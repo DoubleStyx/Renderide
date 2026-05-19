@@ -273,6 +273,14 @@ impl EmbeddedMaterialBindResources {
         self.texture_debug_cache.lock().clear();
     }
 
+    /// Invalidates reflected layout and group-1 caches for one composed shader stem.
+    pub(crate) fn invalidate_stem_layout(&self, stem: &str) {
+        profiling::scope!("materials::embedded_invalidate_stem_layout");
+        self.stem_cache.lock().remove(stem);
+        self.bind_cache.clear();
+        self.texture_debug_cache.lock().clear();
+    }
+
     /// Returns or builds a `@group(1)` bind group for the composed embedded `stem`. Callers
     /// must thread the shader-specific Froox variant bitmask through
     /// [`EmbeddedMaterialBindShader::shader_variant_bits`]: hard-coding `None` zeroes

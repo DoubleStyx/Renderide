@@ -238,6 +238,33 @@ impl RenderBackend {
             .unwrap_or(crate::config::ExperimentalSettings::default().reflection_probe_sh2_enabled)
     }
 
+    /// Snapshot of the live development WGSL material hot-reload toggle.
+    pub(crate) fn material_shader_hot_reload_enabled(&self) -> bool {
+        self.renderer_settings
+            .as_ref()
+            .and_then(|h| h.read().ok())
+            .map(|s| s.experimental.material_shader_hot_reload_enabled)
+            .unwrap_or(
+                crate::config::ExperimentalSettings::default().material_shader_hot_reload_enabled,
+            )
+    }
+
+    /// Applies development WGSL hot-reload settings and polls for changed local material targets.
+    pub(crate) fn sync_material_shader_hot_reload(&mut self) {
+        let enabled = self.material_shader_hot_reload_enabled();
+        self.materials.set_dev_shader_hot_reload_enabled(enabled);
+        let report = self.materials.poll_dev_shader_hot_reload();
+        if report.is_empty() {
+            return;
+        }
+        for stem in &report.reloaded_stems {
+            logger::info!("materials: development WGSL reloaded for {stem}");
+        }
+        for error in &report.errors {
+            logger::warn!("materials: development WGSL reload failed: {error}");
+        }
+    }
+
     /// Count of host Texture2D asset ids that have received a [`crate::shared::SetTexture2DFormat`] (CPU-side table).
     pub fn texture_format_registration_count(&self) -> usize {
         self.asset_transfers.texture_format_registration_count()
@@ -415,6 +442,7 @@ impl RenderBackend {
                     .collect()
             })
             .unwrap_or_default();
+        let material_diagnostics = self.materials.diagnostic_snapshot();
         crate::diagnostics::BackendDiagSnapshot {
             texture_format_registration_count: self.texture_format_registration_count(),
             texture_mip0_ready_count: self.texture_mip0_ready_count(),
@@ -427,6 +455,8 @@ impl RenderBackend {
             material_property_slots: store.material_property_slot_count(),
             property_block_slots: store.property_block_slot_count(),
             material_shader_bindings: store.material_shader_binding_count(),
+            material_shader_graph: material_diagnostics.shader_graph,
+            material_pipeline_cache: material_diagnostics.pipeline_cache,
             frame_graph_pass_count: self.frame_graph_pass_count(),
             frame_graph_topo_levels: self.frame_graph_topo_levels(),
             gpu_light_count: self.frame_services.frame_resources.frame_lights().len(),

@@ -91,7 +91,7 @@ impl BackendDrawPreparation {
             let property_store = materials.material_property_store();
             let router = materials
                 .material_registry()
-                .map_or(&*null_material_router, |registry| &registry.router);
+                .map_or(&*null_material_router, |registry| registry.router());
             let pipeline_property_ids = materials.pipeline_property_resolver().resolve();
             (property_store, router, pipeline_property_ids)
         };

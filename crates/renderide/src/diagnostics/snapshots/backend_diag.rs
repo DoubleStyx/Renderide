@@ -4,7 +4,10 @@
 //! Captured by [`crate::backend::RenderBackend::snapshot_for_diagnostics`] before the diagnostics
 //! HUD layer runs, so `diagnostics/` never borrows `&RenderBackend` directly.
 
-use crate::materials::RasterPipelineKind;
+use crate::materials::{
+    MaterialPipelineCacheDiagnosticSnapshot, MaterialShaderGraphDiagnosticSnapshot,
+    RasterPipelineKind,
+};
 use crate::world_mesh::{WorldMeshDrawStateRow, WorldMeshDrawStats};
 
 /// One host-shader -> renderer-pipeline routing row captured for the **Shader routes** HUD tab.
@@ -49,6 +52,10 @@ pub struct BackendDiagSnapshot {
     pub property_block_slots: usize,
     /// Distinct shader binding sets registered for materials.
     pub material_shader_bindings: usize,
+    /// Shader/material graph diagnostics.
+    pub material_shader_graph: MaterialShaderGraphDiagnosticSnapshot,
+    /// Material pipeline cache diagnostics.
+    pub material_pipeline_cache: MaterialPipelineCacheDiagnosticSnapshot,
     /// Pass count in the compiled main render graph.
     pub frame_graph_pass_count: usize,
     /// Kahn-style DAG wave count from the compiled main render graph.

@@ -29,6 +29,7 @@ fn pre_record_layout(
         width,
         height,
         stereo,
+        sample_count: 1,
         depth_format: wgpu::TextureFormat::Depth32Float,
         color_format: wgpu::TextureFormat::Rgba16Float,
         needs_depth_snapshot,

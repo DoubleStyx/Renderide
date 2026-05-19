@@ -67,6 +67,7 @@
 //! [`MaterialPipelineCache`], keyed by [`MaterialPipelineCacheKey`] (shader route + permutation
 //! + attachment formats + resolved render state).
 
+mod asset_graph;
 mod cache;
 pub(crate) mod embedded;
 pub(crate) mod host_data;
@@ -86,10 +87,15 @@ mod system;
 mod wgsl;
 mod wgsl_reflect;
 
+pub(crate) use asset_graph::{
+    GlobalUniformValueType, MaterialShaderGraphDiagnosticSnapshot, MaterialShaderHotReloadReport,
+};
 #[cfg(test)]
 pub(crate) use cache::MaterialPipelineCache;
 /// Pipeline cache keyed by shader route / layout fingerprint.
-pub(crate) use cache::{MaterialPipelineSet, MaterialPipelineVariantSpec};
+pub(crate) use cache::{
+    MaterialPipelineCacheDiagnosticSnapshot, MaterialPipelineSet, MaterialPipelineVariantSpec,
+};
 
 /// Embedded raster materials: bind groups, texture pools, uniform packing, and stem-metadata queries.
 pub(crate) use embedded::EmbeddedMaterialBindShader;

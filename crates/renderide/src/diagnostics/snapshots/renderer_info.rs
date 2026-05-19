@@ -3,6 +3,9 @@
 use crate::diagnostics::BackendDiagSnapshot;
 use crate::frontend::InitState;
 use crate::gpu::{GpuContext, GpuLimits};
+use crate::materials::{
+    MaterialPipelineCacheDiagnosticSnapshot, MaterialShaderGraphDiagnosticSnapshot,
+};
 use crate::scene::SceneCoordinator;
 
 /// Per-frame diagnostic snapshot built on the CPU before the render graph executes.
@@ -46,6 +49,10 @@ pub struct RendererInfoSnapshot {
     pub property_block_slots: usize,
     /// Distinct shader binding sets registered for materials.
     pub material_shader_bindings: usize,
+    /// Shader/material graph diagnostics.
+    pub material_shader_graph: MaterialShaderGraphDiagnosticSnapshot,
+    /// Material pipeline cache diagnostics.
+    pub material_pipeline_cache: MaterialPipelineCacheDiagnosticSnapshot,
     /// Pass count in the compiled main render graph.
     pub frame_graph_pass_count: usize,
     /// Kahn-style DAG wave count at compile time ([`crate::render_graph::CompileStats::topo_levels`]); same graph as [`Self::frame_graph_pass_count`].
@@ -134,6 +141,8 @@ impl RendererInfoSnapshot {
             material_property_slots: args.backend.material_property_slots,
             property_block_slots: args.backend.property_block_slots,
             material_shader_bindings: args.backend.material_shader_bindings,
+            material_shader_graph: args.backend.material_shader_graph.clone(),
+            material_pipeline_cache: args.backend.material_pipeline_cache,
             frame_graph_pass_count: args.backend.frame_graph_pass_count,
             frame_graph_topo_levels: args.backend.frame_graph_topo_levels,
             gpu_light_count: args.backend.gpu_light_count,

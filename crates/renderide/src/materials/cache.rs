@@ -1,9 +1,9 @@
 //! Cache of [`wgpu::RenderPipeline`] per [`RasterPipelineKind`] + permutation + attachment formats.
 //!
-//! Lookup keys intentionally **do not** include a WGSL layout fingerprint: reflecting the full
-//! shader on every cache probe would dominate CPU cost. Embedded targets are stable per
-//! `(kind, permutation, [`MaterialPipelineDesc`])`. If hot-reload or dynamic WGSL is introduced,
-//! extend the key with a content hash or version.
+//! Lookup keys intentionally **do not** reflect WGSL on every cache probe: doing so would dominate
+//! CPU cost. The material asset graph supplies a source generation for each embedded target, and
+//! that generation is included in the key so development reloads and future dynamic shader sources
+//! cannot reuse stale pipelines.
 //!
 //! The cache is LRU-bounded to avoid unbounded growth when many format/permutation combinations appear.
 
@@ -71,6 +71,11 @@ pub struct MaterialPipelineVariantSpec {
 pub struct MaterialPipelineCacheKey {
     /// Which WGSL program backs the pipeline (embedded stem or null fallback).
     pub kind: RasterPipelineKind,
+    /// Source generation from the material asset graph.
+    ///
+    /// Development hot reload and future dynamic shader compiler paths bump this value so stale
+    /// pipelines cannot be reused for a changed WGSL source.
+    pub shader_source_generation: u64,
     /// Stereo multiview / single-view permutation for the pipeline.
     pub permutation: ShaderPermutation,
     /// Color attachment format (swapchain or offscreen).
@@ -110,11 +115,32 @@ pub(super) enum MaterialPipelineLookup {
     Failed(String),
 }
 
+/// Plain-data diagnostic snapshot for the material pipeline cache.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct MaterialPipelineCacheDiagnosticSnapshot {
+    /// Ready cached pipeline entries across all shards.
+    pub(crate) ready_entries: usize,
+    /// Pipeline entries currently compiling on the background worker.
+    pub(crate) pending_entries: usize,
+    /// Pipeline entries that failed compilation.
+    pub(crate) failed_entries: usize,
+    /// Cache hit counter.
+    pub(crate) hits: u64,
+    /// Cache miss counter.
+    pub(crate) misses: u64,
+    /// Cache insertion counter.
+    pub(crate) insertions: u64,
+    /// Cache eviction counter.
+    pub(crate) evictions: u64,
+}
+
 struct PipelineBuildRequest {
     key: MaterialPipelineCacheKey,
     kind: RasterPipelineKind,
     desc: MaterialPipelineDesc,
     variant: MaterialPipelineVariantSpec,
+    /// Optional WGSL source override loaded by development hot reload.
+    wgsl_override: Option<Arc<str>>,
     device: Arc<wgpu::Device>,
     limits: Arc<crate::gpu::GpuLimits>,
     tx: crossbeam_channel::Sender<PipelineBuildOutcome>,
@@ -200,9 +226,11 @@ impl MaterialPipelineCache {
         kind: &RasterPipelineKind,
         desc: &MaterialPipelineDesc,
         variant: MaterialPipelineVariantSpec,
+        shader_source_generation: u64,
+        wgsl_override: Option<Arc<str>>,
     ) -> MaterialPipelineLookup {
         profiling::scope!("materials::get_or_create_pipeline");
-        let key = Self::cache_key(kind, desc, variant);
+        let key = Self::cache_key(kind, desc, variant, shader_source_generation);
 
         {
             let mut shard = self.shard_for(&key).lock();
@@ -220,14 +248,31 @@ impl MaterialPipelineCache {
             }
         }
 
-        self.queue_pipeline_build(key, kind.clone(), *desc, variant);
+        self.queue_pipeline_build(key, kind.clone(), *desc, variant, wgsl_override);
         MaterialPipelineLookup::Pending
+    }
+
+    /// Queues a pipeline build if the exact key is not already ready, pending, or failed.
+    pub(super) fn queue_warmup(
+        &self,
+        kind: &RasterPipelineKind,
+        desc: &MaterialPipelineDesc,
+        variant: MaterialPipelineVariantSpec,
+        shader_source_generation: u64,
+        wgsl_override: Option<Arc<str>>,
+    ) {
+        match self.get_or_queue(kind, desc, variant, shader_source_generation, wgsl_override) {
+            MaterialPipelineLookup::Ready(_)
+            | MaterialPipelineLookup::Pending
+            | MaterialPipelineLookup::Failed(_) => {}
+        }
     }
 
     fn cache_key(
         kind: &RasterPipelineKind,
         desc: &MaterialPipelineDesc,
         variant: MaterialPipelineVariantSpec,
+        shader_source_generation: u64,
     ) -> MaterialPipelineCacheKey {
         let MaterialPipelineVariantSpec {
             permutation,
@@ -238,6 +283,7 @@ impl MaterialPipelineCache {
         } = variant;
         MaterialPipelineCacheKey {
             kind: kind.clone(),
+            shader_source_generation,
             permutation,
             surface_format: desc.surface_format,
             depth_stencil_format: desc.depth_stencil_format,
@@ -256,6 +302,7 @@ impl MaterialPipelineCache {
         kind: RasterPipelineKind,
         desc: MaterialPipelineDesc,
         variant: MaterialPipelineVariantSpec,
+        wgsl_override: Option<Arc<str>>,
     ) {
         self.stats.note_miss();
 
@@ -264,6 +311,7 @@ impl MaterialPipelineCache {
             kind: kind.clone(),
             desc,
             variant,
+            wgsl_override,
             device: self.device.clone(),
             limits: self.limits.clone(),
             tx: self.pipeline_build_tx.clone(),
@@ -310,6 +358,7 @@ impl MaterialPipelineCache {
         kind: &RasterPipelineKind,
         desc: &MaterialPipelineDesc,
         variant: MaterialPipelineVariantSpec,
+        wgsl_override: Option<Arc<str>>,
     ) -> Result<MaterialPipelineSet, PipelineBuildError> {
         let MaterialPipelineVariantSpec {
             permutation,
@@ -321,9 +370,19 @@ impl MaterialPipelineCache {
         let wgsl = match kind {
             RasterPipelineKind::EmbeddedStem(stem) => {
                 validate_embedded_required_features(&device, stem, permutation)?;
-                build_embedded_wgsl(stem, permutation)?
+                if let Some(source) = wgsl_override.as_ref() {
+                    source.to_string()
+                } else {
+                    build_embedded_wgsl(stem, permutation)?
+                }
             }
-            RasterPipelineKind::Null => build_null_wgsl(permutation)?,
+            RasterPipelineKind::Null => {
+                if let Some(source) = wgsl_override.as_ref() {
+                    source.to_string()
+                } else {
+                    build_null_wgsl(permutation)?
+                }
+            }
         };
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("raster_material_shader"),
@@ -388,6 +447,29 @@ impl MaterialPipelineCache {
             );
         }
     }
+
+    /// Captures ready/pending/failed entry counts and cache counters.
+    pub(super) fn diagnostic_snapshot(&self) -> MaterialPipelineCacheDiagnosticSnapshot {
+        let mut ready_entries = 0usize;
+        let mut pending_entries = 0usize;
+        let mut failed_entries = 0usize;
+        for shard in &self.shards {
+            let shard = shard.lock();
+            ready_entries = ready_entries.saturating_add(shard.pipelines.len());
+            pending_entries = pending_entries.saturating_add(shard.pending.len());
+            failed_entries = failed_entries.saturating_add(shard.failed.len());
+        }
+        let stats = self.stats.snapshot();
+        MaterialPipelineCacheDiagnosticSnapshot {
+            ready_entries,
+            pending_entries,
+            failed_entries,
+            hits: stats.hits,
+            misses: stats.misses,
+            insertions: stats.insertions,
+            evictions: stats.evictions,
+        }
+    }
 }
 
 /// Ensures the active device can compile an embedded material target before module creation.
@@ -416,13 +498,20 @@ fn spawn_pipeline_build(request: PipelineBuildRequest) -> Result<(), String> {
             kind,
             desc,
             variant,
+            wgsl_override,
             device,
             limits,
             tx,
         } = request;
-        let result =
-            MaterialPipelineCache::build_pipeline_set_for(device, limits, &kind, &desc, variant)
-                .map_err(|e| e.to_string());
+        let result = MaterialPipelineCache::build_pipeline_set_for(
+            device,
+            limits,
+            &kind,
+            &desc,
+            variant,
+            wgsl_override,
+        )
+        .map_err(|e| e.to_string());
         let _ = tx.send(PipelineBuildOutcome { key, kind, result });
     });
     Ok(())
@@ -439,4 +528,46 @@ fn material_pipeline_compile_pool() -> Result<&'static rayon::ThreadPool, String
     })
     .as_ref()
     .map_err(Clone::clone)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::{MaterialPipelineCache, MaterialPipelineVariantSpec};
+    use crate::materials::{
+        MaterialBlendMode, MaterialPipelineDesc, MaterialRenderState, RasterFrontFace,
+        RasterPipelineKind, RasterPrimitiveTopology, ShaderPermutation,
+    };
+
+    fn base_desc() -> MaterialPipelineDesc {
+        MaterialPipelineDesc {
+            surface_format: wgpu::TextureFormat::Rgba16Float,
+            depth_stencil_format: Some(wgpu::TextureFormat::Depth32Float),
+            sample_count: 1,
+            multiview_mask: None,
+        }
+    }
+
+    fn base_variant() -> MaterialPipelineVariantSpec {
+        MaterialPipelineVariantSpec {
+            permutation: ShaderPermutation::default(),
+            blend_mode: MaterialBlendMode::Opaque,
+            render_state: MaterialRenderState::default(),
+            front_face: RasterFrontFace::default(),
+            primitive_topology: RasterPrimitiveTopology::default(),
+        }
+    }
+
+    #[test]
+    fn cache_key_includes_shader_source_generation() {
+        let kind = RasterPipelineKind::EmbeddedStem(Arc::from("unlit_default"));
+
+        let first = MaterialPipelineCache::cache_key(&kind, &base_desc(), base_variant(), 1);
+        let second = MaterialPipelineCache::cache_key(&kind, &base_desc(), base_variant(), 2);
+
+        assert_ne!(first, second);
+        assert_eq!(first.shader_source_generation, 1);
+        assert_eq!(second.shader_source_generation, 2);
+    }
 }

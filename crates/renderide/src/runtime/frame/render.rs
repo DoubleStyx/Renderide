@@ -69,6 +69,7 @@ impl RendererRuntime {
         profiling::scope!("render::render_frame");
         self.sync_debug_hud_diagnostics_from_settings();
         self.setup_msaa_for_mode(gpu, &mode);
+        self.backend.sync_material_shader_hot_reload();
         // Drain background pipeline-build completions exactly once per frame, before per-view
         // recording fans out. Workers can then do pure cache reads in `get_or_queue` without
         // touching the completion channel or pending/failed mutexes per draw.

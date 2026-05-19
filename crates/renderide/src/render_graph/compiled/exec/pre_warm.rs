@@ -108,7 +108,7 @@ impl CompiledRenderGraph {
         logger::trace!("graph pre-warm per-view resources: views={}", views.len(),);
         mv_ctx
             .backend
-            .pre_warm_view_assets_from_blackboards(mv_ctx.device, views);
+            .pre_warm_view_assets_from_blackboards(mv_ctx.device, views, view_layouts);
         Ok(())
     }
 
@@ -247,11 +247,23 @@ fn build_view_layouts(
             let viewport = view.target.extent_px(mv_ctx.gpu);
             let stereo = view.is_multiview_stereo_active();
             let depth_format = view.target.depth_format(mv_ctx.gpu).ok()?;
+            let sample_count = match &view.target {
+                super::super::FrameViewTarget::Swapchain => {
+                    mv_ctx.gpu.msaa().swapchain_msaa_effective().max(1)
+                }
+                super::super::FrameViewTarget::ExternalMultiview(_) => {
+                    mv_ctx.gpu.msaa().swapchain_msaa_effective_stereo().max(1)
+                }
+                super::super::FrameViewTarget::OffscreenRt(ext) => ext
+                    .sample_count_policy
+                    .resolve(mv_ctx.gpu.msaa().swapchain_msaa_effective()),
+            };
             Some(PreRecordViewResourceLayout {
                 view_id: view.view_id(),
                 width: viewport.0,
                 height: viewport.1,
                 stereo,
+                sample_count,
                 depth_format,
                 color_format,
                 needs_depth_snapshot: view.resource_hints.needs_depth_snapshot,

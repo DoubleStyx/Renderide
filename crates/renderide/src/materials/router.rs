@@ -47,6 +47,11 @@ impl MaterialRouter {
         self.generation = self.generation.wrapping_add(1);
     }
 
+    /// Bumps dependency generation for shader-source changes that keep the same host route.
+    pub(crate) fn bump_generation_for_shader_dependency(&mut self) {
+        self.bump();
+    }
+
     /// Monotonic generation counter bumped on any route / stem / fallback mutation.
     ///
     /// Persistent resolved-material caches compare a snapshot of this value against the current

@@ -85,6 +85,8 @@ mod tests {
             material_property_slots: 7,
             property_block_slots: 8,
             material_shader_bindings: 9,
+            material_shader_graph: Default::default(),
+            material_pipeline_cache: Default::default(),
             frame_graph_pass_count: 10,
             frame_graph_topo_levels: 11,
             gpu_light_count: 12,

@@ -14,6 +14,10 @@ use crate::materials::host_data::{
 
 use crate::materials::PipelinePropertyResolver;
 use crate::materials::embedded::{EmbeddedMaterialBindError, EmbeddedMaterialBindResources};
+use crate::materials::{
+    MaterialPipelineCacheDiagnosticSnapshot, MaterialPipelineDesc, MaterialPipelineVariantSpec,
+};
+use crate::materials::{MaterialShaderGraphDiagnosticSnapshot, MaterialShaderHotReloadReport};
 use crate::shared::bit_span::BitSpanMut;
 use crate::shared::{MaterialsUpdateBatch, MaterialsUpdateBatchResult, RendererCommand};
 
@@ -33,7 +37,7 @@ static MATERIAL_BATCH_PARSE_ANOMALY_LOG: LogThrottle = LogThrottle::new();
 static LARGE_MATERIAL_BATCH_LOG: LogThrottle = LogThrottle::new();
 
 /// Snapshot of deferred material work and GPU material-system attachment state.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct MaterialSystemDiagnosticSnapshot {
     /// Host material batches waiting for shared-memory availability.
     pub(crate) pending_material_batches: usize,
@@ -43,6 +47,10 @@ pub(crate) struct MaterialSystemDiagnosticSnapshot {
     pub(crate) material_registry_attached: bool,
     /// Whether embedded material bind resources have been attached.
     pub(crate) embedded_bind_attached: bool,
+    /// Shader/material graph diagnostics.
+    pub(crate) shader_graph: MaterialShaderGraphDiagnosticSnapshot,
+    /// Material pipeline cache diagnostics.
+    pub(crate) pipeline_cache: MaterialPipelineCacheDiagnosticSnapshot,
 }
 
 /// Host material tables, GPU registry/cache, embedded bind builder, and deferred shader routes.
@@ -221,7 +229,63 @@ impl MaterialSystem {
             pending_shader_routes: self.pending_shader_routes.len(),
             material_registry_attached: self.material_registry.is_some(),
             embedded_bind_attached: self.embedded_material_bind.is_some(),
+            shader_graph: self
+                .material_registry
+                .as_ref()
+                .map_or_else(MaterialShaderGraphDiagnosticSnapshot::default, |registry| {
+                    registry.shader_graph_diagnostics()
+                }),
+            pipeline_cache: self.material_registry.as_ref().map_or_else(
+                MaterialPipelineCacheDiagnosticSnapshot::default,
+                |registry| registry.pipeline_cache_diagnostics(),
+            ),
         }
+    }
+
+    /// Queues a material pipeline warmup for a prepared draw batch.
+    pub(crate) fn queue_material_pipeline_warmup(
+        &self,
+        kind: &RasterPipelineKind,
+        desc: &MaterialPipelineDesc,
+        variant: MaterialPipelineVariantSpec,
+    ) {
+        if let Some(registry) = self.material_registry.as_ref() {
+            registry.queue_pipeline_warmup(kind, desc, variant);
+        }
+    }
+
+    /// Pre-warms a reflected embedded material layout when group-1 resources are attached.
+    pub(crate) fn pre_warm_embedded_material_layout(&self, stem: &str) {
+        let Some(embedded) = self.embedded_material_bind.as_ref() else {
+            return;
+        };
+        if let Err(error) = embedded.embedded_material_bind_group_layout(stem) {
+            logger::trace!("materials: embedded layout pre-warm failed for {stem}: {error}");
+        }
+    }
+
+    /// Enables or disables development WGSL hot reload.
+    pub(crate) fn set_dev_shader_hot_reload_enabled(&mut self, enabled: bool) {
+        if let Some(registry) = self.material_registry.as_mut() {
+            registry.set_dev_shader_hot_reload_enabled(enabled);
+        }
+    }
+
+    /// Polls development WGSL hot reload and invalidates affected material-side caches.
+    pub(crate) fn poll_dev_shader_hot_reload(&mut self) -> MaterialShaderHotReloadReport {
+        let Some(registry) = self.material_registry.as_mut() else {
+            return MaterialShaderHotReloadReport::default();
+        };
+        let report = registry.poll_dev_shader_hot_reload();
+        if report.is_empty() {
+            return report;
+        }
+        if let Some(embedded) = self.embedded_material_bind.as_ref() {
+            for stem in &report.reloaded_stems {
+                embedded.invalidate_stem_layout(stem);
+            }
+        }
+        report
     }
 
     /// Moves material batches that were waiting for shared memory out for cooperative integration.

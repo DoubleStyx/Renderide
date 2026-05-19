@@ -1,5 +1,6 @@
 //! Narrow backend access packet used by render-graph execution.
 
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use hashbrown::{HashMap, HashSet};
@@ -7,13 +8,18 @@ use hashbrown::{HashMap, HashSet};
 use crate::backend::AssetTransferQueue;
 use crate::diagnostics::{DebugHudEncodeError, PerViewHudConfig, PerViewHudOutputs};
 use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
-use crate::materials::{EmbeddedTangentFallbackMode, MaterialSystem};
+use crate::materials::{
+    EmbeddedTangentFallbackMode, MaterialPipelineDesc, MaterialPipelineVariantSpec, MaterialSystem,
+    RasterPipelineKind, SHADER_PERM_MULTIVIEW_STEREO, ShaderPermutation,
+};
 use crate::mesh_deform::{GpuSkinCache, MeshDeformScratch, MeshPreprocessPipelines};
 use crate::render_graph::TransientPool;
 use crate::render_graph::blackboard::Blackboard;
-use crate::render_graph::compiled::FrameView;
+use crate::render_graph::compiled::{FrameView, FrameViewTarget};
 use crate::render_graph::execution_backend::{GraphExecutionBackend, GraphFrameParamsSplit};
-use crate::render_graph::frame_params::{GraphPassFrame, PerViewFramePlan};
+use crate::render_graph::frame_params::{
+    GraphPassFrame, PerViewFramePlan, PreRecordViewResourceLayout,
+};
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::render_graph::upload_arena::PersistentUploadArena;
 use crate::world_mesh::WorldMeshDrawItem;
@@ -103,6 +109,27 @@ fn collect_view_asset_prewarm_requests(views: &[FrameView<'_>]) -> ViewAssetPrew
         }
     }
     requests
+}
+
+fn material_pass_desc_for_layout(
+    layout: PreRecordViewResourceLayout,
+    supports_multiview: bool,
+) -> (MaterialPipelineDesc, ShaderPermutation) {
+    let use_multiview = layout.stereo && supports_multiview;
+    let shader_perm = if use_multiview {
+        SHADER_PERM_MULTIVIEW_STEREO
+    } else {
+        ShaderPermutation::default()
+    };
+    (
+        MaterialPipelineDesc {
+            surface_format: layout.color_format,
+            depth_stencil_format: Some(layout.depth_format),
+            sample_count: layout.sample_count.max(1),
+            multiview_mask: use_multiview.then(|| NonZeroU32::new(3)).flatten(),
+        },
+        shader_perm,
+    )
 }
 
 /// Narrow backend packet used by the render graph executor.
@@ -244,6 +271,7 @@ impl<'a> BackendGraphAccess<'a> {
         &mut self,
         device: &wgpu::Device,
         views: &[FrameView<'_>],
+        view_layouts: &[Option<PreRecordViewResourceLayout>],
     ) {
         profiling::scope!("graph::pre_warm_view_assets");
         let requests = collect_view_asset_prewarm_requests(views);
@@ -264,6 +292,59 @@ impl<'a> BackendGraphAccess<'a> {
             &requests,
             &mesh_ids_needing_all_extended_streams,
         );
+        self.pre_warm_material_assets_from_blackboards(views, view_layouts);
+    }
+
+    /// Warms material graph, reflected group-1 layouts, and pipeline cache entries from prepared draws.
+    fn pre_warm_material_assets_from_blackboards(
+        &self,
+        views: &[FrameView<'_>],
+        view_layouts: &[Option<PreRecordViewResourceLayout>],
+    ) {
+        profiling::scope!("graph::pre_warm_material_assets");
+        let mut warmed_batches = 0usize;
+        for (view, layout) in views.iter().zip(view_layouts.iter()) {
+            let Some(layout) = *layout else {
+                continue;
+            };
+            let Some(draw_plan) = view.initial_blackboard.get::<WorldMeshDrawPlanSlot>() else {
+                continue;
+            };
+            let Some(collection) = draw_plan.as_prefetched() else {
+                continue;
+            };
+            let supports_multiview = self
+                .gpu_limits
+                .as_ref()
+                .is_some_and(|limits| limits.supports_multiview);
+            let (pass_desc, shader_perm) =
+                material_pass_desc_for_layout(layout, supports_multiview);
+            let offscreen = matches!(view.target, FrameViewTarget::OffscreenRt(_));
+            for item in &collection.items {
+                let mut front_face = item.batch_key.front_face;
+                if offscreen {
+                    front_face = front_face.flipped();
+                }
+                let variant = MaterialPipelineVariantSpec {
+                    permutation: shader_perm,
+                    blend_mode: item.batch_key.blend_mode,
+                    render_state: item.batch_key.render_state,
+                    front_face,
+                    primitive_topology: item.batch_key.primitive_topology,
+                };
+                self.materials.queue_material_pipeline_warmup(
+                    &item.batch_key.pipeline,
+                    &pass_desc,
+                    variant,
+                );
+                if let RasterPipelineKind::EmbeddedStem(stem) = &item.batch_key.pipeline {
+                    self.materials
+                        .pre_warm_embedded_material_layout(stem.as_ref());
+                }
+                warmed_batches = warmed_batches.saturating_add(1);
+            }
+        }
+        logger::trace!("graph pre-warm material assets: batches={warmed_batches}");
     }
 
     fn ensure_view_asset_prewarm_requests(
@@ -505,8 +586,14 @@ impl GraphExecutionBackend for BackendGraphAccess<'_> {
         &mut self,
         device: &wgpu::Device,
         views: &[FrameView<'_>],
+        view_layouts: &[Option<PreRecordViewResourceLayout>],
     ) {
-        BackendGraphAccess::pre_warm_view_assets_from_blackboards(self, device, views);
+        BackendGraphAccess::pre_warm_view_assets_from_blackboards(
+            self,
+            device,
+            views,
+            view_layouts,
+        );
     }
 
     fn prepare_view_blackboard(

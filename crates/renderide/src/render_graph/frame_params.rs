@@ -146,6 +146,8 @@ pub struct PreRecordViewResourceLayout {
     pub height: u32,
     /// Whether this view records as a two-layer multiview target.
     pub stereo: bool,
+    /// Forward-pass sample count for this view.
+    pub sample_count: u32,
     /// Depth snapshot format for material scene-depth sampling.
     pub depth_format: wgpu::TextureFormat,
     /// HDR scene-color snapshot format for grab-pass material sampling.

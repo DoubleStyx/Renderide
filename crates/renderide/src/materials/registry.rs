@@ -2,12 +2,17 @@
 
 use std::sync::Arc;
 
+use super::asset_graph::MaterialAssetGraph;
 use super::cache::{
-    MaterialPipelineCache, MaterialPipelineLookup, MaterialPipelineSet, MaterialPipelineVariantSpec,
+    MaterialPipelineCache, MaterialPipelineCacheDiagnosticSnapshot, MaterialPipelineLookup,
+    MaterialPipelineSet, MaterialPipelineVariantSpec,
 };
 use super::pipeline_kind::RasterPipelineKind;
 use super::raster_pipeline::MaterialPipelineDesc;
 use super::router::MaterialRouter;
+use super::{
+    GlobalUniformValueType, MaterialShaderGraphDiagnosticSnapshot, MaterialShaderHotReloadReport,
+};
 
 /// Pipeline set paired with the concrete raster kind that produced it.
 #[derive(Clone)]
@@ -40,8 +45,8 @@ struct PipelineLookupRequest<'a> {
 
 /// Owning table of material routing and pipeline cache.
 pub struct MaterialRegistry {
-    /// Shader asset id -> pipeline family and resolved asset-name routing.
-    pub router: MaterialRouter,
+    /// Shader/material graph state for routes, source generations, and dependency hooks.
+    asset_graph: MaterialAssetGraph,
     cache: MaterialPipelineCache,
 }
 
@@ -56,7 +61,16 @@ impl MaterialRegistry {
             desc,
             variant,
         } = request;
-        match self.cache.get_or_queue(kind, desc, variant) {
+        let source = self
+            .asset_graph
+            .shader_source_snapshot(kind, variant.permutation);
+        match self.cache.get_or_queue(
+            kind,
+            desc,
+            variant,
+            source.generation,
+            source.source_override,
+        ) {
             MaterialPipelineLookup::Ready(p) => {
                 Some(MaterialPipelineResolution::new(kind.clone(), p))
             }
@@ -97,7 +111,16 @@ impl MaterialRegistry {
         variant: MaterialPipelineVariantSpec,
     ) -> Option<MaterialPipelineResolution> {
         let fallback = RasterPipelineKind::Null;
-        match self.cache.get_or_queue(&fallback, desc, variant) {
+        let source = self
+            .asset_graph
+            .shader_source_snapshot(&fallback, variant.permutation);
+        match self.cache.get_or_queue(
+            &fallback,
+            desc,
+            variant,
+            source.generation,
+            source.source_override,
+        ) {
             MaterialPipelineLookup::Ready(p) => Some(MaterialPipelineResolution::new(fallback, p)),
             MaterialPipelineLookup::Pending => None,
             MaterialPipelineLookup::Failed(e) => {
@@ -121,10 +144,22 @@ impl MaterialRegistry {
         device: Arc<wgpu::Device>,
         limits: Arc<crate::gpu::GpuLimits>,
     ) -> Self {
+        let mut asset_graph = MaterialAssetGraph::new(RasterPipelineKind::Null);
+        asset_graph.register_global_uniform("Renderide_FrameIndex", GlobalUniformValueType::Uint);
+        asset_graph
+            .register_global_uniform("Renderide_FrameTimeSeconds", GlobalUniformValueType::Float);
+        asset_graph.register_global_uniform("Renderide_ViewPosition", GlobalUniformValueType::Vec4);
+        asset_graph
+            .register_global_uniform("Renderide_ViewProjection", GlobalUniformValueType::Mat4);
         Self {
-            router: MaterialRouter::new(RasterPipelineKind::Null),
+            asset_graph,
             cache: MaterialPipelineCache::new(device, limits),
         }
+    }
+
+    /// Returns the shader router used by draw preparation.
+    pub(crate) fn router(&self) -> &MaterialRouter {
+        self.asset_graph.router()
     }
 
     /// Inserts a host shader id -> pipeline mapping and optional resolved AssetBundle shader asset name.
@@ -135,25 +170,17 @@ impl MaterialRegistry {
         shader_asset_name: Option<String>,
         shader_variant_bits: Option<u32>,
     ) {
-        self.router.set_shader_route(
+        self.asset_graph.register_shader_route(
             shader_asset_id,
-            pipeline.clone(),
+            pipeline,
             shader_asset_name,
             shader_variant_bits,
         );
-        match &pipeline {
-            RasterPipelineKind::EmbeddedStem(s) => {
-                self.router.set_shader_stem(shader_asset_id, s.to_string());
-            }
-            RasterPipelineKind::Null => {
-                self.router.remove_shader_stem(shader_asset_id);
-            }
-        }
     }
 
     /// Removes routing for a host shader id [`crate::shared::ShaderUnload`].
     pub fn unmap_shader(&mut self, shader_asset_id: i32) {
-        self.router.remove_shader_route(shader_asset_id);
+        self.asset_graph.unregister_shader_route(shader_asset_id);
     }
 
     /// Resolves a cached or new pipeline for an already-resolved raster pipeline kind.
@@ -172,21 +199,41 @@ impl MaterialRegistry {
         })
     }
 
+    /// Queues a pipeline build for a prepared draw batch without waiting for the result.
+    pub(crate) fn queue_pipeline_warmup(
+        &self,
+        kind: &RasterPipelineKind,
+        desc: &MaterialPipelineDesc,
+        variant: MaterialPipelineVariantSpec,
+    ) {
+        let source = self
+            .asset_graph
+            .shader_source_snapshot(kind, variant.permutation);
+        self.cache.queue_warmup(
+            kind,
+            desc,
+            variant,
+            source.generation,
+            source.source_override,
+        );
+    }
+
     /// Shader routes for the debug HUD (`shader_asset_id`, [`RasterPipelineKind`], optional AssetBundle shader metadata), sorted.
     pub fn shader_routes_for_hud(
         &self,
     ) -> Vec<(i32, RasterPipelineKind, Option<String>, Option<u32>)> {
-        self.router.routes_sorted_for_hud()
+        self.asset_graph.shader_routes_for_hud()
     }
 
     /// Resolved composed WGSL stem for a host shader id, when [`Self::map_shader_route`] recorded one.
     pub fn stem_for_shader_asset(&self, shader_asset_id: i32) -> Option<&str> {
-        self.router.stem_for_shader_asset(shader_asset_id)
+        self.asset_graph.stem_for_shader_asset(shader_asset_id)
     }
 
     /// Froox shader variant bitmask for a host shader id, when one was parsed.
     pub fn variant_bits_for_shader_asset(&self, shader_asset_id: i32) -> Option<u32> {
-        self.router.variant_bits_for_shader_asset(shader_asset_id)
+        self.asset_graph
+            .variant_bits_for_shader_asset(shader_asset_id)
     }
 
     /// Drains finished background pipeline builds into the cache.
@@ -195,5 +242,25 @@ impl MaterialRegistry {
     /// threads never touch the completion channel or the pending/failed mutexes during draw.
     pub fn drain_pipeline_build_completions(&self) {
         self.cache.drain_pipeline_build_completions();
+    }
+
+    /// Enables or disables development WGSL hot reload polling.
+    pub(crate) fn set_dev_shader_hot_reload_enabled(&mut self, enabled: bool) {
+        self.asset_graph.set_dev_hot_reload_enabled(enabled);
+    }
+
+    /// Polls local WGSL targets for development reload changes.
+    pub(crate) fn poll_dev_shader_hot_reload(&mut self) -> MaterialShaderHotReloadReport {
+        self.asset_graph.poll_dev_hot_reload()
+    }
+
+    /// Captures graph diagnostics.
+    pub(crate) fn shader_graph_diagnostics(&self) -> MaterialShaderGraphDiagnosticSnapshot {
+        self.asset_graph.diagnostic_snapshot()
+    }
+
+    /// Captures pipeline cache diagnostics.
+    pub(crate) fn pipeline_cache_diagnostics(&self) -> MaterialPipelineCacheDiagnosticSnapshot {
+        self.cache.diagnostic_snapshot()
     }
 }

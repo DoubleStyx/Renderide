@@ -260,6 +260,7 @@ pub trait GraphExecutionBackend {
         &mut self,
         device: &wgpu::Device,
         views: &[FrameView<'_>],
+        view_layouts: &[Option<PreRecordViewResourceLayout>],
     );
     /// Lets backend-specific systems enrich one per-view blackboard before recording.
     fn prepare_view_blackboard(

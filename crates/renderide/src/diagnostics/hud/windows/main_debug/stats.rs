@@ -539,6 +539,51 @@ impl StatsSection for MaterialsSection {
                 "Shader bindings",
                 &format!("{}", r.material_shader_bindings),
             );
+            kv(
+                ui,
+                "Shader graph",
+                &format!(
+                    "{} routes / {} sources / {} globals",
+                    r.material_shader_graph.shader_nodes,
+                    r.material_shader_graph.embedded_source_nodes,
+                    r.material_shader_graph.global_uniforms
+                ),
+            );
+            kv(
+                ui,
+                "Pipeline cache",
+                &format!(
+                    "{} ready / {} pending / {} failed",
+                    r.material_pipeline_cache.ready_entries,
+                    r.material_pipeline_cache.pending_entries,
+                    r.material_pipeline_cache.failed_entries
+                ),
+            );
+            kv(
+                ui,
+                "Pipeline cache stats",
+                &format!(
+                    "{} hits / {} misses / {} evictions",
+                    r.material_pipeline_cache.hits,
+                    r.material_pipeline_cache.misses,
+                    r.material_pipeline_cache.evictions
+                ),
+            );
+            kv(
+                ui,
+                "WGSL hot reload",
+                if r.material_shader_graph.dev_hot_reload_enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
+            );
+            if let Some(stem) = r.material_shader_graph.last_dev_reload_stem.as_deref() {
+                kv(ui, "Last WGSL reload", stem);
+            }
+            if let Some(error) = r.material_shader_graph.last_dev_reload_error.as_deref() {
+                kv(ui, "Last WGSL reload error", error);
+            }
         });
     }
 }
