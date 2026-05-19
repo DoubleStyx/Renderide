@@ -17,7 +17,7 @@ const KKM_4PI: f32 = KMIE * 4.0 * PI;
 const KSCALE: f32 = 1.0 / (OUTER_RADIUS - 1.0);
 const KSCALE_DEPTH: f32 = 0.25;
 const KSCALE_OVER_SCALE_DEPTH: f32 = (1.0 / (OUTER_RADIUS - 1.0)) / 0.25;
-const KSAMPLES: f32 = 2.0;
+const KSAMPLES: u32 = 2u;
 const MIE_G: f32 = -0.990;
 const MIE_G2: f32 = 0.9801;
 const SKY_GROUND_THRESHOLD: f32 = 0.02;
@@ -41,8 +41,7 @@ struct ProceduralSkyVisibleTerms {
     ground_color: vec3<f32>,
     sky_color: vec3<f32>,
     sun_color: vec3<f32>,
-    fragment_ray: vec3<f32>,
-    sky_ground_factor: f32,
+    ray: vec3<f32>,
 }
 
 struct ScatteringStep {
@@ -145,22 +144,19 @@ fn evaluate_scattering(
         let start_angle = dot(eye_ray, camera_pos) / height;
         let start_offset = depth_init * scale_factor(start_angle);
 
-        let sample_length = far / KSAMPLES;
+        let sample_length = far / f32(KSAMPLES);
         let scaled_length = sample_length * KSCALE;
         let sample_ray = eye_ray * sample_length;
         var sample_point = camera_pos + sample_ray * 0.5;
 
         var front_color = vec3<f32>(0.0);
-        let s0 = scattering_inscatter_step(
-            sample_point, eye_ray, sun_dir, inv_wavelength, kkr_4pi, start_offset, scaled_length,
-        );
-        front_color = front_color + s0.contribution;
-        sample_point = sample_point + sample_ray;
-
-        let s1 = scattering_inscatter_step(
-            sample_point, eye_ray, sun_dir, inv_wavelength, kkr_4pi, start_offset, scaled_length,
-        );
-        front_color = front_color + s1.contribution;
+        for (var i = 0u; i < KSAMPLES; i++) {
+            let step = scattering_inscatter_step(
+                sample_point, eye_ray, sun_dir, inv_wavelength, kkr_4pi, start_offset, scaled_length,
+            );
+            front_color = front_color + step.contribution;
+            sample_point = sample_point + sample_ray;
+        }
 
         c_in = front_color * (inv_wavelength * kkr_esun);
         c_out = front_color * KKM_ESUN;
@@ -175,7 +171,7 @@ fn evaluate_scattering(
         let camera_offset = depth * camera_scale;
         let temp = light_scale + camera_scale;
 
-        let sample_length = far / KSAMPLES;
+        let sample_length = far / f32(KSAMPLES);
         let scaled_length = sample_length * KSCALE;
         let sample_ray = eye_ray * sample_length;
         let sample_point = camera_pos + sample_ray * 0.5;
@@ -220,34 +216,31 @@ fn visible_vertex_terms(params: ProceduralSkyParams, input_eye_ray: vec3<f32>) -
     let ground_color = params.exposure * (scattering.c_in + params.ground_color * scattering.c_out);
     let sky_color = params.exposure * (scattering.c_in * rayleigh_phase(sun_dir, -eye_ray));
     let sun_color = params.exposure * (scattering.c_out * params.sun_color);
-    let fragment_ray = -eye_ray;
-    let sky_ground_factor = fragment_ray.y / SKY_GROUND_THRESHOLD;
     return ProceduralSkyVisibleTerms(
         ground_color,
         sky_color,
         sun_color,
-        fragment_ray,
-        sky_ground_factor,
+        -eye_ray,
     );
 }
 
 fn visible_fragment_color(params: ProceduralSkyParams, terms: ProceduralSkyVisibleTerms) -> vec3<f32> {
-    let sun_dir = safe_normalize(params.sun_direction, vec3<f32>(0.0, 1.0, 0.0));
-    let fragment_ray = safe_normalize(terms.fragment_ray, vec3<f32>(0.0, -1.0, 0.0));
+    let sky_ground_factor = terms.ray.y / SKY_GROUND_THRESHOLD;
     var color = mix(
         terms.sky_color,
         terms.ground_color,
-        clamp(terms.sky_ground_factor, 0.0, 1.0),
+        clamp(sky_ground_factor, 0.0, 1.0),
     );
 
-    if (!sun_disk_mode_none(params.sun_disk_mode) && terms.sky_ground_factor < 0.0) {
+    if (!sun_disk_mode_none(params.sun_disk_mode) && sky_ground_factor < 0.0) {
+        let sun_dir = safe_normalize(params.sun_direction, vec3<f32>(0.0, 1.0, 0.0));
         let sun_size = clamp(params.sun_size, 1.0e-4, 1.0);
         var mie: f32;
         if (sun_disk_mode_high_quality(params.sun_disk_mode)) {
-            let eye_cos = dot(sun_dir, fragment_ray);
+            let eye_cos = dot(sun_dir, terms.ray);
             mie = mie_phase(eye_cos, eye_cos * eye_cos, sun_size);
         } else {
-            mie = calc_sun_spot(sun_dir, -fragment_ray, sun_size);
+            mie = calc_sun_spot(sun_dir, -terms.ray, sun_size);
         }
         color = color + mie * terms.sun_color;
     }

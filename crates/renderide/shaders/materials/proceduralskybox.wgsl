@@ -29,8 +29,7 @@ struct VertexOutput {
     @location(0) ground_color: vec3<f32>,
     @location(1) sky_color: vec3<f32>,
     @location(2) sun_color: vec3<f32>,
-    @location(3) fragment_ray: vec3<f32>,
-    @location(4) sky_ground_factor: f32,
+    @location(3) ray: vec3<f32>,
 }
 
 @vertex
@@ -55,8 +54,7 @@ fn vs_main(
     out.ground_color = terms.ground_color;
     out.sky_color = terms.sky_color;
     out.sun_color = terms.sun_color;
-    out.fragment_ray = terms.fragment_ray;
-    out.sky_ground_factor = terms.sky_ground_factor;
+    out.ray = terms.ray;
     return out;
 }
 
@@ -67,8 +65,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         in.ground_color,
         in.sky_color,
         in.sun_color,
-        in.fragment_ray,
-        in.sky_ground_factor,
+        in.ray,
     );
     return rg::retain_globals_additive(vec4<f32>(
         ps::visible_fragment_color(psmat::params(), terms),

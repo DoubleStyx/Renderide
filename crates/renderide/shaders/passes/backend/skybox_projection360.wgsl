@@ -102,7 +102,7 @@ fn vs_main(
     @builtin(view_index) view_idx: u32,
 #endif
 ) -> VertexOutput {
-    let clip = skybox::fullscreen_clip_pos(vertex_index);
+    let clip = skybox::fullscreen_quad_clip_pos(vertex_index);
     var out: VertexOutput;
     out.clip_pos = clip;
     out.ndc = vec2<f32>(clip.x, clip.y * view.ndc_y_sign_pad.x);

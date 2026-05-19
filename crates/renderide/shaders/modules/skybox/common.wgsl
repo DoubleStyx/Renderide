@@ -26,24 +26,21 @@ fn fullscreen_clip_pos(vertex_index: u32) -> vec4<f32> {
     return vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
 }
 
+const FULLSCREEN_COVERING_TRIANGLE = mat3x4<f32>(
+    vec4<f32>(-1.0, -1.0, 0.0, 1.0),
+    vec4<f32>(3.0, -1.0, 0.0, 1.0),
+    vec4<f32>(-1.0, 3.0, 0.0, 1.0)
+);
+
 fn fullscreen_quad_clip_pos(vertex_index: u32) -> vec4<f32> {
-    let i = vertex_index % 6u;
-    if (i == 0u) {
-        return vec4<f32>(-1.0, 1.0, 0.0, 1.0);
-    }
+    let i = vertex_index % 3u;
     if (i == 1u) {
-        return vec4<f32>(1.0, 1.0, 0.0, 1.0);
+        return FULLSCREEN_COVERING_TRIANGLE[1];
     }
     if (i == 2u) {
-        return vec4<f32>(-1.0, -1.0, 0.0, 1.0);
+        return FULLSCREEN_COVERING_TRIANGLE[2];
     }
-    if (i == 3u) {
-        return vec4<f32>(-1.0, -1.0, 0.0, 1.0);
-    }
-    if (i == 4u) {
-        return vec4<f32>(1.0, 1.0, 0.0, 1.0);
-    }
-    return vec4<f32>(1.0, -1.0, 0.0, 1.0);
+    return FULLSCREEN_COVERING_TRIANGLE[0];
 }
 
 fn view_is_orthographic(sky: SkyboxView, view_layer: u32) -> bool {
