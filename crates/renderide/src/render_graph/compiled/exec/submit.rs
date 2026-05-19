@@ -8,6 +8,7 @@ use crate::camera::{HostCameraFrame, ViewId};
 
 use super::super::super::context::GraphResolvedResources;
 use super::super::super::frame_upload_batch::{FrameUploadBatch, FrameUploadBatchStats};
+use super::super::super::schedule::{ScheduleSubmitStep, ScheduleSubmitStepKind};
 use super::super::super::upload_arena::PersistentUploadArena;
 use super::{
     CompiledRenderGraph, DrainedUploadCommand, FrameView, FrameViewTarget, GraphExecuteError,
@@ -69,11 +70,12 @@ fn drain_upload_command_buffer(
 }
 
 fn assemble_submit_command_batch(
-    upload_cmd: Option<wgpu::CommandBuffer>,
-    frame_global_cmd: Option<wgpu::CommandBuffer>,
-    per_view_cmds: Vec<wgpu::CommandBuffer>,
-    per_view_profiler_cmd: Option<wgpu::CommandBuffer>,
-    hud_cmd: Option<wgpu::CommandBuffer>,
+    submit_steps: &[ScheduleSubmitStep],
+    mut upload_cmd: Option<wgpu::CommandBuffer>,
+    mut frame_global_cmd: Option<wgpu::CommandBuffer>,
+    mut per_view_cmds: Vec<wgpu::CommandBuffer>,
+    mut per_view_profiler_cmd: Option<wgpu::CommandBuffer>,
+    mut hud_cmd: Option<wgpu::CommandBuffer>,
 ) -> (Vec<wgpu::CommandBuffer>, f64) {
     let command_batch_assembly_start = Instant::now();
     let mut all_cmds: Vec<wgpu::CommandBuffer> = {
@@ -88,11 +90,19 @@ fn assemble_submit_command_batch(
     };
     {
         profiling::scope!("graph::single_submit::assemble_command_batch");
-        all_cmds.extend(upload_cmd);
-        all_cmds.extend(frame_global_cmd);
-        all_cmds.extend(per_view_cmds);
-        all_cmds.extend(per_view_profiler_cmd);
-        all_cmds.extend(hud_cmd);
+        for step in submit_steps {
+            match step.kind {
+                ScheduleSubmitStepKind::GraphUploadDrain => all_cmds.extend(upload_cmd.take()),
+                ScheduleSubmitStepKind::FrameGlobalCommands => {
+                    all_cmds.extend(frame_global_cmd.take());
+                }
+                ScheduleSubmitStepKind::PerViewCommands => all_cmds.append(&mut per_view_cmds),
+                ScheduleSubmitStepKind::PerViewProfilerResolve => {
+                    all_cmds.extend(per_view_profiler_cmd.take());
+                }
+                ScheduleSubmitStepKind::HudOverlay => all_cmds.extend(hud_cmd.take()),
+            }
+        }
     }
     let command_batch_assembly_ms = elapsed_ms(command_batch_assembly_start);
     (all_cmds, command_batch_assembly_ms)
@@ -200,6 +210,7 @@ impl CompiledRenderGraph {
         let has_hud_cmd = hud_cmd.is_some();
 
         let (all_cmds, command_batch_assembly_ms) = assemble_submit_command_batch(
+            &self.schedule.submit_steps,
             upload.command_buffer,
             frame_global_cmd,
             per_view_cmds,

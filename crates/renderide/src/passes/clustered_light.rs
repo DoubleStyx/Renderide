@@ -289,6 +289,7 @@ impl ComputePass for ClusteredLightPass {
 
     fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
         b.compute();
+        b.async_compute_capable();
         b.import_buffer(
             self.resources.lights,
             BufferAccess::Storage {

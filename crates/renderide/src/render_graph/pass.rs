@@ -29,9 +29,8 @@ pub mod template;
 pub use builder::PassBuilder;
 pub use compute::ComputePass;
 pub use encoder::EncoderPass;
-#[cfg(test)]
 pub use node::PassMergeHint;
-pub use node::{GroupScope, PassKind, PassNode, PassPhase};
+pub use node::{GroupScope, PassKind, PassNode, PassPhase, PassWorkloadFlags};
 pub use raster::RasterPass;
 pub use setup::PassSetup;
 pub use template::{ColorAttachmentTemplate, DepthAttachmentTemplate, RenderPassTemplate};

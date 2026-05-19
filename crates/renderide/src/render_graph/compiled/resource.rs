@@ -1,8 +1,8 @@
 //! Compiled-graph resource metadata (transient lifetimes, pass info, compile stats).
 
-use super::super::pass::RenderPassTemplate;
 #[cfg(test)]
-use super::super::pass::{PassKind, PassMergeHint};
+use super::super::pass::PassKind;
+use super::super::pass::{PassMergeHint, PassWorkloadFlags, RenderPassTemplate};
 use super::super::resources::{ResourceAccess, TransientBufferDesc, TransientTextureDesc};
 
 /// Statistics emitted when building a [`super::CompiledRenderGraph`].
@@ -12,9 +12,9 @@ pub struct CompileStats {
     pub pass_count: usize,
     /// Number of Kahn sweep **waves** (parallel layers) in the build-time DAG sort.
     ///
-    /// Runtime execution still walks the compiled pass list in one flat order; this
-    /// count is not a separate executor schedule. It is exposed in the debug HUD (with pass count)
-    /// as a diagnostic and a hint for future wave-based parallel record scheduling.
+    /// Runtime execution consumes the retained wave ranges in
+    /// [`super::super::schedule::FrameSchedule`] while preserving deterministic pass order inside
+    /// each wave. The value is exposed in the debug HUD with pass count.
     pub topo_levels: usize,
     /// Number of passes culled because their writes could not reach an import/export.
     pub culled_count: usize,
@@ -82,6 +82,8 @@ pub struct CompiledPassInfo {
     /// Command kind.
     #[cfg(test)]
     pub kind: PassKind,
+    /// Scheduler-visible workload and execution policy flags.
+    pub workload_flags: PassWorkloadFlags,
     /// Declared accesses.
     pub(crate) accesses: Vec<ResourceAccess>,
     /// Optional multiview mask for raster passes.
@@ -91,8 +93,7 @@ pub struct CompiledPassInfo {
     pub raster_template: Option<RenderPassTemplate>,
     /// Backend merge hint declared at setup time. See [`PassMergeHint`].
     ///
-    /// The wgpu executor currently ignores this; the field is populated for use by a future
-    /// subpass-aware backend without a second migration pass across all call sites.
-    #[cfg(test)]
+    /// Scheduler v1 consumes this while detecting conservative render-pass merge groups. The wgpu
+    /// executor still opens distinct render passes for the retained pass list.
     pub merge_hint: PassMergeHint,
 }

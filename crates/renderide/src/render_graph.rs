@@ -34,9 +34,9 @@
 //!   uncached variant is requested.
 //!
 //! [`CompileStats`] field `topo_levels` counts Kahn-style **parallel waves** in the DAG at compile
-//! time; the executor still walks passes in a **single flat order** (waves are not a separate
-//! runtime schedule). The debug HUD surfaces this value next to pass count as a scheduling /
-//! future-parallelism hint.
+//! time; [`schedule::FrameSchedule`] stores the retained wave ranges used by the executor while
+//! preserving deterministic pass order inside each wave. The debug HUD surfaces this value next to
+//! pass count as a scheduling / future-parallelism hint.
 //!
 //! ## Frame pipeline
 //!

@@ -20,6 +20,12 @@ pub enum SetupError {
     #[error("non-raster pass declared a color or depth attachment")]
     NonRasterPassHasAttachment,
 
+    /// Scheduler v1 records through wgpu's single queue and cannot require real async compute.
+    #[error(
+        "async compute was required, but the current wgpu scheduler only records single-queue work"
+    )]
+    AsyncComputeRequiredUnsupported,
+
     /// A pass referenced a transient texture handle unknown to the graph.
     #[error("unknown transient texture handle {0:?}")]
     UnknownTexture(TextureHandle),
@@ -91,6 +97,24 @@ pub enum GraphBuildError {
         handle: SubresourceHandle,
         /// Short validation reason.
         reason: &'static str,
+    },
+
+    /// An imported frame target has a final access that requires a retained writer.
+    #[error(
+        "import `{label}` requires final access `{final_access}` but no retained pass writes it"
+    )]
+    MissingImportedFinalWriter {
+        /// Import declaration label.
+        label: &'static str,
+        /// Final access category.
+        final_access: &'static str,
+    },
+
+    /// The compiled execution schedule violated scheduler invariants.
+    #[error("invalid render graph schedule: {source}")]
+    InvalidSchedule {
+        /// Schedule validation failure.
+        source: super::schedule::ScheduleValidationError,
     },
 }
 

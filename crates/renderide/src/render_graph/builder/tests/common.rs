@@ -5,7 +5,8 @@ pub(super) use crate::render_graph::context::{ComputePassCtx, EncoderPassCtx, Ra
 pub(super) use crate::render_graph::error::{GraphBuildError, RenderPassError, SetupError};
 pub(super) use crate::render_graph::ids::PassId;
 pub(super) use crate::render_graph::pass::{
-    ComputePass, EncoderPass, GroupScope, PassBuilder, PassMergeHint, PassPhase, RasterPass,
+    ComputePass, EncoderPass, GroupScope, PassBuilder, PassMergeHint, PassPhase, PassWorkloadFlags,
+    RasterPass,
 };
 pub(super) use crate::render_graph::resources::{
     BufferAccess, BufferHandle, BufferImportSource, BufferSizePolicy, FrameTargetRole,
@@ -29,6 +30,9 @@ pub(super) struct TestComputePass {
     pub(super) imported_texture_writes: Vec<ImportedTextureHandle>,
     pub(super) imported_buffer_writes: Vec<ImportedBufferHandle>,
     pub(super) cull_exempt: bool,
+    pub(super) async_compute_capable: bool,
+    pub(super) require_async_compute: bool,
+    pub(super) never_parallel: bool,
 }
 
 impl TestComputePass {
@@ -45,6 +49,9 @@ impl TestComputePass {
             imported_texture_writes: Vec::new(),
             imported_buffer_writes: Vec::new(),
             cull_exempt: false,
+            async_compute_capable: false,
+            require_async_compute: false,
+            never_parallel: false,
         }
     }
 
@@ -55,6 +62,21 @@ impl TestComputePass {
 
     pub(super) fn cull_exempt(mut self) -> Self {
         self.cull_exempt = true;
+        self
+    }
+
+    pub(super) fn async_compute_capable(mut self) -> Self {
+        self.async_compute_capable = true;
+        self
+    }
+
+    pub(super) fn require_async_compute(mut self) -> Self {
+        self.require_async_compute = true;
+        self
+    }
+
+    pub(super) fn never_parallel(mut self) -> Self {
+        self.never_parallel = true;
         self
     }
 }
@@ -72,6 +94,15 @@ impl ComputePass for TestComputePass {
         b.compute();
         if self.cull_exempt {
             b.cull_exempt();
+        }
+        if self.async_compute_capable {
+            b.async_compute_capable();
+        }
+        if self.require_async_compute {
+            b.require_async_compute();
+        }
+        if self.never_parallel {
+            b.never_parallel();
         }
         for &h in &self.texture_reads {
             b.read_texture(
@@ -191,6 +222,7 @@ pub(super) struct TestRasterPass {
         Option<TextureResourceHandle>,
     )>,
     pub(super) frame_sampled_depth: Option<(TextureResourceHandle, TextureResourceHandle)>,
+    pub(super) never_merge: bool,
 }
 
 impl TestRasterPass {
@@ -205,7 +237,13 @@ impl TestRasterPass {
             resolve: None,
             frame_sampled_color: None,
             frame_sampled_depth: None,
+            never_merge: false,
         }
+    }
+
+    pub(super) fn never_merge(mut self) -> Self {
+        self.never_merge = true;
+        self
     }
 }
 
@@ -215,6 +253,9 @@ impl RasterPass for TestRasterPass {
     }
 
     fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
+        if self.never_merge {
+            b.never_merge();
+        }
         {
             let mut r = b.raster();
             if let Some((single, msaa, res)) = self.frame_sampled_color {

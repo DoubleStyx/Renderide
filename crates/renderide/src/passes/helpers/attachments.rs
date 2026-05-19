@@ -1,7 +1,7 @@
 //! Render-graph pass-builder helpers for declaring texture reads and color attachments.
 
 use crate::render_graph::error::RenderPassError;
-use crate::render_graph::pass::PassBuilder;
+use crate::render_graph::pass::{PassBuilder, PassMergeHint};
 use crate::render_graph::resources::{
     ImportedTextureHandle, TextureAccess, TextureHandle, TextureResourceHandle,
 };
@@ -25,6 +25,13 @@ pub(in crate::passes) fn color_attachment(
     handle: impl Into<TextureResourceHandle>,
     load: wgpu::LoadOp<wgpu::Color>,
 ) {
+    let preserves_attachment = matches!(&load, wgpu::LoadOp::Load);
+    if preserves_attachment {
+        b.merge_hint(PassMergeHint {
+            attachment_reuse: true,
+            tile_memory_preferred: true,
+        });
+    }
     let mut r = b.raster();
     r.color(
         handle,
@@ -42,6 +49,13 @@ pub(in crate::passes) fn imported_color_attachment(
     handle: ImportedTextureHandle,
     load: wgpu::LoadOp<wgpu::Color>,
 ) {
+    let preserves_attachment = matches!(&load, wgpu::LoadOp::Load);
+    if preserves_attachment {
+        b.merge_hint(PassMergeHint {
+            attachment_reuse: true,
+            tile_memory_preferred: true,
+        });
+    }
     let mut r = b.raster();
     r.color(
         handle,

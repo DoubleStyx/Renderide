@@ -3,6 +3,8 @@
 //! [`PassBuilder`] is the single entry-point a pass's `setup` method uses to declare:
 //! - What kind of GPU work it performs ([`PassKind`] via [`PassBuilder::raster`] or
 //!   [`PassBuilder::compute`] / [`PassBuilder::encoder`]).
+//! - Scheduler policy flags such as never-cull, never-merge, never-parallel, and
+//!   async-compute-capable metadata.
 //! - Which resources it reads or writes (textures/buffers, transient or imported).
 //! - For raster passes: color and depth-stencil attachments with their load/store ops.
 //! - Whether the pass is exempt from dead-pass culling ([`PassBuilder::cull_exempt`]).
@@ -10,9 +12,7 @@
 use std::num::NonZeroU32;
 
 use super::attachments::{declare_color_attachment, declare_depth_attachment};
-use super::node::PassKind;
-#[cfg(test)]
-use super::node::PassMergeHint;
+use super::node::{PassKind, PassMergeHint, PassWorkloadFlags};
 use super::setup::{PassSetup, RasterColorAttachmentSetup, RasterDepthAttachmentSetup};
 use crate::render_graph::error::SetupError;
 #[cfg(test)]
@@ -27,12 +27,13 @@ use crate::render_graph::resources::{
 pub struct PassBuilder<'a> {
     pub(crate) _name: &'a str,
     pub(crate) kind: PassKind,
+    pub(crate) flags: PassWorkloadFlags,
     pub(crate) accesses: Vec<ResourceAccess>,
     pub(crate) color_attachments: Vec<RasterColorAttachmentSetup>,
     pub(crate) depth_stencil_attachment: Option<RasterDepthAttachmentSetup>,
     pub(crate) multiview_mask: Option<NonZeroU32>,
     pub(crate) cull_exempt: bool,
-    #[cfg(test)]
+    pub(crate) requires_async_compute: bool,
     pub(crate) merge_hint: PassMergeHint,
 }
 
@@ -42,25 +43,28 @@ impl<'a> PassBuilder<'a> {
         Self {
             _name: name,
             kind: PassKind::Compute,
+            flags: PassWorkloadFlags::EMPTY,
             accesses: Vec::new(),
             color_attachments: Vec::new(),
             depth_stencil_attachment: None,
             multiview_mask: None,
             cull_exempt: false,
-            #[cfg(test)]
+            requires_async_compute: false,
             merge_hint: PassMergeHint::default(),
         }
     }
 
     pub(crate) fn finish(self) -> Result<PassSetup, SetupError> {
+        let workload_flags = self.flags.with(PassWorkloadFlags::for_kind(self.kind));
         PassSetup {
             kind: self.kind,
+            workload_flags,
             accesses: self.accesses,
             color_attachments: self.color_attachments,
             depth_stencil_attachment: self.depth_stencil_attachment,
             multiview_mask: self.multiview_mask,
             cull_exempt: self.cull_exempt,
-            #[cfg(test)]
+            requires_async_compute: self.requires_async_compute,
             merge_hint: self.merge_hint,
         }
         .validate()
@@ -85,13 +89,41 @@ impl<'a> PassBuilder<'a> {
     /// Keeps the pass even when it has no graph-visible export.
     pub fn cull_exempt(&mut self) {
         self.cull_exempt = true;
+        self.flags.insert(PassWorkloadFlags::NEVER_CULL);
+    }
+
+    /// Prevents the scheduler from folding this pass into a render-pass merge group.
+    pub fn never_merge(&mut self) {
+        self.flags.insert(PassWorkloadFlags::NEVER_MERGE);
+    }
+
+    /// Prevents future scheduler backends from recording this pass off the main path.
+    pub fn never_parallel(&mut self) {
+        self.flags.insert(PassWorkloadFlags::NEVER_PARALLEL);
+    }
+
+    /// Marks this compute pass as eligible for async-compute scheduling on a future backend.
+    ///
+    /// This flag is metadata in the current wgpu executor. It does not move the pass to a
+    /// separate queue.
+    pub fn async_compute_capable(&mut self) {
+        self.flags.insert(PassWorkloadFlags::ASYNC_COMPUTE_CAPABLE);
+    }
+
+    /// Requires async-compute execution.
+    ///
+    /// Scheduler v1 does not expose a multi-queue backend, so this is rejected during setup
+    /// validation instead of silently falling back to the graphics queue.
+    #[cfg(test)]
+    pub fn require_async_compute(&mut self) {
+        self.requires_async_compute = true;
+        self.flags.insert(PassWorkloadFlags::ASYNC_COMPUTE_CAPABLE);
     }
 
     /// Sets the backend merge hint for this pass. See [`PassMergeHint`] for details.
     ///
-    /// The current wgpu executor ignores the hint; it exists so passes can annotate their
-    /// attachment-reuse intent today, ready to be consumed by a future subpass-aware backend.
-    #[cfg(test)]
+    /// Scheduler v1 uses this metadata when grouping adjacent raster passes that target the same
+    /// attachments. The current wgpu executor still records each pass independently.
     pub fn merge_hint(&mut self, hint: PassMergeHint) {
         self.merge_hint = hint;
     }
