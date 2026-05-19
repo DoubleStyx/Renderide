@@ -13,6 +13,17 @@ use crate::scene::MeshMaterialSlot;
 use crate::scene::{MeshRendererInstanceId, RenderSpaceId, StaticMeshRenderer};
 use crate::world_mesh::materials::MaterialDrawBatchKey;
 
+/// CPU arrangement counters captured while preparing one view's draw list.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WorldMeshDrawArrangementStats {
+    /// Nontransparent bins emitted before strict transparent sorting.
+    pub nontransparent_bins: usize,
+    /// Draws emitted through nontransparent phase bins.
+    pub nontransparent_binned_draws: usize,
+    /// Draws that kept strict transparent/grab ordering.
+    pub strict_sorted_draws: usize,
+}
+
 /// Result of `collect_and_sort_draws` including optional frustum cull counts.
 #[derive(Clone, Debug)]
 pub struct WorldMeshDrawCollection {
@@ -24,6 +35,8 @@ pub struct WorldMeshDrawCollection {
     pub draws_culled: usize,
     /// Draws removed by hierarchical depth occlusion (after frustum), when Hi-Z data was available.
     pub draws_hi_z_culled: usize,
+    /// CPU arrangement counters for the final draw list.
+    pub arrangement: WorldMeshDrawArrangementStats,
 }
 
 impl WorldMeshDrawCollection {
@@ -34,6 +47,7 @@ impl WorldMeshDrawCollection {
             draws_pre_cull: 0,
             draws_culled: 0,
             draws_hi_z_culled: 0,
+            arrangement: WorldMeshDrawArrangementStats::default(),
         }
     }
 }

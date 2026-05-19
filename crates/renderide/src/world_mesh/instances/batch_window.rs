@@ -6,9 +6,8 @@
 
 use std::ops::Range;
 
-use crate::materials::{UNITY_RENDER_QUEUE_ALPHA_TEST, render_queue_is_transparent};
-use crate::world_mesh::MaterialDrawBatchKey;
 use crate::world_mesh::draw_prep::WorldMeshDrawItem;
+use crate::world_mesh::phase_classification::classify_world_mesh_batch;
 
 use super::{DrawGroup, WorldMeshPhase};
 
@@ -35,51 +34,17 @@ pub(super) fn next_batch_window(
         end += 1;
     }
 
-    let intersect = key.embedded_requires_intersection_pass;
-    let grab_pass = key.embedded_uses_scene_color_snapshot;
-    let post_skybox = !intersect && !grab_pass && regular_window_records_after_skybox(key);
-    let phase = phase_for_window(key, intersect, grab_pass, post_skybox);
+    let classification = classify_world_mesh_batch(key);
     let order_dependent = !key.transparent_class.allows_relaxed_batching();
-    debug_assert!(
-        !(intersect && grab_pass),
-        "intersection and grab-pass subpasses are mutually exclusive"
-    );
 
     BatchWindow {
         range: start..end,
-        phase,
+        phase: classification.phase,
         singleton: !supports_base_instance
             || draws[start].skinned
-            || (post_skybox && order_dependent)
+            || (classification.post_skybox && order_dependent)
             || (key.alpha_blended && order_dependent)
-            || grab_pass,
-    }
-}
-
-/// Returns whether a regular forward draw must render after the skybox/background draw.
-fn regular_window_records_after_skybox(key: &MaterialDrawBatchKey) -> bool {
-    key.alpha_blended
-        || render_queue_is_transparent(key.render_queue)
-        || key.render_state.depth_write == Some(false)
-}
-
-/// Selects the primary phase for one same-batch-key window.
-fn phase_for_window(
-    key: &MaterialDrawBatchKey,
-    intersect: bool,
-    grab_pass: bool,
-    post_skybox: bool,
-) -> WorldMeshPhase {
-    if intersect {
-        WorldMeshPhase::Intersection
-    } else if grab_pass {
-        WorldMeshPhase::TransparentGrab
-    } else if post_skybox {
-        WorldMeshPhase::Transparent
-    } else if key.render_queue >= UNITY_RENDER_QUEUE_ALPHA_TEST {
-        WorldMeshPhase::ForwardAlphaTest
-    } else {
-        WorldMeshPhase::ForwardOpaque
+            || classification.grab_pass,
     }
 }
 

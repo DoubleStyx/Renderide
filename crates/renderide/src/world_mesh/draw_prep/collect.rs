@@ -24,10 +24,10 @@ use crate::shared::RenderingContext;
 use crate::world_mesh::culling::WorldMeshCullInput;
 use crate::world_mesh::materials::FrameMaterialBatchCache;
 
+use super::arrange::arrange_draws_by_phase_bins;
 use super::filter::CameraTransformDrawFilter;
 use super::item::{WorldMeshDrawCollection, WorldMeshDrawItem};
 use super::prepared_renderables::FramePreparedRenderables;
-use super::sort::{sort_draws, sort_draws_serial};
 
 mod candidate;
 mod filter_masks;
@@ -94,16 +94,16 @@ pub struct DrawCollectionContext<'a> {
     pub prepared: Option<&'a FramePreparedRenderables>,
 }
 
-/// How [`collect_and_sort_draws_with_parallelism`] parallelizes per-chunk collection and sorting.
+/// How [`collect_and_sort_draws_with_parallelism`] parallelizes per-chunk collection and transparent sorting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorldMeshDrawCollectParallelism {
-    /// Per-chunk collection and draw sort both use rayon.
+    /// Per-chunk collection and transparent draw sorting both use rayon.
     Full,
-    /// Serial per-chunk merge and serial sort; use when an outer `par_iter` already fans out (e.g. multiple secondary RTs).
+    /// Serial per-chunk merge and transparent sorting; use when an outer `par_iter` already fans out (e.g. multiple secondary RTs).
     SerialInnerForNestedBatch,
 }
 
-/// Collects draws from active spaces, then sorts for batching with control over inner rayon use.
+/// Collects draws from active spaces, then arranges them for batching with control over inner rayon use.
 pub fn collect_and_sort_draws_with_parallelism(
     ctx: &DrawCollectionContext<'_>,
     parallelism: WorldMeshDrawCollectParallelism,
@@ -188,20 +188,19 @@ pub fn collect_and_sort_draws_with_parallelism(
         }
     }
 
-    {
-        profiling::scope!("mesh::sort");
-        match parallelism {
-            WorldMeshDrawCollectParallelism::Full => sort_draws(&mut out),
-            WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch => {
-                sort_draws_serial(&mut out);
-            }
-        }
-    }
+    let arrangement = {
+        profiling::scope!("mesh::arrange");
+        arrange_draws_by_phase_bins(
+            &mut out,
+            parallelism == WorldMeshDrawCollectParallelism::Full,
+        )
+    };
     WorldMeshDrawCollection {
         items: out,
         draws_pre_cull: cull_stats.0,
         draws_culled: cull_stats.1,
         draws_hi_z_culled: cull_stats.2,
+        arrangement,
     }
 }
 

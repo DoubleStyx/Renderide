@@ -327,6 +327,14 @@ impl StatsSection for DrawStatsSection {
             );
             kv(
                 ui,
+                "Draw arrangement",
+                &format!(
+                    "{} bins  /  {} binned  /  {} strict",
+                    m.nontransparent_bins, m.nontransparent_binned_draws, m.strict_sorted_draws
+                ),
+            );
+            kv(
+                ui,
                 "GPU instance batches",
                 &format!(
                     "{} indexed  ({} intersect / {} grab)",

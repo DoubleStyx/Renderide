@@ -119,6 +119,7 @@ mod tests {
             draws_pre_cull: 1,
             draws_culled: 0,
             draws_hi_z_culled: 0,
+            arrangement: Default::default(),
         };
         assert_eq!(
             WorldMeshHelperNeeds::from_collection(&collection),
@@ -130,6 +131,7 @@ mod tests {
             draws_pre_cull: 3,
             draws_culled: 0,
             draws_hi_z_culled: 0,
+            arrangement: Default::default(),
         };
         assert_eq!(
             WorldMeshHelperNeeds::from_collection(&collection),
@@ -147,6 +149,7 @@ mod tests {
             draws_pre_cull: 1,
             draws_culled: 0,
             draws_hi_z_culled: 0,
+            arrangement: Default::default(),
         };
         assert_eq!(
             WorldMeshHelperNeeds::from_collection(&collection),
@@ -181,6 +184,7 @@ mod tests {
             draws_pre_cull: 1,
             draws_culled: 0,
             draws_hi_z_culled: 0,
+            arrangement: Default::default(),
         };
         let plan = WorldMeshDrawPlan::Prefetched(Box::new(
             super::PrefetchedWorldMeshViewDraws::new(collection, None),

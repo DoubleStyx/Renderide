@@ -1,6 +1,6 @@
 //! Batch and draw counters for the debug HUD (aligned with sorted [`WorldMeshDrawItem`] order).
 
-use super::draw_prep::WorldMeshDrawItem;
+use super::draw_prep::{WorldMeshDrawArrangementStats, WorldMeshDrawItem};
 use super::instances::DrawGroup;
 use super::materials::{MaterialDrawBatchKey, TransparentMaterialClass};
 use crate::materials::{
@@ -95,6 +95,12 @@ pub struct WorldMeshDrawStats {
     pub gpu_instances_emitted: usize,
     /// Actual pipeline-pass draw submissions after multi-pass materials expand each instance batch.
     pub submitted_pipeline_pass_total: usize,
+    /// Nontransparent bins emitted during CPU draw arrangement.
+    pub nontransparent_bins: usize,
+    /// Draws emitted through nontransparent phase bins.
+    pub nontransparent_binned_draws: usize,
+    /// Draws that kept strict transparent/grab sorting.
+    pub strict_sorted_draws: usize,
 }
 
 /// One submitted draw row for the **Draw state** debug HUD tab.
@@ -166,6 +172,7 @@ pub struct WorldMeshDrawStateRow {
 pub fn stats_from_sorted(
     draws: &[WorldMeshDrawItem],
     cull: Option<(usize, usize, usize)>,
+    arrangement: WorldMeshDrawArrangementStats,
     supports_base_instance: bool,
     shader_perm: ShaderPermutation,
 ) -> WorldMeshDrawStats {
@@ -245,6 +252,9 @@ pub fn stats_from_sorted(
         depth_prepass_instances,
         gpu_instances_emitted,
         submitted_pipeline_pass_total,
+        nontransparent_bins: arrangement.nontransparent_bins,
+        nontransparent_binned_draws: arrangement.nontransparent_binned_draws,
+        strict_sorted_draws: arrangement.strict_sorted_draws,
     }
 }
 
@@ -320,7 +330,13 @@ mod tests {
 
     #[test]
     fn world_mesh_draw_stats_empty() {
-        let s = stats_from_sorted(&[], None, true, ShaderPermutation(0));
+        let s = stats_from_sorted(
+            &[],
+            None,
+            WorldMeshDrawArrangementStats::default(),
+            true,
+            ShaderPermutation(0),
+        );
         assert_eq!(s.batch_total, 0);
         assert_eq!(s.draws_total, 0);
         assert_eq!(s.instance_batch_total, 0);
@@ -358,7 +374,13 @@ mod tests {
             alpha_blended: false,
         });
         let draws = vec![a, b];
-        let s = stats_from_sorted(&draws, None, true, ShaderPermutation(0));
+        let s = stats_from_sorted(
+            &draws,
+            None,
+            WorldMeshDrawArrangementStats::default(),
+            true,
+            ShaderPermutation(0),
+        );
         assert_eq!(s.batch_total, 1);
         assert_eq!(s.draws_total, 2);
         assert_eq!(s.rigid_draws, 2);
@@ -386,7 +408,13 @@ mod tests {
         });
         draw.batch_key.embedded_uses_scene_color_snapshot = true;
         draw.batch_key.transparent_class = TransparentMaterialClass::GrabPassFilter;
-        let s = stats_from_sorted(&[draw], None, true, ShaderPermutation(0));
+        let s = stats_from_sorted(
+            &[draw],
+            None,
+            WorldMeshDrawArrangementStats::default(),
+            true,
+            ShaderPermutation(0),
+        );
         assert_eq!(s.instance_batch_total, 1);
         assert_eq!(s.intersect_pass_batches, 0);
         assert_eq!(s.transparent_pass_batches, 1);

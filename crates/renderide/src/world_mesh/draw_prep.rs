@@ -1,4 +1,4 @@
-//! Flatten scene mesh renderables into sorted draw items for backend world-mesh frame planning.
+//! Flatten scene mesh renderables into arranged draw items for backend world-mesh frame planning.
 //!
 //! Batches are keyed by raster pipeline kind (from host shader -> [`crate::materials::resolve_raster_pipeline`]),
 //! material asset id, property block slot0, and skinned--ordering mirrors Unity-style batch boundaries so
@@ -8,11 +8,13 @@
 //! ([`super::culling::mesh_draw_passes_cpu_cull`]) using the same view-projection rules as the forward pass
 //! ([`super::culling::build_world_mesh_cull_proj_params`]).
 //!
-//! Per-space draw collection runs in parallel ([`rayon`]) by default; the merged list is sorted with
-//! [`sort_draws`] ([`rayon::slice::ParallelSliceMut::par_sort_unstable_by`]). When
+//! Per-space draw collection runs in parallel ([`rayon`]) by default; the merged list is arranged
+//! into nontransparent phase bins while the transparent tail keeps strict ordering. When
 //! [`collect_and_sort_draws_with_parallelism`] uses [`WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch`]
-//! (e.g. prefetching multiple secondary RTs under an outer `par_iter`), inner collection and sort stay serial to avoid nested rayon.
+//! (e.g. prefetching multiple secondary RTs under an outer `par_iter`), inner collection and
+//! transparent sorting stay serial to avoid nested rayon.
 
+mod arrange;
 mod collect;
 mod filter;
 pub(crate) mod item;
@@ -24,7 +26,7 @@ pub use collect::{
     DrawCollectionContext, WorldMeshDrawCollectParallelism, collect_and_sort_draws_with_parallelism,
 };
 pub use filter::{CameraTransformDrawFilter, draw_filter_from_camera_entry};
-pub use item::{WorldMeshDrawCollection, WorldMeshDrawItem};
+pub use item::{WorldMeshDrawArrangementStats, WorldMeshDrawCollection, WorldMeshDrawItem};
 pub use prepared_renderables::FramePreparedRenderables;
 pub use render_world::RenderWorld;
 #[cfg(test)]

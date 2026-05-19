@@ -92,6 +92,7 @@ pub(super) fn maybe_set_world_mesh_draw_stats(
                 collection.draws_culled,
                 collection.draws_hi_z_culled,
             )),
+            collection.arrangement,
             supports_base_instance,
             shader_perm,
         );

@@ -9,6 +9,7 @@ pub(crate) mod diagnostics;
 pub(crate) mod draw_prep;
 pub(crate) mod instances;
 pub(crate) mod materials;
+pub(crate) mod phase_classification;
 pub mod prefetch;
 #[cfg(test)]
 pub(crate) mod test_fixtures;

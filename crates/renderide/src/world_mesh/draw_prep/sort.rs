@@ -82,11 +82,26 @@ pub fn pack_sort_prefix(
 /// Commutative additive/multiply classes may sort by batch key inside the same sorting-order
 /// bucket because their color composition is order independent.
 #[inline]
-fn cmp_transparent_intra_run(a: &WorldMeshDrawItem, b: &WorldMeshDrawItem) -> Ordering {
+pub(super) fn cmp_transparent_intra_run(a: &WorldMeshDrawItem, b: &WorldMeshDrawItem) -> Ordering {
     a.sorting_order
         .cmp(&b.sorting_order)
         .then_with(|| cmp_transparent_class_tie(a, b))
         .then(a.collect_order.cmp(&b.collect_order))
+}
+
+/// Comparator for draws whose visible result depends on submission order.
+///
+/// The prefix matches the old transparent-sort buckets: main-layer work before overlay, then
+/// ascending Unity render queue. Within that bucket the existing transparent class comparator
+/// preserves back-to-front ordering for ordered alpha and batch-friendly ordering for commutative
+/// blends.
+#[inline]
+pub(super) fn cmp_order_sensitive_draws(a: &WorldMeshDrawItem, b: &WorldMeshDrawItem) -> Ordering {
+    a.is_overlay
+        .cmp(&b.is_overlay)
+        .then(a.batch_key.render_queue.cmp(&b.batch_key.render_queue))
+        .then_with(|| cmp_transparent_intra_run(a, b))
+        .then(a.sort_prefix.cmp(&b.sort_prefix))
 }
 
 /// Orders transparent draws after `sorting_order` has already matched.
@@ -114,6 +129,7 @@ fn cmp_transparent_class_tie(a: &WorldMeshDrawItem, b: &WorldMeshDrawItem) -> Or
 /// This function reproduces that order for the post-radix fix-up in
 /// [`resort_intra_prefix_runs`].
 #[inline]
+#[cfg(test)]
 fn cmp_opaque_intra_prefix(a: &WorldMeshDrawItem, b: &WorldMeshDrawItem) -> Ordering {
     a.batch_key_hash
         .cmp(&b.batch_key_hash)
@@ -137,6 +153,7 @@ fn cmp_opaque_intra_prefix(a: &WorldMeshDrawItem, b: &WorldMeshDrawItem) -> Orde
 ///   zeros the depth-bucket and hash bits for transparent items so they all collide on the
 ///   primary key; the transparent comparator then sorts by `sorting_order`, an appropriate class
 ///   tie-breaker, then `collect_order`.
+#[cfg(test)]
 fn resort_intra_prefix_runs(items: &mut [WorldMeshDrawItem], allow_parallel: bool) {
     profiling::scope!("mesh::sort_intra_prefix_runs");
     let mut start = 0;
@@ -179,6 +196,13 @@ fn sort_intra_prefix_run(
     }
 }
 
+/// Sorts order-sensitive transparent/grab draws while leaving nontransparent bins out of the
+/// full item sort.
+pub(super) fn sort_order_sensitive_draws(items: &mut [WorldMeshDrawItem], allow_parallel: bool) {
+    profiling::scope!("mesh::sort_order_sensitive_draws");
+    sort_intra_prefix_run(items, cmp_order_sensitive_draws, allow_parallel);
+}
+
 /// Sorts opaque draws for batching and transparent draws by compatibility class.
 ///
 /// Primary pass: parallel `sort_unstable_by_key` over [`WorldMeshDrawItem::sort_prefix`] —
@@ -186,6 +210,7 @@ fn sort_intra_prefix_run(
 /// per pairwise compare, which is the dominant cost reduction. Secondary pass:
 /// [`resort_intra_prefix_runs`] resolves opaque and transparent ties using the structural
 /// comparators.
+#[cfg(test)]
 pub fn sort_draws(items: &mut [WorldMeshDrawItem]) {
     profiling::scope!("mesh::sort_draws");
     items.par_sort_unstable_by_key(|item| item.sort_prefix);
@@ -193,6 +218,7 @@ pub fn sort_draws(items: &mut [WorldMeshDrawItem]) {
 }
 
 /// Same ordering as [`sort_draws`] without rayon (for nested parallel batches).
+#[cfg(test)]
 pub(super) fn sort_draws_serial(items: &mut [WorldMeshDrawItem]) {
     profiling::scope!("mesh::sort_draws_serial");
     items.sort_unstable_by_key(|item| item.sort_prefix);
