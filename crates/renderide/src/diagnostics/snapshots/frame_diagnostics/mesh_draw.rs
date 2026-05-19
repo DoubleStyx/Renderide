@@ -1,7 +1,7 @@
 //! Mesh draw stats and resident-pool counts fragment of [`super::FrameDiagnosticsSnapshot`].
 
 use crate::diagnostics::BackendDiagSnapshot;
-use crate::world_mesh::{WorldMeshDrawStateRow, WorldMeshDrawStats};
+use crate::world_mesh::{RenderWorldMaintenanceStats, WorldMeshDrawStateRow, WorldMeshDrawStats};
 
 /// Mesh draw / batching / culling stats plus resident pool counts captured for the **Stats** and
 /// **Draw state** tabs.
@@ -29,6 +29,8 @@ pub struct MeshDrawFragment {
     pub render_textures_gpu_resident: usize,
     /// Rows in [`crate::gpu_pools::MeshPool`] (resident GPU mesh entries).
     pub mesh_pool_entry_count: usize,
+    /// Retained render-world maintenance counters captured after backend extraction.
+    pub render_world_maintenance: RenderWorldMaintenanceStats,
 }
 
 impl MeshDrawFragment {
@@ -52,6 +54,7 @@ impl MeshDrawFragment {
             textures_gpu_resident: backend.texture_pool_resident_count,
             render_textures_gpu_resident: backend.render_texture_pool_len,
             mesh_pool_entry_count: backend.mesh_pool_entry_count,
+            render_world_maintenance: backend.render_world_maintenance,
         }
     }
 }
@@ -82,6 +85,10 @@ mod tests {
                 ..Default::default()
             },
             last_world_mesh_draw_state_rows: Vec::new(),
+            render_world_maintenance: RenderWorldMaintenanceStats {
+                retained_template_count: 17,
+                ..Default::default()
+            },
             material_property_slots: 7,
             property_block_slots: 8,
             material_shader_bindings: 9,
@@ -105,6 +112,10 @@ mod tests {
         assert_eq!(fragment.textures_gpu_resident, 4);
         assert_eq!(fragment.render_textures_gpu_resident, 5);
         assert_eq!(fragment.mesh_pool_entry_count, 6);
+        assert_eq!(
+            fragment.render_world_maintenance.retained_template_count,
+            17
+        );
         assert!(fragment.draw_state_rows.is_empty());
     }
 }

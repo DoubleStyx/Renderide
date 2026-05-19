@@ -68,13 +68,17 @@ mod transforms;
 mod world;
 
 pub use camera::CameraRenderableEntry;
-pub use coordinator::{SceneApplyReport, SceneCacheFlushReport, SceneCoordinator};
+pub use coordinator::{
+    RenderWorldMaterialOverrideDirty, RenderWorldRendererDirty, RenderWorldRendererKind,
+    RenderWorldTransformDirty, SceneApplyReport, SceneCacheFlushReport, SceneCoordinator,
+};
 pub use ids::RenderSpaceId;
 pub use lights::{ResolvedLight, light_contributes, light_has_negative_contribution};
 pub use math::render_transform_to_matrix;
 pub use meshes::types::{
     MeshMaterialSlot, MeshRendererInstanceId, SkinnedMeshRenderer, StaticMeshRenderer,
 };
+pub use overrides::MeshRendererOverrideTarget;
 pub(crate) use reflection_probe::changed_probe_completion;
 pub use reflection_probe::{
     DrainedReflectionProbeRenderChanges, ReflectionProbeEntry,

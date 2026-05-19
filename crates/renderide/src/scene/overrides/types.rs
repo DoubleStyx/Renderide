@@ -52,7 +52,9 @@ pub struct RenderMaterialOverrideEntry {
 }
 
 /// Decodes host-packed mesh renderer target for material override rows.
-pub(super) fn decode_packed_mesh_renderer_target(packed: i32) -> MeshRendererOverrideTarget {
+pub(in crate::scene) fn decode_packed_mesh_renderer_target(
+    packed: i32,
+) -> MeshRendererOverrideTarget {
     if packed < 0 {
         return MeshRendererOverrideTarget::Unknown;
     }

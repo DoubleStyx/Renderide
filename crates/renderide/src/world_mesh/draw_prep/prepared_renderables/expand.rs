@@ -6,7 +6,9 @@
 
 use glam::Mat4;
 use hashbrown::HashSet;
+#[cfg(test)]
 use rayon::prelude::*;
+#[cfg(test)]
 use std::ops::Range;
 
 use crate::assets::mesh::GpuMesh;
@@ -29,16 +31,20 @@ const MATERIAL_KEY_SIGNATURE_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const MATERIAL_KEY_SIGNATURE_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 /// Renderer count in one render space above which expansion fans out across Rayon chunks.
+#[cfg(test)]
 pub(in crate::world_mesh::draw_prep) const PREPARED_EXPAND_PARALLEL_MIN_RENDERERS: usize = 256;
 /// Renderer slice width used by aggressive prepared-renderable expansion.
+#[cfg(test)]
 pub(in crate::world_mesh::draw_prep) const PREPARED_EXPAND_RENDERER_CHUNK_SIZE: usize = 64;
 
+#[cfg(test)]
 #[derive(Clone, Copy)]
 enum ExpansionChunkKind {
     Static,
     Skinned,
 }
 
+#[cfg(test)]
 #[derive(Clone)]
 struct ExpansionChunkSpec {
     kind: ExpansionChunkKind,
@@ -148,6 +154,7 @@ pub(in crate::world_mesh::draw_prep) fn populate_runs_and_material_keys(
 /// buffers. The 2x multiplier reflects the typical 2-slot-per-renderer expansion observed across
 /// the existing scene corpus; over-estimation is cheap (`Vec::reserve` only grows), under-estimation
 /// triggers the doubling growth path.
+#[cfg(test)]
 pub(in crate::world_mesh::draw_prep) fn estimated_draw_count(
     scene: &SceneCoordinator,
     space_id: RenderSpaceId,
@@ -168,6 +175,7 @@ pub(in crate::world_mesh::draw_prep) fn estimated_draw_count(
 }
 
 /// Total static + skinned renderer rows in one active render space.
+#[cfg(test)]
 pub(in crate::world_mesh::draw_prep) fn renderer_count_for_space(
     scene: &SceneCoordinator,
     space_id: RenderSpaceId,
@@ -184,6 +192,7 @@ pub(in crate::world_mesh::draw_prep) fn renderer_count_for_space(
 }
 
 /// Expands every valid renderer (static and skinned) in `space_id` into `out`.
+#[cfg(test)]
 pub(in crate::world_mesh::draw_prep) fn expand_space_into(
     out: &mut Vec<FramePreparedDraw>,
     scene: &SceneCoordinator,
@@ -212,7 +221,74 @@ pub(in crate::world_mesh::draw_prep) fn expand_space_into(
     expand_skinned_list(ctx, space.skinned_mesh_renderers());
 }
 
+/// Expands one static renderer row into retained draw-template entries.
+pub(in crate::world_mesh::draw_prep) fn expand_static_renderer_into(
+    out: &mut Vec<FramePreparedDraw>,
+    scene: &SceneCoordinator,
+    mesh_pool: &MeshPool,
+    render_context: RenderingContext,
+    space_id: RenderSpaceId,
+    renderable_index: usize,
+) {
+    profiling::scope!("mesh::prepared_renderables::expand_static_renderer");
+    let Some(space) = scene.space(space_id) else {
+        return;
+    };
+    if !space.is_active() {
+        return;
+    }
+    let Some(renderer) = space.static_mesh_renderers().get(renderable_index) else {
+        return;
+    };
+    let mut ctx = ExpandCtx {
+        out,
+        scene,
+        mesh_pool,
+        render_context,
+        space_id,
+        space_is_overlay: space.is_overlay(),
+    };
+    try_expand_one_renderer(&mut ctx, renderable_index, renderer, false, None);
+}
+
+/// Expands one skinned renderer row into retained draw-template entries.
+pub(in crate::world_mesh::draw_prep) fn expand_skinned_renderer_into(
+    out: &mut Vec<FramePreparedDraw>,
+    scene: &SceneCoordinator,
+    mesh_pool: &MeshPool,
+    render_context: RenderingContext,
+    space_id: RenderSpaceId,
+    renderable_index: usize,
+) {
+    profiling::scope!("mesh::prepared_renderables::expand_skinned_renderer");
+    let Some(space) = scene.space(space_id) else {
+        return;
+    };
+    if !space.is_active() {
+        return;
+    }
+    let Some(renderer) = space.skinned_mesh_renderers().get(renderable_index) else {
+        return;
+    };
+    let mut ctx = ExpandCtx {
+        out,
+        scene,
+        mesh_pool,
+        render_context,
+        space_id,
+        space_is_overlay: space.is_overlay(),
+    };
+    try_expand_one_renderer(
+        &mut ctx,
+        renderable_index,
+        &renderer.base,
+        true,
+        Some(renderer),
+    );
+}
+
 /// Expands every valid renderer in `space_id`, using chunked Rayon fan-out for large spaces.
+#[cfg(test)]
 pub(in crate::world_mesh::draw_prep) fn expand_space_into_aggressive(
     out: &mut Vec<FramePreparedDraw>,
     chunk_scratch: &mut Vec<Vec<FramePreparedDraw>>,
@@ -236,6 +312,7 @@ pub(in crate::world_mesh::draw_prep) fn expand_space_into_aggressive(
     );
 }
 
+#[cfg(test)]
 fn expand_space_into_parallel_chunks(
     out: &mut Vec<FramePreparedDraw>,
     chunk_scratch: &mut Vec<Vec<FramePreparedDraw>>,
@@ -301,6 +378,7 @@ fn expand_space_into_parallel_chunks(
     }
 }
 
+#[cfg(test)]
 fn push_expansion_chunks(
     chunks: &mut Vec<ExpansionChunkSpec>,
     kind: ExpansionChunkKind,
@@ -328,6 +406,7 @@ struct ExpandCtx<'a> {
 }
 
 impl<'a> ExpandCtx<'a> {
+    #[cfg(test)]
     fn reborrow(&mut self) -> ExpandCtx<'_> {
         ExpandCtx {
             out: self.out,
@@ -340,6 +419,7 @@ impl<'a> ExpandCtx<'a> {
     }
 }
 
+#[cfg(test)]
 fn expand_static_list(mut ctx: ExpandCtx<'_>, renderers: &[StaticMeshRenderer]) {
     profiling::scope!("mesh::prepared_renderables::expand_static_list");
     for (renderable_index, r) in renderers.iter().enumerate() {
@@ -347,6 +427,7 @@ fn expand_static_list(mut ctx: ExpandCtx<'_>, renderers: &[StaticMeshRenderer]) 
     }
 }
 
+#[cfg(test)]
 fn expand_skinned_list(mut ctx: ExpandCtx<'_>, renderers: &[SkinnedMeshRenderer]) {
     profiling::scope!("mesh::prepared_renderables::expand_skinned_list");
     for (renderable_index, sk) in renderers.iter().enumerate() {
@@ -360,6 +441,7 @@ fn expand_skinned_list(mut ctx: ExpandCtx<'_>, renderers: &[SkinnedMeshRenderer]
     }
 }
 
+#[cfg(test)]
 fn expand_space_chunk_into(
     out: &mut Vec<FramePreparedDraw>,
     scene: &SceneCoordinator,

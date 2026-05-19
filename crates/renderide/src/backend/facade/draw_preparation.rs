@@ -7,7 +7,7 @@ use crate::materials::{MaterialPipelinePropertyIds, MaterialRouter, RasterPipeli
 use crate::reflection_probes::specular::ReflectionProbeFrameSelection;
 use crate::scene::{SceneApplyReport, SceneCacheFlushReport, SceneCoordinator};
 use crate::shared::RenderingContext;
-use crate::world_mesh::{FrameMaterialBatchCache, RenderWorld};
+use crate::world_mesh::{FrameMaterialBatchCache, RenderWorld, RenderWorldMaintenanceStats};
 
 use crate::backend::AssetTransferQueue;
 use crate::materials::{MaterialSystem, ShaderPermutation};
@@ -61,8 +61,8 @@ impl BackendDrawPreparation {
     }
 
     /// Applies world-cache flush reports to backend-owned CPU render-world caches.
-    pub(super) fn note_scene_cache_flush_report(&mut self, report: &SceneCacheFlushReport) {
-        for render_world in self.render_worlds.values_mut() {
+    pub(super) fn note_scene_cache_flush_report(&self, report: &SceneCacheFlushReport) {
+        for render_world in self.render_worlds.values() {
             render_world.note_cache_flush_report(report);
         }
     }
@@ -126,6 +126,15 @@ impl BackendDrawPreparation {
             reflection_probes,
             inner_parallelism,
         }
+    }
+
+    /// Aggregated retained render-world maintenance counters for diagnostics.
+    pub(super) fn render_world_maintenance_stats(&self) -> RenderWorldMaintenanceStats {
+        let mut stats = RenderWorldMaintenanceStats::default();
+        for render_world in self.render_worlds.values() {
+            stats.accumulate(render_world.maintenance_stats());
+        }
+        stats
     }
 }
 

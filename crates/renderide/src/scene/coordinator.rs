@@ -23,7 +23,7 @@ use super::lights::{
 };
 #[cfg(test)]
 use super::math::multiply_root;
-use super::overrides::MeshRendererOverrideTarget;
+use super::overrides::{MeshRendererOverrideTarget, decode_packed_mesh_renderer_target};
 use super::render_space::{RenderSpaceState, RenderSpaceView};
 use super::transforms::TransformRemovalEvent;
 use super::world::{WorldTransformCache, compute_world_matrices_for_space, ensure_cache_shapes};
@@ -65,6 +65,181 @@ fn extracted_update_affects_render_world(update: &ExtractedRenderSpaceUpdate) ->
         || update.layers.is_some()
         || update.transform_overrides.is_some()
         || update.material_overrides.is_some()
+}
+
+fn note_render_world_dirty_for_extracted_update(
+    report: &mut SceneApplyReport,
+    space_id: RenderSpaceId,
+    header_dirty: bool,
+    current_node_count: usize,
+    update: &ExtractedRenderSpaceUpdate,
+) {
+    if header_dirty {
+        report.render_world_dirty.note_full_space(space_id);
+    }
+    if let Some(ref transforms) = update.transforms {
+        note_transform_update_render_world_dirty(report, space_id, current_node_count, transforms);
+    }
+    if let Some(ref meshes) = update.meshes {
+        note_mesh_update_render_world_dirty(
+            report,
+            space_id,
+            RenderWorldRendererKind::Static,
+            &meshes.removals,
+            &meshes.additions,
+            meshes
+                .mesh_states
+                .iter()
+                .map(|state| state.renderable_index),
+        );
+    }
+    if let Some(ref skinned_meshes) = update.skinned_meshes {
+        note_skinned_mesh_update_render_world_dirty(report, space_id, skinned_meshes);
+    }
+    if update.layers.is_some() || update.transform_overrides.is_some() {
+        report.render_world_dirty.note_full_space(space_id);
+    }
+    if let Some(ref material_overrides) = update.material_overrides {
+        note_material_override_update_render_world_dirty(report, space_id, material_overrides);
+    }
+}
+
+fn has_active_dense_indices(values: &[i32]) -> bool {
+    values
+        .iter()
+        .take_while(|&&value| value >= 0)
+        .next()
+        .is_some()
+}
+
+fn note_mesh_update_render_world_dirty<I>(
+    report: &mut SceneApplyReport,
+    space_id: RenderSpaceId,
+    kind: RenderWorldRendererKind,
+    removals: &[i32],
+    additions: &[i32],
+    renderable_indices: I,
+) where
+    I: IntoIterator<Item = i32>,
+{
+    if has_active_dense_indices(removals) || has_active_dense_indices(additions) {
+        report.render_world_dirty.note_full_space(space_id);
+        return;
+    }
+    for renderable_index in renderable_indices {
+        if renderable_index < 0 {
+            break;
+        }
+        report
+            .render_world_dirty
+            .note_renderer(space_id, kind, renderable_index as usize);
+    }
+}
+
+fn note_skinned_mesh_update_render_world_dirty(
+    report: &mut SceneApplyReport,
+    space_id: RenderSpaceId,
+    skinned_meshes: &super::meshes::ExtractedSkinnedMeshRenderablesUpdate,
+) {
+    if has_active_dense_indices(&skinned_meshes.removals)
+        || has_active_dense_indices(&skinned_meshes.additions)
+    {
+        report.render_world_dirty.note_full_space(space_id);
+        return;
+    }
+    let kind = RenderWorldRendererKind::Skinned;
+    for state in &skinned_meshes.mesh_states {
+        if state.renderable_index < 0 {
+            break;
+        }
+        report
+            .render_world_dirty
+            .note_renderer(space_id, kind, state.renderable_index as usize);
+    }
+    for assignment in &skinned_meshes.bone_assignments {
+        if assignment.renderable_index < 0 {
+            break;
+        }
+        report.render_world_dirty.note_renderer(
+            space_id,
+            kind,
+            assignment.renderable_index as usize,
+        );
+    }
+    for batch in &skinned_meshes.blendshape_update_batches {
+        if batch.renderable_index < 0 {
+            break;
+        }
+        report
+            .render_world_dirty
+            .note_renderer(space_id, kind, batch.renderable_index as usize);
+    }
+    for bounds in &skinned_meshes.bounds_updates {
+        if bounds.renderable_index < 0 {
+            break;
+        }
+        report
+            .render_world_dirty
+            .note_renderer(space_id, kind, bounds.renderable_index as usize);
+    }
+}
+
+fn note_transform_update_render_world_dirty(
+    report: &mut SceneApplyReport,
+    space_id: RenderSpaceId,
+    current_node_count: usize,
+    transforms: &super::transforms::ExtractedTransformsUpdate,
+) {
+    if has_active_dense_indices(&transforms.removals)
+        || (transforms.target_transform_count >= 0
+            && transforms.target_transform_count as usize != current_node_count)
+    {
+        report.render_world_dirty.note_full_space(space_id);
+        return;
+    }
+    let pose_roots = transforms
+        .pose_updates
+        .iter()
+        .take_while(|pose| pose.transform_id >= 0)
+        .map(|pose| pose.transform_id);
+    let parent_roots = transforms
+        .parent_updates
+        .iter()
+        .take_while(|parent| parent.transform_id >= 0)
+        .map(|parent| parent.transform_id);
+    report
+        .render_world_dirty
+        .note_transform_roots(space_id, pose_roots.chain(parent_roots));
+}
+
+fn note_material_override_update_render_world_dirty(
+    report: &mut SceneApplyReport,
+    space_id: RenderSpaceId,
+    material_overrides: &super::overrides::ExtractedRenderMaterialOverridesUpdate,
+) {
+    if has_active_dense_indices(&material_overrides.removals)
+        || has_active_dense_indices(&material_overrides.additions)
+    {
+        report.render_world_dirty.note_full_space(space_id);
+        return;
+    }
+    for state in &material_overrides.states {
+        if state.renderable_index < 0 {
+            break;
+        }
+        let target = decode_packed_mesh_renderer_target(state.packed_mesh_renderer_index);
+        match target {
+            MeshRendererOverrideTarget::Static(_) | MeshRendererOverrideTarget::Skinned(_) => {
+                report
+                    .render_world_dirty
+                    .note_material_override(space_id, state.context, target);
+            }
+            MeshRendererOverrideTarget::Unknown => {
+                report.render_world_dirty.note_full_space(space_id);
+                return;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -124,8 +299,126 @@ struct ApplyWorkSlot {
     world_dirty: bool,
 }
 
+/// Static or skinned renderer table addressed by a render-world dirty event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RenderWorldRendererKind {
+    /// Dirty event targets [`RenderSpaceState::static_mesh_renderers`].
+    Static,
+    /// Dirty event targets [`RenderSpaceState::skinned_mesh_renderers`].
+    Skinned,
+}
+
+/// One renderer row whose retained draw templates need to be refreshed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct RenderWorldRendererDirty {
+    /// Host render space containing the renderer.
+    pub space_id: RenderSpaceId,
+    /// Renderer table addressed by [`Self::renderable_index`].
+    pub kind: RenderWorldRendererKind,
+    /// Dense renderer index in the selected table.
+    pub renderable_index: usize,
+}
+
+/// Transform roots whose descendant renderers need cached world-dependent template refresh.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RenderWorldTransformDirty {
+    /// Host render space containing the transform roots.
+    pub space_id: RenderSpaceId,
+    /// Dense transform ids whose descendants may have changed world matrices.
+    pub root_node_ids: Vec<i32>,
+}
+
+/// Material override row whose render-context-specific target needs template refresh.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RenderWorldMaterialOverrideDirty {
+    /// Host render space containing the override row.
+    pub space_id: RenderSpaceId,
+    /// Render context the override applies to.
+    pub context: RenderingContext,
+    /// Static or skinned mesh renderer targeted by the override.
+    pub target: MeshRendererOverrideTarget,
+}
+
+/// Fine-grained dirty events consumed by backend render-world caches.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SceneRenderWorldDirtyReport {
+    /// Render spaces that need a full retained-template refresh.
+    pub full_spaces: Vec<RenderSpaceId>,
+    /// Renderer rows that need retained-template refresh.
+    pub renderers: Vec<RenderWorldRendererDirty>,
+    /// Transform roots that need descendant renderer records refreshed after world-cache flush.
+    pub transform_roots: Vec<RenderWorldTransformDirty>,
+    /// Material override targets that need refresh only in matching render contexts.
+    pub material_overrides: Vec<RenderWorldMaterialOverrideDirty>,
+}
+
+impl SceneRenderWorldDirtyReport {
+    /// Returns whether the report contains no fine-grained render-world work.
+    pub fn is_empty(&self) -> bool {
+        self.full_spaces.is_empty()
+            && self.renderers.is_empty()
+            && self.transform_roots.is_empty()
+            && self.material_overrides.is_empty()
+    }
+
+    /// Records a render space that needs a full retained-template refresh.
+    fn note_full_space(&mut self, id: RenderSpaceId) {
+        if !self.full_spaces.contains(&id) {
+            self.full_spaces.push(id);
+        }
+    }
+
+    /// Records a renderer row that needs retained-template refresh.
+    fn note_renderer(
+        &mut self,
+        space_id: RenderSpaceId,
+        kind: RenderWorldRendererKind,
+        renderable_index: usize,
+    ) {
+        self.renderers.push(RenderWorldRendererDirty {
+            space_id,
+            kind,
+            renderable_index,
+        });
+    }
+
+    /// Records transform roots whose descendants may own cached renderer templates.
+    fn note_transform_roots<I>(&mut self, space_id: RenderSpaceId, roots: I)
+    where
+        I: IntoIterator<Item = i32>,
+    {
+        let mut root_node_ids = Vec::new();
+        for root in roots {
+            if root >= 0 && !root_node_ids.contains(&root) {
+                root_node_ids.push(root);
+            }
+        }
+        if !root_node_ids.is_empty() {
+            self.transform_roots.push(RenderWorldTransformDirty {
+                space_id,
+                root_node_ids,
+            });
+        }
+    }
+
+    /// Records a context-specific material override target.
+    fn note_material_override(
+        &mut self,
+        space_id: RenderSpaceId,
+        context: RenderingContext,
+        target: MeshRendererOverrideTarget,
+    ) {
+        self.material_overrides
+            .push(RenderWorldMaterialOverrideDirty {
+                space_id,
+                context,
+                target,
+            });
+    }
+}
+
 /// Scene changes observed while applying one host frame submission.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct SceneApplyReport {
     /// Host frame index from [`FrameSubmitData::frame_index`].
     pub frame_index: i32,
@@ -135,6 +428,8 @@ pub struct SceneApplyReport {
     pub changed_spaces: Vec<RenderSpaceId>,
     /// Render spaces removed because they were absent from the submission.
     pub removed_spaces: Vec<RenderSpaceId>,
+    /// Fine-grained render-world dirty events for backend retained draw-template caches.
+    pub render_world_dirty: SceneRenderWorldDirtyReport,
 }
 
 impl SceneApplyReport {
@@ -145,6 +440,7 @@ impl SceneApplyReport {
             submitted_spaces: Vec::new(),
             changed_spaces: Vec::new(),
             removed_spaces: Vec::new(),
+            render_world_dirty: SceneRenderWorldDirtyReport::default(),
         }
     }
 
@@ -567,12 +863,20 @@ impl SceneCoordinator {
                 });
                 space.id = id;
                 space.apply_update_header(update);
+                let current_node_count = space.nodes.len();
                 self.world_caches.entry(id).or_default();
 
                 let extracted = extract_render_space_update(shm, update, data.frame_index)?;
                 if header_dirty || extracted_update_affects_render_world(&extracted) {
                     report.note_changed_space(id);
                 }
+                note_render_world_dirty_for_extracted_update(
+                    &mut report,
+                    id,
+                    header_dirty,
+                    current_node_count,
+                    &extracted,
+                );
                 extracted_per_space.push(extracted);
             }
         }

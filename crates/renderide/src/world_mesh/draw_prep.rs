@@ -26,7 +26,7 @@ pub use collect::{
 pub use filter::{CameraTransformDrawFilter, draw_filter_from_camera_entry};
 pub use item::{WorldMeshDrawCollection, WorldMeshDrawItem};
 pub use prepared_renderables::FramePreparedRenderables;
-pub use render_world::RenderWorld;
+pub use render_world::{RenderWorld, RenderWorldMaintenanceStats};
 #[cfg(test)]
 pub use sort::pack_sort_prefix;
 #[cfg(test)]
