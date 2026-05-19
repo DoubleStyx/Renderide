@@ -1,6 +1,6 @@
 # Nightly release pipeline.
 #
-# Picks the newest owner commit that has passed `ci.yml`, builds platform
+# Picks the newest master commit that has passed `ci.yml`, builds platform
 # binaries in release mode, and publishes a GitHub Release with per-platform
 # zips. The most recent release acts as the "last good version" pointer - this
 # workflow no-ops when no new green commit has appeared since.
@@ -34,7 +34,7 @@ jobs:
       tag: ${{ steps.pick.outputs.tag }}
       should_release: ${{ steps.pick.outputs.should_release }}
     steps:
-      - name: Find newest green commit on owner
+      - name: Find newest green commit on master
         id: pick
         env:
           GH_TOKEN: ${{ github.token }}
@@ -42,16 +42,16 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Newest SHA from recent successful CI runs on owner.
+          # Newest SHA from recent successful CI runs on master.
           candidate=$(
             gh api -X GET \
               "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs" \
-              -f branch=owner -f status=success -F per_page=100 \
+              -f branch=master -f status=success -F per_page=100 \
               | jq -r '[.workflow_runs | sort_by(.created_at) | reverse | .[].head_sha][0] // ""'
           )
 
           if [ -z "$candidate" ]; then
-            echo "No owner commit has CI green; skipping." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "No master commit has CI green; skipping." | tee -a "$GITHUB_STEP_SUMMARY"
             echo "should_release=false" >>"$GITHUB_OUTPUT"
             exit 0
           fi

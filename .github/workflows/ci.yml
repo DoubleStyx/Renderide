@@ -3,7 +3,7 @@ name: CI
 
 "on":
   push:
-    branches: [owner, main, master]
+    branches: [master]
     paths:
       - ".github/workflows/ci.yml"
       - ".taplo.toml"

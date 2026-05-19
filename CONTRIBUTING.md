@@ -278,9 +278,9 @@ The main check workflow lives under `.github/workflows/`.
 
 - `ci.yml` builds and tests the Rust workspace and the .NET solution as independent jobs, each with Ubuntu, Windows, and macOS matrix entries so the Rust and .NET checks can run in parallel. Linux is the only Rust matrix entry that uses `--all-features`, because GStreamer dev packages are reliably installable from the system package manager only on Linux. Windows and macOS still build the `tracy` feature so it stays warning-free on those platforms. The Linux Rust job also installs Vulkan tooling so the `materials::registry` smoke test can find an adapter. The .NET job runs the generator's unit and roundtrip tests, and verifies formatting on Linux only (Windows checkouts can disagree with the in-repo encoding because of `core.autocrlf`, so format checks would fail spuriously there).
 
-The CI workflow triggers on push to `owner`, `main`, or `master`, on pull requests, and on manual dispatch.
+The CI workflow triggers on push to `master`, on pull requests, and on manual dispatch.
 
-Local hooks catch failures before a push, but they are not the final gate because any git hook can be bypassed with `--no-verify`. Protect `owner` with a GitHub branch protection rule or ruleset that requires pull requests and these status checks before merge:
+Local hooks catch failures before a push, but they are not the final gate because any git hook can be bypassed with `--no-verify`. Protect `master` with a GitHub branch protection rule or ruleset that requires pull requests and these status checks before merge:
 
 - `Rust / ubuntu-latest`
 - `Rust / windows-latest`
@@ -289,7 +289,7 @@ Local hooks catch failures before a push, but they are not the final gate becaus
 - `.NET / windows-latest`
 - `.NET / macos-latest`
 
-Block force pushes and branch deletion on `owner` so the hosted CI result remains the authoritative merge gate.
+Block force pushes and branch deletion on `master` so the hosted CI result remains the authoritative merge gate.
 
 ---
 
