@@ -10,6 +10,20 @@ use crate::gpu_pools::{GpuResource, VramAccounting, impl_gpu_resource};
 
 impl_gpu_resource!(GpuMesh);
 
+/// Maximum resident-mesh mutation entries retained for incremental render-world invalidation.
+const MESH_MUTATION_LOG_LIMIT: usize = 4096;
+
+/// Mesh-pool mutations visible since a caller's last observed generation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MeshPoolMutationDelta<'a> {
+    /// Current mesh-pool mutation generation.
+    pub current_generation: u64,
+    /// Asset ids changed since the requested generation when the retained log still covers them.
+    pub changed_asset_ids: &'a [i32],
+    /// Whether the caller must conservatively rebuild all mesh-dependent cached state.
+    pub requires_full_rebuild: bool,
+}
+
 /// Insert / remove pool for meshes; insert / remove update [`VramAccounting`] and notify the
 /// wired [`StreamingPolicy`].
 pub struct MeshPool {
@@ -19,6 +33,10 @@ pub struct MeshPool {
     layout_cache: HashMap<i32, (u64, MeshBufferLayout)>,
     /// Monotonic generation bumped whenever resident mesh membership or contents change.
     mutation_generation: u64,
+    /// First generation represented by [`Self::mutation_log`].
+    mutation_log_start_generation: u64,
+    /// Changed mesh asset ids, one row per mutation generation.
+    mutation_log: Vec<i32>,
 }
 
 impl MeshPool {
@@ -28,6 +46,8 @@ impl MeshPool {
             inner: GpuResourcePool::new(StreamingAccess::mesh_noop()),
             layout_cache: HashMap::new(),
             mutation_generation: 0,
+            mutation_log_start_generation: 1,
+            mutation_log: Vec::new(),
         }
     }
 
@@ -40,7 +60,7 @@ impl MeshPool {
     /// Inserts or replaces a mesh; returns `true` if a previous entry was replaced.
     #[inline]
     pub fn insert(&mut self, mesh: GpuMesh) -> bool {
-        self.mutation_generation = self.mutation_generation.wrapping_add(1);
+        self.record_mutation(mesh.asset_id);
         self.inner.insert(mesh)
     }
 
@@ -50,7 +70,7 @@ impl MeshPool {
         self.layout_cache.remove(&asset_id);
         let removed = self.inner.remove(asset_id);
         if removed {
-            self.mutation_generation = self.mutation_generation.wrapping_add(1);
+            self.record_mutation(asset_id);
         }
         removed
     }
@@ -60,7 +80,7 @@ impl MeshPool {
     pub(crate) fn take(&mut self, asset_id: i32) -> Option<GpuMesh> {
         self.layout_cache.remove(&asset_id);
         let mesh = self.inner.take(asset_id)?;
-        self.mutation_generation = self.mutation_generation.wrapping_add(1);
+        self.record_mutation(asset_id);
         Some(mesh)
     }
 
@@ -68,6 +88,48 @@ impl MeshPool {
     #[inline]
     pub fn mutation_generation(&self) -> u64 {
         self.mutation_generation
+    }
+
+    /// Returns mesh asset ids mutated since `last_generation`, or a full-rebuild signal when the
+    /// retained log no longer covers that generation.
+    pub fn mutation_delta_since(&self, last_generation: u64) -> MeshPoolMutationDelta<'_> {
+        if last_generation == self.mutation_generation {
+            return MeshPoolMutationDelta {
+                current_generation: self.mutation_generation,
+                changed_asset_ids: &[],
+                requires_full_rebuild: false,
+            };
+        }
+        if last_generation > self.mutation_generation || self.mutation_log.is_empty() {
+            return MeshPoolMutationDelta {
+                current_generation: self.mutation_generation,
+                changed_asset_ids: &[],
+                requires_full_rebuild: true,
+            };
+        }
+        let first_retained_generation = self.mutation_log_start_generation;
+        if last_generation.saturating_add(1) < first_retained_generation {
+            return MeshPoolMutationDelta {
+                current_generation: self.mutation_generation,
+                changed_asset_ids: &[],
+                requires_full_rebuild: true,
+            };
+        }
+        let offset = last_generation
+            .saturating_add(1)
+            .saturating_sub(first_retained_generation) as usize;
+        let Some(changed_asset_ids) = self.mutation_log.get(offset..) else {
+            return MeshPoolMutationDelta {
+                current_generation: self.mutation_generation,
+                changed_asset_ids: &[],
+                requires_full_rebuild: true,
+            };
+        };
+        MeshPoolMutationDelta {
+            current_generation: self.mutation_generation,
+            changed_asset_ids,
+            requires_full_rebuild: false,
+        }
     }
 
     /// Borrows a resident mesh by host asset id.
@@ -185,6 +247,19 @@ impl MeshPool {
         }
         ok
     }
+
+    /// Records a resident-mesh mutation and advances the monotonic generation.
+    fn record_mutation(&mut self, asset_id: i32) {
+        self.mutation_generation = self.mutation_generation.wrapping_add(1);
+        if self.mutation_generation == 0 || self.mutation_log.len() >= MESH_MUTATION_LOG_LIMIT {
+            self.mutation_log.clear();
+            self.mutation_log_start_generation = self.mutation_generation;
+        }
+        if self.mutation_log.is_empty() {
+            self.mutation_log_start_generation = self.mutation_generation;
+        }
+        self.mutation_log.push(asset_id);
+    }
 }
 
 #[cfg(test)]
@@ -233,5 +308,29 @@ mod layout_cache_tests {
     fn get_cached_mesh_layout_misses_for_unknown_asset_id() {
         let pool = MeshPool::default_pool();
         assert_eq!(pool.get_cached_mesh_layout(999, 0), None);
+    }
+
+    #[test]
+    fn mutation_delta_returns_retained_asset_ids() {
+        let mut pool = MeshPool::default_pool();
+        pool.record_mutation(10);
+        let generation = pool.mutation_generation();
+        pool.record_mutation(20);
+        pool.record_mutation(30);
+
+        let delta = pool.mutation_delta_since(generation);
+
+        assert_eq!(delta.current_generation, pool.mutation_generation());
+        assert_eq!(delta.changed_asset_ids, &[20, 30]);
+        assert!(!delta.requires_full_rebuild);
+    }
+
+    #[test]
+    fn mutation_delta_requests_full_rebuild_when_generation_is_unknown() {
+        let pool = MeshPool::default_pool();
+        let delta = pool.mutation_delta_since(100);
+
+        assert!(delta.requires_full_rebuild);
+        assert!(delta.changed_asset_ids.is_empty());
     }
 }

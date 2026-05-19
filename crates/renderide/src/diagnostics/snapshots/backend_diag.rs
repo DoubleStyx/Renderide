@@ -8,7 +8,7 @@ use crate::materials::{
     MaterialPipelineCacheDiagnosticSnapshot, MaterialShaderGraphDiagnosticSnapshot,
     RasterPipelineKind,
 };
-use crate::world_mesh::{WorldMeshDrawStateRow, WorldMeshDrawStats};
+use crate::world_mesh::{RenderWorldMaintenanceStats, WorldMeshDrawStateRow, WorldMeshDrawStats};
 
 /// One host-shader -> renderer-pipeline routing row captured for the **Shader routes** HUD tab.
 #[derive(Clone, Debug)]
@@ -46,6 +46,8 @@ pub struct BackendDiagSnapshot {
     pub last_world_mesh_draw_stats: WorldMeshDrawStats,
     /// Latest world-mesh draw-state rows published by the previous frame.
     pub last_world_mesh_draw_state_rows: Vec<WorldMeshDrawStateRow>,
+    /// Retained render-world maintenance counters from the latest backend extraction.
+    pub render_world_maintenance: RenderWorldMaintenanceStats,
     /// Allocated material property uniform slots.
     pub material_property_slots: usize,
     /// Allocated material property block slots.

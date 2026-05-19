@@ -452,6 +452,7 @@ impl RenderBackend {
             shader_routes,
             last_world_mesh_draw_stats: self.last_world_mesh_draw_stats(),
             last_world_mesh_draw_state_rows: self.last_world_mesh_draw_state_rows(),
+            render_world_maintenance: self.draw_preparation.render_world_maintenance_stats(),
             material_property_slots: store.material_property_slot_count(),
             property_block_slots: store.property_block_slot_count(),
             material_shader_bindings: store.material_shader_binding_count(),

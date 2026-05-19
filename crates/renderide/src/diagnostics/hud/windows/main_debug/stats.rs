@@ -385,6 +385,22 @@ impl StatsSection for DrawStatsSection {
                 "Prep",
                 &format!("rigid {}  skinned {}", m.rigid_draws, m.skinned_draws),
             );
+            let rw = f.mesh_draw.render_world_maintenance;
+            kv(
+                ui,
+                "Render world",
+                &format!(
+                    "retained={}  dirty={}  refreshed={}  templates={}  mesh={}  full-space={}  full-world={}  skips={}",
+                    rw.retained_template_count,
+                    rw.dirty_renderer_count,
+                    rw.refreshed_renderer_count,
+                    rw.refreshed_template_count,
+                    rw.mesh_asset_invalidation_count,
+                    rw.full_space_rebuild_count,
+                    rw.full_world_rebuild_count,
+                    rw.steady_state_skip_count
+                ),
+            );
         });
     }
 }

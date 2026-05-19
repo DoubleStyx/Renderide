@@ -28,10 +28,15 @@ use crate::world_mesh::culling::MeshCullGeometry;
 
 use expand::{empty_material_key_signature, populate_runs_and_material_keys};
 
+#[cfg(test)]
 pub(in crate::world_mesh::draw_prep) use expand::estimated_draw_count;
 #[cfg(test)]
 pub(in crate::world_mesh::draw_prep) use expand::expand_space_into;
+#[cfg(test)]
 pub(in crate::world_mesh::draw_prep) use expand::expand_space_into_aggressive;
+pub(in crate::world_mesh::draw_prep) use expand::{
+    expand_skinned_renderer_into, expand_static_renderer_into,
+};
 
 /// Target draw count for one prepared renderer-run chunk.
 pub(super) const PREPARED_RUN_CHUNK_DRAW_TARGET: usize = 64;
@@ -382,27 +387,27 @@ impl FramePreparedRenderables {
         self.material_property_key_signature
     }
 
-    /// Rebuilds this snapshot in place from the supplied iterator of cached `(space, draws)`
-    /// pairs. Used by [`super::render_world::RenderWorld`] when refreshing its persistent cache.
-    ///
-    /// Keeps the underlying `Vec` capacities so the steady-state rebuild path does not drop the
-    /// backing buffers each frame.
-    pub(super) fn rebuild_from_cached_spaces<'a, I>(
-        &mut self,
-        render_context: RenderingContext,
-        active_with_draws: I,
-    ) where
-        I: IntoIterator<Item = (RenderSpaceId, &'a [FramePreparedDraw])>,
-    {
+    /// Starts a retained render-world snapshot rebuild, preserving backing buffer capacity.
+    pub(super) fn begin_cached_rebuild(&mut self, render_context: RenderingContext) {
         self.render_context = render_context;
         self.active_space_ids.clear();
         self.draws.clear();
         self.runs.clear();
         self.run_chunks.clear();
-        for (id, draws) in active_with_draws {
-            self.active_space_ids.push(id);
-            self.draws.extend(draws.iter().cloned());
-        }
+    }
+
+    /// Appends an active render space id to the retained snapshot under construction.
+    pub(super) fn push_cached_space(&mut self, id: RenderSpaceId) {
+        self.active_space_ids.push(id);
+    }
+
+    /// Appends retained draw-template rows to the snapshot under construction.
+    pub(super) fn extend_cached_draws(&mut self, draws: &[FramePreparedDraw]) {
+        self.draws.extend(draws.iter().cloned());
+    }
+
+    /// Finalizes a retained snapshot rebuild by refreshing runs, chunks, and material keys.
+    pub(super) fn finish_cached_rebuild(&mut self) {
         self.refresh_runs_material_keys_and_chunks();
     }
 }

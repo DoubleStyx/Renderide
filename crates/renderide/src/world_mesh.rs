@@ -24,8 +24,8 @@ pub use diagnostics::{
 pub(crate) use draw_prep::WorldMeshDrawCollection;
 pub use draw_prep::{
     CameraTransformDrawFilter, DrawCollectionContext, FramePreparedRenderables, RenderWorld,
-    WorldMeshDrawCollectParallelism, WorldMeshDrawItem, collect_and_sort_draws_with_parallelism,
-    draw_filter_from_camera_entry,
+    RenderWorldMaintenanceStats, WorldMeshDrawCollectParallelism, WorldMeshDrawItem,
+    collect_and_sort_draws_with_parallelism, draw_filter_from_camera_entry,
 };
 pub(crate) use instances::depth_prepass_group_eligible;
 pub use instances::{DrawGroup, InstancePlan, MeshPassKind, WorldMeshPhase, build_plan_for_shader};

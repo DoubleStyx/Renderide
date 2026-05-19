@@ -9,7 +9,10 @@ use crate::shared::{RenderSpaceUpdate, RenderTransform};
 use super::super::super::ids::RenderSpaceId;
 use super::super::super::world::{WorldTransformCache, compute_world_matrices_for_space};
 use super::super::apply::ExtractedRenderSpaceUpdate;
-use super::super::{extracted_update_affects_render_world, render_world_header_changed};
+use super::super::{
+    RenderWorldRendererKind, SceneApplyReport, extracted_update_affects_render_world,
+    note_render_world_dirty_for_extracted_update, render_world_header_changed,
+};
 
 fn empty_extracted_render_space_update() -> ExtractedRenderSpaceUpdate {
     ExtractedRenderSpaceUpdate {
@@ -106,6 +109,109 @@ fn extracted_render_world_dirty_tracks_transform_updates() {
     update.transforms = Some(crate::scene::transforms::ExtractedTransformsUpdate::default());
 
     assert!(extracted_update_affects_render_world(&update));
+}
+
+#[test]
+fn render_world_dirty_report_tracks_static_state_rows() {
+    let mut update = empty_extracted_render_space_update();
+    update.meshes = Some(crate::scene::meshes::ExtractedMeshRenderablesUpdate {
+        mesh_states: vec![
+            crate::shared::MeshRendererState {
+                renderable_index: 4,
+                ..Default::default()
+            },
+            crate::shared::MeshRendererState {
+                renderable_index: -1,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    });
+    let mut report = SceneApplyReport::default();
+
+    note_render_world_dirty_for_extracted_update(&mut report, RenderSpaceId(3), false, 0, &update);
+
+    assert_eq!(report.render_world_dirty.full_spaces, Vec::new());
+    assert_eq!(report.render_world_dirty.renderers.len(), 1);
+    assert_eq!(
+        report.render_world_dirty.renderers[0].kind,
+        RenderWorldRendererKind::Static
+    );
+    assert_eq!(report.render_world_dirty.renderers[0].renderable_index, 4);
+}
+
+#[test]
+fn render_world_dirty_report_marks_mesh_membership_as_full_space() {
+    let mut update = empty_extracted_render_space_update();
+    update.meshes = Some(crate::scene::meshes::ExtractedMeshRenderablesUpdate {
+        removals: vec![1, -1],
+        ..Default::default()
+    });
+    let mut report = SceneApplyReport::default();
+
+    note_render_world_dirty_for_extracted_update(&mut report, RenderSpaceId(3), false, 0, &update);
+
+    assert_eq!(
+        report.render_world_dirty.full_spaces,
+        vec![RenderSpaceId(3)]
+    );
+    assert!(report.render_world_dirty.renderers.is_empty());
+}
+
+#[test]
+fn render_world_dirty_report_tracks_transform_pose_roots() {
+    let mut update = empty_extracted_render_space_update();
+    update.transforms = Some(crate::scene::transforms::ExtractedTransformsUpdate {
+        pose_updates: vec![
+            crate::shared::TransformPoseUpdate {
+                transform_id: 2,
+                pose: RenderTransform::default(),
+            },
+            crate::shared::TransformPoseUpdate {
+                transform_id: -1,
+                pose: RenderTransform::default(),
+            },
+        ],
+        target_transform_count: 5,
+        ..Default::default()
+    });
+    let mut report = SceneApplyReport::default();
+
+    note_render_world_dirty_for_extracted_update(&mut report, RenderSpaceId(4), false, 5, &update);
+
+    assert_eq!(
+        report.render_world_dirty.transform_roots[0].root_node_ids,
+        vec![2]
+    );
+    assert!(report.render_world_dirty.full_spaces.is_empty());
+}
+
+#[test]
+fn render_world_dirty_report_tracks_material_override_targets() {
+    let mut update = empty_extracted_render_space_update();
+    update.material_overrides = Some(
+        crate::scene::overrides::ExtractedRenderMaterialOverridesUpdate {
+            states: vec![
+                crate::shared::RenderMaterialOverrideState {
+                    renderable_index: 0,
+                    packed_mesh_renderer_index: (1 << 30) | 7,
+                    context: crate::shared::RenderingContext::Camera,
+                    ..Default::default()
+                },
+                crate::shared::RenderMaterialOverrideState {
+                    renderable_index: -1,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        },
+    );
+    let mut report = SceneApplyReport::default();
+
+    note_render_world_dirty_for_extracted_update(&mut report, RenderSpaceId(5), false, 0, &update);
+
+    assert_eq!(report.render_world_dirty.material_overrides.len(), 1);
+    assert!(report.render_world_dirty.full_spaces.is_empty());
 }
 
 /// [`super::super::apply::apply_extracted_render_space_update`] mutates only the per-space

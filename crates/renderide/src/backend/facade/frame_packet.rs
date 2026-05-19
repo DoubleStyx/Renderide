@@ -79,7 +79,7 @@ impl RenderBackend {
     }
 
     /// Applies world-cache flush reports to backend-owned CPU render-world caches.
-    pub(crate) fn note_scene_cache_flush_report(&mut self, report: &SceneCacheFlushReport) {
+    pub(crate) fn note_scene_cache_flush_report(&self, report: &SceneCacheFlushReport) {
         self.draw_preparation.note_scene_cache_flush_report(report);
     }
 
