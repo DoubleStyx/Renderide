@@ -74,9 +74,9 @@ impl Default for BloomSettings {
         Self {
             enabled: true,
             intensity: 0.5,
-            low_frequency_boost: 0.3,
+            low_frequency_boost: 0.5,
             low_frequency_boost_curvature: 1.0,
-            high_pass_frequency: 0.6,
+            high_pass_frequency: 0.5,
             prefilter_threshold: 1.0,
             prefilter_threshold_softness: 0.5,
             composite_mode: BloomCompositeMode::EnergyConserving,
