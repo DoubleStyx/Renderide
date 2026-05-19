@@ -29,7 +29,7 @@ use crate::materials::{
 };
 
 use super::pipeline_build_error::PipelineBuildError;
-use super::raster_pipeline::MaterialPipelineDesc;
+use super::raster_pipeline::{MaterialPipelineDesc, MaterialPipelineTarget};
 
 /// Maximum raster pipelines retained (LRU eviction).
 const MAX_CACHED_PIPELINES: usize = 512;
@@ -75,6 +75,8 @@ pub struct MaterialPipelineCacheKey {
     pub permutation: ShaderPermutation,
     /// Color attachment format (swapchain or offscreen).
     pub surface_format: wgpu::TextureFormat,
+    /// Pipeline target family selected by the active render pass.
+    pub target: MaterialPipelineTarget,
     /// Depth/stencil format when depth attachment is used.
     pub depth_stencil_format: Option<wgpu::TextureFormat>,
     /// MSAA sample count for the color target.
@@ -240,6 +242,7 @@ impl MaterialPipelineCache {
             kind: kind.clone(),
             permutation,
             surface_format: desc.surface_format,
+            target: desc.target,
             depth_stencil_format: desc.depth_stencil_format,
             sample_count: desc.sample_count,
             multiview_mask: desc.multiview_mask,

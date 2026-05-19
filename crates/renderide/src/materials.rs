@@ -42,9 +42,10 @@
 //! 2. Declares explicit pipeline state: blend, depth write/test, cull, color mask, stencil, offset.
 //! 3. Counts the draws per material -- N directives => N pipelines => N `draw_indexed` calls.
 //!
-//! Recognized pass types are intentionally small: `type=forward` for raster material draws and
-//! `type=depth_prepass` for authored depth-only prepasses. Specialized Unity behavior is expressed
-//! through metadata such as `blend=transparent_material`, `zwrite=material(off)`, `cull=front`,
+//! Recognized pass types are intentionally small: `type=forward` for raster material draws,
+//! `type=depth_prepass` for authored depth-only prepasses, and `type=shadow_caster` for
+//! source-authored shadow-map caster passes. Specialized Unity behavior is expressed through
+//! metadata such as `blend=transparent_material`, `zwrite=material(off)`, `cull=front`,
 //! `color_mask=0`, and `offset=material(0,0)` rather than by multiplying pass kind variants.
 //!
 //! **Why explicit pass metadata exists when the host already sends pipeline state.** The host's
@@ -97,16 +98,16 @@ pub(crate) use embedded::EmbeddedMaterialBindShader;
 pub(crate) use embedded::{
     EmbeddedMaterialBindResources, EmbeddedTangentFallbackMode, EmbeddedTexturePools,
     SnapshotRequirements, embedded_default_stem_for_shader_asset_name,
-    embedded_stem_depth_prepass_pass, embedded_stem_needs_color_stream,
-    embedded_stem_needs_extended_vertex_streams, embedded_stem_needs_tangent_stream,
-    embedded_stem_needs_uv0_stream, embedded_stem_needs_uv1_stream, embedded_stem_needs_uv2_stream,
-    embedded_stem_needs_uv3_stream, embedded_stem_needs_wide_uv_stream,
-    embedded_stem_pipeline_pass_count, embedded_stem_requires_intersection_pass,
-    embedded_stem_tangent_fallback_mode, embedded_stem_uses_alpha_blending,
-    embedded_stem_uses_blended_depth_write, embedded_stem_uses_raw_normal_payload,
-    embedded_stem_uses_raw_tangent_payload, embedded_stem_uses_scene_color_snapshot,
-    embedded_stem_uses_scene_depth_snapshot, embedded_stem_uses_two_sided_transparency,
-    embedded_stem_uses_ui_transparent_fallback,
+    embedded_stem_depth_prepass_pass, embedded_stem_has_shadow_caster_pass,
+    embedded_stem_needs_color_stream, embedded_stem_needs_extended_vertex_streams,
+    embedded_stem_needs_tangent_stream, embedded_stem_needs_uv0_stream,
+    embedded_stem_needs_uv1_stream, embedded_stem_needs_uv2_stream, embedded_stem_needs_uv3_stream,
+    embedded_stem_needs_wide_uv_stream, embedded_stem_pipeline_pass_count,
+    embedded_stem_requires_intersection_pass, embedded_stem_tangent_fallback_mode,
+    embedded_stem_uses_alpha_blending, embedded_stem_uses_blended_depth_write,
+    embedded_stem_uses_raw_normal_payload, embedded_stem_uses_raw_tangent_payload,
+    embedded_stem_uses_scene_color_snapshot, embedded_stem_uses_scene_depth_snapshot,
+    embedded_stem_uses_two_sided_transparency, embedded_stem_uses_ui_transparent_fallback,
 };
 
 pub(crate) use material_passes::{
@@ -120,7 +121,7 @@ pub(crate) use material_passes::{PropertyMapRef, first_float_from_maps, first_ve
 pub(crate) use pipeline_build_error::PipelineBuildError;
 pub(crate) use pipeline_kind::RasterPipelineKind;
 /// Pipeline family descriptors, per-property GPU layout, and raster kind flags.
-pub(crate) use raster_pipeline::MaterialPipelineDesc;
+pub(crate) use raster_pipeline::{MaterialPipelineDesc, MaterialPipelineTarget};
 pub(crate) use render_queue::{UNITY_RENDER_QUEUE_ALPHA_TEST, render_queue_is_transparent};
 #[cfg(test)]
 pub(crate) use render_queue::{
@@ -132,8 +133,8 @@ pub(crate) use render_queue::{
 #[cfg(test)]
 pub(crate) use render_state::MaterialDepthOffsetState;
 pub(crate) use render_state::{
-    MaterialDepthCompareDomain, MaterialRenderState, RasterFrontFace, RasterPrimitiveTopology,
-    material_render_state_for_lookup, material_render_state_from_maps,
+    MaterialCullOverride, MaterialDepthCompareDomain, MaterialRenderState, RasterFrontFace,
+    RasterPrimitiveTopology, material_render_state_for_lookup, material_render_state_from_maps,
 };
 
 #[cfg(test)]

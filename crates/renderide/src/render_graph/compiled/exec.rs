@@ -497,6 +497,7 @@ impl CompiledRenderGraph {
                     render_context: work_item.render_context,
                     clear: work_item.clear,
                     post_processing: work_item.post_processing,
+                    shadows: work_item.shadows,
                     gpu_limits: mv_ctx.backend.gpu_limits().cloned(),
                     msaa_depth_resolve: mv_ctx.backend.msaa_depth_resolve(),
                     hi_z_slot,
@@ -534,6 +535,7 @@ impl CompiledRenderGraph {
             let resolved = Self::resolve_owned_view_from_target(
                 view_id,
                 view.post_processing,
+                view.shadows,
                 &view.target,
                 mv_ctx.gpu,
                 mv_ctx.backbuffer_view_holder.as_ref(),
@@ -558,6 +560,7 @@ impl CompiledRenderGraph {
                 view_id,
                 clear: view.clear,
                 post_processing: view.post_processing,
+                shadows: view.shadows,
                 initial_blackboard: std::mem::take(&mut view.initial_blackboard),
                 resolved,
                 per_view_frame_bg_and_buf,

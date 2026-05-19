@@ -6,6 +6,24 @@ use super::super::render_state::{
 };
 use super::*;
 
+/// Returns only passes that write the forward color path.
+fn color_passes(stem: &str) -> Vec<MaterialPassDesc> {
+    crate::embedded_shaders::embedded_target_passes(stem)
+        .iter()
+        .copied()
+        .filter(|pass| pass.pass_type != PassType::ShadowCaster)
+        .collect()
+}
+
+/// Verifies a stem declares one source-authored shadow caster pass.
+fn assert_has_shadow_caster_pass(stem: &str) {
+    let count = crate::embedded_shaders::embedded_target_passes(stem)
+        .iter()
+        .filter(|pass| pass.pass_type == PassType::ShadowCaster)
+        .count();
+    assert_eq!(count, 1, "{stem} should declare one shadow caster pass");
+}
+
 /// Builds a render-state override set that exercises every pass policy field.
 fn override_state(depth_write: bool) -> MaterialRenderState {
     MaterialRenderState {
@@ -307,10 +325,11 @@ fn ui_unlit_stems_use_filter_pass_material_state() {
 #[test]
 fn pbs_dualsided_opaque_stems_apply_material_cull_overrides() {
     for stem in ["pbsdualsided_default", "pbsdualsidedspecular_default"] {
-        let passes = crate::embedded_shaders::embedded_target_passes(stem);
+        let passes = color_passes(stem);
         assert_eq!(passes.len(), 1, "{stem} should declare one forward pass");
         assert_eq!(passes[0].name, "forward_two_sided", "{stem}");
         assert_eq!(passes[0].cull_mode, None, "{stem}");
+        assert_has_shadow_caster_pass(stem);
 
         for (cull_override, expected_cull) in [
             (MaterialCullOverride::Front, Some(wgpu::Face::Front)),
@@ -327,6 +346,22 @@ fn pbs_dualsided_opaque_stems_apply_material_cull_overrides() {
                 "{stem} must apply host {cull_override:?} over authored Cull Off"
             );
         }
+    }
+}
+
+#[test]
+fn high_impact_pbs_stems_declare_shadow_caster_passes() {
+    for stem in [
+        "pbsmetallic_default",
+        "pbsspecular_default",
+        "pbslerp_default",
+        "pbslerpspecular_default",
+        "pbsdisplace_default",
+        "pbsdisplacespecular_default",
+        "pbsslice_default",
+        "pbsslicespecular_default",
+    ] {
+        assert_has_shadow_caster_pass(stem);
     }
 }
 
@@ -589,10 +624,11 @@ fn xstoon_outlined_stems_keep_outline_before_forward() {
         "xstoon2.0-dithered-outlined_default",
         "xstoon2.0-cutouta2c-outlined_default",
     ] {
-        let passes = crate::embedded_shaders::embedded_target_passes(stem);
+        let passes = color_passes(stem);
         assert_eq!(passes.len(), 2, "{stem} should declare outline + forward");
         assert_eq!(passes[0].name, "outline", "{stem}");
         assert_eq!(passes[1].name, "forward", "{stem}");
+        assert_has_shadow_caster_pass(stem);
     }
 }
 
@@ -606,21 +642,23 @@ fn xstoon_opaque_stems_keep_single_forward_pass() {
         "xstoon2.0-cutouta2cmasked_default",
         "xstoon2.0-dithered_default",
     ] {
-        let passes = crate::embedded_shaders::embedded_target_passes(stem);
+        let passes = color_passes(stem);
         assert_eq!(
             passes.len(),
             1,
             "{stem} should declare a single forward pass"
         );
         assert_eq!(passes[0].name, "forward", "{stem}");
+        assert_has_shadow_caster_pass(stem);
     }
 }
 
 /// Verifies XSToon fade uses its source-authored alpha blend state.
 #[test]
 fn xstoon_fade_uses_source_alpha_blend_pass_state() {
-    let fade_passes = crate::embedded_shaders::embedded_target_passes("xstoon2.0-fade_default");
+    let fade_passes = color_passes("xstoon2.0-fade_default");
     assert_eq!(fade_passes.len(), 1, "xstoon2.0-fade_default");
+    assert_has_shadow_caster_pass("xstoon2.0-fade_default");
     assert_eq!(fade_passes[0].name, "forward_alpha_blend");
     assert_eq!(fade_passes[0].cull_mode, Some(wgpu::Face::Back));
     assert!(!fade_passes[0].depth_write);
@@ -640,9 +678,9 @@ fn xstoon_fade_uses_source_alpha_blend_pass_state() {
 /// Verifies XSToon transparent uses its source-authored premultiplied blend state.
 #[test]
 fn xstoon_transparent_uses_source_premultiplied_pass_state() {
-    let transparent_passes =
-        crate::embedded_shaders::embedded_target_passes("xstoon2.0-transparent_default");
+    let transparent_passes = color_passes("xstoon2.0-transparent_default");
     assert_eq!(transparent_passes.len(), 1, "xstoon2.0-transparent_default");
+    assert_has_shadow_caster_pass("xstoon2.0-transparent_default");
     assert_eq!(
         transparent_passes[0].name,
         "forward_premultiplied_transparent"
@@ -681,17 +719,17 @@ fn xstoon_a2c_stems_enable_alpha_to_coverage() {
         "xstoon2.0-cutouta2c_default",
         "xstoon2.0-cutouta2cmasked_default",
     ] {
-        let passes = crate::embedded_shaders::embedded_target_passes(stem);
+        let passes = color_passes(stem);
         assert_eq!(
             passes.len(),
             1,
             "{stem} should declare a single forward pass"
         );
         assert!(passes[0].alpha_to_coverage, "{stem}");
+        assert_has_shadow_caster_pass(stem);
     }
 
-    let outlined =
-        crate::embedded_shaders::embedded_target_passes("xstoon2.0-cutouta2c-outlined_default");
+    let outlined = color_passes("xstoon2.0-cutouta2c-outlined_default");
     assert_eq!(outlined.len(), 2, "xstoon2.0-cutouta2c-outlined_default");
     assert!(
         outlined.iter().all(|pass| pass.alpha_to_coverage),
@@ -703,7 +741,7 @@ fn xstoon_a2c_stems_enable_alpha_to_coverage() {
         "xstoon2.0-dithered_default",
         "xstoon2.0-dithered-outlined_default",
     ] {
-        let passes = crate::embedded_shaders::embedded_target_passes(stem);
+        let passes = color_passes(stem);
         assert!(passes.iter().all(|pass| !pass.alpha_to_coverage), "{stem}");
     }
 }

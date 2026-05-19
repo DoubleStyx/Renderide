@@ -209,7 +209,7 @@ fn static_draw_source<'a>(
     renderable_index: usize,
     r: &'a StaticMeshRenderer,
 ) -> Option<StaticMeshDrawSource<'a>> {
-    if !r.emits_visible_color_draws() || r.mesh_asset_id < 0 || r.node_id < 0 {
+    if !r.participates_in_raster_draws() || r.mesh_asset_id < 0 || r.node_id < 0 {
         return None;
     }
     let mesh = ctx.mesh_pool.get(r.mesh_asset_id)?;
@@ -236,7 +236,7 @@ fn skinned_draw_source<'a>(
     sk: &'a SkinnedMeshRenderer,
 ) -> Option<StaticMeshDrawSource<'a>> {
     let r = &sk.base;
-    if !r.emits_visible_color_draws() || r.mesh_asset_id < 0 || r.node_id < 0 {
+    if !r.participates_in_raster_draws() || r.mesh_asset_id < 0 || r.node_id < 0 {
         return None;
     }
     let mesh = ctx.mesh_pool.get(r.mesh_asset_id)?;
@@ -269,7 +269,7 @@ pub(super) fn estimate_active_renderable_count(
             continue;
         }
         for renderer in space.static_mesh_renderers() {
-            if !renderer.emits_visible_color_draws()
+            if !renderer.participates_in_raster_draws()
                 || renderer.mesh_asset_id < 0
                 || renderer.node_id < 0
             {
@@ -285,7 +285,7 @@ pub(super) fn estimate_active_renderable_count(
         }
         for skinned in space.skinned_mesh_renderers() {
             let renderer = &skinned.base;
-            if !renderer.emits_visible_color_draws()
+            if !renderer.participates_in_raster_draws()
                 || renderer.mesh_asset_id < 0
                 || renderer.node_id < 0
             {

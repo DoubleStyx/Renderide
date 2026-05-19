@@ -36,6 +36,7 @@ pub(in crate::world_mesh::draw_prep) fn prepared_draws_share_renderer(
         && a.world_space_deformed == b.world_space_deformed
         && a.blendshape_deformed == b.blendshape_deformed
         && a.tangent_blendshape_deform_active == b.tangent_blendshape_deform_active
+        && a.shadow_cast_mode == b.shadow_cast_mode
 }
 
 /// Per-renderer view-local state shared by every material slot in a prepared run.
@@ -219,6 +220,7 @@ fn append_prepared_run_draws(
             world_space_deformed: d.world_space_deformed,
             blendshape_deformed: d.blendshape_deformed,
             tangent_blendshape_deform_active: d.tangent_blendshape_deform_active,
+            shadow_cast_mode: d.shadow_cast_mode,
             material_asset_id: d.material_asset_id,
             property_block_id: d.property_block_id,
             world_aabb: state.world_aabb,

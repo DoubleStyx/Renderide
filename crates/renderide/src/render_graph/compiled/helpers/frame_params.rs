@@ -11,7 +11,7 @@ use crate::render_graph::frame_params::{
 use crate::scene::SceneCoordinator;
 use crate::shared::RenderingContext;
 
-use super::super::{ResolvedView, ViewPostProcessing};
+use super::super::{ResolvedView, ViewPostProcessing, ViewShadows};
 
 /// Per-view inputs for [`frame_render_params_from_shared`].
 ///
@@ -31,6 +31,8 @@ pub(in crate::render_graph::compiled) struct GraphPassFrameViewInputs<'a, 'r> {
     pub clear: FrameViewClear,
     /// Post-processing permissions requested by this view.
     pub post_processing: ViewPostProcessing,
+    /// Realtime shadow-map permissions requested by this view.
+    pub shadows: ViewShadows,
     /// GPU capability limits, shared with passes that need to clamp against them.
     pub gpu_limits: Option<Arc<GpuLimits>>,
     /// MSAA depth resolve helpers when MSAA is active.
@@ -51,6 +53,7 @@ pub(in crate::render_graph::compiled) fn frame_render_params_from_shared<'a>(
         render_context,
         clear,
         post_processing,
+        shadows,
         gpu_limits,
         msaa_depth_resolve,
         hi_z_slot,
@@ -84,6 +87,7 @@ pub(in crate::render_graph::compiled) fn frame_render_params_from_shared<'a>(
             msaa_depth_resolve,
             clear,
             post_processing,
+            shadows,
             // MSAA views now live in the per-view blackboard (MsaaViewsSlot), resolved from
             // graph transient textures by the executor via resolve_forward_msaa_views_from_graph_resources.
         },
@@ -98,7 +102,6 @@ pub(in crate::render_graph::compiled) fn frame_render_params_from_resolved<'a>(
     host_camera: &HostCameraFrame,
     render_context: RenderingContext,
     clear: FrameViewClear,
-    post_processing: ViewPostProcessing,
 ) -> GraphPassFrame<'a> {
     let scene_color_format = backend.scene_color_format_wgpu();
     let split = backend.split_for_graph_frame_params();
@@ -122,7 +125,8 @@ pub(in crate::render_graph::compiled) fn frame_render_params_from_resolved<'a>(
             host_camera,
             render_context,
             clear,
-            post_processing,
+            post_processing: resolved.post_processing,
+            shadows: resolved.shadows,
             gpu_limits: split.gpu_limits,
             msaa_depth_resolve: split.msaa_depth_resolve,
             hi_z_slot,

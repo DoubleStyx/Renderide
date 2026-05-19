@@ -13,7 +13,9 @@ use crate::camera::{
 };
 use crate::diagnostics::log_once::KeyedLogOnce;
 use crate::gpu::GpuContext;
-use crate::render_graph::{FrameViewClear, OffscreenSampleCountPolicy, ViewPostProcessing};
+use crate::render_graph::{
+    FrameViewClear, OffscreenSampleCountPolicy, ViewPostProcessing, ViewShadows,
+};
 use crate::scene::RenderSpaceId;
 use crate::shared::RenderingContext;
 use crate::world_mesh::draw_filter_from_camera_entry;
@@ -242,6 +244,7 @@ impl RendererRuntime {
                 viewport_px: extent_px,
                 clear: FrameViewClear::skybox(),
                 post_processing: ViewPostProcessing::primary_view(),
+                shadows: ViewShadows::primary_view(),
                 target: FrameViewPlanTarget::Hmd(ext),
             });
         }
@@ -373,6 +376,7 @@ impl RendererRuntime {
                 viewport_px,
                 clear: FrameViewClear::from_camera_state(&entry.state),
                 post_processing,
+                shadows: ViewShadows::from_camera_state(&entry.state),
                 target: FrameViewPlanTarget::SecondaryRt(rt_handles),
             });
         }
@@ -413,6 +417,7 @@ impl RendererRuntime {
             viewport_px: swapchain_extent_px,
             clear: FrameViewClear::skybox(),
             post_processing,
+            shadows: ViewShadows::primary_view(),
             target: FrameViewPlanTarget::MainSwapchain,
         }
     }

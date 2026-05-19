@@ -37,12 +37,18 @@ pub fn camera_state_render_private_ui(flags: u16) -> bool {
     flags & (1 << 3) != 0
 }
 
+/// Returns `true` when [`crate::shared::CameraState::flags`] bit 5 is set.
+#[inline]
+pub fn camera_state_render_shadows(flags: u16) -> bool {
+    flags & (1 << 5) != 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         camera_state_enabled, camera_state_motion_blur, camera_state_post_processing,
-        camera_state_render_private_ui, camera_state_screen_space_reflections,
-        camera_state_use_transform_scale,
+        camera_state_render_private_ui, camera_state_render_shadows,
+        camera_state_screen_space_reflections, camera_state_use_transform_scale,
     };
 
     #[test]
@@ -59,6 +65,14 @@ mod tests {
         assert!(camera_state_use_transform_scale(1 << 1));
         assert!(!camera_state_render_private_ui(0));
         assert!(camera_state_render_private_ui(1 << 3));
+    }
+
+    #[test]
+    fn camera_state_render_shadows_reads_bit_five() {
+        assert!(!camera_state_render_shadows(0));
+        assert!(camera_state_render_shadows(1 << 5));
+        assert!(camera_state_render_shadows(0xffff));
+        assert!(!camera_state_render_shadows(1 << 4));
     }
 
     #[test]

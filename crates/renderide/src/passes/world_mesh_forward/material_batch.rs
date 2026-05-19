@@ -15,12 +15,13 @@ use crate::materials::{
     EmbeddedMaterialBindResources, EmbeddedMaterialBindShader, EmbeddedTexturePools,
 };
 use crate::materials::{
-    MaterialBlendMode, MaterialPipelineDesc, MaterialPipelineResolution, MaterialPipelineSet,
-    MaterialPipelineVariantSpec, MaterialRegistry, MaterialRenderState, RasterFrontFace,
-    RasterPipelineKind, RasterPrimitiveTopology,
+    MaterialBlendMode, MaterialCullOverride, MaterialPipelineDesc, MaterialPipelineResolution,
+    MaterialPipelineSet, MaterialPipelineTarget, MaterialPipelineVariantSpec, MaterialRegistry,
+    MaterialRenderState, RasterFrontFace, RasterPipelineKind, RasterPrimitiveTopology,
 };
 use crate::passes::WorldMeshForwardEncodeRefs;
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
+use crate::shared::ShadowCastMode;
 use crate::world_mesh::draw_prep::WorldMeshDrawItem;
 
 /// Throttles repeated embedded-bind failures so a single bad material cannot flood logs.
@@ -110,6 +111,8 @@ pub(crate) struct PipelineVariantKey {
     pub shader_asset_id: i32,
     /// Color attachment format.
     pub surface_format: wgpu::TextureFormat,
+    /// Pipeline target family selected by the active render pass.
+    pub target: MaterialPipelineTarget,
     /// Optional depth/stencil format.
     pub depth_stencil_format: Option<wgpu::TextureFormat>,
     /// Effective sample count for the active render pass.
@@ -143,6 +146,7 @@ impl PipelineVariantKey {
         Self {
             shader_asset_id,
             surface_format: pass_desc.surface_format,
+            target: pass_desc.target,
             depth_stencil_format: pass_desc.depth_stencil_format,
             sample_count: pass_desc.sample_count,
             multiview_mask: pass_desc.multiview_mask,
@@ -157,6 +161,7 @@ impl PipelineVariantKey {
     /// Rehydrates the material pipeline descriptor used by [`MaterialRegistry`].
     pub(crate) fn pass_desc(self) -> MaterialPipelineDesc {
         MaterialPipelineDesc {
+            target: self.target,
             surface_format: self.surface_format,
             depth_stencil_format: self.depth_stencil_format,
             sample_count: self.sample_count,
@@ -182,12 +187,18 @@ impl PipelineVariantKey {
         shader_perm: ShaderPermutation,
     ) -> Self {
         let batch_key = &item.batch_key;
+        let mut render_state = batch_key.render_state;
+        if pass_desc.target == MaterialPipelineTarget::ShadowCaster
+            && item.shadow_cast_mode == ShadowCastMode::DoubleSided
+        {
+            render_state.cull_override = MaterialCullOverride::Off;
+        }
         Self::new(PipelineVariantKeyInput {
             pass_desc,
             shader_perm,
             shader_asset_id: batch_key.shader_asset_id,
             blend_mode: batch_key.blend_mode,
-            render_state: batch_key.render_state,
+            render_state,
             front_face: batch_key.front_face,
             primitive_topology: batch_key.primitive_topology,
         })
@@ -385,6 +396,9 @@ impl<'a> MaterialDrawResolver<'a> {
         &self,
         pipeline_key: PipelineVariantKey,
     ) -> Option<MaterialPipelineResolution> {
+        if pipeline_key.target == MaterialPipelineTarget::ShadowCaster {
+            return None;
+        }
         let registry = self.registry?;
         let pass_desc = pipeline_key.pass_desc();
         let resolution =
@@ -518,6 +532,7 @@ mod tests {
 
     fn base_desc() -> MaterialPipelineDesc {
         MaterialPipelineDesc {
+            target: MaterialPipelineTarget::Color,
             surface_format: wgpu::TextureFormat::Rgba16Float,
             depth_stencil_format: Some(wgpu::TextureFormat::Depth24PlusStencil8),
             sample_count: 4,
@@ -576,6 +591,36 @@ mod tests {
             Some(wgpu::TextureFormat::Depth24PlusStencil8)
         );
         assert_eq!(key.multiview_mask, NonZeroU32::new(3));
+    }
+
+    #[test]
+    fn shadow_pipeline_key_applies_double_sided_shadow_mode() {
+        let mut item = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 42,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 7,
+            node_id: 1,
+            slot_index: 0,
+            collect_order: 0,
+            alpha_blended: false,
+        });
+        item.batch_key.shader_asset_id = 42;
+        item.batch_key.blend_mode = MaterialBlendMode::Opaque;
+        item.batch_key.render_state.cull_override = MaterialCullOverride::Back;
+        item.shadow_cast_mode = ShadowCastMode::DoubleSided;
+
+        let key = PipelineVariantKey::for_draw_item(
+            &item,
+            MaterialPipelineDesc {
+                target: MaterialPipelineTarget::ShadowCaster,
+                ..base_desc()
+            },
+            ShaderPermutation(1),
+        );
+
+        assert_eq!(key.render_state.cull_override, MaterialCullOverride::Off);
     }
 
     #[test]

@@ -22,8 +22,12 @@ pub(crate) enum ResourceChurnKind {
     Buffer,
     /// `wgpu::BindGroup` creation.
     BindGroup,
+    /// `wgpu::Texture` creation.
+    Texture,
     /// `wgpu::TextureView` creation.
     TextureView,
+    /// `wgpu::Sampler` creation.
+    Sampler,
     /// `wgpu::RenderPipeline` creation.
     RenderPipeline,
     /// `wgpu::ComputePipeline` creation.

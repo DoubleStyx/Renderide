@@ -42,6 +42,18 @@ struct GpuReflectionProbe {
     sh2_i: vec4<f32>,
 }
 
+struct GpuShadowLight {
+    first_view: u32,
+    view_count: u32,
+    flags: u32,
+    align_pad_shadow_light: u32,
+}
+
+struct GpuShadowView {
+    view_proj: mat4x4<f32>,
+    params: vec4<f32>,
+}
+
 /// Per-frame scene + clustered grid.
 struct FrameGlobals {
     camera_world_pos: vec4<f32>,

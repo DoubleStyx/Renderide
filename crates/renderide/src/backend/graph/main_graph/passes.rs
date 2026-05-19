@@ -9,6 +9,7 @@ use super::handles::MainGraphHandles;
 /// Pass ids registered by [`register_main_graph_passes`]; consumed by edge wiring.
 pub(super) struct MainGraphPassIds {
     pub(super) deform: PassId,
+    pub(super) shadows: PassId,
     pub(super) clustered: PassId,
     pub(super) depth_prepass: PassId,
     pub(super) forward_opaque: PassId,
@@ -64,6 +65,7 @@ pub(super) fn register_main_graph_passes(
     _msaa_sample_count: u8,
 ) -> MainGraphPassIds {
     let deform = builder.add_compute_pass(Box::new(crate::passes::MeshDeformPass::new()));
+    let shadows = builder.add_encoder_pass(Box::new(crate::passes::WorldMeshShadowMapPass::new()));
     let clustered = builder.add_compute_pass(Box::new(crate::passes::ClusteredLightPass::new(
         crate::passes::ClusteredLightGraphResources {
             lights: h.lights,
@@ -98,6 +100,7 @@ pub(super) fn register_main_graph_passes(
     )));
     MainGraphPassIds {
         deform,
+        shadows,
         clustered,
         depth_prepass,
         forward_opaque,

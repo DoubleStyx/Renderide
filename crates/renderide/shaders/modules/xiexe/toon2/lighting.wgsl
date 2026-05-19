@@ -31,6 +31,7 @@
 #import renderide::pbs::brdf as brdf
 #import renderide::lighting::birp as bl
 #import renderide::lighting::reflection_probes as rprobe
+#import renderide::lighting::shadows as sh
 
 /// SH-probe sample used for xiexe's uncoloured indirect-diffuse term.
 fn indirect_diffuse(s: xb::SurfaceData, world_pos: vec3<f32>, view_layer: u32) -> vec3<f32> {
@@ -456,10 +457,13 @@ fn clustered_toon_lighting_for_layout(
             continue;
         }
 
-        let light = sample_light(rg::lights[li], world_pos);
+        let raw_light = rg::lights[li];
+        var light = sample_light(raw_light, world_pos);
         if ((light.is_directional && !include_directional) || (!light.is_directional && !include_local)) {
             continue;
         }
+        let shadow = sh::shadow_visibility(li, raw_light, world_pos, s.normal);
+        light.attenuation = light.attenuation * shadow;
 
         let ndl = dot(s.normal, light.direction);
         let ramp = ramp_for_ndl(ndl, light.attenuation, s.ramp_mask);
@@ -577,7 +581,10 @@ fn clustered_outline_lighting(
             continue;
         }
 
-        let light = sample_light(rg::lights[li], world_pos);
+        let raw_light = rg::lights[li];
+        var light = sample_light(raw_light, world_pos);
+        let shadow = sh::shadow_visibility(li, raw_light, world_pos, s.normal);
+        light.attenuation = light.attenuation * shadow;
         let ndl = xb::saturate(dot(s.normal, light.direction));
         let direct = xb::saturate(light.attenuation * ndl) * light.color;
         let weight = xb::grayscale(direct);

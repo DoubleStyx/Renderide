@@ -85,10 +85,27 @@ impl CompiledRenderGraph {
                     resource: "per-draw",
                 });
             }
+            if !mv_ctx
+                .backend
+                .frame_resources_mut()
+                .ensure_per_view_shadow_per_draw_resources(view_id, mv_ctx.device)
+            {
+                logger::warn!(
+                    "graph pre-warm: shadow per-draw resources unavailable for view {view_id:?}"
+                );
+                return Err(GraphExecuteError::MissingPerViewResources {
+                    view_id,
+                    resource: "shadow per-draw",
+                });
+            }
             mv_ctx
                 .backend
                 .frame_resources_mut()
                 .ensure_per_view_per_draw_scratch(view_id);
+            mv_ctx
+                .backend
+                .frame_resources_mut()
+                .ensure_per_view_shadow_per_draw_scratch(view_id);
         }
         for (view_id, layout) in prepared_frame_layouts {
             if !mv_ctx
@@ -186,6 +203,7 @@ impl CompiledRenderGraph {
             let resolved = Self::resolve_view_from_target(
                 view.view_id(),
                 view.post_processing,
+                view.shadows,
                 &view.target,
                 mv_ctx.gpu,
                 mv_ctx.backbuffer_view_holder.as_ref(),

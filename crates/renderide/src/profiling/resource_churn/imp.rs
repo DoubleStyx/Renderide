@@ -94,7 +94,9 @@ impl ResourceChurnKind {
         match self {
             Self::Buffer => "buffer",
             Self::BindGroup => "bind_group",
+            Self::Texture => "texture",
             Self::TextureView => "texture_view",
+            Self::Sampler => "sampler",
             Self::RenderPipeline => "render_pipeline",
             Self::ComputePipeline => "compute_pipeline",
         }
@@ -149,7 +151,15 @@ fn configure_total_plots_if_needed(client: &tracy_client::Client) {
         stepped_plot_config(),
     );
     client.plot_config(
+        tracy_client::plot_name!("resource_churn::textures_total"),
+        stepped_plot_config(),
+    );
+    client.plot_config(
         tracy_client::plot_name!("resource_churn::texture_views_total"),
+        stepped_plot_config(),
+    );
+    client.plot_config(
+        tracy_client::plot_name!("resource_churn::samplers_total"),
         stepped_plot_config(),
     );
     client.plot_config(
@@ -174,7 +184,9 @@ fn stepped_plot_config() -> tracy_client::PlotConfiguration {
 struct ResourceChurnTotals {
     buffers: u64,
     bind_groups: u64,
+    textures: u64,
     texture_views: u64,
+    samplers: u64,
     render_pipelines: u64,
     compute_pipelines: u64,
 }
@@ -188,8 +200,14 @@ impl ResourceChurnTotals {
             ResourceChurnKind::BindGroup => {
                 self.bind_groups = self.bind_groups.saturating_add(count);
             }
+            ResourceChurnKind::Texture => {
+                self.textures = self.textures.saturating_add(count);
+            }
             ResourceChurnKind::TextureView => {
                 self.texture_views = self.texture_views.saturating_add(count);
+            }
+            ResourceChurnKind::Sampler => {
+                self.samplers = self.samplers.saturating_add(count);
             }
             ResourceChurnKind::RenderPipeline => {
                 self.render_pipelines = self.render_pipelines.saturating_add(count);
@@ -214,8 +232,16 @@ impl ResourceChurnTotals {
             self.bind_groups as f64,
         );
         client.plot(
+            tracy_client::plot_name!("resource_churn::textures_total"),
+            self.textures as f64,
+        );
+        client.plot(
             tracy_client::plot_name!("resource_churn::texture_views_total"),
             self.texture_views as f64,
+        );
+        client.plot(
+            tracy_client::plot_name!("resource_churn::samplers_total"),
+            self.samplers as f64,
         );
         client.plot(
             tracy_client::plot_name!("resource_churn::render_pipelines_total"),

@@ -42,8 +42,10 @@ mod frame_uniforms;
 mod material_batch;
 mod material_resolve;
 mod normal_pass;
+mod phase;
 mod prepare;
 mod raster_recording;
+mod shadow_maps;
 mod skybox;
 mod slab;
 mod state;
@@ -54,10 +56,18 @@ pub use depth_prepass::{WorldMeshForwardDepthPrepass, WorldMeshForwardDepthPrepa
 pub(crate) use material_batch::{MaterialBatchBoundary, MaterialBatchPacket, MaterialDrawResolver};
 pub(crate) use normal_pass::GTAO_VIEW_NORMAL_FORMAT;
 pub use normal_pass::{WorldMeshForwardNormalGraphResources, WorldMeshForwardNormalPass};
+pub(crate) use phase::{
+    DepthPrepassPhase, DepthPrepassRun, MaterialShadowRun, ShadowCasterPhase,
+    ShadowCasterPreparedPlan, build_shadow_caster_phase_from_prepared,
+    build_shadow_caster_prepared_plan,
+};
 pub(crate) use prepare::{WorldMeshForwardPrepareContext, prepare_world_mesh_forward_frame};
+pub use shadow_maps::WorldMeshShadowMapPass;
+pub(crate) use shadow_maps::WorldMeshShadowPhaseCache;
 pub(crate) use skybox::SkyboxRenderer as WorldMeshForwardSkyboxRenderer;
 pub(crate) use state::{
-    PreparedWorldMeshForwardFrame, WorldMeshForwardPipelineState, WorldMeshForwardPlanSlot,
+    PreparedWorldMeshForwardFrame, ShadowCasterDrawPlanSlot, WorldMeshForwardPipelineState,
+    WorldMeshForwardPlanSlot,
 };
 pub use transparent_sequence::WorldMeshForwardTransparentSequencePass;
 

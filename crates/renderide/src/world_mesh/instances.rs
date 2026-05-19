@@ -19,8 +19,11 @@ use rayon::prelude::*;
 
 use crate::materials::{
     RasterPipelineKind, ShaderPermutation, UNITY_RENDER_QUEUE_ALPHA_TEST,
-    embedded_stem_depth_prepass_pass, render_queue_is_transparent,
+    embedded_stem_depth_prepass_pass, embedded_stem_has_shadow_caster_pass,
+    render_queue_is_transparent,
 };
+#[cfg(test)]
+use crate::shared::ShadowCastMode;
 
 use super::draw_prep::WorldMeshDrawItem;
 
@@ -78,6 +81,18 @@ pub struct InstancePlan {
     /// Groups emitted by the grab-pass transparent subpass (post scene-color snapshot), in
     /// ascending `representative_draw_idx` order.
     pub transparent_groups: Vec<DrawGroup>,
+}
+
+/// Shadow-map submission path selected for one draw item.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ShadowCasterRoute {
+    /// Do not submit this item to shadow maps.
+    #[cfg(test)]
+    Skip,
+    /// Submit through the renderer-owned position-only depth path.
+    GenericDepth,
+    /// Submit through the material-authored shadow-caster pass.
+    MaterialShadow,
 }
 
 /// Builds the per-view [`InstancePlan`] from a sorted draw list.
@@ -249,6 +264,26 @@ pub(crate) fn depth_prepass_group_eligible(
     })
 }
 
+/// Returns whether a shadow-caster draw group may use the generic position-only depth pass.
+#[cfg(test)]
+pub(crate) fn shadow_caster_depth_group_eligible(
+    draws: &[WorldMeshDrawItem],
+    slab_layout: &[usize],
+    group: &DrawGroup,
+    shader_perm: ShaderPermutation,
+) -> bool {
+    let start = group.instance_range.start as usize;
+    let end = group.instance_range.end as usize;
+    slab_layout.get(start..end).is_some_and(|members| {
+        !members.is_empty()
+            && members.iter().all(|&draw_idx| {
+                draws
+                    .get(draw_idx)
+                    .is_some_and(|item| shadow_caster_depth_item_eligible(item, shader_perm))
+            })
+    })
+}
+
 /// Returns whether a draw may be submitted through the conservative generic depth prepass.
 fn depth_prepass_item_eligible(item: &WorldMeshDrawItem, shader_perm: ShaderPermutation) -> bool {
     let key = &item.batch_key;
@@ -264,12 +299,72 @@ fn depth_prepass_item_eligible(item: &WorldMeshDrawItem, shader_perm: ShaderPerm
         && key.render_state.depth_compare.is_none()
         && key.render_state.depth_offset.is_none()
         && !key.render_state.stencil.enabled
-        && match &key.pipeline {
-            RasterPipelineKind::Null => true,
-            RasterPipelineKind::EmbeddedStem(stem) => {
-                embedded_stem_depth_prepass_pass(stem.as_ref(), shader_perm).is_some()
-            }
+        && batch_key_has_depth_prepass(item, shader_perm)
+}
+
+/// Returns whether a draw can cast into a shadow map through the generic depth-only path.
+#[cfg(test)]
+fn shadow_caster_depth_item_eligible(
+    item: &WorldMeshDrawItem,
+    shader_perm: ShaderPermutation,
+) -> bool {
+    shadow_caster_route_for_item(item, shader_perm) == ShadowCasterRoute::GenericDepth
+}
+
+/// Returns whether a draw should cast shadows through its source-authored material pass.
+#[cfg(test)]
+fn shadow_caster_material_item_eligible(
+    item: &WorldMeshDrawItem,
+    shader_perm: ShaderPermutation,
+) -> bool {
+    shadow_caster_route_for_item(item, shader_perm) == ShadowCasterRoute::MaterialShadow
+}
+
+/// Selects the cheapest shadow-map path that preserves the material's caster silhouette.
+#[cfg(test)]
+pub(crate) fn shadow_caster_route_for_item(
+    item: &WorldMeshDrawItem,
+    shader_perm: ShaderPermutation,
+) -> ShadowCasterRoute {
+    if item.is_overlay || item.shadow_cast_mode == ShadowCastMode::Off {
+        return ShadowCasterRoute::Skip;
+    }
+    shadow_caster_batch_route_for_item(item, shader_perm)
+}
+
+/// Selects the material-dependent shadow-map route for an otherwise shadow-casting draw.
+pub(crate) fn shadow_caster_batch_route_for_item(
+    item: &WorldMeshDrawItem,
+    shader_perm: ShaderPermutation,
+) -> ShadowCasterRoute {
+    if batch_key_has_shadow_caster_pass(item, shader_perm) {
+        ShadowCasterRoute::MaterialShadow
+    } else {
+        ShadowCasterRoute::GenericDepth
+    }
+}
+
+/// Returns whether the material route has a position-only depth pipeline.
+fn batch_key_has_depth_prepass(item: &WorldMeshDrawItem, shader_perm: ShaderPermutation) -> bool {
+    match &item.batch_key.pipeline {
+        RasterPipelineKind::Null => true,
+        RasterPipelineKind::EmbeddedStem(stem) => {
+            embedded_stem_depth_prepass_pass(stem.as_ref(), shader_perm).is_some()
         }
+    }
+}
+
+/// Returns whether the material route declares a source-authored shadow caster pass.
+fn batch_key_has_shadow_caster_pass(
+    item: &WorldMeshDrawItem,
+    shader_perm: ShaderPermutation,
+) -> bool {
+    match &item.batch_key.pipeline {
+        RasterPipelineKind::Null => false,
+        RasterPipelineKind::EmbeddedStem(stem) => {
+            embedded_stem_has_shadow_caster_pass(stem.as_ref(), shader_perm)
+        }
+    }
 }
 
 /// Mutable output and scratch buffers used while building one [`InstancePlan`].

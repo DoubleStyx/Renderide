@@ -155,6 +155,7 @@ impl RendererRuntime {
             RunningCommandEffect::RenderDecouplingConfig(cfg) => {
                 self.apply_render_decoupling_config(cfg);
             }
+            RunningCommandEffect::QualityConfig(cfg) => self.backend.apply_quality_config(cfg),
             RunningCommandEffect::Unhandled { tag } => self.note_unhandled_renderer_command(tag),
         }
     }

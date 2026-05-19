@@ -22,6 +22,7 @@
 //#mat_default _FresnelStrength float 0.2
 
 #import renderide::lighting::birp as bl
+#import renderide::lighting::shadows as sh
 #import renderide::frame::globals as rg
 #import renderide::draw::per_draw as pd
 #import renderide::mesh::vertex as mv
@@ -161,7 +162,8 @@ fn shade(
         }
         let diff_step = tbrdf::diffuse(n, l, mat._Transmission);
         let spec_step = tbrdf::specular(n, l, v, smoothness, mat._SpecularHighlights);
-        let radiance = light.color * attenuation;
+        let shadow = sh::shadow_visibility(li, light, world_pos, n);
+        let radiance = light.color * attenuation * shadow;
         lo = lo + radiance * (base_color * diff_step + spec_color * spec_step);
     }
 

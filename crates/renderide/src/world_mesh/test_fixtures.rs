@@ -113,8 +113,10 @@ pub fn dummy_world_mesh_draw_item(spec: DummyDrawItemSpec) -> WorldMeshDrawItem 
         skinned,
         world_space_deformed: skinned,
         blendshape_deformed: false,
+        shadow_cast_mode: crate::shared::ShadowCastMode::On,
         collect_order,
         camera_distance_sq: 0.0,
+        world_aabb: None,
         lookup_ids: MaterialPropertyLookupIds {
             material_asset_id: mid,
             mesh_property_block_slot0: pb,

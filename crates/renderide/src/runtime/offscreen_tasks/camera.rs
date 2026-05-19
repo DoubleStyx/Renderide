@@ -10,7 +10,7 @@ use crate::camera::{ViewId, camera_render_task_world_matrix, host_camera_frame_f
 use crate::gpu::GpuContext;
 use crate::ipc::SharedMemoryAccessor;
 use crate::render_graph::{
-    FrameViewClear, GraphExecuteError, OffscreenSampleCountPolicy, ViewPostProcessing,
+    FrameViewClear, GraphExecuteError, OffscreenSampleCountPolicy, ViewPostProcessing, ViewShadows,
 };
 use crate::scene::{RenderSpaceId, SceneCoordinator};
 use crate::shared::{CameraRenderParameters, CameraRenderTask, RenderingContext, TextureFormat};
@@ -431,6 +431,7 @@ fn plan_camera_task(
             viewport_px: extent.tuple(),
             clear: FrameViewClear::from_camera_render_parameters(parameters),
             post_processing: camera_render_task_post_processing(parameters),
+            shadows: ViewShadows::primary_view(),
             target: FrameViewPlanTarget::SecondaryRt(targets.to_offscreen_handles()),
         },
         targets,

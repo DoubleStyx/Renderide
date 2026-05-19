@@ -17,6 +17,7 @@ use crate::world_mesh::{
 use super::camera::{compute_view_projections, resolve_pass_config};
 use super::frame_uniforms::write_per_view_frame_uniforms;
 use super::material_resolve::precompute_material_resolve_batches;
+use super::phase::build_depth_prepass_phase;
 use super::skybox::SkyboxRenderer;
 use super::slab::{SlabPackInputs, pack_and_upload_per_draw_slab};
 use super::{MaterialBatchBoundary, MaterialBatchPacket, PreparedWorldMeshForwardFrame};
@@ -200,12 +201,14 @@ pub(crate) fn prepare_world_mesh_forward_frame(
         offscreen_write_rt,
         &mut plan,
     );
+    let depth_prepass_phase = build_depth_prepass_phase(&draws, &plan, &pipeline);
 
     let viewport_px = frame.view.viewport_px;
     PreparedWorldMeshForwardView {
         prepared: Some(PreparedWorldMeshForwardFrame {
             draws,
             plan,
+            depth_prepass_phase,
             pipeline,
             helper_needs,
             supports_base_instance,
@@ -403,6 +406,7 @@ mod tests {
             pipeline_key: PipelineVariantKey::for_draw_item(
                 &item,
                 MaterialPipelineDesc {
+                    target: crate::materials::MaterialPipelineTarget::Color,
                     surface_format: wgpu::TextureFormat::Rgba16Float,
                     depth_stencil_format: Some(wgpu::TextureFormat::Depth24PlusStencil8),
                     sample_count: 1,

@@ -126,3 +126,22 @@ fn fs_forward_base(
         frag_pos, front_facing, world_pos, world_n, world_t, world_b, uv0, uv1, color, view_layer, XIEE_ALPHA_MODE
     );
 }
+
+//#pass type=shadow_caster name=shadow_caster cull=material(back) zwrite=on ztest=main color_mask=0 offset=material(0,0)
+@fragment
+fn fs_shadow_caster(
+    @builtin(position) frag_pos: vec4<f32>,
+    @builtin(front_facing) front_facing: bool,
+    @location(0) world_pos: vec3<f32>,
+    @location(1) world_n: vec3<f32>,
+    @location(2) world_t: vec3<f32>,
+    @location(3) world_b: vec3<f32>,
+    @location(4) uv0: vec2<f32>,
+    @location(5) uv1: vec2<f32>,
+    @location(6) color: vec4<f32>,
+    @location(8) @interpolate(flat) view_layer: u32,
+) {
+    xs::fragment_shadow_caster(
+        frag_pos, front_facing, world_pos, world_n, world_t, world_b, uv0, uv1, color, view_layer, XIEE_ALPHA_MODE
+    );
+}

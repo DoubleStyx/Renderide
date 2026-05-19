@@ -233,6 +233,7 @@ impl CompiledRenderGraph {
                 render_context,
                 clear,
                 post_processing: resolved.post_processing,
+                shadows: resolved.shadows,
                 gpu_limits: shared.gpu_limits_arc.clone(),
                 msaa_depth_resolve: shared.msaa_depth_resolve.clone(),
                 hi_z_slot,
@@ -338,6 +339,7 @@ impl CompiledRenderGraph {
                 Self::resolve_view_from_target(
                     first.view_id(),
                     first.post_processing,
+                    first.shadows,
                     &first.target,
                     gpu,
                     backbuffer_view_holder.as_ref(),
@@ -378,7 +380,6 @@ impl CompiledRenderGraph {
                     &first.host_camera,
                     first.render_context,
                     first.clear,
-                    first.post_processing,
                 )
             };
             let mut frame_blackboard = Self::build_frame_global_blackboard();

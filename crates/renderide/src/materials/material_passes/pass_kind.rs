@@ -75,6 +75,8 @@ pub enum PassType {
     Forward,
     /// Source-authored depth-only prepass that must remain a separate draw.
     DepthPrepass,
+    /// Source-authored shadow-map caster pass.
+    ShadowCaster,
 }
 
 /// How a declared shader pass applies material-driven Unity blend state.

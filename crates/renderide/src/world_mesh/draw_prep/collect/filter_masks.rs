@@ -40,6 +40,7 @@ mod tests {
     use crate::materials::{MaterialPipelinePropertyIds, MaterialRouter, RasterPipelineKind};
     use crate::scene::SceneCoordinator;
     use crate::shared::{RenderTransform, RenderingContext};
+    use crate::world_mesh::draw_prep::WorldMeshDrawKind;
     use crate::world_mesh::draw_prep::filter::CameraTransformDrawFilter;
 
     fn with_draw_context(
@@ -69,6 +70,7 @@ mod tests {
             material_cache: None,
             reflection_probes: None,
             prepared: None,
+            draw_kind: WorldMeshDrawKind::VisibleColor,
         };
         test(&ctx);
     }

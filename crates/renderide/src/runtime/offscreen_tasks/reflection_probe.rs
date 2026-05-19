@@ -6,7 +6,7 @@ use crate::backend::RenderBackend;
 use crate::camera::{HostCameraFrame, ViewId};
 use crate::gpu::GpuContext;
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
-use crate::render_graph::{GraphExecuteError, OffscreenSampleCountPolicy};
+use crate::render_graph::{GraphExecuteError, OffscreenSampleCountPolicy, ViewShadows};
 use crate::scene::{
     ReflectionProbeOnChangesRenderRequest, RenderSpaceId, SceneCoordinator,
     reflection_probe_skybox_only,
@@ -512,6 +512,7 @@ fn plan_reflection_probe_task(
             viewport_px: extent.tuple(),
             clear: clear_from_reflection_probe_state(probe.state),
             post_processing: reflection_probe_bake_post_processing(),
+            shadows: ViewShadows::primary_view(),
             target: FrameViewPlanTarget::SecondaryRt(
                 targets.to_offscreen_handles(face, REFLECTION_PROBE_SAMPLE_COUNT_POLICY),
             ),

@@ -92,6 +92,17 @@ pub struct DrawCollectionContext<'a> {
     /// resolution may disagree. Single-view callers can leave this `None` and fall back to the
     /// scene-walk path.
     pub prepared: Option<&'a FramePreparedRenderables>,
+    /// Which raster draw family this collection is building.
+    pub draw_kind: WorldMeshDrawKind,
+}
+
+/// Raster draw family requested by world-mesh collection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorldMeshDrawKind {
+    /// Visible color draws for camera targets.
+    VisibleColor,
+    /// Depth-only shadow-caster draws for realtime shadow maps.
+    ShadowCaster,
 }
 
 /// How [`collect_and_sort_draws_with_parallelism`] parallelizes per-chunk collection and sorting.

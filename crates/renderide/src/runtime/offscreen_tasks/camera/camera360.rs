@@ -14,11 +14,11 @@ use crate::gpu::bind_layout::{
     sampler_layout_entry, texture_layout_entry, uniform_buffer_layout_entry,
 };
 use crate::gpu_resource::{OnceGpu, RenderPipelineMap};
-use crate::render_graph::FrameViewClear;
 use crate::render_graph::gpu_cache::{
     FullscreenRenderPipelineDesc, create_fullscreen_render_pipeline, create_linear_clamp_sampler,
     create_wgsl_shader_module,
 };
+use crate::render_graph::{FrameViewClear, ViewShadows};
 use crate::scene::RenderSpaceId;
 use crate::shared::{CameraRenderParameters, RenderingContext};
 
@@ -197,6 +197,7 @@ fn plan_camera360_task(
             viewport_px: face_viewport,
             clear: FrameViewClear::from_camera_render_parameters(parameters),
             post_processing: camera_render_task_post_processing(parameters),
+            shadows: ViewShadows::primary_view(),
             target: FrameViewPlanTarget::SecondaryRt(
                 cube_targets.to_offscreen_handles(face, CAMERA_TASK_SAMPLE_COUNT_POLICY),
             ),

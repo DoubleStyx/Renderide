@@ -129,6 +129,21 @@ fn compute_lerp_factor(uv_lerp: vec2<f32>) -> f32 {
     return l;
 }
 
+fn sample_lerp_albedo_alpha(uv0_raw: vec2<f32>) -> vec4<f32> {
+    let uv_main0 = uvu::apply_st(uv0_raw, mat._MainTex_ST);
+    let uv_main1 = uvu::apply_st(uv0_raw, mat._MainTex1_ST);
+    let uv_lerp = uvu::apply_st(uv0_raw, mat._LerpTex_ST);
+    let l = compute_lerp_factor(uv_lerp);
+
+    var c0 = mat._Color;
+    var c1 = mat._Color1;
+    if (pbs_kw(PBSLERPSPECULAR_KW_ALBEDOTEX)) {
+        c0 = c0 * textureSample(_MainTex, _MainTex_sampler, uv_main0);
+        c1 = c1 * textureSample(_MainTex1, _MainTex1_sampler, uv_main1);
+    }
+    return mix(c0, c1, l);
+}
+
 @vertex
 fn vs_main(
     @builtin(instance_index) instance_index: u32,
@@ -163,14 +178,7 @@ fn fs_main(
     let uv_lerp = uvu::apply_st(uv0_raw, mat._LerpTex_ST);
     let l = compute_lerp_factor(uv_lerp);
 
-    var c0 = mat._Color;
-    var c1 = mat._Color1;
-    if (pbs_kw(PBSLERPSPECULAR_KW_ALBEDOTEX)) {
-        c0 = c0 * textureSample(_MainTex, _MainTex_sampler, uv_main0);
-        c1 = c1 * textureSample(_MainTex1, _MainTex1_sampler, uv_main1);
-    }
-
-    let c = mix(c0, c1, l);
+    let c = sample_lerp_albedo_alpha(uv0_raw);
     if (pbs_kw(PBSLERPSPECULAR_KW_ALPHACLIP) && c.a <= mat._Cutoff) {
         discard;
     }
@@ -231,4 +239,15 @@ fn fs_main(
         plight::default_lighting_options(),
     );
     return vec4<f32>(color, alpha);
+}
+
+//#pass type=shadow_caster name=shadow_caster cull=material(back) zwrite=on ztest=main color_mask=0 offset=material(0,0)
+@fragment
+fn fs_shadow_caster(
+    @location(3) uv0_raw: vec2<f32>,
+) {
+    let c = sample_lerp_albedo_alpha(uv0_raw);
+    if (pbs_kw(PBSLERPSPECULAR_KW_ALPHACLIP) && c.a <= mat._Cutoff) {
+        discard;
+    }
 }

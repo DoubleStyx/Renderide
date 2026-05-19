@@ -11,12 +11,14 @@ use crate::backend::cluster_gpu::ClusterBufferRefs;
 use crate::camera::ViewId;
 use crate::gpu::frame_globals::{FrameGpuUniforms, SkyboxSpecularUniformParams};
 use crate::mesh_deform::SkinCacheKey;
+use crate::passes::WorldMeshShadowPhaseCache;
 use crate::render_graph::frame_params::PreRecordViewResourceLayout;
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
+use crate::shared::QualityConfig;
 
 use super::super::frame_gpu::{
-    EmptyMaterialBindGroup, FrameGpuResources, PerViewSceneSnapshots,
-    ReflectionProbeSpecularResources,
+    EmptyMaterialBindGroup, FrameGpuResources, PerViewFrameBindGroupInputs,
+    PerViewSceneSnapshotSyncParams, PerViewSceneSnapshots, ReflectionProbeSpecularResources,
 };
 use super::super::per_draw_resources::PerDrawResources;
 use super::cluster_layout::{
@@ -25,6 +27,91 @@ use super::cluster_layout::{
 };
 use super::manager::FrameResourceManager;
 use super::per_view_state::{PerViewFrameState, PerViewPerDrawScratch};
+
+/// Resource versions captured while creating a per-view frame state.
+#[derive(Clone, Copy, Debug)]
+struct PerViewFrameVersions {
+    /// Shared cluster-buffer version used by the bind group.
+    cluster: u64,
+    /// Reflection-probe specular resource version used by the bind group.
+    skybox_specular: u64,
+    /// Shadow-map texture/sampler version used by the bind group.
+    shadow_resources: u64,
+    /// Whether the view uses stereo cluster parameters.
+    stereo: bool,
+}
+
+/// Creates the GPU resources owned by a single render view.
+fn create_per_view_frame_state(
+    device: &wgpu::Device,
+    limits: &crate::gpu::GpuLimits,
+    layout: PreRecordViewResourceLayout,
+    snapshot_sync: PerViewSceneSnapshotSyncParams,
+    frame_gpu: &FrameGpuResources,
+    versions: PerViewFrameVersions,
+) -> Option<PerViewFrameState> {
+    let frame_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("per_view_frame_uniform"),
+        size: size_of::<FrameGpuUniforms>() as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    crate::profiling::note_resource_churn!(Buffer, "backend::per_view_frame_uniform");
+    let lights_buffer =
+        FrameGpuResources::create_lights_storage_buffer(device, "per_view_lights_storage");
+    crate::profiling::note_resource_churn!(Buffer, "backend::per_view_lights_storage");
+    let shadow_lights_buffer = FrameGpuResources::create_shadow_light_storage_buffer(
+        device,
+        "per_view_shadow_lights_storage",
+    );
+    crate::profiling::note_resource_churn!(Buffer, "backend::per_view_shadow_lights_storage");
+    let shadow_views_buffer = FrameGpuResources::create_shadow_view_storage_buffer(
+        device,
+        "per_view_shadow_views_storage",
+    );
+    crate::profiling::note_resource_churn!(Buffer, "backend::per_view_shadow_views_storage");
+    let cluster_params_buffer = make_cluster_params_buffer(device, versions.stereo);
+    let mut scene_snapshots =
+        PerViewSceneSnapshots::new(device, layout.depth_format, layout.color_format);
+    scene_snapshots.sync(device, limits, snapshot_sync);
+    let refs = frame_gpu.cluster_cache.current_refs()?;
+    let frame_bind_group = frame_gpu.build_per_view_bind_group(
+        device,
+        PerViewFrameBindGroupInputs {
+            frame_uniform: &frame_uniform_buffer,
+            lights_buffer: &lights_buffer,
+            cluster_refs: refs,
+            snapshots: scene_snapshots.views(),
+            shadow_lights_buffer: &shadow_lights_buffer,
+            shadow_views_buffer: &shadow_views_buffer,
+        },
+    );
+    let shadow_writer_frame_bind_group = frame_gpu.build_per_view_shadow_writer_bind_group(
+        device,
+        PerViewFrameBindGroupInputs {
+            frame_uniform: &frame_uniform_buffer,
+            lights_buffer: &lights_buffer,
+            cluster_refs: refs,
+            snapshots: scene_snapshots.views(),
+            shadow_lights_buffer: &shadow_lights_buffer,
+            shadow_views_buffer: &shadow_views_buffer,
+        },
+    );
+    Some(PerViewFrameState {
+        frame_uniform_buffer,
+        lights_buffer,
+        shadow_lights_buffer,
+        shadow_views_buffer,
+        frame_bind_group,
+        shadow_writer_frame_bind_group,
+        cluster_params_buffer,
+        scene_snapshots,
+        last_cluster_version: versions.cluster,
+        last_skybox_specular_version: versions.skybox_specular,
+        last_shadow_resources_version: versions.shadow_resources,
+        last_stereo: versions.stereo,
+    })
+}
 
 impl FrameResourceManager {
     /// Clears per-tick frame-resource flags. Call once per winit frame from
@@ -127,44 +214,24 @@ impl FrameResourceManager {
         }
         let cluster_ver = fgpu.cluster_cache.version;
         let skybox_specular_version = fgpu.skybox_specular_version();
+        let shadow_resources_version = fgpu.shadow_resources_version();
 
         if !per_view_frame.contains_key(view_id) {
             let state = {
                 profiling::scope!("render::ensure_per_view_frame::insert_state");
-                let frame_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("per_view_frame_uniform"),
-                    size: size_of::<FrameGpuUniforms>() as u64,
-                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                });
-                crate::profiling::note_resource_churn!(Buffer, "backend::per_view_frame_uniform");
-                let lights_buffer = FrameGpuResources::create_lights_storage_buffer(
+                create_per_view_frame_state(
                     device,
-                    "per_view_lights_storage",
-                );
-                crate::profiling::note_resource_churn!(Buffer, "backend::per_view_lights_storage");
-                let cluster_params_buffer = make_cluster_params_buffer(device, stereo);
-                let mut scene_snapshots =
-                    PerViewSceneSnapshots::new(device, layout.depth_format, layout.color_format);
-                scene_snapshots.sync(device, limits.as_ref(), snapshot_sync);
-                let refs = fgpu.cluster_cache.current_refs()?;
-                let frame_bind_group = fgpu.build_per_view_bind_group(
-                    device,
-                    &frame_uniform_buffer,
-                    &lights_buffer,
-                    refs,
-                    scene_snapshots.views(),
-                );
-                PerViewFrameState {
-                    frame_uniform_buffer,
-                    lights_buffer,
-                    frame_bind_group,
-                    cluster_params_buffer,
-                    scene_snapshots,
-                    last_cluster_version: cluster_ver,
-                    last_skybox_specular_version: skybox_specular_version,
-                    last_stereo: stereo,
-                }
+                    limits.as_ref(),
+                    layout,
+                    snapshot_sync,
+                    fgpu,
+                    PerViewFrameVersions {
+                        cluster: cluster_ver,
+                        skybox_specular: skybox_specular_version,
+                        shadow_resources: shadow_resources_version,
+                        stereo,
+                    },
+                )?
             };
             let _ = per_view_frame.get_or_insert_with(view_id, || state);
         }
@@ -185,6 +252,7 @@ impl FrameResourceManager {
         };
         let needs_rebuild = cluster_ver != entry.last_cluster_version
             || skybox_specular_version != entry.last_skybox_specular_version
+            || shadow_resources_version != entry.last_shadow_resources_version
             || snapshots_changed;
 
         if needs_rebuild {
@@ -192,17 +260,69 @@ impl FrameResourceManager {
             let refs = fgpu.cluster_cache.current_refs()?;
             let new_bg = fgpu.build_per_view_bind_group(
                 device,
-                &entry.frame_uniform_buffer,
-                &entry.lights_buffer,
-                refs,
-                entry.scene_snapshots.views(),
+                PerViewFrameBindGroupInputs {
+                    frame_uniform: &entry.frame_uniform_buffer,
+                    lights_buffer: &entry.lights_buffer,
+                    cluster_refs: refs,
+                    snapshots: entry.scene_snapshots.views(),
+                    shadow_lights_buffer: &entry.shadow_lights_buffer,
+                    shadow_views_buffer: &entry.shadow_views_buffer,
+                },
+            );
+            let new_shadow_writer_bg = fgpu.build_per_view_shadow_writer_bind_group(
+                device,
+                PerViewFrameBindGroupInputs {
+                    frame_uniform: &entry.frame_uniform_buffer,
+                    lights_buffer: &entry.lights_buffer,
+                    cluster_refs: refs,
+                    snapshots: entry.scene_snapshots.views(),
+                    shadow_lights_buffer: &entry.shadow_lights_buffer,
+                    shadow_views_buffer: &entry.shadow_views_buffer,
+                },
             );
             entry.frame_bind_group = new_bg;
+            entry.shadow_writer_frame_bind_group = new_shadow_writer_bg;
             entry.last_cluster_version = cluster_ver;
             entry.last_skybox_specular_version = skybox_specular_version;
+            entry.last_shadow_resources_version = shadow_resources_version;
         }
 
         per_view_frame.get_mut(view_id)
+    }
+
+    /// Applies the latest host quality settings for frame-resource allocation.
+    pub fn set_quality_config(&mut self, config: QualityConfig) {
+        self.quality_config = config;
+    }
+
+    /// Returns the latest host quality settings.
+    pub fn quality_config(&self) -> QualityConfig {
+        self.quality_config.clone()
+    }
+
+    /// Current shadow-map edge in pixels.
+    pub fn shadow_resolution(&self) -> u32 {
+        self.frame_gpu
+            .as_ref()
+            .map_or(1, FrameGpuResources::shadow_resolution)
+    }
+
+    /// Returns one renderable shadow-map layer view.
+    pub fn shadow_layer_view(&self, layer: usize) -> Option<Arc<wgpu::TextureView>> {
+        self.frame_gpu.as_ref()?.shadow_layer_view(layer)
+    }
+
+    /// View-local shadow metadata buffers for `view_id`.
+    pub fn shadow_metadata_buffers_for_view(
+        &self,
+        view_id: ViewId,
+    ) -> Option<(wgpu::Buffer, wgpu::Buffer)> {
+        self.per_view_frame(view_id).map(|state| {
+            (
+                state.shadow_lights_buffer.clone(),
+                state.shadow_views_buffer.clone(),
+            )
+        })
     }
 
     /// Uniform parameters for the disabled direct skybox specular slot.
@@ -262,14 +382,40 @@ impl FrameResourceManager {
         }))
     }
 
+    /// Returns the shadow per-draw slab for the given view, creating it if it does not yet exist.
+    pub fn per_view_shadow_per_draw_or_create(
+        &mut self,
+        view_id: ViewId,
+        device: &wgpu::Device,
+    ) -> Option<&Mutex<PerDrawResources>> {
+        profiling::scope!("render::ensure_per_view_shadow_per_draw");
+        let layout = self.per_draw_bind_group_layout.clone()?;
+        let limits = self.limits.clone()?;
+        let _ = self.per_view_shadow_per_draw_scratch_or_create(view_id);
+        let _ = self.per_view_shadow_phase_cache_or_create(view_id);
+        Some(self.per_view_shadow_draw.get_or_insert_with(view_id, || {
+            Mutex::new(PerDrawResources::new_with_layout(device, layout, limits))
+        }))
+    }
+
     /// Returns the per-draw slab for the given view, or `None` if it has not been created yet.
     pub fn per_view_per_draw(&self, view_id: ViewId) -> Option<&Mutex<PerDrawResources>> {
         self.per_view_draw.get(view_id)
     }
 
+    /// Returns the shadow per-draw slab for the given view, or `None` if absent.
+    pub fn per_view_shadow_per_draw(&self, view_id: ViewId) -> Option<&Mutex<PerDrawResources>> {
+        self.per_view_shadow_draw.get(view_id)
+    }
+
     /// Frees the per-draw slab for a view that is no longer active.
     pub fn retire_per_view_per_draw(&mut self, view_id: ViewId) {
         self.per_view_draw.retire(view_id);
+    }
+
+    /// Frees the shadow per-draw slab for a view that is no longer active.
+    pub fn retire_per_view_shadow_per_draw(&mut self, view_id: ViewId) {
+        self.per_view_shadow_draw.retire(view_id);
     }
 
     /// Returns the per-view scratch slot used for per-draw uniform packing, creating it on first use.
@@ -282,6 +428,16 @@ impl FrameResourceManager {
             .get_or_insert_with(view_id, || Mutex::new(PerViewPerDrawScratch::default()))
     }
 
+    /// Returns the shadow per-view scratch slot, creating it on first use.
+    pub fn per_view_shadow_per_draw_scratch_or_create(
+        &mut self,
+        view_id: ViewId,
+    ) -> &Mutex<PerViewPerDrawScratch> {
+        profiling::scope!("render::ensure_per_view_shadow_per_draw_scratch");
+        self.per_view_shadow_per_draw_scratch
+            .get_or_insert_with(view_id, || Mutex::new(PerViewPerDrawScratch::default()))
+    }
+
     /// Returns the per-view scratch slot, or `None` if it has not been created yet.
     pub fn per_view_per_draw_scratch(
         &self,
@@ -290,16 +446,55 @@ impl FrameResourceManager {
         self.per_view_per_draw_scratch.get(view_id)
     }
 
+    /// Returns the shadow per-view scratch slot, or `None` if absent.
+    pub fn per_view_shadow_per_draw_scratch(
+        &self,
+        view_id: ViewId,
+    ) -> Option<&Mutex<PerViewPerDrawScratch>> {
+        self.per_view_shadow_per_draw_scratch.get(view_id)
+    }
+
+    /// Returns the shadow phase cache for the given view, creating it on first use.
+    pub fn per_view_shadow_phase_cache_or_create(
+        &mut self,
+        view_id: ViewId,
+    ) -> &Mutex<WorldMeshShadowPhaseCache> {
+        profiling::scope!("render::ensure_per_view_shadow_phase_cache");
+        self.per_view_shadow_phase_cache
+            .get_or_insert_with(view_id, || Mutex::new(WorldMeshShadowPhaseCache::default()))
+    }
+
+    /// Returns the shadow phase cache for the given view, or `None` if absent.
+    pub fn per_view_shadow_phase_cache(
+        &self,
+        view_id: ViewId,
+    ) -> Option<&Mutex<WorldMeshShadowPhaseCache>> {
+        self.per_view_shadow_phase_cache.get(view_id)
+    }
+
     /// Frees the per-view scratch buffers for a view that is no longer active.
     pub fn retire_per_view_per_draw_scratch(&mut self, view_id: ViewId) {
         self.per_view_per_draw_scratch.retire(view_id);
+    }
+
+    /// Frees the shadow per-view scratch buffers for a view that is no longer active.
+    pub fn retire_per_view_shadow_per_draw_scratch(&mut self, view_id: ViewId) {
+        self.per_view_shadow_per_draw_scratch.retire(view_id);
+    }
+
+    /// Frees the shadow phase cache for a view that is no longer active.
+    pub fn retire_per_view_shadow_phase_cache(&mut self, view_id: ViewId) {
+        self.per_view_shadow_phase_cache.retire(view_id);
     }
 
     /// Retires all view-scoped frame resources for `view_id`.
     pub fn retire_view(&mut self, view_id: ViewId) {
         self.retire_per_view_frame(view_id);
         self.retire_per_view_per_draw(view_id);
+        self.retire_per_view_shadow_per_draw(view_id);
         self.retire_per_view_per_draw_scratch(view_id);
+        self.retire_per_view_shadow_per_draw_scratch(view_id);
+        self.retire_per_view_shadow_phase_cache(view_id);
         let _ = self.per_view_lights.retire(view_id);
     }
 
@@ -312,6 +507,10 @@ impl FrameResourceManager {
         view_layouts: &[PreRecordViewResourceLayout],
     ) {
         profiling::scope!("render::pre_record_sync_for_views");
+        let shadow_resolution_mode = self.quality_config.shadow_resolution;
+        if let Some(fgpu) = self.frame_gpu_mut() {
+            let _ = fgpu.sync_shadow_resources(device, shadow_resolution_mode);
+        }
         let cluster_layouts = unique_cluster_pre_record_layouts(view_layouts, |view_id| {
             self.frame_light_count_for_view_u32(view_id)
         });
@@ -337,6 +536,9 @@ impl FrameResourceManager {
                     layout.index_capacity_words
                 );
             }
+        }
+        for layout in view_layouts {
+            let _ = self.per_view_frame_or_create(layout.view_id, device, *layout);
         }
         {
             profiling::scope!("render::pre_record_sync_for_views::write_lights");

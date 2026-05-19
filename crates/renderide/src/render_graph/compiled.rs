@@ -23,6 +23,7 @@ mod dot;
 pub(crate) use frame_view::{
     ExternalFrameTargets, ExternalOffscreenTargets, FrameView, FrameViewResourceHints,
     FrameViewTarget, OffscreenColorCopyTarget, OffscreenSampleCountPolicy, ViewPostProcessing,
+    ViewShadows,
 };
 pub(super) use resource::{
     CompileStats, CompiledBufferResource, CompiledPassInfo, CompiledTextureResource,
@@ -119,6 +120,7 @@ pub(super) struct ResolvedView<'a> {
     pub(super) view_id: ViewId,
     pub(super) sample_count: u32,
     pub(super) post_processing: ViewPostProcessing,
+    pub(super) shadows: ViewShadows,
     // MSAA views are now in the per-view blackboard (MsaaViewsSlot), resolved from graph
     // transient textures by the executor via resolve_forward_msaa_views_from_graph_resources.
 }

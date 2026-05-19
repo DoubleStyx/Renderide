@@ -6,13 +6,15 @@ use std::num::NonZeroU64;
 use super::super::frame_globals::FrameGpuUniforms;
 use super::lights::GpuLight;
 use super::reflection_probes::GpuReflectionProbeMetadata;
+use super::shadows::{GpuShadowLight, GpuShadowView};
 
 /// Returns the `@group(0)` layout entries shared by every material pipeline.
 pub fn frame_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
-    let mut entries = Vec::with_capacity(13);
+    let mut entries = Vec::with_capacity(17);
     append_frame_buffer_layout_entries(&mut entries);
     append_scene_snapshot_layout_entries(&mut entries);
     append_ibl_layout_entries(&mut entries);
+    append_shadow_layout_entries(&mut entries);
     entries
 }
 
@@ -164,6 +166,47 @@ fn append_ibl_layout_entries(entries: &mut Vec<wgpu::BindGroupLayoutEntry>) {
                 ty: wgpu::BufferBindingType::Storage { read_only: true },
                 has_dynamic_offset: false,
                 min_binding_size: NonZeroU64::new(size_of::<GpuReflectionProbeMetadata>() as u64),
+            },
+            count: None,
+        },
+    ]);
+}
+
+fn append_shadow_layout_entries(entries: &mut Vec<wgpu::BindGroupLayoutEntry>) {
+    entries.extend([
+        wgpu::BindGroupLayoutEntry {
+            binding: 13,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Depth,
+                view_dimension: wgpu::TextureViewDimension::D2Array,
+                multisampled: false,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 14,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 15,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: NonZeroU64::new(size_of::<GpuShadowLight>() as u64),
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 16,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: NonZeroU64::new(size_of::<GpuShadowView>() as u64),
             },
             count: None,
         },

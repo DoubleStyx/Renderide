@@ -70,6 +70,8 @@ pub(super) struct FramePreparedDraw {
     pub blendshape_deformed: bool,
     /// Cached active tangent-blendshape state used when a material needs tangent-space shading.
     pub tangent_blendshape_deform_active: bool,
+    /// Host shadow-caster mode used by shadow-map collection.
+    pub shadow_cast_mode: crate::shared::ShadowCastMode,
     /// Material-slot index within the renderer's slot / primary fallback list.
     pub slot_index: usize,
     /// First index in the mesh index buffer for the selected submesh range.
@@ -436,6 +438,7 @@ mod tests {
             world_space_deformed: false,
             blendshape_deformed: false,
             tangent_blendshape_deform_active: false,
+            shadow_cast_mode: ShadowCastMode::On,
             slot_index: 0,
             first_index: 0,
             index_count: 3,
@@ -539,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn estimated_draw_count_excludes_static_shadow_only_renderers() {
+    fn estimated_draw_count_includes_static_shadow_only_renderers() {
         let mut scene = empty_scene();
         let id = RenderSpaceId(1);
         scene.test_insert_static_mesh_renderers(
@@ -556,11 +559,11 @@ mod tests {
             ],
         );
 
-        assert_eq!(estimated_draw_count(&scene, id), 2);
+        assert_eq!(estimated_draw_count(&scene, id), 4);
     }
 
     #[test]
-    fn estimated_draw_count_excludes_skinned_shadow_only_renderers() {
+    fn estimated_draw_count_includes_skinned_shadow_only_renderers() {
         let mut scene = empty_scene();
         let id = RenderSpaceId(1);
         let mut visible = SkinnedMeshRenderer::default();
@@ -569,6 +572,6 @@ mod tests {
         shadow_only.base.shadow_cast_mode = ShadowCastMode::ShadowOnly;
         scene.test_insert_skinned_mesh_renderers(id, vec![visible, shadow_only]);
 
-        assert_eq!(estimated_draw_count(&scene, id), 2);
+        assert_eq!(estimated_draw_count(&scene, id), 4);
     }
 }

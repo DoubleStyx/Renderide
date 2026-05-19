@@ -12,14 +12,12 @@ mod vertex_binding;
 use crate::gpu::GpuLimits;
 use crate::materials::MaterialPipelineSet;
 use crate::passes::WorldMeshForwardEncodeRefs;
-use crate::world_mesh::{DrawGroup, WorldMeshDrawItem, depth_prepass_group_eligible};
+use crate::world_mesh::{DrawGroup, WorldMeshDrawItem};
 
-use super::MaterialBatchPacket;
-use super::depth_prepass::{
-    WorldMeshForwardDepthPrepassPipelineCache, WorldMeshForwardDepthPrepassPipelineKey,
-};
+use super::depth_prepass::WorldMeshForwardDepthPrepassPipelineCache;
 use super::material_batch::MaterialGroup1Binding;
 use super::normal_pass::{WorldMeshForwardNormalPipelineCache, WorldMeshForwardNormalPipelineKey};
+use super::{DepthPrepassRun, MaterialBatchPacket, MaterialShadowRun};
 
 use bind_group::{PerDrawSlabBind, bind_per_draw_slab_if_changed};
 use scissor::{reset_forward_scissor, set_forward_scissor_if_changed};
@@ -89,14 +87,12 @@ pub(crate) struct NormalDrawBatch<'a, 'b, 'c, 'd> {
     pub normal_pipelines: &'a WorldMeshForwardNormalPipelineCache,
 }
 
-/// Pre-grouped draws and pipeline state for the generic opaque depth prepass.
-pub(crate) struct DepthPrepassDrawBatch<'a, 'b, 'c, 'd> {
+/// Prepared depth runs and pipeline state for one depth-only replay pass.
+pub(crate) struct DepthPrepassPhaseDrawBatch<'a, 'b, 'c, 'd> {
     /// Active render pass.
     pub rpass: &'a mut wgpu::RenderPass<'b>,
-    /// Pre-built regular draw groups in ascending representative order.
-    pub groups: &'c [DrawGroup],
-    /// Slab layout used to resolve every draw member in each group.
-    pub slab_layout: &'c [usize],
+    /// Prepared depth runs for this pass.
+    pub runs: &'c [DepthPrepassRun],
     /// Full sorted world mesh draw list for the view.
     pub draws: &'c [WorldMeshDrawItem],
     /// Mesh pool and skin cache for vertex/index binding.
@@ -107,12 +103,72 @@ pub(crate) struct DepthPrepassDrawBatch<'a, 'b, 'c, 'd> {
     pub per_draw_bind_group: &'a wgpu::BindGroup,
     /// Whether `draw_indexed` may use non-zero `first_instance`.
     pub supports_base_instance: bool,
-    /// Pipeline state resolved for the active world-mesh view.
-    pub pipeline: &'a super::WorldMeshForwardPipelineState,
     /// GPU device used for lazy depth-prepass pipeline creation.
     pub device: &'a wgpu::Device,
     /// Shared depth-prepass pipeline cache.
     pub depth_pipelines: &'a WorldMeshForwardDepthPrepassPipelineCache,
+    /// Extra slab slot offset applied when one draw list is repeated for multiple shadow views.
+    pub slab_slot_base: usize,
+}
+
+/// Prepared material shadow runs and material packets for one shadow-map material replay pass.
+pub(crate) struct MaterialShadowPhaseDrawBatch<'a, 'b, 'c, 'd> {
+    /// Active render pass.
+    pub rpass: &'a mut wgpu::RenderPass<'b>,
+    /// Prepared material-authored shadow runs.
+    pub runs: &'c [MaterialShadowRun],
+    /// Full sorted shadow-caster draw list.
+    pub draws: &'c [WorldMeshDrawItem],
+    /// Pre-resolved shadow-caster pipelines and bind groups.
+    pub precomputed: &'c [MaterialBatchPacket],
+    /// Mesh pool and skin cache for vertex/index binding.
+    pub encode: &'a mut WorldMeshForwardEncodeRefs<'d>,
+    /// Device limits snapshot for dynamic storage-buffer offsets.
+    pub gpu_limits: &'a GpuLimits,
+    /// Frame globals at `@group(0)`.
+    pub frame_bg: &'a wgpu::BindGroup,
+    /// Fallback material bind group when a batch has no resolved `@group(1)`.
+    pub empty_bg: &'a wgpu::BindGroup,
+    /// Per-draw storage slab at `@group(2)` for shadow view-projection data.
+    pub per_draw_bind_group: &'a wgpu::BindGroup,
+    /// Whether `draw_indexed` may use non-zero `first_instance`.
+    pub supports_base_instance: bool,
+    /// Extra slab slot offset applied when one draw list is repeated for multiple shadow views.
+    pub slab_slot_base: usize,
+}
+
+/// CPU-side summary of a generic depth-prepass draw submission.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct DepthPrepassDrawStats {
+    /// Number of input draw groups inspected by the encoder.
+    pub considered_groups: usize,
+    /// Number of groups rejected by pass-specific eligibility rules.
+    pub skipped_eligibility_groups: usize,
+    /// Number of groups rejected because a depth pipeline key could not be built.
+    pub skipped_pipeline_key_groups: usize,
+    /// Number of groups submitted to the render pass.
+    pub submitted_groups: usize,
+    /// Number of source instances covered by submitted groups.
+    pub submitted_instances: usize,
+}
+
+impl DepthPrepassDrawStats {
+    /// Adds another summary into this one.
+    pub(crate) fn add(&mut self, other: Self) {
+        self.considered_groups = self
+            .considered_groups
+            .saturating_add(other.considered_groups);
+        self.skipped_eligibility_groups = self
+            .skipped_eligibility_groups
+            .saturating_add(other.skipped_eligibility_groups);
+        self.skipped_pipeline_key_groups = self
+            .skipped_pipeline_key_groups
+            .saturating_add(other.skipped_pipeline_key_groups);
+        self.submitted_groups = self.submitted_groups.saturating_add(other.submitted_groups);
+        self.submitted_instances = self
+            .submitted_instances
+            .saturating_add(other.submitted_instances);
+    }
 }
 
 pub(super) struct ForwardDrawState {
@@ -399,40 +455,40 @@ pub(crate) fn draw_normals_subset(batch: NormalDrawBatch<'_, '_, '_, '_>) {
     }
 }
 
-/// Records the safe opaque depth prepass draw subset.
-pub(crate) fn draw_depth_prepass_subset(batch: DepthPrepassDrawBatch<'_, '_, '_, '_>) {
-    profiling::scope!("world_mesh::draw_depth_prepass_subset");
-    let DepthPrepassDrawBatch {
+/// Records a prepared depth-only phase without rechecking group eligibility.
+pub(crate) fn draw_depth_prepass_phase(
+    batch: DepthPrepassPhaseDrawBatch<'_, '_, '_, '_>,
+) -> DepthPrepassDrawStats {
+    profiling::scope!("world_mesh::draw_depth_prepass_phase");
+    let DepthPrepassPhaseDrawBatch {
         rpass,
-        groups,
-        slab_layout,
+        runs,
         draws,
         encode,
         gpu_limits,
         per_draw_bind_group,
         supports_base_instance,
-        pipeline,
         device,
         depth_pipelines,
+        slab_slot_base,
     } = batch;
 
     let mut last_mesh = LastMeshBindState::new();
     let mut last_per_draw_dyn_offset: Option<u32> = None;
     let mut last_pipeline: Option<*const wgpu::RenderPipeline> = None;
+    let mut stats = DepthPrepassDrawStats::default();
 
-    for group in groups {
+    for run in runs {
+        stats.considered_groups = stats.considered_groups.saturating_add(1);
+        let group = &run.group;
         let representative = group.representative_draw_idx;
         let Some(item) = draws.get(representative) else {
-            continue;
-        };
-        if !depth_prepass_group_eligible(draws, slab_layout, group, pipeline.shader_perm) {
-            continue;
-        }
-        let Some(key) = WorldMeshForwardDepthPrepassPipelineKey::for_draw(item, pipeline) else {
+            stats.skipped_pipeline_key_groups = stats.skipped_pipeline_key_groups.saturating_add(1);
             continue;
         };
 
-        let slab_first_instance = group.instance_range.start as usize;
+        let slab_first_instance =
+            slab_slot_base.saturating_add(group.instance_range.start as usize);
         let instance_count = group.instance_range.end - group.instance_range.start;
         bind_per_draw_slab_if_changed(
             rpass,
@@ -447,17 +503,142 @@ pub(crate) fn draw_depth_prepass_subset(batch: DepthPrepassDrawBatch<'_, '_, '_,
             &mut last_per_draw_dyn_offset,
         );
 
-        let pipeline = depth_pipelines.pipeline(device, key);
+        let pipeline = depth_pipelines.pipeline(device, run.pipeline_key);
         let pipeline_id: *const wgpu::RenderPipeline = pipeline.as_ref();
         if last_pipeline != Some(pipeline_id) {
             rpass.set_pipeline(pipeline.as_ref());
             last_pipeline = Some(pipeline_id);
         }
 
-        let inst_range = instance_range_for_draw_group(group, supports_base_instance);
+        let inst_range = instance_range_for_draw_group_with_base(
+            group,
+            supports_base_instance,
+            slab_slot_base as u32,
+        );
         let gpu_refs = gpu_refs_for_encode(encode);
         draw_mesh_submesh_depth_instanced(rpass, item, gpu_refs, inst_range, &mut last_mesh);
+        stats.submitted_groups = stats.submitted_groups.saturating_add(1);
+        stats.submitted_instances = stats
+            .submitted_instances
+            .saturating_add(instance_count as usize);
     }
+
+    stats
+}
+
+/// Records a prepared material shadow phase without rechecking group eligibility.
+pub(crate) fn draw_material_shadow_phase(
+    batch: MaterialShadowPhaseDrawBatch<'_, '_, '_, '_>,
+) -> DepthPrepassDrawStats {
+    profiling::scope!("world_mesh::draw_material_shadow_phase");
+    let MaterialShadowPhaseDrawBatch {
+        rpass,
+        runs,
+        draws,
+        precomputed,
+        encode,
+        gpu_limits,
+        frame_bg,
+        empty_bg,
+        per_draw_bind_group,
+        supports_base_instance,
+        slab_slot_base,
+    } = batch;
+
+    let mut state = ForwardDrawState::new();
+    let mut stats = DepthPrepassDrawStats::default();
+    rpass.set_bind_group(0, frame_bg, &[]);
+
+    for run in runs {
+        stats.considered_groups = stats.considered_groups.saturating_add(1);
+        let group = &run.group;
+        let representative = group.representative_draw_idx;
+        let Some(item) = draws.get(representative) else {
+            stats.skipped_pipeline_key_groups = stats.skipped_pipeline_key_groups.saturating_add(1);
+            continue;
+        };
+        let batch_cursor = group.material_packet_idx;
+        let Some(packet) = precomputed.get(batch_cursor) else {
+            stats.skipped_pipeline_key_groups = stats.skipped_pipeline_key_groups.saturating_add(1);
+            continue;
+        };
+        let Some(pipelines) = packet.pipelines.as_ref() else {
+            stats.skipped_pipeline_key_groups = stats.skipped_pipeline_key_groups.saturating_add(1);
+            continue;
+        };
+
+        bind_shadow_material_packet_if_changed(
+            rpass,
+            empty_bg,
+            &mut state.bound_batch_cursor,
+            batch_cursor,
+            packet,
+        );
+        let slab_first_instance =
+            slab_slot_base.saturating_add(group.instance_range.start as usize);
+        let instance_count = group.instance_range.end - group.instance_range.start;
+        bind_per_draw_slab_if_changed(
+            rpass,
+            PerDrawSlabBind {
+                bind_group_index: 2,
+                bind_group: per_draw_bind_group,
+                gpu_limits,
+                slab_first_instance,
+                instance_count,
+                supports_base_instance,
+            },
+            &mut state.last_per_draw_dyn_offset,
+        );
+
+        let inst_range = instance_range_for_draw_group_with_base(
+            group,
+            supports_base_instance,
+            slab_slot_base as u32,
+        );
+        issue_material_pipeline_passes(
+            rpass,
+            encode,
+            item,
+            ActivePipelineSelection { pipelines },
+            &inst_range,
+            &mut state.last_mesh,
+            &mut state.last_pipeline,
+        );
+        stats.submitted_groups = stats.submitted_groups.saturating_add(1);
+        stats.submitted_instances = stats
+            .submitted_instances
+            .saturating_add(instance_count as usize);
+    }
+
+    stats
+}
+
+fn bind_shadow_material_packet_if_changed(
+    rpass: &mut wgpu::RenderPass<'_>,
+    empty_bg: &wgpu::BindGroup,
+    bound_batch_cursor: &mut Option<usize>,
+    batch_cursor: usize,
+    packet: &MaterialBatchPacket,
+) {
+    if *bound_batch_cursor == Some(batch_cursor) {
+        return;
+    }
+    match &packet.group1_binding {
+        MaterialGroup1Binding::Empty => {
+            rpass.set_bind_group(1, empty_bg, &[]);
+        }
+        MaterialGroup1Binding::Embedded {
+            bind_group,
+            uniform_dynamic_offset,
+        } => {
+            if let Some(offset) = uniform_dynamic_offset {
+                rpass.set_bind_group(1, bind_group.as_ref(), &[*offset]);
+            } else {
+                rpass.set_bind_group(1, bind_group.as_ref(), &[]);
+            }
+        }
+    }
+    *bound_batch_cursor = Some(batch_cursor);
 }
 
 /// Per-batch pipeline selection for [`issue_material_pipeline_passes`].
@@ -509,8 +690,16 @@ fn instance_range_for_draw_group(
     group: &DrawGroup,
     supports_base_instance: bool,
 ) -> std::ops::Range<u32> {
+    instance_range_for_draw_group_with_base(group, supports_base_instance, 0)
+}
+
+fn instance_range_for_draw_group_with_base(
+    group: &DrawGroup,
+    supports_base_instance: bool,
+    base_instance: u32,
+) -> std::ops::Range<u32> {
     if supports_base_instance {
-        group.instance_range.clone()
+        (group.instance_range.start + base_instance)..(group.instance_range.end + base_instance)
     } else {
         debug_assert_eq!(
             group.instance_range.end - group.instance_range.start,

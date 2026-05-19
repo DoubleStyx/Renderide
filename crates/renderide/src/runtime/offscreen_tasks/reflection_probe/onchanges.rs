@@ -10,6 +10,7 @@ use crate::gpu::GpuContext;
 use crate::reflection_probes::specular::{
     RuntimeReflectionProbeCapture, RuntimeReflectionProbeCaptureKey,
 };
+use crate::render_graph::ViewShadows;
 use crate::scene::{
     ReflectionProbeOnChangesRenderRequest, RenderSpaceId, SceneCoordinator,
     changed_probe_completion,
@@ -742,6 +743,7 @@ fn plan_runtime_reflection_probe_faces(
             viewport_px: extent.tuple(),
             clear: clear_from_reflection_probe_state(state),
             post_processing: reflection_probe_bake_post_processing(),
+            shadows: ViewShadows::primary_view(),
             target: FrameViewPlanTarget::SecondaryRt(
                 targets.to_offscreen_handles(face, REFLECTION_PROBE_SAMPLE_COUNT_POLICY),
             ),

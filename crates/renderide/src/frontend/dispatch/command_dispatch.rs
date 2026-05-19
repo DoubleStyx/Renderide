@@ -7,14 +7,14 @@ use crate::shared::{
     DesktopConfig, DesktopTexturePropertiesUpdate, FrameStartData, FrameSubmitData,
     GaussianSplatConfig, GaussianSplatUploadEncoded, GaussianSplatUploadRaw,
     LightsBufferRendererSubmission, MaterialPropertyIdRequest, MaterialsUpdateBatch, MeshUnload,
-    MeshUploadData, PointRenderBufferUnload, PointRenderBufferUpload, RenderDecouplingConfig,
-    RendererCommand, SetCubemapData, SetCubemapFormat, SetCubemapProperties,
-    SetDesktopTextureProperties, SetRenderTextureFormat, SetTexture2DData, SetTexture2DFormat,
-    SetTexture2DProperties, SetTexture3DData, SetTexture3DFormat, SetTexture3DProperties,
-    ShaderUnload, ShaderUpload, TrailRenderBufferUnload, TrailRenderBufferUpload, UnloadCubemap,
-    UnloadDesktopTexture, UnloadGaussianSplat, UnloadRenderTexture, UnloadTexture2D,
-    UnloadTexture3D, UnloadVideoTexture, VideoTextureLoad, VideoTextureProperties,
-    VideoTextureStartAudioTrack, VideoTextureUpdate,
+    MeshUploadData, PointRenderBufferUnload, PointRenderBufferUpload, QualityConfig,
+    RenderDecouplingConfig, RendererCommand, SetCubemapData, SetCubemapFormat,
+    SetCubemapProperties, SetDesktopTextureProperties, SetRenderTextureFormat, SetTexture2DData,
+    SetTexture2DFormat, SetTexture2DProperties, SetTexture3DData, SetTexture3DFormat,
+    SetTexture3DProperties, ShaderUnload, ShaderUpload, TrailRenderBufferUnload,
+    TrailRenderBufferUpload, UnloadCubemap, UnloadDesktopTexture, UnloadGaussianSplat,
+    UnloadRenderTexture, UnloadTexture2D, UnloadTexture3D, UnloadVideoTexture, VideoTextureLoad,
+    VideoTextureProperties, VideoTextureStartAudioTrack, VideoTextureUpdate,
 };
 
 use super::renderer_command_kind::renderer_command_variant_tag;
@@ -126,6 +126,8 @@ pub(crate) enum RunningCommandEffect {
     DesktopConfig(DesktopConfig),
     /// Host render decoupling config.
     RenderDecouplingConfig(RenderDecouplingConfig),
+    /// Host quality settings used for realtime raster shadows and future render-quality gates.
+    QualityConfig(QualityConfig),
     /// Command variant with no running-state handler yet.
     Unhandled { tag: &'static str },
 }
@@ -201,6 +203,7 @@ pub(crate) fn dispatch_running_command(cmd: RendererCommand) -> RunningCommandEf
         RendererCommand::RenderDecouplingConfig(cfg) => {
             RunningCommandEffect::RenderDecouplingConfig(cfg)
         }
+        RendererCommand::QualityConfig(cfg) => RunningCommandEffect::QualityConfig(cfg),
         cmd => dispatch_auxiliary_asset_command(cmd),
     }
 }
@@ -255,8 +258,8 @@ mod tests {
     };
     use crate::shared::{
         DesktopConfig, FrameSubmitData, GaussianSplatUploadRaw, MaterialPropertyIdRequest,
-        PointRenderBufferUpload, QualityConfig, RendererCommand, RendererShutdown,
-        SetDesktopTextureProperties, SetTexture2DFormat, TrailRenderBufferUpload,
+        PointRenderBufferUpload, PostProcessingConfig, QualityConfig, RendererCommand,
+        RendererShutdown, SetDesktopTextureProperties, SetTexture2DFormat, TrailRenderBufferUpload,
     };
 
     #[test]
@@ -340,9 +343,19 @@ mod tests {
 
     #[test]
     fn decodes_unhandled_commands_with_stable_tag() {
-        match dispatch_running_command(RendererCommand::QualityConfig(QualityConfig::default())) {
-            RunningCommandEffect::Unhandled { tag } => assert_eq!(tag, "QualityConfig"),
+        match dispatch_running_command(RendererCommand::PostProcessingConfig(
+            PostProcessingConfig::default(),
+        )) {
+            RunningCommandEffect::Unhandled { tag } => assert_eq!(tag, "PostProcessingConfig"),
             other => panic!("unexpected effect: {other:?}"),
         }
+    }
+
+    #[test]
+    fn decodes_quality_config_to_backend_effect() {
+        assert!(matches!(
+            dispatch_running_command(RendererCommand::QualityConfig(QualityConfig::default())),
+            RunningCommandEffect::QualityConfig(_)
+        ));
     }
 }

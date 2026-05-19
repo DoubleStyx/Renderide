@@ -9,7 +9,9 @@ use std::num::NonZeroU32;
 use crate::gpu::{
     empty_material_bind_group_layout, frame_bind_group_layout, frame_bind_group_layout_entries,
 };
-use crate::materials::material_passes::{DefaultPassParams, MaterialPassDesc, default_pass};
+use crate::materials::material_passes::{
+    DefaultPassParams, MaterialPassDesc, PassType, default_pass,
+};
 use crate::materials::pipeline_build_error::PipelineBuildError;
 use crate::materials::wgsl_reflect::reflect_raster_material_wgsl_with_vertex_entries;
 use crate::materials::{MaterialRenderState, RasterFrontFace, RasterPrimitiveTopology};
@@ -18,9 +20,36 @@ use crate::materials::{
     validate_per_draw_group2, validate_vertex_layout_against_limits,
 };
 
+/// Render-target family used when material pipelines are created.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum MaterialPipelineTarget {
+    /// Ordinary world-mesh forward rendering with one color attachment.
+    #[default]
+    Color,
+    /// Shadow-map caster rendering with only a depth attachment.
+    ShadowCaster,
+}
+
+impl MaterialPipelineTarget {
+    /// Returns whether pipelines for this target use a color attachment.
+    pub(crate) const fn has_color_attachment(self) -> bool {
+        matches!(self, Self::Color)
+    }
+
+    /// Returns whether a material pass belongs to this target.
+    pub(crate) const fn includes_pass(self, pass_type: PassType) -> bool {
+        match self {
+            Self::Color => !matches!(pass_type, PassType::ShadowCaster),
+            Self::ShadowCaster => matches!(pass_type, PassType::ShadowCaster),
+        }
+    }
+}
+
 /// Swapchain-relevant state needed to build a [`wgpu::RenderPipeline`].
 #[derive(Clone, Copy, Debug)]
 pub struct MaterialPipelineDesc {
+    /// Pipeline target family selected by the active render pass.
+    pub target: MaterialPipelineTarget,
     /// Primary color attachment format (for example swapchain format).
     pub surface_format: wgpu::TextureFormat,
     /// Optional depth attachment (meshes / MRT later).
@@ -327,6 +356,16 @@ pub(crate) fn build_pipeline_from_pass(
     );
     {
         profiling::scope!("materials::create_render_pipeline_wgpu");
+        let color_targets = [Some(wgpu::ColorTargetState {
+            format: shared.desc.surface_format,
+            blend: pass.blend,
+            write_mask: pass.resolved_color_writes(render_state),
+        })];
+        let targets = if shared.desc.target.has_color_attachment() {
+            color_targets.as_slice()
+        } else {
+            &[]
+        };
         let pipeline = shared
             .device
             .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -342,11 +381,7 @@ pub(crate) fn build_pipeline_from_pass(
                     module: shared.module,
                     entry_point: Some(pass.fragment_entry),
                     compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: shared.desc.surface_format,
-                        blend: pass.blend,
-                        write_mask: pass.resolved_color_writes(render_state),
-                    })],
+                    targets,
                 }),
                 primitive: wgpu::PrimitiveState {
                     topology: shared.primitive_topology.to_wgpu(),
@@ -428,6 +463,18 @@ pub(crate) fn create_reflective_raster_mesh_forward_pipeline(
     ))
 }
 
+/// Keeps only pass descriptors that are meaningful for the requested pipeline target.
+fn passes_for_pipeline_target(
+    target: MaterialPipelineTarget,
+    passes: &[MaterialPassDesc],
+) -> Vec<MaterialPassDesc> {
+    passes
+        .iter()
+        .copied()
+        .filter(|pass| target.includes_pass(pass.pass_type))
+        .collect()
+}
+
 /// Builds N pipelines (one per pass descriptor) that share reflected bind-group layout and vertex streams.
 pub(crate) fn create_reflective_raster_mesh_forward_pipelines(
     shader: ReflectiveRasterShaderContext<'_>,
@@ -437,6 +484,7 @@ pub(crate) fn create_reflective_raster_mesh_forward_pipelines(
     front_face: RasterFrontFace,
     primitive_topology: RasterPrimitiveTopology,
 ) -> Result<Vec<wgpu::RenderPipeline>, PipelineBuildError> {
+    let passes = passes_for_pipeline_target(shader.desc.target, passes);
     if passes.is_empty() {
         return Err(PipelineBuildError::EmptyPasses {
             label: shader.label,

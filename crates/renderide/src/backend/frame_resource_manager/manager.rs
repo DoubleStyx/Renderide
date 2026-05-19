@@ -8,7 +8,9 @@ use parking_lot::Mutex;
 
 use crate::gpu::GpuLimits;
 use crate::mesh_deform::SkinCacheKey;
+use crate::passes::WorldMeshShadowPhaseCache;
 use crate::scene::{RenderSpaceId, ResolvedLight};
+use crate::shared::QualityConfig;
 
 use super::super::frame_gpu::{EmptyMaterialBindGroup, FrameGpuResources};
 use super::super::frame_gpu_bindings::{FrameGpuBindings, FrameGpuBindingsError};
@@ -34,6 +36,8 @@ pub struct FrameResourceManager {
     /// Created lazily; keyed by [`ViewId`] so secondary RT cameras never compete
     /// with the main view (or each other) for buffer space.
     pub(super) per_view_draw: PerViewResourceMap<Mutex<PerDrawResources>>,
+    /// One grow-on-demand shadow-caster per-draw slab per stable render-view identity.
+    pub(super) per_view_shadow_draw: PerViewResourceMap<Mutex<PerDrawResources>>,
     /// Shared `@group(2)` bind group layout, reflected once at attach time.
     pub(super) per_draw_bind_group_layout: Option<Arc<wgpu::BindGroupLayout>>,
     /// GPU limits stored at attach time for lazy per-view slab/cluster creation.
@@ -48,6 +52,8 @@ pub struct FrameResourceManager {
     pub(super) resolved_flatten_scratch: Vec<ResolvedLight>,
     /// Reused each view to collect active render spaces that should contribute lights.
     pub(super) light_space_ids_scratch: Vec<RenderSpaceId>,
+    /// Latest host quality settings affecting realtime shadow-map allocation and planning.
+    pub(super) quality_config: QualityConfig,
     /// When true, [`crate::passes::MeshDeformPass`] already dispatched for the current graph
     /// submission.
     ///
@@ -60,6 +66,10 @@ pub struct FrameResourceManager {
     ///
     /// Each view owns its own mutex-wrapped slot so rayon workers never alias the same scratch.
     pub(super) per_view_per_draw_scratch: PerViewResourceMap<Mutex<PerViewPerDrawScratch>>,
+    /// Reused per-view scratch for shadow-caster per-draw VP packing.
+    pub(super) per_view_shadow_per_draw_scratch: PerViewResourceMap<Mutex<PerViewPerDrawScratch>>,
+    /// Retained per-view shadow phase cache used to avoid rebuilding caster phases per light.
+    pub(super) per_view_shadow_phase_cache: PerViewResourceMap<Mutex<WorldMeshShadowPhaseCache>>,
     /// One-shot guard for the [`crate::backend::light_gpu::MAX_LIGHTS`] overflow warning so a scene
     /// with too many lights does not spam logs every frame.
     pub(super) lights_overflow_warned: bool,
@@ -81,6 +91,7 @@ impl FrameResourceManager {
             empty_material: None,
             per_view_frame: PerViewResourceMap::new(),
             per_view_draw: PerViewResourceMap::new(),
+            per_view_shadow_draw: PerViewResourceMap::new(),
             per_draw_bind_group_layout: None,
             limits: None,
             light_scratch: Vec::new(),
@@ -88,9 +99,12 @@ impl FrameResourceManager {
             signed_scene_color_required: false,
             resolved_flatten_scratch: Vec::new(),
             light_space_ids_scratch: Vec::new(),
+            quality_config: QualityConfig::default(),
             mesh_deform_dispatched_this_submission: AtomicBool::new(false),
             visible_mesh_deform_keys: Mutex::new(None),
             per_view_per_draw_scratch: PerViewResourceMap::new(),
+            per_view_shadow_per_draw_scratch: PerViewResourceMap::new(),
+            per_view_shadow_phase_cache: PerViewResourceMap::new(),
             lights_overflow_warned: false,
             signed_scene_color_required_logged: false,
         }

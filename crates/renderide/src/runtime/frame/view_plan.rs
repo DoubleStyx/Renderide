@@ -15,7 +15,7 @@ use crate::render_graph::blackboard::Blackboard;
 use crate::render_graph::{
     ExternalFrameTargets, ExternalOffscreenTargets, FrameView, FrameViewClear,
     FrameViewResourceHints, FrameViewTarget, OffscreenColorCopyTarget, OffscreenSampleCountPolicy,
-    ViewPostProcessing,
+    ViewPostProcessing, ViewShadows,
 };
 use crate::scene::RenderSpaceId;
 use crate::shared::RenderingContext;
@@ -142,6 +142,8 @@ pub(in crate::runtime) struct FrameViewPlan<'a> {
     pub(in crate::runtime) clear: FrameViewClear,
     /// Post-processing permissions for this view.
     pub(in crate::runtime) post_processing: ViewPostProcessing,
+    /// Realtime shadow-map permissions for this view.
+    pub(in crate::runtime) shadows: ViewShadows,
     /// Target-specific payload (HMD, secondary RT, main swapchain).
     pub(in crate::runtime) target: FrameViewPlanTarget<'a>,
 }
@@ -195,6 +197,7 @@ impl FrameViewPlan<'_> {
             target: self.target(),
             clear: self.clear,
             post_processing: self.post_processing,
+            shadows: self.shadows,
             resource_hints,
             initial_blackboard,
         }
@@ -263,6 +266,7 @@ mod tests {
             viewport_px: (1280, 720),
             clear: FrameViewClear::color(glam::Vec4::new(0.1, 0.2, 0.3, 1.0)),
             post_processing: ViewPostProcessing::primary_view(),
+            shadows: ViewShadows::primary_view(),
             target: FrameViewPlanTarget::MainSwapchain,
         }
     }
@@ -289,6 +293,7 @@ mod tests {
         assert_eq!(frame_view.host_camera.frame_index, -1);
         assert_eq!(frame_view.clear, plan.clear);
         assert_eq!(frame_view.post_processing, plan.post_processing);
+        assert_eq!(frame_view.shadows, plan.shadows);
         assert!(matches!(frame_view.target, FrameViewTarget::Swapchain));
         assert_eq!(frame_view.resource_hints, hints);
         assert!(frame_view.initial_blackboard.is_empty());

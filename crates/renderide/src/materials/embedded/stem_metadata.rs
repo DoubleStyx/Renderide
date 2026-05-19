@@ -17,8 +17,8 @@ pub use blending::{
     embedded_stem_uses_two_sided_transparency,
 };
 pub use passes::{
-    embedded_stem_depth_prepass_pass, embedded_stem_pipeline_pass_count,
-    embedded_stem_requires_intersection_pass,
+    embedded_stem_depth_prepass_pass, embedded_stem_has_shadow_caster_pass,
+    embedded_stem_pipeline_pass_count, embedded_stem_requires_intersection_pass,
 };
 pub use tangent_fallback::{EmbeddedTangentFallbackMode, embedded_stem_tangent_fallback_mode};
 pub use vertex_streams::{
@@ -83,6 +83,8 @@ struct EmbeddedStemMetadata {
     tangent_fallback_mode: EmbeddedTangentFallbackMode,
     /// Number of declared material passes submitted for this target.
     pass_count: usize,
+    /// Whether this target declares an authored shadow caster pass.
+    has_shadow_caster_pass: bool,
     /// Whether any declared pass has a blend state.
     uses_alpha_blending: bool,
     /// Whether any declared blended pass writes depth by default.
@@ -184,6 +186,11 @@ impl EmbeddedStemQuery {
         self.metadata.pass_count
     }
 
+    /// `true` when the target declares an authored shadow caster pass.
+    pub fn has_shadow_caster_pass(&self) -> bool {
+        self.metadata.has_shadow_caster_pass
+    }
+
     /// `true` when any declared pass has a blend state (transparent material).
     pub fn uses_alpha_blending(&self) -> bool {
         self.metadata.uses_alpha_blending
@@ -251,13 +258,23 @@ fn embedded_stem_metadata(base_stem: &str, permutation: ShaderPermutation) -> Em
         .ok()
     });
     let depth_prepass_pass = depth_prepass_pass_for_target(wgsl, reflected.as_ref(), passes);
+    let color_passes = passes
+        .iter()
+        .copied()
+        .filter(|pass| pass.pass_type != crate::materials::PassType::ShadowCaster)
+        .collect::<Vec<_>>();
     let metadata = EmbeddedStemMetadata {
         reflected,
         tangent_fallback_mode: tangent_fallback_mode_for_stem(base_stem),
-        pass_count: passes.len().max(1),
-        uses_alpha_blending: passes.iter().any(|p| p.blend.is_some()),
-        uses_blended_depth_write: passes.iter().any(|p| p.blend.is_some() && p.depth_write),
-        uses_two_sided_transparency: passes_use_two_sided_transparency(passes),
+        pass_count: color_passes.len().max(1),
+        has_shadow_caster_pass: passes
+            .iter()
+            .any(|pass| pass.pass_type == crate::materials::PassType::ShadowCaster),
+        uses_alpha_blending: color_passes.iter().any(|pass| pass.blend.is_some()),
+        uses_blended_depth_write: color_passes
+            .iter()
+            .any(|pass| pass.blend.is_some() && pass.depth_write),
+        uses_two_sided_transparency: passes_use_two_sided_transparency(&color_passes),
         depth_prepass_pass,
     };
     guard.insert(key, metadata.clone());
@@ -282,9 +299,13 @@ fn depth_prepass_pass_for_target(
 ) -> Option<MaterialPassDesc> {
     let wgsl = wgsl?;
     let reflected = reflected?;
-    let [pass] = passes else {
+    let mut color_passes = passes
+        .iter()
+        .filter(|pass| pass.pass_type != crate::materials::PassType::ShadowCaster);
+    let pass = color_passes.next()?;
+    if color_passes.next().is_some() {
         return None;
-    };
+    }
     let snapshots = reflected.snapshot_requirements();
     let pass_is_opaque_forward = pass.pass_type == crate::materials::PassType::Forward;
     (pass_is_opaque_forward
@@ -414,6 +435,7 @@ mod tests {
                 }),
                 tangent_fallback_mode: EmbeddedTangentFallbackMode::default(),
                 pass_count: 1,
+                has_shadow_caster_pass: false,
                 uses_alpha_blending: false,
                 uses_blended_depth_write: false,
                 uses_two_sided_transparency: false,

@@ -3,6 +3,7 @@ use crate::materials::{
     MaterialBlendMode, MaterialDepthOffsetState, RasterFrontFace, RasterPipelineKind,
     UNITY_RENDER_QUEUE_ALPHA_TEST, UNITY_RENDER_QUEUE_TRANSPARENT,
 };
+use crate::shared::ShadowCastMode;
 use crate::world_mesh::TransparentMaterialClass;
 use crate::world_mesh::draw_prep::{pack_sort_prefix, sort_draws};
 use crate::world_mesh::materials::compute_batch_key_hash;
@@ -457,6 +458,155 @@ fn depth_prepass_rejects_unsafe_embedded_stems() {
     item.batch_key.pipeline = RasterPipelineKind::EmbeddedStem("invisible_default".into());
 
     assert!(!depth_prepass_item_eligible(&item, ShaderPermutation(0)));
+}
+
+#[test]
+fn shadow_caster_depth_prepass_accepts_material_state_variants() {
+    let mut cases = Vec::new();
+
+    let mut alpha_test = opaque(7, 1, 0, 1);
+    set_render_queue(&mut alpha_test, UNITY_RENDER_QUEUE_ALPHA_TEST);
+    cases.push(alpha_test);
+
+    let mut transparent = opaque(7, 1, 0, 2);
+    set_render_queue(&mut transparent, UNITY_RENDER_QUEUE_TRANSPARENT);
+    cases.push(transparent);
+
+    let mut blended = opaque(7, 1, 0, 3);
+    blended.batch_key.blend_mode = MaterialBlendMode::UnityBlend { src: 5, dst: 10 };
+    cases.push(blended);
+
+    let mut zwrite_off = opaque(7, 1, 0, 4);
+    zwrite_off.batch_key.render_state.depth_write = Some(false);
+    cases.push(zwrite_off);
+
+    let mut ztest = opaque(7, 1, 0, 5);
+    ztest.batch_key.render_state.depth_compare = Some(2);
+    cases.push(ztest);
+
+    let mut offset = opaque(7, 1, 0, 6);
+    offset.batch_key.render_state.depth_offset = MaterialDepthOffsetState::new(1.0, 0);
+    cases.push(offset);
+
+    let mut stencil = opaque(7, 1, 0, 7);
+    stencil.batch_key.render_state.stencil.enabled = true;
+    cases.push(stencil);
+
+    let mut scene_depth = opaque(7, 1, 0, 8);
+    scene_depth.batch_key.embedded_uses_scene_depth_snapshot = true;
+    cases.push(scene_depth);
+
+    let mut grab = opaque(7, 1, 0, 9);
+    grab.batch_key.embedded_uses_scene_color_snapshot = true;
+    cases.push(grab);
+
+    let mut intersect = opaque(7, 1, 0, 10);
+    intersect.batch_key.embedded_requires_intersection_pass = true;
+    cases.push(intersect);
+
+    for item in cases {
+        assert!(!depth_prepass_item_eligible(&item, ShaderPermutation(0)));
+        assert!(shadow_caster_depth_item_eligible(
+            &item,
+            ShaderPermutation(0)
+        ));
+    }
+}
+
+#[test]
+fn shadow_caster_depth_prepass_rejects_overlay_and_disabled_shadow_mode() {
+    let mut overlay = opaque(7, 1, 0, 0);
+    overlay.is_overlay = true;
+    assert!(!shadow_caster_depth_item_eligible(
+        &overlay,
+        ShaderPermutation(0)
+    ));
+
+    let mut disabled = opaque(7, 1, 0, 1);
+    disabled.shadow_cast_mode = ShadowCastMode::Off;
+    assert!(!shadow_caster_depth_item_eligible(
+        &disabled,
+        ShaderPermutation(0)
+    ));
+}
+
+#[test]
+fn shadow_caster_depth_prepass_accepts_missing_depth_route_as_solid_fallback() {
+    let mut missing_depth = opaque(7, 1, 0, 2);
+    missing_depth.batch_key.pipeline = RasterPipelineKind::EmbeddedStem("invisible_default".into());
+    assert!(shadow_caster_depth_item_eligible(
+        &missing_depth,
+        ShaderPermutation(0)
+    ));
+}
+
+#[test]
+fn shadow_caster_uses_opaque_authored_material_shadow_pass() {
+    let mut material_shadow = opaque(7, 1, 0, 2);
+    material_shadow.batch_key.pipeline =
+        RasterPipelineKind::EmbeddedStem("pbsmetallic_default".into());
+    assert_eq!(
+        shadow_caster_route_for_item(&material_shadow, ShaderPermutation(0)),
+        ShadowCasterRoute::MaterialShadow
+    );
+    assert!(!shadow_caster_depth_item_eligible(
+        &material_shadow,
+        ShaderPermutation(0)
+    ));
+    assert!(shadow_caster_material_item_eligible(
+        &material_shadow,
+        ShaderPermutation(0)
+    ));
+}
+
+#[test]
+fn shadow_caster_material_route_preserves_stateful_authored_shadow_pass() {
+    let mut alpha_test = opaque(7, 1, 0, 2);
+    alpha_test.batch_key.pipeline = RasterPipelineKind::EmbeddedStem("pbsmetallic_default".into());
+    set_render_queue(&mut alpha_test, UNITY_RENDER_QUEUE_ALPHA_TEST);
+    assert_eq!(
+        shadow_caster_route_for_item(&alpha_test, ShaderPermutation(0)),
+        ShadowCasterRoute::MaterialShadow
+    );
+    assert!(!shadow_caster_depth_item_eligible(
+        &alpha_test,
+        ShaderPermutation(0)
+    ));
+    assert!(shadow_caster_material_item_eligible(
+        &alpha_test,
+        ShaderPermutation(0)
+    ));
+}
+
+#[test]
+fn shadow_caster_depth_prepass_accepts_groups_outside_regular_subpass() {
+    let mut draws = Vec::new();
+    let mut alpha_blended = opaque(7, 1, 0, 0);
+    alpha_blended.batch_key.alpha_blended = true;
+    draws.push(alpha_blended);
+
+    let mut intersect = opaque(7, 2, 0, 1);
+    intersect.batch_key.embedded_requires_intersection_pass = true;
+    draws.push(intersect);
+
+    sort_draws(&mut draws);
+    let plan = build_plan(&draws, true);
+    assert!(plan.regular_groups.is_empty());
+    assert!(!plan.post_skybox_groups.is_empty());
+    assert!(!plan.intersect_groups.is_empty());
+
+    for group in plan
+        .post_skybox_groups
+        .iter()
+        .chain(plan.intersect_groups.iter())
+    {
+        assert!(shadow_caster_depth_group_eligible(
+            &draws,
+            &plan.slab_layout,
+            group,
+            ShaderPermutation(0),
+        ));
+    }
 }
 
 #[test]

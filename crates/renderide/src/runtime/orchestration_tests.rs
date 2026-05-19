@@ -82,14 +82,14 @@ fn dispatch_frame_submit_updates_lockstep_fields() {
 }
 
 #[test]
-fn dispatch_quality_config_increments_unhandled_when_no_handler() {
+fn dispatch_quality_config_is_handled_by_backend() {
     let mut rt = test_runtime_standalone();
     let before = rt.unhandled_ipc_command_event_total();
     apply_running_command(
         &mut rt,
         RendererCommand::QualityConfig(QualityConfig::default()),
     );
-    assert_eq!(rt.unhandled_ipc_command_event_total(), before + 1);
+    assert_eq!(rt.unhandled_ipc_command_event_total(), before);
 }
 
 #[test]
@@ -229,7 +229,7 @@ fn ipc_init_renderer_init_data_moves_to_init_received() {
 }
 
 #[test]
-fn ipc_init_finalize_then_running_dispatch_unhandled() {
+fn ipc_init_finalize_then_running_dispatch_handles_quality_config() {
     let mut rt = test_runtime_ipc_shape();
     rt.handle_ipc_command(RendererCommand::RendererInitData(test_renderer_init_data()));
     rt.handle_ipc_command(RendererCommand::RendererInitFinalizeData(
@@ -238,7 +238,7 @@ fn ipc_init_finalize_then_running_dispatch_unhandled() {
     assert_eq!(rt.init_state(), crate::frontend::InitState::Finalized);
     let before = rt.unhandled_ipc_command_event_total();
     rt.handle_ipc_command(RendererCommand::QualityConfig(QualityConfig::default()));
-    assert_eq!(rt.unhandled_ipc_command_event_total(), before + 1);
+    assert_eq!(rt.unhandled_ipc_command_event_total(), before);
 }
 
 #[test]

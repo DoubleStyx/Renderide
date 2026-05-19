@@ -26,6 +26,10 @@
 @group(0) @binding(10) var reflection_probe_specular_sampler: sampler;
 @group(0) @binding(11) var ibl_dfg_lut: texture_2d<f32>;
 @group(0) @binding(12) var<storage, read> reflection_probes: array<ft::GpuReflectionProbe>;
+@group(0) @binding(13) var shadow_maps: texture_depth_2d_array;
+@group(0) @binding(14) var shadow_sampler: sampler_comparison;
+@group(0) @binding(15) var<storage, read> shadow_lights: array<ft::GpuShadowLight>;
+@group(0) @binding(16) var<storage, read> shadow_views: array<ft::GpuShadowView>;
 
 /// View index encoded in a material varying.
 fn view_index_from_layer(view_layer: u32) -> u32 {
@@ -133,5 +137,8 @@ fn retain_globals_additive(color: vec4<f32>) -> vec4<f32> {
         f32(cluster_light_ranges[0u].y & 255u) * 1e-10 +
         f32(cluster_light_indices[0u] & 255u) * 1e-10;
     let probe_touch = reflection_probes[0u].params.x * 1e-10;
-    return color + vec4<f32>(vec3<f32>(f32(lit) * 1e-10 + cluster_touch + probe_touch), 0.0);
+    let shadow_touch =
+        f32(shadow_lights[0u].view_count & 255u) * 1e-10 +
+        shadow_views[0u].params.x * 1e-10;
+    return color + vec4<f32>(vec3<f32>(f32(lit) * 1e-10 + cluster_touch + probe_touch + shadow_touch), 0.0);
 }

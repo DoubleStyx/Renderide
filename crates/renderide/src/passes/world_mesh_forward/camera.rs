@@ -7,7 +7,7 @@ use glam::Mat4;
 use super::WorldMeshForwardPipelineState;
 use crate::camera::{HostCameraFrame, WorldProjectionSet};
 use crate::gpu::GpuLimits;
-use crate::materials::MaterialPipelineDesc;
+use crate::materials::{MaterialPipelineDesc, MaterialPipelineTarget};
 use crate::materials::{SHADER_PERM_MULTIVIEW_STEREO, ShaderPermutation};
 use crate::scene::SceneCoordinator;
 use crate::shared::RenderingContext;
@@ -45,6 +45,7 @@ pub(super) fn resolve_pass_config(
     let sc = sample_count.max(1);
 
     let pass_desc = MaterialPipelineDesc {
+        target: MaterialPipelineTarget::Color,
         surface_format: scene_color_format,
         depth_stencil_format: Some(depth_stencil_format),
         sample_count: sc,

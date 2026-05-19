@@ -428,19 +428,19 @@ mod tests {
     fn full_pipeline_sampler_count_includes_frame_group0() {
         let frame_entries = crate::gpu::frame_bind_group_layout_entries();
         let limits = synthetic_limits(16, 64);
-        let layout = reflected_layout_with_material_entries(fragment_sampler_entries(14));
+        let layout = reflected_layout_with_material_entries(fragment_sampler_entries(13));
 
-        validate_layout_against_limits(&layout, &frame_entries, &limits).expect("14 + 2 samplers");
+        validate_layout_against_limits(&layout, &frame_entries, &limits).expect("13 + 3 samplers");
     }
 
     #[test]
     fn full_pipeline_sampler_count_rejects_frame_group0_overflow() {
         let frame_entries = crate::gpu::frame_bind_group_layout_entries();
         let limits = synthetic_limits(16, 64);
-        let layout = reflected_layout_with_material_entries(fragment_sampler_entries(15));
+        let layout = reflected_layout_with_material_entries(fragment_sampler_entries(14));
 
         let err = validate_layout_against_limits(&layout, &frame_entries, &limits)
-            .expect_err("15 + 2 samplers should exceed a 16-sampler stage limit");
+            .expect_err("14 + 3 samplers should exceed a 16-sampler stage limit");
         assert!(matches!(
             err,
             ReflectError::ExceedsSamplersPerStage {
@@ -455,20 +455,20 @@ mod tests {
     fn full_pipeline_sampled_texture_count_includes_frame_group0() {
         let frame_entries = crate::gpu::frame_bind_group_layout_entries();
         let limits = synthetic_limits(64, 8);
-        let layout = reflected_layout_with_material_entries(fragment_texture_entries(2));
+        let layout = reflected_layout_with_material_entries(fragment_texture_entries(1));
 
         validate_layout_against_limits(&layout, &frame_entries, &limits)
-            .expect("2 + 6 sampled textures");
+            .expect("1 + 7 sampled textures");
     }
 
     #[test]
     fn full_pipeline_sampled_texture_count_rejects_frame_group0_overflow() {
         let frame_entries = crate::gpu::frame_bind_group_layout_entries();
         let limits = synthetic_limits(64, 8);
-        let layout = reflected_layout_with_material_entries(fragment_texture_entries(3));
+        let layout = reflected_layout_with_material_entries(fragment_texture_entries(2));
 
         let err = validate_layout_against_limits(&layout, &frame_entries, &limits)
-            .expect_err("3 + 6 sampled textures should exceed an 8-texture stage limit");
+            .expect_err("2 + 7 sampled textures should exceed an 8-texture stage limit");
         assert!(matches!(
             err,
             ReflectError::ExceedsSampledTexturesPerStage {

@@ -28,7 +28,8 @@ pub(super) fn add_main_graph_edges(
     chain_output: post_process_chain::ChainOutput,
     compose: PassId,
 ) {
-    builder.add_edge(passes.deform, passes.clustered);
+    builder.add_edge(passes.deform, passes.shadows);
+    builder.add_edge(passes.shadows, passes.clustered);
     builder.add_edge(passes.clustered, passes.depth_prepass);
     builder.add_edge(passes.depth_prepass, passes.forward_opaque);
     if let Some(gtao_normals) = passes.gtao_normals.as_ref() {

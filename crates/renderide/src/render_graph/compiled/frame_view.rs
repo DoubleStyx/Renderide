@@ -5,7 +5,7 @@ use super::super::error::GraphExecuteError;
 use super::super::frame_params::FrameViewClear;
 use crate::camera::{
     HostCameraFrame, ViewId, camera_state_motion_blur, camera_state_post_processing,
-    camera_state_screen_space_reflections,
+    camera_state_render_shadows, camera_state_screen_space_reflections,
 };
 use crate::gpu::GpuContext;
 use crate::shared::{CameraRenderParameters, CameraState, RenderingContext};
@@ -184,6 +184,55 @@ impl Default for ViewPostProcessing {
     }
 }
 
+/// Per-view realtime shadow permissions requested by the host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ViewShadows {
+    /// `true` when this view should render and sample realtime shadow maps.
+    pub enabled: bool,
+}
+
+impl ViewShadows {
+    /// Builds a per-view shadow policy.
+    pub const fn new(enabled: bool) -> Self {
+        Self { enabled }
+    }
+
+    /// Primary/HMD view policy: render shadows unless a host camera explicitly disables them.
+    pub const fn primary_view() -> Self {
+        Self::from_camera_portal_flags(0)
+    }
+
+    /// Raw-capture policy for views that should not render or sample shadow maps.
+    pub const fn disabled() -> Self {
+        Self::new(false)
+    }
+
+    /// Converts secondary render-texture camera state flags into a shadow policy.
+    pub fn from_camera_state(state: &CameraState) -> Self {
+        Self::new(camera_state_render_shadows(state.flags))
+    }
+
+    /// Converts camera-portal state flags into a shadow policy.
+    pub const fn from_camera_portal_flags(flags: i32) -> Self {
+        if flags & (1 << 3) != 0 {
+            Self::disabled()
+        } else {
+            Self::new(true)
+        }
+    }
+
+    /// Returns `true` when this view should render realtime shadow maps.
+    pub const fn is_enabled(self) -> bool {
+        self.enabled
+    }
+}
+
+impl Default for ViewShadows {
+    fn default() -> Self {
+        Self::primary_view()
+    }
+}
+
 /// One view to render in a multi-view frame.
 pub struct FrameView<'a> {
     /// Stable logical identity for view-scoped resources and temporal state.
@@ -198,6 +247,8 @@ pub struct FrameView<'a> {
     pub clear: FrameViewClear,
     /// Post-processing permissions for this view.
     pub post_processing: ViewPostProcessing,
+    /// Realtime shadow-map permissions for this view.
+    pub shadows: ViewShadows,
     /// Resource layout hints required by backend-specific pre-record preparation.
     pub resource_hints: FrameViewResourceHints,
     /// Caller-seeded per-view graph state.
@@ -276,6 +327,28 @@ mod tests {
         assert!(!policy.is_enabled());
         assert!(!policy.screen_space_reflections);
         assert!(!policy.motion_blur);
+    }
+
+    #[test]
+    fn view_shadows_decode_secondary_camera_render_shadows_flag() {
+        let disabled = ViewShadows::from_camera_state(&CameraState {
+            flags: 1 << 0,
+            ..Default::default()
+        });
+        let enabled = ViewShadows::from_camera_state(&CameraState {
+            flags: (1 << 0) | (1 << 5),
+            ..Default::default()
+        });
+
+        assert!(!disabled.is_enabled());
+        assert!(enabled.is_enabled());
+    }
+
+    #[test]
+    fn view_shadows_decode_camera_portal_disable_shadows_flag() {
+        assert!(ViewShadows::from_camera_portal_flags(0).is_enabled());
+        assert!(!ViewShadows::from_camera_portal_flags(1 << 3).is_enabled());
+        assert!(ViewShadows::from_camera_portal_flags(1 << 2).is_enabled());
     }
 
     #[test]

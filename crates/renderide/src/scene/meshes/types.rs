@@ -85,6 +85,18 @@ impl StaticMeshRenderer {
     pub(crate) fn emits_visible_color_draws(&self) -> bool {
         self.shadow_cast_mode != ShadowCastMode::ShadowOnly
     }
+
+    /// Returns whether this renderer should contribute to raster shadow maps.
+    #[inline]
+    pub(crate) fn casts_shadows(&self) -> bool {
+        self.shadow_cast_mode != ShadowCastMode::Off
+    }
+
+    /// Returns whether this renderer participates in either visible color or shadow rendering.
+    #[inline]
+    pub(crate) fn participates_in_raster_draws(&self) -> bool {
+        self.emits_visible_color_draws() || self.casts_shadows()
+    }
 }
 
 /// Skinned mesh instance: [`StaticMeshRenderer`]-style header plus bone palette and root bone.
@@ -284,6 +296,30 @@ mod renderer_tests {
 
             assert!(renderer.emits_visible_color_draws());
         }
+    }
+
+    #[test]
+    fn shadow_cast_modes_decode_shadow_map_participation() {
+        for shadow_cast_mode in [
+            ShadowCastMode::On,
+            ShadowCastMode::ShadowOnly,
+            ShadowCastMode::DoubleSided,
+        ] {
+            let renderer = StaticMeshRenderer {
+                shadow_cast_mode,
+                ..Default::default()
+            };
+
+            assert!(renderer.casts_shadows());
+            assert!(renderer.participates_in_raster_draws());
+        }
+
+        let disabled = StaticMeshRenderer {
+            shadow_cast_mode: ShadowCastMode::Off,
+            ..Default::default()
+        };
+        assert!(!disabled.casts_shadows());
+        assert!(disabled.participates_in_raster_draws());
     }
 }
 

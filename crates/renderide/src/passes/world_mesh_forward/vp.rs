@@ -7,6 +7,7 @@ use glam::Mat4;
 use crate::camera::HostCameraFrame;
 use crate::camera::view_matrix_for_host_world_mesh_space;
 use crate::materials::RasterPipelineKind;
+use crate::mesh_deform::PaddedPerDrawUniforms;
 use crate::scene::SceneCoordinator;
 use crate::shared::RenderingContext;
 use crate::world_mesh::WorldMeshDrawItem;
@@ -204,6 +205,24 @@ pub(crate) fn compute_per_draw_vp_matrices(
         let base_vp = proj * view;
         PerDrawVpMatrices::new(base_vp, base_vp, model())
     }
+}
+
+/// Computes a single-view per-draw uniform for a shadow-map view-projection matrix.
+pub(in crate::passes::world_mesh_forward) fn compute_per_draw_shadow_vp_uniform(
+    scene: &SceneCoordinator,
+    item: &WorldMeshDrawItem,
+    hc: &HostCameraFrame,
+    render_context: RenderingContext,
+    shadow_view_proj: Mat4,
+) -> PaddedPerDrawUniforms {
+    let model = resolve_model_selection(scene, item, hc, render_context);
+    let matrices = PerDrawVpMatrices::new(shadow_view_proj, shadow_view_proj, model);
+    PaddedPerDrawUniforms::new_single(matrices.view_proj_left, matrices.model)
+        .with_position_stream_world_space(matrices.position_stream_world_space)
+        .with_reflection_probe_selection(
+            item.reflection_probes.atlas_indices,
+            item.reflection_probes.importance_mask,
+        )
 }
 
 #[cfg(test)]

@@ -14,7 +14,7 @@ use crate::world_mesh::materials::{
 };
 
 use super::super::item::WorldMeshDrawItem;
-use super::DrawCollectionContext;
+use super::{DrawCollectionContext, WorldMeshDrawKind};
 
 /// View-local material-slot draw candidate shared by scene-walk and prepared collection.
 pub(super) struct DrawCandidate {
@@ -46,6 +46,8 @@ pub(super) struct DrawCandidate {
     pub(super) blendshape_deformed: bool,
     /// Whether active blendshape tangent deltas should deform this draw if the material reads tangents.
     pub(super) tangent_blendshape_deform_active: bool,
+    /// Host shadow-caster mode copied from the source renderer.
+    pub(super) shadow_cast_mode: crate::shared::ShadowCastMode,
     /// Material asset after render-context override resolution.
     pub(super) material_asset_id: i32,
     /// Property block associated with material slot zero.
@@ -65,6 +67,13 @@ pub(super) fn evaluate_draw_candidate(
     alpha_distance_sq: f32,
 ) -> Option<WorldMeshDrawItem> {
     if candidate.index_count == 0 || candidate.material_asset_id < 0 {
+        return None;
+    }
+    if !draw_kind_accepts_candidate(
+        ctx.draw_kind,
+        candidate.shadow_cast_mode,
+        candidate.is_overlay,
+    ) {
         return None;
     }
     let lookup_ids = MaterialPropertyLookupIds {
@@ -143,8 +152,10 @@ pub(super) fn evaluate_draw_candidate(
         skinned: candidate.skinned,
         world_space_deformed: candidate.world_space_deformed,
         blendshape_deformed,
+        shadow_cast_mode: candidate.shadow_cast_mode,
         collect_order: 0,
         camera_distance_sq,
+        world_aabb: candidate.world_aabb,
         lookup_ids,
         batch_key,
         batch_key_hash,
@@ -154,6 +165,22 @@ pub(super) fn evaluate_draw_candidate(
         reflection_probes,
         ui_rect_clip_local,
     })
+}
+
+/// Returns whether a draw candidate belongs to the requested draw family.
+fn draw_kind_accepts_candidate(
+    draw_kind: WorldMeshDrawKind,
+    shadow_cast_mode: crate::shared::ShadowCastMode,
+    is_overlay: bool,
+) -> bool {
+    match draw_kind {
+        WorldMeshDrawKind::VisibleColor => {
+            shadow_cast_mode != crate::shared::ShadowCastMode::ShadowOnly
+        }
+        WorldMeshDrawKind::ShadowCaster => {
+            !is_overlay && shadow_cast_mode != crate::shared::ShadowCastMode::Off
+        }
+    }
 }
 
 /// Returns the transparent back-to-front sort metric for a draw candidate.
@@ -247,6 +274,7 @@ mod tests {
             material_cache: None,
             reflection_probes: None,
             prepared: None,
+            draw_kind: WorldMeshDrawKind::VisibleColor,
         };
         let candidate = DrawCandidate {
             space_id: RenderSpaceId(3),
@@ -263,6 +291,7 @@ mod tests {
             world_space_deformed: true,
             blendshape_deformed: true,
             tangent_blendshape_deform_active: false,
+            shadow_cast_mode: crate::shared::ShadowCastMode::On,
             material_asset_id: 11,
             property_block_id: None,
             world_aabb: None,
@@ -310,6 +339,7 @@ mod tests {
             material_cache: None,
             reflection_probes: None,
             prepared: None,
+            draw_kind: WorldMeshDrawKind::VisibleColor,
         };
         let candidate = DrawCandidate {
             space_id: RenderSpaceId(3),
@@ -326,6 +356,7 @@ mod tests {
             world_space_deformed: false,
             blendshape_deformed: false,
             tangent_blendshape_deform_active: false,
+            shadow_cast_mode: crate::shared::ShadowCastMode::On,
             material_asset_id: 11,
             property_block_id: None,
             world_aabb: None,
@@ -347,6 +378,35 @@ mod tests {
             item.batch_key.render_state.depth_compare,
             Some(ZTEST_ALWAYS)
         );
+    }
+
+    #[test]
+    fn shadow_caster_draw_kind_accepts_only_world_shadow_casters() {
+        assert!(draw_kind_accepts_candidate(
+            WorldMeshDrawKind::ShadowCaster,
+            crate::shared::ShadowCastMode::On,
+            false,
+        ));
+        assert!(draw_kind_accepts_candidate(
+            WorldMeshDrawKind::ShadowCaster,
+            crate::shared::ShadowCastMode::ShadowOnly,
+            false,
+        ));
+        assert!(draw_kind_accepts_candidate(
+            WorldMeshDrawKind::ShadowCaster,
+            crate::shared::ShadowCastMode::DoubleSided,
+            false,
+        ));
+        assert!(!draw_kind_accepts_candidate(
+            WorldMeshDrawKind::ShadowCaster,
+            crate::shared::ShadowCastMode::Off,
+            false,
+        ));
+        assert!(!draw_kind_accepts_candidate(
+            WorldMeshDrawKind::ShadowCaster,
+            crate::shared::ShadowCastMode::On,
+            true,
+        ));
     }
 
     #[test]
@@ -399,6 +459,7 @@ mod tests {
             material_cache: None,
             reflection_probes: None,
             prepared: None,
+            draw_kind: WorldMeshDrawKind::VisibleColor,
         };
         let candidate = DrawCandidate {
             space_id: RenderSpaceId(3),
@@ -415,6 +476,7 @@ mod tests {
             world_space_deformed: false,
             blendshape_deformed: false,
             tangent_blendshape_deform_active: false,
+            shadow_cast_mode: crate::shared::ShadowCastMode::On,
             material_asset_id: 11,
             property_block_id: None,
             world_aabb: None,

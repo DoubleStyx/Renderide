@@ -7,6 +7,7 @@
 #import renderide::pbs::cluster as pcls
 #import renderide::pbs::surface as surface
 #import renderide::lighting::reflection_probes as rprobe
+#import renderide::lighting::shadows as sh
 
 struct ClusterLightingOptions {
     include_directional: bool,
@@ -67,9 +68,10 @@ fn direct_metallic_clustered(
         if (!light_enabled_for_options(light.light_type, options)) {
             continue;
         }
+        let shadow = sh::shadow_visibility(li, light, world_pos, s.normal);
 
         if (options.specular_highlights_enabled) {
-            lo = lo + brdf::direct_radiance_metallic(
+            lo = lo + shadow * brdf::direct_radiance_metallic(
                 light,
                 world_pos,
                 s.normal,
@@ -82,7 +84,7 @@ fn direct_metallic_clustered(
                 energy_compensation,
             );
         } else {
-            lo = lo + brdf::diffuse_only_metallic(light, world_pos, s.normal, view_dir, s.roughness, s.base_color, s.metallic);
+            lo = lo + shadow * brdf::diffuse_only_metallic(light, world_pos, s.normal, view_dir, s.roughness, s.base_color, s.metallic);
         }
     }
     return lo;
@@ -113,9 +115,10 @@ fn direct_specular_clustered(
         if (!light_enabled_for_options(light.light_type, options)) {
             continue;
         }
+        let shadow = sh::shadow_visibility(li, light, world_pos, s.normal);
 
         if (options.specular_highlights_enabled) {
-            lo = lo + brdf::direct_radiance_specular(
+            lo = lo + shadow * brdf::direct_radiance_specular(
                 light,
                 world_pos,
                 s.normal,
@@ -128,7 +131,7 @@ fn direct_specular_clustered(
                 energy_compensation,
             );
         } else {
-            lo = lo + brdf::diffuse_only_specular(
+            lo = lo + shadow * brdf::diffuse_only_specular(
                 light,
                 world_pos,
                 s.normal,

@@ -106,11 +106,11 @@ fn gtao_enabled_post() -> PostProcessingSettings {
 }
 
 #[test]
-fn default_main_needs_surface_and_ten_passes() {
+fn default_main_needs_surface_and_eleven_passes() {
     let g = build_main_graph(smoke_key(), &no_post()).expect("default graph");
     assert!(g.needs_surface_acquire());
-    assert_eq!(g.pass_count(), 10);
-    assert_eq!(g.compile_stats.topo_levels, 10);
+    assert_eq!(g.pass_count(), 11);
+    assert_eq!(g.compile_stats.topo_levels, 11);
     assert_eq!(g.compile_stats.transient_texture_count, 4);
     assert!(
         !g.pass_info
@@ -122,11 +122,20 @@ fn default_main_needs_surface_and_ten_passes() {
         .iter()
         .position(|name| *name == "WorldMeshForwardDepthPrepass")
         .expect("depth prepass");
+    let shadow_pos = pass_names
+        .iter()
+        .position(|name| *name == "WorldMeshShadowMap")
+        .expect("shadow pass");
+    let clustered_pos = pass_names
+        .iter()
+        .position(|name| *name == "ClusteredLight")
+        .expect("clustered light pass");
     let opaque_pos = pass_names
         .iter()
         .position(|name| *name == "WorldMeshForwardOpaque")
         .expect("opaque pass");
     assert!(depth_prepass_pos < opaque_pos);
+    assert!(shadow_pos < clustered_pos);
 }
 
 #[test]
@@ -154,8 +163,8 @@ fn msaa_main_graph_uses_transparent_sequence_for_grab_resolves() {
     assert!(!pass_names.contains(&"WorldMeshColorSnapshot"));
     assert!(!pass_names.contains(&"WorldMeshForwardTransparent"));
     assert!(!pass_names.contains(&"WorldMeshForwardColorResolveFinal"));
-    assert_eq!(g.pass_count(), 10);
-    assert_eq!(g.compile_stats.topo_levels, 10);
+    assert_eq!(g.pass_count(), 11);
+    assert_eq!(g.compile_stats.topo_levels, 11);
 }
 
 #[test]

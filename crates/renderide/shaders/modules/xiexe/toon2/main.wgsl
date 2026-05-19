@@ -8,8 +8,8 @@
 //! - `xiexe_toon2_outline`  -- outline vertex extrusion and per-fragment shading.
 //!
 //! Dispatcher shaders (`materials/xstoon2.0*.wgsl`) only need to import this module plus
-//! `renderide::xiexe::toon2::base` for the `VertexOutput` type, then call the four
-//! entry-point wrappers below.
+//! `renderide::xiexe::toon2::base` for the `VertexOutput` type, then call the entry-point
+//! wrappers below.
 
 #define_import_path renderide::xiexe::toon2
 
@@ -86,4 +86,53 @@ fn fragment_forward_for_layout(
     let alpha = xa::apply_alpha(alpha_mode, frag_pos.xy, world_pos, view_layer, uv_primary, s.albedo.a, s.clip_alpha);
     let rgb = xl::clustered_toon_lighting_for_layout(frag_pos.xy, s, world_pos, view_layer, true, true, true, keyword_layout);
     return rg::retain_globals_additive(vec4<f32>(rgb, alpha));
+}
+
+/// Shadow-caster fragment entry for the generic XSToon keyword layout.
+fn fragment_shadow_caster(
+    frag_pos: vec4<f32>,
+    front_facing: bool,
+    world_pos: vec3<f32>,
+    world_n: vec3<f32>,
+    world_t: vec3<f32>,
+    world_b: vec3<f32>,
+    uv_primary: vec2<f32>,
+    uv_secondary: vec2<f32>,
+    color: vec4<f32>,
+    view_layer: u32,
+    alpha_mode: u32,
+) {
+    fragment_shadow_caster_for_layout(
+        frag_pos,
+        front_facing,
+        world_pos,
+        world_n,
+        world_t,
+        world_b,
+        uv_primary,
+        uv_secondary,
+        color,
+        view_layer,
+        alpha_mode,
+        xvb::XTOON_KEYWORD_LAYOUT_GENERIC,
+    );
+}
+
+/// Shadow-caster fragment entry for a selected XSToon keyword layout.
+fn fragment_shadow_caster_for_layout(
+    frag_pos: vec4<f32>,
+    front_facing: bool,
+    world_pos: vec3<f32>,
+    world_n: vec3<f32>,
+    world_t: vec3<f32>,
+    world_b: vec3<f32>,
+    uv_primary: vec2<f32>,
+    uv_secondary: vec2<f32>,
+    color: vec4<f32>,
+    view_layer: u32,
+    alpha_mode: u32,
+    keyword_layout: u32,
+) {
+    let s = xsurf::sample_surface_for_layout(true, front_facing, world_pos, world_n, world_t, world_b, uv_primary, uv_secondary, color, keyword_layout);
+    let _alpha = xa::apply_alpha(alpha_mode, frag_pos.xy, world_pos, view_layer, uv_primary, s.albedo.a, s.clip_alpha);
 }

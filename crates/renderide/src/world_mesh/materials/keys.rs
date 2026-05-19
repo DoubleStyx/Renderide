@@ -14,12 +14,12 @@ pub(super) fn collect_material_keys_into(
         return;
     };
     for r in space.static_mesh_renderers() {
-        if r.mesh_asset_id >= 0 && r.emits_visible_color_draws() {
+        if r.mesh_asset_id >= 0 && r.participates_in_raster_draws() {
             append_renderer_material_keys(r, out);
         }
     }
     for sk in space.skinned_mesh_renderers() {
-        if sk.base.mesh_asset_id >= 0 && sk.base.emits_visible_color_draws() {
+        if sk.base.mesh_asset_id >= 0 && sk.base.participates_in_raster_draws() {
             append_renderer_material_keys(&sk.base, out);
         }
     }
@@ -95,7 +95,7 @@ mod tests {
     }
 
     #[test]
-    fn shadow_only_renderer_is_skipped() {
+    fn shadow_only_renderer_contributes_for_shadow_map_casters() {
         let mut scene = SceneCoordinator::new();
         let id = RenderSpaceId(1);
         let mut renderer = renderer_with_mesh_asset(0);
@@ -108,7 +108,7 @@ mod tests {
 
         let mut out = Vec::new();
         collect_material_keys_into(&scene, id, &mut out);
-        assert!(out.is_empty());
+        assert_eq!(out, vec![(17, Some(3))]);
     }
 
     #[test]

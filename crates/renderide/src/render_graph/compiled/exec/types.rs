@@ -13,7 +13,7 @@ use super::super::super::frame_params::FrameViewClear;
 use super::super::super::frame_upload_batch::{FrameUploadBatch, FrameUploadBatchStats};
 use super::super::super::history::HistoryRegistry;
 use super::super::super::{GraphAssetResources, GraphFrameResources};
-use super::super::{FrameView, ResolvedView, ViewPostProcessing};
+use super::super::{FrameView, ResolvedView, ViewPostProcessing, ViewShadows};
 
 /// Key for reusing transient pool allocations across [`FrameView`]s with identical surface layout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -103,6 +103,8 @@ pub(super) struct OwnedResolvedView {
     pub(super) sample_count: u32,
     /// Post-processing permissions requested by this view.
     pub(super) post_processing: ViewPostProcessing,
+    /// Realtime shadow-map permissions requested by this view.
+    pub(super) shadows: ViewShadows,
     /// Optional color copy into a host render texture after this view's graph passes.
     pub(super) offscreen_color_copy: Option<ResolvedOffscreenColorCopy>,
 }
@@ -121,6 +123,7 @@ impl OwnedResolvedView {
             view_id: self.view_id,
             sample_count: self.sample_count,
             post_processing: self.post_processing,
+            shadows: self.shadows,
         }
     }
 }
@@ -139,6 +142,8 @@ pub(super) struct PerViewWorkItem {
     pub(super) clear: FrameViewClear,
     /// Post-processing permissions requested by this view.
     pub(super) post_processing: ViewPostProcessing,
+    /// Realtime shadow-map permissions requested by this view.
+    pub(super) shadows: ViewShadows,
     /// Caller-seeded blackboard moved out of the frame view before pass recording.
     pub(super) initial_blackboard: Blackboard,
     /// Owned resolved view snapshot safe to move to a worker thread.

@@ -21,7 +21,8 @@ mod render_world;
 mod sort;
 
 pub use collect::{
-    DrawCollectionContext, WorldMeshDrawCollectParallelism, collect_and_sort_draws_with_parallelism,
+    DrawCollectionContext, WorldMeshDrawCollectParallelism, WorldMeshDrawKind,
+    collect_and_sort_draws_with_parallelism,
 };
 pub use filter::{CameraTransformDrawFilter, draw_filter_from_camera_entry};
 pub use item::{WorldMeshDrawCollection, WorldMeshDrawItem};

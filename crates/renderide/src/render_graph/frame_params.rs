@@ -223,6 +223,8 @@ pub struct GraphPassFrameView<'a> {
     pub clear: FrameViewClear,
     /// Post-processing permissions requested by this view.
     pub post_processing: ViewPostProcessing,
+    /// Realtime shadow-map permissions requested by this view.
+    pub shadows: crate::render_graph::ViewShadows,
 }
 
 /// Compositor over [`FrameSystemsShared`] and [`GraphPassFrameView`].

@@ -1,5 +1,6 @@
 //! Graph-facing resource contracts implemented by renderer-owned backend systems.
 
+use std::any::Any;
 use std::sync::Arc;
 
 use hashbrown::HashSet;
@@ -12,7 +13,7 @@ use crate::camera::ViewId;
 use crate::config::{AutoExposureSettings, BloomSettings, GtaoSettings, MotionBlurSettings};
 use crate::diagnostics::{DebugHudEncodeError, PerViewHudConfig, PerViewHudOutputs};
 use crate::gpu::frame_globals::SkyboxSpecularUniformParams;
-use crate::gpu::{GpuLight, GpuLimits, MsaaDepthResolveResources};
+use crate::gpu::{GpuLight, GpuLimits, GpuShadowLight, GpuShadowView, MsaaDepthResolveResources};
 use crate::gpu_pools::{
     CubemapPool, MeshPool, RenderTexturePool, Texture3dPool, TexturePool, VideoTexturePool,
 };
@@ -23,6 +24,7 @@ use crate::mesh_deform::{
 use crate::occlusion::OcclusionGraphHook;
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::render_graph::upload_arena::PersistentUploadArena;
+use crate::shared::QualityConfig;
 
 /// Cloned references to the shared clustered-light storage buffers.
 #[derive(Clone)]
@@ -31,6 +33,15 @@ pub struct GraphClusterBufferRefs {
     pub cluster_light_counts: wgpu::Buffer,
     /// Compact light-index storage addressed by each cluster range row.
     pub cluster_light_indices: wgpu::Buffer,
+}
+
+/// View-local shadow metadata buffers bound through frame `@group(0)`.
+#[derive(Clone)]
+pub struct GraphShadowMetadataBuffers {
+    /// Per-light shadow indirection rows.
+    pub shadow_lights: wgpu::Buffer,
+    /// Per-shadow-view matrix and sampling rows.
+    pub shadow_views: wgpu::Buffer,
 }
 
 /// Graph-facing access to renderer frame resources.
@@ -104,6 +115,69 @@ pub trait GraphFrameResources: Send + Sync {
     /// Per-view per-draw bind group.
     fn per_view_per_draw_bind_group(&self, view_id: ViewId) -> Option<Arc<wgpu::BindGroup>>;
 
+    /// Latest host quality settings affecting realtime shadow planning.
+    fn quality_config(&self) -> QualityConfig;
+
+    /// Current square shadow-map edge in pixels.
+    fn shadow_resolution(&self) -> u32;
+
+    /// Single shadow-map array layer view for depth rendering.
+    fn shadow_layer_view(&self, layer: usize) -> Option<Arc<wgpu::TextureView>>;
+
+    /// View-local shadow metadata buffers.
+    fn shadow_metadata_buffers(&self, view_id: ViewId) -> Option<GraphShadowMetadataBuffers>;
+
+    /// Records a shadow-light metadata upload into `shadow_lights_buffer`.
+    fn write_shadow_lights(
+        &self,
+        uploads: GraphUploadSink<'_>,
+        shadow_lights_buffer: &wgpu::Buffer,
+        lights: &[GpuShadowLight],
+    );
+
+    /// Records a shadow-view metadata upload into `shadow_views_buffer`.
+    fn write_shadow_views(
+        &self,
+        uploads: GraphUploadSink<'_>,
+        shadow_views_buffer: &wgpu::Buffer,
+        views: &[GpuShadowView],
+    );
+
+    /// Ensures this view's shadow per-draw slab can hold `draw_count` rows.
+    fn ensure_per_view_shadow_per_draw_capacity(
+        &self,
+        device: &wgpu::Device,
+        view_id: ViewId,
+        draw_count: usize,
+    ) -> Option<wgpu::Buffer>;
+
+    /// Gives callers mutable access to the shadow per-view CPU slab-packing scratch.
+    fn with_per_view_shadow_per_draw_scratch(
+        &self,
+        view_id: ViewId,
+        f: &mut dyn FnMut(&mut Vec<PaddedPerDrawUniforms>, &mut Vec<u8>),
+    ) -> bool;
+
+    /// Gives callers mutable access to pass-owned per-view shadow phase cache state.
+    ///
+    /// The value is type-erased to keep the render graph independent from concrete pass-layer
+    /// types while still allowing expensive per-view CPU preparation to be retained by the
+    /// backend frame resource manager.
+    fn with_per_view_shadow_phase_cache(
+        &self,
+        view_id: ViewId,
+        f: &mut dyn FnMut(&mut dyn Any),
+    ) -> bool;
+
+    /// Shadow per-view per-draw bind group.
+    fn per_view_shadow_per_draw_bind_group(&self, view_id: ViewId) -> Option<Arc<wgpu::BindGroup>>;
+
+    /// Per-view frame bind group used while writing the live shadow atlas.
+    fn per_view_shadow_writer_frame_bind_group(
+        &self,
+        view_id: ViewId,
+    ) -> Option<Arc<wgpu::BindGroup>>;
+
     /// Empty material bind group used by shaders without per-material resources.
     fn empty_material_bind_group(&self) -> Option<Arc<wgpu::BindGroup>>;
 
@@ -157,8 +231,18 @@ pub trait GraphFrameResources: Send + Sync {
         device: &wgpu::Device,
     ) -> bool;
 
+    /// Ensures per-view shadow per-draw resources are resident.
+    fn ensure_per_view_shadow_per_draw_resources(
+        &mut self,
+        view_id: ViewId,
+        device: &wgpu::Device,
+    ) -> bool;
+
     /// Ensures per-view per-draw CPU scratch is resident.
     fn ensure_per_view_per_draw_scratch(&mut self, view_id: ViewId);
+
+    /// Ensures per-view shadow per-draw CPU scratch is resident.
+    fn ensure_per_view_shadow_per_draw_scratch(&mut self, view_id: ViewId);
 
     /// Synchronizes shared frame resources before graph recording.
     fn pre_record_sync_for_views(

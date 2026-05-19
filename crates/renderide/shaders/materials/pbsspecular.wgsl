@@ -287,3 +287,16 @@ fn fs_forward_base(
     );
     return vec4<f32>(color, s.alpha);
 }
+
+//#pass type=shadow_caster name=shadow_caster cull=material(back) zwrite=on ztest=main color_mask=0 offset=material(0,0)
+@fragment
+fn fs_shadow_caster(
+    @location(0) world_pos: vec3<f32>,
+    @location(1) world_n: vec3<f32>,
+    @location(2) world_t: vec4<f32>,
+    @location(3) uv0: vec2<f32>,
+    @location(4) uv1: vec2<f32>,
+    @location(5) @interpolate(flat) view_layer: u32,
+) {
+    let _surface = sample_surface(uv0, uv1, world_pos, world_n, world_t, view_layer);
+}

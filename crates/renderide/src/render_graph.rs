@@ -83,6 +83,7 @@ pub(crate) use compiled::cache::{GraphCache, GraphCacheEnsureResult, GraphCacheK
 pub(crate) use compiled::{
     ExternalFrameTargets, ExternalOffscreenTargets, FrameView, FrameViewResourceHints,
     FrameViewTarget, OffscreenColorCopyTarget, OffscreenSampleCountPolicy, ViewPostProcessing,
+    ViewShadows,
 };
 pub(crate) use error::GraphExecuteError;
 pub(crate) use execution_backend::{

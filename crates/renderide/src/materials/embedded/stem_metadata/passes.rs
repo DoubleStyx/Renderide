@@ -9,6 +9,14 @@ pub fn embedded_stem_pipeline_pass_count(base_stem: &str, permutation: ShaderPer
     EmbeddedStemQuery::for_stem(base_stem, permutation).pipeline_pass_count()
 }
 
+/// `true` when the composed embedded target declares an authored shadow caster pass.
+pub fn embedded_stem_has_shadow_caster_pass(
+    base_stem: &str,
+    permutation: ShaderPermutation,
+) -> bool {
+    EmbeddedStemQuery::for_stem(base_stem, permutation).has_shadow_caster_pass()
+}
+
 /// `true` when the composed embedded target uses an intersection subpass.
 pub fn embedded_stem_requires_intersection_pass(
     base_stem: &str,

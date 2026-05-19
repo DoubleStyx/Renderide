@@ -23,7 +23,7 @@ use crate::render_graph::resources::{
 };
 use crate::world_mesh::WorldMeshDrawItem;
 
-use super::encode::{DepthPrepassDrawBatch, draw_depth_prepass_subset};
+use super::encode::{DepthPrepassPhaseDrawBatch, draw_depth_prepass_phase};
 use super::{WorldMeshForwardPipelineState, WorldMeshForwardPlanSlot};
 
 const POSITION_ATTRIBUTES: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
@@ -194,6 +194,35 @@ impl WorldMeshForwardDepthPrepassPipelineKey {
             primitive_topology: item.batch_key.primitive_topology,
         })
     }
+
+    /// Builds a depth-prepass pipeline key for one shadow-caster draw group.
+    pub(super) fn for_shadow_draw(
+        item: &WorldMeshDrawItem,
+        pipeline: &WorldMeshForwardPipelineState,
+    ) -> Option<Self> {
+        let depth_stencil_format = pipeline.pass_desc.depth_stencil_format?;
+        let mut key = Self {
+            depth_stencil_format,
+            sample_count: pipeline.pass_desc.sample_count,
+            multiview_mask: pipeline.pass_desc.multiview_mask,
+            front_face: item.batch_key.front_face,
+            cull_mode: cull_for_topology(
+                shadow_caster_generic_cull_mode(item),
+                item.batch_key.primitive_topology,
+            ),
+            primitive_topology: item.batch_key.primitive_topology,
+        };
+        if item.shadow_cast_mode == crate::shared::ShadowCastMode::DoubleSided {
+            key.cull_mode = None;
+        }
+        Some(key)
+    }
+}
+
+fn shadow_caster_generic_cull_mode(item: &WorldMeshDrawItem) -> Option<wgpu::Face> {
+    item.batch_key
+        .render_state
+        .resolved_cull_mode(Some(wgpu::Face::Back))
 }
 
 fn depth_prepass_cull_mode(
@@ -222,7 +251,8 @@ fn cull_for_topology(
     }
 }
 
-fn depth_prepass_pipelines() -> &'static WorldMeshForwardDepthPrepassPipelineCache {
+pub(in crate::passes::world_mesh_forward) fn depth_prepass_pipelines()
+-> &'static WorldMeshForwardDepthPrepassPipelineCache {
     static CACHE: LazyLock<WorldMeshForwardDepthPrepassPipelineCache> =
         LazyLock::new(WorldMeshForwardDepthPrepassPipelineCache::default);
     &CACHE
@@ -313,18 +343,17 @@ impl RasterPass for WorldMeshForwardDepthPrepass {
             return Ok(());
         };
         let mut encode_refs = super::WorldMeshForwardEncodeRefs::from_frame(frame);
-        draw_depth_prepass_subset(DepthPrepassDrawBatch {
+        draw_depth_prepass_phase(DepthPrepassPhaseDrawBatch {
             rpass,
-            groups: &prepared.plan.regular_groups,
-            slab_layout: &prepared.plan.slab_layout,
+            runs: &prepared.depth_prepass_phase.runs,
             draws: &prepared.draws,
             encode: &mut encode_refs,
             gpu_limits: gpu_limits.as_ref(),
             per_draw_bind_group: per_draw_bg.as_ref(),
             supports_base_instance: prepared.supports_base_instance,
-            pipeline: &prepared.pipeline,
             device: ctx.device,
             depth_pipelines: self.pipelines,
+            slab_slot_base: 0,
         });
         Ok(())
     }
@@ -345,6 +374,7 @@ mod tests {
         WorldMeshForwardPipelineState {
             use_multiview: false,
             pass_desc: crate::materials::MaterialPipelineDesc {
+                target: crate::materials::MaterialPipelineTarget::Color,
                 surface_format: wgpu::TextureFormat::Rgba16Float,
                 depth_stencil_format: Some(wgpu::TextureFormat::Depth24PlusStencil8),
                 sample_count: 4,

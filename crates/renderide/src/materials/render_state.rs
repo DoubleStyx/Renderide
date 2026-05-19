@@ -8,8 +8,9 @@ mod types;
 mod unity_mapping;
 
 pub use from_maps::{material_render_state_for_lookup, material_render_state_from_maps};
-#[cfg(test)]
-pub(crate) use types::{MaterialCullOverride, MaterialDepthOffsetState, MaterialStencilState};
+pub(crate) use types::MaterialCullOverride;
 pub use types::{
     MaterialDepthCompareDomain, MaterialRenderState, RasterFrontFace, RasterPrimitiveTopology,
 };
+#[cfg(test)]
+pub(crate) use types::{MaterialDepthOffsetState, MaterialStencilState};

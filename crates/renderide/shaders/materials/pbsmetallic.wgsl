@@ -2,8 +2,8 @@
 //!
 //! This mirrors the built-in Standard metallic forward passes within the renderer's forward path:
 //! `FORWARD` writes ambient/emission plus directional lighting, and `FORWARD_DELTA` additively
-//! accumulates local lights. Unity's ShadowCaster/Deferred/Meta passes are not declared here because
-//! this render path has one forward color target, not shadow-map, G-buffer, or lightmapping targets.
+//! accumulates local lights. The `ShadowCaster` pass shares surface sampling with forward shading
+//! so alpha test, parallax, and texture-driven cutouts cast the same silhouettes they render.
 //!
 //! Froox variant bits populate `_RenderideVariantBits`; this shader decodes PBSMetallic's
 //! shader-specific keyword bits locally.
@@ -283,4 +283,17 @@ fn fs_forward_base(
         options,
     );
     return vec4<f32>(color, s.alpha);
+}
+
+//#pass type=shadow_caster name=shadow_caster cull=material(back) zwrite=on ztest=main color_mask=0 offset=material(0,0)
+@fragment
+fn fs_shadow_caster(
+    @location(0) world_pos: vec3<f32>,
+    @location(1) world_n: vec3<f32>,
+    @location(2) world_t: vec4<f32>,
+    @location(3) uv0: vec2<f32>,
+    @location(4) uv1: vec2<f32>,
+    @location(5) @interpolate(flat) view_layer: u32,
+) {
+    let _surface = sample_surface(uv0, uv1, world_pos, world_n, world_t, view_layer);
 }

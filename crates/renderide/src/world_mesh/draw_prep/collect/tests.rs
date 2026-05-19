@@ -10,7 +10,7 @@ use crate::materials::{
     MaterialPipelinePropertyIds, MaterialRouter, RasterFrontFace, RasterPipelineKind,
 };
 use crate::scene::{MeshRendererInstanceId, RenderSpaceId, SceneCoordinator};
-use crate::shared::{RenderTransform, RenderingContext};
+use crate::shared::{RenderTransform, RenderingContext, ShadowCastMode};
 
 /// Builds a unit-scale transform for draw-prep tests.
 fn identity_transform() -> RenderTransform {
@@ -57,6 +57,7 @@ fn transform_scale_filter_result(scale: Vec3) -> bool {
         material_cache: None,
         reflection_probes: None,
         prepared: None,
+        draw_kind: WorldMeshDrawKind::VisibleColor,
     };
 
     transform_chain_has_degenerate_scale(&ctx, space_id, 0)
@@ -76,6 +77,7 @@ fn prepared_draw(space_id: RenderSpaceId) -> FramePreparedDraw {
         world_space_deformed: false,
         blendshape_deformed: false,
         tangent_blendshape_deform_active: false,
+        shadow_cast_mode: ShadowCastMode::On,
         slot_index: 0,
         first_index: 0,
         index_count: 3,

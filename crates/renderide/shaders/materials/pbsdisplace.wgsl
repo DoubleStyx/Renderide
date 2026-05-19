@@ -124,6 +124,29 @@ fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32
     );
 }
 
+fn displaced_fragment_uv(uv0: vec2<f32>) -> vec2<f32> {
+    let uv_main_base = uvu::apply_st(uv0, mat._MainTex_ST);
+    return pdisp::apply_fragment_uv_offset(
+        uv_main_base,
+        uv0,
+        kw_UV_OFFSET(),
+        mat._UVOffsetMap_ST,
+        mat._UVOffsetMagnitude,
+        mat._UVOffsetBias,
+        _UVOffsetMap,
+        _UVOffsetMap_sampler,
+    );
+}
+
+fn sample_albedo_alpha(uv0: vec2<f32>) -> vec4<f32> {
+    let uv_main = displaced_fragment_uv(uv0);
+    var c = mat._Color;
+    if (kw_ALBEDOTEX()) {
+        c = c * textureSample(_MainTex, _MainTex_sampler, uv_main);
+    }
+    return c;
+}
+
 @vertex
 fn vs_main(
     @builtin(instance_index) instance_index: u32,
@@ -189,22 +212,9 @@ fn shade(
     include_directional: bool,
     include_local: bool,
 ) -> vec4<f32> {
-    let uv_main_base = uvu::apply_st(uv0, mat._MainTex_ST);
-    let uv_main = pdisp::apply_fragment_uv_offset(
-        uv_main_base,
-        uv0,
-        kw_UV_OFFSET(),
-        mat._UVOffsetMap_ST,
-        mat._UVOffsetMagnitude,
-        mat._UVOffsetBias,
-        _UVOffsetMap,
-        _UVOffsetMap_sampler,
-    );
+    let uv_main = displaced_fragment_uv(uv0);
 
-    var c = mat._Color;
-    if (kw_ALBEDOTEX()) {
-        c = c * textureSample(_MainTex, _MainTex_sampler, uv_main);
-    }
+    let c = sample_albedo_alpha(uv0);
     if (kw_ALPHACLIP() && c.a <= mat._AlphaClip) {
         discard;
     }
@@ -250,4 +260,15 @@ fn fs_forward_base(
     @location(4) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
     return shade(frag_pos.xy, world_pos, world_n, world_t, uv0, view_layer, true, true);
+}
+
+//#pass type=shadow_caster name=shadow_caster cull=material(back) zwrite=on ztest=main color_mask=0 offset=material(0,0)
+@fragment
+fn fs_shadow_caster(
+    @location(3) uv0: vec2<f32>,
+) {
+    let c = sample_albedo_alpha(uv0);
+    if (kw_ALPHACLIP() && c.a <= mat._AlphaClip) {
+        discard;
+    }
 }

@@ -172,6 +172,8 @@ pub(super) enum BuildPassType {
     Forward,
     /// Source-authored depth-only prepass.
     DepthPrepass,
+    /// Source-authored shadow-map caster pass.
+    ShadowCaster,
 }
 
 impl BuildPassType {
@@ -180,8 +182,9 @@ impl BuildPassType {
         match value.trim().to_ascii_lowercase().as_str() {
             "forward" => Ok(Self::Forward),
             "depth_prepass" | "depthprepass" | "prepass" => Ok(Self::DepthPrepass),
+            "shadow_caster" | "shadowcaster" | "shadow" => Ok(Self::ShadowCaster),
             _ => Err(BuildError::Message(format!(
-                "{file}:{line}: unknown `//#pass` type `{value}` (allowed: forward, depth_prepass)"
+                "{file}:{line}: unknown `//#pass` type `{value}` (allowed: forward, depth_prepass, shadow_caster)"
             ))),
         }
     }
@@ -191,6 +194,7 @@ impl BuildPassType {
         match self {
             Self::Forward => "Forward",
             Self::DepthPrepass => "DepthPrepass",
+            Self::ShadowCaster => "ShadowCaster",
         }
     }
 
@@ -199,6 +203,7 @@ impl BuildPassType {
         match self {
             Self::Forward => "forward",
             Self::DepthPrepass => "depth_prepass",
+            Self::ShadowCaster => "shadow_caster",
         }
     }
 }
@@ -481,6 +486,28 @@ impl BuildPassDraft {
                     render_state_policy: policy,
                 }
             }
+            BuildPassType::ShadowCaster => {
+                let mut policy = BuildRenderStatePolicy::ALL_MATERIAL;
+                policy.color_mask = false;
+                policy.depth_write = false;
+                policy.stencil = false;
+                Self {
+                    pass_type,
+                    name: pass_type.default_name().to_string(),
+                    vertex_entry: "vs_main".to_string(),
+                    alpha_to_coverage: false,
+                    depth_compare: BuildDepthCompare::Main,
+                    depth_compare_domain: BuildDepthCompareDomain::FrooxZTest,
+                    depth_write: true,
+                    cull_mode: BuildCullMode::Back,
+                    blend: BuildBlend::Off,
+                    write_mask: BuildColorWrites::None,
+                    depth_bias_slope_scale_bits: 0.0f32.to_bits(),
+                    depth_bias_constant: 0,
+                    material_state: BuildMaterialPassState::Static,
+                    render_state_policy: policy,
+                }
+            }
         }
     }
 }
@@ -610,14 +637,14 @@ pub(super) fn parse_pass_directives(
         let body = rest.trim();
         if body.is_empty() {
             return Err(BuildError::Message(format!(
-                "{file}:{line_no}: `//#pass` tag requires `type=forward` or `type=depth_prepass`"
+                "{file}:{line_no}: `//#pass` tag requires `type=forward`, `type=depth_prepass`, or `type=shadow_caster`"
             )));
         }
         let mut tokens = body.split_whitespace();
         let first = tokens.next().unwrap_or("");
         let Some((first_key, first_value)) = first.split_once('=') else {
             return Err(BuildError::Message(format!(
-                "{file}:{line_no}: `//#pass` uses explicit key=value metadata; start with `type=forward` or `type=depth_prepass`, got `{first}`"
+                "{file}:{line_no}: `//#pass` uses explicit key=value metadata; start with `type=forward`, `type=depth_prepass`, or `type=shadow_caster`, got `{first}`"
             )));
         };
         if !first_key.trim().eq_ignore_ascii_case("type") {
@@ -1477,6 +1504,33 @@ fn fs_main() -> @location(0) vec4<f32> {
 
         assert!(passes[0].alpha_to_coverage);
         assert_eq!(passes[0].name, "forward");
+        Ok(())
+    }
+
+    /// Shadow-caster pass directives default to depth-only material-aware raster state.
+    #[test]
+    fn pass_directive_extracts_shadow_caster_state() -> Result<(), BuildError> {
+        let passes = parse_pass_directives(
+            r#"
+//#pass type=shadow_caster
+@fragment
+fn fs_shadow() {
+}
+"#,
+            "test.wgsl",
+        )?;
+
+        assert_eq!(passes[0].pass_type, BuildPassType::ShadowCaster);
+        assert_eq!(passes[0].name, "shadow_caster");
+        assert!(passes[0].depth_write);
+        assert_eq!(passes[0].write_mask, BuildColorWrites::None);
+        assert_eq!(passes[0].material_state, BuildMaterialPassState::Static);
+        assert!(!passes[0].render_state_policy.color_mask);
+        assert!(!passes[0].render_state_policy.depth_write);
+        assert!(passes[0].render_state_policy.depth_compare);
+        assert!(passes[0].render_state_policy.cull);
+        assert!(!passes[0].render_state_policy.stencil);
+        assert!(passes[0].render_state_policy.depth_offset);
         Ok(())
     }
 

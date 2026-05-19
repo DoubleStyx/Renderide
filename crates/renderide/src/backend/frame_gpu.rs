@@ -11,14 +11,16 @@ mod empty_material;
 mod ibl_dfg;
 mod reflection_probe_specular;
 mod scene_snapshot;
+mod shadows;
 
 use std::sync::Arc;
 
 use crate::backend::cluster_gpu::{CLUSTER_COUNT_Z, ClusterBufferCache, ClusterBufferRefs};
 use crate::backend::light_gpu::GpuLight;
 use crate::gpu::frame_globals::{FrameGpuUniforms, SkyboxSpecularUniformParams};
-use crate::gpu::{GpuLimits, MAX_LIGHTS, frame_bind_group_layout};
+use crate::gpu::{GpuLimits, GpuShadowLight, GpuShadowView, MAX_LIGHTS, frame_bind_group_layout};
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
+use crate::shared::ShadowResolutionMode;
 
 use super::frame_gpu_error::FrameGpuInitError;
 pub(crate) use crate::gpu::{
@@ -35,6 +37,7 @@ pub(crate) use scene_snapshot::FrameSceneSnapshotTextureViews;
 use scene_snapshot::{
     DEFAULT_SCENE_COLOR_FORMAT, SceneSnapshotKind, SceneSnapshotLayout, SceneSnapshotSet,
 };
+use shadows::{ShadowMapResources, create_shadow_light_buffer, create_shadow_view_buffer};
 
 /// GPU buffers and bind groups for `@group(0)` frame globals (camera, lights, cluster lists,
 /// fallback sampled scene snapshots, and reflection-probe specular IBL).
@@ -76,6 +79,12 @@ pub struct FrameGpuResources {
     _ibl_dfg_lut_texture: Arc<wgpu::Texture>,
     /// Frame-global DFG LUT view bound at `@group(0) @binding(11)`.
     ibl_dfg_lut_view: Arc<wgpu::TextureView>,
+    /// Persistent shadow-map texture array and comparison sampler.
+    shadow_maps: ShadowMapResources,
+    /// Fallback per-light shadow indirection buffer.
+    shadow_lights_buffer: Arc<wgpu::Buffer>,
+    /// Fallback per-shadow-view matrix buffer.
+    shadow_views_buffer: Arc<wgpu::Buffer>,
     /// Global `@group(0)` bind group (fallback frame uniform + fallback lights/snapshots).
     ///
     /// Per-view passes bind the per-view bind group from
@@ -189,6 +198,44 @@ impl PerViewSceneSnapshots {
     }
 }
 
+/// Inputs for creating one frame `@group(0)` bind group.
+struct FrameBindGroupInputs<'a> {
+    /// Uniform buffer containing frame/view globals.
+    frame_uniform: &'a wgpu::Buffer,
+    /// Storage buffer containing visible light records.
+    lights_buffer: &'a wgpu::Buffer,
+    /// Shared clustered-light buffers.
+    cluster_refs: ClusterBufferRefs<'a>,
+    /// Scene snapshot texture views and sampler.
+    snapshots: FrameSceneSnapshotTextureViews<'a>,
+    /// Reflection-probe specular IBL resources.
+    reflection_probes: ReflectionProbeSpecularBindGroupResources<'a>,
+    /// Static DFG LUT used by split-sum IBL.
+    ibl_dfg_lut_view: &'a wgpu::TextureView,
+    /// Shadow-map texture array and compare sampler.
+    shadows: shadows::ShadowBindGroupResources<'a>,
+    /// Per-light shadow metadata buffer.
+    shadow_lights_buffer: &'a wgpu::Buffer,
+    /// Per-shadow-view matrix metadata buffer.
+    shadow_views_buffer: &'a wgpu::Buffer,
+}
+
+/// Per-view inputs that differ from the shared frame-global bind resources.
+pub(super) struct PerViewFrameBindGroupInputs<'a> {
+    /// Per-view frame uniform buffer.
+    pub(super) frame_uniform: &'a wgpu::Buffer,
+    /// Per-view light storage buffer.
+    pub(super) lights_buffer: &'a wgpu::Buffer,
+    /// Shared clustered-light buffers.
+    pub(super) cluster_refs: ClusterBufferRefs<'a>,
+    /// Per-view scene snapshot texture views and sampler.
+    pub(super) snapshots: FrameSceneSnapshotTextureViews<'a>,
+    /// Per-view shadow-light metadata buffer.
+    pub(super) shadow_lights_buffer: &'a wgpu::Buffer,
+    /// Per-view shadow-view metadata buffer.
+    pub(super) shadow_views_buffer: &'a wgpu::Buffer,
+}
+
 impl FrameGpuResources {
     /// Layout for `@group(0)`: uniform frame + lights + cluster ranges + cluster indices +
     /// scene snapshots + reflection-probe specular resources.
@@ -198,72 +245,100 @@ impl FrameGpuResources {
 
     fn create_bind_group(
         device: &wgpu::Device,
-        frame_uniform: &wgpu::Buffer,
-        lights_buffer: &wgpu::Buffer,
-        refs: ClusterBufferRefs<'_>,
-        snapshots: FrameSceneSnapshotTextureViews<'_>,
-        reflection_probes: ReflectionProbeSpecularBindGroupResources<'_>,
-        ibl_dfg_lut_view: &wgpu::TextureView,
+        inputs: FrameBindGroupInputs<'_>,
     ) -> Arc<wgpu::BindGroup> {
         let layout = Self::bind_group_layout(device);
-        let bind_group = Arc::new(device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("frame_globals_bind_group"),
-            layout: &layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: frame_uniform.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: lights_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: refs.cluster_light_counts.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: refs.cluster_light_indices.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::TextureView(snapshots.scene_depth_2d),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: wgpu::BindingResource::TextureView(snapshots.scene_depth_array),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: wgpu::BindingResource::TextureView(snapshots.scene_color_2d),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 7,
-                    resource: wgpu::BindingResource::TextureView(snapshots.scene_color_array),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 8,
-                    resource: wgpu::BindingResource::Sampler(snapshots.scene_color_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 9,
-                    resource: wgpu::BindingResource::TextureView(reflection_probes.array_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 10,
-                    resource: wgpu::BindingResource::Sampler(reflection_probes.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 11,
-                    resource: wgpu::BindingResource::TextureView(ibl_dfg_lut_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 12,
-                    resource: reflection_probes.metadata_buffer.as_entire_binding(),
-                },
-            ],
-        }));
+        let bind_group = Arc::new(
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("frame_globals_bind_group"),
+                layout: &layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: inputs.frame_uniform.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: inputs.lights_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: inputs.cluster_refs.cluster_light_counts.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: inputs
+                            .cluster_refs
+                            .cluster_light_indices
+                            .as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(
+                            inputs.snapshots.scene_depth_2d,
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::TextureView(
+                            inputs.snapshots.scene_depth_array,
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: wgpu::BindingResource::TextureView(
+                            inputs.snapshots.scene_color_2d,
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: wgpu::BindingResource::TextureView(
+                            inputs.snapshots.scene_color_array,
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 8,
+                        resource: wgpu::BindingResource::Sampler(
+                            inputs.snapshots.scene_color_sampler,
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 9,
+                        resource: wgpu::BindingResource::TextureView(
+                            inputs.reflection_probes.array_view,
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 10,
+                        resource: wgpu::BindingResource::Sampler(inputs.reflection_probes.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 11,
+                        resource: wgpu::BindingResource::TextureView(inputs.ibl_dfg_lut_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 12,
+                        resource: inputs.reflection_probes.metadata_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 13,
+                        resource: wgpu::BindingResource::TextureView(inputs.shadows.array_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 14,
+                        resource: wgpu::BindingResource::Sampler(inputs.shadows.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 15,
+                        resource: inputs.shadow_lights_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 16,
+                        resource: inputs.shadow_views_buffer.as_entire_binding(),
+                    },
+                ],
+            }),
+        );
         crate::profiling::note_resource_churn!(BindGroup, "backend::frame_globals_bind_group");
         bind_group
     }
@@ -279,6 +354,22 @@ impl FrameGpuResources {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         })
+    }
+
+    /// Allocates a per-light shadow metadata buffer large enough for [`MAX_LIGHTS`] rows.
+    pub(in crate::backend) fn create_shadow_light_storage_buffer(
+        device: &wgpu::Device,
+        label: &'static str,
+    ) -> wgpu::Buffer {
+        create_shadow_light_buffer(device, label)
+    }
+
+    /// Allocates a shadow-view metadata buffer large enough for all shadow-map layers.
+    pub(in crate::backend) fn create_shadow_view_storage_buffer(
+        device: &wgpu::Device,
+        label: &'static str,
+    ) -> wgpu::Buffer {
+        create_shadow_view_buffer(device, label)
     }
 
     /// Returns the currently selected reflection-probe bind-group resources.
@@ -299,12 +390,17 @@ impl FrameGpuResources {
         };
         self.bind_group = Self::create_bind_group(
             device,
-            &self.frame_uniform,
-            &self.lights_buffer,
-            refs,
-            self.scene_snapshots.views(),
-            self.reflection_probe_bind_group_resources(),
-            self.ibl_dfg_lut_view.as_ref(),
+            FrameBindGroupInputs {
+                frame_uniform: &self.frame_uniform,
+                lights_buffer: &self.lights_buffer,
+                cluster_refs: refs,
+                snapshots: self.scene_snapshots.views(),
+                reflection_probes: self.reflection_probe_bind_group_resources(),
+                ibl_dfg_lut_view: self.ibl_dfg_lut_view.as_ref(),
+                shadows: self.shadow_maps.bind_group_resources(),
+                shadow_lights_buffer: self.shadow_lights_buffer.as_ref(),
+                shadow_views_buffer: self.shadow_views_buffer.as_ref(),
+            },
         );
     }
 
@@ -350,18 +446,32 @@ impl FrameGpuResources {
             reflection_probe_metadata_buffer,
         ) = create_reflection_probe_specular_fallback(device);
         let (ibl_dfg_lut_texture, ibl_dfg_lut_view) = create_ibl_dfg_lut(device, queue);
+        let shadow_maps = ShadowMapResources::new(device);
+        let shadow_lights_buffer = Arc::new(create_shadow_light_buffer(
+            device,
+            "frame_shadow_lights_storage",
+        ));
+        let shadow_views_buffer = Arc::new(create_shadow_view_buffer(
+            device,
+            "frame_shadow_views_storage",
+        ));
         let bind_group = Self::create_bind_group(
             device,
-            &frame_uniform,
-            &lights_buffer,
-            refs,
-            scene_snapshots.views(),
-            ReflectionProbeSpecularBindGroupResources {
-                array_view: reflection_probe_array_view.as_ref(),
-                sampler: reflection_probe_sampler.as_ref(),
-                metadata_buffer: reflection_probe_metadata_buffer.as_ref(),
+            FrameBindGroupInputs {
+                frame_uniform: &frame_uniform,
+                lights_buffer: &lights_buffer,
+                cluster_refs: refs,
+                snapshots: scene_snapshots.views(),
+                reflection_probes: ReflectionProbeSpecularBindGroupResources {
+                    array_view: reflection_probe_array_view.as_ref(),
+                    sampler: reflection_probe_sampler.as_ref(),
+                    metadata_buffer: reflection_probe_metadata_buffer.as_ref(),
+                },
+                ibl_dfg_lut_view: ibl_dfg_lut_view.as_ref(),
+                shadows: shadow_maps.bind_group_resources(),
+                shadow_lights_buffer: shadow_lights_buffer.as_ref(),
+                shadow_views_buffer: shadow_views_buffer.as_ref(),
             },
-            ibl_dfg_lut_view.as_ref(),
         );
         Ok(Self {
             frame_uniform,
@@ -375,6 +485,9 @@ impl FrameGpuResources {
             reflection_probe_version: 0,
             _ibl_dfg_lut_texture: ibl_dfg_lut_texture,
             ibl_dfg_lut_view,
+            shadow_maps,
+            shadow_lights_buffer,
+            shadow_views_buffer,
             bind_group,
             cluster_bind_version,
             limits,
@@ -424,20 +537,113 @@ impl FrameGpuResources {
     pub(super) fn build_per_view_bind_group(
         &self,
         device: &wgpu::Device,
-        frame_uniform: &wgpu::Buffer,
-        lights_buffer: &wgpu::Buffer,
-        cluster_refs: ClusterBufferRefs<'_>,
-        snapshots: FrameSceneSnapshotTextureViews<'_>,
+        inputs: PerViewFrameBindGroupInputs<'_>,
+    ) -> Arc<wgpu::BindGroup> {
+        self.build_per_view_bind_group_with_shadows(
+            device,
+            inputs,
+            self.shadow_maps.bind_group_resources(),
+        )
+    }
+
+    /// Builds a per-view `@group(0)` bind group for passes that write the live shadow atlas.
+    pub(super) fn build_per_view_shadow_writer_bind_group(
+        &self,
+        device: &wgpu::Device,
+        inputs: PerViewFrameBindGroupInputs<'_>,
+    ) -> Arc<wgpu::BindGroup> {
+        self.build_per_view_bind_group_with_shadows(
+            device,
+            inputs,
+            self.shadow_maps.writer_bind_group_resources(),
+        )
+    }
+
+    /// Builds a per-view frame bind group with caller-selected shadow sampling resources.
+    fn build_per_view_bind_group_with_shadows(
+        &self,
+        device: &wgpu::Device,
+        inputs: PerViewFrameBindGroupInputs<'_>,
+        shadows: shadows::ShadowBindGroupResources<'_>,
     ) -> Arc<wgpu::BindGroup> {
         Self::create_bind_group(
             device,
-            frame_uniform,
-            lights_buffer,
-            cluster_refs,
-            snapshots,
-            self.reflection_probe_bind_group_resources(),
-            self.ibl_dfg_lut_view.as_ref(),
+            FrameBindGroupInputs {
+                frame_uniform: inputs.frame_uniform,
+                lights_buffer: inputs.lights_buffer,
+                cluster_refs: inputs.cluster_refs,
+                snapshots: inputs.snapshots,
+                reflection_probes: self.reflection_probe_bind_group_resources(),
+                ibl_dfg_lut_view: self.ibl_dfg_lut_view.as_ref(),
+                shadows,
+                shadow_lights_buffer: inputs.shadow_lights_buffer,
+                shadow_views_buffer: inputs.shadow_views_buffer,
+            },
         )
+    }
+
+    /// Ensures the shared shadow-map texture matches the current quality setting.
+    pub(super) fn sync_shadow_resources(
+        &mut self,
+        device: &wgpu::Device,
+        mode: ShadowResolutionMode,
+    ) -> bool {
+        let changed = self
+            .shadow_maps
+            .sync_resolution(device, self.limits.as_ref(), mode);
+        if changed {
+            self.rebuild_bind_group(device);
+        }
+        changed
+    }
+
+    /// Version for per-view frame bind-group invalidation when the shadow texture reallocates.
+    pub(super) fn shadow_resources_version(&self) -> u64 {
+        self.shadow_maps.version()
+    }
+
+    /// Current shadow-map resolution.
+    pub(super) fn shadow_resolution(&self) -> u32 {
+        self.shadow_maps.resolution()
+    }
+
+    /// Returns one renderable shadow-map layer view.
+    pub(super) fn shadow_layer_view(&self, layer: usize) -> Option<Arc<wgpu::TextureView>> {
+        self.shadow_maps.layer_view(layer)
+    }
+
+    /// Records a shadow-light metadata upload.
+    pub(in crate::backend) fn write_shadow_lights_buffer_to(
+        uploads: GraphUploadSink<'_>,
+        shadow_lights_buffer: &wgpu::Buffer,
+        lights: &[GpuShadowLight],
+    ) {
+        if lights.is_empty() {
+            uploads.write_buffer(
+                shadow_lights_buffer,
+                0,
+                bytemuck::bytes_of(&GpuShadowLight::default()),
+            );
+        } else {
+            uploads.write_buffer(shadow_lights_buffer, 0, bytemuck::cast_slice(lights));
+        }
+    }
+
+    /// Records a shadow-view metadata upload.
+    pub(in crate::backend) fn write_shadow_views_buffer_to(
+        uploads: GraphUploadSink<'_>,
+        shadow_views_buffer: &wgpu::Buffer,
+        views: &[GpuShadowView],
+    ) {
+        if views.is_empty() {
+            uploads.write_buffer(
+                shadow_views_buffer,
+                0,
+                bytemuck::bytes_of(&GpuShadowView::default()),
+            );
+        } else {
+            uploads.write_buffer(shadow_views_buffer, 0, bytemuck::cast_slice(views));
+        }
     }
 
     /// Current reflection-probe resource version for per-view bind-group invalidation.
@@ -514,7 +720,7 @@ mod tests {
         let entries = crate::gpu::frame_bind_group_layout_entries();
         assert_eq!(
             fragment_resource_count(&entries, |ty| matches!(ty, wgpu::BindingType::Sampler(_))),
-            2
+            3
         );
     }
 
@@ -526,7 +732,7 @@ mod tests {
                 ty,
                 wgpu::BindingType::Texture { .. }
             )),
-            6
+            7
         );
     }
 }

@@ -31,6 +31,7 @@ use crate::gpu::GpuLimits;
 use crate::gpu_pools::{MeshPool, RenderTexturePool, TexturePool};
 use crate::materials::host_data::MaterialPropertyStore;
 use crate::render_graph::TransientPool;
+use crate::shared::QualityConfig;
 
 use super::FrameResourceManager;
 use super::secondary_rt_scratch::{SecondaryRtScratchCache, SecondaryRtScratchTargets};
@@ -133,6 +134,25 @@ impl RenderBackend {
             surface_format: None,
             renderer_settings: None,
             headless: false,
+        }
+    }
+
+    /// Applies host quality settings used by frame-resource allocation.
+    pub(crate) fn apply_quality_config(&mut self, config: QualityConfig) {
+        let previous = self.frame_services.frame_resources.quality_config();
+        let shadow_config_changed = previous.shadow_cascades != config.shadow_cascades
+            || previous.shadow_resolution != config.shadow_resolution
+            || previous.shadow_distance.to_bits() != config.shadow_distance.to_bits();
+        self.frame_services
+            .frame_resources
+            .set_quality_config(config.clone());
+        if shadow_config_changed {
+            logger::info!(
+                "backend quality config applied: shadow_resolution={:?} shadow_cascades={:?} shadow_distance={:.3}",
+                config.shadow_resolution,
+                config.shadow_cascades,
+                config.shadow_distance
+            );
         }
     }
 

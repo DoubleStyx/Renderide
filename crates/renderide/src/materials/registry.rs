@@ -6,7 +6,7 @@ use super::cache::{
     MaterialPipelineCache, MaterialPipelineLookup, MaterialPipelineSet, MaterialPipelineVariantSpec,
 };
 use super::pipeline_kind::RasterPipelineKind;
-use super::raster_pipeline::MaterialPipelineDesc;
+use super::raster_pipeline::{MaterialPipelineDesc, MaterialPipelineTarget};
 use super::router::MaterialRouter;
 
 /// Pipeline set paired with the concrete raster kind that produced it.
@@ -96,6 +96,9 @@ impl MaterialRegistry {
         desc: &MaterialPipelineDesc,
         variant: MaterialPipelineVariantSpec,
     ) -> Option<MaterialPipelineResolution> {
+        if desc.target == MaterialPipelineTarget::ShadowCaster {
+            return None;
+        }
         let fallback = RasterPipelineKind::Null;
         match self.cache.get_or_queue(&fallback, desc, variant) {
             MaterialPipelineLookup::Ready(p) => Some(MaterialPipelineResolution::new(fallback, p)),

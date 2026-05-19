@@ -235,3 +235,37 @@ fn fs_main(
     );
     return vec4<f32>(color, alpha);
 }
+
+//#pass type=shadow_caster name=shadow_caster cull=material(back) zwrite=on ztest=main color_mask=0 offset=material(0,0)
+@fragment
+fn fs_shadow_caster(
+    @location(0) world_pos: vec3<f32>,
+    @location(1) object_pos: vec3<f32>,
+    @location(4) uv0: vec2<f32>,
+) {
+    let uv_main = uvu::apply_st(uv0, mat._MainTex_ST);
+    let uv_detail_albedo = uvu::apply_st(uv0, mat._DetailAlbedoMap_ST);
+    let slice_p = pslice::slice_position(
+        world_pos,
+        object_pos,
+        pbs_kw(PBSSLICE_KW_WORLD_SPACE),
+        pbs_kw(PBSSLICE_KW_OBJECT_SPACE),
+    );
+    let slice = pslice::evaluate_planes(
+        mat._Slicers,
+        slice_p,
+        mat._EdgeTransitionStart,
+        mat._EdgeTransitionEnd,
+    );
+    if (slice.min_distance < 0.0) {
+        discard;
+    }
+    var c = sample_albedo_color(uv_main, slice.edge_lerp);
+    if (pbs_kw(PBSSLICE_KW_DETAIL_ALBEDOTEX)) {
+        let detail = textureSample(_DetailAlbedoMap, _DetailAlbedoMap_sampler, uv_detail_albedo).rgb * 2.0;
+        c = vec4<f32>(c.rgb * detail, c.a);
+    }
+    if (pbs_kw(PBSSLICE_KW_ALPHACLIP) && c.a <= mat._AlphaClip) {
+        discard;
+    }
+}

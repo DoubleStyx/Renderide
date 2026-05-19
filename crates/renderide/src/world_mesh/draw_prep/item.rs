@@ -11,6 +11,7 @@ use crate::reflection_probes::specular::ReflectionProbeDrawSelection;
 #[cfg(test)]
 use crate::scene::MeshMaterialSlot;
 use crate::scene::{MeshRendererInstanceId, RenderSpaceId, StaticMeshRenderer};
+use crate::shared::ShadowCastMode;
 use crate::world_mesh::materials::MaterialDrawBatchKey;
 
 /// Result of `collect_and_sort_draws` including optional frustum cull counts.
@@ -72,6 +73,8 @@ pub struct WorldMeshDrawItem {
     pub world_space_deformed: bool,
     /// Whether this draw reads blendshape-deformed positions from the GPU skin cache.
     pub blendshape_deformed: bool,
+    /// Host shadow-caster mode for depth-only shadow-map passes.
+    pub shadow_cast_mode: ShadowCastMode,
     /// Stable insertion order before sorting; used for transparent UI/text.
     pub collect_order: usize,
     /// Approximate camera distance metric used for transparent back-to-front sorting.
@@ -79,6 +82,10 @@ pub struct WorldMeshDrawItem {
     /// Transparent draws prefer world bounds when available and fall back to transform-origin
     /// distance when the host has not provided usable mesh bounds for the draw.
     pub camera_distance_sq: f32,
+    /// World-space object bounds used by secondary visibility passes.
+    ///
+    /// `None` means bounds are unavailable or not trusted, so consumers should keep the draw.
+    pub world_aabb: Option<(glam::Vec3, glam::Vec3)>,
     /// Merge key for host material + property block lookups (e.g. [`crate::materials::host_data::MaterialDictionary::get_merged`]).
     pub lookup_ids: MaterialPropertyLookupIds,
     /// Cached batch key for the forward pass.
@@ -152,7 +159,7 @@ pub(crate) fn stacked_material_submesh_topology(
 
 /// Counts material slots that can produce draws for `renderer` without allocating a fallback slot.
 pub(crate) fn resolved_material_slot_count(renderer: &StaticMeshRenderer) -> usize {
-    if !renderer.emits_visible_color_draws() {
+    if !renderer.participates_in_raster_draws() {
         return 0;
     }
     if renderer.material_slots.is_empty() {
@@ -191,7 +198,6 @@ mod tests {
     };
     use crate::scene::{MeshMaterialSlot, StaticMeshRenderer};
     use crate::shared::ShadowCastMode;
-
     #[test]
     fn stacked_material_submesh_range_reuses_last_submesh_for_extra_slots() {
         let submeshes = [(0, 3), (3, 6)];
@@ -249,7 +255,7 @@ mod tests {
     }
 
     #[test]
-    fn resolved_material_slot_count_suppresses_shadow_only_renderers() {
+    fn resolved_material_slot_count_keeps_shadow_only_renderers_for_shadow_maps() {
         let renderer = StaticMeshRenderer {
             shadow_cast_mode: ShadowCastMode::ShadowOnly,
             material_slots: vec![MeshMaterialSlot {
@@ -260,14 +266,25 @@ mod tests {
             ..Default::default()
         };
 
+        assert_eq!(resolved_material_slot_count(&renderer), 1);
+    }
+
+    #[test]
+    fn resolved_material_slot_count_suppresses_non_casters_without_color_draws() {
+        let renderer = StaticMeshRenderer {
+            shadow_cast_mode: ShadowCastMode::Off,
+            ..Default::default()
+        };
+
         assert_eq!(resolved_material_slot_count(&renderer), 0);
     }
 
     #[test]
-    fn resolved_material_slot_count_keeps_non_shadow_only_renderers() {
+    fn resolved_material_slot_count_keeps_visible_or_shadow_renderers() {
         for shadow_cast_mode in [
             ShadowCastMode::Off,
             ShadowCastMode::On,
+            ShadowCastMode::ShadowOnly,
             ShadowCastMode::DoubleSided,
         ] {
             let renderer = StaticMeshRenderer {

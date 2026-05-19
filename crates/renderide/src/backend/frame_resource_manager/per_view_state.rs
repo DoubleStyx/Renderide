@@ -35,9 +35,16 @@ pub struct PerViewFrameState {
     pub frame_uniform_buffer: wgpu::Buffer,
     /// Per-view light storage buffer written during pre-record synchronization.
     pub lights_buffer: wgpu::Buffer,
+    /// Per-view shadow-light metadata buffer written by the shadow-map pass.
+    pub shadow_lights_buffer: wgpu::Buffer,
+    /// Per-view shadow-view matrix buffer written by the shadow-map pass.
+    pub shadow_views_buffer: wgpu::Buffer,
     /// Per-view `@group(0)` bind group referencing [`Self::frame_uniform_buffer`],
-    /// [`Self::lights_buffer`], shared cluster buffers, and view-local scene snapshots.
+    /// [`Self::lights_buffer`], shadow metadata, shared cluster buffers, and view-local scene
+    /// snapshots.
     pub frame_bind_group: Arc<wgpu::BindGroup>,
+    /// Per-view `@group(0)` bind group for passes that write the live shadow atlas.
+    pub shadow_writer_frame_bind_group: Arc<wgpu::BindGroup>,
     /// Per-view uniform buffer for `ClusterParams` (camera matrix, projection, viewport, etc.).
     ///
     /// Sized `CLUSTER_PARAMS_UNIFORM_SIZE x eye_multiplier`. Must be per-view -- see struct doc.
@@ -48,6 +55,8 @@ pub struct PerViewFrameState {
     pub(super) last_cluster_version: u64,
     /// Reflection-probe resource version at which [`Self::frame_bind_group`] was last built.
     pub(super) last_skybox_specular_version: u64,
+    /// Shadow-map resource version at which [`Self::frame_bind_group`] was last built.
+    pub(super) last_shadow_resources_version: u64,
     /// Stereo flag at which [`Self::cluster_params_buffer`] was last allocated.
     pub(super) last_stereo: bool,
 }

@@ -155,12 +155,12 @@ pub(in crate::world_mesh::draw_prep) fn estimated_draw_count(
     scene.space(space_id).map_or(0, |s| {
         s.static_mesh_renderers()
             .iter()
-            .filter(|renderer| renderer.emits_visible_color_draws())
+            .filter(|renderer| renderer.participates_in_raster_draws())
             .count()
             .saturating_add(
                 s.skinned_mesh_renderers()
                     .iter()
-                    .filter(|skinned| skinned.base.emits_visible_color_draws())
+                    .filter(|skinned| skinned.base.participates_in_raster_draws())
                     .count(),
             )
             .saturating_mul(2)
@@ -419,7 +419,7 @@ fn try_expand_one_renderer(
     skinned: bool,
     skinned_renderer: Option<&SkinnedMeshRenderer>,
 ) {
-    if !base.emits_visible_color_draws() || base.mesh_asset_id < 0 || base.node_id < 0 {
+    if !base.participates_in_raster_draws() || base.mesh_asset_id < 0 || base.node_id < 0 {
         return;
     }
     if ctx.scene.transform_has_degenerate_scale_for_context(
@@ -577,6 +577,7 @@ fn expand_renderer_slots(
             world_space_deformed,
             blendshape_deformed,
             tangent_blendshape_deform_active,
+            shadow_cast_mode: renderer.shadow_cast_mode,
             slot_index,
             first_index,
             index_count,

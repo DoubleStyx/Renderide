@@ -9,6 +9,7 @@ use crate::diagnostics::{DebugHudEncodeError, PerViewHudConfig, PerViewHudOutput
 use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
 use crate::materials::{EmbeddedTangentFallbackMode, MaterialSystem};
 use crate::mesh_deform::{GpuSkinCache, MeshDeformScratch, MeshPreprocessPipelines};
+use crate::passes::ShadowCasterDrawPlanSlot;
 use crate::render_graph::TransientPool;
 use crate::render_graph::blackboard::Blackboard;
 use crate::render_graph::compiled::FrameView;
@@ -92,17 +93,30 @@ impl ViewAssetPrewarmRequests {
 fn collect_view_asset_prewarm_requests(views: &[FrameView<'_>]) -> ViewAssetPrewarmRequests {
     let mut requests = ViewAssetPrewarmRequests::default();
     for view in views {
-        let Some(draw_plan) = view.initial_blackboard.get::<WorldMeshDrawPlanSlot>() else {
-            continue;
-        };
-        let Some(collection) = draw_plan.as_prefetched() else {
-            continue;
-        };
-        for item in &collection.items {
-            requests.record_item(item);
-        }
+        record_view_draw_plan_assets(
+            &mut requests,
+            view.initial_blackboard.get::<WorldMeshDrawPlanSlot>(),
+        );
+        record_view_draw_plan_assets(
+            &mut requests,
+            view.initial_blackboard.get::<ShadowCasterDrawPlanSlot>(),
+        );
     }
     requests
+}
+
+/// Adds mesh stream requirements from one optional per-view draw plan.
+fn record_view_draw_plan_assets(
+    requests: &mut ViewAssetPrewarmRequests,
+    draw_plan: Option<&crate::world_mesh::WorldMeshDrawPlan>,
+) {
+    let Some(collection) = draw_plan.and_then(crate::world_mesh::WorldMeshDrawPlan::as_prefetched)
+    else {
+        return;
+    };
+    for item in &collection.items {
+        requests.record_item(item);
+    }
 }
 
 /// Narrow backend packet used by the render graph executor.

@@ -3,8 +3,9 @@
 use crate::materials::{MaterialPipelineDesc, ShaderPermutation};
 use crate::render_graph::blackboard::BlackboardSlot;
 use crate::skybox::PreparedSkybox;
-use crate::world_mesh::{InstancePlan, WorldMeshDrawItem, WorldMeshHelperNeeds};
+use crate::world_mesh::{InstancePlan, WorldMeshDrawItem, WorldMeshDrawPlan, WorldMeshHelperNeeds};
 
+use super::DepthPrepassPhase;
 use super::MaterialBatchPacket;
 
 /// Pipeline state resolved during world-mesh forward preparation.
@@ -23,6 +24,8 @@ pub(crate) struct PreparedWorldMeshForwardFrame {
     pub draws: Vec<WorldMeshDrawItem>,
     /// Per-view [`InstancePlan`]: per-draw slab layout plus regular and intersection draw groups.
     pub plan: InstancePlan,
+    /// Prepared safe-opaque depth prepass replay phase.
+    pub depth_prepass_phase: DepthPrepassPhase,
     /// Pipeline format/sample/multiview state.
     pub pipeline: WorldMeshForwardPipelineState,
     /// Scene snapshot helper work needed by the prepared draw list.
@@ -55,4 +58,10 @@ pub(crate) struct PreparedWorldMeshForwardFrame {
 pub(crate) struct WorldMeshForwardPlanSlot;
 impl BlackboardSlot for WorldMeshForwardPlanSlot {
     type Value = PreparedWorldMeshForwardFrame;
+}
+
+/// Blackboard slot carrying prefetched shadow-caster draws for the view's shadow-map pass.
+pub(crate) struct ShadowCasterDrawPlanSlot;
+impl BlackboardSlot for ShadowCasterDrawPlanSlot {
+    type Value = WorldMeshDrawPlan;
 }

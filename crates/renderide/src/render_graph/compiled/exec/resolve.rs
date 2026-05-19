@@ -354,6 +354,7 @@ impl CompiledRenderGraph {
     pub(super) fn resolve_view_from_target<'a>(
         view_id: ViewId,
         post_processing: ViewPostProcessing,
+        shadows: super::super::ViewShadows,
         target: &'a FrameViewTarget<'a>,
         gpu: &'a mut GpuContext,
         backbuffer_view_holder: Option<&'a wgpu::TextureView>,
@@ -381,6 +382,7 @@ impl CompiledRenderGraph {
                     view_id: ViewId::Main,
                     sample_count,
                     post_processing,
+                    shadows,
                 })
             }
             FrameViewTarget::ExternalMultiview(ext) => {
@@ -396,6 +398,7 @@ impl CompiledRenderGraph {
                     view_id: ViewId::Main,
                     sample_count,
                     post_processing,
+                    shadows,
                 })
             }
             FrameViewTarget::OffscreenRt(ext) => Ok(ResolvedView {
@@ -411,6 +414,7 @@ impl CompiledRenderGraph {
                     .sample_count_policy
                     .resolve(gpu.msaa().swapchain_msaa_effective()),
                 post_processing,
+                shadows,
             }),
         }
     }
@@ -419,6 +423,7 @@ impl CompiledRenderGraph {
     pub(super) fn resolve_owned_view_from_target(
         view_id: ViewId,
         post_processing: ViewPostProcessing,
+        shadows: super::super::ViewShadows,
         target: &FrameViewTarget<'_>,
         gpu: &mut GpuContext,
         backbuffer_view_holder: Option<&wgpu::TextureView>,
@@ -426,6 +431,7 @@ impl CompiledRenderGraph {
         let resolved = Self::resolve_view_from_target(
             view_id,
             post_processing,
+            shadows,
             target,
             gpu,
             backbuffer_view_holder,
@@ -453,6 +459,7 @@ impl CompiledRenderGraph {
             view_id: resolved.view_id,
             sample_count: resolved.sample_count,
             post_processing: resolved.post_processing,
+            shadows: resolved.shadows,
             offscreen_color_copy,
         })
     }

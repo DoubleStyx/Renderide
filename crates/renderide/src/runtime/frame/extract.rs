@@ -9,8 +9,10 @@ use rayon::prelude::*;
 
 use crate::backend::{ExtractedFrameShared, RenderBackend, WorldMeshDrawPlanSlot};
 use crate::gpu::GpuContext;
+use crate::materials::ShaderPermutation;
 use crate::mesh_deform::SkinCacheKey;
 use crate::occlusion::HiZCullData;
+use crate::passes::ShadowCasterDrawPlanSlot;
 use crate::render_graph::blackboard::Blackboard;
 use crate::render_graph::{FrameView, FrameViewResourceHints, GraphExecuteError};
 use crate::world_mesh::{
@@ -107,7 +109,7 @@ impl<'a> PreparedViews<'a> {
     }
 
     /// Builds executable graph views from the prepared plans and collected draw plans.
-    fn build_execution_views<'b>(&'b self, draw_plans: Vec<WorldMeshDrawPlan>) -> Vec<FrameView<'b>>
+    fn build_execution_views<'b>(&'b self, draw_plans: Vec<ViewDrawPlans>) -> Vec<FrameView<'b>>
     where
         'a: 'b,
     {
@@ -116,13 +118,14 @@ impl<'a> PreparedViews<'a> {
             .iter()
             .zip(draw_plans)
             .map(|(prep, draws)| {
-                let helper_needs = draws.helper_needs();
+                let helper_needs = draws.visible.helper_needs();
                 let resource_hints = FrameViewResourceHints {
                     needs_depth_snapshot: helper_needs.depth_snapshot,
                     needs_color_snapshot: helper_needs.color_snapshot,
                 };
                 let mut initial_blackboard = Blackboard::new();
-                initial_blackboard.insert::<WorldMeshDrawPlanSlot>(draws);
+                initial_blackboard.insert::<WorldMeshDrawPlanSlot>(draws.visible);
+                initial_blackboard.insert::<ShadowCasterDrawPlanSlot>(draws.shadow);
                 prep.to_frame_view(resource_hints, initial_blackboard)
             })
             .collect();
@@ -137,8 +140,8 @@ impl<'a> PreparedViews<'a> {
 pub(in crate::runtime) struct PreparedDraws<'a> {
     /// Ordered per-frame view plans and headless output substitution snapshot.
     prepared_views: PreparedViews<'a>,
-    /// Explicit draw plan for every prepared view.
-    view_draws: Vec<WorldMeshDrawPlan>,
+    /// Explicit visible and shadow draw plans for every prepared view.
+    view_draws: Vec<ViewDrawPlans>,
 }
 
 impl<'a> PreparedDraws<'a> {
@@ -155,8 +158,8 @@ impl<'a> PreparedDraws<'a> {
 pub(in crate::runtime) struct SubmitFrame<'a> {
     /// Ordered per-frame view plans and headless output substitution snapshot.
     prepared_views: PreparedViews<'a>,
-    /// Explicit draw plan for every prepared view.
-    view_draws: Vec<WorldMeshDrawPlan>,
+    /// Explicit visible and shadow draw plans for every prepared view.
+    view_draws: Vec<ViewDrawPlans>,
 }
 
 impl SubmitFrame<'_> {
@@ -167,7 +170,7 @@ impl SubmitFrame<'_> {
         scene: &crate::scene::SceneCoordinator,
         backend: &mut RenderBackend,
     ) -> Result<(), GraphExecuteError> {
-        let visible_deform_keys = visible_mesh_deform_keys_from_draw_plans(&self.view_draws);
+        let visible_deform_keys = mesh_deform_keys_from_draw_plans(&self.view_draws);
         backend
             .frame_resources_mut()
             .begin_mesh_deform_submission(visible_deform_keys);
@@ -176,12 +179,22 @@ impl SubmitFrame<'_> {
     }
 }
 
-fn visible_mesh_deform_keys_from_draw_plans(
-    draw_plans: &[WorldMeshDrawPlan],
+/// Prepared visible and shadow draw plans for one graph view.
+struct ViewDrawPlans {
+    /// Draw plan consumed by the world-mesh forward pass.
+    visible: WorldMeshDrawPlan,
+    /// Draw plan consumed by the realtime shadow-map pass.
+    shadow: WorldMeshDrawPlan,
+}
+
+/// Collects skin-cache keys needed by visible draws and shadow-only casters.
+fn mesh_deform_keys_from_draw_plans(
+    draw_plans: &[ViewDrawPlans],
 ) -> hashbrown::HashSet<SkinCacheKey> {
     let mut keys = hashbrown::HashSet::new();
     for collection in draw_plans
         .iter()
+        .flat_map(|plans| [&plans.visible, &plans.shadow])
         .filter_map(WorldMeshDrawPlan::as_prefetched)
     {
         for item in &collection.items {
@@ -219,7 +232,7 @@ fn collect_view_draws(
     setup: &ExtractedFrameShared<'_>,
     prepared: &[FrameViewPlan<'_>],
     cull_snapshots: Vec<Option<ViewCullSnapshot>>,
-) -> Vec<WorldMeshDrawPlan> {
+) -> Vec<ViewDrawPlans> {
     profiling::scope!("render::collect_view_draws");
     // The MaterialDictionary wraps the property store with read-only views; building it once
     // and sharing across views avoids N redundant constructions inside the rayon par_iter.
@@ -278,19 +291,22 @@ fn collect_view_draws(
                 material_cache,
                 reflection_probes: Some(setup.reflection_probes),
                 prepared: setup.prepared_renderables_for(render_context),
+                draw_kind: crate::world_mesh::WorldMeshDrawKind::VisibleColor,
             },
             inner_parallelism,
         );
-        {
+        let visible = {
             profiling::scope!("render::collect_view_draws::package_draw_plan");
             WorldMeshDrawPlan::Prefetched(Box::new(PrefetchedWorldMeshViewDraws::new(
                 collection,
                 cull_proj.as_ref(),
             )))
-        }
+        };
+        let shadow = collect_shadow_draw_plan(setup, &dict, prep, inner_parallelism);
+        ViewDrawPlans { visible, shadow }
     };
 
-    let draw_plans: Vec<WorldMeshDrawPlan> = if prepared.len() == 1 {
+    let draw_plans: Vec<ViewDrawPlans> = if prepared.len() == 1 {
         profiling::scope!("render::collect_view_draws::single_view");
         let mut snaps = cull_snapshots.into_iter();
         let snap = snaps.next().unwrap_or(None);
@@ -310,12 +326,52 @@ fn collect_view_draws(
     draw_plans
 }
 
-fn trace_view_draw_plans(prepared: &[FrameViewPlan<'_>], draw_plans: &[WorldMeshDrawPlan]) {
+/// Collects shadow-caster draws through the same prepared renderables and material caches as visible draws.
+fn collect_shadow_draw_plan(
+    setup: &ExtractedFrameShared<'_>,
+    material_dict: &crate::materials::host_data::MaterialDictionary<'_>,
+    prep: &FrameViewPlan<'_>,
+    inner_parallelism: WorldMeshDrawCollectParallelism,
+) -> WorldMeshDrawPlan {
+    if !prep.shadows.is_enabled() {
+        return WorldMeshDrawPlan::Empty;
+    }
+    profiling::scope!("render::collect_view_draws::shadow_casters");
+    let render_context = prep.render_context();
+    let shader_perm = ShaderPermutation(0);
+    let material_cache = setup.material_cache_for(render_context, shader_perm);
+    let collection = collect_and_sort_draws_with_parallelism(
+        &DrawCollectionContext {
+            scene: setup.scene,
+            mesh_pool: setup.mesh_pool,
+            material_dict,
+            material_router: setup.router,
+            pipeline_property_ids: &setup.pipeline_property_ids,
+            shader_perm,
+            render_context,
+            head_output_transform: prep.host_camera.head_output_transform,
+            view_origin_world: prep.view_origin_world(),
+            culling: None,
+            transform_filter: prep.draw_filter.as_ref(),
+            render_space_filter: prep.render_space_filter,
+            material_cache,
+            reflection_probes: None,
+            prepared: setup.prepared_renderables_for(render_context),
+            draw_kind: crate::world_mesh::WorldMeshDrawKind::ShadowCaster,
+        },
+        inner_parallelism,
+    );
+    WorldMeshDrawPlan::Prefetched(Box::new(PrefetchedWorldMeshViewDraws::new(
+        collection, None,
+    )))
+}
+
+fn trace_view_draw_plans(prepared: &[FrameViewPlan<'_>], draw_plans: &[ViewDrawPlans]) {
     if !logger::enabled(logger::LogLevel::Trace) {
         return;
     }
-    for (prep, draw_plan) in prepared.iter().zip(draw_plans.iter()) {
-        let Some(collection) = draw_plan.as_prefetched() else {
+    for (prep, draw_plans) in prepared.iter().zip(draw_plans.iter()) {
+        let Some(collection) = draw_plans.visible.as_prefetched() else {
             logger::trace!(
                 "render view draws: view_id={:?} extent={}x{} shader_perm={:?} empty_plan=true",
                 prep.view_id,
@@ -325,14 +381,19 @@ fn trace_view_draw_plans(prepared: &[FrameViewPlan<'_>], draw_plans: &[WorldMesh
             );
             continue;
         };
-        let helper_needs = draw_plan.helper_needs();
+        let helper_needs = draw_plans.visible.helper_needs();
+        let shadow_draw_count = draw_plans
+            .shadow
+            .as_prefetched()
+            .map_or(0, |collection| collection.items.len());
         logger::trace!(
-            "render view draws: view_id={:?} extent={}x{} shader_perm={:?} draws={} pre_cull={} frustum_culled={} hi_z_culled={} helper_depth_snapshot={} helper_color_snapshot={}",
+            "render view draws: view_id={:?} extent={}x{} shader_perm={:?} draws={} shadow_casters={} pre_cull={} frustum_culled={} hi_z_culled={} helper_depth_snapshot={} helper_color_snapshot={}",
             prep.view_id,
             prep.viewport_px.0,
             prep.viewport_px.1,
             prep.shader_permutation(),
             collection.items.len(),
+            shadow_draw_count,
             collection.draws_pre_cull,
             collection.draws_culled,
             collection.draws_hi_z_culled,
@@ -414,7 +475,7 @@ mod tests {
     use crate::camera::{HostCameraFrame, ViewId};
     use crate::mesh_deform::{SkinCacheKey, SkinCacheRendererKind};
     use crate::occlusion::OcclusionSystem;
-    use crate::render_graph::{FrameViewClear, ViewPostProcessing};
+    use crate::render_graph::{FrameViewClear, ViewPostProcessing, ViewShadows};
     use crate::scene::SceneCoordinator;
     use crate::world_mesh::WorldMeshDrawCollectParallelism;
     use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
@@ -433,6 +494,7 @@ mod tests {
             viewport_px: (640, 480),
             clear: FrameViewClear::default(),
             post_processing: ViewPostProcessing::primary_view(),
+            shadows: ViewShadows::primary_view(),
             target: FrameViewPlanTarget::MainSwapchain,
         }
     }
@@ -505,7 +567,7 @@ mod tests {
     }
 
     #[test]
-    fn visible_deform_keys_include_only_visible_deformed_draws() {
+    fn mesh_deform_keys_include_visible_and_shadow_deformed_draws() {
         let mut rigid = dummy_world_mesh_draw_item(DummyDrawItemSpec {
             material_asset_id: 1,
             property_block: None,
@@ -539,8 +601,13 @@ mod tests {
         });
         skinned.world_space_deformed = true;
 
-        let plans = [WorldMeshDrawPlan::Prefetched(Box::new(
-            PrefetchedWorldMeshViewDraws::new(
+        let mut shadow_only = skinned.clone();
+        shadow_only.node_id = 16;
+        shadow_only.renderable_index = 16;
+        shadow_only.instance_id = crate::scene::MeshRendererInstanceId(17);
+
+        let plans = [ViewDrawPlans {
+            visible: WorldMeshDrawPlan::Prefetched(Box::new(PrefetchedWorldMeshViewDraws::new(
                 WorldMeshDrawCollection {
                     items: vec![rigid, blend.clone(), skinned.clone()],
                     draws_pre_cull: 3,
@@ -548,12 +615,21 @@ mod tests {
                     draws_hi_z_culled: 0,
                 },
                 None,
-            ),
-        ))];
+            ))),
+            shadow: WorldMeshDrawPlan::Prefetched(Box::new(PrefetchedWorldMeshViewDraws::new(
+                WorldMeshDrawCollection {
+                    items: vec![shadow_only.clone()],
+                    draws_pre_cull: 1,
+                    draws_culled: 0,
+                    draws_hi_z_culled: 0,
+                },
+                None,
+            ))),
+        }];
 
-        let keys = visible_mesh_deform_keys_from_draw_plans(&plans);
+        let keys = mesh_deform_keys_from_draw_plans(&plans);
 
-        assert_eq!(keys.len(), 2);
+        assert_eq!(keys.len(), 3);
         assert!(keys.contains(&SkinCacheKey::new(
             blend.space_id,
             SkinCacheRendererKind::Static,
@@ -563,6 +639,11 @@ mod tests {
             skinned.space_id,
             SkinCacheRendererKind::Skinned,
             skinned.instance_id,
+        )));
+        assert!(keys.contains(&SkinCacheKey::new(
+            shadow_only.space_id,
+            SkinCacheRendererKind::Skinned,
+            shadow_only.instance_id,
         )));
     }
 }

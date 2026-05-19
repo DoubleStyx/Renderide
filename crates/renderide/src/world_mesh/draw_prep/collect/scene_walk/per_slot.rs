@@ -106,6 +106,7 @@ pub(super) fn push_one_slot_draw(
         world_space_deformed,
         blendshape_deformed,
         tangent_blendshape_deform_active,
+        shadow_cast_mode: draw.renderer.shadow_cast_mode,
         material_asset_id,
         property_block_id: slot.property_block_id,
         world_aabb,

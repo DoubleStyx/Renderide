@@ -4,6 +4,7 @@
 
 #import renderide::frame::globals as rg
 #import renderide::lighting::reflection_probes as rprobe
+#import renderide::lighting::shadows as sh
 #import renderide::pbs::brdf as brdf
 #import renderide::pbs::cluster as pcls
 #import renderide::pbs::surface as psurf
@@ -67,6 +68,7 @@ fn direct_specular_clustered(
         if (!light_enabled_for_options(light.light_type, options)) {
             continue;
         }
+        let shadow = sh::shadow_visibility(light_index, light, world_pos, s.normal);
 
         if (options.specular_highlights_enabled) {
             direct = direct + brdf::direct_radiance_specular(
@@ -80,9 +82,9 @@ fn direct_specular_clustered(
                 s.specular_color,
                 s.one_minus_reflectivity,
                 energy_compensation,
-            ) * visibility;
+            ) * (shadow * visibility);
         } else {
-            direct = direct + brdf::diffuse_only_specular(
+            direct = direct + shadow * brdf::diffuse_only_specular(
                 light,
                 world_pos,
                 s.normal,
