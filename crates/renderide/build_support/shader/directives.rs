@@ -418,6 +418,8 @@ struct BuildPassDraft {
     vertex_entry: String,
     /// Whether this pass enables hardware alpha-to-coverage.
     alpha_to_coverage: bool,
+    /// Whether this pass enabled multisampling.
+    multisample: bool,
     /// Depth comparison fallback.
     depth_compare: BuildDepthCompare,
     /// `_ZTest` enum layout used when host material state overrides this pass.
@@ -449,6 +451,7 @@ impl BuildPassDraft {
                 name: pass_type.default_name().to_string(),
                 vertex_entry: "vs_main".to_string(),
                 alpha_to_coverage: false,
+                multisample: true,
                 depth_compare: BuildDepthCompare::Main,
                 depth_compare_domain: BuildDepthCompareDomain::FrooxZTest,
                 depth_write: true,
@@ -469,6 +472,7 @@ impl BuildPassDraft {
                     name: pass_type.default_name().to_string(),
                     vertex_entry: "vs_main".to_string(),
                     alpha_to_coverage: false,
+                    multisample: true,
                     depth_compare: BuildDepthCompare::Main,
                     depth_compare_domain: BuildDepthCompareDomain::FrooxZTest,
                     depth_write: true,
@@ -520,6 +524,8 @@ pub(super) struct BuildPassDirective {
     pub vertex_entry: String,
     /// Whether this pass enables hardware alpha-to-coverage.
     pub alpha_to_coverage: bool,
+    /// Whether this pass enabled multisampling.
+    pub multisample: bool,
     /// `_ZTest` enum layout used when host material state overrides this pass.
     pub depth_compare_domain: BuildDepthCompareDomain,
     /// Depth comparison fallback.
@@ -645,6 +651,9 @@ pub(super) fn parse_pass_directives(
                     draft.alpha_to_coverage =
                         parse_bool_value(value.trim(), file, line_no, key.trim())?;
                 }
+                "multisample" => {
+                    draft.multisample = parse_bool_value(value.trim(), file, line_no, key.trim())?;
+                }
                 "blend" => parse_blend_value(value.trim(), file, line_no, &mut draft)?,
                 "zwrite" | "z_write" | "depth_write" | "depthwrite" => {
                     parse_zwrite_value(value.trim(), file, line_no, &mut draft)?;
@@ -672,6 +681,7 @@ pub(super) fn parse_pass_directives(
             fragment_entry,
             vertex_entry: draft.vertex_entry,
             alpha_to_coverage: draft.alpha_to_coverage,
+            multisample: draft.multisample,
             depth_compare_domain: draft.depth_compare_domain,
             depth_compare: draft.depth_compare,
             depth_write: draft.depth_write,
@@ -1195,7 +1205,25 @@ pub(super) fn parse_source_alias(source: &str, file: &str) -> Result<Option<Stri
 pub(super) fn pass_literal(pass: &BuildPassDirective) -> String {
     let slope = f32::from_bits(pass.depth_bias_slope_scale_bits);
     format!(
-        "crate::materials::MaterialPassDesc {{ name: {name:?}, pass_type: crate::materials::PassType::{pass_type}, vertex_entry: {vs:?}, fragment_entry: {fs:?}, depth_compare: {depth_compare}, depth_compare_domain: {depth_domain}, depth_write: {depth_write}, cull_mode: {cull_mode}, blend: {blend}, write_mask: {write_mask}, depth_bias_slope_scale: {slope:?}, depth_bias_constant: {depth_bias_constant}, alpha_to_coverage: {alpha_to_coverage}, material_state: {material_state}, render_state_policy: {policy} }}",
+        "\
+crate::materials::MaterialPassDesc {{
+    name: {name:?},
+    pass_type: crate::materials::PassType::{pass_type},
+    vertex_entry: {vs:?},
+    fragment_entry: {fs:?},
+    depth_compare: {depth_compare},
+    depth_compare_domain: {depth_domain},
+    depth_write: {depth_write},
+    cull_mode: {cull_mode},
+    blend: {blend},
+    write_mask: {write_mask},
+    depth_bias_slope_scale: {slope:?},
+    depth_bias_constant: {depth_bias_constant},
+    alpha_to_coverage: {alpha_to_coverage},
+    material_state: {material_state},
+    multisample: {multisample},
+    render_state_policy: {policy}
+}}",
         name = pass.name.as_str(),
         pass_type = pass.pass_type.rust_variant(),
         vs = pass.vertex_entry.as_str(),
@@ -1208,6 +1236,7 @@ pub(super) fn pass_literal(pass: &BuildPassDirective) -> String {
         write_mask = pass.write_mask.rust_literal(),
         depth_bias_constant = pass.depth_bias_constant,
         alpha_to_coverage = pass.alpha_to_coverage,
+        multisample = pass.multisample,
         material_state = pass.material_state.rust_literal(),
         policy = pass.render_state_policy.rust_literal(),
     )

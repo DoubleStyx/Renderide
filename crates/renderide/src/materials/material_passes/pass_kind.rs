@@ -151,6 +151,8 @@ pub struct MaterialPassDesc {
     pub depth_bias_constant: i32,
     /// Whether this pass enables hardware alpha-to-coverage for MSAA targets.
     pub alpha_to_coverage: bool,
+    /// Whether this pass enabled multisampling.
+    pub multisample: bool,
     /// Optional material-driven Unity pass-state override.
     pub material_state: MaterialPassState,
     /// Per-field policy for host-authored Unity render-state overrides.
@@ -267,6 +269,7 @@ pub const fn default_pass(params: DefaultPassParams) -> MaterialPassDesc {
         depth_bias_slope_scale: 0.0,
         depth_bias_constant: 0,
         alpha_to_coverage: false,
+        multisample: true,
         material_state: MaterialPassState::Static,
         render_state_policy: MaterialRenderStatePolicy::ALL_MATERIAL,
     }
