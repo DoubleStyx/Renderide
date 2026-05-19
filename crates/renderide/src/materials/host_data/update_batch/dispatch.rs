@@ -180,7 +180,7 @@ fn apply_structural_opcode(
                     store,
                     target,
                     render_queue_pid,
-                    MaterialPropertyValue::Float(property_id as f32),
+                    MaterialPropertyValue::Float(unity_render_queue_conversion(property_id) as f32),
                 );
             }
             !is_property_block
@@ -198,6 +198,25 @@ fn apply_structural_opcode(
         }
         _ => false,
     }
+}
+
+/// Applies the render queue mechanism that Unity uses for very large values.
+/// Queues behave exactly as expected until reaching 2^15.
+/// After that point, they seem to behave like slightly non opaque geometry (2501),
+/// until reaching 2^16+2501, at which point they start behaving
+/// as if they wrapped around to 2501.
+/// Then the cycle continues: as expected of (x-2^16)
+/// until they reach 2^16+2^15, at which point they return to 2000,
+/// and so on... Repeating every 2^16. Tested manually up to 163840 (2^17 + 2^15).
+fn unity_render_queue_conversion(queue: i32) -> i32 {
+    if queue < 0x8000 {
+        return queue;
+    }
+    let truncated = queue & 0xFFFF;
+    if truncated < 2501 || truncated >= 0x8000 {
+        return 2501;
+    }
+    truncated
 }
 
 /// Applies one material/property-block opcode after [`MaterialBatchTarget`] is active (excludes target switching).
