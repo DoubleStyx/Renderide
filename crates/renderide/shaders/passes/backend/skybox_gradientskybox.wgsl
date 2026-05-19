@@ -18,8 +18,7 @@ struct GradientSkyboxMaterial {
 
 struct VertexOutput {
     @builtin(position) clip_pos: vec4<f32>,
-    @location(0) ndc: vec2<f32>,
-    @location(1) @interpolate(flat) view_layer: u32,
+    @location(0) @interpolate(flat) view_layer: u32,
 }
 
 @vertex
@@ -32,7 +31,6 @@ fn vs_main(
     let clip = skybox::fullscreen_quad_clip_pos(vertex_index);
     var out: VertexOutput;
     out.clip_pos = clip;
-    out.ndc = vec2<f32>(clip.x, clip.y * view.ndc_y_sign_pad.x);
 #ifdef MULTIVIEW
     out.view_layer = view_idx;
 #else
@@ -43,9 +41,10 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    let ndc = vec2<f32>(in.clip_pos.x, in.clip_pos.y * view.ndc_y_sign_pad.x);
     let proj_params = select(rg::frame.proj_params_left, rg::frame.proj_params_right, in.view_layer != 0u);
     let view_ray = skybox::view_ray_from_ndc(
-        in.ndc,
+        ndc,
         proj_params,
         skybox::view_is_orthographic(view, in.view_layer),
     );
