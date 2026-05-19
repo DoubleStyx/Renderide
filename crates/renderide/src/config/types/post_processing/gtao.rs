@@ -70,7 +70,7 @@ impl Default for GtaoSettings {
             quality_level: 3,
             radius_meters: 1.0,
             radius_multiplier: 1.457,
-            intensity: 1.0,
+            intensity: 0.33,
             max_pixel_radius: 256.0,
             step_count: 16,
             falloff_range: 1.0,

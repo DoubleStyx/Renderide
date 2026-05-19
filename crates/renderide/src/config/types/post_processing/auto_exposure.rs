@@ -97,7 +97,7 @@ impl AutoExposureSettings {
 impl Default for AutoExposureSettings {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             min_ev: -16.0,
             max_ev: 16.0,
             low_percent: 0.25,

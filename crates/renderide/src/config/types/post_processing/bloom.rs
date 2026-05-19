@@ -73,13 +73,13 @@ impl Default for BloomSettings {
     fn default() -> Self {
         Self {
             enabled: true,
-            intensity: 0.667,
+            intensity: 0.5,
             low_frequency_boost: 0.0,
             low_frequency_boost_curvature: 1.0,
             high_pass_frequency: 1.0,
             prefilter_threshold: 1.0,
             prefilter_threshold_softness: 0.5,
-            composite_mode: BloomCompositeMode::EnergyConserving,
+            composite_mode: BloomCompositeMode::Additive,
             max_mip_dimension: 512,
         }
     }
