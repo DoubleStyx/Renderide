@@ -28,6 +28,71 @@ pub enum PassKind {
     Encoder,
 }
 
+/// Scheduler-visible workload and execution policy flags for one pass.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct PassWorkloadFlags {
+    bits: u16,
+}
+
+impl PassWorkloadFlags {
+    /// No workload or policy flags.
+    pub const EMPTY: Self = Self { bits: 0 };
+    /// Pass uses graph-managed rasterization on the graphics queue.
+    pub const RASTER: Self = Self { bits: 1 << 0 };
+    /// Pass uses compute work on the graphics queue.
+    pub const COMPUTE: Self = Self { bits: 1 << 1 };
+    /// Pass records copy or mixed encoder commands directly.
+    pub const COPY_ENCODER: Self = Self { bits: 1 << 2 };
+    /// Pass and its producers are kept even when no graph export consumes them.
+    pub const NEVER_CULL: Self = Self { bits: 1 << 3 };
+    /// Pass must not be folded into an adjacent render-pass merge group.
+    pub const NEVER_MERGE: Self = Self { bits: 1 << 4 };
+    /// Pass must stay on the main recording path even when parallel recording is available.
+    pub const NEVER_PARALLEL: Self = Self { bits: 1 << 5 };
+    /// Compute pass is eligible for async-compute scheduling on a future multi-queue backend.
+    pub const ASYNC_COMPUTE_CAPABLE: Self = Self { bits: 1 << 6 };
+
+    /// Returns whether every flag in `other` is present.
+    pub const fn contains(self, other: Self) -> bool {
+        (self.bits & other.bits) == other.bits
+    }
+
+    /// Returns a copy of this set with `other` inserted.
+    pub const fn with(self, other: Self) -> Self {
+        Self {
+            bits: self.bits | other.bits,
+        }
+    }
+
+    /// Inserts `other` into this set.
+    pub fn insert(&mut self, other: Self) {
+        self.bits |= other.bits;
+    }
+
+    /// Returns the scheduler workload bit implied by a pass kind.
+    pub const fn for_kind(kind: PassKind) -> Self {
+        match kind {
+            PassKind::Raster => Self::RASTER,
+            PassKind::Compute => Self::COMPUTE,
+            PassKind::Encoder => Self::COPY_ENCODER,
+        }
+    }
+}
+
+impl std::ops::BitOr for PassWorkloadFlags {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        self.with(rhs)
+    }
+}
+
+impl std::ops::BitOrAssign for PassWorkloadFlags {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.insert(rhs);
+    }
+}
+
 /// Scheduling phase: when in the multi-view loop a pass runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PassPhase {
@@ -59,13 +124,11 @@ impl From<PassPhase> for GroupScope {
 /// the same attachments.
 ///
 /// Populated by passes at setup time via [`crate::render_graph::pass::PassBuilder::merge_hint`].
-/// The current wgpu executor ignores the hint (each pass opens its own render pass), so populating
-/// the hint on existing passes is a no-op today. It exists as scaffolding for a future
-/// subpass-aware backend (tile-based mobile GPUs, Vulkan subpasses, Metal tile shading) that can
-/// merge adjacent raster passes sharing attachments to preserve tile memory and avoid redundant
-/// load/store traffic.
+/// Scheduler v1 uses the hint when building conservative merge groups while the current wgpu
+/// executor still records each pass as its own render pass. The metadata keeps attachment-reuse
+/// intent explicit for backends that can preserve tile memory or map adjacent raster work to
+/// subpasses.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-#[cfg(test)]
 pub struct PassMergeHint {
     /// When `true`, adjacent passes writing to the same attachments may reuse the render-pass
     /// encoder without resolving / storing attachment contents in between. Safe when the next

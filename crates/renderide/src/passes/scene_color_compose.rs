@@ -72,6 +72,8 @@ impl RasterPass for SceneColorComposePass {
     }
 
     fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
+        b.never_merge();
+        b.never_parallel();
         read_fragment_sampled_texture(b, self.resources.scene_color_hdr);
         if self.resources.post_processed_scene_color_hdr != self.resources.scene_color_hdr {
             read_fragment_sampled_texture(b, self.resources.post_processed_scene_color_hdr);

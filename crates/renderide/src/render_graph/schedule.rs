@@ -4,11 +4,29 @@
 //! It replaces the two parallel index lists (`frame_global_pass_indices` /
 //! `per_view_pass_indices`) that previously lived on [`super::compiled::CompiledRenderGraph`].
 //!
-//! Each [`ScheduleStep`] records the pass's retained-schedule index and the Kahn-wave it
-//! belongs to. The wave index is a hint for future work-parallel recording; the runtime executor
-//! currently walks steps in the flat `steps` order.
+//! Each [`ScheduleStep`] records the pass's retained-schedule index and the Kahn wave it belongs
+//! to. The executor consumes these waves while preserving deterministic pass order inside each
+//! wave.
 
+use super::frame_upload_batch::FrameUploadScope;
 use super::pass::PassPhase;
+use super::resources::{
+    BufferAccess, BufferHandle, ImportedBufferHandle, ImportedTextureHandle, TextureAccess,
+    TextureHandle,
+};
+
+/// Scheduler-facing upload phase for one pass step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScheduleUploadPhase {
+    /// Uploads queued before graph pass recording begins.
+    PreRecord,
+    /// Uploads queued while frame-global passes record.
+    FrameGlobal,
+    /// Uploads queued while per-view passes record.
+    PerView,
+    /// Upload batch drain emitted before graph command buffers in the submit batch.
+    SubmitDrain,
+}
 
 /// One entry in the retained execution schedule.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,20 +38,133 @@ pub struct ScheduleStep {
     /// Kahn-style topological wave (zero-indexed). Passes in the same wave have no mutual
     /// dependency and could record in parallel.
     pub wave_idx: usize,
+    /// Upload replay scope associated with this pass.
+    pub upload_phase: ScheduleUploadPhase,
+}
+
+impl ScheduleStep {
+    /// Builds the deterministic frame-upload scope for this scheduled pass.
+    pub(crate) fn frame_upload_scope(self, view_idx: Option<usize>) -> FrameUploadScope {
+        match self.phase {
+            PassPhase::FrameGlobal => FrameUploadScope::frame_global(self.pass_idx),
+            PassPhase::PerView => FrameUploadScope::per_view(view_idx.unwrap_or(0), self.pass_idx),
+        }
+    }
+}
+
+/// Fixed submit-batch steps owned by the scheduler.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScheduleSubmitStep {
+    /// Submit-order index for this step.
+    pub order: usize,
+    /// Kind of submit-batch work.
+    pub kind: ScheduleSubmitStepKind,
+}
+
+/// Kinds of submit-batch work assembled after recording.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScheduleSubmitStepKind {
+    /// Drain graph uploads into queue writes or a staging-copy command buffer.
+    GraphUploadDrain,
+    /// Submit the frame-global command buffer when one was recorded.
+    FrameGlobalCommands,
+    /// Submit per-view command buffers.
+    PerViewCommands,
+    /// Submit profiler query resolve commands for per-view recording.
+    PerViewProfilerResolve,
+    /// Submit debug HUD overlay commands.
+    HudOverlay,
+}
+
+/// Scheduler-visible transient resource key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScheduledResource {
+    /// Transient texture handle.
+    Texture(TextureHandle),
+    /// Transient buffer handle.
+    Buffer(BufferHandle),
+}
+
+/// Scheduler-visible transient resource lifetime event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResourceScheduleEvent {
+    /// Resource affected by this event.
+    pub resource: ScheduledResource,
+    /// Retained pass index at which the event occurs.
+    pub pass_idx: usize,
+    /// Allocation or release event kind.
+    pub kind: ResourceScheduleEventKind,
+}
+
+/// Kinds of transient resource lifetime events.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResourceScheduleEventKind {
+    /// Concrete resource is needed by this pass.
+    Allocate,
+    /// Concrete resource is no longer needed after this pass.
+    Release,
+}
+
+/// Imported resource tracked by the final-access plan.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImportedResourceFinalAccess {
+    /// Import declaration label.
+    pub label: &'static str,
+    /// Imported resource handle.
+    pub resource: ImportedScheduleResource,
+    /// Final access requested by the import declaration.
+    pub final_access: ImportedFinalAccess,
+    /// Whether a retained pass writes this import.
+    pub written_by_retained_pass: bool,
+}
+
+/// Imported resource handle used by the final-access plan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImportedScheduleResource {
+    /// Imported texture.
+    Texture(ImportedTextureHandle),
+    /// Imported buffer.
+    Buffer(ImportedBufferHandle),
+}
+
+/// Final access requested for one imported resource.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ImportedFinalAccess {
+    /// Texture final access.
+    Texture(TextureAccess),
+    /// Buffer final access.
+    Buffer(BufferAccess),
+}
+
+/// Adjacent raster passes that are conservatively merge-compatible.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RenderPassMergeGroup {
+    /// First schedule-step index in the merge-compatible run.
+    pub start_step: usize,
+    /// Exclusive schedule-step index after the merge-compatible run.
+    pub end_step: usize,
 }
 
 /// Compiled execution schedule for one [`super::compiled::CompiledRenderGraph`].
 ///
 /// `steps` is the flat retained pass list in execution order. `waves` stores index ranges into
 /// `steps` for each Kahn wave. Both are immutable after graph compilation.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct FrameSchedule {
     /// All retained passes in execution order.
-    #[cfg(test)]
     pub steps: Vec<ScheduleStep>,
     /// Per-wave index ranges into `steps` (`steps[waves[w]]` are in wave `w`).
-    #[cfg(test)]
     pub waves: Vec<std::ops::Range<usize>>,
+    /// Fixed submit-order steps owned by the scheduler.
+    pub submit_steps: Vec<ScheduleSubmitStep>,
+    /// Upload phases represented by scheduler v1.
+    pub upload_phases: Vec<ScheduleUploadPhase>,
+    /// Transient allocation/release events keyed by retained pass index.
+    pub resource_events: Vec<ResourceScheduleEvent>,
+    /// Imported-resource final access policy.
+    pub imported_final_accesses: Vec<ImportedResourceFinalAccess>,
+    /// Conservatively detected render-pass merge groups.
+    pub render_pass_merge_groups: Vec<RenderPassMergeGroup>,
     /// Cached `pass_idx` values for [`PassPhase::FrameGlobal`] steps, in execution order.
     ///
     /// Populated once by [`FrameSchedule::new`] so per-frame post-submit dispatch can iterate a
@@ -51,9 +182,13 @@ impl FrameSchedule {
     /// precomputes the per-phase `pass_idx` slices exposed by
     /// [`FrameSchedule::frame_global_pass_indices`] and
     /// [`FrameSchedule::per_view_pass_indices`].
-    pub fn new(steps: Vec<ScheduleStep>, waves: Vec<std::ops::Range<usize>>) -> Self {
-        #[cfg(not(test))]
-        let _ = waves;
+    pub fn new(
+        steps: Vec<ScheduleStep>,
+        waves: Vec<std::ops::Range<usize>>,
+        resource_events: Vec<ResourceScheduleEvent>,
+        imported_final_accesses: Vec<ImportedResourceFinalAccess>,
+        render_pass_merge_groups: Vec<RenderPassMergeGroup>,
+    ) -> Self {
         let frame_global_pass_indices = steps
             .iter()
             .filter(|s| s.phase == PassPhase::FrameGlobal)
@@ -65,10 +200,18 @@ impl FrameSchedule {
             .map(|s| s.pass_idx)
             .collect();
         Self {
-            #[cfg(test)]
             steps,
-            #[cfg(test)]
             waves,
+            submit_steps: submit_steps(),
+            upload_phases: vec![
+                ScheduleUploadPhase::PreRecord,
+                ScheduleUploadPhase::FrameGlobal,
+                ScheduleUploadPhase::PerView,
+                ScheduleUploadPhase::SubmitDrain,
+            ],
+            resource_events,
+            imported_final_accesses,
+            render_pass_merge_groups,
             frame_global_pass_indices,
             per_view_pass_indices,
         }
@@ -76,11 +219,10 @@ impl FrameSchedule {
 
     /// Creates an empty schedule.
     pub fn empty() -> Self {
-        Self::default()
+        Self::new(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())
     }
 
     /// Iterates over [`PassPhase::FrameGlobal`] steps in execution order.
-    #[cfg(test)]
     pub fn frame_global_steps(&self) -> impl Iterator<Item = ScheduleStep> + '_ {
         self.steps
             .iter()
@@ -89,12 +231,16 @@ impl FrameSchedule {
     }
 
     /// Iterates over [`PassPhase::PerView`] steps in execution order.
-    #[cfg(test)]
     pub fn per_view_steps(&self) -> impl Iterator<Item = ScheduleStep> + '_ {
         self.steps
             .iter()
             .copied()
             .filter(|s| s.phase == PassPhase::PerView)
+    }
+
+    /// Iterates topological waves in deterministic schedule order.
+    pub fn wave_steps(&self) -> impl Iterator<Item = &[ScheduleStep]> + '_ {
+        self.waves.iter().map(|range| &self.steps[range.clone()])
     }
 
     /// Returns cached `pass_idx` values for every [`PassPhase::FrameGlobal`] step, in execution
@@ -110,13 +256,11 @@ impl FrameSchedule {
     }
 
     /// Number of retained passes.
-    #[cfg(test)]
     pub fn pass_count(&self) -> usize {
         self.steps.len()
     }
 
     /// Number of topological waves (parallel layers in the DAG).
-    #[cfg(test)]
     pub fn wave_count(&self) -> usize {
         self.waves.len()
     }
@@ -128,7 +272,6 @@ impl FrameSchedule {
     ///   [`super::builder::edges::add_group_edges`]).
     /// - `wave_idx` values are non-decreasing in execution order (Kahn topology invariant).
     /// - Wave ranges cover `steps` without gaps or overlaps when present.
-    #[cfg(test)]
     pub fn validate(&self) -> Result<(), ScheduleValidationError> {
         // 1. FrameGlobal steps precede PerView steps.
         let mut seen_per_view = false;
@@ -176,8 +319,39 @@ impl FrameSchedule {
     }
 }
 
+impl Default for FrameSchedule {
+    fn default() -> Self {
+        Self::new(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())
+    }
+}
+
+/// Builds the fixed submit-batch order for scheduler v1.
+fn submit_steps() -> Vec<ScheduleSubmitStep> {
+    vec![
+        ScheduleSubmitStep {
+            order: 0,
+            kind: ScheduleSubmitStepKind::GraphUploadDrain,
+        },
+        ScheduleSubmitStep {
+            order: 1,
+            kind: ScheduleSubmitStepKind::FrameGlobalCommands,
+        },
+        ScheduleSubmitStep {
+            order: 2,
+            kind: ScheduleSubmitStepKind::PerViewCommands,
+        },
+        ScheduleSubmitStep {
+            order: 3,
+            kind: ScheduleSubmitStepKind::PerViewProfilerResolve,
+        },
+        ScheduleSubmitStep {
+            order: 4,
+            kind: ScheduleSubmitStepKind::HudOverlay,
+        },
+    ]
+}
+
 /// Validation failure modes for [`FrameSchedule::validate`].
-#[cfg(test)]
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ScheduleValidationError {
     /// A frame-global pass appears after a per-view pass in the flat schedule.
@@ -217,7 +391,6 @@ pub enum ScheduleValidationError {
 /// Captured once per graph build/rebuild and surfaced in the diagnostics overlay so developers
 /// can see pass count, wave layout, and phase distribution at a glance.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[cfg(test)]
 pub struct ScheduleHudSnapshot {
     /// Total retained pass count.
     pub pass_count: usize,
@@ -231,7 +404,6 @@ pub struct ScheduleHudSnapshot {
     pub passes_per_wave: Vec<usize>,
 }
 
-#[cfg(test)]
 impl ScheduleHudSnapshot {
     /// Builds a snapshot from a [`FrameSchedule`].
     pub fn from_schedule(schedule: &FrameSchedule) -> Self {
@@ -250,16 +422,25 @@ mod tests {
     use super::*;
 
     fn step(phase: PassPhase, pass_idx: usize, wave_idx: usize) -> ScheduleStep {
+        let upload_phase = match phase {
+            PassPhase::FrameGlobal => ScheduleUploadPhase::FrameGlobal,
+            PassPhase::PerView => ScheduleUploadPhase::PerView,
+        };
         ScheduleStep {
             phase,
             pass_idx,
             wave_idx,
+            upload_phase,
         }
+    }
+
+    fn schedule(steps: Vec<ScheduleStep>, waves: Vec<std::ops::Range<usize>>) -> FrameSchedule {
+        FrameSchedule::new(steps, waves, Vec::new(), Vec::new(), Vec::new())
     }
 
     #[test]
     fn frame_global_steps_filters_correctly() {
-        let sched = FrameSchedule::new(
+        let sched = schedule(
             vec![
                 step(PassPhase::FrameGlobal, 0, 0),
                 step(PassPhase::PerView, 1, 1),
@@ -278,7 +459,7 @@ mod tests {
 
     #[test]
     fn per_view_steps_filters_correctly() {
-        let sched = FrameSchedule::new(
+        let sched = schedule(
             vec![
                 step(PassPhase::FrameGlobal, 0, 0),
                 step(PassPhase::PerView, 1, 1),
@@ -294,7 +475,7 @@ mod tests {
 
     #[test]
     fn pass_count_and_wave_count() {
-        let sched = FrameSchedule::new(
+        let sched = schedule(
             vec![
                 step(PassPhase::FrameGlobal, 0, 0),
                 step(PassPhase::PerView, 1, 1),
@@ -319,7 +500,7 @@ mod tests {
 
     #[test]
     fn validate_accepts_well_formed_schedule() {
-        let sched = FrameSchedule::new(
+        let sched = schedule(
             vec![
                 step(PassPhase::FrameGlobal, 0, 0),
                 step(PassPhase::PerView, 1, 1),
@@ -332,7 +513,7 @@ mod tests {
 
     #[test]
     fn validate_rejects_per_view_before_frame_global() {
-        let sched = FrameSchedule::new(
+        let sched = schedule(
             vec![
                 step(PassPhase::PerView, 0, 0),
                 step(PassPhase::FrameGlobal, 1, 0),
@@ -348,7 +529,7 @@ mod tests {
 
     #[test]
     fn validate_rejects_wave_inversion() {
-        let sched = FrameSchedule::new(
+        let sched = schedule(
             vec![
                 step(PassPhase::FrameGlobal, 0, 1),
                 step(PassPhase::PerView, 1, 0),
@@ -365,7 +546,7 @@ mod tests {
 
     #[test]
     fn validate_rejects_wave_range_gap() {
-        let sched = FrameSchedule::new(
+        let sched = schedule(
             vec![
                 step(PassPhase::FrameGlobal, 0, 0),
                 step(PassPhase::PerView, 1, 1),
@@ -378,7 +559,7 @@ mod tests {
 
     #[test]
     fn hud_snapshot_counts_phases_and_wave_sizes() {
-        let sched = FrameSchedule::new(
+        let sched = schedule(
             vec![
                 step(PassPhase::FrameGlobal, 0, 0),
                 step(PassPhase::FrameGlobal, 1, 0),

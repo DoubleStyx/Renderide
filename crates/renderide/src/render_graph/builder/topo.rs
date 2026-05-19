@@ -9,7 +9,7 @@ use super::decl::SetupEntry;
 pub(super) fn topo_sort(
     n: usize,
     edges: &HashSet<(usize, usize)>,
-) -> Result<(Vec<usize>, usize), GraphBuildError> {
+) -> Result<(Vec<usize>, Vec<usize>), GraphBuildError> {
     let mut in_degree = vec![0usize; n];
     let mut neighbors: Vec<Vec<usize>> = vec![Vec::new(); n];
     for &(from, to) in edges {
@@ -25,12 +25,13 @@ pub(super) fn topo_sort(
 
     let mut current: Vec<usize> = (0..n).filter(|&i| in_degree[i] == 0).collect();
     let mut sorted = Vec::with_capacity(n);
-    let mut levels = 0usize;
+    let mut wave_by_node = vec![0usize; n];
+    let mut wave_idx = 0usize;
     while !current.is_empty() {
         current.sort_unstable();
-        levels += 1;
         let mut next = Vec::new();
         for node in current {
+            wave_by_node[node] = wave_idx;
             sorted.push(node);
             for &neighbor in &neighbors[node] {
                 in_degree[neighbor] = in_degree[neighbor].saturating_sub(1);
@@ -40,11 +41,12 @@ pub(super) fn topo_sort(
             }
         }
         current = next;
+        wave_idx += 1;
     }
     if sorted.len() != n {
         return Err(GraphBuildError::CycleDetected);
     }
-    Ok((sorted, levels))
+    Ok((sorted, wave_by_node))
 }
 
 pub(super) fn retained_passes(

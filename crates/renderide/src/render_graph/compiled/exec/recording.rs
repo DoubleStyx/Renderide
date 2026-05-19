@@ -15,7 +15,7 @@ use super::super::super::frame_params::{
 use super::super::super::frame_upload_batch::{
     FrameUploadBatch, FrameUploadScope, GraphUploadSink,
 };
-use super::super::super::pass::PassKind;
+use super::super::super::pass::{PassKind, PassPhase};
 use super::super::helpers;
 use super::super::{CompiledRenderGraph, FrameView, MultiViewExecutionContext, ResolvedView};
 use super::{
@@ -29,6 +29,59 @@ use crate::render_graph::post_process_settings::{
     AutoExposureSettingsSlot, AutoExposureSettingsValue, BloomSettingsSlot, BloomSettingsValue,
     GtaoSettingsSlot, GtaoSettingsValue, MotionBlurSettingsSlot, MotionBlurSettingsValue,
 };
+
+/// Mutable state needed to replay frame-global schedule steps.
+struct FrameGlobalPassLoop<'record, 'frame> {
+    /// Compiled graph being recorded.
+    graph: &'record CompiledRenderGraph,
+    /// Resolved view used by frame-global passes.
+    resolved: &'frame ResolvedView<'frame>,
+    /// Graph resource table resolved for the frame-global view.
+    graph_resources: &'frame GraphResolvedResources,
+    /// Mutable per-pass frame parameters.
+    frame_params: &'record mut crate::render_graph::frame_params::GraphPassFrame<'frame>,
+    /// Blackboard shared across frame-global passes.
+    frame_blackboard: &'record mut Blackboard,
+    /// Command encoder receiving frame-global work.
+    encoder: &'record mut wgpu::CommandEncoder,
+    /// GPU device.
+    device: &'frame wgpu::Device,
+    /// GPU limits for pass contexts.
+    gpu_limits: &'frame crate::gpu::GpuLimits,
+    /// Deferred upload batch for scoped graph uploads.
+    upload_batch: &'record FrameUploadBatch,
+    /// Optional profiler handle for pass GPU scopes.
+    pass_profiler: Option<&'frame crate::profiling::GpuProfilerHandle>,
+}
+
+impl FrameGlobalPassLoop<'_, '_> {
+    /// Records every frame-global pass in scheduler wave order.
+    fn record(self) -> Result<(), GraphExecuteError> {
+        profiling::scope!("graph::frame_global::pass_loop");
+        for wave in self.graph.schedule.wave_steps() {
+            for step in wave
+                .iter()
+                .copied()
+                .filter(|step| step.phase == PassPhase::FrameGlobal)
+            {
+                self.graph.execute_pass_node(
+                    step.pass_idx,
+                    step.frame_upload_scope(None),
+                    self.resolved,
+                    self.graph_resources,
+                    self.frame_params,
+                    self.frame_blackboard,
+                    self.encoder,
+                    self.device,
+                    self.gpu_limits,
+                    self.upload_batch,
+                    self.pass_profiler,
+                )?;
+            }
+        }
+        Ok(())
+    }
+}
 
 impl CompiledRenderGraph {
     /// Records the per-view pass phase into one command buffer for `work_item`.
@@ -85,22 +138,26 @@ impl CompiledRenderGraph {
 
         {
             profiling::scope!("graph::per_view::pass_loop");
-            // Iterate the cached per-view `pass_idx` slice from `FrameSchedule` to avoid
-            // rebuilding a scratch `Vec<usize>` every frame.
-            for &pass_idx in self.schedule.per_view_pass_indices() {
-                self.execute_pass_node(
-                    pass_idx,
-                    FrameUploadScope::per_view(view_idx, pass_idx),
-                    &resolved_view,
-                    graph_resources,
-                    &mut frame_params,
-                    &mut view_blackboard,
-                    &mut encoder,
-                    shared.device,
-                    shared.gpu_limits,
-                    upload_batch,
-                    profiler,
-                )?;
+            for wave in self.schedule.wave_steps() {
+                for step in wave
+                    .iter()
+                    .copied()
+                    .filter(|step| step.phase == PassPhase::PerView)
+                {
+                    self.execute_pass_node(
+                        step.pass_idx,
+                        step.frame_upload_scope(Some(view_idx)),
+                        &resolved_view,
+                        graph_resources,
+                        &mut frame_params,
+                        &mut view_blackboard,
+                        &mut encoder,
+                        shared.device,
+                        shared.gpu_limits,
+                        upload_batch,
+                        profiler,
+                    )?;
+                }
             }
         }
         Self::record_offscreen_color_copy(
@@ -383,24 +440,19 @@ impl CompiledRenderGraph {
             };
             let mut frame_blackboard = Self::build_frame_global_blackboard();
 
-            {
-                profiling::scope!("graph::frame_global::pass_loop");
-                for &pass_idx in self.schedule.frame_global_pass_indices() {
-                    self.execute_pass_node(
-                        pass_idx,
-                        FrameUploadScope::frame_global(pass_idx),
-                        &resolved,
-                        graph_resources,
-                        &mut frame_params,
-                        &mut frame_blackboard,
-                        &mut encoder,
-                        device,
-                        gpu_limits,
-                        upload_batch,
-                        pass_profiler.as_ref(),
-                    )?;
-                }
+            FrameGlobalPassLoop {
+                graph: self,
+                resolved: &resolved,
+                graph_resources,
+                frame_params: &mut frame_params,
+                frame_blackboard: &mut frame_blackboard,
+                encoder: &mut encoder,
+                device,
+                gpu_limits,
+                upload_batch,
+                pass_profiler: pass_profiler.as_ref(),
             }
+            .record()?;
             Ok(())
         })();
 

@@ -5,9 +5,7 @@
 
 use std::num::NonZeroU32;
 
-use super::node::PassKind;
-#[cfg(test)]
-use super::node::PassMergeHint;
+use super::node::{PassKind, PassMergeHint, PassWorkloadFlags};
 use crate::render_graph::error::SetupError;
 use crate::render_graph::resources::{
     ResourceAccess, TextureAttachmentResolve, TextureAttachmentTarget,
@@ -42,6 +40,8 @@ pub struct RasterDepthAttachmentSetup {
 pub struct PassSetup {
     /// Command domain (raster or compute).
     pub(crate) kind: PassKind,
+    /// Scheduler-visible workload and execution policy flags.
+    pub(crate) workload_flags: PassWorkloadFlags,
     /// Declared resource accesses for dependency synthesis and lifetime analysis.
     pub(crate) accesses: Vec<ResourceAccess>,
     /// Color attachment declarations for graph-managed raster passes.
@@ -52,8 +52,9 @@ pub struct PassSetup {
     pub(crate) multiview_mask: Option<NonZeroU32>,
     /// When `true`, the pass is retained even when it has no import-writing successors.
     pub(crate) cull_exempt: bool,
+    /// Whether the pass requires a real async-compute queue.
+    pub(crate) requires_async_compute: bool,
     /// Backend merge hint; see [`PassMergeHint`].
-    #[cfg(test)]
     pub(crate) merge_hint: PassMergeHint,
 }
 
@@ -63,6 +64,9 @@ impl PassSetup {
         let has_attachment = !self.color_attachments.is_empty()
             || self.depth_stencil_attachment.is_some()
             || self.accesses.iter().any(ResourceAccess::is_attachment);
+        if self.requires_async_compute {
+            return Err(SetupError::AsyncComputeRequiredUnsupported);
+        }
         match self.kind {
             PassKind::Raster if !has_attachment => Err(SetupError::RasterWithoutAttachments),
             PassKind::Compute if has_attachment => Err(SetupError::NonRasterPassHasAttachment),

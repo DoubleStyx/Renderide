@@ -256,6 +256,9 @@ mod tests {
 
     /// Builds a minimal compiled graph containing one release-counting pass.
     fn graph_with_release_counter(releases: Arc<AtomicUsize>) -> CompiledRenderGraph {
+        let schedule = FrameSchedule::empty();
+        let schedule_hud =
+            crate::render_graph::schedule::ScheduleHudSnapshot::from_schedule(&schedule);
         CompiledRenderGraph {
             passes: vec![PassNode::Compute(Box::new(ReleaseCountingPass {
                 releases,
@@ -272,7 +275,8 @@ mod tests {
             subresources: Vec::new(),
             imported_textures: Vec::new(),
             imported_buffers: Vec::new(),
-            schedule: FrameSchedule::empty(),
+            schedule,
+            schedule_hud,
             main_graph_msaa_transient_handles: None,
         }
     }

@@ -8,7 +8,7 @@ use super::pass::PassNode;
 use super::resources::{
     ImportedBufferDecl, ImportedTextureDecl, TextureHandle, TransientSubresourceDesc,
 };
-use super::schedule::FrameSchedule;
+use super::schedule::{FrameSchedule, ScheduleHudSnapshot};
 use crate::camera::ViewId;
 
 pub(super) mod cache;
@@ -103,6 +103,8 @@ pub struct CompiledRenderGraph {
     pub imported_buffers: Vec<ImportedBufferDecl>,
     /// Single source of truth for pass ordering, phase, and wave membership.
     pub schedule: FrameSchedule,
+    /// Build-time scheduler summary for diagnostics and HUD overlays.
+    pub schedule_hud: ScheduleHudSnapshot,
     /// When this graph is the main frame graph from [`super::build_main_graph`], transient handles
     /// for the MSAA depth and R32-float depth-resolve scratch resources.
     pub(super) main_graph_msaa_transient_handles: Option<[TextureHandle; 2]>,
