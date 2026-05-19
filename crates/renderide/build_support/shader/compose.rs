@@ -34,7 +34,12 @@ fn compose_source_variant(
             shader_defs: std::collections::HashMap::from_iter(variant.shader_defs()),
             ..Default::default()
         })
-        .map_err(|e| BuildError::Message(format!("compose {file_path}: {e}")))
+        .map_err(|e| {
+            BuildError::Message(format!(
+                "compose {file_path}: {}",
+                e.emit_to_string(&composer)
+            ))
+        })
 }
 
 /// Checks the `@builtin(view_index)` contract for variant-sensitive outputs.

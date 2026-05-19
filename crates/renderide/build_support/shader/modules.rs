@@ -170,14 +170,17 @@ pub(super) fn register_composable_modules(
     modules: &[(String, String)],
 ) -> Result<(), BuildError> {
     for (file_path, source) in modules {
-        composer
-            .add_composable_module(ComposableModuleDescriptor {
-                source: source.as_str(),
-                file_path: file_path.as_str(),
-                language: ShaderLanguage::Wgsl,
-                ..Default::default()
-            })
-            .map_err(|e| BuildError::Message(format!("add composable module {file_path}: {e}")))?;
+        if let Err(e) = composer.add_composable_module(ComposableModuleDescriptor {
+            source: source.as_str(),
+            file_path: file_path.as_str(),
+            language: ShaderLanguage::Wgsl,
+            ..Default::default()
+        }) {
+            return Err(BuildError::Message(format!(
+                "add composable module {file_path}: {}",
+                e.emit_to_string(&composer)
+            )));
+        }
     }
     Ok(())
 }
