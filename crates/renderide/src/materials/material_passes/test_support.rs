@@ -210,6 +210,7 @@ const fn base_forward_pass(name: &'static str, fragment_entry: &'static str) -> 
         depth_bias_slope_scale: 0.0,
         depth_bias_constant: 0,
         alpha_to_coverage: false,
+        multisample: true,
         material_state: MaterialPassState::Forward,
         render_state_policy: MaterialRenderStatePolicy::ALL_MATERIAL,
     }

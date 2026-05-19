@@ -160,6 +160,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let scene_depth = sds::scene_linear_depth(in.clip_pos, in.view_layer);
     let part_depth = sds::fragment_linear_depth(in.world_pos, in.view_layer);
 
+    // The Scene Depth node is sampling the camera depth texture, which is always rendered without MSAA.
+    return rg::retain_globals_additive(mix(vec4(0.0, 0.0, 0.0, 1.0), vec4(1.0, 1.0, 1.0, 1.0), (scene_depth-part_depth) / 10.0));
+
     var raw_distance: f32;
     var acc_color: vec4<f32>;
     if (kw_world_space()) {
