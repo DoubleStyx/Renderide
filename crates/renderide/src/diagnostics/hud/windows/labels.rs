@@ -1,6 +1,6 @@
 //! Label strings and draw-row predicates for debug HUD tables.
 
-use crate::materials::{MaterialBlendMode, RasterPipelineKind};
+use crate::materials::{MaterialBlendMode, MaterialDepthCompareOverride, RasterPipelineKind};
 use crate::world_mesh::{TransparentMaterialClass, WorldMeshDrawStateRow};
 
 pub(super) fn device_type_label(kind: wgpu::DeviceType) -> &'static str {
@@ -92,18 +92,19 @@ pub(super) fn stencil_label(row: &WorldMeshDrawStateRow) -> String {
     )
 }
 
-pub(super) fn ztest_label(value: Option<u8>) -> &'static str {
+pub(super) fn ztest_label(value: Option<MaterialDepthCompareOverride>) -> &'static str {
     match value {
-        Some(0) => "off",
-        Some(1) => "never",
-        Some(2) => "less",
-        Some(3) => "equal",
-        Some(4) => "lequal",
-        Some(5) => "greater",
-        Some(6) => "not-equal",
-        Some(7) => "gequal",
-        Some(8) => "always",
-        Some(_) => "invalid",
+        Some(MaterialDepthCompareOverride::HostValue(0)) => "off",
+        Some(MaterialDepthCompareOverride::HostValue(1)) => "never",
+        Some(MaterialDepthCompareOverride::HostValue(2)) => "less",
+        Some(MaterialDepthCompareOverride::HostValue(3)) => "equal",
+        Some(MaterialDepthCompareOverride::HostValue(4)) => "lequal",
+        Some(MaterialDepthCompareOverride::HostValue(5)) => "greater",
+        Some(MaterialDepthCompareOverride::HostValue(6)) => "not-equal",
+        Some(MaterialDepthCompareOverride::HostValue(7)) => "gequal",
+        Some(MaterialDepthCompareOverride::HostValue(8)) => "always",
+        Some(MaterialDepthCompareOverride::HostValue(_)) => "invalid",
+        Some(MaterialDepthCompareOverride::Always) => "always",
         None => "pass",
     }
 }
@@ -112,5 +113,35 @@ pub(super) fn offset_label(value: Option<(u32, i32)>) -> String {
     match value {
         Some((factor_bits, units)) => format!("{:.3}/{}", f32::from_bits(factor_bits), units),
         None => "pass".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Unit tests for compact HUD labels.
+
+    use super::*;
+
+    /// Host `_ZTest` values keep their user-facing labels.
+    #[test]
+    fn ztest_label_keeps_host_value_labels() {
+        assert_eq!(
+            ztest_label(Some(MaterialDepthCompareOverride::HostValue(6))),
+            "not-equal"
+        );
+        assert_eq!(
+            ztest_label(Some(MaterialDepthCompareOverride::HostValue(8))),
+            "always"
+        );
+    }
+
+    /// Renderer-authored always-pass depth shows the same compact label as Unity `Always`.
+    #[test]
+    fn ztest_label_shows_renderer_authored_always() {
+        assert_eq!(
+            ztest_label(Some(MaterialDepthCompareOverride::Always)),
+            "always"
+        );
+        assert_eq!(ztest_label(None), "pass");
     }
 }

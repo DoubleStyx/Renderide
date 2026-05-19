@@ -90,7 +90,6 @@ mod wgsl_reflect;
 pub(crate) use cache::MaterialPipelineCache;
 /// Pipeline cache keyed by shader route / layout fingerprint.
 pub(crate) use cache::{MaterialPipelineSet, MaterialPipelineVariantSpec};
-pub(crate) use material_passes::ZTEST_ALWAYS;
 
 /// Embedded raster materials: bind groups, texture pools, uniform packing, and stem-metadata queries.
 pub(crate) use embedded::EmbeddedMaterialBindShader;
@@ -132,8 +131,8 @@ pub(crate) use render_queue::{
 #[cfg(test)]
 pub(crate) use render_state::MaterialDepthOffsetState;
 pub(crate) use render_state::{
-    MaterialDepthCompareDomain, MaterialRenderState, RasterFrontFace, RasterPrimitiveTopology,
-    material_render_state_for_lookup, material_render_state_from_maps,
+    MaterialDepthCompareDomain, MaterialDepthCompareOverride, MaterialRenderState, RasterFrontFace,
+    RasterPrimitiveTopology, material_render_state_for_lookup, material_render_state_from_maps,
 };
 
 #[cfg(test)]

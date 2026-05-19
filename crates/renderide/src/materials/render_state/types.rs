@@ -3,7 +3,7 @@
 use glam::{Mat3, Mat4};
 
 use super::super::material_passes::wire_tables::{
-    froox_ztest_depth_compare_function, unity_color_writes, unity_compare_function,
+    froox_shaderlab_ztest_depth_compare_function, unity_color_writes, unity_compare_function,
     unity_stencil_operation, unity_ztest_depth_compare_function,
 };
 
@@ -114,6 +114,15 @@ pub enum MaterialDepthCompareDomain {
     UnityCompareFunction,
 }
 
+/// Material depth-compare override source carried in raster pipeline keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MaterialDepthCompareOverride {
+    /// Raw host/material `_ZTest` byte that must be decoded in the selected pass domain.
+    HostValue(u8),
+    /// Renderer-authored always-pass depth override.
+    Always,
+}
+
 /// Runtime Unity stencil/color/depth/cull state resolved from material properties.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MaterialRenderState {
@@ -123,8 +132,8 @@ pub struct MaterialRenderState {
     pub color_mask: Option<u8>,
     /// Unity `ZWrite` override. `None` preserves the shader pass default.
     pub depth_write: Option<bool>,
-    /// Raw `_ZTest` override. `None` preserves the shader pass default.
-    pub depth_compare: Option<u8>,
+    /// Material depth-compare override. `None` preserves the shader pass default.
+    pub depth_compare: Option<MaterialDepthCompareOverride>,
     /// Unity `Offset factor, units` override. `None` preserves the shader pass default.
     pub depth_offset: Option<MaterialDepthOffsetState>,
     /// Unity `Cull` / `_Culling` override for wgpu [`PrimitiveState::cull_mode`](wgpu::PrimitiveState::cull_mode).
@@ -184,7 +193,7 @@ impl MaterialRenderState {
         self.depth_write.unwrap_or(fallback)
     }
 
-    /// Applies the optional FrooxEngine `ZTest` override to a pass default.
+    /// Applies the optional default-domain host `ZTest` override to a pass default.
     pub fn depth_compare(self, fallback: wgpu::CompareFunction) -> wgpu::CompareFunction {
         self.depth_compare_for_domain(fallback, MaterialDepthCompareDomain::FrooxZTest)
     }
@@ -195,14 +204,19 @@ impl MaterialRenderState {
         fallback: wgpu::CompareFunction,
         domain: MaterialDepthCompareDomain,
     ) -> wgpu::CompareFunction {
-        self.depth_compare
-            .and_then(|value| match domain {
-                MaterialDepthCompareDomain::FrooxZTest => froox_ztest_depth_compare_function(value),
+        match self.depth_compare {
+            Some(MaterialDepthCompareOverride::Always) => wgpu::CompareFunction::Always,
+            Some(MaterialDepthCompareOverride::HostValue(value)) => match domain {
+                MaterialDepthCompareDomain::FrooxZTest => {
+                    froox_shaderlab_ztest_depth_compare_function(value)
+                }
                 MaterialDepthCompareDomain::UnityCompareFunction => {
                     unity_ztest_depth_compare_function(value)
                 }
-            })
-            .unwrap_or(fallback)
+            }
+            .unwrap_or(fallback),
+            None => fallback,
+        }
     }
 
     /// Applies [`Self::cull_override`] to a pass default (`None` = culling disabled).
@@ -413,37 +427,59 @@ mod tests {
 
         let st = MaterialRenderState {
             depth_write: Some(false),
-            // FrooxEngine `ZTest.LessOrEqual = 2` inverts to wgpu `GreaterEqual` under reverse-Z.
-            depth_compare: Some(2),
+            depth_compare: Some(MaterialDepthCompareOverride::HostValue(2)),
             ..MaterialRenderState::default()
         };
         assert!(!st.depth_write(true));
         assert_eq!(
             st.depth_compare(wgpu::CompareFunction::Always),
-            wgpu::CompareFunction::GreaterEqual
+            wgpu::CompareFunction::Greater
         );
     }
 
     #[test]
     fn depth_compare_domain_selects_ztest_enum_layout() {
         let st = MaterialRenderState {
-            depth_compare: Some(4),
+            depth_compare: Some(MaterialDepthCompareOverride::HostValue(7)),
             ..MaterialRenderState::default()
         };
 
         assert_eq!(
             st.depth_compare_for_domain(
-                wgpu::CompareFunction::Always,
+                wgpu::CompareFunction::Never,
                 MaterialDepthCompareDomain::FrooxZTest,
             ),
-            wgpu::CompareFunction::Equal
+            wgpu::CompareFunction::Never
         );
         assert_eq!(
             st.depth_compare_for_domain(
-                wgpu::CompareFunction::Always,
+                wgpu::CompareFunction::Never,
                 MaterialDepthCompareDomain::UnityCompareFunction,
             ),
-            wgpu::CompareFunction::GreaterEqual
+            wgpu::CompareFunction::LessEqual
+        );
+    }
+
+    #[test]
+    fn renderer_authored_always_bypasses_host_decode_domain() {
+        let st = MaterialRenderState {
+            depth_compare: Some(MaterialDepthCompareOverride::Always),
+            ..MaterialRenderState::default()
+        };
+
+        assert_eq!(
+            st.depth_compare_for_domain(
+                wgpu::CompareFunction::Never,
+                MaterialDepthCompareDomain::FrooxZTest,
+            ),
+            wgpu::CompareFunction::Always
+        );
+        assert_eq!(
+            st.depth_compare_for_domain(
+                wgpu::CompareFunction::Never,
+                MaterialDepthCompareDomain::UnityCompareFunction,
+            ),
+            wgpu::CompareFunction::Always
         );
     }
 

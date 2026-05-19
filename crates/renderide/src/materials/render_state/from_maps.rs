@@ -10,7 +10,8 @@ use super::super::material_passes::{
     MaterialPipelinePropertyIds, PropertyMapRef, first_float_from_maps,
 };
 use super::types::{
-    MaterialCullOverride, MaterialDepthOffsetState, MaterialRenderState, MaterialStencilState,
+    MaterialCullOverride, MaterialDepthCompareOverride, MaterialDepthOffsetState,
+    MaterialRenderState, MaterialStencilState,
 };
 use super::unity_mapping::{unity_mask, unity_offset_units, unity_u8};
 
@@ -28,7 +29,8 @@ pub fn material_render_state_from_maps(
     let stencil = resolve_stencil(get, ids);
     let color_mask = get(&ids.color_mask).map(unity_u8);
     let depth_write = get(&ids.z_write).map(|v| v.round().clamp(0.0, 1.0) >= 0.5);
-    let depth_compare = get(&ids.z_test).map(unity_u8);
+    let depth_compare =
+        get(&ids.z_test).map(|value| MaterialDepthCompareOverride::HostValue(unity_u8(value)));
     let cull_override = resolve_cull_override(get(&ids.cull));
     let depth_offset = resolve_depth_offset(get(&ids.offset_factor), get(&ids.offset_units));
 

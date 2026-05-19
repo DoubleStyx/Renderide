@@ -11,5 +11,6 @@ pub use from_maps::{material_render_state_for_lookup, material_render_state_from
 #[cfg(test)]
 pub(crate) use types::{MaterialCullOverride, MaterialDepthOffsetState, MaterialStencilState};
 pub use types::{
-    MaterialDepthCompareDomain, MaterialRenderState, RasterFrontFace, RasterPrimitiveTopology,
+    MaterialDepthCompareDomain, MaterialDepthCompareOverride, MaterialRenderState, RasterFrontFace,
+    RasterPrimitiveTopology,
 };

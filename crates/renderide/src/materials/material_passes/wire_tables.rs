@@ -3,9 +3,6 @@
 //! These tables cover material inspector values used by [`super::render_state`] and multi-pass
 //! blend materialization in [`super::material_passes`].
 
-/// Host `_ZTest` value for an always-passing depth test.
-pub(crate) const ZTEST_ALWAYS: u8 = 6;
-
 /// Maps a Unity `CompareFunction` stencil enum value to `wgpu::CompareFunction`.
 pub(crate) fn unity_compare_function(value: u8) -> wgpu::CompareFunction {
     match value {
@@ -22,71 +19,26 @@ pub(crate) fn unity_compare_function(value: u8) -> wgpu::CompareFunction {
     }
 }
 
-/// Helper enum for converting the FrooxEngine forward-Z ZTest enum into the WGPU equivalent.
-#[derive(num_enum::TryFromPrimitive)]
-#[repr(u8)]
-enum FrooxEngineZTest {
-    Less,
-    Greater,
-    LessOrEqual,
-    GreaterOrEqual,
-    Equal,
-    NotEqual,
-    Always,
-    /// Does not exist on FrooxEngine side, needed for wgpu parity.
-    Never = 255,
-}
-
-impl FrooxEngineZTest {
-    /// Replicates Resonite bug behavior:
-    /// https://github.com/Yellow-Dog-Man/Resonite-Issues/issues/1618
-    /// TODO: Fix this in FrooxEngine
-    pub fn map_1618(self) -> Self {
-        use FrooxEngineZTest::*;
-        match self {
-            Less => Always,
-            Equal => LessOrEqual,
-            LessOrEqual => Less,
-            Greater => Never,
-            NotEqual => Greater,
-            GreaterOrEqual => Equal,
-            Always => NotEqual,
-            Never => Never,
-        }
-    }
-}
-
-impl Into<wgpu::CompareFunction> for FrooxEngineZTest {
-    /// Converts from the forward-Z ZTest type of FrooxEngine into
-    /// the revers-Z [`wgpu::CompareFunction`].
-    fn into(self) -> wgpu::CompareFunction {
-        match self {
-            Self::Less => wgpu::CompareFunction::Greater,
-            Self::Greater => wgpu::CompareFunction::Less,
-            Self::LessOrEqual => wgpu::CompareFunction::GreaterEqual,
-            Self::GreaterOrEqual => wgpu::CompareFunction::LessEqual,
-            Self::Equal => wgpu::CompareFunction::Equal,
-            Self::NotEqual => wgpu::CompareFunction::NotEqual,
-            Self::Always => wgpu::CompareFunction::Always,
-            Self::Never => wgpu::CompareFunction::Never,
-        }
-    }
-}
-
-/// Maps a FrooxEngine `ZTest` enum value carried on the host `_ZTest` property to the reverse-Z
-/// equivalent `wgpu::CompareFunction`.
+/// Maps a host `_ZTest` byte through ShaderLab's ZTest parser bug to a reverse-Z compare.
 ///
-/// The host's `ZTest` enum layout is:
-/// `Less=0, Greater=1, LessOrEqual=2, GreaterOrEqual=3, Equal=4, NotEqual=5, Always=6`. This
-/// uses its own layout; the host casts `Sync<ZTest>.Value` to float without any remapping, so the
-/// renderer must decode it with the host's layout.
+/// The host sends its own enum value as a raw integer. ShaderLab interprets that integer with
+/// its own `ZTest` token layout before the renderer converts the result to reverse-Z `wgpu`.
 ///
-/// Depth-test comparisons invert under reverse-Z (near fragments have greater depth), so e.g.
-/// `ZTest.LessOrEqual` -- the usual opaque-pass default -- becomes `wgpu::CompareFunction::GreaterEqual`.
-pub(crate) fn froox_ztest_depth_compare_function(value: u8) -> Option<wgpu::CompareFunction> {
-    FrooxEngineZTest::try_from(value)
-        .ok()
-        .map(|fe_ztest| fe_ztest.map_1618().into())
+/// This table is intentionally direct: raw host value `6` is not renderer "always"; after
+/// ShaderLab parsing and reverse-Z conversion it resolves to `NotEqual`.
+pub(crate) fn froox_shaderlab_ztest_depth_compare_function(
+    value: u8,
+) -> Option<wgpu::CompareFunction> {
+    match value {
+        0 => Some(wgpu::CompareFunction::Always),
+        1 => Some(wgpu::CompareFunction::Never),
+        2 => Some(wgpu::CompareFunction::Greater),
+        3 => Some(wgpu::CompareFunction::Equal),
+        4 => Some(wgpu::CompareFunction::GreaterEqual),
+        5 => Some(wgpu::CompareFunction::Less),
+        6 => Some(wgpu::CompareFunction::NotEqual),
+        _ => None,
+    }
 }
 
 /// Maps a Unity `CompareFunction` `_ZTest` value to the reverse-Z equivalent
@@ -236,40 +188,37 @@ mod tests {
     }
 
     #[test]
-    fn froox_ztest_depth_compare_inverts_for_reverse_z() {
-        // `ZTest.Less` (0) inverts to wgpu `Greater` under reverse-Z.
+    fn froox_shaderlab_ztest_depth_compare_uses_bug_parity_table() {
         assert_eq!(
-            froox_ztest_depth_compare_function(0),
+            froox_shaderlab_ztest_depth_compare_function(0),
+            Some(wgpu::CompareFunction::Always)
+        );
+        assert_eq!(
+            froox_shaderlab_ztest_depth_compare_function(1),
+            Some(wgpu::CompareFunction::Never)
+        );
+        assert_eq!(
+            froox_shaderlab_ztest_depth_compare_function(2),
             Some(wgpu::CompareFunction::Greater)
         );
         assert_eq!(
-            froox_ztest_depth_compare_function(1),
-            Some(wgpu::CompareFunction::Less)
-        );
-        // `ZTest.LessOrEqual` (2) is Unity's opaque-pass default and must invert to `GreaterEqual`.
-        assert_eq!(
-            froox_ztest_depth_compare_function(2),
-            Some(wgpu::CompareFunction::GreaterEqual)
-        );
-        assert_eq!(
-            froox_ztest_depth_compare_function(3),
-            Some(wgpu::CompareFunction::LessEqual)
-        );
-        assert_eq!(
-            froox_ztest_depth_compare_function(4),
+            froox_shaderlab_ztest_depth_compare_function(3),
             Some(wgpu::CompareFunction::Equal)
         );
         assert_eq!(
-            froox_ztest_depth_compare_function(5),
-            Some(wgpu::CompareFunction::NotEqual)
+            froox_shaderlab_ztest_depth_compare_function(4),
+            Some(wgpu::CompareFunction::GreaterEqual)
         );
         assert_eq!(
-            froox_ztest_depth_compare_function(6),
-            Some(wgpu::CompareFunction::Always)
+            froox_shaderlab_ztest_depth_compare_function(5),
+            Some(wgpu::CompareFunction::Less)
         );
-        // Values outside the FrooxEngine `ZTest` enum fall back to the shader pass default.
-        assert_eq!(froox_ztest_depth_compare_function(7), None);
-        assert_eq!(froox_ztest_depth_compare_function(99), None);
+        assert_eq!(
+            froox_shaderlab_ztest_depth_compare_function(6),
+            Some(wgpu::CompareFunction::NotEqual)
+        );
+        assert_eq!(froox_shaderlab_ztest_depth_compare_function(7), None);
+        assert_eq!(froox_shaderlab_ztest_depth_compare_function(99), None);
     }
 
     #[test]

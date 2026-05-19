@@ -5,8 +5,8 @@
 //! the code they cover.
 
 use super::super::render_state::{
-    MaterialCullOverride, MaterialDepthCompareDomain, MaterialRenderState,
-    material_render_state_for_lookup,
+    MaterialCullOverride, MaterialDepthCompareDomain, MaterialDepthCompareOverride,
+    MaterialRenderState, material_render_state_for_lookup,
 };
 use super::*;
 use crate::materials::host_data::{
@@ -284,7 +284,6 @@ fn ztest_property_overrides_pass_depth_compare_for_reverse_z() {
     let ids = MaterialPipelinePropertyIds::new(&reg);
     let mut store = MaterialPropertyStore::new();
     let ztest = reg.intern("_ZTest");
-    // FrooxEngine `ZTest.Always = 6` inverts to wgpu `Always` under reverse-Z.
     store.set_material(48, ztest, MaterialPropertyValue::Float(6.0));
     let dict = MaterialDictionary::new(&store);
     let lookup = MaterialPropertyLookupIds {
@@ -293,13 +292,15 @@ fn ztest_property_overrides_pass_depth_compare_for_reverse_z() {
         mesh_renderer_property_block_id: None,
     };
     let state = material_render_state_for_lookup(&dict, lookup, &ids);
-    assert_eq!(state.depth_compare, Some(6));
+    assert_eq!(
+        state.depth_compare,
+        Some(MaterialDepthCompareOverride::HostValue(6))
+    );
     assert_eq!(
         state.depth_compare(wgpu::CompareFunction::GreaterEqual),
-        wgpu::CompareFunction::Always
+        wgpu::CompareFunction::NotEqual
     );
 
-    // FrooxEngine `ZTest.LessOrEqual = 2` inverts to wgpu `GreaterEqual` under reverse-Z.
     store.set_property_block(480, ztest, MaterialPropertyValue::Float(2.0));
     let dict = MaterialDictionary::new(&store);
     let lookup = MaterialPropertyLookupIds {
@@ -310,7 +311,7 @@ fn ztest_property_overrides_pass_depth_compare_for_reverse_z() {
     let state = material_render_state_for_lookup(&dict, lookup, &ids);
     assert_eq!(
         state.depth_compare(wgpu::CompareFunction::Always),
-        wgpu::CompareFunction::GreaterEqual
+        wgpu::CompareFunction::Greater
     );
 }
 
@@ -321,7 +322,7 @@ fn unity_ztest_domain_decodes_compare_function_for_reverse_z() {
         ..stencil_pass("fs_stencil")
     };
     let state = MaterialRenderState {
-        depth_compare: Some(4),
+        depth_compare: Some(MaterialDepthCompareOverride::HostValue(4)),
         ..MaterialRenderState::default()
     };
 
@@ -577,7 +578,7 @@ fn base_refract_embedded_policy_ignores_host_ztest() {
         MaterialBlendMode::UnityBlend { src: 1, dst: 0 },
     );
     let state = MaterialRenderState {
-        depth_compare: Some(ZTEST_ALWAYS),
+        depth_compare: Some(MaterialDepthCompareOverride::HostValue(6)),
         ..MaterialRenderState::default()
     };
 
@@ -596,13 +597,13 @@ fn refract_perobject_keeps_host_ztest_policy() {
         MaterialBlendMode::UnityBlend { src: 1, dst: 0 },
     );
     let state = MaterialRenderState {
-        depth_compare: Some(ZTEST_ALWAYS),
+        depth_compare: Some(MaterialDepthCompareOverride::HostValue(6)),
         ..MaterialRenderState::default()
     };
 
     assert_eq!(
         materialized.resolved_depth_compare(state),
-        wgpu::CompareFunction::Always
+        wgpu::CompareFunction::NotEqual
     );
 }
 

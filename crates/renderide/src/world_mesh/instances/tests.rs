@@ -1,7 +1,7 @@
 use super::*;
 use crate::materials::{
-    MaterialBlendMode, MaterialDepthOffsetState, RasterFrontFace, RasterPipelineKind,
-    UNITY_RENDER_QUEUE_ALPHA_TEST, UNITY_RENDER_QUEUE_TRANSPARENT,
+    MaterialBlendMode, MaterialDepthCompareOverride, MaterialDepthOffsetState, RasterFrontFace,
+    RasterPipelineKind, UNITY_RENDER_QUEUE_ALPHA_TEST, UNITY_RENDER_QUEUE_TRANSPARENT,
 };
 use crate::world_mesh::TransparentMaterialClass;
 use crate::world_mesh::draw_prep::{pack_sort_prefix, sort_draws};
@@ -423,7 +423,7 @@ fn depth_prepass_rejects_non_opaque_or_custom_depth_state() {
     cases.push(zwrite_off);
 
     let mut ztest = opaque(7, 1, 0, 5);
-    ztest.batch_key.render_state.depth_compare = Some(2);
+    ztest.batch_key.render_state.depth_compare = Some(MaterialDepthCompareOverride::HostValue(2));
     cases.push(ztest);
 
     let mut offset = opaque(7, 1, 0, 6);

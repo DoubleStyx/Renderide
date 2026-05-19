@@ -1,8 +1,8 @@
 //! No-GPU coverage for pass-scoped material render-state policy.
 
 use super::super::render_state::{
-    MaterialCullOverride, MaterialDepthCompareDomain, MaterialDepthOffsetState,
-    MaterialRenderState, MaterialStencilState,
+    MaterialCullOverride, MaterialDepthCompareDomain, MaterialDepthCompareOverride,
+    MaterialDepthOffsetState, MaterialRenderState, MaterialStencilState,
 };
 use super::*;
 
@@ -21,7 +21,7 @@ fn override_state(depth_write: bool) -> MaterialRenderState {
         },
         color_mask: Some(15),
         depth_write: Some(depth_write),
-        depth_compare: Some(6),
+        depth_compare: Some(MaterialDepthCompareOverride::HostValue(0)),
         depth_offset: MaterialDepthOffsetState::new(2.0, 3),
         cull_override: MaterialCullOverride::Off,
     }
@@ -263,22 +263,22 @@ fn assert_ui_unlit_filter_pass(stem: &str) {
     assert!(!materialized.resolved_depth_write(zwrite_off), "{stem}");
 
     let less_or_equal_ztest = MaterialRenderState {
-        depth_compare: Some(2),
+        depth_compare: Some(MaterialDepthCompareOverride::HostValue(2)),
         ..MaterialRenderState::default()
     };
     assert_eq!(
         materialized.resolved_depth_compare(less_or_equal_ztest),
-        wgpu::CompareFunction::GreaterEqual,
+        wgpu::CompareFunction::Greater,
         "{stem}"
     );
 
-    let always_ztest = MaterialRenderState {
-        depth_compare: Some(ZTEST_ALWAYS),
+    let host_not_equal_ztest = MaterialRenderState {
+        depth_compare: Some(MaterialDepthCompareOverride::HostValue(6)),
         ..MaterialRenderState::default()
     };
     assert_eq!(
-        materialized.resolved_depth_compare(always_ztest),
-        wgpu::CompareFunction::Always,
+        materialized.resolved_depth_compare(host_not_equal_ztest),
+        wgpu::CompareFunction::NotEqual,
         "{stem}"
     );
 
@@ -327,6 +327,33 @@ fn pbs_dualsided_opaque_stems_apply_material_cull_overrides() {
                 "{stem} must apply host {cull_override:?} over authored Cull Off"
             );
         }
+    }
+}
+
+/// Verifies PBS lerp forward passes preserve their authored depth compare.
+#[test]
+fn pbs_lerp_stems_ignore_host_ztest_on_forward_pass() {
+    for stem in ["pbslerp_default", "pbslerpspecular_default"] {
+        let passes = crate::embedded_shaders::embedded_target_passes(stem);
+        let forward = passes
+            .iter()
+            .find(|pass| pass.pass_type == PassType::Forward)
+            .expect("forward pass");
+        let state = MaterialRenderState {
+            depth_compare: Some(MaterialDepthCompareOverride::HostValue(6)),
+            ..MaterialRenderState::default()
+        };
+
+        assert_eq!(
+            forward.depth_compare,
+            crate::gpu::MAIN_FORWARD_DEPTH_COMPARE,
+            "{stem}"
+        );
+        assert_eq!(
+            forward.resolved_depth_compare(state),
+            crate::gpu::MAIN_FORWARD_DEPTH_COMPARE,
+            "{stem}"
+        );
     }
 }
 

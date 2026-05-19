@@ -3,8 +3,10 @@
 use super::draw_prep::WorldMeshDrawItem;
 use super::instances::{DrawGroup, build_plan, depth_prepass_group_eligible};
 use super::materials::{MaterialDrawBatchKey, TransparentMaterialClass};
-use crate::materials::ShaderPermutation;
-use crate::materials::{MaterialBlendMode, RasterPipelineKind, embedded_stem_pipeline_pass_count};
+use crate::materials::{
+    MaterialBlendMode, MaterialDepthCompareOverride, RasterPipelineKind, ShaderPermutation,
+    embedded_stem_pipeline_pass_count,
+};
 
 /// Per-class transparent draw counts for diagnostics.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -138,8 +140,8 @@ pub struct WorldMeshDrawStateRow {
     pub requires_intersection_pass: bool,
     /// Unity `_ZWrite` / `ZWrite` override. `None` means the shader pass default is used.
     pub depth_write: Option<bool>,
-    /// FrooxEngine `ZTest` enum override (raw `_ZTest` byte). `None` means the shader pass default is used.
-    pub depth_compare: Option<u8>,
+    /// Material depth-compare override. `None` means the shader pass default is used.
+    pub depth_compare: Option<MaterialDepthCompareOverride>,
     /// Unity `Offset factor, units` override. `None` means the shader pass default is used.
     pub depth_offset: Option<(u32, i32)>,
     /// Whether stencil state was enabled by material/properties.
@@ -429,7 +431,8 @@ mod tests {
         });
         draw.batch_key.blend_mode = MaterialBlendMode::UnityBlend { src: 1, dst: 10 };
         draw.batch_key.render_state.depth_write = Some(false);
-        draw.batch_key.render_state.depth_compare = Some(8);
+        draw.batch_key.render_state.depth_compare =
+            Some(MaterialDepthCompareOverride::HostValue(8));
         draw.batch_key.render_state.depth_offset = MaterialDepthOffsetState::new(-1.0, -2);
         draw.batch_key.render_state.color_mask = Some(0);
         draw.batch_key.render_state.stencil.enabled = true;
@@ -444,7 +447,10 @@ mod tests {
         assert_eq!(row.material_asset_id, 7);
         assert_eq!(row.property_block_slot0, Some(70));
         assert_eq!(row.depth_write, Some(false));
-        assert_eq!(row.depth_compare, Some(8));
+        assert_eq!(
+            row.depth_compare,
+            Some(MaterialDepthCompareOverride::HostValue(8))
+        );
         assert_eq!(row.depth_offset, Some(((-1.0f32).to_bits(), -2)));
         assert_eq!(row.color_mask, Some(0));
         assert!(row.stencil_enabled);

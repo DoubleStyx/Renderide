@@ -48,6 +48,5 @@ pub(crate) use test_support::{
     outline_pass, overlay_always_pass, overlay_behind_pass, overlay_front_pass, stencil_pass,
     transparent_rgb_pass, volume_front_pass,
 };
-pub(crate) use wire_tables::ZTEST_ALWAYS;
 
 pub(crate) use blend_mode::{PropertyMapRef, first_float_from_maps, first_vec4_from_maps};

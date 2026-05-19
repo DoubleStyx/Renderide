@@ -191,7 +191,7 @@ pub(super) fn create_skybox_pipeline(
 mod tests {
     use super::{SkyboxDepthState, SkyboxFamily};
     use crate::gpu::MAIN_FORWARD_DEPTH_COMPARE;
-    use crate::materials::MaterialRenderState;
+    use crate::materials::{MaterialDepthCompareOverride, MaterialRenderState};
 
     #[test]
     fn skybox_family_resolves_supported_stems() {
@@ -259,12 +259,11 @@ mod tests {
     }
 
     #[test]
-    fn projection360_skybox_honors_ztest_reverse_z_mapping() {
+    fn projection360_skybox_honors_ztest_shaderlab_mapping() {
         let depth = SkyboxDepthState::for_family(
             SkyboxFamily::Projection360,
             MaterialRenderState {
-                // FrooxEngine `ZTest.Less` maps to `Greater` in Renderide's reverse-Z depth buffer.
-                depth_compare: Some(0),
+                depth_compare: Some(MaterialDepthCompareOverride::HostValue(2)),
                 ..MaterialRenderState::default()
             },
         );
@@ -276,7 +275,7 @@ mod tests {
     fn analytic_skyboxes_ignore_material_depth_state() {
         let render_state = MaterialRenderState {
             depth_write: Some(true),
-            depth_compare: Some(6),
+            depth_compare: Some(MaterialDepthCompareOverride::HostValue(6)),
             ..MaterialRenderState::default()
         };
 

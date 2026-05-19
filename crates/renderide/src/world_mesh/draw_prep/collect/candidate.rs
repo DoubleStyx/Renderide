@@ -4,7 +4,8 @@ use glam::{Mat4, Vec3};
 
 use crate::materials::host_data::MaterialPropertyLookupIds;
 use crate::materials::{
-    RasterFrontFace, RasterPrimitiveTopology, ZTEST_ALWAYS, render_queue_is_transparent,
+    MaterialDepthCompareOverride, RasterFrontFace, RasterPrimitiveTopology,
+    render_queue_is_transparent,
 };
 use crate::reflection_probes::specular::ReflectionProbeDrawSelection;
 use crate::scene::{MeshRendererInstanceId, RenderSpaceId};
@@ -199,7 +200,7 @@ fn apply_overlay_layer_depth_policy(
 ) -> crate::world_mesh::MaterialDrawBatchKey {
     if is_overlay {
         batch_key.render_state.depth_write = Some(false);
-        batch_key.render_state.depth_compare = Some(ZTEST_ALWAYS);
+        batch_key.render_state.depth_compare = Some(MaterialDepthCompareOverride::Always);
     }
     batch_key
 }
@@ -345,7 +346,7 @@ mod tests {
         assert_eq!(item.batch_key.render_state.depth_write, Some(false));
         assert_eq!(
             item.batch_key.render_state.depth_compare,
-            Some(ZTEST_ALWAYS)
+            Some(MaterialDepthCompareOverride::Always)
         );
     }
 
