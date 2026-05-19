@@ -10,7 +10,7 @@ use crate::render_graph::frame_params::{GraphPassFrame, PerViewFramePlan};
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::world_mesh::draw_prep::{WorldMeshDrawCollection, WorldMeshDrawItem};
 use crate::world_mesh::{
-    DrawGroup, InstancePlan, PrefetchedWorldMeshViewDraws, WorldMeshCullProjParams,
+    DrawGroup, InstancePlan, PrefetchedWorldMeshViewDraws, WorldMeshCullProjParams, WorldMeshPhase,
     state_rows_from_sorted, stats_from_sorted,
 };
 
@@ -165,6 +165,7 @@ pub(crate) fn prepare_world_mesh_forward_frame(
         uploads,
         frame,
         supports_base_instance,
+        shader_perm,
         hc,
         prefetched.collection.items,
     )
@@ -226,6 +227,7 @@ fn pack_forward_draws_for_view(
     uploads: GraphUploadSink<'_>,
     frame: &GraphPassFrame<'_>,
     supports_base_instance: bool,
+    shader_perm: ShaderPermutation,
     hc: &HostCameraFrame,
     draws: Vec<WorldMeshDrawItem>,
 ) -> Option<PackedForwardDraws> {
@@ -244,7 +246,7 @@ fn pack_forward_draws_for_view(
         apply_offscreen_projection_flip(world_proj, overlay_proj, offscreen_write_rt);
     let plan = {
         profiling::scope!("world_mesh::prepare_frame::build_instance_plan");
-        crate::world_mesh::build_plan(&draws, supports_base_instance)
+        crate::world_mesh::build_plan_for_shader(&draws, supports_base_instance, shader_perm)
     };
     let slab_uploaded = {
         profiling::scope!("world_mesh::prepare_frame::pack_and_upload_slab");
@@ -310,10 +312,9 @@ fn precompute_and_assign_material_batches(
 
 /// Stamps each draw group with the material packet covering its representative draw.
 fn assign_material_packet_indices(plan: &mut InstancePlan, packets: &[MaterialBatchPacket]) {
-    assign_group_packet_indices(&mut plan.regular_groups, packets);
-    assign_group_packet_indices(&mut plan.post_skybox_groups, packets);
-    assign_group_packet_indices(&mut plan.intersect_groups, packets);
-    assign_group_packet_indices(&mut plan.transparent_groups, packets);
+    for phase in WorldMeshPhase::ALL {
+        assign_group_packet_indices(plan.phase_mut(phase), packets);
+    }
 }
 
 fn assign_group_packet_indices(groups: &mut [DrawGroup], packets: &[MaterialBatchPacket]) {
@@ -426,20 +427,48 @@ mod tests {
 
     #[test]
     fn assign_material_packet_indices_covers_all_forward_group_lists() {
-        let mut plan = InstancePlan {
-            slab_layout: vec![0, 1, 2, 3],
-            regular_groups: vec![group(0)],
-            post_skybox_groups: vec![group(1)],
-            intersect_groups: vec![group(2)],
-            transparent_groups: vec![group(3)],
-        };
-        let packets = [test_packet(0, 1), test_packet(2, 3)];
+        let mut plan = InstancePlan::default();
+        plan.slab_layout = vec![0, 1, 2, 3, 4, 5, 6];
+        plan.phase_mut(WorldMeshPhase::DepthOnly).push(group(0));
+        plan.phase_mut(WorldMeshPhase::ForwardOpaque).push(group(1));
+        plan.phase_mut(WorldMeshPhase::ForwardAlphaTest)
+            .push(group(2));
+        plan.phase_mut(WorldMeshPhase::ViewNormals).push(group(3));
+        plan.phase_mut(WorldMeshPhase::Intersection).push(group(4));
+        plan.phase_mut(WorldMeshPhase::Transparent).push(group(5));
+        plan.phase_mut(WorldMeshPhase::TransparentGrab)
+            .push(group(6));
+        let packets = [test_packet(0, 1), test_packet(2, 3), test_packet(4, 6)];
 
         assign_material_packet_indices(&mut plan, &packets);
 
-        assert_eq!(plan.regular_groups[0].material_packet_idx, 0);
-        assert_eq!(plan.post_skybox_groups[0].material_packet_idx, 0);
-        assert_eq!(plan.intersect_groups[0].material_packet_idx, 1);
-        assert_eq!(plan.transparent_groups[0].material_packet_idx, 1);
+        assert_eq!(
+            plan.phase(WorldMeshPhase::DepthOnly)[0].material_packet_idx,
+            0
+        );
+        assert_eq!(
+            plan.phase(WorldMeshPhase::ForwardOpaque)[0].material_packet_idx,
+            0
+        );
+        assert_eq!(
+            plan.phase(WorldMeshPhase::ForwardAlphaTest)[0].material_packet_idx,
+            1
+        );
+        assert_eq!(
+            plan.phase(WorldMeshPhase::ViewNormals)[0].material_packet_idx,
+            1
+        );
+        assert_eq!(
+            plan.phase(WorldMeshPhase::Intersection)[0].material_packet_idx,
+            2
+        );
+        assert_eq!(
+            plan.phase(WorldMeshPhase::Transparent)[0].material_packet_idx,
+            2
+        );
+        assert_eq!(
+            plan.phase(WorldMeshPhase::TransparentGrab)[0].material_packet_idx,
+            2
+        );
     }
 }

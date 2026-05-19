@@ -46,6 +46,7 @@ mod gpu_pools;
 mod materials;
 mod profiling;
 mod render_graph;
+mod render_phase;
 mod runtime;
 mod scene;
 mod shared;

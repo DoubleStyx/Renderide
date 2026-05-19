@@ -28,7 +28,7 @@ pub use draw_prep::{
     draw_filter_from_camera_entry,
 };
 pub(crate) use instances::depth_prepass_group_eligible;
-pub use instances::{DrawGroup, InstancePlan, build_plan};
+pub use instances::{DrawGroup, InstancePlan, MeshPassKind, WorldMeshPhase, build_plan_for_shader};
 #[cfg(test)]
 pub(crate) use materials::compute_batch_key_hash;
 pub use materials::{FrameMaterialBatchCache, MaterialDrawBatchKey, TransparentMaterialClass};

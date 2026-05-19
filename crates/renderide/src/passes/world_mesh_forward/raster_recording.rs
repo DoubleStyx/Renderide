@@ -8,6 +8,7 @@ use crate::passes::WorldMeshForwardEncodeRefs;
 use crate::render_graph::blackboard::Blackboard;
 use crate::render_graph::frame_params::{GraphPassFrame, PerViewFramePlanSlot};
 use crate::world_mesh::draw_prep::WorldMeshDrawItem;
+use crate::world_mesh::{MeshPassKind, WorldMeshPhase};
 
 use super::encode::{ForwardDrawBatch, NormalDrawBatch, draw_normals_subset, draw_subset};
 use super::normal_pass::WorldMeshForwardNormalPipelineCache;
@@ -58,25 +59,6 @@ struct ForwardSubpassDrawRecord<'a, 'c, 'd> {
     encode: &'a mut WorldMeshForwardEncodeRefs<'d>,
 }
 
-/// World-mesh forward subpass selection.
-#[derive(Clone, Copy, Debug)]
-enum ForwardSubpassKind {
-    /// Opaque and alpha-cutout draws before scene-depth snapshotting.
-    Opaque,
-    /// Intersection material draws after the depth snapshot.
-    Intersection,
-}
-
-impl ForwardSubpassKind {
-    /// Returns the pre-built draw groups for this subpass.
-    fn groups(self, plan: &crate::world_mesh::InstancePlan) -> &[crate::world_mesh::DrawGroup] {
-        match self {
-            Self::Opaque => &plan.regular_groups,
-            Self::Intersection => &plan.intersect_groups,
-        }
-    }
-}
-
 fn record_world_mesh_forward_subpass(
     rpass: &mut wgpu::RenderPass<'_>,
     sub: ForwardSubpassDrawRecord<'_, '_, '_>,
@@ -123,9 +105,26 @@ fn record_world_mesh_forward_graph_raster(
     frame: &GraphPassFrame<'_>,
     blackboard: &Blackboard,
     prepared: &PreparedWorldMeshForwardFrame,
-    subpass: ForwardSubpassKind,
+    mesh_pass: MeshPassKind,
 ) -> bool {
-    let groups = subpass.groups(&prepared.plan);
+    for &phase in mesh_pass.phases() {
+        if !record_world_mesh_forward_phase_graph_raster(rpass, frame, blackboard, prepared, phase)
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// Records one named world-mesh phase into a render pass already opened by the caller.
+pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_phase_graph_raster(
+    rpass: &mut wgpu::RenderPass<'_>,
+    frame: &GraphPassFrame<'_>,
+    blackboard: &Blackboard,
+    prepared: &PreparedWorldMeshForwardFrame,
+    phase: WorldMeshPhase,
+) -> bool {
+    let groups = prepared.plan.phase(phase);
     record_world_mesh_forward_groups_graph_raster(rpass, frame, blackboard, prepared, groups)
 }
 
@@ -200,7 +199,7 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_opaque_gr
         frame,
         blackboard,
         prepared,
-        ForwardSubpassKind::Opaque,
+        MeshPassKind::ForwardOpaque,
     )
 }
 
@@ -213,7 +212,7 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_normal_gr
     pipelines: &WorldMeshForwardNormalPipelineCache,
 ) -> bool {
     profiling::scope!("world_mesh_forward::record_normal_graph_raster");
-    let groups = &prepared.plan.regular_groups;
+    let groups = prepared.plan.phase(MeshPassKind::ViewNormals.first_phase());
     if groups.is_empty() {
         return true;
     }
@@ -258,6 +257,6 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_intersect
         frame,
         blackboard,
         prepared,
-        ForwardSubpassKind::Intersection,
+        MeshPassKind::Intersection,
     )
 }

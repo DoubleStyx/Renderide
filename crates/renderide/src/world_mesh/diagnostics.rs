@@ -1,7 +1,7 @@
 //! Batch and draw counters for the debug HUD (aligned with sorted [`WorldMeshDrawItem`] order).
 
 use super::draw_prep::WorldMeshDrawItem;
-use super::instances::{DrawGroup, build_plan, depth_prepass_group_eligible};
+use super::instances::DrawGroup;
 use super::materials::{MaterialDrawBatchKey, TransparentMaterialClass};
 use crate::materials::{
     MaterialBlendMode, MaterialDepthCompareOverride, RasterPipelineKind, ShaderPermutation,
@@ -69,9 +69,8 @@ pub struct WorldMeshDrawStats {
     pub draws_hi_z_culled: usize,
     /// GPU instance batches after merge (one indexed draw each); at most `draws_total`.
     ///
-    /// Counts batches across all subpasses the forward pass actually issues
-    /// (regular + intersection + grab-pass transparent), matching what `draw_subset` submits per frame rather
-    /// than the optimistic single-pass count.
+    /// Counts batches across visible forward phases, matching what `draw_subset` submits per frame
+    /// rather than the optimistic single-pass count.
     pub instance_batch_total: usize,
     /// Subset of [`Self::instance_batch_total`] in the intersection-pass subpass
     /// (materials whose embedded shader needs `_IntersectColor` / depth snapshot).
@@ -201,31 +200,20 @@ pub fn stats_from_sorted(
 
     // The forward pass drives both subpasses from this same `InstancePlan`, so the HUD
     // counts are exactly what `draw_subset` ends up submitting.
-    let plan = build_plan(draws, supports_base_instance);
-    let post_skybox_pass_batches = plan.post_skybox_groups.len();
-    let intersect_pass_batches = plan.intersect_groups.len();
-    let transparent_pass_batches = plan.transparent_groups.len();
+    let plan = crate::world_mesh::build_plan_for_shader(draws, supports_base_instance, shader_perm);
+    let intersect_pass_batches = plan.phase_len(crate::world_mesh::WorldMeshPhase::Intersection);
+    let transparent_pass_batches = plan.phase_len(crate::world_mesh::WorldMeshPhase::Transparent)
+        + plan.phase_len(crate::world_mesh::WorldMeshPhase::TransparentGrab);
     let (depth_prepass_batches, depth_prepass_instances) =
-        depth_prepass_counts(&plan.regular_groups, &plan.slab_layout, draws, shader_perm);
-    let instance_batch_total = plan.regular_groups.len()
-        + post_skybox_pass_batches
-        + intersect_pass_batches
-        + transparent_pass_batches;
+        depth_prepass_counts(plan.phase(crate::world_mesh::WorldMeshPhase::DepthOnly));
+    let instance_batch_total = plan.primary_forward_group_count();
     let gpu_instances_emitted: usize = plan
-        .regular_groups
-        .iter()
-        .chain(plan.post_skybox_groups.iter())
-        .chain(plan.intersect_groups.iter())
-        .chain(plan.transparent_groups.iter())
+        .primary_forward_groups()
         .map(|g| (g.instance_range.end - g.instance_range.start) as usize)
         .sum();
     // this is the real submit count when a material has multiple passes.
     let submitted_pipeline_pass_total = plan
-        .regular_groups
-        .iter()
-        .chain(plan.post_skybox_groups.iter())
-        .chain(plan.intersect_groups.iter())
-        .chain(plan.transparent_groups.iter())
+        .primary_forward_groups()
         .map(|group: &DrawGroup| {
             let item = &draws[group.representative_draw_idx];
             match &item.batch_key.pipeline {
@@ -271,18 +259,10 @@ fn transparent_class_stats_from_sorted(
     stats
 }
 
-fn depth_prepass_counts(
-    regular_groups: &[DrawGroup],
-    slab_layout: &[usize],
-    draws: &[WorldMeshDrawItem],
-    shader_perm: ShaderPermutation,
-) -> (usize, usize) {
+fn depth_prepass_counts(depth_groups: &[DrawGroup]) -> (usize, usize) {
     let mut batches = 0usize;
     let mut instances = 0usize;
-    for group in regular_groups {
-        if !depth_prepass_group_eligible(draws, slab_layout, group, shader_perm) {
-            continue;
-        }
+    for group in depth_groups {
         batches += 1;
         instances += (group.instance_range.end - group.instance_range.start) as usize;
     }

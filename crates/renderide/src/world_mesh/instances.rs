@@ -21,10 +21,11 @@ use crate::materials::{
     RasterPipelineKind, ShaderPermutation, UNITY_RENDER_QUEUE_ALPHA_TEST,
     embedded_stem_depth_prepass_pass, render_queue_is_transparent,
 };
+use crate::render_phase::{RenderPhaseKey, RenderPhaseSet};
 
 use super::draw_prep::WorldMeshDrawItem;
 
-use batch_window::{BatchWindow, emit_group, next_batch_window, subpass_groups};
+use batch_window::{BatchWindow, build_group, next_batch_window};
 use scratch::InstancePlanScratch;
 
 /// Draw count above which [`build_plan`] may split batch windows across worker threads.
@@ -54,30 +55,180 @@ pub struct DrawGroup {
     pub material_packet_idx: usize,
 }
 
-/// Per-view instance plan: slab layout plus groups for pre-skybox regular, post-skybox regular,
-/// intersection, and grab-pass transparent subpasses.
+/// Named mesh render phase produced by world-mesh instance planning.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum WorldMeshPhase {
+    /// Conservative depth-only mirror of eligible pre-skybox forward groups.
+    DepthOnly,
+    /// Pre-skybox opaque forward groups below the alpha-test queue.
+    ForwardOpaque,
+    /// Pre-skybox alpha-test forward groups.
+    ForwardAlphaTest,
+    /// Normal-prepass mirror of pre-skybox forward groups.
+    ViewNormals,
+    /// Intersection-material groups that run after the scene-depth snapshot.
+    Intersection,
+    /// Post-skybox transparent groups that do not require a grab snapshot.
+    Transparent,
+    /// Transparent scene-color snapshot filter groups.
+    TransparentGrab,
+}
+
+impl WorldMeshPhase {
+    /// All world-mesh phase keys in dense index order.
+    pub const ALL: [Self; 7] = [
+        Self::DepthOnly,
+        Self::ForwardOpaque,
+        Self::ForwardAlphaTest,
+        Self::ViewNormals,
+        Self::Intersection,
+        Self::Transparent,
+        Self::TransparentGrab,
+    ];
+
+    /// Primary phases that submit visible world-mesh material passes.
+    pub const PRIMARY_FORWARD: [Self; 5] = [
+        Self::ForwardOpaque,
+        Self::ForwardAlphaTest,
+        Self::Intersection,
+        Self::Transparent,
+        Self::TransparentGrab,
+    ];
+}
+
+impl RenderPhaseKey for WorldMeshPhase {
+    const COUNT: usize = Self::ALL.len();
+
+    fn index(self) -> usize {
+        match self {
+            Self::DepthOnly => 0,
+            Self::ForwardOpaque => 1,
+            Self::ForwardAlphaTest => 2,
+            Self::ViewNormals => 3,
+            Self::Intersection => 4,
+            Self::Transparent => 5,
+            Self::TransparentGrab => 6,
+        }
+    }
+}
+
+/// Mesh pass consumer for one or more world-mesh phases.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum MeshPassKind {
+    /// Generic safe depth-only prepass.
+    DepthPrepass,
+    /// Main pre-skybox forward material pass.
+    ForwardOpaque,
+    /// GTAO view-normal prepass.
+    ViewNormals,
+    /// Intersection material pass.
+    Intersection,
+    /// Post-skybox transparent and grab-pass sequence.
+    TransparentSequence,
+}
+
+impl MeshPassKind {
+    /// Returns the phases consumed by this mesh pass in submission order.
+    pub fn phases(self) -> &'static [WorldMeshPhase] {
+        match self {
+            Self::DepthPrepass => &[WorldMeshPhase::DepthOnly],
+            Self::ForwardOpaque => &[
+                WorldMeshPhase::ForwardOpaque,
+                WorldMeshPhase::ForwardAlphaTest,
+            ],
+            Self::ViewNormals => &[WorldMeshPhase::ViewNormals],
+            Self::Intersection => &[WorldMeshPhase::Intersection],
+            Self::TransparentSequence => {
+                &[WorldMeshPhase::Transparent, WorldMeshPhase::TransparentGrab]
+            }
+        }
+    }
+
+    /// Returns the first phase consumed by this mesh pass.
+    pub fn first_phase(self) -> WorldMeshPhase {
+        match self {
+            Self::DepthPrepass => WorldMeshPhase::DepthOnly,
+            Self::ForwardOpaque => WorldMeshPhase::ForwardOpaque,
+            Self::ViewNormals => WorldMeshPhase::ViewNormals,
+            Self::Intersection => WorldMeshPhase::Intersection,
+            Self::TransparentSequence => WorldMeshPhase::Transparent,
+        }
+    }
+}
+
+/// Per-view instance plan: slab layout plus named mesh render phases.
 ///
 /// The forward pass packs the per-draw slab in `slab_layout` order -- slot `i` holds the
 /// per-draw uniforms for `draws[slab_layout[i]]` -- and emits each group's `instance_range`
 /// directly. `representative_draw_idx` for each group list is monotonically increasing; backend
 /// frame planning attaches material packet indices after packet resolution so recording does not
 /// search packet boundaries.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InstancePlan {
     /// New slab order. `slab_layout[i]` is the sorted-draw index whose per-draw uniforms
     /// go into per-draw slot `i`. Length equals `draws.len()` (every draw gets one slot).
     pub slab_layout: Vec<usize>,
-    /// Groups emitted before the skybox draw, in ascending `representative_draw_idx` order.
-    pub regular_groups: Vec<DrawGroup>,
-    /// Regular forward groups emitted after the skybox draw, in ascending
-    /// `representative_draw_idx` order.
-    pub post_skybox_groups: Vec<DrawGroup>,
-    /// Groups emitted by the intersection-pass subpass (post depth-snapshot), in
-    /// ascending `representative_draw_idx` order.
-    pub intersect_groups: Vec<DrawGroup>,
-    /// Groups emitted by the grab-pass transparent subpass (post scene-color snapshot), in
-    /// ascending `representative_draw_idx` order.
-    pub transparent_groups: Vec<DrawGroup>,
+    /// Phase queues keyed by [`WorldMeshPhase`].
+    phases: RenderPhaseSet<WorldMeshPhase, DrawGroup>,
+}
+
+impl InstancePlan {
+    /// Creates an empty plan with all phase queues initialized.
+    pub fn new() -> Self {
+        Self {
+            slab_layout: Vec::new(),
+            phases: RenderPhaseSet::new(),
+        }
+    }
+
+    /// Creates an empty plan sized for `draw_count` slab entries.
+    fn with_capacity(draw_count: usize) -> Self {
+        Self {
+            slab_layout: Vec::with_capacity(draw_count),
+            phases: RenderPhaseSet::new(),
+        }
+    }
+
+    /// Returns the groups queued in `phase`.
+    pub fn phase(&self, phase: WorldMeshPhase) -> &[DrawGroup] {
+        self.phases.phase(phase).items()
+    }
+
+    /// Returns the groups queued in `phase` mutably.
+    pub fn phase_mut(&mut self, phase: WorldMeshPhase) -> &mut Vec<DrawGroup> {
+        self.phases.phase_mut(phase).items_mut()
+    }
+
+    /// Returns whether `phase` has no queued groups.
+    pub fn phase_is_empty(&self, phase: WorldMeshPhase) -> bool {
+        self.phases.phase(phase).is_empty()
+    }
+
+    /// Returns the number of groups queued in `phase`.
+    pub fn phase_len(&self, phase: WorldMeshPhase) -> usize {
+        self.phases.phase(phase).len()
+    }
+
+    /// Returns all primary visible forward groups.
+    pub fn primary_forward_groups(&self) -> impl Iterator<Item = &DrawGroup> {
+        WorldMeshPhase::PRIMARY_FORWARD
+            .iter()
+            .flat_map(|&phase| self.phase(phase).iter())
+    }
+
+    /// Returns the total number of primary visible forward groups.
+    pub fn primary_forward_group_count(&self) -> usize {
+        WorldMeshPhase::PRIMARY_FORWARD
+            .iter()
+            .map(|&phase| self.phase_len(phase))
+            .sum()
+    }
+}
+
+impl Default for InstancePlan {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Builds the per-view [`InstancePlan`] from a sorted draw list.
@@ -93,21 +244,31 @@ pub struct InstancePlan {
 /// Group emit order matches the order of each group's first member in `draws`, so the
 /// view's high-level sort intent (state-change minimisation, transparent depth) is
 /// preserved while same-mesh members that landed later still merge in.
+#[cfg(test)]
 pub fn build_plan(draws: &[WorldMeshDrawItem], supports_base_instance: bool) -> InstancePlan {
+    build_plan_for_shader(draws, supports_base_instance, ShaderPermutation(0))
+}
+
+/// Builds a per-view [`InstancePlan`] using the active shader permutation.
+pub fn build_plan_for_shader(
+    draws: &[WorldMeshDrawItem],
+    supports_base_instance: bool,
+    shader_perm: ShaderPermutation,
+) -> InstancePlan {
     profiling::scope!("mesh::build_plan");
     if draws.is_empty() {
         return InstancePlan::default();
     }
 
     if draws.len() < INSTANCE_PLAN_PARALLEL_MIN_DRAWS {
-        return build_plan_serial(draws, supports_base_instance);
+        return build_plan_serial(draws, supports_base_instance, shader_perm);
     }
 
     let windows = collect_batch_windows(draws, supports_base_instance);
     if should_parallelize_instance_plan(draws.len(), windows.len()) {
-        build_plan_parallel(draws, &windows)
+        build_plan_parallel(draws, &windows, shader_perm)
     } else {
-        build_plan_from_windows_serial(draws, &windows)
+        build_plan_from_windows_serial(draws, &windows, shader_perm)
     }
 }
 
@@ -116,8 +277,12 @@ fn should_parallelize_instance_plan(draw_count: usize, window_count: usize) -> b
         && window_count >= INSTANCE_PLAN_PARALLEL_MIN_WINDOWS
 }
 
-fn build_plan_serial(draws: &[WorldMeshDrawItem], supports_base_instance: bool) -> InstancePlan {
-    let mut builder = InstancePlanBuilder::with_capacity(draws.len());
+fn build_plan_serial(
+    draws: &[WorldMeshDrawItem],
+    supports_base_instance: bool,
+    shader_perm: ShaderPermutation,
+) -> InstancePlan {
+    let mut builder = InstancePlanBuilder::with_capacity(draws.len(), shader_perm);
     let mut i = 0usize;
     while i < draws.len() {
         let window = next_batch_window(draws, i, supports_base_instance);
@@ -145,21 +310,26 @@ fn collect_batch_windows(
 fn build_plan_from_windows_serial(
     draws: &[WorldMeshDrawItem],
     windows: &[BatchWindow],
+    shader_perm: ShaderPermutation,
 ) -> InstancePlan {
-    let mut builder = InstancePlanBuilder::with_capacity(draws.len());
+    let mut builder = InstancePlanBuilder::with_capacity(draws.len(), shader_perm);
     for window in windows {
         builder.process_window(draws, window.clone());
     }
     builder.finish()
 }
 
-fn build_plan_parallel(draws: &[WorldMeshDrawItem], windows: &[BatchWindow]) -> InstancePlan {
+fn build_plan_parallel(
+    draws: &[WorldMeshDrawItem],
+    windows: &[BatchWindow],
+    shader_perm: ShaderPermutation,
+) -> InstancePlan {
     profiling::scope!("mesh::build_plan_parallel_windows");
     let partials: Vec<_> = windows
         .par_iter()
         .map(|window| {
             profiling::scope!("mesh::build_plan_window_worker");
-            let mut builder = InstancePlanBuilder::with_capacity(window.range.len());
+            let mut builder = InstancePlanBuilder::with_capacity(window.range.len(), shader_perm);
             builder.process_window(draws, window.clone());
             builder.finish()
         })
@@ -168,37 +338,18 @@ fn build_plan_parallel(draws: &[WorldMeshDrawItem], windows: &[BatchWindow]) -> 
 }
 
 fn merge_partial_instance_plans(draw_count: usize, partials: Vec<InstancePlan>) -> InstancePlan {
-    let mut plan = InstancePlan {
-        slab_layout: Vec::with_capacity(draw_count),
-        regular_groups: Vec::new(),
-        post_skybox_groups: Vec::new(),
-        intersect_groups: Vec::new(),
-        transparent_groups: Vec::new(),
-    };
+    let mut plan = InstancePlan::with_capacity(draw_count);
 
     for partial in partials {
         let slab_offset = plan.slab_layout.len() as u32;
+        for phase in WorldMeshPhase::ALL {
+            append_groups_with_slab_offset(
+                plan.phase_mut(phase),
+                partial.phase(phase).to_vec(),
+                slab_offset,
+            );
+        }
         plan.slab_layout.extend(partial.slab_layout);
-        append_groups_with_slab_offset(
-            &mut plan.regular_groups,
-            partial.regular_groups,
-            slab_offset,
-        );
-        append_groups_with_slab_offset(
-            &mut plan.post_skybox_groups,
-            partial.post_skybox_groups,
-            slab_offset,
-        );
-        append_groups_with_slab_offset(
-            &mut plan.intersect_groups,
-            partial.intersect_groups,
-            slab_offset,
-        );
-        append_groups_with_slab_offset(
-            &mut plan.transparent_groups,
-            partial.transparent_groups,
-            slab_offset,
-        );
     }
 
     debug_assert_plan_group_order(&plan);
@@ -218,10 +369,9 @@ fn append_groups_with_slab_offset(
 }
 
 fn debug_assert_plan_group_order(plan: &InstancePlan) {
-    debug_assert!(groups_are_monotonic(&plan.regular_groups));
-    debug_assert!(groups_are_monotonic(&plan.post_skybox_groups));
-    debug_assert!(groups_are_monotonic(&plan.intersect_groups));
-    debug_assert!(groups_are_monotonic(&plan.transparent_groups));
+    for phase in WorldMeshPhase::ALL {
+        debug_assert!(groups_are_monotonic(plan.phase(phase)));
+    }
 }
 
 fn groups_are_monotonic(groups: &[DrawGroup]) -> bool {
@@ -276,27 +426,21 @@ fn depth_prepass_item_eligible(item: &WorldMeshDrawItem, shader_perm: ShaderPerm
 struct InstancePlanBuilder {
     /// Per-draw slab order emitted for the frame.
     slab_layout: Vec<usize>,
-    /// Regular forward draw groups emitted before the skybox draw.
-    regular_groups: Vec<DrawGroup>,
-    /// Regular forward draw groups emitted after the skybox draw.
-    post_skybox_groups: Vec<DrawGroup>,
-    /// Intersection-pass draw groups.
-    intersect_groups: Vec<DrawGroup>,
-    /// Grab-pass transparent draw groups.
-    transparent_groups: Vec<DrawGroup>,
+    /// Named phase queues emitted for the frame.
+    phases: RenderPhaseSet<WorldMeshPhase, DrawGroup>,
+    /// Shader permutation used to decide phase mirrors that depend on material pass metadata.
+    shader_perm: ShaderPermutation,
     /// Reusable grouping scratch for one batch-key window.
     scratch: InstancePlanScratch,
 }
 
 impl InstancePlanBuilder {
     /// Creates a builder sized for `draw_count` sorted draws.
-    fn with_capacity(draw_count: usize) -> Self {
+    fn with_capacity(draw_count: usize, shader_perm: ShaderPermutation) -> Self {
         Self {
             slab_layout: Vec::with_capacity(draw_count),
-            regular_groups: Vec::new(),
-            post_skybox_groups: Vec::new(),
-            intersect_groups: Vec::new(),
-            transparent_groups: Vec::new(),
+            phases: RenderPhaseSet::new(),
+            shader_perm,
             scratch: InstancePlanScratch::default(),
         }
     }
@@ -304,80 +448,67 @@ impl InstancePlanBuilder {
     /// Emits all groups for one same-batch-key window.
     fn process_window(&mut self, draws: &[WorldMeshDrawItem], window: BatchWindow) {
         if window.singleton {
-            self.emit_singletons(window);
+            self.emit_singletons(draws, window);
         } else {
             self.emit_grouped_window(draws, window);
         }
     }
 
     /// Emits one GPU draw group per source draw.
-    fn emit_singletons(&mut self, window: BatchWindow) {
-        let target = subpass_groups(
-            &mut self.regular_groups,
-            &mut self.post_skybox_groups,
-            &mut self.intersect_groups,
-            &mut self.transparent_groups,
-            &window,
-        );
+    fn emit_singletons(&mut self, draws: &[WorldMeshDrawItem], window: BatchWindow) {
         for draw_idx in window.range {
-            emit_group(&mut self.slab_layout, target, draw_idx, &[draw_idx]);
+            let group = build_group(&mut self.slab_layout, draw_idx, &[draw_idx]);
+            self.queue_group_to_phase(draws, window.phase, group);
         }
     }
 
     /// Groups non-transparent same-batch-key draws by mesh/submesh before emission.
     fn emit_grouped_window(&mut self, draws: &[WorldMeshDrawItem], window: BatchWindow) {
         self.scratch.rebuild(draws, window.range.clone());
-        let target = subpass_groups(
-            &mut self.regular_groups,
-            &mut self.post_skybox_groups,
-            &mut self.intersect_groups,
-            &mut self.transparent_groups,
-            &window,
-        );
         for group_idx in 0..self.scratch.group_count() {
-            let members = self.scratch.group_members(group_idx);
-            emit_group(
-                &mut self.slab_layout,
-                target,
-                self.scratch.group_representative(group_idx),
-                members,
-            );
+            let group = {
+                let members = self.scratch.group_members(group_idx);
+                let representative = self.scratch.group_representative(group_idx);
+                build_group(&mut self.slab_layout, representative, members)
+            };
+            self.queue_group_to_phase(draws, window.phase, group);
+        }
+    }
+
+    /// Queues one group into its primary phase and any mirror phases.
+    fn queue_group_to_phase(
+        &mut self,
+        draws: &[WorldMeshDrawItem],
+        phase: WorldMeshPhase,
+        group: DrawGroup,
+    ) {
+        self.phases.phase_mut(phase).push(group.clone());
+        if phase_is_pre_skybox_forward(phase) {
+            self.phases
+                .phase_mut(WorldMeshPhase::ViewNormals)
+                .push(group.clone());
+            if depth_prepass_group_eligible(draws, &self.slab_layout, &group, self.shader_perm) {
+                self.phases.phase_mut(WorldMeshPhase::DepthOnly).push(group);
+            }
         }
     }
 
     /// Produces the final plan after debug-validating group order.
     fn finish(self) -> InstancePlan {
-        // The cross-window walk visits regular and intersect groups interleaved by sort order,
-        // so each list is already in ascending `representative_draw_idx` order -- no resort.
-        debug_assert!(
-            self.regular_groups
-                .windows(2)
-                .all(|w| w[0].representative_draw_idx <= w[1].representative_draw_idx)
-        );
-        debug_assert!(
-            self.intersect_groups
-                .windows(2)
-                .all(|w| w[0].representative_draw_idx <= w[1].representative_draw_idx)
-        );
-        debug_assert!(
-            self.post_skybox_groups
-                .windows(2)
-                .all(|w| w[0].representative_draw_idx <= w[1].representative_draw_idx)
-        );
-        debug_assert!(
-            self.transparent_groups
-                .windows(2)
-                .all(|w| w[0].representative_draw_idx <= w[1].representative_draw_idx)
-        );
-
-        InstancePlan {
+        let plan = InstancePlan {
             slab_layout: self.slab_layout,
-            regular_groups: self.regular_groups,
-            post_skybox_groups: self.post_skybox_groups,
-            intersect_groups: self.intersect_groups,
-            transparent_groups: self.transparent_groups,
-        }
+            phases: self.phases,
+        };
+        debug_assert_plan_group_order(&plan);
+        plan
     }
+}
+
+fn phase_is_pre_skybox_forward(phase: WorldMeshPhase) -> bool {
+    matches!(
+        phase,
+        WorldMeshPhase::ForwardOpaque | WorldMeshPhase::ForwardAlphaTest
+    )
 }
 
 #[cfg(test)]

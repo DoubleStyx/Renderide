@@ -6,23 +6,19 @@
 
 use std::ops::Range;
 
-use crate::materials::render_queue_is_transparent;
+use crate::materials::{UNITY_RENDER_QUEUE_ALPHA_TEST, render_queue_is_transparent};
 use crate::world_mesh::MaterialDrawBatchKey;
 use crate::world_mesh::draw_prep::WorldMeshDrawItem;
 
-use super::DrawGroup;
+use super::{DrawGroup, WorldMeshPhase};
 
 /// Same-batch-key draw window and its subpass routing metadata.
 #[derive(Clone, Debug)]
 pub(super) struct BatchWindow {
     /// Draw index range covered by this window.
     pub(super) range: Range<usize>,
-    /// Whether the window belongs to the intersection subpass.
-    pub(super) intersect: bool,
-    /// Whether the window belongs to the regular post-skybox subpass.
-    pub(super) post_skybox: bool,
-    /// Whether the window belongs to the grab-pass transparent subpass.
-    pub(super) grab_pass: bool,
+    /// Primary mesh render phase for the window.
+    pub(super) phase: WorldMeshPhase,
     /// Whether every draw must remain a singleton group.
     pub(super) singleton: bool,
 }
@@ -42,6 +38,7 @@ pub(super) fn next_batch_window(
     let intersect = key.embedded_requires_intersection_pass;
     let grab_pass = key.embedded_uses_scene_color_snapshot;
     let post_skybox = !intersect && !grab_pass && regular_window_records_after_skybox(key);
+    let phase = phase_for_window(key, intersect, grab_pass, post_skybox);
     let order_dependent = !key.transparent_class.allows_relaxed_batching();
     debug_assert!(
         !(intersect && grab_pass),
@@ -50,9 +47,7 @@ pub(super) fn next_batch_window(
 
     BatchWindow {
         range: start..end,
-        intersect,
-        post_skybox,
-        grab_pass,
+        phase,
         singleton: !supports_base_instance
             || draws[start].skinned
             || (post_skybox && order_dependent)
@@ -68,39 +63,39 @@ fn regular_window_records_after_skybox(key: &MaterialDrawBatchKey) -> bool {
         || key.render_state.depth_write == Some(false)
 }
 
-/// Selects the subpass group vector for a batch window.
-pub(super) fn subpass_groups<'a>(
-    regular_groups: &'a mut Vec<DrawGroup>,
-    post_skybox_groups: &'a mut Vec<DrawGroup>,
-    intersect_groups: &'a mut Vec<DrawGroup>,
-    transparent_groups: &'a mut Vec<DrawGroup>,
-    window: &BatchWindow,
-) -> &'a mut Vec<DrawGroup> {
-    if window.intersect {
-        intersect_groups
-    } else if window.grab_pass {
-        transparent_groups
-    } else if window.post_skybox {
-        post_skybox_groups
+/// Selects the primary phase for one same-batch-key window.
+fn phase_for_window(
+    key: &MaterialDrawBatchKey,
+    intersect: bool,
+    grab_pass: bool,
+    post_skybox: bool,
+) -> WorldMeshPhase {
+    if intersect {
+        WorldMeshPhase::Intersection
+    } else if grab_pass {
+        WorldMeshPhase::TransparentGrab
+    } else if post_skybox {
+        WorldMeshPhase::Transparent
+    } else if key.render_queue >= UNITY_RENDER_QUEUE_ALPHA_TEST {
+        WorldMeshPhase::ForwardAlphaTest
     } else {
-        regular_groups
+        WorldMeshPhase::ForwardOpaque
     }
 }
 
-/// Appends `members` to `slab_layout` and pushes a [`DrawGroup`] covering the new slab range.
+/// Appends `members` to `slab_layout` and returns a [`DrawGroup`] covering the new slab range.
 #[inline]
-pub(super) fn emit_group(
+pub(super) fn build_group(
     slab_layout: &mut Vec<usize>,
-    target: &mut Vec<DrawGroup>,
     representative_draw_idx: usize,
     members: &[usize],
-) {
+) -> DrawGroup {
     let first_instance = slab_layout.len() as u32;
     slab_layout.extend_from_slice(members);
     let count = members.len() as u32;
-    target.push(DrawGroup {
+    DrawGroup {
         representative_draw_idx,
         instance_range: first_instance..first_instance + count,
         material_packet_idx: 0,
-    });
+    }
 }

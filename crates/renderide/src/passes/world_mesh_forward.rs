@@ -11,16 +11,16 @@
 //! 2. [`WorldMeshForwardDepthPrepass`] -- **[`RasterPass`]** that clears and fills depth for
 //!    conservative opaque draws.
 //! 3. [`WorldMeshForwardOpaquePass`] -- **[`RasterPass`]** that clears HDR color, loads the
-//!    prepass depth attachment, records pre-skybox regular draws, records the skybox/background,
-//!    then records regular draws that need the skybox as background.
+//!    prepass depth attachment, records pre-skybox opaque and alpha-test phases, then records the
+//!    skybox/background.
 //! 4. [`WorldMeshForwardNormalPass`] -- optional **[`RasterPass`]** that writes smooth
 //!    view-space vertex normals for GTAO, using the opaque depth buffer as an equality mask.
 //! 5. [`WorldMeshDepthSnapshotPass`] -- **[`ComputePass`]** that resolves MSAA depth (when active)
 //!    and copies single-sample depth into the scene-depth snapshot for intersection materials.
 //! 6. [`WorldMeshForwardIntersectPass`] -- **[`RasterPass`]** that draws intersection materials.
 //! 7. [`WorldMeshForwardTransparentSequencePass`] -- **[`EncoderPass`]** that draws the sorted
-//!    transparent tail, resolving/copying a fresh scene-color snapshot immediately before each
-//!    grab-pass group.
+//!    transparent phase, resolving/copying a fresh scene-color snapshot immediately before each
+//!    grab-pass phase group.
 //! 8. [`WorldMeshForwardDepthResolvePass`] -- **[`ComputePass`]** that resolves the final MSAA depth into the single-sample frame depth used by Hi-Z.
 //!
 //! ## VR stereo world draws
@@ -73,7 +73,7 @@ use crate::render_graph::resources::{
     BufferAccess, ImportedBufferHandle, ImportedTextureHandle, StorageAccess, TextureAccess,
     TextureHandle,
 };
-use crate::world_mesh::InstancePlan;
+use crate::world_mesh::{InstancePlan, WorldMeshPhase};
 
 use depth_resolve::encode_msaa_depth_resolve_after_clear_only;
 use depth_snapshot::encode_world_mesh_forward_depth_snapshot;
@@ -195,7 +195,7 @@ impl<'a> WorldMeshForwardEncodeRefs<'a> {
 
 /// Returns whether the intersection raster tail has view-local work to record.
 fn forward_intersection_raster_needed(opaque_recorded: bool, plan: &InstancePlan) -> bool {
-    opaque_recorded && !plan.intersect_groups.is_empty()
+    opaque_recorded && !plan.phase_is_empty(WorldMeshPhase::Intersection)
 }
 
 impl WorldMeshForwardOpaquePass {
@@ -575,7 +575,7 @@ mod tests {
         InstancePlan, forward_intersection_raster_needed,
         transparent_sequence::forward_transparent_sequence_needed,
     };
-    use crate::world_mesh::DrawGroup;
+    use crate::world_mesh::{DrawGroup, WorldMeshPhase};
 
     /// Empty helper plans skip their raster pass even after opaque work records successfully.
     #[test]
@@ -585,20 +585,24 @@ mod tests {
         assert!(!forward_transparent_sequence_needed(true, &empty));
 
         let mut intersect = InstancePlan::default();
-        intersect.intersect_groups.push(DrawGroup {
-            representative_draw_idx: 0,
-            instance_range: 0..1,
-            material_packet_idx: 0,
-        });
+        intersect
+            .phase_mut(WorldMeshPhase::Intersection)
+            .push(DrawGroup {
+                representative_draw_idx: 0,
+                instance_range: 0..1,
+                material_packet_idx: 0,
+            });
         assert!(forward_intersection_raster_needed(true, &intersect));
         assert!(!forward_intersection_raster_needed(false, &intersect));
 
         let mut transparent = InstancePlan::default();
-        transparent.post_skybox_groups.push(DrawGroup {
-            representative_draw_idx: 0,
-            instance_range: 0..1,
-            material_packet_idx: 0,
-        });
+        transparent
+            .phase_mut(WorldMeshPhase::Transparent)
+            .push(DrawGroup {
+                representative_draw_idx: 0,
+                instance_range: 0..1,
+                material_packet_idx: 0,
+            });
         assert!(forward_transparent_sequence_needed(true, &transparent));
         assert!(!forward_transparent_sequence_needed(false, &transparent));
     }

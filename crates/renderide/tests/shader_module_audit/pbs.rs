@@ -23,146 +23,116 @@ fn assert_keyword_bit(src: &str, file_name: &str, constant_name: &str, bit_index
     assert!(src.contains(&needle), "{file_name} must define `{needle}`");
 }
 
+/// Asserts all expected shader variant bit constants for a material root.
+fn assert_keyword_bits(file_name: &str, expected: &[(&str, u32)]) -> io::Result<()> {
+    let src = material_source(file_name)?;
+    for (constant_name, bit_index) in expected.iter().copied() {
+        assert_keyword_bit(&src, file_name, constant_name, bit_index);
+    }
+    Ok(())
+}
+
 #[test]
 fn selected_pbs_materials_keep_sorted_shader_variant_bits() -> io::Result<()> {
-    let pbs_stencil_specular = material_source("pbsstencilspecular.wgsl")?;
-    for (constant_name, bit_index) in [
-        ("PBSSTENCILSPECULAR_KW_ALBEDOTEX", 0),
-        ("PBSSTENCILSPECULAR_KW_EMISSIONTEX", 1),
-        ("PBSSTENCILSPECULAR_KW_NORMALMAP", 2),
-        ("PBSSTENCILSPECULAR_KW_OCCLUSION", 3),
-        ("PBSSTENCILSPECULAR_KW_SPECULARMAP", 4),
-    ] {
-        assert_keyword_bit(
-            &pbs_stencil_specular,
-            "pbsstencilspecular.wgsl",
-            constant_name,
-            bit_index,
-        );
-    }
-
-    let pbs_triplanar = material_source("pbstriplanar.wgsl")?;
-    for (constant_name, bit_index) in [
-        ("PBSTRIPLANAR_KW_ALBEDOTEX", 0),
-        ("PBSTRIPLANAR_KW_EMISSIONTEX", 1),
-        ("PBSTRIPLANAR_KW_METALLICMAP", 2),
-        ("PBSTRIPLANAR_KW_NORMALMAP", 3),
-        ("PBSTRIPLANAR_KW_OBJECTSPACE", 4),
-        ("PBSTRIPLANAR_KW_OCCLUSION", 5),
-        ("PBSTRIPLANAR_KW_WORLDSPACE", 6),
-    ] {
-        assert_keyword_bit(
-            &pbs_triplanar,
-            "pbstriplanar.wgsl",
-            constant_name,
-            bit_index,
-        );
-    }
-
-    let pbs_triplanar_specular = material_source("pbstriplanarspecular.wgsl")?;
-    for (constant_name, bit_index) in [
-        ("PBSTRIPLANARSPEC_KW_ALBEDOTEX", 0),
-        ("PBSTRIPLANARSPEC_KW_EMISSIONTEX", 1),
-        ("PBSTRIPLANARSPEC_KW_NORMALMAP", 2),
-        ("PBSTRIPLANARSPEC_KW_OBJECTSPACE", 3),
-        ("PBSTRIPLANARSPEC_KW_OCCLUSION", 4),
-        ("PBSTRIPLANARSPEC_KW_SPECULARMAP", 5),
-        ("PBSTRIPLANARSPEC_KW_WORLDSPACE", 6),
-    ] {
-        assert_keyword_bit(
-            &pbs_triplanar_specular,
-            "pbstriplanarspecular.wgsl",
-            constant_name,
-            bit_index,
-        );
-    }
-
-    let pbs_slice = material_source("pbsslice.wgsl")?;
-    for (constant_name, bit_index) in [
-        ("PBSSLICE_KW_ALBEDOTEX", 0),
-        ("PBSSLICE_KW_ALPHACLIP", 1),
-        ("PBSSLICE_KW_DETAIL_ALBEDOTEX", 2),
-        ("PBSSLICE_KW_DETAIL_NORMALMAP", 3),
-        ("PBSSLICE_KW_EMISSIONTEX", 4),
-        ("PBSSLICE_KW_METALLICMAP", 5),
-        ("PBSSLICE_KW_NORMALMAP", 6),
-        ("PBSSLICE_KW_OCCLUSION", 7),
-        ("PBSSLICE_KW_OBJECT_SPACE", 8),
-        ("PBSSLICE_KW_WORLD_SPACE", 9),
-    ] {
-        assert_keyword_bit(&pbs_slice, "pbsslice.wgsl", constant_name, bit_index);
-    }
-
-    let pbs_slice_specular = material_source("pbsslicespecular.wgsl")?;
-    for (constant_name, bit_index) in [
-        ("PBSSLICESPECULAR_KW_ALBEDOTEX", 0),
-        ("PBSSLICESPECULAR_KW_ALPHACLIP", 1),
-        ("PBSSLICESPECULAR_KW_DETAIL_ALBEDOTEX", 2),
-        ("PBSSLICESPECULAR_KW_DETAIL_NORMALMAP", 3),
-        ("PBSSLICESPECULAR_KW_EMISSIONTEX", 4),
-        ("PBSSLICESPECULAR_KW_METALLICMAP", 5),
-        ("PBSSLICESPECULAR_KW_NORMALMAP", 6),
-        ("PBSSLICESPECULAR_KW_OCCLUSION", 7),
-        ("PBSSLICESPECULAR_KW_OBJECT_SPACE", 8),
-        ("PBSSLICESPECULAR_KW_WORLD_SPACE", 9),
-    ] {
-        assert_keyword_bit(
-            &pbs_slice_specular,
-            "pbsslicespecular.wgsl",
-            constant_name,
-            bit_index,
-        );
-    }
-
-    let pbs_vertex_color_transparent = material_source("pbsvertexcolortransparent.wgsl")?;
-    for (constant_name, bit_index) in [
-        ("PBSVCT_KW_ALBEDOTEX", 0),
-        ("PBSVCT_KW_ALPHACLIP", 1),
-        ("PBSVCT_KW_EMISSIONTEX", 2),
-        ("PBSVCT_KW_METALLICMAP", 3),
-        ("PBSVCT_KW_NORMALMAP", 4),
-        ("PBSVCT_KW_OCCLUSION", 5),
-        ("PBSVCT_KW_VCOLOR_ALBEDO", 6),
-        ("PBSVCT_KW_VCOLOR_EMIT", 7),
-        ("PBSVCT_KW_VCOLOR_METALLIC", 8),
-    ] {
-        assert_keyword_bit(
-            &pbs_vertex_color_transparent,
-            "pbsvertexcolortransparent.wgsl",
-            constant_name,
-            bit_index,
-        );
-    }
-
-    let pbs_vertex_color_transparent_specular =
-        material_source("pbsvertexcolortransparentspecular.wgsl")?;
-    for (constant_name, bit_index) in [
-        ("PBSVCTS_KW_ALBEDOTEX", 0),
-        ("PBSVCTS_KW_ALPHACLIP", 1),
-        ("PBSVCTS_KW_EMISSIONTEX", 2),
-        ("PBSVCTS_KW_NORMALMAP", 3),
-        ("PBSVCTS_KW_OCCLUSION", 4),
-        ("PBSVCTS_KW_SPECULARMAP", 5),
-        ("PBSVCTS_KW_VCOLOR_ALBEDO", 6),
-        ("PBSVCTS_KW_VCOLOR_EMIT", 7),
-        ("PBSVCTS_KW_VCOLOR_SPECULAR", 8),
-    ] {
-        assert_keyword_bit(
-            &pbs_vertex_color_transparent_specular,
-            "pbsvertexcolortransparentspecular.wgsl",
-            constant_name,
-            bit_index,
-        );
-    }
-
-    let pixelate = material_source("pixelate.wgsl")?;
-    for (constant_name, bit_index) in [
-        ("PIXELATE_KW_RECTCLIP", 0),
-        ("PIXELATE_KW_RESOLUTION_TEX", 1),
-    ] {
-        assert_keyword_bit(&pixelate, "pixelate.wgsl", constant_name, bit_index);
-    }
-
+    assert_keyword_bits(
+        "pbsstencilspecular.wgsl",
+        &[
+            ("PBSSTENCILSPECULAR_KW_ALBEDOTEX", 0),
+            ("PBSSTENCILSPECULAR_KW_EMISSIONTEX", 1),
+            ("PBSSTENCILSPECULAR_KW_NORMALMAP", 2),
+            ("PBSSTENCILSPECULAR_KW_OCCLUSION", 3),
+            ("PBSSTENCILSPECULAR_KW_SPECULARMAP", 4),
+        ],
+    )?;
+    assert_keyword_bits(
+        "pbstriplanar.wgsl",
+        &[
+            ("PBSTRIPLANAR_KW_ALBEDOTEX", 0),
+            ("PBSTRIPLANAR_KW_EMISSIONTEX", 1),
+            ("PBSTRIPLANAR_KW_METALLICMAP", 2),
+            ("PBSTRIPLANAR_KW_NORMALMAP", 3),
+            ("PBSTRIPLANAR_KW_OBJECTSPACE", 4),
+            ("PBSTRIPLANAR_KW_OCCLUSION", 5),
+            ("PBSTRIPLANAR_KW_WORLDSPACE", 6),
+        ],
+    )?;
+    assert_keyword_bits(
+        "pbstriplanarspecular.wgsl",
+        &[
+            ("PBSTRIPLANARSPEC_KW_ALBEDOTEX", 0),
+            ("PBSTRIPLANARSPEC_KW_EMISSIONTEX", 1),
+            ("PBSTRIPLANARSPEC_KW_NORMALMAP", 2),
+            ("PBSTRIPLANARSPEC_KW_OBJECTSPACE", 3),
+            ("PBSTRIPLANARSPEC_KW_OCCLUSION", 4),
+            ("PBSTRIPLANARSPEC_KW_SPECULARMAP", 5),
+            ("PBSTRIPLANARSPEC_KW_WORLDSPACE", 6),
+        ],
+    )?;
+    assert_keyword_bits(
+        "pbsslice.wgsl",
+        &[
+            ("PBSSLICE_KW_ALBEDOTEX", 0),
+            ("PBSSLICE_KW_ALPHACLIP", 1),
+            ("PBSSLICE_KW_DETAIL_ALBEDOTEX", 2),
+            ("PBSSLICE_KW_DETAIL_NORMALMAP", 3),
+            ("PBSSLICE_KW_EMISSIONTEX", 4),
+            ("PBSSLICE_KW_METALLICMAP", 5),
+            ("PBSSLICE_KW_NORMALMAP", 6),
+            ("PBSSLICE_KW_OCCLUSION", 7),
+            ("PBSSLICE_KW_OBJECT_SPACE", 8),
+            ("PBSSLICE_KW_WORLD_SPACE", 9),
+        ],
+    )?;
+    assert_keyword_bits(
+        "pbsslicespecular.wgsl",
+        &[
+            ("PBSSLICESPECULAR_KW_ALBEDOTEX", 0),
+            ("PBSSLICESPECULAR_KW_ALPHACLIP", 1),
+            ("PBSSLICESPECULAR_KW_DETAIL_ALBEDOTEX", 2),
+            ("PBSSLICESPECULAR_KW_DETAIL_NORMALMAP", 3),
+            ("PBSSLICESPECULAR_KW_EMISSIONTEX", 4),
+            ("PBSSLICESPECULAR_KW_METALLICMAP", 5),
+            ("PBSSLICESPECULAR_KW_NORMALMAP", 6),
+            ("PBSSLICESPECULAR_KW_OCCLUSION", 7),
+            ("PBSSLICESPECULAR_KW_OBJECT_SPACE", 8),
+            ("PBSSLICESPECULAR_KW_WORLD_SPACE", 9),
+        ],
+    )?;
+    assert_keyword_bits(
+        "pbsvertexcolortransparent.wgsl",
+        &[
+            ("PBSVCT_KW_ALBEDOTEX", 0),
+            ("PBSVCT_KW_ALPHACLIP", 1),
+            ("PBSVCT_KW_EMISSIONTEX", 2),
+            ("PBSVCT_KW_METALLICMAP", 3),
+            ("PBSVCT_KW_NORMALMAP", 4),
+            ("PBSVCT_KW_OCCLUSION", 5),
+            ("PBSVCT_KW_VCOLOR_ALBEDO", 6),
+            ("PBSVCT_KW_VCOLOR_EMIT", 7),
+            ("PBSVCT_KW_VCOLOR_METALLIC", 8),
+        ],
+    )?;
+    assert_keyword_bits(
+        "pbsvertexcolortransparentspecular.wgsl",
+        &[
+            ("PBSVCTS_KW_ALBEDOTEX", 0),
+            ("PBSVCTS_KW_ALPHACLIP", 1),
+            ("PBSVCTS_KW_EMISSIONTEX", 2),
+            ("PBSVCTS_KW_NORMALMAP", 3),
+            ("PBSVCTS_KW_OCCLUSION", 4),
+            ("PBSVCTS_KW_SPECULARMAP", 5),
+            ("PBSVCTS_KW_VCOLOR_ALBEDO", 6),
+            ("PBSVCTS_KW_VCOLOR_EMIT", 7),
+            ("PBSVCTS_KW_VCOLOR_SPECULAR", 8),
+        ],
+    )?;
+    assert_keyword_bits(
+        "pixelate.wgsl",
+        &[
+            ("PIXELATE_KW_RECTCLIP", 0),
+            ("PIXELATE_KW_RESOLUTION_TEX", 1),
+        ],
+    )?;
     Ok(())
 }
 

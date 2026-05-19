@@ -126,43 +126,15 @@ fn command_stats_from_prepared(prepared: &PreparedWorldMeshForwardFrame) -> Grap
             .and_then(|packet| packet.pipelines.as_ref())
             .map_or(0, |pipelines| pipelines.len())
     };
-    let regular_pipeline_passes: usize = prepared
+    let pipeline_passes: usize = prepared
         .plan
-        .regular_groups
-        .iter()
-        .map(&group_pipeline_passes)
-        .sum();
-    let post_skybox_pipeline_passes: usize = prepared
-        .plan
-        .post_skybox_groups
-        .iter()
-        .map(&group_pipeline_passes)
-        .sum();
-    let intersect_pipeline_passes: usize = prepared
-        .plan
-        .intersect_groups
-        .iter()
-        .map(&group_pipeline_passes)
-        .sum();
-    let transparent_pipeline_passes: usize = prepared
-        .plan
-        .transparent_groups
-        .iter()
+        .primary_forward_groups()
         .map(group_pipeline_passes)
         .sum();
     GraphCommandStats {
         draw_items: prepared.draws.len(),
-        instance_batches: prepared
-            .plan
-            .regular_groups
-            .len()
-            .saturating_add(prepared.plan.post_skybox_groups.len())
-            .saturating_add(prepared.plan.intersect_groups.len())
-            .saturating_add(prepared.plan.transparent_groups.len()),
-        pipeline_pass_submits: regular_pipeline_passes
-            .saturating_add(post_skybox_pipeline_passes)
-            .saturating_add(intersect_pipeline_passes)
-            .saturating_add(transparent_pipeline_passes),
+        instance_batches: prepared.plan.primary_forward_group_count(),
+        pipeline_pass_submits: pipeline_passes,
     }
 }
 

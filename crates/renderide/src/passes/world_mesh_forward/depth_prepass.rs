@@ -21,7 +21,7 @@ use crate::render_graph::pass::{PassBuilder, RasterPass, RenderPassTemplate};
 use crate::render_graph::resources::{
     BufferAccess, ImportedBufferHandle, ImportedTextureHandle, StorageAccess, TextureHandle,
 };
-use crate::world_mesh::WorldMeshDrawItem;
+use crate::world_mesh::{MeshPassKind, WorldMeshDrawItem};
 
 use super::encode::{DepthPrepassDrawBatch, draw_depth_prepass_subset};
 use super::{WorldMeshForwardPipelineState, WorldMeshForwardPlanSlot};
@@ -315,7 +315,9 @@ impl RasterPass for WorldMeshForwardDepthPrepass {
         let mut encode_refs = super::WorldMeshForwardEncodeRefs::from_frame(frame);
         draw_depth_prepass_subset(DepthPrepassDrawBatch {
             rpass,
-            groups: &prepared.plan.regular_groups,
+            groups: prepared
+                .plan
+                .phase(MeshPassKind::DepthPrepass.first_phase()),
             slab_layout: &prepared.plan.slab_layout,
             draws: &prepared.draws,
             encode: &mut encode_refs,

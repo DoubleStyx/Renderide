@@ -37,14 +37,31 @@ fn set_render_queue(item: &mut WorldMeshDrawItem, render_queue: i32) {
     refresh_sort_keys(item);
 }
 
+fn groups(plan: &InstancePlan, phase: WorldMeshPhase) -> &[DrawGroup] {
+    plan.phase(phase)
+}
+
+fn assert_phases_empty(plan: &InstancePlan, phases: &[WorldMeshPhase]) {
+    for &phase in phases {
+        assert!(plan.phase_is_empty(phase), "expected {phase:?} to be empty");
+    }
+}
+
+fn non_primary_forward_phases() -> [WorldMeshPhase; 5] {
+    [
+        WorldMeshPhase::ForwardAlphaTest,
+        WorldMeshPhase::Intersection,
+        WorldMeshPhase::Transparent,
+        WorldMeshPhase::TransparentGrab,
+        WorldMeshPhase::DepthOnly,
+    ]
+}
+
 #[test]
 fn empty_yields_empty_plan() {
     let plan = build_plan(&[], true);
     assert!(plan.slab_layout.is_empty());
-    assert!(plan.regular_groups.is_empty());
-    assert!(plan.post_skybox_groups.is_empty());
-    assert!(plan.intersect_groups.is_empty());
-    assert!(plan.transparent_groups.is_empty());
+    assert_phases_empty(&plan, &WorldMeshPhase::ALL);
 }
 
 #[test]
@@ -53,12 +70,15 @@ fn identical_opaque_draws_collapse_to_one_group() {
     sort_draws(&mut draws);
 
     let plan = build_plan(&draws, true);
-    assert_eq!(plan.regular_groups.len(), 1);
-    assert_eq!(plan.regular_groups[0].instance_range, 0..6);
+    assert_eq!(groups(&plan, WorldMeshPhase::ForwardOpaque).len(), 1);
+    assert_eq!(
+        groups(&plan, WorldMeshPhase::ForwardOpaque)[0].instance_range,
+        0..6
+    );
     assert_eq!(plan.slab_layout.len(), 6);
-    assert!(plan.post_skybox_groups.is_empty());
-    assert!(plan.intersect_groups.is_empty());
-    assert!(plan.transparent_groups.is_empty());
+    assert_eq!(groups(&plan, WorldMeshPhase::ViewNormals).len(), 1);
+    assert_eq!(groups(&plan, WorldMeshPhase::DepthOnly).len(), 1);
+    assert_phases_empty(&plan, &non_primary_forward_phases()[..4]);
 }
 
 #[test]
@@ -70,14 +90,14 @@ fn mirrored_opaque_draws_split_instance_groups() {
     sort_draws(&mut draws);
 
     let plan = build_plan(&draws, true);
-    assert_eq!(plan.regular_groups.len(), 2);
-    for group in &plan.regular_groups {
+    assert_eq!(groups(&plan, WorldMeshPhase::ForwardOpaque).len(), 2);
+    for group in groups(&plan, WorldMeshPhase::ForwardOpaque) {
         assert_eq!(group.instance_range.end - group.instance_range.start, 1);
     }
     assert_eq!(plan.slab_layout.len(), 2);
-    assert!(plan.post_skybox_groups.is_empty());
-    assert!(plan.intersect_groups.is_empty());
-    assert!(plan.transparent_groups.is_empty());
+    assert_eq!(groups(&plan, WorldMeshPhase::ViewNormals).len(), 2);
+    assert_eq!(groups(&plan, WorldMeshPhase::DepthOnly).len(), 2);
+    assert_phases_empty(&plan, &non_primary_forward_phases()[..4]);
 }
 
 #[test]
@@ -96,11 +116,15 @@ fn stacked_duplicate_submesh_draws_keep_two_gpu_instances() {
     sort_draws(&mut draws);
 
     let plan = build_plan(&draws, true);
-    assert_eq!(plan.regular_groups.len(), 1);
-    assert_eq!(plan.regular_groups[0].instance_range, 0..2);
+    assert_eq!(groups(&plan, WorldMeshPhase::ForwardOpaque).len(), 1);
+    assert_eq!(
+        groups(&plan, WorldMeshPhase::ForwardOpaque)[0].instance_range,
+        0..2
+    );
     assert_eq!(plan.slab_layout.len(), 2);
-    assert!(plan.post_skybox_groups.is_empty());
-    assert!(plan.intersect_groups.is_empty());
+    assert_eq!(groups(&plan, WorldMeshPhase::ViewNormals).len(), 1);
+    assert_eq!(groups(&plan, WorldMeshPhase::DepthOnly).len(), 1);
+    assert_phases_empty(&plan, &non_primary_forward_phases()[..4]);
 }
 
 #[test]
@@ -116,17 +140,17 @@ fn varying_sorting_order_still_collapses_per_mesh() {
     sort_draws(&mut draws);
 
     let plan = build_plan(&draws, true);
-    assert_eq!(plan.regular_groups.len(), 2);
+    assert_eq!(groups(&plan, WorldMeshPhase::ForwardOpaque).len(), 2);
     let total_instances: u32 = plan
-        .regular_groups
+        .phase(WorldMeshPhase::ForwardOpaque)
         .iter()
         .map(|g| g.instance_range.end - g.instance_range.start)
         .sum();
     assert_eq!(total_instances, 5);
     assert_eq!(plan.slab_layout.len(), 5);
-    assert!(plan.post_skybox_groups.is_empty());
-    assert!(plan.intersect_groups.is_empty());
-    assert!(plan.transparent_groups.is_empty());
+    assert_eq!(groups(&plan, WorldMeshPhase::ViewNormals).len(), 2);
+    assert_eq!(groups(&plan, WorldMeshPhase::DepthOnly).len(), 2);
+    assert_phases_empty(&plan, &non_primary_forward_phases()[..4]);
 }
 
 #[test]
@@ -149,10 +173,12 @@ fn skinned_window_emits_singletons() {
     sort_draws(&mut draws);
 
     let plan = build_plan(&draws, true);
-    assert_eq!(plan.regular_groups.len(), 3);
-    for group in &plan.regular_groups {
+    assert_eq!(groups(&plan, WorldMeshPhase::ForwardOpaque).len(), 3);
+    for group in groups(&plan, WorldMeshPhase::ForwardOpaque) {
         assert_eq!(group.instance_range.end - group.instance_range.start, 1);
     }
+    assert_eq!(groups(&plan, WorldMeshPhase::ViewNormals).len(), 3);
+    assert_eq!(groups(&plan, WorldMeshPhase::DepthOnly).len(), 3);
 }
 
 #[test]
@@ -175,13 +201,21 @@ fn alpha_blended_regular_window_emits_post_skybox_singletons() {
     sort_draws(&mut draws);
 
     let plan = build_plan(&draws, true);
-    assert!(plan.regular_groups.is_empty());
-    assert_eq!(plan.post_skybox_groups.len(), 3);
-    for group in &plan.post_skybox_groups {
+    assert!(groups(&plan, WorldMeshPhase::ForwardOpaque).is_empty());
+    assert_eq!(groups(&plan, WorldMeshPhase::Transparent).len(), 3);
+    for group in groups(&plan, WorldMeshPhase::Transparent) {
         assert_eq!(group.instance_range.end - group.instance_range.start, 1);
     }
-    assert!(plan.intersect_groups.is_empty());
-    assert!(plan.transparent_groups.is_empty());
+    assert_phases_empty(
+        &plan,
+        &[
+            WorldMeshPhase::ForwardAlphaTest,
+            WorldMeshPhase::Intersection,
+            WorldMeshPhase::TransparentGrab,
+            WorldMeshPhase::DepthOnly,
+            WorldMeshPhase::ViewNormals,
+        ],
+    );
 }
 
 #[test]
@@ -208,11 +242,22 @@ fn commutative_transparent_regular_window_groups_by_mesh() {
     sort_draws(&mut draws);
 
     let plan = build_plan(&draws, true);
-    assert!(plan.regular_groups.is_empty());
-    assert_eq!(plan.post_skybox_groups.len(), 1);
-    assert_eq!(plan.post_skybox_groups[0].instance_range, 0..3);
-    assert!(plan.intersect_groups.is_empty());
-    assert!(plan.transparent_groups.is_empty());
+    assert!(groups(&plan, WorldMeshPhase::ForwardOpaque).is_empty());
+    assert_eq!(groups(&plan, WorldMeshPhase::Transparent).len(), 1);
+    assert_eq!(
+        groups(&plan, WorldMeshPhase::Transparent)[0].instance_range,
+        0..3
+    );
+    assert_phases_empty(
+        &plan,
+        &[
+            WorldMeshPhase::ForwardAlphaTest,
+            WorldMeshPhase::Intersection,
+            WorldMeshPhase::TransparentGrab,
+            WorldMeshPhase::DepthOnly,
+            WorldMeshPhase::ViewNormals,
+        ],
+    );
 }
 
 #[test]
@@ -227,10 +272,18 @@ fn transparent_render_queue_regular_window_emits_post_skybox_singletons() {
     sort_draws(&mut draws);
 
     let plan = build_plan(&draws, true);
-    assert!(plan.regular_groups.is_empty());
-    assert_eq!(plan.post_skybox_groups.len(), 3);
-    assert!(plan.intersect_groups.is_empty());
-    assert!(plan.transparent_groups.is_empty());
+    assert!(groups(&plan, WorldMeshPhase::ForwardOpaque).is_empty());
+    assert_eq!(groups(&plan, WorldMeshPhase::Transparent).len(), 3);
+    assert_phases_empty(
+        &plan,
+        &[
+            WorldMeshPhase::ForwardAlphaTest,
+            WorldMeshPhase::Intersection,
+            WorldMeshPhase::TransparentGrab,
+            WorldMeshPhase::DepthOnly,
+            WorldMeshPhase::ViewNormals,
+        ],
+    );
 }
 
 #[test]
@@ -246,10 +299,18 @@ fn zwrite_off_regular_window_emits_post_skybox_singletons() {
     sort_draws(&mut draws);
 
     let plan = build_plan(&draws, true);
-    assert!(plan.regular_groups.is_empty());
-    assert_eq!(plan.post_skybox_groups.len(), 3);
-    assert!(plan.intersect_groups.is_empty());
-    assert!(plan.transparent_groups.is_empty());
+    assert!(groups(&plan, WorldMeshPhase::ForwardOpaque).is_empty());
+    assert_eq!(groups(&plan, WorldMeshPhase::Transparent).len(), 3);
+    assert_phases_empty(
+        &plan,
+        &[
+            WorldMeshPhase::ForwardAlphaTest,
+            WorldMeshPhase::Intersection,
+            WorldMeshPhase::TransparentGrab,
+            WorldMeshPhase::DepthOnly,
+            WorldMeshPhase::ViewNormals,
+        ],
+    );
 }
 
 #[test]
@@ -264,10 +325,18 @@ fn alpha_test_regular_window_stays_before_skybox() {
     sort_draws(&mut draws);
 
     let plan = build_plan(&draws, true);
-    assert_eq!(plan.regular_groups.len(), 1);
-    assert!(plan.post_skybox_groups.is_empty());
-    assert!(plan.intersect_groups.is_empty());
-    assert!(plan.transparent_groups.is_empty());
+    assert!(groups(&plan, WorldMeshPhase::ForwardOpaque).is_empty());
+    assert_eq!(groups(&plan, WorldMeshPhase::ForwardAlphaTest).len(), 1);
+    assert_eq!(groups(&plan, WorldMeshPhase::ViewNormals).len(), 1);
+    assert_phases_empty(
+        &plan,
+        &[
+            WorldMeshPhase::Intersection,
+            WorldMeshPhase::Transparent,
+            WorldMeshPhase::TransparentGrab,
+            WorldMeshPhase::DepthOnly,
+        ],
+    );
 }
 
 #[test]
@@ -293,11 +362,11 @@ fn grab_pass_window_emits_transparent_singletons() {
     sort_draws(&mut draws);
 
     let plan = build_plan(&draws, true);
-    assert!(plan.regular_groups.is_empty());
-    assert!(plan.post_skybox_groups.is_empty());
-    assert!(plan.intersect_groups.is_empty());
-    assert_eq!(plan.transparent_groups.len(), 3);
-    for group in &plan.transparent_groups {
+    assert!(groups(&plan, WorldMeshPhase::ForwardOpaque).is_empty());
+    assert!(groups(&plan, WorldMeshPhase::Transparent).is_empty());
+    assert!(groups(&plan, WorldMeshPhase::Intersection).is_empty());
+    assert_eq!(groups(&plan, WorldMeshPhase::TransparentGrab).len(), 3);
+    for group in groups(&plan, WorldMeshPhase::TransparentGrab) {
         assert_eq!(group.instance_range.end - group.instance_range.start, 1);
     }
 }
@@ -313,10 +382,10 @@ fn intersect_and_grab_pass_batches_stay_separate() {
     sort_draws(&mut draws);
 
     let plan = build_plan(&draws, true);
-    assert!(plan.regular_groups.is_empty());
-    assert!(plan.post_skybox_groups.is_empty());
-    assert_eq!(plan.intersect_groups.len(), 1);
-    assert_eq!(plan.transparent_groups.len(), 1);
+    assert!(groups(&plan, WorldMeshPhase::ForwardOpaque).is_empty());
+    assert!(groups(&plan, WorldMeshPhase::Transparent).is_empty());
+    assert_eq!(groups(&plan, WorldMeshPhase::Intersection).len(), 1);
+    assert_eq!(groups(&plan, WorldMeshPhase::TransparentGrab).len(), 1);
 }
 
 #[test]
@@ -325,8 +394,8 @@ fn downlevel_disables_grouping() {
     sort_draws(&mut draws);
 
     let plan = build_plan(&draws, false);
-    assert_eq!(plan.regular_groups.len(), 4);
-    for group in &plan.regular_groups {
+    assert_eq!(groups(&plan, WorldMeshPhase::ForwardOpaque).len(), 4);
+    for group in groups(&plan, WorldMeshPhase::ForwardOpaque) {
         assert_eq!(group.instance_range.end - group.instance_range.start, 1);
     }
 }
@@ -358,7 +427,7 @@ fn group_representatives_are_monotonic() {
     sort_draws(&mut draws);
 
     let plan = build_plan(&draws, true);
-    for w in plan.regular_groups.windows(2) {
+    for w in groups(&plan, WorldMeshPhase::ForwardOpaque).windows(2) {
         assert!(w[0].representative_draw_idx < w[1].representative_draw_idx);
     }
 }
@@ -373,7 +442,7 @@ fn depth_prepass_accepts_plain_opaque_groups() {
     assert!(depth_prepass_group_eligible(
         &draws,
         &plan.slab_layout,
-        &plan.regular_groups[0],
+        &groups(&plan, WorldMeshPhase::DepthOnly)[0],
         ShaderPermutation(0),
     ));
 }
@@ -485,12 +554,12 @@ fn parallel_instance_plan_matches_serial_windows() {
 
     let windows = collect_batch_windows(&draws, true);
     assert!(should_parallelize_instance_plan(draws.len(), windows.len()));
-    let serial = build_plan_from_windows_serial(&draws, &windows);
+    let serial = build_plan_from_windows_serial(&draws, &windows, ShaderPermutation(0));
     let parallel = build_plan(&draws, true);
 
     assert_eq!(parallel, serial);
-    assert!(!parallel.regular_groups.is_empty());
-    assert!(!parallel.post_skybox_groups.is_empty());
-    assert!(!parallel.intersect_groups.is_empty());
-    assert!(!parallel.transparent_groups.is_empty());
+    assert!(!groups(&parallel, WorldMeshPhase::ForwardOpaque).is_empty());
+    assert!(!groups(&parallel, WorldMeshPhase::Transparent).is_empty());
+    assert!(!groups(&parallel, WorldMeshPhase::Intersection).is_empty());
+    assert!(!groups(&parallel, WorldMeshPhase::TransparentGrab).is_empty());
 }

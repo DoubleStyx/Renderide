@@ -5,7 +5,7 @@ use crate::render_graph::error::{RenderPassError, SetupError};
 use crate::render_graph::gpu_cache::stereo_mask_or_template;
 use crate::render_graph::pass::{EncoderPass, PassBuilder};
 use crate::render_graph::resources::{TextureAccess, TextureResourceHandle};
-use crate::world_mesh::{DrawGroup, InstancePlan};
+use crate::world_mesh::{DrawGroup, InstancePlan, MeshPassKind, WorldMeshPhase};
 
 use super::color_resolve::{
     WorldMeshForwardColorResolveEncodeContext, WorldMeshForwardColorResolveGraphResources,
@@ -36,7 +36,15 @@ pub(in crate::passes::world_mesh_forward) fn forward_transparent_sequence_needed
     opaque_recorded: bool,
     plan: &InstancePlan,
 ) -> bool {
-    opaque_recorded && (!plan.post_skybox_groups.is_empty() || !plan.transparent_groups.is_empty())
+    let (transparent_phase, grab_phase) = transparent_sequence_phase_pair();
+    opaque_recorded && (!plan.phase_is_empty(transparent_phase) || !plan.phase_is_empty(grab_phase))
+}
+
+fn transparent_sequence_phase_pair() -> (WorldMeshPhase, WorldMeshPhase) {
+    match MeshPassKind::TransparentSequence.phases() {
+        [transparent, grab] => (*transparent, *grab),
+        _ => (WorldMeshPhase::Transparent, WorldMeshPhase::TransparentGrab),
+    }
 }
 
 fn declare_transparent_sequence_accesses(
@@ -90,10 +98,11 @@ fn declare_transparent_sequence_accesses(
 }
 
 fn next_sequence_entry_is_post(plan: &InstancePlan, post_idx: usize, grab_idx: usize) -> bool {
-    let Some(post) = plan.post_skybox_groups.get(post_idx) else {
+    let (transparent_phase, grab_phase) = transparent_sequence_phase_pair();
+    let Some(post) = plan.phase(transparent_phase).get(post_idx) else {
         return false;
     };
-    let Some(grab) = plan.transparent_groups.get(grab_idx) else {
+    let Some(grab) = plan.phase(grab_phase).get(grab_idx) else {
         return true;
     };
     post.representative_draw_idx <= grab.representative_draw_idx
@@ -196,11 +205,12 @@ fn flush_post_groups(
     let Some(start) = start else {
         return Ok(true);
     };
+    let (transparent_phase, _) = transparent_sequence_phase_pair();
     draw_tail_groups(
         ctx,
         prepared,
         resources,
-        &prepared.plan.post_skybox_groups[start..end],
+        &prepared.plan.phase(transparent_phase)[start..end],
     )
 }
 
@@ -260,12 +270,15 @@ fn record_transparent_sequence(
 ) -> Result<bool, RenderPassError> {
     profiling::scope!("world_mesh_forward::transparent_sequence_record");
     let plan = &prepared.plan;
+    let (transparent_phase, grab_phase) = transparent_sequence_phase_pair();
+    let transparent_groups = plan.phase(transparent_phase);
+    let grab_groups = plan.phase(grab_phase);
     let mut post_idx = 0usize;
     let mut grab_idx = 0usize;
     let mut pending_post_start = None;
     let mut recorded_any = false;
 
-    while post_idx < plan.post_skybox_groups.len() || grab_idx < plan.transparent_groups.len() {
+    while post_idx < transparent_groups.len() || grab_idx < grab_groups.len() {
         if next_sequence_entry_is_post(plan, post_idx, grab_idx) {
             if pending_post_start.is_none() {
                 pending_post_start = Some(post_idx);
@@ -298,7 +311,7 @@ fn record_transparent_sequence(
             ctx,
             prepared,
             resources,
-            std::slice::from_ref(&plan.transparent_groups[grab_idx]),
+            std::slice::from_ref(&grab_groups[grab_idx]),
         )? {
             return Ok(false);
         }
@@ -386,7 +399,11 @@ fn collect_transparent_sequence_test_ops_with_snapshot_result(
     let mut pending_post_start = None;
     let mut recorded_any = false;
 
-    while post_idx < plan.post_skybox_groups.len() || grab_idx < plan.transparent_groups.len() {
+    let (transparent_phase, grab_phase) = transparent_sequence_phase_pair();
+    let transparent_groups = plan.phase(transparent_phase);
+    let grab_groups = plan.phase(grab_phase);
+
+    while post_idx < transparent_groups.len() || grab_idx < grab_groups.len() {
         if next_sequence_entry_is_post(plan, post_idx, grab_idx) {
             if pending_post_start.is_none() {
                 pending_post_start = Some(post_idx);
@@ -428,7 +445,7 @@ mod tests {
         TransparentSequenceTestOp, collect_transparent_sequence_test_ops,
         collect_transparent_sequence_test_ops_with_snapshot_result,
     };
-    use crate::world_mesh::{DrawGroup, InstancePlan};
+    use crate::world_mesh::{DrawGroup, InstancePlan, WorldMeshPhase};
 
     fn group(representative_draw_idx: usize) -> DrawGroup {
         DrawGroup {
@@ -438,12 +455,19 @@ mod tests {
         }
     }
 
+    fn plan_with_transparent_groups(
+        non_grab: Vec<DrawGroup>,
+        grab: Vec<DrawGroup>,
+    ) -> InstancePlan {
+        let mut plan = InstancePlan::default();
+        plan.phase_mut(WorldMeshPhase::Transparent).extend(non_grab);
+        plan.phase_mut(WorldMeshPhase::TransparentGrab).extend(grab);
+        plan
+    }
+
     #[test]
     fn non_grab_transparent_groups_stay_in_sorted_runs() {
-        let plan = InstancePlan {
-            post_skybox_groups: vec![group(2), group(4), group(8)],
-            ..Default::default()
-        };
+        let plan = plan_with_transparent_groups(vec![group(2), group(4), group(8)], Vec::new());
 
         assert_eq!(
             collect_transparent_sequence_test_ops(&plan, 1),
@@ -453,11 +477,7 @@ mod tests {
 
     #[test]
     fn grab_groups_trigger_snapshot_immediately_before_draw() {
-        let plan = InstancePlan {
-            post_skybox_groups: vec![group(1), group(9)],
-            transparent_groups: vec![group(5)],
-            ..Default::default()
-        };
+        let plan = plan_with_transparent_groups(vec![group(1), group(9)], vec![group(5)]);
 
         assert_eq!(
             collect_transparent_sequence_test_ops(&plan, 1),
@@ -472,10 +492,7 @@ mod tests {
 
     #[test]
     fn multiple_grab_groups_take_multiple_snapshots() {
-        let plan = InstancePlan {
-            transparent_groups: vec![group(3), group(7)],
-            ..Default::default()
-        };
+        let plan = plan_with_transparent_groups(Vec::new(), vec![group(3), group(7)]);
 
         assert_eq!(
             collect_transparent_sequence_test_ops(&plan, 1),
@@ -490,11 +507,7 @@ mod tests {
 
     #[test]
     fn msaa_resolves_before_each_grab_and_after_tail() {
-        let plan = InstancePlan {
-            post_skybox_groups: vec![group(1)],
-            transparent_groups: vec![group(3), group(7)],
-            ..Default::default()
-        };
+        let plan = plan_with_transparent_groups(vec![group(1)], vec![group(3), group(7)]);
 
         assert_eq!(
             collect_transparent_sequence_test_ops(&plan, 4),
@@ -513,10 +526,7 @@ mod tests {
 
     #[test]
     fn failed_snapshot_copy_skips_grab_draw() {
-        let plan = InstancePlan {
-            transparent_groups: vec![group(3)],
-            ..Default::default()
-        };
+        let plan = plan_with_transparent_groups(Vec::new(), vec![group(3)]);
 
         assert_eq!(
             collect_transparent_sequence_test_ops_with_snapshot_result(&plan, 1, false),
@@ -529,11 +539,7 @@ mod tests {
 
     #[test]
     fn post_groups_before_failed_grab_still_count_as_recorded_tail() {
-        let plan = InstancePlan {
-            post_skybox_groups: vec![group(1)],
-            transparent_groups: vec![group(3)],
-            ..Default::default()
-        };
+        let plan = plan_with_transparent_groups(vec![group(1)], vec![group(3)]);
 
         assert_eq!(
             collect_transparent_sequence_test_ops_with_snapshot_result(&plan, 4, false),
