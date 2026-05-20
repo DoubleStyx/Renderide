@@ -8,6 +8,7 @@ const INNER_RADIUS: f32 = 1.0;
 const OUTER_RADIUS_SQ: f32 = OUTER_RADIUS * OUTER_RADIUS;
 const INNER_RADIUS_SQ: f32 = INNER_RADIUS * INNER_RADIUS;
 const CAMERA_HEIGHT: f32 = 0.0001;
+const CAMERA_POS_HEIGHT: f32 = INNER_RADIUS +CAMERA_HEIGHT;
 const KMIE: f32 = 0.0010;
 const KSUN_BRIGHTNESS: f32 = 20.0;
 const KMAX_SCATTER: f32 = 50.0;
@@ -17,7 +18,7 @@ const KKM_4PI: f32 = KMIE * 4.0 * PI;
 const KSCALE: f32 = 1.0 / (OUTER_RADIUS - 1.0);
 const KSCALE_DEPTH: f32 = 0.25;
 const KSCALE_OVER_SCALE_DEPTH: f32 = (1.0 / (OUTER_RADIUS - 1.0)) / 0.25;
-const KSAMPLES: f32 = 2.0;
+const KSAMPLES: u32 = 2u;
 const MIE_G: f32 = -0.990;
 const MIE_G2: f32 = 0.9801;
 const SKY_GROUND_THRESHOLD: f32 = 0.02;
@@ -41,8 +42,12 @@ struct ProceduralSkyVisibleTerms {
     ground_color: vec3<f32>,
     sky_color: vec3<f32>,
     sun_color: vec3<f32>,
-    fragment_ray: vec3<f32>,
-    sky_ground_factor: f32,
+    ray: vec3<f32>,
+}
+
+struct ScatteringParameters {
+    kkr_in: vec3<f32>,
+    kkr_scatter: vec3<f32>,
 }
 
 struct ScatteringStep {
@@ -95,8 +100,7 @@ fn scattering_inscatter_step(
     sample_point: vec3<f32>,
     eye_ray: vec3<f32>,
     sun_dir: vec3<f32>,
-    inv_wavelength: vec3<f32>,
-    kkr_4pi: f32,
+    kkr_scatter: vec3<f32>,
     start_offset: f32,
     scaled_length: f32,
 ) -> ScatteringStep {
@@ -105,14 +109,13 @@ fn scattering_inscatter_step(
     let light_angle = dot(sun_dir, sample_point) / h;
     let camera_angle = dot(eye_ray, sample_point) / h;
     let scatter = start_offset + depth * (scale_factor(light_angle) - scale_factor(camera_angle));
-    let attenuate = exp(-clamp(scatter, 0.0, KMAX_SCATTER) * (inv_wavelength * kkr_4pi + KKM_4PI));
+    let attenuate = exp(-clamp(scatter, 0.0, KMAX_SCATTER) * kkr_scatter);
     return ScatteringStep(attenuate * (depth * scaled_length), attenuate);
 }
 
 fn ground_inscatter_step(
     sample_point: vec3<f32>,
-    inv_wavelength: vec3<f32>,
-    kkr_4pi: f32,
+    kkr_scatter: vec3<f32>,
     temp: f32,
     camera_offset: f32,
     scaled_length: f32,
@@ -120,19 +123,16 @@ fn ground_inscatter_step(
     let h = length(sample_point);
     let depth = exp(KSCALE_OVER_SCALE_DEPTH * (INNER_RADIUS - h));
     let scatter = depth * temp - camera_offset;
-    let attenuate = exp(-clamp(scatter, 0.0, KMAX_SCATTER) * (inv_wavelength * kkr_4pi + KKM_4PI));
+    let attenuate = exp(-clamp(scatter, 0.0, KMAX_SCATTER) * kkr_scatter);
     return ScatteringStep(attenuate * (depth * scaled_length), attenuate);
 }
 
 fn evaluate_scattering(
     eye_ray: vec3<f32>,
     sun_dir: vec3<f32>,
-    inv_wavelength: vec3<f32>,
-    krayleigh: f32,
+    scattering_params: ScatteringParameters,
 ) -> ScatteringOutput {
-    let kkr_esun = krayleigh * KSUN_BRIGHTNESS;
-    let kkr_4pi = krayleigh * 4.0 * PI;
-    let camera_pos = vec3<f32>(0.0, INNER_RADIUS + CAMERA_HEIGHT, 0.0);
+    let camera_pos = vec3<f32>(0.0, CAMERA_POS_HEIGHT, 0.0);
 
     var c_in: vec3<f32>;
     var c_out: vec3<f32>;
@@ -140,29 +140,26 @@ fn evaluate_scattering(
     if (eye_ray.y >= 0.0) {
         let far = sqrt(OUTER_RADIUS_SQ + INNER_RADIUS_SQ * eye_ray.y * eye_ray.y - INNER_RADIUS_SQ)
             - INNER_RADIUS * eye_ray.y;
-        let height = INNER_RADIUS + CAMERA_HEIGHT;
+        let height = CAMERA_POS_HEIGHT;
         let depth_init = exp(KSCALE_OVER_SCALE_DEPTH * (-CAMERA_HEIGHT));
         let start_angle = dot(eye_ray, camera_pos) / height;
         let start_offset = depth_init * scale_factor(start_angle);
 
-        let sample_length = far / KSAMPLES;
+        let sample_length = far / f32(KSAMPLES);
         let scaled_length = sample_length * KSCALE;
         let sample_ray = eye_ray * sample_length;
         var sample_point = camera_pos + sample_ray * 0.5;
 
         var front_color = vec3<f32>(0.0);
-        let s0 = scattering_inscatter_step(
-            sample_point, eye_ray, sun_dir, inv_wavelength, kkr_4pi, start_offset, scaled_length,
-        );
-        front_color = front_color + s0.contribution;
-        sample_point = sample_point + sample_ray;
+        for (var i = 0u; i < KSAMPLES; i++) {
+            let step = scattering_inscatter_step(
+                sample_point, eye_ray, sun_dir, scattering_params.kkr_scatter, start_offset, scaled_length,
+            );
+            front_color = front_color + step.contribution;
+            sample_point = sample_point + sample_ray;
+        }
 
-        let s1 = scattering_inscatter_step(
-            sample_point, eye_ray, sun_dir, inv_wavelength, kkr_4pi, start_offset, scaled_length,
-        );
-        front_color = front_color + s1.contribution;
-
-        c_in = front_color * (inv_wavelength * kkr_esun);
+        c_in = front_color * (scattering_params.kkr_in);
         c_out = front_color * KKM_ESUN;
     } else {
         let far = (-CAMERA_HEIGHT) / min(-0.001, eye_ray.y);
@@ -175,17 +172,17 @@ fn evaluate_scattering(
         let camera_offset = depth * camera_scale;
         let temp = light_scale + camera_scale;
 
-        let sample_length = far / KSAMPLES;
+        let sample_length = far / f32(KSAMPLES);
         let scaled_length = sample_length * KSCALE;
         let sample_ray = eye_ray * sample_length;
         let sample_point = camera_pos + sample_ray * 0.5;
 
         let g = ground_inscatter_step(
-            sample_point, inv_wavelength, kkr_4pi, temp, camera_offset, scaled_length,
+            sample_point, scattering_params.kkr_scatter, temp, camera_offset, scaled_length,
         );
         let front_color = g.contribution;
 
-        c_in = front_color * (inv_wavelength * kkr_esun + KKM_ESUN);
+        c_in = front_color * (scattering_params.kkr_in + KKM_ESUN);
         c_out = clamp(g.attenuate, vec3<f32>(0.0), vec3<f32>(1.0));
     }
 
@@ -209,45 +206,54 @@ fn sun_disk_mode_high_quality(mode: f32) -> bool {
     return mode > 1.5;
 }
 
-fn visible_vertex_terms(params: ProceduralSkyParams, input_eye_ray: vec3<f32>) -> ProceduralSkyVisibleTerms {
-    let eye_ray = safe_normalize(input_eye_ray, vec3<f32>(0.0, 1.0, 0.0));
-    let sun_dir = safe_normalize(params.sun_direction, vec3<f32>(0.0, 1.0, 0.0));
+fn scattering_parameters(params: ProceduralSkyParams) -> ScatteringParameters {
     let scattering_wavelength = scattering_wavelength_from_tint(params.sky_tint);
     let inv_wavelength = 1.0 / pow(scattering_wavelength, vec3<f32>(4.0));
     let krayleigh = mix(0.0, 0.0025, pow(max(params.atmosphere_thickness, 0.0), 2.5));
-    let scattering = evaluate_scattering(eye_ray, sun_dir, inv_wavelength, krayleigh);
+    let kkr_esun = krayleigh * KSUN_BRIGHTNESS;
+    let kkr_4pi = krayleigh * 4.0 * PI;
+    let kkr_in = inv_wavelength * kkr_esun;
+    let kkr_scatter = inv_wavelength * kkr_4pi + KKM_4PI;
+    return ScatteringParameters(kkr_in, kkr_scatter);
+}
+
+fn visible_vertex_terms(
+    params: ProceduralSkyParams,
+    scattering_params: ScatteringParameters,
+    input_eye_ray: vec3<f32>
+) -> ProceduralSkyVisibleTerms {
+    let eye_ray = safe_normalize(input_eye_ray, vec3<f32>(0.0, 1.0, 0.0));
+    let sun_dir = safe_normalize(params.sun_direction, vec3<f32>(0.0, 1.0, 0.0));
+    let scattering = evaluate_scattering(eye_ray, sun_dir, scattering_params);
 
     let ground_color = params.exposure * (scattering.c_in + params.ground_color * scattering.c_out);
     let sky_color = params.exposure * (scattering.c_in * rayleigh_phase(sun_dir, -eye_ray));
     let sun_color = params.exposure * (scattering.c_out * params.sun_color);
-    let fragment_ray = -eye_ray;
-    let sky_ground_factor = fragment_ray.y / SKY_GROUND_THRESHOLD;
     return ProceduralSkyVisibleTerms(
         ground_color,
         sky_color,
         sun_color,
-        fragment_ray,
-        sky_ground_factor,
+        -eye_ray,
     );
 }
 
 fn visible_fragment_color(params: ProceduralSkyParams, terms: ProceduralSkyVisibleTerms) -> vec3<f32> {
-    let sun_dir = safe_normalize(params.sun_direction, vec3<f32>(0.0, 1.0, 0.0));
-    let fragment_ray = safe_normalize(terms.fragment_ray, vec3<f32>(0.0, -1.0, 0.0));
+    let sky_ground_factor = terms.ray.y / SKY_GROUND_THRESHOLD;
     var color = mix(
         terms.sky_color,
         terms.ground_color,
-        clamp(terms.sky_ground_factor, 0.0, 1.0),
+        clamp(sky_ground_factor, 0.0, 1.0),
     );
 
-    if (!sun_disk_mode_none(params.sun_disk_mode) && terms.sky_ground_factor < 0.0) {
+    if (!sun_disk_mode_none(params.sun_disk_mode) && sky_ground_factor < 0.0) {
+        let sun_dir = safe_normalize(params.sun_direction, vec3<f32>(0.0, 1.0, 0.0));
         let sun_size = clamp(params.sun_size, 1.0e-4, 1.0);
         var mie: f32;
         if (sun_disk_mode_high_quality(params.sun_disk_mode)) {
-            let eye_cos = dot(sun_dir, fragment_ray);
+            let eye_cos = dot(sun_dir, terms.ray);
             mie = mie_phase(eye_cos, eye_cos * eye_cos, sun_size);
         } else {
-            mie = calc_sun_spot(sun_dir, -fragment_ray, sun_size);
+            mie = calc_sun_spot(sun_dir, -terms.ray, sun_size);
         }
         color = color + mie * terms.sun_color;
     }
@@ -256,5 +262,7 @@ fn visible_fragment_color(params: ProceduralSkyParams, terms: ProceduralSkyVisib
 }
 
 fn sample(params: ProceduralSkyParams, input_eye_ray: vec3<f32>) -> vec3<f32> {
-    return visible_fragment_color(params, visible_vertex_terms(params, input_eye_ray));
+    let scattering_params = scattering_parameters(params);
+    let vertex_terms = visible_vertex_terms(params, scattering_params, input_eye_ray);
+    return visible_fragment_color(params, vertex_terms);
 }

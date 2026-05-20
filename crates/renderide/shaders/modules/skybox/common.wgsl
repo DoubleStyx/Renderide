@@ -20,32 +20,6 @@ struct SkyboxView {
     ndc_y_sign_pad: vec4<f32>,
 }
 
-fn fullscreen_clip_pos(vertex_index: u32) -> vec4<f32> {
-    let x = f32((vertex_index << 1u) & 2u);
-    let y = f32(vertex_index & 2u);
-    return vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
-}
-
-fn fullscreen_quad_clip_pos(vertex_index: u32) -> vec4<f32> {
-    let i = vertex_index % 6u;
-    if (i == 0u) {
-        return vec4<f32>(-1.0, 1.0, 0.0, 1.0);
-    }
-    if (i == 1u) {
-        return vec4<f32>(1.0, 1.0, 0.0, 1.0);
-    }
-    if (i == 2u) {
-        return vec4<f32>(-1.0, -1.0, 0.0, 1.0);
-    }
-    if (i == 3u) {
-        return vec4<f32>(-1.0, -1.0, 0.0, 1.0);
-    }
-    if (i == 4u) {
-        return vec4<f32>(1.0, 1.0, 0.0, 1.0);
-    }
-    return vec4<f32>(1.0, -1.0, 0.0, 1.0);
-}
-
 fn view_is_orthographic(sky: SkyboxView, view_layer: u32) -> bool {
     if (view_layer == 0u) {
         return sky.ndc_y_sign_pad.y > 0.5;
@@ -60,9 +34,11 @@ fn view_ray_from_ndc(ndc: vec2<f32>, proj_params: vec4<f32>, orthographic: bool)
     }
     // Asymmetric OpenXR projections store skew on the Z column. With sky rays fixed at z = -1
     // and clip_w = -view_z, inverse projection uses ndc + skew.
-    let view_x = (ndc.x + proj_params.z) / max(abs(proj_params.x), 0.000001);
-    let view_y = (ndc.y + proj_params.w) / max(abs(proj_params.y), 0.000001);
-    return normalize(vec3<f32>(view_x, view_y, -1.0));
+
+    let view_unscaled = ndc.xy + proj_params.zw;
+    let proj_params_signs = sign(sign(proj_params.xy) * 2.0 + 1.0);
+    let proj_params_safe = proj_params_signs * max(abs(proj_params.xy), vec2<f32>(0.000001));
+    return normalize(vec3<f32>(view_unscaled / proj_params_safe, -1.0));
 }
 
 fn world_ray_from_view_ray(view_ray: vec3<f32>, sky: SkyboxView, view_layer: u32) -> vec3<f32> {
