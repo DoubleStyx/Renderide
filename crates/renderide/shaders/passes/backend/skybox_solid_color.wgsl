@@ -11,7 +11,7 @@ struct VertexOutput {
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     var out: VertexOutput;
-    out.clip_pos = skybox::fullscreen_clip_pos(vertex_index);
+    out.clip_pos = skybox::fullscreen_quad_clip_pos(vertex_index);
     return out;
 }
 
