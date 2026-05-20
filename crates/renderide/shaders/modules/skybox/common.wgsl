@@ -57,7 +57,8 @@ fn view_ray_from_ndc(ndc: vec2<f32>, proj_params: vec4<f32>, orthographic: bool)
     }
     // Asymmetric OpenXR projections store skew on the Z column. With sky rays fixed at z = -1
     // and clip_w = -view_z, inverse projection uses ndc + skew.
-    let view_unscaled = vec2<f32>(ndc.x + proj_params.z, ndc.y + proj_params.w);
+
+    let view_unscaled = ndc.xy + proj_params.zw;
     let proj_params_signs = sign(sign(proj_params.xy) * 2.0 + 1.0);
     let proj_params_safe = proj_params_signs * max(abs(proj_params.xy), vec2<f32>(0.000001));
     return normalize(vec3<f32>(view_unscaled / proj_params_safe, -1.0));

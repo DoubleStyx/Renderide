@@ -50,7 +50,9 @@ fn vs_main(
 
     var out: VertexOutput;
     out.clip_pos = vp * world_p;
-    let terms = ps::visible_vertex_terms(psmat::params(), mv::model_vector(d, pos.xyz));
+    let ps_params = psmat::params();
+    let scattering_params = ps::scattering_parameters(ps_params);
+    let terms = ps::visible_vertex_terms(ps_params, scattering_params, mv::model_vector(d, pos.xyz));
     out.ground_color = terms.ground_color;
     out.sky_color = terms.sky_color;
     out.sun_color = terms.sun_color;
