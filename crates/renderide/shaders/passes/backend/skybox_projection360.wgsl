@@ -51,8 +51,7 @@ struct Projection360Material {
 
 struct VertexOutput {
     @builtin(position) clip_pos: vec4<f32>,
-    @location(0) ndc: vec2<f32>,
-    @location(1) @interpolate(flat) view_layer: u32,
+    @location(0) @interpolate(flat) view_layer: u32,
 }
 
 fn projection360_params() -> p360m::Projection360Params {
@@ -105,7 +104,6 @@ fn vs_main(
     let clip = skybox::fullscreen_quad_clip_pos(vertex_index);
     var out: VertexOutput;
     out.clip_pos = clip;
-    out.ndc = vec2<f32>(clip.x, clip.y * view.ndc_y_sign_pad.x);
 #ifdef MULTIVIEW
     out.view_layer = view_idx;
 #else
@@ -117,8 +115,9 @@ fn vs_main(
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let params = projection360_params();
+    let ndc = vec2<f32>(in.clip_pos.x, in.clip_pos.y * view.ndc_y_sign_pad.x);
     let view_dir = p360m::apply_offset(
-        base_view_dir(in.ndc, in.view_layer),
+        base_view_dir(ndc, in.view_layer),
         params,
         _OffsetTex,
         _OffsetTex_sampler,
