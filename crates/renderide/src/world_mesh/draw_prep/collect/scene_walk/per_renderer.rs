@@ -15,7 +15,7 @@ use super::{
 /// Expands one static mesh renderer into draw items (material slots mapped to submesh ranges).
 ///
 /// `collect_order` is filled with a placeholder; the merge step in
-/// [`super::super::collect_and_sort_draws_with_parallelism`] assigns the final stable index after
+/// [`super::super::queue_draws_with_parallelism`] assigns the final stable index after
 /// per-chunk results are merged.
 pub(super) fn push_draws_for_renderer(
     ctx: &DrawCollectionContext<'_>,

@@ -1,7 +1,7 @@
 //! Frame-scope dense expansion of scene mesh renderables into one entry per
 //! `(renderer, material slot)` pair.
 //!
-//! This is the Stage 3 amortization of [`super::collect::collect_and_sort_draws_with_parallelism`]:
+//! This is the Stage 3 amortization of [`super::collect::queue_draws_with_parallelism`]:
 //! every per-view collection used to walk each active render space, look up the resident
 //! [`crate::assets::mesh::GpuMesh`] per renderer, expand material slots onto submesh ranges, and resolve
 //! render-context material overrides -- all of which are functions of frame-global state, not the

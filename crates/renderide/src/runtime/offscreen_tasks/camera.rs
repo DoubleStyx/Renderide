@@ -17,10 +17,10 @@ use crate::shared::{CameraRenderParameters, CameraRenderTask, RenderingContext, 
 use crate::world_mesh::{CameraTransformDrawFilter, WorldMeshDrawCollectParallelism};
 
 use super::super::RendererRuntime;
-use super::super::frame::extract::{ExtractedFrame, PreparedViews};
-use super::super::frame::view_plan::{
-    FrameViewPlan, FrameViewPlanTarget, OffscreenRtHandles, ViewFamilyPlan,
+use super::super::frame::schedule::{
+    CpuRenderSchedule, RenderScheduleKind, execute_one_shot_view_plans,
 };
+use super::super::frame::view_plan::{FrameViewPlan, FrameViewPlanTarget, OffscreenRtHandles};
 use super::readback::{AwaitBufferMapError, await_buffer_map};
 
 mod alpha_coverage;
@@ -349,19 +349,11 @@ fn render_camera_task(ctx: CameraTaskRenderCtx<'_>) -> Result<(), CameraReadback
         ctx.task_index,
         ctx.task,
     )?;
-    let view_id = planned.plan.view_id;
     render_camera_task_offscreen(ctx.gpu, ctx.backend, ctx.scene, planned.plan)?;
     if planned.output_format.needs_alpha_coverage_repair() {
         alpha_coverage::apply_camera_task_alpha_coverage(ctx.gpu, &planned.targets);
     }
-    let rgba = match readback_camera_task_texture(ctx.gpu, planned.targets.color_texture.as_ref()) {
-        Ok(rgba) => rgba,
-        Err(error) => {
-            ctx.backend.retire_one_shot_views(&[view_id]);
-            return Err(error);
-        }
-    };
-    ctx.backend.retire_one_shot_views(&[view_id]);
+    let rgba = readback_camera_task_texture(ctx.gpu, planned.targets.color_texture.as_ref())?;
     write_camera_task_result(
         ctx.shm,
         ctx.task,
@@ -468,30 +460,15 @@ fn render_camera_task_offscreen(
     plan: FrameViewPlan<'static>,
 ) -> Result<(), CameraReadbackError> {
     profiling::scope!("camera_task::offscreen_render");
-    let view_id = plan.view_id;
-    let prepared_views = PreparedViews::new(ViewFamilyPlan::new(vec![plan]), None);
-    backend.prepare_lights_for_views(
+    execute_one_shot_view_plans(
+        CpuRenderSchedule::new(RenderScheduleKind::CameraTask),
+        gpu,
+        backend,
         scene,
-        prepared_views
-            .plans()
-            .iter()
-            .map(FrameViewPlan::light_view_desc),
-    );
-    let view_perms = prepared_views
-        .plans()
-        .iter()
-        .map(|plan| (plan.render_context(), plan.shader_permutation()))
-        .collect::<Vec<_>>();
-    let shared =
-        backend.extract_frame_shared(scene, WorldMeshDrawCollectParallelism::Full, &view_perms);
-    let submit_frame = ExtractedFrame::new(prepared_views, shared)
-        .prepare_draws()
-        .into_submit_frame();
-    let result = submit_frame.execute(gpu, scene, backend);
-    if result.is_err() {
-        backend.retire_one_shot_views(&[view_id]);
-    }
-    result.map_err(CameraReadbackError::Graph)
+        vec![plan],
+        WorldMeshDrawCollectParallelism::Full,
+    )
+    .map_err(CameraReadbackError::Graph)
 }
 
 fn readback_camera_task_texture(

@@ -15,10 +15,11 @@ use crate::render_graph::blackboard::Blackboard;
 use crate::render_graph::{
     FrameView, FrameViewResourceHints, GraphExecuteError, ViewFamilyGraphRequirements,
 };
+use crate::world_mesh::QueuedWorldMeshDraws;
 use crate::world_mesh::{
     DrawCollectionContext, HiZTemporalState, PrefetchedWorldMeshViewDraws, WorldMeshCullInput,
     WorldMeshCullProjParams, WorldMeshDrawCollectParallelism, WorldMeshDrawPlan,
-    build_world_mesh_cull_proj_params, collect_and_sort_draws_with_parallelism,
+    build_world_mesh_cull_proj_params, queue_draws_with_parallelism,
 };
 
 use super::view_plan::{FrameViewPlan, ViewFamilyPlan};
@@ -46,13 +47,8 @@ impl<'views, 'backend> ExtractedFrame<'views, 'backend> {
         }
     }
 
-    /// Returns `true` when no view should be rendered this tick.
-    pub(in crate::runtime) fn is_empty(&self) -> bool {
-        self.prepared_views.is_empty()
-    }
-
-    /// Collects and packages explicit world-mesh draw plans for each prepared view.
-    pub(in crate::runtime) fn prepare_draws(self) -> PreparedDraws<'views> {
+    /// Queues explicit world-mesh draw candidates for each prepared view.
+    pub(in crate::runtime) fn queue_draws(self) -> QueuedDraws<'views> {
         let ExtractedFrame {
             prepared_views,
             shared,
@@ -69,9 +65,39 @@ impl<'views, 'backend> ExtractedFrame<'views, 'backend> {
                     .collect(),
             }
         };
-        let view_draws = collect_view_draws(&shared, prepared_views.plans(), cull_snapshots);
-        PreparedDraws {
+        let view_draws = queue_view_draws(&shared, prepared_views.plans(), cull_snapshots);
+        QueuedDraws {
             prepared_views,
+            view_draws,
+            parallelism: shared.inner_parallelism,
+        }
+    }
+}
+
+/// Queued per-view draw candidates built after view planning and before phase sorting.
+pub(in crate::runtime) struct QueuedDraws<'a> {
+    /// Ordered per-frame view plans and headless output substitution snapshot.
+    prepared_views: PreparedViews<'a>,
+    /// Queued draw candidates for every prepared view.
+    view_draws: Vec<QueuedViewDraws>,
+    /// Rayon tier to use for strict-order sorting inside each queued view.
+    parallelism: WorldMeshDrawCollectParallelism,
+}
+
+impl<'a> QueuedDraws<'a> {
+    /// Sorts queued draws and promotes them into final per-view draw plans.
+    pub(in crate::runtime) fn sort_draws(self) -> PreparedDraws<'a> {
+        let view_draws = self
+            .view_draws
+            .into_iter()
+            .map(|queued| queued.sort_and_package(self.parallelism))
+            .collect::<Vec<_>>();
+        {
+            profiling::scope!("render::sort_view_draws::trace_plans");
+            trace_view_draw_plans(self.prepared_views.plans(), &view_draws);
+        }
+        PreparedDraws {
+            prepared_views: self.prepared_views,
             view_draws,
         }
     }
@@ -168,17 +194,32 @@ pub(in crate::runtime) struct SubmitFrame<'a> {
 }
 
 impl SubmitFrame<'_> {
-    /// Executes the final submit packet while the prepared view owners are still alive.
-    pub(in crate::runtime) fn execute(
+    /// Prepares frame resources that depend on the sorted draw list.
+    pub(in crate::runtime) fn prepare_resources(
+        &self,
+        scene: &crate::scene::SceneCoordinator,
+        backend: &mut RenderBackend,
+    ) {
+        backend.prepare_lights_for_views(
+            scene,
+            self.prepared_views
+                .plans()
+                .iter()
+                .map(FrameViewPlan::light_view_desc),
+        );
+        let visible_deform_keys = visible_mesh_deform_keys_from_draw_plans(&self.view_draws);
+        backend
+            .frame_resources_mut()
+            .begin_mesh_deform_submission(visible_deform_keys);
+    }
+
+    /// Executes the final submit packet after [`Self::prepare_resources`] has run.
+    pub(in crate::runtime) fn execute_after_resource_prepare(
         self,
         gpu: &mut GpuContext,
         scene: &crate::scene::SceneCoordinator,
         backend: &mut RenderBackend,
     ) -> Result<(), GraphExecuteError> {
-        let visible_deform_keys = visible_mesh_deform_keys_from_draw_plans(&self.view_draws);
-        backend
-            .frame_resources_mut()
-            .begin_mesh_deform_submission(visible_deform_keys);
         let requirements = self.prepared_views.graph_requirements();
         let mut views = self.prepared_views.build_execution_views(self.view_draws);
         backend.execute_multi_view_frame(gpu, scene, &mut views, requirements, true)
@@ -216,24 +257,43 @@ struct ViewCullSnapshot {
     hi_z_temporal: Option<HiZTemporalState>,
 }
 
-/// Collects and sorts world-mesh draws for every prepared view in parallel.
+/// Queued draw candidates and cull projection for one view.
+struct QueuedViewDraws {
+    /// Draw candidates before final phase sorting.
+    queued: QueuedWorldMeshDraws,
+    /// Projection parameters matching the view's camera/viewport.
+    cull_proj: Option<WorldMeshCullProjParams>,
+}
+
+impl QueuedViewDraws {
+    /// Sorts this view's queued draws and packages the final draw plan.
+    fn sort_and_package(self, parallelism: WorldMeshDrawCollectParallelism) -> WorldMeshDrawPlan {
+        let collection = self.queued.sort_and_arrange(parallelism);
+        WorldMeshDrawPlan::Prefetched(Box::new(PrefetchedWorldMeshViewDraws::new(
+            collection,
+            self.cull_proj.as_ref(),
+        )))
+    }
+}
+
+/// Queues world-mesh draws for every prepared view in parallel.
 ///
-/// Returns one explicit [`WorldMeshDrawPlan`] per prepared view, preserving input order so the
-/// compiled graph never has to infer whether draws were intentionally omitted or merely missing.
+/// Returns one queued draw packet per prepared view, preserving input order so the compiled graph
+/// never has to infer whether draws were intentionally omitted or merely missing after sorting.
 ///
 /// Takes ownership of `cull_snapshots` so each view moves its `hi_z` / `hi_z_temporal` payloads
 /// (already `Arc`-shared internally) into the cull input instead of cloning, avoiding a per-view
 /// refcount bump on the heaviest-view path.
-fn collect_view_draws(
+fn queue_view_draws(
     setup: &ExtractedFrameShared<'_>,
     prepared: &[FrameViewPlan<'_>],
     cull_snapshots: Vec<Option<ViewCullSnapshot>>,
-) -> Vec<WorldMeshDrawPlan> {
-    profiling::scope!("render::collect_view_draws");
+) -> Vec<QueuedViewDraws> {
+    profiling::scope!("render::queue_view_draws");
     // The MaterialDictionary wraps the property store with read-only views; building it once
     // and sharing across views avoids N redundant constructions inside the rayon par_iter.
     let dict = {
-        profiling::scope!("collect::shared_dictionary");
+        profiling::scope!("queue::shared_dictionary");
         crate::materials::host_data::MaterialDictionary::new(setup.property_store)
     };
     let inner_parallelism = select_inner_parallelism_for_prepared_work(
@@ -250,17 +310,17 @@ fn collect_view_draws(
     // pure overhead vs a direct serial call. Per-view collection internally still parallelises
     // across renderer-run chunks when the refined inner-parallelism tier allows it.
     let collect_one = |(prep, snap): (&FrameViewPlan<'_>, Option<ViewCullSnapshot>)| {
-        profiling::scope!("render::collect_view_draws::collect_one");
+        profiling::scope!("render::queue_view_draws::queue_one");
         let shader_perm = prep.shader_permutation();
         let render_context = prep.render_context();
         // The backend pre-refreshed one material batch cache per render-context/permutation pair
         // in `extract_frame_shared`, so any prepared view should find a matching cache here.
         let material_cache = {
-            profiling::scope!("render::collect_view_draws::material_cache_lookup");
+            profiling::scope!("render::queue_view_draws::material_cache_lookup");
             setup.material_cache_for(render_context, shader_perm)
         };
         let (cull_proj, culling) = {
-            profiling::scope!("render::collect_view_draws::build_cull_input");
+            profiling::scope!("render::queue_view_draws::build_cull_input");
             let cull_proj = snap.as_ref().map(|s| s.proj);
             let culling = snap.map(|s| WorldMeshCullInput {
                 proj: s.proj,
@@ -270,7 +330,7 @@ fn collect_view_draws(
             });
             (cull_proj, culling)
         };
-        let collection = collect_and_sort_draws_with_parallelism(
+        let queued = queue_draws_with_parallelism(
             &DrawCollectionContext {
                 scene: setup.scene,
                 mesh_pool: setup.mesh_pool,
@@ -290,33 +350,23 @@ fn collect_view_draws(
             },
             inner_parallelism,
         );
-        {
-            profiling::scope!("render::collect_view_draws::package_draw_plan");
-            WorldMeshDrawPlan::Prefetched(Box::new(PrefetchedWorldMeshViewDraws::new(
-                collection,
-                cull_proj.as_ref(),
-            )))
-        }
+        QueuedViewDraws { queued, cull_proj }
     };
 
-    let draw_plans: Vec<WorldMeshDrawPlan> = if prepared.len() == 1 {
-        profiling::scope!("render::collect_view_draws::single_view");
+    let queued_view_draws: Vec<QueuedViewDraws> = if prepared.len() == 1 {
+        profiling::scope!("render::queue_view_draws::single_view");
         let mut snaps = cull_snapshots.into_iter();
         let snap = snaps.next().unwrap_or(None);
         vec![collect_one((&prepared[0], snap))]
     } else {
-        profiling::scope!("render::collect_view_draws::parallel_views");
+        profiling::scope!("render::queue_view_draws::parallel_views");
         prepared
             .par_iter()
             .zip(cull_snapshots.into_par_iter())
             .map(collect_one)
             .collect()
     };
-    {
-        profiling::scope!("render::collect_view_draws::trace_plans");
-        trace_view_draw_plans(prepared, &draw_plans);
-    }
-    draw_plans
+    queued_view_draws
 }
 
 fn trace_view_draw_plans(prepared: &[FrameViewPlan<'_>], draw_plans: &[WorldMeshDrawPlan]) {

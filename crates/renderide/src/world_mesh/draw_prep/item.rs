@@ -24,7 +24,7 @@ pub struct WorldMeshDrawArrangementStats {
     pub strict_sorted_draws: usize,
 }
 
-/// Result of `collect_and_sort_draws` including optional frustum cull counts.
+/// Result of queued and sorted world-mesh draws including optional frustum cull counts.
 #[derive(Clone, Debug)]
 pub struct WorldMeshDrawCollection {
     /// Draw items after culling and sorting.

@@ -47,10 +47,11 @@
 //!    most one full pack per winit tick (coalesced across graph entry points).
 //! 2. **Camera / cluster params** -- [`frame_params::GraphPassFrame`] carries host camera and
 //!    per-view frame state to passes.
-//! 3. **Cull / sort** -- runtime extraction prepares caller-owned draw packets before graph entry.
-//! 4. **View prep** -- backend-specific blackboard preparation packs per-draw uniforms and resolves
+//! 3. **Draw queue / sort** -- the runtime CPU render schedule queues caller-owned draw packets,
+//!    then sorts and arranges them before graph entry.
+//! 4. **Resource prepare** -- backend-specific blackboard preparation packs per-draw uniforms and resolves
 //!    material packets before graph pass-node recording.
-//! 5. **RenderPasses** -- [`CompiledRenderGraph`] runs mesh deform (logical deform outputs producer),
+//! 5. **Command record** -- [`CompiledRenderGraph`] runs mesh deform (logical deform outputs producer),
 //!    clustered lights, then forward (see [`default_graph_tests`] / [`build_main_graph`]); frame-global
 //!    deform runs before per-view passes at execute time ([`CompiledRenderGraph::execute_multi_view`]).
 //! 6. **HiZ** -- [`passes::HiZBuildPass`] after depth is written; CPU readback feeds next frame's cull.

@@ -85,7 +85,7 @@ pub fn capture_hi_z_temporal(
     }
 }
 
-/// Host camera + projection bundle for [`super::draw_prep::collect_and_sort_draws`].
+/// Host camera + projection bundle for [`super::draw_prep::queue_draws_with_parallelism`].
 pub struct WorldMeshCullInput<'a> {
     /// Shared reverse-Z projection state for the frame.
     pub proj: WorldMeshCullProjParams,

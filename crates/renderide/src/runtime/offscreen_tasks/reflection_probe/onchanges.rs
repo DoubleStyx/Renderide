@@ -540,10 +540,8 @@ fn step_realtime_reflection_probe_capture(
             state,
             &faces,
         )?;
-        let view_ids = plans.iter().map(|plan| plan.view_id).collect::<Vec<_>>();
         let render_result =
             render_reflection_probe_faces_offscreen(ctx.gpu, ctx.backend, ctx.scene, plans);
-        ctx.backend.retire_one_shot_views(&view_ids);
         render_result?;
         ctx.capture.progress.mark_rendered(&faces);
     }
@@ -568,10 +566,8 @@ fn step_onchanges_reflection_probe_capture(
             state,
             &faces,
         )?;
-        let view_ids = plans.iter().map(|plan| plan.view_id).collect::<Vec<_>>();
         let render_result =
             render_reflection_probe_faces_offscreen(ctx.gpu, ctx.backend, ctx.scene, plans);
-        ctx.backend.retire_one_shot_views(&view_ids);
         render_result?;
         ctx.capture.progress.mark_rendered(&faces);
     }

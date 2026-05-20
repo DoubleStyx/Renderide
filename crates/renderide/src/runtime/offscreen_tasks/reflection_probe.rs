@@ -43,6 +43,7 @@ use face::{
 };
 
 use super::super::RendererRuntime;
+use super::super::frame::schedule::RenderScheduleKind;
 use super::super::frame::view_plan::{FrameViewPlan, FrameViewPlanTarget};
 use super::super::state::tick::QueuedReflectionProbeRenderTask;
 
@@ -415,31 +416,16 @@ fn render_reflection_probe_task(
 ) -> Result<(), ReflectionProbeBakeError> {
     profiling::scope!("reflection_probe_task::render_one");
     let planned = plan_reflection_probe_task(ctx.gpu, ctx.scene, ctx.base_camera, ctx.queued)?;
-    let view_ids = planned
-        .plans
-        .iter()
-        .map(|plan| plan.view_id)
-        .collect::<Vec<_>>();
     let render_result =
         render_reflection_probe_faces_offscreen(ctx.gpu, ctx.backend, ctx.scene, planned.plans);
-    if let Err(error) = render_result {
-        ctx.backend.retire_one_shot_views(&view_ids);
-        return Err(error);
-    }
-    let mapped = match readback_reflection_probe_cube(
+    render_result?;
+    let mapped = readback_reflection_probe_cube(
         ctx.gpu,
         ctx.convolver,
         planned.targets.cube_texture.as_ref(),
         planned.extent,
         &planned.readback_layout,
-    ) {
-        Ok(mapped) => mapped,
-        Err(error) => {
-            ctx.backend.retire_one_shot_views(&view_ids);
-            return Err(error);
-        }
-    };
-    ctx.backend.retire_one_shot_views(&view_ids);
+    )?;
     write_probe_task_result(ctx.shm, &ctx.queued.task, &planned.readback_layout, &mapped)
 }
 
@@ -543,7 +529,14 @@ fn render_reflection_probe_faces_offscreen(
     plans: Vec<FrameViewPlan<'static>>,
 ) -> Result<(), ReflectionProbeBakeError> {
     profiling::scope!("reflection_probe_task::offscreen_render");
-    render_cube_capture_faces_offscreen(gpu, backend, scene, plans).map_err(Into::into)
+    render_cube_capture_faces_offscreen(
+        RenderScheduleKind::ReflectionProbeCapture,
+        gpu,
+        backend,
+        scene,
+        plans,
+    )
+    .map_err(Into::into)
 }
 
 fn queue_reflection_probe_failures<'a>(

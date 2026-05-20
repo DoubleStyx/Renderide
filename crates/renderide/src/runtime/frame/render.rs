@@ -8,7 +8,11 @@ use crate::gpu::GpuContext;
 use crate::render_graph::{ExternalFrameTargets, GraphExecuteError};
 
 use super::super::RendererRuntime;
-use super::extract::{ExtractedFrame, PreparedViews, select_inner_parallelism};
+use super::extract::{PreparedViews, select_inner_parallelism};
+use super::schedule::{
+    CpuRenderPhase, CpuRenderSchedule, RenderScheduleKind, execute_prepared_views,
+    prepare_assets_for_schedule,
+};
 use super::view_plan::{FrameViewPlan, FrameViewPlanTarget, HeadlessOffscreenSnapshot};
 
 /// Which combination of views the compiled render graph records for one tick.
@@ -67,31 +71,28 @@ impl RendererRuntime {
         mode: FrameRenderMode<'_>,
     ) -> Result<(), GraphExecuteError> {
         profiling::scope!("render::render_frame");
-        self.sync_debug_hud_diagnostics_from_settings();
-        self.setup_msaa_for_mode(gpu, &mode);
-        self.backend.sync_material_shader_hot_reload();
-        // Drain background pipeline-build completions exactly once per frame, before per-view
-        // recording fans out. Workers can then do pure cache reads in `get_or_queue` without
-        // touching the completion channel or pending/failed mutexes per draw.
-        self.backend.drain_pipeline_build_completions();
-
-        let frame_extract = {
-            profiling::scope!("render::extract_frame");
-            self.extract_frame(gpu, mode)
-        };
-        if frame_extract.is_empty() {
-            logger::trace!("render frame skipped: no prepared views");
-            return Ok(());
-        }
-
-        let prepared_draws = {
-            profiling::scope!("render::prepare_draws");
-            frame_extract.prepare_draws()
-        };
-        let submit_frame = prepared_draws.into_submit_frame();
+        let schedule = CpuRenderSchedule::new(render_schedule_kind_for_mode(&mode));
+        schedule.run_phase(CpuRenderPhase::Extract, || {
+            self.sync_debug_hud_diagnostics_from_settings();
+        });
+        schedule.run_phase(CpuRenderPhase::AssetPrepare, || {
+            self.setup_msaa_for_mode(gpu, &mode);
+            prepare_assets_for_schedule(&mut self.backend);
+        });
+        let prepared_views = schedule.run_phase(CpuRenderPhase::ViewPlanning, || {
+            self.prepare_frame_views(gpu, mode)
+        });
+        let inner_parallelism = select_inner_parallelism(prepared_views.plans());
         let scene = &self.scene;
         let backend = &mut self.backend;
-        submit_frame.execute(gpu, scene, backend)
+        execute_prepared_views(
+            schedule,
+            gpu,
+            backend,
+            scene,
+            prepared_views,
+            inner_parallelism,
+        )
     }
 
     /// Applies the MSAA tier for the active mode and evicts transient textures keyed by stale
@@ -104,48 +105,6 @@ impl RendererRuntime {
         if mode.has_hmd() {
             self.sync_stereo_msaa_from_master(gpu);
         }
-    }
-
-    /// Builds the explicit frame extraction packet for this tick, including prepared views,
-    /// backend draw-prep state, and any headless main-target substitution resources that must
-    /// outlive graph-view creation.
-    fn extract_frame<'a>(
-        &mut self,
-        gpu: &mut GpuContext,
-        mode: FrameRenderMode<'a>,
-    ) -> ExtractedFrame<'a, '_> {
-        let prepared_views = {
-            profiling::scope!("render::prepare_views");
-            self.prepare_frame_views(gpu, mode)
-        };
-        self.backend
-            .sync_active_views(prepared_views.plans().iter().map(|view| view.view_id));
-        {
-            profiling::scope!("render::prepare_lights_for_views");
-            self.backend.prepare_lights_for_views(
-                &self.scene,
-                prepared_views
-                    .plans()
-                    .iter()
-                    .map(FrameViewPlan::light_view_desc),
-            );
-        }
-        let shared = {
-            profiling::scope!("render::extract_frame_shared");
-            // Hand the per-view render context and shader permutation through so the backend
-            // refreshes material and draw-prep caches for each distinct view mode in the batch.
-            let view_perms = prepared_views
-                .plans()
-                .iter()
-                .map(|plan| (plan.render_context(), plan.shader_permutation()))
-                .collect::<Vec<_>>();
-            self.backend.extract_frame_shared(
-                &self.scene,
-                select_inner_parallelism(prepared_views.plans()),
-                &view_perms,
-            )
-        };
-        ExtractedFrame::new(prepared_views, shared)
     }
 
     /// Builds the explicit prepared-view stage for this tick, including any headless main-target
@@ -168,6 +127,8 @@ impl RendererRuntime {
         };
         let prepared = self.collect_prepared_views(gpu, mode, swapchain_extent_px, main_profile);
         trace_prepared_views(prepared.plans());
+        self.backend
+            .sync_active_views(prepared.plans().iter().map(|view| view.view_id));
         let headless_snapshot = {
             profiling::scope!("render::headless_snapshot");
             if includes_main && gpu.is_headless() {
@@ -177,6 +138,14 @@ impl RendererRuntime {
             }
         };
         PreparedViews::new(prepared, headless_snapshot)
+    }
+}
+
+fn render_schedule_kind_for_mode(mode: &FrameRenderMode<'_>) -> RenderScheduleKind {
+    match mode {
+        FrameRenderMode::DesktopPlusSecondaries => RenderScheduleKind::Desktop,
+        FrameRenderMode::VrWithHmd(_) => RenderScheduleKind::Hmd,
+        FrameRenderMode::VrSecondariesOnly => RenderScheduleKind::VrSecondariesOnly,
     }
 }
 

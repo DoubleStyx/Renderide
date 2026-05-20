@@ -10,7 +10,7 @@
 //!
 //! Per-space draw collection runs in parallel ([`rayon`]) by default; the merged list is arranged
 //! into nontransparent phase bins while the transparent tail keeps strict ordering. When
-//! [`collect_and_sort_draws_with_parallelism`] uses [`WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch`]
+//! [`queue_draws_with_parallelism`] uses [`WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch`]
 //! (e.g. prefetching multiple secondary RTs under an outer `par_iter`), inner collection and
 //! transparent sorting stay serial to avoid nested rayon.
 
@@ -23,7 +23,8 @@ mod render_world;
 mod sort;
 
 pub use collect::{
-    DrawCollectionContext, WorldMeshDrawCollectParallelism, collect_and_sort_draws_with_parallelism,
+    DrawCollectionContext, QueuedWorldMeshDraws, WorldMeshDrawCollectParallelism,
+    queue_draws_with_parallelism,
 };
 pub use filter::{CameraTransformDrawFilter, draw_filter_from_camera_entry};
 pub use item::{WorldMeshDrawArrangementStats, WorldMeshDrawCollection, WorldMeshDrawItem};

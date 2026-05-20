@@ -22,6 +22,7 @@ use crate::render_graph::{FrameViewClear, RenderPathProfile};
 use crate::scene::RenderSpaceId;
 use crate::shared::{CameraRenderParameters, RenderingContext};
 
+use super::super::super::frame::schedule::RenderScheduleKind;
 use super::super::super::frame::view_plan::{FrameViewPlan, FrameViewPlanTarget};
 use super::super::cube_capture::{
     CUBE_FACE_COUNT, CubeCaptureBasisMode, CubeCaptureExtent, CubeCaptureFace,
@@ -84,15 +85,14 @@ pub(super) fn render_camera360_task(
 ) -> Result<(), CameraReadbackError> {
     profiling::scope!("camera360_task::render_one");
     let planned = plan_camera360_task(&ctx)?;
-    let view_ids = planned
-        .plans
-        .iter()
-        .map(|plan| plan.view_id)
-        .collect::<Vec<_>>();
-    let render_result =
-        render_cube_capture_faces_offscreen(ctx.gpu, ctx.backend, ctx.scene, planned.plans);
+    let render_result = render_cube_capture_faces_offscreen(
+        RenderScheduleKind::Camera360Capture,
+        ctx.gpu,
+        ctx.backend,
+        ctx.scene,
+        planned.plans,
+    );
     if let Err(error) = render_result {
-        ctx.backend.retire_one_shot_views(&view_ids);
         return Err(CameraReadbackError::Graph(error));
     }
     if planned.output_format.needs_alpha_coverage_repair() {
@@ -104,17 +104,8 @@ pub(super) fn render_camera360_task(
         &planned.output_targets,
         ctx.task.rotation,
     );
-    let rgba = match readback_camera_task_texture(
-        ctx.gpu,
-        planned.output_targets.color_texture.as_ref(),
-    ) {
-        Ok(rgba) => rgba,
-        Err(error) => {
-            ctx.backend.retire_one_shot_views(&view_ids);
-            return Err(error);
-        }
-    };
-    ctx.backend.retire_one_shot_views(&view_ids);
+    let rgba =
+        readback_camera_task_texture(ctx.gpu, planned.output_targets.color_texture.as_ref())?;
     write_camera_task_result(
         ctx.shm,
         ctx.task,

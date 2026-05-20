@@ -9,6 +9,7 @@ static START_INSTANT: OnceLock<Instant> = OnceLock::new();
 static UPTIME_MS: AtomicU64 = AtomicU64::new(0);
 static TICK_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static TICK_PHASE: AtomicU8 = AtomicU8::new(TickPhase::Unknown as u8);
+static CPU_RENDER_PHASE: AtomicU8 = AtomicU8::new(CpuRenderPhase::Unknown as u8);
 static RENDER_MODE: AtomicU8 = AtomicU8::new(RenderMode::Unknown as u8);
 static INIT_STATE: AtomicU8 = AtomicU8::new(InitState::NotStarted as u8);
 static TARGET_MODE: AtomicU8 = AtomicU8::new(TargetMode::Unknown as u8);
@@ -89,6 +90,60 @@ impl TickPhase {
             Self::Headless => "headless",
             Self::Shutdown => "shutdown",
             Self::Prologue => "prologue",
+        }
+    }
+}
+
+/// CPU render schedule phase recorded for crash diagnostics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub(crate) enum CpuRenderPhase {
+    /// No CPU render phase is active.
+    Unknown = 0,
+    /// Extract immutable frame inputs from runtime state.
+    Extract = 1,
+    /// Prepare asset and material state needed by this frame.
+    AssetPrepare = 2,
+    /// Plan the ordered views for this submission.
+    ViewPlanning = 3,
+    /// Queue visible draw candidates for planned views.
+    DrawQueue = 4,
+    /// Sort and arrange queued draws into renderable phase order.
+    Sort = 5,
+    /// Prepare CPU/GPU frame resources before command encoding.
+    ResourcePrepare = 6,
+    /// Record and submit render-graph commands.
+    CommandRecord = 7,
+    /// Release frame-local or one-shot CPU render state.
+    Cleanup = 8,
+}
+
+impl CpuRenderPhase {
+    fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::Extract,
+            2 => Self::AssetPrepare,
+            3 => Self::ViewPlanning,
+            4 => Self::DrawQueue,
+            5 => Self::Sort,
+            6 => Self::ResourcePrepare,
+            7 => Self::CommandRecord,
+            8 => Self::Cleanup,
+            _ => Self::Unknown,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Extract => "extract",
+            Self::AssetPrepare => "asset-prepare",
+            Self::ViewPlanning => "view-planning",
+            Self::DrawQueue => "draw-queue",
+            Self::Sort => "sort",
+            Self::ResourcePrepare => "resource-prepare",
+            Self::CommandRecord => "command-record",
+            Self::Cleanup => "cleanup",
         }
     }
 }
@@ -373,6 +428,8 @@ pub(crate) struct CrashContextSnapshot {
     pub(crate) tick_sequence: u64,
     /// Last recorded renderer tick phase.
     pub(crate) tick_phase: TickPhase,
+    /// Last recorded CPU render schedule phase.
+    pub(crate) cpu_render_phase: CpuRenderPhase,
     /// Last recorded renderer mode.
     pub(crate) render_mode: RenderMode,
     /// Last recorded host initialization state.
@@ -408,6 +465,12 @@ pub(crate) fn record_tick_start() {
 /// Records the active tick phase.
 pub(crate) fn set_tick_phase(phase: TickPhase) {
     TICK_PHASE.store(phase as u8, Ordering::Relaxed);
+    refresh_uptime();
+}
+
+/// Records the active CPU render schedule phase.
+pub(crate) fn set_cpu_render_phase(phase: CpuRenderPhase) {
+    CPU_RENDER_PHASE.store(phase as u8, Ordering::Relaxed);
     refresh_uptime();
 }
 
@@ -469,6 +532,7 @@ pub(crate) fn snapshot() -> CrashContextSnapshot {
         uptime_ms: UPTIME_MS.load(Ordering::Relaxed),
         tick_sequence: TICK_SEQUENCE.load(Ordering::Relaxed),
         tick_phase: TickPhase::from_u8(TICK_PHASE.load(Ordering::Relaxed)),
+        cpu_render_phase: CpuRenderPhase::from_u8(CPU_RENDER_PHASE.load(Ordering::Relaxed)),
         render_mode: RenderMode::from_u8(RENDER_MODE.load(Ordering::Relaxed)),
         init_state: InitState::from_u8(INIT_STATE.load(Ordering::Relaxed)),
         target_mode: TargetMode::from_u8(TARGET_MODE.load(Ordering::Relaxed)),
@@ -491,10 +555,11 @@ pub(crate) fn format_snapshot_from(s: &CrashContextSnapshot) -> String {
     let mut out = String::new();
     let _ = writeln!(
         out,
-        "Renderer crash context: uptime_ms={} tick={} phase={} mode={} target={} init={} last_host_frame={} prepared_views={} ipc_drop_streaks=primary:{} background:{} driver_backlog={} last_graph_error={}",
+        "Renderer crash context: uptime_ms={} tick={} phase={} cpu_phase={} mode={} target={} init={} last_host_frame={} prepared_views={} ipc_drop_streaks=primary:{} background:{} driver_backlog={} last_graph_error={}",
         s.uptime_ms,
         s.tick_sequence,
         s.tick_phase.as_str(),
+        s.cpu_render_phase.as_str(),
         s.render_mode.as_str(),
         s.target_mode.as_str(),
         s.init_state.as_str(),
@@ -519,6 +584,8 @@ pub(crate) fn write_minimal_snapshot(out: &mut [u8]) -> usize {
     push_u64(out, &mut w, s.tick_sequence);
     push(out, &mut w, b" phase=");
     push(out, &mut w, s.tick_phase.as_str().as_bytes());
+    push(out, &mut w, b" cpu_phase=");
+    push(out, &mut w, s.cpu_render_phase.as_str().as_bytes());
     push(out, &mut w, b" mode=");
     push(out, &mut w, s.render_mode.as_str().as_bytes());
     push(out, &mut w, b" target=");
@@ -591,12 +658,13 @@ mod tests {
     use parking_lot::Mutex;
 
     use super::{
-        BACKGROUND_IPC_DROP_STREAK, CrashContextSnapshot, DRIVER_BACKLOG, GraphErrorKind,
-        INIT_STATE, InitState, LAST_GRAPH_ERROR, LAST_HOST_FRAME_INDEX, PREPARED_VIEW_COUNT,
-        PRIMARY_IPC_DROP_STREAK, RENDER_MODE, RenderMode, TARGET_MODE, TICK_PHASE, TICK_SEQUENCE,
-        TargetMode, TickPhase, UPTIME_MS, format_snapshot_from, set_init_state,
-        set_last_graph_error, set_last_host_frame_index, set_prepared_view_count, set_render_mode,
-        set_target_mode, set_tick_phase, snapshot, write_minimal_snapshot,
+        BACKGROUND_IPC_DROP_STREAK, CPU_RENDER_PHASE, CpuRenderPhase, CrashContextSnapshot,
+        DRIVER_BACKLOG, GraphErrorKind, INIT_STATE, InitState, LAST_GRAPH_ERROR,
+        LAST_HOST_FRAME_INDEX, PREPARED_VIEW_COUNT, PRIMARY_IPC_DROP_STREAK, RENDER_MODE,
+        RenderMode, TARGET_MODE, TICK_PHASE, TICK_SEQUENCE, TargetMode, TickPhase, UPTIME_MS,
+        format_snapshot_from, set_cpu_render_phase, set_init_state, set_last_graph_error,
+        set_last_host_frame_index, set_prepared_view_count, set_render_mode, set_target_mode,
+        set_tick_phase, snapshot, write_minimal_snapshot,
     };
 
     static CRASH_CONTEXT_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -605,6 +673,7 @@ mod tests {
         UPTIME_MS.store(0, Ordering::Relaxed);
         TICK_SEQUENCE.store(0, Ordering::Relaxed);
         TICK_PHASE.store(TickPhase::Unknown as u8, Ordering::Relaxed);
+        CPU_RENDER_PHASE.store(CpuRenderPhase::Unknown as u8, Ordering::Relaxed);
         RENDER_MODE.store(RenderMode::Unknown as u8, Ordering::Relaxed);
         INIT_STATE.store(InitState::NotStarted as u8, Ordering::Relaxed);
         TARGET_MODE.store(TargetMode::Unknown as u8, Ordering::Relaxed);
@@ -628,6 +697,7 @@ mod tests {
             uptime_ms: 123,
             tick_sequence: 45,
             tick_phase: TickPhase::RenderViews,
+            cpu_render_phase: CpuRenderPhase::CommandRecord,
             render_mode: RenderMode::HmdMultiview,
             init_state: InitState::Finalized,
             target_mode: TargetMode::OpenXr,
@@ -640,6 +710,7 @@ mod tests {
         };
         let line = format_snapshot_from(&s);
         assert!(line.contains("phase=render-views"));
+        assert!(line.contains("cpu_phase=command-record"));
         assert!(line.contains("mode=hmd-multiview"));
         assert!(line.contains("target=openxr"));
         assert!(line.contains("init=finalized"));
@@ -652,6 +723,7 @@ mod tests {
         let _guard = lock_reset_crash_context();
 
         set_tick_phase(TickPhase::AssetIntegration);
+        set_cpu_render_phase(CpuRenderPhase::Sort);
         set_render_mode(RenderMode::IpcDesktop);
         set_target_mode(TargetMode::Desktop);
         set_init_state(InitState::InitializationComplete);
@@ -660,6 +732,7 @@ mod tests {
         set_last_graph_error(GraphErrorKind::TransientPool);
         let s = snapshot();
         assert_eq!(s.tick_phase, TickPhase::AssetIntegration);
+        assert_eq!(s.cpu_render_phase, CpuRenderPhase::Sort);
         assert_eq!(s.render_mode, RenderMode::IpcDesktop);
         assert_eq!(s.target_mode, TargetMode::Desktop);
         assert_eq!(s.init_state, InitState::InitializationComplete);
@@ -673,12 +746,14 @@ mod tests {
         let _guard = lock_reset_crash_context();
 
         set_tick_phase(TickPhase::Shutdown);
+        set_cpu_render_phase(CpuRenderPhase::Cleanup);
         set_render_mode(RenderMode::Headless);
         let mut out = [0u8; 512];
         let n = write_minimal_snapshot(&mut out);
         let line = std::str::from_utf8(&out[..n]).expect("utf8");
         assert!(line.starts_with("CRASH_CONTEXT"));
         assert!(line.contains("phase=shutdown"));
+        assert!(line.contains("cpu_phase=cleanup"));
         assert!(line.contains("mode=headless"));
         assert!(line.ends_with('\n'));
     }

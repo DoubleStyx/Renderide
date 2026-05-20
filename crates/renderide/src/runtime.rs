@@ -25,7 +25,9 @@
 //!    [`FrameStartData`](crate::shared::FrameStartData) when allowed; the gating predicate
 //!    [`RendererFrontend::should_send_begin_frame`] keeps the lock-step *state* in
 //!    [`RendererFrontend`] (this module owns no lock-step counters).
-//! 7. **Render** -- desktop multi-view or HMD path through [`crate::render_graph`].
+//! 7. **Render** -- desktop multi-view, HMD, and offscreen paths run the explicit CPU render
+//!    schedule in [`frame::schedule`]: extract, asset prepare, view planning, draw queueing,
+//!    sort, resource prepare, command record, cleanup.
 //! 8. **Present + HUD** -- present surface, blit VR mirror, capture ImGui debug snapshots.
 //!
 //! Lock-step is driven by the `last_frame_index` field of [`FrameStartData`](crate::shared::FrameStartData)

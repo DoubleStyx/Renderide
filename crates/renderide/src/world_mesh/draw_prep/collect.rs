@@ -1,8 +1,8 @@
 //! Scene walk that pairs material slots with submesh ranges and applies optional CPU culling.
 //!
-//! [`collect_and_sort_draws`] walks each render space in 128-renderable parallel chunks
+//! [`queue_draws_with_parallelism`] walks each render space in 128-renderable parallel chunks
 //! ([`rayon`]), merges in [`SceneCoordinator::render_space_ids`] order, assigns
-//! [`WorldMeshDrawItem::collect_order`], then sorts.
+//! [`WorldMeshDrawItem::collect_order`]. The caller then runs the explicit sort phase.
 //!
 //! Material-derived batch key fields are computed once per `(material_asset_id, property_block_id)`
 //! per call via [`FrameMaterialBatchCache`] before the parallel phase begins. This eliminates
@@ -94,7 +94,7 @@ pub struct DrawCollectionContext<'a> {
     pub prepared: Option<&'a FramePreparedRenderables>,
 }
 
-/// How [`collect_and_sort_draws_with_parallelism`] parallelizes per-chunk collection and transparent sorting.
+/// How [`queue_draws_with_parallelism`] parallelizes per-chunk collection and transparent sorting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorldMeshDrawCollectParallelism {
     /// Per-chunk collection and transparent draw sorting both use rayon.
@@ -103,15 +103,50 @@ pub enum WorldMeshDrawCollectParallelism {
     SerialInnerForNestedBatch,
 }
 
-/// Collects draws from active spaces, then arranges them for batching with control over inner rayon use.
-pub fn collect_and_sort_draws_with_parallelism(
+/// Draw candidates queued for one view before final phase sorting and arrangement.
+pub struct QueuedWorldMeshDraws {
+    /// Candidate draw items in deterministic scene collection order.
+    items: Vec<WorldMeshDrawItem>,
+    /// Number of candidate draws before CPU culling.
+    draws_pre_cull: usize,
+    /// Number of candidate draws rejected by CPU frustum culling.
+    draws_culled: usize,
+    /// Number of candidate draws rejected by temporal Hi-Z culling.
+    draws_hi_z_culled: usize,
+}
+
+impl QueuedWorldMeshDraws {
+    /// Sorts and arranges queued draws into render-phase submission order.
+    pub fn sort_and_arrange(
+        mut self,
+        parallelism: WorldMeshDrawCollectParallelism,
+    ) -> WorldMeshDrawCollection {
+        let arrangement = {
+            profiling::scope!("mesh::arrange");
+            arrange_draws_by_phase_bins(
+                &mut self.items,
+                parallelism == WorldMeshDrawCollectParallelism::Full,
+            )
+        };
+        WorldMeshDrawCollection {
+            items: self.items,
+            draws_pre_cull: self.draws_pre_cull,
+            draws_culled: self.draws_culled,
+            draws_hi_z_culled: self.draws_hi_z_culled,
+            arrangement,
+        }
+    }
+}
+
+/// Queues draws from active spaces with control over inner rayon use.
+pub fn queue_draws_with_parallelism(
     ctx: &DrawCollectionContext<'_>,
     parallelism: WorldMeshDrawCollectParallelism,
-) -> WorldMeshDrawCollection {
-    profiling::scope!("mesh::collect_and_sort");
+) -> QueuedWorldMeshDraws {
+    profiling::scope!("mesh::queue_draws");
     let owned_space_ids;
     let space_ids: &[RenderSpaceId] = {
-        profiling::scope!("mesh::collect_and_sort::resolve_space_ids");
+        profiling::scope!("mesh::queue_draws::resolve_space_ids");
         if let Some(prepared) = ctx.prepared {
             if let Some(space_id) = ctx.render_space_filter {
                 owned_space_ids = prepared
@@ -137,13 +172,13 @@ pub fn collect_and_sort_draws_with_parallelism(
         }
     };
     let cap_hint = {
-        profiling::scope!("mesh::collect_and_sort::estimate_capacity");
+        profiling::scope!("mesh::queue_draws::estimate_capacity");
         estimate_active_renderable_count(space_ids, ctx)
     };
 
     let owned_cache;
     let cache: &FrameMaterialBatchCache = {
-        profiling::scope!("mesh::collect_and_sort::resolve_material_cache");
+        profiling::scope!("mesh::queue_draws::resolve_material_cache");
         if let Some(shared) = ctx.material_cache {
             shared
         } else {
@@ -160,12 +195,12 @@ pub fn collect_and_sort_draws_with_parallelism(
         }
     };
     let filter_masks = {
-        profiling::scope!("mesh::collect_and_sort::build_filter_masks");
+        profiling::scope!("mesh::queue_draws::build_filter_masks");
         build_per_space_filter_masks(space_ids, ctx)
     };
 
     let per_chunk = {
-        profiling::scope!("mesh::collect_and_sort::collect_chunks");
+        profiling::scope!("mesh::queue_draws::collect_chunks");
         collect_world_mesh_chunks(ctx, parallelism, cache, &filter_masks, space_ids)
     };
 
@@ -182,25 +217,17 @@ pub fn collect_and_sort_draws_with_parallelism(
     }
 
     {
-        profiling::scope!("mesh::collect_and_sort::assign_collect_order");
+        profiling::scope!("mesh::queue_draws::assign_collect_order");
         for (i, item) in out.iter_mut().enumerate() {
             item.collect_order = i;
         }
     }
 
-    let arrangement = {
-        profiling::scope!("mesh::arrange");
-        arrange_draws_by_phase_bins(
-            &mut out,
-            parallelism == WorldMeshDrawCollectParallelism::Full,
-        )
-    };
-    WorldMeshDrawCollection {
+    QueuedWorldMeshDraws {
         items: out,
         draws_pre_cull: cull_stats.0,
         draws_culled: cull_stats.1,
         draws_hi_z_culled: cull_stats.2,
-        arrangement,
     }
 }
 

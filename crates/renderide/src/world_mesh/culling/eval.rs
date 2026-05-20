@@ -1,4 +1,4 @@
-//! CPU frustum and Hi-Z culling helpers for [`crate::world_mesh::draw_prep::collect_and_sort_draws`].
+//! CPU frustum and Hi-Z culling helpers for [`crate::world_mesh::draw_prep::queue_draws_with_parallelism`].
 //!
 //! Shares one bounds evaluation per draw slot using the same view-projection rules as the forward pass
 //! ([`super::build_world_mesh_cull_proj_params`]), including

@@ -15,8 +15,10 @@ use crate::camera::{
 };
 use crate::gpu::{CUBEMAP_ARRAY_LAYERS, GpuContext};
 use crate::render_graph::GraphExecuteError;
-use crate::runtime::frame::extract::{ExtractedFrame, PreparedViews};
-use crate::runtime::frame::view_plan::{FrameViewPlan, OffscreenRtHandles, ViewFamilyPlan};
+use crate::runtime::frame::schedule::{
+    CpuRenderSchedule, RenderScheduleKind, execute_one_shot_view_plans,
+};
+use crate::runtime::frame::view_plan::{FrameViewPlan, OffscreenRtHandles};
 use crate::scene::SceneCoordinator;
 use crate::world_mesh::WorldMeshDrawCollectParallelism;
 
@@ -503,31 +505,21 @@ pub(in crate::runtime) fn host_camera_frame_for_cube_face_with_basis(
 
 /// Renders a batch of cubemap face plans through the normal frame extraction and graph path.
 pub(in crate::runtime) fn render_cube_capture_faces_offscreen(
+    kind: RenderScheduleKind,
     gpu: &mut GpuContext,
     backend: &mut RenderBackend,
     scene: &SceneCoordinator,
     plans: Vec<FrameViewPlan<'static>>,
 ) -> Result<(), GraphExecuteError> {
     profiling::scope!("cube_capture::offscreen_render");
-    let prepared_views = PreparedViews::new(ViewFamilyPlan::new(plans), None);
-    backend.prepare_lights_for_views(
+    execute_one_shot_view_plans(
+        CpuRenderSchedule::new(kind),
+        gpu,
+        backend,
         scene,
-        prepared_views
-            .plans()
-            .iter()
-            .map(FrameViewPlan::light_view_desc),
-    );
-    let view_perms = prepared_views
-        .plans()
-        .iter()
-        .map(|plan| (plan.render_context(), plan.shader_permutation()))
-        .collect::<Vec<_>>();
-    let shared =
-        backend.extract_frame_shared(scene, WorldMeshDrawCollectParallelism::Full, &view_perms);
-    let submit_frame = ExtractedFrame::new(prepared_views, shared)
-        .prepare_draws()
-        .into_submit_frame();
-    submit_frame.execute(gpu, scene, backend)
+        plans,
+        WorldMeshDrawCollectParallelism::Full,
+    )
 }
 
 #[cfg(test)]
