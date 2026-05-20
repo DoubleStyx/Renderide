@@ -16,6 +16,15 @@ use crate::shared::{
     LightData, LightType, LightsBufferRendererState, RenderTransform, RenderingContext, ShadowType,
 };
 
+/// Returns an identity host transform for scene fixtures.
+fn identity_transform() -> RenderTransform {
+    RenderTransform {
+        position: Vec3::ZERO,
+        scale: Vec3::ONE,
+        rotation: Quat::IDENTITY,
+    }
+}
+
 /// Builds a pre-record layout for pure frame-resource planning tests.
 fn pre_record_layout(
     width: u32,
@@ -189,7 +198,7 @@ fn seed_space_with_light(
     global_unique_id: i32,
     color_x: f32,
 ) {
-    scene.test_seed_space_identity_worlds(space_id, vec![RenderTransform::default()], vec![-1]);
+    scene.test_seed_space_identity_worlds(space_id, vec![identity_transform()], vec![-1]);
     let cache = scene.light_cache_mut();
     cache.store_full(global_unique_id, vec![make_light_data(color_x)]);
     cache.apply_update(space_id.0, &[], &[0], &[make_state(global_unique_id)]);
@@ -202,7 +211,7 @@ fn seed_space_with_signed_light(
     color_x: f32,
     intensity: f32,
 ) {
-    scene.test_seed_space_identity_worlds(space_id, vec![RenderTransform::default()], vec![-1]);
+    scene.test_seed_space_identity_worlds(space_id, vec![identity_transform()], vec![-1]);
     let cache = scene.light_cache_mut();
     cache.store_full(
         global_unique_id,

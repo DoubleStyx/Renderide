@@ -60,7 +60,7 @@ fn repair_rotation_component(value: f32, fallback: f32, default: f32) -> f32 {
 }
 
 /// Identity local pose: origin, unit scale, identity rotation (`RenderTransform` / Unity TRS).
-pub(super) fn render_transform_identity() -> RenderTransform {
+pub(in crate::scene) fn render_transform_identity() -> RenderTransform {
     RenderTransform {
         position: Vec3::ZERO,
         scale: Vec3::ONE,

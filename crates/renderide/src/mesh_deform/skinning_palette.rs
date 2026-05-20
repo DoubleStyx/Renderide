@@ -176,9 +176,16 @@ mod tests {
     }
 
     fn seed_scene_with_one_transform() -> (SceneCoordinator, RenderSpaceId) {
+        seed_scene_with_transforms(vec![identity_transform()], vec![-1])
+    }
+
+    fn seed_scene_with_transforms(
+        nodes: Vec<RenderTransform>,
+        parents: Vec<i32>,
+    ) -> (SceneCoordinator, RenderSpaceId) {
         let mut scene = SceneCoordinator::new();
         let id = RenderSpaceId(1);
-        scene.test_seed_space_identity_worlds(id, vec![identity_transform()], vec![-1]);
+        scene.test_seed_space_identity_worlds(id, nodes, parents);
         (scene, id)
     }
 
@@ -186,6 +193,45 @@ mod tests {
         (0..count)
             .map(|i| Mat4::from_translation(Vec3::new(i as f32, 0.5 * i as f32, -(i as f32))))
             .collect()
+    }
+
+    fn palette_for_one_identity_bound_bone(
+        scene: &SceneCoordinator,
+        space_id: RenderSpaceId,
+        context: RenderingContext,
+    ) -> Mat4 {
+        build_skinning_palette(SkinningPaletteParams {
+            scene,
+            space_id,
+            skinning_bind_matrices: &[Mat4::IDENTITY],
+            has_skeleton: true,
+            bone_transform_indices: &[0],
+            smr_node_id: -1,
+            render_context: context,
+            head_output_transform: Mat4::IDENTITY,
+        })
+        .expect("palette")[0]
+    }
+
+    fn assert_palette_linear_columns(matrix: Mat4, expected_scale: Vec3) {
+        assert!(
+            matrix
+                .x_axis
+                .truncate()
+                .abs_diff_eq(Vec3::new(expected_scale.x, 0.0, 0.0), 1e-6)
+        );
+        assert!(
+            matrix
+                .y_axis
+                .truncate()
+                .abs_diff_eq(Vec3::new(0.0, expected_scale.y, 0.0), 1e-6)
+        );
+        assert!(
+            matrix
+                .z_axis
+                .truncate()
+                .abs_diff_eq(Vec3::new(0.0, 0.0, expected_scale.z), 1e-6)
+        );
     }
 
     #[test]
@@ -273,5 +319,60 @@ mod tests {
             expected.extend_from_slice(bytemuck::cast_slice::<f32, u8>(&m.to_cols_array()));
         }
         assert_eq!(bytes, expected);
+    }
+
+    #[test]
+    fn bone_palette_preserves_planar_zero_scale_bone() {
+        let mut planar = identity_transform();
+        planar.scale = Vec3::new(1.0, 0.0, 1.0);
+        let (scene, space_id) = seed_scene_with_transforms(vec![planar], vec![-1]);
+
+        let palette =
+            palette_for_one_identity_bound_bone(&scene, space_id, RenderingContext::UserView);
+
+        assert_palette_linear_columns(palette, planar.scale);
+    }
+
+    #[test]
+    fn bone_palette_preserves_line_zero_scale_bone() {
+        let mut line = identity_transform();
+        line.scale = Vec3::new(1.0, 0.0, 0.0);
+        let (scene, space_id) = seed_scene_with_transforms(vec![line], vec![-1]);
+
+        let palette =
+            palette_for_one_identity_bound_bone(&scene, space_id, RenderingContext::UserView);
+
+        assert_palette_linear_columns(palette, line.scale);
+    }
+
+    #[test]
+    fn bone_palette_preserves_point_zero_scale_bone() {
+        let mut point = identity_transform();
+        point.scale = Vec3::ZERO;
+        let (scene, space_id) = seed_scene_with_transforms(vec![point], vec![-1]);
+
+        let palette =
+            palette_for_one_identity_bound_bone(&scene, space_id, RenderingContext::UserView);
+
+        assert_palette_linear_columns(palette, point.scale);
+    }
+
+    #[test]
+    fn bone_palette_zero_scale_override_is_context_local() {
+        let (mut scene, space_id) = seed_scene_with_one_transform();
+        scene.test_push_scale_render_transform_override(
+            space_id,
+            0,
+            RenderingContext::UserView,
+            Vec3::ZERO,
+        );
+
+        let user_palette =
+            palette_for_one_identity_bound_bone(&scene, space_id, RenderingContext::UserView);
+        let external_palette =
+            palette_for_one_identity_bound_bone(&scene, space_id, RenderingContext::ExternalView);
+
+        assert_palette_linear_columns(user_palette, Vec3::ZERO);
+        assert_palette_linear_columns(external_palette, Vec3::ONE);
     }
 }

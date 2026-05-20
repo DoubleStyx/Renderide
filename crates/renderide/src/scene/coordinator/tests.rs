@@ -7,9 +7,10 @@
 //! scale flags). Shared test-only helpers on [`super::SceneCoordinator`] live here so both
 //! subject files can use them.
 
+use crate::scene::overrides::RenderTransformOverrideEntry;
 use crate::scene::render_space::{LayerAssignmentEntry, RenderSpaceState};
 use crate::scene::{SkinnedMeshRenderer, StaticMeshRenderer};
-use crate::shared::{LayerType, RenderTransform};
+use crate::shared::{LayerType, RenderTransform, RenderingContext};
 
 use super::super::ids::RenderSpaceId;
 use super::super::world::{WorldTransformCache, compute_world_matrices_for_space};
@@ -85,6 +86,25 @@ impl SceneCoordinator {
             .layer_assignments
             .push(LayerAssignmentEntry { node_id, layer });
         space.layer_index_dirty = true;
+    }
+
+    /// Appends a scale-only render transform override to a seeded render space (unit tests only).
+    pub(crate) fn test_push_scale_render_transform_override(
+        &mut self,
+        id: RenderSpaceId,
+        node_id: i32,
+        context: RenderingContext,
+        scale: glam::Vec3,
+    ) {
+        let space = self.spaces.get_mut(&id).expect("seeded space");
+        space
+            .render_transform_overrides
+            .push(RenderTransformOverrideEntry {
+                node_id,
+                context,
+                scale_override: Some(scale),
+                ..Default::default()
+            });
     }
 
     /// Inserts a render space with static mesh renderers (unit tests only).

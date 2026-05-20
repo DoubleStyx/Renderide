@@ -133,3 +133,9 @@ fn draw_transform_scale_filter_allows_planar_zero_scale() {
 fn draw_transform_scale_filter_rejects_line_scale() {
     assert!(transform_scale_filter_result(Vec3::new(1.0, 0.0, 0.0)));
 }
+
+/// Point-scale renderer nodes are not eligible for triangle draw collection.
+#[test]
+fn draw_transform_scale_filter_rejects_point_scale() {
+    assert!(transform_scale_filter_result(Vec3::ZERO));
+}

@@ -4,6 +4,16 @@ use super::state::RenderWorldRendererTemplate;
 use super::*;
 use crate::scene::SceneCacheFlushReport;
 use crate::shared::RenderTransform;
+use glam::{Quat, Vec3};
+
+/// Returns an identity host transform for scene fixtures.
+fn identity_transform() -> RenderTransform {
+    RenderTransform {
+        position: Vec3::ZERO,
+        scale: Vec3::ONE,
+        rotation: Quat::IDENTITY,
+    }
+}
 
 /// Builds a dirty renderer key for tests.
 fn dirty_static(space_id: RenderSpaceId, renderable_index: usize) -> RenderWorldRendererDirty {
@@ -108,7 +118,7 @@ fn removed_space_wins_over_changed_space_in_apply_report() {
 fn mark_all_scene_spaces_dirty_retain_only_existing_scene_spaces() {
     let mut scene = SceneCoordinator::new();
     let keep = RenderSpaceId(10);
-    scene.test_seed_space_identity_worlds(keep, vec![RenderTransform::default()], vec![-1]);
+    scene.test_seed_space_identity_worlds(keep, vec![identity_transform()], vec![-1]);
     let mut world = RenderWorld::default();
     world.spaces.insert(keep, RenderWorldSpace::default());
     world
@@ -127,8 +137,8 @@ fn rebuild_prepared_snapshot_skips_inactive_cached_spaces() {
     let mut scene = SceneCoordinator::new();
     let active = RenderSpaceId(20);
     let inactive = RenderSpaceId(21);
-    scene.test_seed_space_identity_worlds(active, vec![RenderTransform::default()], vec![-1]);
-    scene.test_seed_space_identity_worlds(inactive, vec![RenderTransform::default()], vec![-1]);
+    scene.test_seed_space_identity_worlds(active, vec![identity_transform()], vec![-1]);
+    scene.test_seed_space_identity_worlds(inactive, vec![identity_transform()], vec![-1]);
     let mut world = RenderWorld::default();
     world.spaces.insert(
         active,

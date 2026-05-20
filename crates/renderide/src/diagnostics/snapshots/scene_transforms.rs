@@ -104,6 +104,16 @@ fn world_sample_from_mat4(m: glam::Mat4) -> Option<WorldTransformSample> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::{Quat, Vec3};
+
+    /// Returns an identity host transform for scene snapshot fixtures.
+    fn identity_transform() -> crate::shared::RenderTransform {
+        crate::shared::RenderTransform {
+            position: Vec3::ZERO,
+            scale: Vec3::ONE,
+            rotation: Quat::IDENTITY,
+        }
+    }
 
     #[test]
     fn capture_empty_scene() {
@@ -118,10 +128,7 @@ mod tests {
         let id = RenderSpaceId(7);
         scene.test_seed_space_identity_worlds(
             id,
-            vec![
-                crate::shared::RenderTransform::default(),
-                crate::shared::RenderTransform::default(),
-            ],
+            vec![identity_transform(), identity_transform()],
             vec![-1, 0],
         );
 
