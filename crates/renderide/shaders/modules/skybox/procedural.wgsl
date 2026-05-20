@@ -137,7 +137,10 @@ fn evaluate_scattering(
     var c_in: vec3<f32>;
     var c_out: vec3<f32>;
 
-    if (eye_ray.y >= 0.0) {
+    if (length(scattering_params.kkr_in) == 0) {
+        c_in = vec3<f32>(0.0);
+        c_out = vec3<f32>(0.0);
+    } else if (eye_ray.y >= 0.0) {
         let far = sqrt(OUTER_RADIUS_SQ + INNER_RADIUS_SQ * eye_ray.y * eye_ray.y - INNER_RADIUS_SQ)
             - INNER_RADIUS * eye_ray.y;
         let height = CAMERA_POS_HEIGHT;
