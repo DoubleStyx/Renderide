@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::diagnostics::PerViewHudOutputs;
 use crate::gpu::GpuLimits;
+use crate::graph_inputs::{GraphPassFrame, PerViewFramePlan};
 use crate::passes::{
     PreparedWorldMeshForwardFrame, WorldMeshForwardPrepareContext, WorldMeshForwardSkyboxRenderer,
     prepare_world_mesh_forward_frame,
@@ -11,7 +12,6 @@ use crate::passes::{
 use crate::render_graph::blackboard::{
     Blackboard, BlackboardSlot, GraphCommandStats, GraphCommandStatsSlot,
 };
-use crate::render_graph::frame_params::{GraphPassFrame, PerViewFramePlan};
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::world_mesh::{PrefetchedWorldMeshViewDraws, WorldMeshDrawPlan};
 

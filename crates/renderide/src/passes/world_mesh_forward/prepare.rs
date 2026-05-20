@@ -3,10 +3,10 @@
 use crate::camera::HostCameraFrame;
 use crate::diagnostics::{PerViewHudConfig, PerViewHudOutputs};
 use crate::gpu::GpuLimits;
+use crate::graph_inputs::{GraphPassFrame, PerViewFramePlan};
 use crate::materials::MaterialSystem;
 use crate::materials::ShaderPermutation;
 use crate::passes::WorldMeshForwardEncodeRefs;
-use crate::render_graph::frame_params::{GraphPassFrame, PerViewFramePlan};
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::world_mesh::draw_prep::{WorldMeshDrawCollection, WorldMeshDrawItem};
 use crate::world_mesh::{

@@ -14,14 +14,14 @@ use std::num::NonZeroU32;
 use super::pipeline::{
     GtaoMainBindGroupResources, GtaoParamsGpu, GtaoPipelines, VIEW_DEPTH_MIP_COUNT,
 };
+use crate::graph_inputs::PerViewFramePlanSlot;
 use crate::passes::helpers::{color_attachment, missing_pass_resource};
+use crate::passes::post_processing::settings_slots::GtaoSettingsSlot;
 use crate::render_graph::context::RasterPassCtx;
 use crate::render_graph::error::{RenderPassError, SetupError};
-use crate::render_graph::frame_params::PerViewFramePlanSlot;
 use crate::render_graph::gpu_cache::raster_stereo_mask_override;
 use crate::render_graph::pass::RenderPassTemplate;
 use crate::render_graph::pass::{PassBuilder, RasterPass};
-use crate::render_graph::post_process_settings::GtaoSettingsSlot;
 use crate::render_graph::resources::{
     BufferAccess, ImportedBufferHandle, TextureAccess, TextureHandle,
 };

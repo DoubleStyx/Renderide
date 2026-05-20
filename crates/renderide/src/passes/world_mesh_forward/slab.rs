@@ -5,10 +5,10 @@ use glam::Mat4;
 use rayon::prelude::*;
 
 use crate::camera::HostCameraFrame;
+use crate::graph_inputs::GraphPassFrame;
 use crate::mesh_deform::{
     PER_DRAW_UNIFORM_STRIDE, PaddedPerDrawUniforms, write_per_draw_uniform_slab,
 };
-use crate::render_graph::frame_params::GraphPassFrame;
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::scene::SceneCoordinator;
 use crate::shared::RenderingContext;

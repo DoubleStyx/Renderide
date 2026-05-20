@@ -40,9 +40,9 @@ use record_action::{
 
 use crate::camera::ViewId;
 use crate::gpu::CLUSTER_PARAMS_UNIFORM_SIZE;
+use crate::graph_inputs::PerViewFramePlanSlot;
 use crate::render_graph::context::ComputePassCtx;
 use crate::render_graph::error::{RenderPassError, SetupError};
-use crate::render_graph::frame_params::PerViewFramePlanSlot;
 use crate::render_graph::pass::{ComputePass, PassBuilder};
 use crate::render_graph::resources::{
     BufferAccess, BufferHandle, ImportedBufferHandle, StorageAccess,

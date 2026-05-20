@@ -31,24 +31,23 @@ use passes::register_main_graph_passes;
 
 /// Declares blackboard slots that graph preparation seeds before per-view pass recording.
 fn seed_main_graph_blackboard(builder: &mut GraphBuilder) {
-    builder.seed_blackboard::<crate::render_graph::frame_params::PerViewFramePlanSlot>(
-        "per-view frame setup",
-    );
-    builder.seed_blackboard::<crate::render_graph::frame_params::MsaaViewsSlot>(
+    builder.seed_blackboard::<crate::graph_inputs::PerViewFramePlanSlot>("per-view frame setup");
+    builder.seed_blackboard::<crate::graph_inputs::MsaaViewsSlot>(
         "per-view graph resource resolution",
     );
     builder.seed_blackboard::<crate::passes::WorldMeshForwardPlanSlot>("world-mesh frame planning");
-    builder.seed_blackboard::<crate::render_graph::post_process_settings::GtaoSettingsSlot>(
+    builder.seed_blackboard::<crate::passes::post_processing::settings_slots::GtaoSettingsSlot>(
         "live post-processing settings",
     );
-    builder.seed_blackboard::<crate::render_graph::post_process_settings::BloomSettingsSlot>(
-        "live post-processing settings",
-    );
-    builder.seed_blackboard::<crate::render_graph::post_process_settings::MotionBlurSettingsSlot>(
+    builder.seed_blackboard::<crate::passes::post_processing::settings_slots::BloomSettingsSlot>(
         "live post-processing settings",
     );
     builder
-        .seed_blackboard::<crate::render_graph::post_process_settings::AutoExposureSettingsSlot>(
+        .seed_blackboard::<crate::passes::post_processing::settings_slots::MotionBlurSettingsSlot>(
+            "live post-processing settings",
+        );
+    builder
+        .seed_blackboard::<crate::passes::post_processing::settings_slots::AutoExposureSettingsSlot>(
             "live post-processing settings",
         );
 }

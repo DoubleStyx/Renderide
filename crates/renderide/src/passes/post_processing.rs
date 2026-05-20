@@ -20,6 +20,7 @@ mod bloom;
 mod fullscreen_tonemap;
 mod gtao;
 mod motion_blur;
+pub(crate) mod settings_slots;
 
 pub use aces_tonemap::AcesTonemapEffect;
 pub use agx_tonemap::AgxTonemapEffect;
@@ -33,7 +34,7 @@ pub(crate) use motion_blur::MotionBlurStateCache;
 
 /// Returns whether a graph view should execute the post-processing chain.
 pub(crate) fn view_post_processing_enabled(
-    view: &crate::render_graph::frame_params::GraphPassFrameView<'_>,
+    view: &crate::graph_inputs::GraphPassFrameView<'_>,
 ) -> bool {
     view.post_processing.is_enabled()
 }

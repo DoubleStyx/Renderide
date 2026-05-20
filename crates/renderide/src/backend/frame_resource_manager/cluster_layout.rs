@@ -3,7 +3,7 @@
 use crate::backend::cluster_gpu::{CLUSTER_COUNT_Z, TILE_SIZE};
 use crate::camera::ViewId;
 use crate::gpu::CLUSTER_PARAMS_UNIFORM_SIZE;
-use crate::render_graph::frame_params::PreRecordViewResourceLayout;
+use crate::graph_inputs::PreRecordViewResourceLayout;
 
 use super::super::frame_gpu::PerViewSceneSnapshotSyncParams;
 

@@ -4,10 +4,8 @@ use std::sync::Arc;
 
 use crate::camera::HostCameraFrame;
 use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
+use crate::graph_inputs::{FrameSystemsShared, FrameViewClear, GraphPassFrame, GraphPassFrameView};
 use crate::render_graph::GraphExecutionBackend;
-use crate::render_graph::frame_params::{
-    FrameSystemsShared, FrameViewClear, GraphPassFrame, GraphPassFrameView,
-};
 use crate::scene::SceneCoordinator;
 use crate::shared::RenderingContext;
 

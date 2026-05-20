@@ -19,12 +19,12 @@ use crate::materials::MaterialSystem;
 use crate::mesh_deform::{GpuSkinCache, MeshDeformScratch, MeshPreprocessPipelines};
 use crate::occlusion::OcclusionGraphHook;
 use crate::occlusion::gpu::HiZGpuState;
+use crate::render_graph::blackboard::BlackboardSlot;
+use crate::render_graph::compiled::ViewPostProcessing;
+use crate::render_graph::execution_backend::{GraphAssetResources, GraphFrameResources};
 use crate::scene::SceneCoordinator;
 use crate::shared::{CameraClearMode, RenderingContext};
 
-use super::blackboard::BlackboardSlot;
-use super::compiled::ViewPostProcessing;
-use super::execution_backend::{GraphAssetResources, GraphFrameResources};
 use crate::gpu::OutputDepthMode;
 
 /// Per-view background clear contract propagated from host camera state.
@@ -82,7 +82,7 @@ impl Default for FrameViewClear {
 /// Blackboard slot for per-view MSAA attachment views resolved from transient graph resources.
 ///
 /// Populated by the executor (before per-view passes run) from
-/// [`super::compiled::helpers::populate_forward_msaa_from_graph_resources`] output.
+/// [`crate::render_graph::compiled::helpers::populate_forward_msaa_from_graph_resources`] output.
 /// Replaces the six `msaa_*` fields that previously lived on [`GraphPassFrame`].
 pub struct MsaaViewsSlot;
 impl BlackboardSlot for MsaaViewsSlot {

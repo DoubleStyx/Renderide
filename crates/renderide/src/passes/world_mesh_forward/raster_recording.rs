@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use super::{MaterialBatchPacket, PreparedWorldMeshForwardFrame};
 use crate::gpu::GpuLimits;
+use crate::graph_inputs::{GraphPassFrame, PerViewFramePlanSlot};
 use crate::passes::WorldMeshForwardEncodeRefs;
 use crate::render_graph::blackboard::Blackboard;
-use crate::render_graph::frame_params::{GraphPassFrame, PerViewFramePlanSlot};
 use crate::world_mesh::draw_prep::WorldMeshDrawItem;
 use crate::world_mesh::{MeshPassKind, WorldMeshPhase};
 

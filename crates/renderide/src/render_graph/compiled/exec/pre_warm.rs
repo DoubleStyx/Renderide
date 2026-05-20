@@ -6,13 +6,13 @@ use hashbrown::hash_map::Entry;
 
 use super::super::super::context::GraphResolvedResources;
 use super::super::super::error::GraphExecuteError;
-use super::super::super::frame_params::PreRecordViewResourceLayout;
 use super::super::super::frame_upload_batch::{FrameUploadBatch, GraphUploadSink};
 use super::super::super::history::{HistoryResourceScope, TextureHistorySpec};
 use super::super::helpers;
 use super::super::{CompiledRenderGraph, FrameView, MultiViewExecutionContext};
 use super::{GraphResolveKey, TransientTextureResolveSurfaceParams};
 use crate::gpu::OutputDepthMode;
+use crate::graph_inputs::PreRecordViewResourceLayout;
 use crate::occlusion::gpu::HIZ_MAX_MIPS;
 use crate::occlusion::{hi_z_pyramid_dimensions, mip_levels_for_extent};
 use crate::render_graph::HistorySlotId;

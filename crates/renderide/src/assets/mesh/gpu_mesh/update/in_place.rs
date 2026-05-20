@@ -15,10 +15,11 @@ use super::super::hints::{
     mesh_upload_hint_touches_vertex_streams, validated_submesh_ranges,
     validated_submesh_topologies, wgpu_index_format,
 };
-use super::super::{
-    BoneBufferWriteHints, ExtendedVertexStreamSource, GpuMesh, MeshInPlaceWriteContext,
+use super::super::upload::queue_init_buffer_size_matches;
+use super::super::{ExtendedVertexStreamSource, GpuMesh, extended_vertex_stream_source_from_raw};
+use super::in_place_buffers::{
+    BoneBufferWriteHints, MeshInPlaceWriteContext,
     blendshape_and_deform_buffers_match_for_in_place, compatible_for_in_place_real_skeleton,
-    extended_vertex_stream_source_from_raw, queue_init_buffer_size_matches,
     write_in_place_blendshape_buffer, write_in_place_bone_buffers, write_in_place_index_buffer,
     write_in_place_vertex_and_derived_streams,
 };

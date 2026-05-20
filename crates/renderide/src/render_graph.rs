@@ -45,7 +45,7 @@
 //!
 //! 1. **LightPrep** -- the backend packs clustered lights into graph-facing frame resources; at
 //!    most one full pack per winit tick (coalesced across graph entry points).
-//! 2. **Camera / cluster params** -- [`frame_params::GraphPassFrame`] carries host camera and
+//! 2. **Camera / cluster params** -- [`crate::graph_inputs::GraphPassFrame`] carries host camera and
 //!    per-view frame state to passes.
 //! 3. **Draw queue / sort** -- the runtime CPU render schedule queues caller-owned draw packets,
 //!    then sorts and arranges them before graph entry.
@@ -65,7 +65,6 @@ pub(crate) mod compiled;
 pub(crate) mod context;
 pub(crate) mod error;
 pub(crate) mod execution_backend;
-pub(crate) mod frame_params;
 pub(crate) mod frame_upload_batch;
 pub(crate) mod gpu_cache;
 pub(crate) mod history;
@@ -73,7 +72,6 @@ pub(crate) mod ids;
 pub(crate) mod pass;
 mod pool;
 pub(crate) mod post_process_chain;
-pub(crate) mod post_process_settings;
 mod record_parallel;
 pub(crate) mod resources;
 mod schedule;
@@ -81,6 +79,7 @@ mod swapchain_scope;
 pub(crate) mod upload_arena;
 pub mod validation;
 
+pub(crate) use crate::graph_inputs::FrameViewClear;
 pub(crate) use compiled::cache::{GraphCache, GraphCacheEnsureResult, GraphCacheKey};
 pub(crate) use compiled::{
     ExternalFrameTargets, ExternalOffscreenTargets, FrameView, FrameViewResourceHints,
@@ -91,7 +90,6 @@ pub(crate) use error::GraphExecuteError;
 pub(crate) use execution_backend::{
     GraphAssetResources, GraphExecutionBackend, GraphFrameResources,
 };
-pub(crate) use frame_params::FrameViewClear;
 pub(crate) use history::{HistoryRegistry, HistoryRegistryError, HistoryTextureMipViews};
 pub(crate) use pool::TransientPool;
 pub(crate) use resources::HistorySlotId;

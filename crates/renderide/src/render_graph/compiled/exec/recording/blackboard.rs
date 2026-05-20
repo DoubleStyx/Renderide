@@ -3,16 +3,9 @@
 use super::super::super::super::blackboard::Blackboard;
 use super::super::super::super::context::GraphResolvedResources;
 use super::super::super::super::error::GraphExecuteError;
-use super::super::super::super::frame_params::{
-    MsaaViewsSlot, PerViewFramePlan, PerViewFramePlanSlot,
-};
 use super::super::super::CompiledRenderGraph;
 use super::super::super::helpers;
-use super::super::types::PerViewRecordShared;
-use crate::render_graph::post_process_settings::{
-    AutoExposureSettingsSlot, AutoExposureSettingsValue, BloomSettingsSlot, BloomSettingsValue,
-    GtaoSettingsSlot, GtaoSettingsValue, MotionBlurSettingsSlot, MotionBlurSettingsValue,
-};
+use crate::graph_inputs::MsaaViewsSlot;
 
 impl CompiledRenderGraph {
     /// Validates declared blackboard inputs immediately before one pass records.
@@ -46,14 +39,12 @@ impl CompiledRenderGraph {
         Ok(())
     }
 
-    /// Builds the per-view [`Blackboard`] seeded with MSAA views and preplanned frame data.
+    /// Builds the per-view [`Blackboard`] seeded with graph-owned per-view resources.
     pub(super) fn build_per_view_blackboard(
         &self,
-        frame_params: &crate::render_graph::frame_params::GraphPassFrame<'_>,
+        frame_params: &crate::graph_inputs::GraphPassFrame<'_>,
         graph_resources: &GraphResolvedResources,
         initial_blackboard: Blackboard,
-        per_view_frame_bg_and_buf: (std::sync::Arc<wgpu::BindGroup>, wgpu::Buffer),
-        view_idx: usize,
     ) -> Blackboard {
         profiling::scope!("graph::per_view::build_blackboard");
         let mut view_blackboard = initial_blackboard;
@@ -65,32 +56,8 @@ impl CompiledRenderGraph {
         ) {
             graph_blackboard.insert::<MsaaViewsSlot>(msaa_views);
         }
-        let (frame_bg, frame_buf) = per_view_frame_bg_and_buf;
-        graph_blackboard.insert::<PerViewFramePlanSlot>(PerViewFramePlan {
-            frame_bind_group: frame_bg,
-            frame_uniform_buffer: frame_buf,
-            view_idx,
-        });
         view_blackboard.extend(graph_blackboard);
         view_blackboard
-    }
-
-    /// Seeds live post-processing settings into one per-view blackboard.
-    pub(super) fn seed_live_post_process_settings(
-        blackboard: &mut Blackboard,
-        shared: &PerViewRecordShared<'_>,
-        view_id: crate::camera::ViewId,
-    ) {
-        blackboard.insert::<GtaoSettingsSlot>(GtaoSettingsValue(shared.live_gtao_settings));
-        blackboard.insert::<BloomSettingsSlot>(BloomSettingsValue(shared.live_bloom_settings));
-        blackboard.insert::<MotionBlurSettingsSlot>(MotionBlurSettingsValue(
-            shared.live_motion_blur_settings,
-        ));
-        blackboard.insert::<AutoExposureSettingsSlot>(AutoExposureSettingsValue::for_view(
-            shared.live_auto_exposure_settings,
-            shared.wall_frame_delta_seconds,
-            view_id,
-        ));
     }
 
     /// Builds the frame-global [`Blackboard`] seeded before frame-global passes record.

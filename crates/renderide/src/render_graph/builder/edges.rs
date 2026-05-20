@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use super::super::error::GraphBuildError;
 use super::super::ids::{GroupId, PassId};
 use super::super::pass::GroupScope;
+use super::super::pass::params::BlackboardAccessKind;
 use super::super::resources::{
     BufferResourceHandle, ResourceHandle, TextureResourceHandle, TextureSubresourceRange,
 };
@@ -176,20 +177,38 @@ pub(super) fn add_blackboard_edges(
     validation_report: &mut GraphValidationReport,
 ) {
     let mut last_writer: HashMap<std::any::TypeId, usize> = HashMap::new();
-    let seeds: HashSet<std::any::TypeId> = builder
-        .blackboard_seeds
-        .iter()
-        .map(|seed| seed.slot.type_id)
-        .collect();
+    let mut seeds: HashMap<std::any::TypeId, _> = HashMap::new();
+    for seed in &builder.blackboard_seeds {
+        if let Some(first) = seeds.insert(seed.slot.type_id, seed) {
+            validation_report.push(GraphValidationDiagnostic::DuplicateBlackboardSeed {
+                slot: seed.slot,
+                first_producer: first.producer,
+                duplicate_producer: seed.producer,
+            });
+        }
+    }
+    let mut pure_writers: HashMap<std::any::TypeId, (usize, String, _)> = HashMap::new();
 
     for (pass_idx, setup) in setups.iter().enumerate() {
+        let mut seen_accesses: HashSet<(std::any::TypeId, BlackboardAccessKind)> = HashSet::new();
+        for access in &setup.setup.blackboard_accesses {
+            if !seen_accesses.insert((access.slot.type_id, access.kind)) {
+                validation_report.push(GraphValidationDiagnostic::DuplicateBlackboardAccess {
+                    pass: PassId(pass_idx),
+                    pass_name: setup.name.clone(),
+                    slot: access.slot,
+                    kind: blackboard_access_kind_label(access.kind),
+                });
+            }
+        }
         for access in &setup.setup.blackboard_accesses {
             if access.kind.reads() {
                 if let Some(&writer) = last_writer.get(&access.slot.type_id) {
                     if writer != pass_idx {
                         edges.insert((writer, pass_idx));
                     }
-                } else if access.kind.requires_value() && !seeds.contains(&access.slot.type_id) {
+                } else if access.kind.requires_value() && !seeds.contains_key(&access.slot.type_id)
+                {
                     validation_report.push(GraphValidationDiagnostic::MissingBlackboardProducer {
                         pass: PassId(pass_idx),
                         pass_name: setup.name.clone(),
@@ -198,11 +217,48 @@ pub(super) fn add_blackboard_edges(
                 }
             }
         }
+        for access in setup
+            .setup
+            .blackboard_accesses
+            .iter()
+            .filter(|access| access.kind.writes())
+        {
+            let reads_same_slot = setup.setup.blackboard_accesses.iter().any(|candidate| {
+                candidate.slot.type_id == access.slot.type_id && candidate.kind.reads()
+            });
+            if reads_same_slot {
+                continue;
+            }
+            if let Some((first_idx, first_name, first_slot)) =
+                pure_writers.get(&access.slot.type_id)
+            {
+                validation_report.push(GraphValidationDiagnostic::AmbiguousBlackboardWriters {
+                    slot: *first_slot,
+                    first_pass: PassId(*first_idx),
+                    first_pass_name: first_name.clone(),
+                    second_pass: PassId(pass_idx),
+                    second_pass_name: setup.name.clone(),
+                });
+            } else {
+                pure_writers.insert(
+                    access.slot.type_id,
+                    (pass_idx, setup.name.clone(), access.slot),
+                );
+            }
+        }
         for access in &setup.setup.blackboard_accesses {
             if access.kind.writes() {
                 last_writer.insert(access.slot.type_id, pass_idx);
             }
         }
+    }
+}
+
+fn blackboard_access_kind_label(kind: BlackboardAccessKind) -> &'static str {
+    match kind {
+        BlackboardAccessKind::RequiredRead => "required-read",
+        BlackboardAccessKind::OptionalRead => "optional-read",
+        BlackboardAccessKind::Write => "write",
     }
 }
 

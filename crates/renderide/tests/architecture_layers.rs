@@ -20,6 +20,7 @@ const ROOT_MODULES: &[&str] = &[
     "config",
     "diagnostics",
     "frontend",
+    "graph_inputs",
     "gpu",
     "gpu_pools",
     "gpu_resource",
@@ -52,7 +53,19 @@ const FORBIDDEN_EDGES: &[Edge] = &[
     },
     Edge {
         from: "frontend",
+        to: "graph_inputs",
+    },
+    Edge {
+        from: "frontend",
         to: "gpu",
+    },
+    Edge {
+        from: "graph_inputs",
+        to: "backend",
+    },
+    Edge {
+        from: "graph_inputs",
+        to: "passes",
     },
     Edge {
         from: "frontend",

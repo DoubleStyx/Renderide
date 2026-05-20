@@ -14,13 +14,13 @@ use super::raster_recording::frame_bind_group_for_view;
 use crate::camera::{CameraProjectionKind, ViewId, world_to_view_pair_for_skybox};
 use crate::embedded_shaders;
 use crate::gpu::frame_bind_group_layout;
+use crate::graph_inputs::GraphPassFrame;
 use crate::materials::host_data::{MaterialDictionary, MaterialPropertyLookupIds};
 use crate::materials::{
     EmbeddedMaterialBindShader, EmbeddedTexturePools, MaterialRenderState,
     material_render_state_for_lookup,
 };
 use crate::render_graph::blackboard::Blackboard;
-use crate::render_graph::frame_params::GraphPassFrame;
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::shared::CameraClearMode;
 use crate::skybox::{PreparedClearColorSkybox, PreparedMaterialSkybox, PreparedSkybox};

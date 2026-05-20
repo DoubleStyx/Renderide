@@ -4,7 +4,7 @@ use bytemuck::Zeroable;
 
 use crate::camera::HostCameraFrame;
 use crate::gpu::frame_globals::FrameGpuUniforms;
-use crate::render_graph::frame_params::{GraphPassFrame, PerViewFramePlan};
+use crate::graph_inputs::{GraphPassFrame, PerViewFramePlan};
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::scene::SceneCoordinator;
 use crate::world_mesh::cluster::{

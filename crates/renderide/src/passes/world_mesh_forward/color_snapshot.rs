@@ -1,7 +1,7 @@
 //! Scene-color snapshot helper for the world-mesh transparent sequence.
 
+use crate::graph_inputs::GraphPassFrame;
 use crate::render_graph::context::GraphResolvedResources;
-use crate::render_graph::frame_params::GraphPassFrame;
 use crate::world_mesh::WorldMeshHelperNeeds;
 
 use super::PreparedWorldMeshForwardFrame;

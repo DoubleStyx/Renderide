@@ -27,10 +27,10 @@ use crate::scene::SceneCoordinator;
 
 use super::super::context::{GraphResolvedResources, PostSubmitContext};
 use super::super::error::GraphExecuteError;
-use super::super::frame_params::{FrameSystemsShared, PerViewFramePlan};
 use super::super::frame_upload_batch::{FrameUploadBatch, GraphUploadSink};
 use super::{CompiledRenderGraph, FrameView, FrameViewTarget, MultiViewExecutionContext, helpers};
 use crate::camera::{HostCameraFrame, ViewId};
+use crate::graph_inputs::{FrameSystemsShared, PerViewFramePlan};
 
 fn elapsed_ms(start: Instant) -> f64 {
     start.elapsed().as_secs_f64() * 1000.0
@@ -108,7 +108,7 @@ impl CompiledRenderGraph {
     ///
     /// ## Per-view frame plan
     ///
-    /// A [`super::super::frame_params::PerViewFramePlanSlot`] is inserted into each view's
+    /// A [`crate::graph_inputs::PerViewFramePlanSlot`] is inserted into each view's
     /// per-view blackboard carrying the per-view `@group(0)` frame bind group and uniform buffer.
     pub(crate) fn execute_multi_view(
         &mut self,
@@ -352,11 +352,6 @@ impl CompiledRenderGraph {
             scene_color_format: mv_ctx.backend.scene_color_format_wgpu(),
             gpu_limits_arc: mv_ctx.backend.gpu_limits().cloned(),
             msaa_depth_resolve: mv_ctx.backend.msaa_depth_resolve(),
-            live_gtao_settings: mv_ctx.backend.live_gtao_settings(),
-            live_bloom_settings: mv_ctx.backend.live_bloom_settings(),
-            live_motion_blur_settings: mv_ctx.backend.live_motion_blur_settings(),
-            live_auto_exposure_settings: mv_ctx.backend.live_auto_exposure_settings(),
-            wall_frame_delta_seconds: mv_ctx.backend.wall_frame_delta_seconds(),
         };
         let mut per_view_profiler = mv_ctx.gpu.take_gpu_profiler();
         let record_result = (|| -> Result<RecordedPerViewBatch, GraphExecuteError> {

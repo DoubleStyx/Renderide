@@ -1,5 +1,6 @@
 //! Unit tests for retained render-world dirty tracking and snapshot maintenance.
 
+use super::state::RenderWorldRendererTemplate;
 use super::*;
 use crate::scene::SceneCacheFlushReport;
 use crate::shared::RenderTransform;

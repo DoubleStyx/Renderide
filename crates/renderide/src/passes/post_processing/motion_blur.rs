@@ -24,6 +24,9 @@ use crate::passes::helpers::{
     color_attachment, missing_pass_resource, read_fragment_sampled_texture,
     transient_output_format_or,
 };
+use crate::passes::post_processing::settings_slots::{
+    MotionBlurSettingsSlot, MotionBlurSettingsValue,
+};
 use crate::render_graph::builder::GraphBuilder;
 use crate::render_graph::context::RasterPassCtx;
 use crate::render_graph::error::{RenderPassError, SetupError};
@@ -32,7 +35,6 @@ use crate::render_graph::pass::{PassBuilder, RasterPass, RenderPassTemplate};
 use crate::render_graph::post_process_chain::{
     EffectPasses, PostProcessEffect, PostProcessEffectId,
 };
-use crate::render_graph::post_process_settings::{MotionBlurSettingsSlot, MotionBlurSettingsValue};
 use crate::render_graph::resources::{
     ImportedTextureHandle, TextureAccess, TextureHandle, TransientArrayLayers, TransientExtent,
     TransientSampleCount, TransientTextureDesc, TransientTextureFormat,
@@ -377,7 +379,7 @@ impl MotionBlurStateCache {
     fn compute_motion_vector_params(
         &self,
         device: &wgpu::Device,
-        frame: &crate::render_graph::frame_params::GraphPassFrame<'_>,
+        frame: &crate::graph_inputs::GraphPassFrame<'_>,
     ) -> MotionVectorParamsGpu {
         let state = self.ensure(device, frame.view.view_id);
         let current = MotionBlurCameraHistory::from_frame(frame);
@@ -419,7 +421,7 @@ struct MotionBlurCameraHistory {
 
 impl MotionBlurCameraHistory {
     /// Captures the camera matrices and view shape for a graph pass frame.
-    fn from_frame(frame: &crate::render_graph::frame_params::GraphPassFrame<'_>) -> Self {
+    fn from_frame(frame: &crate::graph_inputs::GraphPassFrame<'_>) -> Self {
         let view = &frame.view;
         let (view_proj_left, view_proj_right) =
             view_proj_pair(frame.shared.scene, &view.host_camera, view.viewport_px);
@@ -501,7 +503,7 @@ fn motion_blur_settings(
 
 /// Returns whether motion blur work should run for the current view.
 fn view_motion_blur_active(
-    view: &crate::render_graph::frame_params::GraphPassFrameView<'_>,
+    view: &crate::graph_inputs::GraphPassFrameView<'_>,
     settings: MotionBlurSettings,
 ) -> bool {
     super::view_post_processing_enabled(view)

@@ -2,12 +2,12 @@
 
 use super::super::blackboard::Blackboard;
 use super::super::error::GraphExecuteError;
-use super::super::frame_params::FrameViewClear;
 use crate::camera::{
     HostCameraFrame, ViewId, camera_state_motion_blur, camera_state_post_processing,
     camera_state_screen_space_reflections,
 };
 use crate::gpu::GpuContext;
+use crate::graph_inputs::FrameViewClear;
 use crate::shared::{CameraRenderParameters, CameraState, RenderingContext};
 
 /// MSAA policy selected by a render-path profile.

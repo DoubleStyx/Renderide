@@ -8,18 +8,22 @@ use hashbrown::{HashMap, HashSet};
 use crate::backend::AssetTransferQueue;
 use crate::diagnostics::{DebugHudEncodeError, PerViewHudConfig, PerViewHudOutputs};
 use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
+use crate::graph_inputs::{
+    GraphPassFrame, PerViewFramePlan, PerViewFramePlanSlot, PreRecordViewResourceLayout,
+};
 use crate::materials::{
     EmbeddedTangentFallbackMode, MaterialPipelineDesc, MaterialPipelineVariantSpec, MaterialSystem,
     RasterPipelineKind, SHADER_PERM_MULTIVIEW_STEREO, ShaderPermutation,
 };
 use crate::mesh_deform::{GpuSkinCache, MeshDeformScratch, MeshPreprocessPipelines};
+use crate::passes::post_processing::settings_slots::{
+    AutoExposureSettingsSlot, AutoExposureSettingsValue, BloomSettingsSlot, BloomSettingsValue,
+    GtaoSettingsSlot, GtaoSettingsValue, MotionBlurSettingsSlot, MotionBlurSettingsValue,
+};
 use crate::render_graph::TransientPool;
 use crate::render_graph::blackboard::Blackboard;
 use crate::render_graph::compiled::{FrameView, FrameViewTarget};
 use crate::render_graph::execution_backend::{GraphExecutionBackend, GraphFrameParamsSplit};
-use crate::render_graph::frame_params::{
-    GraphPassFrame, PerViewFramePlan, PreRecordViewResourceLayout,
-};
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::render_graph::upload_arena::PersistentUploadArena;
 use crate::world_mesh::WorldMeshDrawItem;
@@ -216,26 +220,6 @@ impl<'a> BackendGraphAccess<'a> {
         self.msaa_depth_resolve.clone()
     }
 
-    /// Live GTAO settings snapshot for this graph frame.
-    pub(crate) fn live_gtao_settings(&self) -> crate::config::GtaoSettings {
-        self.live_gtao_settings
-    }
-
-    /// Live bloom settings snapshot for this graph frame.
-    pub(crate) fn live_bloom_settings(&self) -> crate::config::BloomSettings {
-        self.live_bloom_settings
-    }
-
-    /// Live motion-blur settings snapshot for this graph frame.
-    pub(crate) fn live_motion_blur_settings(&self) -> crate::config::MotionBlurSettings {
-        self.live_motion_blur_settings
-    }
-
-    /// Live auto-exposure settings snapshot for this graph frame.
-    pub(crate) fn live_auto_exposure_settings(&self) -> crate::config::AutoExposureSettings {
-        self.live_auto_exposure_settings
-    }
-
     /// Wall-frame delta snapshot for this graph frame, in seconds.
     pub(crate) fn wall_frame_delta_seconds(&self) -> f32 {
         (self.wall_frame_time_ms / 1000.0).clamp(0.0, 1.0) as f32
@@ -427,6 +411,17 @@ impl<'a> BackendGraphAccess<'a> {
         frame_plan: &PerViewFramePlan,
         blackboard: &mut Blackboard,
     ) {
+        blackboard.insert::<PerViewFramePlanSlot>(frame_plan.clone());
+        blackboard.insert::<GtaoSettingsSlot>(GtaoSettingsValue(self.live_gtao_settings));
+        blackboard.insert::<BloomSettingsSlot>(BloomSettingsValue(self.live_bloom_settings));
+        blackboard.insert::<MotionBlurSettingsSlot>(MotionBlurSettingsValue(
+            self.live_motion_blur_settings,
+        ));
+        blackboard.insert::<AutoExposureSettingsSlot>(AutoExposureSettingsValue::for_view(
+            self.live_auto_exposure_settings,
+            self.wall_frame_delta_seconds(),
+            frame.view.view_id,
+        ));
         crate::backend::prepare_world_mesh_view_blackboard(
             self.world_mesh_frame_planner,
             device,
@@ -524,26 +519,6 @@ impl GraphExecutionBackend for BackendGraphAccess<'_> {
 
     fn msaa_depth_resolve(&self) -> Option<Arc<MsaaDepthResolveResources>> {
         BackendGraphAccess::msaa_depth_resolve(self)
-    }
-
-    fn live_gtao_settings(&self) -> crate::config::GtaoSettings {
-        BackendGraphAccess::live_gtao_settings(self)
-    }
-
-    fn live_bloom_settings(&self) -> crate::config::BloomSettings {
-        BackendGraphAccess::live_bloom_settings(self)
-    }
-
-    fn live_motion_blur_settings(&self) -> crate::config::MotionBlurSettings {
-        BackendGraphAccess::live_motion_blur_settings(self)
-    }
-
-    fn live_auto_exposure_settings(&self) -> crate::config::AutoExposureSettings {
-        BackendGraphAccess::live_auto_exposure_settings(self)
-    }
-
-    fn wall_frame_delta_seconds(&self) -> f32 {
-        BackendGraphAccess::wall_frame_delta_seconds(self)
     }
 
     fn frame_resources(&self) -> &dyn crate::render_graph::GraphFrameResources {

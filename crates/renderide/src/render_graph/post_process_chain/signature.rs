@@ -6,10 +6,10 @@ use crate::config::{PostProcessingSettings, TonemapMode};
 ///
 /// Changes to any field force a render-graph rebuild. Non-topology parameters (intensity,
 /// threshold, composite mode, etc.) flow to the passes via per-view blackboard slots
-/// ([`crate::render_graph::post_process_settings::BloomSettingsSlot`],
-/// [`crate::render_graph::post_process_settings::GtaoSettingsSlot`],
-/// [`crate::render_graph::post_process_settings::AutoExposureSettingsSlot`], and
-/// [`crate::render_graph::post_process_settings::MotionBlurSettingsSlot`]) and therefore do
+/// ([`crate::passes::post_processing::settings_slots::BloomSettingsSlot`],
+/// [`crate::passes::post_processing::settings_slots::GtaoSettingsSlot`],
+/// [`crate::passes::post_processing::settings_slots::AutoExposureSettingsSlot`], and
+/// [`crate::passes::post_processing::settings_slots::MotionBlurSettingsSlot`]) and therefore do
 /// **not** need to be tracked here.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct PostProcessChainSignature {

@@ -1,6 +1,6 @@
 //! Per-view blackboard slots that propagate live post-processing settings into the chain.
 
-use super::blackboard::BlackboardSlot;
+use crate::render_graph::blackboard::BlackboardSlot;
 
 /// Blackboard slot for the live [`crate::config::GtaoSettings`] snapshot.
 ///

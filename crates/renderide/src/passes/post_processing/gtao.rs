@@ -62,7 +62,7 @@ const GTAO_VIEW_DEPTH_MIP_LABELS: [&str; VIEW_DEPTH_MIP_COUNT as usize] = [
 pub struct GtaoEffect {
     /// Snapshot of the GTAO settings used when building the chain for this frame. Live edits
     /// after chain build flow in via
-    /// [`crate::render_graph::post_process_settings::GtaoSettingsSlot`] for non-topology
+    /// [`crate::passes::post_processing::settings_slots::GtaoSettingsSlot`] for non-topology
     /// fields; topology fields (`enabled`, `denoise_passes`) trigger a graph rebuild via
     /// [`crate::render_graph::post_process_chain::PostProcessChainSignature`].
     pub settings: GtaoSettings,
@@ -71,7 +71,7 @@ pub struct GtaoEffect {
     /// Smooth view-space normal target produced after opaque forward rendering.
     pub view_normals: TextureHandle,
     /// Imported frame-uniforms buffer handle (fallback / scheduling; actual bind sources from
-    /// [`crate::render_graph::frame_params::PerViewFramePlanSlot`] at record time).
+    /// [`crate::graph_inputs::PerViewFramePlanSlot`] at record time).
     pub frame_uniforms: ImportedBufferHandle,
     /// Whether this graph is compiled for OpenXR multiview stereo.
     pub multiview_stereo: bool,

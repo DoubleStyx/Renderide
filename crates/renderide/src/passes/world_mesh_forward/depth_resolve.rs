@@ -1,14 +1,14 @@
 //! MSAA depth resolve for the graph-managed world-mesh forward pass.
 //!
 //! Consumes the MSAA attachment views from the per-view blackboard's
-//! [`crate::render_graph::frame_params::MsaaViewsSlot`], populated by the executor in
+//! [`crate::graph_inputs::MsaaViewsSlot`], populated by the executor in
 //! [`crate::render_graph::compiled::helpers::resolve_forward_msaa_views_from_graph_resources`].
 
 use crate::gpu::{
     MsaaDepthResolveMonoTargets, MsaaDepthResolveResources, MsaaDepthResolveStereoTargets,
 };
+use crate::graph_inputs::{GraphPassFrame, MsaaViews};
 use crate::profiling::GpuProfilerHandle;
-use crate::render_graph::frame_params::{GraphPassFrame, MsaaViews};
 
 /// After a clear-only MSAA pass, resolves multisampled depth to the single-sample depth used by Hi-Z.
 pub(crate) fn encode_msaa_depth_resolve_after_clear_only(

@@ -24,6 +24,7 @@ use crate::config::PostProcessingSettings;
 use crate::passes::helpers::{
     color_attachment, missing_pass_resource, read_fragment_sampled_texture,
 };
+use crate::passes::post_processing::settings_slots::AutoExposureSettingsSlot;
 use crate::render_graph::builder::GraphBuilder;
 use crate::render_graph::context::{ComputePassCtx, GraphResolvedResources, RasterPassCtx};
 use crate::render_graph::error::{RenderPassError, SetupError};
@@ -33,7 +34,6 @@ use crate::render_graph::pass::{ComputePass, PassBuilder, RasterPass};
 use crate::render_graph::post_process_chain::{
     EffectPasses, PostProcessEffect, PostProcessEffectId,
 };
-use crate::render_graph::post_process_settings::AutoExposureSettingsSlot;
 use crate::render_graph::resources::{TextureAccess, TextureHandle};
 
 /// Compute pass that meters scene luminance and updates persistent exposure EV state.

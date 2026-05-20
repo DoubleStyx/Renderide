@@ -10,8 +10,8 @@ use parking_lot::Mutex;
 use crate::backend::cluster_gpu::ClusterBufferRefs;
 use crate::camera::ViewId;
 use crate::gpu::frame_globals::{FrameGpuUniforms, SkyboxSpecularUniformParams};
+use crate::graph_inputs::PreRecordViewResourceLayout;
 use crate::mesh_deform::SkinCacheKey;
-use crate::render_graph::frame_params::PreRecordViewResourceLayout;
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
 
 use super::super::frame_gpu::{

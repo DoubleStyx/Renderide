@@ -1,8 +1,8 @@
 //! Ordered transparent tail with per-grab scene-color snapshots.
 
+use crate::graph_inputs::PerViewFramePlanSlot;
 use crate::render_graph::context::EncoderPassCtx;
 use crate::render_graph::error::{RenderPassError, SetupError};
-use crate::render_graph::frame_params::PerViewFramePlanSlot;
 use crate::render_graph::gpu_cache::stereo_mask_or_template;
 use crate::render_graph::pass::{EncoderPass, PassBuilder};
 use crate::render_graph::resources::{TextureAccess, TextureResourceHandle};

@@ -9,8 +9,8 @@ use super::*;
 use glam::{Mat4, Quat, Vec3};
 
 use crate::camera::ViewId;
+use crate::graph_inputs::PreRecordViewResourceLayout;
 use crate::mesh_deform::{SkinCacheKey, SkinCacheRendererKind};
-use crate::render_graph::frame_params::PreRecordViewResourceLayout;
 use crate::scene::{MeshRendererInstanceId, RenderSpaceId, SceneCoordinator};
 use crate::shared::{
     LightData, LightType, LightsBufferRendererState, RenderTransform, RenderingContext, ShadowType,

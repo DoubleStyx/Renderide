@@ -63,9 +63,9 @@ pub use transparent_sequence::WorldMeshForwardTransparentSequencePass;
 
 use std::num::NonZeroU32;
 
+use crate::graph_inputs::{MsaaViewsSlot, PerViewFramePlanSlot};
 use crate::render_graph::context::{ComputePassCtx, RasterPassCtx};
 use crate::render_graph::error::{RenderPassError, SetupError};
-use crate::render_graph::frame_params::{MsaaViewsSlot, PerViewFramePlanSlot};
 use crate::render_graph::gpu_cache::stereo_mask_or_template;
 use crate::render_graph::pass::{ComputePass, PassBuilder, RasterPass};
 use crate::render_graph::pass::{DepthAttachmentTemplate, RenderPassTemplate};
@@ -161,9 +161,7 @@ pub(crate) struct WorldMeshForwardEncodeRefs<'a> {
 
 impl<'a> WorldMeshForwardEncodeRefs<'a> {
     /// Builds encode refs from a graph pass frame's disjoint system slices.
-    pub(crate) fn from_frame(
-        frame: &crate::render_graph::frame_params::GraphPassFrame<'a>,
-    ) -> Self {
+    pub(crate) fn from_frame(frame: &crate::graph_inputs::GraphPassFrame<'a>) -> Self {
         Self {
             materials: frame.shared.materials,
             mesh_pool: frame.shared.asset_resources.mesh_pool(),

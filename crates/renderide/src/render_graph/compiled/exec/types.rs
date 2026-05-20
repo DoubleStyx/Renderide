@@ -9,11 +9,11 @@ use crate::shared::RenderingContext;
 
 use super::super::super::blackboard::{Blackboard, GraphCommandStats};
 use super::super::super::context::GraphResolvedResources;
-use super::super::super::frame_params::FrameViewClear;
 use super::super::super::frame_upload_batch::{FrameUploadBatch, FrameUploadBatchStats};
 use super::super::super::history::HistoryRegistry;
 use super::super::super::{GraphAssetResources, GraphFrameResources};
 use super::super::{FrameView, ResolvedView, ViewPostProcessing};
+use crate::graph_inputs::FrameViewClear;
 
 /// Key for reusing transient pool allocations across [`FrameView`]s with identical surface layout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -177,19 +177,6 @@ pub(super) struct PerViewRecordShared<'a> {
     pub(super) gpu_limits_arc: Option<std::sync::Arc<crate::gpu::GpuLimits>>,
     /// Optional MSAA depth-resolve resources for the frame.
     pub(super) msaa_depth_resolve: Option<std::sync::Arc<crate::gpu::MsaaDepthResolveResources>>,
-    /// Live GTAO settings snapshot for the frame, seeded into each view's blackboard so the
-    /// GTAO chain ([`crate::passes::post_processing::GtaoEffect`]) can read the current slider
-    /// values without rebuilding the compiled render graph.
-    pub(super) live_gtao_settings: crate::config::GtaoSettings,
-    /// Live bloom settings snapshot for the frame, seeded into each view's blackboard so the
-    /// bloom passes' UBO / blend constants / pipeline variants reflect current slider values.
-    pub(super) live_bloom_settings: crate::config::BloomSettings,
-    /// Live motion-blur settings snapshot for the frame, seeded into each view's blackboard.
-    pub(super) live_motion_blur_settings: crate::config::MotionBlurSettings,
-    /// Live auto-exposure settings snapshot for the frame, seeded into each view's blackboard.
-    pub(super) live_auto_exposure_settings: crate::config::AutoExposureSettings,
-    /// Wall-frame delta used by temporal post-processing effects.
-    pub(super) wall_frame_delta_seconds: f32,
 }
 
 impl GraphResolveKey {

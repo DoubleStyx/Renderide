@@ -5,8 +5,8 @@
 //! intersection materials.
 
 use crate::gpu::MsaaDepthResolveResources;
+use crate::graph_inputs::{GraphPassFrame, MsaaViews};
 use crate::profiling::GpuProfilerHandle;
-use crate::render_graph::frame_params::{GraphPassFrame, MsaaViews};
 use crate::world_mesh::WorldMeshHelperNeeds;
 
 use super::PreparedWorldMeshForwardFrame;

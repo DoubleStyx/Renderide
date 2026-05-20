@@ -2,4 +2,5 @@
 
 mod extended_streams;
 mod in_place;
+mod in_place_buffers;
 mod queries;

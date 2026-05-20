@@ -6,10 +6,10 @@ use hashbrown::HashSet;
 
 use crate::camera::ViewId;
 use crate::gpu::frame_globals::SkyboxSpecularUniformParams;
+use crate::graph_inputs::PreRecordViewResourceLayout;
 use crate::mesh_deform::{PaddedPerDrawUniforms, SkinCacheKey};
 use crate::passes::MaterialBatchBoundary;
 use crate::render_graph::execution_backend::{GraphClusterBufferRefs, GraphFrameResources};
-use crate::render_graph::frame_params::PreRecordViewResourceLayout;
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
 
 use super::super::light_gpu::GpuLight;

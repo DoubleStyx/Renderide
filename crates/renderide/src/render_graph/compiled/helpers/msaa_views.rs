@@ -1,7 +1,7 @@
 //! Resolves MSAA / multiview attachment views from compiled transient textures.
 
+use crate::graph_inputs::{GraphPassFrame, MsaaViews};
 use crate::render_graph::context::{GraphResolvedResources, ResolvedGraphTexture};
-use crate::render_graph::frame_params::{GraphPassFrame, MsaaViews};
 use crate::render_graph::resources::TextureHandle;
 
 fn first_two_layer_views(texture: &ResolvedGraphTexture) -> Option<[wgpu::TextureView; 2]> {
@@ -46,7 +46,7 @@ fn first_two_depth_sample_layer_views(
 /// Returns `None` when MSAA is inactive (`sample_count <= 1`) or the transient handles are
 /// unavailable. The executor inserts the returned value into the
 /// per-view [`crate::render_graph::blackboard::Blackboard`] as a
-/// [`crate::render_graph::frame_params::MsaaViewsSlot`]. Depth views are produced with
+/// [`crate::graph_inputs::MsaaViewsSlot`]. Depth views are produced with
 /// `DepthOnly` aspect so they are directly bindable as `texture_multisampled_2d<f32>` in the
 /// depth-resolve compute shader.
 pub(in crate::render_graph::compiled) fn resolve_forward_msaa_views_from_graph_resources(
