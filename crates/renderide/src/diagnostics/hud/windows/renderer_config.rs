@@ -13,8 +13,8 @@ use imgui::{Drag, TabItem, TabItemFlags};
 use crate::config::{
     AutoExposureSettings, BloomCompositeMode, DebugHudRendererConfigTab, DebugHudSettings,
     GraphicsApiSetting, GtaoSettings, MotionBlurSettings, MsaaSampleCount, PowerPreferenceSetting,
-    RendererSettings, RendererSettingsHandle, SceneColorFormat, TonemapMode, VsyncMode,
-    WatchdogAction, save_renderer_settings, save_renderer_settings_pruned,
+    RenderGraphValidationMode, RendererSettings, RendererSettingsHandle, SceneColorFormat,
+    TonemapMode, VsyncMode, WatchdogAction, save_renderer_settings, save_renderer_settings_pruned,
 };
 
 use super::super::layout::{self, Viewport, WindowSlot};
@@ -438,6 +438,19 @@ fn debug_diagnostics_section(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &m
     ui.text_disabled(
         "Vulkan validation layers significantly reduce performance; enable only when debugging. Restart required to apply (desktop and OpenXR).",
     );
+    ui.text_disabled("Render graph validation");
+    for (i, &mode) in RenderGraphValidationMode::ALL.iter().enumerate() {
+        let _id = ui.push_id_int(600 + i as i32);
+        if ui
+            .selectable_config(mode.label())
+            .selected(g.debug.render_graph_validation == mode)
+            .build()
+        {
+            g.debug.render_graph_validation = mode;
+            *dirty = true;
+        }
+    }
+    ui.text_disabled("Warn logs declaration/runtime issues; Strict turns them into graph errors.");
     ui.text_disabled("Power preference (applies at next renderer launch)");
     for (i, &pref) in PowerPreferenceSetting::ALL.iter().enumerate() {
         let _id = ui.push_id_int(i as i32);

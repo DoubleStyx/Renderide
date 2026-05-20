@@ -6,3 +6,4 @@ mod schedule_validation;
 mod scheduler_v1;
 mod subresources;
 mod templates;
+mod validation_v2;

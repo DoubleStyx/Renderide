@@ -124,10 +124,9 @@ impl From<PassPhase> for GroupScope {
 /// the same attachments.
 ///
 /// Populated by passes at setup time via [`crate::render_graph::pass::PassBuilder::merge_hint`].
-/// Scheduler v1 uses the hint when building conservative merge groups while the current wgpu
-/// executor still records each pass as its own render pass. The metadata keeps attachment-reuse
-/// intent explicit for backends that can preserve tile memory or map adjacent raster work to
-/// subpasses.
+/// Scheduler v1 uses the hint when building conservative merge groups. The wgpu executor
+/// materializes compatible groups into one render pass when load/store, multiview, and stencil
+/// state allow it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct PassMergeHint {
     /// When `true`, adjacent passes writing to the same attachments may reuse the render-pass

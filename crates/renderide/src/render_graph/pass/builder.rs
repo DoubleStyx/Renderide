@@ -13,6 +13,9 @@ use std::num::NonZeroU32;
 
 use super::attachments::{declare_color_attachment, declare_depth_attachment};
 use super::node::{PassKind, PassMergeHint, PassWorkloadFlags};
+use super::params::{
+    BlackboardAccessDecl, BlackboardAccessKind, GraphPassParameters, PassParameterSchema,
+};
 use super::setup::{PassSetup, RasterColorAttachmentSetup, RasterDepthAttachmentSetup};
 use crate::render_graph::error::SetupError;
 #[cfg(test)]
@@ -31,6 +34,8 @@ pub struct PassBuilder<'a> {
     pub(crate) accesses: Vec<ResourceAccess>,
     pub(crate) color_attachments: Vec<RasterColorAttachmentSetup>,
     pub(crate) depth_stencil_attachment: Option<RasterDepthAttachmentSetup>,
+    pub(crate) blackboard_accesses: Vec<BlackboardAccessDecl>,
+    pub(crate) parameter_schema: Option<PassParameterSchema>,
     pub(crate) multiview_mask: Option<NonZeroU32>,
     pub(crate) cull_exempt: bool,
     pub(crate) requires_async_compute: bool,
@@ -47,6 +52,8 @@ impl<'a> PassBuilder<'a> {
             accesses: Vec::new(),
             color_attachments: Vec::new(),
             depth_stencil_attachment: None,
+            blackboard_accesses: Vec::new(),
+            parameter_schema: Some(PassParameterSchema::new(name)),
             multiview_mask: None,
             cull_exempt: false,
             requires_async_compute: false,
@@ -62,6 +69,8 @@ impl<'a> PassBuilder<'a> {
             accesses: self.accesses,
             color_attachments: self.color_attachments,
             depth_stencil_attachment: self.depth_stencil_attachment,
+            blackboard_accesses: self.blackboard_accesses,
+            parameter_schema: self.parameter_schema,
             multiview_mask: self.multiview_mask,
             cull_exempt: self.cull_exempt,
             requires_async_compute: self.requires_async_compute,
@@ -84,6 +93,39 @@ impl<'a> PassBuilder<'a> {
     /// Declares this pass as encoder-driven mixed work.
     pub fn encoder(&mut self) {
         self.kind = PassKind::Encoder;
+    }
+
+    /// Declares a graph-facing parameter schema for this pass.
+    pub fn parameter_schema(&mut self, schema: PassParameterSchema) {
+        self.parameter_schema = Some(schema);
+    }
+
+    /// Declares resources and metadata from a typed parameter struct.
+    pub fn parameters<P: GraphPassParameters>(&mut self, params: &P) -> Result<(), SetupError> {
+        self.parameter_schema(params.schema());
+        params.declare(self)
+    }
+
+    /// Declares a required blackboard slot read.
+    pub fn read_blackboard<S: crate::render_graph::blackboard::BlackboardSlot>(&mut self) {
+        self.blackboard_accesses
+            .push(BlackboardAccessDecl::new::<S>(
+                BlackboardAccessKind::RequiredRead,
+            ));
+    }
+
+    /// Declares an optional blackboard slot read.
+    pub fn read_optional_blackboard<S: crate::render_graph::blackboard::BlackboardSlot>(&mut self) {
+        self.blackboard_accesses
+            .push(BlackboardAccessDecl::new::<S>(
+                BlackboardAccessKind::OptionalRead,
+            ));
+    }
+
+    /// Declares a blackboard slot write.
+    pub fn write_blackboard<S: crate::render_graph::blackboard::BlackboardSlot>(&mut self) {
+        self.blackboard_accesses
+            .push(BlackboardAccessDecl::new::<S>(BlackboardAccessKind::Write));
     }
 
     /// Keeps the pass even when it has no graph-visible export.
@@ -123,7 +165,7 @@ impl<'a> PassBuilder<'a> {
     /// Sets the backend merge hint for this pass. See [`PassMergeHint`] for details.
     ///
     /// Scheduler v1 uses this metadata when grouping adjacent raster passes that target the same
-    /// attachments. The current wgpu executor still records each pass independently.
+    /// attachments. The wgpu executor materializes compatible groups into one render pass.
     pub fn merge_hint(&mut self, hint: PassMergeHint) {
         self.merge_hint = hint;
     }

@@ -285,6 +285,8 @@ impl ComputePass for GtaoDepthPrefilterPass {
 
     fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
         b.compute();
+        b.read_optional_blackboard::<PerViewFramePlanSlot>();
+        b.read_blackboard::<GtaoSettingsSlot>();
         if let Some(source_mip) = self.resources.source_mip {
             b.read_texture_subresource(
                 source_mip,

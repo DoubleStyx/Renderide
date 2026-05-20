@@ -65,8 +65,8 @@ pub use types::{
     AutoExposureSettings, BloomCompositeMode, BloomSettings, DebugHudMainTab,
     DebugHudMainTabVisibility, DebugHudRendererConfigTab, DebugHudRendererConfigTabVisibility,
     DebugHudSettings, ExperimentalSettings, GraphicsApiSetting, GtaoSettings, MotionBlurSettings,
-    MsaaSampleCount, PostProcessingSettings, PowerPreferenceSetting, RendererSettings,
-    SceneColorFormat, TonemapMode, VsyncMode, WatchdogAction, WatchdogSettings,
+    MsaaSampleCount, PostProcessingSettings, PowerPreferenceSetting, RenderGraphValidationMode,
+    RendererSettings, SceneColorFormat, TonemapMode, VsyncMode, WatchdogAction, WatchdogSettings,
 };
 #[cfg(test)]
 pub(crate) use types::{DebugSettings, TonemapSettings};

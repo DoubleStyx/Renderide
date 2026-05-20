@@ -11,7 +11,11 @@ mod frame_params;
 mod msaa_views;
 mod transient_extent;
 
-pub(super) use attachments::{execute_graph_raster_pass_node, pass_info_raster_template};
+pub(super) use attachments::{
+    coalesce_render_pass_template, execute_graph_raster_pass_node,
+    frame_sample_count_from_raster_ctx, pass_info_raster_template, resolve_color_attachments,
+    resolve_depth_attachment_with_stencil,
+};
 pub(super) use frame_params::{
     GraphPassFrameViewInputs, frame_render_params_from_resolved, frame_render_params_from_shared,
 };

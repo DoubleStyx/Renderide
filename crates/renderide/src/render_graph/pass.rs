@@ -22,6 +22,7 @@ pub mod builder;
 pub mod compute;
 pub mod encoder;
 pub mod node;
+pub mod params;
 pub mod raster;
 pub(crate) mod setup;
 pub mod template;
@@ -31,6 +32,9 @@ pub use compute::ComputePass;
 pub use encoder::EncoderPass;
 pub use node::PassMergeHint;
 pub use node::{GroupScope, PassKind, PassNode, PassPhase, PassWorkloadFlags};
+pub use params::{
+    BlackboardAccessDecl, BlackboardSeedDecl, BlackboardSlotKey, PassParameterSchema,
+};
 pub use raster::RasterPass;
 pub use setup::PassSetup;
 pub use template::{ColorAttachmentTemplate, DepthAttachmentTemplate, RenderPassTemplate};

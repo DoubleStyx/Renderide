@@ -11,6 +11,7 @@ use super::super::resources::{
 };
 use super::GraphBuilder;
 use super::decl::SetupEntry;
+use crate::render_graph::validation::{GraphValidationDiagnostic, GraphValidationReport};
 
 pub(super) fn explicit_edges(
     builder: &GraphBuilder,
@@ -164,6 +165,45 @@ pub(super) fn add_resource_edges(
         }
     }
     Ok(())
+}
+
+/// Adds dependency edges for declared blackboard producer/consumer relationships and records
+/// validation diagnostics for required reads that have no declared source.
+pub(super) fn add_blackboard_edges(
+    builder: &GraphBuilder,
+    setups: &[SetupEntry],
+    edges: &mut HashSet<(usize, usize)>,
+    validation_report: &mut GraphValidationReport,
+) {
+    let mut last_writer: HashMap<std::any::TypeId, usize> = HashMap::new();
+    let seeds: HashSet<std::any::TypeId> = builder
+        .blackboard_seeds
+        .iter()
+        .map(|seed| seed.slot.type_id)
+        .collect();
+
+    for (pass_idx, setup) in setups.iter().enumerate() {
+        for access in &setup.setup.blackboard_accesses {
+            if access.kind.reads() {
+                if let Some(&writer) = last_writer.get(&access.slot.type_id) {
+                    if writer != pass_idx {
+                        edges.insert((writer, pass_idx));
+                    }
+                } else if access.kind.requires_value() && !seeds.contains(&access.slot.type_id) {
+                    validation_report.push(GraphValidationDiagnostic::MissingBlackboardProducer {
+                        pass: PassId(pass_idx),
+                        pass_name: setup.name.clone(),
+                        slot: access.slot,
+                    });
+                }
+            }
+        }
+        for access in &setup.setup.blackboard_accesses {
+            if access.kind.writes() {
+                last_writer.insert(access.slot.type_id, pass_idx);
+            }
+        }
+    }
 }
 
 /// Parent resource domain used for overlap-aware dependency synthesis.

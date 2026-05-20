@@ -4,7 +4,7 @@ use crate::backend::graph::build_main_graph_with_resources;
 use crate::config::PostProcessingSettings;
 use crate::passes::post_processing::gpu_supports_gtao;
 use crate::render_graph::post_process_chain::PostProcessChainSignature;
-use crate::render_graph::{GraphCacheEnsureResult, GraphCacheKey};
+use crate::render_graph::{GraphCacheEnsureResult, GraphCacheKey, RenderGraphValidationMode};
 
 use super::RenderBackend;
 
@@ -25,6 +25,8 @@ pub(super) struct FrameGraphShape {
     scene_color_format: wgpu::TextureFormat,
     /// Active post-processing topology.
     post_processing: PostProcessChainSignature,
+    /// Render-graph declaration and execution validation policy.
+    validation_mode: RenderGraphValidationMode,
 }
 
 impl FrameGraphShape {
@@ -37,6 +39,7 @@ impl FrameGraphShape {
             surface_format: self.surface_format,
             scene_color_format: self.scene_color_format,
             post_processing: self.post_processing,
+            validation_mode: self.validation_mode,
         }
     }
 }
@@ -81,6 +84,7 @@ impl RenderBackend {
         post_processing: &PostProcessingSettings,
         msaa_sample_count: u8,
         multiview_stereo: bool,
+        validation_mode: RenderGraphValidationMode,
     ) -> FrameGraphShape {
         FrameGraphShape {
             msaa_sample_count,
@@ -90,6 +94,7 @@ impl RenderBackend {
                 .unwrap_or(wgpu::TextureFormat::Bgra8UnormSrgb),
             scene_color_format: self.scene_color_format_wgpu(),
             post_processing: PostProcessChainSignature::from_settings(post_processing),
+            validation_mode,
         }
     }
 
@@ -127,23 +132,33 @@ impl RenderBackend {
         }
         let post_processing_resources = self.graph_state.post_processing_resources().clone();
         match self.graph_state.frame_graph_cache.ensure(key, || {
-            build_main_graph_with_resources(key, post_processing, &post_processing_resources)
+            build_main_graph_with_resources(
+                key,
+                post_processing,
+                &post_processing_resources,
+                key.validation_mode,
+            )
         }) {
             Ok(GraphCacheEnsureResult::Hit) => {}
             Ok(GraphCacheEnsureResult::Built) => {
                 self.graph_state.reset_upload_arena();
                 if let Some(stats) = self.graph_state.frame_graph_cache.compile_stats() {
                     logger::info!(
-                        "render graph ready: passes={} topo_levels={} culled={} transient_textures={} texture_slots={} transient_buffers={} buffer_slots={} imported_textures={} imported_buffers={} key={:?}",
+                        "render graph ready: passes={} topo_levels={} culled={} transient_textures={} texture_slots={} texture_lanes={} transient_buffers={} buffer_slots={} buffer_lanes={} imported_textures={} imported_buffers={} validation_diagnostics={} merge_groups={} materialized_groups={} key={:?}",
                         stats.pass_count,
                         stats.topo_levels,
                         stats.culled_count,
                         stats.transient_texture_count,
                         stats.transient_texture_slots,
+                        stats.transient_texture_lanes,
                         stats.transient_buffer_count,
                         stats.transient_buffer_slots,
+                        stats.transient_buffer_lanes,
                         stats.imported_texture_count,
                         stats.imported_buffer_count,
+                        stats.validation_diagnostics,
+                        stats.render_pass_merge_groups,
+                        stats.render_pass_materialization_groups,
                         key,
                     );
                 }
@@ -160,17 +175,23 @@ impl RenderBackend {
         let Some(handle) = self.renderer_settings.as_ref() else {
             return;
         };
-        let (live_settings, live_msaa) = match handle.read() {
+        let (live_settings, live_msaa, validation_mode) = match handle.read() {
             Ok(guard) => (
                 guard.post_processing.clone(),
                 guard.rendering.msaa.as_count() as u8,
+                guard.debug.render_graph_validation,
             ),
             Err(_) => return,
         };
         let graph_settings = self.effective_post_processing_settings_for_graph(&live_settings);
         let graph_settings =
             self.post_processing_settings_for_graph_shape(&graph_settings, multiview_stereo);
-        let shape = self.frame_graph_shape_for(&graph_settings, live_msaa, multiview_stereo);
+        let shape = self.frame_graph_shape_for(
+            &graph_settings,
+            live_msaa,
+            multiview_stereo,
+            validation_mode,
+        );
         self.sync_frame_graph_cache(&graph_settings, shape);
     }
 }

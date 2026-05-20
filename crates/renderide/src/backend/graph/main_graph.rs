@@ -20,6 +20,7 @@ use crate::render_graph::GraphCacheKey;
 use crate::render_graph::builder::GraphBuilder;
 use crate::render_graph::compiled::CompiledRenderGraph;
 use crate::render_graph::error::GraphBuildError;
+use crate::render_graph::validation::RenderGraphValidationMode;
 
 pub(crate) use handles::MainGraphPostProcessingResources;
 
@@ -27,6 +28,30 @@ use default_chain::build_default_post_processing_chain;
 use edges::add_main_graph_edges;
 use handles::{MainGraphHandles, import_main_graph_resources};
 use passes::register_main_graph_passes;
+
+/// Declares blackboard slots that graph preparation seeds before per-view pass recording.
+fn seed_main_graph_blackboard(builder: &mut GraphBuilder) {
+    builder.seed_blackboard::<crate::render_graph::frame_params::PerViewFramePlanSlot>(
+        "per-view frame setup",
+    );
+    builder.seed_blackboard::<crate::render_graph::frame_params::MsaaViewsSlot>(
+        "per-view graph resource resolution",
+    );
+    builder.seed_blackboard::<crate::passes::WorldMeshForwardPlanSlot>("world-mesh frame planning");
+    builder.seed_blackboard::<crate::render_graph::post_process_settings::GtaoSettingsSlot>(
+        "live post-processing settings",
+    );
+    builder.seed_blackboard::<crate::render_graph::post_process_settings::BloomSettingsSlot>(
+        "live post-processing settings",
+    );
+    builder.seed_blackboard::<crate::render_graph::post_process_settings::MotionBlurSettingsSlot>(
+        "live post-processing settings",
+    );
+    builder
+        .seed_blackboard::<crate::render_graph::post_process_settings::AutoExposureSettingsSlot>(
+            "live post-processing settings",
+        );
+}
 
 /// Orchestrates registration of every pass, the default post-processing chain, the compose pass,
 /// and dependency edge wiring before compiling the graph.
@@ -38,6 +63,7 @@ fn add_main_graph_passes_and_edges(
     msaa_sample_count: u8,
     multiview_stereo: bool,
 ) -> Result<CompiledRenderGraph, GraphBuildError> {
+    seed_main_graph_blackboard(&mut builder);
     let passes = register_main_graph_passes(
         &mut builder,
         &h,
@@ -86,6 +112,7 @@ pub fn build_main_graph(
         key,
         post_processing_settings,
         &MainGraphPostProcessingResources::default(),
+        RenderGraphValidationMode::default(),
     )
 }
 
@@ -94,13 +121,14 @@ pub(crate) fn build_main_graph_with_resources(
     key: GraphCacheKey,
     post_processing_settings: &crate::config::PostProcessingSettings,
     post_processing_resources: &MainGraphPostProcessingResources,
+    validation_mode: RenderGraphValidationMode,
 ) -> Result<CompiledRenderGraph, GraphBuildError> {
     logger::info!(
         "main render graph: scene color HDR format = {:?}, post-processing = {} effect(s)",
         key.scene_color_format,
         key.post_processing.active_count()
     );
-    let mut builder = GraphBuilder::new();
+    let mut builder = GraphBuilder::with_validation_mode(validation_mode);
     let handles = import_main_graph_resources(&mut builder);
     let msaa_handles = [handles.forward_msaa_depth, handles.forward_msaa_depth_r32];
     let mut graph = add_main_graph_passes_and_edges(

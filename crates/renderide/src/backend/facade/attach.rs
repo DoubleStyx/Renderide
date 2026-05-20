@@ -115,20 +115,35 @@ impl RenderBackend {
             ipc,
         );
 
-        let (post_processing_settings, msaa_sample_count) = self
+        let (post_processing_settings, msaa_sample_count, validation_mode) = self
             .renderer_settings
             .as_ref()
             .and_then(|h| {
-                h.read()
-                    .ok()
-                    .map(|g| (g.post_processing.clone(), g.rendering.msaa.as_count() as u8))
+                h.read().ok().map(|g| {
+                    (
+                        g.post_processing.clone(),
+                        g.rendering.msaa.as_count() as u8,
+                        g.debug.render_graph_validation,
+                    )
+                })
             })
-            .unwrap_or_else(|| (PostProcessingSettings::default(), 1));
+            .unwrap_or_else(|| {
+                (
+                    PostProcessingSettings::default(),
+                    1,
+                    crate::render_graph::RenderGraphValidationMode::default(),
+                )
+            });
         let graph_post_processing =
             self.effective_post_processing_settings_for_graph(&post_processing_settings);
         let graph_post_processing =
             self.post_processing_settings_for_graph_shape(&graph_post_processing, false);
-        let shape = self.frame_graph_shape_for(&graph_post_processing, msaa_sample_count, false);
+        let shape = self.frame_graph_shape_for(
+            &graph_post_processing,
+            msaa_sample_count,
+            false,
+            validation_mode,
+        );
         self.sync_frame_graph_cache(&graph_post_processing, shape);
         logger::info!(
             "backend attached: surface_format={:?} scene_color_format={:?} msaa_sample_count={} mesh_preprocess={} msaa_depth_resolve={} frame_graph_passes={} frame_graph_topo_levels={}",

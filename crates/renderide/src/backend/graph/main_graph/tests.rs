@@ -20,6 +20,7 @@ fn smoke_key() -> GraphCacheKey {
         surface_format: TextureFormat::Bgra8UnormSrgb,
         scene_color_format: TextureFormat::Rgba16Float,
         post_processing: PostProcessChainSignature::default(),
+        validation_mode: RenderGraphValidationMode::default(),
     }
 }
 

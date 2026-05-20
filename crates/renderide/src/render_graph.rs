@@ -79,6 +79,7 @@ pub(crate) mod resources;
 mod schedule;
 mod swapchain_scope;
 pub(crate) mod upload_arena;
+pub mod validation;
 
 pub(crate) use compiled::cache::{GraphCache, GraphCacheEnsureResult, GraphCacheKey};
 pub(crate) use compiled::{
@@ -93,3 +94,4 @@ pub(crate) use frame_params::FrameViewClear;
 pub(crate) use history::{HistoryRegistry, HistoryRegistryError, HistoryTextureMipViews};
 pub(crate) use pool::TransientPool;
 pub(crate) use resources::HistorySlotId;
+pub use validation::RenderGraphValidationMode;

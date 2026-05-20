@@ -201,6 +201,17 @@ fn merge_groups_detect_only_compatible_adjacent_raster_passes() -> Result<(), Gr
             end_step: 2,
         }]
     );
+    assert_eq!(
+        g.schedule.render_pass_materialization_plan.groups,
+        vec![
+            crate::render_graph::schedule::RenderPassMaterializationGroup {
+                start_step: 0,
+                end_step: 2,
+            }
+        ]
+    );
+    assert_eq!(g.compile_stats.render_pass_merge_groups, 1);
+    assert_eq!(g.compile_stats.render_pass_materialization_groups, 1);
 
     let mut b = GraphBuilder::new();
     let first = b.import_texture(backbuffer_import());

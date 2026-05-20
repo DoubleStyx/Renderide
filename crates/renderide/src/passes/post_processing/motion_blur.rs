@@ -145,6 +145,7 @@ impl RasterPass for MotionVectorsPass {
     }
 
     fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
+        b.read_blackboard::<MotionBlurSettingsSlot>();
         b.import_texture(
             self.depth,
             TextureAccess::Sampled {
@@ -255,6 +256,7 @@ impl RasterPass for MotionBlurResolvePass {
     }
 
     fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
+        b.read_blackboard::<MotionBlurSettingsSlot>();
         read_fragment_sampled_texture(b, self.input);
         read_fragment_sampled_texture(b, self.velocity);
         color_attachment(b, self.output, wgpu::LoadOp::Clear(wgpu::Color::BLACK));

@@ -7,6 +7,7 @@ use wgpu::TextureFormat;
 
 use super::super::error::GraphBuildError;
 use super::super::post_process_chain::PostProcessChainSignature;
+use super::super::validation::RenderGraphValidationMode;
 use super::CompileStats;
 use super::CompiledRenderGraph;
 use crate::camera::ViewId;
@@ -14,8 +15,7 @@ use crate::camera::ViewId;
 /// Maximum number of compiled graph variants retained by the main graph cache.
 const GRAPH_CACHE_CAPACITY: usize = 4;
 
-/// Inputs that invalidate a compiled main graph (extent, MSAA, multiview, surface format,
-/// scene-color format, and post-processing chain topology).
+/// Inputs that invalidate a compiled main graph variant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GraphCacheKey {
     /// Main surface extent in physical pixels.
@@ -32,6 +32,8 @@ pub struct GraphCacheKey {
     /// effect parameters that only update uniforms do not flip this signature; only adding or
     /// removing a pass invalidates the cached graph.
     pub post_processing: PostProcessChainSignature,
+    /// Validation policy used by graph compilation and execution.
+    pub validation_mode: RenderGraphValidationMode,
 }
 
 /// Result of ensuring a graph variant is available for a cache key.
@@ -208,6 +210,7 @@ mod tests {
             surface_format: TextureFormat::Bgra8UnormSrgb,
             scene_color_format: TextureFormat::Rgba16Float,
             post_processing: sig,
+            validation_mode: RenderGraphValidationMode::default(),
         }
     }
 
@@ -272,11 +275,17 @@ mod tests {
             pass_info: Vec::new(),
             transient_textures: Vec::new(),
             transient_buffers: Vec::new(),
+            texture_lifetime_lanes: Vec::new(),
+            buffer_lifetime_lanes: Vec::new(),
             subresources: Vec::new(),
             imported_textures: Vec::new(),
             imported_buffers: Vec::new(),
             schedule,
             schedule_hud,
+            validation_report: crate::render_graph::validation::GraphValidationReport::new(
+                RenderGraphValidationMode::default(),
+            ),
+            validation_mode: RenderGraphValidationMode::default(),
             main_graph_msaa_transient_handles: None,
         }
     }

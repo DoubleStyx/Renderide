@@ -73,6 +73,7 @@ impl RasterPass for BloomUpsamplePass {
     }
 
     fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
+        b.read_blackboard::<BloomSettingsSlot>();
         read_fragment_sampled_texture(b, self.input);
         // Upsample blends into the target mip; load the existing contents so the blend unit can
         // combine `src * C` with `dst * (1-C)` or `dst * 1` depending on composite mode.

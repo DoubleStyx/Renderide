@@ -9,6 +9,7 @@ use super::resources::{
     ImportedBufferDecl, ImportedTextureDecl, TextureHandle, TransientSubresourceDesc,
 };
 use super::schedule::{FrameSchedule, ScheduleHudSnapshot};
+use super::validation::{GraphValidationReport, RenderGraphValidationMode};
 use crate::camera::ViewId;
 
 pub(super) mod cache;
@@ -26,7 +27,7 @@ pub(crate) use frame_view::{
 };
 pub(super) use resource::{
     CompileStats, CompiledBufferResource, CompiledPassInfo, CompiledTextureResource,
-    ResourceLifetime,
+    ResourceLifetime, ResourceLifetimeLane, ResourceLifetimeSegment,
 };
 
 /// Borrows shared across frame-global and per-view [`CompiledRenderGraph::execute_multi_view`] passes.
@@ -93,6 +94,10 @@ pub struct CompiledRenderGraph {
     pub transient_textures: Vec<CompiledTextureResource>,
     /// Compiled transient buffer metadata.
     pub transient_buffers: Vec<CompiledBufferResource>,
+    /// Lifetime lanes for transient texture alias slots.
+    pub texture_lifetime_lanes: Vec<ResourceLifetimeLane>,
+    /// Lifetime lanes for transient buffer alias slots.
+    pub buffer_lifetime_lanes: Vec<ResourceLifetimeLane>,
     /// Declared subresource views of transient textures. Resolved lazily at execute time via
     /// [`super::context::GraphResolvedResources::subresource_view`]; see
     /// [`super::resources::SubresourceHandle`].
@@ -105,6 +110,10 @@ pub struct CompiledRenderGraph {
     pub schedule: FrameSchedule,
     /// Build-time scheduler summary for diagnostics and HUD overlays.
     pub schedule_hud: ScheduleHudSnapshot,
+    /// Build-time validation diagnostics.
+    pub validation_report: GraphValidationReport,
+    /// Runtime validation policy for this graph.
+    pub validation_mode: RenderGraphValidationMode,
     /// When this graph is the main frame graph from [`super::build_main_graph`], transient handles
     /// for the MSAA depth and R32-float depth-resolve scratch resources.
     pub(super) main_graph_msaa_transient_handles: Option<[TextureHandle; 2]>,

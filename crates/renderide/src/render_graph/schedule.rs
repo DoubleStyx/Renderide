@@ -145,6 +145,40 @@ pub struct RenderPassMergeGroup {
     pub end_step: usize,
 }
 
+/// One render-pass merge group selected for materialized recording.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RenderPassMaterializationGroup {
+    /// First schedule-step index in the materialized run.
+    pub start_step: usize,
+    /// Exclusive schedule-step index after the materialized run.
+    pub end_step: usize,
+}
+
+impl From<RenderPassMergeGroup> for RenderPassMaterializationGroup {
+    fn from(value: RenderPassMergeGroup) -> Self {
+        Self {
+            start_step: value.start_step,
+            end_step: value.end_step,
+        }
+    }
+}
+
+/// Materialized render-pass recording plan derived from conservative merge groups.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RenderPassMaterializationPlan {
+    /// Candidate groups that the executor should attempt to materialize.
+    pub groups: Vec<RenderPassMaterializationGroup>,
+}
+
+impl RenderPassMaterializationPlan {
+    /// Builds a materialization plan from conservative merge groups.
+    pub fn from_merge_groups(groups: &[RenderPassMergeGroup]) -> Self {
+        Self {
+            groups: groups.iter().copied().map(Into::into).collect(),
+        }
+    }
+}
+
 /// Compiled execution schedule for one [`super::compiled::CompiledRenderGraph`].
 ///
 /// `steps` is the flat retained pass list in execution order. `waves` stores index ranges into
@@ -165,6 +199,8 @@ pub struct FrameSchedule {
     pub imported_final_accesses: Vec<ImportedResourceFinalAccess>,
     /// Conservatively detected render-pass merge groups.
     pub render_pass_merge_groups: Vec<RenderPassMergeGroup>,
+    /// Render-pass groups the executor attempts to materialize into one wgpu render pass.
+    pub render_pass_materialization_plan: RenderPassMaterializationPlan,
     /// Cached `pass_idx` values for [`PassPhase::FrameGlobal`] steps, in execution order.
     ///
     /// Populated once by [`FrameSchedule::new`] so per-frame post-submit dispatch can iterate a
@@ -211,6 +247,9 @@ impl FrameSchedule {
             ],
             resource_events,
             imported_final_accesses,
+            render_pass_materialization_plan: RenderPassMaterializationPlan::from_merge_groups(
+                &render_pass_merge_groups,
+            ),
             render_pass_merge_groups,
             frame_global_pass_indices,
             per_view_pass_indices,
@@ -402,6 +441,10 @@ pub struct ScheduleHudSnapshot {
     pub per_view_count: usize,
     /// Pass count per wave (`waves[w].len()`).
     pub passes_per_wave: Vec<usize>,
+    /// Conservative merge groups detected at compile time.
+    pub render_pass_merge_group_count: usize,
+    /// Merge groups planned for materialized recording.
+    pub render_pass_materialization_group_count: usize,
 }
 
 impl ScheduleHudSnapshot {
@@ -412,7 +455,12 @@ impl ScheduleHudSnapshot {
             wave_count: schedule.wave_count(),
             frame_global_count: schedule.frame_global_steps().count(),
             per_view_count: schedule.per_view_steps().count(),
-            passes_per_wave: schedule.waves.iter().map(ExactSizeIterator::len).collect(),
+            passes_per_wave: schedule.wave_steps().map(<[ScheduleStep]>::len).collect(),
+            render_pass_merge_group_count: schedule.render_pass_merge_groups.len(),
+            render_pass_materialization_group_count: schedule
+                .render_pass_materialization_plan
+                .groups
+                .len(),
         }
     }
 }

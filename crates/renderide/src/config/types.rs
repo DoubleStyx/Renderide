@@ -12,6 +12,7 @@ mod post_processing;
 mod rendering;
 mod watchdog;
 
+pub use crate::render_graph::RenderGraphValidationMode;
 pub use debug::{
     DebugHudMainTab, DebugHudMainTabVisibility, DebugHudRendererConfigTab,
     DebugHudRendererConfigTabVisibility, DebugHudSettings, DebugSettings, PowerPreferenceSetting,

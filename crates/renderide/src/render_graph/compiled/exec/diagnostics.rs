@@ -28,8 +28,13 @@ pub(super) struct CommandEncodingDiagnostics {
     pub(super) scheduler_resource_events: usize,
     pub(super) scheduler_import_final_accesses: usize,
     pub(super) scheduler_merge_groups: usize,
+    pub(super) scheduler_materialized_groups: usize,
     pub(super) transient_texture_count: usize,
     pub(super) transient_texture_slots: usize,
+    pub(super) transient_texture_lanes: usize,
+    pub(super) transient_buffer_lanes: usize,
+    pub(super) validation_diagnostics: usize,
+    pub(super) pass_parameter_schemas: usize,
     pub(super) pre_resolve_ms: f64,
     pub(super) prepare_resources_ms: f64,
     pub(super) frame_global_encode_ms: f64,
@@ -68,8 +73,21 @@ impl CommandEncodingDiagnostics {
             scheduler_resource_events: graph.schedule.resource_events.len(),
             scheduler_import_final_accesses: graph.schedule.imported_final_accesses.len(),
             scheduler_merge_groups: graph.schedule.render_pass_merge_groups.len(),
+            scheduler_materialized_groups: graph
+                .schedule
+                .render_pass_materialization_plan
+                .groups
+                .len(),
             transient_texture_count: graph.compile_stats.transient_texture_count,
             transient_texture_slots: graph.compile_stats.transient_texture_slots,
+            transient_texture_lanes: graph.texture_lifetime_lanes.len(),
+            transient_buffer_lanes: graph.buffer_lifetime_lanes.len(),
+            validation_diagnostics: graph.validation_report.len(),
+            pass_parameter_schemas: graph
+                .pass_info
+                .iter()
+                .filter(|info| info.parameter_schema.is_some())
+                .count(),
             pre_resolve_ms: 0.0,
             prepare_resources_ms: 0.0,
             frame_global_encode_ms: 0.0,
@@ -180,7 +198,7 @@ impl CommandEncodingDiagnostics {
             return;
         }
         logger::warn!(
-            "slow command encoder finish: max_finish_ms={:.3} frame_global_finish_ms={:.3} per_view_max_finish_ms={:.3} upload_finish_ms={:.3} views={} command_buffers={} passes(frame_global/per_view)={}/{} scheduler(passes/waves/largest_wave/submit_steps/upload_phases/resource_events/import_finals/merge_groups)={}/{}/{}/{}/{}/{}/{}/{} transients(textures/slots)={}/{} transient_misses(tex/buf)={}/{} uploads(writes/bytes/staged/fallback)={}/{}/{}/{} upload_arena(persistent_bytes/temp_bytes/reuses/grows/temp_fallbacks/oversized_queue/capacity/free/inflight/remapping)={}/{}/{}/{}/{}/{}/{}/{}/{}/{} timings_ms(pre_resolve/prepare/frame_global_encode/per_view_encode/upload_drain/assemble/submit)={:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3} commands(draws/instance_batches/pipeline_pass_submits)={}/{}/{}",
+            "slow command encoder finish: max_finish_ms={:.3} frame_global_finish_ms={:.3} per_view_max_finish_ms={:.3} upload_finish_ms={:.3} views={} command_buffers={} passes(frame_global/per_view)={}/{} scheduler(passes/waves/largest_wave/submit_steps/upload_phases/resource_events/import_finals/merge_groups/materialized_groups)={}/{}/{}/{}/{}/{}/{}/{}/{} transients(textures/slots/texture_lanes/buffer_lanes)={}/{}/{}/{} validation(diagnostics/parameter_schemas)={}/{} transient_misses(tex/buf)={}/{} uploads(writes/bytes/staged/fallback)={}/{}/{}/{} upload_arena(persistent_bytes/temp_bytes/reuses/grows/temp_fallbacks/oversized_queue/capacity/free/inflight/remapping)={}/{}/{}/{}/{}/{}/{}/{}/{}/{} timings_ms(pre_resolve/prepare/frame_global_encode/per_view_encode/upload_drain/assemble/submit)={:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3} commands(draws/instance_batches/pipeline_pass_submits)={}/{}/{}",
             max_finish_ms,
             self.frame_global_finish_ms,
             self.per_view_max_finish_ms,
@@ -197,8 +215,13 @@ impl CommandEncodingDiagnostics {
             self.scheduler_resource_events,
             self.scheduler_import_final_accesses,
             self.scheduler_merge_groups,
+            self.scheduler_materialized_groups,
             self.transient_texture_count,
             self.transient_texture_slots,
+            self.transient_texture_lanes,
+            self.transient_buffer_lanes,
+            self.validation_diagnostics,
+            self.pass_parameter_schemas,
             self.transient_delta.texture_misses,
             self.transient_delta.buffer_misses,
             self.upload_stats.writes,

@@ -62,6 +62,7 @@ impl RasterPass for BloomDownsampleFirstPass {
     }
 
     fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
+        b.read_blackboard::<BloomSettingsSlot>();
         read_fragment_sampled_texture(b, self.input);
         color_attachment(
             b,
