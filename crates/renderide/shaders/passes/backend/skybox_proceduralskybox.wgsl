@@ -4,6 +4,7 @@
 //! shader-specific keyword decoding for both this pass-side sky draw and the material root.
 
 #import renderide::frame::globals as rg
+#import renderide::core::fullscreen as fs
 #import renderide::skybox::procedural as ps
 #import renderide::skybox::procedural_material as psmat
 #import renderide::skybox::common as skybox
@@ -22,7 +23,7 @@ fn vs_main(
     @builtin(view_index) view_idx: u32,
 #endif
 ) -> VertexOutput {
-    let clip = skybox::fullscreen_quad_clip_pos(vertex_index);
+    let clip = fs::fullscreen_clip_pos(vertex_index);
     var out: VertexOutput;
     out.clip_pos = clip;
 #ifdef MULTIVIEW

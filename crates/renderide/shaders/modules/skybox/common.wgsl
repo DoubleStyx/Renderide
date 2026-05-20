@@ -20,29 +20,6 @@ struct SkyboxView {
     ndc_y_sign_pad: vec4<f32>,
 }
 
-fn fullscreen_clip_pos(vertex_index: u32) -> vec4<f32> {
-    let x = f32((vertex_index << 1u) & 2u);
-    let y = f32(vertex_index & 2u);
-    return vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
-}
-
-const FULLSCREEN_COVERING_TRIANGLE = mat3x4<f32>(
-    vec4<f32>(-1.0, -1.0, 0.0, 1.0),
-    vec4<f32>(3.0, -1.0, 0.0, 1.0),
-    vec4<f32>(-1.0, 3.0, 0.0, 1.0)
-);
-
-fn fullscreen_quad_clip_pos(vertex_index: u32) -> vec4<f32> {
-    let i = vertex_index % 3u;
-    if (i == 1u) {
-        return FULLSCREEN_COVERING_TRIANGLE[1];
-    }
-    if (i == 2u) {
-        return FULLSCREEN_COVERING_TRIANGLE[2];
-    }
-    return FULLSCREEN_COVERING_TRIANGLE[0];
-}
-
 fn view_is_orthographic(sky: SkyboxView, view_layer: u32) -> bool {
     if (view_layer == 0u) {
         return sky.ndc_y_sign_pad.y > 0.5;
