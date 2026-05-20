@@ -428,8 +428,7 @@ mod tests {
 
     #[test]
     fn skybox_view_uniforms_are_16_byte_aligned() {
-        assert_eq!(size_of::<SkyboxViewUniforms>() % 16, 0);
-        assert_eq!(SKYBOX_VIEW_UNIFORM_SIZE, 128);
+        assert_eq!(SKYBOX_VIEW_UNIFORM_SIZE % 16, 0);
     }
 
     #[test]

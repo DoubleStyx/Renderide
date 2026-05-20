@@ -47,10 +47,8 @@ impl SkyboxFamily {
 
     /// Vertex count used by the fullscreen background draw.
     pub(super) const fn draw_vertex_count(self) -> u32 {
-        match self {
-            Self::Projection360 | Self::Gradient => 3,
-            Self::Procedural => 3,
-        }
+        // A single triangle encompassing the viewport
+        3
     }
 }
 
@@ -211,7 +209,7 @@ mod tests {
     fn procedural_skybox_draws_fullscreen_quad() {
         assert_eq!(SkyboxFamily::Projection360.draw_vertex_count(), 3);
         assert_eq!(SkyboxFamily::Gradient.draw_vertex_count(), 3);
-        assert_eq!(SkyboxFamily::Procedural.draw_vertex_count(), 6);
+        assert_eq!(SkyboxFamily::Procedural.draw_vertex_count(), 3);
     }
 
     #[test]

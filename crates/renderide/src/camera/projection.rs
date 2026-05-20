@@ -304,8 +304,7 @@ mod projection_math_tests {
     #[test]
     fn skybox_shader_uses_positive_asymmetric_skew_sign() {
         let source = include_str!("../../shaders/modules/skybox/common.wgsl");
-        assert!(source.contains("ndc.x + proj_params.z"));
-        assert!(source.contains("ndc.y + proj_params.w"));
+        assert!(source.contains("ndc.xy + proj_params.zw"));
     }
 
     /// Orthographic skyboxes use a parallel view ray instead of unprojecting NDC as a perspective
