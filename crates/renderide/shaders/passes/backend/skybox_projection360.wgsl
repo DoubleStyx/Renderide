@@ -4,7 +4,6 @@
 //! sampling for both this pass-side sky draw and the material root.
 
 #import renderide::frame::globals as rg
-#import renderide::core::fullscreen as fs
 #import renderide::skybox::common as skybox
 #import renderide::skybox::projection360 as p360
 #import renderide::skybox::projection360_material as p360m
@@ -81,6 +80,10 @@ fn projection360_params() -> p360m::Projection360Params {
 }
 
 fn base_view_dir(ndc: vec2<f32>, view_layer: u32) -> vec3<f32> {
+    if (p360m::kw_PERSPECTIVE(mat._RenderideVariantBits)) {
+        return p360::perspective_view_dir_from_ndc(ndc.xy, mat._PerspectiveFOV);
+    }
+
     let proj_params = select(rg::frame.proj_params_left, rg::frame.proj_params_right, view_layer != 0u);
     let camera_ray_view = skybox::view_ray_from_ndc(
         ndc,
@@ -88,10 +91,6 @@ fn base_view_dir(ndc: vec2<f32>, view_layer: u32) -> vec3<f32> {
         skybox::view_is_orthographic(view, view_layer),
     );
     let camera_ray_world = skybox::world_ray_from_view_ray(camera_ray_view, view, view_layer);
-
-    if (p360m::kw_PERSPECTIVE(mat._RenderideVariantBits)) {
-        return p360::perspective_view_dir_from_ndc(ndc, mat._PerspectiveFOV);
-    }
     return normalize(-camera_ray_world);
 }
 
@@ -102,7 +101,7 @@ fn vs_main(
     @builtin(view_index) view_idx: u32,
 #endif
 ) -> VertexOutput {
-    let clip = fs::fullscreen_clip_pos(vertex_index);
+    let clip = skybox::fullscreen_clip_pos(vertex_index);
     var out: VertexOutput;
     out.clip_pos = clip;
 #ifdef MULTIVIEW
@@ -116,7 +115,7 @@ fn vs_main(
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let params = projection360_params();
-    let ndc = vec2<f32>(in.clip_pos.x, in.clip_pos.y * view.ndc_y_sign_pad.x);
+    let ndc = in.clip_pos.xy * vec2<f32>(1.0, view.ndc_y_sign_pad.x);
     let view_dir = p360m::apply_offset(
         base_view_dir(ndc, in.view_layer),
         params,

@@ -4,7 +4,6 @@
 //! shader-specific keyword decoding for both this pass-side sky draw and the material root.
 
 #import renderide::frame::globals as rg
-#import renderide::core::fullscreen as fs
 #import renderide::skybox::procedural as ps
 #import renderide::skybox::procedural_material as psmat
 #import renderide::skybox::common as skybox
@@ -23,7 +22,7 @@ fn vs_main(
     @builtin(view_index) view_idx: u32,
 #endif
 ) -> VertexOutput {
-    let clip = fs::fullscreen_clip_pos(vertex_index);
+    let clip = skybox::fullscreen_clip_pos(vertex_index);
     var out: VertexOutput;
     out.clip_pos = clip;
 #ifdef MULTIVIEW
@@ -37,7 +36,7 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let ndc = vec2<f32>(in.clip_pos.x, in.clip_pos.y * view.ndc_y_sign_pad.x);
+    let ndc = in.clip_pos.xy * vec2<f32>(1.0, view.ndc_y_sign_pad.x);
     let proj_params = select(rg::frame.proj_params_left, rg::frame.proj_params_right, in.view_layer != 0u);
     let view_ray = skybox::view_ray_from_ndc(
         ndc,

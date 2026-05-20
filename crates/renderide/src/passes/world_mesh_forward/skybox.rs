@@ -42,18 +42,10 @@ struct SkyboxViewBinding {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct SkyboxViewUniforms {
-    /// View-to-world X basis for the left eye or mono view.
-    view_x_left: [f32; 4],
-    /// View-to-world Y basis for the left eye or mono view.
-    view_y_left: [f32; 4],
-    /// View-to-world Z basis for the left eye or mono view.
-    view_z_left: [f32; 4],
-    /// View-to-world X basis for the right eye.
-    view_x_right: [f32; 4],
-    /// View-to-world Y basis for the right eye.
-    view_y_right: [f32; 4],
-    /// View-to-world Z basis for the right eye.
-    view_z_right: [f32; 4],
+    /// View-to-world basis for the left eye or mono view.
+    view_left: [f32; 16],
+    /// View-to-world basis for the right eye.
+    view_right: [f32; 16],
     /// Background color for `CameraClearMode::Color`.
     clear_color: [f32; 4],
     /// `.x`: ndc Y sign passed to the fragment shader (1.0 normal, -1.0 for offscreen-RT views).
@@ -70,8 +62,6 @@ impl SkyboxViewUniforms {
     /// Builds view bases and clear color for the current view.
     fn from_frame(frame: &GraphPassFrame<'_>) -> Self {
         let (left, right) = skybox_world_to_view_pair(frame);
-        let (lx, ly, lz) = view_to_world_basis(left);
-        let (rx, ry, rz) = view_to_world_basis(right);
         let ndc_y_sign = if frame.view.offscreen_write_render_texture_asset_id.is_some() {
             -1.0
         } else {
@@ -79,12 +69,8 @@ impl SkyboxViewUniforms {
         };
         let ortho_flag = projection_kind_orthographic_flag(frame.view.host_camera.projection_kind);
         Self {
-            view_x_left: lx,
-            view_y_left: ly,
-            view_z_left: lz,
-            view_x_right: rx,
-            view_y_right: ry,
-            view_z_right: rz,
+            view_left: left.inverse().to_cols_array(),
+            view_right: right.inverse().to_cols_array(),
             clear_color: frame.view.clear.color.to_array(),
             ndc_y_sign_pad: [ndc_y_sign, ortho_flag, ortho_flag, 0.0],
         }
@@ -425,16 +411,6 @@ fn skybox_stem_for_shader_asset(
 /// Finds the world-to-view matrices used for skybox ray reconstruction.
 fn skybox_world_to_view_pair(frame: &GraphPassFrame<'_>) -> (glam::Mat4, glam::Mat4) {
     world_to_view_pair_for_skybox(frame.shared.scene, &frame.view.host_camera)
-}
-
-/// Converts a world-to-view matrix into packed view-to-world basis vectors.
-fn view_to_world_basis(world_to_view: glam::Mat4) -> ([f32; 4], [f32; 4], [f32; 4]) {
-    let view_to_world = world_to_view.inverse();
-    (
-        view_to_world.x_axis.truncate().extend(0.0).to_array(),
-        view_to_world.y_axis.truncate().extend(0.0).to_array(),
-        view_to_world.z_axis.truncate().extend(0.0).to_array(),
-    )
 }
 
 fn projection_kind_orthographic_flag(kind: CameraProjectionKind) -> f32 {
