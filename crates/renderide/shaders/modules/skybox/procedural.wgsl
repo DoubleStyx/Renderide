@@ -130,6 +130,7 @@ fn ground_inscatter_step(
 fn evaluate_scattering(
     eye_ray: vec3<f32>,
     sun_dir: vec3<f32>,
+    params: ProceduralSkyParams,
     scattering_params: ScatteringParameters,
 ) -> ScatteringOutput {
     let camera_pos = vec3<f32>(0.0, CAMERA_POS_HEIGHT, 0.0);
@@ -137,10 +138,7 @@ fn evaluate_scattering(
     var c_in: vec3<f32>;
     var c_out: vec3<f32>;
 
-    if (length(scattering_params.kkr_in) == 0) {
-        c_in = vec3<f32>(0.0);
-        c_out = vec3<f32>(0.0);
-    } else if (eye_ray.y >= 0.0) {
+    if (eye_ray.y >= 0.0) {
         let far = sqrt(OUTER_RADIUS_SQ + INNER_RADIUS_SQ * eye_ray.y * eye_ray.y - INNER_RADIUS_SQ)
             - INNER_RADIUS * eye_ray.y;
         let height = CAMERA_POS_HEIGHT;
@@ -185,7 +183,8 @@ fn evaluate_scattering(
         );
         let front_color = g.contribution;
 
-        c_in = front_color * (scattering_params.kkr_in + KKM_ESUN);
+        let sun_contrib = select(KKM_ESUN, 0, sun_disk_mode_none(params.sun_disk_mode));
+        c_in = front_color * (scattering_params.kkr_in + sun_contrib);
         c_out = clamp(g.attenuate, vec3<f32>(0.0), vec3<f32>(1.0));
     }
 
@@ -227,7 +226,7 @@ fn visible_vertex_terms(
 ) -> ProceduralSkyVisibleTerms {
     let eye_ray = safe_normalize(input_eye_ray, vec3<f32>(0.0, 1.0, 0.0));
     let sun_dir = safe_normalize(params.sun_direction, vec3<f32>(0.0, 1.0, 0.0));
-    let scattering = evaluate_scattering(eye_ray, sun_dir, scattering_params);
+    let scattering = evaluate_scattering(eye_ray, sun_dir, params, scattering_params);
 
     let ground_color = params.exposure * (scattering.c_in + params.ground_color * scattering.c_out);
     let sky_color = params.exposure * (scattering.c_in * rayleigh_phase(sun_dir, -eye_ray));
