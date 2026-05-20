@@ -6,7 +6,7 @@ use crate::backend::RenderBackend;
 use crate::camera::{HostCameraFrame, ViewId};
 use crate::gpu::GpuContext;
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
-use crate::render_graph::{GraphExecuteError, OffscreenSampleCountPolicy};
+use crate::render_graph::{GraphExecuteError, RenderPathProfile};
 use crate::scene::{
     ReflectionProbeOnChangesRenderRequest, RenderSpaceId, SceneCoordinator,
     reflection_probe_skybox_only,
@@ -40,7 +40,6 @@ use super::cube_capture::{
 use face::{
     CUBE_FACE_COUNT, ProbeCubeFace, clear_from_reflection_probe_state,
     draw_filter_from_reflection_probe_state, host_camera_frame_for_probe_face,
-    reflection_probe_bake_post_processing,
 };
 
 use super::super::RendererRuntime;
@@ -50,9 +49,6 @@ use super::super::state::tick::QueuedReflectionProbeRenderTask;
 const RGBA16F_BYTES_PER_PIXEL: usize = 8;
 const RGBA8_BYTES_PER_PIXEL: usize = 4;
 const PROBE_TASK_COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
-/// MSAA policy used by reflection-probe utility captures.
-const REFLECTION_PROBE_SAMPLE_COUNT_POLICY: OffscreenSampleCountPolicy =
-    OffscreenSampleCountPolicy::SingleSample;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProbeOutputFormat {
@@ -511,10 +507,8 @@ fn plan_reflection_probe_task(
             ),
             viewport_px: extent.tuple(),
             clear: clear_from_reflection_probe_state(probe.state),
-            post_processing: reflection_probe_bake_post_processing(),
-            target: FrameViewPlanTarget::SecondaryRt(
-                targets.to_offscreen_handles(face, REFLECTION_PROBE_SAMPLE_COUNT_POLICY),
-            ),
+            profile: RenderPathProfile::reflection_probe(),
+            target: FrameViewPlanTarget::SecondaryRt(targets.to_offscreen_handles(face)),
         })
         .collect();
     Ok(PlannedReflectionProbeTask {

@@ -10,6 +10,7 @@ use crate::gpu::GpuContext;
 use crate::reflection_probes::specular::{
     RuntimeReflectionProbeCapture, RuntimeReflectionProbeCaptureKey,
 };
+use crate::render_graph::RenderPathProfile;
 use crate::scene::{
     ReflectionProbeOnChangesRenderRequest, RenderSpaceId, SceneCoordinator,
     changed_probe_completion,
@@ -21,10 +22,9 @@ use crate::shared::{
 
 use super::{
     FrameViewPlan, FrameViewPlanTarget, ProbeCubeFace, ProbeTaskExtent, ProbeTaskTargets,
-    REFLECTION_PROBE_SAMPLE_COUNT_POLICY, ReflectionProbeBakeError, RendererRuntime,
-    clear_from_reflection_probe_state, create_probe_task_targets,
-    draw_filter_from_reflection_probe_state, host_camera_frame_for_probe_face,
-    reflection_probe_bake_post_processing, render_reflection_probe_faces_offscreen,
+    ReflectionProbeBakeError, RendererRuntime, clear_from_reflection_probe_state,
+    create_probe_task_targets, draw_filter_from_reflection_probe_state,
+    host_camera_frame_for_probe_face, render_reflection_probe_faces_offscreen,
 };
 
 /// Active OnChanges probe capture, retained across ticks when host time slicing requests it.
@@ -741,10 +741,8 @@ fn plan_runtime_reflection_probe_faces(
             ),
             viewport_px: extent.tuple(),
             clear: clear_from_reflection_probe_state(state),
-            post_processing: reflection_probe_bake_post_processing(),
-            target: FrameViewPlanTarget::SecondaryRt(
-                targets.to_offscreen_handles(face, REFLECTION_PROBE_SAMPLE_COUNT_POLICY),
-            ),
+            profile: RenderPathProfile::reflection_probe(),
+            target: FrameViewPlanTarget::SecondaryRt(targets.to_offscreen_handles(face)),
         })
         .collect())
 }

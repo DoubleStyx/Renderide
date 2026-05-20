@@ -10,7 +10,7 @@ use crate::camera::{ViewId, camera_render_task_world_matrix, host_camera_frame_f
 use crate::gpu::GpuContext;
 use crate::ipc::SharedMemoryAccessor;
 use crate::render_graph::{
-    FrameViewClear, GraphExecuteError, OffscreenSampleCountPolicy, ViewPostProcessing,
+    FrameViewClear, GraphExecuteError, RenderPathProfile, ViewPostProcessing,
 };
 use crate::scene::{RenderSpaceId, SceneCoordinator};
 use crate::shared::{CameraRenderParameters, CameraRenderTask, RenderingContext, TextureFormat};
@@ -18,7 +18,9 @@ use crate::world_mesh::{CameraTransformDrawFilter, WorldMeshDrawCollectParalleli
 
 use super::super::RendererRuntime;
 use super::super::frame::extract::{ExtractedFrame, PreparedViews};
-use super::super::frame::view_plan::{FrameViewPlan, FrameViewPlanTarget, OffscreenRtHandles};
+use super::super::frame::view_plan::{
+    FrameViewPlan, FrameViewPlanTarget, OffscreenRtHandles, ViewFamilyPlan,
+};
 use super::readback::{AwaitBufferMapError, await_buffer_map};
 
 mod alpha_coverage;
@@ -34,9 +36,6 @@ use result_write::{output_byte_count, write_camera_task_result, zero_task_result
 const CAMERA_READBACK_TIMEOUT: Duration = Duration::from_secs(5);
 /// Color attachment format used for CPU camera readback tasks.
 const CAMERA_TASK_COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
-/// MSAA policy used while rendering CPU camera readback tasks.
-const CAMERA_TASK_SAMPLE_COUNT_POLICY: OffscreenSampleCountPolicy =
-    OffscreenSampleCountPolicy::MasterMsaa;
 /// Bytes per texel copied from the readback color target.
 pub(super) const RGBA8_BYTES_PER_PIXEL: usize = 4;
 
@@ -244,7 +243,6 @@ impl CameraTaskTargets {
             depth_texture: Arc::clone(&self.depth_texture),
             depth_view: Arc::clone(&self.depth_view),
             color_format: self.color_format,
-            sample_count_policy: CAMERA_TASK_SAMPLE_COUNT_POLICY,
             copy_to_color: None,
         }
     }
@@ -430,7 +428,9 @@ fn plan_camera_task(
             view_id: ViewId::camera_render_task(render_space_id, task_index),
             viewport_px: extent.tuple(),
             clear: FrameViewClear::from_camera_render_parameters(parameters),
-            post_processing: camera_render_task_post_processing(parameters),
+            profile: RenderPathProfile::camera_readback(camera_render_task_post_processing(
+                parameters,
+            )),
             target: FrameViewPlanTarget::SecondaryRt(targets.to_offscreen_handles()),
         },
         targets,
@@ -469,7 +469,7 @@ fn render_camera_task_offscreen(
 ) -> Result<(), CameraReadbackError> {
     profiling::scope!("camera_task::offscreen_render");
     let view_id = plan.view_id;
-    let prepared_views = PreparedViews::new(vec![plan], None);
+    let prepared_views = PreparedViews::new(ViewFamilyPlan::new(vec![plan]), None);
     backend.prepare_lights_for_views(
         scene,
         prepared_views

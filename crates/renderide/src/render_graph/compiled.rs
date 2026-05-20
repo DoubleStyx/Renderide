@@ -22,8 +22,11 @@ mod dot;
 
 pub(crate) use frame_view::{
     ExternalFrameTargets, ExternalOffscreenTargets, FrameView, FrameViewResourceHints,
-    FrameViewTarget, OffscreenColorCopyTarget, OffscreenSampleCountPolicy, ViewPostProcessing,
+    FrameViewTarget, OffscreenColorCopyTarget, RenderPathProfile, ViewFamilyGraphRequirements,
+    ViewPostProcessing,
 };
+#[cfg(test)]
+pub(crate) use frame_view::{RenderPathProfileId, RenderPathSampleCountPolicy};
 pub(super) use resource::{
     CompileStats, CompiledBufferResource, CompiledPassInfo, CompiledTextureResource,
     ResourceLifetime,

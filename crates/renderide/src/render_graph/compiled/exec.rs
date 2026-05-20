@@ -533,7 +533,7 @@ impl CompiledRenderGraph {
             let render_context = view.render_context;
             let resolved = Self::resolve_owned_view_from_target(
                 view_id,
-                view.post_processing,
+                view.profile,
                 &view.target,
                 mv_ctx.gpu,
                 mv_ctx.backbuffer_view_holder.as_ref(),
@@ -557,7 +557,7 @@ impl CompiledRenderGraph {
                 render_context,
                 view_id,
                 clear: view.clear,
-                post_processing: view.post_processing,
+                post_processing: view.post_processing(),
                 initial_blackboard: std::mem::take(&mut view.initial_blackboard),
                 resolved,
                 per_view_frame_bg_and_buf,

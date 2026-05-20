@@ -12,6 +12,7 @@ use crate::backend::asset_transfers as asset_uploads;
 use crate::config::{PostProcessingSettings, RendererSettingsHandle};
 use crate::gpu::{GpuLimits, GpuMappedBufferHealth};
 use crate::materials::embedded::EmbeddedMaterialBindError;
+use crate::render_graph::{RenderPathProfile, ViewFamilyGraphRequirements};
 
 use super::super::{FrameGpuBindingsError, RenderBackend};
 
@@ -124,11 +125,18 @@ impl RenderBackend {
                     .map(|g| (g.post_processing.clone(), g.rendering.msaa.as_count() as u8))
             })
             .unwrap_or_else(|| (PostProcessingSettings::default(), 1));
+        let initial_profile = if self.headless {
+            RenderPathProfile::headless_main()
+        } else {
+            RenderPathProfile::desktop_main()
+        };
+        let requirements = ViewFamilyGraphRequirements::from_profile(initial_profile, false);
+        let graph_post_processing = self
+            .effective_post_processing_settings_for_graph(&post_processing_settings, requirements);
         let graph_post_processing =
-            self.effective_post_processing_settings_for_graph(&post_processing_settings);
-        let graph_post_processing =
-            self.post_processing_settings_for_graph_shape(&graph_post_processing, false);
-        let shape = self.frame_graph_shape_for(&graph_post_processing, msaa_sample_count, false);
+            self.post_processing_settings_for_graph_shape(&graph_post_processing, requirements);
+        let shape =
+            self.frame_graph_shape_for(&graph_post_processing, msaa_sample_count, requirements);
         self.sync_frame_graph_cache(&graph_post_processing, shape);
         logger::info!(
             "backend attached: surface_format={:?} scene_color_format={:?} msaa_sample_count={} mesh_preprocess={} msaa_depth_resolve={} frame_graph_passes={} frame_graph_topo_levels={}",

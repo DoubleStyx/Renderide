@@ -161,14 +161,13 @@ impl RendererRuntime {
         // before the render graph dispatches, so passing a stale/zero value produces a degenerate
         // frustum and randomly culls scene objects.
         let swapchain_extent_px = gpu.surface_extent_px();
-        let main_post_processing = if includes_main && gpu.is_headless() {
-            crate::render_graph::ViewPostProcessing::disabled()
+        let main_profile = if includes_main && gpu.is_headless() {
+            crate::render_graph::RenderPathProfile::headless_main()
         } else {
-            crate::render_graph::ViewPostProcessing::primary_view()
+            crate::render_graph::RenderPathProfile::desktop_main()
         };
-        let prepared: Vec<FrameViewPlan<'a>> =
-            self.collect_prepared_views(gpu, mode, swapchain_extent_px, main_post_processing);
-        trace_prepared_views(&prepared);
+        let prepared = self.collect_prepared_views(gpu, mode, swapchain_extent_px, main_profile);
+        trace_prepared_views(prepared.plans());
         let headless_snapshot = {
             profiling::scope!("render::headless_snapshot");
             if includes_main && gpu.is_headless() {
@@ -210,11 +209,13 @@ fn trace_prepared_views(prepared: &[FrameViewPlan<'_>]) {
         }
         let _ = write!(
             details,
-            "#{idx}:{label} view_id={:?} extent={}x{} stereo={} filter={}",
+            "#{idx}:{label} profile={:?} view_id={:?} extent={}x{} stereo={} post={} filter={}",
+            view.profile.id(),
             view.view_id,
             view.viewport_px.0,
             view.viewport_px.1,
             view.is_multiview_stereo_active(),
+            view.post_processing().is_enabled(),
             view.draw_filter.is_some(),
         );
     }

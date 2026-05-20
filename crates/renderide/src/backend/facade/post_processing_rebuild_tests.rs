@@ -6,7 +6,10 @@ use super::*;
 use crate::config::{
     GtaoSettings, PostProcessingSettings, RendererSettings, TonemapMode, TonemapSettings,
 };
-use crate::render_graph::{GraphCacheKey, post_process_chain::PostProcessChainSignature};
+use crate::render_graph::{
+    GraphCacheKey, RenderPathProfile, ViewFamilyGraphRequirements,
+    post_process_chain::PostProcessChainSignature,
+};
 use hashbrown::HashMap;
 
 fn settings_handle(post: PostProcessingSettings) -> RendererSettingsHandle {
@@ -23,6 +26,18 @@ fn cached_graph_key(backend: &RenderBackend) -> GraphCacheKey {
         .frame_graph_cache
         .last_key()
         .expect("graph key should exist after sync")
+}
+
+fn desktop_requirements() -> ViewFamilyGraphRequirements {
+    ViewFamilyGraphRequirements::from_profile(RenderPathProfile::desktop_main(), false)
+}
+
+fn xr_requirements() -> ViewFamilyGraphRequirements {
+    ViewFamilyGraphRequirements::from_profile(RenderPathProfile::xr_hmd(), true)
+}
+
+fn headless_requirements() -> ViewFamilyGraphRequirements {
+    ViewFamilyGraphRequirements::from_profile(RenderPathProfile::headless_main(), false)
 }
 
 fn limits_with_format_usage(
@@ -64,7 +79,7 @@ fn first_sync_builds_graph_and_records_signature() {
         ..Default::default()
     });
     backend.renderer_settings = Some(handle);
-    backend.ensure_frame_graph_in_sync(false);
+    backend.ensure_frame_graph_in_sync(desktop_requirements());
     assert!(
         backend.frame_graph_pass_count() > 0,
         "graph should be built"
@@ -93,7 +108,7 @@ fn signature_change_triggers_rebuild() {
         ..Default::default()
     });
     backend.renderer_settings = Some(Arc::clone(&handle));
-    backend.ensure_frame_graph_in_sync(false);
+    backend.ensure_frame_graph_in_sync(desktop_requirements());
     let initial_passes = backend.frame_graph_pass_count();
     let initial_signature = cached_graph_key(&backend).post_processing;
 
@@ -101,7 +116,7 @@ fn signature_change_triggers_rebuild() {
         g.post_processing.enabled = true;
         g.post_processing.tonemap.mode = TonemapMode::AcesFitted;
     }
-    backend.ensure_frame_graph_in_sync(false);
+    backend.ensure_frame_graph_in_sync(desktop_requirements());
 
     assert_ne!(
         cached_graph_key(&backend).post_processing,
@@ -126,11 +141,11 @@ fn unchanged_signature_does_not_rebuild() {
         ..Default::default()
     });
     backend.renderer_settings = Some(handle);
-    backend.ensure_frame_graph_in_sync(false);
+    backend.ensure_frame_graph_in_sync(desktop_requirements());
     let signature = cached_graph_key(&backend).post_processing;
     let pass_count = backend.frame_graph_pass_count();
 
-    backend.ensure_frame_graph_in_sync(false);
+    backend.ensure_frame_graph_in_sync(desktop_requirements());
     assert_eq!(cached_graph_key(&backend).post_processing, signature);
     assert_eq!(backend.frame_graph_pass_count(), pass_count);
 }
@@ -142,9 +157,9 @@ fn multiview_change_updates_graph_key() {
     let mut backend = RenderBackend::new();
     backend.renderer_settings = Some(settings_handle(PostProcessingSettings::default()));
 
-    backend.ensure_frame_graph_in_sync(false);
+    backend.ensure_frame_graph_in_sync(desktop_requirements());
     let mono_key = cached_graph_key(&backend);
-    backend.ensure_frame_graph_in_sync(true);
+    backend.ensure_frame_graph_in_sync(xr_requirements());
     let stereo_key = cached_graph_key(&backend);
 
     assert!(!mono_key.multiview_stereo);
@@ -164,7 +179,7 @@ fn multiview_motion_blur_is_opt_in() {
     settings.motion_blur.allow_vr = true;
     backend.renderer_settings = Some(settings_handle(settings));
 
-    backend.ensure_frame_graph_in_sync(true);
+    backend.ensure_frame_graph_in_sync(xr_requirements());
 
     assert!(cached_graph_key(&backend).post_processing.motion_blur);
 }
@@ -176,11 +191,11 @@ fn cached_multiview_variant_switch_does_not_reset_upload_arena() {
     backend.renderer_settings = Some(settings_handle(PostProcessingSettings::default()));
 
     let initial_generation = backend.upload_arena_generation_for_tests();
-    backend.ensure_frame_graph_in_sync(false);
+    backend.ensure_frame_graph_in_sync(desktop_requirements());
     let after_mono_build = backend.upload_arena_generation_for_tests();
-    backend.ensure_frame_graph_in_sync(true);
+    backend.ensure_frame_graph_in_sync(xr_requirements());
     let after_stereo_build = backend.upload_arena_generation_for_tests();
-    backend.ensure_frame_graph_in_sync(false);
+    backend.ensure_frame_graph_in_sync(desktop_requirements());
     let after_mono_cache_hit = backend.upload_arena_generation_for_tests();
 
     assert!(
@@ -202,9 +217,8 @@ fn cached_multiview_variant_switch_does_not_reset_upload_arena() {
 }
 
 #[test]
-fn headless_backend_forces_empty_post_processing_signature() {
-    let mut backend = RenderBackend::new();
-    backend.headless = true;
+fn headless_profile_forces_empty_post_processing_signature() {
+    let backend = RenderBackend::new();
     let settings = PostProcessingSettings {
         enabled: true,
         auto_exposure: crate::config::AutoExposureSettings {
@@ -217,7 +231,8 @@ fn headless_backend_forces_empty_post_processing_signature() {
         ..Default::default()
     };
 
-    let effective = backend.effective_post_processing_settings_for_graph(&settings);
+    let effective =
+        backend.effective_post_processing_settings_for_graph(&settings, headless_requirements());
 
     assert!(
         !effective.enabled,

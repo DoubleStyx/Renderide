@@ -4,7 +4,9 @@ use std::fmt::Write as _;
 
 use crate::diagnostics::crash_context;
 use crate::gpu::GpuContext;
-use crate::render_graph::{FrameView, FrameViewTarget, GraphExecuteError};
+use crate::render_graph::{
+    FrameView, FrameViewTarget, GraphExecuteError, ViewFamilyGraphRequirements,
+};
 use crate::scene::SceneCoordinator;
 
 use super::RenderBackend;
@@ -36,6 +38,7 @@ impl RenderBackend {
         gpu: &mut GpuContext,
         scene: &SceneCoordinator,
         views: &mut Vec<FrameView<'_>>,
+        requirements: ViewFamilyGraphRequirements,
         skip_hi_z_begin_readback: bool,
     ) -> Result<(), GraphExecuteError> {
         profiling::scope!("backend::execute_multi_view_frame");
@@ -58,11 +61,14 @@ impl RenderBackend {
             }
         }
         self.graph_state.history_registry_mut().advance_frame();
+        debug_assert_eq!(
+            requirements,
+            ViewFamilyGraphRequirements::from_frame_views(views.as_slice())
+        );
         // Live HUD edits to `[post_processing]` only take effect when the graph is rebuilt; check
         // each tick so signature flips (effect added or removed) take effect on the next frame.
         // Parameter-only edits do not flip the signature and avoid the rebuild cost.
-        let multiview_stereo = views.iter().any(FrameView::is_multiview_stereo_active);
-        self.ensure_frame_graph_in_sync(multiview_stereo);
+        self.ensure_frame_graph_in_sync(requirements);
         let Some(mut graph) = self.graph_state.frame_graph_cache.take_graph() else {
             return Err(GraphExecuteError::NoFrameGraph);
         };
@@ -111,12 +117,13 @@ fn summarize_frame_views(gpu: &GpuContext, views: &[FrameView<'_>]) -> String {
         let extent = view.target.extent_px(gpu);
         let _ = write!(
             out,
-            "#{idx}:{target} view_id={:?} extent={}x{} stereo={} post={}",
+            "#{idx}:{target} profile={:?} view_id={:?} extent={}x{} stereo={} post={}",
+            view.profile.id(),
             view.view_id,
             extent.0,
             extent.1,
             view.is_multiview_stereo_active(),
-            view.post_processing.is_enabled(),
+            view.post_processing().is_enabled(),
         );
     }
     out

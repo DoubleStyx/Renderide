@@ -4,7 +4,7 @@ use crate::backend::graph::build_main_graph_with_resources;
 use crate::config::PostProcessingSettings;
 use crate::passes::post_processing::gpu_supports_gtao;
 use crate::render_graph::post_process_chain::PostProcessChainSignature;
-use crate::render_graph::{GraphCacheEnsureResult, GraphCacheKey};
+use crate::render_graph::{GraphCacheEnsureResult, GraphCacheKey, ViewFamilyGraphRequirements};
 
 use super::RenderBackend;
 
@@ -46,9 +46,10 @@ impl RenderBackend {
     pub(super) fn effective_post_processing_settings_for_graph(
         &self,
         settings: &PostProcessingSettings,
+        requirements: ViewFamilyGraphRequirements,
     ) -> PostProcessingSettings {
         let mut effective = settings.clone();
-        if self.headless {
+        if !requirements.any_post_processing {
             effective.enabled = false;
             return effective;
         }
@@ -65,10 +66,10 @@ impl RenderBackend {
     pub(super) fn post_processing_settings_for_graph_shape(
         &self,
         settings: &PostProcessingSettings,
-        multiview_stereo: bool,
+        requirements: ViewFamilyGraphRequirements,
     ) -> PostProcessingSettings {
         let mut effective = settings.clone();
-        if multiview_stereo && !effective.motion_blur.allow_vr {
+        if requirements.disable_motion_blur_for_vr && !effective.motion_blur.allow_vr {
             effective.motion_blur.enabled = false;
         }
         effective
@@ -80,11 +81,11 @@ impl RenderBackend {
         &self,
         post_processing: &PostProcessingSettings,
         msaa_sample_count: u8,
-        multiview_stereo: bool,
+        requirements: ViewFamilyGraphRequirements,
     ) -> FrameGraphShape {
         FrameGraphShape {
             msaa_sample_count,
-            multiview_stereo,
+            multiview_stereo: requirements.multiview_stereo,
             surface_format: self
                 .surface_format
                 .unwrap_or(wgpu::TextureFormat::Bgra8UnormSrgb),
@@ -155,8 +156,8 @@ impl RenderBackend {
         }
     }
 
-    /// Rebuilds the main graph when live settings or the execution multiview shape changed.
-    pub(crate) fn ensure_frame_graph_in_sync(&mut self, multiview_stereo: bool) {
+    /// Rebuilds the main graph when live settings or the active view-family shape changed.
+    pub(crate) fn ensure_frame_graph_in_sync(&mut self, requirements: ViewFamilyGraphRequirements) {
         let Some(handle) = self.renderer_settings.as_ref() else {
             return;
         };
@@ -167,10 +168,11 @@ impl RenderBackend {
             ),
             Err(_) => return,
         };
-        let graph_settings = self.effective_post_processing_settings_for_graph(&live_settings);
         let graph_settings =
-            self.post_processing_settings_for_graph_shape(&graph_settings, multiview_stereo);
-        let shape = self.frame_graph_shape_for(&graph_settings, live_msaa, multiview_stereo);
+            self.effective_post_processing_settings_for_graph(&live_settings, requirements);
+        let graph_settings =
+            self.post_processing_settings_for_graph_shape(&graph_settings, requirements);
+        let shape = self.frame_graph_shape_for(&graph_settings, live_msaa, requirements);
         self.sync_frame_graph_cache(&graph_settings, shape);
     }
 }

@@ -6,7 +6,7 @@ use hashbrown::HashSet;
 use glam::Vec3;
 
 use crate::camera::{CameraClipPlanes, HostCameraFrame};
-use crate::render_graph::{FrameViewClear, ViewPostProcessing};
+use crate::render_graph::FrameViewClear;
 use crate::scene::reflection_probe_skybox_only;
 use crate::shared::{CameraClearMode, ReflectionProbeClear, ReflectionProbeState};
 use crate::world_mesh::CameraTransformDrawFilter;
@@ -70,8 +70,4 @@ pub(super) fn draw_filter_from_reflection_probe_state(
             exclude: HashSet::new(),
         }
     }
-}
-
-pub(super) fn reflection_probe_bake_post_processing() -> ViewPostProcessing {
-    ViewPostProcessing::disabled()
 }

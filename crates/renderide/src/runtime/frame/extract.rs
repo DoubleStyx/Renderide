@@ -12,14 +12,16 @@ use crate::gpu::GpuContext;
 use crate::mesh_deform::SkinCacheKey;
 use crate::occlusion::HiZCullData;
 use crate::render_graph::blackboard::Blackboard;
-use crate::render_graph::{FrameView, FrameViewResourceHints, GraphExecuteError};
+use crate::render_graph::{
+    FrameView, FrameViewResourceHints, GraphExecuteError, ViewFamilyGraphRequirements,
+};
 use crate::world_mesh::{
     DrawCollectionContext, HiZTemporalState, PrefetchedWorldMeshViewDraws, WorldMeshCullInput,
     WorldMeshCullProjParams, WorldMeshDrawCollectParallelism, WorldMeshDrawPlan,
     build_world_mesh_cull_proj_params, collect_and_sort_draws_with_parallelism,
 };
 
-use super::view_plan::FrameViewPlan;
+use super::view_plan::{FrameViewPlan, ViewFamilyPlan};
 
 /// Immutable runtime-owned extraction packet built before per-view draw collection starts.
 ///
@@ -78,8 +80,8 @@ impl<'views, 'backend> ExtractedFrame<'views, 'backend> {
 /// Prepared per-frame view list plus any headless swapchain substitution resources needed to
 /// turn it into executable graph views.
 pub(in crate::runtime) struct PreparedViews<'a> {
-    /// Ordered list of planned views for this tick.
-    prepared: Vec<FrameViewPlan<'a>>,
+    /// Ordered view family and aggregate graph requirements for this tick.
+    family: ViewFamilyPlan<'a>,
     /// Headless main-target replacement captured before backend execution borrows the GPU.
     headless_snapshot: Option<super::view_plan::HeadlessOffscreenSnapshot>,
 }
@@ -87,23 +89,28 @@ pub(in crate::runtime) struct PreparedViews<'a> {
 impl<'a> PreparedViews<'a> {
     /// Builds prepared views from the ordered plan and optional headless target snapshot.
     pub(in crate::runtime) fn new(
-        prepared: Vec<FrameViewPlan<'a>>,
+        family: ViewFamilyPlan<'a>,
         headless_snapshot: Option<super::view_plan::HeadlessOffscreenSnapshot>,
     ) -> Self {
         Self {
-            prepared,
+            family,
             headless_snapshot,
         }
     }
 
     /// Returns `true` when no view should be rendered this tick.
     pub(in crate::runtime) fn is_empty(&self) -> bool {
-        self.prepared.is_empty()
+        self.family.is_empty()
     }
 
     /// Shared slice of the ordered planned views.
     pub(in crate::runtime) fn plans(&self) -> &[FrameViewPlan<'a>] {
-        &self.prepared
+        self.family.plans()
+    }
+
+    /// Aggregate graph-shaping requirements for the ordered views.
+    pub(in crate::runtime) fn graph_requirements(&self) -> ViewFamilyGraphRequirements {
+        self.family.requirements()
     }
 
     /// Builds executable graph views from the prepared plans and collected draw plans.
@@ -112,7 +119,8 @@ impl<'a> PreparedViews<'a> {
         'a: 'b,
     {
         let mut views: Vec<FrameView<'b>> = self
-            .prepared
+            .family
+            .plans()
             .iter()
             .zip(draw_plans)
             .map(|(prep, draws)| {
@@ -171,8 +179,9 @@ impl SubmitFrame<'_> {
         backend
             .frame_resources_mut()
             .begin_mesh_deform_submission(visible_deform_keys);
+        let requirements = self.prepared_views.graph_requirements();
         let mut views = self.prepared_views.build_execution_views(self.view_draws);
-        backend.execute_multi_view_frame(gpu, scene, &mut views, true)
+        backend.execute_multi_view_frame(gpu, scene, &mut views, requirements, true)
     }
 }
 
@@ -414,7 +423,7 @@ mod tests {
     use crate::camera::{HostCameraFrame, ViewId};
     use crate::mesh_deform::{SkinCacheKey, SkinCacheRendererKind};
     use crate::occlusion::OcclusionSystem;
-    use crate::render_graph::{FrameViewClear, ViewPostProcessing};
+    use crate::render_graph::{FrameViewClear, RenderPathProfile};
     use crate::scene::SceneCoordinator;
     use crate::world_mesh::WorldMeshDrawCollectParallelism;
     use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
@@ -432,7 +441,7 @@ mod tests {
             view_id: ViewId::Main,
             viewport_px: (640, 480),
             clear: FrameViewClear::default(),
-            post_processing: ViewPostProcessing::primary_view(),
+            profile: RenderPathProfile::desktop_main(),
             target: FrameViewPlanTarget::MainSwapchain,
         }
     }

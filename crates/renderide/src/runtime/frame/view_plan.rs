@@ -14,8 +14,8 @@ use crate::materials::{SHADER_PERM_MULTIVIEW_STEREO, ShaderPermutation};
 use crate::render_graph::blackboard::Blackboard;
 use crate::render_graph::{
     ExternalFrameTargets, ExternalOffscreenTargets, FrameView, FrameViewClear,
-    FrameViewResourceHints, FrameViewTarget, OffscreenColorCopyTarget, OffscreenSampleCountPolicy,
-    ViewPostProcessing,
+    FrameViewResourceHints, FrameViewTarget, OffscreenColorCopyTarget, RenderPathProfile,
+    ViewFamilyGraphRequirements, ViewPostProcessing,
 };
 use crate::scene::RenderSpaceId;
 use crate::shared::RenderingContext;
@@ -71,9 +71,9 @@ impl HeadlessOffscreenSnapshot {
                     depth_view: &self.depth_view,
                     extent_px: self.extent_px,
                     color_format: self.color_format,
-                    sample_count_policy: OffscreenSampleCountPolicy::SingleSample,
                     copy_to_color: None,
                 });
+                view.profile = RenderPathProfile::headless_main();
             }
         }
     }
@@ -104,8 +104,6 @@ pub(in crate::runtime) struct OffscreenRtHandles {
     pub(in crate::runtime) depth_view: Arc<wgpu::TextureView>,
     /// Color attachment format.
     pub(in crate::runtime) color_format: wgpu::TextureFormat,
-    /// MSAA policy for transient forward attachments that resolve into this target.
-    pub(in crate::runtime) sample_count_policy: OffscreenSampleCountPolicy,
     /// Optional copy from this view's color texture into a host render texture.
     pub(in crate::runtime) copy_to_color: Option<OffscreenRtColorCopy>,
 }
@@ -118,6 +116,43 @@ pub(in crate::runtime) enum FrameViewPlanTarget<'a> {
     SecondaryRt(OffscreenRtHandles),
     /// Main desktop swapchain view.
     MainSwapchain,
+}
+
+/// Ordered view family for one render submission plus its aggregate graph requirements.
+pub(in crate::runtime) struct ViewFamilyPlan<'a> {
+    /// Ordered planned views.
+    views: Vec<FrameViewPlan<'a>>,
+    /// Graph-shaping requirements aggregated from the planned views.
+    requirements: ViewFamilyGraphRequirements,
+}
+
+impl<'a> ViewFamilyPlan<'a> {
+    /// Builds a view-family plan from ordered views.
+    pub(in crate::runtime) fn new(views: Vec<FrameViewPlan<'a>>) -> Self {
+        let mut requirements = ViewFamilyGraphRequirements::default();
+        for view in &views {
+            requirements.include_profile(view.profile, view.is_multiview_stereo_active());
+        }
+        Self {
+            views,
+            requirements,
+        }
+    }
+
+    /// Returns `true` when the family has no views.
+    pub(in crate::runtime) fn is_empty(&self) -> bool {
+        self.views.is_empty()
+    }
+
+    /// Shared slice of ordered planned views.
+    pub(in crate::runtime) fn plans(&self) -> &[FrameViewPlan<'a>] {
+        &self.views
+    }
+
+    /// Graph-shaping requirements for this family.
+    pub(in crate::runtime) fn requirements(&self) -> ViewFamilyGraphRequirements {
+        self.requirements
+    }
 }
 
 /// One CPU-planned view ready for draw collection and render-graph conversion.
@@ -140,8 +175,8 @@ pub(in crate::runtime) struct FrameViewPlan<'a> {
     pub(in crate::runtime) viewport_px: (u32, u32),
     /// Background clear/skybox behavior for this view.
     pub(in crate::runtime) clear: FrameViewClear,
-    /// Post-processing permissions for this view.
-    pub(in crate::runtime) post_processing: ViewPostProcessing,
+    /// Render-path profile that owns MSAA, post-processing, snapshots, topology, and fallbacks.
+    pub(in crate::runtime) profile: RenderPathProfile,
     /// Target-specific payload (HMD, secondary RT, main swapchain).
     pub(in crate::runtime) target: FrameViewPlanTarget<'a>,
 }
@@ -168,7 +203,6 @@ impl FrameViewPlan<'_> {
                     depth_view: handles.depth_view.as_ref(),
                     extent_px: self.viewport_px,
                     color_format: handles.color_format,
-                    sample_count_policy: handles.sample_count_policy,
                     copy_to_color: handles.copy_to_color.as_ref().map(|copy| {
                         OffscreenColorCopyTarget {
                             destination_texture: copy.destination_texture.as_ref(),
@@ -188,13 +222,14 @@ impl FrameViewPlan<'_> {
         resource_hints: FrameViewResourceHints,
         initial_blackboard: Blackboard,
     ) -> FrameView<'_> {
+        let resource_hints = self.profile.resource_hints(resource_hints);
         FrameView {
             view_id: self.view_id,
             host_camera: self.host_camera,
             render_context: self.render_context,
             target: self.target(),
+            profile: self.profile,
             clear: self.clear,
-            post_processing: self.post_processing,
             resource_hints,
             initial_blackboard,
         }
@@ -242,6 +277,11 @@ impl FrameViewPlan<'_> {
     pub(in crate::runtime) fn output_depth_mode(&self) -> OutputDepthMode {
         OutputDepthMode::from_multiview_stereo(self.is_multiview_stereo_active())
     }
+
+    /// Post-processing permissions requested by this view's profile.
+    pub(in crate::runtime) fn post_processing(&self) -> ViewPostProcessing {
+        self.profile.post_processing()
+    }
 }
 
 #[cfg(test)]
@@ -262,7 +302,7 @@ mod tests {
             view_id: ViewId::Main,
             viewport_px: (1280, 720),
             clear: FrameViewClear::color(glam::Vec4::new(0.1, 0.2, 0.3, 1.0)),
-            post_processing: ViewPostProcessing::primary_view(),
+            profile: RenderPathProfile::desktop_main(),
             target: FrameViewPlanTarget::MainSwapchain,
         }
     }
@@ -288,9 +328,19 @@ mod tests {
         assert_eq!(frame_view.view_id, ViewId::Main);
         assert_eq!(frame_view.host_camera.frame_index, -1);
         assert_eq!(frame_view.clear, plan.clear);
-        assert_eq!(frame_view.post_processing, plan.post_processing);
+        assert_eq!(frame_view.post_processing(), plan.post_processing());
         assert!(matches!(frame_view.target, FrameViewTarget::Swapchain));
         assert_eq!(frame_view.resource_hints, hints);
         assert!(frame_view.initial_blackboard.is_empty());
+    }
+
+    #[test]
+    fn view_family_plan_aggregates_profile_requirements() {
+        let family = ViewFamilyPlan::new(vec![main_swapchain_plan()]);
+
+        assert!(!family.is_empty());
+        assert_eq!(family.plans().len(), 1);
+        assert!(family.requirements().any_post_processing);
+        assert!(!family.requirements().multiview_stereo);
     }
 }

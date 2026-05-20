@@ -185,7 +185,7 @@ impl CompiledRenderGraph {
         for view in views {
             let resolved = Self::resolve_view_from_target(
                 view.view_id(),
-                view.post_processing,
+                view.profile,
                 &view.target,
                 mv_ctx.gpu,
                 mv_ctx.backbuffer_view_holder.as_ref(),
@@ -247,17 +247,7 @@ fn build_view_layouts(
             let viewport = view.target.extent_px(mv_ctx.gpu);
             let stereo = view.is_multiview_stereo_active();
             let depth_format = view.target.depth_format(mv_ctx.gpu).ok()?;
-            let sample_count = match &view.target {
-                super::super::FrameViewTarget::Swapchain => {
-                    mv_ctx.gpu.msaa().swapchain_msaa_effective().max(1)
-                }
-                super::super::FrameViewTarget::ExternalMultiview(_) => {
-                    mv_ctx.gpu.msaa().swapchain_msaa_effective_stereo().max(1)
-                }
-                super::super::FrameViewTarget::OffscreenRt(ext) => ext
-                    .sample_count_policy
-                    .resolve(mv_ctx.gpu.msaa().swapchain_msaa_effective()),
-            };
+            let sample_count = view.profile.resolve_sample_count(mv_ctx.gpu);
             Some(PreRecordViewResourceLayout {
                 view_id: view.view_id(),
                 width: viewport.0,

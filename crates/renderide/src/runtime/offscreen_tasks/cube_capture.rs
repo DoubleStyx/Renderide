@@ -14,9 +14,9 @@ use crate::camera::{
     CameraClipPlanes, CameraPose, CameraProjectionKind, EyeView, HostCameraFrame, Viewport,
 };
 use crate::gpu::{CUBEMAP_ARRAY_LAYERS, GpuContext};
-use crate::render_graph::{GraphExecuteError, OffscreenSampleCountPolicy};
+use crate::render_graph::GraphExecuteError;
 use crate::runtime::frame::extract::{ExtractedFrame, PreparedViews};
-use crate::runtime::frame::view_plan::{FrameViewPlan, OffscreenRtHandles};
+use crate::runtime::frame::view_plan::{FrameViewPlan, OffscreenRtHandles, ViewFamilyPlan};
 use crate::scene::SceneCoordinator;
 use crate::world_mesh::WorldMeshDrawCollectParallelism;
 
@@ -364,7 +364,6 @@ impl CubeCaptureTargets {
     pub(in crate::runtime) fn to_offscreen_handles(
         &self,
         face: CubeCaptureFace,
-        sample_count_policy: OffscreenSampleCountPolicy,
     ) -> OffscreenRtHandles {
         OffscreenRtHandles {
             rt_id: -1,
@@ -373,7 +372,6 @@ impl CubeCaptureTargets {
             depth_texture: Arc::clone(&self.face_depth_textures[face.index()]),
             depth_view: Arc::clone(&self.face_depth_views[face.index()]),
             color_format: self.color_format,
-            sample_count_policy,
             copy_to_color: None,
         }
     }
@@ -511,7 +509,7 @@ pub(in crate::runtime) fn render_cube_capture_faces_offscreen(
     plans: Vec<FrameViewPlan<'static>>,
 ) -> Result<(), GraphExecuteError> {
     profiling::scope!("cube_capture::offscreen_render");
-    let prepared_views = PreparedViews::new(plans, None);
+    let prepared_views = PreparedViews::new(ViewFamilyPlan::new(plans), None);
     backend.prepare_lights_for_views(
         scene,
         prepared_views

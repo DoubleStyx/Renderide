@@ -9,8 +9,8 @@ use super::*;
 #[test]
 fn camera_render_tasks_use_master_msaa_policy() {
     assert_eq!(
-        CAMERA_TASK_SAMPLE_COUNT_POLICY,
-        OffscreenSampleCountPolicy::MasterMsaa
+        RenderPathProfile::camera_readback(ViewPostProcessing::disabled()).sample_count_policy(),
+        crate::render_graph::compiled::RenderPathSampleCountPolicy::MasterMsaa
     );
 }
 

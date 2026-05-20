@@ -16,8 +16,8 @@ use super::*;
 #[test]
 fn reflection_probe_captures_use_single_sample_policy() {
     assert_eq!(
-        REFLECTION_PROBE_SAMPLE_COUNT_POLICY,
-        OffscreenSampleCountPolicy::SingleSample
+        RenderPathProfile::reflection_probe().sample_count_policy(),
+        crate::render_graph::compiled::RenderPathSampleCountPolicy::SingleSample
     );
 }
 
@@ -217,8 +217,8 @@ fn clear_from_reflection_probe_state_defaults_to_skybox() {
 }
 
 #[test]
-fn reflection_probe_bake_views_disable_post_processing() {
-    let policy = reflection_probe_bake_post_processing();
+fn reflection_probe_profile_disables_post_processing() {
+    let policy = RenderPathProfile::reflection_probe().post_processing();
 
     assert!(!policy.is_enabled());
     assert!(!policy.screen_space_reflections);

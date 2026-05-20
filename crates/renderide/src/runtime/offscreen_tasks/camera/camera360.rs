@@ -14,11 +14,11 @@ use crate::gpu::bind_layout::{
     sampler_layout_entry, texture_layout_entry, uniform_buffer_layout_entry,
 };
 use crate::gpu_resource::{OnceGpu, RenderPipelineMap};
-use crate::render_graph::FrameViewClear;
 use crate::render_graph::gpu_cache::{
     FullscreenRenderPipelineDesc, create_fullscreen_render_pipeline, create_linear_clamp_sampler,
     create_wgsl_shader_module,
 };
+use crate::render_graph::{FrameViewClear, RenderPathProfile};
 use crate::scene::RenderSpaceId;
 use crate::shared::{CameraRenderParameters, RenderingContext};
 
@@ -29,10 +29,10 @@ use super::super::cube_capture::{
     render_cube_capture_faces_offscreen,
 };
 use super::{
-    CAMERA_TASK_COLOR_FORMAT, CAMERA_TASK_SAMPLE_COUNT_POLICY, CameraReadbackError,
-    CameraTaskExtent, CameraTaskOutputFormat, CameraTaskRenderCtx, CameraTaskTargets,
-    alpha_coverage, camera_render_task_post_processing, draw_filter_from_camera_render_task,
-    output_byte_count, readback_camera_task_texture, write_camera_task_result,
+    CAMERA_TASK_COLOR_FORMAT, CameraReadbackError, CameraTaskExtent, CameraTaskOutputFormat,
+    CameraTaskRenderCtx, CameraTaskTargets, alpha_coverage, camera_render_task_post_processing,
+    draw_filter_from_camera_render_task, output_byte_count, readback_camera_task_texture,
+    write_camera_task_result,
 };
 
 /// Cubemap orientation mode used by Camera360 before equirectangular projection.
@@ -196,10 +196,10 @@ fn plan_camera360_task(
             ),
             viewport_px: face_viewport,
             clear: FrameViewClear::from_camera_render_parameters(parameters),
-            post_processing: camera_render_task_post_processing(parameters),
-            target: FrameViewPlanTarget::SecondaryRt(
-                cube_targets.to_offscreen_handles(face, CAMERA_TASK_SAMPLE_COUNT_POLICY),
-            ),
+            profile: RenderPathProfile::cube_capture(camera_render_task_post_processing(
+                parameters,
+            )),
+            target: FrameViewPlanTarget::SecondaryRt(cube_targets.to_offscreen_handles(face)),
         })
         .collect();
 

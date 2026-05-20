@@ -394,7 +394,7 @@ impl CompiledRenderGraph {
                 profiling::scope!("graph::frame_global::resolve_target");
                 Self::resolve_view_from_target(
                     first.view_id(),
-                    first.post_processing,
+                    first.profile,
                     &first.target,
                     gpu,
                     backbuffer_view_holder.as_ref(),
@@ -435,7 +435,7 @@ impl CompiledRenderGraph {
                     &first.host_camera,
                     first.render_context,
                     first.clear,
-                    first.post_processing,
+                    first.post_processing(),
                 )
             };
             let mut frame_blackboard = Self::build_frame_global_blackboard();
