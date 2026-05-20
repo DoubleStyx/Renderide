@@ -2,6 +2,8 @@
 
 #define_import_path renderide::skybox::common
 
+#import renderide::frame::globals as rg
+
 struct SkyboxView {
     view_left: mat4x4<f32>,
     view_right: mat4x4<f32>,
@@ -29,6 +31,13 @@ fn fullscreen_clip_pos(vertex_index: u32) -> vec4<f32> {
     return vec4<f32>(3.0 * (x - 1.0), y * 4.0 - 1.0, 0.0, 1.0);
 }
 
+fn ndc_from_clip(clip_pos: vec4<f32>) -> vec2<f32> {
+    return vec2<f32>(
+        clip_pos.x / f32(rg::frame.viewport_width),
+        1 - clip_pos.y / f32(rg::frame.viewport_height),
+    ) * 2.0 - 1.0;
+}
+
 fn view_is_orthographic(sky: SkyboxView, view_layer: u32) -> bool {
     if (view_layer == 0u) {
         return sky.ndc_y_sign_pad.y > 0.5;
@@ -39,14 +48,14 @@ fn view_is_orthographic(sky: SkyboxView, view_layer: u32) -> bool {
 /// Reconstructs a view-space sky ray from NDC and packed projection coefficients.
 fn view_ray_from_ndc(ndc: vec2<f32>, proj_params: vec4<f32>, orthographic: bool) -> vec3<f32> {
     if (orthographic) {
-        return vec3<f32>(0.0, 0.0, 1.0);
+        return vec3<f32>(0.0, 0.0, -1.0);
     }
     // Asymmetric OpenXR projections store skew on the Z column. With sky rays fixed at z = -1
     // and clip_w = -view_z, inverse projection uses ndc + skew.
-    return vec3<f32>((ndc.xy + proj_params.zw) / max(abs(proj_params.xy), vec2<f32>(0.000001)), 1.0);
+    return vec3<f32>((ndc.xy + proj_params.zw) / max(abs(proj_params.xy), vec2<f32>(0.000001)), -1.0);
 }
 
 fn world_ray_from_view_ray(view_ray: vec3<f32>, sky: SkyboxView, view_layer: u32) -> vec3<f32> {
     let view_matrix = select_view_proj(sky, view_layer);
-    return normalize(view_matrix * vec4<f32>(view_ray, 1.0)).xyz;
+    return normalize(view_matrix * vec4<f32>(view_ray, 0.0)).xyz;
 }

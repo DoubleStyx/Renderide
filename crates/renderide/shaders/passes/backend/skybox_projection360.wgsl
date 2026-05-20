@@ -115,7 +115,7 @@ fn vs_main(
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let params = projection360_params();
-    let ndc = in.clip_pos.xy * vec2<f32>(1.0, view.ndc_y_sign_pad.x);
+    let ndc = skybox::ndc_from_clip(in.clip_pos);
     let view_dir = p360m::apply_offset(
         base_view_dir(ndc, in.view_layer),
         params,

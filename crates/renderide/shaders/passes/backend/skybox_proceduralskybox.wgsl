@@ -36,7 +36,7 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let ndc = in.clip_pos.xy * vec2<f32>(1.0, view.ndc_y_sign_pad.x);
+    let ndc = skybox::ndc_from_clip(in.clip_pos);
     let proj_params = select(rg::frame.proj_params_left, rg::frame.proj_params_right, in.view_layer != 0u);
     let view_ray = skybox::view_ray_from_ndc(
         ndc,
