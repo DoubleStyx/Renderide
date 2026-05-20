@@ -1,0 +1,34 @@
+\begin{tikzpicture}[
+  x=1cm,
+  y=1cm,
+  stage/.style={draw, rounded corners=2pt, align=center, minimum width=4.35cm, minimum height=0.72cm, font=\small},
+  phase/.style={draw, rounded corners=2pt, align=center, minimum width=4.35cm, minimum height=0.72cm, fill=black!4, font=\small\bfseries},
+  arrow/.style={-{Latex[length=2mm]}, thick}
+]
+\node[phase] (intake) at (0.0,3.6) {Intake};
+\node[stage] (ipc) at (0.0,2.55) {Poll IPC and apply\\scene commands};
+\node[stage] (assets) at (0.0,1.45) {Integrate asset and\\material work};
+\node[stage] (gpu) at (0.0,0.35) {Maintain GPU services\\and history};
+
+\node[phase] (prep) at (5.25,3.6) {Preparation};
+\node[stage] (xr) at (5.25,2.55) {Acquire XR frame and\\input snapshots};
+\node[stage] (views) at (5.25,1.45) {Plan desktop, HMD,\\and offscreen views};
+\node[stage] (draws) at (5.25,0.35) {Cull, sort, batch,\\and bind draws};
+
+\node[phase] (exec) at (10.5,3.6) {Execution};
+\node[stage] (global) at (10.5,2.55) {Run frame-global\\graph passes};
+\node[stage] (perview) at (10.5,1.45) {Record per-view\\graph passes};
+\node[stage] (present) at (10.5,0.35) {Submit, present,\\mirror, diagnose};
+
+\draw[arrow] (intake) -- (ipc);
+\draw[arrow] (ipc) -- (assets);
+\draw[arrow] (assets) -- (gpu);
+\draw[arrow] (gpu.east) -- ++(0.45,0) |- (xr.west);
+\draw[arrow] (prep) -- (xr);
+\draw[arrow] (xr) -- (views);
+\draw[arrow] (views) -- (draws);
+\draw[arrow] (draws.east) -- ++(0.45,0) |- (global.west);
+\draw[arrow] (exec) -- (global);
+\draw[arrow] (global) -- (perview);
+\draw[arrow] (perview) -- (present);
+\end{tikzpicture}

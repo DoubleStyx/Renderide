@@ -1,0 +1,26 @@
+\begin{tikzpicture}[
+  x=1cm,
+  y=1cm,
+  process/.style={draw, rounded corners=2pt, align=center, minimum width=2.9cm, minimum height=0.82cm, font=\small},
+  data/.style={draw, rounded corners=2pt, align=center, minimum width=3.2cm, minimum height=0.78cm, fill=black!4, font=\small},
+  arrow/.style={-{Latex[length=2mm]}, thick},
+  dashedarrow/.style={-{Latex[length=2mm]}, thick, dashed}
+]
+\node[process] (boot) at (-6.6,2.8) {Bootstrapper\\process};
+\node[process] (host) at (0.0,2.8) {FrooxEngine\\host};
+\node[process] (renderer) at (0.0,0.0) {Renderide\\renderer};
+\node[data] (primary) at (-3.9,1.4) {Primary queue\\lock-step traffic};
+\node[data] (background) at (0.0,1.4) {Background queue\\async traffic};
+\node[data] (shm) at (3.9,1.4) {Shared memory\\bulk payloads};
+\node[data] (display) at (4.8,0.0) {Window and\\OpenXR runtime};
+
+\draw[arrow] (boot) -- node[above,font=\scriptsize] {spawn and supervise} (host);
+\draw[arrow] (boot.south) |- node[left,font=\scriptsize,pos=.22] {spawn} (renderer.west);
+\draw[arrow] (host.south west) -- (primary.north);
+\draw[arrow] (primary.south) -- (renderer.north west);
+\draw[arrow] (host.south) -- (background.north);
+\draw[arrow] (background.south) -- (renderer.north);
+\draw[dashedarrow] (host.south east) -- (shm.north);
+\draw[dashedarrow] (shm.south) -- (renderer.north east);
+\draw[arrow] (renderer) -- (display);
+\end{tikzpicture}

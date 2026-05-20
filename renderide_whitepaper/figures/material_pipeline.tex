@@ -1,0 +1,23 @@
+\begin{tikzpicture}[
+  x=1cm,
+  y=1cm,
+  item/.style={draw, rounded corners=2pt, align=center, minimum width=3.4cm, minimum height=0.78cm, font=\small},
+  cache/.style={draw, rounded corners=2pt, align=center, minimum width=3.4cm, minimum height=0.78cm, fill=black!4, font=\small},
+  arrow/.style={-{Latex[length=2mm]}, thick}
+]
+\node[item] (shader) at (0.0,2.25) {Host shader\\asset identity};
+\node[item] (props) at (0.0,0.55) {Material properties\\and textures};
+\node[item] (route) at (4.25,2.25) {Shader routing\\and variant bits};
+\node[item] (reflect) at (4.25,0.55) {WGSL reflection\\and pass metadata};
+\node[cache] (pipeline) at (8.5,2.25) {Pipeline cache\\render-state key};
+\node[cache] (binds) at (8.5,0.55) {Material bind groups\\uniforms and textures};
+\node[item] (draw) at (12.75,1.4) {Sorted draw packets\\per view};
+
+\draw[arrow] (shader) -- (route);
+\draw[arrow] (props) -- (reflect);
+\draw[arrow] (route) -- (pipeline);
+\draw[arrow] (reflect.north east) -- (pipeline.south west);
+\draw[arrow] (reflect) -- (binds);
+\draw[arrow] (pipeline) -- (draw.north west);
+\draw[arrow] (binds) -- (draw.south west);
+\end{tikzpicture}
