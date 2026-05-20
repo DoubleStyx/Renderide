@@ -116,6 +116,13 @@ pub enum GraphBuildError {
         /// Schedule validation failure.
         source: super::schedule::ScheduleValidationError,
     },
+
+    /// Graph validation found declaration issues in strict mode.
+    #[error("render graph validation failed: {report}")]
+    Validation {
+        /// Validation report containing the diagnostics.
+        report: super::validation::GraphValidationReport,
+    },
 }
 
 /// Failure inside a single [`super::RenderPass::execute`] call.
@@ -256,6 +263,15 @@ pub enum GraphExecuteError {
         slot: &'static str,
         /// Selected half, either "current" or "previous".
         half: &'static str,
+    },
+
+    /// A pass declared a required blackboard slot that was missing when the pass recorded.
+    #[error("pass `{pass}` requires blackboard slot `{slot}` but it was not present")]
+    MissingBlackboardSlot {
+        /// Pass name.
+        pass: String,
+        /// Slot that was missing.
+        slot: &'static str,
     },
 }
 

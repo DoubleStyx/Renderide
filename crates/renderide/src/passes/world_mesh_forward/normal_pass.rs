@@ -14,6 +14,7 @@ use crate::materials::{RasterFrontFace, RasterPrimitiveTopology};
 use crate::mesh_deform::PER_DRAW_UNIFORM_STRIDE;
 use crate::render_graph::context::RasterPassCtx;
 use crate::render_graph::error::{RenderPassError, SetupError};
+use crate::render_graph::frame_params::PerViewFramePlanSlot;
 use crate::render_graph::gpu_cache::{create_wgsl_shader_module, stereo_mask_or_template};
 use crate::render_graph::pass::{DepthAttachmentTemplate, RenderPassTemplate};
 use crate::render_graph::pass::{PassBuilder, RasterPass};
@@ -260,6 +261,9 @@ impl RasterPass for WorldMeshForwardNormalPass {
     }
 
     fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
+        b.read_blackboard::<PerViewFramePlanSlot>();
+        b.read_optional_blackboard::<WorldMeshForwardPlanSlot>();
+        b.write_blackboard::<WorldMeshForwardPlanSlot>();
         {
             let mut r = b.raster();
             r.frame_sampled_color(

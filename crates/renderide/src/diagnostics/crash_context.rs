@@ -306,8 +306,10 @@ pub(crate) enum GraphErrorKind {
     UnallocatedHistoryTexture = 16,
     /// History buffer was not allocated.
     UnallocatedHistoryBuffer = 17,
+    /// Required blackboard slot was missing at pass execution.
+    MissingBlackboardSlot = 18,
     /// Error type did not map to a narrower category.
-    Other = 18,
+    Other = 19,
 }
 
 impl GraphErrorKind {
@@ -330,7 +332,8 @@ impl GraphErrorKind {
             15 => Self::MissingHistoryBuffer,
             16 => Self::UnallocatedHistoryTexture,
             17 => Self::UnallocatedHistoryBuffer,
-            18 => Self::Other,
+            18 => Self::MissingBlackboardSlot,
+            19 => Self::Other,
             _ => Self::None,
         }
     }
@@ -355,6 +358,7 @@ impl GraphErrorKind {
             Self::MissingHistoryBuffer => "missing-history-buffer",
             Self::UnallocatedHistoryTexture => "unallocated-history-texture",
             Self::UnallocatedHistoryBuffer => "unallocated-history-buffer",
+            Self::MissingBlackboardSlot => "missing-blackboard-slot",
             Self::Other => "other",
         }
     }
@@ -377,6 +381,9 @@ pub(crate) fn graph_error_kind(error: &crate::render_graph::GraphExecuteError) -
         }
         crate::render_graph::GraphExecuteError::MissingRasterTemplate { .. } => {
             GraphErrorKind::MissingRasterTemplate
+        }
+        crate::render_graph::GraphExecuteError::MissingBlackboardSlot { .. } => {
+            GraphErrorKind::MissingBlackboardSlot
         }
         crate::render_graph::GraphExecuteError::Pass(_) => GraphErrorKind::Pass,
         crate::render_graph::GraphExecuteError::NoViewsInBatch => GraphErrorKind::NoViewsInBatch,

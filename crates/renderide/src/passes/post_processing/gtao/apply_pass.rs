@@ -66,6 +66,7 @@ impl RasterPass for GtaoApplyPass {
     }
 
     fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
+        b.read_blackboard::<GtaoSettingsSlot>();
         read_fragment_sampled_texture(b, self.resources.hdr_input);
         read_fragment_sampled_texture(b, self.resources.ao_in);
         read_fragment_sampled_texture(b, self.resources.edges);

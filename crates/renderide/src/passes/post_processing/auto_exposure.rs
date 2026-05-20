@@ -64,6 +64,7 @@ impl ComputePass for AutoExposureComputePass {
 
     fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
         b.compute();
+        b.read_blackboard::<AutoExposureSettingsSlot>();
         b.read_texture_resource(
             self.input,
             TextureAccess::Sampled {

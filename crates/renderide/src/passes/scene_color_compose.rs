@@ -19,6 +19,9 @@ use crate::render_graph::context::RasterPassCtx;
 use crate::render_graph::error::{RenderPassError, SetupError};
 use crate::render_graph::gpu_cache::raster_stereo_mask_override;
 use crate::render_graph::pass::RenderPassTemplate;
+use crate::render_graph::pass::params::{
+    GraphPassParameters, PassParameterField, PassParameterSchema,
+};
 use crate::render_graph::pass::{PassBuilder, RasterPass};
 use crate::render_graph::resources::{ImportedTextureHandle, TextureHandle};
 
@@ -66,6 +69,31 @@ fn scene_color_compose_input(
     }
 }
 
+impl GraphPassParameters for SceneColorComposeGraphResources {
+    fn schema(&self) -> PassParameterSchema {
+        PassParameterSchema::new("SceneColorComposeGraphResources")
+            .with_field(PassParameterField::new("scene_color_hdr", "sampled_input"))
+            .with_field(PassParameterField::new(
+                "post_processed_scene_color_hdr",
+                "sampled_input",
+            ))
+            .with_field(PassParameterField::new("frame_color", "color_output"))
+    }
+
+    fn declare(&self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
+        read_fragment_sampled_texture(b, self.scene_color_hdr);
+        if self.post_processed_scene_color_hdr != self.scene_color_hdr {
+            read_fragment_sampled_texture(b, self.post_processed_scene_color_hdr);
+        }
+        imported_color_attachment(
+            b,
+            self.frame_color,
+            wgpu::LoadOp::Clear(SWAPCHAIN_CLEAR_COLOR),
+        );
+        Ok(())
+    }
+}
+
 impl RasterPass for SceneColorComposePass {
     fn name(&self) -> &str {
         "SceneColorCompose"
@@ -74,16 +102,7 @@ impl RasterPass for SceneColorComposePass {
     fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
         b.never_merge();
         b.never_parallel();
-        read_fragment_sampled_texture(b, self.resources.scene_color_hdr);
-        if self.resources.post_processed_scene_color_hdr != self.resources.scene_color_hdr {
-            read_fragment_sampled_texture(b, self.resources.post_processed_scene_color_hdr);
-        }
-        imported_color_attachment(
-            b,
-            self.resources.frame_color,
-            wgpu::LoadOp::Clear(SWAPCHAIN_CLEAR_COLOR),
-        );
-        Ok(())
+        b.parameters(&self.resources)
     }
 
     fn multiview_mask_override(

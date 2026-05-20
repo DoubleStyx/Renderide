@@ -70,6 +70,8 @@ impl RasterPass for GtaoMainPass {
     }
 
     fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
+        b.read_optional_blackboard::<PerViewFramePlanSlot>();
+        b.read_blackboard::<GtaoSettingsSlot>();
         b.read_texture_resource(
             self.resources.view_depth,
             TextureAccess::Sampled {

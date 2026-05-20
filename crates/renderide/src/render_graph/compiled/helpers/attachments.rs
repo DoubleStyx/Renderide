@@ -61,7 +61,7 @@ pub(in crate::render_graph::compiled) fn resolve_attachment_resolve_target(
 }
 
 /// Resolves the raster pass template's color attachments to live `wgpu::TextureView`s.
-fn resolve_color_attachments<'a>(
+pub(in crate::render_graph::compiled) fn resolve_color_attachments<'a>(
     pass_name: &str,
     template: &RenderPassTemplate,
     graph_resources: &'a GraphResolvedResources,
@@ -102,13 +102,13 @@ fn resolve_color_attachments<'a>(
     Ok(color_attachments)
 }
 
-/// Resolves the raster pass template's depth/stencil attachment, if any, to a live view.
-fn resolve_depth_attachment<'a>(
-    pass: &PassNode,
+/// Resolves the raster pass template's depth/stencil attachment with caller-selected stencil ops.
+pub(in crate::render_graph::compiled) fn resolve_depth_attachment_with_stencil<'a>(
+    pass_name: &str,
     template: &RenderPassTemplate,
     graph_resources: &'a GraphResolvedResources,
     sample_count: u32,
-    ctx: &RasterPassCtx<'_, '_>,
+    stencil_ops: Option<wgpu::Operations<u32>>,
 ) -> Result<Option<wgpu::RenderPassDepthStencilAttachment<'a>>, GraphExecuteError> {
     profiling::scope!("graph::raster::resolve_depth_attachment");
     let Some(depth) = &template.depth_stencil_attachment else {
@@ -117,16 +117,116 @@ fn resolve_depth_attachment<'a>(
     let target = resolve_attachment_target(depth.target, sample_count);
     let view = graph_resources.texture_view(target).ok_or_else(|| {
         GraphExecuteError::MissingGraphAttachment {
-            pass: pass.name().to_owned(),
+            pass: pass_name.to_owned(),
             resource: format!("{target:?}"),
         }
     })?;
-    let stencil_ops = pass.stencil_ops_override(ctx, depth);
     Ok(Some(wgpu::RenderPassDepthStencilAttachment {
         view,
         depth_ops: Some(depth.depth),
         stencil_ops,
     }))
+}
+
+/// Resolves the raster pass template's depth/stencil attachment, if any, to a live view.
+fn resolve_depth_attachment<'a>(
+    pass: &PassNode,
+    template: &RenderPassTemplate,
+    graph_resources: &'a GraphResolvedResources,
+    sample_count: u32,
+    ctx: &RasterPassCtx<'_, '_>,
+) -> Result<Option<wgpu::RenderPassDepthStencilAttachment<'a>>, GraphExecuteError> {
+    let stencil_ops = template
+        .depth_stencil_attachment
+        .as_ref()
+        .and_then(|depth| pass.stencil_ops_override(ctx, depth));
+    resolve_depth_attachment_with_stencil(
+        pass.name(),
+        template,
+        graph_resources,
+        sample_count,
+        stencil_ops,
+    )
+}
+
+/// Builds the attachment template used when compatible raster passes are materialized together.
+pub(in crate::render_graph::compiled) fn coalesce_render_pass_template(
+    templates: &[RenderPassTemplate],
+) -> Option<RenderPassTemplate> {
+    let (first, rest) = templates.split_first()?;
+    if rest.is_empty() {
+        return None;
+    }
+    let last = templates.last()?;
+    if templates.iter().any(|template| {
+        template
+            .color_attachments
+            .iter()
+            .any(|color| color.resolve_to.is_some())
+    }) {
+        return None;
+    }
+    if !rest.iter().all(|template| {
+        template
+            .color_attachments
+            .iter()
+            .all(|color| matches!(color.load, wgpu::LoadOp::Load))
+    }) {
+        return None;
+    }
+    if !templates[..templates.len() - 1].iter().all(|template| {
+        template
+            .color_attachments
+            .iter()
+            .all(|color| matches!(color.store, wgpu::StoreOp::Store))
+    }) {
+        return None;
+    }
+    if !depth_ops_can_be_coalesced(templates) {
+        return None;
+    }
+    let mut merged = first.clone();
+    for (merged_color, last_color) in merged
+        .color_attachments
+        .iter_mut()
+        .zip(&last.color_attachments)
+    {
+        merged_color.store = last_color.store;
+    }
+    if let (Some(merged_depth), Some(last_depth)) = (
+        merged.depth_stencil_attachment.as_mut(),
+        last.depth_stencil_attachment.as_ref(),
+    ) {
+        merged_depth.depth.store = last_depth.depth.store;
+        merged_depth.stencil = last_depth.stencil;
+    }
+    Some(merged)
+}
+
+/// Returns whether depth/stencil load/store ops can be represented by one merged pass.
+fn depth_ops_can_be_coalesced(templates: &[RenderPassTemplate]) -> bool {
+    if templates.iter().any(|template| {
+        template
+            .depth_stencil_attachment
+            .as_ref()
+            .is_some_and(|depth| depth.stencil.is_some())
+    }) {
+        return false;
+    }
+    let Some((_, rest)) = templates.split_first() else {
+        return false;
+    };
+    rest.iter().all(|template| {
+        template
+            .depth_stencil_attachment
+            .as_ref()
+            .is_none_or(|depth| matches!(depth.depth.load, wgpu::LoadOp::Load))
+    }) && templates[..templates.len() - 1].iter().all(|template| {
+        template
+            .depth_stencil_attachment
+            .as_ref()
+            .is_none_or(|depth| matches!(depth.depth.store, wgpu::StoreOp::Store))
+    })
 }
 
 /// Opens a graph-managed raster render pass for a [`PassNode::Raster`] variant and calls

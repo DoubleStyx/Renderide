@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::{DebugHudSettings, PowerPreferenceSetting};
+use crate::render_graph::RenderGraphValidationMode;
 
 /// Debug and diagnostics flags. Persisted as `[debug]`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -44,6 +45,9 @@ pub struct DebugSettings {
     pub debug_hud_textures: bool,
     /// Semantic ImGui HUD state persisted through the renderer config.
     pub hud: DebugHudSettings,
+    /// Render-graph declaration and runtime validation policy.
+    #[serde(default)]
+    pub render_graph_validation: RenderGraphValidationMode,
 }
 
 impl Default for DebugSettings {
@@ -57,6 +61,7 @@ impl Default for DebugSettings {
             debug_hud_transforms: false,
             debug_hud_textures: false,
             hud: DebugHudSettings::default(),
+            render_graph_validation: RenderGraphValidationMode::default(),
         }
     }
 }

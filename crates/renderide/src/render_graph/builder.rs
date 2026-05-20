@@ -10,10 +10,12 @@ mod validate;
 mod tests;
 
 use decl::{GroupEntry, PassEntry, SetupEntry};
-use edges::{add_group_edges, add_resource_edges, explicit_edges};
+use edges::{add_blackboard_edges, add_group_edges, add_resource_edges, explicit_edges};
 use lifetime::{compile_buffers, compile_textures};
 use topo::{retained_ordinals, retained_passes, topo_sort};
 use validate::validate_handles;
+
+use std::collections::HashSet;
 
 use super::compiled::{
     CompileStats, CompiledBufferResource, CompiledPassInfo, CompiledRenderGraph,
@@ -22,8 +24,8 @@ use super::compiled::{
 use super::error::GraphBuildError;
 use super::ids::{GroupId, PassId};
 use super::pass::{
-    ColorAttachmentTemplate, ComputePass, DepthAttachmentTemplate, EncoderPass, GroupScope,
-    PassBuilder, PassMergeHint, PassNode, PassPhase, PassWorkloadFlags, RasterPass,
+    BlackboardSeedDecl, ColorAttachmentTemplate, ComputePass, DepthAttachmentTemplate, EncoderPass,
+    GroupScope, PassBuilder, PassMergeHint, PassNode, PassPhase, PassWorkloadFlags, RasterPass,
     RenderPassTemplate,
 };
 use super::resources::{
@@ -37,6 +39,7 @@ use super::schedule::{
     RenderPassMergeGroup, ResourceScheduleEvent, ResourceScheduleEventKind, ScheduleHudSnapshot,
     ScheduleStep, ScheduleUploadPhase, ScheduledResource,
 };
+use super::validation::{GraphValidationReport, RenderGraphValidationMode};
 
 /// Builder for a typed render graph.
 pub struct GraphBuilder {
@@ -48,6 +51,8 @@ pub struct GraphBuilder {
     pub(crate) passes: Vec<PassEntry>,
     pub(crate) edges: Vec<(usize, usize)>,
     pub(crate) groups: Vec<GroupEntry>,
+    pub(crate) blackboard_seeds: Vec<BlackboardSeedDecl>,
+    validation_mode: RenderGraphValidationMode,
     default_frame_group: GroupId,
     default_per_view_group: GroupId,
 }
@@ -75,8 +80,18 @@ impl GraphBuilder {
                     after: vec![default_frame_group],
                 },
             ],
+            blackboard_seeds: Vec::new(),
+            validation_mode: RenderGraphValidationMode::default(),
             default_frame_group,
             default_per_view_group,
+        }
+    }
+
+    /// Empty builder with an explicit validation mode.
+    pub fn with_validation_mode(validation_mode: RenderGraphValidationMode) -> Self {
+        Self {
+            validation_mode,
+            ..Self::new()
         }
     }
 
@@ -122,6 +137,15 @@ impl GraphBuilder {
         let handle = ImportedBufferHandle(self.imports_buf.len() as u32);
         self.imports_buf.push(decl);
         handle
+    }
+
+    /// Declares a blackboard slot seeded before graph pass recording.
+    pub fn seed_blackboard<S: super::blackboard::BlackboardSlot>(
+        &mut self,
+        producer: &'static str,
+    ) {
+        self.blackboard_seeds
+            .push(BlackboardSeedDecl::new::<S>(producer));
     }
 
     /// Creates an explicit scheduling group.
@@ -208,10 +232,7 @@ impl GraphBuilder {
         }
 
         let setups = self.collect_setup()?;
-        let mut edges = explicit_edges(&self, n)?;
-        add_group_edges(&self, &setups, &mut edges)?;
-        add_resource_edges(&self, &setups, &mut edges)?;
-
+        let (edges, validation_report) = self.synthesize_edges_and_validation(&setups, n)?;
         let (sorted, wave_by_node) = topo_sort(n, &edges)?;
         let topo_levels = wave_by_node.iter().copied().max().map_or(0, |max| max + 1);
         #[cfg(debug_assertions)]
@@ -235,9 +256,9 @@ impl GraphBuilder {
             .collect();
 
         let retained_ord = retained_ordinals(&ordered);
-        let (compiled_textures, texture_slots) =
+        let (compiled_textures, texture_slots, texture_lifetime_lanes) =
             compile_textures(&self.textures, &self.subresources, &setups, &retained_ord);
-        let (compiled_buffers, buffer_slots) =
+        let (compiled_buffers, buffer_slots, buffer_lifetime_lanes) =
             compile_buffers(&self.buffers, &setups, &retained_ord);
         let pass_info = compile_pass_info(&setups, &ordered);
         let imported_final_accesses =
@@ -271,6 +292,10 @@ impl GraphBuilder {
             &pass_info,
         )?;
         let schedule_hud = ScheduleHudSnapshot::from_schedule(&schedule);
+        let validation_diagnostics = validation_report.len();
+        let render_pass_merge_groups = schedule.render_pass_merge_groups.len();
+        let render_pass_materialization_groups =
+            schedule.render_pass_materialization_plan.groups.len();
 
         Ok(CompiledRenderGraph {
             passes: ordered_passes,
@@ -281,19 +306,28 @@ impl GraphBuilder {
                 culled_count,
                 transient_texture_count: self.textures.len(),
                 transient_texture_slots: texture_slots,
+                transient_texture_lanes: texture_lifetime_lanes.len(),
                 transient_buffer_count: self.buffers.len(),
                 transient_buffer_slots: buffer_slots,
+                transient_buffer_lanes: buffer_lifetime_lanes.len(),
                 imported_texture_count: self.imports_tex.len(),
                 imported_buffer_count: self.imports_buf.len(),
+                validation_diagnostics,
+                render_pass_merge_groups,
+                render_pass_materialization_groups,
             },
             pass_info,
             transient_textures: compiled_textures,
             transient_buffers: compiled_buffers,
+            texture_lifetime_lanes,
+            buffer_lifetime_lanes,
             subresources: self.subresources,
             imported_textures: self.imports_tex,
             imported_buffers: self.imports_buf,
             schedule,
             schedule_hud,
+            validation_report,
+            validation_mode: self.validation_mode,
             main_graph_msaa_transient_handles: None,
         })
     }
@@ -332,11 +366,15 @@ impl GraphBuilder {
                     physical_slot: usize::MAX,
                 })
                 .collect(),
+            texture_lifetime_lanes: Vec::new(),
+            buffer_lifetime_lanes: Vec::new(),
             subresources: self.subresources,
             imported_textures: self.imports_tex,
             imported_buffers: self.imports_buf,
             schedule,
             schedule_hud,
+            validation_report: GraphValidationReport::new(self.validation_mode),
+            validation_mode: self.validation_mode,
             main_graph_msaa_transient_handles: None,
         }
     }
@@ -386,6 +424,26 @@ impl GraphBuilder {
             });
         }
         Ok(setups)
+    }
+
+    /// Synthesizes scheduling edges and validates declared blackboard dependencies.
+    fn synthesize_edges_and_validation(
+        &self,
+        setups: &[SetupEntry],
+        n: usize,
+    ) -> Result<(HashSet<(usize, usize)>, GraphValidationReport), GraphBuildError> {
+        let mut edges = explicit_edges(self, n)?;
+        add_group_edges(self, setups, &mut edges)?;
+        add_resource_edges(self, setups, &mut edges)?;
+        let mut validation_report = GraphValidationReport::new(self.validation_mode);
+        add_blackboard_edges(self, setups, &mut edges, &mut validation_report);
+        validation_report.log();
+        if self.validation_mode.is_strict() && !validation_report.is_empty() {
+            return Err(GraphBuildError::Validation {
+                report: validation_report,
+            });
+        }
+        Ok((edges, validation_report))
     }
 
     /// Validates subresource declarations before pass setup starts using their handles.
@@ -575,6 +633,8 @@ fn compile_pass_info(setups: &[SetupEntry], ordered: &[usize]) -> Vec<CompiledPa
                 kind: setup.setup.kind,
                 workload_flags: setup.setup.workload_flags,
                 accesses: setup.setup.accesses.clone(),
+                blackboard_accesses: setup.setup.blackboard_accesses.clone(),
+                parameter_schema: setup.setup.parameter_schema.clone(),
                 #[cfg(test)]
                 multiview_mask: setup.setup.multiview_mask,
                 raster_template,

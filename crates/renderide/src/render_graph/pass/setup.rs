@@ -6,6 +6,7 @@
 use std::num::NonZeroU32;
 
 use super::node::{PassKind, PassMergeHint, PassWorkloadFlags};
+use super::params::{BlackboardAccessDecl, PassParameterSchema};
 use crate::render_graph::error::SetupError;
 use crate::render_graph::resources::{
     ResourceAccess, TextureAttachmentResolve, TextureAttachmentTarget,
@@ -48,6 +49,10 @@ pub struct PassSetup {
     pub(crate) color_attachments: Vec<RasterColorAttachmentSetup>,
     /// Depth/stencil attachment declaration for graph-managed raster passes.
     pub(crate) depth_stencil_attachment: Option<RasterDepthAttachmentSetup>,
+    /// Declared blackboard accesses for dependency synthesis and validation.
+    pub(crate) blackboard_accesses: Vec<BlackboardAccessDecl>,
+    /// Pass-parameter schema used by graph diagnostics and tooling.
+    pub(crate) parameter_schema: Option<PassParameterSchema>,
     /// Optional multiview mask for graph-managed raster passes.
     pub(crate) multiview_mask: Option<NonZeroU32>,
     /// When `true`, the pass is retained even when it has no import-writing successors.

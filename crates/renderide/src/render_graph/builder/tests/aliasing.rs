@@ -27,6 +27,11 @@ fn aliased_handles_share_slot_when_lifetimes_disjoint() -> Result<(), GraphBuild
         g.transient_textures[c.index()].physical_slot
     );
     assert_eq!(g.compile_stats.transient_texture_slots, 1);
+    assert_eq!(g.compile_stats.transient_texture_lanes, 1);
+    assert_eq!(g.texture_lifetime_lanes.len(), 1);
+    assert_eq!(g.texture_lifetime_lanes[0].segments.len(), 2);
+    assert_eq!(g.texture_lifetime_lanes[0].segments[0].label, "a");
+    assert_eq!(g.texture_lifetime_lanes[0].segments[1].label, "c");
     Ok(())
 }
 

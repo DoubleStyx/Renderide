@@ -2,6 +2,7 @@
 
 use crate::render_graph::context::EncoderPassCtx;
 use crate::render_graph::error::{RenderPassError, SetupError};
+use crate::render_graph::frame_params::PerViewFramePlanSlot;
 use crate::render_graph::gpu_cache::stereo_mask_or_template;
 use crate::render_graph::pass::{EncoderPass, PassBuilder};
 use crate::render_graph::resources::{TextureAccess, TextureResourceHandle};
@@ -338,6 +339,9 @@ impl EncoderPass for WorldMeshForwardTransparentSequencePass {
 
     fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
         b.encoder();
+        b.read_blackboard::<PerViewFramePlanSlot>();
+        b.read_optional_blackboard::<WorldMeshForwardPlanSlot>();
+        b.write_blackboard::<WorldMeshForwardPlanSlot>();
         declare_transparent_sequence_accesses(b, self.resources);
         Ok(())
     }

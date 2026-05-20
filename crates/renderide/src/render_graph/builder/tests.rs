@@ -3,6 +3,7 @@
 mod aliasing;
 mod common;
 mod schedule_validation;
-mod scheduler_v1;
+mod scheduler;
 mod subresources;
 mod templates;
+mod validation;

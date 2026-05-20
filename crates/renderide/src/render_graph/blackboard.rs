@@ -75,6 +75,11 @@ impl Blackboard {
             .and_then(|v| v.downcast_ref::<S::Value>())
     }
 
+    /// Returns `true` when a value exists for the raw slot type id.
+    pub(crate) fn contains_type_id(&self, type_id: TypeId) -> bool {
+        self.slots.contains_key(&type_id)
+    }
+
     /// Returns a mutable reference to the value stored under slot `S`, or [`None`] if absent.
     #[cfg(test)]
     pub fn get_mut<S: BlackboardSlot>(&mut self) -> Option<&mut S::Value> {

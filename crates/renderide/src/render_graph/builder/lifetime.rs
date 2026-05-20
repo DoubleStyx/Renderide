@@ -2,7 +2,10 @@
 
 use hashbrown::HashMap;
 
-use super::super::compiled::{CompiledBufferResource, CompiledTextureResource, ResourceLifetime};
+use super::super::compiled::{
+    CompiledBufferResource, CompiledTextureResource, ResourceLifetime, ResourceLifetimeLane,
+    ResourceLifetimeSegment,
+};
 use super::super::resources::{
     ResourceHandle, TransientBufferDesc, TransientSubresourceDesc, TransientTextureDesc,
 };
@@ -13,7 +16,11 @@ pub(super) fn compile_textures(
     subresources: &[TransientSubresourceDesc],
     setups: &[SetupEntry],
     retained_ord: &HashMap<usize, usize>,
-) -> (Vec<CompiledTextureResource>, usize) {
+) -> (
+    Vec<CompiledTextureResource>,
+    usize,
+    Vec<ResourceLifetimeLane>,
+) {
     let mut resources: Vec<CompiledTextureResource> = descs
         .iter()
         .cloned()
@@ -42,7 +49,8 @@ pub(super) fn compile_textures(
     }
 
     let slot_count = assign_aliased_slots(&mut resources);
-    (resources, slot_count)
+    let lanes = compile_lifetime_lanes(&resources);
+    (resources, slot_count, lanes)
 }
 
 /// Resolves a texture access to the parent transient texture that owns lifetime and usage.
@@ -63,7 +71,11 @@ pub(super) fn compile_buffers(
     descs: &[TransientBufferDesc],
     setups: &[SetupEntry],
     retained_ord: &HashMap<usize, usize>,
-) -> (Vec<CompiledBufferResource>, usize) {
+) -> (
+    Vec<CompiledBufferResource>,
+    usize,
+    Vec<ResourceLifetimeLane>,
+) {
     let mut resources: Vec<CompiledBufferResource> = descs
         .iter()
         .cloned()
@@ -92,7 +104,8 @@ pub(super) fn compile_buffers(
     }
 
     let slot_count = assign_aliased_slots(&mut resources);
-    (resources, slot_count)
+    let lanes = compile_lifetime_lanes(&resources);
+    (resources, slot_count, lanes)
 }
 
 fn merge_lifetime(existing: Option<ResourceLifetime>, ordinal: usize) -> Option<ResourceLifetime> {
@@ -128,6 +141,12 @@ trait AliasResource {
 
     /// Records the chosen physical slot index back on the resource.
     fn set_physical_slot(&mut self, slot: usize);
+
+    /// Physical slot assigned by the compiler.
+    fn physical_slot(&self) -> usize;
+
+    /// Diagnostic label for this resource.
+    fn label(&self) -> &'static str;
 }
 
 impl AliasResource for CompiledTextureResource {
@@ -156,6 +175,14 @@ impl AliasResource for CompiledTextureResource {
     fn set_physical_slot(&mut self, slot: usize) {
         self.physical_slot = slot;
     }
+
+    fn physical_slot(&self) -> usize {
+        self.physical_slot
+    }
+
+    fn label(&self) -> &'static str {
+        self.desc.label
+    }
 }
 
 impl AliasResource for CompiledBufferResource {
@@ -178,6 +205,14 @@ impl AliasResource for CompiledBufferResource {
 
     fn set_physical_slot(&mut self, slot: usize) {
         self.physical_slot = slot;
+    }
+
+    fn physical_slot(&self) -> usize {
+        self.physical_slot
+    }
+
+    fn label(&self) -> &'static str {
+        self.desc.label
     }
 }
 
@@ -208,4 +243,40 @@ fn assign_aliased_slots<R: AliasResource>(resources: &mut [R]) -> usize {
         }
     }
     slots.len()
+}
+
+/// Builds diagnostic lifetime lanes from resources after physical-slot assignment.
+fn compile_lifetime_lanes<R: AliasResource>(resources: &[R]) -> Vec<ResourceLifetimeLane> {
+    let mut lanes: Vec<ResourceLifetimeLane> = Vec::new();
+    for (resource_index, resource) in resources.iter().enumerate() {
+        let Some(lifetime) = resource.lifetime() else {
+            continue;
+        };
+        let physical_slot = resource.physical_slot();
+        if physical_slot == usize::MAX {
+            continue;
+        }
+        if lanes.len() <= physical_slot {
+            lanes.resize_with(physical_slot + 1, || ResourceLifetimeLane {
+                physical_slot: 0,
+                segments: Vec::new(),
+            });
+        }
+        lanes[physical_slot].physical_slot = physical_slot;
+        lanes[physical_slot].segments.push(ResourceLifetimeSegment {
+            label: resource.label(),
+            resource_index,
+            lifetime,
+        });
+    }
+    for lane in &mut lanes {
+        lane.segments.sort_by_key(|segment| {
+            (
+                segment.lifetime.first_pass,
+                segment.lifetime.last_pass,
+                segment.resource_index,
+            )
+        });
+    }
+    lanes
 }

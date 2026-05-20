@@ -65,7 +65,7 @@ use std::num::NonZeroU32;
 
 use crate::render_graph::context::{ComputePassCtx, RasterPassCtx};
 use crate::render_graph::error::{RenderPassError, SetupError};
-use crate::render_graph::frame_params::MsaaViewsSlot;
+use crate::render_graph::frame_params::{MsaaViewsSlot, PerViewFramePlanSlot};
 use crate::render_graph::gpu_cache::stereo_mask_or_template;
 use crate::render_graph::pass::{ComputePass, PassBuilder, RasterPass};
 use crate::render_graph::pass::{DepthAttachmentTemplate, RenderPassTemplate};
@@ -273,6 +273,9 @@ impl RasterPass for WorldMeshForwardOpaquePass {
     }
 
     fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
+        b.read_blackboard::<PerViewFramePlanSlot>();
+        b.read_optional_blackboard::<WorldMeshForwardPlanSlot>();
+        b.write_blackboard::<WorldMeshForwardPlanSlot>();
         {
             let mut r = b.raster();
             r.frame_sampled_color(
@@ -363,6 +366,9 @@ impl ComputePass for WorldMeshDepthSnapshotPass {
 
     fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
         b.compute();
+        b.read_optional_blackboard::<WorldMeshForwardPlanSlot>();
+        b.read_optional_blackboard::<MsaaViewsSlot>();
+        b.write_blackboard::<WorldMeshForwardPlanSlot>();
         // Declare only what is actually used: msaa_depth as sampled input,
         // msaa_depth_r32 as storage write output, and depth as CopySrc.
         // Note: msaa_depth_r32 lifetime is extended by WorldMeshForwardDepthResolvePass
@@ -423,6 +429,9 @@ impl RasterPass for WorldMeshForwardIntersectPass {
     }
 
     fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
+        b.read_blackboard::<PerViewFramePlanSlot>();
+        b.read_optional_blackboard::<WorldMeshForwardPlanSlot>();
+        b.write_blackboard::<WorldMeshForwardPlanSlot>();
         {
             let mut r = b.raster();
             // No `resolve_target` here: when MSAA is active, the multisampled buffer is preserved
@@ -526,6 +535,7 @@ impl ComputePass for WorldMeshForwardDepthResolvePass {
 
     fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
         b.compute();
+        b.read_optional_blackboard::<MsaaViewsSlot>();
         b.read_texture(
             self.resources.msaa_depth,
             TextureAccess::Sampled {
