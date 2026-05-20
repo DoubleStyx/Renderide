@@ -34,14 +34,10 @@ impl VideoPlayer {
     }
 
     /// No-op stand-in for the GStreamer-backed implementation.
-    pub fn handle_update(&self, _u: VideoTextureUpdate) {
-        match self {}
-    }
+    pub fn handle_update(&self, _u: VideoTextureUpdate) {}
 
     /// No-op stand-in for the GStreamer-backed implementation.
-    pub fn handle_start_audio_track(&self, _s: VideoTextureStartAudioTrack) {
-        match self {}
-    }
+    pub fn handle_start_audio_track(&self, _s: VideoTextureStartAudioTrack) {}
 
     /// No-op stand-in for the GStreamer-backed implementation.
     pub fn process_events(
@@ -49,21 +45,18 @@ impl VideoPlayer {
         _frame_sink: &mut impl Sized,
         _ipc: &mut Option<&mut DualQueueIpc>,
     ) {
-        match self {}
     }
 
     /// No-op stand-in for starting cooperative shutdown.
-    pub fn begin_shutdown(&self) {
-        match self {}
-    }
+    pub fn begin_shutdown(&self) {}
 
     /// No-op stand-in for polling cooperative shutdown completion.
     pub fn poll_shutdown_complete(&self) -> bool {
-        match self {}
+        true
     }
 
     /// No-op stand-in for the GStreamer-backed implementation. The stub never produces samples.
     pub fn sample_clock_error(&self) -> Option<VideoTextureClockErrorState> {
-        match self {}
+        None
     }
 }
