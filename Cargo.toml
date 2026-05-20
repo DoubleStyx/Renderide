@@ -52,6 +52,7 @@ unsafe_op_in_unsafe_fn = "warn"
 variant_size_differences = "warn"
 
 [workspace.lints.clippy]
+all = "warn"
 undocumented_unsafe_blocks = "warn"
 unwrap_used = "warn"
 expect_used = "warn"
