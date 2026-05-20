@@ -45,7 +45,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     );
     let world_ray = skybox::world_ray_from_view_ray(view_ray, view, in.view_layer);
     let ps_params = psmat::params();
-    let terms = ps::visible_vertex_terms(ps_params, world_ray);
+    let scattering_params = ps::scattering_parameters(ps_params);
+    let terms = ps::visible_vertex_terms(ps_params, scattering_params, world_ray);
     return rg::retain_globals_additive(vec4<f32>(
         ps::visible_fragment_color(ps_params, terms),
         1.0,
