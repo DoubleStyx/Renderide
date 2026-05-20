@@ -112,7 +112,7 @@ jobs:
         run: taplo fmt --check --diff
 
       - name: Clippy
-        run: cargo clippy --all-targets --locked ${{ matrix.clippy_features }} -- -W clippy::all -D warnings
+        run: cargo clippy --all-targets --locked ${{ matrix.clippy_features }} -- -D warnings
 
       - name: Check Tracy feature
         if: runner.os != 'Linux'
