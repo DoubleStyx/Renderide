@@ -30,13 +30,17 @@ fn scale_axis_contributes_dimension(axis: f32) -> bool {
 }
 
 /// Returns the sanitized scale vector used for matrix construction.
+///
+/// When every axis is at or below [`MIN_RENDER_SCALE`] (including exact zeros), matrix construction
+/// must use **`Vec3::ZERO`**, not unit scale—otherwise rigs and objects with `(0,0,0)` local scale
+/// incorrectly behave like `(1,1,1)` in world matrices and skinning palettes.
 #[inline]
 fn sanitized_scale(scale: Vec3) -> Vec3 {
     let contributes = scale_axis_contributes_dimension(scale.x)
         || scale_axis_contributes_dimension(scale.y)
         || scale_axis_contributes_dimension(scale.z);
     if scale.is_finite() && !contributes {
-        return Vec3::ONE;
+        return Vec3::ZERO;
     }
     Vec3::new(
         sanitized_scale_axis(scale.x),
@@ -203,9 +207,9 @@ mod tests {
         assert!((m.col(2).z - 1.0).abs() < 1e-6);
     }
 
-    /// An all-zero scale vector is an identity-default fallback, but remains non-renderable.
+    /// An all-zero scale vector maps to collapsed matrix axes while translation stays unchanged.
     #[test]
-    fn zero_scale_vector_falls_back_to_unit_scale_matrix() {
+    fn zero_scale_vector_preserves_collapsed_scale_in_matrix() {
         let t = RenderTransform {
             position: Vec3::new(3.0, 4.0, 5.0),
             scale: Vec3::ZERO,
@@ -213,9 +217,9 @@ mod tests {
         };
         let m = render_transform_to_matrix(&t);
 
-        assert!((m.col(0).x - 1.0).abs() < 1e-6);
-        assert!((m.col(1).y - 1.0).abs() < 1e-6);
-        assert!((m.col(2).z - 1.0).abs() < 1e-6);
+        assert!(m.col(0).truncate().length_squared() < 1e-12);
+        assert!(m.col(1).truncate().length_squared() < 1e-12);
+        assert!(m.col(2).truncate().length_squared() < 1e-12);
         assert_eq!(m.col(3).truncate(), Vec3::new(3.0, 4.0, 5.0));
         assert!(render_transform_has_degenerate_scale(&t));
     }
