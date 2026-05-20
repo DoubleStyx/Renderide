@@ -49,7 +49,7 @@ impl SkyboxFamily {
     pub(super) const fn draw_vertex_count(self) -> u32 {
         match self {
             Self::Projection360 | Self::Gradient => 3,
-            Self::Procedural => 6,
+            Self::Procedural => 3,
         }
     }
 }
