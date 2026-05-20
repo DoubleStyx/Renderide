@@ -25,12 +25,6 @@ fn select_view_proj(view: SkyboxView, view_idx: u32) -> mat4x4<f32> {
     return view.view_right;
 }
 
-fn fullscreen_clip_pos(vertex_index: u32) -> vec4<f32> {
-    let x = f32(vertex_index % 3u);
-    let y = f32(vertex_index % 2u);
-    return vec4<f32>(3.0 * (x - 1.0), y * 4.0 - 1.0, 0.0, 1.0);
-}
-
 fn ndc_from_clip(clip_pos: vec4<f32>) -> vec2<f32> {
     return vec2<f32>(
         clip_pos.x / f32(rg::frame.viewport_width),
