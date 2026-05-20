@@ -205,9 +205,7 @@ impl EmbeddedStemQuery {
         self.metadata
             .reflected
             .as_ref()
-            .map_or(SnapshotRequirements::default(), |r| {
-                r.snapshot_requirements()
-            })
+            .map_or_else(SnapshotRequirements::default, |r| r.snapshot_requirements())
     }
 
     /// Returns the single forward pass that can be mirrored by the generic depth prepass.

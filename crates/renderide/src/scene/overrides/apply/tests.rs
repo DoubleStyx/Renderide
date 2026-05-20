@@ -318,7 +318,7 @@ fn material_override_apply_removes_adds_decodes_target_and_rows() {
             ..Default::default()
         });
 
-    let skinned_target = (1i32 << 30) | 12;
+    let skinned_target = 0x4000_0000i32 | 0x000c;
     let extracted = ExtractedRenderMaterialOverridesUpdate {
         removals: vec![0, -1],
         additions: vec![30, -1],

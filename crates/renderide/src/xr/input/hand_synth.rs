@@ -537,7 +537,7 @@ mod tests {
         let VRControllerState::TouchControllerState(mut s) =
             touch_controller(Chirality::Left, true, 0.0, 0.0)
         else {
-            unreachable!()
+            panic!("expected touch controller state")
         };
         s.grip = 1.5;
         s.trigger = -0.5;

@@ -17,7 +17,7 @@ fn decode_packed_mesh_renderer_target_matches_shared_packer_layout() {
         MeshRendererOverrideTarget::Static(7)
     );
     assert_eq!(
-        decode_packed_mesh_renderer_target((1 << 30) | 11),
+        decode_packed_mesh_renderer_target(0x4000_0000 | 0x000b),
         MeshRendererOverrideTarget::Skinned(11)
     );
 }

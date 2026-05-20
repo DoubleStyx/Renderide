@@ -324,7 +324,7 @@ impl RendererRuntime {
     /// Drains queued reflection-probe bake tasks before the next host begin-frame is sent.
     pub fn drain_reflection_probe_render_tasks(&mut self, gpu: &mut GpuContext) {
         profiling::scope!("reflection_probe_task::drain");
-        let mut tasks = std::mem::take(&mut self.tick_state.pending_reflection_probe_render_tasks);
+        let tasks = std::mem::take(&mut self.tick_state.pending_reflection_probe_render_tasks);
         self.flush_reflection_probe_render_results();
         if !tasks.is_empty() {
             let RendererRuntime {
@@ -342,7 +342,7 @@ impl RendererRuntime {
                 let mut convolver = SkyboxIblConvolver::new();
                 let mut completed = 0u64;
                 let mut failed = 0u64;
-                for queued in tasks.drain(..) {
+                for queued in tasks {
                     match render_reflection_probe_task(ReflectionProbeTaskRenderCtx {
                         gpu: &mut *gpu,
                         backend: &mut *backend,

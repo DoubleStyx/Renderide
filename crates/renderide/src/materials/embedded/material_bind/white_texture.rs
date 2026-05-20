@@ -133,9 +133,10 @@ fn tex3d_placeholder_labels(color: PlaceholderTextureColor) -> PlaceholderLabels
             label: "embedded_default_red_3d",
             view_label: "embedded_default_red_3d_view",
         },
-        PlaceholderTextureColor::FlatNormal => unreachable!(
-            "FlatNormal placeholder is 2D-only; normal-map fallbacks never request a 3D view"
-        ),
+        PlaceholderTextureColor::FlatNormal => PlaceholderLabels {
+            label: "embedded_default_flat_normal_3d",
+            view_label: "embedded_default_flat_normal_3d_view",
+        },
     }
 }
 
@@ -157,9 +158,10 @@ fn cube_placeholder_labels(color: PlaceholderTextureColor) -> PlaceholderLabels 
             label: "embedded_default_red_cube",
             view_label: "embedded_default_red_cube_view",
         },
-        PlaceholderTextureColor::FlatNormal => unreachable!(
-            "FlatNormal placeholder is 2D-only; normal-map fallbacks never request a cube view"
-        ),
+        PlaceholderTextureColor::FlatNormal => PlaceholderLabels {
+            label: "embedded_default_flat_normal_cube",
+            view_label: "embedded_default_flat_normal_cube_view",
+        },
     }
 }
 

@@ -1,7 +1,7 @@
 //! Explicit group edges and resource read/write dependency edges.
 
 use hashbrown::HashMap;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use super::super::error::GraphBuildError;
 use super::super::ids::{GroupId, PassId};
@@ -16,8 +16,8 @@ use crate::render_graph::validation::{GraphValidationDiagnostic, GraphValidation
 pub(super) fn explicit_edges(
     builder: &GraphBuilder,
     n: usize,
-) -> Result<HashSet<(usize, usize)>, GraphBuildError> {
-    let mut edges = HashSet::new();
+) -> Result<BTreeSet<(usize, usize)>, GraphBuildError> {
+    let mut edges = BTreeSet::new();
     for &(from, to) in &builder.edges {
         if from >= n || to >= n {
             return Err(GraphBuildError::InvalidEdge {
@@ -33,7 +33,7 @@ pub(super) fn explicit_edges(
 }
 
 /// Adds linear-size relay edges so every pass in set `a` precedes every pass in set `b`.
-fn relay_all_before(a: &[usize], b: &[usize], edges: &mut HashSet<(usize, usize)>) {
+fn relay_all_before(a: &[usize], b: &[usize], edges: &mut BTreeSet<(usize, usize)>) {
     if a.is_empty() || b.is_empty() {
         return;
     }
@@ -53,7 +53,7 @@ fn relay_all_before(a: &[usize], b: &[usize], edges: &mut HashSet<(usize, usize)
 pub(super) fn add_group_edges(
     builder: &GraphBuilder,
     setups: &[SetupEntry],
-    edges: &mut HashSet<(usize, usize)>,
+    edges: &mut BTreeSet<(usize, usize)>,
 ) -> Result<(), GraphBuildError> {
     for entry in &builder.groups {
         for &dep in &entry.after {
@@ -99,7 +99,7 @@ pub(super) fn add_group_edges(
 pub(super) fn add_resource_edges(
     builder: &GraphBuilder,
     setups: &[SetupEntry],
-    edges: &mut HashSet<(usize, usize)>,
+    edges: &mut BTreeSet<(usize, usize)>,
 ) -> Result<(), GraphBuildError> {
     let mut by_domain: HashMap<ResourceDomain, Vec<ResourceAccessEvent>> = HashMap::new();
     for (pass_idx, setup) in setups.iter().enumerate() {
@@ -172,7 +172,7 @@ pub(super) fn add_resource_edges(
 pub(super) fn add_blackboard_edges(
     builder: &GraphBuilder,
     setups: &[SetupEntry],
-    edges: &mut HashSet<(usize, usize)>,
+    edges: &mut BTreeSet<(usize, usize)>,
     validation_report: &mut GraphValidationReport,
 ) {
     let mut last_writer: HashMap<std::any::TypeId, usize> = HashMap::new();

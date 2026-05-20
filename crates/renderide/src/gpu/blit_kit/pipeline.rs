@@ -64,17 +64,14 @@ impl ColorBlitPipelineSlot {
         format: wgpu::TextureFormat,
         build: impl FnOnce(wgpu::TextureFormat) -> wgpu::RenderPipeline,
     ) -> &wgpu::RenderPipeline {
-        let needs_build = match &self.entry {
-            Some((cached, _)) => *cached != format,
-            None => true,
-        };
-        if needs_build {
-            self.entry = Some((format, build(format)));
+        if let Some((cached, pipeline)) = self.entry.take()
+            && cached == format
+        {
+            let entry = self.entry.insert((cached, pipeline));
+            return &entry.1;
         }
-        match &self.entry {
-            Some((_, pipeline)) => pipeline,
-            None => unreachable!("ColorBlitPipelineSlot entry populated above"),
-        }
+        let entry = self.entry.insert((format, build(format)));
+        &entry.1
     }
 }
 

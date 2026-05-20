@@ -1,14 +1,14 @@
 //! Topological ordering (Kahn) and import-root pass culling.
 
 use hashbrown::HashMap;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use super::super::error::GraphBuildError;
 use super::decl::SetupEntry;
 
 pub(super) fn topo_sort(
     n: usize,
-    edges: &HashSet<(usize, usize)>,
+    edges: &BTreeSet<(usize, usize)>,
 ) -> Result<(Vec<usize>, Vec<usize>), GraphBuildError> {
     let mut in_degree = vec![0usize; n];
     let mut neighbors: Vec<Vec<usize>> = vec![Vec::new(); n];
@@ -51,7 +51,7 @@ pub(super) fn topo_sort(
 
 pub(super) fn retained_passes(
     n: usize,
-    edges: &HashSet<(usize, usize)>,
+    edges: &BTreeSet<(usize, usize)>,
     setups: &[SetupEntry],
 ) -> HashSet<usize> {
     let mut reverse: Vec<Vec<usize>> = vec![Vec::new(); n];

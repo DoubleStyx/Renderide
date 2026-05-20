@@ -48,7 +48,7 @@ mod handle;
 pub mod labeled_enum;
 pub(crate) mod persist;
 mod types;
-pub mod value;
+pub(crate) mod value;
 
 /// Serializes tests that mutate or depend on `RENDERIDE_*` process environment variables.
 #[cfg(test)]

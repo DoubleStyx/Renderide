@@ -264,7 +264,7 @@ impl RendererRuntime {
     /// Drains queued camera readback tasks before the next host begin-frame is sent.
     pub fn drain_camera_render_tasks(&mut self, gpu: &mut GpuContext) {
         profiling::scope!("camera_task::drain");
-        let mut tasks = std::mem::take(&mut self.tick_state.pending_camera_render_tasks);
+        let tasks = std::mem::take(&mut self.tick_state.pending_camera_render_tasks);
         if tasks.is_empty() {
             self.set_pending_camera_readbacks(0);
             return;
@@ -293,7 +293,7 @@ impl RendererRuntime {
 
         let base_camera = &*host_camera;
         let total = tasks.len();
-        for (index, task) in tasks.drain(..).enumerate() {
+        for (index, task) in tasks.into_iter().enumerate() {
             let task_index = i32::try_from(index).unwrap_or(i32::MAX);
             match render_camera_task(CameraTaskRenderCtx {
                 gpu: &mut *gpu,

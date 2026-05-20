@@ -164,7 +164,7 @@ fn suite_config_from_opts(opts: &SuiteOpts) -> Result<SuiteConfig, HarnessError>
     runner.verbose_renderer = opts.verbose_renderer;
     runner.output_root = opts.output_root.clone().unwrap_or_else(default_output_root);
 
-    let jobs = opts.jobs.unwrap_or(case_count.max(1)).max(1);
+    let jobs = opts.jobs.unwrap_or_else(|| case_count.max(1)).max(1);
     Ok(SuiteConfig {
         cases,
         runner,

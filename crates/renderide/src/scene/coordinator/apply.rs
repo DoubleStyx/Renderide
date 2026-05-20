@@ -339,6 +339,10 @@ impl SceneCoordinator {
     /// merged into [`SceneCoordinator::world_dirty`] on the main thread before reinsert. The
     /// caller's `extracted_per_space` is drained in place so the backing [`Vec`] capacity persists
     /// across frames.
+    #[expect(
+        clippy::iter_with_drain,
+        reason = "per-frame apply scratch drains keep Vec capacity for reuse after reinsertion"
+    )]
     pub(super) fn apply_extracted_per_space(
         &mut self,
         extracted_per_space: &mut Vec<ExtractedRenderSpaceUpdate>,

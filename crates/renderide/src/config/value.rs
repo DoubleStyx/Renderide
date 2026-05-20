@@ -1,12 +1,12 @@
-//! Validating value algebra for renderer config: bounded numeric ranges with optional zero-as-default
-//! sentinels, plus power-of-two flooring for bloom-style mip pyramids.
+//! Validating value algebra for renderer config: bounded numeric ranges plus power-of-two flooring
+//! for bloom-style mip pyramids.
 //!
 //! ## Why
 //!
 //! Several config fields kept their raw user-supplied integer in the section struct, then
-//! re-validated it on every read through a hand-written helper (clamp to `[MIN, MAX]`, treat `0`
-//! as "unset", round down to a power of two for graph use). The helpers were structurally
-//! identical and scattered across [`super::types::rendering`] and [`super::types::post_processing`].
+//! re-validated it on every read through a hand-written helper (clamp to `[MIN, MAX]` or round
+//! down to a power of two for graph use). The helpers were structurally similar and scattered
+//! across [`super::types::rendering`] and [`super::types::post_processing`].
 //!
 //! [`Clamped`] consolidates the clamp-then-extract step into one type-driven primitive, and
 //! [`power_of_two_floor`] consolidates the bloom-style rounding step into one place. Field types
@@ -16,23 +16,16 @@
 
 use std::fmt;
 
-/// A `u32` known to satisfy `MIN <= value <= MAX`. Construct via [`Clamped::new`] (clamps an
-/// arbitrary input) or [`Clamped::with_default_for_zero`] (treats `0` as a sentinel meaning
-/// "use the supplied default").
+/// A `u32` known to satisfy `MIN <= value <= MAX`. Construct via [`Clamped::new`], which clamps an
+/// arbitrary input into the configured range.
 ///
 /// `MIN` and `MAX` are const generics so the bounds are visible in error messages and the
 /// returned value is structurally distinct from a plain `u32` at type-checking time. Callers
 /// extract the raw value with [`Clamped::get`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct Clamped<const MIN: u32, const MAX: u32>(u32);
+pub(crate) struct Clamped<const MIN: u32, const MAX: u32>(u32);
 
 impl<const MIN: u32, const MAX: u32> Clamped<MIN, MAX> {
-    /// Smallest value this [`Clamped`] can hold, exposed as an associated constant for callers
-    /// that want to log or display the bound.
-    pub const MIN: u32 = MIN;
-    /// Largest value this [`Clamped`] can hold.
-    pub const MAX: u32 = MAX;
-
     /// Clamps `raw` into `[MIN, MAX]`.
     pub const fn new(raw: u32) -> Self {
         let v = if raw < MIN {
@@ -43,17 +36,6 @@ impl<const MIN: u32, const MAX: u32> Clamped<MIN, MAX> {
             raw
         };
         Self(v)
-    }
-
-    /// Like [`Self::new`] but treats `raw == 0` as a sentinel meaning "use `default`". Several
-    /// renderer config fields use `0` to mean "auto" / "unset"; the explicit fallback keeps a
-    /// stray zero from being silently promoted to `MIN`.
-    pub const fn with_default_for_zero(raw: u32, default: u32) -> Self {
-        if raw == 0 {
-            Self::new(default)
-        } else {
-            Self::new(raw)
-        }
     }
 
     /// Returns the underlying clamped value.
@@ -96,16 +78,6 @@ mod tests {
         assert_eq!(C::new(2).get(), 2);
         assert_eq!(C::new(3).get(), 3);
         assert_eq!(C::new(99).get(), 3);
-    }
-
-    #[test]
-    fn clamped_with_default_for_zero_uses_default_when_zero() {
-        type C = Clamped<1, 3>;
-        assert_eq!(C::with_default_for_zero(0, 2).get(), 2);
-        assert_eq!(C::with_default_for_zero(1, 2).get(), 1);
-        assert_eq!(C::with_default_for_zero(99, 2).get(), 3);
-        // The default itself is also clamped, so a stray default outside the range still resolves safely.
-        assert_eq!(C::with_default_for_zero(0, 99).get(), 3);
     }
 
     #[test]

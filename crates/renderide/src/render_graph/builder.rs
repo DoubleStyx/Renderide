@@ -15,7 +15,7 @@ use lifetime::{compile_buffers, compile_textures};
 use topo::{retained_ordinals, retained_passes, topo_sort};
 use validate::validate_handles;
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 
 use super::compiled::{
     CompileStats, CompiledBufferResource, CompiledPassInfo, CompiledRenderGraph,
@@ -431,7 +431,7 @@ impl GraphBuilder {
         &self,
         setups: &[SetupEntry],
         n: usize,
-    ) -> Result<(HashSet<(usize, usize)>, GraphValidationReport), GraphBuildError> {
+    ) -> Result<(BTreeSet<(usize, usize)>, GraphValidationReport), GraphBuildError> {
         let mut edges = explicit_edges(self, n)?;
         add_group_edges(self, setups, &mut edges)?;
         add_resource_edges(self, setups, &mut edges)?;
