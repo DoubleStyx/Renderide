@@ -60,7 +60,7 @@ impl AssetCatalogs {
         self.video_texture_properties
             .get(&asset_id)
             .cloned()
-            .unwrap_or(VideoTextureProperties {
+            .unwrap_or_else(|| VideoTextureProperties {
                 asset_id,
                 ..VideoTextureProperties::default()
             })

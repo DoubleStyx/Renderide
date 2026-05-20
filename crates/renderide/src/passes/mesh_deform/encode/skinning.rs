@@ -291,9 +291,7 @@ fn skinning_bind_group(
     if let Some(bind_group) = gpu.scratch.skinning_bind_group(key) {
         return (bind_group, true);
     }
-    let Some(skin_u_size) = NonZeroU64::new(SKIN_DISPATCH_PARAM_BYTES) else {
-        unreachable!("skin dispatch params size is nonzero");
-    };
+    let skin_u_size = NonZeroU64::new(SKIN_DISPATCH_PARAM_BYTES).unwrap_or(NonZeroU64::MIN);
     let bind_group = {
         profiling::scope!("mesh_deform::skinning_create_bg");
         Arc::new(gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {

@@ -41,7 +41,7 @@ struct Logger {
 }
 
 impl log::Log for Logger {
-    fn enabled(&self, metadata: &log::Metadata) -> bool {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
         let level: LogLevel = metadata.level().into();
         let mut max_level = current_max_level(self);
         if max_level == LogLevel::Debug && metadata.target().starts_with("naga") {
@@ -51,7 +51,7 @@ impl log::Log for Logger {
         level <= max_level
     }
 
-    fn log(&self, record: &log::Record) {
+    fn log(&self, record: &log::Record<'_>) {
         if self.enabled(record.metadata()) {
             let level: LogLevel = record.level().into();
             with_line_buf(|buf| {

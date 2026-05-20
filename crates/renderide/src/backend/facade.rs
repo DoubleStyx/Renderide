@@ -235,7 +235,9 @@ impl RenderBackend {
             .as_ref()
             .and_then(|h| h.read().ok())
             .map(|s| s.experimental.reflection_probe_sh2_enabled)
-            .unwrap_or(crate::config::ExperimentalSettings::default().reflection_probe_sh2_enabled)
+            .unwrap_or_else(|| {
+                crate::config::ExperimentalSettings::default().reflection_probe_sh2_enabled
+            })
     }
 
     /// Snapshot of the live development WGSL material hot-reload toggle.
@@ -244,9 +246,9 @@ impl RenderBackend {
             .as_ref()
             .and_then(|h| h.read().ok())
             .map(|s| s.experimental.material_shader_hot_reload_enabled)
-            .unwrap_or(
-                crate::config::ExperimentalSettings::default().material_shader_hot_reload_enabled,
-            )
+            .unwrap_or_else(|| {
+                crate::config::ExperimentalSettings::default().material_shader_hot_reload_enabled
+            })
     }
 
     /// Applies development WGSL hot-reload settings and polls for changed local material targets.

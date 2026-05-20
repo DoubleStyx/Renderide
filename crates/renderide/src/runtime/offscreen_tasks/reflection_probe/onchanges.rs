@@ -182,11 +182,11 @@ impl RendererRuntime {
         }
 
         let base_camera = &self.host_camera;
-        let mut active =
+        let active =
             std::mem::take(&mut self.tick_state.active_onchanges_reflection_probe_captures);
         let mut still_active = Vec::with_capacity(active.len());
         let mut completed_results = Vec::new();
-        for mut capture in active.drain(..) {
+        for mut capture in active {
             match step_onchanges_reflection_probe_capture(OnChangesCaptureStepCtx {
                 gpu,
                 backend: &mut self.backend,
@@ -239,13 +239,13 @@ impl RendererRuntime {
     /// Starts any queued OnChanges reflection-probe captures.
     fn start_pending_onchanges_reflection_probe_captures(&mut self, gpu: &GpuContext) {
         profiling::scope!("reflection_probe_onchanges::start_pending");
-        let mut pending =
+        let pending =
             std::mem::take(&mut self.tick_state.pending_onchanges_reflection_probe_requests);
         if pending.is_empty() {
             return;
         }
         let mut completed_results = Vec::new();
-        for request in pending.drain(..) {
+        for request in pending {
             let generation = self.tick_state.next_onchanges_reflection_probe_generation;
             self.tick_state.next_onchanges_reflection_probe_generation = self
                 .tick_state
@@ -299,10 +299,9 @@ impl RendererRuntime {
         }
 
         let base_camera = &self.host_camera;
-        let mut active =
-            std::mem::take(&mut self.tick_state.active_realtime_reflection_probe_captures);
+        let active = std::mem::take(&mut self.tick_state.active_realtime_reflection_probe_captures);
         let mut still_active = Vec::with_capacity(active.len());
-        for mut capture in active.drain(..) {
+        for mut capture in active {
             if !realtime_capture_is_still_valid(&self.scene, &capture) {
                 continue;
             }

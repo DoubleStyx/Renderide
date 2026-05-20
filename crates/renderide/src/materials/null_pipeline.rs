@@ -26,9 +26,8 @@ impl NullFamily {
     pub fn per_draw_bind_group_layout(
         device: &wgpu::Device,
     ) -> Result<wgpu::BindGroupLayout, PipelineBuildError> {
-        let wgsl = embedded_shaders::embedded_target_wgsl("null_default").ok_or(
-            PipelineBuildError::MissingEmbeddedShader("null_default".to_string()),
-        )?;
+        let wgsl = embedded_shaders::embedded_target_wgsl("null_default")
+            .ok_or_else(|| PipelineBuildError::MissingEmbeddedShader("null_default".to_string()))?;
         let r = reflect_raster_material_wgsl(wgsl)?;
         validate_per_draw_group2(&r.per_draw_entries)?;
         Ok(

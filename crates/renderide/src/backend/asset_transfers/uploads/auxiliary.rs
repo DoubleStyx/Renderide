@@ -54,7 +54,7 @@ pub fn on_set_desktop_texture_properties(
         .desktop_texture_updates
         .get(&asset_id)
         .cloned()
-        .unwrap_or(DesktopTexturePropertiesUpdate {
+        .unwrap_or_else(|| DesktopTexturePropertiesUpdate {
             asset_id,
             ..Default::default()
         });

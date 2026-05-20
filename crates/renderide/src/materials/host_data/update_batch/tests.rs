@@ -589,7 +589,7 @@ fn parse_with_bits(
             1 => float_buffers.push(d),
             2 => float4_buffers.push(d),
             3 => matrix_buffers.push(d),
-            _ => unreachable!("invalid side-blob kind"),
+            kind => panic!("invalid side-blob kind {kind}"),
         }
     }
     let batch = MaterialsUpdateBatch {

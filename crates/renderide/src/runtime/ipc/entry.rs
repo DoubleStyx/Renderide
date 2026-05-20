@@ -32,6 +32,10 @@ impl RendererRuntime {
 
     /// Drains IPC and dispatches commands. Each poll batch is ordered so `renderer_init_data` runs
     /// first, then frame submits, then the rest (see [`crate::frontend::RendererFrontend::poll_commands`]).
+    #[expect(
+        clippy::iter_with_drain,
+        reason = "the drained batch is recycled to preserve IPC Vec allocation across frames"
+    )]
     pub fn poll_ipc(&mut self) {
         profiling::scope!("ipc::poll_batch");
         shader_material::drain_pending_shader_resolutions(
