@@ -130,7 +130,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let mask_mul = ui_unlit_kw(UIUNLIT_KW_MASK_TEXTURE_MUL);
     let mask_clip = ui_unlit_kw(UIUNLIT_KW_MASK_TEXTURE_CLIP);
     if (mask_mul || mask_clip) {
-        let uv_mask = uvu::apply_st(in.uv, mat._MaskTex_ST);
+        let uv_mask = uvu::apply_st(uv_main, mat._MaskTex_ST);
         let mask_sample = ts::sample_tex_2d(_MaskTex, _MaskTex_sampler, uv_mask, mat._MaskTex_LodBias);
         let mul = ma::mask_luminance(mask_sample);
         if (mask_mul) {

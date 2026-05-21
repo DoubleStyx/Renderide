@@ -19,6 +19,25 @@ pub struct SnapshotRequirements {
     pub requires_intersection_pass: bool,
 }
 
+/// How a material expects the scene-color snapshot to be refreshed.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum SceneColorSnapshotMode {
+    /// The material does not sample the scene-color snapshot.
+    #[default]
+    None,
+    /// Unity unnamed grab-pass behavior: copy immediately before each draw group.
+    PerObjectGrab,
+    /// Unity named grab-pass behavior: copy once at the first matching draw and reuse it.
+    NamedBackgroundGrab,
+}
+
+impl SceneColorSnapshotMode {
+    /// Returns true when the mode samples a scene-color snapshot.
+    pub fn uses_scene_color(self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
 impl SnapshotRequirements {
     /// Returns true when any snapshot flag is set.
     #[cfg(test)]
@@ -59,5 +78,12 @@ mod tests {
             }
             .any()
         );
+    }
+
+    #[test]
+    fn scene_color_snapshot_mode_reports_usage() {
+        assert!(!SceneColorSnapshotMode::None.uses_scene_color());
+        assert!(SceneColorSnapshotMode::PerObjectGrab.uses_scene_color());
+        assert!(SceneColorSnapshotMode::NamedBackgroundGrab.uses_scene_color());
     }
 }

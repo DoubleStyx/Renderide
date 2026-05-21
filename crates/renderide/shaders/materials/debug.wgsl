@@ -31,6 +31,17 @@ const DEBUG_KW_UV0: u32 = 1u << 8u;
 const DEBUG_KW_UV1: u32 = 1u << 9u;
 const DEBUG_KW_UV2: u32 = 1u << 10u;
 const DEBUG_KW_UV3: u32 = 1u << 11u;
+const DEBUG_SELECTOR_MASK: u32 =
+    DEBUG_KW_COLOR |
+    DEBUG_KW_COLOR_ALPHA |
+    DEBUG_KW_NORMAL |
+    DEBUG_KW_POSITION |
+    DEBUG_KW_TANGENT |
+    DEBUG_KW_TANGENT4 |
+    DEBUG_KW_UV0 |
+    DEBUG_KW_UV1 |
+    DEBUG_KW_UV2 |
+    DEBUG_KW_UV3;
 
 @group(1) @binding(0) var<uniform> mat: DebugMaterial;
 
@@ -45,6 +56,10 @@ fn debug_kw(mask: u32) -> bool {
     return vb::enabled(mat._RenderideVariantBits, mask);
 }
 
+fn selector_defaults_to_position() -> bool {
+    return (mat._RenderideVariantBits & DEBUG_SELECTOR_MASK) == 0u;
+}
+
 fn selected_mesh_data(
     pos: vec4<f32>,
     n: vec4<f32>,
@@ -55,7 +70,7 @@ fn selected_mesh_data(
     uv2: vec4<f32>,
     uv3: vec4<f32>,
 ) -> vec3<f32> {
-    if (debug_kw(DEBUG_KW_POSITION)) {
+    if (debug_kw(DEBUG_KW_POSITION) || selector_defaults_to_position()) {
         return pos.xyz;
     }
     if (debug_kw(DEBUG_KW_COLOR)) {

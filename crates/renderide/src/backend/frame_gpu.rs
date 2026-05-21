@@ -125,6 +125,11 @@ impl PerViewSceneSnapshots {
         self.set.views()
     }
 
+    /// Returns views that bind named grab-pass color snapshots at the scene-color slots.
+    pub(super) fn named_color_views(&self) -> FrameSceneSnapshotTextureViews<'_> {
+        self.set.named_color_views()
+    }
+
     /// Ensures requested per-view snapshot textures exist before command recording starts.
     pub(super) fn sync(
         &mut self,
@@ -151,7 +156,16 @@ impl PerViewSceneSnapshots {
                 params.viewport,
                 params.color_format,
             );
-        depth_changed || color_changed
+        let named_color_changed = params.needs_color_snapshot
+            && self.set.ensure(
+                device,
+                limits,
+                SceneSnapshotKind::NamedColor,
+                layout,
+                params.viewport,
+                params.color_format,
+            );
+        depth_changed || color_changed || named_color_changed
     }
 
     /// Encodes a copy into this view's scene-depth snapshot.
@@ -183,6 +197,23 @@ impl PerViewSceneSnapshots {
             encoder,
             source_color,
             SceneSnapshotKind::Color,
+            SceneSnapshotLayout::from_multiview(multiview),
+            viewport,
+        )
+    }
+
+    /// Encodes a copy into this view's named scene-color snapshot.
+    pub(super) fn encode_named_color_copy(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        source_color: &wgpu::Texture,
+        viewport: (u32, u32),
+        multiview: bool,
+    ) -> bool {
+        self.set.encode_copy(
+            encoder,
+            source_color,
+            SceneSnapshotKind::NamedColor,
             SceneSnapshotLayout::from_multiview(multiview),
             viewport,
         )

@@ -66,6 +66,14 @@ impl GraphFrameResources for FrameResourceManager {
         })
     }
 
+    fn per_view_named_scene_color_frame_bind_group(
+        &self,
+        view_id: ViewId,
+    ) -> Option<Arc<wgpu::BindGroup>> {
+        self.per_view_frame(view_id)
+            .map(|state| Arc::clone(&state.named_scene_color_frame_bind_group))
+    }
+
     fn ensure_per_view_per_draw_capacity(
         &self,
         device: &wgpu::Device,
@@ -144,6 +152,23 @@ impl GraphFrameResources for FrameResourceManager {
         multiview: bool,
     ) -> bool {
         self.copy_scene_color_snapshot_for_view(view_id, encoder, source_color, viewport, multiview)
+    }
+
+    fn copy_named_scene_color_snapshot_for_view(
+        &self,
+        view_id: ViewId,
+        encoder: &mut wgpu::CommandEncoder,
+        source_color: &wgpu::Texture,
+        viewport: (u32, u32),
+        multiview: bool,
+    ) -> bool {
+        self.copy_named_scene_color_snapshot_for_view(
+            view_id,
+            encoder,
+            source_color,
+            viewport,
+            multiview,
+        )
     }
 
     fn skybox_specular_uniform_params(&self) -> SkyboxSpecularUniformParams {

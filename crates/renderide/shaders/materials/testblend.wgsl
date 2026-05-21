@@ -16,6 +16,7 @@
 #import renderide::pbs::lighting as plight
 #import renderide::pbs::sampling as psamp
 #import renderide::pbs::surface as psurf
+#import renderide::core::texture_sampling as ts
 #import renderide::core::uv as uvu
 
 struct TestBlendMaterial {
@@ -26,6 +27,8 @@ struct TestBlendMaterial {
     _Metallic: f32,
     _Lerp: f32,
     _CutOff: f32,
+    _MainTex_LodBias: f32,
+    _MainTex2_LodBias: f32,
     _RenderideVariantBits: u32,
     _pad0: vec3<u32>,
 }
@@ -84,8 +87,8 @@ fn shade(
 ) -> vec4<f32> {
     let uv_main = uvu::apply_st(uv0, mat._MainTex_ST);
     let uv_main2 = uvu::apply_st(uv0, mat._MainTex2_ST);
-    let c1 = textureSample(_MainTex, _MainTex_sampler, uv_main);
-    let c2 = textureSample(_MainTex2, _MainTex2_sampler, uv_main2);
+    let c1 = ts::sample_tex_2d(_MainTex, _MainTex_sampler, uv_main, mat._MainTex_LodBias);
+    let c2 = ts::sample_tex_2d(_MainTex2, _MainTex2_sampler, uv_main2, mat._MainTex2_LodBias);
     let c = mix(c1, c2, mat._Lerp);
 
     if (c.a < mat._CutOff) {

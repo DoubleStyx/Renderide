@@ -335,6 +335,7 @@ impl RendererRuntime {
                 host_camera,
                 ..
             } = self;
+            let frame_time_seconds = tick_state.frame_time_seconds();
             let base_camera = &*host_camera;
             let (shm, mut ipc) = frontend.transport_pair_mut();
             flush_reflection_probe_render_results_to_ipc(tick_state, &mut ipc);
@@ -351,6 +352,7 @@ impl RendererRuntime {
                         shm: &mut *shm,
                         convolver: &mut convolver,
                         queued: &queued,
+                        frame_time_seconds,
                     }) {
                         Ok(()) => {
                             completed = completed.saturating_add(1);
@@ -409,13 +411,20 @@ struct ReflectionProbeTaskRenderCtx<'a> {
     shm: &'a mut SharedMemoryAccessor,
     convolver: &'a mut SkyboxIblConvolver,
     queued: &'a QueuedReflectionProbeRenderTask,
+    frame_time_seconds: f32,
 }
 
 fn render_reflection_probe_task(
     ctx: ReflectionProbeTaskRenderCtx<'_>,
 ) -> Result<(), ReflectionProbeBakeError> {
     profiling::scope!("reflection_probe_task::render_one");
-    let planned = plan_reflection_probe_task(ctx.gpu, ctx.scene, ctx.base_camera, ctx.queued)?;
+    let planned = plan_reflection_probe_task(
+        ctx.gpu,
+        ctx.scene,
+        ctx.base_camera,
+        ctx.queued,
+        ctx.frame_time_seconds,
+    )?;
     let render_result =
         render_reflection_probe_faces_offscreen(ctx.gpu, ctx.backend, ctx.scene, planned.plans);
     render_result?;
@@ -434,6 +443,7 @@ fn plan_reflection_probe_task(
     scene: &SceneCoordinator,
     base_camera: &HostCameraFrame,
     queued: &QueuedReflectionProbeRenderTask,
+    frame_time_seconds: f32,
 ) -> Result<PlannedReflectionProbeTask, ReflectionProbeBakeError> {
     profiling::scope!("reflection_probe_task::plan");
     let task = &queued.task;
@@ -484,6 +494,7 @@ fn plan_reflection_probe_task(
                 face,
             ),
             render_context: RenderingContext::RenderToAsset,
+            frame_time_seconds,
             draw_filter: Some(filter.clone()),
             render_space_filter: Some(queued.render_space_id),
             view_id: ViewId::reflection_probe_render_task(

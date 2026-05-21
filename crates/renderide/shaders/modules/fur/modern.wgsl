@@ -19,7 +19,7 @@ struct ModernFurMaterial {
     _RimColor: vec4<f32>,
     _ReflColor: vec4<f32>,
     _MainTex_ST: vec4<f32>,
-    _NormalMap_ST: vec4<f32>,
+    _BumpMap_ST: vec4<f32>,
     _NoiseTex_ST: vec4<f32>,
     _ForceGlobal: vec4<f32>,
     _ForceLocal: vec4<f32>,
@@ -27,7 +27,6 @@ struct ModernFurMaterial {
     _Gloss: f32,
     _FurLength: f32,
     _Cutoff: f32,
-    _EdgeFade: f32,
     _HairHardness: f32,
     _HairThinness: f32,
     _HairShading: f32,
@@ -37,7 +36,7 @@ struct ModernFurMaterial {
     _ReflMinLevel: f32,
     _RimPower: f32,
     _MainTex_LodBias: f32,
-    _NormalMap_LodBias: f32,
+    _BumpMap_LodBias: f32,
     _NoiseTex_LodBias: f32,
     _Cube_LodBias: f32,
     _Cube_StorageVInverted: f32,
@@ -46,8 +45,8 @@ struct ModernFurMaterial {
 @group(1) @binding(0) var<uniform> mat: ModernFurMaterial;
 @group(1) @binding(1) var _MainTex: texture_2d<f32>;
 @group(1) @binding(2) var _MainTex_sampler: sampler;
-@group(1) @binding(3) var _NormalMap: texture_2d<f32>;
-@group(1) @binding(4) var _NormalMap_sampler: sampler;
+@group(1) @binding(3) var _BumpMap: texture_2d<f32>;
+@group(1) @binding(4) var _BumpMap_sampler: sampler;
 @group(1) @binding(5) var _NoiseTex: texture_2d<f32>;
 @group(1) @binding(6) var _NoiseTex_sampler: sampler;
 @group(1) @binding(7) var _Cube: texture_cube<f32>;
@@ -80,10 +79,10 @@ fn vertex_main(
 }
 
 fn base_normal(input: furc::VertexOutput) -> vec3<f32> {
-    let normal_uv = uvu::apply_st(input.raw_uv, mat._NormalMap_ST);
+    let normal_uv = uvu::apply_st(input.raw_uv, mat._BumpMap_ST);
     let tbn = pnorm::orthonormal_tbn(input.world_n, input.world_t);
     let ts_n = nd::decode_ts_normal_with_placeholder_sample(
-        ts::sample_tex_2d(_NormalMap, _NormalMap_sampler, normal_uv, mat._NormalMap_LodBias),
+        ts::sample_tex_2d(_BumpMap, _BumpMap_sampler, normal_uv, mat._BumpMap_LodBias),
         1.0,
     );
     return normalize(tbn * ts_n);
@@ -152,8 +151,7 @@ fn fragment_shell(input: furc::VertexOutput, version3: bool) -> vec4<f32> {
 
     let noise_uv = input.main_uv * mat._HairThinness;
     let noise = ts::sample_tex_2d(_NoiseTex, _NoiseTex_sampler, noise_uv, mat._NoiseTex_LodBias).r;
-    let alpha = furc::classic_shell_alpha(noise, mat._EdgeFade, input.fur_multiplier);
-    furc::alpha_clip(alpha, mat._Cutoff);
+    furc::alpha_clip(noise, mat._Cutoff);
 
     let shadow = ts::sample_tex_2d(
         _NoiseTex,
@@ -174,7 +172,7 @@ fn fragment_shell(input: furc::VertexOutput, version3: bool) -> vec4<f32> {
     return shaded_color(
         input,
         base_color,
-        alpha,
+        noise,
         input.world_n,
         shell_emission(input),
         mat._Gloss * noise,

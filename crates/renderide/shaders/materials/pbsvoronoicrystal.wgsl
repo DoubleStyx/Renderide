@@ -37,6 +37,7 @@ struct PbsVoronoiCrystalMaterial {
     _EmissionColor: vec4<f32>,
     _EdgeColor: vec4<f32>,
     _EdgeEmission: vec4<f32>,
+    _Global_ST: vec4<f32>,
     _Scale: vec4<f32>,
     _NormalMap_ST: vec4<f32>,
     _NormalStrength: f32,
@@ -114,7 +115,8 @@ fn shade(
     view_layer: u32,
 ) -> vec4<f32> {
     let scale = mat._Scale.xy;
-    let v_result = vor::voronoi_full(uv * scale, scale, mat._AnimationOffset);
+    let global_uv = uvu::apply_st(uv, mat._Global_ST);
+    let v_result = vor::voronoi_full(global_uv * scale, scale, mat._AnimationOffset);
     let cell_offset = vec2<f32>(0.5) + vec2<f32>(0.5) * sin(mat._AnimationOffset + 6.2831 * v_result.min_point);
     let border_dist = v_result.second_min_dist - v_result.min_dist;
     let aaf = fwidth(border_dist);

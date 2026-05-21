@@ -62,7 +62,7 @@ fn vs_main(
 #endif
 }
 
-//#pass type=forward name=forward_filter blend=material_filter
+//#pass type=forward name=forward_filter blend=material_filter zwrite=material(off) ztest=material(main) cull=material(back) color_mask=material(rgba) stencil=material offset=material(0,0)
 @fragment
 fn fs_main(vout: fv::RectVertexOutput) -> @location(0) vec4<f32> {
     fc::discard_rect_if_enabled(vout.obj_xy, mat._Rect, kw_RECTCLIP());

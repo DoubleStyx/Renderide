@@ -205,7 +205,7 @@ fn shade(
     if (kw_ALBEDOTEX()) {
         c = c * textureSample(_MainTex, _MainTex_sampler, uv_main);
     }
-    if (kw_ALPHACLIP() && c.a <= mat._AlphaClip) {
+    if (kw_ALPHACLIP() && c.a < mat._AlphaClip) {
         discard;
     }
 
@@ -239,7 +239,7 @@ fn shade(
     );
 }
 
-//#pass type=forward
+//#pass type=forward cull=material(off)
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,

@@ -169,7 +169,7 @@ fn sample_surface(
         let uv_albedo2 = uvu::apply_st(pick_uv(uv0, uv1, uv2, uv3, mat._SecondaryAlbedoUV), mat._SecondaryAlbedo_ST);
         c = c * textureSample(_SecondaryAlbedo, _SecondaryAlbedo_sampler, uv_albedo2);
     }
-    if (pbs_kw(PBSMULTIUV_KW_ALPHACLIP) && c.a <= mat._AlphaClip) {
+    if (pbs_kw(PBSMULTIUV_KW_ALPHACLIP) && c.a < mat._AlphaClip) {
         discard;
     }
 

@@ -18,6 +18,7 @@
 #import renderide::material::variant_bits as vb
 #import renderide::mesh::vertex as mv
 #import renderide::core::uv as uvu
+#import renderide::core::texture_sampling as ts
 
 struct UnlitDistanceLerpMaterial {
     _Point: vec4<f32>,
@@ -29,6 +30,8 @@ struct UnlitDistanceLerpMaterial {
     _Transition: f32,
     _Cutoff: f32,
     _RenderideVariantBits: u32,
+    _NearTex_LodBias: f32,
+    _FarTex_LodBias: f32,
 }
 
 const UNLITDISTANCELERP_KW_ALPHATEST: u32 = 1u << 0u;
@@ -104,7 +107,11 @@ fn lerp_position(in: VertexOutput) -> vec3<f32> {
 }
 
 fn distance_lerp(p: vec3<f32>) -> f32 {
-    let transition = max(abs(mat._Transition), 1e-6);
+    let transition = select(
+        mat._Transition,
+        select(-1e-6, 1e-6, mat._Transition >= 0.0),
+        abs(mat._Transition) < 1e-6,
+    );
     let dist = distance(mat._Point.xyz, p) - mat._Distance;
     return clamp((dist / transition) + mat._Transition * 0.5, 0.0, 1.0);
 }
@@ -117,8 +124,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let near_uv = uvu::apply_st(in.uv, mat._NearTex_ST);
     let far_uv = uvu::apply_st(in.uv, mat._FarTex_ST);
 
-    let near = textureSample(_NearTex, _NearTex_sampler, near_uv) * mat._NearColor;
-    let far = textureSample(_FarTex, _FarTex_sampler, far_uv) * mat._FarColor;
+    let near = ts::sample_tex_2d(_NearTex, _NearTex_sampler, near_uv, mat._NearTex_LodBias) * mat._NearColor;
+    let far = ts::sample_tex_2d(_FarTex, _FarTex_sampler, far_uv, mat._FarTex_LodBias) * mat._FarColor;
 
     let c = mix(near, far, l);
 

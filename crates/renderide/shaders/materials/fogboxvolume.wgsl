@@ -196,6 +196,5 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let dist = accumulation_distance(raw_distance);
     let acc_base = max(dist * mat._AccumulationRate, 0.0);
     let acc = pow(acc_base, max(mat._GammaCurve, vol::VOLUME_EPSILON)) * acc_color;
-    let result = vol::clamp_volume_source_rgb(apply_saturation(mat._BaseColor + acc));
-    return rg::retain_globals_additive(result);
+    return rg::retain_globals_additive(apply_saturation(mat._BaseColor + acc));
 }

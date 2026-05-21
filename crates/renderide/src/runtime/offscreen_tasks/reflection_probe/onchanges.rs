@@ -82,6 +82,8 @@ struct RuntimeReflectionProbeFacePlan<'a> {
     targets: &'a ProbeTaskTargets,
     /// Current host reflection probe state.
     state: ReflectionProbeState,
+    /// Elapsed renderer runtime in seconds for Unity-style shader time inputs.
+    frame_time_seconds: f32,
 }
 
 /// Result of advancing one runtime capture by one renderer tick.
@@ -182,6 +184,7 @@ impl RendererRuntime {
         }
 
         let base_camera = &self.host_camera;
+        let frame_time_seconds = self.tick_state.frame_time_seconds();
         let active =
             std::mem::take(&mut self.tick_state.active_onchanges_reflection_probe_captures);
         let mut still_active = Vec::with_capacity(active.len());
@@ -192,6 +195,7 @@ impl RendererRuntime {
                 backend: &mut self.backend,
                 scene: &self.scene,
                 base_camera,
+                frame_time_seconds,
                 capture: &mut capture,
             }) {
                 Ok(RuntimeProbeCaptureStep::Pending) => still_active.push(capture),
@@ -299,6 +303,7 @@ impl RendererRuntime {
         }
 
         let base_camera = &self.host_camera;
+        let frame_time_seconds = self.tick_state.frame_time_seconds();
         let active = std::mem::take(&mut self.tick_state.active_realtime_reflection_probe_captures);
         let mut still_active = Vec::with_capacity(active.len());
         for mut capture in active {
@@ -310,6 +315,7 @@ impl RendererRuntime {
                 backend: &mut self.backend,
                 scene: &self.scene,
                 base_camera,
+                frame_time_seconds,
                 capture: &mut capture,
             }) {
                 Ok(RuntimeProbeCaptureStep::Pending) => still_active.push(capture),
@@ -388,6 +394,8 @@ struct OnChangesCaptureStepCtx<'a> {
     scene: &'a SceneCoordinator,
     /// Current host camera used as the base for offscreen face cameras.
     base_camera: &'a HostCameraFrame,
+    /// Elapsed renderer runtime in seconds for Unity-style shader time inputs.
+    frame_time_seconds: f32,
     /// Capture state advanced by this step.
     capture: &'a mut ActiveOnChangesReflectionProbeCapture,
 }
@@ -520,6 +528,8 @@ struct RealtimeCaptureStepCtx<'a> {
     scene: &'a SceneCoordinator,
     /// Current host camera used as the base for offscreen face cameras.
     base_camera: &'a HostCameraFrame,
+    /// Elapsed renderer runtime in seconds for Unity-style shader time inputs.
+    frame_time_seconds: f32,
     /// Capture state advanced by this step.
     capture: &'a mut ActiveRealtimeReflectionProbeCapture,
 }
@@ -537,6 +547,7 @@ fn step_realtime_reflection_probe_capture(
             ctx.base_camera,
             ctx.capture,
             state,
+            ctx.frame_time_seconds,
             &faces,
         )?;
         let render_result =
@@ -563,6 +574,7 @@ fn step_onchanges_reflection_probe_capture(
             ctx.base_camera,
             ctx.capture,
             state,
+            ctx.frame_time_seconds,
             &faces,
         )?;
         let render_result =
@@ -637,6 +649,7 @@ fn plan_onchanges_reflection_probe_faces(
     base_camera: &HostCameraFrame,
     capture: &ActiveOnChangesReflectionProbeCapture,
     state: ReflectionProbeState,
+    frame_time_seconds: f32,
     faces: &[ProbeCubeFace],
 ) -> Result<Vec<FrameViewPlan<'static>>, ReflectionProbeBakeError> {
     let key = RuntimeReflectionProbeCaptureKey {
@@ -652,6 +665,7 @@ fn plan_onchanges_reflection_probe_faces(
             extent: capture.extent,
             targets: &capture.targets,
             state,
+            frame_time_seconds,
         },
         faces,
     )
@@ -663,6 +677,7 @@ fn plan_realtime_reflection_probe_faces(
     base_camera: &HostCameraFrame,
     capture: &ActiveRealtimeReflectionProbeCapture,
     state: ReflectionProbeState,
+    frame_time_seconds: f32,
     faces: &[ProbeCubeFace],
 ) -> Result<Vec<FrameViewPlan<'static>>, ReflectionProbeBakeError> {
     plan_runtime_reflection_probe_faces(
@@ -674,6 +689,7 @@ fn plan_realtime_reflection_probe_faces(
             extent: capture.extent,
             targets: &capture.targets,
             state,
+            frame_time_seconds,
         },
         faces,
     )
@@ -692,6 +708,7 @@ fn plan_runtime_reflection_probe_faces(
         extent,
         targets,
         state,
+        frame_time_seconds,
     } = plan;
     let space_id = key.space_id;
     let space = scene
@@ -727,6 +744,7 @@ fn plan_runtime_reflection_probe_faces(
                 face,
             ),
             render_context: RenderingContext::RenderToAsset,
+            frame_time_seconds,
             render_space_filter: Some(space_id),
             draw_filter: Some(filter.clone()),
             view_id: ViewId::reflection_probe_render_task(

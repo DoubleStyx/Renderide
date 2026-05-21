@@ -12,8 +12,8 @@ mod offset_and_packing_tests {
     use glam::Mat4;
 
     #[test]
-    fn frame_globals_size_304() {
-        assert_eq!(size_of::<FrameGpuUniforms>(), 304);
+    fn frame_globals_size_384() {
+        assert_eq!(size_of::<FrameGpuUniforms>(), 384);
         assert_eq!(size_of::<FrameGpuUniforms>() % 16, 0);
     }
 
@@ -32,15 +32,29 @@ mod offset_and_packing_tests {
             std::mem::offset_of!(FrameGpuUniforms, view_space_z_coeffs_right),
             48
         );
-        assert_eq!(std::mem::offset_of!(FrameGpuUniforms, cluster_count_x), 64);
-        assert_eq!(std::mem::offset_of!(FrameGpuUniforms, proj_params_left), 96);
+        assert_eq!(
+            std::mem::offset_of!(FrameGpuUniforms, view_to_world_y_coeffs),
+            64
+        );
+        assert_eq!(
+            std::mem::offset_of!(FrameGpuUniforms, view_to_world_y_coeffs_right),
+            80
+        );
+        assert_eq!(std::mem::offset_of!(FrameGpuUniforms, cluster_count_x), 96);
+        assert_eq!(
+            std::mem::offset_of!(FrameGpuUniforms, proj_params_left),
+            128
+        );
         assert_eq!(
             std::mem::offset_of!(FrameGpuUniforms, proj_params_right),
-            112
+            144
         );
-        assert_eq!(std::mem::offset_of!(FrameGpuUniforms, frame_tail), 128);
-        assert_eq!(std::mem::offset_of!(FrameGpuUniforms, skybox_specular), 144);
-        assert_eq!(std::mem::offset_of!(FrameGpuUniforms, ambient_sh), 160);
+        assert_eq!(std::mem::offset_of!(FrameGpuUniforms, frame_tail), 160);
+        assert_eq!(std::mem::offset_of!(FrameGpuUniforms, skybox_specular), 176);
+        assert_eq!(std::mem::offset_of!(FrameGpuUniforms, frame_time), 192);
+        assert_eq!(std::mem::offset_of!(FrameGpuUniforms, ambient_sh), 208);
+        assert_eq!(std::mem::offset_of!(FrameGpuUniforms, fog_color_mode), 352);
+        assert_eq!(std::mem::offset_of!(FrameGpuUniforms, fog_params), 368);
     }
 
     #[test]
@@ -70,6 +84,20 @@ mod offset_and_packing_tests {
     }
 
     #[test]
+    fn view_to_world_y_coeffs_extract_world_y_from_view_position() {
+        let view_to_world =
+            Mat4::from_translation(glam::Vec3::new(3.0, 4.0, 5.0)) * Mat4::from_rotation_x(0.35);
+        let world_to_view = view_to_world.inverse();
+        let coeffs = FrameGpuUniforms::view_to_world_y_coeffs_from_world_to_view(world_to_view);
+        let view_p = glam::Vec3::new(1.0, -2.0, 3.0);
+        let world_y = (view_to_world * view_p.extend(1.0)).y;
+        let dotted = coeffs[2].mul_add(view_p.z, coeffs[0].mul_add(view_p.x, coeffs[1] * view_p.y))
+            + coeffs[3];
+
+        assert!((world_y - dotted).abs() < 1e-5);
+    }
+
+    #[test]
     fn proj_params_extract_diagonal_and_offcenter_are_zero_for_symmetric() {
         // Symmetric perspective: [0][2] and [1][2] are zero.
         let p = Mat4::perspective_rh(60.0_f32.to_radians(), 16.0 / 9.0, 0.1, 1000.0);
@@ -87,6 +115,8 @@ mod offset_and_packing_tests {
             camera_world_pos_right: glam::Vec3::new(4.0, 5.0, 6.0),
             view_space_z_coeffs: [0.1, 0.2, 0.3, 0.4],
             view_space_z_coeffs_right: [0.5, 0.6, 0.7, 0.8],
+            view_to_world_y_coeffs: [1.1, 1.2, 1.3, 1.4],
+            view_to_world_y_coeffs_right: [1.5, 1.6, 1.7, 1.8],
             cluster_count_x: 16,
             cluster_count_y: 9,
             cluster_count_z: 24,
@@ -103,6 +133,7 @@ mod offset_and_packing_tests {
             sample_count: 4,
             ambient_sh_valid: true,
             skybox_specular: SkyboxSpecularUniformParams::from_cubemap_resident_mips(6),
+            frame_time_seconds: 12.25,
             ambient_sh: [[0.0; 4]; 9],
         };
         let u = FrameGpuUniforms::new_clustered(&params);
@@ -110,6 +141,8 @@ mod offset_and_packing_tests {
         assert_eq!(u.camera_world_pos_right, [4.0, 5.0, 6.0, 0.0]);
         assert_eq!(u.view_space_z_coeffs, [0.1, 0.2, 0.3, 0.4]);
         assert_eq!(u.view_space_z_coeffs_right, [0.5, 0.6, 0.7, 0.8]);
+        assert_eq!(u.view_to_world_y_coeffs, [1.1, 1.2, 1.3, 1.4]);
+        assert_eq!(u.view_to_world_y_coeffs_right, [1.5, 1.6, 1.7, 1.8]);
         assert_eq!(u.cluster_count_x, 16);
         assert_eq!(u.cluster_count_y, 9);
         assert_eq!(u.cluster_count_z, 24);
@@ -130,6 +163,7 @@ mod offset_and_packing_tests {
             ]
         );
         assert_eq!(u.skybox_specular, [5.0, 1.0, 1.0, 0.0]);
+        assert_eq!(u.frame_time, [12.25, 0.0, 0.0, 0.0]);
         assert_eq!(u.ambient_sh, [[0.0; 4]; 9]);
     }
 
@@ -141,6 +175,8 @@ mod offset_and_packing_tests {
             camera_world_pos_right: camera_world_pos,
             view_space_z_coeffs: [0.0, 0.0, 1.0, 0.0],
             view_space_z_coeffs_right: [0.0, 0.0, 1.0, 0.0],
+            view_to_world_y_coeffs: [0.0, 1.0, 0.0, 0.0],
+            view_to_world_y_coeffs_right: [0.0, 1.0, 0.0, 0.0],
             cluster_count_x: 1,
             cluster_count_y: 1,
             cluster_count_z: 1,
@@ -157,6 +193,7 @@ mod offset_and_packing_tests {
             sample_count: 1,
             ambient_sh_valid: false,
             skybox_specular: SkyboxSpecularUniformParams::disabled(),
+            frame_time_seconds: 0.0,
             ambient_sh: [[0.0; 4]; 9],
         };
         let u = FrameGpuUniforms::new_clustered(&params);

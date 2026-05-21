@@ -51,6 +51,10 @@ struct FrameGlobals {
     view_space_z_coeffs: vec4<f32>,
     /// Right-eye world -> view-space Z coefficients (equals left in mono mode).
     view_space_z_coeffs_right: vec4<f32>,
+    /// Left-eye (or mono) view -> world-space Y coefficients.
+    view_to_world_y_coeffs: vec4<f32>,
+    /// Right-eye view -> world-space Y coefficients (equals left in mono mode).
+    view_to_world_y_coeffs_right: vec4<f32>,
     cluster_count_x: u32,
     cluster_count_y: u32,
     cluster_count_z: u32,
@@ -67,6 +71,8 @@ struct FrameGlobals {
     frame_tail: vec4<u32>,
     /// Reserved. Skybox specular lighting is supplied by reflection probes.
     skybox_specular: vec4<f32>,
+    /// Frame time values: `.x` is elapsed renderer seconds and `.yzw` are reserved.
+    frame_time: vec4<f32>,
     /// Ambient SH2 coefficient 0, padded to a vec4 slot.
     ambient_sh_a: vec4<f32>,
     /// Ambient SH2 coefficient 1, padded to a vec4 slot.
@@ -85,4 +91,8 @@ struct FrameGlobals {
     ambient_sh_h: vec4<f32>,
     /// Ambient SH2 coefficient 8, padded to a vec4 slot.
     ambient_sh_i: vec4<f32>,
+    /// Fog color in `.rgb` and fog mode in `.w`; zero mode disables fog.
+    fog_color_mode: vec4<f32>,
+    /// Unity-style fog parameters consumed by `renderide::frame::fog`.
+    fog_params: vec4<f32>,
 }

@@ -26,6 +26,7 @@ impl RendererRuntime {
         profiling::scope!("tick::frame_wall_clock_begin");
         crash_context::record_tick_start();
         self.tick_state.reset_for_tick();
+        self.tick_state.note_frame_wall_clock_begin(now);
         self.frontend.reset_ipc_outbound_drop_tick_flags();
         self.backend.reset_light_prep_for_tick();
         self.frontend.on_tick_frame_wall_clock(now);

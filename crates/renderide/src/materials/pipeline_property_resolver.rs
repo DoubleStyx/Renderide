@@ -4,7 +4,7 @@
 //! The renderer evaluates blend mode and render-state overrides multiple times per frame: once
 //! while building the backend frame packet and again per draw inside
 //! [`crate::materials::material_blend_mode_for_lookup`] /
-//! [`crate::materials::render_state::material_render_state_for_lookup`]. Both paths need the same
+//! [`crate::materials::render_state::material_render_state_from_maps`]. Both paths need the same
 //! `MaterialPipelinePropertyIds`. Without a resolver, every call constructs a new
 //! [`MaterialPipelinePropertyIds`] which goes through ~14
 //! [`crate::materials::host_data::PropertyIdRegistry::intern`] calls; the resolver caches the

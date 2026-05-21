@@ -52,6 +52,34 @@ fn scene_linear_depth_at_uv(uv: vec2<f32>, view_layer: u32) -> f32 {
     return scene_linear_depth_at_xy(scene_depth_xy_from_uv(uv), view_layer);
 }
 
+fn view_pos_from_uv_linear_depth(
+    uv: vec2<f32>,
+    linear_depth: f32,
+    view_layer: u32,
+) -> vec3<f32> {
+    let proj = rg::proj_params_for_view(view_layer);
+    let ndc_xy = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+    if (rg::view_is_orthographic(view_layer)) {
+        let view_x = (ndc_xy.x + proj.z) / max(abs(proj.x), 1e-6);
+        let view_y = (ndc_xy.y + proj.w) / max(abs(proj.y), 1e-6);
+        return vec3<f32>(view_x, view_y, -linear_depth);
+    }
+    let view_x = (ndc_xy.x + proj.z) * linear_depth / proj.x;
+    let view_y = (ndc_xy.y + proj.w) * linear_depth / proj.y;
+    return vec3<f32>(view_x, view_y, -linear_depth);
+}
+
+fn world_y_from_view_pos(view_pos: vec3<f32>, view_layer: u32) -> f32 {
+    let coeffs = rg::view_to_world_y_coeffs_for_view(view_layer);
+    return dot(coeffs.xyz, view_pos) + coeffs.w;
+}
+
+fn scene_world_y_at_uv(uv: vec2<f32>, view_layer: u32) -> f32 {
+    let linear_depth = scene_linear_depth_at_uv(uv, view_layer);
+    let view_pos = view_pos_from_uv_linear_depth(uv, linear_depth, view_layer);
+    return world_y_from_view_pos(view_pos, view_layer);
+}
+
 fn fragment_linear_depth(world_pos: vec3<f32>, view_layer: u32) -> f32 {
     let z_coeffs = rg::view_space_z_coeffs_for_view(view_layer);
     let view_z = dot(z_coeffs.xyz, world_pos) + z_coeffs.w;

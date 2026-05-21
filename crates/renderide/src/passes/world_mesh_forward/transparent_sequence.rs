@@ -1,6 +1,9 @@
-//! Ordered transparent tail with per-grab scene-color snapshots.
+//! Ordered transparent tail with per-grab and reusable named scene-color snapshots.
+
+use std::sync::Arc;
 
 use crate::graph_inputs::PerViewFramePlanSlot;
+use crate::materials::SceneColorSnapshotMode;
 use crate::render_graph::context::EncoderPassCtx;
 use crate::render_graph::error::{RenderPassError, SetupError};
 use crate::render_graph::gpu_cache::stereo_mask_or_template;
@@ -13,7 +16,10 @@ use super::color_resolve::{
     encode_world_mesh_forward_msaa_color_resolve,
 };
 use super::color_snapshot::encode_world_mesh_forward_color_snapshot;
-use super::raster_recording::{record_world_mesh_forward_groups_graph_raster, stencil_load_ops};
+use super::raster_recording::{
+    frame_bind_group_for_view, record_world_mesh_forward_groups_graph_raster_with_frame_bind_group,
+    stencil_load_ops,
+};
 use super::{
     PreparedWorldMeshForwardFrame, WorldMeshForwardGraphResources, WorldMeshForwardPlanSlot,
     declare_forward_draw_reads,
@@ -123,6 +129,7 @@ fn draw_tail_groups(
     prepared: &PreparedWorldMeshForwardFrame,
     resources: WorldMeshForwardGraphResources,
     groups: &[DrawGroup],
+    frame_bind_group: &Arc<wgpu::BindGroup>,
 ) -> Result<bool, RenderPassError> {
     if groups.is_empty() {
         return Ok(true);
@@ -182,12 +189,12 @@ fn draw_tail_groups(
             timestamp_writes,
             multiview_mask: stereo_mask_or_template(prepared.pipeline.use_multiview, None),
         });
-        record_world_mesh_forward_groups_graph_raster(
+        record_world_mesh_forward_groups_graph_raster_with_frame_bind_group(
             &mut rpass,
             frame,
-            &*ctx.blackboard,
             prepared,
             groups,
+            frame_bind_group,
         )
     };
     if let (Some(p), Some(q)) = (ctx.profiler, pass_query) {
@@ -202,6 +209,7 @@ fn flush_post_groups(
     resources: WorldMeshForwardGraphResources,
     start: Option<usize>,
     end: usize,
+    frame_bind_group: &Arc<wgpu::BindGroup>,
 ) -> Result<bool, RenderPassError> {
     let Some(start) = start else {
         return Ok(true);
@@ -212,6 +220,7 @@ fn flush_post_groups(
         prepared,
         resources,
         &prepared.plan.phase(transparent_phase)[start..end],
+        frame_bind_group,
     )
 }
 
@@ -247,6 +256,79 @@ fn copy_grab_snapshot(
     )
 }
 
+fn copy_named_grab_snapshot(
+    ctx: &mut EncoderPassCtx<'_, '_, '_>,
+    prepared: &PreparedWorldMeshForwardFrame,
+    resources: WorldMeshForwardGraphResources,
+) -> bool {
+    profiling::scope!("world_mesh_forward::encode_named_color_snapshot");
+    if !prepared.helper_needs.color_snapshot {
+        logger::warn!(
+            "world mesh named color snapshot copy: helper needs did not request a color snapshot"
+        );
+        return false;
+    }
+    if !ctx.pass_frame.shared.frame_resources.has_frame_gpu() {
+        logger::warn!("world mesh named color snapshot copy: frame GPU resources are unavailable");
+        return false;
+    }
+    let Some(source_color) = ctx
+        .graph_resources
+        .transient_texture(resources.scene_color_hdr)
+    else {
+        logger::warn!(
+            "world mesh named color snapshot copy: resolved scene color source is unavailable"
+        );
+        return false;
+    };
+    let copy_query = ctx.profiler.map(|p| {
+        p.begin_query(
+            "world_mesh_forward::named_scene_color_snapshot_copy",
+            ctx.encoder,
+        )
+    });
+    let copied = ctx
+        .pass_frame
+        .shared
+        .frame_resources
+        .copy_named_scene_color_snapshot_for_view(
+            ctx.pass_frame.view.view_id,
+            ctx.encoder,
+            &source_color.texture,
+            ctx.pass_frame.view.viewport_px,
+            prepared.pipeline.use_multiview,
+        );
+    if let (Some(profiler), Some(query)) = (ctx.profiler, copy_query) {
+        profiler.end_query(ctx.encoder, query);
+    }
+    copied
+}
+
+fn transparent_sequence_frame_bind_groups(
+    ctx: &EncoderPassCtx<'_, '_, '_>,
+) -> Option<(Arc<wgpu::BindGroup>, Arc<wgpu::BindGroup>)> {
+    let default = frame_bind_group_for_view(ctx.pass_frame, ctx.blackboard)?;
+    let named = ctx
+        .pass_frame
+        .shared
+        .frame_resources
+        .per_view_named_scene_color_frame_bind_group(ctx.pass_frame.view.view_id)?;
+    Some((default, named))
+}
+
+/// Returns the scene-color snapshot refresh policy for a grab-pass draw group.
+fn scene_color_snapshot_mode_for_group(
+    prepared: &PreparedWorldMeshForwardFrame,
+    group: &DrawGroup,
+) -> SceneColorSnapshotMode {
+    prepared
+        .draws
+        .get(group.representative_draw_idx)
+        .map(|draw| draw.batch_key.scene_color_snapshot_mode)
+        .filter(|mode| mode.uses_scene_color())
+        .unwrap_or(SceneColorSnapshotMode::PerObjectGrab)
+}
+
 fn final_resolve_after_tail(
     ctx: &mut EncoderPassCtx<'_, '_, '_>,
     resources: WorldMeshForwardGraphResources,
@@ -274,10 +356,16 @@ fn record_transparent_sequence(
     let (transparent_phase, grab_phase) = transparent_sequence_phase_pair();
     let transparent_groups = plan.phase(transparent_phase);
     let grab_groups = plan.phase(grab_phase);
+    let Some((default_frame_bind_group, named_frame_bind_group)) =
+        transparent_sequence_frame_bind_groups(ctx)
+    else {
+        return Ok(false);
+    };
     let mut post_idx = 0usize;
     let mut grab_idx = 0usize;
     let mut pending_post_start = None;
     let mut recorded_any = false;
+    let mut named_background_snapshot_ready = false;
 
     while post_idx < transparent_groups.len() || grab_idx < grab_groups.len() {
         if next_sequence_entry_is_post(plan, post_idx, grab_idx) {
@@ -295,24 +383,51 @@ fn record_transparent_sequence(
             resources,
             pending_post_start.take(),
             post_idx,
+            &default_frame_bind_group,
         )? {
             return Ok(false);
         }
         recorded_any |= flushed_post_groups;
-        resolve_for_grab_snapshot(ctx, resources)?;
-        if !copy_grab_snapshot(ctx, prepared, resources) {
-            logger::warn!(
-                "WorldMeshForwardTransparentSequence: skipping grab-pass filter group {} because scene-color snapshot copy failed",
-                grab_idx
-            );
-            grab_idx += 1;
-            continue;
+        let grab_group = &grab_groups[grab_idx];
+        let snapshot_mode = scene_color_snapshot_mode_for_group(prepared, grab_group);
+        let needs_snapshot_copy = match snapshot_mode {
+            SceneColorSnapshotMode::NamedBackgroundGrab => !named_background_snapshot_ready,
+            SceneColorSnapshotMode::PerObjectGrab | SceneColorSnapshotMode::None => true,
+        };
+        if needs_snapshot_copy {
+            resolve_for_grab_snapshot(ctx, resources)?;
+            let copied = match snapshot_mode {
+                SceneColorSnapshotMode::NamedBackgroundGrab => {
+                    copy_named_grab_snapshot(ctx, prepared, resources)
+                }
+                SceneColorSnapshotMode::PerObjectGrab | SceneColorSnapshotMode::None => {
+                    copy_grab_snapshot(ctx, prepared, resources)
+                }
+            };
+            if !copied {
+                logger::warn!(
+                    "WorldMeshForwardTransparentSequence: skipping grab-pass filter group {} because scene-color snapshot copy failed",
+                    grab_idx
+                );
+                grab_idx += 1;
+                continue;
+            }
+            if snapshot_mode == SceneColorSnapshotMode::NamedBackgroundGrab {
+                named_background_snapshot_ready = true;
+            }
         }
+        let grab_frame_bind_group = match snapshot_mode {
+            SceneColorSnapshotMode::NamedBackgroundGrab => &named_frame_bind_group,
+            SceneColorSnapshotMode::PerObjectGrab | SceneColorSnapshotMode::None => {
+                &default_frame_bind_group
+            }
+        };
         if !draw_tail_groups(
             ctx,
             prepared,
             resources,
-            std::slice::from_ref(&grab_groups[grab_idx]),
+            std::slice::from_ref(grab_group),
+            grab_frame_bind_group,
         )? {
             return Ok(false);
         }
@@ -320,7 +435,14 @@ fn record_transparent_sequence(
         grab_idx += 1;
     }
 
-    if !flush_post_groups(ctx, prepared, resources, pending_post_start, post_idx)? {
+    if !flush_post_groups(
+        ctx,
+        prepared,
+        resources,
+        pending_post_start,
+        post_idx,
+        &default_frame_bind_group,
+    )? {
         return Ok(false);
     }
     if post_idx > 0 {
@@ -378,6 +500,8 @@ enum TransparentSequenceTestOp {
     DrawPostRange(usize, usize),
     ResolveBeforeGrab(usize),
     SnapshotForGrab(usize),
+    SnapshotForNamedGrab(usize),
+    ReuseNamedGrabSnapshot(usize),
     DrawGrab(usize),
     SkipGrabMissingSnapshot(usize),
     FinalResolve,
@@ -397,11 +521,27 @@ fn collect_transparent_sequence_test_ops_with_snapshot_result(
     sample_count: u32,
     snapshot_copy_succeeds: bool,
 ) -> Vec<TransparentSequenceTestOp> {
+    collect_transparent_sequence_test_ops_with_modes(
+        plan,
+        sample_count,
+        snapshot_copy_succeeds,
+        &[],
+    )
+}
+
+#[cfg(test)]
+fn collect_transparent_sequence_test_ops_with_modes(
+    plan: &InstancePlan,
+    sample_count: u32,
+    snapshot_copy_succeeds: bool,
+    grab_modes: &[SceneColorSnapshotMode],
+) -> Vec<TransparentSequenceTestOp> {
     let mut ops = Vec::new();
     let mut post_idx = 0usize;
     let mut grab_idx = 0usize;
     let mut pending_post_start = None;
     let mut recorded_any = false;
+    let mut named_background_snapshot_ready = false;
 
     let (transparent_phase, grab_phase) = transparent_sequence_phase_pair();
     let transparent_groups = plan.phase(transparent_phase);
@@ -420,16 +560,40 @@ fn collect_transparent_sequence_test_ops_with_snapshot_result(
             ops.push(TransparentSequenceTestOp::DrawPostRange(start, post_idx));
             recorded_any = true;
         }
-        if sample_count > 1 {
-            ops.push(TransparentSequenceTestOp::ResolveBeforeGrab(grab_idx));
-        }
-        ops.push(TransparentSequenceTestOp::SnapshotForGrab(grab_idx));
-        if snapshot_copy_succeeds {
-            ops.push(TransparentSequenceTestOp::DrawGrab(grab_idx));
-            recorded_any = true;
+        let mode = grab_modes
+            .get(grab_idx)
+            .copied()
+            .unwrap_or(SceneColorSnapshotMode::PerObjectGrab);
+        let needs_snapshot_copy = match mode {
+            SceneColorSnapshotMode::NamedBackgroundGrab => !named_background_snapshot_ready,
+            SceneColorSnapshotMode::PerObjectGrab | SceneColorSnapshotMode::None => true,
+        };
+        if needs_snapshot_copy {
+            if sample_count > 1 {
+                ops.push(TransparentSequenceTestOp::ResolveBeforeGrab(grab_idx));
+            }
+            match mode {
+                SceneColorSnapshotMode::NamedBackgroundGrab => {
+                    ops.push(TransparentSequenceTestOp::SnapshotForNamedGrab(grab_idx));
+                }
+                SceneColorSnapshotMode::PerObjectGrab | SceneColorSnapshotMode::None => {
+                    ops.push(TransparentSequenceTestOp::SnapshotForGrab(grab_idx));
+                }
+            }
+            if snapshot_copy_succeeds {
+                if mode == SceneColorSnapshotMode::NamedBackgroundGrab {
+                    named_background_snapshot_ready = true;
+                }
+            } else {
+                ops.push(TransparentSequenceTestOp::SkipGrabMissingSnapshot(grab_idx));
+                grab_idx += 1;
+                continue;
+            }
         } else {
-            ops.push(TransparentSequenceTestOp::SkipGrabMissingSnapshot(grab_idx));
+            ops.push(TransparentSequenceTestOp::ReuseNamedGrabSnapshot(grab_idx));
         }
+        ops.push(TransparentSequenceTestOp::DrawGrab(grab_idx));
+        recorded_any = true;
         grab_idx += 1;
     }
 
@@ -447,8 +611,10 @@ fn collect_transparent_sequence_test_ops_with_snapshot_result(
 mod tests {
     use super::{
         TransparentSequenceTestOp, collect_transparent_sequence_test_ops,
+        collect_transparent_sequence_test_ops_with_modes,
         collect_transparent_sequence_test_ops_with_snapshot_result,
     };
+    use crate::materials::SceneColorSnapshotMode;
     use crate::world_mesh::{DrawGroup, InstancePlan, WorldMeshPhase};
 
     fn group(representative_draw_idx: usize) -> DrawGroup {
@@ -505,6 +671,86 @@ mod tests {
                 TransparentSequenceTestOp::DrawGrab(0),
                 TransparentSequenceTestOp::SnapshotForGrab(1),
                 TransparentSequenceTestOp::DrawGrab(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn named_grab_groups_reuse_the_first_named_snapshot() {
+        let plan = plan_with_transparent_groups(Vec::new(), vec![group(3), group(7)]);
+
+        assert_eq!(
+            collect_transparent_sequence_test_ops_with_modes(
+                &plan,
+                1,
+                true,
+                &[
+                    SceneColorSnapshotMode::NamedBackgroundGrab,
+                    SceneColorSnapshotMode::NamedBackgroundGrab,
+                ],
+            ),
+            vec![
+                TransparentSequenceTestOp::SnapshotForNamedGrab(0),
+                TransparentSequenceTestOp::DrawGrab(0),
+                TransparentSequenceTestOp::ReuseNamedGrabSnapshot(1),
+                TransparentSequenceTestOp::DrawGrab(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn per_object_grabs_still_copy_between_named_grab_reuse() {
+        let plan = plan_with_transparent_groups(Vec::new(), vec![group(3), group(5), group(7)]);
+
+        assert_eq!(
+            collect_transparent_sequence_test_ops_with_modes(
+                &plan,
+                1,
+                true,
+                &[
+                    SceneColorSnapshotMode::NamedBackgroundGrab,
+                    SceneColorSnapshotMode::PerObjectGrab,
+                    SceneColorSnapshotMode::NamedBackgroundGrab,
+                ],
+            ),
+            vec![
+                TransparentSequenceTestOp::SnapshotForNamedGrab(0),
+                TransparentSequenceTestOp::DrawGrab(0),
+                TransparentSequenceTestOp::SnapshotForGrab(1),
+                TransparentSequenceTestOp::DrawGrab(1),
+                TransparentSequenceTestOp::ReuseNamedGrabSnapshot(2),
+                TransparentSequenceTestOp::DrawGrab(2),
+            ]
+        );
+    }
+
+    #[test]
+    fn interleaved_named_grabs_reuse_background_after_per_object_copy() {
+        let plan = plan_with_transparent_groups(
+            vec![group(4), group(9)],
+            vec![group(2), group(6), group(11)],
+        );
+
+        assert_eq!(
+            collect_transparent_sequence_test_ops_with_modes(
+                &plan,
+                1,
+                true,
+                &[
+                    SceneColorSnapshotMode::NamedBackgroundGrab,
+                    SceneColorSnapshotMode::PerObjectGrab,
+                    SceneColorSnapshotMode::NamedBackgroundGrab,
+                ],
+            ),
+            vec![
+                TransparentSequenceTestOp::SnapshotForNamedGrab(0),
+                TransparentSequenceTestOp::DrawGrab(0),
+                TransparentSequenceTestOp::DrawPostRange(0, 1),
+                TransparentSequenceTestOp::SnapshotForGrab(1),
+                TransparentSequenceTestOp::DrawGrab(1),
+                TransparentSequenceTestOp::DrawPostRange(1, 2),
+                TransparentSequenceTestOp::ReuseNamedGrabSnapshot(2),
+                TransparentSequenceTestOp::DrawGrab(2),
             ]
         );
     }

@@ -26,6 +26,7 @@
 #import renderide::pbs::lighting as plight
 #import renderide::pbs::sampling as psamp
 #import renderide::pbs::surface as psurf
+#import renderide::core::texture_sampling as ts
 #import renderide::core::uv as uvu
 
 struct PbsRimTransparentZWriteSpecularMaterial {
@@ -37,6 +38,10 @@ struct PbsRimTransparentZWriteSpecularMaterial {
     _NormalScale: f32,
     _RimPower: f32,
     _RenderideVariantBits: u32,
+    _NormalMap_LodBias: f32,
+    _EmissionMap_LodBias: f32,
+    _OcclusionMap_LodBias: f32,
+    _SpecularMap_LodBias: f32,
 }
 
 const PBSRIMTRANSPARENTZWRITESPECULAR_KW_EMISSIONTEX: u32 = 1u << 0u;
@@ -64,7 +69,7 @@ fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32
         _NormalMap,
         _NormalMap_sampler,
         uv_main,
-        0.0,
+        mat._NormalMap_LodBias,
         mat._NormalScale,
         world_n,
         world_t,
@@ -99,10 +104,10 @@ fn fs_depth_only(
     @location(4) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
     let uv_main = uvu::apply_st(uv0, mat._MainTex_ST);
-    let normal_s = textureSample(_NormalMap, _NormalMap_sampler, uv_main);
-    let emit_s = textureSample(_EmissionMap, _EmissionMap_sampler, uv_main);
-    let occ_s = textureSample(_OcclusionMap, _OcclusionMap_sampler, uv_main);
-    let spec_s = textureSample(_SpecularMap, _SpecularMap_sampler, uv_main);
+    let normal_s = ts::sample_tex_2d(_NormalMap, _NormalMap_sampler, uv_main, mat._NormalMap_LodBias);
+    let emit_s = ts::sample_tex_2d(_EmissionMap, _EmissionMap_sampler, uv_main, mat._EmissionMap_LodBias);
+    let occ_s = ts::sample_tex_2d(_OcclusionMap, _OcclusionMap_sampler, uv_main, mat._OcclusionMap_LodBias);
+    let spec_s = ts::sample_tex_2d(_SpecularMap, _SpecularMap_sampler, uv_main, mat._SpecularMap_LodBias);
     let touch = (mat._Color.x + mat._SpecularColor.x + mat._EmissionColor.x + mat._RimColor.x
         + mat._NormalScale + mat._RimPower
         + f32(mat._RenderideVariantBits)
@@ -134,12 +139,12 @@ fn fs_main(
 
     var occlusion = 1.0;
     if (pbs_kw(PBSRIMTRANSPARENTZWRITESPECULAR_KW_OCCLUSION)) {
-        occlusion = textureSample(_OcclusionMap, _OcclusionMap_sampler, uv_main).r;
+        occlusion = ts::sample_tex_2d(_OcclusionMap, _OcclusionMap_sampler, uv_main, mat._OcclusionMap_LodBias).r;
     }
 
     var spec = mat._SpecularColor;
     if (pbs_kw(PBSRIMTRANSPARENTZWRITESPECULAR_KW_SPECULARMAP)) {
-        spec = textureSample(_SpecularMap, _SpecularMap_sampler, uv_main);
+        spec = ts::sample_tex_2d(_SpecularMap, _SpecularMap_sampler, uv_main, mat._SpecularMap_LodBias);
     }
     let f0 = clamp(spec.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
     let smoothness = clamp(spec.a, 0.0, 1.0);
@@ -147,7 +152,7 @@ fn fs_main(
 
     var emission = mat._EmissionColor.rgb;
     if (pbs_kw(PBSRIMTRANSPARENTZWRITESPECULAR_KW_EMISSIONTEX)) {
-        emission = emission * textureSample(_EmissionMap, _EmissionMap_sampler, uv_main).rgb;
+        emission = emission * ts::sample_tex_2d(_EmissionMap, _EmissionMap_sampler, uv_main, mat._EmissionMap_LodBias).rgb;
     }
 
     let view_dir = rg::view_dir_for_world_pos(world_pos, view_layer);

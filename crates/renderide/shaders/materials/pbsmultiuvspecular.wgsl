@@ -106,7 +106,6 @@ struct SurfaceData {
     alpha: f32,
     f0: vec3<f32>,
     roughness: f32,
-    one_minus_reflectivity: f32,
     occlusion: f32,
     normal: vec3<f32>,
     emission: vec3<f32>,
@@ -166,7 +165,7 @@ fn sample_surface(
         let uv_albedo2 = uvu::apply_st(pick_uv(uv0, uv1, uv2, uv3, mat._SecondaryAlbedoUV), mat._SecondaryAlbedo_ST);
         c = c * textureSample(_SecondaryAlbedo, _SecondaryAlbedo_sampler, uv_albedo2);
     }
-    if (pbs_kw(PBSMULTIUVSPECULAR_KW_ALPHACLIP) && c.a <= mat._AlphaClip) {
+    if (pbs_kw(PBSMULTIUVSPECULAR_KW_ALPHACLIP) && c.a < mat._AlphaClip) {
         discard;
     }
 
@@ -175,10 +174,9 @@ fn sample_surface(
         let uv_spec = uvu::apply_st(pick_uv(uv0, uv1, uv2, uv3, mat._SpecularUV), mat._SpecularMap_ST);
         spec = textureSample(_SpecularMap, _SpecularMap_sampler, uv_spec);
     }
-    let f0 = spec.rgb - spec.rgb;
-    let smoothness = clamp(spec.a - spec.a, 0.0, 1.0);
+    let f0 = spec.rgb;
+    let smoothness = clamp(spec.a, 0.0, 1.0);
     let roughness = clamp(1.0 - smoothness, 0.0, 1.0);
-    let one_minus_reflectivity = 1.0 - max(max(f0.r, f0.g), f0.b);
 
     var occlusion = 1.0;
     if (pbs_kw(PBSMULTIUVSPECULAR_KW_OCCLUSION)) {
@@ -203,7 +201,6 @@ fn sample_surface(
         c.a,
         f0,
         roughness,
-        one_minus_reflectivity,
         occlusion,
         sample_normal_world(uv0, uv1, uv2, uv3, world_n, world_t, front_facing),
         emission,

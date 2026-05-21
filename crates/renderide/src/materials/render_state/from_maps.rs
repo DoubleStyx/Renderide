@@ -4,6 +4,7 @@
 //! every Unity render-state property in one pass; [`material_render_state_for_lookup`] is the
 //! convenience entry point that fetches those maps from a [`MaterialDictionary`].
 
+#[cfg(test)]
 use crate::materials::host_data::{MaterialDictionary, MaterialPropertyLookupIds};
 
 use super::super::material_passes::{
@@ -45,6 +46,7 @@ pub fn material_render_state_from_maps(
 }
 
 /// Resolves Unity color, stencil, and depth properties for a material/property-block pair.
+#[cfg(test)]
 pub fn material_render_state_for_lookup(
     dict: &MaterialDictionary<'_>,
     lookup: MaterialPropertyLookupIds,

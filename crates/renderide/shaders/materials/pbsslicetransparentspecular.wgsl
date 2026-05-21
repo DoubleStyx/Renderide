@@ -29,6 +29,7 @@
 #import renderide::pbs::normal as pnorm
 #import renderide::pbs::sampling as psamp
 #import renderide::pbs::surface as psurf
+#import renderide::core::texture_sampling as ts
 #import renderide::core::uv as uvu
 #import renderide::core::normal_decode as nd
 
@@ -46,9 +47,13 @@ struct PBSSliceTransparentSpecularMaterial {
     _NormalScale: f32,
     _DetailNormalMapScale: f32,
     _RenderideVariantBits: u32,
-    _pad0: f32,
-    _pad1: f32,
-    _pad2: f32,
+    _MainTex_LodBias: f32,
+    _NormalMap_LodBias: f32,
+    _EmissionMap_LodBias: f32,
+    _OcclusionMap_LodBias: f32,
+    _SpecularMap_LodBias: f32,
+    _DetailAlbedoMap_LodBias: f32,
+    _DetailNormalMap_LodBias: f32,
     _Slicers: array<vec4<f32>, 8>,
 }
 
@@ -86,7 +91,7 @@ fn pbs_kw(mask: u32) -> bool {
 fn sample_albedo_color(uv_main: vec2<f32>, edge_lerp: f32) -> vec4<f32> {
     let tint = mix(mat._Color, mat._EdgeColor, edge_lerp);
     if (pbs_kw(PBSSLICETRANSPARENTSPECULAR_KW_ALBEDOTEX) || pbs_kw(PBSSLICETRANSPARENTSPECULAR_KW_DETAIL_ALBEDOTEX)) {
-        return textureSample(_MainTex, _MainTex_sampler, uv_main) * tint;
+        return ts::sample_tex_2d(_MainTex, _MainTex_sampler, uv_main, mat._MainTex_LodBias) * tint;
     }
     return tint;
 }
@@ -102,21 +107,21 @@ fn sample_normal_world(
     let use_normal_map = pbs_kw(PBSSLICETRANSPARENTSPECULAR_KW_NORMALMAP) || pbs_kw(PBSSLICETRANSPARENTSPECULAR_KW_DETAIL_NORMALMAP);
     if (use_normal_map) {
         let tbn = pnorm::orthonormal_tbn(world_n, world_t);
-        var ts = nd::decode_ts_normal_with_placeholder_sample(
-            textureSample(_NormalMap, _NormalMap_sampler, uv_main),
+        var ts_n = nd::decode_ts_normal_with_placeholder_sample(
+            ts::sample_tex_2d(_NormalMap, _NormalMap_sampler, uv_main, mat._NormalMap_LodBias),
             mat._NormalScale,
         );
         if (pbs_kw(PBSSLICETRANSPARENTSPECULAR_KW_DETAIL_NORMALMAP)) {
             let detail = nd::decode_ts_normal_with_placeholder_sample(
-                textureSample(_DetailNormalMap, _DetailNormalMap_sampler, uv_detail),
+                ts::sample_tex_2d(_DetailNormalMap, _DetailNormalMap_sampler, uv_detail, mat._DetailNormalMap_LodBias),
                 mat._DetailNormalMapScale,
             );
-            ts = pslice::blend_detail_normal(ts, detail);
+            ts_n = pslice::blend_detail_normal(ts_n, detail);
         }
         if (!front_facing) {
-            ts = vec3<f32>(ts.x, ts.y, -ts.z);
+            ts_n = vec3<f32>(ts_n.x, ts_n.y, -ts_n.z);
         }
-        return normalize(tbn * ts);
+        return normalize(tbn * ts_n);
     }
     if (!front_facing) {
         n = -n;
@@ -142,7 +147,7 @@ fn vs_main(
 #endif
 }
 
-//#pass type=forward name=forward_transparent blend=transparent_material zwrite=material(off) cull=material(off) color_mask=material(rgba)
+//#pass type=forward name=forward_transparent blend=transparent_material zwrite=material(off) cull=material(off) color_mask=material(rgba) offset=material(0,0)
 @fragment
 fn fs_main(
     @builtin(position) frag_pos: vec4<f32>,
@@ -177,7 +182,7 @@ fn fs_main(
 
     var c = sample_albedo_color(uv_main, edge_lerp);
     if (pbs_kw(PBSSLICETRANSPARENTSPECULAR_KW_DETAIL_ALBEDOTEX)) {
-        let detail = textureSample(_DetailAlbedoMap, _DetailAlbedoMap_sampler, uv_detail_albedo).rgb * 2.0;
+        let detail = ts::sample_tex_2d(_DetailAlbedoMap, _DetailAlbedoMap_sampler, uv_detail_albedo, mat._DetailAlbedoMap_LodBias).rgb * 2.0;
         c = vec4<f32>(c.rgb * detail, c.a);
     }
 
@@ -185,12 +190,12 @@ fn fs_main(
 
     var occlusion: f32 = 1.0;
     if (pbs_kw(PBSSLICETRANSPARENTSPECULAR_KW_OCCLUSION)) {
-        occlusion = textureSample(_OcclusionMap, _OcclusionMap_sampler, uv_main).r;
+        occlusion = ts::sample_tex_2d(_OcclusionMap, _OcclusionMap_sampler, uv_main, mat._OcclusionMap_LodBias).r;
     }
 
     var spec = mat._SpecularColor;
     if (pbs_kw(PBSSLICETRANSPARENTSPECULAR_KW_METALLICMAP)) {
-        spec = textureSample(_SpecularMap, _SpecularMap_sampler, uv_main);
+        spec = ts::sample_tex_2d(_SpecularMap, _SpecularMap_sampler, uv_main, mat._SpecularMap_LodBias);
     }
     let f0 = clamp(spec.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
     let smoothness = clamp(spec.a, 0.0, 1.0);
@@ -198,7 +203,7 @@ fn fs_main(
 
     var emission = mat._EmissionColor.rgb;
     if (pbs_kw(PBSSLICETRANSPARENTSPECULAR_KW_EMISSIONTEX)) {
-        emission = emission * textureSample(_EmissionMap, _EmissionMap_sampler, uv_main).rgb;
+        emission = emission * ts::sample_tex_2d(_EmissionMap, _EmissionMap_sampler, uv_main, mat._EmissionMap_LodBias).rgb;
     }
     let edge_emission = mix(emission, mat._EdgeEmissionColor.rgb, edge_lerp);
 

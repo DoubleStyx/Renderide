@@ -97,10 +97,10 @@ fn resolves_fresnel_lerp_from_asset_name() {
 }
 
 #[test]
-fn resolves_textunit_from_asset_style_name() {
+fn does_not_resolve_removed_textunit_alias() {
     assert_eq!(
         embedded_default_stem_for_shader_asset_name("TextUnit").as_deref(),
-        Some("textunit_default")
+        None
     );
 }
 
@@ -133,6 +133,22 @@ fn resolves_debugchannel_from_asset_filename() {
     assert_eq!(
         embedded_default_stem_for_shader_asset_name("DebugChannel").as_deref(),
         Some("debugchannel_default")
+    );
+}
+
+#[test]
+fn resolves_depth_shader_playerfinder_from_asset_filename() {
+    assert_eq!(
+        embedded_default_stem_for_shader_asset_name("Depth_Shader_PlayerFinder_1").as_deref(),
+        Some("depth_shader_playerfinder_1_default")
+    );
+}
+
+#[test]
+fn resolves_legacy_circle_segment_from_asset_filename() {
+    assert_eq!(
+        embedded_default_stem_for_shader_asset_name("LegacyCircleSegment").as_deref(),
+        Some("legacycirclesegment_default")
     );
 }
 

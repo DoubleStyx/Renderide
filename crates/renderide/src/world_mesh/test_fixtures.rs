@@ -82,6 +82,7 @@ pub fn dummy_world_mesh_draw_item(spec: DummyDrawItemSpec) -> WorldMeshDrawItem 
         embedded_requires_intersection_pass: false,
         embedded_uses_scene_depth_snapshot: false,
         embedded_uses_scene_color_snapshot: false,
+        scene_color_snapshot_mode: Default::default(),
         render_queue,
         render_state: Default::default(),
         blend_mode: Default::default(),

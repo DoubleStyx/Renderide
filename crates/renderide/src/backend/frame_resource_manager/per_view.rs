@@ -26,6 +26,32 @@ use super::cluster_layout::{
 use super::manager::FrameResourceManager;
 use super::per_view_state::{PerViewFrameState, PerViewPerDrawScratch};
 
+/// Builds the default and named-grab frame bind groups for one per-view frame state.
+fn build_per_view_frame_bind_groups(
+    device: &wgpu::Device,
+    fgpu: &FrameGpuResources,
+    frame_uniform_buffer: &wgpu::Buffer,
+    lights_buffer: &wgpu::Buffer,
+    refs: ClusterBufferRefs<'_>,
+    scene_snapshots: &PerViewSceneSnapshots,
+) -> (Arc<wgpu::BindGroup>, Arc<wgpu::BindGroup>) {
+    let frame_bind_group = fgpu.build_per_view_bind_group(
+        device,
+        frame_uniform_buffer,
+        lights_buffer,
+        refs,
+        scene_snapshots.views(),
+    );
+    let named_scene_color_frame_bind_group = fgpu.build_per_view_bind_group(
+        device,
+        frame_uniform_buffer,
+        lights_buffer,
+        refs,
+        scene_snapshots.named_color_views(),
+    );
+    (frame_bind_group, named_scene_color_frame_bind_group)
+}
+
 impl FrameResourceManager {
     /// Clears per-tick frame-resource flags. Call once per winit frame from
     /// [`crate::runtime::RendererRuntime::tick_frame_wall_clock_begin`].
@@ -148,17 +174,20 @@ impl FrameResourceManager {
                     PerViewSceneSnapshots::new(device, layout.depth_format, layout.color_format);
                 scene_snapshots.sync(device, limits.as_ref(), snapshot_sync);
                 let refs = fgpu.cluster_cache.current_refs()?;
-                let frame_bind_group = fgpu.build_per_view_bind_group(
-                    device,
-                    &frame_uniform_buffer,
-                    &lights_buffer,
-                    refs,
-                    scene_snapshots.views(),
-                );
+                let (frame_bind_group, named_scene_color_frame_bind_group) =
+                    build_per_view_frame_bind_groups(
+                        device,
+                        fgpu,
+                        &frame_uniform_buffer,
+                        &lights_buffer,
+                        refs,
+                        &scene_snapshots,
+                    );
                 PerViewFrameState {
                     frame_uniform_buffer,
                     lights_buffer,
                     frame_bind_group,
+                    named_scene_color_frame_bind_group,
                     cluster_params_buffer,
                     scene_snapshots,
                     last_cluster_version: cluster_ver,
@@ -190,14 +219,16 @@ impl FrameResourceManager {
         if needs_rebuild {
             profiling::scope!("render::ensure_per_view_frame::rebuild_bind_group");
             let refs = fgpu.cluster_cache.current_refs()?;
-            let new_bg = fgpu.build_per_view_bind_group(
+            let (new_bg, new_named_bg) = build_per_view_frame_bind_groups(
                 device,
+                fgpu,
                 &entry.frame_uniform_buffer,
                 &entry.lights_buffer,
                 refs,
-                entry.scene_snapshots.views(),
+                &entry.scene_snapshots,
             );
             entry.frame_bind_group = new_bg;
+            entry.named_scene_color_frame_bind_group = new_named_bg;
             entry.last_cluster_version = cluster_ver;
             entry.last_skybox_specular_version = skybox_specular_version;
         }
@@ -387,5 +418,25 @@ impl FrameResourceManager {
         state
             .scene_snapshots
             .encode_color_copy(encoder, source_color, viewport, multiview)
+    }
+
+    /// Copies the main color attachment into this view's named scene-color snapshot.
+    pub fn copy_named_scene_color_snapshot_for_view(
+        &self,
+        view_id: ViewId,
+        encoder: &mut wgpu::CommandEncoder,
+        source_color: &wgpu::Texture,
+        viewport: (u32, u32),
+        multiview: bool,
+    ) -> bool {
+        let Some(state) = self.per_view_frame.get(view_id) else {
+            logger::warn!(
+                "named scene color snapshot copy: missing per-view frame for {view_id:?}"
+            );
+            return false;
+        };
+        state
+            .scene_snapshots
+            .encode_named_color_copy(encoder, source_color, viewport, multiview)
     }
 }

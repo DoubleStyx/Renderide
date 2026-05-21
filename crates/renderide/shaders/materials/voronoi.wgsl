@@ -5,8 +5,8 @@
 //! reference. `_WaveHeight` and `_MainTex` are declared for material-property parity but unused
 //! by the original fragment, so they are also unused here.
 //!
-//! Animation is host-driven via `_AnimationOffset` because the renderer does not expose
-//! `_Time.y` directly; this matches the convention used by [`pbsvoronoicrystal`].
+//! The original animates cell centers from Unity `_Time.y`. Use the renderer frame time by
+//! default, while preserving `_AnimationOffset` as an explicit host override when supplied.
 
 
 //#texture_default _MainTex white
@@ -44,7 +44,11 @@ fn vs_main(
 #endif
 }
 
-//#pass type=forward
+fn animation_phase() -> f32 {
+    return select(rg::frame.frame_time.x, mat._AnimationOffset, abs(mat._AnimationOffset) > 1e-6);
+}
+
+//#pass type=forward blend=off zwrite=off ztest=always cull=off color_mask=rgba stencil=off offset=0,0
 @fragment
 fn fs_main(
     @builtin(position) frag_pos: vec4<f32>,
@@ -52,6 +56,6 @@ fn fs_main(
     @location(4) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
     let scale = max(10.0 - 10.0 * mat._WaveScale, 1e-4);
-    let dist = vor::voronoi_min_dist(primary_uv * scale, mat._AnimationOffset);
+    let dist = vor::voronoi_min_dist(primary_uv * scale, animation_phase());
     return rg::retain_globals_additive(vec4<f32>(vec3<f32>(dist), 1.0));
 }

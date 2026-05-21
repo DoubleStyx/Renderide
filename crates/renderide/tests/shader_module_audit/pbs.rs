@@ -233,6 +233,162 @@ fn pbs_transparent_roots_keep_authored_pass_directives() -> io::Result<()> {
 }
 
 #[test]
+fn pbs_displace_alpha_clip_matches_unity_threshold_equality() -> io::Result<()> {
+    for material in [
+        "pbsdisplace.wgsl",
+        "pbsdisplacespecular.wgsl",
+        "pbsdisplacetransparent.wgsl",
+        "pbsdisplacespeculartransparent.wgsl",
+    ] {
+        let src = material_source(material)?;
+        assert!(
+            src.contains("&& c.a < mat._AlphaClip"),
+            "{material} must match Unity `clip(c.a - _AlphaClip)` equality behavior"
+        );
+        assert!(
+            !src.contains("&& c.a <= mat._AlphaClip"),
+            "{material} must not reject alpha exactly equal to `_AlphaClip`"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn pbs_vertex_color_transparent_roots_keep_source_alpha_and_emission() -> io::Result<()> {
+    for material in [
+        "pbsvertexcolortransparent.wgsl",
+        "pbsvertexcolortransparentspecular.wgsl",
+    ] {
+        let src = material_source(material)?;
+        assert!(
+            src.contains("&& albedo.a < mat._AlphaClip"),
+            "{material} must match Unity `clip(albedo.a - _AlphaClip)` equality behavior"
+        );
+        assert!(
+            !src.contains("&& albedo.a <= mat._AlphaClip"),
+            "{material} must not reject alpha exactly equal to `_AlphaClip`"
+        );
+        assert!(
+            src.contains("var emission = mat._EmissionColor.rgb;"),
+            "{material} must include constant emission color even without an emission texture"
+        );
+        assert!(
+            !src.contains("dot(emission_color, emission_color) > 1e-8"),
+            "{material} must not suppress tiny nonzero emission colors"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn pbsvoronoicrystal_keeps_global_uv_transform() -> io::Result<()> {
+    let src = material_source("pbsvoronoicrystal.wgsl")?;
+
+    for required in [
+        "_Global_ST: vec4<f32>",
+        "let global_uv = uvu::apply_st(uv, mat._Global_ST);",
+        "vor::voronoi_full(global_uv * scale, scale, mat._AnimationOffset)",
+    ] {
+        assert!(
+            src.contains(required),
+            "pbsvoronoicrystal.wgsl must contain `{required}`"
+        );
+    }
+    assert!(
+        !src.contains("vor::voronoi_full(uv * scale"),
+        "pbsvoronoicrystal.wgsl must apply `_Global_ST` before Voronoi sampling"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn pbs_displace_roots_keep_source_authored_one_sided_normals() -> io::Result<()> {
+    for material in [
+        "pbsdisplacespecular.wgsl",
+        "pbsdisplacetransparent.wgsl",
+        "pbsdisplacespeculartransparent.wgsl",
+    ] {
+        let src = material_source(material)?;
+        for forbidden in [
+            "@builtin(front_facing)",
+            "ts_n.z = -ts_n.z",
+            "psamp::two_sided_geometric_normal",
+        ] {
+            assert!(
+                !src.contains(forbidden),
+                "{material} must not apply dual-sided normal handling through `{forbidden}`"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn pbs_distance_lerp_roots_keep_source_zero_uv_and_raw_displacement_direction() -> io::Result<()> {
+    for material in [
+        "pbsdistancelerp.wgsl",
+        "pbsdistancelerpspecular.wgsl",
+        "pbsdistancelerptransparent.wgsl",
+        "pbsdistancelerpspeculartransparent.wgsl",
+    ] {
+        let src = material_source(material)?;
+        assert!(
+            src.contains("let uv_main = vec2<f32>(0.0);"),
+            "{material} must sample material textures at the source-authored zero UV"
+        );
+        for forbidden in [
+            "_MainTex_ST: vec4<f32>",
+            "uvu::apply_st(uv0, mat._MainTex_ST)",
+            "@location(2) uv0",
+            "normalize(n.xyz)",
+            "normalize(mat._DisplacementDirection.xyz)",
+        ] {
+            assert!(
+                !src.contains(forbidden),
+                "{material} must not use `{forbidden}`"
+            );
+        }
+        assert!(
+            src.contains("select(\n        n.xyz,\n        mat._DisplacementDirection.xyz,"),
+            "{material} must preserve raw displacement direction magnitude"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn selected_pbs_material_roots_keep_material_offset_pass_metadata() -> io::Result<()> {
+    for material in [
+        "pbsdistancelerp.wgsl",
+        "pbsdistancelerpspecular.wgsl",
+        "pbsdistancelerpspeculartransparent.wgsl",
+        "pbsdistancelerptransparent.wgsl",
+        "pbsdualsided.wgsl",
+        "pbsdualsidedspecular.wgsl",
+        "pbsdualsidedtransparent.wgsl",
+        "pbsdualsidedtransparentspecular.wgsl",
+        "pbsintersect.wgsl",
+        "pbsintersectspecular.wgsl",
+    ] {
+        let src = material_source(material)?;
+        let mut pass_count = 0usize;
+        for line in src
+            .lines()
+            .filter(|line| line.trim_start().starts_with("//#pass "))
+        {
+            pass_count += 1;
+            assert!(
+                line.contains("offset=material(0,0)"),
+                "{material} pass directive must preserve material-driven Unity Offset state: {line}"
+            );
+        }
+        assert!(pass_count > 0, "{material} must declare at least one pass");
+    }
+    Ok(())
+}
+
+#[test]
 fn pbs_material_roots_use_shared_sampling_and_mask_helpers() -> io::Result<()> {
     for material in ["pbscolorsplat.wgsl", "pbscolorsplatspecular.wgsl"] {
         let src = material_source(material)?;
@@ -505,6 +661,62 @@ fn spot_lights_do_not_use_arbitrary_smoothstep_cone_fade() -> io::Result<()> {
 }
 
 #[test]
+fn toon_standard_and_water_use_unity_toon_brdf_composition() -> io::Result<()> {
+    let toon_brdf = module_source("material/toon_brdf.wgsl")?;
+    for required in [
+        "fn energy_conserved_diffuse(",
+        "fn direct_light(",
+        "return radiance * (diff_color + spec_color * specular_step) * diffuse_step;",
+        "fn indirect_light(",
+        "let specular_tint = mix(spec_color, vec3<f32>(grazing_term), fresnel_term);",
+    ] {
+        assert!(
+            toon_brdf.contains(required),
+            "toon_brdf.wgsl must contain `{required}`"
+        );
+    }
+
+    for material in ["toonstandard.wgsl", "toonwater.wgsl"] {
+        let src = material_source(material)?;
+        for required in [
+            "#import renderide::core::texture_sampling as ts",
+            "#import renderide::lighting::reflection_probes as rprobe",
+            "tbrdf::energy_conserved_diffuse(",
+            "tbrdf::direct_light(",
+            "tbrdf::indirect_light(",
+        ] {
+            assert!(
+                src.contains(required),
+                "{material} must contain `{required}`"
+            );
+        }
+    }
+
+    let water = material_source("toonwater.wgsl")?;
+    for required in [
+        "fn unity_time_x() -> f32",
+        "fn unity_time_y() -> f32",
+        "fn unity_sin_time_w() -> f32",
+        "sds::scene_world_y_at_uv(refracted_uv, view_layer) + object_y",
+        "let smoothness = clamp(spec_s.a * mat._Glossiness, 0.0, 1.0);",
+        "//#pass type=forward zwrite=off",
+        "ts::sample_tex_2d(_ReflectionTex, _ReflectionTex_sampler, screen_uv, mat._ReflectionTex_LodBias)",
+    ] {
+        assert!(
+            water.contains(required),
+            "toonwater.wgsl must contain `{required}`"
+        );
+    }
+    assert!(
+        !water.contains("color = color + refl * (1.0 - smoothness)")
+            && !water.contains("mat._SmoothnessTextureChannel > 0.5"),
+        "toonwater.wgsl must not keep the old additive reflection or albedo-alpha smoothness paths"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn standard_pbs_roots_use_unity_standard_packed_channels() -> io::Result<()> {
     let standard = module_source("pbs/standard.wgsl")?;
     for required in [
@@ -512,7 +724,7 @@ fn standard_pbs_roots_use_unity_standard_packed_channels() -> io::Result<()> {
         "return color_alpha;",
         "return color_alpha * texture_alpha;",
         "fn clip_standard_alpha(",
-        "if (enabled && alpha <= cutoff) {",
+        "if (enabled && alpha < cutoff) {",
         "fn occlusion_from_sample(sample: f32, strength: f32) -> f32",
         "return mix(1.0, sample, clamp(strength, 0.0, 1.0));",
     ] {
@@ -606,6 +818,9 @@ fn furfx_and_toon_roots_declare_unity_defaults_for_unsent_fields() -> io::Result
         let src = source_file(&path)?;
         let required: &[&str] = if src.contains("renderide::fur::classic_selfshadow") {
             &[
+                "//#mat_default _RimColor vec4 0.0 0.0 0.0 0.0",
+                "//#mat_default _ForceGlobal vec4 0.0 0.0 0.0 0.0",
+                "//#mat_default _ForceLocal vec4 0.0 0.0 0.0 0.0",
                 "//#mat_default _EdgeFade float 0.15",
                 "//#mat_default _SkinAlpha float 0.5",
                 "//#mat_default _Reflection float 0.0",
@@ -613,20 +828,30 @@ fn furfx_and_toon_roots_declare_unity_defaults_for_unsent_fields() -> io::Result
             ]
         } else if src.contains("renderide::fur::classic_advanced") {
             &[
+                "//#mat_default _RimColor vec4 0.0 0.0 0.0 0.0",
+                "//#mat_default _ForceGlobal vec4 0.0 0.0 0.0 0.0",
+                "//#mat_default _ForceLocal vec4 0.0 0.0 0.0 0.0",
                 "//#mat_default _EdgeFade float 0.15",
                 "//#mat_default _SkinAlpha float 0.5",
                 "//#mat_default _Reflection float 0.0",
             ]
         } else if src.contains("renderide::fur::classic_basic") {
             &[
+                "//#mat_default _ForceGlobal vec4 0.0 0.0 0.0 0.0",
+                "//#mat_default _ForceLocal vec4 0.0 0.0 0.0 0.0",
                 "//#mat_default _EdgeFade float 0.15",
                 "//#mat_default _SkinAlpha float 0.5",
             ]
         } else if src.contains("renderide::fur::modern") {
             &[
+                "//#mat_default _RimColor vec4 0.0 0.0 0.0 0.0",
+                "//#mat_default _ForceGlobal vec4 0.0 0.0 0.0 0.0",
+                "//#mat_default _ForceLocal vec4 0.0 0.0 0.0 0.0",
                 "//#mat_default _BonusAmbient vec4 0.0 0.0 0.0 1.0",
+                "//#mat_default _RimColor vec4 0.0 0.0 0.0 0.0",
                 "//#mat_default _ReflColor vec4 1.0 1.0 1.0 1.0",
-                "//#mat_default _EdgeFade float 0.15",
+                "//#mat_default _ForceGlobal vec4 0.0 0.0 0.0 0.0",
+                "//#mat_default _ForceLocal vec4 0.0 0.0 0.0 0.0",
                 "//#mat_default _SkinAlpha float 0.5",
                 "//#mat_default _Reflection float 0.0",
                 "//#mat_default _ReflMinLevel float 0.0",
@@ -666,6 +891,102 @@ fn furfx_and_toon_roots_declare_unity_defaults_for_unsent_fields() -> io::Result
             );
         }
     }
+    Ok(())
+}
+
+#[test]
+fn early_material_parity_gaps_stay_closed() -> io::Result<()> {
+    let depth_projection = material_source("depthprojection.wgsl")?;
+    assert!(
+        !depth_projection.contains("@location(1) n:"),
+        "depthprojection.wgsl must not request normals; the source vertex input uses position and UV only"
+    );
+
+    let fogbox = material_source("fogboxvolume.wgsl")?;
+    assert!(
+        !fogbox.contains("clamp_volume_source_rgb(apply_saturation"),
+        "fogboxvolume.wgsl must not clamp RGB unless SATURATE_COLOR is selected"
+    );
+    assert!(
+        fogbox.contains(
+            "return rg::retain_globals_additive(apply_saturation(mat._BaseColor + acc));"
+        ),
+        "fogboxvolume.wgsl must preserve unsaturated HDR accumulation output"
+    );
+
+    let material_sample = module_source("material/sample.wgsl")?;
+    for required in [
+        "let mapped = uvu::polar_mapping(raw_uv, st, polar_power);",
+        "textureSampleGrad(tex, samp, mapped.uv, mapped.ddx_uv, mapped.ddy_uv)",
+    ] {
+        assert!(
+            material_sample.contains(required),
+            "material/sample.wgsl must contain `{required}`"
+        );
+    }
+
+    let fresnellerp = material_source("fresnellerp.wgsl")?;
+    assert!(
+        fresnellerp
+            .contains("let mapped = uvu::polar_mapping(uv, mat._LerpTex_ST, mat._LerpPolarPow);"),
+        "fresnellerp.wgsl must use Unity-style polar gradients for _LerpTex"
+    );
+    assert!(
+        !fresnellerp
+            .contains("uvu::apply_st(uvu::polar_uv(uv, mat._LerpPolarPow), mat._LerpTex_ST)"),
+        "fresnellerp.wgsl must not sample polar _LerpTex without gradient repair"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn modern_furfx_roots_use_unity_property_names_and_noise_alpha() -> io::Result<()> {
+    let modern = module_source("fur/modern.wgsl")?;
+    for required in [
+        "_BumpMap_ST: vec4<f32>",
+        "_BumpMap_LodBias: f32",
+        "var _BumpMap: texture_2d<f32>",
+        "furc::alpha_clip(noise, mat._Cutoff);",
+    ] {
+        assert!(
+            modern.contains(required),
+            "fur/modern.wgsl must contain `{required}`"
+        );
+    }
+    for forbidden in ["_NormalMap", "_EdgeFade", "classic_shell_alpha"] {
+        assert!(
+            !modern.contains(forbidden),
+            "fur/modern.wgsl must not contain `{forbidden}`"
+        );
+    }
+
+    for path in wgsl_files_recursive("shaders/materials")? {
+        let label = file_label(&path);
+        let src = source_file(&path)?;
+        if !src.contains("renderide::fur::modern") {
+            continue;
+        }
+        let uses_bump_map = src.contains("fur::fragment_base(input)");
+        if uses_bump_map {
+            assert!(
+                src.contains("//#texture_default _BumpMap bump"),
+                "{label} must declare Unity's _BumpMap texture fallback"
+            );
+        } else {
+            assert!(
+                !src.contains("//#texture_default _BumpMap bump"),
+                "{label} must not declare an unused _BumpMap texture fallback"
+            );
+        }
+        for forbidden in ["_NormalMap", "_EdgeFade"] {
+            assert!(
+                !src.contains(forbidden),
+                "{label} must not contain `{forbidden}`"
+            );
+        }
+    }
+
     Ok(())
 }
 
@@ -825,6 +1146,151 @@ fn pbs_direct_specular_lobe_is_shared() -> io::Result<()> {
             "pbs/brdf.wgsl must share direct specular lobe term `{required}`"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn xiexe_pbs_and_fur_stay_on_shared_modern_brdf() -> io::Result<()> {
+    for (module, required_terms) in [
+        (
+            "pbs/lighting.wgsl",
+            [
+                "#import renderide::pbs::brdf as brdf",
+                "brdf::direct_radiance_metallic(",
+                "brdf::direct_radiance_specular(",
+                "brdf::indirect_specular_visibility(",
+            ],
+        ),
+        (
+            "xiexe/toon2/lighting.wgsl",
+            [
+                "#import renderide::pbs::brdf as brdf",
+                "brdf::eval_direct_specular_lobe(",
+                "brdf::fd_burley(",
+                "brdf::indirect_specular_visibility(",
+            ],
+        ),
+        (
+            "fur/lighting.wgsl",
+            [
+                "#import renderide::pbs::brdf as brdf",
+                "brdf::direct_radiance_specular(",
+                "brdf::indirect_diffuse_specular(",
+                "brdf::indirect_specular_visibility(",
+            ],
+        ),
+    ] {
+        let src = module_source(module)?;
+        for required in required_terms {
+            assert!(
+                src.contains(required),
+                "{module} must keep modern PBS BRDF term `{required}`"
+            );
+        }
+    }
+
+    let forbidden_terms = [
+        "#import renderide::material::toon_brdf",
+        "tbrdf::",
+        "brdf::fd_lambert(",
+        "let d_term = brdf::d_ggx(",
+        "let v_term = brdf::v_smith_ggx_correlated(",
+        "let f_term = brdf::f_schlick(",
+        "d_term * v_term * f_term",
+        "brdf::MIN_ALPHA",
+        "let specular_occlusion = brdf::specular_ao_lagarde",
+        "clamp(perceptual_roughness, 0.045, 1.0)",
+        "clamp(s.roughness, 0.045, 1.0)",
+        "clamp(1.0 - smoothness, 0.045, 1.0)",
+    ];
+    let mut offenders = Vec::new();
+
+    for root in [
+        "shaders/modules/pbs",
+        "shaders/modules/xiexe",
+        "shaders/modules/fur",
+        "shaders/materials",
+    ] {
+        for path in wgsl_files_recursive(root)? {
+            let label = file_label(&path);
+            if label.ends_with("shaders/modules/pbs/brdf.wgsl") || !modern_brdf_family_label(&label)
+            {
+                continue;
+            }
+
+            let src = source_file(&path)?;
+            for forbidden in forbidden_terms {
+                if src.contains(forbidden) {
+                    offenders.push(format!("{label}: {forbidden}"));
+                }
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "Xiexe, PBS, and Fur shaders must not reintroduce older local BRDF paths:\n  {}",
+        offenders.join("\n  ")
+    );
+    Ok(())
+}
+
+/// Returns true when a source path belongs to the shader families that should use the modern PBS BRDF.
+fn modern_brdf_family_label(label: &str) -> bool {
+    label.starts_with("shaders/modules/pbs/")
+        || label.starts_with("shaders/modules/xiexe/")
+        || label.starts_with("shaders/modules/fur/")
+        || label.starts_with("shaders/materials/pbs")
+        || label.starts_with("shaders/materials/paintpbs")
+        || label.starts_with("shaders/materials/xstoon")
+        || label.starts_with("shaders/materials/furfx")
+}
+
+#[test]
+fn classic_furfx_modules_keep_source_parity_details() -> io::Result<()> {
+    let common = module_source("fur/common.wgsl")?;
+    for required in [
+        "@location(9) base_world_pos: vec3<f32>,",
+        "let base_world_pos = mv::world_position(draw, pos).xyz;",
+        "out.shell_noise_uv = uv0 + shell_noise_offset;",
+        "out.base_world_pos = base_world_pos;",
+        "var color = tex_rgb;\n    color = color - shadow_rgb * hair_coloring;\n    color = color - vec3<f32>(pow(1.0 - fur_multiplier, 4.0) * hair_shading);\n    color = color * tint_rgb;",
+    ] {
+        assert!(
+            common.contains(required),
+            "fur/common.wgsl must preserve classic FurFX parity detail `{required}`"
+        );
+    }
+    assert!(
+        !common.contains("out.shell_noise_uv = uvu::apply_st(uv0 + shell_noise_offset, noise_st);"),
+        "classic FurFX shell shadow UVs must not apply _NoiseTex_ST"
+    );
+
+    for module in [
+        "fur/classic_basic.wgsl",
+        "fur/classic_advanced.wgsl",
+        "fur/classic_selfshadow.wgsl",
+    ] {
+        let src = module_source(module)?;
+        for required in [
+            "input.base_world_pos",
+            "furc::alpha_clip(1.0, mat._Cutoff);",
+        ] {
+            assert!(
+                src.contains(required),
+                "{module} must preserve classic FurFX parity detail `{required}`"
+            );
+        }
+    }
+
+    for module in ["fur/classic_advanced.wgsl", "fur/classic_selfshadow.wgsl"] {
+        let src = module_source(module)?;
+        assert!(
+            src.contains("rg::view_dir_for_world_pos(input.base_world_pos, input.view_layer);"),
+            "{module} must evaluate rim/reflection from the base mesh world position"
+        );
+    }
+
     Ok(())
 }
 
@@ -1007,6 +1473,135 @@ fn pbs_lerp_preserves_variant_channels_and_raw_lerp() -> io::Result<()> {
         "pbslerpspecular.wgsl must use Unity's raw lerp factor"
     );
 
+    Ok(())
+}
+
+/// Verifies PBSLerp roots use their source-authored alpha clip property names and defaults.
+#[test]
+fn pbs_lerp_uses_alpha_clip_property_and_defaults() -> io::Result<()> {
+    let metallic = material_source("pbslerp.wgsl")?;
+    for required in [
+        "//#mat_default _AlphaClip float 0.5",
+        "//#mat_default _Glossiness1 float 0.5",
+        "_AlphaClip: f32",
+        "c.a < mat._AlphaClip",
+    ] {
+        assert!(
+            metallic.contains(required),
+            "pbslerp.wgsl must contain `{required}`"
+        );
+    }
+    for rejected in ["_Cutoff: f32", "mat._Cutoff", "c.a <= mat._AlphaClip"] {
+        assert!(
+            !metallic.contains(rejected),
+            "pbslerp.wgsl must not contain `{rejected}`"
+        );
+    }
+
+    let specular = material_source("pbslerpspecular.wgsl")?;
+    for required in [
+        "//#mat_default _AlphaClip float 0.5",
+        "_AlphaClip: f32",
+        "c.a < mat._AlphaClip",
+    ] {
+        assert!(
+            specular.contains(required),
+            "pbslerpspecular.wgsl must contain `{required}`"
+        );
+    }
+    for rejected in ["_Cutoff: f32", "mat._Cutoff", "c.a <= mat._AlphaClip"] {
+        assert!(
+            !specular.contains(rejected),
+            "pbslerpspecular.wgsl must not contain `{rejected}`"
+        );
+    }
+
+    Ok(())
+}
+
+/// Verifies PBSMetallic keeps Unity's secondary texture UV selector.
+#[test]
+fn pbs_metallic_uses_uvsec_for_detail_uvs() -> io::Result<()> {
+    let src = material_source("pbsmetallic.wgsl")?;
+    for required in [
+        "//#mat_default _UVSec float 0.0",
+        "_UVSec: f32",
+        "@location(5) uv1: vec2<f32>",
+        "pstd::detail_uv(uv0, uv1, mat._UVSec, mat._DetailAlbedoMap_ST)",
+        "mv::world_uv2_vertex_main(instance_index, view_idx, pos, n, t, uv0, uv1)",
+        "mv::world_uv2_vertex_main(instance_index, 0u, pos, n, t, uv0, uv1)",
+    ] {
+        assert!(
+            src.contains(required),
+            "pbsmetallic.wgsl must contain `{required}`"
+        );
+    }
+    assert!(
+        !src.contains("pstd::detail_uv(uv0, uv1, 0.0"),
+        "pbsmetallic.wgsl must not hard-code UV0 for secondary textures"
+    );
+    Ok(())
+}
+
+/// Verifies PBSMultiUVSpecular propagates specular RGB and smoothness alpha.
+#[test]
+fn pbs_multiuv_specular_uses_specular_channels() -> io::Result<()> {
+    let src = material_source("pbsmultiuvspecular.wgsl")?;
+    for required in [
+        "let f0 = spec.rgb;",
+        "let smoothness = clamp(spec.a, 0.0, 1.0);",
+    ] {
+        assert!(
+            src.contains(required),
+            "pbsmultiuvspecular.wgsl must contain `{required}`"
+        );
+    }
+    for rejected in [
+        "spec.rgb - spec.rgb",
+        "spec.a - spec.a",
+        "one_minus_reflectivity",
+    ] {
+        assert!(
+            !src.contains(rejected),
+            "pbsmultiuvspecular.wgsl must not contain `{rejected}`"
+        );
+    }
+    Ok(())
+}
+
+/// Verifies alpha clip paths in this material slice preserve Unity `clip(x)` equality behavior.
+#[test]
+fn pbs_materials_81_to_90_use_strict_alpha_clip_thresholds() -> io::Result<()> {
+    for material in [
+        "pbslerp.wgsl",
+        "pbslerpspecular.wgsl",
+        "pbsmultiuv.wgsl",
+        "pbsmultiuvspecular.wgsl",
+    ] {
+        let src = material_source(material)?;
+        assert!(
+            src.contains("c.a < mat._AlphaClip"),
+            "{material} must discard only when alpha is below `_AlphaClip`"
+        );
+        assert!(
+            !src.contains("c.a <= mat._AlphaClip"),
+            "{material} must not reject alpha exactly equal to `_AlphaClip`"
+        );
+        assert!(
+            !src.contains("c.a <= mat._Cutoff"),
+            "{material} must not use the wrong alpha clip property"
+        );
+    }
+
+    let standard = module_source("pbs/standard.wgsl")?;
+    assert!(
+        standard.contains("if (enabled && alpha < cutoff)"),
+        "pbs/standard.wgsl must match Unity `clip(alpha - cutoff)` equality behavior"
+    );
+    assert!(
+        !standard.contains("if (enabled && alpha <= cutoff)"),
+        "pbs/standard.wgsl must not reject alpha exactly equal to cutoff"
+    );
     Ok(())
 }
 

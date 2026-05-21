@@ -22,7 +22,9 @@
 //#mat_default _Color1 vec4 1.0 1.0 1.0 1.0
 //#mat_default _NormalScale float 1.0
 //#mat_default _NormalScale1 float 1.0
+//#mat_default _AlphaClip float 0.5
 //#mat_default _Glossiness float 0.5
+//#mat_default _Glossiness1 float 0.5
 
 #import renderide::material::variant_bits as vb
 #import renderide::mesh::vertex as mv
@@ -48,7 +50,7 @@ struct PbsLerpMaterial {
     _Glossiness1: f32,
     _Metallic: f32,
     _Metallic1: f32,
-    _Cutoff: f32,
+    _AlphaClip: f32,
     _RenderideVariantBits: u32,
 }
 
@@ -175,7 +177,7 @@ fn fs_main(
     }
 
     let c = mix(c0, c1, l);
-    if (pbs_kw(PBSLERP_KW_ALPHACLIP) && c.a <= mat._Cutoff) {
+    if (pbs_kw(PBSLERP_KW_ALPHACLIP) && c.a < mat._AlphaClip) {
         discard;
     }
 

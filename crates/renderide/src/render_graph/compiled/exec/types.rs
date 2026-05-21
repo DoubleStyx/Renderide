@@ -133,6 +133,8 @@ pub(super) struct PerViewWorkItem {
     pub(super) host_camera: HostCameraFrame,
     /// Render-context override scope used by this view.
     pub(super) render_context: RenderingContext,
+    /// Elapsed renderer runtime in seconds for Unity-style shader time inputs.
+    pub(super) frame_time_seconds: f32,
     /// Stable occlusion slot used by post-submit hooks.
     pub(super) view_id: ViewId,
     /// Background clear/skybox behavior for this view.

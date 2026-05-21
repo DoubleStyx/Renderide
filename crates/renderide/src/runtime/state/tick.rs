@@ -1,5 +1,7 @@
 //! Runtime-owned per-tick scratch and phase gates.
 
+use std::time::Instant;
+
 use crate::scene::{ReflectionProbeOnChangesRenderRequest, RenderSpaceId};
 use crate::shared::{CameraRenderTask, ReflectionProbeRenderResult, ReflectionProbeRenderTask};
 
@@ -18,6 +20,10 @@ pub(in crate::runtime) struct QueuedReflectionProbeRenderTask {
 
 /// Per-tick gates and reusable view-planning scratch.
 pub(in crate::runtime) struct RuntimeTickState {
+    /// Wall-clock anchor for Unity-style shader time inputs.
+    started_at: Instant,
+    /// Elapsed renderer runtime in seconds captured at the start of the current tick.
+    frame_time_seconds: f32,
     /// Set when asset integration completed for the current winit tick.
     did_integrate_this_tick: bool,
     /// Reusable per-frame scratch for secondary render-texture view collection.
@@ -48,7 +54,10 @@ pub(in crate::runtime) struct RuntimeTickState {
 impl RuntimeTickState {
     /// Creates empty tick state.
     pub(in crate::runtime) fn new() -> Self {
+        let started_at = Instant::now();
         Self {
+            started_at,
+            frame_time_seconds: 0.0,
             did_integrate_this_tick: false,
             secondary_view_tasks_scratch: Vec::new(),
             pending_camera_render_tasks: Vec::new(),
@@ -65,6 +74,16 @@ impl RuntimeTickState {
     /// Clears once-per-tick gates at the start of a new winit tick.
     pub(in crate::runtime) fn reset_for_tick(&mut self) {
         self.did_integrate_this_tick = false;
+    }
+
+    /// Captures the frame-start wall clock for material shader time inputs.
+    pub(in crate::runtime) fn note_frame_wall_clock_begin(&mut self, now: Instant) {
+        self.frame_time_seconds = now.saturating_duration_since(self.started_at).as_secs_f32();
+    }
+
+    /// Elapsed renderer runtime in seconds captured at the start of the current tick.
+    pub(in crate::runtime) fn frame_time_seconds(&self) -> f32 {
+        self.frame_time_seconds
     }
 
     /// Whether asset integration already ran this tick.
@@ -91,5 +110,15 @@ mod tests {
         assert!(state.did_integrate_assets_this_tick());
         state.reset_for_tick();
         assert!(!state.did_integrate_assets_this_tick());
+    }
+
+    #[test]
+    fn frame_time_is_captured_from_runtime_start() {
+        let mut state = RuntimeTickState::new();
+        let later = state.started_at + std::time::Duration::from_millis(250);
+
+        state.note_frame_wall_clock_begin(later);
+
+        assert!((state.frame_time_seconds() - 0.25).abs() < 0.001);
     }
 }

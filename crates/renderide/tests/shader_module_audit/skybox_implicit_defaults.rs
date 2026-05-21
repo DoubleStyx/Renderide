@@ -192,3 +192,41 @@ fn skybox_pass_threads_shader_variant_bits_into_bind_group() -> io::Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn skybox_pass_uses_dedicated_background_depth_state() -> io::Result<()> {
+    let skybox_src = source_file(manifest_dir().join("src/passes/world_mesh_forward/skybox.rs"))?;
+    assert!(
+        !skybox_src.contains("material_render_state_for_lookup")
+            && !skybox_src.contains("MaterialDictionary::new")
+            && !skybox_src.contains("pipeline_property_resolver().resolve()"),
+        "dedicated skybox pass preparation must not resolve material `_ZWrite` / `_ZTest`; \
+         skybox materials draw as background, not as arbitrary mesh/UI Projection360 draws",
+    );
+    assert!(
+        skybox_src.contains("SkyboxDepthState::fixed_background()"),
+        "dedicated skybox pipelines must use the fixed background depth state",
+    );
+
+    let pipeline_src =
+        source_file(manifest_dir().join("src/passes/world_mesh_forward/skybox/pipeline.rs"))?;
+    assert!(
+        !pipeline_src.contains("fn for_family(")
+            && !pipeline_src.contains("render_state.depth_write")
+            && !pipeline_src.contains("render_state.depth_compare")
+            && !pipeline_src.contains("pub(super) depth: SkyboxDepthState"),
+        "skybox pipeline keys must not vary with material depth state; Projection360 mesh/UI \
+         render-state overrides do not belong to the dedicated skybox pass",
+    );
+    for required in [
+        "blend: None",
+        "cull_mode: None",
+        "stencil: wgpu::StencilState::default()",
+    ] {
+        assert!(
+            pipeline_src.contains(required),
+            "dedicated skybox pipeline must keep fixed background render state `{required}`",
+        );
+    }
+    Ok(())
+}

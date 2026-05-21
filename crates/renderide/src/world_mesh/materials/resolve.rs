@@ -5,18 +5,18 @@ use crate::materials::host_data::{MaterialDictionary, MaterialPropertyLookupIds}
 use crate::materials::{
     EmbeddedTangentFallbackMode, MaterialBlendMode, MaterialPipelinePropertyIds,
     MaterialRenderState, MaterialRouter, PropertyMapRef, RasterFrontFace, RasterPipelineKind,
-    RasterPrimitiveTopology, embedded_stem_needs_color_stream,
+    RasterPrimitiveTopology, SceneColorSnapshotMode, embedded_stem_needs_color_stream,
     embedded_stem_needs_extended_vertex_streams, embedded_stem_needs_tangent_stream,
     embedded_stem_needs_uv0_stream, embedded_stem_needs_uv1_stream, embedded_stem_needs_uv2_stream,
     embedded_stem_needs_uv3_stream, embedded_stem_needs_wide_uv_stream,
-    embedded_stem_requires_intersection_pass, embedded_stem_tangent_fallback_mode,
-    embedded_stem_uses_alpha_blending, embedded_stem_uses_blended_depth_write,
-    embedded_stem_uses_raw_normal_payload, embedded_stem_uses_raw_tangent_payload,
-    embedded_stem_uses_scene_color_snapshot, embedded_stem_uses_scene_depth_snapshot,
-    embedded_stem_uses_two_sided_transparency, embedded_stem_uses_ui_transparent_fallback,
-    fallback_render_queue_for_material, first_float_from_maps, first_vec4_from_maps,
-    material_blend_mode_from_maps, material_render_queue_from_maps,
-    material_render_state_from_maps, resolve_raster_pipeline,
+    embedded_stem_requires_intersection_pass, embedded_stem_scene_color_snapshot_mode,
+    embedded_stem_tangent_fallback_mode, embedded_stem_uses_alpha_blending,
+    embedded_stem_uses_blended_depth_write, embedded_stem_uses_raw_normal_payload,
+    embedded_stem_uses_raw_tangent_payload, embedded_stem_uses_scene_color_snapshot,
+    embedded_stem_uses_scene_depth_snapshot, embedded_stem_uses_two_sided_transparency,
+    embedded_stem_uses_ui_transparent_fallback, fallback_render_queue_for_material,
+    first_float_from_maps, first_vec4_from_maps, material_blend_mode_from_maps,
+    material_render_queue_from_maps, material_render_state_from_maps, resolve_raster_pipeline,
 };
 
 use super::FrameMaterialBatchCache;
@@ -74,6 +74,8 @@ pub(crate) struct ResolvedMaterialBatch {
     pub embedded_uses_scene_depth_snapshot: bool,
     /// Whether the active shader permutation declares a scene-color snapshot binding.
     pub embedded_uses_scene_color_snapshot: bool,
+    /// How the active shader permutation expects scene-color snapshots to be refreshed.
+    pub scene_color_snapshot_mode: SceneColorSnapshotMode,
     /// Renderer-local transparent behavior class inferred from resolved material state.
     pub transparent_class: TransparentMaterialClass,
     /// Resolved material blend mode.
@@ -135,6 +137,7 @@ struct EmbeddedMaterialFeatures {
     requires_intersection_pass: bool,
     uses_scene_depth_snapshot: bool,
     uses_scene_color_snapshot: bool,
+    scene_color_snapshot_mode: SceneColorSnapshotMode,
     uses_alpha_blending: bool,
     uses_ui_transparent_fallback: bool,
     uses_blended_depth_write: bool,
@@ -167,6 +170,7 @@ fn embedded_material_features(
         requires_intersection_pass: embedded_stem_requires_intersection_pass(stem, shader_perm),
         uses_scene_depth_snapshot: embedded_stem_uses_scene_depth_snapshot(stem, shader_perm),
         uses_scene_color_snapshot: embedded_stem_uses_scene_color_snapshot(stem, shader_perm),
+        scene_color_snapshot_mode: embedded_stem_scene_color_snapshot_mode(stem, shader_perm),
         uses_alpha_blending: embedded_stem_uses_alpha_blending(stem),
         uses_ui_transparent_fallback: embedded_stem_uses_ui_transparent_fallback(stem),
         uses_blended_depth_write: embedded_stem_uses_blended_depth_write(stem, shader_perm),
@@ -305,6 +309,7 @@ pub(crate) fn resolve_material_batch(
         embedded_requires_intersection_pass: embedded.requires_intersection_pass,
         embedded_uses_scene_depth_snapshot: embedded.uses_scene_depth_snapshot,
         embedded_uses_scene_color_snapshot: embedded.uses_scene_color_snapshot,
+        scene_color_snapshot_mode: embedded.scene_color_snapshot_mode,
         transparent_class,
         blend_mode,
         render_queue,
@@ -346,6 +351,7 @@ fn batch_key_from_resolved(
         embedded_requires_intersection_pass: r.embedded_requires_intersection_pass,
         embedded_uses_scene_depth_snapshot: r.embedded_uses_scene_depth_snapshot,
         embedded_uses_scene_color_snapshot: r.embedded_uses_scene_color_snapshot,
+        scene_color_snapshot_mode: r.scene_color_snapshot_mode,
         render_queue: r.render_queue,
         render_state: r.render_state,
         blend_mode: r.blend_mode,
@@ -364,7 +370,7 @@ mod ui_rect_clip_tests {
         MaterialPropertyStore, MaterialPropertyValue, PropertyIdRegistry,
     };
     use crate::materials::{
-        MaterialRouter, RasterPipelineKind, UNITY_RENDER_QUEUE_GEOMETRY,
+        MaterialRouter, RasterPipelineKind, SceneColorSnapshotMode, UNITY_RENDER_QUEUE_GEOMETRY,
         UNITY_RENDER_QUEUE_TRANSPARENT,
     };
 
@@ -503,6 +509,42 @@ mod ui_rect_clip_tests {
         assert!(resolved.alpha_blended);
         assert_eq!(resolved.render_queue, UNITY_RENDER_QUEUE_TRANSPARENT);
         assert!(resolved.embedded_raw_tangent_payload);
+    }
+
+    #[test]
+    fn scene_color_snapshot_mode_reaches_resolved_material_batch() {
+        let registry = PropertyIdRegistry::new();
+        let ids = MaterialPipelinePropertyIds::new(&registry);
+        let mut store = MaterialPropertyStore::new();
+        store.set_shader_asset_for_material(7, 70);
+        store.set_shader_asset_for_material(8, 80);
+
+        let mut router = MaterialRouter::new(RasterPipelineKind::Null);
+        router.set_shader_pipeline(
+            70,
+            RasterPipelineKind::EmbeddedStem(std::sync::Arc::from("pixelate_default")),
+        );
+        router.set_shader_pipeline(
+            80,
+            RasterPipelineKind::EmbeddedStem(std::sync::Arc::from("pixelate_perobject_default")),
+        );
+
+        let dict = MaterialDictionary::new(&store);
+        let named =
+            resolve_material_batch(7, None, &dict, &router, &ids, ShaderPermutation::default());
+        let per_object =
+            resolve_material_batch(8, None, &dict, &router, &ids, ShaderPermutation::default());
+
+        assert!(named.embedded_uses_scene_color_snapshot);
+        assert_eq!(
+            named.scene_color_snapshot_mode,
+            SceneColorSnapshotMode::NamedBackgroundGrab
+        );
+        assert!(per_object.embedded_uses_scene_color_snapshot);
+        assert_eq!(
+            per_object.scene_color_snapshot_mode,
+            SceneColorSnapshotMode::PerObjectGrab
+        );
     }
 
     #[test]

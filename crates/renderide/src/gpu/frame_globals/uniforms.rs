@@ -18,12 +18,12 @@ pub const FRAME_TAIL_SAMPLE_COUNT_MASK: u32 = 0xF << FRAME_TAIL_SAMPLE_COUNT_SHI
 /// Frame projection flag indicating that the corresponding view uses orthographic projection.
 pub const FRAME_PROJECTION_FLAG_ORTHOGRAPHIC: u32 = 1;
 
-/// Uniform block matching WGSL `FrameGlobals` (304-byte size, 16-byte aligned).
+/// Uniform block matching WGSL `FrameGlobals` (384-byte size, 16-byte aligned).
 ///
-/// Encodes per-eye camera positions, per-eye coefficients for view-space Z from world position,
-/// clustered grid dimensions, clip planes, light count, viewport size, per-eye projection
-/// coefficients for screen-space-to-view unprojection, a monotonic frame index for temporal /
-/// jittered effects, a reserved direct skybox specular slot, and ambient SH2.
+/// per-eye coefficients for reconstructing world Y from view position, clustered grid dimensions,
+/// clip planes, light count, viewport size, per-eye projection coefficients for screen-space-to-view
+/// unprojection, a monotonic frame index for temporal / jittered effects, a reserved direct skybox
+/// specular slot, elapsed frame time, ambient SH2, and disabled fog slots.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct FrameGpuUniforms {
@@ -35,6 +35,10 @@ pub struct FrameGpuUniforms {
     pub view_space_z_coeffs: [f32; 4],
     /// Right-eye world -> view-space Z. Set equal to `view_space_z_coeffs` in mono mode.
     pub view_space_z_coeffs_right: [f32; 4],
+    /// Left-eye (or mono) view -> world-space Y: `dot(coeffs.xyz, view) + coeffs.w`.
+    pub view_to_world_y_coeffs: [f32; 4],
+    /// Right-eye view -> world-space Y. Set equal to `view_to_world_y_coeffs` in mono mode.
+    pub view_to_world_y_coeffs_right: [f32; 4],
     /// Cluster grid width in tiles (X).
     pub cluster_count_x: u32,
     /// Cluster grid height in tiles (Y).
@@ -70,8 +74,15 @@ pub struct FrameGpuUniforms {
     /// Reserved direct skybox specular parameters: `.x` max resident LOD, `.y` enabled flag,
     /// `.z` [`super::skybox_specular::SkyboxSpecularSourceKind`] tag, `.w` reserved.
     pub skybox_specular: [f32; 4],
+    /// Frame time values for Unity-style shader time inputs: `.x` is elapsed renderer seconds and
+    /// `.yzw` are reserved.
+    pub frame_time: [f32; 4],
     /// Ambient SH2 coefficients (`RenderSH2` order), padded to WGSL `vec4<f32>` slots.
     pub ambient_sh: [[f32; 4]; 9],
+    /// Fog color in `.rgb` and fog mode in `.w`; zero mode disables fog.
+    pub fog_color_mode: [f32; 4],
+    /// Unity-style fog parameters used by WGSL helpers when fog mode is nonzero.
+    pub fog_params: [f32; 4],
 }
 
 impl FrameGpuUniforms {
@@ -81,6 +92,14 @@ impl FrameGpuUniforms {
     pub fn view_space_z_coeffs_from_world_to_view(world_to_view: Mat4) -> [f32; 4] {
         let m = world_to_view;
         [m.x_axis.z, m.y_axis.z, m.z_axis.z, m.w_axis.z]
+    }
+
+    /// Coefficients so `dot(coeffs.xyz, view) + coeffs.w` yields world-space Y for a view point.
+    ///
+    /// Uses the second row of the inverse world-to-view matrix.
+    pub fn view_to_world_y_coeffs_from_world_to_view(world_to_view: Mat4) -> [f32; 4] {
+        let m = world_to_view.inverse();
+        [m.x_axis.y, m.y_axis.y, m.z_axis.y, m.w_axis.y]
     }
 
     /// Extracts `(P[0][0], P[1][1], P[0][2], P[1][2])` from a column-major perspective matrix.

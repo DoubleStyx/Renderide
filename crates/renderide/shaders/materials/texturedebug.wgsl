@@ -6,11 +6,13 @@
 
 #import renderide::frame::globals as rg
 #import renderide::mesh::vertex as mv
+#import renderide::core::texture_sampling as ts
 #import renderide::core::uv as uvu
 
 struct TextureDebugMaterial {
     _MainTex_ST: vec4<f32>,
     _TextureChannel: f32,
+    _MainTex_LodBias: f32,
 }
 
 @group(1) @binding(0) var<uniform> mat: TextureDebugMaterial;
@@ -40,16 +42,16 @@ fn vs_main(
 fn fs_main(
     @location(0) uv: vec2<f32>,
 ) -> @location(0) vec4<f32> {
-    let col = textureSample(_MainTex, _MainTex_sampler, uv);
-    let ch = i32(round(mat._TextureChannel));
+    let col = ts::sample_tex_2d(_MainTex, _MainTex_sampler, uv, mat._MainTex_LodBias);
+    let channel = mat._TextureChannel;
     var result = col;
-    if (ch == 0) {
+    if (channel == 0.0) {
         result = vec4<f32>(vec3<f32>(col.r), 1.0);
-    } else if (ch == 1) {
+    } else if (channel == 1.0) {
         result = vec4<f32>(vec3<f32>(col.g), 1.0);
-    } else if (ch == 2) {
+    } else if (channel == 2.0) {
         result = vec4<f32>(vec3<f32>(col.b), 1.0);
-    } else if (ch == 3) {
+    } else if (channel == 3.0) {
         result = vec4<f32>(vec3<f32>(col.a), 1.0);
     }
     return rg::retain_globals_additive(result);

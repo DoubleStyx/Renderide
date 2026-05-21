@@ -6,7 +6,9 @@
 //! negates the direction.
 
 //#texture_default _Cube empty
+//#mat_default _Cube_LodBias float 0.0
 
+#import renderide::core::texture_sampling as ts
 #import renderide::skybox::cubemap_storage as cubemap_storage
 #import renderide::skybox::equirect as equirect
 #import renderide::post::filter_vertex as fv
@@ -17,7 +19,8 @@ struct CubemapProjectionMaterial {
     _Rotation: mat4x4<f32>,
     _Cube_StorageVInverted: f32,
     _RenderideVariantBits: u32,
-    _pad0: vec2<f32>,
+    _Cube_LodBias: f32,
+    _pad0: f32,
 }
 
 const CUBEMAPPROJECTION_KW_FLIP: u32 = 1u << 0u;
@@ -61,10 +64,11 @@ fn fs_main(
     if (kw_FLIP()) {
         dir = -dir;
     }
-    let color = textureSample(
+    let color = ts::sample_cube(
         _Cube,
         _Cube_sampler,
         cubemap_storage::sample_dir(dir, mat._Cube_StorageVInverted),
+        mat._Cube_LodBias,
     );
     return rg::retain_globals_additive(color);
 }

@@ -78,7 +78,7 @@ impl<'a> MaterialDictionary<'a> {
     /// [`MaterialPropertyLookupIds`] in a single outer-map probe.
     ///
     /// Callers that iterate many property ids against the same lookup -- e.g.
-    /// [`crate::materials::material_render_state_for_lookup`] issuing ~30 `get_merged` calls per
+    /// [`crate::materials::render_state::material_render_state_from_maps`] resolving many ids per
     /// material -- use this to hoist the two outer probes out of the inner loop, reducing per-id
     /// cost to a single inner-map lookup on each side.
     pub fn fetch_property_maps(&self, ids: MaterialPropertyLookupIds) -> PropertyMapPair<'a> {

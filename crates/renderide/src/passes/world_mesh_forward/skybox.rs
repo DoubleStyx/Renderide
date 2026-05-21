@@ -15,11 +15,8 @@ use crate::camera::{CameraProjectionKind, ViewId, world_to_view_pair_for_skybox}
 use crate::embedded_shaders;
 use crate::gpu::frame_bind_group_layout;
 use crate::graph_inputs::GraphPassFrame;
-use crate::materials::host_data::{MaterialDictionary, MaterialPropertyLookupIds};
-use crate::materials::{
-    EmbeddedMaterialBindShader, EmbeddedTexturePools, MaterialRenderState,
-    material_render_state_for_lookup,
-};
+use crate::materials::host_data::MaterialPropertyLookupIds;
+use crate::materials::{EmbeddedMaterialBindShader, EmbeddedTexturePools};
 use crate::render_graph::blackboard::Blackboard;
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::shared::CameraClearMode;
@@ -172,16 +169,6 @@ impl SkyboxRenderer {
             mesh_property_block_slot0: None,
             mesh_renderer_property_block_id: None,
         };
-        let depth = if family == SkyboxFamily::Projection360 {
-            let dict = MaterialDictionary::new(store);
-            let ids = materials.pipeline_property_resolver().resolve();
-            SkyboxDepthState::for_family(
-                family,
-                material_render_state_for_lookup(&dict, lookup, &ids),
-            )
-        } else {
-            SkyboxDepthState::for_family(family, MaterialRenderState::default())
-        };
         let shader_variant_bits = registry.variant_bits_for_shader_asset(shader_asset_id);
         let material_bind = embedded_bind
             .embedded_material_bind_group_with_cache_key(
@@ -202,7 +189,7 @@ impl SkyboxRenderer {
             .ok()?;
         let view_bind_group = self.view_bind_group(device, uploads, frame);
         let target = SkyboxPipelineTarget::from_forward_state(pipeline_state);
-        let pipeline = self.material_pipeline(device, &material_layout, family, target, depth)?;
+        let pipeline = self.material_pipeline(device, &material_layout, family, target)?;
         Some(PreparedSkybox::Material(PreparedMaterialSkybox {
             pipeline,
             material_bind_group: material_bind.bind_group,
@@ -293,13 +280,8 @@ impl SkyboxRenderer {
         material_layout: &wgpu::BindGroupLayout,
         family: SkyboxFamily,
         target: SkyboxPipelineTarget,
-        depth: SkyboxDepthState,
     ) -> Option<Arc<wgpu::RenderPipeline>> {
-        let key = SkyboxPipelineKey {
-            family,
-            target,
-            depth,
-        };
+        let key = SkyboxPipelineKey { family, target };
         {
             let guard = self.material_pipelines.lock();
             if let Some(pipeline) = guard.get(&key) {
@@ -329,7 +311,7 @@ impl SkyboxRenderer {
             &shader,
             &layout,
             target,
-            depth,
+            SkyboxDepthState::fixed_background(),
         ));
         let mut guard = self.material_pipelines.lock();
         if let Some(existing) = guard.get(&key) {

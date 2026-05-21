@@ -330,6 +330,37 @@ fn pbs_dualsided_opaque_stems_apply_material_cull_overrides() {
     }
 }
 
+/// Verifies opaque PBS displace and distance-lerp stems preserve source-authored Cull Off fallback.
+#[test]
+fn pbs_displace_and_distance_lerp_opaque_stems_apply_material_cull_overrides() {
+    for stem in [
+        "pbsdisplace_default",
+        "pbsdisplacespecular_default",
+        "pbsdistancelerp_default",
+        "pbsdistancelerpspecular_default",
+    ] {
+        let passes = crate::embedded_shaders::embedded_target_passes(stem);
+        assert_eq!(passes.len(), 1, "{stem} should declare one forward pass");
+        assert_eq!(passes[0].cull_mode, None, "{stem}");
+
+        for (cull_override, expected_cull) in [
+            (MaterialCullOverride::Front, Some(wgpu::Face::Front)),
+            (MaterialCullOverride::Back, Some(wgpu::Face::Back)),
+            (MaterialCullOverride::Off, None),
+        ] {
+            let state = MaterialRenderState {
+                cull_override,
+                ..MaterialRenderState::default()
+            };
+            assert_eq!(
+                passes[0].resolved_cull_mode(state),
+                expected_cull,
+                "{stem} must apply host {cull_override:?} over authored Cull Off"
+            );
+        }
+    }
+}
+
 /// Verifies PBS lerp forward passes preserve their authored depth compare.
 #[test]
 fn pbs_lerp_stems_ignore_host_ztest_on_forward_pass() {

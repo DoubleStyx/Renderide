@@ -17,6 +17,7 @@ struct VertexOutput {
     @location(6) fur_multiplier: f32,
     @location(7) @interpolate(flat) view_layer: u32,
     @location(8) raw_uv: vec2<f32>,
+    @location(9) base_world_pos: vec3<f32>,
 }
 
 fn saturate(value: f32) -> f32 {
@@ -53,13 +54,14 @@ fn fur_vertex_main(
     let draw = pd::get_draw(instance_index);
     let world_n = mv::world_normal(draw, n);
     let world_t = mv::world_tangent(draw, t);
+    let base_world_pos = mv::world_position(draw, pos).xyz;
     let shell_offset = n.xyz * fur_length * fur_multiplier * hair_hardness;
     let shell_pos = vec4<f32>(pos.xyz + shell_offset, pos.w);
-    let world_base = mv::world_position(draw, shell_pos).xyz;
+    let shell_world_pos = mv::world_position(draw, shell_pos).xyz;
     let global_force = clamp(force_global.xyz, vec3<f32>(-1.0), vec3<f32>(1.0));
     let local_force = mv::model_vector(draw, clamp(force_local.xyz, vec3<f32>(-1.0), vec3<f32>(1.0)));
     let force_offset = (global_force + local_force) * fur_multiplier * fur_multiplier * fur_length;
-    let world_p = world_base + force_offset;
+    let world_p = shell_world_pos + force_offset;
     let vp = mv::select_view_proj(draw, view_idx);
 
     var out: VertexOutput;
@@ -70,10 +72,11 @@ fn fur_vertex_main(
     out.main_uv = uvu::apply_st(uv0, main_st);
     out.noise_uv = uvu::apply_st(uv0, noise_st);
     let shell_noise_offset = vec2<f32>(1.0 - dot(n.xyz, vec3<f32>(0.0, 0.0, 1.0))) * 0.0011 * fur_multiplier;
-    out.shell_noise_uv = uvu::apply_st(uv0 + shell_noise_offset, noise_st);
+    out.shell_noise_uv = uv0 + shell_noise_offset;
     out.fur_multiplier = fur_multiplier;
     out.view_layer = mv::packed_view_layer(instance_index, view_idx);
     out.raw_uv = uv0;
+    out.base_world_pos = base_world_pos;
     return out;
 }
 
@@ -105,9 +108,10 @@ fn classic_fur_color(
     hair_shading: f32,
     fur_multiplier: f32,
 ) -> vec3<f32> {
-    var color = tex_rgb * tint_rgb;
+    var color = tex_rgb;
     color = color - shadow_rgb * hair_coloring;
     color = color - vec3<f32>(pow(1.0 - fur_multiplier, 4.0) * hair_shading);
+    color = color * tint_rgb;
     return max(color, vec3<f32>(0.0));
 }
 

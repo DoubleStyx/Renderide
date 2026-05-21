@@ -161,8 +161,7 @@ fn unlit_uses_reserved_variant_bits_instead_of_keyword_uniform_fields() -> io::R
 fn unlit_polar_variants_use_unity_derivative_selection() -> io::Result<()> {
     let unlit = material_source("unlit.wgsl")?;
     assert!(
-        unlit
-            .contains("let mapped = uvu::polar_mapping(in.uv, main_st, max(mat._PolarPow, 1e-4));")
+        unlit.contains("let mapped = uvu::polar_mapping(in.uv, main_st, mat._PolarPow);")
             && unlit.contains("ddx_uv = mapped.ddx_uv;")
             && unlit.contains("ddy_uv = mapped.ddy_uv;")
             && unlit.contains("textureSampleGrad(_Tex, _Tex_sampler, uv_main, ddx_uv, ddy_uv)"),
@@ -176,7 +175,7 @@ fn unlit_polar_variants_use_unity_derivative_selection() -> io::Result<()> {
     let polar = material_source("unlitpolarmapping.wgsl")?;
     assert!(
         polar.contains(
-            "let mapped = uvu::polar_mapping(uv_in, mat._MainTex_ST, max(mat._Pow, 1e-4));"
+            "let mapped = uvu::polar_mapping(uv_in, mat._MainTex_ST, mat._Pow);"
         ) && polar.contains(
             "textureSampleGrad(_MainTex, _MainTex_sampler, mapped.uv, mapped.ddx_uv, mapped.ddy_uv)"
         ),
@@ -219,6 +218,35 @@ fn unlitdistancelerp_matches_sorted_keyword_bits_and_fragment_parity() -> io::Re
             "UnlitDistanceLerp Unity fragment does not apply `_VERTEXCOLORS`; found `{forbidden}`"
         );
     }
+    assert!(
+        src.contains("#import renderide::core::texture_sampling as ts")
+            && src.contains("_NearTex_LodBias: f32")
+            && src.contains("_FarTex_LodBias: f32")
+            && src.contains(
+                "ts::sample_tex_2d(_NearTex, _NearTex_sampler, near_uv, mat._NearTex_LodBias)"
+            )
+            && src.contains(
+                "ts::sample_tex_2d(_FarTex, _FarTex_sampler, far_uv, mat._FarTex_LodBias)"
+            ),
+        "UnlitDistanceLerp must apply host mip bias to the filtered near/far samples"
+    );
+    assert!(
+        src.contains("select(-1e-6, 1e-6, mat._Transition >= 0.0)")
+            && !src.contains("max(abs(mat._Transition), 1e-6)"),
+        "UnlitDistanceLerp must preserve the sign of `_Transition`"
+    );
+    Ok(())
+}
+
+#[test]
+fn ui_unlit_mask_uv_matches_source_transform_order() -> io::Result<()> {
+    let src = material_source("ui_unlit.wgsl")?;
+    assert!(
+        src.contains("let uv_main = uvu::apply_st(in.uv, mat._MainTex_ST);")
+            && src.contains("let uv_mask = uvu::apply_st(uv_main, mat._MaskTex_ST);")
+            && !src.contains("let uv_mask = uvu::apply_st(in.uv, mat._MaskTex_ST);"),
+        "ui_unlit.wgsl must transform mask UVs from the already transformed main UV"
+    );
     Ok(())
 }
 

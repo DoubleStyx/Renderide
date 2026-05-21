@@ -194,6 +194,7 @@ impl MaterialRenderState {
     }
 
     /// Applies the optional default-domain host `ZTest` override to a pass default.
+    #[cfg(test)]
     pub fn depth_compare(self, fallback: wgpu::CompareFunction) -> wgpu::CompareFunction {
         self.depth_compare_for_domain(fallback, MaterialDepthCompareDomain::FrooxZTest)
     }

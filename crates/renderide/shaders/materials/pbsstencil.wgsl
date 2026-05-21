@@ -25,6 +25,7 @@
 #import renderide::pbs::lighting as plight
 #import renderide::pbs::sampling as psamp
 #import renderide::pbs::surface as psurf
+#import renderide::core::texture_sampling as ts
 #import renderide::core::uv as uvu
 
 struct PbsStencilMaterial {
@@ -35,6 +36,14 @@ struct PbsStencilMaterial {
     _Glossiness: f32,
     _Metallic: f32,
     _RenderideVariantBits: u32,
+    _MainTex_LodBias: f32,
+    _NormalMap_LodBias: f32,
+    _EmissionMap_LodBias: f32,
+    _OcclusionMap_LodBias: f32,
+    _MetallicMap_LodBias: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
 }
 
 const PBSSTENCIL_KW_ALBEDOTEX: u32 = 1u << 0u;
@@ -85,7 +94,7 @@ fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32
         _NormalMap,
         _NormalMap_sampler,
         uv_main,
-        0.0,
+        mat._NormalMap_LodBias,
         mat._NormalScale,
         world_n,
         world_t,
@@ -123,13 +132,13 @@ fn shade(
     let uv_main = uvu::apply_st(uv0, mat._MainTex_ST);
     var c = mat._Color;
     if (kw_ALBEDOTEX()) {
-        c = c * textureSample(_MainTex, _MainTex_sampler, uv_main);
+        c = c * ts::sample_tex_2d(_MainTex, _MainTex_sampler, uv_main, mat._MainTex_LodBias);
     }
 
     var metallic = mat._Metallic;
     var smoothness = mat._Glossiness;
     if (kw_METALLICMAP()) {
-        let m = textureSample(_MetallicMap, _MetallicMap_sampler, uv_main);
+        let m = ts::sample_tex_2d(_MetallicMap, _MetallicMap_sampler, uv_main, mat._MetallicMap_LodBias);
         metallic = m.r;
         smoothness = m.a;
     }
@@ -138,12 +147,12 @@ fn shade(
 
     var occlusion = 1.0;
     if (kw_OCCLUSION()) {
-        occlusion = textureSample(_OcclusionMap, _OcclusionMap_sampler, uv_main).r;
+        occlusion = ts::sample_tex_2d(_OcclusionMap, _OcclusionMap_sampler, uv_main, mat._OcclusionMap_LodBias).r;
     }
 
     var emission = mat._EmissionColor.rgb;
     if (kw_EMISSIONTEX()) {
-        emission = emission * textureSample(_EmissionMap, _EmissionMap_sampler, uv_main).rgb;
+        emission = emission * ts::sample_tex_2d(_EmissionMap, _EmissionMap_sampler, uv_main, mat._EmissionMap_LodBias).rgb;
     }
 
     let base_color = c.rgb;
@@ -156,7 +165,7 @@ fn shade(
     );
 }
 
-//#pass type=forward
+//#pass type=forward color_mask=material(rgba) stencil=material offset=material(0,0)
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,

@@ -17,7 +17,8 @@ pub(super) use attachments::{
     resolve_depth_attachment_with_stencil,
 };
 pub(super) use frame_params::{
-    GraphPassFrameViewInputs, frame_render_params_from_resolved, frame_render_params_from_shared,
+    GraphPassFrameViewInputs, ResolvedFrameRenderParamsInputs, frame_render_params_from_resolved,
+    frame_render_params_from_shared,
 };
 pub(super) use msaa_views::resolve_forward_msaa_views_from_graph_resources;
 pub(super) use transient_extent::{

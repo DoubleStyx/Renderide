@@ -120,8 +120,8 @@ fn compute_lerp(uv: vec2<f32>) -> f32 {
             l = l * mat._Lerp;
         }
     } else if (kw_LERPTEX_POLARUV()) {
-        let polar_uv = uvu::apply_st(uvu::polar_uv(uv, mat._LerpPolarPow), mat._LerpTex_ST);
-        l = textureSample(_LerpTex, _LerpTex_sampler, polar_uv).r;
+        let mapped = uvu::polar_mapping(uv, mat._LerpTex_ST, mat._LerpPolarPow);
+        l = textureSampleGrad(_LerpTex, _LerpTex_sampler, mapped.uv, mapped.ddx_uv, mapped.ddy_uv).r;
         if (kw_MULTI_VALUES()) {
             l = l * mat._Lerp;
         }
