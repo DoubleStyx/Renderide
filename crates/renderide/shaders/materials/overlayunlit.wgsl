@@ -18,6 +18,7 @@
 #import renderide::material::vertex_color as vc
 #import renderide::mesh::vertex as mv
 #import renderide::core::uv as uvu
+#import renderide::core::texture_sampling as ts
 
 struct OverlayUnlitMaterial {
     _BehindColor: vec4<f32>,
@@ -27,6 +28,8 @@ struct OverlayUnlitMaterial {
     _Cutoff: f32,
     _PolarPow: f32,
     _RenderideVariantBits: u32,
+    _BehindTex_LodBias: f32,
+    _FrontTex_LodBias: f32,
 }
 
 const OVERLAYUNLIT_KW_ALPHATEST: u32 = 1u << 0u;
@@ -105,6 +108,7 @@ fn sample_layer(
     tint: vec4<f32>,
     uv: vec2<f32>,
     st: vec4<f32>,
+    lod_bias: f32,
 ) -> vec4<f32> {
     if (!kw_TEXTURE()) {
         return tint;
@@ -113,7 +117,7 @@ fn sample_layer(
         let mapped = uvu::polar_mapping(uv, st, mat._PolarPow);
         return textureSampleGrad(tex, samp, mapped.uv, mapped.ddx_uv, mapped.ddy_uv) * tint;
     }
-    return textureSample(tex, samp, uvu::apply_st(uv, st)) * tint;
+    return ts::sample_tex_2d(tex, samp, uvu::apply_st(uv, st), lod_bias) * tint;
 }
 
 fn apply_vertex_color(color_in: vec4<f32>, vertex_color: vec4<f32>) -> vec4<f32> {
@@ -156,6 +160,7 @@ fn fs_behind(in: mv::UvColorVertexOutput) -> @location(0) vec4<f32> {
         mat._BehindColor,
         in.uv,
         mat._BehindTex_ST,
+        mat._BehindTex_LodBias,
     );
     return finalize_layer_color(color, in.color);
 }
@@ -169,6 +174,7 @@ fn fs_front(in: mv::UvColorVertexOutput) -> @location(0) vec4<f32> {
         mat._FrontColor,
         in.uv,
         mat._FrontTex_ST,
+        mat._FrontTex_LodBias,
     );
     return finalize_layer_color(color, in.color);
 }

@@ -260,6 +260,7 @@ const EXPECTED_SHADER_DEFAULT_DIRECTIVES: &[(&str, &[&str])] = &[
         &[
             "//#mat_default _Color vec4 1.0 1.0 1.0 1.0",
             "//#mat_default _SpecColor vec4 1.0 1.0 1.0 1.0",
+            "//#mat_default _RimColor vec4 0.0 0.0 0.0 0.0",
         ],
     ),
     (
@@ -267,6 +268,7 @@ const EXPECTED_SHADER_DEFAULT_DIRECTIVES: &[(&str, &[&str])] = &[
         &[
             "//#mat_default _Color vec4 1.0 1.0 1.0 1.0",
             "//#mat_default _SpecColor vec4 1.0 1.0 1.0 1.0",
+            "//#mat_default _RimColor vec4 0.0 0.0 0.0 0.0",
         ],
     ),
     (
@@ -274,6 +276,7 @@ const EXPECTED_SHADER_DEFAULT_DIRECTIVES: &[(&str, &[&str])] = &[
         &[
             "//#mat_default _Color vec4 1.0 1.0 1.0 1.0",
             "//#mat_default _SpecColor vec4 1.0 1.0 1.0 1.0",
+            "//#mat_default _RimColor vec4 0.0 0.0 0.0 0.0",
         ],
     ),
     (
@@ -281,6 +284,7 @@ const EXPECTED_SHADER_DEFAULT_DIRECTIVES: &[(&str, &[&str])] = &[
         &[
             "//#mat_default _Color vec4 1.0 1.0 1.0 1.0",
             "//#mat_default _SpecColor vec4 1.0 1.0 1.0 1.0",
+            "//#mat_default _RimColor vec4 0.0 0.0 0.0 0.0",
         ],
     ),
     ("gamma.wgsl", &["//#mat_default _Gamma float 2.2"]),
@@ -348,12 +352,14 @@ const EXPECTED_SHADER_DEFAULT_DIRECTIVES: &[(&str, &[&str])] = &[
         "paintpbs.wgsl",
         &[
             "//#mat_default _Color vec4 1.0 1.0 1.0 1.0",
+            "//#mat_default _Glossiness float 0.5",
             "//#mat_default _OutputScale float 10.0",
             "//#mat_default _PaintGain float 1.0",
             "//#mat_default _PaintTexOffsets vec4 0.0 0.333 0.5 0.777",
             "//#mat_default _PaintTexScales vec4 1.0 0.95 0.89 1.13",
             "//#mat_default _PaintTexShifts vec4 -0.7 0.2 -0.4 1.0",
             "//#mat_default _Pow float 1.0",
+            "//#mat_default _SideFadeSize float 0.1",
         ],
     ),
     (
@@ -388,6 +394,10 @@ const EXPECTED_SHADER_DEFAULT_DIRECTIVES: &[(&str, &[&str])] = &[
             "//#mat_default _NormalScale1 float 1.0",
             "//#mat_default _NormalScale2 float 1.0",
             "//#mat_default _NormalScale3 float 1.0",
+            "//#mat_default _Glossiness float 0.5",
+            "//#mat_default _Glossiness1 float 0.5",
+            "//#mat_default _Glossiness2 float 0.5",
+            "//#mat_default _Glossiness3 float 0.5",
         ],
     ),
     (

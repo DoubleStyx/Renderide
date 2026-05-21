@@ -238,6 +238,8 @@ mod camera360;
 mod hygiene;
 #[path = "shader_module_audit/material_defaults.rs"]
 mod material_defaults;
+#[path = "shader_module_audit/material_parity_51_60.rs"]
+mod material_parity_51_60;
 #[path = "shader_module_audit/pbs.rs"]
 mod pbs;
 #[path = "shader_module_audit/skybox_implicit_defaults.rs"]

@@ -40,12 +40,10 @@
 #import renderide::pbs::surface as psurf
 #import renderide::material::variant_bits as vb
 #import renderide::core::math as rmath
-#import renderide::core::uv as uvu
 
 struct PbsDistanceLerpMaterial {
     _Color: vec4<f32>,
     _EmissionColor: vec4<f32>,
-    _MainTex_ST: vec4<f32>,
     _DistanceGridSize: vec4<f32>,
     _DistanceGridOffset: vec4<f32>,
     _EmissionColorFrom: vec4<f32>,
@@ -89,9 +87,8 @@ struct VertexOutput {
     @location(0) world_pos: vec3<f32>,
     @location(1) world_n: vec3<f32>,
     @location(2) world_t: vec4<f32>,
-    @location(3) uv0: vec2<f32>,
-    @location(4) point_emission: vec3<f32>,
-    @location(5) @interpolate(flat) view_layer: u32,
+    @location(3) point_emission: vec3<f32>,
+    @location(4) @interpolate(flat) view_layer: u32,
 }
 
 fn pbsdl_kw(mask: u32) -> bool {
@@ -125,7 +122,6 @@ fn vs_main(
 #endif
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
-    @location(2) uv0: vec2<f32>,
     @location(4) t: vec4<f32>,
 ) -> VertexOutput {
     let d = pd::get_draw(instance_index);
@@ -149,8 +145,8 @@ fn vs_main(
     );
 
     let direction = select(
-        normalize(n.xyz),
-        normalize(mat._DisplacementDirection.xyz),
+        n.xyz,
+        mat._DisplacementDirection.xyz,
         kw_OVERRIDE_DISPLACE_DIRECTION(),
     );
     let displaced_obj = pos.xyz + direction * acc.displace;
@@ -168,7 +164,6 @@ fn vs_main(
     out.world_pos = world_p.xyz;
     out.world_n = wn;
     out.world_t = wt;
-    out.uv0 = uv0;
     out.point_emission = acc.emission;
 #ifdef MULTIVIEW
     out.view_layer = mv::packed_view_layer(instance_index, view_idx);
@@ -183,14 +178,13 @@ fn shade(
     world_pos: vec3<f32>,
     world_n: vec3<f32>,
     world_t: vec4<f32>,
-    uv0: vec2<f32>,
     point_emission: vec3<f32>,
     view_layer: u32,
     front_facing: bool,
     include_directional: bool,
     include_local: bool,
 ) -> vec4<f32> {
-    let uv_main = uvu::apply_st(uv0, mat._MainTex_ST);
+    let uv_main = vec2<f32>(0.0);
     let albedo_s = textureSample(_MainTex, _MainTex_sampler, uv_main);
     let base_color = (mat._Color * albedo_s).rgb;
     let alpha = mat._Color.a * albedo_s.a;
@@ -226,7 +220,7 @@ fn shade(
     return vec4<f32>(color, alpha);
 }
 
-//#pass type=forward
+//#pass type=forward cull=material(off)
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,
@@ -234,9 +228,8 @@ fn fs_forward_base(
     @location(0) world_pos: vec3<f32>,
     @location(1) world_n: vec3<f32>,
     @location(2) world_t: vec4<f32>,
-    @location(3) uv0: vec2<f32>,
-    @location(4) point_emission: vec3<f32>,
-    @location(5) @interpolate(flat) view_layer: u32,
+    @location(3) point_emission: vec3<f32>,
+    @location(4) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
-    return shade(frag_pos.xy, world_pos, world_n, world_t, uv0, point_emission, view_layer, front_facing, true, true);
+    return shade(frag_pos.xy, world_pos, world_n, world_t, point_emission, view_layer, front_facing, true, true);
 }

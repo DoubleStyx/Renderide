@@ -112,23 +112,16 @@ fn kw_UV_OFFSET() -> bool { return pbsdispt_kw(PBSDISPT_KW_UV_OFFSET); }
 fn kw_VERTEX_OFFSET() -> bool { return pbsdispt_kw(PBSDISPT_KW_VERTEX_OFFSET); }
 fn kw_VERTEX_POS_OFFSET() -> bool { return pbsdispt_kw(PBSDISPT_KW_VERTEX_POS_OFFSET); }
 
-fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>, front_facing: bool) -> vec3<f32> {
+fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>) -> vec3<f32> {
     if (!kw_NORMALMAP()) {
-        var n = normalize(world_n);
-        if (!front_facing) {
-            n = -n;
-        }
-        return n;
+        return normalize(world_n);
     }
 
     let tbn = pnorm::orthonormal_tbn(world_n, world_t);
-    var ts_n = nd::decode_ts_normal_with_placeholder_sample(
+    let ts_n = nd::decode_ts_normal_with_placeholder_sample(
         textureSample(_NormalMap, _NormalMap_sampler, uv_main),
         mat._NormalScale,
     );
-    if (!front_facing) {
-        ts_n.z = -ts_n.z;
-    }
     return normalize(tbn * ts_n);
 }
 
@@ -194,7 +187,6 @@ fn shade(
     world_t: vec4<f32>,
     uv0: vec2<f32>,
     view_layer: u32,
-    front_facing: bool,
     include_directional: bool,
     include_local: bool,
 ) -> vec4<f32> {
@@ -214,7 +206,7 @@ fn shade(
     if (kw_ALBEDOTEX()) {
         c = c * textureSample(_MainTex, _MainTex_sampler, uv_main);
     }
-    if (kw_ALPHACLIP() && c.a <= mat._AlphaClip) {
+    if (kw_ALPHACLIP() && c.a < mat._AlphaClip) {
         discard;
     }
 
@@ -238,7 +230,7 @@ fn shade(
         emission = emission * textureSample(_EmissionMap, _EmissionMap_sampler, uv_main).rgb;
     }
 
-    let n = sample_normal_world(uv_main, world_n, world_t, front_facing);
+    let n = sample_normal_world(uv_main, world_n, world_t);
     let base_color = c.rgb;
     let surface = psurf::metallic_with_geometric_normal(
         base_color,
@@ -247,7 +239,7 @@ fn shade(
         roughness,
         occlusion,
         n,
-        psamp::two_sided_geometric_normal(world_n, front_facing),
+        world_n,
         emission,
     );
     let options = plight::ClusterLightingOptions(include_directional, include_local, true, true);
@@ -258,12 +250,11 @@ fn shade(
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,
-    @builtin(front_facing) front_facing: bool,
     @location(0) world_pos: vec3<f32>,
     @location(1) world_n: vec3<f32>,
     @location(2) world_t: vec4<f32>,
     @location(3) uv0: vec2<f32>,
     @location(4) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
-    return shade(frag_pos.xy, world_pos, world_n, world_t, uv0, view_layer, front_facing, true, true);
+    return shade(frag_pos.xy, world_pos, world_n, world_t, uv0, view_layer, true, true);
 }

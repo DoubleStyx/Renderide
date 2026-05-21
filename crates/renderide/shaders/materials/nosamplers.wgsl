@@ -19,12 +19,17 @@
 #import renderide::pbs::sampling as psamp
 #import renderide::pbs::surface as psurf
 #import renderide::core::uv as uvu
+#import renderide::core::texture_sampling as ts
 
 struct NosamplersMaterial {
     _Color: vec4<f32>,
     _Albedo_ST: vec4<f32>,
     _Glossiness: f32,
     _Metallic: f32,
+    _Albedo_LodBias: f32,
+    _MetallicMap_LodBias: f32,
+    _EmissionMap_LodBias: f32,
+    _EmissionMap1_LodBias: f32,
 }
 
 @group(1) @binding(0) var<uniform> mat: NosamplersMaterial;
@@ -88,11 +93,16 @@ fn shade(
     uv: vec2<f32>,
     view_layer: u32,
 ) -> vec4<f32> {
-    let c = textureSample(_Albedo, _Albedo_sampler, uv) * mat._Color;
+    let c = ts::sample_tex_2d(_Albedo, _Albedo_sampler, uv, mat._Albedo_LodBias) * mat._Color;
 
-    let m = textureSample(_MetallicMap, _Albedo_sampler, uv);
-    let e0 = textureSample(_EmissionMap, _EmissionMap_sampler, uv).rgb;
-    let e1 = textureSample(_EmissionMap1, _EmissionMap1_sampler, uv).rgb;
+    let m = ts::sample_tex_2d(_MetallicMap, _Albedo_sampler, uv, mat._MetallicMap_LodBias);
+    let e0 = ts::sample_tex_2d(_EmissionMap, _EmissionMap_sampler, uv, mat._EmissionMap_LodBias).rgb;
+    let e1 = ts::sample_tex_2d(
+        _EmissionMap1,
+        _EmissionMap1_sampler,
+        uv,
+        mat._EmissionMap1_LodBias,
+    ).rgb;
     let emission = mix(e0, e1, 0.5);
 
     let base_color = c.rgb;

@@ -92,7 +92,6 @@ fn vs_main(
     @builtin(view_index) view_idx: u32,
 #endif
     @location(0) pos: vec4<f32>,
-    @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
 ) -> VertexOutput {
     let d = pd::get_draw(instance_index);

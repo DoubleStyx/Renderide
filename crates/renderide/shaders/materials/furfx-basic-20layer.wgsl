@@ -4,6 +4,8 @@
 //#texture_default _NoiseTex white
 //#mat_default _Color vec4 1.0 1.0 1.0 1.0
 //#mat_default _SpecColor vec4 1.0 1.0 1.0 1.0
+//#mat_default _ForceGlobal vec4 0.0 0.0 0.0 0.0
+//#mat_default _ForceLocal vec4 0.0 0.0 0.0 0.0
 //#mat_default _Shininess float 8.0
 //#mat_default _FurLength float 0.05
 //#mat_default _Cutoff float 0.0001

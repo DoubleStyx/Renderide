@@ -5,6 +5,9 @@
 //#texture_default _Cube empty
 //#mat_default _Color vec4 1.0 1.0 1.0 1.0
 //#mat_default _SpecColor vec4 1.0 1.0 1.0 1.0
+//#mat_default _RimColor vec4 0.0 0.0 0.0 0.0
+//#mat_default _ForceGlobal vec4 0.0 0.0 0.0 0.0
+//#mat_default _ForceLocal vec4 0.0 0.0 0.0 0.0
 //#mat_default _Shininess float 8.0
 //#mat_default _FurLength float 0.05
 //#mat_default _Cutoff float 0.0001
@@ -14,6 +17,7 @@
 //#mat_default _HairShading float 0.25
 //#mat_default _HairColoring float 0.1
 //#mat_default _SkinAlpha float 0.5
+//#mat_default _RimColor vec4 0.0 0.0 0.0 0.0
 //#mat_default _RimPower float 4.0
 //#mat_default _Reflection float 0.0
 //#mat_default _ShadowStrength float 1.0
