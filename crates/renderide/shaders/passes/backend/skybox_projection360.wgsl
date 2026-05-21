@@ -22,6 +22,7 @@
 
 #import renderide::frame::globals as rg
 #import renderide::core::fullscreen as fs
+#import renderide::core::math as math
 #import renderide::skybox::common as skybox
 #import renderide::skybox::projection360 as p360
 #import renderide::skybox::projection360_material as p360m
@@ -121,7 +122,10 @@ fn vs_main(
 ) -> VertexOutput {
     let clip = fs::fullscreen_clip_pos(vertex_index);
     var out: VertexOutput;
-    out.clip_pos = clip;
+    /// Add MIN_FLOAT to avoid Z-fighting with far plane
+    /// when using wgpu::CompareFunction::Greater
+    /// i.e. with FrooxEngine ZTest enum LessOrEqual
+    out.clip_pos = clip + vec4<f32>(0.0, 0.0, math::MIN_FLOAT, 0.0);
 #ifdef MULTIVIEW
     out.view_layer = view_idx;
 #else
