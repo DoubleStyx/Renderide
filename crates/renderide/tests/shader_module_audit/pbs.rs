@@ -1150,6 +1150,103 @@ fn pbs_direct_specular_lobe_is_shared() -> io::Result<()> {
 }
 
 #[test]
+fn xiexe_pbs_and_fur_stay_on_shared_modern_brdf() -> io::Result<()> {
+    for (module, required_terms) in [
+        (
+            "pbs/lighting.wgsl",
+            [
+                "#import renderide::pbs::brdf as brdf",
+                "brdf::direct_radiance_metallic(",
+                "brdf::direct_radiance_specular(",
+                "brdf::indirect_specular_visibility(",
+            ],
+        ),
+        (
+            "xiexe/toon2/lighting.wgsl",
+            [
+                "#import renderide::pbs::brdf as brdf",
+                "brdf::eval_direct_specular_lobe(",
+                "brdf::fd_burley(",
+                "brdf::indirect_specular_visibility(",
+            ],
+        ),
+        (
+            "fur/lighting.wgsl",
+            [
+                "#import renderide::pbs::brdf as brdf",
+                "brdf::direct_radiance_specular(",
+                "brdf::indirect_diffuse_specular(",
+                "brdf::indirect_specular_visibility(",
+            ],
+        ),
+    ] {
+        let src = module_source(module)?;
+        for required in required_terms {
+            assert!(
+                src.contains(required),
+                "{module} must keep modern PBS BRDF term `{required}`"
+            );
+        }
+    }
+
+    let forbidden_terms = [
+        "#import renderide::material::toon_brdf",
+        "tbrdf::",
+        "brdf::fd_lambert(",
+        "let d_term = brdf::d_ggx(",
+        "let v_term = brdf::v_smith_ggx_correlated(",
+        "let f_term = brdf::f_schlick(",
+        "d_term * v_term * f_term",
+        "brdf::MIN_ALPHA",
+        "let specular_occlusion = brdf::specular_ao_lagarde",
+        "clamp(perceptual_roughness, 0.045, 1.0)",
+        "clamp(s.roughness, 0.045, 1.0)",
+        "clamp(1.0 - smoothness, 0.045, 1.0)",
+    ];
+    let mut offenders = Vec::new();
+
+    for root in [
+        "shaders/modules/pbs",
+        "shaders/modules/xiexe",
+        "shaders/modules/fur",
+        "shaders/materials",
+    ] {
+        for path in wgsl_files_recursive(root)? {
+            let label = file_label(&path);
+            if label.ends_with("shaders/modules/pbs/brdf.wgsl") || !modern_brdf_family_label(&label)
+            {
+                continue;
+            }
+
+            let src = source_file(&path)?;
+            for forbidden in forbidden_terms {
+                if src.contains(forbidden) {
+                    offenders.push(format!("{label}: {forbidden}"));
+                }
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "Xiexe, PBS, and Fur shaders must not reintroduce older local BRDF paths:\n  {}",
+        offenders.join("\n  ")
+    );
+    Ok(())
+}
+
+/// Returns true when a source path belongs to the shader families that should use the modern PBS BRDF.
+fn modern_brdf_family_label(label: &str) -> bool {
+    label.starts_with("shaders/modules/pbs/")
+        || label.starts_with("shaders/modules/xiexe/")
+        || label.starts_with("shaders/modules/fur/")
+        || label.starts_with("shaders/materials/pbs")
+        || label.starts_with("shaders/materials/paintpbs")
+        || label.starts_with("shaders/materials/xstoon")
+        || label.starts_with("shaders/materials/furfx")
+}
+
+#[test]
 fn classic_furfx_modules_keep_source_parity_details() -> io::Result<()> {
     let common = module_source("fur/common.wgsl")?;
     for required in [
