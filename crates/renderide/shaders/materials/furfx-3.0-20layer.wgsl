@@ -10,10 +10,7 @@
 //#mat_default _ForceGlobal vec4 0.0 0.0 0.0 0.0
 //#mat_default _ForceLocal vec4 0.0 0.0 0.0 0.0
 //#mat_default _BonusAmbient vec4 0.0 0.0 0.0 1.0
-//#mat_default _RimColor vec4 0.0 0.0 0.0 0.0
 //#mat_default _ReflColor vec4 1.0 1.0 1.0 1.0
-//#mat_default _ForceGlobal vec4 0.0 0.0 0.0 0.0
-//#mat_default _ForceLocal vec4 0.0 0.0 0.0 0.0
 //#mat_default _Shininess float 8.0
 //#mat_default _Gloss float 1.0
 //#mat_default _FurLength float 0.05

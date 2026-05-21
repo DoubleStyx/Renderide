@@ -17,7 +17,6 @@
 //#mat_default _HairShading float 0.25
 //#mat_default _HairColoring float 0.1
 //#mat_default _SkinAlpha float 0.5
-//#mat_default _RimColor vec4 0.0 0.0 0.0 0.0
 //#mat_default _RimPower float 4.0
 //#mat_default _Reflection float 0.0
 //#mat_default _ShadowStrength float 1.0
