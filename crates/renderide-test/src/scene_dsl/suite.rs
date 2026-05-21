@@ -18,6 +18,11 @@ use super::runner::{CaseRunOutcome, RunnerConfig, run_integration_case};
 /// Suite-level report filename written under the configured output root.
 pub const SUITE_REPORT_FILENAME: &str = "suite-report.json";
 
+/// Suite cases assigned to one harness worker chunk.
+const SUITE_PARALLEL_CHUNK_CASES: usize = 1;
+/// Suite case count required before the harness fans out.
+const SUITE_PARALLEL_MIN_CASES: usize = SUITE_PARALLEL_CHUNK_CASES * 2;
+
 /// Inputs for [`run_suite`].
 #[derive(Clone, Debug)]
 pub struct SuiteConfig {
@@ -139,21 +144,23 @@ fn run_suite_with(
         .map_err(|e| HarnessError::QueueOptions(format!("build suite thread pool: {e}")))?;
 
     let runner = &config.runner;
-    let case_reports = if jobs >= 2 && config.cases.len() >= 2 {
-        pool.install(|| {
+    let case_reports =
+        if jobs >= SUITE_PARALLEL_MIN_CASES && config.cases.len() >= SUITE_PARALLEL_MIN_CASES {
+            pool.install(|| {
+                config
+                    .cases
+                    .par_iter()
+                    .with_min_len(SUITE_PARALLEL_CHUNK_CASES)
+                    .map(|case| run_case(case, runner))
+                    .collect::<Vec<_>>()
+            })
+        } else {
             config
                 .cases
-                .par_iter()
+                .iter()
                 .map(|case| run_case(case, runner))
                 .collect::<Vec<_>>()
-        })
-    } else {
-        config
-            .cases
-            .iter()
-            .map(|case| run_case(case, runner))
-            .collect::<Vec<_>>()
-    };
+        };
 
     let report = SuiteReport::from_cases(case_reports);
     let report_path = write_suite_report(&config.runner.output_root, &report)?;

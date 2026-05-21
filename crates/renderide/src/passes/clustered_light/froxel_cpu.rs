@@ -20,8 +20,12 @@ pub(super) const AUTO_CPU_FROXEL_LIGHT_THRESHOLD: u32 = 64;
 const CPU_FROXEL_LIGHT_CHUNK_SIZE: usize = 32;
 /// Light count at which CPU froxel assignment fans out across worker chunks.
 const CPU_FROXEL_PARALLEL_MIN_LIGHTS: usize = CPU_FROXEL_LIGHT_CHUNK_SIZE * 2;
+/// CPU froxel light chunks assigned to one worker task.
+const CPU_FROXEL_PARALLEL_CHUNK_TASKS: usize = 1;
 /// Cluster-count stride for local prefix-sum chunks.
 const CPU_FROXEL_PREFIX_CHUNK_SIZE: usize = 256;
+/// Prefix chunks assigned to one Rayon worker leaf.
+const CPU_FROXEL_PREFIX_CHUNKS_PER_TASK: usize = 1;
 /// Froxel count at which count merge, offset, and prefix work uses Rayon.
 const CPU_FROXEL_PREFIX_PARALLEL_MIN_CLUSTERS: usize = CPU_FROXEL_PREFIX_CHUNK_SIZE * 2;
 
@@ -254,6 +258,7 @@ fn count_parallel_light_chunks(inputs: &CpuFroxelParallelInputs<'_>) -> Vec<CpuF
 
     chunks
         .par_iter_mut()
+        .with_min_len(CPU_FROXEL_PARALLEL_CHUNK_TASKS)
         .enumerate()
         .for_each(|(chunk_idx, chunk)| {
             profiling::scope!("clustered_light::cpu_froxel_count_worker");
@@ -316,6 +321,7 @@ fn merge_parallel_chunk_counts(
     };
     let stats = chunks
         .par_iter()
+        .with_min_len(CPU_FROXEL_PARALLEL_CHUNK_TASKS)
         .map(|chunk| chunk.stats)
         .reduce(CpuFroxelStats::default, merge_froxel_stats);
     (counts, stats)
@@ -390,6 +396,7 @@ fn write_parallel_light_chunks(
         .collect::<Vec<_>>();
     chunk_offsets
         .par_iter()
+        .with_min_len(CPU_FROXEL_PARALLEL_CHUNK_TASKS)
         .enumerate()
         .for_each(|(chunk_idx, offsets)| {
             profiling::scope!("clustered_light::cpu_froxel_write_worker");
@@ -681,6 +688,7 @@ fn prefix_counts_to_ranges_serial(counts: &[u32]) -> Option<(Vec<[u32; 2]>, usiz
 fn prefix_counts_to_ranges_parallel(counts: &[u32]) -> Option<(Vec<[u32; 2]>, usize)> {
     let mut chunks = counts
         .par_chunks(CPU_FROXEL_PREFIX_CHUNK_SIZE)
+        .with_min_len(CPU_FROXEL_PREFIX_CHUNKS_PER_TASK)
         .map(|counts| {
             let mut ranges = Vec::with_capacity(counts.len());
             let mut offset = 0u64;

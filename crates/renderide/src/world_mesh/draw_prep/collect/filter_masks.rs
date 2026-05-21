@@ -7,8 +7,10 @@ use crate::scene::RenderSpaceId;
 
 use super::DrawCollectionContext;
 
+/// Render spaces assigned to one filter-mask construction worker.
+const FILTER_MASK_PARALLEL_CHUNK_SPACES: usize = 1;
 /// Render-space count at which per-space filter mask construction uses Rayon.
-const FILTER_MASK_PARALLEL_MIN_SPACES: usize = 2;
+const FILTER_MASK_PARALLEL_MIN_SPACES: usize = FILTER_MASK_PARALLEL_CHUNK_SPACES * 2;
 
 /// Builds per-space `Vec<bool>` masks from [`DrawCollectionContext::transform_filter`].
 ///
@@ -24,6 +26,7 @@ pub(super) fn build_per_space_filter_masks(
     let pairs = if space_ids.len() >= FILTER_MASK_PARALLEL_MIN_SPACES {
         space_ids
             .par_iter()
+            .with_min_len(FILTER_MASK_PARALLEL_CHUNK_SPACES)
             .copied()
             .filter_map(|sid| {
                 let mask = transform_filter.build_pass_mask(ctx.scene, sid)?;

@@ -24,6 +24,9 @@ use crate::world_mesh::FramePreparedRenderables;
 use super::keys::{collect_material_keys_for_space, collect_material_keys_into};
 use super::resolve::{MaterialResolveCtx, ResolvedMaterialBatch, resolve_material_batch};
 
+/// Active render spaces assigned to one material-key collection worker.
+const MATERIAL_KEY_PARALLEL_CHUNK_SPACES: usize = 1;
+
 /// Cached resolution plus the validation keys captured at resolve time.
 #[derive(Clone)]
 struct CacheEntry {
@@ -341,7 +344,12 @@ impl FrameMaterialBatchCache {
                 use rayon::prelude::*;
                 keys_per_space
                     .par_iter_mut()
-                    .zip(active.par_iter())
+                    .with_min_len(MATERIAL_KEY_PARALLEL_CHUNK_SPACES)
+                    .zip(
+                        active
+                            .par_iter()
+                            .with_min_len(MATERIAL_KEY_PARALLEL_CHUNK_SPACES),
+                    )
                     .for_each(|(out, &space_id)| {
                         out.clear();
                         collect_material_keys_into(scene, space_id, out);

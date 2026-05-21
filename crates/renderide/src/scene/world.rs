@@ -12,6 +12,8 @@ use super::math::{
 };
 
 const WORLD_BULK_REBUILD_PARALLEL_CHUNK_SIZE: usize = 64;
+/// Hierarchy-depth chunks assigned to one bulk rebuild worker.
+const WORLD_BULK_REBUILD_PARALLEL_CHUNK_TASKS: usize = 1;
 /// Node count above which a fully dirty cache routes through the bulk rebuild path.
 const WORLD_BULK_REBUILD_PARALLEL_MIN: usize = WORLD_BULK_REBUILD_PARALLEL_CHUNK_SIZE * 2;
 /// Node count in one hierarchy depth level above which that level fans out across rayon.
@@ -39,7 +41,12 @@ fn collect_bulk_level_parallel<F>(
     chunks
         .par_iter_mut()
         .take(chunk_count)
-        .zip(indices.par_chunks(WORLD_BULK_REBUILD_PARALLEL_CHUNK_SIZE))
+        .with_min_len(WORLD_BULK_REBUILD_PARALLEL_CHUNK_TASKS)
+        .zip(
+            indices
+                .par_chunks(WORLD_BULK_REBUILD_PARALLEL_CHUNK_SIZE)
+                .with_min_len(WORLD_BULK_REBUILD_PARALLEL_CHUNK_TASKS),
+        )
         .for_each(|(chunk_out, chunk_indices)| {
             profiling::scope!("scene::world_bulk_rebuild::chunk_worker");
             chunk_out.clear();

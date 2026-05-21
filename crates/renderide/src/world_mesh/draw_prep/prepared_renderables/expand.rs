@@ -37,6 +37,12 @@ pub(in crate::world_mesh::draw_prep) const PREPARED_EXPAND_RENDERER_CHUNK_SIZE: 
 #[cfg(test)]
 pub(in crate::world_mesh::draw_prep) const PREPARED_EXPAND_PARALLEL_MIN_RENDERERS: usize =
     PREPARED_EXPAND_RENDERER_CHUNK_SIZE * 2;
+/// Renderer chunks assigned to one prepared-renderable expansion worker.
+#[cfg(test)]
+const PREPARED_EXPAND_PARALLEL_CHUNK_TASKS: usize = 1;
+/// Renderer chunk count required before prepared-renderable expansion fans out.
+#[cfg(test)]
+const PREPARED_EXPAND_PARALLEL_MIN_CHUNKS: usize = PREPARED_EXPAND_PARALLEL_CHUNK_TASKS * 2;
 
 #[cfg(test)]
 #[derive(Clone, Copy)]
@@ -343,7 +349,7 @@ fn expand_space_into_parallel_chunks(
             space.skinned_mesh_renderers().len(),
         );
     }
-    if specs.len() < 2 {
+    if specs.len() < PREPARED_EXPAND_PARALLEL_MIN_CHUNKS {
         expand_space_into(out, scene, mesh_pool, render_context, space_id);
         return;
     }
@@ -357,7 +363,12 @@ fn expand_space_into_parallel_chunks(
     chunk_scratch
         .par_iter_mut()
         .take(specs.len())
-        .zip(specs.par_iter())
+        .with_min_len(PREPARED_EXPAND_PARALLEL_CHUNK_TASKS)
+        .zip(
+            specs
+                .par_iter()
+                .with_min_len(PREPARED_EXPAND_PARALLEL_CHUNK_TASKS),
+        )
         .for_each(|(chunk_out, spec)| {
             profiling::scope!("mesh::prepared_renderables::renderer_chunk_worker");
             chunk_out.clear();

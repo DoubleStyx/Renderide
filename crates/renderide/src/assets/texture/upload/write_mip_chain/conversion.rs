@@ -19,6 +19,11 @@ const DOWNSAMPLE_PARALLEL_MIN_TEXELS: usize = DOWNSAMPLE_PARALLEL_CHUNK_TEXELS *
 const DOWNSAMPLE_PARALLEL_MIN_ROWS: usize = 2;
 
 #[inline]
+fn downsample_parallel_rows_per_chunk(dst_w: usize) -> usize {
+    DOWNSAMPLE_PARALLEL_CHUNK_TEXELS.div_ceil(dst_w.max(1))
+}
+
+#[inline]
 fn should_parallelize_downsample(dst_w: usize, dst_h: usize) -> bool {
     dst_h >= DOWNSAMPLE_PARALLEL_MIN_ROWS
         && dst_w.saturating_mul(dst_h) >= DOWNSAMPLE_PARALLEL_MIN_TEXELS
@@ -144,6 +149,7 @@ fn downsample_rgba8_box_2x2(src: &[u8], dst: &mut [u8], sw: usize, dw: usize) {
     };
     if should_parallelize_downsample(dw, dst_h) {
         dst.par_chunks_exact_mut(row_bytes)
+            .with_min_len(downsample_parallel_rows_per_chunk(dw))
             .enumerate()
             .for_each(process_row);
     } else {
@@ -188,6 +194,7 @@ fn downsample_rgba8_box_general(
     };
     if should_parallelize_downsample(dw, dh) {
         dst.par_chunks_exact_mut(row_bytes)
+            .with_min_len(downsample_parallel_rows_per_chunk(dw))
             .enumerate()
             .for_each(process_row);
     } else {

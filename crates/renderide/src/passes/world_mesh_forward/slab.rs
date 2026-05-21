@@ -18,6 +18,8 @@ use super::vp::compute_per_draw_vp_matrices;
 
 /// Draws assigned to one per-draw VP / model uniform packing worker chunk.
 const PER_DRAW_VP_PARALLEL_CHUNK_DRAWS: usize = 64;
+/// Per-draw VP chunks assigned to one Rayon worker leaf.
+const PER_DRAW_VP_PARALLEL_CHUNKS_PER_TASK: usize = 1;
 /// Minimum draws before parallelizing per-draw VP / model uniform packing.
 const PER_DRAW_VP_PARALLEL_MIN_DRAWS: usize = PER_DRAW_VP_PARALLEL_CHUNK_DRAWS * 2;
 
@@ -145,10 +147,12 @@ fn pack_per_draw_vp_uniforms(
     if inputs.draws.len() >= PER_DRAW_VP_PARALLEL_MIN_DRAWS {
         uniforms
             .par_chunks_mut(PER_DRAW_VP_PARALLEL_CHUNK_DRAWS)
+            .with_min_len(PER_DRAW_VP_PARALLEL_CHUNKS_PER_TASK)
             .zip(
                 inputs
                     .slab_layout
-                    .par_chunks(PER_DRAW_VP_PARALLEL_CHUNK_DRAWS),
+                    .par_chunks(PER_DRAW_VP_PARALLEL_CHUNK_DRAWS)
+                    .with_min_len(PER_DRAW_VP_PARALLEL_CHUNKS_PER_TASK),
             )
             .for_each(|(slots, layout)| {
                 profiling::scope!("world_mesh::pack_vp_matrices::worker");

@@ -55,6 +55,8 @@ pub(in crate::runtime) fn await_buffer_map(
 
 /// Per-thread fill chunk for large shared-memory result buffers.
 const PAR_FILL_CHUNK: usize = 64 * 1024;
+/// Fill chunks assigned to one Rayon worker leaf.
+const PAR_FILL_CHUNKS_PER_TASK: usize = 1;
 /// Buffers at or above this size are zero-filled through rayon.
 const PAR_FILL_THRESHOLD: usize = PAR_FILL_CHUNK * 2;
 
@@ -64,6 +66,7 @@ pub(in crate::runtime) fn par_fill_zeros(bytes: &mut [u8]) {
     if bytes.len() >= PAR_FILL_THRESHOLD {
         bytes
             .par_chunks_mut(PAR_FILL_CHUNK)
+            .with_min_len(PAR_FILL_CHUNKS_PER_TASK)
             .for_each(|chunk| chunk.fill(0));
     } else {
         bytes.fill(0);

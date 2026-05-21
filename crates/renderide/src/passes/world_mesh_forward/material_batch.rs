@@ -23,6 +23,15 @@ use crate::passes::WorldMeshForwardEncodeRefs;
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::world_mesh::draw_prep::WorldMeshDrawItem;
 
+/// Material boundary runs assigned to one packet-resolution worker.
+///
+/// This mirrors the small renderer-command grains used by draw-command cache builders: each run
+/// may touch pipeline lookup, bind layout validation, and material resource resolution, so a
+/// dozen runs is enough work to amortize one task without over-coalescing heterogeneous materials.
+const MATERIAL_BATCH_PARALLEL_CHUNK_RUNS: usize = 12;
+/// Material boundary run count required before packet resolution uses Rayon.
+const MATERIAL_BATCH_PARALLEL_MIN_RUNS: usize = MATERIAL_BATCH_PARALLEL_CHUNK_RUNS * 2;
+
 /// Throttles repeated embedded-bind failures so a single bad material cannot flood logs.
 static EMBEDDED_MATERIAL_BIND_FAILURE_LOG: LogThrottle = LogThrottle::new();
 
@@ -252,7 +261,7 @@ impl<'a> MaterialDrawResolver<'a> {
         }
 
         collect_material_batch_boundaries_into(draws, boundaries_scratch);
-        if boundaries_scratch.len() < 2 {
+        if boundaries_scratch.len() < MATERIAL_BATCH_PARALLEL_MIN_RUNS {
             let mut packets = Vec::with_capacity(boundaries_scratch.len());
             for &(first, last) in boundaries_scratch.iter() {
                 packets.push(self.resolve_one_batch(draws, first, last));
@@ -261,6 +270,7 @@ impl<'a> MaterialDrawResolver<'a> {
         } else {
             boundaries_scratch
                 .par_iter()
+                .with_min_len(MATERIAL_BATCH_PARALLEL_CHUNK_RUNS)
                 .copied()
                 .map(|(first, last)| self.resolve_one_batch(draws, first, last))
                 .collect()

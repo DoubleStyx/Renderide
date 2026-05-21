@@ -8,6 +8,8 @@ use crate::shared::TextureFormat;
 ///
 /// Larger chunks reduce rayon scheduler thrash and keep split counts bounded even on huge inputs.
 const PARALLEL_DECODE_TEXELS_PER_CHUNK: usize = 8_192;
+/// Decode chunks assigned to one Rayon worker leaf.
+const PARALLEL_DECODE_CHUNKS_PER_TASK: usize = 1;
 
 /// Texel count at which mip decode fans out across rayon (64 KiB RGBA8 = 128x128).
 ///
@@ -43,7 +45,11 @@ fn decode_in_chunks<F>(
         let src_chunk = PARALLEL_DECODE_TEXELS_PER_CHUNK * src_bytes_per_texel;
         let dst_chunk = PARALLEL_DECODE_TEXELS_PER_CHUNK * dst_bytes_per_texel;
         dst.par_chunks_mut(dst_chunk)
-            .zip(src.par_chunks(src_chunk))
+            .with_min_len(PARALLEL_DECODE_CHUNKS_PER_TASK)
+            .zip(
+                src.par_chunks(src_chunk)
+                    .with_min_len(PARALLEL_DECODE_CHUNKS_PER_TASK),
+            )
             .for_each(|(d, s)| decode(s, d));
     } else {
         decode(src, dst);

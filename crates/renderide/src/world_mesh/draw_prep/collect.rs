@@ -46,6 +46,15 @@ use prepared::prepared_draws_share_renderer;
 #[cfg(test)]
 use scene_walk::transform_chain_has_degenerate_scale;
 
+/// Prepared renderer-run chunks assigned to one draw-collection worker.
+const PREPARED_COLLECT_PARALLEL_CHUNK_TASKS: usize = 1;
+/// Prepared renderer-run chunk count required before draw collection fans out.
+const PREPARED_COLLECT_PARALLEL_MIN_CHUNKS: usize = PREPARED_COLLECT_PARALLEL_CHUNK_TASKS * 2;
+/// Scene-walk chunk specs assigned to one draw-collection worker.
+const SCENE_COLLECT_PARALLEL_CHUNK_TASKS: usize = 1;
+/// Scene-walk chunk count required before draw collection fans out.
+const SCENE_COLLECT_PARALLEL_MIN_CHUNKS: usize = SCENE_COLLECT_PARALLEL_CHUNK_TASKS * 2;
+
 /// Read-only scene, material, and cull state shared across all spaces during draw collection.
 pub struct DrawCollectionContext<'a> {
     /// Scene graph for mesh renderables.
@@ -265,10 +274,13 @@ fn collect_world_mesh_chunks(
         // view without allocating a chunk list per view.
         let run_chunks = prepared.run_chunks();
         let draws = prepared.draws();
-        if parallelism == WorldMeshDrawCollectParallelism::Full && run_chunks.len() >= 2 {
+        if parallelism == WorldMeshDrawCollectParallelism::Full
+            && run_chunks.len() >= PREPARED_COLLECT_PARALLEL_MIN_CHUNKS
+        {
             profiling::scope!("mesh::collect_prepared::parallel_chunks");
             run_chunks
                 .par_iter()
+                .with_min_len(PREPARED_COLLECT_PARALLEL_CHUNK_TASKS)
                 .map(|&chunk| {
                     profiling::scope!("mesh::collect_prepared::chunk_worker");
                     let runs = prepared.runs_for_chunk(chunk);
@@ -291,10 +303,13 @@ fn collect_world_mesh_chunks(
             build_chunk_specs(space_ids, ctx)
         };
         profiling::scope!("mesh::collect");
-        if parallelism == WorldMeshDrawCollectParallelism::Full && chunks.len() >= 2 {
+        if parallelism == WorldMeshDrawCollectParallelism::Full
+            && chunks.len() >= SCENE_COLLECT_PARALLEL_MIN_CHUNKS
+        {
             profiling::scope!("mesh::collect::parallel_chunks");
             chunks
                 .par_iter()
+                .with_min_len(SCENE_COLLECT_PARALLEL_CHUNK_TASKS)
                 .map(|spec| {
                     profiling::scope!("mesh::collect::chunk_worker");
                     collect_chunk(spec, ctx, cache, filter_masks)

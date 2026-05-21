@@ -24,6 +24,15 @@ use crate::world_mesh::{
 
 use super::view_plan::{FrameViewPlan, ViewFamilyPlan};
 
+/// Prepared view plans assigned to one cull-snapshot worker.
+const CULL_SNAPSHOT_PARALLEL_CHUNK_VIEWS: usize = 1;
+/// Prepared view count required before cull-snapshot gathering fans out.
+const CULL_SNAPSHOT_PARALLEL_MIN_VIEWS: usize = CULL_SNAPSHOT_PARALLEL_CHUNK_VIEWS * 2;
+/// Prepared view plans assigned to one draw-collection worker.
+const VIEW_COLLECTION_PARALLEL_CHUNK_VIEWS: usize = 1;
+/// Prepared view count required before view-level draw collection fans out.
+const VIEW_COLLECTION_PARALLEL_MIN_VIEWS: usize = VIEW_COLLECTION_PARALLEL_CHUNK_VIEWS * 2;
+
 /// Immutable runtime-owned extraction packet built before per-view draw collection starts.
 ///
 /// Prepared views live beside the backend's read-only draw-prep view so later stages no longer
@@ -59,8 +68,13 @@ impl<'views, 'backend> ExtractedFrame<'views, 'backend> {
             match plans.len() {
                 0 => Vec::new(),
                 1 => vec![cull_snapshot_for_view(&shared, &plans[0])],
-                _ => plans
+                _ if plans.len() >= CULL_SNAPSHOT_PARALLEL_MIN_VIEWS => plans
                     .par_iter()
+                    .with_min_len(CULL_SNAPSHOT_PARALLEL_CHUNK_VIEWS)
+                    .map(|prep| cull_snapshot_for_view(&shared, prep))
+                    .collect(),
+                _ => plans
+                    .iter()
                     .map(|prep| cull_snapshot_for_view(&shared, prep))
                     .collect(),
             }
@@ -404,7 +418,12 @@ where
             profiling::scope!("render::queue_view_draws::parallel_views::par_iter");
             prepared
                 .par_iter()
-                .zip(cull_snapshots.into_par_iter())
+                .with_min_len(VIEW_COLLECTION_PARALLEL_CHUNK_VIEWS)
+                .zip(
+                    cull_snapshots
+                        .into_par_iter()
+                        .with_min_len(VIEW_COLLECTION_PARALLEL_CHUNK_VIEWS),
+                )
                 .map(collect_one)
                 .collect()
         }
@@ -492,7 +511,7 @@ fn select_inner_parallelism_for_prepared_work(
 
 /// Returns whether multiple views should collect draws through outer view-level rayon work.
 fn should_parallelize_view_collection(view_count: usize, max_prepared_draw_count: usize) -> bool {
-    view_count > 1
+    view_count >= VIEW_COLLECTION_PARALLEL_MIN_VIEWS
         && view_count.saturating_mul(max_prepared_draw_count)
             >= MIN_TOTAL_DRAWS_FOR_PARALLEL_VIEW_COLLECTION
 }

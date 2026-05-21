@@ -14,6 +14,8 @@ use super::state::{RenderWorldRendererRef, RenderWorldRendererTemplate, RenderWo
 
 /// Records per worker chunk when refreshing dense retained renderer tables.
 const RENDER_WORLD_REFRESH_CHUNK_SIZE: usize = 64;
+/// Retained-renderer refresh chunks assigned to one Rayon worker leaf.
+const RENDER_WORLD_REFRESH_CHUNKS_PER_TASK: usize = 1;
 /// Renderer count above which retained-template refresh uses Rayon.
 const RENDER_WORLD_PARALLEL_MIN_RENDERERS: usize = RENDER_WORLD_REFRESH_CHUNK_SIZE * 2;
 
@@ -254,6 +256,7 @@ fn refresh_all_static_records(
         profiling::scope!("mesh::render_world::refresh_space_parallel::static");
         records
             .par_chunks_mut(RENDER_WORLD_REFRESH_CHUNK_SIZE)
+            .with_min_len(RENDER_WORLD_REFRESH_CHUNKS_PER_TASK)
             .enumerate()
             .for_each(|(chunk_index, chunk)| {
                 profiling::scope!("mesh::render_world::refresh_space_parallel::static_chunk");
@@ -299,6 +302,7 @@ fn refresh_all_skinned_records(
         profiling::scope!("mesh::render_world::refresh_space_parallel::skinned");
         records
             .par_chunks_mut(RENDER_WORLD_REFRESH_CHUNK_SIZE)
+            .with_min_len(RENDER_WORLD_REFRESH_CHUNKS_PER_TASK)
             .enumerate()
             .for_each(|(chunk_index, chunk)| {
                 profiling::scope!("mesh::render_world::refresh_space_parallel::skinned_chunk");
@@ -421,6 +425,7 @@ fn refresh_static_dirty_records_dense_scan(
     if records.len() >= RENDER_WORLD_PARALLEL_MIN_RENDERERS {
         records
             .par_chunks_mut(RENDER_WORLD_REFRESH_CHUNK_SIZE)
+            .with_min_len(RENDER_WORLD_REFRESH_CHUNKS_PER_TASK)
             .enumerate()
             .for_each(|(chunk_index, chunk)| {
                 profiling::scope!(
@@ -472,6 +477,7 @@ fn refresh_skinned_dirty_records_dense_scan(
     if records.len() >= RENDER_WORLD_PARALLEL_MIN_RENDERERS {
         records
             .par_chunks_mut(RENDER_WORLD_REFRESH_CHUNK_SIZE)
+            .with_min_len(RENDER_WORLD_REFRESH_CHUNKS_PER_TASK)
             .enumerate()
             .for_each(|(chunk_index, chunk)| {
                 profiling::scope!(

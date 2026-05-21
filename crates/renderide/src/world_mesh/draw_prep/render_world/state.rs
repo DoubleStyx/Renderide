@@ -11,6 +11,8 @@ use super::super::prepared_renderables::{FramePreparedDraw, FramePreparedRendera
 
 /// Renderer count assigned to one reverse-index worker chunk.
 const REVERSE_INDEX_PARALLEL_CHUNK_RENDERERS: usize = 64;
+/// Reverse-index chunks assigned to one Rayon worker leaf.
+const REVERSE_INDEX_PARALLEL_CHUNKS_PER_TASK: usize = 1;
 /// Renderer count at which reverse-index rebuilds use worker-local indexes.
 const REVERSE_INDEX_PARALLEL_MIN_RENDERERS: usize = REVERSE_INDEX_PARALLEL_CHUNK_RENDERERS * 2;
 
@@ -232,6 +234,7 @@ fn build_reverse_index_chunks(
     if renderers.len() >= REVERSE_INDEX_PARALLEL_MIN_RENDERERS {
         renderers
             .par_chunks(REVERSE_INDEX_PARALLEL_CHUNK_RENDERERS)
+            .with_min_len(REVERSE_INDEX_PARALLEL_CHUNKS_PER_TASK)
             .enumerate()
             .map(|(chunk_index, chunk)| {
                 profiling::scope!("mesh::render_world::rebuild_reverse_indexes_parallel::chunk");

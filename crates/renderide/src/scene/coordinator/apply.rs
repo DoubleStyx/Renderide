@@ -54,11 +54,13 @@ use super::super::transforms::{
     extract_transforms_update,
 };
 
+/// Render-space apply slots assigned to one mutation worker.
+const APPLY_PARALLEL_CHUNK_SPACES: usize = 1;
 /// Minimum independent render-space slots before Phase B may use rayon workers.
-const MIN_SPACES_FOR_PARALLEL_APPLY: usize = 2;
+const MIN_SPACES_FOR_PARALLEL_APPLY: usize = APPLY_PARALLEL_CHUNK_SPACES * 2;
 
 /// Minimum extracted row count before Phase B may fan out across render-space slots.
-const MIN_APPLY_PARALLEL_WORK_UNITS: usize = MIN_SPACES_FOR_PARALLEL_APPLY;
+const MIN_APPLY_PARALLEL_WORK_UNITS: usize = APPLY_PARALLEL_CHUNK_SPACES * 2;
 
 /// Returns `true` when [`ExtractedRenderSpaceUpdate`] carries no body work for this tick (every
 /// per-update payload is `None`).
@@ -556,17 +558,19 @@ impl SceneCoordinator {
         use rayon::prelude::*;
         {
             profiling::scope!("scene::apply::mutate");
-            work.par_iter_mut().for_each(|slot| {
-                profiling::scope!("scene::apply::mutate::worker_slot");
-                slot.world_dirty = apply_extracted_render_space_update(
-                    &slot.extracted,
-                    PerSpaceApplyInputs {
-                        space: &mut slot.space,
-                        cache: &mut slot.cache,
-                        removal_events: &mut slot.removal_events,
-                    },
-                );
-            });
+            work.par_iter_mut()
+                .with_min_len(APPLY_PARALLEL_CHUNK_SPACES)
+                .for_each(|slot| {
+                    profiling::scope!("scene::apply::mutate::worker_slot");
+                    slot.world_dirty = apply_extracted_render_space_update(
+                        &slot.extracted,
+                        PerSpaceApplyInputs {
+                            space: &mut slot.space,
+                            cache: &mut slot.cache,
+                            removal_events: &mut slot.removal_events,
+                        },
+                    );
+                });
         };
         {
             profiling::scope!("scene::apply::reinsert");

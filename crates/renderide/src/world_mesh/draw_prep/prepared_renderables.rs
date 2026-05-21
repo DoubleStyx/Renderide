@@ -40,6 +40,12 @@ pub(in crate::world_mesh::draw_prep) use expand::{
 
 /// Target draw count for one prepared renderer-run chunk.
 pub(super) const PREPARED_RUN_CHUNK_DRAW_TARGET: usize = 64;
+/// Active render spaces assigned to one prepared-renderable expansion worker.
+#[cfg(test)]
+const PREPARED_EXPAND_PARALLEL_CHUNK_SPACES: usize = 1;
+/// Active render-space count required before prepared-renderable expansion fans out.
+#[cfg(test)]
+const PREPARED_EXPAND_PARALLEL_MIN_SPACES: usize = PREPARED_EXPAND_PARALLEL_CHUNK_SPACES * 2;
 
 /// One fully-resolved draw slot (renderer x material slot mapped to a submesh range) for the current frame.
 ///
@@ -248,10 +254,9 @@ impl FramePreparedRenderables {
             return;
         }
 
-        if self.active_space_ids.len() == 1 {
-            let space_id = self.active_space_ids[0];
-            {
-                profiling::scope!("mesh::prepared_renderables::single_space_expand");
+        if self.active_space_ids.len() < PREPARED_EXPAND_PARALLEL_MIN_SPACES {
+            profiling::scope!("mesh::prepared_renderables::serial_space_expand");
+            for &space_id in &self.active_space_ids {
                 self.draws.reserve(estimated_draw_count(scene, space_id));
                 expand_space_into_aggressive(
                     &mut self.draws,
@@ -281,7 +286,12 @@ impl FramePreparedRenderables {
             profiling::scope!("mesh::prepared_renderables::parallel_expand");
             space_scratch
                 .par_iter_mut()
-                .zip(active_space_ids.par_iter())
+                .with_min_len(PREPARED_EXPAND_PARALLEL_CHUNK_SPACES)
+                .zip(
+                    active_space_ids
+                        .par_iter()
+                        .with_min_len(PREPARED_EXPAND_PARALLEL_CHUNK_SPACES),
+                )
                 .for_each(|(out, &space_id)| {
                     profiling::scope!("mesh::prepared_renderables::space_worker");
                     out.clear();

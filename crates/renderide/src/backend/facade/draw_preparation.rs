@@ -16,6 +16,17 @@ use crate::occlusion::OcclusionSystem;
 
 use super::frame_packet::ExtractedFrameShared;
 
+/// Unique render contexts assigned to one render-world preparation worker.
+const RENDER_WORLD_PREP_PARALLEL_CHUNK_CONTEXTS: usize = 1;
+/// Unique render-context count required before render-world preparation fans out.
+const RENDER_WORLD_PREP_PARALLEL_MIN_CONTEXTS: usize =
+    RENDER_WORLD_PREP_PARALLEL_CHUNK_CONTEXTS * 2;
+/// Unique material caches assigned to one cache-refresh worker.
+const MATERIAL_CACHE_PREP_PARALLEL_CHUNK_CACHES: usize = 1;
+/// Unique material-cache count required before cache refresh fans out.
+const MATERIAL_CACHE_PREP_PARALLEL_MIN_CACHES: usize =
+    MATERIAL_CACHE_PREP_PARALLEL_CHUNK_CACHES * 2;
+
 /// Inputs for one backend draw-preparation extraction.
 pub(super) struct DrawPreparationExtractDesc<'a, 'v> {
     /// Scene after cache flush for world-matrix lookups and cull evaluation.
@@ -153,9 +164,10 @@ fn prepare_render_worlds_for_views(
 ) {
     profiling::scope!("render::prepare_render_worlds_for_views");
     let mut work = unique_render_context_work(view_draw_preparations, render_worlds);
-    if work.len() >= 2 {
+    if work.len() >= RENDER_WORLD_PREP_PARALLEL_MIN_CONTEXTS {
         profiling::scope!("render::prepare_render_worlds_for_views::parallel_contexts");
         work.par_iter_mut()
+            .with_min_len(RENDER_WORLD_PREP_PARALLEL_CHUNK_CONTEXTS)
             .for_each(|(_, render_context, render_world)| {
                 profiling::scope!("render::prepare_render_worlds_for_views::context_worker");
                 render_world.prepare_for_frame(scene, mesh_pool, *render_context);
@@ -205,9 +217,10 @@ fn refresh_material_caches(
         MaterialDictionary::new(property_store)
     };
     let mut work = unique_material_cache_work(view_draw_preparations, material_batch_caches);
-    if work.len() >= 2 {
+    if work.len() >= MATERIAL_CACHE_PREP_PARALLEL_MIN_CACHES {
         profiling::scope!("render::build_frame_material_cache::parallel_caches");
         work.par_iter_mut()
+            .with_min_len(MATERIAL_CACHE_PREP_PARALLEL_CHUNK_CACHES)
             .for_each(|(context_key, shader_perm, cache)| {
                 profiling::scope!("render::build_frame_material_cache::cache_worker");
                 if let Some(render_world) = render_worlds.get(context_key) {

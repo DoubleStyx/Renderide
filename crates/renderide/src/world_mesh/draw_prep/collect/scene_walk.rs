@@ -86,7 +86,7 @@ enum ChunkKind {
     Skinned,
 }
 
-/// One 128-renderable slice of a render space's static or skinned renderer array.
+/// One renderer slice of a render space's static or skinned renderer array.
 pub(super) struct WorldMeshChunkSpec {
     /// Render space containing the slice.
     space_id: RenderSpaceId,

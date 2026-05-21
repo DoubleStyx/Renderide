@@ -39,6 +39,10 @@ pub use reports::{
 };
 
 const PRIMARY_DESKTOP_DISPLAY_INDEX: i16 = 0;
+/// Dirty render spaces assigned to one world-cache flush worker.
+const WORLD_CACHE_FLUSH_PARALLEL_CHUNK_SPACES: usize = 1;
+/// Dirty render-space count required before world-cache flush fans out.
+const WORLD_CACHE_FLUSH_PARALLEL_MIN_SPACES: usize = WORLD_CACHE_FLUSH_PARALLEL_CHUNK_SPACES * 2;
 
 /// Warns when more than one non-overlay render space is marked active (breaks main-camera assumptions).
 fn warn_if_multiple_active_non_overlay_spaces(data: &FrameSubmitData) {
@@ -429,10 +433,13 @@ impl SceneCoordinator {
             (id, result.map(|()| cache))
         };
         let results: Vec<(RenderSpaceId, Result<WorldTransformCache, SceneError>)> =
-            if work.len() == 1 {
+            if work.len() < WORLD_CACHE_FLUSH_PARALLEL_MIN_SPACES {
                 work.into_iter().map(compute_one).collect()
             } else {
-                work.into_par_iter().map(compute_one).collect()
+                work.into_par_iter()
+                    .with_min_len(WORLD_CACHE_FLUSH_PARALLEL_CHUNK_SPACES)
+                    .map(compute_one)
+                    .collect()
             };
 
         let mut first_err: Option<SceneError> = None;

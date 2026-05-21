@@ -33,7 +33,9 @@ const INSTANCE_PLAN_PARALLEL_MIN_WINDOWS: usize = 2;
 /// Draw count above which [`build_plan`] may split batch windows across worker threads.
 const INSTANCE_PLAN_PARALLEL_MIN_DRAWS: usize = INSTANCE_PLAN_PARALLEL_MIN_WINDOWS;
 /// Maximum batch windows processed by one parallel worker task.
-const INSTANCE_PLAN_PARALLEL_MAX_WINDOWS_PER_TASK: usize = 8;
+const INSTANCE_PLAN_PARALLEL_MAX_WINDOWS_PER_TASK: usize = 12;
+/// Adaptive window chunks assigned to one Rayon worker leaf.
+const INSTANCE_PLAN_PARALLEL_CHUNKS_PER_TASK: usize = 1;
 
 /// One emitted indexed draw covering a contiguous slab range of identical instances.
 ///
@@ -369,6 +371,7 @@ fn build_plan_parallel(
         let window_chunk_size = parallel_window_chunk_size(windows.len());
         windows
             .par_chunks(window_chunk_size)
+            .with_min_len(INSTANCE_PLAN_PARALLEL_CHUNKS_PER_TASK)
             .map(|chunk| {
                 profiling::scope!("mesh::build_plan_window_chunk_worker");
                 let draw_count = chunk.iter().map(|window| window.range.len()).sum::<usize>();

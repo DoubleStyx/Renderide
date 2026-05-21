@@ -150,6 +150,8 @@ impl PaddedPerDrawUniforms {
 
 /// Draw slots assigned to one slab-copy worker chunk.
 const PER_DRAW_SLAB_PARALLEL_CHUNK_SLOTS: usize = 64;
+/// Slab-copy chunks assigned to one Rayon worker leaf.
+const PER_DRAW_SLAB_PARALLEL_CHUNKS_PER_TASK: usize = 1;
 /// Slot count above which slab writes fan out to a rayon worker pool.
 ///
 /// Each slot is a 256-byte copy. Two 64-slot chunks make the slab large enough for
@@ -171,7 +173,12 @@ pub fn write_per_draw_uniform_slab(slots: &[PaddedPerDrawUniforms], out: &mut [u
     let dst = &mut out[..need];
     if slots.len() >= PER_DRAW_SLAB_PARALLEL_MIN {
         dst.par_chunks_mut(PER_DRAW_UNIFORM_STRIDE * PER_DRAW_SLAB_PARALLEL_CHUNK_SLOTS)
-            .zip(slots.par_chunks(PER_DRAW_SLAB_PARALLEL_CHUNK_SLOTS))
+            .with_min_len(PER_DRAW_SLAB_PARALLEL_CHUNKS_PER_TASK)
+            .zip(
+                slots
+                    .par_chunks(PER_DRAW_SLAB_PARALLEL_CHUNK_SLOTS)
+                    .with_min_len(PER_DRAW_SLAB_PARALLEL_CHUNKS_PER_TASK),
+            )
             .for_each(|(slabs, slots)| {
                 profiling::scope!("mesh_deform::write_per_draw_uniform_slab::worker");
                 for (slab, slot) in slabs

@@ -5,6 +5,11 @@ use super::{
     PerViewWorkItem,
 };
 
+/// Per-view work items assigned to one recording worker.
+const PER_VIEW_RECORD_PARALLEL_CHUNK_VIEWS: usize = 1;
+/// View count at which per-view command recording fans out.
+const MIN_VIEWS_FOR_PARALLEL_RECORD: usize = PER_VIEW_RECORD_PARALLEL_CHUNK_VIEWS * 2;
+
 impl CompiledRenderGraph {
     /// Drives the per-view recording phase serially for a single view or across Rayon workers for
     /// multi-view batches, returning one [`PerViewRecordOutput`] per input work item in submission
@@ -18,9 +23,13 @@ impl CompiledRenderGraph {
         profiling::scope!("graph::record_per_view_outputs");
         // One view records serially. Two or more independent views can use worker threads, which
         // lets OpenXR stereo record both eyes in parallel.
-        const MIN_VIEWS_FOR_PARALLEL_RECORD: usize = 2;
         if n_views >= MIN_VIEWS_FOR_PARALLEL_RECORD {
-            self.record_per_view_outputs_parallel(per_view_work_items, inputs, n_views)
+            self.record_per_view_outputs_parallel(
+                per_view_work_items,
+                inputs,
+                n_views,
+                PER_VIEW_RECORD_PARALLEL_CHUNK_VIEWS,
+            )
         } else {
             self.record_per_view_outputs_serial(per_view_work_items, inputs, n_views)
         }
@@ -31,6 +40,7 @@ impl CompiledRenderGraph {
         per_view_work_items: Vec<PerViewWorkItem>,
         inputs: PerViewRecordInputs<'_>,
         n_views: usize,
+        parallel_chunk_views: usize,
     ) -> Result<Vec<PerViewRecordOutput>, GraphExecuteError> {
         profiling::scope!("graph::per_view_fan_out");
         if n_views == 2 {
@@ -48,6 +58,7 @@ impl CompiledRenderGraph {
             use rayon::prelude::*;
             per_view_work_items
                 .into_par_iter()
+                .with_min_len(parallel_chunk_views)
                 .map(|work_item| {
                     profiling::scope!("graph::per_view_fan_out::worker");
                     self.record_per_view_work_item_output(

@@ -120,6 +120,14 @@ struct MeshDeformDispatchCtx<'a> {
 const DEFORM_COLLECT_RENDERER_CHUNK_SIZE: usize = 64;
 /// Renderer count above which deform work collection fans out across two chunks.
 const DEFORM_COLLECT_PARALLEL_MIN_RENDERERS: usize = DEFORM_COLLECT_RENDERER_CHUNK_SIZE * 2;
+/// Renderer chunks assigned to one deform collection worker task.
+const DEFORM_COLLECT_PARALLEL_CHUNK_TASKS: usize = 1;
+/// Renderer chunk count required before deform collection fans out.
+const DEFORM_COLLECT_PARALLEL_MIN_CHUNKS: usize = DEFORM_COLLECT_PARALLEL_CHUNK_TASKS * 2;
+/// Render spaces assigned to one deform collection worker.
+const DEFORM_SPACE_PARALLEL_CHUNK_SPACES: usize = 1;
+/// Render-space count required before deform collection fans out across spaces.
+const DEFORM_SPACE_PARALLEL_MIN_SPACES: usize = DEFORM_SPACE_PARALLEL_CHUNK_SPACES * 2;
 
 #[derive(Clone, Copy)]
 enum DeformCollectChunkKind {
@@ -330,7 +338,7 @@ fn collect_deform_work_for_space_aggressive(
         DeformCollectChunkKind::Skinned,
         space.skinned_mesh_renderers().len(),
     );
-    if specs.len() < 2 {
+    if specs.len() < DEFORM_COLLECT_PARALLEL_MIN_CHUNKS {
         collect_deform_work_for_space(scene, mesh_pool, visible_filter, space_id, work);
         return;
     }
@@ -340,7 +348,12 @@ fn collect_deform_work_for_space_aggressive(
     chunks
         .par_iter_mut()
         .take(specs.len())
-        .zip(specs.par_iter())
+        .with_min_len(DEFORM_COLLECT_PARALLEL_CHUNK_TASKS)
+        .zip(
+            specs
+                .par_iter()
+                .with_min_len(DEFORM_COLLECT_PARALLEL_CHUNK_TASKS),
+        )
         .for_each(|(chunk, spec)| {
             profiling::scope!("mesh_deform::collect_work::renderer_chunk_worker");
             collect_deform_work_for_chunk(scene, mesh_pool, visible_filter, space_id, spec, chunk);
@@ -392,13 +405,18 @@ fn collect_deform_work_into_scratch(
             );
             return;
         }
-        _ => {
+        _ if space_count >= DEFORM_SPACE_PARALLEL_MIN_SPACES => {
             let space_ids = &scratch.space_ids;
             let chunks = &mut scratch.chunks;
             space_ids
                 .par_iter()
+                .with_min_len(DEFORM_SPACE_PARALLEL_CHUNK_SPACES)
                 .copied()
-                .zip(chunks.par_iter_mut())
+                .zip(
+                    chunks
+                        .par_iter_mut()
+                        .with_min_len(DEFORM_SPACE_PARALLEL_CHUNK_SPACES),
+                )
                 .for_each(|(space_id, chunk)| {
                     profiling::scope!("mesh_deform::collect_work::space_worker");
                     collect_deform_work_for_space(
@@ -410,6 +428,7 @@ fn collect_deform_work_into_scratch(
                     );
                 });
         }
+        _ => {}
     }
 
     scratch.work.clear();
