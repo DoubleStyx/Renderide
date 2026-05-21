@@ -70,7 +70,11 @@ fn fs_main(
     fc::discard_rect_if_enabled(obj_xy, mat._Rect, threshold_kw(THRESHOLD_KW_RECTCLIP));
 
     let c = fc::sample_scene_color_at_clip(frag_pos, view_layer);
-    let transition = max(abs(mat._Transition), 1e-6);
+    let transition = select(
+        mat._Transition,
+        select(-1e-6, 1e-6, mat._Transition >= 0.0),
+        abs(mat._Transition) < 1e-6,
+    );
     let filtered = clamp(((c.rgb - vec3<f32>(mat._Threshold)) / transition) + vec3<f32>(mat._Transition * 0.5), vec3<f32>(0.0), vec3<f32>(1.0));
     return fc::retain_globals(vec4<f32>(filtered, c.a));
 }

@@ -1,6 +1,7 @@
-//! Ordered transparent tail with per-grab scene-color snapshots.
+//! Ordered transparent tail with per-grab and reusable named scene-color snapshots.
 
 use crate::graph_inputs::PerViewFramePlanSlot;
+use crate::materials::SceneColorSnapshotMode;
 use crate::render_graph::context::EncoderPassCtx;
 use crate::render_graph::error::{RenderPassError, SetupError};
 use crate::render_graph::gpu_cache::stereo_mask_or_template;
@@ -247,6 +248,19 @@ fn copy_grab_snapshot(
     )
 }
 
+/// Returns the scene-color snapshot refresh policy for a grab-pass draw group.
+fn scene_color_snapshot_mode_for_group(
+    prepared: &PreparedWorldMeshForwardFrame,
+    group: &DrawGroup,
+) -> SceneColorSnapshotMode {
+    prepared
+        .draws
+        .get(group.representative_draw_idx)
+        .map(|draw| draw.batch_key.scene_color_snapshot_mode)
+        .filter(|mode| mode.uses_scene_color())
+        .unwrap_or(SceneColorSnapshotMode::PerObjectGrab)
+}
+
 fn final_resolve_after_tail(
     ctx: &mut EncoderPassCtx<'_, '_, '_>,
     resources: WorldMeshForwardGraphResources,
@@ -278,6 +292,7 @@ fn record_transparent_sequence(
     let mut grab_idx = 0usize;
     let mut pending_post_start = None;
     let mut recorded_any = false;
+    let mut active_snapshot_is_named_background = false;
 
     while post_idx < transparent_groups.len() || grab_idx < grab_groups.len() {
         if next_sequence_entry_is_post(plan, post_idx, grab_idx) {
@@ -299,21 +314,26 @@ fn record_transparent_sequence(
             return Ok(false);
         }
         recorded_any |= flushed_post_groups;
-        resolve_for_grab_snapshot(ctx, resources)?;
-        if !copy_grab_snapshot(ctx, prepared, resources) {
-            logger::warn!(
-                "WorldMeshForwardTransparentSequence: skipping grab-pass filter group {} because scene-color snapshot copy failed",
-                grab_idx
-            );
-            grab_idx += 1;
-            continue;
+        let grab_group = &grab_groups[grab_idx];
+        let snapshot_mode = scene_color_snapshot_mode_for_group(prepared, grab_group);
+        let needs_snapshot = match snapshot_mode {
+            SceneColorSnapshotMode::NamedBackgroundGrab => !active_snapshot_is_named_background,
+            SceneColorSnapshotMode::PerObjectGrab | SceneColorSnapshotMode::None => true,
+        };
+        if needs_snapshot {
+            resolve_for_grab_snapshot(ctx, resources)?;
+            if !copy_grab_snapshot(ctx, prepared, resources) {
+                logger::warn!(
+                    "WorldMeshForwardTransparentSequence: skipping grab-pass filter group {} because scene-color snapshot copy failed",
+                    grab_idx
+                );
+                grab_idx += 1;
+                continue;
+            }
+            active_snapshot_is_named_background =
+                snapshot_mode == SceneColorSnapshotMode::NamedBackgroundGrab;
         }
-        if !draw_tail_groups(
-            ctx,
-            prepared,
-            resources,
-            std::slice::from_ref(&grab_groups[grab_idx]),
-        )? {
+        if !draw_tail_groups(ctx, prepared, resources, std::slice::from_ref(grab_group))? {
             return Ok(false);
         }
         recorded_any = true;
@@ -397,11 +417,27 @@ fn collect_transparent_sequence_test_ops_with_snapshot_result(
     sample_count: u32,
     snapshot_copy_succeeds: bool,
 ) -> Vec<TransparentSequenceTestOp> {
+    collect_transparent_sequence_test_ops_with_modes(
+        plan,
+        sample_count,
+        snapshot_copy_succeeds,
+        &[],
+    )
+}
+
+#[cfg(test)]
+fn collect_transparent_sequence_test_ops_with_modes(
+    plan: &InstancePlan,
+    sample_count: u32,
+    snapshot_copy_succeeds: bool,
+    grab_modes: &[SceneColorSnapshotMode],
+) -> Vec<TransparentSequenceTestOp> {
     let mut ops = Vec::new();
     let mut post_idx = 0usize;
     let mut grab_idx = 0usize;
     let mut pending_post_start = None;
     let mut recorded_any = false;
+    let mut active_snapshot_is_named_background = false;
 
     let (transparent_phase, grab_phase) = transparent_sequence_phase_pair();
     let transparent_groups = plan.phase(transparent_phase);
@@ -420,16 +456,30 @@ fn collect_transparent_sequence_test_ops_with_snapshot_result(
             ops.push(TransparentSequenceTestOp::DrawPostRange(start, post_idx));
             recorded_any = true;
         }
-        if sample_count > 1 {
-            ops.push(TransparentSequenceTestOp::ResolveBeforeGrab(grab_idx));
+        let snapshot_mode = grab_modes
+            .get(grab_idx)
+            .copied()
+            .unwrap_or(SceneColorSnapshotMode::PerObjectGrab);
+        let needs_snapshot = match snapshot_mode {
+            SceneColorSnapshotMode::NamedBackgroundGrab => !active_snapshot_is_named_background,
+            SceneColorSnapshotMode::PerObjectGrab | SceneColorSnapshotMode::None => true,
+        };
+        if needs_snapshot {
+            if sample_count > 1 {
+                ops.push(TransparentSequenceTestOp::ResolveBeforeGrab(grab_idx));
+            }
+            ops.push(TransparentSequenceTestOp::SnapshotForGrab(grab_idx));
+            if snapshot_copy_succeeds {
+                active_snapshot_is_named_background =
+                    snapshot_mode == SceneColorSnapshotMode::NamedBackgroundGrab;
+            } else {
+                ops.push(TransparentSequenceTestOp::SkipGrabMissingSnapshot(grab_idx));
+                grab_idx += 1;
+                continue;
+            }
         }
-        ops.push(TransparentSequenceTestOp::SnapshotForGrab(grab_idx));
-        if snapshot_copy_succeeds {
-            ops.push(TransparentSequenceTestOp::DrawGrab(grab_idx));
-            recorded_any = true;
-        } else {
-            ops.push(TransparentSequenceTestOp::SkipGrabMissingSnapshot(grab_idx));
-        }
+        ops.push(TransparentSequenceTestOp::DrawGrab(grab_idx));
+        recorded_any = true;
         grab_idx += 1;
     }
 
@@ -447,8 +497,10 @@ fn collect_transparent_sequence_test_ops_with_snapshot_result(
 mod tests {
     use super::{
         TransparentSequenceTestOp, collect_transparent_sequence_test_ops,
+        collect_transparent_sequence_test_ops_with_modes,
         collect_transparent_sequence_test_ops_with_snapshot_result,
     };
+    use crate::materials::SceneColorSnapshotMode;
     use crate::world_mesh::{DrawGroup, InstancePlan, WorldMeshPhase};
 
     fn group(representative_draw_idx: usize) -> DrawGroup {
@@ -505,6 +557,85 @@ mod tests {
                 TransparentSequenceTestOp::DrawGrab(0),
                 TransparentSequenceTestOp::SnapshotForGrab(1),
                 TransparentSequenceTestOp::DrawGrab(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn named_background_grab_groups_share_first_snapshot() {
+        let plan = plan_with_transparent_groups(Vec::new(), vec![group(3), group(7)]);
+
+        assert_eq!(
+            collect_transparent_sequence_test_ops_with_modes(
+                &plan,
+                1,
+                true,
+                &[
+                    SceneColorSnapshotMode::NamedBackgroundGrab,
+                    SceneColorSnapshotMode::NamedBackgroundGrab,
+                ],
+            ),
+            vec![
+                TransparentSequenceTestOp::SnapshotForGrab(0),
+                TransparentSequenceTestOp::DrawGrab(0),
+                TransparentSequenceTestOp::DrawGrab(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn per_object_grab_groups_still_take_per_group_snapshots() {
+        let plan = plan_with_transparent_groups(Vec::new(), vec![group(3), group(5), group(7)]);
+
+        assert_eq!(
+            collect_transparent_sequence_test_ops_with_modes(
+                &plan,
+                1,
+                true,
+                &[
+                    SceneColorSnapshotMode::PerObjectGrab,
+                    SceneColorSnapshotMode::PerObjectGrab,
+                    SceneColorSnapshotMode::PerObjectGrab,
+                ],
+            ),
+            vec![
+                TransparentSequenceTestOp::SnapshotForGrab(0),
+                TransparentSequenceTestOp::DrawGrab(0),
+                TransparentSequenceTestOp::SnapshotForGrab(1),
+                TransparentSequenceTestOp::DrawGrab(1),
+                TransparentSequenceTestOp::SnapshotForGrab(2),
+                TransparentSequenceTestOp::DrawGrab(2),
+            ]
+        );
+    }
+
+    #[test]
+    fn interleaved_grabs_recapture_named_background_after_per_object_overwrite() {
+        let plan = plan_with_transparent_groups(
+            vec![group(4), group(9)],
+            vec![group(2), group(6), group(11)],
+        );
+
+        assert_eq!(
+            collect_transparent_sequence_test_ops_with_modes(
+                &plan,
+                1,
+                true,
+                &[
+                    SceneColorSnapshotMode::NamedBackgroundGrab,
+                    SceneColorSnapshotMode::PerObjectGrab,
+                    SceneColorSnapshotMode::NamedBackgroundGrab,
+                ],
+            ),
+            vec![
+                TransparentSequenceTestOp::SnapshotForGrab(0),
+                TransparentSequenceTestOp::DrawGrab(0),
+                TransparentSequenceTestOp::DrawPostRange(0, 1),
+                TransparentSequenceTestOp::SnapshotForGrab(1),
+                TransparentSequenceTestOp::DrawGrab(1),
+                TransparentSequenceTestOp::DrawPostRange(1, 2),
+                TransparentSequenceTestOp::SnapshotForGrab(2),
+                TransparentSequenceTestOp::DrawGrab(2),
             ]
         );
     }

@@ -125,7 +125,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         _OffsetMask,
         _OffsetMask_sampler,
     );
-    let c = p360m::sample_projection(
+    let sample = p360m::sample_projection(
         view_dir,
         in.view_layer,
         params,
@@ -140,5 +140,5 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         _SecondCube,
         _SecondCube_sampler,
     );
-    return rg::retain_globals_additive(p360m::finish_skybox_color(c, params));
+    return rg::retain_globals_additive(p360m::finish_skybox_sample(sample, params));
 }

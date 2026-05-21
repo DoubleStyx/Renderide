@@ -20,6 +20,7 @@
 //#texture_default _DetailNormalMap bump
 //#mat_default _GlossMapScale float 1.0
 //#mat_default _SmoothnessTextureChannel float 0.0
+//#mat_default _UVSec float 0.0
 //#mat_default _OcclusionStrength float 1.0
 //#mat_default _BumpScale float 1.0
 //#mat_default _Color vec4 1.0 1.0 1.0 1.0
@@ -45,6 +46,7 @@ struct PbsMetallicMaterial {
     _Glossiness: f32,
     _GlossMapScale: f32,
     _SmoothnessTextureChannel: f32,
+    _UVSec: f32,
     _Metallic: f32,
     _BumpScale: f32,
     _Parallax: f32,
@@ -146,7 +148,7 @@ fn sample_surface(uv0: vec2<f32>, uv1: vec2<f32>, world_pos: vec3<f32>, world_n:
         _ParallaxMap_sampler,
         mat._ParallaxMap_LodBias,
     );
-    let uv_detail = pstd::detail_uv(uv0, uv1, 0.0, mat._DetailAlbedoMap_ST);
+    let uv_detail = pstd::detail_uv(uv0, uv1, mat._UVSec, mat._DetailAlbedoMap_ST);
 
     let albedo_sample = ts::sample_tex_2d(_MainTex, _MainTex_sampler, uv_main, mat._MainTex_LodBias);
     let base_alpha = pstd::standard_alpha(mat._Color.a, albedo_sample.a, smoothness_from_albedo_alpha());
@@ -230,11 +232,12 @@ fn vs_main(
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
     @location(4) t: vec4<f32>,
+    @location(5) uv1: vec2<f32>,
 ) -> mv::WorldUv2VertexOutput {
 #ifdef MULTIVIEW
-    return mv::world_uv2_vertex_main(instance_index, view_idx, pos, n, t, uv0, uv0);
+    return mv::world_uv2_vertex_main(instance_index, view_idx, pos, n, t, uv0, uv1);
 #else
-    return mv::world_uv2_vertex_main(instance_index, 0u, pos, n, t, uv0, uv0);
+    return mv::world_uv2_vertex_main(instance_index, 0u, pos, n, t, uv0, uv1);
 #endif
 }
 

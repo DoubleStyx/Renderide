@@ -23,6 +23,20 @@ const XSTOON2_OUTLINED_MATERIAL_ROOTS: &[&str] = &[
     "xstoon2.0_outlined.wgsl",
 ];
 
+const XSTOON2_STATIC_VERTEXLIGHT_MATERIAL_ROOTS: &[&str] = &[
+    "xstoon2.0-cutout.wgsl",
+    "xstoon2.0-cutouta2c.wgsl",
+    "xstoon2.0-cutouta2c-outlined.wgsl",
+    "xstoon2.0-cutouta2cmasked.wgsl",
+    "xstoon2.0-dithered.wgsl",
+    "xstoon2.0-dithered-outlined.wgsl",
+    "xstoon2.0-fade.wgsl",
+    "xstoon2.0-outlined.wgsl",
+    "xstoon2.0-transparent.wgsl",
+    "xstoon2.0_wireframeoverride.wgsl",
+    "xstoon2.0_wireframeoverride_a2c.wgsl",
+];
+
 const XIEXE_NON_CORE_EXTENSION_IDENTIFIERS: &[&str] = &[
     "_DetailNormalMap",
     "_DetailMask",
@@ -556,13 +570,7 @@ fn xiexe_static_stems_use_static_vertexlight_keyword_layout() -> io::Result<()> 
         );
     }
 
-    for file_name in [
-        "xstoon2.0-cutout.wgsl",
-        "xstoon2.0-cutouta2c.wgsl",
-        "xstoon2.0-cutouta2cmasked.wgsl",
-        "xstoon2.0-cutouta2c-outlined.wgsl",
-        "xstoon2.0-dithered-outlined.wgsl",
-    ] {
+    for file_name in XSTOON2_STATIC_VERTEXLIGHT_MATERIAL_ROOTS {
         let src = material_source(file_name)?;
         assert!(
             src.contains(
@@ -575,11 +583,16 @@ fn xiexe_static_stems_use_static_vertexlight_keyword_layout() -> io::Result<()> 
                 && src.contains("XIEE_ALPHA_MODE, XIEE_KEYWORD_LAYOUT"),
             "{file_name} must pass the static keyword layout into the forward fragment path"
         );
+        assert!(
+            !src.contains("resolved_alpha_mode_from_bits"),
+            "{file_name} must not route fixed XSToon sources through generic variant-bit alpha resolution"
+        );
     }
 
     for file_name in [
         "xstoon2.0-cutouta2c-outlined.wgsl",
         "xstoon2.0-dithered-outlined.wgsl",
+        "xstoon2.0-outlined.wgsl",
     ] {
         let src = material_source(file_name)?;
         assert!(

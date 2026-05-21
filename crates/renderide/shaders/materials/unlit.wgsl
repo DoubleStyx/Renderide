@@ -185,7 +185,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var ddx_uv: vec2<f32>;
     var ddy_uv: vec2<f32>;
     if (use_polar_uv) {
-        let mapped = uvu::polar_mapping(in.uv, main_st, max(mat._PolarPow, 1e-4));
+        let mapped = uvu::polar_mapping(in.uv, main_st, mat._PolarPow);
         uv_main = mapped.uv;
         ddx_uv = mapped.ddx_uv;
         ddy_uv = mapped.ddy_uv;

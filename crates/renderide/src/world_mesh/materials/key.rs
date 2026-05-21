@@ -2,7 +2,7 @@
 
 use crate::materials::{
     EmbeddedTangentFallbackMode, MaterialBlendMode, MaterialRenderState, RasterFrontFace,
-    RasterPipelineKind, RasterPrimitiveTopology,
+    RasterPipelineKind, RasterPrimitiveTopology, SceneColorSnapshotMode,
 };
 
 use super::transparent::TransparentMaterialClass;
@@ -57,6 +57,8 @@ pub struct MaterialDrawBatchKey {
     pub embedded_uses_scene_depth_snapshot: bool,
     /// Whether the shader samples the scene-color snapshot through frame globals.
     pub embedded_uses_scene_color_snapshot: bool,
+    /// How the shader expects scene-color snapshots to be refreshed.
+    pub scene_color_snapshot_mode: SceneColorSnapshotMode,
     /// Effective Unity render queue after material override / fallback resolution.
     pub render_queue: i32,
     /// Runtime color, stencil, and depth state for this material/property-block pair.

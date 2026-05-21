@@ -1,8 +1,8 @@
 //! Unity surface shader `Shader "PBSDualSided"`: metallic Standard lighting with two-sided normals.
 //!
-//! Unity's `#pragma surface surf Standard fullforwardshadows addshadow` generates forward base,
-//! forward additive, and shadow caster passes. This renderer has a forward color path here, so the
-//! shader declares the forward base + forward additive passes and keeps culling disabled.
+//! Unity's `#pragma surface surf Standard fullforwardshadows addshadow` uses a material-driven
+//! `Cull [_Cull]` state whose default disables culling. This renderer keeps a single clustered
+//! forward color pass with the same cull fallback.
 //!
 //! Froox variant bits populate `_RenderideVariantBits`; this shader decodes PBSDualSided's
 //! shader-specific keyword bits locally.
@@ -163,7 +163,7 @@ fn vs_main(
 #endif
 }
 
-//#pass type=forward name=forward_two_sided cull=material(off)
+//#pass type=forward name=forward_two_sided cull=material(off) offset=material(0,0)
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,

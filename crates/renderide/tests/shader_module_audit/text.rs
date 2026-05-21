@@ -65,3 +65,14 @@ fn text_shaders_route_font_extra_data_through_normal_stream() -> io::Result<()> 
     }
     Ok(())
 }
+
+#[test]
+fn text_outline_keyword_uses_per_glyph_width_even_when_material_size_is_zero() -> io::Result<()> {
+    let module_src = source_file(manifest_dir().join("shaders/modules/material/text_sdf.wgsl"))?;
+    assert!(
+        module_src.contains("if (outline_enabled) {")
+            && !module_src.contains("outline_enabled && style.outline_size > 1e-6"),
+        "text_sdf.wgsl must not drop OUTLINE when glyph extra data supplies the outline width"
+    );
+    Ok(())
+}

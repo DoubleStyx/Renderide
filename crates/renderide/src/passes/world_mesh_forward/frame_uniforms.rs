@@ -81,6 +81,8 @@ fn build_frame_gpu_uniforms(
             camera_world_pos: camera_world,
             camera_world_pos_right: camera_world_right,
             right_z_coeffs: right.view_space_z_coeffs(),
+            right_view_to_world_y_coeffs:
+                FrameGpuUniforms::view_to_world_y_coeffs_from_world_to_view(right.world_to_view),
             right_proj_params: right.proj_params(),
             right_projection_flags: right.projection_flags,
             light_count: inputs.light_count,
@@ -100,6 +102,8 @@ fn build_frame_gpu_uniforms(
             camera_world_pos_right: camera_world_right,
             light_count: inputs.light_count,
             right_z_coeffs: z,
+            right_view_to_world_y_coeffs:
+                FrameGpuUniforms::view_to_world_y_coeffs_from_world_to_view(mono.world_to_view),
             right_proj_params: p,
             right_projection_flags: mono.projection_flags,
             sample_count: inputs.sample_count,

@@ -12,9 +12,9 @@ mod tangent_fallback;
 mod vertex_streams;
 
 pub use blending::{
-    embedded_stem_uses_alpha_blending, embedded_stem_uses_blended_depth_write,
-    embedded_stem_uses_scene_color_snapshot, embedded_stem_uses_scene_depth_snapshot,
-    embedded_stem_uses_two_sided_transparency,
+    embedded_stem_scene_color_snapshot_mode, embedded_stem_uses_alpha_blending,
+    embedded_stem_uses_blended_depth_write, embedded_stem_uses_scene_color_snapshot,
+    embedded_stem_uses_scene_depth_snapshot, embedded_stem_uses_two_sided_transparency,
 };
 pub use passes::{
     embedded_stem_depth_prepass_pass, embedded_stem_pipeline_pass_count,
@@ -42,7 +42,7 @@ use crate::materials::raster_pipeline::{
 };
 use crate::materials::{
     MaterialBlendMode, MaterialPassDesc, MaterialRenderState, RasterFrontFace,
-    RasterPrimitiveTopology, ReflectedRasterLayout, SnapshotRequirements,
+    RasterPrimitiveTopology, ReflectedRasterLayout, SceneColorSnapshotMode, SnapshotRequirements,
     materialized_embedded_pass_for_blend_mode,
 };
 
@@ -89,6 +89,8 @@ struct EmbeddedStemMetadata {
     uses_blended_depth_write: bool,
     /// Whether declared blended passes include authored front/back cull ordering.
     uses_two_sided_transparency: bool,
+    /// How this material expects scene-color snapshots to be refreshed.
+    scene_color_snapshot_mode: SceneColorSnapshotMode,
     /// Single forward pass that is safe to mirror with the generic depth prepass, if any.
     depth_prepass_pass: Option<MaterialPassDesc>,
 }
@@ -208,6 +210,11 @@ impl EmbeddedStemQuery {
             .map_or_else(SnapshotRequirements::default, |r| r.snapshot_requirements())
     }
 
+    /// How this material expects scene-color snapshots to be refreshed.
+    pub fn scene_color_snapshot_mode(&self) -> SceneColorSnapshotMode {
+        self.metadata.scene_color_snapshot_mode
+    }
+
     /// Returns the single forward pass that can be mirrored by the generic depth prepass.
     pub fn depth_prepass_pass(&self) -> Option<MaterialPassDesc> {
         self.metadata.depth_prepass_pass
@@ -249,6 +256,9 @@ fn embedded_stem_metadata(base_stem: &str, permutation: ShaderPermutation) -> Em
         .ok()
     });
     let depth_prepass_pass = depth_prepass_pass_for_target(wgsl, reflected.as_ref(), passes);
+    let snapshot_requirements = reflected
+        .as_ref()
+        .map_or_else(SnapshotRequirements::default, |r| r.snapshot_requirements());
     let metadata = EmbeddedStemMetadata {
         reflected,
         tangent_fallback_mode: tangent_fallback_mode_for_stem(base_stem),
@@ -256,10 +266,38 @@ fn embedded_stem_metadata(base_stem: &str, permutation: ShaderPermutation) -> Em
         uses_alpha_blending: passes.iter().any(|p| p.blend.is_some()),
         uses_blended_depth_write: passes.iter().any(|p| p.blend.is_some() && p.depth_write),
         uses_two_sided_transparency: passes_use_two_sided_transparency(passes),
+        scene_color_snapshot_mode: scene_color_snapshot_mode_for_stem(
+            base_stem,
+            snapshot_requirements,
+        ),
         depth_prepass_pass,
     };
     guard.insert(key, metadata.clone());
     metadata
+}
+
+/// Derives the refresh policy for scene-color snapshots from reflection and shader-family stem.
+fn scene_color_snapshot_mode_for_stem(
+    base_stem: &str,
+    requirements: SnapshotRequirements,
+) -> SceneColorSnapshotMode {
+    if !requirements.uses_scene_color {
+        return SceneColorSnapshotMode::None;
+    }
+    if stem_uses_named_background_grab(base_stem) {
+        SceneColorSnapshotMode::NamedBackgroundGrab
+    } else {
+        SceneColorSnapshotMode::PerObjectGrab
+    }
+}
+
+/// Returns true for filter stems that use ShaderLab's named `_BackgroundTexture` grab.
+fn stem_uses_named_background_grab(base_stem: &str) -> bool {
+    let stem = base_stem
+        .strip_suffix("_default")
+        .or_else(|| base_stem.strip_suffix("_multiview"))
+        .unwrap_or(base_stem);
+    matches!(stem, "blur" | "pixelate" | "refract")
 }
 
 /// Returns whether a target declares blended front- and back-culled passes.
@@ -415,6 +453,7 @@ mod tests {
                 uses_alpha_blending: false,
                 uses_blended_depth_write: false,
                 uses_two_sided_transparency: false,
+                scene_color_snapshot_mode: SceneColorSnapshotMode::None,
                 depth_prepass_pass: None,
             },
         }

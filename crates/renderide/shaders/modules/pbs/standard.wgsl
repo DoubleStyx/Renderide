@@ -17,7 +17,7 @@ fn standard_alpha(color_alpha: f32, texture_alpha: f32, smoothness_from_albedo_a
 }
 
 fn clip_standard_alpha(alpha: f32, cutoff: f32, enabled: bool) {
-    if (enabled && alpha <= cutoff) {
+    if (enabled && alpha < cutoff) {
         discard;
     }
 }

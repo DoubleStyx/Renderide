@@ -19,6 +19,7 @@
 //#mat_default _Color1 vec4 1.0 1.0 1.0 1.0
 //#mat_default _NormalScale float 1.0
 //#mat_default _NormalScale1 float 1.0
+//#mat_default _AlphaClip float 0.5
 //#mat_default _SpecularColor vec4 1.0 1.0 1.0 0.5
 //#mat_default _SpecularColor1 vec4 1.0 1.0 1.0 0.5
 
@@ -44,7 +45,7 @@ struct PbsLerpSpecularMaterial {
     _Lerp: f32,
     _NormalScale: f32,
     _NormalScale1: f32,
-    _Cutoff: f32,
+    _AlphaClip: f32,
     _RenderideVariantBits: u32,
 }
 
@@ -171,7 +172,7 @@ fn fs_main(
     }
 
     let c = mix(c0, c1, l);
-    if (pbs_kw(PBSLERPSPECULAR_KW_ALPHACLIP) && c.a <= mat._Cutoff) {
+    if (pbs_kw(PBSLERPSPECULAR_KW_ALPHACLIP) && c.a < mat._AlphaClip) {
         discard;
     }
 

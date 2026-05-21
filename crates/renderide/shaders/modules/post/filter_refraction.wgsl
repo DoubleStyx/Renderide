@@ -3,6 +3,7 @@
 #define_import_path renderide::post::filter_refraction
 
 #import renderide::core::normal_decode as nd
+#import renderide::core::texture_sampling as ts
 #import renderide::core::uv as uvu
 #import renderide::draw::per_draw as pd
 #import renderide::frame::scene_depth_sample as sds
@@ -26,6 +27,7 @@ fn normal_offset(
     clip_w: f32,
     strength: f32,
     normal_map_st: vec4<f32>,
+    normal_lod_bias: f32,
     normal_map: texture_2d<f32>,
     normal_sampler: sampler,
 ) -> vec2<f32> {
@@ -35,12 +37,17 @@ fn normal_offset(
 
     var n = normalize(view_n);
     if (normal_map_enabled) {
-        let ts = nd::decode_ts_normal_with_placeholder_sample(
-            textureSample(normal_map, normal_sampler, uvu::apply_st(uv0, normal_map_st)),
+        let tangent_normal = nd::decode_ts_normal_with_placeholder_sample(
+            ts::sample_tex_2d(
+                normal_map,
+                normal_sampler,
+                uvu::apply_st(uv0, normal_map_st),
+                normal_lod_bias,
+            ),
             1.0,
         );
         let tbn = pnorm::orthonormal_tbn(n, view_t);
-        n = normalize(tbn * ts);
+        n = normalize(tbn * tangent_normal);
     }
 
     return n.xy / max(abs(clip_w), 0.000001) * strength;
@@ -57,6 +64,7 @@ fn guarded_refracted_screen_uv(
     view_layer: u32,
     normal_map_enabled: bool,
     normal_map_st: vec4<f32>,
+    normal_lod_bias: f32,
     normal_map: texture_2d<f32>,
     normal_sampler: sampler,
     strength: f32,
@@ -73,10 +81,11 @@ fn guarded_refracted_screen_uv(
         clip_w,
         strength,
         normal_map_st,
+        normal_lod_bias,
         normal_map,
         normal_sampler,
     ) * fade * fm::screen_vignette(screen_uv);
-    let grab_uv = screen_uv + offset;
+    let grab_uv = screen_uv - offset;
 
     // Linearizing the fragment depth twice, and the scene depth not at all.
     // This is what Unity does, and somehow it works!?

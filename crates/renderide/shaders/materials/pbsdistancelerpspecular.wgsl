@@ -207,7 +207,7 @@ fn shade(
     return vec4<f32>(color, alpha);
 }
 
-//#pass type=forward cull=material(off)
+//#pass type=forward cull=material(off) offset=material(0,0)
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,

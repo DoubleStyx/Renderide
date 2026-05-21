@@ -41,7 +41,7 @@ fn vs_main(
 fn fs_main(
     @location(0) uv_in: vec2<f32>,
 ) -> @location(0) vec4<f32> {
-    let mapped = uvu::polar_mapping(uv_in, mat._MainTex_ST, max(mat._Pow, 1e-4));
+    let mapped = uvu::polar_mapping(uv_in, mat._MainTex_ST, mat._Pow);
     let col = textureSampleGrad(_MainTex, _MainTex_sampler, mapped.uv, mapped.ddx_uv, mapped.ddy_uv);
     return rg::retain_globals_additive(col);
 }

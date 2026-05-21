@@ -51,6 +51,10 @@ struct FrameGlobals {
     view_space_z_coeffs: vec4<f32>,
     /// Right-eye world -> view-space Z coefficients (equals left in mono mode).
     view_space_z_coeffs_right: vec4<f32>,
+    /// Left-eye (or mono) view -> world-space Y coefficients.
+    view_to_world_y_coeffs: vec4<f32>,
+    /// Right-eye view -> world-space Y coefficients (equals left in mono mode).
+    view_to_world_y_coeffs_right: vec4<f32>,
     cluster_count_x: u32,
     cluster_count_y: u32,
     cluster_count_z: u32,

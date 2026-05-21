@@ -110,7 +110,7 @@ fn vs_main(
 #endif
 }
 
-//#pass type=forward name=forward_transparent blend=transparent_material zwrite=material(off) cull=material(off) color_mask=material(rgba)
+//#pass type=forward name=forward_transparent blend=transparent_material zwrite=material(off) cull=material(off) color_mask=material(rgba) offset=material(0,0)
 @fragment
 fn fs_main(
     @builtin(position) frag_pos: vec4<f32>,

@@ -29,6 +29,7 @@ struct FiltersBlurMaterial {
     _Iterations: f32,
     _RefractionStrength: f32,
     _DepthDivisor: f32,
+    _NormalMap_LodBias: f32,
     _RenderideVariantBits: u32,
 }
 
@@ -122,6 +123,7 @@ fn refract_offset(uv0: vec2<f32>, view_n: vec3<f32>, view_t: vec4<f32>, clip_w: 
         clip_w,
         mat._RefractionStrength,
         mat._NormalMap_ST,
+        mat._NormalMap_LodBias,
         _NormalMap,
         _NormalMap_sampler,
     );

@@ -132,7 +132,7 @@ fn sample_surface(uv0: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>, vertex
     if (kw_VCOLOR_ALBEDO()) {
         albedo = albedo * vertex_color;
     }
-    if (kw_ALPHACLIP() && albedo.a <= mat._AlphaClip) {
+    if (kw_ALPHACLIP() && albedo.a < mat._AlphaClip) {
         discard;
     }
 
@@ -152,13 +152,9 @@ fn sample_surface(uv0: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>, vertex
         occlusion = textureSample(_OcclusionMap, _OcclusionMap_sampler, uv_main).r;
     }
 
-    let emission_color = mat._EmissionColor.rgb;
-    var emission = vec3<f32>(0.0);
-    if (dot(emission_color, emission_color) > 1e-8) {
-        emission = emission_color;
-        if (kw_EMISSIONTEX()) {
-            emission = emission * textureSample(_EmissionMap, _EmissionMap_sampler, uv_main).rgb;
-        }
+    var emission = mat._EmissionColor.rgb;
+    if (kw_EMISSIONTEX()) {
+        emission = emission * textureSample(_EmissionMap, _EmissionMap_sampler, uv_main).rgb;
     }
     if (kw_VCOLOR_EMIT()) {
         emission = emission * vertex_color.rgb;

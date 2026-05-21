@@ -12,6 +12,16 @@ fn diffuse(n: vec3<f32>, l: vec3<f32>, transmission: f32) -> f32 {
     return min(round(wrapped * 2.0) / 2.0 + transmission, 1.0);
 }
 
+/// Unity Standard SpecularSetup diffuse reflectivity remainder.
+fn one_minus_reflectivity(spec_color: vec3<f32>) -> f32 {
+    return 1.0 - max(max(spec_color.r, spec_color.g), spec_color.b);
+}
+
+/// Unity `EnergyConservationBetweenDiffuseAndSpecular` diffuse reduction.
+fn energy_conserved_diffuse(base_color: vec3<f32>, spec_color: vec3<f32>) -> vec3<f32> {
+    return base_color * clamp(one_minus_reflectivity(spec_color), 0.0, 1.0);
+}
+
 /// Stepped normalized Blinn-Phong specular, used as an analytical replacement for Unity's LUT.
 fn specular(n: vec3<f32>, l: vec3<f32>, v: vec3<f32>, smoothness: f32, specular_highlights: f32) -> f32 {
     if (specular_highlights < 0.5) {
@@ -26,6 +36,41 @@ fn specular(n: vec3<f32>, l: vec3<f32>, v: vec3<f32>, smoothness: f32, specular_
     let steps = max((1.0 - smoothness) * 4.0, 0.01);
     let stepped = round(raw * steps) / steps;
     return stepped * nl;
+}
+
+/// Direct toon-light contribution matching Unity ToonBRDF's `(diffuse + specular) * steppedDiffuse`.
+fn direct_light(
+    diff_color: vec3<f32>,
+    spec_color: vec3<f32>,
+    n: vec3<f32>,
+    l: vec3<f32>,
+    v: vec3<f32>,
+    smoothness: f32,
+    transmission: f32,
+    specular_highlights: f32,
+    radiance: vec3<f32>,
+) -> vec3<f32> {
+    let diffuse_step = diffuse(n, l, transmission);
+    let specular_step = specular(n, l, v, smoothness, specular_highlights);
+    return radiance * (diff_color + spec_color * specular_step) * diffuse_step;
+}
+
+/// Indirect toon contribution matching Unity's diffuse SH plus glossy specular blend.
+fn indirect_light(
+    diff_color: vec3<f32>,
+    spec_color: vec3<f32>,
+    one_minus_reflectivity_value: f32,
+    smoothness: f32,
+    n: vec3<f32>,
+    v: vec3<f32>,
+    ambient: vec3<f32>,
+    specular_radiance: vec3<f32>,
+) -> vec3<f32> {
+    let nv = clamp(dot(n, v), 0.0, 1.0);
+    let fresnel_term = pow(1.0 - nv, 4.0);
+    let grazing_term = clamp(smoothness + (1.0 - one_minus_reflectivity_value), 0.0, 1.0);
+    let specular_tint = mix(spec_color, vec3<f32>(grazing_term), fresnel_term);
+    return ambient * diff_color + specular_radiance * specular_tint;
 }
 
 /// View-dependent stylization rim from the Unity ToonBRDF Fresnel implementation.

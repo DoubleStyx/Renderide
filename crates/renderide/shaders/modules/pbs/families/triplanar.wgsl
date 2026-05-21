@@ -3,6 +3,8 @@
 #define_import_path renderide::pbs::families::triplanar
 
 #import renderide::core::normal_decode as nd
+#import renderide::core::texture_sampling as ts
+
 struct PlanarUvs {
     uv_x: vec2<f32>,
     uv_y: vec2<f32>,
@@ -45,9 +47,19 @@ fn build_planar_uvs(proj_pos: vec3<f32>, projection_n: vec3<f32>, main_tex_st: v
 }
 
 fn sample_rgba(tex: texture_2d<f32>, samp: sampler, uvs: PlanarUvs, weights: vec3<f32>) -> vec4<f32> {
-    let cx = textureSample(tex, samp, uvs.uv_x);
-    let cy = textureSample(tex, samp, uvs.uv_y);
-    let cz = textureSample(tex, samp, uvs.uv_z);
+    return sample_rgba_biased(tex, samp, uvs, weights, 0.0);
+}
+
+fn sample_rgba_biased(
+    tex: texture_2d<f32>,
+    samp: sampler,
+    uvs: PlanarUvs,
+    weights: vec3<f32>,
+    lod_bias: f32,
+) -> vec4<f32> {
+    let cx = ts::sample_tex_2d(tex, samp, uvs.uv_x, lod_bias);
+    let cy = ts::sample_tex_2d(tex, samp, uvs.uv_y, lod_bias);
+    let cz = ts::sample_tex_2d(tex, samp, uvs.uv_z, lod_bias);
     return cx * weights.x + cy * weights.y + cz * weights.z;
 }
 
@@ -60,14 +72,36 @@ fn sample_normal_projected(
     projection_n: vec3<f32>,
     weights: vec3<f32>,
 ) -> vec3<f32> {
+    return sample_normal_projected_biased(
+        enabled,
+        normal_tex,
+        normal_samp,
+        uvs,
+        normal_scale,
+        projection_n,
+        weights,
+        0.0,
+    );
+}
+
+fn sample_normal_projected_biased(
+    enabled: bool,
+    normal_tex: texture_2d<f32>,
+    normal_samp: sampler,
+    uvs: PlanarUvs,
+    normal_scale: f32,
+    projection_n: vec3<f32>,
+    weights: vec3<f32>,
+    lod_bias: f32,
+) -> vec3<f32> {
     let n_geo = normalize(projection_n);
     if (!enabled) {
         return n_geo;
     }
 
-    var t_x = nd::decode_ts_normal_with_placeholder_sample(textureSample(normal_tex, normal_samp, uvs.uv_x), normal_scale);
-    var t_y = nd::decode_ts_normal_with_placeholder_sample(textureSample(normal_tex, normal_samp, uvs.uv_y), normal_scale);
-    var t_z = nd::decode_ts_normal_with_placeholder_sample(textureSample(normal_tex, normal_samp, uvs.uv_z), normal_scale);
+    var t_x = nd::decode_ts_normal_with_placeholder_sample(ts::sample_tex_2d(normal_tex, normal_samp, uvs.uv_x, lod_bias), normal_scale);
+    var t_y = nd::decode_ts_normal_with_placeholder_sample(ts::sample_tex_2d(normal_tex, normal_samp, uvs.uv_y, lod_bias), normal_scale);
+    var t_z = nd::decode_ts_normal_with_placeholder_sample(ts::sample_tex_2d(normal_tex, normal_samp, uvs.uv_z, lod_bias), normal_scale);
 
     t_x.x = t_x.x * uvs.axis_sign.x;
     t_y.x = t_y.x * uvs.axis_sign.y;

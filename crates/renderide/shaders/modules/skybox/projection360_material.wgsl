@@ -30,6 +30,11 @@ struct Projection360Params {
     variant_bits: u32,
 }
 
+struct Projection360Sample {
+    color: vec4<f32>,
+    outside_color: bool,
+}
+
 const P360_KW_CLAMP_INTENSITY: u32 = 1u << 0u;
 const P360_KW_NORMAL: u32 = 1u << 1u;
 const P360_KW_OFFSET: u32 = 1u << 2u;
@@ -123,11 +128,11 @@ fn sample_equirect(
     second_sampler: sampler,
     tint_tex: texture_2d<f32>,
     tint_sampler: sampler,
-) -> vec4<f32> {
+) -> Projection360Sample {
     var uv = p360::dir_to_uv(view_dir, params.fov);
     if (p360::is_outside_uv(uv)) {
         if (kw_OUTSIDE_COLOR(params.variant_bits)) {
-            return params.outside_color;
+            return Projection360Sample(params.outside_color, true);
         }
         if (kw_OUTSIDE_CLIP(params.variant_bits)) {
             discard;
@@ -142,8 +147,12 @@ fn sample_equirect(
     let sample_uv = uvu::apply_st(uv, st);
     var c = textureSampleLevel(main_tex, main_sampler, sample_uv, 0.0);
     if (kw_SECOND_TEXTURE(params.variant_bits)) {
-        let secondary_offset = vec2<f32>(params.second_tex_offset.x, -params.second_tex_offset.y);
-        let sc = textureSampleLevel(second_tex, second_sampler, sample_uv + secondary_offset, 0.0);
+        let sc = textureSampleLevel(
+            second_tex,
+            second_sampler,
+            sample_uv + params.second_tex_offset.xy,
+            0.0,
+        );
         c = mix(c, sc, params.texture_lerp);
     }
 
@@ -157,7 +166,7 @@ fn sample_equirect(
         let l = textureSampleLevel(tint_tex, tint_sampler, tint_uv, 0.0).r;
         c = c * mix(params.tint_a, params.tint_b, l);
     }
-    return c;
+    return Projection360Sample(c, false);
 }
 
 fn sample_cubemap(
@@ -167,7 +176,7 @@ fn sample_cubemap(
     main_cube_sampler: sampler,
     second_cube: texture_cube<f32>,
     second_cube_sampler: sampler,
-) -> vec4<f32> {
+) -> Projection360Sample {
     let dir = normalize(-view_dir);
     let main_dir = cubemap_storage::sample_dir(dir, params.main_cube_storage_v_inverted);
     var c: vec4<f32>;
@@ -186,7 +195,7 @@ fn sample_cubemap(
         }
         c = mix(c, sc, params.texture_lerp);
     }
-    return c;
+    return Projection360Sample(c, false);
 }
 
 fn sample_projection(
@@ -203,7 +212,7 @@ fn sample_projection(
     main_cube_sampler: sampler,
     second_cube: texture_cube<f32>,
     second_cube_sampler: sampler,
-) -> vec4<f32> {
+) -> Projection360Sample {
     if (kw_CUBEMAP(params.variant_bits) || kw_CUBEMAP_LOD(params.variant_bits)) {
         return sample_cubemap(view_dir, params, main_cube, main_cube_sampler, second_cube, second_cube_sampler);
     }
@@ -235,9 +244,23 @@ fn finish_skybox_color(c: vec4<f32>, params: Projection360Params) -> vec4<f32> {
     return apply_tint_exposure_and_clamp(c, params.tint, params);
 }
 
+fn finish_skybox_sample(sample: Projection360Sample, params: Projection360Params) -> vec4<f32> {
+    if (sample.outside_color) {
+        return sample.color;
+    }
+    return finish_skybox_color(sample.color, params);
+}
+
 fn finish_material_color(c_in: vec4<f32>, dist: f32, params: Projection360Params) -> vec4<f32> {
     let fade = clamp((dist - 0.05) * 10.0, 0.0, 1.0);
     var tint = params.tint;
     tint.a = tint.a * fade;
     return apply_tint_exposure_and_clamp(c_in, tint, params);
+}
+
+fn finish_material_sample(sample: Projection360Sample, dist: f32, params: Projection360Params) -> vec4<f32> {
+    if (sample.outside_color) {
+        return sample.color;
+    }
+    return finish_material_color(sample.color, dist, params);
 }

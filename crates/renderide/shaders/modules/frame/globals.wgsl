@@ -66,6 +66,26 @@ fn view_space_z_coeffs_for_view(view_layer: u32) -> vec4<f32> {
     return frame.view_space_z_coeffs;
 }
 
+/// View -> world-space Y coefficients for the current view layer.
+fn view_to_world_y_coeffs_for_view(view_layer: u32) -> vec4<f32> {
+#ifdef MULTIVIEW
+    if (view_index_from_layer(view_layer) != 0u) {
+        return frame.view_to_world_y_coeffs_right;
+    }
+#endif
+    return frame.view_to_world_y_coeffs;
+}
+
+/// Projection coefficients for the current view layer.
+fn proj_params_for_view(view_layer: u32) -> vec4<f32> {
+#ifdef MULTIVIEW
+    if (view_index_from_layer(view_layer) != 0u) {
+        return frame.proj_params_right;
+    }
+#endif
+    return frame.proj_params_left;
+}
+
 /// Projection flags for the current view layer.
 fn projection_flags_for_view(view_layer: u32) -> u32 {
 #ifdef MULTIVIEW

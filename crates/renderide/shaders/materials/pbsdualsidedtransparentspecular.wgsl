@@ -212,7 +212,7 @@ fn shade(
     );
 }
 
-//#pass type=forward name=forward_transparent_cull_front blend=transparent_material zwrite=material(off) cull=front color_mask=material(rgba)
+//#pass type=forward name=forward_transparent_cull_front blend=transparent_material zwrite=material(off) cull=front color_mask=material(rgba) offset=material(0,0)
 @fragment
 fn fs_back_faces(
     @builtin(position) frag_pos: vec4<f32>,
@@ -227,7 +227,7 @@ fn fs_back_faces(
     return shade(frag_pos.xy, world_pos, world_n, world_t, uv0, color, view_layer, front_facing);
 }
 
-//#pass type=forward name=forward_transparent_cull_back blend=transparent_material zwrite=material(off) cull=back color_mask=material(rgba)
+//#pass type=forward name=forward_transparent_cull_back blend=transparent_material zwrite=material(off) cull=back color_mask=material(rgba) offset=material(0,0)
 @fragment
 fn fs_front_faces(
     @builtin(position) frag_pos: vec4<f32>,

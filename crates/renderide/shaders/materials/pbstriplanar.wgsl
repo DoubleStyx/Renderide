@@ -50,6 +50,16 @@ struct PbsTriplanarMaterial {
     _TriBlendPower: f32,
     /// Renderer-reserved Froox shader variant bitmask.
     _RenderideVariantBits: u32,
+    /// Host mip bias for `_MainTex`.
+    _MainTex_LodBias: f32,
+    /// Host mip bias for `_NormalMap`.
+    _NormalMap_LodBias: f32,
+    /// Host mip bias for `_MetallicMap`.
+    _MetallicMap_LodBias: f32,
+    /// Host mip bias for `_EmissionMap`.
+    _EmissionMap_LodBias: f32,
+    /// Host mip bias for `_OcclusionMap`.
+    _OcclusionMap_LodBias: f32,
 }
 
 const PBSTRIPLANAR_KW_ALBEDOTEX: u32 = 1u << 0u;
@@ -138,13 +148,13 @@ fn sample_surface(
 
     var c = mat._Color;
     if (kw_ALBEDOTEX()) {
-        c = c * ptri::sample_rgba(_MainTex, _MainTex_sampler, uvs, weights);
+        c = c * ptri::sample_rgba_biased(_MainTex, _MainTex_sampler, uvs, weights, mat._MainTex_LodBias);
     }
 
     var metallic = mat._Metallic;
     var smoothness = mat._Glossiness;
     if (kw_METALLICMAP()) {
-        let m = ptri::sample_rgba(_MetallicMap, _MetallicMap_sampler, uvs, weights);
+        let m = ptri::sample_rgba_biased(_MetallicMap, _MetallicMap_sampler, uvs, weights, mat._MetallicMap_LodBias);
         metallic = m.r;
         smoothness = m.a;
     }
@@ -154,16 +164,16 @@ fn sample_surface(
     var occlusion = 1.0;
     if (kw_OCCLUSION()) {
         // Unity's reference reads occlusion from the green channel here.
-        let occ = ptri::sample_rgba(_OcclusionMap, _OcclusionMap_sampler, uvs, weights);
+        let occ = ptri::sample_rgba_biased(_OcclusionMap, _OcclusionMap_sampler, uvs, weights, mat._OcclusionMap_LodBias);
         occlusion = occ.g;
     }
 
     var emission = mat._EmissionColor;
     if (kw_EMISSIONTEX()) {
-        emission = emission * ptri::sample_rgba(_EmissionMap, _EmissionMap_sampler, uvs, weights);
+        emission = emission * ptri::sample_rgba_biased(_EmissionMap, _EmissionMap_sampler, uvs, weights, mat._EmissionMap_LodBias);
     }
 
-    var n_world = ptri::sample_normal_projected(
+    var n_world = ptri::sample_normal_projected_biased(
         normal_map,
         _NormalMap,
         _NormalMap_sampler,
@@ -171,6 +181,7 @@ fn sample_surface(
         mat._NormalScale,
         projection_n,
         weights,
+        mat._NormalMap_LodBias,
     );
     if (object_space) {
         if (normal_map) {
@@ -229,7 +240,7 @@ fn vs_main(
 }
 
 /// Forward-base pass: ambient + directional lighting + emission.
-//#pass type=forward
+//#pass type=forward cull=material(off) offset=material(0,0)
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,

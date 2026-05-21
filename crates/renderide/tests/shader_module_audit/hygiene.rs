@@ -215,6 +215,17 @@ fn grab_filter_roots_use_shared_filter_common_helpers() -> io::Result<()> {
 }
 
 #[test]
+fn threshold_filter_preserves_signed_transition() -> io::Result<()> {
+    let src = material_source("threshold.wgsl")?;
+    assert!(
+        src.contains("select(-1e-6, 1e-6, mat._Transition >= 0.0)")
+            && !src.contains("max(abs(mat._Transition), 1e-6)"),
+        "threshold.wgsl must keep negative `_Transition` values inverted like the Unity source"
+    );
+    Ok(())
+}
+
+#[test]
 fn refraction_filter_roots_use_shared_refraction_helpers() -> io::Result<()> {
     for material in ["blur.wgsl", "refract.wgsl"] {
         let src = material_source(material)?;

@@ -45,9 +45,11 @@
 
 #import renderide::xiexe::toon2 as xs
 #import renderide::xiexe::toon2::base as xb
+#import renderide::xiexe::toon2::variant_bits as xvb
 #import renderide::xiexe::toon2::outline as xo
 
 const XIEE_ALPHA_MODE: u32 = 0u;
+const XIEE_KEYWORD_LAYOUT: u32 = xvb::XTOON_KEYWORD_LAYOUT_STATIC_VERTEXLIGHT;
 
 @vertex
 fn vs_main(
@@ -103,8 +105,8 @@ fn fs_outline(
     @location(6) color: vec4<f32>,
     @location(8) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
-    return xo::fragment_outline(
-        frag_pos, front_facing, world_pos, world_n, world_t, world_b, uv0, uv1, color, view_layer, XIEE_ALPHA_MODE
+    return xo::fragment_outline_for_layout(
+        frag_pos, front_facing, world_pos, world_n, world_t, world_b, uv0, uv1, color, view_layer, XIEE_ALPHA_MODE, XIEE_KEYWORD_LAYOUT
     );
 }
 
@@ -122,7 +124,7 @@ fn fs_forward_base(
     @location(6) color: vec4<f32>,
     @location(8) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
-    return xs::fragment_forward(
-        frag_pos, front_facing, world_pos, world_n, world_t, world_b, uv0, uv1, color, view_layer, XIEE_ALPHA_MODE
+    return xs::fragment_forward_for_layout(
+        frag_pos, front_facing, world_pos, world_n, world_t, world_b, uv0, uv1, color, view_layer, XIEE_ALPHA_MODE, XIEE_KEYWORD_LAYOUT
     );
 }

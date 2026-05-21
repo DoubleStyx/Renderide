@@ -18,6 +18,7 @@
 #import renderide::material::alpha as ma
 #import renderide::material::variant_bits as vb
 #import renderide::mesh::vertex as mv
+#import renderide::core::texture_sampling as ts
 #import renderide::core::uv as uvu
 #import renderide::core::normal_decode as nd
 
@@ -26,8 +27,9 @@ struct ReflectionMaterial {
     _NormalMap_ST: vec4<f32>,
     _Cutoff: f32,
     _Distort: f32,
+    _NormalMap_LodBias: f32,
     _RenderideVariantBits: u32,
-    _pad0: u32,
+    _pad0: vec2<u32>,
 }
 
 const REFLECTION_KW_ALPHATEST: u32 = 1u << 0u;
@@ -99,7 +101,7 @@ fn fs_main(
     var screen = screen_uv.xy / max(screen_uv.z, 1e-4);
     if (kw_NORMALMAP()) {
         let bump = nd::decode_ts_normal_with_placeholder_sample(
-            textureSample(_NormalMap, _NormalMap_sampler, uv),
+            ts::sample_tex_2d(_NormalMap, _NormalMap_sampler, uv, mat._NormalMap_LodBias),
             1.0,
         );
         screen = screen + bump.xy * mat._Distort;

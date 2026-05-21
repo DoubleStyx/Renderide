@@ -30,6 +30,8 @@
 #import renderide::pbs::sampling as psamp
 #import renderide::material::toon_brdf as tbrdf
 #import renderide::core::uv as uvu
+#import renderide::core::texture_sampling as ts
+#import renderide::lighting::reflection_probes as rprobe
 
 struct ToonStandardMaterial {
     _Color: vec4<f32>,
@@ -47,6 +49,10 @@ struct ToonStandardMaterial {
     _Cutoff: f32,
     _SpecularHighlights: f32,
     _GlossyReflections: f32,
+    _MainTex_LodBias: f32,
+    _SpecGlossMap_LodBias: f32,
+    _BumpMap_LodBias: f32,
+    _EmissionMap_LodBias: f32,
 }
 
 @group(1) @binding(0) var<uniform> mat: ToonStandardMaterial;
@@ -69,7 +75,7 @@ struct VertexOutput {
 }
 
 fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>) -> vec3<f32> {
-    return psamp::sample_world_normal(_BumpMap, _BumpMap_sampler, uv_main, 0.0, mat._BumpScale, world_n, world_t);
+    return psamp::sample_world_normal(_BumpMap, _BumpMap_sampler, uv_main, mat._BumpMap_LodBias, mat._BumpScale, world_n, world_t);
 }
 
 @vertex
@@ -115,19 +121,20 @@ fn shade(
     view_layer: u32,
 ) -> vec4<f32> {
     let uv_main = uvu::apply_st(uv0, mat._MainTex_ST);
-    let albedo_s = textureSample(_MainTex, _MainTex_sampler, uv_main);
+    let albedo_s = ts::sample_tex_2d(_MainTex, _MainTex_sampler, uv_main, mat._MainTex_LodBias);
     let c = albedo_s * mat._Color;
     let base_color = c.rgb;
 
-    let spec_s = textureSample(_SpecGlossMap, _SpecGlossMap_sampler, uv_main);
+    let spec_s = ts::sample_tex_2d(_SpecGlossMap, _SpecGlossMap_sampler, uv_main, mat._SpecGlossMap_LodBias);
     let spec_color = spec_s.rgb * mat._SpecColor.rgb;
+    let one_minus_reflectivity = tbrdf::one_minus_reflectivity(spec_color);
+    let diff_color = tbrdf::energy_conserved_diffuse(base_color, spec_color);
     let smoothness = clamp(spec_s.a * mat._Glossiness, 0.0, 1.0);
 
-    let emission = textureSample(_EmissionMap, _EmissionMap_sampler, uv_main).rgb * mat._EmissionColor.rgb;
+    let emission = ts::sample_tex_2d(_EmissionMap, _EmissionMap_sampler, uv_main, mat._EmissionMap_LodBias).rgb * mat._EmissionColor.rgb;
 
     let n = sample_normal_world(uv_main, world_n, world_t);
-    let cam = rg::camera_world_pos_for_view(view_layer);
-    let v = normalize(cam - world_pos);
+    let v = rg::view_dir_for_world_pos(world_pos, view_layer);
 
     let cluster_id = pcls::cluster_id_from_frag(
         frag_xy, world_pos, rg::frame.view_space_z_coeffs, rg::frame.view_space_z_coeffs_right,
@@ -159,14 +166,43 @@ fn shade(
                 attenuation = attenuation * bl::spot_angle_attenuation(light, l);
             }
         }
-        let diff_step = tbrdf::diffuse(n, l, mat._Transmission);
-        let spec_step = tbrdf::specular(n, l, v, smoothness, mat._SpecularHighlights);
         let radiance = light.color * attenuation;
-        lo = lo + radiance * (base_color * diff_step + spec_color * spec_step);
+        lo = lo + tbrdf::direct_light(
+            diff_color,
+            spec_color,
+            n,
+            l,
+            v,
+            smoothness,
+            mat._Transmission,
+            mat._SpecularHighlights,
+            radiance,
+        );
     }
 
+    let ambient = rprobe::indirect_diffuse(world_pos, n, view_layer, true);
+    let indirect_specular = rprobe::raw_indirect_specular_with_horizon(
+        world_pos,
+        n,
+        normalize(world_n),
+        v,
+        psamp::roughness_from_smoothness(smoothness),
+        mat._GlossyReflections >= 0.5,
+        view_layer,
+    );
+    let indirect = tbrdf::indirect_light(
+        diff_color,
+        spec_color,
+        one_minus_reflectivity,
+        smoothness,
+        n,
+        v,
+        ambient,
+        indirect_specular,
+    );
+
     let fresnel = tbrdf::fresnel(
-        base_color,
+        diff_color,
         v,
         n,
         mat._Fresnel,
@@ -175,7 +211,7 @@ fn shade(
         mat._FresnelStrength,
         mat._FresnelTint.rgb,
     );
-    return vec4<f32>(lo + emission + fresnel, c.a);
+    return vec4<f32>(lo + indirect + emission + fresnel, c.a);
 }
 
 //#pass type=forward

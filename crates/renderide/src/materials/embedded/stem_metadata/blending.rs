@@ -1,6 +1,6 @@
 //! Alpha-blending and scene-snapshot flag queries on composed embedded WGSL stems.
 
-use crate::materials::ShaderPermutation;
+use crate::materials::{SceneColorSnapshotMode, ShaderPermutation};
 
 use super::EmbeddedStemQuery;
 
@@ -45,18 +45,26 @@ pub fn embedded_stem_uses_scene_color_snapshot(
         .uses_scene_color
 }
 
+/// How the embedded material expects the scene-color snapshot to be refreshed.
+pub fn embedded_stem_scene_color_snapshot_mode(
+    base_stem: &str,
+    permutation: ShaderPermutation,
+) -> SceneColorSnapshotMode {
+    EmbeddedStemQuery::for_stem(base_stem, permutation).scene_color_snapshot_mode()
+}
+
 #[cfg(test)]
 mod tests {
     use crate::materials::ShaderPermutation;
     use crate::materials::{
         MaterialDepthCompareDomain, MaterialPassState, MaterialRenderStatePolicy,
-        SHADER_PERM_MULTIVIEW_STEREO,
+        SHADER_PERM_MULTIVIEW_STEREO, SceneColorSnapshotMode,
     };
 
     use super::{
-        embedded_stem_uses_alpha_blending, embedded_stem_uses_blended_depth_write,
-        embedded_stem_uses_scene_color_snapshot, embedded_stem_uses_scene_depth_snapshot,
-        embedded_stem_uses_two_sided_transparency,
+        embedded_stem_scene_color_snapshot_mode, embedded_stem_uses_alpha_blending,
+        embedded_stem_uses_blended_depth_write, embedded_stem_uses_scene_color_snapshot,
+        embedded_stem_uses_scene_depth_snapshot, embedded_stem_uses_two_sided_transparency,
     };
     use crate::materials::embedded::stem_metadata::{
         embedded_composed_stem_for_permutation, embedded_stem_requires_intersection_pass,
@@ -161,6 +169,42 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn scene_color_snapshot_modes_distinguish_named_and_per_object_grabs() {
+        let mono = ShaderPermutation(0);
+
+        for stem in ["blur_default", "pixelate_default", "refract_default"] {
+            assert_eq!(
+                embedded_stem_scene_color_snapshot_mode(stem, mono),
+                SceneColorSnapshotMode::NamedBackgroundGrab,
+                "{stem}"
+            );
+            assert_eq!(
+                embedded_stem_scene_color_snapshot_mode(stem, SHADER_PERM_MULTIVIEW_STEREO),
+                SceneColorSnapshotMode::NamedBackgroundGrab,
+                "{stem}"
+            );
+        }
+
+        for stem in [
+            "blur_perobject_default",
+            "pixelate_perobject_default",
+            "posterize_default",
+            "posterize_perobject_default",
+        ] {
+            assert_eq!(
+                embedded_stem_scene_color_snapshot_mode(stem, mono),
+                SceneColorSnapshotMode::PerObjectGrab,
+                "{stem}"
+            );
+        }
+
+        assert_eq!(
+            embedded_stem_scene_color_snapshot_mode("pbsmetallic_default", mono),
+            SceneColorSnapshotMode::None
+        );
     }
 
     /// Asserts the source-authored filter pass fallback state for one stem.

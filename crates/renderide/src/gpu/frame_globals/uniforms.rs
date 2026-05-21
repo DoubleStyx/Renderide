@@ -18,12 +18,13 @@ pub const FRAME_TAIL_SAMPLE_COUNT_MASK: u32 = 0xF << FRAME_TAIL_SAMPLE_COUNT_SHI
 /// Frame projection flag indicating that the corresponding view uses orthographic projection.
 pub const FRAME_PROJECTION_FLAG_ORTHOGRAPHIC: u32 = 1;
 
-/// Uniform block matching WGSL `FrameGlobals` (320-byte size, 16-byte aligned).
+/// Uniform block matching WGSL `FrameGlobals` (352-byte size, 16-byte aligned).
 ///
 /// Encodes per-eye camera positions, per-eye coefficients for view-space Z from world position,
-/// clustered grid dimensions, clip planes, light count, viewport size, per-eye projection
-/// coefficients for screen-space-to-view unprojection, a monotonic frame index for temporal /
-/// jittered effects, a reserved direct skybox specular slot, elapsed frame time, and ambient SH2.
+/// per-eye coefficients for reconstructing world Y from view position, clustered grid dimensions,
+/// clip planes, light count, viewport size, per-eye projection coefficients for screen-space-to-view
+/// unprojection, a monotonic frame index for temporal / jittered effects, a reserved direct skybox
+/// specular slot, elapsed frame time, and ambient SH2.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct FrameGpuUniforms {
@@ -35,6 +36,10 @@ pub struct FrameGpuUniforms {
     pub view_space_z_coeffs: [f32; 4],
     /// Right-eye world -> view-space Z. Set equal to `view_space_z_coeffs` in mono mode.
     pub view_space_z_coeffs_right: [f32; 4],
+    /// Left-eye (or mono) view -> world-space Y: `dot(coeffs.xyz, view) + coeffs.w`.
+    pub view_to_world_y_coeffs: [f32; 4],
+    /// Right-eye view -> world-space Y. Set equal to `view_to_world_y_coeffs` in mono mode.
+    pub view_to_world_y_coeffs_right: [f32; 4],
     /// Cluster grid width in tiles (X).
     pub cluster_count_x: u32,
     /// Cluster grid height in tiles (Y).
@@ -84,6 +89,14 @@ impl FrameGpuUniforms {
     pub fn view_space_z_coeffs_from_world_to_view(world_to_view: Mat4) -> [f32; 4] {
         let m = world_to_view;
         [m.x_axis.z, m.y_axis.z, m.z_axis.z, m.w_axis.z]
+    }
+
+    /// Coefficients so `dot(coeffs.xyz, view) + coeffs.w` yields world-space Y for a view point.
+    ///
+    /// Uses the second row of the inverse world-to-view matrix.
+    pub fn view_to_world_y_coeffs_from_world_to_view(world_to_view: Mat4) -> [f32; 4] {
+        let m = world_to_view.inverse();
+        [m.x_axis.y, m.y_axis.y, m.z_axis.y, m.w_axis.y]
     }
 
     /// Extracts `(P[0][0], P[1][1], P[0][2], P[1][2])` from a column-major perspective matrix.
