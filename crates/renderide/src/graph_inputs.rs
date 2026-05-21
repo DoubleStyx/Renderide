@@ -206,6 +206,8 @@ pub struct GraphPassFrameView<'a> {
     pub host_camera: HostCameraFrame,
     /// Render-context override scope used for transforms, materials, lights, and draw matrices.
     pub render_context: RenderingContext,
+    /// Elapsed renderer runtime in seconds for Unity-style shader time inputs.
+    pub frame_time_seconds: f32,
     /// When `true`, the forward pass targets 2-layer array attachments and may use multiview.
     pub multiview_stereo: bool,
     /// When rendering a secondary camera to a host render texture, the asset id of the color

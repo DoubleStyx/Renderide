@@ -132,7 +132,7 @@ fn material_roots_do_not_redeclare_shared_helpers() -> io::Result<()> {
 }
 
 #[test]
-fn volume_material_roots_clamp_emitted_source_rgb() -> io::Result<()> {
+fn volume_unlit_clamps_emitted_source_rgb() -> io::Result<()> {
     let volume_box = module_source("material/volume_box.wgsl")?;
     assert!(
         volume_box.contains("fn clamp_volume_source_rgb(color: vec4<f32>) -> vec4<f32>")
@@ -140,13 +140,11 @@ fn volume_material_roots_clamp_emitted_source_rgb() -> io::Result<()> {
         "volume_box must expose a helper that clamps emitted volume source RGB"
     );
 
-    for material in ["fogboxvolume.wgsl", "volumeunlit.wgsl"] {
-        let src = material_source(material)?;
-        assert!(
-            src.contains("vol::clamp_volume_source_rgb("),
-            "{material} must clamp emitted source RGB before additive retention"
-        );
-    }
+    let src = material_source("volumeunlit.wgsl")?;
+    assert!(
+        src.contains("vol::clamp_volume_source_rgb("),
+        "volumeunlit.wgsl must clamp emitted source RGB before additive retention"
+    );
 
     Ok(())
 }

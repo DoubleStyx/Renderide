@@ -13,10 +13,12 @@
 #import renderide::pbs::normal as pnorm
 #import renderide::core::uv as uvu
 #import renderide::frame::view_basis as vb
+#import renderide::core::texture_sampling as ts
 
 struct MatcapMaterial {
     _RenderideVariantBits: u32,
-    _pad0: u32,
+    _MainTex_LodBias: f32,
+    _NormalMap_LodBias: f32,
     _NormalMap_ST: vec4<f32>,
 }
 
@@ -93,7 +95,7 @@ fn fs_main(
     var normal_ts = vec3<f32>(0.0, 0.0, 1.0);
     if (kw_NORMALMAP()) {
         normal_ts = nd::decode_ts_normal_with_placeholder_sample(
-            textureSample(_NormalMap, _NormalMap_sampler, uv_normal),
+            ts::sample_tex_2d(_NormalMap, _NormalMap_sampler, uv_normal, mat._NormalMap_LodBias),
             1.0,
         );
     }
@@ -108,6 +110,6 @@ fn fs_main(
         dot(rmath::safe_normalize(view_y, vec3<f32>(0.0, 1.0, 0.0)), n_world),
     );
     let uv = n_view_xy * 0.5 + vec2<f32>(0.5);
-    let col = textureSample(_MainTex, _MainTex_sampler, uv);
+    let col = ts::sample_tex_2d(_MainTex, _MainTex_sampler, uv, mat._MainTex_LodBias);
     return rg::retain_globals_additive(col);
 }

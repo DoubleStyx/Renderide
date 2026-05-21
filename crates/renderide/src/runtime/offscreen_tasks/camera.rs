@@ -271,6 +271,7 @@ impl RendererRuntime {
         }
         self.sync_master_msaa(gpu);
         self.set_pending_camera_readbacks(tasks.len());
+        let frame_time_seconds = self.tick_state.frame_time_seconds();
         let mut stats = CameraReadbackDrainStats::default();
         let RendererRuntime {
             frontend,
@@ -303,6 +304,7 @@ impl RendererRuntime {
                 shm: &mut *shm,
                 task_index,
                 task: &task,
+                frame_time_seconds,
             }) {
                 Ok(()) => stats.completed = stats.completed.saturating_add(1),
                 Err(error) => {
@@ -330,6 +332,7 @@ struct CameraTaskRenderCtx<'a> {
     shm: &'a mut SharedMemoryAccessor,
     task_index: i32,
     task: &'a CameraRenderTask,
+    frame_time_seconds: f32,
 }
 
 fn render_camera_task(ctx: CameraTaskRenderCtx<'_>) -> Result<(), CameraReadbackError> {
@@ -348,6 +351,7 @@ fn render_camera_task(ctx: CameraTaskRenderCtx<'_>) -> Result<(), CameraReadback
         ctx.base_camera,
         ctx.task_index,
         ctx.task,
+        ctx.frame_time_seconds,
     )?;
     render_camera_task_offscreen(ctx.gpu, ctx.backend, ctx.scene, planned.plan)?;
     if planned.output_format.needs_alpha_coverage_repair() {
@@ -375,6 +379,7 @@ fn plan_camera_task(
     base_camera: &crate::camera::HostCameraFrame,
     task_index: i32,
     task: &CameraRenderTask,
+    frame_time_seconds: f32,
 ) -> Result<PlannedCameraTask, CameraReadbackError> {
     profiling::scope!("camera_task::plan");
     let parameters = task
@@ -415,6 +420,7 @@ fn plan_camera_task(
         plan: FrameViewPlan {
             host_camera,
             render_context: RenderingContext::RenderToAsset,
+            frame_time_seconds,
             draw_filter: Some(filter),
             render_space_filter: Some(render_space_id),
             view_id: ViewId::camera_render_task(render_space_id, task_index),

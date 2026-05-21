@@ -18,12 +18,12 @@ pub const FRAME_TAIL_SAMPLE_COUNT_MASK: u32 = 0xF << FRAME_TAIL_SAMPLE_COUNT_SHI
 /// Frame projection flag indicating that the corresponding view uses orthographic projection.
 pub const FRAME_PROJECTION_FLAG_ORTHOGRAPHIC: u32 = 1;
 
-/// Uniform block matching WGSL `FrameGlobals` (304-byte size, 16-byte aligned).
+/// Uniform block matching WGSL `FrameGlobals` (320-byte size, 16-byte aligned).
 ///
 /// Encodes per-eye camera positions, per-eye coefficients for view-space Z from world position,
 /// clustered grid dimensions, clip planes, light count, viewport size, per-eye projection
 /// coefficients for screen-space-to-view unprojection, a monotonic frame index for temporal /
-/// jittered effects, a reserved direct skybox specular slot, and ambient SH2.
+/// jittered effects, a reserved direct skybox specular slot, elapsed frame time, and ambient SH2.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct FrameGpuUniforms {
@@ -70,6 +70,9 @@ pub struct FrameGpuUniforms {
     /// Reserved direct skybox specular parameters: `.x` max resident LOD, `.y` enabled flag,
     /// `.z` [`super::skybox_specular::SkyboxSpecularSourceKind`] tag, `.w` reserved.
     pub skybox_specular: [f32; 4],
+    /// Frame time values for Unity-style shader time inputs: `.x` is elapsed renderer seconds and
+    /// `.yzw` are reserved.
+    pub frame_time: [f32; 4],
     /// Ambient SH2 coefficients (`RenderSH2` order), padded to WGSL `vec4<f32>` slots.
     pub ambient_sh: [[f32; 4]; 9],
 }

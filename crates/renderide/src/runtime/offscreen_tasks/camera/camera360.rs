@@ -178,6 +178,7 @@ fn plan_camera360_task(
                 CAMERA360_CUBE_BASIS_MODE,
             ),
             render_context: RenderingContext::RenderToAsset,
+            frame_time_seconds: ctx.frame_time_seconds,
             draw_filter: Some(filter.clone()),
             render_space_filter: Some(render_space_id),
             view_id: ViewId::camera360_render_task_face(

@@ -77,7 +77,7 @@ fn shaded_color(
     );
     let color = furl::shade_specular_clustered(
         input.clip_pos.xy,
-        input.world_pos,
+        input.base_world_pos,
         input.view_layer,
         surface,
         furl::default_lighting_options(direct_visibility),
@@ -87,6 +87,8 @@ fn shaded_color(
 
 fn fragment_base(input: furc::VertexOutput) -> vec4<f32> {
     let tex = ts::sample_tex_2d(_MainTex, _MainTex_sampler, input.main_uv, mat._MainTex_LodBias);
+    furc::alpha_clip(1.0, mat._Cutoff);
+
     let base_color = tex.rgb * mat._Color.rgb;
     return shaded_color(input, base_color, 1.0, 1.0);
 }

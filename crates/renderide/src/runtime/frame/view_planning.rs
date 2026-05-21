@@ -221,6 +221,7 @@ impl RendererRuntime {
             views.push(FrameViewPlan {
                 host_camera: self.host_camera,
                 render_context: main_render_context,
+                frame_time_seconds: self.tick_state.frame_time_seconds(),
                 draw_filter: None,
                 render_space_filter: None,
                 view_id: ViewId::Main,
@@ -351,6 +352,7 @@ impl RendererRuntime {
             views.push(FrameViewPlan {
                 host_camera: hc,
                 render_context: secondary_camera_render_context(),
+                frame_time_seconds: self.tick_state.frame_time_seconds(),
                 draw_filter: Some(filter),
                 render_space_filter: Some(sid),
                 view_id: secondary_camera_view_id(sid, entry.renderable_index, cam_idx),
@@ -391,6 +393,7 @@ impl RendererRuntime {
         FrameViewPlan {
             host_camera: self.host_camera,
             render_context: self.scene.active_main_render_context(),
+            frame_time_seconds: self.tick_state.frame_time_seconds(),
             draw_filter: None,
             render_space_filter: None,
             view_id: ViewId::Main,

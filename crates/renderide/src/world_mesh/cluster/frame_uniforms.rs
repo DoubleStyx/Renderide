@@ -35,6 +35,8 @@ pub struct FrameGpuUniformBuildParams {
     pub ambient_sh_valid: bool,
     /// Reserved direct skybox specular state; specular IBL comes from reflection probes.
     pub skybox_specular: SkyboxSpecularUniformParams,
+    /// Elapsed renderer runtime in seconds for Unity-style shader time inputs.
+    pub frame_time_seconds: f32,
     /// Host ambient SH2 coefficients for indirect diffuse.
     pub ambient_sh: [[f32; 4]; 9],
 }
@@ -69,6 +71,7 @@ pub(super) fn build_frame_gpu_uniforms(
         sample_count: params.sample_count,
         ambient_sh_valid: params.ambient_sh_valid,
         skybox_specular: params.skybox_specular,
+        frame_time_seconds: params.frame_time_seconds,
         ambient_sh: params.ambient_sh,
     };
     FrameGpuUniforms::new_clustered(&params)

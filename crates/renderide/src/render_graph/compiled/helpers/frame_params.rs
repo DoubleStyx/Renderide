@@ -25,6 +25,8 @@ pub(in crate::render_graph::compiled) struct GraphPassFrameViewInputs<'a, 'r> {
     pub host_camera: &'r HostCameraFrame,
     /// Render-context override scope used by per-view passes.
     pub render_context: RenderingContext,
+    /// Elapsed renderer runtime in seconds for Unity-style shader time inputs.
+    pub frame_time_seconds: f32,
     /// Background clear/skybox behavior for this view.
     pub clear: FrameViewClear,
     /// Post-processing permissions requested by this view.
@@ -37,6 +39,22 @@ pub(in crate::render_graph::compiled) struct GraphPassFrameViewInputs<'a, 'r> {
     pub hi_z_slot: Arc<parking_lot::Mutex<crate::occlusion::gpu::HiZGpuState>>,
 }
 
+/// Inputs for [`frame_render_params_from_resolved`].
+pub(in crate::render_graph::compiled) struct ResolvedFrameRenderParamsInputs<'a, 'r> {
+    /// Resolved surface targets, viewport, and view flags for this view.
+    pub resolved: &'r ResolvedView<'a>,
+    /// Host camera inputs forwarded to per-pass logic.
+    pub host_camera: &'r HostCameraFrame,
+    /// Render-context override scope used by per-view passes.
+    pub render_context: RenderingContext,
+    /// Elapsed renderer runtime in seconds for Unity-style shader time inputs.
+    pub frame_time_seconds: f32,
+    /// Background clear/skybox behavior for this view.
+    pub clear: FrameViewClear,
+    /// Post-processing permissions requested by this view.
+    pub post_processing: ViewPostProcessing,
+}
+
 /// Builds [`GraphPassFrame`] from pre-split shared backend slices and per-view surface state.
 pub(in crate::render_graph::compiled) fn frame_render_params_from_shared<'a>(
     shared: FrameSystemsShared<'a>,
@@ -47,6 +65,7 @@ pub(in crate::render_graph::compiled) fn frame_render_params_from_shared<'a>(
         scene_color_format,
         host_camera,
         render_context,
+        frame_time_seconds,
         clear,
         post_processing,
         gpu_limits,
@@ -72,6 +91,7 @@ pub(in crate::render_graph::compiled) fn frame_render_params_from_shared<'a>(
             viewport_px: resolved.viewport_px,
             host_camera: *host_camera,
             render_context,
+            frame_time_seconds,
             multiview_stereo: resolved.multiview_stereo,
             offscreen_write_render_texture_asset_id: resolved
                 .offscreen_write_render_texture_asset_id,
@@ -92,12 +112,16 @@ pub(in crate::render_graph::compiled) fn frame_render_params_from_shared<'a>(
 pub(in crate::render_graph::compiled) fn frame_render_params_from_resolved<'a>(
     scene: &'a SceneCoordinator,
     backend: &'a mut dyn GraphExecutionBackend,
-    resolved: &ResolvedView<'a>,
-    host_camera: &HostCameraFrame,
-    render_context: RenderingContext,
-    clear: FrameViewClear,
-    post_processing: ViewPostProcessing,
+    inputs: ResolvedFrameRenderParamsInputs<'a, '_>,
 ) -> GraphPassFrame<'a> {
+    let ResolvedFrameRenderParamsInputs {
+        resolved,
+        host_camera,
+        render_context,
+        frame_time_seconds,
+        clear,
+        post_processing,
+    } = inputs;
     let scene_color_format = backend.scene_color_format_wgpu();
     let split = backend.split_for_graph_frame_params();
     let hi_z_slot = split.occlusion.ensure_hi_z_state(resolved.view_id);
@@ -119,6 +143,7 @@ pub(in crate::render_graph::compiled) fn frame_render_params_from_resolved<'a>(
             scene_color_format,
             host_camera,
             render_context,
+            frame_time_seconds,
             clear,
             post_processing,
             gpu_limits: split.gpu_limits,

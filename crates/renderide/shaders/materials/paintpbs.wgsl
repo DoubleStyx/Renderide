@@ -1,7 +1,7 @@
 //! Unity surface shader `Shader "Art/PaintPBS"`: metallic Standard lighting with a paint-pattern
 //! overlay sampled from four horizontal strips of `_PaintTex`. Faded at horizontal edges and
 //! gated through `pow(paint, _Pow)` x `_PaintGain` x `_OutputScale` for the final alpha mask.
-//! Default render state is transparent (host-driven via `_SrcBlend` / `_DstBlend` / `_ZWrite`).
+//! Unity authors this as a transparent `alpha:fade` surface.
 
 
 //#texture_default _MainTex white
@@ -22,6 +22,7 @@
 #import renderide::pbs::sampling as psamp
 #import renderide::pbs::surface as psurf
 #import renderide::core::uv as uvu
+#import renderide::core::texture_sampling as ts
 
 struct PaintPBSMaterial {
     _Color: vec4<f32>,
@@ -37,6 +38,8 @@ struct PaintPBSMaterial {
     _PaintBias: f32,
     _PaintGain: f32,
     _OutputScale: f32,
+    _MainTex_LodBias: f32,
+    _PaintTex_LodBias: f32,
 }
 
 @group(1) @binding(0) var<uniform> mat: PaintPBSMaterial;
@@ -94,16 +97,16 @@ fn shade(
     uv_paint: vec2<f32>,
     view_layer: u32,
 ) -> vec4<f32> {
-    var c = textureSample(_MainTex, _MainTex_sampler, uv_main) * mat._Color;
+    var c = ts::sample_tex_2d(_MainTex, _MainTex_sampler, uv_main, mat._MainTex_LodBias) * mat._Color;
     let side_fade = clamp(min(uv_main.x / mat._SideFadeSize, (1.0 - uv_main.x) / mat._SideFadeSize), 0.0, 1.0);
     c.a = c.a * side_fade;
 
     let offsets = uv_paint.y * mat._PaintTexScales + mat._PaintTexOffsets + uv_paint.x * mat._PaintTexShifts;
     let p = vec4<f32>(
-        textureSample(_PaintTex, _PaintTex_sampler, vec2<f32>(uv_paint.x, offsets.x)).r,
-        textureSample(_PaintTex, _PaintTex_sampler, vec2<f32>(uv_paint.x, offsets.y)).g,
-        textureSample(_PaintTex, _PaintTex_sampler, vec2<f32>(uv_paint.x, offsets.z)).b,
-        textureSample(_PaintTex, _PaintTex_sampler, vec2<f32>(uv_paint.x, offsets.w)).a,
+        ts::sample_tex_2d(_PaintTex, _PaintTex_sampler, vec2<f32>(uv_paint.x, offsets.x), mat._PaintTex_LodBias).r,
+        ts::sample_tex_2d(_PaintTex, _PaintTex_sampler, vec2<f32>(uv_paint.x, offsets.y), mat._PaintTex_LodBias).g,
+        ts::sample_tex_2d(_PaintTex, _PaintTex_sampler, vec2<f32>(uv_paint.x, offsets.z), mat._PaintTex_LodBias).b,
+        ts::sample_tex_2d(_PaintTex, _PaintTex_sampler, vec2<f32>(uv_paint.x, offsets.w), mat._PaintTex_LodBias).a,
     );
     let paint = (p.x + p.y + p.z + p.w) * 0.25 * mat._PaintGain + mat._PaintBias;
     let strength = clamp((c.a + pow(max(paint, 0.0), max(mat._Pow, 1e-4)) - 1.0) * mat._OutputScale, 0.0, 1.0);
@@ -135,7 +138,7 @@ fn shade(
     );
 }
 
-//#pass type=forward
+//#pass type=forward name=forward_alpha_fade blend=alpha zwrite=off ztest=main cull=back color_mask=rgba offset=0,0
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,

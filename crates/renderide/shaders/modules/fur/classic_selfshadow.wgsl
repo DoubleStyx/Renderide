@@ -76,7 +76,7 @@ fn shell_direct_visibility(fur_multiplier: f32, noise: f32) -> f32 {
 }
 
 fn shell_emission(input: furc::VertexOutput, alpha: f32, direct_visibility: f32) -> vec3<f32> {
-    let view_dir = rg::view_dir_for_world_pos(input.world_pos, input.view_layer);
+    let view_dir = rg::view_dir_for_world_pos(input.base_world_pos, input.view_layer);
     let rim = furc::rim_emission(mat._RimColor, mat._RimPower, view_dir, input.world_n) * 2.0;
     let reflection_dir = cubemap_storage::sample_dir(
         reflect(-view_dir, normalize(input.world_n)),
@@ -105,7 +105,7 @@ fn shaded_color(
     );
     let color = furl::shade_specular_clustered(
         input.clip_pos.xy,
-        input.world_pos,
+        input.base_world_pos,
         input.view_layer,
         surface,
         furl::default_lighting_options(direct_visibility),
@@ -115,6 +115,8 @@ fn shaded_color(
 
 fn fragment_base(input: furc::VertexOutput) -> vec4<f32> {
     let tex = ts::sample_tex_2d(_MainTex, _MainTex_sampler, input.main_uv, mat._MainTex_LodBias);
+    furc::alpha_clip(1.0, mat._Cutoff);
+
     let base_color = tex.rgb * mat._Color.rgb;
     return shaded_color(input, base_color, 1.0, vec3<f32>(0.0), 1.0);
 }

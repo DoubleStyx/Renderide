@@ -19,5 +19,9 @@ fn sample_rgba(
     polar_power: f32,
     polar_enabled: bool,
 ) -> vec4<f32> {
+    if (polar_enabled) {
+        let mapped = uvu::polar_mapping(raw_uv, st, polar_power);
+        return textureSampleGrad(tex, samp, mapped.uv, mapped.ddx_uv, mapped.ddy_uv);
+    }
     return ts::sample_tex_2d(tex, samp, sample_uv(raw_uv, st, polar_power, polar_enabled), lod_bias);
 }

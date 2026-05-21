@@ -165,6 +165,8 @@ pub(in crate::runtime) struct FrameViewPlan<'a> {
     pub(in crate::runtime) host_camera: HostCameraFrame,
     /// Render-context override scope used for transforms, materials, culling, lights, and draws.
     pub(in crate::runtime) render_context: RenderingContext,
+    /// Elapsed renderer runtime in seconds for Unity-style shader time inputs.
+    pub(in crate::runtime) frame_time_seconds: f32,
     /// Optional selective/exclude filter; present for secondary cameras only.
     pub(in crate::runtime) draw_filter: Option<CameraTransformDrawFilter>,
     /// Optional render-space scope for offscreen cameras/tasks.
@@ -227,6 +229,7 @@ impl FrameViewPlan<'_> {
             view_id: self.view_id,
             host_camera: self.host_camera,
             render_context: self.render_context,
+            frame_time_seconds: self.frame_time_seconds,
             target: self.target(),
             profile: self.profile,
             clear: self.clear,
@@ -297,6 +300,7 @@ mod tests {
         FrameViewPlan {
             host_camera: HostCameraFrame::default(),
             render_context: RenderingContext::UserView,
+            frame_time_seconds: 0.0,
             draw_filter: None,
             render_space_filter: None,
             view_id: ViewId::Main,

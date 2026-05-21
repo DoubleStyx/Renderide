@@ -51,6 +51,8 @@ pub struct ClusteredFrameGlobalsParams {
     pub ambient_sh_valid: bool,
     /// Skybox indirect specular sampling parameters.
     pub skybox_specular: SkyboxSpecularUniformParams,
+    /// Elapsed renderer runtime in seconds for Unity-style shader time inputs.
+    pub frame_time_seconds: f32,
     /// Ambient SH2 coefficients for the active main render space.
     pub ambient_sh: [[f32; 4]; 9],
 }
@@ -93,6 +95,7 @@ impl FrameGpuUniforms {
                 pack_frame_tail_flags(params.ambient_sh_valid, params.sample_count),
             ],
             skybox_specular: params.skybox_specular.to_vec4(),
+            frame_time: [params.frame_time_seconds, 0.0, 0.0, 0.0],
             ambient_sh: params.ambient_sh,
         }
     }

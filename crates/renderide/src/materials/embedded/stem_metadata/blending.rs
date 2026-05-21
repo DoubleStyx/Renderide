@@ -47,8 +47,11 @@ pub fn embedded_stem_uses_scene_color_snapshot(
 
 #[cfg(test)]
 mod tests {
-    use crate::materials::SHADER_PERM_MULTIVIEW_STEREO;
     use crate::materials::ShaderPermutation;
+    use crate::materials::{
+        MaterialDepthCompareDomain, MaterialPassState, MaterialRenderStatePolicy,
+        SHADER_PERM_MULTIVIEW_STEREO,
+    };
 
     use super::{
         embedded_stem_uses_alpha_blending, embedded_stem_uses_blended_depth_write,
@@ -158,6 +161,63 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Asserts the source-authored filter pass fallback state for one stem.
+    fn assert_source_filter_pass_fallbacks(stem: &str, expected_depth_write: bool) {
+        for permutation in [ShaderPermutation(0), SHADER_PERM_MULTIVIEW_STEREO] {
+            let composed = embedded_composed_stem_for_permutation(stem, permutation);
+            let passes = crate::embedded_shaders::embedded_target_passes(&composed);
+            assert_eq!(
+                passes.len(),
+                1,
+                "{composed:?} should declare exactly one raster pass",
+            );
+
+            let pass = &passes[0];
+            assert_eq!(pass.name, "forward_filter", "{composed:?}");
+            assert_eq!(
+                pass.material_state,
+                MaterialPassState::Filter,
+                "{composed:?}"
+            );
+            assert_eq!(pass.write_mask, wgpu::ColorWrites::ALL, "{composed:?}");
+            assert_eq!(pass.depth_write, expected_depth_write, "{composed:?}");
+            assert_eq!(
+                pass.depth_compare,
+                crate::gpu::MAIN_FORWARD_DEPTH_COMPARE,
+                "{composed:?}",
+            );
+            assert_eq!(
+                pass.depth_compare_domain,
+                MaterialDepthCompareDomain::FrooxZTest,
+                "{composed:?}",
+            );
+            assert_eq!(pass.cull_mode, Some(wgpu::Face::Back), "{composed:?}");
+            assert_eq!(
+                pass.render_state_policy,
+                MaterialRenderStatePolicy::ALL_MATERIAL,
+                "{composed:?}",
+            );
+        }
+    }
+
+    /// Verifies filter materials in the 31-40 parity batch preserve ShaderLab fallback state.
+    #[test]
+    fn filter_parity_stems_keep_source_fallback_render_state() {
+        for stem in ["gamma_default", "gamma_perobject_default"] {
+            assert_source_filter_pass_fallbacks(stem, true);
+            assert!(
+                embedded_stem_uses_scene_color_snapshot(stem, ShaderPermutation(0)),
+                "{stem:?} should sample the scene-color snapshot",
+            );
+        }
+
+        assert_source_filter_pass_fallbacks("getdepth_default", false);
+        assert!(
+            embedded_stem_uses_scene_depth_snapshot("getdepth_default", ShaderPermutation(0)),
+            "getdepth_default should sample the scene-depth snapshot",
+        );
     }
 
     #[test]

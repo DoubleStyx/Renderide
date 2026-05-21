@@ -28,6 +28,7 @@
 #import renderide::pbs::normal as pnorm
 #import renderide::core::uv as uvu
 #import renderide::core::normal_decode as nd
+#import renderide::core::texture_sampling as ts
 
 struct OverlayFresnelMaterial {
     _BehindFarColor: vec4<f32>,
@@ -43,6 +44,11 @@ struct OverlayFresnelMaterial {
     _GammaCurve: f32,
     _PolarPow: f32,
     _RenderideVariantBits: u32,
+    _BehindFarTex_LodBias: f32,
+    _BehindNearTex_LodBias: f32,
+    _FrontFarTex_LodBias: f32,
+    _FrontNearTex_LodBias: f32,
+    _NormalMap_LodBias: f32,
 }
 
 const OVERLAYFRESNEL_KW_MUL_ALPHA_INTENSITY: u32 = 1u << 0u;
@@ -105,12 +111,13 @@ fn sample_overlay_tex(
     samp: sampler,
     uv: vec2<f32>,
     st: vec4<f32>,
+    lod_bias: f32,
 ) -> vec4<f32> {
     if (kw_POLARUV()) {
         let mapped = uvu::polar_mapping(uv, st, mat._PolarPow);
         return textureSampleGrad(tex, samp, mapped.uv, mapped.ddx_uv, mapped.ddy_uv);
     }
-    return textureSample(tex, samp, uvu::apply_st(uv, st));
+    return ts::sample_tex_2d(tex, samp, uvu::apply_st(uv, st), lod_bias);
 }
 
 fn overlay_normal(in: mv::WorldVertexOutput) -> vec3<f32> {
@@ -123,7 +130,7 @@ fn overlay_normal(in: mv::WorldVertexOutput) -> vec3<f32> {
         );
         let tbn = pnorm::orthonormal_tbn(n, t);
         let ts_n = nd::decode_ts_normal_with_placeholder_sample(
-            textureSample(_NormalMap, _NormalMap_sampler, uv_n),
+            ts::sample_tex_2d(_NormalMap, _NormalMap_sampler, uv_n, mat._NormalMap_LodBias),
             1.0,
         );
         n = normalize(tbn * ts_n);
@@ -152,9 +159,10 @@ fn layer_color(
     samp: sampler,
     uv: vec2<f32>,
     st: vec4<f32>,
+    lod_bias: f32,
 ) -> vec4<f32> {
     if (kw_TEXTURE()) {
-        return tint * sample_overlay_tex(tex, samp, uv, st);
+        return tint * sample_overlay_tex(tex, samp, uv, st, lod_bias);
     }
     return tint;
 }
@@ -169,6 +177,7 @@ fn fs_main_behind(in: mv::WorldVertexOutput) -> @location(0) vec4<f32> {
         _BehindFarTex_sampler,
         in.primary_uv,
         mat._BehindFarTex_ST,
+        mat._BehindFarTex_LodBias,
     );
     let near_color = layer_color(
         mat._BehindNearColor,
@@ -176,6 +185,7 @@ fn fs_main_behind(in: mv::WorldVertexOutput) -> @location(0) vec4<f32> {
         _BehindNearTex_sampler,
         in.primary_uv,
         mat._BehindNearTex_ST,
+        mat._BehindNearTex_LodBias,
     );
     let color = apply_alpha_intensity(mf::near_far_color(near_color, far_color, fresnel));
     return rg::retain_globals_additive(color);
@@ -191,6 +201,7 @@ fn fs_main_front(in: mv::WorldVertexOutput) -> @location(0) vec4<f32> {
         _FrontFarTex_sampler,
         in.primary_uv,
         mat._FrontFarTex_ST,
+        mat._FrontFarTex_LodBias,
     );
     let near_color = layer_color(
         mat._FrontNearColor,
@@ -198,6 +209,7 @@ fn fs_main_front(in: mv::WorldVertexOutput) -> @location(0) vec4<f32> {
         _FrontNearTex_sampler,
         in.primary_uv,
         mat._FrontNearTex_ST,
+        mat._FrontNearTex_LodBias,
     );
     let color = apply_alpha_intensity(mf::near_far_color(near_color, far_color, fresnel));
     return rg::retain_globals_additive(color);

@@ -534,6 +534,8 @@ pub struct FrameView<'a> {
     pub host_camera: HostCameraFrame,
     /// Render-context override scope used by this view.
     pub render_context: RenderingContext,
+    /// Elapsed renderer runtime in seconds for Unity-style shader time inputs.
+    pub frame_time_seconds: f32,
     /// Color/depth destination.
     pub target: FrameViewTarget<'a>,
     /// Render-path profile that owns MSAA, post-processing, snapshot, and fallback policy.

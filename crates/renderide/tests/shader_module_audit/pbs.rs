@@ -677,6 +677,9 @@ fn furfx_and_toon_roots_declare_unity_defaults_for_unsent_fields() -> io::Result
         let src = source_file(&path)?;
         let required: &[&str] = if src.contains("renderide::fur::classic_selfshadow") {
             &[
+                "//#mat_default _RimColor vec4 0.0 0.0 0.0 0.0",
+                "//#mat_default _ForceGlobal vec4 0.0 0.0 0.0 0.0",
+                "//#mat_default _ForceLocal vec4 0.0 0.0 0.0 0.0",
                 "//#mat_default _EdgeFade float 0.15",
                 "//#mat_default _SkinAlpha float 0.5",
                 "//#mat_default _Reflection float 0.0",
@@ -684,20 +687,30 @@ fn furfx_and_toon_roots_declare_unity_defaults_for_unsent_fields() -> io::Result
             ]
         } else if src.contains("renderide::fur::classic_advanced") {
             &[
+                "//#mat_default _RimColor vec4 0.0 0.0 0.0 0.0",
+                "//#mat_default _ForceGlobal vec4 0.0 0.0 0.0 0.0",
+                "//#mat_default _ForceLocal vec4 0.0 0.0 0.0 0.0",
                 "//#mat_default _EdgeFade float 0.15",
                 "//#mat_default _SkinAlpha float 0.5",
                 "//#mat_default _Reflection float 0.0",
             ]
         } else if src.contains("renderide::fur::classic_basic") {
             &[
+                "//#mat_default _ForceGlobal vec4 0.0 0.0 0.0 0.0",
+                "//#mat_default _ForceLocal vec4 0.0 0.0 0.0 0.0",
                 "//#mat_default _EdgeFade float 0.15",
                 "//#mat_default _SkinAlpha float 0.5",
             ]
         } else if src.contains("renderide::fur::modern") {
             &[
+                "//#mat_default _RimColor vec4 0.0 0.0 0.0 0.0",
+                "//#mat_default _ForceGlobal vec4 0.0 0.0 0.0 0.0",
+                "//#mat_default _ForceLocal vec4 0.0 0.0 0.0 0.0",
                 "//#mat_default _BonusAmbient vec4 0.0 0.0 0.0 1.0",
+                "//#mat_default _RimColor vec4 0.0 0.0 0.0 0.0",
                 "//#mat_default _ReflColor vec4 1.0 1.0 1.0 1.0",
-                "//#mat_default _EdgeFade float 0.15",
+                "//#mat_default _ForceGlobal vec4 0.0 0.0 0.0 0.0",
+                "//#mat_default _ForceLocal vec4 0.0 0.0 0.0 0.0",
                 "//#mat_default _SkinAlpha float 0.5",
                 "//#mat_default _Reflection float 0.0",
                 "//#mat_default _ReflMinLevel float 0.0",
@@ -737,6 +750,102 @@ fn furfx_and_toon_roots_declare_unity_defaults_for_unsent_fields() -> io::Result
             );
         }
     }
+    Ok(())
+}
+
+#[test]
+fn early_material_parity_gaps_stay_closed() -> io::Result<()> {
+    let depth_projection = material_source("depthprojection.wgsl")?;
+    assert!(
+        !depth_projection.contains("@location(1) n:"),
+        "depthprojection.wgsl must not request normals; the source vertex input uses position and UV only"
+    );
+
+    let fogbox = material_source("fogboxvolume.wgsl")?;
+    assert!(
+        !fogbox.contains("clamp_volume_source_rgb(apply_saturation"),
+        "fogboxvolume.wgsl must not clamp RGB unless SATURATE_COLOR is selected"
+    );
+    assert!(
+        fogbox.contains(
+            "return rg::retain_globals_additive(apply_saturation(mat._BaseColor + acc));"
+        ),
+        "fogboxvolume.wgsl must preserve unsaturated HDR accumulation output"
+    );
+
+    let material_sample = module_source("material/sample.wgsl")?;
+    for required in [
+        "let mapped = uvu::polar_mapping(raw_uv, st, polar_power);",
+        "textureSampleGrad(tex, samp, mapped.uv, mapped.ddx_uv, mapped.ddy_uv)",
+    ] {
+        assert!(
+            material_sample.contains(required),
+            "material/sample.wgsl must contain `{required}`"
+        );
+    }
+
+    let fresnellerp = material_source("fresnellerp.wgsl")?;
+    assert!(
+        fresnellerp
+            .contains("let mapped = uvu::polar_mapping(uv, mat._LerpTex_ST, mat._LerpPolarPow);"),
+        "fresnellerp.wgsl must use Unity-style polar gradients for _LerpTex"
+    );
+    assert!(
+        !fresnellerp
+            .contains("uvu::apply_st(uvu::polar_uv(uv, mat._LerpPolarPow), mat._LerpTex_ST)"),
+        "fresnellerp.wgsl must not sample polar _LerpTex without gradient repair"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn modern_furfx_roots_use_unity_property_names_and_noise_alpha() -> io::Result<()> {
+    let modern = module_source("fur/modern.wgsl")?;
+    for required in [
+        "_BumpMap_ST: vec4<f32>",
+        "_BumpMap_LodBias: f32",
+        "var _BumpMap: texture_2d<f32>",
+        "furc::alpha_clip(noise, mat._Cutoff);",
+    ] {
+        assert!(
+            modern.contains(required),
+            "fur/modern.wgsl must contain `{required}`"
+        );
+    }
+    for forbidden in ["_NormalMap", "_EdgeFade", "classic_shell_alpha"] {
+        assert!(
+            !modern.contains(forbidden),
+            "fur/modern.wgsl must not contain `{forbidden}`"
+        );
+    }
+
+    for path in wgsl_files_recursive("shaders/materials")? {
+        let label = file_label(&path);
+        let src = source_file(&path)?;
+        if !src.contains("renderide::fur::modern") {
+            continue;
+        }
+        let uses_bump_map = src.contains("fur::fragment_base(input)");
+        if uses_bump_map {
+            assert!(
+                src.contains("//#texture_default _BumpMap bump"),
+                "{label} must declare Unity's _BumpMap texture fallback"
+            );
+        } else {
+            assert!(
+                !src.contains("//#texture_default _BumpMap bump"),
+                "{label} must not declare an unused _BumpMap texture fallback"
+            );
+        }
+        for forbidden in ["_NormalMap", "_EdgeFade"] {
+            assert!(
+                !src.contains(forbidden),
+                "{label} must not contain `{forbidden}`"
+            );
+        }
+    }
+
     Ok(())
 }
 
@@ -896,6 +1005,54 @@ fn pbs_direct_specular_lobe_is_shared() -> io::Result<()> {
             "pbs/brdf.wgsl must share direct specular lobe term `{required}`"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn classic_furfx_modules_keep_source_parity_details() -> io::Result<()> {
+    let common = module_source("fur/common.wgsl")?;
+    for required in [
+        "@location(9) base_world_pos: vec3<f32>,",
+        "let base_world_pos = mv::world_position(draw, pos).xyz;",
+        "out.shell_noise_uv = uv0 + shell_noise_offset;",
+        "out.base_world_pos = base_world_pos;",
+        "var color = tex_rgb;\n    color = color - shadow_rgb * hair_coloring;\n    color = color - vec3<f32>(pow(1.0 - fur_multiplier, 4.0) * hair_shading);\n    color = color * tint_rgb;",
+    ] {
+        assert!(
+            common.contains(required),
+            "fur/common.wgsl must preserve classic FurFX parity detail `{required}`"
+        );
+    }
+    assert!(
+        !common.contains("out.shell_noise_uv = uvu::apply_st(uv0 + shell_noise_offset, noise_st);"),
+        "classic FurFX shell shadow UVs must not apply _NoiseTex_ST"
+    );
+
+    for module in [
+        "fur/classic_basic.wgsl",
+        "fur/classic_advanced.wgsl",
+        "fur/classic_selfshadow.wgsl",
+    ] {
+        let src = module_source(module)?;
+        for required in [
+            "input.base_world_pos",
+            "furc::alpha_clip(1.0, mat._Cutoff);",
+        ] {
+            assert!(
+                src.contains(required),
+                "{module} must preserve classic FurFX parity detail `{required}`"
+            );
+        }
+    }
+
+    for module in ["fur/classic_advanced.wgsl", "fur/classic_selfshadow.wgsl"] {
+        let src = module_source(module)?;
+        assert!(
+            src.contains("rg::view_dir_for_world_pos(input.base_world_pos, input.view_layer);"),
+            "{module} must evaluate rim/reflection from the base mesh world position"
+        );
+    }
+
     Ok(())
 }
 

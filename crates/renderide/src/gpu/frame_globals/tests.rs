@@ -12,8 +12,8 @@ mod offset_and_packing_tests {
     use glam::Mat4;
 
     #[test]
-    fn frame_globals_size_304() {
-        assert_eq!(size_of::<FrameGpuUniforms>(), 304);
+    fn frame_globals_size_320() {
+        assert_eq!(size_of::<FrameGpuUniforms>(), 320);
         assert_eq!(size_of::<FrameGpuUniforms>() % 16, 0);
     }
 
@@ -40,7 +40,8 @@ mod offset_and_packing_tests {
         );
         assert_eq!(std::mem::offset_of!(FrameGpuUniforms, frame_tail), 128);
         assert_eq!(std::mem::offset_of!(FrameGpuUniforms, skybox_specular), 144);
-        assert_eq!(std::mem::offset_of!(FrameGpuUniforms, ambient_sh), 160);
+        assert_eq!(std::mem::offset_of!(FrameGpuUniforms, frame_time), 160);
+        assert_eq!(std::mem::offset_of!(FrameGpuUniforms, ambient_sh), 176);
     }
 
     #[test]
@@ -103,6 +104,7 @@ mod offset_and_packing_tests {
             sample_count: 4,
             ambient_sh_valid: true,
             skybox_specular: SkyboxSpecularUniformParams::from_cubemap_resident_mips(6),
+            frame_time_seconds: 12.25,
             ambient_sh: [[0.0; 4]; 9],
         };
         let u = FrameGpuUniforms::new_clustered(&params);
@@ -130,6 +132,7 @@ mod offset_and_packing_tests {
             ]
         );
         assert_eq!(u.skybox_specular, [5.0, 1.0, 1.0, 0.0]);
+        assert_eq!(u.frame_time, [12.25, 0.0, 0.0, 0.0]);
         assert_eq!(u.ambient_sh, [[0.0; 4]; 9]);
     }
 
@@ -157,6 +160,7 @@ mod offset_and_packing_tests {
             sample_count: 1,
             ambient_sh_valid: false,
             skybox_specular: SkyboxSpecularUniformParams::disabled(),
+            frame_time_seconds: 0.0,
             ambient_sh: [[0.0; 4]; 9],
         };
         let u = FrameGpuUniforms::new_clustered(&params);

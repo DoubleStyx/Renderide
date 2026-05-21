@@ -13,6 +13,8 @@ struct FiltersLutPerObjectMaterial {
     _Rect: vec4<f32>,
     _Lerp: f32,
     _RenderideVariantBits: u32,
+    _LUT_LodBias: f32,
+    _SecondaryLUT_LodBias: f32,
 }
 
 const LUT_PEROBJECT_KW_LERP: u32 = 1u << 0u;
@@ -61,9 +63,14 @@ fn fs_main(in: fv::RectVertexOutput) -> @location(0) vec4<f32> {
 
     let c = fc::sample_scene_color_at_clip(in.clip_pos, in.view_layer);
     let coords = c.rgb;
-    var filtered = ts::sample_tex_3d(_LUT, _LUT_sampler, coords, 0.0).rgb;
+    var filtered = ts::sample_tex_3d(_LUT, _LUT_sampler, coords, mat._LUT_LodBias).rgb;
     if (kw_LERP()) {
-        let secondary = ts::sample_tex_3d(_SecondaryLUT, _SecondaryLUT_sampler, coords, 0.0).rgb;
+        let secondary = ts::sample_tex_3d(
+            _SecondaryLUT,
+            _SecondaryLUT_sampler,
+            coords,
+            mat._SecondaryLUT_LodBias,
+        ).rgb;
         filtered = mix(filtered, secondary, mat._Lerp);
     }
     return fc::retain_globals(vec4<f32>(filtered, c.a));
