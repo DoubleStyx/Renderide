@@ -16,14 +16,17 @@
 //#mat_default _PointSize vec4 0.1 0.1 0.0 0.0
 //#mat_default _PolarPow float 1.0
 //#mat_default _Cutoff float 0.5
+//#mat_default _Tex_LodBias float 0.0
+//#mat_default _OffsetTex_LodBias float 0.0
 
+#import renderide::core::texture_sampling as ts
+#import renderide::core::uv as uvu
 #import renderide::frame::globals as rg
 #import renderide::draw::per_draw as pd
 #import renderide::material::variant_bits as vb
 #import renderide::material::vertex_color as vc
 #import renderide::mesh::billboard as mb
 #import renderide::mesh::vertex as mv
-#import renderide::core::uv as uvu
 
 struct BillboardUnlitMaterial {
     _Color: vec4<f32>,
@@ -35,7 +38,9 @@ struct BillboardUnlitMaterial {
     _Cutoff: f32,
     _PolarPow: f32,
     _RenderideVariantBits: u32,
-    _pad0: f32,
+    _Tex_LodBias: f32,
+    _OffsetTex_LodBias: f32,
+    _pad0: vec2<f32>,
 }
 
 const BILLBOARDUNLIT_KW_ALPHATEST: u32 = 1u << 0u;
@@ -188,7 +193,7 @@ fn texture_uv(base_uv: vec2<f32>, view_layer: u32) -> vec2<f32> {
     }
     if (kw_OFFSET_TEXTURE()) {
         let uv_off = uvu::apply_st(base_uv, mat._OffsetTex_ST);
-        let offset_s = textureSample(_OffsetTex, _OffsetTex_sampler, uv_off);
+        let offset_s = ts::sample_tex_2d(_OffsetTex, _OffsetTex_sampler, uv_off, mat._OffsetTex_LodBias);
         uv = uv + offset_s.xy * mat._OffsetMagnitude.xy;
     }
     return uv;
@@ -197,7 +202,7 @@ fn texture_uv(base_uv: vec2<f32>, view_layer: u32) -> vec2<f32> {
 fn offset_texture_uv(uv: vec2<f32>, base_uv: vec2<f32>) -> vec2<f32> {
     if (kw_OFFSET_TEXTURE()) {
         let uv_off = uvu::apply_st(base_uv, mat._OffsetTex_ST);
-        let offset_s = textureSample(_OffsetTex, _OffsetTex_sampler, uv_off);
+        let offset_s = ts::sample_tex_2d(_OffsetTex, _OffsetTex_sampler, uv_off, mat._OffsetTex_LodBias);
         return uv + offset_s.xy * mat._OffsetMagnitude.xy;
     }
     return uv;
@@ -209,7 +214,7 @@ fn sample_main_texture(base_uv: vec2<f32>, view_layer: u32) -> vec4<f32> {
         let uv_main = offset_texture_uv(mapped.uv, base_uv);
         return textureSampleGrad(_Tex, _Tex_sampler, uv_main, mapped.ddx_uv, mapped.ddy_uv);
     }
-    return textureSample(_Tex, _Tex_sampler, texture_uv(base_uv, view_layer));
+    return ts::sample_tex_2d(_Tex, _Tex_sampler, texture_uv(base_uv, view_layer), mat._Tex_LodBias);
 }
 
 fn vertex_color(color: vec4<f32>) -> vec4<f32> {
@@ -226,7 +231,7 @@ fn vertex_color(color: vec4<f32>) -> vec4<f32> {
     return color;
 }
 
-//#pass type=forward
+//#pass type=forward name=forward_billboard blend=material_filter
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let use_texture = kw_TEXTURE();

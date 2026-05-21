@@ -91,4 +91,8 @@ struct FrameGlobals {
     ambient_sh_h: vec4<f32>,
     /// Ambient SH2 coefficient 8, padded to a vec4 slot.
     ambient_sh_i: vec4<f32>,
+    /// Fog color in `.rgb` and fog mode in `.w`; zero mode disables fog.
+    fog_color_mode: vec4<f32>,
+    /// Unity-style fog parameters consumed by `renderide::frame::fog`.
+    fog_params: vec4<f32>,
 }

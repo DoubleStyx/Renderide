@@ -64,6 +64,12 @@ pub trait GraphFrameResources: Send + Sync {
         view_id: ViewId,
     ) -> Option<(Arc<wgpu::BindGroup>, wgpu::Buffer)>;
 
+    /// Per-view frame bind group that binds named scene-color snapshots at the grab slots.
+    fn per_view_named_scene_color_frame_bind_group(
+        &self,
+        view_id: ViewId,
+    ) -> Option<Arc<wgpu::BindGroup>>;
+
     /// Ensures this view's per-draw slab can hold `draw_count` rows and returns its storage buffer.
     fn ensure_per_view_per_draw_capacity(
         &self,
@@ -118,6 +124,16 @@ pub trait GraphFrameResources: Send + Sync {
 
     /// Copies the current HDR scene color into this view's sampled scene-color snapshot.
     fn copy_scene_color_snapshot_for_view(
+        &self,
+        view_id: ViewId,
+        encoder: &mut wgpu::CommandEncoder,
+        source_color: &wgpu::Texture,
+        viewport: (u32, u32),
+        multiview: bool,
+    ) -> bool;
+
+    /// Copies the current HDR scene color into this view's named scene-color snapshot.
+    fn copy_named_scene_color_snapshot_for_view(
         &self,
         view_id: ViewId,
         encoder: &mut wgpu::CommandEncoder,

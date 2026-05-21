@@ -12,8 +12,8 @@ mod offset_and_packing_tests {
     use glam::Mat4;
 
     #[test]
-    fn frame_globals_size_352() {
-        assert_eq!(size_of::<FrameGpuUniforms>(), 352);
+    fn frame_globals_size_384() {
+        assert_eq!(size_of::<FrameGpuUniforms>(), 384);
         assert_eq!(size_of::<FrameGpuUniforms>() % 16, 0);
     }
 
@@ -53,6 +53,8 @@ mod offset_and_packing_tests {
         assert_eq!(std::mem::offset_of!(FrameGpuUniforms, skybox_specular), 176);
         assert_eq!(std::mem::offset_of!(FrameGpuUniforms, frame_time), 192);
         assert_eq!(std::mem::offset_of!(FrameGpuUniforms, ambient_sh), 208);
+        assert_eq!(std::mem::offset_of!(FrameGpuUniforms, fog_color_mode), 352);
+        assert_eq!(std::mem::offset_of!(FrameGpuUniforms, fog_params), 368);
     }
 
     #[test]

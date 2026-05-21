@@ -38,6 +38,8 @@ pub struct PerViewFrameState {
     /// Per-view `@group(0)` bind group referencing [`Self::frame_uniform_buffer`],
     /// [`Self::lights_buffer`], shared cluster buffers, and view-local scene snapshots.
     pub frame_bind_group: Arc<wgpu::BindGroup>,
+    /// Per-view `@group(0)` bind group whose scene-color bindings point at named grab snapshots.
+    pub named_scene_color_frame_bind_group: Arc<wgpu::BindGroup>,
     /// Per-view uniform buffer for `ClusterParams` (camera matrix, projection, viewport, etc.).
     ///
     /// Sized `CLUSTER_PARAMS_UNIFORM_SIZE x eye_multiplier`. Must be per-view -- see struct doc.

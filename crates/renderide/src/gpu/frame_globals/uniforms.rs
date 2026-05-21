@@ -18,13 +18,12 @@ pub const FRAME_TAIL_SAMPLE_COUNT_MASK: u32 = 0xF << FRAME_TAIL_SAMPLE_COUNT_SHI
 /// Frame projection flag indicating that the corresponding view uses orthographic projection.
 pub const FRAME_PROJECTION_FLAG_ORTHOGRAPHIC: u32 = 1;
 
-/// Uniform block matching WGSL `FrameGlobals` (352-byte size, 16-byte aligned).
+/// Uniform block matching WGSL `FrameGlobals` (384-byte size, 16-byte aligned).
 ///
-/// Encodes per-eye camera positions, per-eye coefficients for view-space Z from world position,
 /// per-eye coefficients for reconstructing world Y from view position, clustered grid dimensions,
 /// clip planes, light count, viewport size, per-eye projection coefficients for screen-space-to-view
 /// unprojection, a monotonic frame index for temporal / jittered effects, a reserved direct skybox
-/// specular slot, elapsed frame time, and ambient SH2.
+/// specular slot, elapsed frame time, ambient SH2, and disabled fog slots.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct FrameGpuUniforms {
@@ -80,6 +79,10 @@ pub struct FrameGpuUniforms {
     pub frame_time: [f32; 4],
     /// Ambient SH2 coefficients (`RenderSH2` order), padded to WGSL `vec4<f32>` slots.
     pub ambient_sh: [[f32; 4]; 9],
+    /// Fog color in `.rgb` and fog mode in `.w`; zero mode disables fog.
+    pub fog_color_mode: [f32; 4],
+    /// Unity-style fog parameters used by WGSL helpers when fog mode is nonzero.
+    pub fog_params: [f32; 4],
 }
 
 impl FrameGpuUniforms {

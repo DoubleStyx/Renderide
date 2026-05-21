@@ -265,6 +265,28 @@ mod tests {
     }
 
     #[test]
+    fn named_background_grabpass_stems_are_distinct_from_per_object_wrappers() {
+        let mono = ShaderPermutation(0);
+
+        assert_eq!(
+            embedded_stem_scene_color_snapshot_mode("blur_default", mono),
+            SceneColorSnapshotMode::NamedBackgroundGrab
+        );
+        assert_eq!(
+            embedded_stem_scene_color_snapshot_mode("blur_perobject_default", mono),
+            SceneColorSnapshotMode::PerObjectGrab
+        );
+        assert_eq!(
+            embedded_stem_scene_color_snapshot_mode("channelmatrix_default", mono),
+            SceneColorSnapshotMode::PerObjectGrab
+        );
+        assert_eq!(
+            embedded_stem_scene_color_snapshot_mode("pbsintersect_default", mono),
+            SceneColorSnapshotMode::None
+        );
+    }
+
+    #[test]
     fn volume_materials_use_depth_snapshot_without_grab_snapshot() {
         let mono = ShaderPermutation(0);
 

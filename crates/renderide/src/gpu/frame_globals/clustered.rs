@@ -103,6 +103,8 @@ impl FrameGpuUniforms {
             skybox_specular: params.skybox_specular.to_vec4(),
             frame_time: [params.frame_time_seconds, 0.0, 0.0, 0.0],
             ambient_sh: params.ambient_sh,
+            fog_color_mode: [0.0; 4],
+            fog_params: [0.0; 4],
         }
     }
 }

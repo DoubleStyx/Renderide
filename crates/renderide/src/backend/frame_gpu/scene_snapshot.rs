@@ -10,8 +10,10 @@ pub(super) const DEFAULT_SCENE_COLOR_FORMAT: wgpu::TextureFormat = wgpu::Texture
 pub(super) enum SceneSnapshotKind {
     /// Depth snapshot used by `_CameraDepthTexture` style material sampling.
     Depth,
-    /// Color snapshot used by grab-pass style material sampling.
+    /// Per-object color snapshot used by unnamed grab-pass style material sampling.
     Color,
+    /// Shared color snapshot used by named `_BackgroundTexture` grab passes.
+    NamedColor,
 }
 
 /// Snapshot texture layout.
@@ -138,6 +140,7 @@ impl SceneSnapshotKind {
         match self {
             Self::Depth => "depth",
             Self::Color => "color",
+            Self::NamedColor => "named_color",
         }
     }
 
@@ -145,7 +148,7 @@ impl SceneSnapshotKind {
     fn view_aspect(self) -> wgpu::TextureAspect {
         match self {
             Self::Depth => wgpu::TextureAspect::DepthOnly,
-            Self::Color => wgpu::TextureAspect::All,
+            Self::Color | Self::NamedColor => wgpu::TextureAspect::All,
         }
     }
 
@@ -154,7 +157,7 @@ impl SceneSnapshotKind {
         match self {
             Self::Depth if source_format.has_stencil_aspect() => wgpu::TextureAspect::All,
             Self::Depth => wgpu::TextureAspect::DepthOnly,
-            Self::Color => wgpu::TextureAspect::All,
+            Self::Color | Self::NamedColor => wgpu::TextureAspect::All,
         }
     }
 }
@@ -163,8 +166,10 @@ impl SceneSnapshotKind {
 struct SceneSnapshotLayoutTargets {
     /// Depth snapshot for this layout.
     depth: SceneSnapshotTexture,
-    /// Color snapshot for this layout.
+    /// Per-object color snapshot for this layout.
     color: SceneSnapshotTexture,
+    /// Named `_BackgroundTexture` color snapshot for this layout.
+    named_color: SceneSnapshotTexture,
 }
 
 impl SceneSnapshotLayoutTargets {
@@ -190,6 +195,13 @@ impl SceneSnapshotLayoutTargets {
                 (1, 1),
                 color_format,
             ),
+            named_color: SceneSnapshotTexture::new(
+                device,
+                SceneSnapshotKind::NamedColor,
+                layout,
+                (1, 1),
+                color_format,
+            ),
         }
     }
 
@@ -198,6 +210,7 @@ impl SceneSnapshotLayoutTargets {
         match kind {
             SceneSnapshotKind::Depth => &self.depth,
             SceneSnapshotKind::Color => &self.color,
+            SceneSnapshotKind::NamedColor => &self.named_color,
         }
     }
 
@@ -206,6 +219,7 @@ impl SceneSnapshotLayoutTargets {
         match kind {
             SceneSnapshotKind::Depth => &mut self.depth,
             SceneSnapshotKind::Color => &mut self.color,
+            SceneSnapshotKind::NamedColor => &mut self.named_color,
         }
     }
 }
@@ -261,6 +275,17 @@ impl SceneSnapshotSet {
             scene_depth_array: &self.stereo.depth.view,
             scene_color_2d: &self.mono.color.view,
             scene_color_array: &self.stereo.color.view,
+            scene_color_sampler: &self.color_sampler,
+        }
+    }
+
+    /// Returns snapshot views with scene-color bindings pointing at the named grab target.
+    pub(super) fn named_color_views(&self) -> FrameSceneSnapshotTextureViews<'_> {
+        FrameSceneSnapshotTextureViews {
+            scene_depth_2d: &self.mono.depth.view,
+            scene_depth_array: &self.stereo.depth.view,
+            scene_color_2d: &self.mono.named_color.view,
+            scene_color_array: &self.stereo.named_color.view,
             scene_color_sampler: &self.color_sampler,
         }
     }
@@ -409,6 +434,10 @@ mod tests {
         );
         assert_eq!(
             SceneSnapshotKind::Color.copy_aspect(wgpu::TextureFormat::Rgba16Float),
+            wgpu::TextureAspect::All
+        );
+        assert_eq!(
+            SceneSnapshotKind::NamedColor.copy_aspect(wgpu::TextureFormat::Rgba16Float),
             wgpu::TextureAspect::All
         );
     }

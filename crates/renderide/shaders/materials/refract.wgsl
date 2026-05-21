@@ -5,6 +5,7 @@
 
 //#texture_default _NormalMap bump
 //#mat_default _DepthBias float 0.01
+//#mat_default _NormalMap_LodBias float 0.0
 //#mat_default _RefractionStrength float 0.01
 
 #import renderide::post::filter_vertex as fv
@@ -19,8 +20,9 @@ struct FiltersRefractMaterial {
     _RefractionStrength: f32,
     _DepthBias: f32,
     _DepthDivisor: f32,
-    _NormalMap_LodBias: f32,
     _RenderideVariantBits: u32,
+    _NormalMap_LodBias: f32,
+    _pad0: vec3<f32>,
 }
 
 const REFRACT_KW_NORMALMAP: u32 = 1u << 0u;

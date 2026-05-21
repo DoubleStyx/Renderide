@@ -136,6 +136,26 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_groups_gr
     prepared: &PreparedWorldMeshForwardFrame,
     groups: &[crate::world_mesh::DrawGroup],
 ) -> bool {
+    let Some(frame_bg_arc) = frame_bind_group_for_view(frame, blackboard) else {
+        return false;
+    };
+    record_world_mesh_forward_groups_graph_raster_with_frame_bind_group(
+        rpass,
+        frame,
+        prepared,
+        groups,
+        &frame_bg_arc,
+    )
+}
+
+/// Records an explicit draw-group slice with a caller-selected `@group(0)` bind group.
+pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_groups_graph_raster_with_frame_bind_group(
+    rpass: &mut wgpu::RenderPass<'_>,
+    frame: &GraphPassFrame<'_>,
+    prepared: &PreparedWorldMeshForwardFrame,
+    groups: &[crate::world_mesh::DrawGroup],
+    frame_bg_arc: &Arc<wgpu::BindGroup>,
+) -> bool {
     if groups.is_empty() {
         return true;
     }
@@ -147,16 +167,13 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_groups_gr
     else {
         return false;
     };
-    let Some(frame_bg_arc) = frame_bind_group_for_view(frame, blackboard) else {
-        return false;
-    };
     let Some(empty_bg_arc) = frame.shared.frame_resources.empty_material_bind_group() else {
         return false;
     };
 
     let bind_groups = ForwardPassBindGroups {
         per_draw: per_draw_bg.as_ref(),
-        frame: &frame_bg_arc,
+        frame: frame_bg_arc,
         empty_material: &empty_bg_arc,
     };
 

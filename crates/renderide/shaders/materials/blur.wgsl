@@ -11,14 +11,17 @@
 //#mat_default _Iterations float 4.0
 //#mat_default _RefractionStrength float 0.01
 //#mat_default _Spread vec4 0.1 0.1 0.0 0.0
+//#mat_default _NormalMap_LodBias float 0.0
+//#mat_default _SpreadTex_LodBias float 0.0
 
+#import renderide::core::texture_sampling as ts
+#import renderide::core::uv as uvu
 #import renderide::post::filter_math as fm
 #import renderide::post::filter_vertex as fv
 #import renderide::post::filter_common as fc
 #import renderide::post::filter_refraction as fr
 #import renderide::frame::grab_pass as gp
 #import renderide::frame::scene_depth_sample as sds
-#import renderide::core::uv as uvu
 #import renderide::material::variant_bits as vb
 
 struct FiltersBlurMaterial {
@@ -29,8 +32,10 @@ struct FiltersBlurMaterial {
     _Iterations: f32,
     _RefractionStrength: f32,
     _DepthDivisor: f32,
-    _NormalMap_LodBias: f32,
     _RenderideVariantBits: u32,
+    _NormalMap_LodBias: f32,
+    _SpreadTex_LodBias: f32,
+    _pad0: vec2<f32>,
 }
 
 const BLUR_KW_POISSON_DISC: u32 = 1u << 0u;
@@ -133,7 +138,7 @@ fn spread_modulation(uv0: vec2<f32>) -> vec2<f32> {
     if (!kw_SPREAD_TEX()) {
         return vec2<f32>(1.0);
     }
-    return textureSample(_SpreadTex, _SpreadTex_sampler, uvu::apply_st(uv0, mat._SpreadTex_ST)).rg;
+    return ts::sample_tex_2d(_SpreadTex, _SpreadTex_sampler, uvu::apply_st(uv0, mat._SpreadTex_ST), mat._SpreadTex_LodBias).rg;
 }
 
 fn sample_blur(center_uv: vec2<f32>, spread: vec2<f32>, iterations: f32, view_layer: u32) -> vec4<f32> {
