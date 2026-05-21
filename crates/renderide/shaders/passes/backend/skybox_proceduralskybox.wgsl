@@ -3,6 +3,14 @@
 //! The shared ProceduralSkybox material module owns the reflected `@group(1)` contract and
 //! shader-specific keyword decoding for both this pass-side sky draw and the material root.
 
+//#mat_default _SkyTint vec4 0.5 0.5 0.5 1.0
+//#mat_default _GroundColor vec4 0.369 0.349 0.341 1.0
+//#mat_default _SunColor vec4 1.0 1.0 1.0 1.0
+//#mat_default _SunDirection vec4 0.577 0.577 0.577 0.0
+//#mat_default _Exposure float 1.3
+//#mat_default _SunSize float 0.04
+//#mat_default _AtmosphereThickness float 1.0
+
 #import renderide::frame::globals as rg
 #import renderide::core::fullscreen as fs
 #import renderide::skybox::procedural as ps
@@ -35,6 +43,7 @@ fn vs_main(
     return out;
 }
 
+//#pass type=forward blend=off zwrite=off ztest=main
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let ndc = skybox::ndc_from_clip(in.clip_pos);
