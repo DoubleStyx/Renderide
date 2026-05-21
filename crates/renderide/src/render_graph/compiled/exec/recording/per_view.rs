@@ -35,6 +35,7 @@ impl CompiledRenderGraph {
             view_idx,
             host_camera,
             render_context,
+            frame_time_seconds,
             clear,
             initial_blackboard,
             resolved,
@@ -59,6 +60,7 @@ impl CompiledRenderGraph {
             &resolved_view,
             &host_camera,
             render_context,
+            frame_time_seconds,
             clear,
         );
         let mut view_blackboard =
@@ -186,6 +188,7 @@ impl CompiledRenderGraph {
         resolved: &'a ResolvedView<'a>,
         host_camera: &crate::camera::HostCameraFrame,
         render_context: crate::shared::RenderingContext,
+        frame_time_seconds: f32,
         clear: crate::graph_inputs::FrameViewClear,
     ) -> crate::graph_inputs::GraphPassFrame<'a> {
         profiling::scope!("graph::per_view::build_frame_params");
@@ -208,6 +211,7 @@ impl CompiledRenderGraph {
                 scene_color_format: shared.scene_color_format,
                 host_camera,
                 render_context,
+                frame_time_seconds,
                 clear,
                 post_processing: resolved.post_processing,
                 gpu_limits: shared.gpu_limits_arc.clone(),

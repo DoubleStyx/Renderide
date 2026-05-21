@@ -143,11 +143,14 @@ impl CompiledRenderGraph {
                 helpers::frame_render_params_from_resolved(
                     scene,
                     &mut **backend,
-                    &resolved,
-                    &first.host_camera,
-                    first.render_context,
-                    first.clear,
-                    first.post_processing(),
+                    helpers::ResolvedFrameRenderParamsInputs {
+                        resolved: &resolved,
+                        host_camera: &first.host_camera,
+                        render_context: first.render_context,
+                        frame_time_seconds: first.frame_time_seconds,
+                        clear: first.clear,
+                        post_processing: first.post_processing(),
+                    },
                 )
             };
             let mut frame_blackboard = Self::build_frame_global_blackboard();

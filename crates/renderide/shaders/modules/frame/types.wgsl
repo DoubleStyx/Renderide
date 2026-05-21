@@ -67,6 +67,8 @@ struct FrameGlobals {
     frame_tail: vec4<u32>,
     /// Reserved. Skybox specular lighting is supplied by reflection probes.
     skybox_specular: vec4<f32>,
+    /// Frame time values: `.x` is elapsed renderer seconds and `.yzw` are reserved.
+    frame_time: vec4<f32>,
     /// Ambient SH2 coefficient 0, padded to a vec4 slot.
     ambient_sh_a: vec4<f32>,
     /// Ambient SH2 coefficient 1, padded to a vec4 slot.

@@ -689,6 +689,7 @@ mod tests {
         FrameViewPlan {
             host_camera: HostCameraFrame::default(),
             render_context: crate::shared::RenderingContext::UserView,
+            frame_time_seconds: 0.0,
             draw_filter: None,
             render_space_filter: None,
             view_id: ViewId::Main,

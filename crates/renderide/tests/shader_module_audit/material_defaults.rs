@@ -78,6 +78,18 @@ const EXPECTED_SHADER_DEFAULT_DIRECTIVES: &[(&str, &[&str])] = &[
         ],
     ),
     (
+        "depth_shader_playerfinder_1.wgsl",
+        &[
+            "//#mat_default _ScrollSpeed vec4 5.0 2.0 0.0 0.0",
+            "//#mat_default _StaticStrength float 0.5",
+            "//#mat_default _PlayerColour vec4 0.0 1.0 0.006896496 0.0",
+            "//#mat_default _GlitchTiling float 0.0",
+            "//#mat_default _Backgroundcolour vec4 0.4117647 0.4117647 0.4117647 0.0",
+            "//#mat_default _Resolution vec4 1.0 1.0 0.0 0.0",
+            "//#mat_default _Smoothness float 0.0",
+        ],
+    ),
+    (
         "faceexplodeshader.wgsl",
         &["//#mat_default _Color vec4 1.0 1.0 1.0 1.0"],
     ),
