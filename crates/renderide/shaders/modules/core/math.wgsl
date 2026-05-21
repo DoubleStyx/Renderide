@@ -4,6 +4,8 @@
 
 const EPSILON: f32 = 1e-6;
 
+const MIN_FLOAT: f32 = 0x1p-126f;
+
 fn saturate(v: f32) -> f32 {
     return clamp(v, 0.0, 1.0);
 }
