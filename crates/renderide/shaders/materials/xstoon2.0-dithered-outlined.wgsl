@@ -86,7 +86,7 @@ fn vs_outline(
 #endif
 }
 
-//#pass type=forward name=outline blend=off cull=front vs=vs_outline
+//#pass type=forward name=outline cull=front vs=vs_outline
 @fragment
 fn fs_outline(
     @builtin(position) frag_pos: vec4<f32>,
