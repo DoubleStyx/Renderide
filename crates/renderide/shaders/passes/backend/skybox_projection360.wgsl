@@ -3,6 +3,23 @@
 //! The shared Projection360 module owns shader-specific keyword decoding and projection
 //! sampling for both this pass-side sky draw and the material root.
 
+//#texture_default _MainTex black
+//#texture_default _SecondTex black
+//#texture_default _TintTex white
+//#texture_default _OffsetTex black
+//#texture_default _OffsetMask white
+//#texture_default _MainCube black
+//#texture_default _SecondCube black
+//#mat_default _Exposure float 1.0
+//#mat_default _FOV vec4 6.283185 3.141593 0.0 0.0
+//#mat_default _Gamma float 1.0
+//#mat_default _MaxIntensity float 4.0
+//#mat_default _OffsetMagnitude vec4 0.1 0.1 0.0 0.0
+//#mat_default _PerspectiveFOV vec4 0.785398 0.785398 0.0 0.0
+//#mat_default _Tint vec4 1.0 1.0 1.0 1.0
+//#mat_default _Tint0 vec4 1.0 0.0 0.0 1.0
+//#mat_default _Tint1 vec4 0.0 1.0 0.0 1.0
+
 #import renderide::frame::globals as rg
 #import renderide::core::fullscreen as fs
 #import renderide::skybox::common as skybox
@@ -113,6 +130,7 @@ fn vs_main(
     return out;
 }
 
+//#pass type=forward blend=off zwrite=off ztest=material(main)
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let params = projection360_params();

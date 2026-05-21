@@ -40,6 +40,7 @@ fn vs_main(
     return out;
 }
 
+//#pass type=forward blend=off zwrite=off ztest=main
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let ndc = skybox::ndc_from_clip(in.clip_pos);

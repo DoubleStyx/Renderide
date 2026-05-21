@@ -16,6 +16,7 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     return out;
 }
 
+//#pass type=forward blend=off zwrite=off ztest=main
 @fragment
 fn fs_main(_in: VertexOutput) -> @location(0) vec4<f32> {
     return view.clear_color;
