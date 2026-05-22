@@ -19,7 +19,7 @@ use rayon::prelude::*;
 
 use crate::materials::{
     RasterPipelineKind, ShaderPermutation, UNITY_RENDER_QUEUE_ALPHA_TEST,
-    embedded_stem_depth_prepass_pass, render_queue_is_transparent,
+    embedded_stem_depth_prepass_pass,
 };
 use crate::render_phase::{RenderPhaseKey, RenderPhaseSet};
 
@@ -459,7 +459,6 @@ fn depth_prepass_item_eligible(item: &WorldMeshDrawItem, shader_perm: ShaderPerm
     let key = &item.batch_key;
     !item.is_overlay
         && key.render_queue < UNITY_RENDER_QUEUE_ALPHA_TEST
-        && !render_queue_is_transparent(key.render_queue)
         && !key.alpha_blended
         && !key.blend_mode.is_transparent()
         && !key.embedded_requires_intersection_pass

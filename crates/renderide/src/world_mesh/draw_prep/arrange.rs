@@ -220,9 +220,7 @@ fn cmp_nontransparent_bin_keys(a: &NonTransparentBinKey, b: &NonTransparentBinKe
 
 #[cfg(test)]
 mod tests {
-    use crate::materials::{
-        UNITY_RENDER_QUEUE_ALPHA_TEST, UNITY_RENDER_QUEUE_TRANSPARENT, render_queue_is_transparent,
-    };
+    use crate::materials::{UNITY_RENDER_QUEUE_ALPHA_TEST, UNITY_RENDER_QUEUE_TRANSPARENT};
     use crate::world_mesh::draw_prep::pack_sort_prefix;
     use crate::world_mesh::materials::compute_batch_key_hash;
     use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
@@ -252,6 +250,7 @@ mod tests {
         item.sort_prefix = pack_sort_prefix(
             item.is_overlay,
             item.batch_key.render_queue,
+            item.batch_key.is_transparent(),
             item._opaque_depth_bucket,
             item.batch_key_hash,
         );
@@ -277,7 +276,7 @@ mod tests {
                     item.collect_order,
                     item.mesh_asset_id,
                     item.batch_key.material_asset_id,
-                    render_queue_is_transparent(item.batch_key.render_queue),
+                    item.batch_key.is_transparent(),
                     item.batch_key.embedded_requires_intersection_pass,
                 )
             })
@@ -337,7 +336,7 @@ mod tests {
             UNITY_RENDER_QUEUE_ALPHA_TEST
         );
         assert!(draws[1].batch_key.embedded_requires_intersection_pass);
-        assert!(render_queue_is_transparent(draws[2].batch_key.render_queue));
+        assert!(draws[2].batch_key.is_transparent());
     }
 
     #[test]

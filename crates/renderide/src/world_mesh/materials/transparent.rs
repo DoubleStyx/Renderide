@@ -1,6 +1,7 @@
 //! Transparent material compatibility classes derived from renderer-local material state.
 
-use crate::materials::{MaterialBlendMode, MaterialRenderState, render_queue_is_transparent};
+use crate::materials::{MaterialBlendMode, MaterialRenderState};
+use crate::world_mesh::materials::key::render_queue_is_transparent;
 
 /// Renderer-local transparent behavior bucket inferred from existing material and shader state.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -72,10 +73,8 @@ pub(super) struct TransparentMaterialClassInput {
 pub(super) fn transparent_class_for_material(
     input: TransparentMaterialClassInput,
 ) -> TransparentMaterialClass {
-    let transparent_queue = render_queue_is_transparent(input.render_queue);
-    let transparent_like = transparent_queue
-        || input.alpha_blended
-        || input.blend_mode.is_transparent()
+    let transparent_like = input.alpha_blended
+        || render_queue_is_transparent(input.render_queue, input.blend_mode.is_transparent())
         || input.uses_scene_color_snapshot
         || input.render_state.depth_write == Some(false);
     if !transparent_like {
@@ -163,6 +162,7 @@ mod tests {
         ] {
             let mut value = input();
             value.blend_mode = blend_mode;
+            value.render_queue = 2600;
 
             assert_eq!(
                 transparent_class_for_material(value),

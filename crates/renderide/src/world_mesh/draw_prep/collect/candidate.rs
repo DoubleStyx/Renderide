@@ -3,10 +3,7 @@
 use glam::{Mat4, Vec3};
 
 use crate::materials::host_data::MaterialPropertyLookupIds;
-use crate::materials::{
-    MaterialDepthCompareOverride, RasterFrontFace, RasterPrimitiveTopology,
-    render_queue_is_transparent,
-};
+use crate::materials::{MaterialDepthCompareOverride, RasterFrontFace, RasterPrimitiveTopology};
 use crate::reflection_probes::specular::ReflectionProbeDrawSelection;
 use crate::scene::{MeshRendererInstanceId, RenderSpaceId};
 use crate::world_mesh::culling::overlay_rect_clip_visible;
@@ -102,7 +99,7 @@ pub(super) fn evaluate_draw_candidate(
     let batch_key = apply_overlay_layer_depth_policy(batch_key, candidate.is_overlay);
     let blendshape_deformed = candidate.blendshape_deformed
         || (candidate.tangent_blendshape_deform_active && batch_key.embedded_needs_tangent);
-    let camera_distance_sq = if render_queue_is_transparent(batch_key.render_queue) {
+    let camera_distance_sq = if batch_key.is_transparent() {
         transparent_sort_distance_sq(
             ctx.view_origin_world,
             candidate.world_aabb,
@@ -123,6 +120,7 @@ pub(super) fn evaluate_draw_candidate(
     let sort_prefix = crate::world_mesh::draw_prep::sort::pack_sort_prefix(
         candidate.is_overlay,
         batch_key.render_queue,
+        batch_key.is_transparent(),
         opaque_depth_bucket,
         batch_key_hash,
     );

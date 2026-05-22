@@ -2,7 +2,6 @@ use std::cmp::Ordering;
 
 use crate::materials::{
     UNITY_RENDER_QUEUE_ALPHA_TEST, UNITY_RENDER_QUEUE_OVERLAY, UNITY_RENDER_QUEUE_TRANSPARENT,
-    render_queue_is_transparent,
 };
 use crate::world_mesh::TransparentMaterialClass;
 use crate::world_mesh::draw_prep::item::WorldMeshDrawItem;
@@ -20,8 +19,8 @@ use super::{
 /// fix-up.
 fn cmp_world_mesh_draw_items(a: &WorldMeshDrawItem, b: &WorldMeshDrawItem) -> Ordering {
     a.sort_prefix.cmp(&b.sort_prefix).then_with(|| {
-        let a_transparent = render_queue_is_transparent(a.batch_key.render_queue);
-        let b_transparent = render_queue_is_transparent(b.batch_key.render_queue);
+        let a_transparent = a.batch_key.is_transparent();
+        let b_transparent = b.batch_key.is_transparent();
         match (a_transparent, b_transparent) {
             (false, false) => a
                 .batch_key_hash
@@ -44,20 +43,17 @@ fn cmp_world_mesh_draw_items_without_depth_bucket(
 ) -> Ordering {
     a.is_overlay
         .cmp(&b.is_overlay)
-        .then(a.batch_key.render_queue.cmp(&b.batch_key.render_queue))
         .then(
-            render_queue_is_transparent(a.batch_key.render_queue)
-                .cmp(&render_queue_is_transparent(b.batch_key.render_queue)),
+            a.batch_key
+                .is_transparent()
+                .cmp(&b.batch_key.is_transparent()),
         )
-        .then_with(|| {
-            match (
-                render_queue_is_transparent(a.batch_key.render_queue),
-                render_queue_is_transparent(b.batch_key.render_queue),
-            ) {
-                (false, false) => a
-                    .batch_key
-                    .cmp(&b.batch_key)
-                    .then(b.sorting_order.cmp(&a.sorting_order))
+        .then(a.batch_key.render_queue.cmp(&b.batch_key.render_queue))
+        .then_with(
+            || match (a.batch_key.is_transparent(), b.batch_key.is_transparent()) {
+                (false, false) => b
+                    .sorting_order
+                    .cmp(&a.sorting_order)
                     .then(a.mesh_asset_id.cmp(&b.mesh_asset_id))
                     .then(a.node_id.cmp(&b.node_id))
                     .then(a.slot_index.cmp(&b.slot_index)),
@@ -67,8 +63,8 @@ fn cmp_world_mesh_draw_items_without_depth_bucket(
                     .then_with(|| b.camera_distance_sq.total_cmp(&a.camera_distance_sq))
                     .then(a.collect_order.cmp(&b.collect_order)),
                 _ => Ordering::Equal,
-            }
-        })
+            },
+        )
 }
 
 /// Sets `camera_distance_sq` and refreshes the precomputed `opaque_depth_bucket` and
@@ -80,6 +76,7 @@ fn set_camera_distance(item: &mut WorldMeshDrawItem, distance_sq: f32) {
     item.sort_prefix = pack_sort_prefix(
         item.is_overlay,
         item.batch_key.render_queue,
+        item.batch_key.is_transparent(),
         item._opaque_depth_bucket,
         item.batch_key_hash,
     );
@@ -91,6 +88,7 @@ fn set_render_queue(item: &mut WorldMeshDrawItem, render_queue: i32) {
     item.sort_prefix = pack_sort_prefix(
         item.is_overlay,
         item.batch_key.render_queue,
+        item.batch_key.is_transparent(),
         item._opaque_depth_bucket,
         item.batch_key_hash,
     );
@@ -103,6 +101,7 @@ fn set_transparent_class(item: &mut WorldMeshDrawItem, class: TransparentMateria
     item.sort_prefix = pack_sort_prefix(
         item.is_overlay,
         item.batch_key.render_queue,
+        item.batch_key.is_transparent(),
         item._opaque_depth_bucket,
         item.batch_key_hash,
     );
@@ -367,15 +366,15 @@ fn render_queue_orders_alpha_test_transparent_and_overlay_ranges() {
 
 #[test]
 fn pack_sort_prefix_orders_overlay_after_main() {
-    let main = pack_sort_prefix(false, UNITY_RENDER_QUEUE_TRANSPARENT, 0, 0);
-    let overlay = pack_sort_prefix(true, 0, 0, 0);
+    let main = pack_sort_prefix(false, UNITY_RENDER_QUEUE_TRANSPARENT, true, 0, 0);
+    let overlay = pack_sort_prefix(true, 0, true, 0, 0);
     assert!(main < overlay);
 }
 
 #[test]
 fn pack_sort_prefix_orders_lower_render_queue_first() {
-    let lo = pack_sort_prefix(false, 0, 0, 0);
-    let hi = pack_sort_prefix(false, UNITY_RENDER_QUEUE_TRANSPARENT, 0, 0);
+    let lo = pack_sort_prefix(false, 0, false, 0, 0);
+    let hi = pack_sort_prefix(false, UNITY_RENDER_QUEUE_TRANSPARENT, false, 0, 0);
     assert!(lo < hi);
 }
 
@@ -384,10 +383,11 @@ fn pack_sort_prefix_zeros_depth_and_hash_for_transparent() {
     let with_depth_and_hash = pack_sort_prefix(
         false,
         UNITY_RENDER_QUEUE_TRANSPARENT,
+        true,
         200,
         0xDEAD_BEEF_DEAD_BEEF,
     );
-    let bare = pack_sort_prefix(false, UNITY_RENDER_QUEUE_TRANSPARENT, 0, 0);
+    let bare = pack_sort_prefix(false, UNITY_RENDER_QUEUE_TRANSPARENT, true, 0, 0);
     assert_eq!(
         with_depth_and_hash, bare,
         "transparent draws must share a key within their (overlay, render_queue) bucket"
@@ -396,11 +396,11 @@ fn pack_sort_prefix_zeros_depth_and_hash_for_transparent() {
 
 #[test]
 fn pack_sort_prefix_keeps_depth_and_hash_for_opaque() {
-    let near = pack_sort_prefix(false, 0, 10, 0);
-    let far = pack_sort_prefix(false, 0, 200, 0);
+    let near = pack_sort_prefix(false, 0, false, 10, 0);
+    let far = pack_sort_prefix(false, 0, false, 200, 0);
     assert!(near < far);
-    let same_depth_lo_hash = pack_sort_prefix(false, 0, 10, 0);
-    let same_depth_hi_hash = pack_sort_prefix(false, 0, 10, u64::MAX);
+    let same_depth_lo_hash = pack_sort_prefix(false, 0, false, 10, 0);
+    let same_depth_hi_hash = pack_sort_prefix(false, 0, false, 10, u64::MAX);
     assert!(same_depth_lo_hash < same_depth_hi_hash);
 }
 

@@ -4,8 +4,6 @@ use std::cmp::Ordering;
 
 use rayon::slice::ParallelSliceMut;
 
-use crate::materials::render_queue_is_transparent;
-
 use super::item::WorldMeshDrawItem;
 
 /// Draws assigned to one secondary structural resort worker chunk.
@@ -63,12 +61,12 @@ pub(super) fn opaque_depth_bucket(distance_sq: f32) -> u16 {
 pub fn pack_sort_prefix(
     is_overlay: bool,
     render_queue: i32,
+    is_transparent: bool,
     opaque_depth_bucket: u16,
     batch_key_hash: u64,
 ) -> u64 {
     let overlay_bit = u64::from(is_overlay);
     let render_queue_clamped = render_queue.clamp(0, SORT_PREFIX_RENDER_QUEUE_MAX) as u64;
-    let is_transparent = render_queue_is_transparent(render_queue);
     let transparent_bit = u64::from(is_transparent);
     let (depth_bits, hash_bits) = if is_transparent {
         (0u64, 0u64)
@@ -174,7 +172,7 @@ fn resort_intra_prefix_runs(items: &mut [WorldMeshDrawItem], allow_parallel: boo
             end += 1;
         }
         if end - start > 1 {
-            let is_transparent = render_queue_is_transparent(items[start].batch_key.render_queue);
+            let is_transparent = items[start].batch_key.is_transparent();
             if is_transparent {
                 sort_intra_prefix_run(
                     &mut items[start..end],

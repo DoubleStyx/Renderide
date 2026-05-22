@@ -3,6 +3,7 @@
 use crate::materials::{
     EmbeddedTangentFallbackMode, MaterialBlendMode, MaterialRenderState, RasterFrontFace,
     RasterPipelineKind, RasterPrimitiveTopology, SceneColorSnapshotMode,
+    UNITY_RENDER_QUEUE_TRANSPARENT, UNITY_TRANSPARENT_RENDER_QUEUE_MIN,
 };
 
 use super::transparent::TransparentMaterialClass;
@@ -69,6 +70,19 @@ pub struct MaterialDrawBatchKey {
     pub alpha_blended: bool,
     /// Renderer-local transparent behavior class inferred from existing material and shader state.
     pub transparent_class: TransparentMaterialClass,
+}
+
+impl MaterialDrawBatchKey {
+    #[inline]
+    pub fn is_transparent(&self) -> bool {
+        render_queue_is_transparent(self.render_queue, self.blend_mode.is_transparent())
+    }
+}
+
+#[inline]
+pub fn render_queue_is_transparent(render_queue: i32, transparent_blend_mode: bool) -> bool {
+    render_queue >= UNITY_RENDER_QUEUE_TRANSPARENT
+        || (transparent_blend_mode && render_queue >= UNITY_TRANSPARENT_RENDER_QUEUE_MIN)
 }
 
 /// Computes a 64-bit content hash for `key` used by the draw-sort comparator's primary tiebreaker.

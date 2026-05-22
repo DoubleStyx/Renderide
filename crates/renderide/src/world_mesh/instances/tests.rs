@@ -27,6 +27,7 @@ fn refresh_sort_keys(item: &mut WorldMeshDrawItem) {
     item.sort_prefix = pack_sort_prefix(
         item.is_overlay,
         item.batch_key.render_queue,
+        item.batch_key.is_transparent(),
         item._opaque_depth_bucket,
         item.batch_key_hash,
     );

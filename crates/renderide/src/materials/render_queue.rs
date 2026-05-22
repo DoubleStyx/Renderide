@@ -7,9 +7,6 @@ use super::material_passes::{MaterialPipelinePropertyIds, PropertyMapRef};
 pub const UNITY_RENDER_QUEUE_GEOMETRY: i32 = 2000;
 /// Unity `AlphaTest` render queue.
 pub const UNITY_RENDER_QUEUE_ALPHA_TEST: i32 = 2450;
-/// Highest Unity queue value still sorted as opaque by the Built-in Render Pipeline.
-#[cfg(test)]
-pub const UNITY_OPAQUE_RENDER_QUEUE_MAX: i32 = 2500;
 /// First Unity queue value sorted as transparent by the Built-in Render Pipeline.
 pub const UNITY_TRANSPARENT_RENDER_QUEUE_MIN: i32 = 2501;
 /// Unity `Transparent` render queue and the fallback queue for unqueued alpha-blended materials.
@@ -17,12 +14,6 @@ pub const UNITY_RENDER_QUEUE_TRANSPARENT: i32 = 3000;
 /// Unity `Overlay` render queue.
 #[cfg(test)]
 pub const UNITY_RENDER_QUEUE_OVERLAY: i32 = 4000;
-
-/// Returns whether a Unity render queue uses transparent-style sorting.
-#[inline]
-pub fn render_queue_is_transparent(render_queue: i32) -> bool {
-    render_queue >= UNITY_TRANSPARENT_RENDER_QUEUE_MIN
-}
 
 /// Returns the compatibility fallback queue when the host did not send a material queue.
 #[inline]
@@ -92,14 +83,6 @@ mod tests {
     use super::*;
     use crate::materials::host_data::{MaterialPropertyValue, PropertyIdRegistry};
     use hashbrown::HashMap;
-
-    #[test]
-    fn transparent_sorting_starts_after_opaque_cutoff() {
-        assert!(!render_queue_is_transparent(UNITY_OPAQUE_RENDER_QUEUE_MAX));
-        assert!(render_queue_is_transparent(
-            UNITY_TRANSPARENT_RENDER_QUEUE_MIN
-        ));
-    }
 
     #[test]
     fn material_render_queue_uses_material_override() {

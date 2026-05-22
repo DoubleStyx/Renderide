@@ -1,6 +1,6 @@
 //! Shared material-to-world-mesh-phase classification.
 
-use crate::materials::{UNITY_RENDER_QUEUE_ALPHA_TEST, render_queue_is_transparent};
+use crate::materials::UNITY_RENDER_QUEUE_ALPHA_TEST;
 use crate::world_mesh::MaterialDrawBatchKey;
 
 use super::instances::WorldMeshPhase;
@@ -36,9 +36,7 @@ pub(crate) fn classify_world_mesh_batch(key: &MaterialDrawBatchKey) -> WorldMesh
 
 /// Returns whether a regular forward draw must render after the skybox/background draw.
 fn regular_window_records_after_skybox(key: &MaterialDrawBatchKey) -> bool {
-    key.alpha_blended
-        || render_queue_is_transparent(key.render_queue)
-        || key.render_state.depth_write == Some(false)
+    key.alpha_blended || key.is_transparent() || key.render_state.depth_write == Some(false)
 }
 
 /// Selects the primary phase for one same-batch-key window.

@@ -97,6 +97,7 @@ pub fn dummy_world_mesh_draw_item(spec: DummyDrawItemSpec) -> WorldMeshDrawItem 
     let sort_prefix = crate::world_mesh::draw_prep::pack_sort_prefix(
         false,
         batch_key.render_queue,
+        batch_key.is_transparent(),
         0,
         batch_key_hash,
     );
