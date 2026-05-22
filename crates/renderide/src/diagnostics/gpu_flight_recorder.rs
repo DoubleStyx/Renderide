@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 
+use crate::diagnostics::crash_context;
+
 /// Number of recent GPU/XR events retained in memory.
 pub(crate) const GPU_FLIGHT_RECORDER_CAPACITY: usize = 512;
 /// Maximum number of events emitted when a crash path dumps the recorder.
@@ -59,6 +61,55 @@ impl GpuFlightRecorder {
             events.pop_front();
         }
         events.push_back(event);
+    }
+
+    /// Records that an OpenXR call has started and marks it active in crash context.
+    pub(crate) fn record_openxr_call_started(
+        &self,
+        call: GpuFlightOpenXrCall,
+        image_index: Option<u32>,
+        predicted_display_time_nanos: Option<i64>,
+    ) {
+        crash_context::set_openxr_call(call.crash_context_call());
+        self.record(GpuFlightEventKind::OpenXrCall {
+            call,
+            result: GpuFlightCallResult::Started,
+            image_index,
+            predicted_display_time_nanos,
+        });
+    }
+
+    /// Records that an OpenXR call completed and clears the active crash-context call.
+    pub(crate) fn record_openxr_call_result(
+        &self,
+        call: GpuFlightOpenXrCall,
+        result: GpuFlightCallResult,
+        image_index: Option<u32>,
+        predicted_display_time_nanos: Option<i64>,
+    ) {
+        self.record(GpuFlightEventKind::OpenXrCall {
+            call,
+            result,
+            image_index,
+            predicted_display_time_nanos,
+        });
+        crash_context::clear_openxr_call_if(call.crash_context_call());
+    }
+
+    /// Records that an OpenXR call exceeded its watchdog timeout while still active.
+    pub(crate) fn record_openxr_call_timeout(
+        &self,
+        call: GpuFlightOpenXrCall,
+        reason: impl Into<String>,
+        image_index: Option<u32>,
+        predicted_display_time_nanos: Option<i64>,
+    ) {
+        self.record(GpuFlightEventKind::OpenXrCall {
+            call,
+            result: GpuFlightCallResult::TimedOut(reason.into()),
+            image_index,
+            predicted_display_time_nanos,
+        });
     }
 
     /// Emits the recent event timeline once, returning whether a dump was written.
@@ -504,6 +555,22 @@ impl fmt::Display for GpuFlightDriverStage {
     }
 }
 
+impl GpuFlightDriverStage {
+    /// Returns the crash-context equivalent of this driver stage.
+    pub(crate) const fn crash_context_stage(self) -> crash_context::DriverStage {
+        match self {
+            Self::Enqueued => crash_context::DriverStage::Enqueued,
+            Self::DroppedAfterExit => crash_context::DriverStage::DroppedAfterExit,
+            Self::SubmitStart => crash_context::DriverStage::SubmitStart,
+            Self::SubmitDone => crash_context::DriverStage::SubmitDone,
+            Self::PresentStart => crash_context::DriverStage::PresentStart,
+            Self::PresentDone => crash_context::DriverStage::PresentDone,
+            Self::XrFinalizeStart => crash_context::DriverStage::XrFinalizeStart,
+            Self::XrFinalizeDone => crash_context::DriverStage::XrFinalizeDone,
+        }
+    }
+}
+
 /// OpenXR call recorded by the flight recorder.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum GpuFlightOpenXrCall {
@@ -546,15 +613,37 @@ impl fmt::Display for GpuFlightOpenXrCall {
     }
 }
 
+impl GpuFlightOpenXrCall {
+    /// Returns the crash-context equivalent of this OpenXR call.
+    pub(crate) const fn crash_context_call(self) -> crash_context::OpenXrCall {
+        match self {
+            Self::PollEvents => crash_context::OpenXrCall::PollEvents,
+            Self::WaitPreviousFinalize => crash_context::OpenXrCall::WaitPreviousFinalize,
+            Self::WaitFrame => crash_context::OpenXrCall::WaitFrame,
+            Self::BeginFrame => crash_context::OpenXrCall::BeginFrame,
+            Self::LocateViews => crash_context::OpenXrCall::LocateViews,
+            Self::AcquireImage => crash_context::OpenXrCall::AcquireImage,
+            Self::WaitImage => crash_context::OpenXrCall::WaitImage,
+            Self::ReleaseImage => crash_context::OpenXrCall::ReleaseImage,
+            Self::EndFrameProjection => crash_context::OpenXrCall::EndFrameProjection,
+            Self::EndFrameEmpty => crash_context::OpenXrCall::EndFrameEmpty,
+        }
+    }
+}
+
 /// Compact call result stored in the flight recorder.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum GpuFlightCallResult {
+    /// Call has started but has not returned yet.
+    Started,
     /// Call succeeded.
     Ok,
     /// Call intentionally skipped.
     Skipped,
     /// Call failed with a compact debug string.
     Failed(String),
+    /// Call exceeded a watchdog timeout while still running.
+    TimedOut(String),
 }
 
 impl GpuFlightCallResult {
@@ -572,9 +661,11 @@ impl GpuFlightCallResult {
 impl fmt::Display for GpuFlightCallResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Started => f.write_str("started"),
             Self::Ok => f.write_str("ok"),
             Self::Skipped => f.write_str("skipped"),
             Self::Failed(error) => write!(f, "failed \"{error}\""),
+            Self::TimedOut(reason) => write!(f, "timed_out \"{reason}\""),
         }
     }
 }
@@ -670,6 +761,24 @@ mod tests {
         .to_string();
         assert!(openxr.contains("openxr call=acquire_image"));
         assert!(openxr.contains("image_index=2"));
+
+        let openxr_started = GpuFlightEventKind::OpenXrCall {
+            call: GpuFlightOpenXrCall::EndFrameProjection,
+            result: GpuFlightCallResult::Started,
+            image_index: Some(1),
+            predicted_display_time_nanos: Some(456),
+        }
+        .to_string();
+        assert!(openxr_started.contains("result=started"));
+
+        let openxr_timeout = GpuFlightEventKind::OpenXrCall {
+            call: GpuFlightOpenXrCall::EndFrameProjection,
+            result: GpuFlightCallResult::TimedOut("runtime_stall".to_owned()),
+            image_index: Some(1),
+            predicted_display_time_nanos: Some(456),
+        }
+        .to_string();
+        assert!(openxr_timeout.contains("timed_out \"runtime_stall\""));
 
         let device = GpuFlightEventKind::DeviceLost {
             generation: 1,

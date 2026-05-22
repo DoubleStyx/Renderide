@@ -21,8 +21,9 @@ use openxr as xr;
 use openxr::{CompositionLayerProjection, CompositionLayerProjectionView, SwapchainSubImage};
 use parking_lot::Mutex;
 
+use crate::diagnostics::crash_context;
 use crate::diagnostics::gpu_flight_recorder::{
-    GpuFlightCallResult, GpuFlightEventKind, GpuFlightOpenXrCall, GpuFlightRecorder,
+    GpuFlightCallResult, GpuFlightOpenXrCall, GpuFlightRecorder,
 };
 use crate::gpu::GpuQueueAccessGate;
 use crate::gpu::driver_thread::BlockingCallWatchdog;
@@ -34,6 +35,15 @@ use crate::gpu::driver_thread::BlockingCallWatchdog;
 /// VR frame budgets while short enough that a true freeze surfaces within one log
 /// interval.
 const END_FRAME_WATCHDOG_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Submit-side context attached to a deferred OpenXR finalize batch.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct XrFinalizeSubmitContext {
+    /// Frame sequence assigned by frame timing, or zero when untracked.
+    frame_seq: u64,
+    /// Command buffer count in the driver batch that carries this finalize.
+    command_buffers: usize,
+}
 
 /// Oneshot used by the driver thread to notify the main thread that the finalize work
 /// for one frame has completed (or failed and recorded to [`XrFinalizeErrorSlot`]).
@@ -72,10 +82,22 @@ pub type XrFinalizeErrorSlot = Arc<Mutex<Option<xr::sys::Result>>>;
 pub struct XrFinalizeWork {
     /// What kind of `xrEndFrame` to issue (projection vs empty).
     pub kind: XrFinalizeKind,
+    /// Submit-side frame context captured when the batch is assembled.
+    pub(crate) submit_context: XrFinalizeSubmitContext,
     /// Driver-to-main completion oneshot. Always signaled, success or failure.
     pub signal: XrFinalizeSignal,
     /// Shared error slot; on failure the driver writes here before signaling.
     pub error_slot: XrFinalizeErrorSlot,
+}
+
+impl XrFinalizeWork {
+    /// Records the driver-batch context that will carry this finalize work.
+    pub(crate) fn set_submit_context(&mut self, frame_seq: u64, command_buffers: usize) {
+        self.submit_context = XrFinalizeSubmitContext {
+            frame_seq,
+            command_buffers,
+        };
+    }
 }
 
 /// Variant of `xrEndFrame` to issue from the driver thread.
@@ -102,6 +124,20 @@ pub enum XrFinalizeKind {
     },
 }
 
+/// Moved empty-finalize payload used by the driver helper.
+struct XrEmptyFinalizePayload {
+    /// Frame stream to issue the empty `xrEndFrame` against.
+    frame_stream: Arc<Mutex<xr::FrameStream<xr::Vulkan>>>,
+    /// Blend mode passed through to the compositor.
+    env_blend_mode: xr::EnvironmentBlendMode,
+    /// Predicted display time of the frame being closed.
+    predicted_display_time: xr::Time,
+    /// Atomic mirror of `XrSessionState::frame_open`; cleared after `xrEndFrame`.
+    frame_open: Arc<AtomicBool>,
+    /// Shared shutdown flag used to lower expected compositor-stall log severity.
+    shutdown_requested: Arc<AtomicBool>,
+}
+
 /// Payload for [`XrFinalizeKind::Projection`]. Stored boxed so the enum stays compact.
 pub struct XrProjectionFinalize {
     /// Swapchain whose acquired image we must release before `xrEndFrame`.
@@ -113,6 +149,8 @@ pub struct XrProjectionFinalize {
     /// `xrReleaseSwapchainImage` so wgpu does not retain tracking state while the compositor owns
     /// the image.
     pub imported_color_texture: Option<wgpu::Texture>,
+    /// Swapchain image index acquired for this frame.
+    pub image_index: u32,
     /// Frame stream the projection layer is submitted through.
     pub frame_stream: Arc<Mutex<xr::FrameStream<xr::Vulkan>>>,
     /// Reference space the projection layer is anchored in.
@@ -154,41 +192,19 @@ pub fn wait_for_finalize(rx: XrFinalizeReceiver) -> Result<(), RecvTimeoutError>
 pub(super) fn run_xr_finalize(
     gate: &GpuQueueAccessGate,
     work: XrFinalizeWork,
-    flight_recorder: &GpuFlightRecorder,
+    flight_recorder: Arc<GpuFlightRecorder>,
 ) -> Result<(), xr::sys::Result> {
     profiling::scope!("driver::xr_finalize");
     let XrFinalizeWork {
         kind,
+        submit_context,
         signal,
         error_slot,
     } = work;
 
     let result = match kind {
-        XrFinalizeKind::Projection(mut payload) => {
-            drop(payload.imported_color_texture.take());
-            let release_res = release_swapchain_image_under_gate(gate, &payload.swapchain);
-            record_openxr_result(
-                flight_recorder,
-                GpuFlightOpenXrCall::ReleaseImage,
-                release_res,
-                None,
-                Some(payload.predicted_display_time.as_nanos()),
-            );
-            if let Err(err) = release_res {
-                Err(err)
-            } else {
-                let frame_open = Arc::clone(&payload.frame_open);
-                let res = end_frame_projection(gate, &payload);
-                record_openxr_result(
-                    flight_recorder,
-                    GpuFlightOpenXrCall::EndFrameProjection,
-                    res,
-                    None,
-                    Some(payload.predicted_display_time.as_nanos()),
-                );
-                frame_open.store(false, Ordering::Release);
-                res
-            }
+        XrFinalizeKind::Projection(payload) => {
+            run_projection_finalize(gate, payload, submit_context, &flight_recorder)
         }
         XrFinalizeKind::Empty {
             frame_stream,
@@ -196,24 +212,18 @@ pub(super) fn run_xr_finalize(
             predicted_display_time,
             frame_open,
             shutdown_requested,
-        } => {
-            let res = end_frame_empty(
-                gate,
-                &frame_stream,
+        } => run_empty_finalize(
+            gate,
+            XrEmptyFinalizePayload {
+                frame_stream,
                 env_blend_mode,
                 predicted_display_time,
-                &shutdown_requested,
-            );
-            record_openxr_result(
-                flight_recorder,
-                GpuFlightOpenXrCall::EndFrameEmpty,
-                res,
-                None,
-                Some(predicted_display_time.as_nanos()),
-            );
-            frame_open.store(false, Ordering::Release);
-            res
-        }
+                frame_open,
+                shutdown_requested,
+            },
+            submit_context,
+            &flight_recorder,
+        ),
     };
 
     if let Err(err) = result {
@@ -225,26 +235,171 @@ pub(super) fn run_xr_finalize(
     }
 
     signal.signal();
+    crash_context::clear_xr_finalize_state();
     result
 }
 
-/// Records a fallible OpenXR result into the flight recorder.
-fn record_openxr_result(
+/// Runs stereo projection finalize work.
+fn run_projection_finalize(
+    gate: &GpuQueueAccessGate,
+    mut payload: Box<XrProjectionFinalize>,
+    submit_context: XrFinalizeSubmitContext,
+    flight_recorder: &Arc<GpuFlightRecorder>,
+) -> Result<(), xr::sys::Result> {
+    set_projection_crash_context(&payload, submit_context);
+    drop(payload.imported_color_texture.take());
+    record_release_image_started(&payload, flight_recorder);
+    let release_res = release_image_with_watchdog(gate, &payload, submit_context, flight_recorder);
+    record_release_image_result(&payload, flight_recorder, release_res);
+    release_res?;
+    record_end_frame_projection_started(&payload, flight_recorder);
+    let res = end_frame_projection(gate, &payload, submit_context, Arc::clone(flight_recorder));
+    record_end_frame_projection_result(&payload, flight_recorder, res);
+    payload.frame_open.store(false, Ordering::Release);
+    res
+}
+
+/// Runs empty-frame finalize work.
+fn run_empty_finalize(
+    gate: &GpuQueueAccessGate,
+    payload: XrEmptyFinalizePayload,
+    submit_context: XrFinalizeSubmitContext,
+    flight_recorder: &Arc<GpuFlightRecorder>,
+) -> Result<(), xr::sys::Result> {
+    crash_context::set_xr_finalize_state(
+        crash_context::XrFinalizeKind::Empty,
+        None,
+        submit_context.frame_seq,
+        submit_context.command_buffers,
+        None,
+        Some(payload.predicted_display_time.as_nanos()),
+    );
+    flight_recorder.record_openxr_call_started(
+        GpuFlightOpenXrCall::EndFrameEmpty,
+        None,
+        Some(payload.predicted_display_time.as_nanos()),
+    );
+    let res = end_frame_empty(
+        gate,
+        &payload.frame_stream,
+        payload.env_blend_mode,
+        payload.predicted_display_time,
+        &payload.shutdown_requested,
+        submit_context,
+        Arc::clone(flight_recorder),
+    );
+    flight_recorder.record_openxr_call_result(
+        GpuFlightOpenXrCall::EndFrameEmpty,
+        flight_result(res),
+        None,
+        Some(payload.predicted_display_time.as_nanos()),
+    );
+    payload.frame_open.store(false, Ordering::Release);
+    res
+}
+
+/// Records the start of a projection swapchain release.
+fn record_release_image_started(
+    payload: &XrProjectionFinalize,
     flight_recorder: &GpuFlightRecorder,
-    call: GpuFlightOpenXrCall,
-    result: Result<(), xr::sys::Result>,
-    image_index: Option<u32>,
-    predicted_display_time_nanos: Option<i64>,
 ) {
-    let result = result.map_or_else(GpuFlightCallResult::failed_debug, |()| {
+    flight_recorder.record_openxr_call_started(
+        GpuFlightOpenXrCall::ReleaseImage,
+        Some(payload.image_index),
+        Some(payload.predicted_display_time.as_nanos()),
+    );
+}
+
+/// Releases a projection swapchain image with a timeout hook.
+fn release_image_with_watchdog(
+    gate: &GpuQueueAccessGate,
+    payload: &XrProjectionFinalize,
+    submit_context: XrFinalizeSubmitContext,
+    flight_recorder: &Arc<GpuFlightRecorder>,
+) -> Result<(), xr::sys::Result> {
+    let release_timeout_context = XrFinalizeTimeoutContext::projection(payload, submit_context);
+    let release_timeout_recorder = Arc::clone(flight_recorder);
+    let release_watchdog = BlockingCallWatchdog::arm_shutdown_aware_with_timeout_hook(
+        END_FRAME_WATCHDOG_TIMEOUT,
+        "xr::release_image",
+        Arc::clone(&payload.shutdown_requested),
+        move || {
+            record_xr_finalize_timeout(
+                release_timeout_recorder,
+                GpuFlightOpenXrCall::ReleaseImage,
+                "openxr-release-image-stall",
+                release_timeout_context,
+            );
+        },
+    );
+    let release_res = release_swapchain_image_under_gate(gate, &payload.swapchain);
+    release_watchdog.disarm();
+    release_res
+}
+
+/// Records the result of a projection swapchain release.
+fn record_release_image_result(
+    payload: &XrProjectionFinalize,
+    flight_recorder: &GpuFlightRecorder,
+    release_res: Result<(), xr::sys::Result>,
+) {
+    flight_recorder.record_openxr_call_result(
+        GpuFlightOpenXrCall::ReleaseImage,
+        flight_result(release_res),
+        Some(payload.image_index),
+        Some(payload.predicted_display_time.as_nanos()),
+    );
+}
+
+/// Records the start of projection end-frame submission.
+fn record_end_frame_projection_started(
+    payload: &XrProjectionFinalize,
+    flight_recorder: &GpuFlightRecorder,
+) {
+    flight_recorder.record_openxr_call_started(
+        GpuFlightOpenXrCall::EndFrameProjection,
+        Some(payload.image_index),
+        Some(payload.predicted_display_time.as_nanos()),
+    );
+}
+
+/// Records the result of projection end-frame submission.
+fn record_end_frame_projection_result(
+    payload: &XrProjectionFinalize,
+    flight_recorder: &GpuFlightRecorder,
+    res: Result<(), xr::sys::Result>,
+) {
+    flight_recorder.record_openxr_call_result(
+        GpuFlightOpenXrCall::EndFrameProjection,
+        flight_result(res),
+        Some(payload.image_index),
+        Some(payload.predicted_display_time.as_nanos()),
+    );
+}
+
+/// Converts a fallible OpenXR result to a compact flight-recorder result.
+fn flight_result(result: Result<(), xr::sys::Result>) -> GpuFlightCallResult {
+    result.map_or_else(GpuFlightCallResult::failed_debug, |()| {
         GpuFlightCallResult::Ok
-    });
-    flight_recorder.record(GpuFlightEventKind::OpenXrCall {
-        call,
-        result,
-        image_index,
-        predicted_display_time_nanos,
-    });
+    })
+}
+
+/// Records projection finalize state for native crash handlers.
+fn set_projection_crash_context(
+    payload: &XrProjectionFinalize,
+    submit_context: XrFinalizeSubmitContext,
+) {
+    let extent = payload.rect.extent;
+    let width = u32::try_from(extent.width).ok();
+    let height = u32::try_from(extent.height).ok();
+    crash_context::set_xr_finalize_state(
+        crash_context::XrFinalizeKind::Projection,
+        Some(payload.image_index),
+        submit_context.frame_seq,
+        submit_context.command_buffers,
+        width.zip(height),
+        Some(payload.predicted_display_time.as_nanos()),
+    );
 }
 
 /// Releases the OpenXR swapchain image under the queue access gate.
@@ -272,16 +427,27 @@ fn release_swapchain_image_under_gate(
 fn end_frame_projection(
     gate: &GpuQueueAccessGate,
     payload: &XrProjectionFinalize,
+    submit_context: XrFinalizeSubmitContext,
+    flight_recorder: Arc<GpuFlightRecorder>,
 ) -> Result<(), xr::sys::Result> {
     profiling::scope!("driver::xr_end_frame");
     let v0 = &payload.views[0];
     let v1 = &payload.views[1];
     let pose0 = sanitize_pose_for_end_frame(v0.pose);
     let pose1 = sanitize_pose_for_end_frame(v1.pose);
-    let wd = BlockingCallWatchdog::arm_shutdown_aware(
+    let timeout_context = XrFinalizeTimeoutContext::projection(payload, submit_context);
+    let wd = BlockingCallWatchdog::arm_shutdown_aware_with_timeout_hook(
         END_FRAME_WATCHDOG_TIMEOUT,
         "xr::end_frame_projection",
         Arc::clone(&payload.shutdown_requested),
+        move || {
+            record_xr_finalize_timeout(
+                flight_recorder,
+                GpuFlightOpenXrCall::EndFrameProjection,
+                "openxr-end-frame-projection-stall",
+                timeout_context,
+            );
+        },
     );
     let res = {
         let _gate = gate.lock();
@@ -327,12 +493,23 @@ fn end_frame_empty(
     env_blend_mode: xr::EnvironmentBlendMode,
     predicted_display_time: xr::Time,
     shutdown_requested: &Arc<AtomicBool>,
+    submit_context: XrFinalizeSubmitContext,
+    flight_recorder: Arc<GpuFlightRecorder>,
 ) -> Result<(), xr::sys::Result> {
     profiling::scope!("driver::xr_end_frame_empty");
-    let wd = BlockingCallWatchdog::arm_shutdown_aware(
+    let timeout_context = XrFinalizeTimeoutContext::empty(predicted_display_time, submit_context);
+    let wd = BlockingCallWatchdog::arm_shutdown_aware_with_timeout_hook(
         END_FRAME_WATCHDOG_TIMEOUT,
         "xr::end_frame_empty",
         Arc::clone(shutdown_requested),
+        move || {
+            record_xr_finalize_timeout(
+                flight_recorder,
+                GpuFlightOpenXrCall::EndFrameEmpty,
+                "openxr-end-frame-empty-stall",
+                timeout_context,
+            );
+        },
     );
     let res = {
         let _gate = gate.lock();
@@ -342,6 +519,98 @@ fn end_frame_empty(
     };
     wd.disarm();
     res
+}
+
+/// Copyable context emitted when an OpenXR finalize call exceeds its watchdog timeout.
+#[derive(Clone, Copy, Debug)]
+struct XrFinalizeTimeoutContext {
+    /// Human-readable finalize kind.
+    kind: &'static str,
+    /// Swapchain image index for projection finalizes.
+    image_index: Option<u32>,
+    /// Frame sequence assigned to the driver batch.
+    frame_seq: u64,
+    /// Command buffers in the driver batch.
+    command_buffers: usize,
+    /// OpenXR swapchain extent for projection finalizes.
+    extent: Option<(u32, u32)>,
+    /// Predicted display time in OpenXR nanoseconds.
+    predicted_display_time_nanos: Option<i64>,
+}
+
+impl XrFinalizeTimeoutContext {
+    /// Builds timeout context for stereo projection end-frame.
+    fn projection(payload: &XrProjectionFinalize, submit_context: XrFinalizeSubmitContext) -> Self {
+        let extent = payload.rect.extent;
+        let width = u32::try_from(extent.width).ok();
+        let height = u32::try_from(extent.height).ok();
+        Self {
+            kind: "projection",
+            image_index: Some(payload.image_index),
+            frame_seq: submit_context.frame_seq,
+            command_buffers: submit_context.command_buffers,
+            extent: width.zip(height),
+            predicted_display_time_nanos: Some(payload.predicted_display_time.as_nanos()),
+        }
+    }
+
+    /// Builds timeout context for empty end-frame.
+    fn empty(predicted_display_time: xr::Time, submit_context: XrFinalizeSubmitContext) -> Self {
+        Self {
+            kind: "empty",
+            image_index: None,
+            frame_seq: submit_context.frame_seq,
+            command_buffers: submit_context.command_buffers,
+            extent: None,
+            predicted_display_time_nanos: Some(predicted_display_time.as_nanos()),
+        }
+    }
+}
+
+/// Records a detailed timeout event and flushes logs before the process can be aborted.
+fn record_xr_finalize_timeout(
+    flight_recorder: Arc<GpuFlightRecorder>,
+    call: GpuFlightOpenXrCall,
+    reason: &'static str,
+    context: XrFinalizeTimeoutContext,
+) {
+    logger::error!(
+        "driver: OpenXR finalize timed out: reason={} call={} kind={} frame_seq={} command_buffers={} image_index={} extent={} predicted_time_ns={}",
+        reason,
+        call,
+        context.kind,
+        context.frame_seq,
+        context.command_buffers,
+        optional_u32(context.image_index),
+        optional_extent(context.extent),
+        optional_i64(context.predicted_display_time_nanos),
+    );
+    flight_recorder.record_openxr_call_timeout(
+        call,
+        reason,
+        context.image_index,
+        context.predicted_display_time_nanos,
+    );
+    flight_recorder.dump_once(reason);
+    logger::flush();
+}
+
+/// Formats an optional unsigned integer for log output.
+fn optional_u32(value: Option<u32>) -> String {
+    value.map_or_else(|| "none".to_owned(), |v| v.to_string())
+}
+
+/// Formats an optional signed integer for log output.
+fn optional_i64(value: Option<i64>) -> String {
+    value.map_or_else(|| "none".to_owned(), |v| v.to_string())
+}
+
+/// Formats an optional extent for log output.
+fn optional_extent(value: Option<(u32, u32)>) -> String {
+    value.map_or_else(
+        || "none".to_owned(),
+        |(width, height)| format!("{width}x{height}"),
+    )
 }
 
 /// OpenXR requires a unit quaternion; some runtimes briefly report `(0,0,0,0)`, which makes

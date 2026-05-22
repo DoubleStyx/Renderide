@@ -4,9 +4,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::diagnostics::gpu_flight_recorder::{
-    GpuFlightCallResult, GpuFlightEventKind, GpuFlightOpenXrCall,
-};
+use crate::diagnostics::gpu_flight_recorder::{GpuFlightCallResult, GpuFlightOpenXrCall};
 use crate::diagnostics::log_throttle::LogThrottle;
 use crate::gpu::GpuContext;
 use crate::gpu::driver_thread::BlockingCallWatchdog as EndFrameWatchdog;
@@ -195,9 +193,11 @@ pub fn try_openxr_hmd_multiview_submit(
         )
     };
     let handles = &mut bundle.handles;
+    let image_index = acquired_image.image_index();
     let (finalize, rx) = handles.xr_session.build_projection_finalize(
         swapchain_handle,
         acquired_image.into_texture(),
+        image_index,
         tick.predicted_display_time,
         projection_views,
         rect,
@@ -245,18 +245,12 @@ fn acquire_imported_hmd_image(
         match acquire_swapchain_image(gpu, &sc.handle) {
             Ok(i) => i,
             Err(e) => {
-                gpu.record_gpu_flight_event(GpuFlightEventKind::OpenXrCall {
-                    call: GpuFlightOpenXrCall::AcquireImage,
-                    result: GpuFlightCallResult::failed_debug(e),
-                    image_index: None,
-                    predicted_display_time_nanos: None,
-                });
                 log_hmd_submit_failure_with_error(HmdSubmitSkipReason::SwapchainAcquireFailed, e);
                 return None;
             }
         }
     };
-    if !wait_for_acquired_swapchain_image(gpu, &sc.handle) {
+    if !wait_for_acquired_swapchain_image(gpu, &sc.handle, image_index) {
         return None;
     }
     match sc.import_acquired_image(gpu.device().as_ref(), image_index) {
@@ -312,6 +306,11 @@ fn acquire_swapchain_image(
     gpu: &GpuContext,
     swapchain: &Mutex<xr::Swapchain<xr::Vulkan>>,
 ) -> Result<usize, xr::sys::Result> {
+    gpu.gpu_flight_recorder().record_openxr_call_started(
+        GpuFlightOpenXrCall::AcquireImage,
+        None,
+        None,
+    );
     let _gate = gpu.gpu_queue_access_gate().lock();
     let result = swapchain
         .lock()
@@ -320,14 +319,17 @@ fn acquire_swapchain_image(
             logger::warn!("OpenXR swapchain acquire_image failed: {e:?}");
         })
         .map(|i| i as usize);
-    if let Ok(image_index) = &result {
-        gpu.record_gpu_flight_event(GpuFlightEventKind::OpenXrCall {
-            call: GpuFlightOpenXrCall::AcquireImage,
-            result: GpuFlightCallResult::Ok,
-            image_index: Some(*image_index as u32),
-            predicted_display_time_nanos: None,
-        });
-    }
+    let image_index = result.as_ref().ok().map(|i| *i as u32);
+    let flight_result = result.as_ref().map_or_else(
+        |error| GpuFlightCallResult::failed_debug(*error),
+        |_| GpuFlightCallResult::Ok,
+    );
+    gpu.gpu_flight_recorder().record_openxr_call_result(
+        GpuFlightOpenXrCall::AcquireImage,
+        flight_result,
+        image_index,
+        None,
+    );
     result
 }
 
@@ -340,6 +342,11 @@ fn release_swapchain_image(
     gpu: &GpuContext,
     swapchain: &Mutex<xr::Swapchain<xr::Vulkan>>,
 ) -> Result<(), xr::sys::Result> {
+    gpu.gpu_flight_recorder().record_openxr_call_started(
+        GpuFlightOpenXrCall::ReleaseImage,
+        None,
+        None,
+    );
     let _gate = gpu.gpu_queue_access_gate().lock();
     let result = swapchain.lock().release_image().inspect_err(|e| {
         logger::warn!("OpenXR swapchain release_image failed: {e:?}");
@@ -348,12 +355,12 @@ fn release_swapchain_image(
         |error| GpuFlightCallResult::failed_debug(*error),
         |()| GpuFlightCallResult::Ok,
     );
-    gpu.record_gpu_flight_event(GpuFlightEventKind::OpenXrCall {
-        call: GpuFlightOpenXrCall::ReleaseImage,
-        result: flight_result,
-        image_index: None,
-        predicted_display_time_nanos: None,
-    });
+    gpu.gpu_flight_recorder().record_openxr_call_result(
+        GpuFlightOpenXrCall::ReleaseImage,
+        flight_result,
+        None,
+        None,
+    );
     result
 }
 
@@ -361,18 +368,43 @@ fn release_swapchain_image(
 fn wait_for_acquired_swapchain_image(
     gpu: &GpuContext,
     swapchain: &Mutex<xr::Swapchain<xr::Vulkan>>,
+    image_index: usize,
 ) -> bool {
     profiling::scope!("xr::swapchain_wait_image");
-    let wd = EndFrameWatchdog::arm(WAIT_IMAGE_WATCHDOG_TIMEOUT, "xr::wait_image");
+    let image_index = Some(image_index as u32);
+    gpu.gpu_flight_recorder().record_openxr_call_started(
+        GpuFlightOpenXrCall::WaitImage,
+        image_index,
+        None,
+    );
+    let timeout_recorder = Arc::clone(gpu.gpu_flight_recorder());
+    let wd = EndFrameWatchdog::arm_with_timeout_hook(
+        WAIT_IMAGE_WATCHDOG_TIMEOUT,
+        "xr::wait_image",
+        move || {
+            logger::error!(
+                "OpenXR wait_image exceeded {}ms -- image_index={}",
+                WAIT_IMAGE_WATCHDOG_TIMEOUT.as_millis(),
+                image_index.map_or_else(|| "none".to_owned(), |i| i.to_string()),
+            );
+            timeout_recorder.record_openxr_call_timeout(
+                GpuFlightOpenXrCall::WaitImage,
+                "openxr-wait-image-stall",
+                image_index,
+                None,
+            );
+            logger::flush();
+        },
+    );
     let res = swapchain.lock().wait_image(xr::Duration::INFINITE);
     wd.disarm();
     if let Err(e) = res {
-        gpu.record_gpu_flight_event(GpuFlightEventKind::OpenXrCall {
-            call: GpuFlightOpenXrCall::WaitImage,
-            result: GpuFlightCallResult::failed_debug(e),
-            image_index: None,
-            predicted_display_time_nanos: None,
-        });
+        gpu.gpu_flight_recorder().record_openxr_call_result(
+            GpuFlightOpenXrCall::WaitImage,
+            GpuFlightCallResult::failed_debug(e),
+            image_index,
+            None,
+        );
         // OpenXR requires every successful `acquire_image` to be paired with
         // `release_image`, even when `wait_image` fails. Without this release the
         // runtime considers the image still in flight and `xrEndFrame` blocks until
@@ -381,12 +413,12 @@ fn wait_for_acquired_swapchain_image(
         log_hmd_submit_failure_with_error(HmdSubmitSkipReason::SwapchainWaitFailed, e);
         return false;
     }
-    gpu.record_gpu_flight_event(GpuFlightEventKind::OpenXrCall {
-        call: GpuFlightOpenXrCall::WaitImage,
-        result: GpuFlightCallResult::Ok,
-        image_index: None,
-        predicted_display_time_nanos: None,
-    });
+    gpu.gpu_flight_recorder().record_openxr_call_result(
+        GpuFlightOpenXrCall::WaitImage,
+        GpuFlightCallResult::Ok,
+        image_index,
+        None,
+    );
     true
 }
 

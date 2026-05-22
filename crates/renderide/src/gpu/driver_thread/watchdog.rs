@@ -19,24 +19,35 @@ pub(crate) struct BlockingCallWatchdog {
 }
 
 impl BlockingCallWatchdog {
-    /// Spawns the watchdog thread. The returned guard must be disarmed within `timeout`.
-    pub(crate) fn arm(timeout: Duration, label: &'static str) -> Self {
-        Self::arm_inner(timeout, label, None)
+    /// Spawns the watchdog thread with a callback that fires once on timeout.
+    pub(crate) fn arm_with_timeout_hook(
+        timeout: Duration,
+        label: &'static str,
+        on_timeout: impl FnOnce() + Send + 'static,
+    ) -> Self {
+        Self::arm_inner(timeout, label, None, Some(Box::new(on_timeout)))
     }
 
-    /// Spawns a watchdog that lowers stall severity after cooperative shutdown starts.
-    pub(crate) fn arm_shutdown_aware(
+    /// Spawns a shutdown-aware watchdog with a callback that fires once on timeout.
+    pub(crate) fn arm_shutdown_aware_with_timeout_hook(
         timeout: Duration,
         label: &'static str,
         shutdown_requested: Arc<AtomicBool>,
+        on_timeout: impl FnOnce() + Send + 'static,
     ) -> Self {
-        Self::arm_inner(timeout, label, Some(shutdown_requested))
+        Self::arm_inner(
+            timeout,
+            label,
+            Some(shutdown_requested),
+            Some(Box::new(on_timeout)),
+        )
     }
 
     fn arm_inner(
         timeout: Duration,
         label: &'static str,
         shutdown_requested: Option<Arc<AtomicBool>>,
+        on_timeout: Option<Box<dyn FnOnce() + Send + 'static>>,
     ) -> Self {
         let (tx, rx) = mpsc::sync_channel::<()>(0);
         let handle = thread::Builder::new()
@@ -45,6 +56,9 @@ impl BlockingCallWatchdog {
                 Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {}
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     log_watchdog_timeout(label, timeout, shutdown_requested.as_deref());
+                    if let Some(on_timeout) = on_timeout {
+                        on_timeout();
+                    }
                     let _ = rx.recv();
                 }
             })
@@ -100,7 +114,11 @@ mod tests {
     #[test]
     fn disarm_before_timeout_does_not_block() {
         let start = Instant::now();
-        let watchdog = BlockingCallWatchdog::arm(Duration::from_secs(5), "test_disarm");
+        let watchdog = BlockingCallWatchdog::arm_with_timeout_hook(
+            Duration::from_secs(5),
+            "test_disarm",
+            || {},
+        );
         watchdog.disarm();
         assert!(
             start.elapsed() < Duration::from_millis(500),
@@ -112,7 +130,11 @@ mod tests {
     fn drop_without_disarm_does_not_hang() {
         let start = Instant::now();
         {
-            let _watchdog = BlockingCallWatchdog::arm(Duration::from_secs(5), "test_drop");
+            let _watchdog = BlockingCallWatchdog::arm_with_timeout_hook(
+                Duration::from_secs(5),
+                "test_drop",
+                || {},
+            );
         }
         assert!(
             start.elapsed() < Duration::from_millis(500),
@@ -122,8 +144,28 @@ mod tests {
 
     #[test]
     fn timeout_fires_then_disarm_still_returns() {
-        let watchdog = BlockingCallWatchdog::arm(Duration::from_millis(10), "test_timeout");
+        let watchdog = BlockingCallWatchdog::arm_with_timeout_hook(
+            Duration::from_millis(10),
+            "test_timeout",
+            || {},
+        );
         thread::sleep(Duration::from_millis(50));
         watchdog.disarm();
+    }
+
+    #[test]
+    fn timeout_hook_fires_once() {
+        let fired = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let fired_for_hook = Arc::clone(&fired);
+        let watchdog = BlockingCallWatchdog::arm_with_timeout_hook(
+            Duration::from_millis(10),
+            "test_timeout_hook",
+            move || {
+                fired_for_hook.fetch_add(1, Ordering::Relaxed);
+            },
+        );
+        thread::sleep(Duration::from_millis(50));
+        watchdog.disarm();
+        assert_eq!(fired.load(Ordering::Relaxed), 1);
     }
 }

@@ -13,6 +13,7 @@ use super::submit_batch::{DriverMessage, SubmitBatch};
 use super::submit_counters::SubmitCounters;
 use super::surface_counters::SurfaceCounters;
 use super::xr_finalize::run_xr_finalize;
+use crate::diagnostics::crash_context;
 use crate::diagnostics::gpu_flight_recorder::{
     GpuFlightCallResult, GpuFlightDriverStage, GpuFlightEventKind, GpuFlightRecorder,
 };
@@ -42,7 +43,7 @@ struct DriverLoopContext<'a> {
     /// Submit counters used for backlog snapshots.
     submit_counters: &'a SubmitCounters,
     /// In-memory crash diagnostic recorder.
-    flight_recorder: &'a GpuFlightRecorder,
+    flight_recorder: &'a Arc<GpuFlightRecorder>,
 }
 
 /// Copyable summary of the batch being processed.
@@ -96,7 +97,7 @@ pub(super) fn driver_loop(
                 gpu_queue_access_gate: &gpu_queue_access_gate,
                 surface_counters: &surface_counters,
                 submit_counters: &submit_counters,
-                flight_recorder: flight_recorder.as_ref(),
+                flight_recorder: &flight_recorder,
             };
             process_batch(ctx, ring_depth, *batch);
         }
@@ -209,7 +210,11 @@ fn finalize_xr_if_present(
         GpuFlightDriverStage::XrFinalizeStart,
         GpuFlightCallResult::Ok,
     );
-    let result = run_xr_finalize(ctx.gpu_queue_access_gate, finalize, ctx.flight_recorder);
+    let result = run_xr_finalize(
+        ctx.gpu_queue_access_gate,
+        finalize,
+        Arc::clone(ctx.flight_recorder),
+    );
     let (failed, flight_result) = match result {
         Ok(()) => (false, GpuFlightCallResult::Ok),
         Err(err) => (true, GpuFlightCallResult::failed_debug(err)),
@@ -266,6 +271,7 @@ fn record_driver_event(
     result: GpuFlightCallResult,
 ) {
     let (pushed, done) = ctx.submit_counters.snapshot();
+    crash_context::set_driver_stage(stage.crash_context_stage());
     ctx.flight_recorder.record(GpuFlightEventKind::Driver {
         stage,
         frame_seq: summary.frame_seq,

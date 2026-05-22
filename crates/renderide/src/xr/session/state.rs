@@ -217,6 +217,7 @@ impl XrSessionState {
         &self,
         swapchain: Arc<Mutex<xr::Swapchain<xr::Vulkan>>>,
         imported_color_texture: wgpu::Texture,
+        image_index: u32,
         predicted_display_time: xr::Time,
         views: [xr::View; 2],
         rect: xr::Rect2Di,
@@ -228,6 +229,7 @@ impl XrSessionState {
         let payload = crate::gpu::driver_thread::XrProjectionFinalize {
             swapchain,
             imported_color_texture: Some(imported_color_texture),
+            image_index,
             frame_stream: Arc::clone(&self.frame_stream),
             stage: Arc::clone(&self.stage),
             env_blend_mode: self.environment_blend_mode,
@@ -239,6 +241,7 @@ impl XrSessionState {
         };
         let work = crate::gpu::driver_thread::XrFinalizeWork {
             kind: crate::gpu::driver_thread::XrFinalizeKind::Projection(Box::new(payload)),
+            submit_context: Default::default(),
             signal,
             error_slot: Arc::clone(&self.finalize_error_slot),
         };
@@ -263,6 +266,7 @@ impl XrSessionState {
                 frame_open: Arc::clone(&self.frame_open),
                 shutdown_requested: Arc::clone(&self.shutdown_requested),
             },
+            submit_context: Default::default(),
             signal,
             error_slot: Arc::clone(&self.finalize_error_slot),
         };

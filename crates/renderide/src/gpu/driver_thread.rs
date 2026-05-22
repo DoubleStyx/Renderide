@@ -35,6 +35,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::diagnostics::crash_context;
 use crate::diagnostics::gpu_flight_recorder::{
     GpuFlightCallResult, GpuFlightDriverStage, GpuFlightEventKind, GpuFlightRecorder,
 };
@@ -208,6 +209,7 @@ impl DriverThread {
         result: GpuFlightCallResult,
     ) {
         let (pushed, done) = self.submit_counters.snapshot();
+        crash_context::set_driver_stage(stage.crash_context_stage());
         self.flight_recorder.record(GpuFlightEventKind::Driver {
             stage,
             frame_seq,

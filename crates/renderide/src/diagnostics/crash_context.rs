@@ -5,6 +5,9 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicI64, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
+const NONE_U32: u32 = u32::MAX;
+const NONE_I64: i64 = i64::MIN;
+
 static START_INSTANT: OnceLock<Instant> = OnceLock::new();
 static UPTIME_MS: AtomicU64 = AtomicU64::new(0);
 static TICK_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -19,6 +22,15 @@ static PRIMARY_IPC_DROP_STREAK: AtomicU32 = AtomicU32::new(0);
 static BACKGROUND_IPC_DROP_STREAK: AtomicU32 = AtomicU32::new(0);
 static DRIVER_BACKLOG: AtomicU32 = AtomicU32::new(0);
 static LAST_GRAPH_ERROR: AtomicU8 = AtomicU8::new(GraphErrorKind::None as u8);
+static DRIVER_STAGE: AtomicU8 = AtomicU8::new(DriverStage::Unknown as u8);
+static OPENXR_CALL: AtomicU8 = AtomicU8::new(OpenXrCall::None as u8);
+static XR_FINALIZE_KIND: AtomicU8 = AtomicU8::new(XrFinalizeKind::None as u8);
+static XR_FINALIZE_IMAGE_INDEX: AtomicU32 = AtomicU32::new(NONE_U32);
+static XR_FINALIZE_FRAME_SEQ: AtomicU64 = AtomicU64::new(0);
+static XR_FINALIZE_COMMAND_BUFFERS: AtomicU32 = AtomicU32::new(0);
+static XR_FINALIZE_EXTENT_WIDTH: AtomicU32 = AtomicU32::new(NONE_U32);
+static XR_FINALIZE_EXTENT_HEIGHT: AtomicU32 = AtomicU32::new(NONE_U32);
+static XR_FINALIZE_PREDICTED_TIME_NS: AtomicI64 = AtomicI64::new(NONE_I64);
 
 /// Renderer tick phase recorded for crash diagnostics.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -364,6 +376,152 @@ impl GraphErrorKind {
     }
 }
 
+/// GPU driver-thread stage recorded for crash diagnostics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub(crate) enum DriverStage {
+    /// No driver stage has been recorded yet.
+    Unknown = 0,
+    /// Batch was enqueued by the producer.
+    Enqueued = 1,
+    /// Batch was dropped because the driver thread exited.
+    DroppedAfterExit = 2,
+    /// Queue submit is about to run.
+    SubmitStart = 3,
+    /// Queue submit returned.
+    SubmitDone = 4,
+    /// Surface present is about to run.
+    PresentStart = 5,
+    /// Surface present returned.
+    PresentDone = 6,
+    /// OpenXR finalize is about to run.
+    XrFinalizeStart = 7,
+    /// OpenXR finalize returned.
+    XrFinalizeDone = 8,
+}
+
+impl DriverStage {
+    fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::Enqueued,
+            2 => Self::DroppedAfterExit,
+            3 => Self::SubmitStart,
+            4 => Self::SubmitDone,
+            5 => Self::PresentStart,
+            6 => Self::PresentDone,
+            7 => Self::XrFinalizeStart,
+            8 => Self::XrFinalizeDone,
+            _ => Self::Unknown,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Enqueued => "enqueued",
+            Self::DroppedAfterExit => "dropped-after-exit",
+            Self::SubmitStart => "submit-start",
+            Self::SubmitDone => "submit-done",
+            Self::PresentStart => "present-start",
+            Self::PresentDone => "present-done",
+            Self::XrFinalizeStart => "xr-finalize-start",
+            Self::XrFinalizeDone => "xr-finalize-done",
+        }
+    }
+}
+
+/// Currently active OpenXR call recorded for crash diagnostics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub(crate) enum OpenXrCall {
+    /// No OpenXR call is currently active.
+    None = 0,
+    /// `xrPollEvent` loop.
+    PollEvents = 1,
+    /// Wait for previous deferred finalize signal.
+    WaitPreviousFinalize = 2,
+    /// `xrWaitFrame`.
+    WaitFrame = 3,
+    /// `xrBeginFrame`.
+    BeginFrame = 4,
+    /// `xrLocateViews`.
+    LocateViews = 5,
+    /// `xrAcquireSwapchainImage`.
+    AcquireImage = 6,
+    /// `xrWaitSwapchainImage`.
+    WaitImage = 7,
+    /// `xrReleaseSwapchainImage`.
+    ReleaseImage = 8,
+    /// Projection `xrEndFrame`.
+    EndFrameProjection = 9,
+    /// Empty `xrEndFrame`.
+    EndFrameEmpty = 10,
+}
+
+impl OpenXrCall {
+    fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::PollEvents,
+            2 => Self::WaitPreviousFinalize,
+            3 => Self::WaitFrame,
+            4 => Self::BeginFrame,
+            5 => Self::LocateViews,
+            6 => Self::AcquireImage,
+            7 => Self::WaitImage,
+            8 => Self::ReleaseImage,
+            9 => Self::EndFrameProjection,
+            10 => Self::EndFrameEmpty,
+            _ => Self::None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::PollEvents => "poll-events",
+            Self::WaitPreviousFinalize => "wait-previous-finalize",
+            Self::WaitFrame => "wait-frame",
+            Self::BeginFrame => "begin-frame",
+            Self::LocateViews => "locate-views",
+            Self::AcquireImage => "acquire-image",
+            Self::WaitImage => "wait-image",
+            Self::ReleaseImage => "release-image",
+            Self::EndFrameProjection => "end-frame-projection",
+            Self::EndFrameEmpty => "end-frame-empty",
+        }
+    }
+}
+
+/// Active OpenXR finalize kind recorded for crash diagnostics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub(crate) enum XrFinalizeKind {
+    /// No OpenXR finalize work is currently active.
+    None = 0,
+    /// Stereo projection finalize is active.
+    Projection = 1,
+    /// Empty-frame finalize is active.
+    Empty = 2,
+}
+
+impl XrFinalizeKind {
+    fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::Projection,
+            2 => Self::Empty,
+            _ => Self::None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Projection => "projection",
+            Self::Empty => "empty",
+        }
+    }
+}
+
 /// Maps a render-graph execution error into the compact crash-context category.
 pub(crate) fn graph_error_kind(error: &crate::render_graph::GraphExecuteError) -> GraphErrorKind {
     match error {
@@ -455,6 +613,22 @@ pub(crate) struct CrashContextSnapshot {
     pub(crate) driver_backlog: u32,
     /// Last recorded render graph error category.
     pub(crate) last_graph_error: GraphErrorKind,
+    /// Last recorded GPU driver-thread stage.
+    pub(crate) driver_stage: DriverStage,
+    /// Currently active OpenXR call.
+    pub(crate) openxr_call: OpenXrCall,
+    /// Active OpenXR finalize kind.
+    pub(crate) xr_finalize_kind: XrFinalizeKind,
+    /// Active OpenXR swapchain image index, when known.
+    pub(crate) xr_finalize_image_index: Option<u32>,
+    /// Active OpenXR finalize frame sequence.
+    pub(crate) xr_finalize_frame_seq: u64,
+    /// Command buffers in the active OpenXR finalize submit.
+    pub(crate) xr_finalize_command_buffers: u32,
+    /// OpenXR swapchain extent for the active finalize.
+    pub(crate) xr_finalize_extent: Option<(u32, u32)>,
+    /// Predicted display time for the active OpenXR finalize.
+    pub(crate) xr_finalize_predicted_display_time_nanos: Option<i64>,
 }
 
 /// Initializes process lifetime tracking.
@@ -532,9 +706,67 @@ pub(crate) fn set_last_graph_error(kind: GraphErrorKind) {
     refresh_uptime();
 }
 
+/// Records the current GPU driver-thread stage.
+pub(crate) fn set_driver_stage(stage: DriverStage) {
+    DRIVER_STAGE.store(stage as u8, Ordering::Relaxed);
+    refresh_uptime();
+}
+
+/// Records the currently active OpenXR call.
+pub(crate) fn set_openxr_call(call: OpenXrCall) {
+    OPENXR_CALL.store(call as u8, Ordering::Relaxed);
+    refresh_uptime();
+}
+
+/// Clears the currently active OpenXR call only when it still matches `call`.
+pub(crate) fn clear_openxr_call_if(call: OpenXrCall) {
+    let _ = OPENXR_CALL.compare_exchange(
+        call as u8,
+        OpenXrCall::None as u8,
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    );
+    refresh_uptime();
+}
+
+/// Records the currently active OpenXR finalize payload.
+pub(crate) fn set_xr_finalize_state(
+    kind: XrFinalizeKind,
+    image_index: Option<u32>,
+    frame_seq: u64,
+    command_buffers: usize,
+    extent: Option<(u32, u32)>,
+    predicted_display_time_nanos: Option<i64>,
+) {
+    XR_FINALIZE_KIND.store(kind as u8, Ordering::Relaxed);
+    XR_FINALIZE_IMAGE_INDEX.store(image_index.unwrap_or(NONE_U32), Ordering::Relaxed);
+    XR_FINALIZE_FRAME_SEQ.store(frame_seq, Ordering::Relaxed);
+    let clamped_command_buffers = command_buffers.min(u32::MAX as usize) as u32;
+    XR_FINALIZE_COMMAND_BUFFERS.store(clamped_command_buffers, Ordering::Relaxed);
+    let (width, height) = extent.unwrap_or((NONE_U32, NONE_U32));
+    XR_FINALIZE_EXTENT_WIDTH.store(width, Ordering::Relaxed);
+    XR_FINALIZE_EXTENT_HEIGHT.store(height, Ordering::Relaxed);
+    XR_FINALIZE_PREDICTED_TIME_NS.store(
+        predicted_display_time_nanos.unwrap_or(NONE_I64),
+        Ordering::Relaxed,
+    );
+    refresh_uptime();
+}
+
+/// Clears the active OpenXR finalize payload.
+pub(crate) fn clear_xr_finalize_state() {
+    set_xr_finalize_state(XrFinalizeKind::None, None, 0, 0, None, None);
+}
+
 /// Captures the current crash context from atomics.
 pub(crate) fn snapshot() -> CrashContextSnapshot {
     refresh_uptime();
+    let xr_image_index = optional_u32_from_atomic(XR_FINALIZE_IMAGE_INDEX.load(Ordering::Relaxed));
+    let xr_extent_width = XR_FINALIZE_EXTENT_WIDTH.load(Ordering::Relaxed);
+    let xr_extent_height = XR_FINALIZE_EXTENT_HEIGHT.load(Ordering::Relaxed);
+    let xr_finalize_extent = optional_extent_from_atomics(xr_extent_width, xr_extent_height);
+    let xr_predicted_time =
+        optional_i64_from_atomic(XR_FINALIZE_PREDICTED_TIME_NS.load(Ordering::Relaxed));
     CrashContextSnapshot {
         uptime_ms: UPTIME_MS.load(Ordering::Relaxed),
         tick_sequence: TICK_SEQUENCE.load(Ordering::Relaxed),
@@ -549,6 +781,14 @@ pub(crate) fn snapshot() -> CrashContextSnapshot {
         background_ipc_drop_streak: BACKGROUND_IPC_DROP_STREAK.load(Ordering::Relaxed),
         driver_backlog: DRIVER_BACKLOG.load(Ordering::Relaxed),
         last_graph_error: GraphErrorKind::from_u8(LAST_GRAPH_ERROR.load(Ordering::Relaxed)),
+        driver_stage: DriverStage::from_u8(DRIVER_STAGE.load(Ordering::Relaxed)),
+        openxr_call: OpenXrCall::from_u8(OPENXR_CALL.load(Ordering::Relaxed)),
+        xr_finalize_kind: XrFinalizeKind::from_u8(XR_FINALIZE_KIND.load(Ordering::Relaxed)),
+        xr_finalize_image_index: xr_image_index,
+        xr_finalize_frame_seq: XR_FINALIZE_FRAME_SEQ.load(Ordering::Relaxed),
+        xr_finalize_command_buffers: XR_FINALIZE_COMMAND_BUFFERS.load(Ordering::Relaxed),
+        xr_finalize_extent,
+        xr_finalize_predicted_display_time_nanos: xr_predicted_time,
     }
 }
 
@@ -562,7 +802,7 @@ pub(crate) fn format_snapshot_from(s: &CrashContextSnapshot) -> String {
     let mut out = String::new();
     let _ = writeln!(
         out,
-        "Renderer crash context: uptime_ms={} tick={} phase={} cpu_phase={} mode={} target={} init={} last_host_frame={} prepared_views={} ipc_drop_streaks=primary:{} background:{} driver_backlog={} last_graph_error={}",
+        "Renderer crash context: uptime_ms={} tick={} phase={} cpu_phase={} mode={} target={} init={} last_host_frame={} prepared_views={} ipc_drop_streaks=primary:{} background:{} driver_backlog={} last_graph_error={} driver_stage={} openxr_call={} xr_finalize={} xr_image={} xr_frame_seq={} xr_command_buffers={} xr_extent={} xr_predicted_time_ns={}",
         s.uptime_ms,
         s.tick_sequence,
         s.tick_phase.as_str(),
@@ -575,7 +815,15 @@ pub(crate) fn format_snapshot_from(s: &CrashContextSnapshot) -> String {
         s.primary_ipc_drop_streak,
         s.background_ipc_drop_streak,
         s.driver_backlog,
-        s.last_graph_error.as_str()
+        s.last_graph_error.as_str(),
+        s.driver_stage.as_str(),
+        s.openxr_call.as_str(),
+        s.xr_finalize_kind.as_str(),
+        format_optional_u32(s.xr_finalize_image_index),
+        s.xr_finalize_frame_seq,
+        s.xr_finalize_command_buffers,
+        format_optional_extent(s.xr_finalize_extent),
+        format_optional_i64(s.xr_finalize_predicted_display_time_nanos)
     );
     out
 }
@@ -611,6 +859,22 @@ pub(crate) fn write_minimal_snapshot(out: &mut [u8]) -> usize {
     push_u64(out, &mut w, u64::from(s.driver_backlog));
     push(out, &mut w, b" graph_error=");
     push(out, &mut w, s.last_graph_error.as_str().as_bytes());
+    push(out, &mut w, b" driver_stage=");
+    push(out, &mut w, s.driver_stage.as_str().as_bytes());
+    push(out, &mut w, b" openxr_call=");
+    push(out, &mut w, s.openxr_call.as_str().as_bytes());
+    push(out, &mut w, b" xr_finalize=");
+    push(out, &mut w, s.xr_finalize_kind.as_str().as_bytes());
+    push(out, &mut w, b" xr_image=");
+    push_optional_u32(out, &mut w, s.xr_finalize_image_index);
+    push(out, &mut w, b" xr_frame_seq=");
+    push_u64(out, &mut w, s.xr_finalize_frame_seq);
+    push(out, &mut w, b" xr_command_buffers=");
+    push_u64(out, &mut w, u64::from(s.xr_finalize_command_buffers));
+    push(out, &mut w, b" xr_extent=");
+    push_optional_extent(out, &mut w, s.xr_finalize_extent);
+    push(out, &mut w, b" xr_predicted_time_ns=");
+    push_optional_i64(out, &mut w, s.xr_finalize_predicted_display_time_nanos);
     push(out, &mut w, b"\n");
     w
 }
@@ -658,6 +922,63 @@ fn push_i64(out: &mut [u8], w: &mut usize, value: i64) {
     }
 }
 
+fn optional_u32_from_atomic(value: u32) -> Option<u32> {
+    if value == NONE_U32 { None } else { Some(value) }
+}
+
+fn optional_i64_from_atomic(value: i64) -> Option<i64> {
+    if value == NONE_I64 { None } else { Some(value) }
+}
+
+fn optional_extent_from_atomics(width: u32, height: u32) -> Option<(u32, u32)> {
+    if width == NONE_U32 || height == NONE_U32 {
+        None
+    } else {
+        Some((width, height))
+    }
+}
+
+fn format_optional_u32(value: Option<u32>) -> String {
+    value.map_or_else(|| "none".to_owned(), |v| v.to_string())
+}
+
+fn format_optional_i64(value: Option<i64>) -> String {
+    value.map_or_else(|| "none".to_owned(), |v| v.to_string())
+}
+
+fn format_optional_extent(value: Option<(u32, u32)>) -> String {
+    value.map_or_else(
+        || "none".to_owned(),
+        |(width, height)| format!("{width}x{height}"),
+    )
+}
+
+fn push_optional_u32(out: &mut [u8], w: &mut usize, value: Option<u32>) {
+    if let Some(value) = value {
+        push_u64(out, w, u64::from(value));
+    } else {
+        push(out, w, b"none");
+    }
+}
+
+fn push_optional_i64(out: &mut [u8], w: &mut usize, value: Option<i64>) {
+    if let Some(value) = value {
+        push_i64(out, w, value);
+    } else {
+        push(out, w, b"none");
+    }
+}
+
+fn push_optional_extent(out: &mut [u8], w: &mut usize, value: Option<(u32, u32)>) {
+    if let Some((width, height)) = value {
+        push_u64(out, w, u64::from(width));
+        push(out, w, b"x");
+        push_u64(out, w, u64::from(height));
+    } else {
+        push(out, w, b"none");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::Ordering;
@@ -666,12 +987,16 @@ mod tests {
 
     use super::{
         BACKGROUND_IPC_DROP_STREAK, CPU_RENDER_PHASE, CpuRenderPhase, CrashContextSnapshot,
-        DRIVER_BACKLOG, GraphErrorKind, INIT_STATE, InitState, LAST_GRAPH_ERROR,
-        LAST_HOST_FRAME_INDEX, PREPARED_VIEW_COUNT, PRIMARY_IPC_DROP_STREAK, RENDER_MODE,
-        RenderMode, TARGET_MODE, TICK_PHASE, TICK_SEQUENCE, TargetMode, TickPhase, UPTIME_MS,
-        format_snapshot_from, set_cpu_render_phase, set_init_state, set_last_graph_error,
-        set_last_host_frame_index, set_prepared_view_count, set_render_mode, set_target_mode,
-        set_tick_phase, snapshot, write_minimal_snapshot,
+        DRIVER_BACKLOG, DRIVER_STAGE, DriverStage, GraphErrorKind, INIT_STATE, InitState,
+        LAST_GRAPH_ERROR, LAST_HOST_FRAME_INDEX, NONE_I64, NONE_U32, OPENXR_CALL, OpenXrCall,
+        PREPARED_VIEW_COUNT, PRIMARY_IPC_DROP_STREAK, RENDER_MODE, RenderMode, TARGET_MODE,
+        TICK_PHASE, TICK_SEQUENCE, TargetMode, TickPhase, UPTIME_MS, XR_FINALIZE_COMMAND_BUFFERS,
+        XR_FINALIZE_EXTENT_HEIGHT, XR_FINALIZE_EXTENT_WIDTH, XR_FINALIZE_FRAME_SEQ,
+        XR_FINALIZE_IMAGE_INDEX, XR_FINALIZE_KIND, XR_FINALIZE_PREDICTED_TIME_NS, XrFinalizeKind,
+        clear_openxr_call_if, clear_xr_finalize_state, format_snapshot_from, set_cpu_render_phase,
+        set_driver_stage, set_init_state, set_last_graph_error, set_last_host_frame_index,
+        set_openxr_call, set_prepared_view_count, set_render_mode, set_target_mode, set_tick_phase,
+        set_xr_finalize_state, snapshot, write_minimal_snapshot,
     };
 
     static CRASH_CONTEXT_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -690,6 +1015,15 @@ mod tests {
         BACKGROUND_IPC_DROP_STREAK.store(0, Ordering::Relaxed);
         DRIVER_BACKLOG.store(0, Ordering::Relaxed);
         LAST_GRAPH_ERROR.store(GraphErrorKind::None as u8, Ordering::Relaxed);
+        DRIVER_STAGE.store(DriverStage::Unknown as u8, Ordering::Relaxed);
+        OPENXR_CALL.store(OpenXrCall::None as u8, Ordering::Relaxed);
+        XR_FINALIZE_KIND.store(XrFinalizeKind::None as u8, Ordering::Relaxed);
+        XR_FINALIZE_IMAGE_INDEX.store(NONE_U32, Ordering::Relaxed);
+        XR_FINALIZE_FRAME_SEQ.store(0, Ordering::Relaxed);
+        XR_FINALIZE_COMMAND_BUFFERS.store(0, Ordering::Relaxed);
+        XR_FINALIZE_EXTENT_WIDTH.store(NONE_U32, Ordering::Relaxed);
+        XR_FINALIZE_EXTENT_HEIGHT.store(NONE_U32, Ordering::Relaxed);
+        XR_FINALIZE_PREDICTED_TIME_NS.store(NONE_I64, Ordering::Relaxed);
     }
 
     fn lock_reset_crash_context() -> parking_lot::MutexGuard<'static, ()> {
@@ -714,6 +1048,14 @@ mod tests {
             background_ipc_drop_streak: 1,
             driver_backlog: 4,
             last_graph_error: GraphErrorKind::Pass,
+            driver_stage: DriverStage::XrFinalizeStart,
+            openxr_call: OpenXrCall::EndFrameProjection,
+            xr_finalize_kind: XrFinalizeKind::Projection,
+            xr_finalize_image_index: Some(2),
+            xr_finalize_frame_seq: 88,
+            xr_finalize_command_buffers: 4,
+            xr_finalize_extent: Some((2520, 2772)),
+            xr_finalize_predicted_display_time_nanos: Some(123_456_789),
         };
         let line = format_snapshot_from(&s);
         assert!(line.contains("phase=render-views"));
@@ -723,6 +1065,12 @@ mod tests {
         assert!(line.contains("init=finalized"));
         assert!(line.contains("last_host_frame=9001"));
         assert!(line.contains("last_graph_error=pass"));
+        assert!(line.contains("driver_stage=xr-finalize-start"));
+        assert!(line.contains("openxr_call=end-frame-projection"));
+        assert!(line.contains("xr_finalize=projection"));
+        assert!(line.contains("xr_image=2"));
+        assert!(line.contains("xr_extent=2520x2772"));
+        assert!(line.contains("xr_predicted_time_ns=123456789"));
     }
 
     #[test]
@@ -737,6 +1085,16 @@ mod tests {
         set_last_host_frame_index(77);
         set_prepared_view_count(2);
         set_last_graph_error(GraphErrorKind::TransientPool);
+        set_driver_stage(DriverStage::XrFinalizeStart);
+        set_openxr_call(OpenXrCall::EndFrameProjection);
+        set_xr_finalize_state(
+            XrFinalizeKind::Projection,
+            Some(1),
+            13,
+            2,
+            Some((640, 480)),
+            Some(99),
+        );
         let s = snapshot();
         assert_eq!(s.tick_phase, TickPhase::AssetIntegration);
         assert_eq!(s.cpu_render_phase, CpuRenderPhase::Sort);
@@ -746,6 +1104,31 @@ mod tests {
         assert_eq!(s.last_host_frame_index, 77);
         assert_eq!(s.prepared_view_count, 2);
         assert_eq!(s.last_graph_error, GraphErrorKind::TransientPool);
+        assert_eq!(s.driver_stage, DriverStage::XrFinalizeStart);
+        assert_eq!(s.openxr_call, OpenXrCall::EndFrameProjection);
+        assert_eq!(s.xr_finalize_kind, XrFinalizeKind::Projection);
+        assert_eq!(s.xr_finalize_image_index, Some(1));
+        assert_eq!(s.xr_finalize_frame_seq, 13);
+        assert_eq!(s.xr_finalize_command_buffers, 2);
+        assert_eq!(s.xr_finalize_extent, Some((640, 480)));
+        assert_eq!(s.xr_finalize_predicted_display_time_nanos, Some(99));
+        clear_openxr_call_if(OpenXrCall::EndFrameProjection);
+        clear_xr_finalize_state();
+        let cleared = snapshot();
+        assert_eq!(cleared.openxr_call, OpenXrCall::None);
+        assert_eq!(cleared.xr_finalize_kind, XrFinalizeKind::None);
+    }
+
+    #[test]
+    fn clear_openxr_call_if_preserves_newer_call() {
+        let _guard = lock_reset_crash_context();
+
+        set_openxr_call(OpenXrCall::EndFrameProjection);
+        set_openxr_call(OpenXrCall::WaitPreviousFinalize);
+        clear_openxr_call_if(OpenXrCall::EndFrameProjection);
+        assert_eq!(snapshot().openxr_call, OpenXrCall::WaitPreviousFinalize);
+        clear_openxr_call_if(OpenXrCall::WaitPreviousFinalize);
+        assert_eq!(snapshot().openxr_call, OpenXrCall::None);
     }
 
     #[test]
@@ -755,13 +1138,28 @@ mod tests {
         set_tick_phase(TickPhase::Shutdown);
         set_cpu_render_phase(CpuRenderPhase::Cleanup);
         set_render_mode(RenderMode::Headless);
-        let mut out = [0u8; 512];
+        set_driver_stage(DriverStage::XrFinalizeStart);
+        set_openxr_call(OpenXrCall::EndFrameProjection);
+        set_xr_finalize_state(
+            XrFinalizeKind::Projection,
+            Some(3),
+            21,
+            4,
+            Some((2520, 2772)),
+            Some(123),
+        );
+        let mut out = [0u8; 1024];
         let n = write_minimal_snapshot(&mut out);
         let line = std::str::from_utf8(&out[..n]).expect("utf8");
         assert!(line.starts_with("CRASH_CONTEXT"));
         assert!(line.contains("phase=shutdown"));
         assert!(line.contains("cpu_phase=cleanup"));
         assert!(line.contains("mode=headless"));
+        assert!(line.contains("driver_stage=xr-finalize-start"));
+        assert!(line.contains("openxr_call=end-frame-projection"));
+        assert!(line.contains("xr_finalize=projection"));
+        assert!(line.contains("xr_image=3"));
+        assert!(line.contains("xr_extent=2520x2772"));
         assert!(line.ends_with('\n'));
     }
 }

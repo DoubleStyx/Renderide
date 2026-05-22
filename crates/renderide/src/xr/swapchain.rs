@@ -70,12 +70,18 @@ pub struct XrStereoSwapchain {
 pub struct XrAcquiredSwapchainImage {
     texture: wgpu::Texture,
     array_view: wgpu::TextureView,
+    image_index: u32,
 }
 
 impl XrAcquiredSwapchainImage {
     /// Two-layer color target view used by the final owned-HMD-color to OpenXR copy.
     pub fn array_view(&self) -> &wgpu::TextureView {
         &self.array_view
+    }
+
+    /// OpenXR swapchain image index acquired for this frame.
+    pub fn image_index(&self) -> u32 {
+        self.image_index
     }
 
     /// Consumes the acquired-image wrapper, leaving the imported wgpu texture alive.
@@ -165,6 +171,7 @@ impl XrStereoSwapchain {
             &hal_device,
             vk_image,
             self.resolution,
+            u32_saturating_from_usize(image_index),
         ))
     }
 }
@@ -174,6 +181,7 @@ fn import_openxr_swapchain_image(
     hal_device: &<HalVulkan as hal::Api>::Device,
     vk_image: vk::Image,
     resolution: (u32, u32),
+    image_index: u32,
 ) -> XrAcquiredSwapchainImage {
     let hal_desc = xr_swapchain_hal_descriptor(resolution);
     // Hand wgpu a no-op drop callback so its `destroy_texture` sees
@@ -212,6 +220,7 @@ fn import_openxr_swapchain_image(
     XrAcquiredSwapchainImage {
         texture,
         array_view,
+        image_index,
     }
 }
 

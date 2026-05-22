@@ -62,7 +62,8 @@ impl GpuContext {
     /// and call `xrEndFrame`; the empty submit takes the queue access gate the same way a
     /// real submit would, preserving the OpenXR external-sync contract. Bypasses the
     /// frame-timing helper because there is no rendering work to attribute the GPU time to.
-    pub fn submit_finalize_only(&self, xr_finalize: crate::gpu::driver_thread::XrFinalizeWork) {
+    pub fn submit_finalize_only(&self, mut xr_finalize: crate::gpu::driver_thread::XrFinalizeWork) {
+        xr_finalize.set_submit_context(0, 0);
         let batch = crate::gpu::driver_thread::SubmitBatch {
             command_buffers: Vec::new(),
             surface_texture: None,
@@ -106,7 +107,7 @@ impl GpuContext {
         surface_texture: Option<wgpu::SurfaceTexture>,
         wait: Option<crate::gpu::driver_thread::SubmitWait>,
         extra_on_submitted_work_done: Vec<Box<dyn FnOnce() + Send + 'static>>,
-        xr_finalize: Option<crate::gpu::driver_thread::XrFinalizeWork>,
+        mut xr_finalize: Option<crate::gpu::driver_thread::XrFinalizeWork>,
     ) {
         if !command_buffers.is_empty() {
             crate::profiling::emit_render_submit_frame_mark();
@@ -144,6 +145,9 @@ impl GpuContext {
             None
         };
         let frame_seq = track.map_or(0, |(_, seq, _)| u64::from(seq));
+        if let Some(finalize) = xr_finalize.as_mut() {
+            finalize.set_submit_context(frame_seq, command_buffers.len());
+        }
         let batch = crate::gpu::driver_thread::SubmitBatch {
             command_buffers,
             surface_texture,
