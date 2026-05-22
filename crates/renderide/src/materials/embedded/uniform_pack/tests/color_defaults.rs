@@ -14,6 +14,7 @@ fn srgb_material_color_vec4_uniforms_linearize_rgb_only() {
         ("_Color", ReflectedUniformScalarKind::Vec4, 16, 0),
         ("_Blend", ReflectedUniformScalarKind::Vec4, 16, 16),
         ("_EdgeEmission", ReflectedUniformScalarKind::Vec4, 16, 32),
+        ("_Tint", ReflectedUniformScalarKind::Vec4, 16, 48),
     ]);
     let mut store = MaterialPropertyStore::new();
     let input = [0.5, 0.25, -0.5, 0.75];
@@ -30,6 +31,11 @@ fn srgb_material_color_vec4_uniforms_linearize_rgb_only() {
     store.set_material(
         27,
         registry.intern("_EdgeEmission"),
+        MaterialPropertyValue::Float4(input),
+    );
+    store.set_material(
+        27,
+        registry.intern("_Tint"),
         MaterialPropertyValue::Float4(input),
     );
     let (texture, texture3d, cubemap, render_texture, video_texture) = empty_texture_pools();
@@ -62,6 +68,48 @@ fn srgb_material_color_vec4_uniforms_linearize_rgb_only() {
     assert_eq!(read_f32x4(&bytes, 0), expected);
     assert_eq!(read_f32x4(&bytes, 16), expected);
     assert_eq!(read_f32x4(&bytes, 32), expected);
+    assert_eq!(read_f32x4(&bytes, 48), expected);
+}
+
+#[test]
+fn srgb_material_color_vec4_defaults_pack_raw() {
+    let (reflected, ids, _) =
+        reflected_with_uniform_fields(&[("_Color", ReflectedUniformScalarKind::Vec4, 16, 0)]);
+    let mut defaults = MaterialUniformDefaults::default();
+    let default_color = [0.5, 0.25, 0.75, 1.0];
+    defaults.insert(
+        "_Color".to_string(),
+        EmbeddedMaterialDefaultValue::vec4(default_color),
+    );
+    let (texture, texture3d, cubemap, render_texture, video_texture) = empty_texture_pools();
+    let pools = EmbeddedTexturePools {
+        texture: &texture,
+        texture3d: &texture3d,
+        cubemap: &cubemap,
+        render_texture: &render_texture,
+        video_texture: &video_texture,
+    };
+    let value_spaces = MaterialUniformValueSpaces::for_stem("pbsmetallic_default", &reflected);
+    let metadata = MaterialUniformPackMetadata {
+        value_spaces: &value_spaces,
+        material_defaults: &defaults,
+    };
+
+    let bytes = build_embedded_uniform_bytes_with_material_defaults(
+        &reflected,
+        &ids,
+        &metadata,
+        &MaterialPropertyStore::new(),
+        lookup(32),
+        &UniformPackTextureContext {
+            pools: &pools,
+            primary_texture_2d: -1,
+        },
+        None,
+    )
+    .expect("uniform bytes");
+
+    assert_eq!(read_f32x4(&bytes, 0), default_color);
 }
 
 #[test]
@@ -190,6 +238,50 @@ fn srgb_material_color_arrays_linearize_only_when_metadata_marks_them() {
         &value_spaces,
         &store,
         lookup(29),
+        &tex_ctx,
+        None,
+    )
+    .expect("uniform bytes");
+
+    assert_eq!(read_f32x4(&bytes, 0), srgb_vec4_rgb_to_linear(input[0]));
+    assert_eq!(read_f32x4(&bytes, 16), srgb_vec4_rgb_to_linear(input[1]));
+}
+
+#[test]
+fn volume_highlight_color_arrays_linearize_host_values() {
+    let (reflected, ids, registry) = reflected_with_uniform_fields(&[(
+        "_HighlightColor",
+        ReflectedUniformScalarKind::Unsupported,
+        32,
+        0,
+    )]);
+    let mut store = MaterialPropertyStore::new();
+    let input = vec![[0.5, 0.25, -0.5, 0.75], [0.04045, 1.25, 0.0, 0.5]];
+    store.set_material(
+        33,
+        registry.intern("_HighlightColor"),
+        MaterialPropertyValue::Float4Array(input.clone()),
+    );
+    let (texture, texture3d, cubemap, render_texture, video_texture) = empty_texture_pools();
+    let pools = EmbeddedTexturePools {
+        texture: &texture,
+        texture3d: &texture3d,
+        cubemap: &cubemap,
+        render_texture: &render_texture,
+        video_texture: &video_texture,
+    };
+    let tex_ctx = UniformPackTextureContext {
+        pools: &pools,
+        primary_texture_2d: -1,
+    };
+    let value_spaces = MaterialUniformValueSpaces::for_stem("volumeunlit_default", &reflected);
+
+    let bytes = build_embedded_uniform_bytes_with_value_spaces(
+        &reflected,
+        &ids,
+        &value_spaces,
+        &store,
+        lookup(33),
         &tex_ctx,
         None,
     )

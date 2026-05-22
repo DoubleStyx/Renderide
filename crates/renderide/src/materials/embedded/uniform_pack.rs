@@ -162,7 +162,8 @@ pub(crate) struct UniformPackTextureContext<'a> {
 /// property store (for host-declared properties), source-declared material defaults, Unity's
 /// identity texture transform for missing `*_ST` vec4 fields, texture wrap bits for fields
 /// following the [`WRAP_MODE_BITS_SUFFIX`] convention, or the renderer-reserved
-/// `_RenderideVariantBits` variant bitfield. Other missing fields fall through to zero.
+/// `_RenderideVariantBits` variant bitfield. Other missing fields fall through to zero. Color-space
+/// conversion applies only to host-sourced `float4` and `float4[]` values.
 #[cfg(test)]
 pub(crate) fn build_embedded_uniform_bytes(
     reflected: &ReflectedRasterLayout,
@@ -225,15 +226,16 @@ pub(crate) fn build_embedded_uniform_bytes_with_material_defaults(
         let pid = *ids.uniform_field_ids.get(field_name)?;
         match field.kind {
             ReflectedUniformScalarKind::Vec4 => {
-                let mut v =
+                let v =
                     if let Some(MaterialPropertyValue::Float4(c)) = store.get_merged(lookup, pid) {
-                        *c
+                        if metadata.value_spaces.is_srgb_vec4(field_name) {
+                            srgb_vec4_rgb_to_linear(*c)
+                        } else {
+                            *c
+                        }
                     } else {
                         missing_vec4_uniform_default(field_name, metadata.material_defaults)
                     };
-                if metadata.value_spaces.is_srgb_vec4(field_name) {
-                    v = srgb_vec4_rgb_to_linear(v);
-                }
                 write_f32x4_at(&mut buf, field, &v);
             }
             ReflectedUniformScalarKind::F32 => {
