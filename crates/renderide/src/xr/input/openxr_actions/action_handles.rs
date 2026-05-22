@@ -14,10 +14,10 @@ pub(in crate::xr::input) struct OpenxrInputActions {
     pub(in crate::xr::input) left_grip_pose: xr::Action<xr::Posef>,
     /// Right-hand tracked grip pose.
     pub(in crate::xr::input) right_grip_pose: xr::Action<xr::Posef>,
-    /// Left-hand aim pose (pointing ray origin).
-    pub(in crate::xr::input) left_aim_pose: xr::Action<xr::Posef>,
-    /// Right-hand aim pose.
-    pub(in crate::xr::input) right_aim_pose: xr::Action<xr::Posef>,
+    /// Left-hand palm_ext pose.
+    pub(in crate::xr::input) left_palm_ext_pose: xr::Action<xr::Posef>,
+    /// Right-hand palm_ext pose.
+    pub(in crate::xr::input) right_palm_ext_pose: xr::Action<xr::Posef>,
 
     /// Left trigger analog value, 0..=1.
     pub(in crate::xr::input) left_trigger: xr::Action<f32>,
@@ -188,8 +188,8 @@ pub(in crate::xr::input) fn build_actions(
     Ok(OpenxrInputActions {
         left_grip_pose: create_pose(action_set, manifest, "left_grip_pose")?,
         right_grip_pose: create_pose(action_set, manifest, "right_grip_pose")?,
-        left_aim_pose: create_pose(action_set, manifest, "left_aim_pose")?,
-        right_aim_pose: create_pose(action_set, manifest, "right_aim_pose")?,
+        left_palm_ext_pose: create_pose(action_set, manifest, "left_palm_ext_pose")?,
+        right_palm_ext_pose: create_pose(action_set, manifest, "right_palm_ext_pose")?,
 
         left_trigger: create_float(action_set, manifest, "left_trigger")?,
         right_trigger: create_float(action_set, manifest, "right_trigger")?,

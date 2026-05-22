@@ -35,6 +35,8 @@ pub struct ProfileExtensionGates {
     pub fb_touch_controller_pro: bool,
     /// `XR_META_touch_controller_plus`.
     pub meta_touch_controller_plus: bool,
+    /// `XR_EXT_palm_pose`.
+    pub palm_pose: bool,
 }
 
 impl ProfileExtensionGates {
@@ -113,10 +115,17 @@ pub(super) fn apply_suggested_interaction_bindings(
             continue;
         }
 
+        // do not suggest palm_ext bindings if the extension is not available, doing so will make the
+        // runtime reject our bindings.
+        let profile_bindings = profile
+            .bindings
+            .iter()
+            .filter(|b| gates.palm_pose || !b.path.contains("palm_ext"));
+
         let profile_path = instance.string_to_path(&profile.profile)?;
 
         let mut bindings: Vec<xr::Binding<'_>> = Vec::with_capacity(profile.bindings.len());
-        for entry in &profile.bindings {
+        for entry in profile_bindings {
             let Some(handle) = actions_by_id.get(entry.action.as_str()) else {
                 logger::error!(
                     "OpenXR manifest invariant: binding for '{}' in '{}' has no matching action handle",
@@ -167,8 +176,8 @@ pub(super) fn build_action_handle_map(
 
     put!(Pose, left_grip_pose);
     put!(Pose, right_grip_pose);
-    put!(Pose, left_aim_pose);
-    put!(Pose, right_aim_pose);
+    put!(Pose, left_palm_ext_pose);
+    put!(Pose, right_palm_ext_pose);
 
     put!(Float, left_trigger);
     put!(Float, right_trigger);
@@ -237,6 +246,7 @@ mod tests {
             htc_vive_focus3_controller_interaction: enabled,
             fb_touch_controller_pro: enabled,
             meta_touch_controller_plus: enabled,
+            palm_pose: enabled,
         }
     }
 

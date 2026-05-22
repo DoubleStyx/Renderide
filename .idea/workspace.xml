@@ -1,0 +1,189 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="ALL" />
+  </component>
+  <component name="CargoProjects">
+    <cargoProject FILE="$PROJECT_DIR$/Cargo.toml">
+      <package file="$PROJECT_DIR$/crates/bootstrapper">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/crates/interprocess">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/crates/logger">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/crates/renderide">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/crates/renderide-shared">
+        <feature name="default" enabled="true" />
+      </package>
+      <package file="$PROJECT_DIR$/crates/renderide-test">
+        <feature name="default" enabled="true" />
+      </package>
+    </cargoProject>
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="9fe610a3-e155-456d-b1d4-9c424c4f8b9c" name="Changes" comment="">
+      <change beforePath="$PROJECT_DIR$/crates/renderide/assets/xr/actions.toml" beforeDir="false" afterPath="$PROJECT_DIR$/crates/renderide/assets/xr/actions.toml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/crates/renderide/assets/xr/bindings/bytedance_pico4_controller.toml" beforeDir="false" afterPath="$PROJECT_DIR$/crates/renderide/assets/xr/bindings/bytedance_pico4_controller.toml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/crates/renderide/assets/xr/bindings/bytedance_pico_neo3_controller.toml" beforeDir="false" afterPath="$PROJECT_DIR$/crates/renderide/assets/xr/bindings/bytedance_pico_neo3_controller.toml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/crates/renderide/assets/xr/bindings/facebook_touch_controller_pro.toml" beforeDir="false" afterPath="$PROJECT_DIR$/crates/renderide/assets/xr/bindings/facebook_touch_controller_pro.toml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/crates/renderide/assets/xr/bindings/hp_mixed_reality_controller.toml" beforeDir="false" afterPath="$PROJECT_DIR$/crates/renderide/assets/xr/bindings/hp_mixed_reality_controller.toml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/crates/renderide/assets/xr/bindings/htc_vive_controller.toml" beforeDir="false" afterPath="$PROJECT_DIR$/crates/renderide/assets/xr/bindings/htc_vive_controller.toml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/crates/renderide/assets/xr/bindings/htc_vive_cosmos_controller.toml" beforeDir="false" afterPath="$PROJECT_DIR$/crates/renderide/assets/xr/bindings/htc_vive_cosmos_controller.toml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/crates/renderide/assets/xr/bindings/htc_vive_focus3_controller.toml" beforeDir="false" afterPath="$PROJECT_DIR$/crates/renderide/assets/xr/bindings/htc_vive_focus3_controller.toml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/crates/renderide/assets/xr/bindings/meta_touch_controller_plus.toml" beforeDir="false" afterPath="$PROJECT_DIR$/crates/renderide/assets/xr/bindings/meta_touch_controller_plus.toml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/crates/renderide/assets/xr/bindings/microsoft_motion_controller.toml" beforeDir="false" afterPath="$PROJECT_DIR$/crates/renderide/assets/xr/bindings/microsoft_motion_controller.toml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/crates/renderide/assets/xr/bindings/oculus_touch_controller.toml" beforeDir="false" afterPath="$PROJECT_DIR$/crates/renderide/assets/xr/bindings/oculus_touch_controller.toml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/crates/renderide/assets/xr/bindings/samsung_odyssey_controller.toml" beforeDir="false" afterPath="$PROJECT_DIR$/crates/renderide/assets/xr/bindings/samsung_odyssey_controller.toml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/crates/renderide/assets/xr/bindings/valve_index_controller.toml" beforeDir="false" afterPath="$PROJECT_DIR$/crates/renderide/assets/xr/bindings/valve_index_controller.toml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/crates/renderide/src/xr/bootstrap/extensions.rs" beforeDir="false" afterPath="$PROJECT_DIR$/crates/renderide/src/xr/bootstrap/extensions.rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/crates/renderide/src/xr/bootstrap/instance.rs" beforeDir="false" afterPath="$PROJECT_DIR$/crates/renderide/src/xr/bootstrap/instance.rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/crates/renderide/src/xr/input/bindings.rs" beforeDir="false" afterPath="$PROJECT_DIR$/crates/renderide/src/xr/input/bindings.rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/crates/renderide/src/xr/input/frame.rs" beforeDir="false" afterPath="$PROJECT_DIR$/crates/renderide/src/xr/input/frame.rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/crates/renderide/src/xr/input/openxr_actions.rs" beforeDir="false" afterPath="$PROJECT_DIR$/crates/renderide/src/xr/input/openxr_actions.rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/crates/renderide/src/xr/input/openxr_actions/action_handles.rs" beforeDir="false" afterPath="$PROJECT_DIR$/crates/renderide/src/xr/input/openxr_actions/action_handles.rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/crates/renderide/src/xr/input/openxr_input.rs" beforeDir="false" afterPath="$PROJECT_DIR$/crates/renderide/src/xr/input/openxr_input.rs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/crates/renderide/src/xr/input/pose.rs" beforeDir="false" afterPath="$PROJECT_DIR$/crates/renderide/src/xr/input/pose.rs" afterDir="false" />
+    </list>
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="ExecutionTargetManager" SELECTED_TARGET="RsBuildProfile:test" />
+  <component name="FileTemplateManagerImpl">
+    <option name="RECENT_TEMPLATES">
+      <list>
+        <option value="Rust File" />
+      </list>
+    </option>
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+  </component>
+  <component name="MacroExpansionManager">
+    <option name="directoryName" value="G5E3BuhA" />
+  </component>
+  <component name="ProjectColorInfo">{
+  &quot;customColor&quot;: &quot;&quot;,
+  &quot;associatedIndex&quot;: 0
+}</component>
+  <component name="ProjectId" id="3E5eAQBF4oflHmBPJWEsNFNxfqG" />
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.rust.reset.selective.auto.import&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.typescript.service.memoryLimit.init&quot;: &quot;true&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;openxr-grip-surface-pose&quot;,
+    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
+    &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
+    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
+    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
+    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
+    &quot;org.rust.cargo.project.model.PROJECT_DISCOVERY&quot;: &quot;true&quot;,
+    &quot;org.rust.first.attach.projects&quot;: &quot;true&quot;,
+    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
+  }
+}</component>
+  <component name="RunManager" selected="Cargo.Test Renderide">
+    <configuration name="Run renderide-renderer" type="CargoCommandRunConfiguration" factoryName="Cargo Command">
+      <option name="command" value="run --package renderide --bin renderide-renderer" />
+      <option name="workingDirectory" value="file://$PROJECT_DIR$" />
+      <envs />
+      <option name="emulateTerminal" value="true" />
+      <option name="channel" value="DEFAULT" />
+      <option name="requiredFeatures" value="true" />
+      <option name="allFeatures" value="false" />
+      <option name="withSudo" value="false" />
+      <option name="buildTarget" value="REMOTE" />
+      <option name="backtrace" value="SHORT" />
+      <option name="isRedirectInput" value="false" />
+      <option name="redirectInputPath" value="" />
+      <method v="2">
+        <option name="CARGO.BUILD_TASK_PROVIDER" enabled="true" />
+      </method>
+    </configuration>
+    <configuration name="Run renderide-test" type="CargoCommandRunConfiguration" factoryName="Cargo Command">
+      <option name="command" value="run --package renderide-test --bin renderide-test" />
+      <option name="workingDirectory" value="file://$PROJECT_DIR$" />
+      <envs />
+      <option name="emulateTerminal" value="true" />
+      <option name="channel" value="DEFAULT" />
+      <option name="requiredFeatures" value="true" />
+      <option name="allFeatures" value="false" />
+      <option name="withSudo" value="false" />
+      <option name="buildTarget" value="REMOTE" />
+      <option name="backtrace" value="SHORT" />
+      <option name="isRedirectInput" value="false" />
+      <option name="redirectInputPath" value="" />
+      <method v="2">
+        <option name="CARGO.BUILD_TASK_PROVIDER" enabled="true" />
+      </method>
+    </configuration>
+    <configuration name="Run renderide" type="CargoCommandRunConfiguration" factoryName="Cargo Command">
+      <option name="command" value="run --package bootstrapper --bin renderide" />
+      <option name="workingDirectory" value="file://$PROJECT_DIR$" />
+      <envs />
+      <option name="emulateTerminal" value="true" />
+      <option name="channel" value="DEFAULT" />
+      <option name="requiredFeatures" value="true" />
+      <option name="allFeatures" value="false" />
+      <option name="withSudo" value="false" />
+      <option name="buildTarget" value="REMOTE" />
+      <option name="backtrace" value="SHORT" />
+      <option name="isRedirectInput" value="false" />
+      <option name="redirectInputPath" value="" />
+      <method v="2">
+        <option name="CARGO.BUILD_TASK_PROVIDER" enabled="true" />
+      </method>
+    </configuration>
+    <configuration name="Test Renderide" type="CargoCommandRunConfiguration" factoryName="Cargo Command">
+      <option name="buildProfileId" value="test" />
+      <option name="command" value="test --workspace" />
+      <option name="workingDirectory" value="file://$PROJECT_DIR$" />
+      <envs />
+      <option name="emulateTerminal" value="true" />
+      <option name="channel" value="DEFAULT" />
+      <option name="requiredFeatures" value="true" />
+      <option name="allFeatures" value="false" />
+      <option name="withSudo" value="false" />
+      <option name="buildTarget" value="REMOTE" />
+      <option name="backtrace" value="SHORT" />
+      <option name="isRedirectInput" value="false" />
+      <option name="redirectInputPath" value="" />
+      <method v="2">
+        <option name="CARGO.BUILD_TASK_PROVIDER" enabled="true" />
+      </method>
+    </configuration>
+  </component>
+  <component name="RustProjectSettings">
+    <option name="toolchainHomeDirectory" value="/usr/bin" />
+  </component>
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="9fe610a3-e155-456d-b1d4-9c424c4f8b9c" name="Changes" comment="" />
+      <created>1779472713339</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1779472713339</updated>
+      <workItem from="1779472714411" duration="12495000" />
+      <workItem from="1779500250219" duration="939000" />
+      <workItem from="1779555315741" duration="5236000" />
+    </task>
+    <servers />
+  </component>
+  <component name="TypeScriptGeneratedFilesManager">
+    <option name="version" value="3" />
+  </component>
+</project>

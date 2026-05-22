@@ -87,6 +87,12 @@ const OPTIONAL_EXTENSIONS: &[OpenxrExtensionEntry] = &[
         enable: |set, v| set.meta_touch_controller_plus = v,
         feeds_profile_gate: Some(|gates, v| gates.meta_touch_controller_plus = v),
     },
+    OpenxrExtensionEntry {
+        log_name: "XR_EXT_palm_pose",
+        is_available: |set| set.ext_palm_pose,
+        enable: |set, v| set.ext_palm_pose = v,
+        feeds_profile_gate: Some(|gates, v| gates.palm_pose = v),
+    },
 ];
 
 /// Mirrors each [`OPTIONAL_EXTENSIONS`] entry from `available` into `enabled` and, for
@@ -118,6 +124,7 @@ pub(super) fn empty_profile_gates() -> ProfileExtensionGates {
         htc_vive_focus3_controller_interaction: false,
         fb_touch_controller_pro: false,
         meta_touch_controller_plus: false,
+        palm_pose: false,
     }
 }
 

@@ -35,6 +35,16 @@ id = "right_aim_pose"
 type = "pose"
 localized_name = "Right aim pose"
 
+[[action]]
+id = "left_palm_ext_pose"
+type = "pose"
+localized_name = "Left palm_ext pose"
+
+[[action]]
+id = "right_palm_ext_pose"
+type = "pose"
+localized_name = "Right palm_ext pose"
+
 # --- Trigger ---
 
 [[action]]

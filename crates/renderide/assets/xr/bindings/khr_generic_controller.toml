@@ -7,12 +7,6 @@ path = "/user/hand/left/input/grip/pose"
 [[binding]]
 action = "right_grip_pose"
 path = "/user/hand/right/input/grip/pose"
-[[binding]]
-action = "left_aim_pose"
-path = "/user/hand/left/input/aim/pose"
-[[binding]]
-action = "right_aim_pose"
-path = "/user/hand/right/input/aim/pose"
 
 [[binding]]
 action = "left_trigger"
