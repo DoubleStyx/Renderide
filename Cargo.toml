@@ -29,6 +29,9 @@ opt-level = 3
 # Disable debug assertions for better performance
 debug-assertions = false
 
+[workspace.lints.rustdoc]
+all = "warn"
+
 [workspace.lints.rust]
 closure_returning_async_block = "warn"
 deprecated_safe_2024 = "warn"
