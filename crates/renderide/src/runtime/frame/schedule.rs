@@ -112,6 +112,17 @@ impl CpuRenderSchedule {
         self.kind
     }
 
+    /// Unity-equivalent mesh LOD bias for this render path.
+    pub(in crate::runtime) const fn mesh_lod_bias(self) -> f32 {
+        match self.kind {
+            RenderScheduleKind::Hmd | RenderScheduleKind::VrSecondariesOnly => 3.8,
+            RenderScheduleKind::Desktop
+            | RenderScheduleKind::CameraTask
+            | RenderScheduleKind::Camera360Capture
+            | RenderScheduleKind::ReflectionProbeCapture => 2.0,
+        }
+    }
+
     /// Runs `work` under a named CPU render phase.
     pub(in crate::runtime) fn run_phase<T>(
         self,
@@ -258,7 +269,7 @@ fn execute_prepared_views_with_cleanup<'a>(
     let queued_draws = schedule.run_phase(CpuRenderPhase::DrawQueue, || {
         let shared =
             backend.extract_frame_shared(scene, inner_parallelism, &view_draw_preparations);
-        ExtractedFrame::new(prepared_views, shared).queue_draws()
+        ExtractedFrame::new(prepared_views, shared, schedule.mesh_lod_bias()).queue_draws()
     });
     let prepared_draws = schedule.run_phase(CpuRenderPhase::Sort, || queued_draws.sort_draws());
     let submit_frame = prepared_draws.into_submit_frame();
@@ -309,6 +320,26 @@ mod tests {
         assert_eq!(
             crash_context::snapshot().cpu_render_phase,
             crash_context::CpuRenderPhase::Unknown
+        );
+    }
+
+    #[test]
+    fn mesh_lod_bias_matches_render_schedule_kind() {
+        assert_eq!(
+            CpuRenderSchedule::new(RenderScheduleKind::Desktop).mesh_lod_bias(),
+            2.0
+        );
+        assert_eq!(
+            CpuRenderSchedule::new(RenderScheduleKind::CameraTask).mesh_lod_bias(),
+            2.0
+        );
+        assert_eq!(
+            CpuRenderSchedule::new(RenderScheduleKind::Hmd).mesh_lod_bias(),
+            3.8
+        );
+        assert_eq!(
+            CpuRenderSchedule::new(RenderScheduleKind::VrSecondariesOnly).mesh_lod_bias(),
+            3.8
         );
     }
 }

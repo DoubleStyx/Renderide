@@ -58,6 +58,7 @@ mod error;
 mod ids;
 mod layer;
 pub mod lights;
+mod lod_groups;
 mod math;
 mod meshes;
 mod overrides;
@@ -74,6 +75,7 @@ pub use coordinator::{
 };
 pub use ids::RenderSpaceId;
 pub use lights::{ResolvedLight, light_contributes, light_has_negative_contribution};
+pub(crate) use lod_groups::{LodEntry, LodRendererKind, LodRendererRef};
 pub use math::render_transform_to_matrix;
 pub use meshes::types::{
     MeshMaterialSlot, MeshRendererInstanceId, SkinnedMeshRenderer, StaticMeshRenderer,

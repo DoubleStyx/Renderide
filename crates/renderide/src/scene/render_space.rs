@@ -11,6 +11,7 @@ use hashbrown::HashMap;
 
 use super::camera::CameraRenderableEntry;
 use super::ids::RenderSpaceId;
+use super::lod_groups::LodGroupEntry;
 use super::meshes::types::{MeshRendererInstanceId, SkinnedMeshRenderer, StaticMeshRenderer};
 use super::pose::render_transform_identity;
 use super::reflection_probe::ReflectionProbeEntry;
@@ -117,6 +118,11 @@ impl<'a> RenderSpaceView<'a> {
         &self.state.skinned_mesh_renderers
     }
 
+    /// LOD groups indexed by dense LOD-group renderable id.
+    pub(crate) fn lod_groups(self) -> &'a [LodGroupEntry] {
+        &self.state.lod_groups
+    }
+
     /// Camera renderers indexed by camera renderable id.
     pub fn cameras(self) -> &'a [CameraRenderableEntry] {
         &self.state.cameras
@@ -172,6 +178,8 @@ pub(in crate::scene) struct RenderSpaceState {
     pub(in crate::scene) skinned_mesh_renderers: Vec<SkinnedMeshRenderer>,
     /// Next renderer-local identity assigned to static or skinned mesh additions.
     pub(in crate::scene) next_mesh_renderer_instance_id: MeshRendererInstanceId,
+    /// Host LOD-group renderables; dense by host `renderable_index`.
+    pub(in crate::scene) lod_groups: Vec<LodGroupEntry>,
     /// Host camera components (secondary cameras, render texture targets).
     pub(in crate::scene) cameras: Vec<CameraRenderableEntry>,
     /// Host reflection probe components.
@@ -263,6 +271,7 @@ impl Default for RenderSpaceState {
             static_mesh_renderers: Vec::new(),
             skinned_mesh_renderers: Vec::new(),
             next_mesh_renderer_instance_id: MeshRendererInstanceId(1),
+            lod_groups: Vec::new(),
             cameras: Vec::new(),
             reflection_probes: Vec::new(),
             pending_reflection_probe_render_changes: Vec::new(),
@@ -388,6 +397,7 @@ mod tests {
             node_parents: vec![-1],
             static_mesh_renderers: vec![StaticMeshRenderer::default()],
             skinned_mesh_renderers: vec![SkinnedMeshRenderer::default()],
+            lod_groups: vec![LodGroupEntry::default()],
             ..Default::default()
         };
 
@@ -407,6 +417,7 @@ mod tests {
         assert_eq!(view.node_parents(), &[-1]);
         assert_eq!(view.static_mesh_renderers().len(), 1);
         assert_eq!(view.skinned_mesh_renderers().len(), 1);
+        assert_eq!(view.lod_groups().len(), 1);
         assert_eq!(view.mesh_renderable_count(), 2);
     }
 

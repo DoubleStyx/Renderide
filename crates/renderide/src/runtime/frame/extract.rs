@@ -54,6 +54,8 @@ pub(in crate::runtime) struct ExtractedFrame<'views, 'backend> {
     prepared_views: PreparedViews<'views>,
     /// Backend-owned draw-prep view assembled once for the frame.
     shared: ExtractedFrameShared<'backend>,
+    /// Mesh LOD bias multiplier for every view in this schedule.
+    mesh_lod_bias: f32,
 }
 
 impl<'views, 'backend> ExtractedFrame<'views, 'backend> {
@@ -61,10 +63,12 @@ impl<'views, 'backend> ExtractedFrame<'views, 'backend> {
     pub(in crate::runtime) fn new(
         prepared_views: PreparedViews<'views>,
         shared: ExtractedFrameShared<'backend>,
+        mesh_lod_bias: f32,
     ) -> Self {
         ExtractedFrame {
             prepared_views,
             shared,
+            mesh_lod_bias,
         }
     }
 
@@ -73,6 +77,7 @@ impl<'views, 'backend> ExtractedFrame<'views, 'backend> {
         let ExtractedFrame {
             prepared_views,
             shared,
+            mesh_lod_bias,
         } = self;
         let cull_snapshots: Vec<Option<ViewCullSnapshot>> = {
             profiling::scope!("render::gather_view_cull_snapshots");
@@ -91,7 +96,12 @@ impl<'views, 'backend> ExtractedFrame<'views, 'backend> {
                     .collect(),
             }
         };
-        let view_draws = queue_view_draws(&shared, prepared_views.plans(), cull_snapshots);
+        let view_draws = queue_view_draws(
+            &shared,
+            prepared_views.plans(),
+            cull_snapshots,
+            mesh_lod_bias,
+        );
         QueuedDraws {
             prepared_views,
             view_draws,
@@ -423,6 +433,7 @@ fn queue_view_draws(
     setup: &ExtractedFrameShared<'_>,
     prepared: &[FrameViewPlan<'_>],
     cull_snapshots: Vec<Option<ViewCullSnapshot>>,
+    mesh_lod_bias: f32,
 ) -> Vec<QueuedViewDraws> {
     profiling::scope!("render::queue_view_draws");
     // The MaterialDictionary wraps the property store with read-only views; building it once
@@ -480,6 +491,7 @@ fn queue_view_draws(
                 head_output_transform: prep.host_camera.head_output_transform,
                 view_origin_world: prep.view_origin_world(),
                 culling: culling.as_ref(),
+                mesh_lod_bias,
                 transform_filter: prep.draw_filter.as_ref(),
                 render_space_filter: prep.render_space_filter,
                 material_cache,

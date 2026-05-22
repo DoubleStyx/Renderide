@@ -11,6 +11,7 @@ use crate::world_mesh::materials::FrameMaterialBatchCache;
 
 use super::super::item::{WorldMeshDrawItem, resolved_material_slot_count};
 use super::DrawCollectionContext;
+use super::lod::LodVisibility;
 
 use cull_cache::CachedCull;
 use per_renderer::push_draws_for_renderer;
@@ -157,6 +158,7 @@ pub(super) fn collect_chunk(
     ctx: &DrawCollectionContext<'_>,
     cache: &FrameMaterialBatchCache,
     filter_masks: &HashMap<RenderSpaceId, Vec<bool>>,
+    lod_visibility: &LodVisibility,
 ) -> (Vec<WorldMeshDrawItem>, (usize, usize, usize)) {
     let mut out = Vec::new();
     let mut cull_stats = (0usize, 0usize, 0usize);
@@ -183,6 +185,9 @@ pub(super) fn collect_chunk(
                 else {
                     continue;
                 };
+                if !lod_visibility.renderer_visible(source.instance_id) {
+                    continue;
+                }
                 push_draws_for_renderer(ctx, &mut acc, source, cache);
             }
         }
@@ -194,6 +199,9 @@ pub(super) fn collect_chunk(
                 else {
                     continue;
                 };
+                if !lod_visibility.renderer_visible(source.instance_id) {
+                    continue;
+                }
                 push_draws_for_renderer(ctx, &mut acc, source, cache);
             }
         }

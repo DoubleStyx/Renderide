@@ -31,11 +31,13 @@ use super::prepared_renderables::FramePreparedRenderables;
 
 mod candidate;
 mod filter_masks;
+mod lod;
 pub(super) mod prepared;
 mod scene_walk;
 mod world_matrix;
 
 use filter_masks::build_per_space_filter_masks;
+use lod::{LodVisibility, build_lod_visibility};
 use prepared::collect_prepared_chunk;
 use scene_walk::{build_chunk_specs, collect_chunk, estimate_active_renderable_count};
 
@@ -79,6 +81,8 @@ pub struct DrawCollectionContext<'a> {
     pub view_origin_world: Vec3,
     /// Optional CPU frustum + Hi-Z cull inputs.
     pub culling: Option<&'a WorldMeshCullInput<'a>>,
+    /// Unity-style mesh LOD bias multiplier for relative screen-height selection.
+    pub mesh_lod_bias: f32,
     /// Optional per-camera node filter.
     pub transform_filter: Option<&'a CameraTransformDrawFilter>,
     /// Optional render-space scope for offscreen cameras/tasks.
@@ -223,29 +227,44 @@ pub fn queue_draws_with_parallelism(
         profiling::scope!("mesh::queue_draws::build_filter_masks");
         build_per_space_filter_masks(space_ids, ctx)
     };
+    let lod_visibility = {
+        profiling::scope!("mesh::queue_draws::build_lod_visibility");
+        build_lod_visibility(ctx, space_ids)
+    };
 
     let per_chunk = {
         profiling::scope!("mesh::queue_draws::collect_chunks");
-        collect_world_mesh_chunks(ctx, parallelism, cache, &filter_masks, space_ids)
+        collect_world_mesh_chunks(
+            ctx,
+            parallelism,
+            cache,
+            &filter_masks,
+            &lod_visibility,
+            space_ids,
+        )
     };
 
+    merge_collected_chunks(per_chunk, cap_hint)
+}
+
+/// Merges per-chunk collection output and assigns stable collection order.
+fn merge_collected_chunks(
+    per_chunk: Vec<(Vec<WorldMeshDrawItem>, (usize, usize, usize))>,
+    cap_hint: usize,
+) -> QueuedWorldMeshDraws {
     let mut out = Vec::with_capacity(cap_hint);
     let mut cull_stats = (0usize, 0usize, 0usize);
-    {
-        profiling::scope!("mesh::collect_and_sort::merge_chunks");
-        for (items, cs) in per_chunk {
-            cull_stats.0 += cs.0;
-            cull_stats.1 += cs.1;
-            cull_stats.2 += cs.2;
-            out.extend(items);
-        }
+    profiling::scope!("mesh::collect_and_sort::merge_chunks");
+    for (items, cs) in per_chunk {
+        cull_stats.0 += cs.0;
+        cull_stats.1 += cs.1;
+        cull_stats.2 += cs.2;
+        out.extend(items);
     }
 
-    {
-        profiling::scope!("mesh::queue_draws::assign_collect_order");
-        for (i, item) in out.iter_mut().enumerate() {
-            item.collect_order = i;
-        }
+    profiling::scope!("mesh::queue_draws::assign_collect_order");
+    for (i, item) in out.iter_mut().enumerate() {
+        item.collect_order = i;
     }
 
     QueuedWorldMeshDraws {
@@ -265,6 +284,7 @@ fn collect_world_mesh_chunks(
     parallelism: WorldMeshDrawCollectParallelism,
     cache: &FrameMaterialBatchCache,
     filter_masks: &HashMap<RenderSpaceId, Vec<bool>>,
+    lod_visibility: &LodVisibility,
     space_ids: &[RenderSpaceId],
 ) -> Vec<(Vec<WorldMeshDrawItem>, (usize, usize, usize))> {
     if let Some(prepared) = ctx.prepared {
@@ -289,7 +309,7 @@ fn collect_world_mesh_chunks(
                 .map(|&chunk| {
                     profiling::scope!("mesh::collect_prepared::chunk_worker");
                     let runs = prepared.runs_for_chunk(chunk);
-                    collect_prepared_chunk(draws, runs, ctx, cache, filter_masks)
+                    collect_prepared_chunk(draws, runs, ctx, cache, filter_masks, lod_visibility)
                 })
                 .collect()
         } else {
@@ -298,7 +318,7 @@ fn collect_world_mesh_chunks(
                 .iter()
                 .map(|&chunk| {
                     let runs = prepared.runs_for_chunk(chunk);
-                    collect_prepared_chunk(draws, runs, ctx, cache, filter_masks)
+                    collect_prepared_chunk(draws, runs, ctx, cache, filter_masks, lod_visibility)
                 })
                 .collect()
         }
@@ -317,14 +337,14 @@ fn collect_world_mesh_chunks(
                 .with_min_len(SCENE_COLLECT_PARALLEL_CHUNK_TASKS)
                 .map(|spec| {
                     profiling::scope!("mesh::collect::chunk_worker");
-                    collect_chunk(spec, ctx, cache, filter_masks)
+                    collect_chunk(spec, ctx, cache, filter_masks, lod_visibility)
                 })
                 .collect()
         } else {
             profiling::scope!("mesh::collect::serial_chunks");
             chunks
                 .iter()
-                .map(|spec| collect_chunk(spec, ctx, cache, filter_masks))
+                .map(|spec| collect_chunk(spec, ctx, cache, filter_masks, lod_visibility))
                 .collect()
         }
     }

@@ -17,6 +17,7 @@ use super::super::item::{WorldMeshDrawItem, stacked_material_submesh_topology};
 use super::super::prepared_renderables::{FramePreparedDraw, FramePreparedRun};
 use super::DrawCollectionContext;
 use super::candidate::{DrawCandidate, evaluate_draw_candidate};
+use super::lod::LodVisibility;
 use super::world_matrix::{front_face_for_draw_matrices, world_matrix_for_local_vertex_stream};
 
 /// Returns true when two prepared slot entries came from the same source renderer.
@@ -243,6 +244,7 @@ fn collect_prepared_renderer_run(
     ctx: &DrawCollectionContext<'_>,
     cache: &FrameMaterialBatchCache,
     filter_masks: &HashMap<RenderSpaceId, Vec<bool>>,
+    lod_visibility: &LodVisibility,
     out: &mut Vec<WorldMeshDrawItem>,
 ) -> (usize, usize, usize) {
     let Some(first) = run.first() else {
@@ -255,6 +257,9 @@ fn collect_prepared_renderer_run(
         return (0, 0, 0);
     }
     if !prepared_run_passes_filter(first, ctx, filter_masks) {
+        return (0, 0, 0);
+    }
+    if !lod_visibility.renderer_visible(first.instance_id) {
         return (0, 0, 0);
     }
     let is_overlay = first.is_overlay;
@@ -285,6 +290,7 @@ pub(super) fn collect_prepared_chunk(
     ctx: &DrawCollectionContext<'_>,
     cache: &FrameMaterialBatchCache,
     filter_masks: &HashMap<RenderSpaceId, Vec<bool>>,
+    lod_visibility: &LodVisibility,
 ) -> (Vec<WorldMeshDrawItem>, (usize, usize, usize)) {
     profiling::scope!("mesh::collect_prepared::chunk");
     let chunk_draws = {
@@ -302,7 +308,14 @@ pub(super) fn collect_prepared_chunk(
             let start = prepared_run.start as usize;
             let end = prepared_run.end as usize;
             let run = &draws[start..end];
-            let run_stats = collect_prepared_renderer_run(run, ctx, cache, filter_masks, &mut out);
+            let run_stats = collect_prepared_renderer_run(
+                run,
+                ctx,
+                cache,
+                filter_masks,
+                lod_visibility,
+                &mut out,
+            );
             cull_stats.0 += run_stats.0;
             cull_stats.1 += run_stats.1;
             cull_stats.2 += run_stats.2;

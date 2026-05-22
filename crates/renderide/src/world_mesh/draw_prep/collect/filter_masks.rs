@@ -83,6 +83,7 @@ mod tests {
             head_output_transform: Mat4::IDENTITY,
             view_origin_world: Vec3::ZERO,
             culling: None,
+            mesh_lod_bias: 2.0,
             transform_filter,
             render_space_filter: None,
             material_cache: None,

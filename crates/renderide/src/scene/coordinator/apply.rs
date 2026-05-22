@@ -33,6 +33,10 @@ use super::super::ids::RenderSpaceId;
 use super::super::layer::{
     ExtractedLayerUpdate, apply_layer_update_extracted, extract_layer_update,
 };
+use super::super::lod_groups::{
+    ExtractedLodGroupRenderablesUpdate, apply_lod_group_renderables_update_extracted,
+    extract_lod_group_renderables_update,
+};
 use super::super::meshes::{
     ExtractedMeshRenderablesUpdate, ExtractedSkinnedMeshRenderablesUpdate,
     apply_mesh_renderables_update_extracted, apply_skinned_mesh_renderables_update_extracted,
@@ -77,6 +81,7 @@ pub(in crate::scene::coordinator) fn is_extracted_empty(e: &ExtractedRenderSpace
         && e.meshes.is_none()
         && e.skinned_meshes.is_none()
         && e.layers.is_none()
+        && e.lod_groups.is_none()
         && e.transform_overrides.is_none()
         && e.material_overrides.is_none()
         && e.blit_to_displays.is_none()
@@ -106,6 +111,9 @@ fn extracted_apply_work_units(e: &ExtractedRenderSpaceUpdate) -> usize {
     }
     if let Some(update) = &e.layers {
         units += layer_update_work_units(update);
+    }
+    if let Some(update) = &e.lod_groups {
+        units += lod_group_update_work_units(update);
     }
     if let Some(update) = &e.transform_overrides {
         units += transform_override_update_work_units(update);
@@ -192,6 +200,16 @@ fn layer_update_work_units(update: &ExtractedLayerUpdate) -> usize {
     update.removals.len() + update.additions.len() + update.layer_assignments.len()
 }
 
+/// Counts extracted LOD group rows and dependent renderer slabs.
+#[inline]
+fn lod_group_update_work_units(update: &ExtractedLodGroupRenderablesUpdate) -> usize {
+    update.removals.len()
+        + update.additions.len()
+        + update.states.len()
+        + update.lod_states.len()
+        + update.packed_mesh_renderer_ids.len()
+}
+
 /// Counts extracted render-transform override rows.
 #[inline]
 fn transform_override_update_work_units(update: &ExtractedRenderTransformOverridesUpdate) -> usize {
@@ -236,6 +254,8 @@ pub(in crate::scene::coordinator) struct ExtractedRenderSpaceUpdate {
     pub skinned_meshes: Option<ExtractedSkinnedMeshRenderablesUpdate>,
     /// Layer-assignment update payload.
     pub layers: Option<ExtractedLayerUpdate>,
+    /// LOD group update payload.
+    pub lod_groups: Option<ExtractedLodGroupRenderablesUpdate>,
     /// Render-context transform-override update payload.
     pub transform_overrides: Option<ExtractedRenderTransformOverridesUpdate>,
     /// Render-context material-override update payload.
@@ -300,6 +320,13 @@ pub(in crate::scene::coordinator) fn extract_render_space_update(
         }
         None => None,
     };
+    let lod_groups = match update.lod_group_update.as_ref() {
+        Some(lgu) => {
+            profiling::scope!("scene::extract_render_space::lod_groups");
+            Some(extract_lod_group_renderables_update(shm, lgu, update.id)?)
+        }
+        None => None,
+    };
     let transform_overrides = match update.render_transform_overrides_update.as_ref() {
         Some(rtu) => {
             profiling::scope!("scene::extract_render_space::transform_overrides");
@@ -333,6 +360,7 @@ pub(in crate::scene::coordinator) fn extract_render_space_update(
         meshes,
         skinned_meshes,
         layers,
+        lod_groups,
         transform_overrides,
         material_overrides,
         blit_to_displays,
@@ -416,6 +444,10 @@ pub(in crate::scene::coordinator) fn apply_extracted_render_space_update(
     if let Some(ref su) = extracted.skinned_meshes {
         profiling::scope!("scene::apply_render_space_chunk::skinned_meshes");
         apply_skinned_mesh_renderables_update_extracted(space, su, transform_removals, scene_id);
+    }
+    if let Some(ref lgu) = extracted.lod_groups {
+        profiling::scope!("scene::apply_render_space_chunk::lod_groups");
+        apply_lod_group_renderables_update_extracted(space, lgu, scene_id);
     }
     let mesh_membership_or_nodes_changed =
         extracted.meshes.is_some() || extracted.skinned_meshes.is_some();
@@ -612,6 +644,7 @@ mod tests {
             meshes: None,
             skinned_meshes: None,
             layers: None,
+            lod_groups: None,
             transform_overrides: None,
             material_overrides: None,
             blit_to_displays: None,
