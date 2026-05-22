@@ -6,11 +6,18 @@ Also available as an [AUR package](https://aur.archlinux.org/packages/renderide-
 
 If you're interested in supporting my work, please consider donating on [Ko-Fi](https://ko-fi.com/DoubleStyx) or [GitHub Sponsors](https://github.com/sponsors/DoubleStyx).
 
+## Feedback
+
+Please report crashes, bugs, missing features, performance problems, and other feedback through whichever channel fits best:
+
+- [GitHub Issues](https://github.com/DoubleStyx/Renderide/issues) for tracked bugs, crashes, feature requests, and reproducible performance issues.
+- [Resonite Rendering Discussion Discord](https://discord.com/channels/1040316820650991766/1156348246973751487) for discussion and quick triage.
+- [Telegram](https://t.me/DoubleStyx) for direct contact.
+
 ## Status
 
 Experimental: performance, stability, and platform support are still evolving.
 *Visual bugs and missing features are expected.*
-Please report bugs you encounter and feature requests as GitHub issues. 
 
 ## What is Renderide
 
