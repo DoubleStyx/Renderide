@@ -5,7 +5,7 @@
 //! # Layout (Cloudtoid / Renderite interop)
 //!
 //! - **Windows**: named section `CT_IP_{prefix}_{bufferId:X}` via
-//!   [`windows_sys`] file mapping (same prefix as [`interprocess`] on Windows).
+//!   `windows_sys` file mapping (same prefix as [`interprocess`] on Windows).
 //! - **Unix**: file `{composed}.qu` in the MMF directory (see below).
 //!
 //! # Backing directory on Unix

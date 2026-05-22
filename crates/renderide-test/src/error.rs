@@ -15,7 +15,7 @@ pub enum HarnessError {
     /// Spawning the renderer process failed.
     #[error("spawn renderer process: {0}")]
     SpawnRenderer(#[source] std::io::Error),
-    /// Building [`interprocess::QueueOptions`] failed (capacity invalid, etc.).
+    /// Building `interprocess::QueueOptions` failed (capacity invalid, etc.).
     #[error("queue options invalid: {0}")]
     QueueOptions(String),
     /// The handshake never completed within the configured timeout.

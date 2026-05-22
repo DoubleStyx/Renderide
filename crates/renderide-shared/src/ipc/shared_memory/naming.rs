@@ -6,7 +6,7 @@ use std::path::PathBuf;
 /// Environment variable overriding the Unix directory for `.qu` MMF files (must match host /
 /// bootstrapper). Same value as `bootstrapper::ipc::RENDERIDE_INTERPROCESS_DIR_ENV`.
 ///
-/// Only read by [`unix_mmf_backing_dir`] on Unix; Windows builds keep this symbol for API parity
+/// Only read by `unix_mmf_backing_dir` on Unix; Windows builds keep this symbol for API parity
 /// with the bootstrapper constant name.
 pub const RENDERIDE_INTERPROCESS_DIR_ENV: &str = "RENDERIDE_INTERPROCESS_DIR";
 

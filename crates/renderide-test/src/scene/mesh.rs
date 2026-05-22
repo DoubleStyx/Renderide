@@ -1,8 +1,8 @@
 //! Procedural mesh primitives shared by all scene-DSL cases.
 //!
 //! Vertex layout matches what [`super::mesh_payload::pack_mesh_upload`] expects: position
-//! (`[f32; 3]`), normal (`[f32; 3]`), and UV (`[f32; 2]`). Both [`super::sphere::SphereMesh`]
-//! and [`super::torus::TorusMesh`] expose [`Mesh`] aliases so they share one packing path.
+//! (`[f32; 3]`), normal (`[f32; 3]`), and UV (`[f32; 2]`). The sphere and torus generators both
+//! return [`Mesh`] so they share one packing path.
 
 use bytemuck::{Pod, Zeroable};
 

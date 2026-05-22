@@ -5,7 +5,7 @@
 ///
 /// The discriminants are pinned via `#[repr(u8)]` because the global logger stores the active max
 /// level in an [`std::sync::atomic::AtomicU8`]. `level as u8` is the canonical encoding and
-/// [`tag_to_level`] decodes it back, saturating to [`LogLevel::Trace`] for unexpected bytes.
+/// `tag_to_level` decodes it back, saturating to [`LogLevel::Trace`] for unexpected bytes.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum LogLevel {

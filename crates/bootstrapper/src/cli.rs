@@ -60,7 +60,7 @@ pub fn parse_host_args_tokens(args: &[String]) -> (Vec<String>, Option<LogLevel>
 }
 
 /// Runs the desktop vs VR dialog (`prompt`) if required by
-/// [`vr_prompt::should_prompt_vr_dialog`] and returns host argv augmented with the resulting
+/// `vr_prompt::should_prompt_vr_dialog` and returns host argv augmented with the resulting
 /// `-Screen` / `-Device SteamVR` flag.
 ///
 /// `prompt` is invoked with no arguments and must return `Some(true)` for VR, `Some(false)` for

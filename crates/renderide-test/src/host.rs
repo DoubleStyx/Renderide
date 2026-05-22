@@ -4,10 +4,10 @@
 //! The implementation is split across:
 //!
 //! - [`ipc_setup`] -- opens the four authority Cloudtoid queues + tempdir for SHM backing files.
-//! - [`handshake`] -- `RendererInitData` -> `RendererInitResult` -> `RendererInitFinalizeData`.
+//! - `handshake` -- `RendererInitData` -> `RendererInitResult` -> `RendererInitFinalizeData`.
 //! - [`lockstep`] -- drains both `...S` queues and replies to every `FrameStartData` with a
 //!   `FrameSubmitData`. Per-frame counter starts at 0.
-//! - [`asset_upload`] -- writes the sphere mesh into shared memory and waits for `MeshUploadResult`.
+//! - `asset_upload` -- writes the sphere mesh into shared memory and waits for `MeshUploadResult`.
 //! - [`scene_session`] -- top-level orchestration.
 
 use std::path::PathBuf;
@@ -23,7 +23,7 @@ pub mod scene_session;
 
 pub use scene_session::{SceneSessionConfig, SessionTemplate};
 
-/// Configuration for [`HostHarness::start`].
+/// Configuration consumed when starting a [`HostHarness`].
 #[derive(Clone, Debug)]
 pub struct HostHarnessConfig {
     /// Path to the `renderide-renderer` binary to spawn.

@@ -1,7 +1,7 @@
 //! PNG stability state machine and the readback driver loop.
 //!
 //! Decision logic is encapsulated in [`PngStabilityState::observe`] so the per-tick I/O loop in
-//! [`run_lockstep_until_png_stable`] is small and the state transitions are unit-testable in
+//! `run_lockstep_until_png_stable` is small and the state transitions are unit-testable in
 //! isolation from the renderer / filesystem.
 
 use std::path::{Path, PathBuf};
@@ -75,7 +75,7 @@ impl PngStabilityState {
     /// Constructs the state from a [`PngStabilityWaitTiming`] anchor pair.
     ///
     /// `min_wall_after_submit` is set to `interval * 2`, floored at
-    /// [`timing::MIN_WALL_AFTER_SUBMIT_FLOOR`], so callers configured with very short
+    /// `timing::MIN_WALL_AFTER_SUBMIT_FLOOR`, so callers configured with very short
     /// renderer intervals still wait long enough for slow software rendering to apply-then-render.
     pub fn new(timing: &PngStabilityWaitTiming) -> Self {
         let min_wall_after_submit = (timing.interval * 2).max(timing::MIN_WALL_AFTER_SUBMIT_FLOOR);

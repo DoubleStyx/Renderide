@@ -1,4 +1,4 @@
-//! Trait for application types that serialize through [`MemoryPacker`](super::memory_packer::MemoryPacker).
+//! Trait for application types that serialize through [`MemoryPacker`].
 
 use super::memory_packer::MemoryPacker;
 use super::memory_packer_entity_pool::MemoryPackerEntityPool;

@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// Configuration for [`super::run_session`].
+/// Configuration for a scene-session run.
 #[derive(Clone, Debug)]
 pub struct SceneSessionConfig {
     /// Path to the `renderide-renderer` binary to spawn.
@@ -22,7 +22,7 @@ pub struct SceneSessionConfig {
     pub verbose_renderer: bool,
 }
 
-/// Result of a successful [`super::run_session`] call.
+/// Result of a successful scene-session run.
 #[derive(Clone, Debug)]
 pub(in crate::host) struct SceneSessionOutcome {
     /// Path to the freshly written PNG produced by the renderer.

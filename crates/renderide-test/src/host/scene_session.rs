@@ -4,12 +4,12 @@
 //!
 //! The implementation is split across focused submodules:
 //!
-//! - [`config`] -- public configuration and outcome types.
-//! - [`consts`] -- centralized timing, asset-id, and tessellation constants.
+//! - `config` -- public configuration and outcome types.
+//! - `consts` -- centralized timing, asset-id, and tessellation constants.
 //! - [`spawn`] -- renderer process spawn + RAII guard.
-//! - [`scene_state`] -- scene-state SHM construction and first-submit pump.
+//! - `scene_state` -- scene-state SHM construction and first-submit pump.
 //! - [`png_readback`] -- PNG stability state machine + readback driver loop.
-//! - [`shutdown`] -- graceful shutdown sequence.
+//! - `shutdown` -- graceful shutdown sequence.
 
 use std::time::{Duration, Instant, SystemTime};
 

@@ -154,7 +154,7 @@ fn clear_render_space_delta_payload(update: &mut RenderSpaceUpdate) {
 /// Builds a [`FrameSubmitData`] message with the supplied frame index, scalar fields, and
 /// optional render-space. Pure: no I/O, no clock, no global state.
 ///
-/// Extracted from [`LockstepDriver::send_frame_submit`] so unit tests can verify the construction
+/// Extracted from `LockstepDriver::send_frame_submit` so unit tests can verify the construction
 /// rules (frame index propagation, scalar plumbing, render-space `Vec` shape) without standing up
 /// a real Cloudtoid queue.
 pub fn build_frame_submit_data(

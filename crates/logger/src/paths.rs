@@ -107,7 +107,7 @@ pub fn log_dir_for(component: LogComponent) -> PathBuf {
 
 /// Full path to a timestamped log file: `<logs>/<component>/<timestamp>.log`.
 ///
-/// The `timestamp` is sanitized via [`sanitize_timestamp`] before being joined to the log
+/// The `timestamp` is sanitized via `sanitize_timestamp` before being joined to the log
 /// directory: any character outside `[A-Za-z0-9_-]` is replaced with `_` so that a caller
 /// passing path-like input (e.g. `"../etc/passwd"`) cannot escape the component log
 /// directory or write to a different file extension. Empty or fully-stripped timestamps fall

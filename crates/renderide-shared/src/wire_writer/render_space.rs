@@ -7,7 +7,7 @@
 //!   shared-memory buffer. The host calls [`SphereSceneSharedMemoryRegions::build`] once.
 //! - [`SphereSceneSharedMemoryLayout`] holds the byte offsets where each chunk lives inside the
 //!   host-allocated shared-memory buffer plus the buffer id and capacity for the resulting
-//!   [`crate::shared::SharedMemoryBufferDescriptor`]s.
+//!   [`crate::buffer::SharedMemoryBufferDescriptor`]s.
 //!
 //! The host writes each region at its assigned offset, then calls
 //! [`build_sphere_render_space_update`] to assemble the final [`crate::shared::RenderSpaceUpdate`]
@@ -128,8 +128,7 @@ impl SphereSceneSharedMemoryRegions {
 /// [`build_sphere_render_space_update`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SphereSceneSharedMemoryLayout {
-    /// Cloudtoid `buffer_id` (matches what the host passed to
-    /// [`crate::SharedMemoryWriterConfig::buffer_id`]).
+    /// Cloudtoid `buffer_id` assigned by the host for the shared-memory buffer.
     pub buffer_id: i32,
     /// Total capacity of the host SHM buffer (bytes).
     pub buffer_capacity: i32,
