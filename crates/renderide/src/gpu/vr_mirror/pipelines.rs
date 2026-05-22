@@ -12,6 +12,34 @@ use crate::gpu::blit_kit::pipeline::color_blit_pipeline;
 
 use super::HMD_MIRROR_SOURCE_FORMAT;
 
+/// Pipeline that samples one owned HMD eye into one OpenXR swapchain layer.
+pub(super) fn openxr_eye_pipeline(device: &wgpu::Device) -> &'static wgpu::RenderPipeline {
+    static PIPE: OnceLock<wgpu::RenderPipeline> = OnceLock::new();
+    PIPE.get_or_init(|| {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("vr_mirror_eye_to_openxr"),
+            source: wgpu::ShaderSource::Wgsl(embedded_wgsl!("vr_mirror_eye_to_openxr").into()),
+        });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("vr_mirror_eye_to_openxr"),
+            bind_group_layouts: &[Some(sampled_2d_filtered_layout(device))],
+            immediate_size: 0,
+        });
+        let pipeline = color_blit_pipeline(
+            device,
+            &shader,
+            &layout,
+            "vr_mirror_eye_to_openxr",
+            HMD_MIRROR_SOURCE_FORMAT,
+        );
+        crate::profiling::note_resource_churn!(
+            RenderPipeline,
+            "gpu::vr_mirror_openxr_eye_pipeline"
+        );
+        pipeline
+    })
+}
+
 /// Pipeline that samples the owned left-eye view into the desktop mirror staging texture.
 pub(super) fn eye_pipeline(device: &wgpu::Device) -> &'static wgpu::RenderPipeline {
     static PIPE: OnceLock<wgpu::RenderPipeline> = OnceLock::new();

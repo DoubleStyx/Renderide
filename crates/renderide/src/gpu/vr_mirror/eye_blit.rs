@@ -7,7 +7,7 @@ use crate::gpu::GpuContext;
 use crate::gpu::blit_kit::layout::sampled_2d_filtered_layout;
 use crate::gpu::blit_kit::sampler::linear_clamp_sampler;
 
-use super::pipelines::eye_pipeline;
+use super::pipelines::{eye_pipeline, openxr_eye_pipeline};
 use super::resources::VrMirrorBlitResources;
 
 /// Number of eye layers copied into the OpenXR stereo swapchain.
@@ -156,7 +156,7 @@ fn encode_openxr_eye_copies(
             encoder,
             OPENXR_EYE_COPY_PASS_LABELS[eye],
             openxr_target_eye_views[eye],
-            eye_pipeline(device),
+            openxr_eye_pipeline(device),
             &eye_bind_groups[eye],
             eye_timestamp_writes,
         );
