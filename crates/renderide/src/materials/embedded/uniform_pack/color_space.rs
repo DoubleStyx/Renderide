@@ -93,6 +93,8 @@ fn srgb_vec4_uniform_field(field_name: &str) -> bool {
             | "_FarColor"
             | "_FarColor0"
             | "_FarColor1"
+            | "_FillColor"
+            | "_FillFarColor"
             | "_FillTint"
             | "_FresnelTint"
             | "_FrontColor"
@@ -100,8 +102,14 @@ fn srgb_vec4_uniform_field(field_name: &str) -> bool {
             | "_FrontNearColor"
             | "_GroundColor"
             | "_InnerColor"
+            | "_InnerFillColor"
+            | "_InnerFillFarColor"
+            | "_InnerLineColor"
+            | "_InnerLineFarColor"
             | "_IntersectColor"
             | "_IntersectEmissionColor"
+            | "_LineColor"
+            | "_LineFarColor"
             | "_MatcapTint"
             | "_NearColor"
             | "_NearColor0"
@@ -165,6 +173,23 @@ mod tests {
         MaterialUniformValueSpaces::for_stem(stem, &reflected)
     }
 
+    fn assert_srgb_vec4_fields(stem: &str, field_names: &[&str]) {
+        let spaces = reflected_material_value_spaces(stem);
+        for field_name in field_names {
+            assert!(
+                spaces.is_srgb_vec4(field_name),
+                "{stem}:{field_name} should be marked as an sRGB host color"
+            );
+        }
+    }
+
+    fn field_name_implies_host_srgb_vec4(field_name: &str) -> bool {
+        !field_name.ends_with("_ST")
+            && (field_name.contains("Color")
+                || field_name.contains("Tint")
+                || matches!(field_name, "_Blend" | "_node_2829"))
+    }
+
     #[test]
     fn srgb_conversion_matches_transfer_curve() {
         let linear = crate::color_space::srgb_f32x4_rgb_to_linear([-0.5, 0.04045, 1.25, 0.33]);
@@ -202,6 +227,31 @@ mod tests {
         assert!(fogbox.is_srgb_vec4("_AccumulationColor"));
         assert!(fogbox.is_srgb_vec4("_AccumulationColorBottom"));
         assert!(fogbox.is_srgb_vec4("_AccumulationColorTop"));
+    }
+
+    #[test]
+    fn metadata_marks_wireframe_host_color_uniforms() {
+        assert_srgb_vec4_fields(
+            "wireframe_default",
+            &["_LineColor", "_FillColor", "_LineFarColor", "_FillFarColor"],
+        );
+        assert_srgb_vec4_fields(
+            "wireframedoublesided_default",
+            &[
+                "_LineColor",
+                "_FillColor",
+                "_InnerLineColor",
+                "_InnerFillColor",
+                "_LineFarColor",
+                "_FillFarColor",
+                "_InnerLineFarColor",
+                "_InnerFillFarColor",
+            ],
+        );
+        assert_srgb_vec4_fields(
+            "wireframeunlittransition_default",
+            &["_LineColor", "_FillColor"],
+        );
     }
 
     #[test]
@@ -249,6 +299,30 @@ mod tests {
                     assert!(
                         !spaces.is_srgb_vec4(field_name),
                         "{stem}:{field_name} must remain raw transform data"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn metadata_covers_color_named_vec4_uniforms_in_embedded_materials() {
+        for stem in embedded_shaders::COMPILED_MATERIAL_STEMS {
+            let wgsl = embedded_shaders::embedded_target_wgsl(stem).expect("embedded WGSL target");
+            let reflected =
+                reflect_raster_material_wgsl(wgsl).expect("reflect embedded WGSL target");
+            let spaces = MaterialUniformValueSpaces::for_stem(stem, &reflected);
+            let Some(uniform) = reflected.material_uniform.as_ref() else {
+                continue;
+            };
+            for (field_name, field) in &uniform.fields {
+                let host_field_name = shader_writer_unescaped_field_name(field_name);
+                if field.kind == ReflectedUniformScalarKind::Vec4
+                    && field_name_implies_host_srgb_vec4(host_field_name)
+                {
+                    assert!(
+                        spaces.is_srgb_vec4(field_name),
+                        "{stem}:{field_name} ({host_field_name}) should be marked as an sRGB host color"
                     );
                 }
             }
