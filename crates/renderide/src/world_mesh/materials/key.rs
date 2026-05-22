@@ -11,7 +11,7 @@ use super::transparent::TransparentMaterialClass;
 /// Groups draws that can share the same raster pipeline, material bind data, and Unity render-queue
 /// ordering bucket (Unity material +
 /// [`MaterialPropertyBlock`](https://docs.unity3d.com/ScriptReference/MaterialPropertyBlock.html)-style slot0).
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct MaterialDrawBatchKey {
     /// Resolved from host `set_shader` -> [`crate::materials::resolve_raster_pipeline`].
     pub pipeline: RasterPipelineKind,
@@ -95,4 +95,34 @@ pub fn compute_batch_key_hash(key: &MaterialDrawBatchKey) -> u64 {
     let mut h = ahash::AHasher::default();
     key.hash(&mut h);
     h.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MaterialBlendMode, MaterialDrawBatchKey};
+    use crate::materials::{UNITY_RENDER_QUEUE_TRANSPARENT, UNITY_TRANSPARENT_RENDER_QUEUE_MIN};
+
+    #[test]
+    fn transparent_sorting_starts_at_transparent_queue_for_opaque_blend() {
+        let mut key = MaterialDrawBatchKey {
+            render_queue: UNITY_RENDER_QUEUE_TRANSPARENT - 1,
+            blend_mode: MaterialBlendMode::Opaque,
+            ..Default::default()
+        };
+        assert!(!key.is_transparent());
+        key.render_queue = UNITY_RENDER_QUEUE_TRANSPARENT;
+        assert!(key.is_transparent());
+    }
+
+    #[test]
+    fn transparent_sorting_starts_at_lower_transparent_queue_for_non_opaque_blend() {
+        let mut key = MaterialDrawBatchKey {
+            render_queue: UNITY_TRANSPARENT_RENDER_QUEUE_MIN - 1,
+            blend_mode: MaterialBlendMode::UnityBlend { src: 5, dst: 10 },
+            ..Default::default()
+        };
+        assert!(!key.is_transparent());
+        key.render_queue = UNITY_TRANSPARENT_RENDER_QUEUE_MIN;
+        assert!(key.is_transparent());
+    }
 }
