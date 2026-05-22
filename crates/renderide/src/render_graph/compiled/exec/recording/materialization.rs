@@ -8,6 +8,8 @@ use super::super::super::super::pass::{PassKind, PassPhase};
 use super::super::super::super::schedule::{RenderPassMaterializationGroup, ScheduleStep};
 use super::super::super::helpers;
 use super::super::super::{CompiledRenderGraph, ResolvedView};
+use super::update_command_stats;
+use crate::render_graph::blackboard::GraphCommandStats;
 
 impl CompiledRenderGraph {
     /// Finds a materialization group that begins at `step_idx`.
@@ -154,6 +156,7 @@ impl CompiledRenderGraph {
             .should_record_raster(&ctx)
             .map_err(GraphExecuteError::Pass)?;
         if !first_should_record {
+            update_command_stats(ctx.blackboard, GraphCommandStats::record_skipped_pass);
             return Ok(false);
         }
 
@@ -206,12 +209,15 @@ impl CompiledRenderGraph {
                     .map_err(GraphExecuteError::Pass)?
             };
             if !should_record {
+                update_command_stats(ctx.blackboard, GraphCommandStats::record_skipped_pass);
                 continue;
             }
             self.validate_blackboard_inputs(step.pass_idx, pass.name(), ctx.blackboard)?;
             pass.record_raster(&mut ctx, &mut rpass)
                 .map_err(GraphExecuteError::Pass)?;
+            update_command_stats(ctx.blackboard, GraphCommandStats::record_raster_pass);
         }
+        update_command_stats(ctx.blackboard, GraphCommandStats::record_opened_render_pass);
         drop(rpass);
         if let (Some(p), Some(q)) = (ctx.profiler, pass_query) {
             p.end_query(encoder, q);

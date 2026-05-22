@@ -60,8 +60,22 @@ pub struct BackendDiagSnapshot {
     pub material_pipeline_cache: MaterialPipelineCacheDiagnosticSnapshot,
     /// Pass count in the compiled main render graph.
     pub frame_graph_pass_count: usize,
+    /// Pass count before compile-time render graph culling.
+    pub frame_graph_registered_pass_count: usize,
     /// Kahn-style DAG wave count from the compiled main render graph.
     pub frame_graph_topo_levels: usize,
+    /// Passes culled because no retained consumer or import needed them.
+    pub frame_graph_culled_pass_count: usize,
+    /// Passes intentionally omitted before graph construction.
+    pub frame_graph_compile_skipped_pass_count: usize,
+    /// Attachment resolve declarations retained by the graph.
+    pub frame_graph_attachment_resolve_count: usize,
+    /// Retained transient attachment stores.
+    pub frame_graph_transient_store_count: usize,
+    /// Retained transient attachment discards.
+    pub frame_graph_transient_discard_count: usize,
+    /// Coarse compile-time attachment bandwidth estimate in bytes.
+    pub frame_graph_estimated_bandwidth_bytes: u64,
     /// Packed lights after the latest [`crate::backend::RenderBackend::prepare_lights_from_scene`].
     pub gpu_light_count: usize,
     /// Whether signed scene-color HDR is active for the current packed light set.

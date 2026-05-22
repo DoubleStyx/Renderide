@@ -118,6 +118,7 @@ impl PostProcessEffect for AcesTonemapEffect {
     fn register(
         &self,
         builder: &mut GraphBuilder,
+        _settings: &PostProcessingSettings,
         input: TextureHandle,
         output: TextureHandle,
     ) -> EffectPasses {

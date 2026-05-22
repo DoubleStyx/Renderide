@@ -10,6 +10,8 @@ use super::super::resources::{ResourceAccess, TransientBufferDesc, TransientText
 /// Statistics emitted when building a [`super::CompiledRenderGraph`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CompileStats {
+    /// Number of passes registered before compile-time culling.
+    pub registered_pass_count: usize,
     /// Number of passes in the flattened schedule.
     pub pass_count: usize,
     /// Number of Kahn sweep **waves** (parallel layers) in the build-time DAG sort.
@@ -20,6 +22,8 @@ pub struct CompileStats {
     pub topo_levels: usize,
     /// Number of passes culled because their writes could not reach an import/export.
     pub culled_count: usize,
+    /// Number of passes intentionally omitted before compile-time graph construction.
+    pub compile_skipped_pass_count: usize,
     /// Number of declared transient texture handles.
     pub transient_texture_count: usize,
     /// Number of physical transient texture slots after lifetime aliasing.
@@ -42,6 +46,14 @@ pub struct CompileStats {
     pub render_pass_merge_groups: usize,
     /// Number of render-pass groups planned for materialized recording.
     pub render_pass_materialization_groups: usize,
+    /// Number of attachment resolve declarations retained in the compiled graph.
+    pub attachment_resolve_count: usize,
+    /// Number of retained transient attachment stores.
+    pub transient_attachment_store_count: usize,
+    /// Number of retained transient attachment discards.
+    pub transient_attachment_discard_count: usize,
+    /// Coarse one-pixel attachment bandwidth estimate for retained attachment load/store/resolve work.
+    pub estimated_bandwidth_bytes: u64,
 }
 
 /// Inclusive pass-index lifetime for one transient resource in the retained schedule.

@@ -89,6 +89,7 @@ impl PostProcessEffect for GtaoEffect {
     fn register(
         &self,
         builder: &mut GraphBuilder,
+        _settings: &PostProcessingSettings,
         input: TextureHandle,
         output: TextureHandle,
     ) -> EffectPasses {
@@ -167,10 +168,7 @@ impl PostProcessEffect for GtaoEffect {
         )));
         builder.add_edge(last, apply);
 
-        EffectPasses {
-            first: first_prefilter,
-            last: apply,
-        }
+        EffectPasses::registered(first_prefilter, apply)
     }
 }
 

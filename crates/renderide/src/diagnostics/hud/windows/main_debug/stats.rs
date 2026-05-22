@@ -653,9 +653,37 @@ impl StatsSection for FrameGraphSection {
                 ui,
                 "Render graph passes",
                 &format!(
-                    "{}  (compile DAG waves {})",
-                    r.frame_graph_pass_count, r.frame_graph_topo_levels
+                    "{} retained / {} registered  (compile DAG waves {})",
+                    r.frame_graph_pass_count,
+                    r.frame_graph_registered_pass_count,
+                    r.frame_graph_topo_levels
                 ),
+            );
+            kv(
+                ui,
+                "Skipped / culled",
+                &format!(
+                    "{} compile skipped / {} culled",
+                    r.frame_graph_compile_skipped_pass_count, r.frame_graph_culled_pass_count
+                ),
+            );
+            kv(
+                ui,
+                "Copies / resolves",
+                &format!("{} resolves", r.frame_graph_attachment_resolve_count),
+            );
+            kv(
+                ui,
+                "Transient stores",
+                &format!(
+                    "{} store / {} discard",
+                    r.frame_graph_transient_store_count, r.frame_graph_transient_discard_count
+                ),
+            );
+            kv(
+                ui,
+                "Estimated bandwidth",
+                &hud_fmt::bytes_compact(r.frame_graph_estimated_bandwidth_bytes),
             );
             kv(ui, "GPU lights (packed)", &format!("{}", r.gpu_light_count));
             let (label, color) = if r.signed_scene_color_active {

@@ -82,7 +82,7 @@ impl CompiledRenderGraph {
                 profiler,
             )?;
         }
-        Self::record_offscreen_color_copy(
+        let offscreen_copy_recorded = Self::record_offscreen_color_copy(
             &mut encoder,
             resolved.offscreen_color_copy.as_ref(),
             profiler,
@@ -92,10 +92,13 @@ impl CompiledRenderGraph {
         {
             prof.end_query(&mut encoder, query);
         }
-        let command_stats = view_blackboard
+        let mut command_stats = view_blackboard
             .get::<GraphCommandStatsSlot>()
             .copied()
             .unwrap_or_default();
+        if offscreen_copy_recorded {
+            command_stats.record_copy();
+        }
         let hud_outputs = view_blackboard.take::<PerViewHudOutputsSlot>();
         let encode_ms = elapsed_ms(encode_start);
         let (command_buffer, finish_ms) = {
@@ -142,12 +145,12 @@ impl CompiledRenderGraph {
         encoder: &mut wgpu::CommandEncoder,
         copy: Option<&ResolvedOffscreenColorCopy>,
         profiler: Option<&crate::profiling::GpuProfilerHandle>,
-    ) {
+    ) -> bool {
         let Some(copy) = copy else {
-            return;
+            return false;
         };
         if copy.extent_px.0 == 0 || copy.extent_px.1 == 0 {
-            return;
+            return false;
         }
         profiling::scope!("graph::per_view::offscreen_color_copy");
         let copy_query =
@@ -180,6 +183,7 @@ impl CompiledRenderGraph {
         {
             profiler.end_query(encoder, query);
         }
+        true
     }
 
     /// Builds [`crate::graph_inputs::GraphPassFrame`] for one per-view pass batch.

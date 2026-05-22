@@ -134,6 +134,7 @@ fn command_stats_from_prepared(prepared: &PreparedWorldMeshForwardFrame) -> Grap
         draw_items: prepared.draws.len(),
         instance_batches: prepared.plan.primary_forward_group_count(),
         pipeline_pass_submits: pipeline_passes,
+        ..Default::default()
     }
 }
 

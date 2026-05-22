@@ -7,6 +7,7 @@ mod lifetime;
 mod pass_info;
 mod raster_merge;
 mod schedule_plan;
+mod store_ops;
 mod topo;
 mod validate;
 
@@ -19,6 +20,7 @@ use imports::{compile_imported_final_accesses, needs_surface_acquire};
 use lifetime::{compile_buffers, compile_textures};
 use pass_info::compile_pass_info;
 use schedule_plan::build_frame_schedule;
+use store_ops::optimize_transient_attachment_stores;
 use topo::{retained_ordinals, retained_passes, topo_sort};
 use validate::validate_handles;
 
@@ -52,6 +54,7 @@ pub struct GraphBuilder {
     pub(crate) edges: Vec<(usize, usize)>,
     pub(crate) groups: Vec<GroupEntry>,
     pub(crate) blackboard_seeds: Vec<BlackboardSeedDecl>,
+    compile_skipped_pass_count: usize,
     validation_mode: RenderGraphValidationMode,
     default_frame_group: GroupId,
     default_per_view_group: GroupId,
@@ -81,6 +84,7 @@ impl GraphBuilder {
                 },
             ],
             blackboard_seeds: Vec::new(),
+            compile_skipped_pass_count: 0,
             validation_mode: RenderGraphValidationMode::default(),
             default_frame_group,
             default_per_view_group,
@@ -223,6 +227,11 @@ impl GraphBuilder {
         self.edges.push((from.0, to.0));
     }
 
+    /// Records a pass intentionally omitted before graph build.
+    pub fn note_skipped_pass(&mut self) {
+        self.compile_skipped_pass_count = self.compile_skipped_pass_count.saturating_add(1);
+    }
+
     /// Compiles setup declarations into an immutable graph.
     pub fn build(mut self) -> Result<CompiledRenderGraph, GraphBuildError> {
         self.validate_subresource_decls()?;
@@ -231,7 +240,7 @@ impl GraphBuilder {
             return Ok(self.empty_graph());
         }
 
-        let setups = self.collect_setup()?;
+        let mut setups = self.collect_setup()?;
         let (edges, validation_report) = self.synthesize_edges_and_validation(&setups, n)?;
         let (sorted, wave_by_node) = topo_sort(n, &edges)?;
         let topo_levels = wave_by_node.iter().copied().max().map_or(0, |max| max + 1);
@@ -256,6 +265,8 @@ impl GraphBuilder {
             .collect();
 
         let retained_ord = retained_ordinals(&ordered);
+        let store_stats =
+            optimize_transient_attachment_stores(&mut setups, &self.subresources, &retained_ord);
         let (compiled_textures, texture_slots, texture_lifetime_lanes) =
             compile_textures(&self.textures, &self.subresources, &setups, &retained_ord);
         let (compiled_buffers, buffer_slots, buffer_lifetime_lanes) =
@@ -265,21 +276,7 @@ impl GraphBuilder {
             compile_imported_final_accesses(&self.imports_tex, &self.imports_buf, &pass_info)?;
         let needs_surface_acquire = needs_surface_acquire(&pass_info, &self.imports_tex);
 
-        // Build passes in retained order, taking ownership from the declaration list.
-        let mut pass_take: Vec<Option<PassNode>> = self
-            .passes
-            .into_iter()
-            .map(|entry| Some(entry.pass))
-            .collect();
-        let mut ordered_passes: Vec<PassNode> = Vec::with_capacity(ordered.len());
-        for idx in &ordered {
-            let Some(pass) = pass_take[*idx].take() else {
-                return Err(GraphBuildError::PassOwnershipInvariant {
-                    message: "pass index taken more than once during build",
-                });
-            };
-            ordered_passes.push(pass);
-        }
+        let ordered_passes = take_ordered_passes(self.passes, &ordered)?;
 
         // Build FrameSchedule: single source of truth for pass ordering and scheduler policy.
         let schedule = build_frame_schedule(
@@ -301,9 +298,11 @@ impl GraphBuilder {
             passes: ordered_passes,
             needs_surface_acquire,
             compile_stats: CompileStats {
+                registered_pass_count: n,
                 pass_count: pass_info.len(),
                 topo_levels,
                 culled_count,
+                compile_skipped_pass_count: self.compile_skipped_pass_count,
                 transient_texture_count: self.textures.len(),
                 transient_texture_slots: texture_slots,
                 transient_texture_lanes: texture_lifetime_lanes.len(),
@@ -315,6 +314,10 @@ impl GraphBuilder {
                 validation_diagnostics,
                 render_pass_merge_groups,
                 render_pass_materialization_groups,
+                attachment_resolve_count: store_stats.attachment_resolve_count,
+                transient_attachment_store_count: store_stats.store_count,
+                transient_attachment_discard_count: store_stats.discard_count,
+                estimated_bandwidth_bytes: store_stats.estimated_bandwidth_bytes,
             },
             pass_info,
             transient_textures: compiled_textures,
@@ -339,10 +342,12 @@ impl GraphBuilder {
             passes: Vec::new(),
             needs_surface_acquire: false,
             compile_stats: CompileStats {
+                registered_pass_count: 0,
                 transient_texture_count: self.textures.len(),
                 transient_buffer_count: self.buffers.len(),
                 imported_texture_count: self.imports_tex.len(),
                 imported_buffer_count: self.imports_buf.len(),
+                compile_skipped_pass_count: self.compile_skipped_pass_count,
                 ..CompileStats::default()
             },
             pass_info: Vec::new(),
@@ -505,6 +510,24 @@ impl GraphBuilder {
         }
         Ok(())
     }
+}
+
+fn take_ordered_passes(
+    passes: Vec<PassEntry>,
+    ordered: &[usize],
+) -> Result<Vec<PassNode>, GraphBuildError> {
+    let mut pass_take: Vec<Option<PassNode>> =
+        passes.into_iter().map(|entry| Some(entry.pass)).collect();
+    let mut ordered_passes: Vec<PassNode> = Vec::with_capacity(ordered.len());
+    for idx in ordered {
+        let Some(pass) = pass_take[*idx].take() else {
+            return Err(GraphBuildError::PassOwnershipInvariant {
+                message: "pass index taken more than once during build",
+            });
+        };
+        ordered_passes.push(pass);
+    }
+    Ok(ordered_passes)
 }
 
 impl Default for GraphBuilder {

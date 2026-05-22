@@ -42,27 +42,42 @@ impl PostProcessEffectId {
     }
 }
 
-/// Range of pass ids an effect contributed to the graph.
+/// Pass range an effect contributed to the graph, or an exact pass-through result.
 ///
 /// Returned by [`PostProcessEffect::register`]. `first` is the head of the subgraph (used as the
 /// `to` endpoint for edges from the previous chain stage); `last` is the tail that terminates in
 /// the effect's output texture (used as the `from` endpoint for edges into the next stage). For
 /// single-pass effects both values are the same `PassId`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct EffectPasses {
-    /// First pass added by the effect (head of its subgraph).
-    pub first: PassId,
-    /// Last pass added by the effect (tail that writes the effect's output texture).
-    pub last: PassId,
+pub enum EffectPasses {
+    /// The effect is mathematically identical to forwarding its input handle.
+    PassThrough,
+    /// The effect registered one or more graph passes.
+    Registered {
+        /// First pass added by the effect (head of its subgraph).
+        first: PassId,
+        /// Last pass added by the effect (tail that writes the effect's output texture).
+        last: PassId,
+    },
 }
 
 impl EffectPasses {
     /// Helper for single-pass effects that contribute exactly one pass.
     pub fn single(pass: PassId) -> Self {
-        Self {
+        Self::Registered {
             first: pass,
             last: pass,
         }
+    }
+
+    /// Helper for multi-pass effects that contribute a first and last pass.
+    pub fn registered(first: PassId, last: PassId) -> Self {
+        Self::Registered { first, last }
+    }
+
+    /// Helper for effects that are exact no-ops for the current graph shape.
+    pub fn pass_through() -> Self {
+        Self::PassThrough
     }
 }
 
@@ -78,14 +93,17 @@ pub trait PostProcessEffect: Send + Sync {
     /// Stable identity (also used for logging).
     fn id(&self) -> PostProcessEffectId;
 
-    /// Whether this effect should run for the current settings snapshot.
+    /// Whether this effect is configured for the current settings snapshot.
     fn is_enabled(&self, settings: &PostProcessingSettings) -> bool;
 
-    /// Registers this effect's passes against `builder`. Returns the head/tail pass ids so the
-    /// chain can wire edges from the previous stage into `first` and from `last` into the next.
+    /// Registers this effect's passes against `builder`.
+    ///
+    /// Returning [`EffectPasses::PassThrough`] is allowed only when the effect is exactly
+    /// equivalent to sampling the input and writing it unchanged to the output.
     fn register(
         &self,
         builder: &mut GraphBuilder,
+        settings: &PostProcessingSettings,
         input: TextureHandle,
         output: TextureHandle,
     ) -> EffectPasses;

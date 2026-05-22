@@ -21,6 +21,9 @@ pub(super) struct CommandEncodingDiagnostics {
     pub(super) frame_global_passes: usize,
     pub(super) per_view_passes: usize,
     pub(super) scheduler_passes: usize,
+    pub(super) scheduler_registered_passes: usize,
+    pub(super) scheduler_culled_passes: usize,
+    pub(super) scheduler_compile_skipped_passes: usize,
     pub(super) scheduler_waves: usize,
     pub(super) scheduler_largest_wave: usize,
     pub(super) scheduler_submit_steps: usize,
@@ -29,6 +32,10 @@ pub(super) struct CommandEncodingDiagnostics {
     pub(super) scheduler_import_final_accesses: usize,
     pub(super) scheduler_merge_groups: usize,
     pub(super) scheduler_materialized_groups: usize,
+    pub(super) scheduler_attachment_resolves: usize,
+    pub(super) scheduler_transient_stores: usize,
+    pub(super) scheduler_transient_discards: usize,
+    pub(super) scheduler_estimated_bandwidth_bytes: u64,
     pub(super) transient_texture_count: usize,
     pub(super) transient_texture_slots: usize,
     pub(super) transient_texture_lanes: usize,
@@ -60,6 +67,9 @@ impl CommandEncodingDiagnostics {
             frame_global_passes: graph.schedule_hud.frame_global_count,
             per_view_passes: graph.schedule_hud.per_view_count,
             scheduler_passes: graph.schedule_hud.pass_count,
+            scheduler_registered_passes: graph.compile_stats.registered_pass_count,
+            scheduler_culled_passes: graph.compile_stats.culled_count,
+            scheduler_compile_skipped_passes: graph.compile_stats.compile_skipped_pass_count,
             scheduler_waves: graph.schedule_hud.wave_count,
             scheduler_largest_wave: graph
                 .schedule_hud
@@ -78,6 +88,10 @@ impl CommandEncodingDiagnostics {
                 .render_pass_materialization_plan
                 .groups
                 .len(),
+            scheduler_attachment_resolves: graph.compile_stats.attachment_resolve_count,
+            scheduler_transient_stores: graph.compile_stats.transient_attachment_store_count,
+            scheduler_transient_discards: graph.compile_stats.transient_attachment_discard_count,
+            scheduler_estimated_bandwidth_bytes: graph.compile_stats.estimated_bandwidth_bytes,
             transient_texture_count: graph.compile_stats.transient_texture_count,
             transient_texture_slots: graph.compile_stats.transient_texture_slots,
             transient_texture_lanes: graph.texture_lifetime_lanes.len(),
@@ -171,6 +185,16 @@ impl CommandEncodingDiagnostics {
             world_mesh_draws: self.command_stats.draw_items,
             world_mesh_instance_batches: self.command_stats.instance_batches,
             world_mesh_pipeline_pass_submits: self.command_stats.pipeline_pass_submits,
+            graph_runtime_skipped_passes: self.command_stats.skipped_passes,
+            graph_recorded_raster_passes: self.command_stats.recorded_raster_passes,
+            graph_recorded_compute_passes: self.command_stats.recorded_compute_passes,
+            graph_recorded_encoder_passes: self.command_stats.recorded_encoder_passes,
+            graph_opened_render_passes: self.command_stats.opened_render_passes,
+            graph_copy_count: self.command_stats.copy_count,
+            graph_resolve_count: self.command_stats.resolve_count,
+            graph_estimated_bandwidth_bytes: self
+                .scheduler_estimated_bandwidth_bytes
+                .saturating_add(self.command_stats.estimated_bandwidth_bytes),
         };
         crate::profiling::plot_command_encoding(&sample);
     }
@@ -198,7 +222,7 @@ impl CommandEncodingDiagnostics {
             return;
         }
         logger::warn!(
-            "slow command encoder finish: max_finish_ms={:.3} frame_global_finish_ms={:.3} per_view_max_finish_ms={:.3} upload_finish_ms={:.3} views={} command_buffers={} passes(frame_global/per_view)={}/{} scheduler(passes/waves/largest_wave/submit_steps/upload_phases/resource_events/import_finals/merge_groups/materialized_groups)={}/{}/{}/{}/{}/{}/{}/{}/{} transients(textures/slots/texture_lanes/buffer_lanes)={}/{}/{}/{} validation(diagnostics/parameter_schemas)={}/{} transient_misses(tex/buf)={}/{} uploads(writes/bytes/staged/fallback)={}/{}/{}/{} upload_arena(persistent_bytes/temp_bytes/reuses/grows/temp_fallbacks/oversized_queue/capacity/free/inflight/remapping)={}/{}/{}/{}/{}/{}/{}/{}/{}/{} timings_ms(pre_resolve/prepare/frame_global_encode/per_view_encode/upload_drain/assemble/submit)={:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3} commands(draws/instance_batches/pipeline_pass_submits)={}/{}/{}",
+            "slow command encoder finish: max_finish_ms={:.3} frame_global_finish_ms={:.3} per_view_max_finish_ms={:.3} upload_finish_ms={:.3} views={} command_buffers={} passes(frame_global/per_view)={}/{} scheduler(passes/registered/culled/compile_skipped/waves/largest_wave/submit_steps/upload_phases/resource_events/import_finals/merge_groups/materialized_groups/attachment_resolves/transient_store/transient_discard/bandwidth_bytes)={}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{} transients(textures/slots/texture_lanes/buffer_lanes)={}/{}/{}/{} validation(diagnostics/parameter_schemas)={}/{} transient_misses(tex/buf)={}/{} uploads(writes/bytes/staged/fallback)={}/{}/{}/{} upload_arena(persistent_bytes/temp_bytes/reuses/grows/temp_fallbacks/oversized_queue/capacity/free/inflight/remapping)={}/{}/{}/{}/{}/{}/{}/{}/{}/{} timings_ms(pre_resolve/prepare/frame_global_encode/per_view_encode/upload_drain/assemble/submit)={:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3} commands(draws/instance_batches/pipeline_pass_submits/skipped/raster/compute/encoder/render_passes/copies/resolves/bandwidth_bytes)={}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
             max_finish_ms,
             self.frame_global_finish_ms,
             self.per_view_max_finish_ms,
@@ -208,6 +232,9 @@ impl CommandEncodingDiagnostics {
             self.frame_global_passes,
             self.per_view_passes,
             self.scheduler_passes,
+            self.scheduler_registered_passes,
+            self.scheduler_culled_passes,
+            self.scheduler_compile_skipped_passes,
             self.scheduler_waves,
             self.scheduler_largest_wave,
             self.scheduler_submit_steps,
@@ -216,6 +243,10 @@ impl CommandEncodingDiagnostics {
             self.scheduler_import_final_accesses,
             self.scheduler_merge_groups,
             self.scheduler_materialized_groups,
+            self.scheduler_attachment_resolves,
+            self.scheduler_transient_stores,
+            self.scheduler_transient_discards,
+            self.scheduler_estimated_bandwidth_bytes,
             self.transient_texture_count,
             self.transient_texture_slots,
             self.transient_texture_lanes,
@@ -248,6 +279,15 @@ impl CommandEncodingDiagnostics {
             self.command_stats.draw_items,
             self.command_stats.instance_batches,
             self.command_stats.pipeline_pass_submits,
+            self.command_stats.skipped_passes,
+            self.command_stats.recorded_raster_passes,
+            self.command_stats.recorded_compute_passes,
+            self.command_stats.recorded_encoder_passes,
+            self.command_stats.opened_render_passes,
+            self.command_stats.copy_count,
+            self.command_stats.resolve_count,
+            self.scheduler_estimated_bandwidth_bytes
+                .saturating_add(self.command_stats.estimated_bandwidth_bytes),
         );
     }
 }

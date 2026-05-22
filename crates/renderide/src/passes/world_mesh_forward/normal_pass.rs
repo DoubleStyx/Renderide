@@ -50,6 +50,8 @@ pub struct WorldMeshForwardNormalGraphResources {
     pub depth: ImportedTextureHandle,
     /// Graph-owned forward depth target used when MSAA is active.
     pub msaa_depth: TextureHandle,
+    /// Whether this graph variant records multisampled normal/depth attachments.
+    pub msaa_enabled: bool,
     /// Imported per-draw storage slab.
     pub per_draw_slab: ImportedBufferHandle,
 }
@@ -266,29 +268,40 @@ impl RasterPass for WorldMeshForwardNormalPass {
         b.write_blackboard::<WorldMeshForwardPlanSlot>();
         {
             let mut r = b.raster();
-            r.frame_sampled_color(
-                self.resources.normals,
-                self.resources.normals_msaa,
-                wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: 0.0,
-                        g: 0.0,
-                        b: -1.0,
-                        a: 0.0,
-                    }),
-                    store: wgpu::StoreOp::Store,
-                },
-                Some(self.resources.normals),
-            );
-            r.frame_sampled_depth(
-                self.resources.depth,
-                self.resources.msaa_depth,
-                wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-                None,
-            );
+            let color_ops = wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color {
+                    r: 0.0,
+                    g: 0.0,
+                    b: -1.0,
+                    a: 0.0,
+                }),
+                store: wgpu::StoreOp::Store,
+            };
+            let depth_ops = wgpu::Operations {
+                load: wgpu::LoadOp::Load,
+                store: wgpu::StoreOp::Store,
+            };
+            if self.resources.msaa_enabled {
+                r.frame_sampled_color(
+                    self.resources.normals,
+                    self.resources.normals_msaa,
+                    color_ops,
+                    Some(self.resources.normals),
+                );
+                r.frame_sampled_depth(
+                    self.resources.depth,
+                    self.resources.msaa_depth,
+                    depth_ops,
+                    None,
+                );
+            } else {
+                r.color(
+                    self.resources.normals,
+                    color_ops,
+                    Option::<TextureHandle>::None,
+                );
+                r.depth(self.resources.depth, depth_ops, None);
+            }
         }
         b.import_buffer(
             self.resources.per_draw_slab,

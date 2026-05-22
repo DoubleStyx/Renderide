@@ -129,6 +129,47 @@ fn raster_template_records_frame_sampled_targets() -> Result<(), GraphBuildError
 }
 
 #[test]
+fn final_transient_attachment_store_is_discarded() -> Result<(), GraphBuildError> {
+    let mut b = GraphBuilder::new();
+    let scratch = b.create_texture(tex_desc("scratch"));
+    let bb = b.import_texture(backbuffer_import());
+    let mut pass = TestRasterPass::new("scratch-final", scratch);
+    pass.imported_texture_writes.push(bb);
+    b.add_raster_pass(Box::new(pass));
+
+    let g = b.build()?;
+    let template = g.pass_info[0]
+        .raster_template
+        .as_ref()
+        .expect("raster template");
+
+    assert_eq!(template.color_attachments[0].store, wgpu::StoreOp::Discard);
+    assert_eq!(g.compile_stats.transient_attachment_discard_count, 1);
+    Ok(())
+}
+
+#[test]
+fn transient_attachment_store_is_preserved_for_later_reader() -> Result<(), GraphBuildError> {
+    let mut b = GraphBuilder::new();
+    let scratch = b.create_texture(tex_desc("scratch"));
+    let bb = b.import_texture(backbuffer_import());
+    b.add_raster_pass(Box::new(TestRasterPass::new("write-scratch", scratch)));
+    let mut export = TestRasterPass::new("export", bb);
+    export.texture_reads.push(scratch);
+    b.add_raster_pass(Box::new(export));
+
+    let g = b.build()?;
+    let template = g.pass_info[0]
+        .raster_template
+        .as_ref()
+        .expect("raster template");
+
+    assert_eq!(template.color_attachments[0].store, wgpu::StoreOp::Store);
+    assert_eq!(g.compile_stats.transient_attachment_store_count, 1);
+    Ok(())
+}
+
+#[test]
 fn buffer_aliasing_uses_size_and_usage_key() -> Result<(), GraphBuildError> {
     let mut b = GraphBuilder::new();
     let a = b.create_buffer(TransientBufferDesc {

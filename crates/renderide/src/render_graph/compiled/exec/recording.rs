@@ -5,7 +5,7 @@ mod frame_global;
 mod materialization;
 mod per_view;
 
-use super::super::super::blackboard::Blackboard;
+use super::super::super::blackboard::{Blackboard, GraphCommandStats, GraphCommandStatsSlot};
 use super::super::super::context::{
     ComputePassCtx, EncoderPassCtx, GraphResolvedResources, RasterPassCtx,
 };
@@ -13,9 +13,18 @@ use super::super::super::error::GraphExecuteError;
 use super::super::super::frame_upload_batch::{
     FrameUploadBatch, FrameUploadScope, GraphUploadSink,
 };
-use super::super::super::pass::PassKind;
+use super::super::super::pass::{PassKind, PassNode};
 use super::super::helpers;
 use super::super::{CompiledRenderGraph, ResolvedView};
+
+fn update_command_stats(blackboard: &mut Blackboard, update: impl FnOnce(&mut GraphCommandStats)) {
+    if blackboard.get::<GraphCommandStatsSlot>().is_none() {
+        blackboard.insert::<GraphCommandStatsSlot>(GraphCommandStats::default());
+    }
+    if let Some(stats) = blackboard.get_mut::<GraphCommandStatsSlot>() {
+        update(stats);
+    }
+}
 
 impl CompiledRenderGraph {
     /// Dispatches one pass node to its correct execution path.
@@ -45,8 +54,6 @@ impl CompiledRenderGraph {
         graph_resources: &'a GraphResolvedResources,
         frame_params: &mut crate::graph_inputs::GraphPassFrame<'a>,
         blackboard: &mut Blackboard,
-        // `encoder` intentionally uses no named lifetime so each call's borrow
-        // ends at the call boundary, avoiding cross-iteration borrow conflicts.
         encoder: &mut wgpu::CommandEncoder,
         device: &'a wgpu::Device,
         gpu_limits: &'a crate::gpu::GpuLimits,
@@ -55,11 +62,6 @@ impl CompiledRenderGraph {
     ) -> Result<(), GraphExecuteError> {
         let _upload_scope = upload_batch.enter_scope(upload_scope);
         let uploads = GraphUploadSink::new(upload_batch, upload_scope);
-        // Hoist the pass borrow once so the inner match arms do not re-index `self.passes` for
-        // every dispatch. The Raster path still needs the explicit `&self.passes[pass_idx]`
-        // because `helpers::execute_graph_raster_pass_node` takes a `&PassNode` and the borrow
-        // matches `pass` exactly; this also keeps the inner record_* dispatches as pointer-cheap
-        // direct calls.
         let pass = &self.passes[pass_idx];
         let _pass_label = pass.profiling_label();
         profiling::scope!("graph::execute_pass_node", _pass_label.as_ref());
@@ -86,8 +88,7 @@ impl CompiledRenderGraph {
             }
             PassKind::Compute => {
                 profiling::scope!("graph::record_compute");
-                // encoder is moved into ComputePassCtx; pass uses ctx.encoder.
-                let mut ctx = {
+                let ctx = {
                     profiling::scope!("graph::record_compute::build_context");
                     ComputePassCtx {
                         device,
@@ -101,28 +102,11 @@ impl CompiledRenderGraph {
                         profiler,
                     }
                 };
-                let should_record = {
-                    profiling::scope!("graph::record_compute::should_record");
-                    pass.should_record_compute(&ctx)
-                        .map_err(GraphExecuteError::Pass)?
-                };
-                if should_record {
-                    let pass_query = ctx
-                        .profiler
-                        .map(|p| p.begin_query(pass.profiling_label(), ctx.encoder));
-                    {
-                        profiling::scope!("graph::record_compute::pass_record");
-                        pass.record_compute(&mut ctx)
-                            .map_err(GraphExecuteError::Pass)?;
-                    }
-                    if let (Some(p), Some(q)) = (ctx.profiler, pass_query) {
-                        p.end_query(ctx.encoder, q);
-                    }
-                }
+                record_compute_pass(pass, ctx)?;
             }
             PassKind::Encoder => {
                 profiling::scope!("graph::record_encoder");
-                let mut ctx = {
+                let ctx = {
                     profiling::scope!("graph::record_encoder::build_context");
                     EncoderPassCtx {
                         device,
@@ -134,26 +118,65 @@ impl CompiledRenderGraph {
                         profiler,
                     }
                 };
-                let should_record = {
-                    profiling::scope!("graph::record_encoder::should_record");
-                    pass.should_record_encoder(&ctx)
-                        .map_err(GraphExecuteError::Pass)?
-                };
-                if should_record {
-                    let pass_query = ctx
-                        .profiler
-                        .map(|p| p.begin_query(pass.profiling_label(), ctx.encoder));
-                    {
-                        profiling::scope!("graph::record_encoder::pass_record");
-                        pass.record_encoder(&mut ctx)
-                            .map_err(GraphExecuteError::Pass)?;
-                    }
-                    if let (Some(p), Some(q)) = (ctx.profiler, pass_query) {
-                        p.end_query(ctx.encoder, q);
-                    }
-                }
+                record_encoder_pass(pass, ctx)?;
             }
         }
         Ok(())
     }
+}
+
+fn record_compute_pass(
+    pass: &PassNode,
+    mut ctx: ComputePassCtx<'_, '_, '_>,
+) -> Result<(), GraphExecuteError> {
+    let should_record = {
+        profiling::scope!("graph::record_compute::should_record");
+        pass.should_record_compute(&ctx)
+            .map_err(GraphExecuteError::Pass)?
+    };
+    if should_record {
+        let pass_query = ctx
+            .profiler
+            .map(|p| p.begin_query(pass.profiling_label(), ctx.encoder));
+        {
+            profiling::scope!("graph::record_compute::pass_record");
+            pass.record_compute(&mut ctx)
+                .map_err(GraphExecuteError::Pass)?;
+        }
+        update_command_stats(ctx.blackboard, GraphCommandStats::record_compute_pass);
+        if let (Some(p), Some(q)) = (ctx.profiler, pass_query) {
+            p.end_query(ctx.encoder, q);
+        }
+    } else {
+        update_command_stats(ctx.blackboard, GraphCommandStats::record_skipped_pass);
+    }
+    Ok(())
+}
+
+fn record_encoder_pass(
+    pass: &PassNode,
+    mut ctx: EncoderPassCtx<'_, '_, '_>,
+) -> Result<(), GraphExecuteError> {
+    let should_record = {
+        profiling::scope!("graph::record_encoder::should_record");
+        pass.should_record_encoder(&ctx)
+            .map_err(GraphExecuteError::Pass)?
+    };
+    if should_record {
+        let pass_query = ctx
+            .profiler
+            .map(|p| p.begin_query(pass.profiling_label(), ctx.encoder));
+        {
+            profiling::scope!("graph::record_encoder::pass_record");
+            pass.record_encoder(&mut ctx)
+                .map_err(GraphExecuteError::Pass)?;
+        }
+        update_command_stats(ctx.blackboard, GraphCommandStats::record_encoder_pass);
+        if let (Some(p), Some(q)) = (ctx.profiler, pass_query) {
+            p.end_query(ctx.encoder, q);
+        }
+    } else {
+        update_command_stats(ctx.blackboard, GraphCommandStats::record_skipped_pass);
+    }
+    Ok(())
 }

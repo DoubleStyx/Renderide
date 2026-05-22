@@ -58,27 +58,13 @@ fn declare_transparent_sequence_accesses(
     b: &mut PassBuilder<'_>,
     resources: WorldMeshForwardGraphResources,
 ) {
+    b.read_texture(resources.scene_color_hdr, TextureAccess::CopySrc);
     b.write_texture(
         resources.scene_color_hdr,
         TextureAccess::ColorAttachment {
             load: wgpu::LoadOp::Load,
             store: wgpu::StoreOp::Store,
             resolve_to: None,
-        },
-    );
-    b.read_texture(resources.scene_color_hdr, TextureAccess::CopySrc);
-    b.write_texture(
-        resources.scene_color_hdr_msaa,
-        TextureAccess::ColorAttachment {
-            load: wgpu::LoadOp::Load,
-            store: wgpu::StoreOp::Store,
-            resolve_to: None,
-        },
-    );
-    b.read_texture(
-        resources.scene_color_hdr_msaa,
-        TextureAccess::Sampled {
-            stages: wgpu::ShaderStages::FRAGMENT,
         },
     );
     b.import_texture(
@@ -91,16 +77,32 @@ fn declare_transparent_sequence_accesses(
             stencil: None,
         },
     );
-    b.write_texture(
-        resources.msaa_depth,
-        TextureAccess::DepthAttachment {
-            depth: wgpu::Operations {
+    if resources.msaa_enabled {
+        b.write_texture(
+            resources.scene_color_hdr_msaa,
+            TextureAccess::ColorAttachment {
                 load: wgpu::LoadOp::Load,
                 store: wgpu::StoreOp::Store,
+                resolve_to: None,
             },
-            stencil: None,
-        },
-    );
+        );
+        b.read_texture(
+            resources.scene_color_hdr_msaa,
+            TextureAccess::Sampled {
+                stages: wgpu::ShaderStages::FRAGMENT,
+            },
+        );
+        b.write_texture(
+            resources.msaa_depth,
+            TextureAccess::DepthAttachment {
+                depth: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+                stencil: None,
+            },
+        );
+    }
     declare_forward_draw_reads(b, resources);
 }
 
@@ -200,6 +202,12 @@ fn draw_tail_groups(
     if let (Some(p), Some(q)) = (ctx.profiler, pass_query) {
         p.end_query(ctx.encoder, q);
     }
+    if let Some(stats) = ctx
+        .blackboard
+        .get_mut::<crate::render_graph::blackboard::GraphCommandStatsSlot>()
+    {
+        stats.record_opened_render_pass();
+    }
     Ok(recorded)
 }
 
@@ -228,16 +236,25 @@ fn resolve_for_grab_snapshot(
     ctx: &mut EncoderPassCtx<'_, '_, '_>,
     resources: WorldMeshForwardGraphResources,
 ) -> Result<(), RenderPassError> {
-    encode_world_mesh_forward_msaa_color_resolve(WorldMeshForwardColorResolveEncodeContext {
-        device: ctx.device,
-        graph_resources: ctx.graph_resources,
-        encoder: ctx.encoder,
-        frame: ctx.pass_frame,
-        uploads: ctx.uploads,
-        resources: color_resolve_resources(resources),
-        profiler: ctx.profiler,
-        label: "WorldMeshForwardTransparentSequencePreGrabResolve",
-    })?;
+    let resolved =
+        encode_world_mesh_forward_msaa_color_resolve(WorldMeshForwardColorResolveEncodeContext {
+            device: ctx.device,
+            graph_resources: ctx.graph_resources,
+            encoder: ctx.encoder,
+            frame: ctx.pass_frame,
+            uploads: ctx.uploads,
+            resources: color_resolve_resources(resources),
+            profiler: ctx.profiler,
+            label: "WorldMeshForwardTransparentSequencePreGrabResolve",
+        })?;
+    if resolved
+        && let Some(stats) = ctx
+            .blackboard
+            .get_mut::<crate::render_graph::blackboard::GraphCommandStatsSlot>()
+    {
+        stats.record_resolve();
+        stats.record_opened_render_pass();
+    }
     Ok(())
 }
 
@@ -246,14 +263,22 @@ fn copy_grab_snapshot(
     prepared: &PreparedWorldMeshForwardFrame,
     resources: WorldMeshForwardGraphResources,
 ) -> bool {
-    encode_world_mesh_forward_color_snapshot(
+    let copied = encode_world_mesh_forward_color_snapshot(
         ctx.graph_resources,
         ctx.encoder,
         ctx.pass_frame,
         prepared,
         resources,
         ctx.profiler,
-    )
+    );
+    if copied
+        && let Some(stats) = ctx
+            .blackboard
+            .get_mut::<crate::render_graph::blackboard::GraphCommandStatsSlot>()
+    {
+        stats.record_copy();
+    }
+    copied
 }
 
 fn copy_named_grab_snapshot(
@@ -301,6 +326,13 @@ fn copy_named_grab_snapshot(
     if let (Some(profiler), Some(query)) = (ctx.profiler, copy_query) {
         profiler.end_query(ctx.encoder, query);
     }
+    if copied
+        && let Some(stats) = ctx
+            .blackboard
+            .get_mut::<crate::render_graph::blackboard::GraphCommandStatsSlot>()
+    {
+        stats.record_copy();
+    }
     copied
 }
 
@@ -333,16 +365,25 @@ fn final_resolve_after_tail(
     ctx: &mut EncoderPassCtx<'_, '_, '_>,
     resources: WorldMeshForwardGraphResources,
 ) -> Result<(), RenderPassError> {
-    encode_world_mesh_forward_msaa_color_resolve(WorldMeshForwardColorResolveEncodeContext {
-        device: ctx.device,
-        graph_resources: ctx.graph_resources,
-        encoder: ctx.encoder,
-        frame: ctx.pass_frame,
-        uploads: ctx.uploads,
-        resources: color_resolve_resources(resources),
-        profiler: ctx.profiler,
-        label: "WorldMeshForwardTransparentSequenceFinalResolve",
-    })?;
+    let resolved =
+        encode_world_mesh_forward_msaa_color_resolve(WorldMeshForwardColorResolveEncodeContext {
+            device: ctx.device,
+            graph_resources: ctx.graph_resources,
+            encoder: ctx.encoder,
+            frame: ctx.pass_frame,
+            uploads: ctx.uploads,
+            resources: color_resolve_resources(resources),
+            profiler: ctx.profiler,
+            label: "WorldMeshForwardTransparentSequenceFinalResolve",
+        })?;
+    if resolved
+        && let Some(stats) = ctx
+            .blackboard
+            .get_mut::<crate::render_graph::blackboard::GraphCommandStatsSlot>()
+    {
+        stats.record_resolve();
+        stats.record_opened_render_pass();
+    }
     Ok(())
 }
 

@@ -30,8 +30,8 @@ impl MotionBlurSettings {
     pub fn is_effectively_enabled(self) -> bool {
         self.enabled
             && self.sample_count > 0
-            && self.shutter_angle > 0.0
-            && self.max_velocity_pixels > 0.0
+            && self.effective_shutter_angle() > 0.0
+            && self.effective_max_velocity_pixels() > 0.0
     }
 
     /// Returns the sample count clamped to the shader's fixed loop bound.

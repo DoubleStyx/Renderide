@@ -18,15 +18,15 @@ pub(crate) fn encode_msaa_depth_resolve_after_clear_only(
     msaa_views: Option<&MsaaViews>,
     msaa_depth_resolve: Option<&MsaaDepthResolveResources>,
     profiler: Option<&GpuProfilerHandle>,
-) {
+) -> bool {
     profiling::scope!("world_mesh_forward::encode_depth_resolve_clear_only");
     if frame.view.sample_count <= 1 {
-        return;
+        return false;
     }
     let (Some(msaa_views), Some(res)) = (msaa_views, msaa_depth_resolve) else {
-        return;
+        return false;
     };
-    encode_msaa_depth_resolve_for_frame(device, encoder, frame, msaa_views, res, profiler);
+    encode_msaa_depth_resolve_for_frame(device, encoder, frame, msaa_views, res, profiler)
 }
 
 /// Dispatches the desktop (`D2`) or stereo (`D2Array` multiview) depth-resolve path based on
@@ -38,11 +38,11 @@ pub(super) fn encode_msaa_depth_resolve_for_frame(
     msaa: &MsaaViews,
     resolve: &MsaaDepthResolveResources,
     profiler: Option<&GpuProfilerHandle>,
-) {
+) -> bool {
     profiling::scope!("world_mesh_forward::encode_depth_resolve_frame");
     let Some(limits) = frame.view.gpu_limits.as_ref() else {
         logger::warn!("MSAA depth resolve: gpu_limits missing; skipping resolve");
-        return;
+        return false;
     };
     let limits = limits.as_ref();
     if msaa.msaa_depth_is_array {
@@ -50,7 +50,7 @@ pub(super) fn encode_msaa_depth_resolve_for_frame(
             msaa.msaa_stereo_depth_layer_views.as_ref(),
             msaa.msaa_stereo_r32_layer_views.as_ref(),
         ) else {
-            return;
+            return false;
         };
         resolve.encode_resolve_stereo(
             device,
@@ -66,6 +66,7 @@ pub(super) fn encode_msaa_depth_resolve_for_frame(
             limits,
             profiler,
         );
+        true
     } else {
         resolve.encode_resolve(
             device,
@@ -80,5 +81,6 @@ pub(super) fn encode_msaa_depth_resolve_for_frame(
             limits,
             profiler,
         );
+        true
     }
 }

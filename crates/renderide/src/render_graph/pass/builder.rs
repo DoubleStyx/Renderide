@@ -324,7 +324,6 @@ impl RasterPassBuilder<'_, '_> {
     }
 
     /// Declares a depth/stencil attachment.
-    #[cfg(test)]
     pub fn depth(
         &mut self,
         handle: impl Into<TextureResourceHandle>,

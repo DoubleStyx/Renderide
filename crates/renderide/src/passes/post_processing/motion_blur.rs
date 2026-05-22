@@ -73,15 +73,19 @@ impl PostProcessEffect for MotionBlurEffect {
     }
 
     fn is_enabled(&self, settings: &PostProcessingSettings) -> bool {
-        settings.enabled && settings.motion_blur.is_effectively_enabled()
+        settings.enabled && settings.motion_blur.enabled
     }
 
     fn register(
         &self,
         builder: &mut GraphBuilder,
+        settings: &PostProcessingSettings,
         input: TextureHandle,
         output: TextureHandle,
     ) -> EffectPasses {
+        if !settings.motion_blur.is_effectively_enabled() {
+            return EffectPasses::pass_through();
+        }
         let velocity = builder.create_texture(TransientTextureDesc {
             label: "motion_vectors",
             format: TransientTextureFormat::Fixed(MOTION_VECTOR_FORMAT),
@@ -106,10 +110,7 @@ impl PostProcessEffect for MotionBlurEffect {
             Arc::clone(&self.state_cache),
         )));
         builder.add_edge(vectors, blur);
-        EffectPasses {
-            first: vectors,
-            last: blur,
-        }
+        EffectPasses::registered(vectors, blur)
     }
 }
 
@@ -544,6 +545,22 @@ fn current_to_previous_clip_matrix(current: Mat4, previous: Mat4, valid: bool) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render_graph::resources::{ImportSource, ImportedTextureDecl};
+
+    fn hdr_texture_desc(label: &'static str) -> TransientTextureDesc {
+        TransientTextureDesc {
+            label,
+            format: TransientTextureFormat::SceneColorHdr,
+            extent: TransientExtent::Backbuffer,
+            mip_levels: 1,
+            sample_count: TransientSampleCount::Fixed(1),
+            dimension: wgpu::TextureDimension::D2,
+            array_layers: TransientArrayLayers::Frame,
+            base_usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+            alias: true,
+        }
+    }
 
     #[test]
     fn history_requires_consecutive_frame_same_shape() {
@@ -587,5 +604,36 @@ mod tests {
         );
 
         assert_eq!(matrix, Mat4::IDENTITY);
+    }
+
+    #[test]
+    fn invalid_settings_register_as_pass_through() {
+        let mut builder = GraphBuilder::new();
+        let depth = builder.import_texture(ImportedTextureDecl {
+            label: "depth",
+            source: ImportSource::External,
+            initial_access: TextureAccess::Sampled {
+                stages: wgpu::ShaderStages::FRAGMENT,
+            },
+            final_access: TextureAccess::Sampled {
+                stages: wgpu::ShaderStages::FRAGMENT,
+            },
+        });
+        let input = builder.create_texture(hdr_texture_desc("input"));
+        let output = builder.create_texture(hdr_texture_desc("output"));
+        let effect = MotionBlurEffect::new(depth, Arc::new(MotionBlurStateCache::default()));
+        let settings = PostProcessingSettings {
+            enabled: true,
+            motion_blur: MotionBlurSettings {
+                enabled: true,
+                sample_count: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let passes = effect.register(&mut builder, &settings, input, output);
+
+        assert_eq!(passes, EffectPasses::pass_through());
     }
 }

@@ -6,7 +6,7 @@ use crate::render_graph::builder::GraphBuilder;
 use crate::render_graph::ids::PassId;
 use crate::render_graph::resources::TextureHandle;
 
-use super::effect::PostProcessEffect;
+use super::effect::{EffectPasses, PostProcessEffect};
 use super::output::ChainOutput;
 use super::ping_pong::{PingPongCursor, PingPongHdrSlots};
 
@@ -35,39 +35,51 @@ impl PostProcessChain {
         input: TextureHandle,
         settings: &PostProcessingSettings,
     ) -> ChainOutput {
-        if !settings.enabled || !self.effects.iter().any(|e| e.is_enabled(settings)) {
+        if !settings.enabled {
+            for _ in &self.effects {
+                builder.note_skipped_pass();
+            }
             return ChainOutput::PassThrough(input);
         }
-
-        let active: Vec<&'static str> = self
-            .effects
-            .iter()
-            .filter(|e| e.is_enabled(settings))
-            .map(|e| e.id().label())
-            .collect();
-        logger::info!(
-            "post-processing chain: {} effect(s) active: {}",
-            active.len(),
-            active.join(", ")
-        );
+        if !self.effects.iter().any(|e| e.is_enabled(settings)) {
+            for _ in &self.effects {
+                builder.note_skipped_pass();
+            }
+            return ChainOutput::PassThrough(input);
+        }
 
         let mut cursor = PingPongCursor::start(PingPongHdrSlots::new(builder), input);
         let mut first_pass: Option<PassId> = None;
         let mut last_pass: Option<PassId> = None;
+        let mut registered_effects = Vec::new();
 
-        for effect in self.effects.iter().filter(|e| e.is_enabled(settings)) {
-            let registered = effect.register(builder, cursor.input(), cursor.output());
-            if let Some(prev_tail) = last_pass {
-                builder.add_edge(prev_tail, registered.first);
+        for effect in &self.effects {
+            if !effect.is_enabled(settings) {
+                builder.note_skipped_pass();
+                continue;
             }
-            first_pass.get_or_insert(registered.first);
-            last_pass = Some(registered.last);
+            let registered = effect.register(builder, settings, cursor.input(), cursor.output());
+            let EffectPasses::Registered { first, last } = registered else {
+                builder.note_skipped_pass();
+                continue;
+            };
+            if let Some(prev_tail) = last_pass {
+                builder.add_edge(prev_tail, first);
+            }
+            first_pass.get_or_insert(first);
+            last_pass = Some(last);
+            registered_effects.push(effect.id().label());
             cursor.advance();
         }
 
         let Some((first_pass, last_pass)) = first_pass.zip(last_pass) else {
             return ChainOutput::PassThrough(input);
         };
+        logger::info!(
+            "post-processing chain: {} effect(s) active: {}",
+            registered_effects.len(),
+            registered_effects.join(", ")
+        );
         ChainOutput::Chained {
             final_handle: cursor.last_output(),
             first_pass,
@@ -113,6 +125,7 @@ mod tests {
     struct MockEffect {
         id: PostProcessEffectId,
         enabled: bool,
+        pass_through: bool,
     }
 
     impl PostProcessEffect for MockEffect {
@@ -127,9 +140,13 @@ mod tests {
         fn register(
             &self,
             builder: &mut GraphBuilder,
+            _settings: &PostProcessingSettings,
             input: TextureHandle,
             output: TextureHandle,
         ) -> EffectPasses {
+            if self.pass_through {
+                return EffectPasses::pass_through();
+            }
             let pass_id = builder.add_raster_pass(Box::new(MockPass {
                 name: self.id.label(),
                 input,
@@ -204,6 +221,7 @@ mod tests {
         chain.push(Box::new(MockEffect {
             id: PostProcessEffectId::AcesTonemap,
             enabled: true,
+            pass_through: false,
         }));
         let settings = PostProcessingSettings {
             enabled: false,
@@ -221,6 +239,7 @@ mod tests {
         chain.push(Box::new(MockEffect {
             id: PostProcessEffectId::AcesTonemap,
             enabled: true,
+            pass_through: false,
         }));
         let settings = PostProcessingSettings {
             enabled: true,
@@ -259,10 +278,12 @@ mod tests {
         chain.push(Box::new(MockEffect {
             id: PostProcessEffectId::AcesTonemap,
             enabled: true,
+            pass_through: false,
         }));
         chain.push(Box::new(MockEffect {
             id: PostProcessEffectId::AcesTonemap,
             enabled: true,
+            pass_through: false,
         }));
         let settings = PostProcessingSettings {
             enabled: true,
@@ -282,5 +303,25 @@ mod tests {
                 panic!("expected Chained variant, got {other:?}")
             }
         }
+    }
+
+    #[test]
+    fn pass_through_effect_does_not_advance_chain_output() {
+        let mut builder = GraphBuilder::new();
+        let input = fake_input(&mut builder);
+        let mut chain = PostProcessChain::new();
+        chain.push(Box::new(MockEffect {
+            id: PostProcessEffectId::MotionBlur,
+            enabled: true,
+            pass_through: true,
+        }));
+        let settings = PostProcessingSettings {
+            enabled: true,
+            ..Default::default()
+        };
+
+        let out = chain.build_into_graph(&mut builder, input, &settings);
+
+        assert!(matches!(out, ChainOutput::PassThrough(h) if h == input));
     }
 }

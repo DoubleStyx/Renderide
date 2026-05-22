@@ -99,7 +99,6 @@ impl Blackboard {
     }
 
     /// Returns a mutable reference to the value stored under slot `S`, or [`None`] if absent.
-    #[cfg(test)]
     pub fn get_mut<S: BlackboardSlot>(&mut self) -> Option<&mut S::Value> {
         self.slots
             .get_mut(&TypeId::of::<S>())
@@ -141,6 +140,22 @@ pub struct GraphCommandStats {
     pub instance_batches: usize,
     /// Pipeline-specific draw submissions after material or pass expansion.
     pub pipeline_pass_submits: usize,
+    /// Runtime graph passes skipped because their `should_record` predicate returned false.
+    pub skipped_passes: usize,
+    /// Logical raster passes that recorded draw work.
+    pub recorded_raster_passes: usize,
+    /// Logical compute passes that recorded dispatch or copy work.
+    pub recorded_compute_passes: usize,
+    /// Logical encoder passes that recorded mixed command work.
+    pub recorded_encoder_passes: usize,
+    /// WGPU render-pass encoders opened by graph-managed or helper full-screen work.
+    pub opened_render_passes: usize,
+    /// Explicit texture copies recorded by graph passes.
+    pub copy_count: usize,
+    /// Manual or attachment resolves recorded by graph passes.
+    pub resolve_count: usize,
+    /// Runtime estimate of attachment, copy, and resolve bandwidth in bytes.
+    pub estimated_bandwidth_bytes: u64,
 }
 
 impl GraphCommandStats {
@@ -151,6 +166,59 @@ impl GraphCommandStats {
         self.pipeline_pass_submits = self
             .pipeline_pass_submits
             .saturating_add(other.pipeline_pass_submits);
+        self.skipped_passes = self.skipped_passes.saturating_add(other.skipped_passes);
+        self.recorded_raster_passes = self
+            .recorded_raster_passes
+            .saturating_add(other.recorded_raster_passes);
+        self.recorded_compute_passes = self
+            .recorded_compute_passes
+            .saturating_add(other.recorded_compute_passes);
+        self.recorded_encoder_passes = self
+            .recorded_encoder_passes
+            .saturating_add(other.recorded_encoder_passes);
+        self.opened_render_passes = self
+            .opened_render_passes
+            .saturating_add(other.opened_render_passes);
+        self.copy_count = self.copy_count.saturating_add(other.copy_count);
+        self.resolve_count = self.resolve_count.saturating_add(other.resolve_count);
+        self.estimated_bandwidth_bytes = self
+            .estimated_bandwidth_bytes
+            .saturating_add(other.estimated_bandwidth_bytes);
+    }
+
+    /// Adds one runtime-skipped graph pass.
+    pub fn record_skipped_pass(&mut self) {
+        self.skipped_passes = self.skipped_passes.saturating_add(1);
+    }
+
+    /// Adds one recorded logical raster pass.
+    pub fn record_raster_pass(&mut self) {
+        self.recorded_raster_passes = self.recorded_raster_passes.saturating_add(1);
+    }
+
+    /// Adds one recorded logical compute pass.
+    pub fn record_compute_pass(&mut self) {
+        self.recorded_compute_passes = self.recorded_compute_passes.saturating_add(1);
+    }
+
+    /// Adds one recorded logical encoder pass.
+    pub fn record_encoder_pass(&mut self) {
+        self.recorded_encoder_passes = self.recorded_encoder_passes.saturating_add(1);
+    }
+
+    /// Adds one opened render pass.
+    pub fn record_opened_render_pass(&mut self) {
+        self.opened_render_passes = self.opened_render_passes.saturating_add(1);
+    }
+
+    /// Adds one explicit copy operation.
+    pub fn record_copy(&mut self) {
+        self.copy_count = self.copy_count.saturating_add(1);
+    }
+
+    /// Adds one explicit or manual resolve operation.
+    pub fn record_resolve(&mut self) {
+        self.resolve_count = self.resolve_count.saturating_add(1);
     }
 }
 

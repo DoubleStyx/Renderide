@@ -1,5 +1,6 @@
 //! Raster pass attachment resolution and the wgpu render-pass lifecycle for graph passes.
 
+use crate::render_graph::blackboard::{GraphCommandStats, GraphCommandStatsSlot};
 use crate::render_graph::context::{GraphResolvedResources, RasterPassCtx};
 use crate::render_graph::error::GraphExecuteError;
 use crate::render_graph::pass::{PassNode, RenderPassTemplate};
@@ -8,6 +9,19 @@ use crate::render_graph::resources::{
 };
 
 use super::super::CompiledPassInfo;
+
+fn update_command_stats(
+    ctx: &mut RasterPassCtx<'_, '_>,
+    update: impl FnOnce(&mut GraphCommandStats),
+) {
+    if ctx.blackboard.get::<GraphCommandStatsSlot>().is_none() {
+        ctx.blackboard
+            .insert::<GraphCommandStatsSlot>(GraphCommandStats::default());
+    }
+    if let Some(stats) = ctx.blackboard.get_mut::<GraphCommandStatsSlot>() {
+        update(stats);
+    }
+}
 
 pub(in crate::render_graph::compiled) fn pass_info_raster_template(
     pass_info: &[CompiledPassInfo],
@@ -248,6 +262,7 @@ pub(in crate::render_graph::compiled) fn execute_graph_raster_pass_node(
             .map_err(GraphExecuteError::Pass)?
     };
     if !should_record {
+        update_command_stats(ctx, GraphCommandStats::record_skipped_pass);
         return Ok(());
     }
 
@@ -279,6 +294,10 @@ pub(in crate::render_graph::compiled) fn execute_graph_raster_pass_node(
         pass.record_raster(ctx, &mut rpass)
             .map_err(GraphExecuteError::Pass)?;
     }
+    update_command_stats(ctx, |stats| {
+        stats.record_raster_pass();
+        stats.record_opened_render_pass();
+    });
     {
         profiling::scope!("graph::raster::end_render_pass");
         drop(rpass);

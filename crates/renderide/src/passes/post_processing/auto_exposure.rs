@@ -256,6 +256,7 @@ impl PostProcessEffect for AutoExposureEffect {
     fn register(
         &self,
         builder: &mut GraphBuilder,
+        _settings: &PostProcessingSettings,
         input: TextureHandle,
         output: TextureHandle,
     ) -> EffectPasses {
@@ -269,10 +270,7 @@ impl PostProcessEffect for AutoExposureEffect {
             Arc::clone(&self.state_cache),
         )));
         builder.add_edge(compute, apply);
-        EffectPasses {
-            first: compute,
-            last: apply,
-        }
+        EffectPasses::registered(compute, apply)
     }
 }
 

@@ -445,6 +445,11 @@ impl RenderBackend {
             })
             .unwrap_or_default();
         let material_diagnostics = self.materials.diagnostic_snapshot();
+        let graph_stats = self
+            .graph_state
+            .frame_graph_cache
+            .compile_stats()
+            .unwrap_or_default();
         crate::diagnostics::BackendDiagSnapshot {
             texture_format_registration_count: self.texture_format_registration_count(),
             texture_mip0_ready_count: self.texture_mip0_ready_count(),
@@ -460,8 +465,15 @@ impl RenderBackend {
             material_shader_bindings: store.material_shader_binding_count(),
             material_shader_graph: material_diagnostics.shader_graph,
             material_pipeline_cache: material_diagnostics.pipeline_cache,
-            frame_graph_pass_count: self.frame_graph_pass_count(),
-            frame_graph_topo_levels: self.frame_graph_topo_levels(),
+            frame_graph_pass_count: graph_stats.pass_count,
+            frame_graph_registered_pass_count: graph_stats.registered_pass_count,
+            frame_graph_topo_levels: graph_stats.topo_levels,
+            frame_graph_culled_pass_count: graph_stats.culled_count,
+            frame_graph_compile_skipped_pass_count: graph_stats.compile_skipped_pass_count,
+            frame_graph_attachment_resolve_count: graph_stats.attachment_resolve_count,
+            frame_graph_transient_store_count: graph_stats.transient_attachment_store_count,
+            frame_graph_transient_discard_count: graph_stats.transient_attachment_discard_count,
+            frame_graph_estimated_bandwidth_bytes: graph_stats.estimated_bandwidth_bytes,
             gpu_light_count: self.frame_services.frame_resources.frame_lights().len(),
             signed_scene_color_active: self.signed_scene_color_active(),
         }

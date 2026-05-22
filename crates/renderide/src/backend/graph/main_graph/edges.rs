@@ -42,7 +42,12 @@ pub(super) fn add_main_graph_edges(
         passes.forward_intersect,
         passes.forward_transparent_sequence,
     );
-    builder.add_edge(passes.forward_transparent_sequence, passes.depth_resolve);
-    builder.add_edge(passes.depth_resolve, passes.hiz);
+    let forward_tail = if let Some(depth_resolve) = passes.depth_resolve {
+        builder.add_edge(passes.forward_transparent_sequence, depth_resolve);
+        depth_resolve
+    } else {
+        passes.forward_transparent_sequence
+    };
+    builder.add_edge(forward_tail, passes.hiz);
     connect_post_processing_edges(builder, passes.hiz, chain_output, compose);
 }

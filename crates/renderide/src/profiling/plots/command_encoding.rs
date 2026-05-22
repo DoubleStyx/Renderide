@@ -76,6 +76,22 @@ pub struct CommandEncodingProfileSample {
     pub world_mesh_instance_batches: usize,
     /// World-mesh pipeline-pass draw submissions after multi-pass material expansion.
     pub world_mesh_pipeline_pass_submits: usize,
+    /// Runtime graph passes skipped by `should_record`.
+    pub graph_runtime_skipped_passes: usize,
+    /// Runtime logical raster passes recorded.
+    pub graph_recorded_raster_passes: usize,
+    /// Runtime logical compute passes recorded.
+    pub graph_recorded_compute_passes: usize,
+    /// Runtime logical encoder passes recorded.
+    pub graph_recorded_encoder_passes: usize,
+    /// WGPU render-pass encoders opened by the graph.
+    pub graph_opened_render_passes: usize,
+    /// Explicit texture copies recorded by the graph.
+    pub graph_copy_count: usize,
+    /// Manual or attachment resolves recorded by the graph.
+    pub graph_resolve_count: usize,
+    /// Estimated render-graph bandwidth in bytes.
+    pub graph_estimated_bandwidth_bytes: u64,
 }
 
 /// Records command-encoding timings and pressure counters for the current frame.
@@ -85,6 +101,7 @@ pub fn plot_command_encoding(sample: &CommandEncodingProfileSample) {
     plot_upload_traffic(sample);
     plot_encoding_timings(sample);
     plot_world_mesh_stats(sample);
+    plot_render_graph_stats(sample);
 }
 
 fn plot_pass_counts(sample: &CommandEncodingProfileSample) {
@@ -220,5 +237,40 @@ fn plot_world_mesh_stats(sample: &CommandEncodingProfileSample) {
     tracy_plot!(
         "command_encoding::world_mesh_pipeline_pass_submits",
         sample.world_mesh_pipeline_pass_submits as f64
+    );
+}
+
+fn plot_render_graph_stats(sample: &CommandEncodingProfileSample) {
+    tracy_plot!(
+        "command_encoding::graph_runtime_skipped_passes",
+        sample.graph_runtime_skipped_passes as f64
+    );
+    tracy_plot!(
+        "command_encoding::graph_recorded_raster_passes",
+        sample.graph_recorded_raster_passes as f64
+    );
+    tracy_plot!(
+        "command_encoding::graph_recorded_compute_passes",
+        sample.graph_recorded_compute_passes as f64
+    );
+    tracy_plot!(
+        "command_encoding::graph_recorded_encoder_passes",
+        sample.graph_recorded_encoder_passes as f64
+    );
+    tracy_plot!(
+        "command_encoding::graph_opened_render_passes",
+        sample.graph_opened_render_passes as f64
+    );
+    tracy_plot!(
+        "command_encoding::graph_copy_count",
+        sample.graph_copy_count as f64
+    );
+    tracy_plot!(
+        "command_encoding::graph_resolve_count",
+        sample.graph_resolve_count as f64
+    );
+    tracy_plot!(
+        "command_encoding::graph_estimated_bandwidth_bytes",
+        sample.graph_estimated_bandwidth_bytes as f64
     );
 }

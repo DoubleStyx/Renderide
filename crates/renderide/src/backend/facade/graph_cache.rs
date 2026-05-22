@@ -147,10 +147,12 @@ impl RenderBackend {
                 self.graph_state.reset_upload_arena();
                 if let Some(stats) = self.graph_state.frame_graph_cache.compile_stats() {
                     logger::info!(
-                        "render graph ready: passes={} topo_levels={} culled={} transient_textures={} texture_slots={} texture_lanes={} transient_buffers={} buffer_slots={} buffer_lanes={} imported_textures={} imported_buffers={} validation_diagnostics={} merge_groups={} materialized_groups={} key={:?}",
+                        "render graph ready: passes={} registered={} topo_levels={} culled={} compile_skipped={} transient_textures={} texture_slots={} texture_lanes={} transient_buffers={} buffer_slots={} buffer_lanes={} imported_textures={} imported_buffers={} validation_diagnostics={} merge_groups={} materialized_groups={} attachment_resolves={} transient_store={} transient_discard={} estimated_bandwidth_bytes={} key={:?}",
                         stats.pass_count,
+                        stats.registered_pass_count,
                         stats.topo_levels,
                         stats.culled_count,
+                        stats.compile_skipped_pass_count,
                         stats.transient_texture_count,
                         stats.transient_texture_slots,
                         stats.transient_texture_lanes,
@@ -162,6 +164,10 @@ impl RenderBackend {
                         stats.validation_diagnostics,
                         stats.render_pass_merge_groups,
                         stats.render_pass_materialization_groups,
+                        stats.attachment_resolve_count,
+                        stats.transient_attachment_store_count,
+                        stats.transient_attachment_discard_count,
+                        stats.estimated_bandwidth_bytes,
                         key,
                     );
                 }

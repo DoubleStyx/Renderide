@@ -58,6 +58,7 @@ pub(super) fn add_gtao_normal_prepass_if_active(
     builder: &mut GraphBuilder,
     h: &MainGraphHandles,
     post_processing_settings: &crate::config::PostProcessingSettings,
+    msaa_enabled: bool,
 ) -> Option<GtaoNormalPrepassNode> {
     if !gtao_post_processing_active(post_processing_settings) {
         return None;
@@ -69,6 +70,7 @@ pub(super) fn add_gtao_normal_prepass_if_active(
             normals_msaa,
             depth: h.depth,
             msaa_depth: h.forward_msaa_depth,
+            msaa_enabled,
             per_draw_slab: h.per_draw_slab,
         },
     )));

@@ -81,6 +81,7 @@ impl PostProcessEffect for BloomEffect {
     fn register(
         &self,
         builder: &mut GraphBuilder,
+        _settings: &PostProcessingSettings,
         input: TextureHandle,
         output: TextureHandle,
     ) -> EffectPasses {
@@ -157,10 +158,7 @@ impl PostProcessEffect for BloomEffect {
         )));
         builder.add_edge(prev, composite);
 
-        EffectPasses {
-            first: first_downsample,
-            last: composite,
-        }
+        EffectPasses::registered(first_downsample, composite)
     }
 }
 
