@@ -38,6 +38,10 @@ struct TileAabb {
     max_v: vec3f,
 }
 
+const SPOT_CULL_MIN_COS_HALF: f32 = 0.9999619;
+const SPOT_CULL_WIDE_COS_HALF: f32 = 0.5;
+const SPOT_CULL_DISTANCE_EPSILON: f32 = 0.00001;
+
 fn ndc_to_view(ndc: vec3f) -> vec3f {
     let clip = params.inv_proj * vec4f(ndc.x, ndc.y, ndc.z, 1.0);
     if abs(clip.w) <= 1e-8 {
@@ -118,16 +122,48 @@ fn sphere_aabb_intersect(center: vec3f, radius: f32, aabb_min: vec3f, aabb_max: 
     return dot(d, d) <= radius * radius;
 }
 
-fn spotlight_bounds_intersect_aabb(apex: vec3f, axis: vec3f, cos_half: f32, range: f32, aabb_min: vec3f, aabb_max: vec3f) -> bool {
-    if cos_half >= 0.9999 {
-        return sphere_aabb_intersect(apex, range, aabb_min, aabb_max);
+fn aabb_bounding_sphere_center(aabb_min: vec3f, aabb_max: vec3f) -> vec3f {
+    return (aabb_min + aabb_max) * 0.5;
+}
+
+fn aabb_bounding_sphere_radius(aabb_min: vec3f, aabb_max: vec3f, center: vec3f) -> f32 {
+    return length(aabb_max - center);
+}
+
+fn spotlight_cone_intersects_sphere(
+    apex: vec3f,
+    axis_n: vec3f,
+    cos_half: f32,
+    range: f32,
+    sphere_center: vec3f,
+    sphere_radius: f32,
+) -> bool {
+    let clamped_cos_half = clamp(cos_half, 0.0, SPOT_CULL_MIN_COS_HALF);
+    if clamped_cos_half <= SPOT_CULL_WIDE_COS_HALF {
+        return true;
     }
-    let axis_n = normalize(axis);
-    let sin_sq = max(0.0, 1.0 - cos_half * cos_half);
-    let tan_sq = sin_sq / max(cos_half * cos_half, 1e-8);
-    let radius = range * sqrt(0.25 + tan_sq);
-    let center = apex + axis_n * (range * 0.5);
-    return sphere_aabb_intersect(center, radius, aabb_min, aabb_max);
+
+    let sin_half = sqrt(max(0.0, 1.0 - clamped_cos_half * clamped_cos_half));
+    let offset = sphere_center - apex;
+    let axis_dist = dot(offset, axis_n);
+    if axis_dist < -sphere_radius || axis_dist > range + sphere_radius {
+        return false;
+    }
+
+    let offset_len_sq = dot(offset, offset);
+    let lateral_len = sqrt(max(0.0, offset_len_sq - axis_dist * axis_dist));
+    let closest_cone_distance = clamped_cos_half * lateral_len - axis_dist * sin_half;
+    return closest_cone_distance <= sphere_radius + SPOT_CULL_DISTANCE_EPSILON;
+}
+
+fn spotlight_bounds_intersect_aabb(apex: vec3f, axis: vec3f, cos_half: f32, range: f32, aabb_min: vec3f, aabb_max: vec3f) -> bool {
+    if !sphere_aabb_intersect(apex, range, aabb_min, aabb_max) {
+        return false;
+    }
+
+    let center = aabb_bounding_sphere_center(aabb_min, aabb_max);
+    let radius = aabb_bounding_sphere_radius(aabb_min, aabb_max, center);
+    return spotlight_cone_intersects_sphere(apex, axis, cos_half, range, center, radius);
 }
 
 @compute @workgroup_size(8, 8, 1)

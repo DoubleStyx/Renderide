@@ -35,6 +35,14 @@ const LIGHT_TYPE_POINT: u32 = 0;
 const LIGHT_TYPE_DIRECTIONAL: u32 = 1;
 /// Spot light tag in [`GpuLight::light_type`].
 const LIGHT_TYPE_SPOT: u32 = 2;
+/// Cluster AABB padding used by the clustered-light compute shader.
+const CLUSTER_BOUNDARY_EPSILON: f32 = 0.00001;
+/// Largest half-angle cosine used by spotlight culling, equivalent to a 0.5 degree half-angle.
+const SPOT_CULL_MIN_COS_HALF: f32 = 0.999_961_9;
+/// Half-angle cosine below which spotlights use range-sphere culling to avoid wide-cone misses.
+const SPOT_CULL_WIDE_COS_HALF: f32 = 0.5;
+/// Small distance pad for cone/sphere boundary comparisons.
+const SPOT_CULL_DISTANCE_EPSILON: f32 = 0.00001;
 
 /// Cluster-grid layout for one eye.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,6 +117,7 @@ struct CpuFroxelParallelInputs<'a> {
     lights: &'a [GpuLight],
     eye_params: &'a [ClusterFrameParams],
     layouts: &'a [FroxelLayout],
+    froxel_spheres_by_eye: &'a [Vec<FroxelSphere>],
     expected_clusters: usize,
     total_clusters: usize,
 }
@@ -178,10 +187,12 @@ fn build_serial(
 ) -> Option<CpuClusterAssignments> {
     let expected_clusters = usize::try_from(clusters_per_eye).ok()?;
     let total_clusters = total_cluster_count(clusters_per_eye, eye_params.len())?;
+    let froxel_spheres_by_eye = build_eye_froxel_spheres(lights, eye_params, layouts)?;
     let mut counts = vec![0u32; total_clusters];
     let mut stats = CpuFroxelStats::default();
 
     for (eye_idx, (params, &layout)) in eye_params.iter().zip(layouts.iter()).enumerate() {
+        let froxel_spheres = eye_froxel_spheres(&froxel_spheres_by_eye, eye_idx);
         let cluster_base = eye_idx.checked_mul(expected_clusters)?;
         let mut emit_count = |cluster_id: usize, _light_idx: u32| {
             let Some(count) = counts.get_mut(cluster_id) else {
@@ -194,6 +205,7 @@ fn build_serial(
             lights,
             *params,
             layout,
+            froxel_spheres,
             cluster_base,
             &mut emit_count,
         ));
@@ -204,11 +216,19 @@ fn build_serial(
     let mut cursors = vec![0u32; total_clusters];
 
     for (eye_idx, (params, &layout)) in eye_params.iter().zip(layouts.iter()).enumerate() {
+        let froxel_spheres = eye_froxel_spheres(&froxel_spheres_by_eye, eye_idx);
         let cluster_base = eye_idx.checked_mul(expected_clusters)?;
         let mut emit_index = |cluster_id: usize, light_idx: u32| {
             write_membership(cluster_id, light_idx, &ranges, &mut cursors, &mut indices);
         };
-        assign_eye_lights(lights, *params, layout, cluster_base, &mut emit_index);
+        assign_eye_lights(
+            lights,
+            *params,
+            layout,
+            froxel_spheres,
+            cluster_base,
+            &mut emit_index,
+        );
     }
 
     Some(CpuClusterAssignments {
@@ -227,10 +247,12 @@ fn build_parallel(
     profiling::scope!("clustered_light::cpu_froxel_parallel");
     let expected_clusters = usize::try_from(clusters_per_eye).ok()?;
     let total_clusters = total_cluster_count(clusters_per_eye, eye_params.len())?;
+    let froxel_spheres_by_eye = build_eye_froxel_spheres(lights, eye_params, layouts)?;
     let inputs = CpuFroxelParallelInputs {
         lights,
         eye_params,
         layouts,
+        froxel_spheres_by_eye: &froxel_spheres_by_eye,
         expected_clusters,
         total_clusters,
     };
@@ -270,6 +292,7 @@ fn count_parallel_light_chunks(inputs: &CpuFroxelParallelInputs<'_>) -> Vec<CpuF
                 .zip(inputs.layouts.iter())
                 .enumerate()
             {
+                let froxel_spheres = eye_froxel_spheres(inputs.froxel_spheres_by_eye, eye_idx);
                 let cluster_base = eye_idx * inputs.expected_clusters;
                 let mut emit_count = |cluster_id: usize, _light_idx: u32| {
                     let Some(count) = chunk.counts.get_mut(cluster_id) else {
@@ -288,6 +311,7 @@ fn count_parallel_light_chunks(inputs: &CpuFroxelParallelInputs<'_>) -> Vec<CpuF
                             light_start,
                             *params,
                             layout,
+                            froxel_spheres,
                             cluster_base,
                             &mut emit_count,
                         ));
@@ -409,6 +433,7 @@ fn write_parallel_light_chunks(
                 .zip(inputs.layouts.iter())
                 .enumerate()
             {
+                let froxel_spheres = eye_froxel_spheres(inputs.froxel_spheres_by_eye, eye_idx);
                 let cluster_base = eye_idx * inputs.expected_clusters;
                 let mut emit_index = |cluster_id: usize, light_idx: u32| {
                     write_membership_atomic(
@@ -424,6 +449,7 @@ fn write_parallel_light_chunks(
                     light_start,
                     *params,
                     layout,
+                    froxel_spheres,
                     cluster_base,
                     &mut emit_index,
                 );
@@ -446,10 +472,19 @@ fn assign_eye_lights(
     lights: &[GpuLight],
     params: ClusterFrameParams,
     layout: FroxelLayout,
+    froxel_spheres: &[FroxelSphere],
     cluster_base: usize,
     emit: &mut impl FnMut(usize, u32),
 ) -> u32 {
-    assign_eye_lights_slice(lights, 0, params, layout, cluster_base, emit)
+    assign_eye_lights_slice(
+        lights,
+        0,
+        params,
+        layout,
+        froxel_spheres,
+        cluster_base,
+        emit,
+    )
 }
 
 fn assign_eye_lights_slice(
@@ -457,6 +492,7 @@ fn assign_eye_lights_slice(
     light_index_base: usize,
     params: ClusterFrameParams,
     layout: FroxelLayout,
+    froxel_spheres: &[FroxelSphere],
     cluster_base: usize,
     emit: &mut impl FnMut(usize, u32),
 ) -> u32 {
@@ -481,7 +517,14 @@ fn assign_eye_lights_slice(
             culled_lights = culled_lights.saturating_add(1);
             continue;
         };
-        assign_bounded_light(light_idx, bounds, layout, cluster_base, emit);
+        assign_bounded_light(
+            light_idx,
+            bounds,
+            layout,
+            froxel_spheres,
+            cluster_base,
+            emit,
+        );
     }
     culled_lights
 }
@@ -503,6 +546,84 @@ struct FroxelBounds {
     z1: u32,
 }
 
+/// View-space AABB for one froxel.
+#[derive(Clone, Copy, Debug)]
+struct FroxelAabb {
+    /// Minimum view-space corner.
+    min: Vec3,
+    /// Maximum view-space corner.
+    max: Vec3,
+}
+
+impl FroxelAabb {
+    /// Returns a sphere that fully contains this AABB.
+    fn bounding_sphere(self) -> FroxelSphere {
+        let center = (self.min + self.max) * 0.5;
+        FroxelSphere {
+            center,
+            radius: (self.max - center).length(),
+        }
+    }
+}
+
+/// Bounding sphere that fully contains one froxel.
+#[derive(Clone, Copy, Debug)]
+struct FroxelSphere {
+    /// Sphere center in view space.
+    center: Vec3,
+    /// Sphere radius in view-space units.
+    radius: f32,
+}
+
+/// Conservative assignment data for one point or spot light.
+#[derive(Clone, Copy, Debug)]
+struct BoundedLight {
+    /// Inclusive froxel range touched by the light's broad range sphere.
+    bounds: FroxelBounds,
+    /// Spotlight-specific fine culling data.
+    spot: Option<SpotCull>,
+}
+
+/// View-space spotlight cone used for per-froxel fine culling.
+#[derive(Clone, Copy, Debug)]
+struct SpotCull {
+    /// Cone apex in view space.
+    apex: Vec3,
+    /// Normalized cone axis in view space.
+    axis: Vec3,
+    /// Cosine of the spotlight half-angle.
+    cos_half: f32,
+    /// Light range in view-space units.
+    range: f32,
+}
+
+impl SpotCull {
+    /// Returns whether this spotlight can affect a froxel bounding sphere.
+    fn intersects_froxel_sphere(self, sphere: FroxelSphere) -> bool {
+        if !sphere_sphere_intersect(self.apex, self.range, sphere.center, sphere.radius) {
+            return false;
+        }
+
+        let clamped_cos_half = self.cos_half.clamp(0.0, SPOT_CULL_MIN_COS_HALF);
+        if clamped_cos_half <= SPOT_CULL_WIDE_COS_HALF {
+            return true;
+        }
+
+        let sin_half = (1.0 - clamped_cos_half * clamped_cos_half).max(0.0).sqrt();
+        let offset = sphere.center - self.apex;
+        let axis_dist = offset.dot(self.axis);
+        if axis_dist < -sphere.radius || axis_dist > self.range + sphere.radius {
+            return false;
+        }
+
+        let lateral_len = (offset.length_squared() - axis_dist * axis_dist)
+            .max(0.0)
+            .sqrt();
+        let closest_cone_distance = clamped_cos_half * lateral_len - axis_dist * sin_half;
+        closest_cone_distance <= sphere.radius + SPOT_CULL_DISTANCE_EPSILON
+    }
+}
+
 /// Computes conservative froxel bounds for point and spot lights.
 fn light_froxel_bounds(
     light: &GpuLight,
@@ -511,27 +632,28 @@ fn light_froxel_bounds(
     view_scale: f32,
     layout: FroxelLayout,
     params: ClusterFrameParams,
-) -> Option<FroxelBounds> {
-    let mut center = transform_point(view, Vec3::from_array(light.position));
-    let mut radius = (light.range * view_scale).max(0.0);
+) -> Option<BoundedLight> {
+    let center = transform_point(view, Vec3::from_array(light.position));
+    let radius = (light.range * view_scale).max(0.0);
     if radius <= 0.0 || !radius.is_finite() {
         return None;
     }
 
-    if light.light_type == LIGHT_TYPE_SPOT {
+    let spot = if light.light_type == LIGHT_TYPE_SPOT {
         let axis = transform_vector(view, Vec3::from_array(light.direction))
             .try_normalize()
             .unwrap_or(Vec3::Z);
-        let cos_half = light.spot_cos_half_angle.clamp(0.0, 1.0);
-        if cos_half < 0.9999 {
-            let sin_sq = (1.0 - cos_half * cos_half).max(0.0);
-            let tan_sq = sin_sq / (cos_half * cos_half).max(1e-8);
-            center += axis * (radius * 0.5);
-            radius *= (0.25 + tan_sq).sqrt();
-        }
+        Some(SpotCull {
+            apex: center,
+            axis,
+            cos_half: light.spot_cos_half_angle,
+            range: radius,
+        })
     } else if light.light_type != LIGHT_TYPE_POINT {
         return None;
-    }
+    } else {
+        None
+    };
 
     let (near, far) = params.sanitized_clip_planes();
     let raw_nearest_depth = -(center.z + radius);
@@ -546,14 +668,217 @@ fn light_froxel_bounds(
     let z1 = cluster_z_from_depth(farthest_depth, near, far, layout.cluster_count_z);
     let (x0, x1, y0, y1) = projected_sphere_xy_bounds(center, radius, proj, near, far, layout)?;
 
-    Some(FroxelBounds {
-        x0,
-        x1,
-        y0,
-        y1,
-        z0: z0.min(z1),
-        z1: z0.max(z1),
+    Some(BoundedLight {
+        bounds: FroxelBounds {
+            x0,
+            x1,
+            y0,
+            y1,
+            z0: z0.min(z1),
+            z1: z0.max(z1),
+        },
+        spot,
     })
+}
+
+/// Returns whether two spheres overlap.
+fn sphere_sphere_intersect(a_center: Vec3, a_radius: f32, b_center: Vec3, b_radius: f32) -> bool {
+    let radius = a_radius + b_radius;
+    a_center.distance_squared(b_center) <= radius * radius
+}
+
+/// Builds froxel bounding spheres for every eye.
+fn build_eye_froxel_spheres(
+    lights: &[GpuLight],
+    eye_params: &[ClusterFrameParams],
+    layouts: &[FroxelLayout],
+) -> Option<Vec<Vec<FroxelSphere>>> {
+    if !lights
+        .iter()
+        .any(|light| light.light_type == LIGHT_TYPE_SPOT)
+    {
+        return Some(Vec::new());
+    }
+
+    let mut all_spheres = Vec::with_capacity(eye_params.len());
+    for (params, &layout) in eye_params.iter().zip(layouts.iter()) {
+        all_spheres.push(froxel_bounding_spheres(*params, layout)?);
+    }
+    Some(all_spheres)
+}
+
+/// Returns one eye's froxel spheres, or an empty slice when no spotlights need them.
+fn eye_froxel_spheres(
+    froxel_spheres_by_eye: &[Vec<FroxelSphere>],
+    eye_idx: usize,
+) -> &[FroxelSphere] {
+    froxel_spheres_by_eye
+        .get(eye_idx)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+}
+
+/// Builds bounding spheres for every froxel in one eye.
+fn froxel_bounding_spheres(
+    params: ClusterFrameParams,
+    layout: FroxelLayout,
+) -> Option<Vec<FroxelSphere>> {
+    let inv_proj = params.proj.inverse();
+    if !inv_proj.is_finite() {
+        return None;
+    }
+
+    let cluster_count = layout.cluster_count()?;
+    let mut spheres = Vec::with_capacity(cluster_count);
+    for z in 0..layout.cluster_count_z {
+        for y in 0..layout.cluster_count_y {
+            for x in 0..layout.cluster_count_x {
+                spheres.push(cluster_aabb(params, inv_proj, layout, x, y, z)?.bounding_sphere());
+            }
+        }
+    }
+    Some(spheres)
+}
+
+/// Computes the view-space AABB for one froxel.
+fn cluster_aabb(
+    params: ClusterFrameParams,
+    inv_proj: Mat4,
+    layout: FroxelLayout,
+    cluster_x: u32,
+    cluster_y: u32,
+    cluster_z: u32,
+) -> Option<FroxelAabb> {
+    let (near_depth, far_depth) = cluster_z_depth_bounds(
+        cluster_z,
+        layout.cluster_count_z,
+        params.near_clip,
+        params.far_clip,
+    );
+    let tile_near = -near_depth;
+    let tile_far = -far_depth;
+
+    let w = layout.viewport_width as f32;
+    let h = layout.viewport_height as f32;
+    let px_min = cluster_x.saturating_mul(TILE_SIZE) as f32;
+    let px_max = cluster_x
+        .saturating_add(1)
+        .saturating_mul(TILE_SIZE)
+        .min(layout.viewport_width) as f32;
+    let py_min = cluster_y.saturating_mul(TILE_SIZE) as f32;
+    let py_max = cluster_y
+        .saturating_add(1)
+        .saturating_mul(TILE_SIZE)
+        .min(layout.viewport_height) as f32;
+    let ndc_left = 2.0 * px_min / w - 1.0;
+    let ndc_right = 2.0 * px_max / w - 1.0;
+    let ndc_top = 1.0 - 2.0 * py_min / h;
+    let ndc_bottom = 1.0 - 2.0 * py_max / h;
+
+    let ndc_bl = Vec2::new(ndc_left, ndc_bottom);
+    let ndc_br = Vec2::new(ndc_right, ndc_bottom);
+    let ndc_tl = Vec2::new(ndc_left, ndc_top);
+    let ndc_tr = Vec2::new(ndc_right, ndc_top);
+
+    let points = [
+        view_point_at_ndc_xy_and_z(params.proj, inv_proj, ndc_bl, tile_near)?,
+        view_point_at_ndc_xy_and_z(params.proj, inv_proj, ndc_br, tile_near)?,
+        view_point_at_ndc_xy_and_z(params.proj, inv_proj, ndc_tl, tile_near)?,
+        view_point_at_ndc_xy_and_z(params.proj, inv_proj, ndc_tr, tile_near)?,
+        view_point_at_ndc_xy_and_z(params.proj, inv_proj, ndc_bl, tile_far)?,
+        view_point_at_ndc_xy_and_z(params.proj, inv_proj, ndc_br, tile_far)?,
+        view_point_at_ndc_xy_and_z(params.proj, inv_proj, ndc_tl, tile_far)?,
+        view_point_at_ndc_xy_and_z(params.proj, inv_proj, ndc_tr, tile_far)?,
+    ];
+    let (mut min_v, mut max_v) = min_max_points(&points);
+
+    if cluster_z == 0 {
+        let camera_clip = params.proj * Vec4::new(0.0, 0.0, 0.0, 1.0);
+        if camera_clip.w.abs() > 1e-8 {
+            let zero_points = [
+                view_point_at_ndc_xy_and_z(params.proj, inv_proj, ndc_bl, 0.0)?,
+                view_point_at_ndc_xy_and_z(params.proj, inv_proj, ndc_br, 0.0)?,
+                view_point_at_ndc_xy_and_z(params.proj, inv_proj, ndc_tl, 0.0)?,
+                view_point_at_ndc_xy_and_z(params.proj, inv_proj, ndc_tr, 0.0)?,
+            ];
+            let (zero_min, zero_max) = min_max_points(&zero_points);
+            min_v = min_v.min(zero_min);
+            max_v = max_v.max(zero_max);
+        } else {
+            min_v = min_v.min(Vec3::ZERO);
+            max_v = max_v.max(Vec3::ZERO);
+        }
+    }
+
+    let extent = max_v - min_v;
+    let max_extent = extent.x.max(extent.y).max(extent.z).max(1.0);
+    let pad = max_extent * CLUSTER_BOUNDARY_EPSILON;
+    Some(FroxelAabb {
+        min: min_v - Vec3::splat(pad),
+        max: max_v + Vec3::splat(pad),
+    })
+}
+
+/// Returns the component-wise min and max for a fixed set of view-space points.
+fn min_max_points<const N: usize>(points: &[Vec3; N]) -> (Vec3, Vec3) {
+    let mut min_v = Vec3::splat(f32::INFINITY);
+    let mut max_v = Vec3::splat(f32::NEG_INFINITY);
+    for &point in points {
+        min_v = min_v.min(point);
+        max_v = max_v.max(point);
+    }
+    (min_v, max_v)
+}
+
+/// Computes logarithmic clustered-depth bounds for one Z slice.
+fn cluster_z_depth_bounds(
+    cluster_z: u32,
+    cluster_count_z: u32,
+    near_clip: f32,
+    far_clip: f32,
+) -> (f32, f32) {
+    let z_count = cluster_count_z.max(1);
+    let z = cluster_z.min(z_count - 1);
+    let (near_safe, far_safe) = sanitize_cluster_clip_planes(near_clip, far_clip);
+    let ratio = (far_safe / near_safe).max(1.0 + f32::EPSILON);
+    let zf = z as f32;
+    let num_z = z_count as f32;
+    (
+        near_safe * ratio.powf(zf / num_z),
+        near_safe * ratio.powf((zf + 1.0) / num_z),
+    )
+}
+
+/// Reconstructs a view-space point from NDC X/Y and view-space Z.
+fn view_point_at_ndc_xy_and_z(
+    proj: Mat4,
+    inv_proj: Mat4,
+    ndc_xy: Vec2,
+    view_z: f32,
+) -> Option<Vec3> {
+    ndc_z_from_view_z(proj, view_z)
+        .and_then(|ndc_z| ndc_to_view(inv_proj, Vec3::new(ndc_xy.x, ndc_xy.y, ndc_z)))
+}
+
+/// Reconstructs a view-space point from NDC coordinates.
+fn ndc_to_view(inv_proj: Mat4, ndc: Vec3) -> Option<Vec3> {
+    let clip = inv_proj * Vec4::new(ndc.x, ndc.y, ndc.z, 1.0);
+    let point = if clip.w.abs() <= 1e-8 {
+        clip.truncate()
+    } else {
+        clip.truncate() / clip.w
+    };
+    point.is_finite().then_some(point)
+}
+
+/// Projects view-space Z to NDC Z using the frame projection.
+fn ndc_z_from_view_z(proj: Mat4, view_z: f32) -> Option<f32> {
+    let clip = proj * Vec4::new(0.0, 0.0, view_z, 1.0);
+    if clip.w.abs() <= 1e-8 || !clip.w.is_finite() {
+        return None;
+    }
+    let ndc_z = clip.z / clip.w;
+    ndc_z.is_finite().then_some(ndc_z)
 }
 
 /// Transforms a world-space point by `matrix`.
@@ -645,16 +970,26 @@ fn assign_directional(
 /// Assigns a bounded local light to its touched froxel range.
 fn assign_bounded_light(
     light_idx: u32,
-    bounds: FroxelBounds,
+    light: BoundedLight,
     layout: FroxelLayout,
+    froxel_spheres: &[FroxelSphere],
     cluster_base: usize,
     emit: &mut impl FnMut(usize, u32),
 ) {
-    for z in bounds.z0..=bounds.z1 {
-        for y in bounds.y0..=bounds.y1 {
-            for x in bounds.x0..=bounds.x1 {
+    for z in light.bounds.z0..=light.bounds.z1 {
+        for y in light.bounds.y0..=light.bounds.y1 {
+            for x in light.bounds.x0..=light.bounds.x1 {
                 let local = x + layout.cluster_count_x * (y + layout.cluster_count_y * z);
-                emit(cluster_base + local as usize, light_idx);
+                let local_usize = local as usize;
+                if let Some(spot) = light.spot {
+                    let Some(&froxel_sphere) = froxel_spheres.get(local_usize) else {
+                        continue;
+                    };
+                    if !spot.intersects_froxel_sphere(froxel_sphere) {
+                        continue;
+                    }
+                }
+                emit(cluster_base + local_usize, light_idx);
             }
         }
     }
@@ -817,11 +1152,39 @@ mod tests {
         }
     }
 
+    /// Builds a spot light at `position`.
+    fn spot_light(
+        position: Vec3,
+        direction: Vec3,
+        range: f32,
+        full_angle_degrees: f32,
+    ) -> GpuLight {
+        let half_angle = (full_angle_degrees * 0.5).to_radians();
+        GpuLight {
+            position: position.to_array(),
+            direction: direction.to_array(),
+            range,
+            light_type: LIGHT_TYPE_SPOT,
+            spot_cos_half_angle: half_angle.cos().clamp(0.0, 1.0),
+            ..Default::default()
+        }
+    }
+
     /// Builds a directional light.
     fn directional_light() -> GpuLight {
         GpuLight {
             light_type: LIGHT_TYPE_DIRECTIONAL,
             ..Default::default()
+        }
+    }
+
+    /// Builds a spotlight cull primitive using a half-angle in degrees.
+    fn spot_cull(half_angle_degrees: f32, range: f32) -> SpotCull {
+        SpotCull {
+            apex: Vec3::ZERO,
+            axis: Vec3::Z,
+            cos_half: half_angle_degrees.to_radians().cos().clamp(0.0, 1.0),
+            range,
         }
     }
 
@@ -909,6 +1272,67 @@ mod tests {
     }
 
     #[test]
+    fn spotlight_cull_keeps_edge_touching_froxel() {
+        let spot = spot_cull(30.0, 10.0);
+        let axis_dist = 5.0f32;
+        let radius = 0.25f32;
+        let cone_edge = axis_dist * 30.0f32.to_radians().tan();
+        let sphere = FroxelSphere {
+            center: Vec3::new(cone_edge + radius * 0.5, 0.0, axis_dist),
+            radius,
+        };
+
+        assert!(spot.intersects_froxel_sphere(sphere));
+    }
+
+    #[test]
+    fn spotlight_cull_keeps_froxel_crossing_apex_plane() {
+        let sphere = FroxelSphere {
+            center: Vec3::new(0.0, 0.0, -0.05),
+            radius: 0.1,
+        };
+
+        assert!(spot_cull(20.0, 10.0).intersects_froxel_sphere(sphere));
+    }
+
+    #[test]
+    fn spotlight_cull_keeps_froxel_crossing_range_end() {
+        let sphere = FroxelSphere {
+            center: Vec3::new(0.0, 0.0, 10.04),
+            radius: 0.05,
+        };
+
+        assert!(spot_cull(20.0, 10.0).intersects_froxel_sphere(sphere));
+    }
+
+    #[test]
+    fn spotlight_cull_clamps_tiny_angles_conservatively() {
+        let min_half_angle = 0.5f32.to_radians();
+        let sphere = FroxelSphere {
+            center: Vec3::new(5.0 * min_half_angle.tan() * 0.5, 0.0, 5.0),
+            radius: 0.001,
+        };
+        let spot = SpotCull {
+            apex: Vec3::ZERO,
+            axis: Vec3::Z,
+            cos_half: 1.0,
+            range: 10.0,
+        };
+
+        assert!(spot.intersects_froxel_sphere(sphere));
+    }
+
+    #[test]
+    fn spotlight_cull_uses_range_for_wide_cones() {
+        let sphere = FroxelSphere {
+            center: Vec3::new(5.0, 0.0, 1.0),
+            radius: 0.1,
+        };
+
+        assert!(spot_cull(75.0, 10.0).intersects_froxel_sphere(sphere));
+    }
+
+    #[test]
     fn compact_indices_store_all_lights() {
         let params = test_params();
         let assignments = FroxelLightPlanner::build(
@@ -946,7 +1370,9 @@ mod tests {
         let layouts = validated_eye_layouts(&params, clusters_per_eye).expect("layouts");
         let lights = (0..CPU_FROXEL_PARALLEL_MIN_LIGHTS + 13)
             .map(|idx| {
-                if idx % 5 == 0 {
+                if idx % 7 == 0 {
+                    spot_light(Vec3::new(0.0, 0.0, -5.0), Vec3::Z, 3.0, 60.0)
+                } else if idx % 5 == 0 {
                     point_light(Vec3::new((idx % 3) as f32 - 1.0, 0.0, -5.0), 0.5)
                 } else {
                     directional_light()
@@ -983,7 +1409,9 @@ mod tests {
         let layouts = validated_eye_layouts(&params, clusters_per_eye).expect("layouts");
         let lights = (0..CPU_FROXEL_PARALLEL_MIN_LIGHTS + 13)
             .map(|idx| {
-                if idx % 5 == 0 {
+                if idx % 7 == 0 {
+                    spot_light(Vec3::new(0.0, 0.0, -5.0), Vec3::Z, 3.0, 60.0)
+                } else if idx % 5 == 0 {
                     point_light(Vec3::new((idx % 3) as f32 - 1.0, 0.0, -5.0), 0.5)
                 } else {
                     directional_light()

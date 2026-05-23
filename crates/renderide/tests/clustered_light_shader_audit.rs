@@ -46,6 +46,11 @@ fn contains_raw_cluster_storage_read(src: &str) -> bool {
     .any(|needle| src.contains(needle))
 }
 
+/// Returns the clustered-light compute shader source.
+fn clustered_light_compute_src() -> io::Result<String> {
+    fs::read_to_string(manifest_dir().join("shaders/passes/compute/clustered_light.wgsl"))
+}
+
 /// Materials and lighting modules must read clustered lists through `pcls` helpers.
 #[test]
 fn clustered_light_storage_uses_shared_helpers() -> io::Result<()> {
@@ -71,5 +76,24 @@ fn clustered_light_storage_uses_shared_helpers() -> io::Result<()> {
             .collect::<Vec<_>>()
             .join("\n  ")
     );
+    Ok(())
+}
+
+/// Spotlight assignment must use froxel-sphere cone culling after the range broad phase.
+#[test]
+fn clustered_light_spotlights_use_conservative_cone_sphere_culling() -> io::Result<()> {
+    let src = clustered_light_compute_src()?;
+    for needle in [
+        "fn spotlight_cone_intersects_sphere",
+        "sphere_aabb_intersect(apex, range, aabb_min, aabb_max)",
+        "aabb_bounding_sphere_radius",
+        "SPOT_CULL_WIDE_COS_HALF",
+        "SPOT_CULL_MIN_COS_HALF",
+    ] {
+        assert!(
+            src.contains(needle),
+            "clustered-light compute shader is missing spotlight culling invariant `{needle}`"
+        );
+    }
     Ok(())
 }
