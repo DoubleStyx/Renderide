@@ -11,6 +11,7 @@
 //! - **`util`** -- Small string helpers shared with [`crate::materials`] (e.g. Unity shader key normalization).
 
 pub mod mesh;
+pub mod resolve;
 pub mod shader;
 pub mod texture;
 pub mod util;

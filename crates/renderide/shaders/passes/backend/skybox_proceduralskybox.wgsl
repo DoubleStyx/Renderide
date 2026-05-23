@@ -22,44 +22,108 @@
 struct VertexOutput {
     @builtin(position) clip_pos: vec4<f32>,
     @location(0) @interpolate(flat) view_layer: u32,
+    @location(1) ground_color: vec3<f32>,
+    @location(2) sky_color: vec3<f32>,
+    @location(3) sun_color: vec3<f32>,
+    @location(4) ray: vec3<f32>,
 }
 
 @vertex
 fn vs_main(
     @builtin(vertex_index) vertex_index: u32,
+    @builtin(instance_index) instance_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
+    @location(0) pos: vec3<f32>,
 ) -> VertexOutput {
-    let clip = fs::fullscreen_clip_pos(vertex_index);
     var out: VertexOutput;
-    out.clip_pos = clip;
 #ifdef MULTIVIEW
     let view_layer = view_idx;
 #else
     let view_layer = 0u;
 #endif
     out.view_layer = view_layer;
+
+    if (length(pos) == 0.0) {
+        // Fullscreen triangle
+        out.clip_pos = fs::fullscreen_clip_pos(vertex_index);
+        out.ground_color = vec3<f32>(0.0);
+        out.sky_color = vec3<f32>(0.0);
+        out.sun_color = vec3<f32>(0.0);
+        out.ray = vec3<f32>(0.0);
+    } else {
+        // Actual mesh
+        let world_ray = -normalize(pos);
+        let view_ray = view_ray_from_world_ray(world_ray, view_layer);
+        let proj_params = select(rg::frame.proj_params_left, rg::frame.proj_params_right, view_layer != 0u);
+        out.clip_pos = clip_pos_from_view_ray(view_ray, proj_params, skybox::view_is_orthographic(view, view_layer));
+
+        let ps_params = psmat::params();
+        let scattering_params = ps::scattering_parameters(ps_params);
+        let terms = ps::visible_vertex_terms(ps_params, scattering_params, world_ray);
+        out.ground_color = terms.ground_color;
+        out.sky_color = terms.sky_color;
+        out.sun_color = terms.sun_color;
+        out.ray = terms.ray;
+    }
     return out;
 }
 
 //#pass type=forward blend=off zwrite=off ztest=main
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let viewport_extent = vec2<f32>(f32(rg::frame.viewport_width), f32(rg::frame.viewport_height));
-    let ndc = skybox::ndc_from_fragment_position(in.clip_pos, view, viewport_extent);
-    let proj_params = select(rg::frame.proj_params_left, rg::frame.proj_params_right, in.view_layer != 0u);
-    let view_ray = skybox::view_ray_from_ndc(
-        ndc,
-        proj_params,
-        skybox::view_is_orthographic(view, in.view_layer),
-    );
-    let world_ray = skybox::world_ray_from_view_ray(view_ray, view, in.view_layer);
     let ps_params = psmat::params();
-    let scattering_params = ps::scattering_parameters(ps_params);
-    let terms = ps::visible_vertex_terms(ps_params, scattering_params, world_ray);
+    var terms: ps::ProceduralSkyVisibleTerms;
+    if (length(in.ray) == 0.0) {
+        // Fullscreen triangle
+        let world_ray = world_ray_from_clip_pos(in.clip_pos, in.view_layer);
+        let scattering_params = ps::scattering_parameters(ps_params);
+        terms =  ps::visible_vertex_terms(ps_params, scattering_params, world_ray);
+    } else {
+        // Actual mesh
+        terms = ps::ProceduralSkyVisibleTerms(
+            in.ground_color,
+            in.sky_color,
+            in.sun_color,
+            in.ray,
+        );
+        if (ps::sun_disk_mode_high_quality(ps_params.sun_disk_mode)) {
+            terms.ray = -world_ray_from_clip_pos(in.clip_pos, in.view_layer);
+        }
+    }
     return rg::retain_globals_additive(vec4<f32>(
         ps::visible_fragment_color(ps_params, terms),
         1.0,
     ));
+}
+
+fn world_ray_from_clip_pos(clip_pos: vec4<f32>, view_layer: u32) -> vec3<f32> {
+    let viewport_extent = vec2<f32>(f32(rg::frame.viewport_width), f32(rg::frame.viewport_height));
+    let ndc = skybox::ndc_from_fragment_position(clip_pos, view, viewport_extent);
+    let proj_params = select(rg::frame.proj_params_left, rg::frame.proj_params_right, view_layer != 0u);
+    let view_ray = skybox::view_ray_from_ndc(ndc, proj_params, skybox::view_is_orthographic(view, view_layer));
+    return skybox::world_ray_from_view_ray(view_ray, view, view_layer);
+}
+
+fn clip_pos_from_view_ray(view_ray: vec3<f32>, proj_params: vec4<f32>, orthographic: bool) -> vec4<f32> {
+    if (view_ray.z >= -1e-6) {
+        return vec4<f32>(view_ray.xy, 2.0, 1.0);
+    }
+    if (orthographic) {
+        return vec4<f32>(sign(view_ray.xy), 0.0, 1.0);
+    }
+    return vec4<f32>(view_ray.xy * proj_params.xy / (-view_ray.z) - proj_params.zw, 0.0, 1.0);
+}
+
+fn view_ray_from_world_ray(world_ray: vec3<f32>, view_layer: u32) -> vec3<f32> {
+    let world_matrix = select_world_proj(view_layer);
+    return normalize((world_matrix * vec4<f32>(world_ray, 0.0)).xyz);
+}
+
+fn select_world_proj(view_idx: u32) -> mat4x4<f32> {
+    if (view_idx == 0u) {
+        return view.world_left;
+    }
+    return view.world_right;
 }

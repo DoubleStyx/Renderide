@@ -20,8 +20,8 @@ pub struct PreparedMaterialSkybox {
     pub material_uniform_dynamic_offset: Option<u32>,
     /// `@group(2)` draw-local skybox view uniform bind group.
     pub view_bind_group: Arc<wgpu::BindGroup>,
-    /// Vertex count used by the fullscreen skybox draw.
-    pub vertex_count: u32,
+    /// Cached buffer containing the procedural skybox mesh
+    pub skybox_mesh_buffer: wgpu::Buffer,
 }
 
 /// Prepared solid-color background resources.

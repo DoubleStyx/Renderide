@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 mod build_support;
 
+use build_support::assets::copy_assets_to_artifact_dir;
 use build_support::git;
 use build_support::openxr_loader::copy_vendored_openxr_loader;
 use build_support::shader::{self, BuildError};
@@ -37,5 +38,6 @@ fn run() -> Result<(), BuildError> {
 
     copy_vendored_openxr_loader(&manifest_dir, &out_dir);
     copy_xr_assets_to_artifact_dir(&manifest_dir, &out_dir);
+    copy_assets_to_artifact_dir(&manifest_dir, &out_dir);
     shader::compile(&manifest_dir, &out_dir)
 }

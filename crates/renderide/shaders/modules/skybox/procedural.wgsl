@@ -163,7 +163,7 @@ fn evaluate_scattering(
         c_in = front_color * (scattering_params.kkr_in);
         c_out = front_color * KKM_ESUN;
     } else {
-        let far = (-CAMERA_HEIGHT) / min(-0.001, eye_ray.y);
+        let far = (-CAMERA_HEIGHT) / min(-0.01, eye_ray.y);
         let pos = camera_pos + far * eye_ray;
         let depth = exp((-CAMERA_HEIGHT) * (1.0 / KSCALE_DEPTH));
         let camera_angle = dot(-eye_ray, pos);

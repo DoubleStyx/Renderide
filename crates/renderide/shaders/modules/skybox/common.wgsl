@@ -3,12 +3,10 @@
 #define_import_path renderide::skybox::common
 
 struct SkyboxView {
-    view_x_left: vec4<f32>,
-    view_y_left: vec4<f32>,
-    view_z_left: vec4<f32>,
-    view_x_right: vec4<f32>,
-    view_y_right: vec4<f32>,
-    view_z_right: vec4<f32>,
+    view_left: mat4x4<f32>,
+    view_right: mat4x4<f32>,
+    world_left: mat4x4<f32>,
+    world_right: mat4x4<f32>,
     clear_color: vec4<f32>,
     /// `.x`: ndc Y sign passed to the fragment shader (1.0 normal, -1.0 for offscreen-RT views).
     /// Offscreen-RT views pre-multiply a clip-space Y flip into the world view-projection so the
@@ -53,17 +51,14 @@ fn view_ray_from_ndc(ndc: vec2<f32>, proj_params: vec4<f32>, orthographic: bool)
     return vec3<f32>((ndc.xy + proj_params.zw) / max(abs(proj_params.xy), vec2<f32>(0.000001)), -1.0);
 }
 
-fn world_ray_from_view_ray(view_ray: vec3<f32>, sky: SkyboxView, view_layer: u32) -> vec3<f32> {
-    if (view_layer == 0u) {
-        return normalize(
-            view_ray.x * sky.view_x_left.xyz +
-            view_ray.y * sky.view_y_left.xyz +
-            view_ray.z * sky.view_z_left.xyz
-        );
+fn select_view_proj(view: SkyboxView, view_idx: u32) -> mat4x4<f32> {
+    if (view_idx == 0u) {
+        return view.view_left;
     }
-    return normalize(
-        view_ray.x * sky.view_x_right.xyz +
-        view_ray.y * sky.view_y_right.xyz +
-        view_ray.z * sky.view_z_right.xyz
-    );
+    return view.view_right;
+}
+
+fn world_ray_from_view_ray(view_ray: vec3<f32>, sky: SkyboxView, view_layer: u32) -> vec3<f32> {
+    let view_matrix = select_view_proj(sky, view_layer);
+    return normalize(view_matrix * vec4<f32>(view_ray, 0.0)).xyz;
 }
