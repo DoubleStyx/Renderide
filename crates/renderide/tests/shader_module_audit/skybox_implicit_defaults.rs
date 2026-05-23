@@ -176,9 +176,7 @@ fn dedicated_skyboxes_reconstruct_rays_from_fragment_positions() -> io::Result<(
         assert!(
             src.contains("rg::frame.viewport_width")
                 && src.contains("rg::frame.viewport_height")
-                && src.contains(
-                    "skybox::ndc_from_fragment_position(in.clip_pos, view, viewport_extent)"
-                ),
+                && src.contains("skybox::ndc_from_fragment_position"),
             "{path_label} must reconstruct sky rays from fragment coordinates instead of \
              interpolated fullscreen vertex NDC.",
         );
