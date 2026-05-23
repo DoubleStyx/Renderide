@@ -504,6 +504,8 @@ pub struct ViewFamilyGraphRequirements {
     pub multiview_stereo: bool,
     /// `true` when at least one view can execute the post-processing chain.
     pub any_post_processing: bool,
+    /// `true` when at least one view can execute motion blur.
+    pub any_motion_blur: bool,
     /// `true` when graph topology must remove motion blur for stereo fallback.
     pub disable_motion_blur_for_vr: bool,
 }
@@ -519,8 +521,10 @@ impl ViewFamilyGraphRequirements {
     /// Adds one profile to this aggregate.
     pub fn include_profile(&mut self, profile: RenderPathProfile, multiview_stereo: bool) {
         self.pass_topology = profile.pass_topology;
+        let post_processing = profile.post_processing();
         self.multiview_stereo |= multiview_stereo;
-        self.any_post_processing |= profile.post_processing().is_enabled();
+        self.any_post_processing |= post_processing.is_enabled();
+        self.any_motion_blur |= post_processing.motion_blur;
         self.disable_motion_blur_for_vr |=
             multiview_stereo && profile.disables_motion_blur_when_multiview();
     }
@@ -742,8 +746,10 @@ mod tests {
             false,
         );
         assert!(!requirements.any_post_processing);
+        assert!(!requirements.any_motion_blur);
         requirements.include_profile(RenderPathProfile::desktop_main(), false);
         assert!(requirements.any_post_processing);
+        assert!(requirements.any_motion_blur);
         assert_eq!(
             requirements.pass_topology,
             RenderPathPassTopology::ForwardFull

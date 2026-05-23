@@ -152,8 +152,12 @@ pub struct GraphCommandStats {
     pub opened_render_passes: usize,
     /// Explicit texture copies recorded by graph passes.
     pub copy_count: usize,
+    /// Explicit texture copies skipped because they were no-ops for this frame.
+    pub skipped_copy_count: usize,
     /// Manual or attachment resolves recorded by graph passes.
     pub resolve_count: usize,
+    /// Manual or attachment resolves skipped because they were no-ops for this frame.
+    pub skipped_resolve_count: usize,
     /// Runtime estimate of attachment, copy, and resolve bandwidth in bytes.
     pub estimated_bandwidth_bytes: u64,
 }
@@ -180,7 +184,13 @@ impl GraphCommandStats {
             .opened_render_passes
             .saturating_add(other.opened_render_passes);
         self.copy_count = self.copy_count.saturating_add(other.copy_count);
+        self.skipped_copy_count = self
+            .skipped_copy_count
+            .saturating_add(other.skipped_copy_count);
         self.resolve_count = self.resolve_count.saturating_add(other.resolve_count);
+        self.skipped_resolve_count = self
+            .skipped_resolve_count
+            .saturating_add(other.skipped_resolve_count);
         self.estimated_bandwidth_bytes = self
             .estimated_bandwidth_bytes
             .saturating_add(other.estimated_bandwidth_bytes);
@@ -216,9 +226,37 @@ impl GraphCommandStats {
         self.copy_count = self.copy_count.saturating_add(1);
     }
 
+    /// Adds one skipped explicit copy operation.
+    pub fn record_skipped_copy(&mut self) {
+        self.skipped_copy_count = self.skipped_copy_count.saturating_add(1);
+    }
+
+    /// Records whether a candidate explicit copy emitted GPU commands.
+    pub fn record_copy_result(&mut self, recorded: bool) {
+        if recorded {
+            self.record_copy();
+        } else {
+            self.record_skipped_copy();
+        }
+    }
+
     /// Adds one explicit or manual resolve operation.
     pub fn record_resolve(&mut self) {
         self.resolve_count = self.resolve_count.saturating_add(1);
+    }
+
+    /// Adds one skipped explicit or manual resolve operation.
+    pub fn record_skipped_resolve(&mut self) {
+        self.skipped_resolve_count = self.skipped_resolve_count.saturating_add(1);
+    }
+
+    /// Records whether a candidate explicit or manual resolve emitted GPU commands.
+    pub fn record_resolve_result(&mut self, recorded: bool) {
+        if recorded {
+            self.record_resolve();
+        } else {
+            self.record_skipped_resolve();
+        }
     }
 }
 
@@ -367,5 +405,20 @@ mod tests {
         let handle = ImportedTextureHandle(0);
         bb.insert::<FrameMotionVectorsSlot>(handle);
         assert_eq!(bb.get::<FrameMotionVectorsSlot>().copied(), Some(handle));
+    }
+
+    #[test]
+    fn graph_command_stats_tracks_recorded_and_skipped_copy_resolve_results() {
+        let mut stats = GraphCommandStats::default();
+
+        stats.record_copy_result(true);
+        stats.record_copy_result(false);
+        stats.record_resolve_result(true);
+        stats.record_resolve_result(false);
+
+        assert_eq!(stats.copy_count, 1);
+        assert_eq!(stats.skipped_copy_count, 1);
+        assert_eq!(stats.resolve_count, 1);
+        assert_eq!(stats.skipped_resolve_count, 1);
     }
 }

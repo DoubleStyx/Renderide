@@ -7,6 +7,7 @@ use std::num::NonZeroU32;
 
 use super::node::{PassKind, PassMergeHint, PassWorkloadFlags};
 use super::params::{BlackboardAccessDecl, PassParameterSchema};
+use super::template::{AttachmentOps, AttachmentStoreOp};
 use crate::render_graph::error::SetupError;
 use crate::render_graph::resources::{
     ResourceAccess, TextureAttachmentResolve, TextureAttachmentTarget,
@@ -20,7 +21,7 @@ pub struct RasterColorAttachmentSetup {
     /// Load operation for the attachment.
     pub(crate) load: wgpu::LoadOp<wgpu::Color>,
     /// Store operation for the attachment.
-    pub(crate) store: wgpu::StoreOp,
+    pub(crate) store: AttachmentStoreOp,
     /// Optional MSAA resolve target.
     pub(crate) resolve_to: Option<TextureAttachmentResolve>,
 }
@@ -31,7 +32,7 @@ pub struct RasterDepthAttachmentSetup {
     /// Attachment target.
     pub(crate) target: TextureAttachmentTarget,
     /// Depth operations.
-    pub(crate) depth: wgpu::Operations<f32>,
+    pub(crate) depth: AttachmentOps<f32>,
     /// Optional stencil operations.
     pub(crate) stencil: Option<wgpu::Operations<u32>>,
 }

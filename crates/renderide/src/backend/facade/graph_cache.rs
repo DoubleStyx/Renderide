@@ -74,6 +74,9 @@ impl RenderBackend {
         requirements: ViewFamilyGraphRequirements,
     ) -> PostProcessingSettings {
         let mut effective = settings.clone();
+        if !requirements.any_motion_blur {
+            effective.motion_blur.enabled = false;
+        }
         if requirements.disable_motion_blur_for_vr && !effective.motion_blur.allow_vr {
             effective.motion_blur.enabled = false;
         }

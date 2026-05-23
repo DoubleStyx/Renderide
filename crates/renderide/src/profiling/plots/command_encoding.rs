@@ -88,8 +88,12 @@ pub struct CommandEncodingProfileSample {
     pub graph_opened_render_passes: usize,
     /// Explicit texture copies recorded by the graph.
     pub graph_copy_count: usize,
+    /// Explicit texture copies skipped by the graph.
+    pub graph_skipped_copy_count: usize,
     /// Manual or attachment resolves recorded by the graph.
     pub graph_resolve_count: usize,
+    /// Manual or attachment resolves skipped by the graph.
+    pub graph_skipped_resolve_count: usize,
     /// Estimated render-graph bandwidth in bytes.
     pub graph_estimated_bandwidth_bytes: u64,
 }
@@ -266,8 +270,16 @@ fn plot_render_graph_stats(sample: &CommandEncodingProfileSample) {
         sample.graph_copy_count as f64
     );
     tracy_plot!(
+        "command_encoding::graph_skipped_copy_count",
+        sample.graph_skipped_copy_count as f64
+    );
+    tracy_plot!(
         "command_encoding::graph_resolve_count",
         sample.graph_resolve_count as f64
+    );
+    tracy_plot!(
+        "command_encoding::graph_skipped_resolve_count",
+        sample.graph_skipped_resolve_count as f64
     );
     tracy_plot!(
         "command_encoding::graph_estimated_bandwidth_bytes",

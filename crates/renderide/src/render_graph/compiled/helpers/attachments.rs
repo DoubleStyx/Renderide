@@ -108,7 +108,7 @@ pub(in crate::render_graph::compiled) fn resolve_color_attachments<'a>(
             resolve_target,
             ops: wgpu::Operations {
                 load: color.load,
-                store: color.store,
+                store: color.store.resolve(sample_count),
             },
             depth_slice: None,
         }));
@@ -137,7 +137,7 @@ pub(in crate::render_graph::compiled) fn resolve_depth_attachment_with_stencil<'
     })?;
     Ok(Some(wgpu::RenderPassDepthStencilAttachment {
         view,
-        depth_ops: Some(depth.depth),
+        depth_ops: Some(depth.depth.resolve(sample_count)),
         stencil_ops,
     }))
 }
@@ -192,7 +192,7 @@ pub(in crate::render_graph::compiled) fn coalesce_render_pass_template(
         template
             .color_attachments
             .iter()
-            .all(|color| matches!(color.store, wgpu::StoreOp::Store))
+            .all(|color| color.store.stores_for_all_targets())
     }) {
         return None;
     }
@@ -239,7 +239,7 @@ fn depth_ops_can_be_coalesced(templates: &[RenderPassTemplate]) -> bool {
         template
             .depth_stencil_attachment
             .as_ref()
-            .is_none_or(|depth| matches!(depth.depth.store, wgpu::StoreOp::Store))
+            .is_none_or(|depth| depth.depth.store.stores_for_all_targets())
     })
 }
 

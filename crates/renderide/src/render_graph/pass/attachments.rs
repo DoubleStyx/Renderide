@@ -8,6 +8,7 @@
 
 use super::builder::PassBuilder;
 use super::setup::{RasterColorAttachmentSetup, RasterDepthAttachmentSetup};
+use super::template::{AttachmentOps, AttachmentStoreOp};
 use crate::render_graph::resources::{
     TextureAccess, TextureAttachmentResolve, TextureAttachmentTarget, TextureResourceHandle,
 };
@@ -61,7 +62,7 @@ pub(super) fn declare_color_attachment(
     parent.color_attachments.push(RasterColorAttachmentSetup {
         target,
         load: ops.load,
-        store: ops.store,
+        store: AttachmentStoreOp::static_op(ops.store),
         resolve_to: resolve,
     });
 }
@@ -95,7 +96,7 @@ pub(super) fn declare_depth_attachment(
     }
     parent.depth_stencil_attachment = Some(RasterDepthAttachmentSetup {
         target,
-        depth,
+        depth: AttachmentOps::from_operations(depth),
         stencil,
     });
 }

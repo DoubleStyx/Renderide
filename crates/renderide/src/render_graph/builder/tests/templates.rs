@@ -143,7 +143,10 @@ fn final_transient_attachment_store_is_discarded() -> Result<(), GraphBuildError
         .as_ref()
         .expect("raster template");
 
-    assert_eq!(template.color_attachments[0].store, wgpu::StoreOp::Discard);
+    assert_eq!(
+        template.color_attachments[0].store,
+        AttachmentStoreOp::static_op(wgpu::StoreOp::Discard)
+    );
     assert_eq!(g.compile_stats.transient_attachment_discard_count, 1);
     Ok(())
 }
@@ -164,8 +167,100 @@ fn transient_attachment_store_is_preserved_for_later_reader() -> Result<(), Grap
         .as_ref()
         .expect("raster template");
 
-    assert_eq!(template.color_attachments[0].store, wgpu::StoreOp::Store);
+    assert_eq!(
+        template.color_attachments[0].store,
+        AttachmentStoreOp::static_op(wgpu::StoreOp::Store)
+    );
     assert_eq!(g.compile_stats.transient_attachment_store_count, 1);
+    Ok(())
+}
+
+#[test]
+fn final_frame_sampled_color_discards_only_transient_msaa_lane() -> Result<(), GraphBuildError> {
+    let mut b = GraphBuilder::new();
+    let color = b.import_texture(backbuffer_import());
+    let resolve = b.import_texture(backbuffer_import());
+    let msaa_color = b.create_texture(frame_sampled_tex_desc("msaa-color"));
+    let mut pass = TestRasterPass::new("frame-sampled-final", color);
+    pass.frame_sampled_color = Some((color.into(), msaa_color.into(), Some(resolve.into())));
+    b.add_raster_pass(Box::new(pass));
+
+    let g = b.build()?;
+    let template = g.pass_info[0]
+        .raster_template
+        .as_ref()
+        .expect("raster template");
+
+    assert_eq!(
+        template.color_attachments[0].store,
+        AttachmentStoreOp::frame_sampled(wgpu::StoreOp::Store, wgpu::StoreOp::Discard)
+    );
+    assert_eq!(g.compile_stats.transient_attachment_discard_count, 1);
+    assert_eq!(g.compile_stats.transient_attachment_store_count, 0);
+    assert_eq!(g.compile_stats.attachment_resolve_count, 1);
+    Ok(())
+}
+
+#[test]
+fn frame_sampled_color_preserves_transient_msaa_lane_for_later_reader()
+-> Result<(), GraphBuildError> {
+    let mut b = GraphBuilder::new();
+    let color = b.import_texture(backbuffer_import());
+    let msaa_color = b.create_texture(frame_sampled_tex_desc("msaa-color"));
+    let mut write = TestRasterPass::new("frame-sampled-write", color);
+    write.frame_sampled_color = Some((color.into(), msaa_color.into(), None));
+    b.add_raster_pass(Box::new(write));
+    let mut export = TestRasterPass::new("export", color);
+    export.texture_reads.push(msaa_color);
+    b.add_raster_pass(Box::new(export));
+
+    let g = b.build()?;
+    let template = g.pass_info[0]
+        .raster_template
+        .as_ref()
+        .expect("raster template");
+
+    assert_eq!(
+        template.color_attachments[0].store,
+        AttachmentStoreOp::static_op(wgpu::StoreOp::Store)
+    );
+    assert_eq!(g.compile_stats.transient_attachment_store_count, 1);
+    Ok(())
+}
+
+#[test]
+fn final_frame_sampled_depth_discards_only_transient_msaa_lane() -> Result<(), GraphBuildError> {
+    let mut b = GraphBuilder::new();
+    let color = b.import_texture(backbuffer_import());
+    let depth = b.import_texture(depth_import());
+    let msaa_depth = b.create_texture(TransientTextureDesc::frame_sampled_texture_2d(
+        "msaa-depth",
+        wgpu::TextureFormat::Depth32Float,
+        TransientExtent::Custom {
+            width: 64,
+            height: 64,
+        },
+        wgpu::TextureUsages::empty(),
+    ));
+    let mut pass = TestRasterPass::new("frame-sampled-depth", color);
+    pass.frame_sampled_depth = Some((depth.into(), msaa_depth.into()));
+    b.add_raster_pass(Box::new(pass));
+
+    let g = b.build()?;
+    let template = g.pass_info[0]
+        .raster_template
+        .as_ref()
+        .expect("raster template");
+    let depth = template
+        .depth_stencil_attachment
+        .as_ref()
+        .expect("depth template");
+
+    assert_eq!(
+        depth.depth.store,
+        AttachmentStoreOp::frame_sampled(wgpu::StoreOp::Store, wgpu::StoreOp::Discard)
+    );
+    assert_eq!(g.compile_stats.transient_attachment_discard_count, 1);
     Ok(())
 }
 

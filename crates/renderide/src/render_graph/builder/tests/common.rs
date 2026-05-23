@@ -5,8 +5,8 @@ pub(super) use crate::render_graph::context::{ComputePassCtx, EncoderPassCtx, Ra
 pub(super) use crate::render_graph::error::{GraphBuildError, RenderPassError, SetupError};
 pub(super) use crate::render_graph::ids::PassId;
 pub(super) use crate::render_graph::pass::{
-    ComputePass, EncoderPass, GroupScope, PassBuilder, PassMergeHint, PassPhase, PassWorkloadFlags,
-    RasterPass,
+    AttachmentStoreOp, ComputePass, EncoderPass, GroupScope, PassBuilder, PassMergeHint, PassPhase,
+    PassWorkloadFlags, RasterPass,
 };
 pub(super) use crate::render_graph::resources::{
     BufferAccess, BufferHandle, BufferImportSource, BufferSizePolicy, FrameTargetRole,

@@ -191,7 +191,9 @@ impl CommandEncodingDiagnostics {
             graph_recorded_encoder_passes: self.command_stats.recorded_encoder_passes,
             graph_opened_render_passes: self.command_stats.opened_render_passes,
             graph_copy_count: self.command_stats.copy_count,
+            graph_skipped_copy_count: self.command_stats.skipped_copy_count,
             graph_resolve_count: self.command_stats.resolve_count,
+            graph_skipped_resolve_count: self.command_stats.skipped_resolve_count,
             graph_estimated_bandwidth_bytes: self
                 .scheduler_estimated_bandwidth_bytes
                 .saturating_add(self.command_stats.estimated_bandwidth_bytes),
@@ -222,7 +224,7 @@ impl CommandEncodingDiagnostics {
             return;
         }
         logger::warn!(
-            "slow command encoder finish: max_finish_ms={:.3} frame_global_finish_ms={:.3} per_view_max_finish_ms={:.3} upload_finish_ms={:.3} views={} command_buffers={} passes(frame_global/per_view)={}/{} scheduler(passes/registered/culled/compile_skipped/waves/largest_wave/submit_steps/upload_phases/resource_events/import_finals/merge_groups/materialized_groups/attachment_resolves/transient_store/transient_discard/bandwidth_bytes)={}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{} transients(textures/slots/texture_lanes/buffer_lanes)={}/{}/{}/{} validation(diagnostics/parameter_schemas)={}/{} transient_misses(tex/buf)={}/{} uploads(writes/bytes/staged/fallback)={}/{}/{}/{} upload_arena(persistent_bytes/temp_bytes/reuses/grows/temp_fallbacks/oversized_queue/capacity/free/inflight/remapping)={}/{}/{}/{}/{}/{}/{}/{}/{}/{} timings_ms(pre_resolve/prepare/frame_global_encode/per_view_encode/upload_drain/assemble/submit)={:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3} commands(draws/instance_batches/pipeline_pass_submits/skipped/raster/compute/encoder/render_passes/copies/resolves/bandwidth_bytes)={}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
+            "slow command encoder finish: max_finish_ms={:.3} frame_global_finish_ms={:.3} per_view_max_finish_ms={:.3} upload_finish_ms={:.3} views={} command_buffers={} passes(frame_global/per_view)={}/{} scheduler(passes/registered/culled/compile_skipped/waves/largest_wave/submit_steps/upload_phases/resource_events/import_finals/merge_groups/materialized_groups/attachment_resolves/transient_store/transient_discard/bandwidth_bytes)={}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{} transients(textures/slots/texture_lanes/buffer_lanes)={}/{}/{}/{} validation(diagnostics/parameter_schemas)={}/{} transient_misses(tex/buf)={}/{} uploads(writes/bytes/staged/fallback)={}/{}/{}/{} upload_arena(persistent_bytes/temp_bytes/reuses/grows/temp_fallbacks/oversized_queue/capacity/free/inflight/remapping)={}/{}/{}/{}/{}/{}/{}/{}/{}/{} timings_ms(pre_resolve/prepare/frame_global_encode/per_view_encode/upload_drain/assemble/submit)={:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3} commands(draws/instance_batches/pipeline_pass_submits/skipped/raster/compute/encoder/render_passes/copies/skipped_copies/resolves/skipped_resolves/bandwidth_bytes)={}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
             max_finish_ms,
             self.frame_global_finish_ms,
             self.per_view_max_finish_ms,
@@ -285,7 +287,9 @@ impl CommandEncodingDiagnostics {
             self.command_stats.recorded_encoder_passes,
             self.command_stats.opened_render_passes,
             self.command_stats.copy_count,
+            self.command_stats.skipped_copy_count,
             self.command_stats.resolve_count,
+            self.command_stats.skipped_resolve_count,
             self.scheduler_estimated_bandwidth_bytes
                 .saturating_add(self.command_stats.estimated_bandwidth_bytes),
         );

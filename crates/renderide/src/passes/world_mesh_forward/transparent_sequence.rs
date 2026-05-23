@@ -247,12 +247,11 @@ fn resolve_for_grab_snapshot(
             profiler: ctx.profiler,
             label: "WorldMeshForwardTransparentSequencePreGrabResolve",
         })?;
-    if resolved
-        && let Some(stats) = ctx
-            .blackboard
-            .get_mut::<crate::render_graph::blackboard::GraphCommandStatsSlot>()
+    if let Some(stats) = ctx
+        .blackboard
+        .get_mut::<crate::render_graph::blackboard::GraphCommandStatsSlot>()
     {
-        stats.record_resolve();
+        stats.record_resolve_result(resolved);
         stats.record_opened_render_pass();
     }
     Ok(())
@@ -271,12 +270,11 @@ fn copy_grab_snapshot(
         resources,
         ctx.profiler,
     );
-    if copied
-        && let Some(stats) = ctx
-            .blackboard
-            .get_mut::<crate::render_graph::blackboard::GraphCommandStatsSlot>()
+    if let Some(stats) = ctx
+        .blackboard
+        .get_mut::<crate::render_graph::blackboard::GraphCommandStatsSlot>()
     {
-        stats.record_copy();
+        stats.record_copy_result(copied);
     }
     copied
 }
@@ -326,12 +324,11 @@ fn copy_named_grab_snapshot(
     if let (Some(profiler), Some(query)) = (ctx.profiler, copy_query) {
         profiler.end_query(ctx.encoder, query);
     }
-    if copied
-        && let Some(stats) = ctx
-            .blackboard
-            .get_mut::<crate::render_graph::blackboard::GraphCommandStatsSlot>()
+    if let Some(stats) = ctx
+        .blackboard
+        .get_mut::<crate::render_graph::blackboard::GraphCommandStatsSlot>()
     {
-        stats.record_copy();
+        stats.record_copy_result(copied);
     }
     copied
 }
@@ -376,12 +373,11 @@ fn final_resolve_after_tail(
             profiler: ctx.profiler,
             label: "WorldMeshForwardTransparentSequenceFinalResolve",
         })?;
-    if resolved
-        && let Some(stats) = ctx
-            .blackboard
-            .get_mut::<crate::render_graph::blackboard::GraphCommandStatsSlot>()
+    if let Some(stats) = ctx
+        .blackboard
+        .get_mut::<crate::render_graph::blackboard::GraphCommandStatsSlot>()
     {
-        stats.record_resolve();
+        stats.record_resolve_result(resolved);
         stats.record_opened_render_pass();
     }
     Ok(())

@@ -96,8 +96,8 @@ impl CompiledRenderGraph {
             .get::<GraphCommandStatsSlot>()
             .copied()
             .unwrap_or_default();
-        if offscreen_copy_recorded {
-            command_stats.record_copy();
+        if resolved.offscreen_color_copy.is_some() {
+            command_stats.record_copy_result(offscreen_copy_recorded);
         }
         let hud_outputs = view_blackboard.take::<PerViewHudOutputsSlot>();
         let encode_ms = elapsed_ms(encode_start);

@@ -430,15 +430,15 @@ impl ComputePass for WorldMeshDepthSnapshotPass {
         );
         if recorded {
             prepared.depth_snapshot_recorded = true;
-            if let Some(stats) =
-                ctx.blackboard
-                    .get_mut::<crate::render_graph::blackboard::GraphCommandStatsSlot>()
-            {
-                if frame.view.sample_count > 1 {
-                    stats.record_resolve();
-                }
-                stats.record_copy();
+        }
+        if let Some(stats) = ctx
+            .blackboard
+            .get_mut::<crate::render_graph::blackboard::GraphCommandStatsSlot>()
+        {
+            if frame.view.sample_count > 1 {
+                stats.record_resolve_result(recorded);
             }
+            stats.record_copy_result(recorded);
         }
         ctx.blackboard.insert::<WorldMeshForwardPlanSlot>(prepared);
         Ok(())
@@ -608,12 +608,11 @@ impl ComputePass for WorldMeshForwardDepthResolvePass {
             msaa_depth_resolve.as_deref(),
             ctx.profiler,
         );
-        if resolved
-            && let Some(stats) =
-                ctx.blackboard
-                    .get_mut::<crate::render_graph::blackboard::GraphCommandStatsSlot>()
+        if let Some(stats) = ctx
+            .blackboard
+            .get_mut::<crate::render_graph::blackboard::GraphCommandStatsSlot>()
         {
-            stats.record_resolve();
+            stats.record_resolve_result(resolved);
         }
         Ok(())
     }

@@ -37,4 +37,6 @@ pub use params::{
 };
 pub use raster::RasterPass;
 pub use setup::PassSetup;
-pub use template::{ColorAttachmentTemplate, DepthAttachmentTemplate, RenderPassTemplate};
+pub use template::{
+    AttachmentStoreOp, ColorAttachmentTemplate, DepthAttachmentTemplate, RenderPassTemplate,
+};

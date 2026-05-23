@@ -7,7 +7,7 @@ use crate::config::{
     GtaoSettings, PostProcessingSettings, RendererSettings, TonemapMode, TonemapSettings,
 };
 use crate::render_graph::{
-    GraphCacheKey, RenderPathProfile, ViewFamilyGraphRequirements,
+    GraphCacheKey, RenderPathProfile, ViewFamilyGraphRequirements, ViewPostProcessing,
     post_process_chain::PostProcessChainSignature,
 };
 use hashbrown::HashMap;
@@ -38,6 +38,13 @@ fn xr_requirements() -> ViewFamilyGraphRequirements {
 
 fn headless_requirements() -> ViewFamilyGraphRequirements {
     ViewFamilyGraphRequirements::from_profile(RenderPathProfile::headless_main(), false)
+}
+
+fn camera_readback_without_motion_blur_requirements() -> ViewFamilyGraphRequirements {
+    ViewFamilyGraphRequirements::from_profile(
+        RenderPathProfile::camera_readback(ViewPostProcessing::new(true, true, false)),
+        false,
+    )
 }
 
 fn limits_with_format_usage(
@@ -180,6 +187,33 @@ fn multiview_motion_blur_is_opt_in() {
     backend.renderer_settings = Some(settings_handle(settings));
 
     backend.ensure_frame_graph_in_sync(xr_requirements());
+
+    assert!(cached_graph_key(&backend).post_processing.motion_blur);
+}
+
+#[test]
+fn post_processing_camera_without_motion_blur_omits_motion_blur_topology() {
+    let mut backend = RenderBackend::new();
+    backend.renderer_settings = Some(settings_handle(PostProcessingSettings::default()));
+
+    backend.ensure_frame_graph_in_sync(camera_readback_without_motion_blur_requirements());
+
+    let key = cached_graph_key(&backend);
+    assert!(key.post_processing.active_count() > 0);
+    assert!(
+        !key.post_processing.motion_blur,
+        "camera/readback graph should omit motion blur when every view disables it"
+    );
+}
+
+#[test]
+fn mixed_view_family_retains_motion_blur_when_any_view_can_use_it() {
+    let mut backend = RenderBackend::new();
+    backend.renderer_settings = Some(settings_handle(PostProcessingSettings::default()));
+    let mut requirements = camera_readback_without_motion_blur_requirements();
+    requirements.include_profile(RenderPathProfile::desktop_main(), false);
+
+    backend.ensure_frame_graph_in_sync(requirements);
 
     assert!(cached_graph_key(&backend).post_processing.motion_blur);
 }

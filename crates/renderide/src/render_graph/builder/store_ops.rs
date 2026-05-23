@@ -3,6 +3,7 @@
 use hashbrown::HashMap;
 
 use super::decl::SetupEntry;
+use crate::render_graph::pass::AttachmentStoreOp;
 use crate::render_graph::resources::{
     ResourceHandle, SubresourceHandle, TextureAttachmentResolve, TextureAttachmentTarget,
     TextureHandle, TextureResourceHandle, TransientSubresourceDesc,
@@ -38,17 +39,20 @@ pub(super) fn optimize_transient_attachment_stores(
             continue;
         };
         for color in &mut entry.setup.color_attachments {
-            if attachment_target_final_transient_use(color.target, ordinal, &last_use_by_texture) {
-                color.store = wgpu::StoreOp::Discard;
-            }
+            color.store = optimized_store_for_target(
+                color.target,
+                ordinal,
+                &last_use_by_texture,
+                color.store,
+            );
         }
-        if let Some(depth) = entry.setup.depth_stencil_attachment.as_mut()
-            && attachment_target_final_transient_use(depth.target, ordinal, &last_use_by_texture)
-        {
-            depth.depth.store = wgpu::StoreOp::Discard;
-            if let Some(stencil) = depth.stencil.as_mut() {
-                stencil.store = wgpu::StoreOp::Discard;
-            }
+        if let Some(depth) = entry.setup.depth_stencil_attachment.as_mut() {
+            depth.depth.store = optimized_store_for_target(
+                depth.target,
+                ordinal,
+                &last_use_by_texture,
+                depth.depth.store,
+            );
         }
     }
     collect_store_stats(setups, retained_ord)
@@ -98,19 +102,51 @@ fn transient_texture_for_subresource(
     subresources.get(handle.index()).map(|desc| desc.parent)
 }
 
-fn attachment_target_final_transient_use(
+fn optimized_store_for_target(
     target: TextureAttachmentTarget,
     ordinal: usize,
     last_use_by_texture: &HashMap<TextureHandle, usize>,
-) -> bool {
+    current: AttachmentStoreOp,
+) -> AttachmentStoreOp {
     match target {
-        TextureAttachmentTarget::Resource(TextureResourceHandle::Transient(handle)) => {
-            last_use_by_texture
+        TextureAttachmentTarget::Resource(handle) => AttachmentStoreOp::static_op(
+            optimized_store_for_resource(handle, ordinal, last_use_by_texture, current.resolve(1)),
+        ),
+        TextureAttachmentTarget::FrameSampled {
+            single_sample,
+            multisampled,
+        } => AttachmentStoreOp::frame_sampled(
+            optimized_store_for_resource(
+                single_sample,
+                ordinal,
+                last_use_by_texture,
+                current.resolve(1),
+            ),
+            optimized_store_for_resource(
+                multisampled,
+                ordinal,
+                last_use_by_texture,
+                current.resolve(2),
+            ),
+        ),
+    }
+}
+
+fn optimized_store_for_resource(
+    handle: TextureResourceHandle,
+    ordinal: usize,
+    last_use_by_texture: &HashMap<TextureHandle, usize>,
+    current: wgpu::StoreOp,
+) -> wgpu::StoreOp {
+    match handle {
+        TextureResourceHandle::Transient(handle)
+            if last_use_by_texture
                 .get(&handle)
-                .is_some_and(|&last| last == ordinal)
+                .is_some_and(|&last| last == ordinal) =>
+        {
+            wgpu::StoreOp::Discard
         }
-        TextureAttachmentTarget::Resource(TextureResourceHandle::Imported(_)) => false,
-        TextureAttachmentTarget::FrameSampled { .. } => false,
+        TextureResourceHandle::Transient(_) | TextureResourceHandle::Imported(_) => current,
     }
 }
 
@@ -127,34 +163,53 @@ fn collect_store_stats(
             stats.attachment_resolve_count = stats
                 .attachment_resolve_count
                 .saturating_add(usize::from(color.resolve_to.is_some()));
-            if attachment_target_is_transient(color.target) {
-                add_store_stat(&mut stats, color.store, COLOR_ATTACHMENT_PIXEL_BYTES);
-            }
+            add_target_store_stats(
+                &mut stats,
+                color.target,
+                color.store,
+                COLOR_ATTACHMENT_PIXEL_BYTES,
+            );
             if color.resolve_to.is_some_and(resolve_target_is_transient) {
                 stats.estimated_bandwidth_bytes = stats
                     .estimated_bandwidth_bytes
                     .saturating_add(COLOR_ATTACHMENT_PIXEL_BYTES);
             }
         }
-        if let Some(depth) = entry.setup.depth_stencil_attachment.as_ref()
-            && attachment_target_is_transient(depth.target)
-        {
-            add_store_stat(&mut stats, depth.depth.store, DEPTH_ATTACHMENT_PIXEL_BYTES);
+        if let Some(depth) = entry.setup.depth_stencil_attachment.as_ref() {
+            add_target_store_stats(
+                &mut stats,
+                depth.target,
+                depth.depth.store,
+                DEPTH_ATTACHMENT_PIXEL_BYTES,
+            );
         }
     }
     stats
 }
 
-fn attachment_target_is_transient(target: TextureAttachmentTarget) -> bool {
+fn add_target_store_stats(
+    stats: &mut TransientAttachmentStoreStats,
+    target: TextureAttachmentTarget,
+    store: AttachmentStoreOp,
+    pixel_bytes: u64,
+) {
     match target {
-        TextureAttachmentTarget::Resource(TextureResourceHandle::Transient(_)) => true,
-        TextureAttachmentTarget::Resource(TextureResourceHandle::Imported(_)) => false,
+        TextureAttachmentTarget::Resource(TextureResourceHandle::Transient(_)) => {
+            add_store_stat(stats, store.resolve(1), pixel_bytes);
+        }
+        TextureAttachmentTarget::Resource(TextureResourceHandle::Imported(_)) => {}
         TextureAttachmentTarget::FrameSampled {
             single_sample,
             multisampled,
         } => {
-            matches!(single_sample, TextureResourceHandle::Transient(_))
-                || matches!(multisampled, TextureResourceHandle::Transient(_))
+            if matches!(single_sample, TextureResourceHandle::Transient(_)) {
+                add_store_stat(stats, store.resolve(1), pixel_bytes);
+            }
+            if single_sample != multisampled
+                && matches!(multisampled, TextureResourceHandle::Transient(_))
+            {
+                add_store_stat(stats, store.resolve(2), pixel_bytes);
+            }
         }
     }
 }

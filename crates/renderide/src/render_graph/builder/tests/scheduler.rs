@@ -222,3 +222,30 @@ fn merge_groups_detect_only_compatible_adjacent_raster_passes() -> Result<(), Gr
     assert!(g.schedule.render_pass_merge_groups.is_empty());
     Ok(())
 }
+
+#[test]
+fn merge_groups_allow_final_dynamic_frame_sampled_discard() -> Result<(), GraphBuildError> {
+    let mut b = GraphBuilder::new();
+    let color = b.import_texture(backbuffer_import());
+    let msaa_color = b.create_texture(frame_sampled_tex_desc("msaa-color"));
+    let mut first = TestRasterPass::new("first", color);
+    first.frame_sampled_color = Some((color.into(), msaa_color.into(), None));
+    let mut second = TestRasterPass::new("second", color);
+    second.frame_sampled_color = Some((color.into(), msaa_color.into(), None));
+    b.add_raster_pass(Box::new(first));
+    b.add_raster_pass(Box::new(second));
+
+    let g = b.build()?;
+
+    assert_eq!(g.compile_stats.render_pass_merge_groups, 1);
+    assert_eq!(
+        g.pass_info[1]
+            .raster_template
+            .as_ref()
+            .expect("second raster template")
+            .color_attachments[0]
+            .store,
+        AttachmentStoreOp::frame_sampled(wgpu::StoreOp::Store, wgpu::StoreOp::Discard)
+    );
+    Ok(())
+}
