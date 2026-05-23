@@ -151,7 +151,7 @@ pub fn embedded_stem_uses_raw_tangent_payload(base_stem: &str) -> bool {
 
 /// `true` when `@location(1)` carries raw shader payload rather than a lighting normal.
 pub fn embedded_stem_uses_raw_normal_payload(base_stem: &str) -> bool {
-    matches!(canonical_stem_name(base_stem), "ui_textunlit")
+    matches!(canonical_stem_name(base_stem), "textunlit" | "ui_textunlit")
 }
 
 /// `true` when the stem should fall back to transparent UI state until host state arrives.
@@ -319,9 +319,9 @@ mod tests {
             "pbsmetallic_default"
         ));
 
-        assert!(embedded_stem_uses_raw_normal_payload(
-            "ui_textunlit_default"
-        ));
+        for stem in ["textunlit_default", "ui_textunlit_default"] {
+            assert!(embedded_stem_uses_raw_normal_payload(stem), "{stem}");
+        }
         assert!(!embedded_stem_uses_raw_normal_payload("unlit_default"));
     }
 

@@ -67,6 +67,22 @@ fn text_shaders_route_font_extra_data_through_normal_stream() -> io::Result<()> 
 }
 
 #[test]
+fn text_shaders_keep_filter_pass_metadata_for_unity_alpha_max() -> io::Result<()> {
+    for file_name in ["ui_textunlit.wgsl", "textunlit.wgsl"] {
+        let src = material_source(file_name)?;
+        assert!(
+            src.contains("//#pass type=forward name=forward_filter blend=material_filter"),
+            "{file_name} must preserve the source text pass blend state"
+        );
+        assert!(
+            !src.contains("//#pass type=forward\n"),
+            "{file_name} must not fall back to the generic opaque forward pass"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn text_outline_keyword_uses_per_glyph_width_even_when_material_size_is_zero() -> io::Result<()> {
     let module_src = source_file(manifest_dir().join("shaders/modules/material/text_sdf.wgsl"))?;
     assert!(

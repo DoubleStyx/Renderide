@@ -228,8 +228,8 @@ fn volume_stems_use_volume_front_pass() {
     }
 }
 
-/// Asserts that a UI unlit stem uses material-controlled filter pass state.
-fn assert_ui_unlit_filter_pass(stem: &str) {
+/// Asserts that a stem uses material-controlled filter pass state.
+fn assert_material_filter_pass(stem: &str) {
     let passes = crate::embedded_shaders::embedded_target_passes(stem);
     assert_eq!(passes.len(), 1, "{stem}");
     assert_eq!(passes[0].name, "forward_filter", "{stem}");
@@ -291,15 +291,16 @@ fn assert_ui_unlit_filter_pass(stem: &str) {
     assert_eq!(bias.slope_scale, -1.0, "{stem}");
 }
 
-/// Verifies UI unlit stems keep Unity-style filter render state.
+/// Verifies unlit/text stems keep Unity-style filter render state.
 #[test]
-fn ui_unlit_stems_use_filter_pass_material_state() {
+fn unlit_text_stems_use_filter_pass_material_state() {
     for stem in [
+        "textunlit_default",
         "ui_unlit_default",
         "ui_textunlit_default",
         "ui_circlesegment_default",
     ] {
-        assert_ui_unlit_filter_pass(stem);
+        assert_material_filter_pass(stem);
     }
 }
 

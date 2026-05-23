@@ -80,7 +80,7 @@ fn vs_main(
     return out;
 }
 
-//#pass type=forward
+//#pass type=forward name=forward_filter blend=material_filter
 @fragment
 fn fs_main(vout: VertexOutput) -> @location(0) vec4<f32> {
     let vtx_color = vout.vtx_color;
