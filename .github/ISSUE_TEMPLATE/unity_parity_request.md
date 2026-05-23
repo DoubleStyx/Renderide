@@ -8,13 +8,13 @@ assignees: ""
 
 **Summary**
 
-**Comparison steps / context**
+**Reproduction Steps**
 
 1.
 2.
 3.
 
-**Unity / Renderide**
+**Unity vs Renderide Behavior**
 
 Unity:
 
