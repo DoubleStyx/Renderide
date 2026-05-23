@@ -12,19 +12,19 @@ use super::artifacts::artifact_dir_from_out_dir;
 /// `cargo:rerun-if-changed` is emitted for the source directory so new assets trigger a rebuild copy.
 pub fn copy_assets_to_artifact_dir(manifest_dir: &Path, out_dir: &Path) {
     let src_root = manifest_dir.join("assets");
-    println!("cargo::rerun-if-changed={}", src_root.display());
+    println!("cargo:rerun-if-changed={}", src_root.display());
     if !src_root.is_dir() {
         return;
     }
 
     let Some(dest_root_parent) = artifact_dir_from_out_dir(out_dir) else {
-        println!("cargo::warning=assets: cannot derive artifact dir from OUT_DIR");
+        println!("cargo:warning=assets: cannot derive artifact dir from OUT_DIR");
         return;
     };
     let dest_root = dest_root_parent.join("assets");
     if let Err(e) = fs::create_dir_all(&dest_root) {
         println!(
-            "cargo::warning=assets: mkdir {} failed: {e}",
+            "cargo:warning=assets: mkdir {} failed: {e}",
             dest_root.display()
         );
         return;
@@ -32,7 +32,7 @@ pub fn copy_assets_to_artifact_dir(manifest_dir: &Path, out_dir: &Path) {
 
     let Ok(entries) = fs::read_dir(&src_root) else {
         println!(
-            "cargo::warning=assets: read_dir {} failed",
+            "cargo:warning=assets: read_dir {} failed",
             src_root.display()
         );
         return;
@@ -51,14 +51,14 @@ pub fn copy_assets_to_artifact_dir(manifest_dir: &Path, out_dir: &Path) {
 fn copy_asset_dir_to_artifact_dir(src_dir: &Path, out_dir: &Path) {
     let Ok(entries) = fs::read_dir(src_dir) else {
         println!(
-            "cargo::warning=assets: read_dir {} failed",
+            "cargo:warning=assets: read_dir {} failed",
             src_dir.display()
         );
         return;
     };
     if let Err(e) = fs::create_dir_all(out_dir) {
         println!(
-            "cargo::warning=assets: mkdir {} failed: {e}",
+            "cargo:warning=assets: mkdir {} failed: {e}",
             out_dir.display()
         );
         return;
@@ -82,7 +82,7 @@ fn copy_asset_dir_to_artifact_dir(src_dir: &Path, out_dir: &Path) {
         let dest = out_dir.join(file_name);
         if let Err(e) = fs::copy(&path, &dest) {
             println!(
-                "cargo::warning=assets: copy {} -> {} failed: {e}",
+                "cargo:warning=assets: copy {} -> {} failed: {e}",
                 path.display(),
                 dest.display()
             );
