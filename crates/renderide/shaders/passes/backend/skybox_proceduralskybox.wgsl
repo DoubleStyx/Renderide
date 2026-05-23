@@ -52,21 +52,31 @@ fn vs_main(
         out.sky_color = vec3<f32>(0.0);
         out.sun_color = vec3<f32>(0.0);
         out.ray = vec3<f32>(0.0);
-    } else {
-        // Actual mesh
-        let world_ray = -normalize(pos);
-        let view_ray = view_ray_from_world_ray(world_ray, view_layer);
-        let proj_params = select(rg::frame.proj_params_left, rg::frame.proj_params_right, view_layer != 0u);
-        out.clip_pos = clip_pos_from_view_ray(view_ray, proj_params, skybox::view_is_orthographic(view, view_layer));
-
-        let ps_params = psmat::params();
-        let scattering_params = ps::scattering_parameters(ps_params);
-        let terms = ps::visible_vertex_terms(ps_params, scattering_params, world_ray);
-        out.ground_color = terms.ground_color;
-        out.sky_color = terms.sky_color;
-        out.sun_color = terms.sun_color;
-        out.ray = terms.ray;
+        return out;
     }
+
+    // Actual mesh
+    let world_ray = -normalize(pos);
+    let view_ray = view_ray_from_world_ray(world_ray, view_layer);
+    let proj_params = select(rg::frame.proj_params_left, rg::frame.proj_params_right, view_layer != 0u);
+    out.clip_pos = clip_pos_from_view_ray(view_ray, proj_params, skybox::view_is_orthographic(view, view_layer));
+
+    if (out.clip_pos.z >= 1) {
+        // Will be culled in fragment shader, no need to compute
+        out.ground_color = vec3<f32>(0.0);
+        out.sky_color = vec3<f32>(0.0);
+        out.sun_color = vec3<f32>(0.0);
+        out.ray = vec3<f32>(0.0);
+        return out;
+    }
+
+    let ps_params = psmat::params();
+    let scattering_params = ps::scattering_parameters(ps_params);
+    let terms = ps::visible_vertex_terms(ps_params, scattering_params, world_ray);
+    out.ground_color = terms.ground_color;
+    out.sky_color = terms.sky_color;
+    out.sun_color = terms.sun_color;
+    out.ray = terms.ray;
     return out;
 }
 
