@@ -13,9 +13,10 @@
 //! for downstream bloom and tonemap to consume.
 //!
 //! The transparent sequence pass uses the cached fullscreen resolve internally before each
-//! grab-pass snapshot and after the transparent tail. The main graph no longer brackets grab
-//! materials with one global pre-grab snapshot. When MSAA is off, forward passes write directly to
-//! the single-sample `scene_color_hdr` and the resolve draw is skipped.
+//! grab-pass snapshot and for the final scene-color handoff, including opaque-only MSAA frames.
+//! The main graph no longer brackets grab materials with one global pre-grab snapshot. When MSAA is
+//! off, forward passes write directly to the single-sample `scene_color_hdr` and the resolve draw is
+//! skipped.
 
 mod pipeline;
 

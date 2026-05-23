@@ -47,6 +47,26 @@ pub(in crate::passes::world_mesh_forward) fn forward_transparent_sequence_needed
     opaque_recorded && (!plan.phase_is_empty(transparent_phase) || !plan.phase_is_empty(grab_phase))
 }
 
+/// Returns whether this pass must record either transparent work or the final MSAA color resolve.
+fn transparent_sequence_pass_needed(
+    opaque_recorded: bool,
+    plan: &InstancePlan,
+    msaa_enabled: bool,
+    sample_count: u32,
+) -> bool {
+    forward_transparent_sequence_needed(opaque_recorded, plan)
+        || final_scene_color_resolve_needed(opaque_recorded, msaa_enabled, sample_count)
+}
+
+/// Returns whether the MSAA color attachment must be resolved for downstream scene-color sampling.
+fn final_scene_color_resolve_needed(
+    opaque_recorded: bool,
+    msaa_enabled: bool,
+    sample_count: u32,
+) -> bool {
+    opaque_recorded && msaa_enabled && sample_count > 1
+}
+
 fn transparent_sequence_phase_pair() -> (WorldMeshPhase, WorldMeshPhase) {
     match MeshPassKind::TransparentSequence.phases() {
         [transparent, grab] => (*transparent, *grab),
@@ -115,6 +135,23 @@ fn next_sequence_entry_is_post(plan: &InstancePlan, post_idx: usize, grab_idx: u
         return true;
     };
     post.representative_draw_idx <= grab.representative_draw_idx
+}
+
+/// Advances a pending transparent-post run when the next sorted item is a post group.
+fn advance_pending_post_run(
+    plan: &InstancePlan,
+    post_idx: &mut usize,
+    grab_idx: usize,
+    pending_post_start: &mut Option<usize>,
+) -> bool {
+    if !next_sequence_entry_is_post(plan, *post_idx, grab_idx) {
+        return false;
+    }
+    if pending_post_start.is_none() {
+        *pending_post_start = Some(*post_idx);
+    }
+    *post_idx += 1;
+    true
 }
 
 fn color_resolve_resources(
@@ -232,10 +269,26 @@ fn flush_post_groups(
     )
 }
 
+/// Flushes an optional pending transparent-post run and reports whether it had any groups.
+fn flush_optional_post_groups(
+    ctx: &mut EncoderPassCtx<'_, '_, '_>,
+    prepared: &PreparedWorldMeshForwardFrame,
+    resources: WorldMeshForwardGraphResources,
+    start: Option<usize>,
+    end: usize,
+    frame_bind_group: &Arc<wgpu::BindGroup>,
+) -> Result<Option<bool>, RenderPassError> {
+    let flushed = start.is_some();
+    if !flush_post_groups(ctx, prepared, resources, start, end, frame_bind_group)? {
+        return Ok(None);
+    }
+    Ok(Some(flushed))
+}
+
 fn resolve_for_grab_snapshot(
     ctx: &mut EncoderPassCtx<'_, '_, '_>,
     resources: WorldMeshForwardGraphResources,
-) -> Result<(), RenderPassError> {
+) -> Result<bool, RenderPassError> {
     let resolved =
         encode_world_mesh_forward_msaa_color_resolve(WorldMeshForwardColorResolveEncodeContext {
             device: ctx.device,
@@ -252,9 +305,11 @@ fn resolve_for_grab_snapshot(
         .get_mut::<crate::render_graph::blackboard::GraphCommandStatsSlot>()
     {
         stats.record_resolve_result(resolved);
-        stats.record_opened_render_pass();
+        if resolved {
+            stats.record_opened_render_pass();
+        }
     }
-    Ok(())
+    Ok(resolved)
 }
 
 fn copy_grab_snapshot(
@@ -358,7 +413,63 @@ fn scene_color_snapshot_mode_for_group(
         .unwrap_or(SceneColorSnapshotMode::PerObjectGrab)
 }
 
-fn final_resolve_after_tail(
+/// Copies the scene-color snapshot required before drawing a grab-pass group.
+fn copy_snapshot_for_mode(
+    ctx: &mut EncoderPassCtx<'_, '_, '_>,
+    prepared: &PreparedWorldMeshForwardFrame,
+    resources: WorldMeshForwardGraphResources,
+    snapshot_mode: SceneColorSnapshotMode,
+    grab_idx: usize,
+    named_background_snapshot_ready: &mut bool,
+) -> bool {
+    let copied = match snapshot_mode {
+        SceneColorSnapshotMode::NamedBackgroundGrab => {
+            copy_named_grab_snapshot(ctx, prepared, resources)
+        }
+        SceneColorSnapshotMode::PerObjectGrab | SceneColorSnapshotMode::None => {
+            copy_grab_snapshot(ctx, prepared, resources)
+        }
+    };
+    if !copied {
+        logger::warn!(
+            "WorldMeshForwardTransparentSequence: skipping grab-pass filter group {} because scene-color snapshot copy failed",
+            grab_idx
+        );
+        return false;
+    }
+    if snapshot_mode == SceneColorSnapshotMode::NamedBackgroundGrab {
+        *named_background_snapshot_ready = true;
+    }
+    true
+}
+
+/// Draws one grab-pass group with the frame bind group selected by its snapshot mode.
+fn draw_grab_group(
+    ctx: &mut EncoderPassCtx<'_, '_, '_>,
+    prepared: &PreparedWorldMeshForwardFrame,
+    resources: WorldMeshForwardGraphResources,
+    grab_group: &DrawGroup,
+    snapshot_mode: SceneColorSnapshotMode,
+    default_frame_bind_group: &Arc<wgpu::BindGroup>,
+    named_frame_bind_group: &Arc<wgpu::BindGroup>,
+) -> Result<bool, RenderPassError> {
+    let grab_frame_bind_group = match snapshot_mode {
+        SceneColorSnapshotMode::NamedBackgroundGrab => named_frame_bind_group,
+        SceneColorSnapshotMode::PerObjectGrab | SceneColorSnapshotMode::None => {
+            default_frame_bind_group
+        }
+    };
+    draw_tail_groups(
+        ctx,
+        prepared,
+        resources,
+        std::slice::from_ref(grab_group),
+        grab_frame_bind_group,
+    )
+}
+
+/// Resolves the multisampled forward color into the single-sample scene color consumed downstream.
+fn resolve_final_scene_color(
     ctx: &mut EncoderPassCtx<'_, '_, '_>,
     resources: WorldMeshForwardGraphResources,
 ) -> Result<(), RenderPassError> {
@@ -378,9 +489,36 @@ fn final_resolve_after_tail(
         .get_mut::<crate::render_graph::blackboard::GraphCommandStatsSlot>()
     {
         stats.record_resolve_result(resolved);
-        stats.record_opened_render_pass();
+        if resolved {
+            stats.record_opened_render_pass();
+        }
     }
     Ok(())
+}
+
+/// Resolves final scene color when MSAA produced a newer multisampled source.
+fn resolve_final_scene_color_if_needed(
+    ctx: &mut EncoderPassCtx<'_, '_, '_>,
+    resources: WorldMeshForwardGraphResources,
+    sample_count: u32,
+    scene_color_resolved_current: bool,
+) -> Result<(), RenderPassError> {
+    if final_scene_color_resolve_needed(true, resources.msaa_enabled, sample_count)
+        && !scene_color_resolved_current
+    {
+        resolve_final_scene_color(ctx, resources)?;
+    }
+    Ok(())
+}
+
+/// Resolves opaque-only MSAA color before skipping the transparent tail.
+fn resolve_final_scene_color_for_skipped_tail(
+    ctx: &mut EncoderPassCtx<'_, '_, '_>,
+    resources: WorldMeshForwardGraphResources,
+    sample_count: u32,
+) -> Result<bool, RenderPassError> {
+    resolve_final_scene_color_if_needed(ctx, resources, sample_count, false)?;
+    Ok(false)
 }
 
 fn record_transparent_sequence(
@@ -393,10 +531,15 @@ fn record_transparent_sequence(
     let (transparent_phase, grab_phase) = transparent_sequence_phase_pair();
     let transparent_groups = plan.phase(transparent_phase);
     let grab_groups = plan.phase(grab_phase);
+    let sample_count = ctx.pass_frame.view.sample_count.max(1);
+    let mut scene_color_resolved_current = false;
+    if transparent_groups.is_empty() && grab_groups.is_empty() {
+        return resolve_final_scene_color_for_skipped_tail(ctx, resources, sample_count);
+    }
     let Some((default_frame_bind_group, named_frame_bind_group)) =
         transparent_sequence_frame_bind_groups(ctx)
     else {
-        return Ok(false);
+        return resolve_final_scene_color_for_skipped_tail(ctx, resources, sample_count);
     };
     let mut post_idx = 0usize;
     let mut grab_idx = 0usize;
@@ -405,26 +548,25 @@ fn record_transparent_sequence(
     let mut named_background_snapshot_ready = false;
 
     while post_idx < transparent_groups.len() || grab_idx < grab_groups.len() {
-        if next_sequence_entry_is_post(plan, post_idx, grab_idx) {
-            if pending_post_start.is_none() {
-                pending_post_start = Some(post_idx);
-            }
-            post_idx += 1;
+        if advance_pending_post_run(plan, &mut post_idx, grab_idx, &mut pending_post_start) {
             continue;
         }
 
-        let flushed_post_groups = pending_post_start.is_some();
-        if !flush_post_groups(
+        let Some(flushed_post_groups) = flush_optional_post_groups(
             ctx,
             prepared,
             resources,
             pending_post_start.take(),
             post_idx,
             &default_frame_bind_group,
-        )? {
+        )?
+        else {
             return Ok(false);
-        }
+        };
         recorded_any |= flushed_post_groups;
+        if flushed_post_groups && sample_count > 1 {
+            scene_color_resolved_current = false;
+        }
         let grab_group = &grab_groups[grab_idx];
         let snapshot_mode = scene_color_snapshot_mode_for_group(prepared, grab_group);
         let needs_snapshot_copy = match snapshot_mode {
@@ -432,62 +574,60 @@ fn record_transparent_sequence(
             SceneColorSnapshotMode::PerObjectGrab | SceneColorSnapshotMode::None => true,
         };
         if needs_snapshot_copy {
-            resolve_for_grab_snapshot(ctx, resources)?;
-            let copied = match snapshot_mode {
-                SceneColorSnapshotMode::NamedBackgroundGrab => {
-                    copy_named_grab_snapshot(ctx, prepared, resources)
-                }
-                SceneColorSnapshotMode::PerObjectGrab | SceneColorSnapshotMode::None => {
-                    copy_grab_snapshot(ctx, prepared, resources)
-                }
-            };
-            if !copied {
-                logger::warn!(
-                    "WorldMeshForwardTransparentSequence: skipping grab-pass filter group {} because scene-color snapshot copy failed",
-                    grab_idx
-                );
+            scene_color_resolved_current |= resolve_for_grab_snapshot(ctx, resources)?;
+            if !copy_snapshot_for_mode(
+                ctx,
+                prepared,
+                resources,
+                snapshot_mode,
+                grab_idx,
+                &mut named_background_snapshot_ready,
+            ) {
                 grab_idx += 1;
                 continue;
             }
-            if snapshot_mode == SceneColorSnapshotMode::NamedBackgroundGrab {
-                named_background_snapshot_ready = true;
-            }
         }
-        let grab_frame_bind_group = match snapshot_mode {
-            SceneColorSnapshotMode::NamedBackgroundGrab => &named_frame_bind_group,
-            SceneColorSnapshotMode::PerObjectGrab | SceneColorSnapshotMode::None => {
-                &default_frame_bind_group
-            }
-        };
-        if !draw_tail_groups(
+        if !draw_grab_group(
             ctx,
             prepared,
             resources,
-            std::slice::from_ref(grab_group),
-            grab_frame_bind_group,
+            grab_group,
+            snapshot_mode,
+            &default_frame_bind_group,
+            &named_frame_bind_group,
         )? {
             return Ok(false);
         }
         recorded_any = true;
+        if sample_count > 1 {
+            scene_color_resolved_current = false;
+        }
         grab_idx += 1;
     }
 
-    if !flush_post_groups(
+    let Some(flushed_post_tail) = flush_optional_post_groups(
         ctx,
         prepared,
         resources,
         pending_post_start,
         post_idx,
         &default_frame_bind_group,
-    )? {
+    )?
+    else {
         return Ok(false);
-    }
-    if post_idx > 0 {
+    };
+    if flushed_post_tail {
         recorded_any = true;
+        if sample_count > 1 {
+            scene_color_resolved_current = false;
+        }
     }
-    if recorded_any {
-        final_resolve_after_tail(ctx, resources)?;
-    }
+    resolve_final_scene_color_if_needed(
+        ctx,
+        resources,
+        sample_count,
+        scene_color_resolved_current,
+    )?;
     Ok(recorded_any)
 }
 
@@ -510,7 +650,12 @@ impl EncoderPass for WorldMeshForwardTransparentSequencePass {
             .blackboard
             .get::<WorldMeshForwardPlanSlot>()
             .is_some_and(|prepared| {
-                forward_transparent_sequence_needed(prepared.opaque_recorded, &prepared.plan)
+                transparent_sequence_pass_needed(
+                    prepared.opaque_recorded,
+                    &prepared.plan,
+                    self.resources.msaa_enabled,
+                    ctx.pass_frame.view.sample_count.max(1),
+                )
             }))
     }
 
@@ -577,7 +722,7 @@ fn collect_transparent_sequence_test_ops_with_modes(
     let mut post_idx = 0usize;
     let mut grab_idx = 0usize;
     let mut pending_post_start = None;
-    let mut recorded_any = false;
+    let mut scene_color_resolved_current = false;
     let mut named_background_snapshot_ready = false;
 
     let (transparent_phase, grab_phase) = transparent_sequence_phase_pair();
@@ -585,17 +730,15 @@ fn collect_transparent_sequence_test_ops_with_modes(
     let grab_groups = plan.phase(grab_phase);
 
     while post_idx < transparent_groups.len() || grab_idx < grab_groups.len() {
-        if next_sequence_entry_is_post(plan, post_idx, grab_idx) {
-            if pending_post_start.is_none() {
-                pending_post_start = Some(post_idx);
-            }
-            post_idx += 1;
+        if advance_pending_post_run(plan, &mut post_idx, grab_idx, &mut pending_post_start) {
             continue;
         }
 
         if let Some(start) = pending_post_start.take() {
             ops.push(TransparentSequenceTestOp::DrawPostRange(start, post_idx));
-            recorded_any = true;
+            if sample_count > 1 {
+                scene_color_resolved_current = false;
+            }
         }
         let mode = grab_modes
             .get(grab_idx)
@@ -608,6 +751,7 @@ fn collect_transparent_sequence_test_ops_with_modes(
         if needs_snapshot_copy {
             if sample_count > 1 {
                 ops.push(TransparentSequenceTestOp::ResolveBeforeGrab(grab_idx));
+                scene_color_resolved_current = true;
             }
             match mode {
                 SceneColorSnapshotMode::NamedBackgroundGrab => {
@@ -630,15 +774,19 @@ fn collect_transparent_sequence_test_ops_with_modes(
             ops.push(TransparentSequenceTestOp::ReuseNamedGrabSnapshot(grab_idx));
         }
         ops.push(TransparentSequenceTestOp::DrawGrab(grab_idx));
-        recorded_any = true;
+        if sample_count > 1 {
+            scene_color_resolved_current = false;
+        }
         grab_idx += 1;
     }
 
     if let Some(start) = pending_post_start {
         ops.push(TransparentSequenceTestOp::DrawPostRange(start, post_idx));
-        recorded_any = true;
+        if sample_count > 1 {
+            scene_color_resolved_current = false;
+        }
     }
-    if recorded_any && sample_count > 1 {
+    if sample_count > 1 && !scene_color_resolved_current {
         ops.push(TransparentSequenceTestOp::FinalResolve);
     }
     ops
@@ -650,6 +798,7 @@ mod tests {
         TransparentSequenceTestOp, collect_transparent_sequence_test_ops,
         collect_transparent_sequence_test_ops_with_modes,
         collect_transparent_sequence_test_ops_with_snapshot_result,
+        transparent_sequence_pass_needed,
     };
     use crate::materials::SceneColorSnapshotMode;
     use crate::world_mesh::{DrawGroup, InstancePlan, WorldMeshPhase};
@@ -670,6 +819,33 @@ mod tests {
         plan.phase_mut(WorldMeshPhase::Transparent).extend(non_grab);
         plan.phase_mut(WorldMeshPhase::TransparentGrab).extend(grab);
         plan
+    }
+
+    #[test]
+    fn msaa_empty_tail_still_records_final_resolve() {
+        let plan = plan_with_transparent_groups(Vec::new(), Vec::new());
+
+        assert_eq!(
+            collect_transparent_sequence_test_ops(&plan, 4),
+            vec![TransparentSequenceTestOp::FinalResolve]
+        );
+    }
+
+    #[test]
+    fn pass_needed_includes_msaa_resolve_only_frames() {
+        let empty = plan_with_transparent_groups(Vec::new(), Vec::new());
+        assert!(!transparent_sequence_pass_needed(true, &empty, false, 1));
+        assert!(!transparent_sequence_pass_needed(true, &empty, true, 1));
+        assert!(transparent_sequence_pass_needed(true, &empty, true, 4));
+        assert!(!transparent_sequence_pass_needed(false, &empty, true, 4));
+
+        let transparent = plan_with_transparent_groups(vec![group(2)], Vec::new());
+        assert!(transparent_sequence_pass_needed(
+            true,
+            &transparent,
+            false,
+            1
+        ));
     }
 
     #[test]
@@ -835,7 +1011,6 @@ mod tests {
                 TransparentSequenceTestOp::ResolveBeforeGrab(0),
                 TransparentSequenceTestOp::SnapshotForGrab(0),
                 TransparentSequenceTestOp::SkipGrabMissingSnapshot(0),
-                TransparentSequenceTestOp::FinalResolve,
             ]
         );
     }
