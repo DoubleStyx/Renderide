@@ -4,6 +4,8 @@
 //! tails, and updates a persistent exposure EV value for the current view.
 
 const HISTOGRAM_BIN_COUNT: u32 = 64u;
+const HISTOGRAM_METERED_BIN_COUNT: f32 = 62.0;
+const MIN_AVERAGE_LUMINANCE: f32 = 0.000001;
 const RGB_TO_LUM: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
 
 struct AutoExposureParams {
@@ -35,7 +37,13 @@ fn color_to_bin(hdr: vec3<f32>) -> u32 {
         return 0u;
     }
     let normalized = clamp((log2(lum) - params.min_log_lum) * params.inv_log_lum_range, 0.0, 1.0);
-    return u32(normalized * 62.0 + 1.0);
+    return u32(normalized * HISTOGRAM_METERED_BIN_COUNT + 1.0);
+}
+
+fn linear_luminance_for_bin(bin: u32) -> f32 {
+    let normalized = min((f32(bin) - 0.5) / HISTOGRAM_METERED_BIN_COUNT, 1.0);
+    let bin_log_luminance = normalized * params.log_lum_range + params.min_log_lum;
+    return exp2(bin_log_luminance);
 }
 
 @compute @workgroup_size(16, 16, 1)
@@ -94,14 +102,14 @@ fn compute_average() {
     let last_index = u32(f32(histogram_sum) * params.high_percent);
 
     var count = 0u;
-    var sum = 0.0;
+    var linear_luminance_sum = 0.0;
     for (var i = 0u; i < HISTOGRAM_BIN_COUNT; i += 1u) {
         let current_cumulative = previous_cumulative + atomicLoad(&histogram[i]);
         if (i > 0u) {
             let bin_count =
                 clamp(current_cumulative, first_index, last_index) -
                 clamp(previous_cumulative, first_index, last_index);
-            sum += f32(bin_count) * f32(i);
+            linear_luminance_sum += f32(bin_count) * linear_luminance_for_bin(i);
             count += bin_count;
         }
         previous_cumulative = current_cumulative;
@@ -110,7 +118,8 @@ fn compute_average() {
 
     var avg_lum = params.min_log_lum;
     if (count > 0u) {
-        avg_lum = sum / (f32(count) * 63.0) * params.log_lum_range + params.min_log_lum;
+        let avg_linear_lum = linear_luminance_sum / f32(count);
+        avg_lum = log2(max(avg_linear_lum, MIN_AVERAGE_LUMINANCE));
     }
 
     let target_exposure = params.target_ev - avg_lum;

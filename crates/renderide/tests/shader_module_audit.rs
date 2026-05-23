@@ -81,6 +81,38 @@ fn module_source(file_name: &str) -> io::Result<String> {
     source_file(manifest_dir().join("shaders/modules").join(file_name))
 }
 
+#[test]
+fn auto_exposure_histogram_meters_linear_luminance() -> io::Result<()> {
+    let src = source_file(
+        manifest_dir()
+            .join("shaders/passes/compute")
+            .join("auto_exposure_histogram.wgsl"),
+    )?;
+
+    assert!(
+        src.contains("fn linear_luminance_for_bin"),
+        "auto-exposure must reconstruct linear luminance from retained histogram bins"
+    );
+    assert!(
+        src.contains("linear_luminance_sum += f32(bin_count) * linear_luminance_for_bin(i);"),
+        "auto-exposure must average retained linear luminance, not retained bin indices"
+    );
+    assert!(
+        src.contains("avg_lum = log2(max(avg_linear_lum, MIN_AVERAGE_LUMINANCE));"),
+        "auto-exposure must convert the linear average back to EV before adaptation"
+    );
+    assert!(
+        !src.contains("sum / (f32(count) * 63.0)"),
+        "auto-exposure must not compute average luminance from raw histogram bin indices"
+    );
+    assert!(
+        !src.contains("sum += f32(bin_count) * f32(i);"),
+        "auto-exposure must not accumulate histogram bin indices as luminance"
+    );
+
+    Ok(())
+}
+
 fn declares_f32_field(src: &str, field_name: &str) -> bool {
     src.lines().any(|line| {
         let trimmed = line.trim();

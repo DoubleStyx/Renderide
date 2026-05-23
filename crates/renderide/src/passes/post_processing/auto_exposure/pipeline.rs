@@ -416,6 +416,141 @@ mod tests {
     use super::{AutoExposureParamsGpu, HISTOGRAM_BIN_COUNT};
     use crate::config::AutoExposureSettings;
 
+    const HISTOGRAM_TEST_BIN_COUNT: usize = HISTOGRAM_BIN_COUNT as usize;
+    const HISTOGRAM_METERED_BIN_COUNT: f32 = 62.0;
+    const HISTOGRAM_EV_TOLERANCE: f32 = 0.08;
+    const MIXED_HISTOGRAM_EV_TOLERANCE: f32 = 0.12;
+    const MIN_AVERAGE_LUMINANCE: f32 = 0.000_001;
+
+    fn assert_close_ev(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() <= HISTOGRAM_EV_TOLERANCE,
+            "expected {actual} EV to be within {HISTOGRAM_EV_TOLERANCE} EV of {expected}"
+        );
+    }
+
+    fn meter_test_settings() -> AutoExposureSettings {
+        AutoExposureSettings {
+            low_percent: 0.0,
+            high_percent: 1.0,
+            ..Default::default()
+        }
+    }
+
+    fn exposure_for_repeated_luminance(luminance: f32) -> f32 {
+        let samples = [luminance; 64];
+        exposure_for_luminance_samples(&samples, meter_test_settings())
+    }
+
+    fn exposure_for_luminance_samples(samples: &[f32], settings: AutoExposureSettings) -> f32 {
+        settings.resolved_target_ev() - metered_log_luminance(samples, settings)
+    }
+
+    fn metered_log_luminance(samples: &[f32], settings: AutoExposureSettings) -> f32 {
+        let histogram = histogram_for_luminance_samples(samples, settings);
+        linear_histogram_metered_log_luminance(&histogram, settings)
+    }
+
+    fn old_log_bin_metered_log_luminance(samples: &[f32], settings: AutoExposureSettings) -> f32 {
+        let histogram = histogram_for_luminance_samples(samples, settings);
+        let (min_ev, max_ev) = settings.resolved_ev_range();
+        let log_lum_range = max_ev - min_ev;
+        let (first_index, last_index) = percentile_indices(&histogram, settings);
+
+        let mut previous_cumulative = 0u32;
+        let mut count = 0u32;
+        let mut sum = 0.0;
+        for (i, bin_population) in histogram.iter().copied().enumerate() {
+            let current_cumulative = previous_cumulative + bin_population;
+            if i > 0 {
+                let bin_count = current_cumulative.clamp(first_index, last_index)
+                    - previous_cumulative.clamp(first_index, last_index);
+                sum += bin_count as f32 * i as f32;
+                count += bin_count;
+            }
+            previous_cumulative = current_cumulative;
+        }
+
+        if count > 0 {
+            sum / (count as f32 * (HISTOGRAM_TEST_BIN_COUNT as f32 - 1.0)) * log_lum_range + min_ev
+        } else {
+            min_ev
+        }
+    }
+
+    fn linear_histogram_metered_log_luminance(
+        histogram: &[u32; HISTOGRAM_TEST_BIN_COUNT],
+        settings: AutoExposureSettings,
+    ) -> f32 {
+        let (min_ev, max_ev) = settings.resolved_ev_range();
+        let (first_index, last_index) = percentile_indices(histogram, settings);
+
+        let mut previous_cumulative = 0u32;
+        let mut count = 0u32;
+        let mut linear_luminance_sum = 0.0;
+        for (i, bin_population) in histogram.iter().copied().enumerate() {
+            let current_cumulative = previous_cumulative + bin_population;
+            if i > 0 {
+                let bin_count = current_cumulative.clamp(first_index, last_index)
+                    - previous_cumulative.clamp(first_index, last_index);
+                linear_luminance_sum +=
+                    bin_count as f32 * linear_luminance_for_bin(i, min_ev, max_ev);
+                count += bin_count;
+            }
+            previous_cumulative = current_cumulative;
+        }
+
+        if count > 0 {
+            (linear_luminance_sum / count as f32)
+                .max(MIN_AVERAGE_LUMINANCE)
+                .log2()
+        } else {
+            min_ev
+        }
+    }
+
+    fn percentile_indices(
+        histogram: &[u32; HISTOGRAM_TEST_BIN_COUNT],
+        settings: AutoExposureSettings,
+    ) -> (u32, u32) {
+        let histogram_sum = histogram.iter().sum::<u32>();
+        let (low_percent, high_percent) = settings.resolved_filter();
+        (
+            (histogram_sum as f32 * low_percent) as u32,
+            (histogram_sum as f32 * high_percent) as u32,
+        )
+    }
+
+    fn histogram_for_luminance_samples(
+        samples: &[f32],
+        settings: AutoExposureSettings,
+    ) -> [u32; HISTOGRAM_TEST_BIN_COUNT] {
+        let mut histogram = [0; HISTOGRAM_TEST_BIN_COUNT];
+        let (min_ev, max_ev) = settings.resolved_ev_range();
+        for luminance in samples.iter().copied() {
+            histogram[bin_for_luminance(luminance, min_ev, max_ev)] += 1;
+        }
+        histogram
+    }
+
+    fn bin_for_luminance(luminance: f32, min_ev: f32, max_ev: f32) -> usize {
+        let luminance = luminance.max(0.0);
+        let min_luminance = min_ev.exp2();
+        if !matches!(
+            luminance.partial_cmp(&min_luminance),
+            Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
+        ) {
+            return 0;
+        }
+        let normalized = ((luminance.log2() - min_ev) / (max_ev - min_ev)).clamp(0.0, 1.0);
+        (normalized * HISTOGRAM_METERED_BIN_COUNT + 1.0) as usize
+    }
+
+    fn linear_luminance_for_bin(bin: usize, min_ev: f32, max_ev: f32) -> f32 {
+        let normalized = ((bin as f32 - 0.5) / HISTOGRAM_METERED_BIN_COUNT).min(1.0);
+        (normalized * (max_ev - min_ev) + min_ev).exp2()
+    }
+
     #[test]
     fn auto_exposure_params_are_uniform_aligned() {
         assert_eq!(size_of::<AutoExposureParamsGpu>(), 48);
@@ -463,5 +598,55 @@ mod tests {
     #[test]
     fn histogram_has_expected_bin_count() {
         assert_eq!(HISTOGRAM_BIN_COUNT, 64);
+    }
+
+    #[test]
+    fn flat_middle_gray_meters_to_neutral_exposure() {
+        assert_close_ev(exposure_for_repeated_luminance(0.18), 0.0);
+    }
+
+    #[test]
+    fn flat_one_stop_above_middle_gray_darkens_one_stop() {
+        assert_close_ev(exposure_for_repeated_luminance(0.36), -1.0);
+    }
+
+    #[test]
+    fn flat_one_stop_below_middle_gray_brightens_one_stop() {
+        assert_close_ev(exposure_for_repeated_luminance(0.09), 1.0);
+    }
+
+    #[test]
+    fn mixed_luminance_meters_linear_average_instead_of_log_average() {
+        let settings = meter_test_settings();
+        let mut samples = vec![0.02; 64];
+        samples.extend([2.0; 64]);
+
+        let metered_log_luminance = metered_log_luminance(&samples, settings);
+        let old_log_bin_luminance = old_log_bin_metered_log_luminance(&samples, settings);
+        let arithmetic_luminance = samples.iter().sum::<f32>() / samples.len() as f32;
+
+        assert!(
+            (metered_log_luminance.exp2() / arithmetic_luminance)
+                .log2()
+                .abs()
+                <= MIXED_HISTOGRAM_EV_TOLERANCE,
+            "metered luminance should track arithmetic luminance"
+        );
+        assert!(
+            metered_log_luminance > old_log_bin_luminance + 1.5,
+            "linear metering should not collapse mixed luminance toward the old log-bin average"
+        );
+    }
+
+    #[test]
+    fn percentile_filtering_discards_dark_and_bright_tails_before_metering() {
+        let mut samples = vec![0.01; 25];
+        samples.extend([0.18; 50]);
+        samples.extend([10.0; 25]);
+
+        assert_close_ev(
+            exposure_for_luminance_samples(&samples, AutoExposureSettings::default()),
+            0.0,
+        );
     }
 }
