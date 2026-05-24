@@ -1,8 +1,7 @@
 //! Creates the OpenXR action set, actions, and controller pose spaces from the data-only manifest.
 //!
-//! Every action listed in `crates/renderide/assets/xr/actions.toml` becomes a typed
-//! [`xr::Action`] field on [`OpenxrInputActions`]; every binding table under
-//! `crates/renderide/assets/xr/bindings/` is forwarded to
+//! Every action bound by `crates/renderide/assets/xr/bindings/` becomes a typed [`xr::Action`]
+//! field on [`OpenxrInputActions`]; every binding table under
 //! [`super::bindings::apply_suggested_interaction_bindings`]. Interaction profile paths that appear
 //! in the manifest are pre-resolved into [`ResolvedProfilePaths`] for the per-frame detection loop
 //! in [`super::openxr_input`].
@@ -48,34 +47,18 @@ fn resolve_user_paths(instance: &xr::Instance) -> Result<UserPaths, xr::sys::Res
     })
 }
 
-/// Creates the controller pose spaces (grip, aim, palm) anchored at
+/// Creates the controller pose spaces (grip and palm) anchored at
 /// [`openxr::Posef::IDENTITY`] for the lifetime of the session.
 fn create_pose_spaces(
     session: &xr::Session<xr::Vulkan>,
     actions: &OpenxrInputActions,
-) -> Result<
-    (
-        xr::Space,
-        xr::Space,
-        xr::Space,
-        xr::Space,
-        xr::Space,
-        xr::Space,
-    ),
-    xr::sys::Result,
-> {
+) -> Result<(xr::Space, xr::Space, xr::Space, xr::Space), xr::sys::Result> {
     Ok((
         actions
             .left_grip_pose
             .create_space(session, xr::Path::NULL, xr::Posef::IDENTITY)?,
         actions
             .right_grip_pose
-            .create_space(session, xr::Path::NULL, xr::Posef::IDENTITY)?,
-        actions
-            .left_aim_pose
-            .create_space(session, xr::Path::NULL, xr::Posef::IDENTITY)?,
-        actions
-            .right_aim_pose
             .create_space(session, xr::Path::NULL, xr::Posef::IDENTITY)?,
         actions
             .left_palm_ext_pose
@@ -105,10 +88,6 @@ pub(super) struct OpenxrInputParts {
     pub(super) left_space: xr::Space,
     /// Right grip pose space.
     pub(super) right_space: xr::Space,
-    /// Left aim pose space.
-    pub(super) left_aim_space: xr::Space,
-    /// Right aim pose space.
-    pub(super) right_aim_space: xr::Space,
     /// Left palm pose space.
     pub(super) left_palm_ext_space: xr::Space,
     /// Right palm pose space.
@@ -150,14 +129,8 @@ pub(super) fn create_openxr_input_parts(
 
     session.attach_action_sets(&[&action_set])?;
 
-    let (
-        left_space,
-        right_space,
-        left_aim_space,
-        right_aim_space,
-        left_palm_space,
-        right_palm_space,
-    ) = create_pose_spaces(session, &actions)?;
+    let (left_space, right_space, left_palm_space, right_palm_space) =
+        create_pose_spaces(session, &actions)?;
 
     Ok(OpenxrInputParts {
         action_set,
@@ -169,8 +142,6 @@ pub(super) fn create_openxr_input_parts(
         right_profile_cache: AtomicU8::new(0),
         left_space,
         right_space,
-        left_aim_space,
-        right_aim_space,
         left_palm_ext_space: left_palm_space,
         right_palm_ext_space: right_palm_space,
     })

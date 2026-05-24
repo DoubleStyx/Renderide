@@ -114,8 +114,6 @@ pub struct OpenxrInput {
     actions: OpenxrInputActions,
     left_space: xr::Space,
     right_space: xr::Space,
-    left_aim_space: xr::Space,
-    right_aim_space: xr::Space,
     left_palm_ext_space: xr::Space,
     right_palm_ext_space: xr::Space,
 }
@@ -147,8 +145,6 @@ impl OpenxrInput {
             actions: parts.actions,
             left_space: parts.left_space,
             right_space: parts.right_space,
-            left_aim_space: parts.left_aim_space,
-            right_aim_space: parts.right_aim_space,
             left_palm_ext_space: parts.left_palm_ext_space,
             right_palm_ext_space: parts.right_palm_ext_space,
         }
@@ -297,14 +293,10 @@ impl OpenxrInput {
         session.sync_actions(&[xr::ActiveActionSet::new(&self.action_set)])?;
         let left_loc = self.left_space.locate(stage, predicted_time)?;
         let right_loc = self.right_space.locate(stage, predicted_time)?;
-        let left_aim_loc = self.left_aim_space.locate(stage, predicted_time)?;
-        let right_aim_loc = self.right_aim_space.locate(stage, predicted_time)?;
         let left_palm_ext_loc = self.left_palm_ext_space.locate(stage, predicted_time)?;
         let right_palm_ext_loc = self.right_palm_ext_space.locate(stage, predicted_time)?;
         let left_grip_pose = pose_from_location(&left_loc);
         let right_grip_pose = pose_from_location(&right_loc);
-        let left_aim_pose = pose_from_location(&left_aim_loc);
-        let right_aim_pose = pose_from_location(&right_aim_loc);
         let left_palm_ext_pose = pose_from_location(&left_palm_ext_loc);
         let right_palm_ext_pose = pose_from_location(&right_palm_ext_loc);
 
@@ -315,36 +307,26 @@ impl OpenxrInput {
         let right_profile = self.active_profile(session, self.right_user_path, Chirality::Right);
         log_profile_transition(Chirality::Left, left_profile);
         log_profile_transition(Chirality::Right, right_profile);
-        Self::log_grip_missing_aim_valid_throttled(Chirality::Left, left_grip_pose, left_aim_pose);
-        Self::log_grip_missing_aim_valid_throttled(
-            Chirality::Right,
-            right_grip_pose,
-            right_aim_pose,
-        );
         Self::log_palm_ext_pose_missing_with_fallback_throttled(
             Chirality::Left,
             left_palm_ext_pose,
             left_grip_pose,
-            left_aim_pose,
         );
         Self::log_palm_ext_pose_missing_with_fallback_throttled(
             Chirality::Right,
             right_palm_ext_pose,
             right_grip_pose,
-            right_aim_pose,
         );
         let left_frame = resolve_controller_frame(
             left_profile,
             Chirality::Left,
             left_grip_pose,
-            left_aim_pose,
             left_palm_ext_pose,
         );
         let right_frame = resolve_controller_frame(
             right_profile,
             Chirality::Right,
             right_grip_pose,
-            right_aim_pose,
             right_palm_ext_pose,
         );
         let left =
@@ -358,39 +340,13 @@ impl OpenxrInput {
         Ok(vec![left, right])
     }
 
-    /// Logs at most once every 300 frames per hand when the grip space is untracked but the aim space is valid.
-    ///
-    /// Confirms on-device that [`super::frame::resolve_controller_frame`] can use the aim fallback path.
-    fn log_grip_missing_aim_valid_throttled(
-        side: Chirality,
-        grip_pose: Option<(Vec3, Quat)>,
-        aim_pose: Option<(Vec3, Quat)>,
-    ) {
-        if grip_pose.is_some() || aim_pose.is_none() {
-            return;
-        }
-        static LEFT: AtomicU32 = AtomicU32::new(0);
-        static RIGHT: AtomicU32 = AtomicU32::new(0);
-        let slot = match side {
-            Chirality::Left => &LEFT,
-            Chirality::Right => &RIGHT,
-        };
-        let n = slot.fetch_add(1, Ordering::Relaxed);
-        if n % 300 == 0 {
-            logger::debug!(
-                "OpenXR {side:?}: grip pose invalid or untracked but aim pose valid; resolving controller frame from aim for IPC"
-            );
-        }
-    }
-
-    /// Logs at most once every 300 frames per hand when `palm_ext` is unavailable but fallback poses are valid.
+    /// Logs at most once every 300 frames per hand when `palm_ext` is unavailable but grip is valid.
     fn log_palm_ext_pose_missing_with_fallback_throttled(
         side: Chirality,
         palm_ext_pose: Option<(Vec3, Quat)>,
         grip_pose: Option<(Vec3, Quat)>,
-        aim_pose: Option<(Vec3, Quat)>,
     ) {
-        if palm_ext_pose.is_some() || (grip_pose.is_none() && aim_pose.is_none()) {
+        if palm_ext_pose.is_some() || grip_pose.is_none() {
             return;
         }
         static LEFT: AtomicU32 = AtomicU32::new(0);
@@ -402,7 +358,7 @@ impl OpenxrInput {
         let n = slot.fetch_add(1, Ordering::Relaxed);
         if n % 300 == 0 {
             logger::debug!(
-                "OpenXR {side:?}: palm_ext pose invalid or untracked; resolving controller frame from grip/aim fallback for IPC"
+                "OpenXR {side:?}: palm_ext pose invalid or untracked; resolving controller frame from grip fallback for IPC"
             );
         }
     }

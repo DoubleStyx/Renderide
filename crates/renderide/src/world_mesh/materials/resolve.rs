@@ -3,18 +3,9 @@
 use crate::materials::ShaderPermutation;
 use crate::materials::host_data::{MaterialDictionary, MaterialPropertyLookupIds};
 use crate::materials::{
-    EmbeddedTangentFallbackMode, MaterialBlendMode, MaterialPipelinePropertyIds,
+    EmbeddedStemQuery, EmbeddedTangentFallbackMode, MaterialBlendMode, MaterialPipelinePropertyIds,
     MaterialRenderState, MaterialRouter, PropertyMapRef, RasterFrontFace, RasterPipelineKind,
-    RasterPrimitiveTopology, SceneColorSnapshotMode, embedded_stem_needs_color_stream,
-    embedded_stem_needs_extended_vertex_streams, embedded_stem_needs_tangent_stream,
-    embedded_stem_needs_uv0_stream, embedded_stem_needs_uv1_stream, embedded_stem_needs_uv2_stream,
-    embedded_stem_needs_uv3_stream, embedded_stem_needs_wide_uv_stream,
-    embedded_stem_requires_intersection_pass, embedded_stem_scene_color_snapshot_mode,
-    embedded_stem_tangent_fallback_mode, embedded_stem_uses_alpha_blending,
-    embedded_stem_uses_blended_depth_write, embedded_stem_uses_raw_normal_payload,
-    embedded_stem_uses_raw_tangent_payload, embedded_stem_uses_scene_color_snapshot,
-    embedded_stem_uses_scene_depth_snapshot, embedded_stem_uses_two_sided_transparency,
-    embedded_stem_uses_ui_transparent_fallback, fallback_render_queue_for_material,
+    RasterPrimitiveTopology, SceneColorSnapshotMode, fallback_render_queue_for_material,
     first_float_from_maps, first_vec4_from_maps, material_blend_mode_from_maps,
     material_render_queue_from_maps, material_render_state_from_maps, resolve_raster_pipeline,
 };
@@ -152,29 +143,29 @@ fn embedded_material_features(
         return EmbeddedMaterialFeatures::default();
     };
     let stem = stem.as_ref();
+    let query = EmbeddedStemQuery::for_stem(stem, shader_perm);
+    let vertex_streams = query.vertex_stream_mask();
+    let snapshots = query.snapshot_requirements();
     EmbeddedMaterialFeatures {
-        needs_uv0: embedded_stem_needs_uv0_stream(stem, shader_perm),
-        needs_color: embedded_stem_needs_color_stream(stem, shader_perm),
-        needs_uv1: embedded_stem_needs_uv1_stream(stem, shader_perm),
-        needs_tangent: embedded_stem_needs_tangent_stream(stem, shader_perm),
-        tangent_fallback_mode: embedded_stem_tangent_fallback_mode(stem, shader_perm),
-        raw_tangent_payload: embedded_stem_uses_raw_tangent_payload(stem),
-        raw_normal_payload: embedded_stem_uses_raw_normal_payload(stem),
-        needs_uv2: embedded_stem_needs_uv2_stream(stem, shader_perm),
-        needs_uv3: embedded_stem_needs_uv3_stream(stem, shader_perm),
-        needs_wide_uvs: embedded_stem_needs_wide_uv_stream(stem, shader_perm),
-        needs_extended_vertex_streams: embedded_stem_needs_extended_vertex_streams(
-            stem,
-            shader_perm,
-        ),
-        requires_intersection_pass: embedded_stem_requires_intersection_pass(stem, shader_perm),
-        uses_scene_depth_snapshot: embedded_stem_uses_scene_depth_snapshot(stem, shader_perm),
-        uses_scene_color_snapshot: embedded_stem_uses_scene_color_snapshot(stem, shader_perm),
-        scene_color_snapshot_mode: embedded_stem_scene_color_snapshot_mode(stem, shader_perm),
-        uses_alpha_blending: embedded_stem_uses_alpha_blending(stem),
-        uses_ui_transparent_fallback: embedded_stem_uses_ui_transparent_fallback(stem),
-        uses_blended_depth_write: embedded_stem_uses_blended_depth_write(stem, shader_perm),
-        uses_two_sided_transparency: embedded_stem_uses_two_sided_transparency(stem, shader_perm),
+        needs_uv0: vertex_streams.uv0,
+        needs_color: vertex_streams.color,
+        needs_uv1: vertex_streams.uv1,
+        needs_tangent: vertex_streams.tangent,
+        tangent_fallback_mode: query.tangent_fallback_mode(),
+        raw_tangent_payload: query.uses_raw_tangent_payload(),
+        raw_normal_payload: query.uses_raw_normal_payload(),
+        needs_uv2: vertex_streams.uv2,
+        needs_uv3: vertex_streams.uv3,
+        needs_wide_uvs: vertex_streams.wide_uvs,
+        needs_extended_vertex_streams: vertex_streams.needs_extended_vertex_streams(),
+        requires_intersection_pass: snapshots.requires_intersection_pass,
+        uses_scene_depth_snapshot: snapshots.uses_scene_depth,
+        uses_scene_color_snapshot: snapshots.uses_scene_color,
+        scene_color_snapshot_mode: query.scene_color_snapshot_mode(),
+        uses_alpha_blending: query.uses_alpha_blending(),
+        uses_ui_transparent_fallback: query.uses_ui_transparent_fallback(),
+        uses_blended_depth_write: query.uses_blended_depth_write(),
+        uses_two_sided_transparency: query.uses_two_sided_transparency(),
     }
 }
 

@@ -1,8 +1,10 @@
 //! Vertex-stream queries derived from pass vertex-entry reflection on a composed embedded WGSL stem.
 
+#[cfg(test)]
 use crate::materials::ShaderPermutation;
 use crate::materials::{ReflectedRasterLayout, ReflectedVertexInputFormat};
 
+#[cfg(test)]
 use super::EmbeddedStemQuery;
 
 /// Mesh-forward UV channel count exposed to material vertex shaders.
@@ -99,41 +101,49 @@ fn uv_channel_from_location(location: u32) -> Option<usize> {
 }
 
 /// `true` when composed embedded WGSL's reflected pass vertex entries use UV0.
+#[cfg(test)]
 pub fn embedded_stem_needs_uv0_stream(base_stem: &str, permutation: ShaderPermutation) -> bool {
     EmbeddedStemQuery::for_stem(base_stem, permutation).needs_uv0_stream()
 }
 
 /// `true` when composed embedded WGSL's reflected pass vertex entries use vertex color.
+#[cfg(test)]
 pub fn embedded_stem_needs_color_stream(base_stem: &str, permutation: ShaderPermutation) -> bool {
     EmbeddedStemQuery::for_stem(base_stem, permutation).needs_color_stream()
 }
 
 /// `true` when composed embedded WGSL's reflected pass vertex entries use tangent.
+#[cfg(test)]
 pub fn embedded_stem_needs_tangent_stream(base_stem: &str, permutation: ShaderPermutation) -> bool {
     EmbeddedStemQuery::for_stem(base_stem, permutation).needs_tangent_stream()
 }
 
 /// `true` when composed embedded WGSL's reflected pass vertex entries use UV1.
+#[cfg(test)]
 pub fn embedded_stem_needs_uv1_stream(base_stem: &str, permutation: ShaderPermutation) -> bool {
     EmbeddedStemQuery::for_stem(base_stem, permutation).needs_uv1_stream()
 }
 
 /// `true` when composed embedded WGSL's reflected pass vertex entries use UV2.
+#[cfg(test)]
 pub fn embedded_stem_needs_uv2_stream(base_stem: &str, permutation: ShaderPermutation) -> bool {
     EmbeddedStemQuery::for_stem(base_stem, permutation).needs_uv2_stream()
 }
 
 /// `true` when composed embedded WGSL's reflected pass vertex entries use UV3.
+#[cfg(test)]
 pub fn embedded_stem_needs_uv3_stream(base_stem: &str, permutation: ShaderPermutation) -> bool {
     EmbeddedStemQuery::for_stem(base_stem, permutation).needs_uv3_stream()
 }
 
 /// `true` when composed embedded WGSL's reflected pass vertex entries need the packed UV0-UV7 stream.
+#[cfg(test)]
 pub fn embedded_stem_needs_wide_uv_stream(base_stem: &str, permutation: ShaderPermutation) -> bool {
     EmbeddedStemQuery::for_stem(base_stem, permutation).needs_wide_uv_stream()
 }
 
 /// `true` when composed embedded WGSL's reflected pass vertex entries use tangent/UV2/UV3 or wide UVs.
+#[cfg(test)]
 pub fn embedded_stem_needs_extended_vertex_streams(
     base_stem: &str,
     permutation: ShaderPermutation,
@@ -142,24 +152,42 @@ pub fn embedded_stem_needs_extended_vertex_streams(
 }
 
 /// `true` when `@location(4)` carries raw shader payload rather than a geometric tangent.
-pub fn embedded_stem_uses_raw_tangent_payload(base_stem: &str) -> bool {
+pub(super) fn stem_uses_raw_tangent_payload(base_stem: &str) -> bool {
     matches!(
         canonical_stem_name(base_stem),
         "ui_circlesegment" | "ui_unlit"
     )
 }
 
+/// `true` when `@location(4)` carries raw shader payload rather than a geometric tangent.
+#[cfg(test)]
+pub fn embedded_stem_uses_raw_tangent_payload(base_stem: &str) -> bool {
+    stem_uses_raw_tangent_payload(base_stem)
+}
+
 /// `true` when `@location(1)` carries raw shader payload rather than a lighting normal.
-pub fn embedded_stem_uses_raw_normal_payload(base_stem: &str) -> bool {
+pub(super) fn stem_uses_raw_normal_payload(base_stem: &str) -> bool {
     matches!(canonical_stem_name(base_stem), "textunlit" | "ui_textunlit")
 }
 
+/// `true` when `@location(1)` carries raw shader payload rather than a lighting normal.
+#[cfg(test)]
+pub fn embedded_stem_uses_raw_normal_payload(base_stem: &str) -> bool {
+    stem_uses_raw_normal_payload(base_stem)
+}
+
 /// `true` when the stem should fall back to transparent UI state until host state arrives.
-pub fn embedded_stem_uses_ui_transparent_fallback(base_stem: &str) -> bool {
+pub(super) fn stem_uses_ui_transparent_fallback(base_stem: &str) -> bool {
     matches!(
         canonical_stem_name(base_stem),
         "ui_circlesegment" | "ui_textunlit" | "ui_unlit"
     )
+}
+
+/// `true` when the stem should fall back to transparent UI state until host state arrives.
+#[cfg(test)]
+pub fn embedded_stem_uses_ui_transparent_fallback(base_stem: &str) -> bool {
+    stem_uses_ui_transparent_fallback(base_stem)
 }
 
 fn canonical_stem_name(base_stem: &str) -> &str {
@@ -179,10 +207,12 @@ mod tests {
     };
 
     use super::{
-        derive_vertex_stream_mask, embedded_stem_needs_extended_vertex_streams,
-        embedded_stem_needs_tangent_stream, embedded_stem_needs_uv0_stream,
-        embedded_stem_uses_raw_normal_payload, embedded_stem_uses_raw_tangent_payload,
-        embedded_stem_uses_ui_transparent_fallback,
+        derive_vertex_stream_mask, embedded_stem_needs_color_stream,
+        embedded_stem_needs_extended_vertex_streams, embedded_stem_needs_tangent_stream,
+        embedded_stem_needs_uv0_stream, embedded_stem_needs_uv1_stream,
+        embedded_stem_needs_uv2_stream, embedded_stem_needs_uv3_stream,
+        embedded_stem_needs_wide_uv_stream, embedded_stem_uses_raw_normal_payload,
+        embedded_stem_uses_raw_tangent_payload, embedded_stem_uses_ui_transparent_fallback,
     };
 
     fn reflected_with_inputs(inputs: Vec<ReflectedVertexInput>) -> ReflectedRasterLayout {
@@ -209,6 +239,18 @@ mod tests {
         assert!(!embedded_stem_needs_uv0_stream(
             "null_default",
             SHADER_PERM_MULTIVIEW_STEREO
+        ));
+    }
+
+    #[test]
+    fn unlit_pass_vertex_entries_need_color_stream() {
+        assert!(embedded_stem_needs_color_stream(
+            "unlit_default",
+            ShaderPermutation(0),
+        ));
+        assert!(embedded_stem_needs_color_stream(
+            "unlit_default",
+            SHADER_PERM_MULTIVIEW_STEREO,
         ));
     }
 
@@ -275,6 +317,26 @@ mod tests {
         assert!(embedded_stem_needs_extended_vertex_streams(
             "furfx-3.0-shell-10layer_default",
             SHADER_PERM_MULTIVIEW_STEREO,
+        ));
+    }
+
+    #[test]
+    fn debug_pass_vertex_entries_need_wide_uv_streams() {
+        assert!(embedded_stem_needs_uv1_stream(
+            "debug_default",
+            ShaderPermutation(0),
+        ));
+        assert!(embedded_stem_needs_uv2_stream(
+            "debug_default",
+            ShaderPermutation(0),
+        ));
+        assert!(embedded_stem_needs_uv3_stream(
+            "debug_default",
+            ShaderPermutation(0),
+        ));
+        assert!(embedded_stem_needs_wide_uv_stream(
+            "debug_default",
+            ShaderPermutation(0),
         ));
     }
 

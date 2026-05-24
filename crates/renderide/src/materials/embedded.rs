@@ -17,17 +17,8 @@ pub use embedded_material_bind_error::EmbeddedMaterialBindError;
 pub use material_bind::EmbeddedMaterialBindResources;
 pub(crate) use material_bind::EmbeddedMaterialBindShader;
 pub use snapshot_requirements::{SceneColorSnapshotMode, SnapshotRequirements};
-pub use stem_metadata::{
-    EmbeddedTangentFallbackMode, embedded_stem_depth_prepass_pass,
-    embedded_stem_needs_color_stream, embedded_stem_needs_extended_vertex_streams,
-    embedded_stem_needs_tangent_stream, embedded_stem_needs_uv0_stream,
-    embedded_stem_needs_uv1_stream, embedded_stem_needs_uv2_stream, embedded_stem_needs_uv3_stream,
-    embedded_stem_needs_wide_uv_stream, embedded_stem_pipeline_pass_count,
-    embedded_stem_requires_intersection_pass, embedded_stem_scene_color_snapshot_mode,
-    embedded_stem_tangent_fallback_mode, embedded_stem_uses_alpha_blending,
-    embedded_stem_uses_blended_depth_write, embedded_stem_uses_raw_normal_payload,
-    embedded_stem_uses_raw_tangent_payload, embedded_stem_uses_scene_color_snapshot,
-    embedded_stem_uses_scene_depth_snapshot, embedded_stem_uses_two_sided_transparency,
-    embedded_stem_uses_ui_transparent_fallback,
+pub(crate) use stem_metadata::{
+    EmbeddedStemQuery, EmbeddedTangentFallbackMode, embedded_stem_depth_prepass_pass,
+    embedded_stem_pipeline_pass_count,
 };
 pub use texture_pools::EmbeddedTexturePools;

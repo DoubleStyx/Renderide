@@ -66,7 +66,7 @@ impl ProfileExtensionGates {
 /// matching generic [`xr::Binding::new`] overload at submission time.
 #[derive(Clone, Copy)]
 pub(super) enum ActionHandleRef<'a> {
-    /// Tracked pose handle (grip or aim).
+    /// Tracked pose handle.
     Pose(&'a xr::Action<xr::Posef>),
     /// Digital state handle.
     Bool(&'a xr::Action<bool>),
@@ -163,7 +163,7 @@ pub(super) fn apply_suggested_interaction_bindings(
 pub(super) fn build_action_handle_map(
     actions: &OpenxrInputActions,
 ) -> HashMap<String, ActionHandleRef<'_>> {
-    let mut map = HashMap::with_capacity(46);
+    let mut map = HashMap::with_capacity(44);
     macro_rules! put {
         ($variant:ident, $field:ident) => {
             map.insert(
@@ -175,8 +175,6 @@ pub(super) fn build_action_handle_map(
 
     put!(Pose, left_grip_pose);
     put!(Pose, right_grip_pose);
-    put!(Pose, left_aim_pose);
-    put!(Pose, right_aim_pose);
     put!(Pose, left_palm_ext_pose);
     put!(Pose, right_palm_ext_pose);
 
