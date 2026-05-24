@@ -65,7 +65,7 @@ struct ControllerCurlInputs {
     /// `MappableTrackedObject.BodyNodePositionOffset` path in FrooxEngine. Otherwise it is the
     /// controller's tracking-space pose directly. `hand_position` / `hand_rotation` on
     /// [`VRControllerState`] are registration-time offsets (see
-    /// [`crate::xr::input::pose::bound_hand_pose_defaults`]), not tracking-space poses.
+    /// [`crate::xr::input::pose::hand_pose_defaults`]), not tracking-space poses.
     wrist_position: Vec3,
     /// Tracking-space wrist rotation to report on [`HandState::wrist_rotation`]. Composed the same
     /// way as [`Self::wrist_position`] and normalised.

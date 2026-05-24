@@ -1,15 +1,19 @@
 //! Alpha-blending and scene-snapshot flag queries on composed embedded WGSL stems.
 
+#[cfg(test)]
 use crate::materials::{SceneColorSnapshotMode, ShaderPermutation};
 
+#[cfg(test)]
 use super::EmbeddedStemQuery;
 
 /// `true` when the embedded material stem declares alpha blending in any `//#pass` directive.
+#[cfg(test)]
 pub fn embedded_stem_uses_alpha_blending(base_stem: &str) -> bool {
     EmbeddedStemQuery::for_stem(base_stem, ShaderPermutation(0)).uses_alpha_blending()
 }
 
 /// `true` when the embedded material stem declares a blended pass that writes depth by default.
+#[cfg(test)]
 pub fn embedded_stem_uses_blended_depth_write(
     base_stem: &str,
     permutation: ShaderPermutation,
@@ -18,6 +22,7 @@ pub fn embedded_stem_uses_blended_depth_write(
 }
 
 /// `true` when the embedded material stem declares blended front/back cull passes.
+#[cfg(test)]
 pub fn embedded_stem_uses_two_sided_transparency(
     base_stem: &str,
     permutation: ShaderPermutation,
@@ -26,6 +31,7 @@ pub fn embedded_stem_uses_two_sided_transparency(
 }
 
 /// `true` when the composed embedded target declares a scene-depth snapshot binding.
+#[cfg(test)]
 pub fn embedded_stem_uses_scene_depth_snapshot(
     base_stem: &str,
     permutation: ShaderPermutation,
@@ -36,6 +42,7 @@ pub fn embedded_stem_uses_scene_depth_snapshot(
 }
 
 /// `true` when the composed embedded target declares a scene-color snapshot binding.
+#[cfg(test)]
 pub fn embedded_stem_uses_scene_color_snapshot(
     base_stem: &str,
     permutation: ShaderPermutation,
@@ -46,6 +53,7 @@ pub fn embedded_stem_uses_scene_color_snapshot(
 }
 
 /// How the embedded material expects the scene-color snapshot to be refreshed.
+#[cfg(test)]
 pub fn embedded_stem_scene_color_snapshot_mode(
     base_stem: &str,
     permutation: ShaderPermutation,
@@ -66,9 +74,8 @@ mod tests {
         embedded_stem_uses_blended_depth_write, embedded_stem_uses_scene_color_snapshot,
         embedded_stem_uses_scene_depth_snapshot, embedded_stem_uses_two_sided_transparency,
     };
-    use crate::materials::embedded::stem_metadata::{
-        embedded_composed_stem_for_permutation, embedded_stem_requires_intersection_pass,
-    };
+    use crate::materials::embedded::stem_metadata::embedded_composed_stem_for_permutation;
+    use crate::materials::embedded::stem_metadata::passes::embedded_stem_requires_intersection_pass;
 
     const FILTER_STEMS: &[&str] = &[
         "blur_default",

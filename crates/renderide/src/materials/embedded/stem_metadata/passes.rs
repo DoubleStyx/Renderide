@@ -10,6 +10,7 @@ pub fn embedded_stem_pipeline_pass_count(base_stem: &str, permutation: ShaderPer
 }
 
 /// `true` when the composed embedded target uses an intersection subpass.
+#[cfg(test)]
 pub fn embedded_stem_requires_intersection_pass(
     base_stem: &str,
     permutation: ShaderPermutation,

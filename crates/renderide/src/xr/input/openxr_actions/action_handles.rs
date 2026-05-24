@@ -4,20 +4,16 @@ use openxr as xr;
 
 use super::super::manifest::{ActionManifest, ActionType};
 
-/// Typed [`xr::Action`] handles for every action declared in the manifest.
+/// Typed [`xr::Action`] handles for every action created by the renderer.
 ///
-/// Field names mirror the action ids in `actions.toml`; adding a new action requires adding a
-/// matching field here so the binding loop can look it up by id. This struct is flat on purpose
-/// to keep per-frame state read sites terse.
+/// Field names mirror the action ids in `actions.toml` that are bound at runtime. Adding a bound
+/// action requires adding a matching field here so the binding loop can look it up by id. This
+/// struct is flat on purpose to keep per-frame state read sites terse.
 pub(in crate::xr::input) struct OpenxrInputActions {
     /// Left-hand tracked grip pose. See `/user/hand/left/input/grip/pose`.
     pub(in crate::xr::input) left_grip_pose: xr::Action<xr::Posef>,
     /// Right-hand tracked grip pose.
     pub(in crate::xr::input) right_grip_pose: xr::Action<xr::Posef>,
-    /// Left-hand aim pose (pointing ray origin).
-    pub(in crate::xr::input) left_aim_pose: xr::Action<xr::Posef>,
-    /// Right-hand aim pose.
-    pub(in crate::xr::input) right_aim_pose: xr::Action<xr::Posef>,
     /// Left-hand palm pose from `XR_EXT_palm_pose`.
     pub(in crate::xr::input) left_palm_ext_pose: xr::Action<xr::Posef>,
     /// Right-hand palm pose from `XR_EXT_palm_pose`.
@@ -192,8 +188,6 @@ pub(in crate::xr::input) fn build_actions(
     Ok(OpenxrInputActions {
         left_grip_pose: create_pose(action_set, manifest, "left_grip_pose")?,
         right_grip_pose: create_pose(action_set, manifest, "right_grip_pose")?,
-        left_aim_pose: create_pose(action_set, manifest, "left_aim_pose")?,
-        right_aim_pose: create_pose(action_set, manifest, "right_aim_pose")?,
         left_palm_ext_pose: create_pose(action_set, manifest, "left_palm_ext_pose")?,
         right_palm_ext_pose: create_pose(action_set, manifest, "right_palm_ext_pose")?,
 

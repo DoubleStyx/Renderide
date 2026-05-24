@@ -1,7 +1,9 @@
 //! Lazy mesh-tangent upload policy for composed embedded WGSL stems.
 
+#[cfg(test)]
 use crate::materials::ShaderPermutation;
 
+#[cfg(test)]
 use super::EmbeddedStemQuery;
 
 /// Lazy tangent upload behavior required by an embedded material.
@@ -58,6 +60,7 @@ fn stem_needs_generated_missing_tangents(stem: &str) -> bool {
 }
 
 /// Tangent fallback policy for lazy mesh tangent upload.
+#[cfg(test)]
 pub fn embedded_stem_tangent_fallback_mode(
     base_stem: &str,
     permutation: ShaderPermutation,
@@ -71,7 +74,7 @@ mod tests {
     use crate::materials::ShaderPermutation;
 
     use super::{EmbeddedTangentFallbackMode, embedded_stem_tangent_fallback_mode};
-    use crate::materials::embedded::stem_metadata::{
+    use crate::materials::embedded::stem_metadata::vertex_streams::{
         embedded_stem_needs_tangent_stream, embedded_stem_needs_uv0_stream,
     };
 

@@ -52,17 +52,18 @@ You do not have to read straight through. The table of contents below is the map
   - [4.13 Bloom](#413-bloom)
   - [4.14 GTAO ambient occlusion](#414-gtao-ambient-occlusion)
   - [4.15 Auto-exposure](#415-auto-exposure)
-  - [4.16 MSAA depth and color resolves](#416-msaa-depth-and-color-resolves)
-  - [4.17 Display blit and final composition](#417-display-blit-and-final-composition)
-  - [4.18 The shader source tree](#418-the-shader-source-tree)
-  - [4.19 Naga-oil composition](#419-naga-oil-composition)
-  - [4.20 Bind group conventions](#420-bind-group-conventions)
-  - [4.21 Pipeline state vs shader uniforms](#421-pipeline-state-vs-shader-uniforms)
-  - [4.22 The pass directive system](#422-the-pass-directive-system)
-  - [4.23 GPU resource pools and budgeting](#423-gpu-resource-pools-and-budgeting)
-  - [4.24 Frame resource management](#424-frame-resource-management)
-  - [4.25 The driver thread and queue access gate](#425-the-driver-thread-and-queue-access-gate)
-  - [4.26 Profiling with Tracy](#426-profiling-with-tracy)
+  - [4.16 Motion blur](#416-motion-blur)
+  - [4.17 MSAA depth and color resolves](#417-msaa-depth-and-color-resolves)
+  - [4.18 Display blit and final composition](#418-display-blit-and-final-composition)
+  - [4.19 The shader source tree](#419-the-shader-source-tree)
+  - [4.20 Naga-oil composition](#420-naga-oil-composition)
+  - [4.21 Bind group conventions](#421-bind-group-conventions)
+  - [4.22 Pipeline state vs shader uniforms](#422-pipeline-state-vs-shader-uniforms)
+  - [4.23 The pass directive system](#423-the-pass-directive-system)
+  - [4.24 GPU resource pools and budgeting](#424-gpu-resource-pools-and-budgeting)
+  - [4.25 Frame resource management](#425-frame-resource-management)
+  - [4.26 The driver thread and queue access gate](#426-the-driver-thread-and-queue-access-gate)
+  - [4.27 Profiling with Tracy](#427-profiling-with-tracy)
 - [License](#license)
 
 ---
@@ -91,7 +92,7 @@ Three processes cooperate to render a frame.
 ```mermaid
 flowchart LR
     BS[Bootstrapper] -- spawns --> Host[Host process<br/>FrooxEngine, .NET]
-    BS -- spawns --> R[Renderer process<br/>renderide]
+    BS -- spawns --> R[Renderer process<br/>renderide-renderer]
     Host == lock-step ==> R
     R -. async .-> Host
     R --> Display[(Window or HMD)]
@@ -106,15 +107,16 @@ Two ideas are worth holding onto from the start:
 
 ### 1.3 Repository layout
 
-The repository is a workspace that mixes a Rust workspace, a .NET solution, a body of WGSL shader source, vendored native libraries, and a small set of runtime assets. Conceptually it splits into five regions:
+The repository is a workspace that mixes a Rust workspace, a .NET solution, a separate host mod, a body of WGSL shader source, vendored native libraries, and a small set of runtime assets. Conceptually it splits into six regions:
 
 - The Rust workspace under `crates/` is where the renderer, the launcher, the IPC transport, the logger, the shared-types crate, and the headless test harness live.
-- The .NET solution under `generators/` produces a Rust source file that both the renderer and any host-side tooling depend on. `RenderideMod/` is a separate C# project that injects renderer-aware behavior into the live host. `Generators.sln` is the solution file that ties the .NET projects together.
+- The .NET solution under `generators/` produces a Rust source file that both the renderer and any host-side tooling depend on. `Generators.sln` ties together the generator and its tests.
+- `RenderideMod/` is a separate C# project that injects renderer-aware behavior into the live host. It is not part of `Generators.sln`.
 - The shader source tree under `crates/renderide/shaders/` holds all WGSL. It is large enough and important enough to deserve its own region.
 - The runtime asset tree under `crates/renderide/assets/` holds files the renderer ships with at run time, including the window icon and OpenXR controller binding profiles.
 - `third_party/` holds vendored native libraries, currently the OpenXR loader.
 
-Everything above the workspace root that isn't one of these regions is configuration: `Cargo.toml`, `.taplo.toml`, `clippy.toml`, `.gitignore`, `.gitattributes`, the `LICENSE`, the `README.md`, and the GitHub Actions workflows under `.github/workflows/`.
+Everything above the workspace root that is not one of these regions is contributor-facing project metadata: `Cargo.toml`, `.taplo.toml`, `clippy.toml`, `.pre-commit-config.yaml`, `.gitignore`, `.gitattributes`, `LICENSE`, `README.md`, `SECURITY.md`, the GitHub issue templates, Dependabot configuration, GitHub Actions workflows, and the static-site files.
 
 ---
 
@@ -130,10 +132,10 @@ The workspace lists six member crates in `Cargo.toml`. Each has a single, focuse
 | [`interprocess`](crates/interprocess) | library | Cloudtoid-compatible shared-memory ring queues and semaphores. The transport every IPC channel rides on. Cross-platform mmap on Unix, named file mappings on Windows. |
 | [`logger`](crates/logger) | library | File-first logger shared by every process. Writes to `logs/<component>/<timestamp>.log` under the runtime-selected log root, with a `RENDERIDE_LOGS_ROOT` override. |
 | [`renderide-shared`](crates/renderide-shared) | library | The host-renderer wire-format crate. Holds the generated shared types, the binary packing helpers, the dual-queue IPC wrappers (one for the host side, one for the renderer side), and the shared-memory accessor and writer. |
-| [`renderide`](crates/renderide) | two binaries plus library | The renderer itself. Owns winit, wgpu, OpenXR, the scene model, the render graph, materials, assets, profiling, and diagnostics. Builds the `renderide` binary (the renderer process) and the `roundtrip` binary (a small CLI used by the .NET generator's roundtrip tests to validate that Rust packing and C# packing agree on the bytes). |
+| [`renderide`](crates/renderide) | two binaries plus library | The renderer itself. Owns winit, wgpu, OpenXR, the scene model, the render graph, materials, assets, profiling, and diagnostics. Builds the `renderide-renderer` binary (the renderer process) and the `roundtrip` binary (a small CLI used by the .NET generator's roundtrip tests to validate that Rust packing and C# packing agree on the bytes). |
 | [`renderide-test`](crates/renderide-test) | binary plus library | Headless integration harness. Acts as a minimal host, drives the real IPC protocol, spawns the renderer, captures its output, and validates the result against golden images and golden state machines. |
 
-`bootstrapper`, `interprocess`, and `logger` know nothing about graphics. `renderide-shared` knows nothing about graphics either. The graphics knowledge is concentrated in `renderide`. `renderide-test` is the only crate that depends on `renderide` for graphics-aware testing, and it does so through the same IPC contract a real host would use.
+`bootstrapper`, `interprocess`, and `logger` know nothing about graphics. `renderide-shared` knows nothing about graphics either. The graphics knowledge is concentrated in `renderide`. `renderide-test` deliberately does not link the renderer crate; it spawns `renderide-renderer` and validates it through the same IPC contract a real host would use.
 
 ```mermaid
 flowchart TB
@@ -146,56 +148,61 @@ flowchart TB
     renderide_test[renderide-test] --> interprocess
     renderide_test --> logger
     renderide_test --> renderide_shared
-    renderide_test -. spawns and inspects .-> renderide
+    renderide_test -. spawns and inspects .-> renderide_renderer[renderide-renderer]
     renderide_shared --> interprocess
     renderide_shared --> logger
 ```
 
 ### 2.2 The C# projects
 
-Two .NET projects sit next to the Rust workspace, joined by `Generators.sln` at the repo root.
+Two .NET projects sit next to the Rust workspace and are joined by `Generators.sln` at the repo root. `RenderideMod` is a third C# project, but it is independent from that solution.
 
 - [`generators/SharedTypeGenerator`](generators/SharedTypeGenerator) is a code generator. Its job is to read the canonical C# definitions of the host-renderer wire types and emit `crates/renderide-shared/src/shared.rs`, which both sides of the IPC then agree on. Internally it is structured like a small compiler: an `Analysis` stage that parses the inputs, an `IR` stage that holds the typed intermediate representation, an `Emission` stage that writes Rust, and an `Options` stage that handles CLI configuration. The entry point is `Program.cs`, with `GeneratorRunner.cs` and a small `Logging/` directory completing the host plumbing.
-- [`generators/SharedTypeGenerator.Tests`](generators/SharedTypeGenerator.Tests) is the test project for the generator. It splits into `Unit/` tests for the generator's internal stages and `Roundtrip/` tests that pack a value with the generated C# packing code, then unpack it with the Rust `roundtrip` binary, then re-pack and re-check, asserting that both sides agree on every byte for every shape of every type the generator emits.
-- [`RenderideMod`](RenderideMod) is a separate Resonite mod that hooks into the live host using HarmonyLib and ResoniteModLoader. It contains a `Patches/` folder for Harmony patches, an `Ipc/` folder for the host-side IPC plumbing the patches use, and a `Properties/` folder for assembly metadata. It is not a renderer dependency; it is the host-side counterpart that knows about Renderide and prepares the host to talk to it.
+- [`generators/SharedTypeGenerator.Tests`](generators/SharedTypeGenerator.Tests) is the test project for the generator. It splits into `Unit/` tests for the generator's internal stages and `Roundtrip/` tests that pack a value with the generated C# packing code, then unpack it with the Rust `roundtrip` binary, then re-pack and re-check, asserting that both sides agree on every byte for every shape of every type the generator emits. Roundtrip sources compile only when `Renderite.Shared.dll` is discoverable through the test project's configured probe paths or environment variables; hosted CI runs the generator tests without those sources.
+- [`RenderideMod`](RenderideMod) is a separate `net10.0` Resonite mod that hooks into the live host using HarmonyLib and ResoniteModLoader. It contains a `Patches/` folder for Harmony patches, an `Ipc/` folder for the host-side IPC plumbing the patches use, and a `Properties/` folder for assembly metadata. It is not a renderer dependency; it is the host-side counterpart that knows about Renderide and prepares the host to talk to it.
 
-The .NET solution is built and tested by its own CI workflow (see [2.9](#29-continuous-integration)). You do not need a .NET SDK installed to build or run the renderer itself, only when you change the generator or the mod.
+The .NET solution is built and tested by the shared CI workflow (see [2.9](#29-continuous-integration)). You do not need a .NET SDK installed to build or run the renderer itself, only when you change the generator or the mod.
 
 ### 2.3 Top-level files and folders
 
 | Path | What it is |
 | --- | --- |
-| `Cargo.toml` | Rust workspace manifest. Lists the member crates, defines the `dev-fast` and `release` profiles, and centralizes the project's clippy and rustc lint configuration. |
+| `Cargo.toml` | Rust workspace manifest. Lists the member crates, customizes the `dev`, `dev-fast`, and `release` profiles, and centralizes the project's clippy and rustc lint configuration. |
 | `Cargo.lock` | Resolved dependency lockfile. Checked in so all builds (and CI runners) agree. |
-| `Generators.sln` | .NET solution file for the C# projects under `generators/`. |
-| `clippy.toml` | Per-crate clippy tuning. Notably allows `unwrap`, `expect`, `panic`, `dbg`, `print`, and indexing in tests, and raises the by-value pass size limit so a deliberately Copy host camera struct can be threaded through hot paths by value. |
+| `Generators.sln` | .NET solution file for `generators/SharedTypeGenerator` and `generators/SharedTypeGenerator.Tests`. |
+| `clippy.toml` | Per-crate clippy tuning. Allows `unwrap`, `expect`, `panic`, `dbg`, `print`, and indexing in tests. |
+| `.pre-commit-config.yaml` | Local pre-commit and pre-push hook definitions. |
 | `.taplo.toml` | TOML formatter configuration, scoped to manifests so build output under `target/` is not formatted. |
 | `.gitignore`, `.gitattributes` | Standard git configuration. |
 | `LICENSE` | Project license. |
 | `README.md` | User-facing build, run, feature, and profiling guide. |
+| `SECURITY.md` | Supported-version and vulnerability-reporting policy. |
 | `crates/` | The Rust workspace member crates. |
 | `generators/` | The C# code generator and its tests. |
 | `RenderideMod/` | The C# Resonite mod. |
 | `third_party/` | Vendored native libraries. Currently holds the OpenXR loader, which the renderer's build script copies onto Windows and macOS targets so the loader is available next to the binary. |
-| `.github/workflows/` | Continuous integration pipelines. |
+| `.github/workflows/` | CI, CodeQL, release, and static-site deployment workflows. |
+| `.github/ISSUE_TEMPLATE/`, `.github/dependabot.yml` | GitHub issue forms and dependency-update configuration. |
+| `index.html`, `robots.txt`, `sitemap.xml`, `renderide_whitepaper/` | Static site and whitepaper content. |
 
 Inside the renderer crate at `crates/renderide/`, three top-level companions live next to `src/`:
 
-- `assets/` holds runtime assets that ship with the renderer: the window icon (`ResoniteLogo.png`) and the OpenXR controller binding profiles under `xr/bindings/` for every supported headset and controller family. The build script copies these into the artifact directory so the binary can find them at run time.
+- `assets/` holds runtime assets that ship with the renderer: the window icon (`ResoniteLogo.png`) and the OpenXR controller binding profiles under `xr/bindings/` for every supported headset and controller family. The build script copies the XR action and binding files into the artifact directory so the binary can find them at run time.
 - `shaders/` holds every WGSL source file the renderer compiles. It is divided into `materials/` (one shader per host material program), `modules/` (shared logic composed via naga-oil), and `passes/` with subdirectories for `backend/`, `compute/`, `post/`, and `present/` shaders.
-- `build.rs` and `build_support/` together compose the WGSL source tree at build time, generate an embedded shader registry that the renderer links in, copy XR assets into the artifact directory, and copy the vendored OpenXR loader on Windows and macOS. The `build_support/shader/` subdirectory is where the shader composition logic lives, broken into `source`, `modules`, `compose`, `directives`, `validation`, `parallel`, `emit`, `model`, and `error`.
+- `build.rs` and `build_support/` together compose the WGSL source tree at build time, generate an embedded shader registry that the renderer links in, copy XR assets into the artifact directory, and copy the vendored OpenXR loader on Windows and macOS. The `build_support/shader/` subdirectory is where the shader composition logic lives, broken into `source`, `modules`, `compose`, `directives`, `validation`, `parallel`, `mirror_once`, `emit`, `model`, and `error`.
 
 ### 2.4 Build profiles and feature flags
 
-The workspace defines two non-default profiles in `Cargo.toml`:
+The workspace customizes three profiles in `Cargo.toml`:
 
-- `dev-fast` inherits `dev` (so debug symbols, unwind, and assertions are on) but raises the optimization level to 2. Use this for everyday dev cycles when stock `cargo build` is too slow but you still want assertions.
-- `release` raises optimization to 3, enables LTO, disables debug assertions, sets `panic = "abort"`, and keeps debug symbols on for crash report symbolication.
+- `dev` raises the default development optimization level to 1 so routine debug builds run faster while keeping debug symbols and assertions.
+- `dev-fast` inherits `dev` (so debug symbols, unwind, and assertions are on) but raises the optimization level to 2. Use this for everyday dev cycles when stock `cargo build` is still too slow but you still want assertions.
+- `release` raises optimization to 3, disables debug assertions, enables debug info for the build, and asks Cargo to strip debuginfo from the final binaries. It does not enable LTO or switch to aborting panics.
 
 The `renderide` crate declares two opt-in Cargo features. Both are off by default to keep stock builds and CI lean.
 
 - `tracy` enables Tracy profiling. CPU spans come from the `profiling` crate. GPU timestamp queries come from `wgpu-profiler`. The Tracy client links statically and runs in on-demand mode, so a profiled build idles near zero cost when no GUI is connected.
-- `video-textures` enables GStreamer-backed video texture decoding. Without this feature, the renderer still accepts video texture IPC commands and allocates GPU placeholders, but no decoding runs and the placeholder stays black.
+- `video-textures` enables GStreamer-backed video texture decoding. Without this feature, the renderer still accepts video texture IPC commands and allocates GPU placeholders, but no decoding runs and the placeholder stays black. On Linux, install `libgstreamer1.0-dev`, `libgstreamer-plugins-base1.0-dev`, and `libgstreamer-plugins-good1.0-dev`; the last package provides the `videoflip` element used to land decoded frames in the texture orientation shaders expect.
 
 See `README.md` for the exact build commands and platform-specific dependencies for each feature.
 
@@ -207,7 +214,7 @@ Tests live in three places.
 - Per-crate integration tests live in `crates/<crate>/tests/`. Each file in a `tests/` directory is its own integration test binary linked against the crate's library API.
 - Cross-process integration tests live in `crates/renderide-test/`, which builds a full host emulator and drives the real IPC contract end to end.
 
-The renderer crate carries a curated set of integration tests under `crates/renderide/tests/` that cover non-GPU concerns. The current set asserts architecture-layer boundaries (`architecture_layers.rs`), the parallel shader build (`build_shader_parallel.rs`), the clustered-light compute shader's bind layout (`clustered_light_shader_audit.rs`), terminal error mirroring on Unix (`error_terminal_mirror_unix.rs`), material UV-flip handling across shader families (`material_uv_flip_audit.rs`), native stdio forwarding (`native_stdio_forwarding.rs`), and shader-module composition correctness (`shader_module_audit.rs` plus its data directory). None of these require a GPU adapter.
+The renderer crate carries a curated set of integration tests under `crates/renderide/tests/` that cover non-GPU concerns. The current set asserts architecture-layer boundaries, OpenXR loader artifact handling, the parallel shader build, clustered-light shader layout, reflection-probe source resolution, terminal error mirroring on Unix, material UV-orientation rules, native stdio forwarding, and shader-module composition correctness. None of these require a GPU adapter.
 
 The supporting crates each have their own integration tests:
 
@@ -215,9 +222,19 @@ The supporting crates each have their own integration tests:
 - `crates/interprocess/tests/` exercises a publisher-subscriber queue end to end (`end_to_end.rs`).
 - `crates/logger/tests/` is a fourteen-file suite covering per-component init layouts, append-versus-truncate semantics, malicious-timestamp sanitization, mirror writers, the log facade, the macros routed through `init_for_*`, second-init no-op behavior, the uninitialized state, and concurrency under torn-line conditions.
 - `crates/renderide-shared/tests/` covers wire packing for polymorphic types (`packing_polymorphic_roundtrip.rs`) and primitives (`packing_wire_primitives.rs`), plus the singleton claim that prevents two renderers from racing on the same IPC name (`renderer_singleton_claim.rs`).
-- `crates/renderide-test/tests/` covers the harness itself: CLI resolution parsing, golden-image diff writing, golden round-trips, log folder routing, the PNG stability state machine, the spawn argument table, an end-to-end sphere pipeline, and two scene integrations (`integration_unlit_sphere.rs`, `integration_torus_unlit_perlin.rs`).
+- `crates/renderide-test/tests/` covers the harness itself: CLI resolution parsing, golden-image diff writing, golden round-trips, log folder routing, the PNG stability state machine, the spawn argument table, an end-to-end sphere pipeline, and the current scene integrations (`unlit_sphere` and `torus_unlit_perlin`).
 
-GPU-driven testing is deliberately out of scope. Integration tests for the renderer are non-GPU by policy: GPU paths are validated at run time and through the headless harness in `renderide-test`, not in CI integration tests.
+Ordinary renderer integration tests should stay non-GPU unless they belong in the dedicated harness. GPU-backed validation lives in `renderide-test`, which CI runs as a headless golden-image suite:
+
+```bash
+cargo run -p renderide-test -- check-suite
+cargo run -p renderide-test -- update-suite
+cargo run -p renderide-test -- check-suite --case unlit_sphere
+```
+
+Use `update-suite` only when the visual change is intentional. The flat-image gate rejects clear-only captures so a broken render cannot silently promote itself.
+
+If the renderer binary is not already present next to the harness, build it first with `cargo build -p renderide` or pass an explicit binary with `--renderer`.
 
 ### 2.6 Lints and formatting
 
@@ -236,7 +253,7 @@ The clippy set includes:
 - `undocumented_unsafe_blocks` requires a `// SAFETY:` comment on every `unsafe` block.
 - A long list of style and correctness lints (`uninlined_format_args`, `needless_pass_by_ref_mut`, `redundant_clone`, `large_stack_arrays`, `await_holding_lock`, `significant_drop_in_scrutinee`, `manual_clamp`, and so on) that catch the kind of paper cuts that compound across a large codebase.
 
-`clippy.toml` allows the panic-and-unwrap family of lints inside test code so tests can assert directly without ceremony, and it raises the by-value pass size limit to 1024 bytes so the host camera frame struct can stay Copy and travel through hot paths by value without tripping `large_types_passed_by_value`.
+`clippy.toml` allows the panic-and-unwrap family of lints inside test and benchmark code so tests can assert directly without ceremony. Production code still inherits the workspace lint set.
 
 Format with `cargo fmt --all` for Rust, `taplo fmt` for `Cargo.toml` and other manifests, and `dotnet format` for the C# projects.
 
@@ -260,7 +277,8 @@ A few conventions are worth spelling out because the lint configuration assumes 
 - Public items carry `///` doc comments. Inline `//` comments are reserved for the non-obvious why.
 - Output goes through the `logger` crate. `println!` and `eprintln!` are clippy-warned everywhere.
 - Collections default to `hashbrown::HashMap`. Locks default to `parking_lot::Mutex`.
-- Dependency versions are pinned to major and minor only (for example `thiserror = "2.1"`), and the latest stable release is preferred.
+- Dependency versions follow the style already used in the relevant manifest. Prefer current stable releases, avoid overly broad version requirements, and justify new dependencies tightly.
+- Follow the AI contribution policy in `README.md` and the vulnerability reporting policy in `SECURITY.md`.
 
 For C# code in the generator and the mod: throw specific exception types instead of catching `Exception` at internal boundaries, and keep public types documented.
 
@@ -268,7 +286,7 @@ For C# code in the generator and the mod: throw specific exception types instead
 
 The renderer has two complementary visibility systems.
 
-The first is the file-first logger from the `logger` crate. Every process initializes it on startup and writes to its own subdirectory under the runtime-selected log root. Local checkout runs prefer `Renderide/logs`; release binaries use the current user's platform log directory unless `RENDERIDE_LOGS_ROOT` is set. The supported component names are `bootstrapper`, `host` (captured host stdout and stderr), `renderer`, `renderer-test`, and `SharedTypeGenerator`. Log files are named with a UTC timestamp so they sort and can be compared across runs. The recommended levels are `error` for unrecoverable failures, `warn` for recoverable anomalies, `info` for lifecycle events, `debug` for per-frame and per-asset control flow (the default), and `trace` for tight loops and high-frequency paths.
+The first is the file-first logger from the `logger` crate. Rust processes initialize it on startup and write to their own subdirectory under the runtime-selected log root. Local checkout runs prefer `Renderide/logs`; release binaries use the current user's platform log directory unless `RENDERIDE_LOGS_ROOT` is set. The Rust logger component names are `bootstrapper`, `host` (captured host stdout and stderr), `renderer`, and `renderer-test`. The C# generator uses its own aligned logging helper and writes under `logs/SharedTypeGenerator`. Log files are named with a UTC timestamp so they sort and can be compared across runs. The recommended levels are `error` for unrecoverable failures, `warn` for recoverable anomalies, `info` for lifecycle events, `debug` for per-frame and per-asset control flow (the default), and `trace` for tight loops and high-frequency paths.
 
 The second is the in-renderer diagnostics overlay built with Dear ImGui. It surfaces per-frame timings, per-view information, scene and asset inspection, host process metrics, encoder errors, and a watchdog. The overlay reads from snapshots captured at layer boundaries rather than borrowing live state from the renderer, which keeps the overlay safe to run alongside the per-frame work it is observing.
 
@@ -276,9 +294,14 @@ The second is the in-renderer diagnostics overlay built with Dear ImGui. It surf
 
 The main check workflow lives under `.github/workflows/`.
 
-- `ci.yml` builds and tests the Rust workspace and the .NET solution as independent jobs, each with Ubuntu, Windows, and macOS matrix entries so the Rust and .NET checks can run in parallel. Linux is the only Rust matrix entry that uses `--all-features`, because GStreamer dev packages are reliably installable from the system package manager only on Linux. Windows and macOS still build the `tracy` feature so it stays warning-free on those platforms. The Linux Rust job also installs Vulkan tooling so the `materials::registry` smoke test can find an adapter. The .NET job runs the generator's unit and roundtrip tests, and verifies formatting on Linux only (Windows checkouts can disagree with the in-repo encoding because of `core.autocrlf`, so format checks would fail spuriously there).
+The current workflows are:
 
-The CI workflow triggers on push to `master`, on pull requests, and on manual dispatch.
+- `ci.yml` builds and tests the Rust workspace and the .NET generator solution as independent jobs. The Rust matrix runs on Ubuntu, Windows, and macOS; Linux is the only entry that uses `--all-features`, because GStreamer dev packages are reliably installable from the system package manager only on Linux. Windows and macOS still check the `tracy` feature so it stays warning-free on those platforms. The Rust job checks formatting, Taplo, Clippy, targeted package builds, the full workspace test suite, and the headless renderer golden suite. The .NET job uses the .NET 10 SDK on Ubuntu, Windows, and macOS, restores `Generators.sln` in locked mode, verifies formatting on Linux only, builds `SharedTypeGenerator.Tests` with warnings as errors, and runs its tests. Hosted runners do not have `Renderite.Shared.dll`, so generator roundtrip sources are excluded there.
+- `codeql.yml` runs CodeQL analysis for GitHub Actions, C#, and Rust on pushes and pull requests that target `master`, plus a weekly schedule.
+- `release.yml` builds nightly or manually requested release artifacts from the newest green CI run on `master`.
+- `static.yml` deploys the static site to GitHub Pages when the site files change on `master` or when manually dispatched.
+
+The CI workflow triggers on push to `master`, on pull requests, and on manual dispatch, but push and pull-request runs are path-filtered to files that affect builds, tests, or generated artifacts.
 
 Local hooks catch failures before a push, but they are not the final gate because any git hook can be bypassed with `--no-verify`. Protect `master` with a GitHub branch protection rule or ruleset that requires pull requests and these status checks before merge:
 
@@ -297,7 +320,7 @@ Block force pushes and branch deletion on `master` so the hosted CI result remai
 
 ### 3.1 The three-process model
 
-Renderide is the renderer process in a three-process system. The bootstrapper owns lifetimes; the host owns the world; the renderer owns the GPU and the window. The mental-model diagram in [1.2](#12-the-mental-model) shows the topology. What is worth picking apart in this section is *what the bootstrapper does that nothing else can*, because the bootstrapper is easy to forget and easy to misuse.
+Renderide's launcher process is `renderide`, built by the `bootstrapper` crate. The renderer process it supervises is `renderide-renderer`, built by the `renderide` crate. Together with the host they form a three-process system: the bootstrapper owns lifetimes, the host owns the world, and the renderer owns the GPU and the window. The mental-model diagram in [1.2](#12-the-mental-model) shows the topology. What is worth picking apart in this section is *what the bootstrapper does that nothing else can*, because the bootstrapper is easy to forget and easy to misuse.
 
 ```mermaid
 flowchart TB
@@ -347,7 +370,7 @@ The primary queue carries per-frame control flow: frame begin and end, scene sub
 
 Queue messages are small and reference shared-memory regions by ID. Shared memory is where the bulk lives: vertex and index data, texture pixels, transform batches, material property batches. The host writes; the renderer reads. Lifetime is governed by the IPC protocol so the renderer never reads a region the host has freed.
 
-The transport layer is the `interprocess` crate, which implements Cloudtoid-compatible shared-memory ring queues. On Unix it backs queues with file mappings under a configurable directory (defaulting to `/dev/shm/.cloudtoid` on Linux). On Windows it uses named file mappings and named semaphores. Queue parameters are passed by CLI; both sides agree on the same names by sharing the same configuration.
+The transport layer is the `interprocess` crate, which implements Cloudtoid-compatible shared-memory ring queues. On Unix it backs queues with file mappings under a configurable directory (defaulting to `/dev/shm/.cloudtoid/interprocess/mmf` on Linux), with `RENDERIDE_INTERPROCESS_DIR` available as an override. On Windows it uses named file mappings and named semaphores. Queue parameters are passed by CLI; both sides agree on the same names by sharing the same configuration.
 
 ### 3.3 The shared types crate
 
@@ -386,11 +409,11 @@ Each layer corresponds to a top-level module in `crates/renderide/src/`:
 
 - The `app` module owns the process boundary. It contains the `bootstrap` for IPC wiring, the `driver` abstraction for winit, a `headless` driver for the test harness, the `frame_clock`, the window icon, the run-exit code (`exit.rs`) that decides what the process returns to its parent, and a `redraw_plan` that decides when to ask the driver for the next paint.
 - The `frontend` module owns transport. It contains the `transport` itself, `init_state` (which carries the handshake), `lockstep_state`, the `decoupling` state machine that lets rendering stay responsive while the host catches up, the `dispatch` of incoming `RendererCommand`s, `begin_frame`, the `input` conversion from winit and OpenXR events into shared `InputState` structures, an `output_policy` that picks where the next frame should land, an `output_device` adapter for host head-output devices, a `session` summary that the diagnostics overlay reads from, a `frame_start_performance` band, and a `renderer_frontend` wrapper that the runtime calls into.
-- The `scene` module owns the host world mirror. It contains `coordinator`, `world`, `render_space`, `dense_update`, the `transforms` arena, the `meshes` registry (mesh and skinned renderables, with their material/transform/per-instance overrides), `lights`, `overrides` (render and material property blocks), `reflection_probe`, `pose`, `math`, `camera`, `layer`, `ids`, `blit_to_display`, and an `error` enum. There is no wgpu in here.
-- The `backend` module owns GPU state. It contains the `facade` that the runtime calls into, the `frame_gpu` that builds frame-global GPU state along with its `frame_gpu_bindings` and `frame_gpu_error` companions, the `frame_resource_manager`, the `gpu_jobs` for nonblocking GPU work such as SH2 projection, the `light_gpu` packer, `cluster_gpu`, `per_draw_resources`, the `view_resource_registry`, the `per_view_resource_map`, the `material_property_reader`, the `asset_transfers` workers that move host shared-memory payloads into GPU pools, a `graph` glue layer that registers the renderer's pass nodes against the render graph, a `world_mesh_frame_plan` that captures the per-frame world-mesh draw plan, and a `debug_hud_bundle` that snapshots the data the overlay reads. Beneath the backend module live the closely related top-level modules `gpu` (device-facing primitives), `gpu_pools` (resident asset pools), `gpu_resource` (resource-handle plumbing shared across pools), `materials` (material registry and pipelines), `assets` (asset integration queues), `mesh_deform` (skinning and blendshape compute), `world_mesh` (visibility planning), `occlusion`, `skybox`, `reflection_probes`, `camera`, `passes`, and `render_graph`, plus the workspace-wide concerns `config`, `diagnostics`, `profiling`, and `process_io`.
-- The `runtime` module is a thin facade that wires the other layers together one tick at a time. It does not own IPC queues, scene tables, or GPU resources. Each per-tick concern lives in its own submodule: `tick`, the `ipc` entry, `asset_integration`, `gpu_services`, `lockstep`, `xr_glue`, `debug_hud_frame`, plus a `frame` subtree that holds `view_planning`, `view_plan`, `extract`, `render`, and `submit`. A `state` subtree carries the long-lived runtime state, `display` and `accessors` give the rest of the renderer typed handles to it, `shutdown` collects the teardown sequence, and `camera_render_task` plus `offscreen_tasks` carry the bookkeeping for secondary-camera and offscreen render paths. An `orchestration_tests` module covers the wiring with in-process tests.
+- The `scene` module owns the host world mirror. It contains `coordinator`, `world`, `render_space`, `dense_update`, the `transforms` arena, the `meshes` registry (mesh and skinned renderables, with their material/transform/per-instance overrides), `lights`, `lod_groups`, `overrides` (render and material property blocks), `reflection_probe`, `pose`, `math`, `camera`, `layer`, `ids`, `blit_to_display`, and an `error` enum. There is no wgpu in here.
+- The `backend` module owns GPU state. It contains the `facade` that the runtime calls into, the `frame_gpu` that builds frame-global GPU state along with its `frame_gpu_bindings` and `frame_gpu_error` companions, the `frame_resource_manager`, the `gpu_jobs` for nonblocking GPU work such as SH2 projection, the `light_gpu` packer, `cluster_gpu`, `per_draw_resources`, the `view_resource_registry`, the `per_view_resource_map`, `secondary_rt_scratch`, the `asset_transfers` workers that move host shared-memory payloads into GPU pools, a `graph` glue layer that registers the renderer's pass nodes against the render graph, a `world_mesh_frame_plan` that captures the per-frame world-mesh draw plan, and a `debug_hud_bundle` that snapshots the data the overlay reads. Beneath the backend module live the closely related top-level modules `gpu` (device-facing primitives), `gpu_pools` (resident asset pools), `gpu_resource` (resource-handle plumbing shared across pools), `materials` (material registry and pipelines), `assets` (asset integration queues), `mesh_deform` (skinning and blendshape compute), `world_mesh` (visibility planning), `occlusion`, `skybox`, `reflection_probes`, `camera`, `passes`, and `render_graph`, plus workspace-wide concerns such as `color_space`, `concurrency`, `config`, `diagnostics`, `graph_inputs`, `profiling`, `process_io`, `render_phase`, `run_error`, and `shared`.
+- The `runtime` module is a thin facade that wires the other layers together one tick at a time. It does not own IPC queues, scene tables, or GPU resources. Each per-tick concern lives in its own submodule: `tick`, the `ipc` entry and its effect handlers, `asset_integration`, `gpu_services`, `lockstep`, `xr_glue`, `debug_hud_frame`, plus a `frame` subtree that holds `view_planning`, `view_plan`, `extract`, `schedule`, `render`, and `submit`. A `state` subtree carries the long-lived runtime state, `display` and `accessors` give the rest of the renderer typed handles to it, `shutdown` collects the teardown sequence, and `offscreen_tasks` carries the bookkeeping for camera captures, 360 captures, cube captures, readbacks, and reflection probes. An `orchestration_tests` module covers the wiring with in-process tests.
 
-The arrows in the diagram are the allowed dependency directions. If you find yourself wanting an upward dependency (scene reaching into IPC, backend mutating frontend state) it is almost always a sign the data should move differently, usually as a snapshot taken at a layer boundary.
+The arrows in the diagram are the allowed dependency directions. The architecture-layer test enforces the concrete forbidden edges: frontend cannot reach assets, graph inputs, GPU, or XR; scene cannot reach backend; assets, materials, passes, render graph, graph inputs, and world mesh cannot reach back into backend or pass scheduling in ways that would invert the layer boundary. If you find yourself wanting an upward dependency (scene reaching into IPC, backend mutating frontend state), it is almost always a sign the data should move differently, usually as a snapshot taken at a layer boundary.
 
 ### 3.5 The frame lifecycle
 
@@ -447,6 +470,7 @@ What lives there:
 - Dense transform arenas keyed by host index, including the host's removal ordering. The dense layout is part of the wire contract: random reorderings would break alignment with what the host is sending.
 - Mesh and skinned renderables, each carrying the mesh, material, transform, and per-instance overrides needed to draw it.
 - Lights merged from frame submits and from light-buffer submissions.
+- LOD groups that let draw collection choose the active renderer set from host-authored distance bands.
 - Render and material-property overrides for per-camera filtering and per-instance tweaks.
 - Skybox state, with the actual filtered cube cache living in the backend.
 - Reflection probe task rows tracking host requests for SH2 projection.
@@ -464,7 +488,7 @@ Asset integration is cooperative, queue-backed, and budgeted. The host can send 
 
 ```mermaid
 flowchart LR
-    Host["Host IPC commands<br/>(mesh / texture / cubemap /<br/>material / shader)"]
+    Host["Host IPC commands<br/>(mesh / texture / cubemap / 3D texture /<br/>render texture / video / material / shader)"]
     AT[Asset transfer queue]
     Mesh[Mesh integration]
     Tex[Texture integration]
@@ -485,7 +509,7 @@ flowchart LR
     Cache --> Frame
 ```
 
-The relevant code lives in `crates/renderide/src/assets/`, structured around an asset transfer queue plus per-type integration subdirectories (`mesh/`, `texture/`, `shader/`, `video/`). The integration phase of the runtime tick (`runtime/asset_integration.rs`) drains these tasks under a time budget that shrinks when the renderer is decoupled from the host. Uploaded resources land in resident pools managed by `gpu_pools/` (see [4.23](#423-gpu-resource-pools-and-budgeting)) and become visible to draw collection on the same tick.
+The relevant code lives in `crates/renderide/src/assets/`, structured around an asset transfer queue plus per-type integration subdirectories (`mesh/`, `texture/`, `shader/`, `video/`). The backend transfer workers handle the GPU-facing details for meshes, 2D textures, cubemaps, 3D textures, render textures, video textures, auxiliary assets, and host-authored catalogs such as material properties and sampler descriptors. The integration phase of the runtime tick (`runtime/asset_integration.rs`) drains these tasks under a time budget that shrinks when the renderer is decoupled from the host. Uploaded resources land in resident pools managed by `gpu_pools/` (see [4.24](#424-gpu-resource-pools-and-budgeting)) and become visible to draw collection on the same tick.
 
 Each asset type has its own integration loop because each has different ordering invariants (formats before data, palettes before frames, mip levels independently uploadable, video decoding running on a worker), but they all share one property: the runtime tick decides when integration runs and how long it gets, not the host.
 
@@ -534,57 +558,69 @@ The relevant code lives in `crates/renderide/src/render_graph/`. The pieces:
 
 - `builder/` is the setup-time API. Passes register their resource access and any per-pass parameters.
 - `compiled/` is the immutable result: a flattened pass list in dependency order, transient usage unions, lifetime-based alias slots, the entry points (`execute` and `execute_multi_view`) that record encoders and submit them, and the memoization keyed on the durable frame-shape inputs (surface extent, MSAA, multiview, surface format, scene HDR format).
-- `pass/` defines the typed pass traits that concrete passes implement: `RasterPass`, `ComputePass`, `CopyPass`, and `CallbackPass`.
+- `pass/` defines the typed pass traits that concrete passes implement: `RasterPass`, `ComputePass`, and `EncoderPass`.
 - `pool/` manages the transient resource pool, and `upload_arena/` backs deferred buffer uploads.
-- `resources/` and `frame_params.rs` carry the typed resource handles and per-frame parameter packs.
+- `resources/` and `compiled/helpers/frame_params.rs` carry the typed resource handles and per-frame parameter packs.
 - `history/` carries the registry of persistent history resources (previous-frame depth, accumulator targets) that survive past a single tick.
-- `post_process_chain/` and `post_process_settings.rs` declare the post-processing chain shape (which effects run, in what order, with what targets) so a planned view can carry its own chain spec.
+- `post_process_chain/` declares the post-processing chain shape and signature. Per-view settings come from `config::types::post_processing`, so a planned view can carry its own chain spec.
 - `record_parallel.rs` is the parallel record path that makes the per-view loop scale across cores.
 - `frame_upload_batch/` coalesces deferred buffer writes into a single drain before submit.
 - `gpu_cache/`, `blackboard.rs`, `context/`, `ids.rs`, `error.rs`, `schedule.rs`, `swapchain_scope.rs`, and `execution_backend.rs` provide the supporting machinery.
 
 Two structural ideas matter most:
 
-- Pass phase. The graph distinguishes `FrameGlobal` passes from `PerView` passes. Frame-global work runs once per tick (mesh deformation, light prep, Hi-Z that depends on previous-frame depth). Per-view work runs once per planned view (world rendering, view-dependent post-processing, scene-color compose).
+- Pass phase. The graph distinguishes `FrameGlobal` passes from `PerView` passes. Frame-global work runs once per tick (currently mesh deformation). Per-view work runs once per planned view (clustered lighting, world rendering, Hi-Z build for the current view's submitted depth, view-dependent post-processing, scene-color compose).
 - Encoder topology. The executor records frame-global passes in a dedicated encoder, then one encoder per planned view for per-view passes. Deferred buffer writes are drained before the single submit. The per-view loop pre-warms transients, per-view per-draw resources, and the pipeline cache once across all views before recording, so the recording loop never pays lazy allocation costs (a structural prerequisite for the parallel record path).
 
 When you find yourself tempted to record a pass on a borrowed encoder outside the graph, register a graph node instead. The graph is what keeps frame resource lifetimes correct.
 
 ### 3.10 Pass implementations
 
-Concrete passes live in `crates/renderide/src/passes/`. Each implements one of the four pass traits and registers against the graph builder.
+Concrete passes live in `crates/renderide/src/passes/`. Each implements one of the graph pass traits and registers against the graph builder.
 
 ```mermaid
 flowchart TB
     md[mesh_deform<br/>skinning + blendshapes]
-    hiz[hi_z_build<br/>from previous-frame depth]
-    cl[clustered_light<br/>build cluster light list]
+    cl[clustered_light<br/>per-view cluster light list]
     dp[world_mesh_depth_prepass<br/>MSAA depth only]
-    wmf[world_mesh_forward<br/>opaque + alpha + transparent +<br/>depth resolve + color resolve]
-    pp[post_processing<br/>auto-exposure, GTAO, bloom, tonemap]
+    opaque[world_mesh_forward_opaque<br/>HDR color + depth]
+    normals[gtao_view_normals<br/>optional]
+    snapshot[world_mesh_depth_snapshot<br/>resolved depth]
+    intersect[world_mesh_intersect<br/>intersection-aware forward]
+    transparent[world_mesh_transparent_sequence<br/>transparent draws]
+    resolve[world_mesh_depth_resolve<br/>optional]
+    hiz[hi_z_build<br/>stage current depth for next frame]
+    pp[post_processing<br/>GTAO, auto-exposure,<br/>bloom, motion blur, tonemap]
     sc[scene_color_compose]
 
-    hiz --> cl
-    md --> wmf
-    cl --> wmf
-    dp --> wmf
-    wmf --> pp
+    md --> cl
+    cl --> dp
+    dp --> opaque
+    opaque --> normals
+    opaque --> snapshot
+    normals --> snapshot
+    snapshot --> intersect
+    intersect --> transparent
+    transparent --> resolve
+    transparent --> hiz
+    resolve --> hiz
+    hiz --> pp
     pp --> sc
 
     classDef global fill:#fff0e8,stroke:#333
     classDef perview fill:#e8f0ff,stroke:#333
-    class hiz,cl,md global
-    class dp,wmf,pp,sc perview
+    class md global
+    class cl,dp,opaque,normals,snapshot,intersect,transparent,resolve,hiz,pp,sc perview
 ```
 
 The currently implemented passes:
 
-- `hi_z_build` builds the hierarchical Z pyramid from the previous frame's depth, used for occlusion testing this frame (see [4.5](#45-visibility-and-hi-z-occlusion)).
-- `clustered_light` runs the compute pass that bins lights into clusters for this frame's camera (see [4.6](#46-clustered-forward-lighting)).
 - `mesh_deform` runs mesh skinning and blendshape compute (see [4.4](#44-mesh-skinning-and-blendshape-compute)).
-- `world_mesh_forward` is the workhorse forward pass. It splits into a prepare step, an optional MSAA depth prepass, an opaque pass, an intersect pass, a transparent pass, depth and color resolve passes, and depth and color snapshot passes that feed downstream effects. A `helpers/` module collects the shared utilities the forward pass and its siblings draw on; it is not itself a pass.
-- `post_processing` is a family of effects, each of which is its own graph node: auto-exposure, GTAO, bloom, and either ACES or AgX tone mapping. See sections [4.11](#411-aces-tone-mapping) through [4.16](#416-msaa-depth-and-color-resolves).
-- `scene_color_compose` copies the HDR scene color into the swapchain, the XR target, or an offscreen output, depending on the planned view. The final display blit (see [4.17](#417-display-blit-and-final-composition)) handles any color-space and resolution conversion past that point.
+- `clustered_light` runs the per-view compute pass that bins lights into clusters for this view's camera and eye layout (see [4.6](#46-clustered-forward-lighting)).
+- `world_mesh_forward` is the workhorse forward family. It splits into a prepare step, an optional MSAA depth prepass, an opaque pass, optional GTAO view normals, a depth snapshot, an intersection-aware pass, the transparent sequence, optional depth resolve, and the color/depth snapshots that feed downstream effects. A `helpers/` module collects the shared utilities the forward pass and its siblings draw on; it is not itself a pass.
+- `hi_z_build` builds and stages the hierarchical Z pyramid from the current resolved depth after forward rendering. Draw collection reads the previous frame's staged pyramid for temporal occlusion testing (see [4.5](#45-visibility-and-hi-z-occlusion)).
+- `post_processing` is a family of effects, each of which is its own graph node: GTAO, auto-exposure, bloom, motion blur, and either ACES or AgX tone mapping. See sections [4.11](#411-aces-tone-mapping) through [4.16](#416-motion-blur).
+- `scene_color_compose` copies the HDR scene color into the swapchain, the XR target, or an offscreen output, depending on the planned view. The final display blit (see [4.18](#418-display-blit-and-final-composition)) handles any color-space and resolution conversion past that point.
 
 Swapchain clears no longer have a dedicated pass; clears happen through the render graph's load ops on the targets that own them, which keeps the cost in the same encoder as the work that follows.
 
@@ -606,7 +642,7 @@ flowchart TB
     Submit --> Present[Present]
 ```
 
-The relevant code lives in `crates/renderide/src/runtime/frame/view_planning.rs` and `view_plan.rs`, supported by `crates/renderide/src/camera/` (the `state`, `frame`, `view`, `projection`, `projection_plan`, `stereo`, `geometry`, and `secondary/` modules) and `crates/renderide/src/gpu/vr_mirror/` for the mirror blit. The final hop to the swapchain goes through `crates/renderide/src/gpu/display_blit/` (see [4.17](#417-display-blit-and-final-composition)), which handles any color-space or resolution mismatch between the composed scene color and the surface.
+The relevant code lives in `crates/renderide/src/runtime/frame/view_planning.rs` and `view_plan.rs`, supported by `crates/renderide/src/camera/` (the `state`, `frame`, `view`, `projection`, `projection_plan`, `stereo`, `geometry`, and `secondary/` modules) and `crates/renderide/src/gpu/vr_mirror/` for the mirror blit. The final hop to the swapchain goes through `crates/renderide/src/gpu/display_blit/` (see [4.18](#418-display-blit-and-final-composition)), which handles any color-space or resolution mismatch between the composed scene color and the surface.
 
 Two invariants are easy to violate and worth restating:
 
@@ -638,11 +674,11 @@ If OpenXR initialization or a per-frame acquire fails, the renderer should degra
 
 - `cli` for command-line parsing.
 - `host` for the host-side IPC plumbing.
-- `scene` for the scenes the harness can stage.
+- `scene` and `scene_dsl` for the scenes the harness can stage.
 - `golden` for golden-image comparison and PNG diff writing.
 - `logging` for the harness's own log routing.
 
-The harness is what stands between "the renderer compiles" and "the renderer behaves." It exercises the same queues, the same shared-memory protocol, and the same renderer entry points a real launch would, then captures the rendered frames for comparison against golden references. New end-to-end integration tests for the renderer as a whole belong in this harness, not in `crates/renderide/tests/`.
+The harness is what stands between "the renderer compiles" and "the renderer behaves." It exercises the same queues, the same shared-memory protocol, and the same renderer entry points a real launch would, then captures the rendered frames for comparison against golden references under `crates/renderide-test/goldens/`. The default renderer binary is resolved next to the harness binary, or to `target/<profile>/renderide-renderer` when `--dev-fast` or `--release` is supplied; `--renderer` can override it. New end-to-end integration tests for the renderer as a whole belong in this harness, not in `crates/renderide/tests/`.
 
 ---
 
@@ -690,13 +726,13 @@ The output is a set of deformed vertex buffers (or buffer ranges) plus per-draw 
 
 ### 4.5 Visibility and Hi-Z occlusion
 
-The renderer runs both CPU frustum culling and GPU Hi-Z occlusion culling against a hierarchical Z pyramid built from the previous frame's depth. The combination is the classical "depth from N-1 to cull N" trick: occlusion is approximate (objects that became visible between frames will pop in for one frame), but the result is dramatically less overdraw and a roughly bounded GPU cost per scene.
+The renderer runs both CPU frustum culling and GPU Hi-Z occlusion culling against a hierarchical Z pyramid staged from the previous frame's submitted depth. The combination is the classical "depth from N-1 to cull N" trick: occlusion is approximate (objects that became visible between frames can pop in for one frame), but the result is dramatically less overdraw and a roughly bounded GPU cost per scene.
 
 The CPU side lives in `crates/renderide/src/occlusion/cpu/` and the world-mesh visibility planner under `crates/renderide/src/world_mesh/culling/`. The GPU side lives in `crates/renderide/src/occlusion/gpu/` plus the `hi_z_build` graph pass and two compute shaders under `shaders/passes/compute/`: `hi_z_mip0.wgsl` (build the base mip from the resolved depth target) and `hi_z_downsample_min.wgsl` (build each subsequent mip by taking the minimum depth value across the four corresponding texels in the previous mip).
 
 The min is the right choice because of reverse-Z. Conservative occlusion culling has to err on the side of *keeping* an object that might be visible; pyramid texels therefore have to summarize their input texels with the *farthest* representative depth, so an object lying in front of the farthest occluder in the coverage region still passes the test. Under reverse-Z, the farthest depth is the smallest value, which is why the downsample takes the min.
 
-The whole thing is a frame-global pass: the pyramid is built once per tick from the previous tick's depth, then read by the forward pass during per-view culling.
+The graph builds the pyramid as per-view work after the current view has produced a resolved depth target. That staged pyramid becomes the temporal input draw collection can read on a later frame.
 
 ### 4.6 Clustered forward lighting
 
@@ -704,7 +740,7 @@ Renderide is a clustered forward renderer. Lights are binned into a 3D grid of c
 
 Two pieces drive it:
 
-- A compute pass `clustered_light` reads the scene's light list and writes the per-cluster light tables. The shader is `shaders/passes/compute/clustered_light.wgsl`. The CPU-side lives in `crates/renderide/src/passes/clustered_light/`.
+- A per-view compute pass `clustered_light` reads the scene's light list and writes the per-cluster light tables for the current camera and eye layout. The shader is `shaders/passes/compute/clustered_light.wgsl`. The CPU-side lives in `crates/renderide/src/passes/clustered_light/`.
 - The forward pass reads the cluster tables at fragment-shader time. The shader-side helpers live in `shaders/modules/lighting/cluster_math.wgsl` and the PBS module set.
 
 The cluster geometry and light packing lives in `crates/renderide/src/world_mesh/cluster/` and `crates/renderide/src/backend/cluster_gpu.rs`. The clustered approach scales to many lights without paying the per-fragment cost of a brute-force forward loop, while keeping the bandwidth advantages of forward rendering over deferred for transparent surfaces, MSAA, and stylized shading.
@@ -742,7 +778,7 @@ The shared evaluator helpers live in `shaders/modules/skybox/`. The skybox is re
 
 ### 4.10 The HDR scene-color chain
 
-The renderer runs in HDR end to end. The world is rendered into an HDR scene-color target (16-bit-per-channel float by default), every post-processing effect reads from and writes to that HDR domain, and the final tone mapper folds the HDR signal down into the swapchain's SDR (or wide-gamut) format right before present. Conceptually the chain is: `world_mesh_forward` writes HDR scene color and its companion depth/color snapshots; the post-processing chain reads those snapshots, applies auto-exposure, GTAO, bloom, and tone mapping; then `scene_color_compose` copies the result into the swapchain target (or an offscreen output for secondary cameras), with the display blit performing any final color-space conversion on the way to the surface.
+The renderer runs in HDR end to end. The world is rendered into an HDR scene-color target (16-bit-per-channel float by default), every post-processing effect reads from and writes to that HDR domain, and the final tone mapper folds the HDR signal down into the swapchain's SDR (or wide-gamut) format right before present. Conceptually the chain is: `world_mesh_forward` writes HDR scene color and its companion depth/color snapshots; the post-processing chain reads those snapshots, applies GTAO, auto-exposure, bloom, motion blur, and tone mapping; then `scene_color_compose` copies the result into the swapchain target (or an offscreen output for secondary cameras), with the display blit performing any final color-space conversion on the way to the surface.
 
 Two structural points:
 
@@ -765,7 +801,7 @@ The implementation is one shader (`shaders/passes/post/agx_tonemap.wgsl`) plus t
 
 Bloom is implemented as a downsample-and-upsample pyramid: the bright parts of the HDR scene color are extracted, downsampled through a chain of progressively smaller mips, then upsampled back and added to the original. The result is a soft halo around bright pixels that approximates the optical bloom a real camera produces.
 
-The shader is `shaders/passes/post/bloom.wgsl` and the pass code lives under `crates/renderide/src/passes/post_processing/`. Bloom runs in the HDR domain before tone mapping so the tone mapper can compress the bloomed signal correctly.
+The shader is `shaders/passes/post/bloom.wgsl` and the pass code lives under `crates/renderide/src/passes/post_processing/`. Bloom runs in the HDR domain after auto-exposure and before motion blur and tone mapping so the tone mapper can compress the bloomed signal correctly.
 
 ### 4.14 GTAO ambient occlusion
 
@@ -778,7 +814,7 @@ GTAO runs in several stages:
 - `gtao_denoise.wgsl` filters the noise spatially using depth-aware weights.
 - `gtao_apply.wgsl` modulates the lighting by the denoised AO.
 
-The shared filter math lives in `shaders/modules/post/`. The pass code lives under `crates/renderide/src/passes/post_processing/`. GTAO runs in the post-processing chain after the forward pass and before tone mapping, reading from the depth and color snapshots produced by the forward pass.
+The shared filter math lives in `shaders/modules/post/`. The pass code lives under `crates/renderide/src/passes/post_processing/`. GTAO runs in the post-processing chain after the forward pass and before auto-exposure, bloom, motion blur, and tone mapping, reading from the depth and color snapshots produced by the forward pass.
 
 ### 4.15 Auto-exposure
 
@@ -792,7 +828,13 @@ A few properties matter when you touch this path:
 
 The CPU-side glue is part of the post-processing chain in `crates/renderide/src/passes/post_processing/`.
 
-### 4.16 MSAA depth and color resolves
+### 4.16 Motion blur
+
+Motion blur is a screen-space HDR post effect that uses per-pixel motion vectors to blur camera and object motion after bloom but before tone mapping. Keeping it before the tone mapper preserves highlight energy and avoids blurring already-compressed SDR values.
+
+The shader is `shaders/passes/post/motion_blur.wgsl` and the pass code lives under `crates/renderide/src/passes/post_processing/`. Camera render tasks explicitly disable motion blur to match the host capture path, and stereo multiview views can remove it from graph topology when the configured view profile disallows it.
+
+### 4.17 MSAA depth and color resolves
 
 Forward rendering with MSAA needs more care than simply turning a sample count up. Multisampled depth cannot be sampled directly in WGSL, so depth-aware post effects (GTAO especially) need a resolved single-sample copy of the depth target to consume. The renderer handles this with a small set of dedicated passes:
 
@@ -803,28 +845,28 @@ Forward rendering with MSAA needs more care than simply turning a sample count u
 
 The MSAA sample count is part of the render-graph cache key (see [3.9](#39-the-render-graph)), so toggling MSAA cleanly rebuilds the graph rather than leaving stale pass scaffolding behind.
 
-### 4.17 Display blit and final composition
+### 4.18 Display blit and final composition
 
 Between `scene_color_compose` and the swapchain sits the display blit at `crates/renderide/src/gpu/display_blit/`, with the matching shader at `shaders/passes/present/display_blit.wgsl`. The display blit is responsible for whatever conversion the surface needs that the rest of the HDR chain does not handle itself: sRGB encoding, PQ or HDR10 packing when the surface is wide-gamut, optional letterboxing when the composed image's resolution does not match the surface, and optional debug overlays drawn on top.
 
 The point of having a dedicated blit is composition stability. Scene composition runs in a known, internal color space; the display blit absorbs whatever surface the platform happens to expose. The desktop window in a VR session reaches the swapchain through the same display blit as a non-VR session (after the VR mirror has staged the eye image), so there is one final-stage code path regardless of mode.
 
-### 4.18 The shader source tree
+### 4.19 The shader source tree
 
-The shader tree under `crates/renderide/shaders/` is organized into four regions:
+The shader tree under `crates/renderide/shaders/` is organized into six source regions:
 
-- `materials/` contains one shader per host material program. The filenames mirror the original Unity shader names, lowercased. There are 117 of them at present; the major families are PBS (physically based, with many variants for shadow, displacement, intersect, alpha, and so on), unlit (basic, overlay, billboard), Xiexe Toon (a stylized BRDF), CAD (line work), and a long list of effect shaders (blur, fresnel, gradient, lut, gamma, hsv, invert, grayscale, channel matrix, paint, matcap, fresnel-lerp, displacement variants).
-- `modules/` contains shared logic composed into materials and passes via naga-oil (see [4.19](#419-naga-oil-composition)). Its subdirectories carry the modules by domain: `core/` for math and small primitives, `draw/` for per-draw helpers, `frame/` for per-frame data helpers, `ibl/` for the GGX prefilter and IBL reconstruction, `lighting/` for direct-light, clustered-light, and SH2 helpers, `material/` for color, alpha, sample, and fresnel utilities, `mesh/` for vertex transforms and billboard math, `pbs/` for the PBS BRDF and its normal/displacement/cluster pieces, `post/` for post-processing math (including the GTAO filter), `skybox/` for the skybox evaluator, `ui/` for UI helpers (overlay tint, rect clipping, text SDF), and `xiexe/` for the Xiexe Toon helpers.
+- `materials/` contains one shader per host material program. The filenames mirror the original Unity shader names, lowercased. There are roughly 150 material roots at present; the major families are PBS (physically based, with many variants for shadow, displacement, intersect, alpha, and so on), unlit (basic, overlay, billboard), Xiexe Toon (a stylized BRDF), FurFX, CAD (line work), and a long list of effect shaders (blur, fresnel, gradient, lut, gamma, hsv, invert, grayscale, channel matrix, paint, matcap, fresnel-lerp, displacement variants).
+- `modules/` contains shared logic composed into materials and passes via naga-oil (see [4.20](#420-naga-oil-composition)). Its subdirectories carry the modules by domain: `core/` for math and small primitives, `draw/` for per-draw helpers, `frame/` for per-frame data helpers, `fur/` for FurFX helpers, `ibl/` for the GGX prefilter and IBL reconstruction, `lighting/` for direct-light, clustered-light, and SH2 helpers, `material/` for color, alpha, sample, and fresnel utilities, `mesh/` for vertex transforms and billboard math, `pbs/` for the PBS BRDF and its normal/displacement/cluster pieces, `post/` for post-processing math (including the GTAO filter), `skybox/` for the skybox evaluator, `ui/` for UI helpers (overlay tint, rect clipping, text SDF), and `xiexe/` for the Xiexe Toon helpers.
 - `passes/backend/` contains shaders the renderer uses for backend tasks that are not material-driven: the skybox families, the depth blits, the MSAA depth prepass, and the GTAO view-normals reconstruction.
 - `passes/compute/` contains all compute shaders: skinning, blendshape, Hi-Z mip 0 and downsample, clustered light binning, MSAA depth resolve, SH2 projection, IBL convolution and downsample, GTAO prefilter, and auto-exposure histogram.
-- `passes/post/` contains the post-processing shaders: GTAO, bloom, ACES and AgX tone mapping, MSAA HDR resolve, auto-exposure apply, scene color compose, and the camera-task alpha coverage shader for secondary-camera output.
+- `passes/post/` contains the post-processing shaders: GTAO, bloom, motion blur, ACES and AgX tone mapping, MSAA HDR resolve, auto-exposure apply, scene color compose, and the camera-task alpha coverage shader for secondary-camera output.
 - `passes/present/` contains the VR mirror shaders and the display blit.
 
-There is also a `target/` directory under `shaders/` that holds build-time outputs; it is not source.
+There is also a `target/` directory under `shaders/` that holds generated inspection outputs and development-reload material targets; it is not source.
 
-The build script under `build.rs` and `build_support/shader/` discovers every WGSL file at build time, composes them, validates them, and emits an embedded shader registry the renderer links in. Material shaders are validated against the pipeline-state-versus-uniform contract (see [4.21](#421-pipeline-state-vs-shader-uniforms)). Shader composition runs in parallel across CPUs.
+The build script under `build.rs` and `build_support/shader/` discovers every WGSL file at build time, composes them, validates them, writes generated inspection outputs, and emits the `OUT_DIR` embedded shader registry the renderer links in. Material shaders are validated against the pipeline-state-versus-uniform contract (see [4.22](#422-pipeline-state-vs-shader-uniforms)). Shader composition runs in parallel across CPUs.
 
-### 4.19 Naga-oil composition
+### 4.20 Naga-oil composition
 
 The renderer uses naga-oil for shader composition. Naga-oil is a small layer on top of naga that adds module imports and conditional compilation to WGSL.
 
@@ -837,13 +879,14 @@ The Rust side of composition lives in `crates/renderide/build_support/shader/`. 
 - `source` discovers shader source files.
 - `modules` discovers and registers naga-oil composable modules.
 - `compose` runs the composition.
-- `directives` parses the comment directives (the most important being the `//#pass` directive, see [4.22](#422-the-pass-directive-system)).
+- `directives` parses the comment directives (the most important being the `//#pass` directive, see [4.23](#423-the-pass-directive-system)).
 - `validation` enforces the cross-cutting contracts (notably the pipeline-state-versus-uniform separation).
 - `parallel` runs composition jobs across cores.
+- `mirror_once` rewrites recognized texture sampling patterns so MirrorOnce wrap modes can be emulated consistently.
 - `emit` writes the embedded shader registry that the renderer links in.
 - `model` and `error` carry the data model and the error type.
 
-### 4.20 Bind group conventions
+### 4.21 Bind group conventions
 
 The renderer fixes the role of each bind group so reflection can be applied uniformly across all material shaders.
 
@@ -858,7 +901,7 @@ Two consequences worth knowing:
 - A material shader does not need to know anything about per-frame layout or per-draw layout; both are imported from modules and bound by the renderer. The shader only declares its own group 1 layout.
 - The build script can validate bind group usage by inspecting the shader's reflection data and rejecting violations of the convention.
 
-### 4.21 Pipeline state vs shader uniforms
+### 4.22 Pipeline state vs shader uniforms
 
 This is the single most important rule in the material system, and the build script enforces it.
 
@@ -868,13 +911,19 @@ If a pipeline-state property name appears in a material shader's group 1 uniform
 
 Adding a new shader uniform is uneventful. Adding a new pipeline-state property requires updating the canonical list of pipeline property IDs in the materials code and confirming that the build-time validator is teaching the new property correctly.
 
-### 4.22 The pass directive system
+### 4.23 The pass directive system
 
-Every material WGSL file under `shaders/materials/` declares one or more `//#pass <kind>` directives, each sitting directly above an `@fragment` entry point. The build script parses these into a static pass description table per shader stem, and the materials system uses that table to build one `wgpu::RenderPipeline` per declared pass.
+Every material WGSL file under `shaders/materials/` declares one or more pass directives, each sitting directly above an `@fragment` entry point. The first token is `type=forward` or `type=depth_prepass`, followed by optional keys such as `name`, `vs`, `blend`, `zwrite`, `ztest`, `cull`, `color_mask`, `stencil`, `offset`, and `a2c`:
+
+```wgsl
+//#pass type=forward name=forward_transparent blend=transparent_material zwrite=material(off)
+```
+
+The build script parses these into a static pass description table per shader stem, and the materials system uses that table to build one `wgpu::RenderPipeline` per declared pass.
 
 The forward encode loop dispatches all pipelines for every draw that binds the material, in declared order. This is how a material that needs depth-only and color passes, or an opaque-and-shadow split, expresses itself: not by writing two shaders but by declaring two passes in the same file.
 
-### 4.23 GPU resource pools and budgeting
+### 4.24 GPU resource pools and budgeting
 
 The renderer is built around the assumption that the per-frame hot path does not allocate. The supporting machinery is the resident pool family under `crates/renderide/src/gpu_pools/`.
 
@@ -891,13 +940,13 @@ Each pool participates in a shared VRAM budget. When a new asset arrives and the
 
 The pool code is split into `pools/` (the registry of pool kinds), `resource_pool` (the shared base behavior), `budget` (the VRAM accounting), `sampler_state` (the sampler pool), and `texture_allocation` (the texture-specific allocation logic). A `test_support` module exposes the helpers integration tests use to drive the pools without a GPU adapter.
 
-### 4.24 Frame resource management
+### 4.25 Frame resource management
 
 Above the per-asset pools sits the frame resource manager (`crates/renderide/src/backend/frame_resource_manager/`). It owns the per-frame state that is too short-lived to be a permanent pool entry but too expensive to reallocate every frame: per-view per-draw resources, frame-global GPU state, the light packing buffers, the cluster GPU buffers, and the bookkeeping that ties them to the planned views.
 
 The render graph pre-warms this state once before the per-view loop begins, which is a structural prerequisite for the parallel record path: if the per-view loop had to lazily allocate frame state, parallel recording would race on the allocation.
 
-### 4.25 The driver thread and queue access gate
+### 4.26 The driver thread and queue access gate
 
 GPU work is submitted from a dedicated driver thread that owns the wgpu device and queue. The runtime tick orchestrates work onto that thread through a queue access gate (`crates/renderide/src/gpu/sync/queue_access_gate.rs`).
 
@@ -905,7 +954,7 @@ The gate exists to prevent two kinds of bugs at once. First, it makes the bounda
 
 The driver thread itself lives in `crates/renderide/src/gpu/driver_thread/`. It is supported by the rest of `crates/renderide/src/gpu/`: the `adapter/`, `context/`, `limits/`, `depth/`, `msaa_depth_resolve/`, `vr_mirror/`, `display_blit/`, `blit_kit/`, `frame_bindings/`, `frame_globals/`, `profiling/`, and `sync/` directories, plus the `bind_layout`, `instance_setup`, `present`, and `submission_state` files.
 
-### 4.26 Profiling with Tracy
+### 4.27 Profiling with Tracy
 
 When the `tracy` feature is enabled, the renderer streams CPU spans and GPU timestamps to a Tracy GUI on port 8086. The integration is on-demand: data is only streamed while a GUI is connected, so a profiled build idles near zero cost when nothing is attached.
 
