@@ -269,6 +269,63 @@ fn alpha_clip_paths_do_not_force_base_mip_sampling() -> io::Result<()> {
 }
 
 #[test]
+fn blur_poisson_path_avoids_dynamic_sample_array_indexing() -> io::Result<()> {
+    let blur = material_source("blur.wgsl")?;
+    assert!(
+        blur.contains("#import renderide::post::poisson_blur as pb")
+            && blur.contains("if (kw_POISSON_DISC())")
+            && blur.contains("pb::sample_poisson_blur("),
+        "blur.wgsl must route Poisson blur through a real control-flow branch"
+    );
+    for forbidden in [
+        "let offset = select(",
+        "fm::poisson_blur_offset(",
+        "POISSON_2D_SAMPLES",
+    ] {
+        assert!(
+            !blur.contains(forbidden),
+            "blur.wgsl must not use eager Poisson/circular selection through `{forbidden}`"
+        );
+    }
+
+    let filter_math = module_source("post/filter_math.wgsl")?;
+    for forbidden in [
+        "POISSON_2D_SAMPLE_COUNT",
+        "POISSON_2D_SAMPLES",
+        "poisson_blur_offset",
+    ] {
+        assert!(
+            !filter_math.contains(forbidden),
+            "filter_math.wgsl must not retain Poisson sample-array helpers"
+        );
+    }
+
+    let poisson = module_source("post/poisson_blur.wgsl")?;
+    assert!(
+        poisson.contains("#define_import_path renderide::post::poisson_blur"),
+        "poisson_blur.wgsl must be a composable shader module"
+    );
+    assert_eq!(
+        poisson.matches("c = c + sample_poisson_tap").count(),
+        128,
+        "poisson_blur.wgsl must keep all 128 Poisson taps explicitly unrolled"
+    );
+    for forbidden in [
+        "array<vec2<f32>",
+        "POISSON_2D_SAMPLES",
+        "[idx]",
+        "[i]",
+        "poisson_blur_offset",
+    ] {
+        assert!(
+            !poisson.contains(forbidden),
+            "poisson_blur.wgsl must not use dynamic sample-array indexing through `{forbidden}`"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn grab_filter_roots_use_shared_filter_common_helpers() -> io::Result<()> {
     for material in [
         "blur.wgsl",
