@@ -1,4 +1,4 @@
-//! Per-view blackboard slots that propagate live post-processing settings into the chain.
+//! Per-view blackboard slots that propagate live post-processing settings into graph passes.
 
 use crate::render_graph::blackboard::blackboard_slot;
 
@@ -6,7 +6,7 @@ blackboard_slot! {
     /// Blackboard slot for the live [`crate::config::GtaoSettings`] snapshot.
     ///
     /// Seeded each frame from [`crate::config::RendererSettings`] before per-view recording so
-    /// the GTAO chain ([`crate::passes::post_processing::GtaoEffect`]) reads the current slider
+    /// the GTAO subchain ([`crate::passes::post_processing::GtaoEffect`]) reads the current slider
     /// values without rebuilding the compiled render graph. Non-topology slider changes don't
     /// flip [`crate::render_graph::post_process_chain::chain::PostProcessChainSignature`] -- this
     /// slot is the path that propagates those edits into the per-stage UBO writes.

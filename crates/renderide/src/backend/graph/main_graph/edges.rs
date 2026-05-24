@@ -31,9 +31,10 @@ pub(super) fn add_main_graph_edges(
     builder.add_edge(passes.deform, passes.clustered);
     builder.add_edge(passes.clustered, passes.depth_prepass);
     builder.add_edge(passes.depth_prepass, passes.forward_opaque);
-    if let Some(gtao_normals) = passes.gtao_normals.as_ref() {
-        builder.add_edge(passes.forward_opaque, gtao_normals.pass);
-        builder.add_edge(gtao_normals.pass, passes.depth_snapshot);
+    if let Some(gtao) = passes.gtao.as_ref() {
+        builder.add_edge(passes.forward_opaque, gtao.normal_pass);
+        builder.add_edge(gtao.normal_pass, gtao.range.first);
+        builder.add_edge(gtao.range.last, passes.depth_snapshot);
     } else {
         builder.add_edge(passes.forward_opaque, passes.depth_snapshot);
     }

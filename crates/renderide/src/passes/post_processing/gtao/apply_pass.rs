@@ -1,15 +1,12 @@
-//! `gtao_apply` raster pass -- GTAO final iteration that folds AO modulation into the
-//! kernel.
+//! `gtao_apply` raster pass -- GTAO final iteration that composites AO into opaque color.
 //!
-//! Reads the post-processing chain's HDR scene-color input plus the AO term and packed
-//! edges (from `gtao_main` directly when `denoise_passes in {0, 1}`, or from the last
-//! intermediate ping-pong target when `denoise_passes >= 2`), runs the bilateral kernel at the
-//! full `denoise_blur_beta`, multiplies the resulting AO term by `OCCLUSION_TERM_SCALE` to
-//! recover the true visibility (the production pass stored `visibility / 1.5` for kernel
-//! headroom), then modulates HDR scene color and writes the chain's HDR output. The shader
-//! short-circuits the kernel when `denoise_blur_beta <= 0`, so `denoise_passes == 0`
-//! collapses to a "modulate by raw production AO" path without re-binding a different
-//! pipeline.
+//! Reads the AO term and packed edges (from `gtao_main` directly when `denoise_passes in {0, 1}`,
+//! or from the last intermediate ping-pong target when `denoise_passes >= 2`), runs the bilateral
+//! kernel at the full `denoise_blur_beta`, and writes a visibility factor. The pipeline uses
+//! multiplicative destination-color blending, so the existing opaque HDR target is modulated in
+//! place before transparent draws run. The shader short-circuits the kernel when
+//! `denoise_blur_beta <= 0`, so `denoise_passes == 0` collapses to a "modulate by raw production
+//! AO" path without re-binding a different pipeline.
 
 use std::num::NonZeroU32;
 
@@ -25,30 +22,29 @@ use crate::render_graph::pass::RenderPassTemplate;
 use crate::render_graph::pass::{PassBuilder, RasterPass};
 use crate::render_graph::resources::TextureHandle;
 
-/// Handles for one [`GtaoApplyPass`] invocation.
+/// Handles for one [`GtaoOpaqueCompositePass`] invocation.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct GtaoApplyResources {
-    /// HDR scene-color input (post-processing chain's previous output, or the forward HDR
-    /// target when GTAO is the chain's first effect).
-    pub hdr_input: TextureHandle,
+pub(super) struct GtaoOpaqueCompositeResources {
+    /// HDR scene-color target to modulate in place.
+    pub target_color: TextureHandle,
+    /// Whether [`Self::target_color`] is the multisampled forward target.
+    pub target_is_msaa: bool,
     /// AO term sampled by the bilateral kernel.
     pub ao_in: TextureHandle,
     /// Packed-edges texture used for kernel weighting.
     pub edges: TextureHandle,
-    /// HDR output written by this pass.
-    pub hdr_output: TextureHandle,
 }
 
-/// Records the final denoise + apply fragment shader.
-pub(super) struct GtaoApplyPass {
-    resources: GtaoApplyResources,
+/// Records the final denoise + opaque composite fragment shader.
+pub(super) struct GtaoOpaqueCompositePass {
+    resources: GtaoOpaqueCompositeResources,
     settings: crate::config::GtaoSettings,
     pipelines: &'static GtaoPipelines,
 }
 
-impl GtaoApplyPass {
+impl GtaoOpaqueCompositePass {
     pub(super) fn new(
-        resources: GtaoApplyResources,
+        resources: GtaoOpaqueCompositeResources,
         settings: crate::config::GtaoSettings,
         pipelines: &'static GtaoPipelines,
     ) -> Self {
@@ -60,21 +56,16 @@ impl GtaoApplyPass {
     }
 }
 
-impl RasterPass for GtaoApplyPass {
+impl RasterPass for GtaoOpaqueCompositePass {
     fn name(&self) -> &str {
-        "GtaoApply"
+        "GtaoOpaqueComposite"
     }
 
     fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
         b.read_blackboard::<GtaoSettingsSlot>();
-        read_fragment_sampled_texture(b, self.resources.hdr_input);
         read_fragment_sampled_texture(b, self.resources.ao_in);
         read_fragment_sampled_texture(b, self.resources.edges);
-        color_attachment(
-            b,
-            self.resources.hdr_output,
-            wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-        );
+        color_attachment(b, self.resources.target_color, wgpu::LoadOp::Load);
         Ok(())
     }
 
@@ -97,15 +88,9 @@ impl RasterPass for GtaoApplyPass {
         ctx: &mut RasterPassCtx<'_, '_>,
         rpass: &mut wgpu::RenderPass<'_>,
     ) -> Result<(), RenderPassError> {
-        profiling::scope!("post_processing::gtao_apply");
+        profiling::scope!("post_processing::gtao_opaque_composite");
         let frame = &*ctx.pass_frame;
         let graph_resources = ctx.graph_resources;
-        let Some(hdr_in_tex) = graph_resources.transient_texture(self.resources.hdr_input) else {
-            return Err(missing_pass_resource(
-                self.name(),
-                format_args!("missing hdr_input {:?}", self.resources.hdr_input),
-            ));
-        };
         let Some(ao_tex) = graph_resources.transient_texture(self.resources.ao_in) else {
             return Err(missing_pass_resource(
                 self.name(),
@@ -118,15 +103,20 @@ impl RasterPass for GtaoApplyPass {
                 format_args!("missing edges {:?}", self.resources.edges),
             ));
         };
-        let Some(out_tex) = graph_resources.transient_texture(self.resources.hdr_output) else {
+        let Some(out_tex) = graph_resources.transient_texture(self.resources.target_color) else {
             return Err(missing_pass_resource(
                 self.name(),
-                format_args!("missing hdr_output {:?}", self.resources.hdr_output),
+                format_args!("missing target_color {:?}", self.resources.target_color),
             ));
         };
 
         let multiview_stereo = frame.view.multiview_stereo;
         let output_format = out_tex.texture.format();
+        let sample_count = if self.resources.target_is_msaa {
+            frame.view.sample_count.max(1)
+        } else {
+            1
+        };
 
         let live = ctx
             .blackboard
@@ -144,14 +134,15 @@ impl RasterPass for GtaoApplyPass {
         let params_buffer = self.pipelines.params.get(ctx.device);
         ctx.write_buffer(params_buffer, 0, bytemuck::bytes_of(&params));
 
-        let pipeline = self
-            .pipelines
-            .apply
-            .pipeline(ctx.device, output_format, multiview_stereo);
+        let pipeline = self.pipelines.apply.pipeline(
+            ctx.device,
+            output_format,
+            sample_count,
+            multiview_stereo,
+        );
         let bind_group = self.pipelines.apply.bind_group(
             ctx.device,
             multiview_stereo,
-            &hdr_in_tex.texture,
             &ao_tex.texture,
             &edges_tex.texture,
             params_buffer,

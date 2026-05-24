@@ -336,7 +336,7 @@ fn agx_post_processing_orders_exposure_before_bloom_and_tonemap_last() {
 }
 
 #[test]
-fn enabling_gtao_adds_normal_prepass_before_gtao_main() {
+fn enabling_gtao_applies_before_depth_snapshot_and_transparent_tail() {
     let post = gtao_enabled_post();
     let mut key = smoke_key();
     key.post_processing = PostProcessChainSignature::from_settings(&post);
@@ -362,11 +362,22 @@ fn enabling_gtao_adds_normal_prepass_before_gtao_main() {
         .iter()
         .position(|name| *name == "GtaoMain")
         .expect("GTAO main pass");
+    let gtao_composite_pos = pass_names
+        .iter()
+        .position(|name| *name == "GtaoOpaqueComposite")
+        .expect("GTAO opaque composite pass");
+    let transparent_pos = pass_names
+        .iter()
+        .position(|name| *name == "WorldMeshForwardTransparentSequence")
+        .expect("transparent sequence pass");
 
     assert!(depth_prepass_pos < opaque_pos);
     assert!(opaque_pos < normal_pos);
-    assert!(normal_pos < depth_snapshot_pos);
-    assert!(depth_snapshot_pos < gtao_main_pos);
+    assert!(normal_pos < gtao_main_pos);
+    assert!(gtao_main_pos < gtao_composite_pos);
+    assert!(gtao_composite_pos < depth_snapshot_pos);
+    assert!(depth_snapshot_pos < transparent_pos);
+    assert!(!pass_names.contains(&"GtaoApply"));
     assert!(
         g.transient_textures
             .iter()

@@ -18,7 +18,7 @@ pub(crate) use hi_z_build::{HiZBuildGraphResources, HiZBuildPass};
 pub(crate) use mesh_deform::MeshDeformPass;
 pub(crate) use post_processing::{
     AcesTonemapEffect, AgxTonemapEffect, AutoExposureEffect, BloomEffect, GtaoEffect,
-    MotionBlurEffect,
+    GtaoGraphResources, GtaoPassRange, MotionBlurEffect,
 };
 pub(crate) use scene_color_compose::{SceneColorComposeGraphResources, SceneColorComposePass};
 pub(crate) use world_mesh_forward::{

@@ -10,8 +10,8 @@
 //!   because the shared fullscreen helper is single-color-target only.
 //! - [`GtaoDenoisePipelineCache`] -- bilateral denoise iteration with one `R8Unorm` color
 //!   target (denoised AO).
-//! - [`GtaoApplyPipelineCache`] -- final-apply pass that folds the denoise kernel into HDR
-//!   modulation; one color target whose format follows the post-processing chain.
+//! - [`GtaoApplyPipelineCache`] -- final-apply pass that folds the denoise kernel into in-place
+//!   opaque HDR modulation through multiplicative destination-color blending.
 //!
 //! Each cache holds mono + multiview variants. One process-wide `GtaoParams` uniform buffer
 //! is shared across all three caches and rewritten per-record from the live
@@ -29,14 +29,13 @@ use std::sync::Arc;
 
 use crate::embedded_shaders::embedded_wgsl;
 use crate::gpu::bind_layout::{
-    fragment_filterable_d2_array_entry, fragment_filtering_sampler_entry,
-    storage_texture_layout_entry, texture_layout_entry, uniform_buffer_layout_entry,
+    fragment_filterable_d2_array_entry, storage_texture_layout_entry, texture_layout_entry,
+    uniform_buffer_layout_entry,
 };
 use crate::gpu_resource::{BindGroupMap, OnceGpu, RenderPipelineMap};
 use crate::render_graph::gpu_cache::{
     FullscreenPipelineVariantDesc, FullscreenShaderVariants, create_d2_array_view,
-    create_linear_clamp_sampler, create_wgsl_shader_module, fullscreen_pipeline_variant,
-    stereo_mask_or_template,
+    create_wgsl_shader_module, fullscreen_pipeline_variant, stereo_mask_or_template,
 };
 #[cfg(test)]
 pub(super) use params::GtaoQualityPreset;
@@ -597,21 +596,32 @@ impl GtaoDenoisePipelineCache {
 
 // ---- apply (final denoise + modulation) pipeline cache --------------------
 
+/// Cache key for [`GtaoApplyPipelineCache::pipeline_mono`] and
+/// [`GtaoApplyPipelineCache::pipeline_multiview`].
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct GtaoApplyPipelineKey {
+    /// Color target format of the opaque HDR attachment.
+    output_format: wgpu::TextureFormat,
+    /// Render target sample count.
+    sample_count: u32,
+}
+
 /// Cache key for [`GtaoApplyPipelineCache::bind_groups`].
 #[derive(Clone, Eq, Hash, PartialEq)]
 struct GtaoApplyBindGroupKey {
-    scene_color: wgpu::Texture,
+    /// AO term texture sampled by the final bilateral kernel.
     ao_term: wgpu::Texture,
+    /// Packed edge texture sampled by the final bilateral kernel.
     ao_edges: wgpu::Texture,
+    /// Whether the texture views bind both stereo array layers.
     multiview_stereo: bool,
 }
 
-/// Cache, sampler, and bind-group layout for `gtao_apply` (final-apply pass).
+/// Cache and bind-group layout for `gtao_apply` (opaque final-apply pass).
 pub(super) struct GtaoApplyPipelineCache {
     bind_group_layout: OnceGpu<wgpu::BindGroupLayout>,
-    sampler: OnceGpu<wgpu::Sampler>,
-    pipeline_mono: RenderPipelineMap<wgpu::TextureFormat>,
-    pipeline_multiview: RenderPipelineMap<wgpu::TextureFormat>,
+    pipeline_mono: RenderPipelineMap<GtaoApplyPipelineKey>,
+    pipeline_multiview: RenderPipelineMap<GtaoApplyPipelineKey>,
     bind_groups: BindGroupMap<GtaoApplyBindGroupKey>,
 }
 
@@ -619,7 +629,6 @@ impl Default for GtaoApplyPipelineCache {
     fn default() -> Self {
         Self {
             bind_group_layout: OnceGpu::default(),
-            sampler: OnceGpu::default(),
             pipeline_mono: RenderPipelineMap::default(),
             pipeline_multiview: RenderPipelineMap::default(),
             bind_groups: BindGroupMap::with_max_entries(MAX_CACHED_BIND_GROUPS),
@@ -628,21 +637,14 @@ impl Default for GtaoApplyPipelineCache {
 }
 
 impl GtaoApplyPipelineCache {
-    fn sampler(&self, device: &wgpu::Device) -> &wgpu::Sampler {
-        self.sampler
-            .get_or_create(|| create_linear_clamp_sampler(device, "gtao_apply"))
-    }
-
     pub(super) fn bind_group_layout(&self, device: &wgpu::Device) -> &wgpu::BindGroupLayout {
         self.bind_group_layout.get_or_create(|| {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("gtao-apply"),
                 entries: &[
                     fragment_filterable_d2_array_entry(0),
-                    fragment_filtering_sampler_entry(1),
-                    fragment_filterable_d2_array_entry(2),
-                    fragment_filterable_d2_array_entry(3),
-                    uniform_buffer_layout_entry(4, wgpu::ShaderStages::FRAGMENT, None),
+                    fragment_filterable_d2_array_entry(1),
+                    uniform_buffer_layout_entry(2, wgpu::ShaderStages::FRAGMENT, None),
                 ],
             })
         })
@@ -652,24 +654,42 @@ impl GtaoApplyPipelineCache {
         &self,
         device: &wgpu::Device,
         output_format: wgpu::TextureFormat,
+        sample_count: u32,
         multiview_stereo: bool,
     ) -> Arc<wgpu::RenderPipeline> {
-        let bind_group_layout = self.bind_group_layout(device);
-        fullscreen_pipeline_variant(
-            device,
-            FullscreenPipelineVariantDesc {
+        let map = if multiview_stereo {
+            &self.pipeline_multiview
+        } else {
+            &self.pipeline_mono
+        };
+        map.get_or_create(
+            GtaoApplyPipelineKey {
                 output_format,
-                multiview_stereo,
-                mono: &self.pipeline_mono,
-                multiview: &self.pipeline_multiview,
-                shader: FullscreenShaderVariants {
-                    mono_label: "gtao_apply_default",
-                    mono_source: embedded_wgsl!("gtao_apply_default"),
-                    multiview_label: "gtao_apply_multiview",
-                    multiview_source: embedded_wgsl!("gtao_apply_multiview"),
-                },
-                bind_group_layouts: &[Some(bind_group_layout)],
-                log_name: "gtao_apply",
+                sample_count: sample_count.max(1),
+            },
+            |key| {
+                logger::debug!(
+                    "gtao_apply: building pipeline (dst format = {:?}, samples = {}, multiview = {})",
+                    key.output_format,
+                    key.sample_count,
+                    multiview_stereo
+                );
+                let (label, source) = if multiview_stereo {
+                    ("gtao_apply_multiview", embedded_wgsl!("gtao_apply_multiview"))
+                } else {
+                    ("gtao_apply_default", embedded_wgsl!("gtao_apply_default"))
+                };
+                let shader = create_wgsl_shader_module(device, label, source);
+                let layout = self.bind_group_layout(device);
+                create_gtao_apply_pipeline(
+                    device,
+                    label,
+                    &shader,
+                    layout,
+                    key.output_format,
+                    key.sample_count,
+                    multiview_stereo,
+                )
             },
         )
     }
@@ -678,24 +698,16 @@ impl GtaoApplyPipelineCache {
         &self,
         device: &wgpu::Device,
         multiview_stereo: bool,
-        scene_color: &wgpu::Texture,
         ao_term: &wgpu::Texture,
         ao_edges: &wgpu::Texture,
         params_buffer: &wgpu::Buffer,
     ) -> wgpu::BindGroup {
         let key = GtaoApplyBindGroupKey {
-            scene_color: scene_color.clone(),
             ao_term: ao_term.clone(),
             ao_edges: ao_edges.clone(),
             multiview_stereo,
         };
-        let sampler = self.sampler(device).clone();
         self.bind_groups.get_or_create(key, |key| {
-            let scene_color_view = create_d2_array_view(
-                &key.scene_color,
-                "gtao_apply_scene_color",
-                key.multiview_stereo,
-            );
             let ao_view = create_d2_array_view(&key.ao_term, "gtao_apply_ao", key.multiview_stereo);
             let edges_view =
                 create_d2_array_view(&key.ao_edges, "gtao_apply_edges", key.multiview_stereo);
@@ -705,22 +717,14 @@ impl GtaoApplyPipelineCache {
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&scene_color_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
                         resource: wgpu::BindingResource::TextureView(&ao_view),
                     },
                     wgpu::BindGroupEntry {
-                        binding: 3,
+                        binding: 1,
                         resource: wgpu::BindingResource::TextureView(&edges_view),
                     },
                     wgpu::BindGroupEntry {
-                        binding: 4,
+                        binding: 2,
                         resource: params_buffer.as_entire_binding(),
                     },
                 ],
@@ -728,6 +732,72 @@ impl GtaoApplyPipelineCache {
             crate::profiling::note_resource_churn!(BindGroup, "passes::gtao_apply_bind_group");
             bind_group
         })
+    }
+}
+
+/// Builds the `gtao_apply` fullscreen pipeline for the active opaque color target.
+fn create_gtao_apply_pipeline(
+    device: &wgpu::Device,
+    label: &str,
+    shader: &wgpu::ShaderModule,
+    bind_group_layout: &wgpu::BindGroupLayout,
+    output_format: wgpu::TextureFormat,
+    sample_count: u32,
+    multiview_stereo: bool,
+) -> wgpu::RenderPipeline {
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some(label),
+        bind_group_layouts: &[Some(bind_group_layout)],
+        immediate_size: 0,
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_main"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_main"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: output_format,
+                blend: Some(gtao_multiply_blend_state()),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState {
+            count: sample_count.max(1),
+            ..Default::default()
+        },
+        multiview_mask: stereo_mask_or_template(multiview_stereo, None),
+        cache: None,
+    });
+    crate::profiling::note_resource_churn!(RenderPipeline, "passes::gtao_apply_pipeline");
+    pipeline
+}
+
+/// Returns the blend state that computes `dst.rgb = src.rgb * dst.rgb` and preserves `dst.a`.
+fn gtao_multiply_blend_state() -> wgpu::BlendState {
+    wgpu::BlendState {
+        color: wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::Dst,
+            dst_factor: wgpu::BlendFactor::Zero,
+            operation: wgpu::BlendOperation::Add,
+        },
+        alpha: wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::Zero,
+            dst_factor: wgpu::BlendFactor::One,
+            operation: wgpu::BlendOperation::Add,
+        },
     }
 }
 

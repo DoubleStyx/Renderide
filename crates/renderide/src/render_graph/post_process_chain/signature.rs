@@ -1,8 +1,8 @@
-//! Topology fingerprint that gates render-graph rebuilds when the chain shape changes.
+//! Topology fingerprint that gates render-graph rebuilds when screen-space effect shape changes.
 
 use crate::config::{PostProcessingSettings, TonemapMode};
 
-/// Topology fingerprint for the post-processing chain at graph compile time.
+/// Topology fingerprint for post-processing and adjacent screen-space effects at graph compile time.
 ///
 /// Changes to any field force a render-graph rebuild. Non-topology parameters (intensity,
 /// threshold, composite mode, etc.) flow to the passes via per-view blackboard slots
@@ -13,7 +13,7 @@ use crate::config::{PostProcessingSettings, TonemapMode};
 /// **not** need to be tracked here.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct PostProcessChainSignature {
-    /// Ground-Truth Ambient Occlusion pass active.
+    /// Ground-Truth Ambient Occlusion subchain active before transparent rendering.
     pub gtao: bool,
     /// Number of GTAO depth-aware denoise iterations baked into the graph (`0..=3`).
     /// Topology field: `>= 2` adds an intermediate denoise pass and a second AO ping-pong

@@ -1,12 +1,13 @@
-//! Fullscreen pass: GTAO depth-aware denoise (final iteration) + HDR modulation.
+//! Fullscreen pass: GTAO depth-aware denoise final iteration for opaque in-place modulation.
 //!
-//! Reads the post-processing chain's HDR scene-color input plus the AO term and packed edges
-//! (from `gtao_main` directly when `denoise_passes in {0, 1}`, or from the last intermediate
-//! denoise ping-pong target when `denoise_passes >= 2`). Runs the edge-preserving 3x3
-//! bilateral kernel at the full `denoise_blur_beta` with `finalApply = true`, multiplies the
-//! resulting AO factor by `OCCLUSION_TERM_SCALE` to
-//! recover the true visibility (the production pass stored `visibility / 1.5` for kernel
-//! headroom), then modulates HDR scene color and writes the chain's HDR output.
+//! Reads the AO term and packed edges (from `gtao_main` directly when `denoise_passes in {0, 1}`,
+//! or from the last intermediate denoise ping-pong target when `denoise_passes >= 2`). Runs the
+//! edge-preserving 3x3 bilateral kernel at the full `denoise_blur_beta`, multiplies the resulting
+//! AO factor by `OCCLUSION_TERM_SCALE` to recover the true visibility (the production pass stored
+//! `visibility / 1.5` for kernel headroom), and outputs that visibility as RGB.
+//!
+//! The render pipeline uses multiplicative destination-color blending, so this pass modulates the
+//! existing opaque HDR attachment in place before transparent draws run.
 //!
 //! The shader short-circuits the kernel when `denoise_blur_beta <= 0` so
 //! `denoise_passes == 0` collapses to a "modulate by raw production AO" path without
@@ -14,26 +15,23 @@
 //! path so the user-visible visibility is correct regardless of the denoise setting.
 //!
 //! Build script composes this into `gtao_apply_default` (mono) and `gtao_apply_multiview`
-//! (stereo). The Rust side caches one pipeline per `(output_format, multiview_stereo)`.
+//! (stereo). The Rust side caches one pipeline per `(output_format, sample_count,
+//! multiview_stereo)`.
 //!
 //! Bind group (`@group(0)`):
-//! - `@binding(0)` HDR scene color (`texture_2d_array<f32>`).
-//! - `@binding(1)` linear-clamp sampler.
-//! - `@binding(2)` AO term (`texture_2d_array<f32>`).
-//! - `@binding(3)` packed edges (`texture_2d_array<f32>`).
-//! - `@binding(4)` `GtaoParams` uniform.
+//! - `@binding(0)` AO term (`texture_2d_array<f32>`).
+//! - `@binding(1)` packed edges (`texture_2d_array<f32>`).
+//! - `@binding(2)` `GtaoParams` uniform.
 
 #import renderide::core::fullscreen as fs
 #import renderide::post::gtao_filter as gf
 #import renderide::post::gtao_params as gparams
 #import renderide::post::gtao_textures as gt
 
-@group(0) @binding(0) var scene_color_hdr: texture_2d_array<f32>;
-@group(0) @binding(1) var linear_clamp: sampler;
-@group(0) @binding(2) var ao_term: texture_2d_array<f32>;
-@group(0) @binding(3) var ao_edges: texture_2d_array<f32>;
+@group(0) @binding(0) var ao_term: texture_2d_array<f32>;
+@group(0) @binding(1) var ao_edges: texture_2d_array<f32>;
 
-@group(0) @binding(4) var<uniform> gtao: gparams::GtaoParams;
+@group(0) @binding(2) var<uniform> gtao: gparams::GtaoParams;
 
 @vertex
 fn vs_main(@builtin(vertex_index) vid: u32) -> fs::FullscreenVertexOutput {
@@ -92,8 +90,7 @@ fn fs_main(in: fs::FullscreenVertexOutput, @builtin(view_index) view: u32) -> @l
     let pix = vec2<i32>(in.clip_pos.xy);
     let ao_scaled = ao_factor_scaled(pix, view, viewport_max);
     let ao = clamp(ao_scaled * gf::GTAO_OCCLUSION_TERM_SCALE, 0.0, 1.0);
-    let hdr = textureSample(scene_color_hdr, linear_clamp, in.uv, view);
-    return vec4<f32>(hdr.rgb * ao, hdr.a);
+    return vec4<f32>(vec3<f32>(ao), 1.0);
 }
 #else
 @fragment
@@ -103,7 +100,6 @@ fn fs_main(in: fs::FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let pix = vec2<i32>(in.clip_pos.xy);
     let ao_scaled = ao_factor_scaled(pix, 0u, viewport_max);
     let ao = clamp(ao_scaled * gf::GTAO_OCCLUSION_TERM_SCALE, 0.0, 1.0);
-    let hdr = textureSample(scene_color_hdr, linear_clamp, in.uv, 0u);
-    return vec4<f32>(hdr.rgb * ao, hdr.a);
+    return vec4<f32>(vec3<f32>(ao), 1.0);
 }
 #endif
