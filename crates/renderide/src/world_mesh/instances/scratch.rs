@@ -9,14 +9,14 @@ use crate::world_mesh::draw_prep::WorldMeshDrawItem;
 /// by mesh and submesh. Cheap to hash because `batch_key` is implicit (constant within the
 /// caller's window).
 #[derive(Hash, Eq, PartialEq, Clone, Copy)]
-struct MeshSubmeshKey {
+pub(super) struct MeshSubmeshKey {
     mesh_asset_id: i32,
     first_index: u32,
     index_count: u32,
 }
 
 /// Builds the grouping key for one draw item.
-fn mesh_submesh_key(item: &WorldMeshDrawItem) -> MeshSubmeshKey {
+pub(super) fn mesh_submesh_key(item: &WorldMeshDrawItem) -> MeshSubmeshKey {
     MeshSubmeshKey {
         mesh_asset_id: item.mesh_asset_id,
         first_index: item.first_index,

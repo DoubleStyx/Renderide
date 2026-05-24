@@ -15,6 +15,7 @@ mod scratch;
 
 use std::ops::Range;
 
+use hashbrown::HashMap;
 use rayon::prelude::*;
 
 use crate::materials::{
@@ -26,7 +27,7 @@ use crate::render_phase::{RenderPhaseKey, RenderPhaseSet};
 use super::draw_prep::WorldMeshDrawItem;
 
 use batch_window::{BatchWindow, build_group, next_batch_window};
-use scratch::InstancePlanScratch;
+use scratch::{InstancePlanScratch, MeshSubmeshKey, mesh_submesh_key};
 
 /// Minimum independent batch windows needed to amortize Rayon scheduling and merge overhead.
 const INSTANCE_PLAN_PARALLEL_MIN_WINDOWS: usize = 2;
@@ -36,6 +37,35 @@ const INSTANCE_PLAN_PARALLEL_MIN_DRAWS: usize = INSTANCE_PLAN_PARALLEL_MIN_WINDO
 const INSTANCE_PLAN_PARALLEL_MAX_WINDOWS_PER_TASK: usize = 12;
 /// Adaptive window chunks assigned to one Rayon worker leaf.
 const INSTANCE_PLAN_PARALLEL_CHUNKS_PER_TASK: usize = 1;
+/// Draws from one large same-batch-key window assigned to one worker chunk.
+const INSTANCE_PLAN_PARALLEL_WINDOW_DRAW_CHUNK: usize = 256;
+/// Draw count required before a single large batch window can fan out internally.
+const INSTANCE_PLAN_PARALLEL_MIN_SINGLE_WINDOW_DRAWS: usize =
+    INSTANCE_PLAN_PARALLEL_WINDOW_DRAW_CHUNK * 2;
+
+/// Worker-local members for one mesh/submesh group inside a large batch window.
+struct LocalGroupedWindowGroup {
+    /// Mesh/submesh key shared by every member.
+    key: MeshSubmeshKey,
+    /// First sorted draw index for this group.
+    representative_draw_idx: usize,
+    /// Sorted draw indexes belonging to the group.
+    members: Vec<usize>,
+}
+
+/// Worker-local grouping result for one chunk of a large batch window.
+struct LocalGroupedWindowChunk {
+    /// Groups in first-seen order inside the chunk.
+    groups: Vec<LocalGroupedWindowGroup>,
+}
+
+/// Merged members for one mesh/submesh group across a whole large batch window.
+struct MergedGroupedWindowGroup {
+    /// First sorted draw index for this group.
+    representative_draw_idx: usize,
+    /// Sorted draw indexes belonging to the group.
+    members: Vec<usize>,
+}
 
 /// One emitted indexed draw covering a contiguous slab range of identical instances.
 ///
@@ -269,6 +299,9 @@ pub fn build_plan_for_shader(
     }
 
     let windows = collect_batch_windows(draws, supports_base_instance);
+    if windows.len() == 1 && should_parallelize_single_window(windows[0].range.len()) {
+        return build_plan_from_large_window_parallel(draws, &windows[0], shader_perm);
+    }
     if should_parallelize_instance_plan(draws.len(), windows.len()) {
         build_plan_parallel(draws, &windows, shader_perm)
     } else {
@@ -283,6 +316,13 @@ fn should_parallelize_instance_plan(draw_count: usize, window_count: usize) -> b
         window_count,
         rayon::current_num_threads(),
     )
+}
+
+/// Returns whether one large batch window should split internally across workers.
+fn should_parallelize_single_window(draw_count: usize) -> bool {
+    draw_count >= INSTANCE_PLAN_PARALLEL_MIN_SINGLE_WINDOW_DRAWS
+        && rayon::current_num_threads() > 1
+        && draw_count.div_ceil(INSTANCE_PLAN_PARALLEL_WINDOW_DRAW_CHUNK) >= 2
 }
 
 /// Returns whether instance planning has enough work and workers to split batch windows.
@@ -387,6 +427,127 @@ fn build_plan_parallel(
         profiling::scope!("mesh::build_plan_parallel_windows::merge");
         merge_partial_instance_plans(draws.len(), partials)
     }
+}
+
+/// Builds a plan for one large same-batch-key window by splitting the window itself.
+fn build_plan_from_large_window_parallel(
+    draws: &[WorldMeshDrawItem],
+    window: &BatchWindow,
+    shader_perm: ShaderPermutation,
+) -> InstancePlan {
+    profiling::scope!("mesh::build_plan_parallel_large_window");
+    if window.singleton {
+        build_singleton_window_parallel(draws, window, shader_perm)
+    } else {
+        build_grouped_window_parallel(draws, window, shader_perm)
+    }
+}
+
+/// Builds singleton groups for a large window in ordered draw chunks.
+fn build_singleton_window_parallel(
+    draws: &[WorldMeshDrawItem],
+    window: &BatchWindow,
+    shader_perm: ShaderPermutation,
+) -> InstancePlan {
+    let ranges = window_draw_chunks(window.range.clone());
+    let partials: Vec<_> = ranges
+        .par_iter()
+        .with_min_len(INSTANCE_PLAN_PARALLEL_CHUNKS_PER_TASK)
+        .map(|range| {
+            profiling::scope!("mesh::build_plan_singleton_window_chunk_worker");
+            let mut builder = InstancePlanBuilder::with_capacity(range.len(), shader_perm);
+            builder.process_window(
+                draws,
+                BatchWindow {
+                    range: range.clone(),
+                    phase: window.phase,
+                    singleton: true,
+                },
+            );
+            builder.finish()
+        })
+        .collect();
+    merge_partial_instance_plans(draws.len(), partials)
+}
+
+/// Builds grouped draw batches for a large window by reducing worker-local mesh/submesh groups.
+fn build_grouped_window_parallel(
+    draws: &[WorldMeshDrawItem],
+    window: &BatchWindow,
+    shader_perm: ShaderPermutation,
+) -> InstancePlan {
+    let ranges = window_draw_chunks(window.range.clone());
+    let chunks = ranges
+        .par_iter()
+        .with_min_len(INSTANCE_PLAN_PARALLEL_CHUNKS_PER_TASK)
+        .map(|range| {
+            profiling::scope!("mesh::build_plan_grouped_window_chunk_worker");
+            collect_grouped_window_chunk(draws, range.clone())
+        })
+        .collect::<Vec<_>>();
+    let groups = merge_grouped_window_chunks(chunks);
+    let mut builder = InstancePlanBuilder::with_capacity(window.range.len(), shader_perm);
+    builder.emit_merged_grouped_window(draws, window.phase, groups);
+    builder.finish()
+}
+
+/// Splits one batch-window draw range into deterministic draw chunks.
+fn window_draw_chunks(range: Range<usize>) -> Vec<Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut start = range.start;
+    while start < range.end {
+        let end = (start + INSTANCE_PLAN_PARALLEL_WINDOW_DRAW_CHUNK).min(range.end);
+        ranges.push(start..end);
+        start = end;
+    }
+    ranges
+}
+
+/// Builds worker-local mesh/submesh groups for a draw range.
+fn collect_grouped_window_chunk(
+    draws: &[WorldMeshDrawItem],
+    range: Range<usize>,
+) -> LocalGroupedWindowChunk {
+    let mut group_index: HashMap<MeshSubmeshKey, usize> = HashMap::new();
+    let mut groups: Vec<LocalGroupedWindowGroup> = Vec::new();
+    for draw_idx in range {
+        let key = mesh_submesh_key(&draws[draw_idx]);
+        if let Some(&group_idx) = group_index.get(&key) {
+            groups[group_idx].members.push(draw_idx);
+        } else {
+            let group_idx = groups.len();
+            group_index.insert(key, group_idx);
+            groups.push(LocalGroupedWindowGroup {
+                key,
+                representative_draw_idx: draw_idx,
+                members: vec![draw_idx],
+            });
+        }
+    }
+    LocalGroupedWindowChunk { groups }
+}
+
+/// Merges worker-local groups in draw-chunk order, preserving serial first-seen group order.
+fn merge_grouped_window_chunks(
+    chunks: Vec<LocalGroupedWindowChunk>,
+) -> Vec<MergedGroupedWindowGroup> {
+    let mut group_index: HashMap<MeshSubmeshKey, usize> = HashMap::new();
+    let mut groups: Vec<MergedGroupedWindowGroup> = Vec::new();
+    for chunk in chunks {
+        for mut local in chunk.groups {
+            if let Some(&group_idx) = group_index.get(&local.key) {
+                groups[group_idx].members.append(&mut local.members);
+            } else {
+                let group_idx = groups.len();
+                group_index.insert(local.key, group_idx);
+                groups.push(MergedGroupedWindowGroup {
+                    representative_draw_idx: local.representative_draw_idx,
+                    members: local.members,
+                });
+            }
+        }
+    }
+    groups
 }
 
 fn merge_partial_instance_plans(
@@ -526,6 +687,23 @@ impl InstancePlanBuilder {
                 build_group(&mut self.slab_layout, representative, members)
             };
             self.queue_group_to_phase(draws, window.phase, group);
+        }
+    }
+
+    /// Emits pre-merged groups for a large same-batch-key window.
+    fn emit_merged_grouped_window(
+        &mut self,
+        draws: &[WorldMeshDrawItem],
+        phase: WorldMeshPhase,
+        groups: Vec<MergedGroupedWindowGroup>,
+    ) {
+        for merged in groups {
+            let group = build_group(
+                &mut self.slab_layout,
+                merged.representative_draw_idx,
+                &merged.members,
+            );
+            self.queue_group_to_phase(draws, phase, group);
         }
     }
 

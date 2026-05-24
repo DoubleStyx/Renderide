@@ -9,6 +9,7 @@ mod state;
 
 use hashbrown::{HashMap, HashSet};
 use rayon::prelude::*;
+use std::ops::Range;
 
 use crate::gpu_pools::MeshPool;
 use crate::scene::{
@@ -18,7 +19,7 @@ use crate::scene::{
 };
 use crate::shared::RenderingContext;
 
-use super::prepared_renderables::FramePreparedRenderables;
+use super::prepared_renderables::{FramePreparedDraw, FramePreparedRenderables};
 use refresh::{DirtyRendererSet, RefreshOutcome, refresh_render_world_space, refresh_renderer_set};
 use state::RenderWorldSpace;
 
@@ -28,8 +29,10 @@ const DIRTY_ROOT_EXPANSION_PARALLEL_CHUNK_ITEMS: usize = 1;
 const MESH_ASSET_DIRTY_EXPANSION_PARALLEL_CHUNK_SPACES: usize = 1;
 /// Dirty render spaces assigned to one retained-cache refresh worker.
 const DIRTY_SPACE_REFRESH_PARALLEL_CHUNK_SPACES: usize = 1;
-/// Active render spaces assigned to one prepared-snapshot rebuild worker.
-const SNAPSHOT_REBUILD_PARALLEL_CHUNK_SPACES: usize = 1;
+/// Prepared-snapshot copy tasks assigned to one rebuild worker.
+const SNAPSHOT_REBUILD_PARALLEL_CHUNK_TASKS: usize = 1;
+/// Renderer records assigned to one prepared-snapshot rebuild worker.
+const SNAPSHOT_REBUILD_PARALLEL_CHUNK_RENDERERS: usize = 64;
 /// Transform-root dirty input count at which expansion uses Rayon.
 const DIRTY_ROOT_EXPANSION_PARALLEL_MIN_ITEMS: usize =
     DIRTY_ROOT_EXPANSION_PARALLEL_CHUNK_ITEMS * 2;
@@ -39,10 +42,10 @@ const MESH_ASSET_DIRTY_EXPANSION_PARALLEL_MIN_SPACES: usize =
 /// Dirty render-space count at which retained cache refresh uses Rayon.
 const DIRTY_SPACE_REFRESH_PARALLEL_MIN_SPACES: usize =
     DIRTY_SPACE_REFRESH_PARALLEL_CHUNK_SPACES * 2;
-/// Active render-space count required before snapshot rebuild fan-out is considered.
-const SNAPSHOT_REBUILD_PARALLEL_MIN_SPACES: usize = SNAPSHOT_REBUILD_PARALLEL_CHUNK_SPACES * 2;
 /// Retained draw-template count required before snapshot rebuild fan-out is considered.
-const SNAPSHOT_REBUILD_PARALLEL_MIN_DRAWS: usize = SNAPSHOT_REBUILD_PARALLEL_MIN_SPACES;
+const SNAPSHOT_REBUILD_PARALLEL_MIN_DRAWS: usize = SNAPSHOT_REBUILD_PARALLEL_MIN_TASKS;
+/// Prepared-snapshot chunk count required before chunk-level rebuild fan-out is considered.
+const SNAPSHOT_REBUILD_PARALLEL_MIN_TASKS: usize = 2;
 
 /// Maintenance counters for backend-owned retained render-world caches.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -161,6 +164,52 @@ struct DirtyRendererRefreshWork {
     cached: RenderWorldSpace,
     /// Refresh counters produced by the worker.
     outcome: RefreshOutcome,
+}
+
+/// Renderer table selected by a prepared-snapshot rebuild task.
+#[derive(Clone, Copy)]
+enum SnapshotRendererTable {
+    /// Static renderer templates.
+    Static,
+    /// Skinned renderer templates.
+    Skinned,
+}
+
+/// One deterministic chunk of retained renderer templates copied into the prepared snapshot.
+#[derive(Clone)]
+struct SnapshotRebuildTask<'a> {
+    /// Retained render space borrowed by this task.
+    space: &'a RenderWorldSpace,
+    /// Renderer table copied by this task.
+    table: SnapshotRendererTable,
+    /// Renderer index range copied by this task.
+    range: Range<usize>,
+}
+
+impl SnapshotRebuildTask<'_> {
+    /// Returns the number of retained draw templates this task will emit.
+    fn retained_template_count(&self) -> usize {
+        match self.table {
+            SnapshotRendererTable::Static => self
+                .space
+                .retained_static_template_count_for_range(self.range.clone()),
+            SnapshotRendererTable::Skinned => self
+                .space
+                .retained_skinned_template_count_for_range(self.range.clone()),
+        }
+    }
+
+    /// Copies this task's retained draw templates into `draws`.
+    fn append_draws_to(&self, draws: &mut Vec<FramePreparedDraw>) {
+        match self.table {
+            SnapshotRendererTable::Static => self
+                .space
+                .append_static_draws_range_to(self.range.clone(), draws),
+            SnapshotRendererTable::Skinned => self
+                .space
+                .append_skinned_draws_range_to(self.range.clone(), draws),
+        }
+    }
 }
 
 impl RenderWorld {
@@ -602,22 +651,25 @@ impl RenderWorld {
             .iter()
             .map(|(_, space)| space.retained_template_count())
             .sum::<usize>();
-        if active_spaces.len() >= SNAPSHOT_REBUILD_PARALLEL_MIN_SPACES
+        let tasks = build_snapshot_rebuild_tasks(&active_spaces);
+        if tasks.len() >= SNAPSHOT_REBUILD_PARALLEL_MIN_TASKS
             && retained_draw_count >= SNAPSHOT_REBUILD_PARALLEL_MIN_DRAWS
         {
             profiling::scope!("mesh::render_world::rebuild_prepared_snapshot::parallel");
-            let outputs = active_spaces
+            for (id, _) in &active_spaces {
+                self.prepared.push_cached_space(*id);
+            }
+            let outputs = tasks
                 .par_iter()
-                .with_min_len(SNAPSHOT_REBUILD_PARALLEL_CHUNK_SPACES)
-                .map(|(id, space)| {
+                .with_min_len(SNAPSHOT_REBUILD_PARALLEL_CHUNK_TASKS)
+                .map(|task| {
                     profiling::scope!("mesh::render_world::rebuild_prepared_snapshot::worker");
-                    let mut draws = Vec::with_capacity(space.retained_template_count());
-                    space.append_draws_to(&mut draws);
-                    (*id, draws)
+                    let mut draws = Vec::with_capacity(task.retained_template_count());
+                    task.append_draws_to(&mut draws);
+                    draws
                 })
                 .collect::<Vec<_>>();
-            for (id, draws) in outputs {
-                self.prepared.push_cached_space(id);
+            for draws in outputs {
                 self.prepared.extend_cached_draws(&draws);
             }
         } else {
@@ -636,6 +688,57 @@ impl RenderWorld {
             .values()
             .map(RenderWorldSpace::retained_template_count)
             .sum()
+    }
+}
+
+/// Builds deterministic snapshot-copy tasks from active render spaces.
+fn build_snapshot_rebuild_tasks<'a>(
+    active_spaces: &[(RenderSpaceId, &'a RenderWorldSpace)],
+) -> Vec<SnapshotRebuildTask<'a>> {
+    let mut tasks = Vec::new();
+    for (_, space) in active_spaces {
+        extend_snapshot_table_tasks(
+            &mut tasks,
+            space,
+            SnapshotRendererTable::Static,
+            space.static_renderers.len(),
+        );
+        extend_snapshot_table_tasks(
+            &mut tasks,
+            space,
+            SnapshotRendererTable::Skinned,
+            space.skinned_renderers.len(),
+        );
+    }
+    tasks
+}
+
+/// Appends chunked snapshot-copy tasks for one renderer table.
+fn extend_snapshot_table_tasks<'a>(
+    tasks: &mut Vec<SnapshotRebuildTask<'a>>,
+    space: &'a RenderWorldSpace,
+    table: SnapshotRendererTable,
+    renderer_count: usize,
+) {
+    let chunk_size = snapshot_rebuild_renderer_chunk_size(renderer_count);
+    let mut start = 0usize;
+    while start < renderer_count {
+        let end = (start + chunk_size).min(renderer_count);
+        tasks.push(SnapshotRebuildTask {
+            space,
+            table,
+            range: start..end,
+        });
+        start = end;
+    }
+}
+
+/// Returns the renderer-table chunk size used for prepared-snapshot copy tasks.
+fn snapshot_rebuild_renderer_chunk_size(renderer_count: usize) -> usize {
+    if renderer_count >= SNAPSHOT_REBUILD_PARALLEL_CHUNK_RENDERERS {
+        SNAPSHOT_REBUILD_PARALLEL_CHUNK_RENDERERS
+    } else {
+        renderer_count.max(1)
     }
 }
 

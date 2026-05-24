@@ -1,6 +1,6 @@
 //! CPU draw-preparation ownership behind the backend facade.
 
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use rayon::prelude::*;
 
 use crate::materials::host_data::{MaterialDictionary, MaterialPropertyStore};
@@ -189,9 +189,10 @@ fn unique_render_context_work(
     render_worlds: &mut HashMap<u8, RenderWorld>,
 ) -> Vec<(u8, RenderingContext, RenderWorld)> {
     let mut work = Vec::new();
-    for (index, &(render_context, _)) in view_draw_preparations.iter().enumerate() {
+    let mut seen_contexts = HashSet::with_capacity(view_draw_preparations.len());
+    for &(render_context, _) in view_draw_preparations {
         let key = render_context_key(render_context);
-        if !is_first_context_request(view_draw_preparations, index, key) {
+        if !seen_contexts.insert(key) {
             continue;
         }
         let render_world = render_worlds
@@ -258,18 +259,18 @@ fn unique_material_cache_work(
     material_batch_caches: &mut HashMap<(u8, ShaderPermutation), FrameMaterialBatchCache>,
 ) -> Vec<(u8, ShaderPermutation, FrameMaterialBatchCache)> {
     let mut work = Vec::new();
-    for (index, &(render_context, view_perm)) in view_draw_preparations.iter().enumerate() {
+    let mut seen_contexts = HashSet::with_capacity(view_draw_preparations.len());
+    let mut seen_permutations = HashSet::with_capacity(view_draw_preparations.len() * 2);
+    for &(render_context, view_perm) in view_draw_preparations {
         let context_key = render_context_key(render_context);
-        if is_first_context_request(view_draw_preparations, index, context_key) {
+        if seen_contexts.insert(context_key) {
             let shader_perm = ShaderPermutation(0);
             let cache = material_batch_caches
                 .remove(&(context_key, shader_perm))
                 .unwrap_or_default();
             work.push((context_key, shader_perm, cache));
         }
-        if view_perm != ShaderPermutation(0)
-            && is_first_permutation_request(view_draw_preparations, index, context_key, view_perm)
-        {
+        if view_perm != ShaderPermutation(0) && seen_permutations.insert((context_key, view_perm)) {
             let cache = material_batch_caches
                 .remove(&(context_key, view_perm))
                 .unwrap_or_default();
@@ -277,29 +278,6 @@ fn unique_material_cache_work(
         }
     }
     work
-}
-
-fn is_first_context_request(
-    view_draw_preparations: &[(RenderingContext, ShaderPermutation)],
-    index: usize,
-    context_key: u8,
-) -> bool {
-    !view_draw_preparations[..index]
-        .iter()
-        .any(|&(previous_context, _)| render_context_key(previous_context) == context_key)
-}
-
-fn is_first_permutation_request(
-    view_draw_preparations: &[(RenderingContext, ShaderPermutation)],
-    index: usize,
-    context_key: u8,
-    shader_perm: ShaderPermutation,
-) -> bool {
-    !view_draw_preparations[..index]
-        .iter()
-        .any(|&(previous_context, previous_perm)| {
-            render_context_key(previous_context) == context_key && previous_perm == shader_perm
-        })
 }
 
 #[cfg(test)]

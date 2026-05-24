@@ -14,6 +14,7 @@
 //! `u64` comparisons -- no dictionary or router lookups required.
 
 use hashbrown::HashMap;
+use rayon::prelude::*;
 
 use crate::materials::ShaderPermutation;
 use crate::materials::host_data::MaterialDictionary;
@@ -26,6 +27,10 @@ use super::resolve::{MaterialResolveCtx, ResolvedMaterialBatch, resolve_material
 
 /// Active render spaces assigned to one material-key collection worker.
 const MATERIAL_KEY_PARALLEL_CHUNK_SPACES: usize = 1;
+/// Material keys assigned to one parallel material-resolution worker.
+const MATERIAL_RESOLVE_PARALLEL_CHUNK_KEYS: usize = 32;
+/// Material-key count required before stale/missing prepared keys resolve on Rayon workers.
+const MATERIAL_RESOLVE_PARALLEL_MIN_KEYS: usize = MATERIAL_RESOLVE_PARALLEL_CHUNK_KEYS * 2;
 
 /// Cached resolution plus the validation keys captured at resolve time.
 #[derive(Clone)]
@@ -99,6 +104,68 @@ enum TouchOutcome {
     Stale,
     /// No cache entry existed for the key.
     Miss,
+}
+
+/// Cache key requiring a fresh material-batch resolve after serial classification.
+#[derive(Clone, Copy)]
+struct PendingMaterialResolve {
+    /// Material asset id from the prepared draw live set.
+    material_asset_id: i32,
+    /// Optional mesh property-block id paired with the material.
+    property_block_id: Option<i32>,
+    /// Material-side mutation generation captured during classification.
+    material_gen: u64,
+    /// Property-block mutation generation captured during classification.
+    property_block_gen: u64,
+}
+
+impl PendingMaterialResolve {
+    /// Resolves this stale or missing key using immutable material state.
+    fn resolve(
+        self,
+        ctx: MaterialResolveCtx<'_>,
+        router_gen: u64,
+        current_frame: u64,
+    ) -> ResolvedMaterialCacheUpdate {
+        let batch = resolve_material_batch(
+            self.material_asset_id,
+            self.property_block_id,
+            ctx.dict,
+            ctx.router,
+            ctx.pipeline_property_ids,
+            ctx.shader_perm,
+        );
+        ResolvedMaterialCacheUpdate {
+            material_asset_id: self.material_asset_id,
+            property_block_id: self.property_block_id,
+            batch,
+            material_gen: self.material_gen,
+            property_block_gen: self.property_block_gen,
+            router_gen,
+            shader_perm: ctx.shader_perm,
+            last_used_frame: current_frame,
+        }
+    }
+}
+
+/// Fully resolved cache entry staged for a serial apply phase.
+struct ResolvedMaterialCacheUpdate {
+    /// Material asset id from the prepared draw live set.
+    material_asset_id: i32,
+    /// Optional mesh property-block id paired with the material.
+    property_block_id: Option<i32>,
+    /// Resolved material batch fields.
+    batch: ResolvedMaterialBatch,
+    /// Material-side mutation generation at resolve time.
+    material_gen: u64,
+    /// Property-block mutation generation at resolve time.
+    property_block_gen: u64,
+    /// Router generation at resolve time.
+    router_gen: u64,
+    /// Shader permutation the entry was resolved for.
+    shader_perm: ShaderPermutation,
+    /// Cache frame stamp to assign when applying the update.
+    last_used_frame: u64,
 }
 
 /// Persistent `(material_asset_id, property_block_id)` -> [`ResolvedMaterialBatch`] lookup table.
@@ -341,7 +408,6 @@ impl FrameMaterialBatchCache {
                 // collect routine appends without reallocating in steady state.
                 let mut keys_per_space = std::mem::take(&mut self.keys_per_space_scratch);
                 keys_per_space.resize_with(active.len(), Vec::new);
-                use rayon::prelude::*;
                 keys_per_space
                     .par_iter_mut()
                     .with_min_len(MATERIAL_KEY_PARALLEL_CHUNK_SPACES)
@@ -436,20 +502,31 @@ impl FrameMaterialBatchCache {
             shader_perm,
         };
         let mut touch_stats = MaterialBatchCacheTouchStats::default();
+        let mut pending_resolves = Vec::new();
 
         {
-            profiling::scope!("mesh::material_batch_cache::prepared_serial_dedup_touch");
+            profiling::scope!("mesh::material_batch_cache::prepared_classify");
             for &(material_asset_id, property_block_id) in prepared.unique_material_property_pairs()
             {
-                let outcome = self.touch_or_refresh(
+                let outcome = self.classify_prepared_key(
                     material_asset_id,
                     property_block_id,
                     ctx,
                     router_gen,
                     current_frame,
+                    &mut pending_resolves,
                 );
                 touch_stats.note(outcome);
             }
+        }
+
+        let resolved_updates = {
+            profiling::scope!("mesh::material_batch_cache::prepared_resolve");
+            resolve_pending_material_batches(pending_resolves, ctx, router_gen, current_frame)
+        };
+        {
+            profiling::scope!("mesh::material_batch_cache::prepared_apply_resolved");
+            self.apply_resolved_material_updates(resolved_updates);
         }
 
         {
@@ -469,6 +546,83 @@ impl FrameMaterialBatchCache {
             );
         }
         self.last_touch_stats = touch_stats;
+    }
+
+    /// Classifies one prepared key, stamping valid hits and staging stale/missing keys for
+    /// immutable parallel resolution.
+    fn classify_prepared_key(
+        &mut self,
+        material_asset_id: i32,
+        property_block_id: Option<i32>,
+        ctx: MaterialResolveCtx<'_>,
+        router_gen: u64,
+        current_frame: u64,
+        pending_resolves: &mut Vec<PendingMaterialResolve>,
+    ) -> TouchOutcome {
+        profiling::scope!("mesh::material_batch_cache::classify_prepared_key");
+        let material_gen = ctx.dict.material_generation(material_asset_id);
+        let property_block_gen =
+            property_block_id.map_or(0, |b| ctx.dict.property_block_generation(b));
+        let key = (material_asset_id, property_block_id);
+        match self.entries.get_mut(&key) {
+            Some(entry)
+                if entry.material_gen == material_gen
+                    && entry.property_block_gen == property_block_gen
+                    && entry.router_gen == router_gen
+                    && entry.shader_perm == ctx.shader_perm =>
+            {
+                entry.last_used_frame = current_frame;
+                TouchOutcome::Hit
+            }
+            Some(_) => {
+                pending_resolves.push(PendingMaterialResolve {
+                    material_asset_id,
+                    property_block_id,
+                    material_gen,
+                    property_block_gen,
+                });
+                TouchOutcome::Stale
+            }
+            None => {
+                pending_resolves.push(PendingMaterialResolve {
+                    material_asset_id,
+                    property_block_id,
+                    material_gen,
+                    property_block_gen,
+                });
+                TouchOutcome::Miss
+            }
+        }
+    }
+
+    /// Applies resolved prepared-cache updates after the parallel resolution phase has completed.
+    fn apply_resolved_material_updates(&mut self, updates: Vec<ResolvedMaterialCacheUpdate>) {
+        for update in updates {
+            let key = (update.material_asset_id, update.property_block_id);
+            match self.entries.get_mut(&key) {
+                Some(entry) => entry.refresh(
+                    update.batch,
+                    update.material_gen,
+                    update.property_block_gen,
+                    update.router_gen,
+                    update.shader_perm,
+                    update.last_used_frame,
+                ),
+                None => {
+                    self.entries.insert(
+                        key,
+                        CacheEntry {
+                            batch: update.batch,
+                            material_gen: update.material_gen,
+                            property_block_gen: update.property_block_gen,
+                            router_gen: update.router_gen,
+                            shader_perm: update.shader_perm,
+                            last_used_frame: update.last_used_frame,
+                        },
+                    );
+                }
+            }
+        }
     }
 
     /// Ensures the cache has a valid entry for `(material_asset_id, property_block_id)` and
@@ -545,6 +699,32 @@ impl FrameMaterialBatchCache {
     }
 }
 
+/// Resolves all stale or missing prepared cache keys using immutable material state.
+fn resolve_pending_material_batches(
+    pending: Vec<PendingMaterialResolve>,
+    ctx: MaterialResolveCtx<'_>,
+    router_gen: u64,
+    current_frame: u64,
+) -> Vec<ResolvedMaterialCacheUpdate> {
+    if pending.is_empty() {
+        return Vec::new();
+    }
+    if pending.len() >= MATERIAL_RESOLVE_PARALLEL_MIN_KEYS && rayon::current_num_threads() > 1 {
+        profiling::scope!("mesh::material_batch_cache::prepared_resolve_parallel");
+        pending
+            .par_iter()
+            .with_min_len(MATERIAL_RESOLVE_PARALLEL_CHUNK_KEYS)
+            .map(|pending| pending.resolve(ctx, router_gen, current_frame))
+            .collect()
+    } else {
+        profiling::scope!("mesh::material_batch_cache::prepared_resolve_serial");
+        pending
+            .into_iter()
+            .map(|pending| pending.resolve(ctx, router_gen, current_frame))
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::materials::ShaderPermutation;
@@ -556,7 +736,7 @@ mod tests {
         RasterPipelineKind,
     };
 
-    use super::{FrameMaterialBatchCache, TouchOutcome};
+    use super::{FrameMaterialBatchCache, PendingMaterialResolve, TouchOutcome};
     use crate::world_mesh::materials::MaterialResolveCtx;
 
     fn make_test_deps() -> (MaterialPropertyStore, MaterialRouter, PropertyIdRegistry) {
@@ -710,6 +890,54 @@ mod tests {
                 3,
             ),
             TouchOutcome::Stale
+        );
+    }
+
+    #[test]
+    fn staged_prepared_resolves_apply_entries_in_key_order() {
+        let (store, router, reg) = make_test_deps();
+        let dict = MaterialDictionary::new(&store);
+        let ids = MaterialPipelinePropertyIds::new(&reg);
+        let ctx = make_ctx(&dict, &router, &ids, ShaderPermutation(2));
+        let pending = vec![
+            PendingMaterialResolve {
+                material_asset_id: 11,
+                property_block_id: None,
+                material_gen: 1,
+                property_block_gen: 0,
+            },
+            PendingMaterialResolve {
+                material_asset_id: 12,
+                property_block_id: Some(4),
+                material_gen: 2,
+                property_block_gen: 3,
+            },
+        ];
+
+        let updates = super::resolve_pending_material_batches(pending, ctx, router.generation(), 9);
+        let mut cache = FrameMaterialBatchCache::new();
+        cache.apply_resolved_material_updates(updates);
+
+        assert_eq!(cache.len(), 2);
+        assert!(cache.get(11, None).is_some());
+        assert!(cache.get(12, Some(4)).is_some());
+        assert_eq!(
+            cache.entries.get(&(11, None)).map(|entry| (
+                entry.material_gen,
+                entry.property_block_gen,
+                entry.shader_perm,
+                entry.last_used_frame
+            )),
+            Some((1, 0, ShaderPermutation(2), 9))
+        );
+        assert_eq!(
+            cache.entries.get(&(12, Some(4))).map(|entry| (
+                entry.material_gen,
+                entry.property_block_gen,
+                entry.shader_perm,
+                entry.last_used_frame
+            )),
+            Some((2, 3, ShaderPermutation(2), 9))
         );
     }
 
