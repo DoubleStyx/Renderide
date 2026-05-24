@@ -239,8 +239,8 @@ fn shipped_manifest_loads() {
         .filter(|b| b.path.contains("/input/palm_ext/pose"))
         .count();
     assert_eq!(
-        palm_bindings, 28,
-        "expected left/right palm_ext bindings on every shipped profile"
+        palm_bindings, 24,
+        "expected left/right palm_ext bindings on concrete shipped profiles"
     );
     for binding in manifest
         .profiles
