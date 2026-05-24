@@ -27,7 +27,7 @@ fn refresh_sort_keys(item: &mut WorldMeshDrawItem) {
     item.sort_prefix = pack_sort_prefix(
         item.is_overlay,
         item.batch_key.render_queue,
-        item.batch_key.is_transparent(),
+        item.batch_key.uses_transparent_sorting(),
         item._opaque_depth_bucket,
         item.batch_key_hash,
     );
@@ -279,6 +279,37 @@ fn transparent_render_queue_regular_window_emits_post_skybox_singletons() {
         &plan,
         &[
             WorldMeshPhase::ForwardAlphaTest,
+            WorldMeshPhase::Intersection,
+            WorldMeshPhase::TransparentGrab,
+            WorldMeshPhase::DepthOnly,
+            WorldMeshPhase::ViewNormals,
+        ],
+    );
+}
+
+#[test]
+fn late_opaque_queue_regular_window_groups_after_skybox() {
+    let mut draws: Vec<_> = (0..3)
+        .map(|n| {
+            let mut item = opaque(7, 1, 0, n);
+            item.batch_key.blend_mode = MaterialBlendMode::Opaque;
+            set_render_queue(&mut item, UNITY_RENDER_QUEUE_TRANSPARENT - 1);
+            item
+        })
+        .collect();
+    sort_draws(&mut draws);
+
+    let plan = build_plan(&draws, true);
+    assert!(groups(&plan, WorldMeshPhase::ForwardOpaque).is_empty());
+    assert!(groups(&plan, WorldMeshPhase::ForwardAlphaTest).is_empty());
+    assert_eq!(groups(&plan, WorldMeshPhase::Transparent).len(), 1);
+    assert_eq!(
+        groups(&plan, WorldMeshPhase::Transparent)[0].instance_range,
+        0..3
+    );
+    assert_phases_empty(
+        &plan,
+        &[
             WorldMeshPhase::Intersection,
             WorldMeshPhase::TransparentGrab,
             WorldMeshPhase::DepthOnly,

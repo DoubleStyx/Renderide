@@ -1,7 +1,8 @@
 //! Transparent material compatibility classes derived from renderer-local material state.
 
 use crate::materials::{MaterialBlendMode, MaterialRenderState};
-use crate::world_mesh::materials::key::render_queue_is_transparent;
+
+use super::key::render_queue_uses_transparent_sorting;
 
 /// Renderer-local transparent behavior bucket inferred from existing material and shader state.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -74,7 +75,10 @@ pub(super) fn transparent_class_for_material(
     input: TransparentMaterialClassInput,
 ) -> TransparentMaterialClass {
     let transparent_like = input.alpha_blended
-        || render_queue_is_transparent(input.render_queue, input.blend_mode.is_transparent())
+        || render_queue_uses_transparent_sorting(
+            input.render_queue,
+            input.alpha_blended || input.blend_mode.is_transparent(),
+        )
         || input.uses_scene_color_snapshot
         || input.render_state.depth_write == Some(false);
     if !transparent_like {
@@ -169,6 +173,25 @@ mod tests {
                 TransparentMaterialClass::CommutativeBlend
             );
         }
+    }
+
+    #[test]
+    fn late_opaque_queue_classifies_as_opaque_until_transparent_queue() {
+        let mut value = input();
+        value.render_queue = crate::materials::UNITY_RENDER_QUEUE_TRANSPARENT - 1;
+        value.blend_mode = MaterialBlendMode::Opaque;
+
+        assert_eq!(
+            transparent_class_for_material(value),
+            TransparentMaterialClass::Opaque
+        );
+
+        value.render_queue = crate::materials::UNITY_RENDER_QUEUE_TRANSPARENT;
+
+        assert_eq!(
+            transparent_class_for_material(value),
+            TransparentMaterialClass::CompatibilityFallback
+        );
     }
 
     #[test]

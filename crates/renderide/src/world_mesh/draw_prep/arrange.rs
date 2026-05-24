@@ -100,10 +100,13 @@ pub(super) fn arrange_draws_by_phase_bins(
     {
         profiling::scope!("mesh::arrange_draws_by_phase_bins::flatten");
         items.reserve(stats.nontransparent_binned_draws + stats.strict_sorted_draws);
+        let tail_start =
+            binned.partition_point(|(key, _)| phase_flatten_rank(key.phase) < post_skybox_rank());
+        let tail_bins = binned.split_off(tail_start);
         for (_, mut bin_items) in binned {
             items.append(&mut bin_items);
         }
-        items.append(&mut strict_ordered);
+        append_post_skybox_tail(items, tail_bins, strict_ordered);
     }
 
     stats
@@ -157,17 +160,17 @@ fn partition_draws_parallel(
         )
 }
 
-/// Routes one draw into either a nontransparent bin or the strict-order tail.
+/// Routes one draw into either a phase bin or the strict-order tail.
 fn partition_draw_item(
     item: WorldMeshDrawItem,
     bins: &mut HashMap<NonTransparentBinKey, Vec<WorldMeshDrawItem>>,
     strict_ordered: &mut Vec<WorldMeshDrawItem>,
 ) {
-    let phase = classify_world_mesh_batch(&item.batch_key).phase;
-    if phase_requires_strict_order(phase) {
+    let classification = classify_world_mesh_batch(&item.batch_key);
+    if classification.strict_order {
         strict_ordered.push(item);
     } else {
-        bins.entry(NonTransparentBinKey::from_draw(&item, phase))
+        bins.entry(NonTransparentBinKey::from_draw(&item, classification.phase))
             .or_default()
             .push(item);
     }
@@ -181,14 +184,6 @@ fn merge_bins(
     for (key, mut items) in source {
         target.entry(key).or_default().append(&mut items);
     }
-}
-
-/// Returns whether draws in `phase` must retain strict transparent/grab ordering.
-fn phase_requires_strict_order(phase: WorldMeshPhase) -> bool {
-    matches!(
-        phase,
-        WorldMeshPhase::Transparent | WorldMeshPhase::TransparentGrab
-    )
 }
 
 /// Stable rank used to flatten nontransparent phases in pass order.
@@ -218,9 +213,67 @@ fn cmp_nontransparent_bin_keys(a: &NonTransparentBinKey, b: &NonTransparentBinKe
         .then(a.index_count.cmp(&b.index_count))
 }
 
+/// Stable rank where post-skybox work starts.
+#[inline]
+fn post_skybox_rank() -> u8 {
+    phase_flatten_rank(WorldMeshPhase::Transparent)
+}
+
+/// Appends post-skybox bins and strict-order draws in their shared queue order.
+fn append_post_skybox_tail(
+    items: &mut Vec<WorldMeshDrawItem>,
+    tail_bins: Vec<(NonTransparentBinKey, Vec<WorldMeshDrawItem>)>,
+    strict_ordered: Vec<WorldMeshDrawItem>,
+) {
+    let mut bins = tail_bins.into_iter().peekable();
+    let mut strict = strict_ordered.into_iter().peekable();
+    loop {
+        let append_bin = match (bins.peek(), strict.peek()) {
+            (Some((bin_key, _)), Some(strict_item)) => {
+                cmp_nontransparent_bin_to_strict_draw(bin_key, strict_item) != Ordering::Greater
+            }
+            (Some(_), None) => true,
+            (None, Some(_)) => false,
+            (None, None) => break,
+        };
+
+        if append_bin {
+            let Some((_, mut bin_items)) = bins.next() else {
+                break;
+            };
+            items.append(&mut bin_items);
+        } else {
+            let Some(item) = strict.next() else {
+                break;
+            };
+            items.push(item);
+        }
+    }
+}
+
+/// Compares one nontransparent post-skybox bin against an order-sensitive draw.
+fn cmp_nontransparent_bin_to_strict_draw(
+    bin: &NonTransparentBinKey,
+    item: &WorldMeshDrawItem,
+) -> Ordering {
+    bin.is_overlay
+        .cmp(&item.is_overlay)
+        .then(bin.render_queue.cmp(&item.batch_key.render_queue))
+        .then(false.cmp(&item.batch_key.uses_transparent_sorting()))
+        .then(bin.batch_key_hash.cmp(&item.batch_key_hash))
+        .then_with(|| bin.batch_key.cmp(&item.batch_key))
+        .then(bin.mesh_asset_id.cmp(&item.mesh_asset_id))
+        .then(bin.first_index.cmp(&item.first_index))
+        .then(bin.index_count.cmp(&item.index_count))
+        .then(Ordering::Less)
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::materials::{UNITY_RENDER_QUEUE_ALPHA_TEST, UNITY_RENDER_QUEUE_TRANSPARENT};
+    use crate::materials::{
+        UNITY_RENDER_QUEUE_ALPHA_TEST, UNITY_RENDER_QUEUE_TRANSPARENT,
+        UNITY_TRANSPARENT_RENDER_QUEUE_MIN,
+    };
     use crate::world_mesh::draw_prep::pack_sort_prefix;
     use crate::world_mesh::materials::compute_batch_key_hash;
     use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
@@ -250,7 +303,7 @@ mod tests {
         item.sort_prefix = pack_sort_prefix(
             item.is_overlay,
             item.batch_key.render_queue,
-            item.batch_key.is_transparent(),
+            item.batch_key.uses_transparent_sorting(),
             item._opaque_depth_bucket,
             item.batch_key_hash,
         );
@@ -276,7 +329,7 @@ mod tests {
                     item.collect_order,
                     item.mesh_asset_id,
                     item.batch_key.material_asset_id,
-                    item.batch_key.is_transparent(),
+                    item.batch_key.uses_transparent_sorting(),
                     item.batch_key.embedded_requires_intersection_pass,
                 )
             })
@@ -336,7 +389,60 @@ mod tests {
             UNITY_RENDER_QUEUE_ALPHA_TEST
         );
         assert!(draws[1].batch_key.embedded_requires_intersection_pass);
-        assert!(draws[2].batch_key.is_transparent());
+        assert!(draws[2].batch_key.uses_transparent_sorting());
+    }
+
+    #[test]
+    fn late_opaque_queue_bins_after_lower_alpha_queue_without_transparent_sorting() {
+        let mut alpha = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 1,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 1,
+            node_id: 1,
+            slot_index: 0,
+            collect_order: 0,
+            alpha_blended: true,
+        });
+        set_render_queue(&mut alpha, UNITY_TRANSPARENT_RENDER_QUEUE_MIN);
+        set_camera_distance(&mut alpha, 16.0);
+
+        let mut late_opaque = opaque(1, 2, 1);
+        late_opaque.batch_key.blend_mode = crate::materials::MaterialBlendMode::Opaque;
+        set_render_queue(&mut late_opaque, UNITY_RENDER_QUEUE_TRANSPARENT - 1);
+
+        let mut transparent = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 3,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 1,
+            node_id: 3,
+            slot_index: 0,
+            collect_order: 2,
+            alpha_blended: true,
+        });
+        set_render_queue(&mut transparent, UNITY_RENDER_QUEUE_TRANSPARENT);
+        set_camera_distance(&mut transparent, 4.0);
+
+        let mut draws = vec![transparent, late_opaque, alpha];
+        let stats = arrange_draws_by_phase_bins(&mut draws, false);
+
+        assert_eq!(stats.nontransparent_binned_draws, 1);
+        assert_eq!(stats.strict_sorted_draws, 2);
+        assert_eq!(
+            draws
+                .iter()
+                .map(|item| item.batch_key.render_queue)
+                .collect::<Vec<_>>(),
+            vec![
+                UNITY_TRANSPARENT_RENDER_QUEUE_MIN,
+                UNITY_RENDER_QUEUE_TRANSPARENT - 1,
+                UNITY_RENDER_QUEUE_TRANSPARENT,
+            ]
+        );
+        assert!(!draws[1].batch_key.uses_transparent_sorting());
     }
 
     #[test]

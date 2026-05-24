@@ -14,13 +14,16 @@ pub(crate) struct WorldMeshBatchPhase {
     pub(crate) post_skybox: bool,
     /// Whether this batch needs a scene-color snapshot immediately before drawing.
     pub(crate) grab_pass: bool,
+    /// Whether draws in this phase must remain in strict order-sensitive submission.
+    pub(crate) strict_order: bool,
 }
 
 /// Classifies one material batch key into the world-mesh phase that records it.
 pub(crate) fn classify_world_mesh_batch(key: &MaterialDrawBatchKey) -> WorldMeshBatchPhase {
     let intersect = key.embedded_requires_intersection_pass;
     let grab_pass = key.embedded_uses_scene_color_snapshot;
-    let post_skybox = !intersect && !grab_pass && regular_window_records_after_skybox(key);
+    let post_skybox = !intersect && !grab_pass && key.records_after_skybox();
+    let strict_order = grab_pass || (!intersect && key.requires_strict_order());
     let phase = phase_for_window(key, intersect, grab_pass, post_skybox);
     debug_assert!(
         !(intersect && grab_pass),
@@ -31,12 +34,8 @@ pub(crate) fn classify_world_mesh_batch(key: &MaterialDrawBatchKey) -> WorldMesh
         phase,
         post_skybox,
         grab_pass,
+        strict_order,
     }
-}
-
-/// Returns whether a regular forward draw must render after the skybox/background draw.
-fn regular_window_records_after_skybox(key: &MaterialDrawBatchKey) -> bool {
-    key.alpha_blended || key.is_transparent() || key.render_state.depth_write == Some(false)
 }
 
 /// Selects the primary phase for one same-batch-key window.
@@ -61,7 +60,10 @@ fn phase_for_window(
 
 #[cfg(test)]
 mod tests {
-    use crate::materials::{UNITY_RENDER_QUEUE_ALPHA_TEST, UNITY_RENDER_QUEUE_TRANSPARENT};
+    use crate::materials::{
+        MaterialBlendMode, UNITY_RENDER_QUEUE_ALPHA_TEST, UNITY_RENDER_QUEUE_TRANSPARENT,
+        UNITY_TRANSPARENT_RENDER_QUEUE_MIN,
+    };
     use crate::world_mesh::WorldMeshPhase;
     use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
 
@@ -90,6 +92,8 @@ mod tests {
             classify_world_mesh_batch(&opaque).phase,
             WorldMeshPhase::ForwardOpaque
         );
+        assert!(!classify_world_mesh_batch(&opaque).post_skybox);
+        assert!(!classify_world_mesh_batch(&opaque).strict_order);
 
         let mut alpha_test = key(false);
         alpha_test.render_queue = UNITY_RENDER_QUEUE_ALPHA_TEST;
@@ -97,6 +101,47 @@ mod tests {
             classify_world_mesh_batch(&alpha_test).phase,
             WorldMeshPhase::ForwardAlphaTest
         );
+        assert!(!classify_world_mesh_batch(&alpha_test).post_skybox);
+        assert!(!classify_world_mesh_batch(&alpha_test).strict_order);
+    }
+
+    #[test]
+    fn classifies_late_opaque_queue_after_skybox_without_strict_order() {
+        let mut late_opaque = key(false);
+        late_opaque.render_queue = UNITY_RENDER_QUEUE_TRANSPARENT - 1;
+        late_opaque.blend_mode = MaterialBlendMode::Opaque;
+
+        let classification = classify_world_mesh_batch(&late_opaque);
+
+        assert_eq!(classification.phase, WorldMeshPhase::Transparent);
+        assert!(classification.post_skybox);
+        assert!(!classification.strict_order);
+    }
+
+    #[test]
+    fn classifies_transparent_queue_as_strict_ordered_transparent() {
+        let mut transparent = key(false);
+        transparent.render_queue = UNITY_RENDER_QUEUE_TRANSPARENT;
+        transparent.blend_mode = MaterialBlendMode::Opaque;
+
+        let classification = classify_world_mesh_batch(&transparent);
+
+        assert_eq!(classification.phase, WorldMeshPhase::Transparent);
+        assert!(classification.post_skybox);
+        assert!(classification.strict_order);
+    }
+
+    #[test]
+    fn classifies_effective_alpha_blend_at_lower_threshold_as_strict_ordered() {
+        let mut alpha = key(true);
+        alpha.render_queue = UNITY_TRANSPARENT_RENDER_QUEUE_MIN;
+        alpha.blend_mode = MaterialBlendMode::StemDefault;
+
+        let classification = classify_world_mesh_batch(&alpha);
+
+        assert_eq!(classification.phase, WorldMeshPhase::Transparent);
+        assert!(classification.post_skybox);
+        assert!(classification.strict_order);
     }
 
     #[test]

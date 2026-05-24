@@ -31,7 +31,7 @@ const SORT_PREFIX_RENDER_QUEUE_MAX: i32 = (1 << SORT_PREFIX_RENDER_QUEUE_BITS) -
 const SORT_PREFIX_OVERLAY_SHIFT: u32 = 63;
 /// Bit shift for the 18-bit render queue (just below overlay).
 const SORT_PREFIX_RENDER_QUEUE_SHIFT: u32 = 45;
-/// Bit shift for the transparent-queue flag.
+/// Bit shift for the transparent-sort flag.
 const SORT_PREFIX_TRANSPARENT_SHIFT: u32 = 44;
 /// Bit shift for the 8-bit opaque depth bucket.
 const SORT_PREFIX_DEPTH_BUCKET_SHIFT: u32 = 36;
@@ -54,21 +54,21 @@ pub(super) fn opaque_depth_bucket(distance_sq: f32) -> u16 {
 /// Packs the dominant ordering prefix of a draw into a single [`u64`] so the hot sort path can
 /// use [`u64::cmp`] instead of a multi-field comparator chain.
 ///
-/// Transparent-queue draws zero the depth-bucket and hash bits so every transparent draw inside
-/// the same `(overlay, render_queue)` bucket compares equal; [`sort_draws`] resorts each such
-/// run afterwards using the class-aware structural comparator.
+/// Transparent-sorted draws zero the depth-bucket and hash bits so every draw inside the same
+/// `(overlay, render_queue)` bucket compares equal; [`sort_draws`] resorts each such run
+/// afterwards using the class-aware structural comparator.
 #[inline]
 pub fn pack_sort_prefix(
     is_overlay: bool,
     render_queue: i32,
-    is_transparent: bool,
+    uses_transparent_sorting: bool,
     opaque_depth_bucket: u16,
     batch_key_hash: u64,
 ) -> u64 {
     let overlay_bit = u64::from(is_overlay);
     let render_queue_clamped = render_queue.clamp(0, SORT_PREFIX_RENDER_QUEUE_MAX) as u64;
-    let transparent_bit = u64::from(is_transparent);
-    let (depth_bits, hash_bits) = if is_transparent {
+    let transparent_bit = u64::from(uses_transparent_sorting);
+    let (depth_bits, hash_bits) = if uses_transparent_sorting {
         (0u64, 0u64)
     } else {
         (
@@ -97,18 +97,33 @@ pub(super) fn cmp_transparent_intra_run(a: &WorldMeshDrawItem, b: &WorldMeshDraw
         .then(a.collect_order.cmp(&b.collect_order))
 }
 
-/// Comparator for draws whose visible result depends on submission order.
+/// Comparator for post-skybox draws that share ordering with strict transparent work.
 ///
-/// The prefix matches the old transparent-sort buckets: main-layer work before overlay, then
-/// ascending Unity render queue. Within that bucket the existing transparent class comparator
-/// preserves back-to-front ordering for ordered alpha and batch-friendly ordering for commutative
-/// blends.
+/// The prefix keeps main-layer work before overlay, then ascending Unity render queue, then
+/// opaque-like draws before transparent-sorted draws within the same queue. Transparent-sorted
+/// draws preserve back-to-front ordering for ordered alpha and batch-friendly ordering for
+/// commutative blends; nontransparent draws keep batch-friendly structural ordering.
 #[inline]
 pub(super) fn cmp_order_sensitive_draws(a: &WorldMeshDrawItem, b: &WorldMeshDrawItem) -> Ordering {
+    let a_transparent = a.batch_key.uses_transparent_sorting();
+    let b_transparent = b.batch_key.uses_transparent_sorting();
     a.is_overlay
         .cmp(&b.is_overlay)
         .then(a.batch_key.render_queue.cmp(&b.batch_key.render_queue))
-        .then_with(|| cmp_transparent_intra_run(a, b))
+        .then(a_transparent.cmp(&b_transparent))
+        .then_with(|| match (a_transparent, b_transparent) {
+            (false, false) => a
+                .batch_key_hash
+                .cmp(&b.batch_key_hash)
+                .then_with(|| a.batch_key.cmp(&b.batch_key))
+                .then(b.sorting_order.cmp(&a.sorting_order))
+                .then(a.mesh_asset_id.cmp(&b.mesh_asset_id))
+                .then(a.node_id.cmp(&b.node_id))
+                .then(a.slot_index.cmp(&b.slot_index))
+                .then(a.collect_order.cmp(&b.collect_order)),
+            (true, true) => cmp_transparent_intra_run(a, b),
+            _ => Ordering::Equal,
+        })
         .then(a.sort_prefix.cmp(&b.sort_prefix))
 }
 
@@ -157,10 +172,10 @@ fn cmp_opaque_intra_prefix(a: &WorldMeshDrawItem, b: &WorldMeshDrawItem) -> Orde
 ///   such a run the structural opaque comparator preserves the deterministic
 ///   `batch_key_hash` -> `batch_key` -> `sorting_order` (descending) -> `mesh / node / slot`
 ///   ordering. Common when many draws share a batch key.
-/// * Transparent draws inside the same `(overlay, render_queue)` bucket. [`pack_sort_prefix`]
-///   zeros the depth-bucket and hash bits for transparent items so they all collide on the
-///   primary key; the transparent comparator then sorts by `sorting_order`, an appropriate class
-///   tie-breaker, then `collect_order`.
+/// * Transparent-sorted draws inside the same `(overlay, render_queue)` bucket.
+///   [`pack_sort_prefix`] zeros the depth-bucket and hash bits for these items so they all collide
+///   on the primary key; the transparent comparator then sorts by `sorting_order`, an appropriate
+///   class tie-breaker, then `collect_order`.
 #[cfg(test)]
 fn resort_intra_prefix_runs(items: &mut [WorldMeshDrawItem], allow_parallel: bool) {
     profiling::scope!("mesh::sort_intra_prefix_runs");
@@ -172,8 +187,8 @@ fn resort_intra_prefix_runs(items: &mut [WorldMeshDrawItem], allow_parallel: boo
             end += 1;
         }
         if end - start > 1 {
-            let is_transparent = items[start].batch_key.is_transparent();
-            if is_transparent {
+            let uses_transparent_sorting = items[start].batch_key.uses_transparent_sorting();
+            if uses_transparent_sorting {
                 sort_intra_prefix_run(
                     &mut items[start..end],
                     cmp_transparent_intra_run,

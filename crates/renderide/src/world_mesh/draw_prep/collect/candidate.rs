@@ -99,7 +99,7 @@ pub(super) fn evaluate_draw_candidate(
     let batch_key = apply_overlay_layer_depth_policy(batch_key, candidate.is_overlay);
     let blendshape_deformed = candidate.blendshape_deformed
         || (candidate.tangent_blendshape_deform_active && batch_key.embedded_needs_tangent);
-    let camera_distance_sq = if batch_key.is_transparent() {
+    let camera_distance_sq = if batch_key.uses_transparent_sorting() {
         transparent_sort_distance_sq(
             ctx.view_origin_world,
             candidate.world_aabb,
@@ -112,7 +112,7 @@ pub(super) fn evaluate_draw_candidate(
     // Precompute the opaque depth bucket here so the sort comparator does not redo `sqrt + log2`
     // on every pairwise compare. The argument matches the previous comparator-side computation
     // (`opaque_depth_bucket(item.camera_distance_sq)`) so the resulting order is stable:
-    // transparent-queue draws use the class-compatible sort metric preserved on
+    // transparent-sorted draws use the class-compatible sort metric preserved on
     // `camera_distance_sq`, while opaque-queue draws feed `0.0` and bucket to `0`,
     // leaving batch-key tiebreaking intact.
     let opaque_depth_bucket =
@@ -120,7 +120,7 @@ pub(super) fn evaluate_draw_candidate(
     let sort_prefix = crate::world_mesh::draw_prep::sort::pack_sort_prefix(
         candidate.is_overlay,
         batch_key.render_queue,
-        batch_key.is_transparent(),
+        batch_key.uses_transparent_sorting(),
         opaque_depth_bucket,
         batch_key_hash,
     );
@@ -212,7 +212,7 @@ mod tests {
     use super::*;
     use crate::gpu_pools::MeshPool;
     use crate::materials::host_data::{
-        MaterialDictionary, MaterialPropertyStore, PropertyIdRegistry,
+        MaterialDictionary, MaterialPropertyStore, MaterialPropertyValue, PropertyIdRegistry,
     };
     use crate::materials::{
         MaterialPipelinePropertyIds, MaterialRouter, RasterPipelineKind, ShaderPermutation,
@@ -348,6 +348,82 @@ mod tests {
             item.batch_key.render_state.depth_compare,
             Some(MaterialDepthCompareOverride::Always)
         );
+    }
+
+    #[test]
+    fn evaluate_draw_candidate_uses_alpha_stem_sort_distance_at_late_opaque_queue() {
+        let scene = SceneCoordinator::new();
+        let mesh_pool = MeshPool::default_pool();
+        let mut store = MaterialPropertyStore::new();
+        let registry = PropertyIdRegistry::new();
+        let property_ids = MaterialPipelinePropertyIds::new(&registry);
+        store.set_shader_asset_for_material(11, 22);
+        store.set_material(
+            11,
+            property_ids.render_queue[0],
+            MaterialPropertyValue::Float(
+                crate::materials::UNITY_TRANSPARENT_RENDER_QUEUE_MIN as f32,
+            ),
+        );
+        let material_dict = MaterialDictionary::new(&store);
+        let mut router = MaterialRouter::new(RasterPipelineKind::Null);
+        router.set_shader_pipeline(
+            22,
+            RasterPipelineKind::EmbeddedStem(std::sync::Arc::<str>::from("ui_unlit_default")),
+        );
+        let cache = FrameMaterialBatchCache::new();
+        let ctx = DrawCollectionContext {
+            scene: &scene,
+            mesh_pool: &mesh_pool,
+            material_dict: &material_dict,
+            material_router: &router,
+            pipeline_property_ids: &property_ids,
+            shader_perm: ShaderPermutation::default(),
+            render_context: RenderingContext::UserView,
+            head_output_transform: Mat4::IDENTITY,
+            view_origin_world: Vec3::ZERO,
+            culling: None,
+            mesh_lod_bias: 2.0,
+            transform_filter: None,
+            render_space_filter: None,
+            material_cache: None,
+            reflection_probes: None,
+            prepared: None,
+        };
+        let candidate = DrawCandidate {
+            space_id: RenderSpaceId(3),
+            node_id: 9,
+            renderable_index: 42,
+            instance_id: MeshRendererInstanceId(99),
+            mesh_asset_id: 7,
+            slot_index: 0,
+            first_index: 0,
+            index_count: 3,
+            is_overlay: false,
+            sorting_order: 0,
+            skinned: false,
+            world_space_deformed: false,
+            blendshape_deformed: false,
+            tangent_blendshape_deform_active: false,
+            material_asset_id: 11,
+            property_block_id: None,
+            world_aabb: Some((Vec3::new(9.0, -2.0, 0.0), Vec3::new(11.0, 2.0, 0.0))),
+        };
+
+        let item = evaluate_draw_candidate(
+            &ctx,
+            &cache,
+            candidate,
+            RasterFrontFace::Clockwise,
+            RasterPrimitiveTopology::TriangleList,
+            None,
+            4.0,
+        )
+        .expect("draw item");
+
+        assert!(item.batch_key.alpha_blended);
+        assert!(item.batch_key.uses_transparent_sorting());
+        assert_eq!(item.camera_distance_sq, 125.0);
     }
 
     #[test]

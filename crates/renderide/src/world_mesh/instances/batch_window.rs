@@ -42,8 +42,7 @@ pub(super) fn next_batch_window(
         phase: classification.phase,
         singleton: !supports_base_instance
             || draws[start].skinned
-            || (classification.post_skybox && order_dependent)
-            || (key.alpha_blended && order_dependent)
+            || (classification.strict_order && order_dependent)
             || classification.grab_pass,
     }
 }

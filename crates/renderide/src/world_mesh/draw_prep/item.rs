@@ -88,7 +88,7 @@ pub struct WorldMeshDrawItem {
     pub blendshape_deformed: bool,
     /// Stable insertion order before sorting; used for transparent UI/text.
     pub collect_order: usize,
-    /// Approximate camera distance metric used for transparent back-to-front sorting.
+    /// Approximate camera distance metric used for transparent-sorted back-to-front ordering.
     ///
     /// Transparent draws prefer world bounds when available and fall back to transform-origin
     /// distance when the host has not provided usable mesh bounds for the draw.
@@ -115,10 +115,10 @@ pub struct WorldMeshDrawItem {
     /// draw-item construction by [`super::sort::pack_sort_prefix`] so the hot sort path uses a
     /// single `u64::cmp` instead of a multi-field comparator chain.
     ///
-    /// Layout (highest bit first): `[overlay:1][render_queue:18][transparent:1]
-    /// [opaque_depth_bucket:8][batch_key_hash_hi:32][reserved:4]`. Transparent draws zero the
-    /// depth-bucket and hash bits so they share a key within their `(overlay, render_queue)`
-    /// bucket; [`super::sort::sort_draws`] then resorts each transparent run with a
+    /// Layout (highest bit first): `[overlay:1][render_queue:18][transparent_sort:1]
+    /// [opaque_depth_bucket:8][batch_key_hash_hi:32][reserved:4]`. Transparent-sorted draws zero
+    /// the depth-bucket and hash bits so they share a key within their `(overlay, render_queue)`
+    /// bucket; [`super::sort::sort_draws`] then resorts each such run with a
     /// class-aware structural comparator.
     pub sort_prefix: u64,
     /// Rigid-body world matrix for non-skinned draws, filled during draw collection to avoid

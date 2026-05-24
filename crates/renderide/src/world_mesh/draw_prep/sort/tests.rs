@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 
 use crate::materials::{
     UNITY_RENDER_QUEUE_ALPHA_TEST, UNITY_RENDER_QUEUE_OVERLAY, UNITY_RENDER_QUEUE_TRANSPARENT,
+    UNITY_TRANSPARENT_RENDER_QUEUE_MIN,
 };
 use crate::world_mesh::TransparentMaterialClass;
 use crate::world_mesh::draw_prep::item::WorldMeshDrawItem;
@@ -19,8 +20,8 @@ use super::{
 /// fix-up.
 fn cmp_world_mesh_draw_items(a: &WorldMeshDrawItem, b: &WorldMeshDrawItem) -> Ordering {
     a.sort_prefix.cmp(&b.sort_prefix).then_with(|| {
-        let a_transparent = a.batch_key.is_transparent();
-        let b_transparent = b.batch_key.is_transparent();
+        let a_transparent = a.batch_key.uses_transparent_sorting();
+        let b_transparent = b.batch_key.uses_transparent_sorting();
         match (a_transparent, b_transparent) {
             (false, false) => a
                 .batch_key_hash
@@ -43,17 +44,21 @@ fn cmp_world_mesh_draw_items_without_depth_bucket(
 ) -> Ordering {
     a.is_overlay
         .cmp(&b.is_overlay)
+        .then(a.batch_key.render_queue.cmp(&b.batch_key.render_queue))
         .then(
             a.batch_key
-                .is_transparent()
-                .cmp(&b.batch_key.is_transparent()),
+                .uses_transparent_sorting()
+                .cmp(&b.batch_key.uses_transparent_sorting()),
         )
-        .then(a.batch_key.render_queue.cmp(&b.batch_key.render_queue))
-        .then_with(
-            || match (a.batch_key.is_transparent(), b.batch_key.is_transparent()) {
-                (false, false) => b
-                    .sorting_order
-                    .cmp(&a.sorting_order)
+        .then_with(|| {
+            match (
+                a.batch_key.uses_transparent_sorting(),
+                b.batch_key.uses_transparent_sorting(),
+            ) {
+                (false, false) => a
+                    .batch_key
+                    .cmp(&b.batch_key)
+                    .then(b.sorting_order.cmp(&a.sorting_order))
                     .then(a.mesh_asset_id.cmp(&b.mesh_asset_id))
                     .then(a.node_id.cmp(&b.node_id))
                     .then(a.slot_index.cmp(&b.slot_index)),
@@ -63,8 +68,8 @@ fn cmp_world_mesh_draw_items_without_depth_bucket(
                     .then_with(|| b.camera_distance_sq.total_cmp(&a.camera_distance_sq))
                     .then(a.collect_order.cmp(&b.collect_order)),
                 _ => Ordering::Equal,
-            },
-        )
+            }
+        })
 }
 
 /// Sets `camera_distance_sq` and refreshes the precomputed `opaque_depth_bucket` and
@@ -76,7 +81,7 @@ fn set_camera_distance(item: &mut WorldMeshDrawItem, distance_sq: f32) {
     item.sort_prefix = pack_sort_prefix(
         item.is_overlay,
         item.batch_key.render_queue,
-        item.batch_key.is_transparent(),
+        item.batch_key.uses_transparent_sorting(),
         item._opaque_depth_bucket,
         item.batch_key_hash,
     );
@@ -88,7 +93,7 @@ fn set_render_queue(item: &mut WorldMeshDrawItem, render_queue: i32) {
     item.sort_prefix = pack_sort_prefix(
         item.is_overlay,
         item.batch_key.render_queue,
-        item.batch_key.is_transparent(),
+        item.batch_key.uses_transparent_sorting(),
         item._opaque_depth_bucket,
         item.batch_key_hash,
     );
@@ -101,7 +106,7 @@ fn set_transparent_class(item: &mut WorldMeshDrawItem, class: TransparentMateria
     item.sort_prefix = pack_sort_prefix(
         item.is_overlay,
         item.batch_key.render_queue,
-        item.batch_key.is_transparent(),
+        item.batch_key.uses_transparent_sorting(),
         item._opaque_depth_bucket,
         item.batch_key_hash,
     );
@@ -320,6 +325,59 @@ fn render_queue_orders_before_transparent_distance() {
         Ordering::Less,
         "lower transparent render queues must draw before farther later queues"
     );
+}
+
+#[test]
+fn opaque_blend_late_queue_keeps_opaque_sort_prefix_until_transparent_queue() {
+    let mut late_opaque = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+        material_asset_id: 1,
+        property_block: None,
+        skinned: false,
+        sorting_order: 0,
+        mesh_asset_id: 1,
+        node_id: 1,
+        slot_index: 0,
+        collect_order: 0,
+        alpha_blended: false,
+    });
+    late_opaque.batch_key.blend_mode = crate::materials::MaterialBlendMode::Opaque;
+    set_render_queue(&mut late_opaque, UNITY_RENDER_QUEUE_TRANSPARENT - 1);
+    set_camera_distance(&mut late_opaque, 64.0);
+
+    assert!(!late_opaque.batch_key.uses_transparent_sorting());
+    assert_ne!(
+        late_opaque.sort_prefix,
+        pack_sort_prefix(
+            false,
+            UNITY_RENDER_QUEUE_TRANSPARENT - 1,
+            true,
+            late_opaque._opaque_depth_bucket,
+            late_opaque.batch_key_hash,
+        )
+    );
+
+    set_render_queue(&mut late_opaque, UNITY_RENDER_QUEUE_TRANSPARENT);
+
+    assert!(late_opaque.batch_key.uses_transparent_sorting());
+}
+
+#[test]
+fn effective_alpha_blend_uses_lower_transparent_sorting_threshold() {
+    let mut alpha = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+        material_asset_id: 1,
+        property_block: None,
+        skinned: false,
+        sorting_order: 0,
+        mesh_asset_id: 1,
+        node_id: 1,
+        slot_index: 0,
+        collect_order: 0,
+        alpha_blended: true,
+    });
+    alpha.batch_key.blend_mode = crate::materials::MaterialBlendMode::StemDefault;
+    set_render_queue(&mut alpha, UNITY_TRANSPARENT_RENDER_QUEUE_MIN);
+
+    assert!(alpha.batch_key.uses_transparent_sorting());
 }
 
 #[test]
