@@ -17,6 +17,7 @@
 #import renderide::core::texture_sampling as ts
 #import renderide::core::uv as uvu
 #import renderide::post::filter_math as fm
+#import renderide::post::poisson_blur as pb
 #import renderide::post::filter_common as fc
 #import renderide::post::filter_refraction as fr
 #import renderide::frame::grab_pass as gp
@@ -118,23 +119,25 @@ fn spread_modulation(uv0: vec2<f32>) -> vec2<f32> {
     return ts::sample_tex_2d(_SpreadTex, _SpreadTex_sampler, uvu::apply_st(uv0, mat._SpreadTex_ST), mat._SpreadTex_LodBias).rg;
 }
 
-fn sample_blur(center_uv: vec2<f32>, spread: vec2<f32>, iterations: f32, view_layer: u32) -> vec4<f32> {
+fn sample_circular_blur(center_uv: vec2<f32>, spread: vec2<f32>, iterations: f32, view_layer: u32) -> vec4<f32> {
     var c = vec4<f32>(0.0);
-    let use_poisson = kw_POISSON_DISC();
     let clamped_iterations = clamp(iterations, 1.0, 128.0);
     for (var i = 0u; i < 128u; i = i + 1u) {
         if (f32(i) >= clamped_iterations) {
             break;
         }
         let angle = (f32(i) / clamped_iterations) * fm::TAU;
-        let offset = select(
-            vec2<f32>(-cos(angle), sin(angle)) * spread,
-            fm::poisson_blur_offset(i, spread),
-            use_poisson,
-        );
+        let offset = vec2<f32>(-cos(angle), sin(angle)) * spread;
         c = c + gp::sample_scene_color(center_uv + offset, view_layer);
     }
     return c / clamped_iterations;
+}
+
+fn sample_blur(center_uv: vec2<f32>, spread: vec2<f32>, iterations: f32, view_layer: u32) -> vec4<f32> {
+    if (kw_POISSON_DISC()) {
+        return pb::sample_poisson_blur(center_uv, spread, iterations, view_layer);
+    }
+    return sample_circular_blur(center_uv, spread, iterations, view_layer);
 }
 
 //#pass type=forward name=forward_filter blend=material_filter
