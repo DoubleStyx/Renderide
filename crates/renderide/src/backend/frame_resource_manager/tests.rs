@@ -268,7 +268,7 @@ fn prepare_lights_from_scene_skips_inactive_spaces() {
     mgr.prepare_lights_from_scene(&scene);
     let packed = mgr.frame_lights();
     assert_eq!(packed.len(), 1);
-    assert!((packed[0].color[0] - 0.214_041_14).abs() < 1e-5);
+    assert!((packed[0].color[0] - 0.5).abs() < 1e-5);
 }
 
 #[test]

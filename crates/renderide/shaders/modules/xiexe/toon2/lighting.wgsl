@@ -69,14 +69,14 @@ fn environment_tint(s: xb::SurfaceData, view_dir: vec3<f32>, world_pos: vec3<f32
 const SPECCUBE_LOD_STEPS: f32 = 6.0;
 
 /// Resolves a single frame light into a `LightSample` (direction toward the light,
-/// color, attenuation, directional flag).
+/// linear radiance, attenuation, directional flag).
 fn sample_light(light: ft::GpuLight, world_pos: vec3<f32>) -> xb::LightSample {
     if (light.light_type == 1u) {
         let dir_len_sq = dot(light.direction.xyz, light.direction.xyz);
         return xb::LightSample(
             select(vec3<f32>(0.0, 0.0, 1.0), normalize(-light.direction.xyz), dir_len_sq > 1e-16),
-            light.color.xyz,
-            bl::direct_light_intensity(light.intensity),
+            bl::light_radiance(light),
+            bl::direct_light_scale(),
             true,
         );
     }
@@ -84,11 +84,11 @@ fn sample_light(light: ft::GpuLight, world_pos: vec3<f32>) -> xb::LightSample {
     let to_light = light.position.xyz - world_pos;
     let dist = length(to_light);
     let l = xb::safe_normalize(to_light, vec3<f32>(0.0, 1.0, 0.0));
-    var attenuation = bl::punctual_attenuation(light.intensity, dist, light.range);
+    var attenuation = brdf::distance_attenuation(dist, light.range);
     if (light.light_type == 2u) {
         attenuation = attenuation * bl::spot_angle_attenuation(light, l);
     }
-    return xb::LightSample(l, light.color.xyz, attenuation, false);
+    return xb::LightSample(l, bl::light_radiance(light), attenuation, false);
 }
 
 /// Toon ramp lookup. The half-Lambert remap (`NdotL * 0.5 + 0.5`) maps to the U axis;

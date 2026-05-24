@@ -169,10 +169,13 @@ impl DebugHudBundle {
         }
     }
 
-    /// Forwards the latest flattened GPU pass timings to the wrapped HUD.
-    pub(crate) fn set_gpu_pass_timings(&mut self, timings: Vec<crate::profiling::GpuPassEntry>) {
+    /// Forwards the latest GPU profiler snapshot to the wrapped HUD.
+    pub(crate) fn set_gpu_profiler_snapshot(
+        &mut self,
+        snapshot: crate::profiling::GpuProfilerSnapshot,
+    ) {
         if let Some(hud) = self.hud.as_mut() {
-            hud.set_gpu_pass_timings(timings);
+            hud.set_gpu_profiler_snapshot(snapshot);
         }
     }
 

@@ -228,13 +228,18 @@ fn draw_tail_groups(
             timestamp_writes,
             multiview_mask: stereo_mask_or_template(prepared.pipeline.use_multiview, None),
         });
-        record_world_mesh_forward_groups_graph_raster_with_frame_bind_group(
+        #[cfg(feature = "tracy")]
+        rpass.push_debug_group("world_mesh_forward::transparent_sequence_draw");
+        let recorded = record_world_mesh_forward_groups_graph_raster_with_frame_bind_group(
             &mut rpass,
             frame,
             prepared,
             groups,
             frame_bind_group,
-        )
+        );
+        #[cfg(feature = "tracy")]
+        rpass.pop_debug_group();
+        recorded
     };
     if let (Some(p), Some(q)) = (ctx.profiler, pass_query) {
         p.end_query(ctx.encoder, q);

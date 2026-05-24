@@ -1,4 +1,4 @@
-//! Shared direct-light intensity and attenuation helpers.
+//! Shared direct-light color, intensity, and attenuation helpers.
 
 #import renderide::frame::types as ft
 
@@ -7,12 +7,51 @@
 /// Quadratic coefficient used by Unity BiRP's normalized punctual-light attenuation LUT.
 const BIRP_ATTENUATION_QUADRATIC: f32 = 25.0;
 
-/// Temporary direct-light multiplier used to match BiRP-authored scene brightness.
+/// Direct-light multiplier used to match BiRP-authored scene brightness.
 const INTENSITY_BOOST: f32 = 3.1415927;
 
-/// Unity BiRP-style direct light intensity with scene-brightness boost applied.
-fn direct_light_intensity(intensity: f32) -> f32 {
-    return intensity * INTENSITY_BOOST;
+/// Upper end of the linear segment in the sRGB transfer curve.
+const SRGB_LINEAR_THRESHOLD: f32 = 0.04045;
+/// Reciprocal slope for the sRGB transfer curve's linear segment.
+const SRGB_LINEAR_INV_SLOPE: f32 = 1.0 / 12.92;
+/// Offset for the sRGB transfer curve's nonlinear segment.
+const SRGB_NONLINEAR_OFFSET: f32 = 0.055;
+/// Reciprocal scale for the sRGB transfer curve's nonlinear segment.
+const SRGB_NONLINEAR_INV_SCALE: f32 = 1.0 / 1.055;
+/// Exponent for the sRGB transfer curve's nonlinear segment.
+const SRGB_NONLINEAR_EXPONENT: f32 = 2.4;
+/// Unity-style exponent used for HDR light values above the normalized sRGB range.
+const SRGB_HDR_EXPONENT: f32 = 2.2;
+
+/// Converts one signed sRGB/gamma light channel to linear space without clamping.
+fn srgb_light_channel_to_linear(value: f32) -> f32 {
+    if (value <= SRGB_LINEAR_THRESHOLD) {
+        return value * SRGB_LINEAR_INV_SLOPE;
+    }
+    if (value < 1.0) {
+        let normalized = (value + SRGB_NONLINEAR_OFFSET) * SRGB_NONLINEAR_INV_SCALE;
+        return pow(normalized, SRGB_NONLINEAR_EXPONENT);
+    }
+    return pow(value, SRGB_HDR_EXPONENT);
+}
+
+/// Converts a signed sRGB/gamma light color to linear space without clamping.
+fn srgb_light_to_linear(color: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        srgb_light_channel_to_linear(color.r),
+        srgb_light_channel_to_linear(color.g),
+        srgb_light_channel_to_linear(color.b),
+    );
+}
+
+/// Linear light radiance before attenuation and Lambert/BRDF factors.
+fn light_radiance(light: ft::GpuLight) -> vec3<f32> {
+    return srgb_light_to_linear(light.color * light.intensity);
+}
+
+/// Unity BiRP-style direct-light scalar boost.
+fn direct_light_scale() -> f32 {
+    return INTENSITY_BOOST;
 }
 
 /// Squared edge fade for a precomputed attenuation curve input.
@@ -40,11 +79,6 @@ fn distance_attenuation(dist: f32, range: f32) -> f32 {
     let t2 = t * t;
     let lut = 1.0 / (1.0 + BIRP_ATTENUATION_QUADRATIC * t2);
     return lut * range_fade(t) * INTENSITY_BOOST;
-}
-
-/// Unity BiRP-style punctual attenuation with light intensity applied.
-fn punctual_attenuation(intensity: f32, dist: f32, range: f32) -> f32 {
-    return intensity * distance_attenuation(dist, range);
 }
 
 fn normalized_spot_direction(direction: vec3<f32>) -> vec3<f32> {

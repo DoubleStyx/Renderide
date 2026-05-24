@@ -17,9 +17,9 @@ pub struct GpuLight {
     pub direction: [f32; 3],
     /// Aligns `direction` to 16 bytes.
     pub _pad1: f32,
-    /// Linear RGB color.
+    /// Host-authored sRGB/gamma light color.
     pub color: [f32; 3],
-    /// Scalar brightness multiplier.
+    /// Scalar brightness multiplier applied before shader-side light color transfer conversion.
     pub intensity: f32,
     /// Attenuation range in world units.
     pub range: f32,

@@ -78,6 +78,7 @@ mod pipeline_kind;
 mod pipeline_property_resolver;
 pub(crate) mod raster_pipeline;
 mod registry;
+mod render_buffer_shader;
 mod render_queue;
 mod render_state;
 mod router;
@@ -152,6 +153,10 @@ pub(crate) use pipeline_property_resolver::PipelinePropertyResolver;
 
 /// Shader route table, optional material asset registry, and WGSL composition patches.
 pub(crate) use registry::{MaterialPipelineResolution, MaterialRegistry};
+pub(crate) use render_buffer_shader::{
+    ensure_render_buffer_billboard_variant_bits, remap_unlit_variant_bits_for_billboard,
+    should_remap_unlit_variant_bits_for_billboard_draw,
+};
 pub(crate) use router::{MaterialRouter, resolve_raster_pipeline};
 
 /// Static shader feature flags (multiview, etc.) keyed into the pipeline cache.

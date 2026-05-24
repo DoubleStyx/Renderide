@@ -155,7 +155,14 @@ fn rebuild_prepared_snapshot_skips_inactive_cached_spaces() {
         },
     );
 
-    world.rebuild_prepared_snapshot(&scene, RenderingContext::RenderToAsset);
+    let mesh_pool = MeshPool::default_pool();
+    let point_render_buffers = HashMap::new();
+    world.rebuild_prepared_snapshot(
+        &scene,
+        &mesh_pool,
+        &point_render_buffers,
+        RenderingContext::RenderToAsset,
+    );
 
     assert_eq!(
         world.prepared.render_context(),

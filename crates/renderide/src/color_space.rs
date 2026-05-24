@@ -1,6 +1,6 @@
 //! Shared color constants and color-space conversion helpers for host-authored values.
 
-use glam::{Vec3, Vec4};
+use glam::Vec4;
 
 /// Linear RGBA fallback color used when a skybox-backed view has no material sky to draw.
 pub(crate) const DEFAULT_SKYBOX_CLEAR_COLOR: Vec4 = Vec4::new(0.1, 0.1, 0.1, 1.0);
@@ -16,15 +16,6 @@ pub(crate) fn srgb_channel_to_linear(value: f32) -> f32 {
     } else {
         value.powf(2.2)
     }
-}
-
-/// Converts sRGB RGB channels to linear RGB.
-pub(crate) fn srgb_vec3_to_linear(color: Vec3) -> Vec3 {
-    Vec3::new(
-        srgb_channel_to_linear(color.x),
-        srgb_channel_to_linear(color.y),
-        srgb_channel_to_linear(color.z),
-    )
 }
 
 /// Converts sRGB RGB channels to linear RGB while preserving alpha.

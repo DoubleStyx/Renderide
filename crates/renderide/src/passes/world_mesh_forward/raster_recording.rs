@@ -125,7 +125,15 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_phase_gra
     phase: WorldMeshPhase,
 ) -> bool {
     let groups = prepared.plan.phase(phase);
-    record_world_mesh_forward_groups_graph_raster(rpass, frame, blackboard, prepared, groups)
+    #[cfg(feature = "tracy")]
+    let debug_label = format!("world_mesh_forward::{phase:?}");
+    #[cfg(feature = "tracy")]
+    rpass.push_debug_group(debug_label.as_str());
+    let recorded =
+        record_world_mesh_forward_groups_graph_raster(rpass, frame, blackboard, prepared, groups);
+    #[cfg(feature = "tracy")]
+    rpass.pop_debug_group();
+    recorded
 }
 
 /// Records an explicit draw-group slice into a render pass already opened by the caller.
@@ -245,6 +253,8 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_normal_gr
         return false;
     };
     let mut encode_refs = WorldMeshForwardEncodeRefs::from_frame(frame);
+    #[cfg(feature = "tracy")]
+    rpass.push_debug_group("world_mesh_forward::view_normals");
     draw_normals_subset(NormalDrawBatch {
         rpass,
         groups,
@@ -257,6 +267,8 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_normal_gr
         device,
         normal_pipelines: pipelines,
     });
+    #[cfg(feature = "tracy")]
+    rpass.pop_debug_group();
     true
 }
 

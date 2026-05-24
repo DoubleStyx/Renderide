@@ -134,6 +134,13 @@ impl AssetTransferQueue {
         &self.pools.mesh_pool
     }
 
+    /// Resident PhotonDust point render buffers.
+    pub(crate) fn point_render_buffers(
+        &self,
+    ) -> &hashbrown::HashMap<i32, crate::particles::PointRenderBufferAsset> {
+        &self.catalogs.point_render_buffers
+    }
+
     /// Mutable resident mesh pool.
     pub(crate) fn mesh_pool_mut(&mut self) -> &mut MeshPool {
         &mut self.pools.mesh_pool

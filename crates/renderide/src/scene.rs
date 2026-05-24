@@ -64,6 +64,7 @@ mod meshes;
 mod overrides;
 mod pose;
 mod reflection_probe;
+mod render_buffers;
 mod render_space;
 mod transforms;
 mod world;
@@ -87,4 +88,5 @@ pub use reflection_probe::{
     ReflectionProbeOnChangesRenderRequest, reflection_probe_skybox_only,
     reflection_probe_solid_color, reflection_probe_use_box_projection,
 };
+pub(crate) use render_buffers::MeshRenderBufferEntry;
 pub use render_space::RenderSpaceView;

@@ -31,6 +31,9 @@ pub(in crate::scene::coordinator) fn extracted_update_affects_render_world(
         || update.layers.is_some()
         || update.transform_overrides.is_some()
         || update.material_overrides.is_some()
+        || update.billboard_render_buffers.is_some()
+        || update.mesh_render_buffers.is_some()
+        || update.trail_render_buffers.is_some()
 }
 
 /// Records fine-grained render-world dirty events for one extracted render-space update.
@@ -64,6 +67,12 @@ pub(in crate::scene::coordinator) fn note_render_world_dirty_for_extracted_updat
         note_skinned_mesh_update_render_world_dirty(report, space_id, skinned_meshes);
     }
     if update.layers.is_some() || update.transform_overrides.is_some() {
+        report.render_world_dirty.note_full_space(space_id);
+    }
+    if update.billboard_render_buffers.is_some()
+        || update.mesh_render_buffers.is_some()
+        || update.trail_render_buffers.is_some()
+    {
         report.render_world_dirty.note_full_space(space_id);
     }
     if let Some(ref material_overrides) = update.material_overrides {

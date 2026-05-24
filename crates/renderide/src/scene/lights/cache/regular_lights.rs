@@ -6,7 +6,6 @@
 
 use glam::{Quat, Vec3};
 
-use crate::color_space::srgb_vec3_to_linear;
 use crate::scene::transforms::TransformRemovalEvent;
 use crate::scene::world::fixup_transform_id;
 use crate::shared::{LightData, LightState, LightsBufferRendererState};
@@ -62,7 +61,7 @@ impl LightCache {
             slot.data = LightData {
                 point: Vec3::ZERO,
                 orientation: Quat::IDENTITY,
-                color: srgb_vec3_to_linear(Vec3::new(state.color.x, state.color.y, state.color.z)),
+                color: Vec3::new(state.color.x, state.color.y, state.color.z),
                 intensity: state.intensity,
                 range: state.range,
                 angle: state.spot_angle,

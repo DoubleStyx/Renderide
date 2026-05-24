@@ -7,9 +7,6 @@ use crate::shared::{LightData, LightState, LightType, LightsBufferRendererState,
 use super::LightCache;
 
 const EPS: f32 = 0.000_001;
-const SRGB_HALF_LINEAR: f32 = 0.214_041_14;
-const SRGB_THRESHOLD_LINEAR: f32 = 0.04045 / 12.92;
-const SRGB_ONE_AND_A_QUARTER_LINEAR: f32 = 1.633_811_8;
 
 fn assert_close(actual: f32, expected: f32) {
     assert!(
@@ -69,7 +66,7 @@ fn make_regular_state(renderable_index: i32, intensity: f32, range: f32) -> Ligh
 }
 
 #[test]
-fn store_full_linearizes_submitted_light_colors() {
+fn store_full_preserves_submitted_light_gamma_colors() {
     let mut cache = LightCache::new();
     let space_id = 0;
     cache.store_full(
@@ -82,9 +79,9 @@ fn store_full_linearizes_submitted_light_colors() {
         .get_lights_for_space(space_id)
         .expect("test setup: space should have lights");
     assert_eq!(lights.len(), 1);
-    assert_close(lights[0].data.color.x, SRGB_HALF_LINEAR);
-    assert_close(lights[0].data.color.y, SRGB_THRESHOLD_LINEAR);
-    assert_close(lights[0].data.color.z, SRGB_ONE_AND_A_QUARTER_LINEAR);
+    assert_close(lights[0].data.color.x, 0.5);
+    assert_close(lights[0].data.color.y, 0.04045);
+    assert_close(lights[0].data.color.z, 1.25);
     assert_eq!(lights[0].data.intensity, 1.0);
     assert_eq!(lights[0].data.range, 10.0);
 }
@@ -224,7 +221,7 @@ fn light_cache_removals() {
 }
 
 #[test]
-fn regular_light_update_linearizes_state_color() {
+fn regular_light_update_preserves_state_gamma_color() {
     let mut cache = LightCache::new();
     let space_id = 0;
     let mut state = make_regular_state(0, 2.0, 30.0);
@@ -237,9 +234,9 @@ fn regular_light_update_linearizes_state_color() {
         .get_lights_for_space(space_id)
         .expect("test setup: space should have lights");
     assert_eq!(lights.len(), 1);
-    assert_close(lights[0].data.color.x, SRGB_HALF_LINEAR);
-    assert_close(lights[0].data.color.y, SRGB_THRESHOLD_LINEAR);
-    assert_close(lights[0].data.color.z, SRGB_ONE_AND_A_QUARTER_LINEAR);
+    assert_close(lights[0].data.color.x, 0.5);
+    assert_close(lights[0].data.color.y, 0.04045);
+    assert_close(lights[0].data.color.z, 1.25);
     assert_eq!(lights[0].data.intensity, 2.0);
     assert_eq!(lights[0].data.range, 30.0);
     assert_eq!(lights[0].state.shadow_strength, 0.5);

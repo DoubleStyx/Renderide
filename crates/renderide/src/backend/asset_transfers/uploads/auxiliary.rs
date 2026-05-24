@@ -88,7 +88,7 @@ pub fn on_unload_desktop_texture(queue: &mut AssetTransferQueue, unload: UnloadD
     logger::debug!("desktop texture {asset_id}: unloaded placeholder source");
 }
 
-/// Stores and acknowledges a point render buffer upload.
+/// Queues a point render-buffer upload for PhotonDust mesh generation.
 pub fn on_point_render_buffer_upload(
     queue: &mut AssetTransferQueue,
     upload: PointRenderBufferUpload,
@@ -100,20 +100,23 @@ pub fn on_point_render_buffer_upload(
         AssetTask::PointRenderBuffer(upload),
         AssetTaskLane::Particle,
     );
-    logger::trace!("point render buffer {asset_id}: queued placeholder upload count={count}");
+    logger::trace!("point render buffer {asset_id}: queued upload count={count}");
 }
 
-/// Removes a tracked point render buffer upload.
+/// Removes a resident point render-buffer upload and generated meshes.
 pub fn on_point_render_buffer_unload(
     queue: &mut AssetTransferQueue,
     unload: PointRenderBufferUnload,
 ) {
     let asset_id = unload.asset_id;
-    queue.catalogs.point_render_buffer_uploads.remove(&asset_id);
-    logger::debug!("point render buffer {asset_id}: unloaded placeholder upload");
+    queue.catalogs.point_render_buffers.remove(&asset_id);
+    for mesh_id in crate::particles::point_render_buffer_generated_mesh_ids(asset_id) {
+        queue.pools.mesh_pool.remove(mesh_id);
+    }
+    logger::debug!("point render buffer {asset_id}: unloaded resident upload");
 }
 
-/// Stores and acknowledges a trail render buffer upload.
+/// Queues a trail render-buffer upload for PhotonDust ribbon mesh generation.
 pub fn on_trail_render_buffer_upload(
     queue: &mut AssetTransferQueue,
     upload: TrailRenderBufferUpload,
@@ -131,13 +134,17 @@ pub fn on_trail_render_buffer_upload(
     );
 }
 
-/// Removes a tracked trail render buffer upload.
+/// Removes a resident trail render-buffer upload and generated meshes.
 pub fn on_trail_render_buffer_unload(
     queue: &mut AssetTransferQueue,
     unload: TrailRenderBufferUnload,
 ) {
     let asset_id = unload.asset_id;
-    queue.catalogs.trail_render_buffer_uploads.remove(&asset_id);
+    queue.catalogs.trail_render_buffers.remove(&asset_id);
+    for mesh_id in crate::particles::trail_render_buffer_generated_mesh_ids(asset_id) {
+        queue.pools.mesh_pool.remove(mesh_id);
+    }
+    logger::debug!("trail render buffer {asset_id}: unloaded resident upload");
 }
 
 /// Stores the Gaussian splat renderer config.

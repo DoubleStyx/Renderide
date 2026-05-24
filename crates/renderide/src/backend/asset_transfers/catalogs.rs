@@ -2,11 +2,11 @@
 
 use hashbrown::HashMap;
 
+use crate::particles::{PointRenderBufferAsset, TrailRenderBufferAsset};
 use crate::shared::{
-    DesktopTexturePropertiesUpdate, GaussianSplatConfig, PointRenderBufferUpload, SetCubemapFormat,
-    SetCubemapProperties, SetDesktopTextureProperties, SetRenderTextureFormat, SetTexture2DFormat,
-    SetTexture2DProperties, SetTexture3DFormat, SetTexture3DProperties, TrailRenderBufferUpload,
-    VideoTextureProperties,
+    DesktopTexturePropertiesUpdate, GaussianSplatConfig, SetCubemapFormat, SetCubemapProperties,
+    SetDesktopTextureProperties, SetRenderTextureFormat, SetTexture2DFormat,
+    SetTexture2DProperties, SetTexture3DFormat, SetTexture3DProperties, VideoTextureProperties,
 };
 
 /// Latest Gaussian splat payload family known for an asset.
@@ -41,10 +41,10 @@ pub(crate) struct AssetCatalogs {
     pub(crate) desktop_texture_properties: HashMap<i32, SetDesktopTextureProperties>,
     /// Latest desktop texture size updates.
     pub(crate) desktop_texture_updates: HashMap<i32, DesktopTexturePropertiesUpdate>,
-    /// Latest point render buffer uploads.
-    pub(crate) point_render_buffer_uploads: HashMap<i32, PointRenderBufferUpload>,
-    /// Latest trail render buffer uploads.
-    pub(crate) trail_render_buffer_uploads: HashMap<i32, TrailRenderBufferUpload>,
+    /// Resident point render-buffer metadata keyed by source asset id.
+    pub(crate) point_render_buffers: HashMap<i32, PointRenderBufferAsset>,
+    /// Resident trail render-buffer metadata keyed by source asset id.
+    pub(crate) trail_render_buffers: HashMap<i32, TrailRenderBufferAsset>,
     /// Latest Gaussian splat upload family per asset.
     pub(crate) gaussian_splat_uploads: HashMap<i32, GaussianSplatUploadKind>,
     /// Latest Gaussian splat renderer config.

@@ -304,7 +304,7 @@ fn distance_attenuation(dist: f32, range: f32) -> f32 {
 struct LightSample {
     /// Direction from the surface toward the light source (unit length when `attenuation > 0`).
     l: vec3<f32>,
-    /// Combined intensity, distance, and spot attenuation (already includes `light.intensity`).
+    /// Combined direct-light boost, distance, and spot attenuation.
     attenuation: f32,
 }
 
@@ -318,24 +318,24 @@ fn eval_light(light: ft::GpuLight, world_pos: vec3<f32>) -> LightSample {
         let to_light = light_pos - world_pos;
         let dist = length(to_light);
         out.l = normalize(to_light);
-        out.attenuation = light.intensity * distance_attenuation(dist, light.range);
+        out.attenuation = distance_attenuation(dist, light.range);
     } else if light.light_type == 1u {
         let dir_len_sq = dot(light_dir, light_dir);
         out.l = select(vec3<f32>(0.0, 0.0, 1.0), normalize(-light_dir), dir_len_sq > 1e-16);
-        out.attenuation = bl::direct_light_intensity(light.intensity);
+        out.attenuation = bl::direct_light_scale();
     } else {
         let to_light = light_pos - world_pos;
         let dist = length(to_light);
         out.l = normalize(to_light);
         let spot_atten = bl::spot_angle_attenuation(light, out.l);
-        out.attenuation = light.intensity * spot_atten * distance_attenuation(dist, light.range);
+        out.attenuation = spot_atten * distance_attenuation(dist, light.range);
     }
     return out;
 }
 
 /// Signed direct radiance carried by one light sample before BRDF multiplication.
 fn signed_light_radiance(light: ft::GpuLight, attenuation: f32, n_dot_l: f32) -> vec3<f32> {
-    return light.color.xyz * attenuation * n_dot_l;
+    return bl::light_radiance(light) * attenuation * n_dot_l;
 }
 
 /// Evaluated direct GGX lobe terms shared by PBS and stylized materials.

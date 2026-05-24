@@ -178,6 +178,8 @@ enum SnapshotRendererTable {
 /// One deterministic chunk of retained renderer templates copied into the prepared snapshot.
 #[derive(Clone)]
 struct SnapshotRebuildTask<'a> {
+    /// Index of the active render space in frame iteration order.
+    space_index: usize,
     /// Retained render space borrowed by this task.
     space: &'a RenderWorldSpace,
     /// Renderer table copied by this task.
@@ -264,6 +266,7 @@ impl RenderWorld {
         &mut self,
         scene: &SceneCoordinator,
         mesh_pool: &MeshPool,
+        point_render_buffers: &HashMap<i32, crate::particles::PointRenderBufferAsset>,
         render_context: RenderingContext,
     ) -> &FramePreparedRenderables {
         profiling::scope!("mesh::render_world::prepare_for_frame");
@@ -301,7 +304,7 @@ impl RenderWorld {
 
         if snapshot_dirty {
             profiling::scope!("mesh::render_world::rebuild_snapshot");
-            self.rebuild_prepared_snapshot(scene, render_context);
+            self.rebuild_prepared_snapshot(scene, mesh_pool, point_render_buffers, render_context);
         } else {
             stats.steady_state_skip_count = 1;
         }
@@ -383,6 +386,10 @@ impl RenderWorld {
         }
         stats.mesh_asset_invalidation_count += delta.changed_asset_ids.len();
         for &asset_id in delta.changed_asset_ids {
+            if crate::particles::is_generated_particle_mesh_asset_id(asset_id) {
+                self.full_rebuild_requested = true;
+                continue;
+            }
             self.dirty_mesh_assets.insert(asset_id);
         }
     }
@@ -634,31 +641,30 @@ impl RenderWorld {
     fn rebuild_prepared_snapshot(
         &mut self,
         scene: &SceneCoordinator,
+        mesh_pool: &MeshPool,
+        point_render_buffers: &HashMap<i32, crate::particles::PointRenderBufferAsset>,
         render_context: RenderingContext,
     ) {
         profiling::scope!("mesh::render_world::rebuild_prepared_snapshot");
         self.prepared.begin_cached_rebuild(render_context);
-        let active_spaces = scene
+        let active_space_ids = scene
             .render_space_ids()
-            .filter_map(|id| {
-                self.spaces
-                    .get(&id)
-                    .filter(|space| space.active)
-                    .map(|s| (id, s))
-            })
+            .filter(|id| self.spaces.get(id).is_some_and(|space| space.active))
+            .collect::<Vec<_>>();
+        let active_spaces = active_space_ids
+            .iter()
+            .filter_map(|id| self.spaces.get(id).map(|space| (*id, space)))
             .collect::<Vec<_>>();
         let retained_draw_count = active_spaces
             .iter()
-            .map(|(_, space)| space.retained_template_count())
+            .map(|(_, space)| *space)
+            .map(RenderWorldSpace::retained_template_count)
             .sum::<usize>();
         let tasks = build_snapshot_rebuild_tasks(&active_spaces);
         if tasks.len() >= SNAPSHOT_REBUILD_PARALLEL_MIN_TASKS
             && retained_draw_count >= SNAPSHOT_REBUILD_PARALLEL_MIN_DRAWS
         {
             profiling::scope!("mesh::render_world::rebuild_prepared_snapshot::parallel");
-            for (id, _) in &active_spaces {
-                self.prepared.push_cached_space(*id);
-            }
             let outputs = tasks
                 .par_iter()
                 .with_min_len(SNAPSHOT_REBUILD_PARALLEL_CHUNK_TASKS)
@@ -666,20 +672,63 @@ impl RenderWorld {
                     profiling::scope!("mesh::render_world::rebuild_prepared_snapshot::worker");
                     let mut draws = Vec::with_capacity(task.retained_template_count());
                     task.append_draws_to(&mut draws);
-                    draws
+                    (task.space_index, draws)
                 })
                 .collect::<Vec<_>>();
-            for draws in outputs {
-                self.prepared.extend_cached_draws(&draws);
+            let mut output_index = 0usize;
+            for (space_index, &id) in active_space_ids.iter().enumerate() {
+                self.prepared.push_cached_space(id);
+                while outputs
+                    .get(output_index)
+                    .is_some_and(|(task_space_index, _)| *task_space_index == space_index)
+                {
+                    self.prepared.extend_cached_draws(&outputs[output_index].1);
+                    output_index += 1;
+                }
+                self.append_particle_draws(
+                    scene,
+                    mesh_pool,
+                    point_render_buffers,
+                    render_context,
+                    id,
+                );
             }
         } else {
             profiling::scope!("mesh::render_world::rebuild_prepared_snapshot::serial");
-            for (id, space) in active_spaces {
+            for id in active_space_ids {
                 self.prepared.push_cached_space(id);
-                space.append_to_prepared(&mut self.prepared);
+                if let Some(space) = self.spaces.get(&id) {
+                    space.append_to_prepared(&mut self.prepared);
+                }
+                self.append_particle_draws(
+                    scene,
+                    mesh_pool,
+                    point_render_buffers,
+                    render_context,
+                    id,
+                );
             }
         }
         self.prepared.finish_cached_rebuild();
+    }
+
+    /// Appends generated PhotonDust render-buffer draw templates for one active render space.
+    fn append_particle_draws(
+        &mut self,
+        scene: &SceneCoordinator,
+        mesh_pool: &MeshPool,
+        point_render_buffers: &HashMap<i32, crate::particles::PointRenderBufferAsset>,
+        render_context: RenderingContext,
+        id: RenderSpaceId,
+    ) {
+        super::prepared_renderables::expand_render_buffer_renderers_into(
+            self.prepared.draws_mut_for_cached_rebuild(),
+            scene,
+            mesh_pool,
+            point_render_buffers,
+            render_context,
+            id,
+        );
     }
 
     /// Number of retained draw templates currently cached.
@@ -696,15 +745,17 @@ fn build_snapshot_rebuild_tasks<'a>(
     active_spaces: &[(RenderSpaceId, &'a RenderWorldSpace)],
 ) -> Vec<SnapshotRebuildTask<'a>> {
     let mut tasks = Vec::new();
-    for (_, space) in active_spaces {
+    for (space_index, (_, space)) in active_spaces.iter().enumerate() {
         extend_snapshot_table_tasks(
             &mut tasks,
+            space_index,
             space,
             SnapshotRendererTable::Static,
             space.static_renderers.len(),
         );
         extend_snapshot_table_tasks(
             &mut tasks,
+            space_index,
             space,
             SnapshotRendererTable::Skinned,
             space.skinned_renderers.len(),
@@ -716,6 +767,7 @@ fn build_snapshot_rebuild_tasks<'a>(
 /// Appends chunked snapshot-copy tasks for one renderer table.
 fn extend_snapshot_table_tasks<'a>(
     tasks: &mut Vec<SnapshotRebuildTask<'a>>,
+    space_index: usize,
     space: &'a RenderWorldSpace,
     table: SnapshotRendererTable,
     renderer_count: usize,
@@ -725,6 +777,7 @@ fn extend_snapshot_table_tasks<'a>(
     while start < renderer_count {
         let end = (start + chunk_size).min(renderer_count);
         tasks.push(SnapshotRebuildTask {
+            space_index,
             space,
             table,
             range: start..end,

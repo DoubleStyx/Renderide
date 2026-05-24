@@ -7,7 +7,7 @@ use crate::shared::{LightData, LightType, LightsBufferRendererState, ShadowType}
 /// Cached light entry combining pose data from submission with state from updates.
 #[derive(Clone, Debug)]
 pub struct CachedLight {
-    /// Local-space pose and linear RGB color from [`LightsBufferRendererSubmission`](crate::shared::LightsBufferRendererSubmission) payload rows.
+    /// Local-space pose and sRGB/gamma color from [`LightsBufferRendererSubmission`](crate::shared::LightsBufferRendererSubmission) payload rows.
     pub data: LightData,
     /// Renderable index, type, and shadow params from frame updates.
     pub state: LightsBufferRendererState,
@@ -22,7 +22,7 @@ pub struct ResolvedLight {
     pub world_position: Vec3,
     /// World-space propagation direction (normalized): local **+Z** after transform.
     pub world_direction: Vec3,
-    /// Linear RGB color.
+    /// Host-authored sRGB/gamma light color.
     pub color: Vec3,
     /// Light intensity.
     pub intensity: f32,
@@ -56,7 +56,7 @@ fn vec3_is_finite(v: Vec3) -> bool {
     v.x.is_finite() && v.y.is_finite() && v.z.is_finite()
 }
 
-/// Signed linear radiance multiplier for `resolved` before attenuation and BRDF terms.
+/// Signed authored brightness multiplier before shader transfer conversion and attenuation.
 #[must_use]
 pub fn light_signed_radiance(resolved: &ResolvedLight) -> Vec3 {
     resolved.color * resolved.intensity
@@ -70,8 +70,8 @@ pub fn light_has_negative_contribution(resolved: &ResolvedLight) -> bool {
 
 /// Whether `resolved` can produce visible direct lighting.
 ///
-/// Zero-radiance, non-finite, and zero-range punctual lights are skipped before GPU packing so
-/// stale or disabled host rows cannot consume clustered-light slots. Signed radiance is supported:
+/// Zero-brightness, non-finite, and zero-range punctual lights are skipped before GPU packing so
+/// stale or disabled host rows cannot consume clustered-light slots. Signed brightness is supported:
 /// negative intensity or negative RGB channels are retained for creative subtraction effects.
 pub fn light_contributes(resolved: &ResolvedLight) -> bool {
     if !vec3_is_finite(resolved.world_position)

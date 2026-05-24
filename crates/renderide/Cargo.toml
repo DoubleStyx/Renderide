@@ -26,7 +26,8 @@ path = "src/bin/roundtrip.rs"
 [features]
 ## Enables Tracy profiling integration. When active, `profiling::scope!` macros emit CPU spans
 ## to the Tracy client, frame marks appear in the Tracy GUI timeline, and `wgpu-profiler` inserts
-## GPU timestamp queries around the two render-graph execution sub-phases.
+## GPU timestamp queries around render-graph passes, manual GPU passes, copies, readbacks, and
+## expensive bounded subpasses.
 ##
 ## Usage: `cargo build --profile dev-fast --features tracy`
 ## For realistic numbers: `cargo build --release --features tracy`

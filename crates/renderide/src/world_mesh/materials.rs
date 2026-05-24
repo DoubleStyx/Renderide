@@ -10,4 +10,6 @@ pub use cache::FrameMaterialBatchCache;
 pub use key::{MaterialDrawBatchKey, compute_batch_key_hash};
 pub use transparent::TransparentMaterialClass;
 
-pub(crate) use resolve::{MaterialResolveCtx, batch_key_for_slot_cached};
+pub(crate) use resolve::{
+    MaterialResolveCtx, apply_render_buffer_mesh_pipeline_override, batch_key_for_slot_cached,
+};

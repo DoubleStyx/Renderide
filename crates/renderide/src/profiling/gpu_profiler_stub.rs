@@ -63,7 +63,7 @@ impl GpuProfilerHandle {
     pub fn process_finished_frame(
         &self,
         _timestamp_period: f32,
-    ) -> Option<Vec<super::GpuPassEntry>> {
+    ) -> Option<super::GpuProfilerSnapshot> {
         None
     }
 }

@@ -1,5 +1,7 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
+use parking_lot::Mutex;
 use wgpu_profiler::{GpuProfiler, GpuProfilerSettings};
 
 use super::PhaseQuery;
@@ -7,6 +9,8 @@ use super::PhaseQuery;
 /// Number of GPU profiler frames allowed to wait for readback before `wgpu-profiler` starts
 /// dropping older timing data.
 const GPU_PROFILER_PENDING_FRAMES: usize = 8;
+/// Soft per-frame query budget used to warn when instrumentation becomes unusually dense.
+const GPU_PROFILER_SOFT_QUERY_BUDGET: u32 = 512;
 
 /// Wraps [`GpuProfiler`] and provides a GPU timestamp query interface for render and
 /// compute passes, bridging results to the Tracy GPU timeline.
@@ -17,6 +21,12 @@ pub struct GpuProfilerHandle {
     inner: GpuProfiler,
     /// Whether any query was opened since the previous successful profiler frame boundary.
     queries_opened_since_frame_end: AtomicBool,
+    /// Number of query scopes opened since the previous profiler frame boundary.
+    query_count_since_frame_end: AtomicU32,
+    /// Per-frame query accounting waiting for the matching resolved timestamp tree.
+    pending_frame_stats: Mutex<VecDeque<super::GpuProfilerFrameStats>>,
+    /// Whether an over-budget warning has already been logged for the current dense run.
+    warned_over_soft_budget: AtomicBool,
 }
 
 impl GpuProfilerHandle {
@@ -70,6 +80,9 @@ impl GpuProfilerHandle {
         Some(Self {
             inner,
             queries_opened_since_frame_end: AtomicBool::new(false),
+            query_count_since_frame_end: AtomicU32::new(0),
+            pending_frame_stats: Mutex::new(VecDeque::new()),
+            warned_over_soft_budget: AtomicBool::new(false),
         })
     }
 
@@ -78,6 +91,8 @@ impl GpuProfilerHandle {
     fn note_query_opened(&self) {
         self.queries_opened_since_frame_end
             .store(true, Ordering::Release);
+        self.query_count_since_frame_end
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// Returns whether the current profiler frame has opened any GPU queries.
@@ -147,10 +162,45 @@ impl GpuProfilerHandle {
         let had_queries = self
             .queries_opened_since_frame_end
             .swap(false, Ordering::AcqRel);
-        if had_queries && let Err(e) = self.inner.end_frame() {
-            logger::warn!("GPU profiler end_frame failed: {e}");
+        let opened_queries = self.query_count_since_frame_end.swap(0, Ordering::AcqRel);
+        if had_queries {
+            match self.inner.end_frame() {
+                Ok(()) => {
+                    self.record_frame_stats(opened_queries);
+                    self.warn_if_soft_budget_exceeded(opened_queries);
+                }
+                Err(e) => {
+                    logger::warn!("GPU profiler end_frame failed: {e}");
+                }
+            }
         }
         had_queries
+    }
+
+    /// Stores query accounting for a frame accepted by `wgpu-profiler`.
+    fn record_frame_stats(&self, opened_queries: u32) {
+        let mut pending = self.pending_frame_stats.lock();
+        if pending.len() >= GPU_PROFILER_PENDING_FRAMES {
+            pending.pop_front();
+        }
+        pending.push_back(super::GpuProfilerFrameStats {
+            opened_queries,
+            skipped_queries: 0,
+            soft_query_budget: GPU_PROFILER_SOFT_QUERY_BUDGET,
+        });
+    }
+
+    /// Logs the first over-budget query frame until query density drops below the soft budget.
+    fn warn_if_soft_budget_exceeded(&self, opened_queries: u32) {
+        if opened_queries <= GPU_PROFILER_SOFT_QUERY_BUDGET {
+            self.warned_over_soft_budget.store(false, Ordering::Release);
+            return;
+        }
+        if !self.warned_over_soft_budget.swap(true, Ordering::AcqRel) {
+            logger::warn!(
+                "GPU profiler opened {opened_queries} timestamp queries in one frame; soft budget is {GPU_PROFILER_SOFT_QUERY_BUDGET}"
+            );
+        }
     }
 
     /// Drains results from the oldest completed profiling frame into Tracy and returns a
@@ -168,11 +218,23 @@ impl GpuProfilerHandle {
     pub fn process_finished_frame(
         &mut self,
         timestamp_period: f32,
-    ) -> Option<Vec<super::GpuPassEntry>> {
+    ) -> Option<super::GpuProfilerSnapshot> {
         let tree = self.inner.process_finished_frame(timestamp_period)?;
         let mut out = Vec::new();
         flatten_results(&tree, 0, &mut out);
-        Some(out)
+        let stats =
+            self.pending_frame_stats
+                .lock()
+                .pop_front()
+                .unwrap_or(super::GpuProfilerFrameStats {
+                    opened_queries: out.len() as u32,
+                    skipped_queries: 0,
+                    soft_query_budget: GPU_PROFILER_SOFT_QUERY_BUDGET,
+                });
+        Some(super::GpuProfilerSnapshot {
+            entries: out,
+            stats,
+        })
     }
 }
 

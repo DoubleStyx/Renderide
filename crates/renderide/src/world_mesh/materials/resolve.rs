@@ -1,5 +1,7 @@
 //! Material batch-key resolution for world-mesh draw prep.
 
+use std::sync::Arc;
+
 use crate::materials::ShaderPermutation;
 use crate::materials::host_data::{MaterialDictionary, MaterialPropertyLookupIds};
 use crate::materials::{
@@ -310,6 +312,47 @@ pub(crate) fn resolve_material_batch(
     }
 }
 
+/// WGSL stem used for generated PhotonDust billboard mesh draws.
+const RENDER_BUFFER_BILLBOARD_STEM: &str = "billboardunlit_default";
+
+/// Routes generated PhotonDust billboard meshes through Billboard/Unlit.
+///
+/// Point render-buffer uploads expand each particle into four co-located quad vertices. Ordinary
+/// mesh shaders see those vertices as degenerate geometry, while Billboard/Unlit expands them in
+/// the vertex stage using the normal stream as point data.
+pub(crate) fn apply_render_buffer_mesh_pipeline_override(
+    batch_key: &mut MaterialDrawBatchKey,
+    mesh_asset_id: i32,
+    shader_perm: ShaderPermutation,
+) {
+    if !crate::particles::is_generated_billboard_mesh_asset_id(mesh_asset_id) {
+        return;
+    }
+    if let RasterPipelineKind::EmbeddedStem(stem) = &batch_key.pipeline
+        && stem.as_ref().starts_with("billboardunlit")
+    {
+        return;
+    }
+    let pipeline = RasterPipelineKind::EmbeddedStem(Arc::from(RENDER_BUFFER_BILLBOARD_STEM));
+    let features = embedded_material_features(&pipeline, shader_perm);
+    batch_key.pipeline = pipeline;
+    batch_key.embedded_needs_uv0 = features.needs_uv0;
+    batch_key.embedded_needs_color = features.needs_color;
+    batch_key.embedded_needs_uv1 = features.needs_uv1;
+    batch_key.embedded_needs_tangent = features.needs_tangent;
+    batch_key.embedded_tangent_fallback_mode = features.tangent_fallback_mode;
+    batch_key.embedded_raw_tangent_payload = features.raw_tangent_payload;
+    batch_key.embedded_raw_normal_payload = features.raw_normal_payload;
+    batch_key.embedded_needs_uv2 = features.needs_uv2;
+    batch_key.embedded_needs_uv3 = features.needs_uv3;
+    batch_key.embedded_needs_wide_uvs = features.needs_wide_uvs;
+    batch_key.embedded_needs_extended_vertex_streams = features.needs_extended_vertex_streams;
+    batch_key.embedded_requires_intersection_pass = features.requires_intersection_pass;
+    batch_key.embedded_uses_scene_depth_snapshot = features.uses_scene_depth_snapshot;
+    batch_key.embedded_uses_scene_color_snapshot = features.uses_scene_color_snapshot;
+    batch_key.scene_color_snapshot_mode = features.scene_color_snapshot_mode;
+}
+
 /// Assembles a [`MaterialDrawBatchKey`] from a pre-resolved [`ResolvedMaterialBatch`] entry.
 #[inline]
 fn batch_key_from_resolved(
@@ -364,6 +407,7 @@ mod ui_rect_clip_tests {
         MaterialRouter, RasterPipelineKind, SceneColorSnapshotMode, UNITY_RENDER_QUEUE_GEOMETRY,
         UNITY_RENDER_QUEUE_TRANSPARENT,
     };
+    use crate::shared::TrailTextureMode;
 
     struct Fixture {
         registry: PropertyIdRegistry,
@@ -456,7 +500,7 @@ mod ui_rect_clip_tests {
         let mut router = MaterialRouter::new(RasterPipelineKind::Null);
         router.set_shader_pipeline(
             99,
-            RasterPipelineKind::EmbeddedStem(std::sync::Arc::from("pbsvoronoicrystal_default")),
+            RasterPipelineKind::EmbeddedStem(Arc::from("pbsvoronoicrystal_default")),
         );
         let ids = MaterialPipelinePropertyIds::new(&PropertyIdRegistry::new());
         let ctx = MaterialResolveCtx {
@@ -490,7 +534,7 @@ mod ui_rect_clip_tests {
         let mut router = MaterialRouter::new(RasterPipelineKind::Null);
         router.set_shader_pipeline(
             99,
-            RasterPipelineKind::EmbeddedStem(std::sync::Arc::from("ui_unlit_default")),
+            RasterPipelineKind::EmbeddedStem(Arc::from("ui_unlit_default")),
         );
         let ids = MaterialPipelinePropertyIds::new(&PropertyIdRegistry::new());
 
@@ -513,11 +557,11 @@ mod ui_rect_clip_tests {
         let mut router = MaterialRouter::new(RasterPipelineKind::Null);
         router.set_shader_pipeline(
             70,
-            RasterPipelineKind::EmbeddedStem(std::sync::Arc::from("pixelate_default")),
+            RasterPipelineKind::EmbeddedStem(Arc::from("pixelate_default")),
         );
         router.set_shader_pipeline(
             80,
-            RasterPipelineKind::EmbeddedStem(std::sync::Arc::from("pixelate_perobject_default")),
+            RasterPipelineKind::EmbeddedStem(Arc::from("pixelate_perobject_default")),
         );
 
         let dict = MaterialDictionary::new(&store);
@@ -551,7 +595,7 @@ mod ui_rect_clip_tests {
         let mut router = MaterialRouter::new(RasterPipelineKind::Null);
         router.set_shader_pipeline(
             99,
-            RasterPipelineKind::EmbeddedStem(std::sync::Arc::from("ui_unlit_default")),
+            RasterPipelineKind::EmbeddedStem(Arc::from("ui_unlit_default")),
         );
         let ids = MaterialPipelinePropertyIds::new(&registry);
 
@@ -560,5 +604,77 @@ mod ui_rect_clip_tests {
 
         assert!(!resolved.alpha_blended);
         assert_eq!(resolved.render_queue, UNITY_RENDER_QUEUE_GEOMETRY);
+    }
+
+    #[test]
+    fn generated_billboard_mesh_overrides_to_billboard_pipeline() {
+        let mut store = MaterialPropertyStore::new();
+        store.set_shader_asset_for_material(7, 99);
+        let dict = MaterialDictionary::new(&store);
+        let mut router = MaterialRouter::new(RasterPipelineKind::Null);
+        router.set_shader_pipeline(
+            99,
+            RasterPipelineKind::EmbeddedStem(Arc::from("unlit_default")),
+        );
+        let ids = MaterialPipelinePropertyIds::new(&PropertyIdRegistry::new());
+        let resolved =
+            resolve_material_batch(7, None, &dict, &router, &ids, ShaderPermutation::default());
+        let mut key = batch_key_from_resolved(
+            7,
+            None,
+            false,
+            RasterFrontFace::Clockwise,
+            RasterPrimitiveTopology::TriangleList,
+            &resolved,
+        );
+        let mesh_asset_id = crate::particles::billboard_render_buffer_mesh_asset_id(3).unwrap();
+
+        apply_render_buffer_mesh_pipeline_override(
+            &mut key,
+            mesh_asset_id,
+            ShaderPermutation::default(),
+        );
+
+        let RasterPipelineKind::EmbeddedStem(stem) = &key.pipeline else {
+            panic!("expected embedded billboard pipeline");
+        };
+        assert_eq!(stem.as_ref(), "billboardunlit_default");
+        assert!(key.embedded_needs_uv0);
+        assert!(key.embedded_needs_color);
+    }
+
+    #[test]
+    fn generated_trail_mesh_does_not_get_billboard_pipeline_override() {
+        let mut store = MaterialPropertyStore::new();
+        store.set_shader_asset_for_material(7, 99);
+        let dict = MaterialDictionary::new(&store);
+        let mut router = MaterialRouter::new(RasterPipelineKind::Null);
+        router.set_shader_pipeline(
+            99,
+            RasterPipelineKind::EmbeddedStem(Arc::from("unlit_default")),
+        );
+        let ids = MaterialPipelinePropertyIds::new(&PropertyIdRegistry::new());
+        let resolved =
+            resolve_material_batch(7, None, &dict, &router, &ids, ShaderPermutation::default());
+        let mut key = batch_key_from_resolved(
+            7,
+            None,
+            false,
+            RasterFrontFace::Clockwise,
+            RasterPrimitiveTopology::TriangleList,
+            &resolved,
+        );
+        let original = key.pipeline.clone();
+        let mesh_asset_id =
+            crate::particles::trail_render_buffer_mesh_asset_id(3, TrailTextureMode::Stretch)
+                .unwrap();
+
+        apply_render_buffer_mesh_pipeline_override(
+            &mut key,
+            mesh_asset_id,
+            ShaderPermutation::default(),
+        );
+
+        assert_eq!(key.pipeline, original);
     }
 }

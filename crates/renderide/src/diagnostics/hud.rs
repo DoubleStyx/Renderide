@@ -101,10 +101,11 @@ pub struct DebugHud {
     imgui_ini_path: PathBuf,
     /// When `true`, do not write `config.toml` from the overlay (startup Figment extract failed).
     suppress_renderer_config_disk_writes: bool,
-    /// Most recent flattened per-pass GPU timings for the **GPU passes** tab. Empty until the
-    /// first profiled frame completes; see
-    /// [`crate::gpu::GpuContext::latest_gpu_pass_timings_handle`].
-    gpu_pass_timings: Vec<crate::profiling::GpuPassEntry>,
+    /// Most recent flattened per-pass GPU timings and query stats for the **GPU passes** tab.
+    ///
+    /// Empty until the first profiled frame completes; see
+    /// [`crate::gpu::GpuContext::latest_gpu_profiler_snapshot_handle`].
+    gpu_profiler_snapshot: crate::profiling::GpuProfilerSnapshot,
 }
 
 impl DebugHud {
@@ -161,16 +162,16 @@ impl DebugHud {
             config_save_path,
             imgui_ini_path,
             suppress_renderer_config_disk_writes,
-            gpu_pass_timings: Vec::new(),
+            gpu_profiler_snapshot: crate::profiling::GpuProfilerSnapshot::default(),
         }
     }
 
-    /// Replaces the flattened GPU pass timings shown in the **GPU passes** tab.
+    /// Replaces the GPU profiler snapshot shown in the **GPU passes** tab.
     ///
     /// Called once per winit tick from the HUD update path with the latest snapshot read out of
-    /// [`crate::gpu::GpuContext::latest_gpu_pass_timings_handle`].
-    pub fn set_gpu_pass_timings(&mut self, timings: Vec<crate::profiling::GpuPassEntry>) {
-        self.gpu_pass_timings = timings;
+    /// [`crate::gpu::GpuContext::latest_gpu_profiler_snapshot_handle`].
+    pub fn set_gpu_profiler_snapshot(&mut self, snapshot: crate::profiling::GpuProfilerSnapshot) {
+        self.gpu_profiler_snapshot = snapshot;
     }
 
     /// Stores [`FrameTimingHudSnapshot`] for the **Frame timing** window.
@@ -405,7 +406,7 @@ impl DebugHud {
         let frame_timing = self.frame_timing.as_ref();
         let renderer_info = self.latest.as_ref();
         let frame_diagnostics = self.frame_diagnostics.as_ref();
-        let gpu_pass_timings: &[crate::profiling::GpuPassEntry] = &self.gpu_pass_timings;
+        let gpu_profiler_snapshot = &self.gpu_profiler_snapshot;
         let scene_transforms = &self.scene_transforms;
         let texture_debug = &self.texture_debug;
         let renderer_settings = &self.renderer_settings;
@@ -427,7 +428,7 @@ impl DebugHud {
                     MainDebugWindowData {
                         renderer_info,
                         frame_diagnostics,
-                        gpu_pass_timings,
+                        gpu_profiler_snapshot,
                     },
                     ui_state,
                 ),

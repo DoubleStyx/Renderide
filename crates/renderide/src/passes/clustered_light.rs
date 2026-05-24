@@ -335,6 +335,7 @@ impl ComputePass for ClusteredLightPass {
                     &data.cluster_light_counts,
                     data.clusters_per_eye,
                     data.eye_count,
+                    ctx.profiler,
                 );
             }
             ClusteredLightRecordAction::GpuScan(data) => {

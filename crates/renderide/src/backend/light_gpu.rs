@@ -152,6 +152,18 @@ mod layout_tests {
     }
 
     #[test]
+    fn gpu_light_preserves_gamma_color_and_separate_intensity() {
+        let mut light = resolved_light(LightType::Point);
+        light.color = Vec3::new(0.5, 0.04045, 1.25);
+        light.intensity = 2.0;
+
+        let gpu = gpu_light_from_resolved(&light);
+
+        assert_eq!(gpu.color, [0.5, 0.04045, 1.25]);
+        assert_eq!(gpu.intensity, 2.0);
+    }
+
+    #[test]
     fn gpu_light_packs_wide_spot_angle() {
         let mut light = resolved_light(LightType::Spot);
         light.spot_angle = 180.0;

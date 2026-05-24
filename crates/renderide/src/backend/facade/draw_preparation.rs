@@ -113,6 +113,7 @@ impl BackendDrawPreparation {
                 render_worlds,
                 scene,
                 asset_transfers.mesh_pool(),
+                asset_transfers.point_render_buffers(),
                 view_draw_preparations,
             );
         }
@@ -160,6 +161,7 @@ fn prepare_render_worlds_for_views(
     render_worlds: &mut HashMap<u8, RenderWorld>,
     scene: &SceneCoordinator,
     mesh_pool: &crate::gpu_pools::MeshPool,
+    point_render_buffers: &HashMap<i32, crate::particles::PointRenderBufferAsset>,
     view_draw_preparations: &[(RenderingContext, ShaderPermutation)],
 ) {
     profiling::scope!("render::prepare_render_worlds_for_views");
@@ -170,12 +172,17 @@ fn prepare_render_worlds_for_views(
             .with_min_len(RENDER_WORLD_PREP_PARALLEL_CHUNK_CONTEXTS)
             .for_each(|(_, render_context, render_world)| {
                 profiling::scope!("render::prepare_render_worlds_for_views::context_worker");
-                render_world.prepare_for_frame(scene, mesh_pool, *render_context);
+                render_world.prepare_for_frame(
+                    scene,
+                    mesh_pool,
+                    point_render_buffers,
+                    *render_context,
+                );
             });
     } else {
         for (_, render_context, render_world) in &mut work {
             profiling::scope!("render::prepare_render_worlds_for_views::context");
-            render_world.prepare_for_frame(scene, mesh_pool, *render_context);
+            render_world.prepare_for_frame(scene, mesh_pool, point_render_buffers, *render_context);
         }
     }
     for (key, _, render_world) in work {
@@ -290,13 +297,20 @@ mod tests {
         let mut render_worlds = HashMap::new();
         let scene = SceneCoordinator::new();
         let mesh_pool = MeshPool::default_pool();
+        let point_render_buffers = HashMap::new();
         let views = [
             (RenderingContext::ExternalView, ShaderPermutation(1)),
             (RenderingContext::Camera, ShaderPermutation(0)),
             (RenderingContext::Camera, ShaderPermutation(0)),
         ];
 
-        prepare_render_worlds_for_views(&mut render_worlds, &scene, &mesh_pool, &views);
+        prepare_render_worlds_for_views(
+            &mut render_worlds,
+            &scene,
+            &mesh_pool,
+            &point_render_buffers,
+            &views,
+        );
 
         assert_eq!(render_worlds.len(), 2);
         assert_eq!(

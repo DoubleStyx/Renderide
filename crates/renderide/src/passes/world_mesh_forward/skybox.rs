@@ -419,6 +419,21 @@ pub(super) fn record_prepared_skybox(
     prepared: &PreparedSkybox,
 ) -> bool {
     profiling::scope!("world_mesh_forward::skybox_record");
+    #[cfg(feature = "tracy")]
+    rpass.push_debug_group("world_mesh_forward::skybox");
+    let recorded = record_prepared_skybox_inner(rpass, frame, blackboard, prepared);
+    #[cfg(feature = "tracy")]
+    rpass.pop_debug_group();
+    recorded
+}
+
+/// Records a prepared skybox/background draw after debug grouping has been applied.
+fn record_prepared_skybox_inner(
+    rpass: &mut wgpu::RenderPass<'_>,
+    frame: &GraphPassFrame<'_>,
+    blackboard: &Blackboard,
+    prepared: &PreparedSkybox,
+) -> bool {
     match prepared {
         PreparedSkybox::Material(skybox) => {
             let Some(frame_bg) = frame_bind_group_for_view(frame, blackboard) else {

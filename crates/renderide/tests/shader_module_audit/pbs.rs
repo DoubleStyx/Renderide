@@ -582,13 +582,16 @@ fn generic_pbs_premultiply_variants_use_unity_transparent_lighting() -> io::Resu
 }
 
 #[test]
-fn direct_light_boost_reaches_directional_and_punctual_paths() -> io::Result<()> {
+fn light_radiance_conversion_reaches_directional_and_punctual_paths() -> io::Result<()> {
     let birp = module_source("lighting/birp.wgsl")?;
     assert!(
-        birp.contains(
-            "fn direct_light_intensity(intensity: f32) -> f32 {\n    return intensity * INTENSITY_BOOST;\n}"
-        ),
-        "BiRP light module must expose the shared direct-light boost helper"
+        birp.contains("fn light_radiance(light: ft::GpuLight) -> vec3<f32> {")
+            && birp.contains("return srgb_light_to_linear(light.color * light.intensity);"),
+        "BiRP light module must apply light intensity before light color transfer conversion"
+    );
+    assert!(
+        birp.contains("fn direct_light_scale() -> f32 {\n    return INTENSITY_BOOST;\n}"),
+        "BiRP light module must expose the shared direct-light scalar boost helper"
     );
     assert!(
         birp.contains("return lut * range_fade(t) * INTENSITY_BOOST;"),
@@ -607,42 +610,75 @@ fn direct_light_boost_reaches_directional_and_punctual_paths() -> io::Result<()>
 
     let pbs_brdf = module_source("pbs/brdf.wgsl")?;
     assert!(
-        pbs_brdf.contains("out.attenuation = bl::direct_light_intensity(light.intensity);"),
-        "PBS directional lights must use the shared intensity boost"
+        pbs_brdf.contains("out.attenuation = bl::direct_light_scale();"),
+        "PBS directional lights must use the shared scalar boost"
     );
     assert!(
-        pbs_brdf.contains("out.attenuation = light.intensity * distance_attenuation(dist, light.range);")
+        pbs_brdf.contains("out.attenuation = distance_attenuation(dist, light.range);")
             && pbs_brdf.contains("let spot_atten = bl::spot_angle_attenuation(light, out.l);")
             && pbs_brdf.contains(
-                "out.attenuation = light.intensity * spot_atten * distance_attenuation(dist, light.range);"
-            ),
-        "PBS point and spot lights must continue using boosted distance attenuation"
+                "out.attenuation = spot_atten * distance_attenuation(dist, light.range);"
+            )
+            && pbs_brdf.contains("return bl::light_radiance(light) * attenuation * n_dot_l;"),
+        "PBS point and spot lights must keep attenuation scalar and use shared light radiance"
     );
 
     let xiexe = module_source("xiexe/toon2/lighting.wgsl")?;
     assert!(
-        xiexe.contains("bl::direct_light_intensity(light.intensity),"),
-        "Xiexe directional lights must use the shared intensity boost"
+        xiexe.contains("bl::light_radiance(light),") && xiexe.contains("bl::direct_light_scale(),"),
+        "Xiexe directional lights must use shared linear radiance and scalar boost"
     );
     assert!(
-        xiexe.contains(
-            "var attenuation = bl::punctual_attenuation(light.intensity, dist, light.range);"
-        ) && xiexe.contains("attenuation = attenuation * bl::spot_angle_attenuation(light, l);"),
-        "Xiexe point and spot lights must continue using boosted punctual attenuation"
+        xiexe.contains("var attenuation = brdf::distance_attenuation(dist, light.range);")
+            && xiexe.contains("attenuation = attenuation * bl::spot_angle_attenuation(light, l);")
+            && xiexe.contains(
+                "return xb::LightSample(l, bl::light_radiance(light), attenuation, false);"
+            ),
+        "Xiexe point and spot lights must keep attenuation scalar and use shared light radiance"
     );
 
     for material in ["toonstandard.wgsl", "toonwater.wgsl"] {
         let src = material_source(material)?;
         assert!(
-            src.contains("attenuation = bl::direct_light_intensity(light.intensity);"),
-            "{material} directional lights must use the shared intensity boost"
+            src.contains("attenuation = bl::direct_light_scale();"),
+            "{material} directional lights must use the shared scalar boost"
         );
         assert!(
-            src.contains(
-                "attenuation = light.intensity * brdf::distance_attenuation(dist, light.range);"
-            ) && src.contains("attenuation = attenuation * bl::spot_angle_attenuation(light, l);"),
-            "{material} point and spot lights must continue using boosted distance attenuation"
+            src.contains("attenuation = brdf::distance_attenuation(dist, light.range);")
+                && src
+                    .contains("attenuation = attenuation * bl::spot_angle_attenuation(light, l);")
+                && src.contains("let radiance = bl::light_radiance(light) * attenuation;"),
+            "{material} point and spot lights must keep attenuation scalar and use shared light radiance"
         );
+        for forbidden in [
+            "direct_light_intensity",
+            "punctual_attenuation",
+            "light.intensity * distance_attenuation",
+            "light.intensity * brdf::distance_attenuation",
+        ] {
+            assert!(
+                !src.contains(forbidden),
+                "{material} must not apply light intensity as a linear attenuation scalar through `{forbidden}`"
+            );
+        }
+    }
+
+    for (name, src) in [
+        ("lighting/birp.wgsl", birp.as_str()),
+        ("pbs/brdf.wgsl", pbs_brdf.as_str()),
+        ("xiexe/toon2/lighting.wgsl", xiexe.as_str()),
+    ] {
+        for forbidden in [
+            "direct_light_intensity",
+            "punctual_attenuation",
+            "light.intensity * distance_attenuation",
+            "light.intensity * brdf::distance_attenuation",
+        ] {
+            assert!(
+                !src.contains(forbidden),
+                "{name} must not apply light intensity as a linear attenuation scalar through `{forbidden}`"
+            );
+        }
     }
 
     Ok(())

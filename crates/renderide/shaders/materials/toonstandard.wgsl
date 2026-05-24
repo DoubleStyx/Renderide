@@ -156,17 +156,17 @@ fn shade(
         if (light.light_type == 1u) {
             let dir_len_sq = dot(light.direction, light.direction);
             l = select(vec3<f32>(0.0, 0.0, 1.0), normalize(-light.direction), dir_len_sq > 1e-16);
-            attenuation = bl::direct_light_intensity(light.intensity);
+            attenuation = bl::direct_light_scale();
         } else {
             let to_light = light.position - world_pos;
             let dist = length(to_light);
             l = normalize(to_light);
-            attenuation = light.intensity * brdf::distance_attenuation(dist, light.range);
+            attenuation = brdf::distance_attenuation(dist, light.range);
             if (light.light_type == 2u) {
                 attenuation = attenuation * bl::spot_angle_attenuation(light, l);
             }
         }
-        let radiance = light.color * attenuation;
+        let radiance = bl::light_radiance(light) * attenuation;
         lo = lo + tbrdf::direct_light(
             diff_color,
             spec_color,

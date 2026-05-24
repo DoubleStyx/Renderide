@@ -27,6 +27,9 @@ fn empty_extracted_render_space_update() -> ExtractedRenderSpaceUpdate {
         transform_overrides: None,
         material_overrides: None,
         blit_to_displays: None,
+        billboard_render_buffers: None,
+        mesh_render_buffers: None,
+        trail_render_buffers: None,
     }
 }
 
@@ -268,6 +271,9 @@ fn parallel_apply_extracted_commits_pose_writes_and_marks_dirty() {
         transform_overrides: None,
         material_overrides: None,
         blit_to_displays: None,
+        billboard_render_buffers: None,
+        mesh_render_buffers: None,
+        trail_render_buffers: None,
     };
     let mut removal_events = Vec::new();
     let dirty = apply_extracted_render_space_update(

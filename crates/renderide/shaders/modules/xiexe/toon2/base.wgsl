@@ -291,9 +291,9 @@ struct SurfaceData {
 struct LightSample {
     /// Direction from the surface toward the light source (unit length).
     direction: vec3<f32>,
-    /// Light color (linear, pre-attenuation).
+    /// Linear light radiance before attenuation.
     color: vec3<f32>,
-    /// Combined intensity, distance, and spot factor (already includes intensity).
+    /// Combined direct-light boost, distance, and spot factor.
     attenuation: f32,
     /// Whether the light is directional (used to scope vertex/forward base passes).
     is_directional: bool,

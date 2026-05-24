@@ -35,7 +35,7 @@ pub(in crate::world_mesh::draw_prep) use expand::expand_space_into;
 #[cfg(test)]
 pub(in crate::world_mesh::draw_prep) use expand::expand_space_into_aggressive;
 pub(in crate::world_mesh::draw_prep) use expand::{
-    expand_skinned_renderer_into, expand_static_renderer_into,
+    expand_render_buffer_renderers_into, expand_skinned_renderer_into, expand_static_renderer_into,
 };
 
 /// Target draw count for one prepared renderer-run chunk.
@@ -96,6 +96,9 @@ pub(super) struct FramePreparedDraw {
     /// and therefore the geometry is view-invariant; `None` for overlay spaces (their world
     /// matrix re-roots against the per-view `head_output_transform`, so cull recomputes per-view).
     pub cull_geometry: Option<MeshCullGeometry>,
+    /// Optional final rigid world matrix for generated draw sources that are not represented by a
+    /// scene transform alone.
+    pub rigid_world_matrix_override: Option<glam::Mat4>,
 }
 
 /// Contiguous range of [`FramePreparedRenderables::draws`] produced by one source renderer.
@@ -416,6 +419,11 @@ impl FramePreparedRenderables {
         self.draws.extend(draws.iter().cloned());
     }
 
+    /// Mutable draw buffer used while a retained snapshot rebuild is in progress.
+    pub(super) fn draws_mut_for_cached_rebuild(&mut self) -> &mut Vec<FramePreparedDraw> {
+        &mut self.draws
+    }
+
     /// Finalizes a retained snapshot rebuild by refreshing runs, chunks, and material keys.
     pub(super) fn finish_cached_rebuild(&mut self) {
         self.refresh_runs_material_keys_and_chunks();
@@ -457,6 +465,7 @@ mod tests {
             material_asset_id,
             property_block_id,
             cull_geometry: None,
+            rigid_world_matrix_override: None,
         }
     }
 

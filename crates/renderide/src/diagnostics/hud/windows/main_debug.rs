@@ -13,7 +13,7 @@ use imgui::{TabItem, TabItemFlags, WindowFlags};
 
 use crate::config::DebugHudMainTab;
 use crate::diagnostics::{FrameDiagnosticsSnapshot, RendererInfoSnapshot};
-use crate::profiling::GpuPassEntry;
+use crate::profiling::GpuProfilerSnapshot;
 
 use super::super::layout::{self, Viewport, WindowAnchor, WindowSlot};
 use super::super::state::HudUiState;
@@ -31,8 +31,8 @@ pub struct MainDebugWindowData<'a> {
     pub renderer_info: Option<&'a RendererInfoSnapshot>,
     /// Frame-scoped tab payload (host metrics, draw stats, shader routes, GPU memory).
     pub frame_diagnostics: Option<&'a FrameDiagnosticsSnapshot>,
-    /// Per-pass GPU timings for the **GPU passes** tab.
-    pub gpu_pass_timings: &'a [GpuPassEntry],
+    /// Per-pass GPU timings and query stats for the **GPU passes** tab.
+    pub gpu_profiler_snapshot: &'a GpuProfilerSnapshot,
 }
 
 /// **Renderide debug** HUD window -- anchored top-right tabbed panel.
@@ -144,7 +144,7 @@ impl DebugTab {
             Self::ShaderRoutes => ShaderRoutesTab.render(ui, data.frame_diagnostics, state),
             Self::DrawState => DrawStateTab.render(ui, data.frame_diagnostics, state),
             Self::GpuMemory => GpuMemoryTab.render(ui, data.frame_diagnostics, state),
-            Self::GpuPasses => GpuPassesTab.render(ui, data.gpu_pass_timings, state),
+            Self::GpuPasses => GpuPassesTab.render(ui, data.gpu_profiler_snapshot, state),
         }
     }
 }

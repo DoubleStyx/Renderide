@@ -120,9 +120,12 @@ impl BackendDiagnostics {
         self.debug_hud.set_frame_timing(snapshot);
     }
 
-    /// Stores GPU pass timing rows for the next HUD frame.
-    pub(super) fn set_gpu_pass_timings(&mut self, timings: Vec<crate::profiling::GpuPassEntry>) {
-        self.debug_hud.set_gpu_pass_timings(timings);
+    /// Stores GPU pass timing rows and query stats for the next HUD frame.
+    pub(super) fn set_gpu_profiler_snapshot(
+        &mut self,
+        snapshot: crate::profiling::GpuProfilerSnapshot,
+    ) {
+        self.debug_hud.set_gpu_profiler_snapshot(snapshot);
     }
 
     /// Clears stats and shader-route payloads.

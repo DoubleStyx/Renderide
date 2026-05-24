@@ -88,3 +88,33 @@ fn compute_pass_timestamp_writes_is_none_without_tracy() {
     assert!(compute_pass_timestamp_writes(Some(&q)).is_none());
     assert!(compute_pass_timestamp_writes(None).is_none());
 }
+
+/// GPU profiler snapshots default to an empty, zero-query frame for HUD startup.
+#[test]
+fn gpu_profiler_snapshot_default_is_empty() {
+    let snapshot = GpuProfilerSnapshot::default();
+    assert!(snapshot.entries.is_empty());
+    assert_eq!(snapshot.stats.opened_queries, 0);
+    assert_eq!(snapshot.stats.skipped_queries, 0);
+}
+
+/// Snapshot construction preserves timing rows and query accounting.
+#[test]
+fn gpu_profiler_snapshot_preserves_stats() {
+    let stats = GpuProfilerFrameStats {
+        opened_queries: 12,
+        skipped_queries: 1,
+        soft_query_budget: 64,
+    };
+    let snapshot = GpuProfilerSnapshot {
+        entries: vec![GpuPassEntry {
+            name: "test_pass".to_owned(),
+            ms: 0.5,
+            depth: 2,
+        }],
+        stats,
+    };
+    assert_eq!(snapshot.entries.len(), 1);
+    assert_eq!(snapshot.entries[0].name, "test_pass");
+    assert_eq!(snapshot.stats, stats);
+}
