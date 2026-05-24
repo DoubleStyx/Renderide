@@ -92,5 +92,6 @@ fn cubemap_key_with_storage(
         content_generation: 1,
         storage_v_inverted,
         sample_size: DEFAULT_SAMPLE_SIZE,
+        clear_color_key: None,
     }
 }

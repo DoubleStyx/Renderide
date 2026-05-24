@@ -255,7 +255,13 @@ fn sh2_source_from_ibl_source(
                 storage_v_inverted: src.storage_v_inverted,
             };
             (
-                Sh2SourceKey::cubemap(render_space_id, identity, src.asset_id, residency),
+                Sh2SourceKey::cubemap(
+                    render_space_id,
+                    identity,
+                    src.asset_id,
+                    residency,
+                    src.clear_color,
+                ),
                 Sh2ResolvedSource::Gpu(GpuSh2Source::Cubemap {
                     asset_id: src.asset_id,
                     storage_v_inverted: src.storage_v_inverted,
@@ -281,6 +287,7 @@ fn sh2_source_from_ibl_source(
                 generation: src.generation,
                 size: src.face_size,
                 sample_size: DEFAULT_SAMPLE_SIZE,
+                clear_color_key: src.clear_color.map(|c| c.to_array().map(|f| f.to_bits())),
             },
             Sh2ResolvedSource::Gpu(GpuSh2Source::RuntimeCubemap {
                 clear_color: src.clear_color,

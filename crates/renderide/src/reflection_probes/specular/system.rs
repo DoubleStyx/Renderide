@@ -476,6 +476,7 @@ mod tests {
                 mip_levels: 1,
                 storage_v_inverted: true,
                 face_size: 128,
+                clear_color_key: None,
             },
             &spaces,
         ));
@@ -497,6 +498,7 @@ mod tests {
                 content_generation: 1,
                 storage_v_inverted: false,
                 face_size: 128,
+                clear_color_key: None,
             },
             &spaces,
         ));

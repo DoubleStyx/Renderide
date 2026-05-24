@@ -59,6 +59,7 @@ pub(super) fn resolve_task_source(
         }
         let asset_id = state.cubemap_asset_id;
         let identity = CubemapSourceMaterialIdentity::DIRECT_PROBE;
+        let clear_color = probe_clear_color(probe.state);
         let Some(cubemap) = assets.cubemap_pool().get(asset_id) else {
             return Some((
                 Sh2SourceKey::cubemap(
@@ -66,6 +67,7 @@ pub(super) fn resolve_task_source(
                     identity,
                     asset_id,
                     CubemapResidency::default(),
+                    clear_color,
                 ),
                 Sh2ResolvedSource::Postpone,
             ));
@@ -75,6 +77,7 @@ pub(super) fn resolve_task_source(
             identity,
             asset_id,
             cubemap_residency_from_pool(cubemap),
+            clear_color,
         );
         if cubemap.mip_levels_resident == 0 {
             return Some((key, Sh2ResolvedSource::Postpone));
@@ -84,7 +87,7 @@ pub(super) fn resolve_task_source(
             Sh2ResolvedSource::Gpu(GpuSh2Source::Cubemap {
                 asset_id,
                 storage_v_inverted: cubemap.storage_v_inverted,
-                clear_color: probe_clear_color(probe.state),
+                clear_color,
             }),
         ));
     }
@@ -105,6 +108,7 @@ fn resolve_runtime_capture_source(
         space_id: RenderSpaceId(render_space_id),
         renderable_index,
     };
+    let clear_color = probe_clear_color(probe.state);
     let Some(capture) = captures.get(key) else {
         return Some((
             Sh2SourceKey::RuntimeCubemap {
@@ -113,6 +117,7 @@ fn resolve_runtime_capture_source(
                 generation: 0,
                 size: 0,
                 sample_size: DEFAULT_SAMPLE_SIZE,
+                clear_color_key: clear_color.map(|c| c.to_array().map(|f| f.to_bits())),
             },
             Sh2ResolvedSource::Postpone,
         ));
@@ -123,13 +128,14 @@ fn resolve_runtime_capture_source(
         generation: capture.generation,
         size: capture.face_size,
         sample_size: DEFAULT_SAMPLE_SIZE,
+        clear_color_key: clear_color.map(|c| c.to_array().map(|f| f.to_bits())),
     };
     Some((
         key,
         Sh2ResolvedSource::Gpu(GpuSh2Source::RuntimeCubemap {
             texture: capture.texture.clone(),
             view: capture.view.clone(),
-            clear_color: probe_clear_color(probe.state),
+            clear_color,
         }),
     ))
 }
@@ -181,6 +187,7 @@ mod tests {
                 generation: 0,
                 size: 0,
                 sample_size: DEFAULT_SAMPLE_SIZE,
+                clear_color_key: None,
             }
         );
         assert!(matches!(source, Sh2ResolvedSource::Postpone));
