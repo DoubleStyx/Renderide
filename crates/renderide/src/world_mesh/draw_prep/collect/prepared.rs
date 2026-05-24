@@ -37,6 +37,7 @@ pub(in crate::world_mesh::draw_prep) fn prepared_draws_share_renderer(
         && a.world_space_deformed == b.world_space_deformed
         && a.blendshape_deformed == b.blendshape_deformed
         && a.tangent_blendshape_deform_active == b.tangent_blendshape_deform_active
+        && a.rigid_world_matrix_override == b.rigid_world_matrix_override
 }
 
 /// Per-renderer view-local state shared by every material slot in a prepared run.
@@ -121,9 +122,12 @@ fn prepared_run_view_state(
     let mut rigid_world_matrix = None;
     let mut world_aabb = None;
     let mut deformed_front_face_world_matrix = None;
+    if let Some(override_matrix) = first.rigid_world_matrix_override {
+        rigid_world_matrix = Some(override_matrix);
+    }
     let needs_geometry =
         ctx.reflection_probes.is_some() || ctx.culling.is_some() || first.world_space_deformed;
-    let geometry = needs_geometry.then(|| {
+    let geometry = (needs_geometry && first.rigid_world_matrix_override.is_none()).then(|| {
         // Reuse the per-renderer geometry that `FramePreparedRenderables::build_for_frame` already
         // computed for non-overlay spaces. Overlay spaces (geometry depends on the per-view
         // `head_output_transform`) keep recomputing per-view via the fallback path below.

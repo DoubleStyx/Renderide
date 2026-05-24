@@ -53,6 +53,13 @@ use super::super::reflection_probe::{
     ExtractedReflectionProbeRenderablesUpdate, apply_reflection_probe_renderables_update_extracted,
     extract_reflection_probe_renderables_update, fixup_reflection_probes_for_transform_removals,
 };
+use super::super::render_buffers::{
+    ExtractedBillboardRenderBufferUpdate, ExtractedMeshRenderBufferUpdate,
+    ExtractedTrailRendererUpdate, apply_billboard_render_buffer_update_extracted,
+    apply_mesh_render_buffer_update_extracted, apply_trail_renderer_update_extracted,
+    extract_billboard_render_buffer_update, extract_mesh_render_buffer_update,
+    extract_trail_renderer_update, fixup_render_buffers_for_transform_removals,
+};
 use super::super::transforms::{
     ExtractedTransformsUpdate, TransformRemovalEvent, apply_transforms_update_extracted,
     extract_transforms_update,
@@ -65,6 +72,18 @@ const MIN_SPACES_FOR_PARALLEL_APPLY: usize = APPLY_PARALLEL_CHUNK_SPACES * 2;
 
 /// Minimum extracted row count before Phase B may fan out across render-space slots.
 const MIN_APPLY_PARALLEL_WORK_UNITS: usize = APPLY_PARALLEL_CHUNK_SPACES * 2;
+
+macro_rules! extract_optional_render_space_update {
+    ($shm:expr, $update:expr, $field:ident, $scope:literal, $extract:path $(, $extra:expr)* $(,)?) => {{
+        match ($update).$field.as_ref() {
+            Some(payload) => {
+                profiling::scope!($scope);
+                Some($extract($shm, payload, $($extra,)* ($update).id)?)
+            }
+            None => None,
+        }
+    }};
+}
 
 /// Returns `true` when [`ExtractedRenderSpaceUpdate`] carries no body work for this tick (every
 /// per-update payload is `None`).
@@ -85,6 +104,9 @@ pub(in crate::scene::coordinator) fn is_extracted_empty(e: &ExtractedRenderSpace
         && e.transform_overrides.is_none()
         && e.material_overrides.is_none()
         && e.blit_to_displays.is_none()
+        && e.billboard_render_buffers.is_none()
+        && e.mesh_render_buffers.is_none()
+        && e.trail_render_buffers.is_none()
 }
 
 /// Returns the row count that approximates how much Phase B work a space update carries.
@@ -123,6 +145,15 @@ fn extracted_apply_work_units(e: &ExtractedRenderSpaceUpdate) -> usize {
     }
     if let Some(update) = &e.blit_to_displays {
         units += blit_to_display_update_work_units(update);
+    }
+    if let Some(update) = &e.billboard_render_buffers {
+        units += billboard_render_buffer_update_work_units(update);
+    }
+    if let Some(update) = &e.mesh_render_buffers {
+        units += mesh_render_buffer_update_work_units(update);
+    }
+    if let Some(update) = &e.trail_render_buffers {
+        units += trail_renderer_update_work_units(update);
     }
     units
 }
@@ -234,6 +265,26 @@ fn blit_to_display_update_work_units(update: &ExtractedBlitToDisplayUpdate) -> u
     update.removals.len() + update.additions.len() + update.states.len()
 }
 
+/// Counts extracted billboard render-buffer rows.
+#[inline]
+fn billboard_render_buffer_update_work_units(
+    update: &ExtractedBillboardRenderBufferUpdate,
+) -> usize {
+    update.removals.len() + update.additions.len() + update.states.len()
+}
+
+/// Counts extracted mesh render-buffer rows.
+#[inline]
+fn mesh_render_buffer_update_work_units(update: &ExtractedMeshRenderBufferUpdate) -> usize {
+    update.removals.len() + update.additions.len() + update.states.len()
+}
+
+/// Counts extracted trail renderer rows.
+#[inline]
+fn trail_renderer_update_work_units(update: &ExtractedTrailRendererUpdate) -> usize {
+    update.removals.len() + update.additions.len() + update.states.len()
+}
+
 /// Owned per-space payload bundle: every shared-memory buffer referenced by one
 /// [`RenderSpaceUpdate`] pre-read into [`Vec`]s, ready for parallel apply.
 ///
@@ -262,6 +313,46 @@ pub(in crate::scene::coordinator) struct ExtractedRenderSpaceUpdate {
     pub material_overrides: Option<ExtractedRenderMaterialOverridesUpdate>,
     /// `BlitToDisplay` renderables update payload.
     pub blit_to_displays: Option<ExtractedBlitToDisplayUpdate>,
+    /// PhotonDust billboard renderer update payload.
+    pub billboard_render_buffers: Option<ExtractedBillboardRenderBufferUpdate>,
+    /// PhotonDust mesh-particle renderer update payload.
+    pub mesh_render_buffers: Option<ExtractedMeshRenderBufferUpdate>,
+    /// PhotonDust trail renderer update payload.
+    pub trail_render_buffers: Option<ExtractedTrailRendererUpdate>,
+}
+
+/// Extracted renderer payloads tied directly to scene geometry and visibility.
+struct ExtractedGeometryRenderSpaceUpdates {
+    /// Camera renderer update payload.
+    cameras: Option<ExtractedCameraRenderablesUpdate>,
+    /// Reflection-probe renderer update payload.
+    reflection_probes: Option<ExtractedReflectionProbeRenderablesUpdate>,
+    /// Transform update payload.
+    transforms: Option<ExtractedTransformsUpdate>,
+    /// Static mesh renderer update payload.
+    meshes: Option<ExtractedMeshRenderablesUpdate>,
+    /// Skinned mesh renderer update payload.
+    skinned_meshes: Option<ExtractedSkinnedMeshRenderablesUpdate>,
+    /// Layer update payload.
+    layers: Option<ExtractedLayerUpdate>,
+    /// LOD-group renderer update payload.
+    lod_groups: Option<ExtractedLodGroupRenderablesUpdate>,
+}
+
+/// Extracted renderer payloads for render-context state and generated particle renderers.
+struct ExtractedContextRenderSpaceUpdates {
+    /// Render-context transform-override update payload.
+    transform_overrides: Option<ExtractedRenderTransformOverridesUpdate>,
+    /// Render-context material-override update payload.
+    material_overrides: Option<ExtractedRenderMaterialOverridesUpdate>,
+    /// `BlitToDisplay` renderables update payload.
+    blit_to_displays: Option<ExtractedBlitToDisplayUpdate>,
+    /// PhotonDust billboard renderer update payload.
+    billboard_render_buffers: Option<ExtractedBillboardRenderBufferUpdate>,
+    /// PhotonDust mesh-particle renderer update payload.
+    mesh_render_buffers: Option<ExtractedMeshRenderBufferUpdate>,
+    /// PhotonDust trail renderer update payload.
+    trail_render_buffers: Option<ExtractedTrailRendererUpdate>,
 }
 
 /// Reads every shared-memory buffer referenced by `update` into owned vectors.
@@ -276,94 +367,134 @@ pub(in crate::scene::coordinator) fn extract_render_space_update(
 ) -> Result<ExtractedRenderSpaceUpdate, SceneError> {
     profiling::scope!("scene::extract_render_space");
     let space_id = RenderSpaceId(update.id);
-    let cameras = match update.cameras_update.as_ref() {
-        Some(cu) => {
-            profiling::scope!("scene::extract_render_space::cameras");
-            Some(extract_camera_renderables_update(shm, cu, update.id)?)
-        }
-        None => None,
-    };
-    let reflection_probes = match update.reflection_probes_update.as_ref() {
-        Some(rpu) => {
-            profiling::scope!("scene::extract_render_space::reflection_probes");
-            Some(extract_reflection_probe_renderables_update(
-                shm, rpu, update.id,
-            )?)
-        }
-        None => None,
-    };
-    let transforms = match update.transforms_update.as_ref() {
-        Some(tu) => {
-            profiling::scope!("scene::extract_render_space::transforms");
-            Some(extract_transforms_update(shm, tu, frame_index, update.id)?)
-        }
-        None => None,
-    };
-    let meshes = match update.mesh_renderers_update.as_ref() {
-        Some(mu) => {
-            profiling::scope!("scene::extract_render_space::meshes");
-            Some(extract_mesh_renderables_update(shm, mu, update.id)?)
-        }
-        None => None,
-    };
-    let skinned_meshes = match update.skinned_mesh_renderers_update.as_ref() {
-        Some(su) => {
-            profiling::scope!("scene::extract_render_space::skinned_meshes");
-            Some(extract_skinned_mesh_renderables_update(shm, su, update.id)?)
-        }
-        None => None,
-    };
-    let layers = match update.layers_update.as_ref() {
-        Some(lu) => {
-            profiling::scope!("scene::extract_render_space::layers");
-            Some(extract_layer_update(shm, lu, update.id)?)
-        }
-        None => None,
-    };
-    let lod_groups = match update.lod_group_update.as_ref() {
-        Some(lgu) => {
-            profiling::scope!("scene::extract_render_space::lod_groups");
-            Some(extract_lod_group_renderables_update(shm, lgu, update.id)?)
-        }
-        None => None,
-    };
-    let transform_overrides = match update.render_transform_overrides_update.as_ref() {
-        Some(rtu) => {
-            profiling::scope!("scene::extract_render_space::transform_overrides");
-            Some(extract_render_transform_overrides_update(
-                shm, rtu, update.id,
-            )?)
-        }
-        None => None,
-    };
-    let material_overrides = match update.render_material_overrides_update.as_ref() {
-        Some(rmu) => {
-            profiling::scope!("scene::extract_render_space::material_overrides");
-            Some(extract_render_material_overrides_update(
-                shm, rmu, update.id,
-            )?)
-        }
-        None => None,
-    };
-    let blit_to_displays = match update.blit_to_displays_update.as_ref() {
-        Some(btd) => {
-            profiling::scope!("scene::extract_render_space::blit_to_displays");
-            Some(extract_blit_to_display_update(shm, btd, update.id)?)
-        }
-        None => None,
-    };
+    let geometry = extract_geometry_render_space_updates(shm, update, frame_index)?;
+    let context = extract_context_render_space_updates(shm, update)?;
     Ok(ExtractedRenderSpaceUpdate {
         space_id,
-        cameras,
-        reflection_probes,
-        transforms,
-        meshes,
-        skinned_meshes,
-        layers,
-        lod_groups,
-        transform_overrides,
-        material_overrides,
-        blit_to_displays,
+        cameras: geometry.cameras,
+        reflection_probes: geometry.reflection_probes,
+        transforms: geometry.transforms,
+        meshes: geometry.meshes,
+        skinned_meshes: geometry.skinned_meshes,
+        layers: geometry.layers,
+        lod_groups: geometry.lod_groups,
+        transform_overrides: context.transform_overrides,
+        material_overrides: context.material_overrides,
+        blit_to_displays: context.blit_to_displays,
+        billboard_render_buffers: context.billboard_render_buffers,
+        mesh_render_buffers: context.mesh_render_buffers,
+        trail_render_buffers: context.trail_render_buffers,
+    })
+}
+
+/// Extracts scene-geometry update payloads referenced by `update`.
+fn extract_geometry_render_space_updates(
+    shm: &mut SharedMemoryAccessor,
+    update: &RenderSpaceUpdate,
+    frame_index: i32,
+) -> Result<ExtractedGeometryRenderSpaceUpdates, SceneError> {
+    Ok(ExtractedGeometryRenderSpaceUpdates {
+        cameras: extract_optional_render_space_update!(
+            shm,
+            update,
+            cameras_update,
+            "scene::extract_render_space::cameras",
+            extract_camera_renderables_update,
+        ),
+        reflection_probes: extract_optional_render_space_update!(
+            shm,
+            update,
+            reflection_probes_update,
+            "scene::extract_render_space::reflection_probes",
+            extract_reflection_probe_renderables_update,
+        ),
+        transforms: extract_optional_render_space_update!(
+            shm,
+            update,
+            transforms_update,
+            "scene::extract_render_space::transforms",
+            extract_transforms_update,
+            frame_index,
+        ),
+        meshes: extract_optional_render_space_update!(
+            shm,
+            update,
+            mesh_renderers_update,
+            "scene::extract_render_space::meshes",
+            extract_mesh_renderables_update,
+        ),
+        skinned_meshes: extract_optional_render_space_update!(
+            shm,
+            update,
+            skinned_mesh_renderers_update,
+            "scene::extract_render_space::skinned_meshes",
+            extract_skinned_mesh_renderables_update,
+        ),
+        layers: extract_optional_render_space_update!(
+            shm,
+            update,
+            layers_update,
+            "scene::extract_render_space::layers",
+            extract_layer_update,
+        ),
+        lod_groups: extract_optional_render_space_update!(
+            shm,
+            update,
+            lod_group_update,
+            "scene::extract_render_space::lod_groups",
+            extract_lod_group_renderables_update,
+        ),
+    })
+}
+
+/// Extracts render-context and generated-particle update payloads referenced by `update`.
+fn extract_context_render_space_updates(
+    shm: &mut SharedMemoryAccessor,
+    update: &RenderSpaceUpdate,
+) -> Result<ExtractedContextRenderSpaceUpdates, SceneError> {
+    Ok(ExtractedContextRenderSpaceUpdates {
+        transform_overrides: extract_optional_render_space_update!(
+            shm,
+            update,
+            render_transform_overrides_update,
+            "scene::extract_render_space::transform_overrides",
+            extract_render_transform_overrides_update,
+        ),
+        material_overrides: extract_optional_render_space_update!(
+            shm,
+            update,
+            render_material_overrides_update,
+            "scene::extract_render_space::material_overrides",
+            extract_render_material_overrides_update,
+        ),
+        blit_to_displays: extract_optional_render_space_update!(
+            shm,
+            update,
+            blit_to_displays_update,
+            "scene::extract_render_space::blit_to_displays",
+            extract_blit_to_display_update,
+        ),
+        billboard_render_buffers: extract_optional_render_space_update!(
+            shm,
+            update,
+            billboard_buffers_update,
+            "scene::extract_render_space::billboard_render_buffers",
+            extract_billboard_render_buffer_update,
+        ),
+        mesh_render_buffers: extract_optional_render_space_update!(
+            shm,
+            update,
+            mesh_render_buffers_update,
+            "scene::extract_render_space::mesh_render_buffers",
+            extract_mesh_render_buffer_update,
+        ),
+        trail_render_buffers: extract_optional_render_space_update!(
+            shm,
+            update,
+            trail_renderers_update,
+            "scene::extract_render_space::trail_renderers",
+            extract_trail_renderer_update,
+        ),
     })
 }
 
@@ -477,6 +608,22 @@ pub(in crate::scene::coordinator) fn apply_extracted_render_space_update(
     if let Some(ref btd) = extracted.blit_to_displays {
         profiling::scope!("scene::apply_render_space_chunk::blit_to_displays");
         apply_blit_to_display_update_extracted(space, btd);
+    }
+    if has_transform_removals {
+        profiling::scope!("scene::apply_render_space_chunk::fixup_render_buffers");
+        fixup_render_buffers_for_transform_removals(space, transform_removals);
+    }
+    if let Some(ref bu) = extracted.billboard_render_buffers {
+        profiling::scope!("scene::apply_render_space_chunk::billboard_render_buffers");
+        apply_billboard_render_buffer_update_extracted(space, bu);
+    }
+    if let Some(ref mu) = extracted.mesh_render_buffers {
+        profiling::scope!("scene::apply_render_space_chunk::mesh_render_buffers");
+        apply_mesh_render_buffer_update_extracted(space, mu);
+    }
+    if let Some(ref tu) = extracted.trail_render_buffers {
+        profiling::scope!("scene::apply_render_space_chunk::trail_renderers");
+        apply_trail_renderer_update_extracted(space, tu);
     }
     world_dirty
 }
@@ -648,6 +795,9 @@ mod tests {
             transform_overrides: None,
             material_overrides: None,
             blit_to_displays: None,
+            billboard_render_buffers: None,
+            mesh_render_buffers: None,
+            trail_render_buffers: None,
         }
     }
 

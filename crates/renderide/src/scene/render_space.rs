@@ -2,6 +2,9 @@
 
 use super::blit_to_display::BlitToDisplayEntry;
 use super::overrides::{RenderMaterialOverrideEntry, RenderTransformOverrideEntry};
+use super::render_buffers::{
+    BillboardRenderBufferEntry, MeshRenderBufferEntry, TrailRenderBufferEntry,
+};
 use crate::shared::{
     LayerType, ReflectionProbeChangeRenderTask, RenderSH2, RenderSpaceUpdate, RenderTransform,
     RenderingContext,
@@ -133,6 +136,21 @@ impl<'a> RenderSpaceView<'a> {
         &self.state.reflection_probes
     }
 
+    /// PhotonDust billboard renderers indexed by billboard renderable id.
+    pub fn billboard_render_buffers(self) -> &'a [BillboardRenderBufferEntry] {
+        &self.state.billboard_render_buffers
+    }
+
+    /// PhotonDust mesh-particle renderers indexed by mesh render-buffer renderable id.
+    pub(crate) fn mesh_render_buffers(self) -> &'a [MeshRenderBufferEntry] {
+        &self.state.mesh_render_buffers
+    }
+
+    /// PhotonDust trail renderers indexed by trail renderable id.
+    pub fn trail_render_buffers(self) -> &'a [TrailRenderBufferEntry] {
+        &self.state.trail_render_buffers
+    }
+
     /// Total dense mesh-renderer count across static and skinned renderers.
     #[cfg(test)]
     pub fn mesh_renderable_count(self) -> usize {
@@ -184,6 +202,12 @@ pub(in crate::scene) struct RenderSpaceState {
     pub(in crate::scene) cameras: Vec<CameraRenderableEntry>,
     /// Host reflection probe components.
     pub(in crate::scene) reflection_probes: Vec<ReflectionProbeEntry>,
+    /// PhotonDust billboard render-buffer renderer components.
+    pub(in crate::scene) billboard_render_buffers: Vec<BillboardRenderBufferEntry>,
+    /// PhotonDust mesh render-buffer renderer components.
+    pub(in crate::scene) mesh_render_buffers: Vec<MeshRenderBufferEntry>,
+    /// PhotonDust trail render-buffer renderer components.
+    pub(in crate::scene) trail_render_buffers: Vec<TrailRenderBufferEntry>,
     /// Changed reflection-probe render requests from the most recent update.
     pub(in crate::scene) pending_reflection_probe_render_changes:
         Vec<ReflectionProbeChangeRenderTask>,
@@ -274,6 +298,9 @@ impl Default for RenderSpaceState {
             lod_groups: Vec::new(),
             cameras: Vec::new(),
             reflection_probes: Vec::new(),
+            billboard_render_buffers: Vec::new(),
+            mesh_render_buffers: Vec::new(),
+            trail_render_buffers: Vec::new(),
             pending_reflection_probe_render_changes: Vec::new(),
             layer_assignments: Vec::new(),
             layer_index: HashMap::new(),

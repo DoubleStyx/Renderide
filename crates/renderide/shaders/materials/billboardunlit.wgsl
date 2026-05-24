@@ -59,6 +59,7 @@ const BILLBOARDUNLIT_KW_VERTEX_HDRSRGBALPHA_COLOR: u32 = 1u << 12u;
 const BILLBOARDUNLIT_KW_VERTEX_LINEAR_COLOR: u32 = 1u << 13u;
 const BILLBOARDUNLIT_KW_VERTEX_SRGB_COLOR: u32 = 1u << 14u;
 const BILLBOARDUNLIT_KW_VERTEXCOLORS: u32 = 1u << 15u;
+const BILLBOARDUNLIT_KW_RENDER_BUFFER: u32 = 1u << 16u;
 
 @group(1) @binding(0) var<uniform> mat: BillboardUnlitMaterial;
 @group(1) @binding(1) var _Tex: texture_2d<f32>;
@@ -98,6 +99,10 @@ fn kw_POINT_SIZE() -> bool {
     return bb_kw(BILLBOARDUNLIT_KW_POINT_SIZE);
 }
 
+fn kw_RENDER_BUFFER() -> bool {
+    return bb_kw(BILLBOARDUNLIT_KW_RENDER_BUFFER);
+}
+
 fn kw_POLARUV() -> bool {
     return bb_kw(BILLBOARDUNLIT_KW_POLARUV);
 }
@@ -134,6 +139,9 @@ struct VertexOutput {
 }
 
 fn billboard_size(pointdata: vec3<f32>, model: mat4x4<f32>) -> vec2<f32> {
+    if (kw_RENDER_BUFFER()) {
+        return max(abs(pointdata.xy), vec2<f32>(1e-6, 1e-6)) * mb::model_uniform_scale(model);
+    }
     return mb::billboard_size(pointdata, mat._PointSize.xy, model, kw_POINT_SIZE());
 }
 
@@ -157,7 +165,8 @@ fn vs_main(
 #endif
 
     let center_world = mv::world_position(d, pos).xyz;
-    let axes = mb::billboard_axes(center_world, pointdata, layer, kw_POINT_ROTATION());
+    let use_rotation = kw_POINT_ROTATION() && abs(pointdata.z) > 1e-4;
+    let axes = mb::billboard_axes(center_world, pointdata, layer, use_rotation);
     let corner = mb::billboard_corner(pos.xyz, uv);
     let size = billboard_size(pointdata, d.model);
     let world_p = center_world + axes.right * (corner.x * size.x) + axes.up * (corner.y * size.y);

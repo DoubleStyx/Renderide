@@ -309,7 +309,7 @@ fn resident_draw_mesh<'a>(
     gpu: WorldMeshDrawGpuRefs<'a>,
     streams: EmbeddedVertexStreamFlags,
 ) -> Option<&'a GpuMesh> {
-    if item.mesh_asset_id < 0 || item.node_id < 0 || item.index_count == 0 {
+    if item.node_id < 0 || item.index_count == 0 {
         return None;
     }
     let mesh = gpu.mesh_pool.get(item.mesh_asset_id)?;
@@ -369,7 +369,7 @@ fn resident_depth_draw_mesh<'a>(
     item: &WorldMeshDrawItem,
     gpu: WorldMeshDrawGpuRefs<'a>,
 ) -> Option<&'a GpuMesh> {
-    if item.mesh_asset_id < 0 || item.node_id < 0 || item.index_count == 0 {
+    if item.node_id < 0 || item.index_count == 0 {
         return None;
     }
     gpu.mesh_pool.get(item.mesh_asset_id)

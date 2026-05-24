@@ -39,6 +39,7 @@ mod camera;
 mod ipc;
 mod mesh_deform;
 mod occlusion;
+mod particles;
 mod passes;
 mod reflection_probes;
 mod skybox;

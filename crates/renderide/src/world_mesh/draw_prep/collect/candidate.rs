@@ -8,7 +8,8 @@ use crate::reflection_probes::specular::ReflectionProbeDrawSelection;
 use crate::scene::{MeshRendererInstanceId, RenderSpaceId};
 use crate::world_mesh::culling::overlay_rect_clip_visible;
 use crate::world_mesh::materials::{
-    FrameMaterialBatchCache, MaterialResolveCtx, batch_key_for_slot_cached, compute_batch_key_hash,
+    FrameMaterialBatchCache, MaterialResolveCtx, apply_render_buffer_mesh_pipeline_override,
+    batch_key_for_slot_cached, compute_batch_key_hash,
 };
 
 use super::super::item::WorldMeshDrawItem;
@@ -70,7 +71,7 @@ pub(super) fn evaluate_draw_candidate(
         mesh_property_block_slot0: candidate.property_block_id,
         mesh_renderer_property_block_id: None,
     };
-    let (batch_key, ui_rect_clip_local) = batch_key_for_slot_cached(
+    let (mut batch_key, ui_rect_clip_local) = batch_key_for_slot_cached(
         candidate.material_asset_id,
         candidate.property_block_id,
         candidate.skinned,
@@ -83,6 +84,11 @@ pub(super) fn evaluate_draw_candidate(
             pipeline_property_ids: ctx.pipeline_property_ids,
             shader_perm: ctx.shader_perm,
         },
+    );
+    apply_render_buffer_mesh_pipeline_override(
+        &mut batch_key,
+        candidate.mesh_asset_id,
+        ctx.shader_perm,
     );
     // Per-slot UI rect-mask CPU cull: the per-renderer cull above runs once per renderer (and
     // bypasses overlay anyway), so the actual rect-vs-viewport check has to live here, where

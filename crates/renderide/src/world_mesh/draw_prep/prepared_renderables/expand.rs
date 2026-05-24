@@ -17,7 +17,7 @@ use crate::scene::{
     MeshMaterialSlot, MeshRendererInstanceId, RenderSpaceId, SceneCoordinator, SkinnedMeshRenderer,
     StaticMeshRenderer,
 };
-use crate::shared::RenderingContext;
+use crate::shared::{LayerType, RenderingContext};
 use crate::world_mesh::culling::{
     MeshCullGeometry, MeshCullTarget, mesh_world_geometry_for_cull_with_head,
 };
@@ -292,6 +292,277 @@ pub(in crate::world_mesh::draw_prep) fn expand_skinned_renderer_into(
         true,
         Some(renderer),
     );
+}
+
+/// Expands PhotonDust billboard and trail render-buffer renderers into prepared draw entries.
+pub(in crate::world_mesh::draw_prep) fn expand_render_buffer_renderers_into(
+    out: &mut Vec<FramePreparedDraw>,
+    scene: &SceneCoordinator,
+    mesh_pool: &MeshPool,
+    point_render_buffers: &hashbrown::HashMap<i32, crate::particles::PointRenderBufferAsset>,
+    render_context: RenderingContext,
+    space_id: RenderSpaceId,
+) {
+    profiling::scope!("mesh::prepared_renderables::expand_render_buffers");
+    let Some(space) = scene.space(space_id) else {
+        return;
+    };
+    if !space.is_active() {
+        return;
+    }
+    let mut ctx = ExpandCtx {
+        out,
+        scene,
+        mesh_pool,
+        render_context,
+        space_id,
+        space_is_overlay: space.is_overlay(),
+    };
+    for (renderable_index, renderer) in space.billboard_render_buffers().iter().enumerate() {
+        let Some(mesh_asset_id) = crate::particles::billboard_render_buffer_mesh_asset_id(
+            renderer.point_render_buffer_asset_id,
+        ) else {
+            continue;
+        };
+        try_expand_render_buffer_renderer(
+            &mut ctx,
+            renderable_index,
+            renderer.node_id,
+            mesh_asset_id,
+            renderer.material_asset_id,
+            ParticleRenderBufferPreparedKind::Billboard,
+        );
+    }
+    for (renderable_index, renderer) in space.trail_render_buffers().iter().enumerate() {
+        let Some(mesh_asset_id) = crate::particles::trail_render_buffer_mesh_asset_id(
+            renderer.trails_render_buffer_asset_id,
+            renderer.texture_mode,
+        ) else {
+            continue;
+        };
+        try_expand_render_buffer_renderer(
+            &mut ctx,
+            renderable_index,
+            renderer.node_id,
+            mesh_asset_id,
+            renderer.material_asset_id,
+            ParticleRenderBufferPreparedKind::Trail,
+        );
+    }
+    for (renderable_index, renderer) in space.mesh_render_buffers().iter().enumerate() {
+        try_expand_mesh_render_buffer_renderer(
+            &mut ctx,
+            point_render_buffers,
+            renderable_index,
+            renderer,
+        );
+    }
+}
+
+/// Render-buffer family used to derive stable prepared renderer identities.
+#[derive(Clone, Copy)]
+enum ParticleRenderBufferPreparedKind {
+    /// Billboard point-buffer renderer.
+    Billboard,
+    /// Trail ribbon renderer.
+    Trail,
+    /// Mesh-particle renderer.
+    Mesh,
+}
+
+impl ParticleRenderBufferPreparedKind {
+    /// Stable high-bit tag for generated renderer-local ids.
+    fn tag(self) -> u64 {
+        match self {
+            Self::Billboard => 1,
+            Self::Trail => 2,
+            Self::Mesh => 3,
+        }
+    }
+}
+
+/// Expands one mesh-particle renderer into one source-mesh draw per particle and submesh.
+fn try_expand_mesh_render_buffer_renderer(
+    ctx: &mut ExpandCtx<'_>,
+    point_render_buffers: &hashbrown::HashMap<i32, crate::particles::PointRenderBufferAsset>,
+    renderable_index: usize,
+    renderer: &crate::scene::MeshRenderBufferEntry,
+) {
+    if renderer.node_id < 0 || renderer.material_asset_id < 0 || renderer.mesh_asset_id < 0 {
+        return;
+    }
+    if matches!(
+        ctx.scene
+            .transform_special_layer(ctx.space_id, renderer.node_id as usize),
+        Some(LayerType::Hidden)
+    ) {
+        return;
+    }
+    if ctx.scene.transform_has_degenerate_scale_for_context(
+        ctx.space_id,
+        renderer.node_id as usize,
+        ctx.render_context,
+    ) {
+        return;
+    }
+    let Some(point_buffer) = point_render_buffers.get(&renderer.point_render_buffer_asset_id)
+    else {
+        return;
+    };
+    let Some(mesh) = ctx.mesh_pool.get(renderer.mesh_asset_id) else {
+        return;
+    };
+    if mesh.submeshes.is_empty() || point_buffer.points.is_empty() {
+        return;
+    }
+    let Some(root_matrix) = ctx.scene.world_matrix_for_context(
+        ctx.space_id,
+        renderer.node_id as usize,
+        ctx.render_context,
+    ) else {
+        return;
+    };
+    let is_overlay = ctx
+        .scene
+        .transform_is_in_overlay_layer(ctx.space_id, renderer.node_id as usize);
+    for (point_index, point) in point_buffer.points.iter().enumerate() {
+        let model = root_matrix * point_transform_matrix(*point);
+        for (slot_index, &(first_index, index_count)) in mesh.submeshes.iter().enumerate() {
+            if index_count == 0 {
+                continue;
+            }
+            ctx.out.push(FramePreparedDraw {
+                space_id: ctx.space_id,
+                renderable_index,
+                instance_id: mesh_particle_renderer_instance_id(renderable_index, point_index),
+                node_id: renderer.node_id,
+                mesh_asset_id: renderer.mesh_asset_id,
+                is_overlay,
+                sorting_order: 0,
+                skinned: false,
+                world_space_deformed: false,
+                blendshape_deformed: false,
+                tangent_blendshape_deform_active: false,
+                slot_index,
+                first_index,
+                index_count,
+                material_asset_id: renderer.material_asset_id,
+                property_block_id: None,
+                cull_geometry: None,
+                rigid_world_matrix_override: Some(model),
+            });
+        }
+    }
+}
+
+/// Builds a local mesh-particle transform from PhotonDust point data.
+fn point_transform_matrix(point: crate::particles::PointParticle) -> Mat4 {
+    Mat4::from_scale_rotation_translation(point.size, point.rotation, point.position)
+}
+
+/// Expands one PhotonDust render-buffer renderer row into a single material draw.
+fn try_expand_render_buffer_renderer(
+    ctx: &mut ExpandCtx<'_>,
+    renderable_index: usize,
+    node_id: i32,
+    mesh_asset_id: i32,
+    material_asset_id: i32,
+    kind: ParticleRenderBufferPreparedKind,
+) {
+    if node_id < 0 || material_asset_id < 0 {
+        return;
+    }
+    if matches!(
+        ctx.scene
+            .transform_special_layer(ctx.space_id, node_id as usize),
+        Some(LayerType::Hidden)
+    ) {
+        return;
+    }
+    if ctx.scene.transform_has_degenerate_scale_for_context(
+        ctx.space_id,
+        node_id as usize,
+        ctx.render_context,
+    ) {
+        return;
+    }
+    let Some(mesh) = ctx.mesh_pool.get(mesh_asset_id) else {
+        return;
+    };
+    let Some((first_index, index_count)) = mesh.submeshes.first().copied() else {
+        return;
+    };
+    if index_count == 0 {
+        return;
+    }
+    let cull_geometry = precompute_particle_cull_geometry(ctx, mesh, node_id);
+    ctx.out.push(FramePreparedDraw {
+        space_id: ctx.space_id,
+        renderable_index,
+        instance_id: particle_renderer_instance_id(kind, renderable_index),
+        node_id,
+        mesh_asset_id,
+        is_overlay: ctx
+            .scene
+            .transform_is_in_overlay_layer(ctx.space_id, node_id as usize),
+        sorting_order: 0,
+        skinned: false,
+        world_space_deformed: false,
+        blendshape_deformed: false,
+        tangent_blendshape_deform_active: false,
+        slot_index: 0,
+        first_index,
+        index_count,
+        material_asset_id,
+        property_block_id: None,
+        cull_geometry,
+        rigid_world_matrix_override: None,
+    });
+}
+
+/// Computes frame-invariant cull geometry for non-overlay render-buffer meshes.
+fn precompute_particle_cull_geometry(
+    ctx: &ExpandCtx<'_>,
+    mesh: &GpuMesh,
+    node_id: i32,
+) -> Option<MeshCullGeometry> {
+    if ctx.space_is_overlay {
+        return None;
+    }
+    let target = MeshCullTarget {
+        scene: ctx.scene,
+        space_id: ctx.space_id,
+        mesh,
+        skinned: false,
+        skinned_renderer: None,
+        node_id,
+    };
+    Some(mesh_world_geometry_for_cull_with_head(
+        &target,
+        Mat4::IDENTITY,
+        ctx.render_context,
+    ))
+}
+
+/// Returns a renderer-local identity that cannot collide with host static/skinned ids.
+fn particle_renderer_instance_id(
+    kind: ParticleRenderBufferPreparedKind,
+    renderable_index: usize,
+) -> MeshRendererInstanceId {
+    MeshRendererInstanceId(0x8000_0000_0000_0000 | (kind.tag() << 48) | renderable_index as u64)
+}
+
+/// Returns a stable renderer-local identity for one mesh-particle instance.
+fn mesh_particle_renderer_instance_id(
+    renderable_index: usize,
+    point_index: usize,
+) -> MeshRendererInstanceId {
+    MeshRendererInstanceId(
+        0x8000_0000_0000_0000
+            | (ParticleRenderBufferPreparedKind::Mesh.tag() << 48)
+            | ((renderable_index as u64) << 24)
+            | point_index as u64,
+    )
 }
 
 /// Expands every valid renderer in `space_id`, using chunked Rayon fan-out for large spaces.
@@ -677,6 +948,7 @@ fn expand_renderer_slots(
             material_asset_id,
             property_block_id: slot.property_block_id,
             cull_geometry,
+            rigid_world_matrix_override: None,
         });
     }
 }

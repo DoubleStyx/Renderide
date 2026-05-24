@@ -17,7 +17,8 @@ use crate::materials::{
 use crate::materials::{
     MaterialBlendMode, MaterialPipelineDesc, MaterialPipelineResolution, MaterialPipelineSet,
     MaterialPipelineVariantSpec, MaterialRegistry, MaterialRenderState, RasterFrontFace,
-    RasterPipelineKind, RasterPrimitiveTopology,
+    RasterPipelineKind, RasterPrimitiveTopology, ensure_render_buffer_billboard_variant_bits,
+    remap_unlit_variant_bits_for_billboard, should_remap_unlit_variant_bits_for_billboard_draw,
 };
 use crate::passes::WorldMeshForwardEncodeRefs;
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
@@ -424,16 +425,13 @@ impl<'a> MaterialDrawResolver<'a> {
         item: &WorldMeshDrawItem,
         stem: &str,
     ) -> Result<MaterialGroup1Binding, EmbeddedMaterialBindError> {
-        let batch_key = &item.batch_key;
         let Some(bind) = self.embedded_bind else {
             return Err(EmbeddedMaterialBindError::from(
                 "embedded material bind resources unavailable",
             ));
         };
 
-        let shader_variant_bits = self
-            .registry
-            .and_then(|registry| registry.variant_bits_for_shader_asset(batch_key.shader_asset_id));
+        let shader_variant_bits = self.resolve_embedded_shader_variant_bits(item, stem);
         let (_, bind_group) = bind.embedded_material_bind_group_with_cache_key(
             EmbeddedMaterialBindShader {
                 stem,
@@ -449,6 +447,33 @@ impl<'a> MaterialDrawResolver<'a> {
             bind_group: bind_group.bind_group,
             uniform_dynamic_offset: bind_group.uniform_dynamic_offset,
         })
+    }
+
+    /// Resolves source shader variant bits for a possibly rerouted embedded draw.
+    fn resolve_embedded_shader_variant_bits(
+        &self,
+        item: &WorldMeshDrawItem,
+        stem: &str,
+    ) -> Option<u32> {
+        let batch_key = &item.batch_key;
+        let source_bits = self
+            .registry
+            .and_then(|registry| registry.variant_bits_for_shader_asset(batch_key.shader_asset_id));
+        let mut bits = source_bits.unwrap_or(0);
+        if should_remap_unlit_variant_bits_for_billboard_draw(
+            stem,
+            self.registry
+                .and_then(|registry| registry.stem_for_shader_asset(batch_key.shader_asset_id)),
+        ) {
+            bits = remap_unlit_variant_bits_for_billboard(bits);
+        }
+        if crate::particles::is_generated_billboard_mesh_asset_id(item.mesh_asset_id)
+            && stem.starts_with("billboardunlit")
+        {
+            Some(ensure_render_buffer_billboard_variant_bits(bits))
+        } else {
+            source_bits.map(|_| bits)
+        }
     }
 
     /// Emits a throttled diagnostic for embedded bind failures and the selected fallback action.
