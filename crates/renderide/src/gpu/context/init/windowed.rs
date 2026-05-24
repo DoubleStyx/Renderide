@@ -288,7 +288,7 @@ fn assemble_window_context(
         runtime.frame_timing,
         runtime.frame_bracket,
         gpu_profiler,
-        runtime.latest_gpu_pass_timings,
+        runtime.latest_gpu_profiler_snapshot,
     );
     Ok(assemble_context(GpuContextParts {
         submission,

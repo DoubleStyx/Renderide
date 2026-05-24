@@ -112,6 +112,7 @@ impl GpuSkinCache {
         &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
+        profiler: Option<&crate::profiling::GpuProfilerHandle>,
         key: SkinCacheKey,
         need: EntryNeed,
         vertex_count: u32,
@@ -141,7 +142,7 @@ impl GpuSkinCache {
                 self.stats.allocations = self.stats.allocations.saturating_add(1);
                 return self.entry_and_arenas(&key);
             }
-            if self.arenas.grow_all(device, encoder) {
+            if self.arenas.grow_all(device, encoder, profiler) {
                 self.stats.grows = self.stats.grows.saturating_add(1);
                 continue;
             }
@@ -166,11 +167,12 @@ impl GpuSkinCache {
         &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
+        profiler: Option<&crate::profiling::GpuProfilerHandle>,
         key: SkinCacheKey,
         need: EntryNeed,
         vertex_count: u32,
     ) -> bool {
-        self.get_or_alloc_with_arenas(device, encoder, key, need, vertex_count)
+        self.get_or_alloc_with_arenas(device, encoder, profiler, key, need, vertex_count)
             .is_some()
     }
 

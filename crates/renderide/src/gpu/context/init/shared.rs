@@ -33,8 +33,8 @@ pub(super) struct GpuRuntimeHandles {
     /// Real-GPU-timestamp factory for the debug HUD's `gpu_frame_ms`. Always constructed; emits
     /// sessions only when the adapter advertises the required timestamp features.
     pub(super) frame_bracket: FrameBracket,
-    /// Latest flattened GPU pass timings for the HUD.
-    pub(super) latest_gpu_pass_timings: Arc<Mutex<Vec<crate::profiling::GpuPassEntry>>>,
+    /// Latest flattened GPU pass timings and profiler accounting for the HUD.
+    pub(super) latest_gpu_profiler_snapshot: Arc<Mutex<crate::profiling::GpuProfilerSnapshot>>,
 }
 
 impl GpuRuntimeHandles {
@@ -61,7 +61,9 @@ impl GpuRuntimeHandles {
             driver_thread,
             frame_timing: Arc::new(Mutex::new(FrameCpuGpuTiming::default())),
             frame_bracket,
-            latest_gpu_pass_timings: Arc::new(Mutex::new(Vec::new())),
+            latest_gpu_profiler_snapshot: Arc::new(Mutex::new(
+                crate::profiling::GpuProfilerSnapshot::default(),
+            )),
         })
     }
 }

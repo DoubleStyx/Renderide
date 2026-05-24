@@ -179,18 +179,13 @@ impl CompiledRenderGraph {
             stencil_ops,
         )?;
         let multiview_mask = first_pass.multiview_mask_override(&ctx, &merged_template);
-        let pass_query = ctx.profiler.map(|p| {
-            p.begin_pass_query(
-                format!(
-                    "graph::raster_merge[{}..{}]",
-                    group.start_step, group.end_step
-                ),
-                encoder,
-            )
-        });
+        let merged_profile_label = self.materialized_group_profile_label(steps);
+        let pass_query = ctx
+            .profiler
+            .map(|p| p.begin_pass_query(merged_profile_label.as_str(), encoder));
         let timestamp_writes = crate::profiling::render_pass_timestamp_writes(pass_query.as_ref());
         let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("render-graph-raster-merged"),
+            label: Some(merged_profile_label.as_str()),
             color_attachments: &color_attachments,
             depth_stencil_attachment,
             occlusion_query_set: None,
@@ -223,6 +218,19 @@ impl CompiledRenderGraph {
             p.end_query(encoder, q);
         }
         Ok(true)
+    }
+
+    /// Builds the GPU label for a merged raster group from its constituent pass labels.
+    fn materialized_group_profile_label(&self, steps: &[ScheduleStep]) -> String {
+        let mut label = String::from("graph::raster_merge(");
+        for (idx, step) in steps.iter().enumerate() {
+            if idx != 0 {
+                label.push_str(" + ");
+            }
+            label.push_str(self.passes[step.pass_idx].profiling_label().as_ref());
+        }
+        label.push(')');
+        label
     }
 
     /// Returns whether dynamic multiview and stencil state match across a merge candidate.

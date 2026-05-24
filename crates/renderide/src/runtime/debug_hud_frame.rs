@@ -138,13 +138,13 @@ impl RendererRuntime {
             &mut self.diagnostics.frame_timing_ema,
         );
         self.backend.set_debug_hud_frame_timing(frame_timing);
-        let gpu_pass_timings = gpu
-            .latest_gpu_pass_timings_handle()
+        let gpu_profiler_snapshot = gpu
+            .latest_gpu_profiler_snapshot_handle()
             .lock()
             .map(|guard| guard.clone())
             .unwrap_or_default();
         self.backend
-            .set_debug_hud_gpu_pass_timings(gpu_pass_timings);
+            .set_debug_hud_gpu_profiler_snapshot(gpu_profiler_snapshot);
 
         if flags.main && self.diagnostics.should_refresh_main_hud_snapshot(now) {
             self.capture_main_debug_hud_panels(gpu, now);

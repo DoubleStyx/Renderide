@@ -27,8 +27,8 @@ pub(super) struct GpuSubmissionState {
     pub(super) pending_gpu_profiler_end: Option<PendingGpuProfilerEnd>,
     /// Last submit token recorded for the current app-driver frame tick. Zero means none.
     pub(super) last_frame_submit_token: AtomicU64,
-    /// Flattened per-pass GPU timings from the most recently drained profiling frame.
-    pub(super) latest_gpu_pass_timings: Arc<Mutex<Vec<crate::profiling::GpuPassEntry>>>,
+    /// Flattened per-pass GPU timings and query stats from the most recently drained profiling frame.
+    pub(super) latest_gpu_profiler_snapshot: Arc<Mutex<crate::profiling::GpuProfilerSnapshot>>,
 }
 
 impl GpuSubmissionState {
@@ -38,7 +38,7 @@ impl GpuSubmissionState {
         frame_timing: FrameCpuGpuTimingHandle,
         frame_bracket: FrameBracket,
         gpu_profiler: Option<crate::profiling::GpuProfilerHandle>,
-        latest_gpu_pass_timings: Arc<Mutex<Vec<crate::profiling::GpuPassEntry>>>,
+        latest_gpu_profiler_snapshot: Arc<Mutex<crate::profiling::GpuProfilerSnapshot>>,
     ) -> Self {
         Self {
             driver_thread,
@@ -47,7 +47,7 @@ impl GpuSubmissionState {
             gpu_profiler,
             pending_gpu_profiler_end: None,
             last_frame_submit_token: AtomicU64::new(0),
-            latest_gpu_pass_timings,
+            latest_gpu_profiler_snapshot,
         }
     }
 }

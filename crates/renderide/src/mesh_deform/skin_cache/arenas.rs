@@ -241,7 +241,13 @@ impl Arena {
         }
     }
 
-    fn grow_to(&mut self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, new_cap: u64) {
+    fn grow_to(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        new_cap: u64,
+        profiler: Option<&crate::profiling::GpuProfilerHandle>,
+    ) {
         let old_size = self.buffer.size();
         if new_cap <= old_size {
             return;
@@ -253,7 +259,13 @@ impl Arena {
             mapped_at_creation: false,
         });
         crate::profiling::note_resource_churn!(Buffer, "mesh_deform::skin_cache_arena_grow");
+        let copy_scope = crate::profiling::GpuEncoderScope::begin(
+            profiler,
+            "mesh_deform::skin_cache_grow_copy",
+            encoder,
+        );
         encoder.copy_buffer_to_buffer(&self.buffer, 0, &new_buf, 0, old_size);
+        copy_scope.end(encoder);
         self.buffer = new_buf;
         self.alloc.grow_to(new_cap);
     }
@@ -353,7 +365,12 @@ impl SkinArenas {
 
     /// Doubles arena capacity (clamped to [`Self::capacity_cap_bytes`]). Returns `true` only when
     /// growth actually happened.
-    pub fn grow_all(&mut self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder) -> bool {
+    pub fn grow_all(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        profiler: Option<&crate::profiling::GpuProfilerHandle>,
+    ) -> bool {
         let next = self
             .positions
             .alloc
@@ -363,10 +380,10 @@ impl SkinArenas {
         if next <= self.positions.alloc.capacity() {
             return false;
         }
-        self.positions.grow_to(device, encoder, next);
-        self.normals.grow_to(device, encoder, next);
-        self.tangents.grow_to(device, encoder, next);
-        self.temp.grow_to(device, encoder, next);
+        self.positions.grow_to(device, encoder, next, profiler);
+        self.normals.grow_to(device, encoder, next, profiler);
+        self.tangents.grow_to(device, encoder, next, profiler);
+        self.temp.grow_to(device, encoder, next, profiler);
         true
     }
 }

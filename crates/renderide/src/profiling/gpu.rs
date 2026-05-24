@@ -44,6 +44,26 @@ pub struct GpuPassEntry {
     pub depth: u32,
 }
 
+/// Per-frame GPU profiler accounting paired with a resolved timestamp result tree.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GpuProfilerFrameStats {
+    /// Timestamp query scopes opened for the frame.
+    pub opened_queries: u32,
+    /// Lower-priority timestamp scopes skipped for the frame after hitting the query budget.
+    pub skipped_queries: u32,
+    /// Soft per-frame query budget used to flag unexpectedly dense instrumentation.
+    pub soft_query_budget: u32,
+}
+
+/// Latest resolved GPU-profiler frame shown by diagnostics surfaces.
+#[derive(Clone, Debug, Default)]
+pub struct GpuProfilerSnapshot {
+    /// Flattened timestamp query tree for the resolved frame.
+    pub entries: Vec<GpuPassEntry>,
+    /// Query accounting for the resolved frame.
+    pub stats: GpuProfilerFrameStats,
+}
+
 /// Reads the render-pass timestamp writes reserved for a pass-level query.
 ///
 /// Forwards to [`wgpu_profiler::GpuProfilerQuery::render_pass_timestamp_writes`] when the

@@ -1,10 +1,10 @@
 //! **GPU passes** tab -- per-pass GPU timing breakdown.
 //!
-//! Rows come from [`crate::gpu::GpuContext::latest_gpu_pass_timings_handle`], populated by
+//! Rows come from [`crate::gpu::GpuContext::latest_gpu_profiler_snapshot_handle`], populated by
 //! [`crate::gpu::GpuContext::end_gpu_profiler_frame`] each tick. The table is empty until a
 //! profiled frame has completed (GPU results lag recording by 1-2 frames).
 
-use crate::profiling::GpuPassEntry;
+use crate::profiling::{GpuPassEntry, GpuProfilerFrameStats, GpuProfilerSnapshot};
 
 use super::super::super::state::HudUiState;
 use super::super::super::view::TabView;
@@ -14,10 +14,12 @@ use super::super::table_helpers::scrolling_table_flags;
 pub struct GpuPassesTab;
 
 impl TabView for GpuPassesTab {
-    type Data<'a> = &'a [GpuPassEntry];
+    type Data<'a> = &'a GpuProfilerSnapshot;
     type State = HudUiState;
 
-    fn render(&self, ui: &imgui::Ui, timings: Self::Data<'_>, _state: &mut Self::State) {
+    fn render(&self, ui: &imgui::Ui, snapshot: Self::Data<'_>, _state: &mut Self::State) {
+        let timings: &[GpuPassEntry] = snapshot.entries.as_slice();
+        let stats: GpuProfilerFrameStats = snapshot.stats;
         if timings.is_empty() {
             ui.text("Waiting for GPU pass timings...");
             ui.text_disabled(
@@ -31,6 +33,10 @@ impl TabView for GpuPassesTab {
             "{} passes * {:.3} ms total (top-level sum)",
             timings.len(),
             total_ms
+        ));
+        ui.text_disabled(format!(
+            "{} timestamp queries opened, {} skipped, soft budget {}",
+            stats.opened_queries, stats.skipped_queries, stats.soft_query_budget
         ));
         ui.text_disabled(
             "Depth indent shows nesting from parent phase queries; self-time is the measured pass range.",

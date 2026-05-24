@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::camera::HostCameraFrame;
 use crate::gpu::{CLUSTER_LIGHT_RANGE_WORDS, CLUSTER_PARAMS_UNIFORM_SIZE, GpuLimits};
+use crate::profiling::GpuEncoderScope;
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::scene::SceneCoordinator;
 use crate::world_mesh::cluster::{
@@ -65,11 +66,17 @@ pub(super) fn run_clustered_light_eye_passes(env: ClusteredLightEyePassEnv<'_>) 
             );
             continue;
         };
+        let clear_scope = GpuEncoderScope::begin(
+            env.profiler,
+            "clustered_light::clear_eye_cluster_counts",
+            env.encoder,
+        );
         env.encoder.clear_buffer(
             env.cluster_light_counts,
             count_clear_offset,
             Some(count_clear_size),
         );
+        clear_scope.end(env.encoder);
         let buf_offset = (eye_idx as u64) * CLUSTER_PARAMS_UNIFORM_SIZE;
         let (near, far) = cfp.sanitized_clip_planes();
         let params = build_params(ClusterParamsDesc {
@@ -164,6 +171,7 @@ pub(super) fn clear_zero_light_cluster_counts(
     cluster_light_counts: &wgpu::Buffer,
     clusters_per_eye: u32,
     eye_count: usize,
+    profiler: Option<&crate::profiling::GpuProfilerHandle>,
 ) {
     let Some(total_clusters) = u64::from(clusters_per_eye).checked_mul(eye_count as u64) else {
         logger::warn!(
@@ -183,7 +191,13 @@ pub(super) fn clear_zero_light_cluster_counts(
         );
         return;
     };
+    let clear_scope = GpuEncoderScope::begin(
+        profiler,
+        "clustered_light::clear_zero_light_counts",
+        encoder,
+    );
     encoder.clear_buffer(cluster_light_counts, 0, Some(counts_bytes));
+    clear_scope.end(encoder);
 }
 
 /// Logs the clustered-light activation banner once per pass instance.

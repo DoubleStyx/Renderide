@@ -135,6 +135,7 @@ pub(super) fn record_blendshape_deform(
 
     stats.copy_ops = stats.copy_ops.saturating_add(copy_base_blendshape_streams(
         gpu.encoder,
+        gpu.profiler,
         mesh,
         positions.as_ref(),
         &destinations,
@@ -217,12 +218,18 @@ fn resolve_blendshape_destinations<'a>(
 
 fn copy_base_blendshape_streams(
     encoder: &mut wgpu::CommandEncoder,
+    profiler: Option<&crate::profiling::GpuProfilerHandle>,
     mesh: &MeshDeformSnapshot,
     positions: &wgpu::Buffer,
     destinations: &BlendshapeDestinations<'_>,
 ) -> u64 {
     let mut copy_ops = 1u64;
     let copy_len = u64::from(mesh.vertex_count).saturating_mul(16).max(16);
+    let copy_scope = crate::profiling::GpuEncoderScope::begin(
+        profiler,
+        "mesh_deform::blendshape_base_copies",
+        encoder,
+    );
     encoder.copy_buffer_to_buffer(
         positions,
         0,
@@ -256,6 +263,7 @@ fn copy_base_blendshape_streams(
         );
         copy_ops = copy_ops.saturating_add(1);
     }
+    copy_scope.end(encoder);
     copy_ops
 }
 

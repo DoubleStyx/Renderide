@@ -496,6 +496,7 @@ fn dispatch_mesh_deform_work(
         if skin_cache.prepare_entry(
             gpu.device,
             &mut *gpu.encoder,
+            gpu.profiler,
             item.skin_cache_key,
             need,
             item.mesh.vertex_count,

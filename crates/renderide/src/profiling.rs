@@ -22,7 +22,9 @@
 //! [`GpuProfilerHandle`] wraps [`wgpu_profiler::GpuProfiler`] (only compiled with `tracy`). It
 //! connects to the running Tracy client via
 //! [`wgpu_profiler::GpuProfiler::new_with_tracy_client`], so pass-level GPU timestamps are
-//! bridged into Tracy's GPU timeline.
+//! bridged into Tracy's GPU timeline. Renderide keeps this as the always-available timing spine:
+//! graph passes, manual compute/render passes, copy/readback regions, and expensive bounded
+//! subpasses should all use stable labels so Tracy and vendor captures line up.
 //!
 //! Pass-level timestamp writes (the preferred path) only require [`wgpu::Features::TIMESTAMP_QUERY`].
 //! Encoder-level [`GpuProfilerHandle::begin_query`]/[`GpuProfilerHandle::end_query`] additionally
@@ -44,6 +46,7 @@ mod gpu;
 mod gpu_profiler_impl;
 #[cfg(not(feature = "tracy"))]
 mod gpu_profiler_stub;
+mod gpu_scope;
 mod plots;
 mod resource_churn;
 #[cfg(test)]
@@ -56,13 +59,15 @@ pub use frame_marks::{
     register_main_thread,
 };
 pub use gpu::{
-    GpuPassEntry, PhaseQuery, compute_pass_timestamp_writes, render_pass_timestamp_writes,
+    GpuPassEntry, GpuProfilerFrameStats, GpuProfilerSnapshot, PhaseQuery,
+    compute_pass_timestamp_writes, render_pass_timestamp_writes,
     timestamp_query_features_if_supported,
 };
 #[cfg(feature = "tracy")]
 pub use gpu_profiler_impl::GpuProfilerHandle;
 #[cfg(not(feature = "tracy"))]
 pub use gpu_profiler_stub::GpuProfilerHandle;
+pub(crate) use gpu_scope::GpuEncoderScope;
 pub use plots::{
     AssetIntegrationProfileSample, CommandEncodingProfileSample, MeshDeformProfileSample,
     plot_asset_integration, plot_command_encoding, plot_driver_submit_backlog,

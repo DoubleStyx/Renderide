@@ -252,7 +252,7 @@ fn apply_camera360_alpha_coverage(gpu: &mut GpuContext, targets: &CubeCaptureTar
 
 /// Projects the captured cubemap to the final equirectangular output texture.
 fn project_camera360_to_equirect(
-    gpu: &GpuContext,
+    gpu: &mut GpuContext,
     cube_targets: &CubeCaptureTargets,
     output_targets: &CameraTaskTargets,
     rotation: glam::Quat,
@@ -293,6 +293,10 @@ fn project_camera360_to_equirect(
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("camera360_projection"),
         });
+    let pass_query = gpu
+        .gpu_profiler_mut()
+        .map(|p| p.begin_pass_query("camera360_task::project_equirect.pass", &mut encoder));
+    let timestamp_writes = crate::profiling::render_pass_timestamp_writes(pass_query.as_ref());
     {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("camera360_projection"),
@@ -306,7 +310,7 @@ fn project_camera360_to_equirect(
                 depth_slice: None,
             })],
             depth_stencil_attachment: None,
-            timestamp_writes: None,
+            timestamp_writes,
             occlusion_query_set: None,
             multiview_mask: None,
         });
@@ -317,6 +321,12 @@ fn project_camera360_to_equirect(
         );
         pass.set_bind_group(0, &bind_group, &[]);
         pass.draw(0..3, 0..1);
+    }
+    if let Some(query) = pass_query
+        && let Some(profiler) = gpu.gpu_profiler_mut()
+    {
+        profiler.end_query(&mut encoder, query);
+        profiler.resolve_queries(&mut encoder);
     }
     let command_buffer = {
         profiling::scope!("CommandEncoder::finish::camera360_projection");

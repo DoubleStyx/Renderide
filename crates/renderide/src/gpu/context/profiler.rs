@@ -171,11 +171,11 @@ impl GpuContext {
         let Some(profiler) = self.submission.gpu_profiler.as_mut() else {
             return;
         };
-        let mut latest_timings = None;
-        while let Some(timings) = profiler.process_finished_frame(ts_period) {
-            latest_timings = Some(timings);
+        let mut latest_snapshot = None;
+        while let Some(snapshot) = profiler.process_finished_frame(ts_period) {
+            latest_snapshot = Some(snapshot);
         }
-        self.publish_latest_gpu_pass_timings(latest_timings);
+        self.publish_latest_gpu_profiler_snapshot(latest_snapshot);
     }
 
     #[cfg(not(feature = "tracy"))]
@@ -184,33 +184,33 @@ impl GpuContext {
         let Some(profiler) = self.submission.gpu_profiler.as_ref() else {
             return;
         };
-        let mut latest_timings = None;
-        while let Some(timings) = profiler.process_finished_frame(ts_period) {
-            latest_timings = Some(timings);
+        let mut latest_snapshot = None;
+        while let Some(snapshot) = profiler.process_finished_frame(ts_period) {
+            latest_snapshot = Some(snapshot);
         }
-        self.publish_latest_gpu_pass_timings(latest_timings);
+        self.publish_latest_gpu_profiler_snapshot(latest_snapshot);
     }
 
-    fn publish_latest_gpu_pass_timings(
+    fn publish_latest_gpu_profiler_snapshot(
         &self,
-        latest_timings: Option<Vec<crate::profiling::GpuPassEntry>>,
+        latest_snapshot: Option<crate::profiling::GpuProfilerSnapshot>,
     ) {
-        if let Some(timings) = latest_timings
-            && let Ok(mut slot) = self.submission.latest_gpu_pass_timings.lock()
+        if let Some(snapshot) = latest_snapshot
+            && let Ok(mut slot) = self.submission.latest_gpu_profiler_snapshot.lock()
         {
-            *slot = timings;
+            *slot = snapshot;
         }
     }
 
-    /// Returns a shared handle to the latest flattened per-pass GPU timings.
+    /// Returns a shared handle to the latest flattened per-pass GPU timings and query stats.
     ///
     /// The debug HUD polls this once per frame. The underlying vector is replaced atomically by
     /// [`Self::end_gpu_profiler_frame`] on the main thread; readers clone the current contents
     /// under a short lock and render them without blocking the renderer.
-    pub fn latest_gpu_pass_timings_handle(
+    pub fn latest_gpu_profiler_snapshot_handle(
         &self,
-    ) -> Arc<Mutex<Vec<crate::profiling::GpuPassEntry>>> {
-        Arc::clone(&self.submission.latest_gpu_pass_timings)
+    ) -> Arc<Mutex<crate::profiling::GpuProfilerSnapshot>> {
+        Arc::clone(&self.submission.latest_gpu_profiler_snapshot)
     }
 
     /// Most recently completed CPU and GPU per-frame ms for the debug HUD, paired so both

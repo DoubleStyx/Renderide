@@ -276,12 +276,12 @@ pub(in crate::render_graph::compiled) fn execute_graph_raster_pass_node(
     let pass_profile_label = pass.profiling_label();
     let pass_query = ctx
         .profiler
-        .map(|p| p.begin_pass_query(pass_profile_label, encoder));
+        .map(|p| p.begin_pass_query(pass_profile_label.as_ref(), encoder));
     let timestamp_writes = crate::profiling::render_pass_timestamp_writes(pass_query.as_ref());
     let mut rpass = {
         profiling::scope!("graph::raster::begin_render_pass");
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("render-graph-raster"),
+            label: Some(pass_profile_label.as_ref()),
             color_attachments: &color_attachments,
             depth_stencil_attachment,
             occlusion_query_set: None,
