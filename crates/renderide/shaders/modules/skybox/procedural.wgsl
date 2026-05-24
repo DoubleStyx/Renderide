@@ -138,7 +138,7 @@ fn evaluate_scattering(
     var c_in: vec3<f32>;
     var c_out: vec3<f32>;
 
-    if (eye_ray.y >= 0.0) {
+    if (eye_ray.y >= -0.001) {
         let far = sqrt(OUTER_RADIUS_SQ + INNER_RADIUS_SQ * eye_ray.y * eye_ray.y - INNER_RADIUS_SQ)
             - INNER_RADIUS * eye_ray.y;
         let height = CAMERA_POS_HEIGHT;
@@ -163,7 +163,7 @@ fn evaluate_scattering(
         c_in = front_color * (scattering_params.kkr_in);
         c_out = front_color * KKM_ESUN;
     } else {
-        let far = (-CAMERA_HEIGHT) / min(-0.001, eye_ray.y);
+        let far = (-CAMERA_HEIGHT) / eye_ray.y;
         let pos = camera_pos + far * eye_ray;
         let depth = exp((-CAMERA_HEIGHT) * (1.0 / KSCALE_DEPTH));
         let camera_angle = dot(-eye_ray, pos);

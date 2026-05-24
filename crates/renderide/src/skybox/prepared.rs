@@ -20,7 +20,29 @@ pub struct PreparedMaterialSkybox {
     pub material_uniform_dynamic_offset: Option<u32>,
     /// `@group(2)` draw-local skybox view uniform bind group.
     pub view_bind_group: Arc<wgpu::BindGroup>,
-    /// Vertex count used by the fullscreen skybox draw.
+    /// Geometry used to draw the skybox.
+    pub geometry: PreparedMaterialSkyboxGeometry,
+}
+
+/// Prepared material skybox geometry.
+pub enum PreparedMaterialSkyboxGeometry {
+    /// Fullscreen triangle geometry generated from `@builtin(vertex_index)`.
+    FullscreenTriangle {
+        /// Vertex count for the fullscreen draw.
+        vertex_count: u32,
+    },
+    /// Fixed mesh geometry sourced from a build-time asset.
+    Mesh {
+        /// Cached fixed mesh used by the draw.
+        mesh: Arc<PreparedMaterialSkyboxMesh>,
+    },
+}
+
+/// Prepared fixed-mesh skybox geometry.
+pub struct PreparedMaterialSkyboxMesh {
+    /// Vertex buffer containing tightly packed `vec3<f32>` positions.
+    pub vertex_buffer: wgpu::Buffer,
+    /// Vertex count for the mesh draw.
     pub vertex_count: u32,
 }
 

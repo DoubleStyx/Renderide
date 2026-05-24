@@ -3,19 +3,15 @@
 #define_import_path renderide::skybox::common
 
 struct SkyboxView {
-    view_x_left: vec4<f32>,
-    view_y_left: vec4<f32>,
-    view_z_left: vec4<f32>,
-    view_x_right: vec4<f32>,
-    view_y_right: vec4<f32>,
-    view_z_right: vec4<f32>,
+    view_to_world_left: mat4x4<f32>,
+    view_to_world_right: mat4x4<f32>,
+    world_to_view_left: mat4x4<f32>,
+    world_to_view_right: mat4x4<f32>,
     clear_color: vec4<f32>,
     /// `.x`: ndc Y sign passed to the fragment shader (1.0 normal, -1.0 for offscreen-RT views).
-    /// Offscreen-RT views pre-multiply a clip-space Y flip into the world view-projection so the
-    /// render-texture lands V=0 bottom; the skybox is a fullscreen pass whose vertex Y flip is a
-    /// rasterization no-op (the triangle still covers the viewport), so we flip the **ndc.y** the
-    /// fragment receives instead -- that inverts the computed view ray, which is what actually
-    /// changes which sky direction is sampled per framebuffer row. `.y` is the left/mono
+    /// Offscreen-RT views pre-multiply a clip-space Y flip into world rendering so the
+    /// render-texture lands V=0 bottom. Skybox shaders reconstruct or project camera rays
+    /// explicitly, so they apply this sign while deriving screen-space Y. `.y` is the left/mono
     /// orthographic flag, `.z` is the right-eye orthographic flag, and `.w` is reserved padding.
     ndc_y_sign_pad: vec4<f32>,
 }
@@ -53,17 +49,14 @@ fn view_ray_from_ndc(ndc: vec2<f32>, proj_params: vec4<f32>, orthographic: bool)
     return vec3<f32>((ndc.xy + proj_params.zw) / max(abs(proj_params.xy), vec2<f32>(0.000001)), -1.0);
 }
 
-fn world_ray_from_view_ray(view_ray: vec3<f32>, sky: SkyboxView, view_layer: u32) -> vec3<f32> {
+fn select_view_to_world(view: SkyboxView, view_layer: u32) -> mat4x4<f32> {
     if (view_layer == 0u) {
-        return normalize(
-            view_ray.x * sky.view_x_left.xyz +
-            view_ray.y * sky.view_y_left.xyz +
-            view_ray.z * sky.view_z_left.xyz
-        );
+        return view.view_to_world_left;
     }
-    return normalize(
-        view_ray.x * sky.view_x_right.xyz +
-        view_ray.y * sky.view_y_right.xyz +
-        view_ray.z * sky.view_z_right.xyz
-    );
+    return view.view_to_world_right;
+}
+
+fn world_ray_from_view_ray(view_ray: vec3<f32>, sky: SkyboxView, view_layer: u32) -> vec3<f32> {
+    let view_to_world = select_view_to_world(sky, view_layer);
+    return normalize(view_to_world * vec4<f32>(view_ray, 0.0)).xyz;
 }

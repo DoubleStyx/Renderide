@@ -9,6 +9,8 @@ const ENV_XR_ASSETS: &str = "RENDERIDE_XR_ASSETS";
 const ACTIONS_FILE: &str = "actions.toml";
 /// Canonical bindings subdirectory inside the XR assets directory.
 const BINDINGS_DIR: &str = "bindings";
+/// Directory name containing the XR actions manifest and bindings
+const XR_DIR: &str = "xr";
 
 /// Enumerates directories that might contain `actions.toml` plus `bindings/`.
 fn xr_assets_search_candidates() -> Vec<PathBuf> {
@@ -26,27 +28,28 @@ fn xr_assets_search_candidates() -> Vec<PathBuf> {
         }
     }
 
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
-        push_unique(&mut out, dir.join("xr"));
-        if let Some(parent) = dir.parent() {
-            push_unique(&mut out, parent.join("xr"));
-        }
-    }
-
     if let Ok(cwd) = std::env::current_dir() {
         if let Some(root) = crate::config::find_renderide_workspace_root(&cwd) {
             push_unique(&mut out, root.join("crates/renderide/assets/xr"));
         }
-        push_unique(&mut out, cwd.join("xr"));
+        push_unique(&mut out, cwd.join(XR_DIR));
     }
 
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
-        && let Some(root) = crate::config::find_renderide_workspace_root(dir)
     {
-        push_unique(&mut out, root.join("crates/renderide/assets/xr"));
+        if let Some(root) = crate::config::find_renderide_workspace_root(dir) {
+            push_unique(&mut out, root.join("crates/renderide/assets/xr"));
+        }
+        push_unique(&mut out, dir.join(XR_DIR));
+        if let Some(parent) = dir.parent() {
+            push_unique(&mut out, parent.join(XR_DIR));
+        }
+    }
+
+    #[cfg(target_family = "unix")]
+    {
+        push_unique(&mut out, PathBuf::from("/usr/share/renderide").join(XR_DIR));
     }
 
     out

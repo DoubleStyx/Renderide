@@ -8,6 +8,7 @@ name = "renderide"
 path = "src/lib.rs"
 
 [build-dependencies]
+gltf = "1.4"
 hashbrown = "0.17"
 jobserver = "0.1"
 naga = { version = "29", features = ["wgsl-in", "wgsl-out", "termcolor"] }

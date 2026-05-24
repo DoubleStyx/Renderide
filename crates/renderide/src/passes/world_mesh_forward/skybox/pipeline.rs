@@ -45,9 +45,14 @@ impl SkyboxFamily {
         }
     }
 
-    /// Vertex count used by the fullscreen background draw.
-    pub(super) const fn draw_vertex_count(self) -> u32 {
-        3
+    /// Vertex buffer layouts required by the skybox family.
+    pub(super) const fn vertex_buffer_layouts(
+        self,
+    ) -> &'static [wgpu::VertexBufferLayout<'static>] {
+        match self {
+            Self::Procedural => &PROCEDURAL_SKYBOX_VERTEX_BUFFER_LAYOUTS,
+            Self::Projection360 | Self::Gradient => &[],
+        }
     }
 }
 
@@ -119,6 +124,7 @@ pub(super) fn create_skybox_pipeline(
     label: &str,
     shader: &wgpu::ShaderModule,
     layout: &wgpu::PipelineLayout,
+    vertex_buffer_layouts: &'static [wgpu::VertexBufferLayout<'static>],
     target: SkyboxPipelineTarget,
     depth: SkyboxDepthState,
 ) -> wgpu::RenderPipeline {
@@ -129,7 +135,7 @@ pub(super) fn create_skybox_pipeline(
             module: shader,
             entry_point: Some("vs_main"),
             compilation_options: Default::default(),
-            buffers: &[],
+            buffers: vertex_buffer_layouts,
         },
         fragment: Some(wgpu::FragmentState {
             module: shader,
@@ -170,6 +176,17 @@ pub(super) fn create_skybox_pipeline(
     pipeline
 }
 
+const PROCEDURAL_SKYBOX_VERTEX_BUFFER_LAYOUTS: [wgpu::VertexBufferLayout<'static>; 1] =
+    [wgpu::VertexBufferLayout {
+        array_stride: 12,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &[wgpu::VertexAttribute {
+            offset: 0,
+            shader_location: 0,
+            format: wgpu::VertexFormat::Float32x3,
+        }],
+    }];
+
 #[cfg(test)]
 mod tests {
     use super::{SkyboxDepthState, SkyboxFamily};
@@ -205,10 +222,14 @@ mod tests {
     }
 
     #[test]
-    fn material_skyboxes_draw_fullscreen_triangle() {
-        assert_eq!(SkyboxFamily::Projection360.draw_vertex_count(), 3);
-        assert_eq!(SkyboxFamily::Gradient.draw_vertex_count(), 3);
-        assert_eq!(SkyboxFamily::Procedural.draw_vertex_count(), 3);
+    fn only_procedural_skybox_uses_a_vertex_buffer_layout() {
+        assert!(
+            SkyboxFamily::Projection360
+                .vertex_buffer_layouts()
+                .is_empty()
+        );
+        assert!(SkyboxFamily::Gradient.vertex_buffer_layouts().is_empty());
+        assert_eq!(SkyboxFamily::Procedural.vertex_buffer_layouts().len(), 1);
     }
 
     #[test]
