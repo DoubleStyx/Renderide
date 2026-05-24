@@ -8,7 +8,7 @@ use glam::Vec3;
 use crate::camera::{CameraClipPlanes, HostCameraFrame};
 use crate::render_graph::FrameViewClear;
 use crate::scene::reflection_probe_skybox_only;
-use crate::shared::{CameraClearMode, ReflectionProbeClear, ReflectionProbeState};
+use crate::shared::{ReflectionProbeClear, ReflectionProbeState};
 use crate::world_mesh::CameraTransformDrawFilter;
 
 use super::super::cube_capture::host_camera_frame_for_cube_face;
@@ -47,10 +47,7 @@ pub(super) fn finite_positive_or(value: f32, fallback: f32) -> f32 {
 
 pub(super) fn clear_from_reflection_probe_state(state: ReflectionProbeState) -> FrameViewClear {
     if state.clear_flags == ReflectionProbeClear::Color {
-        FrameViewClear {
-            mode: CameraClearMode::Color,
-            color: state.background_color,
-        }
+        FrameViewClear::color(state.background_color)
     } else {
         FrameViewClear::skybox()
     }

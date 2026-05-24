@@ -1,7 +1,5 @@
 //! Source-key resolution for reflection-probe SH2 projection tasks.
 
-use glam::Vec4;
-
 use super::task_rows::TaskHeader;
 use super::{
     CubemapResidency, CubemapSourceMaterialIdentity, DEFAULT_SAMPLE_SIZE, GpuSh2Source,
@@ -10,8 +8,10 @@ use super::{
 use crate::reflection_probes::specular::{
     RuntimeReflectionProbeCaptureKey, RuntimeReflectionProbeCaptureStore,
 };
-use crate::scene::{RenderSpaceId, SceneCoordinator};
-use crate::shared::{ReflectionProbeClear, ReflectionProbeType, RenderSH2};
+use crate::scene::{
+    ReflectionProbeEntry, RenderSpaceId, SceneCoordinator, reflection_probe_solid_color,
+};
+use crate::shared::{ReflectionProbeType, RenderSH2};
 
 /// Either a synchronous CPU result or a GPU source to project.
 pub(super) enum Sh2ResolvedSource {
@@ -39,18 +39,18 @@ pub(super) fn resolve_task_source(
         .reflection_probes()
         .get(task.reflection_probe_renderable_index as usize)?;
     let state = probe.state;
-    if state.clear_flags == ReflectionProbeClear::Color {
+
+    if reflection_probe_solid_color(state) {
         let color = state.background_color * state.intensity.max(0.0);
         let key = Sh2SourceKey::ConstantColor {
             render_space_id,
-            color_bits: vec4_bits(color),
+            color_bits: color.to_array().map(|f| f.to_bits()),
         };
         return Some((
             key,
             Sh2ResolvedSource::Cpu(Box::new(constant_color_sh2(color.truncate()))),
         ));
     }
-
     if state.r#type == ReflectionProbeType::Baked {
         if state.cubemap_asset_id < 0 {
             return None;
@@ -87,16 +87,17 @@ pub(super) fn resolve_task_source(
     }
 
     if state.r#type == ReflectionProbeType::OnChanges {
-        return resolve_runtime_capture_source(render_space_id, probe.renderable_index, captures);
+        return resolve_runtime_capture_source(render_space_id, probe, captures);
     }
     None
 }
 
 fn resolve_runtime_capture_source(
     render_space_id: i32,
-    renderable_index: i32,
+    probe: &ReflectionProbeEntry,
     captures: &RuntimeReflectionProbeCaptureStore,
 ) -> Option<(Sh2SourceKey, Sh2ResolvedSource)> {
+    let renderable_index = probe.renderable_index;
     let key = RuntimeReflectionProbeCaptureKey {
         space_id: RenderSpaceId(render_space_id),
         renderable_index,
@@ -141,30 +142,25 @@ fn cubemap_residency_from_pool(
     }
 }
 
-/// Bit pattern for a `Vec4`.
-fn vec4_bits(v: Vec4) -> [u32; 4] {
-    [v.x.to_bits(), v.y.to_bits(), v.z.to_bits(), v.w.to_bits()]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn vec4_bits_preserves_exact_float_bit_patterns() {
-        let bits = vec4_bits(Vec4::new(0.0, -0.0, f32::INFINITY, f32::NAN));
-
-        assert_eq!(bits[0], 0.0f32.to_bits());
-        assert_eq!(bits[1], (-0.0f32).to_bits());
-        assert_eq!(bits[2], f32::INFINITY.to_bits());
-        assert_eq!(bits[3], f32::NAN.to_bits());
-    }
+    use crate::shared::{ReflectionProbeClear, ReflectionProbeState};
 
     #[test]
     fn missing_runtime_capture_postpones_onchanges_probe() {
         let captures = RuntimeReflectionProbeCaptureStore::default();
 
-        let (key, source) = resolve_runtime_capture_source(7, 3, &captures)
+        let probe = ReflectionProbeEntry {
+            renderable_index: 3,
+            transform_id: 12,
+            state: ReflectionProbeState {
+                clear_flags: ReflectionProbeClear::Skybox,
+                ..Default::default()
+            },
+        };
+
+        let (key, source) = resolve_runtime_capture_source(7, &probe, &captures)
             .expect("missing captures should return a stable postponed key");
 
         assert_eq!(
@@ -178,5 +174,39 @@ mod tests {
             }
         );
         assert!(matches!(source, Sh2ResolvedSource::Postpone));
+    }
+
+    #[test]
+    fn missing_runtime_capture_key_ignores_background_color() {
+        let captures = RuntimeReflectionProbeCaptureStore::default();
+        let skybox_probe = ReflectionProbeEntry {
+            renderable_index: 3,
+            transform_id: 12,
+            state: ReflectionProbeState {
+                clear_flags: ReflectionProbeClear::Skybox,
+                background_color: glam::Vec4::new(0.1, 0.2, 0.3, 1.0),
+                ..Default::default()
+            },
+        };
+        let color_probe = ReflectionProbeEntry {
+            renderable_index: skybox_probe.renderable_index,
+            transform_id: skybox_probe.transform_id,
+            state: ReflectionProbeState {
+                clear_flags: ReflectionProbeClear::Color,
+                background_color: glam::Vec4::new(0.9, 0.8, 0.7, 1.0),
+                flags: 0,
+                ..Default::default()
+            },
+        };
+
+        let (skybox_key, skybox_source) =
+            resolve_runtime_capture_source(7, &skybox_probe, &captures)
+                .expect("missing skybox capture should return a postponed key");
+        let (color_key, color_source) = resolve_runtime_capture_source(7, &color_probe, &captures)
+            .expect("missing color capture should return a postponed key");
+
+        assert_eq!(color_key, skybox_key);
+        assert!(matches!(skybox_source, Sh2ResolvedSource::Postpone));
+        assert!(matches!(color_source, Sh2ResolvedSource::Postpone));
     }
 }

@@ -13,6 +13,7 @@ pub(crate) fn solid_color_ibl_source(identity: u64, color: [f32; 4]) -> SkyboxIb
 pub(crate) fn solid_color_params(color: [f32; 4]) -> SkyboxEvaluatorParams {
     let mut params = SkyboxEvaluatorParams::empty(SkyboxParamMode::Gradient);
     params.color0 = color;
+    params.sample_size = 1;
     params.gradient_count = 0;
     params
 }

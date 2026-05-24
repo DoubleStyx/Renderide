@@ -7,8 +7,8 @@ use crate::backend::frame_gpu::{
     GpuReflectionProbeMetadata, REFLECTION_PROBE_ATLAS_FORMAT, ReflectionProbeSpecularResources,
 };
 use crate::gpu::GpuContext;
-use crate::scene::{RenderSpaceId, SceneCoordinator};
-use crate::shared::{ReflectionProbeClear, ReflectionProbeType, RenderSH2};
+use crate::scene::{RenderSpaceId, SceneCoordinator, reflection_probe_solid_color};
+use crate::shared::{ReflectionProbeType, RenderSH2};
 use crate::skybox::ibl_cache::{
     SkyboxIblCache, SkyboxIblKey, build_key, clamp_face_size, mip_extent, mip_levels_for_edge,
 };
@@ -151,7 +151,7 @@ impl ReflectionProbeSpecularSystem {
                 if matches!(
                     probe.state.r#type,
                     ReflectionProbeType::OnChanges | ReflectionProbeType::Realtime
-                ) && probe.state.clear_flags != ReflectionProbeClear::Color
+                ) && !reflection_probe_solid_color(probe.state)
                 {
                     collected
                         .active_capture_keys

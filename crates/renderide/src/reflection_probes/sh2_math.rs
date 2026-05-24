@@ -12,16 +12,6 @@ const PROJECTION360_DEFAULT_FOV: [f32; 4] = [std::f32::consts::TAU, std::f32::co
 #[cfg(test)]
 const DEFAULT_MAIN_TEX_ST: [f32; 4] = [1.0, 1.0, 0.0, 0.0];
 
-/// Bit pattern for a packed float4.
-pub(super) fn f32x4_bits(v: [f32; 4]) -> [u32; 4] {
-    [
-        v[0].to_bits(),
-        v[1].to_bits(),
-        v[2].to_bits(),
-        v[3].to_bits(),
-    ]
-}
-
 /// Analytic raw SH2 coefficients for a constant radiance color.
 pub(super) fn constant_color_sh2(color: Vec3) -> RenderSH2 {
     let c = color * (4.0 * std::f32::consts::PI * SH_C0);

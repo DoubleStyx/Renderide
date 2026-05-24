@@ -13,11 +13,10 @@ use crate::reflection_probes::specular::{
 use crate::render_graph::RenderPathProfile;
 use crate::scene::{
     ReflectionProbeOnChangesRenderRequest, RenderSpaceId, SceneCoordinator,
-    changed_probe_completion,
+    changed_probe_completion, reflection_probe_solid_color,
 };
 use crate::shared::{
-    ReflectionProbeClear, ReflectionProbeState, ReflectionProbeTimeSlicingMode,
-    ReflectionProbeType, RenderingContext,
+    ReflectionProbeState, ReflectionProbeTimeSlicingMode, ReflectionProbeType, RenderingContext,
 };
 
 use super::{
@@ -424,7 +423,7 @@ fn start_onchanges_reflection_probe_capture(
     let probe = space.reflection_probes().get(probe_index).ok_or(
         ReflectionProbeBakeError::MissingProbe(request.renderable_index),
     )?;
-    if probe.state.clear_flags == ReflectionProbeClear::Color {
+    if reflection_probe_solid_color(probe.state) {
         return Ok(OnChangesCaptureStart::ImmediateComplete);
     }
     if probe.state.r#type != ReflectionProbeType::OnChanges {
@@ -475,8 +474,7 @@ fn active_realtime_probe_keys(scene: &SceneCoordinator) -> Vec<RuntimeReflection
 
 /// Returns whether a probe state should have a realtime cubemap capture in flight.
 pub(in crate::runtime) fn realtime_probe_state_needs_capture(state: ReflectionProbeState) -> bool {
-    state.r#type == ReflectionProbeType::Realtime
-        && state.clear_flags != ReflectionProbeClear::Color
+    state.r#type == ReflectionProbeType::Realtime && !reflection_probe_solid_color(state)
 }
 
 /// Starts a realtime capture generation for one active probe.
@@ -487,9 +485,6 @@ fn start_realtime_reflection_probe_capture(
     generation: u64,
 ) -> Result<Box<ActiveRealtimeReflectionProbeCapture>, ReflectionProbeBakeError> {
     let state = realtime_capture_state(scene, key)?;
-    if state.clear_flags == ReflectionProbeClear::Color {
-        return Err(ReflectionProbeBakeError::MissingProbe(key.renderable_index));
-    }
     let extent = ProbeTaskExtent::from_size(state.resolution)?;
     let targets = create_probe_task_targets(gpu, extent)?;
     Ok(Box::new(ActiveRealtimeReflectionProbeCapture {
@@ -509,9 +504,6 @@ fn realtime_capture_is_still_valid(
     let Ok(state) = realtime_capture_state(scene, capture.key) else {
         return false;
     };
-    if state.clear_flags == ReflectionProbeClear::Color {
-        return false;
-    }
     match ProbeTaskExtent::from_size(state.resolution) {
         Ok(extent) => extent == capture.extent,
         Err(_error) => false,

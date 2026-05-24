@@ -139,6 +139,15 @@ fn realtime_capture_scheduler_ignores_non_realtime_and_solid_color_states() {
         ReflectionProbeState {
             r#type: ReflectionProbeType::Realtime,
             clear_flags: ReflectionProbeClear::Color,
+            flags: 0x1,
+            ..Default::default()
+        }
+    ));
+    assert!(onchanges::realtime_probe_state_needs_capture(
+        ReflectionProbeState {
+            r#type: ReflectionProbeType::Realtime,
+            clear_flags: ReflectionProbeClear::Color,
+            flags: 0x0,
             ..Default::default()
         }
     ));

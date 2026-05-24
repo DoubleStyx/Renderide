@@ -11,6 +11,7 @@ struct SkyboxEvaluatorParams {
     sample_size: u32,
     mode: u32,
     gradient_count: u32,
+    _pad: u32,
     color_a: vec4<f32>,
     color_b: vec4<f32>,
     direction: vec4<f32>,

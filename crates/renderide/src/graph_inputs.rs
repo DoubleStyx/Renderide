@@ -46,7 +46,6 @@ impl FrameViewClear {
     }
 
     /// Color clear mode with the supplied linear RGBA background.
-    #[cfg(test)]
     pub fn color(color: glam::Vec4) -> Self {
         Self {
             mode: CameraClearMode::Color,

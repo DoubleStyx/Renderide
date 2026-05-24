@@ -85,6 +85,6 @@ pub(crate) use reflection_probe::changed_probe_completion;
 pub use reflection_probe::{
     DrainedReflectionProbeRenderChanges, ReflectionProbeEntry,
     ReflectionProbeOnChangesRenderRequest, reflection_probe_skybox_only,
-    reflection_probe_use_box_projection,
+    reflection_probe_solid_color, reflection_probe_use_box_projection,
 };
 pub use render_space::RenderSpaceView;
