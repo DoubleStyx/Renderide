@@ -2,22 +2,24 @@
 
 use crate::gpu::GpuContext;
 
-/// Wall-clock interval and paired CPU/GPU timing for the current diagnostics tick.
+/// Wall-clock interval and CPU/GPU submit splits for the current diagnostics tick.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FrameTimingFragment {
     /// Wall-clock roundtrip between consecutive winit ticks (ms): the time between when one frame
     /// started and the next one started. FPS = `1000.0 / wall_frame_time_ms`.
     pub wall_frame_time_ms: f64,
-    /// CPU per-frame ms: main-thread tick duration from frame start to the runtime tick epilogue.
+    /// CPU per-frame ms: from the start of the winit tick to the moment `Queue::submit` returns
+    /// on the driver thread for that tick's last submit. Matches the Frame timing HUD CPU line.
     ///
-    /// Comes from the most recent frame whose CPU value and GPU value have both completed, so it
-    /// may lag the current tick by one or more frames.
+    /// Comes from the most recent frame whose submit has reached the driver thread, so it may
+    /// lag the current tick by one frame.
     pub cpu_frame_ms: Option<f64>,
-    /// GPU per-frame ms: real frame-bracket timestamp duration when available, otherwise
-    /// submit-to-callback latency from the queue completion fallback.
+    /// GPU per-frame ms: from `Queue::submit` returning on the driver thread to the
+    /// `on_submitted_work_done` callback firing for that submit. Matches the Frame timing HUD
+    /// GPU line.
     ///
-    /// Comes from the most recent frame whose CPU value and GPU value have both completed, so it
-    /// may lag the current tick by one or more frames.
+    /// Comes from the most recent frame whose completion callback has fired, so it may lag the
+    /// current tick by one or more frames.
     pub gpu_frame_ms: Option<f64>,
 }
 

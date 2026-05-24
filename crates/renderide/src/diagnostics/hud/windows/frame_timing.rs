@@ -80,7 +80,6 @@ fn fps_color(fps: f64) -> [f32; 4] {
 }
 
 fn render_rows(ui: &imgui::Ui, t: &FrameTimingHudSnapshot) {
-    let row_values = cpu_gpu_row_values(t);
     let fps = t.fps_from_wall();
     row(
         ui,
@@ -94,7 +93,7 @@ fn render_rows(ui: &imgui::Ui, t: &FrameTimingHudSnapshot) {
         Some(FRAME_TOOLTIP),
     );
 
-    let cpu_ms = ms_or_dash(row_values.cpu_ms);
+    let cpu_ms = ms_or_dash(t.cpu_frame_ms_smoothed);
     row(
         ui,
         ("CPU", CPU_HEAD_COLOR),
@@ -104,7 +103,7 @@ fn render_rows(ui: &imgui::Ui, t: &FrameTimingHudSnapshot) {
         Some(CPU_TOOLTIP),
     );
 
-    let gpu_ms = ms_or_dash(row_values.gpu_ms);
+    let gpu_ms = ms_or_dash(t.gpu_frame_ms_smoothed);
     let (gpu_label, gpu_tooltip) = match t.gpu_ms_source {
         Some(GpuMsSource::CallbackLatency) => ("GPU latency", GPU_LATENCY_TOOLTIP),
         // Default to the standard label until the first GPU value lands; once it does we know
@@ -152,26 +151,6 @@ fn render_rows(ui: &imgui::Ui, t: &FrameTimingHudSnapshot) {
         Some((gpu_reserved, DIM_COLOR)),
         Some(VRAM_TOOLTIP),
     );
-}
-
-/// CPU/GPU timing values after applying the Frame timing HUD display mapping.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct CpuGpuRowValues {
-    /// Milliseconds shown on the CPU row.
-    cpu_ms: Option<f64>,
-    /// Milliseconds shown on the GPU or GPU latency row.
-    gpu_ms: Option<f64>,
-}
-
-/// Maps the captured timing payload into the visible CPU/GPU rows.
-///
-/// The correction stays at the HUD boundary so the accumulator, diagnostics payload, and IPC
-/// render-time contract keep their existing meanings.
-fn cpu_gpu_row_values(t: &FrameTimingHudSnapshot) -> CpuGpuRowValues {
-    CpuGpuRowValues {
-        cpu_ms: t.gpu_frame_ms_smoothed,
-        gpu_ms: t.cpu_frame_ms_smoothed,
-    }
 }
 
 const FRAME_TOOLTIP: &str = "\
@@ -273,29 +252,5 @@ fn format_bytes_gib(bytes: u64) -> String {
     } else {
         let mib = bytes as f64 / (1024.0 * 1024.0);
         format!("{mib:5.0} MiB")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{CpuGpuRowValues, cpu_gpu_row_values};
-    use crate::diagnostics::FrameTimingHudSnapshot;
-
-    /// Verifies the HUD row mapping that corrects the visible CPU/GPU timing swap.
-    #[test]
-    fn cpu_gpu_rows_use_corrected_hud_mapping() {
-        let snapshot = FrameTimingHudSnapshot {
-            cpu_frame_ms_smoothed: Some(3.0),
-            gpu_frame_ms_smoothed: Some(7.0),
-            ..Default::default()
-        };
-
-        assert_eq!(
-            cpu_gpu_row_values(&snapshot),
-            CpuGpuRowValues {
-                cpu_ms: Some(7.0),
-                gpu_ms: Some(3.0),
-            }
-        );
     }
 }
