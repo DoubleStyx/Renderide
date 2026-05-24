@@ -629,3 +629,52 @@ fn parallel_instance_plan_matches_serial_windows() {
     assert!(!groups(&parallel, WorldMeshPhase::Intersection).is_empty());
     assert!(!groups(&parallel, WorldMeshPhase::TransparentGrab).is_empty());
 }
+
+#[test]
+fn large_grouped_window_parallel_matches_serial_window() {
+    let mut draws: Vec<_> = (0..(INSTANCE_PLAN_PARALLEL_MIN_SINGLE_WINDOW_DRAWS + 64))
+        .map(|n| {
+            let mut item = opaque(20 + (n % 4) as i32, 1, (n % 17) as i32, n as i32);
+            item.first_index = ((n % 3) * 12) as u32;
+            item.index_count = (6 + (n % 2) * 3) as u32;
+            item
+        })
+        .collect();
+    sort_draws(&mut draws);
+    let windows = collect_batch_windows(&draws, true);
+    assert_eq!(windows.len(), 1);
+    assert!(!windows[0].singleton);
+
+    let serial = build_plan_from_windows_serial(&draws, &windows, ShaderPermutation(0));
+    let parallel = build_plan_from_large_window_parallel(&draws, &windows[0], ShaderPermutation(0));
+
+    assert_eq!(parallel, serial);
+}
+
+#[test]
+fn large_singleton_window_parallel_matches_serial_window() {
+    let mut draws: Vec<_> = (0..(INSTANCE_PLAN_PARALLEL_MIN_SINGLE_WINDOW_DRAWS + 64))
+        .map(|n| {
+            dummy_world_mesh_draw_item(DummyDrawItemSpec {
+                material_asset_id: 1,
+                property_block: None,
+                skinned: true,
+                sorting_order: (n % 17) as i32,
+                mesh_asset_id: 30 + (n % 4) as i32,
+                node_id: n as i32,
+                slot_index: 0,
+                collect_order: n,
+                alpha_blended: false,
+            })
+        })
+        .collect();
+    sort_draws(&mut draws);
+    let windows = collect_batch_windows(&draws, true);
+    assert_eq!(windows.len(), 1);
+    assert!(windows[0].singleton);
+
+    let serial = build_plan_from_windows_serial(&draws, &windows, ShaderPermutation(0));
+    let parallel = build_plan_from_large_window_parallel(&draws, &windows[0], ShaderPermutation(0));
+
+    assert_eq!(parallel, serial);
+}

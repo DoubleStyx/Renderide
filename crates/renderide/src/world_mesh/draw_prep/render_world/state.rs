@@ -2,6 +2,7 @@
 
 use hashbrown::HashMap;
 use rayon::prelude::*;
+use std::ops::Range;
 
 use crate::scene::{
     MeshRendererInstanceId, RenderWorldRendererKind, SkinnedMeshRenderer, StaticMeshRenderer,
@@ -200,14 +201,42 @@ impl RenderWorldSpace {
         }
     }
 
-    /// Appends this space's retained draw templates into an owned scratch vector.
-    pub(super) fn append_draws_to(&self, draws: &mut Vec<FramePreparedDraw>) {
-        for renderer in &self.static_renderers {
+    /// Appends retained static-renderer draw templates for `range` into an owned scratch vector.
+    pub(super) fn append_static_draws_range_to(
+        &self,
+        range: Range<usize>,
+        draws: &mut Vec<FramePreparedDraw>,
+    ) {
+        for renderer in &self.static_renderers[range] {
             draws.extend(renderer.draws.iter().cloned());
         }
-        for renderer in &self.skinned_renderers {
+    }
+
+    /// Appends retained skinned-renderer draw templates for `range` into an owned scratch vector.
+    pub(super) fn append_skinned_draws_range_to(
+        &self,
+        range: Range<usize>,
+        draws: &mut Vec<FramePreparedDraw>,
+    ) {
+        for renderer in &self.skinned_renderers[range] {
             draws.extend(renderer.draws.iter().cloned());
         }
+    }
+
+    /// Counts retained static-renderer draw templates for `range`.
+    pub(super) fn retained_static_template_count_for_range(&self, range: Range<usize>) -> usize {
+        self.static_renderers[range]
+            .iter()
+            .map(|renderer| renderer.draws.len())
+            .sum()
+    }
+
+    /// Counts retained skinned-renderer draw templates for `range`.
+    pub(super) fn retained_skinned_template_count_for_range(&self, range: Range<usize>) -> usize {
+        self.skinned_renderers[range]
+            .iter()
+            .map(|renderer| renderer.draws.len())
+            .sum()
     }
 
     /// Returns reverse-index keys for one retained renderer table reference.

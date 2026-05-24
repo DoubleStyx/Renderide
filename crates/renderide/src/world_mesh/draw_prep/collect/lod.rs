@@ -2,6 +2,7 @@
 
 use glam::{Mat4, Vec3};
 use hashbrown::HashSet;
+use rayon::prelude::*;
 
 use crate::camera::view_matrix_for_world_mesh_render_space;
 use crate::scene::{
@@ -18,6 +19,10 @@ use super::DrawCollectionContext;
 const CAMERA_INTERSECTING_RELATIVE_HEIGHT: f32 = 1.0;
 /// Minimum homogeneous `w` accepted for screen-height projection.
 const CLIP_W_EPS: f32 = 1e-6;
+/// LOD groups assigned to one worker chunk.
+const LOD_VISIBILITY_PARALLEL_CHUNK_GROUPS: usize = 4;
+/// LOD group count required before view-local visibility fans out.
+const LOD_VISIBILITY_PARALLEL_MIN_GROUPS: usize = LOD_VISIBILITY_PARALLEL_CHUNK_GROUPS * 2;
 
 /// Per-view LOD decision map.
 #[derive(Clone, Debug, Default)]
@@ -34,6 +39,23 @@ impl LodVisibility {
     pub(super) fn renderer_visible(&self, instance_id: MeshRendererInstanceId) -> bool {
         !self.grouped.contains(&instance_id) || self.selected.contains(&instance_id)
     }
+
+    /// Merges another group-selection result into this view's visibility set.
+    fn extend(&mut self, other: Self) {
+        self.grouped.extend(other.grouped);
+        self.selected.extend(other.selected);
+    }
+}
+
+/// One LOD group scheduled for view-local selection.
+#[derive(Clone, Copy)]
+struct LodGroupWork<'a> {
+    /// Render space that owns the LOD group.
+    space_id: RenderSpaceId,
+    /// Borrowed render-space tables used to resolve renderer references.
+    space: RenderSpaceView<'a>,
+    /// LOD rows in priority order.
+    lods: &'a [LodEntry],
 }
 
 /// Renderer resolved from a stable LOD membership row.
@@ -73,10 +95,56 @@ pub(super) fn build_lod_visibility(
     if capacity == 0 {
         return LodVisibility::default();
     }
+    let group_work = collect_lod_group_work(ctx, space_ids);
+    if group_work.is_empty() {
+        return LodVisibility::default();
+    }
+    if group_work.len() >= LOD_VISIBILITY_PARALLEL_MIN_GROUPS && rayon::current_num_threads() > 1 {
+        profiling::scope!("mesh::lod_visibility::parallel_groups");
+        return group_work
+            .par_iter()
+            .with_min_len(LOD_VISIBILITY_PARALLEL_CHUNK_GROUPS)
+            .map(|work| {
+                profiling::scope!("mesh::lod_visibility::group_worker");
+                let mut visibility = LodVisibility::default();
+                select_group_lod(
+                    ctx,
+                    culling,
+                    work.space_id,
+                    work.space,
+                    work.lods,
+                    &mut visibility,
+                );
+                visibility
+            })
+            .reduce(LodVisibility::default, |mut merged, visibility| {
+                merged.extend(visibility);
+                merged
+            });
+    }
     let mut visibility = LodVisibility {
         grouped: HashSet::with_capacity(capacity),
         selected: HashSet::with_capacity(capacity),
     };
+    for work in group_work {
+        select_group_lod(
+            ctx,
+            culling,
+            work.space_id,
+            work.space,
+            work.lods,
+            &mut visibility,
+        );
+    }
+    visibility
+}
+
+/// Collects active LOD groups into a dense work list for serial or parallel selection.
+fn collect_lod_group_work<'a>(
+    ctx: &DrawCollectionContext<'a>,
+    space_ids: &[RenderSpaceId],
+) -> Vec<LodGroupWork<'a>> {
+    let mut work = Vec::new();
     for &space_id in space_ids {
         let Some(space) = ctx.scene.space(space_id) else {
             continue;
@@ -85,17 +153,14 @@ pub(super) fn build_lod_visibility(
             continue;
         }
         for group in space.lod_groups() {
-            select_group_lod(
-                ctx,
-                culling,
+            work.push(LodGroupWork {
                 space_id,
                 space,
-                group.lods.as_slice(),
-                &mut visibility,
-            );
+                lods: group.lods.as_slice(),
+            });
         }
     }
-    visibility
+    work
 }
 
 /// Counts renderer refs present in active LOD groups for hash-set capacity planning.

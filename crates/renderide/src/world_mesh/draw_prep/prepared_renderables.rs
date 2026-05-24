@@ -39,7 +39,7 @@ pub(in crate::world_mesh::draw_prep) use expand::{
 };
 
 /// Target draw count for one prepared renderer-run chunk.
-pub(super) const PREPARED_RUN_CHUNK_DRAW_TARGET: usize = 64;
+pub(super) const PREPARED_RUN_CHUNK_DRAW_TARGET: usize = 32;
 /// Active render spaces assigned to one prepared-renderable expansion worker.
 #[cfg(test)]
 const PREPARED_EXPAND_PARALLEL_CHUNK_SPACES: usize = 1;

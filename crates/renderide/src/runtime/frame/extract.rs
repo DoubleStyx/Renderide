@@ -618,8 +618,8 @@ pub(in crate::runtime) fn select_inner_parallelism(
 
 /// Prepared-draw count above which two outer-parallel views keep inner chunk parallelism enabled.
 ///
-/// The gate is two prepared 64-draw chunks per view.
-const MIN_DRAWS_FOR_TWO_VIEW_INNER_PARALLELISM: usize = 128;
+/// The gate is two prepared 32-draw chunks per view.
+const MIN_DRAWS_FOR_TWO_VIEW_INNER_PARALLELISM: usize = 64;
 
 /// Estimated total prepared draws above which view-level parallel collection pays for itself.
 ///
