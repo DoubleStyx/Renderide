@@ -147,7 +147,7 @@ fn proceduralskybox_material_path_interpolates_unity_vertex_terms() -> io::Resul
 }
 
 #[test]
-fn dedicated_skyboxes_reconstruct_rays_from_fragment_positions() -> io::Result<()> {
+fn dedicated_skyboxes_keep_family_specific_ray_reconstruction() -> io::Result<()> {
     let common_src = module_source("skybox/common.wgsl")?;
     assert!(
         common_src.contains("fn ndc_from_fragment_position(")
@@ -161,12 +161,6 @@ fn dedicated_skyboxes_reconstruct_rays_from_fragment_positions() -> io::Result<(
         (
             "passes/backend/skybox_gradientskybox.wgsl",
             source_file(manifest_dir().join("shaders/passes/backend/skybox_gradientskybox.wgsl"))?,
-        ),
-        (
-            "passes/backend/skybox_proceduralskybox.wgsl",
-            source_file(
-                manifest_dir().join("shaders/passes/backend/skybox_proceduralskybox.wgsl"),
-            )?,
         ),
         (
             "passes/backend/skybox_projection360.wgsl",
@@ -187,8 +181,15 @@ fn dedicated_skyboxes_reconstruct_rays_from_fragment_positions() -> io::Result<(
     assert!(
         procedural_src.contains("ps::visible_vertex_terms(")
             && procedural_src.contains("ps::visible_fragment_color("),
-        "passes/backend/skybox_proceduralskybox.wgsl must still use shared ProceduralSkybox \
-         scattering terms after reconstructing the per-fragment ray.",
+        "passes/backend/skybox_proceduralskybox.wgsl must use shared ProceduralSkybox \
+         scattering terms for fixed-mesh vertex interpolation plus fragment sky mixing.",
+    );
+    assert!(
+        procedural_src.contains("fn world_ray_from_clip_pos(")
+            && procedural_src.contains("skybox::ndc_from_fragment_position")
+            && procedural_src.contains("ps::sun_disk_mode_high_quality"),
+        "passes/backend/skybox_proceduralskybox.wgsl must retain fragment-position ray \
+         reconstruction for high-quality sun disk evaluation.",
     );
     assert!(
         !procedural_src.contains("ps::sample("),

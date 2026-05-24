@@ -12,7 +12,6 @@ use wgpu::util::DeviceExt;
 
 use super::WorldMeshForwardPipelineState;
 use super::raster_recording::frame_bind_group_for_view;
-use crate::assets::resolve::assets_search_candidates;
 use crate::camera::{CameraProjectionKind, ViewId, world_to_view_pair_for_skybox};
 use crate::embedded_shaders;
 use crate::gpu::frame_bind_group_layout;
@@ -22,12 +21,20 @@ use crate::materials::{EmbeddedMaterialBindShader, EmbeddedTexturePools};
 use crate::render_graph::blackboard::Blackboard;
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::shared::CameraClearMode;
-use crate::skybox::{PreparedClearColorSkybox, PreparedMaterialSkybox, PreparedSkybox};
+use crate::skybox::{
+    PreparedClearColorSkybox, PreparedMaterialSkybox, PreparedMaterialSkyboxGeometry,
+    PreparedMaterialSkyboxMesh, PreparedSkybox,
+};
 
 use pipeline::{
     ClearPipelineKey, SkyboxDepthState, SkyboxFamily, SkyboxPipelineKey, SkyboxPipelineTarget,
     create_skybox_pipeline,
 };
+
+include!(concat!(env!("OUT_DIR"), "/procedural_skybox_mesh.rs"));
+
+/// Vertex count used by fullscreen triangle skybox draws.
+const FULLSCREEN_SKYBOX_VERTEX_COUNT: u32 = 3;
 
 /// Minimum binding size for [`SkyboxViewUniforms`].
 const SKYBOX_VIEW_UNIFORM_SIZE: u64 = size_of::<SkyboxViewUniforms>() as u64;
@@ -45,22 +52,20 @@ struct SkyboxViewBinding {
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct SkyboxViewUniforms {
     /// View-to-world basis for the left eye or mono view.
-    view_left: [f32; 16],
+    view_to_world_left: [f32; 16],
     /// View-to-world basis for the right eye.
-    view_right: [f32; 16],
+    view_to_world_right: [f32; 16],
     /// World-to-view basis for the left eye or mono view.
-    world_left: [f32; 16],
+    world_to_view_left: [f32; 16],
     /// World-to-view basis for the right eye.
-    world_right: [f32; 16],
+    world_to_view_right: [f32; 16],
     /// Background color for `CameraClearMode::Color`.
     clear_color: [f32; 4],
     /// `.x`: ndc Y sign passed to the fragment shader (1.0 normal, -1.0 for offscreen-RT views).
-    /// Offscreen-RT views pre-multiply a clip-space Y flip into the world view-projection so the
-    /// render-texture lands V=0 bottom. The skybox is a fullscreen pass whose vertex Y flip is a
-    /// rasterization no-op, so we flip the ndc.y the fragment receives instead -- that inverts the
-    /// computed view ray, which is what actually changes which sky direction is sampled per
-    /// framebuffer row. `.y` is the left/mono orthographic flag, `.z` is the right-eye
-    /// orthographic flag, and `.w` is reserved padding.
+    /// Offscreen-RT views pre-multiply a clip-space Y flip into world rendering so the
+    /// render-texture lands V=0 bottom. Skybox shaders reconstruct or project camera rays
+    /// explicitly, so they apply this sign while deriving screen-space Y. `.y` is the left/mono
+    /// orthographic flag, `.z` is the right-eye orthographic flag, and `.w` is reserved padding.
     ndc_y_sign_pad: [f32; 4],
 }
 
@@ -75,20 +80,14 @@ impl SkyboxViewUniforms {
         };
         let ortho_flag = projection_kind_orthographic_flag(frame.view.host_camera.projection_kind);
         Self {
-            view_left: left.inverse().to_cols_array(),
-            view_right: right.inverse().to_cols_array(),
-            world_left: left.to_cols_array(),
-            world_right: right.to_cols_array(),
+            view_to_world_left: left.inverse().to_cols_array(),
+            view_to_world_right: right.inverse().to_cols_array(),
+            world_to_view_left: left.to_cols_array(),
+            world_to_view_right: right.to_cols_array(),
             clear_color: frame.view.clear.color.to_array(),
             ndc_y_sign_pad: [ndc_y_sign, ortho_flag, ortho_flag, 0.0],
         }
     }
-}
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct SkyboxMeshBufferKey {
-    family: SkyboxFamily,
-    device: wgpu::Device,
 }
 
 /// Persistent skybox caches owned by backend world-mesh frame planning.
@@ -97,7 +96,7 @@ pub(crate) struct SkyboxRenderer {
     material_pipelines: Mutex<HashMap<SkyboxPipelineKey, Arc<wgpu::RenderPipeline>>>,
     clear_pipelines: Mutex<HashMap<ClearPipelineKey, Arc<wgpu::RenderPipeline>>>,
     view_bindings: Mutex<HashMap<ViewId, SkyboxViewBinding>>,
-    skybox_mesh_buffers: Mutex<HashMap<SkyboxMeshBufferKey, wgpu::Buffer>>,
+    procedural_mesh_buffers: Mutex<HashMap<wgpu::Device, Arc<PreparedMaterialSkyboxMesh>>>,
 }
 
 impl std::fmt::Debug for SkyboxRenderer {
@@ -113,7 +112,7 @@ impl Default for SkyboxRenderer {
             material_pipelines: Mutex::new(HashMap::new()),
             clear_pipelines: Mutex::new(HashMap::new()),
             view_bindings: Mutex::new(HashMap::new()),
-            skybox_mesh_buffers: Mutex::new(HashMap::new()),
+            procedural_mesh_buffers: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -206,13 +205,13 @@ impl SkyboxRenderer {
         let view_bind_group = self.view_bind_group(device, uploads, frame);
         let target = SkyboxPipelineTarget::from_forward_state(pipeline_state);
         let pipeline = self.material_pipeline(device, &material_layout, family, target)?;
-        let skybox_mesh_buffer = self.skybox_mesh_buffer(device, family);
+        let geometry = self.material_geometry(device, family);
         Some(PreparedSkybox::Material(PreparedMaterialSkybox {
             pipeline,
             material_bind_group: material_bind.bind_group,
             material_uniform_dynamic_offset: material_bind.uniform_dynamic_offset,
             view_bind_group,
-            skybox_mesh_buffer,
+            geometry,
         }))
     }
 
@@ -327,7 +326,7 @@ impl SkyboxRenderer {
             shader_target,
             &shader,
             &layout,
-            family,
+            family.vertex_buffer_layouts(),
             target,
             SkyboxDepthState::fixed_background(),
         ));
@@ -354,8 +353,7 @@ impl SkyboxRenderer {
             }
         }
 
-        let family = SkyboxFamily::Clear;
-        let shader_target = family.shader_target(false);
+        let shader_target = "skybox_solid_color";
         let source = embedded_shaders::embedded_target_wgsl(shader_target)?;
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some(shader_target),
@@ -371,7 +369,7 @@ impl SkyboxRenderer {
             shader_target,
             &shader,
             &layout,
-            family,
+            &[],
             key,
             SkyboxDepthState::fixed_background(),
         ));
@@ -384,21 +382,32 @@ impl SkyboxRenderer {
         Some(pipeline)
     }
 
-    fn skybox_mesh_buffer(&self, device: &wgpu::Device, family: SkyboxFamily) -> wgpu::Buffer {
-        let key = SkyboxMeshBufferKey {
-            device: device.clone(),
-            family,
-        };
-        {
-            if let Some(buffer) = self.skybox_mesh_buffers.lock().get(&key) {
-                return buffer.clone();
+    /// Returns prepared geometry for a material skybox family.
+    fn material_geometry(
+        &self,
+        device: &wgpu::Device,
+        family: SkyboxFamily,
+    ) -> PreparedMaterialSkyboxGeometry {
+        match family {
+            SkyboxFamily::Procedural => {
+                let mesh = self.procedural_skybox_mesh(device);
+                PreparedMaterialSkyboxGeometry::Mesh { mesh }
+            }
+            SkyboxFamily::Projection360 | SkyboxFamily::Gradient => {
+                PreparedMaterialSkyboxGeometry::FullscreenTriangle {
+                    vertex_count: FULLSCREEN_SKYBOX_VERTEX_COUNT,
+                }
             }
         }
+    }
 
-        let buffer = skybox_sphere_buffer(device, family.draw_vertex_count());
-        let mut guard = self.skybox_mesh_buffers.lock();
-        guard.insert(key, buffer.clone());
-        buffer
+    /// Returns the per-device procedural skybox fixed mesh buffer.
+    fn procedural_skybox_mesh(&self, device: &wgpu::Device) -> Arc<PreparedMaterialSkyboxMesh> {
+        let mut meshes = self.procedural_mesh_buffers.lock();
+        meshes
+            .entry(device.clone())
+            .or_insert_with(|| create_procedural_skybox_mesh(device))
+            .clone()
     }
 }
 
@@ -423,9 +432,15 @@ pub(super) fn record_prepared_skybox(
                 rpass.set_bind_group(1, skybox.material_bind_group.as_ref(), &[]);
             }
             rpass.set_bind_group(2, skybox.view_bind_group.as_ref(), &[]);
-            let vertex_count = skybox.skybox_mesh_buffer.size() / 12;
-            rpass.set_vertex_buffer(0, skybox.skybox_mesh_buffer.slice(0..));
-            rpass.draw(0..vertex_count as u32, 0..1);
+            match &skybox.geometry {
+                PreparedMaterialSkyboxGeometry::FullscreenTriangle { vertex_count } => {
+                    rpass.draw(0..*vertex_count, 0..1);
+                }
+                PreparedMaterialSkyboxGeometry::Mesh { mesh } => {
+                    rpass.set_vertex_buffer(0, mesh.vertex_buffer.slice(0..));
+                    rpass.draw(0..mesh.vertex_count, 0..1);
+                }
+            }
             true
         }
         PreparedSkybox::ClearColor(clear) => {
@@ -452,69 +467,18 @@ fn skybox_world_to_view_pair(frame: &GraphPassFrame<'_>) -> (glam::Mat4, glam::M
     world_to_view_pair_for_skybox(frame.shared.scene, &frame.view.host_camera)
 }
 
-fn skybox_sphere_buffer(device: &wgpu::Device, vertex_count: u32) -> wgpu::Buffer {
-    let vertices = if vertex_count == 0 {
-        skybox_sphere_vertices()
-    } else {
-        &vec![[0.0; 3]; vertex_count as usize]
-    };
-    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Skybox_mesh"),
-        contents: bytemuck::cast_slice(vertices),
+/// Creates the procedural skybox fixed mesh vertex buffer.
+fn create_procedural_skybox_mesh(device: &wgpu::Device) -> Arc<PreparedMaterialSkyboxMesh> {
+    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("procedural_skybox_mesh"),
+        contents: bytemuck::cast_slice(PROCEDURAL_SKYBOX_VERTICES.as_slice()),
         usage: wgpu::BufferUsages::VERTEX,
+    });
+    crate::profiling::note_resource_churn!(Buffer, "passes::procedural_skybox_mesh");
+    Arc::new(PreparedMaterialSkyboxMesh {
+        vertex_buffer,
+        vertex_count: PROCEDURAL_SKYBOX_VERTEX_COUNT,
     })
-}
-
-static SKYBOX_SPHERE_VERTICES: OnceLock<Vec<[f32; 3]>> = OnceLock::new();
-
-fn skybox_sphere_vertices() -> &'static Vec<[f32; 3]> {
-    SKYBOX_SPHERE_VERTICES.get_or_init(parse_skybox_sphere)
-}
-
-fn parse_skybox_sphere() -> Vec<[f32; 3]> {
-    let asset_folders = assets_search_candidates();
-    let Some(skybox_path) = asset_folders
-        .iter()
-        .map(|p| p.join("models/skybox.glb"))
-        .find(|p| p.is_file())
-    else {
-        logger::error!("Could not locate skybox model");
-        return vec![[0.0; 3]; 3];
-    };
-    let (doc, buffers, _) = match gltf::import(skybox_path.as_path()) {
-        Ok(result) => result,
-        Err(err) => {
-            logger::error!("Could not parse {}: {err}", skybox_path.display());
-            return vec![[0.0; 3]; 3];
-        }
-    };
-    let mut vertices = Vec::new();
-    for mesh in doc.meshes() {
-        logger::debug!(
-            "Skybox: Reading mesh {} {}",
-            mesh.index(),
-            mesh.name().unwrap_or("")
-        );
-        for primitive in mesh.primitives() {
-            let reader = primitive.reader(|p| Some(&buffers[p.index()]));
-            let positions = reader
-                .read_positions()
-                .map(|pi| pi.collect())
-                .unwrap_or(Vec::new());
-            if let Some(indices) = reader.read_indices() {
-                for index in indices.into_u32() {
-                    if let Some(&position) = positions.get(index as usize) {
-                        vertices.push(position);
-                    }
-                }
-            }
-        }
-    }
-    logger::info!(
-        "Skybox mesh parsed successfully, {} vertices in mesh",
-        vertices.len()
-    );
-    vertices
 }
 
 fn projection_kind_orthographic_flag(kind: CameraProjectionKind) -> f32 {

@@ -8,6 +8,7 @@ name = "renderide"
 path = "src/lib.rs"
 
 [build-dependencies]
+gltf = "1.4"
 hashbrown = "0.17"
 jobserver = "0.1"
 naga = { version = "29", features = ["wgsl-in", "wgsl-out", "termcolor"] }
@@ -84,7 +85,6 @@ notify = "8.2"
 naga = { version = "29.0", features = ["wgsl-in", "wgsl-out", "termcolor"] }
 unity-asset = "0.2"
 unity-asset-binary = "0.2"
-gltf = "1.4.1"
 wgpu = "29.0"
 winit = "0.31.0-beta.2"
 ash = "0.38"

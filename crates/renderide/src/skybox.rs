@@ -5,4 +5,7 @@ pub(crate) mod params;
 mod prepared;
 pub(crate) mod specular;
 
-pub use prepared::{PreparedClearColorSkybox, PreparedMaterialSkybox, PreparedSkybox};
+pub use prepared::{
+    PreparedClearColorSkybox, PreparedMaterialSkybox, PreparedMaterialSkyboxGeometry,
+    PreparedMaterialSkyboxMesh, PreparedSkybox,
+};

@@ -1,13 +1,13 @@
-//! Build-script entry point for shader composition and runtime asset copying.
+//! Build-script entry point for shader composition and generated runtime data.
 
 use std::path::PathBuf;
 
 mod build_support;
 
-use build_support::assets::copy_assets_to_artifact_dir;
 use build_support::git;
 use build_support::openxr_loader::copy_vendored_openxr_loader;
 use build_support::shader::{self, BuildError};
+use build_support::skybox_mesh::emit_procedural_skybox_mesh;
 use build_support::xr_assets::copy_xr_assets_to_artifact_dir;
 
 /// Runs the build script.
@@ -38,6 +38,6 @@ fn run() -> Result<(), BuildError> {
 
     copy_vendored_openxr_loader(&manifest_dir, &out_dir);
     copy_xr_assets_to_artifact_dir(&manifest_dir, &out_dir);
-    copy_assets_to_artifact_dir(&manifest_dir, &out_dir);
+    emit_procedural_skybox_mesh(&manifest_dir, &out_dir)?;
     shader::compile(&manifest_dir, &out_dir)
 }

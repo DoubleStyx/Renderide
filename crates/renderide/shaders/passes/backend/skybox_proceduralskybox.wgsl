@@ -1,4 +1,4 @@
-//! Fullscreen ProceduralSkybox sky draw.
+//! Fixed-mesh ProceduralSkybox sky draw.
 //!
 //! The shared ProceduralSkybox material module owns the reflected `@group(1)` contract and
 //! shader-specific keyword decoding for both this pass-side sky draw and the material root.
@@ -12,7 +12,6 @@
 //#mat_default _AtmosphereThickness float 1.0
 
 #import renderide::frame::globals as rg
-#import renderide::core::fullscreen as fs
 #import renderide::skybox::procedural as ps
 #import renderide::skybox::procedural_material as psmat
 #import renderide::skybox::common as skybox
@@ -30,12 +29,10 @@ struct VertexOutput {
 
 @vertex
 fn vs_main(
-    @builtin(vertex_index) vertex_index: u32,
-    @builtin(instance_index) instance_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
-    @location(0) pos: vec3<f32>,
+    @location(0) position: vec3<f32>,
 ) -> VertexOutput {
     var out: VertexOutput;
 #ifdef MULTIVIEW
@@ -45,24 +42,16 @@ fn vs_main(
 #endif
     out.view_layer = view_layer;
 
-    if (length(pos) == 0.0) {
-        // Fullscreen triangle
-        out.clip_pos = fs::fullscreen_clip_pos(vertex_index);
-        out.ground_color = vec3<f32>(0.0);
-        out.sky_color = vec3<f32>(0.0);
-        out.sun_color = vec3<f32>(0.0);
-        out.ray = vec3<f32>(0.0);
-        return out;
-    }
-
-    // Actual mesh
-    let world_ray = -normalize(pos);
+    let world_ray = -normalize(position);
     let view_ray = view_ray_from_world_ray(world_ray, view_layer);
     let proj_params = select(rg::frame.proj_params_left, rg::frame.proj_params_right, view_layer != 0u);
-    out.clip_pos = clip_pos_from_view_ray(view_ray, proj_params, skybox::view_is_orthographic(view, view_layer));
+    out.clip_pos = clip_pos_from_view_ray(
+        view_ray,
+        proj_params,
+        skybox::view_is_orthographic(view, view_layer),
+    );
 
-    if (out.clip_pos.z >= 1) {
-        // Will be culled in fragment shader, no need to compute
+    if (out.clip_pos.z >= 1.0) {
         out.ground_color = vec3<f32>(0.0);
         out.sky_color = vec3<f32>(0.0);
         out.sun_color = vec3<f32>(0.0);
@@ -84,23 +73,14 @@ fn vs_main(
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let ps_params = psmat::params();
-    var terms: ps::ProceduralSkyVisibleTerms;
-    if (length(in.ray) == 0.0) {
-        // Fullscreen triangle
-        let world_ray = world_ray_from_clip_pos(in.clip_pos, in.view_layer);
-        let scattering_params = ps::scattering_parameters(ps_params);
-        terms =  ps::visible_vertex_terms(ps_params, scattering_params, world_ray);
-    } else {
-        // Actual mesh
-        terms = ps::ProceduralSkyVisibleTerms(
-            in.ground_color,
-            in.sky_color,
-            in.sun_color,
-            in.ray,
-        );
-        if (ps::sun_disk_mode_high_quality(ps_params.sun_disk_mode)) {
-            terms.ray = -world_ray_from_clip_pos(in.clip_pos, in.view_layer);
-        }
+    var terms: ps::ProceduralSkyVisibleTerms = ps::ProceduralSkyVisibleTerms(
+        in.ground_color,
+        in.sky_color,
+        in.sun_color,
+        in.ray,
+    );
+    if (ps::sun_disk_mode_high_quality(ps_params.sun_disk_mode)) {
+        terms.ray = -world_ray_from_clip_pos(in.clip_pos, in.view_layer);
     }
     return rg::retain_globals_additive(vec4<f32>(
         ps::visible_fragment_color(ps_params, terms),
@@ -112,11 +92,19 @@ fn world_ray_from_clip_pos(clip_pos: vec4<f32>, view_layer: u32) -> vec3<f32> {
     let viewport_extent = vec2<f32>(f32(rg::frame.viewport_width), f32(rg::frame.viewport_height));
     let ndc = skybox::ndc_from_fragment_position(clip_pos, view, viewport_extent);
     let proj_params = select(rg::frame.proj_params_left, rg::frame.proj_params_right, view_layer != 0u);
-    let view_ray = skybox::view_ray_from_ndc(ndc, proj_params, skybox::view_is_orthographic(view, view_layer));
+    let view_ray = skybox::view_ray_from_ndc(
+        ndc,
+        proj_params,
+        skybox::view_is_orthographic(view, view_layer),
+    );
     return skybox::world_ray_from_view_ray(view_ray, view, view_layer);
 }
 
-fn clip_pos_from_view_ray(view_ray: vec3<f32>, proj_params: vec4<f32>, orthographic: bool) -> vec4<f32> {
+fn clip_pos_from_view_ray(
+    view_ray: vec3<f32>,
+    proj_params: vec4<f32>,
+    orthographic: bool,
+) -> vec4<f32> {
     let camera_ray = view_ray * vec3<f32>(1.0, view.ndc_y_sign_pad.x, 1.0);
     if (camera_ray.z >= -1e-6) {
         return vec4<f32>(camera_ray.xy, 2.0, 1.0);
@@ -128,13 +116,13 @@ fn clip_pos_from_view_ray(view_ray: vec3<f32>, proj_params: vec4<f32>, orthograp
 }
 
 fn view_ray_from_world_ray(world_ray: vec3<f32>, view_layer: u32) -> vec3<f32> {
-    let world_matrix = select_world_proj(view_layer);
-    return normalize((world_matrix * vec4<f32>(world_ray, 0.0)).xyz);
+    let world_to_view = select_world_to_view(view_layer);
+    return normalize((world_to_view * vec4<f32>(world_ray, 0.0)).xyz);
 }
 
-fn select_world_proj(view_idx: u32) -> mat4x4<f32> {
-    if (view_idx == 0u) {
-        return view.world_left;
+fn select_world_to_view(view_layer: u32) -> mat4x4<f32> {
+    if (view_layer == 0u) {
+        return view.world_to_view_left;
     }
-    return view.world_right;
+    return view.world_to_view_right;
 }
