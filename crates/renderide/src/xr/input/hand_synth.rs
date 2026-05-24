@@ -75,12 +75,17 @@ struct ControllerCurlInputs {
     grip: f32,
     /// Trigger analog in 0..=1. Drives index finger curl.
     trigger: f32,
+    /// Thumb boolean resting state. Drives thumb finger curl.
+    thumb: bool,
 }
 
 /// Profile-agnostic pose + analog inputs feeding curl synthesis.
 ///
-/// Each `VRControllerState` variant has the same set of pose fields and an analog trigger; the
-/// only profile-specific bit is grip, which is `f32` on Touch / Index but `bool` on Vive / WMR.
+/// Each `VRControllerState` variant has the same set of pose fields and an analog trigger.
+/// There are only a handful of profile-specific bits:
+/// - `grip` is `f32` on Touch / Index but `bool` on Vive / WMR.
+/// - `thumb` is conditioned on different sensors depending on controllers.
+///
 /// Match arms in [`extract_curl_inputs`] pre-coerce grip into `0.0` / `1.0` for the boolean
 /// profiles, then call into [`curl_inputs_from_source`] uniformly.
 struct ControllerCurlSource {
@@ -93,13 +98,14 @@ struct ControllerCurlSource {
     hand_rotation: Quat,
     grip: f32,
     trigger: f32,
+    thumb: bool,
 }
 
 /// Builds [`ControllerCurlSource`] from a profile-specific controller state with an explicit
 /// grip expression. The other pose fields share the same names across every profile struct so
 /// they forward 1:1.
 macro_rules! curl_source {
-    ($s:expr, grip = $grip:expr) => {
+    ($s:expr, grip = $grip:expr, thumb = $thumb:expr) => {
         ControllerCurlSource {
             is_tracking: $s.is_tracking,
             side: $s.side,
@@ -110,6 +116,7 @@ macro_rules! curl_source {
             hand_rotation: $s.hand_rotation,
             grip: $grip,
             trigger: $s.trigger,
+            thumb: $thumb,
         }
     };
 }
@@ -136,6 +143,7 @@ fn curl_inputs_from_source(src: ControllerCurlSource) -> Option<ControllerCurlIn
         wrist_rotation,
         grip: src.grip.clamp(0.0, 1.0),
         trigger: src.trigger.clamp(0.0, 1.0),
+        thumb: src.thumb,
     })
 }
 
@@ -146,18 +154,26 @@ fn curl_inputs_from_source(src: ControllerCurlSource) -> Option<ControllerCurlIn
 /// boolean is coerced to `0.0` / `1.0` before clamping.
 fn extract_curl_inputs(controller: &VRControllerState) -> Option<ControllerCurlInputs> {
     match controller {
-        VRControllerState::TouchControllerState(s) => {
-            curl_inputs_from_source(curl_source!(s, grip = s.grip))
-        }
-        VRControllerState::IndexControllerState(s) => {
-            curl_inputs_from_source(curl_source!(s, grip = s.grip))
-        }
-        VRControllerState::ViveControllerState(s) => {
-            curl_inputs_from_source(curl_source!(s, grip = if s.grip { 1.0 } else { 0.0 }))
-        }
-        VRControllerState::WindowsMRControllerState(s) => {
-            curl_inputs_from_source(curl_source!(s, grip = if s.grip { 1.0 } else { 0.0 }))
-        }
+        VRControllerState::TouchControllerState(s) => curl_inputs_from_source(curl_source!(
+            s,
+            grip = s.grip,
+            thumb = s.thumbrest_touch || s.button_xa_touch || s.button_yb_touch || s.joystick_touch
+        )),
+        VRControllerState::IndexControllerState(s) => curl_inputs_from_source(curl_source!(
+            s,
+            grip = s.grip,
+            thumb = s.touchpad_touch || s.button_atouch || s.button_btouch || s.joystick_touch
+        )),
+        VRControllerState::ViveControllerState(s) => curl_inputs_from_source(curl_source!(
+            s,
+            grip = if s.grip { 1.0 } else { 0.0 },
+            thumb = s.touchpad_touch
+        )),
+        VRControllerState::WindowsMRControllerState(s) => curl_inputs_from_source(curl_source!(
+            s,
+            grip = if s.grip { 1.0 } else { 0.0 },
+            thumb = s.touchpad_touch
+        )),
         VRControllerState::CosmosControllerState(_)
         | VRControllerState::GenericControllerState(_)
         | VRControllerState::HPReverbControllerState(_)
@@ -172,13 +188,14 @@ fn extract_curl_inputs(controller: &VRControllerState) -> Option<ControllerCurlI
 
 /// Returns the idle<->fist blend factor for a given segment index.
 ///
-/// - Thumb and metacarpals are held at idle (`0.0`). Non-thumb metacarpals are overridden on the
+/// - Metacarpals are held at idle (`0.0`). Non-thumb metacarpals are overridden on the
 ///   host anyway when [`HandState::tracks_metacarpals`] is `false`, so their blend does not matter.
 /// - Index curl follows `trigger`.
 /// - Middle, ring, and pinky curl follow `grip`.
-fn blend_factor_for_segment(index: usize, grip: f32, trigger: f32) -> f32 {
+/// - Thumb curl follows `thumb`.
+fn blend_factor_for_segment(index: usize, grip: f32, trigger: f32, thumb: f32) -> f32 {
     match finger_kind_for_segment(index) {
-        FingerKind::Thumb => 0.0,
+        FingerKind::Thumb => thumb,
         FingerKind::Index => trigger,
         FingerKind::Middle | FingerKind::Ring | FingerKind::Pinky => grip,
     }
@@ -188,6 +205,7 @@ fn blend_factor_for_segment(index: usize, grip: f32, trigger: f32) -> f32 {
 /// `None` if the controller is untracked or not a variant we drive hands for.
 fn synthesize_one_hand(controller: &VRControllerState) -> Option<HandState> {
     let inputs = extract_curl_inputs(controller)?;
+    let thumb = if inputs.thumb { 1.0 } else { 0.0 };
     let (pos_idle, rot_idle, pos_fist, rot_fist, rot_half, unique_id) = match inputs.side {
         Chirality::Left => (
             &IDLE_POS_LEFT,
@@ -209,7 +227,7 @@ fn synthesize_one_hand(controller: &VRControllerState) -> Option<HandState> {
     let mut segment_positions = Vec::with_capacity(SEGMENT_COUNT);
     let mut segment_rotations = Vec::with_capacity(SEGMENT_COUNT);
     for i in 0..SEGMENT_COUNT {
-        let t = blend_factor_for_segment(i, inputs.grip, inputs.trigger);
+        let t = blend_factor_for_segment(i, inputs.grip, inputs.trigger, thumb);
         let pi = Vec3::from_array(pos_idle[i]);
         let pf = Vec3::from_array(pos_fist[i]);
         segment_positions.push(pi.lerp(pf, t));
@@ -257,15 +275,32 @@ mod tests {
         is_tracking: bool,
         grip: f32,
         trigger: f32,
+        thumb: bool,
     ) -> VRControllerState {
-        VRControllerState::TouchControllerState(TouchControllerState {
+        VRControllerState::TouchControllerState(touch_controller_state(
+            side,
+            is_tracking,
+            grip,
+            trigger,
+            thumb,
+        ))
+    }
+
+    fn touch_controller_state(
+        side: Chirality,
+        is_tracking: bool,
+        grip: f32,
+        trigger: f32,
+        thumb: bool,
+    ) -> TouchControllerState {
+        TouchControllerState {
             model: TouchControllerModel::QuestAndRiftS,
             start: false,
             button_yb: false,
             button_xa: false,
             button_yb_touch: false,
             button_xa_touch: false,
-            thumbrest_touch: false,
+            thumbrest_touch: thumb,
             grip,
             grip_click: false,
             joystick_raw: glam::Vec2::ZERO,
@@ -290,14 +325,18 @@ mod tests {
             hand_rotation: Quat::IDENTITY,
             battery_level: 1.0,
             battery_charging: false,
-        })
+        }
+    }
+
+    fn idle_tracked_touch_controller_state() -> TouchControllerState {
+        touch_controller_state(Chirality::Left, true, 0.0, 0.0, false)
     }
 
     #[test]
     fn produces_one_hand_per_tracked_controller() {
         let controllers = vec![
-            touch_controller(Chirality::Left, true, 0.0, 0.0),
-            touch_controller(Chirality::Right, true, 0.0, 0.0),
+            touch_controller(Chirality::Left, true, 0.0, 0.0, false),
+            touch_controller(Chirality::Right, true, 0.0, 0.0, false),
         ];
         let hands = synthesize_hand_states(&controllers);
         assert_eq!(hands.len(), 2);
@@ -308,8 +347,8 @@ mod tests {
     #[test]
     fn skips_untracked_controllers() {
         let controllers = vec![
-            touch_controller(Chirality::Left, false, 0.0, 0.0),
-            touch_controller(Chirality::Right, true, 0.0, 0.0),
+            touch_controller(Chirality::Left, false, 0.0, 0.0, false),
+            touch_controller(Chirality::Right, true, 0.0, 0.0, false),
         ];
         let hands = synthesize_hand_states(&controllers);
         assert_eq!(hands.len(), 1);
@@ -318,7 +357,8 @@ mod tests {
 
     #[test]
     fn segment_arrays_have_host_expected_length() {
-        let hands = synthesize_hand_states(&[touch_controller(Chirality::Left, true, 0.5, 0.5)]);
+        let hands =
+            synthesize_hand_states(&[touch_controller(Chirality::Left, true, 0.5, 0.5, false)]);
         let hand = &hands[0];
         assert_eq!(hand.segment_positions.len(), SEGMENT_COUNT);
         assert_eq!(hand.segment_rotations.len(), SEGMENT_COUNT);
@@ -329,9 +369,11 @@ mod tests {
     #[test]
     fn trigger_bends_index_but_not_other_fingers() {
         let idle =
-            synthesize_hand_states(&[touch_controller(Chirality::Left, true, 0.0, 0.0)]).remove(0);
+            synthesize_hand_states(&[touch_controller(Chirality::Left, true, 0.0, 0.0, false)])
+                .remove(0);
         let full_trigger =
-            synthesize_hand_states(&[touch_controller(Chirality::Left, true, 0.0, 1.0)]).remove(0);
+            synthesize_hand_states(&[touch_controller(Chirality::Left, true, 0.0, 1.0, false)])
+                .remove(0);
         let index_delta = (full_trigger.segment_rotations[6].to_array()[3]
             - idle.segment_rotations[6].to_array()[3])
             .abs();
@@ -358,9 +400,11 @@ mod tests {
     #[test]
     fn grip_bends_middle_ring_pinky_but_not_index_or_thumb() {
         let idle =
-            synthesize_hand_states(&[touch_controller(Chirality::Left, true, 0.0, 0.0)]).remove(0);
+            synthesize_hand_states(&[touch_controller(Chirality::Left, true, 0.0, 0.0, false)])
+                .remove(0);
         let full_grip =
-            synthesize_hand_states(&[touch_controller(Chirality::Left, true, 1.0, 0.0)]).remove(0);
+            synthesize_hand_states(&[touch_controller(Chirality::Left, true, 1.0, 0.0, false)])
+                .remove(0);
         let middle_delta = (full_grip.segment_rotations[11].to_array()[3]
             - idle.segment_rotations[11].to_array()[3])
             .abs();
@@ -401,8 +445,8 @@ mod tests {
     #[test]
     fn left_and_right_hands_differ() {
         let hands = synthesize_hand_states(&[
-            touch_controller(Chirality::Left, true, 0.5, 0.5),
-            touch_controller(Chirality::Right, true, 0.5, 0.5),
+            touch_controller(Chirality::Left, true, 0.5, 0.5, false),
+            touch_controller(Chirality::Right, true, 0.5, 0.5, false),
         ]);
         let left_index_met_x = hands[0].segment_positions[4].x;
         let right_index_met_x = hands[1].segment_positions[4].x;
@@ -428,15 +472,47 @@ mod tests {
     }
 
     #[test]
-    fn thumb_metacarpal_always_at_idle_pose() {
-        // Thumb is never blended, so thumb metacarpal position (segment 0) should always match the
-        // idle preset regardless of grip/trigger.
-        let hands = synthesize_hand_states(&[touch_controller(Chirality::Left, true, 1.0, 1.0)]);
-        let expected = Vec3::from_array(IDLE_POS_LEFT[0]);
-        let actual = hands[0].segment_positions[0];
+    fn thumb_does_not_curl_other_fingers() {
+        let idle =
+            synthesize_hand_states(&[touch_controller(Chirality::Left, true, 0.0, 0.0, false)])
+                .remove(0);
+        let full_grip =
+            synthesize_hand_states(&[touch_controller(Chirality::Left, true, 0.0, 0.0, true)])
+                .remove(0);
+        let middle_delta = (full_grip.segment_rotations[11].to_array()[3]
+            - idle.segment_rotations[11].to_array()[3])
+            .abs();
+        let ring_delta = (full_grip.segment_rotations[16].to_array()[3]
+            - idle.segment_rotations[16].to_array()[3])
+            .abs();
+        let pinky_delta = (full_grip.segment_rotations[21].to_array()[3]
+            - idle.segment_rotations[21].to_array()[3])
+            .abs();
+        let index_delta = (full_grip.segment_rotations[6].to_array()[3]
+            - idle.segment_rotations[6].to_array()[3])
+            .abs();
+        let thumb_delta = (full_grip.segment_rotations[1].to_array()[3]
+            - idle.segment_rotations[1].to_array()[3])
+            .abs();
         assert!(
-            (actual - expected).length() < 1e-6,
-            "thumb metacarpal should stay at idle when grip=1, trigger=1"
+            middle_delta < 1e-5,
+            "thumb must not move middle (delta={middle_delta})"
+        );
+        assert!(
+            ring_delta < 1e-5,
+            "thumb must not move ring (delta={ring_delta})"
+        );
+        assert!(
+            pinky_delta < 1e-5,
+            "thumb must not move pinky (delta={pinky_delta})"
+        );
+        assert!(
+            index_delta < 1e-5,
+            "thumb must not move index (delta={index_delta})"
+        );
+        assert!(
+            thumb_delta > 0.05,
+            "thumb should bend (delta={thumb_delta})"
         );
     }
 
@@ -544,7 +620,7 @@ mod tests {
     #[test]
     fn touch_clamps_out_of_range_grip_and_trigger() {
         let VRControllerState::TouchControllerState(mut s) =
-            touch_controller(Chirality::Left, true, 0.0, 0.0)
+            touch_controller(Chirality::Left, true, 0.0, 0.0, false)
         else {
             panic!("expected touch controller state")
         };
@@ -554,6 +630,57 @@ mod tests {
             .expect("tracked controller should produce inputs");
         assert_eq!(inputs.grip, 1.0, "grip > 1 must clamp to 1");
         assert_eq!(inputs.trigger, 0.0, "trigger < 0 must clamp to 0");
+    }
+
+    #[test]
+    fn touch_considers_all_face_buttons_and_sensors_for_thumb() {
+        let thumbrest_touch_inputs = extract_curl_inputs(&VRControllerState::TouchControllerState(
+            TouchControllerState {
+                thumbrest_touch: true,
+                ..idle_tracked_touch_controller_state()
+            },
+        ))
+        .expect("tracked controller should produce inputs");
+        assert!(
+            thumbrest_touch_inputs.thumb,
+            "thumbrest touch sensor should set thumb to true"
+        );
+
+        let button_xa_touch_inputs = extract_curl_inputs(&VRControllerState::TouchControllerState(
+            TouchControllerState {
+                button_xa_touch: true,
+                ..idle_tracked_touch_controller_state()
+            },
+        ))
+        .expect("tracked controller should produce inputs");
+        assert!(
+            button_xa_touch_inputs.thumb,
+            "xa button touch sensor should set thumb to true"
+        );
+
+        let button_yb_touch_inputs = extract_curl_inputs(&VRControllerState::TouchControllerState(
+            TouchControllerState {
+                button_yb_touch: true,
+                ..idle_tracked_touch_controller_state()
+            },
+        ))
+        .expect("tracked controller should produce inputs");
+        assert!(
+            button_yb_touch_inputs.thumb,
+            "yb button touch sensor should set thumb to true"
+        );
+
+        let joystick_touch_inputs = extract_curl_inputs(&VRControllerState::TouchControllerState(
+            TouchControllerState {
+                joystick_touch: true,
+                ..idle_tracked_touch_controller_state()
+            },
+        ))
+        .expect("tracked controller should produce inputs");
+        assert!(
+            joystick_touch_inputs.thumb,
+            "joystick touch sensor should set thumb to true"
+        );
     }
 
     #[test]
