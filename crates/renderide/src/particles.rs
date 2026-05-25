@@ -1,6 +1,6 @@
 //! PhotonDust render-buffer decoding and generated mesh helpers.
 
-use std::sync::Arc;
+use std::{ops::Range, sync::Arc};
 
 use glam::{Quat, Vec2, Vec3, Vec4};
 use rayon::prelude::*;
@@ -26,6 +26,18 @@ const POINT_PARTICLE_PARALLEL_MIN: usize = 2_048;
 const POINT_PARTICLE_PARALLEL_CHUNK: usize = 1_024;
 /// Minimum trail points before building texture-mode meshes in parallel is worthwhile.
 const TRAIL_PARALLEL_POINT_MIN: usize = 1_024;
+/// Trail points targeted per decode worker.
+const TRAIL_DECODE_PARALLEL_CHUNK_POINTS: usize = 1_024;
+/// Trail points required before trail decode fans out across Rayon.
+const TRAIL_DECODE_PARALLEL_MIN_POINTS: usize = TRAIL_DECODE_PARALLEL_CHUNK_POINTS * 2;
+/// Trail points targeted per generated mesh worker.
+const TRAIL_MESH_PARALLEL_CHUNK_POINTS: usize = 1_024;
+/// Trail points required before one texture-mode mesh build fans out across Rayon.
+const TRAIL_MESH_PARALLEL_MIN_POINTS: usize = TRAIL_MESH_PARALLEL_CHUNK_POINTS * 2;
+/// Cheap bound scans use larger chunks so scheduling overhead stays amortized.
+const PARTICLE_BOUNDS_PARALLEL_CHUNK_POINTS: usize = 16_384;
+/// Point or trail point count required before bounds reduction uses Rayon.
+const PARTICLE_BOUNDS_PARALLEL_MIN_POINTS: usize = PARTICLE_BOUNDS_PARALLEL_CHUNK_POINTS * 2;
 /// Number of bytes in one PhotonDust trail-offset row.
 const TRAIL_OFFSET_BYTES: usize = 16;
 /// Generated particle mesh id tag for billboard quads.
@@ -365,7 +377,7 @@ fn checked_range(
     offset: i32,
     count: usize,
     stride: usize,
-) -> Result<std::ops::Range<usize>, ParticleRenderBufferError> {
+) -> Result<Range<usize>, ParticleRenderBufferError> {
     if offset < 0 {
         return Err(ParticleRenderBufferError::MissingOffset {
             kind,
@@ -415,14 +427,14 @@ fn checked_optional_range(
     offset: i32,
     count: usize,
     stride: usize,
-) -> Result<Option<std::ops::Range<usize>>, ParticleRenderBufferError> {
+) -> Result<Option<Range<usize>>, ParticleRenderBufferError> {
     if offset < 0 {
         return Ok(None);
     }
     checked_range(kind, asset_id, raw_len, field, offset, count, stride).map(Some)
 }
 
-fn read_pod_at<T: bytemuck::Pod>(raw: &[u8], range: &std::ops::Range<usize>, index: usize) -> T {
+fn read_pod_at<T: bytemuck::Pod>(raw: &[u8], range: &Range<usize>, index: usize) -> T {
     let stride = size_of::<T>();
     let start = range.start + index * stride;
     bytemuck::pod_read_unaligned(&raw[start..start + stride])
@@ -568,7 +580,7 @@ fn build_billboard_mesh(
 
 /// Returns whether point decode/fill work is large enough to amortize Rayon scheduling.
 fn point_parallel_is_worthwhile(count: usize) -> bool {
-    count >= POINT_PARTICLE_PARALLEL_MIN
+    count >= POINT_PARTICLE_PARALLEL_MIN && rayon::current_num_threads() > 1
 }
 
 /// Fills packed billboard vertex and index buffers for `points`.
@@ -774,38 +786,121 @@ fn decode_trails(
         trail_point_count,
         4,
     )?;
-    let mut trails = Vec::with_capacity(trails_count);
-    for index in 0..trails_count {
-        let row: [i32; 4] = read_pod_at(raw, &trail_offsets, index);
-        let offset = decode_trail_offset(row, trail_point_count);
-        let mut points = Vec::with_capacity(offset.map_or(0, |o| o.count));
-        if let Some(offset) = offset {
-            for logical_index in 0..offset.count {
-                let Some(point_index) = offset.point_index(logical_index) else {
-                    continue;
-                };
-                if point_index >= trail_point_count {
-                    continue;
-                }
-                let p: [f32; 3] = read_pod_at(raw, &positions, point_index);
-                let c: [f32; 4] = read_pod_at(raw, &colors, point_index);
-                let width = read_pod_at::<f32>(raw, &sizes, point_index).max(0.0);
-                points.push(TrailPoint {
-                    position: Vec3::from_array(p),
-                    color: Vec4::from_array(c),
-                    width,
-                });
-            }
+    let offsets = (0..trails_count)
+        .map(|index| {
+            let row: [i32; 4] = read_pod_at(raw, &trail_offsets, index);
+            decode_trail_offset(row, trail_point_count)
+        })
+        .collect::<Vec<_>>();
+    let total_points = offsets
+        .iter()
+        .filter_map(|offset| offset.as_ref().map(|offset| offset.count))
+        .sum::<usize>();
+    let chunks = trail_chunks_by_point_budget(&offsets, TRAIL_DECODE_PARALLEL_CHUNK_POINTS);
+    if trail_decode_parallel_is_worthwhile(total_points, chunks.len()) {
+        profiling::scope!("particles::decode_trails_parallel");
+        let per_chunk = chunks
+            .par_iter()
+            .with_min_len(1)
+            .map(|range| {
+                decode_trail_range(
+                    raw,
+                    &positions,
+                    &colors,
+                    &sizes,
+                    trail_point_count,
+                    &offsets,
+                    range.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut trails = Vec::with_capacity(trails_count);
+        for mut chunk in per_chunk {
+            trails.append(&mut chunk);
         }
-        let distances = trail_distances(&points);
-        let total_distance = distances.last().copied().unwrap_or(0.0).max(1e-6);
-        trails.push(TrailPolyline {
-            points,
-            distances,
-            total_distance,
-        });
+        return Ok(trails);
+    }
+    profiling::scope!("particles::decode_trails_serial");
+    let mut trails = Vec::with_capacity(trails_count);
+    for offset in offsets.iter().take(trails_count).copied() {
+        trails.push(decode_trail_polyline(
+            raw,
+            &positions,
+            &colors,
+            &sizes,
+            trail_point_count,
+            offset,
+        ));
     }
     Ok(trails)
+}
+
+/// Returns whether trail decode has enough work to produce at least two useful Rayon chunks.
+fn trail_decode_parallel_is_worthwhile(total_points: usize, chunk_count: usize) -> bool {
+    total_points >= TRAIL_DECODE_PARALLEL_MIN_POINTS
+        && chunk_count >= 2
+        && rayon::current_num_threads() > 1
+}
+
+/// Decodes one contiguous trail-index range into ordered polylines.
+fn decode_trail_range(
+    raw: &[u8],
+    positions: &Range<usize>,
+    colors: &Range<usize>,
+    sizes: &Range<usize>,
+    trail_point_count: usize,
+    offsets: &[Option<TrailOffset>],
+    range: Range<usize>,
+) -> Vec<TrailPolyline> {
+    let mut trails = Vec::with_capacity(range.end.saturating_sub(range.start));
+    for index in range {
+        trails.push(decode_trail_polyline(
+            raw,
+            positions,
+            colors,
+            sizes,
+            trail_point_count,
+            offsets[index],
+        ));
+    }
+    trails
+}
+
+/// Decodes one logical trail after offset-ring normalization.
+fn decode_trail_polyline(
+    raw: &[u8],
+    positions: &Range<usize>,
+    colors: &Range<usize>,
+    sizes: &Range<usize>,
+    trail_point_count: usize,
+    offset: Option<TrailOffset>,
+) -> TrailPolyline {
+    let mut points = Vec::with_capacity(offset.map_or(0, |o| o.count));
+    if let Some(offset) = offset {
+        for logical_index in 0..offset.count {
+            let Some(point_index) = offset.point_index(logical_index) else {
+                continue;
+            };
+            if point_index >= trail_point_count {
+                continue;
+            }
+            let p: [f32; 3] = read_pod_at(raw, positions, point_index);
+            let c: [f32; 4] = read_pod_at(raw, colors, point_index);
+            let width = read_pod_at::<f32>(raw, sizes, point_index).max(0.0);
+            points.push(TrailPoint {
+                position: Vec3::from_array(p),
+                color: Vec4::from_array(c),
+                width,
+            });
+        }
+    }
+    let distances = trail_distances(&points);
+    let total_distance = distances.last().copied().unwrap_or(0.0).max(1e-6);
+    TrailPolyline {
+        points,
+        distances,
+        total_distance,
+    }
 }
 
 fn decode_trail_offset(row: [i32; 4], trail_point_count: usize) -> Option<TrailOffset> {
@@ -871,6 +966,7 @@ fn build_trail_meshes(
 /// Returns whether trail mesh generation has enough point work to build modes in parallel.
 fn trail_mesh_parallel_is_worthwhile(trails: &[TrailPolyline]) -> bool {
     trails.iter().map(|trail| trail.points.len()).sum::<usize>() >= TRAIL_PARALLEL_POINT_MIN
+        && rayon::current_num_threads() > 1
 }
 
 fn build_trail_mesh(
@@ -913,9 +1009,79 @@ fn build_trail_mesh(
 
     let mut vertices = Vec::with_capacity(vertex_count * generated_vertex_stride());
     let mut indices = Vec::with_capacity(index_count * 4);
+    let trail_vertex_offsets = trail_vertex_offsets(trails);
+    let trail_point_count = trail_vertex_offsets.last().copied().unwrap_or(0) / 2;
+    let chunks = trail_chunks_by_point_budget_from_trails(trails, TRAIL_MESH_PARALLEL_CHUNK_POINTS);
+    if trail_mesh_inner_parallel_is_worthwhile(trail_point_count, chunks.len()) {
+        profiling::scope!("particles::build_trail_mesh_inner_parallel");
+        let per_chunk = chunks
+            .par_iter()
+            .with_min_len(1)
+            .map(|range| {
+                build_trail_mesh_chunk(trails, &trail_vertex_offsets, texture_mode, range.clone())
+            })
+            .collect::<Vec<_>>();
+        for mut chunk in per_chunk {
+            vertices.append(&mut chunk.vertices);
+            indices.append(&mut chunk.indices);
+        }
+    } else {
+        profiling::scope!("particles::build_trail_mesh_inner_serial");
+        let mut chunk =
+            build_trail_mesh_chunk(trails, &trail_vertex_offsets, texture_mode, 0..trails.len());
+        vertices.append(&mut chunk.vertices);
+        indices.append(&mut chunk.indices);
+    }
+
+    upload_generated_mesh(
+        gpu,
+        GeneratedMeshUploadInput {
+            kind: "trail",
+            source_asset_id,
+            mesh_asset_id,
+            vertices,
+            indices,
+            vertex_count,
+            index_count,
+            bounds: bounds_for_trails(trails),
+        },
+        existing,
+    )
+}
+
+/// Packed generated trail data for one trail-index chunk.
+struct TrailMeshChunk {
+    /// Generated vertex bytes for the chunk.
+    vertices: Vec<u8>,
+    /// Generated index bytes for the chunk.
+    indices: Vec<u8>,
+}
+
+/// Returns whether one generated trail mesh has enough point work for at least two worker chunks.
+fn trail_mesh_inner_parallel_is_worthwhile(total_points: usize, chunk_count: usize) -> bool {
+    total_points >= TRAIL_MESH_PARALLEL_MIN_POINTS
+        && chunk_count >= 2
+        && rayon::current_num_threads() > 1
+}
+
+/// Builds one contiguous trail-index range into local vertex and index buffers.
+fn build_trail_mesh_chunk(
+    trails: &[TrailPolyline],
+    trail_vertex_offsets: &[usize],
+    texture_mode: TrailTextureMode,
+    range: Range<usize>,
+) -> TrailMeshChunk {
+    let vertex_count =
+        trail_vertex_offsets[range.end].saturating_sub(trail_vertex_offsets[range.start]);
+    let segment_count = trails[range.clone()]
+        .iter()
+        .map(|trail| trail.points.len().saturating_sub(1))
+        .sum::<usize>();
+    let mut vertices = Vec::with_capacity(vertex_count * generated_vertex_stride());
+    let mut indices = Vec::with_capacity(segment_count * 6 * size_of::<u32>());
     let normal = Vec3::Z;
-    let mut base_vertex = 0u32;
-    for trail in trails {
+    for trail_index in range {
+        let trail = &trails[trail_index];
         if trail.points.len() < 2 {
             continue;
         }
@@ -945,29 +1111,72 @@ fn build_trail_mesh(
                 point.color,
             );
         }
+        let base_vertex = trail_vertex_offsets[trail_index] as u32;
         for segment_index in 0..trail.points.len() - 1 {
             let a = base_vertex + (segment_index as u32) * 2;
             for index in [a, a + 1, a + 2, a + 2, a + 1, a + 3] {
                 indices.extend_from_slice(bytemuck::bytes_of(&index));
             }
         }
-        base_vertex = base_vertex.saturating_add((trail.points.len() * 2) as u32);
     }
+    TrailMeshChunk { vertices, indices }
+}
 
-    upload_generated_mesh(
-        gpu,
-        GeneratedMeshUploadInput {
-            kind: "trail",
-            source_asset_id,
-            mesh_asset_id,
-            vertices,
-            indices,
-            vertex_count,
-            index_count,
-            bounds: bounds_for_trails(trails),
-        },
-        existing,
-    )
+/// Prefix-sums generated trail vertex counts per source trail.
+fn trail_vertex_offsets(trails: &[TrailPolyline]) -> Vec<usize> {
+    let mut offsets = Vec::with_capacity(trails.len() + 1);
+    let mut total = 0usize;
+    offsets.push(0);
+    for trail in trails {
+        total = total.saturating_add(trail.points.len().saturating_mul(2));
+        offsets.push(total);
+    }
+    offsets
+}
+
+/// Builds trail-index chunks by accumulating decoded point count.
+fn trail_chunks_by_point_budget_from_trails(
+    trails: &[TrailPolyline],
+    target_points: usize,
+) -> Vec<Range<usize>> {
+    trail_chunks_by_point_budget_impl(trails.len(), target_points, |index| {
+        trails[index].points.len()
+    })
+}
+
+/// Builds trail-index chunks by accumulating offset point count.
+fn trail_chunks_by_point_budget(
+    offsets: &[Option<TrailOffset>],
+    target_points: usize,
+) -> Vec<Range<usize>> {
+    trail_chunks_by_point_budget_impl(offsets.len(), target_points, |index| {
+        offsets[index].map_or(0, |offset| offset.count)
+    })
+}
+
+/// Chunks an ordered trail domain without reordering any source trail.
+fn trail_chunks_by_point_budget_impl(
+    len: usize,
+    target_points: usize,
+    point_count: impl Fn(usize) -> usize,
+) -> Vec<Range<usize>> {
+    if len == 0 {
+        return Vec::new();
+    }
+    let target_points = target_points.max(1);
+    let mut chunks = Vec::new();
+    let mut start = 0usize;
+    let mut points = 0usize;
+    for index in 0..len {
+        points = points.saturating_add(point_count(index));
+        if points >= target_points && index + 1 < len {
+            chunks.push(start..index + 1);
+            start = index + 1;
+            points = 0;
+        }
+    }
+    chunks.push(start..len);
+    chunks
 }
 
 fn trail_distances(points: &[TrailPoint]) -> Vec<f32> {
@@ -1189,6 +1398,25 @@ fn generated_mesh_upload_data(
 }
 
 fn bounds_for_points(points: &[PointParticle]) -> RenderBoundingBox {
+    if particle_bounds_parallel_is_worthwhile(points.len()) {
+        return points
+            .par_chunks(PARTICLE_BOUNDS_PARALLEL_CHUNK_POINTS)
+            .with_min_len(1)
+            .map(|chunk| {
+                let mut bounds = BoundsAccumulator::default();
+                for point in chunk {
+                    let radius = point.size.abs().max_element() * 0.5;
+                    bounds.include(point.position - Vec3::splat(radius));
+                    bounds.include(point.position + Vec3::splat(radius));
+                }
+                bounds
+            })
+            .reduce(BoundsAccumulator::default, |mut a, b| {
+                a.merge(b);
+                a
+            })
+            .finish();
+    }
     let mut bounds = BoundsAccumulator::default();
     for point in points {
         let radius = point.size.abs().max_element() * 0.5;
@@ -1199,6 +1427,30 @@ fn bounds_for_points(points: &[PointParticle]) -> RenderBoundingBox {
 }
 
 fn bounds_for_trails(trails: &[TrailPolyline]) -> RenderBoundingBox {
+    let point_count = trails.iter().map(|trail| trail.points.len()).sum::<usize>();
+    let chunks =
+        trail_chunks_by_point_budget_from_trails(trails, PARTICLE_BOUNDS_PARALLEL_CHUNK_POINTS);
+    if particle_bounds_parallel_is_worthwhile(point_count) && chunks.len() >= 2 {
+        return chunks
+            .par_iter()
+            .with_min_len(1)
+            .map(|range| {
+                let mut bounds = BoundsAccumulator::default();
+                for trail in &trails[range.clone()] {
+                    for point in &trail.points {
+                        let radius = point.width.abs() * 0.5;
+                        bounds.include(point.position - Vec3::splat(radius));
+                        bounds.include(point.position + Vec3::splat(radius));
+                    }
+                }
+                bounds
+            })
+            .reduce(BoundsAccumulator::default, |mut a, b| {
+                a.merge(b);
+                a
+            })
+            .finish();
+    }
     let mut bounds = BoundsAccumulator::default();
     for trail in trails {
         for point in &trail.points {
@@ -1208,6 +1460,11 @@ fn bounds_for_trails(trails: &[TrailPolyline]) -> RenderBoundingBox {
         }
     }
     bounds.finish()
+}
+
+/// Returns whether a cheap bounds reduction has at least two useful chunks.
+fn particle_bounds_parallel_is_worthwhile(point_count: usize) -> bool {
+    point_count >= PARTICLE_BOUNDS_PARALLEL_MIN_POINTS && rayon::current_num_threads() > 1
 }
 
 #[derive(Default)]
@@ -1223,6 +1480,15 @@ impl BoundsAccumulator {
         }
         self.min = Some(self.min.map_or(point, |min| min.min(point)));
         self.max = Some(self.max.map_or(point, |max| max.max(point)));
+    }
+
+    fn merge(&mut self, other: Self) {
+        if let Some(min) = other.min {
+            self.include(min);
+        }
+        if let Some(max) = other.max {
+            self.include(max);
+        }
     }
 
     fn finish(self) -> RenderBoundingBox {
@@ -1416,5 +1682,85 @@ mod tests {
             trail_v_coordinate(TrailTextureMode::RepeatPerSegment, &distances, 5.0, 2),
             2.0
         );
+    }
+
+    #[test]
+    fn trail_mesh_chunks_merge_to_full_mesh_bytes() {
+        let trails = vec![
+            test_trail(&[
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(2.0, 0.0, 0.0),
+            ]),
+            test_trail(&[
+                Vec3::new(0.0, 1.0, 0.0),
+                Vec3::new(0.0, 2.0, 0.0),
+                Vec3::new(0.0, 3.0, 0.0),
+            ]),
+            test_trail(&[Vec3::new(1.0, 1.0, 0.0), Vec3::new(2.0, 2.0, 0.0)]),
+        ];
+        let offsets = trail_vertex_offsets(&trails);
+        let full = build_trail_mesh_chunk(&trails, &offsets, TrailTextureMode::Stretch, 0..3);
+        let mut chunked = TrailMeshChunk {
+            vertices: Vec::new(),
+            indices: Vec::new(),
+        };
+        for range in [0..1, 1..3] {
+            let mut chunk =
+                build_trail_mesh_chunk(&trails, &offsets, TrailTextureMode::Stretch, range);
+            chunked.vertices.append(&mut chunk.vertices);
+            chunked.indices.append(&mut chunk.indices);
+        }
+
+        assert_eq!(chunked.vertices, full.vertices);
+        assert_eq!(chunked.indices, full.indices);
+    }
+
+    #[test]
+    fn trail_chunk_budget_requires_two_chunks_for_parallel_decode() {
+        let offsets = vec![
+            Some(TrailOffset {
+                offset: 0,
+                capacity: 4,
+                start: 0,
+                count: 4,
+            }),
+            Some(TrailOffset {
+                offset: 4,
+                capacity: 4,
+                start: 0,
+                count: 4,
+            }),
+        ];
+        let chunks = trail_chunks_by_point_budget(&offsets, 4);
+
+        assert_eq!(chunks, vec![0..1, 1..2]);
+        assert!(
+            trail_decode_parallel_is_worthwhile(TRAIL_DECODE_PARALLEL_MIN_POINTS, 2)
+                || rayon::current_num_threads() == 1
+        );
+        assert!(!trail_decode_parallel_is_worthwhile(
+            TRAIL_DECODE_PARALLEL_MIN_POINTS,
+            1
+        ));
+    }
+
+    fn test_trail(points: &[Vec3]) -> TrailPolyline {
+        let points = points
+            .iter()
+            .copied()
+            .map(|position| TrailPoint {
+                position,
+                color: Vec4::ONE,
+                width: 1.0,
+            })
+            .collect::<Vec<_>>();
+        let distances = trail_distances(&points);
+        let total_distance = distances.last().copied().unwrap_or(0.0).max(1e-6);
+        TrailPolyline {
+            points,
+            distances,
+            total_distance,
+        }
     }
 }

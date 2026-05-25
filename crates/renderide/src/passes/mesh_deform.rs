@@ -13,7 +13,9 @@ use parking_lot::Mutex;
 use rayon::prelude::*;
 
 use crate::gpu_pools::MeshPool;
-use crate::mesh_deform::{SkinCacheKey, SkinCacheRendererKind};
+use crate::mesh_deform::{
+    SkinCacheKey, SkinCacheRendererKind, SkinningPaletteParams, write_skinning_palette_bytes_serial,
+};
 use crate::render_graph::context::ComputePassCtx;
 use crate::render_graph::error::{RenderPassError, SetupError};
 use crate::render_graph::pass::{ComputePass, PassBuilder, PassPhase};
@@ -24,8 +26,8 @@ use self::encode::{
     flush_mesh_deform_batch, record_mesh_deform,
 };
 use self::snapshot::{
-    MeshDeformSnapshot, deform_needs_skin_mesh, entry_need_for_snapshot,
-    gpu_mesh_needs_deform_dispatch,
+    MeshDeformSnapshot, deform_needs_skin_mesh, deform_needs_skin_snapshot,
+    entry_need_for_snapshot, gpu_mesh_needs_deform_dispatch,
 };
 
 /// Encodes mesh deformation compute for all active render spaces.
@@ -110,6 +112,7 @@ struct MeshDeformDispatchResult {
     skipped_allocations: u64,
 }
 
+#[derive(Clone, Copy)]
 struct MeshDeformDispatchCtx<'a> {
     scene: &'a SceneCoordinator,
     render_context: crate::shared::RenderingContext,
@@ -128,6 +131,10 @@ const DEFORM_COLLECT_PARALLEL_MIN_CHUNKS: usize = DEFORM_COLLECT_PARALLEL_CHUNK_
 const DEFORM_SPACE_PARALLEL_CHUNK_SPACES: usize = 1;
 /// Render-space count required before deform collection fans out across spaces.
 const DEFORM_SPACE_PARALLEL_MIN_SPACES: usize = DEFORM_SPACE_PARALLEL_CHUNK_SPACES * 2;
+/// Skinned deform work items assigned to one palette-preplan worker.
+const DEFORM_PREPLAN_PARALLEL_CHUNK_ITEMS: usize = 16;
+/// Skinned deform work item count required before palette preplanning uses Rayon.
+const DEFORM_PREPLAN_PARALLEL_MIN_ITEMS: usize = DEFORM_PREPLAN_PARALLEL_CHUNK_ITEMS * 2;
 
 #[derive(Clone, Copy)]
 enum DeformCollectChunkKind {
@@ -472,6 +479,58 @@ fn report_mesh_deform_stats(
     }
 }
 
+/// Prepares CPU skinning palette bytes before the serial encode loop when enough skinned work exists.
+fn preplan_skinning_palettes(
+    work: &[DeformWorkItem],
+    ready_work_indices: &[usize],
+    dispatch_ctx: MeshDeformDispatchCtx<'_>,
+) -> Vec<Option<Vec<u8>>> {
+    let skinned_count = ready_work_indices
+        .iter()
+        .filter(|&&work_index| {
+            work.get(work_index)
+                .is_some_and(|item| deform_needs_skin_snapshot(&item.mesh, item.skinned.as_deref()))
+        })
+        .count();
+    if skinned_count < DEFORM_PREPLAN_PARALLEL_MIN_ITEMS || rayon::current_num_threads() <= 1 {
+        return Vec::new();
+    }
+    profiling::scope!("mesh_deform::preplan_skinning_palettes_parallel");
+    ready_work_indices
+        .par_iter()
+        .with_min_len(DEFORM_PREPLAN_PARALLEL_CHUNK_ITEMS)
+        .map(|&work_index| {
+            work.get(work_index)
+                .and_then(|item| preplan_skinning_palette_for_item(item, dispatch_ctx))
+        })
+        .collect()
+}
+
+/// Builds one work item's skinning palette using worker-owned scratch.
+fn preplan_skinning_palette_for_item(
+    item: &DeformWorkItem,
+    dispatch_ctx: MeshDeformDispatchCtx<'_>,
+) -> Option<Vec<u8>> {
+    if !deform_needs_skin_snapshot(&item.mesh, item.skinned.as_deref()) {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    write_skinning_palette_bytes_serial(
+        SkinningPaletteParams {
+            scene: dispatch_ctx.scene,
+            space_id: item.space_id,
+            skinning_bind_matrices: &item.mesh.skinning_bind_matrices,
+            has_skeleton: item.mesh.has_skeleton,
+            bone_transform_indices: item.skinned.as_deref()?,
+            smr_node_id: item.smr_node_id,
+            render_context: dispatch_ctx.render_context,
+            head_output_transform: dispatch_ctx.head_output_transform,
+        },
+        &mut bytes,
+    )?;
+    Some(bytes)
+}
+
 fn dispatch_mesh_deform_work(
     mut gpu: MeshDeformEncodeGpu<'_>,
     skin_cache: &mut crate::mesh_deform::GpuSkinCache,
@@ -506,12 +565,16 @@ fn dispatch_mesh_deform_work(
             result.skipped_allocations = result.skipped_allocations.saturating_add(1);
         }
     }
+    let preplanned_palettes = preplan_skinning_palettes(work, ready_work_indices, dispatch_ctx);
 
     batch.clear();
-    for &work_index in ready_work_indices.iter() {
+    for (ready_index, &work_index) in ready_work_indices.iter().enumerate() {
         let Some(item) = work.get(work_index) else {
             continue;
         };
+        let prepared_skinning_palette_bytes = preplanned_palettes
+            .get(ready_index)
+            .and_then(Option::as_deref);
         let previous_signature = skin_cache.entry_deform_signature(&item.skin_cache_key);
         let record = {
             let Some((cache_entry, positions_arena, normals_arena, tangents_arena, temp_arena)) =
@@ -531,6 +594,7 @@ fn dispatch_mesh_deform_work(
                     smr_node_id: item.smr_node_id,
                     render_context: dispatch_ctx.render_context,
                     head_output_transform: dispatch_ctx.head_output_transform,
+                    prepared_skinning_palette_bytes,
                     blend_weights: &item.blend_weights,
                     previous_signature,
                     bone_cursor: &mut cursors.bone,
