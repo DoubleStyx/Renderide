@@ -15,6 +15,8 @@
 //! avatar's own rest pose. Thumb is held at idle; index curl follows the trigger analog;
 //! middle/ring/pinky follow the squeeze (grip) analog.
 
+#[cfg(test)]
+mod model_space_presets;
 mod presets;
 
 use glam::{Quat, Vec3};
@@ -22,9 +24,9 @@ use glam::{Quat, Vec3};
 use crate::shared::{Chirality, HandState, VRControllerState};
 
 use presets::{
-    FIST_POS_LEFT, FIST_POS_RIGHT, FIST_ROT_LEFT, FIST_ROT_RIGHT, HALF_FIST_ROT_LEFT,
-    HALF_FIST_ROT_RIGHT, IDLE_POS_LEFT, IDLE_POS_RIGHT, IDLE_ROT_LEFT, IDLE_ROT_RIGHT,
-    LEFT_HAND_ID, RIGHT_HAND_ID, SEGMENT_COUNT,
+    FIST_POS_LEFT, FIST_POS_RIGHT, FIST_ROT_LEFT, FIST_ROT_RIGHT, IDLE_POS_LEFT, IDLE_POS_RIGHT,
+    IDLE_ROT_LEFT, IDLE_ROT_RIGHT, LEFT_HAND_ID, RIGHT_HAND_ID, SEGMENT_COUNTS,
+    TOTAL_SEGMENT_COUNT,
 };
 
 /// Which finger a [`HandState`] segment index (0..24) belongs to.
@@ -42,16 +44,16 @@ enum FingerKind {
     Pinky,
 }
 
-/// Returns which finger the segment at `index` (0..24) belongs to, matching the
-/// `BodyNode::LeftThumbMetacarpal..=LeftPinkyTip` layout.
-fn finger_kind_for_segment(index: usize) -> FingerKind {
-    match index {
-        0..=3 => FingerKind::Thumb,
-        4..=8 => FingerKind::Index,
-        9..=13 => FingerKind::Middle,
-        14..=18 => FingerKind::Ring,
-        19..=23 => FingerKind::Pinky,
-        _ => FingerKind::Pinky,
+impl From<u8> for FingerKind {
+    fn from(value: u8) -> Self {
+        match value % 5 {
+            0 => Self::Thumb,
+            1 => Self::Index,
+            2 => Self::Middle,
+            3 => Self::Ring,
+            4 => Self::Pinky,
+            _ => Self::Pinky,
+        }
     }
 }
 
@@ -186,15 +188,15 @@ fn extract_curl_inputs(controller: &VRControllerState) -> Option<ControllerCurlI
     }
 }
 
-/// Returns the idle<->fist blend factor for a given segment index.
+/// Returns the idle<->fist blend factor for a given finger.
 ///
 /// - Metacarpals are held at idle (`0.0`). Non-thumb metacarpals are overridden on the
 ///   host anyway when [`HandState::tracks_metacarpals`] is `false`, so their blend does not matter.
 /// - Index curl follows `trigger`.
 /// - Middle, ring, and pinky curl follow `grip`.
 /// - Thumb curl follows `thumb`.
-fn blend_factor_for_segment(index: usize, grip: f32, trigger: f32, thumb: f32) -> f32 {
-    match finger_kind_for_segment(index) {
+fn blend_factor_for_segment(finger: FingerKind, grip: f32, trigger: f32, thumb: f32) -> f32 {
+    match finger {
         FingerKind::Thumb => thumb,
         FingerKind::Index => trigger,
         FingerKind::Middle | FingerKind::Ring | FingerKind::Pinky => grip,
@@ -206,13 +208,12 @@ fn blend_factor_for_segment(index: usize, grip: f32, trigger: f32, thumb: f32) -
 fn synthesize_one_hand(controller: &VRControllerState) -> Option<HandState> {
     let inputs = extract_curl_inputs(controller)?;
     let thumb = if inputs.thumb { 1.0 } else { 0.0 };
-    let (pos_idle, rot_idle, pos_fist, rot_fist, rot_half, unique_id) = match inputs.side {
+    let (pos_idle, rot_idle, pos_fist, rot_fist, unique_id) = match inputs.side {
         Chirality::Left => (
             &IDLE_POS_LEFT,
             &IDLE_ROT_LEFT,
             &FIST_POS_LEFT,
             &FIST_ROT_LEFT,
-            &HALF_FIST_ROT_LEFT,
             LEFT_HAND_ID,
         ),
         Chirality::Right => (
@@ -220,26 +221,27 @@ fn synthesize_one_hand(controller: &VRControllerState) -> Option<HandState> {
             &IDLE_ROT_RIGHT,
             &FIST_POS_RIGHT,
             &FIST_ROT_RIGHT,
-            &HALF_FIST_ROT_RIGHT,
             RIGHT_HAND_ID,
         ),
     };
-    let mut segment_positions = Vec::with_capacity(SEGMENT_COUNT);
-    let mut segment_rotations = Vec::with_capacity(SEGMENT_COUNT);
-    for i in 0..SEGMENT_COUNT {
-        let t = blend_factor_for_segment(i, inputs.grip, inputs.trigger, thumb);
-        let pi = Vec3::from_array(pos_idle[i]);
-        let pf = Vec3::from_array(pos_fist[i]);
-        segment_positions.push(pi.lerp(pf, t));
+    let mut segment_positions = Vec::with_capacity(TOTAL_SEGMENT_COUNT);
+    let mut segment_rotations = Vec::with_capacity(TOTAL_SEGMENT_COUNT);
+    for (finger_index, &finger_segment_count) in SEGMENT_COUNTS.iter().enumerate() {
+        let finger = FingerKind::from(finger_index as u8);
+        let t = blend_factor_for_segment(finger, inputs.grip, inputs.trigger, thumb);
+        let mut position = Vec3::ZERO;
+        let mut rotation = Quat::IDENTITY;
+        for i in 0..finger_segment_count {
+            let pi = Vec3::from_array(pos_idle[finger_index][i]);
+            let pf = Vec3::from_array(pos_fist[finger_index][i]);
+            position += pi.lerp(pf, t);
+            segment_positions.push(position);
 
-        let (rot_start, rot_end, rt) = if t <= 0.5 {
-            (rot_idle, rot_half, 2.0 * t)
-        } else {
-            (rot_half, rot_fist, 2.0 * t - 1.0)
-        };
-        let ri = Quat::from_array(rot_start[i]);
-        let rf = Quat::from_array(rot_end[i]);
-        segment_rotations.push(ri.slerp(rf, rt));
+            let ri = Quat::from_array(rot_idle[finger_index][i]);
+            let rf = Quat::from_array(rot_fist[finger_index][i]);
+            rotation = rotation.mul_quat(ri.slerp(rf, t));
+            segment_rotations.push(rotation);
+        }
     }
     Some(HandState {
         unique_id: Some(unique_id.to_string()),
@@ -360,8 +362,8 @@ mod tests {
         let hands =
             synthesize_hand_states(&[touch_controller(Chirality::Left, true, 0.5, 0.5, false)]);
         let hand = &hands[0];
-        assert_eq!(hand.segment_positions.len(), SEGMENT_COUNT);
-        assert_eq!(hand.segment_rotations.len(), SEGMENT_COUNT);
+        assert_eq!(hand.segment_positions.len(), TOTAL_SEGMENT_COUNT);
+        assert_eq!(hand.segment_rotations.len(), TOTAL_SEGMENT_COUNT);
         assert!(hand.is_tracking);
         assert!(!hand.tracks_metacarpals);
     }
