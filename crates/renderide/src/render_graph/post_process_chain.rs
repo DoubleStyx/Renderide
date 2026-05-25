@@ -9,7 +9,6 @@
 //! multi-pass subgraph terminating in a single composite/apply pass.
 //!
 //! See [`crate::passes::post_processing`] for concrete effect implementations:
-//! [`GtaoEffect`](crate::passes::post_processing::GtaoEffect),
 //! [`AutoExposureEffect`](crate::passes::post_processing::AutoExposureEffect),
 //! [`BloomEffect`](crate::passes::post_processing::BloomEffect), and
 //! tonemap effects from [`crate::passes::post_processing`].

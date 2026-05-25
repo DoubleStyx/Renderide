@@ -68,13 +68,12 @@ fn add_main_graph_passes_and_edges(
         &h,
         post_processing_settings,
         msaa_sample_count,
+        multiview_stereo,
     );
     let chain = build_default_post_processing_chain(
         &h,
         post_processing_settings,
-        multiview_stereo,
         post_processing_resources,
-        passes.gtao_normals.as_ref().map(|node| node.view_normals),
     );
     let chain_output =
         chain.build_into_graph(&mut builder, h.scene_color_hdr, post_processing_settings);

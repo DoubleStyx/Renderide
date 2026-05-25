@@ -11,11 +11,9 @@ use crate::render_graph::builder::GraphBuilder;
 use crate::render_graph::ids::PassId;
 use crate::render_graph::resources::TextureHandle;
 
-/// Stable identity for a post-processing effect.
+/// Stable identity for a regular post-processing chain effect.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PostProcessEffectId {
-    /// Ground-Truth Ambient Occlusion (Jimenez et al. 2016), pre-tonemap HDR modulation.
-    Gtao,
     /// Dual-filter physically-based bloom, pre-tonemap HDR.
     Bloom,
     /// Histogram-based exposure adaptation, pre-tonemap HDR scale.
@@ -32,7 +30,6 @@ impl PostProcessEffectId {
     /// Stable short label for logs and diagnostics.
     pub fn label(self) -> &'static str {
         match self {
-            Self::Gtao => "GTAO",
             Self::Bloom => "Bloom",
             Self::AutoExposure => "Auto Exposure",
             Self::MotionBlur => "Motion Blur",

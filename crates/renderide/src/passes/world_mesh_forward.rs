@@ -13,15 +13,18 @@
 //! 3. [`WorldMeshForwardOpaquePass`] -- **[`RasterPass`]** that clears HDR color, loads the
 //!    prepass depth attachment, records pre-skybox opaque and alpha-test phases, then records the
 //!    skybox/background.
-//! 4. [`WorldMeshForwardNormalPass`] -- optional **[`RasterPass`]** that writes smooth
+//! 4. [`WorldMeshForwardGtaoDepthResolvePass`] -- optional **[`EncoderPass`]** that resolves
+//!    current MSAA depth before GTAO samples the single-sample frame depth.
+//! 5. [`WorldMeshForwardNormalPass`] -- optional **[`RasterPass`]** that writes smooth
 //!    view-space vertex normals for GTAO, using the opaque depth buffer as an equality mask.
-//! 5. [`WorldMeshDepthSnapshotPass`] -- **[`ComputePass`]** that resolves MSAA depth (when active)
+//! 6. [`WorldMeshDepthSnapshotPass`] -- **[`EncoderPass`]** that resolves MSAA depth (when active)
 //!    and copies single-sample depth into the scene-depth snapshot for intersection materials.
-//! 6. [`WorldMeshForwardIntersectPass`] -- **[`RasterPass`]** that draws intersection materials.
-//! 7. [`WorldMeshForwardTransparentSequencePass`] -- **[`EncoderPass`]** that draws the sorted
+//! 7. [`WorldMeshForwardIntersectPass`] -- **[`RasterPass`]** that draws intersection materials.
+//! 8. [`WorldMeshForwardTransparentSequencePass`] -- **[`EncoderPass`]** that draws the sorted
 //!    transparent phase, resolving/copying a fresh scene-color snapshot immediately before each
 //!    grab-pass phase group.
-//! 8. [`WorldMeshForwardDepthResolvePass`] -- **[`ComputePass`]** that resolves the final MSAA depth into the single-sample frame depth used by Hi-Z.
+//! 9. [`WorldMeshForwardDepthResolvePass`] -- **[`EncoderPass`]** that resolves the final MSAA
+//!    depth into the single-sample frame depth used by Hi-Z.
 //!
 //! ## VR stereo world draws
 //!
@@ -64,11 +67,11 @@ pub use transparent_sequence::WorldMeshForwardTransparentSequencePass;
 use std::num::NonZeroU32;
 
 use crate::graph_inputs::{MsaaViewsSlot, PerViewFramePlanSlot};
-use crate::render_graph::context::{ComputePassCtx, RasterPassCtx};
+use crate::render_graph::context::{EncoderPassCtx, RasterPassCtx};
 use crate::render_graph::error::{RenderPassError, SetupError};
 use crate::render_graph::gpu_cache::stereo_mask_or_template;
-use crate::render_graph::pass::{ComputePass, PassBuilder, RasterPass};
 use crate::render_graph::pass::{DepthAttachmentTemplate, RenderPassTemplate};
+use crate::render_graph::pass::{EncoderPass, PassBuilder, RasterPass};
 use crate::render_graph::resources::{
     BufferAccess, ImportedBufferHandle, ImportedTextureHandle, StorageAccess, TextureAccess,
     TextureHandle,
@@ -111,6 +114,12 @@ pub struct WorldMeshForwardIntersectPass {
 /// Resolves the final MSAA forward depth into the single-sample frame depth target.
 #[derive(Debug)]
 pub struct WorldMeshForwardDepthResolvePass {
+    resources: WorldMeshForwardGraphResources,
+}
+
+/// Resolves MSAA forward depth before GTAO samples the single-sample frame depth target.
+#[derive(Debug)]
+pub struct WorldMeshForwardGtaoDepthResolvePass {
     resources: WorldMeshForwardGraphResources,
 }
 
@@ -224,6 +233,72 @@ impl WorldMeshForwardDepthResolvePass {
     pub fn new(resources: WorldMeshForwardGraphResources) -> Self {
         Self { resources }
     }
+}
+
+impl WorldMeshForwardGtaoDepthResolvePass {
+    /// Creates a pre-GTAO depth-resolve pass instance.
+    pub fn new(resources: WorldMeshForwardGraphResources) -> Self {
+        Self { resources }
+    }
+}
+
+/// Declares the resources touched by the manual MSAA depth resolve encoder path.
+fn declare_msaa_depth_resolve_accesses(
+    b: &mut PassBuilder<'_>,
+    resources: WorldMeshForwardGraphResources,
+) {
+    b.read_optional_blackboard::<MsaaViewsSlot>();
+    b.read_texture(
+        resources.msaa_depth,
+        TextureAccess::Sampled {
+            stages: wgpu::ShaderStages::COMPUTE,
+        },
+    );
+    b.write_texture(
+        resources.msaa_depth_r32,
+        TextureAccess::Storage {
+            stages: wgpu::ShaderStages::COMPUTE,
+            access: StorageAccess::WriteOnly,
+        },
+    );
+    b.read_texture(
+        resources.msaa_depth_r32,
+        TextureAccess::Sampled {
+            stages: wgpu::ShaderStages::FRAGMENT,
+        },
+    );
+    b.import_texture(
+        resources.depth,
+        TextureAccess::DepthAttachment {
+            depth: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(crate::gpu::MAIN_FORWARD_DEPTH_CLEAR),
+                store: wgpu::StoreOp::Store,
+            },
+            stencil: None,
+        },
+    );
+}
+
+/// Encodes the shared MSAA depth resolve and records command stats for the current view.
+fn record_msaa_depth_resolve(ctx: &mut EncoderPassCtx<'_, '_, '_>) -> bool {
+    let frame = &mut *ctx.pass_frame;
+    let msaa_views = ctx.blackboard.get::<MsaaViewsSlot>();
+    let msaa_depth_resolve = frame.view.msaa_depth_resolve.clone();
+    let resolved = encode_msaa_depth_resolve_after_clear_only(
+        ctx.device,
+        ctx.encoder,
+        frame,
+        msaa_views,
+        msaa_depth_resolve.as_deref(),
+        ctx.profiler,
+    );
+    if let Some(stats) = ctx
+        .blackboard
+        .get_mut::<crate::render_graph::blackboard::GraphCommandStatsSlot>()
+    {
+        stats.record_resolve_result(resolved);
+    }
+    resolved
 }
 
 pub(in crate::passes::world_mesh_forward) fn declare_forward_draw_reads(
@@ -370,21 +445,16 @@ impl RasterPass for WorldMeshForwardOpaquePass {
     }
 }
 
-impl ComputePass for WorldMeshDepthSnapshotPass {
+impl EncoderPass for WorldMeshDepthSnapshotPass {
     fn name(&self) -> &str {
         "WorldMeshDepthSnapshot"
     }
 
     fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
-        b.compute();
+        b.encoder();
         b.read_optional_blackboard::<WorldMeshForwardPlanSlot>();
         b.read_optional_blackboard::<MsaaViewsSlot>();
         b.write_blackboard::<WorldMeshForwardPlanSlot>();
-        // Declare only what is actually used: msaa_depth as sampled input,
-        // msaa_depth_r32 as storage write output, and depth as CopySrc.
-        // Note: msaa_depth_r32 lifetime is extended by WorldMeshForwardDepthResolvePass
-        // which also writes it, covering the intersection pass that reads it implicitly
-        // via the frame bind group.
         if self.resources.msaa_enabled {
             b.read_texture(
                 self.resources.msaa_depth,
@@ -399,19 +469,35 @@ impl ComputePass for WorldMeshDepthSnapshotPass {
                     access: StorageAccess::WriteOnly,
                 },
             );
+            b.read_texture(
+                self.resources.msaa_depth_r32,
+                TextureAccess::Sampled {
+                    stages: wgpu::ShaderStages::FRAGMENT,
+                },
+            );
+            b.import_texture(
+                self.resources.depth,
+                TextureAccess::DepthAttachment {
+                    depth: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(crate::gpu::MAIN_FORWARD_DEPTH_CLEAR),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    stencil: None,
+                },
+            );
         }
         b.import_texture(self.resources.depth, TextureAccess::CopySrc);
         Ok(())
     }
 
-    fn should_record(&self, ctx: &ComputePassCtx<'_, '_, '_>) -> Result<bool, RenderPassError> {
+    fn should_record(&self, ctx: &EncoderPassCtx<'_, '_, '_>) -> Result<bool, RenderPassError> {
         Ok(ctx
             .blackboard
             .get::<WorldMeshForwardPlanSlot>()
             .is_some_and(|prepared| prepared.helper_needs.depth_snapshot))
     }
 
-    fn record(&self, ctx: &mut ComputePassCtx<'_, '_, '_>) -> Result<(), RenderPassError> {
+    fn record(&self, ctx: &mut EncoderPassCtx<'_, '_, '_>) -> Result<(), RenderPassError> {
         profiling::scope!("world_mesh_forward::depth_snapshot_record");
         let frame = &mut *ctx.pass_frame;
         let Some(mut prepared) = ctx.blackboard.take::<WorldMeshForwardPlanSlot>() else {
@@ -561,59 +647,46 @@ impl RasterPass for WorldMeshForwardIntersectPass {
     }
 }
 
-impl ComputePass for WorldMeshForwardDepthResolvePass {
+impl EncoderPass for WorldMeshForwardGtaoDepthResolvePass {
+    fn name(&self) -> &str {
+        "WorldMeshForwardGtaoDepthResolve"
+    }
+
+    fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
+        b.encoder();
+        declare_msaa_depth_resolve_accesses(b, self.resources);
+        Ok(())
+    }
+
+    fn should_record(&self, ctx: &EncoderPassCtx<'_, '_, '_>) -> Result<bool, RenderPassError> {
+        Ok(ctx.pass_frame.view.sample_count > 1)
+    }
+
+    fn record(&self, ctx: &mut EncoderPassCtx<'_, '_, '_>) -> Result<(), RenderPassError> {
+        profiling::scope!("world_mesh_forward::gtao_depth_resolve_record");
+        record_msaa_depth_resolve(ctx);
+        Ok(())
+    }
+}
+
+impl EncoderPass for WorldMeshForwardDepthResolvePass {
     fn name(&self) -> &str {
         "WorldMeshForwardDepthResolve"
     }
 
     fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
-        b.compute();
-        b.read_optional_blackboard::<MsaaViewsSlot>();
-        b.read_texture(
-            self.resources.msaa_depth,
-            TextureAccess::Sampled {
-                stages: wgpu::ShaderStages::COMPUTE,
-            },
-        );
-        b.write_texture(
-            self.resources.msaa_depth_r32,
-            TextureAccess::Storage {
-                stages: wgpu::ShaderStages::COMPUTE,
-                access: StorageAccess::WriteOnly,
-            },
-        );
-        b.read_texture(
-            self.resources.msaa_depth_r32,
-            TextureAccess::Sampled {
-                stages: wgpu::ShaderStages::FRAGMENT,
-            },
-        );
+        b.encoder();
+        declare_msaa_depth_resolve_accesses(b, self.resources);
         Ok(())
     }
 
-    fn should_record(&self, ctx: &ComputePassCtx<'_, '_, '_>) -> Result<bool, RenderPassError> {
+    fn should_record(&self, ctx: &EncoderPassCtx<'_, '_, '_>) -> Result<bool, RenderPassError> {
         Ok(ctx.pass_frame.view.sample_count > 1)
     }
 
-    fn record(&self, ctx: &mut ComputePassCtx<'_, '_, '_>) -> Result<(), RenderPassError> {
+    fn record(&self, ctx: &mut EncoderPassCtx<'_, '_, '_>) -> Result<(), RenderPassError> {
         profiling::scope!("world_mesh_forward::depth_resolve_record");
-        let frame = &mut *ctx.pass_frame;
-        let msaa_views = ctx.blackboard.get::<MsaaViewsSlot>();
-        let msaa_depth_resolve = frame.view.msaa_depth_resolve.clone();
-        let resolved = encode_msaa_depth_resolve_after_clear_only(
-            ctx.device,
-            ctx.encoder,
-            frame,
-            msaa_views,
-            msaa_depth_resolve.as_deref(),
-            ctx.profiler,
-        );
-        if let Some(stats) = ctx
-            .blackboard
-            .get_mut::<crate::render_graph::blackboard::GraphCommandStatsSlot>()
-        {
-            stats.record_resolve_result(resolved);
-        }
+        record_msaa_depth_resolve(ctx);
         Ok(())
     }
 }

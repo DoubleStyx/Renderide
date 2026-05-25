@@ -4,14 +4,14 @@ use serde::{Deserialize, Serialize};
 
 /// Ground-Truth Ambient Occlusion (Jimenez et al. 2016) configuration.
 ///
-/// Persisted as `[post_processing.gtao]`. GTAO runs pre-tonemap and modulates HDR scene
-/// color by a visibility factor reconstructed from the depth buffer. View-space normals are
-/// reconstructed from depth derivatives (no separate GBuffer). Defaults keep the effect local
-/// and contact-shadow-like instead of behaving like a broad full-scene darkener.
+/// Persisted as `[post_processing.gtao]`. GTAO runs after opaque/cutout rendering and before
+/// transparent rendering, modulating HDR scene color by a visibility factor reconstructed from the
+/// depth buffer. Defaults keep the effect local and contact-shadow-like instead of behaving like a
+/// broad full-scene darkener.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GtaoSettings {
-    /// Whether GTAO runs in the post-processing chain when post-processing is enabled.
+    /// Whether GTAO runs when post-processing is enabled.
     pub enabled: bool,
     /// Quality preset: `0` low, `1` medium, `2` high, `3` ultra. Higher presets add slice
     /// directions before adding more per-slice steps.
@@ -49,9 +49,9 @@ pub struct GtaoSettings {
     /// light lost by assuming fully-absorbing occluders. Set lower for darker scenes,
     /// higher for brighter.
     pub albedo_multibounce: f32,
-    /// Number of depth-aware denoise iterations applied to the AO term before
-    /// it modulates HDR scene color. `0` disables the bilateral filter (apply pass uses the
-    /// raw single-tap AO term); `1` runs only the final-apply kernel; `2` runs an intermediate
+    /// Number of depth-aware denoise iterations applied to the AO term before it modulates opaque
+    /// HDR scene color. `0` disables the bilateral filter (apply pass uses the raw single-tap AO
+    /// term); `1` runs only the final-apply kernel; `2` runs an intermediate
     /// iteration at `denoise_blur_beta / 5`
     /// followed by the apply iteration at the full `denoise_blur_beta`. `3` adds a second
     /// intermediate ping-pong iteration for a softer MXAO-style result. Values above `3` are

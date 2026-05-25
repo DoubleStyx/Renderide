@@ -1,23 +1,22 @@
-//! Ground-Truth Ambient Occlusion (Jimenez et al. 2016) post-processing effect with
+//! Ground-Truth Ambient Occlusion (Jimenez et al. 2016) opaque-only screen-space effect with
 //! depth-aware bilateral denoise.
 //!
-//! Registers a GTAO chain on the post-processing graph builder:
+//! Registers a GTAO chain on the main graph after opaque/cutout world-mesh rendering and before
+//! transparent/intersection draws:
 //!
 //! 1. [`depth_prefilter_pass::GtaoDepthPrefilterPass`] -- converts raw depth to view-space
 //!    depth and builds the five-mip depth chain sampled by the horizon search.
 //! 2. [`main_pass::GtaoMainPass`] -- produces the AO term (scaled by
 //!    `1 / OCCLUSION_TERM_SCALE` to leave denoise headroom) and packed depth-edge
-//!    weights from the prefiltered depth chain plus the forward view-normal prepass. The HDR
-//!    scene-color input is *not* read here; modulation is deferred to the apply stage so the
-//!    bilateral denoiser can act on the AO term first.
+//!    weights from the prefiltered depth chain plus the forward view-normal prepass.
 //! 3. [`denoise_pass::GtaoDenoisePass`] -- 3x3 edge-preserving bilateral filter.
 //!    Registered once when [`crate::config::GtaoSettings::denoise_passes`] is `>= 2`, and
 //!    twice when it is `>= 3`.
-//! 4. [`apply_pass::GtaoApplyPass`] -- final denoise iteration that multiplies the AO term by
-//!    `OCCLUSION_TERM_SCALE` to recover the true visibility, then modulates HDR scene color
-//!    and writes the chain's HDR output. Always registered. The shader short-circuits the
-//!    kernel when `denoise_blur_beta <= 0`, so `denoise_passes == 0` collapses to a
-//!    "modulate by raw AO" path without re-binding a different pipeline.
+//! 4. [`apply_pass::GtaoOpaqueCompositePass`] -- final denoise iteration that outputs recovered
+//!    visibility. Multiplicative blending modulates the existing opaque HDR scene color in place.
+//!    Always registered. The shader short-circuits the kernel when `denoise_blur_beta <= 0`, so
+//!    `denoise_passes == 0` collapses to a "modulate by raw AO" path without re-binding a
+//!    different pipeline.
 //!
 //! Multiview (stereo) is handled by per-stage pipeline variants. Raster stages use
 //! `multiview_mask_override` with `#ifdef MULTIVIEW` selecting `@builtin(view_index)`, while
@@ -31,7 +30,7 @@ mod pipeline;
 
 use std::sync::LazyLock;
 
-use apply_pass::{GtaoApplyPass, GtaoApplyResources};
+use apply_pass::{GtaoOpaqueCompositePass, GtaoOpaqueCompositeResources};
 use denoise_pass::{GtaoDenoisePass, GtaoDenoiseResources};
 use depth_prefilter_pass::{GtaoDepthPrefilterPass, GtaoDepthPrefilterResources};
 use main_pass::{GtaoMainPass, GtaoMainResources};
@@ -39,11 +38,9 @@ use pipeline::{
     AO_TERM_FORMAT, EDGES_FORMAT, GtaoPipelines, VIEW_DEPTH_FORMAT, VIEW_DEPTH_MIP_COUNT,
 };
 
-use crate::config::{GtaoSettings, PostProcessingSettings};
+use crate::config::GtaoSettings;
 use crate::render_graph::builder::GraphBuilder;
-use crate::render_graph::post_process_chain::{
-    EffectPasses, PostProcessEffect, PostProcessEffectId,
-};
+use crate::render_graph::ids::PassId;
 use crate::render_graph::resources::{
     ImportedBufferHandle, ImportedTextureHandle, SubresourceHandle, TextureHandle,
     TransientArrayLayers, TransientExtent, TransientSampleCount, TransientSubresourceDesc,
@@ -58,48 +55,58 @@ const GTAO_VIEW_DEPTH_MIP_LABELS: [&str; VIEW_DEPTH_MIP_COUNT as usize] = [
     "gtao_view_depth_mip4",
 ];
 
-/// Effect descriptor that contributes the GTAO pass chain to the post-processing chain.
-pub struct GtaoEffect {
+/// Graph resources consumed and produced by the opaque GTAO subchain.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GtaoGraphResources {
+    /// Imported forward depth texture sampled by the view-depth prefilter.
+    pub(crate) depth: ImportedTextureHandle,
+    /// Smooth view-space normals produced from the visible opaque/cutout surface.
+    pub(crate) view_normals: TextureHandle,
+    /// Imported frame-uniform buffer used by depth reconstruction.
+    pub(crate) frame_uniforms: ImportedBufferHandle,
+    /// Single-sample HDR scene color target.
+    pub(crate) scene_color_hdr: TextureHandle,
+    /// Multisampled HDR scene color target used when MSAA is active.
+    pub(crate) scene_color_hdr_msaa: TextureHandle,
+    /// Whether the opaque forward pass records into multisampled attachments.
+    pub(crate) msaa_enabled: bool,
+    /// Whether this graph is compiled for OpenXR multiview stereo.
+    pub(crate) multiview_stereo: bool,
+}
+
+/// First and last pass ids registered by the opaque GTAO subchain.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GtaoPassRange {
+    /// First pass in the subchain.
+    pub(crate) first: PassId,
+    /// Last pass in the subchain.
+    pub(crate) last: PassId,
+}
+
+/// Effect descriptor that contributes the opaque GTAO pass chain to the main graph.
+pub(crate) struct GtaoEffect {
     /// Snapshot of the GTAO settings used when building the chain for this frame. Live edits
-    /// after chain build flow in via
+    /// after graph build flow in via
     /// [`crate::passes::post_processing::settings_slots::GtaoSettingsSlot`] for non-topology
     /// fields; topology fields (`enabled`, `denoise_passes`) trigger a graph rebuild via
     /// [`crate::render_graph::post_process_chain::PostProcessChainSignature`].
-    pub settings: GtaoSettings,
-    /// Imported depth texture handle (declared as a sampled read for scheduling).
-    pub depth: ImportedTextureHandle,
-    /// Smooth view-space normal target produced after opaque forward rendering.
-    pub view_normals: TextureHandle,
-    /// Imported frame-uniforms buffer handle (fallback / scheduling; actual bind sources from
-    /// [`crate::graph_inputs::PerViewFramePlanSlot`] at record time).
-    pub frame_uniforms: ImportedBufferHandle,
-    /// Whether this graph is compiled for OpenXR multiview stereo.
-    pub multiview_stereo: bool,
+    pub(crate) settings: GtaoSettings,
+    /// Graph resources used by this effect.
+    pub(crate) resources: GtaoGraphResources,
 }
 
-impl PostProcessEffect for GtaoEffect {
-    fn id(&self) -> PostProcessEffectId {
-        PostProcessEffectId::Gtao
-    }
-
-    fn is_enabled(&self, settings: &PostProcessingSettings) -> bool {
-        settings.enabled && settings.gtao.enabled
-    }
-
-    fn register(
-        &self,
-        builder: &mut GraphBuilder,
-        _settings: &PostProcessingSettings,
-        input: TextureHandle,
-        output: TextureHandle,
-    ) -> EffectPasses {
+impl GtaoEffect {
+    /// Registers the opaque-only GTAO subchain and returns its first and last pass ids.
+    pub(crate) fn register(&self, builder: &mut GraphBuilder) -> GtaoPassRange {
         let pipelines = gtao_pipelines();
         let denoise_passes = self.settings.denoise_passes.min(3);
 
-        let view_depth =
-            builder.create_texture(view_depth_desc("gtao_view_depth", self.multiview_stereo));
+        let view_depth = builder.create_texture(view_depth_desc(
+            "gtao_view_depth",
+            self.resources.multiview_stereo,
+        ));
         let view_depth_mips =
-            create_view_depth_subresources(builder, view_depth, self.multiview_stereo);
+            create_view_depth_subresources(builder, view_depth, self.resources.multiview_stereo);
         let (first_prefilter, last_prefilter) =
             add_view_depth_prefilter(builder, view_depth_mips, self, pipelines);
 
@@ -114,8 +121,8 @@ impl PostProcessEffect for GtaoEffect {
         let main = builder.add_raster_pass(Box::new(GtaoMainPass::new(
             GtaoMainResources {
                 view_depth,
-                view_normals: self.view_normals,
-                frame_uniforms: self.frame_uniforms,
+                view_normals: self.resources.view_normals,
+                frame_uniforms: self.resources.frame_uniforms,
                 ao_term: ao_term_a,
                 edges,
             },
@@ -156,24 +163,33 @@ impl PostProcessEffect for GtaoEffect {
             }
         }
 
-        let apply = builder.add_raster_pass(Box::new(GtaoApplyPass::new(
-            GtaoApplyResources {
-                hdr_input: input,
+        let target_color = if self.resources.msaa_enabled {
+            self.resources.scene_color_hdr_msaa
+        } else {
+            self.resources.scene_color_hdr
+        };
+        let apply = builder.add_raster_pass(Box::new(GtaoOpaqueCompositePass::new(
+            GtaoOpaqueCompositeResources {
+                target_color,
+                target_is_msaa: self.resources.msaa_enabled,
                 ao_in: ao_for_apply,
                 edges,
-                hdr_output: output,
             },
             self.settings,
             pipelines,
         )));
         builder.add_edge(last, apply);
 
-        EffectPasses::registered(first_prefilter, apply)
+        GtaoPassRange {
+            first: first_prefilter,
+            last: apply,
+        }
     }
 }
 
 #[derive(Clone, Copy, Debug)]
 struct ViewDepthSubresources {
+    /// View-depth subresources, one per GTAO depth mip.
     mips: [SubresourceHandle; VIEW_DEPTH_MIP_COUNT as usize],
 }
 
@@ -201,13 +217,10 @@ fn add_view_depth_prefilter(
     view_depth_mips: ViewDepthSubresources,
     effect: &GtaoEffect,
     pipelines: &'static GtaoPipelines,
-) -> (
-    crate::render_graph::ids::PassId,
-    crate::render_graph::ids::PassId,
-) {
+) -> (PassId, PassId) {
     let first_resources = GtaoDepthPrefilterResources {
-        depth: effect.depth,
-        frame_uniforms: effect.frame_uniforms,
+        depth: effect.resources.depth,
+        frame_uniforms: effect.resources.frame_uniforms,
         source_mip: None,
         output_mip: view_depth_mips.mips[0],
     };
@@ -215,15 +228,15 @@ fn add_view_depth_prefilter(
         first_resources,
         effect.settings,
         pipelines,
-        effect.multiview_stereo,
+        effect.resources.multiview_stereo,
     )));
     let mut last = first;
     for mip in 1..VIEW_DEPTH_MIP_COUNT {
         let output_mip = view_depth_mips.mips[mip as usize];
         let source_mip = Some(view_depth_mips.mips[mip as usize - 1]);
         let resources = GtaoDepthPrefilterResources {
-            depth: effect.depth,
-            frame_uniforms: effect.frame_uniforms,
+            depth: effect.resources.depth,
+            frame_uniforms: effect.resources.frame_uniforms,
             source_mip,
             output_mip,
         };
@@ -232,7 +245,7 @@ fn add_view_depth_prefilter(
             effect.settings,
             pipelines,
             mip,
-            effect.multiview_stereo,
+            effect.resources.multiview_stereo,
         )));
         builder.add_edge(last, id);
         last = id;
@@ -311,40 +324,19 @@ fn view_depth_desc(label: &'static str, multiview_stereo: bool) -> TransientText
 mod tests {
     use super::*;
 
-    #[test]
-    fn gtao_effect_id_label() {
-        let e = GtaoEffect {
+    fn test_effect(multiview_stereo: bool) -> GtaoEffect {
+        GtaoEffect {
             settings: GtaoSettings::default(),
-            depth: ImportedTextureHandle(0),
-            view_normals: TextureHandle(0),
-            frame_uniforms: ImportedBufferHandle(0),
-            multiview_stereo: false,
-        };
-        assert_eq!(e.id(), PostProcessEffectId::Gtao);
-        assert_eq!(e.id().label(), "GTAO");
-    }
-
-    #[test]
-    fn gtao_effect_is_gated_by_master_and_per_effect_enable() {
-        let e = GtaoEffect {
-            settings: GtaoSettings::default(),
-            depth: ImportedTextureHandle(0),
-            view_normals: TextureHandle(0),
-            frame_uniforms: ImportedBufferHandle(0),
-            multiview_stereo: false,
-        };
-        let mut s = PostProcessingSettings {
-            enabled: false,
-            ..Default::default()
-        };
-        assert!(!e.is_enabled(&s), "master off gates GTAO");
-        s.enabled = true;
-        assert!(e.is_enabled(&s), "master on + default GTAO on");
-        s.gtao.enabled = false;
-        assert!(!e.is_enabled(&s), "master on but GTAO off");
-        s.gtao.enabled = true;
-        s.enabled = false;
-        assert!(!e.is_enabled(&s), "master off disables even if gtao on");
+            resources: GtaoGraphResources {
+                depth: ImportedTextureHandle(0),
+                view_normals: TextureHandle(0),
+                frame_uniforms: ImportedBufferHandle(0),
+                scene_color_hdr: TextureHandle(1),
+                scene_color_hdr_msaa: TextureHandle(2),
+                msaa_enabled: false,
+                multiview_stereo,
+            },
+        }
     }
 
     /// The WGSL `GtaoParams` struct is 64 bytes (16 x 4); changes here require updating
@@ -472,13 +464,7 @@ mod tests {
         let mut builder = GraphBuilder::new();
         let texture = builder.create_texture(view_depth_desc("gtao_view_depth", true));
         let mips = create_view_depth_subresources(&mut builder, texture, true);
-        let effect = GtaoEffect {
-            settings: GtaoSettings::default(),
-            depth: ImportedTextureHandle(0),
-            view_normals: TextureHandle(0),
-            frame_uniforms: ImportedBufferHandle(0),
-            multiview_stereo: true,
-        };
+        let effect = test_effect(true);
         let before = builder.passes.len();
 
         let (first, last) = add_view_depth_prefilter(&mut builder, mips, &effect, gtao_pipelines());

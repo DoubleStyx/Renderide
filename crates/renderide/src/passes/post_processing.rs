@@ -1,14 +1,14 @@
-//! Concrete post-processing render passes registered on the
-//! [`crate::render_graph::post_process_chain::PostProcessChain`].
+//! Concrete screen-space render passes registered around the main forward graph.
 //!
-//! The chain currently ships with five effects, executed in this order:
-//! 1. [`GtaoEffect`] -- Ground-Truth Ambient Occlusion (pre-tonemap HDR modulation, with a
-//!    depth-aware bilateral denoise stage between AO production and apply).
-//! 2. [`AutoExposureEffect`] -- histogram-based exposure adaptation (pre-bloom HDR scale).
-//! 3. [`BloomEffect`] -- dual-filter physically-based bloom (post-exposure, pre-tonemap HDR scatter).
-//! 4. [`MotionBlurEffect`] -- screen-space HDR motion blur (post-bloom, pre-tonemap).
-//! 5. [`AcesTonemapEffect`] -- Stephen Hill ACES Fitted tonemap when selected.
-//! 6. [`AgxTonemapEffect`] -- analytic AgX tonemap when selected.
+//! The regular post-processing chain currently ships with five effects, executed in this order:
+//! 1. [`AutoExposureEffect`] -- histogram-based exposure adaptation (pre-bloom HDR scale).
+//! 2. [`BloomEffect`] -- dual-filter physically-based bloom (post-exposure, pre-tonemap HDR scatter).
+//! 3. [`MotionBlurEffect`] -- screen-space HDR motion blur (post-bloom, pre-tonemap).
+//! 4. [`AcesTonemapEffect`] -- Stephen Hill ACES Fitted tonemap when selected.
+//! 5. [`AgxTonemapEffect`] -- analytic AgX tonemap when selected.
+//!
+//! [`GtaoEffect`] is a screen-space effect too, but it is registered by the main graph before
+//! transparent rendering so Unity-style opaque-only AO does not darken late transparent pixels.
 //!
 //! Future effects (color grading, etc.) live alongside them as sibling sub-modules and implement
 //! [`crate::render_graph::post_process_chain::PostProcessEffect`].
@@ -27,8 +27,7 @@ pub use agx_tonemap::AgxTonemapEffect;
 pub use auto_exposure::AutoExposureEffect;
 pub(crate) use auto_exposure::AutoExposureStateCache;
 pub use bloom::BloomEffect;
-pub use gtao::GtaoEffect;
-pub(crate) use gtao::gpu_supports_gtao;
+pub(crate) use gtao::{GtaoEffect, GtaoGraphResources, GtaoPassRange, gpu_supports_gtao};
 pub use motion_blur::MotionBlurEffect;
 pub(crate) use motion_blur::MotionBlurStateCache;
 
