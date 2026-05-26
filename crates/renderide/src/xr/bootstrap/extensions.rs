@@ -93,6 +93,12 @@ const OPTIONAL_EXTENSIONS: &[OpenxrExtensionEntry] = &[
         enable: |set, v| set.ext_palm_pose = v,
         feeds_profile_gate: Some(|gates, v| gates.palm_pose = v),
     },
+    OpenxrExtensionEntry {
+        log_name: "EXT_hand_tracking",
+        is_available: |set| set.ext_hand_tracking,
+        enable: |set, v| set.ext_hand_tracking = v,
+        feeds_profile_gate: Some(|gates, v| gates.hand_tracking_ext = v),
+    },
 ];
 
 /// Mirrors each [`OPTIONAL_EXTENSIONS`] entry from `available` into `enabled` and, for
@@ -125,6 +131,7 @@ pub(super) fn empty_profile_gates() -> ProfileExtensionGates {
         fb_touch_controller_pro: false,
         meta_touch_controller_plus: false,
         palm_pose: false,
+        hand_tracking_ext: false,
     }
 }
 

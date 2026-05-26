@@ -37,6 +37,8 @@ pub struct ProfileExtensionGates {
     pub meta_touch_controller_plus: bool,
     /// `XR_EXT_palm_pose`.
     pub palm_pose: bool,
+    /// `XR_EXT_hand_tracking`.
+    pub hand_tracking_ext: bool,
 }
 
 impl ProfileExtensionGates {
@@ -246,6 +248,7 @@ mod tests {
             fb_touch_controller_pro: enabled,
             meta_touch_controller_plus: enabled,
             palm_pose: enabled,
+            hand_tracking_ext: enabled,
         }
     }
 

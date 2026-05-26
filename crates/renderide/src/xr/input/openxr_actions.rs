@@ -92,6 +92,10 @@ pub(super) struct OpenxrInputParts {
     pub(super) left_palm_ext_space: xr::Space,
     /// Right palm pose space.
     pub(super) right_palm_ext_space: xr::Space,
+    /// Left hand OpenXR hand tracker.
+    pub(super) left_hand_tracker: Option<xr::HandTracker>,
+    /// Right hand OpenXR hand tracker.
+    pub(super) right_hand_tracker: Option<xr::HandTracker>,
 }
 
 /// Manifest-driven end-to-end OpenXR input setup: action set, actions, suggested bindings, attach, spaces.
@@ -132,6 +136,15 @@ pub(super) fn create_openxr_input_parts(
     let (left_space, right_space, left_palm_space, right_palm_space) =
         create_pose_spaces(session, &actions)?;
 
+    let (left_hand_tracker, right_hand_tracker) = if gates.hand_tracking_ext {
+        (
+            session.create_hand_tracker(xr::Hand::LEFT).ok(),
+            session.create_hand_tracker(xr::Hand::RIGHT).ok(),
+        )
+    } else {
+        (None, None)
+    };
+
     Ok(OpenxrInputParts {
         action_set,
         left_user_path,
@@ -144,5 +157,7 @@ pub(super) fn create_openxr_input_parts(
         right_space,
         left_palm_ext_space: left_palm_space,
         right_palm_ext_space: right_palm_space,
+        left_hand_tracker,
+        right_hand_tracker,
     })
 }

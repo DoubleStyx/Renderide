@@ -2,11 +2,6 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
-use glam::{Quat, Vec2, Vec3};
-use openxr as xr;
-
-use crate::shared::{Chirality, VRControllerState};
-
 use super::bindings::ProfileExtensionGates;
 use super::frame::{ControllerFrame, resolve_controller_frame};
 use super::manifest::Manifest;
@@ -19,6 +14,12 @@ use super::profile::{
     profile_code,
 };
 use super::state::{OpenxrControllerRawInputs, build_controller_state};
+use crate::shared::{Chirality, VRControllerState};
+use crate::xr::input::hand_tracking::hand_from_openxr;
+use crate::xr::synthesize_hand_states;
+use glam::{Quat, Vec2, Vec3};
+use openxr as xr;
+use renderide_shared::HandState;
 
 /// OpenXR [`xr::Action::state`] snapshot for one hand (all channels consumed by IPC mapping).
 struct PolledHandStates {
@@ -116,6 +117,8 @@ pub struct OpenxrInput {
     right_space: xr::Space,
     left_palm_ext_space: xr::Space,
     right_palm_ext_space: xr::Space,
+    left_hand_tracker: Option<xr::HandTracker>,
+    right_hand_tracker: Option<xr::HandTracker>,
 }
 
 impl OpenxrInput {
@@ -147,6 +150,8 @@ impl OpenxrInput {
             right_space: parts.right_space,
             left_palm_ext_space: parts.left_palm_ext_space,
             right_palm_ext_space: parts.right_palm_ext_space,
+            left_hand_tracker: parts.left_hand_tracker,
+            right_hand_tracker: parts.right_hand_tracker,
         }
     }
 
@@ -288,7 +293,7 @@ impl OpenxrInput {
         session: &xr::Session<xr::Vulkan>,
         stage: &xr::Space,
         predicted_time: xr::Time,
-    ) -> Result<Vec<VRControllerState>, xr::sys::Result> {
+    ) -> Result<(Vec<VRControllerState>, Vec<HandState>), xr::sys::Result> {
         profiling::scope!("xr::input_sync_and_sample");
         session.sync_actions(&[xr::ActiveActionSet::new(&self.action_set)])?;
         let left_loc = self.left_space.locate(stage, predicted_time)?;
@@ -299,6 +304,20 @@ impl OpenxrInput {
         let right_grip_pose = pose_from_location(&right_loc);
         let left_palm_ext_pose = pose_from_location(&left_palm_ext_loc);
         let right_palm_ext_pose = pose_from_location(&right_palm_ext_loc);
+
+        let left_joint_locations = self
+            .left_hand_tracker
+            .as_ref()
+            .map(|t| stage.locate_hand_joints(t, predicted_time).ok())
+            .flatten()
+            .flatten();
+
+        let right_joint_locations = self
+            .right_hand_tracker
+            .as_ref()
+            .map(|t| stage.locate_hand_joints(t, predicted_time).ok())
+            .flatten()
+            .flatten();
 
         let left_polled = self.poll_hand_action_states(session, Chirality::Left)?;
         let right_polled = self.poll_hand_action_states(session, Chirality::Right)?;
@@ -337,7 +356,20 @@ impl OpenxrInput {
             right_frame,
             &right_polled,
         );
-        Ok(vec![left, right])
+
+        let controllers = vec![left, right];
+
+        let mut hand_states = synthesize_hand_states(&controllers);
+        for (joints, chirality) in [
+            (left_joint_locations, Chirality::Left),
+            (right_joint_locations, Chirality::Right),
+        ] {
+            if let Some(hand) = joints.and_then(|j| hand_from_openxr(j, chirality)) {
+                hand_states.push(hand);
+            }
+        }
+
+        Ok((controllers, hand_states))
     }
 
     /// Logs at most once every 300 frames per hand when `palm_ext` is unavailable but grip is valid.

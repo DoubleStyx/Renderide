@@ -33,6 +33,31 @@ pub(super) fn pose_from_location(location: &xr::SpaceLocation) -> Option<(Vec3, 
     })
 }
 
+/// Converts an [`xr::HandJointLocation`] into OpenXR tracking-space `(position, rotation)`.
+///
+/// Returns `None` when either position or orientation is invalid.
+pub(super) fn pose_from_joint(location: &xr::HandJointLocation) -> Option<(Vec3, Quat)> {
+    let tracked = location
+        .location_flags
+        .contains(xr::SpaceLocationFlags::ORIENTATION_VALID)
+        && location
+            .location_flags
+            .contains(xr::SpaceLocationFlags::POSITION_VALID);
+    tracked.then(|| {
+        let pose = &location.pose;
+        let position = Vec3::new(pose.position.x, pose.position.y, pose.position.z);
+        let orientation = pose.orientation;
+        let rotation = Quat::from_xyzw(orientation.x, orientation.y, orientation.z, orientation.w);
+        let len_sq = rotation.length_squared();
+        let rotation = if len_sq.is_finite() && len_sq >= 1e-10 {
+            rotation.normalize()
+        } else {
+            Quat::IDENTITY
+        };
+        (position, rotation)
+    })
+}
+
 /// Default `hand_position` / `hand_rotation` IPC offsets for bound-hand tracking.
 ///
 /// These offsets are paired with the palm-pose controller frame emitted by
