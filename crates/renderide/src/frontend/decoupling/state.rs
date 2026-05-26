@@ -78,8 +78,7 @@ impl DecouplingState {
     }
 
     /// Whether the renderer is currently running decoupled from host lock-step.
-    #[cfg(test)]
-    pub fn is_active(&self) -> bool {
+    pub(crate) fn is_active(&self) -> bool {
         self.active
     }
 
@@ -177,7 +176,16 @@ impl DecouplingState {
     /// The returned value is always at least 1 ms so [`std::time::Duration::from_millis`] cannot
     /// produce a zero-length budget.
     pub fn effective_asset_integration_budget_ms(&self, coupled_default_ms: u32) -> u32 {
-        if !self.active {
+        self.effective_asset_integration_budget_ms_for_mode(coupled_default_ms, self.active)
+    }
+
+    /// Returns the wall-clock budget (in milliseconds) for an externally resolved decoupled mode.
+    pub fn effective_asset_integration_budget_ms_for_mode(
+        &self,
+        coupled_default_ms: u32,
+        renderer_decoupled: bool,
+    ) -> u32 {
+        if !renderer_decoupled {
             return coupled_default_ms.max(1);
         }
         let ceiling_ms = (self.decoupled_max_asset_processing_seconds * 1000.0).round();

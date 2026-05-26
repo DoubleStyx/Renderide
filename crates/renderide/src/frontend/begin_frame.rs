@@ -19,6 +19,10 @@ pub(crate) struct BeginFrameGateInput {
     pub(crate) ipc_connected: bool,
     /// Whether the previous host frame submit was processed.
     pub(crate) last_frame_data_processed: bool,
+    /// Whether that processed host frame has not yet been rendered.
+    pub(crate) pending_frame_submit_render: bool,
+    /// Whether the renderer is currently allowed to render stale scene state.
+    pub(crate) renderer_decoupled: bool,
     /// Host frame index echoed to the host.
     pub(crate) last_frame_index: i32,
     /// Whether the initial bootstrap frame-start was already sent.
@@ -73,8 +77,10 @@ pub(crate) fn decide_begin_frame(input: BeginFrameGateInput) -> BeginFrameDecisi
         };
     }
     let bootstrap = input.last_frame_index < 0 && !input.sent_bootstrap_frame_start;
+    let processed_frame_allows_send = input.last_frame_data_processed
+        && (input.renderer_decoupled || !input.pending_frame_submit_render);
     BeginFrameDecision {
-        allowed: input.last_frame_data_processed || bootstrap,
+        allowed: processed_frame_allows_send || bootstrap,
         bootstrap,
     }
 }
@@ -107,6 +113,8 @@ mod tests {
             fatal_error: false,
             ipc_connected: true,
             last_frame_data_processed: true,
+            pending_frame_submit_render: false,
+            renderer_decoupled: false,
             last_frame_index: 0,
             sent_bootstrap_frame_start: true,
         }
@@ -150,6 +158,30 @@ mod tests {
         assert!(
             decide_begin_frame(BeginFrameGateInput {
                 last_frame_index: 5,
+                ..finalized_processed_gate()
+            })
+            .is_allowed()
+        );
+    }
+
+    #[test]
+    fn processed_unrendered_frame_blocks_while_coupled() {
+        assert!(
+            !decide_begin_frame(BeginFrameGateInput {
+                pending_frame_submit_render: true,
+                renderer_decoupled: false,
+                ..finalized_processed_gate()
+            })
+            .is_allowed()
+        );
+    }
+
+    #[test]
+    fn processed_unrendered_frame_allows_while_decoupled() {
+        assert!(
+            decide_begin_frame(BeginFrameGateInput {
+                pending_frame_submit_render: true,
+                renderer_decoupled: true,
                 ..finalized_processed_gate()
             })
             .is_allowed()

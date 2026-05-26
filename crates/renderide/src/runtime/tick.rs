@@ -20,6 +20,21 @@ impl RendererRuntime {
         self.frontend.should_send_begin_frame()
     }
 
+    /// Whether the current tick may render world state under host lockstep and decoupling rules.
+    pub fn should_render_frame(&self) -> bool {
+        self.frontend.should_render_frame()
+    }
+
+    /// Whether a `FrameStartData` has been sent and the matching host submit is still outstanding.
+    pub fn awaiting_frame_submit(&self) -> bool {
+        self.frontend.awaiting_frame_submit()
+    }
+
+    /// Marks any processed host frame submit as having had a renderer-side draw attempt.
+    pub fn note_frame_render_attempted(&mut self) {
+        self.frontend.note_frame_render_attempted();
+    }
+
     /// Records wall-clock spacing for host FPS metrics. Call at the very start of each winit tick,
     /// before [`Self::poll_ipc`], OpenXR, and [`Self::pre_frame`].
     pub fn tick_frame_wall_clock_begin(&mut self, now: Instant) {
@@ -134,8 +149,15 @@ impl RendererRuntime {
         if self.should_send_begin_frame() {
             self.pre_frame(inputs);
         }
+        if !self.should_render_frame() {
+            return TickOutcome {
+                render_skipped: true,
+                ..Default::default()
+            };
+        }
         crash_context::set_tick_phase(TickPhase::RenderViews);
         let graph_error = self.render_desktop_frame(gpu).err();
+        self.note_frame_render_attempted();
         TickOutcome {
             graph_error,
             ..Default::default()

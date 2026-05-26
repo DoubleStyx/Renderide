@@ -8,6 +8,10 @@ use crate::shared::{
 };
 
 use super::super::decoupling::logging::log_submit_decision;
+use super::super::lockstep_state::LockstepBeginFrameContext;
+use super::super::render_cadence::{
+    RenderCadenceDecision, RenderCadenceInput, decide_render_cadence,
+};
 use super::RendererFrontend;
 
 impl RendererFrontend {
@@ -25,17 +29,51 @@ impl RendererFrontend {
     /// Whether a [`crate::shared::FrameStartData`] should be sent this tick.
     pub fn should_send_begin_frame(&self) -> bool {
         self.lockstep
-            .begin_frame_decision(
-                self.session.init_state().is_finalized(),
-                self.session.fatal_error(),
-                self.transport.is_ipc_connected(),
-            )
+            .begin_frame_decision(LockstepBeginFrameContext {
+                init_finalized: self.session.init_state().is_finalized(),
+                fatal_error: self.session.fatal_error(),
+                ipc_connected: self.transport.is_ipc_connected(),
+                renderer_decoupled: self.is_renderer_decoupled(),
+            })
             .is_allowed()
     }
 
     /// Whether the renderer is waiting for the host's next [`crate::shared::FrameSubmitData`].
     pub fn awaiting_frame_submit(&self) -> bool {
         self.lockstep.awaiting_submit()
+    }
+
+    /// Whether the host has enabled regular lockstep through `RendererEngineReady`.
+    #[cfg(test)]
+    pub fn host_lockstep_activated(&self) -> bool {
+        self.lockstep.host_lockstep_activated()
+    }
+
+    /// Whether a processed host submit still needs a renderer-side draw attempt.
+    #[cfg(test)]
+    pub fn pending_frame_submit_render(&self) -> bool {
+        self.lockstep.pending_frame_submit_render()
+    }
+
+    /// Pure render-cadence decision for the current frontend state.
+    pub(crate) fn render_cadence_decision(&self) -> RenderCadenceDecision {
+        decide_render_cadence(RenderCadenceInput {
+            standalone: self.transport.is_standalone(),
+            host_lockstep_activated: self.lockstep.host_lockstep_activated(),
+            renderer_decoupled: self.is_renderer_decoupled(),
+            awaiting_frame_submit: self.lockstep.awaiting_submit(),
+            pending_frame_submit_render: self.lockstep.pending_frame_submit_render(),
+        })
+    }
+
+    /// Whether the current tick may render world state.
+    pub fn should_render_frame(&self) -> bool {
+        self.render_cadence_decision().should_render()
+    }
+
+    /// Marks any pending processed host submit as rendered by this process.
+    pub fn note_frame_render_attempted(&mut self) {
+        self.lockstep.note_frame_render_attempted();
     }
 
     /// Appends reflection-probe render completion rows for the next outgoing frame-start.

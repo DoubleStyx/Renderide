@@ -26,8 +26,13 @@ static LAST_FRAME_RENDER_MODE: AtomicU8 = AtomicU8::new(UNSEEN_FRAME_RENDER_MODE
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FrameTickOutcome {
+    /// A world render was attempted and presentation/diagnostics ran.
     Presented,
+    /// Rendering was intentionally skipped while coupled lockstep waits for the host.
+    RenderSkipped,
+    /// The app requested event-loop exit during this tick.
     ExitRequested,
+    /// No render target was available for this tick.
     MissingTarget,
 }
 
@@ -71,8 +76,8 @@ impl AppDriver {
         if let Some(heartbeat) = self.main_heartbeat.as_ref() {
             heartbeat.pet();
         }
-        let _outcome = self.drive_frame_phases(event_loop, frame_start);
-        self.finish_frame_tick();
+        let outcome = self.drive_frame_phases(event_loop, frame_start);
+        self.finish_frame_tick(outcome);
     }
 
     fn drive_frame_phases(
@@ -102,6 +107,9 @@ impl AppDriver {
             self.runtime.drain_reflection_probe_render_tasks(gpu);
             self.runtime.drain_camera_render_tasks(gpu);
         }
+        if self.runtime.awaiting_frame_submit() && !self.runtime.should_render_frame() {
+            return FrameTickOutcome::RenderSkipped;
+        }
 
         let xr_pause = self
             .main_heartbeat
@@ -116,6 +124,10 @@ impl AppDriver {
             self.poll_graceful_shutdown(event_loop);
             return FrameTickOutcome::ExitRequested;
         }
+        if !self.runtime.should_render_frame() {
+            self.queue_empty_openxr_frame_if_needed(xr_tick);
+            return FrameTickOutcome::RenderSkipped;
+        }
 
         let Some(window) = self
             .target
@@ -127,6 +139,7 @@ impl AppDriver {
         let Some(render_outcome) = self.render_views(&window, xr_tick.as_ref()) else {
             return FrameTickOutcome::MissingTarget;
         };
+        self.runtime.note_frame_render_attempted();
         let hmd_projection_ended = render_outcome.hmd_projection_ended;
         if self.handle_gpu_device_loss_request(event_loop) {
             if !hmd_projection_ended {
@@ -139,8 +152,8 @@ impl AppDriver {
         FrameTickOutcome::Presented
     }
 
-    fn finish_frame_tick(&mut self) {
-        self.frame_tick_epilogue();
+    fn finish_frame_tick(&mut self, outcome: FrameTickOutcome) {
+        self.frame_tick_epilogue(outcome);
         crate::profiling::flush_resource_churn_plots();
         crate::profiling::emit_frame_mark();
     }
@@ -394,7 +407,7 @@ impl AppDriver {
         }
     }
 
-    fn frame_tick_epilogue(&mut self) {
+    fn frame_tick_epilogue(&mut self, outcome: FrameTickOutcome) {
         profiling::scope!("tick::epilogue");
         super::tick_phase_trace("frame_tick_epilogue");
         self.drain_driver_thread_error();
@@ -405,7 +418,9 @@ impl AppDriver {
             .and_then(|target| target.gpu().last_completed_gpu_render_time_seconds());
         self.runtime
             .tick_frame_render_time_end(gpu_render_time_seconds);
-        self.runtime.note_render_tick_complete();
+        if outcome != FrameTickOutcome::RenderSkipped {
+            self.runtime.note_render_tick_complete();
+        }
         self.frame_clock.end_tick(Instant::now());
     }
 

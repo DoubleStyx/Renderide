@@ -56,4 +56,9 @@ impl RendererFrontend {
         self.session.mark_init_received();
         self.lockstep.mark_init_received();
     }
+
+    /// Marks the host engine as ready for strict frame lockstep gating.
+    pub fn on_renderer_engine_ready(&mut self) {
+        self.lockstep.activate_host_lockstep();
+    }
 }
