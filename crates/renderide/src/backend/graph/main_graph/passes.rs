@@ -24,13 +24,11 @@ fn main_forward_resources(h: &MainGraphHandles) -> crate::passes::WorldMeshForwa
     crate::passes::WorldMeshForwardGraphResources {
         scene_color_hdr: h.scene_color_hdr,
         depth: h.depth,
-        msaa: h
-            .msaa
-            .map(|msaa| crate::passes::WorldMeshForwardMsaaGraphResources {
-                scene_color_hdr: msaa.scene_color_hdr,
-                depth: msaa.forward_depth,
-                depth_r32: msaa.forward_depth_r32,
-            }),
+        msaa: h.msaa.map(|msaa| crate::passes::ForwardMsaaResources {
+            scene_color_hdr: msaa.scene_color_hdr,
+            depth: msaa.forward_depth,
+            depth_r32: msaa.forward_depth_r32,
+        }),
         cluster_light_counts: h.cluster_light_counts,
         cluster_light_indices: h.cluster_light_indices,
         lights: h.lights,

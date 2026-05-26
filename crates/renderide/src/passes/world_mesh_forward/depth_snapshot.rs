@@ -14,39 +14,37 @@ use super::depth_resolve::encode_msaa_depth_resolve_for_frame;
 
 /// Work recorded by the scene-depth snapshot pass.
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct WorldMeshForwardDepthSnapshotResult {
+pub(super) struct EncodeResult {
     /// Whether the MSAA depth target was resolved into the imported single-sample depth target.
-    pub(crate) resolved_depth: bool,
+    pub(super) resolved_depth: bool,
     /// Whether the imported single-sample depth target was copied into the scene-depth snapshot.
-    pub(crate) copied: bool,
+    pub(super) copied: bool,
 }
 
 /// Inputs required to resolve and copy the scene-depth snapshot.
-pub(crate) struct WorldMeshForwardDepthSnapshotEncodeContext<'a, 'encoder, 'frame> {
+pub(super) struct EncodeCtx<'a, 'encoder, 'frame> {
     /// WGPU device used by the MSAA depth resolve path.
-    pub(crate) device: &'a wgpu::Device,
+    pub(super) device: &'a wgpu::Device,
     /// Command encoder receiving resolve and copy work.
-    pub(crate) encoder: &'encoder mut wgpu::CommandEncoder,
+    pub(super) encoder: &'encoder mut wgpu::CommandEncoder,
     /// Per-view frame data and shared renderer services.
-    pub(crate) frame: &'frame GraphPassFrame<'a>,
+    pub(super) frame: &'frame GraphPassFrame<'a>,
     /// Prepared forward state for this view.
-    pub(crate) prepared: &'frame PreparedWorldMeshForwardFrame,
+    pub(super) prepared: &'frame PreparedWorldMeshForwardFrame,
     /// Resolved MSAA transient texture views, when this graph variant uses MSAA.
-    pub(crate) msaa_views: Option<&'frame MsaaViews>,
+    pub(super) msaa_views: Option<&'frame MsaaViews>,
     /// Pipelines and bind layouts for MSAA depth resolve, when supported by the backend.
-    pub(crate) msaa_depth_resolve: Option<&'frame MsaaDepthResolveResources>,
+    pub(super) msaa_depth_resolve: Option<&'frame MsaaDepthResolveResources>,
     /// Optional GPU profiler for timestamp queries.
-    pub(crate) profiler: Option<&'a GpuProfilerHandle>,
+    pub(super) profiler: Option<&'a GpuProfilerHandle>,
     /// Whether the caller determined single-sample depth is stale and must be resolved first.
-    pub(crate) resolve_msaa_depth: bool,
+    pub(super) resolve_msaa_depth: bool,
 }
 
 /// Resolves MSAA depth when needed, then copies the single-sample frame depth into the sampled
 /// scene-depth snapshot used by intersection materials.
-pub(crate) fn encode_world_mesh_forward_depth_snapshot(
-    ctx: WorldMeshForwardDepthSnapshotEncodeContext<'_, '_, '_>,
-) -> WorldMeshForwardDepthSnapshotResult {
-    let WorldMeshForwardDepthSnapshotEncodeContext {
+pub(super) fn encode_world_mesh_forward_depth_snapshot(ctx: EncodeCtx<'_, '_, '_>) -> EncodeResult {
+    let EncodeCtx {
         device,
         encoder,
         frame,
@@ -58,7 +56,7 @@ pub(crate) fn encode_world_mesh_forward_depth_snapshot(
     } = ctx;
     profiling::scope!("world_mesh_forward::encode_depth_snapshot");
     if !depth_snapshot_recording_needed(prepared.helper_needs) {
-        return WorldMeshForwardDepthSnapshotResult::default();
+        return EncodeResult::default();
     }
 
     let resolved_depth = if resolve_msaa_depth {
@@ -72,7 +70,7 @@ pub(crate) fn encode_world_mesh_forward_depth_snapshot(
     };
 
     if !frame.shared.frame_resources.has_frame_gpu() {
-        return WorldMeshForwardDepthSnapshotResult {
+        return EncodeResult {
             resolved_depth,
             copied: false,
         };
@@ -92,7 +90,7 @@ pub(crate) fn encode_world_mesh_forward_depth_snapshot(
     if let (Some(profiler), Some(query)) = (profiler, copy_query) {
         profiler.end_query(encoder, query);
     }
-    WorldMeshForwardDepthSnapshotResult {
+    EncodeResult {
         resolved_depth,
         copied,
     }

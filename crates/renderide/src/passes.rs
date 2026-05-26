@@ -21,14 +21,14 @@ pub(crate) use post_processing::{
     GtaoGraphResources, GtaoPassRange, MotionBlurEffect,
 };
 pub(crate) use scene_color_compose::{SceneColorComposeGraphResources, SceneColorComposePass};
+pub(crate) use world_mesh_forward::ForwardMsaaResources;
 pub(crate) use world_mesh_forward::{
     GTAO_VIEW_NORMAL_FORMAT, MaterialBatchBoundary, PreparedWorldMeshForwardFrame,
     WorldMeshDepthSnapshotPass, WorldMeshForwardDepthPrepass,
     WorldMeshForwardDepthPrepassGraphResources, WorldMeshForwardDepthResolvePass,
     WorldMeshForwardEncodeRefs, WorldMeshForwardGraphResources,
     WorldMeshForwardGtaoDepthResolvePass, WorldMeshForwardIntersectPass,
-    WorldMeshForwardMsaaGraphResources, WorldMeshForwardNormalGraphResources,
-    WorldMeshForwardNormalPass, WorldMeshForwardOpaquePass, WorldMeshForwardPlanSlot,
-    WorldMeshForwardPrepareContext, WorldMeshForwardSkyboxRenderer,
+    WorldMeshForwardNormalGraphResources, WorldMeshForwardNormalPass, WorldMeshForwardOpaquePass,
+    WorldMeshForwardPlanSlot, WorldMeshForwardPrepareContext, WorldMeshForwardSkyboxRenderer,
     WorldMeshForwardTransparentSequencePass, prepare_world_mesh_forward_frame,
 };

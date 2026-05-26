@@ -80,7 +80,7 @@ use crate::world_mesh::{InstancePlan, WorldMeshPhase};
 
 use depth_resolve::encode_msaa_depth_resolve_after_clear_only;
 use depth_snapshot::{
-    WorldMeshForwardDepthSnapshotEncodeContext, encode_world_mesh_forward_depth_snapshot,
+    EncodeCtx as DepthSnapshotEncodeCtx, encode_world_mesh_forward_depth_snapshot,
 };
 use raster_recording::{
     record_world_mesh_forward_intersection_graph_raster,
@@ -127,7 +127,7 @@ pub struct WorldMeshForwardGtaoDepthResolvePass {
 
 /// MSAA-only transient graph resources shared by world-mesh forward passes.
 #[derive(Clone, Copy, Debug)]
-pub struct WorldMeshForwardMsaaGraphResources {
+pub(crate) struct ForwardMsaaResources {
     /// Multisampled HDR scene-color transient.
     pub scene_color_hdr: TextureHandle,
     /// Graph-owned forward depth target.
@@ -144,7 +144,7 @@ pub struct WorldMeshForwardGraphResources {
     /// Imported frame depth target.
     pub depth: ImportedTextureHandle,
     /// Multisampled forward transients when MSAA is active.
-    pub msaa: Option<WorldMeshForwardMsaaGraphResources>,
+    pub msaa: Option<ForwardMsaaResources>,
     /// Imported cluster light-count storage buffer.
     pub cluster_light_counts: ImportedBufferHandle,
     /// Imported cluster light-index storage buffer.
@@ -529,17 +529,16 @@ impl EncoderPass for WorldMeshDepthSnapshotPass {
         let msaa_depth_resolve = frame.view.msaa_depth_resolve.clone();
         let resolve_msaa_depth =
             frame.view.sample_count > 1 && !prepared.depth_freshness.is_current();
-        let result =
-            encode_world_mesh_forward_depth_snapshot(WorldMeshForwardDepthSnapshotEncodeContext {
-                device: ctx.device,
-                encoder: ctx.encoder,
-                frame,
-                prepared: &prepared,
-                msaa_views,
-                msaa_depth_resolve: msaa_depth_resolve.as_deref(),
-                profiler: ctx.profiler,
-                resolve_msaa_depth,
-            });
+        let result = encode_world_mesh_forward_depth_snapshot(DepthSnapshotEncodeCtx {
+            device: ctx.device,
+            encoder: ctx.encoder,
+            frame,
+            prepared: &prepared,
+            msaa_views,
+            msaa_depth_resolve: msaa_depth_resolve.as_deref(),
+            profiler: ctx.profiler,
+            resolve_msaa_depth,
+        });
         if result.resolved_depth {
             prepared.depth_freshness.mark_resolved();
         }
