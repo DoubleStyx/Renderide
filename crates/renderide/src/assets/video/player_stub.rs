@@ -5,7 +5,7 @@
 //! `None`, so `video_players` stays empty and the integrator's polling loop
 //! has nothing to drive.
 
-use crate::gpu::GpuQueueAccessGate;
+use crate::gpu::{GpuQueueAccessGate, GpuQueueAccessMode};
 use renderide_shared::ipc::DualQueueIpc;
 use renderide_shared::{
     VideoTextureClockErrorState, VideoTextureLoad, VideoTextureStartAudioTrack, VideoTextureUpdate,
@@ -44,6 +44,7 @@ impl VideoPlayer {
         &self,
         _frame_sink: &mut impl Sized,
         _ipc: &mut Option<&mut DualQueueIpc>,
+        _queue_access_mode: GpuQueueAccessMode,
     ) {
     }
 

@@ -10,7 +10,7 @@ use super::cpu_copy::CpuCopyVideoSink;
 use super::ready::{video_audio_track_eq, video_texture_ready_eq};
 use super::source::source_uri;
 use crate::assets::video::VideoTextureFrameSink;
-use crate::gpu::GpuQueueAccessGate;
+use crate::gpu::{GpuQueueAccessGate, GpuQueueAccessMode};
 use glam::IVec2;
 use gstreamer::prelude::{ElementExt, ElementExtManual};
 
@@ -342,6 +342,7 @@ impl VideoPlayer {
         &mut self,
         frame_sink: &mut impl VideoTextureFrameSink,
         ipc: &mut Option<&mut DualQueueIpc>,
+        queue_access_mode: GpuQueueAccessMode,
     ) {
         profiling::scope!("video::process_events");
         if self.shutdown.load(Ordering::Acquire) {
@@ -354,7 +355,7 @@ impl VideoPlayer {
         // Forward any texture the sink created since last frame. Ensure the pool entry exists here
         // so a frame cannot be lost if video data arrives before sampler properties.
         let id = self.asset_id;
-        if let Some((view, w, h, bytes)) = self.video_sink.poll_texture_change()
+        if let Some((view, w, h, bytes)) = self.video_sink.poll_texture_change(queue_access_mode)
             && !frame_sink.set_video_texture_frame(id, view, w, h, bytes)
         {
             logger::warn!("video texture {id}: GPU placeholder unavailable for decoded frame");
