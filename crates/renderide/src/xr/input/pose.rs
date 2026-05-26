@@ -1,6 +1,6 @@
 //! Controller palm pose math and OpenXR [`openxr::SpaceLocation`] conversion.
 
-use glam::{EulerRot, Quat, Vec3};
+use glam::{Quat, Vec3};
 use openxr as xr;
 
 use crate::shared::Chirality;
@@ -65,22 +65,12 @@ pub(super) fn pose_from_joint(location: &xr::HandJointLocation) -> Option<(Vec3,
 pub(super) fn hand_pose_defaults(side: Chirality) -> (Vec3, Quat) {
     match side {
         Chirality::Left => (
-            Vec3::new(0.0, 0.01, -0.08),
-            Quat::from_euler(
-                EulerRot::XYZ,
-                11.5f32.to_radians(),
-                0.5f32.to_radians(),
-                93.7f32.to_radians(),
-            ),
+            Vec3::new(-0.01656174, 0.01746511, -0.06041543),
+            Quat::from_xyzw(0.03415401, -0.03669568, 0.65963954, 0.7499084),
         ),
         Chirality::Right => (
-            Vec3::new(0.0, 0.01, -0.08),
-            Quat::from_euler(
-                EulerRot::XYZ,
-                11.5f32.to_radians(),
-                0.5f32.to_radians(),
-                -93.7f32.to_radians(),
-            ),
+            Vec3::new(0.01654901, 0.01747206, -0.06039015),
+            Quat::from_xyzw(-0.03416481, -0.03668703, 0.65962956, -0.74991711),
         ),
     }
 }

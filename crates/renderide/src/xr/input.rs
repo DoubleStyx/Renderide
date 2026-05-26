@@ -3,6 +3,7 @@
 mod bindings;
 mod frame;
 mod hand_synth;
+mod hand_tracking;
 mod haptics;
 mod manifest;
 mod openxr_actions;
@@ -10,7 +11,6 @@ mod openxr_input;
 mod pose;
 mod profile;
 mod state;
-mod hand_tracking;
 
 pub use bindings::ProfileExtensionGates;
 pub use hand_synth::synthesize_hand_states;
