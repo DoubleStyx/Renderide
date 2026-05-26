@@ -10,7 +10,10 @@ mod tonemap;
 
 pub use auto_exposure::AutoExposureSettings;
 pub use bloom::{BloomCompositeMode, BloomSettings};
-pub use gtao::GtaoSettings;
+pub use gtao::{
+    GTAO_MAX_DENOISE_PASSES, GTAO_MAX_QUALITY_LEVEL, GTAO_MAX_RESOLUTION_DIVISOR,
+    GTAO_MAX_SLICE_COUNT, GTAO_MAX_STEPS_PER_SLICE, GtaoSettings,
+};
 pub use motion_blur::MotionBlurSettings;
 pub use tonemap::{TonemapMode, TonemapSettings};
 

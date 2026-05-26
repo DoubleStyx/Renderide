@@ -1,6 +1,6 @@
 //! `gtao_main` raster pass -- GTAO production stage.
 //!
-//! Reads the GTAO view-space depth mip chain plus the smooth view-space normal prepass,
+//! Reads the GTAO view-space depth levels plus the smooth view-space normal prepass,
 //! evaluates the horizon search, and writes:
 //!
 //! - `@location(0)` -- `saturate(visibility / OCCLUSION_TERM_SCALE)` to an `R8Unorm` ping-pong
@@ -23,14 +23,16 @@ use crate::render_graph::gpu_cache::raster_stereo_mask_override;
 use crate::render_graph::pass::RenderPassTemplate;
 use crate::render_graph::pass::{PassBuilder, RasterPass};
 use crate::render_graph::resources::{
-    BufferAccess, ImportedBufferHandle, TextureAccess, TextureHandle,
+    BufferAccess, ImportedBufferHandle, SubresourceHandle, TextureAccess, TextureHandle,
 };
 
 /// Graph handles bound to one [`GtaoMainPass`] instance.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct GtaoMainResources {
-    /// View-space depth mip chain sampled by the AO horizon search.
-    pub view_depth: TextureHandle,
+    /// View-space depth levels sampled by the AO horizon search.
+    pub view_depth_mips: [TextureHandle; VIEW_DEPTH_MIP_COUNT as usize],
+    /// View-space depth subresource views sampled by the AO horizon search.
+    pub view_depth_views: [SubresourceHandle; VIEW_DEPTH_MIP_COUNT as usize],
     /// Smooth view-space normal texture produced by the forward normal prepass.
     pub view_normals: TextureHandle,
     /// Frame-uniforms buffer used as a fallback when the per-view buffer slot is absent.
@@ -73,12 +75,14 @@ impl RasterPass for GtaoMainPass {
         b.read_optional_blackboard::<PerViewFramePlanSlot>();
         b.read_optional_blackboard::<crate::passes::WorldMeshForwardPlanSlot>();
         b.read_blackboard::<GtaoSettingsSlot>();
-        b.read_texture_resource(
-            self.resources.view_depth,
-            TextureAccess::Sampled {
-                stages: wgpu::ShaderStages::FRAGMENT,
-            },
-        );
+        for mip in self.resources.view_depth_views {
+            b.read_texture_subresource(
+                mip,
+                TextureAccess::Sampled {
+                    stages: wgpu::ShaderStages::FRAGMENT,
+                },
+            );
+        }
         b.read_texture_resource(
             self.resources.view_normals,
             TextureAccess::Sampled {
@@ -163,14 +167,23 @@ impl RasterPass for GtaoMainPass {
         // Production stage doesn't run the bilateral kernel; `denoise_blur_beta = 0` and
         // `final_apply = 0` keep the shared UBO unambiguous (the production shader doesn't
         // read either field but the apply / denoise shaders share the layout).
-        let Some(view_depth_tex) = graph_resources.transient_texture(self.resources.view_depth)
-        else {
-            return Err(missing_pass_resource(
-                self.name(),
-                format_args!("missing view_depth {:?}", self.resources.view_depth),
-            ));
-        };
-        let view_depth_mip_count = view_depth_tex.mip_levels.clamp(1, VIEW_DEPTH_MIP_COUNT);
+        let [mip0, mip1, mip2, mip3, mip4] = self.resources.view_depth_mips;
+        let view_depth_mip0 = graph_resources.transient_texture(mip0).ok_or_else(|| {
+            missing_pass_resource(self.name(), format_args!("missing view_depth {mip0:?}"))
+        })?;
+        let view_depth_mip1 = graph_resources.transient_texture(mip1).ok_or_else(|| {
+            missing_pass_resource(self.name(), format_args!("missing view_depth {mip1:?}"))
+        })?;
+        let view_depth_mip2 = graph_resources.transient_texture(mip2).ok_or_else(|| {
+            missing_pass_resource(self.name(), format_args!("missing view_depth {mip2:?}"))
+        })?;
+        let view_depth_mip3 = graph_resources.transient_texture(mip3).ok_or_else(|| {
+            missing_pass_resource(self.name(), format_args!("missing view_depth {mip3:?}"))
+        })?;
+        let view_depth_mip4 = graph_resources.transient_texture(mip4).ok_or_else(|| {
+            missing_pass_resource(self.name(), format_args!("missing view_depth {mip4:?}"))
+        })?;
+        let view_depth_mip_count = VIEW_DEPTH_MIP_COUNT;
         let params = GtaoParamsGpu::from_settings(live, 0.0, false)
             .with_view_depth_mip_count(view_depth_mip_count);
         let params_buffer = self.pipelines.params.get(ctx.device);
@@ -189,7 +202,13 @@ impl RasterPass for GtaoMainPass {
             ctx.device,
             GtaoMainBindGroupResources {
                 multiview_stereo,
-                view_depth_texture: &view_depth_tex.texture,
+                view_depth_mips: [
+                    &view_depth_mip0.texture,
+                    &view_depth_mip1.texture,
+                    &view_depth_mip2.texture,
+                    &view_depth_mip3.texture,
+                    &view_depth_mip4.texture,
+                ],
                 view_depth_mip_count,
                 view_normals_texture: &view_normals_tex.texture,
                 frame_uniforms: &frame_uniform_buffer,

@@ -225,6 +225,7 @@ mod tests {
             bloom_max_mip_dimension: 0,
             gtao: false,
             gtao_denoise_passes: 0,
+            gtao_resolution_divisor: 0,
             motion_blur: false,
         });
         assert_ne!(off, on);

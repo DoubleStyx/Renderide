@@ -2,9 +2,8 @@
 //!
 //! Reads the AO term and packed edges produced by [`super::main_pass::GtaoMainPass`], runs
 //! the 3x3 edge-preserving kernel with `finalApply = false`, and writes a denoised AO term to a
-//! ping-pong target. Registered when
-//! [`crate::config::GtaoSettings::denoise_passes`] is `>= 2`; a second instance is added for
-//! `denoise_passes >= 3`. Intermediate iterations use
+//! ping-pong target. Registered `denoise_passes - 1` times when
+//! [`crate::config::GtaoSettings::denoise_passes`] is `>= 2`. Intermediate iterations use
 //! `denoise_blur_beta / 5.0` so two iterations approximate the quality of a single soft
 //! pass without over-smoothing silhouettes.
 

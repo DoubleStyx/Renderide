@@ -87,7 +87,7 @@ fn ao_factor_scaled(pix: vec2<i32>, view_layer: u32, viewport_max: vec2<i32>) ->
 fn fs_main(in: fs::FullscreenVertexOutput, @builtin(view_index) view: u32) -> @location(0) vec4<f32> {
     let dim = textureDimensions(ao_term);
     let viewport_max = vec2<i32>(i32(dim.x) - 1, i32(dim.y) - 1);
-    let pix = vec2<i32>(in.clip_pos.xy);
+    let pix = vec2<i32>(in.uv * vec2<f32>(f32(dim.x), f32(dim.y)));
     let ao_scaled = ao_factor_scaled(pix, view, viewport_max);
     let ao = clamp(ao_scaled * gf::GTAO_OCCLUSION_TERM_SCALE, 0.0, 1.0);
     return vec4<f32>(vec3<f32>(ao), 1.0);
@@ -97,7 +97,7 @@ fn fs_main(in: fs::FullscreenVertexOutput, @builtin(view_index) view: u32) -> @l
 fn fs_main(in: fs::FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let dim = textureDimensions(ao_term);
     let viewport_max = vec2<i32>(i32(dim.x) - 1, i32(dim.y) - 1);
-    let pix = vec2<i32>(in.clip_pos.xy);
+    let pix = vec2<i32>(in.uv * vec2<f32>(f32(dim.x), f32(dim.y)));
     let ao_scaled = ao_factor_scaled(pix, 0u, viewport_max);
     let ao = clamp(ao_scaled * gf::GTAO_OCCLUSION_TERM_SCALE, 0.0, 1.0);
     return vec4<f32>(vec3<f32>(ao), 1.0);

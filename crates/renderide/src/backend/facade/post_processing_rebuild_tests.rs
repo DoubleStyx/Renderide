@@ -100,7 +100,8 @@ fn first_sync_builds_graph_and_records_signature() {
             bloom: true,
             bloom_max_mip_dimension: 512,
             gtao: true,
-            gtao_denoise_passes: GtaoSettings::default().denoise_passes.min(3),
+            gtao_denoise_passes: GtaoSettings::default().effective_denoise_passes(),
+            gtao_resolution_divisor: GtaoSettings::default().effective_resolution_divisor(),
             motion_blur: true,
         }
     );
