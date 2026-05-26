@@ -106,15 +106,15 @@ mod tests {
     }
 
     #[test]
-    fn classifies_late_opaque_queue_after_skybox_without_strict_order() {
+    fn classifies_late_opaque_queue_as_alpha_test_without_strict_order() {
         let mut late_opaque = key(false);
         late_opaque.render_queue = UNITY_RENDER_QUEUE_TRANSPARENT - 1;
         late_opaque.blend_mode = MaterialBlendMode::Opaque;
 
         let classification = classify_world_mesh_batch(&late_opaque);
 
-        assert_eq!(classification.phase, WorldMeshPhase::Transparent);
-        assert!(classification.post_skybox);
+        assert_eq!(classification.phase, WorldMeshPhase::ForwardAlphaTest);
+        assert!(!classification.post_skybox);
         assert!(!classification.strict_order);
     }
 
