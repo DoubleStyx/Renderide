@@ -3,6 +3,56 @@
 use std::path::PathBuf;
 
 use crate::config::{RendererSettingsHandle, save_renderer_settings};
+use crate::shared::DesktopConfig;
+
+/// Minimum positive host desktop frame-rate cap accepted from [`DesktopConfig`].
+const MIN_HOST_DESKTOP_FPS_CAP: u32 = 5;
+
+/// Effective foreground and background desktop frame-pacing caps for the app driver.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DesktopFramePacingCaps {
+    /// FPS cap used while the OS reports the renderer window has keyboard focus.
+    pub(crate) foreground_fps_cap: u32,
+    /// FPS cap used while the OS reports the renderer window does not have keyboard focus.
+    pub(crate) background_fps_cap: u32,
+}
+
+/// Host-supplied desktop frame-pacing overrides from [`DesktopConfig`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct HostDesktopFramePacingCaps {
+    /// Positive host foreground cap, after Unity-compatible minimum clamping.
+    foreground_fps_cap: Option<u32>,
+    /// Positive host background cap, after Unity-compatible minimum clamping.
+    background_fps_cap: Option<u32>,
+}
+
+impl HostDesktopFramePacingCaps {
+    /// Converts host desktop config fields into optional frame-pacing caps.
+    fn from_desktop_config(cfg: &DesktopConfig) -> Self {
+        Self {
+            foreground_fps_cap: sanitized_host_fps_cap(cfg.maximum_foreground_framerate),
+            background_fps_cap: sanitized_host_fps_cap(cfg.maximum_background_framerate),
+        }
+    }
+
+    /// Resolves optional host caps over renderer-config fallback caps.
+    fn resolve(self, fallback: DesktopFramePacingCaps) -> DesktopFramePacingCaps {
+        DesktopFramePacingCaps {
+            foreground_fps_cap: self
+                .foreground_fps_cap
+                .unwrap_or(fallback.foreground_fps_cap),
+            background_fps_cap: self
+                .background_fps_cap
+                .unwrap_or(fallback.background_fps_cap),
+        }
+    }
+}
+
+/// Returns a positive host cap with Unity-compatible minimum clamping.
+fn sanitized_host_fps_cap(raw: Option<i32>) -> Option<u32> {
+    raw.filter(|cap| *cap > 0)
+        .map(|cap| (cap as u32).max(MIN_HOST_DESKTOP_FPS_CAP))
+}
 
 /// Settings handle, persistence path, and config-write suppression state.
 pub(in crate::runtime) struct RuntimeConfigState {
@@ -12,6 +62,8 @@ pub(in crate::runtime) struct RuntimeConfigState {
     config_save_path: PathBuf,
     /// When true, ImGui and config save helpers must not overwrite `config.toml`.
     suppress_renderer_config_disk_writes: bool,
+    /// Optional host frame-pacing overrides from the latest [`DesktopConfig`].
+    host_desktop_caps: HostDesktopFramePacingCaps,
 }
 
 impl RuntimeConfigState {
@@ -24,7 +76,29 @@ impl RuntimeConfigState {
             settings,
             config_save_path,
             suppress_renderer_config_disk_writes: false,
+            host_desktop_caps: HostDesktopFramePacingCaps::default(),
         }
+    }
+
+    /// Applies host desktop frame-pacing overrides without mutating persisted renderer settings.
+    pub(in crate::runtime) fn apply_host_desktop_config(&mut self, cfg: &DesktopConfig) {
+        self.host_desktop_caps = HostDesktopFramePacingCaps::from_desktop_config(cfg);
+    }
+
+    /// Returns desktop frame-pacing caps after applying host overrides over renderer settings.
+    pub(in crate::runtime) fn desktop_frame_pacing_caps(&self) -> DesktopFramePacingCaps {
+        let fallback = self
+            .settings
+            .read()
+            .map(|settings| DesktopFramePacingCaps {
+                foreground_fps_cap: settings.display.focused_fps_cap,
+                background_fps_cap: settings.display.unfocused_fps_cap,
+            })
+            .unwrap_or(DesktopFramePacingCaps {
+                foreground_fps_cap: 0,
+                background_fps_cap: 0,
+            });
+        self.host_desktop_caps.resolve(fallback)
     }
 
     /// Cloned config save path for backend HUD attach.
@@ -75,11 +149,13 @@ impl RuntimeConfigState {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
     use std::sync::{Arc, RwLock};
 
     use crate::config::RendererSettings;
+    use crate::shared::DesktopConfig;
 
-    use super::RuntimeConfigState;
+    use super::{DesktopFramePacingCaps, RuntimeConfigState, sanitized_host_fps_cap};
 
     #[test]
     fn toggle_imgui_visibility_updates_memory_and_disk() {
@@ -140,5 +216,73 @@ mod tests {
                 .hud
                 .imgui_visible
         );
+    }
+
+    #[test]
+    fn host_desktop_caps_override_positive_values_without_mutating_settings() {
+        let settings = Arc::new(RwLock::new(RendererSettings::default()));
+        {
+            let mut settings = settings.write().expect("settings write");
+            settings.display.focused_fps_cap = 144;
+            settings.display.unfocused_fps_cap = 30;
+        }
+        let mut state = RuntimeConfigState::new(Arc::clone(&settings), PathBuf::new());
+
+        state.apply_host_desktop_config(&DesktopConfig {
+            maximum_foreground_framerate: Some(90),
+            maximum_background_framerate: Some(1),
+            v_sync: false,
+        });
+
+        assert_eq!(
+            state.desktop_frame_pacing_caps(),
+            DesktopFramePacingCaps {
+                foreground_fps_cap: 90,
+                background_fps_cap: 5,
+            }
+        );
+        let (focused_fps_cap, unfocused_fps_cap) = {
+            let settings = settings.read().expect("settings read");
+            (
+                settings.display.focused_fps_cap,
+                settings.display.unfocused_fps_cap,
+            )
+        };
+        assert_eq!(focused_fps_cap, 144);
+        assert_eq!(unfocused_fps_cap, 30);
+    }
+
+    #[test]
+    fn host_desktop_caps_ignore_none_zero_and_negative_values() {
+        let settings = Arc::new(RwLock::new(RendererSettings::default()));
+        {
+            let mut settings = settings.write().expect("settings write");
+            settings.display.focused_fps_cap = 240;
+            settings.display.unfocused_fps_cap = 60;
+        }
+        let mut state = RuntimeConfigState::new(settings, PathBuf::new());
+
+        state.apply_host_desktop_config(&DesktopConfig {
+            maximum_foreground_framerate: Some(0),
+            maximum_background_framerate: Some(-10),
+            v_sync: false,
+        });
+
+        assert_eq!(
+            state.desktop_frame_pacing_caps(),
+            DesktopFramePacingCaps {
+                foreground_fps_cap: 240,
+                background_fps_cap: 60,
+            }
+        );
+    }
+
+    #[test]
+    fn host_desktop_cap_sanitizer_matches_unity_minimum() {
+        assert_eq!(sanitized_host_fps_cap(None), None);
+        assert_eq!(sanitized_host_fps_cap(Some(0)), None);
+        assert_eq!(sanitized_host_fps_cap(Some(-1)), None);
+        assert_eq!(sanitized_host_fps_cap(Some(1)), Some(5));
+        assert_eq!(sanitized_host_fps_cap(Some(30)), Some(30));
     }
 }

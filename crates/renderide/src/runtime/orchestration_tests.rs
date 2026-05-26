@@ -93,7 +93,7 @@ fn dispatch_quality_config_increments_unhandled_when_no_handler() {
 }
 
 #[test]
-fn dispatch_desktop_config_is_ignored_without_overriding_renderer_settings() {
+fn dispatch_desktop_config_overrides_effective_caps_without_mutating_renderer_settings() {
     let mut rt = test_runtime_standalone();
     let before = rt.unhandled_ipc_command_event_total();
     {
@@ -107,11 +107,14 @@ fn dispatch_desktop_config_is_ignored_without_overriding_renderer_settings() {
         &mut rt,
         RendererCommand::DesktopConfig(DesktopConfig {
             maximum_background_framerate: Some(30),
-            maximum_foreground_framerate: None,
+            maximum_foreground_framerate: Some(120),
             v_sync: true,
         }),
     );
 
+    let caps = rt.desktop_frame_pacing_caps();
+    assert_eq!(caps.foreground_fps_cap, 120);
+    assert_eq!(caps.background_fps_cap, 30);
     {
         let settings = rt.settings().read().expect("settings readable");
         assert_eq!(settings.rendering.vsync, VsyncMode::On);
@@ -123,7 +126,7 @@ fn dispatch_desktop_config_is_ignored_without_overriding_renderer_settings() {
 }
 
 #[test]
-fn dispatch_desktop_config_ignores_negative_and_zero_host_caps() {
+fn dispatch_desktop_config_ignores_negative_and_zero_host_caps_for_effective_caps() {
     let mut rt = test_runtime_standalone();
     {
         let mut settings = rt.settings().write().expect("settings writable");
@@ -141,6 +144,9 @@ fn dispatch_desktop_config_ignores_negative_and_zero_host_caps() {
         }),
     );
 
+    let caps = rt.desktop_frame_pacing_caps();
+    assert_eq!(caps.foreground_fps_cap, 240);
+    assert_eq!(caps.background_fps_cap, 60);
     {
         let settings = rt.settings().read().expect("settings readable");
         assert_eq!(settings.rendering.vsync, VsyncMode::On);

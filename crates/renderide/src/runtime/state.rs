@@ -10,6 +10,7 @@ pub(super) mod ipc;
 pub(super) mod tick;
 pub(super) mod xr;
 
+pub(crate) use config::DesktopFramePacingCaps;
 pub(super) use config::RuntimeConfigState;
 pub(super) use diagnostics::RuntimeDiagnosticsState;
 pub(super) use ipc::RuntimeIpcState;

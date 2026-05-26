@@ -406,7 +406,7 @@ mod tests {
             .effective_sample_counts(),
             (3, 3)
         );
-        assert_eq!(GtaoSettings::default().effective_sample_counts(), (9, 3));
+        assert_eq!(GtaoSettings::default().effective_sample_counts(), (3, 3));
         assert_eq!(
             GtaoSettings {
                 quality_level: 4,

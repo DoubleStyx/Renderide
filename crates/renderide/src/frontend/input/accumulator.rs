@@ -44,7 +44,7 @@ pub struct WindowInputAccumulator {
     pub button5_held: bool,
     /// Whether the cursor is inside the client area.
     pub mouse_active: bool,
-    /// Whether the window is focused.
+    /// Whether winit reports keyboard focus for the renderer window.
     pub window_focused: bool,
     /// Keys currently held, in host [`Key`] form.
     pub held_keys: Vec<Key>,
@@ -74,7 +74,7 @@ impl Default for WindowInputAccumulator {
             button4_held: false,
             button5_held: false,
             mouse_active: false,
-            window_focused: true,
+            window_focused: false,
             held_keys: Vec::new(),
             ime_commit_buffer: String::new(),
             text_typing_buffer: String::new(),
@@ -117,6 +117,14 @@ impl WindowInputAccumulator {
         self.fullscreen = fullscreen;
     }
 
+    /// Records whether winit reports keyboard focus for the renderer window.
+    pub fn set_window_focused(&mut self, focused: bool) {
+        self.window_focused = focused;
+        if !focused {
+            self.clear_stuck_keyboard_on_focus_lost();
+        }
+    }
+
     /// Updates cursor position from winit [`WindowEvent::PointerMoved`](winit::event::WindowEvent::PointerMoved).
     ///
     /// `position` is in **physical** pixels; `window_position` stores **logical** pixels for host
@@ -146,7 +154,7 @@ impl WindowInputAccumulator {
         self.last_cursor_pixel.y = physical.y.round() as i32;
     }
 
-    /// Clears [`Self::held_keys`] and modifier state when the window loses focus.
+    /// Clears [`Self::held_keys`] and modifier state when the window loses keyboard focus.
     ///
     /// After Alt+Tab or similar, the platform may not deliver key release events to this window,
     /// which would otherwise leave keys stuck in [`Self::held_keys`]. Mouse buttons are **not**
@@ -248,6 +256,23 @@ mod tests {
         assert_eq!(w.keyboard_modifiers(), ModifiersState::empty());
         assert!(w.left_held);
         assert!(w.right_held);
+    }
+
+    #[test]
+    fn set_window_focused_tracks_winit_keyboard_focus_and_clears_keys_on_loss() {
+        let mut w = WindowInputAccumulator::default();
+        assert!(!w.window_focused);
+
+        w.set_window_focused(true);
+        w.held_keys.push(Key::W);
+        w.set_keyboard_modifiers(ModifiersState::SHIFT);
+        assert!(w.window_focused);
+
+        w.set_window_focused(false);
+
+        assert!(!w.window_focused);
+        assert!(w.held_keys.is_empty());
+        assert_eq!(w.keyboard_modifiers(), ModifiersState::empty());
     }
 
     #[test]

@@ -55,10 +55,7 @@ pub fn apply_window_event(
         }
         WindowEvent::Focused(focused) => {
             profiling::scope!("frontend::window_event", "focus");
-            acc.window_focused = *focused;
-            if !*focused {
-                acc.clear_stuck_keyboard_on_focus_lost();
-            }
+            acc.set_window_focused(*focused);
         }
         WindowEvent::ModifiersChanged(modifiers) => {
             profiling::scope!("frontend::window_event", "modifiers");

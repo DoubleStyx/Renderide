@@ -20,8 +20,9 @@ impl AppDriver {
         profiling::scope!("startup::ensure_render_target");
         match RenderTarget::create(event_loop, &mut self.runtime, self.startup_gpu) {
             Ok(target) => {
-                self.input
-                    .sync_window_resolution_logical(target.window().as_ref());
+                let window = target.window();
+                self.input.sync_window_resolution_logical(window.as_ref());
+                self.input.set_window_focused(window.has_focus());
                 self.input.set_fullscreen(target.is_fullscreen());
                 self.target = Some(target);
             }
@@ -139,6 +140,15 @@ impl ApplicationHandler for AppDriver {
 
     fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
         profiling::scope!("app::about_to_wait");
+        let window_has_keyboard_focus = self
+            .target
+            .as_ref()
+            .map_or(self.input.window_focused, |target| {
+                target.window().has_focus()
+            });
+        if self.input.window_focused != window_has_keyboard_focus {
+            self.input.set_window_focused(window_has_keyboard_focus);
+        }
         crate::profiling::plot_window_focused(self.input.window_focused);
         if self.exit_is_requested() {
             self.poll_graceful_shutdown(event_loop);
@@ -150,33 +160,18 @@ impl ApplicationHandler for AppDriver {
             return;
         }
 
-        if self
+        let wants_more_idle_asset_work = self
             .runtime
-            .run_asset_integration_while_waiting_for_submit(std::time::Instant::now())
-        {
-            event_loop.set_control_flow(ControlFlow::Poll);
-            self.flush_logs_if_due();
-            return;
-        }
+            .run_asset_integration_while_waiting_for_submit(std::time::Instant::now());
 
-        let (focused_fps_cap, unfocused_fps_cap) = self
-            .runtime
-            .settings()
-            .read()
-            .map(|settings| {
-                (
-                    settings.display.focused_fps_cap,
-                    settings.display.unfocused_fps_cap,
-                )
-            })
-            .unwrap_or((0, 0));
+        let frame_pacing_caps = self.runtime.desktop_frame_pacing_caps();
         let plan = plan_redraw(RedrawInputs {
             has_window: self.target.is_some(),
             exit_requested: self.exit_is_requested(),
             vr_active: self.runtime.vr_active(),
-            window_focused: self.input.window_focused,
-            focused_fps_cap,
-            unfocused_fps_cap,
+            window_has_keyboard_focus: self.input.window_focused,
+            foreground_fps_cap: frame_pacing_caps.foreground_fps_cap,
+            background_fps_cap: frame_pacing_caps.background_fps_cap,
             last_frame_start: self.frame_clock.last_frame_start(),
             now: std::time::Instant::now(),
         });
@@ -191,6 +186,11 @@ impl ApplicationHandler for AppDriver {
                 return;
             }
             RedrawDecision::RedrawNow => {
+                if wants_more_idle_asset_work {
+                    event_loop.set_control_flow(ControlFlow::Poll);
+                    self.flush_logs_if_due();
+                    return;
+                }
                 if let Some(target) = self.target.as_ref() {
                     target.window().request_redraw();
                 }
