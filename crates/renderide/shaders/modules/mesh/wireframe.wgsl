@@ -23,6 +23,15 @@ fn screen_edge_distance(barycentric: vec3<f32>) -> f32 {
     return min(d0, min(d1, d2));
 }
 
+fn line_stream_edge_distance(barycentric: vec3<f32>) -> f32 {
+    let dx = dpdx(barycentric);
+    let dy = dpdy(barycentric);
+
+    let d0 = gradient_distance(barycentric.x, length(vec2<f32>(dx.x, dy.x)));
+    let d2 = gradient_distance(barycentric.z, length(vec2<f32>(dx.z, dy.z)));
+    return min(d0, d2);
+}
+
 fn world_gradient_length(world_pos: vec3<f32>, coord: f32) -> f32 {
     let px = dpdx(world_pos);
     let py = dpdy(world_pos);
@@ -49,6 +58,10 @@ fn world_edge_distance(barycentric: vec3<f32>, world_pos: vec3<f32>) -> f32 {
     return min(d0, min(d1, d2));
 }
 
+fn unity_world_edge_distance(barycentric: vec3<f32>, world_pos: vec3<f32>) -> f32 {
+    return world_edge_distance(barycentric, world_pos) * 0.5;
+}
+
 fn coverage_from_distance(distance: f32, thickness: f32) -> f32 {
     let width = max(thickness, 0.0);
     let aa = max(fwidth(distance), 1e-6);
@@ -69,8 +82,26 @@ fn edge_lerp(
     return coverage_from_distance(distance, thickness);
 }
 
+fn unity_edge_lerp(
+    barycentric: vec3<f32>,
+    world_pos: vec3<f32>,
+    thickness: f32,
+    screenspace: bool,
+) -> f32 {
+    let distance = select(
+        unity_world_edge_distance(barycentric, world_pos),
+        screen_edge_distance(barycentric),
+        screenspace,
+    );
+    return coverage_from_distance(distance, thickness);
+}
+
 fn thin_edge_mask(barycentric: vec3<f32>, pixel_width: f32) -> f32 {
     return coverage_from_distance(screen_edge_distance(barycentric), pixel_width);
+}
+
+fn line_stream_edge_mask(barycentric: vec3<f32>, pixel_width: f32) -> f32 {
+    return coverage_from_distance(line_stream_edge_distance(barycentric), pixel_width);
 }
 
 fn fresnel_factor(normal: vec3<f32>, view_dir: vec3<f32>, exponent: f32) -> f32 {

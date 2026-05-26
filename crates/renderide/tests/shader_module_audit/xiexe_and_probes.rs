@@ -66,6 +66,31 @@ const XIEXE_NON_CORE_EXTENSION_IDENTIFIERS: &[&str] = &[
 ];
 
 #[test]
+fn xiexe_wireframe_override_matches_line_stream_topology() -> io::Result<()> {
+    for root in [
+        "xstoon2.0_wireframeoverride.wgsl",
+        "xstoon2.0_wireframeoverride_a2c.wgsl",
+    ] {
+        let src = material_source(root)?;
+        assert!(
+            src.contains("wf::line_stream_edge_mask(barycentric, 1.0)"),
+            "{root} must draw only the two source LineStream segments"
+        );
+        assert!(
+            src.lines()
+                .any(|line| line.starts_with("//#pass") && line.contains("cull=off")),
+            "{root} must disable triangle culling to match source line primitives"
+        );
+        assert!(
+            !src.contains("@builtin(front_facing)") && src.contains("frag_pos, true, world_pos"),
+            "{root} must shade wire fragments without back-face normal flipping"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn xiexe_transparent_keeps_premultiplied_transparent_pass_directive() -> io::Result<()> {
     let src = material_source("xstoon2.0-transparent.wgsl")?;
     assert!(

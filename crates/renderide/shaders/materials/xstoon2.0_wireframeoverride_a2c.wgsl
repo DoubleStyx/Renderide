@@ -66,11 +66,10 @@ fn vs_main(
 #endif
 }
 
-//#pass type=forward a2c=true
+//#pass type=forward cull=off a2c=true
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,
-    @builtin(front_facing) front_facing: bool,
     @builtin(barycentric) barycentric: vec3<f32>,
     @location(0) world_pos: vec3<f32>,
     @location(1) world_n: vec3<f32>,
@@ -81,13 +80,13 @@ fn fs_forward_base(
     @location(6) color: vec4<f32>,
     @location(8) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
-    let edge = wf::thin_edge_mask(barycentric, 1.0);
+    let edge = wf::line_stream_edge_mask(barycentric, 1.0);
     let edge_cutoff = select(0.5, 0.0, rg::frame_sample_count() > 1u);
     if (edge <= edge_cutoff) {
         discard;
     }
     var shaded = xs::fragment_forward_for_layout(
-        frag_pos, front_facing, world_pos, world_n, world_t, world_b, uv0, uv1, color, view_layer, XIEE_ALPHA_MODE, XIEE_KEYWORD_LAYOUT
+        frag_pos, true, world_pos, world_n, world_t, world_b, uv0, uv1, color, view_layer, XIEE_ALPHA_MODE, XIEE_KEYWORD_LAYOUT
     );
     if (rg::frame_sample_count() > 1u) {
         shaded.a = min(shaded.a, edge);

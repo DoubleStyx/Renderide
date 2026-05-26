@@ -190,6 +190,50 @@ fn unlit_uses_reserved_variant_bits_instead_of_keyword_uniform_fields() -> io::R
 }
 
 #[test]
+fn wireframe_helpers_keep_unity_distance_conventions() -> io::Result<()> {
+    let src = module_source("mesh/wireframe.wgsl")?;
+    assert!(
+        src.contains("fn unity_world_edge_distance")
+            && src.contains("return world_edge_distance(barycentric, world_pos) * 0.5;"),
+        "common Wireframe world-space mode must keep the source shader's half-altitude edge distances"
+    );
+
+    let line_stream_start = src
+        .find("fn line_stream_edge_distance")
+        .expect("line stream edge helper");
+    let next_helper = src[line_stream_start..]
+        .find("fn world_gradient_length")
+        .expect("following helper")
+        + line_stream_start;
+    let line_stream_helper = &src[line_stream_start..next_helper];
+    assert!(
+        line_stream_helper.contains("barycentric.x")
+            && line_stream_helper.contains("barycentric.z")
+            && !line_stream_helper.contains("barycentric.y"),
+        "XSToon wireframe override must match the two-segment LineStream topology and skip the closing edge"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn common_wireframe_roots_use_unity_world_edge_lerp() -> io::Result<()> {
+    for file_name in [
+        "wireframe.wgsl",
+        "wireframedoublesided.wgsl",
+        "wireframeunlittransition.wgsl",
+    ] {
+        let src = material_source(file_name)?;
+        assert!(
+            src.contains("wf::unity_edge_lerp("),
+            "{file_name} must use the source-compatible world-space wire distance helper"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn unlit_polar_variants_use_unity_derivative_selection() -> io::Result<()> {
     let unlit = material_source("unlit.wgsl")?;
     assert!(

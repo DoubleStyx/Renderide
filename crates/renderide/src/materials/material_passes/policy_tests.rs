@@ -422,9 +422,9 @@ fn pbsrim_zwrite_stems_keep_depth_prepass_before_transparent_forward() {
     }
 }
 
-/// Verifies barycentric wireframe stems keep their source-authored pass state.
+/// Verifies barycentric wireframe stems request barycentric support.
 #[test]
-fn wireframe_stems_use_barycentric_material_passes() {
+fn wireframe_stems_require_barycentric_features() {
     for stem in [
         "wireframe_default",
         "wireframedoublesided_default",
@@ -438,7 +438,11 @@ fn wireframe_stems_use_barycentric_material_passes() {
             "{stem}"
         );
     }
+}
 
+/// Verifies common barycentric wireframe stems keep their source-authored pass state.
+#[test]
+fn common_wireframe_stems_use_barycentric_material_passes() {
     let wireframe = crate::embedded_shaders::embedded_target_passes("wireframe_default");
     assert_eq!(wireframe.len(), 1);
     assert_eq!(wireframe[0].cull_mode, Some(wgpu::Face::Back));
@@ -465,11 +469,29 @@ fn wireframe_stems_use_barycentric_material_passes() {
     let additive = transition[2].blend.expect("transition wire blend");
     assert_eq!(additive.color.src_factor, wgpu::BlendFactor::One);
     assert_eq!(additive.color.dst_factor, wgpu::BlendFactor::One);
+}
 
-    let xstoon_a2c =
-        crate::embedded_shaders::embedded_target_passes("xstoon2.0_wireframeoverride_a2c_default");
-    assert_eq!(xstoon_a2c.len(), 1);
-    assert!(xstoon_a2c[0].alpha_to_coverage);
+/// Verifies XSToon wireframe override stems force double-sided line-stream rendering.
+#[test]
+fn xstoon_wireframe_override_stems_use_double_sided_material_passes() {
+    assert_xstoon_wireframe_override_pass("xstoon2.0_wireframeoverride_default", false);
+    assert_xstoon_wireframe_override_pass("xstoon2.0_wireframeoverride_a2c_default", true);
+}
+
+/// Asserts that an XSToon wireframe override pass ignores host culling.
+fn assert_xstoon_wireframe_override_pass(stem: &str, alpha_to_coverage: bool) {
+    let passes = crate::embedded_shaders::embedded_target_passes(stem);
+    assert_eq!(passes.len(), 1, "{stem}");
+    assert_eq!(passes[0].cull_mode, None, "{stem}");
+    assert_eq!(
+        passes[0].resolved_cull_mode(MaterialRenderState {
+            cull_override: MaterialCullOverride::Back,
+            ..MaterialRenderState::default()
+        }),
+        None,
+        "{stem}"
+    );
+    assert_eq!(passes[0].alpha_to_coverage, alpha_to_coverage, "{stem}");
 }
 
 /// Asserts that a shader stem declares one premultiplied transparent pass.
