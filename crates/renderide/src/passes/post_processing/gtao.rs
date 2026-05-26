@@ -39,6 +39,8 @@ use pipeline::{
 };
 
 use crate::config::GtaoSettings;
+use crate::graph_inputs::GraphPassFrameView;
+use crate::render_graph::blackboard::Blackboard;
 use crate::render_graph::builder::GraphBuilder;
 use crate::render_graph::ids::PassId;
 use crate::render_graph::resources::{
@@ -67,9 +69,7 @@ pub(crate) struct GtaoGraphResources {
     /// Single-sample HDR scene color target.
     pub(crate) scene_color_hdr: TextureHandle,
     /// Multisampled HDR scene color target used when MSAA is active.
-    pub(crate) scene_color_hdr_msaa: TextureHandle,
-    /// Whether the opaque forward pass records into multisampled attachments.
-    pub(crate) msaa_enabled: bool,
+    pub(crate) scene_color_hdr_msaa: Option<TextureHandle>,
     /// Whether this graph is compiled for OpenXR multiview stereo.
     pub(crate) multiview_stereo: bool,
 }
@@ -93,6 +93,17 @@ pub(crate) struct GtaoEffect {
     pub(crate) settings: GtaoSettings,
     /// Graph resources used by this effect.
     pub(crate) resources: GtaoGraphResources,
+}
+
+/// Returns whether this view has visible opaque world-mesh color for GTAO to sample and composite.
+pub(super) fn gtao_view_recording_needed(
+    blackboard: &Blackboard,
+    view: &GraphPassFrameView<'_>,
+) -> bool {
+    super::view_post_processing_enabled(view)
+        && blackboard
+            .get::<crate::passes::WorldMeshForwardPlanSlot>()
+            .is_some_and(|prepared| prepared.opaque_recorded)
 }
 
 impl GtaoEffect {
@@ -163,15 +174,16 @@ impl GtaoEffect {
             }
         }
 
-        let target_color = if self.resources.msaa_enabled {
-            self.resources.scene_color_hdr_msaa
-        } else {
-            self.resources.scene_color_hdr
-        };
+        let (target_color, target_is_msaa) =
+            if let Some(scene_color_hdr_msaa) = self.resources.scene_color_hdr_msaa {
+                (scene_color_hdr_msaa, true)
+            } else {
+                (self.resources.scene_color_hdr, false)
+            };
         let apply = builder.add_raster_pass(Box::new(GtaoOpaqueCompositePass::new(
             GtaoOpaqueCompositeResources {
                 target_color,
-                target_is_msaa: self.resources.msaa_enabled,
+                target_is_msaa,
                 ao_in: ao_for_apply,
                 edges,
             },
@@ -332,8 +344,7 @@ mod tests {
                 view_normals: TextureHandle(0),
                 frame_uniforms: ImportedBufferHandle(0),
                 scene_color_hdr: TextureHandle(1),
-                scene_color_hdr_msaa: TextureHandle(2),
-                msaa_enabled: false,
+                scene_color_hdr_msaa: None,
                 multiview_stereo,
             },
         }

@@ -71,6 +71,7 @@ impl RasterPass for GtaoMainPass {
 
     fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
         b.read_optional_blackboard::<PerViewFramePlanSlot>();
+        b.read_optional_blackboard::<crate::passes::WorldMeshForwardPlanSlot>();
         b.read_blackboard::<GtaoSettingsSlot>();
         b.read_texture_resource(
             self.resources.view_depth,
@@ -116,7 +117,8 @@ impl RasterPass for GtaoMainPass {
     }
 
     fn should_record(&self, ctx: &RasterPassCtx<'_, '_>) -> Result<bool, RenderPassError> {
-        Ok(super::super::view_post_processing_enabled(
+        Ok(super::gtao_view_recording_needed(
+            ctx.blackboard,
             &ctx.pass_frame.view,
         ))
     }

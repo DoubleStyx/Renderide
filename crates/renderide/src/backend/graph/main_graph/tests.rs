@@ -114,7 +114,7 @@ fn default_main_needs_surface_and_skips_single_sample_depth_resolve() {
     assert_eq!(g.compile_stats.topo_levels, 9);
     assert_eq!(g.compile_stats.registered_pass_count, 9);
     assert!(g.compile_stats.compile_skipped_pass_count >= 1);
-    assert_eq!(g.compile_stats.transient_texture_count, 4);
+    assert_eq!(g.compile_stats.transient_texture_count, 1);
     assert!(
         !g.pass_info
             .iter()
@@ -176,8 +176,9 @@ fn enabling_aces_adds_a_pass_and_a_transient() {
     let g_on = build_main_graph(key_on, &aces_enabled_post()).expect("aces graph");
     assert_eq!(g_on.pass_count(), g_off.pass_count() + 1);
     assert!(g_on.needs_surface_acquire());
-    assert!(
-        g_on.compile_stats.transient_texture_count >= g_off.compile_stats.transient_texture_count
+    assert_eq!(
+        g_on.compile_stats.transient_texture_count,
+        g_off.compile_stats.transient_texture_count + 1
     );
 }
 
@@ -193,8 +194,9 @@ fn enabling_agx_adds_a_pass_and_a_transient() {
     assert!(pass_names.contains(&"AgxTonemap"));
     assert!(!pass_names.contains(&"AcesTonemap"));
     assert!(g_on.needs_surface_acquire());
-    assert!(
-        g_on.compile_stats.transient_texture_count >= g_off.compile_stats.transient_texture_count
+    assert_eq!(
+        g_on.compile_stats.transient_texture_count,
+        g_off.compile_stats.transient_texture_count + 1
     );
 }
 
@@ -386,7 +388,7 @@ fn enabling_gtao_applies_before_depth_snapshot_and_transparent_tail() {
             .any(|t| t.desc.label == "gtao_view_normals")
     );
     assert!(
-        g.transient_textures
+        !g.transient_textures
             .iter()
             .any(|t| t.desc.label == "gtao_view_normals_msaa")
     );
@@ -434,6 +436,11 @@ fn msaa_gtao_resolves_depth_before_depth_prefilter() {
     assert!(normal_pos < prefilter_pos);
     assert!(prefilter_pos < gtao_main_pos);
     assert!(transparent_pos < final_resolve_pos);
+    assert!(
+        g.transient_textures
+            .iter()
+            .any(|t| t.desc.label == "gtao_view_normals_msaa")
+    );
 }
 
 #[test]
@@ -597,6 +604,7 @@ fn graph_cache_rebuilds_when_scene_color_format_changes() {
 fn forward_msaa_depth_uses_frame_array_layers_with_mono_cache_key() {
     let mut key = smoke_key();
     key.multiview_stereo = false;
+    key.msaa_sample_count = 4;
     let g = build_main_graph(key, &no_post()).expect("default graph");
     let forward_depth = g
         .transient_textures

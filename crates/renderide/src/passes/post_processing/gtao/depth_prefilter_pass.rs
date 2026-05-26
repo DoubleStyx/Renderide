@@ -286,6 +286,7 @@ impl ComputePass for GtaoDepthPrefilterPass {
     fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
         b.compute();
         b.read_optional_blackboard::<PerViewFramePlanSlot>();
+        b.read_optional_blackboard::<crate::passes::WorldMeshForwardPlanSlot>();
         b.read_blackboard::<GtaoSettingsSlot>();
         if let Some(source_mip) = self.resources.source_mip {
             b.read_texture_subresource(
@@ -320,7 +321,8 @@ impl ComputePass for GtaoDepthPrefilterPass {
     }
 
     fn should_record(&self, ctx: &ComputePassCtx<'_, '_, '_>) -> Result<bool, RenderPassError> {
-        Ok(super::super::view_post_processing_enabled(
+        Ok(super::gtao_view_recording_needed(
+            ctx.blackboard,
             &ctx.pass_frame.view,
         ))
     }

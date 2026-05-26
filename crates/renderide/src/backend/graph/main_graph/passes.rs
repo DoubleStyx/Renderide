@@ -20,17 +20,15 @@ pub(super) struct MainGraphPassIds {
     pub(super) hiz: PassId,
 }
 
-fn main_forward_resources(
-    h: &MainGraphHandles,
-    msaa_enabled: bool,
-) -> crate::passes::WorldMeshForwardGraphResources {
+fn main_forward_resources(h: &MainGraphHandles) -> crate::passes::WorldMeshForwardGraphResources {
     crate::passes::WorldMeshForwardGraphResources {
         scene_color_hdr: h.scene_color_hdr,
-        scene_color_hdr_msaa: h.scene_color_hdr_msaa,
         depth: h.depth,
-        msaa_depth: h.forward_msaa_depth,
-        msaa_depth_r32: h.forward_msaa_depth_r32,
-        msaa_enabled,
+        msaa: h.msaa.map(|msaa| crate::passes::ForwardMsaaResources {
+            scene_color_hdr: msaa.scene_color_hdr,
+            depth: msaa.forward_depth,
+            depth_r32: msaa.forward_depth_r32,
+        }),
         cluster_light_counts: h.cluster_light_counts,
         cluster_light_indices: h.cluster_light_indices,
         lights: h.lights,
@@ -44,7 +42,7 @@ fn main_depth_prepass_resources(
 ) -> crate::passes::WorldMeshForwardDepthPrepassGraphResources {
     crate::passes::WorldMeshForwardDepthPrepassGraphResources {
         depth: h.depth,
-        msaa_depth: h.forward_msaa_depth,
+        msaa_depth: h.msaa.map(|msaa| msaa.forward_depth),
         per_draw_slab: h.per_draw_slab,
     }
 }
@@ -78,7 +76,7 @@ pub(super) fn register_main_graph_passes(
             params: h.cluster_params,
         },
     )));
-    let forward_resources = main_forward_resources(h, msaa_enabled);
+    let forward_resources = main_forward_resources(h);
     let depth_prepass = add_world_mesh_depth_prepass(builder, h);
     let forward_opaque = builder.add_raster_pass(Box::new(
         crate::passes::WorldMeshForwardOpaquePass::new(forward_resources),
@@ -98,7 +96,7 @@ pub(super) fn register_main_graph_passes(
     let forward_transparent_sequence = builder.add_encoder_pass(Box::new(
         crate::passes::WorldMeshForwardTransparentSequencePass::new(forward_resources),
     ));
-    let depth_resolve = if msaa_enabled {
+    let depth_resolve = if msaa_enabled && forward_resources.msaa_enabled() {
         Some(builder.add_encoder_pass(Box::new(
             crate::passes::WorldMeshForwardDepthResolvePass::new(forward_resources),
         )))

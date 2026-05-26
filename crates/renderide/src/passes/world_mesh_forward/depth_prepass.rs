@@ -39,7 +39,7 @@ pub struct WorldMeshForwardDepthPrepassGraphResources {
     /// Imported frame depth target.
     pub depth: ImportedTextureHandle,
     /// Graph-owned forward depth target used when MSAA is active.
-    pub msaa_depth: TextureHandle,
+    pub msaa_depth: Option<TextureHandle>,
     /// Imported per-draw storage slab.
     pub per_draw_slab: ImportedBufferHandle,
 }
@@ -262,15 +262,15 @@ impl RasterPass for WorldMeshForwardDepthPrepass {
         b.read_optional_blackboard::<WorldMeshForwardPlanSlot>();
         {
             let mut r = b.raster();
-            r.frame_sampled_depth(
-                self.resources.depth,
-                self.resources.msaa_depth,
-                wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(crate::gpu::MAIN_FORWARD_DEPTH_CLEAR),
-                    store: wgpu::StoreOp::Store,
-                },
-                None,
-            );
+            let depth_ops = wgpu::Operations {
+                load: wgpu::LoadOp::Clear(crate::gpu::MAIN_FORWARD_DEPTH_CLEAR),
+                store: wgpu::StoreOp::Store,
+            };
+            if let Some(msaa_depth) = self.resources.msaa_depth {
+                r.frame_sampled_depth(self.resources.depth, msaa_depth, depth_ops, None);
+            } else {
+                r.depth(self.resources.depth, depth_ops, None);
+            }
         }
         b.import_buffer(
             self.resources.per_draw_slab,

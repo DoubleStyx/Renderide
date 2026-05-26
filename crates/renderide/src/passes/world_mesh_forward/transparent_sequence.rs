@@ -97,9 +97,9 @@ fn declare_transparent_sequence_accesses(
             stencil: None,
         },
     );
-    if resources.msaa_enabled {
+    if let Some(msaa) = resources.msaa {
         b.write_texture(
-            resources.scene_color_hdr_msaa,
+            msaa.scene_color_hdr,
             TextureAccess::ColorAttachment {
                 load: wgpu::LoadOp::Load,
                 store: wgpu::StoreOp::Store,
@@ -107,13 +107,13 @@ fn declare_transparent_sequence_accesses(
             },
         );
         b.read_texture(
-            resources.scene_color_hdr_msaa,
+            msaa.scene_color_hdr,
             TextureAccess::Sampled {
                 stages: wgpu::ShaderStages::FRAGMENT,
             },
         );
         b.write_texture(
-            resources.msaa_depth,
+            msaa.depth,
             TextureAccess::DepthAttachment {
                 depth: wgpu::Operations {
                     load: wgpu::LoadOp::Load,
@@ -156,11 +156,13 @@ fn advance_pending_post_run(
 
 fn color_resolve_resources(
     resources: WorldMeshForwardGraphResources,
-) -> WorldMeshForwardColorResolveGraphResources {
-    WorldMeshForwardColorResolveGraphResources {
-        scene_color_hdr_msaa: resources.scene_color_hdr_msaa,
-        scene_color_hdr: resources.scene_color_hdr,
-    }
+) -> Option<WorldMeshForwardColorResolveGraphResources> {
+    resources
+        .msaa
+        .map(|msaa| WorldMeshForwardColorResolveGraphResources {
+            scene_color_hdr_msaa: msaa.scene_color_hdr,
+            scene_color_hdr: resources.scene_color_hdr,
+        })
 }
 
 fn draw_tail_groups(
@@ -176,15 +178,21 @@ fn draw_tail_groups(
 
     let frame = &*ctx.pass_frame;
     let sample_count = frame.view.sample_count.max(1);
-    let color_handle = if sample_count > 1 {
-        TextureResourceHandle::Transient(resources.scene_color_hdr_msaa)
+    let (color_handle, depth_handle) = if sample_count > 1 {
+        let Some(msaa) = resources.msaa else {
+            return Err(RenderPassError::FrameParamsRequired {
+                pass: "WorldMeshForwardTransparentSequence missing MSAA resources".to_string(),
+            });
+        };
+        (
+            TextureResourceHandle::Transient(msaa.scene_color_hdr),
+            TextureResourceHandle::Transient(msaa.depth),
+        )
     } else {
-        TextureResourceHandle::Transient(resources.scene_color_hdr)
-    };
-    let depth_handle = if sample_count > 1 {
-        TextureResourceHandle::Transient(resources.msaa_depth)
-    } else {
-        TextureResourceHandle::Imported(resources.depth)
+        (
+            TextureResourceHandle::Transient(resources.scene_color_hdr),
+            TextureResourceHandle::Imported(resources.depth),
+        )
     };
     let Some(color_view) = ctx.graph_resources.texture_view(color_handle) else {
         return Err(RenderPassError::FrameParamsRequired {
@@ -294,6 +302,9 @@ fn resolve_for_grab_snapshot(
     ctx: &mut EncoderPassCtx<'_, '_, '_>,
     resources: WorldMeshForwardGraphResources,
 ) -> Result<bool, RenderPassError> {
+    let Some(resolve_resources) = color_resolve_resources(resources) else {
+        return Ok(false);
+    };
     let resolved =
         encode_world_mesh_forward_msaa_color_resolve(WorldMeshForwardColorResolveEncodeContext {
             device: ctx.device,
@@ -301,7 +312,7 @@ fn resolve_for_grab_snapshot(
             encoder: ctx.encoder,
             frame: ctx.pass_frame,
             uploads: ctx.uploads,
-            resources: color_resolve_resources(resources),
+            resources: resolve_resources,
             profiler: ctx.profiler,
             label: "WorldMeshForwardTransparentSequencePreGrabResolve",
         })?;
@@ -478,6 +489,9 @@ fn resolve_final_scene_color(
     ctx: &mut EncoderPassCtx<'_, '_, '_>,
     resources: WorldMeshForwardGraphResources,
 ) -> Result<(), RenderPassError> {
+    let Some(resolve_resources) = color_resolve_resources(resources) else {
+        return Ok(());
+    };
     let resolved =
         encode_world_mesh_forward_msaa_color_resolve(WorldMeshForwardColorResolveEncodeContext {
             device: ctx.device,
@@ -485,7 +499,7 @@ fn resolve_final_scene_color(
             encoder: ctx.encoder,
             frame: ctx.pass_frame,
             uploads: ctx.uploads,
-            resources: color_resolve_resources(resources),
+            resources: resolve_resources,
             profiler: ctx.profiler,
             label: "WorldMeshForwardTransparentSequenceFinalResolve",
         })?;
@@ -508,7 +522,7 @@ fn resolve_final_scene_color_if_needed(
     sample_count: u32,
     scene_color_resolved_current: bool,
 ) -> Result<(), RenderPassError> {
-    if final_scene_color_resolve_needed(true, resources.msaa_enabled, sample_count)
+    if final_scene_color_resolve_needed(true, resources.msaa_enabled(), sample_count)
         && !scene_color_resolved_current
     {
         resolve_final_scene_color(ctx, resources)?;
@@ -658,7 +672,7 @@ impl EncoderPass for WorldMeshForwardTransparentSequencePass {
                 transparent_sequence_pass_needed(
                     prepared.opaque_recorded,
                     &prepared.plan,
-                    self.resources.msaa_enabled,
+                    self.resources.msaa_enabled(),
                     ctx.pass_frame.view.sample_count.max(1),
                 )
             }))
@@ -675,6 +689,9 @@ impl EncoderPass for WorldMeshForwardTransparentSequencePass {
         };
         if recorded {
             prepared.tail_raster_recorded = true;
+            if ctx.pass_frame.view.sample_count > 1 {
+                prepared.depth_freshness.mark_dirty();
+            }
         }
         ctx.blackboard.insert::<WorldMeshForwardPlanSlot>(prepared);
         Ok(())
