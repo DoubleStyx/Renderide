@@ -61,11 +61,11 @@ pub(super) fn validate_frame_group0(
         if rb.group != 0 {
             continue;
         }
-        if rb.binding > 12 {
+        if rb.binding > 15 {
             return Err(ReflectError::UnsupportedBinding {
                 group: 0,
                 binding: rb.binding,
-                reason: "only bindings 0..=12 are supported for raster frame globals".into(),
+                reason: "only bindings 0..=15 are supported for raster frame globals".into(),
             });
         }
         let (space, data_ty) = resource_data_ty(module, gv);
@@ -93,6 +93,12 @@ pub(super) fn validate_frame_group0(
             }
             (11, AddressSpace::Handle) => {
                 validate_frame_color_texture_binding(module, data_ty, false, rb.binding)?;
+            }
+            (13 | 14, AddressSpace::Handle) => {
+                validate_frame_color_texture_binding(module, data_ty, true, rb.binding)?;
+            }
+            (15, AddressSpace::Handle) => {
+                validate_frame_color_sampler_binding(module, data_ty, rb.binding)?;
             }
             (0, AddressSpace::Uniform) => {
                 b0_size = Some(layouter[data_ty].size);

@@ -23,6 +23,9 @@ use crate::gpu_pools::texture_allocation::{
 
 static NEXT_CUBEMAP_ALLOCATION_GENERATION: AtomicU64 = AtomicU64::new(1);
 
+/// One full-mip 2D texture view for each cubemap face.
+type CubemapFaceViews = [Arc<wgpu::TextureView>; crate::gpu::CUBEMAP_ARRAY_LAYERS as usize];
+
 /// GPU cubemap: six faces in one array texture (`TextureViewDimension::Cube`).
 #[derive(Debug)]
 pub struct GpuCubemap {
@@ -34,6 +37,8 @@ pub struct GpuCubemap {
     pub view: Arc<wgpu::TextureView>,
     /// Full-mip 2D-array view for manual cross-face filtering.
     pub array_view: Arc<wgpu::TextureView>,
+    /// Full-mip 2D views for each cubemap face.
+    pub face_views: CubemapFaceViews,
     /// Resolved wgpu format for `texture`.
     pub wgpu_format: wgpu::TextureFormat,
     /// Face size in texels (mip0).
@@ -123,18 +128,10 @@ impl GpuCubemap {
                 },
             },
         );
-        let array_view = Arc::new(texture.create_view(&wgpu::TextureViewDescriptor {
-            label: Some(&format!("Cubemap {} array view", fmt.asset_id)),
-            format: Some(wgpu_format),
-            dimension: Some(wgpu::TextureViewDimension::D2Array),
-            usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
-            aspect: wgpu::TextureAspect::All,
-            base_mip_level: 0,
-            mip_level_count: Some(mips),
-            base_array_layer: 0,
-            array_layer_count: Some(6),
-        }));
-        crate::profiling::note_resource_churn!(TextureView, "cubemap::array_view");
+        let array_view =
+            create_cubemap_array_view(texture.as_ref(), fmt.asset_id, wgpu_format, mips);
+        let face_views =
+            create_cubemap_face_views(texture.as_ref(), fmt.asset_id, wgpu_format, mips);
         let resident_bytes = estimate_gpu_cubemap_bytes(wgpu_format, s, mips);
         let sampler = SamplerState::from_cubemap_props(props);
         let residency = props
@@ -145,6 +142,7 @@ impl GpuCubemap {
             texture,
             view,
             array_view,
+            face_views,
             wgpu_format,
             size: s,
             mip_levels_total: mips,
@@ -169,6 +167,52 @@ impl GpuCubemap {
         self.sampler = SamplerState::from_cubemap_props(Some(p));
         self.residency = TextureResidencyMeta::from_host_props(p);
     }
+}
+
+/// Creates the full cubemap array view used by shaders that sample faces manually.
+fn create_cubemap_array_view(
+    texture: &wgpu::Texture,
+    asset_id: i32,
+    format: wgpu::TextureFormat,
+    mip_count: u32,
+) -> Arc<wgpu::TextureView> {
+    let view = Arc::new(texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some(&format!("Cubemap {asset_id} array view")),
+        format: Some(format),
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
+        aspect: wgpu::TextureAspect::All,
+        base_mip_level: 0,
+        mip_level_count: Some(mip_count),
+        base_array_layer: 0,
+        array_layer_count: Some(crate::gpu::CUBEMAP_ARRAY_LAYERS),
+    }));
+    crate::profiling::note_resource_churn!(TextureView, "cubemap::array_view");
+    view
+}
+
+/// Creates one full-mip 2D sampled view for each cubemap face.
+fn create_cubemap_face_views(
+    texture: &wgpu::Texture,
+    asset_id: i32,
+    format: wgpu::TextureFormat,
+    mip_count: u32,
+) -> CubemapFaceViews {
+    let views = std::array::from_fn(|face| {
+        Arc::new(texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some(&format!("Cubemap {asset_id} face {face} view")),
+            format: Some(format),
+            dimension: Some(wgpu::TextureViewDimension::D2),
+            usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
+            aspect: wgpu::TextureAspect::All,
+            base_mip_level: 0,
+            mip_level_count: Some(mip_count),
+            base_array_layer: face as u32,
+            array_layer_count: Some(1),
+        }))
+    });
+    crate::profiling::note_resource_churn!(TextureView, "cubemap::face_views");
+    views
 }
 
 impl_gpu_resource!(GpuCubemap);

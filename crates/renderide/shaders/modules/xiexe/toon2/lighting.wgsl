@@ -30,6 +30,7 @@
 #import renderide::pbs::cluster as pcls
 #import renderide::pbs::brdf as brdf
 #import renderide::lighting::birp as bl
+#import renderide::lighting::light_cookies as cookies
 #import renderide::lighting::reflection_probes as rprobe
 
 /// SH-probe sample used for xiexe's uncoloured indirect-diffuse term.
@@ -88,6 +89,7 @@ fn sample_light(light: ft::GpuLight, world_pos: vec3<f32>) -> xb::LightSample {
     if (light.light_type == 2u) {
         attenuation = attenuation * bl::spot_angle_attenuation(light, l);
     }
+    attenuation = attenuation * cookies::multiplier(light, world_pos);
     return xb::LightSample(l, bl::light_radiance(light), attenuation, false);
 }
 

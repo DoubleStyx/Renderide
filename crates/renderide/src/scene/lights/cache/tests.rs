@@ -15,6 +15,12 @@ fn assert_close(actual: f32, expected: f32) {
     );
 }
 
+fn assert_vec3_close(actual: Vec3, expected: Vec3) {
+    assert_close(actual.x, expected.x);
+    assert_close(actual.y, expected.y);
+    assert_close(actual.z, expected.z);
+}
+
 fn make_light_data(pos: (f32, f32, f32), color: (f32, f32, f32)) -> LightData {
     LightData {
         point: Vec3::new(pos.0, pos.1, pos.2),
@@ -243,6 +249,34 @@ fn regular_light_update_preserves_state_gamma_color() {
 }
 
 #[test]
+fn regular_light_update_preserves_cookie_texture_asset_id() {
+    let mut cache = LightCache::new();
+    let space_id = 0;
+    let mut state = make_regular_state(0, 2.0, 30.0);
+    state.cookie_texture_asset_id = 1234;
+
+    cache.apply_regular_lights_update(space_id, &[], &[0], &[state]);
+
+    let resolved = cache.resolve_lights(space_id, |_| Some(Mat4::IDENTITY));
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].cookie_texture_asset_id, 1234);
+}
+
+#[test]
+fn buffer_light_resolve_preserves_cookie_texture_asset_id() {
+    let mut cache = LightCache::new();
+    let space_id = 0;
+    cache.store_full(100, vec![make_light_data((0.0, 0.0, 0.0), (1.0, 1.0, 1.0))]);
+    let mut state = make_state(0, 100, LightType::Spot);
+    state.cookie_texture_asset_id = 5678;
+    cache.apply_update(space_id, &[], &[0], &[state]);
+
+    let resolved = cache.resolve_lights(space_id, |_| Some(Mat4::IDENTITY));
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].cookie_texture_asset_id, 5678);
+}
+
+#[test]
 fn light_cache_resolve_world_space() {
     let mut cache = LightCache::new();
     let space_id = 0;
@@ -259,6 +293,26 @@ fn light_cache_resolve_world_space() {
     assert!((resolved[0].world_position.x - 11.0).abs() < 1e-5);
     assert!((resolved[0].world_position.y - 0.0).abs() < 1e-5);
     assert!((resolved[0].world_position.z - 0.0).abs() < 1e-5);
+}
+
+#[test]
+fn light_cache_resolve_world_basis_preserves_cookie_roll() {
+    let mut cache = LightCache::new();
+    let space_id = 0;
+    let mut data = make_light_data((0.0, 0.0, 0.0), (1.0, 1.0, 1.0));
+    data.orientation = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+    cache.store_full(100, vec![data]);
+    cache.apply_update(space_id, &[], &[0], &[make_state(0, 100, LightType::Spot)]);
+
+    let world_matrix = Mat4::from_quat(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2));
+    let resolved = cache.resolve_lights(space_id, |tid| (tid == 0).then_some(world_matrix));
+
+    assert_eq!(resolved.len(), 1);
+    let rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2)
+        * Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+    assert_vec3_close(resolved[0].world_right, rotation * Vec3::X);
+    assert_vec3_close(resolved[0].world_up, rotation * Vec3::Y);
+    assert_vec3_close(resolved[0].world_direction, rotation * Vec3::Z);
 }
 
 #[test]

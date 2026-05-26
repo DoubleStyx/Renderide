@@ -67,6 +67,9 @@ pub(super) fn register_main_graph_passes(
     multiview_stereo: bool,
 ) -> MainGraphPassIds {
     let msaa_enabled = msaa_sample_count > 1;
+    let _light_cookies = builder.add_encoder_pass(Box::new(
+        crate::backend::frame_gpu::LightCookieAtlasPass::new(),
+    ));
     let deform = builder.add_compute_pass(Box::new(crate::passes::MeshDeformPass::new()));
     let clustered = builder.add_compute_pass(Box::new(crate::passes::ClusteredLightPass::new(
         crate::passes::ClusteredLightGraphResources {

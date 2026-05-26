@@ -110,9 +110,9 @@ fn gtao_enabled_post() -> PostProcessingSettings {
 fn default_main_needs_surface_and_skips_single_sample_depth_resolve() {
     let g = build_main_graph(smoke_key(), &no_post()).expect("default graph");
     assert!(g.needs_surface_acquire());
-    assert_eq!(g.pass_count(), 9);
+    assert_eq!(g.pass_count(), 10);
     assert_eq!(g.compile_stats.topo_levels, 9);
-    assert_eq!(g.compile_stats.registered_pass_count, 9);
+    assert_eq!(g.compile_stats.registered_pass_count, 10);
     assert!(g.compile_stats.compile_skipped_pass_count >= 1);
     assert_eq!(g.compile_stats.transient_texture_count, 1);
     assert!(
@@ -162,9 +162,9 @@ fn msaa_main_graph_uses_transparent_sequence_for_grab_resolves() {
     assert!(!pass_names.contains(&"WorldMeshColorSnapshot"));
     assert!(!pass_names.contains(&"WorldMeshForwardTransparent"));
     assert!(!pass_names.contains(&"WorldMeshForwardColorResolveFinal"));
-    assert_eq!(g.pass_count(), 10);
+    assert_eq!(g.pass_count(), 11);
     assert_eq!(g.compile_stats.topo_levels, 10);
-    assert_eq!(g.compile_stats.registered_pass_count, 10);
+    assert_eq!(g.compile_stats.registered_pass_count, 11);
     assert!(!pass_names.contains(&"WorldMeshForwardGtaoDepthResolve"));
 }
 
