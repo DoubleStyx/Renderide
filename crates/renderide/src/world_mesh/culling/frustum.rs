@@ -123,15 +123,18 @@ impl Frustum {
     }
 }
 
-fn model_matrix_is_affine_bottom_row(m: Mat4) -> bool {
-    let r = m.row(3);
-    r.x.abs() <= MODEL_MATRIX_AFFINE_BOTTOM_EPS
-        && r.y.abs() <= MODEL_MATRIX_AFFINE_BOTTOM_EPS
-        && r.z.abs() <= MODEL_MATRIX_AFFINE_BOTTOM_EPS
-        && (r.w - 1.0).abs() <= MODEL_MATRIX_AFFINE_BOTTOM_EPS
+fn row_is_world_aligned(v: Vec3) -> bool {
+    let l = v.length();
+    l - v.abs().max_element() <= MODEL_MATRIX_AFFINE_BOTTOM_EPS * l
 }
 
-fn world_aabb_from_local_bounds_affine(
+fn model_matrix_is_world_aligned(m: Mat4) -> bool {
+    row_is_world_aligned(m.row(0).xyz())
+        && row_is_world_aligned(m.row(1).xyz())
+        && row_is_world_aligned(m.row(2).xyz())
+}
+
+fn world_aabb_from_local_bounds_world_aligned(
     bounds: &RenderBoundingBox,
     m: Mat4,
 ) -> Option<(Vec3, Vec3)> {
@@ -231,8 +234,8 @@ pub fn world_aabb_from_local_bounds(
     bounds: &RenderBoundingBox,
     model_matrix: Mat4,
 ) -> Option<(Vec3, Vec3)> {
-    if model_matrix_is_affine_bottom_row(model_matrix) {
-        world_aabb_from_local_bounds_affine(bounds, model_matrix)
+    if model_matrix_is_world_aligned(model_matrix) {
+        world_aabb_from_local_bounds_world_aligned(bounds, model_matrix)
     } else {
         world_aabb_from_local_bounds_bruteforce(bounds, model_matrix)
     }

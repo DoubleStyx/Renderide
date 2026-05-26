@@ -159,7 +159,6 @@ impl ReflectionProbeSpatialIndex {
                         probe_volume: probe.volume,
                         center_distance_sq: (probe.center - object_center).length_squared(),
                         renderable_index: probe.renderable_index,
-                        skybox: probe.skybox,
                     };
                     if probe.skybox {
                         if aabb_contains(probe.aabb_min, probe.aabb_max, object_min, object_max) {
@@ -275,7 +274,6 @@ struct ProbeScore {
     probe_volume: f32,
     center_distance_sq: f32,
     renderable_index: i32,
-    skybox: bool,
 }
 
 /// Order of preference:
@@ -289,7 +287,6 @@ fn score_better(a: ProbeScore, b: ProbeScore) -> bool {
     a.importance
         .cmp(&b.importance)
         .reverse()
-        .then_with(|| a.skybox.cmp(&b.skybox))
         .then_with(|| {
             a.influence_intersection
                 .total_cmp(&b.influence_intersection)
@@ -738,7 +735,6 @@ mod tests {
                     probe_volume: probe.volume,
                     center_distance_sq: (probe.center - object_center).length_squared(),
                     renderable_index: probe.renderable_index,
-                    skybox: probe.skybox,
                 },
             );
         }
