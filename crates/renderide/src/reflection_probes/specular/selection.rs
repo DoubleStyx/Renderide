@@ -175,7 +175,7 @@ impl ReflectionProbeSpatialIndex {
                 stack.push(node.right);
             }
         }
-        self.selection_from_scores(top, fallback)
+        selection_from_scores(top, fallback)
     }
 
     fn build_node(&mut self, order: &mut [usize], start: usize, end: usize) -> usize {
@@ -226,34 +226,6 @@ impl ReflectionProbeSpatialIndex {
             top.push(score);
         }
     }
-
-    fn selection_from_scores(
-        &self,
-        top: Vec<ProbeScore>,
-        fallback: Option<ProbeScore>,
-    ) -> ReflectionProbeDrawSelection {
-        let mut atlas_indices = [0u16; MAX_LOCAL_PROBES + 1];
-        let mut importance_mask = 0u8;
-        let mut previous_importance = None;
-        if let Some(probe) = fallback {
-            atlas_indices[0] = probe.atlas_index;
-        }
-        for (i, probe) in top
-            .iter()
-            .take(self.max_local_reflection_probes)
-            .enumerate()
-        {
-            atlas_indices[i + 1] = probe.atlas_index;
-            if previous_importance.is_some_and(|importance| probe.importance < importance) {
-                importance_mask |= 1 << i;
-            }
-            previous_importance = Some(probe.importance);
-        }
-        ReflectionProbeDrawSelection {
-            atlas_indices,
-            importance_mask,
-        }
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -277,25 +249,43 @@ struct ProbeScore {
 }
 
 /// Order of preference:
-/// 1. Largest importance set by creator
-/// 2. Non-skybox preferred over skybox
-/// 3. Largest influence intersection
-/// 4. Smallest probe volume
-/// 5. Closest to the center
-/// 6. Lowest renderable index
+/// 1. Largest influence intersection
+/// 2. Smallest probe volume
+/// 3. Closest to the center
+/// 4. Lowest renderable index
 fn score_better(a: ProbeScore, b: ProbeScore) -> bool {
-    a.importance
-        .cmp(&b.importance)
+    a.influence_intersection
+        .total_cmp(&b.influence_intersection)
         .reverse()
-        .then_with(|| {
-            a.influence_intersection
-                .total_cmp(&b.influence_intersection)
-                .reverse()
-        })
         .then_with(|| a.probe_volume.total_cmp(&b.probe_volume))
         .then_with(|| a.center_distance_sq.total_cmp(&b.center_distance_sq))
         .then_with(|| a.renderable_index.cmp(&b.renderable_index))
         .is_lt()
+}
+
+fn selection_from_scores(
+    mut top: Vec<ProbeScore>,
+    fallback: Option<ProbeScore>,
+) -> ReflectionProbeDrawSelection {
+    let mut atlas_indices = [0u16; MAX_LOCAL_PROBES + 1];
+    let mut importance_mask = 0u8;
+    let mut previous_importance = None;
+    if let Some(probe) = fallback {
+        atlas_indices[0] = probe.atlas_index;
+    }
+    // Stable reorder by descending importance to keep the scoring order
+    top.sort_by_key(|probe| -probe.importance);
+    for (i, probe) in top.iter().enumerate() {
+        atlas_indices[i + 1] = probe.atlas_index;
+        if previous_importance.is_some_and(|importance| probe.importance < importance) {
+            importance_mask |= 1 << i;
+        }
+        previous_importance = Some(probe.importance);
+    }
+    ReflectionProbeDrawSelection {
+        atlas_indices,
+        importance_mask,
+    }
 }
 
 fn bounds_for_order(probes: &[SpatialProbe], order: &[usize]) -> (Vec3A, Vec3A) {
@@ -691,7 +681,7 @@ mod tests {
 
         let selection = index.select((Vec3::splat(-5.0), Vec3::splat(5.0)));
 
-        assert_eq!(selection, expected_selection(3, [1, 0, 0, 0], 0b0000));
+        assert_eq!(selection, expected_selection(3, [2, 0, 0, 0], 0b0000));
     }
 
     #[test]
