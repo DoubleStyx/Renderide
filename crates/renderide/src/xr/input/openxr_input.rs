@@ -308,15 +308,13 @@ impl OpenxrInput {
         let left_joint_locations = self
             .left_hand_tracker
             .as_ref()
-            .map(|t| stage.locate_hand_joints(t, predicted_time).ok())
-            .flatten()
+            .and_then(|t| stage.locate_hand_joints(t, predicted_time).ok())
             .flatten();
 
         let right_joint_locations = self
             .right_hand_tracker
             .as_ref()
-            .map(|t| stage.locate_hand_joints(t, predicted_time).ok())
-            .flatten()
+            .and_then(|t| stage.locate_hand_joints(t, predicted_time).ok())
             .flatten();
 
         let left_polled = self.poll_hand_action_states(session, Chirality::Left)?;
@@ -364,7 +362,7 @@ impl OpenxrInput {
             (left_joint_locations, Chirality::Left),
             (right_joint_locations, Chirality::Right),
         ] {
-            if let Some(hand) = joints.and_then(|j| hand_from_openxr(j, chirality)) {
+            if let Some(hand) = joints.and_then(|j| hand_from_openxr(&j, chirality)) {
                 hand_states.push(hand);
             }
         }

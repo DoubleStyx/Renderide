@@ -16,7 +16,10 @@ fn joint_to_host(location: &xr::HandJointLocation) -> Option<(Vec3, Quat)> {
 /// Builds a [`HandState`] from [`xr::HandJointLocations`].
 ///
 /// The priority field is always set to 1, that way it is preferred over the synthesized hand.
-pub fn hand_from_openxr(joints: xr::HandJointLocations, chirality: Chirality) -> Option<HandState> {
+pub fn hand_from_openxr(
+    joints: &xr::HandJointLocations,
+    chirality: Chirality,
+) -> Option<HandState> {
     let (wrist_position, wrist_rotation) = joint_to_host(&joints[xr::HandJoint::WRIST])?;
     let inv_wrist_rot = wrist_rotation.inverse();
 

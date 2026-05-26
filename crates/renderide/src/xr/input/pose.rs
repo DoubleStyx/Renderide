@@ -65,12 +65,12 @@ pub(super) fn pose_from_joint(location: &xr::HandJointLocation) -> Option<(Vec3,
 pub(super) fn hand_pose_defaults(side: Chirality) -> (Vec3, Quat) {
     match side {
         Chirality::Left => (
-            Vec3::new(-0.01656174, 0.01746511, -0.06041543),
-            Quat::from_xyzw(0.03415401, -0.03669568, 0.65963954, 0.7499084),
+            Vec3::new(-0.016_561_74, 0.017_465_11, -0.060_415_43),
+            Quat::from_xyzw(0.034_154_01, -0.036_695_68, 0.659_639_54, 0.749_908_4),
         ),
         Chirality::Right => (
-            Vec3::new(0.01654901, 0.01747206, -0.06039015),
-            Quat::from_xyzw(-0.03416481, -0.03668703, 0.65962956, -0.74991711),
+            Vec3::new(0.016_549_01, 0.017_472_06, -0.060_390_15),
+            Quat::from_xyzw(-0.034_164_81, -0.036_687_03, 0.659_629_6, -0.749_917_1),
         ),
     }
 }
