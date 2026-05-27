@@ -57,10 +57,14 @@ impl RendererRuntime {
         self.frontend.set_decoupling_config(cfg);
     }
 
-    pub(in crate::runtime) fn apply_desktop_config(&self, _cfg: DesktopConfig) {
-        logger::trace!(
-            "runtime: desktop_config ignored; renderer config owns desktop frame pacing"
+    pub(in crate::runtime) fn apply_desktop_config(&mut self, cfg: DesktopConfig) {
+        logger::info!(
+            "runtime: desktop_config foreground_fps={:?} background_fps={:?} v_sync={} (positive FPS caps override renderer config for this session; vsync remains renderer-owned)",
+            cfg.maximum_foreground_framerate,
+            cfg.maximum_background_framerate,
+            cfg.v_sync
         );
+        self.config.apply_host_desktop_config(&cfg);
     }
 }
 

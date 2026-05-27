@@ -4,12 +4,12 @@ use imgui::Drag;
 
 use crate::config::RendererSettings;
 
-/// Focused and unfocused FPS caps.
+/// Foreground and background desktop FPS caps.
 pub(super) fn display_section(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bool) {
     ui.text("Display");
     ui.indent();
     let mut ff = g.display.focused_fps_cap as f32;
-    if Drag::new("Focused FPS cap (0 = uncapped)")
+    if Drag::new("Foreground FPS cap (0 = uncapped)")
         .range(0.0, 2000.0)
         .speed(1.0)
         .build(ui, &mut ff)
@@ -18,7 +18,7 @@ pub(super) fn display_section(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &
         *dirty = true;
     }
     let mut uf = g.display.unfocused_fps_cap as f32;
-    if Drag::new("Unfocused FPS cap (0 = uncapped)")
+    if Drag::new("Background FPS cap (0 = uncapped)")
         .range(0.0, 2000.0)
         .speed(1.0)
         .build(ui, &mut uf)

@@ -53,6 +53,11 @@ impl RendererRuntime {
         &self.config.settings
     }
 
+    /// Effective desktop foreground/background FPS caps for the winit app driver.
+    pub(crate) fn desktop_frame_pacing_caps(&self) -> crate::runtime::DesktopFramePacingCaps {
+        self.config.desktop_frame_pacing_caps()
+    }
+
     /// Toggles the master ImGui overlay visibility setting and clears stale HUD input capture.
     pub fn toggle_imgui_visibility(&mut self) {
         if self.config.toggle_imgui_visibility().is_some() {
