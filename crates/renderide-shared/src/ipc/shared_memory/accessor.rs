@@ -110,6 +110,9 @@ impl SharedMemoryAccessor {
 
     fn get_view(&mut self, d: &SharedMemoryBufferDescriptor) -> Option<&mut SharedMemoryView> {
         profiling::scope!("shared_memory::get_view");
+        if self.prefix.is_empty() {
+            return None;
+        }
         let capacity = required_view_capacity(d)?;
         let buffer_id = d.buffer_id;
         if !self.views.contains_key(&buffer_id) {
@@ -574,6 +577,38 @@ mod access_copy_diagnostic_tests {
 
     fn unique_prefix(label: &str) -> String {
         format!("renderide_test_accessor_{label}_{}", std::process::id())
+    }
+
+    #[test]
+    fn with_read_bytes_returns_none_when_prefix_is_empty() {
+        let mut acc = SharedMemoryAccessor::new(String::new());
+        let d = SharedMemoryBufferDescriptor {
+            buffer_id: 0,
+            buffer_capacity: 16,
+            offset: 0,
+            length: 16,
+        };
+
+        let read = acc.with_read_bytes(&d, |_bytes| Some(()));
+
+        assert!(!acc.is_available());
+        assert!(read.is_none());
+    }
+
+    #[test]
+    fn with_read_bytes_returns_none_when_mapping_is_missing() {
+        let prefix = unique_prefix("missing_read");
+        let mut acc = SharedMemoryAccessor::new(prefix);
+        let d = SharedMemoryBufferDescriptor {
+            buffer_id: 41,
+            buffer_capacity: 16,
+            offset: 0,
+            length: 16,
+        };
+
+        let read = acc.with_read_bytes(&d, |_bytes| Some(()));
+
+        assert!(read.is_none());
     }
 
     fn encode_realtime_bounds_rows(rows: &mut [SkinnedMeshRealtimeBoundsUpdate]) -> Vec<u8> {

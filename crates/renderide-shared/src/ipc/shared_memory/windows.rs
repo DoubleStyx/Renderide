@@ -3,12 +3,11 @@
 use std::ffi::OsStr;
 use std::io;
 use std::os::windows::ffi::OsStrExt;
-use std::ptr::null;
 
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::Memory::{
-    CreateFileMappingW, FILE_MAP_ALL_ACCESS, FILE_MAP_WRITE, FlushViewOfFile,
-    MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile, OpenFileMappingW, PAGE_READWRITE, UnmapViewOfFile,
+    FILE_MAP_ALL_ACCESS, FILE_MAP_WRITE, FlushViewOfFile, MEMORY_MAPPED_VIEW_ADDRESS,
+    MapViewOfFile, OpenFileMappingW, UnmapViewOfFile,
 };
 
 use super::bounds::byte_subrange;
@@ -24,7 +23,7 @@ pub struct SharedMemoryView {
 }
 
 impl SharedMemoryView {
-    /// Opens or creates the mapping and maps `capacity` bytes (host already sized the section).
+    /// Opens the existing mapping and maps `capacity` bytes.
     pub fn new(prefix: &str, buffer_id: i32, capacity: i32) -> io::Result<Self> {
         let name = format!(
             "{}{}",
@@ -38,9 +37,9 @@ impl SharedMemoryView {
             .chain(std::iter::once(0))
             .collect();
 
-        let map_handle = create_or_open_file_mapping(&name_wide, size)?;
+        let map_handle = open_file_mapping(&name_wide, &name)?;
 
-        // SAFETY: `map_handle` was just returned valid by `create_or_open_file_mapping`.
+        // SAFETY: `map_handle` was just returned valid by `open_file_mapping`.
         let view =
             unsafe { MapViewOfFile(map_handle, FILE_MAP_ALL_ACCESS | FILE_MAP_WRITE, 0, 0, size) };
 
@@ -135,24 +134,7 @@ fn is_valid_handle(h: HANDLE) -> bool {
     !h.is_null() && h != INVALID_HANDLE_VALUE
 }
 
-fn create_or_open_file_mapping(name: &[u16], size: usize) -> io::Result<HANDLE> {
-    // SAFETY: `name` is a NUL-terminated wide string; `INVALID_HANDLE_VALUE` requests an anonymous
-    // pagefile-backed mapping.
-    let handle = unsafe {
-        CreateFileMappingW(
-            INVALID_HANDLE_VALUE,
-            null(),
-            PAGE_READWRITE,
-            (size >> 32) as u32,
-            (size & 0xFFFF_FFFF) as u32,
-            name.as_ptr(),
-        )
-    };
-
-    if is_valid_handle(handle) {
-        return Ok(handle);
-    }
-
+fn open_file_mapping(name: &[u16], display_name: &str) -> io::Result<HANDLE> {
     // SAFETY: `name` is a NUL-terminated wide string.
     let handle = unsafe { OpenFileMappingW(FILE_MAP_ALL_ACCESS, 0, name.as_ptr()) };
 
@@ -162,6 +144,6 @@ fn create_or_open_file_mapping(name: &[u16], size: usize) -> io::Result<HANDLE> 
 
     Err(io::Error::new(
         io::ErrorKind::NotFound,
-        "Failed to create or open file mapping for shared memory buffer",
+        format!("Failed to open file mapping for shared memory buffer {display_name}"),
     ))
 }

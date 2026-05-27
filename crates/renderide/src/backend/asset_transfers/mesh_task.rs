@@ -345,10 +345,13 @@ mod tests {
 
     #[test]
     fn missing_shared_memory_payload_is_rejected_before_gpu_upload() {
-        let mut shm = SharedMemoryAccessor::new(String::new());
+        let prefix = format!("renderide_test_missing_mesh_{}", std::process::id());
+        let mut shm = SharedMemoryAccessor::new(prefix);
         let data = MeshUploadData {
             asset_id: 45,
             buffer: SharedMemoryBufferDescriptor {
+                buffer_id: 45,
+                buffer_capacity: 16,
                 length: 16,
                 ..Default::default()
             },
