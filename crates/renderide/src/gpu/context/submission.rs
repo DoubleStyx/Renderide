@@ -2,13 +2,30 @@
 //!
 //! All `Queue::submit` and `SurfaceTexture::present` calls flow through the dedicated
 //! [`crate::gpu::driver_thread::DriverThread`]; these methods build
-//! [`crate::gpu::driver_thread::SubmitBatch`] instances and hand them off. The frame-timing
-//! track is attached here so the driver thread can update CPU/GPU intervals asynchronously.
+//! [`crate::gpu::driver_thread::SubmitBatch`] instances and hand them off. Primary render submits
+//! attach frame-timing state here so the driver thread can update CPU/GPU intervals asynchronously.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Instant;
 
 use super::GpuContext;
+
+/// Whether a driver-thread submit contributes to the compact frame timing HUD.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FrameSubmitTiming {
+    /// Attach frame timing and frame-bracket GPU timestamp readback state.
+    Tracked,
+    /// Submit/present work without changing the HUD's CPU/GPU frame pair.
+    Untracked,
+}
+
+impl FrameSubmitTiming {
+    /// Returns `true` when the submit should allocate a frame-timing sequence number.
+    const fn tracks_frame_timing(self) -> bool {
+        matches!(self, Self::Tracked)
+    }
+}
 
 impl GpuContext {
     /// Hands a finished frame off to the driver thread for submit + present.
@@ -24,7 +41,32 @@ impl GpuContext {
         surface_texture: Option<wgpu::SurfaceTexture>,
         wait: Option<crate::gpu::driver_thread::SubmitWait>,
     ) {
-        self.submit_frame_batch_inner(cmds, surface_texture, wait, Vec::new());
+        self.submit_frame_batch_inner(
+            cmds,
+            surface_texture,
+            wait,
+            Vec::new(),
+            FrameSubmitTiming::Tracked,
+        );
+    }
+
+    /// Hands presentation-only work to the driver thread without updating compact frame timing.
+    ///
+    /// Use this for swapchain or compositor blits that are not the primary render workload for the
+    /// tick. The GPU pass profiler still records any query scopes in the command buffers.
+    pub(crate) fn submit_frame_batch_untracked(
+        &self,
+        cmds: Vec<wgpu::CommandBuffer>,
+        surface_texture: Option<wgpu::SurfaceTexture>,
+        wait: Option<crate::gpu::driver_thread::SubmitWait>,
+    ) {
+        self.submit_frame_batch_inner(
+            cmds,
+            surface_texture,
+            wait,
+            Vec::new(),
+            FrameSubmitTiming::Untracked,
+        );
     }
 
     /// Same as [`Self::submit_frame_batch`] but attaches extra `on_submitted_work_done`
@@ -39,19 +81,33 @@ impl GpuContext {
         wait: Option<crate::gpu::driver_thread::SubmitWait>,
         extra_on_submitted_work_done: Vec<Box<dyn FnOnce() + Send + 'static>>,
     ) {
-        self.submit_frame_batch_inner(cmds, surface_texture, wait, extra_on_submitted_work_done);
+        self.submit_frame_batch_inner(
+            cmds,
+            surface_texture,
+            wait,
+            extra_on_submitted_work_done,
+            FrameSubmitTiming::Tracked,
+        );
     }
 
-    /// Same as [`Self::submit_frame_batch_with_callbacks`] but also attaches an OpenXR
-    /// finalize payload (`xrReleaseSwapchainImage` + `xrEndFrame`) to be executed on the
-    /// driver thread immediately after `Queue::submit` returns. Used by the VR HMD path
-    /// to keep the main thread off the OpenXR critical path.
+    /// Submits final OpenXR copy work plus an OpenXR finalize payload.
+    ///
+    /// The command buffers still go through the normal driver thread and GPU profiler path, but
+    /// they do not update the compact frame timing HUD. In VR, the HUD's GPU row should reflect the
+    /// HMD multiview render graph submitted before this compositor handoff copy.
     pub fn submit_frame_batch_with_xr_finalize(
         &self,
         cmds: Vec<wgpu::CommandBuffer>,
         xr_finalize: crate::gpu::driver_thread::XrFinalizeWork,
     ) {
-        self.submit_frame_batch_inner_full(cmds, None, None, Vec::new(), Some(xr_finalize));
+        self.submit_frame_batch_inner_full(
+            cmds,
+            None,
+            None,
+            Vec::new(),
+            Some(xr_finalize),
+            FrameSubmitTiming::Untracked,
+        );
     }
 
     /// Pushes a zero-work driver batch carrying only an OpenXR finalize payload.
@@ -77,9 +133,8 @@ impl GpuContext {
         self.submission.driver_thread.submit(batch);
     }
 
-    /// Internal helper that builds the [`crate::gpu::driver_thread::SubmitBatch`] (including the
-    /// frame-timing track and an optional frame-bracket timestamp readback) and pushes it into
-    /// the driver thread's ring. Blocks when the ring is full -- that block is the frame-pacing
+    /// Internal helper that builds the [`crate::gpu::driver_thread::SubmitBatch`] and pushes it
+    /// into the driver thread's ring. Blocks when the ring is full -- that block is the frame-pacing
     /// backpressure.
     fn submit_frame_batch_inner(
         &self,
@@ -87,6 +142,7 @@ impl GpuContext {
         surface_texture: Option<wgpu::SurfaceTexture>,
         wait: Option<crate::gpu::driver_thread::SubmitWait>,
         extra_on_submitted_work_done: Vec<Box<dyn FnOnce() + Send + 'static>>,
+        timing: FrameSubmitTiming,
     ) {
         self.submit_frame_batch_inner_full(
             command_buffers,
@@ -94,6 +150,7 @@ impl GpuContext {
             wait,
             extra_on_submitted_work_done,
             None,
+            timing,
         );
     }
 
@@ -108,17 +165,21 @@ impl GpuContext {
         wait: Option<crate::gpu::driver_thread::SubmitWait>,
         extra_on_submitted_work_done: Vec<Box<dyn FnOnce() + Send + 'static>>,
         mut xr_finalize: Option<crate::gpu::driver_thread::XrFinalizeWork>,
+        timing: FrameSubmitTiming,
     ) {
         if !command_buffers.is_empty() {
             crate::profiling::emit_render_submit_frame_mark();
         }
-        let track = {
+        let has_gpu_work = !command_buffers.is_empty();
+        let track = if timing.tracks_frame_timing() && has_gpu_work {
             let mut ft = self
                 .submission
                 .frame_timing
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             ft.on_before_tracked_submit()
+        } else {
+            None
         };
         let frame_timing = track.map(|(generation, seq, frame_start)| {
             crate::gpu::frame_cpu_gpu_timing::FrameTimingTrack {
@@ -199,6 +260,8 @@ impl GpuContext {
     /// swapchain texture, [`wgpu::Queue::on_submitted_work_done`] callbacks) to remain
     /// pipelined alongside the next frame's CPU recording.
     pub fn wait_for_previous_present(&self) {
+        let start = Instant::now();
         self.submission.driver_thread.wait_for_previous_present();
+        self.record_frame_timing_excluded_wait(start.elapsed());
     }
 }

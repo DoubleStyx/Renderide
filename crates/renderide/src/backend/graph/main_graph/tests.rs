@@ -110,11 +110,11 @@ fn gtao_enabled_post() -> PostProcessingSettings {
 fn default_main_needs_surface_and_skips_single_sample_depth_resolve() {
     let g = build_main_graph(smoke_key(), &no_post()).expect("default graph");
     assert!(g.needs_surface_acquire());
-    assert_eq!(g.pass_count(), 9);
+    assert_eq!(g.pass_count(), 10);
     assert_eq!(g.compile_stats.topo_levels, 9);
-    assert_eq!(g.compile_stats.registered_pass_count, 9);
+    assert_eq!(g.compile_stats.registered_pass_count, 10);
     assert!(g.compile_stats.compile_skipped_pass_count >= 1);
-    assert_eq!(g.compile_stats.transient_texture_count, 4);
+    assert_eq!(g.compile_stats.transient_texture_count, 1);
     assert!(
         !g.pass_info
             .iter()
@@ -162,9 +162,10 @@ fn msaa_main_graph_uses_transparent_sequence_for_grab_resolves() {
     assert!(!pass_names.contains(&"WorldMeshColorSnapshot"));
     assert!(!pass_names.contains(&"WorldMeshForwardTransparent"));
     assert!(!pass_names.contains(&"WorldMeshForwardColorResolveFinal"));
-    assert_eq!(g.pass_count(), 10);
+    assert_eq!(g.pass_count(), 11);
     assert_eq!(g.compile_stats.topo_levels, 10);
-    assert_eq!(g.compile_stats.registered_pass_count, 10);
+    assert_eq!(g.compile_stats.registered_pass_count, 11);
+    assert!(!pass_names.contains(&"WorldMeshForwardGtaoDepthResolve"));
 }
 
 #[test]
@@ -175,8 +176,9 @@ fn enabling_aces_adds_a_pass_and_a_transient() {
     let g_on = build_main_graph(key_on, &aces_enabled_post()).expect("aces graph");
     assert_eq!(g_on.pass_count(), g_off.pass_count() + 1);
     assert!(g_on.needs_surface_acquire());
-    assert!(
-        g_on.compile_stats.transient_texture_count >= g_off.compile_stats.transient_texture_count
+    assert_eq!(
+        g_on.compile_stats.transient_texture_count,
+        g_off.compile_stats.transient_texture_count + 1
     );
 }
 
@@ -192,8 +194,9 @@ fn enabling_agx_adds_a_pass_and_a_transient() {
     assert!(pass_names.contains(&"AgxTonemap"));
     assert!(!pass_names.contains(&"AcesTonemap"));
     assert!(g_on.needs_surface_acquire());
-    assert!(
-        g_on.compile_stats.transient_texture_count >= g_off.compile_stats.transient_texture_count
+    assert_eq!(
+        g_on.compile_stats.transient_texture_count,
+        g_off.compile_stats.transient_texture_count + 1
     );
 }
 
@@ -221,9 +224,10 @@ fn mono_gtao_graph_declares_single_layer_view_depth_mips() {
     let view_depth = graph
         .transient_textures
         .iter()
-        .find(|texture| texture.desc.label == "gtao_view_depth")
+        .find(|texture| texture.desc.label == "gtao_view_depth_mip0")
         .expect("gtao view depth transient");
     assert_eq!(view_depth.desc.array_layers, TransientArrayLayers::Frame);
+    assert_eq!(view_depth.desc.mip_levels, 1);
 }
 
 #[test]
@@ -243,9 +247,10 @@ fn stereo_gtao_graph_declares_layered_view_depth_mips() {
     let view_depth = graph
         .transient_textures
         .iter()
-        .find(|texture| texture.desc.label == "gtao_view_depth")
+        .find(|texture| texture.desc.label == "gtao_view_depth_mip0")
         .expect("gtao view depth transient");
     assert_eq!(view_depth.desc.array_layers, TransientArrayLayers::Fixed(2));
+    assert_eq!(view_depth.desc.mip_levels, 1);
 }
 
 #[test]
@@ -336,7 +341,7 @@ fn agx_post_processing_orders_exposure_before_bloom_and_tonemap_last() {
 }
 
 #[test]
-fn enabling_gtao_adds_normal_prepass_before_gtao_main() {
+fn enabling_gtao_applies_before_depth_snapshot_and_transparent_tail() {
     let post = gtao_enabled_post();
     let mut key = smoke_key();
     key.post_processing = PostProcessChainSignature::from_settings(&post);
@@ -362,16 +367,77 @@ fn enabling_gtao_adds_normal_prepass_before_gtao_main() {
         .iter()
         .position(|name| *name == "GtaoMain")
         .expect("GTAO main pass");
+    let gtao_composite_pos = pass_names
+        .iter()
+        .position(|name| *name == "GtaoOpaqueComposite")
+        .expect("GTAO opaque composite pass");
+    let transparent_pos = pass_names
+        .iter()
+        .position(|name| *name == "WorldMeshForwardTransparentSequence")
+        .expect("transparent sequence pass");
 
     assert!(depth_prepass_pos < opaque_pos);
     assert!(opaque_pos < normal_pos);
-    assert!(normal_pos < depth_snapshot_pos);
-    assert!(depth_snapshot_pos < gtao_main_pos);
+    assert!(normal_pos < gtao_main_pos);
+    assert!(gtao_main_pos < gtao_composite_pos);
+    assert!(gtao_composite_pos < depth_snapshot_pos);
+    assert!(depth_snapshot_pos < transparent_pos);
+    assert!(!pass_names.contains(&"GtaoApply"));
+    assert!(!pass_names.contains(&"WorldMeshForwardGtaoDepthResolve"));
     assert!(
         g.transient_textures
             .iter()
             .any(|t| t.desc.label == "gtao_view_normals")
     );
+    assert!(
+        !g.transient_textures
+            .iter()
+            .any(|t| t.desc.label == "gtao_view_normals_msaa")
+    );
+}
+
+#[test]
+fn msaa_gtao_resolves_depth_before_depth_prefilter() {
+    let post = gtao_enabled_post();
+    let mut key = smoke_key();
+    key.msaa_sample_count = 4;
+    key.post_processing = PostProcessChainSignature::from_settings(&post);
+    let g = build_main_graph(key, &post).expect("MSAA GTAO graph");
+    let pass_names: Vec<&str> = g.pass_info.iter().map(|p| p.name.as_str()).collect();
+    let opaque_pos = pass_names
+        .iter()
+        .position(|name| *name == "WorldMeshForwardOpaque")
+        .expect("opaque pass");
+    let pre_resolve_pos = pass_names
+        .iter()
+        .position(|name| *name == "WorldMeshForwardGtaoDepthResolve")
+        .expect("pre-GTAO depth resolve pass");
+    let normal_pos = pass_names
+        .iter()
+        .position(|name| *name == "WorldMeshForwardNormals")
+        .expect("GTAO normal prepass");
+    let prefilter_pos = pass_names
+        .iter()
+        .position(|name| *name == "GtaoDepthPrefilter")
+        .expect("GTAO depth prefilter pass");
+    let gtao_main_pos = pass_names
+        .iter()
+        .position(|name| *name == "GtaoMain")
+        .expect("GTAO main pass");
+    let transparent_pos = pass_names
+        .iter()
+        .position(|name| *name == "WorldMeshForwardTransparentSequence")
+        .expect("transparent sequence pass");
+    let final_resolve_pos = pass_names
+        .iter()
+        .position(|name| *name == "WorldMeshForwardDepthResolve")
+        .expect("final depth resolve pass");
+
+    assert!(opaque_pos < pre_resolve_pos);
+    assert!(pre_resolve_pos < normal_pos);
+    assert!(normal_pos < prefilter_pos);
+    assert!(prefilter_pos < gtao_main_pos);
+    assert!(transparent_pos < final_resolve_pos);
     assert!(
         g.transient_textures
             .iter()
@@ -540,6 +606,7 @@ fn graph_cache_rebuilds_when_scene_color_format_changes() {
 fn forward_msaa_depth_uses_frame_array_layers_with_mono_cache_key() {
     let mut key = smoke_key();
     key.multiview_stereo = false;
+    key.msaa_sample_count = 4;
     let g = build_main_graph(key, &no_post()).expect("default graph");
     let forward_depth = g
         .transient_textures

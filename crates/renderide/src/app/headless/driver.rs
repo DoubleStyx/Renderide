@@ -92,10 +92,11 @@ impl<'a> HeadlessDriver<'a> {
             self.runtime.tick_frame_wall_clock_begin(now);
             let tick_kind = self.schedule.tick_kind(now);
             let outcome = self.run_tick(tick_kind);
+            let render_skipped = outcome.render_skipped;
             if let Some(exit) = self.handle_tick_outcome(outcome) {
                 return Ok(exit);
             }
-            self.after_tick(tick_kind);
+            self.after_tick(tick_kind, render_skipped);
         }
 
         Ok(RunExit::Clean)
@@ -167,8 +168,8 @@ impl<'a> HeadlessDriver<'a> {
         }
     }
 
-    fn after_tick(&mut self, kind: HeadlessTickKind) {
-        if kind == HeadlessTickKind::FullFrame {
+    fn after_tick(&mut self, kind: HeadlessTickKind, render_skipped: bool) {
+        if kind == HeadlessTickKind::FullFrame && !render_skipped {
             self.maybe_write_frame_png();
         }
         self.runtime

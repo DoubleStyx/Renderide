@@ -29,7 +29,7 @@ pub struct FrameTimingHudSnapshot {
     pub wall_frame_time_ms_smoothed: f64,
     /// CPU per-frame ms (EMA-smoothed): main-thread tick duration from
     /// [`crate::gpu::frame_cpu_gpu_timing::FrameCpuGpuTiming`]. Excludes FPS-gating sleeps,
-    /// lockstep waits, and event-loop idles.
+    /// lockstep waits, event-loop idles, and explicit GPU/display/compositor pacing waits.
     pub cpu_frame_ms_smoothed: Option<f64>,
     /// GPU per-frame ms (EMA-smoothed). Source identified by [`Self::gpu_ms_source`].
     pub gpu_frame_ms_smoothed: Option<f64>,

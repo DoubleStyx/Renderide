@@ -31,6 +31,10 @@ const MATERIAL_KEY_PARALLEL_CHUNK_SPACES: usize = 1;
 const MATERIAL_RESOLVE_PARALLEL_CHUNK_KEYS: usize = 32;
 /// Material-key count required before stale/missing prepared keys resolve on Rayon workers.
 const MATERIAL_RESOLVE_PARALLEL_MIN_KEYS: usize = MATERIAL_RESOLVE_PARALLEL_CHUNK_KEYS * 2;
+/// Material keys assigned to one prepared-cache classification worker.
+const MATERIAL_CLASSIFY_PARALLEL_CHUNK_KEYS: usize = 64;
+/// Material-key count required before prepared cache classification uses Rayon.
+const MATERIAL_CLASSIFY_PARALLEL_MIN_KEYS: usize = MATERIAL_CLASSIFY_PARALLEL_CHUNK_KEYS * 2;
 
 /// Cached resolution plus the validation keys captured at resolve time.
 #[derive(Clone)]
@@ -117,6 +121,20 @@ struct PendingMaterialResolve {
     material_gen: u64,
     /// Property-block mutation generation captured during classification.
     property_block_gen: u64,
+}
+
+/// Immutable classification result for one prepared material key.
+struct PreparedMaterialClassification {
+    /// Material asset id from the prepared draw live set.
+    material_asset_id: i32,
+    /// Optional mesh property-block id paired with the material.
+    property_block_id: Option<i32>,
+    /// Material-side mutation generation captured during classification.
+    material_gen: u64,
+    /// Property-block mutation generation captured during classification.
+    property_block_gen: u64,
+    /// Cache touch outcome that should be applied serially.
+    outcome: TouchOutcome,
 }
 
 impl PendingMaterialResolve {
@@ -501,24 +519,15 @@ impl FrameMaterialBatchCache {
             pipeline_property_ids,
             shader_perm,
         };
-        let mut touch_stats = MaterialBatchCacheTouchStats::default();
-        let mut pending_resolves = Vec::new();
-
-        {
+        let (mut touch_stats, pending_resolves) = {
             profiling::scope!("mesh::material_batch_cache::prepared_classify");
-            for &(material_asset_id, property_block_id) in prepared.unique_material_property_pairs()
-            {
-                let outcome = self.classify_prepared_key(
-                    material_asset_id,
-                    property_block_id,
-                    ctx,
-                    router_gen,
-                    current_frame,
-                    &mut pending_resolves,
-                );
-                touch_stats.note(outcome);
-            }
-        }
+            self.classify_prepared_keys(
+                prepared.unique_material_property_pairs(),
+                ctx,
+                router_gen,
+                current_frame,
+            )
+        };
 
         let resolved_updates = {
             profiling::scope!("mesh::material_batch_cache::prepared_resolve");
@@ -591,6 +600,118 @@ impl FrameMaterialBatchCache {
                     property_block_gen,
                 });
                 TouchOutcome::Miss
+            }
+        }
+    }
+
+    /// Classifies all prepared keys, using Rayon once the prepared live set has two useful chunks.
+    fn classify_prepared_keys(
+        &mut self,
+        keys: &[(i32, Option<i32>)],
+        ctx: MaterialResolveCtx<'_>,
+        router_gen: u64,
+        current_frame: u64,
+    ) -> (MaterialBatchCacheTouchStats, Vec<PendingMaterialResolve>) {
+        let mut touch_stats = MaterialBatchCacheTouchStats::default();
+        let mut pending_resolves = Vec::new();
+        if keys.len() >= MATERIAL_CLASSIFY_PARALLEL_MIN_KEYS && rayon::current_num_threads() > 1 {
+            profiling::scope!("mesh::material_batch_cache::prepared_classify_parallel");
+            let classified = keys
+                .par_iter()
+                .with_min_len(MATERIAL_CLASSIFY_PARALLEL_CHUNK_KEYS)
+                .map(|&(material_asset_id, property_block_id)| {
+                    self.classify_prepared_key_immutable(
+                        material_asset_id,
+                        property_block_id,
+                        ctx,
+                        router_gen,
+                    )
+                })
+                .collect::<Vec<_>>();
+            for classified in classified {
+                self.apply_prepared_key_classification(
+                    classified,
+                    current_frame,
+                    &mut touch_stats,
+                    &mut pending_resolves,
+                );
+            }
+            return (touch_stats, pending_resolves);
+        }
+
+        profiling::scope!("mesh::material_batch_cache::prepared_classify_serial");
+        for &(material_asset_id, property_block_id) in keys {
+            let outcome = self.classify_prepared_key(
+                material_asset_id,
+                property_block_id,
+                ctx,
+                router_gen,
+                current_frame,
+                &mut pending_resolves,
+            );
+            touch_stats.note(outcome);
+        }
+        (touch_stats, pending_resolves)
+    }
+
+    /// Classifies one prepared key without mutating the cache.
+    fn classify_prepared_key_immutable(
+        &self,
+        material_asset_id: i32,
+        property_block_id: Option<i32>,
+        ctx: MaterialResolveCtx<'_>,
+        router_gen: u64,
+    ) -> PreparedMaterialClassification {
+        let material_gen = ctx.dict.material_generation(material_asset_id);
+        let property_block_gen =
+            property_block_id.map_or(0, |b| ctx.dict.property_block_generation(b));
+        let key = (material_asset_id, property_block_id);
+        let outcome = match self.entries.get(&key) {
+            Some(entry)
+                if entry.material_gen == material_gen
+                    && entry.property_block_gen == property_block_gen
+                    && entry.router_gen == router_gen
+                    && entry.shader_perm == ctx.shader_perm =>
+            {
+                TouchOutcome::Hit
+            }
+            Some(_) => TouchOutcome::Stale,
+            None => TouchOutcome::Miss,
+        };
+        PreparedMaterialClassification {
+            material_asset_id,
+            property_block_id,
+            material_gen,
+            property_block_gen,
+            outcome,
+        }
+    }
+
+    /// Applies one immutable classification result in prepared-key order.
+    fn apply_prepared_key_classification(
+        &mut self,
+        classified: PreparedMaterialClassification,
+        current_frame: u64,
+        touch_stats: &mut MaterialBatchCacheTouchStats,
+        pending_resolves: &mut Vec<PendingMaterialResolve>,
+    ) {
+        touch_stats.note(classified.outcome);
+        match classified.outcome {
+            TouchOutcome::Hit => {
+                if let Some(entry) = self
+                    .entries
+                    .get_mut(&(classified.material_asset_id, classified.property_block_id))
+                {
+                    entry.last_used_frame = current_frame;
+                }
+            }
+            TouchOutcome::Stale | TouchOutcome::Miss => {
+                pending_resolves.push(PendingMaterialResolve {
+                    material_asset_id: classified.material_asset_id,
+                    property_block_id: classified.property_block_id,
+                    material_gen: classified.material_gen,
+                    property_block_gen: classified.property_block_gen,
+                });
             }
         }
     }
@@ -939,6 +1060,34 @@ mod tests {
             )),
             Some((2, 3, ShaderPermutation(2), 9))
         );
+    }
+
+    #[test]
+    fn prepared_key_classification_stamps_hits_without_pending_resolves() {
+        let (store, router, reg) = make_test_deps();
+        let dict = MaterialDictionary::new(&store);
+        let ids = MaterialPipelinePropertyIds::new(&reg);
+        let ctx = make_ctx(&dict, &router, &ids, ShaderPermutation(0));
+        let mut cache = FrameMaterialBatchCache::new();
+        let keys = (0..super::MATERIAL_CLASSIFY_PARALLEL_MIN_KEYS)
+            .map(|index| (index as i32, None))
+            .collect::<Vec<_>>();
+        for &(material_asset_id, property_block_id) in &keys {
+            touch(&mut cache, material_asset_id, property_block_id, ctx, 1);
+        }
+
+        let (stats, pending) = cache.classify_prepared_keys(&keys, ctx, router.generation(), 2);
+
+        assert_eq!(stats.hits, keys.len());
+        assert_eq!(stats.stale, 0);
+        assert_eq!(stats.misses, 0);
+        assert!(pending.is_empty());
+        assert!(keys.iter().all(|key| {
+            cache
+                .entries
+                .get(key)
+                .is_some_and(|entry| entry.last_used_frame == 2)
+        }));
     }
 
     #[test]

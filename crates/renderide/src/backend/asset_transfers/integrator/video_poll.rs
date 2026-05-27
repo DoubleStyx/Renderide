@@ -1,5 +1,6 @@
 //! Video-texture event polling performed at the end of each asset-integration drain.
 
+use crate::gpu::GpuQueueAccessMode;
 use crate::ipc::DualQueueIpc;
 
 use super::super::AssetTransferQueue;
@@ -12,6 +13,7 @@ use super::super::AssetTransferQueue;
 pub(super) fn poll_video_texture_events(
     asset: &mut AssetTransferQueue,
     ipc: &mut Option<&mut DualQueueIpc>,
+    queue_access_mode: GpuQueueAccessMode,
 ) {
     // Idle scenes never instantiate a video player; skip the `mem::take` swap and the inner
     // profiling scope entirely so the tracy timeline doesn't carry a zero-work zone every frame.
@@ -23,7 +25,7 @@ pub(super) fn poll_video_texture_events(
     {
         profiling::scope!("video::sample_clock_errors");
         for player in video_textures.values_mut() {
-            player.process_events(asset, ipc);
+            player.process_events(asset, ipc, queue_access_mode);
             if let Some(state) = player.sample_clock_error() {
                 asset.video.record_pending_clock_error(state);
             }

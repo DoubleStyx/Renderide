@@ -9,10 +9,11 @@ use super::reflection_probes::GpuReflectionProbeMetadata;
 
 /// Returns the `@group(0)` layout entries shared by every material pipeline.
 pub fn frame_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
-    let mut entries = Vec::with_capacity(13);
+    let mut entries = Vec::with_capacity(16);
     append_frame_buffer_layout_entries(&mut entries);
     append_scene_snapshot_layout_entries(&mut entries);
     append_ibl_layout_entries(&mut entries);
+    append_light_cookie_layout_entries(&mut entries);
     entries
 }
 
@@ -165,6 +166,37 @@ fn append_ibl_layout_entries(entries: &mut Vec<wgpu::BindGroupLayoutEntry>) {
                 has_dynamic_offset: false,
                 min_binding_size: NonZeroU64::new(size_of::<GpuReflectionProbeMetadata>() as u64),
             },
+            count: None,
+        },
+    ]);
+}
+
+fn append_light_cookie_layout_entries(entries: &mut Vec<wgpu::BindGroupLayoutEntry>) {
+    entries.extend([
+        wgpu::BindGroupLayoutEntry {
+            binding: 13,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2Array,
+                multisampled: false,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 14,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2Array,
+                multisampled: false,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 15,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
             count: None,
         },
     ]);

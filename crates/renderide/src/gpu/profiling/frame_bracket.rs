@@ -1,4 +1,4 @@
-//! Frame-bracket GPU timing: real `TIMESTAMP_QUERY` writes that surround a tick's command
+//! Frame-bracket GPU timing: real `TIMESTAMP_QUERY` writes that surround a tracked submit's command
 //! buffers, giving the debug HUD a `gpu_frame_ms` value drawn from the GPU's own clock rather
 //! than from `Queue::on_submitted_work_done` callback latency.
 //!
@@ -9,7 +9,7 @@
 //!    [`wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS`]. Returns [`None`] otherwise; callers
 //!    fall back to the existing callback-latency path.
 //! 2. Main thread: [`FrameBracketSession::begin_command_buffer`] / `end_command_buffer` produce
-//!    two short [`wgpu::CommandBuffer`]s that bracket the tick's real work. The begin CB writes
+//!    two short [`wgpu::CommandBuffer`]s that bracket tracked submit work. The begin CB writes
 //!    timestamp 0; the end CB writes timestamp 1, resolves both into a GPU-side buffer, and
 //!    copies that into a CPU-mappable readback buffer.
 //! 3. Main thread folds those CBs into the [`crate::gpu::driver_thread::SubmitBatch`] passed to
@@ -19,7 +19,7 @@
 //!    `gpu_frame_ms` value. The callback owns all its [`wgpu::Buffer`] / [`wgpu::QuerySet`]
 //!    references so the GPU resources stay alive until the read completes.
 //!
-//! Each tick uses fresh resources rather than a ring of pre-allocated slots -- the per-frame
+//! Each tracked submit uses fresh resources rather than a ring of pre-allocated slots -- the per-frame
 //! cost is one 2-entry timestamp query set plus two 16-byte buffers, which is negligible
 //! compared to the rest of the renderer's per-frame allocation.
 
@@ -30,7 +30,7 @@ use super::super::sync::mapped_buffer_health::GpuMappedBufferHealth;
 /// Number of bytes a 2-entry `Timestamp` query set resolves into (`u64 x 2`).
 const TIMESTAMP_PAIR_BYTES: u64 = 16;
 
-/// Factory for per-tick frame-bracket sessions.
+/// Factory for per-submit frame-bracket sessions.
 ///
 /// Cheap to construct and to clone the held [`Arc`] handles. Held by [`super::GpuContext`]'s
 /// submission state.
@@ -69,7 +69,7 @@ impl FrameBracket {
         }
     }
 
-    /// Allocates a fresh per-tick session, or [`None`] when the adapter does not support the
+    /// Allocates a fresh per-submit session, or [`None`] when the adapter does not support the
     /// required timestamp features.
     ///
     /// Each session carries its own query set / resolve buffer / readback buffer; resources are
@@ -109,7 +109,7 @@ impl FrameBracket {
     }
 }
 
-/// Per-tick state used by the main thread to wrap a frame's command buffers.
+/// Per-submit state used by the main thread to wrap tracked command buffers.
 ///
 /// Produced by [`FrameBracket::open_session`]; consumed by [`Self::into_readback`] once the
 /// begin / end command buffers have been folded into the submit batch.
@@ -133,7 +133,7 @@ pub struct FrameBracketSession {
 impl FrameBracketSession {
     /// Builds the command buffer that opens the bracket -- writes timestamp index 0.
     ///
-    /// Submit this **before** any other tracked command buffer in the tick so its timestamp
+    /// Submit this **before** any other tracked command buffer in the submit so its timestamp
     /// reflects the GPU clock right before the renderer's real work begins.
     pub fn begin_command_buffer(&self) -> wgpu::CommandBuffer {
         let mut enc = self
@@ -151,7 +151,7 @@ impl FrameBracketSession {
     /// Builds the command buffer that closes the bracket -- writes timestamp 1, resolves both
     /// timestamps into the resolve buffer, and copies the result into the mappable readback.
     ///
-    /// Submit this **after** every other tracked command buffer in the tick so its timestamp
+    /// Submit this **after** every other tracked command buffer in the submit so its timestamp
     /// reflects the GPU clock right after the renderer's real work completes.
     pub fn end_command_buffer(&self) -> wgpu::CommandBuffer {
         let mut enc = self

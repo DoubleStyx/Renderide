@@ -15,7 +15,7 @@ use super::super::super::pool::{BufferKey, TextureKey, TransientPool};
 use super::super::super::resources::{
     BackendFrameBufferKind, BufferImportSource, FrameTargetRole, HistorySlotId, ImportSource,
     ImportedBufferDecl, ImportedBufferHandle, ImportedTextureDecl, ImportedTextureHandle,
-    SubresourceHandle, TextureHandle,
+    SubresourceHandle, TextureHandle, TransientExtent,
 };
 use super::super::helpers;
 use super::super::{CompiledRenderGraph, FrameViewTarget, RenderPathProfile, ResolvedView};
@@ -116,6 +116,16 @@ impl CompiledRenderGraph {
                     array_layers,
                     usage_bits: u64::from(compiled.usage.bits()),
                 };
+                let (width, height) = match key.extent {
+                    TransientExtent::Custom { width, height } => (width.max(1), height.max(1)),
+                    TransientExtent::MultiLayer { width, height, .. } => {
+                        (width.max(1), height.max(1))
+                    }
+                    TransientExtent::Backbuffer
+                    | TransientExtent::BackbufferDivisor { .. }
+                    | TransientExtent::BackbufferDivisorMip { .. }
+                    | TransientExtent::BackbufferScaledMip { .. } => surface.viewport_px,
+                };
                 let lease = pool.acquire_texture_resource(
                     device,
                     limits,
@@ -128,6 +138,8 @@ impl CompiledRenderGraph {
                     pool_id: lease.pool_id,
                     texture: lease.texture,
                     view: lease.view,
+                    width,
+                    height,
                     layer_views,
                     mip_levels: key.mip_levels.max(1),
                     array_layers: key.array_layers.max(1),

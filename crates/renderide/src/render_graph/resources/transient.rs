@@ -7,6 +7,18 @@ use std::hash::{Hash, Hasher};
 pub enum TransientExtent {
     /// Resolve to the current frame target extent.
     Backbuffer,
+    /// Resolve to the current frame target extent divided by `divisor` on both axes.
+    BackbufferDivisor {
+        /// Linear divisor. Values below one resolve as one.
+        divisor: u32,
+    },
+    /// Resolve to a mip of [`Self::BackbufferDivisor`].
+    BackbufferDivisorMip {
+        /// Linear divisor. Values below one resolve as one.
+        divisor: u32,
+        /// Mip level index. Resolved size = `max(1, ceil(viewport / divisor) >> mip)`.
+        mip: u32,
+    },
     /// Fixed width and height.
     Custom {
         /// Width in pixels.
@@ -39,7 +51,10 @@ impl TransientExtent {
     #[cfg(test)]
     pub fn fixed_extent(self) -> Option<(u32, u32, u32)> {
         match self {
-            Self::Backbuffer | Self::BackbufferScaledMip { .. } => None,
+            Self::Backbuffer
+            | Self::BackbufferDivisor { .. }
+            | Self::BackbufferDivisorMip { .. }
+            | Self::BackbufferScaledMip { .. } => None,
             Self::Custom { width, height } => Some((width, height, 1)),
             Self::MultiLayer {
                 width,

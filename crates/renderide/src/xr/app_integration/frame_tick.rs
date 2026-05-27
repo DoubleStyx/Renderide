@@ -1,6 +1,7 @@
 //! OpenXR frame wait/locate and host camera sync.
 
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Instant;
 
 use openxr as xr;
 
@@ -82,10 +83,12 @@ fn wait_for_openxr_frame(
     flight_recorder: &GpuFlightRecorder,
 ) -> Option<xr::FrameState> {
     profiling::scope!("xr::wait_frame");
-    match handles
+    let wait_start = Instant::now();
+    let frame_state = handles
         .xr_session
-        .wait_frame(gpu_queue_access_gate, flight_recorder)
-    {
+        .wait_frame(gpu_queue_access_gate, flight_recorder);
+    runtime.note_frame_timing_excluded_wait(wait_start.elapsed());
+    match frame_state {
         Ok(Some(state)) => {
             WAIT_FRAME_FAILURE_STREAK.store(0, Ordering::Relaxed);
             Some(state)

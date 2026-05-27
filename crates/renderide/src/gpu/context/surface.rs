@@ -1,6 +1,8 @@
 //! Surface lifecycle methods on [`GpuContext`]: present mode hot-reload, resize,
 //! swapchain acquire-with-recovery, and small surface accessors.
 
+use std::time::{Duration, Instant};
+
 use crate::config::VsyncMode;
 use crate::diagnostics::gpu_flight_recorder::{
     GpuFlightEventKind, GpuFlightSurfaceReconfigureOutcome, GpuFlightSurfaceReconfigureSite,
@@ -240,7 +242,9 @@ impl GpuContext {
             return Err(wgpu::CurrentSurfaceTexture::Validation);
         }
         self.wait_for_previous_present();
-        match surface.get_current_texture() {
+        let (first_acquire, first_acquire_wait) = timed_surface_get_current_texture(surface);
+        self.record_frame_timing_excluded_wait(first_acquire_wait);
+        match first_acquire {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Ok(t),
             wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
@@ -260,7 +264,10 @@ impl GpuContext {
                 let Some(surface) = self.surface.as_ref() else {
                     return Err(wgpu::CurrentSurfaceTexture::Lost);
                 };
-                match surface.get_current_texture() {
+                let (second_acquire, second_acquire_wait) =
+                    timed_surface_get_current_texture(surface);
+                self.record_frame_timing_excluded_wait(second_acquire_wait);
+                match second_acquire {
                     wgpu::CurrentSurfaceTexture::Success(t)
                     | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Ok(t),
                     other => Err(other),
@@ -269,6 +276,15 @@ impl GpuContext {
             other => Err(other),
         }
     }
+}
+
+/// Calls `Surface::get_current_texture` and returns the elapsed wall-clock time.
+fn timed_surface_get_current_texture(
+    surface: &wgpu::Surface<'_>,
+) -> (wgpu::CurrentSurfaceTexture, Duration) {
+    let start = Instant::now();
+    let texture = surface.get_current_texture();
+    (texture, start.elapsed())
 }
 
 fn format_wgpu_error(error: wgpu::Error) -> String {

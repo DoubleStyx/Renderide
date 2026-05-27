@@ -159,21 +159,23 @@ waits. EMA-smoothed for display; the graph below shows raw samples.";
 
 const CPU_TOOLTIP: &str = "\
 Main-thread tick duration: from frame start to the moment the renderer finishes dispatching \
-this tick's submit. Excludes FPS-gating sleeps, lockstep waits, and event-loop idles. \
-EMA-smoothed.";
+this tick's submit, minus GPU/display/compositor pacing waits. Excludes FPS-gating sleeps, \
+lockstep waits, and event-loop idles. EMA-smoothed.";
 
 const VRAM_TOOLTIP: &str = "\
 Wgpu device allocator memory tracked by the active backend. Shows live allocation bytes and \
 reserved allocator capacity, not total physical adapter VRAM.";
 
 const GPU_TOOLTIP: &str = "\
-Real GPU compute time, measured by hardware timestamp queries that bracket the tick's command \
-buffers. Computed as (end - begin) * Queue::get_timestamp_period / 1e6. EMA-smoothed.";
+Real GPU compute time, measured by hardware timestamp queries that bracket the primary tracked \
+render submit. In VR this is the HMD multiview graph, excluding mirror/presentation blits. \
+Computed as (end - begin) * Queue::get_timestamp_period / 1e6. EMA-smoothed.";
 
 const GPU_LATENCY_TOOLTIP: &str = "\
 Adapter does not advertise TIMESTAMP_QUERY + TIMESTAMP_QUERY_INSIDE_ENCODERS, so this is the \
 wall-clock between Queue::submit returning and on_submitted_work_done firing -- submit-to-callback \
-latency, NOT actual GPU compute time. EMA-smoothed.";
+latency for the primary tracked render submit, NOT actual GPU compute time. In VR this excludes \
+mirror/presentation blits. EMA-smoothed.";
 
 fn row(
     ui: &imgui::Ui,

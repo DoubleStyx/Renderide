@@ -88,8 +88,8 @@ impl MaterialDrawBatchKey {
     /// Returns whether this draw belongs after the skybox/background split.
     #[inline]
     pub fn records_after_skybox(&self) -> bool {
-        render_queue_records_after_skybox(self.render_queue)
-            || self.effective_alpha_blended()
+        self.alpha_blended
+            || self.uses_transparent_sorting()
             || self.embedded_uses_scene_color_snapshot
             || self.render_state.depth_write == Some(false)
     }
@@ -97,7 +97,7 @@ impl MaterialDrawBatchKey {
     /// Returns whether this draw needs strict order-sensitive submission within its phase.
     #[inline]
     pub fn requires_strict_order(&self) -> bool {
-        self.effective_alpha_blended()
+        self.alpha_blended
             || self.uses_transparent_sorting()
             || self.transparent_class.is_transparent()
             || self.embedded_uses_scene_color_snapshot
@@ -113,12 +113,6 @@ pub(super) fn render_queue_uses_transparent_sorting(
 ) -> bool {
     render_queue >= UNITY_RENDER_QUEUE_TRANSPARENT
         || (alpha_blended && render_queue >= UNITY_TRANSPARENT_RENDER_QUEUE_MIN)
-}
-
-/// Returns whether a render queue records after the skybox/background split.
-#[inline]
-fn render_queue_records_after_skybox(render_queue: i32) -> bool {
-    render_queue >= UNITY_TRANSPARENT_RENDER_QUEUE_MIN
 }
 
 /// Computes a 64-bit content hash for `key` used by the draw-sort comparator's primary tiebreaker.
@@ -161,11 +155,12 @@ mod tests {
         key.blend_mode = MaterialBlendMode::Opaque;
 
         assert!(!key.uses_transparent_sorting());
-        assert!(key.records_after_skybox());
+        assert!(!key.records_after_skybox());
         assert!(!key.requires_strict_order());
 
         key.render_queue = UNITY_RENDER_QUEUE_TRANSPARENT;
         assert!(key.uses_transparent_sorting());
+        assert!(key.records_after_skybox());
         assert!(key.requires_strict_order());
     }
 
@@ -176,11 +171,13 @@ mod tests {
         key.blend_mode = MaterialBlendMode::UnityBlend { src: 5, dst: 10 };
 
         assert!(!key.uses_transparent_sorting());
-        assert!(key.records_after_skybox());
-        assert!(key.requires_strict_order());
+        assert!(!key.records_after_skybox());
+        assert!(!key.requires_strict_order());
 
         key.render_queue = UNITY_TRANSPARENT_RENDER_QUEUE_MIN;
         assert!(key.uses_transparent_sorting());
+        assert!(key.records_after_skybox());
+        assert!(key.requires_strict_order());
     }
 
     #[test]

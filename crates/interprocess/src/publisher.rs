@@ -97,6 +97,13 @@ mod tests {
     use crate::subscriber::Subscriber;
 
     #[test]
+    fn publisher_is_send() {
+        fn assert_send<T: Send>() {}
+
+        assert_send::<Publisher>();
+    }
+
+    #[test]
     fn enqueue_empty_body_roundtrip() {
         let dir =
             std::env::temp_dir().join(format!("interprocess_pub_empty_{}", std::process::id()));

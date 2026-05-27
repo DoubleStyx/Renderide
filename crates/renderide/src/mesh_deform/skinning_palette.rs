@@ -130,6 +130,26 @@ pub fn write_skinning_palette_bytes(
     params: SkinningPaletteParams<'_>,
     out: &mut Vec<u8>,
 ) -> Option<usize> {
+    write_skinning_palette_bytes_impl(params, out, true)
+}
+
+/// Writes the skinning palette without nested Rayon fan-out.
+///
+/// Item-level mesh-deform preplanning calls this from Rayon workers so a large batch of skinned
+/// renderers does not recursively split every medium palette.
+pub fn write_skinning_palette_bytes_serial(
+    params: SkinningPaletteParams<'_>,
+    out: &mut Vec<u8>,
+) -> Option<usize> {
+    write_skinning_palette_bytes_impl(params, out, false)
+}
+
+/// Shared palette writer with optional per-palette fan-out.
+fn write_skinning_palette_bytes_impl(
+    params: SkinningPaletteParams<'_>,
+    out: &mut Vec<u8>,
+    allow_parallel: bool,
+) -> Option<usize> {
     let bone_count = params.skinning_bind_matrices.len();
     if bone_count == 0 || !params.has_skeleton {
         return None;
@@ -139,7 +159,7 @@ pub fn write_skinning_palette_bytes(
     out.reserve(total_bytes);
     let resolver = PaletteResolver::new(&params);
 
-    if bone_count >= SKINNING_PALETTE_PARALLEL_MIN {
+    if allow_parallel && bone_count >= SKINNING_PALETTE_PARALLEL_MIN {
         // SAFETY: `reserve(total_bytes)` above guarantees capacity for `total_bytes` bytes. The
         // par_chunks_exact_mut loop below fully overwrites every byte via `copy_from_slice`
         // before any read of `out`, so exposing the uninitialised range as `&mut [u8]` is sound.

@@ -81,7 +81,6 @@ impl RendererRuntime {
             .map(|s| s.rendering.asset_integration_budget_ms)
             .unwrap_or(2);
         self.frontend
-            .decoupling_state()
             .effective_asset_integration_budget_ms(coupled_default_ms)
     }
 

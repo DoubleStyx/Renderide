@@ -27,4 +27,6 @@ pub use scratch::{
 pub use skin_cache::{
     DeformSignature, EntryNeed, GpuSkinCache, SkinCacheEntry, SkinCacheKey, SkinCacheRendererKind,
 };
-pub use skinning_palette::{SkinningPaletteParams, write_skinning_palette_bytes};
+pub use skinning_palette::{
+    SkinningPaletteParams, write_skinning_palette_bytes, write_skinning_palette_bytes_serial,
+};

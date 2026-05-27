@@ -393,7 +393,7 @@ mod tests {
     }
 
     #[test]
-    fn late_opaque_queue_bins_after_lower_alpha_queue_without_transparent_sorting() {
+    fn late_opaque_queue_bins_before_transparent_tail_without_transparent_sorting() {
         let mut alpha = dummy_world_mesh_draw_item(DummyDrawItemSpec {
             material_asset_id: 1,
             property_block: None,
@@ -437,12 +437,12 @@ mod tests {
                 .map(|item| item.batch_key.render_queue)
                 .collect::<Vec<_>>(),
             vec![
-                UNITY_TRANSPARENT_RENDER_QUEUE_MIN,
                 UNITY_RENDER_QUEUE_TRANSPARENT - 1,
+                UNITY_TRANSPARENT_RENDER_QUEUE_MIN,
                 UNITY_RENDER_QUEUE_TRANSPARENT,
             ]
         );
-        assert!(!draws[1].batch_key.uses_transparent_sorting());
+        assert!(!draws[0].batch_key.uses_transparent_sorting());
     }
 
     #[test]

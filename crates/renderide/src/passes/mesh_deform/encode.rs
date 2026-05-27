@@ -66,6 +66,8 @@ pub(super) struct MeshDeformRecordInputs<'a, 'b> {
     pub render_context: crate::shared::RenderingContext,
     /// Head / HMD output transform for palette construction.
     pub head_output_transform: Mat4,
+    /// Optional CPU palette bytes prepared before serial command encoding.
+    pub prepared_skinning_palette_bytes: Option<&'a [u8]>,
     /// Blendshape weights (parallel to mesh blendshape count).
     pub blend_weights: &'a [f32],
     /// Last cache-line signature, if any.
@@ -170,28 +172,20 @@ pub(super) fn record_mesh_deform(
     let blend_then_skin = deform_guard.needs_blend && deform_guard.needs_skin;
     let mut stats = MeshDeformRecordStats::default();
     let prepared_palette_len = if deform_guard.needs_skin {
-        let palette_len = prepare_skinning_palette_bytes(
-            gpu,
-            SkinningPaletteBuildContext {
-                scene: inputs.scene,
-                space_id: inputs.space_id,
-                mesh: inputs.mesh,
-                bone_transform_indices: inputs.bone_transform_indices,
-                smr_node_id: inputs.smr_node_id,
-                render_context: inputs.render_context,
-                head_output_transform: inputs.head_output_transform,
-            },
-        );
-        if palette_len.is_none() {
+        let Some(palette_len) = prepared_skinning_palette_len(gpu, &inputs) else {
             return MeshDeformRecordResult {
                 stats,
                 signature_to_store: None,
             };
-        }
-        palette_len
+        };
+        Some(palette_len)
     } else {
         None
     };
+    let palette_bytes_for_signature = inputs
+        .prepared_skinning_palette_bytes
+        .filter(|bytes| !bytes.is_empty())
+        .unwrap_or(gpu.scratch.bone_palette_bytes.as_slice());
     let signature = build_deform_signature(
         inputs.mesh,
         inputs.mesh_pool_generation,
@@ -199,7 +193,7 @@ pub(super) fn record_mesh_deform(
         inputs.bone_transform_indices,
         inputs.render_context,
         deform_guard.entry_need,
-        prepared_palette_len.map(|_| gpu.scratch.bone_palette_bytes.as_slice()),
+        prepared_palette_len.map(|_| palette_bytes_for_signature),
     );
     if inputs.previous_signature == Some(signature) {
         stats.stable_skips = stats.stable_skips.saturating_add(1);
@@ -234,6 +228,7 @@ pub(super) fn record_mesh_deform(
                 signature_to_store: None,
             };
         };
+        copy_preplanned_skinning_palette(gpu, inputs.prepared_skinning_palette_bytes);
         stats.add(record_skinning_deform(
             gpu,
             SkinningDeformContext {
@@ -256,6 +251,43 @@ pub(super) fn record_mesh_deform(
     MeshDeformRecordResult {
         stats,
         signature_to_store: planned_any.then_some(signature),
+    }
+}
+
+/// Returns the byte length of the prepared skinning palette for one record item.
+fn prepared_skinning_palette_len(
+    gpu: &mut MeshDeformEncodeGpu<'_>,
+    inputs: &MeshDeformRecordInputs<'_, '_>,
+) -> Option<u64> {
+    if let Some(bytes) = inputs.prepared_skinning_palette_bytes
+        && !bytes.is_empty()
+    {
+        return Some(bytes.len() as u64);
+    }
+    prepare_skinning_palette_bytes(
+        gpu,
+        SkinningPaletteBuildContext {
+            scene: inputs.scene,
+            space_id: inputs.space_id,
+            mesh: inputs.mesh,
+            bone_transform_indices: inputs.bone_transform_indices,
+            smr_node_id: inputs.smr_node_id,
+            render_context: inputs.render_context,
+            head_output_transform: inputs.head_output_transform,
+        },
+    )
+}
+
+/// Copies a preplanned palette into scratch before the serial upload path consumes it.
+fn copy_preplanned_skinning_palette(
+    gpu: &mut MeshDeformEncodeGpu<'_>,
+    prepared_skinning_palette_bytes: Option<&[u8]>,
+) {
+    if let Some(bytes) = prepared_skinning_palette_bytes
+        && !bytes.is_empty()
+    {
+        gpu.scratch.bone_palette_bytes.clear();
+        gpu.scratch.bone_palette_bytes.extend_from_slice(bytes);
     }
 }
 

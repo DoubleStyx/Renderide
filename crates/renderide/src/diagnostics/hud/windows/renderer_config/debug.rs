@@ -37,7 +37,7 @@ fn debug_hud_section(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bool)
     if ui.checkbox("Frame timing HUD", &mut g.debug.debug_hud_frame_timing) {
         *dirty = true;
     }
-    ui.text_disabled("FPS and CPU/GPU submit intervals; snapshot is cheap.");
+    ui.text_disabled("FPS and CPU/GPU frame intervals; snapshot is cheap.");
     if ui.checkbox(
         "Debug HUD (Stats / Shader routes / Draw state / GPU memory)",
         &mut g.debug.debug_hud_enabled,

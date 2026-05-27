@@ -1,6 +1,6 @@
 //! Runtime-owned per-tick scratch and phase gates.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::scene::{ReflectionProbeOnChangesRenderRequest, RenderSpaceId};
 use crate::shared::{CameraRenderTask, ReflectionProbeRenderResult, ReflectionProbeRenderTask};
@@ -26,6 +26,8 @@ pub(in crate::runtime) struct RuntimeTickState {
     frame_time_seconds: f32,
     /// Set when asset integration completed for the current winit tick.
     did_integrate_this_tick: bool,
+    /// Main-thread compositor pacing waits observed outside [`crate::gpu::GpuContext`] this tick.
+    frame_timing_excluded_wait: Duration,
     /// Reusable per-frame scratch for secondary render-texture view collection.
     pub(in crate::runtime) secondary_view_tasks_scratch: Vec<(RenderSpaceId, f32, usize)>,
     /// Host camera readback tasks waiting for a GPU context before the next begin-frame send.
@@ -59,6 +61,7 @@ impl RuntimeTickState {
             started_at,
             frame_time_seconds: 0.0,
             did_integrate_this_tick: false,
+            frame_timing_excluded_wait: Duration::ZERO,
             secondary_view_tasks_scratch: Vec::new(),
             pending_camera_render_tasks: Vec::new(),
             pending_reflection_probe_render_tasks: Vec::new(),
@@ -74,6 +77,7 @@ impl RuntimeTickState {
     /// Clears once-per-tick gates at the start of a new winit tick.
     pub(in crate::runtime) fn reset_for_tick(&mut self) {
         self.did_integrate_this_tick = false;
+        self.frame_timing_excluded_wait = Duration::ZERO;
     }
 
     /// Captures the frame-start wall clock for material shader time inputs.
@@ -94,6 +98,18 @@ impl RuntimeTickState {
     /// Marks asset integration as completed for this tick.
     pub(in crate::runtime) fn mark_integrated_assets_this_tick(&mut self) {
         self.did_integrate_this_tick = true;
+    }
+
+    /// Adds compositor or display pacing time that should not count as active CPU frame work.
+    pub(in crate::runtime) fn note_frame_timing_excluded_wait(&mut self, wait: Duration) {
+        self.frame_timing_excluded_wait = self.frame_timing_excluded_wait.saturating_add(wait);
+    }
+
+    /// Drains accumulated non-GPU-context pacing time for publication into frame timing.
+    pub(in crate::runtime) fn drain_frame_timing_excluded_wait(&mut self) -> Duration {
+        let wait = self.frame_timing_excluded_wait;
+        self.frame_timing_excluded_wait = Duration::ZERO;
+        wait
     }
 }
 
@@ -120,5 +136,21 @@ mod tests {
         state.note_frame_wall_clock_begin(later);
 
         assert!((state.frame_time_seconds() - 0.25).abs() < 0.001);
+    }
+
+    #[test]
+    fn frame_timing_excluded_wait_accumulates_and_drains() {
+        let mut state = RuntimeTickState::new();
+        state.note_frame_timing_excluded_wait(std::time::Duration::from_millis(2));
+        state.note_frame_timing_excluded_wait(std::time::Duration::from_millis(3));
+
+        assert_eq!(
+            state.drain_frame_timing_excluded_wait(),
+            std::time::Duration::from_millis(5)
+        );
+        assert_eq!(
+            state.drain_frame_timing_excluded_wait(),
+            std::time::Duration::ZERO
+        );
     }
 }

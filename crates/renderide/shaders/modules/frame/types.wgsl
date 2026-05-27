@@ -5,6 +5,9 @@
 const FRAME_PROJECTION_FLAG_ORTHOGRAPHIC: u32 = 1u;
 const FRAME_TAIL_SAMPLE_COUNT_SHIFT: u32 = 1u;
 const FRAME_TAIL_SAMPLE_COUNT_MASK: u32 = 30u;
+const LIGHT_COOKIE_KIND_NONE: u32 = 0u;
+const LIGHT_COOKIE_KIND_SPOT_2D: u32 = 1u;
+const LIGHT_COOKIE_KIND_POINT_CUBE: u32 = 2u;
 
 struct GpuLight {
     position: vec3<f32>,
@@ -22,7 +25,11 @@ struct GpuLight {
     shadow_bias: f32,
     shadow_normal_bias: f32,
     shadow_type: u32,
-    align_pad_vec3_tail: vec3<u32>,
+    cookie_kind: u32,
+    cookie_layer: u32,
+    cookie_reserved: u32,
+    cookie_right_tan_half_angle: vec4<f32>,
+    cookie_up: vec4<f32>,
 }
 
 struct GpuReflectionProbe {

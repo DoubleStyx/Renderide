@@ -1,6 +1,6 @@
 //! Dear ImGui overlay for developer diagnostics.
 //!
-//! The **Frame timing** window shows FPS, CPU/GPU submit intervals, RAM/VRAM, and a frametime graph.
+//! The **Frame timing** window shows FPS, CPU/GPU frame intervals, RAM/VRAM, and a frametime graph.
 //! **[`crate::config::DebugSettings::debug_hud_frame_timing`]** toggles the **Frame timing** window (default on).
 //! **[`crate::config::DebugSettings::debug_hud_enabled`]** toggles **Renderide debug** (Stats / Shader routes / Draw state / GPU memory).
 //! **[`crate::config::DebugSettings::debug_hud_transforms`]** toggles the **Scene transforms** window.

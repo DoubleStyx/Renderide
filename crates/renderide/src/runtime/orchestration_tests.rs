@@ -10,8 +10,8 @@ use crate::ipc::SharedMemoryAccessor;
 use crate::shared::buffer::SharedMemoryBufferDescriptor;
 use crate::shared::{
     DesktopConfig, FrameSubmitData, FreeSharedMemoryView, Guid, HeadOutputDevice, KeepAlive,
-    MeshRenderablesUpdate, QualityConfig, RenderSpaceUpdate, RendererCommand, RendererInitData,
-    RendererInitFinalizeData, RendererShutdown,
+    MeshRenderablesUpdate, QualityConfig, RenderSpaceUpdate, RendererCommand, RendererEngineReady,
+    RendererInitData, RendererInitFinalizeData, RendererShutdown,
 };
 
 use super::RendererRuntime;
@@ -78,7 +78,37 @@ fn dispatch_frame_submit_updates_lockstep_fields() {
     apply_running_command(&mut rt, RendererCommand::FrameSubmitData(data));
     assert_eq!(rt.last_frame_index(), 101);
     assert!(rt.last_frame_data_processed());
+    assert!(rt.pending_frame_submit_render());
     assert!(!rt.fatal_error());
+}
+
+#[test]
+fn render_attempt_clears_pending_frame_submit_render() {
+    let mut rt = test_runtime_standalone();
+    rt.test_set_shared_memory("test_shm");
+    let data = FrameSubmitData {
+        frame_index: 101,
+        ..Default::default()
+    };
+    apply_running_command(&mut rt, RendererCommand::FrameSubmitData(data));
+    assert!(rt.pending_frame_submit_render());
+
+    rt.note_frame_render_attempted();
+
+    assert!(!rt.pending_frame_submit_render());
+}
+
+#[test]
+fn renderer_engine_ready_activates_host_lockstep_gate() {
+    let mut rt = test_runtime_standalone();
+    assert!(!rt.host_lockstep_activated());
+
+    apply_running_command(
+        &mut rt,
+        RendererCommand::RendererEngineReady(RendererEngineReady::default()),
+    );
+
+    assert!(rt.host_lockstep_activated());
 }
 
 #[test]

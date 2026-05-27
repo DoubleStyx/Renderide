@@ -6,7 +6,7 @@
 
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::gpu::driver_thread::SubmitToken;
 use crate::gpu::submission_state::PendingGpuProfilerEnd;
@@ -43,6 +43,22 @@ impl GpuContext {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         ft.end_frame();
+    }
+
+    /// Adds main-thread pacing time that should be subtracted from the HUD CPU frame value.
+    ///
+    /// Use this for waits on GPU/display/compositor readiness. The timing accumulator ignores
+    /// calls outside an active frame, so callers may record measured waits unconditionally.
+    pub(crate) fn record_frame_timing_excluded_wait(&self, wait: Duration) {
+        if wait.is_zero() {
+            return;
+        }
+        let mut ft = self
+            .submission
+            .frame_timing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ft.record_excluded_wait(wait);
     }
 
     /// Mutable reference to the GPU profiler, when one is active.
@@ -102,7 +118,7 @@ impl GpuContext {
             return;
         }
         let Some(submit_token) = self.last_frame_submit_token() else {
-            logger::warn!("GPU profiler frame had queries but no tracked submit token");
+            logger::warn!("GPU profiler frame had queries but no submit token");
             self.end_active_gpu_profiler_frame();
             self.drain_gpu_profiler_results();
             return;
@@ -247,11 +263,11 @@ impl GpuContext {
         ft.last_gpu_source
     }
 
-    /// Publishes the main-thread CPU frame duration synchronously.
+    /// Publishes the active main-thread CPU frame duration synchronously.
     ///
     /// Call from the runtime tick epilogue, after the last [`wgpu::Queue::submit`] dispatch
-    /// but before the event-loop yields. The captured duration becomes the HUD's "CPU" row
-    /// reading -- see
+    /// but before the event-loop yields. The timing accumulator subtracts excluded pacing waits
+    /// before publishing the HUD's "CPU" row reading -- see
     /// [`crate::gpu::frame_cpu_gpu_timing::FrameCpuGpuTiming::record_main_thread_cpu_end`].
     pub fn record_main_thread_cpu_end(&self, cpu_end: Instant) {
         profiling::scope!("gpu::record_main_thread_cpu_end");
@@ -263,12 +279,12 @@ impl GpuContext {
         ft.record_main_thread_cpu_end(cpu_end);
     }
 
-    /// Most recently completed GPU frame ms in **seconds**, for the IPC
+    /// Most recently completed whole-frame GPU time in **seconds**, for the IPC
     /// [`crate::shared::PerformanceState::render_time`] field consumed by
     /// `FrooxEngine.PerformanceMetrics.RenderTime`.
     ///
-    /// Returns [`None`] until the first [`wgpu::Queue::on_submitted_work_done`] callback has run;
-    /// callers that need the host-visible "unavailable" sentinel should map [`None`] to `-1.0`.
+    /// Returns [`None`] until every tracked submit in at least one frame has completed; callers
+    /// that need the host-visible "unavailable" sentinel should map [`None`] to `-1.0`.
     pub fn last_completed_gpu_render_time_seconds(&self) -> Option<f32> {
         let ft = self
             .submission

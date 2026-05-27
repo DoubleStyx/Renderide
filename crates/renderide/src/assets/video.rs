@@ -41,6 +41,7 @@ pub trait VideoTextureFrameSink {
 
 #[cfg(feature = "video-textures")]
 mod sink {
+    use crate::gpu::GpuQueueAccessMode;
     use glam::IVec2;
     use gstreamer_app::AppSink;
     use std::sync::Arc;
@@ -53,10 +54,14 @@ mod sink {
         /// Returns the underlying [`AppSink`] for passing to playbin.
         fn appsink(&self) -> &AppSink;
 
-        /// Returns a new [`wgpu::TextureView`] if the sink allocated a new texture
-        /// since the last call, along with its dimensions and resident byte count.
-        /// Returns `None` if nothing changed.
-        fn poll_texture_change(&mut self) -> Option<(Arc<wgpu::TextureView>, u32, u32, u64)>;
+        /// Uploads the latest decoded frame if one is pending and returns a new
+        /// [`wgpu::TextureView`] if the upload allocated a new texture since the last call,
+        /// along with its dimensions and resident byte count. Returns `None` if no pool-visible
+        /// texture view changed.
+        fn poll_texture_change(
+            &mut self,
+            queue_access_mode: GpuQueueAccessMode,
+        ) -> Option<(Arc<wgpu::TextureView>, u32, u32, u64)>;
 
         /// Stops accepting decoded samples and releases callback-owned GPU handles.
         fn begin_shutdown(&mut self);

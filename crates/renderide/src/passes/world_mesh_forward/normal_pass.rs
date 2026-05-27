@@ -45,13 +45,11 @@ pub struct WorldMeshForwardNormalGraphResources {
     /// Single-sample view-space normal target sampled by GTAO.
     pub normals: TextureHandle,
     /// Multisampled view-space normal target used when frame MSAA is active.
-    pub normals_msaa: TextureHandle,
+    pub normals_msaa: Option<TextureHandle>,
     /// Imported frame depth target.
     pub depth: ImportedTextureHandle,
     /// Graph-owned forward depth target used when MSAA is active.
-    pub msaa_depth: TextureHandle,
-    /// Whether this graph variant records multisampled normal/depth attachments.
-    pub msaa_enabled: bool,
+    pub msaa_depth: Option<TextureHandle>,
     /// Imported per-draw storage slab.
     pub per_draw_slab: ImportedBufferHandle,
 }
@@ -281,19 +279,16 @@ impl RasterPass for WorldMeshForwardNormalPass {
                 load: wgpu::LoadOp::Load,
                 store: wgpu::StoreOp::Store,
             };
-            if self.resources.msaa_enabled {
+            if let (Some(normals_msaa), Some(msaa_depth)) =
+                (self.resources.normals_msaa, self.resources.msaa_depth)
+            {
                 r.frame_sampled_color(
                     self.resources.normals,
-                    self.resources.normals_msaa,
+                    normals_msaa,
                     color_ops,
                     Some(self.resources.normals),
                 );
-                r.frame_sampled_depth(
-                    self.resources.depth,
-                    self.resources.msaa_depth,
-                    depth_ops,
-                    None,
-                );
+                r.frame_sampled_depth(self.resources.depth, msaa_depth, depth_ops, None);
             } else {
                 r.color(
                     self.resources.normals,
@@ -341,7 +336,13 @@ impl RasterPass for WorldMeshForwardNormalPass {
     }
 
     fn should_record(&self, ctx: &RasterPassCtx<'_, '_>) -> Result<bool, RenderPassError> {
-        Ok(crate::passes::post_processing::view_post_processing_enabled(&ctx.pass_frame.view))
+        Ok(
+            crate::passes::post_processing::view_post_processing_enabled(&ctx.pass_frame.view)
+                && ctx
+                    .blackboard
+                    .get::<WorldMeshForwardPlanSlot>()
+                    .is_some_and(|prepared| prepared.opaque_recorded),
+        )
     }
 
     fn record(

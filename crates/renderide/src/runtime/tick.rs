@@ -6,7 +6,7 @@
 //! [`Self::drain_reflection_probe_render_tasks`], [`Self::drain_camera_render_tasks`],
 //! [`Self::pre_frame`], and [`Self::render_desktop_frame`] in their fixed order.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::diagnostics::crash_context::{self, TickPhase};
 use crate::gpu::GpuContext;
@@ -18,6 +18,21 @@ impl RendererRuntime {
     /// Whether the next tick should build [`InputState`] and call [`Self::pre_frame`].
     pub fn should_send_begin_frame(&self) -> bool {
         self.frontend.should_send_begin_frame()
+    }
+
+    /// Whether the current tick may render world state under host lockstep and decoupling rules.
+    pub fn should_render_frame(&self) -> bool {
+        self.frontend.should_render_frame()
+    }
+
+    /// Whether a `FrameStartData` has been sent and the matching host submit is still outstanding.
+    pub fn awaiting_frame_submit(&self) -> bool {
+        self.frontend.awaiting_frame_submit()
+    }
+
+    /// Marks any processed host frame submit as having had a renderer-side draw attempt.
+    pub fn note_frame_render_attempted(&mut self) {
+        self.frontend.note_frame_render_attempted();
     }
 
     /// Records wall-clock spacing for host FPS metrics. Call at the very start of each winit tick,
@@ -32,6 +47,16 @@ impl RendererRuntime {
         self.frontend.on_tick_frame_wall_clock(now);
         let (primary, background) = self.frontend.ipc_consecutive_outbound_drop_streaks();
         crash_context::set_ipc_drop_streaks(primary, background);
+    }
+
+    /// Adds main-thread pacing time observed outside [`GpuContext`] to the current frame timing.
+    pub(crate) fn note_frame_timing_excluded_wait(&mut self, wait: Duration) {
+        self.tick_state.note_frame_timing_excluded_wait(wait);
+    }
+
+    /// Drains pacing time accumulated outside [`GpuContext`] for HUD CPU-frame accounting.
+    pub(crate) fn drain_frame_timing_excluded_wait(&mut self) -> Duration {
+        self.tick_state.drain_frame_timing_excluded_wait()
     }
 
     /// Per-tick decoupling activation check. Call **after** [`Self::poll_ipc`] (so a
@@ -51,10 +76,10 @@ impl RendererRuntime {
         self.frontend.note_render_tick_complete();
     }
 
-    /// Forwards the most recently completed GPU submit->idle interval to the frontend so the next
-    /// [`crate::shared::PerformanceState::render_time`] reports raw GPU render time (no post-submit
-    /// present/vsync block). Pass [`None`] when no GPU completion has fired yet; the frontend
-    /// maps that to the host-visible `-1.0` sentinel.
+    /// Forwards the most recently completed whole-frame GPU interval to the frontend so the next
+    /// [`crate::shared::PerformanceState::render_time`] reports Unity-compatible GPU render time.
+    /// Pass [`None`] when no full frame GPU sample has completed yet; the frontend maps that to
+    /// the host-visible `-1.0` sentinel.
     ///
     /// Call once before every return from the app driver's redraw tick.
     pub fn tick_frame_render_time_end(&mut self, gpu_render_time_seconds: Option<f32>) {
@@ -124,8 +149,15 @@ impl RendererRuntime {
         if self.should_send_begin_frame() {
             self.pre_frame(inputs);
         }
+        if !self.should_render_frame() {
+            return TickOutcome {
+                render_skipped: true,
+                ..Default::default()
+            };
+        }
         crash_context::set_tick_phase(TickPhase::RenderViews);
         let graph_error = self.render_desktop_frame(gpu).err();
+        self.note_frame_render_attempted();
         TickOutcome {
             graph_error,
             ..Default::default()

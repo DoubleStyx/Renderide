@@ -2,6 +2,8 @@
 //!
 //! Implementations live on [`crate::runtime::RendererRuntime`] in [`crate::runtime`].
 
+use std::time::Duration;
+
 use glam::{Mat4, Quat, Vec3};
 
 use crate::camera::StereoViewMatrices;
@@ -33,6 +35,8 @@ pub trait XrHostCameraSync {
     fn note_openxr_wait_frame_failed(&mut self) {}
     /// Hook when OpenXR `locate_views` fails while the runtime expected rendering views.
     fn note_openxr_locate_views_failed(&mut self) {}
+    /// Hook for OpenXR frame pacing waits that should be excluded from HUD CPU frame time.
+    fn note_frame_timing_excluded_wait(&mut self, _wait: Duration) {}
 }
 
 /// Per-tick render entry points used by the OpenXR frame submit helper.

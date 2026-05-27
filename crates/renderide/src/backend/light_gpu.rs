@@ -4,15 +4,44 @@
 //! [`LightType`](crate::shared::LightType) and [`ShadowType`](crate::shared::ShadowType) are stored as `u32`
 //! with the same numeric values as `repr(u8)` on the wire.
 
-pub(crate) use crate::gpu::{GpuLight, MAX_LIGHTS};
+pub(crate) use crate::gpu::{
+    GpuLight, LIGHT_COOKIE_KIND_NONE, LIGHT_COOKIE_KIND_POINT_CUBE, LIGHT_COOKIE_KIND_SPOT_2D,
+    MAX_LIGHTS,
+};
 use crate::scene::ResolvedLight;
 use crate::shared::{LightType, ShadowType};
 
 const MIN_SPOT_ANGLE_SCALE_DENOMINATOR: f32 = 1e-6;
 
+/// Cookie atlas binding assigned to a packed GPU light.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LightCookieBinding {
+    /// Cookie kind matching the shader constants.
+    pub kind: u32,
+    /// Atlas layer, or first face layer for point cookies.
+    pub layer: u32,
+}
+
+impl LightCookieBinding {
+    /// Binding used by lights without a valid cookie.
+    pub const NONE: Self = Self {
+        kind: LIGHT_COOKIE_KIND_NONE,
+        layer: 0,
+    };
+}
+
 /// Packs a [`ResolvedLight`] for GPU consumption.
 pub fn gpu_light_from_resolved(light: &ResolvedLight) -> GpuLight {
-    let (spot_cos_half_angle, spot_angle_scale) = spot_angle_terms(light.spot_angle);
+    gpu_light_from_resolved_with_cookie(light, LightCookieBinding::NONE)
+}
+
+/// Packs a [`ResolvedLight`] and its assigned cookie atlas binding for GPU consumption.
+pub fn gpu_light_from_resolved_with_cookie(
+    light: &ResolvedLight,
+    cookie: LightCookieBinding,
+) -> GpuLight {
+    let (spot_cos_half_angle, spot_angle_scale, spot_tan_half_angle) =
+        spot_angle_terms(light.spot_angle);
     GpuLight {
         position: [
             light.world_position.x,
@@ -37,13 +66,20 @@ pub fn gpu_light_from_resolved(light: &ResolvedLight) -> GpuLight {
         shadow_bias: light.shadow_bias,
         shadow_normal_bias: light.shadow_normal_bias,
         shadow_type: shadow_type_u32(light.shadow_type),
-        _pad_align_vec3_trailing: [0; 4],
-        _pad_trailing: [0; 3],
-        _pad_struct_end: [0; 12],
+        cookie_kind: cookie.kind,
+        cookie_layer: cookie.layer,
+        _cookie_reserved: 0,
+        cookie_right_tan_half_angle: [
+            light.world_right.x,
+            light.world_right.y,
+            light.world_right.z,
+            spot_tan_half_angle,
+        ],
+        cookie_up: [light.world_up.x, light.world_up.y, light.world_up.z, 0.0],
     }
 }
 
-fn spot_angle_terms(spot_angle: f32) -> (f32, f32) {
+fn spot_angle_terms(spot_angle: f32) -> (f32, f32, f32) {
     let angle = if spot_angle.is_finite() {
         spot_angle.clamp(0.0, 180.0)
     } else {
@@ -58,7 +94,12 @@ fn spot_angle_terms(spot_angle: f32) -> (f32, f32) {
     } else {
         0.0
     };
-    (cos_outer, scale)
+    let tan_half = if scale > 0.0 {
+        outer_half_radians.tan()
+    } else {
+        0.0
+    };
+    (cos_outer, scale, tan_half)
 }
 
 impl From<&ResolvedLight> for GpuLight {
@@ -108,14 +149,16 @@ mod layout_tests {
     use crate::shared::{LightType, ShadowType};
 
     use super::{
-        GpuLight, MAX_LIGHTS, gpu_light_from_resolved, order_lights_for_clustered_shading_in_place,
+        GpuLight, LIGHT_COOKIE_KIND_POINT_CUBE, LIGHT_COOKIE_KIND_SPOT_2D, LightCookieBinding,
+        MAX_LIGHTS, gpu_light_from_resolved, gpu_light_from_resolved_with_cookie,
+        order_lights_for_clustered_shading_in_place,
     };
 
     #[test]
     fn gpu_light_stride_matches_wgsl() {
         assert_eq!(
             size_of::<GpuLight>(),
-            112,
+            128,
             "must match WGSL storage layout for `array<GpuLight>` (naga stride)"
         );
     }
@@ -124,6 +167,8 @@ mod layout_tests {
         ResolvedLight {
             world_position: Vec3::ZERO,
             world_direction: Vec3::Z,
+            world_right: Vec3::X,
+            world_up: Vec3::Y,
             color: Vec3::ONE,
             intensity: 1.0,
             range: 10.0,
@@ -134,6 +179,7 @@ mod layout_tests {
             shadow_near_plane: 0.0,
             shadow_bias: 0.0,
             shadow_normal_bias: 0.0,
+            cookie_texture_asset_id: -1,
         }
     }
 
@@ -173,6 +219,7 @@ mod layout_tests {
         assert!(gpu.spot_cos_half_angle.abs() < 1e-6);
         assert!(gpu.spot_angle_scale.is_finite());
         assert_eq!(gpu.spot_angle_scale, 0.0);
+        assert_eq!(gpu.cookie_right_tan_half_angle[3], 0.0);
     }
 
     #[test]
@@ -187,7 +234,39 @@ mod layout_tests {
             assert!(gpu.spot_angle_scale.is_finite());
             assert_eq!(gpu.spot_cos_half_angle, 1.0);
             assert_eq!(gpu.spot_angle_scale, 0.0);
+            assert_eq!(gpu.cookie_right_tan_half_angle[3], 0.0);
         }
+    }
+
+    #[test]
+    fn gpu_light_packs_cookie_binding_and_basis() {
+        let mut light = resolved_light(LightType::Spot);
+        light.world_right = Vec3::Y;
+        light.world_up = Vec3::NEG_X;
+
+        let gpu = gpu_light_from_resolved_with_cookie(
+            &light,
+            LightCookieBinding {
+                kind: LIGHT_COOKIE_KIND_SPOT_2D,
+                layer: 7,
+            },
+        );
+
+        assert_eq!(gpu.cookie_kind, LIGHT_COOKIE_KIND_SPOT_2D);
+        assert_eq!(gpu.cookie_layer, 7);
+        assert_eq!(&gpu.cookie_right_tan_half_angle[..3], &[0.0, 1.0, 0.0]);
+        assert_eq!(&gpu.cookie_up[..3], &[-1.0, 0.0, 0.0]);
+        assert!(gpu.cookie_right_tan_half_angle[3] > 0.0);
+
+        let point = gpu_light_from_resolved_with_cookie(
+            &resolved_light(LightType::Point),
+            LightCookieBinding {
+                kind: LIGHT_COOKIE_KIND_POINT_CUBE,
+                layer: 13,
+            },
+        );
+        assert_eq!(point.cookie_kind, LIGHT_COOKIE_KIND_POINT_CUBE);
+        assert_eq!(point.cookie_layer, 13);
     }
 
     #[test]

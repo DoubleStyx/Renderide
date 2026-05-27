@@ -8,15 +8,14 @@ pub struct FrameTimingFragment {
     /// Wall-clock roundtrip between consecutive winit ticks (ms): the time between when one frame
     /// started and the next one started. FPS = `1000.0 / wall_frame_time_ms`.
     pub wall_frame_time_ms: f64,
-    /// CPU per-frame ms: from the start of the winit tick to the moment `Queue::submit` returns
-    /// on the driver thread for that tick's last submit. Matches the Frame timing HUD CPU line.
+    /// CPU per-frame ms: active renderer main-thread work, excluding GPU/display/compositor
+    /// pacing waits. Matches the Frame timing HUD CPU line.
     ///
-    /// Comes from the most recent frame whose submit has reached the driver thread, so it may
-    /// lag the current tick by one frame.
+    /// Comes from the most recent frame whose CPU sample has paired with a GPU timing sample,
+    /// so it may lag the current tick by one or more frames.
     pub cpu_frame_ms: Option<f64>,
-    /// GPU per-frame ms: from `Queue::submit` returning on the driver thread to the
-    /// `on_submitted_work_done` callback firing for that submit. Matches the Frame timing HUD
-    /// GPU line.
+    /// GPU per-frame ms: hardware timestamp frame bracket when available, otherwise
+    /// submit-to-completion callback latency. Matches the Frame timing HUD GPU line.
     ///
     /// Comes from the most recent frame whose completion callback has fired, so it may lag the
     /// current tick by one or more frames.

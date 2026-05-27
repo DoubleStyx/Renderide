@@ -68,13 +68,12 @@ fn add_main_graph_passes_and_edges(
         &h,
         post_processing_settings,
         msaa_sample_count,
+        multiview_stereo,
     );
     let chain = build_default_post_processing_chain(
         &h,
         post_processing_settings,
-        multiview_stereo,
         post_processing_resources,
-        passes.gtao_normals.as_ref().map(|node| node.view_normals),
     );
     let chain_output =
         chain.build_into_graph(&mut builder, h.scene_color_hdr, post_processing_settings);
@@ -128,8 +127,11 @@ pub(crate) fn build_main_graph_with_resources(
         key.post_processing.active_count()
     );
     let mut builder = GraphBuilder::with_validation_mode(validation_mode);
-    let handles = import_main_graph_resources(&mut builder);
-    let msaa_handles = [handles.forward_msaa_depth, handles.forward_msaa_depth_r32];
+    let msaa_enabled = key.msaa_sample_count > 1;
+    let handles = import_main_graph_resources(&mut builder, msaa_enabled);
+    let msaa_handles = handles
+        .msaa
+        .map(|msaa| [msaa.forward_depth, msaa.forward_depth_r32]);
     let mut graph = add_main_graph_passes_and_edges(
         builder,
         handles,
@@ -138,6 +140,8 @@ pub(crate) fn build_main_graph_with_resources(
         key.msaa_sample_count,
         key.multiview_stereo,
     )?;
-    graph.set_main_graph_msaa_transient_handles(msaa_handles);
+    if let Some(msaa_handles) = msaa_handles {
+        graph.set_main_graph_msaa_transient_handles(msaa_handles);
+    }
     Ok(graph)
 }

@@ -19,6 +19,12 @@ pub(in crate::render_graph::compiled) fn resolve_transient_extent(
             width: viewport_px.0.max(1),
             height: viewport_px.1.max(1),
         },
+        TransientExtent::BackbufferDivisor { divisor } => {
+            resolve_backbuffer_divisor_extent(divisor, 0, viewport_px, array_layers)
+        }
+        TransientExtent::BackbufferDivisorMip { divisor, mip } => {
+            resolve_backbuffer_divisor_extent(divisor, mip, viewport_px, array_layers)
+        }
         TransientExtent::BackbufferScaledMip { max_dim, mip } => {
             resolve_backbuffer_scaled_mip_extent(max_dim, mip, viewport_px, array_layers)
         }
@@ -56,7 +62,10 @@ fn max_mip_levels_for_transient_extent(
             height,
             layers,
         } => (width.max(1), height.max(1), layers.max(1)),
-        TransientExtent::Backbuffer | TransientExtent::BackbufferScaledMip { .. } => (1, 1, 1),
+        TransientExtent::Backbuffer
+        | TransientExtent::BackbufferDivisor { .. }
+        | TransientExtent::BackbufferDivisorMip { .. }
+        | TransientExtent::BackbufferScaledMip { .. } => (1, 1, 1),
     };
     let max_axis = match dimension {
         wgpu::TextureDimension::D1 => width,
@@ -64,6 +73,32 @@ fn max_mip_levels_for_transient_extent(
         wgpu::TextureDimension::D3 => width.max(height).max(depth),
     };
     u32::BITS - max_axis.max(1).leading_zeros()
+}
+
+/// Resolves a backbuffer extent divided by an integer and optionally shifted by mip level.
+fn resolve_backbuffer_divisor_extent(
+    divisor: u32,
+    mip: u32,
+    viewport_px: (u32, u32),
+    array_layers: u32,
+) -> TransientExtent {
+    let divisor = divisor.max(1);
+    let base_w = viewport_px.0.max(1).div_ceil(divisor).max(1);
+    let base_h = viewport_px.1.max(1).div_ceil(divisor).max(1);
+    let w = mip_axis_extent(base_w, mip);
+    let h = mip_axis_extent(base_h, mip);
+    if array_layers > 1 {
+        TransientExtent::MultiLayer {
+            width: w,
+            height: h,
+            layers: array_layers,
+        }
+    } else {
+        TransientExtent::Custom {
+            width: w,
+            height: h,
+        }
+    }
 }
 
 /// Resolves a bloom-style backbuffer-relative mip extent without exceeding the current viewport.
@@ -202,6 +237,48 @@ mod tests {
                 width: 1280,
                 height: 720,
                 layers: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn backbuffer_divisor_extent_ceil_divides_viewport() {
+        assert_eq!(
+            resolve_transient_extent(
+                TransientExtent::BackbufferDivisor { divisor: 2 },
+                (1279, 721),
+                1,
+            ),
+            TransientExtent::Custom {
+                width: 640,
+                height: 361,
+            }
+        );
+        assert_eq!(
+            resolve_transient_extent(
+                TransientExtent::BackbufferDivisor { divisor: 4 },
+                (1280, 720),
+                2,
+            ),
+            TransientExtent::MultiLayer {
+                width: 320,
+                height: 180,
+                layers: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn backbuffer_divisor_mip_halves_from_divided_base() {
+        assert_eq!(
+            resolve_transient_extent(
+                TransientExtent::BackbufferDivisorMip { divisor: 2, mip: 2 },
+                (1279, 721),
+                1,
+            ),
+            TransientExtent::Custom {
+                width: 160,
+                height: 90,
             }
         );
     }

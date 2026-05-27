@@ -41,14 +41,20 @@ impl PostProcessChain {
             }
             return ChainOutput::PassThrough(input);
         }
-        if !self.effects.iter().any(|e| e.is_enabled(settings)) {
+        let enabled_effect_count = self
+            .effects
+            .iter()
+            .filter(|effect| effect.is_enabled(settings))
+            .count();
+        if enabled_effect_count == 0 {
             for _ in &self.effects {
                 builder.note_skipped_pass();
             }
             return ChainOutput::PassThrough(input);
         }
 
-        let mut cursor = PingPongCursor::start(PingPongHdrSlots::new(builder), input);
+        let mut cursor =
+            PingPongCursor::start(PingPongHdrSlots::new(builder, enabled_effect_count), input);
         let mut first_pass: Option<PassId> = None;
         let mut last_pass: Option<PassId> = None;
         let mut registered_effects = Vec::new();

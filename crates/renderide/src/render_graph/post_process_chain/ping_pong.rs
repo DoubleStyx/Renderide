@@ -1,9 +1,9 @@
 //! Ping-pong HDR transient slot helper for post-processing chains.
 //!
-//! A two-slot rotation lets each effect read the previous effect's output and write into a
+//! A one- or two-slot rotation lets each effect read the previous effect's output and write into a
 //! sibling slot without forcing the chain to allocate `N+1` transient targets. The first effect
-//! reads the chain input and writes into [`PingPongHdrSlots::ping`]; subsequent effects swap
-//! between [`PingPongHdrSlots::ping`] and [`PingPongHdrSlots::pong`] each step.
+//! reads the chain input and writes into [`PingPongHdrSlots::ping`]; multi-effect chains also
+//! allocate [`PingPongHdrSlots::pong`] and swap between the pair each step.
 
 use crate::render_graph::builder::GraphBuilder;
 use crate::render_graph::resources::{
@@ -11,25 +11,27 @@ use crate::render_graph::resources::{
     TransientTextureDesc, TransientTextureFormat,
 };
 
-/// The two HDR ping-pong transient texture handles used by a post-processing chain.
+/// The HDR ping-pong transient texture handles used by a post-processing chain.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PingPongHdrSlots {
     /// First-write target slot.
     pub ping: TextureHandle,
-    /// Second-write target slot.
-    pub pong: TextureHandle,
+    /// Second-write target slot, allocated only for chains that can need a swap target.
+    pub pong: Option<TextureHandle>,
 }
 
 impl PingPongHdrSlots {
-    /// Creates the two ping-pong transient HDR scene-color textures.
-    pub fn new(builder: &mut GraphBuilder) -> Self {
+    /// Creates the ping-pong transient HDR scene-color textures needed by `enabled_effect_count`.
+    pub fn new(builder: &mut GraphBuilder, enabled_effect_count: usize) -> Self {
         Self {
             ping: builder.create_texture(post_process_color_transient_desc(
                 "post_processed_color_hdr_a",
             )),
-            pong: builder.create_texture(post_process_color_transient_desc(
-                "post_processed_color_hdr_b",
-            )),
+            pong: (enabled_effect_count > 1).then(|| {
+                builder.create_texture(post_process_color_transient_desc(
+                    "post_processed_color_hdr_b",
+                ))
+            }),
         }
     }
 }
@@ -37,8 +39,8 @@ impl PingPongHdrSlots {
 /// Walks a sequence of effects through a [`PingPongHdrSlots`] pair, exposing the current effect's
 /// `(input, output)` handles and advancing the cursor each time an effect registers.
 ///
-/// The first advance abandons the chain input and starts the rotation between
-/// [`PingPongHdrSlots::ping`] and [`PingPongHdrSlots::pong`]. Subsequent advances are pure swaps.
+/// The first advance abandons the chain input and starts the rotation between allocated slots.
+/// Subsequent advances are pure swaps when a second target exists.
 pub(super) struct PingPongCursor {
     slots: PingPongHdrSlots,
     input: TextureHandle,
@@ -71,10 +73,15 @@ impl PingPongCursor {
     /// becomes the sibling slot.
     pub fn advance(&mut self) {
         if self.advanced_once {
-            std::mem::swap(&mut self.input, &mut self.output);
+            if self.slots.pong.is_some() {
+                std::mem::swap(&mut self.input, &mut self.output);
+            }
         } else {
             self.input = self.slots.ping;
-            self.output = self.slots.pong;
+            self.output = match self.slots.pong {
+                Some(pong) => pong,
+                None => self.slots.ping,
+            };
             self.advanced_once = true;
         }
     }

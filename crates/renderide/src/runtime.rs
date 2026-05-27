@@ -116,6 +116,8 @@ pub struct TickOutcome {
     pub fatal_error: bool,
     /// Render-graph execution error for this tick, if any.
     pub graph_error: Option<GraphExecuteError>,
+    /// Whether this tick intentionally skipped rendering while waiting for host lockstep.
+    pub render_skipped: bool,
 }
 
 /// Facade: [`RendererFrontend`] + [`SceneCoordinator`] + [`RenderBackend`] + ingestion helpers.

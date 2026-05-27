@@ -52,6 +52,7 @@ struct DrainOutcomes {
     integration_elapsed: Duration,
     particle_elapsed: Duration,
     gpu_ready: bool,
+    queue_access_mode: GpuQueueAccessMode,
 }
 
 /// Runs integration steps: high-priority tasks get an emergency ceiling, then normal-priority tasks
@@ -105,6 +106,7 @@ pub fn drain_asset_tasks(
             integration_elapsed,
             particle_elapsed,
             gpu_ready: gpu.is_some(),
+            queue_access_mode,
         },
     )
 }
@@ -240,7 +242,7 @@ fn finalize_drain(
         outcomes.integration.normal_priority.pending,
     );
 
-    poll_video_texture_events(asset, ipc);
+    poll_video_texture_events(asset, ipc, outcomes.queue_access_mode);
 
     let processed = ProcessedLaneCounts {
         main: outcomes.integration.main.processed,

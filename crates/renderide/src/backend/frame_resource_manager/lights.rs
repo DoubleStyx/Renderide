@@ -7,7 +7,8 @@ use crate::scene::{
 };
 
 use super::super::light_gpu::{
-    GpuLight, MAX_LIGHTS, gpu_light_from_resolved, order_lights_for_clustered_shading_in_place,
+    GpuLight, MAX_LIGHTS, gpu_light_from_resolved_with_cookie,
+    order_lights_for_clustered_shading_in_place,
 };
 use super::manager::FrameResourceManager;
 use super::per_view_state::PreparedViewLights;
@@ -25,7 +26,8 @@ struct PreparedViewLightPacket {
     render_context: crate::shared::RenderingContext,
     render_space_filter: Option<RenderSpaceId>,
     resolved_len: usize,
-    lights: PreparedViewLights,
+    signed_scene_color_required: bool,
+    resolved: Vec<ResolvedLight>,
 }
 
 impl FrameResourceManager {
@@ -103,6 +105,9 @@ impl FrameResourceManager {
                 .collect::<Vec<_>>()
         };
 
+        if let Some(fgpu) = self.frame_gpu() {
+            fgpu.begin_light_cookie_frame();
+        }
         let mut wrote_fallback = false;
         for packet in packets {
             self.commit_prepared_light_packet(packet, &mut wrote_fallback);
@@ -130,22 +135,28 @@ impl FrameResourceManager {
             self.lights_overflow_warned = true;
         }
 
-        self.signed_scene_color_required |= packet.lights.signed_scene_color_required;
+        self.signed_scene_color_required |= packet.signed_scene_color_required;
+        let mut packed_lights = Vec::with_capacity(packet.resolved.len());
+        for light in &packet.resolved {
+            let cookie = self.frame_gpu().map_or(
+                crate::backend::light_gpu::LightCookieBinding::NONE,
+                |fgpu| fgpu.assign_light_cookie(light),
+            );
+            packed_lights.push(gpu_light_from_resolved_with_cookie(light, cookie));
+        }
         if !*wrote_fallback {
             self.light_scratch
-                .extend_from_slice(packet.lights.lights.as_slice());
+                .extend_from_slice(packed_lights.as_slice());
             *wrote_fallback = true;
         }
 
-        let light_count = packet.lights.lights.len();
-        let signed_scene_color_required = packet.lights.signed_scene_color_required;
+        let light_count = packed_lights.len();
+        let signed_scene_color_required = packet.signed_scene_color_required;
         let entry = self
             .per_view_lights
             .get_or_insert_with(packet.view_id, PreparedViewLights::default);
         entry.lights.clear();
-        entry
-            .lights
-            .extend_from_slice(packet.lights.lights.as_slice());
+        entry.lights.extend_from_slice(packed_lights.as_slice());
         entry.signed_scene_color_required = signed_scene_color_required;
         logger::trace!(
             "prepared lights for view {:?}: lights={} render_context={:?} render_space_filter={:?}",
@@ -191,18 +202,14 @@ fn prepare_lights_for_view_packet(
         .iter()
         .take(kept)
         .any(light_has_negative_contribution);
-    let mut lights = PreparedViewLights::default();
-    lights.lights.reserve(kept);
-    lights
-        .lights
-        .extend(resolved.iter().take(kept).map(gpu_light_from_resolved));
-    lights.signed_scene_color_required = signed_scene_color_required;
+    resolved.truncate(kept);
     PreparedViewLightPacket {
         view_id: desc.view_id,
         render_context: desc.render_context,
         render_space_filter: desc.render_space_filter,
         resolved_len,
-        lights,
+        signed_scene_color_required,
+        resolved,
     }
 }
 

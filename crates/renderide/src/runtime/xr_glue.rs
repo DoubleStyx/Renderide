@@ -2,6 +2,8 @@
 //!
 //! Lives next to the type it impls so `xr/` never reaches into runtime internals.
 
+use std::time::Duration;
+
 use glam::{Mat4, Quat, Vec3};
 
 use crate::camera::StereoViewMatrices;
@@ -66,6 +68,10 @@ impl crate::xr::XrHostCameraSync for RendererRuntime {
 
     fn note_openxr_locate_views_failed(&mut self) {
         self.xr_stats.note_locate_views_failed();
+    }
+
+    fn note_frame_timing_excluded_wait(&mut self, wait: Duration) {
+        RendererRuntime::note_frame_timing_excluded_wait(self, wait);
     }
 }
 
