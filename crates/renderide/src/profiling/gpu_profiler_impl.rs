@@ -12,6 +12,19 @@ const GPU_PROFILER_PENDING_FRAMES: usize = 8;
 /// Soft per-frame query budget used to warn when instrumentation becomes unusually dense.
 const GPU_PROFILER_SOFT_QUERY_BUDGET: u32 = 512;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TracyBridgeMode {
+    Unbridged,
+    Bridged,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TracyBridgeAction {
+    Keep,
+    Defer,
+    Rebuild(TracyBridgeMode),
+}
+
 /// Wraps [`GpuProfiler`] and provides a GPU timestamp query interface for render and
 /// compute passes, bridging results to the Tracy GPU timeline.
 ///
@@ -19,6 +32,8 @@ const GPU_PROFILER_SOFT_QUERY_BUDGET: u32 = 512;
 pub struct GpuProfilerHandle {
     /// Underlying query allocator, resolver, readback processor, and Tracy bridge.
     inner: GpuProfiler,
+    /// Whether `inner` currently owns a Tracy GPU context and emits Tracy GPU events.
+    tracy_bridge_mode: TracyBridgeMode,
     /// Whether any query was opened since the previous successful profiler frame boundary.
     queries_opened_since_frame_end: AtomicBool,
     /// Number of query scopes opened since the previous profiler frame boundary.
@@ -32,11 +47,10 @@ pub struct GpuProfilerHandle {
 impl GpuProfilerHandle {
     /// Creates a new handle if the device supports [`wgpu::Features::TIMESTAMP_QUERY`].
     ///
-    /// Connects to the running Tracy client so GPU timestamps appear on Tracy's GPU timeline;
-    /// the client is expected to be started from
-    /// [`super::register_main_thread`]. If the Tracy client is unavailable
-    /// (e.g. test harness), falls back to a non-Tracy-bridged profiler -- spans still resolve
-    /// but do not reach the Tracy GUI.
+    /// Connects to the Tracy GPU timeline only when a Tracy GUI is already attached. In
+    /// `ondemand` mode GPU events emitted while no GUI is attached can cross a later connection
+    /// boundary with stale query ids, so late attach is handled by [`Self::refresh_tracy_bridge`]
+    /// at clean frame boundaries instead.
     ///
     /// Returns [`None`] when timestamp queries are unavailable; callers fall back to CPU-only
     /// spans without any GPU timeline data.
@@ -49,41 +63,111 @@ impl GpuProfilerHandle {
         if !features.contains(wgpu::Features::TIMESTAMP_QUERY) {
             return None;
         }
-        let settings = GpuProfilerSettings {
-            enable_timer_queries: true,
-            enable_debug_groups: true,
-            max_num_pending_frames: GPU_PROFILER_PENDING_FRAMES,
-        };
         let backend = adapter.get_info().backend;
-        let inner_result = if tracy_client::Client::running().is_some() {
-            GpuProfiler::new_with_tracy_client(settings.clone(), backend, device, queue)
+        let initial_mode = if tracy_client::Client::is_connected() {
+            TracyBridgeMode::Bridged
         } else {
-            GpuProfiler::new(device, settings.clone())
+            TracyBridgeMode::Unbridged
         };
-        let inner = match inner_result {
-            Ok(inner) => inner,
-            Err(e) => {
-                logger::warn!(
-                    "GPU profiler (Tracy-bridged) creation failed: {e}; falling back to unbridged"
-                );
-                match GpuProfiler::new(device, settings) {
-                    Ok(inner) => inner,
-                    Err(e2) => {
-                        logger::warn!(
-                            "GPU profiler creation failed: {e2}; GPU timeline unavailable"
-                        );
-                        return None;
+        let (inner, tracy_bridge_mode) =
+            match create_profiler_for_mode(initial_mode, backend, device, queue) {
+                Ok(inner) => (inner, initial_mode),
+                Err(e) if initial_mode == TracyBridgeMode::Bridged => {
+                    logger::warn!(
+                        "GPU profiler Tracy bridge creation failed: {e}; falling back to unbridged"
+                    );
+                    match create_profiler_for_mode(
+                        TracyBridgeMode::Unbridged,
+                        backend,
+                        device,
+                        queue,
+                    ) {
+                        Ok(inner) => (inner, TracyBridgeMode::Unbridged),
+                        Err(e2) => {
+                            logger::warn!(
+                                "GPU profiler creation failed: {e2}; GPU timeline unavailable"
+                            );
+                            return None;
+                        }
                     }
                 }
-            }
-        };
+                Err(e) => {
+                    logger::warn!("GPU profiler creation failed: {e}; GPU timeline unavailable");
+                    return None;
+                }
+            };
         Some(Self {
             inner,
+            tracy_bridge_mode,
             queries_opened_since_frame_end: AtomicBool::new(false),
             query_count_since_frame_end: AtomicU32::new(0),
             pending_frame_stats: Mutex::new(VecDeque::new()),
             warned_over_soft_budget: AtomicBool::new(false),
         })
+    }
+
+    /// Rebuilds the Tracy bridge when the GUI connection state changes at a clean frame boundary.
+    ///
+    /// The underlying `tracy-client` GPU API does not gate serial GPU events on
+    /// `TRACY_ON_DEMAND`, so Renderide keeps `wgpu-profiler` unbridged while the GUI is
+    /// disconnected. When a GUI connects, this method swaps in a fresh Tracy-bridged profiler
+    /// before the next frame opens any queries. When it disconnects, the bridge is replaced by an
+    /// unbridged profiler for the same reason.
+    pub fn refresh_tracy_bridge(
+        &mut self,
+        backend: wgpu::Backend,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pending_submit_end: bool,
+    ) {
+        let target_mode = if tracy_client::Client::is_connected() {
+            TracyBridgeMode::Bridged
+        } else {
+            TracyBridgeMode::Unbridged
+        };
+        let action = tracy_bridge_action(
+            self.tracy_bridge_mode,
+            target_mode,
+            self.has_queries_opened_since_frame_end(),
+            pending_submit_end,
+        );
+        let TracyBridgeAction::Rebuild(mode) = action else {
+            return;
+        };
+        match create_profiler_for_mode(mode, backend, device, queue) {
+            Ok(inner) => {
+                self.replace_inner(inner, mode);
+                match mode {
+                    TracyBridgeMode::Bridged => {
+                        logger::info!("GPU profiler Tracy bridge enabled");
+                    }
+                    TracyBridgeMode::Unbridged => {
+                        logger::info!("GPU profiler Tracy bridge disabled");
+                    }
+                }
+            }
+            Err(e) if mode == TracyBridgeMode::Bridged => {
+                logger::warn!(
+                    "GPU profiler Tracy bridge creation failed: {e}; keeping unbridged profiler"
+                );
+            }
+            Err(e) => {
+                logger::warn!(
+                    "GPU profiler unbridged rebuild failed after Tracy disconnect: {e}; preserving current profiler"
+                );
+            }
+        }
+    }
+
+    /// Replaces the underlying profiler and clears accounting that belongs to the old query ids.
+    fn replace_inner(&mut self, inner: GpuProfiler, tracy_bridge_mode: TracyBridgeMode) {
+        self.inner = inner;
+        self.tracy_bridge_mode = tracy_bridge_mode;
+        self.queries_opened_since_frame_end
+            .store(false, Ordering::Release);
+        self.query_count_since_frame_end.store(0, Ordering::Release);
+        self.pending_frame_stats.lock().clear();
+        self.warned_over_soft_budget.store(false, Ordering::Release);
     }
 
     /// Marks the active profiler frame as non-empty.
@@ -256,5 +340,122 @@ fn flatten_results(
             });
         }
         flatten_results(&node.nested_queries, depth + 1, out);
+    }
+}
+
+fn profiler_settings() -> GpuProfilerSettings {
+    GpuProfilerSettings {
+        enable_timer_queries: true,
+        enable_debug_groups: true,
+        max_num_pending_frames: GPU_PROFILER_PENDING_FRAMES,
+    }
+}
+
+fn create_profiler_for_mode(
+    mode: TracyBridgeMode,
+    backend: wgpu::Backend,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+) -> Result<GpuProfiler, wgpu_profiler::CreationError> {
+    let settings = profiler_settings();
+    match mode {
+        TracyBridgeMode::Unbridged => GpuProfiler::new(device, settings),
+        TracyBridgeMode::Bridged => {
+            GpuProfiler::new_with_tracy_client(settings, backend, device, queue)
+        }
+    }
+}
+
+fn tracy_bridge_action(
+    current_mode: TracyBridgeMode,
+    target_mode: TracyBridgeMode,
+    frame_has_queries: bool,
+    pending_submit_end: bool,
+) -> TracyBridgeAction {
+    if current_mode == target_mode {
+        return TracyBridgeAction::Keep;
+    }
+    if frame_has_queries || pending_submit_end {
+        return TracyBridgeAction::Defer;
+    }
+    TracyBridgeAction::Rebuild(target_mode)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TracyBridgeAction, TracyBridgeMode, tracy_bridge_action};
+
+    #[test]
+    fn bridge_action_keeps_current_mode_when_connection_matches() {
+        assert_eq!(
+            tracy_bridge_action(
+                TracyBridgeMode::Unbridged,
+                TracyBridgeMode::Unbridged,
+                false,
+                false,
+            ),
+            TracyBridgeAction::Keep
+        );
+        assert_eq!(
+            tracy_bridge_action(
+                TracyBridgeMode::Bridged,
+                TracyBridgeMode::Bridged,
+                false,
+                false,
+            ),
+            TracyBridgeAction::Keep
+        );
+    }
+
+    #[test]
+    fn bridge_action_rebuilds_for_late_connect_at_clean_boundary() {
+        assert_eq!(
+            tracy_bridge_action(
+                TracyBridgeMode::Unbridged,
+                TracyBridgeMode::Bridged,
+                false,
+                false,
+            ),
+            TracyBridgeAction::Rebuild(TracyBridgeMode::Bridged)
+        );
+    }
+
+    #[test]
+    fn bridge_action_rebuilds_for_disconnect_at_clean_boundary() {
+        assert_eq!(
+            tracy_bridge_action(
+                TracyBridgeMode::Bridged,
+                TracyBridgeMode::Unbridged,
+                false,
+                false,
+            ),
+            TracyBridgeAction::Rebuild(TracyBridgeMode::Unbridged)
+        );
+    }
+
+    #[test]
+    fn bridge_action_defers_when_frame_has_queries() {
+        assert_eq!(
+            tracy_bridge_action(
+                TracyBridgeMode::Unbridged,
+                TracyBridgeMode::Bridged,
+                true,
+                false,
+            ),
+            TracyBridgeAction::Defer
+        );
+    }
+
+    #[test]
+    fn bridge_action_defers_when_submit_end_is_pending() {
+        assert_eq!(
+            tracy_bridge_action(
+                TracyBridgeMode::Bridged,
+                TracyBridgeMode::Unbridged,
+                false,
+                true,
+            ),
+            TracyBridgeAction::Defer
+        );
     }
 }

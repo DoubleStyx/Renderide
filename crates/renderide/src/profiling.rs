@@ -9,7 +9,9 @@
 //! ```
 //!
 //! Then launch the [Tracy GUI](https://github.com/wolfpld/tracy) and connect on port **8086**.
-//! Tracy uses `ondemand` mode, so data is only streamed while a GUI is connected.
+//! Tracy uses `ondemand` mode, so CPU data is only streamed while a GUI is connected. The GPU
+//! profiler bridge is rebuilt on clean frame boundaries as the GUI connects and disconnects, so
+//! late attach starts with fresh GPU query ids instead of replaying disconnected GPU events.
 //!
 //! # Default builds (no `tracy` feature)
 //!
@@ -20,11 +22,13 @@
 //! # GPU profiling
 //!
 //! [`GpuProfilerHandle`] wraps [`wgpu_profiler::GpuProfiler`] (only compiled with `tracy`). It
-//! connects to the running Tracy client via
+//! connects to the currently attached Tracy client via
 //! [`wgpu_profiler::GpuProfiler::new_with_tracy_client`], so pass-level GPU timestamps are
-//! bridged into Tracy's GPU timeline. Renderide keeps this as the always-available timing spine:
-//! graph passes, manual compute/render passes, copy/readback regions, and expensive bounded
-//! subpasses should all use stable labels so Tracy and vendor captures line up.
+//! bridged into Tracy's GPU timeline. The bridge is disabled while Tracy is disconnected because
+//! Tracy's serial GPU events are not gated by `ondemand`. Renderide keeps this as the
+//! always-available timing spine: graph passes, manual compute/render passes, copy/readback
+//! regions, and expensive bounded subpasses should all use stable labels so Tracy and vendor
+//! captures line up.
 //!
 //! Pass-level timestamp writes (the preferred path) only require [`wgpu::Features::TIMESTAMP_QUERY`].
 //! Encoder-level [`GpuProfilerHandle::begin_query`]/[`GpuProfilerHandle::end_query`] additionally

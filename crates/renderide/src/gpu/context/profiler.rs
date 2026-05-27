@@ -19,6 +19,7 @@ impl GpuContext {
         profiling::scope!("gpu::begin_frame_timing");
         self.finish_deferred_gpu_profiler_frame_if_ready();
         self.drain_gpu_profiler_results();
+        self.refresh_gpu_profiler_tracy_bridge();
         self.submission
             .last_frame_submit_token
             .store(0, Ordering::Release);
@@ -165,6 +166,25 @@ impl GpuContext {
         };
         pending.profiler.end_frame_if_queries_opened();
         self.submission.gpu_profiler = Some(pending.profiler);
+    }
+
+    /// Refreshes the Tracy GPU bridge after all older query frames that can safely end have ended.
+    ///
+    /// Late Tracy GUI attach/detach is handled by swapping the underlying `wgpu-profiler`
+    /// instance only when no command-buffer submit still owns the current profiler frame.
+    fn refresh_gpu_profiler_tracy_bridge(&mut self) {
+        let pending_submit_end = self.submission.pending_gpu_profiler_end.is_some();
+        let backend = self.adapter_info.backend;
+        let device = Arc::clone(&self.device);
+        let queue = Arc::clone(&self.queue);
+        if let Some(profiler) = self.submission.gpu_profiler.as_mut() {
+            profiler.refresh_tracy_bridge(
+                backend,
+                device.as_ref(),
+                queue.as_ref(),
+                pending_submit_end,
+            );
+        }
     }
 
     #[cfg(feature = "tracy")]

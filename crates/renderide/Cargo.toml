@@ -32,8 +32,9 @@ path = "src/bin/roundtrip.rs"
 ## Usage: `cargo build --profile dev-fast --features tracy`
 ## For realistic numbers: `cargo build --release --features tracy`
 ##
-## Requires no runtime configuration; connect the Tracy GUI on port 8086 after launching.
-## Uses Tracy's `ondemand` mode so data is only streamed when a GUI is attached.
+## Requires no runtime configuration; connect the Tracy GUI on port 8086 before or after launching.
+## Uses Tracy's `ondemand` mode, and the GPU bridge is rebuilt at clean frame boundaries so late
+## attach starts with fresh GPU query ids instead of replaying disconnected GPU events.
 tracy = [
   "dep:wgpu-profiler",
   "dep:tracy-client",
