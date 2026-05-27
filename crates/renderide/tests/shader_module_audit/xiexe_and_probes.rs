@@ -439,7 +439,7 @@ fn xiexe_direct_diffuse_uses_burley_with_ramp_tint() -> io::Result<()> {
         !lighting_src.contains("s.albedo.rgb * ramp * light_col_atten"),
         "The legacy un-normalized direct-diffuse accumulator must be removed"
     );
-    // Guard the regression: missing `light.attenuation` makes diffuse π× dimmer than
+    // Guard the regression: missing `light.attenuation` makes diffuse pi-times dimmer than
     // PBSMetallic and washes out the toon shadow ramp.
     assert!(
         !lighting_src.contains("s.albedo.rgb * brdf::fd_lambert() * light.color * ramp"),
@@ -450,6 +450,58 @@ fn xiexe_direct_diffuse_uses_burley_with_ramp_tint() -> io::Result<()> {
             .contains("s.albedo.rgb * brdf::fd_lambert() * light.color * light.attenuation * ramp"),
         "Direct diffuse must not bypass the PBS Fresnel transmission envelope or Burley diffuse"
     );
+    Ok(())
+}
+
+/// Verifies that Xiexe ramp placement stays independent from boosted punctual light attenuation.
+#[test]
+fn xiexe_shadow_sharpness_stays_on_directional_shadow_visibility() -> io::Result<()> {
+    let lighting_src =
+        source_file(manifest_dir().join("shaders/modules/xiexe/toon2/lighting.wgsl"))?;
+    for required in [
+        "var visibility = bl::distance_visibility(dist, light.range);",
+        "visibility = visibility * bl::spot_angle_attenuation(light, l);",
+        "visibility = visibility * cookies::multiplier(light, world_pos);",
+        "let attenuation = visibility * bl::direct_light_scale();",
+        "return xb::LightSample(l, bl::light_radiance(light), attenuation, visibility, false);",
+        "fn ramp_visibility(light: xb::LightSample) -> f32",
+        "if (!light.is_directional) {\n        return 1.0;\n    }",
+        "return mix(visibility, round(visibility), clamp(xb::mat._ShadowSharpness, 0.0, 1.0));",
+        "let x = clamp((ndl * 0.5 + 0.5) * ramp_visibility(light), 0.0, 1.0);",
+        "let ramp = ramp_for_ndl(ndl, light, s.ramp_mask);",
+        "vec3<f32>(light.visibility) + ambient",
+        "let visibility = xb::saturate(light.visibility * (dot(s.normal, light.direction) * 0.5 + 0.5));",
+        "return max(vec3<f32>(0.0), light.color * scatter * s.albedo.rgb);",
+    ] {
+        assert!(
+            lighting_src.contains(required),
+            "Xiexe visibility split must contain `{required}`"
+        );
+    }
+    for forbidden in [
+        "mix(attenuation, round(attenuation)",
+        "ramp_for_ndl(ndl, light.attenuation",
+        "vec3<f32>(light.attenuation) + ambient",
+        "return max(vec3<f32>(0.0), light.color * scatter * s.albedo.rgb) * ndl * light.attenuation",
+    ] {
+        assert!(
+            !lighting_src.contains(forbidden),
+            "Xiexe ShadowSharpness and style visibility must not retain `{forbidden}`"
+        );
+    }
+
+    let birp_src = source_file(manifest_dir().join("shaders/modules/lighting/birp.wgsl"))?;
+    for required in [
+        "fn distance_visibility(dist: f32, range: f32) -> f32",
+        "return lut * range_fade(t);",
+        "return distance_visibility(dist, range) * INTENSITY_BOOST;",
+    ] {
+        assert!(
+            birp_src.contains(required),
+            "BiRP lighting helpers must expose unboosted visibility; missing `{required}`"
+        );
+    }
+
     Ok(())
 }
 
@@ -626,8 +678,8 @@ fn xiexe_a2c_has_single_sample_dither_fallback() -> io::Result<()> {
     let alpha_src = source_file(manifest_dir().join("shaders/modules/xiexe/toon2/alpha.wgsl"))?;
     for required in [
         "rg::frame_sample_count() <= 1u",
-        "if (coverage <= d)",
-        "if (coverage <= xb::bayer_threshold(frag_xy))",
+        "if (coverage < d)",
+        "if (coverage < xb::bayer_threshold(frag_xy))",
         "textureSample(xb::_CutoutMask, xb::_CutoutMask_sampler, uv_primary).r",
     ] {
         assert!(
@@ -639,6 +691,18 @@ fn xiexe_a2c_has_single_sample_dither_fallback() -> io::Result<()> {
         !alpha_src.contains("textureSampleLevel(xb::_CutoutMask"),
         "Xiexe cutout masks must not force base-mip sampling"
     );
+    for forbidden in [
+        "clip_alpha <= xb::mat._Cutoff",
+        "coverage <= d",
+        "coverage <= xb::bayer_threshold(frag_xy)",
+        "((1.0 - mask) + d) <= dither",
+        "clip_alpha <= dither",
+    ] {
+        assert!(
+            !alpha_src.contains(forbidden),
+            "Xiexe alpha clip emulation must preserve equality and not contain `{forbidden}`"
+        );
+    }
 
     let globals_src = source_file(manifest_dir().join("shaders/modules/frame/globals.wgsl"))?;
     for required in [

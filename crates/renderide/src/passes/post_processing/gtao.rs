@@ -382,38 +382,24 @@ mod tests {
 
     #[test]
     fn gtao_quality_levels_match_expected_presets() {
-        assert_eq!(
+        /// Builds a GTAO settings value with explicit overrides disabled.
+        fn preset_settings(quality_level: u32) -> GtaoSettings {
             GtaoSettings {
-                quality_level: 0,
+                quality_level,
+                slice_count_override: 0,
+                step_count: 0,
                 ..Default::default()
             }
-            .effective_sample_counts(),
-            (1, 2)
-        );
+        }
+
+        assert_eq!(preset_settings(0).effective_sample_counts(), (1, 2));
+        assert_eq!(preset_settings(1).effective_sample_counts(), (2, 2));
+        assert_eq!(preset_settings(2).effective_sample_counts(), (3, 3));
+        assert_eq!(preset_settings(3).effective_sample_counts(), (9, 3));
+        assert_eq!(preset_settings(4).effective_sample_counts(), (12, 4));
         assert_eq!(
-            GtaoSettings {
-                quality_level: 1,
-                ..Default::default()
-            }
-            .effective_sample_counts(),
-            (2, 2)
-        );
-        assert_eq!(
-            GtaoSettings {
-                quality_level: 2,
-                ..Default::default()
-            }
-            .effective_sample_counts(),
-            (3, 3)
-        );
-        assert_eq!(GtaoSettings::default().effective_sample_counts(), (9, 3));
-        assert_eq!(
-            GtaoSettings {
-                quality_level: 4,
-                ..Default::default()
-            }
-            .effective_sample_counts(),
-            (12, 4)
+            GtaoSettings::default().effective_sample_counts(),
+            (crate::config::GTAO_MAX_SLICE_COUNT, 2)
         );
     }
 
