@@ -582,6 +582,19 @@ fn generic_pbs_premultiply_variants_use_unity_transparent_lighting() -> io::Resu
 }
 
 #[test]
+fn birp_range_fade_uses_sextic_smoothing() -> io::Result<()> {
+    let birp = module_source("lighting/birp.wgsl")?;
+    assert!(
+        birp.contains(
+            "fn range_fade(t: f32) -> f32 {\n    let t2 = t * t;\n    return squared_edge_fade(t2 * t2 * t2);\n}"
+        ),
+        "BiRP punctual range smoothing must use a sextic fade input"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn light_radiance_conversion_reaches_directional_and_punctual_paths() -> io::Result<()> {
     let birp = module_source("lighting/birp.wgsl")?;
     assert!(

@@ -60,16 +60,16 @@ fn squared_edge_fade(t: f32) -> f32 {
     return fade * fade;
 }
 
-/// Quartic window that smoothly fades normalized attenuation to zero at the boundary.
+/// Sextic window that smoothly fades normalized attenuation to zero at the boundary.
 fn range_fade(t: f32) -> f32 {
     let t2 = t * t;
-    return squared_edge_fade(t2 * t2);
+    return squared_edge_fade(t2 * t2 * t2);
 }
 
 /// Unity BiRP-style distance attenuation for punctual lights.
 ///
 /// `1 / (1 + 25*t^2)` with `t = dist/range` approximates the Built-in RP attenuation LUT while
-/// keeping the light's peak brightness independent of range. The quartic range window prevents
+/// keeping the light's peak brightness independent of range. The sextic range window prevents
 /// clustered lights from leaking past their declared range.
 fn distance_visibility(dist: f32, range: f32) -> f32 {
     if (range <= 0.0) {
