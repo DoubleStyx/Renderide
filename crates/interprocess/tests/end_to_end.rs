@@ -1,16 +1,49 @@
 //! Integration tests using only the public `interprocess` API.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::Duration;
 
 use interprocess::{Publisher, QueueOptions, Subscriber};
+use tempfile::TempDir;
+
+/// Unique queue-name suffix for tests sharing the kernel semaphore namespace.
+static QUEUE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Builds isolated queue options backed by a temporary directory.
+fn queue_options(prefix: &str, capacity: i64) -> Result<(TempDir, QueueOptions), String> {
+    let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e}"))?;
+    let name = format!(
+        "{prefix}_{}_{}",
+        std::process::id(),
+        QUEUE_SEQ.fetch_add(1, Ordering::Relaxed)
+    );
+    let opts = QueueOptions::with_path(&name, dir.path(), capacity)
+        .map_err(|e| format!("queue options: {e}"))?;
+    Ok((dir, opts))
+}
+
+/// Builds isolated queue options with explicit destroy behavior.
+fn queue_options_with_destroy(
+    prefix: &str,
+    capacity: i64,
+    destroy_on_dispose: bool,
+) -> Result<(TempDir, QueueOptions), String> {
+    let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e}"))?;
+    let name = format!(
+        "{prefix}_{}_{}",
+        std::process::id(),
+        QUEUE_SEQ.fetch_add(1, Ordering::Relaxed)
+    );
+    let opts = QueueOptions::with_path_and_destroy(&name, dir.path(), capacity, destroy_on_dispose)
+        .map_err(|e| format!("queue options: {e}"))?;
+    Ok((dir, opts))
+}
 
 #[test]
 fn enqueue_and_dequeue_roundtrip() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let opts = QueueOptions::with_path("e2e_roundtrip", dir.path(), 4096).expect("valid options");
+    let (_dir, opts) = queue_options("e2e_roundtrip", 4096).expect("queue options");
     let mut publisher = Publisher::new(opts.clone()).expect("publisher");
     let mut subscriber = Subscriber::new(opts).expect("subscriber");
 
@@ -23,9 +56,7 @@ fn enqueue_and_dequeue_roundtrip() {
 
 #[test]
 fn subscriber_opens_before_publisher_roundtrip() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let name = format!("e2e_sub_first_{}", std::process::id());
-    let opts = QueueOptions::with_path(&name, dir.path(), 4096).expect("valid options");
+    let (_dir, opts) = queue_options("e2e_sub_first", 4096).expect("queue options");
     let mut subscriber = Subscriber::new(opts.clone()).expect("subscriber");
     let mut publisher = Publisher::new(opts).expect("publisher");
 
@@ -38,9 +69,7 @@ fn subscriber_opens_before_publisher_roundtrip() {
 
 #[test]
 fn dequeue_unblocks_after_subscriber_first() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let name = format!("e2e_deq_block_{}", std::process::id());
-    let opts = QueueOptions::with_path(&name, dir.path(), 4096).expect("valid");
+    let (_dir, opts) = queue_options("e2e_deq_block", 4096).expect("queue options");
     let opts_pub = opts.clone();
     let barrier = Arc::new(Barrier::new(2));
     let barrier_consumer = Arc::clone(&barrier);
@@ -62,8 +91,7 @@ fn dequeue_unblocks_after_subscriber_first() {
 
 #[test]
 fn multi_message_fifo_varied_sizes() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let opts = QueueOptions::with_path("e2e_fifo", dir.path(), 8192).expect("valid");
+    let (_dir, opts) = queue_options("e2e_fifo", 8192).expect("queue options");
     let mut publisher = Publisher::new(opts.clone()).expect("publisher");
     let mut subscriber = Subscriber::new(opts).expect("subscriber");
 
@@ -87,9 +115,8 @@ fn multi_message_fifo_varied_sizes() {
 #[cfg(unix)]
 #[test]
 fn destroy_on_dispose_unlinks_qu_file() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let opts =
-        QueueOptions::with_path_and_destroy("e2e_destroy", dir.path(), 4096, true).expect("valid");
+    let (_dir, opts) =
+        queue_options_with_destroy("e2e_destroy", 4096, true).expect("queue options");
     let path = opts.file_path();
     let _publisher = Publisher::new(opts).expect("publisher");
     assert!(path.exists());
@@ -99,8 +126,7 @@ fn destroy_on_dispose_unlinks_qu_file() {
 
 #[test]
 fn concurrent_producer_consumer() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let opts = QueueOptions::with_path("e2e_concurrent", dir.path(), 65_536).expect("valid");
+    let (_dir, opts) = queue_options("e2e_concurrent", 65_536).expect("queue options");
     let opts_pub = opts.clone();
     let n = 50u32;
     let cancel = Arc::new(AtomicBool::new(false));
@@ -136,8 +162,7 @@ fn concurrent_producer_consumer() {
 
 #[test]
 fn try_enqueue_returns_false_when_full_then_succeeds_after_drain() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let opts = QueueOptions::with_path("e2e_full_drain", dir.path(), 64).expect("valid");
+    let (_dir, opts) = queue_options("e2e_full_drain", 64).expect("queue options");
     let mut publisher = Publisher::new(opts.clone()).expect("publisher");
     let mut subscriber = Subscriber::new(opts).expect("subscriber");
 
@@ -169,8 +194,7 @@ fn try_enqueue_returns_false_when_full_then_succeeds_after_drain() {
 
 #[test]
 fn subscriber_drains_messages_after_publisher_drop() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let opts = QueueOptions::with_path("e2e_pub_drop", dir.path(), 4096).expect("valid");
+    let (_dir, opts) = queue_options("e2e_pub_drop", 4096).expect("queue options");
     let mut publisher = Publisher::new(opts.clone()).expect("publisher");
     let mut subscriber = Subscriber::new(opts).expect("subscriber");
 
@@ -191,9 +215,7 @@ fn subscriber_drains_messages_after_publisher_drop() {
 #[cfg(unix)]
 #[test]
 fn keep_backing_file_when_destroy_on_dispose_false() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let opts =
-        QueueOptions::with_path_and_destroy("e2e_keep", dir.path(), 4096, false).expect("valid");
+    let (_dir, opts) = queue_options_with_destroy("e2e_keep", 4096, false).expect("queue options");
     let path = opts.file_path();
     let publisher = Publisher::new(opts).expect("publisher");
     assert!(path.exists());

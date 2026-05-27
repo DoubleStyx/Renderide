@@ -89,12 +89,30 @@ fn write_message_to_ring(ring: RingView, write_offset: i64, len: i64, message: &
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::Ordering;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use tempfile::TempDir;
 
     use super::*;
     use crate::options::QueueOptions;
     use crate::ring::available_space;
     use crate::subscriber::Subscriber;
+
+    /// Unique queue-name suffix for tests sharing the kernel semaphore namespace.
+    static QUEUE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    /// Builds isolated queue options backed by a temporary directory.
+    fn queue_options(prefix: &str, capacity: i64) -> Result<(TempDir, QueueOptions), String> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e}"))?;
+        let name = format!(
+            "{prefix}_{}_{}",
+            std::process::id(),
+            QUEUE_SEQ.fetch_add(1, Ordering::Relaxed)
+        );
+        let opts = QueueOptions::with_path(&name, dir.path(), capacity)
+            .map_err(|e| format!("queue options: {e}"))?;
+        Ok((dir, opts))
+    }
 
     #[test]
     fn publisher_is_send() {
@@ -105,57 +123,38 @@ mod tests {
 
     #[test]
     fn enqueue_empty_body_roundtrip() {
-        let dir =
-            std::env::temp_dir().join(format!("interprocess_pub_empty_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let opts = QueueOptions::with_path("pub_empty", &dir, 4096).expect("valid");
+        let (_dir, opts) = queue_options("pub_empty", 4096).expect("queue options");
         let mut publisher = Publisher::new(opts.clone()).expect("publisher");
         let mut subscriber = Subscriber::new(opts).expect("subscriber");
         assert!(publisher.try_enqueue(&[]));
         assert_eq!(subscriber.try_dequeue().as_deref(), Some([].as_slice()));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn enqueue_rejects_when_padded_exceeds_capacity() {
-        let dir =
-            std::env::temp_dir().join(format!("interprocess_pub_full_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
         let cap = 24i64;
-        let opts = QueueOptions::with_path("pub_full", &dir, cap).expect("valid");
+        let (_dir, opts) = queue_options("pub_full", cap).expect("queue options");
         let mut publisher = Publisher::new(opts.clone()).expect("publisher");
         let mut subscriber = Subscriber::new(opts).expect("subscriber");
         let big = vec![0u8; cap as usize];
         assert!(!publisher.try_enqueue(&big));
         assert!(subscriber.try_dequeue().is_none());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn multi_message_fifo_order() {
-        let dir =
-            std::env::temp_dir().join(format!("interprocess_pub_fifo_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let opts = QueueOptions::with_path("pub_fifo", &dir, 4096).expect("valid");
+        let (_dir, opts) = queue_options("pub_fifo", 4096).expect("queue options");
         let mut publisher = Publisher::new(opts.clone()).expect("publisher");
         let mut subscriber = Subscriber::new(opts).expect("subscriber");
         assert!(publisher.try_enqueue(b"a"));
         assert!(publisher.try_enqueue(b"bb"));
         assert_eq!(subscriber.try_dequeue().as_deref(), Some(b"a".as_slice()));
         assert_eq!(subscriber.try_dequeue().as_deref(), Some(b"bb".as_slice()));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn varied_body_lengths_roundtrip() {
-        let dir =
-            std::env::temp_dir().join(format!("interprocess_pub_lens_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let opts = QueueOptions::with_path("pub_lens", &dir, 4096).expect("valid");
+        let (_dir, opts) = queue_options("pub_lens", 4096).expect("queue options");
         let mut publisher = Publisher::new(opts.clone()).expect("publisher");
         let mut subscriber = Subscriber::new(opts).expect("subscriber");
         for payload in [
@@ -168,17 +167,12 @@ mod tests {
             assert!(publisher.try_enqueue(payload));
             assert_eq!(subscriber.try_dequeue().as_deref(), Some(payload));
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn try_enqueue_does_not_advance_when_insufficient_space() {
-        let dir =
-            std::env::temp_dir().join(format!("interprocess_pub_no_adv_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
         let cap = 24i64;
-        let opts = QueueOptions::with_path("pub_no_adv", &dir, cap).expect("valid");
+        let (_dir, opts) = queue_options("pub_no_adv", cap).expect("queue options");
         let mut publisher = Publisher::new(opts).expect("publisher");
         let w0 = publisher.res.header().write_offset.load(Ordering::SeqCst);
         let big = vec![0u8; cap as usize];
@@ -187,17 +181,12 @@ mod tests {
             publisher.res.header().write_offset.load(Ordering::SeqCst),
             w0
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn wrap_logical_offsets_multi_enqueue() {
-        let dir =
-            std::env::temp_dir().join(format!("interprocess_pub_wrap_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
         let cap = 64i64;
-        let opts = QueueOptions::with_path("pub_wrap", &dir, cap).expect("valid");
+        let (_dir, opts) = queue_options("pub_wrap", cap).expect("queue options");
         let mut publisher = Publisher::new(opts.clone()).expect("publisher");
         let mut subscriber = Subscriber::new(opts).expect("subscriber");
         for i in 0u32..20 {
@@ -208,7 +197,6 @@ mod tests {
                 Some(payload.as_bytes())
             );
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

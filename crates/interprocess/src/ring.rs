@@ -85,22 +85,9 @@ impl RingView {
         if len == 0 {
             return Vec::new();
         }
-        let (phys, first, second) = split_at_wrap(offset, self.capacity, len);
+        let segments = WrappedSegments::new(offset, self.capacity, len);
         let mut result = vec![0u8; len];
-        if first > 0 {
-            // SAFETY: `split_at_wrap` guarantees `phys + first <= capacity`; the ring region is
-            // live and readable for `capacity` bytes per the type invariant.
-            unsafe {
-                result[..first]
-                    .copy_from_slice(std::slice::from_raw_parts(self.ptr.add(phys), first));
-            }
-        }
-        if second > 0 {
-            // SAFETY: `split_at_wrap` guarantees `second <= capacity`; reads from the ring base.
-            unsafe {
-                result[first..].copy_from_slice(std::slice::from_raw_parts(self.ptr, second));
-            }
-        }
+        segments.copy_from_ring(self.ptr, &mut result);
         result
     }
 
@@ -109,22 +96,8 @@ impl RingView {
         if data.is_empty() {
             return;
         }
-        let len = data.len();
-        let (phys, first, second) = split_at_wrap(offset, self.capacity, len);
-        if first > 0 {
-            // SAFETY: `phys + first <= capacity`; `data[..first]` and the ring region do not alias
-            // (the ring is shared memory; `data` is caller-owned stack/heap). Single-writer wire
-            // protocol forbids concurrent writes to this slot.
-            unsafe {
-                std::ptr::copy_nonoverlapping(data.as_ptr(), self.ptr.add(phys), first);
-            }
-        }
-        if second > 0 {
-            // SAFETY: same invariants -- `second <= capacity`, distinct allocations.
-            unsafe {
-                std::ptr::copy_nonoverlapping(data.as_ptr().add(first), self.ptr, second);
-            }
-        }
+        let segments = WrappedSegments::new(offset, self.capacity, data.len());
+        segments.copy_to_ring(self.ptr, data);
     }
 
     /// Zero-fills `len` bytes at logical `offset`, wrapping at `capacity`.
@@ -132,30 +105,94 @@ impl RingView {
         if len == 0 {
             return;
         }
-        let (phys, first, second) = split_at_wrap(offset, self.capacity, len);
-        if first > 0 {
-            // SAFETY: `phys + first <= capacity`; single-writer protocol guards the slot.
-            unsafe {
-                std::ptr::write_bytes(self.ptr.add(phys), 0, first);
-            }
-        }
-        if second > 0 {
-            // SAFETY: `second <= capacity`.
-            unsafe {
-                std::ptr::write_bytes(self.ptr, 0, second);
-            }
-        }
+        let segments = WrappedSegments::new(offset, self.capacity, len);
+        segments.clear_ring(self.ptr);
     }
 }
 
-/// Returns `(physical_start, first_segment_len, second_segment_len)` for `len` bytes at logical `offset`.
-fn split_at_wrap(offset: i64, capacity: i64, len: usize) -> (usize, usize, usize) {
-    debug_assert!(capacity > 0, "capacity must be positive");
-    let cap = capacity as usize;
-    let phys = (offset.rem_euclid(capacity)) as usize;
-    let first = (cap - phys).min(len);
-    let second = len - first;
-    (phys, first, second)
+/// One or two physical byte spans for a logical ring range.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+struct WrappedSegments {
+    /// Physical offset of the first span.
+    phys: usize,
+    /// Length of the span beginning at [`Self::phys`].
+    first: usize,
+    /// Length of the wrapped span beginning at the ring base.
+    second: usize,
+}
+
+impl WrappedSegments {
+    /// Builds wrapped physical spans for `len` bytes at logical `offset`.
+    fn new(offset: i64, capacity: i64, len: usize) -> Self {
+        debug_assert!(capacity > 0, "capacity must be positive");
+        let cap = capacity as usize;
+        let phys = (offset.rem_euclid(capacity)) as usize;
+        let first = (cap - phys).min(len);
+        let second = len - first;
+        Self {
+            phys,
+            first,
+            second,
+        }
+    }
+
+    /// Copies the described bytes from `ring_ptr` into `out`.
+    fn copy_from_ring(self, ring_ptr: *mut u8, out: &mut [u8]) {
+        if self.first > 0 {
+            // SAFETY: `new` guarantees `phys + first <= capacity`; the ring region is live and
+            // readable for `capacity` bytes per the `RingView` type invariant.
+            unsafe {
+                out[..self.first].copy_from_slice(std::slice::from_raw_parts(
+                    ring_ptr.add(self.phys),
+                    self.first,
+                ));
+            }
+        }
+        if self.second > 0 {
+            // SAFETY: `new` guarantees the wrapped segment begins at the ring base and fits the
+            // caller-constrained logical range.
+            unsafe {
+                out[self.first..]
+                    .copy_from_slice(std::slice::from_raw_parts(ring_ptr, self.second));
+            }
+        }
+    }
+
+    /// Copies `data` into the described bytes at `ring_ptr`.
+    fn copy_to_ring(self, ring_ptr: *mut u8, data: &[u8]) {
+        if self.first > 0 {
+            // SAFETY: `new` guarantees `phys + first <= capacity`; `data[..first]` and the ring
+            // region do not alias. The single-writer wire protocol guards writes to this slot.
+            unsafe {
+                std::ptr::copy_nonoverlapping(data.as_ptr(), ring_ptr.add(self.phys), self.first);
+            }
+        }
+        if self.second > 0 {
+            // SAFETY: `new` guarantees the wrapped segment starts at the ring base; source and
+            // destination are distinct allocations under the queue wire protocol.
+            unsafe {
+                std::ptr::copy_nonoverlapping(data.as_ptr().add(self.first), ring_ptr, self.second);
+            }
+        }
+    }
+
+    /// Zero-fills the described bytes at `ring_ptr`.
+    fn clear_ring(self, ring_ptr: *mut u8) {
+        if self.first > 0 {
+            // SAFETY: `new` guarantees `phys + first <= capacity`; the slot is guarded by the
+            // single-reader consumption protocol.
+            unsafe {
+                std::ptr::write_bytes(ring_ptr.add(self.phys), 0, self.first);
+            }
+        }
+        if self.second > 0 {
+            // SAFETY: `new` guarantees the wrapped segment starts at the ring base and fits the
+            // caller-constrained logical range.
+            unsafe {
+                std::ptr::write_bytes(ring_ptr, 0, self.second);
+            }
+        }
+    }
 }
 
 /// Returns free bytes in the ring for a new message, or `0` when full.
@@ -200,27 +237,48 @@ mod tests {
 
     #[test]
     fn split_no_wrap() {
-        let (p, a, b) = split_at_wrap(2, 10, 3);
-        assert_eq!((p, a, b), (2, 3, 0));
+        let segments = WrappedSegments::new(2, 10, 3);
+        assert_eq!(
+            segments,
+            WrappedSegments {
+                phys: 2,
+                first: 3,
+                second: 0,
+            }
+        );
     }
 
     #[test]
     fn split_exact_end_then_wrap() {
-        let (p, a, b) = split_at_wrap(8, 10, 4);
-        assert_eq!((p, a, b), (8, 2, 2));
+        let segments = WrappedSegments::new(8, 10, 4);
+        assert_eq!(
+            segments,
+            WrappedSegments {
+                phys: 8,
+                first: 2,
+                second: 2,
+            }
+        );
     }
 
     #[test]
     fn split_full_second_segment() {
-        let (p, a, b) = split_at_wrap(0, 6, 6);
-        assert_eq!((p, a, b), (0, 6, 0));
+        let segments = WrappedSegments::new(0, 6, 6);
+        assert_eq!(
+            segments,
+            WrappedSegments {
+                phys: 0,
+                first: 6,
+                second: 0,
+            }
+        );
     }
 
     #[test]
     fn split_negative_logical_offset() {
-        let (p, a, b) = split_at_wrap(-2, 5, 4);
-        assert_eq!(p, 3);
-        assert_eq!(a + b, 4);
+        let segments = WrappedSegments::new(-2, 5, 4);
+        assert_eq!(segments.phys, 3);
+        assert_eq!(segments.first + segments.second, 4);
     }
 
     #[test]
