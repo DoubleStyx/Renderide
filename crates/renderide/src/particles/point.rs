@@ -312,7 +312,7 @@ fn particle_frame_uv(corner: Vec2, frame_index: Option<u16>, frame_grid_size: gl
     let frame_count = columns.saturating_mul(rows).max(1);
     let frame = u32::from(frame_index).min(frame_count - 1);
     let column = frame % columns;
-    let row = frame / columns;
+    let row = rows - 1 - frame / columns;
     Vec2::new(
         (column as f32 + corner.x) / columns as f32,
         (row as f32 + corner.y) / rows as f32,

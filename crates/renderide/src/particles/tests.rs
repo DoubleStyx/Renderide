@@ -136,6 +136,42 @@ fn billboard_fill_writes_stable_point_indices() {
 }
 
 #[test]
+fn billboard_frame_uvs_advance_top_to_bottom() {
+    let points: Vec<_> = (0u16..4)
+        .map(|frame_index| PointParticle {
+            position: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+            size: Vec3::ONE,
+            color: Vec4::ONE,
+            frame_index: Some(frame_index),
+        })
+        .collect();
+    let mut vertices =
+        vec![0u8; points.len() * BILLBOARD_VERTICES_PER_POINT * generated_vertex_stride()];
+    let mut indices = vec![0u8; points.len() * BILLBOARD_INDICES_PER_POINT * size_of::<u32>()];
+
+    fill_billboard_buffers(&points, glam::IVec2::new(2, 2), &mut vertices, &mut indices);
+
+    let uv = |point_index: usize, corner_index: usize| {
+        let vertex_stride = generated_vertex_stride();
+        let vertex_start =
+            (point_index * BILLBOARD_VERTICES_PER_POINT + corner_index) * vertex_stride;
+        let vertex: &[f32] =
+            bytemuck::cast_slice(&vertices[vertex_start..vertex_start + vertex_stride]);
+        [vertex[6], vertex[7]]
+    };
+
+    assert_eq!(uv(0, 0), [0.0, 0.5]);
+    assert_eq!(uv(0, 3), [0.5, 1.0]);
+    assert_eq!(uv(1, 0), [0.5, 0.5]);
+    assert_eq!(uv(1, 3), [1.0, 1.0]);
+    assert_eq!(uv(2, 0), [0.0, 0.0]);
+    assert_eq!(uv(2, 3), [0.5, 0.5]);
+    assert_eq!(uv(3, 0), [0.5, 0.0]);
+    assert_eq!(uv(3, 3), [1.0, 0.5]);
+}
+
+#[test]
 fn trail_decode_precomputes_distances() {
     let trails_offset = 0;
     let positions_offset = trails_offset + TRAIL_OFFSET_BYTES as i32;
