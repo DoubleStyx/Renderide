@@ -36,10 +36,6 @@ pub(super) struct WindowsMapping {
     queue_name: String,
 }
 
-#[expect(
-    clippy::non_send_fields_in_send_ty,
-    reason = "Win32 mapping handles and view addresses are OS resources without thread affinity"
-)]
 // SAFETY: `WindowsMapping` owns a Win32 mapping handle and one mapped view. Both can be moved to
 // another thread and closed or unmapped there; the wrapper does not expose Rust references tied to
 // the creating thread. Queue data synchronization is handled by the shared-memory wire protocol.
