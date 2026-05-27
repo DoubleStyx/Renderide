@@ -36,6 +36,20 @@ pub(super) struct WindowsMapping {
     queue_name: String,
 }
 
+#[expect(
+    clippy::non_send_fields_in_send_ty,
+    reason = "Win32 mapping handles and view addresses are OS resources without thread affinity"
+)]
+// SAFETY: `WindowsMapping` owns a Win32 mapping handle and one mapped view. Both can be moved to
+// another thread and closed or unmapped there; the wrapper does not expose Rust references tied to
+// the creating thread. Queue data synchronization is handled by the shared-memory wire protocol.
+unsafe impl Send for WindowsMapping {}
+
+// SAFETY: shared access only exposes the stable view pointer, length, and backing metadata. Reads
+// and writes through the mapping are synchronized by the queue header atomics and slot protocol,
+// matching the same contract used by `RingView`.
+unsafe impl Sync for WindowsMapping {}
+
 impl WindowsMapping {
     /// Returns the start of the mapped section.
     pub(super) fn as_ptr(&self) -> *const u8 {

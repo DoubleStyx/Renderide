@@ -50,7 +50,7 @@ impl FrameStartPerformanceState {
         self.fps_window.record_tick(now);
     }
 
-    /// Stores the most recently completed GPU submit-to-idle interval.
+    /// Stores the most recently completed whole-frame GPU interval.
     pub(crate) fn set_last_render_time_seconds(&mut self, render_time_seconds: Option<f32>) {
         self.last_render_time_seconds = render_time_seconds.unwrap_or(RENDER_TIME_UNAVAILABLE);
     }

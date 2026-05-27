@@ -70,7 +70,7 @@ fn environment_tint(s: xb::SurfaceData, view_dir: vec3<f32>, world_pos: vec3<f32
 const SPECCUBE_LOD_STEPS: f32 = 6.0;
 
 /// Resolves a single frame light into a `LightSample` (direction toward the light,
-/// linear radiance, attenuation, directional flag).
+/// linear radiance, boosted energy attenuation, unboosted style visibility, directional flag).
 fn sample_light(light: ft::GpuLight, world_pos: vec3<f32>) -> xb::LightSample {
     if (light.light_type == 1u) {
         let dir_len_sq = dot(light.direction.xyz, light.direction.xyz);
@@ -78,6 +78,7 @@ fn sample_light(light: ft::GpuLight, world_pos: vec3<f32>) -> xb::LightSample {
             select(vec3<f32>(0.0, 0.0, 1.0), normalize(-light.direction.xyz), dir_len_sq > 1e-16),
             bl::light_radiance(light),
             bl::direct_light_scale(),
+            1.0,
             true,
         );
     }
@@ -85,20 +86,29 @@ fn sample_light(light: ft::GpuLight, world_pos: vec3<f32>) -> xb::LightSample {
     let to_light = light.position.xyz - world_pos;
     let dist = length(to_light);
     let l = xb::safe_normalize(to_light, vec3<f32>(0.0, 1.0, 0.0));
-    var attenuation = brdf::distance_attenuation(dist, light.range);
+    var visibility = bl::distance_visibility(dist, light.range);
     if (light.light_type == 2u) {
-        attenuation = attenuation * bl::spot_angle_attenuation(light, l);
+        visibility = visibility * bl::spot_angle_attenuation(light, l);
     }
-    attenuation = attenuation * cookies::multiplier(light, world_pos);
-    return xb::LightSample(l, bl::light_radiance(light), attenuation, false);
+    visibility = visibility * cookies::multiplier(light, world_pos);
+    let attenuation = visibility * bl::direct_light_scale();
+    return xb::LightSample(l, bl::light_radiance(light), attenuation, visibility, false);
+}
+
+/// Received-shadow visibility used to place the toon ramp on the half-Lambert axis.
+fn ramp_visibility(light: xb::LightSample) -> f32 {
+    if (!light.is_directional) {
+        return 1.0;
+    }
+    let visibility = clamp(light.visibility, 0.0, 1.0);
+    return mix(visibility, round(visibility), clamp(xb::mat._ShadowSharpness, 0.0, 1.0));
 }
 
 /// Toon ramp lookup. The half-Lambert remap (`NdotL * 0.5 + 0.5`) maps to the U axis;
-/// the ramp-mask sample maps to the V axis. `_ShadowSharpness` sharpens the attenuation before it
-/// multiplies half-Lambert.
-fn ramp_for_ndl(ndl: f32, attenuation: f32, ramp_mask: f32) -> vec3<f32> {
-    let att_sharp = mix(attenuation, round(attenuation), clamp(xb::mat._ShadowSharpness, 0.0, 1.0));
-    let x = clamp((ndl * 0.5 + 0.5) * att_sharp, 0.0, 1.0);
+/// the ramp-mask sample maps to the V axis. `_ShadowSharpness` only sharpens received directional
+/// shadow visibility; local distance and spot falloff affect light energy, not ramp placement.
+fn ramp_for_ndl(ndl: f32, light: xb::LightSample, ramp_mask: f32) -> vec3<f32> {
+    let x = clamp((ndl * 0.5 + 0.5) * ramp_visibility(light), 0.0, 1.0);
     return textureSample(xb::_Ramp, xb::_Ramp_sampler, vec2<f32>(x, clamp(ramp_mask, 0.0, 1.0))).rgb;
 }
 
@@ -248,7 +258,7 @@ fn rim_light(
     rim = smoothstep(xb::mat._RimRange - sharp, xb::mat._RimRange + sharp, rim);
 
     var col = rim * xb::mat._RimIntensity * (light.color + ambient);
-    col = col * mix(vec3<f32>(1.0), vec3<f32>(light.attenuation) + ambient, clamp(xb::mat._RimAttenEffect, 0.0, 1.0));
+    col = col * mix(vec3<f32>(1.0), vec3<f32>(light.visibility) + ambient, clamp(xb::mat._RimAttenEffect, 0.0, 1.0));
     col = col * xb::mat._RimColor.rgb;
     col = col * mix(vec3<f32>(1.0), s.diffuse_color, clamp(xb::mat._RimAlbedoTint, 0.0, 1.0));
     col = col * mix(vec3<f32>(1.0), env_map, clamp(xb::mat._RimCubemapTint, 0.0, 1.0));
@@ -273,10 +283,11 @@ fn shadow_rim(
 }
 
 /// Stylized subsurface scattering behavior, including the all-zero `_SSColor`
-/// early-out, distortion-by-normal half-vector, `VdotH^_SSPower` intensity, and `_SSColor *
-/// (VdotH + indirectDiffuse) * attenuation * _SSScale * thickness * lightCol * albedo`
-/// final tint. When the `THICKNESS_MAP` keyword is off, `s.thickness` defaults to `1.0`
-/// in `surface::sample_surface_for_layout` so the math is identical to the gated material path.
+/// early-out, distortion-by-normal half-vector, `VdotH^_SSPower` intensity, half-Lambert
+/// visibility, and `_SSColor * (VdotH + indirectDiffuse) * visibility * _SSScale *
+/// thickness * lightCol * albedo` final tint. When the `THICKNESS_MAP` keyword is off,
+/// `s.thickness` defaults to `1.0` in `surface::sample_surface_for_layout` so the math is
+/// identical to the gated material path.
 fn subsurface(
     s: xb::SurfaceData,
     light: xb::LightSample,
@@ -287,17 +298,15 @@ fn subsurface(
         return vec3<f32>(0.0);
     }
 
-    let raw_ndl = dot(s.normal, light.direction);
-    let ndl = xb::saturate(raw_ndl);
-    if (ndl <= 1e-4 || light.attenuation <= 1e-4) {
+    let visibility = xb::saturate(light.visibility * (dot(s.normal, light.direction) * 0.5 + 0.5));
+    if (visibility <= 1e-4) {
         return vec3<f32>(0.0);
     }
 
-    let attenuation = xb::saturate(light.attenuation * (raw_ndl * 0.5 + 0.5));
     let h = xb::safe_normalize(light.direction + s.normal * xb::mat._SSDistortion, s.normal);
     let vdh = pow(xb::saturate(dot(view_dir, -h)), max(xb::mat._SSPower, 0.001));
-    let scatter = xb::mat._SSColor.rgb * (vdh + ambient) * attenuation * xb::mat._SSScale * s.thickness;
-    return max(vec3<f32>(0.0), light.color * scatter * s.albedo.rgb) * ndl * light.attenuation;
+    let scatter = xb::mat._SSColor.rgb * (vdh + ambient) * visibility * xb::mat._SSScale * s.thickness;
+    return max(vec3<f32>(0.0), light.color * scatter * s.albedo.rgb);
 }
 
 /// View-space matcap UV. Projects `n` onto the camera's right and up basis vectors and remaps to
@@ -447,7 +456,7 @@ fn clustered_toon_lighting_for_layout(
     var direct_spec = vec3<f32>(0.0);
     var sss = vec3<f32>(0.0);
 
-    var dominant_light = xb::LightSample(vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(0.0), 0.0, true);
+    var dominant_light = xb::LightSample(vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(0.0), 0.0, 0.0, true);
     var dominant_light_col_atten = vec3<f32>(0.0);
     var dominant_ramp = vec3<f32>(0.0);
     var dominant_weight = -1.0;
@@ -464,12 +473,12 @@ fn clustered_toon_lighting_for_layout(
         }
 
         let ndl = dot(s.normal, light.direction);
-        let ramp = ramp_for_ndl(ndl, light.attenuation, s.ramp_mask);
+        let ramp = ramp_for_ndl(ndl, light, s.ramp_mask);
         let light_col_atten = light.color * light.attenuation;
         // Rough diffuse times the boosted `light.attenuation` times the toon ramp, wrapped by the
         // PBS direct diffuse Fresnel-transmission envelope. The toon ramp is the 3-channel
-        // stylized replacement for `NdL` and bakes
-        // attenuation into its `U` axis to compress the curve for distant punctual lights.
+        // stylized replacement for `NdL`; local distance and spot falloff remain in the light
+        // energy term so they do not move the authored ramp bands across the mesh.
         // `s.albedo` is already metallic-discounted in `surface::sample_surface_for_layout`.
         let diffuse_transmission = direct_diffuse_fresnel_transmission(
             s.normal,

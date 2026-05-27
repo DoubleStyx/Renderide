@@ -279,12 +279,12 @@ impl GpuContext {
         ft.record_main_thread_cpu_end(cpu_end);
     }
 
-    /// Most recently completed GPU frame ms in **seconds**, for the IPC
+    /// Most recently completed whole-frame GPU time in **seconds**, for the IPC
     /// [`crate::shared::PerformanceState::render_time`] field consumed by
     /// `FrooxEngine.PerformanceMetrics.RenderTime`.
     ///
-    /// Returns [`None`] until the first [`wgpu::Queue::on_submitted_work_done`] callback has run;
-    /// callers that need the host-visible "unavailable" sentinel should map [`None`] to `-1.0`.
+    /// Returns [`None`] until every tracked submit in at least one frame has completed; callers
+    /// that need the host-visible "unavailable" sentinel should map [`None`] to `-1.0`.
     pub fn last_completed_gpu_render_time_seconds(&self) -> Option<f32> {
         let ft = self
             .submission

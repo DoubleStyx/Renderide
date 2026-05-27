@@ -9,7 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 bytemuck = { version = "1.25", features = ["derive"] }
-glam = { version = "0.32", features = ["bytemuck"] }
+glam = { version = "0.33", features = ["bytemuck"] }
 hashbrown = "0.17"
 interprocess = { path = "../interprocess" }
 logger = { path = "../logger" }

@@ -71,14 +71,19 @@ fn range_fade(t: f32) -> f32 {
 /// `1 / (1 + 25*t^2)` with `t = dist/range` approximates the Built-in RP attenuation LUT while
 /// keeping the light's peak brightness independent of range. The quartic range window prevents
 /// clustered lights from leaking past their declared range.
-fn distance_attenuation(dist: f32, range: f32) -> f32 {
+fn distance_visibility(dist: f32, range: f32) -> f32 {
     if (range <= 0.0) {
         return 0.0;
     }
     let t = dist / range;
     let t2 = t * t;
     let lut = 1.0 / (1.0 + BIRP_ATTENUATION_QUADRATIC * t2);
-    return lut * range_fade(t) * INTENSITY_BOOST;
+    return lut * range_fade(t);
+}
+
+/// Unity BiRP-style distance attenuation with Renderide's scene-brightness boost applied.
+fn distance_attenuation(dist: f32, range: f32) -> f32 {
+    return distance_visibility(dist, range) * INTENSITY_BOOST;
 }
 
 fn normalized_spot_direction(direction: vec3<f32>) -> vec3<f32> {
