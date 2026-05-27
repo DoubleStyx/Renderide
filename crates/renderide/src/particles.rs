@@ -649,7 +649,7 @@ fn fill_billboard_particle(
     indices: &mut [u8],
 ) {
     let (_, _, roll) = point.rotation.to_euler(glam::EulerRot::XYZ);
-    let point_data = Vec3::new(point.size.x, point.size.y, roll);
+    let point_data = Vec3::new(point.size.x * 0.5, point.size.y * 0.5, roll);
     for (corner_index, corner) in [
         Vec2::new(0.0, 0.0),
         Vec2::new(1.0, 0.0),
