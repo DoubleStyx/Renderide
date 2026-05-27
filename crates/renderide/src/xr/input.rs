@@ -3,6 +3,7 @@
 mod bindings;
 mod frame;
 mod hand_synth;
+mod hand_tracking;
 mod haptics;
 mod manifest;
 mod openxr_actions;

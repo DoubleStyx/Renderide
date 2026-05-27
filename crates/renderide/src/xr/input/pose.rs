@@ -1,6 +1,6 @@
 //! Controller palm pose math and OpenXR [`openxr::SpaceLocation`] conversion.
 
-use glam::{EulerRot, Quat, Vec3};
+use glam::{Quat, Vec3};
 use openxr as xr;
 
 use crate::shared::Chirality;
@@ -33,6 +33,31 @@ pub(super) fn pose_from_location(location: &xr::SpaceLocation) -> Option<(Vec3, 
     })
 }
 
+/// Converts an [`xr::HandJointLocation`] into OpenXR tracking-space `(position, rotation)`.
+///
+/// Returns `None` when either position or orientation is invalid.
+pub(super) fn pose_from_joint(location: &xr::HandJointLocation) -> Option<(Vec3, Quat)> {
+    let tracked = location
+        .location_flags
+        .contains(xr::SpaceLocationFlags::ORIENTATION_VALID)
+        && location
+            .location_flags
+            .contains(xr::SpaceLocationFlags::POSITION_VALID);
+    tracked.then(|| {
+        let pose = &location.pose;
+        let position = Vec3::new(pose.position.x, pose.position.y, pose.position.z);
+        let orientation = pose.orientation;
+        let rotation = Quat::from_xyzw(orientation.x, orientation.y, orientation.z, orientation.w);
+        let len_sq = rotation.length_squared();
+        let rotation = if len_sq.is_finite() && len_sq >= 1e-10 {
+            rotation.normalize()
+        } else {
+            Quat::IDENTITY
+        };
+        (position, rotation)
+    })
+}
+
 /// Default `hand_position` / `hand_rotation` IPC offsets for bound-hand tracking.
 ///
 /// These offsets are paired with the palm-pose controller frame emitted by
@@ -40,22 +65,12 @@ pub(super) fn pose_from_location(location: &xr::SpaceLocation) -> Option<(Vec3, 
 pub(super) fn hand_pose_defaults(side: Chirality) -> (Vec3, Quat) {
     match side {
         Chirality::Left => (
-            Vec3::new(0.0, 0.01, -0.08),
-            Quat::from_euler(
-                EulerRot::XYZ,
-                11.5f32.to_radians(),
-                0.5f32.to_radians(),
-                93.7f32.to_radians(),
-            ),
+            Vec3::new(-0.016_561_74, 0.017_465_11, -0.060_415_43),
+            Quat::from_xyzw(0.034_154_01, -0.036_695_68, 0.659_639_54, 0.749_908_4),
         ),
         Chirality::Right => (
-            Vec3::new(0.0, 0.01, -0.08),
-            Quat::from_euler(
-                EulerRot::XYZ,
-                11.5f32.to_radians(),
-                0.5f32.to_radians(),
-                -93.7f32.to_radians(),
-            ),
+            Vec3::new(0.016_549_01, 0.017_472_06, -0.060_390_15),
+            Quat::from_xyzw(-0.034_164_81, -0.036_687_03, 0.659_629_6, -0.749_917_1),
         ),
     }
 }
