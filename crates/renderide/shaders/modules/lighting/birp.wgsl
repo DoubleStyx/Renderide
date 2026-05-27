@@ -7,6 +7,13 @@
 /// Quadratic coefficient used by Unity BiRP's normalized punctual-light attenuation LUT.
 const BIRP_ATTENUATION_QUADRATIC: f32 = 25.0;
 
+/// Slight devation from 1.0 for Renderite falloff curve: 1-(1/9)^2
+/// May be due to dithering?
+const BIRP_ALMOST_ONE: f32 = 0.98765432;
+
+/// Falloff foot term for Renderite authored content: (5/3)^2 or 25/9 where 25 is probably BIRP_ATTENUATION_QUADRATIC
+const BIRP_FRACTION: f32 = 2.7777778;
+
 /// Direct-light multiplier used to match BiRP-authored scene brightness.
 const INTENSITY_BOOST: f32 = 3.1415927;
 
@@ -71,7 +78,7 @@ fn range_fade(t: f32) -> f32 {
 /// `1 / (1 + 25*t^2)` with `t = dist/range` approximates the Built-in RP attenuation LUT while
 /// keeping the light's peak brightness independent of range. The quartic range window prevents
 /// clustered lights from leaking past their declared range.
-fn distance_visibility(dist: f32, range: f32) -> f32 {
+fn _distance_visibility(dist: f32, range: f32) -> f32 {
     if (range <= 0.0) {
         return 0.0;
     }
@@ -79,6 +86,20 @@ fn distance_visibility(dist: f32, range: f32) -> f32 {
     let t2 = t * t;
     let lut = 1.0 / (1.0 + BIRP_ATTENUATION_QUADRATIC * t2);
     return lut * range_fade(t);
+}
+
+/// Near exact curve for Renderite-authored content.
+fn distance_visibility(dist: f32, range: f32) -> f32 {
+    if (range <= 0.0) {
+        return 0.0;
+    }
+    let t = dist / range;
+    let t2 = t * t;
+    let lut = 1.0 / (BIRP_ALMOST_ONE + BIRP_ATTENUATION_QUADRATIC * t2);
+    if (t >= 0.8) {
+        return lut * BIRP_FRACTION * max(1.0-t2, 0.0);
+    }
+    return lut;
 }
 
 /// Unity BiRP-style distance attenuation with Renderide's scene-brightness boost applied.
