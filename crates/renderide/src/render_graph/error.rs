@@ -273,6 +273,17 @@ pub enum GraphExecuteError {
         /// Slot that was missing.
         slot: &'static str,
     },
+
+    /// A pass accessed a blackboard slot without declaring the access during setup.
+    #[error("pass `{pass}` performed undeclared blackboard {access} access to slot `{slot}`")]
+    UndeclaredBlackboardAccess {
+        /// Pass name.
+        pass: String,
+        /// Slot that was accessed.
+        slot: &'static str,
+        /// Access kind observed at runtime.
+        access: &'static str,
+    },
 }
 
 impl GraphExecuteError {

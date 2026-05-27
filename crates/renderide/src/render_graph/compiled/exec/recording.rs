@@ -5,7 +5,9 @@ mod frame_global;
 mod materialization;
 mod per_view;
 
-use super::super::super::blackboard::{Blackboard, GraphCommandStats, GraphCommandStatsSlot};
+use super::super::super::blackboard::{
+    Blackboard, BlackboardRuntimeAccessViolation, GraphCommandStats, GraphCommandStatsSlot,
+};
 use super::super::super::context::{
     ComputePassCtx, EncoderPassCtx, GraphResolvedResources, RasterPassCtx,
 };
@@ -18,10 +20,13 @@ use super::super::helpers;
 use super::super::{CompiledRenderGraph, ResolvedView};
 
 fn update_command_stats(blackboard: &mut Blackboard, update: impl FnOnce(&mut GraphCommandStats)) {
-    if blackboard.get::<GraphCommandStatsSlot>().is_none() {
-        blackboard.insert::<GraphCommandStatsSlot>(GraphCommandStats::default());
+    if blackboard
+        .get_untracked::<GraphCommandStatsSlot>()
+        .is_none()
+    {
+        blackboard.insert_untracked::<GraphCommandStatsSlot>(GraphCommandStats::default());
     }
-    if let Some(stats) = blackboard.get_mut::<GraphCommandStatsSlot>() {
+    if let Some(stats) = blackboard.get_mut_untracked::<GraphCommandStatsSlot>() {
         update(stats);
     }
 }
@@ -66,60 +71,115 @@ impl CompiledRenderGraph {
         let _pass_label = pass.profiling_label();
         profiling::scope!("graph::execute_pass_node", _pass_label.as_ref());
         self.validate_blackboard_inputs(pass_idx, pass.name(), blackboard)?;
-        match pass.kind() {
-            PassKind::Raster => {
-                profiling::scope!("graph::record_raster");
-                let template = helpers::pass_info_raster_template(&self.pass_info, pass_idx)?;
-                let mut ctx = RasterPassCtx {
-                    device,
-                    pass_frame: frame_params,
-                    uploads,
-                    graph_resources,
-                    blackboard,
-                    profiler,
-                };
-                helpers::execute_graph_raster_pass_node(
-                    pass,
-                    &template,
-                    graph_resources,
-                    encoder,
-                    &mut ctx,
-                )?;
-            }
-            PassKind::Compute => {
-                profiling::scope!("graph::record_compute");
-                let ctx = {
-                    profiling::scope!("graph::record_compute::build_context");
-                    ComputePassCtx {
+        self.begin_blackboard_access_validation(pass_idx, pass.name(), blackboard);
+        let record_result = (|| -> Result<(), GraphExecuteError> {
+            match pass.kind() {
+                PassKind::Raster => {
+                    profiling::scope!("graph::record_raster");
+                    let template = helpers::pass_info_raster_template(&self.pass_info, pass_idx)?;
+                    let mut ctx = RasterPassCtx {
                         device,
-                        gpu_limits,
-                        encoder,
-                        depth_view: Some(resolved.depth_view),
                         pass_frame: frame_params,
                         uploads,
                         graph_resources,
                         blackboard,
                         profiler,
-                    }
-                };
-                record_compute_pass(pass, ctx)?;
-            }
-            PassKind::Encoder => {
-                profiling::scope!("graph::record_encoder");
-                let ctx = {
-                    profiling::scope!("graph::record_encoder::build_context");
-                    EncoderPassCtx {
-                        device,
-                        encoder,
-                        pass_frame: frame_params,
-                        uploads,
+                    };
+                    helpers::execute_graph_raster_pass_node(
+                        pass,
+                        &template,
                         graph_resources,
-                        blackboard,
-                        profiler,
-                    }
-                };
-                record_encoder_pass(pass, ctx)?;
+                        encoder,
+                        &mut ctx,
+                    )
+                }
+                PassKind::Compute => {
+                    profiling::scope!("graph::record_compute");
+                    let ctx = {
+                        profiling::scope!("graph::record_compute::build_context");
+                        ComputePassCtx {
+                            device,
+                            gpu_limits,
+                            encoder,
+                            depth_view: Some(resolved.depth_view),
+                            pass_frame: frame_params,
+                            uploads,
+                            graph_resources,
+                            blackboard,
+                            profiler,
+                        }
+                    };
+                    record_compute_pass(pass, ctx)
+                }
+                PassKind::Encoder => {
+                    profiling::scope!("graph::record_encoder");
+                    let ctx = {
+                        profiling::scope!("graph::record_encoder::build_context");
+                        EncoderPassCtx {
+                            device,
+                            encoder,
+                            pass_frame: frame_params,
+                            uploads,
+                            graph_resources,
+                            blackboard,
+                            profiler,
+                        }
+                    };
+                    record_encoder_pass(pass, ctx)
+                }
             }
+        })();
+        let access_result = self.finish_blackboard_access_validation(blackboard);
+        record_result?;
+        access_result
+    }
+
+    /// Starts runtime blackboard access validation for one pass when validation is enabled.
+    pub(super) fn begin_blackboard_access_validation(
+        &self,
+        pass_idx: usize,
+        pass_name: &str,
+        blackboard: &Blackboard,
+    ) {
+        if !self.validation_mode.enabled() {
+            return;
+        }
+        let Some(info) = self.pass_info.get(pass_idx) else {
+            return;
+        };
+        blackboard.begin_access_validation(pass_name, &info.blackboard_accesses);
+    }
+
+    /// Completes runtime blackboard access validation for one pass.
+    pub(super) fn finish_blackboard_access_validation(
+        &self,
+        blackboard: &Blackboard,
+    ) -> Result<(), GraphExecuteError> {
+        if !self.validation_mode.enabled() {
+            return Ok(());
+        }
+        let violations = blackboard.finish_access_validation();
+        self.report_blackboard_access_violations(&violations)
+    }
+
+    fn report_blackboard_access_violations(
+        &self,
+        violations: &[BlackboardRuntimeAccessViolation],
+    ) -> Result<(), GraphExecuteError> {
+        for violation in violations {
+            if self.validation_mode.is_strict() {
+                return Err(GraphExecuteError::UndeclaredBlackboardAccess {
+                    pass: violation.pass.clone(),
+                    slot: violation.slot,
+                    access: violation.access.label(),
+                });
+            }
+            logger::warn!(
+                "render graph validation: pass `{}` performed undeclared blackboard {} access to slot `{}`",
+                violation.pass,
+                violation.access.label(),
+                violation.slot
+            );
         }
         Ok(())
     }

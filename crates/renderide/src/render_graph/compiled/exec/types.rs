@@ -27,8 +27,8 @@ pub(super) struct GraphResolveKey {
 
 /// CPU-side outputs collected while recording one per-view command buffer.
 pub(super) struct PerViewEncodeOutput {
-    /// Encoded GPU work for the view.
-    pub(super) command_buffer: wgpu::CommandBuffer,
+    /// Encoded GPU work for the view, in deterministic submit order.
+    pub(super) command_buffers: Vec<wgpu::CommandBuffer>,
     /// Deferred HUD payload merged on the main thread after recording.
     pub(super) hud_outputs: Option<PerViewHudOutputs>,
     /// CPU time spent before this view's encoder finish.
@@ -45,8 +45,8 @@ pub(super) struct PerViewRecordOutput {
     pub(super) view_id: ViewId,
     /// Host camera snapshot paired with the view.
     pub(super) host_camera: HostCameraFrame,
-    /// Encoded GPU work for the view.
-    pub(super) command_buffer: wgpu::CommandBuffer,
+    /// Encoded GPU work for the view, in deterministic submit order.
+    pub(super) command_buffers: Vec<wgpu::CommandBuffer>,
     /// Deferred HUD payload merged on the main thread after recording.
     pub(super) hud_outputs: Option<PerViewHudOutputs>,
     /// CPU time spent before this view's encoder finish.

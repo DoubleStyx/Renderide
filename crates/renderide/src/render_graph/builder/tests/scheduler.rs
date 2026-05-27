@@ -1,10 +1,38 @@
 //! Scheduler v1 metadata, wave, upload, final-access, and merge-planning tests.
 
 use super::common::*;
+use crate::render_graph::blackboard::BlackboardSlot;
 use crate::render_graph::schedule::{
-    ImportedFinalAccess, ImportedScheduleResource, ResourceScheduleEventKind,
-    ScheduleSubmitStepKind, ScheduledResource,
+    ImportedFinalAccess, ImportedScheduleResource, RecordingBatchKind, RecordingSerialReason,
+    ResourceScheduleEventKind, ScheduleSubmitStepKind, ScheduledResource,
 };
+
+struct SchedulerBlackboardSlot;
+
+impl BlackboardSlot for SchedulerBlackboardSlot {
+    type Value = u32;
+}
+
+struct BlackboardWriterPass {
+    name: &'static str,
+}
+
+impl ComputePass for BlackboardWriterPass {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
+        b.compute();
+        b.cull_exempt();
+        b.write_blackboard::<SchedulerBlackboardSlot>();
+        Ok(())
+    }
+
+    fn record(&self, _ctx: &mut ComputePassCtx<'_, '_, '_>) -> Result<(), RenderPassError> {
+        Ok(())
+    }
+}
 
 #[test]
 fn retained_schedule_uses_real_topological_waves_after_culling() -> Result<(), GraphBuildError> {
@@ -36,8 +64,23 @@ fn retained_schedule_uses_real_topological_waves_after_culling() -> Result<(), G
     let names: Vec<&str> = g.pass_info.iter().map(|info| info.name.as_str()).collect();
     assert_eq!(names, vec!["write-a", "write-b", "export-a", "export-b"]);
     assert_eq!(g.compile_stats.culled_count, 1);
+    assert_eq!(g.compile_stats.dependency_edge_count, 2);
+    assert_eq!(g.schedule_hud.dependency_edge_count, 2);
     assert_eq!(g.schedule.wave_count(), 2);
     assert_eq!(g.schedule.waves, vec![0..2, 2..4]);
+    assert_eq!(
+        g.schedule.dependency_edges,
+        vec![
+            crate::render_graph::schedule::ScheduleDependencyEdge {
+                from_step: 0,
+                to_step: 2,
+            },
+            crate::render_graph::schedule::ScheduleDependencyEdge {
+                from_step: 1,
+                to_step: 3,
+            },
+        ]
+    );
     assert_eq!(
         g.schedule
             .steps
@@ -64,6 +107,70 @@ fn workload_flags_record_scheduler_policy() -> Result<(), GraphBuildError> {
     assert!(flags.contains(PassWorkloadFlags::COMPUTE));
     assert!(flags.contains(PassWorkloadFlags::ASYNC_COMPUTE_CAPABLE));
     assert!(flags.contains(PassWorkloadFlags::NEVER_PARALLEL));
+    assert_eq!(g.compile_stats.async_compute_capable_pass_count, 1);
+    Ok(())
+}
+
+#[test]
+fn independent_per_view_units_share_parallel_recording_batch() -> Result<(), GraphBuildError> {
+    let mut b = GraphBuilder::new();
+    b.add_compute_pass(Box::new(TestComputePass::new("first").cull_exempt()));
+    b.add_compute_pass(Box::new(TestComputePass::new("second").cull_exempt()));
+
+    let g = b.build()?;
+
+    assert_eq!(g.schedule.recording_plan.parallel_unit_count(), 2);
+    assert_eq!(g.schedule.recording_plan.parallel_batch_count(), 1);
+    assert_eq!(g.compile_stats.parallel_recording_unit_count, 2);
+    assert_eq!(g.compile_stats.parallel_recording_batch_count, 1);
+    assert_eq!(g.schedule.recording_plan.batches.len(), 1);
+    assert_eq!(
+        g.schedule.recording_plan.batches[0].kind,
+        RecordingBatchKind::Parallel
+    );
+    Ok(())
+}
+
+#[test]
+fn blackboard_writers_remain_serial_recording_units() -> Result<(), GraphBuildError> {
+    let mut b = GraphBuilder::new();
+    b.add_compute_pass(Box::new(BlackboardWriterPass { name: "writer" }));
+    b.add_compute_pass(Box::new(TestComputePass::new("independent").cull_exempt()));
+
+    let g = b.build()?;
+
+    assert_eq!(g.schedule.recording_plan.parallel_unit_count(), 1);
+    assert_eq!(
+        g.schedule.recording_plan.units[0].serial_reason,
+        RecordingSerialReason::BlackboardWrites
+    );
+    assert_eq!(g.schedule.recording_plan.batches.len(), 2);
+    assert_eq!(
+        g.schedule.recording_plan.batches[0].kind,
+        RecordingBatchKind::Serial
+    );
+    assert_eq!(
+        g.schedule.recording_plan.batches[1].kind,
+        RecordingBatchKind::Serial
+    );
+    Ok(())
+}
+
+#[test]
+fn encoder_passes_remain_serial_recording_units() -> Result<(), GraphBuildError> {
+    let mut b = GraphBuilder::new();
+    let bb = b.import_texture(backbuffer_import());
+    let mut pass = TestEncoderPass::new("encoder");
+    pass.imported_texture_writes.push(bb);
+    b.add_encoder_pass(Box::new(pass));
+
+    let g = b.build()?;
+
+    assert_eq!(g.schedule.recording_plan.parallel_unit_count(), 0);
+    assert_eq!(
+        g.schedule.recording_plan.units[0].serial_reason,
+        RecordingSerialReason::EncoderSideEffects
+    );
     Ok(())
 }
 
@@ -212,6 +319,15 @@ fn merge_groups_detect_only_compatible_adjacent_raster_passes() -> Result<(), Gr
     );
     assert_eq!(g.compile_stats.render_pass_merge_groups, 1);
     assert_eq!(g.compile_stats.render_pass_materialization_groups, 1);
+    assert_eq!(g.schedule.recording_plan.units.len(), 1);
+    assert_eq!(
+        g.schedule.recording_plan.units[0].serial_reason,
+        RecordingSerialReason::MaterializedRasterGroup
+    );
+    assert_eq!(
+        g.schedule.recording_plan.batches[0].kind,
+        RecordingBatchKind::Serial
+    );
 
     let mut b = GraphBuilder::new();
     let first = b.import_texture(backbuffer_import());

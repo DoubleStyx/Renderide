@@ -42,10 +42,18 @@ pub struct CompileStats {
     pub imported_buffer_count: usize,
     /// Number of graph validation diagnostics emitted at build time.
     pub validation_diagnostics: usize,
+    /// Number of retained dependency edges between scheduled steps.
+    pub dependency_edge_count: usize,
     /// Number of conservative render-pass merge groups detected by the scheduler.
     pub render_pass_merge_groups: usize,
     /// Number of render-pass groups planned for materialized recording.
     pub render_pass_materialization_groups: usize,
+    /// Number of retained passes marked as future async-compute candidates.
+    pub async_compute_capable_pass_count: usize,
+    /// Number of retained scheduler V2 units eligible for parallel command recording.
+    pub parallel_recording_unit_count: usize,
+    /// Number of retained scheduler V2 batches that record multiple units concurrently.
+    pub parallel_recording_batch_count: usize,
     /// Number of attachment resolve declarations retained in the compiled graph.
     pub attachment_resolve_count: usize,
     /// Number of retained transient attachment stores.

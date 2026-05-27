@@ -30,8 +30,12 @@ pub(super) struct CommandEncodingDiagnostics {
     pub(super) scheduler_upload_phases: usize,
     pub(super) scheduler_resource_events: usize,
     pub(super) scheduler_import_final_accesses: usize,
+    pub(super) scheduler_dependency_edges: usize,
     pub(super) scheduler_merge_groups: usize,
     pub(super) scheduler_materialized_groups: usize,
+    pub(super) scheduler_async_compute_capable: usize,
+    pub(super) scheduler_parallel_recording_units: usize,
+    pub(super) scheduler_parallel_recording_batches: usize,
     pub(super) scheduler_attachment_resolves: usize,
     pub(super) scheduler_transient_stores: usize,
     pub(super) scheduler_transient_discards: usize,
@@ -82,12 +86,18 @@ impl CommandEncodingDiagnostics {
             scheduler_upload_phases: graph.schedule.upload_phases.len(),
             scheduler_resource_events: graph.schedule.resource_events.len(),
             scheduler_import_final_accesses: graph.schedule.imported_final_accesses.len(),
+            scheduler_dependency_edges: graph.schedule_hud.dependency_edge_count,
             scheduler_merge_groups: graph.schedule.render_pass_merge_groups.len(),
             scheduler_materialized_groups: graph
                 .schedule
                 .render_pass_materialization_plan
                 .groups
                 .len(),
+            scheduler_async_compute_capable: graph.compile_stats.async_compute_capable_pass_count,
+            scheduler_parallel_recording_units: graph.compile_stats.parallel_recording_unit_count,
+            scheduler_parallel_recording_batches: graph
+                .compile_stats
+                .parallel_recording_batch_count,
             scheduler_attachment_resolves: graph.compile_stats.attachment_resolve_count,
             scheduler_transient_stores: graph.compile_stats.transient_attachment_store_count,
             scheduler_transient_discards: graph.compile_stats.transient_attachment_discard_count,
@@ -224,7 +234,7 @@ impl CommandEncodingDiagnostics {
             return;
         }
         logger::warn!(
-            "slow command encoder finish: max_finish_ms={:.3} frame_global_finish_ms={:.3} per_view_max_finish_ms={:.3} upload_finish_ms={:.3} views={} command_buffers={} passes(frame_global/per_view)={}/{} scheduler(passes/registered/culled/compile_skipped/waves/largest_wave/submit_steps/upload_phases/resource_events/import_finals/merge_groups/materialized_groups/attachment_resolves/transient_store/transient_discard/bandwidth_bytes)={}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{} transients(textures/slots/texture_lanes/buffer_lanes)={}/{}/{}/{} validation(diagnostics/parameter_schemas)={}/{} transient_misses(tex/buf)={}/{} uploads(writes/bytes/staged/fallback)={}/{}/{}/{} upload_arena(persistent_bytes/temp_bytes/reuses/grows/temp_fallbacks/oversized_queue/capacity/free/inflight/remapping)={}/{}/{}/{}/{}/{}/{}/{}/{}/{} timings_ms(pre_resolve/prepare/frame_global_encode/per_view_encode/upload_drain/assemble/submit)={:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3} commands(draws/instance_batches/pipeline_pass_submits/skipped/raster/compute/encoder/render_passes/copies/skipped_copies/resolves/skipped_resolves/bandwidth_bytes)={}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
+            "slow command encoder finish: max_finish_ms={:.3} frame_global_finish_ms={:.3} per_view_max_finish_ms={:.3} upload_finish_ms={:.3} views={} command_buffers={} passes(frame_global/per_view)={}/{} scheduler(passes/registered/culled/compile_skipped/waves/largest_wave/submit_steps/upload_phases/resource_events/import_finals/dependency_edges/merge_groups/materialized_groups/async_compute_capable/parallel_units/parallel_batches/attachment_resolves/transient_store/transient_discard/bandwidth_bytes)={}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{} transients(textures/slots/texture_lanes/buffer_lanes)={}/{}/{}/{} validation(diagnostics/parameter_schemas)={}/{} transient_misses(tex/buf)={}/{} uploads(writes/bytes/staged/fallback)={}/{}/{}/{} upload_arena(persistent_bytes/temp_bytes/reuses/grows/temp_fallbacks/oversized_queue/capacity/free/inflight/remapping)={}/{}/{}/{}/{}/{}/{}/{}/{}/{} timings_ms(pre_resolve/prepare/frame_global_encode/per_view_encode/upload_drain/assemble/submit)={:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3} commands(draws/instance_batches/pipeline_pass_submits/skipped/raster/compute/encoder/render_passes/copies/skipped_copies/resolves/skipped_resolves/bandwidth_bytes)={}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
             max_finish_ms,
             self.frame_global_finish_ms,
             self.per_view_max_finish_ms,
@@ -243,8 +253,12 @@ impl CommandEncodingDiagnostics {
             self.scheduler_upload_phases,
             self.scheduler_resource_events,
             self.scheduler_import_final_accesses,
+            self.scheduler_dependency_edges,
             self.scheduler_merge_groups,
             self.scheduler_materialized_groups,
+            self.scheduler_async_compute_capable,
+            self.scheduler_parallel_recording_units,
+            self.scheduler_parallel_recording_batches,
             self.scheduler_attachment_resolves,
             self.scheduler_transient_stores,
             self.scheduler_transient_discards,

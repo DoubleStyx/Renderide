@@ -14,11 +14,15 @@ fn update_command_stats(
     ctx: &mut RasterPassCtx<'_, '_>,
     update: impl FnOnce(&mut GraphCommandStats),
 ) {
-    if ctx.blackboard.get::<GraphCommandStatsSlot>().is_none() {
+    if ctx
+        .blackboard
+        .get_untracked::<GraphCommandStatsSlot>()
+        .is_none()
+    {
         ctx.blackboard
-            .insert::<GraphCommandStatsSlot>(GraphCommandStats::default());
+            .insert_untracked::<GraphCommandStatsSlot>(GraphCommandStats::default());
     }
-    if let Some(stats) = ctx.blackboard.get_mut::<GraphCommandStatsSlot>() {
+    if let Some(stats) = ctx.blackboard.get_mut_untracked::<GraphCommandStatsSlot>() {
         update(stats);
     }
 }
