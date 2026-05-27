@@ -9,6 +9,7 @@ use thiserror::Error;
 use crate::assets::mesh::{
     GpuMesh, MeshGpuUploadContext, compute_and_validate_mesh_layout, try_upload_mesh_from_raw,
 };
+use crate::color_space::srgb_vec4_rgb_to_linear;
 use crate::shared::buffer::SharedMemoryBufferDescriptor;
 use crate::shared::{
     IndexBufferFormat, MeshUploadData, PointRenderBufferUpload, RenderBoundingBox,
@@ -517,7 +518,7 @@ fn decode_point_particles(
             position: Vec3::from_array(p),
             rotation: Quat::from_xyzw(r[0], r[1], r[2], r[3]),
             size: Vec3::from_array(s),
-            color: Vec4::from_array(c),
+            color: srgb_vec4_rgb_to_linear(Vec4::from_array(c)),
             frame_index,
         }
     };
@@ -889,7 +890,7 @@ fn decode_trail_polyline(
             let width = read_pod_at::<f32>(raw, sizes, point_index).max(0.0);
             points.push(TrailPoint {
                 position: Vec3::from_array(p),
-                color: Vec4::from_array(c),
+                color: srgb_vec4_rgb_to_linear(Vec4::from_array(c)),
                 width,
             });
         }
