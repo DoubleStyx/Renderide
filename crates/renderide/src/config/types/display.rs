@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Display-related caps. Persisted as `[display]`.
+/// Desktop display frame-pacing caps. Persisted as `[display]`.
 ///
 /// Non-zero values cap desktop redraw scheduling via winit (`ControlFlow::WaitUntil`) while
 /// swapchain vsync is off; OpenXR VR sessions ignore these caps so headset frame pacing is
@@ -10,10 +10,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DisplaySettings {
-    /// Target max FPS when the window is focused (0 = uncapped).
+    /// Target max FPS while the renderer window is the foreground input window (0 = uncapped).
     #[serde(rename = "focused_fps")]
     pub focused_fps_cap: u32,
-    /// Target max FPS when unfocused (0 = uncapped).
+    /// Target max FPS while the renderer window is in the background (0 = uncapped).
     #[serde(rename = "unfocused_fps")]
     pub unfocused_fps_cap: u32,
 }

@@ -148,8 +148,9 @@ impl RendererRuntime {
             }
             RunningCommandEffect::RendererEngineReady => {
                 logger::trace!(
-                    "runtime: renderer_engine_ready from host (post-init lifecycle ack; no action)"
+                    "runtime: renderer_engine_ready from host; enabling strict frame lockstep"
                 );
+                self.frontend.on_renderer_engine_ready();
             }
             RunningCommandEffect::DesktopConfig(cfg) => self.apply_desktop_config(cfg),
             RunningCommandEffect::RenderDecouplingConfig(cfg) => {

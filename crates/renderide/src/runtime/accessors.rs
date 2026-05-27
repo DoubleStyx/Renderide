@@ -53,6 +53,11 @@ impl RendererRuntime {
         &self.config.settings
     }
 
+    /// Effective desktop foreground/background FPS caps for the winit app driver.
+    pub(crate) fn desktop_frame_pacing_caps(&self) -> crate::runtime::DesktopFramePacingCaps {
+        self.config.desktop_frame_pacing_caps()
+    }
+
     /// Toggles the master ImGui overlay visibility setting and clears stale HUD input capture.
     pub fn toggle_imgui_visibility(&mut self) {
         if self.config.toggle_imgui_visibility().is_some() {
@@ -79,6 +84,18 @@ impl RendererRuntime {
     #[cfg(test)]
     pub fn last_frame_data_processed(&self) -> bool {
         self.frontend.last_frame_data_processed()
+    }
+
+    /// Whether the host has enabled regular lockstep with `RendererEngineReady`.
+    #[cfg(test)]
+    pub fn host_lockstep_activated(&self) -> bool {
+        self.frontend.host_lockstep_activated()
+    }
+
+    /// Whether an applied host frame still needs a renderer-side draw attempt.
+    #[cfg(test)]
+    pub fn pending_frame_submit_render(&self) -> bool {
+        self.frontend.pending_frame_submit_render()
     }
 
     /// Current lock-step frame index echoed to the host.

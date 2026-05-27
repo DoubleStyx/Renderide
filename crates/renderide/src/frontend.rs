@@ -16,6 +16,7 @@ mod init_state;
 mod lockstep_state;
 pub(crate) mod output_device;
 mod output_policy;
+mod render_cadence;
 mod renderer_frontend;
 mod session;
 mod transport;
@@ -31,6 +32,7 @@ pub use renderer_frontend::RendererFrontend;
 mod tests {
     use std::time::Instant;
 
+    use crate::connection::ConnectionParams;
     use crate::shared::RenderDecouplingConfig;
 
     use super::{InitState, RendererFrontend};
@@ -94,6 +96,33 @@ mod tests {
 
         frontend.note_frame_submit_processed(7);
         assert!(!frontend.is_decoupled());
+    }
+
+    #[test]
+    fn renderer_engine_ready_enables_strict_lockstep_predicate() {
+        let mut frontend = RendererFrontend::new(Some(ConnectionParams {
+            queue_name: "frontend_decoupling_gate_test".into(),
+            queue_capacity: crate::connection::DEFAULT_QUEUE_CAPACITY,
+        }));
+
+        assert!(!frontend.host_lockstep_activated());
+        assert!(frontend.is_renderer_decoupled());
+
+        frontend.on_renderer_engine_ready();
+
+        assert!(frontend.host_lockstep_activated());
+        assert!(!frontend.is_renderer_decoupled());
+    }
+
+    #[test]
+    fn frame_submit_pending_render_clears_after_render_attempt() {
+        let mut frontend = RendererFrontend::new(None);
+
+        frontend.note_frame_submit_processed(7);
+        assert!(frontend.pending_frame_submit_render());
+
+        frontend.note_frame_render_attempted();
+        assert!(!frontend.pending_frame_submit_render());
     }
 
     #[test]

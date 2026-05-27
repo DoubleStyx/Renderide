@@ -229,31 +229,20 @@ impl RenderBackend {
             .unwrap_or_default()
     }
 
-    /// Snapshot of the live reflection-probe SH2 experimental toggle.
-    pub(crate) fn reflection_probe_sh2_enabled(&self) -> bool {
+    /// Snapshot of the live experimental renderer settings.
+    pub(crate) fn experimental_settings(&self) -> crate::config::ExperimentalSettings {
         self.renderer_settings
             .as_ref()
             .and_then(|h| h.read().ok())
-            .map(|s| s.experimental.reflection_probe_sh2_enabled)
-            .unwrap_or_else(|| {
-                crate::config::ExperimentalSettings::default().reflection_probe_sh2_enabled
-            })
-    }
-
-    /// Snapshot of the live development WGSL material hot-reload toggle.
-    pub(crate) fn material_shader_hot_reload_enabled(&self) -> bool {
-        self.renderer_settings
-            .as_ref()
-            .and_then(|h| h.read().ok())
-            .map(|s| s.experimental.material_shader_hot_reload_enabled)
-            .unwrap_or_else(|| {
-                crate::config::ExperimentalSettings::default().material_shader_hot_reload_enabled
-            })
+            .map(|s| s.experimental)
+            .unwrap_or_default()
     }
 
     /// Applies development WGSL hot-reload settings and polls for changed local material targets.
     pub(crate) fn sync_material_shader_hot_reload(&mut self) {
-        let enabled = self.material_shader_hot_reload_enabled();
+        let enabled = self
+            .experimental_settings()
+            .material_shader_hot_reload_enabled;
         self.materials.set_dev_shader_hot_reload_enabled(enabled);
         let report = self.materials.poll_dev_shader_hot_reload();
         if report.is_empty() {
@@ -368,13 +357,14 @@ impl RenderBackend {
         scene: &crate::scene::SceneCoordinator,
         render_context: crate::shared::RenderingContext,
     ) {
-        let reflection_probe_sh2_enabled = self.reflection_probe_sh2_enabled();
+        let experimental_settings = self.experimental_settings();
         let resources = self.reflection_probes.maintain_specular_jobs(
             gpu,
             scene,
             &self.asset_transfers,
             render_context,
-            reflection_probe_sh2_enabled,
+            experimental_settings.reflection_probe_sh2_enabled,
+            experimental_settings.effective_max_local_reflection_probes(),
         );
         let _ = self
             .frame_services

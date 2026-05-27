@@ -93,6 +93,12 @@ const OPTIONAL_EXTENSIONS: &[OpenxrExtensionEntry] = &[
         enable: |set, v| set.ext_palm_pose = v,
         feeds_profile_gate: Some(|gates, v| gates.palm_pose = v),
     },
+    OpenxrExtensionEntry {
+        log_name: "EXT_hand_tracking",
+        is_available: |set| set.ext_hand_tracking,
+        enable: |set, v| set.ext_hand_tracking = v,
+        feeds_profile_gate: Some(|gates, v| gates.hand_tracking_ext = v),
+    },
 ];
 
 /// Mirrors each [`OPTIONAL_EXTENSIONS`] entry from `available` into `enabled` and, for
@@ -125,6 +131,7 @@ pub(super) fn empty_profile_gates() -> ProfileExtensionGates {
         fb_touch_controller_pro: false,
         meta_touch_controller_plus: false,
         palm_pose: false,
+        hand_tracking_ext: false,
     }
 }
 
@@ -162,6 +169,7 @@ mod tests {
         set.fb_touch_controller_pro = true;
         set.meta_touch_controller_plus = true;
         set.ext_palm_pose = true;
+        set.ext_hand_tracking = true;
         set
     }
 
@@ -181,6 +189,7 @@ mod tests {
         assert!(enabled.fb_touch_controller_pro);
         assert!(enabled.meta_touch_controller_plus);
         assert!(enabled.ext_palm_pose);
+        assert!(enabled.ext_hand_tracking);
     }
 
     #[test]
@@ -198,6 +207,7 @@ mod tests {
         assert!(gates.fb_touch_controller_pro);
         assert!(gates.meta_touch_controller_plus);
         assert!(gates.palm_pose);
+        assert!(gates.hand_tracking_ext);
     }
 
     #[test]
@@ -208,9 +218,11 @@ mod tests {
         enable_optional_extensions(&available, &mut enabled, &mut gates);
         assert!(!enabled.ext_debug_utils);
         assert!(!enabled.khr_generic_controller);
+        assert!(!enabled.ext_hand_tracking);
         assert!(!gates.khr_generic_controller);
         assert!(!gates.bd_controller);
         assert!(!gates.palm_pose);
+        assert!(!gates.hand_tracking_ext);
     }
 
     #[test]
@@ -236,7 +248,7 @@ mod tests {
              BD_controller_interaction,EXT_hp_mixed_reality_controller,\
              EXT_samsung_odyssey_controller,HTC_vive_cosmos_controller_interaction,\
              HTC_vive_focus3_controller_interaction,FB_touch_controller_pro,\
-             META_touch_controller_plus,EXT_palm_pose"
+             META_touch_controller_plus,EXT_palm_pose,EXT_hand_tracking"
         );
     }
 

@@ -68,6 +68,22 @@ fn create_pose_spaces(
             .create_space(session, xr::Path::NULL, xr::Posef::IDENTITY)?,
     ))
 }
+
+/// Creates one optional hand tracker, logging failures without disabling controller input.
+fn create_optional_hand_tracker(
+    session: &xr::Session<xr::Vulkan>,
+    hand: xr::Hand,
+    label: &str,
+) -> Option<xr::HandTracker> {
+    match session.create_hand_tracker(hand) {
+        Ok(tracker) => Some(tracker),
+        Err(error) => {
+            logger::warn!("OpenXR {label} hand tracker creation failed: {error:?}");
+            None
+        }
+    }
+}
+
 /// Container for everything [`super::openxr_input::OpenxrInput`] needs after setup.
 pub(super) struct OpenxrInputParts {
     /// OpenXR action set, kept alive for the session.
@@ -92,6 +108,10 @@ pub(super) struct OpenxrInputParts {
     pub(super) left_palm_ext_space: xr::Space,
     /// Right palm pose space.
     pub(super) right_palm_ext_space: xr::Space,
+    /// Left hand OpenXR hand tracker.
+    pub(super) left_hand_tracker: Option<xr::HandTracker>,
+    /// Right hand OpenXR hand tracker.
+    pub(super) right_hand_tracker: Option<xr::HandTracker>,
 }
 
 /// Manifest-driven end-to-end OpenXR input setup: action set, actions, suggested bindings, attach, spaces.
@@ -132,6 +152,15 @@ pub(super) fn create_openxr_input_parts(
     let (left_space, right_space, left_palm_space, right_palm_space) =
         create_pose_spaces(session, &actions)?;
 
+    let (left_hand_tracker, right_hand_tracker) = if gates.hand_tracking_ext {
+        (
+            create_optional_hand_tracker(session, xr::Hand::LEFT, "left"),
+            create_optional_hand_tracker(session, xr::Hand::RIGHT, "right"),
+        )
+    } else {
+        (None, None)
+    };
+
     Ok(OpenxrInputParts {
         action_set,
         left_user_path,
@@ -144,5 +173,7 @@ pub(super) fn create_openxr_input_parts(
         right_space,
         left_palm_ext_space: left_palm_space,
         right_palm_ext_space: right_palm_space,
+        left_hand_tracker,
+        right_hand_tracker,
     })
 }

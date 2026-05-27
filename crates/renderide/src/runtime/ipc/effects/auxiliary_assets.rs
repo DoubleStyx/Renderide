@@ -66,11 +66,7 @@ impl RendererRuntime {
 
     pub(in crate::runtime) fn process_mesh_upload(&mut self, d: MeshUploadData) {
         let (shm, ipc) = self.frontend.transport_pair_mut();
-        if let Some(shm) = shm {
-            self.backend.try_process_mesh_upload(d, shm, ipc);
-        } else {
-            logger::warn!("mesh upload: no shared memory (standalone?)");
-        }
+        self.backend.try_process_mesh_upload(d, shm, ipc);
     }
 
     pub(in crate::runtime) fn release_shared_memory_view(&mut self, buffer_id: i32) {

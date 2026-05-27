@@ -6,14 +6,20 @@ use crate::scene::RenderSpaceId;
 /// Maximum number of probes in one BVH leaf.
 const BVH_LEAF_SIZE: usize = 8;
 const MIN_BLEND_DISTANCE: f32 = 1e-6;
-const MAX_LOCAL_PROBES: usize = 4;
+/// Maximum number of local reflection probes packed into one draw.
+pub const MAX_LOCAL_PROBES: usize = 4;
 const CONTAINMENT_EPSILON: f32 = 1e-5;
+
+/// Clamps user configuration to the fixed per-draw packing capacity.
+fn clamp_local_probe_limit(max_local_reflection_probes: usize) -> usize {
+    max_local_reflection_probes.min(MAX_LOCAL_PROBES)
+}
 
 /// Per-draw reflection-probe selection stored in the per-draw slab.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ReflectionProbeDrawSelection {
     /// Atlas indices ordered as `[global_fallback, local0, local1, local2, local3]`.
-    pub atlas_indices: [u16; 5],
+    pub atlas_indices: [u16; MAX_LOCAL_PROBES + 1],
     /// Bit mask marking local probes that start a lower-importance group than their predecessor.
     pub importance_mask: u8,
 }
@@ -29,13 +35,22 @@ impl ReflectionProbeDrawSelection {
 }
 
 /// CPU-side selector snapshot used during world-mesh draw collection.
-#[derive(Default)]
 pub struct ReflectionProbeFrameSelection {
     spaces: HashMap<RenderSpaceId, ReflectionProbeSpatialIndex>,
+    max_local_reflection_probes: usize,
+}
+
+impl Default for ReflectionProbeFrameSelection {
+    fn default() -> Self {
+        Self {
+            spaces: Default::default(),
+            max_local_reflection_probes: MAX_LOCAL_PROBES,
+        }
+    }
 }
 
 impl ReflectionProbeFrameSelection {
-    /// Selects a global fallback probe and up to 4 local probes for one object AABB.
+    /// Selects a global fallback probe and configured local probes for one object AABB.
     #[must_use]
     pub fn select(
         &self,
@@ -53,6 +68,11 @@ impl ReflectionProbeFrameSelection {
         ReflectionProbeDrawSelection::default()
     }
 
+    /// Sets the maximum number of local probes selected per draw.
+    pub(super) fn set_max_local_reflection_probes(&mut self, max_local_reflection_probes: usize) {
+        self.max_local_reflection_probes = clamp_local_probe_limit(max_local_reflection_probes);
+    }
+
     pub(super) fn rebuild_spatial<I>(&mut self, probes: I)
     where
         I: IntoIterator<Item = (RenderSpaceId, SpatialProbe)>,
@@ -63,8 +83,10 @@ impl ReflectionProbeFrameSelection {
             by_space.entry(space_id).or_default().push(probe);
         }
         for (space_id, probes) in by_space {
-            self.spaces
-                .insert(space_id, ReflectionProbeSpatialIndex::build(probes));
+            self.spaces.insert(
+                space_id,
+                ReflectionProbeSpatialIndex::build(probes, self.max_local_reflection_probes),
+            );
         }
     }
 }
@@ -87,15 +109,17 @@ pub(super) struct SpatialProbe {
 #[derive(Default)]
 pub struct ReflectionProbeSpatialIndex {
     probes: Vec<SpatialProbe>,
+    max_local_reflection_probes: usize,
     order: Vec<usize>,
     nodes: Vec<BvhNode>,
     root: Option<usize>,
 }
 
 impl ReflectionProbeSpatialIndex {
-    pub(super) fn build(probes: Vec<SpatialProbe>) -> Self {
+    pub(super) fn build(probes: Vec<SpatialProbe>, max_local_reflection_probes: usize) -> Self {
         let mut out = Self {
             order: (0..probes.len()).collect(),
+            max_local_reflection_probes: clamp_local_probe_limit(max_local_reflection_probes),
             probes,
             nodes: Vec::new(),
             root: None,
@@ -156,7 +180,7 @@ impl ReflectionProbeSpatialIndex {
                         }
                         continue;
                     }
-                    insert_probe_score(&mut top, score);
+                    self.insert_probe_score(&mut top, score);
                 }
             } else {
                 stack.push(node.left);
@@ -199,6 +223,21 @@ impl ReflectionProbeSpatialIndex {
         self.nodes[index].right = right;
         index
     }
+
+    fn insert_probe_score(&self, top: &mut Vec<ProbeScore>, score: ProbeScore) {
+        for i in 0..top.len() {
+            if score_better(score, top[i]) {
+                top.insert(i, score);
+                if top.len() > self.max_local_reflection_probes {
+                    top.pop();
+                }
+                return;
+            }
+        }
+        if top.len() < self.max_local_reflection_probes {
+            top.push(score);
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -220,21 +259,6 @@ struct ProbeScore {
     center_distance_sq: f32,
     renderable_index: i32,
     skybox: bool,
-}
-
-fn insert_probe_score(top: &mut Vec<ProbeScore>, score: ProbeScore) {
-    for i in 0..top.len() {
-        if score_better(score, top[i]) {
-            top.insert(i, score);
-            if top.len() > MAX_LOCAL_PROBES {
-                top.pop();
-            }
-            return;
-        }
-    }
-    if top.len() < MAX_LOCAL_PROBES {
-        top.push(score);
-    }
 }
 
 /// Order of preference:
@@ -264,7 +288,7 @@ fn selection_from_scores(
     top: Vec<ProbeScore>,
     fallback: Option<ProbeScore>,
 ) -> ReflectionProbeDrawSelection {
-    let mut atlas_indices = [0u16; 5];
+    let mut atlas_indices = [0u16; MAX_LOCAL_PROBES + 1];
     let mut importance_mask = 0u8;
     let mut previous_importance = None;
     if let Some(probe) = fallback {
@@ -369,7 +393,7 @@ mod tests {
         local_atlas_indices: [u16; MAX_LOCAL_PROBES],
         importance_mask: u8,
     ) -> ReflectionProbeDrawSelection {
-        let mut atlas_indices = [0; 5];
+        let mut atlas_indices = [0; MAX_LOCAL_PROBES + 1];
         atlas_indices[0] = fallback_atlas_index;
         atlas_indices[1..].copy_from_slice(&local_atlas_indices);
         ReflectionProbeDrawSelection {
@@ -423,11 +447,43 @@ mod tests {
     }
 
     #[test]
+    fn frame_selection_defaults_to_full_local_probe_capacity() {
+        let selection = ReflectionProbeFrameSelection::default();
+
+        assert_eq!(selection.max_local_reflection_probes, MAX_LOCAL_PROBES);
+    }
+
+    #[test]
+    fn configured_limit_clamps_to_packed_capacity() {
+        let index = ReflectionProbeSpatialIndex::build(
+            (0..=MAX_LOCAL_PROBES)
+                .map(|i| {
+                    probe(
+                        i as i32,
+                        (i + 1) as u16,
+                        1,
+                        Vec3::splat(-1.0),
+                        Vec3::splat(1.0),
+                    )
+                })
+                .collect(),
+            MAX_LOCAL_PROBES + 99,
+        );
+
+        let selection = index.select((Vec3::splat(-0.5), Vec3::splat(0.5)));
+
+        assert_eq!(selection, expected_selection(0, [1, 2, 3, 4], 0));
+    }
+
+    #[test]
     fn higher_priority_overrides_lower_priority() {
-        let index = ReflectionProbeSpatialIndex::build(vec![
-            probe(0, 1, 0, Vec3::splat(-100.0), Vec3::splat(100.0)),
-            probe(1, 2, 1, Vec3::splat(-1.0), Vec3::splat(1.0)),
-        ]);
+        let index = ReflectionProbeSpatialIndex::build(
+            vec![
+                probe(0, 1, 0, Vec3::splat(-100.0), Vec3::splat(100.0)),
+                probe(1, 2, 1, Vec3::splat(-1.0), Vec3::splat(1.0)),
+            ],
+            MAX_LOCAL_PROBES,
+        );
 
         let selection = index.select((Vec3::splat(-0.25), Vec3::splat(0.25)));
 
@@ -477,14 +533,17 @@ mod tests {
 
     #[test]
     fn blend_distance_selects_probe_outside_original_bounds() {
-        let index = ReflectionProbeSpatialIndex::build(vec![probe_with_blend(
-            0,
-            1,
-            1,
-            Vec3::splat(-1.0),
-            Vec3::splat(1.0),
-            0.75,
-        )]);
+        let index = ReflectionProbeSpatialIndex::build(
+            vec![probe_with_blend(
+                0,
+                1,
+                1,
+                Vec3::splat(-1.0),
+                Vec3::splat(1.0),
+                0.75,
+            )],
+            MAX_LOCAL_PROBES,
+        );
 
         let selection = index.select((Vec3::new(1.25, -0.25, -0.25), Vec3::new(1.5, 0.25, 0.25)));
 
@@ -510,10 +569,13 @@ mod tests {
 
     #[test]
     fn higher_priority_overrides_lower_priority_in_blend_fringe() {
-        let index = ReflectionProbeSpatialIndex::build(vec![
-            probe_with_blend(0, 1, 0, Vec3::splat(-5.0), Vec3::splat(5.0), 0.0),
-            probe_with_blend(1, 2, 1, Vec3::splat(-1.0), Vec3::splat(1.0), 1.0),
-        ]);
+        let index = ReflectionProbeSpatialIndex::build(
+            vec![
+                probe_with_blend(0, 1, 0, Vec3::splat(-5.0), Vec3::splat(5.0), 0.0),
+                probe_with_blend(1, 2, 1, Vec3::splat(-1.0), Vec3::splat(1.0), 1.0),
+            ],
+            MAX_LOCAL_PROBES,
+        );
 
         let selection = index.select((Vec3::new(1.2, -0.1, -0.1), Vec3::new(1.4, 0.1, 0.1)));
 
@@ -522,29 +584,32 @@ mod tests {
 
     #[test]
     fn same_importance_selects_two_by_intersection_volume() {
-        let index = ReflectionProbeSpatialIndex::build(vec![
-            probe(
-                0,
-                1,
-                1,
-                Vec3::new(-1.0, -1.0, -1.0),
-                Vec3::new(1.0, 1.0, 1.0),
-            ),
-            probe(
-                1,
-                2,
-                1,
-                Vec3::new(0.0, -1.0, -1.0),
-                Vec3::new(2.0, 1.0, 1.0),
-            ),
-            probe(
-                2,
-                3,
-                1,
-                Vec3::new(0.75, -1.0, -1.0),
-                Vec3::new(2.0, 1.0, 1.0),
-            ),
-        ]);
+        let index = ReflectionProbeSpatialIndex::build(
+            vec![
+                probe(
+                    0,
+                    1,
+                    1,
+                    Vec3::new(-1.0, -1.0, -1.0),
+                    Vec3::new(1.0, 1.0, 1.0),
+                ),
+                probe(
+                    1,
+                    2,
+                    1,
+                    Vec3::new(0.0, -1.0, -1.0),
+                    Vec3::new(2.0, 1.0, 1.0),
+                ),
+                probe(
+                    2,
+                    3,
+                    1,
+                    Vec3::new(0.75, -1.0, -1.0),
+                    Vec3::new(2.0, 1.0, 1.0),
+                ),
+            ],
+            MAX_LOCAL_PROBES,
+        );
 
         let selection = index.select((Vec3::new(-0.5, -0.5, -0.5), Vec3::new(1.5, 0.5, 0.5)));
 
@@ -553,10 +618,13 @@ mod tests {
 
     #[test]
     fn contained_same_importance_probe_selects_inner_in_higher_priority_when_object_fully_inside() {
-        let index = ReflectionProbeSpatialIndex::build(vec![
-            probe(0, 1, 1, Vec3::splat(-10.0), Vec3::splat(10.0)),
-            probe(1, 2, 1, Vec3::splat(-1.0), Vec3::splat(1.0)),
-        ]);
+        let index = ReflectionProbeSpatialIndex::build(
+            vec![
+                probe(0, 1, 1, Vec3::splat(-10.0), Vec3::splat(10.0)),
+                probe(1, 2, 1, Vec3::splat(-1.0), Vec3::splat(1.0)),
+            ],
+            MAX_LOCAL_PROBES,
+        );
 
         let selection = index.select((Vec3::splat(-0.5), Vec3::splat(0.5)));
 
@@ -565,10 +633,13 @@ mod tests {
 
     #[test]
     fn contained_same_importance_probe_blends_when_object_partially_leaves_inner() {
-        let index = ReflectionProbeSpatialIndex::build(vec![
-            probe(0, 1, 1, Vec3::splat(-10.0), Vec3::splat(10.0)),
-            probe(1, 2, 1, Vec3::splat(-1.0), Vec3::splat(1.0)),
-        ]);
+        let index = ReflectionProbeSpatialIndex::build(
+            vec![
+                probe(0, 1, 1, Vec3::splat(-10.0), Vec3::splat(10.0)),
+                probe(1, 2, 1, Vec3::splat(-1.0), Vec3::splat(1.0)),
+            ],
+            MAX_LOCAL_PROBES,
+        );
 
         let selection = index.select((Vec3::new(-0.5, -0.5, -0.5), Vec3::new(1.5, 0.5, 0.5)));
 
@@ -577,10 +648,13 @@ mod tests {
 
     #[test]
     fn identical_same_importance_probe_boxes_use_intersection_blend() {
-        let index = ReflectionProbeSpatialIndex::build(vec![
-            probe(0, 1, 1, Vec3::splat(-1.0), Vec3::splat(1.0)),
-            probe(1, 2, 1, Vec3::splat(-1.0), Vec3::splat(1.0)),
-        ]);
+        let index = ReflectionProbeSpatialIndex::build(
+            vec![
+                probe(0, 1, 1, Vec3::splat(-1.0), Vec3::splat(1.0)),
+                probe(1, 2, 1, Vec3::splat(-1.0), Vec3::splat(1.0)),
+            ],
+            MAX_LOCAL_PROBES,
+        );
 
         let selection = index.select((Vec3::splat(-0.5), Vec3::splat(0.5)));
 
@@ -589,12 +663,15 @@ mod tests {
 
     #[test]
     fn skybox_probe_terrible_candidate_but_used_as_fallback() {
-        let index = ReflectionProbeSpatialIndex::build(vec![
-            probe(0, 1, 0, Vec3::splat(-1.0), Vec3::splat(1.0)),
-            probe(1, 2, 0, Vec3::splat(-1.0), Vec3::splat(1.0)),
-            skybox_probe(2, 3, 0, Vec3::splat(-1000.0), Vec3::splat(1000.0)),
-            skybox_probe(3, 4, 0, Vec3::splat(-10_000.0), Vec3::splat(10_000.0)),
-        ]);
+        let index = ReflectionProbeSpatialIndex::build(
+            vec![
+                probe(0, 1, 0, Vec3::splat(-1.0), Vec3::splat(1.0)),
+                probe(1, 2, 0, Vec3::splat(-1.0), Vec3::splat(1.0)),
+                skybox_probe(2, 3, 0, Vec3::splat(-1000.0), Vec3::splat(1000.0)),
+                skybox_probe(3, 4, 0, Vec3::splat(-10_000.0), Vec3::splat(10_000.0)),
+            ],
+            MAX_LOCAL_PROBES,
+        );
 
         let selection = index.select((Vec3::splat(-0.5), Vec3::splat(0.5)));
 
@@ -603,15 +680,18 @@ mod tests {
 
     #[test]
     fn skybox_fallback_requires_original_bounds_containment() {
-        let index = ReflectionProbeSpatialIndex::build(vec![full_probe(
-            0,
-            3,
-            0,
-            Vec3::splat(-1.0),
-            Vec3::splat(1.0),
-            1.0,
-            true,
-        )]);
+        let index = ReflectionProbeSpatialIndex::build(
+            vec![full_probe(
+                0,
+                3,
+                0,
+                Vec3::splat(-1.0),
+                Vec3::splat(1.0),
+                1.0,
+                true,
+            )],
+            MAX_LOCAL_PROBES,
+        );
 
         let selection = index.select((Vec3::new(1.25, -0.25, -0.25), Vec3::new(1.5, 0.25, 0.25)));
 
@@ -620,16 +700,82 @@ mod tests {
 
     #[test]
     fn probes_of_different_importance_respect_hierarchy_and_have_fallback() {
-        let index = ReflectionProbeSpatialIndex::build(vec![
-            probe(0, 1, 2, Vec3::splat(-1.0), Vec3::splat(1.0)),
-            probe(1, 2, 1, Vec3::splat(-3.0), Vec3::splat(3.0)),
-            skybox_probe(2, 3, 0, Vec3::splat(-1000.0), Vec3::splat(1000.0)),
-            skybox_probe(3, 4, 0, Vec3::splat(-10_000.0), Vec3::splat(10_000.0)),
-        ]);
+        let index = ReflectionProbeSpatialIndex::build(
+            vec![
+                probe(0, 1, 2, Vec3::splat(-1.0), Vec3::splat(1.0)),
+                probe(1, 2, 1, Vec3::splat(-3.0), Vec3::splat(3.0)),
+                skybox_probe(2, 3, 0, Vec3::splat(-1000.0), Vec3::splat(1000.0)),
+                skybox_probe(3, 4, 0, Vec3::splat(-10_000.0), Vec3::splat(10_000.0)),
+            ],
+            MAX_LOCAL_PROBES,
+        );
 
         let selection = index.select((Vec3::splat(-5.0), Vec3::splat(5.0)));
 
         assert_eq!(selection, expected_selection(3, [1, 2, 0, 0], 0b0010));
+    }
+
+    #[test]
+    fn local_probe_limit_zero_uses_fallback_only() {
+        let index = ReflectionProbeSpatialIndex::build(
+            vec![
+                probe(0, 1, 1, Vec3::splat(-1.0), Vec3::splat(1.0)),
+                skybox_probe(1, 2, 0, Vec3::splat(-1000.0), Vec3::splat(1000.0)),
+            ],
+            0,
+        );
+
+        let selection = index.select((Vec3::splat(-0.5), Vec3::splat(0.5)));
+
+        assert_eq!(selection, expected_selection(2, [0, 0, 0, 0], 0));
+    }
+
+    #[test]
+    fn local_probe_limit_one_keeps_highest_priority_probe() {
+        let index = ReflectionProbeSpatialIndex::build(
+            vec![
+                probe(0, 1, 2, Vec3::splat(-1.0), Vec3::splat(1.0)),
+                probe(1, 2, 1, Vec3::splat(-3.0), Vec3::splat(3.0)),
+                skybox_probe(2, 3, 0, Vec3::splat(-1000.0), Vec3::splat(1000.0)),
+                skybox_probe(3, 4, 0, Vec3::splat(-10_000.0), Vec3::splat(10_000.0)),
+            ],
+            1,
+        );
+
+        let selection = index.select((Vec3::splat(-5.0), Vec3::splat(5.0)));
+
+        assert_eq!(selection, expected_selection(3, [1, 0, 0, 0], 0b0000));
+    }
+
+    #[test]
+    fn local_probe_limit_two_keeps_top_two_priority_probes() {
+        let index = ReflectionProbeSpatialIndex::build(
+            vec![
+                probe(0, 1, 2, Vec3::splat(-1.0), Vec3::splat(1.0)),
+                probe(1, 2, 1, Vec3::splat(-3.0), Vec3::splat(3.0)),
+                probe(2, 3, 0, Vec3::splat(-5.0), Vec3::splat(5.0)),
+            ],
+            2,
+        );
+
+        let selection = index.select((Vec3::splat(-5.0), Vec3::splat(5.0)));
+
+        assert_eq!(selection, expected_selection(0, [1, 2, 0, 0], 0b0010));
+    }
+
+    #[test]
+    fn higher_importance_prunes_before_larger_overlap() {
+        let index = ReflectionProbeSpatialIndex::build(
+            vec![
+                probe(0, 1, 3, Vec3::splat(-0.5), Vec3::splat(0.5)),
+                probe(1, 2, 1, Vec3::splat(-10.0), Vec3::splat(10.0)),
+            ],
+            1,
+        );
+
+        let selection = index.select((Vec3::splat(-2.0), Vec3::splat(2.0)));
+
+        assert_eq!(selection, expected_selection(0, [1, 0, 0, 0], 0));
     }
 
     #[test]
@@ -646,7 +792,7 @@ mod tests {
                 )
             })
             .collect();
-        let index = ReflectionProbeSpatialIndex::build(probes.clone());
+        let index = ReflectionProbeSpatialIndex::build(probes.clone(), MAX_LOCAL_PROBES);
         let object = (Vec3::new(4.2, -0.25, -0.25), Vec3::new(6.1, 0.25, 0.25));
         let selection = index.select(object);
 
@@ -664,7 +810,7 @@ mod tests {
             if influence_intersection < MIN_BLEND_DISTANCE {
                 continue;
             }
-            insert_probe_score(
+            index.insert_probe_score(
                 &mut brute,
                 ProbeScore {
                     atlas_index: probe.atlas_index,

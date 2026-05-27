@@ -94,6 +94,16 @@ pub enum SurfaceSubmitTrace {
     Desktop,
 }
 
+impl SurfaceSubmitTrace {
+    /// Returns `true` when this surface submit should update compact frame timing.
+    pub(crate) const fn tracks_frame_timing(self) -> bool {
+        match self {
+            Self::Desktop | Self::ClearFallback => true,
+            Self::VrMirror | Self::VrClear => false,
+        }
+    }
+}
+
 impl From<SurfaceAcquireTrace> for GpuFlightSurfaceSite {
     fn from(trace: SurfaceAcquireTrace) -> Self {
         match trace {
@@ -202,20 +212,34 @@ pub fn submit_surface_frame_traced(
     match trace {
         SurfaceSubmitTrace::VrMirror => {
             profiling::scope!("gpu::surface_submit.vr_mirror");
-            gpu.submit_frame_batch(command_buffers, Some(frame), None);
+            submit_surface_command_buffers(gpu, command_buffers, frame, trace);
         }
         SurfaceSubmitTrace::VrClear => {
             profiling::scope!("gpu::surface_submit.vr_clear");
-            gpu.submit_frame_batch(command_buffers, Some(frame), None);
+            submit_surface_command_buffers(gpu, command_buffers, frame, trace);
         }
         SurfaceSubmitTrace::ClearFallback => {
             profiling::scope!("gpu::surface_submit.clear_fallback");
-            gpu.submit_frame_batch(command_buffers, Some(frame), None);
+            submit_surface_command_buffers(gpu, command_buffers, frame, trace);
         }
         SurfaceSubmitTrace::Desktop => {
             profiling::scope!("gpu::surface_submit.desktop");
-            gpu.submit_frame_batch(command_buffers, Some(frame), None);
+            submit_surface_command_buffers(gpu, command_buffers, frame, trace);
         }
+    }
+}
+
+/// Submits a surface frame through the tracked or untracked timing path for `trace`.
+fn submit_surface_command_buffers(
+    gpu: &GpuContext,
+    command_buffers: Vec<wgpu::CommandBuffer>,
+    frame: wgpu::SurfaceTexture,
+    trace: SurfaceSubmitTrace,
+) {
+    if trace.tracks_frame_timing() {
+        gpu.submit_frame_batch(command_buffers, Some(frame), None);
+    } else {
+        gpu.submit_frame_batch_untracked(command_buffers, Some(frame), None);
     }
 }
 
@@ -368,4 +392,21 @@ where
     };
     submit_surface_frame_traced(gpu, vec![command_buffer], frame, submit_trace);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SurfaceSubmitTrace;
+
+    #[test]
+    fn vr_surface_submits_do_not_track_compact_frame_timing() {
+        assert!(!SurfaceSubmitTrace::VrMirror.tracks_frame_timing());
+        assert!(!SurfaceSubmitTrace::VrClear.tracks_frame_timing());
+    }
+
+    #[test]
+    fn desktop_surface_submits_track_compact_frame_timing() {
+        assert!(SurfaceSubmitTrace::Desktop.tracks_frame_timing());
+        assert!(SurfaceSubmitTrace::ClearFallback.tracks_frame_timing());
+    }
 }

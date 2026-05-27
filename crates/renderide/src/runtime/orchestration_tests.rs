@@ -10,8 +10,8 @@ use crate::ipc::SharedMemoryAccessor;
 use crate::shared::buffer::SharedMemoryBufferDescriptor;
 use crate::shared::{
     DesktopConfig, FrameSubmitData, FreeSharedMemoryView, Guid, HeadOutputDevice, KeepAlive,
-    MeshRenderablesUpdate, QualityConfig, RenderSpaceUpdate, RendererCommand, RendererInitData,
-    RendererInitFinalizeData, RendererShutdown,
+    MeshRenderablesUpdate, QualityConfig, RenderSpaceUpdate, RendererCommand, RendererEngineReady,
+    RendererInitData, RendererInitFinalizeData, RendererShutdown,
 };
 
 use super::RendererRuntime;
@@ -78,7 +78,37 @@ fn dispatch_frame_submit_updates_lockstep_fields() {
     apply_running_command(&mut rt, RendererCommand::FrameSubmitData(data));
     assert_eq!(rt.last_frame_index(), 101);
     assert!(rt.last_frame_data_processed());
+    assert!(rt.pending_frame_submit_render());
     assert!(!rt.fatal_error());
+}
+
+#[test]
+fn render_attempt_clears_pending_frame_submit_render() {
+    let mut rt = test_runtime_standalone();
+    rt.test_set_shared_memory("test_shm");
+    let data = FrameSubmitData {
+        frame_index: 101,
+        ..Default::default()
+    };
+    apply_running_command(&mut rt, RendererCommand::FrameSubmitData(data));
+    assert!(rt.pending_frame_submit_render());
+
+    rt.note_frame_render_attempted();
+
+    assert!(!rt.pending_frame_submit_render());
+}
+
+#[test]
+fn renderer_engine_ready_activates_host_lockstep_gate() {
+    let mut rt = test_runtime_standalone();
+    assert!(!rt.host_lockstep_activated());
+
+    apply_running_command(
+        &mut rt,
+        RendererCommand::RendererEngineReady(RendererEngineReady::default()),
+    );
+
+    assert!(rt.host_lockstep_activated());
 }
 
 #[test]
@@ -93,7 +123,7 @@ fn dispatch_quality_config_increments_unhandled_when_no_handler() {
 }
 
 #[test]
-fn dispatch_desktop_config_is_ignored_without_overriding_renderer_settings() {
+fn dispatch_desktop_config_overrides_effective_caps_without_mutating_renderer_settings() {
     let mut rt = test_runtime_standalone();
     let before = rt.unhandled_ipc_command_event_total();
     {
@@ -107,11 +137,14 @@ fn dispatch_desktop_config_is_ignored_without_overriding_renderer_settings() {
         &mut rt,
         RendererCommand::DesktopConfig(DesktopConfig {
             maximum_background_framerate: Some(30),
-            maximum_foreground_framerate: None,
+            maximum_foreground_framerate: Some(120),
             v_sync: true,
         }),
     );
 
+    let caps = rt.desktop_frame_pacing_caps();
+    assert_eq!(caps.foreground_fps_cap, 120);
+    assert_eq!(caps.background_fps_cap, 30);
     {
         let settings = rt.settings().read().expect("settings readable");
         assert_eq!(settings.rendering.vsync, VsyncMode::On);
@@ -123,7 +156,7 @@ fn dispatch_desktop_config_is_ignored_without_overriding_renderer_settings() {
 }
 
 #[test]
-fn dispatch_desktop_config_ignores_negative_and_zero_host_caps() {
+fn dispatch_desktop_config_ignores_negative_and_zero_host_caps_for_effective_caps() {
     let mut rt = test_runtime_standalone();
     {
         let mut settings = rt.settings().write().expect("settings writable");
@@ -141,6 +174,9 @@ fn dispatch_desktop_config_ignores_negative_and_zero_host_caps() {
         }),
     );
 
+    let caps = rt.desktop_frame_pacing_caps();
+    assert_eq!(caps.foreground_fps_cap, 240);
+    assert_eq!(caps.background_fps_cap, 60);
     {
         let settings = rt.settings().read().expect("settings readable");
         assert_eq!(settings.rendering.vsync, VsyncMode::On);

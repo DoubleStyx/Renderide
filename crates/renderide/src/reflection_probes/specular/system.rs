@@ -41,6 +41,8 @@ pub(crate) struct ReflectionProbeSpecularMaintainParams<'a> {
     pub(crate) sh2_system: &'a mut ReflectionProbeSh2System,
     /// Whether reflection probes should contribute SH2 indirect diffuse lighting.
     pub(crate) reflection_probe_sh2_enabled: bool,
+    /// Maximum number of local reflection probes that can contribute to reflections on a single mesh.
+    pub(crate) max_local_reflection_probes: usize,
 }
 
 /// Specular reflection-probe bake/cache/selection system.
@@ -118,6 +120,8 @@ impl ReflectionProbeSpecularSystem {
         let face_size = clamp_face_size(DEFAULT_REFLECTION_PROBE_FACE_SIZE, params.gpu.limits());
         let mut collected = CollectedProbeResources::default();
 
+        self.selection
+            .set_max_local_reflection_probes(params.max_local_reflection_probes);
         self.collect_probe_resources(&mut params, face_size, &mut collected);
         self.captures.retain_active(&collected.active_capture_keys);
         self.last_ready

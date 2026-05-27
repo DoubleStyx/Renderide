@@ -105,6 +105,10 @@ mod tests {
             RendererSettings::CURRENT_CONFIG_VERSION
         );
         assert_eq!(settings.display.focused_fps_cap, 75);
+        assert_eq!(
+            settings.experimental.max_local_reflection_probes,
+            crate::reflection_probes::specular::MAX_LOCAL_PROBES
+        );
         assert!(!settings.experimental.reflection_probe_sh2_enabled);
     }
 
@@ -117,6 +121,10 @@ mod tests {
         let decoded: RendererSettings = toml::from_str(&text).expect("deserialize");
 
         assert!(text.contains("[experimental]"), "got:\n{text}");
+        assert_eq!(
+            decoded.experimental.max_local_reflection_probes,
+            crate::reflection_probes::specular::MAX_LOCAL_PROBES
+        );
         assert!(!decoded.experimental.reflection_probe_sh2_enabled);
     }
 }

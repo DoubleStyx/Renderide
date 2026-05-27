@@ -68,6 +68,7 @@ impl ReflectionProbeServices {
         asset_transfers: &AssetTransferQueue,
         render_context: RenderingContext,
         reflection_probe_sh2_enabled: bool,
+        max_local_reflection_probes: usize,
     ) -> Option<ReflectionProbeSpecularResources> {
         self.specular
             .maintain(ReflectionProbeSpecularMaintainParams {
@@ -77,6 +78,7 @@ impl ReflectionProbeServices {
                 render_context,
                 sh2_system: &mut self.sh2,
                 reflection_probe_sh2_enabled,
+                max_local_reflection_probes,
             });
         self.specular.resources()
     }

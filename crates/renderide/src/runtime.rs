@@ -103,6 +103,8 @@ use state::{
     RuntimeConfigState, RuntimeDiagnosticsState, RuntimeIpcState, RuntimeTickState, RuntimeXrStats,
 };
 
+pub(crate) use state::DesktopFramePacingCaps;
+
 /// Result of one [`RendererRuntime::tick_one_frame`] call.
 ///
 /// `shutdown_requested` lets the calling driver exit its event loop; `fatal_error` triggers a
@@ -116,6 +118,8 @@ pub struct TickOutcome {
     pub fatal_error: bool,
     /// Render-graph execution error for this tick, if any.
     pub graph_error: Option<GraphExecuteError>,
+    /// Whether this tick intentionally skipped rendering while waiting for host lockstep.
+    pub render_skipped: bool,
 }
 
 /// Facade: [`RendererFrontend`] + [`SceneCoordinator`] + [`RenderBackend`] + ingestion helpers.

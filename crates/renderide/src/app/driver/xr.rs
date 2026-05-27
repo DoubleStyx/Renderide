@@ -5,8 +5,8 @@ use glam::{Quat, Vec3};
 use crate::diagnostics::gpu_flight_recorder::GpuFlightRecorder;
 use crate::frontend::input::vr_inputs_for_session;
 use crate::gpu::GpuQueueAccessGate;
-use crate::shared::{HeadOutputDevice, OutputState, VRControllerState, VRInputsState};
-use crate::xr::{OpenxrFrameTick, synthesize_hand_states};
+use crate::shared::{HandState, HeadOutputDevice, OutputState, VRControllerState, VRInputsState};
+use crate::xr::OpenxrFrameTick;
 
 use super::AppDriver;
 use std::sync::Arc;
@@ -16,17 +16,17 @@ use std::sync::Arc;
 pub(super) struct XrInputCache {
     head_pose: Option<(Vec3, Quat)>,
     controllers: Vec<VRControllerState>,
+    hand_states: Vec<HandState>,
 }
 
 impl XrInputCache {
     /// Builds host-facing VR input for the current session output device.
     pub(super) fn build_vr_input(&self, output_device: HeadOutputDevice) -> Option<VRInputsState> {
-        let synthesised_hands = synthesize_hand_states(&self.controllers);
         vr_inputs_for_session(
             output_device,
             self.head_pose,
             &self.controllers,
-            synthesised_hands,
+            self.hand_states.clone(),
         )
     }
 }
@@ -95,7 +95,10 @@ impl AppDriver {
             session.handles.xr_session.stage_space(),
             tick.predicted_display_time,
         ) {
-            Ok(controllers) => self.xr_input_cache.controllers = controllers,
+            Ok((controllers, hand_states)) => {
+                self.xr_input_cache.controllers = controllers;
+                self.xr_input_cache.hand_states = hand_states;
+            }
             Err(error) => logger::trace!("OpenXR input sync: {error:?}"),
         }
     }

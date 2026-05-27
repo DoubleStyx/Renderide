@@ -47,6 +47,11 @@ impl FrontendTransport {
         self.ipc.is_some()
     }
 
+    /// Whether this renderer was constructed without host IPC parameters.
+    pub(crate) fn is_standalone(&self) -> bool {
+        self.params.is_none()
+    }
+
     /// Mutable reference to the connected dual-queue IPC, if present.
     pub(crate) fn ipc_mut(&mut self) -> Option<&mut DualQueueIpc> {
         self.ipc.as_mut()

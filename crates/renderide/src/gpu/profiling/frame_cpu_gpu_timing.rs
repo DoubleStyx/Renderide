@@ -18,7 +18,8 @@
 //!   the wall-clock latency from the tick's first tracked `Queue::submit` return on the driver
 //!   thread to the tick's last [`wgpu::Queue::on_submitted_work_done`] callback --
 //!   [`GpuMsSource`] records which path produced the value so the HUD can relabel the row
-//!   honestly.
+//!   honestly. Presentation-only submits, such as VR mirror blits and OpenXR handoff copies, opt
+//!   out so they do not contribute to the primary render graph timing for the tick.
 //! - **Roundtrip ms** -- wall-clock between consecutive winit ticks. Tracked outside this
 //!   struct ([`crate::diagnostics::FrameTimingHudSnapshot::wall_frame_time_ms`]).
 //!
@@ -51,7 +52,7 @@ const MAX_PENDING_PAIRS: usize = 16;
 /// it for actual compute time.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GpuMsSource {
-    /// Computed from real GPU `WriteTimestamp` queries that bracket the tick's command buffers.
+    /// Computed from real GPU `WriteTimestamp` queries that bracket tracked command buffers.
     FrameBracket,
     /// Wall-clock between driver-thread `Queue::submit` returning and
     /// `Queue::on_submitted_work_done` firing. Fallback used when the adapter lacks the
@@ -250,7 +251,7 @@ impl FrameCpuGpuTiming {
         }
     }
 
-    /// Call after all render graph submits for this tick (last submit index is known).
+    /// Call after all tracked render submits for this tick (last submit index is known).
     ///
     /// Picks up the per-tick GPU value when the driver thread / readback already reported it;
     /// the GPU number may still arrive later, in which case

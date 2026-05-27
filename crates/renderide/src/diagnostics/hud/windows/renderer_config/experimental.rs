@@ -1,11 +1,22 @@
 //! Experimental renderer-config HUD controls.
 
 use crate::config::RendererSettings;
+use crate::reflection_probes::specular::MAX_LOCAL_PROBES;
 
 /// Experimental feature flags.
 pub(super) fn experimental_section(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bool) {
     ui.text("Experimental");
     ui.indent();
+    let mut mrp = g.experimental.effective_max_local_reflection_probes();
+    if ui.slider(
+        "Maximum number of local reflection probes per mesh",
+        0,
+        MAX_LOCAL_PROBES,
+        &mut mrp,
+    ) {
+        g.experimental.max_local_reflection_probes = mrp.clamp(0, MAX_LOCAL_PROBES);
+        *dirty = true;
+    }
     if ui.checkbox(
         "Use reflection probe SH2",
         &mut g.experimental.reflection_probe_sh2_enabled,

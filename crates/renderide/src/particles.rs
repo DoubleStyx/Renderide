@@ -9,6 +9,7 @@ use thiserror::Error;
 use crate::assets::mesh::{
     GpuMesh, MeshGpuUploadContext, compute_and_validate_mesh_layout, try_upload_mesh_from_raw,
 };
+use crate::color_space::srgb_channel_to_linear;
 use crate::shared::buffer::SharedMemoryBufferDescriptor;
 use crate::shared::{
     IndexBufferFormat, MeshUploadData, PointRenderBufferUpload, RenderBoundingBox,
@@ -440,6 +441,25 @@ fn read_pod_at<T: bytemuck::Pod>(raw: &[u8], range: &Range<usize>, index: usize)
     bytemuck::pod_read_unaligned(&raw[start..start + stride])
 }
 
+/// Converts one PhotonDust LDR sRGB vertex-color channel into renderer-linear space.
+fn photondust_srgb_ldr_channel_to_linear(value: f32) -> f32 {
+    if value > -1.0 && value < 1.0 {
+        srgb_channel_to_linear(value)
+    } else {
+        value
+    }
+}
+
+/// Converts PhotonDust sRGB particle color into renderer-linear vertex color.
+fn photondust_particle_color_to_linear(color: Vec4) -> Vec4 {
+    Vec4::new(
+        photondust_srgb_ldr_channel_to_linear(color.x),
+        photondust_srgb_ldr_channel_to_linear(color.y),
+        photondust_srgb_ldr_channel_to_linear(color.z),
+        color.w,
+    )
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PointParticle {
     /// Particle center in the render-buffer renderer's local space.
@@ -448,7 +468,7 @@ pub(crate) struct PointParticle {
     pub(crate) rotation: Quat,
     /// Particle size from PhotonDust.
     pub(crate) size: Vec3,
-    /// Particle color from PhotonDust.
+    /// Particle color converted from PhotonDust sRGB to linear vertex color.
     pub(crate) color: Vec4,
     /// Optional texture-sheet frame index.
     pub(crate) frame_index: Option<u16>,
@@ -517,7 +537,7 @@ fn decode_point_particles(
             position: Vec3::from_array(p),
             rotation: Quat::from_xyzw(r[0], r[1], r[2], r[3]),
             size: Vec3::from_array(s),
-            color: Vec4::from_array(c),
+            color: photondust_particle_color_to_linear(Vec4::from_array(c)),
             frame_index,
         }
     };
@@ -649,7 +669,7 @@ fn fill_billboard_particle(
     indices: &mut [u8],
 ) {
     let (_, _, roll) = point.rotation.to_euler(glam::EulerRot::XYZ);
-    let point_data = Vec3::new(point.size.x, point.size.y, roll);
+    let point_data = Vec3::new(point.size.x * 0.5, point.size.y * 0.5, roll);
     for (corner_index, corner) in [
         Vec2::new(0.0, 0.0),
         Vec2::new(1.0, 0.0),
@@ -729,8 +749,11 @@ impl TrailOffset {
 
 #[derive(Clone, Copy)]
 struct TrailPoint {
+    /// Trail point center in the render-buffer renderer's local space.
     position: Vec3,
+    /// Trail point color converted from PhotonDust sRGB to linear vertex color.
     color: Vec4,
+    /// Trail width from PhotonDust.
     width: f32,
 }
 
@@ -889,7 +912,7 @@ fn decode_trail_polyline(
             let width = read_pod_at::<f32>(raw, sizes, point_index).max(0.0);
             points.push(TrailPoint {
                 position: Vec3::from_array(p),
-                color: Vec4::from_array(c),
+                color: photondust_particle_color_to_linear(Vec4::from_array(c)),
                 width,
             });
         }
@@ -1553,7 +1576,7 @@ mod tests {
         raw.extend_from_slice(bytemuck::cast_slice(&[[1.0f32, 2.0, 3.0]]));
         raw.extend_from_slice(bytemuck::cast_slice(&[[0.0f32, 0.0, 0.0, 1.0]]));
         raw.extend_from_slice(bytemuck::cast_slice(&[[4.0f32, 5.0, 6.0]]));
-        raw.extend_from_slice(bytemuck::cast_slice(&[[0.25f32, 0.5, 0.75, 1.0]]));
+        raw.extend_from_slice(bytemuck::cast_slice(&[[0.25f32, 0.5, 1.25, 0.75]]));
         raw.extend_from_slice(bytemuck::cast_slice(&[7u16]));
         let upload = PointRenderBufferUpload {
             asset_id: 12,
@@ -1571,6 +1594,10 @@ mod tests {
 
         assert_eq!(points[0].position, Vec3::new(1.0, 2.0, 3.0));
         assert_eq!(points[0].size, Vec3::new(4.0, 5.0, 6.0));
+        assert!(
+            Vec4::new(0.050_876_09, 0.214_041_14, 1.25, 0.75).distance_squared(points[0].color)
+                < 1e-5
+        );
         assert_eq!(points[0].frame_index, Some(7));
     }
 
@@ -1607,6 +1634,7 @@ mod tests {
         );
         let first_vertex: &[f32] = bytemuck::cast_slice(&vertices[..generated_vertex_stride()]);
         assert_eq!(&first_vertex[..3], &[1.0, 2.0, 3.0]);
+        assert_eq!(&first_vertex[3..5], &[0.5, 0.5]);
         assert_eq!(&first_vertex[6..8], &[0.0, 0.0]);
     }
 
@@ -1624,7 +1652,7 @@ mod tests {
             [3.0f32, 4.0, 0.0],
         ]));
         raw.extend_from_slice(bytemuck::cast_slice(&[
-            [1.0f32, 1.0, 1.0, 1.0],
+            [0.25f32, 0.5, 1.25, 0.75],
             [1.0f32, 1.0, 1.0, 1.0],
             [1.0f32, 1.0, 1.0, 1.0],
         ]));
@@ -1643,6 +1671,11 @@ mod tests {
         let trails = decode_trails(&raw, &upload, 1, 3).unwrap();
 
         assert_eq!(trails[0].distances, vec![0.0, 3.0, 7.0]);
+        assert!(
+            Vec4::new(0.050_876_09, 0.214_041_14, 1.25, 0.75)
+                .distance_squared(trails[0].points[0].color)
+                < 1e-5
+        );
         assert_eq!(trails[0].total_distance, 7.0);
     }
 

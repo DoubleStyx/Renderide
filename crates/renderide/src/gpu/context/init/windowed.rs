@@ -54,8 +54,8 @@ impl GpuContext {
     /// when [`wgpu::PowerPreference::LowPower`]).
     ///
     /// `vsync` is resolved against the surface's actual present-mode capabilities via
-    /// [`VsyncMode::resolve_present_mode`] (so e.g. [`VsyncMode::On`] picks `FifoRelaxed` when
-    /// available, then falls back to plain `Fifo`).
+    /// [`VsyncMode::resolve_present_mode`] (so e.g. [`VsyncMode::On`] picks strict `Fifo`
+    /// presentation).
     ///
     /// `max_frame_latency` is the initial fixed value for
     /// [`wgpu::SurfaceConfiguration::desired_maximum_frame_latency`]. The renderer uses `2`,

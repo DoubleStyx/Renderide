@@ -132,6 +132,28 @@ focused_fps = 10
 }
 
 #[test]
+fn max_local_reflection_probe_env_override_clamps_effective_value() {
+    const PROBE_LIMIT_VAR: &str = "RENDERIDE_EXPERIMENTAL__MAX_LOCAL_REFLECTION_PROBES";
+
+    let _guard = crate::config::CONFIG_ENV_TEST_LOCK.lock().expect("lock");
+    let _env = EnvGuard::capture(&[PROBE_LIMIT_VAR]);
+    // SAFETY: env mutation in test; serialized via CONFIG_ENV_TEST_LOCK and restored by EnvGuard.
+    unsafe {
+        std::env::set_var(PROBE_LIMIT_VAR, "99");
+    }
+
+    let settings = load_settings_from_toml_str("").expect("figment extract");
+
+    assert_eq!(settings.experimental.max_local_reflection_probes, 99);
+    assert_eq!(
+        settings
+            .experimental
+            .effective_max_local_reflection_probes(),
+        crate::reflection_probes::specular::MAX_LOCAL_PROBES
+    );
+}
+
+#[test]
 fn ignore_config_skips_file_and_suppresses_writes() {
     let result = load_renderer_settings(ConfigFilePolicy::Ignore);
     assert_eq!(result.resolve.source, ConfigSource::None);
