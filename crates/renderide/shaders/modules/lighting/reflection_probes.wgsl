@@ -146,7 +146,7 @@ fn add_importance_to_total(total: vec4<f32>, importance: ProbeBlendGroup) -> vec
     if (importance.weight_sum < MIN_PROBE_BLEND_WEIGHT || importance.coverage < MIN_PROBE_BLEND_WEIGHT) {
         return total;
     }
-    let remaining = min(importance.weight_sum, 1.0 - total.w);
+    let remaining = min(importance.coverage, 1.0 - total.w);
     let result = importance.weighted_result / importance.weight_sum;
     return total + vec4<f32>(result * remaining, remaining);
 }

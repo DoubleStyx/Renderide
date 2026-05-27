@@ -229,7 +229,7 @@ impl RenderBackend {
             .unwrap_or_default()
     }
 
-    /// Snapshot of the live reflection-probe SH2 experimental toggle.
+    /// Snapshot of the live experimental renderer settings.
     pub(crate) fn experimental_settings(&self) -> crate::config::ExperimentalSettings {
         self.renderer_settings
             .as_ref()
@@ -364,7 +364,7 @@ impl RenderBackend {
             &self.asset_transfers,
             render_context,
             experimental_settings.reflection_probe_sh2_enabled,
-            experimental_settings.max_local_reflection_probes,
+            experimental_settings.effective_max_local_reflection_probes(),
         );
         let _ = self
             .frame_services

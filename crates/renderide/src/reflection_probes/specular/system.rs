@@ -120,7 +120,8 @@ impl ReflectionProbeSpecularSystem {
         let face_size = clamp_face_size(DEFAULT_REFLECTION_PROBE_FACE_SIZE, params.gpu.limits());
         let mut collected = CollectedProbeResources::default();
 
-        self.selection.max_local_reflection_probes = params.max_local_reflection_probes;
+        self.selection
+            .set_max_local_reflection_probes(params.max_local_reflection_probes);
         self.collect_probe_resources(&mut params, face_size, &mut collected);
         self.captures.retain_active(&collected.active_capture_keys);
         self.last_ready

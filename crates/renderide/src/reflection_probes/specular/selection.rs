@@ -6,8 +6,14 @@ use crate::scene::RenderSpaceId;
 /// Maximum number of probes in one BVH leaf.
 const BVH_LEAF_SIZE: usize = 8;
 const MIN_BLEND_DISTANCE: f32 = 1e-6;
+/// Maximum number of local reflection probes packed into one draw.
 pub const MAX_LOCAL_PROBES: usize = 4;
 const CONTAINMENT_EPSILON: f32 = 1e-5;
+
+/// Clamps user configuration to the fixed per-draw packing capacity.
+fn clamp_local_probe_limit(max_local_reflection_probes: usize) -> usize {
+    max_local_reflection_probes.min(MAX_LOCAL_PROBES)
+}
 
 /// Per-draw reflection-probe selection stored in the per-draw slab.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -31,20 +37,20 @@ impl ReflectionProbeDrawSelection {
 /// CPU-side selector snapshot used during world-mesh draw collection.
 pub struct ReflectionProbeFrameSelection {
     spaces: HashMap<RenderSpaceId, ReflectionProbeSpatialIndex>,
-    pub(super) max_local_reflection_probes: usize,
+    max_local_reflection_probes: usize,
 }
 
 impl Default for ReflectionProbeFrameSelection {
     fn default() -> Self {
         Self {
             spaces: Default::default(),
-            max_local_reflection_probes: 2,
+            max_local_reflection_probes: MAX_LOCAL_PROBES,
         }
     }
 }
 
 impl ReflectionProbeFrameSelection {
-    /// Selects a global fallback probe and up to 4 local probes for one object AABB.
+    /// Selects a global fallback probe and configured local probes for one object AABB.
     #[must_use]
     pub fn select(
         &self,
@@ -60,6 +66,11 @@ impl ReflectionProbeFrameSelection {
             return selection;
         }
         ReflectionProbeDrawSelection::default()
+    }
+
+    /// Sets the maximum number of local probes selected per draw.
+    pub(super) fn set_max_local_reflection_probes(&mut self, max_local_reflection_probes: usize) {
+        self.max_local_reflection_probes = clamp_local_probe_limit(max_local_reflection_probes);
     }
 
     pub(super) fn rebuild_spatial<I>(&mut self, probes: I)
@@ -108,7 +119,7 @@ impl ReflectionProbeSpatialIndex {
     pub(super) fn build(probes: Vec<SpatialProbe>, max_local_reflection_probes: usize) -> Self {
         let mut out = Self {
             order: (0..probes.len()).collect(),
-            max_local_reflection_probes,
+            max_local_reflection_probes: clamp_local_probe_limit(max_local_reflection_probes),
             probes,
             nodes: Vec::new(),
             root: None,
@@ -159,6 +170,7 @@ impl ReflectionProbeSpatialIndex {
                         probe_volume: probe.volume,
                         center_distance_sq: (probe.center - object_center).length_squared(),
                         renderable_index: probe.renderable_index,
+                        skybox: probe.skybox,
                     };
                     if probe.skybox {
                         if aabb_contains(probe.aabb_min, probe.aabb_max, object_min, object_max) {
@@ -246,17 +258,26 @@ struct ProbeScore {
     probe_volume: f32,
     center_distance_sq: f32,
     renderable_index: i32,
+    skybox: bool,
 }
 
 /// Order of preference:
-/// 1. Largest influence intersection
-/// 2. Smallest probe volume
-/// 3. Closest to the center
-/// 4. Lowest renderable index
+/// 1. Largest importance set by creator
+/// 2. Non-skybox preferred over skybox
+/// 3. Largest influence intersection
+/// 4. Smallest probe volume
+/// 5. Closest to the center
+/// 6. Lowest renderable index
 fn score_better(a: ProbeScore, b: ProbeScore) -> bool {
-    a.influence_intersection
-        .total_cmp(&b.influence_intersection)
+    a.importance
+        .cmp(&b.importance)
         .reverse()
+        .then_with(|| a.skybox.cmp(&b.skybox))
+        .then_with(|| {
+            a.influence_intersection
+                .total_cmp(&b.influence_intersection)
+                .reverse()
+        })
         .then_with(|| a.probe_volume.total_cmp(&b.probe_volume))
         .then_with(|| a.center_distance_sq.total_cmp(&b.center_distance_sq))
         .then_with(|| a.renderable_index.cmp(&b.renderable_index))
@@ -264,7 +285,7 @@ fn score_better(a: ProbeScore, b: ProbeScore) -> bool {
 }
 
 fn selection_from_scores(
-    mut top: Vec<ProbeScore>,
+    top: Vec<ProbeScore>,
     fallback: Option<ProbeScore>,
 ) -> ReflectionProbeDrawSelection {
     let mut atlas_indices = [0u16; MAX_LOCAL_PROBES + 1];
@@ -273,9 +294,7 @@ fn selection_from_scores(
     if let Some(probe) = fallback {
         atlas_indices[0] = probe.atlas_index;
     }
-    // Stable reorder by descending importance to keep the scoring order
-    top.sort_by_key(|probe| -probe.importance);
-    for (i, probe) in top.iter().enumerate() {
+    for (i, probe) in top.iter().take(MAX_LOCAL_PROBES).enumerate() {
         atlas_indices[i + 1] = probe.atlas_index;
         if previous_importance.is_some_and(|importance| probe.importance < importance) {
             importance_mask |= 1 << i;
@@ -425,6 +444,35 @@ mod tests {
             volume: aabb_volume(min, max),
             skybox,
         }
+    }
+
+    #[test]
+    fn frame_selection_defaults_to_full_local_probe_capacity() {
+        let selection = ReflectionProbeFrameSelection::default();
+
+        assert_eq!(selection.max_local_reflection_probes, MAX_LOCAL_PROBES);
+    }
+
+    #[test]
+    fn configured_limit_clamps_to_packed_capacity() {
+        let index = ReflectionProbeSpatialIndex::build(
+            (0..=MAX_LOCAL_PROBES)
+                .map(|i| {
+                    probe(
+                        i as i32,
+                        (i + 1) as u16,
+                        1,
+                        Vec3::splat(-1.0),
+                        Vec3::splat(1.0),
+                    )
+                })
+                .collect(),
+            MAX_LOCAL_PROBES + 99,
+        );
+
+        let selection = index.select((Vec3::splat(-0.5), Vec3::splat(0.5)));
+
+        assert_eq!(selection, expected_selection(0, [1, 2, 3, 4], 0));
     }
 
     #[test]
@@ -668,7 +716,22 @@ mod tests {
     }
 
     #[test]
-    fn limits_number_of_selected_probes_depending_on_settings() {
+    fn local_probe_limit_zero_uses_fallback_only() {
+        let index = ReflectionProbeSpatialIndex::build(
+            vec![
+                probe(0, 1, 1, Vec3::splat(-1.0), Vec3::splat(1.0)),
+                skybox_probe(1, 2, 0, Vec3::splat(-1000.0), Vec3::splat(1000.0)),
+            ],
+            0,
+        );
+
+        let selection = index.select((Vec3::splat(-0.5), Vec3::splat(0.5)));
+
+        assert_eq!(selection, expected_selection(2, [0, 0, 0, 0], 0));
+    }
+
+    #[test]
+    fn local_probe_limit_one_keeps_highest_priority_probe() {
         let index = ReflectionProbeSpatialIndex::build(
             vec![
                 probe(0, 1, 2, Vec3::splat(-1.0), Vec3::splat(1.0)),
@@ -681,7 +744,38 @@ mod tests {
 
         let selection = index.select((Vec3::splat(-5.0), Vec3::splat(5.0)));
 
-        assert_eq!(selection, expected_selection(3, [2, 0, 0, 0], 0b0000));
+        assert_eq!(selection, expected_selection(3, [1, 0, 0, 0], 0b0000));
+    }
+
+    #[test]
+    fn local_probe_limit_two_keeps_top_two_priority_probes() {
+        let index = ReflectionProbeSpatialIndex::build(
+            vec![
+                probe(0, 1, 2, Vec3::splat(-1.0), Vec3::splat(1.0)),
+                probe(1, 2, 1, Vec3::splat(-3.0), Vec3::splat(3.0)),
+                probe(2, 3, 0, Vec3::splat(-5.0), Vec3::splat(5.0)),
+            ],
+            2,
+        );
+
+        let selection = index.select((Vec3::splat(-5.0), Vec3::splat(5.0)));
+
+        assert_eq!(selection, expected_selection(0, [1, 2, 0, 0], 0b0010));
+    }
+
+    #[test]
+    fn higher_importance_prunes_before_larger_overlap() {
+        let index = ReflectionProbeSpatialIndex::build(
+            vec![
+                probe(0, 1, 3, Vec3::splat(-0.5), Vec3::splat(0.5)),
+                probe(1, 2, 1, Vec3::splat(-10.0), Vec3::splat(10.0)),
+            ],
+            1,
+        );
+
+        let selection = index.select((Vec3::splat(-2.0), Vec3::splat(2.0)));
+
+        assert_eq!(selection, expected_selection(0, [1, 0, 0, 0], 0));
     }
 
     #[test]
@@ -725,6 +819,7 @@ mod tests {
                     probe_volume: probe.volume,
                     center_distance_sq: (probe.center - object_center).length_squared(),
                     renderable_index: probe.renderable_index,
+                    skybox: probe.skybox,
                 },
             );
         }
