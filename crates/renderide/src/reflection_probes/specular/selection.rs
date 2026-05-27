@@ -137,11 +137,13 @@ impl ReflectionProbeSpatialIndex {
     #[must_use]
     pub fn select(&self, object_aabb: (Vec3, Vec3)) -> ReflectionProbeDrawSelection {
         let object_min = Vec3A::from(object_aabb.0);
-        let object_max = Vec3A::from(object_aabb.1);
+        let mut object_max = Vec3A::from(object_aabb.1);
         if self.root.is_none() || !aabb_valid(object_aabb.0, object_aabb.1) {
             return ReflectionProbeDrawSelection::default();
         }
+        object_max = object_max.max(object_min + Vec3A::splat(MIN_BLEND_DISTANCE));
         let object_center = object_center(object_min, object_max);
+        let object_volume = aabb_volume_vec3a(object_min, object_max);
         let mut top: Vec<ProbeScore> = Vec::new();
         let mut fallback: Option<ProbeScore> = None;
         let mut stack = Vec::with_capacity(64);
@@ -160,7 +162,7 @@ impl ReflectionProbeSpatialIndex {
                         object_min,
                         object_max,
                     );
-                    if influence_intersection < MIN_BLEND_DISTANCE {
+                    if influence_intersection < MIN_BLEND_DISTANCE * object_volume {
                         continue;
                     }
                     let score = ProbeScore {
@@ -170,7 +172,6 @@ impl ReflectionProbeSpatialIndex {
                         probe_volume: probe.volume,
                         center_distance_sq: (probe.center - object_center).length_squared(),
                         renderable_index: probe.renderable_index,
-                        skybox: probe.skybox,
                     };
                     if probe.skybox {
                         if aabb_contains(probe.aabb_min, probe.aabb_max, object_min, object_max) {
@@ -258,26 +259,17 @@ struct ProbeScore {
     probe_volume: f32,
     center_distance_sq: f32,
     renderable_index: i32,
-    skybox: bool,
 }
 
 /// Order of preference:
-/// 1. Largest importance set by creator
-/// 2. Non-skybox preferred over skybox
-/// 3. Largest influence intersection
-/// 4. Smallest probe volume
-/// 5. Closest to the center
-/// 6. Lowest renderable index
+/// 1. Largest influence intersection
+/// 2. Smallest probe volume
+/// 3. Closest to the center
+/// 4. Lowest renderable index
 fn score_better(a: ProbeScore, b: ProbeScore) -> bool {
-    a.importance
-        .cmp(&b.importance)
+    a.influence_intersection
+        .total_cmp(&b.influence_intersection)
         .reverse()
-        .then_with(|| a.skybox.cmp(&b.skybox))
-        .then_with(|| {
-            a.influence_intersection
-                .total_cmp(&b.influence_intersection)
-                .reverse()
-        })
         .then_with(|| a.probe_volume.total_cmp(&b.probe_volume))
         .then_with(|| a.center_distance_sq.total_cmp(&b.center_distance_sq))
         .then_with(|| a.renderable_index.cmp(&b.renderable_index))
@@ -285,7 +277,7 @@ fn score_better(a: ProbeScore, b: ProbeScore) -> bool {
 }
 
 fn selection_from_scores(
-    top: Vec<ProbeScore>,
+    mut top: Vec<ProbeScore>,
     fallback: Option<ProbeScore>,
 ) -> ReflectionProbeDrawSelection {
     let mut atlas_indices = [0u16; MAX_LOCAL_PROBES + 1];
@@ -294,6 +286,7 @@ fn selection_from_scores(
     if let Some(probe) = fallback {
         atlas_indices[0] = probe.atlas_index;
     }
+    top.sort_by_key(|probe| -probe.importance);
     for (i, probe) in top.iter().take(MAX_LOCAL_PROBES).enumerate() {
         atlas_indices[i + 1] = probe.atlas_index;
         if previous_importance.is_some_and(|importance| probe.importance < importance) {
@@ -327,7 +320,7 @@ fn aabb_contains(outer_min: Vec3A, outer_max: Vec3A, inner_min: Vec3A, inner_max
 }
 
 pub(super) fn aabb_valid(min: Vec3, max: Vec3) -> bool {
-    min.is_finite() && max.is_finite() && (max - min).cmpgt(Vec3::ZERO).all()
+    min.is_finite() && max.is_finite() && (max - min).cmpgt(Vec3::ZERO).any()
 }
 
 pub(super) fn sanitized_blend_distance(blend_distance: f32) -> f32 {
@@ -731,7 +724,7 @@ mod tests {
     }
 
     #[test]
-    fn local_probe_limit_one_keeps_highest_priority_probe() {
+    fn local_probe_limit_one_keeps_highest_intersection_probe() {
         let index = ReflectionProbeSpatialIndex::build(
             vec![
                 probe(0, 1, 2, Vec3::splat(-1.0), Vec3::splat(1.0)),
@@ -744,11 +737,11 @@ mod tests {
 
         let selection = index.select((Vec3::splat(-5.0), Vec3::splat(5.0)));
 
-        assert_eq!(selection, expected_selection(3, [1, 0, 0, 0], 0b0000));
+        assert_eq!(selection, expected_selection(3, [2, 0, 0, 0], 0b0000));
     }
 
     #[test]
-    fn local_probe_limit_two_keeps_top_two_priority_probes() {
+    fn local_probe_limit_two_keeps_top_two_intersection_probes_then_sorts_by_importance() {
         let index = ReflectionProbeSpatialIndex::build(
             vec![
                 probe(0, 1, 2, Vec3::splat(-1.0), Vec3::splat(1.0)),
@@ -760,11 +753,11 @@ mod tests {
 
         let selection = index.select((Vec3::splat(-5.0), Vec3::splat(5.0)));
 
-        assert_eq!(selection, expected_selection(0, [1, 2, 0, 0], 0b0010));
+        assert_eq!(selection, expected_selection(0, [2, 3, 0, 0], 0b0010));
     }
 
     #[test]
-    fn higher_importance_prunes_before_larger_overlap() {
+    fn higher_importance_prunes_after_larger_overlap() {
         let index = ReflectionProbeSpatialIndex::build(
             vec![
                 probe(0, 1, 3, Vec3::splat(-0.5), Vec3::splat(0.5)),
@@ -775,7 +768,7 @@ mod tests {
 
         let selection = index.select((Vec3::splat(-2.0), Vec3::splat(2.0)));
 
-        assert_eq!(selection, expected_selection(0, [1, 0, 0, 0], 0));
+        assert_eq!(selection, expected_selection(0, [2, 0, 0, 0], 0));
     }
 
     #[test]
@@ -819,7 +812,6 @@ mod tests {
                     probe_volume: probe.volume,
                     center_distance_sq: (probe.center - object_center).length_squared(),
                     renderable_index: probe.renderable_index,
-                    skybox: probe.skybox,
                 },
             );
         }
