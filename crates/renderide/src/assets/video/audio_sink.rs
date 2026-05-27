@@ -28,7 +28,6 @@ impl ResoniteAudioSink {
             )
             .max_buffers(1)
             .drop(true)
-            .sync(true)
             .build();
 
         Self { sink }
