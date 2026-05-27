@@ -132,6 +132,34 @@ impl DecouplingState {
         decision
     }
 
+    /// Returns the next bounded wait slice before this state should be checked again.
+    ///
+    /// [`None`] means no lock-step submit wait is currently active. Finite thresholds return the
+    /// smaller of the remaining activation interval and `max_slice`; non-finite positive
+    /// thresholds never activate, so callers receive `max_slice` and continue waiting for host
+    /// traffic in bounded chunks.
+    pub(crate) fn activation_wait_timeout(
+        &self,
+        now: Instant,
+        awaiting_submit: bool,
+        max_slice: Duration,
+    ) -> Option<Duration> {
+        if !awaiting_submit || self.active {
+            return None;
+        }
+        let sent_at = self.last_frame_start_sent_at?;
+        let interval_seconds = f64::from(self.activate_interval_seconds);
+        if interval_seconds <= 0.0 {
+            return Some(Duration::ZERO);
+        }
+        if !interval_seconds.is_finite() {
+            return Some(max_slice);
+        }
+        let activation_interval = Duration::from_secs_f64(interval_seconds);
+        let elapsed = now.saturating_duration_since(sent_at);
+        Some(activation_interval.saturating_sub(elapsed).min(max_slice))
+    }
+
     /// Records the round-trip for the just-received [`crate::shared::FrameSubmitData`] and, when
     /// decoupled, advances or resets the recouple counter.
     ///
@@ -269,6 +297,67 @@ mod tests {
         let later = t0 + Duration::from_secs_f32(0.01);
         s.update_activation_for_tick(later, true);
         assert!(!s.is_active());
+    }
+
+    #[test]
+    fn activation_wait_timeout_reports_remaining_bounded_interval() {
+        let mut s = DecouplingState::default();
+        s.apply_config(&cfg(0.05, 0.004, 5));
+        let t0 = Instant::now();
+        s.record_frame_start_sent(t0);
+        let wait = s
+            .activation_wait_timeout(
+                t0 + Duration::from_millis(10),
+                true,
+                Duration::from_millis(100),
+            )
+            .expect("active wait");
+        assert!(wait >= Duration::from_millis(39));
+        assert!(wait <= Duration::from_millis(41));
+    }
+
+    #[test]
+    fn activation_wait_timeout_clamps_to_max_slice() {
+        let mut s = DecouplingState::default();
+        s.apply_config(&cfg(1.0, 0.004, 5));
+        let t0 = Instant::now();
+        s.record_frame_start_sent(t0);
+        let wait = s
+            .activation_wait_timeout(t0, true, Duration::from_millis(25))
+            .expect("active wait");
+        assert_eq!(wait, Duration::from_millis(25));
+    }
+
+    #[test]
+    fn activation_wait_timeout_zero_at_or_after_threshold() {
+        let mut s = DecouplingState::default();
+        s.apply_config(&cfg(0.05, 0.004, 5));
+        let t0 = Instant::now();
+        s.record_frame_start_sent(t0);
+        let wait = s
+            .activation_wait_timeout(
+                t0 + Duration::from_millis(60),
+                true,
+                Duration::from_millis(100),
+            )
+            .expect("active wait");
+        assert_eq!(wait, Duration::ZERO);
+    }
+
+    #[test]
+    fn activation_wait_timeout_for_infinite_threshold_uses_max_slice() {
+        let mut s = DecouplingState::default();
+        s.apply_config(&cfg(f32::INFINITY, 0.004, 5));
+        let t0 = Instant::now();
+        s.record_frame_start_sent(t0);
+        let wait = s
+            .activation_wait_timeout(
+                t0 + Duration::from_secs(60),
+                true,
+                Duration::from_millis(250),
+            )
+            .expect("active wait");
+        assert_eq!(wait, Duration::from_millis(250));
     }
 
     #[test]

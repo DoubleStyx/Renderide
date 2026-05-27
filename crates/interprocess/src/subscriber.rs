@@ -1,7 +1,7 @@
 //! Consumer side of the shared-memory queue.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::layout::QueueHeader;
 use crate::layout::{
@@ -118,6 +118,35 @@ impl Subscriber {
             backoff.step(&self.res);
         }
         vec![]
+    }
+
+    /// Waits until the queue appears non-empty or `timeout` elapses.
+    ///
+    /// This does not remove a message; callers should follow with [`Self::try_dequeue`] or their
+    /// normal drain loop. Stale semaphore tokens are tolerated by checking the queue header after
+    /// every wake and continuing until the caller's deadline.
+    pub fn wait_for_message_timeout(&mut self, timeout: Duration) -> bool {
+        if !self.res.header().is_empty() {
+            return true;
+        }
+        if timeout.is_zero() {
+            return false;
+        }
+        let start = Instant::now();
+        loop {
+            let elapsed = start.elapsed();
+            if elapsed >= timeout {
+                return !self.res.header().is_empty();
+            }
+            let remaining = timeout.saturating_sub(elapsed);
+            let acquired = self.res.wait_semaphore_timeout(remaining);
+            if !self.res.header().is_empty() {
+                return true;
+            }
+            if !acquired {
+                return false;
+            }
+        }
     }
 
     /// Returns the next message if one is ready; non-blocking aside from contender spin windows.
@@ -263,6 +292,26 @@ mod tests {
         );
         let cancel = AtomicBool::new(true);
         assert!(subscriber.dequeue(&cancel).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wait_for_message_timeout_observes_publish() {
+        let dir =
+            std::env::temp_dir().join(format!("interprocess_sub_wait_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let opts = QueueOptions::with_path("sub_wait", &dir, 4096).expect("valid");
+        let mut publisher = Publisher::new(opts.clone()).expect("publisher");
+        let mut subscriber = Subscriber::new(opts).expect("subscriber");
+
+        assert!(!subscriber.wait_for_message_timeout(Duration::from_millis(0)));
+        assert!(publisher.try_enqueue(b"payload"));
+        assert!(subscriber.wait_for_message_timeout(Duration::from_millis(50)));
+        assert_eq!(
+            subscriber.try_dequeue().as_deref(),
+            Some(b"payload".as_slice())
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

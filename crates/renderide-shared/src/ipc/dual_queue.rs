@@ -3,6 +3,8 @@
 //! Naming matches the host client when the renderer is **non-authority**: subscribe on `...A`,
 //! publish on `...S`.
 
+use std::time::Duration;
+
 use interprocess::{Publisher, QueueFactory, Subscriber};
 
 use super::connection::{ConnectionParams, InitError, publisher_queue_name, subscriber_queue_name};
@@ -142,6 +144,30 @@ impl DualQueueIpc {
                 INVALID_MESSAGE_LOG_PREFIX,
             );
         }
+    }
+
+    /// Waits up to `timeout` for the primary inbound queue, then drains both inbound queues.
+    ///
+    /// The immediate drain first handles messages that were already queued before the caller
+    /// decided to wait. The timed wait is primary-only because lock-step frame submissions and
+    /// lifecycle commands travel on the primary channel.
+    pub fn poll_into_after_primary_wait(
+        &mut self,
+        out: &mut Vec<RendererCommand>,
+        timeout: Duration,
+    ) -> Duration {
+        self.poll_into(out);
+        if !out.is_empty() || timeout.is_zero() {
+            return Duration::ZERO;
+        }
+        let wait_started = std::time::Instant::now();
+        let ready = self.primary_subscriber.wait_for_message_timeout(timeout);
+        let waited = wait_started.elapsed();
+        if !ready {
+            return waited;
+        }
+        self.poll_into(out);
+        waited
     }
 
     /// Encodes and sends a command on the **Primary** publisher (frame handshake, init, etc.).

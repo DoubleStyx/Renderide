@@ -1,5 +1,7 @@
 //! IPC queue, shared-memory, and command-batch methods on [`RendererFrontend`].
 
+use std::time::Duration;
+
 use crate::connection::InitError;
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::shared::RendererCommand;
@@ -67,6 +69,14 @@ impl RendererFrontend {
     /// Poll and sort commands by lifecycle priority.
     pub fn poll_commands(&mut self) -> Vec<RendererCommand> {
         self.transport.poll_commands()
+    }
+
+    /// Waits briefly for primary-queue work, then polls and sorts commands by lifecycle priority.
+    pub fn poll_commands_after_primary_wait(
+        &mut self,
+        timeout: Duration,
+    ) -> (Vec<RendererCommand>, Duration) {
+        self.transport.poll_commands_after_primary_wait(timeout)
     }
 
     /// Returns an empty command batch so its allocation is retained for the next poll.

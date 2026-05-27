@@ -4,6 +4,8 @@
 //! by [`crate::frontend::dispatch`] and applied by [`super::effects`], keeping frontend dispatch
 //! independent of the runtime facade.
 
+use std::time::Duration;
+
 use crate::frontend::InitState;
 use crate::frontend::dispatch::renderer_command_kind::renderer_command_variant_tag;
 use crate::shared::RendererCommand;
@@ -32,18 +34,30 @@ impl RendererRuntime {
 
     /// Drains IPC and dispatches commands. Each poll batch is ordered so `renderer_init_data` runs
     /// first, then frame submits, then the rest (see [`crate::frontend::RendererFrontend::poll_commands`]).
+    pub fn poll_ipc(&mut self) {
+        let _ = self.poll_ipc_inner(None);
+    }
+
+    /// Waits up to `timeout` for primary-queue work before draining and dispatching IPC commands.
+    pub(crate) fn poll_ipc_after_primary_wait(&mut self, timeout: Duration) -> Duration {
+        self.poll_ipc_inner(Some(timeout))
+    }
+
     #[expect(
         clippy::iter_with_drain,
         reason = "the drained batch is recycled to preserve IPC Vec allocation across frames"
     )]
-    pub fn poll_ipc(&mut self) {
+    fn poll_ipc_inner(&mut self, primary_wait: Option<Duration>) -> Duration {
         profiling::scope!("ipc::poll_batch");
         shader_material::drain_pending_shader_resolutions(
             &mut self.ipc_state.pending_shader_resolutions,
             &mut self.backend,
             &mut self.frontend,
         );
-        let mut batch = self.frontend.poll_commands();
+        let (mut batch, waited) = match primary_wait {
+            Some(timeout) => self.frontend.poll_commands_after_primary_wait(timeout),
+            None => (self.frontend.poll_commands(), Duration::ZERO),
+        };
         trace_ipc_batch(
             &batch,
             self.frontend.init_state(),
@@ -60,6 +74,7 @@ impl RendererRuntime {
             self.handle_ipc_command(cmd);
         }
         self.frontend.recycle_command_batch(batch);
+        waited
     }
 }
 

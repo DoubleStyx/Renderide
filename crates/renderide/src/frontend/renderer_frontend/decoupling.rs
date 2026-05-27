@@ -3,7 +3,7 @@
 //! [`super::super::decoupling::logging`] so this file stays focused on
 //! delegation.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::shared::RenderDecouplingConfig;
 
@@ -53,5 +53,15 @@ impl RendererFrontend {
         if decision == DecouplingActivationDecision::Activate {
             log_activation(&self.decoupling, self.lockstep.last_frame_index());
         }
+    }
+
+    /// Bounded wait slice before the next decoupling activation check while a host submit is due.
+    pub fn decoupling_activation_wait_timeout(
+        &self,
+        now: Instant,
+        max_slice: Duration,
+    ) -> Option<Duration> {
+        self.decoupling
+            .activation_wait_timeout(now, self.lockstep.awaiting_submit(), max_slice)
     }
 }

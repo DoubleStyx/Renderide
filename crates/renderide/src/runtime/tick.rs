@@ -14,6 +14,9 @@ use crate::shared::{InputState, OutputState};
 
 use super::{RendererRuntime, TickOutcome};
 
+/// Longest single semaphore wait while desktop lock-step is coupled.
+const MAX_DESKTOP_LOCKSTEP_WAIT_SLICE: Duration = Duration::from_secs(1);
+
 impl RendererRuntime {
     /// Whether the next tick should build [`InputState`] and call [`Self::pre_frame`].
     pub fn should_send_begin_frame(&self) -> bool {
@@ -67,6 +70,55 @@ impl RendererRuntime {
     /// would never fire.
     pub fn update_decoupling_activation(&mut self, now: Instant) {
         self.frontend.update_decoupling_activation(now);
+    }
+
+    /// Waits for the coupled desktop frame submit or for renderer decoupling to activate.
+    ///
+    /// Host-compatible lockstep waits inside the same tick after sending `FrameStartData`; doing
+    /// that here prevents desktop from alternating one redraw that only requests a host frame with
+    /// the next redraw that renders it. Active asset integration remains counted as CPU work; only
+    /// the semaphore wait itself is excluded from HUD CPU-frame timing.
+    pub fn wait_for_desktop_coupled_submit_or_decoupling(&mut self) {
+        profiling::scope!("tick::desktop_lockstep_wait");
+        let mut excluded_wait = Duration::ZERO;
+        loop {
+            let now = Instant::now();
+            self.update_decoupling_activation(now);
+            if self.should_render_frame()
+                || !self.awaiting_frame_submit()
+                || self.shutdown_requested()
+                || self.fatal_error()
+            {
+                break;
+            }
+
+            if self.run_asset_integration_while_waiting_for_submit(now) {
+                continue;
+            }
+
+            let now = Instant::now();
+            self.update_decoupling_activation(now);
+            if self.should_render_frame()
+                || !self.awaiting_frame_submit()
+                || self.shutdown_requested()
+                || self.fatal_error()
+            {
+                break;
+            }
+
+            let Some(timeout) = self
+                .frontend
+                .decoupling_activation_wait_timeout(now, MAX_DESKTOP_LOCKSTEP_WAIT_SLICE)
+            else {
+                break;
+            };
+            if timeout.is_zero() {
+                self.poll_ipc();
+                continue;
+            }
+            excluded_wait = excluded_wait.saturating_add(self.poll_ipc_after_primary_wait(timeout));
+        }
+        self.note_frame_timing_excluded_wait(excluded_wait);
     }
 
     /// Increments the renderer-tick counter feeding

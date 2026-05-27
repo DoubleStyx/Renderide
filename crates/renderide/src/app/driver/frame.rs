@@ -36,6 +36,13 @@ enum FrameTickOutcome {
     MissingTarget,
 }
 
+impl FrameTickOutcome {
+    /// Whether this outcome should publish visible frame timing and HUD samples.
+    const fn records_frame_timing(self) -> bool {
+        !matches!(self, Self::RenderSkipped)
+    }
+}
+
 /// Render path used for the current frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum FrameRenderMode {
@@ -108,7 +115,15 @@ impl AppDriver {
             self.runtime.drain_camera_render_tasks(gpu);
         }
         if self.runtime.awaiting_frame_submit() && !self.runtime.should_render_frame() {
-            return FrameTickOutcome::RenderSkipped;
+            if !self.runtime.vr_active() {
+                self.runtime.wait_for_desktop_coupled_submit_or_decoupling();
+                if self.handle_runtime_exit_requests(event_loop) {
+                    return FrameTickOutcome::ExitRequested;
+                }
+            }
+            if !self.runtime.should_render_frame() {
+                return FrameTickOutcome::RenderSkipped;
+            }
         }
 
         let xr_pause = self
@@ -125,8 +140,17 @@ impl AppDriver {
             return FrameTickOutcome::ExitRequested;
         }
         if !self.runtime.should_render_frame() {
-            self.queue_empty_openxr_frame_if_needed(xr_tick);
-            return FrameTickOutcome::RenderSkipped;
+            if !self.runtime.vr_active() {
+                self.runtime.wait_for_desktop_coupled_submit_or_decoupling();
+                if self.handle_runtime_exit_requests(event_loop) {
+                    self.queue_empty_openxr_frame_if_needed(xr_tick);
+                    return FrameTickOutcome::ExitRequested;
+                }
+            }
+            if !self.runtime.should_render_frame() {
+                self.queue_empty_openxr_frame_if_needed(xr_tick);
+                return FrameTickOutcome::RenderSkipped;
+            }
         }
 
         let Some(window) = self
@@ -411,7 +435,9 @@ impl AppDriver {
         profiling::scope!("tick::epilogue");
         super::tick_phase_trace("frame_tick_epilogue");
         self.drain_driver_thread_error();
-        self.end_frame_timing_and_hud_capture();
+        if outcome.records_frame_timing() {
+            self.end_frame_timing_and_hud_capture();
+        }
         let gpu_render_time_seconds = self
             .target
             .as_ref()
@@ -514,8 +540,8 @@ fn frame_render_mode_code_label(code: u8) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        FrameRenderMode, RenderViewsOutcome, frame_render_mode_code, frame_render_mode_code_label,
-        frame_render_mode_label, runtime_exit_reason,
+        FrameRenderMode, FrameTickOutcome, RenderViewsOutcome, frame_render_mode_code,
+        frame_render_mode_code_label, frame_render_mode_label, runtime_exit_reason,
     };
     use crate::app::exit::ExitReason;
     use crate::xr::HmdSubmitOutcome;
@@ -560,6 +586,13 @@ mod tests {
             "vr-secondaries-only"
         );
         assert_eq!(frame_render_mode_code_label(3), "desktop");
+    }
+
+    #[test]
+    fn render_skipped_ticks_do_not_record_visible_frame_timing() {
+        assert!(!FrameTickOutcome::RenderSkipped.records_frame_timing());
+        assert!(FrameTickOutcome::Presented.records_frame_timing());
+        assert!(FrameTickOutcome::ExitRequested.records_frame_timing());
     }
 
     #[test]

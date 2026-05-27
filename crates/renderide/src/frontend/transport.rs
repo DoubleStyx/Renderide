@@ -1,5 +1,7 @@
 //! IPC and shared-memory ownership for the frontend facade.
 
+use std::time::Duration;
+
 use crate::connection::{ConnectionParams, InitError};
 use crate::frontend::dispatch::command_kind::classify_renderer_command;
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
@@ -121,6 +123,23 @@ impl FrontendTransport {
             batch.clear();
         }
         batch
+    }
+
+    /// Waits briefly for primary-queue work, then polls and sorts commands by lifecycle priority.
+    pub(crate) fn poll_commands_after_primary_wait(
+        &mut self,
+        timeout: Duration,
+    ) -> (Vec<RendererCommand>, Duration) {
+        profiling::scope!("frontend::poll_commands_after_primary_wait");
+        let mut batch = std::mem::take(&mut self.command_batch);
+        let mut waited = Duration::ZERO;
+        if let Some(ipc) = self.ipc.as_mut() {
+            waited = ipc.poll_into_after_primary_wait(&mut batch, timeout);
+            batch.sort_by_key(|cmd| classify_renderer_command(cmd).poll_priority());
+        } else {
+            batch.clear();
+        }
+        (batch, waited)
     }
 
     /// Returns the drained command batch so the allocation is retained for the next poll.
