@@ -7,7 +7,7 @@
 
 use std::time::{Duration, Instant};
 
-use super::RendererRuntime;
+use super::{RendererRuntime, ipc::shader_material};
 use crate::diagnostics::log_throttle::LogThrottle;
 use crate::gpu::GpuQueueAccessMode;
 
@@ -47,8 +47,12 @@ impl RendererRuntime {
     pub fn run_asset_integration_while_waiting_for_submit(&mut self, now: Instant) -> bool {
         profiling::scope!("tick::asset_integration_host_wait");
         self.frontend.update_decoupling_activation(now);
-        if !self.frontend.awaiting_frame_submit() || !self.backend.has_pending_asset_work() {
-            if self.frontend.awaiting_frame_submit() {
+        let awaiting_frame_submit = self.frontend.awaiting_frame_submit();
+        if awaiting_frame_submit {
+            self.drain_pending_shader_resolutions_for_asset_integration();
+        }
+        if !awaiting_frame_submit || !self.backend.has_pending_asset_work() {
+            if awaiting_frame_submit {
                 self.frontend.record_asset_integration_handle_wait();
             }
             return false;
@@ -71,6 +75,30 @@ impl RendererRuntime {
         let made_non_gpu_progress =
             summary.processed_main_tasks > 0 || summary.processed_particle_tasks > 0;
         self.backend.has_pending_asset_work() && (summary.gpu_ready || made_non_gpu_progress)
+    }
+
+    /// Drains completed asynchronous shader uploads before an asset-integration slice.
+    pub(crate) fn drain_pending_shader_resolutions_for_asset_integration(&mut self) {
+        profiling::scope!("tick::asset_integration_shader_resolution");
+        shader_material::drain_pending_shader_resolutions(
+            &mut self.ipc_state.pending_shader_resolutions,
+            &mut self.backend,
+            &mut self.frontend,
+        );
+    }
+
+    /// Integrates assets decoded during a primary-queue wait before rendering the submitted frame.
+    pub(crate) fn run_asset_integration_after_wait_poll(&mut self) {
+        profiling::scope!("tick::asset_integration_after_wait_poll");
+        self.drain_pending_shader_resolutions_for_asset_integration();
+        if !self.backend.has_pending_asset_work() {
+            return;
+        }
+        let Some(summary) = self.run_asset_integration_pass(GpuQueueAccessMode::NonBlocking) else {
+            return;
+        };
+        trace_asset_integration_summary(self.asset_integration_budget_ms(), summary);
+        self.record_asset_integration_summary(summary, 0);
     }
 
     fn asset_integration_budget_ms(&self) -> u32 {

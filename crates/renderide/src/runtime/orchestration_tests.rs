@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::config::{RendererSettings, RendererSettingsHandle, VsyncMode};
 use crate::connection::ConnectionParams;
@@ -11,7 +11,7 @@ use crate::shared::buffer::SharedMemoryBufferDescriptor;
 use crate::shared::{
     DesktopConfig, FrameSubmitData, FreeSharedMemoryView, Guid, HeadOutputDevice, KeepAlive,
     MeshRenderablesUpdate, QualityConfig, RenderSpaceUpdate, RendererCommand, RendererEngineReady,
-    RendererInitData, RendererInitFinalizeData, RendererShutdown,
+    RendererInitData, RendererInitFinalizeData, RendererShutdown, SetTexture2DFormat, ShaderUpload,
 };
 
 use super::RendererRuntime;
@@ -284,5 +284,61 @@ fn ipc_init_init_received_defers_unrelated_command() {
     assert_eq!(rt.init_state(), crate::frontend::InitState::InitReceived);
     rt.handle_ipc_command(RendererCommand::QualityConfig(QualityConfig::default()));
     assert_eq!(rt.init_state(), crate::frontend::InitState::InitReceived);
+    assert_eq!(rt.ipc_state.deferred_pre_finalize_command_count(), 1);
     assert!(!rt.fatal_error());
+}
+
+#[test]
+fn ipc_init_init_received_dispatches_startup_asset_commands() {
+    let mut rt = test_runtime_ipc_shape();
+    rt.handle_ipc_command(RendererCommand::RendererInitData(test_renderer_init_data()));
+
+    rt.handle_ipc_command(RendererCommand::SetTexture2DFormat(
+        SetTexture2DFormat::default(),
+    ));
+    rt.handle_ipc_command(RendererCommand::ShaderUpload(ShaderUpload::default()));
+
+    assert_eq!(rt.init_state(), crate::frontend::InitState::InitReceived);
+    assert_eq!(rt.ipc_state.deferred_pre_finalize_command_count(), 0);
+    assert_eq!(rt.ipc_state.pending_shader_resolutions.len(), 1);
+    assert!(!rt.fatal_error());
+}
+
+#[test]
+fn ipc_init_engine_ready_defers_until_finalize() {
+    let mut rt = test_runtime_ipc_shape();
+    rt.handle_ipc_command(RendererCommand::RendererInitData(test_renderer_init_data()));
+
+    rt.handle_ipc_command(RendererCommand::RendererEngineReady(
+        RendererEngineReady::default(),
+    ));
+
+    assert!(!rt.host_lockstep_activated());
+    assert_eq!(rt.ipc_state.deferred_pre_finalize_command_count(), 1);
+
+    rt.handle_ipc_command(RendererCommand::RendererInitFinalizeData(
+        RendererInitFinalizeData::default(),
+    ));
+
+    assert_eq!(rt.init_state(), crate::frontend::InitState::Finalized);
+    assert!(rt.host_lockstep_activated());
+    assert_eq!(rt.ipc_state.deferred_pre_finalize_command_count(), 0);
+}
+
+#[test]
+fn post_wait_asset_integration_drains_completed_shader_uploads() {
+    let mut rt = test_runtime_ipc_shape();
+    rt.handle_ipc_command(RendererCommand::RendererInitData(test_renderer_init_data()));
+    rt.handle_ipc_command(RendererCommand::ShaderUpload(ShaderUpload::default()));
+    assert_eq!(rt.ipc_state.pending_shader_resolutions.len(), 1);
+
+    for _ in 0..100 {
+        rt.run_asset_integration_after_wait_poll();
+        if rt.ipc_state.pending_shader_resolutions.is_empty() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    panic!("shader upload resolution did not drain");
 }

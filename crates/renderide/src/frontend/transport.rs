@@ -3,7 +3,6 @@
 use std::time::Duration;
 
 use crate::connection::{ConnectionParams, InitError};
-use crate::frontend::dispatch::command_kind::classify_renderer_command;
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::shared::RendererCommand;
 
@@ -112,20 +111,20 @@ impl FrontendTransport {
         })
     }
 
-    /// Polls host queues into the reusable batch and sorts by lifecycle priority.
+    /// Polls host queues into the reusable batch and prioritizes init data.
     pub(crate) fn poll_commands(&mut self) -> Vec<RendererCommand> {
         profiling::scope!("frontend::poll_commands");
         let mut batch = std::mem::take(&mut self.command_batch);
         if let Some(ipc) = self.ipc.as_mut() {
             ipc.poll_into(&mut batch);
-            batch.sort_by_key(|cmd| classify_renderer_command(cmd).poll_priority());
+            prioritize_renderer_init_data(&mut batch);
         } else {
             batch.clear();
         }
         batch
     }
 
-    /// Waits briefly for primary-queue work, then polls and sorts commands by lifecycle priority.
+    /// Waits briefly for primary-queue work, then polls and prioritizes init data.
     pub(crate) fn poll_commands_after_primary_wait(
         &mut self,
         timeout: Duration,
@@ -135,7 +134,7 @@ impl FrontendTransport {
         let mut waited = Duration::ZERO;
         if let Some(ipc) = self.ipc.as_mut() {
             waited = ipc.poll_into_after_primary_wait(&mut batch, timeout);
-            batch.sort_by_key(|cmd| classify_renderer_command(cmd).poll_priority());
+            prioritize_renderer_init_data(&mut batch);
         } else {
             batch.clear();
         }
@@ -145,5 +144,69 @@ impl FrontendTransport {
     /// Returns the drained command batch so the allocation is retained for the next poll.
     pub(crate) fn recycle_command_batch(&mut self, batch: Vec<RendererCommand>) {
         self.command_batch = batch;
+    }
+}
+
+/// Moves host init data to the front while preserving all other command arrival order.
+fn prioritize_renderer_init_data(batch: &mut [RendererCommand]) {
+    let mut insert_at = 0;
+    for idx in 0..batch.len() {
+        if matches!(&batch[idx], RendererCommand::RendererInitData(_)) {
+            batch[insert_at..=idx].rotate_right(1);
+            insert_at += 1;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prioritize_renderer_init_data;
+    use crate::frontend::dispatch::renderer_command_kind::renderer_command_variant_tag;
+    use crate::shared::{
+        FrameSubmitData, QualityConfig, RendererCommand, RendererInitData, SetTexture2DFormat,
+    };
+
+    fn command_tags(commands: &[RendererCommand]) -> Vec<&'static str> {
+        commands.iter().map(renderer_command_variant_tag).collect()
+    }
+
+    #[test]
+    fn init_data_priority_preserves_non_init_order() {
+        let mut batch = vec![
+            RendererCommand::SetTexture2DFormat(SetTexture2DFormat::default()),
+            RendererCommand::FrameSubmitData(FrameSubmitData::default()),
+            RendererCommand::QualityConfig(QualityConfig::default()),
+        ];
+
+        prioritize_renderer_init_data(&mut batch);
+
+        assert_eq!(
+            command_tags(&batch),
+            vec!["SetTexture2DFormat", "FrameSubmitData", "QualityConfig"]
+        );
+    }
+
+    #[test]
+    fn init_data_priority_stably_moves_init_data_to_front() {
+        let mut batch = vec![
+            RendererCommand::QualityConfig(QualityConfig::default()),
+            RendererCommand::RendererInitData(RendererInitData::default()),
+            RendererCommand::SetTexture2DFormat(SetTexture2DFormat::default()),
+            RendererCommand::RendererInitData(RendererInitData::default()),
+            RendererCommand::FrameSubmitData(FrameSubmitData::default()),
+        ];
+
+        prioritize_renderer_init_data(&mut batch);
+
+        assert_eq!(
+            command_tags(&batch),
+            vec![
+                "RendererInitData",
+                "RendererInitData",
+                "QualityConfig",
+                "SetTexture2DFormat",
+                "FrameSubmitData"
+            ]
+        );
     }
 }

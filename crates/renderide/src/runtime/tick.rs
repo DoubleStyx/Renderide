@@ -114,9 +114,11 @@ impl RendererRuntime {
             };
             if timeout.is_zero() {
                 self.poll_ipc();
+                self.run_asset_integration_after_wait_poll();
                 continue;
             }
             excluded_wait = excluded_wait.saturating_add(self.poll_ipc_after_primary_wait(timeout));
+            self.run_asset_integration_after_wait_poll();
         }
         self.note_frame_timing_excluded_wait(excluded_wait);
     }

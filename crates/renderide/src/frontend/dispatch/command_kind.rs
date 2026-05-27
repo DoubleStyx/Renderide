@@ -1,4 +1,4 @@
-//! Exhaustive command classification for IPC polling, init routing, and diagnostics.
+//! Exhaustive command classification for init routing and diagnostics.
 
 use crate::shared::RendererCommand;
 
@@ -37,18 +37,6 @@ impl RendererCommandInfo {
     /// Lifecycle classification used by init routing.
     pub(crate) fn lifecycle(self) -> RendererCommandLifecycle {
         self.lifecycle
-    }
-
-    /// Batch polling priority. Init commands must run before frame submits that share a batch.
-    pub(crate) fn poll_priority(self) -> u8 {
-        match self.lifecycle {
-            RendererCommandLifecycle::InitData => 0,
-            RendererCommandLifecycle::InitProgressUpdate => 1,
-            RendererCommandLifecycle::EngineReady => 2,
-            RendererCommandLifecycle::InitFinalize => 3,
-            RendererCommandLifecycle::FrameSubmit => 4,
-            RendererCommandLifecycle::KeepAlive | RendererCommandLifecycle::Running => 5,
-        }
     }
 }
 
@@ -163,41 +151,41 @@ mod tests {
     }
 
     #[test]
-    fn lifecycle_priorities_preserve_init_before_frame_submit_order() {
+    fn lifecycle_classifies_init_and_frame_commands() {
         assert_eq!(
             classify_renderer_command(&RendererCommand::RendererInitData(
                 RendererInitData::default()
             ))
-            .poll_priority(),
-            0
+            .lifecycle(),
+            RendererCommandLifecycle::InitData
         );
         assert_eq!(
             classify_renderer_command(&RendererCommand::RendererInitProgressUpdate(
                 RendererInitProgressUpdate::default()
             ))
-            .poll_priority(),
-            1
+            .lifecycle(),
+            RendererCommandLifecycle::InitProgressUpdate
         );
         assert_eq!(
             classify_renderer_command(&RendererCommand::RendererEngineReady(
                 RendererEngineReady::default()
             ))
-            .poll_priority(),
-            2
+            .lifecycle(),
+            RendererCommandLifecycle::EngineReady
         );
         assert_eq!(
             classify_renderer_command(&RendererCommand::RendererInitFinalizeData(
                 RendererInitFinalizeData::default()
             ))
-            .poll_priority(),
-            3
+            .lifecycle(),
+            RendererCommandLifecycle::InitFinalize
         );
         assert_eq!(
             classify_renderer_command(
                 &RendererCommand::FrameSubmitData(FrameSubmitData::default())
             )
-            .poll_priority(),
-            4
+            .lifecycle(),
+            RendererCommandLifecycle::FrameSubmit
         );
     }
 

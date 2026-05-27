@@ -32,8 +32,8 @@ impl RendererRuntime {
         self.ipc_state.record_unhandled_renderer_command(tag)
     }
 
-    /// Drains IPC and dispatches commands. Each poll batch is ordered so `renderer_init_data` runs
-    /// first, then frame submits, then the rest (see [`crate::frontend::RendererFrontend::poll_commands`]).
+    /// Drains IPC and dispatches commands. Each poll batch only moves renderer init data ahead
+    /// of the rest, preserving host arrival order for asset commands and frame submits.
     pub fn poll_ipc(&mut self) {
         let _ = self.poll_ipc_inner(None);
     }
