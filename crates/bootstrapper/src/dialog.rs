@@ -9,6 +9,8 @@
 //! exe failed to load with `STATUS_ENTRYPOINT_NOT_FOUND` (0xc0000139) on Windows CI. Keeping the
 //! `rfd` reference in the bin keeps the lib (and its test exe) free of that import.
 
+use bootstrapper::updater::{UpdateNotice, UpdateNoticeLevel, UpdatePrompt, UpdatePromptChoice};
+
 /// Custom-button label for the VR choice; also returned verbatim by `rfd` as the
 /// `MessageDialogResult::Custom(label)` payload, so the same string doubles as the match key.
 const VR_BUTTON_LABEL: &str = "VR";
@@ -18,6 +20,12 @@ const DESKTOP_BUTTON_LABEL: &str = "Desktop";
 /// Custom-button label for the Cancel choice; also returned verbatim by `rfd` as the
 /// `MessageDialogResult::Custom(label)` payload.
 const CANCEL_BUTTON_LABEL: &str = "Cancel";
+/// Custom-button label that starts the release update.
+const UPDATE_BUTTON_LABEL: &str = "Update";
+/// Custom-button label that skips the update for the current launch only.
+const SKIP_ONCE_BUTTON_LABEL: &str = "Skip Once";
+/// Custom-button label that persists a skip for the offered release tag.
+const SKIP_RELEASE_BUTTON_LABEL: &str = "Skip This Release";
 
 /// Shows the desktop vs VR selection dialog and returns the choice: `Some(true)` for VR,
 /// `Some(false)` for Desktop, [`None`] for Cancel/dismiss (callers treat the latter as a
@@ -54,4 +62,64 @@ pub fn prompt_desktop_or_vr() -> Option<bool> {
             None
         }
     }
+}
+
+/// Shows the release update prompt and returns the selected update action.
+pub fn prompt_release_update(prompt: &UpdatePrompt) -> UpdatePromptChoice {
+    logger::info!(
+        "Showing update dialog for release {} asset {}.",
+        prompt.latest_tag,
+        prompt.asset_name
+    );
+    let description = format!(
+        "A new Renderide CI release is available.\n\nCurrent: {} ({})\nLatest: {} ({})\n\nUpdating will replace the launcher, renderer, and bundled runtime assets, then exit so you can restart into the new build.",
+        prompt.current_tag,
+        short_commit(&prompt.current_commit),
+        prompt.latest_tag,
+        short_commit(&prompt.latest_commit),
+    );
+    let result = rfd::MessageDialog::new()
+        .set_title("Renderide Update")
+        .set_description(description)
+        .set_buttons(rfd::MessageButtons::YesNoCancelCustom(
+            UPDATE_BUTTON_LABEL.into(),
+            SKIP_ONCE_BUTTON_LABEL.into(),
+            SKIP_RELEASE_BUTTON_LABEL.into(),
+        ))
+        .show();
+
+    match result {
+        rfd::MessageDialogResult::Custom(label) if label == UPDATE_BUTTON_LABEL => {
+            logger::info!("Update dialog returned: update.");
+            UpdatePromptChoice::Update
+        }
+        rfd::MessageDialogResult::Custom(label) if label == SKIP_RELEASE_BUTTON_LABEL => {
+            logger::info!("Update dialog returned: skip this release.");
+            UpdatePromptChoice::SkipRelease
+        }
+        other => {
+            logger::info!("Update dialog returned skip-once or dismissed: {other:?}.");
+            UpdatePromptChoice::SkipOnce
+        }
+    }
+}
+
+/// Shows an updater notification dialog.
+pub fn show_update_notice(notice: UpdateNotice) {
+    logger::info!("Showing update notice: {}", notice.title);
+    let level = match notice.level {
+        UpdateNoticeLevel::Info => rfd::MessageLevel::Info,
+        UpdateNoticeLevel::Warning => rfd::MessageLevel::Warning,
+        UpdateNoticeLevel::Error => rfd::MessageLevel::Error,
+    };
+    let _ = rfd::MessageDialog::new()
+        .set_title(notice.title)
+        .set_description(notice.message)
+        .set_level(level)
+        .show();
+}
+
+/// Returns a short display prefix for a full commit SHA.
+fn short_commit(commit: &str) -> &str {
+    commit.get(..8).unwrap_or(commit)
 }

@@ -18,3 +18,12 @@ fn parse_host_args_tokens_empty_slice() {
     assert!(host.is_empty());
     assert!(level.is_none());
 }
+
+/// Update rollback is a launcher-only flag and must not leak to Host argv.
+#[test]
+fn parse_bootstrap_args_tokens_consumes_rollback_update() {
+    let args = vec!["--rollback-update".into(), "-Invisible".into()];
+    let parsed = bootstrapper::cli::parse_bootstrap_args_tokens(&args);
+    assert_eq!(parsed.host_args, vec!["-Invisible".to_string()]);
+    assert!(parsed.rollback_update);
+}

@@ -22,7 +22,8 @@ mod dialog;
 /// Exits with status `0` without spawning the Host when the user cancels the
 /// desktop vs VR dialog.
 fn main() {
-    let (host_args, log_level) = bootstrapper::cli::parse_args();
+    let parsed_args = bootstrapper::cli::parse_args();
+    let log_level = parsed_args.log_level;
     let log_timestamp = logger::log_filename_timestamp();
     let max_level = log_level.unwrap_or(logger::LogLevel::Trace);
 
@@ -47,8 +48,21 @@ fn main() {
 
     bootstrapper::vr_prompt::sanitize_linux_display_env();
 
+    if parsed_args.rollback_update || bootstrapper::updater::rollback_requested_from_env() {
+        let _ = bootstrapper::updater::run_startup_rollback(dialog::show_update_notice);
+        return;
+    }
+
+    if bootstrapper::updater::run_startup_update_check(
+        dialog::prompt_release_update,
+        dialog::show_update_notice,
+    ) == bootstrapper::updater::StartupUpdateOutcome::Exit
+    {
+        return;
+    }
+
     let Some(host_args) =
-        bootstrapper::cli::resolve_vr_choice(host_args, dialog::prompt_desktop_or_vr)
+        bootstrapper::cli::resolve_vr_choice(parsed_args.host_args, dialog::prompt_desktop_or_vr)
     else {
         logger::info!("Desktop/VR dialog cancelled; exiting without spawning Host.");
         return;

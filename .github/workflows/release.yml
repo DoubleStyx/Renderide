@@ -133,6 +133,11 @@ jobs:
           cargo metadata --locked --no-deps --format-version 1 >/dev/null
 
       - name: Build (release)
+        env:
+          RENDERIDE_RELEASE_CHANNEL: github-ci
+          RENDERIDE_RELEASE_TAG: ${{ needs.select-commit.outputs.tag }}
+          RENDERIDE_RELEASE_COMMIT: ${{ needs.select-commit.outputs.sha }}
+          RENDERIDE_RELEASE_PLATFORM: ${{ matrix.platform }}
         run: cargo build --release --locked -p renderide -p bootstrapper
 
       - name: Stage zip (Unix)
@@ -140,6 +145,7 @@ jobs:
         env:
           PLATFORM: ${{ matrix.platform }}
           TAG: ${{ needs.select-commit.outputs.tag }}
+          SHA: ${{ needs.select-commit.outputs.sha }}
         run: |
           set -euo pipefail
           name="renderide-${PLATFORM}-${TAG}"
@@ -165,6 +171,27 @@ jobs:
               cp "${macos_loader}" "${dist}/"
               ;;
           esac
+          DIST="${dist}" python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          files = ["renderide", "renderide-renderer", "xr"]
+          if os.environ["PLATFORM"].startswith("macos-"):
+              files.append("libopenxr_loader.dylib")
+          manifest = {
+              "schema": 1,
+              "channel": "github-ci",
+              "tag": os.environ["TAG"],
+              "commit": os.environ["SHA"],
+              "platform": os.environ["PLATFORM"],
+              "required_files": files,
+          }
+          Path(os.environ["DIST"]).joinpath("renderide-release.json").write_text(
+              json.dumps(manifest, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
           ( cd dist && zip -r "${name}.zip" "${name}" )
 
       - name: Stage zip (Windows)
@@ -173,6 +200,7 @@ jobs:
         env:
           PLATFORM: ${{ matrix.platform }}
           TAG: ${{ needs.select-commit.outputs.tag }}
+          SHA: ${{ needs.select-commit.outputs.sha }}
         run: |
           $ErrorActionPreference = "Stop"
           $name = "renderide-$env:PLATFORM-$env:TAG"
@@ -186,6 +214,15 @@ jobs:
             throw "openxr_loader.dll missing from $src - vendored loader did not copy during build."
           }
           Copy-Item "$src/openxr_loader.dll" -Destination $dist
+          $manifest = [ordered]@{
+            schema = 1
+            channel = "github-ci"
+            tag = $env:TAG
+            commit = $env:SHA
+            platform = $env:PLATFORM
+            required_files = @("renderide.exe", "renderide-renderer.exe", "xr", "openxr_loader.dll")
+          }
+          $manifest | ConvertTo-Json -Depth 4 | Set-Content "$dist/renderide-release.json" -Encoding utf8
           Compress-Archive -Path $dist -DestinationPath "dist/$name.zip" -Force
 
       - uses: actions/upload-artifact@v4

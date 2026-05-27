@@ -12,6 +12,17 @@ use logger::LogLevel;
 
 use crate::vr_prompt;
 
+/// Parsed bootstrapper command line after stripping launcher-only flags.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParsedArgs {
+    /// Arguments forwarded to Host after bootstrapper-only flags are removed.
+    pub host_args: Vec<String>,
+    /// Optional maximum log level for the bootstrapper and renderer.
+    pub log_level: Option<LogLevel>,
+    /// Whether the launcher should restore the latest update backup and exit.
+    pub rollback_update: bool,
+}
+
 /// Trims `token`, strips a single leading `-` (if present), and ASCII-lowercases the rest.
 ///
 /// Used by argv scanning to compare a flag-shaped token against canonical lowercase forms
@@ -28,10 +39,39 @@ pub(crate) fn normalize_flag_token(token: &str) -> String {
 
 /// Parses bootstrapper args, extracting `--log-level` / `-l` for bootstrapper and Renderide.
 ///
-/// Returns `(arguments to forward to Host, optional log level)`.
-pub fn parse_args() -> (Vec<String>, Option<LogLevel>) {
+/// Returns Host arguments plus bootstrapper-only startup options.
+pub fn parse_args() -> ParsedArgs {
     let args: Vec<String> = env::args().skip(1).collect();
-    parse_host_args_tokens(&args)
+    parse_bootstrap_args_tokens(&args)
+}
+
+/// Parses bootstrapper args after the program name, including update-control flags.
+pub fn parse_bootstrap_args_tokens(args: &[String]) -> ParsedArgs {
+    let mut host_args = Vec::new();
+    let mut log_level = None;
+    let mut rollback_update = false;
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        let normalized = normalize_flag_token(arg);
+        if (normalized == "-log-level" || normalized == "l") && i + 1 < args.len() {
+            log_level = LogLevel::parse(&args[i + 1]);
+            i += 2;
+            continue;
+        }
+        if normalized == "-rollback-update" || normalized == "rollback-update" {
+            rollback_update = true;
+            i += 1;
+            continue;
+        }
+        host_args.push(arg.clone());
+        i += 1;
+    }
+    ParsedArgs {
+        host_args,
+        log_level,
+        rollback_update,
+    }
 }
 
 /// Parses `args` as argv after the program name: strips `--log-level` / `-l` plus the following
@@ -42,21 +82,8 @@ pub fn parse_args() -> (Vec<String>, Option<LogLevel>) {
 ///
 /// When the flag appears multiple times, the **last** [`LogLevel::parse`] result wins (including `None` for unknown tokens).
 pub fn parse_host_args_tokens(args: &[String]) -> (Vec<String>, Option<LogLevel>) {
-    let mut host_args = Vec::new();
-    let mut log_level = None;
-    let mut i = 0;
-    while i < args.len() {
-        let arg = &args[i];
-        let normalized = normalize_flag_token(arg);
-        if (normalized == "-log-level" || normalized == "l") && i + 1 < args.len() {
-            log_level = LogLevel::parse(&args[i + 1]);
-            i += 2;
-            continue;
-        }
-        host_args.push(arg.clone());
-        i += 1;
-    }
-    (host_args, log_level)
+    let parsed = parse_bootstrap_args_tokens(args);
+    (parsed.host_args, parsed.log_level)
 }
 
 /// Runs the desktop vs VR dialog (`prompt`) if required by
@@ -197,6 +224,31 @@ mod tests {
         let (host, level) = parse_host_args_tokens(&tokens(&["--log-level"]));
         assert_eq!(host, vec!["--log-level".to_string()]);
         assert!(level.is_none());
+    }
+
+    #[test]
+    fn parse_bootstrap_args_tokens_consumes_rollback_update_flag() {
+        let parsed = parse_bootstrap_args_tokens(&tokens(&[
+            "--rollback-update",
+            "-Invisible",
+            "--log-level",
+            "info",
+        ]));
+        assert_eq!(parsed.host_args, vec!["-Invisible".to_string()]);
+        assert_eq!(parsed.log_level, Some(LogLevel::Info));
+        assert!(parsed.rollback_update);
+    }
+
+    #[test]
+    fn parse_host_args_tokens_consumes_rollback_update_flag() {
+        let (host, level) = parse_host_args_tokens(&tokens(&[
+            "--rollback-update",
+            "-Invisible",
+            "--log-level",
+            "info",
+        ]));
+        assert_eq!(host, vec!["-Invisible".to_string()]);
+        assert_eq!(level, Some(LogLevel::Info));
     }
 
     /// Serializes env-mutating tests so parallel runs do not race on shared env state.

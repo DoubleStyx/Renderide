@@ -24,6 +24,7 @@ mod paths;
 mod protocol;
 mod protocol_handlers;
 mod renderer_link;
+pub mod updater;
 #[cfg(test)]
 /// Test-only synchronization for process-wide environment variable mutations.
 pub(crate) mod test_env {
