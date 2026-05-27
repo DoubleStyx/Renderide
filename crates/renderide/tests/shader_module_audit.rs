@@ -208,6 +208,17 @@ fn wireframe_helpers_keep_unity_distance_conventions() -> io::Result<()> {
             && src.contains("return coverage_from_distance(distance, thickness);"),
         "common Wireframe roots must keep the source shader's dist3 min + fwidth line-lerp shape"
     );
+    assert!(
+        !src.contains("abs(det) <= 1e-12"),
+        "non-screenspace Wireframe must not drop close-up valid triangles through an absolute determinant cutoff"
+    );
+    assert!(
+        src.contains("WIREFRAME_GRAM_DETERMINANT_RELATIVE_EPSILON")
+            && src
+                .contains("gram_scale * gram_scale * WIREFRAME_GRAM_DETERMINANT_RELATIVE_EPSILON")
+            && src.contains("if (!(det > det_floor))"),
+        "non-screenspace Wireframe must use a scale-relative determinant floor for world derivative inversion"
+    );
 
     let line_stream_start = src
         .find("fn line_stream_edge_distances")

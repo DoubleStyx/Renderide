@@ -5,6 +5,8 @@
 #import renderide::core::math as rmath
 
 const WIREFRAME_FALLBACK_DISTANCE: f32 = 1000000.0;
+const WIREFRAME_GRAM_DETERMINANT_RELATIVE_EPSILON: f32 = 1e-7;
+const WIREFRAME_GRAM_DETERMINANT_MINIMUM: f32 = 1e-30;
 
 fn gradient_distance(coord: f32, gradient_len: f32) -> f32 {
     if (gradient_len <= 1e-6) {
@@ -54,7 +56,12 @@ fn world_gradient_length(world_pos: vec3<f32>, coord: f32) -> f32 {
     let g01 = dot(px, py);
     let g11 = dot(py, py);
     let det = g00 * g11 - g01 * g01;
-    if (abs(det) <= 1e-12) {
+    let gram_scale = max(max(g00, g11), abs(g01));
+    let det_floor = max(
+        gram_scale * gram_scale * WIREFRAME_GRAM_DETERMINANT_RELATIVE_EPSILON,
+        WIREFRAME_GRAM_DETERMINANT_MINIMUM,
+    );
+    if (!(det > det_floor)) {
         return 0.0;
     }
 
