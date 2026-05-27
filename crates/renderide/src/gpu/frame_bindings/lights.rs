@@ -11,6 +11,23 @@ pub const LIGHT_COOKIE_KIND_NONE: u32 = 0;
 pub const LIGHT_COOKIE_KIND_SPOT_2D: u32 = 1;
 /// A point-light cookie sampled from the cubemap-face atlas.
 pub const LIGHT_COOKIE_KIND_POINT_CUBE: u32 = 2;
+/// A directional light cookie sampled from the 2D cookie atlas.
+pub const LIGHT_COOKIE_KIND_DIRECTIONAL_2D: u32 = 3;
+
+/// Cookie U-axis wrap mode bit shift.
+pub const LIGHT_COOKIE_WRAP_U_SHIFT: u32 = 0;
+/// Cookie V-axis wrap mode bit shift.
+pub const LIGHT_COOKIE_WRAP_V_SHIFT: u32 = 2;
+/// Cookie wrap mode bit mask for one axis.
+pub const LIGHT_COOKIE_WRAP_MODE_MASK: u32 = 0b11;
+/// Repeating cookie address mode.
+pub const LIGHT_COOKIE_WRAP_MODE_REPEAT: u32 = 0;
+/// Clamp-to-edge cookie address mode.
+pub const LIGHT_COOKIE_WRAP_MODE_CLAMP: u32 = 1;
+/// Mirrored repeat cookie address mode.
+pub const LIGHT_COOKIE_WRAP_MODE_MIRROR: u32 = 2;
+/// Mirror-once cookie address mode.
+pub const LIGHT_COOKIE_WRAP_MODE_MIRROR_ONCE: u32 = 3;
 
 /// GPU-facing light record for a storage buffer upload.
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -48,11 +65,11 @@ pub struct GpuLight {
     pub shadow_type: u32,
     /// Cookie kind, matching `LIGHT_COOKIE_KIND_*`.
     pub cookie_kind: u32,
-    /// Spot atlas layer or first point-cubemap face layer.
+    /// 2D atlas layer or first point-cubemap face layer.
     pub cookie_layer: u32,
-    /// Reserved for future cookie flags.
+    /// Packed cookie wrap modes for 2D cookie sampling.
     pub _cookie_reserved: u32,
-    /// World-space local +X axis; `.w` stores the spot half-angle tangent.
+    /// World-space local +X axis; `.w` stores the spot half-angle tangent or directional cookie size.
     pub cookie_right_tan_half_angle: [f32; 4],
     /// World-space local +Y axis; `.w` is reserved.
     pub cookie_up: [f32; 4],

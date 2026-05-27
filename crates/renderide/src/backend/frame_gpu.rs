@@ -330,7 +330,7 @@ impl FrameGpuResources {
                     wgpu::BindGroupEntry {
                         binding: 13,
                         resource: wgpu::BindingResource::TextureView(
-                            inputs.light_cookies.spot_view(),
+                            inputs.light_cookies.two_d_view(),
                         ),
                     },
                     wgpu::BindGroupEntry {
@@ -542,9 +542,10 @@ impl FrameGpuResources {
     pub(in crate::backend) fn assign_light_cookie(
         &self,
         light: &crate::scene::ResolvedLight,
+        assets: Option<&dyn crate::render_graph::GraphAssetResources>,
     ) -> crate::backend::light_gpu::LightCookieBinding {
         self.light_cookies
-            .assign(light.light_type, light.cookie_texture_asset_id)
+            .assign(light.light_type, light.cookie_texture_asset_id, assets)
     }
 
     /// Returns whether the frame-global cookie atlas pass has work.

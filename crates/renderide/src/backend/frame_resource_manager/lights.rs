@@ -1,6 +1,7 @@
 //! Light preparation and per-view light access for [`FrameResourceManager`].
 
 use crate::camera::ViewId;
+use crate::render_graph::GraphAssetResources;
 use crate::scene::{
     RenderSpaceId, ResolvedLight, SceneCoordinator, light_contributes,
     light_has_negative_contribution,
@@ -71,6 +72,7 @@ impl FrameResourceManager {
                 render_space_filter: None,
                 head_output_transform: glam::Mat4::IDENTITY,
             }],
+            None,
         );
     }
 
@@ -81,8 +83,12 @@ impl FrameResourceManager {
     /// space. Non-contributing lights are filtered via [`light_contributes`] before clustered
     /// ordering, and each view's transforms are resolved with the same render context and
     /// head-output transform used by draw collection.
-    pub(crate) fn prepare_lights_for_views<I>(&mut self, scene: &SceneCoordinator, views: I)
-    where
+    pub(crate) fn prepare_lights_for_views<I>(
+        &mut self,
+        scene: &SceneCoordinator,
+        views: I,
+        asset_resources: Option<&dyn GraphAssetResources>,
+    ) where
         I: IntoIterator<Item = FrameLightViewDesc>,
     {
         profiling::scope!("render::prepare_lights_for_views");
@@ -110,7 +116,7 @@ impl FrameResourceManager {
         }
         let mut wrote_fallback = false;
         for packet in packets {
-            self.commit_prepared_light_packet(packet, &mut wrote_fallback);
+            self.commit_prepared_light_packet(packet, &mut wrote_fallback, asset_resources);
         }
         if self.signed_scene_color_required && !self.signed_scene_color_required_logged {
             logger::info!(
@@ -124,6 +130,7 @@ impl FrameResourceManager {
         &mut self,
         packet: PreparedViewLightPacket,
         wrote_fallback: &mut bool,
+        asset_resources: Option<&dyn GraphAssetResources>,
     ) {
         if packet.resolved_len > MAX_LIGHTS && !self.lights_overflow_warned {
             logger::warn!(
@@ -140,7 +147,7 @@ impl FrameResourceManager {
         for light in &packet.resolved {
             let cookie = self.frame_gpu().map_or(
                 crate::backend::light_gpu::LightCookieBinding::NONE,
-                |fgpu| fgpu.assign_light_cookie(light),
+                |fgpu| fgpu.assign_light_cookie(light, asset_resources),
             );
             packed_lights.push(gpu_light_from_resolved_with_cookie(light, cookie));
         }

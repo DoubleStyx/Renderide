@@ -136,7 +136,7 @@ impl RenderBackend {
     {
         self.frame_services
             .frame_resources
-            .prepare_lights_for_views(scene, views);
+            .prepare_lights_for_views(scene, views, Some(&self.asset_transfers));
     }
 
     /// Drains completed Hi-Z readbacks into CPU snapshots at the top of the tick.

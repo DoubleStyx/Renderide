@@ -26,7 +26,7 @@
 @group(0) @binding(10) var reflection_probe_specular_sampler: sampler;
 @group(0) @binding(11) var ibl_dfg_lut: texture_2d<f32>;
 @group(0) @binding(12) var<storage, read> reflection_probes: array<ft::GpuReflectionProbe>;
-@group(0) @binding(13) var light_cookie_spot_atlas: texture_2d_array<f32>;
+@group(0) @binding(13) var light_cookie_2d_atlas: texture_2d_array<f32>;
 @group(0) @binding(14) var light_cookie_point_atlas: texture_2d_array<f32>;
 @group(0) @binding(15) var light_cookie_sampler: sampler;
 
@@ -157,7 +157,7 @@ fn retain_globals_additive(color: vec4<f32>) -> vec4<f32> {
         f32(cluster_light_indices[0u] & 255u) * 1e-10;
     let probe_touch = reflection_probes[0u].params.x * 1e-10;
     let cookie_touch =
-        textureSampleLevel(light_cookie_spot_atlas, light_cookie_sampler, vec2<f32>(0.5), 0, 0.0).a * 1e-10 +
-        textureSampleLevel(light_cookie_point_atlas, light_cookie_sampler, vec2<f32>(0.5), 0, 0.0).a * 1e-10;
+        textureSampleLevel(light_cookie_2d_atlas, light_cookie_sampler, vec2<f32>(0.5), 0, 0.0).r * 1e-10 +
+        textureSampleLevel(light_cookie_point_atlas, light_cookie_sampler, vec2<f32>(0.5), 0, 0.0).r * 1e-10;
     return color + vec4<f32>(vec3<f32>(f32(lit) * 1e-10 + cluster_touch + probe_touch + cookie_touch), 0.0);
 }

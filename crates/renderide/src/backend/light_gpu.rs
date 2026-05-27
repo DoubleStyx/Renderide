@@ -5,13 +5,14 @@
 //! with the same numeric values as `repr(u8)` on the wire.
 
 pub(crate) use crate::gpu::{
-    GpuLight, LIGHT_COOKIE_KIND_NONE, LIGHT_COOKIE_KIND_POINT_CUBE, LIGHT_COOKIE_KIND_SPOT_2D,
-    MAX_LIGHTS,
+    GpuLight, LIGHT_COOKIE_KIND_DIRECTIONAL_2D, LIGHT_COOKIE_KIND_NONE,
+    LIGHT_COOKIE_KIND_POINT_CUBE, LIGHT_COOKIE_KIND_SPOT_2D, MAX_LIGHTS,
 };
 use crate::scene::ResolvedLight;
 use crate::shared::{LightType, ShadowType};
 
 const MIN_SPOT_ANGLE_SCALE_DENOMINATOR: f32 = 1e-6;
+const DIRECTIONAL_COOKIE_SIZE: f32 = 10.0;
 
 /// Cookie atlas binding assigned to a packed GPU light.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -20,6 +21,8 @@ pub struct LightCookieBinding {
     pub kind: u32,
     /// Atlas layer, or first face layer for point cookies.
     pub layer: u32,
+    /// Packed 2D cookie wrap modes.
+    pub wrap_bits: u32,
 }
 
 impl LightCookieBinding {
@@ -27,6 +30,7 @@ impl LightCookieBinding {
     pub const NONE: Self = Self {
         kind: LIGHT_COOKIE_KIND_NONE,
         layer: 0,
+        wrap_bits: 0,
     };
 }
 
@@ -42,6 +46,11 @@ pub fn gpu_light_from_resolved_with_cookie(
 ) -> GpuLight {
     let (spot_cos_half_angle, spot_angle_scale, spot_tan_half_angle) =
         spot_angle_terms(light.spot_angle);
+    let cookie_projection_scale = if cookie.kind == LIGHT_COOKIE_KIND_DIRECTIONAL_2D {
+        DIRECTIONAL_COOKIE_SIZE
+    } else {
+        spot_tan_half_angle
+    };
     GpuLight {
         position: [
             light.world_position.x,
@@ -68,12 +77,12 @@ pub fn gpu_light_from_resolved_with_cookie(
         shadow_type: shadow_type_u32(light.shadow_type),
         cookie_kind: cookie.kind,
         cookie_layer: cookie.layer,
-        _cookie_reserved: 0,
+        _cookie_reserved: cookie.wrap_bits,
         cookie_right_tan_half_angle: [
             light.world_right.x,
             light.world_right.y,
             light.world_right.z,
-            spot_tan_half_angle,
+            cookie_projection_scale,
         ],
         cookie_up: [light.world_up.x, light.world_up.y, light.world_up.z, 0.0],
     }
@@ -149,8 +158,9 @@ mod layout_tests {
     use crate::shared::{LightType, ShadowType};
 
     use super::{
-        GpuLight, LIGHT_COOKIE_KIND_POINT_CUBE, LIGHT_COOKIE_KIND_SPOT_2D, LightCookieBinding,
-        MAX_LIGHTS, gpu_light_from_resolved, gpu_light_from_resolved_with_cookie,
+        DIRECTIONAL_COOKIE_SIZE, GpuLight, LIGHT_COOKIE_KIND_DIRECTIONAL_2D,
+        LIGHT_COOKIE_KIND_POINT_CUBE, LIGHT_COOKIE_KIND_SPOT_2D, LightCookieBinding, MAX_LIGHTS,
+        gpu_light_from_resolved, gpu_light_from_resolved_with_cookie,
         order_lights_for_clustered_shading_in_place,
     };
 
@@ -249,11 +259,13 @@ mod layout_tests {
             LightCookieBinding {
                 kind: LIGHT_COOKIE_KIND_SPOT_2D,
                 layer: 7,
+                wrap_bits: 0x9,
             },
         );
 
         assert_eq!(gpu.cookie_kind, LIGHT_COOKIE_KIND_SPOT_2D);
         assert_eq!(gpu.cookie_layer, 7);
+        assert_eq!(gpu._cookie_reserved, 0x9);
         assert_eq!(&gpu.cookie_right_tan_half_angle[..3], &[0.0, 1.0, 0.0]);
         assert_eq!(&gpu.cookie_up[..3], &[-1.0, 0.0, 0.0]);
         assert!(gpu.cookie_right_tan_half_angle[3] > 0.0);
@@ -263,10 +275,27 @@ mod layout_tests {
             LightCookieBinding {
                 kind: LIGHT_COOKIE_KIND_POINT_CUBE,
                 layer: 13,
+                wrap_bits: 0,
             },
         );
         assert_eq!(point.cookie_kind, LIGHT_COOKIE_KIND_POINT_CUBE);
         assert_eq!(point.cookie_layer, 13);
+    }
+
+    #[test]
+    fn gpu_light_packs_directional_cookie_size() {
+        let gpu = gpu_light_from_resolved_with_cookie(
+            &resolved_light(LightType::Directional),
+            LightCookieBinding {
+                kind: LIGHT_COOKIE_KIND_DIRECTIONAL_2D,
+                layer: 5,
+                wrap_bits: 0,
+            },
+        );
+
+        assert_eq!(gpu.cookie_kind, LIGHT_COOKIE_KIND_DIRECTIONAL_2D);
+        assert_eq!(gpu.cookie_layer, 5);
+        assert_eq!(gpu.cookie_right_tan_half_angle[3], DIRECTIONAL_COOKIE_SIZE);
     }
 
     #[test]

@@ -8,7 +8,7 @@ use crate::assets::texture::{
     resolve_cubemap_wgpu_format,
 };
 use crate::gpu::GpuLimits;
-use crate::shared::{SetCubemapFormat, SetCubemapProperties};
+use crate::shared::{SetCubemapFormat, SetCubemapProperties, TextureFormat};
 
 use crate::gpu_pools::budget::TextureResidencyMeta;
 use crate::gpu_pools::impl_gpu_resource;
@@ -41,6 +41,8 @@ pub struct GpuCubemap {
     pub face_views: CubemapFaceViews,
     /// Resolved wgpu format for `texture`.
     pub wgpu_format: wgpu::TextureFormat,
+    /// Host [`TextureFormat`] enum (compression / layout family).
+    pub host_format: TextureFormat,
     /// Face size in texels (mip0).
     pub size: u32,
     /// Mip chain length allocated on GPU.
@@ -144,6 +146,7 @@ impl GpuCubemap {
             array_view,
             face_views,
             wgpu_format,
+            host_format: fmt.format,
             size: s,
             mip_levels_total: mips,
             mip_levels_resident: 0,

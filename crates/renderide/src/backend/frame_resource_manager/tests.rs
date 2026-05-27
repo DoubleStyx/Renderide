@@ -313,6 +313,7 @@ fn prepare_lights_for_views_keeps_secondary_light_positions_view_local() {
                 head_output_transform: Mat4::from_translation(Vec3::new(30.0, 0.0, 0.0)),
             },
         ],
+        None,
     );
 
     let first_lights = mgr.frame_lights_for_view(first);

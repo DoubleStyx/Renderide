@@ -325,6 +325,7 @@ fn eval_light(light: ft::GpuLight, world_pos: vec3<f32>) -> LightSample {
         let dir_len_sq = dot(light_dir, light_dir);
         out.l = select(vec3<f32>(0.0, 0.0, 1.0), normalize(-light_dir), dir_len_sq > 1e-16);
         out.attenuation = bl::direct_light_scale();
+        out.attenuation = out.attenuation * cookies::multiplier(light, world_pos);
     } else {
         let to_light = light_pos - world_pos;
         let dist = length(to_light);

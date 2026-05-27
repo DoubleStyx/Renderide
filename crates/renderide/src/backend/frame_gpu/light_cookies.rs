@@ -8,28 +8,102 @@ use parking_lot::Mutex;
 
 use crate::assets::texture::{HostTextureAssetKind, unpack_host_texture_packed};
 use crate::backend::light_gpu::{
-    LIGHT_COOKIE_KIND_POINT_CUBE, LIGHT_COOKIE_KIND_SPOT_2D, LightCookieBinding,
+    LIGHT_COOKIE_KIND_DIRECTIONAL_2D, LIGHT_COOKIE_KIND_POINT_CUBE, LIGHT_COOKIE_KIND_SPOT_2D,
+    LightCookieBinding,
 };
-use crate::gpu::GpuLimits;
-use crate::gpu_pools::GpuCubemap;
+use crate::gpu::{
+    GpuLimits, LIGHT_COOKIE_WRAP_MODE_CLAMP, LIGHT_COOKIE_WRAP_MODE_MASK,
+    LIGHT_COOKIE_WRAP_MODE_MIRROR, LIGHT_COOKIE_WRAP_MODE_MIRROR_ONCE,
+    LIGHT_COOKIE_WRAP_MODE_REPEAT, LIGHT_COOKIE_WRAP_U_SHIFT, LIGHT_COOKIE_WRAP_V_SHIFT,
+};
+use crate::gpu_pools::{GpuCubemap, SamplerState};
 use crate::render_graph::GraphAssetResources;
-use crate::shared::LightType;
+use crate::shared::{LightType, TextureFormat, TextureWrapMode};
 
 /// Edge length of each light-cookie atlas layer.
 const LIGHT_COOKIE_ATLAS_EDGE: u32 = 256;
-/// Maximum spotlight cookie layers including the fallback layer.
-const SPOT_COOKIE_LAYER_CAP: u32 = 64;
+/// Maximum 2D cookie layers including the fallback layer.
+const COOKIE_2D_LAYER_CAP: u32 = 64;
 /// Maximum resident point-light cookie cubemaps.
 const POINT_COOKIE_CUBEMAP_CAP: u32 = 16;
 /// Cubemap face count.
 const POINT_COOKIE_FACE_COUNT: u32 = 6;
-/// Atlas format used for scalar cookie alpha masks.
-const LIGHT_COOKIE_ATLAS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// Embedded WGSL target for copying 2D source cookies into atlas layers.
 const LIGHT_COOKIE_BLIT_2D_STEM: &str = "light_cookie_blit_2d";
 /// Source WGSL used only if embedded shader metadata is unexpectedly missing.
 const LIGHT_COOKIE_BLIT_2D_SOURCE: &str =
     include_str!("../../../shaders/passes/backend/light_cookie_blit_2d.wgsl");
+
+/// Scalar storage format used for light-cookie atlas layers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LightCookieAtlasFormat {
+    /// Signed half-float scalar storage.
+    R16Float,
+    /// Signed half-float RGBA storage used when scalar render targets are unavailable.
+    Rgba16Float,
+    /// Unsigned normalized scalar fallback.
+    R8Unorm,
+}
+
+impl LightCookieAtlasFormat {
+    /// Returns the wgpu texture format.
+    const fn wgpu(self) -> wgpu::TextureFormat {
+        match self {
+            Self::R16Float => wgpu::TextureFormat::R16Float,
+            Self::Rgba16Float => wgpu::TextureFormat::Rgba16Float,
+            Self::R8Unorm => wgpu::TextureFormat::R8Unorm,
+        }
+    }
+
+    /// Returns bytes per texel for CPU fallback-layer writes.
+    const fn bytes_per_texel(self) -> u32 {
+        match self {
+            Self::R16Float => 2,
+            Self::Rgba16Float => 8,
+            Self::R8Unorm => 1,
+        }
+    }
+}
+
+/// Channel read from a source texture into the scalar cookie atlas.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LightCookieSourceChannel {
+    /// Source red channel.
+    Red,
+    /// Source alpha channel.
+    Alpha,
+}
+
+/// Sampler/layout mode used for source cookie blits.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LightCookieSourceSampling {
+    /// Filterable source texture and filtering sampler.
+    Filtering,
+    /// Unfilterable float source texture and non-filtering sampler.
+    NonFiltering,
+}
+
+/// Resolved source texture view plus sampling policy.
+#[derive(Clone, Copy)]
+struct LightCookieSource<'a> {
+    /// Source texture view.
+    view: &'a wgpu::TextureView,
+    /// Source channel copied into the scalar atlas.
+    channel: LightCookieSourceChannel,
+    /// Source sampler/layout mode.
+    sampling: LightCookieSourceSampling,
+}
+
+/// Resolved point-cookie source cubemap plus sampling policy.
+#[derive(Clone, Copy)]
+struct LightCookiePointSource<'a> {
+    /// Source cubemap resource.
+    cubemap: &'a GpuCubemap,
+    /// Source channel copied into the scalar atlas.
+    channel: LightCookieSourceChannel,
+    /// Source sampler/layout mode.
+    sampling: LightCookieSourceSampling,
+}
 
 /// One requested light-cookie source assigned to an atlas layer.
 #[derive(Clone, Copy, Debug)]
@@ -40,8 +114,23 @@ struct LightCookieRequest {
     asset_id: i32,
     /// Unpacked host texture kind.
     kind: HostTextureAssetKind,
-    /// Spot atlas layer or first point face layer.
+    /// 2D atlas layer or first point face layer.
     layer: u32,
+}
+
+/// One unpacked light-cookie handle ready for atlas assignment.
+#[derive(Clone, Copy, Debug)]
+struct LightCookieAssignment {
+    /// Host light type requesting the cookie.
+    light_type: LightType,
+    /// Packed host texture handle.
+    packed_id: i32,
+    /// Unpacked host asset id.
+    asset_id: i32,
+    /// Unpacked host texture kind.
+    kind: HostTextureAssetKind,
+    /// Packed 2D cookie wrap modes.
+    wrap_bits: u32,
 }
 
 /// Atlas slot state for a packed host texture handle.
@@ -56,16 +145,16 @@ struct LightCookieSlot {
 /// Mutable cookie assignment state shared by light packing and atlas encoding.
 #[derive(Debug)]
 struct LightCookieAtlasState {
-    /// Persistent spot-cookie slots keyed by packed texture handle.
-    spot_slots: HashMap<i32, LightCookieSlot>,
+    /// Persistent 2D-cookie slots keyed by packed texture handle.
+    two_d_slots: HashMap<i32, LightCookieSlot>,
     /// Persistent point-cookie slots keyed by packed texture handle.
     point_slots: HashMap<i32, LightCookieSlot>,
-    /// Unique spot-cookie requests for the current frame.
-    spot_requests: Vec<LightCookieRequest>,
+    /// Unique 2D-cookie requests for the current frame.
+    two_d_requests: Vec<LightCookieRequest>,
     /// Unique point-cookie requests for the current frame.
     point_requests: Vec<LightCookieRequest>,
-    /// One-shot guard for spot-cookie atlas overflow.
-    spot_overflow_logged: bool,
+    /// One-shot guard for 2D-cookie atlas overflow.
+    two_d_overflow_logged: bool,
     /// One-shot guard for point-cookie atlas overflow.
     point_overflow_logged: bool,
 }
@@ -74,76 +163,97 @@ impl LightCookieAtlasState {
     /// Creates an empty assignment table.
     fn new() -> Self {
         Self {
-            spot_slots: HashMap::new(),
+            two_d_slots: HashMap::new(),
             point_slots: HashMap::new(),
-            spot_requests: Vec::new(),
+            two_d_requests: Vec::new(),
             point_requests: Vec::new(),
-            spot_overflow_logged: false,
+            two_d_overflow_logged: false,
             point_overflow_logged: false,
         }
     }
 
     /// Marks all slots unrequested and clears current-frame request lists.
     fn begin_frame(&mut self) {
-        for slot in self.spot_slots.values_mut() {
+        for slot in self.two_d_slots.values_mut() {
             slot.requested_this_frame = false;
         }
         for slot in self.point_slots.values_mut() {
             slot.requested_this_frame = false;
         }
-        self.spot_requests.clear();
+        self.two_d_requests.clear();
         self.point_requests.clear();
     }
 
     /// Assigns a cookie atlas binding for one resolved light.
     fn assign(
         &mut self,
-        light_type: LightType,
-        packed_id: i32,
-        spot_layers: u32,
+        assignment: LightCookieAssignment,
+        two_d_layers: u32,
         point_layers: u32,
     ) -> LightCookieBinding {
-        let Some((asset_id, kind)) = unpack_host_texture_packed(packed_id) else {
-            return LightCookieBinding::NONE;
-        };
-        match (light_type, kind) {
+        match (assignment.light_type, assignment.kind) {
             (
                 LightType::Spot,
                 HostTextureAssetKind::Texture2D
                 | HostTextureAssetKind::RenderTexture
                 | HostTextureAssetKind::VideoTexture,
-            ) => self.assign_spot(packed_id, asset_id, kind, spot_layers),
-            (LightType::Point, HostTextureAssetKind::Cubemap) => {
-                self.assign_point(packed_id, asset_id, kind, point_layers)
-            }
+            ) => self.assign_2d(
+                assignment.packed_id,
+                assignment.asset_id,
+                assignment.kind,
+                two_d_layers,
+                LIGHT_COOKIE_KIND_SPOT_2D,
+                assignment.wrap_bits,
+            ),
+            (
+                LightType::Directional,
+                HostTextureAssetKind::Texture2D
+                | HostTextureAssetKind::RenderTexture
+                | HostTextureAssetKind::VideoTexture,
+            ) => self.assign_2d(
+                assignment.packed_id,
+                assignment.asset_id,
+                assignment.kind,
+                two_d_layers,
+                LIGHT_COOKIE_KIND_DIRECTIONAL_2D,
+                assignment.wrap_bits,
+            ),
+            (LightType::Point, HostTextureAssetKind::Cubemap) => self.assign_point(
+                assignment.packed_id,
+                assignment.asset_id,
+                assignment.kind,
+                point_layers,
+            ),
             _ => LightCookieBinding::NONE,
         }
     }
 
-    /// Assigns a 2D spotlight cookie layer.
-    fn assign_spot(
+    /// Assigns a 2D cookie layer.
+    fn assign_2d(
         &mut self,
         packed_id: i32,
         asset_id: i32,
         kind: HostTextureAssetKind,
         layers: u32,
+        cookie_kind: u32,
+        wrap_bits: u32,
     ) -> LightCookieBinding {
         let Some(layer) = assign_cookie_layer(
-            &mut self.spot_slots,
+            &mut self.two_d_slots,
             packed_id,
             1,
             layers,
             1,
-            &mut self.spot_overflow_logged,
-            "spot",
+            &mut self.two_d_overflow_logged,
+            "2D",
         ) else {
             return LightCookieBinding::NONE;
         };
-        if let Some(slot) = self.spot_slots.get_mut(&packed_id)
+        if let Some(slot) = self.two_d_slots.get_mut(&packed_id)
             && !slot.requested_this_frame
         {
             slot.requested_this_frame = true;
-            self.spot_requests.push(LightCookieRequest {
+            self.two_d_requests.push(LightCookieRequest {
                 packed_id,
                 asset_id,
                 kind,
@@ -151,8 +261,9 @@ impl LightCookieAtlasState {
             });
         }
         LightCookieBinding {
-            kind: LIGHT_COOKIE_KIND_SPOT_2D,
+            kind: cookie_kind,
             layer,
+            wrap_bits,
         }
     }
 
@@ -189,17 +300,18 @@ impl LightCookieAtlasState {
         LightCookieBinding {
             kind: LIGHT_COOKIE_KIND_POINT_CUBE,
             layer,
+            wrap_bits: 0,
         }
     }
 
     /// Returns whether any current-frame request needs atlas synchronization.
     fn has_requests(&self) -> bool {
-        !(self.spot_requests.is_empty() && self.point_requests.is_empty())
+        !(self.two_d_requests.is_empty() && self.point_requests.is_empty())
     }
 
     /// Snapshot of requests for encoder recording without holding the state lock.
     fn requests(&self) -> (Vec<LightCookieRequest>, Vec<LightCookieRequest>) {
-        (self.spot_requests.clone(), self.point_requests.clone())
+        (self.two_d_requests.clone(), self.point_requests.clone())
     }
 }
 
@@ -254,6 +366,95 @@ fn assign_cookie_layer(
     None
 }
 
+/// Selects the scalar texture format used by light-cookie atlases.
+fn select_light_cookie_atlas_format(limits: &GpuLimits) -> LightCookieAtlasFormat {
+    if light_cookie_atlas_format_supported(limits, LightCookieAtlasFormat::R16Float) {
+        return LightCookieAtlasFormat::R16Float;
+    }
+    if light_cookie_atlas_format_supported(limits, LightCookieAtlasFormat::Rgba16Float) {
+        logger::warn!(
+            "signed scalar light-cookie atlas format R16Float is unavailable; using Rgba16Float HDR cookie storage"
+        );
+        return LightCookieAtlasFormat::Rgba16Float;
+    }
+    logger::warn!(
+        "HDR light-cookie atlas formats are unavailable; falling back to unsigned R8Unorm cookies"
+    );
+    LightCookieAtlasFormat::R8Unorm
+}
+
+/// Returns whether the device can use `format` for sampled scalar light-cookie atlases.
+fn light_cookie_atlas_format_supported(limits: &GpuLimits, format: LightCookieAtlasFormat) -> bool {
+    let features = limits.texture_format_features(format.wgpu());
+    features.allowed_usages.contains(
+        wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::COPY_DST,
+    ) && features
+        .flags
+        .contains(wgpu::TextureFormatFeatureFlags::FILTERABLE)
+}
+
+/// Returns the source channel that carries the scalar cookie value.
+fn source_channel_for_host_format(format: TextureFormat) -> LightCookieSourceChannel {
+    match format {
+        TextureFormat::ARGB32
+        | TextureFormat::RGBA32
+        | TextureFormat::BGRA32
+        | TextureFormat::RGBAHalf
+        | TextureFormat::ARGBHalf
+        | TextureFormat::RGBAFloat
+        | TextureFormat::ARGBFloat
+        | TextureFormat::BC2
+        | TextureFormat::BC3
+        | TextureFormat::BC7
+        | TextureFormat::ETC2RGBA1
+        | TextureFormat::ETC2RGBA8
+        | TextureFormat::ASTC4x4
+        | TextureFormat::ASTC5x5
+        | TextureFormat::ASTC6x6
+        | TextureFormat::ASTC8x8
+        | TextureFormat::ASTC10x10
+        | TextureFormat::ASTC12x12 => LightCookieSourceChannel::Alpha,
+        TextureFormat::Unknown
+        | TextureFormat::Alpha8
+        | TextureFormat::R8
+        | TextureFormat::RGB24
+        | TextureFormat::RGB565
+        | TextureFormat::BGR565
+        | TextureFormat::RHalf
+        | TextureFormat::RGHalf
+        | TextureFormat::RFloat
+        | TextureFormat::RGFloat
+        | TextureFormat::BC1
+        | TextureFormat::BC4
+        | TextureFormat::BC5
+        | TextureFormat::BC6H
+        | TextureFormat::ETC2RGB => LightCookieSourceChannel::Red,
+    }
+}
+
+/// Packs U/V sampler wrap modes for 2D cookie shader addressing.
+fn light_cookie_wrap_bits(sampler: &SamplerState) -> u32 {
+    pack_wrap_mode(sampler.wrap_u, LIGHT_COOKIE_WRAP_U_SHIFT)
+        | pack_wrap_mode(sampler.wrap_v, LIGHT_COOKIE_WRAP_V_SHIFT)
+}
+
+/// Packs one wrap mode into the shader metadata bitfield.
+fn pack_wrap_mode(mode: TextureWrapMode, shift: u32) -> u32 {
+    (wrap_mode_bits(mode) & LIGHT_COOKIE_WRAP_MODE_MASK) << shift
+}
+
+/// Converts a host texture wrap mode to the compact shader enum.
+fn wrap_mode_bits(mode: TextureWrapMode) -> u32 {
+    match mode {
+        TextureWrapMode::Repeat => LIGHT_COOKIE_WRAP_MODE_REPEAT,
+        TextureWrapMode::Clamp => LIGHT_COOKIE_WRAP_MODE_CLAMP,
+        TextureWrapMode::Mirror => LIGHT_COOKIE_WRAP_MODE_MIRROR,
+        TextureWrapMode::MirrorOnce => LIGHT_COOKIE_WRAP_MODE_MIRROR_ONCE,
+    }
+}
+
 /// Layered atlas texture and one-layer render-target views.
 struct LightCookieLayeredAtlas {
     /// Backing texture.
@@ -268,7 +469,14 @@ struct LightCookieLayeredAtlas {
 
 impl LightCookieLayeredAtlas {
     /// Creates a light-cookie atlas with one-layer render-target views.
-    fn new(device: &wgpu::Device, queue: &wgpu::Queue, label: &'static str, layers: u32) -> Self {
+    fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        label: &'static str,
+        layers: u32,
+        format: LightCookieAtlasFormat,
+    ) -> Self {
+        let wgpu_format = format.wgpu();
         let texture = Arc::new(device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
             size: wgpu::Extent3d {
@@ -279,16 +487,16 @@ impl LightCookieLayeredAtlas {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: LIGHT_COOKIE_ATLAS_FORMAT,
+            format: wgpu_format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         }));
-        write_white_layer(queue, texture.as_ref(), 0);
+        write_white_layer(queue, texture.as_ref(), 0, format);
         let view = Arc::new(texture.create_view(&wgpu::TextureViewDescriptor {
             label: Some(&format!("{label}_view")),
-            format: Some(LIGHT_COOKIE_ATLAS_FORMAT),
+            format: Some(wgpu_format),
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
             aspect: wgpu::TextureAspect::All,
@@ -302,7 +510,7 @@ impl LightCookieLayeredAtlas {
             .map(|layer| {
                 Arc::new(texture.create_view(&wgpu::TextureViewDescriptor {
                     label: Some(&format!("{label}_layer_{layer}")),
-                    format: Some(LIGHT_COOKIE_ATLAS_FORMAT),
+                    format: Some(wgpu_format),
                     dimension: Some(wgpu::TextureViewDimension::D2),
                     usage: Some(wgpu::TextureUsages::RENDER_ATTACHMENT),
                     aspect: wgpu::TextureAspect::All,
@@ -329,8 +537,13 @@ impl LightCookieLayeredAtlas {
 }
 
 /// Writes a white fallback layer.
-fn write_white_layer(queue: &wgpu::Queue, texture: &wgpu::Texture, layer: u32) {
-    let bytes = vec![255u8; (LIGHT_COOKIE_ATLAS_EDGE * LIGHT_COOKIE_ATLAS_EDGE * 4) as usize];
+fn write_white_layer(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    layer: u32,
+    format: LightCookieAtlasFormat,
+) {
+    let bytes = white_layer_bytes(format);
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
             texture,
@@ -345,7 +558,7 @@ fn write_white_layer(queue: &wgpu::Queue, texture: &wgpu::Texture, layer: u32) {
         &bytes,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
-            bytes_per_row: Some(LIGHT_COOKIE_ATLAS_EDGE * 4),
+            bytes_per_row: Some(LIGHT_COOKIE_ATLAS_EDGE * format.bytes_per_texel()),
             rows_per_image: Some(LIGHT_COOKIE_ATLAS_EDGE),
         },
         wgpu::Extent3d {
@@ -356,36 +569,197 @@ fn write_white_layer(queue: &wgpu::Queue, texture: &wgpu::Texture, layer: u32) {
     );
 }
 
+/// Builds a CPU-side full-white fallback layer for `format`.
+fn white_layer_bytes(format: LightCookieAtlasFormat) -> Vec<u8> {
+    let texels = (LIGHT_COOKIE_ATLAS_EDGE * LIGHT_COOKIE_ATLAS_EDGE) as usize;
+    match format {
+        LightCookieAtlasFormat::R16Float => {
+            let mut bytes = Vec::with_capacity(texels * 2);
+            for _ in 0..texels {
+                bytes.extend_from_slice(&0x3c00u16.to_le_bytes());
+            }
+            bytes
+        }
+        LightCookieAtlasFormat::Rgba16Float => {
+            let mut bytes = Vec::with_capacity(texels * 8);
+            for _ in 0..(texels * 4) {
+                bytes.extend_from_slice(&0x3c00u16.to_le_bytes());
+            }
+            bytes
+        }
+        LightCookieAtlasFormat::R8Unorm => vec![255u8; texels],
+    }
+}
+
 /// Pipelines and bind-group layouts used to copy source cookies into atlases.
 struct LightCookieBlitPipelines {
-    /// 2D texture source bind-group layout.
-    source_2d_layout: wgpu::BindGroupLayout,
-    /// 2D source blit pipeline.
-    source_2d_pipeline: wgpu::RenderPipeline,
+    /// Filterable 2D texture source bind-group layout.
+    source_filter_layout: wgpu::BindGroupLayout,
+    /// Non-filterable 2D texture source bind-group layout.
+    source_non_filter_layout: wgpu::BindGroupLayout,
+    /// Alpha-channel filterable source blit pipeline.
+    alpha_filter_pipeline: wgpu::RenderPipeline,
+    /// Red-channel filterable source blit pipeline.
+    red_filter_pipeline: wgpu::RenderPipeline,
+    /// Alpha-channel non-filterable source blit pipeline.
+    alpha_non_filter_pipeline: wgpu::RenderPipeline,
+    /// Red-channel non-filterable source blit pipeline.
+    red_non_filter_pipeline: wgpu::RenderPipeline,
+    /// Nearest sampler used with non-filterable float source textures.
+    source_nearest_sampler: wgpu::Sampler,
 }
 
 impl LightCookieBlitPipelines {
     /// Creates blit pipelines for light-cookie atlas updates.
-    fn new(device: &wgpu::Device) -> Self {
-        let source_2d_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("light_cookie_source_2d_bgl"),
-            entries: &[
-                sampled_texture_entry(0, wgpu::TextureViewDimension::D2),
-                sampler_entry(1),
-            ],
-        });
-        let source_2d_pipeline = create_blit_pipeline(
+    fn new(device: &wgpu::Device, atlas_format: LightCookieAtlasFormat) -> Self {
+        let source_filter_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("light_cookie_source_2d_filter_bgl"),
+                entries: &[
+                    sampled_texture_entry(0, wgpu::TextureViewDimension::D2, true),
+                    sampler_entry(1, wgpu::SamplerBindingType::Filtering),
+                ],
+            });
+        let source_non_filter_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("light_cookie_source_2d_non_filter_bgl"),
+                entries: &[
+                    sampled_texture_entry(0, wgpu::TextureViewDimension::D2, false),
+                    sampler_entry(1, wgpu::SamplerBindingType::NonFiltering),
+                ],
+            });
+        let alpha_filter_pipeline = create_blit_pipeline(
             device,
-            "light_cookie_blit_2d",
+            "light_cookie_blit_alpha_filter",
             light_cookie_blit_2d_wgsl(),
-            &source_2d_layout,
-            "fs_main",
+            &source_filter_layout,
+            blit_fragment_entry(LightCookieSourceChannel::Alpha, atlas_format),
+            atlas_format,
         );
+        let red_filter_pipeline = create_blit_pipeline(
+            device,
+            "light_cookie_blit_red_filter",
+            light_cookie_blit_2d_wgsl(),
+            &source_filter_layout,
+            blit_fragment_entry(LightCookieSourceChannel::Red, atlas_format),
+            atlas_format,
+        );
+        let alpha_non_filter_pipeline = create_blit_pipeline(
+            device,
+            "light_cookie_blit_alpha_non_filter",
+            light_cookie_blit_2d_wgsl(),
+            &source_non_filter_layout,
+            blit_fragment_entry(LightCookieSourceChannel::Alpha, atlas_format),
+            atlas_format,
+        );
+        let red_non_filter_pipeline = create_blit_pipeline(
+            device,
+            "light_cookie_blit_red_non_filter",
+            light_cookie_blit_2d_wgsl(),
+            &source_non_filter_layout,
+            blit_fragment_entry(LightCookieSourceChannel::Red, atlas_format),
+            atlas_format,
+        );
+        let source_nearest_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("light_cookie_source_nearest_sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
         Self {
-            source_2d_layout,
-            source_2d_pipeline,
+            source_filter_layout,
+            source_non_filter_layout,
+            alpha_filter_pipeline,
+            red_filter_pipeline,
+            alpha_non_filter_pipeline,
+            red_non_filter_pipeline,
+            source_nearest_sampler,
         }
     }
+
+    /// Returns the bind-group layout for `sampling`.
+    fn layout(&self, sampling: LightCookieSourceSampling) -> &wgpu::BindGroupLayout {
+        match sampling {
+            LightCookieSourceSampling::Filtering => &self.source_filter_layout,
+            LightCookieSourceSampling::NonFiltering => &self.source_non_filter_layout,
+        }
+    }
+
+    /// Returns the render pipeline for `channel` and `sampling`.
+    fn pipeline(
+        &self,
+        channel: LightCookieSourceChannel,
+        sampling: LightCookieSourceSampling,
+    ) -> &wgpu::RenderPipeline {
+        match (channel, sampling) {
+            (LightCookieSourceChannel::Alpha, LightCookieSourceSampling::Filtering) => {
+                &self.alpha_filter_pipeline
+            }
+            (LightCookieSourceChannel::Red, LightCookieSourceSampling::Filtering) => {
+                &self.red_filter_pipeline
+            }
+            (LightCookieSourceChannel::Alpha, LightCookieSourceSampling::NonFiltering) => {
+                &self.alpha_non_filter_pipeline
+            }
+            (LightCookieSourceChannel::Red, LightCookieSourceSampling::NonFiltering) => {
+                &self.red_non_filter_pipeline
+            }
+        }
+    }
+
+    /// Returns the sampler used for source blits.
+    fn sampler<'a>(
+        &'a self,
+        sampling: LightCookieSourceSampling,
+        filtering_sampler: &'a wgpu::Sampler,
+    ) -> &'a wgpu::Sampler {
+        match sampling {
+            LightCookieSourceSampling::Filtering => filtering_sampler,
+            LightCookieSourceSampling::NonFiltering => &self.source_nearest_sampler,
+        }
+    }
+}
+
+/// Returns the fragment entry point matching the atlas target channel count.
+fn blit_fragment_entry(
+    channel: LightCookieSourceChannel,
+    atlas_format: LightCookieAtlasFormat,
+) -> &'static str {
+    match (channel, atlas_format) {
+        (LightCookieSourceChannel::Alpha, LightCookieAtlasFormat::Rgba16Float) => "fs_alpha_rgba",
+        (LightCookieSourceChannel::Red, LightCookieAtlasFormat::Rgba16Float) => "fs_red_rgba",
+        (LightCookieSourceChannel::Alpha, _) => "fs_alpha_scalar",
+        (LightCookieSourceChannel::Red, _) => "fs_red_scalar",
+    }
+}
+
+/// Builds a source bind group for one blit.
+fn create_source_bind_group(
+    device: &wgpu::Device,
+    blit: &LightCookieBlitPipelines,
+    source: LightCookieSource<'_>,
+    filtering_sampler: &wgpu::Sampler,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("light_cookie_source_bg"),
+        layout: blit.layout(source.sampling),
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(source.view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(
+                    blit.sampler(source.sampling, filtering_sampler),
+                ),
+            },
+        ],
+    })
 }
 
 /// Returns the composed 2D light-cookie blit shader.
@@ -404,12 +778,13 @@ fn light_cookie_blit_2d_wgsl() -> &'static str {
 fn sampled_texture_entry(
     binding: u32,
     view_dimension: wgpu::TextureViewDimension,
+    filterable: bool,
 ) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::FRAGMENT,
         ty: wgpu::BindingType::Texture {
-            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            sample_type: wgpu::TextureSampleType::Float { filterable },
             view_dimension,
             multisampled: false,
         },
@@ -417,23 +792,27 @@ fn sampled_texture_entry(
     }
 }
 
-/// Builds a filtering sampler binding layout entry.
-fn sampler_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+/// Builds a sampler binding layout entry.
+fn sampler_entry(
+    binding: u32,
+    sampler_type: wgpu::SamplerBindingType,
+) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::FRAGMENT,
-        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+        ty: wgpu::BindingType::Sampler(sampler_type),
         count: None,
     }
 }
 
-/// Creates a fullscreen alpha-copy render pipeline.
+/// Creates a fullscreen scalar-cookie render pipeline.
 fn create_blit_pipeline(
     device: &wgpu::Device,
     label: &'static str,
     source: &'static str,
     bind_group_layout: &wgpu::BindGroupLayout,
     fragment_entry: &'static str,
+    atlas_format: LightCookieAtlasFormat,
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
@@ -457,9 +836,9 @@ fn create_blit_pipeline(
             module: &shader,
             entry_point: Some(fragment_entry),
             targets: &[Some(wgpu::ColorTargetState {
-                format: LIGHT_COOKIE_ATLAS_FORMAT,
+                format: atlas_format.wgpu(),
                 blend: None,
-                write_mask: wgpu::ColorWrites::ALL,
+                write_mask: wgpu::ColorWrites::RED,
             })],
             compilation_options: Default::default(),
         }),
@@ -473,10 +852,31 @@ fn create_blit_pipeline(
     pipeline
 }
 
+/// Returns the source sampling mode supported by `format`.
+fn source_sampling_for_limits(
+    limits: &GpuLimits,
+    format: wgpu::TextureFormat,
+) -> Option<LightCookieSourceSampling> {
+    let features = limits.texture_format_features(format);
+    if !features
+        .allowed_usages
+        .contains(wgpu::TextureUsages::TEXTURE_BINDING)
+    {
+        return None;
+    }
+    if features
+        .flags
+        .contains(wgpu::TextureFormatFeatureFlags::FILTERABLE)
+    {
+        return Some(LightCookieSourceSampling::Filtering);
+    }
+    Some(LightCookieSourceSampling::NonFiltering)
+}
+
 /// Frame-global light-cookie atlas resources.
 pub(super) struct LightCookieAtlasResources {
-    /// Spotlight 2D cookie atlas.
-    spot: LightCookieLayeredAtlas,
+    /// 2D cookie atlas shared by spot and directional lights.
+    two_d: LightCookieLayeredAtlas,
     /// Point-light cubemap-face cookie atlas.
     point: LightCookieLayeredAtlas,
     /// Sampler used by material lighting shaders.
@@ -493,21 +893,24 @@ impl LightCookieAtlasResources {
     /// Creates frame-global light-cookie atlas resources.
     pub(super) fn new(device: &wgpu::Device, queue: &wgpu::Queue, limits: Arc<GpuLimits>) -> Self {
         let max_layers = limits.max_texture_array_layers().max(1);
-        let spot_layers = SPOT_COOKIE_LAYER_CAP.min(max_layers).max(1);
+        let two_d_layers = COOKIE_2D_LAYER_CAP.min(max_layers).max(1);
         let point_layers = (1 + POINT_COOKIE_CUBEMAP_CAP * POINT_COOKIE_FACE_COUNT)
             .min(max_layers)
             .max(1);
-        let spot = LightCookieLayeredAtlas::new(
+        let atlas_format = select_light_cookie_atlas_format(&limits);
+        let two_d = LightCookieLayeredAtlas::new(
             device,
             queue,
-            "frame_light_cookie_spot_atlas",
-            spot_layers,
+            "frame_light_cookie_2d_atlas",
+            two_d_layers,
+            atlas_format,
         );
         let point = LightCookieLayeredAtlas::new(
             device,
             queue,
             "frame_light_cookie_point_atlas",
             point_layers,
+            atlas_format,
         );
         let sampler = Arc::new(device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("frame_light_cookie_sampler"),
@@ -519,9 +922,9 @@ impl LightCookieAtlasResources {
             mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         }));
-        let blit = LightCookieBlitPipelines::new(device);
+        let blit = LightCookieBlitPipelines::new(device, atlas_format);
         Self {
-            spot,
+            two_d,
             point,
             sampler,
             blit,
@@ -530,9 +933,9 @@ impl LightCookieAtlasResources {
         }
     }
 
-    /// Full spotlight atlas view for group-0 binding.
-    pub(super) fn spot_view(&self) -> &wgpu::TextureView {
-        self.spot.view.as_ref()
+    /// Full 2D cookie atlas view for group-0 binding.
+    pub(super) fn two_d_view(&self) -> &wgpu::TextureView {
+        self.two_d.view.as_ref()
     }
 
     /// Full point-cookie atlas view for group-0 binding.
@@ -551,10 +954,26 @@ impl LightCookieAtlasResources {
     }
 
     /// Assigns a cookie atlas binding for one resolved light.
-    pub(super) fn assign(&self, light_type: LightType, packed_id: i32) -> LightCookieBinding {
+    pub(super) fn assign(
+        &self,
+        light_type: LightType,
+        packed_id: i32,
+        assets: Option<&dyn GraphAssetResources>,
+    ) -> LightCookieBinding {
+        let Some((asset_id, kind)) = unpack_host_texture_packed(packed_id) else {
+            return LightCookieBinding::NONE;
+        };
+        let wrap_bits = self.source_wrap_bits(assets, asset_id, kind);
+        let assignment = LightCookieAssignment {
+            light_type,
+            packed_id,
+            asset_id,
+            kind,
+            wrap_bits,
+        };
         self.state
             .lock()
-            .assign(light_type, packed_id, self.spot.layers, self.point.layers)
+            .assign(assignment, self.two_d.layers, self.point.layers)
     }
 
     /// Returns whether a frame-global atlas update pass has work.
@@ -570,50 +989,37 @@ impl LightCookieAtlasResources {
         assets: &dyn GraphAssetResources,
     ) {
         profiling::scope!("light_cookies::encode_atlas");
-        let (spot_requests, point_requests) = self.state.lock().requests();
-        for request in spot_requests {
-            self.encode_spot_request(device, encoder, assets, request);
+        let (two_d_requests, point_requests) = self.state.lock().requests();
+        for request in two_d_requests {
+            self.encode_2d_request(device, encoder, assets, request);
         }
         for request in point_requests {
             self.encode_point_request(device, encoder, assets, request);
         }
     }
 
-    /// Records one spotlight cookie atlas update.
-    fn encode_spot_request(
+    /// Records one 2D cookie atlas update.
+    fn encode_2d_request(
         &self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         assets: &dyn GraphAssetResources,
         request: LightCookieRequest,
     ) {
-        let Some(target) = self.spot.layer_view(request.layer) else {
+        let Some(target) = self.two_d.layer_view(request.layer) else {
             return;
         };
-        let Some(source) = self.resolve_spot_source(assets, request) else {
-            clear_cookie_layer(encoder, target, "light_cookie_spot_clear");
+        let Some(source) = self.resolve_2d_source(assets, request) else {
+            clear_cookie_layer(encoder, target, "light_cookie_2d_clear");
             return;
         };
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("light_cookie_spot_source_bg"),
-            layout: &self.blit.source_2d_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(source),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(self.sampler()),
-                },
-            ],
-        });
-        crate::profiling::note_resource_churn!(BindGroup, "backend::light_cookie_spot_source_bg");
+        let bind_group = create_source_bind_group(device, &self.blit, source, self.sampler());
+        crate::profiling::note_resource_churn!(BindGroup, "backend::light_cookie_2d_source_bg");
         blit_cookie_layer(
             encoder,
             target,
-            "light_cookie_spot_blit",
-            &self.blit.source_2d_pipeline,
+            "light_cookie_2d_blit",
+            self.blit.pipeline(source.channel, source.sampling),
             &bind_group,
         );
     }
@@ -638,22 +1044,13 @@ impl LightCookieAtlasResources {
             let Some(target) = self.point.layer_view(request.layer + face) else {
                 continue;
             };
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("light_cookie_point_source_bg"),
-                layout: &self.blit.source_2d_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(
-                            source.face_views[face as usize].as_ref(),
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(self.sampler()),
-                    },
-                ],
-            });
+            let face_source = LightCookieSource {
+                view: source.cubemap.face_views[face as usize].as_ref(),
+                channel: source.channel,
+                sampling: source.sampling,
+            };
+            let bind_group =
+                create_source_bind_group(device, &self.blit, face_source, self.sampler());
             crate::profiling::note_resource_churn!(
                 BindGroup,
                 "backend::light_cookie_point_source_bg"
@@ -662,49 +1059,58 @@ impl LightCookieAtlasResources {
                 encoder,
                 target,
                 "light_cookie_point_blit",
-                &self.blit.source_2d_pipeline,
+                self.blit
+                    .pipeline(face_source.channel, face_source.sampling),
                 &bind_group,
             );
         }
     }
 
-    /// Resolves a spotlight source texture view.
-    fn resolve_spot_source<'a>(
+    /// Resolves a 2D source texture view and sampling policy.
+    fn resolve_2d_source<'a>(
         &self,
         assets: &'a dyn GraphAssetResources,
         request: LightCookieRequest,
-    ) -> Option<&'a wgpu::TextureView> {
+    ) -> Option<LightCookieSource<'a>> {
         match request.kind {
             HostTextureAssetKind::Texture2D => {
                 let texture = assets.texture_pool().get(request.asset_id)?;
-                if texture.mip_levels_resident == 0
-                    || !self.source_format_filterable(texture.wgpu_format)
-                {
+                if texture.mip_levels_resident == 0 {
                     return None;
                 }
-                Some(texture.view.as_ref())
+                Some(LightCookieSource {
+                    view: texture.view.as_ref(),
+                    channel: source_channel_for_host_format(texture.host_format),
+                    sampling: self.source_sampling(texture.wgpu_format)?,
+                })
             }
             HostTextureAssetKind::RenderTexture => {
                 let texture = assets.render_texture_pool().get(request.asset_id)?;
-                if !texture.is_sampleable()
-                    || !self.source_format_filterable(texture.wgpu_color_format)
-                {
+                if !texture.is_sampleable() {
                     return None;
                 }
-                Some(texture.color_view.as_ref())
+                Some(LightCookieSource {
+                    view: texture.color_view.as_ref(),
+                    channel: LightCookieSourceChannel::Alpha,
+                    sampling: self.source_sampling(texture.wgpu_color_format)?,
+                })
             }
             HostTextureAssetKind::VideoTexture => {
                 let texture = assets.video_texture_pool().get(request.asset_id)?;
                 if !texture.is_sampleable() {
                     return None;
                 }
-                Some(texture.view.as_ref())
+                Some(LightCookieSource {
+                    view: texture.view.as_ref(),
+                    channel: LightCookieSourceChannel::Alpha,
+                    sampling: LightCookieSourceSampling::Filtering,
+                })
             }
             HostTextureAssetKind::Texture3D
             | HostTextureAssetKind::Cubemap
             | HostTextureAssetKind::Desktop => {
                 logger::trace!(
-                    "spotlight cookie {} ignored unsupported source kind {:?}",
+                    "2D light cookie {} ignored unsupported source kind {:?}",
                     request.packed_id,
                     request.kind
                 );
@@ -713,28 +1119,58 @@ impl LightCookieAtlasResources {
         }
     }
 
+    /// Returns packed U/V wrap mode bits for a 2D cookie source.
+    fn source_wrap_bits(
+        &self,
+        assets: Option<&dyn GraphAssetResources>,
+        asset_id: i32,
+        kind: HostTextureAssetKind,
+    ) -> u32 {
+        let Some(assets) = assets else {
+            return 0;
+        };
+        match kind {
+            HostTextureAssetKind::Texture2D => assets
+                .texture_pool()
+                .get(asset_id)
+                .map_or(0, |texture| light_cookie_wrap_bits(&texture.sampler)),
+            HostTextureAssetKind::RenderTexture => assets
+                .render_texture_pool()
+                .get(asset_id)
+                .map_or(0, |texture| light_cookie_wrap_bits(&texture.sampler)),
+            HostTextureAssetKind::VideoTexture => assets
+                .video_texture_pool()
+                .get(asset_id)
+                .map_or(0, |texture| light_cookie_wrap_bits(&texture.sampler)),
+            HostTextureAssetKind::Cubemap
+            | HostTextureAssetKind::Texture3D
+            | HostTextureAssetKind::Desktop => 0,
+        }
+    }
+
     /// Resolves a point-light cubemap source texture view.
     fn resolve_point_source<'a>(
         &self,
         assets: &'a dyn GraphAssetResources,
         request: LightCookieRequest,
-    ) -> Option<&'a GpuCubemap> {
+    ) -> Option<LightCookiePointSource<'a>> {
         if request.kind != HostTextureAssetKind::Cubemap {
             return None;
         }
         let cubemap = assets.cubemap_pool().get(request.asset_id)?;
-        if cubemap.mip_levels_resident == 0 || !self.source_format_filterable(cubemap.wgpu_format) {
+        if cubemap.mip_levels_resident == 0 {
             return None;
         }
-        Some(cubemap)
+        Some(LightCookiePointSource {
+            cubemap,
+            channel: source_channel_for_host_format(cubemap.host_format),
+            sampling: self.source_sampling(cubemap.wgpu_format)?,
+        })
     }
 
-    /// Returns whether a source format can be sampled by the filtering blit pipeline.
-    fn source_format_filterable(&self, format: wgpu::TextureFormat) -> bool {
-        self.limits
-            .texture_format_features(format)
-            .flags
-            .contains(wgpu::TextureFormatFeatureFlags::FILTERABLE)
+    /// Returns the source sampling mode supported by `format`.
+    fn source_sampling(&self, format: wgpu::TextureFormat) -> Option<LightCookieSourceSampling> {
+        source_sampling_for_limits(&self.limits, format)
     }
 }
 
@@ -856,11 +1292,277 @@ impl crate::render_graph::pass::EncoderPass for LightCookieAtlasPass {
 
 #[cfg(test)]
 mod tests {
-    use super::LIGHT_COOKIE_BLIT_2D_STEM;
+    use super::{
+        LIGHT_COOKIE_ATLAS_EDGE, LIGHT_COOKIE_BLIT_2D_STEM, LightCookieAssignment,
+        LightCookieAtlasFormat, LightCookieAtlasState, LightCookieSourceChannel,
+        LightCookieSourceSampling, light_cookie_atlas_format_supported, light_cookie_wrap_bits,
+        select_light_cookie_atlas_format, source_channel_for_host_format,
+        source_sampling_for_limits, white_layer_bytes,
+    };
+    use crate::assets::texture::HostTextureAssetKind;
+    use crate::gpu::{
+        GpuLimits, LIGHT_COOKIE_KIND_DIRECTIONAL_2D, LIGHT_COOKIE_WRAP_MODE_CLAMP,
+        LIGHT_COOKIE_WRAP_MODE_MIRROR_ONCE, LIGHT_COOKIE_WRAP_U_SHIFT, LIGHT_COOKIE_WRAP_V_SHIFT,
+    };
+    use crate::gpu_pools::SamplerState;
+    use crate::shared::{LightType, TextureFormat, TextureWrapMode};
+
+    use hashbrown::HashMap;
 
     #[test]
     fn blit_shader_stem_resolves_to_embedded_wgsl() {
         let wgsl = crate::embedded_shaders::embedded_target_wgsl(LIGHT_COOKIE_BLIT_2D_STEM);
         assert!(wgsl.is_some_and(|source| !source.trim().is_empty()));
+    }
+
+    #[test]
+    fn atlas_format_prefers_signed_filterable_r16_float() {
+        let limits = limits_with_format(
+            wgpu::TextureFormat::R16Float,
+            wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_DST,
+            wgpu::TextureFormatFeatureFlags::FILTERABLE,
+        );
+
+        assert!(light_cookie_atlas_format_supported(
+            &limits,
+            LightCookieAtlasFormat::R16Float
+        ));
+        assert_eq!(
+            select_light_cookie_atlas_format(&limits),
+            LightCookieAtlasFormat::R16Float
+        );
+    }
+
+    #[test]
+    fn atlas_format_falls_back_when_r16_float_is_not_filterable() {
+        let limits = limits_with_format_features([
+            (
+                wgpu::TextureFormat::R16Float,
+                wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::COPY_DST,
+                wgpu::TextureFormatFeatureFlags::empty(),
+            ),
+            (
+                wgpu::TextureFormat::Rgba16Float,
+                wgpu::TextureUsages::empty(),
+                wgpu::TextureFormatFeatureFlags::empty(),
+            ),
+        ]);
+
+        assert!(!light_cookie_atlas_format_supported(
+            &limits,
+            LightCookieAtlasFormat::R16Float
+        ));
+        assert_eq!(
+            select_light_cookie_atlas_format(&limits),
+            LightCookieAtlasFormat::R8Unorm
+        );
+    }
+
+    #[test]
+    fn atlas_format_uses_rgba16_float_when_scalar_hdr_is_unavailable() {
+        let limits = limits_with_format_features([
+            (
+                wgpu::TextureFormat::R16Float,
+                wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::COPY_DST,
+                wgpu::TextureFormatFeatureFlags::empty(),
+            ),
+            (
+                wgpu::TextureFormat::Rgba16Float,
+                wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::COPY_DST,
+                wgpu::TextureFormatFeatureFlags::FILTERABLE,
+            ),
+        ]);
+
+        assert!(!light_cookie_atlas_format_supported(
+            &limits,
+            LightCookieAtlasFormat::R16Float
+        ));
+        assert!(light_cookie_atlas_format_supported(
+            &limits,
+            LightCookieAtlasFormat::Rgba16Float
+        ));
+        assert_eq!(
+            select_light_cookie_atlas_format(&limits),
+            LightCookieAtlasFormat::Rgba16Float
+        );
+    }
+
+    #[test]
+    fn source_channel_uses_alpha_for_alpha_capable_formats() {
+        for format in [
+            TextureFormat::ARGB32,
+            TextureFormat::RGBA32,
+            TextureFormat::BGRA32,
+            TextureFormat::RGBAHalf,
+            TextureFormat::ARGBHalf,
+            TextureFormat::RGBAFloat,
+            TextureFormat::ARGBFloat,
+            TextureFormat::BC3,
+            TextureFormat::BC7,
+            TextureFormat::ETC2RGBA8,
+            TextureFormat::ASTC4x4,
+        ] {
+            assert_eq!(
+                source_channel_for_host_format(format),
+                LightCookieSourceChannel::Alpha,
+                "{format:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn source_channel_uses_red_for_scalar_and_no_alpha_formats() {
+        for format in [
+            TextureFormat::Alpha8,
+            TextureFormat::R8,
+            TextureFormat::RHalf,
+            TextureFormat::RFloat,
+            TextureFormat::RGFloat,
+            TextureFormat::RGB24,
+            TextureFormat::BC1,
+            TextureFormat::BC4,
+            TextureFormat::ETC2RGB,
+        ] {
+            assert_eq!(
+                source_channel_for_host_format(format),
+                LightCookieSourceChannel::Red,
+                "{format:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn source_sampling_accepts_filtering_and_non_filtering_textures() {
+        let filterable = limits_with_format(
+            wgpu::TextureFormat::Rgba16Float,
+            wgpu::TextureUsages::TEXTURE_BINDING,
+            wgpu::TextureFormatFeatureFlags::FILTERABLE,
+        );
+        let non_filterable = limits_with_format(
+            wgpu::TextureFormat::Rgba32Float,
+            wgpu::TextureUsages::TEXTURE_BINDING,
+            wgpu::TextureFormatFeatureFlags::empty(),
+        );
+        let not_sampled = limits_with_format(
+            wgpu::TextureFormat::Rgba32Float,
+            wgpu::TextureUsages::COPY_DST,
+            wgpu::TextureFormatFeatureFlags::empty(),
+        );
+
+        assert_eq!(
+            source_sampling_for_limits(&filterable, wgpu::TextureFormat::Rgba16Float),
+            Some(LightCookieSourceSampling::Filtering)
+        );
+        assert_eq!(
+            source_sampling_for_limits(&non_filterable, wgpu::TextureFormat::Rgba32Float),
+            Some(LightCookieSourceSampling::NonFiltering)
+        );
+        assert_eq!(
+            source_sampling_for_limits(&not_sampled, wgpu::TextureFormat::Rgba32Float),
+            None
+        );
+    }
+
+    #[test]
+    fn white_layer_bytes_match_atlas_formats() {
+        let texels = (LIGHT_COOKIE_ATLAS_EDGE * LIGHT_COOKIE_ATLAS_EDGE) as usize;
+        let r8 = white_layer_bytes(LightCookieAtlasFormat::R8Unorm);
+        assert_eq!(r8.len(), texels);
+        assert!(r8.iter().all(|&b| b == 255));
+
+        let r16 = white_layer_bytes(LightCookieAtlasFormat::R16Float);
+        assert_eq!(r16.len(), texels * 2);
+        assert!(r16.chunks_exact(2).all(|bytes| bytes == [0x00, 0x3c]));
+
+        let rgba16 = white_layer_bytes(LightCookieAtlasFormat::Rgba16Float);
+        assert_eq!(rgba16.len(), texels * 8);
+        assert!(rgba16.chunks_exact(2).all(|bytes| bytes == [0x00, 0x3c]));
+    }
+
+    #[test]
+    fn light_cookie_wrap_bits_pack_u_and_v_modes() {
+        let sampler = SamplerState {
+            wrap_u: TextureWrapMode::Clamp,
+            wrap_v: TextureWrapMode::MirrorOnce,
+            ..Default::default()
+        };
+        let bits = light_cookie_wrap_bits(&sampler);
+
+        assert_eq!(
+            bits,
+            (LIGHT_COOKIE_WRAP_MODE_CLAMP << LIGHT_COOKIE_WRAP_U_SHIFT)
+                | (LIGHT_COOKIE_WRAP_MODE_MIRROR_ONCE << LIGHT_COOKIE_WRAP_V_SHIFT)
+        );
+    }
+
+    #[test]
+    fn assigns_directional_cookies_to_2d_atlas() {
+        let mut state = LightCookieAtlasState::new();
+        let binding = state.assign(
+            LightCookieAssignment {
+                light_type: LightType::Directional,
+                packed_id: 42,
+                asset_id: 7,
+                kind: HostTextureAssetKind::Texture2D,
+                wrap_bits: 0x0d,
+            },
+            8,
+            8,
+        );
+
+        assert_eq!(binding.kind, LIGHT_COOKIE_KIND_DIRECTIONAL_2D);
+        assert_eq!(binding.layer, 1);
+        assert_eq!(binding.wrap_bits, 0x0d);
+        let (two_d, point) = state.requests();
+        assert_eq!(two_d.len(), 1);
+        assert_eq!(two_d[0].asset_id, 7);
+        assert!(point.is_empty());
+    }
+
+    fn limits_with_format(
+        format: wgpu::TextureFormat,
+        allowed_usages: wgpu::TextureUsages,
+        flags: wgpu::TextureFormatFeatureFlags,
+    ) -> GpuLimits {
+        limits_with_format_features([(format, allowed_usages, flags)])
+    }
+
+    fn limits_with_format_features<const N: usize>(
+        features: [(
+            wgpu::TextureFormat,
+            wgpu::TextureUsages,
+            wgpu::TextureFormatFeatureFlags,
+        ); N],
+    ) -> GpuLimits {
+        let mut format_features = HashMap::new();
+        for (format, allowed_usages, flags) in features {
+            format_features.insert(
+                format,
+                wgpu::TextureFormatFeatures {
+                    allowed_usages,
+                    flags,
+                },
+            );
+        }
+        GpuLimits::synthetic_for_tests(
+            wgpu::Limits {
+                max_texture_dimension_2d: 4096,
+                max_texture_dimension_3d: 4096,
+                max_texture_array_layers: 64,
+                max_storage_buffer_binding_size: 256 * 1024,
+                max_buffer_size: 256 * 1024,
+                ..Default::default()
+            },
+            wgpu::Features::empty(),
+            format_features,
+        )
     }
 }

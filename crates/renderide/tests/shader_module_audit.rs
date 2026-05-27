@@ -326,6 +326,8 @@ fn count_font_atlas_lod_bias_samples(src: &str) -> usize {
 mod camera360;
 #[path = "shader_module_audit/hygiene.rs"]
 mod hygiene;
+#[path = "shader_module_audit/light_cookies.rs"]
+mod light_cookies;
 #[path = "shader_module_audit/material_defaults.rs"]
 mod material_defaults;
 #[path = "shader_module_audit/pbs.rs"]

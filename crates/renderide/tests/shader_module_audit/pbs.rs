@@ -627,8 +627,9 @@ fn light_radiance_conversion_reaches_directional_and_punctual_paths() -> io::Res
 
     let xiexe = module_source("xiexe/toon2/lighting.wgsl")?;
     assert!(
-        xiexe.contains("bl::light_radiance(light),") && xiexe.contains("bl::direct_light_scale(),"),
-        "Xiexe directional lights must use shared linear radiance and scalar boost"
+        xiexe.contains("bl::light_radiance(light),")
+            && xiexe.contains("bl::direct_light_scale() * cookies::multiplier(light, world_pos),"),
+        "Xiexe directional lights must use shared linear radiance, scalar boost, and cookie attenuation"
     );
     assert!(
         xiexe.contains("var visibility = bl::distance_visibility(dist, light.range);")

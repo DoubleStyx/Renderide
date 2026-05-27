@@ -77,7 +77,7 @@ fn sample_light(light: ft::GpuLight, world_pos: vec3<f32>) -> xb::LightSample {
         return xb::LightSample(
             select(vec3<f32>(0.0, 0.0, 1.0), normalize(-light.direction.xyz), dir_len_sq > 1e-16),
             bl::light_radiance(light),
-            bl::direct_light_scale(),
+            bl::direct_light_scale() * cookies::multiplier(light, world_pos),
             1.0,
             true,
         );
