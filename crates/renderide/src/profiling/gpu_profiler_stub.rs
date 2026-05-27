@@ -19,7 +19,7 @@ impl GpuProfilerHandle {
     /// No-op stub; Tracy bridge state only exists when the `tracy` feature is enabled.
     #[inline]
     pub fn refresh_tracy_bridge(
-        &mut self,
+        &self,
         _backend: wgpu::Backend,
         _device: &wgpu::Device,
         _queue: &wgpu::Queue,
