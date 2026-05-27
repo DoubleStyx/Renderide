@@ -5,11 +5,10 @@ use glam::{Quat, Vec3};
 use crate::diagnostics::gpu_flight_recorder::GpuFlightRecorder;
 use crate::frontend::input::vr_inputs_for_session;
 use crate::gpu::GpuQueueAccessGate;
-use crate::shared::{HeadOutputDevice, OutputState, VRControllerState, VRInputsState};
+use crate::shared::{HandState, HeadOutputDevice, OutputState, VRControllerState, VRInputsState};
 use crate::xr::OpenxrFrameTick;
 
 use super::AppDriver;
-use renderide_shared::HandState;
 use std::sync::Arc;
 
 /// Latest OpenXR input state sampled for host IPC.

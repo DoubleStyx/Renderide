@@ -14,12 +14,11 @@ use super::profile::{
     profile_code,
 };
 use super::state::{OpenxrControllerRawInputs, build_controller_state};
-use crate::shared::{Chirality, VRControllerState};
-use crate::xr::input::hand_tracking::hand_from_openxr;
+use crate::shared::{Chirality, HandState, VRControllerState};
+use crate::xr::input::hand_tracking::{hand_from_openxr, inactive_openxr_hand};
 use crate::xr::synthesize_hand_states;
 use glam::{Quat, Vec2, Vec3};
 use openxr as xr;
-use renderide_shared::HandState;
 
 /// OpenXR [`xr::Action::state`] snapshot for one hand (all channels consumed by IPC mapping).
 struct PolledHandStates {
@@ -55,6 +54,84 @@ impl PolledHandStates {
     fn trackpad_vec(&self) -> Vec2 {
         Vec2::new(self.trackpad.current_state.x, self.trackpad.current_state.y)
     }
+}
+
+/// Result of sampling an optional OpenXR hand tracker for one side.
+enum OpenxrHandSample {
+    /// No tracker exists for this side, so controller-synthesized hand input is the only source.
+    NoTracker,
+    /// A tracker exists, but it produced no usable joint pose for the current frame.
+    Inactive,
+    /// A tracker produced a host-facing hand for the current frame.
+    Active(HandState),
+}
+
+/// Locates and converts one OpenXR hand tracker without failing the whole input tick.
+fn sample_openxr_hand(
+    tracker: Option<&xr::HandTracker>,
+    stage: &xr::Space,
+    predicted_time: xr::Time,
+    chirality: Chirality,
+) -> OpenxrHandSample {
+    let Some(tracker) = tracker else {
+        return OpenxrHandSample::NoTracker;
+    };
+    let joints = match stage.locate_hand_joints(tracker, predicted_time) {
+        Ok(Some(joints)) => joints,
+        Ok(None) => return OpenxrHandSample::Inactive,
+        Err(error) => {
+            logger::trace!("OpenXR {chirality:?} hand tracking locate failed: {error:?}");
+            return OpenxrHandSample::Inactive;
+        }
+    };
+    hand_from_openxr(&joints, chirality)
+        .map_or(OpenxrHandSample::Inactive, OpenxrHandSample::Active)
+}
+
+/// Appends the host-facing hand state for one side using OpenXR state when available.
+fn append_hand_for_side(
+    hands: &mut Vec<HandState>,
+    synthetic_hands: &[HandState],
+    chirality: Chirality,
+    openxr_sample: OpenxrHandSample,
+) {
+    match openxr_sample {
+        OpenxrHandSample::Active(hand) => hands.push(hand),
+        OpenxrHandSample::Inactive => {
+            hands.push(inactive_openxr_hand(chirality));
+            append_synthetic_hand_for_side(hands, synthetic_hands, chirality);
+        }
+        OpenxrHandSample::NoTracker => {
+            append_synthetic_hand_for_side(hands, synthetic_hands, chirality);
+        }
+    }
+}
+
+/// Appends synthesized controller-driven hand state for one side.
+fn append_synthetic_hand_for_side(
+    hands: &mut Vec<HandState>,
+    synthetic_hands: &[HandState],
+    chirality: Chirality,
+) {
+    hands.extend(
+        synthetic_hands
+            .iter()
+            .filter(|hand| hand.chirality == chirality)
+            .cloned(),
+    );
+}
+
+/// Builds the ordered hand list sent over IPC for a pair of OpenXR tracker samples.
+fn hand_states_from_samples(
+    controllers: &[VRControllerState],
+    left_openxr: OpenxrHandSample,
+    right_openxr: OpenxrHandSample,
+) -> Vec<HandState> {
+    let synthetic_hands = synthesize_hand_states(controllers);
+    let mut hands = Vec::with_capacity(synthetic_hands.len() + 2);
+    append_hand_for_side(&mut hands, &synthetic_hands, Chirality::Left, left_openxr);
+    append_hand_for_side(&mut hands, &synthetic_hands, Chirality::Right, right_openxr);
+    hands
 }
 
 /// Fallback [`ControllerFrame`] when [`resolve_controller_frame`] returns [`None`].
@@ -305,17 +382,18 @@ impl OpenxrInput {
         let left_palm_ext_pose = pose_from_location(&left_palm_ext_loc);
         let right_palm_ext_pose = pose_from_location(&right_palm_ext_loc);
 
-        let left_joint_locations = self
-            .left_hand_tracker
-            .as_ref()
-            .and_then(|t| stage.locate_hand_joints(t, predicted_time).ok())
-            .flatten();
-
-        let right_joint_locations = self
-            .right_hand_tracker
-            .as_ref()
-            .and_then(|t| stage.locate_hand_joints(t, predicted_time).ok())
-            .flatten();
+        let left_openxr_hand = sample_openxr_hand(
+            self.left_hand_tracker.as_ref(),
+            stage,
+            predicted_time,
+            Chirality::Left,
+        );
+        let right_openxr_hand = sample_openxr_hand(
+            self.right_hand_tracker.as_ref(),
+            stage,
+            predicted_time,
+            Chirality::Right,
+        );
 
         let left_polled = self.poll_hand_action_states(session, Chirality::Left)?;
         let right_polled = self.poll_hand_action_states(session, Chirality::Right)?;
@@ -356,16 +434,8 @@ impl OpenxrInput {
         );
 
         let controllers = vec![left, right];
-
-        let mut hand_states = synthesize_hand_states(&controllers);
-        for (joints, chirality) in [
-            (left_joint_locations, Chirality::Left),
-            (right_joint_locations, Chirality::Right),
-        ] {
-            if let Some(hand) = joints.and_then(|j| hand_from_openxr(&j, chirality)) {
-                hand_states.push(hand);
-            }
-        }
+        let hand_states =
+            hand_states_from_samples(&controllers, left_openxr_hand, right_openxr_hand);
 
         Ok((controllers, hand_states))
     }
@@ -406,5 +476,132 @@ impl OpenxrInput {
                 "OpenXR stereo: views[0].pose.x ({x0}) > views[1].pose.x ({x1}); runtime may use right-then-left ordering - verify eye mapping."
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shared::{BodyNode, TouchControllerModel, TouchControllerState};
+
+    /// Builds a tracked Touch controller state that can synthesize one fallback hand.
+    fn touch_controller(side: Chirality) -> VRControllerState {
+        VRControllerState::TouchControllerState(TouchControllerState {
+            model: TouchControllerModel::QuestAndRiftS,
+            start: false,
+            button_yb: false,
+            button_xa: false,
+            button_yb_touch: false,
+            button_xa_touch: false,
+            thumbrest_touch: false,
+            grip: 0.5,
+            grip_click: false,
+            joystick_raw: Vec2::ZERO,
+            joystick_touch: false,
+            joystick_click: false,
+            trigger: 0.25,
+            trigger_touch: false,
+            trigger_click: false,
+            device_id: None,
+            device_model: None,
+            side,
+            body_node: match side {
+                Chirality::Left => BodyNode::LeftController,
+                Chirality::Right => BodyNode::RightController,
+            },
+            is_device_active: true,
+            is_tracking: true,
+            position: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+            has_bound_hand: false,
+            hand_position: Vec3::ZERO,
+            hand_rotation: Quat::IDENTITY,
+            battery_level: 1.0,
+            battery_charging: false,
+        })
+    }
+
+    /// Builds a minimal active OpenXR hand state for selection tests.
+    fn tracked_openxr_hand(chirality: Chirality) -> HandState {
+        HandState {
+            unique_id: Some(format!("test_openxr_{chirality:?}")),
+            priority: 1,
+            chirality,
+            is_device_active: true,
+            is_tracking: true,
+            tracks_metacarpals: true,
+            confidence: 1.0,
+            wrist_position: Vec3::ZERO,
+            wrist_rotation: Quat::IDENTITY,
+            segment_positions: vec![Vec3::ZERO; 24],
+            segment_rotations: vec![Quat::IDENTITY; 24],
+        }
+    }
+
+    /// Filters a hand list down to one chirality.
+    fn hands_for_side(hands: &[HandState], chirality: Chirality) -> Vec<&HandState> {
+        hands
+            .iter()
+            .filter(|hand| hand.chirality == chirality)
+            .collect()
+    }
+
+    #[test]
+    fn active_openxr_hand_suppresses_same_side_synthetic_fallback() {
+        let controllers = vec![
+            touch_controller(Chirality::Left),
+            touch_controller(Chirality::Right),
+        ];
+        let hands = hand_states_from_samples(
+            &controllers,
+            OpenxrHandSample::Active(tracked_openxr_hand(Chirality::Left)),
+            OpenxrHandSample::NoTracker,
+        );
+
+        let left_hands = hands_for_side(&hands, Chirality::Left);
+        let right_hands = hands_for_side(&hands, Chirality::Right);
+        assert_eq!(left_hands.len(), 1);
+        assert_eq!(left_hands[0].priority, 1);
+        assert!(left_hands[0].is_tracking);
+        assert_eq!(right_hands.len(), 1);
+        assert_eq!(right_hands[0].priority, 0);
+    }
+
+    #[test]
+    fn inactive_openxr_tracker_clears_device_then_keeps_synthetic_fallback() {
+        let controllers = vec![
+            touch_controller(Chirality::Left),
+            touch_controller(Chirality::Right),
+        ];
+        let hands = hand_states_from_samples(
+            &controllers,
+            OpenxrHandSample::Inactive,
+            OpenxrHandSample::NoTracker,
+        );
+
+        let left_hands = hands_for_side(&hands, Chirality::Left);
+        assert_eq!(left_hands.len(), 2);
+        assert_eq!(left_hands[0].priority, 1);
+        assert!(!left_hands[0].is_tracking);
+        assert_eq!(left_hands[1].priority, 0);
+        assert!(left_hands[1].is_tracking);
+    }
+
+    #[test]
+    fn missing_openxr_trackers_preserve_synthetic_only_behavior() {
+        let controllers = vec![
+            touch_controller(Chirality::Left),
+            touch_controller(Chirality::Right),
+        ];
+        let hands = hand_states_from_samples(
+            &controllers,
+            OpenxrHandSample::NoTracker,
+            OpenxrHandSample::NoTracker,
+        );
+
+        assert_eq!(hands.len(), 2);
+        assert!(hands.iter().all(|hand| hand.priority == 0));
+        assert_eq!(hands_for_side(&hands, Chirality::Left).len(), 1);
+        assert_eq!(hands_for_side(&hands, Chirality::Right).len(), 1);
     }
 }
