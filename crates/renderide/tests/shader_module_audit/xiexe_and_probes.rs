@@ -66,6 +66,31 @@ const XIEXE_NON_CORE_EXTENSION_IDENTIFIERS: &[&str] = &[
 ];
 
 #[test]
+fn xiexe_wireframe_override_matches_line_stream_topology() -> io::Result<()> {
+    for root in [
+        "xstoon2.0_wireframeoverride.wgsl",
+        "xstoon2.0_wireframeoverride_a2c.wgsl",
+    ] {
+        let src = material_source(root)?;
+        assert!(
+            src.contains("wf::line_stream_edge_mask(barycentric, 0.5)"),
+            "{root} must approximate the source LineStream's one-pixel hardware line width"
+        );
+        assert!(
+            src.lines()
+                .any(|line| line.starts_with("//#pass") && line.contains("cull=material(back)")),
+            "{root} must preserve source material culling from _Culling"
+        );
+        assert!(
+            !src.contains("@builtin(front_facing)") && src.contains("frag_pos, true, world_pos"),
+            "{root} must shade wire fragments without back-face normal flipping"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn xiexe_transparent_keeps_premultiplied_transparent_pass_directive() -> io::Result<()> {
     let src = material_source("xstoon2.0-transparent.wgsl")?;
     assert!(

@@ -422,9 +422,9 @@ fn pbsrim_zwrite_stems_keep_depth_prepass_before_transparent_forward() {
     }
 }
 
-/// Verifies barycentric wireframe stems keep their source-authored pass state.
+/// Verifies barycentric wireframe stems request barycentric support.
 #[test]
-fn wireframe_stems_use_barycentric_material_passes() {
+fn wireframe_stems_require_barycentric_features() {
     for stem in [
         "wireframe_default",
         "wireframedoublesided_default",
@@ -438,7 +438,11 @@ fn wireframe_stems_use_barycentric_material_passes() {
             "{stem}"
         );
     }
+}
 
+/// Verifies common barycentric wireframe stems keep their source-authored pass state.
+#[test]
+fn common_wireframe_stems_use_barycentric_material_passes() {
     let wireframe = crate::embedded_shaders::embedded_target_passes("wireframe_default");
     assert_eq!(wireframe.len(), 1);
     assert_eq!(wireframe[0].cull_mode, Some(wgpu::Face::Back));
@@ -465,11 +469,36 @@ fn wireframe_stems_use_barycentric_material_passes() {
     let additive = transition[2].blend.expect("transition wire blend");
     assert_eq!(additive.color.src_factor, wgpu::BlendFactor::One);
     assert_eq!(additive.color.dst_factor, wgpu::BlendFactor::One);
+}
 
-    let xstoon_a2c =
-        crate::embedded_shaders::embedded_target_passes("xstoon2.0_wireframeoverride_a2c_default");
-    assert_eq!(xstoon_a2c.len(), 1);
-    assert!(xstoon_a2c[0].alpha_to_coverage);
+/// Verifies XSToon wireframe override stems preserve source material culling.
+#[test]
+fn xstoon_wireframe_override_stems_use_material_culled_passes() {
+    assert_xstoon_wireframe_override_pass("xstoon2.0_wireframeoverride_default", false);
+    assert_xstoon_wireframe_override_pass("xstoon2.0_wireframeoverride_a2c_default", true);
+}
+
+/// Asserts that an XSToon wireframe override pass applies `_Culling` over a back-cull fallback.
+fn assert_xstoon_wireframe_override_pass(stem: &str, alpha_to_coverage: bool) {
+    let passes = crate::embedded_shaders::embedded_target_passes(stem);
+    assert_eq!(passes.len(), 1, "{stem}");
+    assert_eq!(passes[0].cull_mode, Some(wgpu::Face::Back), "{stem}");
+    for (cull_override, expected_cull) in [
+        (MaterialCullOverride::Front, Some(wgpu::Face::Front)),
+        (MaterialCullOverride::Back, Some(wgpu::Face::Back)),
+        (MaterialCullOverride::Off, None),
+    ] {
+        let state = MaterialRenderState {
+            cull_override,
+            ..MaterialRenderState::default()
+        };
+        assert_eq!(
+            passes[0].resolved_cull_mode(state),
+            expected_cull,
+            "{stem} must apply host {cull_override:?} over the source back-cull fallback"
+        );
+    }
+    assert_eq!(passes[0].alpha_to_coverage, alpha_to_coverage, "{stem}");
 }
 
 /// Asserts that a shader stem declares one premultiplied transparent pass.

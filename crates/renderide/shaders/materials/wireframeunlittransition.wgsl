@@ -120,7 +120,7 @@ fn fs_wire(
     in: VertexOutput,
     @builtin(barycentric) barycentric: vec3<f32>,
 ) -> @location(0) vec4<f32> {
-    let edge = wf::edge_lerp(barycentric, in.world_pos, mat._Thickness, false);
+    let edge = wf::unity_edge_lerp(barycentric, in.world_pos, mat._Thickness, false);
     let fill = transition_lerp(
         in.object_distance,
         mat._FillPlaneOffset,

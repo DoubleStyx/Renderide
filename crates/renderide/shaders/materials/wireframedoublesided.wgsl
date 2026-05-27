@@ -115,7 +115,7 @@ fn pass_color(in: VertexOutput, edge: f32, inner: bool) -> vec4<f32> {
 }
 
 fn fragment_wire(in: VertexOutput, barycentric: vec3<f32>, inner: bool) -> vec4<f32> {
-    let edge = wf::edge_lerp(barycentric, in.world_pos, mat._Thickness, kw_SCREENSPACE());
+    let edge = wf::unity_edge_lerp(barycentric, in.world_pos, mat._Thickness, kw_SCREENSPACE());
     let tex = ts::sample_tex_2d(_MainTex, _MainTex_sampler, in.uv, mat._MainTex_LodBias);
     return rg::retain_globals_additive(pass_color(in, edge, inner) * tex);
 }
