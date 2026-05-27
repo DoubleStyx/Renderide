@@ -423,7 +423,7 @@ fn transparent_render_queue_regular_window_emits_post_skybox_singletons() {
 }
 
 #[test]
-fn late_opaque_queue_regular_window_groups_after_skybox() {
+fn late_opaque_queue_regular_window_groups_as_alpha_test() {
     let mut draws: Vec<_> = (0..3)
         .map(|n| {
             let mut item = opaque(7, 1, 0, n);
@@ -436,19 +436,19 @@ fn late_opaque_queue_regular_window_groups_after_skybox() {
 
     let plan = build_plan(&draws, true);
     assert!(groups(&plan, WorldMeshPhase::ForwardOpaque).is_empty());
-    assert!(groups(&plan, WorldMeshPhase::ForwardAlphaTest).is_empty());
-    assert_eq!(groups(&plan, WorldMeshPhase::Transparent).len(), 1);
+    assert_eq!(groups(&plan, WorldMeshPhase::ForwardAlphaTest).len(), 1);
     assert_eq!(
-        groups(&plan, WorldMeshPhase::Transparent)[0].instance_range,
+        groups(&plan, WorldMeshPhase::ForwardAlphaTest)[0].instance_range,
         0..3
     );
+    assert_eq!(groups(&plan, WorldMeshPhase::ViewNormals).len(), 1);
     assert_phases_empty(
         &plan,
         &[
             WorldMeshPhase::Intersection,
+            WorldMeshPhase::Transparent,
             WorldMeshPhase::TransparentGrab,
             WorldMeshPhase::DepthOnly,
-            WorldMeshPhase::ViewNormals,
         ],
     );
 }

@@ -179,17 +179,13 @@ impl CompiledRenderGraph {
     }
 
     fn frame_global_passes_are_inactive(&self, backend: &dyn GraphExecutionBackend) -> bool {
-        let mut indices = self.schedule.frame_global_pass_indices().iter().copied();
-        let Some(pass_idx) = indices.next() else {
-            return true;
-        };
-        if indices.next().is_some() {
-            return false;
+        let frame_resources = backend.frame_resources();
+        for pass_idx in self.schedule.frame_global_pass_indices().iter().copied() {
+            if !frame_resources.frame_global_pass_is_inactive(self.passes[pass_idx].name()) {
+                return false;
+            }
         }
-        self.passes[pass_idx].name() == "MeshDeform"
-            && backend
-                .frame_resources()
-                .visible_mesh_deform_filter_is_empty()
+        true
     }
 
     fn finish_frame_global_encoder(

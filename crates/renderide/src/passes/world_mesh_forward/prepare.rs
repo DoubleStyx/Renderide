@@ -240,6 +240,7 @@ pub(crate) fn prepare_world_mesh_forward_frame(
             opaque_recorded: false,
             depth_snapshot_recorded: false,
             tail_raster_recorded: false,
+            depth_freshness: Default::default(),
             precomputed_batches,
             skybox,
             overlay_view_proj,

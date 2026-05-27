@@ -52,10 +52,19 @@ pub(super) struct MainGraphHandles {
     pub(super) cluster_params: BufferHandle,
     /// Single-sample HDR scene color (forward resolve target + compose input).
     pub(super) scene_color_hdr: TextureHandle,
+    /// MSAA-only forward transients.
+    pub(super) msaa: Option<MainGraphMsaaHandles>,
+}
+
+/// Transient handles required only for MSAA graph variants.
+#[derive(Clone, Copy)]
+pub(super) struct MainGraphMsaaHandles {
     /// Multisampled HDR scene color for forward when MSAA is active.
-    pub(super) scene_color_hdr_msaa: TextureHandle,
-    pub(super) forward_msaa_depth: TextureHandle,
-    pub(super) forward_msaa_depth_r32: TextureHandle,
+    pub(super) scene_color_hdr: TextureHandle,
+    /// Multisampled forward depth target.
+    pub(super) forward_depth: TextureHandle,
+    /// R32Float intermediate used while resolving MSAA depth.
+    pub(super) forward_depth_r32: TextureHandle,
 }
 
 /// Handles for imported backend buffers (lights, cluster tables, per-draw slab, frame uniforms).
@@ -190,13 +199,8 @@ fn import_main_graph_buffers(builder: &mut GraphBuilder) -> MainGraphBufferImpor
 /// OpenXR without mismatched multiview attachment layers.
 fn create_main_graph_transient_resources(
     builder: &mut GraphBuilder,
-) -> (
-    BufferHandle,
-    TextureHandle,
-    TextureHandle,
-    TextureHandle,
-    TextureHandle,
-) {
+    msaa_enabled: bool,
+) -> (BufferHandle, TextureHandle, Option<MainGraphMsaaHandles>) {
     let cluster_params = builder.create_buffer(TransientBufferDesc {
         label: "cluster_params",
         size_policy: BufferSizePolicy::Fixed(crate::gpu::CLUSTER_PARAMS_UNIFORM_SIZE * 2),
@@ -217,55 +221,54 @@ fn create_main_graph_transient_resources(
         base_usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         alias: true,
     });
-    let scene_color_hdr_msaa = builder.create_texture(TransientTextureDesc {
-        label: "scene_color_hdr_msaa",
-        format: TransientTextureFormat::SceneColorHdr,
-        extent: extent_backbuffer,
-        mip_levels: 1,
-        sample_count: TransientSampleCount::Frame,
-        dimension: wgpu::TextureDimension::D2,
-        array_layers: TransientArrayLayers::Frame,
-        base_usage: wgpu::TextureUsages::empty(),
-        alias: true,
-    });
-    let mut forward_msaa_depth = TransientTextureDesc::frame_depth_stencil_sampled_texture_2d(
-        "forward_msaa_depth",
-        extent_backbuffer,
-        wgpu::TextureUsages::empty(),
-    );
-    forward_msaa_depth.sample_count = TransientSampleCount::Frame;
-    forward_msaa_depth.array_layers = TransientArrayLayers::Frame;
-    let forward_msaa_depth = builder.create_texture(forward_msaa_depth);
-    let forward_msaa_depth_r32 = builder.create_texture(
-        TransientTextureDesc::texture_2d(
-            "forward_msaa_depth_r32",
-            wgpu::TextureFormat::R32Float,
+    let msaa = msaa_enabled.then(|| {
+        let scene_color_hdr = builder.create_texture(TransientTextureDesc {
+            label: "scene_color_hdr_msaa",
+            format: TransientTextureFormat::SceneColorHdr,
+            extent: extent_backbuffer,
+            mip_levels: 1,
+            sample_count: TransientSampleCount::Frame,
+            dimension: wgpu::TextureDimension::D2,
+            array_layers: TransientArrayLayers::Frame,
+            base_usage: wgpu::TextureUsages::empty(),
+            alias: true,
+        });
+        let mut forward_depth = TransientTextureDesc::frame_depth_stencil_sampled_texture_2d(
+            "forward_msaa_depth",
             extent_backbuffer,
-            1,
             wgpu::TextureUsages::empty(),
-        )
-        .with_frame_array_layers(),
-    );
-    (
-        cluster_params,
-        scene_color_hdr,
-        scene_color_hdr_msaa,
-        forward_msaa_depth,
-        forward_msaa_depth_r32,
-    )
+        );
+        forward_depth.sample_count = TransientSampleCount::Frame;
+        forward_depth.array_layers = TransientArrayLayers::Frame;
+        let forward_depth = builder.create_texture(forward_depth);
+        let forward_depth_r32 = builder.create_texture(
+            TransientTextureDesc::texture_2d(
+                "forward_msaa_depth_r32",
+                wgpu::TextureFormat::R32Float,
+                extent_backbuffer,
+                1,
+                wgpu::TextureUsages::empty(),
+            )
+            .with_frame_array_layers(),
+        );
+        MainGraphMsaaHandles {
+            scene_color_hdr,
+            forward_depth,
+            forward_depth_r32,
+        }
+    });
+    (cluster_params, scene_color_hdr, msaa)
 }
 
 /// Wires imported frame targets and main-graph transients into `builder`.
-pub(super) fn import_main_graph_resources(builder: &mut GraphBuilder) -> MainGraphHandles {
+pub(super) fn import_main_graph_resources(
+    builder: &mut GraphBuilder,
+    msaa_enabled: bool,
+) -> MainGraphHandles {
     let (color, depth, hi_z_current) = import_main_graph_textures(builder);
     let buf = import_main_graph_buffers(builder);
-    let (
-        cluster_params,
-        scene_color_hdr,
-        scene_color_hdr_msaa,
-        forward_msaa_depth,
-        forward_msaa_depth_r32,
-    ) = create_main_graph_transient_resources(builder);
+    let (cluster_params, scene_color_hdr, msaa) =
+        create_main_graph_transient_resources(builder, msaa_enabled);
     MainGraphHandles {
         color,
         depth,
@@ -277,8 +280,6 @@ pub(super) fn import_main_graph_resources(builder: &mut GraphBuilder) -> MainGra
         frame_uniforms: buf.frame_uniforms,
         cluster_params,
         scene_color_hdr,
-        scene_color_hdr_msaa,
-        forward_msaa_depth,
-        forward_msaa_depth_r32,
+        msaa,
     }
 }

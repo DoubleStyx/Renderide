@@ -259,13 +259,13 @@ fn resolve_cached_light(
     let world_pos = world.transform_point3(p);
 
     let ori = cached.data.orientation;
-    let q = ori;
-    let world_dir = (world.to_scale_rotation_translation().1 * q) * LOCAL_LIGHT_PROPAGATION;
-    let world_dir = if world_dir.length_squared() > 1e-10 {
-        world_dir.normalize()
-    } else {
-        LOCAL_LIGHT_PROPAGATION
-    };
+    let world_rotation = world.to_scale_rotation_translation().1 * ori;
+    let world_right = normalized_light_axis(world_rotation * Vec3::X, Vec3::X);
+    let world_up = normalized_light_axis(world_rotation * Vec3::Y, Vec3::Y);
+    let world_dir = normalized_light_axis(
+        world_rotation * LOCAL_LIGHT_PROPAGATION,
+        LOCAL_LIGHT_PROPAGATION,
+    );
 
     let color = cached.data.color;
     let color = Vec3::new(color.x, color.y, color.z);
@@ -281,6 +281,8 @@ fn resolve_cached_light(
     ResolvedLight {
         world_position: world_pos,
         world_direction: world_dir,
+        world_right,
+        world_up,
         color,
         intensity: cached.data.intensity,
         range,
@@ -291,6 +293,15 @@ fn resolve_cached_light(
         shadow_near_plane: cached.state.shadow_near_plane,
         shadow_bias: cached.state.shadow_bias,
         shadow_normal_bias: cached.state.shadow_normal_bias,
+        cookie_texture_asset_id: cached.state.cookie_texture_asset_id,
+    }
+}
+
+fn normalized_light_axis(axis: Vec3, fallback: Vec3) -> Vec3 {
+    if axis.length_squared() > 1e-10 {
+        axis.normalize()
+    } else {
+        fallback
     }
 }
 

@@ -16,15 +16,23 @@ const HILBERT_INDEX_FRAME_OFFSET: u32 = 288u;
 const MIN_VISIBILITY: f32 = 0.03;
 #ifdef MULTIVIEW
 @group(0) @binding(0) var view_depth: texture_2d_array<f32>;
-@group(0) @binding(1) var view_normals: texture_2d_array<f32>;
+@group(0) @binding(1) var view_depth_mip1: texture_2d_array<f32>;
+@group(0) @binding(2) var view_depth_mip2: texture_2d_array<f32>;
+@group(0) @binding(3) var view_depth_mip3: texture_2d_array<f32>;
+@group(0) @binding(4) var view_depth_mip4: texture_2d_array<f32>;
+@group(0) @binding(5) var view_normals: texture_2d_array<f32>;
 #else
 @group(0) @binding(0) var view_depth: texture_2d<f32>;
-@group(0) @binding(1) var view_normals: texture_2d<f32>;
+@group(0) @binding(1) var view_depth_mip1: texture_2d<f32>;
+@group(0) @binding(2) var view_depth_mip2: texture_2d<f32>;
+@group(0) @binding(3) var view_depth_mip3: texture_2d<f32>;
+@group(0) @binding(4) var view_depth_mip4: texture_2d<f32>;
+@group(0) @binding(5) var view_normals: texture_2d<f32>;
 #endif
 
-@group(0) @binding(2) var<uniform> frame: ft::FrameGlobals;
+@group(0) @binding(6) var<uniform> frame: ft::FrameGlobals;
 
-@group(0) @binding(3) var<uniform> gtao: gparams::GtaoParams;
+@group(0) @binding(7) var<uniform> gtao: gparams::GtaoParams;
 
 struct GtaoMainOutput {
     @location(0) ao_term: vec4<f32>,
@@ -78,9 +86,27 @@ fn view_pos_from_uv(
 
 fn mip_dimensions(mip: u32) -> vec2<u32> {
 #ifdef MULTIVIEW
-    let dim = textureDimensions(view_depth, i32(mip));
+    var dim = textureDimensions(view_depth);
+    if (mip == 1u) {
+        dim = textureDimensions(view_depth_mip1);
+    } else if (mip == 2u) {
+        dim = textureDimensions(view_depth_mip2);
+    } else if (mip == 3u) {
+        dim = textureDimensions(view_depth_mip3);
+    } else if (mip >= 4u) {
+        dim = textureDimensions(view_depth_mip4);
+    }
 #else
-    let dim = textureDimensions(view_depth, i32(mip));
+    var dim = textureDimensions(view_depth);
+    if (mip == 1u) {
+        dim = textureDimensions(view_depth_mip1);
+    } else if (mip == 2u) {
+        dim = textureDimensions(view_depth_mip2);
+    } else if (mip == 3u) {
+        dim = textureDimensions(view_depth_mip3);
+    } else if (mip >= 4u) {
+        dim = textureDimensions(view_depth_mip4);
+    }
 #endif
     return vec2<u32>(dim.xy);
 }
@@ -90,9 +116,33 @@ fn load_view_z(pix: vec2<i32>, view_layer: u32, mip: u32) -> f32 {
     let max_pix = vec2<i32>(i32(dim.x) - 1, i32(dim.y) - 1);
     let p = clamp(pix, vec2<i32>(0), max_pix);
 #ifdef MULTIVIEW
-    return textureLoad(view_depth, p, i32(view_layer), i32(mip)).r;
+    if (mip == 1u) {
+        return textureLoad(view_depth_mip1, p, i32(view_layer), 0).r;
+    }
+    if (mip == 2u) {
+        return textureLoad(view_depth_mip2, p, i32(view_layer), 0).r;
+    }
+    if (mip == 3u) {
+        return textureLoad(view_depth_mip3, p, i32(view_layer), 0).r;
+    }
+    if (mip >= 4u) {
+        return textureLoad(view_depth_mip4, p, i32(view_layer), 0).r;
+    }
+    return textureLoad(view_depth, p, i32(view_layer), 0).r;
 #else
-    return textureLoad(view_depth, p, i32(mip)).r;
+    if (mip == 1u) {
+        return textureLoad(view_depth_mip1, p, 0).r;
+    }
+    if (mip == 2u) {
+        return textureLoad(view_depth_mip2, p, 0).r;
+    }
+    if (mip == 3u) {
+        return textureLoad(view_depth_mip3, p, 0).r;
+    }
+    if (mip >= 4u) {
+        return textureLoad(view_depth_mip4, p, 0).r;
+    }
+    return textureLoad(view_depth, p, 0).r;
 #endif
 }
 
@@ -111,10 +161,10 @@ fn normal_dimensions() -> vec2<u32> {
     return vec2<u32>(dim.xy);
 }
 
-fn load_prepass_view_normal(pix: vec2<i32>, view_layer: u32) -> vec4<f32> {
+fn load_prepass_view_normal(uv: vec2<f32>, view_layer: u32) -> vec4<f32> {
     let dim = normal_dimensions();
     let max_pix = vec2<i32>(i32(dim.x) - 1, i32(dim.y) - 1);
-    let p = clamp(pix, vec2<i32>(0), max_pix);
+    let p = clamp(vec2<i32>(uv * vec2<f32>(dim)), vec2<i32>(0), max_pix);
 #ifdef MULTIVIEW
     return textureLoad(view_normals, p, i32(view_layer), 0);
 #else
@@ -167,7 +217,8 @@ fn reconstruct_view_normal(
     edges_lrtb: vec4<f32>,
     view_layer: u32,
 ) -> vec3<f32> {
-    let inv_viewport = 1.0 / vec2<f32>(f32(frame.viewport_width), f32(frame.viewport_height));
+    let depth_dim = mip_dimensions(0u);
+    let inv_viewport = 1.0 / vec2<f32>(f32(depth_dim.x), f32(depth_dim.y));
     let center = view_pos_from_uv(uv, z_center, proj_params, view_layer);
     let left = view_pos_from_uv(uv + vec2<f32>(-inv_viewport.x, 0.0), z_left, proj_params, view_layer);
     let right = view_pos_from_uv(uv + vec2<f32>(inv_viewport.x, 0.0), z_right, proj_params, view_layer);
@@ -177,7 +228,6 @@ fn reconstruct_view_normal(
 }
 
 fn select_view_normal(
-    pix: vec2<i32>,
     view_layer: u32,
     uv: vec2<f32>,
     proj_params: vec4<f32>,
@@ -188,7 +238,7 @@ fn select_view_normal(
     z_bottom: f32,
     edges_lrtb: vec4<f32>,
 ) -> vec3<f32> {
-    let prepass = load_prepass_view_normal(pix, view_layer);
+    let prepass = load_prepass_view_normal(uv, view_layer);
     let prepass_len = length(prepass.xyz);
     if (prepass.a > 0.5 && prepass_len > 1e-4) {
         return prepass.xyz / prepass_len;
@@ -292,7 +342,8 @@ fn add_horizon_sample(
 }
 
 fn compute_gtao(pix: vec2<i32>, uv: vec2<f32>, view_layer: u32) -> GtaoSampleOutput {
-    let viewport = vec2<f32>(f32(frame.viewport_width), f32(frame.viewport_height));
+    let depth_dim = mip_dimensions(0u);
+    let viewport = vec2<f32>(f32(depth_dim.x), f32(depth_dim.y));
     let inv_viewport = 1.0 / viewport;
     let proj_params = proj_params_for_view(view_layer);
 
@@ -308,7 +359,6 @@ fn compute_gtao(pix: vec2<i32>, uv: vec2<f32>, view_layer: u32) -> GtaoSampleOut
     }
 
     let view_normal = select_view_normal(
-        pix,
         view_layer,
         uv,
         proj_params,
@@ -332,7 +382,9 @@ fn compute_gtao(pix: vec2<i32>, uv: vec2<f32>, view_layer: u32) -> GtaoSampleOut
         orthographic_pixel_view_size,
         orthographic,
     ), 1e-6);
-    let screenspace_radius = min(gtao.max_pixel_radius, effect_radius / pixel_view_size);
+    let resolution_divisor = max(f32(gtao.resolution_divisor), 1.0);
+    let max_ao_pixel_radius = gtao.max_pixel_radius / resolution_divisor;
+    let screenspace_radius = min(max_ao_pixel_radius, effect_radius / pixel_view_size);
 
     var visibility = clamp((10.0 - screenspace_radius) / 100.0, 0.0, 1.0) * 0.5;
     let pixel_too_close_threshold = 1.3;

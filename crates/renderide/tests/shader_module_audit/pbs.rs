@@ -594,8 +594,10 @@ fn light_radiance_conversion_reaches_directional_and_punctual_paths() -> io::Res
         "BiRP light module must expose the shared direct-light scalar boost helper"
     );
     assert!(
-        birp.contains("return lut * range_fade(t) * INTENSITY_BOOST;"),
-        "punctual distance attenuation must keep the existing intensity boost"
+        birp.contains("fn distance_visibility(dist: f32, range: f32) -> f32")
+            && birp.contains("return lut * range_fade(t);")
+            && birp.contains("return distance_visibility(dist, range) * INTENSITY_BOOST;"),
+        "punctual distance attenuation must keep the existing intensity boost while exposing unboosted visibility"
     );
     assert!(
         birp.contains("fn spot_angle_attenuation(light: ft::GpuLight, l: vec3<f32>) -> f32"),
@@ -629,12 +631,13 @@ fn light_radiance_conversion_reaches_directional_and_punctual_paths() -> io::Res
         "Xiexe directional lights must use shared linear radiance and scalar boost"
     );
     assert!(
-        xiexe.contains("var attenuation = brdf::distance_attenuation(dist, light.range);")
-            && xiexe.contains("attenuation = attenuation * bl::spot_angle_attenuation(light, l);")
+        xiexe.contains("var visibility = bl::distance_visibility(dist, light.range);")
+            && xiexe.contains("visibility = visibility * bl::spot_angle_attenuation(light, l);")
+            && xiexe.contains("let attenuation = visibility * bl::direct_light_scale();")
             && xiexe.contains(
-                "return xb::LightSample(l, bl::light_radiance(light), attenuation, false);"
+                "return xb::LightSample(l, bl::light_radiance(light), attenuation, visibility, false);"
             ),
-        "Xiexe point and spot lights must keep attenuation scalar and use shared light radiance"
+        "Xiexe point and spot lights must keep boosted attenuation scalar, unboosted visibility, and shared light radiance"
     );
 
     for material in ["toonstandard.wgsl", "toonwater.wgsl"] {

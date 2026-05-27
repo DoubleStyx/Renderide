@@ -14,7 +14,10 @@ pub use bind_group::{
     empty_material_bind_group_layout, frame_bind_group_layout, frame_bind_group_layout_entries,
 };
 pub use cluster_params::{CLUSTER_LIGHT_RANGE_WORDS, CLUSTER_PARAMS_UNIFORM_SIZE};
-pub use lights::{GpuLight, MAX_LIGHTS};
+pub use lights::{
+    GpuLight, LIGHT_COOKIE_KIND_NONE, LIGHT_COOKIE_KIND_POINT_CUBE, LIGHT_COOKIE_KIND_SPOT_2D,
+    MAX_LIGHTS,
+};
 pub use reflection_probes::{
     GpuReflectionProbeMetadata, REFLECTION_PROBE_ATLAS_FORMAT,
     REFLECTION_PROBE_METADATA_BOX_PROJECTION, REFLECTION_PROBE_METADATA_SH2_SOURCE_LOCAL,

@@ -56,7 +56,7 @@ pub fn attach_flush_pending_asset_uploads(
         }
         for data in pending_mesh {
             let ipc_ref = ipc.as_deref_mut();
-            try_process_mesh_upload(queue, data, shm, ipc_ref);
+            try_process_mesh_upload(queue, data, Some(&mut *shm), ipc_ref);
         }
         drain_asset_tasks_unbounded(queue, materials, shm, &mut ipc);
     } else {

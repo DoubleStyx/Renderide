@@ -19,6 +19,7 @@
 #import renderide::frame::globals as rg
 #import renderide::frame::types as ft
 #import renderide::lighting::birp as bl
+#import renderide::lighting::light_cookies as cookies
 
 #define_import_path renderide::pbs::brdf
 
@@ -319,6 +320,7 @@ fn eval_light(light: ft::GpuLight, world_pos: vec3<f32>) -> LightSample {
         let dist = length(to_light);
         out.l = normalize(to_light);
         out.attenuation = distance_attenuation(dist, light.range);
+        out.attenuation = out.attenuation * cookies::multiplier(light, world_pos);
     } else if light.light_type == 1u {
         let dir_len_sq = dot(light_dir, light_dir);
         out.l = select(vec3<f32>(0.0, 0.0, 1.0), normalize(-light_dir), dir_len_sq > 1e-16);
@@ -329,6 +331,7 @@ fn eval_light(light: ft::GpuLight, world_pos: vec3<f32>) -> LightSample {
         out.l = normalize(to_light);
         let spot_atten = bl::spot_angle_attenuation(light, out.l);
         out.attenuation = spot_atten * distance_attenuation(dist, light.range);
+        out.attenuation = out.attenuation * cookies::multiplier(light, world_pos);
     }
     return out;
 }

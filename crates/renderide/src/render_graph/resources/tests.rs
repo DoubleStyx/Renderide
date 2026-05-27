@@ -71,6 +71,14 @@ fn transient_extent_fixed_extent_only_for_concrete_sizes() {
     );
     assert_eq!(TransientExtent::Backbuffer.fixed_extent(), None);
     assert_eq!(
+        TransientExtent::BackbufferDivisor { divisor: 2 }.fixed_extent(),
+        None
+    );
+    assert_eq!(
+        TransientExtent::BackbufferDivisorMip { divisor: 2, mip: 1 }.fixed_extent(),
+        None
+    );
+    assert_eq!(
         TransientExtent::BackbufferScaledMip {
             max_dim: 512,
             mip: 2

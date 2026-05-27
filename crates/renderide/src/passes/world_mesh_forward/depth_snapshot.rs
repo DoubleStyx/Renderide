@@ -12,23 +12,54 @@ use crate::world_mesh::WorldMeshHelperNeeds;
 use super::PreparedWorldMeshForwardFrame;
 use super::depth_resolve::encode_msaa_depth_resolve_for_frame;
 
+/// Work recorded by the scene-depth snapshot pass.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct EncodeResult {
+    /// Whether the MSAA depth target was resolved into the imported single-sample depth target.
+    pub(super) resolved_depth: bool,
+    /// Whether the imported single-sample depth target was copied into the scene-depth snapshot.
+    pub(super) copied: bool,
+}
+
+/// Inputs required to resolve and copy the scene-depth snapshot.
+pub(super) struct EncodeCtx<'a, 'encoder, 'frame> {
+    /// WGPU device used by the MSAA depth resolve path.
+    pub(super) device: &'a wgpu::Device,
+    /// Command encoder receiving resolve and copy work.
+    pub(super) encoder: &'encoder mut wgpu::CommandEncoder,
+    /// Per-view frame data and shared renderer services.
+    pub(super) frame: &'frame GraphPassFrame<'a>,
+    /// Prepared forward state for this view.
+    pub(super) prepared: &'frame PreparedWorldMeshForwardFrame,
+    /// Resolved MSAA transient texture views, when this graph variant uses MSAA.
+    pub(super) msaa_views: Option<&'frame MsaaViews>,
+    /// Pipelines and bind layouts for MSAA depth resolve, when supported by the backend.
+    pub(super) msaa_depth_resolve: Option<&'frame MsaaDepthResolveResources>,
+    /// Optional GPU profiler for timestamp queries.
+    pub(super) profiler: Option<&'a GpuProfilerHandle>,
+    /// Whether the caller determined single-sample depth is stale and must be resolved first.
+    pub(super) resolve_msaa_depth: bool,
+}
+
 /// Resolves MSAA depth when needed, then copies the single-sample frame depth into the sampled
 /// scene-depth snapshot used by intersection materials.
-pub(crate) fn encode_world_mesh_forward_depth_snapshot(
-    device: &wgpu::Device,
-    encoder: &mut wgpu::CommandEncoder,
-    frame: &GraphPassFrame<'_>,
-    prepared: &PreparedWorldMeshForwardFrame,
-    msaa_views: Option<&MsaaViews>,
-    msaa_depth_resolve: Option<&MsaaDepthResolveResources>,
-    profiler: Option<&GpuProfilerHandle>,
-) -> bool {
+pub(super) fn encode_world_mesh_forward_depth_snapshot(ctx: EncodeCtx<'_, '_, '_>) -> EncodeResult {
+    let EncodeCtx {
+        device,
+        encoder,
+        frame,
+        prepared,
+        msaa_views,
+        msaa_depth_resolve,
+        profiler,
+        resolve_msaa_depth,
+    } = ctx;
     profiling::scope!("world_mesh_forward::encode_depth_snapshot");
     if !depth_snapshot_recording_needed(prepared.helper_needs) {
-        return false;
+        return EncodeResult::default();
     }
 
-    let _resolved = if frame.view.sample_count > 1 {
+    let resolved_depth = if resolve_msaa_depth {
         if let (Some(msaa_views), Some(res)) = (msaa_views, msaa_depth_resolve) {
             encode_msaa_depth_resolve_for_frame(device, encoder, frame, msaa_views, res, profiler)
         } else {
@@ -39,7 +70,10 @@ pub(crate) fn encode_world_mesh_forward_depth_snapshot(
     };
 
     if !frame.shared.frame_resources.has_frame_gpu() {
-        return false;
+        return EncodeResult {
+            resolved_depth,
+            copied: false,
+        };
     }
     let copy_query =
         profiler.map(|p| p.begin_query("world_mesh_forward::scene_depth_snapshot_copy", encoder));
@@ -56,7 +90,10 @@ pub(crate) fn encode_world_mesh_forward_depth_snapshot(
     if let (Some(profiler), Some(query)) = (profiler, copy_query) {
         profiler.end_query(encoder, query);
     }
-    copied
+    EncodeResult {
+        resolved_depth,
+        copied,
+    }
 }
 
 /// Returns whether the scene-depth snapshot copy should be recorded for this view.

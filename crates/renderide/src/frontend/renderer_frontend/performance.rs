@@ -11,7 +11,7 @@ impl RendererFrontend {
         self.performance.on_tick_frame_wall_clock(now);
     }
 
-    /// Stores the most recently completed GPU submit-to-idle interval for the next frame-start.
+    /// Stores the most recently completed whole-frame GPU interval for the next frame-start.
     pub fn set_perf_last_render_time_seconds(&mut self, render_time_seconds: Option<f32>) {
         self.performance
             .set_last_render_time_seconds(render_time_seconds);

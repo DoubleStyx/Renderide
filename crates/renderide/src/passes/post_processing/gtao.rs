@@ -5,13 +5,12 @@
 //! transparent/intersection draws:
 //!
 //! 1. [`depth_prefilter_pass::GtaoDepthPrefilterPass`] -- converts raw depth to view-space
-//!    depth and builds the five-mip depth chain sampled by the horizon search.
+//!    depth and builds the five-level depth chain sampled by the horizon search.
 //! 2. [`main_pass::GtaoMainPass`] -- produces the AO term (scaled by
 //!    `1 / OCCLUSION_TERM_SCALE` to leave denoise headroom) and packed depth-edge
 //!    weights from the prefiltered depth chain plus the forward view-normal prepass.
-//! 3. [`denoise_pass::GtaoDenoisePass`] -- 3x3 edge-preserving bilateral filter.
-//!    Registered once when [`crate::config::GtaoSettings::denoise_passes`] is `>= 2`, and
-//!    twice when it is `>= 3`.
+//! 3. [`denoise_pass::GtaoDenoisePass`] -- 3x3 edge-preserving bilateral filter. Registered
+//!    `denoise_passes - 1` times when denoise asks for intermediate ping-pong iterations.
 //! 4. [`apply_pass::GtaoOpaqueCompositePass`] -- final denoise iteration that outputs recovered
 //!    visibility. Multiplicative blending modulates the existing opaque HDR scene color in place.
 //!    Always registered. The shader short-circuits the kernel when `denoise_blur_beta <= 0`, so
@@ -39,6 +38,8 @@ use pipeline::{
 };
 
 use crate::config::GtaoSettings;
+use crate::graph_inputs::GraphPassFrameView;
+use crate::render_graph::blackboard::Blackboard;
 use crate::render_graph::builder::GraphBuilder;
 use crate::render_graph::ids::PassId;
 use crate::render_graph::resources::{
@@ -67,9 +68,7 @@ pub(crate) struct GtaoGraphResources {
     /// Single-sample HDR scene color target.
     pub(crate) scene_color_hdr: TextureHandle,
     /// Multisampled HDR scene color target used when MSAA is active.
-    pub(crate) scene_color_hdr_msaa: TextureHandle,
-    /// Whether the opaque forward pass records into multisampled attachments.
-    pub(crate) msaa_enabled: bool,
+    pub(crate) scene_color_hdr_msaa: Option<TextureHandle>,
     /// Whether this graph is compiled for OpenXR multiview stereo.
     pub(crate) multiview_stereo: bool,
 }
@@ -88,39 +87,52 @@ pub(crate) struct GtaoEffect {
     /// Snapshot of the GTAO settings used when building the chain for this frame. Live edits
     /// after graph build flow in via
     /// [`crate::passes::post_processing::settings_slots::GtaoSettingsSlot`] for non-topology
-    /// fields; topology fields (`enabled`, `denoise_passes`) trigger a graph rebuild via
+    /// fields; topology fields (`enabled`, `denoise_passes`, `resolution_divisor`) trigger a graph rebuild via
     /// [`crate::render_graph::post_process_chain::PostProcessChainSignature`].
     pub(crate) settings: GtaoSettings,
     /// Graph resources used by this effect.
     pub(crate) resources: GtaoGraphResources,
 }
 
+/// Returns whether this view has visible opaque world-mesh color for GTAO to sample and composite.
+pub(super) fn gtao_view_recording_needed(
+    blackboard: &Blackboard,
+    view: &GraphPassFrameView<'_>,
+) -> bool {
+    super::view_post_processing_enabled(view)
+        && blackboard
+            .get::<crate::passes::WorldMeshForwardPlanSlot>()
+            .is_some_and(|prepared| prepared.opaque_recorded)
+}
+
 impl GtaoEffect {
     /// Registers the opaque-only GTAO subchain and returns its first and last pass ids.
     pub(crate) fn register(&self, builder: &mut GraphBuilder) -> GtaoPassRange {
         let pipelines = gtao_pipelines();
-        let denoise_passes = self.settings.denoise_passes.min(3);
+        let denoise_passes = self.settings.effective_denoise_passes();
+        let resolution_divisor = self.settings.effective_resolution_divisor();
 
-        let view_depth = builder.create_texture(view_depth_desc(
-            "gtao_view_depth",
+        let view_depth_mips = create_view_depth_textures(
+            builder,
             self.resources.multiview_stereo,
-        ));
-        let view_depth_mips =
-            create_view_depth_subresources(builder, view_depth, self.resources.multiview_stereo);
-        let (first_prefilter, last_prefilter) =
-            add_view_depth_prefilter(builder, view_depth_mips, self, pipelines);
+            resolution_divisor,
+        );
+        let prefilter = add_view_depth_prefilter(builder, view_depth_mips, self, pipelines);
 
-        let ao_term_a = builder.create_texture(ao_buffer_desc("gtao_ao_term_a"));
+        let ao_term_a =
+            builder.create_texture(ao_buffer_desc("gtao_ao_term_a", resolution_divisor));
         let edges = builder.create_texture(ao_buffer_desc_format(
             "gtao_edges",
             TransientTextureFormat::Fixed(EDGES_FORMAT),
+            resolution_divisor,
         ));
-        let ao_term_b =
-            (denoise_passes >= 2).then(|| builder.create_texture(ao_buffer_desc("gtao_ao_term_b")));
+        let ao_term_b = (denoise_passes >= 2)
+            .then(|| builder.create_texture(ao_buffer_desc("gtao_ao_term_b", resolution_divisor)));
 
         let main = builder.add_raster_pass(Box::new(GtaoMainPass::new(
             GtaoMainResources {
-                view_depth,
+                view_depth_mips: view_depth_mips.textures,
+                view_depth_views: view_depth_mips.storage_views,
                 view_normals: self.resources.view_normals,
                 frame_uniforms: self.resources.frame_uniforms,
                 ao_term: ao_term_a,
@@ -129,49 +141,44 @@ impl GtaoEffect {
             self.settings,
             pipelines,
         )));
-        builder.add_edge(last_prefilter, main);
+        builder.add_edge(prefilter, main);
 
         let mut last = main;
         let mut ao_for_apply = ao_term_a;
         if let Some(ao_term_b) = ao_term_b {
-            let denoise_1 = builder.add_raster_pass(Box::new(GtaoDenoisePass::new(
-                GtaoDenoiseResources {
-                    ao_in: ao_term_a,
-                    edges,
-                    ao_out: ao_term_b,
-                },
-                self.settings,
-                pipelines,
-            )));
-            builder.add_edge(last, denoise_1);
-            last = denoise_1;
-            ao_for_apply = ao_term_b;
-
-            if denoise_passes >= 3 {
-                let denoise_2 = builder.add_raster_pass(Box::new(GtaoDenoisePass::new(
+            let mut ao_in = ao_term_a;
+            for iteration in 0..denoise_passes.saturating_sub(1) {
+                let ao_out = if iteration % 2 == 0 {
+                    ao_term_b
+                } else {
+                    ao_term_a
+                };
+                let denoise = builder.add_raster_pass(Box::new(GtaoDenoisePass::new(
                     GtaoDenoiseResources {
-                        ao_in: ao_term_b,
+                        ao_in,
                         edges,
-                        ao_out: ao_term_a,
+                        ao_out,
                     },
                     self.settings,
                     pipelines,
                 )));
-                builder.add_edge(last, denoise_2);
-                last = denoise_2;
-                ao_for_apply = ao_term_a;
+                builder.add_edge(last, denoise);
+                last = denoise;
+                ao_in = ao_out;
+                ao_for_apply = ao_out;
             }
         }
 
-        let target_color = if self.resources.msaa_enabled {
-            self.resources.scene_color_hdr_msaa
-        } else {
-            self.resources.scene_color_hdr
-        };
+        let (target_color, target_is_msaa) =
+            if let Some(scene_color_hdr_msaa) = self.resources.scene_color_hdr_msaa {
+                (scene_color_hdr_msaa, true)
+            } else {
+                (self.resources.scene_color_hdr, false)
+            };
         let apply = builder.add_raster_pass(Box::new(GtaoOpaqueCompositePass::new(
             GtaoOpaqueCompositeResources {
                 target_color,
-                target_is_msaa: self.resources.msaa_enabled,
+                target_is_msaa,
                 ao_in: ao_for_apply,
                 edges,
             },
@@ -181,76 +188,67 @@ impl GtaoEffect {
         builder.add_edge(last, apply);
 
         GtaoPassRange {
-            first: first_prefilter,
+            first: prefilter,
             last: apply,
         }
     }
 }
 
 #[derive(Clone, Copy, Debug)]
-struct ViewDepthSubresources {
-    /// View-depth subresources, one per GTAO depth mip.
-    mips: [SubresourceHandle; VIEW_DEPTH_MIP_COUNT as usize],
+struct ViewDepthTextures {
+    /// View-depth textures, one per GTAO depth level.
+    textures: [TextureHandle; VIEW_DEPTH_MIP_COUNT as usize],
+    /// Writable views for the view-depth textures.
+    storage_views: [SubresourceHandle; VIEW_DEPTH_MIP_COUNT as usize],
 }
 
-fn create_view_depth_subresources(
+fn create_view_depth_textures(
     builder: &mut GraphBuilder,
-    view_depth: TextureHandle,
     multiview_stereo: bool,
-) -> ViewDepthSubresources {
+    resolution_divisor: u32,
+) -> ViewDepthTextures {
     let array_layer_count = stereo_array_layer_count(multiview_stereo);
-    let mips = std::array::from_fn(|mip| {
-        builder.create_subresource(TransientSubresourceDesc {
-            parent: view_depth,
+    let pairs = std::array::from_fn(|mip| {
+        let texture = builder.create_texture(view_depth_desc(
+            GTAO_VIEW_DEPTH_MIP_LABELS[mip],
+            multiview_stereo,
+            resolution_divisor,
+            mip as u32,
+        ));
+        let storage_view = builder.create_subresource(TransientSubresourceDesc {
+            parent: texture,
             label: GTAO_VIEW_DEPTH_MIP_LABELS[mip],
-            base_mip_level: mip as u32,
+            base_mip_level: 0,
             mip_level_count: 1,
             base_array_layer: 0,
             array_layer_count,
-        })
+        });
+        (texture, storage_view)
     });
-    ViewDepthSubresources { mips }
+    ViewDepthTextures {
+        textures: pairs.map(|(texture, _)| texture),
+        storage_views: pairs.map(|(_, storage_view)| storage_view),
+    }
 }
 
 fn add_view_depth_prefilter(
     builder: &mut GraphBuilder,
-    view_depth_mips: ViewDepthSubresources,
+    view_depth_mips: ViewDepthTextures,
     effect: &GtaoEffect,
     pipelines: &'static GtaoPipelines,
-) -> (PassId, PassId) {
-    let first_resources = GtaoDepthPrefilterResources {
+) -> PassId {
+    let resources = GtaoDepthPrefilterResources {
         depth: effect.resources.depth,
         frame_uniforms: effect.resources.frame_uniforms,
-        source_mip: None,
-        output_mip: view_depth_mips.mips[0],
+        output_textures: view_depth_mips.textures,
+        output_mips: view_depth_mips.storage_views,
     };
-    let first = builder.add_compute_pass(Box::new(GtaoDepthPrefilterPass::mip0(
-        first_resources,
+    builder.add_compute_pass(Box::new(GtaoDepthPrefilterPass::new(
+        resources,
         effect.settings,
         pipelines,
         effect.resources.multiview_stereo,
-    )));
-    let mut last = first;
-    for mip in 1..VIEW_DEPTH_MIP_COUNT {
-        let output_mip = view_depth_mips.mips[mip as usize];
-        let source_mip = Some(view_depth_mips.mips[mip as usize - 1]);
-        let resources = GtaoDepthPrefilterResources {
-            depth: effect.resources.depth,
-            frame_uniforms: effect.resources.frame_uniforms,
-            source_mip,
-            output_mip,
-        };
-        let id = builder.add_compute_pass(Box::new(GtaoDepthPrefilterPass::downsample(
-            resources,
-            effect.settings,
-            pipelines,
-            mip,
-            effect.resources.multiview_stereo,
-        )));
-        builder.add_edge(last, id);
-        last = id;
-    }
-    (first, last)
+    )))
 }
 
 /// Process-wide pipeline + UBO singleton shared across every GTAO chain rebuild.
@@ -280,19 +278,26 @@ pub(crate) fn gpu_supports_gtao(limits: &crate::gpu::GpuLimits) -> bool {
 
 /// Transient texture descriptor for the AO term ping-pong buffers (`R8Unorm`, frame array
 /// layers).
-fn ao_buffer_desc(label: &'static str) -> TransientTextureDesc {
-    ao_buffer_desc_format(label, TransientTextureFormat::Fixed(AO_TERM_FORMAT))
+fn ao_buffer_desc(label: &'static str, resolution_divisor: u32) -> TransientTextureDesc {
+    ao_buffer_desc_format(
+        label,
+        TransientTextureFormat::Fixed(AO_TERM_FORMAT),
+        resolution_divisor,
+    )
 }
 
 /// Transient texture descriptor for an `R8Unorm` GTAO buffer with a custom format slot.
 fn ao_buffer_desc_format(
     label: &'static str,
     format: TransientTextureFormat,
+    resolution_divisor: u32,
 ) -> TransientTextureDesc {
     TransientTextureDesc {
         label,
         format,
-        extent: TransientExtent::Backbuffer,
+        extent: TransientExtent::BackbufferDivisor {
+            divisor: resolution_divisor.max(1),
+        },
         mip_levels: 1,
         sample_count: TransientSampleCount::Fixed(1),
         dimension: wgpu::TextureDimension::D2,
@@ -302,12 +307,20 @@ fn ao_buffer_desc_format(
     }
 }
 
-fn view_depth_desc(label: &'static str, multiview_stereo: bool) -> TransientTextureDesc {
+fn view_depth_desc(
+    label: &'static str,
+    multiview_stereo: bool,
+    resolution_divisor: u32,
+    mip: u32,
+) -> TransientTextureDesc {
     TransientTextureDesc {
         label,
         format: TransientTextureFormat::Fixed(VIEW_DEPTH_FORMAT),
-        extent: TransientExtent::Backbuffer,
-        mip_levels: VIEW_DEPTH_MIP_COUNT,
+        extent: TransientExtent::BackbufferDivisorMip {
+            divisor: resolution_divisor.max(1),
+            mip,
+        },
+        mip_levels: 1,
         sample_count: TransientSampleCount::Fixed(1),
         dimension: wgpu::TextureDimension::D2,
         array_layers: if multiview_stereo {
@@ -332,8 +345,7 @@ mod tests {
                 view_normals: TextureHandle(0),
                 frame_uniforms: ImportedBufferHandle(0),
                 scene_color_hdr: TextureHandle(1),
-                scene_color_hdr_msaa: TextureHandle(2),
-                msaa_enabled: false,
+                scene_color_hdr_msaa: None,
                 multiview_stereo,
             },
         }
@@ -368,38 +380,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn gtao_quality_levels_match_expected_presets() {
-        assert_eq!(
-            pipeline::GtaoQualityPreset::from_level(0, 1),
-            pipeline::GtaoQualityPreset {
-                slice_count: 1,
-                steps_per_slice: 2,
-            }
-        );
-        assert_eq!(
-            pipeline::GtaoQualityPreset::from_level(1, 1),
-            pipeline::GtaoQualityPreset {
-                slice_count: 2,
-                steps_per_slice: 2,
-            }
-        );
-        assert_eq!(
-            pipeline::GtaoQualityPreset::from_level(2, 1),
-            pipeline::GtaoQualityPreset {
-                slice_count: 3,
-                steps_per_slice: 3,
-            }
-        );
-        assert_eq!(
-            pipeline::GtaoQualityPreset::from_level(3, 1),
-            pipeline::GtaoQualityPreset {
-                slice_count: 9,
-                steps_per_slice: 3,
-            }
-        );
-    }
-
     /// Verifies the bundle of caches constructs (which exercises the manual `Default`
     /// implementations in `pipeline.rs` that pick bounded bind-group caches).
     #[test]
@@ -410,67 +390,56 @@ mod tests {
     #[test]
     fn mono_view_depth_declares_only_layer_zero() {
         let mut builder = GraphBuilder::new();
-        let texture = builder.create_texture(view_depth_desc("gtao_view_depth", false));
-        let _mips = create_view_depth_subresources(&mut builder, texture, false);
+        let _mips = create_view_depth_textures(&mut builder, false, 1);
 
-        assert_eq!(builder.subresources.len(), VIEW_DEPTH_MIP_COUNT as usize);
+        assert_eq!(builder.textures.len(), VIEW_DEPTH_MIP_COUNT as usize);
         assert!(
             builder
-                .subresources
+                .textures
                 .iter()
-                .all(|desc| desc.base_array_layer == 0)
+                .all(|desc| desc.array_layers == TransientArrayLayers::Frame)
         );
         assert!(
             builder
-                .subresources
+                .textures
                 .iter()
-                .all(|desc| desc.array_layer_count == 1)
-        );
-        assert!(
-            builder
-                .subresources
-                .iter()
-                .all(|desc| !desc.label.ends_with("_l0") && !desc.label.ends_with("_l1"))
+                .enumerate()
+                .all(|(mip, desc)| desc.extent
+                    == (TransientExtent::BackbufferDivisorMip {
+                        divisor: 1,
+                        mip: mip as u32,
+                    }))
         );
     }
 
     #[test]
     fn stereo_view_depth_declares_shared_layered_mips() {
         let mut builder = GraphBuilder::new();
-        let texture = builder.create_texture(view_depth_desc("gtao_view_depth", true));
-        let _mips = create_view_depth_subresources(&mut builder, texture, true);
+        let _mips = create_view_depth_textures(&mut builder, true, 2);
 
-        assert_eq!(builder.subresources.len(), VIEW_DEPTH_MIP_COUNT as usize);
+        assert_eq!(builder.textures.len(), VIEW_DEPTH_MIP_COUNT as usize);
         assert!(
             builder
-                .subresources
+                .textures
                 .iter()
-                .all(|desc| desc.base_array_layer == 0 && desc.array_layer_count == 2)
+                .all(|desc| desc.array_layers == TransientArrayLayers::Fixed(2))
         );
-        assert!(
-            builder
-                .subresources
-                .iter()
-                .all(|desc| !desc.label.ends_with("_l0") && !desc.label.ends_with("_l1"))
-        );
-        assert_eq!(
-            builder.textures[texture.index()].array_layers,
-            TransientArrayLayers::Fixed(2)
-        );
+        assert!(builder.textures.iter().all(|desc| matches!(
+            desc.extent,
+            TransientExtent::BackbufferDivisorMip { divisor: 2, .. }
+        )));
     }
 
     #[test]
-    fn stereo_depth_prefilter_registers_one_pass_per_mip() {
+    fn stereo_depth_prefilter_registers_one_combined_pass() {
         let mut builder = GraphBuilder::new();
-        let texture = builder.create_texture(view_depth_desc("gtao_view_depth", true));
-        let mips = create_view_depth_subresources(&mut builder, texture, true);
+        let mips = create_view_depth_textures(&mut builder, true, 1);
         let effect = test_effect(true);
         let before = builder.passes.len();
 
-        let (first, last) = add_view_depth_prefilter(&mut builder, mips, &effect, gtao_pipelines());
+        let first = add_view_depth_prefilter(&mut builder, mips, &effect, gtao_pipelines());
 
-        assert_eq!(builder.passes.len() - before, VIEW_DEPTH_MIP_COUNT as usize);
+        assert_eq!(builder.passes.len() - before, 1);
         assert_eq!(first.0, before);
-        assert_eq!(last.0, before + VIEW_DEPTH_MIP_COUNT as usize - 1);
     }
 }

@@ -22,6 +22,10 @@ pub struct ResolvedLight {
     pub world_position: Vec3,
     /// World-space propagation direction (normalized): local **+Z** after transform.
     pub world_direction: Vec3,
+    /// World-space local +X axis used for cookie projection.
+    pub world_right: Vec3,
+    /// World-space local +Y axis used for cookie projection.
+    pub world_up: Vec3,
     /// Host-authored sRGB/gamma light color.
     pub color: Vec3,
     /// Light intensity.
@@ -42,6 +46,8 @@ pub struct ResolvedLight {
     pub shadow_bias: f32,
     /// Normal bias for shadow receivers (host value).
     pub shadow_normal_bias: f32,
+    /// Packed host texture handle for this light's cookie, or the host null sentinel.
+    pub cookie_texture_asset_id: i32,
 }
 
 /// Whether `resolved` should cast shadows (ray-traced path guard).
@@ -76,6 +82,8 @@ pub fn light_has_negative_contribution(resolved: &ResolvedLight) -> bool {
 pub fn light_contributes(resolved: &ResolvedLight) -> bool {
     if !vec3_is_finite(resolved.world_position)
         || !vec3_is_finite(resolved.world_direction)
+        || !vec3_is_finite(resolved.world_right)
+        || !vec3_is_finite(resolved.world_up)
         || !vec3_is_finite(resolved.color)
         || !resolved.intensity.is_finite()
         || light_signed_radiance(resolved).abs().max_element() <= 0.0
@@ -97,6 +105,8 @@ mod tests {
         ResolvedLight {
             world_position: Vec3::ZERO,
             world_direction: Vec3::Z,
+            world_right: Vec3::X,
+            world_up: Vec3::Y,
             color: Vec3::ONE,
             intensity: 1.0,
             range: 10.0,
@@ -107,6 +117,7 @@ mod tests {
             shadow_near_plane: 0.0,
             shadow_bias: 0.0,
             shadow_normal_bias: 0.0,
+            cookie_texture_asset_id: -1,
         }
     }
 

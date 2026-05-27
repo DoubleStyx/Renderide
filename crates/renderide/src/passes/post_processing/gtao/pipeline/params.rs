@@ -56,8 +56,8 @@ pub(in crate::passes::post_processing::gtao) struct GtaoParamsGpu {
     pub final_apply: u32,
     /// Number of valid view-depth mips bound for the production shader.
     pub view_depth_mip_count: u32,
-    /// Padding to keep the uniform block size 16-byte aligned.
-    pub _pad1: u32,
+    /// Linear divisor applied to GTAO-owned depth and AO buffers.
+    pub resolution_divisor: u32,
 }
 
 impl GtaoParamsGpu {
@@ -67,24 +67,28 @@ impl GtaoParamsGpu {
         denoise_blur_beta: f32,
         final_apply: bool,
     ) -> Self {
-        let preset = GtaoQualityPreset::from_level(settings.quality_level, settings.step_count);
+        let (slice_count, steps_per_slice) = settings.effective_sample_counts();
         Self {
             radius_world: settings.radius_meters.max(0.0),
-            radius_multiplier: settings.radius_multiplier.clamp(0.3, 3.0),
-            max_pixel_radius: settings.max_pixel_radius.max(1.0),
-            intensity: settings.intensity.max(0.0),
-            falloff_range: settings.falloff_range.clamp(0.05, 1.0),
-            sample_distribution_power: settings.sample_distribution_power.clamp(1.0, 3.0),
-            thin_occluder_compensation: settings.thin_occluder_compensation.clamp(0.0, 0.7),
-            final_value_power: settings.final_value_power.clamp(0.5, 5.0),
-            depth_mip_sampling_offset: settings.depth_mip_sampling_offset.clamp(0.0, 30.0),
-            albedo_multibounce: settings.albedo_multibounce.clamp(0.0, 0.99),
-            denoise_blur_beta,
-            slice_count: preset.slice_count,
-            steps_per_slice: preset.steps_per_slice,
+            radius_multiplier: settings.radius_multiplier.clamp(0.1, 8.0),
+            max_pixel_radius: if settings.max_pixel_radius.is_nan() {
+                1.0
+            } else {
+                settings.max_pixel_radius.clamp(1.0, 4096.0)
+            },
+            intensity: settings.intensity.clamp(0.0, 8.0),
+            falloff_range: settings.falloff_range.clamp(0.01, 2.0),
+            sample_distribution_power: settings.sample_distribution_power.clamp(0.25, 6.0),
+            thin_occluder_compensation: settings.thin_occluder_compensation.clamp(0.0, 2.0),
+            final_value_power: settings.final_value_power.clamp(0.1, 12.0),
+            depth_mip_sampling_offset: settings.depth_mip_sampling_offset.clamp(-8.0, 30.0),
+            albedo_multibounce: settings.albedo_multibounce.clamp(0.0, 1.0),
+            denoise_blur_beta: denoise_blur_beta.clamp(0.0, 16.0),
+            slice_count,
+            steps_per_slice,
             final_apply: u32::from(final_apply),
             view_depth_mip_count: VIEW_DEPTH_MIP_COUNT,
-            _pad1: 0,
+            resolution_divisor: settings.effective_resolution_divisor(),
         }
     }
 
@@ -95,46 +99,6 @@ impl GtaoParamsGpu {
     ) -> Self {
         self.view_depth_mip_count = mip_count.clamp(1, VIEW_DEPTH_MIP_COUNT);
         self
-    }
-}
-
-/// Sampling preset selected by `GtaoSettings::quality_level`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in crate::passes::post_processing::gtao) struct GtaoQualityPreset {
-    /// Slice directions evaluated by the horizon search.
-    pub(in crate::passes::post_processing::gtao) slice_count: u32,
-    /// Steps evaluated per slice direction.
-    pub(in crate::passes::post_processing::gtao) steps_per_slice: u32,
-}
-
-impl GtaoQualityPreset {
-    /// Maps quality levels to slice/step layouts.
-    pub(in crate::passes::post_processing::gtao) fn from_level(
-        level: u32,
-        step_count_floor: u32,
-    ) -> Self {
-        let preset = match level.min(3) {
-            0 => Self {
-                slice_count: 1,
-                steps_per_slice: 2,
-            },
-            1 => Self {
-                slice_count: 2,
-                steps_per_slice: 2,
-            },
-            2 => Self {
-                slice_count: 3,
-                steps_per_slice: 3,
-            },
-            _ => Self {
-                slice_count: 9,
-                steps_per_slice: 3,
-            },
-        };
-        Self {
-            slice_count: preset.slice_count,
-            steps_per_slice: preset.steps_per_slice.max(step_count_floor.clamp(1, 8)),
-        }
     }
 }
 

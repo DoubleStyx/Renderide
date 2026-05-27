@@ -94,7 +94,7 @@ struct XiexeToon2Material {
     _RimAlbedoTint: f32,
     /// Lerp factor that tints rim by the env-map sample.
     _RimCubemapTint: f32,
-    /// Lerp factor that gates rim by light attenuation + ambient.
+    /// Lerp factor that gates rim by unboosted light visibility + ambient.
     _RimAttenEffect: f32,
     /// Rim brightness multiplier.
     _RimIntensity: f32,
@@ -112,7 +112,7 @@ struct XiexeToon2Material {
     /// Lerp factor that tints specular highlight by albedo.
     _SpecularAlbedoTint: f32,
 
-    /// Sharpens the shadow attenuation transition. `0` = smooth, `1` = hard step.
+    /// Sharpens the received shadow visibility transition. `0` = smooth, `1` = hard step.
     _ShadowSharpness: f32,
     /// Centre of the shadow-rim smoothstep window.
     _ShadowRimRange: f32,
@@ -295,6 +295,8 @@ struct LightSample {
     color: vec3<f32>,
     /// Combined direct-light boost, distance, and spot factor.
     attenuation: f32,
+    /// Unboosted visibility from distance, spot shape, cookies, and future received shadows.
+    visibility: f32,
     /// Whether the light is directional (used to scope vertex/forward base passes).
     is_directional: bool,
 }

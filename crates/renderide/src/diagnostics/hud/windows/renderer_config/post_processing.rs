@@ -1,8 +1,9 @@
 //! Post-processing renderer-config HUD controls.
 
 use crate::config::{
-    AutoExposureSettings, BloomCompositeMode, GtaoSettings, MotionBlurSettings, RendererSettings,
-    TonemapMode,
+    AutoExposureSettings, BloomCompositeMode, GTAO_MAX_DENOISE_PASSES, GTAO_MAX_QUALITY_LEVEL,
+    GTAO_MAX_RESOLUTION_DIVISOR, GTAO_MAX_SLICE_COUNT, GTAO_MAX_STEPS_PER_SLICE, GtaoSettings,
+    MotionBlurSettings, RendererSettings, TonemapMode,
 };
 
 /// Master toggle, GTAO, bloom, motion blur, auto-exposure, and tonemap settings.
@@ -60,19 +61,38 @@ fn gtao_quality_controls(ui: &imgui::Ui, gtao: &mut GtaoSettings, dirty: &mut bo
     ui.text("Quality");
     ui.indent();
     if ui
-        .slider_config("Quality level", 0_u32, 3_u32)
+        .slider_config("Quality level", 0_u32, GTAO_MAX_QUALITY_LEVEL)
         .build(&mut gtao.quality_level)
     {
         *dirty = true;
     }
-    ui.text_disabled("0 = low, 1 = medium, 2 = high, 3 = ultra.");
+    ui.text_disabled("0 = low, 1 = medium, 2 = high, 3 = ultra, 4 = experimental high.");
     if ui
-        .slider_config("Step floor", 1_u32, 8_u32)
+        .slider_config("Slice override", 0_u32, GTAO_MAX_SLICE_COUNT)
+        .build(&mut gtao.slice_count_override)
+    {
+        *dirty = true;
+    }
+    ui.text_disabled("0 uses the selected preset.");
+    if ui
+        .slider_config("Steps override", 0_u32, GTAO_MAX_STEPS_PER_SLICE)
         .build(&mut gtao.step_count)
     {
         *dirty = true;
     }
-    ui.text_disabled("Advanced floor for steps per slice; quality preset remains primary.");
+    ui.text_disabled("0 uses the selected preset.");
+    if ui
+        .slider_config("Resolution divisor", 1_u32, GTAO_MAX_RESOLUTION_DIVISOR)
+        .build(&mut gtao.resolution_divisor)
+    {
+        *dirty = true;
+    }
+    let (effective_slices, effective_steps) = gtao.effective_sample_counts();
+    let effective_divisor = gtao.effective_resolution_divisor();
+    ui.text_disabled(format!(
+        "Effective: {effective_slices} slices x {effective_steps} steps, divisor {effective_divisor}, ~{} depth taps per AO pixel.",
+        gtao.approximate_depth_samples_per_pixel(),
+    ));
     ui.unindent();
 }
 
@@ -81,70 +101,70 @@ fn gtao_sampling_controls(ui: &imgui::Ui, gtao: &mut GtaoSettings, dirty: &mut b
     ui.text("Sampling");
     ui.indent();
     if ui
-        .slider_config("Radius (m)", 0.05_f32, 2.0_f32)
+        .slider_config("Radius (m)", 0.01_f32, 10.0_f32)
         .display_format("%.2f")
         .build(&mut gtao.radius_meters)
     {
         *dirty = true;
     }
     if ui
-        .slider_config("Radius multiplier", 0.3_f32, 3.0_f32)
+        .slider_config("Radius multiplier", 0.1_f32, 8.0_f32)
         .display_format("%.3f")
         .build(&mut gtao.radius_multiplier)
     {
         *dirty = true;
     }
     if ui
-        .slider_config("Intensity", 0.0_f32, 2.0_f32)
+        .slider_config("Intensity", 0.0_f32, 8.0_f32)
         .display_format("%.2f")
         .build(&mut gtao.intensity)
     {
         *dirty = true;
     }
     if ui
-        .slider_config("Max pixel radius", 16.0_f32, 2048.0_f32)
+        .slider_config("Max pixel radius", 1.0_f32, 4096.0_f32)
         .display_format("%.0f")
         .build(&mut gtao.max_pixel_radius)
     {
         *dirty = true;
     }
     if ui
-        .slider_config("Falloff range", 0.05_f32, 1.0_f32)
+        .slider_config("Falloff range", 0.01_f32, 2.0_f32)
         .display_format("%.2f")
         .build(&mut gtao.falloff_range)
     {
         *dirty = true;
     }
     if ui
-        .slider_config("Sample distribution power", 1.0_f32, 3.0_f32)
+        .slider_config("Sample distribution power", 0.25_f32, 6.0_f32)
         .display_format("%.2f")
         .build(&mut gtao.sample_distribution_power)
     {
         *dirty = true;
     }
     if ui
-        .slider_config("Thin occluder compensation", 0.0_f32, 0.7_f32)
+        .slider_config("Thin occluder compensation", 0.0_f32, 2.0_f32)
         .display_format("%.2f")
         .build(&mut gtao.thin_occluder_compensation)
     {
         *dirty = true;
     }
     if ui
-        .slider_config("Final value power", 0.5_f32, 5.0_f32)
+        .slider_config("Final value power", 0.1_f32, 12.0_f32)
         .display_format("%.2f")
         .build(&mut gtao.final_value_power)
     {
         *dirty = true;
     }
     if ui
-        .slider_config("Depth mip sampling offset", 0.0_f32, 30.0_f32)
+        .slider_config("Depth mip sampling offset", -8.0_f32, 30.0_f32)
         .display_format("%.2f")
         .build(&mut gtao.depth_mip_sampling_offset)
     {
         *dirty = true;
     }
     if ui
-        .slider_config("Multi-bounce albedo", 0.0_f32, 0.9_f32)
+        .slider_config("Multi-bounce albedo", 0.0_f32, 1.0_f32)
         .display_format("%.2f")
         .build(&mut gtao.albedo_multibounce)
     {
@@ -158,13 +178,13 @@ fn gtao_denoise_controls(ui: &imgui::Ui, gtao: &mut GtaoSettings, dirty: &mut bo
     ui.text("Denoise");
     ui.indent();
     if ui
-        .slider_config("Denoise passes", 0_u32, 3_u32)
+        .slider_config("Denoise passes", 0_u32, GTAO_MAX_DENOISE_PASSES)
         .build(&mut gtao.denoise_passes)
     {
         *dirty = true;
     }
     if ui
-        .slider_config("Denoise blur beta", 0.0_f32, 8.0_f32)
+        .slider_config("Denoise blur beta", 0.0_f32, 16.0_f32)
         .display_format("%.2f")
         .build(&mut gtao.denoise_blur_beta)
     {

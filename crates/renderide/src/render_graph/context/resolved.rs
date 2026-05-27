@@ -18,6 +18,10 @@ pub struct ResolvedGraphTexture {
     pub texture: wgpu::Texture,
     /// Default texture view.
     pub view: wgpu::TextureView,
+    /// Resolved width in pixels.
+    pub width: u32,
+    /// Resolved height in pixels.
+    pub height: u32,
     /// Per-layer D2 views for array textures.
     pub layer_views: Vec<wgpu::TextureView>,
     /// Resolved mip count for this execution scope.
