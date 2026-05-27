@@ -2,8 +2,8 @@
 //!
 //! The arrays are calibration data; keep the literal values stable for diffability.
 //!
-//! These inputs are extracted from external tools in model space,
-//! then converted to parent space for use in `presets`.
+//! These inputs are flat hand-space calibration values that are converted to local space for use
+//! in `presets`.
 
 #![expect(
     clippy::unreadable_literal,
@@ -12,12 +12,17 @@
 
 use glam::{Quat, Vec3};
 
+use super::presets::{
+    FINGER_COUNT, LocalPositionPresets, LocalRotationPresets, MAX_SEGMENTS_PER_FINGER,
+    SEGMENT_COUNTS,
+};
+
 /// Number of finger segments in a [`HandState`]. Equal to
 /// `BodyNode::LeftPinkyTip - BodyNode::LeftThumbMetacarpal + 1 = 42 - 19 + 1`.
-const SEGMENT_COUNT: usize = 24;
+pub(super) const SEGMENT_COUNT: usize = 24;
 
 /// Idle pose positions for the left hand (24 segments).
-const IDLE_POS_LEFT: [[f32; 3]; SEGMENT_COUNT] = [
+pub(super) const IDLE_POS_LEFT: [[f32; 3]; SEGMENT_COUNT] = [
     [0.032114964, -0.013815194, 0.025049219],
     [0.06472655, -0.014863592, 0.04888261],
     [0.085127905, -0.0175668, 0.074058294],
@@ -46,7 +51,7 @@ const IDLE_POS_LEFT: [[f32; 3]; SEGMENT_COUNT] = [
 
 /// Idle pose rotations for the left hand (24 segments, `[x, y, z, w]`). Entry 5
 /// (`LeftIndexFinger_Proximal`) is the evaluated f32 form of the host calibration expression.
-const IDLE_ROT_LEFT: [[f32; 4]; SEGMENT_COUNT] = [
+pub(super) const IDLE_ROT_LEFT: [[f32; 4]; SEGMENT_COUNT] = [
     [0.27903825, -0.35667107, 0.5716526, -0.6842053],
     [-0.19714294, 0.27205768, -0.6480588, 0.68347573],
     [0.2759179, -0.3647225, 0.6079112, -0.64906913],
@@ -74,7 +79,7 @@ const IDLE_ROT_LEFT: [[f32; 4]; SEGMENT_COUNT] = [
 ];
 
 /// Idle pose positions for the right hand (24 segments).
-const IDLE_POS_RIGHT: [[f32; 3]; SEGMENT_COUNT] = [
+pub(super) const IDLE_POS_RIGHT: [[f32; 3]; SEGMENT_COUNT] = [
     [-0.032747645, -0.014222979, 0.02505552],
     [-0.06477464, -0.016079383, 0.049621053],
     [-0.083759174, -0.019294739, 0.075823866],
@@ -102,7 +107,7 @@ const IDLE_POS_RIGHT: [[f32; 3]; SEGMENT_COUNT] = [
 ];
 
 /// Idle pose rotations for the right hand (24 segments, `[x, y, z, w]`).
-const IDLE_ROT_RIGHT: [[f32; 4]; SEGMENT_COUNT] = [
+pub(super) const IDLE_ROT_RIGHT: [[f32; 4]; SEGMENT_COUNT] = [
     [0.26789832, 0.3524874, -0.58295935, -0.68127936],
     [-0.17208317, -0.25975865, 0.6496945, 0.69340456],
     [-0.24061818, -0.33929846, 0.61731255, 0.6677608],
@@ -130,7 +135,7 @@ const IDLE_ROT_RIGHT: [[f32; 4]; SEGMENT_COUNT] = [
 ];
 
 /// Fist pose positions for the left hand (24 segments).
-const FIST_POS_LEFT: [[f32; 3]; SEGMENT_COUNT] = [
+pub(super) const FIST_POS_LEFT: [[f32; 3]; SEGMENT_COUNT] = [
     [0.026763892, -0.0063486164, 0.01744702],
     [0.06192772, -0.008122697, 0.037271187],
     [0.06832408, -0.0105211735, 0.06906241],
@@ -158,7 +163,7 @@ const FIST_POS_LEFT: [[f32; 3]; SEGMENT_COUNT] = [
 ];
 
 /// Fist pose rotations for the left hand (24 segments, `[x, y, z, w]`).
-const FIST_ROT_LEFT: [[f32; 4]; SEGMENT_COUNT] = [
+pub(super) const FIST_ROT_LEFT: [[f32; 4]; SEGMENT_COUNT] = [
     [0.26891267, -0.42705113, 0.4962459, -0.70643705],
     [-0.0299031, 0.10131291, -0.59843856, 0.7941744],
     [-0.2432386, 0.1075707, 0.5974826, -0.7564906],
@@ -186,7 +191,7 @@ const FIST_ROT_LEFT: [[f32; 4]; SEGMENT_COUNT] = [
 ];
 
 /// Fist pose positions for the right hand (24 segments).
-const FIST_POS_RIGHT: [[f32; 3]; SEGMENT_COUNT] = [
+pub(super) const FIST_POS_RIGHT: [[f32; 3]; SEGMENT_COUNT] = [
     [-0.027928837, -0.0065499977, 0.018533913],
     [-0.062129922, -0.00902483, 0.039906792],
     [-0.06678565, -0.011821985, 0.07196686],
@@ -214,7 +219,7 @@ const FIST_POS_RIGHT: [[f32; 3]; SEGMENT_COUNT] = [
 ];
 
 /// Fist pose rotations for the right hand (24 segments, `[x, y, z, w]`).
-const FIST_ROT_RIGHT: [[f32; 4]; SEGMENT_COUNT] = [
+pub(super) const FIST_ROT_RIGHT: [[f32; 4]; SEGMENT_COUNT] = [
     [0.25109518, 0.41529992, -0.5051993, -0.71361816],
     [-0.009018947, -0.08332496, 0.6021248, 0.7939908],
     [0.20381555, 0.07913755, 0.6027624, 0.7673814],
@@ -241,115 +246,43 @@ const FIST_ROT_RIGHT: [[f32; 4]; SEGMENT_COUNT] = [
     [0.7436072, -0.15017207, -0.03690451, -0.650488],
 ];
 
-pub fn generate_parent_space_presets() -> String {
-    let mut result = String::new();
-    result.push_str(
-        format!(
-            "pub(super) const IDLE_POS_LEFT: [[[f32; 3]; 5]; 5] = [{:?}];\n",
-            model_space_position_to_parent_space(&IDLE_POS_LEFT)
-        )
-        .as_str(),
-    );
-    result.push_str(
-        format!(
-            "pub(super) const IDLE_ROT_LEFT: [[[f32; 4]; 5]; 5] = [{:?}];\n",
-            model_space_rotation_to_parent_space(&IDLE_ROT_LEFT)
-        )
-        .as_str(),
-    );
-    result.push_str(
-        format!(
-            "pub(super) const IDLE_POS_RIGHT: [[[f32; 3]; 5]; 5] = [{:?}];\n",
-            model_space_position_to_parent_space(&IDLE_POS_RIGHT)
-        )
-        .as_str(),
-    );
-    result.push_str(
-        format!(
-            "pub(super) const IDLE_ROT_RIGHT: [[[f32; 4]; 5]; 5] = [{:?}];\n",
-            model_space_rotation_to_parent_space(&IDLE_ROT_RIGHT)
-        )
-        .as_str(),
-    );
-    result.push_str(
-        format!(
-            "pub(super) const FIST_POS_LEFT: [[[f32; 3]; 5]; 5] = [{:?}];\n",
-            model_space_position_to_parent_space(&FIST_POS_LEFT)
-        )
-        .as_str(),
-    );
-    result.push_str(
-        format!(
-            "pub(super) const FIST_ROT_LEFT: [[[f32; 4]; 5]; 5] = [{:?}];\n",
-            model_space_rotation_to_parent_space(&FIST_ROT_LEFT)
-        )
-        .as_str(),
-    );
-    result.push_str(
-        format!(
-            "pub(super) const FIST_POS_RIGHT: [[[f32; 3]; 5]; 5] = [{:?}];\n",
-            model_space_position_to_parent_space(&FIST_POS_RIGHT)
-        )
-        .as_str(),
-    );
-    result.push_str(
-        format!(
-            "pub(super) const FIST_ROT_RIGHT: [[[f32; 4]; 5]; 5] = [{:?}];\n",
-            model_space_rotation_to_parent_space(&FIST_ROT_RIGHT)
-        )
-        .as_str(),
-    );
+/// Converts flat hand-space segment positions into per-finger local positions.
+pub(super) fn flat_position_to_local_space(
+    positions: &[[f32; 3]; SEGMENT_COUNT],
+    rotations: &[[f32; 4]; SEGMENT_COUNT],
+) -> LocalPositionPresets {
+    let mut result = [[[0.0; 3]; MAX_SEGMENTS_PER_FINGER]; FINGER_COUNT];
+    let mut flat_index = 0;
+    for (finger_result, &segment_count) in result.iter_mut().zip(SEGMENT_COUNTS.iter()) {
+        let mut previous_position = Vec3::ZERO;
+        let mut previous_rotation = Quat::IDENTITY;
+        for local_position in finger_result.iter_mut().take(segment_count) {
+            let current_position = Vec3::from_array(positions[flat_index]);
+            *local_position =
+                (previous_rotation.inverse() * (current_position - previous_position)).to_array();
+            previous_position = current_position;
+            previous_rotation = Quat::from_array(rotations[flat_index]).normalize();
+            flat_index += 1;
+        }
+    }
     result
 }
 
-pub fn model_space_position_to_parent_space(
-    positions: &[[f32; 3]; SEGMENT_COUNT],
-) -> [[[f32; 3]; 5]; 5] {
-    let mut result: Vec<[[f32; 3]; 5]> = Vec::new();
-    for range in [0..4, 4..9, 9..14, 14..19, 19..24] {
-        let mut finger_result = Vec::new();
-        let mut previous = Vec3::ZERO;
-        for i in range {
-            let current = Vec3::from_slice(&positions[i]);
-            finger_result.push((current - previous).to_array());
-            previous = current;
-        }
-        while finger_result.len() < 5 {
-            finger_result.push([0.0; 3]);
-        }
-        result.push(*finger_result.as_array().unwrap());
-    }
-    *result.as_array().unwrap()
-}
-
-pub fn model_space_rotation_to_parent_space(
+/// Converts flat hand-space segment rotations into per-finger local rotations.
+pub(super) fn flat_rotation_to_local_space(
     rotations: &[[f32; 4]; SEGMENT_COUNT],
-) -> [[[f32; 4]; 5]; 5] {
-    let mut result: Vec<[[f32; 4]; 5]> = Vec::new();
-    for range in [0..4, 4..9, 9..14, 14..19, 19..24] {
-        let mut finger_result = Vec::new();
-        let mut previous = Quat::IDENTITY;
-        for i in range {
-            let current = Quat::from_slice(&rotations[i]);
-            finger_result.push(previous.inverse().mul_quat(current).to_array());
-            previous = current;
+) -> LocalRotationPresets {
+    let mut result = [[[0.0; 4]; MAX_SEGMENTS_PER_FINGER]; FINGER_COUNT];
+    let mut flat_index = 0;
+    for (finger_result, &segment_count) in result.iter_mut().zip(SEGMENT_COUNTS.iter()) {
+        let mut previous_rotation = Quat::IDENTITY;
+        for local_rotation_row in finger_result.iter_mut().take(segment_count) {
+            let current_rotation = Quat::from_array(rotations[flat_index]).normalize();
+            let local_rotation = (previous_rotation.inverse() * current_rotation).normalize();
+            *local_rotation_row = local_rotation.to_array();
+            previous_rotation = current_rotation;
+            flat_index += 1;
         }
-        while finger_result.len() < 5 {
-            finger_result.push([0.0; 4]);
-        }
-        result.push(*finger_result.as_array().unwrap());
     }
-    *result.as_array().unwrap()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn can_generate_parent_space_preset_code() {
-        let result = generate_parent_space_presets();
-        // println!("{result}");
-        assert_eq!(result.matches("\n").count(), 8);
-    }
+    result
 }
