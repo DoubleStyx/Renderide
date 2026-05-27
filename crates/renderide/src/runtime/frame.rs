@@ -10,6 +10,7 @@
 pub(in crate::runtime) mod extract;
 pub(crate) mod render;
 pub(in crate::runtime) mod schedule;
+pub(in crate::runtime) mod skinned_bounds;
 pub(in crate::runtime) mod submit;
 pub(in crate::runtime) mod view_plan;
 pub(in crate::runtime) mod view_planning;

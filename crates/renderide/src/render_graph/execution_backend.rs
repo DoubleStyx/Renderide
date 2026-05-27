@@ -145,9 +145,6 @@ pub trait GraphFrameResources: Send + Sync {
     /// Uniform parameters for the active skybox/reflection-probe specular source.
     fn skybox_specular_uniform_params(&self) -> SkyboxSpecularUniformParams;
 
-    /// Whether visible mesh-deform filtering has proven there is no work for this submission.
-    fn visible_mesh_deform_filter_is_empty(&self) -> bool;
-
     /// Whether mesh deform has already recorded work for this graph submission.
     fn mesh_deform_dispatched_this_submission(&self) -> bool;
 
@@ -156,6 +153,9 @@ pub trait GraphFrameResources: Send + Sync {
 
     /// Cloned visible mesh-deform filter for this submission's frame-global deform collection.
     fn visible_mesh_deform_keys_snapshot(&self) -> Option<HashSet<SkinCacheKey>>;
+
+    /// Whether a named frame-global pass has no work for the current graph submission.
+    fn frame_global_pass_is_inactive(&self, pass_name: &str) -> bool;
 
     /// Ensures per-view frame bind resources are resident.
     fn ensure_per_view_frame_resources(
@@ -181,6 +181,17 @@ pub trait GraphFrameResources: Send + Sync {
         device: &wgpu::Device,
         uploads: GraphUploadSink<'_>,
         view_layouts: &[PreRecordViewResourceLayout],
+    );
+
+    /// Whether any light-cookie atlas layers need frame-global synchronization.
+    fn has_light_cookie_requests(&self) -> bool;
+
+    /// Records light-cookie atlas clears and source blits.
+    fn encode_light_cookie_atlas(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        asset_resources: &dyn GraphAssetResources,
     );
 }
 

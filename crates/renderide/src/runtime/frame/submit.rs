@@ -5,7 +5,11 @@ use std::time::Instant;
 use super::super::offscreen_tasks::camera::zero_camera_render_task_results;
 use super::super::offscreen_tasks::reflection_probe::reflection_probe_render_task_count;
 use super::super::{RendererRuntime, lockstep};
+use super::skinned_bounds::answer_skinned_realtime_bounds;
 use crate::diagnostics::crash_context::{self, TickPhase};
+use crate::gpu_pools::MeshPool;
+use crate::ipc::SharedMemoryAccessor;
+use crate::scene::SceneCoordinator;
 use crate::shared::FrameSubmitData;
 
 impl RendererRuntime {
@@ -80,6 +84,8 @@ impl RendererRuntime {
                 }
             }
             if !apply_failed {
+                let bounds_submit = (&self.scene, self.backend.mesh_pool(), &data, frame_index);
+                answer_bounds(shm, bounds_submit);
                 profiling::scope!("scene::frame_submit_reflection_probes");
                 self.backend
                     .answer_reflection_probe_sh2_tasks(shm, &self.scene, &data);
@@ -95,7 +101,7 @@ impl RendererRuntime {
                     data.render_tasks.len()
                 );
                 failed_camera_tasks =
-                    failed_camera_tasks.saturating_add(data.render_tasks.len() as u64);
+                    failed_camera_tasks.saturating_add(submitted_render_tasks as u64);
                 failed_reflection_probe_tasks = reflection_probe_task_count > 0;
             } else if reflection_probe_task_count > 0 {
                 failed_reflection_probe_tasks = true;
@@ -105,8 +111,7 @@ impl RendererRuntime {
                 "dropping {} CameraRenderTask readback(s): frame submit has no shared memory accessor",
                 data.render_tasks.len()
             );
-            failed_camera_tasks =
-                failed_camera_tasks.saturating_add(data.render_tasks.len() as u64);
+            failed_camera_tasks = failed_camera_tasks.saturating_add(submitted_render_tasks as u64);
             failed_reflection_probe_tasks = reflection_probe_task_count > 0;
         } else if reflection_probe_task_count > 0 {
             failed_reflection_probe_tasks = true;
@@ -238,6 +243,16 @@ struct FrameSubmitReadbackQueueDecision<'a> {
     queue_reflection_probe_tasks: bool,
     failed_reflection_probe_tasks: bool,
     failed_camera_tasks: u64,
+}
+
+/// Borrow bundle for one skinned bounds writeback pass.
+type BoundsWritebackSubmit<'a> = (&'a SceneCoordinator, &'a MeshPool, &'a FrameSubmitData, i32);
+
+/// Answers host skinned realtime bounds rows and logs the per-frame writeback summary.
+fn answer_bounds(shm: &mut SharedMemoryAccessor, submit: BoundsWritebackSubmit<'_>) {
+    let (scene, mesh_pool, data, frame_index) = submit;
+    let report = answer_skinned_realtime_bounds(shm, scene, mesh_pool, data);
+    report.log(frame_index);
 }
 
 #[cfg(test)]

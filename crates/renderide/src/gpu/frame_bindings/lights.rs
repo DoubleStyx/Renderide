@@ -5,6 +5,13 @@ use bytemuck::{Pod, Zeroable};
 /// Max lights copied into the frame light buffer.
 pub const MAX_LIGHTS: usize = 65536;
 
+/// No light cookie is bound.
+pub const LIGHT_COOKIE_KIND_NONE: u32 = 0;
+/// A spotlight cookie sampled from the 2D cookie atlas.
+pub const LIGHT_COOKIE_KIND_SPOT_2D: u32 = 1;
+/// A point-light cookie sampled from the cubemap-face atlas.
+pub const LIGHT_COOKIE_KIND_POINT_CUBE: u32 = 2;
+
 /// GPU-facing light record for a storage buffer upload.
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 #[repr(C)]
@@ -39,12 +46,16 @@ pub struct GpuLight {
     pub shadow_normal_bias: f32,
     /// Shadow type as a `u32`.
     pub shadow_type: u32,
-    /// Padding so `_pad_trailing` starts at a 16-byte aligned offset.
-    pub _pad_align_vec3_trailing: [u8; 4],
-    /// Trailing `vec3<u32>`-shaped padding in WGSL.
-    pub _pad_trailing: [u32; 3],
-    /// Pads struct size to match WGSL struct alignment.
-    pub _pad_struct_end: [u8; 12],
+    /// Cookie kind, matching `LIGHT_COOKIE_KIND_*`.
+    pub cookie_kind: u32,
+    /// Spot atlas layer or first point-cubemap face layer.
+    pub cookie_layer: u32,
+    /// Reserved for future cookie flags.
+    pub _cookie_reserved: u32,
+    /// World-space local +X axis; `.w` stores the spot half-angle tangent.
+    pub cookie_right_tan_half_angle: [f32; 4],
+    /// World-space local +Y axis; `.w` is reserved.
+    pub cookie_up: [f32; 4],
 }
 
 impl Default for GpuLight {
@@ -65,9 +76,11 @@ impl Default for GpuLight {
             shadow_bias: 0.0,
             shadow_normal_bias: 0.0,
             shadow_type: 0,
-            _pad_align_vec3_trailing: [0; 4],
-            _pad_trailing: [0; 3],
-            _pad_struct_end: [0; 12],
+            cookie_kind: LIGHT_COOKIE_KIND_NONE,
+            cookie_layer: 0,
+            _cookie_reserved: 0,
+            cookie_right_tan_half_angle: [1.0, 0.0, 0.0, 1.0],
+            cookie_up: [0.0, 1.0, 0.0, 0.0],
         }
     }
 }
@@ -79,6 +92,6 @@ mod tests {
 
     #[test]
     fn gpu_light_row_size_matches_wgsl_storage_stride() {
-        assert_eq!(size_of::<GpuLight>(), 112);
+        assert_eq!(size_of::<GpuLight>(), 128);
     }
 }

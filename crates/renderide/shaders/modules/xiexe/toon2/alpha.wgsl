@@ -24,7 +24,7 @@ fn apply_alpha(
     clip_alpha: f32,
 ) -> f32 {
     if (alpha_mode == xb::ALPHA_CUTOUT) {
-        if (clip_alpha <= xb::mat._Cutoff) {
+        if (clip_alpha < xb::mat._Cutoff) {
             discard;
         }
         return 1.0;
@@ -34,7 +34,7 @@ fn apply_alpha(
         let d = xb::bayer_threshold(frag_xy);
         let coverage = xb::saturate(alpha - (d * (1.0 - alpha) * 0.15));
         if (rg::frame_sample_count() <= 1u) {
-            if (coverage <= d) {
+            if (coverage < d) {
                 discard;
             }
             return 1.0;
@@ -47,7 +47,7 @@ fn apply_alpha(
         var coverage = xb::saturate(mask + xb::mat._Cutoff);
         coverage = mix(1.0 - coverage, coverage, xb::saturate(alpha));
         if (rg::frame_sample_count() <= 1u) {
-            if (coverage <= xb::bayer_threshold(frag_xy)) {
+            if (coverage < xb::bayer_threshold(frag_xy)) {
                 discard;
             }
             return 1.0;
@@ -61,10 +61,10 @@ fn apply_alpha(
             let mask = textureSample(xb::_CutoutMask, xb::_CutoutMask_sampler, uv_primary).r;
             let dist = distance(rg::camera_world_pos_for_view(view_layer), world_pos);
             let d = smoothstep(xb::mat._FadeDitherDistance, xb::mat._FadeDitherDistance + 0.02, dist);
-            if (((1.0 - mask) + d) <= dither) {
+            if (((1.0 - mask) + d) < dither) {
                 discard;
             }
-        } else if (clip_alpha <= dither) {
+        } else if (clip_alpha < dither) {
             discard;
         }
         return 1.0;

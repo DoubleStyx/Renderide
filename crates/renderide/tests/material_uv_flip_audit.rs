@@ -22,6 +22,13 @@ const FORBIDDEN_MESH_UV_V_FLIPS: &[&str] = &[
     "1.0 - uv0.y",
 ];
 
+const FORBIDDEN_TEXTURE3D_AXIS_FLIPS: &[&str] = &[
+    "1.0 - uvw.y",
+    "1.0 - sample_pos.y",
+    "uvw.y = 1.0 -",
+    "sample_pos.y = 1.0 -",
+];
+
 fn materials_dir() -> PathBuf {
     let manifest = env!("CARGO_MANIFEST_DIR");
     Path::new(manifest).join("shaders/materials")
@@ -30,6 +37,10 @@ fn materials_dir() -> PathBuf {
 fn modules_dir() -> PathBuf {
     let manifest = env!("CARGO_MANIFEST_DIR");
     Path::new(manifest).join("shaders/modules")
+}
+
+fn texture_sampling_module_path() -> PathBuf {
+    modules_dir().join("core/texture_sampling.wgsl")
 }
 
 fn wgsl_files_in(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
@@ -63,6 +74,28 @@ fn declared_storage_inverted_fields(src: &str) -> Vec<String> {
     names.sort();
     names.dedup();
     names
+}
+
+/// Verifies shared Texture3D sampling helpers keep authored volume coordinates unchanged.
+#[test]
+fn texture3d_sampling_helpers_do_not_flip_axes() -> Result<(), Box<dyn std::error::Error>> {
+    let path = texture_sampling_module_path();
+    let src = std::fs::read_to_string(&path)?;
+    let mut offenders = Vec::new();
+    for snippet in FORBIDDEN_TEXTURE3D_AXIS_FLIPS {
+        if src.contains(snippet) {
+            offenders.push(format!(
+                "{} contains Texture3D axis flip {snippet}",
+                path.file_name().unwrap().to_string_lossy()
+            ));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "Texture3D helpers must preserve direct Bitmap3D XYZ coordinates:\n  - {}",
+        offenders.join("\n  - ")
+    );
+    Ok(())
 }
 
 #[test]

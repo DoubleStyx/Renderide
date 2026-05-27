@@ -305,7 +305,7 @@ impl RenderBackend {
     pub fn try_process_mesh_upload(
         &mut self,
         data: MeshUploadData,
-        shm: &mut SharedMemoryAccessor,
+        shm: Option<&mut SharedMemoryAccessor>,
         ipc: Option<&mut DualQueueIpc>,
     ) {
         asset_uploads::try_process_mesh_upload(&mut self.asset_transfers, data, shm, ipc);

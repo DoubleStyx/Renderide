@@ -9,6 +9,7 @@
 
 mod empty_material;
 mod ibl_dfg;
+mod light_cookies;
 mod reflection_probe_specular;
 mod scene_snapshot;
 
@@ -27,6 +28,8 @@ pub(crate) use crate::gpu::{
 };
 pub(crate) use empty_material::EmptyMaterialBindGroup;
 use ibl_dfg::create_ibl_dfg_lut;
+use light_cookies::LightCookieAtlasResources;
+pub(crate) use light_cookies::{LIGHT_COOKIE_ATLAS_PASS_NAME, LightCookieAtlasPass};
 pub(crate) use reflection_probe_specular::ReflectionProbeSpecularResources;
 use reflection_probe_specular::{
     ReflectionProbeSpecularBindGroupResources, create_reflection_probe_specular_fallback,
@@ -76,6 +79,8 @@ pub struct FrameGpuResources {
     _ibl_dfg_lut_texture: Arc<wgpu::Texture>,
     /// Frame-global DFG LUT view bound at `@group(0) @binding(11)`.
     ibl_dfg_lut_view: Arc<wgpu::TextureView>,
+    /// Frame-global light-cookie atlas textures and sampler.
+    light_cookies: LightCookieAtlasResources,
     /// Global `@group(0)` bind group (fallback frame uniform + fallback lights/snapshots).
     ///
     /// Per-view passes bind the per-view bind group from
@@ -89,6 +94,24 @@ pub struct FrameGpuResources {
 pub(super) struct PerViewSceneSnapshots {
     /// Depth/color snapshot textures bound through this view's `@group(0)`.
     set: SceneSnapshotSet,
+}
+
+/// Borrowed resources used to build a frame-global bind group.
+struct FrameBindGroupInputs<'a> {
+    /// Frame uniform buffer for binding 0.
+    frame_uniform: &'a wgpu::Buffer,
+    /// Light storage buffer for binding 1.
+    lights_buffer: &'a wgpu::Buffer,
+    /// Cluster buffer references for bindings 2 and 3.
+    cluster_refs: ClusterBufferRefs<'a>,
+    /// Scene snapshot views and sampler for bindings 4 through 8.
+    snapshots: FrameSceneSnapshotTextureViews<'a>,
+    /// Reflection-probe atlas, sampler, and metadata buffer for bindings 9, 10, and 12.
+    reflection_probes: ReflectionProbeSpecularBindGroupResources<'a>,
+    /// Integrated BRDF lookup texture view for binding 11.
+    ibl_dfg_lut_view: &'a wgpu::TextureView,
+    /// Light-cookie atlas textures and sampler for bindings 13 through 15.
+    light_cookies: &'a LightCookieAtlasResources,
 }
 
 /// Requested per-view scene snapshot shape and families for pre-record synchronization.
@@ -229,72 +252,100 @@ impl FrameGpuResources {
 
     fn create_bind_group(
         device: &wgpu::Device,
-        frame_uniform: &wgpu::Buffer,
-        lights_buffer: &wgpu::Buffer,
-        refs: ClusterBufferRefs<'_>,
-        snapshots: FrameSceneSnapshotTextureViews<'_>,
-        reflection_probes: ReflectionProbeSpecularBindGroupResources<'_>,
-        ibl_dfg_lut_view: &wgpu::TextureView,
+        inputs: FrameBindGroupInputs<'_>,
     ) -> Arc<wgpu::BindGroup> {
         let layout = Self::bind_group_layout(device);
-        let bind_group = Arc::new(device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("frame_globals_bind_group"),
-            layout: &layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: frame_uniform.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: lights_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: refs.cluster_light_counts.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: refs.cluster_light_indices.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::TextureView(snapshots.scene_depth_2d),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: wgpu::BindingResource::TextureView(snapshots.scene_depth_array),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: wgpu::BindingResource::TextureView(snapshots.scene_color_2d),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 7,
-                    resource: wgpu::BindingResource::TextureView(snapshots.scene_color_array),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 8,
-                    resource: wgpu::BindingResource::Sampler(snapshots.scene_color_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 9,
-                    resource: wgpu::BindingResource::TextureView(reflection_probes.array_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 10,
-                    resource: wgpu::BindingResource::Sampler(reflection_probes.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 11,
-                    resource: wgpu::BindingResource::TextureView(ibl_dfg_lut_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 12,
-                    resource: reflection_probes.metadata_buffer.as_entire_binding(),
-                },
-            ],
-        }));
+        let bind_group = Arc::new(
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("frame_globals_bind_group"),
+                layout: &layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: inputs.frame_uniform.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: inputs.lights_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: inputs.cluster_refs.cluster_light_counts.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: inputs
+                            .cluster_refs
+                            .cluster_light_indices
+                            .as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(
+                            inputs.snapshots.scene_depth_2d,
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::TextureView(
+                            inputs.snapshots.scene_depth_array,
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: wgpu::BindingResource::TextureView(
+                            inputs.snapshots.scene_color_2d,
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: wgpu::BindingResource::TextureView(
+                            inputs.snapshots.scene_color_array,
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 8,
+                        resource: wgpu::BindingResource::Sampler(
+                            inputs.snapshots.scene_color_sampler,
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 9,
+                        resource: wgpu::BindingResource::TextureView(
+                            inputs.reflection_probes.array_view,
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 10,
+                        resource: wgpu::BindingResource::Sampler(inputs.reflection_probes.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 11,
+                        resource: wgpu::BindingResource::TextureView(inputs.ibl_dfg_lut_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 12,
+                        resource: inputs.reflection_probes.metadata_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 13,
+                        resource: wgpu::BindingResource::TextureView(
+                            inputs.light_cookies.spot_view(),
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 14,
+                        resource: wgpu::BindingResource::TextureView(
+                            inputs.light_cookies.point_view(),
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 15,
+                        resource: wgpu::BindingResource::Sampler(inputs.light_cookies.sampler()),
+                    },
+                ],
+            }),
+        );
         crate::profiling::note_resource_churn!(BindGroup, "backend::frame_globals_bind_group");
         bind_group
     }
@@ -330,12 +381,15 @@ impl FrameGpuResources {
         };
         self.bind_group = Self::create_bind_group(
             device,
-            &self.frame_uniform,
-            &self.lights_buffer,
-            refs,
-            self.scene_snapshots.views(),
-            self.reflection_probe_bind_group_resources(),
-            self.ibl_dfg_lut_view.as_ref(),
+            FrameBindGroupInputs {
+                frame_uniform: &self.frame_uniform,
+                lights_buffer: &self.lights_buffer,
+                cluster_refs: refs,
+                snapshots: self.scene_snapshots.views(),
+                reflection_probes: self.reflection_probe_bind_group_resources(),
+                ibl_dfg_lut_view: self.ibl_dfg_lut_view.as_ref(),
+                light_cookies: &self.light_cookies,
+            },
         );
     }
 
@@ -381,18 +435,22 @@ impl FrameGpuResources {
             reflection_probe_metadata_buffer,
         ) = create_reflection_probe_specular_fallback(device);
         let (ibl_dfg_lut_texture, ibl_dfg_lut_view) = create_ibl_dfg_lut(device, queue);
+        let light_cookies = LightCookieAtlasResources::new(device, queue, Arc::clone(&limits));
         let bind_group = Self::create_bind_group(
             device,
-            &frame_uniform,
-            &lights_buffer,
-            refs,
-            scene_snapshots.views(),
-            ReflectionProbeSpecularBindGroupResources {
-                array_view: reflection_probe_array_view.as_ref(),
-                sampler: reflection_probe_sampler.as_ref(),
-                metadata_buffer: reflection_probe_metadata_buffer.as_ref(),
+            FrameBindGroupInputs {
+                frame_uniform: &frame_uniform,
+                lights_buffer: &lights_buffer,
+                cluster_refs: refs,
+                snapshots: scene_snapshots.views(),
+                reflection_probes: ReflectionProbeSpecularBindGroupResources {
+                    array_view: reflection_probe_array_view.as_ref(),
+                    sampler: reflection_probe_sampler.as_ref(),
+                    metadata_buffer: reflection_probe_metadata_buffer.as_ref(),
+                },
+                ibl_dfg_lut_view: ibl_dfg_lut_view.as_ref(),
+                light_cookies: &light_cookies,
             },
-            ibl_dfg_lut_view.as_ref(),
         );
         Ok(Self {
             frame_uniform,
@@ -406,6 +464,7 @@ impl FrameGpuResources {
             reflection_probe_version: 0,
             _ibl_dfg_lut_texture: ibl_dfg_lut_texture,
             ibl_dfg_lut_view,
+            light_cookies,
             bind_group,
             cluster_bind_version,
             limits,
@@ -462,13 +521,45 @@ impl FrameGpuResources {
     ) -> Arc<wgpu::BindGroup> {
         Self::create_bind_group(
             device,
-            frame_uniform,
-            lights_buffer,
-            cluster_refs,
-            snapshots,
-            self.reflection_probe_bind_group_resources(),
-            self.ibl_dfg_lut_view.as_ref(),
+            FrameBindGroupInputs {
+                frame_uniform,
+                lights_buffer,
+                cluster_refs,
+                snapshots,
+                reflection_probes: self.reflection_probe_bind_group_resources(),
+                ibl_dfg_lut_view: self.ibl_dfg_lut_view.as_ref(),
+                light_cookies: &self.light_cookies,
+            },
         )
+    }
+
+    /// Starts a new frame of light-cookie assignment.
+    pub(in crate::backend) fn begin_light_cookie_frame(&self) {
+        self.light_cookies.begin_frame();
+    }
+
+    /// Assigns a cookie atlas binding for one light.
+    pub(in crate::backend) fn assign_light_cookie(
+        &self,
+        light: &crate::scene::ResolvedLight,
+    ) -> crate::backend::light_gpu::LightCookieBinding {
+        self.light_cookies
+            .assign(light.light_type, light.cookie_texture_asset_id)
+    }
+
+    /// Returns whether the frame-global cookie atlas pass has work.
+    pub(in crate::backend) fn has_light_cookie_requests(&self) -> bool {
+        self.light_cookies.has_requests()
+    }
+
+    /// Records light-cookie atlas updates.
+    pub(in crate::backend) fn encode_light_cookie_atlas(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        assets: &dyn crate::render_graph::GraphAssetResources,
+    ) {
+        self.light_cookies.encode(device, encoder, assets);
     }
 
     /// Current reflection-probe resource version for per-view bind-group invalidation.
@@ -541,23 +632,23 @@ mod tests {
     }
 
     #[test]
-    fn frame_layout_contributes_two_fragment_samplers() {
+    fn frame_layout_contributes_three_fragment_samplers() {
         let entries = crate::gpu::frame_bind_group_layout_entries();
         assert_eq!(
             fragment_resource_count(&entries, |ty| matches!(ty, wgpu::BindingType::Sampler(_))),
-            2
+            3
         );
     }
 
     #[test]
-    fn frame_layout_contributes_six_fragment_sampled_textures() {
+    fn frame_layout_contributes_eight_fragment_sampled_textures() {
         let entries = crate::gpu::frame_bind_group_layout_entries();
         assert_eq!(
             fragment_resource_count(&entries, |ty| matches!(
                 ty,
                 wgpu::BindingType::Texture { .. }
             )),
-            6
+            8
         );
     }
 }

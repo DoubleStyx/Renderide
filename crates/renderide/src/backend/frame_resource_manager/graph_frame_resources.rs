@@ -4,12 +4,15 @@ use std::sync::Arc;
 
 use hashbrown::HashSet;
 
+use crate::backend::frame_gpu::LIGHT_COOKIE_ATLAS_PASS_NAME;
 use crate::camera::ViewId;
 use crate::gpu::frame_globals::SkyboxSpecularUniformParams;
 use crate::graph_inputs::PreRecordViewResourceLayout;
 use crate::mesh_deform::{PaddedPerDrawUniforms, SkinCacheKey};
 use crate::passes::MaterialBatchBoundary;
-use crate::render_graph::execution_backend::{GraphClusterBufferRefs, GraphFrameResources};
+use crate::render_graph::execution_backend::{
+    GraphAssetResources, GraphClusterBufferRefs, GraphFrameResources,
+};
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
 
 use super::super::light_gpu::GpuLight;
@@ -175,10 +178,6 @@ impl GraphFrameResources for FrameResourceManager {
         self.skybox_specular_uniform_params()
     }
 
-    fn visible_mesh_deform_filter_is_empty(&self) -> bool {
-        self.visible_mesh_deform_filter_is_empty()
-    }
-
     fn mesh_deform_dispatched_this_submission(&self) -> bool {
         self.mesh_deform_dispatched_this_submission()
     }
@@ -189,6 +188,14 @@ impl GraphFrameResources for FrameResourceManager {
 
     fn visible_mesh_deform_keys_snapshot(&self) -> Option<HashSet<SkinCacheKey>> {
         self.visible_mesh_deform_keys_snapshot()
+    }
+
+    fn frame_global_pass_is_inactive(&self, pass_name: &str) -> bool {
+        match pass_name {
+            "MeshDeform" => self.visible_mesh_deform_filter_is_empty(),
+            LIGHT_COOKIE_ATLAS_PASS_NAME => !self.has_light_cookie_requests(),
+            _ => false,
+        }
     }
 
     fn ensure_per_view_frame_resources(
@@ -220,5 +227,21 @@ impl GraphFrameResources for FrameResourceManager {
         view_layouts: &[PreRecordViewResourceLayout],
     ) {
         self.pre_record_sync_for_views(device, uploads, view_layouts);
+    }
+
+    fn has_light_cookie_requests(&self) -> bool {
+        self.frame_gpu()
+            .is_some_and(|fgpu| fgpu.has_light_cookie_requests())
+    }
+
+    fn encode_light_cookie_atlas(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        asset_resources: &dyn GraphAssetResources,
+    ) {
+        if let Some(fgpu) = self.frame_gpu() {
+            fgpu.encode_light_cookie_atlas(device, encoder, asset_resources);
+        }
     }
 }

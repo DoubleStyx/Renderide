@@ -46,6 +46,7 @@
 #import renderide::material::voronoi as vor
 #import renderide::core::texture_sampling as ts
 #import renderide::lighting::reflection_probes as rprobe
+#import renderide::lighting::light_cookies as cookies
 
 struct ToonWaterMaterial {
     _Color: vec4<f32>,
@@ -251,6 +252,7 @@ fn fs_main(
             if (light.light_type == 2u) {
                 attenuation = attenuation * bl::spot_angle_attenuation(light, l);
             }
+            attenuation = attenuation * cookies::multiplier(light, world_pos);
         }
         let radiance = bl::light_radiance(light) * attenuation;
         lo = lo + tbrdf::direct_light(

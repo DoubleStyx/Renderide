@@ -116,9 +116,10 @@ impl PoolKind for BufferKind {
 /// viewport-derived.
 pub(super) fn texture_key_dims(key: TextureKey) -> (u32, u32, u32) {
     match key.extent {
-        TransientExtent::Backbuffer | TransientExtent::BackbufferScaledMip { .. } => {
-            (1, 1, key.array_layers)
-        }
+        TransientExtent::Backbuffer
+        | TransientExtent::BackbufferDivisor { .. }
+        | TransientExtent::BackbufferDivisorMip { .. }
+        | TransientExtent::BackbufferScaledMip { .. } => (1, 1, key.array_layers),
         TransientExtent::Custom { width, height } => (width, height, key.array_layers),
         TransientExtent::MultiLayer {
             width,
@@ -202,6 +203,20 @@ mod tests {
         assert_eq!(
             texture_key_dims(texture_key(TransientExtent::Backbuffer, 2)),
             (1, 1, 2)
+        );
+        assert_eq!(
+            texture_key_dims(texture_key(
+                TransientExtent::BackbufferDivisor { divisor: 2 },
+                3,
+            )),
+            (1, 1, 3)
+        );
+        assert_eq!(
+            texture_key_dims(texture_key(
+                TransientExtent::BackbufferDivisorMip { divisor: 2, mip: 2 },
+                4,
+            )),
+            (1, 1, 4)
         );
         assert_eq!(
             texture_key_dims(texture_key(

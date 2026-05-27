@@ -127,8 +127,11 @@ pub(crate) fn build_main_graph_with_resources(
         key.post_processing.active_count()
     );
     let mut builder = GraphBuilder::with_validation_mode(validation_mode);
-    let handles = import_main_graph_resources(&mut builder);
-    let msaa_handles = [handles.forward_msaa_depth, handles.forward_msaa_depth_r32];
+    let msaa_enabled = key.msaa_sample_count > 1;
+    let handles = import_main_graph_resources(&mut builder, msaa_enabled);
+    let msaa_handles = handles
+        .msaa
+        .map(|msaa| [msaa.forward_depth, msaa.forward_depth_r32]);
     let mut graph = add_main_graph_passes_and_edges(
         builder,
         handles,
@@ -137,6 +140,8 @@ pub(crate) fn build_main_graph_with_resources(
         key.msaa_sample_count,
         key.multiview_stereo,
     )?;
-    graph.set_main_graph_msaa_transient_handles(msaa_handles);
+    if let Some(msaa_handles) = msaa_handles {
+        graph.set_main_graph_msaa_transient_handles(msaa_handles);
+    }
     Ok(graph)
 }

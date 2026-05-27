@@ -113,13 +113,16 @@ impl GpuContext {
         if !command_buffers.is_empty() {
             crate::profiling::emit_render_submit_frame_mark();
         }
-        let track = {
+        let has_gpu_work = !command_buffers.is_empty();
+        let track = if has_gpu_work {
             let mut ft = self
                 .submission
                 .frame_timing
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             ft.on_before_tracked_submit()
+        } else {
+            None
         };
         let frame_timing = track.map(|(generation, seq, frame_start)| {
             crate::gpu::frame_cpu_gpu_timing::FrameTimingTrack {

@@ -49,7 +49,7 @@ tracy = [
 ## `libgstreamer-plugins-base1.0-dev`, and `libgstreamer-plugins-good1.0-dev` first;
 ## the latter provides `videoflip`, used to land frames in the Unity V=0-bottom
 ## convention shaders expect).
-video-textures = ["dep:gstreamer", "dep:gstreamer-app"]
+video-textures = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
 
 [package.metadata.cargo-machete]
 ignored = ["tracing", "tracy-client"]
@@ -60,7 +60,7 @@ ignored = ["tracing", "tracy-client"]
 profiling = "1.0"
 ahash = "0.8"
 bytemuck = { version = "1.25", features = ["derive"] }
-glam = { version = "0.32", features = ["bytemuck"] }
+glam = { version = "0.33", features = ["bytemuck"] }
 logger = { path = "../logger" }
 tracing = { version = "0.1", features = ["log-always"] }
 renderide-shared = { path = "../renderide-shared" }
@@ -114,6 +114,7 @@ tracy-client = { version = "0.18", optional = true, default-features = false, fe
 ## upload paths are stubbed and the host sees a static black placeholder.
 gstreamer = { version = "0.25", optional = true }
 gstreamer-app = { version = "0.25", optional = true }
+gstreamer-video = { version = "0.25", optional = true }
 directories = "6.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]

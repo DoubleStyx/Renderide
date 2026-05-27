@@ -15,11 +15,14 @@ use crate::config::{PostProcessingSettings, TonemapMode};
 pub struct PostProcessChainSignature {
     /// Ground-Truth Ambient Occlusion subchain active before transparent rendering.
     pub gtao: bool,
-    /// Number of GTAO depth-aware denoise iterations baked into the graph (`0..=3`).
+    /// Number of GTAO depth-aware denoise iterations baked into the graph (`0..=6`).
     /// Topology field: `>= 2` adds an intermediate denoise pass and a second AO ping-pong
-    /// transient; `3` adds another ping-pong iteration, so a change must rebuild. `0` when
-    /// GTAO is inactive.
+    /// transient; higher values add more ping-pong iterations, so a change must rebuild. `0`
+    /// when GTAO is inactive.
     pub gtao_denoise_passes: u32,
+    /// Linear GTAO AO/depth-buffer divisor baked into transient extents. `0` when GTAO is
+    /// inactive.
+    pub gtao_resolution_divisor: u32,
     /// Dual-filter bloom pass active.
     pub bloom: bool,
     /// Screen-space motion blur pass active.
@@ -48,7 +51,12 @@ impl PostProcessChainSignature {
         Self {
             gtao,
             gtao_denoise_passes: if gtao {
-                settings.gtao.denoise_passes.min(3)
+                settings.gtao.effective_denoise_passes()
+            } else {
+                0
+            },
+            gtao_resolution_divisor: if gtao {
+                settings.gtao.effective_resolution_divisor()
             } else {
                 0
             },
@@ -190,7 +198,7 @@ mod tests {
     }
 
     #[test]
-    fn signature_clamps_gtao_denoise_topology_to_soft_preset() {
+    fn signature_clamps_gtao_denoise_topology_to_runtime_limit() {
         let mut s = PostProcessingSettings {
             enabled: true,
             tonemap: TonemapSettings {
@@ -205,7 +213,31 @@ mod tests {
         let sig = PostProcessChainSignature::from_settings(&s);
 
         assert!(sig.gtao);
-        assert_eq!(sig.gtao_denoise_passes, 3);
+        assert_eq!(
+            sig.gtao_denoise_passes,
+            crate::config::GTAO_MAX_DENOISE_PASSES
+        );
+    }
+
+    #[test]
+    fn signature_tracks_gtao_resolution_divisor_topology() {
+        let mut s = PostProcessingSettings {
+            enabled: true,
+            tonemap: TonemapSettings {
+                mode: TonemapMode::None,
+            },
+            ..Default::default()
+        };
+        s.bloom.enabled = false;
+        s.motion_blur.enabled = false;
+        s.auto_exposure.enabled = false;
+
+        let full_res = PostProcessChainSignature::from_settings(&s);
+        s.gtao.resolution_divisor = 2;
+        let half_res = PostProcessChainSignature::from_settings(&s);
+
+        assert_ne!(full_res, half_res);
+        assert_eq!(half_res.gtao_resolution_divisor, 2);
     }
 
     #[test]

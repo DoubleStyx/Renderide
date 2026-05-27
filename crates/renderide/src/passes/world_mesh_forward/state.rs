@@ -7,6 +7,30 @@ use crate::world_mesh::{InstancePlan, WorldMeshDrawItem, WorldMeshHelperNeeds};
 
 use super::MaterialBatchPacket;
 
+/// Tracks whether the imported single-sample depth target matches the MSAA forward depth target.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct DepthFreshness {
+    /// Whether the single-sample frame depth contains the latest MSAA forward depth contents.
+    single_sample_matches_msaa: bool,
+}
+
+impl DepthFreshness {
+    /// Marks the single-sample depth target as matching the current MSAA forward depth target.
+    pub(crate) fn mark_resolved(&mut self) {
+        self.single_sample_matches_msaa = true;
+    }
+
+    /// Marks the single-sample depth target as stale relative to the MSAA forward depth target.
+    pub(crate) fn mark_dirty(&mut self) {
+        self.single_sample_matches_msaa = false;
+    }
+
+    /// Returns whether the single-sample depth target already matches MSAA forward depth.
+    pub(crate) fn is_current(self) -> bool {
+        self.single_sample_matches_msaa
+    }
+}
+
 /// Pipeline state resolved during world-mesh forward preparation.
 pub(crate) struct WorldMeshForwardPipelineState {
     /// Whether this view records multiview raster passes.
@@ -35,6 +59,8 @@ pub(crate) struct PreparedWorldMeshForwardFrame {
     pub depth_snapshot_recorded: bool,
     /// Whether the intersection/color-resolve tail raster was already recorded by a split graph node.
     pub tail_raster_recorded: bool,
+    /// Freshness state for the single-sample depth target when MSAA rendering is active.
+    pub depth_freshness: DepthFreshness,
     /// Per-batch resolved pipelines and bind groups, pre-computed by backend frame planning.
     pub precomputed_batches: Vec<MaterialBatchPacket>,
     /// Optional background draw prepared for the opaque subpass.
@@ -54,4 +80,20 @@ pub(crate) struct PreparedWorldMeshForwardFrame {
 blackboard_slot! {
     /// Blackboard slot key for the per-view world-mesh forward plan.
     pub(crate) WorldMeshForwardPlanSlot => PreparedWorldMeshForwardFrame,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DepthFreshness;
+
+    #[test]
+    fn depth_freshness_tracks_resolve_and_tail_writes() {
+        let mut freshness = DepthFreshness::default();
+
+        assert!(!freshness.is_current());
+        freshness.mark_resolved();
+        assert!(freshness.is_current());
+        freshness.mark_dirty();
+        assert!(!freshness.is_current());
+    }
 }

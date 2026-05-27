@@ -7,6 +7,7 @@ use bytemuck::{Pod, Zeroable};
 use crate::buffer::SharedMemoryBufferDescriptor;
 use crate::packing::default_entity_pool::DefaultEntityPool;
 use crate::packing::memory_packable::MemoryPackable;
+use crate::packing::memory_packer::MemoryPacker;
 use crate::packing::memory_unpacker::MemoryUnpacker;
 use crate::packing::wire_decode_error::WireDecodeError;
 
@@ -175,6 +176,40 @@ impl SharedMemoryAccessor {
         true
     }
 
+    /// Resolves `descriptor` to a mutable byte slice, runs `f`, and flushes the range after a
+    /// successful mutation. Errors are routed through `prefix_err` for call-site diagnostics.
+    fn with_validated_slice_mut_result<R>(
+        &mut self,
+        descriptor: &SharedMemoryBufferDescriptor,
+        prefix_err: &impl Fn(&str) -> String,
+        f: impl FnOnce(&mut [u8]) -> Result<R, String>,
+    ) -> Result<R, String> {
+        let buffer_id = descriptor.buffer_id;
+        let path_for_diag = self.shm_path_for_buffer(buffer_id);
+        let Some(view) = self.get_view(descriptor) else {
+            return Err(prefix_err(&describe_get_view_failure(
+                buffer_id,
+                &path_for_diag,
+            )));
+        };
+        let view_len = view.len();
+        let result = {
+            let bytes = view
+                .slice_mut(descriptor.offset, descriptor.length)
+                .ok_or_else(|| {
+                    prefix_err(&describe_slice_failure(
+                        buffer_id,
+                        descriptor.offset,
+                        descriptor.length,
+                        view_len,
+                    ))
+                })?;
+            f(bytes)?
+        };
+        view.flush_range(descriptor.offset, descriptor.length);
+        Ok(result)
+    }
+
     /// Copy helper for small typed reads (tests / diagnostics). Prefer [`Self::with_read_bytes`] for large meshes.
     pub fn access_copy<T: Pod + Zeroable>(
         &mut self,
@@ -299,6 +334,46 @@ impl SharedMemoryAccessor {
                 }
             }
             Ok(out)
+        })
+    }
+
+    /// Mutates host-sized [`MemoryPackable`] rows until `mutate` returns `true`.
+    ///
+    /// The matching row is decoded, offered to `mutate`, repacked, and included in the returned
+    /// count. Use this for host writeback buffers that carry sentinel-terminated rows whose
+    /// element type is not [`Pod`].
+    pub fn access_mut_memory_packable_rows_until_with_max<T, F>(
+        &mut self,
+        descriptor: &SharedMemoryBufferDescriptor,
+        element_stride: usize,
+        max_bytes: i32,
+        context: Option<&str>,
+        mut mutate: F,
+    ) -> Result<usize, String>
+    where
+        T: MemoryPackable + Default,
+        F: FnMut(&mut T) -> bool,
+    {
+        profiling::scope!("shared_memory::access_mut_packable_rows_until");
+        let prefix_err = make_context_prefixer(context);
+        validate_memory_packable_row_descriptor(
+            descriptor,
+            element_stride,
+            max_bytes,
+            &prefix_err,
+        )?;
+        self.with_validated_slice_mut_result(descriptor, &prefix_err, |bytes| {
+            let mut count = 0usize;
+            for chunk in bytes.chunks_exact_mut(element_stride) {
+                let mut row = unpack_memory_packable_row::<T>(chunk, element_stride, &prefix_err)?;
+                let stop = mutate(&mut row);
+                pack_memory_packable_row(&mut row, chunk, element_stride, &prefix_err)?;
+                count = count.saturating_add(1);
+                if stop {
+                    break;
+                }
+            }
+            Ok(count)
         })
     }
 
@@ -454,6 +529,27 @@ fn unpack_memory_packable_row<T: MemoryPackable + Default>(
     Ok(row)
 }
 
+/// Encodes one fixed-stride host row through [`MemoryPackable`].
+fn pack_memory_packable_row<T: MemoryPackable>(
+    row: &mut T,
+    chunk: &mut [u8],
+    element_stride: usize,
+    prefix_err: &impl Fn(&str) -> String,
+) -> Result<(), String> {
+    let mut packer = MemoryPacker::new(chunk);
+    row.pack(&mut packer);
+    if let Some(err) = packer.overflow_error() {
+        return Err(prefix_err(&format!("MemoryPackable::pack: {err}")));
+    }
+    if packer.remaining_len() != 0 {
+        return Err(prefix_err(&format!(
+            "pack left {} bytes unwritten (stride {element_stride})",
+            packer.remaining_len()
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod access_copy_diagnostic_tests {
     use crate::buffer::SharedMemoryBufferDescriptor;
@@ -462,8 +558,12 @@ mod access_copy_diagnostic_tests {
         make_context_prefixer,
     };
     use crate::ipc::shared_memory::writer::{SharedMemoryWriter, SharedMemoryWriterConfig};
+    use crate::packing::extras::SKINNED_MESH_REALTIME_BOUNDS_UPDATE_HOST_ROW_BYTES;
+    use crate::packing::memory_packable::MemoryPackable;
+    use crate::packing::memory_packer::MemoryPacker;
     use crate::shared::{
-        RenderTransform, TRANSFORM_POSE_UPDATE_HOST_ROW_BYTES, TransformPoseUpdate,
+        RenderBoundingBox, RenderTransform, SkinnedMeshRealtimeBoundsUpdate,
+        TRANSFORM_POSE_UPDATE_HOST_ROW_BYTES, TransformPoseUpdate,
     };
     use crate::wire_writer::{TransformPoseRow, encode_transform_pose_updates};
 
@@ -474,6 +574,19 @@ mod access_copy_diagnostic_tests {
 
     fn unique_prefix(label: &str) -> String {
         format!("renderide_test_accessor_{label}_{}", std::process::id())
+    }
+
+    fn encode_realtime_bounds_rows(rows: &mut [SkinnedMeshRealtimeBoundsUpdate]) -> Vec<u8> {
+        let mut bytes = vec![0u8; rows.len() * SKINNED_MESH_REALTIME_BOUNDS_UPDATE_HOST_ROW_BYTES];
+        for (row, chunk) in rows
+            .iter_mut()
+            .zip(bytes.chunks_exact_mut(SKINNED_MESH_REALTIME_BOUNDS_UPDATE_HOST_ROW_BYTES))
+        {
+            let mut packer = MemoryPacker::new(chunk);
+            row.pack(&mut packer);
+            assert_eq!(packer.remaining_len(), 0, "test row must fill host stride");
+        }
+        bytes
     }
 
     #[test]
@@ -765,5 +878,72 @@ mod access_copy_diagnostic_tests {
 
         assert!(err.starts_with("pose_rows:"), "unexpected message: {err}");
         assert!(err.contains("exceeds max 64"), "unexpected message: {err}");
+    }
+
+    #[test]
+    fn access_mut_packable_rows_until_writes_rows_and_stops_at_sentinel() {
+        let prefix = unique_prefix("mut_packable_until");
+        let mut source_rows = [
+            SkinnedMeshRealtimeBoundsUpdate {
+                renderable_index: 0,
+                computed_global_bounds: RenderBoundingBox {
+                    center: glam::Vec3::new(1.0, 2.0, 3.0),
+                    extents: glam::Vec3::ONE,
+                },
+            },
+            SkinnedMeshRealtimeBoundsUpdate {
+                renderable_index: -1,
+                computed_global_bounds: RenderBoundingBox {
+                    center: glam::Vec3::new(4.0, 5.0, 6.0),
+                    extents: glam::Vec3::ONE,
+                },
+            },
+            SkinnedMeshRealtimeBoundsUpdate {
+                renderable_index: 99,
+                computed_global_bounds: RenderBoundingBox {
+                    center: glam::Vec3::new(7.0, 8.0, 9.0),
+                    extents: glam::Vec3::ONE,
+                },
+            },
+        ];
+        let bytes = encode_realtime_bounds_rows(&mut source_rows);
+        let cfg = SharedMemoryWriterConfig {
+            prefix: prefix.clone(),
+            destroy_on_drop: true,
+            ..SharedMemoryWriterConfig::default()
+        };
+        let mut writer = SharedMemoryWriter::open(cfg, 14, bytes.len()).expect("open writer");
+        writer.write_at(0, &bytes).expect("write rows");
+        writer.flush();
+        let descriptor = writer.descriptor_for(0, bytes.len() as i32);
+
+        let mut acc = SharedMemoryAccessor::new(prefix);
+        let visited = acc
+            .access_mut_memory_packable_rows_until_with_max::<SkinnedMeshRealtimeBoundsUpdate, _>(
+                &descriptor,
+                SKINNED_MESH_REALTIME_BOUNDS_UPDATE_HOST_ROW_BYTES,
+                descriptor.length,
+                Some("realtime_bounds"),
+                |row| {
+                    if row.renderable_index < 0 {
+                        return true;
+                    }
+                    row.computed_global_bounds.center.x += 10.0;
+                    false
+                },
+            )
+            .expect("mutate rows");
+        let rows = acc
+            .access_copy_memory_packable_rows::<SkinnedMeshRealtimeBoundsUpdate>(
+                &descriptor,
+                SKINNED_MESH_REALTIME_BOUNDS_UPDATE_HOST_ROW_BYTES,
+                Some("realtime_bounds"),
+            )
+            .expect("read rows");
+
+        assert_eq!(visited, 2);
+        assert_eq!(rows[0].computed_global_bounds.center.x, 11.0);
+        assert_eq!(rows[1].computed_global_bounds.center.x, 4.0);
+        assert_eq!(rows[2].computed_global_bounds.center.x, 7.0);
     }
 }

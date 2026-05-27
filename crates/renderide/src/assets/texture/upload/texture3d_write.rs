@@ -488,3 +488,122 @@ impl Texture3dMipChainUploader {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::shared::{ColorProfile, TextureFormat};
+
+    /// Builds a Texture3D format record for local upload-layout tests.
+    fn texture3d_format(
+        asset_id: i32,
+        width: i32,
+        height: i32,
+        depth: i32,
+        mipmap_count: i32,
+    ) -> SetTexture3DFormat {
+        SetTexture3DFormat {
+            width,
+            height,
+            depth,
+            mipmap_count,
+            format: TextureFormat::RGBA32,
+            profile: ColorProfile::Linear,
+            asset_id,
+        }
+    }
+
+    /// Builds a Texture3D upload record with a descriptor length matching `payload_len`.
+    fn texture3d_upload(asset_id: i32, payload_len: usize) -> SetTexture3DData {
+        let mut upload = SetTexture3DData {
+            asset_id,
+            ..SetTexture3DData::default()
+        };
+        upload.data.length = i32::try_from(payload_len).unwrap();
+        upload
+    }
+
+    /// Encodes one RGBA8 marker texel for an authored `(x, y, z)` coordinate.
+    fn marker_texel(x: u8, y: u8, z: u8) -> [u8; 4] {
+        [x, y, z, 255]
+    }
+
+    /// Builds a tight `Bitmap3D`-order RGBA8 volume: X fastest, Y next, Z as full slices.
+    fn marker_volume(width: u32, height: u32, depth: u32) -> Vec<u8> {
+        let mut payload = Vec::with_capacity((width * height * depth * 4) as usize);
+        for z in 0..depth {
+            for y in 0..height {
+                for x in 0..width {
+                    payload.extend_from_slice(&marker_texel(x as u8, y as u8, z as u8));
+                }
+            }
+        }
+        payload
+    }
+
+    /// Reads one marker texel using the same tight `Bitmap3D` linearization.
+    fn marker_at(payload: &[u8], width: u32, height: u32, x: u32, y: u32, z: u32) -> [u8; 4] {
+        let texel = ((z * width * height + y * width + x) * 4) as usize;
+        payload[texel..texel + 4].try_into().unwrap()
+    }
+
+    /// Verifies that tight Texture3D uploads keep authored `Bitmap3D` X/Y/Z texel order intact.
+    #[test]
+    fn texture3d_payload_preserves_bitmap3d_xyz_order() {
+        let fmt = texture3d_format(7, 2, 2, 2, 1);
+        let payload = marker_volume(2, 2, 2);
+        let upload = texture3d_upload(fmt.asset_id, payload.len());
+        let (w, h, d, mip_src, slice_bytes, vol_bytes) =
+            texture3d_mip_volume_payload_slice(2, 2, 2, 0, &fmt, &upload, &payload).unwrap();
+
+        assert_eq!((w, h, d), (2, 2, 2));
+        assert_eq!(slice_bytes, 16);
+        assert_eq!(vol_bytes, 32);
+        assert_eq!(mip_src, payload.as_slice());
+
+        let pixels = texture3d_mip_to_upload_pixels(
+            MipUploadFormatCtx {
+                asset_id: fmt.asset_id,
+                fmt_format: TextureFormat::RGBA32,
+                wgpu_format: wgpu::TextureFormat::Rgba8Unorm,
+                needs_rgba8_decode: false,
+            },
+            Texture3dMipGeom {
+                w,
+                h,
+                d,
+                level_idx: 0,
+                slice_bytes,
+                vol_bytes,
+            },
+            mip_src,
+        )
+        .unwrap();
+
+        assert_eq!(marker_at(&pixels, 2, 2, 0, 0, 0), marker_texel(0, 0, 0));
+        assert_eq!(marker_at(&pixels, 2, 2, 1, 0, 0), marker_texel(1, 0, 0));
+        assert_eq!(marker_at(&pixels, 2, 2, 0, 1, 0), marker_texel(0, 1, 0));
+        assert_eq!(marker_at(&pixels, 2, 2, 0, 0, 1), marker_texel(0, 0, 1));
+    }
+
+    /// Verifies mip offsets advance by whole 3D volumes rather than by one 2D slice.
+    #[test]
+    fn texture3d_mip_offsets_walk_complete_z_slices() {
+        let fmt = texture3d_format(9, 4, 2, 2, 2);
+        let mut payload = marker_volume(4, 2, 2);
+        let mip1 = marker_volume(2, 1, 1);
+        payload.extend_from_slice(&mip1);
+        let upload = texture3d_upload(fmt.asset_id, payload.len());
+
+        let (w, h, d, mip_src, slice_bytes, vol_bytes) =
+            texture3d_mip_volume_payload_slice(4, 2, 2, 1, &fmt, &upload, &payload).unwrap();
+
+        assert_eq!((w, h, d), (2, 1, 1));
+        assert_eq!(slice_bytes, 8);
+        assert_eq!(vol_bytes, 8);
+        assert_eq!(mip_src, mip1.as_slice());
+        assert_eq!(marker_at(mip_src, 2, 1, 0, 0, 0), marker_texel(0, 0, 0));
+        assert_eq!(marker_at(mip_src, 2, 1, 1, 0, 0), marker_texel(1, 0, 0));
+    }
+}

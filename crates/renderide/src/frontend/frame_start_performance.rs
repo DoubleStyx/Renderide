@@ -8,9 +8,10 @@
 //!   elapsed_seconds` recomputed once each time the window closes, otherwise the previously
 //!   computed value is carried forward unchanged. Stable for ~[`FPS_WINDOW`] at a time so the host-side
 //!   `Sync<float> FPS.Value` change events fire at the window cadence rather than every frame.
-//! - `render_time` -- most recently completed GPU submit->idle wall-clock duration in seconds
-//!   ([`crate::gpu::GpuContext::last_completed_gpu_render_time_seconds`]); excludes the post-submit
-//!   present/vsync block. Reports `-1.0` when no GPU completion callback has fired yet.
+//! - `render_time` -- most recently completed whole-frame GPU duration in seconds
+//!   ([`crate::gpu::GpuContext::last_completed_gpu_render_time_seconds`]), matching the
+//!   Unity renderer's `XRStats.TryGetGPUTimeLastFrame` contract. Reports `-1.0` until a full
+//!   frame GPU sample has completed.
 //! - `rendered_frames_since_last` -- number of completed renderer ticks since the previous
 //!   `FrameStartData` send. `1` in lockstep, `> 1` when the renderer ticked multiple times per
 //!   host submit (i.e. host is slow and the renderer kept rendering). Drives
