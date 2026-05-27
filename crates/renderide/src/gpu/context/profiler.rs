@@ -118,7 +118,7 @@ impl GpuContext {
             return;
         }
         let Some(submit_token) = self.last_frame_submit_token() else {
-            logger::warn!("GPU profiler frame had queries but no tracked submit token");
+            logger::warn!("GPU profiler frame had queries but no submit token");
             self.end_active_gpu_profiler_frame();
             self.drain_gpu_profiler_results();
             return;
