@@ -104,7 +104,7 @@ impl DebugHudBundle {
 
     /// Merges one view's deferred HUD payload into the bundle on the main thread.
     pub(crate) fn apply_per_view_outputs(&mut self, outputs: &PerViewHudOutputs) {
-        if let Some(stats) = outputs.world_mesh_draw_stats {
+        if let Some(stats) = outputs.world_mesh_draw_stats.as_ref() {
             self.set_last_world_mesh_draw_stats(stats);
         }
         if let Some(rows) = outputs.world_mesh_draw_state_rows.clone() {
@@ -186,8 +186,8 @@ impl DebugHudBundle {
         }
     }
 
-    pub(crate) fn set_last_world_mesh_draw_stats(&mut self, stats: WorldMeshDrawStats) {
-        self.last_world_mesh_draw_stats = stats;
+    pub(crate) fn set_last_world_mesh_draw_stats(&mut self, stats: &WorldMeshDrawStats) {
+        self.last_world_mesh_draw_stats = *stats;
     }
 
     pub(crate) fn last_world_mesh_draw_stats(&self) -> WorldMeshDrawStats {

@@ -837,6 +837,7 @@ mod tests {
                     draws_pre_cull: 3,
                     draws_culled: 0,
                     draws_hi_z_culled: 0,
+                    visibility: Default::default(),
                     arrangement: Default::default(),
                 },
                 None,

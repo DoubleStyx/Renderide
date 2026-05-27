@@ -451,6 +451,20 @@ impl FramePreparedRenderables {
     pub(super) fn finish_cached_rebuild(&mut self) {
         self.refresh_runs_material_keys_and_chunks();
     }
+
+    /// Rebuilds the cached-space snapshot directly from supplied draw slices for tests.
+    #[cfg(test)]
+    fn rebuild_from_cached_spaces<'a, I>(&mut self, render_context: RenderingContext, spaces: I)
+    where
+        I: IntoIterator<Item = (RenderSpaceId, &'a [FramePreparedDraw])>,
+    {
+        self.begin_cached_rebuild(render_context);
+        for (space_id, draws) in spaces {
+            self.push_cached_space(space_id);
+            self.extend_cached_draws(draws);
+        }
+        self.finish_cached_rebuild();
+    }
 }
 
 #[cfg(test)]
@@ -676,6 +690,11 @@ mod tests {
         assert!(prepared.space_uses_bvh_for_tests(space_id));
         assert_eq!(candidates.runs.len(), 40);
         assert_eq!(candidates.cull_stats, (40, 40, 0));
+        assert_eq!(candidates.visibility.indexed_runs, 80);
+        assert_eq!(candidates.visibility.fallback_runs, 0);
+        assert_eq!(candidates.visibility.candidate_runs, 40);
+        assert_eq!(candidates.visibility.broadphase_culled_runs, 40);
+        assert_eq!(candidates.visibility.broadphase_culled_draws, 40);
     }
 
     #[test]
@@ -704,6 +723,9 @@ mod tests {
         assert!(!prepared.space_uses_bvh_for_tests(space_id));
         assert_eq!(candidates.runs.len(), 8);
         assert_eq!(candidates.cull_stats, (0, 0, 0));
+        assert_eq!(candidates.visibility.indexed_runs, 8);
+        assert_eq!(candidates.visibility.linear_fallback_runs, 8);
+        assert_eq!(candidates.visibility.candidate_runs, 8);
     }
 
     #[test]
@@ -732,6 +754,10 @@ mod tests {
 
         assert_eq!(candidates.runs.len(), 1);
         assert_eq!(candidates.cull_stats, (2, 2, 0));
+        assert_eq!(candidates.visibility.indexed_runs, 2);
+        assert_eq!(candidates.visibility.candidate_runs, 1);
+        assert_eq!(candidates.visibility.broadphase_culled_runs, 1);
+        assert_eq!(candidates.visibility.broadphase_culled_draws, 2);
     }
 
     #[test]
@@ -760,6 +786,72 @@ mod tests {
         assert!(!prepared.space_uses_bvh_for_tests(space_id));
         assert_eq!(candidates.runs.len(), 80);
         assert_eq!(candidates.cull_stats, (0, 0, 0));
+        assert_eq!(candidates.visibility.indexed_runs, 0);
+        assert_eq!(candidates.visibility.fallback_runs, 80);
+        assert_eq!(candidates.visibility.linear_fallback_runs, 80);
+        assert_eq!(candidates.visibility.candidate_runs, 80);
+    }
+
+    #[test]
+    fn spatial_query_preserves_run_order_across_multiple_spaces() {
+        let first_space = RenderSpaceId(5);
+        let second_space = RenderSpaceId(6);
+        let mut scene = SceneCoordinator::new();
+        scene.test_seed_space_identity_worlds(
+            first_space,
+            vec![RenderTransform::default()],
+            vec![-1],
+        );
+        scene.test_seed_space_identity_worlds(
+            second_space,
+            vec![RenderTransform::default()],
+            vec![-1],
+        );
+        let host_camera = HostCameraFrame::default();
+        let culling = WorldMeshCullInput {
+            proj: WorldMeshCullProjParams {
+                world_proj: Mat4::IDENTITY,
+                overlay_proj: Mat4::IDENTITY,
+                vr_stereo: None,
+            },
+            host_camera: &host_camera,
+            hi_z: None,
+            hi_z_temporal: None,
+        };
+        let mut prepared = FramePreparedRenderables::empty(RenderingContext::UserView);
+        let mut first_draw = prepared_draw_with_bounds(
+            0,
+            Vec3::new(-0.25, -0.25, -0.25),
+            Vec3::new(0.25, 0.25, 0.25),
+        );
+        first_draw.space_id = first_space;
+        let first = [first_draw];
+        let mut second_draw = prepared_draw_with_bounds(
+            1,
+            Vec3::new(-0.25, -0.25, -0.25),
+            Vec3::new(0.25, 0.25, 0.25),
+        );
+        second_draw.space_id = second_space;
+        let second = [second_draw];
+        prepared.rebuild_from_cached_spaces(
+            RenderingContext::UserView,
+            [
+                (first_space, first.as_slice()),
+                (second_space, second.as_slice()),
+            ],
+        );
+
+        let candidates =
+            prepared.spatial_run_candidates(&[second_space, first_space], &scene, Some(&culling));
+
+        assert_eq!(
+            candidates.runs,
+            vec![
+                FramePreparedRun { start: 0, end: 1 },
+                FramePreparedRun { start: 1, end: 2 },
+            ]
+        );
+        assert_eq!(candidates.visibility.candidate_runs, 2);
     }
 
     #[test]
