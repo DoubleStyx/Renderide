@@ -30,9 +30,11 @@ pub fn prompt_desktop_or_vr() -> Option<bool> {
     let res = rfd::MessageDialog::new()
         .set_title("Renderide")
         .set_description("Launch Resonite in VR or desktop mode?")
+        // Keep Desktop first so native default-button handling is safe if a pending keypress
+        // confirms the dialog as soon as it appears.
         .set_buttons(rfd::MessageButtons::YesNoCancelCustom(
-            VR_BUTTON_LABEL.into(),
             DESKTOP_BUTTON_LABEL.into(),
+            VR_BUTTON_LABEL.into(),
             CANCEL_BUTTON_LABEL.into(),
         ))
         .show();
