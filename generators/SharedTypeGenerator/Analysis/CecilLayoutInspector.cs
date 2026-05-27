@@ -15,10 +15,7 @@ internal static class CecilLayoutInspector
     {
         if (!type.IsValueType || type.IsEnum)
             return false;
-        string? fullName = type.FullName;
-        if (string.IsNullOrEmpty(fullName))
-            return false;
-        TypeDefinition? typeDef = assemblyDef.MainModule.GetType(fullName);
+        TypeDefinition? typeDef = CecilTypeResolver.Resolve(assemblyDef, type);
         return typeDef != null && (typeDef.Attributes & Mono.Cecil.TypeAttributes.ExplicitLayout) != 0;
     }
 
@@ -32,10 +29,7 @@ internal static class CecilLayoutInspector
     {
         try
         {
-            string? fullName = type.FullName;
-            if (string.IsNullOrEmpty(fullName))
-                return 0;
-            TypeDefinition? typeDef = assemblyDef.MainModule.GetType(fullName);
+            TypeDefinition? typeDef = CecilTypeResolver.Resolve(assemblyDef, type);
             if (typeDef == null)
                 return 0;
             if (typeDef.ClassSize > 0)

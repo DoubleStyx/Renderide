@@ -12,7 +12,7 @@ namespace SharedTypeGenerator.Analysis;
 
 /// <summary>Frontend orchestrator: loads a compiled C# assembly and produces
 /// an ordered list of TypeDescriptors by traversing from RendererCommand.</summary>
-public partial class TypeAnalyzer
+internal sealed partial class TypeAnalyzer
 {
     private readonly Logger _logger;
     private readonly Assembly _assembly;
@@ -172,6 +172,47 @@ public partial class TypeAnalyzer
         foreach (Type refType in result.ReferencedTypes)
             EnqueueType(refType);
         return result.RustType;
+    }
+
+    /// <summary>Builds field descriptors for all reflected instance fields on a struct-like type.</summary>
+    private List<FieldDescriptor> BuildFieldDescriptors(Type ownerType, FieldInfo[] fields, bool explicitLayout)
+    {
+        var fieldDescriptors = new List<FieldDescriptor>(fields.Length);
+        foreach (FieldInfo field in fields)
+            fieldDescriptors.Add(BuildFieldDescriptor(ownerType, field, explicitLayout));
+        return fieldDescriptors;
+    }
+
+    /// <summary>Builds the generated field metadata for one reflected field.</summary>
+    private FieldDescriptor BuildFieldDescriptor(Type ownerType, FieldInfo field, bool explicitLayout)
+    {
+        string rustType = explicitLayout && field.FieldType == typeof(bool)
+            ? "u8"
+            : MapRustTypeWithQueue(field.FieldType);
+
+        if (!explicitLayout)
+            rustType = RustFieldTypeOverrides.Apply(ownerType.Name, field.Name, rustType);
+
+        FieldKind kind = _classifier.ClassifyByType(field.FieldType);
+        if (explicitLayout
+            && kind == FieldKind.Pod
+            && !PodAnalyzer.IsRustLayoutPodField(field.FieldType, new HashSet<Type>(), _assembly))
+        {
+            kind = FieldKind.ObjectRequired;
+        }
+
+        FieldOffsetAttribute? offset = explicitLayout
+            ? field.GetCustomAttribute<FieldOffsetAttribute>()
+            : null;
+
+        return new FieldDescriptor
+        {
+            CSharpName = field.Name,
+            RustName = field.Name.HumanizeField(),
+            RustType = rustType,
+            Kind = kind,
+            ExplicitOffset = offset?.Value,
+        };
     }
 
     private void EnqueueType(Type type)

@@ -38,17 +38,25 @@ public sealed class FieldClassifierTests
     public void Classify_write_value_list_vs_enum_value_list()
     {
         Assert.Equal(FieldKind.EnumValueList,
-            _classifier.Classify(typeof(List<PlainEnum>), "WriteEnumValueList"));
+            _classifier.Classify(typeof(List<PlainEnum>), MemoryPackOperation.WriteValueList));
         Assert.Equal(FieldKind.ValueList,
-            _classifier.Classify(typeof(List<int>), "WriteEnumValueList"));
+            _classifier.Classify(typeof(List<int>), MemoryPackOperation.WriteValueList));
     }
 
-    /// <summary><c>Write</c>/<c>Read</c> uses the shared atomic classification path.</summary>
+    /// <summary>Generic write operations use the atomic classification path, while ignored calls fall back to type-only classification.</summary>
     [Fact]
     public void Classify_write_read_uses_atomic_path_for_int()
     {
-        Assert.Equal(FieldKind.Pod, _classifier.Classify(typeof(int), "Write"));
-        Assert.Equal(FieldKind.Pod, _classifier.Classify(typeof(int), "Read"));
+        Assert.Equal(FieldKind.Pod, _classifier.Classify(typeof(int), MemoryPackOperation.Write));
+        Assert.Equal(FieldKind.Pod, _classifier.Classify(typeof(int), MemoryPackOperation.Ignore));
+    }
+
+    /// <summary>Object-required pack operations bypass field-type ambiguity.</summary>
+    [Fact]
+    public void Classify_write_object_required_uses_required_kind()
+    {
+        Assert.Equal(FieldKind.ObjectRequired,
+            _classifier.Classify(typeof(TestPackable), MemoryPackOperation.WriteObjectRequired));
     }
 
     private enum PlainEnum

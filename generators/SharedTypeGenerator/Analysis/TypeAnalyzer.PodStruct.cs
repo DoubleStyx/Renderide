@@ -7,29 +7,8 @@ using SharedTypeGenerator.Logging;
 namespace SharedTypeGenerator.Analysis;
 
 /// <summary>Explicit-layout <see cref="TypeShape.PodStruct"/> analysis helpers for <see cref="TypeAnalyzer"/>.</summary>
-public partial class TypeAnalyzer
+internal sealed partial class TypeAnalyzer
 {
-    /// <summary>Builds a single <see cref="FieldDescriptor"/> for an explicit-layout struct field.</summary>
-    private FieldDescriptor BuildPodStructFieldDescriptor(FieldInfo field)
-    {
-        FieldOffsetAttribute? offset = field.GetCustomAttribute<FieldOffsetAttribute>();
-
-        bool fieldRustLayoutPod = PodAnalyzer.IsRustLayoutPodField(field.FieldType, new HashSet<Type>(), _assembly);
-        string rustType = field.FieldType == typeof(bool) ? "u8" : MapRustTypeWithQueue(field.FieldType);
-        FieldKind kind = _classifier.ClassifyByType(field.FieldType);
-        if (kind == FieldKind.Pod && !fieldRustLayoutPod)
-            kind = FieldKind.ObjectRequired;
-
-        return new FieldDescriptor
-        {
-            CSharpName = field.Name,
-            RustName = field.Name.HumanizeField(),
-            RustType = rustType,
-            Kind = kind,
-            ExplicitOffset = offset?.Value,
-        };
-    }
-
     /// <summary>
     /// Inserts synthetic <c>_padding</c> fields between explicit-offset regions to match declared struct size.
     /// </summary>
@@ -194,14 +173,13 @@ public partial class TypeAnalyzer
     private TypeDescriptor AnalyzePodStruct(Type type)
     {
         FieldInfo[] fields = type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-        var fieldDescriptors = new List<FieldDescriptor>();
+        List<FieldDescriptor> fieldDescriptors = BuildFieldDescriptors(type, fields, explicitLayout: true);
 
         bool allFieldsPod = true;
         foreach (FieldInfo field in fields)
         {
             if (!PodAnalyzer.IsRustLayoutPodField(field.FieldType, new HashSet<Type>(), _assembly))
                 allFieldsPod = false;
-            fieldDescriptors.Add(BuildPodStructFieldDescriptor(field));
         }
 
         StructLayoutAttribute? layout = type.GetCustomAttribute<StructLayoutAttribute>();

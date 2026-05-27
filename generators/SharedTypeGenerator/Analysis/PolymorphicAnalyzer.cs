@@ -8,7 +8,7 @@ namespace SharedTypeGenerator.Analysis;
 
 /// <summary>Extracts the polymorphic type registry from a PolymorphicMemoryPackableEntity{T}
 /// subclass's static constructor by scanning for Ldtoken instructions.</summary>
-public class PolymorphicAnalyzer
+internal sealed class PolymorphicAnalyzer
 {
     private readonly AssemblyDefinition _assemblyDef;
     private readonly Assembly _assembly;
@@ -26,8 +26,7 @@ public class PolymorphicAnalyzer
     {
         var variants = new List<PolymorphicVariant>();
 
-        string? cecilName = type.FullName?.Replace("+", "/", StringComparison.Ordinal);
-        TypeDefinition? typeDef = cecilName is not null ? _assemblyDef.MainModule.GetType(cecilName) : null;
+        TypeDefinition? typeDef = CecilTypeResolver.Resolve(_assemblyDef, type);
         if (typeDef == null) return variants;
 
         MethodDefinition? cctor = typeDef.GetStaticConstructor();

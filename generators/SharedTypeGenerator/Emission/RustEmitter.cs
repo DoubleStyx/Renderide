@@ -7,7 +7,7 @@ namespace SharedTypeGenerator.Emission;
 /// <summary>Backend orchestrator: takes a list of TypeDescriptors and emits the complete
 /// shared.rs file. Dispatches each type to shape-specific emission methods.
 /// No reflection, no Cecil -- purely data-driven from the IR.</summary>
-public partial class RustEmitter
+internal sealed partial class RustEmitter
 {
     /// <summary>Stable order for <c>use glam::{{ ... }};</c>; only names referenced in emitted Rust types are imported.</summary>
     private static readonly string[] GlamImportOrder =

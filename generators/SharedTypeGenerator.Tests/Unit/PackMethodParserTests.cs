@@ -39,6 +39,34 @@ namespace PackAsm {
         Assert.Equal(FieldKind.Pod, wf.Kind);
     }
 
+    /// <summary>Nested CLR types resolve to Cecil nested names when parsing Pack IL.</summary>
+    [Fact]
+    public void ParseWithConditionals_nested_type_resolves_cecil_body()
+    {
+        const string source = @"
+namespace PackAsm {
+  public struct MemoryPacker {
+    public void Write<T>(ref T value) where T : unmanaged { }
+  }
+  public sealed class Outer {
+    public sealed class Inner {
+      public int field;
+      public void Pack(ref MemoryPacker p) {
+        p.Write(ref field);
+      }
+    }
+  }
+}";
+        (Assembly reflection, AssemblyDefinition cecil) = TestCompilation.Compile(source);
+        Type inner = reflection.GetType("PackAsm.Outer+Inner", throwOnError: true)!;
+        FieldInfo[] fields = inner.GetFields(BindingFlags.Public | BindingFlags.Instance);
+        PackMethodParser parser = CreateParser(cecil);
+        List<SerializationStep> steps = parser.ParseWithConditionals(inner, fields);
+        WriteField? wf = Assert.Single(steps) as WriteField;
+        Assert.NotNull(wf);
+        Assert.Equal("field", wf.FieldName);
+    }
+
     /// <summary>Conditional <c>if</c> around writes becomes a <see cref="ConditionalBlock"/>.</summary>
     [Fact]
     public void ParseWithConditionals_conditional_block()

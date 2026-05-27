@@ -8,10 +8,9 @@ namespace SharedTypeGenerator.Emission;
 /// <summary>
 /// Pack/unpack emission for <see cref="SerializationStep"/> lists: conditional blocks, packed bools, and per-field lines.
 /// </summary>
-public static partial class PackEmitter
+internal static partial class PackEmitter
 {
-    private static void EmitPackStep(RustWriter w, Logger logger, string csharpTypeName, SerializationStep step,
-        List<FieldDescriptor> fields)
+    private static void EmitPackStep(RustWriter w, Logger logger, string csharpTypeName, SerializationStep step)
     {
         switch (step)
         {
@@ -19,7 +18,7 @@ public static partial class PackEmitter
                 if (wf.Kind == FieldKind.StringList)
                     EmitStringListPack(w, wf.FieldName);
                 else
-                    w.Line(PackLine(logger, csharpTypeName, wf.FieldName, wf.Kind));
+                    w.Line(BuildPackLine(logger, csharpTypeName, wf.FieldName, wf.Kind));
                 break;
 
             case PackedBools pb:
@@ -48,7 +47,7 @@ public static partial class PackEmitter
                     using (w.BeginIf($"self.{cb.ConditionField}"))
                     {
                         foreach (SerializationStep inner in cb.Steps)
-                            EmitPackStep(w, logger, csharpTypeName, inner, fields);
+                            EmitPackStep(w, logger, csharpTypeName, inner);
                     }
 
                     break;
@@ -63,12 +62,12 @@ public static partial class PackEmitter
     }
 
     private static void EmitUnpackStep(RustWriter w, Logger logger, string csharpTypeName, SerializationStep step,
-        List<FieldDescriptor> fields)
+        FieldDescriptorLookup fields)
     {
         switch (step)
         {
             case WriteField wf:
-                w.Line(UnpackLine(logger, csharpTypeName, wf.FieldName, wf.Kind, fields));
+                w.Line(BuildUnpackLine(logger, csharpTypeName, wf.FieldName, wf.Kind, fields));
                 break;
 
             case PackedBools pb:
@@ -111,7 +110,8 @@ public static partial class PackEmitter
         }
     }
 
-    private static string PackLine(Logger logger, string csharpTypeName, string name, FieldKind kind) => kind switch
+    /// <summary>Builds the Rust statement used to pack one field.</summary>
+    internal static string BuildPackLine(Logger logger, string csharpTypeName, string name, FieldKind kind) => kind switch
     {
         FieldKind.Pod => $"packer.write(&self.{name});",
         FieldKind.Bool => $"packer.write_bool(self.{name});",
@@ -138,8 +138,9 @@ public static partial class PackEmitter
         return $"// FIXME: Unknown FieldKind {kind} for {name}";
     }
 
-    private static string UnpackLine(Logger logger, string csharpTypeName, string name, FieldKind kind,
-        List<FieldDescriptor> fields) => kind switch
+    /// <summary>Builds the Rust statement used to unpack one field.</summary>
+    internal static string BuildUnpackLine(Logger logger, string csharpTypeName, string name, FieldKind kind,
+        FieldDescriptorLookup fields) => kind switch
         {
             FieldKind.Pod => $"self.{name} = unpacker.read()?;",
             FieldKind.Bool => $"self.{name} = unpacker.read_bool()?;",
@@ -158,9 +159,9 @@ public static partial class PackEmitter
             _ => UnknownFieldKindUnpackLine(logger, csharpTypeName, name, kind),
         };
 
-    private static string StringUnpackLine(string name, List<FieldDescriptor> fields)
+    private static string StringUnpackLine(string name, FieldDescriptorLookup fields)
     {
-        FieldDescriptor? field = fields.FirstOrDefault(f => f.RustName == name);
+        FieldDescriptor? field = fields.Find(name);
         if (field != null && RustFieldTypeOverrides.IsStaticStringCowOption(field.RustType))
             return $"self.{name} = unpacker.read_str()?.map(<_>::into);";
 
@@ -175,9 +176,9 @@ public static partial class PackEmitter
         return $"// FIXME: Unknown FieldKind {kind} for {name}";
     }
 
-    private static string UnpackObjectLine(Logger logger, string csharpTypeName, string name, List<FieldDescriptor> fields)
+    private static string UnpackObjectLine(Logger logger, string csharpTypeName, string name, FieldDescriptorLookup fields)
     {
-        FieldDescriptor? field = fields.FirstOrDefault(f => f.RustName == name);
+        FieldDescriptor? field = fields.Find(name);
         if (field == null)
         {
             logger.LogWarning(
@@ -191,9 +192,9 @@ public static partial class PackEmitter
     }
 
     private static string UnpackPolymorphicListLine(Logger logger, string csharpTypeName, string name,
-        List<FieldDescriptor> fields)
+        FieldDescriptorLookup fields)
     {
-        FieldDescriptor? field = fields.FirstOrDefault(f => f.RustName == name);
+        FieldDescriptor? field = fields.Find(name);
         if (field == null)
         {
             logger.LogWarning(

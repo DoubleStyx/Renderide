@@ -4,7 +4,7 @@ using SharedTypeGenerator.IR;
 
 namespace SharedTypeGenerator.Emission;
 
-public partial class RustEmitter
+internal sealed partial class RustEmitter
 {
     private void EmitPodStruct(TypeDescriptor type)
     {
