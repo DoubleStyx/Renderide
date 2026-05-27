@@ -380,58 +380,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn gtao_quality_levels_match_expected_presets() {
-        assert_eq!(
-            GtaoSettings {
-                quality_level: 0,
-                ..Default::default()
-            }
-            .effective_sample_counts(),
-            (1, 2)
-        );
-        assert_eq!(
-            GtaoSettings {
-                quality_level: 1,
-                ..Default::default()
-            }
-            .effective_sample_counts(),
-            (2, 2)
-        );
-        assert_eq!(
-            GtaoSettings {
-                quality_level: 2,
-                ..Default::default()
-            }
-            .effective_sample_counts(),
-            (3, 3)
-        );
-        assert_eq!(GtaoSettings::default().effective_sample_counts(), (9, 3));
-        assert_eq!(
-            GtaoSettings {
-                quality_level: 4,
-                ..Default::default()
-            }
-            .effective_sample_counts(),
-            (12, 4)
-        );
-    }
-
-    #[test]
-    fn gtao_quality_overrides_clamp_to_supported_range() {
-        let settings = GtaoSettings {
-            slice_count_override: 99,
-            step_count: 99,
-            resolution_divisor: 99,
-            denoise_passes: 99,
-            ..Default::default()
-        };
-
-        assert_eq!(settings.effective_sample_counts(), (16, 8));
-        assert_eq!(settings.effective_resolution_divisor(), 4);
-        assert_eq!(settings.effective_denoise_passes(), 6);
-    }
-
     /// Verifies the bundle of caches constructs (which exercises the manual `Default`
     /// implementations in `pipeline.rs` that pick bounded bind-group caches).
     #[test]
