@@ -221,6 +221,36 @@ fn unlit_polar_variants_use_unity_derivative_selection() -> io::Result<()> {
 }
 
 #[test]
+fn billboard_render_buffer_uses_indexed_corner_separate_from_sample_uv() -> io::Result<()> {
+    let src = material_source("billboardunlit.wgsl")?;
+
+    assert!(
+        src.contains("@builtin(vertex_index) vertex_index: u32"),
+        "Billboard/Unlit must know the indexed vertex id for generated render-buffer quads"
+    );
+    assert!(
+        src.contains("fn render_buffer_billboard_unit_corner(vertex_index: u32) -> vec2<f32>")
+            && src.contains("let corner = vertex_index % 4u;"),
+        "Billboard/Unlit must derive generated render-buffer quad corners from vertex order"
+    );
+    assert!(
+        src.contains(
+            "fn billboard_corner_for_vertex(pos: vec3<f32>, uv: vec2<f32>, vertex_index: u32) -> vec2<f32>"
+        ) && src.contains(
+            "return render_buffer_billboard_unit_corner(vertex_index) * 2.0 - vec2<f32>(1.0, 1.0);"
+        ) && src.contains("return mb::billboard_corner(pos, uv);"),
+        "Render-buffer billboards must not reuse framed atlas UVs as geometry corners"
+    );
+    assert!(
+        src.contains("let corner = billboard_corner_for_vertex(pos.xyz, uv, vertex_index);")
+            && src.contains("out.uv = uv;"),
+        "Billboard/Unlit must keep atlas sampling UVs separate from generated geometry corners"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn unlitdistancelerp_matches_sorted_keyword_bits_and_fragment_parity() -> io::Result<()> {
     let src = material_source("unlitdistancelerp.wgsl")?;
     for (constant_name, bit_index) in [

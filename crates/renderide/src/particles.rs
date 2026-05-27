@@ -1608,6 +1608,19 @@ mod tests {
         let first_vertex: &[f32] = bytemuck::cast_slice(&vertices[..generated_vertex_stride()]);
         assert_eq!(&first_vertex[..3], &[1.0, 2.0, 3.0]);
         assert_eq!(&first_vertex[6..8], &[0.0, 0.0]);
+        let second_first_vertex_start = BILLBOARD_VERTICES_PER_POINT * generated_vertex_stride();
+        let second_first_vertex: &[f32] = bytemuck::cast_slice(
+            &vertices
+                [second_first_vertex_start..second_first_vertex_start + generated_vertex_stride()],
+        );
+        assert_eq!(&second_first_vertex[6..8], &[0.5, 0.0]);
+        let second_last_vertex_start =
+            (BILLBOARD_VERTICES_PER_POINT + 3) * generated_vertex_stride();
+        let second_last_vertex: &[f32] = bytemuck::cast_slice(
+            &vertices
+                [second_last_vertex_start..second_last_vertex_start + generated_vertex_stride()],
+        );
+        assert_eq!(&second_last_vertex[6..8], &[1.0, 1.0]);
     }
 
     #[test]

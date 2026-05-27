@@ -145,9 +145,25 @@ fn billboard_size(pointdata: vec3<f32>, model: mat4x4<f32>) -> vec2<f32> {
     return mb::billboard_size(pointdata, mat._PointSize.xy, model, kw_POINT_SIZE());
 }
 
+fn render_buffer_billboard_unit_corner(vertex_index: u32) -> vec2<f32> {
+    let corner = vertex_index % 4u;
+    return vec2<f32>(
+        select(0.0, 1.0, (corner & 1u) != 0u),
+        select(0.0, 1.0, (corner & 2u) != 0u),
+    );
+}
+
+fn billboard_corner_for_vertex(pos: vec3<f32>, uv: vec2<f32>, vertex_index: u32) -> vec2<f32> {
+    if (kw_RENDER_BUFFER()) {
+        return render_buffer_billboard_unit_corner(vertex_index) * 2.0 - vec2<f32>(1.0, 1.0);
+    }
+    return mb::billboard_corner(pos, uv);
+}
+
 @vertex
 fn vs_main(
     @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) vertex_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
@@ -167,7 +183,7 @@ fn vs_main(
     let center_world = mv::world_position(d, pos).xyz;
     let use_rotation = kw_POINT_ROTATION() && abs(pointdata.z) > 1e-4;
     let axes = mb::billboard_axes(center_world, pointdata, layer, use_rotation);
-    let corner = mb::billboard_corner(pos.xyz, uv);
+    let corner = billboard_corner_for_vertex(pos.xyz, uv, vertex_index);
     let size = billboard_size(pointdata, d.model);
     let world_p = center_world + axes.right * (corner.x * size.x) + axes.up * (corner.y * size.y);
 
