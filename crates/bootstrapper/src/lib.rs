@@ -21,22 +21,74 @@ pub mod ipc;
 mod orchestration;
 pub mod panic_hook;
 mod paths;
+mod process_state;
 mod protocol;
 mod protocol_handlers;
 mod renderer_link;
 pub mod updater;
+mod watchdogs;
 #[cfg(test)]
 /// Test-only synchronization for process-wide environment variable mutations.
 pub(crate) mod test_env {
+    use std::ffi::OsString;
     use std::sync::{Mutex, MutexGuard};
 
     static INTERPROCESS_ENV_LOCK: Mutex<()> = Mutex::new(());
+    static PROCESS_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     /// Locks process-wide test mutations of `RENDERIDE_INTERPROCESS_DIR`.
     pub(crate) fn lock_interprocess_env() -> MutexGuard<'static, ()> {
         INTERPROCESS_ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Locks process-wide test environment mutations for non-IPC env vars.
+    pub(crate) fn lock_process_env() -> MutexGuard<'static, ()> {
+        PROCESS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Captures and restores a fixed set of environment variables.
+    pub(crate) struct EnvSnapshot {
+        /// Captured values keyed by environment variable name.
+        values: Vec<(&'static str, Option<OsString>)>,
+    }
+
+    impl EnvSnapshot {
+        /// Captures current values for `keys`.
+        pub(crate) fn capture(keys: &[&'static str]) -> Self {
+            Self {
+                values: keys
+                    .iter()
+                    .map(|key| (*key, std::env::var_os(key)))
+                    .collect(),
+            }
+        }
+    }
+
+    impl Drop for EnvSnapshot {
+        fn drop(&mut self) {
+            for (key, value) in self.values.drain(..) {
+                restore_env(key, value);
+            }
+        }
+    }
+
+    /// Restores one env var to `value`, or removes it when `value` is [`None`].
+    pub(crate) fn restore_env(key: &str, value: Option<OsString>) {
+        if let Some(value) = value {
+            // SAFETY: env mutation in tests is serialized by the appropriate test env lock.
+            unsafe {
+                std::env::set_var(key, value);
+            }
+        } else {
+            // SAFETY: env mutation in tests is serialized by the appropriate test env lock.
+            unsafe {
+                std::env::remove_var(key);
+            }
+        }
     }
 }
 pub mod vr_prompt;

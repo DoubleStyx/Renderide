@@ -1,200 +1,12 @@
 //! Host-to-bootstrapper queue messages: heartbeat, clipboard, renderer spawn.
 
-use std::process::Child;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
+mod command;
+mod queue;
 
-use interprocess::{Publisher, Subscriber};
-
-use crate::child_lifetime::ChildLifetimeGroup;
-use crate::config::ResoBootConfig;
-use crate::constants::{
-    HEARTBEAT_REFRESH_TIMEOUT_SECS, INITIAL_HEARTBEAT_TIMEOUT_SECS, queue_loop_flush_interval,
-    queue_wait_log_interval,
-};
-use crate::protocol_handlers;
-
-/// Command sent from the Host over `bootstrapper_in`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HostCommand {
-    /// Extends the IPC watchdog deadline.
-    Heartbeat,
-    /// Clean shutdown request.
-    Shutdown,
-    /// Clipboard read request.
-    GetText,
-    /// Clipboard write (payload after `SETTEXT` prefix).
-    SetText(String),
-    /// Spawn renderer with argv-style tokens from the message (whitespace-separated).
-    StartRenderer(Vec<String>),
-}
-
-/// Action for the queue loop after handling one message.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LoopAction {
-    /// Continue dequeuing.
-    Continue,
-    /// Exit the loop (e.g. `SHUTDOWN`).
-    Break,
-}
-
-/// Parses a UTF-8 message from the Host into a [`HostCommand`].
-///
-/// Recognized prefixes: `HEARTBEAT`, `SHUTDOWN`, `GETTEXT`, `SETTEXT<payload>`.
-/// Any other input is treated as whitespace-separated argv for [`HostCommand::StartRenderer`];
-/// this catch-all is how `BootstrapperManager` requests a renderer launch (no command keyword,
-/// just the argv to forward). The fallback is logged at `debug` so unexpected tokens are visible
-/// in support traces while preserving the existing wire contract.
-pub fn parse_host_command(s: &str) -> HostCommand {
-    match s {
-        "HEARTBEAT" => HostCommand::Heartbeat,
-        "SHUTDOWN" => HostCommand::Shutdown,
-        "GETTEXT" => HostCommand::GetText,
-        _ if s.starts_with("SETTEXT") => HostCommand::SetText(
-            s.strip_prefix("SETTEXT")
-                .map(str::to_string)
-                .unwrap_or_default(),
-        ),
-        _ => {
-            let argv: Vec<String> = s.split_whitespace().map(String::from).collect();
-            let first = argv.first().map_or("<empty>", String::as_str);
-            logger::debug!(
-                "Bootstrap message did not match a known command; treating as renderer argv (first token: {first})"
-            );
-            HostCommand::StartRenderer(argv)
-        }
-    }
-}
-
-/// Returns `true` when queue-loop trace logging should run for this iteration counter.
-pub const fn should_trace_iter(loop_iter: u64) -> bool {
-    loop_iter <= 3 || loop_iter.is_multiple_of(1000)
-}
-
-#[derive(Default)]
-struct QueueLoopStats {
-    messages: u64,
-    invalid_utf8: u64,
-    heartbeats: u64,
-    shutdowns: u64,
-    get_text: u64,
-    set_text: u64,
-    start_renderer: u64,
-}
-
-impl QueueLoopStats {
-    fn record_command(&mut self, cmd: &HostCommand) {
-        self.messages = self.messages.saturating_add(1);
-        match cmd {
-            HostCommand::Heartbeat => self.heartbeats = self.heartbeats.saturating_add(1),
-            HostCommand::Shutdown => self.shutdowns = self.shutdowns.saturating_add(1),
-            HostCommand::GetText => self.get_text = self.get_text.saturating_add(1),
-            HostCommand::SetText(_) => self.set_text = self.set_text.saturating_add(1),
-            HostCommand::StartRenderer(_) => {
-                self.start_renderer = self.start_renderer.saturating_add(1);
-            }
-        }
-    }
-}
-
-/// Blocks on `incoming` until `cancel`, handling messages. Initial watchdog uses
-/// [`INITIAL_HEARTBEAT_TIMEOUT_SECS`], extended to [`HEARTBEAT_REFRESH_TIMEOUT_SECS`] on each
-/// [`HostCommand::Heartbeat`] via `heartbeat_deadline`.
-pub fn queue_loop(
-    incoming: &mut Subscriber,
-    outgoing: &mut Publisher,
-    config: &ResoBootConfig,
-    cancel: &AtomicBool,
-    lifetime: &ChildLifetimeGroup,
-    heartbeat_deadline: &Arc<Mutex<Instant>>,
-    renderer_child: &Arc<Mutex<Option<Child>>>,
-) {
-    let start = Instant::now();
-    let mut last_wait_log = Instant::now();
-    let mut last_flush = Instant::now();
-    let mut loop_iter: u64 = 0;
-    let mut stats = QueueLoopStats::default();
-    let mut stop_reason = "cancel";
-
-    logger::info!(
-        "Starting queue loop ({} s initial idle timeout; {} s after each HEARTBEAT)",
-        INITIAL_HEARTBEAT_TIMEOUT_SECS,
-        HEARTBEAT_REFRESH_TIMEOUT_SECS
-    );
-
-    while !cancel.load(Ordering::Relaxed) {
-        if last_flush.elapsed() >= queue_loop_flush_interval() {
-            logger::flush();
-            last_flush = Instant::now();
-        }
-        loop_iter += 1;
-        if should_trace_iter(loop_iter) {
-            logger::trace!(
-                "queue_loop iter {} elapsed={:.1}s cancel={}",
-                loop_iter,
-                start.elapsed().as_secs_f64(),
-                cancel.load(Ordering::Relaxed)
-            );
-        }
-
-        let msg = incoming.dequeue(cancel);
-        if msg.is_empty() {
-            if cancel.load(Ordering::Relaxed) {
-                logger::info!(
-                    "Queue loop stopping (cancel set: host exit, renderer exit, SHUTDOWN, or timeout)"
-                );
-                break;
-            }
-            if last_wait_log.elapsed() >= queue_wait_log_interval() {
-                logger::info!(
-                    "Still waiting for message from Host (elapsed {:.0}s). Check -shmprefix and BootstrapperManager.",
-                    start.elapsed().as_secs_f64()
-                );
-                last_wait_log = Instant::now();
-            }
-            continue;
-        }
-
-        let Ok(arguments) = String::from_utf8(msg) else {
-            stats.invalid_utf8 = stats.invalid_utf8.saturating_add(1);
-            continue;
-        };
-
-        logger::info!("Received message: {}", arguments);
-
-        let cmd = parse_host_command(&arguments);
-        stats.record_command(&cmd);
-        if matches!(
-            protocol_handlers::dispatch_command(
-                cmd,
-                outgoing,
-                config,
-                lifetime,
-                heartbeat_deadline,
-                renderer_child,
-            ),
-            LoopAction::Break
-        ) {
-            cancel.store(true, Ordering::SeqCst);
-            stop_reason = "command-break";
-            break;
-        }
-    }
-    logger::info!(
-        "Queue loop summary: reason={} elapsed_s={:.3} iterations={} messages={} invalid_utf8={} heartbeats={} shutdowns={} get_text={} set_text={} start_renderer={}",
-        stop_reason,
-        start.elapsed().as_secs_f64(),
-        loop_iter,
-        stats.messages,
-        stats.invalid_utf8,
-        stats.heartbeats,
-        stats.shutdowns,
-        stats.get_text,
-        stats.set_text,
-        stats.start_renderer,
-    );
-}
+pub use command::{HostCommand, parse_host_command};
+#[cfg(test)]
+use queue::should_trace_iter;
+pub use queue::{LoopAction, queue_loop};
 
 #[cfg(test)]
 mod tests {
@@ -286,7 +98,6 @@ mod tests {
 
 #[cfg(test)]
 mod queue_loop_tests {
-    use std::process::Child;
     use std::sync::Mutex;
     use std::sync::atomic::AtomicBool;
     use std::time::Instant;
@@ -298,6 +109,7 @@ mod queue_loop_tests {
         BootstrapQueues, RENDERIDE_INTERPROCESS_DIR_ENV,
         open_bootstrap_queues_host_publisher_first, open_bootstrap_queues_with_host_endpoints,
     };
+    use crate::process_state::SharedChildSlot;
     use crate::test_env::lock_interprocess_env;
 
     #[test]
@@ -318,7 +130,7 @@ mod queue_loop_tests {
         let lifetime = ChildLifetimeGroup::new().expect("lifetime");
         let cancel = AtomicBool::new(true);
         let deadline = std::sync::Arc::new(Mutex::new(Instant::now()));
-        let renderer: std::sync::Arc<Mutex<Option<Child>>> = std::sync::Arc::new(Mutex::new(None));
+        let renderer = SharedChildSlot::empty();
 
         queue_loop(
             &mut queues.incoming,
@@ -361,7 +173,7 @@ mod queue_loop_tests {
         let lifetime = ChildLifetimeGroup::new().expect("lifetime");
         let cancel = AtomicBool::new(false);
         let deadline = std::sync::Arc::new(Mutex::new(Instant::now()));
-        let renderer: std::sync::Arc<Mutex<Option<Child>>> = std::sync::Arc::new(Mutex::new(None));
+        let renderer = SharedChildSlot::empty();
 
         queue_loop(
             &mut queues.incoming,
@@ -386,9 +198,6 @@ mod queue_loop_tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// `HEARTBEAT` followed by `SHUTDOWN`: the loop must process the heartbeat (advancing the
-    /// shared deadline) before the shutdown breaks the loop, proving the watchdog refresh path
-    /// runs end-to-end via the real `Subscriber::dequeue` + `dispatch_command` chain.
     #[test]
     fn queue_loop_handles_heartbeat_then_shutdown() {
         let _g = lock_interprocess_env();
@@ -414,7 +223,7 @@ mod queue_loop_tests {
         let lifetime = ChildLifetimeGroup::new().expect("lifetime");
         let cancel = AtomicBool::new(false);
         let deadline = std::sync::Arc::new(Mutex::new(Instant::now()));
-        let renderer: std::sync::Arc<Mutex<Option<Child>>> = std::sync::Arc::new(Mutex::new(None));
+        let renderer = SharedChildSlot::empty();
         let initial_deadline = *deadline.lock().expect("lock");
 
         queue_loop(
@@ -445,10 +254,6 @@ mod queue_loop_tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// `GETTEXT` followed by `SHUTDOWN`: the loop must enqueue a clipboard response on the
-    /// outgoing queue before the shutdown breaks the loop. Content is not asserted because the
-    /// clipboard backend may not be available on a headless test runner; what matters is that the
-    /// dispatch path produced a response (empty UTF-8 on backend failure) and the loop continued.
     #[test]
     fn queue_loop_handles_gettext_then_shutdown() {
         let _g = lock_interprocess_env();
@@ -471,7 +276,7 @@ mod queue_loop_tests {
         let lifetime = ChildLifetimeGroup::new().expect("lifetime");
         let cancel = AtomicBool::new(false);
         let deadline = std::sync::Arc::new(Mutex::new(Instant::now()));
-        let renderer: std::sync::Arc<Mutex<Option<Child>>> = std::sync::Arc::new(Mutex::new(None));
+        let renderer = SharedChildSlot::empty();
 
         queue_loop(
             &mut queues.incoming,
