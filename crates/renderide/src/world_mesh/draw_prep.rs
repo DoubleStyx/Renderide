@@ -22,6 +22,7 @@ mod prepared_renderables;
 mod render_world;
 mod sort;
 
+pub(crate) use collect::queue_prepared_draws_for_views_with_parallelism;
 pub use collect::{
     DrawCollectionContext, QueuedWorldMeshDraws, WorldMeshDrawCollectParallelism,
     queue_draws_with_parallelism,

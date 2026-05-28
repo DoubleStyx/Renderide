@@ -14,6 +14,7 @@ use hashbrown::HashMap;
 use glam::{Mat4, Vec3};
 use rayon::prelude::*;
 
+use crate::cpu_parallelism::{FrameCpuWorkload, FrameParallelPolicy, ParallelAdmission};
 use crate::gpu_pools::MeshPool;
 use crate::materials::ShaderPermutation;
 use crate::materials::host_data::MaterialDictionary;
@@ -50,12 +51,25 @@ use scene_walk::transform_chain_has_degenerate_scale;
 
 /// Prepared renderer-run chunks assigned to one draw-collection worker.
 const PREPARED_COLLECT_PARALLEL_CHUNK_TASKS: usize = 1;
-/// Prepared renderer-run chunk count required before draw collection fans out.
-const PREPARED_COLLECT_PARALLEL_MIN_CHUNKS: usize = PREPARED_COLLECT_PARALLEL_CHUNK_TASKS * 2;
 /// Scene-walk chunk specs assigned to one draw-collection worker.
 const SCENE_COLLECT_PARALLEL_CHUNK_TASKS: usize = 1;
 /// Scene-walk chunk count required before draw collection fans out.
 const SCENE_COLLECT_PARALLEL_MIN_CHUNKS: usize = SCENE_COLLECT_PARALLEL_CHUNK_TASKS * 2;
+
+/// Returns the admission decision for prepared renderer-run chunk collection.
+fn prepared_collect_admission(
+    policy: FrameParallelPolicy,
+    task_count: usize,
+    draw_count: usize,
+) -> ParallelAdmission {
+    if !policy.is_draw_heavy(draw_count) {
+        return ParallelAdmission::Serial;
+    }
+    policy.admit_independent_items(
+        FrameCpuWorkload::new(0, draw_count, task_count),
+        PREPARED_COLLECT_PARALLEL_CHUNK_TASKS,
+    )
+}
 
 /// Read-only scene, material, and cull state shared across all spaces during draw collection.
 pub struct DrawCollectionContext<'a> {
@@ -126,6 +140,29 @@ pub struct QueuedWorldMeshDraws {
     draws_culled: usize,
     /// Number of candidate draws rejected by temporal Hi-Z culling.
     draws_hi_z_culled: usize,
+}
+
+/// Prepared draw collection state derived once per view before chunk dispatch.
+struct PreparedCollectionState<'a> {
+    /// Pre-expanded frame draw snapshot for this view's render context.
+    prepared: &'a FramePreparedRenderables,
+    /// Material batch keys refreshed for this view's render context and shader permutation.
+    cache: &'a FrameMaterialBatchCache,
+    /// Per-space camera transform-filter masks.
+    filter_masks: HashMap<RenderSpaceId, Vec<bool>>,
+    /// Per-view LOD visibility decisions.
+    lod_visibility: LodVisibility,
+    /// Expected retained draw count for output capacity.
+    cap_hint: usize,
+}
+
+/// One flat prepared-collection task for a specific view and run chunk.
+#[derive(Clone, Copy)]
+struct PreparedViewChunkTask {
+    /// View index in the caller-provided context slice.
+    view_index: usize,
+    /// Prepared renderer-run chunk index within the view's prepared snapshot.
+    chunk_index: usize,
 }
 
 impl QueuedWorldMeshDraws {
@@ -247,6 +284,50 @@ pub fn queue_draws_with_parallelism(
     merge_collected_chunks(per_chunk, cap_hint)
 }
 
+/// Queues prepared draws for multiple view contexts through one flat `(view, chunk)` workload.
+///
+/// Returns `None` when any context lacks a prepared snapshot or material cache, letting callers
+/// fall back to the general per-view queue path. When the combined prepared work is large enough,
+/// this avoids spawning one Rayon job per view that then serially walks every prepared chunk.
+pub(crate) fn queue_prepared_draws_for_views_with_parallelism(
+    contexts: &[DrawCollectionContext<'_>],
+    parallelism: WorldMeshDrawCollectParallelism,
+) -> Option<Vec<QueuedWorldMeshDraws>> {
+    profiling::scope!("mesh::queue_prepared_draws_for_views");
+    if contexts.is_empty() {
+        return Some(Vec::new());
+    }
+    let states = build_prepared_collection_states(contexts)?;
+    let task_count = states
+        .iter()
+        .map(|state| state.prepared.run_chunks().len())
+        .sum::<usize>();
+    let draw_count = states.iter().map(|state| state.cap_hint).sum::<usize>();
+    let policy = FrameParallelPolicy::for_current_thread_pool();
+    if contexts.len() > 1
+        && prepared_collect_admission(policy, task_count, draw_count).is_parallel()
+    {
+        Some(collect_prepared_views_flat(contexts, &states, task_count))
+    } else {
+        Some(
+            states
+                .iter()
+                .enumerate()
+                .map(|(view_index, state)| {
+                    let allow_parallel_chunks =
+                        contexts.len() == 1 && parallelism == WorldMeshDrawCollectParallelism::Full;
+                    let per_chunk = collect_prepared_chunks_for_state(
+                        &contexts[view_index],
+                        state,
+                        allow_parallel_chunks,
+                    );
+                    merge_collected_chunks(per_chunk, state.cap_hint)
+                })
+                .collect(),
+        )
+    }
+}
+
 /// Merges per-chunk collection output and assigns stable collection order.
 fn merge_collected_chunks(
     per_chunk: Vec<(Vec<WorldMeshDrawItem>, (usize, usize, usize))>,
@@ -275,6 +356,191 @@ fn merge_collected_chunks(
     }
 }
 
+/// Builds per-view prepared collection state for all contexts.
+fn build_prepared_collection_states<'a>(
+    contexts: &[DrawCollectionContext<'a>],
+) -> Option<Vec<PreparedCollectionState<'a>>> {
+    let mut states = Vec::with_capacity(contexts.len());
+    for ctx in contexts {
+        let prepared = ctx.prepared?;
+        let cache = ctx.material_cache?;
+        let space_ids = prepared_space_ids_for_context(ctx, prepared);
+        let cap_hint = prepared_capacity_hint_for_context(ctx, prepared);
+        let filter_masks = {
+            profiling::scope!("mesh::queue_prepared_draws_for_views::build_filter_masks");
+            build_per_space_filter_masks(&space_ids, ctx)
+        };
+        let lod_visibility = {
+            profiling::scope!("mesh::queue_prepared_draws_for_views::build_lod_visibility");
+            build_lod_visibility(ctx, &space_ids)
+        };
+        states.push(PreparedCollectionState {
+            prepared,
+            cache,
+            filter_masks,
+            lod_visibility,
+            cap_hint,
+        });
+    }
+    Some(states)
+}
+
+/// Resolves the active prepared render spaces relevant to one view context.
+fn prepared_space_ids_for_context(
+    ctx: &DrawCollectionContext<'_>,
+    prepared: &FramePreparedRenderables,
+) -> Vec<RenderSpaceId> {
+    match ctx.render_space_filter {
+        Some(space_id) => prepared
+            .active_space_ids()
+            .iter()
+            .copied()
+            .filter(|id| *id == space_id)
+            .collect(),
+        None => prepared.active_space_ids().to_vec(),
+    }
+}
+
+/// Estimates output capacity for one prepared view context.
+fn prepared_capacity_hint_for_context(
+    ctx: &DrawCollectionContext<'_>,
+    prepared: &FramePreparedRenderables,
+) -> usize {
+    match ctx.render_space_filter {
+        Some(space_id) => prepared
+            .draws()
+            .iter()
+            .filter(|draw| draw.space_id == space_id)
+            .count(),
+        None => prepared.len(),
+    }
+}
+
+/// Collects all prepared view chunks through one flat Rayon workload.
+fn collect_prepared_views_flat(
+    contexts: &[DrawCollectionContext<'_>],
+    states: &[PreparedCollectionState<'_>],
+    task_count: usize,
+) -> Vec<QueuedWorldMeshDraws> {
+    profiling::scope!("mesh::collect_prepared::flat_views");
+    let tasks = build_prepared_view_chunk_tasks(states, task_count);
+    let outputs = {
+        profiling::scope!("mesh::collect_prepared::flat_views::parallel_chunks");
+        tasks
+            .par_iter()
+            .with_min_len(PREPARED_COLLECT_PARALLEL_CHUNK_TASKS)
+            .map(|task| {
+                profiling::scope!("mesh::collect_prepared::flat_views::chunk_worker");
+                let state = &states[task.view_index];
+                let chunk = state.prepared.run_chunks()[task.chunk_index];
+                let runs = state.prepared.runs_for_chunk(chunk);
+                let collected = collect_prepared_chunk(
+                    state.prepared.draws(),
+                    runs,
+                    &contexts[task.view_index],
+                    state.cache,
+                    &state.filter_masks,
+                    &state.lod_visibility,
+                );
+                (task.view_index, collected)
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut per_view = states
+        .iter()
+        .map(|state| Vec::with_capacity(state.prepared.run_chunks().len()))
+        .collect::<Vec<_>>();
+    {
+        profiling::scope!("mesh::collect_prepared::flat_views::demux");
+        for (view_index, collected) in outputs {
+            if let Some(view_chunks) = per_view.get_mut(view_index) {
+                view_chunks.push(collected);
+            }
+        }
+    }
+    per_view
+        .into_iter()
+        .zip(states)
+        .map(|(per_chunk, state)| merge_collected_chunks(per_chunk, state.cap_hint))
+        .collect()
+}
+
+/// Builds flat prepared view-chunk tasks in deterministic view/chunk order.
+fn build_prepared_view_chunk_tasks(
+    states: &[PreparedCollectionState<'_>],
+    task_count: usize,
+) -> Vec<PreparedViewChunkTask> {
+    let mut tasks = Vec::with_capacity(task_count);
+    for (view_index, state) in states.iter().enumerate() {
+        tasks.extend((0..state.prepared.run_chunks().len()).map(|chunk_index| {
+            PreparedViewChunkTask {
+                view_index,
+                chunk_index,
+            }
+        }));
+    }
+    tasks
+}
+
+/// Collects prepared chunks for one view state.
+fn collect_prepared_chunks_for_state(
+    ctx: &DrawCollectionContext<'_>,
+    state: &PreparedCollectionState<'_>,
+    allow_parallel_chunks: bool,
+) -> Vec<(Vec<WorldMeshDrawItem>, (usize, usize, usize))> {
+    collect_prepared_chunks(
+        ctx,
+        state.prepared,
+        state.cache,
+        &state.filter_masks,
+        &state.lod_visibility,
+        state.cap_hint,
+        allow_parallel_chunks,
+    )
+}
+
+/// Collects prepared chunks for one view from borrowed per-view state.
+fn collect_prepared_chunks(
+    ctx: &DrawCollectionContext<'_>,
+    prepared: &FramePreparedRenderables,
+    cache: &FrameMaterialBatchCache,
+    filter_masks: &HashMap<RenderSpaceId, Vec<bool>>,
+    lod_visibility: &LodVisibility,
+    cap_hint: usize,
+    allow_parallel_chunks: bool,
+) -> Vec<(Vec<WorldMeshDrawItem>, (usize, usize, usize))> {
+    let run_chunks = prepared.run_chunks();
+    let draws = prepared.draws();
+    if allow_parallel_chunks
+        && prepared_collect_admission(
+            FrameParallelPolicy::for_current_thread_pool(),
+            run_chunks.len(),
+            cap_hint,
+        )
+        .is_parallel()
+    {
+        profiling::scope!("mesh::collect_prepared::parallel_chunks");
+        run_chunks
+            .par_iter()
+            .with_min_len(PREPARED_COLLECT_PARALLEL_CHUNK_TASKS)
+            .map(|&chunk| {
+                profiling::scope!("mesh::collect_prepared::chunk_worker");
+                let runs = prepared.runs_for_chunk(chunk);
+                collect_prepared_chunk(draws, runs, ctx, cache, filter_masks, lod_visibility)
+            })
+            .collect()
+    } else {
+        profiling::scope!("mesh::collect_prepared::serial_chunks");
+        run_chunks
+            .iter()
+            .map(|&chunk| {
+                let runs = prepared.runs_for_chunk(chunk);
+                collect_prepared_chunk(draws, runs, ctx, cache, filter_masks, lod_visibility)
+            })
+            .collect()
+    }
+}
+
 /// Dispatches chunk collection to the prepared-draw path or the scene-walk fallback.
 ///
 /// `Full` parallelism maps chunks via rayon; `SerialInnerForNestedBatch` keeps iteration serial
@@ -297,31 +563,15 @@ fn collect_world_mesh_chunks(
         // Cached run-aligned chunking ensures every renderer's slots stay inside one chunk so the
         // per-renderer CPU cull and material-batch lookup happens at most once per renderer per
         // view without allocating a chunk list per view.
-        let run_chunks = prepared.run_chunks();
-        let draws = prepared.draws();
-        if parallelism == WorldMeshDrawCollectParallelism::Full
-            && run_chunks.len() >= PREPARED_COLLECT_PARALLEL_MIN_CHUNKS
-        {
-            profiling::scope!("mesh::collect_prepared::parallel_chunks");
-            run_chunks
-                .par_iter()
-                .with_min_len(PREPARED_COLLECT_PARALLEL_CHUNK_TASKS)
-                .map(|&chunk| {
-                    profiling::scope!("mesh::collect_prepared::chunk_worker");
-                    let runs = prepared.runs_for_chunk(chunk);
-                    collect_prepared_chunk(draws, runs, ctx, cache, filter_masks, lod_visibility)
-                })
-                .collect()
-        } else {
-            profiling::scope!("mesh::collect_prepared::serial_chunks");
-            run_chunks
-                .iter()
-                .map(|&chunk| {
-                    let runs = prepared.runs_for_chunk(chunk);
-                    collect_prepared_chunk(draws, runs, ctx, cache, filter_masks, lod_visibility)
-                })
-                .collect()
-        }
+        collect_prepared_chunks(
+            ctx,
+            prepared,
+            cache,
+            filter_masks,
+            lod_visibility,
+            prepared_capacity_hint_for_context(ctx, prepared),
+            parallelism == WorldMeshDrawCollectParallelism::Full,
+        )
     } else {
         let chunks = {
             profiling::scope!("mesh::collect::build_chunk_specs");
