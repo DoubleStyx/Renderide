@@ -11,11 +11,11 @@
 //! Cases are dispatched by [`super::cases::CaseTemplate`] -- adding a new template means
 //! adding an arm here and a builder in [`super::cases`].
 
-use std::path::Path;
 use std::time::Duration;
 
 use crate::error::HarnessError;
 use crate::host::{HostHarness, HostHarnessConfig, SessionTemplate};
+use crate::image_io::{load_rgba, save_rgba, write_diff_image};
 use crate::scene::perlin::generate_perlin_rgba;
 
 use super::cases::{CaseTemplate, IntegrationCase};
@@ -122,7 +122,7 @@ pub fn run_integration_case(
         HarnessError::QueueOptions(format!("prepare {}: {e}", layout.root.display()))
     })?;
 
-    write_template_side_artifacts(&case.template, &layout)?;
+    let prepared_template = prepare_template(&case.template, &layout)?;
 
     let harness_cfg = HostHarnessConfig {
         renderer_path: runner.renderer_path.clone(),
@@ -132,7 +132,7 @@ pub fn run_integration_case(
         interval_ms: runner.interval_ms,
         timeout: runner.timeout,
         verbose_renderer: runner.verbose_renderer,
-        template: session_template_for(&case.template),
+        template: prepared_template.session_template,
     };
 
     match drive_template(harness_cfg) {
@@ -150,34 +150,26 @@ fn drive_template(cfg: HostHarnessConfig) -> Result<(), HarnessError> {
     h.run().map(|_| ())
 }
 
-fn session_template_for(template: &CaseTemplate) -> SessionTemplate {
+/// Session template plus any side artifacts prepared from a case template.
+struct PreparedTemplate {
+    /// Host-session template that drives the renderer.
+    session_template: SessionTemplate,
+}
+
+/// Prepares CPU-generated template data once for both renderer input and side artifacts.
+fn prepare_template(
+    template: &CaseTemplate,
+    layout: &CaseOutputLayout,
+) -> Result<PreparedTemplate, HarnessError> {
     match template {
-        CaseTemplate::SphereNull => SessionTemplate::Sphere,
+        CaseTemplate::SphereNull => Ok(PreparedTemplate {
+            session_template: SessionTemplate::Sphere,
+        }),
         CaseTemplate::TorusUnlitPerlin { perlin } => {
             let img = generate_perlin_rgba(perlin);
             let texture_size = (img.width(), img.height());
-            let texture_rgba = img.into_raw();
-            SessionTemplate::Torus {
-                texture_rgba,
-                texture_size,
-            }
-        }
-    }
-}
-
-fn write_template_side_artifacts(
-    template: &CaseTemplate,
-    layout: &CaseOutputLayout,
-) -> Result<(), HarnessError> {
-    match template {
-        CaseTemplate::SphereNull => Ok(()),
-        CaseTemplate::TorusUnlitPerlin { perlin } => {
-            let img = generate_perlin_rgba(perlin);
             let path = layout.root.join("perlin_texture.png");
-            img.save(&path).map_err(|e| HarnessError::PngWrite {
-                path: path.clone(),
-                source: e,
-            })?;
+            save_rgba(&img, &path)?;
             logger::info!(
                 "runner: wrote Perlin noise side artifact ({}x{}, seed=0x{:X}) to {}",
                 perlin.width,
@@ -185,7 +177,13 @@ fn write_template_side_artifacts(
                 perlin.seed,
                 path.display()
             );
-            Ok(())
+            let texture_rgba = img.into_raw();
+            Ok(PreparedTemplate {
+                session_template: SessionTemplate::Torus {
+                    texture_rgba,
+                    texture_size,
+                },
+            })
         }
     }
 }
@@ -248,34 +246,6 @@ fn evaluate_and_finalize(
             Ok(CaseRunOutcome { layout, report })
         }
     }
-}
-
-fn load_rgba(path: &Path) -> Result<image::RgbaImage, HarnessError> {
-    let img = image::open(path).map_err(|e| HarnessError::PngRead {
-        path: path.to_path_buf(),
-        source: e,
-    })?;
-    Ok(img.to_rgba8())
-}
-
-fn write_diff_image(
-    actual: &image::RgbaImage,
-    golden: &image::RgbaImage,
-    diff_path: &Path,
-) -> Result<(), HarnessError> {
-    if let Some(parent) = diff_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let result = image_compare::rgba_hybrid_compare(actual, golden)
-        .map_err(|e| HarnessError::ImageCompare(format!("{e:?}")))?;
-    let diff_img = result.image.to_color_map();
-    diff_img
-        .save(diff_path)
-        .map_err(|e| HarnessError::PngWrite {
-            path: diff_path.to_path_buf(),
-            source: image::ImageError::IoError(std::io::Error::other(format!("{e:?}"))),
-        })?;
-    Ok(())
 }
 
 #[cfg(test)]
