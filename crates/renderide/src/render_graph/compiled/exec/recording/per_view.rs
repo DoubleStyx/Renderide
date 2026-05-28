@@ -1,6 +1,7 @@
 //! Per-view command-buffer recording.
 
 use hashbrown::HashMap;
+use std::ops::Range;
 use std::time::Instant;
 
 use crate::diagnostics::PerViewHudOutputsSlot;
@@ -26,6 +27,40 @@ struct PerViewUnitEncodeOutput {
     encode_ms: f64,
     finish_ms: f64,
     command_stats: crate::render_graph::blackboard::GraphCommandStats,
+}
+
+/// Returns the exclusive batch index and unit index for a contiguous serial run.
+fn serial_batch_run_end(batches: &[RecordingBatch], start_index: usize) -> (usize, usize) {
+    let Some(first) = batches.get(start_index).copied() else {
+        return (start_index, 0);
+    };
+    debug_assert_eq!(first.kind, RecordingBatchKind::Serial);
+    let mut next_batch_index = start_index + 1;
+    let mut end_unit = first.end_unit;
+    while let Some(batch) = batches.get(next_batch_index) {
+        if batch.kind != RecordingBatchKind::Serial
+            || batch.phase != first.phase
+            || batch.start_unit != end_unit
+        {
+            break;
+        }
+        end_unit = batch.end_unit;
+        next_batch_index += 1;
+    }
+    (next_batch_index, end_unit)
+}
+
+/// Returns the next recording batch index for `phase` at or after `start_index`.
+fn next_phase_batch_index(
+    batches: &[RecordingBatch],
+    start_index: usize,
+    phase: PassPhase,
+) -> Option<usize> {
+    batches
+        .iter()
+        .enumerate()
+        .skip(start_index)
+        .find_map(|(index, batch)| (batch.phase == phase).then_some(index))
 }
 
 impl CompiledRenderGraph {
@@ -218,29 +253,30 @@ impl CompiledRenderGraph {
         let mut parallel_stats = crate::render_graph::blackboard::GraphCommandStats::default();
         let mut encode_ms = 0.0;
         let mut finish_ms = 0.0;
-        for batch in self
-            .schedule
-            .recording_plan
-            .phase_batches(PassPhase::PerView)
-        {
+        let batches = self.schedule.recording_plan.batches.as_slice();
+        let mut batch_index = next_phase_batch_index(batches, 0, PassPhase::PerView);
+        while let Some(current_batch_index) = batch_index {
+            let batch = batches[current_batch_index];
             match batch.kind {
                 RecordingBatchKind::Serial => {
-                    for unit_idx in batch.start_unit..batch.end_unit {
-                        let output = self.record_serial_unit(
-                            shared,
-                            view_idx,
-                            resolved_view,
-                            graph_resources,
-                            frame_params,
-                            view_blackboard,
-                            unit_idx,
-                            upload_batch,
-                            profiler,
-                        )?;
-                        encode_ms += output.encode_ms;
-                        finish_ms += output.finish_ms;
-                        command_buffers.push(output.command_buffer);
-                    }
+                    let (next_batch_index, end_unit) =
+                        serial_batch_run_end(batches, current_batch_index);
+                    let output = self.record_serial_unit_range(
+                        shared,
+                        view_idx,
+                        resolved_view,
+                        graph_resources,
+                        frame_params,
+                        view_blackboard,
+                        batch.start_unit..end_unit,
+                        upload_batch,
+                        profiler,
+                    )?;
+                    encode_ms += output.encode_ms;
+                    finish_ms += output.finish_ms;
+                    command_buffers.push(output.command_buffer);
+                    batch_index =
+                        next_phase_batch_index(batches, next_batch_index, PassPhase::PerView);
                 }
                 RecordingBatchKind::Parallel => {
                     let outputs = self.record_parallel_batch(
@@ -263,6 +299,11 @@ impl CompiledRenderGraph {
                         parallel_stats.add(output.command_stats);
                         command_buffers.push(output.command_buffer);
                     }
+                    batch_index = next_phase_batch_index(
+                        batches,
+                        current_batch_index + 1,
+                        PassPhase::PerView,
+                    );
                 }
             }
         }
@@ -291,9 +332,9 @@ impl CompiledRenderGraph {
 
     #[expect(
         clippy::too_many_arguments,
-        reason = "unit recording mirrors pass context construction"
+        reason = "serial range recording keeps pass context construction explicit"
     )]
-    fn record_serial_unit<'a>(
+    fn record_serial_unit_range<'a>(
         &self,
         shared: &'a PerViewRecordShared<'a>,
         view_idx: usize,
@@ -301,24 +342,56 @@ impl CompiledRenderGraph {
         graph_resources: &'a GraphResolvedResources,
         frame_params: &mut crate::graph_inputs::GraphPassFrame<'a>,
         view_blackboard: &mut crate::render_graph::blackboard::Blackboard,
-        unit_idx: usize,
+        unit_range: Range<usize>,
         upload_batch: &FrameUploadBatch,
         profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
     ) -> Result<PerViewUnitEncodeOutput, GraphExecuteError> {
-        let unit = self.schedule.recording_plan.units[unit_idx];
-        self.record_unit_command_buffer(
-            shared.device,
-            shared.gpu_limits,
-            view_idx,
-            resolved_view,
-            graph_resources,
-            frame_params,
-            view_blackboard,
-            unit,
-            upload_batch,
-            profiler,
-            "render-graph-per-view-unit",
-        )
+        let encode_start = Instant::now();
+        let mut encoder = shared
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("render-graph-per-view-serial-units"),
+            });
+        for unit_idx in unit_range {
+            let unit = self.schedule.recording_plan.units[unit_idx];
+            let query_label = self.recording_unit_label(unit);
+            let gpu_query = profiler.map(|p| p.begin_query(query_label.as_str(), &mut encoder));
+            self.record_unit_into_encoder(
+                view_idx,
+                resolved_view,
+                graph_resources,
+                frame_params,
+                view_blackboard,
+                &mut encoder,
+                shared.device,
+                shared.gpu_limits,
+                upload_batch,
+                profiler,
+                unit,
+            )?;
+            if let Some(query) = gpu_query
+                && let Some(prof) = profiler
+            {
+                prof.end_query(&mut encoder, query);
+            }
+        }
+        let command_stats = view_blackboard
+            .get_untracked::<GraphCommandStatsSlot>()
+            .copied()
+            .unwrap_or_default();
+        let encode_ms = elapsed_ms(encode_start);
+        let (command_buffer, finish_ms) = {
+            profiling::scope!("CommandEncoder::finish::graph_per_view_serial_batch");
+            let finish_start = Instant::now();
+            let command_buffer = encoder.finish();
+            (command_buffer, elapsed_ms(finish_start))
+        };
+        Ok(PerViewUnitEncodeOutput {
+            command_buffer,
+            encode_ms,
+            finish_ms,
+            command_stats,
+        })
     }
 
     #[expect(
@@ -636,5 +709,62 @@ impl CompiledRenderGraph {
                 hi_z_slot,
             },
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Creates a per-view recording batch for unit range assertions.
+    fn batch(
+        start_unit: usize,
+        end_unit: usize,
+        kind: RecordingBatchKind,
+        phase: PassPhase,
+    ) -> RecordingBatch {
+        RecordingBatch {
+            start_unit,
+            end_unit,
+            phase,
+            wave_idx: 0,
+            kind,
+        }
+    }
+
+    /// Contiguous serial batches are coalesced into one encoder run.
+    #[test]
+    fn serial_batch_run_merges_adjacent_serial_batches() {
+        let batches = [
+            batch(0, 1, RecordingBatchKind::Serial, PassPhase::PerView),
+            batch(1, 2, RecordingBatchKind::Serial, PassPhase::PerView),
+            batch(2, 4, RecordingBatchKind::Serial, PassPhase::PerView),
+        ];
+
+        assert_eq!(serial_batch_run_end(&batches, 0), (3, 4));
+    }
+
+    /// Parallel batches stay as hard boundaries so they can still fan out.
+    #[test]
+    fn serial_batch_run_stops_before_parallel_batch() {
+        let batches = [
+            batch(0, 1, RecordingBatchKind::Serial, PassPhase::PerView),
+            batch(1, 3, RecordingBatchKind::Parallel, PassPhase::PerView),
+            batch(3, 4, RecordingBatchKind::Serial, PassPhase::PerView),
+        ];
+
+        assert_eq!(serial_batch_run_end(&batches, 0), (1, 1));
+        assert_eq!(serial_batch_run_end(&batches, 2), (3, 4));
+    }
+
+    /// Serial ranges do not merge across phase boundaries.
+    #[test]
+    fn serial_batch_run_stops_before_other_phase() {
+        let batches = [
+            batch(0, 1, RecordingBatchKind::Serial, PassPhase::PerView),
+            batch(1, 2, RecordingBatchKind::Serial, PassPhase::FrameGlobal),
+        ];
+
+        assert_eq!(serial_batch_run_end(&batches, 0), (1, 1));
     }
 }
