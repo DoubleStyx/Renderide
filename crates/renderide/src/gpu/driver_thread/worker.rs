@@ -86,21 +86,22 @@ pub(super) fn driver_loop(
 
     let _liveness = ConsumerLivenessGuard { ring: &ring };
     loop {
-        {
+        let message = {
             profiling::scope!("driver::wait_for_batch");
-            let DriverMessage::Submit(batch) = ring.pop() else {
-                break;
-            };
-            let ring_depth = ring.depth();
-            let ctx = DriverLoopContext {
-                queue: queue.as_ref(),
-                gpu_queue_access_gate: &gpu_queue_access_gate,
-                surface_counters: &surface_counters,
-                submit_counters: &submit_counters,
-                flight_recorder: &flight_recorder,
-            };
-            process_batch(ctx, ring_depth, *batch);
-        }
+            ring.pop()
+        };
+        let DriverMessage::Submit(batch) = message else {
+            break;
+        };
+        let ring_depth = ring.depth();
+        let ctx = DriverLoopContext {
+            queue: queue.as_ref(),
+            gpu_queue_access_gate: &gpu_queue_access_gate,
+            surface_counters: &surface_counters,
+            submit_counters: &submit_counters,
+            flight_recorder: &flight_recorder,
+        };
+        process_batch(ctx, ring_depth, *batch);
     }
     // A `DriverMessage::Shutdown` value breaks the loop above; nothing further to do.
     let (pushed, done) = submit_counters.snapshot();

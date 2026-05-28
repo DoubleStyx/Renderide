@@ -148,16 +148,20 @@ pub(super) fn high_priority_emergency_deadline(
 }
 
 /// Emits current asset integration queue pressure to the profiler.
-fn plot_asset_integrator_backlog(
-    asset: &AssetTransferQueue,
-    high_priority_budget_exhausted: bool,
-    normal_priority_budget_exhausted: bool,
-) {
+fn plot_asset_integrator_backlog(asset: &AssetTransferQueue, outcomes: &DrainOutcomes) {
     plot_asset_integration(AssetIntegrationProfileSample {
+        main_queued: asset.integrator.main.len(),
         high_priority_queued: asset.integrator.high_priority.len(),
+        render_queued: asset.integrator.render.len(),
         normal_priority_queued: asset.integrator.normal_priority.len(),
-        high_priority_budget_exhausted,
-        normal_priority_budget_exhausted,
+        particle_queued: asset.integrator.particle.len(),
+        main_processed: outcomes.integration.main.processed,
+        high_priority_processed: outcomes.integration.high_priority.processed,
+        render_processed: outcomes.integration.render.processed,
+        normal_priority_processed: outcomes.integration.normal_priority.processed,
+        particle_processed: outcomes.particle.processed,
+        high_priority_budget_exhausted: outcomes.integration.high_priority.pending,
+        normal_priority_budget_exhausted: outcomes.integration.normal_priority.pending,
     });
 }
 
@@ -236,11 +240,7 @@ fn finalize_drain(
     summary: AssetIntegrationDrainSummary,
     outcomes: DrainOutcomes,
 ) -> AssetIntegrationDrainSummary {
-    plot_asset_integrator_backlog(
-        asset,
-        outcomes.integration.high_priority.pending,
-        outcomes.integration.normal_priority.pending,
-    );
+    plot_asset_integrator_backlog(asset, &outcomes);
 
     poll_video_texture_events(asset, ipc, outcomes.queue_access_mode);
 

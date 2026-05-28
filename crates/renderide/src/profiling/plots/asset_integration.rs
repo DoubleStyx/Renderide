@@ -8,10 +8,26 @@ use super::tracy_plot::tracy_plot;
 /// Asset-integration backlog and budget-exhaustion counters for one drain.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AssetIntegrationProfileSample {
+    /// Main-lane tasks still queued after the drain.
+    pub main_queued: usize,
     /// High-priority tasks still queued after the drain.
     pub high_priority_queued: usize,
+    /// Render-lane tasks still queued after the drain.
+    pub render_queued: usize,
     /// Normal-priority tasks still queued after the drain.
     pub normal_priority_queued: usize,
+    /// Particle-lane tasks still queued after the drain.
+    pub particle_queued: usize,
+    /// Main-lane steps processed by the drain.
+    pub main_processed: u32,
+    /// High-priority steps processed by the drain.
+    pub high_priority_processed: u32,
+    /// Render-lane steps processed by the drain.
+    pub render_processed: u32,
+    /// Normal-priority steps processed by the drain.
+    pub normal_priority_processed: u32,
+    /// Particle-lane steps processed by the drain.
+    pub particle_processed: u32,
     /// Whether the high-priority emergency ceiling stopped the drain.
     pub high_priority_budget_exhausted: bool,
     /// Whether the normal-priority frame budget stopped the drain.
@@ -21,13 +37,42 @@ pub struct AssetIntegrationProfileSample {
 /// Records asset-integration backlog and budget pressure for the current frame.
 #[inline]
 pub fn plot_asset_integration(sample: AssetIntegrationProfileSample) {
+    tracy_plot!("asset_integration::main_queued", sample.main_queued as f64);
     tracy_plot!(
         "asset_integration::high_priority_queued",
         sample.high_priority_queued as f64
     );
     tracy_plot!(
+        "asset_integration::render_queued",
+        sample.render_queued as f64
+    );
+    tracy_plot!(
         "asset_integration::normal_priority_queued",
         sample.normal_priority_queued as f64
+    );
+    tracy_plot!(
+        "asset_integration::particle_queued",
+        sample.particle_queued as f64
+    );
+    tracy_plot!(
+        "asset_integration::main_processed",
+        sample.main_processed as f64
+    );
+    tracy_plot!(
+        "asset_integration::high_priority_processed",
+        sample.high_priority_processed as f64
+    );
+    tracy_plot!(
+        "asset_integration::render_processed",
+        sample.render_processed as f64
+    );
+    tracy_plot!(
+        "asset_integration::normal_priority_processed",
+        sample.normal_priority_processed as f64
+    );
+    tracy_plot!(
+        "asset_integration::particle_processed",
+        sample.particle_processed as f64
     );
     tracy_plot!(
         "asset_integration::high_priority_budget_exhausted",

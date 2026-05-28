@@ -20,7 +20,7 @@ const CAMERA_INTERSECTING_RELATIVE_HEIGHT: f32 = 1.0;
 /// Minimum homogeneous `w` accepted for screen-height projection.
 const CLIP_W_EPS: f32 = 1e-6;
 /// LOD groups assigned to one worker chunk.
-const LOD_VISIBILITY_PARALLEL_CHUNK_GROUPS: usize = 4;
+const LOD_VISIBILITY_PARALLEL_CHUNK_GROUPS: usize = 32;
 /// LOD group count required before view-local visibility fans out.
 const LOD_VISIBILITY_PARALLEL_MIN_GROUPS: usize = LOD_VISIBILITY_PARALLEL_CHUNK_GROUPS * 2;
 
@@ -34,6 +34,14 @@ pub(super) struct LodVisibility {
 }
 
 impl LodVisibility {
+    /// Creates an empty visibility set with capacity for `renderer_refs` renderer refs.
+    fn with_capacity(renderer_refs: usize) -> Self {
+        Self {
+            grouped: HashSet::with_capacity(renderer_refs),
+            selected: HashSet::with_capacity(renderer_refs),
+        }
+    }
+
     /// Returns whether `instance_id` may emit draws in this view.
     #[inline]
     pub(super) fn renderer_visible(&self, instance_id: MeshRendererInstanceId) -> bool {
@@ -101,20 +109,26 @@ pub(super) fn build_lod_visibility(
     }
     if group_work.len() >= LOD_VISIBILITY_PARALLEL_MIN_GROUPS && rayon::current_num_threads() > 1 {
         profiling::scope!("mesh::lod_visibility::parallel_groups");
+        let group_count = group_work.len();
         return group_work
-            .par_iter()
-            .with_min_len(LOD_VISIBILITY_PARALLEL_CHUNK_GROUPS)
-            .map(|work| {
-                profiling::scope!("mesh::lod_visibility::group_worker");
-                let mut visibility = LodVisibility::default();
-                select_group_lod(
-                    ctx,
-                    culling,
-                    work.space_id,
-                    work.space,
-                    work.lods,
-                    &mut visibility,
-                );
+            .par_chunks(LOD_VISIBILITY_PARALLEL_CHUNK_GROUPS)
+            .map(|chunk| {
+                profiling::scope!("mesh::lod_visibility::group_chunk_worker");
+                let mut visibility = LodVisibility::with_capacity(lod_group_chunk_capacity(
+                    capacity,
+                    group_count,
+                    chunk.len(),
+                ));
+                for work in chunk {
+                    select_group_lod(
+                        ctx,
+                        culling,
+                        work.space_id,
+                        work.space,
+                        work.lods,
+                        &mut visibility,
+                    );
+                }
                 visibility
             })
             .reduce(LodVisibility::default, |mut merged, visibility| {
@@ -137,6 +151,20 @@ pub(super) fn build_lod_visibility(
         );
     }
     visibility
+}
+
+/// Estimates the renderer-ref capacity needed by one LOD worker chunk.
+fn lod_group_chunk_capacity(
+    total_renderer_refs: usize,
+    total_groups: usize,
+    chunk_groups: usize,
+) -> usize {
+    if total_renderer_refs == 0 || total_groups == 0 || chunk_groups == 0 {
+        return 0;
+    }
+    total_renderer_refs
+        .div_ceil(total_groups)
+        .saturating_mul(chunk_groups)
 }
 
 /// Collects active LOD groups into a dense work list for serial or parallel selection.
@@ -516,5 +544,12 @@ mod tests {
 
         assert!(!visibility.renderer_visible(grouped));
         assert!(visibility.renderer_visible(selected));
+    }
+
+    #[test]
+    fn lod_group_chunk_capacity_scales_refs_by_chunk_size() {
+        assert_eq!(lod_group_chunk_capacity(0, 8, 4), 0);
+        assert_eq!(lod_group_chunk_capacity(17, 8, 4), 12);
+        assert_eq!(lod_group_chunk_capacity(17, 8, 0), 0);
     }
 }
