@@ -10,6 +10,7 @@ mod event_loop;
 mod frame_upload;
 mod ipc;
 mod mesh_deform;
+mod rayon_admission;
 mod tracy_plot;
 
 pub use asset_integration::{AssetIntegrationProfileSample, plot_asset_integration};
@@ -21,3 +22,4 @@ pub use event_loop::{
 pub use frame_upload::{plot_frame_upload_batch, plot_world_mesh_subpass};
 pub use ipc::{IpcPollProfileSample, plot_ipc_poll};
 pub use mesh_deform::{MeshDeformProfileSample, plot_mesh_deform};
+pub use rayon_admission::{RayonAdmissionProfileSample, plot_rayon_admission};

@@ -74,10 +74,11 @@ pub use gpu_profiler_stub::GpuProfilerHandle;
 pub(crate) use gpu_scope::GpuEncoderScope;
 pub use plots::{
     AssetIntegrationProfileSample, CommandEncodingProfileSample, IpcPollProfileSample,
-    MeshDeformProfileSample, plot_asset_integration, plot_command_encoding,
-    plot_driver_submit_backlog, plot_event_loop_idle_ms, plot_event_loop_wait_ms,
-    plot_fps_cap_active, plot_frame_upload_batch, plot_ipc_poll, plot_mesh_deform,
-    plot_surface_acquire_outcome, plot_window_focused, plot_world_mesh_subpass,
+    MeshDeformProfileSample, RayonAdmissionProfileSample, plot_asset_integration,
+    plot_command_encoding, plot_driver_submit_backlog, plot_event_loop_idle_ms,
+    plot_event_loop_wait_ms, plot_fps_cap_active, plot_frame_upload_batch, plot_ipc_poll,
+    plot_mesh_deform, plot_rayon_admission, plot_surface_acquire_outcome, plot_window_focused,
+    plot_world_mesh_subpass,
 };
 pub(crate) use resource_churn::{
     ResourceChurnKind, ResourceChurnSite, flush_resource_churn_plots, note_resource_churn,
