@@ -4,11 +4,10 @@ use super::{
     CompiledRenderGraph, GraphExecuteError, PerViewRecordInputs, PerViewRecordOutput,
     PerViewWorkItem,
 };
+use crate::cpu_parallelism::{FrameCpuWorkload, FrameParallelPolicy};
 
 /// Per-view work items assigned to one recording worker.
 const PER_VIEW_RECORD_PARALLEL_CHUNK_VIEWS: usize = 1;
-/// View count at which per-view command recording fans out.
-const MIN_VIEWS_FOR_PARALLEL_RECORD: usize = PER_VIEW_RECORD_PARALLEL_CHUNK_VIEWS * 2;
 
 impl CompiledRenderGraph {
     /// Drives the per-view recording phase serially for a single view or across Rayon workers for
@@ -21,14 +20,20 @@ impl CompiledRenderGraph {
         n_views: usize,
     ) -> Result<Vec<PerViewRecordOutput>, GraphExecuteError> {
         profiling::scope!("graph::record_per_view_outputs");
-        // One view records serially. Two or more independent views can use worker threads, which
-        // lets OpenXR stereo record both eyes in parallel.
-        if n_views >= MIN_VIEWS_FOR_PARALLEL_RECORD {
+        let total_draw_count = per_view_work_items
+            .iter()
+            .map(|work_item| work_item.estimated_draw_count)
+            .sum::<usize>();
+        let admission = FrameParallelPolicy::for_current_thread_pool().admit_draw_heavy_views(
+            FrameCpuWorkload::view_draws(n_views, total_draw_count),
+            PER_VIEW_RECORD_PARALLEL_CHUNK_VIEWS,
+        );
+        if admission.is_parallel() {
             self.record_per_view_outputs_parallel(
                 per_view_work_items,
                 inputs,
                 n_views,
-                PER_VIEW_RECORD_PARALLEL_CHUNK_VIEWS,
+                admission.chunk_size().unwrap_or(1),
             )
         } else {
             self.record_per_view_outputs_serial(per_view_work_items, inputs, n_views)
