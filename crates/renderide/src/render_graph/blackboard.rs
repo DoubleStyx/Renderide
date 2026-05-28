@@ -15,10 +15,13 @@
 //! - **View blackboard** -- one instance per [`super::compiled::FrameView`]; populated and consumed by
 //!   [`super::pass::PassPhase::PerView`] passes for that view.
 
-use std::any::{Any, TypeId};
+use std::any::{Any, TypeId, type_name};
+use std::sync::Arc;
 
 use hashbrown::HashMap;
+use parking_lot::Mutex;
 
+use super::pass::BlackboardAccessDecl;
 #[cfg(test)]
 use super::resources::ImportedTextureHandle;
 
@@ -38,7 +41,7 @@ use super::resources::ImportedTextureHandle;
 /// ```
 pub trait BlackboardSlot: 'static {
     /// Type stored under this slot.
-    type Value: Send + 'static;
+    type Value: Send + Sync + 'static;
 }
 
 /// Defines a zero-sized blackboard slot marker and its [`BlackboardSlot`] value type.
@@ -63,9 +66,9 @@ pub(crate) use blackboard_slot;
 ///
 /// Values are boxed as `dyn Any + Send` and retrieved by downcasting from the [`TypeId`] of the
 /// slot key type. Insertion replaces any existing value for the same slot.
-#[derive(Default)]
 pub struct Blackboard {
-    slots: HashMap<TypeId, Box<dyn Any + Send>>,
+    slots: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
+    access_validation: Mutex<Option<BlackboardAccessValidation>>,
 }
 
 impl Blackboard {
@@ -76,7 +79,13 @@ impl Blackboard {
 
     /// Inserts `value` under slot `S`, replacing any previous value.
     pub fn insert<S: BlackboardSlot>(&mut self, value: S::Value) {
-        self.slots.insert(TypeId::of::<S>(), Box::new(value));
+        self.record_access::<S>(BlackboardRuntimeAccessKind::Write);
+        self.insert_untracked::<S>(value);
+    }
+
+    /// Inserts `value` without recording a pass-facing blackboard access.
+    pub(crate) fn insert_untracked<S: BlackboardSlot>(&mut self, value: S::Value) {
+        self.slots.insert(TypeId::of::<S>(), Arc::new(value));
     }
 
     /// Moves all slots from `other` into this blackboard.
@@ -86,11 +95,29 @@ impl Blackboard {
         self.slots.extend(other.slots);
     }
 
+    /// Creates a shallow read-only snapshot of the current slots.
+    ///
+    /// Slot payloads are reference-counted so parallel recording workers can read values without
+    /// cloning the underlying payload. Mutable access to shared values returns [`None`], which is
+    /// paired with runtime access validation to keep undeclared writes visible.
+    pub(crate) fn clone_read_only(&self) -> Self {
+        Self {
+            slots: self.slots.clone(),
+            access_validation: Mutex::new(None),
+        }
+    }
+
     /// Returns a shared reference to the value stored under slot `S`, or [`None`] if absent.
     pub fn get<S: BlackboardSlot>(&self) -> Option<&S::Value> {
+        self.record_access::<S>(BlackboardRuntimeAccessKind::Read);
+        self.get_untracked::<S>()
+    }
+
+    /// Returns a shared reference without recording a pass-facing blackboard access.
+    pub(crate) fn get_untracked<S: BlackboardSlot>(&self) -> Option<&S::Value> {
         self.slots
             .get(&TypeId::of::<S>())
-            .and_then(|v| v.downcast_ref::<S::Value>())
+            .and_then(|v| v.as_ref().downcast_ref::<S::Value>())
     }
 
     /// Returns `true` when a value exists for the raw slot type id.
@@ -100,16 +127,100 @@ impl Blackboard {
 
     /// Returns a mutable reference to the value stored under slot `S`, or [`None`] if absent.
     pub fn get_mut<S: BlackboardSlot>(&mut self) -> Option<&mut S::Value> {
+        self.record_access::<S>(BlackboardRuntimeAccessKind::ReadWrite);
+        self.get_mut_untracked::<S>()
+    }
+
+    /// Returns a mutable reference without recording a pass-facing blackboard access.
+    pub(crate) fn get_mut_untracked<S: BlackboardSlot>(&mut self) -> Option<&mut S::Value> {
         self.slots
             .get_mut(&TypeId::of::<S>())
+            .and_then(Arc::get_mut)
             .and_then(|v| v.downcast_mut::<S::Value>())
     }
 
     /// Removes and returns the value stored under slot `S`, or [`None`] if absent.
     pub fn take<S: BlackboardSlot>(&mut self) -> Option<S::Value> {
+        self.record_access::<S>(BlackboardRuntimeAccessKind::ReadWrite);
         self.slots
             .remove(&TypeId::of::<S>())
-            .and_then(|v| v.downcast::<S::Value>().ok().map(|b| *b))
+            .and_then(|v| Arc::downcast::<S::Value>(v).ok())
+            .and_then(|v| Arc::try_unwrap(v).ok())
+    }
+
+    /// Starts collecting pass-facing blackboard accesses for one graph pass.
+    pub(crate) fn begin_access_validation(
+        &self,
+        pass_name: &str,
+        declared_accesses: &[BlackboardAccessDecl],
+    ) {
+        let mut allowed = HashMap::new();
+        for access in declared_accesses {
+            let entry = allowed
+                .entry(access.slot.type_id)
+                .or_insert(AllowedBlackboardAccess {
+                    type_name: access.slot.type_name,
+                    reads: false,
+                    writes: false,
+                });
+            entry.reads |= access.kind.reads();
+            entry.writes |= access.kind.writes();
+        }
+        *self.access_validation.lock() = Some(BlackboardAccessValidation {
+            pass_name: pass_name.to_owned(),
+            allowed,
+            violations: Vec::new(),
+        });
+    }
+
+    /// Finishes collection and returns undeclared accesses observed since
+    /// [`Self::begin_access_validation`].
+    pub(crate) fn finish_access_validation(&self) -> Vec<BlackboardRuntimeAccessViolation> {
+        self.access_validation
+            .lock()
+            .take()
+            .map_or_else(Vec::new, |validation| validation.violations)
+    }
+
+    fn record_access<S: BlackboardSlot>(&self, access: BlackboardRuntimeAccessKind) {
+        Self::record_access_in_validation::<S>(&mut self.access_validation.lock(), access);
+    }
+
+    /// Records one access while the validation state is already locked.
+    fn record_access_in_validation<S: BlackboardSlot>(
+        validation: &mut Option<BlackboardAccessValidation>,
+        access: BlackboardRuntimeAccessKind,
+    ) {
+        let Some(validation) = validation.as_mut() else {
+            return;
+        };
+        let type_id = TypeId::of::<S>();
+        let allowed = validation.allowed.get(&type_id);
+        let allowed_reads = allowed.is_some_and(|allowed| allowed.reads);
+        let allowed_writes = allowed.is_some_and(|allowed| allowed.writes);
+        let access_allowed = match access {
+            BlackboardRuntimeAccessKind::Read => allowed_reads,
+            BlackboardRuntimeAccessKind::Write => allowed_writes,
+            BlackboardRuntimeAccessKind::ReadWrite => allowed_reads && allowed_writes,
+        };
+        if access_allowed {
+            return;
+        }
+        let slot = allowed.map_or_else(|| type_name::<S>(), |allowed| allowed.type_name);
+        if validation
+            .violations
+            .iter()
+            .any(|violation| violation.slot == slot && violation.access == access)
+        {
+            return;
+        }
+        validation
+            .violations
+            .push(BlackboardRuntimeAccessViolation {
+                pass: validation.pass_name.clone(),
+                slot,
+                access,
+            });
     }
 
     /// Returns `true` when slot `S` has a stored value.
@@ -129,6 +240,60 @@ impl Blackboard {
     pub fn is_empty(&self) -> bool {
         self.slots.is_empty()
     }
+}
+
+impl Default for Blackboard {
+    fn default() -> Self {
+        Self {
+            slots: HashMap::new(),
+            access_validation: Mutex::new(None),
+        }
+    }
+}
+
+/// Runtime blackboard access category observed while pass code records.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BlackboardRuntimeAccessKind {
+    /// Shared read through [`Blackboard::get`].
+    Read,
+    /// Replacement write through [`Blackboard::insert`].
+    Write,
+    /// Mutable access or take, which both read and write slot state.
+    ReadWrite,
+}
+
+impl BlackboardRuntimeAccessKind {
+    /// Human-readable label for diagnostics.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+            Self::ReadWrite => "read/write",
+        }
+    }
+}
+
+/// One pass-facing blackboard access that was not declared during setup.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct BlackboardRuntimeAccessViolation {
+    /// Pass that touched the slot.
+    pub(crate) pass: String,
+    /// Slot type name.
+    pub(crate) slot: &'static str,
+    /// Access kind observed at runtime.
+    pub(crate) access: BlackboardRuntimeAccessKind,
+}
+
+struct AllowedBlackboardAccess {
+    type_name: &'static str,
+    reads: bool,
+    writes: bool,
+}
+
+struct BlackboardAccessValidation {
+    pass_name: String,
+    allowed: HashMap<TypeId, AllowedBlackboardAccess>,
+    violations: Vec<BlackboardRuntimeAccessViolation>,
 }
 
 /// Generic command-count diagnostics captured by pass families during one graph scope.
@@ -420,5 +585,54 @@ mod tests {
         assert_eq!(stats.skipped_copy_count, 1);
         assert_eq!(stats.resolve_count, 1);
         assert_eq!(stats.skipped_resolve_count, 1);
+    }
+
+    #[test]
+    fn runtime_access_validation_reports_undeclared_read() {
+        let bb = Blackboard::new();
+        bb.begin_access_validation("read-pass", &[]);
+
+        assert_eq!(bb.get::<FooSlot>(), None);
+
+        assert_eq!(
+            bb.finish_access_validation(),
+            vec![BlackboardRuntimeAccessViolation {
+                pass: "read-pass".to_owned(),
+                slot: type_name::<FooSlot>(),
+                access: BlackboardRuntimeAccessKind::Read,
+            }]
+        );
+    }
+
+    #[test]
+    fn runtime_access_validation_accepts_declared_mutation() {
+        let mut bb = Blackboard::new();
+        bb.insert_untracked::<FooSlot>(1);
+        let declared = [
+            BlackboardAccessDecl::new::<FooSlot>(
+                crate::render_graph::pass::params::BlackboardAccessKind::RequiredRead,
+            ),
+            BlackboardAccessDecl::new::<FooSlot>(
+                crate::render_graph::pass::params::BlackboardAccessKind::Write,
+            ),
+        ];
+
+        bb.begin_access_validation("mutate-pass", &declared);
+        *bb.get_mut::<FooSlot>().expect("declared slot") = 2;
+
+        assert!(bb.finish_access_validation().is_empty());
+        assert_eq!(bb.get_untracked::<FooSlot>(), Some(&2));
+    }
+
+    #[test]
+    fn read_only_clone_shares_reads_and_blocks_mutable_aliases() {
+        let mut bb = Blackboard::new();
+        bb.insert::<FooSlot>(7);
+
+        let mut clone = bb.clone_read_only();
+
+        assert_eq!(clone.get::<FooSlot>(), Some(&7));
+        assert!(clone.get_mut::<FooSlot>().is_none());
+        assert_eq!(bb.get::<FooSlot>(), Some(&7));
     }
 }

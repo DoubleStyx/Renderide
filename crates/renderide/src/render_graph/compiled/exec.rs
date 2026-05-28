@@ -115,7 +115,7 @@ impl CompiledRenderGraph {
             PerViewRecordOutput {
                 view_id,
                 host_camera,
-                command_buffer: encoded.command_buffer,
+                command_buffers: encoded.command_buffers,
                 hud_outputs: encoded.hud_outputs,
                 encode_ms: encoded.encode_ms,
                 finish_ms: encoded.finish_ms,
@@ -408,7 +408,7 @@ impl CompiledRenderGraph {
                 finish_ms += output.finish_ms;
                 max_finish_ms = f64::max(max_finish_ms, output.finish_ms);
                 command_stats.add(output.command_stats);
-                per_view_cmds.push(output.command_buffer);
+                per_view_cmds.extend(output.command_buffers);
                 per_view_occlusion_info.push((output.view_id, output.host_camera));
                 per_view_hud_outputs.push(output.hud_outputs);
             }
