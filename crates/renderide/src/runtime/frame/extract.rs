@@ -526,15 +526,29 @@ fn queue_view_draws(
     collect_view_draws_with_strategy(&contexts, &cull_projs, parallelize_views, inner_parallelism)
 }
 
+/// Shared empty cull-projection reference for defensive fallback indexing.
+const NO_CULL_PROJ: Option<WorldMeshCullProjParams> = None;
+
 /// Queues one view through the general draw-collection path.
 fn collect_one_view_draws(
     ctx: &DrawCollectionContext<'_>,
-    cull_proj: Option<WorldMeshCullProjParams>,
+    cull_proj: &Option<WorldMeshCullProjParams>,
     parallelism: WorldMeshDrawCollectParallelism,
 ) -> QueuedViewDraws {
     profiling::scope!("render::queue_view_draws::queue_one");
     let queued = queue_draws_with_parallelism(ctx, parallelism);
-    QueuedViewDraws { queued, cull_proj }
+    QueuedViewDraws {
+        queued,
+        cull_proj: *cull_proj,
+    }
+}
+
+/// Returns a cull projection reference for `index`, or a stable `None` reference when absent.
+fn cull_proj_or_none(
+    cull_projs: &[Option<WorldMeshCullProjParams>],
+    index: usize,
+) -> &Option<WorldMeshCullProjParams> {
+    cull_projs.get(index).unwrap_or(&NO_CULL_PROJ)
 }
 
 /// Dispatches queued draw collection using the selected view-level parallelism strategy.
@@ -550,15 +564,15 @@ fn collect_view_draws_with_strategy(
             profiling::scope!("render::queue_view_draws::single_view");
             vec![collect_one_view_draws(
                 &contexts[0],
-                cull_projs.first().copied().unwrap_or(None),
+                cull_proj_or_none(cull_projs, 0),
                 parallelism,
             )]
         }
         2 if parallelize_views => {
             profiling::scope!("render::queue_view_draws::parallel_views");
             profiling::scope!("render::queue_view_draws::parallel_views::two_view_join");
-            let first_proj = cull_projs.first().copied().unwrap_or(None);
-            let second_proj = cull_projs.get(1).copied().unwrap_or(None);
+            let first_proj = cull_proj_or_none(cull_projs, 0);
+            let second_proj = cull_proj_or_none(cull_projs, 1);
             let (first, second) = rayon::join(
                 || {
                     profiling::scope!(
@@ -583,8 +597,7 @@ fn collect_view_draws_with_strategy(
                 .with_min_len(VIEW_COLLECTION_PARALLEL_CHUNK_VIEWS)
                 .enumerate()
                 .map(|(index, ctx)| {
-                    let cull_proj = cull_projs.get(index).copied().unwrap_or(None);
-                    collect_one_view_draws(ctx, cull_proj, parallelism)
+                    collect_one_view_draws(ctx, cull_proj_or_none(cull_projs, index), parallelism)
                 })
                 .collect()
         }
@@ -594,8 +607,7 @@ fn collect_view_draws_with_strategy(
                 .iter()
                 .enumerate()
                 .map(|(index, ctx)| {
-                    let cull_proj = cull_projs.get(index).copied().unwrap_or(None);
-                    collect_one_view_draws(ctx, cull_proj, parallelism)
+                    collect_one_view_draws(ctx, cull_proj_or_none(cull_projs, index), parallelism)
                 })
                 .collect()
         }
