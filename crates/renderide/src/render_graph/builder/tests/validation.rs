@@ -1,4 +1,4 @@
-//! Render-graph v2 validation and blackboard declaration tests.
+//! Render-graph validation and blackboard declaration tests.
 
 use super::common::*;
 use crate::render_graph::blackboard::BlackboardSlot;

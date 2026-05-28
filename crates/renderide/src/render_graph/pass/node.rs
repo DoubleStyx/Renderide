@@ -124,7 +124,7 @@ impl From<PassPhase> for GroupScope {
 /// the same attachments.
 ///
 /// Populated by passes at setup time via [`crate::render_graph::pass::PassBuilder::merge_hint`].
-/// Scheduler v1 uses the hint when building conservative merge groups. The wgpu executor
+/// Scheduler uses the hint when building conservative merge groups. The wgpu executor
 /// materializes compatible groups into one render pass when load/store, multiview, and stencil
 /// state allow it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]

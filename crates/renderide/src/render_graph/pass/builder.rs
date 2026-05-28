@@ -154,7 +154,7 @@ impl<'a> PassBuilder<'a> {
 
     /// Requires async-compute execution.
     ///
-    /// Scheduler v1 does not expose a multi-queue backend, so this is rejected during setup
+    /// Scheduler does not expose a multi-queue backend, so this is rejected during setup
     /// validation instead of silently falling back to the graphics queue.
     #[cfg(test)]
     pub fn require_async_compute(&mut self) {
@@ -164,7 +164,7 @@ impl<'a> PassBuilder<'a> {
 
     /// Sets the backend merge hint for this pass. See [`PassMergeHint`] for details.
     ///
-    /// Scheduler v1 uses this metadata when grouping adjacent raster passes that target the same
+    /// Scheduler uses this metadata when grouping adjacent raster passes that target the same
     /// attachments. The wgpu executor materializes compatible groups into one render pass.
     pub fn merge_hint(&mut self, hint: PassMergeHint) {
         self.merge_hint = hint;

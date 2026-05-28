@@ -72,7 +72,7 @@ impl CompiledRenderGraph {
             .recording_plan
             .phase_has_parallel_batches(PassPhase::PerView)
         {
-            self.record_one_view_scheduler_v2(
+            self.record_one_view_scheduler(
                 shared,
                 view_idx,
                 &resolved_view,
@@ -187,9 +187,9 @@ impl CompiledRenderGraph {
 
     #[expect(
         clippy::too_many_arguments,
-        reason = "scheduler v2 needs independent serial and worker borrows"
+        reason = "scheduler needs independent serial and worker borrows"
     )]
-    fn record_one_view_scheduler_v2<'a>(
+    fn record_one_view_scheduler<'a>(
         &self,
         shared: &'a PerViewRecordShared<'a>,
         view_idx: usize,
@@ -213,7 +213,7 @@ impl CompiledRenderGraph {
         ),
         GraphExecuteError,
     > {
-        profiling::scope!("graph::per_view::scheduler_v2");
+        profiling::scope!("graph::per_view::scheduler");
         let mut command_buffers = Vec::new();
         let mut parallel_stats = crate::render_graph::blackboard::GraphCommandStats::default();
         let mut encode_ms = 0.0;
@@ -340,7 +340,7 @@ impl CompiledRenderGraph {
         upload_batch: &FrameUploadBatch,
         profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
     ) -> Result<Vec<PerViewUnitEncodeOutput>, GraphExecuteError> {
-        profiling::scope!("graph::per_view::scheduler_v2::parallel_batch");
+        profiling::scope!("graph::per_view::scheduler::parallel_batch");
         use rayon::prelude::*;
         let mut outputs = (batch.start_unit..batch.end_unit)
             .into_par_iter()

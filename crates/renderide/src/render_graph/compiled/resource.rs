@@ -50,9 +50,9 @@ pub struct CompileStats {
     pub render_pass_materialization_groups: usize,
     /// Number of retained passes marked as future async-compute candidates.
     pub async_compute_capable_pass_count: usize,
-    /// Number of retained scheduler V2 units eligible for parallel command recording.
+    /// Number of retained scheduler units eligible for parallel command recording.
     pub parallel_recording_unit_count: usize,
-    /// Number of retained scheduler V2 batches that record multiple units concurrently.
+    /// Number of retained scheduler batches that record multiple units concurrently.
     pub parallel_recording_batch_count: usize,
     /// Number of attachment resolve declarations retained in the compiled graph.
     pub attachment_resolve_count: usize,
@@ -149,7 +149,7 @@ pub struct CompiledPassInfo {
     pub raster_template: Option<RenderPassTemplate>,
     /// Backend merge hint declared at setup time. See [`PassMergeHint`].
     ///
-    /// Scheduler v1 consumes this while detecting conservative render-pass merge groups. The wgpu
+    /// Scheduler consumes this while detecting conservative render-pass merge groups. The wgpu
     /// executor materializes compatible groups when runtime state stays merge-safe.
     pub merge_hint: PassMergeHint,
 }

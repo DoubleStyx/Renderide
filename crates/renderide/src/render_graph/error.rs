@@ -20,7 +20,7 @@ pub enum SetupError {
     #[error("non-raster pass declared a color or depth attachment")]
     NonRasterPassHasAttachment,
 
-    /// Scheduler v1 records through wgpu's single queue and cannot require real async compute.
+    /// Scheduler records through wgpu's single queue and cannot require real async compute.
     #[error(
         "async compute was required, but the current wgpu scheduler only records single-queue work"
     )]

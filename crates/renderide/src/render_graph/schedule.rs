@@ -189,7 +189,7 @@ pub struct ScheduleDependencyEdge {
     pub to_step: usize,
 }
 
-/// One scheduler V2 command-recording unit.
+/// One scheduler command-recording unit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RecordingUnit {
     /// First schedule-step index covered by this unit.
@@ -230,7 +230,7 @@ pub enum RecordingSerialReason {
     BlackboardWrites,
 }
 
-/// One deterministic scheduler V2 batch.
+/// One deterministic scheduler batch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RecordingBatch {
     /// First recording-unit index in [`RecordingSchedulePlan::units`].
@@ -254,7 +254,7 @@ pub enum RecordingBatchKind {
     Parallel,
 }
 
-/// Scheduler V2 command-recording plan.
+/// Scheduler command-recording plan.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RecordingSchedulePlan {
     /// Recording units in retained schedule order.
@@ -323,7 +323,7 @@ impl RecordingSchedulePlan {
     }
 }
 
-/// Builds scheduler V2 recording units and batches from retained schedule metadata.
+/// Builds scheduler recording units and batches from retained schedule metadata.
 pub(crate) fn build_recording_schedule_plan(
     steps: &[ScheduleStep],
     pass_info: &[CompiledPassInfo],
@@ -528,7 +528,7 @@ pub struct FrameSchedule {
     pub waves: Vec<std::ops::Range<usize>>,
     /// Fixed submit-order steps owned by the scheduler.
     pub submit_steps: Vec<ScheduleSubmitStep>,
-    /// Upload phases represented by scheduler v1.
+    /// Upload phases represented by scheduler.
     pub upload_phases: Vec<ScheduleUploadPhase>,
     /// Transient allocation/release events keyed by retained pass index.
     pub resource_events: Vec<ResourceScheduleEvent>,
@@ -540,7 +540,7 @@ pub struct FrameSchedule {
     pub render_pass_materialization_plan: RenderPassMaterializationPlan,
     /// Retained dependency edges between schedule steps.
     pub dependency_edges: Vec<ScheduleDependencyEdge>,
-    /// Scheduler V2 command-recording plan.
+    /// Scheduler command-recording plan.
     pub recording_plan: RecordingSchedulePlan,
     /// Cached `pass_idx` values for [`PassPhase::FrameGlobal`] steps, in execution order.
     ///
@@ -729,7 +729,7 @@ impl Default for FrameSchedule {
     }
 }
 
-/// Builds the fixed submit-batch order for scheduler v1.
+/// Builds the fixed submit-batch order for scheduler.
 fn submit_steps() -> Vec<ScheduleSubmitStep> {
     vec![
         ScheduleSubmitStep {
@@ -812,9 +812,9 @@ pub struct ScheduleHudSnapshot {
     pub render_pass_merge_group_count: usize,
     /// Merge groups planned for materialized recording.
     pub render_pass_materialization_group_count: usize,
-    /// Scheduler V2 units that can record in a worker batch.
+    /// Scheduler units that can record in a worker batch.
     pub parallel_recording_unit_count: usize,
-    /// Scheduler V2 batches that record more than one unit in parallel.
+    /// Scheduler batches that record more than one unit in parallel.
     pub parallel_recording_batch_count: usize,
 }
 

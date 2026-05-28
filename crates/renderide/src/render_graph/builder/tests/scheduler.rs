@@ -1,4 +1,4 @@
-//! Scheduler v1 metadata, wave, upload, final-access, and merge-planning tests.
+//! Scheduler metadata, wave, upload, final-access, and merge-planning tests.
 
 use super::common::*;
 use crate::render_graph::blackboard::BlackboardSlot;
