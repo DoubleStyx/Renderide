@@ -2,6 +2,8 @@
 
 use thiserror::Error;
 
+use super::type_name::short_type_name;
+
 /// Failure while advancing a [`super::memory_unpacker::MemoryUnpacker`] cursor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum MemoryUnpackError {
@@ -37,11 +39,6 @@ impl MemoryUnpackError {
             remaining,
         }
     }
-}
-
-fn short_type_name<T>() -> &'static str {
-    let full = std::any::type_name::<T>();
-    full.rsplit("::").next().unwrap_or(full)
 }
 
 #[cfg(test)]

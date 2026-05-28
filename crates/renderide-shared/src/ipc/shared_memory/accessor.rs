@@ -5,11 +5,7 @@ use hashbrown::HashMap;
 use bytemuck::{Pod, Zeroable};
 
 use crate::buffer::SharedMemoryBufferDescriptor;
-use crate::packing::default_entity_pool::DefaultEntityPool;
 use crate::packing::memory_packable::MemoryPackable;
-use crate::packing::memory_packer::MemoryPacker;
-use crate::packing::memory_unpacker::MemoryUnpacker;
-use crate::packing::wire_decode_error::WireDecodeError;
 
 #[cfg(windows)]
 use super::naming::compose_memory_view_name;
@@ -25,6 +21,14 @@ use super::diagnostics::{
     describe_descriptor_failure, describe_get_view_failure, describe_slice_failure,
     describe_slice_failure_with_descriptor, log_shared_memory_read_failure, make_context_prefixer,
 };
+
+mod copy;
+mod rows;
+mod validation;
+
+use copy::copy_pod_slice;
+use rows::{pack_memory_packable_row, unpack_memory_packable_row};
+use validation::{validate_access_copy_descriptor, validate_memory_packable_row_descriptor};
 
 /// Lazy mapping cache keyed by `buffer_id` for host shared buffers.
 pub struct SharedMemoryAccessor {
@@ -425,132 +429,6 @@ impl SharedMemoryAccessor {
             true
         })
     }
-}
-
-/// Copies a typed POD slice out of `bytes` using bytemuck, falling back to per-element unaligned
-/// reads when the source pointer is not [`T`]-aligned.
-fn copy_pod_slice<T: Pod + Zeroable>(
-    bytes: &[u8],
-    length: usize,
-    prefix_err: &impl Fn(&str) -> String,
-) -> Result<Vec<T>, String> {
-    let type_size = size_of::<T>();
-    let remainder = length % type_size;
-    if remainder != 0 {
-        return Err(prefix_err(&format!(
-            "length {length} is not a multiple of type size {type_size} (remainder {remainder})"
-        )));
-    }
-    let count = length / type_size;
-    if count == 0 {
-        return Ok(Vec::new());
-    }
-
-    let align = align_of::<T>();
-    let base = bytes.as_ptr() as usize;
-    if base.is_multiple_of(align)
-        && let Ok(slice) = bytemuck::try_cast_slice::<u8, T>(bytes)
-        && slice.len() >= count
-    {
-        return Ok(slice[..count].to_vec());
-    }
-
-    let mut out = Vec::with_capacity(count);
-    for i in 0..count {
-        let start = i * type_size;
-        let chunk = bytes
-            .get(start..start + type_size)
-            .ok_or_else(|| prefix_err("pod chunk subslice"))?;
-        let value = bytemuck::try_pod_read_unaligned::<T>(chunk)
-            .map_err(|e| prefix_err(&format!("pod_read_unaligned: {e:?}")))?;
-        out.push(value);
-    }
-    Ok(out)
-}
-
-/// Validates the descriptor invariants shared by all `access_copy_*` paths: positive length and
-/// length within the `max_bytes` ceiling. Errors are routed through `prefix_err` so the caller's
-/// diagnostic context is preserved in the returned message.
-fn validate_access_copy_descriptor(
-    descriptor: &SharedMemoryBufferDescriptor,
-    max_bytes: i32,
-    prefix_err: &impl Fn(&str) -> String,
-) -> Result<(), String> {
-    if descriptor.length <= 0 {
-        return Err(prefix_err(&format!(
-            "length<=0 (buffer_id={} offset={} length={})",
-            descriptor.buffer_id, descriptor.offset, descriptor.length
-        )));
-    }
-    if descriptor.length > max_bytes {
-        return Err(prefix_err(&format!(
-            "length {} exceeds max {} (buffer_id={})",
-            descriptor.length, max_bytes, descriptor.buffer_id
-        )));
-    }
-    Ok(())
-}
-
-/// Validates a host-row descriptor before opening a mapping for sentinel-aware row decoding.
-fn validate_memory_packable_row_descriptor(
-    descriptor: &SharedMemoryBufferDescriptor,
-    element_stride: usize,
-    max_bytes: i32,
-    prefix_err: &impl Fn(&str) -> String,
-) -> Result<(), String> {
-    if element_stride == 0 {
-        return Err(prefix_err("element_stride must be nonzero"));
-    }
-    validate_access_copy_descriptor(descriptor, max_bytes, prefix_err)?;
-    let length = descriptor.length as usize;
-    let remainder = length % element_stride;
-    if remainder != 0 {
-        return Err(prefix_err(&format!(
-            "length {length} is not a multiple of element_stride {element_stride} (remainder {remainder})"
-        )));
-    }
-    Ok(())
-}
-
-/// Decodes one fixed-stride host row using the same `MemoryPackable` contract as full row copies.
-fn unpack_memory_packable_row<T: MemoryPackable + Default>(
-    chunk: &[u8],
-    element_stride: usize,
-    prefix_err: &impl Fn(&str) -> String,
-) -> Result<T, String> {
-    let mut pool = DefaultEntityPool;
-    let mut unpacker = MemoryUnpacker::new(chunk, &mut pool);
-    let mut row = T::default();
-    row.unpack(&mut unpacker)
-        .map_err(|e: WireDecodeError| prefix_err(&format!("MemoryPackable::unpack: {e}")))?;
-    if unpacker.remaining_data() != 0 {
-        return Err(prefix_err(&format!(
-            "unpack left {} bytes unconsumed (stride {element_stride})",
-            unpacker.remaining_data()
-        )));
-    }
-    Ok(row)
-}
-
-/// Encodes one fixed-stride host row through [`MemoryPackable`].
-fn pack_memory_packable_row<T: MemoryPackable>(
-    row: &mut T,
-    chunk: &mut [u8],
-    element_stride: usize,
-    prefix_err: &impl Fn(&str) -> String,
-) -> Result<(), String> {
-    let mut packer = MemoryPacker::new(chunk);
-    row.pack(&mut packer);
-    if let Some(err) = packer.overflow_error() {
-        return Err(prefix_err(&format!("MemoryPackable::pack: {err}")));
-    }
-    if packer.remaining_len() != 0 {
-        return Err(prefix_err(&format!(
-            "pack left {} bytes unwritten (stride {element_stride})",
-            packer.remaining_len()
-        )));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
