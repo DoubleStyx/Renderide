@@ -18,6 +18,7 @@ use hashbrown::HashSet;
 #[cfg(test)]
 use rayon::prelude::*;
 
+use crate::cpu_parallelism::RENDER_COMMAND_CHUNK_DRAWS;
 #[cfg(test)]
 use crate::gpu_pools::MeshPool;
 #[cfg(test)]
@@ -39,7 +40,7 @@ pub(in crate::world_mesh::draw_prep) use expand::{
 };
 
 /// Target draw count for one prepared renderer-run chunk.
-pub(super) const PREPARED_RUN_CHUNK_DRAW_TARGET: usize = 32;
+pub(super) const PREPARED_RUN_CHUNK_DRAW_TARGET: usize = RENDER_COMMAND_CHUNK_DRAWS;
 /// Active render spaces assigned to one prepared-renderable expansion worker.
 #[cfg(test)]
 const PREPARED_EXPAND_PARALLEL_CHUNK_SPACES: usize = 1;

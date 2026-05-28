@@ -64,6 +64,10 @@ use super::super::transforms::{
     ExtractedTransformsUpdate, TransformRemovalEvent, apply_transforms_update_extracted,
     extract_transforms_update,
 };
+use crate::cpu_parallelism::{
+    ParallelAdmission, ParallelAdmissionSite, VISIBILITY_CULL_CHUNK_ITEMS,
+    current_reference_worker_count, has_visibility_parallel_work, record_parallel_admission,
+};
 
 /// Render-space apply slots assigned to one mutation worker.
 const APPLY_PARALLEL_CHUNK_SPACES: usize = 1;
@@ -71,7 +75,7 @@ const APPLY_PARALLEL_CHUNK_SPACES: usize = 1;
 const MIN_SPACES_FOR_PARALLEL_APPLY: usize = APPLY_PARALLEL_CHUNK_SPACES * 2;
 
 /// Minimum extracted row count before Phase B may fan out across render-space slots.
-const MIN_APPLY_PARALLEL_WORK_UNITS: usize = APPLY_PARALLEL_CHUNK_SPACES * 2;
+const MIN_APPLY_PARALLEL_WORK_UNITS: usize = VISIBILITY_CULL_CHUNK_ITEMS;
 
 macro_rules! extract_optional_render_space_update {
     ($shm:expr, $update:expr, $field:ident, $scope:literal, $extract:path $(, $extra:expr)* $(,)?) => {{
@@ -160,8 +164,27 @@ fn extracted_apply_work_units(e: &ExtractedRenderSpaceUpdate) -> usize {
 
 /// Returns whether the apply workload has enough independent row work to use rayon.
 #[inline]
-fn should_parallelize_apply(slot_count: usize, work_units: usize) -> bool {
-    slot_count >= MIN_SPACES_FOR_PARALLEL_APPLY && work_units >= MIN_APPLY_PARALLEL_WORK_UNITS
+fn apply_parallel_admission(slot_count: usize, work_units: usize) -> ParallelAdmission {
+    apply_parallel_admission_with_workers(slot_count, work_units, current_reference_worker_count())
+}
+
+/// Returns the apply admission decision for a known worker count.
+#[inline]
+fn apply_parallel_admission_with_workers(
+    slot_count: usize,
+    work_units: usize,
+    worker_count: usize,
+) -> ParallelAdmission {
+    if slot_count >= MIN_SPACES_FOR_PARALLEL_APPLY
+        && work_units >= MIN_APPLY_PARALLEL_WORK_UNITS
+        && has_visibility_parallel_work(work_units, worker_count)
+    {
+        ParallelAdmission::Parallel {
+            chunk_size: APPLY_PARALLEL_CHUNK_SPACES,
+        }
+    } else {
+        ParallelAdmission::Serial
+    }
 }
 
 /// Returns the total Phase B row estimate for all lifted work slots.
@@ -711,7 +734,14 @@ impl SceneCoordinator {
             profiling::scope!("scene::apply::estimate_parallel_work");
             apply_work_units(&work)
         };
-        if !should_parallelize_apply(work.len(), work_units) {
+        let admission = apply_parallel_admission(work.len(), work_units);
+        record_parallel_admission(
+            ParallelAdmissionSite::SceneApply,
+            work_units,
+            work.len(),
+            admission,
+        );
+        if !admission.is_parallel() {
             profiling::scope!("scene::apply::mutate::serial_small_batch");
             for mut slot in work.drain(..) {
                 profiling::scope!("scene::apply::mutate::serial_slot");
@@ -823,14 +853,33 @@ mod tests {
     /// Verifies that small multi-space updates stay serial until enough row work is present.
     #[test]
     fn apply_parallelism_requires_multiple_slots_and_enough_work() {
-        assert!(!should_parallelize_apply(1, MIN_APPLY_PARALLEL_WORK_UNITS));
-        assert!(!should_parallelize_apply(
-            MIN_SPACES_FOR_PARALLEL_APPLY,
-            MIN_APPLY_PARALLEL_WORK_UNITS - 1
-        ));
-        assert!(should_parallelize_apply(
-            MIN_SPACES_FOR_PARALLEL_APPLY,
-            MIN_APPLY_PARALLEL_WORK_UNITS
-        ));
+        assert!(
+            !apply_parallel_admission_with_workers(1, MIN_APPLY_PARALLEL_WORK_UNITS, 4)
+                .is_parallel()
+        );
+        assert!(
+            !apply_parallel_admission_with_workers(
+                MIN_SPACES_FOR_PARALLEL_APPLY,
+                MIN_APPLY_PARALLEL_WORK_UNITS - 1,
+                4
+            )
+            .is_parallel()
+        );
+        assert!(
+            apply_parallel_admission_with_workers(
+                MIN_SPACES_FOR_PARALLEL_APPLY,
+                MIN_APPLY_PARALLEL_WORK_UNITS,
+                4
+            )
+            .is_parallel()
+        );
+        assert!(
+            !apply_parallel_admission_with_workers(
+                MIN_SPACES_FOR_PARALLEL_APPLY,
+                MIN_APPLY_PARALLEL_WORK_UNITS,
+                1
+            )
+            .is_parallel()
+        );
     }
 }

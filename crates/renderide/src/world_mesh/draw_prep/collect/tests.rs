@@ -4,7 +4,7 @@ use glam::{Mat4, Quat, Vec3};
 
 use super::world_matrix::front_face_for_draw_matrices;
 use super::*;
-use crate::cpu_parallelism::{FrameParallelPolicy, ParallelAdmission};
+use crate::cpu_parallelism::{ParallelAdmission, RENDER_COMMAND_CHUNK_DRAWS};
 use crate::gpu_pools::MeshPool;
 use crate::materials::host_data::{MaterialDictionary, MaterialPropertyStore, PropertyIdRegistry};
 use crate::materials::{
@@ -145,16 +145,19 @@ fn draw_transform_scale_filter_rejects_point_scale() {
 
 #[test]
 fn prepared_collect_parallelism_requires_draw_heavy_work_and_multiple_tasks() {
-    let policy = FrameParallelPolicy::new(2);
-    let threshold = policy.draw_heavy_threshold();
+    let threshold = RENDER_COMMAND_CHUNK_DRAWS * 2;
 
     assert_eq!(
-        prepared_collect_admission(policy, 2, threshold - 1),
+        prepared_collect_admission(2, threshold - 1, 2),
         ParallelAdmission::Serial
     );
     assert_eq!(
-        prepared_collect_admission(policy, 1, threshold),
+        prepared_collect_admission(1, threshold, 2),
         ParallelAdmission::Serial
     );
-    assert!(prepared_collect_admission(policy, 2, threshold).is_parallel());
+    assert!(prepared_collect_admission(2, threshold, 2).is_parallel());
+    assert_eq!(
+        prepared_collect_admission(2, threshold, 1),
+        ParallelAdmission::Serial
+    );
 }

@@ -3,6 +3,10 @@
 use hashbrown::HashMap;
 use rayon::prelude::*;
 
+use crate::cpu_parallelism::{
+    ParallelAdmission, ParallelAdmissionSite, current_reference_worker_count,
+    has_visibility_parallel_work, record_parallel_admission,
+};
 use crate::scene::RenderSpaceId;
 
 use super::DrawCollectionContext;
@@ -11,6 +15,37 @@ use super::DrawCollectionContext;
 const FILTER_MASK_PARALLEL_CHUNK_SPACES: usize = 1;
 /// Render-space count at which per-space filter mask construction uses Rayon.
 const FILTER_MASK_PARALLEL_MIN_SPACES: usize = FILTER_MASK_PARALLEL_CHUNK_SPACES * 2;
+
+/// Returns the filter-mask admission decision for a known worker count.
+#[inline]
+fn filter_mask_admission(
+    space_count: usize,
+    work_units: usize,
+    worker_count: usize,
+) -> ParallelAdmission {
+    if space_count >= FILTER_MASK_PARALLEL_MIN_SPACES
+        && has_visibility_parallel_work(work_units, worker_count)
+    {
+        ParallelAdmission::Parallel {
+            chunk_size: FILTER_MASK_PARALLEL_CHUNK_SPACES,
+        }
+    } else {
+        ParallelAdmission::Serial
+    }
+}
+
+/// Estimates transform rows scanned by per-space filter-mask construction.
+#[inline]
+fn filter_mask_work_units(space_ids: &[RenderSpaceId], ctx: &DrawCollectionContext<'_>) -> usize {
+    space_ids
+        .iter()
+        .filter_map(|sid| {
+            ctx.scene
+                .space(*sid)
+                .map(|space| space.local_transforms().len())
+        })
+        .sum()
+}
 
 /// Builds per-space `Vec<bool>` masks from [`DrawCollectionContext::transform_filter`].
 ///
@@ -23,7 +58,20 @@ pub(super) fn build_per_space_filter_masks(
         return HashMap::new();
     };
 
-    let pairs = if space_ids.len() >= FILTER_MASK_PARALLEL_MIN_SPACES {
+    let work_units = filter_mask_work_units(space_ids, ctx);
+    let admission = filter_mask_admission(
+        space_ids.len(),
+        work_units,
+        current_reference_worker_count(),
+    );
+    record_parallel_admission(
+        ParallelAdmissionSite::FilterMasks,
+        work_units,
+        space_ids.len(),
+        admission,
+    );
+
+    let pairs = if admission.is_parallel() {
         space_ids
             .par_iter()
             .with_min_len(FILTER_MASK_PARALLEL_CHUNK_SPACES)

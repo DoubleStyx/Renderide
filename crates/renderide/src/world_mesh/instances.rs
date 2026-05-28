@@ -18,6 +18,11 @@ use std::ops::Range;
 use hashbrown::HashMap;
 use rayon::prelude::*;
 
+use crate::cpu_parallelism::{
+    ParallelAdmission, ParallelAdmissionSite, RENDER_COMMAND_CHUNK_DRAWS,
+    admit_render_command_items, current_reference_worker_count, record_parallel_admission,
+    reference_worker_count,
+};
 use crate::materials::{
     RasterPipelineKind, ShaderPermutation, UNITY_RENDER_QUEUE_ALPHA_TEST,
     embedded_stem_depth_prepass_pass,
@@ -32,13 +37,13 @@ use scratch::{InstancePlanScratch, MeshSubmeshKey, mesh_submesh_key};
 /// Minimum independent batch windows needed to amortize Rayon scheduling and merge overhead.
 const INSTANCE_PLAN_PARALLEL_MIN_WINDOWS: usize = 2;
 /// Draw count above which [`build_plan`] may split batch windows across worker threads.
-const INSTANCE_PLAN_PARALLEL_MIN_DRAWS: usize = INSTANCE_PLAN_PARALLEL_MIN_WINDOWS;
+const INSTANCE_PLAN_PARALLEL_MIN_DRAWS: usize = RENDER_COMMAND_CHUNK_DRAWS * 2;
 /// Maximum batch windows processed by one parallel worker task.
 const INSTANCE_PLAN_PARALLEL_MAX_WINDOWS_PER_TASK: usize = 12;
 /// Adaptive window chunks assigned to one Rayon worker leaf.
 const INSTANCE_PLAN_PARALLEL_CHUNKS_PER_TASK: usize = 1;
 /// Draws from one large same-batch-key window assigned to one worker chunk.
-const INSTANCE_PLAN_PARALLEL_WINDOW_DRAW_CHUNK: usize = 256;
+const INSTANCE_PLAN_PARALLEL_WINDOW_DRAW_CHUNK: usize = RENDER_COMMAND_CHUNK_DRAWS;
 /// Draw count required before a single large batch window can fan out internally.
 const INSTANCE_PLAN_PARALLEL_MIN_SINGLE_WINDOW_DRAWS: usize =
     INSTANCE_PLAN_PARALLEL_WINDOW_DRAW_CHUNK * 2;
@@ -318,14 +323,36 @@ pub fn build_plan_for_shader(
     }
 
     if draws.len() < INSTANCE_PLAN_PARALLEL_MIN_DRAWS {
+        record_parallel_admission(
+            ParallelAdmissionSite::WorldMeshInstancePlan,
+            draws.len(),
+            draws.len(),
+            ParallelAdmission::Serial,
+        );
         return build_plan_serial(draws, supports_base_instance, shader_perm);
     }
 
     let windows = collect_batch_windows(draws, supports_base_instance);
-    if windows.len() == 1 && should_parallelize_single_window(windows[0].range.len()) {
+    let worker_count = current_reference_worker_count();
+    let admission = if windows.len() == 1 {
+        single_window_admission(windows[0].range.len(), worker_count)
+    } else {
+        instance_plan_admission(draws.len(), windows.len(), worker_count)
+    };
+    record_parallel_admission(
+        ParallelAdmissionSite::WorldMeshInstancePlan,
+        draws.len(),
+        if windows.len() == 1 {
+            draws.len()
+        } else {
+            windows.len()
+        },
+        admission,
+    );
+    if windows.len() == 1 && admission.is_parallel() {
         return build_plan_from_large_window_parallel(draws, &windows[0], shader_perm);
     }
-    if should_parallelize_instance_plan(draws.len(), windows.len()) {
+    if admission.is_parallel() {
         build_plan_parallel(draws, &windows, shader_perm)
     } else {
         build_plan_from_windows_serial(draws, &windows, shader_perm)
@@ -418,31 +445,52 @@ fn build_plan_from_submission_classes_serial(
 }
 
 /// Returns whether instance planning should use its active Rayon pool.
+#[cfg(test)]
 fn should_parallelize_instance_plan(draw_count: usize, window_count: usize) -> bool {
     should_parallelize_instance_plan_with_workers(
         draw_count,
         window_count,
-        rayon::current_num_threads(),
+        current_reference_worker_count(),
     )
 }
 
-/// Returns whether one large batch window should split internally across workers.
-fn should_parallelize_single_window(draw_count: usize) -> bool {
-    draw_count >= INSTANCE_PLAN_PARALLEL_MIN_SINGLE_WINDOW_DRAWS
-        && rayon::current_num_threads() > 1
-        && draw_count.div_ceil(INSTANCE_PLAN_PARALLEL_WINDOW_DRAW_CHUNK) >= 2
+/// Returns the admission decision for one large same-batch-key window.
+fn single_window_admission(draw_count: usize, worker_count: usize) -> ParallelAdmission {
+    let admission = admit_render_command_items(draw_count, worker_count);
+    if draw_count >= INSTANCE_PLAN_PARALLEL_MIN_SINGLE_WINDOW_DRAWS && admission.is_parallel() {
+        admission
+    } else {
+        ParallelAdmission::Serial
+    }
 }
 
 /// Returns whether instance planning has enough work and workers to split batch windows.
+#[cfg(test)]
 fn should_parallelize_instance_plan_with_workers(
     draw_count: usize,
     window_count: usize,
     worker_count: usize,
 ) -> bool {
-    draw_count >= INSTANCE_PLAN_PARALLEL_MIN_DRAWS
-        && window_count >= INSTANCE_PLAN_PARALLEL_MIN_WINDOWS
-        && worker_count > 1
+    instance_plan_admission(draw_count, window_count, worker_count).is_parallel()
+}
+
+/// Returns the admission decision for splitting batch windows across workers.
+fn instance_plan_admission(
+    draw_count: usize,
+    window_count: usize,
+    worker_count: usize,
+) -> ParallelAdmission {
+    let draw_admission = admit_render_command_items(draw_count, worker_count);
+    if window_count >= INSTANCE_PLAN_PARALLEL_MIN_WINDOWS
+        && draw_admission.is_parallel()
         && parallel_window_chunk_count_with_workers(window_count, worker_count) >= 2
+    {
+        ParallelAdmission::Parallel {
+            chunk_size: INSTANCE_PLAN_PARALLEL_CHUNKS_PER_TASK,
+        }
+    } else {
+        ParallelAdmission::Serial
+    }
 }
 
 /// Returns how many worker chunks `window_count` produces for a known worker count.
@@ -460,7 +508,7 @@ fn parallel_window_chunk_size(window_count: usize) -> usize {
 
 /// Returns an adaptive batch-window chunk size capped to avoid over-coalescing work.
 fn parallel_window_chunk_size_with_workers(window_count: usize, worker_count: usize) -> usize {
-    let worker_count = worker_count.max(1);
+    let worker_count = reference_worker_count(worker_count);
     window_count
         .div_ceil(worker_count)
         .clamp(1, INSTANCE_PLAN_PARALLEL_MAX_WINDOWS_PER_TASK)

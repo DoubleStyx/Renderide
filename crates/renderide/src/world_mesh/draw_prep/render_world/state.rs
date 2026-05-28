@@ -4,6 +4,10 @@ use hashbrown::HashMap;
 use rayon::prelude::*;
 use std::ops::Range;
 
+use crate::cpu_parallelism::{
+    ParallelAdmissionSite, RENDERABLE_UPDATE_CHUNK_ITEMS, admit_renderable_update_items,
+    current_reference_worker_count, record_parallel_admission,
+};
 use crate::scene::{
     MeshRendererInstanceId, RenderWorldRendererKind, SkinnedMeshRenderer, StaticMeshRenderer,
 };
@@ -11,7 +15,7 @@ use crate::scene::{
 use super::super::prepared_renderables::{FramePreparedDraw, FramePreparedRenderables};
 
 /// Renderer count assigned to one reverse-index worker chunk.
-const REVERSE_INDEX_PARALLEL_CHUNK_RENDERERS: usize = 64;
+const REVERSE_INDEX_PARALLEL_CHUNK_RENDERERS: usize = RENDERABLE_UPDATE_CHUNK_ITEMS;
 /// Reverse-index chunks assigned to one Rayon worker leaf.
 const REVERSE_INDEX_PARALLEL_CHUNKS_PER_TASK: usize = 1;
 /// Renderer count at which reverse-index rebuilds use worker-local indexes.
@@ -98,9 +102,20 @@ impl RenderWorldSpace {
     /// Rebuilds reverse indexes after one or more renderer records changed identity.
     pub(super) fn rebuild_reverse_indexes(&mut self) {
         profiling::scope!("mesh::render_world::rebuild_reverse_indexes");
-        if self.static_renderers.len() >= REVERSE_INDEX_PARALLEL_MIN_RENDERERS
-            || self.skinned_renderers.len() >= REVERSE_INDEX_PARALLEL_MIN_RENDERERS
-        {
+        let table_work = self
+            .static_renderers
+            .len()
+            .max(self.skinned_renderers.len());
+        let admission = admit_renderable_update_items(table_work, current_reference_worker_count());
+        record_parallel_admission(
+            ParallelAdmissionSite::RenderWorldReverseIndex,
+            self.static_renderers
+                .len()
+                .saturating_add(self.skinned_renderers.len()),
+            table_work,
+            admission,
+        );
+        if table_work >= REVERSE_INDEX_PARALLEL_MIN_RENDERERS && admission.is_parallel() {
             self.rebuild_reverse_indexes_parallel();
             return;
         }

@@ -12,6 +12,10 @@ use glam::Mat4;
 
 use crate::assets::texture::{HostTextureAssetKind, pack_host_texture_id};
 use crate::color_space::DEFAULT_SKYBOX_CLEAR_COLOR;
+use crate::cpu_parallelism::{
+    ParallelAdmission, ParallelAdmissionSite, admit_renderable_update_items,
+    current_reference_worker_count, record_parallel_admission,
+};
 use crate::ipc::SharedMemoryAccessor;
 use crate::shared::{BlitToDisplayState, FrameSubmitData, RenderSH2, RenderingContext};
 
@@ -43,6 +47,23 @@ const PRIMARY_DESKTOP_DISPLAY_INDEX: i16 = 0;
 const WORLD_CACHE_FLUSH_PARALLEL_CHUNK_SPACES: usize = 1;
 /// Dirty render-space count required before world-cache flush fans out.
 const WORLD_CACHE_FLUSH_PARALLEL_MIN_SPACES: usize = WORLD_CACHE_FLUSH_PARALLEL_CHUNK_SPACES * 2;
+
+/// Returns the world-cache flush admission decision for a known worker count.
+#[inline]
+fn world_cache_flush_admission(
+    space_count: usize,
+    work_units: usize,
+    worker_count: usize,
+) -> ParallelAdmission {
+    let work_admission = admit_renderable_update_items(work_units, worker_count);
+    if space_count >= WORLD_CACHE_FLUSH_PARALLEL_MIN_SPACES && work_admission.is_parallel() {
+        ParallelAdmission::Parallel {
+            chunk_size: WORLD_CACHE_FLUSH_PARALLEL_CHUNK_SPACES,
+        }
+    } else {
+        ParallelAdmission::Serial
+    }
+}
 
 /// Warns when more than one non-overlay render space is marked active (breaks main-camera assumptions).
 fn warn_if_multiple_active_non_overlay_spaces(data: &FrameSubmitData) {
@@ -431,6 +452,20 @@ impl SceneCoordinator {
         if work.is_empty() {
             return Ok(report);
         }
+        let work_units = {
+            profiling::scope!("scene::flush_world_caches::estimate_parallel_work");
+            work.iter()
+                .filter_map(|(id, _cache)| self.spaces.get(id).map(|space| space.nodes.len()))
+                .sum::<usize>()
+        };
+        let admission =
+            world_cache_flush_admission(work.len(), work_units, current_reference_worker_count());
+        record_parallel_admission(
+            ParallelAdmissionSite::SceneWorldCacheFlush,
+            work_units,
+            work.len(),
+            admission,
+        );
 
         // `&self.spaces` is a shared borrow across rayon workers; `BTreeMap::get` is `Sync` for
         // `Sync` keys and values. Each task owns its own cache.
@@ -452,7 +487,7 @@ impl SceneCoordinator {
             (id, result.map(|()| cache))
         };
         let results: Vec<(RenderSpaceId, Result<WorldTransformCache, SceneError>)> =
-            if work.len() < WORLD_CACHE_FLUSH_PARALLEL_MIN_SPACES {
+            if !admission.is_parallel() {
                 work.into_iter().map(compute_one).collect()
             } else {
                 work.into_par_iter()
