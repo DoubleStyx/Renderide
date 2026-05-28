@@ -193,6 +193,15 @@ fn symbolicate_frames(ips: &[*mut c_void]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use parking_lot::{Mutex, MutexGuard};
+
+    /// Serializes tests that mutate the fatal-crash reentry guard.
+    static CRASH_REENTRY_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Acquires exclusive access to [`CRASH_REENTRY`] for tests.
+    fn lock_crash_reentry_test() -> MutexGuard<'static, ()> {
+        CRASH_REENTRY_TEST_LOCK.lock()
+    }
 
     #[test]
     fn format_frames_hex_shape() {
@@ -214,6 +223,8 @@ mod tests {
     #[test]
     fn reentry_guard_blocks_second_entry() {
         use std::cell::Cell;
+
+        let _guard = lock_crash_reentry_test();
 
         // Reset in case a prior test in the same process left the guard set.
         CRASH_REENTRY.store(false, Ordering::Release);
@@ -243,6 +254,8 @@ mod tests {
     #[test]
     fn sigabrt_skips_phase_two_symbols() {
         use std::cell::RefCell;
+
+        let _guard = lock_crash_reentry_test();
 
         CRASH_REENTRY.store(false, Ordering::Release);
 
