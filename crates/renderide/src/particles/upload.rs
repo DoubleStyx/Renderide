@@ -60,26 +60,27 @@ pub(super) fn write_u32s(out: &mut [u8], values: &[u32]) {
 }
 
 /// Inputs needed to publish one renderer-generated mesh into the mesh pool.
-pub(super) struct GeneratedMeshUploadInput {
+#[derive(Debug)]
+pub(crate) struct GeneratedMeshUploadInput {
     /// Human-readable source kind used in diagnostics.
-    pub(super) kind: &'static str,
+    pub(crate) kind: &'static str,
     /// Host asset id that produced the generated mesh.
-    pub(super) source_asset_id: i32,
+    pub(crate) source_asset_id: i32,
     /// Renderer-generated mesh asset id.
-    pub(super) mesh_asset_id: i32,
+    pub(crate) mesh_asset_id: i32,
     /// Packed interleaved vertex bytes.
-    pub(super) vertices: Vec<u8>,
+    pub(crate) vertices: Vec<u8>,
     /// Packed `u32` index bytes.
-    pub(super) indices: Vec<u8>,
+    pub(crate) indices: Vec<u8>,
     /// Number of vertices in `vertices`.
-    pub(super) vertex_count: usize,
+    pub(crate) vertex_count: usize,
     /// Number of indices in `indices`.
-    pub(super) index_count: usize,
+    pub(crate) index_count: usize,
     /// Local-space bounds for the generated mesh.
-    pub(super) bounds: RenderBoundingBox,
+    pub(crate) bounds: RenderBoundingBox,
 }
 
-pub(super) fn upload_generated_mesh(
+pub(crate) fn upload_generated_mesh(
     gpu: MeshGpuUploadContext<'_>,
     input: GeneratedMeshUploadInput,
     existing: Option<GpuMesh>,
@@ -109,12 +110,25 @@ pub(super) fn upload_generated_mesh(
             asset_id: input.source_asset_id,
         });
     }
-    try_upload_mesh_from_raw(gpu, &raw, &data, existing, &layout).ok_or(
-        ParticleRenderBufferError::GpuUploadFailed {
+    let validation_scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let mesh = try_upload_mesh_from_raw(gpu, &raw, &data, existing, &layout);
+    let validation_error = pollster::block_on(validation_scope.pop());
+    if let Some(err) = validation_error {
+        logger::error!(
+            "{} render buffer {}: generated mesh GPU validation failed: {}",
+            input.kind,
+            input.source_asset_id,
+            err
+        );
+        return Err(ParticleRenderBufferError::GpuUploadFailed {
             kind: input.kind,
             asset_id: input.source_asset_id,
-        },
-    )
+        });
+    }
+    mesh.ok_or(ParticleRenderBufferError::GpuUploadFailed {
+        kind: input.kind,
+        asset_id: input.source_asset_id,
+    })
 }
 
 fn generated_mesh_upload_data(

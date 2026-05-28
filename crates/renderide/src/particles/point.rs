@@ -3,19 +3,16 @@ use std::sync::Arc;
 use glam::{Quat, Vec2, Vec3, Vec4};
 use rayon::prelude::*;
 
-use crate::assets::mesh::{GpuMesh, MeshGpuUploadContext};
 use crate::shared::PointRenderBufferUpload;
 
 use super::bounds::bounds_for_points;
 use super::ids::billboard_render_buffer_mesh_asset_id;
 use super::types::{
-    ParticleRenderBufferError, PointParticle, PointRenderBufferAsset, PointRenderBufferMeshUpload,
-    checked_optional_range, checked_range, nonnegative_count, photondust_particle_color_to_linear,
-    read_pod_at,
+    ParticleRenderBufferError, PointParticle, PointRenderBufferAsset, checked_optional_range,
+    checked_range, nonnegative_count, photondust_particle_color_to_linear, read_pod_at,
 };
 use super::upload::{
-    GeneratedMeshUploadInput, generated_vertex_stride, upload_generated_mesh,
-    write_generated_vertex, write_u32s,
+    GeneratedMeshUploadInput, generated_vertex_stride, write_generated_vertex, write_u32s,
 };
 
 /// Number of billboard vertices generated for one point particle.
@@ -27,12 +24,20 @@ const POINT_PARTICLE_PARALLEL_MIN: usize = 2_048;
 /// Point particle chunk size used by parallel vertex/index fill.
 const POINT_PARTICLE_PARALLEL_CHUNK: usize = 1_024;
 
-pub(crate) fn build_point_render_buffer_upload(
-    gpu: MeshGpuUploadContext<'_>,
+/// CPU output from building a point render buffer.
+#[derive(Debug)]
+pub(crate) struct PointRenderBufferBuild {
+    /// Resident point render-buffer metadata.
+    pub(crate) asset: PointRenderBufferAsset,
+    /// Generated billboard mesh input ready for renderer-thread GPU upload.
+    pub(crate) billboard_mesh: GeneratedMeshUploadInput,
+}
+
+/// Builds point render-buffer metadata and generated billboard bytes without touching the GPU.
+pub(crate) fn build_point_render_buffer_cpu(
     raw: Arc<[u8]>,
     upload: &PointRenderBufferUpload,
-    existing: Option<GpuMesh>,
-) -> Result<PointRenderBufferMeshUpload, ParticleRenderBufferError> {
+) -> Result<PointRenderBufferBuild, ParticleRenderBufferError> {
     profiling::scope!("particle::build_point_render_buffer");
     let asset_id = upload.asset_id;
     let count = nonnegative_count("point", asset_id, "count", upload.count)?;
@@ -43,23 +48,17 @@ pub(crate) fn build_point_render_buffer_upload(
             asset_id,
         },
     )?;
-    let mesh = build_billboard_mesh(
-        gpu,
-        mesh_asset_id,
-        asset_id,
-        &points,
-        upload.frame_grid_size,
-        existing,
-    )?;
+    let billboard_mesh =
+        build_billboard_mesh_input(mesh_asset_id, asset_id, &points, upload.frame_grid_size)?;
     let points: Arc<[PointParticle]> = Arc::from(points.into_boxed_slice());
-    Ok(PointRenderBufferMeshUpload {
+    Ok(PointRenderBufferBuild {
         asset: PointRenderBufferAsset {
             asset_id,
             count: points.len(),
             frame_grid_size: upload.frame_grid_size,
             points,
         },
-        billboard_mesh: mesh,
+        billboard_mesh,
     })
 }
 
@@ -138,14 +137,12 @@ pub(super) fn decode_point_particles(
     Ok(points)
 }
 
-fn build_billboard_mesh(
-    gpu: MeshGpuUploadContext<'_>,
+fn build_billboard_mesh_input(
     mesh_asset_id: i32,
     source_asset_id: i32,
     points: &[PointParticle],
     frame_grid_size: glam::IVec2,
-    existing: Option<GpuMesh>,
-) -> Result<GpuMesh, ParticleRenderBufferError> {
+) -> Result<GeneratedMeshUploadInput, ParticleRenderBufferError> {
     let vertex_count = points
         .len()
         .checked_mul(BILLBOARD_VERTICES_PER_POINT)
@@ -171,20 +168,16 @@ fn build_billboard_mesh(
     let mut indices = vec![0u8; index_count * size_of::<u32>()];
     fill_billboard_buffers(points, frame_grid_size, &mut vertices, &mut indices);
 
-    upload_generated_mesh(
-        gpu,
-        GeneratedMeshUploadInput {
-            kind: "point",
-            source_asset_id,
-            mesh_asset_id,
-            vertices,
-            indices,
-            vertex_count,
-            index_count,
-            bounds: bounds_for_points(points),
-        },
-        existing,
-    )
+    Ok(GeneratedMeshUploadInput {
+        kind: "point",
+        source_asset_id,
+        mesh_asset_id,
+        vertices,
+        indices,
+        vertex_count,
+        index_count,
+        bounds: bounds_for_points(points),
+    })
 }
 
 /// Returns whether point decode/fill work is large enough to amortize Rayon scheduling.

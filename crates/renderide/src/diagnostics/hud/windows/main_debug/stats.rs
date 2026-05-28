@@ -462,7 +462,7 @@ fn render_world_maintenance_row(ui: &imgui::Ui, stats: RenderWorldMaintenanceSta
         ui,
         "Render world",
         &format!(
-            "retained={}  dirty={}  refreshed={}  templates={}  mesh={}  full-space={}  full-world={}  skips={}",
+            "retained={}  dirty={}  refreshed={}  templates={}  mesh={}  full-space={}  full-world={}  particle-snapshot={}  skips={}",
             stats.retained_template_count,
             stats.dirty_renderer_count,
             stats.refreshed_renderer_count,
@@ -470,6 +470,7 @@ fn render_world_maintenance_row(ui: &imgui::Ui, stats: RenderWorldMaintenanceSta
             stats.mesh_asset_invalidation_count,
             stats.full_space_rebuild_count,
             stats.full_world_rebuild_count,
+            stats.particle_snapshot_rebuild_count,
             stats.steady_state_skip_count
         ),
     );

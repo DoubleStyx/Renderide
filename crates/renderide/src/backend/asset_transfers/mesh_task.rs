@@ -236,19 +236,26 @@ impl MeshUploadTask {
         };
         let asset_id = self.data.asset_id;
         let upload_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            try_upload_mesh_from_raw(
-                MeshGpuUploadContext {
-                    device: gpu.device.as_ref(),
-                    queue: gpu.queue.as_ref(),
-                    gpu_limits: gpu.gpu_limits.as_ref(),
-                    mapped_buffer_health: gpu.mapped_buffer_health.as_ref(),
-                    mapped_buffer_generation,
-                },
+            let ctx = MeshGpuUploadContext {
+                device: gpu.device.as_ref(),
+                queue: gpu.queue.as_ref(),
+                gpu_limits: gpu.gpu_limits.as_ref(),
+                mapped_buffer_health: gpu.mapped_buffer_health.as_ref(),
+                mapped_buffer_generation,
+            };
+            let validation_scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let upload_result = try_upload_mesh_from_raw(
+                ctx,
                 &raw,
                 &self.data,
                 existing.map(|mesh| *mesh),
                 &layout,
-            )
+            );
+            if let Some(err) = pollster::block_on(validation_scope.pop()) {
+                logger::error!("mesh {asset_id}: GPU upload validation failed: {err}");
+                return None;
+            }
+            upload_result
         }));
         let Ok(upload_result) = upload_result else {
             complete_failed_mesh_upload(asset_id, "GPU upload panicked", ipc);

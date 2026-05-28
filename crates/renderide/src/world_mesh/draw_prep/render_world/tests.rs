@@ -243,6 +243,49 @@ fn mesh_asset_dirties_use_reverse_index() {
 }
 
 #[test]
+fn generated_particle_mesh_delta_marks_only_snapshot_dirty() {
+    let mut mesh_pool = MeshPool::default_pool();
+    let mut world = RenderWorld {
+        full_rebuild_requested: false,
+        mesh_pool_generation: mesh_pool.mutation_generation(),
+        ..Default::default()
+    };
+
+    let mesh_asset_id = crate::particles::billboard_render_buffer_mesh_asset_id(44)
+        .expect("generated billboard mesh id should fit");
+    mesh_pool.test_record_mutation(mesh_asset_id);
+    let mut stats = RenderWorldMaintenanceStats::default();
+
+    world.note_mesh_pool_delta(&mesh_pool, &mut stats);
+
+    assert_eq!(stats.mesh_asset_invalidation_count, 1);
+    assert!(world.particle_snapshot_dirty);
+    assert!(!world.full_rebuild_requested);
+    assert!(world.dirty_mesh_assets.is_empty());
+}
+
+#[test]
+fn particle_snapshot_dirty_rebuilds_snapshot_without_static_refresh() {
+    let scene = SceneCoordinator::new();
+    let mesh_pool = MeshPool::default_pool();
+    let point_render_buffers = HashMap::new();
+    let mut world = RenderWorld {
+        full_rebuild_requested: false,
+        particle_snapshot_dirty: true,
+        ..Default::default()
+    };
+    let render_context = world.prepared.render_context();
+
+    world.prepare_for_frame(&scene, &mesh_pool, &point_render_buffers, render_context);
+
+    let stats = world.maintenance_stats();
+    assert_eq!(stats.particle_snapshot_rebuild_count, 1);
+    assert_eq!(stats.full_world_rebuild_count, 0);
+    assert_eq!(stats.full_space_rebuild_count, 0);
+    assert!(!world.particle_snapshot_dirty);
+}
+
+#[test]
 fn reverse_index_delta_replaces_stale_renderer_identity() {
     let mut cached = RenderWorldSpace::default();
     cached.static_renderers.push(RenderWorldRendererTemplate {

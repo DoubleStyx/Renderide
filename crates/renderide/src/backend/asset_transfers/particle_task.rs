@@ -2,12 +2,12 @@
 
 use std::sync::Arc;
 
-use crate::assets::mesh::{GpuMesh, MeshGpuUploadContext};
+use crate::assets::mesh::MeshGpuUploadContext;
 use crate::gpu::{GpuLimits, GpuMappedBufferHealth};
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::particles::{
-    PointRenderBufferMeshUpload, TrailRenderBufferExistingMeshes, TrailRenderBufferMeshUpload,
-    build_point_render_buffer_upload, build_trail_render_buffer_upload,
+    PointRenderBufferBuild, TrailRenderBufferBuild, build_point_render_buffer_cpu,
+    build_trail_render_buffer_cpu, upload_generated_mesh,
 };
 use crate::shared::{
     PointRenderBufferConsumed, PointRenderBufferUpload, RendererCommand, TrailRenderBufferConsumed,
@@ -17,7 +17,7 @@ use crate::shared::{
 use super::AssetTransferQueue;
 use super::integrator::StepResult;
 
-/// GPU handles needed to build particle-generated meshes on a Rayon worker.
+/// GPU handles needed to publish particle-generated meshes on the renderer thread.
 pub(in crate::backend::asset_transfers) struct ParticleTaskGpu<'a> {
     /// Logical device used to create generated mesh buffers.
     pub(in crate::backend::asset_transfers) device: &'a Arc<wgpu::Device>,
@@ -90,8 +90,8 @@ enum TrailRenderBufferTaskStage {
 struct PointBuildResult {
     /// Upload generation used for stale-result rejection.
     generation: u64,
-    /// Generated mesh upload result.
-    result: Result<PointRenderBufferMeshUpload, crate::particles::ParticleRenderBufferError>,
+    /// CPU generated mesh build result.
+    result: Result<PointRenderBufferBuild, crate::particles::ParticleRenderBufferError>,
 }
 
 /// Background trail build result.
@@ -99,8 +99,8 @@ struct PointBuildResult {
 struct TrailBuildResult {
     /// Upload generation used for stale-result rejection.
     generation: u64,
-    /// Generated mesh upload result.
-    result: Result<TrailRenderBufferMeshUpload, crate::particles::ParticleRenderBufferError>,
+    /// CPU generated mesh build result.
+    result: Result<TrailRenderBufferBuild, crate::particles::ParticleRenderBufferError>,
 }
 
 /// Outcome from attempting to start a particle background build.
@@ -147,7 +147,12 @@ impl PointRenderBufferTask {
                 asset_id,
                 generation,
                 rx,
-            } => poll_point_task(queue, ipc, *asset_id, *generation, rx),
+            } => {
+                let Some(gpu) = gpu else {
+                    return StepResult::YieldBackground;
+                };
+                poll_point_task(queue, gpu, ipc, *asset_id, *generation, rx)
+            }
         }
     }
 }
@@ -186,7 +191,12 @@ impl TrailRenderBufferTask {
                 asset_id,
                 generation,
                 rx,
-            } => poll_trail_task(queue, ipc, *asset_id, *generation, rx),
+            } => {
+                let Some(gpu) = gpu else {
+                    return StepResult::YieldBackground;
+                };
+                poll_trail_task(queue, gpu, ipc, *asset_id, *generation, rx)
+            }
         }
     }
 }
@@ -206,9 +216,9 @@ fn start_point_task(
         send_point_render_buffer_consumed(ipc, asset_id);
         return ParticleTaskStart::Done;
     }
-    let Some(gpu) = gpu else {
+    if gpu.is_none() {
         return ParticleTaskStart::YieldPending;
-    };
+    }
     if !queue.try_acquire_particle_build_worker() {
         return ParticleTaskStart::YieldPending;
     }
@@ -225,9 +235,7 @@ fn start_point_task(
         return ParticleTaskStart::Done;
     };
 
-    let existing = crate::particles::billboard_render_buffer_mesh_asset_id(asset_id)
-        .and_then(|mesh_id| queue.pools.mesh_pool.get(mesh_id).cloned());
-    let rx = spawn_point_build(gpu, upload, raw, existing, generation);
+    let rx = spawn_point_build(upload, raw, generation);
     ParticleTaskStart::Building(PointRenderBufferTaskStage::Building {
         asset_id,
         generation,
@@ -250,9 +258,9 @@ fn start_trail_task(
         send_trail_render_buffer_consumed(ipc, asset_id);
         return ParticleTaskStart::Done;
     }
-    let Some(gpu) = gpu else {
+    if gpu.is_none() {
         return ParticleTaskStart::YieldPending;
-    };
+    }
     if !queue.try_acquire_particle_build_worker() {
         return ParticleTaskStart::YieldPending;
     }
@@ -269,8 +277,7 @@ fn start_trail_task(
         return ParticleTaskStart::Done;
     };
 
-    let existing = existing_trail_meshes(queue, asset_id);
-    let rx = spawn_trail_build(gpu, upload, raw, existing, generation);
+    let rx = spawn_trail_build(upload, raw, generation);
     ParticleTaskStart::Building(TrailRenderBufferTaskStage::Building {
         asset_id,
         generation,
@@ -281,6 +288,7 @@ fn start_trail_task(
 /// Polls a point render-buffer background build.
 fn poll_point_task(
     queue: &mut AssetTransferQueue,
+    gpu: ParticleTaskGpu<'_>,
     _ipc: &mut Option<&mut DualQueueIpc>,
     asset_id: i32,
     generation: u64,
@@ -290,7 +298,7 @@ fn poll_point_task(
     match rx.try_recv() {
         Ok(result) => {
             queue.release_particle_build_worker();
-            integrate_point_result(queue, asset_id, generation, result);
+            integrate_point_result(queue, gpu, asset_id, generation, result);
             StepResult::Done
         }
         Err(crossbeam_channel::TryRecvError::Empty) => StepResult::YieldBackground,
@@ -308,6 +316,7 @@ fn poll_point_task(
 /// Polls a trail render-buffer background build.
 fn poll_trail_task(
     queue: &mut AssetTransferQueue,
+    gpu: ParticleTaskGpu<'_>,
     _ipc: &mut Option<&mut DualQueueIpc>,
     asset_id: i32,
     generation: u64,
@@ -317,7 +326,7 @@ fn poll_trail_task(
     match rx.try_recv() {
         Ok(result) => {
             queue.release_particle_build_worker();
-            integrate_trail_result(queue, asset_id, generation, result);
+            integrate_trail_result(queue, gpu, asset_id, generation, result);
             StepResult::Done
         }
         Err(crossbeam_channel::TryRecvError::Empty) => StepResult::YieldBackground,
@@ -332,9 +341,21 @@ fn poll_trail_task(
     }
 }
 
+/// Captures the current GPU upload context for generated particle mesh publication.
+fn particle_mesh_gpu_context(gpu: ParticleTaskGpu<'_>) -> MeshGpuUploadContext<'_> {
+    MeshGpuUploadContext {
+        device: gpu.device.as_ref(),
+        queue: gpu.queue.as_ref(),
+        gpu_limits: gpu.gpu_limits.as_ref(),
+        mapped_buffer_health: gpu.mapped_buffer_health.as_ref(),
+        mapped_buffer_generation: gpu.mapped_buffer_health.generation(),
+    }
+}
+
 /// Publishes a point render-buffer result when it is still current.
 fn integrate_point_result(
     queue: &mut AssetTransferQueue,
+    gpu: ParticleTaskGpu<'_>,
     asset_id: i32,
     generation: u64,
     result: PointBuildResult,
@@ -347,15 +368,29 @@ fn integrate_point_result(
         return;
     }
     match result.result {
-        Ok(result) => {
-            let stored_asset_id = result.asset.asset_id;
-            let count = result.asset.count;
-            let frame_grid_size = result.asset.frame_grid_size;
+        Ok(build) => {
+            let existing = crate::particles::billboard_render_buffer_mesh_asset_id(asset_id)
+                .and_then(|mesh_id| queue.pools.mesh_pool.get(mesh_id).cloned());
+            let mesh = match upload_generated_mesh(
+                particle_mesh_gpu_context(gpu),
+                build.billboard_mesh,
+                existing,
+            ) {
+                Ok(mesh) => mesh,
+                Err(err) => {
+                    logger::warn!("{err}");
+                    remove_point_render_buffer(queue, asset_id);
+                    return;
+                }
+            };
+            let stored_asset_id = build.asset.asset_id;
+            let count = build.asset.count;
+            let frame_grid_size = build.asset.frame_grid_size;
             queue
                 .catalogs
                 .point_render_buffers
-                .insert(asset_id, result.asset);
-            queue.pools.mesh_pool.insert(result.billboard_mesh);
+                .insert(asset_id, build.asset);
+            queue.pools.mesh_pool.insert(mesh);
             logger::trace!(
                 "point render buffer {stored_asset_id}: uploaded billboard mesh for {count} particles frame_grid={frame_grid_size:?}"
             );
@@ -370,6 +405,7 @@ fn integrate_point_result(
 /// Publishes a trail render-buffer result when it is still current.
 fn integrate_trail_result(
     queue: &mut AssetTransferQueue,
+    gpu: ParticleTaskGpu<'_>,
     asset_id: i32,
     generation: u64,
     result: TrailBuildResult,
@@ -382,15 +418,29 @@ fn integrate_trail_result(
         return;
     }
     match result.result {
-        Ok(result) => {
-            let stored_asset_id = result.asset.asset_id;
-            let trails_count = result.asset.trails_count;
-            let trail_point_count = result.asset.trail_point_count;
+        Ok(build) => {
+            let ctx = particle_mesh_gpu_context(gpu);
+            let mut meshes = Vec::with_capacity(build.meshes.len());
+            for input in build.meshes {
+                let existing = queue.pools.mesh_pool.get(input.mesh_asset_id).cloned();
+                let mesh = match upload_generated_mesh(ctx, input, existing) {
+                    Ok(mesh) => mesh,
+                    Err(err) => {
+                        logger::warn!("{err}");
+                        remove_trail_render_buffer(queue, asset_id);
+                        return;
+                    }
+                };
+                meshes.push(mesh);
+            }
+            let stored_asset_id = build.asset.asset_id;
+            let trails_count = build.asset.trails_count;
+            let trail_point_count = build.asset.trail_point_count;
             queue
                 .catalogs
                 .trail_render_buffers
-                .insert(asset_id, result.asset);
-            for mesh in result.meshes {
+                .insert(asset_id, build.asset);
+            for mesh in meshes {
                 queue.pools.mesh_pool.insert(mesh);
             }
             logger::trace!(
@@ -406,33 +456,15 @@ fn integrate_trail_result(
 
 /// Spawns a point render-buffer build on Rayon.
 fn spawn_point_build(
-    gpu: ParticleTaskGpu<'_>,
     upload: PointRenderBufferUpload,
     raw: Arc<[u8]>,
-    existing: Option<GpuMesh>,
     generation: u64,
 ) -> crossbeam_channel::Receiver<PointBuildResult> {
     profiling::scope!("particle::point_task_spawn");
     let (tx, rx) = crossbeam_channel::bounded(1);
-    let device = Arc::clone(gpu.device);
-    let gpu_limits = Arc::clone(gpu.gpu_limits);
-    let queue = Arc::clone(gpu.queue);
-    let mapped_buffer_health = Arc::clone(gpu.mapped_buffer_health);
-    let mapped_buffer_generation = mapped_buffer_health.generation();
     rayon::spawn(move || {
         profiling::scope!("particle::point_task_build_worker");
-        let result = build_point_render_buffer_upload(
-            MeshGpuUploadContext {
-                device: device.as_ref(),
-                queue: queue.as_ref(),
-                gpu_limits: gpu_limits.as_ref(),
-                mapped_buffer_health: mapped_buffer_health.as_ref(),
-                mapped_buffer_generation,
-            },
-            raw,
-            &upload,
-            existing,
-        );
+        let result = build_point_render_buffer_cpu(raw, &upload);
         let _ = tx.send(PointBuildResult { generation, result });
     });
     rx
@@ -440,33 +472,15 @@ fn spawn_point_build(
 
 /// Spawns a trail render-buffer build on Rayon.
 fn spawn_trail_build(
-    gpu: ParticleTaskGpu<'_>,
     upload: TrailRenderBufferUpload,
     raw: Arc<[u8]>,
-    existing: TrailRenderBufferExistingMeshes,
     generation: u64,
 ) -> crossbeam_channel::Receiver<TrailBuildResult> {
     profiling::scope!("particle::trail_task_spawn");
     let (tx, rx) = crossbeam_channel::bounded(1);
-    let device = Arc::clone(gpu.device);
-    let gpu_limits = Arc::clone(gpu.gpu_limits);
-    let queue = Arc::clone(gpu.queue);
-    let mapped_buffer_health = Arc::clone(gpu.mapped_buffer_health);
-    let mapped_buffer_generation = mapped_buffer_health.generation();
     rayon::spawn(move || {
         profiling::scope!("particle::trail_task_build_worker");
-        let result = build_trail_render_buffer_upload(
-            MeshGpuUploadContext {
-                device: device.as_ref(),
-                queue: queue.as_ref(),
-                gpu_limits: gpu_limits.as_ref(),
-                mapped_buffer_health: mapped_buffer_health.as_ref(),
-                mapped_buffer_generation,
-            },
-            raw,
-            &upload,
-            existing,
-        );
+        let result = build_trail_render_buffer_cpu(raw, &upload);
         let _ = tx.send(TrailBuildResult { generation, result });
     });
     rx
@@ -538,37 +552,6 @@ fn remove_trail_render_buffer(queue: &mut AssetTransferQueue, asset_id: i32) {
     for mesh_id in crate::particles::trail_render_buffer_generated_mesh_ids(asset_id) {
         queue.pools.mesh_pool.remove(mesh_id);
     }
-}
-
-/// Collects existing trail meshes for in-place upload reuse.
-fn existing_trail_meshes(
-    queue: &AssetTransferQueue,
-    asset_id: i32,
-) -> TrailRenderBufferExistingMeshes {
-    TrailRenderBufferExistingMeshes {
-        stretch: existing_trail_mesh(queue, asset_id, crate::shared::TrailTextureMode::Stretch),
-        tile: existing_trail_mesh(queue, asset_id, crate::shared::TrailTextureMode::Tile),
-        distribute_per_segment: existing_trail_mesh(
-            queue,
-            asset_id,
-            crate::shared::TrailTextureMode::DistributePerSegment,
-        ),
-        repeat_per_segment: existing_trail_mesh(
-            queue,
-            asset_id,
-            crate::shared::TrailTextureMode::RepeatPerSegment,
-        ),
-    }
-}
-
-/// Looks up one existing generated trail mesh.
-fn existing_trail_mesh(
-    queue: &AssetTransferQueue,
-    asset_id: i32,
-    mode: crate::shared::TrailTextureMode,
-) -> Option<GpuMesh> {
-    crate::particles::trail_render_buffer_mesh_asset_id(asset_id, mode)
-        .and_then(|mesh_id| queue.pools.mesh_pool.get(mesh_id).cloned())
 }
 
 #[cfg(test)]

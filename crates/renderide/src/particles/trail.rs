@@ -4,19 +4,15 @@ use std::sync::Arc;
 use glam::{Vec2, Vec3, Vec4};
 use rayon::prelude::*;
 
-use crate::assets::mesh::{GpuMesh, MeshGpuUploadContext};
 use crate::shared::{TrailRenderBufferUpload, TrailTextureMode};
 
 use super::bounds::bounds_for_trails;
 use super::ids::trail_render_buffer_mesh_asset_id;
 use super::types::{
-    ParticleRenderBufferError, TrailRenderBufferAsset, TrailRenderBufferExistingMeshes,
-    TrailRenderBufferMeshUpload, checked_range, nonnegative_count,
+    ParticleRenderBufferError, TrailRenderBufferAsset, checked_range, nonnegative_count,
     photondust_particle_color_to_linear, read_pod_at,
 };
-use super::upload::{
-    GeneratedMeshUploadInput, generated_vertex_stride, push_generated_vertex, upload_generated_mesh,
-};
+use super::upload::{GeneratedMeshUploadInput, generated_vertex_stride, push_generated_vertex};
 
 /// Minimum trail points before building texture-mode meshes in parallel is worthwhile.
 const TRAIL_PARALLEL_POINT_MIN: usize = 1_024;
@@ -32,12 +28,20 @@ const TRAIL_MESH_PARALLEL_MIN_POINTS: usize = TRAIL_MESH_PARALLEL_CHUNK_POINTS *
 /// Number of bytes in one PhotonDust trail-offset row.
 pub(super) const TRAIL_OFFSET_BYTES: usize = 16;
 
-pub(crate) fn build_trail_render_buffer_upload(
-    gpu: MeshGpuUploadContext<'_>,
+/// CPU output from building a trail render buffer.
+#[derive(Debug)]
+pub(crate) struct TrailRenderBufferBuild {
+    /// Resident trail render-buffer metadata.
+    pub(crate) asset: TrailRenderBufferAsset,
+    /// Generated trail mesh inputs ready for renderer-thread GPU upload.
+    pub(crate) meshes: Vec<GeneratedMeshUploadInput>,
+}
+
+/// Builds trail render-buffer metadata and generated mesh bytes without touching the GPU.
+pub(crate) fn build_trail_render_buffer_cpu(
     raw: Arc<[u8]>,
     upload: &TrailRenderBufferUpload,
-    existing: TrailRenderBufferExistingMeshes,
-) -> Result<TrailRenderBufferMeshUpload, ParticleRenderBufferError> {
+) -> Result<TrailRenderBufferBuild, ParticleRenderBufferError> {
     profiling::scope!("particle::build_trail_render_buffer");
     let asset_id = upload.asset_id;
     let trails_count = nonnegative_count("trail", asset_id, "trails_count", upload.trails_count)?;
@@ -48,8 +52,8 @@ pub(crate) fn build_trail_render_buffer_upload(
         upload.trail_point_count,
     )?;
     let trails = decode_trails(raw.as_ref(), upload, trails_count, trail_point_count)?;
-    let meshes = build_trail_meshes(gpu, asset_id, &trails, existing)?;
-    Ok(TrailRenderBufferMeshUpload {
+    let meshes = build_trail_mesh_inputs(asset_id, &trails)?;
+    Ok(TrailRenderBufferBuild {
         asset: TrailRenderBufferAsset {
             asset_id,
             trails_count,
@@ -273,13 +277,11 @@ fn decode_trail_offset(row: [i32; 4], trail_point_count: usize) -> Option<TrailO
     })
 }
 
-/// Builds the generated trail meshes for every supported texture coordinate mode.
-fn build_trail_meshes(
-    gpu: MeshGpuUploadContext<'_>,
+/// Builds generated trail mesh upload inputs for every supported texture coordinate mode.
+fn build_trail_mesh_inputs(
     asset_id: i32,
     trails: &[TrailPolyline],
-    mut existing: TrailRenderBufferExistingMeshes,
-) -> Result<Vec<GpuMesh>, ParticleRenderBufferError> {
+) -> Result<Vec<GeneratedMeshUploadInput>, ParticleRenderBufferError> {
     let modes = [
         TrailTextureMode::Stretch,
         TrailTextureMode::Tile,
@@ -295,23 +297,21 @@ fn build_trail_meshes(
                     asset_id,
                 },
             )?;
-            Ok((mode, mesh_asset_id, existing.take_mode(mode)))
+            Ok((mode, mesh_asset_id))
         })
         .collect();
     let inputs = inputs?;
     if trail_mesh_parallel_is_worthwhile(trails) {
         return inputs
             .into_par_iter()
-            .map(|(mode, mesh_asset_id, existing)| {
-                build_trail_mesh(gpu, mesh_asset_id, asset_id, trails, mode, existing)
+            .map(|(mode, mesh_asset_id)| {
+                build_trail_mesh_input(mesh_asset_id, asset_id, trails, mode)
             })
             .collect();
     }
     inputs
         .into_iter()
-        .map(|(mode, mesh_asset_id, existing)| {
-            build_trail_mesh(gpu, mesh_asset_id, asset_id, trails, mode, existing)
-        })
+        .map(|(mode, mesh_asset_id)| build_trail_mesh_input(mesh_asset_id, asset_id, trails, mode))
         .collect()
 }
 
@@ -321,14 +321,12 @@ fn trail_mesh_parallel_is_worthwhile(trails: &[TrailPolyline]) -> bool {
         && rayon::current_num_threads() > 1
 }
 
-fn build_trail_mesh(
-    gpu: MeshGpuUploadContext<'_>,
+fn build_trail_mesh_input(
     mesh_asset_id: i32,
     source_asset_id: i32,
     trails: &[TrailPolyline],
     texture_mode: TrailTextureMode,
-    existing: Option<GpuMesh>,
-) -> Result<GpuMesh, ParticleRenderBufferError> {
+) -> Result<GeneratedMeshUploadInput, ParticleRenderBufferError> {
     let vertex_count = trails
         .iter()
         .map(|trail| trail.points.len().saturating_mul(2))
@@ -385,20 +383,16 @@ fn build_trail_mesh(
         indices.append(&mut chunk.indices);
     }
 
-    upload_generated_mesh(
-        gpu,
-        GeneratedMeshUploadInput {
-            kind: "trail",
-            source_asset_id,
-            mesh_asset_id,
-            vertices,
-            indices,
-            vertex_count,
-            index_count,
-            bounds: bounds_for_trails(trails),
-        },
-        existing,
-    )
+    Ok(GeneratedMeshUploadInput {
+        kind: "trail",
+        source_asset_id,
+        mesh_asset_id,
+        vertices,
+        indices,
+        vertex_count,
+        index_count,
+        bounds: bounds_for_trails(trails),
+    })
 }
 
 /// Packed generated trail data for one trail-index chunk.

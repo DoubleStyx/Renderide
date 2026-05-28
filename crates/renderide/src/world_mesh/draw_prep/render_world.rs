@@ -106,6 +106,8 @@ pub struct RenderWorldMaintenanceStats {
     pub full_space_rebuild_count: usize,
     /// Full render-world rebuild requests processed this frame.
     pub full_world_rebuild_count: usize,
+    /// Prepared snapshots rebuilt only because generated particle meshes changed.
+    pub particle_snapshot_rebuild_count: usize,
     /// Retained draw templates currently cached after maintenance.
     pub retained_template_count: usize,
     /// Frames where this render world proved its retained snapshot did not need rebuilding.
@@ -121,6 +123,7 @@ impl RenderWorldMaintenanceStats {
         self.mesh_asset_invalidation_count += other.mesh_asset_invalidation_count;
         self.full_space_rebuild_count += other.full_space_rebuild_count;
         self.full_world_rebuild_count += other.full_world_rebuild_count;
+        self.particle_snapshot_rebuild_count += other.particle_snapshot_rebuild_count;
         self.retained_template_count += other.retained_template_count;
         self.steady_state_skip_count += other.steady_state_skip_count;
     }
@@ -138,6 +141,8 @@ pub struct RenderWorld {
     dirty_transform_roots: Vec<RenderWorldTransformDirty>,
     /// Mesh assets whose referencing renderer records need refresh.
     dirty_mesh_assets: HashSet<i32>,
+    /// Whether generated particle mesh churn requires rebuilding the prepared snapshot.
+    particle_snapshot_dirty: bool,
     /// Whether the next prepare must rebuild every scene space.
     full_rebuild_requested: bool,
     /// Mesh-pool mutation generation consumed by this cache.
@@ -271,6 +276,7 @@ impl RenderWorld {
             dirty_renderers: HashSet::new(),
             dirty_transform_roots: Vec::new(),
             dirty_mesh_assets: HashSet::new(),
+            particle_snapshot_dirty: false,
             full_rebuild_requested: true,
             mesh_pool_generation: 0,
             prepared: FramePreparedRenderables::empty(render_context),
@@ -349,10 +355,15 @@ impl RenderWorld {
             stats.refreshed_template_count += outcome.template_count;
             snapshot_dirty |= outcome.renderer_count > 0;
         }
+        if self.particle_snapshot_dirty {
+            stats.particle_snapshot_rebuild_count = 1;
+            snapshot_dirty = true;
+        }
 
         if snapshot_dirty {
             profiling::scope!("mesh::render_world::rebuild_snapshot");
             self.rebuild_prepared_snapshot(scene, mesh_pool, point_render_buffers, render_context);
+            self.particle_snapshot_dirty = false;
         } else {
             stats.steady_state_skip_count = 1;
         }
@@ -435,7 +446,7 @@ impl RenderWorld {
         stats.mesh_asset_invalidation_count += delta.changed_asset_ids.len();
         for &asset_id in delta.changed_asset_ids {
             if crate::particles::is_generated_particle_mesh_asset_id(asset_id) {
-                self.full_rebuild_requested = true;
+                self.particle_snapshot_dirty = true;
                 continue;
             }
             self.dirty_mesh_assets.insert(asset_id);

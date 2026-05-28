@@ -84,6 +84,12 @@ impl MeshPool {
         self.mutation_generation
     }
 
+    /// Records a synthetic mutation for tests that exercise mutation consumers without GPU meshes.
+    #[cfg(test)]
+    pub(crate) fn test_record_mutation(&mut self, asset_id: i32) {
+        self.record_mutation(asset_id);
+    }
+
     /// Returns mesh asset ids mutated since `last_generation`, or a full-rebuild signal when the
     /// retained log no longer covers that generation.
     pub fn mutation_delta_since(&self, last_generation: u64) -> MeshPoolMutationDelta<'_> {

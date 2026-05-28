@@ -14,16 +14,16 @@ mod trail;
 /// Shared particle asset types and decode helpers.
 mod types;
 /// Generated mesh upload packing helpers.
-mod upload;
+pub(crate) mod upload;
 
 pub(crate) use ids::{
     billboard_render_buffer_mesh_asset_id, is_generated_billboard_mesh_asset_id,
     is_generated_particle_mesh_asset_id, point_render_buffer_generated_mesh_ids,
     trail_render_buffer_generated_mesh_ids, trail_render_buffer_mesh_asset_id,
 };
-pub(crate) use point::build_point_render_buffer_upload;
-pub(crate) use trail::build_trail_render_buffer_upload;
+pub(crate) use point::{PointRenderBufferBuild, build_point_render_buffer_cpu};
+pub(crate) use trail::{TrailRenderBufferBuild, build_trail_render_buffer_cpu};
 pub(crate) use types::{
-    ParticleRenderBufferError, PointParticle, PointRenderBufferAsset, PointRenderBufferMeshUpload,
-    TrailRenderBufferAsset, TrailRenderBufferExistingMeshes, TrailRenderBufferMeshUpload,
+    ParticleRenderBufferError, PointParticle, PointRenderBufferAsset, TrailRenderBufferAsset,
 };
+pub(crate) use upload::upload_generated_mesh;

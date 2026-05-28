@@ -197,6 +197,7 @@ impl CompiledRenderGraph {
         }
         let offscreen_copy_recorded =
             Self::record_offscreen_color_copy(&mut encoder, offscreen_color_copy, profiler);
+        let gpu_query_recorded = gpu_query.is_some();
         if let Some(query) = gpu_query
             && let Some(prof) = profiler
         {
@@ -210,6 +211,9 @@ impl CompiledRenderGraph {
             command_stats.record_copy_result(offscreen_copy_recorded);
         }
         let encode_ms = elapsed_ms(encode_start);
+        if !command_stats.has_recorded_work() && !gpu_query_recorded {
+            return Ok((Vec::new(), command_stats, encode_ms, 0.0));
+        }
         let (command_buffer, finish_ms) = {
             profiling::scope!("CommandEncoder::finish::graph_per_view");
             let finish_start = Instant::now();

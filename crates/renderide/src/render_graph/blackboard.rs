@@ -361,6 +361,16 @@ impl GraphCommandStats {
             .saturating_add(other.estimated_bandwidth_bytes);
     }
 
+    /// Returns whether command recording emitted GPU-visible work.
+    pub fn has_recorded_work(&self) -> bool {
+        self.recorded_raster_passes > 0
+            || self.recorded_compute_passes > 0
+            || self.recorded_encoder_passes > 0
+            || self.opened_render_passes > 0
+            || self.copy_count > 0
+            || self.resolve_count > 0
+    }
+
     /// Adds one runtime-skipped graph pass.
     pub fn record_skipped_pass(&mut self) {
         self.skipped_passes = self.skipped_passes.saturating_add(1);
@@ -585,6 +595,18 @@ mod tests {
         assert_eq!(stats.skipped_copy_count, 1);
         assert_eq!(stats.resolve_count, 1);
         assert_eq!(stats.skipped_resolve_count, 1);
+        assert!(stats.has_recorded_work());
+    }
+
+    #[test]
+    fn graph_command_stats_skipped_commands_are_not_recorded_work() {
+        let mut stats = GraphCommandStats::default();
+
+        stats.record_skipped_pass();
+        stats.record_copy_result(false);
+        stats.record_resolve_result(false);
+
+        assert!(!stats.has_recorded_work());
     }
 
     #[test]

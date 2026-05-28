@@ -4,9 +4,7 @@ use std::sync::Arc;
 use glam::{Quat, Vec3, Vec4};
 use thiserror::Error;
 
-use crate::assets::mesh::GpuMesh;
 use crate::color_space::srgb_channel_to_linear;
-use crate::shared::TrailTextureMode;
 
 /// CPU metadata retained for a resident PhotonDust point render buffer.
 #[derive(Clone, Debug)]
@@ -30,49 +28,6 @@ pub(crate) struct TrailRenderBufferAsset {
     pub(crate) trails_count: usize,
     /// Number of trail point slots decoded from the latest upload.
     pub(crate) trail_point_count: usize,
-}
-
-/// Meshes and metadata produced by a point render-buffer upload.
-#[derive(Debug)]
-pub(crate) struct PointRenderBufferMeshUpload {
-    /// Resident point render-buffer metadata.
-    pub(crate) asset: PointRenderBufferAsset,
-    /// Generated billboard quad mesh for the point buffer.
-    pub(crate) billboard_mesh: GpuMesh,
-}
-
-/// Meshes and metadata produced by a trail render-buffer upload.
-#[derive(Debug)]
-pub(crate) struct TrailRenderBufferMeshUpload {
-    /// Resident trail render-buffer metadata.
-    pub(crate) asset: TrailRenderBufferAsset,
-    /// Generated trail meshes for the supported texture modes.
-    pub(crate) meshes: Vec<GpuMesh>,
-}
-
-/// Existing generated trail meshes, keyed by texture mode, for in-place GPU buffer reuse.
-#[derive(Default)]
-pub(crate) struct TrailRenderBufferExistingMeshes {
-    /// Existing stretch-mode trail mesh.
-    pub(crate) stretch: Option<GpuMesh>,
-    /// Existing tiled trail mesh.
-    pub(crate) tile: Option<GpuMesh>,
-    /// Existing per-segment distributed trail mesh.
-    pub(crate) distribute_per_segment: Option<GpuMesh>,
-    /// Existing per-segment repeated trail mesh.
-    pub(crate) repeat_per_segment: Option<GpuMesh>,
-}
-
-impl TrailRenderBufferExistingMeshes {
-    /// Takes the existing mesh for `mode`, leaving that slot empty.
-    pub(super) fn take_mode(&mut self, mode: TrailTextureMode) -> Option<GpuMesh> {
-        match mode {
-            TrailTextureMode::Stretch => self.stretch.take(),
-            TrailTextureMode::Tile => self.tile.take(),
-            TrailTextureMode::DistributePerSegment => self.distribute_per_segment.take(),
-            TrailTextureMode::RepeatPerSegment => self.repeat_per_segment.take(),
-        }
-    }
 }
 
 /// Error raised while validating or generating a PhotonDust render-buffer mesh.

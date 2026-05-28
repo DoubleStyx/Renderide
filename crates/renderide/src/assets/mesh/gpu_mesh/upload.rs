@@ -211,16 +211,16 @@ fn reject_if_mapped_buffer_generation_changed(
     true
 }
 
-/// Creates a buffer with initial contents while capturing validation errors.
+/// Creates a buffer with initial contents.
 ///
 /// This intentionally avoids [`wgpu::util::DeviceExt::create_buffer_init`]'s
 /// mapped-at-creation path. Device-loss and surface-validation failures can leave
 /// new buffers invalid, and asking wgpu for a mapped range on that invalid buffer
-/// is fatal. Queue-backed initialization lets validation stay inside error scopes
-/// and lets the caller reject work when the shared invalidation generation changes.
+/// is fatal. Queue-backed initialization lets the caller's upload-level error
+/// scope catch validation once while this helper rejects work when the shared
+/// invalidation generation changes.
 ///
-/// Returns [`None`] when buffer creation failed validation; the helper logs the
-/// underlying wgpu error with label, content size, and usage flags.
+/// Returns [`None`] when the mapped-buffer invalidation generation changed.
 fn try_create_buffer_init(
     ctx: MeshGpuUploadContext<'_>,
     desc: &wgpu::util::BufferInitDescriptor<'_>,
@@ -233,23 +233,12 @@ fn try_create_buffer_init(
         return None;
     }
 
-    let error_scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
     let buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: desc.label,
         size: queue_init_buffer_size(desc.contents.len()),
         usage: desc.usage,
         mapped_at_creation: false,
     });
-    if let Some(err) = pollster::block_on(error_scope.pop()) {
-        logger::error!(
-            "mesh upload: buffer create failed for {:?} ({} B, usage {:?}): {}",
-            desc.label,
-            desc.contents.len(),
-            desc.usage,
-            err,
-        );
-        return None;
-    }
 
     if reject_if_mapped_buffer_generation_changed(
         ctx.mapped_buffer_health,
@@ -260,18 +249,7 @@ fn try_create_buffer_init(
     }
 
     if !desc.contents.is_empty() {
-        let error_scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
         write_mesh_queue_buffer(ctx.queue, &buffer, 0, desc.contents);
-        if let Some(err) = pollster::block_on(error_scope.pop()) {
-            logger::error!(
-                "mesh upload: queue write failed for {:?} ({} B, usage {:?}): {}",
-                desc.label,
-                desc.contents.len(),
-                desc.usage,
-                err,
-            );
-            return None;
-        }
     }
 
     if reject_if_mapped_buffer_generation_changed(
