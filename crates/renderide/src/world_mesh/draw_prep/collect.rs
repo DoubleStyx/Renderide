@@ -30,7 +30,7 @@ use crate::world_mesh::materials::FrameMaterialBatchCache;
 
 use super::arrange::arrange_draws_by_phase_bins;
 use super::filter::CameraTransformDrawFilter;
-use super::item::{WorldMeshDrawCollection, WorldMeshDrawItem};
+use super::item::{WorldMeshDrawCollection, WorldMeshDrawItem, WorldMeshVisibilityStats};
 use super::prepared_renderables::FramePreparedRenderables;
 
 mod candidate;
@@ -44,6 +44,8 @@ use filter_masks::build_per_space_filter_masks;
 use lod::{LodVisibility, build_lod_visibility};
 use prepared::collect_prepared_chunk;
 use scene_walk::{build_chunk_specs, collect_chunk, estimate_active_renderable_count};
+
+const SPATIAL_QUERY_RUN_CHUNK_TARGET: usize = 64;
 
 #[cfg(test)]
 use super::prepared_renderables::FramePreparedDraw;
@@ -87,6 +89,27 @@ fn scene_collect_admission(
         }
     } else {
         ParallelAdmission::Serial
+    }
+}
+
+/// Per-chunk CPU cull counters: pre-cull, frustum-culled, and Hi-Z-culled draws.
+type WorldMeshChunkCullStats = (usize, usize, usize);
+
+/// Draw items and cull counters produced by one collection worker.
+type WorldMeshDrawChunk = (Vec<WorldMeshDrawItem>, WorldMeshChunkCullStats);
+
+/// Draw chunks plus broadphase visibility counters produced by collection.
+struct WorldMeshCollectedChunks {
+    /// Worker-local draw chunks in deterministic merge order.
+    chunks: Vec<WorldMeshDrawChunk>,
+    /// Visibility broadphase counters gathered during candidate selection.
+    visibility: WorldMeshVisibilityStats,
+}
+
+impl WorldMeshCollectedChunks {
+    /// Builds collected chunks with the supplied visibility counters.
+    fn new(chunks: Vec<WorldMeshDrawChunk>, visibility: WorldMeshVisibilityStats) -> Self {
+        Self { chunks, visibility }
     }
 }
 
@@ -159,6 +182,8 @@ pub struct QueuedWorldMeshDraws {
     draws_culled: usize,
     /// Number of candidate draws rejected by temporal Hi-Z culling.
     draws_hi_z_culled: usize,
+    /// Visibility broadphase counters gathered before per-renderer prepared draw expansion.
+    visibility: WorldMeshVisibilityStats,
 }
 
 /// Prepared draw collection state derived once per view before chunk dispatch.
@@ -167,6 +192,8 @@ struct PreparedCollectionState<'a> {
     prepared: &'a FramePreparedRenderables,
     /// Material batch keys refreshed for this view's render context and shader permutation.
     cache: &'a FrameMaterialBatchCache,
+    /// Active prepared render spaces relevant to this view.
+    space_ids: Vec<RenderSpaceId>,
     /// Per-space camera transform-filter masks.
     filter_masks: HashMap<RenderSpaceId, Vec<bool>>,
     /// Per-view LOD visibility decisions.
@@ -207,6 +234,7 @@ impl QueuedWorldMeshDraws {
             draws_pre_cull: self.draws_pre_cull,
             draws_culled: self.draws_culled,
             draws_hi_z_culled: self.draws_hi_z_culled,
+            visibility: self.visibility,
             arrangement,
         }
     }
@@ -288,7 +316,7 @@ pub fn queue_draws_with_parallelism(
         build_lod_visibility(ctx, space_ids)
     };
 
-    let per_chunk = {
+    let collected = {
         profiling::scope!("mesh::queue_draws::collect_chunks");
         collect_world_mesh_chunks(
             ctx,
@@ -300,7 +328,7 @@ pub fn queue_draws_with_parallelism(
         )
     };
 
-    merge_collected_chunks(per_chunk, cap_hint)
+    merge_collected_chunks(collected, cap_hint)
 }
 
 /// Queues prepared draws for multiple view contexts through one flat `(view, chunk)` workload.
@@ -330,7 +358,10 @@ pub(crate) fn queue_prepared_draws_for_views_with_parallelism(
         draw_count,
         admission,
     );
-    if contexts.len() > 1 && admission.is_parallel() {
+    if contexts.len() > 1
+        && contexts.iter().all(|ctx| ctx.culling.is_none())
+        && admission.is_parallel()
+    {
         Some(collect_prepared_views_flat(contexts, &states, task_count))
     } else {
         Some(
@@ -340,12 +371,12 @@ pub(crate) fn queue_prepared_draws_for_views_with_parallelism(
                 .map(|(view_index, state)| {
                     let allow_parallel_chunks =
                         contexts.len() == 1 && parallelism == WorldMeshDrawCollectParallelism::Full;
-                    let per_chunk = collect_prepared_chunks_for_state(
+                    let collected = collect_prepared_chunks_for_state(
                         &contexts[view_index],
                         state,
                         allow_parallel_chunks,
                     );
-                    merge_collected_chunks(per_chunk, state.cap_hint)
+                    merge_collected_chunks(collected, state.cap_hint)
                 })
                 .collect(),
         )
@@ -354,13 +385,13 @@ pub(crate) fn queue_prepared_draws_for_views_with_parallelism(
 
 /// Merges per-chunk collection output and assigns stable collection order.
 fn merge_collected_chunks(
-    per_chunk: Vec<(Vec<WorldMeshDrawItem>, (usize, usize, usize))>,
+    collected: WorldMeshCollectedChunks,
     cap_hint: usize,
 ) -> QueuedWorldMeshDraws {
     let mut out = Vec::with_capacity(cap_hint);
     let mut cull_stats = (0usize, 0usize, 0usize);
     profiling::scope!("mesh::collect_and_sort::merge_chunks");
-    for (items, cs) in per_chunk {
+    for (items, cs) in collected.chunks {
         cull_stats.0 += cs.0;
         cull_stats.1 += cs.1;
         cull_stats.2 += cs.2;
@@ -377,6 +408,7 @@ fn merge_collected_chunks(
         draws_pre_cull: cull_stats.0,
         draws_culled: cull_stats.1,
         draws_hi_z_culled: cull_stats.2,
+        visibility: collected.visibility,
     }
 }
 
@@ -401,6 +433,7 @@ fn build_prepared_collection_states<'a>(
         states.push(PreparedCollectionState {
             prepared,
             cache,
+            space_ids,
             filter_masks,
             lod_visibility,
             cap_hint,
@@ -485,7 +518,11 @@ fn collect_prepared_views_flat(
     per_view
         .into_iter()
         .zip(states)
-        .map(|(per_chunk, state)| merge_collected_chunks(per_chunk, state.cap_hint))
+        .map(|(per_chunk, state)| {
+            let collected =
+                WorldMeshCollectedChunks::new(per_chunk, WorldMeshVisibilityStats::default());
+            merge_collected_chunks(collected, state.cap_hint)
+        })
         .collect()
 }
 
@@ -511,15 +548,34 @@ fn collect_prepared_chunks_for_state(
     ctx: &DrawCollectionContext<'_>,
     state: &PreparedCollectionState<'_>,
     allow_parallel_chunks: bool,
-) -> Vec<(Vec<WorldMeshDrawItem>, (usize, usize, usize))> {
-    collect_prepared_chunks(
-        ctx,
-        state.prepared,
-        state.cache,
-        &state.filter_masks,
-        &state.lod_visibility,
-        state.cap_hint,
-        allow_parallel_chunks,
+) -> WorldMeshCollectedChunks {
+    if ctx.culling.is_some() {
+        let parallelism = if allow_parallel_chunks {
+            WorldMeshDrawCollectParallelism::Full
+        } else {
+            WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch
+        };
+        return collect_prepared_spatial_chunks(
+            state.prepared,
+            ctx,
+            parallelism,
+            state.cache,
+            &state.filter_masks,
+            &state.lod_visibility,
+            &state.space_ids,
+        );
+    }
+    WorldMeshCollectedChunks::new(
+        collect_prepared_chunks(
+            ctx,
+            state.prepared,
+            state.cache,
+            &state.filter_masks,
+            &state.lod_visibility,
+            state.cap_hint,
+            allow_parallel_chunks,
+        ),
+        WorldMeshVisibilityStats::default(),
     )
 }
 
@@ -577,17 +633,56 @@ fn collect_world_mesh_chunks(
     filter_masks: &HashMap<RenderSpaceId, Vec<bool>>,
     lod_visibility: &LodVisibility,
     space_ids: &[RenderSpaceId],
-) -> Vec<(Vec<WorldMeshDrawItem>, (usize, usize, usize))> {
+) -> WorldMeshCollectedChunks {
     if let Some(prepared) = ctx.prepared {
-        debug_assert_eq!(
-            prepared.render_context(),
-            ctx.render_context,
-            "prepared renderables were built for a different render context than the per-view draw collection -- material overrides would disagree"
+        return collect_prepared_world_mesh_chunks(
+            prepared,
+            ctx,
+            parallelism,
+            cache,
+            filter_masks,
+            lod_visibility,
+            space_ids,
         );
-        profiling::scope!("mesh::collect_prepared");
-        // Cached run-aligned chunking ensures every renderer's slots stay inside one chunk so the
-        // per-renderer CPU cull and material-batch lookup happens at most once per renderer per
-        // view without allocating a chunk list per view.
+    }
+    collect_scene_world_mesh_chunks(
+        ctx,
+        parallelism,
+        cache,
+        filter_masks,
+        lod_visibility,
+        space_ids,
+    )
+}
+
+/// Collects chunks from the prepared draw snapshot.
+fn collect_prepared_world_mesh_chunks(
+    prepared: &FramePreparedRenderables,
+    ctx: &DrawCollectionContext<'_>,
+    parallelism: WorldMeshDrawCollectParallelism,
+    cache: &FrameMaterialBatchCache,
+    filter_masks: &HashMap<RenderSpaceId, Vec<bool>>,
+    lod_visibility: &LodVisibility,
+    space_ids: &[RenderSpaceId],
+) -> WorldMeshCollectedChunks {
+    debug_assert_eq!(
+        prepared.render_context(),
+        ctx.render_context,
+        "prepared renderables were built for a different render context than the per-view draw collection -- material overrides would disagree"
+    );
+    profiling::scope!("mesh::collect_prepared");
+    if ctx.culling.is_some() {
+        return collect_prepared_spatial_chunks(
+            prepared,
+            ctx,
+            parallelism,
+            cache,
+            filter_masks,
+            lod_visibility,
+            space_ids,
+        );
+    }
+    WorldMeshCollectedChunks::new(
         collect_prepared_chunks(
             ctx,
             prepared,
@@ -596,25 +691,111 @@ fn collect_world_mesh_chunks(
             lod_visibility,
             prepared_capacity_hint_for_context(ctx, prepared),
             parallelism == WorldMeshDrawCollectParallelism::Full,
-        )
+        ),
+        WorldMeshVisibilityStats::default(),
+    )
+}
+
+/// Collects prepared chunks from spatial broadphase candidates.
+fn collect_prepared_spatial_chunks(
+    prepared: &FramePreparedRenderables,
+    ctx: &DrawCollectionContext<'_>,
+    parallelism: WorldMeshDrawCollectParallelism,
+    cache: &FrameMaterialBatchCache,
+    filter_masks: &HashMap<RenderSpaceId, Vec<bool>>,
+    lod_visibility: &LodVisibility,
+    space_ids: &[RenderSpaceId],
+) -> WorldMeshCollectedChunks {
+    profiling::scope!("mesh::collect_prepared::spatial_candidates");
+    let draws = prepared.draws();
+    let candidates = prepared.spatial_run_candidates(space_ids, ctx.scene, ctx.culling);
+    let candidate_draw_count = candidates
+        .runs
+        .iter()
+        .map(|run| (run.end - run.start) as usize)
+        .sum::<usize>();
+    let admission = prepared_collect_admission(
+        candidates.runs.len(),
+        candidate_draw_count,
+        current_reference_worker_count(),
+    );
+    record_parallel_admission(
+        ParallelAdmissionSite::PreparedDrawCollect,
+        candidate_draw_count,
+        candidate_draw_count,
+        admission,
+    );
+    let mut chunks = if candidates.runs.is_empty() {
+        Vec::new()
+    } else if parallelism == WorldMeshDrawCollectParallelism::Full && admission.is_parallel() {
+        profiling::scope!("mesh::collect_prepared::spatial_parallel_chunks");
+        candidates
+            .runs
+            .par_chunks(SPATIAL_QUERY_RUN_CHUNK_TARGET)
+            .map(|runs| {
+                profiling::scope!("mesh::collect_prepared::spatial_chunk_worker");
+                collect_prepared_chunk(draws, runs, ctx, cache, filter_masks, lod_visibility)
+            })
+            .collect()
     } else {
-        let chunks = {
-            profiling::scope!("mesh::collect::build_chunk_specs");
-            build_chunk_specs(space_ids, ctx)
-        };
-        let work_units = {
-            profiling::scope!("mesh::collect::estimate_parallel_work");
-            estimate_active_renderable_count(space_ids, ctx)
-        };
-        let admission =
-            scene_collect_admission(chunks.len(), work_units, current_reference_worker_count());
-        record_parallel_admission(
-            ParallelAdmissionSite::SceneDrawCollect,
-            work_units,
-            chunks.len(),
-            admission,
-        );
-        profiling::scope!("mesh::collect");
+        profiling::scope!("mesh::collect_prepared::spatial_serial_chunks");
+        vec![collect_prepared_chunk(
+            draws,
+            &candidates.runs,
+            ctx,
+            cache,
+            filter_masks,
+            lod_visibility,
+        )]
+    };
+    merge_spatial_candidate_cull_stats(&mut chunks, candidates.cull_stats);
+    WorldMeshCollectedChunks::new(chunks, candidates.visibility)
+}
+
+/// Merges broadphase cull counters into collected draw chunks.
+fn merge_spatial_candidate_cull_stats(
+    chunks: &mut Vec<WorldMeshDrawChunk>,
+    cull_stats: WorldMeshChunkCullStats,
+) {
+    if cull_stats == (0, 0, 0) {
+        return;
+    }
+    if let Some((_, stats)) = chunks.first_mut() {
+        stats.0 += cull_stats.0;
+        stats.1 += cull_stats.1;
+        stats.2 += cull_stats.2;
+    } else {
+        chunks.push((Vec::new(), cull_stats));
+    }
+}
+
+/// Collects chunks by walking scene render spaces when no prepared draw snapshot exists.
+fn collect_scene_world_mesh_chunks(
+    ctx: &DrawCollectionContext<'_>,
+    parallelism: WorldMeshDrawCollectParallelism,
+    cache: &FrameMaterialBatchCache,
+    filter_masks: &HashMap<RenderSpaceId, Vec<bool>>,
+    lod_visibility: &LodVisibility,
+    space_ids: &[RenderSpaceId],
+) -> WorldMeshCollectedChunks {
+    let chunks = {
+        profiling::scope!("mesh::collect::build_chunk_specs");
+        build_chunk_specs(space_ids, ctx)
+    };
+    let work_units = {
+        profiling::scope!("mesh::collect::estimate_parallel_work");
+        estimate_active_renderable_count(space_ids, ctx)
+    };
+    let admission =
+        scene_collect_admission(chunks.len(), work_units, current_reference_worker_count());
+    record_parallel_admission(
+        ParallelAdmissionSite::SceneDrawCollect,
+        work_units,
+        chunks.len(),
+        admission,
+    );
+    profiling::scope!("mesh::collect");
+    let collected =
         if parallelism == WorldMeshDrawCollectParallelism::Full && admission.is_parallel() {
             profiling::scope!("mesh::collect::parallel_chunks");
             chunks
@@ -631,8 +812,8 @@ fn collect_world_mesh_chunks(
                 .iter()
                 .map(|spec| collect_chunk(spec, ctx, cache, filter_masks, lod_visibility))
                 .collect()
-        }
-    }
+        };
+    WorldMeshCollectedChunks::new(collected, WorldMeshVisibilityStats::default())
 }
 
 #[cfg(test)]

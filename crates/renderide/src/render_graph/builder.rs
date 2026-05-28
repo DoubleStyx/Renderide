@@ -19,21 +19,22 @@ use edges::{add_blackboard_edges, add_group_edges, add_resource_edges, explicit_
 use imports::{compile_imported_final_accesses, needs_surface_acquire};
 use lifetime::{compile_buffers, compile_textures};
 use pass_info::compile_pass_info;
-use schedule_plan::build_frame_schedule;
-use store_ops::optimize_transient_attachment_stores;
+use schedule_plan::{FrameScheduleBuildInput, build_frame_schedule};
+use store_ops::{TransientAttachmentStoreStats, optimize_transient_attachment_stores};
 use topo::{retained_ordinals, retained_passes, topo_sort};
 use validate::validate_handles;
 
 use std::collections::BTreeSet;
 
 use super::compiled::{
-    CompileStats, CompiledBufferResource, CompiledRenderGraph, CompiledTextureResource,
+    CompileStats, CompiledBufferResource, CompiledPassInfo, CompiledRenderGraph,
+    CompiledTextureResource,
 };
 use super::error::GraphBuildError;
 use super::ids::{GroupId, PassId};
 use super::pass::{
     BlackboardSeedDecl, ComputePass, EncoderPass, GroupScope, PassBuilder, PassNode, PassPhase,
-    RasterPass,
+    PassWorkloadFlags, RasterPass,
 };
 use super::resources::{
     BufferHandle, ImportedBufferDecl, ImportedBufferHandle, ImportedTextureDecl,
@@ -58,6 +59,83 @@ pub struct GraphBuilder {
     validation_mode: RenderGraphValidationMode,
     default_frame_group: GroupId,
     default_per_view_group: GroupId,
+}
+
+/// Inputs used to assemble compile diagnostics after scheduling.
+struct CompileStatsInput<'a> {
+    /// Number of passes registered before culling.
+    registered_pass_count: usize,
+    /// Number of topological waves before retention.
+    topo_levels: usize,
+    /// Number of passes culled as dead graph work.
+    culled_count: usize,
+    /// Number of passes intentionally skipped before setup.
+    compile_skipped_pass_count: usize,
+    /// Number of declared transient texture handles.
+    transient_texture_count: usize,
+    /// Number of physical transient texture slots.
+    transient_texture_slots: usize,
+    /// Number of transient texture lifetime lanes.
+    transient_texture_lanes: usize,
+    /// Number of declared transient buffer handles.
+    transient_buffer_count: usize,
+    /// Number of physical transient buffer slots.
+    transient_buffer_slots: usize,
+    /// Number of transient buffer lifetime lanes.
+    transient_buffer_lanes: usize,
+    /// Number of imported texture declarations.
+    imported_texture_count: usize,
+    /// Number of imported buffer declarations.
+    imported_buffer_count: usize,
+    /// Number of build-time validation diagnostics.
+    validation_diagnostics: usize,
+    /// Attachment store and resolve diagnostics.
+    store_stats: TransientAttachmentStoreStats,
+    /// Final retained schedule.
+    schedule: &'a FrameSchedule,
+    /// Retained pass metadata.
+    pass_info: &'a [CompiledPassInfo],
+}
+
+/// Builds public compile diagnostics from retained graph metadata.
+fn build_compile_stats(input: CompileStatsInput<'_>) -> CompileStats {
+    CompileStats {
+        registered_pass_count: input.registered_pass_count,
+        pass_count: input.pass_info.len(),
+        topo_levels: input.topo_levels,
+        culled_count: input.culled_count,
+        compile_skipped_pass_count: input.compile_skipped_pass_count,
+        transient_texture_count: input.transient_texture_count,
+        transient_texture_slots: input.transient_texture_slots,
+        transient_texture_lanes: input.transient_texture_lanes,
+        transient_buffer_count: input.transient_buffer_count,
+        transient_buffer_slots: input.transient_buffer_slots,
+        transient_buffer_lanes: input.transient_buffer_lanes,
+        imported_texture_count: input.imported_texture_count,
+        imported_buffer_count: input.imported_buffer_count,
+        validation_diagnostics: input.validation_diagnostics,
+        dependency_edge_count: input.schedule.dependency_edges.len(),
+        render_pass_merge_groups: input.schedule.render_pass_merge_groups.len(),
+        render_pass_materialization_groups: input
+            .schedule
+            .render_pass_materialization_plan
+            .groups
+            .len(),
+        async_compute_capable_pass_count: input
+            .pass_info
+            .iter()
+            .filter(|info| {
+                info.workload_flags
+                    .contains(PassWorkloadFlags::ASYNC_COMPUTE_CAPABLE)
+            })
+            .count(),
+        parallel_recording_unit_count: input.schedule.recording_plan.parallel_unit_count(),
+        parallel_recording_batch_count: input.schedule.recording_plan.parallel_batch_count(),
+        attachment_resolve_count: input.store_stats.attachment_resolve_count,
+        transient_attachment_store_count: input.store_stats.store_count,
+        transient_attachment_discard_count: input.store_stats.discard_count,
+        estimated_bandwidth_bytes: input.store_stats.estimated_bandwidth_bytes,
+    }
 }
 
 impl GraphBuilder {
@@ -279,46 +357,40 @@ impl GraphBuilder {
         let ordered_passes = take_ordered_passes(self.passes, &ordered)?;
 
         // Build FrameSchedule: single source of truth for pass ordering and scheduler policy.
-        let schedule = build_frame_schedule(
-            &ordered_passes,
-            &ordered,
-            &wave_by_node,
-            &compiled_textures,
-            &compiled_buffers,
+        let schedule = build_frame_schedule(FrameScheduleBuildInput {
+            ordered_passes: &ordered_passes,
+            ordered: &ordered,
+            wave_by_node: &wave_by_node,
+            compiled_textures: &compiled_textures,
+            compiled_buffers: &compiled_buffers,
             imported_final_accesses,
-            &pass_info,
-        )?;
+            pass_info: &pass_info,
+            edges: &edges,
+        })?;
         let schedule_hud = ScheduleHudSnapshot::from_schedule(&schedule);
-        let validation_diagnostics = validation_report.len();
-        let render_pass_merge_groups = schedule.render_pass_merge_groups.len();
-        let render_pass_materialization_groups =
-            schedule.render_pass_materialization_plan.groups.len();
+        let compile_stats = build_compile_stats(CompileStatsInput {
+            registered_pass_count: n,
+            topo_levels,
+            culled_count,
+            compile_skipped_pass_count: self.compile_skipped_pass_count,
+            transient_texture_count: self.textures.len(),
+            transient_texture_slots: texture_slots,
+            transient_texture_lanes: texture_lifetime_lanes.len(),
+            transient_buffer_count: self.buffers.len(),
+            transient_buffer_slots: buffer_slots,
+            transient_buffer_lanes: buffer_lifetime_lanes.len(),
+            imported_texture_count: self.imports_tex.len(),
+            imported_buffer_count: self.imports_buf.len(),
+            validation_diagnostics: validation_report.len(),
+            store_stats,
+            schedule: &schedule,
+            pass_info: &pass_info,
+        });
 
         Ok(CompiledRenderGraph {
             passes: ordered_passes,
             needs_surface_acquire,
-            compile_stats: CompileStats {
-                registered_pass_count: n,
-                pass_count: pass_info.len(),
-                topo_levels,
-                culled_count,
-                compile_skipped_pass_count: self.compile_skipped_pass_count,
-                transient_texture_count: self.textures.len(),
-                transient_texture_slots: texture_slots,
-                transient_texture_lanes: texture_lifetime_lanes.len(),
-                transient_buffer_count: self.buffers.len(),
-                transient_buffer_slots: buffer_slots,
-                transient_buffer_lanes: buffer_lifetime_lanes.len(),
-                imported_texture_count: self.imports_tex.len(),
-                imported_buffer_count: self.imports_buf.len(),
-                validation_diagnostics,
-                render_pass_merge_groups,
-                render_pass_materialization_groups,
-                attachment_resolve_count: store_stats.attachment_resolve_count,
-                transient_attachment_store_count: store_stats.store_count,
-                transient_attachment_discard_count: store_stats.discard_count,
-                estimated_bandwidth_bytes: store_stats.estimated_bandwidth_bytes,
-            },
+            compile_stats,
             pass_info,
             transient_textures: compiled_textures,
             transient_buffers: compiled_buffers,

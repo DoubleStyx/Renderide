@@ -8,8 +8,9 @@
 //! to. The executor consumes these waves while preserving deterministic pass order inside each
 //! wave.
 
+use super::compiled::CompiledPassInfo;
 use super::frame_upload_batch::FrameUploadScope;
-use super::pass::PassPhase;
+use super::pass::{PassPhase, PassWorkloadFlags};
 use super::resources::{
     BufferAccess, BufferHandle, ImportedBufferHandle, ImportedTextureHandle, TextureAccess,
     TextureHandle,
@@ -179,6 +180,342 @@ impl RenderPassMaterializationPlan {
     }
 }
 
+/// Dependency edge between retained schedule steps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScheduleDependencyEdge {
+    /// Producer step index in [`FrameSchedule::steps`].
+    pub from_step: usize,
+    /// Consumer step index in [`FrameSchedule::steps`].
+    pub to_step: usize,
+}
+
+/// One scheduler V2 command-recording unit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecordingUnit {
+    /// First schedule-step index covered by this unit.
+    pub start_step: usize,
+    /// Exclusive schedule-step index after this unit.
+    pub end_step: usize,
+    /// Runtime phase shared by every covered step.
+    pub phase: PassPhase,
+    /// Wave where this unit is eligible to record.
+    pub wave_idx: usize,
+    /// Whether this unit is allowed to record on a worker alongside other units.
+    pub parallel_safe: bool,
+    /// Why the unit remains on the serial path when [`Self::parallel_safe`] is false.
+    pub serial_reason: RecordingSerialReason,
+}
+
+impl RecordingUnit {
+    /// Returns whether this unit represents a materialized render-pass group.
+    pub const fn is_materialized_group(self) -> bool {
+        self.end_step > self.start_step + 1
+    }
+}
+
+/// Reason a recording unit must stay serial.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordingSerialReason {
+    /// Unit is parallel-safe.
+    ParallelSafe,
+    /// Frame-global passes retain mutable frame scratch and record serially.
+    FrameGlobalPhase,
+    /// Materialized raster groups must not be split across encoders.
+    MaterializedRasterGroup,
+    /// Pass explicitly requested serial command recording.
+    NeverParallel,
+    /// Encoder-driven passes can contain undeclared command-level side effects.
+    EncoderSideEffects,
+    /// Pass writes or mutably accesses the blackboard.
+    BlackboardWrites,
+}
+
+/// One deterministic scheduler V2 batch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecordingBatch {
+    /// First recording-unit index in [`RecordingSchedulePlan::units`].
+    pub start_unit: usize,
+    /// Exclusive recording-unit index after this batch.
+    pub end_unit: usize,
+    /// Phase shared by the batched units.
+    pub phase: PassPhase,
+    /// Wave shared by the batched units.
+    pub wave_idx: usize,
+    /// Recording mode for this batch.
+    pub kind: RecordingBatchKind,
+}
+
+/// Recording mode selected for one batch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordingBatchKind {
+    /// Record units serially in schedule order.
+    Serial,
+    /// Record units concurrently and submit the finished command buffers in schedule order.
+    Parallel,
+}
+
+/// Scheduler V2 command-recording plan.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RecordingSchedulePlan {
+    /// Recording units in retained schedule order.
+    pub units: Vec<RecordingUnit>,
+    /// Deterministic batches over [`Self::units`].
+    pub batches: Vec<RecordingBatch>,
+}
+
+impl RecordingSchedulePlan {
+    /// Builds a conservative all-serial plan from schedule steps.
+    pub fn serial_from_steps(steps: &[ScheduleStep]) -> Self {
+        let units: Vec<_> = steps
+            .iter()
+            .enumerate()
+            .map(|(step_idx, step)| RecordingUnit {
+                start_step: step_idx,
+                end_step: step_idx + 1,
+                phase: step.phase,
+                wave_idx: step.wave_idx,
+                parallel_safe: false,
+                serial_reason: match step.phase {
+                    PassPhase::FrameGlobal => RecordingSerialReason::FrameGlobalPhase,
+                    PassPhase::PerView => RecordingSerialReason::NeverParallel,
+                },
+            })
+            .collect();
+        let batches = units
+            .iter()
+            .enumerate()
+            .map(|(idx, unit)| RecordingBatch {
+                start_unit: idx,
+                end_unit: idx + 1,
+                phase: unit.phase,
+                wave_idx: unit.wave_idx,
+                kind: RecordingBatchKind::Serial,
+            })
+            .collect();
+        Self { units, batches }
+    }
+
+    /// Returns batches for one pass phase.
+    pub fn phase_batches(&self, phase: PassPhase) -> impl Iterator<Item = RecordingBatch> + '_ {
+        self.batches
+            .iter()
+            .copied()
+            .filter(move |batch| batch.phase == phase)
+    }
+
+    /// Returns whether this phase has any real parallel batch.
+    pub fn phase_has_parallel_batches(&self, phase: PassPhase) -> bool {
+        self.phase_batches(phase)
+            .any(|batch| batch.kind == RecordingBatchKind::Parallel)
+    }
+
+    /// Counts real parallel batches across all phases.
+    pub fn parallel_batch_count(&self) -> usize {
+        self.batches
+            .iter()
+            .filter(|batch| batch.kind == RecordingBatchKind::Parallel)
+            .count()
+    }
+
+    /// Counts recording units that are allowed to run in a parallel batch.
+    pub fn parallel_unit_count(&self) -> usize {
+        self.units.iter().filter(|unit| unit.parallel_safe).count()
+    }
+}
+
+/// Builds scheduler V2 recording units and batches from retained schedule metadata.
+pub(crate) fn build_recording_schedule_plan(
+    steps: &[ScheduleStep],
+    pass_info: &[CompiledPassInfo],
+    materialization_plan: &RenderPassMaterializationPlan,
+) -> RecordingSchedulePlan {
+    let units = build_recording_units(steps, pass_info, materialization_plan);
+    let batches = build_recording_batches(&units, steps, pass_info);
+    RecordingSchedulePlan { units, batches }
+}
+
+fn build_recording_units(
+    steps: &[ScheduleStep],
+    pass_info: &[CompiledPassInfo],
+    materialization_plan: &RenderPassMaterializationPlan,
+) -> Vec<RecordingUnit> {
+    let mut groups = materialization_plan.groups.clone();
+    groups.sort_unstable_by_key(|group| group.start_step);
+    let mut group_idx = 0usize;
+    let mut step_idx = 0usize;
+    let mut units = Vec::new();
+    while step_idx < steps.len() {
+        while groups
+            .get(group_idx)
+            .is_some_and(|group| group.start_step < step_idx)
+        {
+            group_idx += 1;
+        }
+        if let Some(group) = groups.get(group_idx).copied()
+            && group.start_step == step_idx
+            && materialization_group_is_valid(steps, group)
+        {
+            let phase = steps[group.start_step].phase;
+            let wave_idx = steps[group.start_step..group.end_step]
+                .iter()
+                .map(|step| step.wave_idx)
+                .max()
+                .unwrap_or(steps[group.start_step].wave_idx);
+            units.push(RecordingUnit {
+                start_step: group.start_step,
+                end_step: group.end_step,
+                phase,
+                wave_idx,
+                parallel_safe: false,
+                serial_reason: RecordingSerialReason::MaterializedRasterGroup,
+            });
+            step_idx = group.end_step;
+            group_idx += 1;
+            continue;
+        }
+        let step = steps[step_idx];
+        let serial_reason = single_step_serial_reason(step, pass_info.get(step.pass_idx));
+        units.push(RecordingUnit {
+            start_step: step_idx,
+            end_step: step_idx + 1,
+            phase: step.phase,
+            wave_idx: step.wave_idx,
+            parallel_safe: serial_reason == RecordingSerialReason::ParallelSafe,
+            serial_reason,
+        });
+        step_idx += 1;
+    }
+    units
+}
+
+fn materialization_group_is_valid(
+    steps: &[ScheduleStep],
+    group: RenderPassMaterializationGroup,
+) -> bool {
+    if group.end_step <= group.start_step + 1 || group.end_step > steps.len() {
+        return false;
+    }
+    let phase = steps[group.start_step].phase;
+    steps[group.start_step..group.end_step]
+        .iter()
+        .all(|step| step.phase == phase)
+}
+
+fn single_step_serial_reason(
+    step: ScheduleStep,
+    info: Option<&CompiledPassInfo>,
+) -> RecordingSerialReason {
+    if step.phase == PassPhase::FrameGlobal {
+        return RecordingSerialReason::FrameGlobalPhase;
+    }
+    let Some(info) = info else {
+        return RecordingSerialReason::NeverParallel;
+    };
+    if info
+        .workload_flags
+        .contains(PassWorkloadFlags::NEVER_PARALLEL)
+    {
+        return RecordingSerialReason::NeverParallel;
+    }
+    if info
+        .workload_flags
+        .contains(PassWorkloadFlags::COPY_ENCODER)
+    {
+        return RecordingSerialReason::EncoderSideEffects;
+    }
+    if info
+        .blackboard_accesses
+        .iter()
+        .any(|access| access.kind.writes())
+    {
+        return RecordingSerialReason::BlackboardWrites;
+    }
+    RecordingSerialReason::ParallelSafe
+}
+
+fn build_recording_batches(
+    units: &[RecordingUnit],
+    steps: &[ScheduleStep],
+    pass_info: &[CompiledPassInfo],
+) -> Vec<RecordingBatch> {
+    let mut batches = Vec::new();
+    let mut start = 0usize;
+    while start < units.len() {
+        let first = units[start];
+        if !first.parallel_safe {
+            batches.push(RecordingBatch {
+                start_unit: start,
+                end_unit: start + 1,
+                phase: first.phase,
+                wave_idx: first.wave_idx,
+                kind: RecordingBatchKind::Serial,
+            });
+            start += 1;
+            continue;
+        }
+        let mut end = start + 1;
+        while end < units.len()
+            && units[end].parallel_safe
+            && units[end].phase == first.phase
+            && units[end].wave_idx == first.wave_idx
+            && !units[..end]
+                .iter()
+                .skip(start)
+                .any(|existing| recording_units_conflict(*existing, units[end], steps, pass_info))
+        {
+            end += 1;
+        }
+        batches.push(RecordingBatch {
+            start_unit: start,
+            end_unit: end,
+            phase: first.phase,
+            wave_idx: first.wave_idx,
+            kind: if end - start > 1 {
+                RecordingBatchKind::Parallel
+            } else {
+                RecordingBatchKind::Serial
+            },
+        });
+        start = end;
+    }
+    batches
+}
+
+fn recording_units_conflict(
+    first: RecordingUnit,
+    second: RecordingUnit,
+    steps: &[ScheduleStep],
+    pass_info: &[CompiledPassInfo],
+) -> bool {
+    for first_step in &steps[first.start_step..first.end_step] {
+        let Some(first_info) = pass_info.get(first_step.pass_idx) else {
+            continue;
+        };
+        for second_step in &steps[second.start_step..second.end_step] {
+            let Some(second_info) = pass_info.get(second_step.pass_idx) else {
+                continue;
+            };
+            if pass_infos_conflict(first_info, second_info) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn pass_infos_conflict(first: &CompiledPassInfo, second: &CompiledPassInfo) -> bool {
+    for first_access in &first.accesses {
+        for second_access in &second.accesses {
+            if first_access.resource == second_access.resource
+                && (first_access.writes() || second_access.writes())
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Compiled execution schedule for one [`super::compiled::CompiledRenderGraph`].
 ///
 /// `steps` is the flat retained pass list in execution order. `waves` stores index ranges into
@@ -201,6 +538,10 @@ pub struct FrameSchedule {
     pub render_pass_merge_groups: Vec<RenderPassMergeGroup>,
     /// Render-pass groups the executor attempts to materialize into one wgpu render pass.
     pub render_pass_materialization_plan: RenderPassMaterializationPlan,
+    /// Retained dependency edges between schedule steps.
+    pub dependency_edges: Vec<ScheduleDependencyEdge>,
+    /// Scheduler V2 command-recording plan.
+    pub recording_plan: RecordingSchedulePlan,
     /// Cached `pass_idx` values for [`PassPhase::FrameGlobal`] steps, in execution order.
     ///
     /// Populated once by [`FrameSchedule::new`] so per-frame post-submit dispatch can iterate a
@@ -224,6 +565,7 @@ impl FrameSchedule {
         resource_events: Vec<ResourceScheduleEvent>,
         imported_final_accesses: Vec<ImportedResourceFinalAccess>,
         render_pass_merge_groups: Vec<RenderPassMergeGroup>,
+        dependency_edges: Vec<ScheduleDependencyEdge>,
     ) -> Self {
         let frame_global_pass_indices = steps
             .iter()
@@ -235,6 +577,7 @@ impl FrameSchedule {
             .filter(|s| s.phase == PassPhase::PerView)
             .map(|s| s.pass_idx)
             .collect();
+        let recording_plan = RecordingSchedulePlan::serial_from_steps(&steps);
         Self {
             steps,
             waves,
@@ -251,6 +594,8 @@ impl FrameSchedule {
                 &render_pass_merge_groups,
             ),
             render_pass_merge_groups,
+            dependency_edges,
+            recording_plan,
             frame_global_pass_indices,
             per_view_pass_indices,
         }
@@ -258,7 +603,20 @@ impl FrameSchedule {
 
     /// Creates an empty schedule.
     pub fn empty() -> Self {
-        Self::new(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())
+        Self::new(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
+    /// Replaces the default all-serial recording plan.
+    pub(crate) fn with_recording_plan(mut self, recording_plan: RecordingSchedulePlan) -> Self {
+        self.recording_plan = recording_plan;
+        self
     }
 
     /// Iterates over [`PassPhase::FrameGlobal`] steps in execution order.
@@ -360,7 +718,14 @@ impl FrameSchedule {
 
 impl Default for FrameSchedule {
     fn default() -> Self {
-        Self::new(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())
+        Self::new(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
     }
 }
 
@@ -441,10 +806,16 @@ pub struct ScheduleHudSnapshot {
     pub per_view_count: usize,
     /// Pass count per wave (`waves[w].len()`).
     pub passes_per_wave: Vec<usize>,
+    /// Retained dependency edge count between scheduled steps.
+    pub dependency_edge_count: usize,
     /// Conservative merge groups detected at compile time.
     pub render_pass_merge_group_count: usize,
     /// Merge groups planned for materialized recording.
     pub render_pass_materialization_group_count: usize,
+    /// Scheduler V2 units that can record in a worker batch.
+    pub parallel_recording_unit_count: usize,
+    /// Scheduler V2 batches that record more than one unit in parallel.
+    pub parallel_recording_batch_count: usize,
 }
 
 impl ScheduleHudSnapshot {
@@ -456,11 +827,14 @@ impl ScheduleHudSnapshot {
             frame_global_count: schedule.frame_global_steps().count(),
             per_view_count: schedule.per_view_steps().count(),
             passes_per_wave: schedule.wave_steps().map(<[ScheduleStep]>::len).collect(),
+            dependency_edge_count: schedule.dependency_edges.len(),
             render_pass_merge_group_count: schedule.render_pass_merge_groups.len(),
             render_pass_materialization_group_count: schedule
                 .render_pass_materialization_plan
                 .groups
                 .len(),
+            parallel_recording_unit_count: schedule.recording_plan.parallel_unit_count(),
+            parallel_recording_batch_count: schedule.recording_plan.parallel_batch_count(),
         }
     }
 }
@@ -483,7 +857,7 @@ mod tests {
     }
 
     fn schedule(steps: Vec<ScheduleStep>, waves: Vec<std::ops::Range<usize>>) -> FrameSchedule {
-        FrameSchedule::new(steps, waves, Vec::new(), Vec::new(), Vec::new())
+        FrameSchedule::new(steps, waves, Vec::new(), Vec::new(), Vec::new(), Vec::new())
     }
 
     #[test]

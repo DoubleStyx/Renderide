@@ -24,6 +24,7 @@ fn queue_options(prefix: &str, capacity: i64) -> Result<(TempDir, QueueOptions),
     Ok((dir, opts))
 }
 
+#[cfg(unix)]
 /// Builds isolated queue options with explicit destroy behavior.
 fn queue_options_with_destroy(
     prefix: &str,

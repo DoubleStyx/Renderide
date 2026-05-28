@@ -1,11 +1,13 @@
 //! Batch and draw counters for the debug HUD (aligned with sorted [`WorldMeshDrawItem`] order).
 
-use super::draw_prep::{WorldMeshDrawArrangementStats, WorldMeshDrawItem};
+use super::draw_prep::{
+    WorldMeshDrawArrangementStats, WorldMeshDrawItem, WorldMeshVisibilityStats,
+};
 use super::instances::{DrawGroup, InstancePlan};
 use super::materials::{MaterialDrawBatchKey, TransparentMaterialClass};
 use crate::materials::{
-    MaterialBlendMode, MaterialDepthCompareOverride, RasterPipelineKind, ShaderPermutation,
-    embedded_stem_pipeline_pass_count,
+    MaterialBlendMode, MaterialDepthCompareOverride, RasterPipelineKind, RasterPrimitiveTopology,
+    ShaderPermutation, embedded_stem_pipeline_pass_count,
 };
 use crate::world_mesh::phase_classification::classify_world_mesh_batch;
 
@@ -58,6 +60,17 @@ pub struct WorldMeshInstancingBlockerStats {
     pub candidate_draws: usize,
 }
 
+/// Draw counts for the future GPU preprocessing path.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WorldMeshGpuPreprocessStats {
+    /// Opaque or alpha-test rigid triangle draws that can enter a future GPU preprocess path.
+    pub eligible_draws: usize,
+    /// Draws kept on CPU because their phase or material behavior is order-sensitive.
+    pub ordered_cpu_only_draws: usize,
+    /// Draws kept on CPU because their current mesh or topology requirements are unsupported.
+    pub unsupported_cpu_only_draws: usize,
+}
+
 /// Draw and batch counts for the debug HUD (aligned with sorted [`WorldMeshDrawItem`] order).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WorldMeshDrawStats {
@@ -83,6 +96,8 @@ pub struct WorldMeshDrawStats {
     pub draws_culled: usize,
     /// Draws removed by Hi-Z occlusion when enabled.
     pub draws_hi_z_culled: usize,
+    /// Visibility broadphase counters captured before per-renderer prepared draw expansion.
+    pub visibility_stats: WorldMeshVisibilityStats,
     /// GPU instance batches after merge (one indexed draw each); at most `draws_total`.
     ///
     /// Counts batches across visible forward phases, matching what `draw_subset` submits per frame
@@ -101,6 +116,8 @@ pub struct WorldMeshDrawStats {
     pub transparent_class_stats: WorldMeshTransparentClassStats,
     /// Counts explaining why draws were forced out of instance candidate grouping.
     pub instancing_blocker_stats: WorldMeshInstancingBlockerStats,
+    /// Draw admission counts for future GPU preprocessing.
+    pub gpu_preprocess_stats: WorldMeshGpuPreprocessStats,
     /// Opaque indexed batches mirrored by the generic depth prepass.
     pub depth_prepass_batches: usize,
     /// Opaque GPU instances mirrored by the generic depth prepass.
@@ -190,6 +207,7 @@ pub struct WorldMeshDrawStateRow {
 pub fn stats_from_sorted(
     draws: &[WorldMeshDrawItem],
     cull: Option<(usize, usize, usize)>,
+    visibility: WorldMeshVisibilityStats,
     arrangement: WorldMeshDrawArrangementStats,
     supports_base_instance: bool,
     shader_perm: ShaderPermutation,
@@ -198,6 +216,7 @@ pub fn stats_from_sorted(
     stats_from_sorted_with_plan(
         draws,
         cull,
+        visibility,
         arrangement,
         supports_base_instance,
         shader_perm,
@@ -209,6 +228,7 @@ pub fn stats_from_sorted(
 pub fn stats_from_sorted_with_plan(
     draws: &[WorldMeshDrawItem],
     cull: Option<(usize, usize, usize)>,
+    visibility: WorldMeshVisibilityStats,
     arrangement: WorldMeshDrawArrangementStats,
     supports_base_instance: bool,
     shader_perm: ShaderPermutation,
@@ -222,6 +242,7 @@ pub fn stats_from_sorted_with_plan(
     let transparent_class_stats = transparent_class_stats_from_sorted(draws);
     let instancing_blocker_stats =
         instancing_blocker_stats_from_sorted(draws, supports_base_instance);
+    let gpu_preprocess_stats = gpu_preprocess_stats_from_sorted(draws);
 
     let mut batch_total = 0usize;
     let mut batch_main = 0usize;
@@ -283,11 +304,13 @@ pub fn stats_from_sorted_with_plan(
         draws_pre_cull,
         draws_culled,
         draws_hi_z_culled,
+        visibility_stats: visibility,
         instance_batch_total,
         intersect_pass_batches,
         transparent_pass_batches,
         transparent_class_stats,
         instancing_blocker_stats,
+        gpu_preprocess_stats,
         depth_prepass_batches,
         depth_prepass_instances,
         gpu_instances_emitted,
@@ -325,6 +348,44 @@ fn instancing_blocker_stats_from_sorted(
             continue;
         }
         stats.candidate_draws += 1;
+    }
+    stats
+}
+
+/// Counts draw admission for a future GPU preprocessing path without changing submission.
+fn gpu_preprocess_stats_from_sorted(draws: &[WorldMeshDrawItem]) -> WorldMeshGpuPreprocessStats {
+    let mut stats = WorldMeshGpuPreprocessStats::default();
+    for draw in draws {
+        let classification = classify_world_mesh_batch(&draw.batch_key);
+        if draw.is_overlay
+            || classification.strict_order
+            || matches!(
+                classification.phase,
+                crate::world_mesh::WorldMeshPhase::Intersection
+                    | crate::world_mesh::WorldMeshPhase::Transparent
+                    | crate::world_mesh::WorldMeshPhase::TransparentGrab
+            )
+        {
+            stats.ordered_cpu_only_draws += 1;
+            continue;
+        }
+        if draw.skinned
+            || draw.world_space_deformed
+            || draw.blendshape_deformed
+            || draw.batch_key.primitive_topology != RasterPrimitiveTopology::TriangleList
+        {
+            stats.unsupported_cpu_only_draws += 1;
+            continue;
+        }
+        if matches!(
+            classification.phase,
+            crate::world_mesh::WorldMeshPhase::ForwardOpaque
+                | crate::world_mesh::WorldMeshPhase::ForwardAlphaTest
+        ) {
+            stats.eligible_draws += 1;
+        } else {
+            stats.unsupported_cpu_only_draws += 1;
+        }
     }
     stats
 }
@@ -395,7 +456,7 @@ pub fn state_rows_from_sorted(draws: &[WorldMeshDrawItem]) -> Vec<WorldMeshDrawS
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::materials::{MaterialBlendMode, MaterialDepthOffsetState};
+    use crate::materials::{MaterialBlendMode, MaterialDepthOffsetState, RasterPrimitiveTopology};
     use crate::world_mesh::TransparentMaterialClass;
     use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
 
@@ -404,6 +465,7 @@ mod tests {
         let s = stats_from_sorted(
             &[],
             None,
+            WorldMeshVisibilityStats::default(),
             WorldMeshDrawArrangementStats::default(),
             true,
             ShaderPermutation(0),
@@ -415,6 +477,8 @@ mod tests {
         assert_eq!(s.transparent_pass_batches, 0);
         assert_eq!(s.transparent_class_stats, Default::default());
         assert_eq!(s.instancing_blocker_stats, Default::default());
+        assert_eq!(s.visibility_stats, Default::default());
+        assert_eq!(s.gpu_preprocess_stats, Default::default());
         assert_eq!(s.depth_prepass_batches, 0);
         assert_eq!(s.depth_prepass_instances, 0);
         assert_eq!(s.gpu_instances_emitted, 0);
@@ -449,6 +513,7 @@ mod tests {
         let s = stats_from_sorted(
             &draws,
             None,
+            WorldMeshVisibilityStats::default(),
             WorldMeshDrawArrangementStats::default(),
             true,
             ShaderPermutation(0),
@@ -460,6 +525,7 @@ mod tests {
         assert_eq!(s.intersect_pass_batches, 0);
         assert_eq!(s.transparent_pass_batches, 0);
         assert_eq!(s.instancing_blocker_stats.candidate_draws, 2);
+        assert_eq!(s.gpu_preprocess_stats.eligible_draws, 2);
         assert_eq!(s.depth_prepass_batches, 1);
         assert_eq!(s.depth_prepass_instances, 2);
         assert_eq!(s.gpu_instances_emitted, 2);
@@ -484,6 +550,7 @@ mod tests {
         let s = stats_from_sorted(
             &[draw],
             None,
+            WorldMeshVisibilityStats::default(),
             WorldMeshDrawArrangementStats::default(),
             true,
             ShaderPermutation(0),
@@ -493,9 +560,95 @@ mod tests {
         assert_eq!(s.transparent_pass_batches, 1);
         assert_eq!(s.transparent_class_stats.grab_pass_filter_draws, 1);
         assert_eq!(s.instancing_blocker_stats.grab_pass_draws, 1);
+        assert_eq!(s.gpu_preprocess_stats.ordered_cpu_only_draws, 1);
         assert_eq!(s.depth_prepass_batches, 0);
         assert_eq!(s.depth_prepass_instances, 0);
         assert_eq!(s.gpu_instances_emitted, 1);
+    }
+
+    #[test]
+    fn world_mesh_draw_stats_preserve_visibility_counters() {
+        let visibility = WorldMeshVisibilityStats {
+            indexed_runs: 10,
+            fallback_runs: 2,
+            candidate_runs: 6,
+            broadphase_culled_runs: 4,
+            broadphase_culled_draws: 7,
+            linear_fallback_runs: 3,
+        };
+
+        let s = stats_from_sorted(
+            &[],
+            None,
+            visibility,
+            WorldMeshDrawArrangementStats::default(),
+            true,
+            ShaderPermutation(0),
+        );
+
+        assert_eq!(s.visibility_stats, visibility);
+    }
+
+    #[test]
+    fn world_mesh_gpu_preprocess_stats_classify_future_admission() {
+        let eligible = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 1,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 1,
+            node_id: 0,
+            slot_index: 0,
+            collect_order: 0,
+            alpha_blended: false,
+        });
+        let ordered = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 2,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 2,
+            node_id: 1,
+            slot_index: 0,
+            collect_order: 1,
+            alpha_blended: true,
+        });
+        let skinned = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 3,
+            property_block: None,
+            skinned: true,
+            sorting_order: 0,
+            mesh_asset_id: 3,
+            node_id: 2,
+            slot_index: 0,
+            collect_order: 2,
+            alpha_blended: false,
+        });
+        let mut point_topology = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 4,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 4,
+            node_id: 3,
+            slot_index: 0,
+            collect_order: 3,
+            alpha_blended: false,
+        });
+        point_topology.batch_key.primitive_topology = RasterPrimitiveTopology::PointList;
+
+        let s = stats_from_sorted(
+            &[eligible, ordered, skinned, point_topology],
+            None,
+            WorldMeshVisibilityStats::default(),
+            WorldMeshDrawArrangementStats::default(),
+            true,
+            ShaderPermutation(0),
+        );
+
+        assert_eq!(s.gpu_preprocess_stats.eligible_draws, 1);
+        assert_eq!(s.gpu_preprocess_stats.ordered_cpu_only_draws, 1);
+        assert_eq!(s.gpu_preprocess_stats.unsupported_cpu_only_draws, 2);
     }
 
     #[test]

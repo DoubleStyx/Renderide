@@ -24,6 +24,23 @@ pub struct WorldMeshDrawArrangementStats {
     pub strict_sorted_draws: usize,
 }
 
+/// CPU visibility-broadphase counters gathered before per-renderer draw expansion.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WorldMeshVisibilityStats {
+    /// Renderer runs with finite world bounds in the queried spaces.
+    pub indexed_runs: usize,
+    /// Renderer runs kept on the conservative fallback path because they cannot be indexed.
+    pub fallback_runs: usize,
+    /// Renderer runs returned to per-run draw collection after broadphase filtering.
+    pub candidate_runs: usize,
+    /// Renderer runs rejected by the broadphase before per-run draw collection.
+    pub broadphase_culled_runs: usize,
+    /// Material-slot draw rows rejected by the broadphase before per-run draw collection.
+    pub broadphase_culled_draws: usize,
+    /// Renderer runs visited through the linear fallback path instead of a BVH traversal.
+    pub linear_fallback_runs: usize,
+}
+
 /// Result of queued and sorted world-mesh draws including optional frustum cull counts.
 #[derive(Clone, Debug)]
 pub struct WorldMeshDrawCollection {
@@ -35,6 +52,8 @@ pub struct WorldMeshDrawCollection {
     pub draws_culled: usize,
     /// Draws removed by hierarchical depth occlusion (after frustum), when Hi-Z data was available.
     pub draws_hi_z_culled: usize,
+    /// Visibility broadphase counters for the prepared render-world path.
+    pub visibility: WorldMeshVisibilityStats,
     /// CPU arrangement counters for the final draw list.
     pub arrangement: WorldMeshDrawArrangementStats,
 }
@@ -47,6 +66,7 @@ impl WorldMeshDrawCollection {
             draws_pre_cull: 0,
             draws_culled: 0,
             draws_hi_z_culled: 0,
+            visibility: WorldMeshVisibilityStats::default(),
             arrangement: WorldMeshDrawArrangementStats::default(),
         }
     }

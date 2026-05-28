@@ -11,7 +11,10 @@ use crate::materials::ShaderPermutation;
 use crate::materials::embedded::MaterialBindCacheKey;
 use crate::passes::WorldMeshForwardEncodeRefs;
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
-use crate::world_mesh::draw_prep::{WorldMeshDrawCollection, WorldMeshDrawItem};
+use crate::world_mesh::draw_prep::{
+    WorldMeshDrawArrangementStats, WorldMeshDrawCollection, WorldMeshDrawItem,
+    WorldMeshVisibilityStats,
+};
 use crate::world_mesh::{
     DrawGroup, InstancePlan, PrefetchedWorldMeshViewDraws, WorldMeshCullProjParams, WorldMeshPhase,
     state_rows_from_sorted, stats_from_sorted, stats_from_sorted_with_plan,
@@ -57,6 +60,24 @@ struct PackedForwardDraws {
     plan: InstancePlan,
     overlay_view_proj: glam::Mat4,
     precomputed_batches: Vec<MaterialBatchPacket>,
+}
+
+/// Inputs used to replace provisional HUD draw stats after instance planning.
+struct WorldMeshForwardDrawStatsUpdate<'a> {
+    /// Sorted draw list after per-view projection resolution.
+    draws: &'a [WorldMeshDrawItem],
+    /// CPU frustum and Hi-Z cull counters captured before sorting.
+    cull_counts: (usize, usize, usize),
+    /// Prepared-draw visibility broadphase counters.
+    visibility: WorldMeshVisibilityStats,
+    /// CPU draw arrangement counters.
+    arrangement: WorldMeshDrawArrangementStats,
+    /// Whether this device supports base-instance draw submission.
+    supports_base_instance: bool,
+    /// Shader permutation used for pipeline-pass expansion counts.
+    shader_perm: ShaderPermutation,
+    /// Planned instance groups emitted by the forward pass.
+    plan: &'a InstancePlan,
 }
 
 /// Material binding state that affects the submitted group-1 bind command.
@@ -126,6 +147,7 @@ pub(super) fn maybe_set_world_mesh_draw_stats(
                 collection.draws_culled,
                 collection.draws_hi_z_culled,
             )),
+            collection.visibility,
             collection.arrangement,
             supports_base_instance,
             shader_perm,
@@ -171,6 +193,7 @@ pub(crate) fn prepare_world_mesh_forward_frame(
         prefetched.collection.draws_hi_z_culled,
     );
     let arrangement = prefetched.collection.arrangement;
+    let visibility = prefetched.collection.visibility;
     let encode_refs = {
         profiling::scope!("world_mesh::prepare_frame::build_encode_refs");
         WorldMeshForwardEncodeRefs::from_frame(frame)
@@ -212,12 +235,15 @@ pub(crate) fn prepare_world_mesh_forward_frame(
     };
     update_world_mesh_draw_stats_from_plan(
         &mut hud_outputs,
-        &draws,
-        cull_counts,
-        arrangement,
-        supports_base_instance,
-        shader_perm,
-        &plan,
+        WorldMeshForwardDrawStatsUpdate {
+            draws: &draws,
+            cull_counts,
+            visibility,
+            arrangement,
+            supports_base_instance,
+            shader_perm,
+            plan: &plan,
+        },
     );
 
     {
@@ -270,12 +296,7 @@ fn resolve_world_mesh_forward_pipeline(
 /// Replaces HUD draw stats with counts derived from the actual prepared instance plan.
 fn update_world_mesh_draw_stats_from_plan(
     hud_outputs: &mut Option<PerViewHudOutputs>,
-    draws: &[WorldMeshDrawItem],
-    cull_counts: (usize, usize, usize),
-    arrangement: crate::world_mesh::draw_prep::WorldMeshDrawArrangementStats,
-    supports_base_instance: bool,
-    shader_perm: ShaderPermutation,
-    plan: &InstancePlan,
+    update: WorldMeshForwardDrawStatsUpdate<'_>,
 ) {
     let Some(outputs) = hud_outputs.as_mut() else {
         return;
@@ -284,12 +305,13 @@ fn update_world_mesh_draw_stats_from_plan(
         return;
     }
     outputs.world_mesh_draw_stats = Some(stats_from_sorted_with_plan(
-        draws,
-        Some(cull_counts),
-        arrangement,
-        supports_base_instance,
-        shader_perm,
-        plan,
+        update.draws,
+        Some(update.cull_counts),
+        update.visibility,
+        update.arrangement,
+        update.supports_base_instance,
+        update.shader_perm,
+        update.plan,
     ));
 }
 

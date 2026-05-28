@@ -4,7 +4,7 @@ use super::super::super::super::blackboard::Blackboard;
 use super::super::super::super::context::{GraphResolvedResources, RasterPassCtx};
 use super::super::super::super::error::GraphExecuteError;
 use super::super::super::super::frame_upload_batch::{FrameUploadBatch, GraphUploadSink};
-use super::super::super::super::pass::{PassKind, PassPhase};
+use super::super::super::super::pass::{PassKind, PassNode, PassPhase};
 use super::super::super::super::schedule::{RenderPassMaterializationGroup, ScheduleStep};
 use super::super::super::helpers;
 use super::super::super::{CompiledRenderGraph, ResolvedView};
@@ -112,7 +112,7 @@ impl CompiledRenderGraph {
         clippy::too_many_arguments,
         reason = "merged raster recording shares the same pass context borrows"
     )]
-    fn try_execute_raster_materialization_group<'a>(
+    pub(super) fn try_execute_raster_materialization_group<'a>(
         &self,
         group: RenderPassMaterializationGroup,
         phase: PassPhase,
@@ -152,10 +152,7 @@ impl CompiledRenderGraph {
             return Ok(false);
         }
         let first_pass = &self.passes[first_step.pass_idx];
-        let first_should_record = first_pass
-            .should_record_raster(&ctx)
-            .map_err(GraphExecuteError::Pass)?;
-        if !first_should_record {
+        if !self.materialized_pass_should_record(first_step, first_pass, &ctx)? {
             update_command_stats(ctx.blackboard, GraphCommandStats::record_skipped_pass);
             return Ok(false);
         }
@@ -200,16 +197,13 @@ impl CompiledRenderGraph {
             let should_record = if idx == 0 {
                 true
             } else {
-                pass.should_record_raster(&ctx)
-                    .map_err(GraphExecuteError::Pass)?
+                self.materialized_pass_should_record(step, pass, &ctx)?
             };
             if !should_record {
                 update_command_stats(ctx.blackboard, GraphCommandStats::record_skipped_pass);
                 continue;
             }
-            self.validate_blackboard_inputs(step.pass_idx, pass.name(), ctx.blackboard)?;
-            pass.record_raster(&mut ctx, &mut rpass)
-                .map_err(GraphExecuteError::Pass)?;
+            self.record_materialized_raster_step(step, pass, &mut ctx, &mut rpass)?;
             update_command_stats(ctx.blackboard, GraphCommandStats::record_raster_pass);
         }
         update_command_stats(ctx.blackboard, GraphCommandStats::record_opened_render_pass);
@@ -218,6 +212,42 @@ impl CompiledRenderGraph {
             p.end_query(encoder, q);
         }
         Ok(true)
+    }
+
+    /// Runs a materialized pass predicate with declared blackboard access validation.
+    fn materialized_pass_should_record(
+        &self,
+        step: ScheduleStep,
+        pass: &PassNode,
+        ctx: &RasterPassCtx<'_, '_>,
+    ) -> Result<bool, GraphExecuteError> {
+        self.validate_blackboard_inputs(step.pass_idx, pass.name(), ctx.blackboard)?;
+        self.begin_blackboard_access_validation(step.pass_idx, pass.name(), ctx.blackboard);
+        let should_record = pass
+            .should_record_raster(ctx)
+            .map_err(GraphExecuteError::Pass);
+        let access_result = self.finish_blackboard_access_validation(ctx.blackboard);
+        let should_record = should_record?;
+        access_result?;
+        Ok(should_record)
+    }
+
+    /// Records one logical raster pass inside a materialized render pass.
+    fn record_materialized_raster_step(
+        &self,
+        step: ScheduleStep,
+        pass: &PassNode,
+        ctx: &mut RasterPassCtx<'_, '_>,
+        rpass: &mut wgpu::RenderPass<'_>,
+    ) -> Result<(), GraphExecuteError> {
+        self.validate_blackboard_inputs(step.pass_idx, pass.name(), ctx.blackboard)?;
+        self.begin_blackboard_access_validation(step.pass_idx, pass.name(), ctx.blackboard);
+        let record_result = pass
+            .record_raster(ctx, rpass)
+            .map_err(GraphExecuteError::Pass);
+        let access_result = self.finish_blackboard_access_validation(ctx.blackboard);
+        record_result?;
+        access_result
     }
 
     /// Builds the GPU label for a merged raster group from its constituent pass labels.

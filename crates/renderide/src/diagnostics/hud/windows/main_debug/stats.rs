@@ -387,6 +387,16 @@ fn draw_submission_rows(ui: &imgui::Ui, stats: &WorldMeshDrawStats) {
     );
     kv(
         ui,
+        "GPU preprocess",
+        &format!(
+            "eligible={}  ordered={}  unsupported={}",
+            stats.gpu_preprocess_stats.eligible_draws,
+            stats.gpu_preprocess_stats.ordered_cpu_only_draws,
+            stats.gpu_preprocess_stats.unsupported_cpu_only_draws
+        ),
+    );
+    kv(
+        ui,
         "Depth prepass",
         &format!(
             "{} batches  /  {} instances",
@@ -421,6 +431,19 @@ fn draw_culling_rows(ui: &imgui::Ui, stats: &WorldMeshDrawStats) {
         &format!(
             "{} considered  /  {} culled  /  Hi-Z {} culled  /  {} submitted",
             stats.draws_pre_cull, stats.draws_culled, stats.draws_hi_z_culled, stats.draws_total
+        ),
+    );
+    kv(
+        ui,
+        "Visibility index",
+        &format!(
+            "indexed={}  fallback={}  candidates={}  culled={} runs / {} draws  linear={}",
+            stats.visibility_stats.indexed_runs,
+            stats.visibility_stats.fallback_runs,
+            stats.visibility_stats.candidate_runs,
+            stats.visibility_stats.broadphase_culled_runs,
+            stats.visibility_stats.broadphase_culled_draws,
+            stats.visibility_stats.linear_fallback_runs
         ),
     );
     kv(

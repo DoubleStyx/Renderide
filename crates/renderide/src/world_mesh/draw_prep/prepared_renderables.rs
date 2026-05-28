@@ -13,6 +13,7 @@
 //! depend on the view's camera, filter, and Hi-Z snapshot.
 
 mod expand;
+mod spatial;
 
 use hashbrown::HashSet;
 #[cfg(test)]
@@ -21,13 +22,12 @@ use rayon::prelude::*;
 use crate::cpu_parallelism::RENDER_COMMAND_CHUNK_DRAWS;
 #[cfg(test)]
 use crate::gpu_pools::MeshPool;
-#[cfg(test)]
-use crate::scene::SceneCoordinator;
-use crate::scene::{MeshRendererInstanceId, RenderSpaceId};
+use crate::scene::{MeshRendererInstanceId, RenderSpaceId, SceneCoordinator};
 use crate::shared::RenderingContext;
-use crate::world_mesh::culling::MeshCullGeometry;
+use crate::world_mesh::culling::{MeshCullGeometry, WorldMeshCullInput};
 
 use expand::{empty_material_key_signature, populate_runs_and_material_keys};
+use spatial::{PreparedSpatialIndex, PreparedSpatialRunCandidates};
 
 #[cfg(test)]
 pub(in crate::world_mesh::draw_prep) use expand::estimated_draw_count;
@@ -174,6 +174,8 @@ pub struct FramePreparedRenderables {
     material_property_keys: Vec<(i32, Option<i32>)>,
     /// Deterministic signature of [`Self::material_property_keys`] membership and order.
     material_property_key_signature: u64,
+    /// Per-render-space BVH and linear fallback buckets over renderer runs.
+    spatial: PreparedSpatialIndex,
     /// Render context used when resolving material overrides; must match the per-view context.
     render_context: RenderingContext,
     /// Reused per-worker output buffers for the multi-space parallel expansion path. Outer
@@ -197,6 +199,7 @@ impl FramePreparedRenderables {
             run_chunks: Vec::new(),
             material_property_keys: Vec::new(),
             material_property_key_signature: empty_material_key_signature(),
+            spatial: PreparedSpatialIndex::default(),
             render_context,
             #[cfg(test)]
             space_scratch: Vec::new(),
@@ -332,6 +335,7 @@ impl FramePreparedRenderables {
             &mut self.run_chunks,
             PREPARED_RUN_CHUNK_DRAW_TARGET,
         );
+        self.spatial.rebuild(&self.draws, &self.runs);
     }
 
     /// Dense prepared draw slice backing [`Self::runs`].
@@ -350,6 +354,18 @@ impl FramePreparedRenderables {
     #[inline]
     pub(super) fn runs_for_chunk(&self, chunk: FramePreparedRunChunk) -> &[FramePreparedRun] {
         &self.runs[chunk.start..chunk.end]
+    }
+
+    /// Returns run candidates for the requested render spaces after spatial frustum filtering.
+    #[inline]
+    pub(super) fn spatial_run_candidates(
+        &self,
+        space_ids: &[RenderSpaceId],
+        scene: &SceneCoordinator,
+        culling: Option<&WorldMeshCullInput<'_>>,
+    ) -> PreparedSpatialRunCandidates {
+        self.spatial
+            .query_runs(&self.runs, space_ids, scene, culling)
     }
 
     /// Number of expanded draws across all active render spaces.
@@ -377,6 +393,13 @@ impl FramePreparedRenderables {
     #[inline]
     pub fn active_space_ids(&self) -> &[RenderSpaceId] {
         &self.active_space_ids
+    }
+
+    /// Returns whether `space_id` uses a BVH instead of only linear buckets.
+    #[inline]
+    #[cfg(test)]
+    pub fn space_uses_bvh_for_tests(&self, space_id: RenderSpaceId) -> bool {
+        self.spatial.space_uses_bvh_for_tests(space_id)
     }
 
     /// Iterator of `(mesh_asset_id, material_asset_id)` pairs for every prepared draw.
@@ -429,15 +452,34 @@ impl FramePreparedRenderables {
     pub(super) fn finish_cached_rebuild(&mut self) {
         self.refresh_runs_material_keys_and_chunks();
     }
+
+    /// Rebuilds the cached-space snapshot directly from supplied draw slices for tests.
+    #[cfg(test)]
+    fn rebuild_from_cached_spaces<'a, I>(&mut self, render_context: RenderingContext, spaces: I)
+    where
+        I: IntoIterator<Item = (RenderSpaceId, &'a [FramePreparedDraw])>,
+    {
+        self.begin_cached_rebuild(render_context);
+        for (space_id, draws) in spaces {
+            self.push_cached_space(space_id);
+            self.extend_cached_draws(draws);
+        }
+        self.finish_cached_rebuild();
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::expand::populate_runs_and_material_keys;
     use super::*;
+    use crate::camera::HostCameraFrame;
     use crate::gpu_pools::MeshPool;
     use crate::scene::{RenderSpaceId, SceneCoordinator, SkinnedMeshRenderer, StaticMeshRenderer};
     use crate::shared::{RenderTransform, ShadowCastMode};
+    use crate::world_mesh::culling::{
+        MeshCullGeometry, WorldMeshCullInput, WorldMeshCullProjParams,
+    };
+    use glam::{Mat4, Vec3};
 
     fn empty_scene() -> SceneCoordinator {
         SceneCoordinator::new()
@@ -468,6 +510,66 @@ mod tests {
             cull_geometry: None,
             rigid_world_matrix_override: None,
         }
+    }
+
+    fn prepared_draw_with_bounds(
+        renderable_index: usize,
+        min: Vec3,
+        max: Vec3,
+    ) -> FramePreparedDraw {
+        let mut draw = prepared_draw(renderable_index, 1, None);
+        draw.cull_geometry = Some(MeshCullGeometry {
+            world_aabb: Some((min, max)),
+            rigid_world_matrix: Some(Mat4::IDENTITY),
+            front_face_world_matrix: Some(Mat4::IDENTITY),
+        });
+        draw
+    }
+
+    fn prepared_overlay_draw_with_bounds(
+        renderable_index: usize,
+        min: Vec3,
+        max: Vec3,
+    ) -> FramePreparedDraw {
+        let mut draw = prepared_draw_with_bounds(renderable_index, min, max);
+        draw.is_overlay = true;
+        draw
+    }
+
+    fn spatial_scene_and_cull(
+        space_id: RenderSpaceId,
+    ) -> (SceneCoordinator, HostCameraFrame, WorldMeshCullProjParams) {
+        let mut scene = SceneCoordinator::new();
+        scene.test_seed_space_identity_worlds(space_id, vec![RenderTransform::default()], vec![-1]);
+        (
+            scene,
+            HostCameraFrame::default(),
+            WorldMeshCullProjParams {
+                world_proj: Mat4::IDENTITY,
+                overlay_proj: Mat4::IDENTITY,
+                vr_stereo: None,
+            },
+        )
+    }
+
+    fn prepared_from_space_draws(
+        space_id: RenderSpaceId,
+        draws: &[FramePreparedDraw],
+    ) -> FramePreparedRenderables {
+        let adjusted = draws
+            .iter()
+            .cloned()
+            .map(|mut draw| {
+                draw.space_id = space_id;
+                draw
+            })
+            .collect::<Vec<_>>();
+        let mut prepared = FramePreparedRenderables::empty(RenderingContext::UserView);
+        prepared.rebuild_from_cached_spaces(
+            RenderingContext::UserView,
+            [(space_id, adjusted.as_slice())],
+        );
+        prepared
     }
 
     #[test]
@@ -561,6 +663,196 @@ mod tests {
                 FramePreparedRunChunk { start: 3, end: 4 },
             ]
         );
+    }
+
+    #[test]
+    fn spatial_query_uses_bvh_for_large_spaces_and_filters_frustum() {
+        let space_id = RenderSpaceId(1);
+        let (scene, host_camera, proj) = spatial_scene_and_cull(space_id);
+        let culling = WorldMeshCullInput {
+            proj,
+            host_camera: &host_camera,
+            hi_z: None,
+            hi_z_temporal: None,
+        };
+        let mut draws = Vec::new();
+        for idx in 0..80 {
+            let (min, max) = if idx < 40 {
+                (Vec3::new(-0.5, -0.5, -0.5), Vec3::new(0.5, 0.5, 0.5))
+            } else {
+                (Vec3::new(2.0, -0.5, -0.5), Vec3::new(3.0, 0.5, 0.5))
+            };
+            draws.push(prepared_draw_with_bounds(idx, min, max));
+        }
+        let prepared = prepared_from_space_draws(space_id, &draws);
+
+        let candidates = prepared.spatial_run_candidates(&[space_id], &scene, Some(&culling));
+
+        assert!(prepared.space_uses_bvh_for_tests(space_id));
+        assert_eq!(candidates.runs.len(), 40);
+        assert_eq!(candidates.cull_stats, (40, 40, 0));
+        assert_eq!(candidates.visibility.indexed_runs, 80);
+        assert_eq!(candidates.visibility.fallback_runs, 0);
+        assert_eq!(candidates.visibility.candidate_runs, 40);
+        assert_eq!(candidates.visibility.broadphase_culled_runs, 40);
+        assert_eq!(candidates.visibility.broadphase_culled_draws, 40);
+    }
+
+    #[test]
+    fn spatial_query_keeps_small_spaces_on_linear_path() {
+        let space_id = RenderSpaceId(2);
+        let (scene, host_camera, proj) = spatial_scene_and_cull(space_id);
+        let culling = WorldMeshCullInput {
+            proj,
+            host_camera: &host_camera,
+            hi_z: None,
+            hi_z_temporal: None,
+        };
+        let draws = (0..8)
+            .map(|idx| {
+                prepared_draw_with_bounds(
+                    idx,
+                    Vec3::new(-0.25, -0.25, -0.25),
+                    Vec3::new(0.25, 0.25, 0.25),
+                )
+            })
+            .collect::<Vec<_>>();
+        let prepared = prepared_from_space_draws(space_id, &draws);
+
+        let candidates = prepared.spatial_run_candidates(&[space_id], &scene, Some(&culling));
+
+        assert!(!prepared.space_uses_bvh_for_tests(space_id));
+        assert_eq!(candidates.runs.len(), 8);
+        assert_eq!(candidates.cull_stats, (0, 0, 0));
+        assert_eq!(candidates.visibility.indexed_runs, 8);
+        assert_eq!(candidates.visibility.linear_fallback_runs, 8);
+        assert_eq!(candidates.visibility.candidate_runs, 8);
+    }
+
+    #[test]
+    fn spatial_query_counts_rejected_material_slots() {
+        let space_id = RenderSpaceId(3);
+        let (scene, host_camera, proj) = spatial_scene_and_cull(space_id);
+        let culling = WorldMeshCullInput {
+            proj,
+            host_camera: &host_camera,
+            hi_z: None,
+            hi_z_temporal: None,
+        };
+        let outside_slot0 =
+            prepared_draw_with_bounds(0, Vec3::new(2.0, -0.5, -0.5), Vec3::new(3.0, 0.5, 0.5));
+        let mut outside_slot1 = outside_slot0.clone();
+        outside_slot1.slot_index = 1;
+        outside_slot1.material_asset_id = 2;
+        let inside = prepared_draw_with_bounds(
+            1,
+            Vec3::new(-0.25, -0.25, -0.25),
+            Vec3::new(0.25, 0.25, 0.25),
+        );
+        let prepared = prepared_from_space_draws(space_id, &[outside_slot0, outside_slot1, inside]);
+
+        let candidates = prepared.spatial_run_candidates(&[space_id], &scene, Some(&culling));
+
+        assert_eq!(candidates.runs.len(), 1);
+        assert_eq!(candidates.cull_stats, (2, 2, 0));
+        assert_eq!(candidates.visibility.indexed_runs, 2);
+        assert_eq!(candidates.visibility.candidate_runs, 1);
+        assert_eq!(candidates.visibility.broadphase_culled_runs, 1);
+        assert_eq!(candidates.visibility.broadphase_culled_draws, 2);
+    }
+
+    #[test]
+    fn spatial_query_keeps_overlay_runs_conservative() {
+        let space_id = RenderSpaceId(4);
+        let (scene, host_camera, proj) = spatial_scene_and_cull(space_id);
+        let culling = WorldMeshCullInput {
+            proj,
+            host_camera: &host_camera,
+            hi_z: None,
+            hi_z_temporal: None,
+        };
+        let draws = (0..80)
+            .map(|idx| {
+                prepared_overlay_draw_with_bounds(
+                    idx,
+                    Vec3::new(2.0, -0.5, -0.5),
+                    Vec3::new(3.0, 0.5, 0.5),
+                )
+            })
+            .collect::<Vec<_>>();
+        let prepared = prepared_from_space_draws(space_id, &draws);
+
+        let candidates = prepared.spatial_run_candidates(&[space_id], &scene, Some(&culling));
+
+        assert!(!prepared.space_uses_bvh_for_tests(space_id));
+        assert_eq!(candidates.runs.len(), 80);
+        assert_eq!(candidates.cull_stats, (0, 0, 0));
+        assert_eq!(candidates.visibility.indexed_runs, 0);
+        assert_eq!(candidates.visibility.fallback_runs, 80);
+        assert_eq!(candidates.visibility.linear_fallback_runs, 80);
+        assert_eq!(candidates.visibility.candidate_runs, 80);
+    }
+
+    #[test]
+    fn spatial_query_preserves_run_order_across_multiple_spaces() {
+        let first_space = RenderSpaceId(5);
+        let second_space = RenderSpaceId(6);
+        let mut scene = SceneCoordinator::new();
+        scene.test_seed_space_identity_worlds(
+            first_space,
+            vec![RenderTransform::default()],
+            vec![-1],
+        );
+        scene.test_seed_space_identity_worlds(
+            second_space,
+            vec![RenderTransform::default()],
+            vec![-1],
+        );
+        let host_camera = HostCameraFrame::default();
+        let culling = WorldMeshCullInput {
+            proj: WorldMeshCullProjParams {
+                world_proj: Mat4::IDENTITY,
+                overlay_proj: Mat4::IDENTITY,
+                vr_stereo: None,
+            },
+            host_camera: &host_camera,
+            hi_z: None,
+            hi_z_temporal: None,
+        };
+        let mut prepared = FramePreparedRenderables::empty(RenderingContext::UserView);
+        let mut first_draw = prepared_draw_with_bounds(
+            0,
+            Vec3::new(-0.25, -0.25, -0.25),
+            Vec3::new(0.25, 0.25, 0.25),
+        );
+        first_draw.space_id = first_space;
+        let first = [first_draw];
+        let mut second_draw = prepared_draw_with_bounds(
+            1,
+            Vec3::new(-0.25, -0.25, -0.25),
+            Vec3::new(0.25, 0.25, 0.25),
+        );
+        second_draw.space_id = second_space;
+        let second = [second_draw];
+        prepared.rebuild_from_cached_spaces(
+            RenderingContext::UserView,
+            [
+                (first_space, first.as_slice()),
+                (second_space, second.as_slice()),
+            ],
+        );
+
+        let candidates =
+            prepared.spatial_run_candidates(&[second_space, first_space], &scene, Some(&culling));
+
+        assert_eq!(
+            candidates.runs,
+            vec![
+                FramePreparedRun { start: 0, end: 1 },
+                FramePreparedRun { start: 1, end: 2 },
+            ]
+        );
+        assert_eq!(candidates.visibility.candidate_runs, 2);
     }
 
     #[test]
