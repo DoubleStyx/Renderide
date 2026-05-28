@@ -28,7 +28,7 @@ self_update = { version = "0.44", default-features = false, features = [
   "reqwest",
   "rustls",
 ] }
-zip = { version = "6.0", default-features = false, features = ["deflate"] }
+zip = { version = "8.6", default-features = false, features = ["deflate"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libloading = "0.9"

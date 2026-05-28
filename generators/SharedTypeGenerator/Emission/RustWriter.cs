@@ -6,7 +6,7 @@ namespace SharedTypeGenerator.Emission;
 
 /// <summary>Low-level Rust code writer with indentation management.
 /// Uses the Block/Indent RAII pattern via <see cref="IDisposable"/> for matching braces.</summary>
-public class RustWriter : IDisposable
+internal sealed class RustWriter : IDisposable
 {
     private readonly TextWriter _writer;
     private readonly bool _ownsWriter;

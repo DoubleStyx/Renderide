@@ -8,6 +8,7 @@
 use rayon::prelude::*;
 
 use crate::backend::{ExtractedFrameShared, RenderBackend, WorldMeshDrawPlanSlot};
+use crate::cpu_parallelism::{FrameCpuWorkload, FrameParallelPolicy};
 use crate::gpu::GpuContext;
 use crate::mesh_deform::SkinCacheKey;
 use crate::occlusion::HiZCullData;
@@ -20,30 +21,19 @@ use crate::world_mesh::{
     DrawCollectionContext, HiZTemporalState, PrefetchedWorldMeshViewDraws, WorldMeshCullInput,
     WorldMeshCullProjParams, WorldMeshDrawCollectParallelism, WorldMeshDrawPlan,
     build_world_mesh_cull_proj_params, queue_draws_with_parallelism,
+    queue_prepared_draws_for_views_with_parallelism,
 };
 
 use super::view_plan::{FrameViewPlan, ViewFamilyPlan};
 
 /// Prepared view plans assigned to one cull-snapshot worker.
 const CULL_SNAPSHOT_PARALLEL_CHUNK_VIEWS: usize = 1;
-/// Prepared view count required before cull-snapshot gathering fans out.
-const CULL_SNAPSHOT_PARALLEL_MIN_VIEWS: usize = CULL_SNAPSHOT_PARALLEL_CHUNK_VIEWS * 2;
 /// Prepared view plans assigned to one draw-collection worker.
 const VIEW_COLLECTION_PARALLEL_CHUNK_VIEWS: usize = 1;
-/// Prepared view count required before view-level draw collection fans out.
-const VIEW_COLLECTION_PARALLEL_MIN_VIEWS: usize = VIEW_COLLECTION_PARALLEL_CHUNK_VIEWS * 2;
 /// Queued view draw packets assigned to one sort worker.
 const VIEW_SORT_PARALLEL_CHUNK_VIEWS: usize = 1;
-/// View count required before queued-draw sorting fans out.
-const VIEW_SORT_PARALLEL_MIN_VIEWS: usize = VIEW_SORT_PARALLEL_CHUNK_VIEWS * 2;
-/// Total queued draw count required before per-view sorting fans out.
-const VIEW_SORT_PARALLEL_MIN_TOTAL_DRAWS: usize = 128;
 /// View draw plans assigned to one visible-deform-key scan worker.
 const VISIBLE_DEFORM_KEYS_PARALLEL_CHUNK_VIEWS: usize = 1;
-/// View count required before visible-deform-key scanning fans out.
-const VISIBLE_DEFORM_KEYS_PARALLEL_MIN_VIEWS: usize = VISIBLE_DEFORM_KEYS_PARALLEL_CHUNK_VIEWS * 2;
-/// Total draw count required before visible-deform-key scanning fans out.
-const VISIBLE_DEFORM_KEYS_PARALLEL_MIN_DRAWS: usize = 128;
 
 /// Immutable runtime-owned extraction packet built before per-view draw collection starts.
 ///
@@ -85,11 +75,19 @@ impl<'views, 'backend> ExtractedFrame<'views, 'backend> {
             match plans.len() {
                 0 => Vec::new(),
                 1 => vec![cull_snapshot_for_view(&shared, &plans[0])],
-                _ if plans.len() >= CULL_SNAPSHOT_PARALLEL_MIN_VIEWS => plans
-                    .par_iter()
-                    .with_min_len(CULL_SNAPSHOT_PARALLEL_CHUNK_VIEWS)
-                    .map(|prep| cull_snapshot_for_view(&shared, prep))
-                    .collect(),
+                _ if FrameParallelPolicy::for_current_thread_pool()
+                    .admit_independent_items(
+                        FrameCpuWorkload::independent_items(plans.len()),
+                        CULL_SNAPSHOT_PARALLEL_CHUNK_VIEWS,
+                    )
+                    .is_parallel() =>
+                {
+                    plans
+                        .par_iter()
+                        .with_min_len(CULL_SNAPSHOT_PARALLEL_CHUNK_VIEWS)
+                        .map(|prep| cull_snapshot_for_view(&shared, prep))
+                        .collect()
+                }
                 _ => plans
                     .iter()
                     .map(|prep| cull_snapshot_for_view(&shared, prep))
@@ -150,12 +148,16 @@ fn sort_view_draws(
 
 /// Returns whether the queued per-view sort has enough independent work to use Rayon.
 fn should_parallelize_view_sort(view_draws: &[QueuedViewDraws]) -> bool {
-    view_draws.len() >= VIEW_SORT_PARALLEL_MIN_VIEWS
-        && view_draws
-            .iter()
-            .map(QueuedViewDraws::queued_draw_count)
-            .sum::<usize>()
-            >= VIEW_SORT_PARALLEL_MIN_TOTAL_DRAWS
+    let total_draws = view_draws
+        .iter()
+        .map(QueuedViewDraws::queued_draw_count)
+        .sum::<usize>();
+    FrameParallelPolicy::for_current_thread_pool()
+        .admit_draw_heavy_views(
+            FrameCpuWorkload::view_draws(view_draws.len(), total_draws),
+            VIEW_SORT_PARALLEL_CHUNK_VIEWS,
+        )
+        .is_parallel()
 }
 
 fn sort_view_draws_serial(
@@ -337,12 +339,16 @@ fn visible_mesh_deform_keys_from_draw_plans(
 }
 
 fn should_parallelize_visible_deform_keys(draw_plans: &[WorldMeshDrawPlan]) -> bool {
-    draw_plans.len() >= VISIBLE_DEFORM_KEYS_PARALLEL_MIN_VIEWS
-        && draw_plans
-            .iter()
-            .map(WorldMeshDrawPlan::draw_count)
-            .sum::<usize>()
-            >= VISIBLE_DEFORM_KEYS_PARALLEL_MIN_DRAWS
+    let total_draws = draw_plans
+        .iter()
+        .map(WorldMeshDrawPlan::draw_count)
+        .sum::<usize>();
+    FrameParallelPolicy::for_current_thread_pool()
+        .admit_draw_heavy_views(
+            FrameCpuWorkload::view_draws(draw_plans.len(), total_draws),
+            VISIBLE_DEFORM_KEYS_PARALLEL_CHUNK_VIEWS,
+        )
+        .is_parallel()
 }
 
 fn visible_mesh_deform_keys_from_draw_plans_serial(
@@ -455,21 +461,13 @@ fn queue_view_draws(
     );
     let parallelize_views =
         should_parallelize_view_collection(prepared.len(), max_prepared_draw_count);
-    // One view per frame is the desktop common case; rayon scope dispatch + single-task spawn is
-    // pure overhead vs a direct serial call. Per-view collection internally still parallelises
-    // across renderer-run chunks when the refined inner-parallelism tier allows it.
-    let collect_one = |(prep, snap): (&FrameViewPlan<'_>, Option<ViewCullSnapshot>)| {
-        profiling::scope!("render::queue_view_draws::queue_one");
-        let shader_perm = prep.shader_permutation();
-        let render_context = prep.render_context();
-        // The backend pre-refreshed one material batch cache per render-context/permutation pair
-        // in `extract_frame_shared`, so any prepared view should find a matching cache here.
-        let material_cache = {
-            profiling::scope!("render::queue_view_draws::material_cache_lookup");
-            setup.material_cache_for(render_context, shader_perm)
-        };
-        let (cull_proj, culling) = {
-            profiling::scope!("render::queue_view_draws::build_cull_input");
+    let mut cull_inputs = Vec::with_capacity(prepared.len());
+    let mut cull_projs = Vec::with_capacity(prepared.len());
+    {
+        profiling::scope!("render::queue_view_draws::build_cull_inputs");
+        let mut snapshots = cull_snapshots.into_iter();
+        for prep in prepared {
+            let snap = snapshots.next().unwrap_or(None);
             let cull_proj = snap.as_ref().map(|s| s.proj);
             let culling = snap.map(|s| WorldMeshCullInput {
                 proj: s.proj,
@@ -477,71 +475,113 @@ fn queue_view_draws(
                 hi_z: s.hi_z,
                 hi_z_temporal: s.hi_z_temporal,
             });
-            (cull_proj, culling)
-        };
-        let queued = queue_draws_with_parallelism(
-            &DrawCollectionContext {
-                scene: setup.scene,
-                mesh_pool: setup.mesh_pool,
-                material_dict: &dict,
-                material_router: setup.router,
-                pipeline_property_ids: &setup.pipeline_property_ids,
-                shader_perm,
-                render_context,
-                head_output_transform: prep.host_camera.head_output_transform,
-                view_origin_world: prep.view_origin_world(),
-                culling: culling.as_ref(),
-                mesh_lod_bias,
-                transform_filter: prep.draw_filter.as_ref(),
-                render_space_filter: prep.render_space_filter,
-                material_cache,
-                reflection_probes: Some(setup.reflection_probes),
-                prepared: setup.prepared_renderables_for(render_context),
-            },
-            inner_parallelism,
-        );
-        QueuedViewDraws { queued, cull_proj }
+            cull_projs.push(cull_proj);
+            cull_inputs.push(culling);
+        }
+    }
+    let contexts = {
+        profiling::scope!("render::queue_view_draws::build_contexts");
+        prepared
+            .iter()
+            .zip(cull_inputs.iter())
+            .map(|(prep, culling)| {
+                let shader_perm = prep.shader_permutation();
+                let render_context = prep.render_context();
+                // The backend pre-refreshed one material batch cache per render-context/permutation pair
+                // in `extract_frame_shared`, so any prepared view should find a matching cache here.
+                let material_cache = {
+                    profiling::scope!("render::queue_view_draws::material_cache_lookup");
+                    setup.material_cache_for(render_context, shader_perm)
+                };
+                DrawCollectionContext {
+                    scene: setup.scene,
+                    mesh_pool: setup.mesh_pool,
+                    material_dict: &dict,
+                    material_router: setup.router,
+                    pipeline_property_ids: &setup.pipeline_property_ids,
+                    shader_perm,
+                    render_context,
+                    head_output_transform: prep.host_camera.head_output_transform,
+                    view_origin_world: prep.view_origin_world(),
+                    culling: culling.as_ref(),
+                    mesh_lod_bias,
+                    transform_filter: prep.draw_filter.as_ref(),
+                    render_space_filter: prep.render_space_filter,
+                    material_cache,
+                    reflection_probes: Some(setup.reflection_probes),
+                    prepared: setup.prepared_renderables_for(render_context),
+                }
+            })
+            .collect::<Vec<_>>()
     };
+    if let Some(queued) =
+        queue_prepared_draws_for_views_with_parallelism(&contexts, inner_parallelism)
+    {
+        return queued
+            .into_iter()
+            .zip(cull_projs)
+            .map(|(queued, cull_proj)| QueuedViewDraws { queued, cull_proj })
+            .collect();
+    }
+    collect_view_draws_with_strategy(&contexts, &cull_projs, parallelize_views, inner_parallelism)
+}
 
-    collect_view_draws_with_strategy(prepared, cull_snapshots, parallelize_views, &collect_one)
+/// Queues one view through the general draw-collection path.
+fn collect_one_view_draws(
+    ctx: &DrawCollectionContext<'_>,
+    cull_proj: Option<&WorldMeshCullProjParams>,
+    parallelism: WorldMeshDrawCollectParallelism,
+) -> QueuedViewDraws {
+    profiling::scope!("render::queue_view_draws::queue_one");
+    let queued = queue_draws_with_parallelism(ctx, parallelism);
+    QueuedViewDraws {
+        queued,
+        cull_proj: cull_proj.copied(),
+    }
+}
+
+/// Returns a cull projection reference for `index` when present.
+fn cull_proj_or_none(
+    cull_projs: &[Option<WorldMeshCullProjParams>],
+    index: usize,
+) -> Option<&WorldMeshCullProjParams> {
+    cull_projs.get(index).and_then(Option::as_ref)
 }
 
 /// Dispatches queued draw collection using the selected view-level parallelism strategy.
-fn collect_view_draws_with_strategy<'plans, 'view, F>(
-    prepared: &'plans [FrameViewPlan<'view>],
-    cull_snapshots: Vec<Option<ViewCullSnapshot>>,
+fn collect_view_draws_with_strategy(
+    contexts: &[DrawCollectionContext<'_>],
+    cull_projs: &[Option<WorldMeshCullProjParams>],
     parallelize_views: bool,
-    collect_one: &F,
-) -> Vec<QueuedViewDraws>
-where
-    F: Fn((&'plans FrameViewPlan<'view>, Option<ViewCullSnapshot>)) -> QueuedViewDraws + Sync,
-{
-    match prepared.len() {
+    parallelism: WorldMeshDrawCollectParallelism,
+) -> Vec<QueuedViewDraws> {
+    match contexts.len() {
         0 => Vec::new(),
         1 => {
             profiling::scope!("render::queue_view_draws::single_view");
-            let mut snaps = cull_snapshots.into_iter();
-            let snap = snaps.next().unwrap_or(None);
-            vec![collect_one((&prepared[0], snap))]
+            vec![collect_one_view_draws(
+                &contexts[0],
+                cull_proj_or_none(cull_projs, 0),
+                parallelism,
+            )]
         }
         2 if parallelize_views => {
             profiling::scope!("render::queue_view_draws::parallel_views");
             profiling::scope!("render::queue_view_draws::parallel_views::two_view_join");
-            let mut snaps = cull_snapshots.into_iter();
-            let first_snap = snaps.next().unwrap_or(None);
-            let second_snap = snaps.next().unwrap_or(None);
+            let first_proj = cull_proj_or_none(cull_projs, 0);
+            let second_proj = cull_proj_or_none(cull_projs, 1);
             let (first, second) = rayon::join(
                 || {
                     profiling::scope!(
                         "render::queue_view_draws::parallel_views::two_view_join::left"
                     );
-                    collect_one((&prepared[0], first_snap))
+                    collect_one_view_draws(&contexts[0], first_proj, parallelism)
                 },
                 || {
                     profiling::scope!(
                         "render::queue_view_draws::parallel_views::two_view_join::right"
                     );
-                    collect_one((&prepared[1], second_snap))
+                    collect_one_view_draws(&contexts[1], second_proj, parallelism)
                 },
             );
             vec![first, second]
@@ -549,23 +589,23 @@ where
         _ if parallelize_views => {
             profiling::scope!("render::queue_view_draws::parallel_views");
             profiling::scope!("render::queue_view_draws::parallel_views::par_iter");
-            prepared
+            contexts
                 .par_iter()
                 .with_min_len(VIEW_COLLECTION_PARALLEL_CHUNK_VIEWS)
-                .zip(
-                    cull_snapshots
-                        .into_par_iter()
-                        .with_min_len(VIEW_COLLECTION_PARALLEL_CHUNK_VIEWS),
-                )
-                .map(collect_one)
+                .enumerate()
+                .map(|(index, ctx)| {
+                    collect_one_view_draws(ctx, cull_proj_or_none(cull_projs, index), parallelism)
+                })
                 .collect()
         }
         _ => {
             profiling::scope!("render::queue_view_draws::serial_small_views");
-            prepared
+            contexts
                 .iter()
-                .zip(cull_snapshots)
-                .map(collect_one)
+                .enumerate()
+                .map(|(index, ctx)| {
+                    collect_one_view_draws(ctx, cull_proj_or_none(cull_projs, index), parallelism)
+                })
                 .collect()
         }
     }
@@ -616,16 +656,6 @@ pub(in crate::runtime) fn select_inner_parallelism(
     }
 }
 
-/// Prepared-draw count above which two outer-parallel views keep inner chunk parallelism enabled.
-///
-/// The gate is two prepared 32-draw chunks per view.
-const MIN_DRAWS_FOR_TWO_VIEW_INNER_PARALLELISM: usize = 64;
-
-/// Estimated total prepared draws above which view-level parallel collection pays for itself.
-///
-/// Two non-empty view chunks can overlap cull and draw collection work.
-const MIN_TOTAL_DRAWS_FOR_PARALLEL_VIEW_COLLECTION: usize = 2;
-
 /// Refines the frame-level inner parallelism once the backend has built the prepared draw list.
 ///
 /// The early selector only knows view count. At this point we also know whether each view will
@@ -635,7 +665,22 @@ fn select_inner_parallelism_for_prepared_work(
     prepared_draw_count: usize,
     default_parallelism: WorldMeshDrawCollectParallelism,
 ) -> WorldMeshDrawCollectParallelism {
-    if view_count == 2 && prepared_draw_count >= MIN_DRAWS_FOR_TWO_VIEW_INNER_PARALLELISM {
+    select_inner_parallelism_for_prepared_work_with_policy(
+        FrameParallelPolicy::for_current_thread_pool(),
+        view_count,
+        prepared_draw_count,
+        default_parallelism,
+    )
+}
+
+/// Policy-injected implementation for deterministic unit tests.
+fn select_inner_parallelism_for_prepared_work_with_policy(
+    policy: FrameParallelPolicy,
+    view_count: usize,
+    prepared_draw_count: usize,
+    default_parallelism: WorldMeshDrawCollectParallelism,
+) -> WorldMeshDrawCollectParallelism {
+    if view_count == 2 && policy.is_draw_heavy(view_count.saturating_mul(prepared_draw_count)) {
         WorldMeshDrawCollectParallelism::Full
     } else {
         default_parallelism
@@ -644,9 +689,28 @@ fn select_inner_parallelism_for_prepared_work(
 
 /// Returns whether multiple views should collect draws through outer view-level rayon work.
 fn should_parallelize_view_collection(view_count: usize, max_prepared_draw_count: usize) -> bool {
-    view_count >= VIEW_COLLECTION_PARALLEL_MIN_VIEWS
-        && view_count.saturating_mul(max_prepared_draw_count)
-            >= MIN_TOTAL_DRAWS_FOR_PARALLEL_VIEW_COLLECTION
+    should_parallelize_view_collection_with_policy(
+        FrameParallelPolicy::for_current_thread_pool(),
+        view_count,
+        max_prepared_draw_count,
+    )
+}
+
+/// Policy-injected implementation for deterministic unit tests.
+fn should_parallelize_view_collection_with_policy(
+    policy: FrameParallelPolicy,
+    view_count: usize,
+    max_prepared_draw_count: usize,
+) -> bool {
+    policy
+        .admit_draw_heavy_views(
+            FrameCpuWorkload::view_draws(
+                view_count,
+                view_count.saturating_mul(max_prepared_draw_count),
+            ),
+            VIEW_COLLECTION_PARALLEL_CHUNK_VIEWS,
+        )
+        .is_parallel()
 }
 
 /// Builds frustum + Hi-Z cull inputs for one prepared view.
@@ -749,18 +813,22 @@ mod tests {
 
     #[test]
     fn prepared_work_selector_reenables_inner_parallelism_for_large_two_view_frames() {
+        let policy = FrameParallelPolicy::new(4);
+        let draws_per_view = policy.draw_heavy_threshold() / 2;
         assert_eq!(
-            select_inner_parallelism_for_prepared_work(
+            select_inner_parallelism_for_prepared_work_with_policy(
+                policy,
                 2,
-                MIN_DRAWS_FOR_TWO_VIEW_INNER_PARALLELISM,
+                draws_per_view,
                 WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch,
             ),
             WorldMeshDrawCollectParallelism::Full
         );
         assert_eq!(
-            select_inner_parallelism_for_prepared_work(
+            select_inner_parallelism_for_prepared_work_with_policy(
+                policy,
                 2,
-                MIN_DRAWS_FOR_TWO_VIEW_INNER_PARALLELISM - 1,
+                draws_per_view - 1,
                 WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch,
             ),
             WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch
@@ -769,10 +837,12 @@ mod tests {
 
     #[test]
     fn prepared_work_selector_keeps_three_view_frames_nested_serial() {
+        let policy = FrameParallelPolicy::new(4);
         assert_eq!(
-            select_inner_parallelism_for_prepared_work(
+            select_inner_parallelism_for_prepared_work_with_policy(
+                policy,
                 3,
-                MIN_DRAWS_FOR_TWO_VIEW_INNER_PARALLELISM.saturating_mul(4),
+                policy.draw_heavy_threshold(),
                 WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch,
             ),
             WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch
@@ -781,17 +851,22 @@ mod tests {
 
     #[test]
     fn view_collection_parallelism_requires_multiple_views_and_enough_work() {
-        assert!(!should_parallelize_view_collection(
+        let policy = FrameParallelPolicy::new(4);
+        let draws_per_view = policy.draw_heavy_threshold() / 2;
+        assert!(!should_parallelize_view_collection_with_policy(
+            policy,
             1,
-            MIN_TOTAL_DRAWS_FOR_PARALLEL_VIEW_COLLECTION
+            policy.draw_heavy_threshold()
         ));
-        assert!(!should_parallelize_view_collection(
+        assert!(!should_parallelize_view_collection_with_policy(
+            policy,
             2,
-            (MIN_TOTAL_DRAWS_FOR_PARALLEL_VIEW_COLLECTION / 2).saturating_sub(1)
+            draws_per_view - 1
         ));
-        assert!(should_parallelize_view_collection(
+        assert!(should_parallelize_view_collection_with_policy(
+            policy,
             2,
-            MIN_TOTAL_DRAWS_FOR_PARALLEL_VIEW_COLLECTION / 2
+            draws_per_view
         ));
     }
 

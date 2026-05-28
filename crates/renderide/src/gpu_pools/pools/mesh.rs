@@ -6,7 +6,7 @@ use crate::assets::mesh::{GpuMesh, MeshBufferLayout};
 use crate::materials::EmbeddedTangentFallbackMode;
 
 use crate::gpu_pools::resource_pool::{GpuResourcePool, StreamingAccess};
-use crate::gpu_pools::{GpuResource, VramAccounting, impl_gpu_resource};
+use crate::gpu_pools::{GpuResource, impl_gpu_resource};
 
 impl_gpu_resource!(GpuMesh);
 
@@ -49,12 +49,6 @@ impl MeshPool {
             mutation_log_start_generation: 1,
             mutation_log: Vec::new(),
         }
-    }
-
-    /// VRAM accounting for resident meshes.
-    #[inline]
-    pub fn accounting(&self) -> &VramAccounting {
-        self.inner.accounting()
     }
 
     /// Inserts or replaces a mesh; returns `true` if a previous entry was replaced.

@@ -251,23 +251,12 @@ mod tests {
         assert_eq!(level, Some(LogLevel::Info));
     }
 
-    /// Serializes env-mutating tests so parallel runs do not race on shared env state.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// Restores a previously captured env var, removing it when `value` is [`None`].
-    fn restore(key: &str, value: Option<std::ffi::OsString>) {
-        if let Some(v) = value {
-            // SAFETY: env mutation in test; serialized via ENV_LOCK / cargo test single-thread.
-            unsafe {
-                env::set_var(key, v);
-            }
-        } else {
-            // SAFETY: env mutation in test; serialized via ENV_LOCK / cargo test single-thread.
-            unsafe {
-                env::remove_var(key);
-            }
-        }
-    }
+    const VR_ENV_KEYS: &[&str] = &[
+        vr_prompt::ENV_SKIP_VR_DIALOG,
+        "CI",
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+    ];
 
     /// Closure usable as the `prompt` argument to [`resolve_vr_choice`] in bypass-path tests:
     /// panics if invoked, asserting that the dialog must not be called.
@@ -277,34 +266,30 @@ mod tests {
 
     #[test]
     fn resolve_vr_choice_bypasses_dialog_on_skip_env() {
-        let _g = ENV_LOCK.lock().expect("env lock");
-        let prev_skip = env::var_os(vr_prompt::ENV_SKIP_VR_DIALOG);
-        let prev_ci = env::var_os("CI");
-        // SAFETY: env mutation in test; serialized via ENV_LOCK / cargo test single-thread.
+        let _g = crate::test_env::lock_process_env();
+        let _snap = crate::test_env::EnvSnapshot::capture(VR_ENV_KEYS);
+        // SAFETY: env mutation in test; serialized via the process env test lock.
         unsafe {
             env::set_var(vr_prompt::ENV_SKIP_VR_DIALOG, "1");
         }
-        // SAFETY: env mutation in test; serialized via ENV_LOCK / cargo test single-thread.
+        // SAFETY: env mutation in test; serialized via the process env test lock.
         unsafe {
             env::set_var("CI", "1");
         }
         let out = resolve_vr_choice(vec!["-Invisible".to_string()], unreachable_prompt)
             .expect("bypass path must yield Some");
         assert_eq!(out, vec!["-Invisible".to_string()]);
-        restore(vr_prompt::ENV_SKIP_VR_DIALOG, prev_skip);
-        restore("CI", prev_ci);
     }
 
     #[test]
     fn resolve_vr_choice_preserves_explicit_screen_arg() {
-        let _g = ENV_LOCK.lock().expect("env lock");
-        let prev_skip = env::var_os(vr_prompt::ENV_SKIP_VR_DIALOG);
-        let prev_ci = env::var_os("CI");
-        // SAFETY: env mutation in test; serialized via ENV_LOCK / cargo test single-thread.
+        let _g = crate::test_env::lock_process_env();
+        let _snap = crate::test_env::EnvSnapshot::capture(VR_ENV_KEYS);
+        // SAFETY: env mutation in test; serialized via the process env test lock.
         unsafe {
             env::remove_var(vr_prompt::ENV_SKIP_VR_DIALOG);
         }
-        // SAFETY: env mutation in test; serialized via ENV_LOCK / cargo test single-thread.
+        // SAFETY: env mutation in test; serialized via the process env test lock.
         unsafe {
             env::remove_var("CI");
         }
@@ -314,20 +299,15 @@ mod tests {
         )
         .expect("explicit output flag bypasses dialog");
         assert_eq!(out, vec!["-Screen".to_string(), "-Invisible".to_string()]);
-        restore(vr_prompt::ENV_SKIP_VR_DIALOG, prev_skip);
-        restore("CI", prev_ci);
     }
 
     /// When the dialog runs and the user cancels (`prompt` returns [`None`]), [`resolve_vr_choice`]
     /// propagates the cancellation as `None` so `main` can exit cleanly without launching the Host.
     #[test]
     fn resolve_vr_choice_returns_none_when_prompt_cancels() {
-        let _g = ENV_LOCK.lock().expect("env lock");
-        let prev_skip = env::var_os(vr_prompt::ENV_SKIP_VR_DIALOG);
-        let prev_ci = env::var_os("CI");
-        let prev_display = env::var_os("DISPLAY");
-        let prev_wayland = env::var_os("WAYLAND_DISPLAY");
-        // SAFETY: env mutation in test; serialized via ENV_LOCK / cargo test single-thread.
+        let _g = crate::test_env::lock_process_env();
+        let _snap = crate::test_env::EnvSnapshot::capture(VR_ENV_KEYS);
+        // SAFETY: env mutation in test; serialized via the process env test lock.
         unsafe {
             env::remove_var(vr_prompt::ENV_SKIP_VR_DIALOG);
             env::remove_var("CI");
@@ -336,22 +316,15 @@ mod tests {
         }
         let result = resolve_vr_choice(vec!["-Invisible".to_string()], || None);
         assert!(result.is_none(), "cancelled dialog must yield None");
-        restore(vr_prompt::ENV_SKIP_VR_DIALOG, prev_skip);
-        restore("CI", prev_ci);
-        restore("DISPLAY", prev_display);
-        restore("WAYLAND_DISPLAY", prev_wayland);
     }
 
     /// When the dialog runs and the user picks VR (`prompt` returns `Some(true)`), the Host argv is
     /// prepended with `-Device SteamVR` ahead of any forwarded tokens.
     #[test]
     fn resolve_vr_choice_applies_vr_device_when_prompt_confirms() {
-        let _g = ENV_LOCK.lock().expect("env lock");
-        let prev_skip = env::var_os(vr_prompt::ENV_SKIP_VR_DIALOG);
-        let prev_ci = env::var_os("CI");
-        let prev_display = env::var_os("DISPLAY");
-        let prev_wayland = env::var_os("WAYLAND_DISPLAY");
-        // SAFETY: env mutation in test; serialized via ENV_LOCK / cargo test single-thread.
+        let _g = crate::test_env::lock_process_env();
+        let _snap = crate::test_env::EnvSnapshot::capture(VR_ENV_KEYS);
+        // SAFETY: env mutation in test; serialized via the process env test lock.
         unsafe {
             env::remove_var(vr_prompt::ENV_SKIP_VR_DIALOG);
             env::remove_var("CI");
@@ -368,9 +341,5 @@ mod tests {
                 "-Invisible".to_string(),
             ]
         );
-        restore(vr_prompt::ENV_SKIP_VR_DIALOG, prev_skip);
-        restore("CI", prev_ci);
-        restore("DISPLAY", prev_display);
-        restore("WAYLAND_DISPLAY", prev_wayland);
     }
 }

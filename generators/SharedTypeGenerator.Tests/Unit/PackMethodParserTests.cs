@@ -39,6 +39,34 @@ namespace PackAsm {
         Assert.Equal(FieldKind.Pod, wf.Kind);
     }
 
+    /// <summary>Nested CLR types resolve to Cecil nested names when parsing Pack IL.</summary>
+    [Fact]
+    public void ParseWithConditionals_nested_type_resolves_cecil_body()
+    {
+        const string source = @"
+namespace PackAsm {
+  public struct MemoryPacker {
+    public void Write<T>(ref T value) where T : unmanaged { }
+  }
+  public sealed class Outer {
+    public sealed class Inner {
+      public int field;
+      public void Pack(ref MemoryPacker p) {
+        p.Write(ref field);
+      }
+    }
+  }
+}";
+        (Assembly reflection, AssemblyDefinition cecil) = TestCompilation.Compile(source);
+        Type inner = reflection.GetType("PackAsm.Outer+Inner", throwOnError: true)!;
+        FieldInfo[] fields = inner.GetFields(BindingFlags.Public | BindingFlags.Instance);
+        PackMethodParser parser = CreateParser(cecil);
+        List<SerializationStep> steps = parser.ParseWithConditionals(inner, fields);
+        WriteField? wf = Assert.Single(steps) as WriteField;
+        Assert.NotNull(wf);
+        Assert.Equal("field", wf.FieldName);
+    }
+
     /// <summary>Conditional <c>if</c> around writes becomes a <see cref="ConditionalBlock"/>.</summary>
     [Fact]
     public void ParseWithConditionals_conditional_block()
@@ -93,6 +121,39 @@ namespace PackAsm {
         PackMethodParser parser = CreateParser(cecil);
         List<SerializationStep> steps = parser.ParseWithConditionals(derived, fields);
         Assert.IsType<CallBase>(Assert.Single(steps));
+    }
+
+    /// <summary>Constructed generic base classes keep their own Pack steps for inherited serialization inlining.</summary>
+    [Fact]
+    public void ParseWithConditionals_constructed_generic_base_resolves_pack_body()
+    {
+        const string source = @"
+namespace PackAsm {
+  public struct MemoryPacker {
+    public void Write<T>(T value) where T : unmanaged { }
+  }
+  public class GenericBase<T> {
+    public int first;
+    public int second;
+    public virtual void Pack(ref MemoryPacker p) {
+      p.Write(first);
+      p.Write(second);
+    }
+  }
+  public sealed class Derived : GenericBase<int> {
+  }
+}";
+        (Assembly reflection, AssemblyDefinition cecil) = TestCompilation.Compile(source);
+        Type derived = reflection.GetType("PackAsm.Derived", throwOnError: true)!;
+        Type genericBase = derived.BaseType!;
+        FieldInfo[] fields = derived.GetFields(BindingFlags.Public | BindingFlags.Instance);
+        PackMethodParser parser = CreateParser(cecil);
+        List<SerializationStep> steps = parser.ParseWithConditionals(genericBase, fields);
+
+        Assert.Collection(
+            steps,
+            step => Assert.Equal("first", Assert.IsType<WriteField>(step).FieldName),
+            step => Assert.Equal("second", Assert.IsType<WriteField>(step).FieldName));
     }
 
     /// <summary><see cref="PackMethodParser.ParseUnpackOnlySteps"/> captures <c>DateTime.UtcNow</c> assignments.</summary>

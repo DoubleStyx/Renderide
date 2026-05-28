@@ -8,6 +8,7 @@ use super::enum_repr::EnumRepr;
 use super::memory_pack_error::MemoryPackError;
 use super::memory_packable::MemoryPackable;
 use super::polymorphic_memory_packable_entity::PolymorphicEncode;
+use super::type_name::short_type_name;
 
 /// Sequential binary writer for IPC buffers.
 ///
@@ -245,12 +246,6 @@ impl<'a> MemoryPacker<'a> {
             }
         }
     }
-}
-
-/// Returns the unqualified Rust type name of `T` for diagnostics.
-fn short_type_name<T>() -> &'static str {
-    let full = std::any::type_name::<T>();
-    full.rsplit("::").next().unwrap_or(full)
 }
 
 #[cfg(test)]

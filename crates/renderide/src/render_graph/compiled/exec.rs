@@ -20,6 +20,7 @@ use hashbrown::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::cpu_parallelism::{FrameCpuWorkload, FrameParallelPolicy};
 use crate::diagnostics::{PerViewHudConfig, PerViewHudOutputs};
 use crate::gpu::{GpuContext, GpuLimits, MsaaDepthResolveResources};
 use crate::render_graph::GraphExecutionBackend;
@@ -45,11 +46,6 @@ fn elapsed_ms(start: Instant) -> f64 {
 
 /// Per-view pre-record work items assigned to one blackboard-preparation worker.
 const PRE_RECORD_VIEW_PREP_PARALLEL_CHUNK_VIEWS: usize = 1;
-/// View count required before per-view blackboard preparation fans out.
-const PRE_RECORD_VIEW_PREP_PARALLEL_MIN_VIEWS: usize =
-    PRE_RECORD_VIEW_PREP_PARALLEL_CHUNK_VIEWS * 2;
-/// Total draw count required before per-view blackboard preparation fans out.
-const PRE_RECORD_VIEW_PREP_PARALLEL_MIN_DRAWS: usize = 128;
 
 struct ViewBlackboardPrepareShared<'a> {
     scene: &'a SceneCoordinator,
@@ -501,9 +497,7 @@ impl CompiledRenderGraph {
         let backend = &*mv_ctx.backend;
         let total_draw_count = work_items
             .iter()
-            .map(|work_item| {
-                backend.estimate_view_blackboard_prepare_draw_count(&work_item.initial_blackboard)
-            })
+            .map(|work_item| work_item.estimated_draw_count)
             .sum::<usize>();
         let preparer = backend.view_blackboard_preparer();
         let shared = ViewBlackboardPrepareShared {
@@ -523,12 +517,17 @@ impl CompiledRenderGraph {
             gpu_limits_arc: backend.gpu_limits().cloned(),
             msaa_depth_resolve: backend.msaa_depth_resolve(),
         };
-        if should_parallelize_view_blackboard_prepare(work_items.len(), total_draw_count) {
+        let admission = view_blackboard_prepare_admission(
+            FrameParallelPolicy::for_current_thread_pool(),
+            work_items.len(),
+            total_draw_count,
+        );
+        if admission.is_parallel() {
             profiling::scope!("graph::prepare_view_blackboards::parallel");
             use rayon::prelude::*;
             work_items
                 .par_iter_mut()
-                .with_min_len(PRE_RECORD_VIEW_PREP_PARALLEL_CHUNK_VIEWS)
+                .with_min_len(admission.chunk_size().unwrap_or(1))
                 .for_each(|work_item| {
                     self.prepare_one_view_blackboard(&shared, work_item);
                 });
@@ -624,6 +623,9 @@ impl CompiledRenderGraph {
                     resource: "frame",
                 });
             };
+            let estimated_draw_count = mv_ctx
+                .backend
+                .estimate_view_blackboard_prepare_draw_count(&view.initial_blackboard);
             work_items.push(PerViewWorkItem {
                 view_idx,
                 host_camera,
@@ -635,16 +637,23 @@ impl CompiledRenderGraph {
                 initial_blackboard: std::mem::take(&mut view.initial_blackboard),
                 resolved,
                 per_view_frame_bg_and_buf,
+                estimated_draw_count,
             });
         }
         Ok(work_items)
     }
 }
 
-/// Returns whether per-view blackboard preparation has enough work to use Rayon.
-fn should_parallelize_view_blackboard_prepare(view_count: usize, total_draw_count: usize) -> bool {
-    view_count >= PRE_RECORD_VIEW_PREP_PARALLEL_MIN_VIEWS
-        && total_draw_count >= PRE_RECORD_VIEW_PREP_PARALLEL_MIN_DRAWS
+/// Returns the Rayon admission decision for per-view blackboard preparation.
+fn view_blackboard_prepare_admission(
+    policy: FrameParallelPolicy,
+    view_count: usize,
+    total_draw_count: usize,
+) -> crate::cpu_parallelism::ParallelAdmission {
+    policy.admit_draw_heavy_views(
+        FrameCpuWorkload::view_draws(view_count, total_draw_count),
+        PRE_RECORD_VIEW_PREP_PARALLEL_CHUNK_VIEWS,
+    )
 }
 
 mod pre_warm;

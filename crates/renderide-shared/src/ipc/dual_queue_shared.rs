@@ -8,6 +8,7 @@
 //! Per-side specifics live in the wrappers; the encode/drain/open primitives below are common.
 
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use interprocess::{Publisher, QueueFactory, QueueOptions, Subscriber};
 
@@ -18,6 +19,29 @@ use crate::packing::memory_unpacker::MemoryUnpacker;
 use crate::packing::polymorphic_memory_packable_entity::PolymorphicEncode;
 use crate::packing::wire_decode_error::WireDecodeError;
 use crate::shared::{RendererCommand, decode_renderer_command};
+
+/// Diagnostic counters collected while draining one IPC subscriber.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct IpcDrainStats {
+    /// Successfully decoded command count.
+    pub messages: usize,
+    /// Total encoded payload bytes consumed from the queue, including invalid messages.
+    pub bytes: usize,
+    /// Messages dropped because their payload did not decode as a renderer command.
+    pub invalid_messages: usize,
+    /// Wall-clock time spent in renderer-command decode.
+    pub decode_duration: Duration,
+}
+
+impl IpcDrainStats {
+    /// Adds another drain sample into this one.
+    pub fn add(&mut self, other: Self) {
+        self.messages += other.messages;
+        self.bytes += other.bytes;
+        self.invalid_messages += other.invalid_messages;
+        self.decode_duration += other.decode_duration;
+    }
+}
 
 /// Encodes `cmd` into `buf`, returning the number of bytes written.
 ///
@@ -51,14 +75,29 @@ pub(super) fn drain_subscriber(
     pool: &mut DefaultEntityPool,
     out: &mut Vec<RendererCommand>,
     invalid_log_prefix: &'static str,
-) {
+) -> IpcDrainStats {
+    let mut stats = IpcDrainStats::default();
     while let Some(msg) = sub.try_dequeue() {
+        stats.bytes += msg.len();
         let mut unpacker = MemoryUnpacker::new(&msg, pool);
-        match decode_renderer_command(&mut unpacker) {
-            Ok(cmd) => out.push(cmd),
-            Err(e) => log_invalid_renderer_command(invalid_log_prefix, e),
+        let decode_started = Instant::now();
+        let decoded = {
+            profiling::scope!("ipc::decode");
+            decode_renderer_command(&mut unpacker)
+        };
+        stats.decode_duration += decode_started.elapsed();
+        match decoded {
+            Ok(cmd) => {
+                stats.messages += 1;
+                out.push(cmd);
+            }
+            Err(e) => {
+                stats.invalid_messages += 1;
+                log_invalid_renderer_command(invalid_log_prefix, e);
+            }
         }
     }
+    stats
 }
 
 /// Logs an invalid-renderer-command decode failure at [`logger::warn!`].

@@ -8,6 +8,7 @@ mod asset_integration;
 mod command_encoding;
 mod event_loop;
 mod frame_upload;
+mod ipc;
 mod mesh_deform;
 mod tracy_plot;
 
@@ -18,4 +19,5 @@ pub use event_loop::{
     plot_fps_cap_active, plot_surface_acquire_outcome, plot_window_focused,
 };
 pub use frame_upload::{plot_frame_upload_batch, plot_world_mesh_subpass};
+pub use ipc::{IpcPollProfileSample, plot_ipc_poll};
 pub use mesh_deform::{MeshDeformProfileSample, plot_mesh_deform};

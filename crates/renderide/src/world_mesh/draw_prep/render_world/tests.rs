@@ -2,6 +2,7 @@
 
 use super::state::{RenderWorldRendererRef, RenderWorldRendererTemplate};
 use super::*;
+use crate::cpu_parallelism::{FrameParallelPolicy, ParallelAdmission};
 use crate::scene::SceneCacheFlushReport;
 use crate::shared::RenderTransform;
 use glam::{Quat, Vec3};
@@ -21,6 +22,30 @@ fn dirty_static(space_id: RenderSpaceId, renderable_index: usize) -> RenderWorld
         space_id,
         kind: RenderWorldRendererKind::Static,
         renderable_index,
+    }
+}
+
+/// Builds a retained draw template entry for snapshot chunking tests.
+fn prepared_draw(space_id: RenderSpaceId, renderable_index: usize) -> FramePreparedDraw {
+    FramePreparedDraw {
+        space_id,
+        renderable_index,
+        instance_id: Default::default(),
+        node_id: -1,
+        mesh_asset_id: 1,
+        is_overlay: false,
+        sorting_order: 0,
+        skinned: false,
+        world_space_deformed: false,
+        blendshape_deformed: false,
+        tangent_blendshape_deform_active: false,
+        slot_index: 0,
+        first_index: 0,
+        index_count: 3,
+        material_asset_id: 1,
+        property_block_id: None,
+        cull_geometry: None,
+        rigid_world_matrix_override: None,
     }
 }
 
@@ -250,4 +275,65 @@ fn reverse_index_delta_replaces_stale_renderer_identity() {
     assert_eq!(cached.mesh_asset_index.get(&99), Some(&vec![first]));
     assert_eq!(cached.node_index.get(&20), Some(&vec![first]));
     assert!(!cached.node_index.contains_key(&10));
+}
+
+#[test]
+fn dirty_refresh_parallelism_requires_enough_spaces_and_work_units() {
+    let policy = FrameParallelPolicy::new(2);
+
+    assert_eq!(
+        dirty_refresh_admission(policy, 2, DIRTY_SPACE_REFRESH_PARALLEL_MIN_WORK_UNITS - 1,),
+        ParallelAdmission::Serial
+    );
+    assert_eq!(
+        dirty_refresh_admission(policy, 1, DIRTY_SPACE_REFRESH_PARALLEL_MIN_WORK_UNITS),
+        ParallelAdmission::Serial
+    );
+    assert!(
+        dirty_refresh_admission(policy, 2, DIRTY_SPACE_REFRESH_PARALLEL_MIN_WORK_UNITS)
+            .is_parallel()
+    );
+}
+
+#[test]
+fn snapshot_rebuild_parallelism_requires_enough_tasks_and_draws() {
+    let policy = FrameParallelPolicy::new(2);
+
+    assert_eq!(
+        snapshot_rebuild_admission(policy, 2, SNAPSHOT_REBUILD_PARALLEL_MIN_DRAWS - 1),
+        ParallelAdmission::Serial
+    );
+    assert_eq!(
+        snapshot_rebuild_admission(policy, 1, SNAPSHOT_REBUILD_PARALLEL_MIN_DRAWS),
+        ParallelAdmission::Serial
+    );
+    assert!(
+        snapshot_rebuild_admission(policy, 2, SNAPSHOT_REBUILD_PARALLEL_MIN_DRAWS).is_parallel()
+    );
+}
+
+#[test]
+fn snapshot_rebuild_tasks_chunk_by_retained_template_count() {
+    let space_id = RenderSpaceId(60);
+    let mut space = RenderWorldSpace::default();
+    space.static_renderers.push(RenderWorldRendererTemplate {
+        draws: vec![prepared_draw(space_id, 0); 800],
+        ..Default::default()
+    });
+    space.static_renderers.push(RenderWorldRendererTemplate {
+        draws: vec![prepared_draw(space_id, 1); 224],
+        ..Default::default()
+    });
+    space.static_renderers.push(RenderWorldRendererTemplate {
+        draws: vec![prepared_draw(space_id, 2); 1],
+        ..Default::default()
+    });
+
+    let tasks = build_snapshot_rebuild_tasks(&[(space_id, &space)]);
+
+    assert_eq!(tasks.len(), 2);
+    assert_eq!(tasks[0].range, 0..2);
+    assert_eq!(tasks[0].retained_template_count(), 1024);
+    assert_eq!(tasks[1].range, 2..3);
+    assert_eq!(tasks[1].retained_template_count(), 1);
 }

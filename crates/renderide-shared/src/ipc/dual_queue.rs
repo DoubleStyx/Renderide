@@ -9,6 +9,7 @@ use interprocess::{Publisher, QueueFactory, Subscriber};
 
 use super::connection::{ConnectionParams, InitError, publisher_queue_name, subscriber_queue_name};
 use super::dual_queue_reliable_outbox::ReliableBackgroundOutbox;
+pub use super::dual_queue_shared::IpcDrainStats;
 use super::dual_queue_shared::{drain_subscriber, encode_command, open_publisher, open_subscriber};
 use crate::packing::default_entity_pool::DefaultEntityPool;
 use crate::shared::RendererCommand;
@@ -23,6 +24,46 @@ const INVALID_MESSAGE_LOG_PREFIX: &str = "IPC";
 
 /// After this many consecutive `try_enqueue` failures on one channel, log at [`logger::error!`].
 const IPC_CONSECUTIVE_DROP_ERROR_AFTER: u32 = 16;
+
+/// Diagnostic counters collected while draining both renderer inbound queues.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DualQueueDrainStats {
+    /// Primary subscriber drain counters.
+    pub primary: IpcDrainStats,
+    /// Background subscriber drain counters.
+    pub background: IpcDrainStats,
+}
+
+impl DualQueueDrainStats {
+    /// Returns an aggregate sample across both queues.
+    pub fn total(&self) -> IpcDrainStats {
+        let mut total = self.primary;
+        total.add(self.background);
+        total
+    }
+}
+
+/// Diagnostic counters collected by a primary-wait poll.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DualQueuePollStats {
+    /// Time spent waiting on the primary inbound semaphore.
+    pub waited: Duration,
+    /// Counters from the immediate pre-wait drain.
+    pub initial_drain: DualQueueDrainStats,
+    /// Counters from the post-wait drain after the primary queue became ready.
+    pub post_wait_drain: DualQueueDrainStats,
+    /// Whether the primary wait consumed the full timeout without a ready message.
+    pub timed_out: bool,
+}
+
+impl DualQueuePollStats {
+    /// Returns aggregate queue-drain counters from the full poll operation.
+    pub fn total_drain(&self) -> IpcDrainStats {
+        let mut total = self.initial_drain.total();
+        total.add(self.post_wait_drain.total());
+        total
+    }
+}
 
 /// Host <-> renderer IPC over two Cloudtoid queue pairs (Primary and Background).
 pub struct DualQueueIpc {
@@ -124,25 +165,34 @@ impl DualQueueIpc {
     ///
     /// Clears `out` then drains both subscribers so each tick starts from an empty batch.
     pub fn poll_into(&mut self, out: &mut Vec<RendererCommand>) {
+        let _stats = self.poll_into_profiled(out);
+    }
+
+    /// Drains both subscribers into `out` and returns diagnostic counters for the drain.
+    pub fn poll_into_profiled(&mut self, out: &mut Vec<RendererCommand>) -> DualQueueDrainStats {
         out.clear();
         self.flush_reliable_outbound();
-        {
+        let primary = {
             profiling::scope!("ipc::primary_drain");
             drain_subscriber(
                 &mut self.primary_subscriber,
                 &mut self.entity_pool,
                 out,
                 INVALID_MESSAGE_LOG_PREFIX,
-            );
+            )
         };
-        {
+        let background = {
             profiling::scope!("ipc::background_drain");
             drain_subscriber(
                 &mut self.background_subscriber,
                 &mut self.entity_pool,
                 out,
                 INVALID_MESSAGE_LOG_PREFIX,
-            );
+            )
+        };
+        DualQueueDrainStats {
+            primary,
+            background,
         }
     }
 
@@ -156,18 +206,50 @@ impl DualQueueIpc {
         out: &mut Vec<RendererCommand>,
         timeout: Duration,
     ) -> Duration {
-        self.poll_into(out);
+        self.poll_into_after_primary_wait_profiled(out, timeout)
+            .waited
+    }
+
+    /// Waits up to `timeout` for primary inbound work and returns diagnostic counters.
+    pub fn poll_into_after_primary_wait_profiled(
+        &mut self,
+        out: &mut Vec<RendererCommand>,
+        timeout: Duration,
+    ) -> DualQueuePollStats {
+        let initial_drain = {
+            profiling::scope!("ipc::immediate_drain");
+            self.poll_into_profiled(out)
+        };
         if !out.is_empty() || timeout.is_zero() {
-            return Duration::ZERO;
+            return DualQueuePollStats {
+                initial_drain,
+                ..DualQueuePollStats::default()
+            };
         }
         let wait_started = std::time::Instant::now();
-        let ready = self.primary_subscriber.wait_for_message_timeout(timeout);
+        let ready = {
+            profiling::scope!("ipc::primary_wait");
+            self.primary_subscriber.wait_for_message_timeout(timeout)
+        };
         let waited = wait_started.elapsed();
         if !ready {
-            return waited;
+            return DualQueuePollStats {
+                waited,
+                initial_drain,
+                timed_out: true,
+                ..DualQueuePollStats::default()
+            };
         }
-        self.poll_into(out);
-        waited
+        let post_wait_drain = {
+            profiling::scope!("ipc::post_wait_drain");
+            self.poll_into_profiled(out)
+        };
+        DualQueuePollStats {
+            waited,
+            initial_drain,
+            post_wait_drain,
+            timed_out: false,
+        }
     }
 
     /// Encodes and sends a command on the **Primary** publisher (frame handshake, init, etc.).

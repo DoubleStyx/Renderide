@@ -5,6 +5,7 @@ use std::path::Path;
 use image::RgbaImage;
 
 use crate::error::HarnessError;
+use crate::image_io::{load_rgba, save_rgba, write_diff_image};
 
 /// Maximum per-channel value range (inclusive) still treated as a flat / clear-only image.
 ///
@@ -57,16 +58,7 @@ pub fn check(
     let score = result.score;
 
     if score < threshold {
-        if let Some(parent) = diff_out.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let diff_img = result.image.to_color_map();
-        diff_img
-            .save(diff_out)
-            .map_err(|e| HarnessError::PngWrite {
-                path: diff_out.to_path_buf(),
-                source: image::ImageError::IoError(std::io::Error::other(format!("{e:?}"))),
-            })?;
+        write_diff_image(&actual_img, &golden_img, diff_out)?;
         return Err(HarnessError::GoldenMismatch {
             score,
             threshold,
@@ -114,23 +106,8 @@ fn flat_sample_rgba_if_nearly_uniform(img: &RgbaImage) -> Option<[u8; 4]> {
         })
 }
 
-fn load_rgba(path: &Path) -> Result<RgbaImage, HarnessError> {
-    let img = image::open(path).map_err(|e| HarnessError::PngRead {
-        path: path.to_path_buf(),
-        source: e,
-    })?;
-    Ok(img.to_rgba8())
-}
-
 fn write_actual_for_debug(actual: &RgbaImage, diff_out: &Path) -> Result<(), HarnessError> {
-    if let Some(parent) = diff_out.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    actual.save(diff_out).map_err(|e| HarnessError::PngWrite {
-        path: diff_out.to_path_buf(),
-        source: e,
-    })?;
-    Ok(())
+    save_rgba(actual, diff_out)
 }
 
 #[cfg(test)]

@@ -29,7 +29,10 @@ pub use draw_prep::{
     RenderWorldMaintenanceStats, WorldMeshDrawCollectParallelism, WorldMeshDrawItem,
     draw_filter_from_camera_entry,
 };
-pub(crate) use draw_prep::{QueuedWorldMeshDraws, queue_draws_with_parallelism};
+pub(crate) use draw_prep::{
+    QueuedWorldMeshDraws, queue_draws_with_parallelism,
+    queue_prepared_draws_for_views_with_parallelism,
+};
 pub(crate) use instances::depth_prepass_group_eligible;
 pub use instances::{
     DrawGroup, InstancePlan, MeshPassKind, WorldMeshPhase, build_plan_for_shader,

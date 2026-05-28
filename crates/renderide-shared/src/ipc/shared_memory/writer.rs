@@ -23,13 +23,6 @@
 use std::io;
 use std::path::PathBuf;
 
-#[cfg(unix)]
-use std::fs::{File, OpenOptions};
-
-#[cfg(unix)]
-use memmap2::MmapMut;
-
-use super::compose_memory_view_name;
 use crate::buffer::SharedMemoryBufferDescriptor;
 
 #[cfg(unix)]
@@ -37,6 +30,16 @@ use super::RENDERIDE_INTERPROCESS_DIR_ENV;
 
 #[cfg(unix)]
 use std::env;
+
+#[cfg(unix)]
+mod unix;
+#[cfg(unix)]
+use unix::PlatformWriter;
+
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+use windows::PlatformWriter;
 
 /// Unix backing-file directory matching the renderer's resolution.
 ///
@@ -108,219 +111,6 @@ impl From<io::Error> for SharedMemoryWriterError {
     }
 }
 
-#[cfg(unix)]
-mod platform {
-    use super::{
-        File, MmapMut, OpenOptions, PathBuf, RENDERIDE_INTERPROCESS_DIR_ENV,
-        SharedMemoryWriterConfig, SharedMemoryWriterError, compose_memory_view_name, env,
-    };
-
-    #[derive(Debug)]
-    pub(super) struct PlatformWriter {
-        file_path: PathBuf,
-        _file: File,
-        mmap: MmapMut,
-        destroy_on_drop: bool,
-    }
-
-    impl PlatformWriter {
-        pub(super) fn new(
-            cfg: &SharedMemoryWriterConfig,
-            buffer_id: i32,
-            capacity_bytes: i32,
-        ) -> Result<Self, SharedMemoryWriterError> {
-            let dir = cfg.dir_override.clone().unwrap_or_else(|| {
-                env::var_os(RENDERIDE_INTERPROCESS_DIR_ENV)
-                    .filter(|s| !s.is_empty())
-                    .map_or_else(interprocess::default_memory_dir, PathBuf::from)
-            });
-            std::fs::create_dir_all(&dir).map_err(SharedMemoryWriterError::Io)?;
-            let file_path = dir.join(format!(
-                "{}.qu",
-                compose_memory_view_name(&cfg.prefix, buffer_id)
-            ));
-            let file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(&file_path)
-                .map_err(|e| {
-                    SharedMemoryWriterError::Map(format!("{}: {e}", file_path.display()))
-                })?;
-            file.set_len(capacity_bytes as u64)
-                .map_err(SharedMemoryWriterError::Io)?;
-            // SAFETY: the writer holds exclusive ownership of the backing `.qu` file; cross-process
-            // readers synchronise via the IPC wire protocol.
-            let mmap = unsafe { MmapMut::map_mut(&file) }
-                .map_err(|e| SharedMemoryWriterError::Map(e.to_string()))?;
-            Ok(Self {
-                file_path,
-                _file: file,
-                mmap,
-                destroy_on_drop: cfg.destroy_on_drop,
-            })
-        }
-
-        pub(super) fn write_at(
-            &mut self,
-            offset: usize,
-            data: &[u8],
-        ) -> Result<(), SharedMemoryWriterError> {
-            self.mmap[offset..offset + data.len()].copy_from_slice(data);
-            Ok(())
-        }
-
-        pub(super) fn flush_range(&self, offset: usize, len: usize) {
-            let _ = self.mmap.flush_range(offset, len);
-        }
-
-        pub(super) fn len(&self) -> usize {
-            self.mmap.len()
-        }
-    }
-
-    impl Drop for PlatformWriter {
-        fn drop(&mut self) {
-            if self.destroy_on_drop {
-                let _ = std::fs::remove_file(&self.file_path);
-            }
-        }
-    }
-}
-
-#[cfg(windows)]
-mod platform {
-    use super::{SharedMemoryWriterConfig, SharedMemoryWriterError, compose_memory_view_name};
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
-    use std::ptr::null;
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
-    use windows_sys::Win32::System::Memory::{
-        CreateFileMappingW, FILE_MAP_ALL_ACCESS, FlushViewOfFile, MEMORY_MAPPED_VIEW_ADDRESS,
-        MapViewOfFile, PAGE_READWRITE, UnmapViewOfFile,
-    };
-
-    const MAP_NAME_PREFIX: &str = "CT_IP_";
-
-    pub(super) struct PlatformWriter {
-        handle: HANDLE,
-        view: MEMORY_MAPPED_VIEW_ADDRESS,
-        len: usize,
-    }
-
-    /// [`MEMORY_MAPPED_VIEW_ADDRESS`] does not implement [`std::fmt::Debug`]; we print the mapped base pointer.
-    impl std::fmt::Debug for PlatformWriter {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.debug_struct("PlatformWriter")
-                .field("handle", &self.handle)
-                .field("view", &self.view.Value)
-                .field("len", &self.len)
-                .finish()
-        }
-    }
-
-    impl PlatformWriter {
-        pub(super) fn new(
-            cfg: &SharedMemoryWriterConfig,
-            buffer_id: i32,
-            capacity_bytes: i32,
-        ) -> Result<Self, SharedMemoryWriterError> {
-            let _ = cfg.destroy_on_drop;
-            let name = format!(
-                "{}{}",
-                MAP_NAME_PREFIX,
-                compose_memory_view_name(&cfg.prefix, buffer_id)
-            );
-            let name_wide: Vec<u16> = OsStr::new(&name)
-                .encode_wide()
-                .chain(std::iter::once(0))
-                .collect();
-            let size = capacity_bytes as usize;
-            // SAFETY: `name_wide` is a NUL-terminated wide string; `INVALID_HANDLE_VALUE` requests
-            // an anonymous pagefile-backed mapping.
-            let handle = unsafe {
-                CreateFileMappingW(
-                    INVALID_HANDLE_VALUE,
-                    null(),
-                    PAGE_READWRITE,
-                    (size >> 32) as u32,
-                    (size & 0xFFFF_FFFF) as u32,
-                    name_wide.as_ptr(),
-                )
-            };
-            if handle.is_null() || handle == INVALID_HANDLE_VALUE {
-                return Err(SharedMemoryWriterError::Map(format!(
-                    "CreateFileMappingW failed for {name}"
-                )));
-            }
-            // SAFETY: `handle` was just returned valid.
-            let view = unsafe { MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0, size) };
-            if view.Value.is_null() {
-                // SAFETY: `handle` is live; closed once on this error path.
-                unsafe {
-                    CloseHandle(handle);
-                }
-                return Err(SharedMemoryWriterError::Map(format!(
-                    "MapViewOfFile failed for {name}"
-                )));
-            }
-            Ok(Self {
-                handle,
-                view,
-                len: size,
-            })
-        }
-
-        pub(super) fn write_at(
-            &mut self,
-            offset: usize,
-            data: &[u8],
-        ) -> Result<(), SharedMemoryWriterError> {
-            // SAFETY: caller-facing bounds are checked by `write` in the outer struct; `self.view`
-            // is the mapping base; `&mut self` ensures no other writer is active here.
-            unsafe {
-                let dst = self.view.Value.add(offset).cast::<u8>();
-                std::ptr::copy_nonoverlapping(data.as_ptr(), dst, data.len());
-            }
-            Ok(())
-        }
-
-        pub(super) fn flush_range(&self, offset: usize, len: usize) {
-            if len == 0 {
-                return;
-            }
-            // SAFETY: `offset + len <= self.len` is the caller's contract (the outer `flush_range`
-            // bounds-checks); `self.view.Value` is the non-null live mapping base.
-            unsafe {
-                let base = self.view.Value.add(offset).cast_const();
-                let _ = FlushViewOfFile(base, len);
-            }
-        }
-
-        pub(super) fn len(&self) -> usize {
-            self.len
-        }
-    }
-
-    impl Drop for PlatformWriter {
-        fn drop(&mut self) {
-            if !self.view.Value.is_null() {
-                // SAFETY: `self.view` was mapped in `new`; unmapped exactly once on drop.
-                unsafe {
-                    UnmapViewOfFile(self.view);
-                }
-            }
-            if !self.handle.is_null() && self.handle != INVALID_HANDLE_VALUE {
-                // SAFETY: `self.handle` was opened in `new`; closed exactly once on drop.
-                unsafe {
-                    CloseHandle(self.handle);
-                }
-            }
-        }
-    }
-}
-
 /// Single host-side shared-memory buffer (one Cloudtoid `.qu` file or named mapping).
 ///
 /// Writes from the host are visible to the renderer's [`SharedMemoryAccessor`](crate::ipc::SharedMemoryAccessor)
@@ -331,7 +121,7 @@ pub struct SharedMemoryWriter {
     cfg: SharedMemoryWriterConfig,
     buffer_id: i32,
     capacity_bytes: i32,
-    inner: platform::PlatformWriter,
+    inner: PlatformWriter,
 }
 
 impl SharedMemoryWriter {
@@ -355,7 +145,7 @@ impl SharedMemoryWriter {
         let capacity_i32: i32 = capacity_bytes
             .try_into()
             .map_err(|_| SharedMemoryWriterError::CapacityOverflow(capacity_bytes))?;
-        let inner = platform::PlatformWriter::new(&cfg, buffer_id, capacity_i32)?;
+        let inner = PlatformWriter::new(&cfg, buffer_id, capacity_i32)?;
         Ok(Self {
             cfg,
             buffer_id,

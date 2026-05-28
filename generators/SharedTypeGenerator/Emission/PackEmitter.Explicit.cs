@@ -5,7 +5,7 @@ using SharedTypeGenerator.Logging;
 namespace SharedTypeGenerator.Emission;
 
 /// <summary>Explicit-layout struct emission: field-by-field writes without IL step lists.</summary>
-public static partial class PackEmitter
+internal static partial class PackEmitter
 {
     /// <summary>Emits pack body for ExplicitLayout structs (field-by-field with offsets).</summary>
     /// <param name="csharpTypeName">C# type name (for log context).</param>

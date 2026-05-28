@@ -3,12 +3,13 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::layout::QueueHeader;
 use crate::layout::{
-    MESSAGE_BODY_OFFSET, STATE_LOCKED, STATE_READY, TICKS_FOR_TEN_SECONDS, padded_message_length,
+    MESSAGE_BODY_OFFSET, MessageHeader, QueueHeader, STATE_LOCKED, STATE_READY,
+    TICKS_FOR_TEN_SECONDS, padded_message_length,
 };
 use crate::options::QueueOptions;
 use crate::queue_resources::QueueResources;
+use crate::ring::RingView;
 
 /// `DateTime.UtcNow.Ticks` value at the Unix epoch (100 ns ticks since 0001-01-01 UTC).
 const DOTNET_TICKS_AT_UNIX_EPOCH: i64 = 621_355_968_000_000_000;
@@ -83,6 +84,14 @@ impl DequeueBackoff {
             std::thread::yield_now();
         }
     }
+}
+
+/// Message bytes and padded slot length extracted from a ready slot.
+struct ExtractedMessage {
+    /// Payload bytes copied from the ring body.
+    body: Vec<u8>,
+    /// Header + body + padding length consumed from the ring.
+    padded_len: i64,
 }
 
 /// Receives messages from the queue using the same contention and backoff pattern as the managed client.
@@ -184,14 +193,41 @@ impl Subscriber {
         let read_offset = header.read_offset.load(Ordering::SeqCst);
         let write_offset = header.write_offset.load(Ordering::SeqCst);
         let ring = self.res.ring();
+        let msg = self.message_header_or_drain(&ring, header, read_offset, write_offset)?;
+        self.claim_ready_message(header, msg, write_offset, spin_start_ticks)?;
+        let extracted = self.read_valid_message(ring, header, msg, read_offset, write_offset)?;
+        ring.clear(read_offset, extracted.padded_len as usize);
+        self.advance_read_offset(header, read_offset, extracted.padded_len);
+        Some(extracted.body)
+    }
+
+    /// Returns the slot header at `read_offset`, or drains corrupted queue state.
+    fn message_header_or_drain<'a>(
+        &self,
+        ring: &'a RingView,
+        header: &QueueHeader,
+        read_offset: i64,
+        write_offset: i64,
+    ) -> Option<&'a MessageHeader> {
         // SAFETY: `read_offset` is produced by the publisher after a space check and the wire
         // protocol guarantees a contiguous eight-byte `MessageHeader` at this slot. A `None`
         // return means the slot is misaligned (corrupted publisher); drain past every queued
         // slot rather than dereference a misaligned pointer.
-        let Some(msg) = (unsafe { ring.message_header_at(read_offset) }) else {
-            header.read_offset.store(write_offset, Ordering::SeqCst);
-            return None;
-        };
+        let msg = unsafe { ring.message_header_at(read_offset) };
+        if msg.is_none() {
+            self.drain_to_write_offset(header, write_offset);
+        }
+        msg
+    }
+
+    /// Claims a ready message header or drains the queue if the writer appears stuck too long.
+    fn claim_ready_message(
+        &self,
+        header: &QueueHeader,
+        msg: &MessageHeader,
+        write_offset: i64,
+        spin_start_ticks: i64,
+    ) -> Option<()> {
         let mut backoff_iter: u32 = 0;
         loop {
             if msg
@@ -207,82 +243,123 @@ impl Subscriber {
                 break;
             }
             if utc_now_ticks() - spin_start_ticks > TICKS_FOR_TEN_SECONDS {
-                header.read_offset.store(write_offset, Ordering::SeqCst);
+                self.drain_to_write_offset(header, write_offset);
                 return None;
             }
-            if backoff_iter < EXTRACT_SPIN_ITERATIONS {
-                std::hint::spin_loop();
-            } else if backoff_iter
-                < EXTRACT_SPIN_ITERATIONS.saturating_add(EXTRACT_YIELD_ITERATIONS)
-            {
-                std::thread::yield_now();
-            } else {
-                std::thread::sleep(EXTRACT_PARK_INTERVAL);
-            }
+            Self::wait_for_extract_retry(backoff_iter);
             backoff_iter = backoff_iter.saturating_add(1);
         }
+        Some(())
+    }
+
+    /// Copies a validated message body from the ring.
+    fn read_valid_message(
+        &self,
+        ring: RingView,
+        header: &QueueHeader,
+        msg: &MessageHeader,
+        read_offset: i64,
+        write_offset: i64,
+    ) -> Option<ExtractedMessage> {
         let body_len = i64::from(msg.body_length);
-        let capacity = self.res.capacity;
-        if body_len < 0 || body_len > capacity {
-            // Corrupted slot: a sane publisher only writes message bodies whose padded length
-            // fits in the ring. Drain past every queued slot rather than reading a giant or
-            // negative body length into `Vec::with_capacity`.
-            header.read_offset.store(write_offset, Ordering::SeqCst);
+        let Some(padded_len) = self.valid_padded_len(body_len) else {
+            self.drain_to_write_offset(header, write_offset);
+            return None;
+        };
+        let body_offset = read_offset + MESSAGE_BODY_OFFSET;
+        let body = ring.read(body_offset, body_len as usize);
+        Some(ExtractedMessage { body, padded_len })
+    }
+
+    /// Returns a padded slot length when `body_len` is sane for this queue capacity.
+    fn valid_padded_len(&self, body_len: i64) -> Option<i64> {
+        if body_len < 0 || body_len > self.res.capacity {
             return None;
         }
         let padded = padded_message_length(body_len);
-        if padded > capacity {
-            header.read_offset.store(write_offset, Ordering::SeqCst);
+        if padded > self.res.capacity {
             return None;
         }
-        let body_offset = read_offset + MESSAGE_BODY_OFFSET;
-        let body_len_usize = body_len as usize;
-        let msg_result = ring.read(body_offset, body_len_usize);
-        ring.clear(read_offset, padded as usize);
-        let new_read = (read_offset + padded) % (capacity * 2);
+        Some(padded)
+    }
+
+    /// Drains every queued slot after corruption or timeout.
+    fn drain_to_write_offset(&self, header: &QueueHeader, write_offset: i64) {
+        header.read_offset.store(write_offset, Ordering::SeqCst);
+    }
+
+    /// Advances the logical read offset after consuming one valid message.
+    fn advance_read_offset(&self, header: &QueueHeader, read_offset: i64, padded_len: i64) {
+        let new_read = (read_offset + padded_len) % (self.res.capacity * 2);
         header.read_offset.store(new_read, Ordering::SeqCst);
-        Some(msg_result)
+    }
+
+    /// Performs one retry delay while waiting for a publisher to publish a claimed slot.
+    fn wait_for_extract_retry(backoff_iter: u32) {
+        if backoff_iter < EXTRACT_SPIN_ITERATIONS {
+            std::hint::spin_loop();
+        } else if backoff_iter < EXTRACT_SPIN_ITERATIONS.saturating_add(EXTRACT_YIELD_ITERATIONS) {
+            std::thread::yield_now();
+        } else {
+            std::thread::sleep(EXTRACT_PARK_INTERVAL);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicU64;
+
+    use tempfile::TempDir;
+
     use super::*;
     use crate::options::QueueOptions;
     use crate::publisher::Publisher;
 
+    /// Unique queue-name suffix for tests sharing the kernel semaphore namespace.
+    static QUEUE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    /// Builds isolated queue options backed by a temporary directory.
+    fn queue_options(prefix: &str, capacity: i64) -> Result<(TempDir, QueueOptions), String> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e}"))?;
+        let name = format!(
+            "{prefix}_{}_{}",
+            std::process::id(),
+            QUEUE_SEQ.fetch_add(1, Ordering::Relaxed)
+        );
+        let opts = QueueOptions::with_path(&name, dir.path(), capacity)
+            .map_err(|e| format!("queue options: {e}"))?;
+        Ok((dir, opts))
+    }
+
+    /// Overwrites the current slot body length without touching the slot state.
+    fn corrupt_message_body_len(subscriber: &Subscriber, body_len: i32) {
+        let read_offset = subscriber.res.header().read_offset.load(Ordering::SeqCst);
+        let field_offset = std::mem::offset_of!(MessageHeader, body_length) as i64;
+        subscriber
+            .res
+            .ring()
+            .write(read_offset + field_offset, &body_len.to_le_bytes());
+    }
+
     #[test]
     fn try_dequeue_empty_returns_none() {
-        let dir =
-            std::env::temp_dir().join(format!("interprocess_sub_empty_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let opts = QueueOptions::with_path("sub_empty", &dir, 4096).expect("valid");
+        let (_dir, opts) = queue_options("sub_empty", 4096).expect("queue options");
         let mut subscriber = Subscriber::new(opts).expect("subscriber");
         assert!(subscriber.try_dequeue().is_none());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn dequeue_respects_cancel_when_idle() {
-        let dir =
-            std::env::temp_dir().join(format!("interprocess_sub_cancel_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let opts = QueueOptions::with_path("sub_cancel", &dir, 4096).expect("valid");
+        let (_dir, opts) = queue_options("sub_cancel", 4096).expect("queue options");
         let mut subscriber = Subscriber::new(opts).expect("subscriber");
         let cancel = AtomicBool::new(true);
         assert!(subscriber.dequeue(&cancel).is_empty());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn dequeue_after_message_then_cancel() {
-        let dir =
-            std::env::temp_dir().join(format!("interprocess_sub_cancel2_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let opts = QueueOptions::with_path("sub_cancel2", &dir, 4096).expect("valid");
+        let (_dir, opts) = queue_options("sub_cancel2", 4096).expect("queue options");
         let mut publisher = Publisher::new(opts.clone()).expect("publisher");
         let mut subscriber = Subscriber::new(opts).expect("subscriber");
         assert!(publisher.try_enqueue(b"ping"));
@@ -292,16 +369,11 @@ mod tests {
         );
         let cancel = AtomicBool::new(true);
         assert!(subscriber.dequeue(&cancel).is_empty());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn wait_for_message_timeout_observes_publish() {
-        let dir =
-            std::env::temp_dir().join(format!("interprocess_sub_wait_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let opts = QueueOptions::with_path("sub_wait", &dir, 4096).expect("valid");
+        let (_dir, opts) = queue_options("sub_wait", 4096).expect("queue options");
         let mut publisher = Publisher::new(opts.clone()).expect("publisher");
         let mut subscriber = Subscriber::new(opts).expect("subscriber");
 
@@ -312,16 +384,11 @@ mod tests {
             subscriber.try_dequeue().as_deref(),
             Some(b"payload".as_slice())
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn fifo_across_many_messages() {
-        let dir =
-            std::env::temp_dir().join(format!("interprocess_sub_fifo_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let opts = QueueOptions::with_path("sub_fifo", &dir, 4096).expect("valid");
+        let (_dir, opts) = queue_options("sub_fifo", 4096).expect("queue options");
         let mut publisher = Publisher::new(opts.clone()).expect("publisher");
         let mut subscriber = Subscriber::new(opts).expect("subscriber");
         for i in 0u32..30 {
@@ -334,7 +401,43 @@ mod tests {
                 Some(expected.as_bytes())
             );
         }
-        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn try_dequeue_drains_when_body_length_is_negative() {
+        let (_dir, opts) = queue_options("sub_negative_len", 4096).expect("queue options");
+        let mut publisher = Publisher::new(opts.clone()).expect("publisher");
+        let mut subscriber = Subscriber::new(opts).expect("subscriber");
+        assert!(publisher.try_enqueue(b"bad"));
+        let write_offset = subscriber.res.header().write_offset.load(Ordering::SeqCst);
+
+        corrupt_message_body_len(&subscriber, -1);
+
+        assert!(subscriber.try_dequeue().is_none());
+        assert_eq!(
+            subscriber.res.header().read_offset.load(Ordering::SeqCst),
+            write_offset
+        );
+        assert!(subscriber.res.header().is_empty());
+    }
+
+    #[test]
+    fn try_dequeue_drains_when_padded_body_length_exceeds_capacity() {
+        let cap = 24i64;
+        let (_dir, opts) = queue_options("sub_padded_len", cap).expect("queue options");
+        let mut publisher = Publisher::new(opts.clone()).expect("publisher");
+        let mut subscriber = Subscriber::new(opts).expect("subscriber");
+        assert!(publisher.try_enqueue(b"x"));
+        let write_offset = subscriber.res.header().write_offset.load(Ordering::SeqCst);
+
+        corrupt_message_body_len(&subscriber, cap as i32);
+
+        assert!(subscriber.try_dequeue().is_none());
+        assert_eq!(
+            subscriber.res.header().read_offset.load(Ordering::SeqCst),
+            write_offset
+        );
+        assert!(subscriber.res.header().is_empty());
     }
 
     #[test]

@@ -21,6 +21,7 @@ mod backend;
 mod color_space;
 mod concurrency;
 mod config;
+mod cpu_parallelism;
 mod diagnostics;
 mod frontend;
 mod gpu;

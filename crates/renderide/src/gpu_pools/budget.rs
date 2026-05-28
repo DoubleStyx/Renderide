@@ -45,6 +45,7 @@ impl VramAccounting {
     }
 
     /// Combined resident size (meshes + textures + future kinds).
+    #[cfg(test)]
     pub fn total_resident_bytes(&self) -> u64 {
         self.total_resident_bytes
     }

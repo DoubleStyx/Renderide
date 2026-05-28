@@ -11,6 +11,7 @@ use hashbrown::{HashMap, HashSet};
 use rayon::prelude::*;
 use std::ops::Range;
 
+use crate::cpu_parallelism::{FrameCpuWorkload, FrameParallelPolicy, ParallelAdmission};
 use crate::gpu_pools::MeshPool;
 use crate::scene::{
     MeshRendererOverrideTarget, RenderSpaceId, RenderWorldMaterialOverrideDirty,
@@ -31,21 +32,64 @@ const MESH_ASSET_DIRTY_EXPANSION_PARALLEL_CHUNK_SPACES: usize = 1;
 const DIRTY_SPACE_REFRESH_PARALLEL_CHUNK_SPACES: usize = 1;
 /// Prepared-snapshot copy tasks assigned to one rebuild worker.
 const SNAPSHOT_REBUILD_PARALLEL_CHUNK_TASKS: usize = 1;
-/// Renderer records assigned to one prepared-snapshot rebuild worker.
-const SNAPSHOT_REBUILD_PARALLEL_CHUNK_RENDERERS: usize = 64;
-/// Transform-root dirty input count at which expansion uses Rayon.
-const DIRTY_ROOT_EXPANSION_PARALLEL_MIN_ITEMS: usize =
-    DIRTY_ROOT_EXPANSION_PARALLEL_CHUNK_ITEMS * 2;
-/// Render-space count at which mesh-asset dirty expansion uses Rayon.
-const MESH_ASSET_DIRTY_EXPANSION_PARALLEL_MIN_SPACES: usize =
-    MESH_ASSET_DIRTY_EXPANSION_PARALLEL_CHUNK_SPACES * 2;
-/// Dirty render-space count at which retained cache refresh uses Rayon.
-const DIRTY_SPACE_REFRESH_PARALLEL_MIN_SPACES: usize =
-    DIRTY_SPACE_REFRESH_PARALLEL_CHUNK_SPACES * 2;
+/// Estimated dirty renderer/template work required before retained cache refresh uses Rayon.
+const DIRTY_SPACE_REFRESH_PARALLEL_MIN_WORK_UNITS: usize = 1024;
+/// Retained draw templates targeted for one prepared-snapshot rebuild task.
+const SNAPSHOT_REBUILD_PARALLEL_TARGET_CHUNK_TEMPLATES: usize = 1024;
 /// Retained draw-template count required before snapshot rebuild fan-out is considered.
-const SNAPSHOT_REBUILD_PARALLEL_MIN_DRAWS: usize = SNAPSHOT_REBUILD_PARALLEL_MIN_TASKS;
-/// Prepared-snapshot chunk count required before chunk-level rebuild fan-out is considered.
-const SNAPSHOT_REBUILD_PARALLEL_MIN_TASKS: usize = 2;
+const SNAPSHOT_REBUILD_PARALLEL_MIN_DRAWS: usize = 2048;
+
+/// Returns the admission decision for transform-root dirty expansion.
+fn transform_root_expansion_admission(
+    policy: FrameParallelPolicy,
+    root_count: usize,
+) -> ParallelAdmission {
+    policy.admit_independent_items(
+        FrameCpuWorkload::independent_items(root_count),
+        DIRTY_ROOT_EXPANSION_PARALLEL_CHUNK_ITEMS,
+    )
+}
+
+/// Returns the admission decision for mesh-asset dirty expansion.
+fn mesh_asset_expansion_admission(
+    policy: FrameParallelPolicy,
+    space_count: usize,
+) -> ParallelAdmission {
+    policy.admit_independent_items(
+        FrameCpuWorkload::independent_items(space_count),
+        MESH_ASSET_DIRTY_EXPANSION_PARALLEL_CHUNK_SPACES,
+    )
+}
+
+/// Returns the admission decision for dirty retained-cache refresh.
+fn dirty_refresh_admission(
+    policy: FrameParallelPolicy,
+    space_count: usize,
+    estimated_work_units: usize,
+) -> ParallelAdmission {
+    if estimated_work_units < DIRTY_SPACE_REFRESH_PARALLEL_MIN_WORK_UNITS {
+        return ParallelAdmission::Serial;
+    }
+    policy.admit_independent_items(
+        FrameCpuWorkload::new(0, estimated_work_units, space_count),
+        DIRTY_SPACE_REFRESH_PARALLEL_CHUNK_SPACES,
+    )
+}
+
+/// Returns the admission decision for retained prepared-snapshot rebuild.
+fn snapshot_rebuild_admission(
+    policy: FrameParallelPolicy,
+    task_count: usize,
+    retained_draw_count: usize,
+) -> ParallelAdmission {
+    if retained_draw_count < SNAPSHOT_REBUILD_PARALLEL_MIN_DRAWS {
+        return ParallelAdmission::Serial;
+    }
+    policy.admit_independent_items(
+        FrameCpuWorkload::new(0, retained_draw_count, task_count),
+        SNAPSHOT_REBUILD_PARALLEL_CHUNK_TASKS,
+    )
+}
 
 /// Maintenance counters for backend-owned retained render-world caches.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -148,6 +192,8 @@ enum TransformDirtyExpansion {
 struct DirtySpaceRefreshWork {
     /// Render space being refreshed.
     id: RenderSpaceId,
+    /// Estimated renderer/template work used for parallel admission.
+    estimated_work_units: usize,
     /// Retained cache removed from [`RenderWorld::spaces`] for worker-owned mutation.
     cached: RenderWorldSpace,
     /// Refresh counters produced by the worker.
@@ -160,6 +206,8 @@ struct DirtyRendererRefreshWork {
     id: RenderSpaceId,
     /// Dirty renderer records grouped for this space.
     dirty_set: DirtyRendererSet,
+    /// Estimated renderer/template work used for parallel admission.
+    estimated_work_units: usize,
     /// Retained cache removed from [`RenderWorld::spaces`] for worker-owned mutation.
     cached: RenderWorldSpace,
     /// Refresh counters produced by the worker.
@@ -419,17 +467,18 @@ impl RenderWorld {
         }
         profiling::scope!("mesh::render_world::expand_transform_roots");
         let roots = std::mem::take(&mut self.dirty_transform_roots);
-        let expansions = if roots.len() >= DIRTY_ROOT_EXPANSION_PARALLEL_MIN_ITEMS {
-            roots
+        let policy = FrameParallelPolicy::for_current_thread_pool();
+        let expansions = match transform_root_expansion_admission(policy, roots.len()).chunk_size()
+        {
+            Some(chunk_size) => roots
                 .par_iter()
-                .with_min_len(DIRTY_ROOT_EXPANSION_PARALLEL_CHUNK_ITEMS)
+                .with_min_len(chunk_size)
                 .map(|dirty| self.expand_transform_dirty(scene, dirty))
-                .collect::<Vec<_>>()
-        } else {
-            roots
+                .collect::<Vec<_>>(),
+            None => roots
                 .iter()
                 .map(|dirty| self.expand_transform_dirty(scene, dirty))
-                .collect()
+                .collect(),
         };
         self.apply_transform_dirty_expansions(expansions);
     }
@@ -512,15 +561,16 @@ impl RenderWorld {
             }
             renderer_dirties
         };
-        let renderer_dirties = if spaces.len() >= MESH_ASSET_DIRTY_EXPANSION_PARALLEL_MIN_SPACES {
-            spaces
-                .par_iter()
-                .with_min_len(MESH_ASSET_DIRTY_EXPANSION_PARALLEL_CHUNK_SPACES)
-                .flat_map(collect_for_space)
-                .collect::<Vec<_>>()
-        } else {
-            spaces.iter().flat_map(collect_for_space).collect()
-        };
+        let policy = FrameParallelPolicy::for_current_thread_pool();
+        let renderer_dirties =
+            match mesh_asset_expansion_admission(policy, spaces.len()).chunk_size() {
+                Some(chunk_size) => spaces
+                    .par_iter()
+                    .with_min_len(chunk_size)
+                    .flat_map(collect_for_space)
+                    .collect::<Vec<_>>(),
+                None => spaces.iter().flat_map(collect_for_space).collect(),
+            };
         for dirty in renderer_dirties {
             self.note_renderer_dirty(dirty);
         }
@@ -538,17 +588,34 @@ impl RenderWorld {
         let mut work = Vec::with_capacity(dirty_spaces.len());
         for id in dirty_spaces {
             self.dirty_renderers.retain(|dirty| dirty.space_id != id);
+            let cached = self.spaces.remove(&id).unwrap_or_default();
+            let estimated_work_units = estimate_full_space_refresh_work(&cached, scene, id);
             work.push(DirtySpaceRefreshWork {
                 id,
-                cached: self.spaces.remove(&id).unwrap_or_default(),
+                estimated_work_units,
+                cached,
                 outcome: RefreshOutcome::default(),
             });
         }
-        if work.len() >= DIRTY_SPACE_REFRESH_PARALLEL_MIN_SPACES {
-            work.par_iter_mut()
-                .with_min_len(DIRTY_SPACE_REFRESH_PARALLEL_CHUNK_SPACES)
-                .for_each(|work| {
-                    profiling::scope!("mesh::render_world::refresh_dirty_spaces::worker");
+        let estimated_work_units = work.iter().map(|work| work.estimated_work_units).sum();
+        let policy = FrameParallelPolicy::for_current_thread_pool();
+        match dirty_refresh_admission(policy, work.len(), estimated_work_units).chunk_size() {
+            Some(chunk_size) => {
+                work.par_iter_mut()
+                    .with_min_len(chunk_size)
+                    .for_each(|work| {
+                        profiling::scope!("mesh::render_world::refresh_dirty_spaces::worker");
+                        work.outcome = refresh_render_world_space(
+                            &mut work.cached,
+                            scene,
+                            mesh_pool,
+                            render_context,
+                            work.id,
+                        );
+                    });
+            }
+            None => {
+                for work in &mut work {
                     work.outcome = refresh_render_world_space(
                         &mut work.cached,
                         scene,
@@ -556,16 +623,7 @@ impl RenderWorld {
                         render_context,
                         work.id,
                     );
-                });
-        } else {
-            for work in &mut work {
-                work.outcome = refresh_render_world_space(
-                    &mut work.cached,
-                    scene,
-                    mesh_pool,
-                    render_context,
-                    work.id,
-                );
+                }
             }
         }
         let mut outcome = RefreshOutcome::default();
@@ -607,24 +665,32 @@ impl RenderWorld {
                 self.remove_space(space_id);
                 continue;
             }
+            let estimated_work_units = dirty_set.len();
             work.push(DirtyRendererRefreshWork {
                 id: space_id,
                 dirty_set,
+                estimated_work_units,
                 cached: self.spaces.remove(&space_id).unwrap_or_default(),
                 outcome: RefreshOutcome::default(),
             });
         }
-        if work.len() >= DIRTY_SPACE_REFRESH_PARALLEL_MIN_SPACES {
-            work.par_iter_mut()
-                .with_min_len(DIRTY_SPACE_REFRESH_PARALLEL_CHUNK_SPACES)
-                .for_each(|work| {
-                    profiling::scope!("mesh::render_world::refresh_dirty_renderers::worker");
+        let estimated_work_units = work.iter().map(|work| work.estimated_work_units).sum();
+        let policy = FrameParallelPolicy::for_current_thread_pool();
+        match dirty_refresh_admission(policy, work.len(), estimated_work_units).chunk_size() {
+            Some(chunk_size) => {
+                work.par_iter_mut()
+                    .with_min_len(chunk_size)
+                    .for_each(|work| {
+                        profiling::scope!("mesh::render_world::refresh_dirty_renderers::worker");
+                        work.outcome =
+                            refresh_dirty_renderer_work(work, scene, mesh_pool, render_context);
+                    });
+            }
+            None => {
+                for work in &mut work {
                     work.outcome =
                         refresh_dirty_renderer_work(work, scene, mesh_pool, render_context);
-                });
-        } else {
-            for work in &mut work {
-                work.outcome = refresh_dirty_renderer_work(work, scene, mesh_pool, render_context);
+                }
             }
         }
         for work in work {
@@ -661,13 +727,14 @@ impl RenderWorld {
             .map(RenderWorldSpace::retained_template_count)
             .sum::<usize>();
         let tasks = build_snapshot_rebuild_tasks(&active_spaces);
-        if tasks.len() >= SNAPSHOT_REBUILD_PARALLEL_MIN_TASKS
-            && retained_draw_count >= SNAPSHOT_REBUILD_PARALLEL_MIN_DRAWS
+        let policy = FrameParallelPolicy::for_current_thread_pool();
+        if let Some(chunk_size) =
+            snapshot_rebuild_admission(policy, tasks.len(), retained_draw_count).chunk_size()
         {
             profiling::scope!("mesh::render_world::rebuild_prepared_snapshot::parallel");
             let outputs = tasks
                 .par_iter()
-                .with_min_len(SNAPSHOT_REBUILD_PARALLEL_CHUNK_TASKS)
+                .with_min_len(chunk_size)
                 .map(|task| {
                     profiling::scope!("mesh::render_world::rebuild_prepared_snapshot::worker");
                     let mut draws = Vec::with_capacity(task.retained_template_count());
@@ -772,27 +839,71 @@ fn extend_snapshot_table_tasks<'a>(
     table: SnapshotRendererTable,
     renderer_count: usize,
 ) {
-    let chunk_size = snapshot_rebuild_renderer_chunk_size(renderer_count);
-    let mut start = 0usize;
-    while start < renderer_count {
-        let end = (start + chunk_size).min(renderer_count);
+    let mut range_start = None;
+    let mut range_template_count = 0usize;
+    for renderer_index in 0..renderer_count {
+        let template_count = retained_renderer_template_count(space, table, renderer_index);
+        if template_count == 0 && range_start.is_none() {
+            continue;
+        }
+        let start = *range_start.get_or_insert(renderer_index);
+        range_template_count = range_template_count.saturating_add(template_count);
+        if range_template_count >= SNAPSHOT_REBUILD_PARALLEL_TARGET_CHUNK_TEMPLATES {
+            tasks.push(SnapshotRebuildTask {
+                space_index,
+                space,
+                table,
+                range: start..renderer_index + 1,
+            });
+            range_start = None;
+            range_template_count = 0;
+        }
+    }
+    if let Some(start) = range_start {
         tasks.push(SnapshotRebuildTask {
             space_index,
             space,
             table,
-            range: start..end,
+            range: start..renderer_count,
         });
-        start = end;
     }
 }
 
-/// Returns the renderer-table chunk size used for prepared-snapshot copy tasks.
-fn snapshot_rebuild_renderer_chunk_size(renderer_count: usize) -> usize {
-    if renderer_count >= SNAPSHOT_REBUILD_PARALLEL_CHUNK_RENDERERS {
-        SNAPSHOT_REBUILD_PARALLEL_CHUNK_RENDERERS
-    } else {
-        renderer_count.max(1)
+/// Returns the retained template count for one renderer record in a snapshot source table.
+fn retained_renderer_template_count(
+    space: &RenderWorldSpace,
+    table: SnapshotRendererTable,
+    renderer_index: usize,
+) -> usize {
+    match table {
+        SnapshotRendererTable::Static => space
+            .static_renderers
+            .get(renderer_index)
+            .map_or(0, |renderer| renderer.draws.len()),
+        SnapshotRendererTable::Skinned => space
+            .skinned_renderers
+            .get(renderer_index)
+            .map_or(0, |renderer| renderer.draws.len()),
     }
+}
+
+/// Estimates full-space retained-refresh work from cached and current scene renderer counts.
+fn estimate_full_space_refresh_work(
+    cached: &RenderWorldSpace,
+    scene: &SceneCoordinator,
+    id: RenderSpaceId,
+) -> usize {
+    let cached_renderer_count = cached
+        .static_renderers
+        .len()
+        .saturating_add(cached.skinned_renderers.len());
+    let scene_renderer_count = scene.space(id).map_or(0, |space| {
+        space
+            .static_mesh_renderers()
+            .len()
+            .saturating_add(space.skinned_mesh_renderers().len())
+    });
+    cached_renderer_count.max(scene_renderer_count)
 }
 
 /// Refreshes one worker-owned retained render-space for a partial renderer dirty set.

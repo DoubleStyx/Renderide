@@ -277,12 +277,6 @@ impl MeshUploadTask {
                 instance_changed: !existed_before,
             },
         );
-        logger::debug!(
-            "mesh {} uploaded via integrator (replaced={} resident_bytes~={})",
-            asset_id,
-            existed_before,
-            queue.pools.mesh_pool.accounting().total_resident_bytes()
-        );
         StepResult::Done
     }
 }

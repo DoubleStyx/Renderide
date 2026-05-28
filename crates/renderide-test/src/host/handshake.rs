@@ -5,7 +5,7 @@
 //! `shared_memory_prefix` always non-null, `unique_session_id` random per session,
 //! `main_process_id = std::process::id()`, `window_title` always set, `output_device = Screen`.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use renderide_shared::ipc::HostDualQueueIpc;
 use renderide_shared::shared::{
@@ -15,6 +15,7 @@ use renderide_shared::shared::{
 
 use crate::error::HarnessError;
 
+use super::command_wait::wait_for_command;
 use super::lockstep::LockstepDriver;
 
 /// Default deadline for receiving `RendererInitResult` after sending `RendererInitData`.
@@ -50,8 +51,7 @@ pub(super) fn run_handshake(
         ));
     }
 
-    let deadline = Instant::now() + timeout;
-    let init_result = wait_for_init_result(queues, lockstep, deadline)?;
+    let init_result = wait_for_init_result(queues, lockstep, timeout)?;
     logger::info!(
         "Handshake: received RendererInitResult (device={:?}, max_texture_size={}, identifier={:?})",
         init_result.actual_output_device,
@@ -73,18 +73,18 @@ pub(super) fn run_handshake(
 fn wait_for_init_result(
     queues: &mut HostDualQueueIpc,
     lockstep: &mut LockstepDriver,
-    deadline: Instant,
+    timeout: Duration,
 ) -> Result<RendererInitResult, HarnessError> {
-    while Instant::now() < deadline {
-        let tick = lockstep.tick(queues);
-        for msg in tick.other_messages {
-            if let RendererCommand::RendererInitResult(r) = msg {
-                return Ok(r);
-            }
-        }
-        std::thread::sleep(Duration::from_millis(2));
-    }
-    Err(HarnessError::HandshakeTimeout(deadline.elapsed()))
+    wait_for_command(
+        queues,
+        lockstep,
+        timeout,
+        HarnessError::HandshakeTimeout,
+        |msg| match msg {
+            RendererCommand::RendererInitResult(result) => Some(result),
+            _ => None,
+        },
+    )
 }
 
 /// Synthesizes a `Guid` from a 128-bit RNG using the platform's nanosecond timer + process id +

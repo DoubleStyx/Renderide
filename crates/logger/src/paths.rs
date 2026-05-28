@@ -1,318 +1,44 @@
-//! Resolves the runtime logs root, applies the `RENDERIDE_LOGS_ROOT` override, and wires
-//! [`init_for`] to the global file sink in [`crate::output`].
+//! Standard log layout helpers and `init_for` wiring.
 
-use std::env;
-use std::ffi::{OsStr, OsString};
+mod component;
+mod file;
+mod root;
+
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 use crate::level::LogLevel;
 use crate::output;
 
-/// Environment variable that overrides the default Renderide logs root directory.
-pub const LOGS_ROOT_ENV: &str = "RENDERIDE_LOGS_ROOT";
+pub use component::LogComponent;
+pub use file::{log_dir_for, log_file_path};
+pub use root::{LogsRootError, logs_root, logs_root_with};
 
-const APP_DIR_NAME: &str = "renderide";
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-const USER_DIR_NAME: &str = "Renderide";
+use file::{ensure_log_dir_at, io_with_path_context, log_file_path_at_root};
+use root::{log_root_candidates, remember_selected_logs_root, strict_explicit_root_active};
 
-static SELECTED_LOGS_ROOT: Mutex<Option<PathBuf>> = Mutex::new(None);
+#[cfg(test)]
+use file::sanitize_timestamp;
+#[cfg(test)]
+use root::{LOGS_ROOT_ENV, default_logs_root_candidates, per_user_logs_root_with};
 
-/// Failure to resolve a default Renderide logs root.
-#[derive(Debug, thiserror::Error)]
-pub enum LogsRootError {
-    /// Compatibility variant preserved for callers that matched the old manifest-path failure.
-    #[error(
-        "logger manifest path did not resolve to a Renderide workspace root; got {manifest_dir:?}"
-    )]
-    ManifestPathTooShort {
-        /// Path that failed to resolve to a workspace root.
-        manifest_dir: PathBuf,
-    },
-    /// No runtime fallback root was available.
-    #[error("no Renderide log root candidate was available")]
-    NoCandidates,
-}
-
-/// Which part of the system produces a log stream under [`logs_root`] / `<component>/`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum LogComponent {
-    /// Bootstrapper process (Rust).
-    Bootstrapper,
-    /// Host process output captured by the bootstrapper (stdout/stderr into one file).
-    Host,
-    /// Renderer process (Rust).
-    Renderer,
-    /// Renderer integration-test harness process (Rust).
-    RendererTest,
-}
-
-impl LogComponent {
-    /// Subdirectory name under `logs/` for this component.
-    pub const fn subdir(self) -> &'static str {
-        match self {
-            Self::Bootstrapper => "bootstrapper",
-            Self::Host => "host",
-            Self::Renderer => "renderer",
-            Self::RendererTest => "renderer-test",
+/// Applies `attempt` to runtime log-root candidates until one succeeds.
+fn with_first_available_log_root<T>(
+    mut attempt: impl FnMut(&Path) -> io::Result<T>,
+) -> io::Result<(PathBuf, T)> {
+    let strict = strict_explicit_root_active();
+    let mut last_error = None;
+    for root in log_root_candidates() {
+        match attempt(&root) {
+            Ok(value) => return Ok((root, value)),
+            Err(error) if strict => return Err(error),
+            Err(error) => last_error = Some(error),
         }
     }
+    Err(last_error.unwrap_or_else(|| io::Error::other("no Renderide log root candidate available")))
 }
 
-impl std::fmt::Display for LogComponent {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.subdir())
-    }
-}
-
-/// Resolves where all Renderide logs live, for use in tests without touching process environment.
-///
-/// If `override_root` is [`Some`], that path is used as the logs root (same role as the
-/// `RENDERIDE_LOGS_ROOT` environment variable). Otherwise `start` and its ancestors are searched
-/// for a Renderide workspace root; if none is found, the per-user and temporary fallbacks are used.
-pub fn logs_root_with(
-    start: &Path,
-    override_root: Option<&OsStr>,
-) -> Result<PathBuf, LogsRootError> {
-    default_logs_root_candidates(
-        &[start.to_path_buf()],
-        override_root.and_then(non_empty_path),
-        per_user_logs_root(),
-        None,
-        temp_logs_root(),
-    )
-    .into_iter()
-    .next()
-    .ok_or(LogsRootError::NoCandidates)
-}
-
-/// Root directory containing per-component folders (`bootstrapper`, `host`, `renderer`,
-/// `renderer-test`).
-///
-/// If logging has already been initialized through [`init_for`], this returns the selected root
-/// from that successful initialization. Otherwise the root is chosen at runtime: an explicit
-/// `RENDERIDE_LOGS_ROOT`, a discovered checkout `logs` directory, a per-user logs directory, an
-/// executable-adjacent `logs` directory, then a temp-directory fallback.
-pub fn logs_root() -> PathBuf {
-    selected_logs_root()
-        .or_else(|| log_root_candidates().into_iter().next())
-        .unwrap_or_else(temp_logs_root)
-}
-
-/// `logs_root()` joined with [`LogComponent::subdir`].
-pub fn log_dir_for(component: LogComponent) -> PathBuf {
-    logs_root().join(component.subdir())
-}
-
-/// Full path to a timestamped log file: `<logs>/<component>/<timestamp>.log`.
-///
-/// The `timestamp` is sanitized via `sanitize_timestamp` before being joined to the log
-/// directory: any character outside `[A-Za-z0-9_-]` is replaced with `_` so that a caller
-/// passing path-like input (e.g. `"../etc/passwd"`) cannot escape the component log
-/// directory or write to a different file extension. Empty or fully-stripped timestamps fall
-/// back to `"invalid"` so the result is always a single, well-formed filename.
-pub fn log_file_path(component: LogComponent, timestamp: &str) -> PathBuf {
-    let safe = sanitize_timestamp(timestamp);
-    log_dir_for(component).join(format!("{safe}.log"))
-}
-
-fn selected_logs_root() -> Option<PathBuf> {
-    SELECTED_LOGS_ROOT.lock().ok().and_then(|root| root.clone())
-}
-
-fn remember_selected_logs_root(root: &Path) {
-    if let Ok(mut selected) = SELECTED_LOGS_ROOT.lock()
-        && selected.is_none()
-    {
-        *selected = Some(root.to_path_buf());
-    }
-}
-
-fn non_empty_path(path: &OsStr) -> Option<PathBuf> {
-    if path.is_empty() {
-        None
-    } else {
-        Some(PathBuf::from(path))
-    }
-}
-
-fn explicit_logs_root() -> Option<PathBuf> {
-    env::var_os(LOGS_ROOT_ENV)
-        .as_deref()
-        .and_then(non_empty_path)
-}
-
-fn runtime_start_paths() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    if let Ok(exe) = env::current_exe()
-        && let Some(parent) = exe.parent()
-    {
-        push_unique(&mut paths, parent.to_path_buf());
-    }
-    if let Ok(cwd) = env::current_dir() {
-        push_unique(&mut paths, cwd);
-    }
-    paths
-}
-
-fn binary_output_dir() -> Option<PathBuf> {
-    env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(Path::to_path_buf))
-}
-
-fn find_renderide_workspace_root(start: &Path) -> Option<PathBuf> {
-    let mut current = start.to_path_buf();
-    loop {
-        let cargo = current.join("Cargo.toml");
-        let logger = current.join("crates/logger/Cargo.toml");
-        let renderer = current.join("crates/renderide/Cargo.toml");
-        if cargo.is_file() && logger.is_file() && renderer.is_file() {
-            return Some(current);
-        }
-        if !current.pop() {
-            return None;
-        }
-    }
-}
-
-fn push_unique(out: &mut Vec<PathBuf>, path: PathBuf) {
-    if !out.iter().any(|candidate| candidate == &path) {
-        out.push(path);
-    }
-}
-
-fn default_logs_root_candidates(
-    start_paths: &[PathBuf],
-    explicit_root: Option<PathBuf>,
-    user_root: Option<PathBuf>,
-    exe_dir: Option<PathBuf>,
-    temp_root: PathBuf,
-) -> Vec<PathBuf> {
-    if let Some(root) = explicit_root {
-        return vec![root];
-    }
-
-    let mut roots = Vec::new();
-    for start in start_paths {
-        if let Some(workspace) = find_renderide_workspace_root(start) {
-            push_unique(&mut roots, workspace.join("logs"));
-        }
-    }
-    if let Some(root) = user_root {
-        push_unique(&mut roots, root);
-    }
-    if let Some(dir) = exe_dir {
-        push_unique(&mut roots, dir.join("logs"));
-    }
-    push_unique(&mut roots, temp_root);
-    roots
-}
-
-fn log_root_candidates() -> Vec<PathBuf> {
-    if let Some(root) = selected_logs_root() {
-        return vec![root];
-    }
-    default_logs_root_candidates(
-        &runtime_start_paths(),
-        explicit_logs_root(),
-        per_user_logs_root(),
-        binary_output_dir(),
-        temp_logs_root(),
-    )
-}
-
-fn temp_logs_root() -> PathBuf {
-    env::temp_dir().join(APP_DIR_NAME).join("logs")
-}
-
-fn per_user_logs_root() -> Option<PathBuf> {
-    per_user_logs_root_with(|key| env::var_os(key))
-}
-
-fn per_user_logs_root_with(mut get_env: impl FnMut(&str) -> Option<OsString>) -> Option<PathBuf> {
-    per_user_logs_root_for_platform(&mut get_env)
-}
-
-#[cfg(target_os = "linux")]
-fn per_user_logs_root_for_platform(
-    get_env: &mut impl FnMut(&str) -> Option<OsString>,
-) -> Option<PathBuf> {
-    if let Some(root) = get_env("XDG_STATE_HOME")
-        .as_deref()
-        .and_then(non_empty_path)
-    {
-        Some(root.join(APP_DIR_NAME).join("logs"))
-    } else {
-        get_env("HOME")
-            .as_deref()
-            .and_then(non_empty_path)
-            .map(|home| {
-                home.join(".local")
-                    .join("state")
-                    .join(APP_DIR_NAME)
-                    .join("logs")
-            })
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn per_user_logs_root_for_platform(
-    get_env: &mut impl FnMut(&str) -> Option<OsString>,
-) -> Option<PathBuf> {
-    get_env("HOME")
-        .as_deref()
-        .and_then(non_empty_path)
-        .map(|home| home.join("Library").join("Logs").join(USER_DIR_NAME))
-}
-
-#[cfg(target_os = "windows")]
-fn per_user_logs_root_for_platform(
-    get_env: &mut impl FnMut(&str) -> Option<OsString>,
-) -> Option<PathBuf> {
-    get_env("LOCALAPPDATA")
-        .as_deref()
-        .and_then(non_empty_path)
-        .map(|root| root.join(USER_DIR_NAME).join("logs"))
-}
-
-#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
-fn per_user_logs_root_for_platform(
-    get_env: &mut impl FnMut(&str) -> Option<OsString>,
-) -> Option<PathBuf> {
-    get_env("HOME")
-        .as_deref()
-        .and_then(non_empty_path)
-        .map(|home| {
-            home.join(".local")
-                .join("state")
-                .join(APP_DIR_NAME)
-                .join("logs")
-        })
-}
-
-#[cfg(not(any(unix, target_os = "windows")))]
-fn per_user_logs_root_for_platform(
-    _get_env: &mut impl FnMut(&str) -> Option<OsString>,
-) -> Option<PathBuf> {
-    None
-}
-
-fn io_with_path_context(action: &str, path: &Path, source: io::Error) -> io::Error {
-    io::Error::new(
-        source.kind(),
-        format!("{action} {}: {source}", path.display()),
-    )
-}
-
-fn ensure_log_dir_at(root: &Path, component: LogComponent) -> io::Result<PathBuf> {
-    let dir = root.join(component.subdir());
-    std::fs::create_dir_all(&dir)
-        .map_err(|source| io_with_path_context("failed to create log directory", &dir, source))?;
-    Ok(dir)
-}
-
+/// Initializes logging under a specific root and returns the opened log path.
 fn init_for_root(
     root: &Path,
     component: LogComponent,
@@ -320,47 +46,16 @@ fn init_for_root(
     max_level: LogLevel,
     append: bool,
 ) -> io::Result<PathBuf> {
-    let dir = ensure_log_dir_at(root, component)?;
-    let safe = sanitize_timestamp(timestamp);
-    let path = dir.join(format!("{safe}.log"));
+    ensure_log_dir_at(root, component)?;
+    let path = log_file_path_at_root(root, component, timestamp);
     output::init_with_mirror(&path, max_level, append, false)
         .map_err(|source| io_with_path_context("failed to open log file", &path, source))?;
     Ok(path)
 }
 
-/// Replaces every character outside `[A-Za-z0-9_-]` with `_`; empty input becomes `"invalid"`.
-///
-/// This is a defense-in-depth guard for [`log_file_path`]: every current caller produces
-/// timestamps via [`crate::log_filename_timestamp`] (already in the safe alphabet), but the
-/// public signature accepts arbitrary `&str` and we do not want a future caller -- or
-/// attacker-influenced input -- to slip a `..` segment or `/` into the joined path.
-fn sanitize_timestamp(timestamp: &str) -> String {
-    let mut out = String::with_capacity(timestamp.len());
-    for c in timestamp.chars() {
-        if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-            out.push(c);
-        } else {
-            out.push('_');
-        }
-    }
-    if out.is_empty() {
-        out.push_str("invalid");
-    }
-    out
-}
-
 /// Ensures `<logs>/<component>/` exists.
 pub fn ensure_log_dir(component: LogComponent) -> io::Result<PathBuf> {
-    let strict = selected_logs_root().is_none() && explicit_logs_root().is_some();
-    let mut last_error = None;
-    for root in log_root_candidates() {
-        match ensure_log_dir_at(&root, component) {
-            Ok(path) => return Ok(path),
-            Err(error) if strict => return Err(error),
-            Err(error) => last_error = Some(error),
-        }
-    }
-    Err(last_error.unwrap_or_else(|| io::Error::other("no Renderide log root candidate available")))
+    with_first_available_log_root(|root| ensure_log_dir_at(root, component)).map(|(_, path)| path)
 }
 
 /// Creates the component log directory, ensures [`log_file_path`] parent exists, initializes the
@@ -377,28 +72,22 @@ pub fn init_for(
     max_level: LogLevel,
     append: bool,
 ) -> io::Result<PathBuf> {
-    let strict = selected_logs_root().is_none() && explicit_logs_root().is_some();
-    let mut last_error = None;
-    for root in log_root_candidates() {
-        match init_for_root(&root, component, timestamp, max_level, append) {
-            Ok(path) => {
-                remember_selected_logs_root(&root);
-                return Ok(path);
-            }
-            Err(error) if strict => return Err(error),
-            Err(error) => last_error = Some(error),
-        }
-    }
-    Err(last_error.unwrap_or_else(|| io::Error::other("no Renderide log root candidate available")))
+    let (root, path) = with_first_available_log_root(|root| {
+        init_for_root(root, component, timestamp, max_level, append)
+    })?;
+    remember_selected_logs_root(&root);
+    Ok(path)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
     use std::ffi::{OsStr, OsString};
     use std::fs;
     use std::sync::{Mutex, MutexGuard};
 
+    /// Serializes process environment changes across logger path tests.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     /// RAII guard that restores `RENDERIDE_LOGS_ROOT` to its prior value when dropped, even on
@@ -439,6 +128,7 @@ mod tests {
         }
     }
 
+    /// Creates a temporary directory with enough Cargo metadata to look like a Renderide checkout.
     fn make_workspace_root() -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
         fs::write(dir.path().join("Cargo.toml"), "[workspace]\n").expect("workspace manifest");
@@ -457,6 +147,7 @@ mod tests {
         dir
     }
 
+    /// Verifies workspace discovery resolves from a crate directory to the checkout logs root.
     #[test]
     fn logs_root_from_workspace_path() {
         let workspace = make_workspace_root();
@@ -465,6 +156,7 @@ mod tests {
         assert_eq!(root, workspace.path().join("logs"));
     }
 
+    /// Verifies an explicit logs root overrides workspace discovery.
     #[test]
     fn logs_root_env_override_wins() {
         let manifest = Path::new("/workspace/Renderide/crates/logger");
@@ -473,6 +165,7 @@ mod tests {
         assert_eq!(root, PathBuf::from("/tmp/custom_logs"));
     }
 
+    /// Verifies an explicit logs root works even when no checkout can be found.
     #[test]
     fn logs_root_with_env_override_takes_precedence_over_missing_workspace() {
         let manifest = Path::new("/logger");
@@ -481,6 +174,7 @@ mod tests {
         assert_eq!(root, PathBuf::from("/tmp/override_logs"));
     }
 
+    /// Verifies root candidates keep the intended workspace, user, executable, temp ordering.
     #[test]
     fn default_candidates_keep_workspace_before_user_logs() {
         let workspace = make_workspace_root();
@@ -502,6 +196,7 @@ mod tests {
         assert_eq!(roots[3], temp_root);
     }
 
+    /// Verifies an explicit root disables all lower-priority fallbacks.
     #[test]
     fn default_candidates_use_strict_explicit_root_only() {
         let workspace = make_workspace_root();
@@ -518,6 +213,7 @@ mod tests {
         assert_eq!(roots, vec![explicit]);
     }
 
+    /// Verifies Linux prefers XDG state home for per-user logs.
     #[cfg(target_os = "linux")]
     #[test]
     fn per_user_logs_root_prefers_xdg_state_home_on_linux() {
@@ -531,6 +227,7 @@ mod tests {
         assert_eq!(root, PathBuf::from("/state/renderide/logs"));
     }
 
+    /// Verifies Linux falls back to `$HOME/.local/state`.
     #[cfg(target_os = "linux")]
     #[test]
     fn per_user_logs_root_falls_back_to_home_on_linux() {
@@ -546,6 +243,7 @@ mod tests {
         );
     }
 
+    /// Verifies macOS follows the `Library/Logs` convention.
     #[cfg(target_os = "macos")]
     #[test]
     fn per_user_logs_root_uses_library_logs_on_macos() {
@@ -558,6 +256,7 @@ mod tests {
         assert_eq!(root, PathBuf::from("/Users/user/Library/Logs/Renderide"));
     }
 
+    /// Verifies Windows follows the `LOCALAPPDATA` convention.
     #[cfg(target_os = "windows")]
     #[test]
     fn per_user_logs_root_uses_local_app_data_on_windows() {
@@ -573,6 +272,7 @@ mod tests {
         );
     }
 
+    /// Verifies each component maps to its stable subdirectory.
     #[test]
     fn log_component_subdirs() {
         assert_eq!(LogComponent::Bootstrapper.subdir(), "bootstrapper");
@@ -581,6 +281,7 @@ mod tests {
         assert_eq!(LogComponent::RendererTest.subdir(), "renderer-test");
     }
 
+    /// Verifies display formatting matches the component subdirectory.
     #[test]
     fn log_component_display_matches_subdir() {
         assert_eq!(format!("{}", LogComponent::Bootstrapper), "bootstrapper");
@@ -589,6 +290,7 @@ mod tests {
         assert_eq!(format!("{}", LogComponent::RendererTest), "renderer-test");
     }
 
+    /// Verifies timestamped log files are placed under the component directory.
     #[test]
     fn log_file_path_layout() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -600,12 +302,14 @@ mod tests {
         );
     }
 
+    /// Verifies log file paths always use the `.log` suffix.
     #[test]
     fn log_file_path_appends_dot_log_suffix() {
         let p = log_file_path(LogComponent::Host, "ts");
         assert!(p.to_string_lossy().ends_with("ts.log"));
     }
 
+    /// Verifies hostile timestamp input cannot produce path traversal.
     #[test]
     fn log_file_path_sanitizes_path_traversal_attempts() {
         let p = log_file_path(LogComponent::Host, "../etc/passwd");
@@ -613,19 +317,20 @@ mod tests {
         assert!(!s.contains(".."), "must not pass `..` through: {s}");
         assert!(!s.contains("/etc/"), "must not pass `/` through: {s}");
         assert!(s.ends_with(".log"));
-        // Component directory is preserved (use path components; Windows uses `\\` not `/`).
         assert!(
             p.iter().any(|c| c == OsStr::new("host")),
             "missing component dir: {p:?}"
         );
     }
 
+    /// Verifies empty timestamp input falls back to a stable placeholder.
     #[test]
     fn log_file_path_empty_timestamp_falls_back_to_invalid() {
         let p = log_file_path(LogComponent::Host, "");
         assert!(p.to_string_lossy().ends_with("invalid.log"));
     }
 
+    /// Verifies timestamp sanitization preserves the filename-safe alphabet.
     #[test]
     fn sanitize_timestamp_preserves_safe_alphabet() {
         assert_eq!(
@@ -634,11 +339,13 @@ mod tests {
         );
     }
 
+    /// Verifies timestamp sanitization replaces unsafe characters one-for-one.
     #[test]
     fn sanitize_timestamp_replaces_unsafe_characters() {
         assert_eq!(sanitize_timestamp("a/b\\c.d"), "a_b_c_d");
     }
 
+    /// Verifies each component has a distinct log directory.
     #[test]
     fn log_dir_for_each_component_distinct() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -656,6 +363,7 @@ mod tests {
         assert_ne!(c, d);
     }
 
+    /// Verifies root candidates always include the temp fallback.
     #[test]
     fn default_candidates_fall_back_to_temp_without_workspace_or_user_root() {
         let temp_root = PathBuf::from("/tmp/renderide/logs");
@@ -663,6 +371,7 @@ mod tests {
         assert_eq!(roots, vec![temp_root]);
     }
 
+    /// Verifies `ensure_log_dir` creates the requested component directory.
     #[test]
     fn ensure_log_dir_creates_directory_using_env_override() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -672,6 +381,7 @@ mod tests {
         assert!(path.ends_with("renderer"));
     }
 
+    /// Verifies each known unsafe character is replaced independently.
     #[test]
     fn sanitize_timestamp_replaces_each_individually_unsafe_char() {
         for unsafe_char in ['\n', '\t', ' ', '"', '\'', '/', '\\', '.', ':', ';'] {
@@ -681,20 +391,20 @@ mod tests {
         }
     }
 
+    /// Verifies consecutive unsafe characters are not collapsed.
     #[test]
     fn sanitize_timestamp_replaces_each_consecutive_unsafe_char_one_to_one() {
-        // The contract is per-char replacement (no run collapsing), so three unsafe characters in
-        // a row become three underscores -- important so different inputs cannot accidentally
-        // collide on the same sanitized filename.
         assert_eq!(sanitize_timestamp("a///b"), "a___b");
         assert_eq!(sanitize_timestamp(".../"), "____");
     }
 
+    /// Verifies empty strings sanitize to the fallback stem.
     #[test]
     fn sanitize_timestamp_empty_string_returns_invalid_fallback() {
         assert_eq!(sanitize_timestamp(""), "invalid");
     }
 
+    /// Verifies repeated directory creation is harmless and stable.
     #[test]
     fn ensure_log_dir_is_idempotent_for_already_existing_directory() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -706,12 +416,12 @@ mod tests {
         assert!(p2.is_dir());
     }
 
-    /// Verifies that non-ASCII characters (Greek, emoji) are all replaced with `_` while the
-    /// safe alphabet around them survives. Sanitization works at the `char` level, so a
-    /// multi-byte codepoint becomes a single `_` (not multiple).
+    /// Verifies non-ASCII codepoints are replaced as whole characters while adjacent safe
+    /// characters survive.
     #[test]
     fn sanitize_timestamp_replaces_unicode_with_underscores() {
-        let got = sanitize_timestamp("ts-π-🚀-2026");
+        let input = format!("ts-{}-{}-2026", '\u{03c0}', '\u{1f680}');
+        let got = sanitize_timestamp(&input);
         assert_eq!(got, "ts-_-_-2026", "unexpected sanitized form: {got:?}");
     }
 

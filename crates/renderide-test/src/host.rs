@@ -16,6 +16,7 @@ use std::time::Duration;
 use crate::error::HarnessError;
 
 mod asset_upload;
+mod command_wait;
 mod handshake;
 pub mod ipc_setup;
 pub mod lockstep;

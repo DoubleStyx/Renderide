@@ -10,6 +10,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::HarnessError;
+use crate::image_io::load_rgba;
 
 use super::cases::{IntegrationCase, lookup, registry};
 use super::output::{CaseOutputLayout, report_from_evaluation, write_report};
@@ -220,12 +221,7 @@ fn promote_case_golden(
         logger::warn!("suite update: failed to refresh artifact golden copy: {e}");
     }
 
-    let actual = image::open(&outcome.layout.actual_png)
-        .map_err(|source| HarnessError::PngRead {
-            path: outcome.layout.actual_png.clone(),
-            source,
-        })?
-        .to_rgba8();
+    let actual = load_rgba(&outcome.layout.actual_png)?;
     let eval = case
         .tolerance
         .evaluate(&actual, &actual)

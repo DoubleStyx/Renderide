@@ -7,7 +7,7 @@ namespace SharedTypeGenerator.Analysis;
 /// <summary>
 /// Central classification of CLR field types into <see cref="FieldKind"/> for IR and emission.
 /// </summary>
-public class FieldClassifier
+internal sealed class FieldClassifier
 {
     private readonly Type _iMemoryPackable;
     private readonly Type _polymorphicBase;
@@ -19,19 +19,20 @@ public class FieldClassifier
         _polymorphicBase = wellKnown.PolymorphicMemoryPackableEntityDefinition;
     }
 
-    /// <summary>Classifies a field based on its type and the C# Pack method name used to serialize it.
-    /// The packMethodName disambiguates when field type alone is insufficient.</summary>
-    public FieldKind Classify(Type fieldType, string packMethodName)
+    /// <summary>Classifies a field based on its type and the MemoryPack operation used to serialize it.
+    /// The operation disambiguates when field type alone is insufficient.</summary>
+    public FieldKind Classify(Type fieldType, MemoryPackOperation operation)
     {
-        return packMethodName switch
+        return operation switch
         {
-            "WriteObject" or "ReadObject" => FieldKind.Object,
-            "WriteValueList" or "ReadValueList" or "WriteEnumValueList" or "ReadEnumValueList" => ClassifyValueListElement(fieldType),
-            "WriteObjectList" or "ReadObjectList" => FieldKind.ObjectList,
-            "WritePolymorphicList" or "ReadPolymorphicList" => FieldKind.PolymorphicList,
-            "WriteStringList" or "ReadStringList" => FieldKind.StringList,
-            "WriteNestedValueList" or "ReadNestedValueList" => FieldKind.NestedValueList,
-            "Write" or "Read" => ClassifyByFieldType(fieldType, expandLists: false),
+            MemoryPackOperation.WriteObject => FieldKind.Object,
+            MemoryPackOperation.WriteObjectRequired => FieldKind.ObjectRequired,
+            MemoryPackOperation.WriteValueList => ClassifyValueListElement(fieldType),
+            MemoryPackOperation.WriteObjectList => FieldKind.ObjectList,
+            MemoryPackOperation.WritePolymorphicList => FieldKind.PolymorphicList,
+            MemoryPackOperation.WriteStringList => FieldKind.StringList,
+            MemoryPackOperation.WriteNestedValueList => FieldKind.NestedValueList,
+            MemoryPackOperation.Write => ClassifyByFieldType(fieldType, expandLists: false),
             _ => ClassifyByType(fieldType),
         };
     }

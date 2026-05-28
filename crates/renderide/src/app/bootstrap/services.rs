@@ -15,7 +15,7 @@ pub(crate) struct AppServices {
     pub(crate) main_heartbeat: Option<Heartbeat>,
 }
 
-/// Installs shutdown handling, watchdog, profiling main-thread state, and rayon worker naming.
+/// Installs shutdown handling, watchdog, profiling main-thread state, and Rayon worker services.
 pub(crate) fn install_app_services(watchdog_settings: WatchdogSettings) -> AppServices {
     let external_shutdown = super::signals::install_external_shutdown();
     let watchdog = Watchdog::install(watchdog_settings);
@@ -31,12 +31,24 @@ pub(crate) fn install_app_services(watchdog_settings: WatchdogSettings) -> AppSe
     }
 }
 
+/// Builds the global Rayon pool with renderer thread names and profiling registration.
 fn init_rayon_pool() {
-    if let Err(e) = rayon::ThreadPoolBuilder::new()
+    match rayon::ThreadPoolBuilder::new()
         .thread_name(|i| format!("rayon-worker-{i}"))
         .start_handler(crate::profiling::rayon_thread_start_handler())
         .build_global()
     {
-        logger::warn!("Rayon global pool already initialized or build_global failed: {e}");
+        Ok(()) => warm_rayon_pool(),
+        Err(e) => {
+            logger::warn!("Rayon global pool already initialized or build_global failed: {e}");
+        }
     }
+}
+
+/// Runs one startup task on every Rayon worker so first-frame jobs do not pay thread wake-up cost.
+fn warm_rayon_pool() {
+    profiling::scope!("startup::rayon_pool_warmup");
+    rayon::broadcast(|_| {
+        profiling::scope!("startup::rayon_pool_warmup::worker");
+    });
 }

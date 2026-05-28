@@ -17,3 +17,5 @@ pub mod packed_bools;
 pub mod polymorphic_decode_error;
 pub mod polymorphic_memory_packable_entity;
 pub mod wire_decode_error;
+
+mod type_name;

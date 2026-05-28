@@ -147,6 +147,8 @@ pub(super) struct PerViewWorkItem {
     pub(super) resolved: OwnedResolvedView,
     /// Per-view `@group(0)` bind group and uniform buffer captured before recording.
     pub(super) per_view_frame_bg_and_buf: (std::sync::Arc<wgpu::BindGroup>, wgpu::Buffer),
+    /// Estimated world-mesh draw work captured before blackboard preparation consumes draw slots.
+    pub(super) estimated_draw_count: usize,
 }
 
 /// Immutable shared inputs required to record one per-view command buffer.

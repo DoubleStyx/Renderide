@@ -24,7 +24,7 @@ use crate::scene::torus::generate_torus;
 use super::asset_upload::{
     DEFAULT_ASSET_UPLOAD_TIMEOUT, MaterialBatchRequest, MaterialUpdateOp, MeshUploadRequest,
     PropertyIdLookup, Texture2DUploadRequest, apply_material_batch, pack_texture2d_handle,
-    request_property_ids, upload_shader, upload_sphere_mesh, upload_texture2d_rgba8,
+    request_property_ids, upload_mesh, upload_shader, upload_texture2d_rgba8,
 };
 use super::handshake::{DEFAULT_HANDSHAKE_TIMEOUT, run_handshake};
 use super::ipc_setup::{DEFAULT_QUEUE_CAPACITY_BYTES, connect_session};
@@ -100,7 +100,7 @@ pub(super) fn run_session(
     let upload = pack_mesh_upload(&geometry.mesh, geometry.bounds).map_err(|e| {
         HarnessError::QueueOptions(format!("pack {template_label} mesh upload: {e}"))
     })?;
-    let _uploaded = upload_sphere_mesh(
+    let _uploaded = upload_mesh(
         &mut session.queues,
         &mut lockstep,
         MeshUploadRequest {

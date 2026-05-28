@@ -14,4 +14,6 @@ pub mod logging;
 pub mod scene;
 pub mod scene_dsl;
 
+mod image_io;
+
 pub use error::HarnessError;

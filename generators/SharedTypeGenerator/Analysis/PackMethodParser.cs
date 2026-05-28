@@ -9,7 +9,7 @@ namespace SharedTypeGenerator.Analysis;
 /// <summary>Parses the IL of a Pack method to produce an ordered list of SerializationSteps.
 /// Only reads Pack (not Unpack) for the step list because Pack and Unpack are symmetric for emission.
 /// Produces pure IR with zero Rust emission.</summary>
-public sealed class PackMethodParser
+internal sealed class PackMethodParser
 {
     private readonly AssemblyDefinition _assemblyDef;
     private readonly FieldClassifier _classifier;
@@ -24,7 +24,7 @@ public sealed class PackMethodParser
     /// <summary>Parses the Pack method with <c>if</c> blocks modeled as <see cref="ConditionalBlock"/>.</summary>
     public List<SerializationStep> ParseWithConditionals(Type type, FieldInfo[] fields)
     {
-        TypeDefinition? typeDef = _assemblyDef.MainModule.GetType(type.Namespace + '.' + type.Name);
+        TypeDefinition? typeDef = ResolveTypeDef(type);
         if (typeDef == null) return [];
 
         MethodDefinition? methodDef = typeDef.GetMethods().FirstOrDefault(m => m.Name == "Pack");
@@ -127,7 +127,6 @@ public sealed class PackMethodParser
 
     private TypeDefinition? ResolveTypeDef(Type type)
     {
-        string fullName = string.IsNullOrEmpty(type.Namespace) ? type.Name : type.Namespace + '.' + type.Name;
-        return _assemblyDef.MainModule.GetType(fullName);
+        return CecilTypeResolver.Resolve(_assemblyDef, type);
     }
 }

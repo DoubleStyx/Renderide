@@ -94,28 +94,25 @@ pub fn try_upload_mesh_from_raw(
         return None;
     }
 
-    if let Some(existing) = existing {
-        profiling::scope!("asset::mesh_in_place_compatibility");
-        if existing.compatible_for_in_place_update(data, layout, raw) {
-            profiling::scope!("asset::mesh_in_place_upload");
-            if let Some(mesh) = existing.write_in_place(ctx.queue, raw, data, layout, hint) {
-                if ctx.mapped_buffer_health.generation() != ctx.mapped_buffer_generation {
-                    logger::debug!(
-                        "mesh {}: in-place upload rejected after mapped-buffer invalidation generation changed during GPU writes",
-                        data.asset_id
-                    );
-                    return None;
-                }
-                if trace_enabled {
-                    logger::trace!(
-                        "mesh {}: in-place upload (layout_fp={:#x})",
-                        data.asset_id,
-                        layout_fp
-                    );
-                }
-                return Some(mesh);
-            }
+    if let Some(existing) = existing
+        && existing.compatible_for_in_place_update(data, layout, raw)
+        && let Some(mesh) = existing.write_in_place(ctx.queue, raw, data, layout, hint)
+    {
+        if ctx.mapped_buffer_health.generation() != ctx.mapped_buffer_generation {
+            logger::debug!(
+                "mesh {}: in-place upload rejected after mapped-buffer invalidation generation changed during GPU writes",
+                data.asset_id
+            );
+            return None;
         }
+        if trace_enabled {
+            logger::trace!(
+                "mesh {}: in-place upload (layout_fp={:#x})",
+                data.asset_id,
+                layout_fp
+            );
+        }
+        return Some(mesh);
     }
 
     if trace_enabled {

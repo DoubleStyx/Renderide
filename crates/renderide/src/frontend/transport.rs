@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use crate::connection::{ConnectionParams, InitError};
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
+use crate::profiling::{IpcPollProfileSample, plot_ipc_poll};
 use crate::shared::RendererCommand;
 
 /// Owns host transport handles and reusable IPC polling scratch.
@@ -133,8 +134,20 @@ impl FrontendTransport {
         let mut batch = std::mem::take(&mut self.command_batch);
         let mut waited = Duration::ZERO;
         if let Some(ipc) = self.ipc.as_mut() {
-            waited = ipc.poll_into_after_primary_wait(&mut batch, timeout);
-            prioritize_renderer_init_data(&mut batch);
+            let stats = ipc.poll_into_after_primary_wait_profiled(&mut batch, timeout);
+            waited = stats.waited;
+            {
+                profiling::scope!("ipc::batch_prioritize");
+                prioritize_renderer_init_data(&mut batch);
+            }
+            let total = stats.total_drain();
+            plot_ipc_poll(&IpcPollProfileSample {
+                waited: stats.waited,
+                messages: total.messages,
+                bytes: total.bytes,
+                decode_duration: total.decode_duration,
+                timed_out: stats.timed_out,
+            });
         } else {
             batch.clear();
         }
