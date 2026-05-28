@@ -125,6 +125,7 @@ mod tests {
             draws_pre_cull: 1,
             draws_culled: 0,
             draws_hi_z_culled: 0,
+            visibility: Default::default(),
             arrangement: Default::default(),
         };
         assert_eq!(
@@ -137,6 +138,7 @@ mod tests {
             draws_pre_cull: 3,
             draws_culled: 0,
             draws_hi_z_culled: 0,
+            visibility: Default::default(),
             arrangement: Default::default(),
         };
         assert_eq!(
@@ -155,6 +157,7 @@ mod tests {
             draws_pre_cull: 1,
             draws_culled: 0,
             draws_hi_z_culled: 0,
+            visibility: Default::default(),
             arrangement: Default::default(),
         };
         assert_eq!(
@@ -190,6 +193,7 @@ mod tests {
             draws_pre_cull: 1,
             draws_culled: 0,
             draws_hi_z_culled: 0,
+            visibility: Default::default(),
             arrangement: Default::default(),
         };
         let plan = WorldMeshDrawPlan::Prefetched(Box::new(

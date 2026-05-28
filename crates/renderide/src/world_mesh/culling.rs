@@ -24,7 +24,7 @@ use crate::occlusion::hi_z_pyramid_dimensions;
 
 pub(crate) use eval::{
     CpuCullFailure, mesh_cpu_cull_with_geometry, mesh_draw_passes_cpu_cull,
-    overlay_rect_clip_visible,
+    overlay_rect_clip_visible, world_aabb_visible_for_cull,
 };
 pub use frustum::world_aabb_from_local_bounds;
 pub(crate) use geometry::{

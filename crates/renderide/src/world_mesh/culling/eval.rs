@@ -47,6 +47,29 @@ fn cpu_cull_frustum_visible(
     }
 }
 
+/// Returns whether a world-space AABB is visible to the culling frustum for one render space.
+///
+/// This is the frustum-only portion of [`mesh_cpu_cull_with_geometry`], exposed so CPU spatial
+/// indices can reject whole renderer candidate groups before per-renderer material slots are
+/// expanded.
+pub(crate) fn world_aabb_visible_for_cull(
+    scene: &SceneCoordinator,
+    space_id: RenderSpaceId,
+    is_overlay: bool,
+    culling: &WorldMeshCullInput<'_>,
+    wmin: Vec3,
+    wmax: Vec3,
+) -> bool {
+    let Some(space) = scene.space(space_id) else {
+        return true;
+    };
+    let view = culling
+        .host_camera
+        .explicit_world_to_view()
+        .unwrap_or_else(|| view_matrix_for_world_mesh_render_space(scene, space));
+    cpu_cull_frustum_visible(&culling.proj, is_overlay, view, wmin, wmax)
+}
+
 /// Returns `true` when the draw should be **culled** by Hi-Z (fully occluded).
 fn cpu_cull_hi_z_should_cull(
     space_id: RenderSpaceId,
@@ -149,15 +172,7 @@ pub(crate) fn mesh_cpu_cull_with_geometry(
     let Some((wmin, wmax)) = geom.world_aabb else {
         return Ok(geom.rigid_world_matrix);
     };
-    let Some(space) = scene.space(space_id) else {
-        return Ok(geom.rigid_world_matrix);
-    };
-    let view = culling
-        .host_camera
-        .explicit_world_to_view()
-        .unwrap_or_else(|| view_matrix_for_world_mesh_render_space(scene, space));
-
-    if !cpu_cull_frustum_visible(&culling.proj, is_overlay, view, wmin, wmax) {
+    if !world_aabb_visible_for_cull(scene, space_id, is_overlay, culling, wmin, wmax) {
         return Err(CpuCullFailure::Frustum);
     }
     if cpu_cull_hi_z_should_cull(space_id, wmin, wmax, culling) {

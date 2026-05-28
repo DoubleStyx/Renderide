@@ -28,7 +28,10 @@ pub use collect::{
     queue_draws_with_parallelism,
 };
 pub use filter::{CameraTransformDrawFilter, draw_filter_from_camera_entry};
-pub use item::{WorldMeshDrawArrangementStats, WorldMeshDrawCollection, WorldMeshDrawItem};
+pub use item::{
+    WorldMeshDrawArrangementStats, WorldMeshDrawCollection, WorldMeshDrawItem,
+    WorldMeshVisibilityStats,
+};
 pub use prepared_renderables::FramePreparedRenderables;
 pub use render_world::{RenderWorld, RenderWorldMaintenanceStats};
 #[cfg(test)]
