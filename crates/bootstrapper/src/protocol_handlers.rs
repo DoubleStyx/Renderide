@@ -1,6 +1,8 @@
 //! Per-variant handling for [`crate::protocol::HostCommand`] messages from the Host.
 
-use std::process::{Child, Command};
+mod clipboard;
+mod renderer;
+
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -9,11 +11,11 @@ use interprocess::Publisher;
 use crate::child_lifetime::ChildLifetimeGroup;
 use crate::config::ResoBootConfig;
 use crate::constants::heartbeat_refresh_timeout;
+use crate::process_state::SharedChildSlot;
 use crate::protocol::{HostCommand, LoopAction};
-use crate::renderer_link;
 
 /// Extends the IPC watchdog deadline and logs receipt.
-pub fn handle_heartbeat(heartbeat_deadline: &Arc<Mutex<Instant>>) -> LoopAction {
+pub(super) fn handle_heartbeat(heartbeat_deadline: &Arc<Mutex<Instant>>) -> LoopAction {
     if let Ok(mut d) = heartbeat_deadline.lock() {
         *d = Instant::now() + heartbeat_refresh_timeout();
     }
@@ -22,122 +24,27 @@ pub fn handle_heartbeat(heartbeat_deadline: &Arc<Mutex<Instant>>) -> LoopAction 
 }
 
 /// Acknowledges shutdown; the queue loop sets `cancel` when this returns [`LoopAction::Break`].
-pub fn handle_shutdown() -> LoopAction {
+pub(super) fn handle_shutdown() -> LoopAction {
     logger::info!("Got shutdown command");
     LoopAction::Break
 }
 
-/// Reads the system clipboard and enqueues UTF-8 bytes (empty string on failure).
-pub fn handle_get_text(outgoing: &mut Publisher) -> LoopAction {
-    logger::info!("Getting clipboard text");
-    let text = match arboard::Clipboard::new().and_then(|mut c| c.get_text()) {
-        Ok(t) => t,
-        Err(e) => {
-            logger::warn!("Clipboard read failed, returning empty string to Host: {e}");
-            String::new()
-        }
-    };
-    if !outgoing.try_enqueue(text.as_bytes()) {
-        logger::warn!("Failed to enqueue GETTEXT response on bootstrapper_out");
-    }
-    LoopAction::Continue
-}
-
-/// Writes UTF-8 text to the system clipboard (best-effort).
-pub fn handle_set_text(text: &str) -> LoopAction {
-    logger::info!("Setting clipboard text");
-    if let Ok(mut clipboard) = arboard::Clipboard::new() {
-        let _ = clipboard.set_text(text);
-    }
-    LoopAction::Continue
-}
-
-/// Spawns the renderer with optional `-LogLevel`, registers it for lifetime management, stores the
-/// [`Child`] in `renderer_child` for [`crate::orchestration::spawn_renderer_exit_watcher`], and
-/// enqueues `RENDERITE_STARTED:{pid}`.
-///
-/// If a renderer was already registered (restart), the previous process is killed and reaped first.
-pub fn handle_start_renderer(
-    renderer_args: &[String],
-    outgoing: &mut Publisher,
-    config: &ResoBootConfig,
-    lifetime: &ChildLifetimeGroup,
-    renderer_child: &Arc<Mutex<Option<Child>>>,
-) -> LoopAction {
-    let mut args: Vec<String> = renderer_args.to_vec();
-    if let Some(ref level) = config.renderide_log_level {
-        args.push("-LogLevel".to_string());
-        args.push(level.as_arg().to_string());
-    }
-    let args_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-
-    renderer_link::ensure_link(config);
-
-    logger::info!(
-        "Spawning renderer: exe={} cwd={} args={:?}",
-        config.renderite_executable.display(),
-        config.renderite_directory.display(),
-        args
-    );
-    let mut renderer_cmd = Command::new(&config.renderite_executable);
-    renderer_cmd
-        .args(&args_refs)
-        .current_dir(&config.renderite_directory);
-    lifetime.prepare_command(&mut renderer_cmd);
-    match renderer_cmd.spawn() {
-        Ok(mut process) => {
-            if let Err(e) = lifetime.register_spawned(&process) {
-                logger::error!("Renderer started but could not join lifetime group: {}", e);
-                let _ = process.kill();
-                let _ = process.wait();
-            } else {
-                let pid = process.id();
-                if let Ok(mut slot) = renderer_child.lock() {
-                    if let Some(mut old) = slot.take() {
-                        logger::info!(
-                            "Replacing previous renderer PID {} with new process",
-                            old.id()
-                        );
-                        let _ = old.kill();
-                        let _ = old.wait();
-                    }
-                    *slot = Some(process);
-                }
-                logger::info!(
-                    "Renderer started PID {} cwd={} args={}",
-                    pid,
-                    config.renderite_directory.display(),
-                    args.join(" ")
-                );
-                let response = format!("RENDERITE_STARTED:{pid}");
-                if !outgoing.try_enqueue(response.as_bytes()) {
-                    logger::warn!("Failed to enqueue RENDERITE_STARTED:{pid} on bootstrapper_out");
-                }
-            }
-        }
-        Err(e) => {
-            logger::error!("Failed to start renderer: {}", e);
-        }
-    }
-    LoopAction::Continue
-}
-
 /// Dispatches one parsed [`HostCommand`].
-pub fn dispatch_command(
+pub(crate) fn dispatch_command(
     cmd: HostCommand,
     outgoing: &mut Publisher,
     config: &ResoBootConfig,
     lifetime: &ChildLifetimeGroup,
     heartbeat_deadline: &Arc<Mutex<Instant>>,
-    renderer_child: &Arc<Mutex<Option<Child>>>,
+    renderer_child: &SharedChildSlot,
 ) -> LoopAction {
     match cmd {
         HostCommand::Heartbeat => handle_heartbeat(heartbeat_deadline),
         HostCommand::Shutdown => handle_shutdown(),
-        HostCommand::GetText => handle_get_text(outgoing),
-        HostCommand::SetText(text) => handle_set_text(&text),
+        HostCommand::GetText => clipboard::handle_get_text(outgoing),
+        HostCommand::SetText(text) => clipboard::handle_set_text(&text),
         HostCommand::StartRenderer(args) => {
-            handle_start_renderer(&args, outgoing, config, lifetime, renderer_child)
+            renderer::handle_start_renderer(&args, outgoing, config, lifetime, renderer_child)
         }
     }
 }
@@ -145,8 +52,7 @@ pub fn dispatch_command(
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::process::Child;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use interprocess::{Publisher, QueueOptions, Subscriber};
     use logger::LogLevel;
@@ -154,8 +60,8 @@ mod tests {
     use super::*;
     use crate::constants::heartbeat_refresh_timeout;
 
-    fn renderer_slot() -> Arc<Mutex<Option<Child>>> {
-        Arc::new(Mutex::new(None))
+    fn renderer_slot() -> SharedChildSlot {
+        SharedChildSlot::empty()
     }
 
     fn sample_config(exe: PathBuf, dir: PathBuf) -> ResoBootConfig {
@@ -178,7 +84,6 @@ mod tests {
         (publisher, subscriber)
     }
 
-    /// `true` is at `/usr/bin/true` on macOS; Linux typically has `/bin/true`. Fall back to `PATH`.
     #[cfg(unix)]
     fn unix_noop_executable() -> PathBuf {
         use std::path::Path;
@@ -219,7 +124,7 @@ mod tests {
         let (mut publisher, _) = make_publisher_subscriber(&dir);
         let slot = renderer_slot();
         assert_eq!(
-            handle_start_renderer(&[], &mut publisher, &cfg, &lifetime, &slot),
+            renderer::handle_start_renderer(&[], &mut publisher, &cfg, &lifetime, &slot),
             LoopAction::Continue
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -238,7 +143,7 @@ mod tests {
         let (mut publisher, mut subscriber) = make_publisher_subscriber(&dir);
         let slot = renderer_slot();
         assert_eq!(
-            handle_start_renderer(&[], &mut publisher, &cfg, &lifetime, &slot),
+            renderer::handle_start_renderer(&[], &mut publisher, &cfg, &lifetime, &slot),
             LoopAction::Continue
         );
         for _ in 0..50 {
@@ -306,30 +211,28 @@ mod tests {
         let (mut publisher, _) = make_publisher_subscriber(&dir);
         let slot = renderer_slot();
         assert_eq!(
-            handle_start_renderer(&[], &mut publisher, &cfg, &lifetime, &slot),
+            renderer::handle_start_renderer(&[], &mut publisher, &cfg, &lifetime, &slot),
             LoopAction::Continue
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// `handle_set_text` swallows clipboard backend failures (best-effort write); on a headless test
-    /// runner where `arboard::Clipboard::new()` fails the function still returns `Continue` so the
-    /// queue loop keeps draining.
     #[test]
     fn set_text_returns_continue() {
-        assert_eq!(handle_set_text("hello"), LoopAction::Continue);
-        assert_eq!(handle_set_text(""), LoopAction::Continue);
+        assert_eq!(clipboard::handle_set_text("hello"), LoopAction::Continue);
+        assert_eq!(clipboard::handle_set_text(""), LoopAction::Continue);
     }
 
-    /// `handle_get_text` always enqueues a response (empty UTF-8 on clipboard failure) so the Host
-    /// is never left waiting on a `GETTEXT` reply, then returns `Continue`.
     #[test]
     fn get_text_enqueues_response_and_continues() {
         let dir = std::env::temp_dir().join(format!("bootstrapper_ph_gt_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let (mut publisher, mut subscriber) = make_publisher_subscriber(&dir);
-        assert_eq!(handle_get_text(&mut publisher), LoopAction::Continue);
+        assert_eq!(
+            clipboard::handle_get_text(&mut publisher),
+            LoopAction::Continue
+        );
         let mut received = false;
         for _ in 0..50 {
             if subscriber.try_dequeue().is_some() {
@@ -342,10 +245,6 @@ mod tests {
         assert!(received, "expected GETTEXT response on outgoing queue");
     }
 
-    /// Routing coverage for the remaining `HostCommand` variants the original
-    /// `dispatch_forwards_to_handlers` did not exercise. `StartRenderer` with a missing executable
-    /// reproduces the spawn-failure branch (already tested directly) but proves the dispatch arm is
-    /// reached and yields `Continue`.
     #[test]
     fn dispatch_forwards_gettext_settext_and_start_renderer() {
         let dir =
