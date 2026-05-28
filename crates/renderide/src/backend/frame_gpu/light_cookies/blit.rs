@@ -273,23 +273,31 @@ pub(super) fn clear_cookie_layer(
     encoder: &mut wgpu::CommandEncoder,
     target: &wgpu::TextureView,
     label: &'static str,
+    profiler: Option<&crate::profiling::GpuProfilerHandle>,
 ) {
-    let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some(label),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-            view: target,
-            depth_slice: None,
-            resolve_target: None,
-            ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
-                store: wgpu::StoreOp::Store,
-            },
-        })],
-        depth_stencil_attachment: None,
-        timestamp_writes: None,
-        occlusion_query_set: None,
-        multiview_mask: None,
-    });
+    let pass_query = profiler.map(|p| p.begin_pass_query(label, encoder));
+    let timestamp_writes = crate::profiling::render_pass_timestamp_writes(pass_query.as_ref());
+    {
+        let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some(label),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+    }
+    if let (Some(p), Some(q)) = (profiler, pass_query) {
+        p.end_query(encoder, q);
+    }
 }
 
 /// Draws one fullscreen blit into a cookie layer.
@@ -299,24 +307,32 @@ pub(super) fn blit_cookie_layer(
     label: &'static str,
     pipeline: &wgpu::RenderPipeline,
     bind_group: &wgpu::BindGroup,
+    profiler: Option<&crate::profiling::GpuProfilerHandle>,
 ) {
-    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some(label),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-            view: target,
-            depth_slice: None,
-            resolve_target: None,
-            ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
-                store: wgpu::StoreOp::Store,
-            },
-        })],
-        depth_stencil_attachment: None,
-        timestamp_writes: None,
-        occlusion_query_set: None,
-        multiview_mask: None,
-    });
-    pass.set_pipeline(pipeline);
-    pass.set_bind_group(0, bind_group, &[]);
-    pass.draw(0..3, 0..1);
+    let pass_query = profiler.map(|p| p.begin_pass_query(label, encoder));
+    let timestamp_writes = crate::profiling::render_pass_timestamp_writes(pass_query.as_ref());
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some(label),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, bind_group, &[]);
+        pass.draw(0..3, 0..1);
+    }
+    if let (Some(p), Some(q)) = (profiler, pass_query) {
+        p.end_query(encoder, q);
+    }
 }

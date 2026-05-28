@@ -43,9 +43,8 @@ pub struct SubmitBatch {
     /// Real-GPU-timestamp readback for this batch. When `Some`, the driver thread schedules
     /// `map_async` on the readback buffer immediately after submit; the resulting
     /// `gpu_frame_ms` value is published into the same [`FrameTimingTrack`] handle as the
-    /// callback-latency fallback would have used. `None` on adapters that lack the required
-    /// timestamp features (the driver thread falls back to the callback path) and on
-    /// non-tracked submits.
+    /// callback completion path. `None` on adapters that lack the required timestamp features
+    /// and on non-tracked submits.
     pub frame_bracket_readback: Option<FrameBracketReadback>,
     /// Optional oneshot fired after submit + present complete on the driver thread.
     ///

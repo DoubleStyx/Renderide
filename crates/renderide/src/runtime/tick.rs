@@ -72,6 +72,11 @@ impl RendererRuntime {
         self.frontend.update_decoupling_activation(now);
     }
 
+    /// Most recent `FrameStartData` send to matching `FrameSubmitData` receive duration.
+    pub fn last_frame_begin_to_submit(&self) -> Option<Duration> {
+        self.frontend.last_frame_begin_to_submit()
+    }
+
     /// Waits for the coupled desktop frame submit or for renderer decoupling to activate.
     ///
     /// Host-compatible lockstep waits inside the same tick after sending `FrameStartData`; doing

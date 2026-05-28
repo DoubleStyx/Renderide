@@ -1,39 +1,36 @@
 //! Exponential moving averages for the frame-timing HUD's scalar readouts.
 //!
 //! The HUD's frametime graph keeps **raw** samples so spikes remain visible, but the numeric
-//! Frame / CPU / GPU readouts are run through an EMA so they stop jittering frame-to-frame on
-//! steady scenes. The smoothing factor is derived from a virtual history length.
+//! Frame / CPU / GPU / Host readouts are run through an EMA so they stop jittering frame-to-frame
+//! on steady scenes.
 //!
-//! The EMA is intentionally simple: `value <- value + alpha * (sample - value)` with `alpha = 2
-//! / (history_len + 1)`. A history length of `EMA_HISTORY_LEN = 20` matches the responsiveness
-//! of typical MangoHud-style overlays.
+//! The EMA is intentionally simple: `value <- value + alpha * (sample - value)`. A fixed
+//! `alpha = 0.25` keeps the display responsive while still damping small one-frame oscillations.
 
-/// Virtual history length used to derive the EMA smoothing factor.
-///
-/// `N = 20` settles a step input to ~95% in ~60 frames at 60 fps, which feels responsive without
-/// being noisy.
-pub const EMA_HISTORY_LEN: usize = 20;
+/// Fixed EMA smoothing factor for live HUD readouts.
+pub const DISPLAY_EMA_ALPHA: f64 = 0.25;
 
 /// Single-channel exponential moving average tracker.
 ///
 /// The first sample seeds the EMA exactly so the displayed value starts from real data instead
 /// of converging in from zero. Subsequent samples blend in with a fixed `alpha`.
 #[derive(Clone, Copy, Debug)]
-pub struct EmaScalar {
+pub struct DisplayEmaScalar {
     /// Accumulated EMA value. [`None`] before the first sample.
     value: Option<f64>,
-    /// Smoothing factor `2 / (history_len + 1)`; precomputed at construction.
+    /// Smoothing factor clamped to the inclusive `[0, 1]` range.
     alpha: f64,
 }
 
-impl EmaScalar {
-    /// Creates a tracker with the given virtual history length (clamped to >= 1).
-    pub fn new(history_len: usize) -> Self {
-        let history = history_len.max(1) as f64;
-        Self {
-            value: None,
-            alpha: 2.0 / (history + 1.0),
-        }
+impl DisplayEmaScalar {
+    /// Creates a tracker with the supplied smoothing factor.
+    pub fn new(alpha: f64) -> Self {
+        let alpha = if alpha.is_finite() {
+            alpha.clamp(0.0, 1.0)
+        } else {
+            DISPLAY_EMA_ALPHA
+        };
+        Self { value: None, alpha }
     }
 
     /// Folds `sample` into the EMA and returns the new value.
@@ -59,38 +56,39 @@ impl EmaScalar {
     }
 }
 
-impl Default for EmaScalar {
+impl Default for DisplayEmaScalar {
     fn default() -> Self {
-        Self::new(EMA_HISTORY_LEN)
+        Self::new(DISPLAY_EMA_ALPHA)
     }
 }
 
-/// EMA bundle for the three frame-timing scalars displayed in the HUD: wall-clock frame time,
-/// main-thread CPU frame ms, and GPU frame ms.
+/// EMA bundle for frame-timing scalars displayed in the HUD.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FrameTimingEma {
     /// EMA of `wall_frame_time_ms`.
-    pub frame: EmaScalar,
+    pub frame: DisplayEmaScalar,
     /// EMA of `cpu_frame_ms` (main-thread tick duration).
-    pub cpu: EmaScalar,
-    /// EMA of `gpu_frame_ms` (real timestamp readback or callback-latency fallback).
-    pub gpu: EmaScalar,
+    pub cpu: DisplayEmaScalar,
+    /// EMA of `gpu_frame_ms` (real timestamp readback only).
+    pub gpu: DisplayEmaScalar,
+    /// EMA of renderer-observed host lockstep turnaround.
+    pub host: DisplayEmaScalar,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{EMA_HISTORY_LEN, EmaScalar};
+    use super::{DISPLAY_EMA_ALPHA, DisplayEmaScalar, FrameTimingEma};
 
     #[test]
     fn first_sample_seeds_exactly() {
-        let mut e = EmaScalar::new(EMA_HISTORY_LEN);
+        let mut e = DisplayEmaScalar::default();
         assert_eq!(e.update(7.5), 7.5);
         assert_eq!(e.current(), Some(7.5));
     }
 
     #[test]
     fn constant_input_converges_to_input() {
-        let mut e = EmaScalar::new(EMA_HISTORY_LEN);
+        let mut e = DisplayEmaScalar::default();
         for _ in 0..200 {
             e.update(16.0);
         }
@@ -99,27 +97,40 @@ mod tests {
     }
 
     #[test]
-    fn spike_is_dampened() {
-        let mut e = EmaScalar::new(EMA_HISTORY_LEN);
-        for _ in 0..100 {
-            e.update(10.0);
-        }
-        // A single 100ms spike should not push the displayed value past ~20 -- EMA alpha is
-        // 2/21 ~= 0.095, so the post-spike value is ~10 + 0.095 * (100 - 10) ~= 18.6.
+    fn step_change_is_snappy_but_dampened() {
+        let mut e = DisplayEmaScalar::default();
+        e.update(10.0);
         let v = e.update(100.0);
-        assert!(v < 25.0, "ema after spike was {v}, expected dampened");
-        assert!(
-            v > 10.0,
-            "ema after spike was {v}, expected at least slight rise"
-        );
+        assert!((v - 32.5).abs() < 1e-9, "ema after step was {v}");
     }
 
     #[test]
     fn reset_reseeds_on_next_update() {
-        let mut e = EmaScalar::new(EMA_HISTORY_LEN);
+        let mut e = DisplayEmaScalar::default();
         e.update(5.0);
         e.update(5.0);
         e.reset();
         assert_eq!(e.update(99.0), 99.0);
+    }
+
+    #[test]
+    fn non_finite_alpha_uses_display_default() {
+        let mut e = DisplayEmaScalar::new(f64::NAN);
+        e.update(10.0);
+        assert_eq!(e.update(20.0), 10.0 + DISPLAY_EMA_ALPHA * 10.0);
+    }
+
+    #[test]
+    fn default_frame_timing_ema_uses_display_alpha_for_all_lanes() {
+        let mut ema = FrameTimingEma::default();
+        ema.frame.update(10.0);
+        ema.cpu.update(10.0);
+        ema.gpu.update(10.0);
+        ema.host.update(10.0);
+
+        assert_eq!(ema.frame.update(20.0), 10.0 + DISPLAY_EMA_ALPHA * 10.0);
+        assert_eq!(ema.cpu.update(20.0), 10.0 + DISPLAY_EMA_ALPHA * 10.0);
+        assert_eq!(ema.gpu.update(20.0), 10.0 + DISPLAY_EMA_ALPHA * 10.0);
+        assert_eq!(ema.host.update(20.0), 10.0 + DISPLAY_EMA_ALPHA * 10.0);
     }
 }

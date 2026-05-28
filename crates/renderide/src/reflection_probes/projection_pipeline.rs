@@ -8,7 +8,7 @@ use wgpu::util::DeviceExt;
 use super::readback_jobs::SubmittedGpuSh2Job;
 use super::{SH2_OUTPUT_BYTES, Sh2ProjectParams, Sh2SourceKey};
 use crate::embedded_shaders;
-use crate::gpu::GpuContext;
+use crate::gpu::{FrameSubmitKind, GpuContext};
 use crate::profiling::{GpuProfilerHandle, compute_pass_timestamp_writes};
 
 /// Lazily-created compute pipeline and bind-group layout.
@@ -375,6 +375,7 @@ fn submit_projection_job(
         encoder.finish()
     };
     gpu.submit_frame_batch_with_callbacks(
+        FrameSubmitKind::BackgroundGpuWork,
         vec![command_buffer],
         None,
         None,

@@ -112,7 +112,6 @@ impl RendererRuntime {
     pub fn capture_debug_hud_after_frame_end(&mut self, gpu: &GpuContext) {
         profiling::scope!("hud::capture_snapshot");
         let wall_ms = self.backend.debug_frame_time_ms();
-        self.diagnostics.frame_time_history.push(wall_ms as f32);
         let flags = self
             .config
             .settings
@@ -130,12 +129,16 @@ impl RendererRuntime {
         // them without requiring the full debug HUD (heavier panels are still gated below).
         let host = self.diagnostics.host_hud.snapshot();
         let frame_timing = crate::diagnostics::FrameTimingHudSnapshot::capture(
-            gpu,
-            wall_ms,
-            &host,
-            self.diagnostics.allocator_report_totals,
-            &self.diagnostics.frame_time_history,
-            &mut self.diagnostics.frame_timing_ema,
+            crate::diagnostics::FrameTimingHudCapture {
+                gpu,
+                wall_frame_time_ms: wall_ms,
+                host_frame_begin_to_submit: self.last_frame_begin_to_submit(),
+                host_hud: &host,
+                gpu_allocator: self.diagnostics.allocator_report_totals,
+                history: &mut self.diagnostics.frame_time_history,
+                ema: &mut self.diagnostics.frame_timing_ema,
+                now,
+            },
         );
         self.backend.set_debug_hud_frame_timing(frame_timing);
         let gpu_profiler_snapshot = gpu

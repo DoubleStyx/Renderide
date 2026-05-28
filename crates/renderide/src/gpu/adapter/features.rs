@@ -9,9 +9,8 @@
 /// adapter supports, regardless of Cargo features. The debug HUD's frame-bracket GPU timing
 /// uses encoder-level `write_timestamp` calls on the driver thread; the `tracy`-gated
 /// [`crate::profiling::GpuProfilerHandle`] consumes the same features for its pass-level path.
-/// Either feature being absent is gracefully tolerated: the frame-bracket falls back to
-/// callback-latency reporting and [`crate::profiling::GpuProfilerHandle::try_new`] returns
-/// [`None`].
+/// Either feature being absent is gracefully tolerated: primary GPU busy time remains unavailable
+/// and [`crate::profiling::GpuProfilerHandle::try_new`] returns [`None`].
 pub(crate) fn adapter_render_features_intersection(adapter: &wgpu::Adapter) -> wgpu::Features {
     let optional = optional_render_feature_mask();
     let timestamp = crate::profiling::timestamp_query_features_if_supported(adapter);

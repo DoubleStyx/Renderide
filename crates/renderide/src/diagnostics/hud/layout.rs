@@ -21,7 +21,7 @@ pub const RENDERER_CONFIG_W: f32 = 440.0;
 pub const RENDERER_CONFIG_H: f32 = 400.0;
 /// Reserved vertical space for the auto-sized **Frame timing** window so **Scene transforms**
 /// can be placed below without overlapping on first use.
-pub const FRAME_TIMING_RESERVE_H: f32 = 140.0;
+pub const FRAME_TIMING_RESERVE_H: f32 = 225.0;
 /// First-use width of the **Renderide debug** main panel (anchored to the viewport's top-right
 /// corner). Pulled out of the panel render path so layout decisions live in one place.
 pub const MAIN_DEBUG_PANEL_W: f32 = 760.0;

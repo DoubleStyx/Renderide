@@ -5,6 +5,7 @@ use std::time::Instant;
 use hashbrown::HashMap;
 
 use crate::camera::{HostCameraFrame, ViewId};
+use crate::gpu::FrameSubmitKind;
 
 use super::super::super::context::GraphResolvedResources;
 use super::super::super::frame_upload_batch::{FrameUploadBatch, FrameUploadBatchStats};
@@ -167,6 +168,26 @@ fn collect_submit_callbacks(
     callbacks
 }
 
+/// Enqueues the primary render submit on the GPU driver thread and returns enqueue cost in ms.
+fn enqueue_primary_submit_batch(
+    mv_ctx: &MultiViewExecutionContext<'_>,
+    all_cmds: Vec<wgpu::CommandBuffer>,
+    surface_tex: Option<wgpu::SurfaceTexture>,
+    submit_callbacks: Vec<Box<dyn FnOnce() + Send + 'static>>,
+) -> f64 {
+    profiling::scope!("graph::single_submit::driver_enqueue");
+    profiling::scope!("gpu::queue_submit");
+    let submit_enqueue_start = Instant::now();
+    mv_ctx.gpu.submit_frame_batch_with_callbacks(
+        FrameSubmitKind::PrimaryRender,
+        all_cmds,
+        surface_tex,
+        None,
+        submit_callbacks,
+    );
+    elapsed_ms(submit_enqueue_start)
+}
+
 impl CompiledRenderGraph {
     /// Encodes the debug HUD overlay (swapchain path only), drains the deferred upload batch, and
     /// submits the assembled command buffers as a single batch through the GPU driver thread.
@@ -249,18 +270,8 @@ impl CompiledRenderGraph {
             submit_callbacks.len(),
         );
 
-        let submit_enqueue_ms = {
-            profiling::scope!("graph::single_submit::driver_enqueue");
-            profiling::scope!("gpu::queue_submit");
-            let submit_enqueue_start = Instant::now();
-            mv_ctx.gpu.submit_frame_batch_with_callbacks(
-                all_cmds,
-                surface_tex,
-                None,
-                submit_callbacks,
-            );
-            elapsed_ms(submit_enqueue_start)
-        };
+        let submit_enqueue_ms =
+            enqueue_primary_submit_batch(mv_ctx, all_cmds, surface_tex, submit_callbacks);
         logger::trace!(
             "graph submit enqueue timing: upload_drain_ms={:.3} upload_finish_ms={:.3} command_batch_assembly_ms={:.3} submit_enqueue_ms={:.3}",
             upload.drain_ms,

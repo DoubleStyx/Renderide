@@ -25,6 +25,23 @@ const COPY_OR_CLEAR_COMMANDS: &[&str] = &[
 /// GPU pass constructors that must use descriptor timestamp writes.
 const PASS_CONSTRUCTORS: &[&str] = &[".begin_render_pass(", ".begin_compute_pass("];
 
+/// Driver-thread submit facade calls that must declare an explicit submit kind.
+const DRIVER_SUBMIT_HELPERS: &[&str] = &[
+    ".submit_frame_batch(",
+    ".submit_frame_batch_with_callbacks(",
+    ".submit_frame_batch_untracked(",
+];
+
+/// Direct queue-submit files that are intentionally outside primary frame timing.
+const DIRECT_QUEUE_SUBMIT_FILES: &[&str] = &[
+    "src/app/headless/readback.rs",
+    "src/gpu/driver_thread/worker.rs",
+    "src/runtime/offscreen_tasks/camera.rs",
+    "src/runtime/offscreen_tasks/camera/alpha_coverage.rs",
+    "src/runtime/offscreen_tasks/camera/camera360.rs",
+    "src/runtime/offscreen_tasks/reflection_probe/readback.rs",
+];
+
 /// Returns the renderide crate directory.
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -74,7 +91,7 @@ fn source_window(lines: &[&str], line_idx: usize, before: usize, after: usize) -
 
 /// Returns whether a source window includes timestamp writes for a GPU pass descriptor.
 fn pass_window_has_timestamp_writes(window: &str) -> bool {
-    window.contains("timestamp_writes")
+    window.contains("timestamp_writes") && !window.contains("timestamp_writes: None")
 }
 
 /// Returns whether a source window includes a GPU-profiler encoder scope.
@@ -85,6 +102,11 @@ fn copy_window_has_gpu_scope(window: &str) -> bool {
 /// Returns whether this file's copy commands are covered by a broader query scope.
 fn copy_file_parent_scoped(label: &str) -> bool {
     PARENT_SCOPED_COPY_FILES.contains(&label)
+}
+
+/// Returns whether this file owns intentionally direct queue submissions.
+fn direct_queue_submit_file_allowed(label: &str) -> bool {
+    DIRECT_QUEUE_SUBMIT_FILES.contains(&label)
 }
 
 #[test]
@@ -133,6 +155,57 @@ fn gpu_copies_and_clears_have_profiler_scopes() -> io::Result<()> {
     assert!(
         offenders.is_empty(),
         "GPU copies and clears must use `GpuEncoderScope`/`begin_query` or be listed in PARENT_SCOPED_COPY_FILES with a real reason:\n  - {}",
+        offenders.join("\n  - ")
+    );
+    Ok(())
+}
+
+#[test]
+fn driver_submits_declare_frame_submit_kind() -> io::Result<()> {
+    let mut offenders = Vec::new();
+    for path in rust_sources()? {
+        let label = file_label(&path);
+        let src = fs::read_to_string(&path)?;
+        let lines: Vec<&str> = src.lines().collect();
+        for (idx, line) in lines.iter().enumerate() {
+            if DRIVER_SUBMIT_HELPERS
+                .iter()
+                .any(|needle| line.contains(needle))
+                && (line.contains("gpu.") || line.contains(".gpu."))
+            {
+                let window = source_window(&lines, idx, 0, 6);
+                if !window.contains("FrameSubmitKind::") {
+                    offenders.push(format!("{}:{}", label, idx + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "Driver-thread submits must pass an explicit FrameSubmitKind so the compact GPU HUD only tracks primary work:\n  - {}",
+        offenders.join("\n  - ")
+    );
+    Ok(())
+}
+
+#[test]
+fn direct_queue_submits_are_explicitly_allowlisted() -> io::Result<()> {
+    let mut offenders = Vec::new();
+    for path in rust_sources()? {
+        let label = file_label(&path);
+        let src = fs::read_to_string(&path)?;
+        let lines: Vec<&str> = src.lines().collect();
+        for (idx, line) in lines.iter().enumerate() {
+            let direct_queue_submit =
+                line.contains(".queue().submit(") || line.contains(".queue.submit(");
+            if direct_queue_submit && !direct_queue_submit_file_allowed(&label) {
+                offenders.push(format!("{}:{}", label, idx + 1));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "Direct queue submits bypass primary frame timing and must be reviewed before adding them:\n  - {}",
         offenders.join("\n  - ")
     );
     Ok(())

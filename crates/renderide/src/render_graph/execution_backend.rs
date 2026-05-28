@@ -192,6 +192,7 @@ pub trait GraphFrameResources: Send + Sync {
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         asset_resources: &dyn GraphAssetResources,
+        profiler: Option<&crate::profiling::GpuProfilerHandle>,
     );
 }
 

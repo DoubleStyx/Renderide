@@ -7,7 +7,7 @@ use crate::diagnostics::gpu_flight_recorder::{
     GpuFlightEventKind, GpuFlightSurfaceAcquireOutcome, GpuFlightSurfaceSite,
     GpuFlightSurfaceStatus, GpuFlightSurfaceSubmitSite,
 };
-use crate::gpu::GpuContext;
+use crate::gpu::{FrameSubmitKind, GpuContext};
 
 /// Clear color used for the skeleton swapchain clear.
 pub const SWAPCHAIN_CLEAR_COLOR: wgpu::Color = wgpu::Color {
@@ -92,25 +92,6 @@ pub enum SurfaceSubmitTrace {
     ClearFallback,
     /// Desktop submit for the host `BlitToDisplay` pass on the local user's display.
     Desktop,
-}
-
-/// Driver-thread submit path used for a surface frame.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SurfaceSubmitRoute {
-    /// Submit through the compact frame-timing path.
-    TrackedFrame,
-    /// Submit without updating compact frame timing.
-    UntrackedFrame,
-}
-
-impl SurfaceSubmitTrace {
-    /// Returns the driver-thread submit path for this surface submit.
-    const fn submit_route(self) -> SurfaceSubmitRoute {
-        match self {
-            Self::Desktop | Self::ClearFallback => SurfaceSubmitRoute::TrackedFrame,
-            Self::VrMirror | Self::VrClear => SurfaceSubmitRoute::UntrackedFrame,
-        }
-    }
 }
 
 impl From<SurfaceAcquireTrace> for GpuFlightSurfaceSite {
@@ -245,12 +226,30 @@ fn submit_surface_command_buffers(
     frame: wgpu::SurfaceTexture,
     trace: SurfaceSubmitTrace,
 ) {
-    match trace.submit_route() {
-        SurfaceSubmitRoute::TrackedFrame => {
-            gpu.submit_frame_batch(command_buffers, Some(frame), None);
+    match trace {
+        SurfaceSubmitTrace::Desktop => {
+            gpu.submit_frame_batch(
+                FrameSubmitKind::PrimaryRender,
+                command_buffers,
+                Some(frame),
+                None,
+            );
         }
-        SurfaceSubmitRoute::UntrackedFrame => {
-            gpu.submit_frame_batch_untracked(command_buffers, Some(frame), None);
+        SurfaceSubmitTrace::ClearFallback => {
+            gpu.submit_frame_batch(
+                FrameSubmitKind::PrimaryClear,
+                command_buffers,
+                Some(frame),
+                None,
+            );
+        }
+        SurfaceSubmitTrace::VrMirror | SurfaceSubmitTrace::VrClear => {
+            gpu.submit_frame_batch_untracked(
+                FrameSubmitKind::Presentation,
+                command_buffers,
+                Some(frame),
+                None,
+            );
         }
     }
 }
@@ -404,33 +403,4 @@ where
     };
     submit_surface_frame_traced(gpu, vec![command_buffer], frame, submit_trace);
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{SurfaceSubmitRoute, SurfaceSubmitTrace};
-
-    #[test]
-    fn vr_surface_submits_route_to_untracked_driver_submission() {
-        assert_eq!(
-            SurfaceSubmitTrace::VrMirror.submit_route(),
-            SurfaceSubmitRoute::UntrackedFrame
-        );
-        assert_eq!(
-            SurfaceSubmitTrace::VrClear.submit_route(),
-            SurfaceSubmitRoute::UntrackedFrame
-        );
-    }
-
-    #[test]
-    fn desktop_surface_submits_route_to_tracked_driver_submission() {
-        assert_eq!(
-            SurfaceSubmitTrace::Desktop.submit_route(),
-            SurfaceSubmitRoute::TrackedFrame
-        );
-        assert_eq!(
-            SurfaceSubmitTrace::ClearFallback.submit_route(),
-            SurfaceSubmitRoute::TrackedFrame
-        );
-    }
 }

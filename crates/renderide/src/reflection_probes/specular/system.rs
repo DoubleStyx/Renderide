@@ -6,7 +6,7 @@ use crate::backend::AssetTransferQueue;
 use crate::backend::frame_gpu::{
     GpuReflectionProbeMetadata, REFLECTION_PROBE_ATLAS_FORMAT, ReflectionProbeSpecularResources,
 };
-use crate::gpu::GpuContext;
+use crate::gpu::{FrameSubmitKind, GpuContext};
 use crate::scene::{RenderSpaceId, SceneCoordinator, reflection_probe_solid_color};
 use crate::shared::{ReflectionProbeType, RenderSH2};
 use crate::skybox::ibl_cache::{
@@ -447,7 +447,12 @@ impl ReflectionProbeSpecularSystem {
             encoder.finish()
         };
         gpu.restore_gpu_profiler(profiler);
-        gpu.submit_frame_batch(vec![command_buffer], None, None);
+        gpu.submit_frame_batch(
+            FrameSubmitKind::BackgroundGpuWork,
+            vec![command_buffer],
+            None,
+            None,
+        );
     }
 }
 

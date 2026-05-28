@@ -12,23 +12,19 @@
 //!   pacing waits recorded through [`Self::record_excluded_wait`]. It does **not** cross the
 //!   driver-thread queue boundary.
 //! - **GPU frame ms** -- when the adapter advertises [`wgpu::Features::TIMESTAMP_QUERY`] +
-//!   [`wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS`], the sum of every non-empty tracked
+//!   [`wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS`], the sum of every non-empty primary
 //!   submit's GPU timestamp bracket for the tick, computed from the GPU's own clock via
-//!   [`wgpu::Queue::get_timestamp_period`]. When those features are unavailable, falls back to
-//!   the wall-clock latency from the tick's first tracked `Queue::submit` return on the driver
-//!   thread to the tick's last [`wgpu::Queue::on_submitted_work_done`] callback --
-//!   [`GpuMsSource`] records which path produced the value so the HUD can relabel the row
-//!   honestly. Presentation-only submits, such as VR mirror blits and OpenXR handoff copies, opt
-//!   out so they do not contribute to the primary render graph timing for the tick.
+//!   [`wgpu::Queue::get_timestamp_period`]. Callback completion is still used to pair CPU samples
+//!   on adapters without timestamp support, but it is not exposed as GPU busy time.
 //! - **Roundtrip ms** -- wall-clock between consecutive winit ticks. Tracked outside this
 //!   struct ([`crate::diagnostics::FrameTimingHudSnapshot::wall_frame_time_ms`]).
 //!
 //! GPU values are populated **on the driver thread or on a `map_async` callback**, so they may
 //! arrive after the originating winit tick has already ended its [`Self::end_frame`]. The HUD
-//! reads [`Self::last_completed_paired_frame_ms`], which is updated only when a CPU value and a
-//! GPU value have *both* arrived for the same frame generation -- that way the two numbers
-//! shown to the user always belong to the same frame, so the relationship
-//! `Frame >= max(CPU, GPU)` (in steady state) is observable on the overlay.
+//! reads [`Self::last_completed_primary_frame_ms`], which is updated only when a CPU value and a
+//! primary-submit completion have *both* arrived for the same frame generation. When the completion
+//! source is timestamp-backed, the sample also carries GPU busy time; when the source is callback
+//! completion, the GPU value stays unavailable.
 //!
 //! `submit_latency_ms` is retained as a backend-cost measurement (frame_start ->
 //! `Queue::submit` returning on the driver thread) but is not displayed in the default HUD; reach
@@ -45,11 +41,10 @@ use hashbrown::HashMap;
 /// covers transient spikes where multiple frames' submits land before any of them complete.
 const MAX_PENDING_PAIRS: usize = 16;
 
-/// Origin of the most recently published `gpu_frame_ms` value.
+/// Origin of the most recently completed primary-submit GPU timing value.
 ///
-/// The HUD uses this to label the GPU row: real timestamp queries get the standard "GPU"
-/// label; the callback-latency fallback is relabelled to "GPU latency" so users do not mistake
-/// it for actual compute time.
+/// Only [`Self::FrameBracket`] is authoritative GPU busy time. [`Self::CallbackLatency`] is kept
+/// only as a completion signal for pairing CPU samples on timestamp-limited adapters.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GpuMsSource {
     /// Computed from real GPU `WriteTimestamp` queries that bracket tracked command buffers.
@@ -58,6 +53,21 @@ pub enum GpuMsSource {
     /// `Queue::on_submitted_work_done` firing. Fallback used when the adapter lacks the
     /// timestamp-query features needed for [`Self::FrameBracket`].
     CallbackLatency,
+}
+
+/// Completed primary frame work sample surfaced to diagnostics.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PrimaryFrameWorkTiming {
+    /// Frame-timing generation this CPU/GPU pair belongs to.
+    pub generation: u64,
+    /// Main-thread active renderer work for the paired frame, in milliseconds.
+    pub cpu_frame_ms: f64,
+    /// Primary GPU busy time from hardware timestamp brackets, in milliseconds.
+    ///
+    /// [`None`] means the frame completed without authoritative timestamp data.
+    pub gpu_frame_ms: Option<f64>,
+    /// Completion source for the paired frame.
+    pub gpu_ms_source: Option<GpuMsSource>,
 }
 
 /// Pending GPU timing aggregate for one renderer tick.
@@ -168,11 +178,12 @@ pub struct FrameCpuGpuTiming {
     pub(crate) submit_latency_ms: Option<f64>,
     /// GPU ms for the current tick once every tracked submit's GPU completion has arrived.
     pub(crate) gpu_frame_ms: Option<f64>,
-    /// Most recent `(cpu_ms, gpu_ms)` pair where both values describe the same completed frame.
-    /// The HUD uses this so its CPU and GPU columns always belong to the same frame.
+    /// Most recent completed primary frame work sample.
+    /// The HUD uses this so its CPU and GPU columns always belong to the same frame when GPU
+    /// timestamp data is available.
     /// Survives [`Self::begin_frame`] so the overlay never goes blank.
-    pub(crate) last_completed_paired_frame_ms: Option<(f64, f64)>,
-    /// Origin of the most recent `gpu_frame_ms` value, surfaced to the HUD label.
+    pub(crate) last_completed_primary_frame_ms: Option<PrimaryFrameWorkTiming>,
+    /// Origin of the most recent primary-submit completion, surfaced to diagnostics.
     pub(crate) last_gpu_source: Option<GpuMsSource>,
     /// Most recent completed whole-frame GPU ms. Used by
     /// [`crate::gpu::GpuContext::last_completed_gpu_render_time_seconds`] for the IPC
@@ -255,7 +266,7 @@ impl FrameCpuGpuTiming {
     ///
     /// Picks up the per-tick GPU value when the driver thread / readback already reported it;
     /// the GPU number may still arrive later, in which case
-    /// [`Self::last_completed_paired_frame_ms`] is what the HUD renders.
+    /// [`Self::last_completed_primary_frame_ms`] is what the HUD renders.
     pub fn end_frame(&mut self) {
         if self.frame_start.is_none() {
             return;
@@ -361,7 +372,13 @@ impl FrameCpuGpuTiming {
             return;
         };
         self.pending_gpu_by_generation.remove(&generation);
-        self.last_completed_gpu_frame_ms = Some(gpu_ms);
+        let gpu_frame_ms = match source {
+            GpuMsSource::FrameBracket => Some(gpu_ms),
+            GpuMsSource::CallbackLatency => None,
+        };
+        if let Some(gpu_frame_ms) = gpu_frame_ms {
+            self.last_completed_gpu_frame_ms = Some(gpu_frame_ms);
+        }
         self.last_gpu_source = Some(source);
         let key = (generation, expected_seq);
         if let Some(pos) = self
@@ -377,11 +394,16 @@ impl FrameCpuGpuTiming {
                 last_cpu_ms = self.pending_paired_cpu_ms.pop_front().map(|(_, ms)| ms);
             }
             if let Some(cpu_ms) = last_cpu_ms {
-                self.last_completed_paired_frame_ms = Some((cpu_ms, gpu_ms));
+                self.last_completed_primary_frame_ms = Some(PrimaryFrameWorkTiming {
+                    generation,
+                    cpu_frame_ms: cpu_ms,
+                    gpu_frame_ms,
+                    gpu_ms_source: Some(source),
+                });
             }
         }
         if generation == self.generation && self.finalized_seq == Some(expected_seq) {
-            self.gpu_frame_ms = Some(gpu_ms);
+            self.gpu_frame_ms = gpu_frame_ms;
         }
     }
 
@@ -486,9 +508,12 @@ mod tests {
             "submit_latency={submit_latency}"
         );
         assert_eq!(t.gpu_frame_ms, Some(5.0));
-        let (paired_cpu, paired_gpu) = t.last_completed_paired_frame_ms.expect("paired");
+        let paired = t.last_completed_primary_frame_ms.expect("paired");
+        let paired_cpu = paired.cpu_frame_ms;
+        let paired_gpu = paired.gpu_frame_ms.expect("gpu");
         assert!((3.5..4.5).contains(&paired_cpu), "paired_cpu={paired_cpu}");
         assert_eq!(paired_gpu, 5.0);
+        assert_eq!(paired.gpu_ms_source, Some(GpuMsSource::FrameBracket));
         assert_eq!(t.last_completed_gpu_frame_ms, Some(5.0));
         assert_eq!(t.last_gpu_source, Some(GpuMsSource::FrameBracket));
     }
@@ -507,7 +532,9 @@ mod tests {
         t.begin_frame(start + Duration::from_millis(16));
         t.record_frame_bracket_done(generation, seq, 2.5);
         assert!(t.gpu_frame_ms.is_none());
-        let (cpu, gpu) = t.last_completed_paired_frame_ms.expect("paired");
+        let paired = t.last_completed_primary_frame_ms.expect("paired");
+        let cpu = paired.cpu_frame_ms;
+        let gpu = paired.gpu_frame_ms.expect("gpu");
         assert!((2.5..3.5).contains(&cpu), "cpu={cpu}");
         assert_eq!(gpu, 2.5);
         assert_eq!(t.last_completed_gpu_frame_ms, Some(2.5));
@@ -530,7 +557,9 @@ mod tests {
         t.record_frame_bracket_done(generation, first_seq, 6.25);
         assert_ms_close(t.gpu_frame_ms, 6.2872);
         assert_ms_close(t.last_completed_gpu_frame_ms, 6.2872);
-        let (paired_cpu, paired_gpu) = t.last_completed_paired_frame_ms.expect("paired");
+        let paired = t.last_completed_primary_frame_ms.expect("paired");
+        let paired_cpu = paired.cpu_frame_ms;
+        let paired_gpu = paired.gpu_frame_ms.expect("gpu");
         assert!((4.5..5.5).contains(&paired_cpu), "paired_cpu={paired_cpu}");
         assert!((paired_gpu - 6.2872).abs() < f64::EPSILON);
         assert_eq!(t.last_gpu_source, Some(GpuMsSource::FrameBracket));
@@ -553,7 +582,9 @@ mod tests {
         t.record_frame_bracket_done(generation, second_seq, 1.25);
         assert_eq!(t.gpu_frame_ms, None);
         assert_eq!(t.last_completed_gpu_frame_ms, Some(4.75));
-        let (paired_cpu, paired_gpu) = t.last_completed_paired_frame_ms.expect("paired");
+        let paired = t.last_completed_primary_frame_ms.expect("paired");
+        let paired_cpu = paired.cpu_frame_ms;
+        let paired_gpu = paired.gpu_frame_ms.expect("gpu");
         assert!((3.5..4.5).contains(&paired_cpu), "paired_cpu={paired_cpu}");
         assert_eq!(paired_gpu, 4.75);
     }
@@ -571,14 +602,14 @@ mod tests {
         t.record_frame_bracket_done(generation, second_seq, 0.04);
         assert_eq!(t.gpu_frame_ms, None);
         assert_eq!(t.last_completed_gpu_frame_ms, None);
-        assert_eq!(t.last_completed_paired_frame_ms, None);
+        assert_eq!(t.last_completed_primary_frame_ms, None);
 
         t.record_frame_bracket_done(generation, first_seq, 4.0);
         assert_ms_close(t.last_completed_gpu_frame_ms, 4.04);
     }
 
     #[test]
-    fn callback_latency_fallback_labels_source_correctly() {
+    fn callback_latency_fallback_pairs_cpu_without_gpu_busy_time() {
         let mut t = FrameCpuGpuTiming::default();
         let start = Instant::now();
         t.begin_frame(start);
@@ -592,7 +623,12 @@ mod tests {
         );
         t.end_frame();
         assert_eq!(t.last_gpu_source, Some(GpuMsSource::CallbackLatency));
-        assert_eq!(t.gpu_frame_ms, Some(4.0));
+        assert_eq!(t.gpu_frame_ms, None);
+        assert_eq!(t.last_completed_gpu_frame_ms, None);
+        let paired = t.last_completed_primary_frame_ms.expect("paired");
+        assert!((1.5..2.5).contains(&paired.cpu_frame_ms));
+        assert_eq!(paired.gpu_frame_ms, None);
+        assert_eq!(paired.gpu_ms_source, Some(GpuMsSource::CallbackLatency));
     }
 
     #[test]
@@ -623,8 +659,11 @@ mod tests {
             second_submit_at,
             fs + Duration::from_millis(9),
         );
-        assert_eq!(t.gpu_frame_ms, Some(8.0));
-        assert_eq!(t.last_completed_gpu_frame_ms, Some(8.0));
+        assert_eq!(t.gpu_frame_ms, None);
+        assert_eq!(t.last_completed_gpu_frame_ms, None);
+        let paired = t.last_completed_primary_frame_ms.expect("paired");
+        assert_eq!(paired.gpu_frame_ms, None);
+        assert_eq!(paired.gpu_ms_source, Some(GpuMsSource::CallbackLatency));
         assert_eq!(t.last_gpu_source, Some(GpuMsSource::CallbackLatency));
     }
 
@@ -641,7 +680,9 @@ mod tests {
 
         let cpu = t.cpu_frame_ms.expect("cpu_frame_ms");
         assert!((4.5..5.5).contains(&cpu), "cpu={cpu}");
-        let (paired_cpu, paired_gpu) = t.last_completed_paired_frame_ms.expect("paired");
+        let paired = t.last_completed_primary_frame_ms.expect("paired");
+        let paired_cpu = paired.cpu_frame_ms;
+        let paired_gpu = paired.gpu_frame_ms.expect("gpu");
         assert!((4.5..5.5).contains(&paired_cpu), "paired_cpu={paired_cpu}");
         assert_eq!(paired_gpu, 3.0);
     }
@@ -667,7 +708,7 @@ mod tests {
         t.end_frame();
         // No record_main_thread_cpu_end ever fires; HUD pair must stay None.
         t.record_frame_bracket_done(generation, seq, 7.0);
-        assert!(t.last_completed_paired_frame_ms.is_none());
+        assert!(t.last_completed_primary_frame_ms.is_none());
         assert_eq!(t.last_completed_gpu_frame_ms, Some(7.0));
         assert_eq!(t.last_gpu_source, Some(GpuMsSource::FrameBracket));
     }

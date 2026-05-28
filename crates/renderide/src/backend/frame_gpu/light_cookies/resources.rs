@@ -142,14 +142,15 @@ impl LightCookieAtlasResources {
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         assets: &dyn GraphAssetResources,
+        profiler: Option<&crate::profiling::GpuProfilerHandle>,
     ) {
         profiling::scope!("light_cookies::encode_atlas");
         let (two_d_requests, point_requests) = self.state.lock().requests();
         for request in two_d_requests {
-            self.encode_2d_request(device, encoder, assets, request);
+            self.encode_2d_request(device, encoder, assets, profiler, request);
         }
         for request in point_requests {
-            self.encode_point_request(device, encoder, assets, request);
+            self.encode_point_request(device, encoder, assets, profiler, request);
         }
     }
 
@@ -159,13 +160,14 @@ impl LightCookieAtlasResources {
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         assets: &dyn GraphAssetResources,
+        profiler: Option<&crate::profiling::GpuProfilerHandle>,
         request: LightCookieRequest,
     ) {
         let Some(target) = self.two_d.layer_view(request.layer) else {
             return;
         };
         let Some(source) = self.resolve_2d_source(assets, request) else {
-            clear_cookie_layer(encoder, target, "light_cookie_2d_clear");
+            clear_cookie_layer(encoder, target, "light_cookie_2d_clear", profiler);
             return;
         };
         let bind_group = create_source_bind_group(device, &self.blit, source, self.sampler());
@@ -176,6 +178,7 @@ impl LightCookieAtlasResources {
             "light_cookie_2d_blit",
             self.blit.pipeline(source.channel, source.sampling),
             &bind_group,
+            profiler,
         );
     }
 
@@ -185,12 +188,13 @@ impl LightCookieAtlasResources {
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         assets: &dyn GraphAssetResources,
+        profiler: Option<&crate::profiling::GpuProfilerHandle>,
         request: LightCookieRequest,
     ) {
         let Some(source) = self.resolve_point_source(assets, request) else {
             for face in 0..POINT_COOKIE_FACE_COUNT {
                 if let Some(target) = self.point.layer_view(request.layer + face) {
-                    clear_cookie_layer(encoder, target, "light_cookie_point_clear");
+                    clear_cookie_layer(encoder, target, "light_cookie_point_clear", profiler);
                 }
             }
             return;
@@ -217,6 +221,7 @@ impl LightCookieAtlasResources {
                 self.blit
                     .pipeline(face_source.channel, face_source.sampling),
                 &bind_group,
+                profiler,
             );
         }
     }

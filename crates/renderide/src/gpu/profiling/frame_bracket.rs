@@ -6,8 +6,8 @@
 //!
 //! 1. Main thread: [`FrameBracket::open_session`] returns a [`FrameBracketSession`] when the
 //!    adapter advertises both [`wgpu::Features::TIMESTAMP_QUERY`] and
-//!    [`wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS`]. Returns [`None`] otherwise; callers
-//!    fall back to the existing callback-latency path.
+//!    [`wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS`]. Returns [`None`] otherwise, leaving
+//!    primary GPU busy time unavailable for the HUD.
 //! 2. Main thread: [`FrameBracketSession::begin_command_buffer`] / `end_command_buffer` produce
 //!    two short [`wgpu::CommandBuffer`]s that bracket tracked submit work. The begin CB writes
 //!    timestamp 0; the end CB writes timestamp 1, resolves both into a GPU-side buffer, and
@@ -51,8 +51,8 @@ impl FrameBracket {
     /// The factory is "enabled" only when the device features include both
     /// [`wgpu::Features::TIMESTAMP_QUERY`] and
     /// [`wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS`]. When either is missing,
-    /// [`Self::open_session`] returns [`None`] and the HUD falls back to relabeling the GPU row
-    /// as "GPU latency" (callback-fire wall-clock, not real compute time).
+    /// [`Self::open_session`] returns [`None`] and the HUD leaves primary GPU busy time
+    /// unavailable instead of substituting callback-fire wall-clock latency.
     pub fn new(
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,

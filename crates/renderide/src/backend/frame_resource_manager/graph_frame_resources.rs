@@ -239,9 +239,10 @@ impl GraphFrameResources for FrameResourceManager {
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         asset_resources: &dyn GraphAssetResources,
+        profiler: Option<&crate::profiling::GpuProfilerHandle>,
     ) {
         if let Some(fgpu) = self.frame_gpu() {
-            fgpu.encode_light_cookie_atlas(device, encoder, asset_resources);
+            fgpu.encode_light_cookie_atlas(device, encoder, asset_resources, profiler);
         }
     }
 }

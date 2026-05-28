@@ -41,6 +41,7 @@ mod surface;
 
 pub use headless_targets::PrimaryOffscreenTargets;
 pub use msaa::GpuMsaa;
+pub use submission::FrameSubmitKind;
 
 /// GPU stack for presentation and future render passes.
 pub struct GpuContext {

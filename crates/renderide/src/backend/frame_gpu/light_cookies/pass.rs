@@ -54,6 +54,7 @@ impl crate::render_graph::pass::EncoderPass for LightCookieAtlasPass {
                 ctx.device,
                 ctx.encoder,
                 ctx.pass_frame.shared.asset_resources,
+                ctx.profiler,
             );
         Ok(())
     }

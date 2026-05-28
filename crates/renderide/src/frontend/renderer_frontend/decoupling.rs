@@ -64,4 +64,9 @@ impl RendererFrontend {
         self.decoupling
             .activation_wait_timeout(now, self.lockstep.awaiting_submit(), max_slice)
     }
+
+    /// Most recent renderer-observed host lockstep turnaround.
+    pub fn last_frame_begin_to_submit(&self) -> Option<Duration> {
+        self.decoupling.last_frame_begin_to_submit()
+    }
 }

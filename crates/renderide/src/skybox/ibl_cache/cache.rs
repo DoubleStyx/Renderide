@@ -5,7 +5,7 @@ use std::sync::Arc;
 use hashbrown::HashMap;
 
 use crate::backend::gpu_jobs::{GpuJobResources, GpuSubmitJobTracker, SubmittedGpuJob};
-use crate::gpu::GpuContext;
+use crate::gpu::{FrameSubmitKind, GpuContext};
 use crate::profiling::GpuProfilerHandle;
 use crate::skybox::specular::{SkyboxIblSource, solid_color_params};
 
@@ -386,6 +386,7 @@ impl SkyboxIblCache {
             encoder.finish()
         };
         gpu.submit_frame_batch_with_callbacks(
+            FrameSubmitKind::BackgroundGpuWork,
             vec![command_buffer],
             None,
             None,

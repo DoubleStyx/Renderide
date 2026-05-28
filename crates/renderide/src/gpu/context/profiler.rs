@@ -67,6 +67,8 @@ impl GpuContext {
     /// Returns [`None`] when the `tracy` feature is off, or when the adapter lacks the required
     /// timestamp-query features (see [`crate::profiling::GpuProfilerHandle::try_new`]).
     pub fn gpu_profiler_mut(&mut self) -> Option<&mut crate::profiling::GpuProfilerHandle> {
+        self.finish_deferred_gpu_profiler_frame_if_ready();
+        self.refresh_gpu_profiler_tracy_bridge();
         self.submission.gpu_profiler.as_mut()
     }
 
@@ -87,6 +89,8 @@ impl GpuContext {
     ///
     /// Returns [`None`] when no profiler is active (feature off or adapter unsupported).
     pub fn take_gpu_profiler(&mut self) -> Option<crate::profiling::GpuProfilerHandle> {
+        self.finish_deferred_gpu_profiler_frame_if_ready();
+        self.refresh_gpu_profiler_tracy_bridge();
         self.submission.gpu_profiler.take()
     }
 
@@ -249,38 +253,23 @@ impl GpuContext {
         Arc::clone(&self.submission.latest_gpu_profiler_snapshot)
     }
 
-    /// Most recently completed CPU and GPU per-frame ms for the debug HUD, paired so both
-    /// values describe the **same** frame.
+    /// Most recently completed primary CPU/GPU frame work for the debug HUD.
     ///
-    /// Returns `(None, None)` until the first submit has both published its main-thread CPU
-    /// duration via [`Self::record_main_thread_cpu_end`] *and* delivered a GPU value (real
-    /// timestamp readback or callback-latency fallback). Once a pair has been observed, the
-    /// values survive across frames so the overlay never goes blank. Lags the current tick by
-    /// at least one frame in steady state, since the GPU readback for frame N typically lands
-    /// after frame N+1's tick has begun.
-    pub fn frame_cpu_gpu_ms_for_hud(&self) -> (Option<f64>, Option<f64>) {
+    /// Returns [`None`] until the first primary submit has both published its main-thread CPU
+    /// duration via [`Self::record_main_thread_cpu_end`] and delivered a completion signal.
+    /// Timestamp-backed completions include GPU busy time; callback-only completions keep GPU
+    /// busy time unavailable. Once a sample has been observed, it survives across frames so the
+    /// overlay never goes blank. Lags the current tick by at least one frame in steady state,
+    /// since the GPU readback for frame N typically lands after frame N+1's tick has begun.
+    pub fn primary_frame_work_timing_for_hud(
+        &self,
+    ) -> Option<crate::gpu::frame_cpu_gpu_timing::PrimaryFrameWorkTiming> {
         let ft = self
             .submission
             .frame_timing
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match ft.last_completed_paired_frame_ms {
-            Some((cpu, gpu)) => (Some(cpu), Some(gpu)),
-            None => (None, None),
-        }
-    }
-
-    /// Origin of the most recent `gpu_frame_ms` value, so the HUD can label the row honestly.
-    ///
-    /// Returns [`None`] until the first GPU value has been published. See
-    /// [`crate::gpu::frame_cpu_gpu_timing::GpuMsSource`].
-    pub fn last_gpu_ms_source(&self) -> Option<crate::gpu::frame_cpu_gpu_timing::GpuMsSource> {
-        let ft = self
-            .submission
-            .frame_timing
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        ft.last_gpu_source
+        ft.last_completed_primary_frame_ms
     }
 
     /// Publishes the active main-thread CPU frame duration synchronously.
@@ -299,12 +288,13 @@ impl GpuContext {
         ft.record_main_thread_cpu_end(cpu_end);
     }
 
-    /// Most recently completed whole-frame GPU time in **seconds**, for the IPC
+    /// Most recently completed timestamp-backed primary GPU time in **seconds**, for the IPC
     /// [`crate::shared::PerformanceState::render_time`] field consumed by
     /// `FrooxEngine.PerformanceMetrics.RenderTime`.
     ///
-    /// Returns [`None`] until every tracked submit in at least one frame has completed; callers
-    /// that need the host-visible "unavailable" sentinel should map [`None`] to `-1.0`.
+    /// Returns [`None`] until every primary submit in at least one frame has completed with
+    /// hardware timestamp data; callers that need the host-visible "unavailable" sentinel should
+    /// map [`None`] to `-1.0`.
     pub fn last_completed_gpu_render_time_seconds(&self) -> Option<f32> {
         let ft = self
             .submission

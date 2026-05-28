@@ -294,10 +294,9 @@ fn record_driver_event(
 /// Picks the GPU-completion path for a tracked submit.
 ///
 /// When `bracket_readback` is `Some`, schedules a `map_async` on the timestamp readback buffer
-/// and publishes the resulting `gpu_frame_ms` (real GPU time) into the timing accumulator
-/// labelled as [`crate::gpu::frame_cpu_gpu_timing::GpuMsSource::FrameBracket`]. Otherwise
-/// registers a `Queue::on_submitted_work_done` callback that publishes the wall-clock
-/// callback-fire latency labelled as [`crate::gpu::frame_cpu_gpu_timing::GpuMsSource::CallbackLatency`].
+/// and publishes the resulting `gpu_frame_ms` (real GPU time) into the timing accumulator.
+/// Otherwise registers a `Queue::on_submitted_work_done` callback that completes the CPU/GPU
+/// pairing without publishing GPU busy time.
 fn register_gpu_completion(
     queue: &wgpu::Queue,
     track: FrameTimingTrack,

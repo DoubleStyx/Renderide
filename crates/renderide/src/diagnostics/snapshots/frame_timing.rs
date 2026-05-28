@@ -1,91 +1,126 @@
-//! Lightweight per-frame timing for the **Frame timing** ImGui window (FPS, wall interval,
-//! CPU/GPU per-frame ms, RAM/VRAM, and a rolling frametime graph -- MangoHud-style overlay).
+//! Lightweight per-frame timing for the **Frame timing** ImGui window.
 //!
-//! Unlike [`super::FrameDiagnosticsSnapshot`], this avoids the heavy shader-routes / allocator-report
-//! gathering and is safe to populate every tick.
+//! The HUD separates wall-frame cadence from active renderer CPU work, timestamp-backed primary
+//! GPU work, and renderer-observed host lockstep turnaround. The compact view intentionally leaves
+//! those lanes separate; compare the visible Frame/CPU/GPU/Host values directly.
+//!
+//! Unlike [`super::FrameDiagnosticsSnapshot`], this avoids heavy shader-route and allocator-detail
+//! gathering and is safe to populate every displayed frame.
 
 pub mod ema;
 pub mod history;
 
+use std::time::{Duration, Instant};
+
 pub use ema::FrameTimingEma;
-pub use history::FrameTimeHistory;
+pub use history::{
+    FrameTimeHistory, FrameTimingHistorySample, FrameTimingHistoryStats, FrameTimingOnePercentStats,
+};
 
 use crate::gpu::GpuContext;
 use crate::gpu::frame_cpu_gpu_timing::GpuMsSource;
 
 use super::frame_diagnostics::{GpuAllocatorHud, HostCpuMemoryHud};
 
-/// Minimal HUD payload: wall-clock roundtrip, CPU/GPU per-frame ms, memory totals, and
-/// frametime graph.
-///
-/// Numeric scalars (`*_ms_smoothed`) are run through [`FrameTimingEma`] so the readouts settle
-/// instead of jittering each frame. The frametime graph keeps the raw samples in
-/// [`Self::frame_time_history`] so spikes remain visible.
+/// Minimal HUD payload: wall-clock cadence, CPU/GPU/host frame ms, memory totals, and rolling
+/// history.
 #[derive(Clone, Debug, Default)]
 pub struct FrameTimingHudSnapshot {
-    /// Wall-clock roundtrip between consecutive winit ticks (ms): the time between when one
-    /// frame started and the next one started. FPS = `1000.0 / wall_frame_time_ms_smoothed`.
-    /// EMA-smoothed for display.
+    /// Wall-clock roundtrip between consecutive winit ticks. FPS is `1000 / wall_ms`.
     pub wall_frame_time_ms_smoothed: f64,
-    /// CPU per-frame ms (EMA-smoothed): main-thread tick duration from
-    /// [`crate::gpu::frame_cpu_gpu_timing::FrameCpuGpuTiming`]. Excludes FPS-gating sleeps,
-    /// lockstep waits, event-loop idles, and explicit GPU/display/compositor pacing waits.
+    /// CPU per-frame ms: main-thread active renderer work, excluding pacing waits.
     pub cpu_frame_ms_smoothed: Option<f64>,
-    /// GPU per-frame ms (EMA-smoothed). Source identified by [`Self::gpu_ms_source`].
+    /// Timestamp-backed primary GPU busy time in milliseconds.
     pub gpu_frame_ms_smoothed: Option<f64>,
-    /// Origin of the GPU value: real timestamp queries vs callback-latency fallback.
-    pub gpu_ms_source: Option<GpuMsSource>,
-    /// Rolling frametime samples (ms, oldest-first) for the sparkline plot. Raw -- not smoothed.
+    /// Renderer-observed `FrameStartData` to `FrameSubmitData` turnaround in milliseconds.
+    pub host_frame_ms_smoothed: Option<f64>,
+    /// Rolling wall-frame samples for the sparkline plot. Raw, not smoothed.
     pub frame_time_history: Vec<f32>,
-    /// Global host CPU usage 0-100 (sysinfo, throttled).
-    pub host_cpu_usage_percent: f32,
-    /// Total system RAM in bytes (sysinfo).
+    /// Rolling 1-second 1% low/high stats.
+    pub history_stats: FrameTimingHistoryStats,
+    /// Total system RAM in bytes from `sysinfo`.
     pub host_ram_total_bytes: u64,
-    /// Used system RAM in bytes (sysinfo).
+    /// Used system RAM in bytes from `sysinfo`.
     pub host_ram_used_bytes: u64,
-    /// Resident memory of the renderer process in bytes (sysinfo; `None` when unavailable).
+    /// Resident memory of the renderer process in bytes.
     pub process_ram_bytes: Option<u64>,
-    /// Live GPU allocator bytes in use (`wgpu::Device::generate_allocator_report` total).
+    /// Live GPU allocator bytes in use.
     pub gpu_allocator_allocated_bytes: Option<u64>,
     /// GPU allocator reserved capacity including allocator fragmentation.
     pub gpu_allocator_reserved_bytes: Option<u64>,
 }
 
+/// Inputs for building a frame-timing HUD snapshot.
+pub struct FrameTimingHudCapture<'a> {
+    /// GPU context that owns frame timing query results and profiler counters.
+    pub gpu: &'a GpuContext,
+    /// Wall-clock interval between displayed renderer ticks in milliseconds.
+    pub wall_frame_time_ms: f64,
+    /// Renderer-observed host lockstep turnaround for the most recent primary frame.
+    pub host_frame_begin_to_submit: Option<Duration>,
+    /// Host/process CPU and RAM snapshot.
+    pub host_hud: &'a HostCpuMemoryHud,
+    /// GPU allocator totals sampled for the compact HUD.
+    pub gpu_allocator: GpuAllocatorHud,
+    /// Rolling frame timing history updated by this capture.
+    pub history: &'a mut FrameTimeHistory,
+    /// EMA state updated by this capture.
+    pub ema: &'a mut FrameTimingEma,
+    /// Capture timestamp used for rolling one-second stats.
+    pub now: Instant,
+}
+
 impl FrameTimingHudSnapshot {
-    /// Reads GPU timing and pairs it with the supplied host / history / EMA state.
-    ///
-    /// `ema` is updated in place with this tick's samples so steady-state readouts settle.
-    pub fn capture(
-        gpu: &GpuContext,
-        wall_frame_time_ms: f64,
-        host: &HostCpuMemoryHud,
-        gpu_allocator: GpuAllocatorHud,
-        history: &FrameTimeHistory,
-        ema: &mut FrameTimingEma,
-    ) -> Self {
+    /// Reads GPU timing and folds this tick into the supplied history / EMA state.
+    pub fn capture(capture: FrameTimingHudCapture<'_>) -> Self {
         profiling::scope!("hud::build_timing_snapshot");
-        let (cpu_frame_ms_raw, gpu_frame_ms_raw) = gpu.frame_cpu_gpu_ms_for_hud();
-        let gpu_ms_source = gpu.last_gpu_ms_source();
+        let FrameTimingHudCapture {
+            gpu,
+            wall_frame_time_ms,
+            host_frame_begin_to_submit,
+            host_hud,
+            gpu_allocator,
+            history,
+            ema,
+            now,
+        } = capture;
+        let primary_work = gpu.primary_frame_work_timing_for_hud();
+        let primary_generation = primary_work.map(|v| v.generation);
+        let cpu_frame_ms_raw = primary_work.map(|v| v.cpu_frame_ms);
+        let gpu_frame_ms_raw = primary_work.and_then(|v| v.gpu_frame_ms);
+        let gpu_ms_source = primary_work.and_then(|v| v.gpu_ms_source);
+        let host_frame_ms_raw = host_frame_begin_to_submit.map(duration_ms);
+
+        history.push(FrameTimingHistorySample {
+            captured_at: now,
+            wall_ms: wall_frame_time_ms,
+            primary_generation,
+            cpu_ms: cpu_frame_ms_raw,
+            gpu_ms: authoritative_gpu_ms(gpu_frame_ms_raw, gpu_ms_source),
+            host_ms: host_frame_ms_raw,
+        });
+        let history_stats = history.stats();
+
         let wall_frame_time_ms_smoothed = ema.frame.update(wall_frame_time_ms);
         let cpu_frame_ms_smoothed = cpu_frame_ms_raw.map(|v| ema.cpu.update(v));
         let gpu_frame_ms_smoothed = gpu_frame_ms_raw.map(|v| ema.gpu.update(v));
+        let host_frame_ms_smoothed = host_frame_ms_raw.map(|v| ema.host.update(v));
         Self {
             wall_frame_time_ms_smoothed,
             cpu_frame_ms_smoothed,
             gpu_frame_ms_smoothed,
-            gpu_ms_source,
+            host_frame_ms_smoothed,
             frame_time_history: history.to_vec(),
-            host_cpu_usage_percent: host.cpu_usage_percent,
-            host_ram_total_bytes: host.ram_total_bytes,
-            host_ram_used_bytes: host.ram_used_bytes,
-            process_ram_bytes: host.process_ram_bytes,
+            history_stats,
+            host_ram_total_bytes: host_hud.ram_total_bytes,
+            host_ram_used_bytes: host_hud.ram_used_bytes,
+            process_ram_bytes: host_hud.process_ram_bytes,
             gpu_allocator_allocated_bytes: gpu_allocator.allocated_bytes,
             gpu_allocator_reserved_bytes: gpu_allocator.reserved_bytes,
         }
     }
 
-    /// FPS from smoothed wall-clock interval between redraws. The smoothed value avoids
-    /// flickering between, say, 59 and 61 fps when the workload is steady.
+    /// FPS from smoothed wall-clock interval between redraws.
     pub fn fps_from_wall(&self) -> f64 {
         if self.wall_frame_time_ms_smoothed <= f64::EPSILON {
             0.0
@@ -95,9 +130,28 @@ impl FrameTimingHudSnapshot {
     }
 }
 
+fn duration_ms(duration: Duration) -> f64 {
+    duration.as_secs_f64() * 1000.0
+}
+
+fn authoritative_gpu_ms(
+    gpu_frame_ms: Option<f64>,
+    gpu_ms_source: Option<GpuMsSource>,
+) -> Option<f64> {
+    match gpu_ms_source {
+        Some(GpuMsSource::FrameBracket) => gpu_frame_ms.and_then(finite_non_negative),
+        _ => None,
+    }
+}
+
+fn finite_non_negative(value: f64) -> Option<f64> {
+    (value.is_finite() && value >= 0.0).then_some(value)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::FrameTimingHudSnapshot;
+    use super::{FrameTimingHudSnapshot, authoritative_gpu_ms};
+    use crate::gpu::frame_cpu_gpu_timing::GpuMsSource;
 
     #[test]
     fn fps_from_wall_matches_inverse_smoothed_ms() {
@@ -121,5 +175,21 @@ mod tests {
         let s = FrameTimingHudSnapshot::default();
         assert_eq!(s.gpu_allocator_allocated_bytes, None);
         assert_eq!(s.gpu_allocator_reserved_bytes, None);
+    }
+
+    #[test]
+    fn timestamped_gpu_ms_is_authoritative() {
+        assert_eq!(
+            authoritative_gpu_ms(Some(8.0), Some(GpuMsSource::FrameBracket)),
+            Some(8.0)
+        );
+    }
+
+    #[test]
+    fn callback_latency_is_not_authoritative_gpu_ms() {
+        assert_eq!(
+            authoritative_gpu_ms(Some(20.0), Some(GpuMsSource::CallbackLatency)),
+            None
+        );
     }
 }

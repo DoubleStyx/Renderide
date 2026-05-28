@@ -19,9 +19,9 @@ pub use hud::{DebugHud, DebugHudEncodeError, DebugHudInput, sanitize_input_state
 pub use per_view::{PerViewHudConfig, PerViewHudOutputs, PerViewHudOutputsSlot};
 pub use snapshots::{
     BackendDiagSnapshot, FrameDiagnosticsIpcQueues, FrameDiagnosticsSnapshot,
-    FrameDiagnosticsSnapshotCapture, FrameTimeHistory, FrameTimingEma, FrameTimingHudSnapshot,
-    GpuAllocatorHud, GpuAllocatorHudRefresh, GpuAllocatorReportHud, HostHudGatherer,
-    RendererInfoSnapshot, RendererInfoSnapshotCapture, SceneTransformsSnapshot,
-    ShaderRouteSnapshot, TextureDebugSnapshot, XrRecoverableFailureCounts,
+    FrameDiagnosticsSnapshotCapture, FrameTimeHistory, FrameTimingEma, FrameTimingHudCapture,
+    FrameTimingHudSnapshot, FrameTimingOnePercentStats, GpuAllocatorHud, GpuAllocatorHudRefresh,
+    GpuAllocatorReportHud, HostHudGatherer, RendererInfoSnapshot, RendererInfoSnapshotCapture,
+    SceneTransformsSnapshot, ShaderRouteSnapshot, TextureDebugSnapshot, XrRecoverableFailureCounts,
 };
 pub use watchdog::{Heartbeat, Watchdog, WatchdogPause};

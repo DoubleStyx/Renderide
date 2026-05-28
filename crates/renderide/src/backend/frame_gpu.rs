@@ -559,8 +559,9 @@ impl FrameGpuResources {
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         assets: &dyn crate::render_graph::GraphAssetResources,
+        profiler: Option<&crate::profiling::GpuProfilerHandle>,
     ) {
-        self.light_cookies.encode(device, encoder, assets);
+        self.light_cookies.encode(device, encoder, assets, profiler);
     }
 
     /// Current reflection-probe resource version for per-view bind-group invalidation.

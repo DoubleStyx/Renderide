@@ -16,7 +16,10 @@ pub use frame_diagnostics::{
     GpuAllocatorHud, GpuAllocatorHudRefresh, GpuAllocatorReportHud, HostHudGatherer,
     XrRecoverableFailureCounts,
 };
-pub use frame_timing::{FrameTimeHistory, FrameTimingEma, FrameTimingHudSnapshot};
+pub use frame_timing::{
+    FrameTimeHistory, FrameTimingEma, FrameTimingHudCapture, FrameTimingHudSnapshot,
+    FrameTimingOnePercentStats,
+};
 pub use renderer_info::{RendererInfoSnapshot, RendererInfoSnapshotCapture};
 pub use scene_transforms::SceneTransformsSnapshot;
 pub use texture_debug::TextureDebugSnapshot;
