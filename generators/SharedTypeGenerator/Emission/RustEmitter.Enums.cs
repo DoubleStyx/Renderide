@@ -7,7 +7,7 @@ using SharedTypeGenerator.Logging;
 
 namespace SharedTypeGenerator.Emission;
 
-public partial class RustEmitter
+internal sealed partial class RustEmitter
 {
     private void EmitValueEnum(TypeDescriptor type)
     {

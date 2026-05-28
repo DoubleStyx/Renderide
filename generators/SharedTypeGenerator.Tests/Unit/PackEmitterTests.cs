@@ -1,12 +1,8 @@
 using System.Globalization;
-using System.Reflection;
 using NotEnoughLogs;
-using NotEnoughLogs.Behaviour;
-using NotEnoughLogs.Sinks;
 using SharedTypeGenerator.Analysis;
 using SharedTypeGenerator.Emission;
 using SharedTypeGenerator.IR;
-using SharedTypeGenerator.Logging;
 using SharedTypeGenerator.Tests.Unit.Support;
 using Xunit;
 
@@ -15,18 +11,16 @@ namespace SharedTypeGenerator.Tests.Unit;
 /// <summary>Unit tests for <see cref="PackEmitter"/> line helpers and emission paths.</summary>
 public sealed class PackEmitterTests
 {
-    private static readonly BindingFlags StaticNonPublic = BindingFlags.Static | BindingFlags.NonPublic;
-
     /// <summary>Snapshot <see cref="PackEmitter"/> pack lines for each <see cref="FieldKind"/>.</summary>
     [Fact]
     public void PackLine_covers_each_field_kind()
     {
-        Logger logger = CreateLogger();
+        Logger logger = TestLoggers.Create();
         foreach (FieldKind kind in Enum.GetValues<FieldKind>())
         {
             if (kind == FieldKind.StringList)
             {
-                Assert.Throws<TargetInvocationException>(() => InvokePackLine(logger, kind));
+                Assert.Throws<InvalidOperationException>(() => InvokePackLine(logger, kind));
                 continue;
             }
 
@@ -40,13 +34,7 @@ public sealed class PackEmitterTests
     public void PackLine_unknown_kind_emits_fixme_and_logs()
     {
         var sink = new CollectingSink();
-        using var logger = new Logger(
-            [sink],
-            new LoggerConfiguration
-            {
-                Behaviour = new DirectLoggingBehaviour(),
-                MaxLevel = LogLevel.Warning,
-            });
+        using var logger = TestLoggers.Create(LogLevel.Warning, sink);
         var bogus = (FieldKind)9999;
         string line = InvokePackLine(logger, bogus);
         Assert.Contains("FIXME", line, StringComparison.Ordinal);
@@ -61,8 +49,8 @@ public sealed class PackEmitterTests
         using var sw = new StringWriter(CultureInfo.InvariantCulture);
         using (var w = new RustWriter(sw))
         {
-            PackEmitter.EmitPack(w, CreateLogger(), "T", [], []);
-            PackEmitter.EmitUnpack(w, CreateLogger(), "T", [], []);
+            PackEmitter.EmitPack(w, TestLoggers.Create(), "T", [], []);
+            PackEmitter.EmitUnpack(w, TestLoggers.Create(), "T", [], []);
         }
 
         string text = sw.ToString();
@@ -79,8 +67,8 @@ public sealed class PackEmitterTests
         var steps = new List<SerializationStep> { new PackedBools(["a", "b"]) };
         using (var w = new RustWriter(sw))
         {
-            PackEmitter.EmitPack(w, CreateLogger(), "T", steps, []);
-            PackEmitter.EmitUnpack(w, CreateLogger(), "T", steps, []);
+            PackEmitter.EmitPack(w, TestLoggers.Create(), "T", steps, []);
+            PackEmitter.EmitUnpack(w, TestLoggers.Create(), "T", steps, []);
         }
 
         string text = sw.ToString();
@@ -98,8 +86,8 @@ public sealed class PackEmitterTests
         var steps = new List<SerializationStep> { new ConditionalBlock("flag", inner) };
         using (var w = new RustWriter(sw))
         {
-            PackEmitter.EmitPack(w, CreateLogger(), "T", steps, []);
-            PackEmitter.EmitUnpack(w, CreateLogger(), "T", steps, []);
+            PackEmitter.EmitPack(w, TestLoggers.Create(), "T", steps, []);
+            PackEmitter.EmitUnpack(w, TestLoggers.Create(), "T", steps, []);
         }
 
         string text = sw.ToString();
@@ -122,7 +110,7 @@ public sealed class PackEmitterTests
         };
 
         using (var w = new RustWriter(sw))
-            PackEmitter.EmitExplicitPack(w, CreateLogger(), "Explicit", fields, paddingBytes: 4);
+            PackEmitter.EmitExplicitPack(w, TestLoggers.Create(), "Explicit", fields, paddingBytes: 4);
 
         string text = sw.ToString();
         Assert.Contains("write_bool(self.b != 0);", text, StringComparison.Ordinal);
@@ -145,7 +133,7 @@ public sealed class PackEmitterTests
         };
 
         using (var w = new RustWriter(sw))
-            PackEmitter.EmitExplicitUnpack(w, CreateLogger(), "Explicit", fields, paddingBytes: 2);
+            PackEmitter.EmitExplicitUnpack(w, TestLoggers.Create(), "Explicit", fields, paddingBytes: 2);
 
         string text = sw.ToString();
         Assert.Contains("read_bool()? as u8;", text, StringComparison.Ordinal);
@@ -158,18 +146,33 @@ public sealed class PackEmitterTests
     [Fact]
     public void UnpackObjectLine_strips_option_wrapper()
     {
-        Logger logger = CreateLogger();
+        Logger logger = TestLoggers.Create();
         var fields = new List<FieldDescriptor> { Ir.ObjectField("obj", "Option<FooBar>") };
 
         string line = InvokeUnpackLine(logger, "T", "obj", FieldKind.Object, fields);
         Assert.Contains("read_object::<FooBar>()", line, StringComparison.Ordinal);
     }
 
+    /// <summary>Field descriptor lookup preserves the previous first-match behavior for duplicate Rust names.</summary>
+    [Fact]
+    public void FieldDescriptorLookup_preserves_first_matching_field()
+    {
+        Logger logger = TestLoggers.Create();
+        var fields = new List<FieldDescriptor>
+        {
+            Ir.ObjectField("obj", "Option<FirstType>"),
+            Ir.ObjectField("obj", "Option<SecondType>"),
+        };
+
+        string line = InvokeUnpackLine(logger, "T", "obj", FieldKind.Object, fields);
+        Assert.Contains("read_object::<FirstType>()", line, StringComparison.Ordinal);
+    }
+
     /// <summary>String unpack converts owned decoded strings into <c>Cow&lt;'static, str&gt;</c> when the generated field uses Cow storage.</summary>
     [Fact]
     public void UnpackLine_converts_string_to_cow_for_static_string_fields()
     {
-        Logger logger = CreateLogger();
+        Logger logger = TestLoggers.Create();
         var fields = new List<FieldDescriptor>
         {
             Ir.PodField("renderer_identifier", "Option<Cow<'static, str>>", FieldKind.String),
@@ -183,7 +186,7 @@ public sealed class PackEmitterTests
     [Fact]
     public void UnpackPolymorphicListLine_strips_vec_wrapper()
     {
-        Logger logger = CreateLogger();
+        Logger logger = TestLoggers.Create();
         var fields = new List<FieldDescriptor>
         {
             Ir.PodField("items", "Vec<Thing>", FieldKind.PolymorphicList),
@@ -194,28 +197,9 @@ public sealed class PackEmitterTests
     }
 
     private static string InvokePackLine(Logger logger, FieldKind kind)
-    {
-        MethodInfo? m = typeof(PackEmitter).GetMethod("PackLine", StaticNonPublic);
-        Assert.NotNull(m);
-        return (string)m.Invoke(null, [logger, "Type", "field", kind])!;
-    }
+        => PackEmitter.BuildPackLine(logger, "Type", "field", kind);
 
     private static string InvokeUnpackLine(Logger logger, string typeName, string fieldName, FieldKind kind,
         List<FieldDescriptor> fields)
-    {
-        MethodInfo? m = typeof(PackEmitter).GetMethod("UnpackLine", StaticNonPublic);
-        Assert.NotNull(m);
-        return (string)m.Invoke(null, [logger, typeName, fieldName, kind, fields])!;
-    }
-
-    private static Logger CreateLogger()
-    {
-        return new Logger(
-            [new CollectingSink()],
-            new LoggerConfiguration
-            {
-                Behaviour = new DirectLoggingBehaviour(),
-                MaxLevel = LogLevel.Trace,
-            });
-    }
+        => PackEmitter.BuildUnpackLine(logger, typeName, fieldName, kind, new FieldDescriptorLookup(fields));
 }

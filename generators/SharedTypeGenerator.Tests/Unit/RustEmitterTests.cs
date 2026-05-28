@@ -1,6 +1,4 @@
 using System.Globalization;
-using NotEnoughLogs;
-using NotEnoughLogs.Behaviour;
 using SharedTypeGenerator.Emission;
 using SharedTypeGenerator.IR;
 using SharedTypeGenerator.Tests.Unit.Support;
@@ -96,7 +94,7 @@ public sealed class RustEmitterTests
         using var sw = new StringWriter(CultureInfo.InvariantCulture);
         using (var writer = new RustWriter(sw))
         {
-            var emitter = new RustEmitter(writer, CreateLogger(), "UnitTestEngine");
+            var emitter = new RustEmitter(writer, TestLoggers.Create(), "UnitTestEngine");
             emitter.Emit(types);
         }
 
@@ -114,12 +112,4 @@ public sealed class RustEmitterTests
             RustUnderlyingType = "i32",
         };
 
-    private static Logger CreateLogger() =>
-        new(
-            [new CollectingSink()],
-            new LoggerConfiguration
-            {
-                Behaviour = new DirectLoggingBehaviour(),
-                MaxLevel = LogLevel.Trace,
-            });
 }

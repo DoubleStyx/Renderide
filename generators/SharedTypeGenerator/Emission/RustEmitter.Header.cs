@@ -4,7 +4,7 @@ using SharedTypeGenerator.IR;
 
 namespace SharedTypeGenerator.Emission;
 
-public partial class RustEmitter
+internal sealed partial class RustEmitter
 {
     /// <summary>
     /// Writes the generated file header: generated notice, a workspace-lint <c>#![allow(...)]</c>

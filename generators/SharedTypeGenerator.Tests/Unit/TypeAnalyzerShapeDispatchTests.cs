@@ -1,6 +1,4 @@
 using System.Reflection;
-using NotEnoughLogs;
-using NotEnoughLogs.Behaviour;
 using SharedTypeGenerator.Analysis;
 using SharedTypeGenerator.IR;
 using SharedTypeGenerator.Tests.Unit.Support;
@@ -44,9 +42,7 @@ namespace ShapeAsm {
     public void ClassifyShape_covers_every_type_shape()
     {
         (Assembly asm, _, string path) = TestCompilation.CompileToFile(Source, assemblyName: "ShapeAsm");
-        using var logger = new Logger(
-            [new CollectingSink()],
-            new LoggerConfiguration { Behaviour = new DirectLoggingBehaviour(), MaxLevel = LogLevel.Trace });
+        using var logger = TestLoggers.Create();
         var analyzer = new TypeAnalyzer(logger, path);
 
         Assert.Equal(TypeShape.ValueEnum, analyzer.ClassifyShape(GetType(asm, "ShapeAsm.MyEnum")));

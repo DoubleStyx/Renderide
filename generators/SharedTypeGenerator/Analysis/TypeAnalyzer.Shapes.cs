@@ -5,7 +5,7 @@ using SharedTypeGenerator.IR;
 namespace SharedTypeGenerator.Analysis;
 
 /// <summary>Per-<see cref="TypeShape"/> analysis methods for <see cref="TypeAnalyzer"/>.</summary>
-public partial class TypeAnalyzer
+internal sealed partial class TypeAnalyzer
 {
     private TypeDescriptor AnalyzePolymorphic(Type type)
     {
@@ -64,22 +64,7 @@ public partial class TypeAnalyzer
     private TypeDescriptor AnalyzePackableStruct(Type type)
     {
         FieldInfo[] fields = type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-
-        var fieldDescriptors = new List<FieldDescriptor>();
-        foreach (FieldInfo field in fields)
-        {
-            string rustType = MapRustTypeWithQueue(field.FieldType);
-            rustType = RustFieldTypeOverrides.Apply(type.Name, field.Name, rustType);
-            FieldKind kind = _classifier.ClassifyByType(field.FieldType);
-
-            fieldDescriptors.Add(new FieldDescriptor
-            {
-                CSharpName = field.Name,
-                RustName = field.Name.HumanizeField(),
-                RustType = rustType,
-                Kind = kind,
-            });
-        }
+        List<FieldDescriptor> fieldDescriptors = BuildFieldDescriptors(type, fields, explicitLayout: false);
 
         List<SerializationStep> steps = _packParser.ParseWithConditionals(type, fields);
         steps = ResolveCallBases(type, steps, fields);
@@ -99,20 +84,7 @@ public partial class TypeAnalyzer
     private TypeDescriptor AnalyzeGeneralStruct(Type type)
     {
         FieldInfo[] fields = type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-
-        var fieldDescriptors = new List<FieldDescriptor>();
-        foreach (FieldInfo field in fields)
-        {
-            string rustType = MapRustTypeWithQueue(field.FieldType);
-            rustType = RustFieldTypeOverrides.Apply(type.Name, field.Name, rustType);
-            fieldDescriptors.Add(new FieldDescriptor
-            {
-                CSharpName = field.Name,
-                RustName = field.Name.HumanizeField(),
-                RustType = rustType,
-                Kind = _classifier.ClassifyByType(field.FieldType),
-            });
-        }
+        List<FieldDescriptor> fieldDescriptors = BuildFieldDescriptors(type, fields, explicitLayout: false);
 
         bool isPod = type == typeof(Guid);
         bool shouldPack = type == typeof(Guid);

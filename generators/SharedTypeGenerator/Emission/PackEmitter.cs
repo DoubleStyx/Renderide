@@ -6,7 +6,7 @@ using SharedTypeGenerator.Logging;
 namespace SharedTypeGenerator.Emission;
 
 /// <summary>Emits pack/unpack method bodies from <see cref="SerializationStep"/> lists and explicit-layout fields.</summary>
-public static partial class PackEmitter
+internal static partial class PackEmitter
 {
     /// <summary>Buffer size (bytes) for generated <c>roundtrip_dispatch</c> output and test harness packing.</summary>
     public const int RoundtripBufferBytes = 1024 * 1024;
@@ -16,6 +16,8 @@ public static partial class PackEmitter
     public static void EmitPack(RustWriter w, Logger logger, string csharpTypeName, List<SerializationStep> steps,
         List<FieldDescriptor> fields)
     {
+        _ = fields;
+
         if (steps.Count == 0)
         {
             w.Line("let _ = self;");
@@ -24,7 +26,7 @@ public static partial class PackEmitter
         }
 
         foreach (SerializationStep step in steps)
-            EmitPackStep(w, logger, csharpTypeName, step, fields);
+            EmitPackStep(w, logger, csharpTypeName, step);
     }
 
     /// <summary>Emits the full unpack method body for a list of steps.
@@ -42,11 +44,13 @@ public static partial class PackEmitter
             return;
         }
 
+        var fieldLookup = new FieldDescriptorLookup(fields);
+
         foreach (SerializationStep step in steps)
-            EmitUnpackStep(w, logger, csharpTypeName, step, fields);
+            EmitUnpackStep(w, logger, csharpTypeName, step, fieldLookup);
 
         foreach (SerializationStep step in unpackOnlySteps ?? [])
-            EmitUnpackStep(w, logger, csharpTypeName, step, fields);
+            EmitUnpackStep(w, logger, csharpTypeName, step, fieldLookup);
 
         w.Line("Ok(())");
     }
