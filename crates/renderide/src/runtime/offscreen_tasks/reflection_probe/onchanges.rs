@@ -27,23 +27,34 @@ use super::{
     host_camera_frame_for_probe_face, render_reflection_probe_faces_offscreen,
 };
 
+/// Minimum wall-clock spacing between successive OnChanges captures for one probe.
+///
+/// Coalesces rapid host re-bake floods into a steady update cadence so the reflection neither
+/// strobes nor starves its sharp bake by constantly superseding captures. The first capture for an
+/// idle probe is not delayed; only re-captures during ongoing change are paced.
+const ONCHANGES_MIN_RECAPTURE_INTERVAL: Duration = Duration::from_millis(400);
+
 /// Upper bound on how long a probe's capture is held waiting for its sharp bake to land.
 ///
 /// If the final IBL bake never reports ready within this window (e.g. the source stops resolving),
-/// the throttle releases so a fresh capture can be attempted instead of stalling indefinitely.
+/// the throttle stops waiting so a fresh capture can be attempted instead of stalling indefinitely.
 const ONCHANGES_CAPTURE_SETTLE_FALLBACK: Duration = Duration::from_secs(2);
 
-/// Tracks a probe whose capture has been started and whose sharp IBL bake has not yet landed.
+/// Per-probe capture pacing state for OnChanges reflection probes.
 ///
 /// While an entry exists the runtime coalesces incoming host re-bake requests for that probe
-/// instead of starting another capture, so a flood of OnChanges changes cannot starve the final
-/// (sharp) bake. The entry clears once [`crate::backend::RenderBackend::reflection_probe_final_ready_generation`]
-/// reaches [`Self::started_generation`] or [`ONCHANGES_CAPTURE_SETTLE_FALLBACK`] elapses.
-pub(in crate::runtime) struct OnChangesCaptureInflight {
-    /// Capture generation started for this probe and awaiting its final bake.
+/// instead of starting another capture. The entry is dropped (allowing the next capture) only once
+/// the sharp bake for [`Self::started_generation`] has landed (or [`ONCHANGES_CAPTURE_SETTLE_FALLBACK`]
+/// elapsed) *and* [`ONCHANGES_MIN_RECAPTURE_INTERVAL`] has passed since the capture started. This
+/// caps the update rate during a flood and guarantees each sharp bake completes before the next
+/// capture supersedes it.
+pub(in crate::runtime) struct OnChangesCaptureThrottle {
+    /// Capture generation started for this probe and awaiting its sharp bake.
     started_generation: u64,
-    /// Instant the capture was started, for the settle fallback.
+    /// Instant the most recent capture was started, for cadence and the settle fallback.
     started_at: Instant,
+    /// Whether the sharp (final) bake for [`Self::started_generation`] is still pending.
+    awaiting_final: bool,
 }
 
 /// Active OnChanges probe capture, retained across ticks when host time slicing requests it.
@@ -278,7 +289,7 @@ impl RendererRuntime {
                         capture.request.renderable_index,
                         capture.request.unique_id
                     );
-                    self.tick_state.onchanges_capture_inflight.remove(&(
+                    self.tick_state.onchanges_capture_throttle.remove(&(
                         capture.request.render_space_id,
                         capture.request.renderable_index,
                     ));
@@ -295,10 +306,10 @@ impl RendererRuntime {
             .enqueue_rendered_reflection_probes(completed_results);
     }
 
-    /// Starts queued OnChanges captures, coalescing while a probe's sharp bake is still pending.
+    /// Starts queued OnChanges captures, pacing each probe to coalesce rapid host re-bake floods.
     fn start_pending_onchanges_reflection_probe_captures(&mut self, gpu: &GpuContext) {
         profiling::scope!("reflection_probe_onchanges::start_pending");
-        self.release_settled_onchanges_capture_inflight();
+        self.advance_onchanges_capture_throttle();
         let pending =
             std::mem::take(&mut self.tick_state.pending_onchanges_reflection_probe_requests);
         if pending.is_empty() {
@@ -308,11 +319,11 @@ impl RendererRuntime {
         let mut deferred = Vec::new();
         for request in pending {
             let probe_key = (request.render_space_id, request.renderable_index);
-            // Hold this request until the previously started generation's sharp bake lands, so a
-            // host flood of OnChanges changes does not keep superseding in-flight final bakes.
+            // A throttle entry means this probe is still capturing/baking the previous generation
+            // or inside its minimum re-capture interval; coalesce (latest request wins) and wait.
             if self
                 .tick_state
-                .onchanges_capture_inflight
+                .onchanges_capture_throttle
                 .contains_key(&probe_key)
             {
                 deferred.push(request);
@@ -332,11 +343,12 @@ impl RendererRuntime {
                     ));
                 }
                 Ok(OnChangesCaptureStart::Capture(capture)) => {
-                    self.tick_state.onchanges_capture_inflight.insert(
+                    self.tick_state.onchanges_capture_throttle.insert(
                         probe_key,
-                        OnChangesCaptureInflight {
+                        OnChangesCaptureThrottle {
                             started_generation: generation,
                             started_at: Instant::now(),
+                            awaiting_final: true,
                         },
                     );
                     self.tick_state
@@ -363,28 +375,38 @@ impl RendererRuntime {
             .enqueue_rendered_reflection_probes(completed_results);
     }
 
-    /// Drops in-flight throttle markers for probes whose sharp bake has landed (or stalled out),
-    /// so the next coalesced request can start a fresh capture.
-    fn release_settled_onchanges_capture_inflight(&mut self) {
-        if self.tick_state.onchanges_capture_inflight.is_empty() {
+    /// Advances per-probe capture pacing: clears the awaiting-sharp flag once a probe's final bake
+    /// lands (or stalls), then drops entries whose sharp bake is done and whose minimum re-capture
+    /// interval has elapsed, so the next coalesced request can start a fresh capture.
+    fn advance_onchanges_capture_throttle(&mut self) {
+        if self.tick_state.onchanges_capture_throttle.is_empty() {
             return;
         }
         let mut settled: Vec<(i32, i32)> = Vec::new();
-        for (probe_key, inflight) in &self.tick_state.onchanges_capture_inflight {
+        for (probe_key, throttle) in &self.tick_state.onchanges_capture_throttle {
+            if !throttle.awaiting_final {
+                continue;
+            }
             let (render_space_id, renderable_index) = *probe_key;
             let final_ready = self
                 .backend
                 .reflection_probe_final_ready_generation(render_space_id, renderable_index)
-                .is_some_and(|generation| generation >= inflight.started_generation);
-            if final_ready || inflight.started_at.elapsed() >= ONCHANGES_CAPTURE_SETTLE_FALLBACK {
+                .is_some_and(|generation| generation >= throttle.started_generation);
+            if final_ready || throttle.started_at.elapsed() >= ONCHANGES_CAPTURE_SETTLE_FALLBACK {
                 settled.push(*probe_key);
             }
         }
         for probe_key in settled {
-            self.tick_state
-                .onchanges_capture_inflight
-                .remove(&probe_key);
+            if let Some(throttle) = self.tick_state.onchanges_capture_throttle.get_mut(&probe_key) {
+                throttle.awaiting_final = false;
+            }
         }
+        // Keep entries that still gate a new capture: either the sharp bake is pending, or the
+        // minimum re-capture interval has not yet elapsed since this capture started.
+        self.tick_state.onchanges_capture_throttle.retain(|_probe_key, throttle| {
+            throttle.awaiting_final
+                || throttle.started_at.elapsed() < ONCHANGES_MIN_RECAPTURE_INTERVAL
+        });
     }
 
     /// Advances continuously refreshing realtime reflection-probe captures.
