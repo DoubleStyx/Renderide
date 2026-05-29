@@ -1,6 +1,7 @@
 //! Resolved transient/imported resource lookup table used during graph execution.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use super::super::HistoryTextureMipViews;
 use super::super::pool::TransientPool;
@@ -8,6 +9,7 @@ use super::super::resources::{
     BufferHandle, ImportedBufferHandle, ImportedTextureHandle, SubresourceHandle, TextureHandle,
     TextureResourceHandle,
 };
+use crate::gpu_resource::TextureViewCache;
 
 /// Resolved transient texture for one graph execution scope.
 #[derive(Clone, Debug)]
@@ -18,6 +20,10 @@ pub struct ResolvedGraphTexture {
     pub texture: wgpu::Texture,
     /// Default texture view.
     pub view: wgpu::TextureView,
+    /// Compatible derived-view cache owned by the transient pool slot.
+    pub view_cache: Arc<TextureViewCache>,
+    /// Resource generation for the backing texture.
+    pub resource_generation: u64,
     /// Resolved width in pixels.
     pub width: u32,
     /// Resolved height in pixels.

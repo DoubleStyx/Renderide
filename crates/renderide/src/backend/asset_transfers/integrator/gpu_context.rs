@@ -5,15 +5,18 @@ use std::sync::Arc;
 use crate::gpu::{GpuLimits, GpuMappedBufferHealth, GpuQueueAccessGate, GpuQueueAccessMode};
 
 use super::super::AssetTransferQueue;
+use super::super::MeshUploadStagingBatch;
 
 /// Owned GPU handles collected from [`crate::backend::AssetTransferQueue::gpu`]; outlives the
 /// borrowed [`AssetUploadGpuContext`] passed into step functions.
 pub(super) struct GpuHandles {
-    device: Arc<wgpu::Device>,
-    gpu_limits: Arc<GpuLimits>,
-    queue: Arc<wgpu::Queue>,
-    gate: GpuQueueAccessGate,
-    mapped_buffer_health: Arc<GpuMappedBufferHealth>,
+    pub(super) device: Arc<wgpu::Device>,
+    pub(super) gpu_limits: Arc<GpuLimits>,
+    pub(super) queue: Arc<wgpu::Queue>,
+    pub(super) gate: GpuQueueAccessGate,
+    pub(super) mapped_buffer_health: Arc<GpuMappedBufferHealth>,
+    pub(super) mesh_upload_batch: Arc<MeshUploadStagingBatch>,
+    pub(super) mesh_validation_scopes_enabled: bool,
 }
 
 impl GpuHandles {
@@ -29,6 +32,8 @@ impl GpuHandles {
             gpu_queue_access_gate: &self.gate,
             queue_access_mode,
             mapped_buffer_health: &self.mapped_buffer_health,
+            mesh_upload_batch: &self.mesh_upload_batch,
+            mesh_validation_scopes_enabled: self.mesh_validation_scopes_enabled,
         }
     }
 }
@@ -50,6 +55,8 @@ pub(super) fn collect_gpu_handles(asset: &AssetTransferQueue) -> Option<GpuHandl
                 queue,
                 gate,
                 mapped_buffer_health,
+                mesh_upload_batch: Arc::clone(&asset.gpu.mesh_upload_batch),
+                mesh_validation_scopes_enabled: asset.gpu.mesh_validation_scopes_enabled,
             })
         }
         _ => None,
@@ -71,4 +78,8 @@ pub(super) struct AssetUploadGpuContext<'a> {
     pub(super) queue_access_mode: GpuQueueAccessMode,
     /// Shared mapped-buffer invalidation generation from the active GPU context.
     pub(super) mapped_buffer_health: &'a Arc<GpuMappedBufferHealth>,
+    /// Mesh upload batch for deferred buffer writes.
+    pub(super) mesh_upload_batch: &'a Arc<MeshUploadStagingBatch>,
+    /// Whether mesh uploads should use wgpu validation scopes.
+    pub(super) mesh_validation_scopes_enabled: bool,
 }

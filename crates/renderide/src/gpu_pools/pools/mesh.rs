@@ -2,7 +2,7 @@
 
 use hashbrown::HashMap;
 
-use crate::assets::mesh::{GpuMesh, MeshBufferLayout};
+use crate::assets::mesh::{GpuMesh, MeshBufferLayout, MeshDerivedStreamDemand};
 use crate::materials::EmbeddedTangentFallbackMode;
 
 use crate::gpu_pools::resource_pool::{GpuResourcePool, StreamingAccess};
@@ -31,6 +31,8 @@ pub struct MeshPool {
     inner: GpuResourcePool<GpuMesh, StreamingAccess>,
     /// Last successful [`MeshBufferLayout`] for [`mesh_upload_input_fingerprint`](crate::assets::mesh::mesh_upload_input_fingerprint) (skips `compute_mesh_buffer_layout` on hot uploads).
     layout_cache: HashMap<i32, (u64, MeshBufferLayout)>,
+    /// Latest material/runtime derived-stream demand seen for each mesh asset id.
+    derived_stream_demands: HashMap<i32, MeshDerivedStreamDemand>,
     /// Monotonic generation bumped whenever resident mesh membership or contents change.
     mutation_generation: u64,
     /// First generation represented by [`Self::mutation_log`].
@@ -45,6 +47,7 @@ impl MeshPool {
         Self {
             inner: GpuResourcePool::new(StreamingAccess::mesh_noop()),
             layout_cache: HashMap::new(),
+            derived_stream_demands: HashMap::new(),
             mutation_generation: 0,
             mutation_log_start_generation: 1,
             mutation_log: Vec::new(),
@@ -62,6 +65,7 @@ impl MeshPool {
     /// layout for the asset.
     pub fn remove(&mut self, asset_id: i32) -> bool {
         self.layout_cache.remove(&asset_id);
+        self.derived_stream_demands.remove(&asset_id);
         let removed = self.inner.remove(asset_id);
         if removed {
             self.record_mutation(asset_id);
@@ -73,6 +77,7 @@ impl MeshPool {
     /// the asset.
     pub(crate) fn take(&mut self, asset_id: i32) -> Option<GpuMesh> {
         self.layout_cache.remove(&asset_id);
+        self.derived_stream_demands.remove(&asset_id);
         let mesh = self.inner.take(asset_id)?;
         self.record_mutation(asset_id);
         Some(mesh)
@@ -169,6 +174,43 @@ impl MeshPool {
         self.layout_cache.insert(asset_id, (input_fp, layout));
     }
 
+    /// Records reflected material/runtime stream demand for a mesh asset id.
+    pub(crate) fn record_derived_stream_demand(
+        &mut self,
+        asset_id: i32,
+        demand: MeshDerivedStreamDemand,
+    ) {
+        if demand.mask.is_empty() {
+            return;
+        }
+        profiling::scope!("asset::mesh_record_derived_stream_demand");
+        let entry = self.derived_stream_demands.entry(asset_id).or_default();
+        entry.merge(demand);
+        if let Some(mesh) = self.inner.get_mut(asset_id) {
+            let mut state = mesh.derived_stream_state;
+            if state.record_demand(*entry) {
+                mesh.derived_stream_state = state;
+                crate::profiling::plot_mesh_derived_stream_masks(
+                    state.demand_mask.bits(),
+                    state.dirty_mask.bits(),
+                );
+            }
+        }
+    }
+
+    /// Returns known demand for an upload, including runtime-required streams for the upload data.
+    pub(crate) fn derived_stream_demand_for_upload(
+        &self,
+        asset_id: i32,
+        data: &crate::shared::MeshUploadData,
+    ) -> MeshDerivedStreamDemand {
+        self.derived_stream_demands
+            .get(&asset_id)
+            .copied()
+            .unwrap_or(MeshDerivedStreamDemand::EMPTY)
+            .with_runtime_required(data)
+    }
+
     /// Lazily creates tangent / UV1-3 buffers for meshes drawn by extended embedded shaders.
     pub fn ensure_extended_vertex_streams(
         &mut self,
@@ -179,6 +221,27 @@ impl MeshPool {
         self.ensure_stream(asset_id, |mesh| {
             mesh.ensure_extended_vertex_streams(device, tangent_fallback_mode)
         })
+    }
+
+    /// Lazily creates primary position/normal streams for drawable meshes that need them.
+    pub fn ensure_position_normal_vertex_streams(
+        &mut self,
+        device: &wgpu::Device,
+        asset_id: i32,
+    ) -> bool {
+        self.ensure_stream(asset_id, |mesh| {
+            mesh.ensure_position_normal_vertex_streams(device)
+        })
+    }
+
+    /// Lazily creates the UV0 buffer for meshes drawn by UV0 embedded shaders.
+    pub fn ensure_uv0_vertex_stream(&mut self, device: &wgpu::Device, asset_id: i32) -> bool {
+        self.ensure_stream(asset_id, |mesh| mesh.ensure_uv0_vertex_stream(device))
+    }
+
+    /// Lazily creates the color buffer for meshes drawn by color embedded shaders.
+    pub fn ensure_color_vertex_stream(&mut self, device: &wgpu::Device, asset_id: i32) -> bool {
+        self.ensure_stream(asset_id, |mesh| mesh.ensure_color_vertex_stream(device))
     }
 
     /// Lazily creates the UV1 buffer for meshes drawn by UV1-only embedded shaders.

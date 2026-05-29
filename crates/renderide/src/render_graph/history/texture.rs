@@ -59,12 +59,14 @@ pub struct HistoryTexture {
 pub struct TextureHistorySlot {
     pub(super) spec: TextureHistorySpec,
     pub(super) pair: [Option<HistoryTexture>; 2],
+    pub(super) generation: u64,
 }
 
 impl TextureHistorySlot {
     pub(super) fn ensure(&mut self, device: &wgpu::Device) {
         for slot in &mut self.pair {
             if slot.is_none() {
+                self.generation = self.generation.wrapping_add(1).max(1);
                 let texture = device.create_texture(&wgpu::TextureDescriptor {
                     label: Some(self.spec.label),
                     size: self.spec.extent,
@@ -100,6 +102,18 @@ impl TextureHistorySlot {
     /// [`crate::render_graph::history::HistoryRegistry::ensure_resources`] call has allocated it.
     pub fn half(&self, index: usize) -> Option<&HistoryTexture> {
         self.pair.get(index)?.as_ref()
+    }
+
+    /// Current allocation generation for this history slot.
+    #[cfg(test)]
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub(super) fn reset_for_spec(&mut self, spec: TextureHistorySpec) {
+        self.spec = spec;
+        self.pair = [None, None];
+        self.generation = self.generation.wrapping_add(1).max(1);
     }
 }
 

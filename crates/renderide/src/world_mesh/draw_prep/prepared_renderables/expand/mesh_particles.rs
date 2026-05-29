@@ -35,13 +35,6 @@ pub(super) fn try_expand_mesh_render_buffer_renderer(
     ) {
         return;
     }
-    if ctx.scene.transform_has_degenerate_scale_for_context(
-        ctx.space_id,
-        renderer.node_id as usize,
-        ctx.render_context,
-    ) {
-        return;
-    }
     let Some(point_buffer) = point_render_buffers.get(&renderer.point_render_buffer_asset_id)
     else {
         return;

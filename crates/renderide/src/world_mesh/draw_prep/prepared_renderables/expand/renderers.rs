@@ -213,13 +213,6 @@ pub(super) fn try_expand_one_renderer(
     if !base.emits_visible_color_draws() || base.mesh_asset_id < 0 || base.node_id < 0 {
         return;
     }
-    if ctx.scene.transform_has_degenerate_scale_for_context(
-        ctx.space_id,
-        base.node_id as usize,
-        ctx.render_context,
-    ) {
-        return;
-    }
     let Some(mesh) = ctx.mesh_pool.get(base.mesh_asset_id) else {
         return;
     };

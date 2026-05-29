@@ -18,6 +18,7 @@ use super::super::prepared_renderables::{FramePreparedDraw, FramePreparedRun};
 use super::DrawCollectionContext;
 use super::candidate::{DrawCandidate, evaluate_draw_candidate};
 use super::lod::LodVisibility;
+use super::scene_walk::transform_chain_has_degenerate_scale;
 use super::world_matrix::{front_face_for_draw_matrices, world_matrix_for_local_vertex_stream};
 
 /// Returns true when two prepared slot entries came from the same source renderer.
@@ -264,6 +265,9 @@ fn collect_prepared_renderer_run(
         return (0, 0, 0);
     }
     if !lod_visibility.renderer_visible(first.space_id, first.renderer_ordinal) {
+        return (0, 0, 0);
+    }
+    if transform_chain_has_degenerate_scale(ctx, first.space_id, first.node_id) {
         return (0, 0, 0);
     }
     let is_overlay = first.is_overlay;

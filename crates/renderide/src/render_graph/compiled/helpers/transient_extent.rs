@@ -1,5 +1,6 @@
 //! Transient texture/buffer extent and mip resolution against the active viewport.
 
+use crate::gpu_resource::{TextureViewCache, TextureViewDescriptorKey};
 use crate::render_graph::pool::TextureKey;
 use crate::render_graph::resources::{BufferSizePolicy, TransientExtent};
 
@@ -177,6 +178,8 @@ pub(in crate::render_graph::compiled) fn resolve_buffer_size(
 
 pub(in crate::render_graph::compiled) fn create_transient_layer_views(
     texture: &wgpu::Texture,
+    view_cache: &TextureViewCache,
+    resource_generation: u64,
     key: TextureKey,
 ) -> Vec<wgpu::TextureView> {
     if key.dimension != wgpu::TextureDimension::D2 || key.array_layers <= 1 {
@@ -184,17 +187,25 @@ pub(in crate::render_graph::compiled) fn create_transient_layer_views(
     }
     (0..key.array_layers)
         .map(|layer| {
-            let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            let desc = wgpu::TextureViewDescriptor {
                 label: Some("render-graph-transient-layer"),
                 dimension: Some(wgpu::TextureViewDimension::D2),
                 base_array_layer: layer,
                 array_layer_count: Some(1),
                 ..Default::default()
-            });
-            crate::profiling::note_resource_churn!(
-                TextureView,
-                "render_graph::transient_layer_view"
+            };
+            let (view, created) = view_cache.get_or_create(
+                texture,
+                resource_generation,
+                TextureViewDescriptorKey::from_descriptor(&desc),
+                desc.label,
             );
+            if created {
+                crate::profiling::note_resource_churn!(
+                    TextureView,
+                    "render_graph::transient_layer_view"
+                );
+            }
             view
         })
         .collect()

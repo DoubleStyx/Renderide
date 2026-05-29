@@ -1,5 +1,6 @@
 //! Resolves MSAA / multiview attachment views from compiled transient textures.
 
+use crate::gpu_resource::TextureViewDescriptorKey;
 use crate::graph_inputs::{GraphPassFrame, MsaaViews};
 use crate::render_graph::context::{GraphResolvedResources, ResolvedGraphTexture};
 use crate::render_graph::resources::TextureHandle;
@@ -14,18 +15,26 @@ fn first_two_layer_views(texture: &ResolvedGraphTexture) -> Option<[wgpu::Textur
 /// Creates a single-layer `D2` view of `texture` with `DepthOnly` aspect, suitable for sampling
 /// the multisampled depth attachment in the depth-resolve compute shader.
 fn depth_sample_view(texture: &ResolvedGraphTexture, layer: Option<u32>) -> wgpu::TextureView {
-    let view = texture.texture.create_view(&wgpu::TextureViewDescriptor {
+    let desc = wgpu::TextureViewDescriptor {
         label: Some("forward-msaa-depth-sample-view"),
         dimension: Some(wgpu::TextureViewDimension::D2),
         base_array_layer: layer.unwrap_or(0),
         array_layer_count: Some(1),
         aspect: wgpu::TextureAspect::DepthOnly,
         ..Default::default()
-    });
-    crate::profiling::note_resource_churn!(
-        TextureView,
-        "render_graph::forward_msaa_depth_sample_view"
+    };
+    let (view, created) = texture.view_cache.get_or_create(
+        &texture.texture,
+        texture.resource_generation,
+        TextureViewDescriptorKey::from_descriptor(&desc),
+        desc.label,
     );
+    if created {
+        crate::profiling::note_resource_churn!(
+            TextureView,
+            "render_graph::forward_msaa_depth_sample_view"
+        );
+    }
     view
 }
 

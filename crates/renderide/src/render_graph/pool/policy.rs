@@ -9,8 +9,10 @@
 //! and lets the call sites stay readable.
 
 use std::hash::Hash;
+use std::sync::Arc;
 
 use super::super::resources::{BufferSizePolicy, TransientExtent};
+use crate::gpu_resource::TextureViewCache;
 
 /// Bound trait describing the value/key shape stored in a [`super::Pool`].
 pub trait PoolKind: 'static {
@@ -27,6 +29,12 @@ pub(super) struct TextureSlotValue {
     pub texture: Option<wgpu::Texture>,
     /// Cached default `wgpu::TextureView` over the full resource, if attached.
     pub view: Option<wgpu::TextureView>,
+    /// Compatible view cache for subresources derived from this texture allocation.
+    pub view_cache: Arc<TextureViewCache>,
+    /// Resource generation bumped whenever the backing texture is replaced or cleared.
+    pub resource_generation: u64,
+    /// Whether this slot has attached GPU resources that have not yet been cleared.
+    pub(super) resources_attached: bool,
 }
 
 impl TextureSlotValue {
@@ -35,10 +43,25 @@ impl TextureSlotValue {
         self.texture.is_some()
     }
 
+    /// Replaces the GPU texture and default view, invalidating compatible cached views.
+    pub fn attach(&mut self, texture: wgpu::Texture, view: wgpu::TextureView) {
+        self.view_cache.clear();
+        self.resource_generation = self.resource_generation.wrapping_add(1).max(1);
+        self.texture = Some(texture);
+        self.view = Some(view);
+        self.resources_attached = true;
+    }
+
     /// Drops cached GPU resources, leaving the slot empty.
     pub fn clear(&mut self) {
+        let had_resources = self.resources_attached || self.view_cache.len() > 0;
         self.texture = None;
         self.view = None;
+        self.view_cache.clear();
+        self.resources_attached = false;
+        if had_resources {
+            self.resource_generation = self.resource_generation.wrapping_add(1).max(1);
+        }
     }
 }
 

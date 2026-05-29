@@ -4,7 +4,8 @@ use crate::diagnostics::BackendDiagSnapshot;
 use crate::frontend::InitState;
 use crate::gpu::{GpuContext, GpuLimits};
 use crate::materials::{
-    MaterialPipelineCacheDiagnosticSnapshot, MaterialShaderGraphDiagnosticSnapshot,
+    EmbeddedMaterialBindCacheDiagnosticSnapshot, MaterialPipelineCacheDiagnosticSnapshot,
+    MaterialShaderGraphDiagnosticSnapshot,
 };
 use crate::scene::SceneCoordinator;
 
@@ -53,6 +54,8 @@ pub struct RendererInfoSnapshot {
     pub material_shader_graph: MaterialShaderGraphDiagnosticSnapshot,
     /// Material pipeline cache diagnostics.
     pub material_pipeline_cache: MaterialPipelineCacheDiagnosticSnapshot,
+    /// Embedded material bind-group cache diagnostics.
+    pub embedded_material_bind_cache: EmbeddedMaterialBindCacheDiagnosticSnapshot,
     /// Pass count in the compiled main render graph.
     pub frame_graph_pass_count: usize,
     /// Pass count before compile-time render graph culling.
@@ -157,6 +160,7 @@ impl RendererInfoSnapshot {
             material_shader_bindings: args.backend.material_shader_bindings,
             material_shader_graph: args.backend.material_shader_graph.clone(),
             material_pipeline_cache: args.backend.material_pipeline_cache,
+            embedded_material_bind_cache: args.backend.embedded_material_bind_cache,
             frame_graph_pass_count: args.backend.frame_graph_pass_count,
             frame_graph_registered_pass_count: args.backend.frame_graph_registered_pass_count,
             frame_graph_topo_levels: args.backend.frame_graph_topo_levels,

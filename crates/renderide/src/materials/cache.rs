@@ -7,15 +7,18 @@
 //!
 //! The cache is LRU-bounded to avoid unbounded growth when many format/permutation combinations appear.
 
+use std::hash::{Hash, Hasher};
 use std::num::{NonZeroU32, NonZeroUsize};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use ahash::RandomState;
+use ahash::{AHasher, RandomState};
 use hashbrown::{HashMap, HashSet};
 use lru::LruCache;
 use parking_lot::Mutex;
 
-use crate::gpu_resource::AtomicCacheCounters;
+use crate::concurrency::{KeyedSingleFlight, SingleFlightPermit};
+use crate::gpu_resource::{AtomicCacheCounters, CacheStats};
 use crate::materials::ShaderPermutation;
 use crate::materials::embedded::stem_metadata::{
     EmbeddedRasterPipelineSource, build_embedded_wgsl, create_embedded_render_pipelines,
@@ -132,6 +135,67 @@ pub(crate) struct MaterialPipelineCacheDiagnosticSnapshot {
     pub(crate) insertions: u64,
     /// Cache eviction counter.
     pub(crate) evictions: u64,
+    /// Warmups skipped because a ready pipeline already existed.
+    pub(crate) warmup_ready_hits: u64,
+    /// Warmups skipped because the same pipeline key was already pending.
+    pub(crate) warmup_pending_hits: u64,
+    /// Warmups skipped because the same pipeline key had already failed.
+    pub(crate) warmup_failed_skips: u64,
+    /// Warmups that queued a new async compile.
+    pub(crate) warmup_queued: u64,
+    /// Cached shader modules retained by the module cache.
+    pub(crate) shader_module_entries: usize,
+    /// Shader module cache hits.
+    pub(crate) shader_module_hits: u64,
+    /// Shader module cache misses.
+    pub(crate) shader_module_misses: u64,
+    /// Shader module cache insertions.
+    pub(crate) shader_module_insertions: u64,
+    /// Shader module cache evictions.
+    pub(crate) shader_module_evictions: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PipelineWarmupDedupeSnapshot {
+    ready_hits: u64,
+    pending_hits: u64,
+    failed_skips: u64,
+    queued: u64,
+}
+
+#[derive(Debug, Default)]
+struct PipelineWarmupDedupeCounters {
+    ready_hits: AtomicU64,
+    pending_hits: AtomicU64,
+    failed_skips: AtomicU64,
+    queued: AtomicU64,
+}
+
+impl PipelineWarmupDedupeCounters {
+    fn note_ready_hit(&self) {
+        self.ready_hits.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn note_pending_hit(&self) {
+        self.pending_hits.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn note_failed_skip(&self) {
+        self.failed_skips.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn note_queued(&self) {
+        self.queued.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn snapshot(&self) -> PipelineWarmupDedupeSnapshot {
+        PipelineWarmupDedupeSnapshot {
+            ready_hits: self.ready_hits.load(Ordering::Relaxed),
+            pending_hits: self.pending_hits.load(Ordering::Relaxed),
+            failed_skips: self.failed_skips.load(Ordering::Relaxed),
+            queued: self.queued.load(Ordering::Relaxed),
+        }
+    }
 }
 
 struct PipelineBuildRequest {
@@ -141,15 +205,130 @@ struct PipelineBuildRequest {
     variant: MaterialPipelineVariantSpec,
     /// Optional WGSL source override loaded by development hot reload.
     wgsl_override: Option<Arc<str>>,
+    resources: PipelineBuildResources,
+    tx: crossbeam_channel::Sender<PipelineBuildOutcome>,
+}
+
+struct PipelineBuildResources {
+    shader_module_cache: Arc<ShaderModuleCache>,
     device: Arc<wgpu::Device>,
     limits: Arc<crate::gpu::GpuLimits>,
-    tx: crossbeam_channel::Sender<PipelineBuildOutcome>,
 }
 
 struct PipelineBuildOutcome {
     key: MaterialPipelineCacheKey,
     kind: RasterPipelineKind,
     result: Result<MaterialPipelineSet, String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+struct ShaderModuleCacheKey {
+    source_hash: u64,
+    source_len: usize,
+    permutation: ShaderPermutation,
+    shader_source_generation: u64,
+}
+
+impl ShaderModuleCacheKey {
+    fn new(source: &str, permutation: ShaderPermutation, shader_source_generation: u64) -> Self {
+        let mut hasher = AHasher::default();
+        source.hash(&mut hasher);
+        Self {
+            source_hash: hasher.finish(),
+            source_len: source.len(),
+            permutation,
+            shader_source_generation,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ShaderModuleCacheEntry {
+    source: Arc<str>,
+    module: Arc<wgpu::ShaderModule>,
+}
+
+#[derive(Default)]
+struct ShaderModuleCache {
+    entries: Mutex<HashMap<ShaderModuleCacheKey, Vec<ShaderModuleCacheEntry>>>,
+    builds: KeyedSingleFlight<ShaderModuleCacheKey>,
+    stats: AtomicCacheCounters,
+}
+
+impl ShaderModuleCache {
+    fn get_or_create(
+        &self,
+        device: &wgpu::Device,
+        source: Arc<str>,
+        permutation: ShaderPermutation,
+        shader_source_generation: u64,
+    ) -> Arc<wgpu::ShaderModule> {
+        profiling::scope!("materials::shader_module_cache_lookup");
+        let key = ShaderModuleCacheKey::new(&source, permutation, shader_source_generation);
+        loop {
+            if let Some(module) = self.cached_module(&key, source.as_ref()) {
+                profiling::scope!("materials::shader_module_cache_hit");
+                self.stats.note_hit();
+                return module;
+            }
+
+            let leader = match self.builds.acquire(key) {
+                SingleFlightPermit::Leader(leader) => leader,
+                SingleFlightPermit::Waiter(waiter) => {
+                    waiter.wait();
+                    continue;
+                }
+            };
+
+            if let Some(module) = self.cached_module(&key, source.as_ref()) {
+                self.stats.note_hit();
+                drop(leader);
+                return module;
+            }
+
+            profiling::scope!("materials::shader_module_cache_miss");
+            self.stats.note_miss();
+            let module = {
+                profiling::scope!("materials::shader_module_create");
+                Arc::new(device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("raster_material_shader"),
+                    source: wgpu::ShaderSource::Wgsl(source.as_ref().into()),
+                }))
+            };
+            self.entries
+                .lock()
+                .entry(key)
+                .or_default()
+                .push(ShaderModuleCacheEntry {
+                    source,
+                    module: module.clone(),
+                });
+            self.stats.note_insertion();
+            drop(leader);
+            return module;
+        }
+    }
+
+    fn cached_module(
+        &self,
+        key: &ShaderModuleCacheKey,
+        source: &str,
+    ) -> Option<Arc<wgpu::ShaderModule>> {
+        self.entries
+            .lock()
+            .get(key)?
+            .iter()
+            .find(|entry| entry.source.as_ref() == source)
+            .map(|entry| entry.module.clone())
+    }
+
+    fn entry_count(&self) -> usize {
+        self.entries.lock().values().map(Vec::len).sum()
+    }
+
+    fn stats(&self) -> CacheStats {
+        self.stats.snapshot()
+    }
 }
 
 /// One LRU slab plus the pending/failed sets for entries whose hash routes here.
@@ -173,6 +352,31 @@ impl PipelineCacheShard {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WarmupDedupeOutcome {
+    ReadyHit,
+    PendingHit,
+    FailedSkip,
+    Queued,
+}
+
+fn claim_warmup_key(
+    shard: &mut PipelineCacheShard,
+    key: MaterialPipelineCacheKey,
+) -> WarmupDedupeOutcome {
+    if shard.pipelines.contains(&key) {
+        return WarmupDedupeOutcome::ReadyHit;
+    }
+    if shard.pending.contains(&key) {
+        return WarmupDedupeOutcome::PendingHit;
+    }
+    if shard.failed.contains_key(&key) {
+        return WarmupDedupeOutcome::FailedSkip;
+    }
+    shard.pending.insert(key);
+    WarmupDedupeOutcome::Queued
+}
+
 /// Lazily built pipeline sets; LRU-evicted when over [`MAX_CACHED_PIPELINES`].
 ///
 /// Cache state is split across [`PIPELINE_CACHE_SHARDS`] shards. Each shard bundles the
@@ -186,6 +390,8 @@ pub struct MaterialPipelineCache {
     pipeline_build_tx: crossbeam_channel::Sender<PipelineBuildOutcome>,
     pipeline_build_rx: crossbeam_channel::Receiver<PipelineBuildOutcome>,
     stats: AtomicCacheCounters,
+    warmup_stats: PipelineWarmupDedupeCounters,
+    shader_module_cache: Arc<ShaderModuleCache>,
 }
 
 impl MaterialPipelineCache {
@@ -204,6 +410,8 @@ impl MaterialPipelineCache {
             pipeline_build_tx,
             pipeline_build_rx,
             stats: AtomicCacheCounters::default(),
+            warmup_stats: PipelineWarmupDedupeCounters::default(),
+            shader_module_cache: Arc::new(ShaderModuleCache::default()),
         }
     }
 
@@ -261,10 +469,20 @@ impl MaterialPipelineCache {
         shader_source_generation: u64,
         wgsl_override: Option<Arc<str>>,
     ) {
-        match self.get_or_queue(kind, desc, variant, shader_source_generation, wgsl_override) {
-            MaterialPipelineLookup::Ready(_)
-            | MaterialPipelineLookup::Pending
-            | MaterialPipelineLookup::Failed(_) => {}
+        profiling::scope!("materials::pipeline_warmup_dedupe");
+        let key = Self::cache_key(kind, desc, variant, shader_source_generation);
+        let outcome = {
+            let mut shard = self.shard_for(&key).lock();
+            claim_warmup_key(&mut shard, key.clone())
+        };
+        match outcome {
+            WarmupDedupeOutcome::ReadyHit => self.warmup_stats.note_ready_hit(),
+            WarmupDedupeOutcome::PendingHit => self.warmup_stats.note_pending_hit(),
+            WarmupDedupeOutcome::FailedSkip => self.warmup_stats.note_failed_skip(),
+            WarmupDedupeOutcome::Queued => {
+                self.warmup_stats.note_queued();
+                self.queue_pipeline_build(key, kind.clone(), *desc, variant, wgsl_override);
+            }
         }
     }
 
@@ -312,8 +530,11 @@ impl MaterialPipelineCache {
             desc,
             variant,
             wgsl_override,
-            device: self.device.clone(),
-            limits: self.limits.clone(),
+            resources: PipelineBuildResources {
+                shader_module_cache: self.shader_module_cache.clone(),
+                device: self.device.clone(),
+                limits: self.limits.clone(),
+            },
             tx: self.pipeline_build_tx.clone(),
         };
         if let Err(e) = spawn_pipeline_build(request) {
@@ -353,13 +574,18 @@ impl MaterialPipelineCache {
     }
 
     fn build_pipeline_set_for(
-        device: Arc<wgpu::Device>,
-        limits: Arc<crate::gpu::GpuLimits>,
+        resources: PipelineBuildResources,
         kind: &RasterPipelineKind,
         desc: &MaterialPipelineDesc,
         variant: MaterialPipelineVariantSpec,
+        shader_source_generation: u64,
         wgsl_override: Option<Arc<str>>,
     ) -> Result<MaterialPipelineSet, PipelineBuildError> {
+        let PipelineBuildResources {
+            shader_module_cache,
+            device,
+            limits,
+        } = resources;
         let MaterialPipelineVariantSpec {
             permutation,
             blend_mode,
@@ -367,27 +593,29 @@ impl MaterialPipelineCache {
             front_face,
             primitive_topology,
         } = variant;
-        let wgsl = match kind {
+        let wgsl: Arc<str> = match kind {
             RasterPipelineKind::EmbeddedStem(stem) => {
                 validate_embedded_required_features(&device, stem, permutation)?;
                 if let Some(source) = wgsl_override.as_ref() {
-                    source.to_string()
+                    source.clone()
                 } else {
-                    build_embedded_wgsl(stem, permutation)?
+                    Arc::from(build_embedded_wgsl(stem, permutation)?.into_boxed_str())
                 }
             }
             RasterPipelineKind::Null => {
                 if let Some(source) = wgsl_override.as_ref() {
-                    source.to_string()
+                    source.clone()
                 } else {
-                    build_null_wgsl(permutation)?
+                    Arc::from(build_null_wgsl(permutation)?.into_boxed_str())
                 }
             }
         };
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("raster_material_shader"),
-            source: wgpu::ShaderSource::Wgsl(wgsl.clone().into()),
-        });
+        let module = shader_module_cache.get_or_create(
+            device.as_ref(),
+            wgsl.clone(),
+            permutation,
+            shader_source_generation,
+        );
         let pipelines: Vec<wgpu::RenderPipeline> = match kind {
             RasterPipelineKind::EmbeddedStem(stem) => create_embedded_render_pipelines(
                 EmbeddedRasterPipelineSource {
@@ -401,18 +629,18 @@ impl MaterialPipelineCache {
                 ShaderModuleBuildRefs {
                     device: &device,
                     limits: &limits,
-                    module: &module,
+                    module: module.as_ref(),
                     desc,
-                    wgsl_source: &wgsl,
+                    wgsl_source: wgsl.as_ref(),
                 },
             )?,
             RasterPipelineKind::Null => {
                 vec![create_null_render_pipeline(
                     &device,
                     &limits,
-                    &module,
+                    module.as_ref(),
                     desc,
-                    &wgsl,
+                    wgsl.as_ref(),
                     front_face,
                     primitive_topology,
                 )?]
@@ -460,6 +688,8 @@ impl MaterialPipelineCache {
             failed_entries = failed_entries.saturating_add(shard.failed.len());
         }
         let stats = self.stats.snapshot();
+        let warmup = self.warmup_stats.snapshot();
+        let shader_module_stats = self.shader_module_cache.stats();
         MaterialPipelineCacheDiagnosticSnapshot {
             ready_entries,
             pending_entries,
@@ -468,6 +698,15 @@ impl MaterialPipelineCache {
             misses: stats.misses,
             insertions: stats.insertions,
             evictions: stats.evictions,
+            warmup_ready_hits: warmup.ready_hits,
+            warmup_pending_hits: warmup.pending_hits,
+            warmup_failed_skips: warmup.failed_skips,
+            warmup_queued: warmup.queued,
+            shader_module_entries: self.shader_module_cache.entry_count(),
+            shader_module_hits: shader_module_stats.hits,
+            shader_module_misses: shader_module_stats.misses,
+            shader_module_insertions: shader_module_stats.insertions,
+            shader_module_evictions: shader_module_stats.evictions,
         }
     }
 }
@@ -499,16 +738,16 @@ fn spawn_pipeline_build(request: PipelineBuildRequest) -> Result<(), String> {
             desc,
             variant,
             wgsl_override,
-            device,
-            limits,
+            resources,
             tx,
         } = request;
+        let shader_source_generation = key.shader_source_generation;
         let result = MaterialPipelineCache::build_pipeline_set_for(
-            device,
-            limits,
+            resources,
             &kind,
             &desc,
             variant,
+            shader_source_generation,
             wgsl_override,
         )
         .map_err(|e| e.to_string());
@@ -545,7 +784,9 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        MaterialPipelineCache, MaterialPipelineVariantSpec, material_pipeline_compile_worker_count,
+        MaterialPipelineCache, MaterialPipelineVariantSpec, PipelineCacheShard,
+        ShaderModuleCacheKey, WarmupDedupeOutcome, claim_warmup_key,
+        material_pipeline_compile_worker_count, per_shard_cap,
     };
     use crate::materials::{
         MaterialBlendMode, MaterialPipelineDesc, MaterialRenderState, RasterFrontFace,
@@ -581,6 +822,50 @@ mod tests {
         assert_ne!(first, second);
         assert_eq!(first.shader_source_generation, 1);
         assert_eq!(second.shader_source_generation, 2);
+    }
+
+    #[test]
+    fn shader_module_cache_key_includes_generation_and_source_identity() {
+        let mono = ShaderPermutation::default();
+        let first = ShaderModuleCacheKey::new("fn main() {}", mono, 1);
+        let same = ShaderModuleCacheKey::new("fn main() {}", mono, 1);
+        let changed_generation = ShaderModuleCacheKey::new("fn main() {}", mono, 2);
+        let changed_source = ShaderModuleCacheKey::new("fn other() {}", mono, 1);
+
+        assert_eq!(first, same);
+        assert_ne!(first, changed_generation);
+        assert_ne!(first, changed_source);
+    }
+
+    #[test]
+    fn warmup_claim_deduplicates_pending_key() {
+        let kind = RasterPipelineKind::EmbeddedStem(Arc::from("unlit_default"));
+        let key = MaterialPipelineCache::cache_key(&kind, &base_desc(), base_variant(), 1);
+        let mut shard = PipelineCacheShard::new(per_shard_cap());
+
+        assert_eq!(
+            claim_warmup_key(&mut shard, key.clone()),
+            WarmupDedupeOutcome::Queued
+        );
+        assert_eq!(
+            claim_warmup_key(&mut shard, key),
+            WarmupDedupeOutcome::PendingHit
+        );
+        assert_eq!(shard.pending.len(), 1);
+    }
+
+    #[test]
+    fn warmup_claim_skips_failed_key() {
+        let kind = RasterPipelineKind::EmbeddedStem(Arc::from("unlit_default"));
+        let key = MaterialPipelineCache::cache_key(&kind, &base_desc(), base_variant(), 1);
+        let mut shard = PipelineCacheShard::new(per_shard_cap());
+        shard.failed.insert(key.clone(), "failed".to_string());
+
+        assert_eq!(
+            claim_warmup_key(&mut shard, key),
+            WarmupDedupeOutcome::FailedSkip
+        );
+        assert!(shard.pending.is_empty());
     }
 
     #[test]

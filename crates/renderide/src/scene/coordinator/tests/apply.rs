@@ -154,6 +154,38 @@ fn render_world_dirty_report_tracks_static_state_rows() {
 }
 
 #[test]
+fn render_world_dirty_report_tracks_skinned_bounds_separately() {
+    let mut update = empty_extracted_render_space_update();
+    update.skinned_meshes = Some(
+        crate::scene::meshes::ExtractedSkinnedMeshRenderablesUpdate {
+            bounds_updates: vec![
+                crate::shared::SkinnedMeshBoundsUpdate {
+                    renderable_index: 2,
+                    local_bounds: crate::shared::RenderBoundingBox::default(),
+                },
+                crate::shared::SkinnedMeshBoundsUpdate {
+                    renderable_index: -1,
+                    local_bounds: crate::shared::RenderBoundingBox::default(),
+                },
+            ],
+            ..Default::default()
+        },
+    );
+    let mut report = SceneApplyReport::default();
+
+    note_render_world_dirty_for_extracted_update(&mut report, RenderSpaceId(3), false, 0, &update);
+
+    assert_eq!(report.render_world_dirty.bounds.len(), 1);
+    assert_eq!(
+        report.render_world_dirty.bounds[0].kind,
+        RenderWorldRendererKind::Skinned
+    );
+    assert_eq!(report.render_world_dirty.bounds[0].renderable_index, 2);
+    assert!(report.render_world_dirty.renderers.is_empty());
+    assert!(report.render_world_dirty.full_spaces.is_empty());
+}
+
+#[test]
 fn render_world_dirty_report_marks_mesh_membership_as_full_space() {
     let mut update = empty_extracted_render_space_update();
     update.meshes = Some(crate::scene::meshes::ExtractedMeshRenderablesUpdate {

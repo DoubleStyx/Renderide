@@ -163,7 +163,7 @@ fn note_skinned_mesh_update_render_world_dirty(
         }
         report
             .render_world_dirty
-            .note_renderer(space_id, kind, bounds.renderable_index as usize);
+            .note_bounds(space_id, kind, bounds.renderable_index as usize);
     }
 }
 

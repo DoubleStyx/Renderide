@@ -114,6 +114,7 @@ fn prompt_from_candidate(
         latest_tag: candidate.tag.clone(),
         latest_commit: candidate.commit.clone(),
         asset_name: candidate.asset.name.clone(),
+        changelog: candidate.changelog.clone(),
     }
 }
 
@@ -150,5 +151,38 @@ where
             });
             StartupUpdateOutcome::Continue
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use self_update::update::ReleaseAsset;
+
+    use super::*;
+    use crate::updater::{RELEASE_CHANNEL, github::asset_name_for};
+
+    #[test]
+    fn prompt_from_candidate_carries_changelog() {
+        let metadata = ReleaseBuildMetadata {
+            channel: RELEASE_CHANNEL.to_owned(),
+            tag: "nightly-2026-05-26-1111111".to_owned(),
+            commit: "1111111111111111111111111111111111111111".to_owned(),
+            platform: "linux-x86_64".to_owned(),
+        };
+        let changelog =
+            "- [22222222](https://example.invalid) Add release notes by Developer".to_owned();
+        let candidate = UpdateCandidate {
+            tag: "nightly-2026-05-27-2222222".to_owned(),
+            commit: "2222222222222222222222222222222222222222".to_owned(),
+            changelog: changelog.clone(),
+            asset: ReleaseAsset {
+                name: asset_name_for(&metadata.platform, "nightly-2026-05-27-2222222"),
+                download_url: String::new(),
+            },
+        };
+
+        let prompt = prompt_from_candidate(&metadata, &candidate);
+
+        assert_eq!(prompt.changelog, changelog);
     }
 }
