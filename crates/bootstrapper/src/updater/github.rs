@@ -174,6 +174,25 @@ Bundle details.
     }
 
     #[test]
+    fn release_changelog_preserves_empty_range_explanation() {
+        let body = "\
+Commit: 2222222222222222222222222222222222222222
+
+## Changelog
+
+No previous release commit was available, so no commit changelog was generated for this release.
+";
+
+        assert_eq!(
+            release_changelog(Some(body)),
+            Some(
+                "No previous release commit was available, so no commit changelog was generated for this release."
+                    .to_owned()
+            )
+        );
+    }
+
+    #[test]
     fn candidate_selection_uses_nightly_tag_and_exact_platform_asset() {
         let metadata = metadata();
         let commit = "2222222222222222222222222222222222222222";
