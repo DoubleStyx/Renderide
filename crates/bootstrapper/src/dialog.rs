@@ -22,10 +22,18 @@ const DESKTOP_BUTTON_LABEL: &str = "Desktop";
 const CANCEL_BUTTON_LABEL: &str = "Cancel";
 /// Custom-button label that starts the release update.
 const UPDATE_BUTTON_LABEL: &str = "Update";
-/// Custom-button label that skips the update for the current launch only.
-const SKIP_ONCE_BUTTON_LABEL: &str = "Skip Once";
+/// Custom-button label that shows the release changelog.
+const VIEW_CHANGELOG_BUTTON_LABEL: &str = "View Changelog";
 /// Custom-button label that persists a skip for the offered release tag.
 const SKIP_RELEASE_BUTTON_LABEL: &str = "Skip This Release";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UpdateDialogAction {
+    Update,
+    ViewChangelog,
+    SkipOnce,
+    SkipRelease,
+}
 
 /// Shows the desktop vs VR selection dialog and returns the choice: `Some(true)` for VR,
 /// `Some(false)` for Desktop, [`None`] for Cancel/dismiss (callers treat the latter as a
@@ -71,37 +79,116 @@ pub fn prompt_release_update(prompt: &UpdatePrompt) -> UpdatePromptChoice {
         prompt.latest_tag,
         prompt.asset_name
     );
-    let description = format!(
-        "A new Renderide CI release is available.\n\nCurrent: {} ({})\nLatest: {} ({})\n\nUpdating will replace the launcher, renderer, and bundled runtime assets, then exit so you can restart into the new build.",
-        prompt.current_tag,
-        short_commit(&prompt.current_commit),
-        prompt.latest_tag,
-        short_commit(&prompt.latest_commit),
-    );
+    loop {
+        match show_release_update_prompt(prompt) {
+            UpdateDialogAction::Update => {
+                logger::info!("Update dialog returned: update.");
+                return UpdatePromptChoice::Update;
+            }
+            UpdateDialogAction::ViewChangelog => {
+                logger::info!("Update dialog returned: view changelog.");
+                show_release_changelog(prompt);
+            }
+            UpdateDialogAction::SkipRelease => {
+                logger::info!("Update dialog returned: skip this release.");
+                return UpdatePromptChoice::SkipRelease;
+            }
+            UpdateDialogAction::SkipOnce => {
+                logger::info!("Update dialog returned skip-once or dismissed.");
+                return UpdatePromptChoice::SkipOnce;
+            }
+        }
+    }
+}
+
+fn show_release_update_prompt(prompt: &UpdatePrompt) -> UpdateDialogAction {
+    let description = release_update_description(prompt);
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(action) = show_release_update_prompt_with_zenity(&description) {
+            return action;
+        }
+    }
     let result = rfd::MessageDialog::new()
         .set_title("Renderide Update")
         .set_description(description)
         .set_buttons(rfd::MessageButtons::YesNoCancelCustom(
             UPDATE_BUTTON_LABEL.into(),
-            SKIP_ONCE_BUTTON_LABEL.into(),
+            VIEW_CHANGELOG_BUTTON_LABEL.into(),
             SKIP_RELEASE_BUTTON_LABEL.into(),
         ))
         .show();
+    action_from_dialog_result(result)
+}
 
+fn release_update_description(prompt: &UpdatePrompt) -> String {
+    format!(
+        "A new Renderide CI release is available.\n\nCurrent: {} ({})\nLatest: {} ({})\n\nUpdating will replace the launcher, renderer, and bundled runtime assets, then exit so you can restart into the new build.",
+        prompt.current_tag,
+        short_commit(&prompt.current_commit),
+        prompt.latest_tag,
+        short_commit(&prompt.latest_commit),
+    )
+}
+
+fn action_from_dialog_result(result: rfd::MessageDialogResult) -> UpdateDialogAction {
     match result {
         rfd::MessageDialogResult::Custom(label) if label == UPDATE_BUTTON_LABEL => {
-            logger::info!("Update dialog returned: update.");
-            UpdatePromptChoice::Update
+            UpdateDialogAction::Update
+        }
+        rfd::MessageDialogResult::Custom(label) if label == VIEW_CHANGELOG_BUTTON_LABEL => {
+            UpdateDialogAction::ViewChangelog
         }
         rfd::MessageDialogResult::Custom(label) if label == SKIP_RELEASE_BUTTON_LABEL => {
-            logger::info!("Update dialog returned: skip this release.");
-            UpdatePromptChoice::SkipRelease
+            UpdateDialogAction::SkipRelease
         }
         other => {
-            logger::info!("Update dialog returned skip-once or dismissed: {other:?}.");
-            UpdatePromptChoice::SkipOnce
+            logger::debug!("Update dialog dismissed or returned unhandled result: {other:?}.");
+            UpdateDialogAction::SkipOnce
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn show_release_update_prompt_with_zenity(description: &str) -> Option<UpdateDialogAction> {
+    let output = match std::process::Command::new("zenity")
+        .arg("--no-markup")
+        .arg("--question")
+        .arg("--title")
+        .arg("Renderide Update")
+        .arg("--text")
+        .arg(description)
+        .arg("--ok-label")
+        .arg(UPDATE_BUTTON_LABEL)
+        .arg("--extra-button")
+        .arg(VIEW_CHANGELOG_BUTTON_LABEL)
+        .arg("--extra-button")
+        .arg(SKIP_RELEASE_BUTTON_LABEL)
+        .output()
+    {
+        Ok(output) => output,
+        Err(e) => {
+            logger::warn!("Could not show update dialog via zenity: {e}");
+            return None;
+        }
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let label = stdout.trim();
+    match label {
+        VIEW_CHANGELOG_BUTTON_LABEL => Some(UpdateDialogAction::ViewChangelog),
+        SKIP_RELEASE_BUTTON_LABEL => Some(UpdateDialogAction::SkipRelease),
+        _ if output.status.success() => Some(UpdateDialogAction::Update),
+        _ => Some(UpdateDialogAction::SkipOnce),
+    }
+}
+
+fn show_release_changelog(prompt: &UpdatePrompt) {
+    let _ = rfd::MessageDialog::new()
+        .set_title(format!("Renderide Changelog {}", prompt.latest_tag))
+        .set_description(prompt.changelog.as_str())
+        .set_level(rfd::MessageLevel::Info)
+        .show();
 }
 
 /// Shows an updater notification dialog.
@@ -122,4 +209,35 @@ pub fn show_update_notice(notice: UpdateNotice) {
 /// Returns a short display prefix for a full commit SHA.
 fn short_commit(commit: &str) -> &str {
     commit.get(..8).unwrap_or(commit)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn update_dialog_result_maps_custom_buttons_and_dismissal() {
+        assert_eq!(
+            action_from_dialog_result(rfd::MessageDialogResult::Custom(
+                UPDATE_BUTTON_LABEL.to_owned()
+            )),
+            UpdateDialogAction::Update
+        );
+        assert_eq!(
+            action_from_dialog_result(rfd::MessageDialogResult::Custom(
+                VIEW_CHANGELOG_BUTTON_LABEL.to_owned()
+            )),
+            UpdateDialogAction::ViewChangelog
+        );
+        assert_eq!(
+            action_from_dialog_result(rfd::MessageDialogResult::Custom(
+                SKIP_RELEASE_BUTTON_LABEL.to_owned()
+            )),
+            UpdateDialogAction::SkipRelease
+        );
+        assert_eq!(
+            action_from_dialog_result(rfd::MessageDialogResult::Cancel),
+            UpdateDialogAction::SkipOnce
+        );
+    }
 }

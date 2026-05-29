@@ -533,6 +533,7 @@ mod tests {
         UpdateCandidate {
             tag: UPDATE_TAG.to_owned(),
             commit: UPDATE_COMMIT.to_owned(),
+            changelog: String::new(),
             asset: ReleaseAsset {
                 name: asset_name,
                 download_url: String::new(),
