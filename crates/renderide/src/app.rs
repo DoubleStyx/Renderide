@@ -8,8 +8,11 @@
 //! device may come from [`crate::xr::init_wgpu_openxr`]; the mirror window uses the same device.
 //! OpenXR success path state (handles, stereo swapchain/depth, mirror blit) lives in
 //! [`crate::xr::XrSessionBundle`] as the app driver's OpenXR render target mode.
-//! Each frame: OpenXR `wait_frame` / `locate_views` run **before** lock-step `pre_frame` so headset
-//! pose in [`InputState::vr`](crate::shared::InputState) matches the same `locate_views` snapshot.
+//! Each rendered VR frame samples OpenXR `wait_frame` / `locate_views` before sending the next
+//! lock-step `FrameStartData`, so headset pose in [`InputState::vr`](crate::shared::InputState)
+//! comes from the current HMD tick. When coupled lock-step is waiting for the host, that wait runs
+//! before `xrBeginFrame` so the compositor reprojects the last submitted frame instead of receiving
+//! an empty frame.
 //! The desktop window uses the normal render graph when VR is inactive. When `vr_active` and multiview
 //! are available, the headset path renders once to the OpenXR array swapchain and ends the frame with a
 //! projection layer; the desktop window shows a **blit of the left-eye** HMD output (no second world render).

@@ -43,6 +43,43 @@ impl FrameTickOutcome {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PreXrLockstepAction {
+    /// Continue toward OpenXR frame begin.
+    Continue,
+    /// Wait for an already requested host submit before opening an OpenXR frame.
+    WaitForSubmit,
+    /// Send the next begin-frame, then wait before opening an OpenXR frame.
+    SendBeginThenWait,
+    /// No render or host request is currently possible; skip without opening an OpenXR frame.
+    SkipUntilHostReady,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PreXrLockstepInput {
+    vr_active: bool,
+    awaiting_frame_submit: bool,
+    should_render_frame: bool,
+    should_send_begin_frame: bool,
+}
+
+fn pre_xr_lockstep_action(input: PreXrLockstepInput) -> PreXrLockstepAction {
+    if input.should_render_frame {
+        return PreXrLockstepAction::Continue;
+    }
+    if input.awaiting_frame_submit {
+        return PreXrLockstepAction::WaitForSubmit;
+    }
+    if !input.vr_active {
+        return PreXrLockstepAction::Continue;
+    }
+    if input.should_send_begin_frame {
+        PreXrLockstepAction::SendBeginThenWait
+    } else {
+        PreXrLockstepAction::SkipUntilHostReady
+    }
+}
+
 /// Render path used for the current frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum FrameRenderMode {
@@ -114,17 +151,29 @@ impl AppDriver {
             self.runtime.drain_reflection_probe_render_tasks(gpu);
             self.runtime.drain_camera_render_tasks(gpu);
         }
-        if self.runtime.awaiting_frame_submit() && !self.runtime.should_render_frame() {
-            if !self.runtime.vr_active() {
-                self.runtime.wait_for_desktop_coupled_submit_or_decoupling();
-                if self.handle_runtime_exit_requests(event_loop) {
-                    return FrameTickOutcome::ExitRequested;
+        let mut vr_active = self.runtime.vr_active();
+        let pre_xr_action = pre_xr_lockstep_action(PreXrLockstepInput {
+            vr_active,
+            awaiting_frame_submit: self.runtime.awaiting_frame_submit(),
+            should_render_frame: self.runtime.should_render_frame(),
+            should_send_begin_frame: self.runtime.should_send_begin_frame(),
+        });
+        match pre_xr_action {
+            PreXrLockstepAction::Continue => {}
+            PreXrLockstepAction::WaitForSubmit => {
+                if let Some(outcome) = self.wait_for_host_submit_before_xr(event_loop) {
+                    return outcome;
                 }
             }
-            if !self.runtime.should_render_frame() {
-                return FrameTickOutcome::RenderSkipped;
+            PreXrLockstepAction::SendBeginThenWait => {
+                self.lock_step_exchange();
+                if let Some(outcome) = self.wait_for_host_submit_before_xr(event_loop) {
+                    return outcome;
+                }
             }
+            PreXrLockstepAction::SkipUntilHostReady => return FrameTickOutcome::RenderSkipped,
         }
+        vr_active = self.runtime.vr_active();
 
         let xr_pause = self
             .main_heartbeat
@@ -133,15 +182,17 @@ impl AppDriver {
         let xr_tick = self.xr_begin_tick();
         drop(xr_pause);
 
-        self.lock_step_exchange();
+        if !vr_active {
+            self.lock_step_exchange();
+        }
         if self.handle_openxr_exit_request(event_loop) {
             self.queue_empty_openxr_frame_if_needed(xr_tick);
             self.poll_graceful_shutdown(event_loop);
             return FrameTickOutcome::ExitRequested;
         }
         if !self.runtime.should_render_frame() {
-            if !self.runtime.vr_active() {
-                self.runtime.wait_for_desktop_coupled_submit_or_decoupling();
+            if !vr_active {
+                self.runtime.wait_for_coupled_submit_or_decoupling();
                 if self.handle_runtime_exit_requests(event_loop) {
                     self.queue_empty_openxr_frame_if_needed(xr_tick);
                     return FrameTickOutcome::ExitRequested;
@@ -173,6 +224,9 @@ impl AppDriver {
             return FrameTickOutcome::ExitRequested;
         }
         self.present_and_diagnostics(xr_tick, hmd_projection_ended);
+        if vr_active {
+            self.lock_step_exchange();
+        }
         FrameTickOutcome::Presented
     }
 
@@ -238,6 +292,21 @@ impl AppDriver {
             ) {
                 logger::trace!("apply_per_frame_cursor_lock_when_locked: {error:?}");
             }
+        }
+    }
+
+    fn wait_for_host_submit_before_xr(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+    ) -> Option<FrameTickOutcome> {
+        self.runtime.wait_for_coupled_submit_or_decoupling();
+        if self.handle_runtime_exit_requests(event_loop) {
+            return Some(FrameTickOutcome::ExitRequested);
+        }
+        if self.runtime.should_render_frame() {
+            None
+        } else {
+            Some(FrameTickOutcome::RenderSkipped)
         }
     }
 
@@ -540,8 +609,9 @@ fn frame_render_mode_code_label(code: u8) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        FrameRenderMode, FrameTickOutcome, RenderViewsOutcome, frame_render_mode_code,
-        frame_render_mode_code_label, frame_render_mode_label, runtime_exit_reason,
+        FrameRenderMode, FrameTickOutcome, PreXrLockstepAction, PreXrLockstepInput,
+        RenderViewsOutcome, frame_render_mode_code, frame_render_mode_code_label,
+        frame_render_mode_label, pre_xr_lockstep_action, runtime_exit_reason,
     };
     use crate::app::exit::ExitReason;
     use crate::xr::HmdSubmitOutcome;
@@ -593,6 +663,71 @@ mod tests {
         assert!(!FrameTickOutcome::RenderSkipped.records_frame_timing());
         assert!(FrameTickOutcome::Presented.records_frame_timing());
         assert!(FrameTickOutcome::ExitRequested.records_frame_timing());
+    }
+
+    #[test]
+    fn vr_awaiting_submit_waits_before_openxr_begin() {
+        assert_eq!(
+            pre_xr_lockstep_action(PreXrLockstepInput {
+                vr_active: true,
+                awaiting_frame_submit: true,
+                should_render_frame: false,
+                should_send_begin_frame: false,
+            }),
+            PreXrLockstepAction::WaitForSubmit
+        );
+    }
+
+    #[test]
+    fn vr_idle_lockstep_sends_begin_before_openxr_begin() {
+        assert_eq!(
+            pre_xr_lockstep_action(PreXrLockstepInput {
+                vr_active: true,
+                awaiting_frame_submit: false,
+                should_render_frame: false,
+                should_send_begin_frame: true,
+            }),
+            PreXrLockstepAction::SendBeginThenWait
+        );
+    }
+
+    #[test]
+    fn vr_renderable_frame_reaches_openxr_before_next_begin() {
+        assert_eq!(
+            pre_xr_lockstep_action(PreXrLockstepInput {
+                vr_active: true,
+                awaiting_frame_submit: false,
+                should_render_frame: true,
+                should_send_begin_frame: true,
+            }),
+            PreXrLockstepAction::Continue
+        );
+    }
+
+    #[test]
+    fn vr_nonrenderable_without_begin_skips_before_openxr_begin() {
+        assert_eq!(
+            pre_xr_lockstep_action(PreXrLockstepInput {
+                vr_active: true,
+                awaiting_frame_submit: false,
+                should_render_frame: false,
+                should_send_begin_frame: false,
+            }),
+            PreXrLockstepAction::SkipUntilHostReady
+        );
+    }
+
+    #[test]
+    fn desktop_idle_lockstep_uses_post_begin_wait_path() {
+        assert_eq!(
+            pre_xr_lockstep_action(PreXrLockstepInput {
+                vr_active: false,
+                awaiting_frame_submit: false,
+                should_render_frame: false,
+                should_send_begin_frame: true,
+            }),
+            PreXrLockstepAction::Continue
+        );
     }
 
     #[test]

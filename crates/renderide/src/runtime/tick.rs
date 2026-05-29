@@ -14,8 +14,8 @@ use crate::shared::{InputState, OutputState};
 
 use super::{RendererRuntime, TickOutcome};
 
-/// Longest single semaphore wait while desktop lock-step is coupled.
-const MAX_DESKTOP_LOCKSTEP_WAIT_SLICE: Duration = Duration::from_secs(1);
+/// Longest single semaphore wait while host lock-step is coupled.
+const MAX_COUPLED_LOCKSTEP_WAIT_SLICE: Duration = Duration::from_secs(1);
 
 impl RendererRuntime {
     /// Whether the next tick should build [`InputState`] and call [`Self::pre_frame`].
@@ -77,14 +77,15 @@ impl RendererRuntime {
         self.frontend.last_frame_begin_to_submit()
     }
 
-    /// Waits for the coupled desktop frame submit or for renderer decoupling to activate.
+    /// Waits for the coupled host frame submit or for renderer decoupling to activate.
     ///
-    /// Host-compatible lockstep waits inside the same tick after sending `FrameStartData`; doing
-    /// that here prevents desktop from alternating one redraw that only requests a host frame with
-    /// the next redraw that renders it. Active asset integration remains counted as CPU work; only
-    /// the semaphore wait itself is excluded from HUD CPU-frame timing.
-    pub fn wait_for_desktop_coupled_submit_or_decoupling(&mut self) {
-        profiling::scope!("tick::desktop_lockstep_wait");
+    /// Host-compatible lockstep waits inside the same tick after sending `FrameStartData` when a
+    /// mode can safely wait before rendering. Desktop uses this after begin-frame sends; VR uses it
+    /// before `xrBeginFrame` so host waits cannot produce empty OpenXR frames. Active asset
+    /// integration remains counted as CPU work; only the semaphore wait itself is excluded from HUD
+    /// CPU-frame timing.
+    pub fn wait_for_coupled_submit_or_decoupling(&mut self) {
+        profiling::scope!("tick::coupled_lockstep_wait");
         let mut excluded_wait = Duration::ZERO;
         loop {
             let now = Instant::now();
@@ -113,7 +114,7 @@ impl RendererRuntime {
 
             let Some(timeout) = self
                 .frontend
-                .decoupling_activation_wait_timeout(now, MAX_DESKTOP_LOCKSTEP_WAIT_SLICE)
+                .decoupling_activation_wait_timeout(now, MAX_COUPLED_LOCKSTEP_WAIT_SLICE)
             else {
                 break;
             };
@@ -225,9 +226,8 @@ impl RendererRuntime {
 
     /// Same as [`Self::tick_one_frame`] but skips the render call.
     ///
-    /// Used by the desktop VR path which runs its own HMD multiview submit + secondary cameras
-    /// to render textures + mirror blit instead of [`Self::render_frame`]. Phase order stays
-    /// in this method so VR cannot drift from desktop / headless lock-step semantics.
+    /// Used by lockstep-only drivers that need IPC, asset integration, and GPU maintenance
+    /// without a main-view render in this tick.
     pub fn tick_one_frame_lockstep_only(
         &mut self,
         gpu: Option<&mut GpuContext>,

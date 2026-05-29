@@ -32,7 +32,7 @@ impl XrInputCache {
 }
 
 impl AppDriver {
-    /// Runs OpenXR wait/locate and samples input before lock-step IPC input is built.
+    /// Runs OpenXR wait/locate and samples input for the next lock-step IPC exchange.
     pub(super) fn xr_begin_tick(&mut self) -> Option<OpenxrFrameTick> {
         profiling::scope!("tick::xr_begin_tick");
         super::tick_phase_trace("xr_begin_tick");

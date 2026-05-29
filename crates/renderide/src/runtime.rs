@@ -19,10 +19,12 @@
 //! 4. **Offscreen readback tasks** -- [`RendererRuntime::drain_reflection_probe_render_tasks`]
 //!    and [`RendererRuntime::drain_camera_render_tasks`] render host-requested captures and write
 //!    the resulting bytes to shared memory.
-//! 5. **Optional XR begin** -- `xr_begin_tick` in `app/`; OpenXR `wait_frame` / `locate_views` so the
-//!    same view snapshot is visible to lock-step input.
+//! 5. **Optional XR begin** -- `xr_begin_tick` in `app/`; VR waits for coupled host submits before
+//!    this point so `xrBeginFrame` is not opened for a frame that cannot render.
 //! 6. **Lock-step exchange** -- [`RendererRuntime::pre_frame`] emits
-//!    [`FrameStartData`](crate::shared::FrameStartData) when allowed; the gating predicate
+//!    [`FrameStartData`](crate::shared::FrameStartData) when allowed. Desktop sends before render;
+//!    VR sends before XR only when it needs an initial host submit, then sends the next begin-frame
+//!    after the HMD render attempt so the sampled pose is current. The gating predicate
 //!    [`RendererFrontend::should_send_begin_frame`] keeps the lock-step *state* in
 //!    [`RendererFrontend`] (this module owns no lock-step counters).
 //! 7. **Render** -- desktop multi-view, HMD, and offscreen paths run the explicit CPU render
