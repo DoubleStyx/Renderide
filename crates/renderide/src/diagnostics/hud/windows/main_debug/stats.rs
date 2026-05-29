@@ -658,6 +658,38 @@ impl StatsSection for MaterialsSection {
             );
             kv(
                 ui,
+                "Pipeline warmups",
+                &format!(
+                    "{} queued / {} ready / {} pending / {} failed",
+                    r.material_pipeline_cache.warmup_queued,
+                    r.material_pipeline_cache.warmup_ready_hits,
+                    r.material_pipeline_cache.warmup_pending_hits,
+                    r.material_pipeline_cache.warmup_failed_skips
+                ),
+            );
+            kv(
+                ui,
+                "Shader module cache",
+                &format!(
+                    "{} entries / {} hits / {} misses",
+                    r.material_pipeline_cache.shader_module_entries,
+                    r.material_pipeline_cache.shader_module_hits,
+                    r.material_pipeline_cache.shader_module_misses
+                ),
+            );
+            kv(
+                ui,
+                "Material bind cache",
+                &format!(
+                    "{} entries / {} hits / {} misses / {} evictions",
+                    r.embedded_material_bind_cache.entries,
+                    r.embedded_material_bind_cache.hits,
+                    r.embedded_material_bind_cache.misses,
+                    r.embedded_material_bind_cache.evictions
+                ),
+            );
+            kv(
+                ui,
                 "WGSL hot reload",
                 if r.material_shader_graph.dev_hot_reload_enabled {
                     "enabled"

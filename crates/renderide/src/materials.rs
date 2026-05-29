@@ -101,10 +101,10 @@ pub(crate) use cache::{
 /// Embedded raster materials: bind groups, texture pools, uniform packing, and stem-metadata queries.
 pub(crate) use embedded::EmbeddedMaterialBindShader;
 pub(crate) use embedded::{
-    EmbeddedMaterialBindResources, EmbeddedStemQuery, EmbeddedTangentFallbackMode,
-    EmbeddedTexturePools, SceneColorSnapshotMode, SnapshotRequirements,
-    embedded_default_stem_for_shader_asset_name, embedded_stem_depth_prepass_pass,
-    embedded_stem_pipeline_pass_count,
+    EmbeddedMaterialBindCacheDiagnosticSnapshot, EmbeddedMaterialBindResources, EmbeddedStemQuery,
+    EmbeddedTangentFallbackMode, EmbeddedTexturePools, SceneColorSnapshotMode,
+    SnapshotRequirements, embedded_default_stem_for_shader_asset_name,
+    embedded_stem_depth_prepass_pass, embedded_stem_pipeline_pass_count,
 };
 
 pub(crate) use material_passes::{

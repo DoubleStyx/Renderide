@@ -14,7 +14,9 @@ mod wrap_mode_bits;
 
 pub use default_stem::embedded_default_stem_for_shader_asset_name;
 pub use embedded_material_bind_error::EmbeddedMaterialBindError;
-pub use material_bind::EmbeddedMaterialBindResources;
+pub(crate) use material_bind::{
+    EmbeddedMaterialBindCacheDiagnosticSnapshot, EmbeddedMaterialBindResources,
+};
 pub(crate) use material_bind::{EmbeddedMaterialBindShader, MaterialBindCacheKey};
 pub use snapshot_requirements::{SceneColorSnapshotMode, SnapshotRequirements};
 pub(crate) use stem_metadata::{

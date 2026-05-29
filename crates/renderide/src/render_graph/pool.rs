@@ -20,7 +20,8 @@ use validate::validate_texture_key;
 
 use hashbrown::HashMap;
 
-use crate::gpu_resource::CacheCounters;
+use crate::gpu_resource::{CacheCounters, CacheStats, TextureViewCache};
+use std::sync::Arc;
 
 use policy::{
     BufferKind, BufferSlotValue, PoolKind, TextureKind, TextureSlotValue, create_buffer,
@@ -103,6 +104,10 @@ pub struct PooledTextureLease {
     pub texture: wgpu::Texture,
     /// Default full-resource texture view.
     pub view: wgpu::TextureView,
+    /// Compatible derived-view cache owned by the transient pool slot.
+    pub view_cache: Arc<TextureViewCache>,
+    /// Resource generation for the backing texture.
+    pub resource_generation: u64,
 }
 
 /// Runtime buffer borrowed from the transient pool by handle clone.
@@ -285,16 +290,14 @@ impl TransientPool {
             |slot| {
                 if slot.texture.is_none() {
                     let (texture, view) = create_texture_and_view(device, key, label, usage);
-                    slot.texture = Some(texture);
-                    slot.view = Some(view);
+                    slot.attach(texture, view);
                 }
             },
             || {
                 let (texture, view) = create_texture_and_view(device, key, label, usage);
-                TextureSlotValue {
-                    texture: Some(texture),
-                    view: Some(view),
-                }
+                let mut slot = TextureSlotValue::default();
+                slot.attach(texture, view);
+                slot
             },
         );
         texture_lease_from_entry(id, self.textures.value(id))
@@ -374,9 +377,13 @@ impl TransientPool {
     /// Returns current metrics.
     pub fn metrics(&self) -> TransientPoolMetrics {
         let texture_stats = self.textures.counters.snapshot();
+        let texture_view_cache = self.texture_view_cache_stats();
+        let texture_view_cache_entries = self.texture_view_cache_entries();
         let buffer_stats = self.buffers.counters.snapshot();
         TransientPoolMetrics {
             texture_cache: texture_stats,
+            texture_view_cache,
+            texture_view_cache_entries,
             texture_hits: saturating_usize(texture_stats.hits),
             texture_misses: saturating_usize(texture_stats.misses),
             buffer_cache: buffer_stats,
@@ -385,6 +392,31 @@ impl TransientPool {
             retained_textures: self.textures.retained_count(TextureSlotValue::is_present),
             retained_buffers: self.buffers.retained_count(BufferSlotValue::is_present),
         }
+    }
+
+    fn texture_view_cache_stats(&self) -> CacheStats {
+        self.textures
+            .entries
+            .iter()
+            .map(|entry| entry.value.view_cache.stats())
+            .fold(CacheStats::default(), add_cache_stats)
+    }
+
+    fn texture_view_cache_entries(&self) -> usize {
+        self.textures
+            .entries
+            .iter()
+            .map(|entry| entry.value.view_cache.len())
+            .sum()
+    }
+}
+
+fn add_cache_stats(a: CacheStats, b: CacheStats) -> CacheStats {
+    CacheStats {
+        hits: a.hits.saturating_add(b.hits),
+        misses: a.misses.saturating_add(b.misses),
+        insertions: a.insertions.saturating_add(b.insertions),
+        evictions: a.evictions.saturating_add(b.evictions),
     }
 }
 
