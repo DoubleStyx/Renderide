@@ -24,6 +24,10 @@ pub struct CommandEncodingProfileSample {
     pub transient_texture_slots: usize,
     /// Transient texture allocation misses during this frame.
     pub transient_texture_misses: usize,
+    /// Transient texture-view cache hits during this frame.
+    pub transient_texture_view_hits: usize,
+    /// Transient texture-view cache misses during this frame.
+    pub transient_texture_view_misses: usize,
     /// Transient buffer allocation misses during this frame.
     pub transient_buffer_misses: usize,
     /// Deferred upload writes drained before submit.
@@ -143,6 +147,14 @@ fn plot_pass_counts(sample: &CommandEncodingProfileSample) {
     tracy_plot!(
         "command_encoding::transient_texture_misses",
         sample.transient_texture_misses as f64
+    );
+    tracy_plot!(
+        "command_encoding::transient_texture_view_hits",
+        sample.transient_texture_view_hits as f64
+    );
+    tracy_plot!(
+        "command_encoding::transient_texture_view_misses",
+        sample.transient_texture_view_misses as f64
     );
     tracy_plot!(
         "command_encoding::transient_buffer_misses",

@@ -182,6 +182,8 @@ impl CommandEncodingDiagnostics {
             transient_textures: self.transient_texture_count,
             transient_texture_slots: self.transient_texture_slots,
             transient_texture_misses: self.transient_delta.texture_misses,
+            transient_texture_view_hits: self.transient_delta.texture_view_hits,
+            transient_texture_view_misses: self.transient_delta.texture_view_misses,
             transient_buffer_misses: self.transient_delta.buffer_misses,
             upload_writes: self.upload_stats.writes,
             upload_bytes: self.upload_stats.bytes,
@@ -335,15 +337,22 @@ impl CommandEncodingDiagnostics {
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct TransientPoolMetricsDelta {
     pub(super) texture_misses: usize,
+    pub(super) texture_view_hits: usize,
+    pub(super) texture_view_misses: usize,
     pub(super) buffer_misses: usize,
 }
 
 impl TransientPoolMetricsDelta {
     pub(super) fn from_metrics(before: TransientPoolMetrics, after: TransientPoolMetrics) -> Self {
         let texture_delta = after.texture_cache.delta_since(before.texture_cache);
+        let texture_view_delta = after
+            .texture_view_cache
+            .delta_since(before.texture_view_cache);
         let buffer_delta = after.buffer_cache.delta_since(before.buffer_cache);
         Self {
             texture_misses: saturating_usize(texture_delta.misses),
+            texture_view_hits: saturating_usize(texture_view_delta.hits),
+            texture_view_misses: saturating_usize(texture_view_delta.misses),
             buffer_misses: saturating_usize(buffer_delta.misses),
         }
     }

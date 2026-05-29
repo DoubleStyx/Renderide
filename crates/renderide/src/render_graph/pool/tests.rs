@@ -1,5 +1,6 @@
 //! Unit tests for [`super::TransientPool`] keying, free-list reuse, GC, and eviction.
 
+use super::policy::TextureSlotValue;
 use super::*;
 use crate::render_graph::resources::{BufferSizePolicy, TransientExtent};
 use hashbrown::HashMap;
@@ -123,6 +124,22 @@ fn pool_metrics_count_hits_and_misses() {
     assert_eq!(metrics.texture_hits, 1);
     assert_eq!(metrics.buffer_misses, 1);
     assert_eq!(metrics.buffer_hits, 1);
+}
+
+#[test]
+fn texture_slot_clear_bumps_resource_generation_when_resources_were_attached() {
+    let mut slot = TextureSlotValue::default();
+    let initial = slot.resource_generation;
+
+    slot.clear();
+    assert_eq!(slot.resource_generation, initial);
+
+    slot.resource_generation = 7;
+    slot.resources_attached = true;
+    slot.clear();
+
+    assert_ne!(slot.resource_generation, 7);
+    assert!(!slot.resources_attached);
 }
 
 #[test]
