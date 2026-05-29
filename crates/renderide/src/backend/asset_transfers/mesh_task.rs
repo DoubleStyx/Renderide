@@ -3,8 +3,9 @@
 use std::sync::Arc;
 
 use crate::assets::mesh::{
-    GpuMesh, MeshBufferLayout, MeshGpuUploadContext, compute_and_validate_mesh_layout,
-    mesh_upload_input_fingerprint, try_upload_mesh_from_raw,
+    GpuMesh, MeshBufferLayout, MeshDerivedStreamDemand, MeshDerivedStreamMask,
+    MeshGpuUploadContext, PreparedDerivedStreams, compute_and_validate_mesh_layout,
+    mesh_upload_input_fingerprint, prepare_derived_stream_bytes, try_upload_mesh_from_raw,
 };
 use crate::gpu::{GpuLimits, GpuMappedBufferHealth};
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
@@ -12,6 +13,10 @@ use crate::shared::{MeshUploadData, MeshUploadResult, RendererCommand};
 
 use super::AssetTransferQueue;
 use super::integrator::StepResult;
+use super::mesh_upload_batch::MeshUploadStagingBatch;
+
+const MESH_PREPARE_BACKGROUND_MIN_BYTES: usize = 64 * 1024;
+const MESH_PREPARE_BACKGROUND_MIN_VERTICES: i32 = 1024;
 
 /// GPU handles needed by a mesh upload task.
 pub(super) struct MeshTaskGpu<'a> {
@@ -19,10 +24,12 @@ pub(super) struct MeshTaskGpu<'a> {
     pub(super) device: &'a Arc<wgpu::Device>,
     /// Effective GPU limits used by mesh upload validation.
     pub(super) gpu_limits: &'a Arc<GpuLimits>,
-    /// Queue used for buffer writes.
-    pub(super) queue: &'a Arc<wgpu::Queue>,
     /// Shared mapped-buffer invalidation generation from the active GPU context.
     pub(super) mapped_buffer_health: &'a Arc<GpuMappedBufferHealth>,
+    /// Deferred mesh buffer upload batch for this drain.
+    pub(super) mesh_upload_batch: &'a Arc<MeshUploadStagingBatch>,
+    /// Whether wgpu validation scopes are enabled for mesh uploads.
+    pub(super) mesh_validation_scopes_enabled: bool,
 }
 
 /// Completes a host mesh upload that carries no geometry payload.
@@ -87,12 +94,23 @@ pub(super) fn send_mesh_upload_result(
 enum MeshStage {
     /// Compute and cache [`MeshBufferLayout`] (CPU only).
     PendingLayout,
+    /// Derived stream bytes are being prepared on a Rayon worker.
+    PreparingDerived {
+        raw: Arc<[u8]>,
+        layout: MeshBufferLayout,
+        existing: Option<Box<GpuMesh>>,
+        mapped_buffer_generation: u64,
+        derived_stream_demand: MeshDerivedStreamDemand,
+        rx: crossbeam_channel::Receiver<PreparedDerivedStreams>,
+    },
     /// Host bytes are captured and ready for renderer-thread GPU upload.
     PendingGpuUpload {
         raw: Arc<[u8]>,
         layout: MeshBufferLayout,
         existing: Option<Box<GpuMesh>>,
         mapped_buffer_generation: u64,
+        derived_stream_demand: MeshDerivedStreamDemand,
+        prepared_derived_streams: Option<Arc<PreparedDerivedStreams>>,
     },
 }
 
@@ -129,6 +147,9 @@ impl MeshUploadTask {
         if matches!(self.stage, MeshStage::PendingLayout) {
             return self.start_pending_layout(queue, gpu, shm, ipc);
         }
+        if matches!(self.stage, MeshStage::PreparingDerived { .. }) {
+            return self.poll_preparing_derived(ipc);
+        }
         if matches!(self.stage, MeshStage::PendingGpuUpload { .. }) {
             return self.run_pending_gpu_upload(queue, gpu, ipc);
         }
@@ -156,6 +177,10 @@ impl MeshUploadTask {
 
         let data = self.data.clone();
         let existing = queue.pools.mesh_pool.get(asset_id).cloned().map(Box::new);
+        let derived_stream_demand = queue
+            .pools
+            .mesh_pool
+            .derived_stream_demand_for_upload(asset_id, &data);
         let raw_len = data.buffer.length.max(0) as usize;
         let raw_arc = Self::copy_mesh_payload(shm, &data, raw_len);
         let Some(raw) = raw_arc else {
@@ -163,13 +188,83 @@ impl MeshUploadTask {
             return StepResult::Done;
         };
 
-        self.stage = MeshStage::PendingGpuUpload {
+        let mapped_buffer_generation = gpu.mapped_buffer_health.generation();
+        if should_prepare_derived_streams_on_worker(&data, raw.len(), derived_stream_demand) {
+            let rx = spawn_prepare_derived_streams(
+                Arc::clone(&raw),
+                data,
+                layout,
+                derived_stream_demand,
+            );
+            self.stage = MeshStage::PreparingDerived {
+                raw,
+                layout,
+                existing,
+                mapped_buffer_generation,
+                derived_stream_demand,
+                rx,
+            };
+        } else {
+            let prepared =
+                prepare_derived_stream_bytes(&raw, &data, &layout, derived_stream_demand);
+            self.stage = MeshStage::PendingGpuUpload {
+                raw,
+                layout,
+                existing,
+                mapped_buffer_generation,
+                derived_stream_demand,
+                prepared_derived_streams: Some(Arc::new(prepared)),
+            };
+        }
+        StepResult::Continue
+    }
+
+    fn poll_preparing_derived(&mut self, ipc: &mut Option<&mut DualQueueIpc>) -> StepResult {
+        profiling::scope!("asset::mesh_prepare_derived_poll");
+        let stage = std::mem::replace(&mut self.stage, MeshStage::PendingLayout);
+        let MeshStage::PreparingDerived {
             raw,
             layout,
             existing,
-            mapped_buffer_generation: gpu.mapped_buffer_health.generation(),
+            mapped_buffer_generation,
+            derived_stream_demand,
+            rx,
+        } = stage
+        else {
+            return StepResult::Done;
         };
-        StepResult::Continue
+        match rx.try_recv() {
+            Ok(prepared) => {
+                self.stage = MeshStage::PendingGpuUpload {
+                    raw,
+                    layout,
+                    existing,
+                    mapped_buffer_generation,
+                    derived_stream_demand,
+                    prepared_derived_streams: Some(Arc::new(prepared)),
+                };
+                StepResult::Continue
+            }
+            Err(crossbeam_channel::TryRecvError::Empty) => {
+                self.stage = MeshStage::PreparingDerived {
+                    raw,
+                    layout,
+                    existing,
+                    mapped_buffer_generation,
+                    derived_stream_demand,
+                    rx,
+                };
+                StepResult::YieldBackground
+            }
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                complete_failed_mesh_upload(
+                    self.data.asset_id,
+                    "derived stream preparation failed",
+                    ipc,
+                );
+                StepResult::Done
+            }
+        }
     }
 
     /// Resolves and caches the mesh buffer layout for the upload.
@@ -230,6 +325,8 @@ impl MeshUploadTask {
             layout,
             existing,
             mapped_buffer_generation,
+            derived_stream_demand,
+            prepared_derived_streams,
         } = stage
         else {
             return StepResult::Done;
@@ -238,22 +335,39 @@ impl MeshUploadTask {
         let upload_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let ctx = MeshGpuUploadContext {
                 device: gpu.device.as_ref(),
-                queue: gpu.queue.as_ref(),
+                upload_sink: gpu.mesh_upload_batch.as_ref(),
+                prepared_derived_streams: prepared_derived_streams.as_deref(),
                 gpu_limits: gpu.gpu_limits.as_ref(),
                 mapped_buffer_health: gpu.mapped_buffer_health.as_ref(),
                 mapped_buffer_generation,
+                derived_stream_demand,
+                validation_scopes_enabled: gpu.mesh_validation_scopes_enabled,
             };
-            let validation_scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
-            let upload_result = try_upload_mesh_from_raw(
-                ctx,
-                &raw,
-                &self.data,
-                existing.map(|mesh| *mesh),
-                &layout,
-            );
-            if let Some(err) = pollster::block_on(validation_scope.pop()) {
-                logger::error!("mesh {asset_id}: GPU upload validation failed: {err}");
-                return None;
+            crate::profiling::plot_mesh_derived_stream_masks(derived_stream_demand.mask.bits(), 0);
+            let upload_result = if ctx.validation_scopes_enabled {
+                crate::profiling::scope!("asset::mesh_validation_scope");
+                let validation_scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+                let upload_result = try_upload_mesh_from_raw(
+                    ctx,
+                    &raw,
+                    &self.data,
+                    existing.map(|mesh| *mesh),
+                    &layout,
+                );
+                if let Some(err) = pollster::block_on(validation_scope.pop()) {
+                    logger::error!("mesh {asset_id}: GPU upload validation failed: {err}");
+                    return None;
+                }
+                upload_result
+            } else {
+                try_upload_mesh_from_raw(ctx, &raw, &self.data, existing.map(|mesh| *mesh), &layout)
+            };
+            if ctx.validation_scopes_enabled {
+                #[cfg(feature = "tracy")]
+                tracy_client::plot!("mesh_upload::validation_scope_use", 1.0);
+            } else {
+                #[cfg(feature = "tracy")]
+                tracy_client::plot!("mesh_upload::validation_scope_use", 0.0);
             }
             upload_result
         }));
@@ -286,6 +400,39 @@ impl MeshUploadTask {
         );
         StepResult::Done
     }
+}
+
+fn should_prepare_derived_streams_on_worker(
+    data: &MeshUploadData,
+    raw_len: usize,
+    demand: MeshDerivedStreamDemand,
+) -> bool {
+    if demand.mask.is_empty() {
+        return false;
+    }
+    raw_len >= MESH_PREPARE_BACKGROUND_MIN_BYTES
+        || data.vertex_count >= MESH_PREPARE_BACKGROUND_MIN_VERTICES
+        || demand
+            .mask
+            .intersects(MeshDerivedStreamMask::TANGENT | MeshDerivedStreamMask::RAW_TANGENT)
+}
+
+fn spawn_prepare_derived_streams(
+    raw: Arc<[u8]>,
+    data: MeshUploadData,
+    layout: MeshBufferLayout,
+    demand: MeshDerivedStreamDemand,
+) -> crossbeam_channel::Receiver<PreparedDerivedStreams> {
+    profiling::scope!("asset::mesh_prepare_derived_spawn");
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    rayon::spawn(move || {
+        profiling::scope!("asset::mesh_prepare_derived_worker");
+        #[cfg(feature = "tracy")]
+        tracy_client::plot!("mesh_upload::background_jobs", 1.0);
+        let prepared = prepare_derived_stream_bytes(&raw, &data, &layout, demand);
+        let _ = tx.send(prepared);
+    });
+    rx
 }
 
 #[cfg(test)]

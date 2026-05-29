@@ -35,6 +35,8 @@ const DRIVER_SUBMIT_HELPERS: &[&str] = &[
 /// Direct queue-submit files that are intentionally outside primary frame timing.
 const DIRECT_QUEUE_SUBMIT_FILES: &[&str] = &[
     "src/app/headless/readback.rs",
+    // Mesh upload staging flushes are queue-gated asset work outside primary frame submission.
+    "src/backend/asset_transfers/integrator/drain.rs",
     "src/gpu/driver_thread/worker.rs",
     "src/runtime/offscreen_tasks/camera.rs",
     "src/runtime/offscreen_tasks/camera/alpha_coverage.rs",

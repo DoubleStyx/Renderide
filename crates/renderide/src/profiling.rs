@@ -80,6 +80,7 @@ pub use plots::{
     plot_mesh_deform, plot_rayon_admission, plot_render_world_maintenance,
     plot_surface_acquire_outcome, plot_window_focused, plot_world_mesh_subpass,
 };
+pub(crate) use plots::{plot_mesh_derived_stream_masks, plot_mesh_upload_batch};
 pub(crate) use resource_churn::{
     ResourceChurnKind, ResourceChurnSite, flush_resource_churn_plots, note_resource_churn,
 };

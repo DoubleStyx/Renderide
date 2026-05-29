@@ -110,21 +110,27 @@ pub(crate) fn upload_generated_mesh(
             asset_id: input.source_asset_id,
         });
     }
-    let validation_scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
-    let mesh = try_upload_mesh_from_raw(gpu, &raw, &data, existing, &layout);
-    let validation_error = pollster::block_on(validation_scope.pop());
-    if let Some(err) = validation_error {
-        logger::error!(
-            "{} render buffer {}: generated mesh GPU validation failed: {}",
-            input.kind,
-            input.source_asset_id,
-            err
-        );
-        return Err(ParticleRenderBufferError::GpuUploadFailed {
-            kind: input.kind,
-            asset_id: input.source_asset_id,
-        });
-    }
+    let mesh = if gpu.validation_scopes_enabled {
+        profiling::scope!("particle::generated_mesh_validation_scope");
+        let validation_scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let mesh = try_upload_mesh_from_raw(gpu, &raw, &data, existing, &layout);
+        let validation_error = pollster::block_on(validation_scope.pop());
+        if let Some(err) = validation_error {
+            logger::error!(
+                "{} render buffer {}: generated mesh GPU validation failed: {}",
+                input.kind,
+                input.source_asset_id,
+                err
+            );
+            return Err(ParticleRenderBufferError::GpuUploadFailed {
+                kind: input.kind,
+                asset_id: input.source_asset_id,
+            });
+        }
+        mesh
+    } else {
+        try_upload_mesh_from_raw(gpu, &raw, &data, existing, &layout)
+    };
     mesh.ok_or(ParticleRenderBufferError::GpuUploadFailed {
         kind: input.kind,
         asset_id: input.source_asset_id,

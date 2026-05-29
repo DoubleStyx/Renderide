@@ -2,7 +2,12 @@
 
 use std::sync::Arc;
 
+use parking_lot::Mutex;
+
 use crate::gpu::{GpuLimits, GpuMappedBufferHealth};
+use crate::render_graph::upload_arena::PersistentUploadArena;
+
+use super::mesh_upload_batch::MeshUploadStagingBatch;
 
 /// Device, queue, and limits captured after backend attach.
 #[derive(Default)]
@@ -17,6 +22,12 @@ pub(crate) struct AssetGpuRuntime {
     pub(crate) gpu_limits: Option<Arc<GpuLimits>>,
     /// Shared mapped-buffer invalidation generation from the active GPU context.
     pub(crate) mapped_buffer_health: Option<Arc<GpuMappedBufferHealth>>,
+    /// Mesh buffer upload batch reused across cooperative drains.
+    pub(crate) mesh_upload_batch: Arc<MeshUploadStagingBatch>,
+    /// Persistent staging arena for mesh upload batch copies.
+    pub(crate) mesh_upload_arena: Mutex<PersistentUploadArena>,
+    /// Whether mesh uploads should use per-mesh wgpu validation scopes.
+    pub(crate) mesh_validation_scopes_enabled: bool,
 }
 
 impl AssetGpuRuntime {
@@ -33,11 +44,13 @@ impl AssetGpuRuntime {
         gate: crate::gpu::GpuQueueAccessGate,
         limits: Arc<GpuLimits>,
         mapped_buffer_health: Arc<GpuMappedBufferHealth>,
+        mesh_validation_scopes_enabled: bool,
     ) {
         self.gpu_device = Some(device);
         self.gpu_queue = Some(queue);
         self.gpu_queue_access_gate = Some(gate);
         self.gpu_limits = Some(limits);
         self.mapped_buffer_health = Some(mapped_buffer_health);
+        self.mesh_validation_scopes_enabled = mesh_validation_scopes_enabled;
     }
 }
