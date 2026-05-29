@@ -148,8 +148,9 @@ fn light_radiance_conversion_reaches_directional_and_punctual_paths() -> io::Res
     assert!(
         birp.contains("let tan2_theta = max(1.0 - rho2, 0.0) / rho2;")
             && birp.contains("let r2 = clamp(tan2_theta * light.spot_angle_scale, 0.0, 1.0);")
-            && birp.contains("return squared_edge_fade(r2);"),
-        "spot angle attenuation must use projected radial quadratic falloff"
+            && birp.contains("return clamp(1.0 - r2, 0.0, 1.0);")
+            && !birp.contains("return squared_edge_fade(r2);"),
+        "spot angle attenuation must use the projected radial Unity BiRP LUT curve"
     );
 
     let pbs_brdf = module_source("pbs/brdf.wgsl")?;

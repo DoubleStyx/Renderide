@@ -94,10 +94,12 @@ fn normalized_spot_direction(direction: vec3<f32>) -> vec3<f32> {
     return direction * inverseSqrt(len_sq);
 }
 
-/// Projected radial quadratic spotlight cone attenuation.
+/// Projected radial Unity BiRP spotlight cone attenuation.
 ///
 /// `l` is the normalized direction from the shaded surface toward the light. The packed light
-/// stores the outer half-angle cosine plus the reciprocal squared tangent of that angle.
+/// stores the outer half-angle cosine plus the reciprocal squared tangent of that angle. The
+/// projected radial coordinate matches Unity's spotlight angle LUT lookup without requiring a
+/// texture sample.
 fn spot_angle_attenuation(light: ft::GpuLight, l: vec3<f32>) -> f32 {
     let rho = dot(-l, normalized_spot_direction(light.direction));
     if (rho <= light.spot_cos_half_angle) {
@@ -109,5 +111,5 @@ fn spot_angle_attenuation(light: ft::GpuLight, l: vec3<f32>) -> f32 {
     let rho2 = max(rho * rho, 1e-6);
     let tan2_theta = max(1.0 - rho2, 0.0) / rho2;
     let r2 = clamp(tan2_theta * light.spot_angle_scale, 0.0, 1.0);
-    return squared_edge_fade(r2);
+    return clamp(1.0 - r2, 0.0, 1.0);
 }
