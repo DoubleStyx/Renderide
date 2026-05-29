@@ -787,7 +787,7 @@ impl RenderWorld {
                 );
             }
         }
-        self.prepared.finish_cached_rebuild();
+        self.prepared.finish_cached_rebuild(scene);
     }
 
     /// Appends generated PhotonDust render-buffer draw templates for one active render space.

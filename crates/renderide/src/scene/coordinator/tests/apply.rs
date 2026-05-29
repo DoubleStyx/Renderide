@@ -116,6 +116,15 @@ fn extracted_render_world_dirty_tracks_transform_updates() {
 }
 
 #[test]
+fn extracted_render_world_dirty_tracks_lod_group_updates() {
+    let mut update = empty_extracted_render_space_update();
+    update.lod_groups =
+        Some(crate::scene::lod_groups::ExtractedLodGroupRenderablesUpdate::default());
+
+    assert!(extracted_update_affects_render_world(&update));
+}
+
+#[test]
 fn render_world_dirty_report_tracks_static_state_rows() {
     let mut update = empty_extracted_render_space_update();
     update.meshes = Some(crate::scene::meshes::ExtractedMeshRenderablesUpdate {
@@ -151,6 +160,22 @@ fn render_world_dirty_report_marks_mesh_membership_as_full_space() {
         removals: vec![1, -1],
         ..Default::default()
     });
+    let mut report = SceneApplyReport::default();
+
+    note_render_world_dirty_for_extracted_update(&mut report, RenderSpaceId(3), false, 0, &update);
+
+    assert_eq!(
+        report.render_world_dirty.full_spaces,
+        vec![RenderSpaceId(3)]
+    );
+    assert!(report.render_world_dirty.renderers.is_empty());
+}
+
+#[test]
+fn render_world_dirty_report_marks_lod_groups_as_full_space() {
+    let mut update = empty_extracted_render_space_update();
+    update.lod_groups =
+        Some(crate::scene::lod_groups::ExtractedLodGroupRenderablesUpdate::default());
     let mut report = SceneApplyReport::default();
 
     note_render_world_dirty_for_extracted_update(&mut report, RenderSpaceId(3), false, 0, &update);

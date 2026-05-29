@@ -6,6 +6,7 @@ use hashbrown::HashMap;
 use crate::scene::{RenderSpaceId, SceneCoordinator};
 use crate::world_mesh::culling::{WorldMeshCullInput, world_aabb_visible_for_cull};
 
+use super::super::bitset::DenseBitSet;
 use super::super::item::WorldMeshVisibilityStats;
 use super::{FramePreparedDraw, FramePreparedRun};
 
@@ -70,37 +71,49 @@ impl PreparedSpatialIndex {
         culling: Option<&WorldMeshCullInput<'_>>,
     ) -> PreparedSpatialRunCandidates {
         profiling::scope!("mesh::prepared_renderables::spatial_query");
-        let mut run_indices = Vec::new();
+        let mut candidate_bits = DenseBitSet::default();
+        candidate_bits.clear_and_resize(runs.len());
+        let mut raw_candidate_marks = 0usize;
         let mut cull_stats = (0usize, 0usize, 0usize);
         let mut visibility = WorldMeshVisibilityStats::default();
-        for &space_id in space_ids {
-            let Some(space) = self.spaces.get(&space_id) else {
-                continue;
-            };
-            space.query(
-                space_id,
-                scene,
-                culling,
-                &mut run_indices,
-                &mut cull_stats,
-                &mut visibility,
-            );
+        {
+            profiling::scope!("mesh::prepared_renderables::spatial_query_mark_candidates");
+            for &space_id in space_ids {
+                let Some(space) = self.spaces.get(&space_id) else {
+                    continue;
+                };
+                space.query(
+                    space_id,
+                    scene,
+                    culling,
+                    &mut PreparedSpatialQueryOutput {
+                        candidates: &mut candidate_bits,
+                        raw_candidate_marks: &mut raw_candidate_marks,
+                        cull_stats: &mut cull_stats,
+                        visibility: &mut visibility,
+                    },
+                );
+            }
         }
 
-        run_indices.sort_unstable();
-        run_indices.dedup();
-        let candidate_runs = run_indices.len();
-        let mut out = Vec::with_capacity(run_indices.len());
-        for run_index in run_indices {
-            if let Some(run) = runs.get(run_index).copied() {
+        let mut out = Vec::with_capacity(raw_candidate_marks.min(runs.len()));
+        {
+            profiling::scope!("mesh::prepared_renderables::spatial_query_gather");
+            for (run_index, run) in runs.iter().copied().enumerate() {
+                if !candidate_bits.contains(run_index) {
+                    continue;
+                }
                 out.push(run);
             }
         }
+        let candidate_runs = out.len();
         PreparedSpatialRunCandidates {
             runs: out,
             cull_stats,
             visibility: WorldMeshVisibilityStats {
                 candidate_runs,
+                raw_candidate_marks,
+                duplicate_candidate_marks: raw_candidate_marks.saturating_sub(candidate_runs),
                 ..visibility
             },
         }
@@ -172,13 +185,11 @@ impl PreparedSpatialSpace {
         space_id: RenderSpaceId,
         scene: &SceneCoordinator,
         culling: Option<&WorldMeshCullInput<'_>>,
-        out: &mut Vec<usize>,
-        cull_stats: &mut (usize, usize, usize),
-        visibility: &mut WorldMeshVisibilityStats,
+        out: &mut PreparedSpatialQueryOutput<'_>,
     ) {
-        visibility.indexed_runs += self.indexed_run_count;
-        visibility.fallback_runs += self.fallback_run_count;
-        visibility.linear_fallback_runs += self.linear.len();
+        out.visibility.indexed_runs += self.indexed_run_count;
+        out.visibility.fallback_runs += self.fallback_run_count;
+        out.visibility.linear_fallback_runs += self.linear.len();
         let cull_context = PreparedSpatialCullContext {
             space_id,
             scene,
@@ -193,14 +204,12 @@ impl PreparedSpatialSpace {
                     cull_context.culling,
                     entry,
                     out,
-                    cull_stats,
-                    visibility,
                 );
             }
         }
         if let Some(root) = self.root {
             profiling::scope!("mesh::prepared_renderables::spatial_query_bvh");
-            self.query_node(root, &cull_context, out, cull_stats, visibility);
+            self.query_node(root, &cull_context, out);
         }
     }
 
@@ -208,9 +217,7 @@ impl PreparedSpatialSpace {
         &self,
         node_index: usize,
         cull_context: &PreparedSpatialCullContext<'_, '_, '_>,
-        out: &mut Vec<usize>,
-        cull_stats: &mut (usize, usize, usize),
-        visibility: &mut WorldMeshVisibilityStats,
+        out: &mut PreparedSpatialQueryOutput<'_>,
     ) {
         let node = self.nodes[node_index];
         if let Some(culling) = cull_context.culling
@@ -222,7 +229,12 @@ impl PreparedSpatialSpace {
                 node.aabb_max,
             )
         {
-            record_spatial_frustum_reject(cull_stats, visibility, node.run_count, node.slot_count);
+            record_spatial_frustum_reject(
+                out.cull_stats,
+                out.visibility,
+                node.run_count,
+                node.slot_count,
+            );
             return;
         }
         if node.count > 0 {
@@ -234,13 +246,11 @@ impl PreparedSpatialSpace {
                     cull_context.culling,
                     entry,
                     out,
-                    cull_stats,
-                    visibility,
                 );
             }
         } else {
-            self.query_node(node.left, cull_context, out, cull_stats, visibility);
-            self.query_node(node.right, cull_context, out, cull_stats, visibility);
+            self.query_node(node.left, cull_context, out);
+            self.query_node(node.right, cull_context, out);
         }
     }
 
@@ -294,6 +304,26 @@ struct PreparedSpatialCullContext<'scene, 'cull_ref, 'cull_data> {
     culling: Option<&'cull_ref WorldMeshCullInput<'cull_data>>,
 }
 
+/// Mutable query output shared across spatial traversal helpers.
+struct PreparedSpatialQueryOutput<'a> {
+    /// Unique candidate run marks.
+    candidates: &'a mut DenseBitSet,
+    /// Raw candidate marks before duplicate suppression.
+    raw_candidate_marks: &'a mut usize,
+    /// Slot-level cull counters.
+    cull_stats: &'a mut (usize, usize, usize),
+    /// Visibility broadphase counters.
+    visibility: &'a mut WorldMeshVisibilityStats,
+}
+
+impl PreparedSpatialQueryOutput<'_> {
+    /// Marks one visible run candidate.
+    fn mark_candidate_run(&mut self, run_index: usize) {
+        *self.raw_candidate_marks = self.raw_candidate_marks.saturating_add(1);
+        self.candidates.insert(run_index);
+    }
+}
+
 #[derive(Clone, Copy)]
 struct LinearPreparedRun {
     run_index: usize,
@@ -327,17 +357,15 @@ fn query_linear_run(
     scene: &SceneCoordinator,
     culling: Option<&WorldMeshCullInput<'_>>,
     entry: &LinearPreparedRun,
-    out: &mut Vec<usize>,
-    cull_stats: &mut (usize, usize, usize),
-    visibility: &mut WorldMeshVisibilityStats,
+    out: &mut PreparedSpatialQueryOutput<'_>,
 ) {
     if let (Some(culling), Some((aabb_min, aabb_max))) = (culling, entry.bounds)
         && !spatial_aabb_visible(scene, space_id, culling, aabb_min, aabb_max)
     {
-        record_spatial_frustum_reject(cull_stats, visibility, 1, entry.slot_count);
+        record_spatial_frustum_reject(out.cull_stats, out.visibility, 1, entry.slot_count);
         return;
     }
-    out.push(entry.run_index);
+    out.mark_candidate_run(entry.run_index);
 }
 
 fn query_indexed_run(
@@ -345,17 +373,15 @@ fn query_indexed_run(
     scene: &SceneCoordinator,
     culling: Option<&WorldMeshCullInput<'_>>,
     entry: IndexedPreparedRun,
-    out: &mut Vec<usize>,
-    cull_stats: &mut (usize, usize, usize),
-    visibility: &mut WorldMeshVisibilityStats,
+    out: &mut PreparedSpatialQueryOutput<'_>,
 ) {
     if let Some(culling) = culling
         && !spatial_aabb_visible(scene, space_id, culling, entry.aabb_min, entry.aabb_max)
     {
-        record_spatial_frustum_reject(cull_stats, visibility, 1, entry.slot_count);
+        record_spatial_frustum_reject(out.cull_stats, out.visibility, 1, entry.slot_count);
         return;
     }
-    out.push(entry.run_index);
+    out.mark_candidate_run(entry.run_index);
 }
 
 fn record_spatial_frustum_reject(

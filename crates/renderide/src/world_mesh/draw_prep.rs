@@ -15,6 +15,7 @@
 //! transparent sorting stay serial to avoid nested rayon.
 
 mod arrange;
+mod bitset;
 mod collect;
 mod filter;
 pub(crate) mod item;

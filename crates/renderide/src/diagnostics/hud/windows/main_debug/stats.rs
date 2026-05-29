@@ -437,10 +437,12 @@ fn draw_culling_rows(ui: &imgui::Ui, stats: &WorldMeshDrawStats) {
         ui,
         "Visibility index",
         &format!(
-            "indexed={}  fallback={}  candidates={}  culled={} runs / {} draws  linear={}",
+            "indexed={}  fallback={}  candidates={} raw / {} unique / {} dup  culled={} runs / {} draws  linear={}",
             stats.visibility_stats.indexed_runs,
             stats.visibility_stats.fallback_runs,
+            stats.visibility_stats.raw_candidate_marks,
             stats.visibility_stats.candidate_runs,
+            stats.visibility_stats.duplicate_candidate_marks,
             stats.visibility_stats.broadphase_culled_runs,
             stats.visibility_stats.broadphase_culled_draws,
             stats.visibility_stats.linear_fallback_runs

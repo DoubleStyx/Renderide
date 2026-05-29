@@ -185,7 +185,8 @@ pub(super) fn collect_chunk(
                 else {
                     continue;
                 };
-                if !lod_visibility.renderer_visible(source.instance_id) {
+                if !lod_visibility.renderer_visible_by_instance(source.space_id, source.instance_id)
+                {
                     continue;
                 }
                 push_draws_for_renderer(ctx, &mut acc, source, cache);
@@ -199,7 +200,8 @@ pub(super) fn collect_chunk(
                 else {
                     continue;
                 };
-                if !lod_visibility.renderer_visible(source.instance_id) {
+                if !lod_visibility.renderer_visible_by_instance(source.space_id, source.instance_id)
+                {
                     continue;
                 }
                 push_draws_for_renderer(ctx, &mut acc, source, cache);

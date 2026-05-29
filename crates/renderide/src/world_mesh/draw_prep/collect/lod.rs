@@ -1,8 +1,7 @@
 //! View-local mesh-swap LOD selection for world mesh draw collection.
 
 use glam::{Mat4, Vec3};
-use hashbrown::HashSet;
-use rayon::prelude::*;
+use hashbrown::HashMap;
 
 use crate::camera::view_matrix_for_world_mesh_render_space;
 use crate::scene::{
@@ -13,46 +12,156 @@ use crate::world_mesh::culling::{
     MeshCullTarget, WorldMeshCullInput, mesh_world_geometry_for_cull_with_head,
 };
 
+use super::super::bitset::DenseBitSet;
+use super::super::prepared_renderables::{FramePreparedLodEntry, FramePreparedLodGroup};
 use super::DrawCollectionContext;
 
 /// Conservative relative screen height used when bounds cross the camera plane.
 const CAMERA_INTERSECTING_RELATIVE_HEIGHT: f32 = 1.0;
 /// Minimum homogeneous `w` accepted for screen-height projection.
 const CLIP_W_EPS: f32 = 1e-6;
-/// LOD groups assigned to one worker chunk.
-const LOD_VISIBILITY_PARALLEL_CHUNK_GROUPS: usize = 32;
-/// LOD group count required before view-local visibility fans out.
-const LOD_VISIBILITY_PARALLEL_MIN_GROUPS: usize = LOD_VISIBILITY_PARALLEL_CHUNK_GROUPS * 2;
-
 /// Per-view LOD decision map.
 #[derive(Clone, Debug, Default)]
 pub(super) struct LodVisibility {
-    /// All live renderers referenced by at least one LOD group.
-    grouped: HashSet<MeshRendererInstanceId>,
-    /// Renderers selected by their owning group's chosen LOD.
-    selected: HashSet<MeshRendererInstanceId>,
+    /// Per-space LOD bitsets and instance-id ordinal lookups.
+    spaces: HashMap<RenderSpaceId, LodVisibilitySpace>,
 }
 
 impl LodVisibility {
-    /// Creates an empty visibility set with capacity for `renderer_refs` renderer refs.
-    fn with_capacity(renderer_refs: usize) -> Self {
-        Self {
-            grouped: HashSet::with_capacity(renderer_refs),
-            selected: HashSet::with_capacity(renderer_refs),
+    /// Creates a visibility map with stable renderer ordinals for the queried spaces.
+    fn for_spaces(ctx: &DrawCollectionContext<'_>, space_ids: &[RenderSpaceId]) -> Self {
+        let mut spaces = HashMap::with_capacity(space_ids.len());
+        for &space_id in space_ids {
+            let Some(space) = ctx.scene.space(space_id) else {
+                continue;
+            };
+            if !space.is_active() {
+                continue;
+            }
+            let mut instance_to_ordinal = HashMap::with_capacity(
+                space
+                    .static_mesh_renderers()
+                    .len()
+                    .saturating_add(space.skinned_mesh_renderers().len()),
+            );
+            for renderer in space.static_mesh_renderers() {
+                let ordinal = instance_to_ordinal.len();
+                instance_to_ordinal.insert(renderer.instance_id, ordinal);
+            }
+            for renderer in space.skinned_mesh_renderers() {
+                let ordinal = instance_to_ordinal.len();
+                instance_to_ordinal.insert(renderer.base.instance_id, ordinal);
+            }
+            let renderer_count = instance_to_ordinal.len();
+            let mut grouped = DenseBitSet::default();
+            let mut selected = DenseBitSet::default();
+            grouped.clear_and_resize(renderer_count);
+            selected.clear_and_resize(renderer_count);
+            spaces.insert(
+                space_id,
+                LodVisibilitySpace {
+                    instance_to_ordinal,
+                    grouped,
+                    selected,
+                },
+            );
         }
+        Self { spaces }
     }
 
     /// Returns whether `instance_id` may emit draws in this view.
     #[inline]
-    pub(super) fn renderer_visible(&self, instance_id: MeshRendererInstanceId) -> bool {
-        !self.grouped.contains(&instance_id) || self.selected.contains(&instance_id)
+    pub(super) fn renderer_visible(
+        &self,
+        space_id: RenderSpaceId,
+        renderer_ordinal: usize,
+    ) -> bool {
+        let Some(space) = self.spaces.get(&space_id) else {
+            return true;
+        };
+        !space.grouped.contains(renderer_ordinal) || space.selected.contains(renderer_ordinal)
     }
 
-    /// Merges another group-selection result into this view's visibility set.
-    fn extend(&mut self, other: Self) {
-        self.grouped.extend(other.grouped);
-        self.selected.extend(other.selected);
+    /// Returns whether `instance_id` may emit draws when only scene state is available.
+    #[inline]
+    pub(super) fn renderer_visible_by_instance(
+        &self,
+        space_id: RenderSpaceId,
+        instance_id: MeshRendererInstanceId,
+    ) -> bool {
+        let Some(space) = self.spaces.get(&space_id) else {
+            return true;
+        };
+        let Some(&ordinal) = space.instance_to_ordinal.get(&instance_id) else {
+            return true;
+        };
+        !space.grouped.contains(ordinal) || space.selected.contains(ordinal)
     }
+
+    /// Marks a renderer as owned by an LOD group.
+    fn mark_grouped(&mut self, space_id: RenderSpaceId, instance_id: MeshRendererInstanceId) {
+        let Some(space) = self.spaces.get_mut(&space_id) else {
+            return;
+        };
+        if let Some(&ordinal) = space.instance_to_ordinal.get(&instance_id) {
+            space.grouped.insert(ordinal);
+        }
+    }
+
+    /// Marks a grouped renderer as selected by the active LOD row.
+    fn mark_selected(&mut self, space_id: RenderSpaceId, instance_id: MeshRendererInstanceId) {
+        let Some(space) = self.spaces.get_mut(&space_id) else {
+            return;
+        };
+        if let Some(&ordinal) = space.instance_to_ordinal.get(&instance_id) {
+            space.selected.insert(ordinal);
+        }
+    }
+
+    /// Marks a stable renderer ordinal as owned by an LOD group.
+    fn mark_grouped_ordinal(&mut self, space_id: RenderSpaceId, renderer_ordinal: usize) {
+        let Some(space) = self.spaces.get_mut(&space_id) else {
+            return;
+        };
+        space.grouped.insert(renderer_ordinal);
+    }
+
+    /// Marks a stable renderer ordinal as selected by the active LOD row.
+    fn mark_selected_ordinal(&mut self, space_id: RenderSpaceId, renderer_ordinal: usize) {
+        let Some(space) = self.spaces.get_mut(&space_id) else {
+            return;
+        };
+        space.selected.insert(renderer_ordinal);
+    }
+
+    /// Number of grouped renderer bits set across all spaces.
+    #[cfg(test)]
+    fn grouped_count(&self) -> usize {
+        self.spaces
+            .values()
+            .map(|space| space.grouped.count_ones())
+            .sum()
+    }
+
+    /// Number of selected renderer bits set across all spaces.
+    #[cfg(test)]
+    fn selected_count(&self) -> usize {
+        self.spaces
+            .values()
+            .map(|space| space.selected.count_ones())
+            .sum()
+    }
+}
+
+/// One render space's LOD visibility bitsets.
+#[derive(Clone, Debug, Default)]
+struct LodVisibilitySpace {
+    /// Stable renderer identity to current dense ordinal.
+    instance_to_ordinal: HashMap<MeshRendererInstanceId, usize>,
+    /// All live renderers referenced by at least one LOD group.
+    grouped: DenseBitSet,
+    /// Renderers selected by their owning group's chosen LOD.
+    selected: DenseBitSet,
 }
 
 /// One LOD group scheduled for view-local selection.
@@ -99,6 +208,20 @@ pub(super) fn build_lod_visibility(
     let Some(culling) = ctx.culling else {
         return LodVisibility::default();
     };
+    if let Some(prepared) = ctx.prepared {
+        let group_work = collect_prepared_lod_group_work(prepared.lod_groups(), space_ids);
+        if group_work.is_empty() {
+            return LodVisibility::default();
+        }
+        let mut visibility = LodVisibility::for_spaces(ctx, space_ids);
+        {
+            profiling::scope!("mesh::lod_visibility::select_prepared_groups");
+            for group in group_work {
+                select_prepared_group_lod(ctx, culling, group, &mut visibility);
+            }
+        }
+        return visibility;
+    }
     let capacity = lod_renderer_ref_capacity(ctx, space_ids);
     if capacity == 0 {
         return LodVisibility::default();
@@ -107,53 +230,100 @@ pub(super) fn build_lod_visibility(
     if group_work.is_empty() {
         return LodVisibility::default();
     }
-    if group_work.len() >= LOD_VISIBILITY_PARALLEL_MIN_GROUPS && rayon::current_num_threads() > 1 {
-        profiling::scope!("mesh::lod_visibility::parallel_groups");
-        let group_count = group_work.len();
-        return group_work
-            .par_chunks(LOD_VISIBILITY_PARALLEL_CHUNK_GROUPS)
-            .map(|chunk| {
-                profiling::scope!("mesh::lod_visibility::group_chunk_worker");
-                let mut visibility = LodVisibility::with_capacity(lod_group_chunk_capacity(
-                    capacity,
-                    group_count,
-                    chunk.len(),
-                ));
-                for work in chunk {
-                    select_group_lod(
-                        ctx,
-                        culling,
-                        work.space_id,
-                        work.space,
-                        work.lods,
-                        &mut visibility,
-                    );
-                }
-                visibility
-            })
-            .reduce(LodVisibility::default, |mut merged, visibility| {
-                merged.extend(visibility);
-                merged
-            });
-    }
-    let mut visibility = LodVisibility {
-        grouped: HashSet::with_capacity(capacity),
-        selected: HashSet::with_capacity(capacity),
-    };
-    for work in group_work {
-        select_group_lod(
-            ctx,
-            culling,
-            work.space_id,
-            work.space,
-            work.lods,
-            &mut visibility,
-        );
+    let mut visibility = LodVisibility::for_spaces(ctx, space_ids);
+    {
+        profiling::scope!("mesh::lod_visibility::select_scene_groups");
+        for work in group_work {
+            select_group_lod(
+                ctx,
+                culling,
+                work.space_id,
+                work.space,
+                work.lods,
+                &mut visibility,
+            );
+        }
     }
     visibility
 }
 
+/// Collects prepared LOD groups relevant to the requested render spaces.
+fn collect_prepared_lod_group_work<'a>(
+    groups: &'a [FramePreparedLodGroup],
+    space_ids: &[RenderSpaceId],
+) -> Vec<&'a FramePreparedLodGroup> {
+    let mut work = Vec::new();
+    for &space_id in space_ids {
+        work.extend(groups.iter().filter(|group| group.space_id == space_id));
+    }
+    work
+}
+
+/// Selects one pre-resolved LOD group.
+fn select_prepared_group_lod(
+    ctx: &DrawCollectionContext<'_>,
+    culling: &WorldMeshCullInput<'_>,
+    group: &FramePreparedLodGroup,
+    visibility: &mut LodVisibility,
+) {
+    if group.lods.is_empty() {
+        return;
+    }
+    for lod in &group.lods {
+        for renderer in &lod.renderers {
+            visibility.mark_grouped_ordinal(group.space_id, renderer.renderer_ordinal);
+        }
+    }
+
+    let view_bounds = if group.world_aabb.is_some() {
+        group.world_aabb.map(|bounds| (group.any_overlay, bounds))
+    } else {
+        scene_lod_group_view_bounds(ctx, group)
+    };
+    let selected_index = match view_bounds {
+        Some((any_overlay, (wmin, wmax))) => {
+            relative_screen_height_for_group(ctx, culling, group.space_id, any_overlay, wmin, wmax)
+                .and_then(|relative_height| {
+                    select_prepared_lod_index(&group.lods, relative_height, ctx.mesh_lod_bias)
+                })
+        }
+        None => first_non_empty_prepared_lod(&group.lods),
+    };
+
+    let Some(selected_index) = selected_index else {
+        return;
+    };
+    for renderer in &group.lods[selected_index].renderers {
+        visibility.mark_selected_ordinal(group.space_id, renderer.renderer_ordinal);
+    }
+}
+
+/// Recomputes view-dependent bounds for a prepared LOD group when cached bounds are unavailable.
+fn scene_lod_group_view_bounds(
+    ctx: &DrawCollectionContext<'_>,
+    group: &FramePreparedLodGroup,
+) -> Option<(bool, (Vec3, Vec3))> {
+    let space = ctx.scene.space(group.space_id)?;
+    let scene_group = space.lod_groups().get(group.scene_group_index)?;
+    let mut world_aabb = None;
+    let mut any_overlay = false;
+    for lod in &scene_group.lods {
+        for renderer_ref in &lod.renderers {
+            let Some(renderer) = resolve_lod_renderer(ctx, group.space_id, space, renderer_ref)
+            else {
+                continue;
+            };
+            any_overlay |= renderer.is_overlay;
+            if let Some(bounds) = world_aabb_for_lod_renderer(ctx, group.space_id, &renderer) {
+                union_aabb(&mut world_aabb, bounds);
+            }
+        }
+    }
+    world_aabb.map(|bounds| (any_overlay, bounds))
+}
+
 /// Estimates the renderer-ref capacity needed by one LOD worker chunk.
+#[cfg(test)]
 fn lod_group_chunk_capacity(
     total_renderer_refs: usize,
     total_groups: usize,
@@ -191,7 +361,7 @@ fn collect_lod_group_work<'a>(
     work
 }
 
-/// Counts renderer refs present in active LOD groups for hash-set capacity planning.
+/// Counts renderer refs present in active LOD groups for visibility capacity planning.
 fn lod_renderer_ref_capacity(
     ctx: &DrawCollectionContext<'_>,
     space_ids: &[RenderSpaceId],
@@ -229,7 +399,7 @@ fn select_group_lod(
             let Some(renderer) = resolve_lod_renderer(ctx, space_id, space, renderer_ref) else {
                 continue;
             };
-            visibility.grouped.insert(renderer.instance_id);
+            visibility.mark_grouped(space_id, renderer.instance_id);
             any_overlay |= renderer.is_overlay;
             if let Some(bounds) = world_aabb_for_lod_renderer(ctx, space_id, &renderer) {
                 union_aabb(&mut world_aabb, bounds);
@@ -260,7 +430,7 @@ fn select_group_lod(
         return;
     };
     for instance_id in &resolved_lods[selected_index].renderers {
-        visibility.selected.insert(*instance_id);
+        visibility.mark_selected(space_id, *instance_id);
     }
 }
 
@@ -466,6 +636,28 @@ fn first_non_empty_lod(lods: &[ResolvedLodEntry]) -> Option<usize> {
     lods.iter().position(|lod| !lod.renderers.is_empty())
 }
 
+/// Selects the first prepared LOD whose biased relative height meets its threshold.
+fn select_prepared_lod_index(
+    lods: &[FramePreparedLodEntry],
+    relative_height: f32,
+    mesh_lod_bias: f32,
+) -> Option<usize> {
+    let bias = if mesh_lod_bias.is_finite() && mesh_lod_bias > 0.0 {
+        mesh_lod_bias
+    } else {
+        1.0
+    };
+    let effective_height = relative_height.max(0.0) * bias;
+    lods.iter().position(|lod| {
+        effective_height >= sanitized_transition_height(lod.screen_relative_transition_height)
+    })
+}
+
+/// Returns the first prepared LOD row that still has any live renderer.
+fn first_non_empty_prepared_lod(lods: &[FramePreparedLodEntry]) -> Option<usize> {
+    lods.iter().position(|lod| !lod.renderers.is_empty())
+}
+
 /// Sanitizes host threshold values for robust selection.
 fn sanitized_transition_height(value: f32) -> f32 {
     if value.is_finite() {
@@ -530,7 +722,9 @@ mod tests {
     fn lod_visibility_keeps_ungrouped_renderers_visible() {
         let visibility = LodVisibility::default();
 
-        assert!(visibility.renderer_visible(MeshRendererInstanceId(42)));
+        assert!(
+            visibility.renderer_visible_by_instance(RenderSpaceId(1), MeshRendererInstanceId(42))
+        );
     }
 
     #[test]
@@ -538,12 +732,24 @@ mod tests {
         let mut visibility = LodVisibility::default();
         let grouped = MeshRendererInstanceId(1);
         let selected = MeshRendererInstanceId(2);
-        visibility.grouped.insert(grouped);
-        visibility.grouped.insert(selected);
-        visibility.selected.insert(selected);
+        let space_id = RenderSpaceId(1);
+        let mut instance_to_ordinal = HashMap::new();
+        instance_to_ordinal.insert(grouped, 0);
+        instance_to_ordinal.insert(selected, 1);
+        let mut space = LodVisibilitySpace {
+            instance_to_ordinal,
+            grouped: DenseBitSet::default(),
+            selected: DenseBitSet::default(),
+        };
+        space.grouped.insert(0);
+        space.grouped.insert(1);
+        space.selected.insert(1);
+        visibility.spaces.insert(space_id, space);
 
-        assert!(!visibility.renderer_visible(grouped));
-        assert!(visibility.renderer_visible(selected));
+        assert!(!visibility.renderer_visible_by_instance(space_id, grouped));
+        assert!(visibility.renderer_visible_by_instance(space_id, selected));
+        assert_eq!(visibility.grouped_count(), 2);
+        assert_eq!(visibility.selected_count(), 1);
     }
 
     #[test]

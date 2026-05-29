@@ -15,7 +15,7 @@
 mod expand;
 mod spatial;
 
-use hashbrown::HashSet;
+use hashbrown::{HashMap, HashSet};
 #[cfg(test)]
 use rayon::prelude::*;
 
@@ -65,6 +65,8 @@ pub(super) struct FramePreparedDraw {
     pub renderable_index: usize,
     /// Renderer-local identity used for persistent GPU skin-cache ownership.
     pub instance_id: MeshRendererInstanceId,
+    /// Dense per-space renderer ordinal assigned after prepared runs are finalized.
+    pub renderer_ordinal: usize,
     /// Scene node id for rigid transform lookup and filter-mask indexing.
     pub node_id: i32,
     /// Resident mesh asset id (always matches `mesh_pool.get(...)` being `Some`).
@@ -118,6 +120,37 @@ pub(super) struct FramePreparedRunChunk {
     start: usize,
     /// One-past-last run index in this chunk.
     end: usize,
+}
+
+/// One renderer referenced by a prepared LOD entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct FramePreparedLodRenderer {
+    /// Stable per-space renderer ordinal used by dense visibility bitsets.
+    pub(super) renderer_ordinal: usize,
+}
+
+/// One prepared LOD row with live renderer membership pre-resolved.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct FramePreparedLodEntry {
+    /// Threshold copied from scene LOD state.
+    pub(super) screen_relative_transition_height: f32,
+    /// Live renderer ordinals selected by this LOD row.
+    pub(super) renderers: Vec<FramePreparedLodRenderer>,
+}
+
+/// One prepared LOD group with membership and view-invariant bounds pre-resolved.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct FramePreparedLodGroup {
+    /// Render space that owns the LOD group.
+    pub(super) space_id: RenderSpaceId,
+    /// Index into the scene render space's LOD group table.
+    pub(super) scene_group_index: usize,
+    /// Whether any referenced renderer is in the overlay layer.
+    pub(super) any_overlay: bool,
+    /// Cached group bounds when every referenced renderer has view-invariant geometry.
+    pub(super) world_aabb: Option<(glam::Vec3, glam::Vec3)>,
+    /// Ordered LOD entries with stale renderer references removed.
+    pub(super) lods: Vec<FramePreparedLodEntry>,
 }
 
 /// Rebuilds cached run-chunk ranges from renderer-run metadata.
@@ -176,6 +209,8 @@ pub struct FramePreparedRenderables {
     material_property_key_signature: u64,
     /// Per-render-space BVH and linear fallback buckets over renderer runs.
     spatial: PreparedSpatialIndex,
+    /// Prepared LOD groups resolved against the current draw snapshot.
+    lod_groups: Vec<FramePreparedLodGroup>,
     /// Render context used when resolving material overrides; must match the per-view context.
     render_context: RenderingContext,
     /// Reused per-worker output buffers for the multi-space parallel expansion path. Outer
@@ -200,6 +235,7 @@ impl FramePreparedRenderables {
             material_property_keys: Vec::new(),
             material_property_key_signature: empty_material_key_signature(),
             spatial: PreparedSpatialIndex::default(),
+            lod_groups: Vec::new(),
             render_context,
             #[cfg(test)]
             space_scratch: Vec::new(),
@@ -246,6 +282,7 @@ impl FramePreparedRenderables {
         self.runs.clear();
         self.run_chunks.clear();
         self.material_property_keys.clear();
+        self.lod_groups.clear();
 
         {
             profiling::scope!("mesh::prepared_renderables::collect_active_spaces");
@@ -274,7 +311,7 @@ impl FramePreparedRenderables {
                     space_id,
                 );
             }
-            self.refresh_runs_material_keys_and_chunks();
+            self.refresh_runs_material_keys_and_chunks(Some(scene));
             return;
         }
 
@@ -319,22 +356,28 @@ impl FramePreparedRenderables {
             }
         }
         self.space_scratch = space_scratch;
-        self.refresh_runs_material_keys_and_chunks();
+        self.refresh_runs_material_keys_and_chunks(Some(scene));
     }
 
     /// Refreshes renderer runs, run chunks, and material keys from the current draw list.
-    fn refresh_runs_material_keys_and_chunks(&mut self) {
+    fn refresh_runs_material_keys_and_chunks(&mut self, scene: Option<&SceneCoordinator>) {
         self.material_property_key_signature = populate_runs_and_material_keys(
             &self.draws,
             &mut self.runs,
             &mut self.material_property_keys,
             &mut self.material_property_seen_scratch,
         );
+        if let Some(scene) = scene {
+            populate_renderer_ordinals_from_scene(&mut self.draws, scene);
+        } else {
+            populate_renderer_ordinals_from_runs(&mut self.draws, &self.runs);
+        }
         populate_run_chunks(
             &self.runs,
             &mut self.run_chunks,
             PREPARED_RUN_CHUNK_DRAW_TARGET,
         );
+        self.rebuild_lod_groups(scene);
         self.spatial.rebuild(&self.draws, &self.runs);
     }
 
@@ -366,6 +409,12 @@ impl FramePreparedRenderables {
     ) -> PreparedSpatialRunCandidates {
         self.spatial
             .query_runs(&self.runs, space_ids, scene, culling)
+    }
+
+    /// Prepared LOD groups for per-view selection.
+    #[inline]
+    pub(super) fn lod_groups(&self) -> &[FramePreparedLodGroup] {
+        &self.lod_groups
     }
 
     /// Number of expanded draws across all active render spaces.
@@ -431,6 +480,7 @@ impl FramePreparedRenderables {
         self.draws.clear();
         self.runs.clear();
         self.run_chunks.clear();
+        self.lod_groups.clear();
     }
 
     /// Appends an active render space id to the retained snapshot under construction.
@@ -449,8 +499,8 @@ impl FramePreparedRenderables {
     }
 
     /// Finalizes a retained snapshot rebuild by refreshing runs, chunks, and material keys.
-    pub(super) fn finish_cached_rebuild(&mut self) {
-        self.refresh_runs_material_keys_and_chunks();
+    pub(super) fn finish_cached_rebuild(&mut self, scene: &SceneCoordinator) {
+        self.refresh_runs_material_keys_and_chunks(Some(scene));
     }
 
     /// Rebuilds the cached-space snapshot directly from supplied draw slices for tests.
@@ -464,7 +514,152 @@ impl FramePreparedRenderables {
             self.push_cached_space(space_id);
             self.extend_cached_draws(draws);
         }
-        self.finish_cached_rebuild();
+        self.refresh_runs_material_keys_and_chunks(None);
+    }
+}
+
+impl FramePreparedRenderables {
+    /// Rebuilds pre-resolved LOD groups from the active scene spaces and current prepared draws.
+    fn rebuild_lod_groups(&mut self, scene: Option<&SceneCoordinator>) {
+        self.lod_groups.clear();
+        let Some(scene) = scene else {
+            return;
+        };
+        profiling::scope!("mesh::prepared_renderables::rebuild_lod_groups");
+        let renderer_lookup = build_lod_renderer_lookup(&self.draws, &self.runs);
+        for &space_id in &self.active_space_ids {
+            let Some(space) = scene.space(space_id) else {
+                continue;
+            };
+            for (scene_group_index, group) in space.lod_groups().iter().enumerate() {
+                let mut view_dependent_bounds = false;
+                let mut prepared_group = FramePreparedLodGroup {
+                    space_id,
+                    scene_group_index,
+                    any_overlay: false,
+                    world_aabb: None,
+                    lods: Vec::new(),
+                };
+                for lod in &group.lods {
+                    let mut prepared_lod = FramePreparedLodEntry {
+                        screen_relative_transition_height: lod.screen_relative_transition_height,
+                        renderers: Vec::with_capacity(lod.renderers.len()),
+                    };
+                    for renderer_ref in &lod.renderers {
+                        let key = (space_id, renderer_ref.instance_id);
+                        let Some(renderer) = renderer_lookup.get(&key).copied() else {
+                            continue;
+                        };
+                        prepared_group.any_overlay |= renderer.is_overlay;
+                        if let Some(bounds) = renderer.world_aabb {
+                            if !view_dependent_bounds {
+                                union_prepared_lod_aabb(&mut prepared_group.world_aabb, bounds);
+                            }
+                        } else {
+                            view_dependent_bounds = true;
+                            prepared_group.world_aabb = None;
+                        }
+                        prepared_lod.renderers.push(FramePreparedLodRenderer {
+                            renderer_ordinal: renderer.renderer_ordinal,
+                        });
+                    }
+                    prepared_group.lods.push(prepared_lod);
+                }
+                if prepared_group
+                    .lods
+                    .iter()
+                    .any(|lod| !lod.renderers.is_empty())
+                {
+                    self.lod_groups.push(prepared_group);
+                }
+            }
+        }
+    }
+}
+
+/// Renderer metadata used while rebuilding prepared LOD groups.
+#[derive(Clone, Copy)]
+struct PreparedLodRendererLookup {
+    /// Stable renderer ordinal.
+    renderer_ordinal: usize,
+    /// Whether the renderer is in the overlay layer.
+    is_overlay: bool,
+    /// View-invariant renderer AABB when available.
+    world_aabb: Option<(glam::Vec3, glam::Vec3)>,
+}
+
+/// Builds a lookup from stable renderer identity to prepared LOD metadata.
+fn build_lod_renderer_lookup(
+    draws: &[FramePreparedDraw],
+    runs: &[FramePreparedRun],
+) -> HashMap<(RenderSpaceId, MeshRendererInstanceId), PreparedLodRendererLookup> {
+    let mut lookup = HashMap::with_capacity(runs.len());
+    for run in runs {
+        let Some(first) = draws.get(run.start as usize) else {
+            continue;
+        };
+        lookup.insert(
+            (first.space_id, first.instance_id),
+            PreparedLodRendererLookup {
+                renderer_ordinal: first.renderer_ordinal,
+                is_overlay: first.is_overlay,
+                world_aabb: first.cull_geometry.and_then(|geometry| geometry.world_aabb),
+            },
+        );
+    }
+    lookup
+}
+
+/// Expands `dst` to include a prepared renderer AABB.
+fn union_prepared_lod_aabb(
+    dst: &mut Option<(glam::Vec3, glam::Vec3)>,
+    bounds: (glam::Vec3, glam::Vec3),
+) {
+    match dst {
+        Some((min, max)) => {
+            *min = min.min(bounds.0);
+            *max = max.max(bounds.1);
+        }
+        None => *dst = Some(bounds),
+    }
+}
+
+/// Assigns stable scene-table renderer ordinals to every prepared draw row.
+fn populate_renderer_ordinals_from_scene(
+    draws: &mut [FramePreparedDraw],
+    scene: &SceneCoordinator,
+) {
+    for draw in draws {
+        let static_count = scene
+            .space(draw.space_id)
+            .map_or(0, |space| space.static_mesh_renderers().len());
+        draw.renderer_ordinal = if draw.skinned {
+            static_count.saturating_add(draw.renderable_index)
+        } else {
+            draw.renderable_index
+        };
+    }
+}
+
+/// Assigns dense renderer ordinals per render space when no scene table is available.
+fn populate_renderer_ordinals_from_runs(
+    draws: &mut [FramePreparedDraw],
+    runs: &[FramePreparedRun],
+) {
+    let mut next_by_space: HashMap<RenderSpaceId, usize> = HashMap::new();
+    for run in runs {
+        let start = run.start as usize;
+        let end = run.end as usize;
+        let Some(first) = draws.get(start) else {
+            continue;
+        };
+        let ordinal = *next_by_space
+            .entry(first.space_id)
+            .and_modify(|next| *next += 1)
+            .or_insert(0);
+        for draw in &mut draws[start..end] {
+            draw.renderer_ordinal = ordinal;
+        }
     }
 }
 
@@ -494,6 +689,7 @@ mod tests {
             space_id: RenderSpaceId(1),
             renderable_index,
             instance_id: MeshRendererInstanceId(renderable_index as u64 + 1),
+            renderer_ordinal: 0,
             node_id: renderable_index as i32,
             mesh_asset_id: 10,
             is_overlay: false,
@@ -663,6 +859,29 @@ mod tests {
                 FramePreparedRunChunk { start: 3, end: 4 },
             ]
         );
+    }
+
+    #[test]
+    fn renderer_ordinals_follow_static_scene_table_even_when_rows_emit_no_draws() {
+        let space_id = RenderSpaceId(9);
+        let mut scene = empty_scene();
+        scene.test_insert_static_mesh_renderers(
+            space_id,
+            vec![
+                StaticMeshRenderer::default(),
+                StaticMeshRenderer::default(),
+                StaticMeshRenderer::default(),
+            ],
+        );
+        let mut static_draw = prepared_draw(1, 7, None);
+        static_draw.space_id = space_id;
+        static_draw.renderable_index = 1;
+        static_draw.skinned = false;
+        let mut draws = vec![static_draw];
+
+        populate_renderer_ordinals_from_scene(&mut draws, &scene);
+
+        assert_eq!(draws[0].renderer_ordinal, 1);
     }
 
     #[test]
@@ -853,6 +1072,43 @@ mod tests {
             ]
         );
         assert_eq!(candidates.visibility.candidate_runs, 2);
+    }
+
+    #[test]
+    fn spatial_query_dedups_duplicate_space_queries_in_prepared_order() {
+        let space_id = RenderSpaceId(7);
+        let (scene, host_camera, proj) = spatial_scene_and_cull(space_id);
+        let culling = WorldMeshCullInput {
+            proj,
+            host_camera: &host_camera,
+            hi_z: None,
+            hi_z_temporal: None,
+        };
+        let first = prepared_draw_with_bounds(
+            0,
+            Vec3::new(-0.25, -0.25, -0.25),
+            Vec3::new(0.25, 0.25, 0.25),
+        );
+        let second = prepared_draw_with_bounds(
+            1,
+            Vec3::new(-0.25, -0.25, -0.25),
+            Vec3::new(0.25, 0.25, 0.25),
+        );
+        let prepared = prepared_from_space_draws(space_id, &[first, second]);
+
+        let candidates =
+            prepared.spatial_run_candidates(&[space_id, space_id], &scene, Some(&culling));
+
+        assert_eq!(
+            candidates.runs,
+            vec![
+                FramePreparedRun { start: 0, end: 1 },
+                FramePreparedRun { start: 1, end: 2 },
+            ]
+        );
+        assert_eq!(candidates.visibility.raw_candidate_marks, 4);
+        assert_eq!(candidates.visibility.candidate_runs, 2);
+        assert_eq!(candidates.visibility.duplicate_candidate_marks, 2);
     }
 
     #[test]

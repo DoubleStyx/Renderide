@@ -30,10 +30,8 @@ struct NonTransparentBinKey {
     phase: WorldMeshPhase,
     /// Effective Unity render queue.
     render_queue: i32,
-    /// Cached hash of [`Self::batch_key`] for cheap bin ordering.
-    batch_key_hash: u64,
-    /// Material and pipeline state shared by all draws in the bin.
-    batch_key: MaterialDrawBatchKey,
+    /// Compact per-arrangement material and pipeline batch identifier.
+    batch_id: u32,
     /// Resident mesh asset id.
     mesh_asset_id: i32,
     /// First index in the submesh range.
@@ -44,17 +42,56 @@ struct NonTransparentBinKey {
 
 impl NonTransparentBinKey {
     /// Builds the bin key for one draw and its pre-classified render phase.
-    fn from_draw(item: &WorldMeshDrawItem, phase: WorldMeshPhase) -> Self {
+    fn from_draw(
+        item: &WorldMeshDrawItem,
+        phase: WorldMeshPhase,
+        batch_ids: &BatchIdTable,
+    ) -> Self {
         Self {
             is_overlay: item.is_overlay,
             phase,
             render_queue: item.batch_key.render_queue,
-            batch_key_hash: item.batch_key_hash,
-            batch_key: item.batch_key.clone(),
+            batch_id: batch_ids.id_for_draw(item),
             mesh_asset_id: item.mesh_asset_id,
             first_index: item.first_index,
             index_count: item.index_count,
         }
+    }
+}
+
+/// Per-arrangement compact IDs for material and pipeline batch keys.
+#[derive(Debug, Default)]
+struct BatchIdTable {
+    /// Stable ID lookup by resolved material batch key.
+    ids: HashMap<MaterialDrawBatchKey, u32>,
+}
+
+impl BatchIdTable {
+    /// Builds compact batch IDs sorted by the previous hash-then-key bin order.
+    fn build(items: &[WorldMeshDrawItem]) -> Self {
+        profiling::scope!("mesh::arrange_draws_by_phase_bins::batch_ids");
+        let mut unique: HashMap<MaterialDrawBatchKey, u64> =
+            HashMap::with_capacity(items.len().min(1_024));
+        for item in items {
+            unique
+                .entry(item.batch_key.clone())
+                .or_insert(item.batch_key_hash);
+        }
+        let mut ordered = unique.into_iter().collect::<Vec<_>>();
+        ordered.sort_unstable_by(|(a_key, a_hash), (b_key, b_hash)| {
+            a_hash.cmp(b_hash).then_with(|| a_key.cmp(b_key))
+        });
+        let mut ids = HashMap::with_capacity(ordered.len());
+        for (index, (key, _)) in ordered.into_iter().enumerate() {
+            ids.insert(key, index.min(u32::MAX as usize) as u32);
+        }
+        Self { ids }
+    }
+
+    /// Returns the compact batch ID for a draw item.
+    #[inline]
+    fn id_for_draw(&self, item: &WorldMeshDrawItem) -> u32 {
+        self.ids.get(&item.batch_key).copied().unwrap_or(u32::MAX)
     }
 }
 
@@ -70,13 +107,14 @@ pub(super) fn arrange_draws_by_phase_bins(
     }
 
     let input = std::mem::take(items);
+    let batch_ids = BatchIdTable::build(&input);
     let (bins, mut strict_ordered) =
         if allow_parallel_sort && input.len() >= ARRANGE_PARALLEL_MIN_DRAWS {
             profiling::scope!("mesh::arrange_draws_by_phase_bins::parallel_partition");
-            partition_draws_parallel(input)
+            partition_draws_parallel(input, &batch_ids)
         } else {
             profiling::scope!("mesh::arrange_draws_by_phase_bins::serial_partition");
-            partition_draws_serial(input)
+            partition_draws_serial(input, &batch_ids)
         };
 
     let mut binned: Vec<_> = bins.into_iter().collect();
@@ -106,7 +144,7 @@ pub(super) fn arrange_draws_by_phase_bins(
         for (_, mut bin_items) in binned {
             items.append(&mut bin_items);
         }
-        append_post_skybox_tail(items, tail_bins, strict_ordered);
+        append_post_skybox_tail(items, tail_bins, strict_ordered, &batch_ids);
     }
 
     stats
@@ -115,6 +153,7 @@ pub(super) fn arrange_draws_by_phase_bins(
 /// Partitions draws into phase bins on the caller thread.
 fn partition_draws_serial(
     input: Vec<WorldMeshDrawItem>,
+    batch_ids: &BatchIdTable,
 ) -> (
     HashMap<NonTransparentBinKey, Vec<WorldMeshDrawItem>>,
     Vec<WorldMeshDrawItem>,
@@ -123,7 +162,7 @@ fn partition_draws_serial(
         HashMap::with_capacity(input.len().min(1_024));
     let mut strict_ordered = Vec::new();
     for item in input {
-        partition_draw_item(item, &mut bins, &mut strict_ordered);
+        partition_draw_item(item, batch_ids, &mut bins, &mut strict_ordered);
     }
     (bins, strict_ordered)
 }
@@ -131,6 +170,7 @@ fn partition_draws_serial(
 /// Partitions draws into phase bins with worker-local bins merged afterward.
 fn partition_draws_parallel(
     input: Vec<WorldMeshDrawItem>,
+    batch_ids: &BatchIdTable,
 ) -> (
     HashMap<NonTransparentBinKey, Vec<WorldMeshDrawItem>>,
     Vec<WorldMeshDrawItem>,
@@ -146,7 +186,7 @@ fn partition_draws_parallel(
                 )
             },
             |(mut bins, mut strict_ordered), item| {
-                partition_draw_item(item, &mut bins, &mut strict_ordered);
+                partition_draw_item(item, batch_ids, &mut bins, &mut strict_ordered);
                 (bins, strict_ordered)
             },
         )
@@ -163,6 +203,7 @@ fn partition_draws_parallel(
 /// Routes one draw into either a phase bin or the strict-order tail.
 fn partition_draw_item(
     item: WorldMeshDrawItem,
+    batch_ids: &BatchIdTable,
     bins: &mut HashMap<NonTransparentBinKey, Vec<WorldMeshDrawItem>>,
     strict_ordered: &mut Vec<WorldMeshDrawItem>,
 ) {
@@ -170,9 +211,13 @@ fn partition_draw_item(
     if classification.strict_order {
         strict_ordered.push(item);
     } else {
-        bins.entry(NonTransparentBinKey::from_draw(&item, classification.phase))
-            .or_default()
-            .push(item);
+        bins.entry(NonTransparentBinKey::from_draw(
+            &item,
+            classification.phase,
+            batch_ids,
+        ))
+        .or_default()
+        .push(item);
     }
 }
 
@@ -206,8 +251,7 @@ fn cmp_nontransparent_bin_keys(a: &NonTransparentBinKey, b: &NonTransparentBinKe
         .cmp(&b.is_overlay)
         .then_with(|| phase_flatten_rank(a.phase).cmp(&phase_flatten_rank(b.phase)))
         .then(a.render_queue.cmp(&b.render_queue))
-        .then(a.batch_key_hash.cmp(&b.batch_key_hash))
-        .then_with(|| a.batch_key.cmp(&b.batch_key))
+        .then(a.batch_id.cmp(&b.batch_id))
         .then(a.mesh_asset_id.cmp(&b.mesh_asset_id))
         .then(a.first_index.cmp(&b.first_index))
         .then(a.index_count.cmp(&b.index_count))
@@ -224,13 +268,15 @@ fn append_post_skybox_tail(
     items: &mut Vec<WorldMeshDrawItem>,
     tail_bins: Vec<(NonTransparentBinKey, Vec<WorldMeshDrawItem>)>,
     strict_ordered: Vec<WorldMeshDrawItem>,
+    batch_ids: &BatchIdTable,
 ) {
     let mut bins = tail_bins.into_iter().peekable();
     let mut strict = strict_ordered.into_iter().peekable();
     loop {
         let append_bin = match (bins.peek(), strict.peek()) {
             (Some((bin_key, _)), Some(strict_item)) => {
-                cmp_nontransparent_bin_to_strict_draw(bin_key, strict_item) != Ordering::Greater
+                cmp_nontransparent_bin_to_strict_draw(bin_key, strict_item, batch_ids)
+                    != Ordering::Greater
             }
             (Some(_), None) => true,
             (None, Some(_)) => false,
@@ -255,13 +301,13 @@ fn append_post_skybox_tail(
 fn cmp_nontransparent_bin_to_strict_draw(
     bin: &NonTransparentBinKey,
     item: &WorldMeshDrawItem,
+    batch_ids: &BatchIdTable,
 ) -> Ordering {
     bin.is_overlay
         .cmp(&item.is_overlay)
         .then(bin.render_queue.cmp(&item.batch_key.render_queue))
         .then(false.cmp(&item.batch_key.uses_transparent_sorting()))
-        .then(bin.batch_key_hash.cmp(&item.batch_key_hash))
-        .then_with(|| bin.batch_key.cmp(&item.batch_key))
+        .then(bin.batch_id.cmp(&batch_ids.id_for_draw(item)))
         .then(bin.mesh_asset_id.cmp(&item.mesh_asset_id))
         .then(bin.first_index.cmp(&item.first_index))
         .then(bin.index_count.cmp(&item.index_count))
