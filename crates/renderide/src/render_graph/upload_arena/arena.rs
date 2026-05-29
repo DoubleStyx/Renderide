@@ -116,9 +116,6 @@ impl PersistentUploadArena {
             }
         }
 
-        logger::debug!(
-            "frame upload arena: no persistent slot available; using temporary staging buffer bytes={required}"
-        );
         PreparedUploadStaging {
             buffer: Some(create_temporary_staging_buffer(device, required)),
             source: UploadStagingSource::Temporary,

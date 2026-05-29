@@ -4,6 +4,7 @@
 use hashbrown::HashMap;
 
 use crate::gpu::GpuContext;
+use crate::gpu_resource::TextureViewDescriptorKey;
 
 use super::super::super::context::{
     GraphResolvedResources, ResolvedGraphBuffer, ResolvedGraphTexture, ResolvedImportedBuffer,
@@ -133,11 +134,18 @@ impl CompiledRenderGraph {
                     compiled.desc.label,
                     compiled.usage,
                 )?;
-                let layer_views = helpers::create_transient_layer_views(&lease.texture, key);
+                let layer_views = helpers::create_transient_layer_views(
+                    &lease.texture,
+                    lease.view_cache.as_ref(),
+                    lease.resource_generation,
+                    key,
+                );
                 Ok(ResolvedGraphTexture {
                     pool_id: lease.pool_id,
                     texture: lease.texture,
                     view: lease.view,
+                    view_cache: lease.view_cache,
+                    resource_generation: lease.resource_generation,
                     width,
                     height,
                     layer_views,
@@ -284,7 +292,7 @@ impl CompiledRenderGraph {
                 );
                 continue;
             }
-            let view = parent.texture.create_view(&wgpu::TextureViewDescriptor {
+            let desc = wgpu::TextureViewDescriptor {
                 label: Some(desc.label),
                 dimension: subresource_view_dimension(parent.dimension, desc.array_layer_count),
                 base_mip_level: desc.base_mip_level,
@@ -292,8 +300,19 @@ impl CompiledRenderGraph {
                 base_array_layer: desc.base_array_layer,
                 array_layer_count: Some(desc.array_layer_count.max(1)),
                 ..Default::default()
-            });
-            crate::profiling::note_resource_churn!(TextureView, "render_graph::subresource_view");
+            };
+            let (view, created) = parent.view_cache.get_or_create(
+                &parent.texture,
+                parent.resource_generation,
+                TextureViewDescriptorKey::from_descriptor(&desc),
+                desc.label,
+            );
+            if created {
+                crate::profiling::note_resource_churn!(
+                    TextureView,
+                    "render_graph::subresource_view"
+                );
+            }
             resources.set_subresource_view(SubresourceHandle(idx as u32), view);
         }
     }

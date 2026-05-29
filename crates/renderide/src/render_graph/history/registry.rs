@@ -107,8 +107,7 @@ impl HistoryRegistry {
             Some(existing) => {
                 let mut guard = existing.lock();
                 if !texture_specs_equivalent(&guard.spec, &spec) {
-                    guard.spec = spec;
-                    guard.pair = [None, None];
+                    guard.reset_for_spec(spec);
                 }
             }
             None => {
@@ -117,6 +116,7 @@ impl HistoryRegistry {
                     Arc::new(Mutex::new(TextureHistorySlot {
                         spec,
                         pair: [None, None],
+                        generation: 0,
                     })),
                 );
             }
@@ -191,8 +191,7 @@ impl HistoryRegistry {
         match self.textures.get(&HistoryResourceKey::new(id, scope)) {
             Some(slot) => {
                 let mut guard = slot.lock();
-                guard.spec = spec;
-                guard.pair = [None, None];
+                guard.reset_for_spec(spec);
                 true
             }
             None => false,
@@ -450,6 +449,7 @@ mod tests {
     fn registering_texture_with_different_spec_resets_pair() {
         let mut reg = HistoryRegistry::new();
         reg.register_texture(SLOT_A, tex_spec()).unwrap();
+        let before_generation = reg.texture_slot(SLOT_A).unwrap().lock().generation();
         let mut changed = tex_spec();
         changed.extent.width = 200;
         reg.register_texture(SLOT_A, changed).unwrap();
@@ -459,7 +459,22 @@ mod tests {
             assert_eq!(guard.spec().extent.width, 200);
             assert!(guard.half(0).is_none());
             assert!(guard.half(1).is_none());
+            assert_ne!(guard.generation(), before_generation);
             drop(guard);
         }
+    }
+
+    #[test]
+    fn idempotent_texture_registration_keeps_generation() {
+        let mut reg = HistoryRegistry::new();
+        reg.register_texture(SLOT_A, tex_spec()).unwrap();
+        let generation = reg.texture_slot(SLOT_A).unwrap().lock().generation();
+
+        reg.register_texture(SLOT_A, tex_spec()).unwrap();
+
+        assert_eq!(
+            reg.texture_slot(SLOT_A).unwrap().lock().generation(),
+            generation
+        );
     }
 }

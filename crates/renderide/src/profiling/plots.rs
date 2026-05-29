@@ -10,7 +10,9 @@ mod event_loop;
 mod frame_upload;
 mod ipc;
 mod mesh_deform;
+mod mesh_upload;
 mod rayon_admission;
+mod render_world;
 mod tracy_plot;
 
 pub use asset_integration::{AssetIntegrationProfileSample, plot_asset_integration};
@@ -25,4 +27,6 @@ pub use frame_upload::{
 };
 pub use ipc::{IpcPollProfileSample, plot_ipc_poll};
 pub use mesh_deform::{MeshDeformProfileSample, plot_mesh_deform};
+pub(crate) use mesh_upload::{plot_mesh_derived_stream_masks, plot_mesh_upload_batch};
 pub use rayon_admission::{RayonAdmissionProfileSample, plot_rayon_admission};
+pub use render_world::plot_render_world_maintenance;

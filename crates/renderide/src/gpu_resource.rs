@@ -9,8 +9,10 @@ mod cache;
 mod once;
 mod sharded_lru;
 mod stats;
+mod texture_view;
 
 pub(crate) use cache::{BindGroupMap, RenderPipelineMap};
 pub(crate) use once::OnceGpu;
 pub(crate) use sharded_lru::ShardedLru;
 pub(crate) use stats::{AtomicCacheCounters, CacheCounters, CacheStats};
+pub(crate) use texture_view::{TextureViewCache, TextureViewDescriptorKey};

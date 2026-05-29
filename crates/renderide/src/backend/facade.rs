@@ -455,6 +455,7 @@ impl RenderBackend {
             material_shader_bindings: store.material_shader_binding_count(),
             material_shader_graph: material_diagnostics.shader_graph,
             material_pipeline_cache: material_diagnostics.pipeline_cache,
+            embedded_material_bind_cache: material_diagnostics.embedded_bind_cache,
             frame_graph_pass_count: graph_stats.pass_count,
             frame_graph_registered_pass_count: graph_stats.registered_pass_count,
             frame_graph_topo_levels: graph_stats.topo_levels,

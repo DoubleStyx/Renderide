@@ -8,7 +8,7 @@ use crate::materials::MaterialSystem;
 use crate::profiling::{AssetIntegrationProfileSample, plot_asset_integration};
 
 use super::super::AssetTransferQueue;
-use super::gpu_context::{AssetUploadGpuContext, collect_gpu_handles};
+use super::gpu_context::{AssetUploadGpuContext, GpuHandles, collect_gpu_handles};
 use super::queue::AssetTaskLane;
 use super::step::{StepResult, step_asset_task};
 use super::summary::{
@@ -96,6 +96,9 @@ pub fn drain_asset_tasks(
     let (particle_elapsed, particle_outcome) =
         run_particle_lane(asset, materials, gpu, shm, ipc, particle_deadline);
 
+    flush_mesh_upload_batch(asset, gpu_handles.as_ref(), queue_access_mode);
+    flush_batched_particle_acks(ipc);
+
     finalize_drain(
         asset,
         ipc,
@@ -109,6 +112,62 @@ pub fn drain_asset_tasks(
             queue_access_mode,
         },
     )
+}
+
+fn flush_batched_particle_acks(ipc: &mut Option<&mut DualQueueIpc>) {
+    let Some(ipc) = ipc.as_deref_mut() else {
+        return;
+    };
+    profiling::scope!("particle::ack_batch_flush");
+    ipc.flush_reliable_outbound();
+}
+
+fn flush_mesh_upload_batch(
+    asset: &AssetTransferQueue,
+    gpu_handles: Option<&GpuHandles>,
+    queue_access_mode: GpuQueueAccessMode,
+) {
+    let Some(gpu) = gpu_handles else {
+        return;
+    };
+    profiling::scope!("asset::mesh_upload_batch_flush");
+    asset
+        .gpu
+        .mesh_upload_arena
+        .lock()
+        .maintain(gpu.device.as_ref());
+    let Some(gate) = gpu.gate.lock_for(queue_access_mode) else {
+        let mut mesh_upload_arena = asset.gpu.mesh_upload_arena.lock();
+        let _ = gpu.mesh_upload_batch.drain_and_flush(
+            gpu.device.as_ref(),
+            gpu.queue.as_ref(),
+            gpu.gpu_limits.max_buffer_size(),
+            &mut mesh_upload_arena,
+            true,
+        );
+        return;
+    };
+    let flush = {
+        let mut mesh_upload_arena = asset.gpu.mesh_upload_arena.lock();
+        gpu.mesh_upload_batch.drain_and_flush(
+            gpu.device.as_ref(),
+            gpu.queue.as_ref(),
+            gpu.gpu_limits.max_buffer_size(),
+            &mut mesh_upload_arena,
+            false,
+        )
+    };
+    let Some(flush) = flush else {
+        return;
+    };
+    let _flush_stats = flush.stats;
+    if let Some(command_buffer) = flush.command_buffer {
+        gpu.queue.submit([command_buffer]);
+        if let Some(on_submitted_work_done) = flush.on_submitted_work_done {
+            gpu.queue.on_submitted_work_done(on_submitted_work_done);
+        }
+    }
+    drop(gate);
 }
 
 /// Drains all queued tasks without a time limit (used on GPU attach before first frame).

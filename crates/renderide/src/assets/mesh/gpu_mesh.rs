@@ -1,6 +1,7 @@
 //! GPU-resident mesh buffers; an optional CPU vertex copy is kept only until lazy extended streams build.
 
 pub(in crate::assets::mesh) mod attribute_reader;
+mod demand;
 mod fingerprint;
 mod hints;
 mod tangent_generation;
@@ -8,8 +9,12 @@ mod update;
 mod upload;
 mod validation;
 
+pub(crate) use demand::{MeshDerivedStreamDemand, MeshDerivedStreamMask, MeshDerivedStreamState};
 pub(crate) use fingerprint::mesh_upload_input_fingerprint;
-pub(crate) use upload::MeshGpuUploadContext;
+pub(crate) use upload::{
+    MeshBufferUploadSink, MeshGpuUploadContext, PreparedDerivedStreams,
+    prepare_derived_stream_bytes,
+};
 pub(crate) use validation::{compute_and_validate_mesh_layout, try_upload_mesh_from_raw};
 
 use std::fmt;
@@ -46,6 +51,9 @@ pub(super) struct ExtendedVertexStreamSource {
     index_format: IndexBufferFormat,
     submeshes: Arc<[SubmeshBufferDescriptor]>,
     can_generate_missing_tangents: bool,
+    has_primary_payload: bool,
+    has_uv0_payload: bool,
+    has_color_payload: bool,
     has_compact_extended_payload: bool,
     has_wide_uv_payload: bool,
 }
@@ -62,6 +70,9 @@ impl fmt::Debug for ExtendedVertexStreamSource {
                 "can_generate_missing_tangents",
                 &self.can_generate_missing_tangents,
             )
+            .field("has_primary_payload", &self.has_primary_payload)
+            .field("has_uv0_payload", &self.has_uv0_payload)
+            .field("has_color_payload", &self.has_color_payload)
             .field(
                 "has_compact_extended_payload",
                 &self.has_compact_extended_payload,
@@ -148,6 +159,8 @@ pub struct GpuMesh {
     pub uv3_buffer: Option<Arc<wgpu::Buffer>>,
     /// Packed UV0-UV7 stream for shaders using UV4-UV7 or 3D/4D UV inputs.
     pub wide_uv_buffer: Option<Arc<wgpu::Buffer>>,
+    /// Demand and dirty-state for lazily maintained derived streams.
+    pub(crate) derived_stream_state: MeshDerivedStreamState,
     /// CPU vertex source kept only until lazy extended streams are created.
     extended_vertex_stream_source: Option<ExtendedVertexStreamSource>,
     /// True when the host uploaded a real skeleton (`bone_count > 0`).
@@ -158,10 +171,6 @@ pub struct GpuMesh {
     pub skinning_bind_matrices: Vec<Mat4>,
     /// Approximate VRAM (bytes), used by [`crate::gpu_pools::VramAccounting`].
     pub resident_bytes: u64,
-}
-
-fn has_extended_vertex_attribute(attrs: &[VertexAttributeDescriptor]) -> bool {
-    has_compact_extended_payload(attrs) || has_wide_uv_payload(attrs)
 }
 
 fn has_compact_extended_payload(attrs: &[VertexAttributeDescriptor]) -> bool {
@@ -223,10 +232,23 @@ pub(super) fn extended_vertex_stream_source_from_raw(
     layout: &MeshBufferLayout,
 ) -> Option<ExtendedVertexStreamSource> {
     let can_generate_missing_tangents = can_generate_missing_tangents(data, layout);
+    let has_primary_payload =
+        has_supported_vertex_attribute(&data.vertex_attributes, VertexAttributeType::Position, 3)
+            && has_supported_vertex_attribute(
+                &data.vertex_attributes,
+                VertexAttributeType::Normal,
+                3,
+            );
+    let has_uv0_payload =
+        has_supported_vertex_attribute(&data.vertex_attributes, VertexAttributeType::UV0, 2);
+    let has_color_payload =
+        has_supported_vertex_attribute(&data.vertex_attributes, VertexAttributeType::Color, 4);
     let has_compact_extended_payload =
         has_compact_extended_payload(&data.vertex_attributes) || can_generate_missing_tangents;
     let has_wide_uv_payload = has_wide_uv_payload(&data.vertex_attributes);
-    if !has_extended_vertex_attribute(&data.vertex_attributes) && !can_generate_missing_tangents {
+    if data.vertex_count <= 0
+        || (data.vertex_attributes.is_empty() && !can_generate_missing_tangents)
+    {
         return None;
     }
     let vertex_bytes = raw.get(..layout.vertex_size)?.to_vec();
@@ -241,6 +263,9 @@ pub(super) fn extended_vertex_stream_source_from_raw(
         index_format: data.index_buffer_format,
         submeshes: Arc::from(data.submeshes.clone()),
         can_generate_missing_tangents,
+        has_primary_payload,
+        has_uv0_payload,
+        has_color_payload,
         has_compact_extended_payload,
         has_wide_uv_payload,
     })
@@ -261,7 +286,75 @@ pub(super) fn extended_vertex_stream_bytes(mesh: &GpuMesh) -> u64 {
     .sum()
 }
 
+fn rebuildable_derived_stream_mask(
+    source: Option<&ExtendedVertexStreamSource>,
+    available_mask: MeshDerivedStreamMask,
+) -> MeshDerivedStreamMask {
+    let mut mask = available_mask;
+    if let Some(source) = source {
+        if source.has_primary_payload {
+            mask |= MeshDerivedStreamMask::POSITION | MeshDerivedStreamMask::NORMAL;
+        }
+        if source.has_uv0_payload {
+            mask |= MeshDerivedStreamMask::UV0;
+        }
+        if source.has_color_payload {
+            mask |= MeshDerivedStreamMask::COLOR;
+        }
+        if source.has_compact_extended_payload {
+            mask |= MeshDerivedStreamMask::TANGENT
+                | MeshDerivedStreamMask::RAW_TANGENT
+                | MeshDerivedStreamMask::UV1
+                | MeshDerivedStreamMask::UV2
+                | MeshDerivedStreamMask::UV3;
+        }
+        if source.has_wide_uv_payload {
+            mask |= MeshDerivedStreamMask::WIDE_UV;
+        }
+        if source.can_generate_missing_tangents {
+            mask |= MeshDerivedStreamMask::TANGENT;
+        }
+    }
+    mask
+}
+
 impl GpuMesh {
+    /// Returns streams with resident GPU buffers.
+    pub(crate) fn available_derived_stream_mask(&self) -> MeshDerivedStreamMask {
+        let mut mask = MeshDerivedStreamMask::EMPTY;
+        if self.positions_buffer.is_some() {
+            mask |= MeshDerivedStreamMask::POSITION;
+        }
+        if self.normals_buffer.is_some() {
+            mask |= MeshDerivedStreamMask::NORMAL;
+        }
+        if self.uv0_buffer.is_some() {
+            mask |= MeshDerivedStreamMask::UV0;
+        }
+        if self.color_buffer.is_some() {
+            mask |= MeshDerivedStreamMask::COLOR;
+        }
+        if self.tangent_buffer.is_some() {
+            mask |= MeshDerivedStreamMask::TANGENT;
+        }
+        if self.raw_tangent_buffer.is_some() {
+            mask |= MeshDerivedStreamMask::RAW_TANGENT;
+        }
+        if self.uv1_buffer.is_some() {
+            mask |= MeshDerivedStreamMask::UV1;
+        }
+        if self.uv2_buffer.is_some() {
+            mask |= MeshDerivedStreamMask::UV2;
+        }
+        if self.uv3_buffer.is_some() {
+            mask |= MeshDerivedStreamMask::UV3;
+        }
+        if self.wide_uv_buffer.is_some() {
+            mask |= MeshDerivedStreamMask::WIDE_UV;
+        }
+        mask
+    }
+
     /// Creates a resident mesh entry for a host upload with no geometry payload.
     pub fn empty(device: &wgpu::Device, data: &MeshUploadData) -> Self {
         profiling::scope!("asset::mesh_empty_gpu_upload");
@@ -317,6 +410,7 @@ impl GpuMesh {
             uv2_buffer: None,
             uv3_buffer: None,
             wide_uv_buffer: None,
+            derived_stream_state: MeshDerivedStreamState::default(),
             extended_vertex_stream_source: None,
             has_skeleton: false,
             skinning_bind_matrices: Vec::new(),
@@ -349,10 +443,20 @@ impl GpuMesh {
         let vc_usize = data.vertex_count.max(0) as usize;
 
         let derived = extract_derived_vertex_streams(ctx, raw, data, layout, &core)?;
+        let derived_available_mask = derived.available_mask();
         let extended_vertex_stream_source = {
             profiling::scope!("asset::mesh_capture_extended_stream_source");
             extended_vertex_stream_source_from_raw(raw, data, layout)
         };
+        let derived_rebuildable_mask = rebuildable_derived_stream_mask(
+            extended_vertex_stream_source.as_ref(),
+            derived_available_mask,
+        );
+        let derived_stream_state = MeshDerivedStreamState::after_full_upload(
+            ctx.derived_stream_demand,
+            derived_available_mask,
+            derived_rebuildable_mask,
+        );
 
         let bone_skin = upload_bone_and_skin_buffers(ctx, raw, data, layout, vc_usize)?;
 
@@ -411,6 +515,7 @@ impl GpuMesh {
             uv2_buffer: derived.uv2_buffer,
             uv3_buffer: derived.uv3_buffer,
             wide_uv_buffer: derived.wide_uv_buffer,
+            derived_stream_state,
             extended_vertex_stream_source,
             has_skeleton: data.bone_count > 0,
             skinning_bind_matrices: bone_skin.skinning_bind_matrices,
@@ -476,7 +581,11 @@ mod tests {
     }
 
     #[test]
-    fn extended_source_ignores_plain_vec2_uv0() {
-        assert!(source_for_attrs(vec![uv_attr(VertexAttributeType::UV0, 2)]).is_none());
+    fn extended_source_captures_plain_vec2_uv0_for_lazy_uv0_upload() {
+        let source =
+            source_for_attrs(vec![uv_attr(VertexAttributeType::UV0, 2)]).expect("uv0 source");
+
+        assert!(source.has_uv0_payload);
+        assert!(!source.has_wide_uv_payload);
     }
 }

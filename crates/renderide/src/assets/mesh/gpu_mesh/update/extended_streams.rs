@@ -4,15 +4,154 @@ use crate::materials::EmbeddedTangentFallbackMode;
 use crate::shared::VertexAttributeType;
 
 use super::super::upload::{
-    ExtendedVertexUploadSource, UvVertexUploadSource, upload_default_extended_vertex_streams,
-    upload_default_raw_tangent_vertex_stream, upload_default_tangent_vertex_stream,
-    upload_default_uv_vertex_stream, upload_default_wide_uv_vertex_stream,
-    upload_extended_vertex_streams, upload_raw_tangent_vertex_stream, upload_tangent_vertex_stream,
-    upload_uv_vertex_stream, upload_wide_uv_vertex_stream,
+    ExtendedVertexUploadSource, UvVertexUploadSource, upload_color_vertex_stream,
+    upload_default_extended_vertex_streams, upload_default_raw_tangent_vertex_stream,
+    upload_default_tangent_vertex_stream, upload_default_uv_vertex_stream,
+    upload_default_wide_uv_vertex_stream, upload_extended_vertex_streams,
+    upload_position_normal_vertex_streams, upload_raw_tangent_vertex_stream,
+    upload_tangent_vertex_stream, upload_uv_vertex_stream, upload_uv0_vertex_stream,
+    upload_wide_uv_vertex_stream,
 };
-use super::super::{ExtendedVertexStreamSource, GpuMesh, extended_vertex_stream_bytes};
+use super::super::{
+    ExtendedVertexStreamSource, GpuMesh, MeshDerivedStreamMask, extended_vertex_stream_bytes,
+    rebuildable_derived_stream_mask,
+};
 
 impl GpuMesh {
+    /// Creates position and normal streams when later material/runtime demand requires them.
+    pub(crate) fn ensure_position_normal_vertex_streams(&mut self, device: &wgpu::Device) -> bool {
+        profiling::scope!("asset::mesh_ensure_position_normal_streams");
+        if self.positions_buffer.is_some() && self.normals_buffer.is_some() {
+            self.derived_stream_state
+                .mark_clean(MeshDerivedStreamMask::POSITION | MeshDerivedStreamMask::NORMAL);
+            return true;
+        }
+        let Some(source) = self.extended_vertex_stream_source.as_ref() else {
+            return false;
+        };
+        let old_bytes = self
+            .positions_buffer
+            .as_ref()
+            .map_or(0, |buffer| buffer.size())
+            .saturating_add(
+                self.normals_buffer
+                    .as_ref()
+                    .map_or(0, |buffer| buffer.size()),
+            );
+        let (positions, normals) = upload_position_normal_vertex_streams(
+            device,
+            self.asset_id,
+            UvVertexUploadSource {
+                vertex_slice: source.vertex_bytes.as_ref(),
+                vertex_count: self.vertex_count as usize,
+                vertex_stride: self.vertex_stride as usize,
+                vertex_attributes: source.vertex_attributes.as_ref(),
+                target: VertexAttributeType::UV0,
+                label: "positions_normals",
+            },
+        );
+        let (Some(positions), Some(normals)) = (positions, normals) else {
+            return false;
+        };
+        self.positions_buffer = Some(positions);
+        self.normals_buffer = Some(normals);
+        let new_bytes = self
+            .positions_buffer
+            .as_ref()
+            .map_or(0, |buffer| buffer.size())
+            .saturating_add(
+                self.normals_buffer
+                    .as_ref()
+                    .map_or(0, |buffer| buffer.size()),
+            );
+        self.resident_bytes = self
+            .resident_bytes
+            .saturating_sub(old_bytes)
+            .saturating_add(new_bytes);
+        self.derived_stream_state
+            .mark_clean(MeshDerivedStreamMask::POSITION | MeshDerivedStreamMask::NORMAL);
+        self.drop_extended_vertex_stream_source_if_complete();
+        true
+    }
+
+    /// Creates the UV0 stream when later material demand requires it.
+    pub(crate) fn ensure_uv0_vertex_stream(&mut self, device: &wgpu::Device) -> bool {
+        profiling::scope!("asset::mesh_ensure_uv0_vertex_stream");
+        if self.uv0_buffer.is_some() {
+            self.derived_stream_state
+                .mark_clean(MeshDerivedStreamMask::UV0);
+            return true;
+        }
+        let Some(source) = self.extended_vertex_stream_source.as_ref() else {
+            return false;
+        };
+        let old_bytes = self.uv0_buffer.as_ref().map_or(0, |buffer| buffer.size());
+        let uv0 = upload_uv0_vertex_stream(
+            device,
+            self.asset_id,
+            UvVertexUploadSource {
+                vertex_slice: source.vertex_bytes.as_ref(),
+                vertex_count: self.vertex_count as usize,
+                vertex_stride: self.vertex_stride as usize,
+                vertex_attributes: source.vertex_attributes.as_ref(),
+                target: VertexAttributeType::UV0,
+                label: "uv0",
+            },
+        );
+        let Some(uv0) = uv0 else {
+            return false;
+        };
+        self.uv0_buffer = Some(uv0);
+        let new_bytes = self.uv0_buffer.as_ref().map_or(0, |buffer| buffer.size());
+        self.resident_bytes = self
+            .resident_bytes
+            .saturating_sub(old_bytes)
+            .saturating_add(new_bytes);
+        self.derived_stream_state
+            .mark_clean(MeshDerivedStreamMask::UV0);
+        self.drop_extended_vertex_stream_source_if_complete();
+        true
+    }
+
+    /// Creates the color stream when later material demand requires it.
+    pub(crate) fn ensure_color_vertex_stream(&mut self, device: &wgpu::Device) -> bool {
+        profiling::scope!("asset::mesh_ensure_color_vertex_stream");
+        if self.color_buffer.is_some() {
+            self.derived_stream_state
+                .mark_clean(MeshDerivedStreamMask::COLOR);
+            return true;
+        }
+        let Some(source) = self.extended_vertex_stream_source.as_ref() else {
+            return false;
+        };
+        let old_bytes = self.color_buffer.as_ref().map_or(0, |buffer| buffer.size());
+        let color = upload_color_vertex_stream(
+            device,
+            self.asset_id,
+            UvVertexUploadSource {
+                vertex_slice: source.vertex_bytes.as_ref(),
+                vertex_count: self.vertex_count as usize,
+                vertex_stride: self.vertex_stride as usize,
+                vertex_attributes: source.vertex_attributes.as_ref(),
+                target: VertexAttributeType::Color,
+                label: "color",
+            },
+        );
+        let Some(color) = color else {
+            return false;
+        };
+        self.color_buffer = Some(color);
+        let new_bytes = self.color_buffer.as_ref().map_or(0, |buffer| buffer.size());
+        self.resident_bytes = self
+            .resident_bytes
+            .saturating_sub(old_bytes)
+            .saturating_add(new_bytes);
+        self.derived_stream_state
+            .mark_clean(MeshDerivedStreamMask::COLOR);
+        self.drop_extended_vertex_stream_source_if_complete();
+        true
+    }
+
     /// Creates tangent / UV1-3 streams the first time an embedded shader needs all of them.
     pub(crate) fn ensure_extended_vertex_streams(
         &mut self,
@@ -68,6 +207,12 @@ impl GpuMesh {
             .resident_bytes
             .saturating_sub(old_bytes)
             .saturating_add(new_bytes);
+        self.derived_stream_state.mark_clean(
+            MeshDerivedStreamMask::TANGENT
+                | MeshDerivedStreamMask::UV1
+                | MeshDerivedStreamMask::UV2
+                | MeshDerivedStreamMask::UV3,
+        );
         self.drop_extended_vertex_stream_source_if_complete();
         true
     }
@@ -122,6 +267,8 @@ impl GpuMesh {
             .resident_bytes
             .saturating_sub(old_bytes)
             .saturating_add(new_bytes);
+        self.derived_stream_state
+            .mark_clean(MeshDerivedStreamMask::TANGENT);
         self.drop_extended_vertex_stream_source_if_complete();
         true
     }
@@ -168,6 +315,8 @@ impl GpuMesh {
             .resident_bytes
             .saturating_sub(old_bytes)
             .saturating_add(new_bytes);
+        self.derived_stream_state
+            .mark_clean(MeshDerivedStreamMask::RAW_TANGENT);
         self.drop_extended_vertex_stream_source_if_complete();
         true
     }
@@ -207,6 +356,8 @@ impl GpuMesh {
             .resident_bytes
             .saturating_sub(old_bytes)
             .saturating_add(new_bytes);
+        self.derived_stream_state
+            .mark_clean(MeshDerivedStreamMask::UV1);
         self.drop_extended_vertex_stream_source_if_complete();
         true
     }
@@ -272,6 +423,8 @@ impl GpuMesh {
             .resident_bytes
             .saturating_sub(old_bytes)
             .saturating_add(new_bytes);
+        self.derived_stream_state
+            .mark_clean(MeshDerivedStreamMask::WIDE_UV);
         self.drop_extended_vertex_stream_source_if_complete();
         true
     }
@@ -321,6 +474,12 @@ impl GpuMesh {
             .resident_bytes
             .saturating_sub(old_bytes)
             .saturating_add(new_bytes);
+        let cleaned_mask = match target {
+            VertexAttributeType::UV2 => MeshDerivedStreamMask::UV2,
+            VertexAttributeType::UV3 => MeshDerivedStreamMask::UV3,
+            _ => MeshDerivedStreamMask::EMPTY,
+        };
+        self.derived_stream_state.mark_clean(cleaned_mask);
         self.drop_extended_vertex_stream_source_if_complete();
         true
     }
@@ -344,6 +503,7 @@ impl GpuMesh {
     ) -> bool {
         self.should_keep_extended_vertex_stream_source_for_compact_streams(source)
             || self.should_keep_extended_vertex_stream_source_for_wide_uv(source)
+            || self.should_keep_extended_vertex_stream_source_for_dirty_streams(source)
             || self.should_keep_extended_vertex_stream_source_for_tangent_upgrade_from(
                 source.can_generate_missing_tangents,
             )
@@ -361,6 +521,20 @@ impl GpuMesh {
         source: &ExtendedVertexStreamSource,
     ) -> bool {
         self.wide_uv_buffer.is_none() && source.has_wide_uv_payload
+    }
+
+    fn should_keep_extended_vertex_stream_source_for_dirty_streams(
+        &self,
+        source: &ExtendedVertexStreamSource,
+    ) -> bool {
+        let rebuildable =
+            rebuildable_derived_stream_mask(Some(source), self.available_derived_stream_mask());
+        let missing_demand = self
+            .derived_stream_state
+            .demand_mask
+            .without(self.available_derived_stream_mask());
+        self.derived_stream_state.dirty_mask.intersects(rebuildable)
+            || missing_demand.intersects(rebuildable)
     }
 
     fn tangent_fallback_needs_upgrade(&self, requested: EmbeddedTangentFallbackMode) -> bool {

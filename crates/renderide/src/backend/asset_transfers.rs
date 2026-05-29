@@ -11,6 +11,7 @@ mod cubemap_upload_plan;
 mod gpu_runtime;
 mod integrator;
 mod mesh_task;
+mod mesh_upload_batch;
 mod particle_task;
 mod pending;
 mod pools;
@@ -42,6 +43,7 @@ pub use integrator::{
     AssetIntegrationDrainSummary, AssetIntegrator, AssetTask, AssetTaskLane, ShaderRouteTask,
     drain_asset_tasks, drain_asset_tasks_unbounded,
 };
+pub(crate) use mesh_upload_batch::{MeshUploadBatchStats, MeshUploadStagingBatch};
 use pending::PendingAssetUploads;
 use pools::ResidentAssetPools;
 pub use uploads::{
@@ -192,9 +194,16 @@ impl AssetTransferQueue {
         gate: crate::gpu::GpuQueueAccessGate,
         limits: Arc<GpuLimits>,
         mapped_buffer_health: Arc<GpuMappedBufferHealth>,
+        mesh_validation_scopes_enabled: bool,
     ) {
-        self.gpu
-            .attach(device, queue, gate, limits, mapped_buffer_health);
+        self.gpu.attach(
+            device,
+            queue,
+            gate,
+            limits,
+            mapped_buffer_health,
+            mesh_validation_scopes_enabled,
+        );
     }
 
     /// Resident mesh pool.

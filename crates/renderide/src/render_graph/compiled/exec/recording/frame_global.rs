@@ -80,6 +80,57 @@ impl CompiledRenderGraph {
             return Ok(None);
         }
         let encode_start = Instant::now();
+        let mut encoder = {
+            let device = mv_ctx.device;
+            profiling::scope!("graph::frame_global::create_encoder");
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("render-graph-frame-global"),
+            })
+        };
+        let gpu_query = mv_ctx
+            .gpu
+            .gpu_profiler_mut()
+            .map(|p| p.begin_query("graph::frame_global", &mut encoder));
+        let pass_profiler = mv_ctx.gpu.take_gpu_profiler();
+
+        let record_result = self.record_frame_global_passes_into_encoder(
+            mv_ctx,
+            views,
+            transient_by_key,
+            &mut encoder,
+            upload_batch,
+            pass_profiler.as_ref(),
+        );
+        mv_ctx.gpu.restore_gpu_profiler(pass_profiler);
+        record_result?;
+        let encode_ms = elapsed_ms(encode_start);
+        let command_buffer =
+            Self::finish_frame_global_encoder(mv_ctx.gpu, encoder, gpu_query, encode_ms);
+        Ok(Some(command_buffer))
+    }
+
+    pub(in crate::render_graph::compiled::exec) fn frame_global_passes_are_inactive(
+        &self,
+        backend: &dyn GraphExecutionBackend,
+    ) -> bool {
+        let frame_resources = backend.frame_resources();
+        for pass_idx in self.schedule.frame_global_pass_indices().iter().copied() {
+            if !frame_resources.frame_global_pass_is_inactive(self.passes[pass_idx].name()) {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub(in crate::render_graph::compiled::exec) fn record_frame_global_passes_into_encoder(
+        &self,
+        mv_ctx: &mut MultiViewExecutionContext<'_>,
+        views: &[FrameView<'_>],
+        transient_by_key: &mut HashMap<GraphResolveKey, GraphResolvedResources>,
+        encoder: &mut wgpu::CommandEncoder,
+        upload_batch: &FrameUploadBatch,
+        pass_profiler: Option<&crate::profiling::GpuProfilerHandle>,
+    ) -> Result<(), GraphExecuteError> {
         let MultiViewExecutionContext {
             gpu,
             scene,
@@ -90,102 +141,72 @@ impl CompiledRenderGraph {
         } = mv_ctx;
 
         let first = views.first().ok_or(GraphExecuteError::NoViewsInBatch)?;
-        let mut encoder = {
-            profiling::scope!("graph::frame_global::create_encoder");
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("render-graph-frame-global"),
-            })
-        };
-        let gpu_query = gpu
-            .gpu_profiler_mut()
-            .map(|p| p.begin_query("graph::frame_global", &mut encoder));
-        let pass_profiler = gpu.take_gpu_profiler();
-
-        let record_result = (|| -> Result<(), GraphExecuteError> {
-            let resolved = {
-                profiling::scope!("graph::frame_global::resolve_target");
-                Self::resolve_view_from_target(
-                    first.view_id(),
-                    first.profile,
-                    &first.target,
-                    gpu,
-                    backbuffer_view_holder.as_ref(),
-                )
-            }?;
-            let resolved_resources = {
-                profiling::scope!("graph::frame_global::resolve_transients");
-                self.resolve_frame_global_transients(
-                    &resolved,
-                    transient_by_key,
-                    device,
-                    &mut **backend,
-                    gpu_limits,
-                )
-            }?;
-            {
-                profiling::scope!("graph::frame_global::resolve_imported_resources");
-                self.resolve_imported_textures(
-                    &resolved,
-                    backend.history_registry(),
-                    resolved_resources,
-                )?;
-                self.resolve_imported_buffers(
-                    backend.frame_resources(),
-                    backend.history_registry(),
-                    &resolved,
-                    resolved_resources,
-                )?;
-            }
-            let graph_resources: &GraphResolvedResources = &*resolved_resources;
-
-            let mut frame_params = {
-                profiling::scope!("graph::frame_global::build_frame_params");
-                helpers::frame_render_params_from_resolved(
-                    scene,
-                    &mut **backend,
-                    helpers::ResolvedFrameRenderParamsInputs {
-                        resolved: &resolved,
-                        host_camera: &first.host_camera,
-                        render_context: first.render_context,
-                        frame_time_seconds: first.frame_time_seconds,
-                        clear: first.clear,
-                        post_processing: first.post_processing(),
-                    },
-                )
-            };
-            let mut frame_blackboard = Self::build_frame_global_blackboard();
-
-            FrameGlobalPassLoop {
-                graph: self,
-                resolved: &resolved,
-                graph_resources,
-                frame_params: &mut frame_params,
-                frame_blackboard: &mut frame_blackboard,
-                encoder: &mut encoder,
+        let resolved = {
+            profiling::scope!("graph::frame_global::resolve_target");
+            Self::resolve_view_from_target(
+                first.view_id(),
+                first.profile,
+                &first.target,
+                gpu,
+                backbuffer_view_holder.as_ref(),
+            )
+        }?;
+        let resolved_resources = {
+            profiling::scope!("graph::frame_global::resolve_transients");
+            self.resolve_frame_global_transients(
+                &resolved,
+                transient_by_key,
                 device,
+                &mut **backend,
                 gpu_limits,
-                upload_batch,
-                pass_profiler: pass_profiler.as_ref(),
-            }
-            .record()?;
-            Ok(())
-        })();
-
-        gpu.restore_gpu_profiler(pass_profiler);
-        record_result?;
-        let encode_ms = elapsed_ms(encode_start);
-        let command_buffer = Self::finish_frame_global_encoder(gpu, encoder, gpu_query, encode_ms);
-        Ok(Some(command_buffer))
-    }
-
-    fn frame_global_passes_are_inactive(&self, backend: &dyn GraphExecutionBackend) -> bool {
-        let frame_resources = backend.frame_resources();
-        for pass_idx in self.schedule.frame_global_pass_indices().iter().copied() {
-            if !frame_resources.frame_global_pass_is_inactive(self.passes[pass_idx].name()) {
-                return false;
-            }
+            )
+        }?;
+        {
+            profiling::scope!("graph::frame_global::resolve_imported_resources");
+            self.resolve_imported_textures(
+                &resolved,
+                backend.history_registry(),
+                resolved_resources,
+            )?;
+            self.resolve_imported_buffers(
+                backend.frame_resources(),
+                backend.history_registry(),
+                &resolved,
+                resolved_resources,
+            )?;
         }
-        true
+        let graph_resources: &GraphResolvedResources = &*resolved_resources;
+
+        let mut frame_params = {
+            profiling::scope!("graph::frame_global::build_frame_params");
+            helpers::frame_render_params_from_resolved(
+                scene,
+                &mut **backend,
+                helpers::ResolvedFrameRenderParamsInputs {
+                    resolved: &resolved,
+                    host_camera: &first.host_camera,
+                    render_context: first.render_context,
+                    frame_time_seconds: first.frame_time_seconds,
+                    clear: first.clear,
+                    post_processing: first.post_processing(),
+                },
+            )
+        };
+        let mut frame_blackboard = Self::build_frame_global_blackboard();
+
+        FrameGlobalPassLoop {
+            graph: self,
+            resolved: &resolved,
+            graph_resources,
+            frame_params: &mut frame_params,
+            frame_blackboard: &mut frame_blackboard,
+            encoder,
+            device,
+            gpu_limits,
+            upload_batch,
+            pass_profiler,
+        }
+        .record()
     }
 
     fn finish_frame_global_encoder(

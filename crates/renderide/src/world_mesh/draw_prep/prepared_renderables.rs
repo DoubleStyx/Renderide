@@ -15,9 +15,10 @@
 mod expand;
 mod spatial;
 
-use hashbrown::HashSet;
+use hashbrown::{HashMap, HashSet};
 #[cfg(test)]
 use rayon::prelude::*;
+use std::ops::Range;
 
 use crate::cpu_parallelism::RENDER_COMMAND_CHUNK_DRAWS;
 #[cfg(test)]
@@ -157,6 +158,8 @@ fn populate_run_chunks(
 pub struct FramePreparedRenderables {
     /// Active render spaces captured while building this frame snapshot.
     active_space_ids: Vec<RenderSpaceId>,
+    /// Draw ranges per active render space in [`Self::draws`].
+    cached_space_draw_ranges: HashMap<RenderSpaceId, Range<usize>>,
     /// Dense expanded draws. Order is deterministic: render spaces in
     /// [`SceneCoordinator::render_space_ids`] order, then static renderers (ascending index),
     /// then skinned renderers (ascending index), then material slots in ascending index.
@@ -194,6 +197,7 @@ impl FramePreparedRenderables {
     pub fn empty(render_context: RenderingContext) -> Self {
         Self {
             active_space_ids: Vec::new(),
+            cached_space_draw_ranges: HashMap::new(),
             draws: Vec::new(),
             runs: Vec::new(),
             run_chunks: Vec::new(),
@@ -242,6 +246,7 @@ impl FramePreparedRenderables {
         profiling::scope!("mesh::prepared_renderables_build_for_frame");
         self.render_context = render_context;
         self.active_space_ids.clear();
+        self.cached_space_draw_ranges.clear();
         self.draws.clear();
         self.runs.clear();
         self.run_chunks.clear();
@@ -324,6 +329,7 @@ impl FramePreparedRenderables {
 
     /// Refreshes renderer runs, run chunks, and material keys from the current draw list.
     fn refresh_runs_material_keys_and_chunks(&mut self) {
+        self.refresh_cached_space_draw_ranges();
         self.material_property_key_signature = populate_runs_and_material_keys(
             &self.draws,
             &mut self.runs,
@@ -336,6 +342,24 @@ impl FramePreparedRenderables {
             PREPARED_RUN_CHUNK_DRAW_TARGET,
         );
         self.spatial.rebuild(&self.draws, &self.runs);
+    }
+
+    /// Rebuilds cached per-space draw ranges from the current active-space ordering.
+    fn refresh_cached_space_draw_ranges(&mut self) {
+        self.cached_space_draw_ranges.clear();
+        let mut cursor = 0usize;
+        for &space_id in &self.active_space_ids {
+            let start = cursor;
+            while self
+                .draws
+                .get(cursor)
+                .is_some_and(|draw| draw.space_id == space_id)
+            {
+                cursor += 1;
+            }
+            self.cached_space_draw_ranges
+                .insert(space_id, start..cursor);
+        }
     }
 
     /// Dense prepared draw slice backing [`Self::runs`].
@@ -395,6 +419,12 @@ impl FramePreparedRenderables {
         &self.active_space_ids
     }
 
+    /// Cached prepared draw rows for one render space.
+    pub(super) fn cached_draws_for_space(&self, id: RenderSpaceId) -> Option<&[FramePreparedDraw]> {
+        let range = self.cached_space_draw_ranges.get(&id)?;
+        self.draws.get(range.clone())
+    }
+
     /// Returns whether `space_id` uses a BVH instead of only linear buckets.
     #[inline]
     #[cfg(test)]
@@ -428,6 +458,7 @@ impl FramePreparedRenderables {
     pub(super) fn begin_cached_rebuild(&mut self, render_context: RenderingContext) {
         self.render_context = render_context;
         self.active_space_ids.clear();
+        self.cached_space_draw_ranges.clear();
         self.draws.clear();
         self.runs.clear();
         self.run_chunks.clear();
@@ -443,9 +474,50 @@ impl FramePreparedRenderables {
         self.draws.extend(draws.iter().cloned());
     }
 
+    /// Appends retained draw-template rows with dynamic cull geometry filled from renderer state.
+    pub(super) fn extend_cached_draws_with_cull_geometry(
+        &mut self,
+        draws: &[FramePreparedDraw],
+        cull_geometry: Option<MeshCullGeometry>,
+    ) {
+        self.draws.extend(draws.iter().cloned().map(|mut draw| {
+            draw.cull_geometry = cull_geometry;
+            draw
+        }));
+    }
+
     /// Mutable draw buffer used while a retained snapshot rebuild is in progress.
     pub(super) fn draws_mut_for_cached_rebuild(&mut self) -> &mut Vec<FramePreparedDraw> {
         &mut self.draws
+    }
+
+    /// Updates dynamic cull geometry for an already prepared renderer run.
+    pub(super) fn update_cached_renderer_cull_geometry(
+        &mut self,
+        space_id: RenderSpaceId,
+        skinned: bool,
+        renderable_index: usize,
+        instance_id: MeshRendererInstanceId,
+        cull_geometry: Option<MeshCullGeometry>,
+    ) {
+        for draw in &mut self.draws {
+            if draw.space_id == space_id
+                && draw.skinned == skinned
+                && draw.renderable_index == renderable_index
+                && draw.instance_id == instance_id
+            {
+                draw.cull_geometry = cull_geometry;
+            }
+        }
+    }
+
+    /// Refits cached spatial data for spaces whose dynamic bounds changed.
+    pub(super) fn refit_cached_spatial_for_spaces<I>(&mut self, space_ids: I) -> usize
+    where
+        I: IntoIterator<Item = RenderSpaceId>,
+    {
+        self.spatial
+            .refit_spaces(&self.draws, &self.runs, space_ids)
     }
 
     /// Finalizes a retained snapshot rebuild by refreshing runs, chunks, and material keys.

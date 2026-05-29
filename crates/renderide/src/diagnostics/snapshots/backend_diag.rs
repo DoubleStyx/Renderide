@@ -5,8 +5,8 @@
 //! HUD layer runs, so `diagnostics/` never borrows `&RenderBackend` directly.
 
 use crate::materials::{
-    MaterialPipelineCacheDiagnosticSnapshot, MaterialShaderGraphDiagnosticSnapshot,
-    RasterPipelineKind,
+    EmbeddedMaterialBindCacheDiagnosticSnapshot, MaterialPipelineCacheDiagnosticSnapshot,
+    MaterialShaderGraphDiagnosticSnapshot, RasterPipelineKind,
 };
 use crate::render_graph::frame_upload_batch::FrameUploadBatchStats;
 use crate::world_mesh::{RenderWorldMaintenanceStats, WorldMeshDrawStateRow, WorldMeshDrawStats};
@@ -110,6 +110,8 @@ pub struct BackendDiagSnapshot {
     pub material_shader_graph: MaterialShaderGraphDiagnosticSnapshot,
     /// Material pipeline cache diagnostics.
     pub material_pipeline_cache: MaterialPipelineCacheDiagnosticSnapshot,
+    /// Embedded material bind-group cache diagnostics.
+    pub embedded_material_bind_cache: EmbeddedMaterialBindCacheDiagnosticSnapshot,
     /// Pass count in the compiled main render graph.
     pub frame_graph_pass_count: usize,
     /// Pass count before compile-time render graph culling.

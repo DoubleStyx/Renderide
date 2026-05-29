@@ -7,14 +7,14 @@ use super::super::super::layout::{
     extract_float3_position_normal_as_vec4_streams, split_bone_weights_tail_for_gpu,
     uv0_float2_stream_bytes, vertex_float2_stream_bytes, wide_uv_stream_bytes,
 };
-use super::super::GpuMesh;
 use super::super::hints::{blendshape_descriptor_count, derived_streams_compatible_for_in_place};
 use super::super::tangent_generation::{
     TangentStreamSource, raw_tangent_payload_stream_bytes, tangent_stream_bytes,
 };
 use super::super::upload::{
-    padded_sparse_bytes, queue_init_buffer_size_matches, write_mesh_queue_buffer,
+    padded_sparse_bytes, queue_init_buffer_size_matches, write_mesh_upload_buffer,
 };
+use super::super::{GpuMesh, MeshBufferUploadSink, MeshDerivedStreamMask};
 
 /// Validates sparse blendshape GPU buffers and scatter ranges against a fresh [`extract_blendshape_offsets`] pass.
 pub(super) fn blendshape_and_deform_buffers_match_for_in_place(
@@ -130,8 +130,8 @@ pub(super) fn compatible_for_in_place_real_skeleton(
 pub(super) struct MeshInPlaceWriteContext<'a> {
     /// Mesh being rewritten.
     pub(super) mesh: &'a GpuMesh,
-    /// Queue receiving buffer writes.
-    pub(super) queue: &'a wgpu::Queue,
+    /// Sink receiving buffer writes.
+    pub(super) upload_sink: &'a dyn MeshBufferUploadSink,
     /// Raw host payload covering the validated layout.
     pub(super) raw: &'a [u8],
     /// Parsed byte layout over [`Self::raw`].
@@ -142,6 +142,8 @@ pub(super) struct MeshInPlaceWriteContext<'a> {
     pub(super) vertex_count: usize,
     /// Interleaved vertex stride as `usize`.
     pub(super) vertex_stride: usize,
+    /// Derived streams requested for this write.
+    pub(super) demand_mask: MeshDerivedStreamMask,
 }
 
 /// Writes interleaved VB then optional derived position/normal/uv/color streams.
@@ -154,8 +156,8 @@ pub(super) fn write_in_place_vertex_and_derived_streams(
     if write_vertex {
         {
             profiling::scope!("asset::mesh_write_in_place::write_interleaved_vertex");
-            write_mesh_queue_buffer(
-                ctx.queue,
+            write_mesh_upload_buffer(
+                ctx.upload_sink,
                 ctx.mesh.vertex_buffer.as_ref(),
                 0,
                 &ctx.raw[..ctx.layout.vertex_size],
@@ -167,12 +169,26 @@ pub(super) fn write_in_place_vertex_and_derived_streams(
         return;
     }
     if write_vertex {
-        write_in_place_position_normal_streams(ctx, vertex_slice);
-        write_in_place_uv0_stream(ctx, vertex_slice);
-        write_in_place_color_stream(ctx, vertex_slice);
-        write_in_place_wide_uv_stream(ctx, vertex_slice);
+        if ctx
+            .demand_mask
+            .intersects(MeshDerivedStreamMask::POSITION | MeshDerivedStreamMask::NORMAL)
+        {
+            write_in_place_position_normal_streams(ctx, vertex_slice);
+        }
+        if ctx.demand_mask.contains(MeshDerivedStreamMask::UV0) {
+            write_in_place_uv0_stream(ctx, vertex_slice);
+        }
+        if ctx.demand_mask.contains(MeshDerivedStreamMask::COLOR) {
+            write_in_place_color_stream(ctx, vertex_slice);
+        }
+        if ctx.demand_mask.contains(MeshDerivedStreamMask::WIDE_UV) {
+            write_in_place_wide_uv_stream(ctx, vertex_slice);
+        }
     }
 
+    if ctx
+        .demand_mask
+        .intersects(MeshDerivedStreamMask::TANGENT | MeshDerivedStreamMask::RAW_TANGENT)
     {
         profiling::scope!("asset::mesh_write_in_place::write_tangent_stream");
         let source = TangentStreamSource {
@@ -185,17 +201,21 @@ pub(super) fn write_in_place_vertex_and_derived_streams(
             index_format: ctx.data.index_buffer_format,
             submeshes: &ctx.data.submeshes,
         };
-        if let (Some(tb), Some(t)) = (
-            ctx.mesh.tangent_buffer.as_ref(),
-            tangent_stream_bytes(source, ctx.mesh.tangent_fallback_mode.generate_missing()),
-        ) {
-            write_mesh_queue_buffer(ctx.queue, tb.as_ref(), 0, &t);
+        if ctx.demand_mask.contains(MeshDerivedStreamMask::TANGENT)
+            && let (Some(tb), Some(t)) = (
+                ctx.mesh.tangent_buffer.as_ref(),
+                tangent_stream_bytes(source, ctx.mesh.tangent_fallback_mode.generate_missing()),
+            )
+        {
+            write_mesh_upload_buffer(ctx.upload_sink, tb.as_ref(), 0, &t);
         }
-        if let (Some(tb), Some(t)) = (
-            ctx.mesh.raw_tangent_buffer.as_ref(),
-            raw_tangent_payload_stream_bytes(source),
-        ) {
-            write_mesh_queue_buffer(ctx.queue, tb.as_ref(), 0, &t);
+        if ctx.demand_mask.contains(MeshDerivedStreamMask::RAW_TANGENT)
+            && let (Some(tb), Some(t)) = (
+                ctx.mesh.raw_tangent_buffer.as_ref(),
+                raw_tangent_payload_stream_bytes(source),
+            )
+        {
+            write_mesh_upload_buffer(ctx.upload_sink, tb.as_ref(), 0, &t);
         }
     }
 
@@ -203,7 +223,11 @@ pub(super) fn write_in_place_vertex_and_derived_streams(
         return;
     }
 
-    write_in_place_uv1_to_uv3_streams(ctx, vertex_slice);
+    if ctx.demand_mask.intersects(
+        MeshDerivedStreamMask::UV1 | MeshDerivedStreamMask::UV2 | MeshDerivedStreamMask::UV3,
+    ) {
+        write_in_place_uv1_to_uv3_streams(ctx, vertex_slice);
+    }
 }
 
 fn write_in_place_position_normal_streams(ctx: &MeshInPlaceWriteContext<'_>, vertex_slice: &[u8]) {
@@ -219,8 +243,8 @@ fn write_in_place_position_normal_streams(ctx: &MeshInPlaceWriteContext<'_>, ver
         )
         .as_ref(),
     ) {
-        write_mesh_queue_buffer(ctx.queue, pb.as_ref(), 0, pvec);
-        write_mesh_queue_buffer(ctx.queue, nb.as_ref(), 0, nvec);
+        write_mesh_upload_buffer(ctx.upload_sink, pb.as_ref(), 0, pvec);
+        write_mesh_upload_buffer(ctx.upload_sink, nb.as_ref(), 0, nvec);
     }
 }
 
@@ -235,7 +259,7 @@ fn write_in_place_uv0_stream(ctx: &MeshInPlaceWriteContext<'_>, vertex_slice: &[
             &ctx.data.vertex_attributes,
         ),
     ) {
-        write_mesh_queue_buffer(ctx.queue, uvb.as_ref(), 0, &uv);
+        write_mesh_upload_buffer(ctx.upload_sink, uvb.as_ref(), 0, &uv);
     }
 }
 
@@ -250,7 +274,7 @@ fn write_in_place_color_stream(ctx: &MeshInPlaceWriteContext<'_>, vertex_slice: 
             &ctx.data.vertex_attributes,
         ),
     ) {
-        write_mesh_queue_buffer(ctx.queue, cb.as_ref(), 0, &c);
+        write_mesh_upload_buffer(ctx.upload_sink, cb.as_ref(), 0, &c);
     }
 }
 
@@ -265,17 +289,32 @@ fn write_in_place_wide_uv_stream(ctx: &MeshInPlaceWriteContext<'_>, vertex_slice
             &ctx.data.vertex_attributes,
         ),
     ) {
-        write_mesh_queue_buffer(ctx.queue, uvb.as_ref(), 0, &uv);
+        write_mesh_upload_buffer(ctx.upload_sink, uvb.as_ref(), 0, &uv);
     }
 }
 
 fn write_in_place_uv1_to_uv3_streams(ctx: &MeshInPlaceWriteContext<'_>, vertex_slice: &[u8]) {
     profiling::scope!("asset::mesh_write_in_place::write_uv1_to_uv3_streams");
-    for (buffer, target) in [
-        (&ctx.mesh.uv1_buffer, VertexAttributeType::UV1),
-        (&ctx.mesh.uv2_buffer, VertexAttributeType::UV2),
-        (&ctx.mesh.uv3_buffer, VertexAttributeType::UV3),
+    for (buffer, target, mask) in [
+        (
+            &ctx.mesh.uv1_buffer,
+            VertexAttributeType::UV1,
+            MeshDerivedStreamMask::UV1,
+        ),
+        (
+            &ctx.mesh.uv2_buffer,
+            VertexAttributeType::UV2,
+            MeshDerivedStreamMask::UV2,
+        ),
+        (
+            &ctx.mesh.uv3_buffer,
+            VertexAttributeType::UV3,
+            MeshDerivedStreamMask::UV3,
+        ),
     ] {
+        if !ctx.demand_mask.contains(mask) {
+            continue;
+        }
         if let (Some(buffer), Some(uv)) = (
             buffer.as_ref(),
             vertex_float2_stream_bytes(
@@ -286,7 +325,7 @@ fn write_in_place_uv1_to_uv3_streams(ctx: &MeshInPlaceWriteContext<'_>, vertex_s
                 target,
             ),
         ) {
-            write_mesh_queue_buffer(ctx.queue, buffer.as_ref(), 0, &uv);
+            write_mesh_upload_buffer(ctx.upload_sink, buffer.as_ref(), 0, &uv);
         }
     }
 }
@@ -294,7 +333,7 @@ fn write_in_place_uv1_to_uv3_streams(ctx: &MeshInPlaceWriteContext<'_>, vertex_s
 /// Writes index buffer slice when `write_ib` is set.
 pub(super) fn write_in_place_index_buffer(
     mesh: &GpuMesh,
-    queue: &wgpu::Queue,
+    upload_sink: &dyn MeshBufferUploadSink,
     raw: &[u8],
     layout: &MeshBufferLayout,
     write_ib: bool,
@@ -305,7 +344,7 @@ pub(super) fn write_in_place_index_buffer(
     }
     let ib_slice =
         &raw[layout.index_buffer_start..layout.index_buffer_start + layout.index_buffer_length];
-    write_mesh_queue_buffer(queue, mesh.index_buffer.as_ref(), 0, ib_slice);
+    write_mesh_upload_buffer(upload_sink, mesh.index_buffer.as_ref(), 0, ib_slice);
 }
 
 /// Per-buffer hint flags driving [`write_in_place_bone_buffers`].
@@ -347,14 +386,14 @@ pub(super) fn write_in_place_bone_buffers(
             let bw = &ctx.raw[ctx.layout.bone_weights_start
                 ..ctx.layout.bone_weights_start + ctx.layout.bone_weights_length];
             if let Some(bcb) = &ctx.mesh.bone_counts_buffer {
-                write_mesh_queue_buffer(ctx.queue, bcb.as_ref(), 0, bc);
+                write_mesh_upload_buffer(ctx.upload_sink, bcb.as_ref(), 0, bc);
             }
             if let Some((ib, wb)) = split_bone_weights_tail_for_gpu(bc, bw, ctx.vertex_count) {
                 if let Some(bi) = &ctx.mesh.bone_indices_buffer {
-                    write_mesh_queue_buffer(ctx.queue, bi.as_ref(), 0, &ib);
+                    write_mesh_upload_buffer(ctx.upload_sink, bi.as_ref(), 0, &ib);
                 }
                 if let Some(bwt) = &ctx.mesh.bone_weights_vec4_buffer {
-                    write_mesh_queue_buffer(ctx.queue, bwt.as_ref(), 0, &wb);
+                    write_mesh_upload_buffer(ctx.upload_sink, bwt.as_ref(), 0, &wb);
                 }
             }
         }
@@ -367,7 +406,7 @@ pub(super) fn write_in_place_bone_buffers(
                     .iter()
                     .flat_map(|m| bytemuck::bytes_of(m).iter().copied())
                     .collect();
-                write_mesh_queue_buffer(ctx.queue, bp.as_ref(), 0, &bp_bytes);
+                write_mesh_upload_buffer(ctx.upload_sink, bp.as_ref(), 0, &bp_bytes);
             }
         }
     }
@@ -377,7 +416,7 @@ pub(super) fn write_in_place_bone_buffers(
 /// Sparse blendshape GPU buffer and CPU ranges.
 pub(super) fn write_in_place_blendshape_buffer(
     mesh: &GpuMesh,
-    queue: &wgpu::Queue,
+    upload_sink: &dyn MeshBufferUploadSink,
     raw: &[u8],
     layout: &MeshBufferLayout,
     data: &MeshUploadData,
@@ -400,7 +439,7 @@ pub(super) fn write_in_place_blendshape_buffer(
     };
     {
         profiling::scope!("asset::mesh_write_in_place::write_blendshape_gpu_buffers");
-        write_mesh_queue_buffer(queue, sb.as_ref(), 0, &sparse);
+        write_mesh_upload_buffer(upload_sink, sb.as_ref(), 0, &sparse);
     }
     Some(())
 }

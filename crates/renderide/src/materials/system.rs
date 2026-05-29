@@ -15,7 +15,8 @@ use crate::materials::host_data::{
 use crate::materials::PipelinePropertyResolver;
 use crate::materials::embedded::{EmbeddedMaterialBindError, EmbeddedMaterialBindResources};
 use crate::materials::{
-    MaterialPipelineCacheDiagnosticSnapshot, MaterialPipelineDesc, MaterialPipelineVariantSpec,
+    EmbeddedMaterialBindCacheDiagnosticSnapshot, MaterialPipelineCacheDiagnosticSnapshot,
+    MaterialPipelineDesc, MaterialPipelineVariantSpec,
 };
 use crate::materials::{MaterialShaderGraphDiagnosticSnapshot, MaterialShaderHotReloadReport};
 use crate::shared::bit_span::BitSpanMut;
@@ -51,6 +52,8 @@ pub(crate) struct MaterialSystemDiagnosticSnapshot {
     pub(crate) shader_graph: MaterialShaderGraphDiagnosticSnapshot,
     /// Material pipeline cache diagnostics.
     pub(crate) pipeline_cache: MaterialPipelineCacheDiagnosticSnapshot,
+    /// Embedded material bind-group cache diagnostics.
+    pub(crate) embedded_bind_cache: EmbeddedMaterialBindCacheDiagnosticSnapshot,
 }
 
 /// Host material tables, GPU registry/cache, embedded bind builder, and deferred shader routes.
@@ -238,6 +241,10 @@ impl MaterialSystem {
             pipeline_cache: self.material_registry.as_ref().map_or_else(
                 MaterialPipelineCacheDiagnosticSnapshot::default,
                 |registry| registry.pipeline_cache_diagnostics(),
+            ),
+            embedded_bind_cache: self.embedded_material_bind.as_ref().map_or_else(
+                EmbeddedMaterialBindCacheDiagnosticSnapshot::default,
+                EmbeddedMaterialBindResources::bind_cache_diagnostics,
             ),
         }
     }

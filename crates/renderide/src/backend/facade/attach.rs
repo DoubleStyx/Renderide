@@ -83,12 +83,18 @@ impl RenderBackend {
         self.renderer_settings = Some(renderer_settings.clone());
         self.surface_format = Some(surface_format);
         self.headless = headless;
+        let mesh_validation_scopes_enabled = cfg!(debug_assertions)
+            || renderer_settings
+                .read()
+                .ok()
+                .is_some_and(|settings| settings.debug.gpu_validation_layers);
         self.asset_transfers.attach_gpu_runtime(
             device.clone(),
             queue.clone(),
             gpu_queue_access_gate,
             Arc::clone(&gpu_limits),
             mapped_buffer_health,
+            mesh_validation_scopes_enabled,
         );
         self.frame_services
             .attach(device.as_ref(), queue.as_ref(), Arc::clone(&gpu_limits))?;

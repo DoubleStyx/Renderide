@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use hashbrown::{HashMap, HashSet};
 
+use crate::assets::mesh::{MeshDerivedStreamDemand, MeshDerivedStreamMask};
 use crate::backend::AssetTransferQueue;
 use crate::diagnostics::{DebugHudEncodeError, PerViewHudConfig, PerViewHudOutputs};
 use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
@@ -43,6 +44,7 @@ struct ViewAssetPrewarmRequests {
     uv2_stream_meshes: HashSet<i32>,
     uv3_stream_meshes: HashSet<i32>,
     wide_uv_stream_meshes: HashSet<i32>,
+    derived_stream_demands: HashMap<i32, MeshDerivedStreamDemand>,
 }
 
 impl ViewAssetPrewarmRequests {
@@ -50,13 +52,26 @@ impl ViewAssetPrewarmRequests {
         if item.mesh_asset_id < 0 {
             return;
         }
+        let mut demand = MeshDerivedStreamDemand {
+            mask: MeshDerivedStreamMask::DRAWABLE_PRIMARY,
+            tangent_fallback_mode: item.batch_key.embedded_tangent_fallback_mode,
+        };
         if item.batch_key.embedded_needs_uv1 {
             self.uv1_stream_meshes.insert(item.mesh_asset_id);
+            demand.mask |= MeshDerivedStreamMask::UV1;
+        }
+        if item.batch_key.embedded_needs_uv0 {
+            demand.mask |= MeshDerivedStreamMask::UV0;
+        }
+        if item.batch_key.embedded_needs_color {
+            demand.mask |= MeshDerivedStreamMask::COLOR;
         }
         if item.batch_key.embedded_needs_tangent && item.batch_key.embedded_raw_tangent_payload {
             self.raw_tangent_stream_meshes.insert(item.mesh_asset_id);
+            demand.mask |= MeshDerivedStreamMask::RAW_TANGENT;
         } else if item.batch_key.embedded_needs_tangent {
             self.tangent_stream_meshes.insert(item.mesh_asset_id);
+            demand.mask |= MeshDerivedStreamMask::TANGENT;
             let mode = self
                 .tangent_fallback_modes
                 .entry(item.mesh_asset_id)
@@ -65,13 +80,20 @@ impl ViewAssetPrewarmRequests {
         }
         if item.batch_key.embedded_needs_uv2 {
             self.uv2_stream_meshes.insert(item.mesh_asset_id);
+            demand.mask |= MeshDerivedStreamMask::UV2;
         }
         if item.batch_key.embedded_needs_uv3 {
             self.uv3_stream_meshes.insert(item.mesh_asset_id);
+            demand.mask |= MeshDerivedStreamMask::UV3;
         }
         if item.batch_key.embedded_needs_wide_uvs {
             self.wide_uv_stream_meshes.insert(item.mesh_asset_id);
+            demand.mask |= MeshDerivedStreamMask::WIDE_UV;
         }
+        self.derived_stream_demands
+            .entry(item.mesh_asset_id)
+            .or_default()
+            .merge(demand);
     }
 
     fn generated_tangent_mesh_count(&self) -> usize {
@@ -408,6 +430,35 @@ impl<'a> BackendGraphAccess<'a> {
         requests: &ViewAssetPrewarmRequests,
         mesh_ids_needing_all_extended_streams: &HashSet<i32>,
     ) {
+        {
+            let mesh_pool = self.asset_transfers.mesh_pool_mut();
+            for (&mesh_asset_id, &demand) in &requests.derived_stream_demands {
+                mesh_pool.record_derived_stream_demand(mesh_asset_id, demand);
+            }
+        }
+        for (&mesh_asset_id, demand) in &requests.derived_stream_demands {
+            if demand
+                .mask
+                .intersects(MeshDerivedStreamMask::POSITION | MeshDerivedStreamMask::NORMAL)
+            {
+                let _ = self
+                    .asset_transfers
+                    .mesh_pool_mut()
+                    .ensure_position_normal_vertex_streams(device, mesh_asset_id);
+            }
+            if demand.mask.contains(MeshDerivedStreamMask::UV0) {
+                let _ = self
+                    .asset_transfers
+                    .mesh_pool_mut()
+                    .ensure_uv0_vertex_stream(device, mesh_asset_id);
+            }
+            if demand.mask.contains(MeshDerivedStreamMask::COLOR) {
+                let _ = self
+                    .asset_transfers
+                    .mesh_pool_mut()
+                    .ensure_color_vertex_stream(device, mesh_asset_id);
+            }
+        }
         for &mesh_asset_id in mesh_ids_needing_all_extended_streams {
             let _ = self
                 .asset_transfers

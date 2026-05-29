@@ -262,6 +262,7 @@ mod tests {
         let candidate = UpdateCandidate {
             tag: "nightly-2026-05-27-2222222".to_owned(),
             commit: "2222222222222222222222222222222222222222".to_owned(),
+            changelog: String::new(),
             asset: ReleaseAsset {
                 name: asset_name_for(&metadata.platform, "nightly-2026-05-27-2222222"),
                 download_url: String::new(),

@@ -9,7 +9,9 @@ use crate::shared::{
 };
 
 use super::super::super::layout::{
-    WIDE_UV_VERTEX_STRIDE_BYTES, vertex_float2_stream_bytes, wide_uv_stream_bytes,
+    WIDE_UV_VERTEX_STRIDE_BYTES, color_float4_stream_bytes,
+    extract_float3_position_normal_as_vec4_streams, uv0_float2_stream_bytes,
+    vertex_float2_stream_bytes, wide_uv_stream_bytes,
 };
 use super::super::tangent_generation::{
     TangentStreamSource, raw_tangent_payload_stream_bytes, tangent_stream_bytes,
@@ -132,6 +134,99 @@ fn create_tangent_stream_buffer(
     );
     crate::profiling::note_resource_churn!(Buffer, "assets::mesh_tangent_stream");
     buffer
+}
+
+fn create_primary_stream_buffer(
+    device: &wgpu::Device,
+    asset_id: i32,
+    label: &str,
+    bytes: &[u8],
+) -> Arc<wgpu::Buffer> {
+    let buffer = Arc::new(
+        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(&format!("mesh {asset_id} {label}_stream")),
+            contents: bytes,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::VERTEX
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+        }),
+    );
+    crate::profiling::note_resource_churn!(Buffer, "assets::mesh_primary_stream");
+    buffer
+}
+
+/// Uploads position and normal streams from retained host vertex data.
+pub(in crate::assets::mesh::gpu_mesh) fn upload_position_normal_vertex_streams(
+    device: &wgpu::Device,
+    asset_id: i32,
+    source: UvVertexUploadSource<'_>,
+) -> (Option<Arc<wgpu::Buffer>>, Option<Arc<wgpu::Buffer>>) {
+    if source.vertex_count == 0 {
+        return (None, None);
+    }
+    let Some((positions, normals)) = extract_float3_position_normal_as_vec4_streams(
+        source.vertex_slice,
+        source.vertex_count,
+        source.vertex_stride,
+        source.vertex_attributes,
+    ) else {
+        return (None, None);
+    };
+    (
+        Some(create_primary_stream_buffer(
+            device,
+            asset_id,
+            "positions",
+            &positions,
+        )),
+        Some(create_primary_stream_buffer(
+            device, asset_id, "normals", &normals,
+        )),
+    )
+}
+
+/// Uploads a UV0 stream from retained host vertex data.
+pub(in crate::assets::mesh::gpu_mesh) fn upload_uv0_vertex_stream(
+    device: &wgpu::Device,
+    asset_id: i32,
+    source: UvVertexUploadSource<'_>,
+) -> Option<Arc<wgpu::Buffer>> {
+    if source.vertex_count == 0 {
+        return None;
+    }
+    let uv_bytes = uv0_float2_stream_bytes(
+        source.vertex_slice,
+        source.vertex_count,
+        source.vertex_stride,
+        source.vertex_attributes,
+    )?;
+    Some(create_vertex_stream_buffer(
+        device, asset_id, "uv0", &uv_bytes,
+    ))
+}
+
+/// Uploads a color stream from retained host vertex data.
+pub(in crate::assets::mesh::gpu_mesh) fn upload_color_vertex_stream(
+    device: &wgpu::Device,
+    asset_id: i32,
+    source: UvVertexUploadSource<'_>,
+) -> Option<Arc<wgpu::Buffer>> {
+    if source.vertex_count == 0 {
+        return None;
+    }
+    let color_bytes = color_float4_stream_bytes(
+        source.vertex_slice,
+        source.vertex_count,
+        source.vertex_stride,
+        source.vertex_attributes,
+    )?;
+    Some(create_vertex_stream_buffer(
+        device,
+        asset_id,
+        "color",
+        &color_bytes,
+    ))
 }
 
 /// Uploads tangent and UV1-UV3 streams from host vertex data.

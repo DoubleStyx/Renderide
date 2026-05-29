@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use crate::assets::mesh::MeshDerivedStreamDemand;
 use crate::assets::mesh::MeshGpuUploadContext;
 use crate::gpu::{GpuLimits, GpuMappedBufferHealth};
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
@@ -16,6 +17,7 @@ use crate::shared::{
 
 use super::AssetTransferQueue;
 use super::integrator::StepResult;
+use super::mesh_upload_batch::MeshUploadStagingBatch;
 
 /// GPU handles needed to publish particle-generated meshes on the renderer thread.
 pub(in crate::backend::asset_transfers) struct ParticleTaskGpu<'a> {
@@ -23,10 +25,12 @@ pub(in crate::backend::asset_transfers) struct ParticleTaskGpu<'a> {
     pub(in crate::backend::asset_transfers) device: &'a Arc<wgpu::Device>,
     /// Effective GPU limits used by mesh upload validation.
     pub(in crate::backend::asset_transfers) gpu_limits: &'a Arc<GpuLimits>,
-    /// Queue used for generated mesh buffer writes.
-    pub(in crate::backend::asset_transfers) queue: &'a Arc<wgpu::Queue>,
     /// Shared mapped-buffer invalidation generation from the active GPU context.
     pub(in crate::backend::asset_transfers) mapped_buffer_health: &'a Arc<GpuMappedBufferHealth>,
+    /// Deferred mesh buffer upload batch for this drain.
+    pub(in crate::backend::asset_transfers) mesh_upload_batch: &'a Arc<MeshUploadStagingBatch>,
+    /// Whether wgpu validation scopes are enabled for generated mesh uploads.
+    pub(in crate::backend::asset_transfers) mesh_validation_scopes_enabled: bool,
 }
 
 /// Cooperative point render-buffer upload task.
@@ -345,10 +349,13 @@ fn poll_trail_task(
 fn particle_mesh_gpu_context(gpu: ParticleTaskGpu<'_>) -> MeshGpuUploadContext<'_> {
     MeshGpuUploadContext {
         device: gpu.device.as_ref(),
-        queue: gpu.queue.as_ref(),
+        upload_sink: gpu.mesh_upload_batch.as_ref(),
+        prepared_derived_streams: None,
         gpu_limits: gpu.gpu_limits.as_ref(),
         mapped_buffer_health: gpu.mapped_buffer_health.as_ref(),
         mapped_buffer_generation: gpu.mapped_buffer_health.generation(),
+        derived_stream_demand: MeshDerivedStreamDemand::GENERATED_PARTICLE,
+        validation_scopes_enabled: gpu.mesh_validation_scopes_enabled,
     }
 }
 
@@ -513,9 +520,9 @@ fn copy_render_buffer_payload(
 /// Sends a point render-buffer consumed acknowledgement.
 fn send_point_render_buffer_consumed(ipc: &mut Option<&mut DualQueueIpc>, asset_id: i32) {
     if let Some(ipc) = ipc.as_deref_mut() {
-        let ack_queued = ipc.send_background_reliable(RendererCommand::PointRenderBufferConsumed(
-            PointRenderBufferConsumed { asset_id },
-        ));
+        let ack_queued = ipc.enqueue_background_reliable(
+            RendererCommand::PointRenderBufferConsumed(PointRenderBufferConsumed { asset_id }),
+        );
         if !ack_queued {
             logger::warn!(
                 "point render buffer {asset_id}: failed to enqueue reliable consumed ack"
@@ -527,9 +534,9 @@ fn send_point_render_buffer_consumed(ipc: &mut Option<&mut DualQueueIpc>, asset_
 /// Sends a trail render-buffer consumed acknowledgement.
 fn send_trail_render_buffer_consumed(ipc: &mut Option<&mut DualQueueIpc>, asset_id: i32) {
     if let Some(ipc) = ipc.as_deref_mut() {
-        let ack_queued = ipc.send_background_reliable(RendererCommand::TrailRenderBufferConsumed(
-            TrailRenderBufferConsumed { asset_id },
-        ));
+        let ack_queued = ipc.enqueue_background_reliable(
+            RendererCommand::TrailRenderBufferConsumed(TrailRenderBufferConsumed { asset_id }),
+        );
         if !ack_queued {
             logger::warn!(
                 "trail render buffer {asset_id}: failed to enqueue reliable consumed ack"

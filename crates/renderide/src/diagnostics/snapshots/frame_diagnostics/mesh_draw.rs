@@ -94,6 +94,7 @@ mod tests {
             material_shader_bindings: 9,
             material_shader_graph: Default::default(),
             material_pipeline_cache: Default::default(),
+            embedded_material_bind_cache: Default::default(),
             frame_graph_pass_count: 10,
             frame_graph_registered_pass_count: 12,
             frame_graph_topo_levels: 11,

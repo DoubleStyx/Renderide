@@ -16,7 +16,10 @@ use super::super::hints::{
     validated_submesh_topologies, wgpu_index_format,
 };
 use super::super::upload::queue_init_buffer_size_matches;
-use super::super::{ExtendedVertexStreamSource, GpuMesh, extended_vertex_stream_source_from_raw};
+use super::super::{
+    ExtendedVertexStreamSource, GpuMesh, MeshBufferUploadSink, MeshDerivedStreamDemand,
+    MeshDerivedStreamMask, extended_vertex_stream_source_from_raw, rebuildable_derived_stream_mask,
+};
 use super::in_place_buffers::{
     BoneBufferWriteHints, MeshInPlaceWriteContext,
     blendshape_and_deform_buffers_match_for_in_place, compatible_for_in_place_real_skeleton,
@@ -130,15 +133,16 @@ impl GpuMesh {
         false
     }
 
-    /// Overwrites vertex, index, and optional bone/blendshape/derived stream data using
-    /// [`wgpu::Queue::write_buffer`], honoring [`MeshUploadHintFlag`] when set (otherwise full writes).
+    /// Overwrites vertex, index, and optional bone/blendshape/derived stream data through
+    /// the mesh upload sink, honoring [`MeshUploadHintFlag`] when set (otherwise full writes).
     pub(crate) fn write_in_place(
         &self,
-        queue: &wgpu::Queue,
+        upload_sink: &dyn MeshBufferUploadSink,
         raw: &[u8],
         data: &MeshUploadData,
         layout: &MeshBufferLayout,
         hint: MeshUploadHintFlag,
+        demand: MeshDerivedStreamDemand,
     ) -> Option<GpuMesh> {
         profiling::scope!("asset::mesh_write_in_place");
         let vertex_stride = compute_vertex_stride(&data.vertex_attributes).max(1) as u32;
@@ -158,12 +162,13 @@ impl GpuMesh {
 
         let write_context = MeshInPlaceWriteContext {
             mesh: self,
-            queue,
+            upload_sink,
             raw,
             layout,
             data,
             vertex_count: vc_usize,
             vertex_stride: vertex_stride_us,
+            demand_mask: demand.mask,
         };
 
         {
@@ -176,7 +181,7 @@ impl GpuMesh {
         }
         {
             profiling::scope!("asset::mesh_write_in_place::write_index");
-            write_in_place_index_buffer(self, queue, raw, layout, flags.write_index);
+            write_in_place_index_buffer(self, upload_sink, raw, layout, flags.write_index);
         }
         {
             profiling::scope!("asset::mesh_write_in_place::write_bones");
@@ -192,7 +197,14 @@ impl GpuMesh {
         }
         {
             profiling::scope!("asset::mesh_write_in_place::write_blendshapes");
-            write_in_place_blendshape_buffer(self, queue, raw, layout, data, flags.write_blend)?;
+            write_in_place_blendshape_buffer(
+                self,
+                upload_sink,
+                raw,
+                layout,
+                data,
+                flags.write_blend,
+            )?;
         }
 
         let skinning = updated_in_place_skinning_matrices(self, raw, data, layout, flags);
@@ -208,6 +220,13 @@ impl GpuMesh {
                 flags.write_index,
             )
         };
+        let derived_stream_state = updated_derived_stream_state(
+            self,
+            demand,
+            extended_vertex_stream_source.as_ref(),
+            flags.write_vertex,
+            flags.write_index,
+        );
 
         Some(rebuild_mesh_after_in_place_write(
             self,
@@ -216,6 +235,7 @@ impl GpuMesh {
             want_submesh_topologies,
             skinning,
             extended_vertex_stream_source,
+            derived_stream_state,
         ))
     }
 }
@@ -281,6 +301,7 @@ fn rebuild_mesh_after_in_place_write(
     submesh_topologies: Vec<RasterPrimitiveTopology>,
     skinning: Vec<Mat4>,
     extended_vertex_stream_source: Option<ExtendedVertexStreamSource>,
+    derived_stream_state: super::super::MeshDerivedStreamState,
 ) -> GpuMesh {
     profiling::scope!("asset::mesh_write_in_place::rebuild_metadata");
     GpuMesh {
@@ -316,11 +337,32 @@ fn rebuild_mesh_after_in_place_write(
         uv2_buffer: mesh.uv2_buffer.clone(),
         uv3_buffer: mesh.uv3_buffer.clone(),
         wide_uv_buffer: mesh.wide_uv_buffer.clone(),
+        derived_stream_state,
         extended_vertex_stream_source,
         has_skeleton: mesh.has_skeleton,
         skinning_bind_matrices: skinning,
         resident_bytes: mesh.resident_bytes,
     }
+}
+
+fn updated_derived_stream_state(
+    mesh: &GpuMesh,
+    demand: MeshDerivedStreamDemand,
+    source: Option<&ExtendedVertexStreamSource>,
+    write_vertex: bool,
+    write_index: bool,
+) -> super::super::MeshDerivedStreamState {
+    let mut changed = MeshDerivedStreamMask::EMPTY;
+    if write_vertex {
+        changed |= MeshDerivedStreamMask::VERTEX_DERIVED;
+    }
+    if write_index {
+        changed |= MeshDerivedStreamMask::INDEX_DERIVED;
+    }
+    let available = mesh.available_derived_stream_mask();
+    let rebuildable = rebuildable_derived_stream_mask(source, available);
+    mesh.derived_stream_state
+        .after_in_place_update(demand, changed, rebuildable)
 }
 
 fn updated_extended_vertex_stream_source(

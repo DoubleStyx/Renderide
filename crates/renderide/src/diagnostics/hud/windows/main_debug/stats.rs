@@ -462,14 +462,19 @@ fn render_world_maintenance_row(ui: &imgui::Ui, stats: RenderWorldMaintenanceSta
         ui,
         "Render world",
         &format!(
-            "retained={}  dirty={}  refreshed={}  templates={}  mesh={}  full-space={}  full-world={}  particle-snapshot={}  skips={}",
+            "retained={}  dirty={}  topo={}  mat={}  xform={}  mesh={}  refreshed={}  templates={}  full-space={}  full-world={}  spatial={}/{}  particle-snapshot={}  skips={}",
             stats.retained_template_count,
             stats.dirty_renderer_count,
+            stats.topology_dirty_count,
+            stats.material_dirty_count,
+            stats.transform_only_dirty_count,
+            stats.mesh_asset_invalidation_count,
             stats.refreshed_renderer_count,
             stats.refreshed_template_count,
-            stats.mesh_asset_invalidation_count,
             stats.full_space_rebuild_count,
             stats.full_world_rebuild_count,
+            stats.spatial_rebuild_count,
+            stats.spatial_refit_count,
             stats.particle_snapshot_rebuild_count,
             stats.steady_state_skip_count
         ),
@@ -654,6 +659,38 @@ impl StatsSection for MaterialsSection {
                     r.material_pipeline_cache.hits,
                     r.material_pipeline_cache.misses,
                     r.material_pipeline_cache.evictions
+                ),
+            );
+            kv(
+                ui,
+                "Pipeline warmups",
+                &format!(
+                    "{} queued / {} ready / {} pending / {} failed",
+                    r.material_pipeline_cache.warmup_queued,
+                    r.material_pipeline_cache.warmup_ready_hits,
+                    r.material_pipeline_cache.warmup_pending_hits,
+                    r.material_pipeline_cache.warmup_failed_skips
+                ),
+            );
+            kv(
+                ui,
+                "Shader module cache",
+                &format!(
+                    "{} entries / {} hits / {} misses",
+                    r.material_pipeline_cache.shader_module_entries,
+                    r.material_pipeline_cache.shader_module_hits,
+                    r.material_pipeline_cache.shader_module_misses
+                ),
+            );
+            kv(
+                ui,
+                "Material bind cache",
+                &format!(
+                    "{} entries / {} hits / {} misses / {} evictions",
+                    r.embedded_material_bind_cache.entries,
+                    r.embedded_material_bind_cache.hits,
+                    r.embedded_material_bind_cache.misses,
+                    r.embedded_material_bind_cache.evictions
                 ),
             );
             kv(

@@ -27,6 +27,8 @@ pub(super) fn texture_lease_from_entry(
         pool_id: id,
         texture,
         view,
+        view_cache: slot.view_cache.clone(),
+        resource_generation: slot.resource_generation,
     })
 }
 
