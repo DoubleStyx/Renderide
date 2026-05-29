@@ -257,6 +257,7 @@ pub(crate) fn prepare_derived_stream_bytes(
     prepared
 }
 
+#[cfg(feature = "tracy")]
 impl PreparedDerivedStreams {
     /// Returns the streams with prepared byte payloads.
     pub(crate) fn available_mask(&self) -> MeshDerivedStreamMask {
