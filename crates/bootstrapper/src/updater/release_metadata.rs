@@ -30,9 +30,17 @@ pub(super) fn current_platform() -> Option<&'static str> {
     {
         Some("linux-x86_64")
     }
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    {
+        Some("linux-aarch64")
+    }
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     {
         Some("windows-x86_64")
+    }
+    #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+    {
+        Some("windows-aarch64")
     }
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
     {
@@ -44,7 +52,9 @@ pub(super) fn current_platform() -> Option<&'static str> {
     }
     #[cfg(not(any(
         all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "aarch64"),
         all(target_os = "windows", target_arch = "x86_64"),
+        all(target_os = "windows", target_arch = "aarch64"),
         all(target_os = "macos", target_arch = "x86_64"),
         all(target_os = "macos", target_arch = "aarch64")
     )))]
