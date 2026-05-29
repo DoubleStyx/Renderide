@@ -4,8 +4,9 @@ use hashbrown::HashMap;
 use std::ops::Range;
 use std::time::Instant;
 
+use crate::camera::HostCameraFrame;
 use crate::diagnostics::PerViewHudOutputsSlot;
-use crate::graph_inputs::FrameSystemsShared;
+use crate::graph_inputs::{FrameSystemsShared, FrameViewClear};
 use crate::render_graph::blackboard::GraphCommandStatsSlot;
 use crate::render_graph::context::GraphResolvedResources;
 use crate::render_graph::error::GraphExecuteError;
@@ -14,12 +15,12 @@ use crate::render_graph::pass::PassPhase;
 use crate::render_graph::schedule::{
     RecordingBatch, RecordingBatchKind, RecordingUnit, RenderPassMaterializationGroup,
 };
+use crate::shared::RenderingContext;
 
-use super::super::super::helpers;
-use super::super::super::{CompiledRenderGraph, ResolvedView};
+use super::super::super::{CompiledRenderGraph, ResolvedView, ViewPostProcessing};
 use super::super::{
     GraphResolveKey, PerViewEncodeOutput, PerViewRecordShared, PerViewWorkItem,
-    ResolvedOffscreenColorCopy, elapsed_ms,
+    PreparedPerViewFrameInput, ResolvedOffscreenColorCopy, elapsed_ms,
 };
 
 struct PerViewUnitEncodeOutput {
@@ -27,6 +28,21 @@ struct PerViewUnitEncodeOutput {
     encode_ms: f64,
     finish_ms: f64,
     command_stats: crate::render_graph::blackboard::GraphCommandStats,
+}
+
+struct PerViewInlineEncodeOutput {
+    encode_ms: f64,
+    command_stats: crate::render_graph::blackboard::GraphCommandStats,
+    recorded_gpu_query: bool,
+}
+
+#[derive(Clone, Copy)]
+struct PerViewFrameParamsInputs<'a> {
+    host_camera: &'a HostCameraFrame,
+    render_context: RenderingContext,
+    frame_time_seconds: f32,
+    clear: FrameViewClear,
+    post_processing: ViewPostProcessing,
 }
 
 /// Returns the exclusive batch index and unit index for a contiguous serial run.
@@ -81,8 +97,10 @@ impl CompiledRenderGraph {
             render_context,
             frame_time_seconds,
             clear,
+            post_processing,
             initial_blackboard,
             resolved,
+            frame_input,
             ..
         } = work_item;
 
@@ -93,11 +111,15 @@ impl CompiledRenderGraph {
 
         let mut frame_params = Self::build_per_view_frame_params(
             shared,
+            &frame_input,
             &resolved_view,
-            &host_camera,
-            render_context,
-            frame_time_seconds,
-            clear,
+            PerViewFrameParamsInputs {
+                host_camera: &host_camera,
+                render_context,
+                frame_time_seconds,
+                clear,
+                post_processing,
+            },
         );
         let mut view_blackboard =
             self.build_per_view_blackboard(&frame_params, graph_resources, initial_blackboard);
@@ -112,10 +134,12 @@ impl CompiledRenderGraph {
                 view_idx,
                 &resolved_view,
                 graph_resources,
+                &frame_input,
                 &host_camera,
                 render_context,
                 frame_time_seconds,
                 clear,
+                post_processing,
                 &mut frame_params,
                 &mut view_blackboard,
                 resolved.offscreen_color_copy.as_ref(),
@@ -143,6 +167,76 @@ impl CompiledRenderGraph {
             encode_ms,
             finish_ms,
             command_stats,
+        })
+    }
+
+    /// Records one serial per-view work item into a caller-owned command encoder.
+    pub(in crate::render_graph::compiled::exec) fn record_one_view_into_encoder(
+        &self,
+        shared: &PerViewRecordShared<'_>,
+        work_item: PerViewWorkItem,
+        transient_by_key: &HashMap<GraphResolveKey, GraphResolvedResources>,
+        encoder: &mut wgpu::CommandEncoder,
+        upload_batch: &FrameUploadBatch,
+        profiler: Option<&crate::profiling::GpuProfilerHandle>,
+    ) -> Result<PerViewEncodeOutput, GraphExecuteError> {
+        profiling::scope!("graph::per_view::single_encoder");
+        debug_assert!(
+            !self
+                .schedule
+                .recording_plan
+                .phase_has_parallel_batches(PassPhase::PerView)
+        );
+        let PerViewWorkItem {
+            view_idx,
+            host_camera,
+            render_context,
+            frame_time_seconds,
+            clear,
+            post_processing,
+            initial_blackboard,
+            resolved,
+            frame_input,
+            ..
+        } = work_item;
+
+        let resolved_view = resolved.as_resolved();
+        let resolved_resources =
+            self.resolve_per_view_graph_resources(shared, &resolved_view, transient_by_key)?;
+        let graph_resources: &GraphResolvedResources = &resolved_resources;
+        let mut frame_params = Self::build_per_view_frame_params(
+            shared,
+            &frame_input,
+            &resolved_view,
+            PerViewFrameParamsInputs {
+                host_camera: &host_camera,
+                render_context,
+                frame_time_seconds,
+                clear,
+                post_processing,
+            },
+        );
+        let mut view_blackboard =
+            self.build_per_view_blackboard(&frame_params, graph_resources, initial_blackboard);
+        let output = self.record_one_view_flat_into_encoder(
+            shared,
+            view_idx,
+            &resolved_view,
+            graph_resources,
+            &mut frame_params,
+            &mut view_blackboard,
+            resolved.offscreen_color_copy.as_ref(),
+            encoder,
+            upload_batch,
+            profiler,
+        )?;
+        let hud_outputs = view_blackboard.take::<PerViewHudOutputsSlot>();
+        Ok(PerViewEncodeOutput {
+            command_buffers: Vec::new(),
+            hud_outputs,
+            encode_ms: output.encode_ms,
+            finish_ms: 0.0,
+            command_stats: output.command_stats,
         })
     }
 
@@ -178,7 +272,56 @@ impl CompiledRenderGraph {
                 label: Some("render-graph-per-view"),
             })
         };
-        let gpu_query = profiler.map(|p| p.begin_query("graph::per_view", &mut encoder));
+        let output = self.record_one_view_flat_into_encoder(
+            shared,
+            view_idx,
+            resolved_view,
+            graph_resources,
+            frame_params,
+            view_blackboard,
+            offscreen_color_copy,
+            &mut encoder,
+            upload_batch,
+            profiler,
+        )?;
+        let encode_ms = output.encode_ms.max(elapsed_ms(encode_start));
+        if !output.command_stats.has_recorded_work() && !output.recorded_gpu_query {
+            return Ok((Vec::new(), output.command_stats, encode_ms, 0.0));
+        }
+        let (command_buffer, finish_ms) = {
+            profiling::scope!("CommandEncoder::finish::graph_per_view");
+            let finish_start = Instant::now();
+            let command_buffer = encoder.finish();
+            let finish_ms = elapsed_ms(finish_start);
+            (command_buffer, finish_ms)
+        };
+        Ok((
+            vec![command_buffer],
+            output.command_stats,
+            encode_ms,
+            finish_ms,
+        ))
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "flat recording keeps existing borrow scopes explicit"
+    )]
+    fn record_one_view_flat_into_encoder<'a>(
+        &self,
+        shared: &'a PerViewRecordShared<'a>,
+        view_idx: usize,
+        resolved_view: &'a ResolvedView<'a>,
+        graph_resources: &'a GraphResolvedResources,
+        frame_params: &mut crate::graph_inputs::GraphPassFrame<'a>,
+        view_blackboard: &mut crate::render_graph::blackboard::Blackboard,
+        offscreen_color_copy: Option<&ResolvedOffscreenColorCopy>,
+        encoder: &mut wgpu::CommandEncoder,
+        upload_batch: &FrameUploadBatch,
+        profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
+    ) -> Result<PerViewInlineEncodeOutput, GraphExecuteError> {
+        let encode_start = Instant::now();
+        let gpu_query = profiler.map(|p| p.begin_query("graph::per_view", encoder));
         {
             profiling::scope!("graph::per_view::pass_loop");
             self.record_phase_steps(
@@ -188,7 +331,7 @@ impl CompiledRenderGraph {
                 graph_resources,
                 frame_params,
                 view_blackboard,
-                &mut encoder,
+                encoder,
                 shared.device,
                 shared.gpu_limits,
                 upload_batch,
@@ -196,12 +339,12 @@ impl CompiledRenderGraph {
             )?;
         }
         let offscreen_copy_recorded =
-            Self::record_offscreen_color_copy(&mut encoder, offscreen_color_copy, profiler);
-        let gpu_query_recorded = gpu_query.is_some();
+            Self::record_offscreen_color_copy(encoder, offscreen_color_copy, profiler);
+        let recorded_gpu_query = gpu_query.is_some();
         if let Some(query) = gpu_query
             && let Some(prof) = profiler
         {
-            prof.end_query(&mut encoder, query);
+            prof.end_query(encoder, query);
         }
         let mut command_stats = view_blackboard
             .get_untracked::<GraphCommandStatsSlot>()
@@ -210,18 +353,11 @@ impl CompiledRenderGraph {
         if offscreen_color_copy.is_some() {
             command_stats.record_copy_result(offscreen_copy_recorded);
         }
-        let encode_ms = elapsed_ms(encode_start);
-        if !command_stats.has_recorded_work() && !gpu_query_recorded {
-            return Ok((Vec::new(), command_stats, encode_ms, 0.0));
-        }
-        let (command_buffer, finish_ms) = {
-            profiling::scope!("CommandEncoder::finish::graph_per_view");
-            let finish_start = Instant::now();
-            let command_buffer = encoder.finish();
-            let finish_ms = elapsed_ms(finish_start);
-            (command_buffer, finish_ms)
-        };
-        Ok((vec![command_buffer], command_stats, encode_ms, finish_ms))
+        Ok(PerViewInlineEncodeOutput {
+            encode_ms: elapsed_ms(encode_start),
+            command_stats,
+            recorded_gpu_query,
+        })
     }
 
     #[expect(
@@ -234,10 +370,12 @@ impl CompiledRenderGraph {
         view_idx: usize,
         resolved_view: &'a ResolvedView<'a>,
         graph_resources: &'a GraphResolvedResources,
-        host_camera: &crate::camera::HostCameraFrame,
-        render_context: crate::shared::RenderingContext,
+        frame_input: &'a PreparedPerViewFrameInput,
+        host_camera: &HostCameraFrame,
+        render_context: RenderingContext,
         frame_time_seconds: f32,
-        clear: crate::graph_inputs::FrameViewClear,
+        clear: FrameViewClear,
+        post_processing: ViewPostProcessing,
         frame_params: &mut crate::graph_inputs::GraphPassFrame<'a>,
         view_blackboard: &mut crate::render_graph::blackboard::Blackboard,
         offscreen_color_copy: Option<&ResolvedOffscreenColorCopy>,
@@ -288,10 +426,12 @@ impl CompiledRenderGraph {
                         view_idx,
                         resolved_view,
                         graph_resources,
+                        frame_input,
                         host_camera,
                         render_context,
                         frame_time_seconds,
                         clear,
+                        post_processing,
                         view_blackboard,
                         batch,
                         upload_batch,
@@ -400,7 +540,7 @@ impl CompiledRenderGraph {
 
     #[expect(
         clippy::too_many_arguments,
-        reason = "parallel workers rebuild view-local frame params"
+        reason = "parallel workers build independent frame wrappers"
     )]
     fn record_parallel_batch<'a>(
         &self,
@@ -408,10 +548,12 @@ impl CompiledRenderGraph {
         view_idx: usize,
         resolved_view: &'a ResolvedView<'a>,
         graph_resources: &'a GraphResolvedResources,
-        host_camera: &crate::camera::HostCameraFrame,
-        render_context: crate::shared::RenderingContext,
+        frame_input: &'a PreparedPerViewFrameInput,
+        host_camera: &HostCameraFrame,
+        render_context: RenderingContext,
         frame_time_seconds: f32,
-        clear: crate::graph_inputs::FrameViewClear,
+        clear: FrameViewClear,
+        post_processing: ViewPostProcessing,
         view_blackboard: &crate::render_graph::blackboard::Blackboard,
         batch: RecordingBatch,
         upload_batch: &FrameUploadBatch,
@@ -425,11 +567,15 @@ impl CompiledRenderGraph {
                 let unit = self.schedule.recording_plan.units[unit_idx];
                 let mut frame_params = Self::build_per_view_frame_params(
                     shared,
+                    frame_input,
                     resolved_view,
-                    host_camera,
-                    render_context,
-                    frame_time_seconds,
-                    clear,
+                    PerViewFrameParamsInputs {
+                        host_camera,
+                        render_context,
+                        frame_time_seconds,
+                        clear,
+                        post_processing,
+                    },
                 );
                 let mut local_blackboard = view_blackboard.clone_read_only();
                 local_blackboard.insert_untracked::<GraphCommandStatsSlot>(
@@ -679,15 +825,12 @@ impl CompiledRenderGraph {
     /// Builds [`crate::graph_inputs::GraphPassFrame`] for one per-view pass batch.
     fn build_per_view_frame_params<'a>(
         shared: &'a PerViewRecordShared<'a>,
+        frame_input: &'a PreparedPerViewFrameInput,
         resolved: &'a ResolvedView<'a>,
-        host_camera: &crate::camera::HostCameraFrame,
-        render_context: crate::shared::RenderingContext,
-        frame_time_seconds: f32,
-        clear: crate::graph_inputs::FrameViewClear,
+        inputs: PerViewFrameParamsInputs<'a>,
     ) -> crate::graph_inputs::GraphPassFrame<'a> {
-        profiling::scope!("graph::per_view::build_frame_params");
-        let hi_z_slot = shared.occlusion.ensure_hi_z_state(resolved.view_id);
-        helpers::frame_render_params_from_shared(
+        profiling::scope!("graph::per_view::reuse_frame_params");
+        frame_input.frame_params(
             FrameSystemsShared {
                 scene: shared.scene,
                 occlusion: shared.occlusion,
@@ -700,18 +843,13 @@ impl CompiledRenderGraph {
                 skin_cache: shared.skin_cache,
                 debug_hud: shared.debug_hud,
             },
-            helpers::GraphPassFrameViewInputs {
-                resolved,
-                scene_color_format: shared.scene_color_format,
-                host_camera,
-                render_context,
-                frame_time_seconds,
-                clear,
-                post_processing: resolved.post_processing,
-                gpu_limits: shared.gpu_limits_arc.clone(),
-                msaa_depth_resolve: shared.msaa_depth_resolve.clone(),
-                hi_z_slot,
-            },
+            resolved,
+            shared.scene_color_format,
+            inputs.host_camera,
+            inputs.render_context,
+            inputs.frame_time_seconds,
+            inputs.clear,
+            inputs.post_processing,
         )
     }
 }

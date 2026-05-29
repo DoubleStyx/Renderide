@@ -12,6 +12,8 @@ pub struct CommandEncodingProfileSample {
     pub view_count: usize,
     /// Number of command buffers submitted in the batch.
     pub command_buffers: usize,
+    /// Command recording path selected by the graph executor.
+    pub recording_path: u64,
     /// Frame-global pass count in the compiled schedule.
     pub frame_global_passes: usize,
     /// Per-view pass count in the compiled schedule.
@@ -64,6 +66,10 @@ pub struct CommandEncodingProfileSample {
     pub upload_drain_ms: f64,
     /// CPU time spent inside the upload encoder `CommandEncoder::finish`.
     pub upload_finish_ms: f64,
+    /// CPU time spent encoding the single-swapchain graph command path.
+    pub single_swapchain_encode_ms: f64,
+    /// CPU time spent inside the single-swapchain graph command encoder `finish`.
+    pub single_swapchain_finish_ms: f64,
     /// CPU time spent allocating and assembling the final command-buffer batch.
     pub command_batch_assembly_ms: f64,
     /// CPU time spent enqueueing the submit batch to the GPU driver thread.
@@ -113,6 +119,10 @@ fn plot_pass_counts(sample: &CommandEncodingProfileSample) {
     tracy_plot!(
         "command_encoding::command_buffers",
         sample.command_buffers as f64
+    );
+    tracy_plot!(
+        "command_encoding::recording_path",
+        sample.recording_path as f64
     );
     tracy_plot!(
         "command_encoding::frame_global_passes",
@@ -214,6 +224,14 @@ fn plot_encoding_timings(sample: &CommandEncodingProfileSample) {
     tracy_plot!(
         "command_encoding::upload_finish_ms",
         sample.upload_finish_ms
+    );
+    tracy_plot!(
+        "command_encoding::single_swapchain_encode_ms",
+        sample.single_swapchain_encode_ms
+    );
+    tracy_plot!(
+        "command_encoding::single_swapchain_finish_ms",
+        sample.single_swapchain_finish_ms
     );
     tracy_plot!(
         "command_encoding::command_batch_assembly_ms",

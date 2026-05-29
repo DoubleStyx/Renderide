@@ -4,7 +4,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::super::super::frame_upload_batch::FrameUploadBatchStats;
 use super::super::super::pool::TransientPoolMetrics;
-use super::{CompiledRenderGraph, RecordedPerViewBatch, SubmitFrameBatchStats, TimedCommandBuffer};
+use super::{
+    CompiledRenderGraph, GraphCommandRecordingPath, RecordedPerViewBatch, SubmitFrameBatchStats,
+    TimedCommandBuffer,
+};
 use crate::diagnostics::gpu_flight_recorder::GpuFlightEventKind;
 use crate::gpu::GpuContext;
 use crate::render_graph::blackboard::GraphCommandStats;
@@ -18,6 +21,7 @@ pub(super) struct CommandEncodingDiagnostics {
     pub(super) view_count: usize,
     pub(super) target_is_swapchain: bool,
     pub(super) command_buffers: usize,
+    pub(super) recording_path: GraphCommandRecordingPath,
     pub(super) frame_global_passes: usize,
     pub(super) per_view_passes: usize,
     pub(super) scheduler_passes: usize,
@@ -55,6 +59,8 @@ pub(super) struct CommandEncodingDiagnostics {
     pub(super) per_view_max_finish_ms: f64,
     pub(super) upload_drain_ms: f64,
     pub(super) upload_finish_ms: f64,
+    pub(super) single_swapchain_encode_ms: f64,
+    pub(super) single_swapchain_finish_ms: f64,
     pub(super) command_batch_assembly_ms: f64,
     pub(super) submit_enqueue_ms: f64,
     pub(super) transient_delta: TransientPoolMetricsDelta,
@@ -68,6 +74,7 @@ impl CommandEncodingDiagnostics {
             view_count,
             target_is_swapchain: false,
             command_buffers: 0,
+            recording_path: GraphCommandRecordingPath::StandardCommandBuffers,
             frame_global_passes: graph.schedule_hud.frame_global_count,
             per_view_passes: graph.schedule_hud.per_view_count,
             scheduler_passes: graph.schedule_hud.pass_count,
@@ -121,6 +128,8 @@ impl CommandEncodingDiagnostics {
             per_view_max_finish_ms: 0.0,
             upload_drain_ms: 0.0,
             upload_finish_ms: 0.0,
+            single_swapchain_encode_ms: 0.0,
+            single_swapchain_finish_ms: 0.0,
             command_batch_assembly_ms: 0.0,
             submit_enqueue_ms: 0.0,
             transient_delta: TransientPoolMetricsDelta::default(),
@@ -151,16 +160,23 @@ impl CommandEncodingDiagnostics {
         self.upload_stats = submit.upload_stats;
     }
 
+    pub(super) fn apply_single_swapchain(&mut self, encode_ms: f64, finish_ms: f64) {
+        self.single_swapchain_encode_ms = encode_ms;
+        self.single_swapchain_finish_ms = finish_ms;
+    }
+
     pub(super) fn max_encoder_finish_ms(&self) -> f64 {
         self.frame_global_finish_ms
             .max(self.per_view_max_finish_ms)
             .max(self.upload_finish_ms)
+            .max(self.single_swapchain_finish_ms)
     }
 
     pub(super) fn plot(&self) {
         let sample = crate::profiling::CommandEncodingProfileSample {
             view_count: self.view_count,
             command_buffers: self.command_buffers,
+            recording_path: self.recording_path.as_plot_value(),
             frame_global_passes: self.frame_global_passes,
             per_view_passes: self.per_view_passes,
             transient_textures: self.transient_texture_count,
@@ -189,6 +205,8 @@ impl CommandEncodingDiagnostics {
             per_view_finish_ms: self.per_view_finish_ms,
             upload_drain_ms: self.upload_drain_ms,
             upload_finish_ms: self.upload_finish_ms,
+            single_swapchain_encode_ms: self.single_swapchain_encode_ms,
+            single_swapchain_finish_ms: self.single_swapchain_finish_ms,
             command_batch_assembly_ms: self.command_batch_assembly_ms,
             submit_enqueue_ms: self.submit_enqueue_ms,
             max_encoder_finish_ms: self.max_encoder_finish_ms(),
@@ -234,13 +252,15 @@ impl CommandEncodingDiagnostics {
             return;
         }
         logger::warn!(
-            "slow command encoder finish: max_finish_ms={:.3} frame_global_finish_ms={:.3} per_view_max_finish_ms={:.3} upload_finish_ms={:.3} views={} command_buffers={} passes(frame_global/per_view)={}/{} scheduler(passes/registered/culled/compile_skipped/waves/largest_wave/submit_steps/upload_phases/resource_events/import_finals/dependency_edges/merge_groups/materialized_groups/async_compute_capable/parallel_units/parallel_batches/attachment_resolves/transient_store/transient_discard/bandwidth_bytes)={}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{} transients(textures/slots/texture_lanes/buffer_lanes)={}/{}/{}/{} validation(diagnostics/parameter_schemas)={}/{} transient_misses(tex/buf)={}/{} uploads(writes/bytes/staged/fallback)={}/{}/{}/{} upload_arena(persistent_bytes/temp_bytes/reuses/grows/temp_fallbacks/oversized_queue/capacity/free/inflight/remapping)={}/{}/{}/{}/{}/{}/{}/{}/{}/{} timings_ms(pre_resolve/prepare/frame_global_encode/per_view_encode/upload_drain/assemble/submit)={:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3} commands(draws/instance_batches/pipeline_pass_submits/skipped/raster/compute/encoder/render_passes/copies/skipped_copies/resolves/skipped_resolves/bandwidth_bytes)={}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
+            "slow command encoder finish: max_finish_ms={:.3} frame_global_finish_ms={:.3} per_view_max_finish_ms={:.3} upload_finish_ms={:.3} single_swapchain_finish_ms={:.3} views={} command_buffers={} recording_path={:?} passes(frame_global/per_view)={}/{} scheduler(passes/registered/culled/compile_skipped/waves/largest_wave/submit_steps/upload_phases/resource_events/import_finals/dependency_edges/merge_groups/materialized_groups/async_compute_capable/parallel_units/parallel_batches/attachment_resolves/transient_store/transient_discard/bandwidth_bytes)={}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{} transients(textures/slots/texture_lanes/buffer_lanes)={}/{}/{}/{} validation(diagnostics/parameter_schemas)={}/{} transient_misses(tex/buf)={}/{} uploads(writes/bytes/staged/fallback)={}/{}/{}/{} upload_arena(persistent_bytes/temp_bytes/reuses/grows/temp_fallbacks/oversized_queue/capacity/free/inflight/remapping)={}/{}/{}/{}/{}/{}/{}/{}/{}/{} timings_ms(pre_resolve/prepare/frame_global_encode/per_view_encode/upload_drain/single_swapchain_encode/assemble/submit)={:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3} commands(draws/instance_batches/pipeline_pass_submits/skipped/raster/compute/encoder/render_passes/copies/skipped_copies/resolves/skipped_resolves/bandwidth_bytes)={}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
             max_finish_ms,
             self.frame_global_finish_ms,
             self.per_view_max_finish_ms,
             self.upload_finish_ms,
+            self.single_swapchain_finish_ms,
             self.view_count,
             self.command_buffers,
+            self.recording_path,
             self.frame_global_passes,
             self.per_view_passes,
             self.scheduler_passes,
@@ -290,6 +310,7 @@ impl CommandEncodingDiagnostics {
             self.frame_global_encode_ms,
             self.per_view_encode_ms,
             self.upload_drain_ms,
+            self.single_swapchain_encode_ms,
             self.command_batch_assembly_ms,
             self.submit_enqueue_ms,
             self.command_stats.draw_items,
