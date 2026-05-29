@@ -59,12 +59,45 @@ impl GpuProfilerHandle {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
     ) -> Option<Self> {
+        Self::try_new_for_backend(adapter.get_info().backend, device, queue)
+    }
+
+    /// Creates a new handle for a known backend if the device supports timestamp queries.
+    ///
+    /// Used by [`crate::gpu::GpuContext`] when a replacement profiler is needed while an older
+    /// profiler frame waits for driver-thread submit completion.
+    pub fn try_new_for_backend(
+        backend: wgpu::Backend,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> Option<Self> {
+        Self::try_new_for_backend_inner(backend, device, queue, true)
+    }
+
+    /// Creates a new unbridged handle for a known backend if timestamp queries are available.
+    ///
+    /// Replacement profilers use this while an older command-buffer batch still waits for the
+    /// driver thread to submit, avoiding Tracy bridge synchronization work inside that overlap.
+    pub fn try_new_for_backend_unbridged(
+        backend: wgpu::Backend,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> Option<Self> {
+        Self::try_new_for_backend_inner(backend, device, queue, false)
+    }
+
+    /// Shared constructor for bridged and intentionally unbridged profiler handles.
+    fn try_new_for_backend_inner(
+        backend: wgpu::Backend,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        allow_tracy_bridge: bool,
+    ) -> Option<Self> {
         let features = device.features();
         if !features.contains(wgpu::Features::TIMESTAMP_QUERY) {
             return None;
         }
-        let backend = adapter.get_info().backend;
-        let initial_mode = if tracy_client::Client::is_connected() {
+        let initial_mode = if allow_tracy_bridge && tracy_client::Client::is_connected() {
             TracyBridgeMode::Bridged
         } else {
             TracyBridgeMode::Unbridged
@@ -111,8 +144,8 @@ impl GpuProfilerHandle {
     /// The underlying `tracy-client` GPU API does not gate serial GPU events on
     /// `TRACY_ON_DEMAND`, so Renderide keeps `wgpu-profiler` unbridged while the GUI is
     /// disconnected. When a GUI connects, this method swaps in a fresh Tracy-bridged profiler
-    /// before the next frame opens any queries. When it disconnects, the bridge is replaced by an
-    /// unbridged profiler for the same reason.
+    /// before the next frame opens any queries and after old timestamp results have drained.
+    /// When it disconnects, the bridge is replaced by an unbridged profiler for the same reason.
     pub fn refresh_tracy_bridge(
         &mut self,
         backend: wgpu::Backend,
@@ -130,6 +163,7 @@ impl GpuProfilerHandle {
             target_mode,
             self.has_queries_opened_since_frame_end(),
             pending_submit_end,
+            self.has_unresolved_result_frames(),
         );
         let TracyBridgeAction::Rebuild(mode) = action else {
             return;
@@ -183,6 +217,12 @@ impl GpuProfilerHandle {
     #[inline]
     pub fn has_queries_opened_since_frame_end(&self) -> bool {
         self.queries_opened_since_frame_end.load(Ordering::Acquire)
+    }
+
+    /// Returns whether ended profiler frames still have unread timestamp results.
+    #[inline]
+    pub fn has_unresolved_result_frames(&self) -> bool {
+        !self.pending_frame_stats.lock().is_empty()
     }
 
     /// Opens an encoder-level GPU timestamp query.
@@ -240,9 +280,10 @@ impl GpuProfilerHandle {
     ///
     /// Call once per render tick after all command encoders for this frame have been submitted.
     /// Empty CPU ticks are intentionally ignored so `wgpu-profiler` does not enqueue empty GPU
-    /// frames that later appear as missing markers in Tracy.
+    /// frames that later appear as missing markers in Tracy. `frame_order` is the renderer-local
+    /// monotonic order used to publish completed frames from a multi-handle pool.
     #[inline]
-    pub fn end_frame_if_queries_opened(&mut self) -> bool {
+    pub fn end_frame_if_queries_opened(&mut self, frame_order: u64) -> bool {
         let had_queries = self
             .queries_opened_since_frame_end
             .swap(false, Ordering::AcqRel);
@@ -250,7 +291,7 @@ impl GpuProfilerHandle {
         if had_queries {
             match self.inner.end_frame() {
                 Ok(()) => {
-                    self.record_frame_stats(opened_queries);
+                    self.record_frame_stats(opened_queries, frame_order);
                     self.warn_if_soft_budget_exceeded(opened_queries);
                 }
                 Err(e) => {
@@ -262,12 +303,13 @@ impl GpuProfilerHandle {
     }
 
     /// Stores query accounting for a frame accepted by `wgpu-profiler`.
-    fn record_frame_stats(&self, opened_queries: u32) {
+    fn record_frame_stats(&self, opened_queries: u32, frame_order: u64) {
         let mut pending = self.pending_frame_stats.lock();
         if pending.len() >= GPU_PROFILER_PENDING_FRAMES {
             pending.pop_front();
         }
         pending.push_back(super::GpuProfilerFrameStats {
+            frame_order,
             opened_queries,
             skipped_queries: 0,
             soft_query_budget: GPU_PROFILER_SOFT_QUERY_BUDGET,
@@ -311,6 +353,7 @@ impl GpuProfilerHandle {
                 .lock()
                 .pop_front()
                 .unwrap_or(super::GpuProfilerFrameStats {
+                    frame_order: 0,
                     opened_queries: out.len() as u32,
                     skipped_queries: 0,
                     soft_query_budget: GPU_PROFILER_SOFT_QUERY_BUDGET,
@@ -371,11 +414,12 @@ fn tracy_bridge_action(
     target_mode: TracyBridgeMode,
     frame_has_queries: bool,
     pending_submit_end: bool,
+    unresolved_result_frames: bool,
 ) -> TracyBridgeAction {
     if current_mode == target_mode {
         return TracyBridgeAction::Keep;
     }
-    if frame_has_queries || pending_submit_end {
+    if frame_has_queries || pending_submit_end || unresolved_result_frames {
         return TracyBridgeAction::Defer;
     }
     TracyBridgeAction::Rebuild(target_mode)
@@ -393,6 +437,7 @@ mod tests {
                 TracyBridgeMode::Unbridged,
                 false,
                 false,
+                false,
             ),
             TracyBridgeAction::Keep
         );
@@ -400,6 +445,7 @@ mod tests {
             tracy_bridge_action(
                 TracyBridgeMode::Bridged,
                 TracyBridgeMode::Bridged,
+                false,
                 false,
                 false,
             ),
@@ -415,6 +461,7 @@ mod tests {
                 TracyBridgeMode::Bridged,
                 false,
                 false,
+                false,
             ),
             TracyBridgeAction::Rebuild(TracyBridgeMode::Bridged)
         );
@@ -426,6 +473,7 @@ mod tests {
             tracy_bridge_action(
                 TracyBridgeMode::Bridged,
                 TracyBridgeMode::Unbridged,
+                false,
                 false,
                 false,
             ),
@@ -441,6 +489,7 @@ mod tests {
                 TracyBridgeMode::Bridged,
                 true,
                 false,
+                false,
             ),
             TracyBridgeAction::Defer
         );
@@ -452,6 +501,21 @@ mod tests {
             tracy_bridge_action(
                 TracyBridgeMode::Bridged,
                 TracyBridgeMode::Unbridged,
+                false,
+                true,
+                false,
+            ),
+            TracyBridgeAction::Defer
+        );
+    }
+
+    #[test]
+    fn bridge_action_defers_when_result_frames_are_unresolved() {
+        assert_eq!(
+            tracy_bridge_action(
+                TracyBridgeMode::Bridged,
+                TracyBridgeMode::Unbridged,
+                false,
                 false,
                 true,
             ),

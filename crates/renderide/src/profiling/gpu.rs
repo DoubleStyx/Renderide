@@ -47,6 +47,8 @@ pub struct GpuPassEntry {
 /// Per-frame GPU profiler accounting paired with a resolved timestamp result tree.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GpuProfilerFrameStats {
+    /// Monotonic profiler-frame order assigned when the frame was accepted by the profiler.
+    pub frame_order: u64,
     /// Timestamp query scopes opened for the frame.
     pub opened_queries: u32,
     /// Lower-priority timestamp scopes skipped for the frame after hitting the query budget.
