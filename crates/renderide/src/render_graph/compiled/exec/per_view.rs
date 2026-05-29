@@ -4,10 +4,14 @@ use super::{
     CompiledRenderGraph, GraphExecuteError, PerViewRecordInputs, PerViewRecordOutput,
     PerViewWorkItem,
 };
-use crate::cpu_parallelism::{FrameCpuWorkload, FrameParallelPolicy};
+use crate::cpu_parallelism::{
+    FrameCpuWorkload, FrameParallelPolicy, ParallelAdmission, record_parallel_admission,
+};
 
 /// Per-view work items assigned to one recording worker.
 const PER_VIEW_RECORD_PARALLEL_CHUNK_VIEWS: usize = 1;
+/// Draw-equivalent work assigned to each per-view graph pass during recording admission.
+const PER_VIEW_RECORD_PASS_DRAW_EQUIVALENT: usize = 64;
 
 impl CompiledRenderGraph {
     /// Drives the per-view recording phase serially for a single view or across Rayon workers for
@@ -24,9 +28,19 @@ impl CompiledRenderGraph {
             .iter()
             .map(|work_item| work_item.estimated_draw_count)
             .sum::<usize>();
-        let admission = FrameParallelPolicy::for_current_thread_pool().admit_draw_heavy_views(
-            FrameCpuWorkload::view_draws(n_views, total_draw_count),
+        let estimated_record_work =
+            per_view_record_draw_equivalent(n_views, total_draw_count, self.pass_count());
+        let admission = per_view_record_admission(
+            FrameParallelPolicy::for_current_thread_pool(),
+            n_views,
+            estimated_record_work,
             PER_VIEW_RECORD_PARALLEL_CHUNK_VIEWS,
+        );
+        record_parallel_admission(
+            "graph_record_per_view",
+            estimated_record_work,
+            n_views,
+            admission,
         );
         if admission.is_parallel() {
             self.record_per_view_outputs_parallel(
@@ -159,6 +173,29 @@ impl CompiledRenderGraph {
     }
 }
 
+fn per_view_record_admission(
+    policy: FrameParallelPolicy,
+    view_count: usize,
+    estimated_record_work: usize,
+    chunk_views: usize,
+) -> ParallelAdmission {
+    policy.admit_draw_heavy_views(
+        FrameCpuWorkload::view_draws(view_count, estimated_record_work),
+        chunk_views,
+    )
+}
+
+fn per_view_record_draw_equivalent(
+    view_count: usize,
+    total_draw_count: usize,
+    pass_count: usize,
+) -> usize {
+    let pass_record_work = view_count
+        .saturating_mul(pass_count)
+        .saturating_mul(PER_VIEW_RECORD_PASS_DRAW_EQUIVALENT);
+    total_draw_count.saturating_add(pass_record_work)
+}
+
 /// Returns outputs sorted by view index, validating that every expected view was recorded once.
 fn collect_ordered_per_view_outputs(
     mut indexed_outputs: Vec<(usize, PerViewRecordOutput)>,
@@ -185,4 +222,45 @@ fn collect_ordered_per_view_outputs(
         .into_iter()
         .map(|(_, output)| output)
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn per_view_record_admission_keeps_single_view_serial() {
+        let admission = per_view_record_admission(FrameParallelPolicy::new(4), 1, usize::MAX, 1);
+
+        assert_eq!(admission, ParallelAdmission::Serial);
+    }
+
+    #[test]
+    fn per_view_record_admission_stays_serial_for_tiny_two_view_graphs() {
+        let estimated_record_work = per_view_record_draw_equivalent(2, 0, 3);
+        let admission =
+            per_view_record_admission(FrameParallelPolicy::new(4), 2, estimated_record_work, 1);
+
+        assert_eq!(estimated_record_work, 384);
+        assert_eq!(admission, ParallelAdmission::Serial);
+    }
+
+    #[test]
+    fn per_view_record_admission_counts_pass_recording_work() {
+        let estimated_record_work = per_view_record_draw_equivalent(2, 0, 4);
+        let admission =
+            per_view_record_admission(FrameParallelPolicy::new(4), 2, estimated_record_work, 1);
+
+        assert_eq!(estimated_record_work, 512);
+        assert_eq!(admission, ParallelAdmission::Parallel { chunk_size: 1 });
+    }
+
+    #[test]
+    fn per_view_record_admission_counts_draw_work() {
+        let estimated_record_work = per_view_record_draw_equivalent(2, 512, 0);
+        let admission =
+            per_view_record_admission(FrameParallelPolicy::new(4), 2, estimated_record_work, 1);
+
+        assert_eq!(admission, ParallelAdmission::Parallel { chunk_size: 1 });
+    }
 }
