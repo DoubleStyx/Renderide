@@ -28,6 +28,7 @@ use crate::render_graph::blackboard::GraphCommandStats;
 use crate::render_graph::execution_backend::{
     GraphAssetResources, GraphFrameResources, GraphViewBlackboardPreparer,
 };
+use crate::render_graph::swapchain_scope::SwapchainScope;
 use crate::scene::SceneCoordinator;
 
 use super::super::context::{GraphResolvedResources, PostSubmitContext};
@@ -63,6 +64,17 @@ struct ViewBlackboardPrepareShared<'a> {
     scene_color_format: wgpu::TextureFormat,
     gpu_limits_arc: Option<Arc<GpuLimits>>,
     msaa_depth_resolve: Option<Arc<MsaaDepthResolveResources>>,
+}
+
+struct RecordSubmitFinalizeInputs<'a, 'view> {
+    views: &'a [FrameView<'view>],
+    transient_by_key: HashMap<GraphResolveKey, GraphResolvedResources>,
+    upload_batch: &'a FrameUploadBatch,
+    per_view_work_items: Vec<PerViewWorkItem>,
+    swapchain_scope: &'a mut SwapchainScope,
+    backbuffer_view_holder: &'a Option<wgpu::TextureView>,
+    queue_arc: &'a Arc<wgpu::Queue>,
+    device: &'a wgpu::Device,
 }
 
 mod diagnostics;
@@ -151,22 +163,66 @@ impl CompiledRenderGraph {
             return Ok(());
         }
 
-        let Some((mut swapchain_scope, backbuffer_view_holder)) = ({
-            profiling::scope!("graph::enter_swapchain_scope");
-            self.enter_swapchain_scope_for_views(gpu, views)?
-        }) else {
-            return Ok(());
-        };
-
         let device_arc = gpu.device().clone();
         let queue_arc = gpu.queue().clone();
         let limits_arc = gpu.limits().clone();
         let device = device_arc.as_ref();
         let gpu_limits = limits_arc.as_ref();
 
-        let transient_metrics_before = backend.transient_pool_mut().metrics();
-        backend.transient_pool_mut().begin_generation();
         let mut command_diagnostics = CommandEncodingDiagnostics::new(self, views.len());
+
+        let mut transient_by_key: HashMap<GraphResolveKey, GraphResolvedResources> = HashMap::new();
+
+        // Deferred graph upload sink shared by pre-record, frame-global, and per-view paths.
+        // Drained onto the main thread after all recording completes and before submit.
+        let upload_batch = FrameUploadBatch::new();
+
+        let backbuffer_view_holder = None;
+        let mut per_view_work_items = {
+            let mut mv_ctx = MultiViewExecutionContext {
+                gpu,
+                scene,
+                backend,
+                device,
+                gpu_limits,
+                backbuffer_view_holder: &backbuffer_view_holder,
+            };
+            self.prepare_before_swapchain_acquire(
+                &mut mv_ctx,
+                views,
+                &mut transient_by_key,
+                &upload_batch,
+                &mut command_diagnostics,
+            )?
+        };
+
+        let (mut swapchain_scope, backbuffer_view_holder) = match self
+            .late_acquire_swapchain_for_prepared_views(gpu, views, &mut per_view_work_items)
+        {
+            Ok(Some(acquired)) => acquired,
+            Ok(None) => {
+                Self::release_transients_after_early_exit(
+                    gpu,
+                    scene,
+                    backend,
+                    device,
+                    gpu_limits,
+                    transient_by_key,
+                );
+                return Ok(());
+            }
+            Err(err) => {
+                Self::release_transients_after_early_exit(
+                    gpu,
+                    scene,
+                    backend,
+                    device,
+                    gpu_limits,
+                    transient_by_key,
+                );
+                return Err(err);
+            }
+        };
 
         let mut mv_ctx = MultiViewExecutionContext {
             gpu,
@@ -177,39 +233,46 @@ impl CompiledRenderGraph {
             backbuffer_view_holder: &backbuffer_view_holder,
         };
 
-        let mut transient_by_key: HashMap<GraphResolveKey, GraphResolvedResources> = HashMap::new();
-
-        // Pre-resolve transient textures and buffers for every unique view key before any
-        // per-view recording begins. The record loop then reads `transient_by_key` without
-        // touching the shared transient pool.
-        let pre_resolve_start = Instant::now();
-        {
-            profiling::scope!("graph::pre_resolve_transients_for_views");
-            self.pre_resolve_transients_for_views(&mut mv_ctx, views, &mut transient_by_key)?;
-        }
-        command_diagnostics.pre_resolve_ms = elapsed_ms(pre_resolve_start);
-        command_diagnostics.transient_delta = TransientPoolMetricsDelta::from_metrics(
-            transient_metrics_before,
-            mv_ctx.backend.transient_pool_mut().metrics(),
-        );
-
-        // Deferred graph upload sink shared by pre-record, frame-global, and per-view paths.
-        // Drained onto the main thread after all recording completes and before submit.
-        let upload_batch = FrameUploadBatch::new();
-
-        let (per_view_work_items, prepare_resources_ms) =
-            self.prepare_resources_and_work_items(&mut mv_ctx, views, &upload_batch)?;
-        command_diagnostics.prepare_resources_ms = prepare_resources_ms;
-
-        // -- Frame-global pass (optional) -----------------------------------------------------
-        let frame_global_cmd = self.encode_frame_global_command(
+        self.record_submit_and_finalize_multi_view(
             &mut mv_ctx,
+            RecordSubmitFinalizeInputs {
+                views,
+                transient_by_key,
+                upload_batch: &upload_batch,
+                per_view_work_items,
+                swapchain_scope: &mut swapchain_scope,
+                backbuffer_view_holder: &backbuffer_view_holder,
+                queue_arc: &queue_arc,
+                device,
+            },
+            &mut command_diagnostics,
+        )
+    }
+
+    fn record_submit_and_finalize_multi_view(
+        &mut self,
+        mv_ctx: &mut MultiViewExecutionContext<'_>,
+        inputs: RecordSubmitFinalizeInputs<'_, '_>,
+        command_diagnostics: &mut CommandEncodingDiagnostics,
+    ) -> Result<(), GraphExecuteError> {
+        let RecordSubmitFinalizeInputs {
+            views,
+            mut transient_by_key,
+            upload_batch,
+            per_view_work_items,
+            swapchain_scope,
+            backbuffer_view_holder,
+            queue_arc,
+            device,
+        } = inputs;
+
+        let frame_global_cmd = self.encode_frame_global_command(
+            mv_ctx,
             views,
             &mut transient_by_key,
-            &upload_batch,
-            &mut command_diagnostics,
+            upload_batch,
+            command_diagnostics,
         )?;
-
         // -- Per-view recording (no submit per view) ------------------------------------------
         let RecordedPerViewBatch {
             per_view_cmds,
@@ -220,10 +283,10 @@ impl CompiledRenderGraph {
         } = {
             profiling::scope!("graph::record_per_view_batch");
             let batch = self.record_per_view_batch(
-                &mut mv_ctx,
+                mv_ctx,
                 per_view_work_items,
                 &transient_by_key,
-                &upload_batch,
+                upload_batch,
             )?;
             command_diagnostics.apply_per_view(&batch);
             batch
@@ -232,7 +295,7 @@ impl CompiledRenderGraph {
         let submit_stats = {
             profiling::scope!("graph::submit_frame_batch");
             self.submit_frame_batch(
-                &mut mv_ctx,
+                mv_ctx,
                 SubmitFrameInputs {
                     views,
                     frame_global_cmd,
@@ -240,10 +303,10 @@ impl CompiledRenderGraph {
                     per_view_profiler_cmd,
                     per_view_hud_outputs,
                     per_view_occlusion_info: &per_view_occlusion_info,
-                    swapchain_scope: &mut swapchain_scope,
-                    backbuffer_view_holder: &backbuffer_view_holder,
-                    upload_batch: &upload_batch,
-                    queue_arc: &queue_arc,
+                    swapchain_scope,
+                    backbuffer_view_holder,
+                    upload_batch,
+                    queue_arc,
                 },
             )?
         };
@@ -257,15 +320,69 @@ impl CompiledRenderGraph {
 
         {
             profiling::scope!("graph::run_post_submit_passes");
-            self.run_post_submit_passes(&mut mv_ctx, views, device, &per_view_occlusion_info)?;
+            self.run_post_submit_passes(mv_ctx, views, device, &per_view_occlusion_info)?;
         }
 
         {
             profiling::scope!("graph::release_transients_and_gc");
-            release_transients_and_gc(&mut mv_ctx, transient_by_key);
+            release_transients_and_gc(mv_ctx, transient_by_key);
         }
 
         Ok(())
+    }
+
+    /// Prepares graph resources and per-view packets before a desktop surface image is acquired.
+    fn prepare_before_swapchain_acquire(
+        &self,
+        mv_ctx: &mut MultiViewExecutionContext<'_>,
+        views: &mut [FrameView<'_>],
+        transient_by_key: &mut HashMap<GraphResolveKey, GraphResolvedResources>,
+        upload_batch: &FrameUploadBatch,
+        command_diagnostics: &mut CommandEncodingDiagnostics,
+    ) -> Result<Vec<PerViewWorkItem>, GraphExecuteError> {
+        let transient_metrics_before = mv_ctx.backend.transient_pool_mut().metrics();
+        mv_ctx.backend.transient_pool_mut().begin_generation();
+
+        // Pre-resolve transient textures and buffers for every unique view key before any
+        // per-view recording begins. The record loop then reads `transient_by_key` without
+        // touching the shared transient pool. Swapchain views resolve layout and depth here
+        // without acquiring a desktop surface image.
+        let pre_resolve_start = Instant::now();
+        {
+            profiling::scope!("graph::pre_resolve_transients_for_views");
+            self.pre_resolve_transients_for_views(mv_ctx, views, transient_by_key)?;
+        }
+        command_diagnostics.pre_resolve_ms = elapsed_ms(pre_resolve_start);
+        command_diagnostics.transient_delta = TransientPoolMetricsDelta::from_metrics(
+            transient_metrics_before,
+            mv_ctx.backend.transient_pool_mut().metrics(),
+        );
+
+        let (per_view_work_items, prepare_resources_ms) =
+            self.prepare_resources_and_work_items(mv_ctx, views, upload_batch)?;
+        command_diagnostics.prepare_resources_ms = prepare_resources_ms;
+        Ok(per_view_work_items)
+    }
+
+    /// Releases pre-acquired transient leases when late swapchain acquire skips or fails.
+    fn release_transients_after_early_exit(
+        gpu: &mut GpuContext,
+        scene: &SceneCoordinator,
+        backend: &mut dyn GraphExecutionBackend,
+        device: &wgpu::Device,
+        gpu_limits: &GpuLimits,
+        transient_by_key: HashMap<GraphResolveKey, GraphResolvedResources>,
+    ) {
+        let backbuffer_view_holder = None;
+        let mut mv_ctx = MultiViewExecutionContext {
+            gpu,
+            scene,
+            backend,
+            device,
+            gpu_limits,
+            backbuffer_view_holder: &backbuffer_view_holder,
+        };
+        release_transients_and_gc(&mut mv_ctx, transient_by_key);
     }
 
     /// Prepares shared frame resources and owned per-view work packets before recording.
@@ -322,35 +439,61 @@ impl CompiledRenderGraph {
     /// the driver thread for `Queue::submit` + `SurfaceTexture::present`. On any early return
     /// before the handoff, the scope still presents on drop so the wgpu Vulkan acquire
     /// semaphore is returned to the pool.
+    fn late_acquire_swapchain_for_prepared_views(
+        &self,
+        gpu: &mut GpuContext,
+        views: &[FrameView<'_>],
+        work_items: &mut [PerViewWorkItem],
+    ) -> Result<Option<(SwapchainScope, Option<wgpu::TextureView>)>, GraphExecuteError> {
+        let acquired = {
+            profiling::scope!("graph::late_swapchain_acquire");
+            self.enter_swapchain_scope_for_views(gpu, views)?
+        };
+        let Some((scope, backbuffer_view)) = acquired else {
+            return Ok(None);
+        };
+        Self::attach_swapchain_backbuffer_to_work_items(work_items, backbuffer_view.as_ref())?;
+        Ok(Some((scope, backbuffer_view)))
+    }
+
     fn enter_swapchain_scope_for_views(
         &self,
         gpu: &mut GpuContext,
         views: &[FrameView<'_>],
-    ) -> Result<
-        Option<(
-            super::super::swapchain_scope::SwapchainScope,
-            Option<wgpu::TextureView>,
-        )>,
-        GraphExecuteError,
-    > {
+    ) -> Result<Option<(SwapchainScope, Option<wgpu::TextureView>)>, GraphExecuteError> {
         let needs_swapchain = views
             .iter()
             .any(|v| matches!(v.target, FrameViewTarget::Swapchain));
-        match super::super::swapchain_scope::SwapchainScope::enter(
-            needs_swapchain,
-            self.needs_surface_acquire,
-            gpu,
-        )? {
-            super::super::swapchain_scope::SwapchainEnterOutcome::NotNeeded => Ok(Some((
-                super::super::swapchain_scope::SwapchainScope::none(),
-                None,
-            ))),
+        match SwapchainScope::enter(needs_swapchain, self.needs_surface_acquire, gpu)? {
+            super::super::swapchain_scope::SwapchainEnterOutcome::NotNeeded => {
+                Ok(Some((SwapchainScope::none(), None)))
+            }
             super::super::swapchain_scope::SwapchainEnterOutcome::SkipFrame => Ok(None),
             super::super::swapchain_scope::SwapchainEnterOutcome::Acquired(scope) => {
                 let bb = scope.backbuffer_view().cloned();
                 Ok(Some((scope, bb)))
             }
         }
+    }
+
+    /// Installs the late-acquired swapchain view into prepared per-view work items.
+    fn attach_swapchain_backbuffer_to_work_items(
+        work_items: &mut [PerViewWorkItem],
+        backbuffer_view: Option<&wgpu::TextureView>,
+    ) -> Result<(), GraphExecuteError> {
+        if !work_items.iter().any(|item| item.target_is_swapchain) {
+            return Ok(());
+        }
+        let Some(backbuffer_view) = backbuffer_view else {
+            return Err(GraphExecuteError::MissingSwapchainView);
+        };
+        for work_item in work_items
+            .iter_mut()
+            .filter(|item| item.target_is_swapchain)
+        {
+            work_item.resolved.attach_backbuffer(backbuffer_view);
+        }
+        Ok(())
     }
 
     /// Records per-view command buffers and resolves per-view profiler queries.
@@ -603,12 +746,12 @@ impl CompiledRenderGraph {
             let host_camera = view.host_camera;
             let render_context = view.render_context;
             let frame_time_seconds = view.frame_time_seconds;
-            let resolved = Self::resolve_owned_view_from_target(
+            let target_is_swapchain = matches!(view.target, FrameViewTarget::Swapchain);
+            let resolved = Self::resolve_owned_view_metadata_from_target(
                 view_id,
                 view.profile,
                 &view.target,
                 mv_ctx.gpu,
-                mv_ctx.backbuffer_view_holder.as_ref(),
             )?;
             let Some(per_view_frame_bg_and_buf) = mv_ctx
                 .backend
@@ -634,6 +777,7 @@ impl CompiledRenderGraph {
                 view_id,
                 clear: view.clear,
                 post_processing: view.post_processing(),
+                target_is_swapchain,
                 initial_blackboard: std::mem::take(&mut view.initial_blackboard),
                 resolved,
                 per_view_frame_bg_and_buf,

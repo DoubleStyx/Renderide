@@ -228,6 +228,7 @@ impl DualQueueIpc {
         }
         let wait_started = std::time::Instant::now();
         let ready = {
+            profiling::scope!("ipc::host_wait::primary_queue");
             profiling::scope!("ipc::primary_wait");
             self.primary_subscriber.wait_for_message_timeout(timeout)
         };

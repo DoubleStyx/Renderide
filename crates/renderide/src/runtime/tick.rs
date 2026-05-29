@@ -98,7 +98,11 @@ impl RendererRuntime {
                 break;
             }
 
-            if self.run_asset_integration_while_waiting_for_submit(now) {
+            let has_more_asset_work = {
+                profiling::scope!("tick::lockstep_wait::asset_work");
+                self.run_asset_integration_while_waiting_for_submit(now)
+            };
+            if has_more_asset_work {
                 continue;
             }
 
@@ -119,12 +123,24 @@ impl RendererRuntime {
                 break;
             };
             if timeout.is_zero() {
-                self.poll_ipc();
-                self.run_asset_integration_after_wait_poll();
+                {
+                    profiling::scope!("tick::lockstep_wait::ipc_command_processing");
+                    self.poll_ipc();
+                }
+                {
+                    profiling::scope!("tick::lockstep_wait::asset_work_after_ipc");
+                    self.run_asset_integration_after_wait_poll();
+                }
                 continue;
             }
-            excluded_wait = excluded_wait.saturating_add(self.poll_ipc_after_primary_wait(timeout));
-            self.run_asset_integration_after_wait_poll();
+            excluded_wait = excluded_wait.saturating_add({
+                profiling::scope!("tick::lockstep_wait::host_wait");
+                self.poll_ipc_after_primary_wait(timeout)
+            });
+            {
+                profiling::scope!("tick::lockstep_wait::asset_work_after_ipc");
+                self.run_asset_integration_after_wait_poll();
+            }
         }
         self.note_frame_timing_excluded_wait(excluded_wait);
     }

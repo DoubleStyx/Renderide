@@ -61,10 +61,12 @@ fn drain_upload_command_buffer(
             drain_ms,
         }
     } else {
+        let mut stats = FrameUploadBatchStats::default();
+        stats.apply_arena_pressure(upload_arena.pressure());
         DrainedUploadCommand {
             command_buffer: None,
             on_submitted_work_done: None,
-            stats: FrameUploadBatchStats::default(),
+            stats,
             drain_ms,
         }
     }
@@ -194,7 +196,7 @@ impl CompiledRenderGraph {
     pub(super) fn submit_frame_batch(
         &self,
         mv_ctx: &mut MultiViewExecutionContext<'_>,
-        inputs: SubmitFrameInputs<'_>,
+        inputs: SubmitFrameInputs<'_, '_>,
     ) -> Result<SubmitFrameBatchStats, GraphExecuteError> {
         profiling::scope!("graph::single_submit");
         let SubmitFrameInputs {
@@ -223,6 +225,7 @@ impl CompiledRenderGraph {
         }?;
 
         let upload = drain_upload_for_submit(mv_ctx, upload_batch, queue_ref);
+        mv_ctx.backend.record_frame_upload_stats(upload.stats);
         let upload_finish_ms = upload.stats.finish_ms;
         let has_upload_cmd = upload.command_buffer.is_some();
         let has_frame_global_cmd = frame_global_cmd.is_some();

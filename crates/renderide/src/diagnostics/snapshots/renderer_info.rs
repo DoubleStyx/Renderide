@@ -1,6 +1,6 @@
 //! Read-only snapshot of renderer state for the debug HUD "Renderer" tab (no ImGui types).
 
-use crate::diagnostics::BackendDiagSnapshot;
+use crate::diagnostics::{BackendDiagSnapshot, FrameUploadArenaSnapshot};
 use crate::frontend::InitState;
 use crate::gpu::{GpuContext, GpuLimits};
 use crate::materials::{
@@ -75,6 +75,8 @@ pub struct RendererInfoSnapshot {
     pub gpu_light_count: usize,
     /// Whether signed scene-color HDR is active for the current packed light set.
     pub signed_scene_color_active: bool,
+    /// Latest persistent upload arena pressure and fallback counters.
+    pub upload_arena: FrameUploadArenaSnapshot,
     /// `max_texture_dimension_2d` from [`GpuLimits`].
     pub gpu_max_texture_dim_2d: u32,
     /// `max_buffer_size` from [`GpuLimits`].
@@ -172,6 +174,7 @@ impl RendererInfoSnapshot {
                 .frame_graph_estimated_bandwidth_bytes,
             gpu_light_count: args.backend.gpu_light_count,
             signed_scene_color_active: args.backend.signed_scene_color_active,
+            upload_arena: args.backend.upload_arena,
             gpu_max_texture_dim_2d: args.gpu_limits.max_texture_dimension_2d(),
             gpu_max_buffer_size: args.gpu_limits.max_buffer_size(),
             gpu_max_storage_binding: args.gpu_limits.max_storage_buffer_binding_size(),

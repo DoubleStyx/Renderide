@@ -19,7 +19,10 @@ pub use event_loop::{
     plot_driver_submit_backlog, plot_event_loop_idle_ms, plot_event_loop_wait_ms,
     plot_fps_cap_active, plot_surface_acquire_outcome, plot_window_focused,
 };
-pub use frame_upload::{plot_frame_upload_batch, plot_world_mesh_subpass};
+pub use frame_upload::{
+    FrameUploadArenaProfileSample, plot_frame_upload_arena, plot_frame_upload_batch,
+    plot_world_mesh_subpass,
+};
 pub use ipc::{IpcPollProfileSample, plot_ipc_poll};
 pub use mesh_deform::{MeshDeformProfileSample, plot_mesh_deform};
 pub use rayon_admission::{RayonAdmissionProfileSample, plot_rayon_admission};

@@ -183,13 +183,13 @@ impl CompiledRenderGraph {
     ) -> Result<(), GraphExecuteError> {
         profiling::scope!("render::pre_resolve_transients");
         for view in views {
-            let resolved = Self::resolve_view_from_target(
+            let resolved = Self::resolve_owned_view_metadata_from_target(
                 view.view_id(),
                 view.profile,
                 &view.target,
                 mv_ctx.gpu,
-                mv_ctx.backbuffer_view_holder.as_ref(),
             )?;
+            let resolved = resolved.as_resolved();
             let key = GraphResolveKey::from_resolved(&resolved);
             if let Entry::Vacant(v) = transient_by_key.entry(key) {
                 let mut resources = GraphResolvedResources::with_capacity(
