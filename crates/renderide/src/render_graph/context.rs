@@ -14,8 +14,9 @@
 //! - `'encoder` -- mutable encoder borrow (compute and encoder contexts).
 //! - `'frame` -- mutable scene/backend frame params borrow.
 //!
-//! Multi-view graph execution creates a **separate** encoder (and thus a separate context) for
-//! frame-global work vs each view; passes never share one encoder across those slices.
+//! Multi-view graph execution normally creates a separate encoder for frame-global work and each
+//! view. Small serial swapchain frames may share one encoder across frame-global and per-view
+//! slices, but each pass still receives a fresh context for its current encoder borrow.
 
 mod pass;
 mod resolved;
