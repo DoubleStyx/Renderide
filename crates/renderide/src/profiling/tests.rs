@@ -36,7 +36,7 @@ fn stubs_are_accessible_without_tracy_feature() {
     flush_resource_churn_plots();
     let profiler = GpuProfilerHandle;
     assert!(!profiler.has_queries_opened_since_frame_end());
-    assert!(!profiler.end_frame_if_queries_opened());
+    assert!(!profiler.end_frame_if_queries_opened(1));
     let _ = rayon_thread_start_handler();
 }
 
@@ -109,6 +109,7 @@ fn gpu_profiler_snapshot_default_is_empty() {
 #[test]
 fn gpu_profiler_snapshot_preserves_stats() {
     let stats = GpuProfilerFrameStats {
+        frame_order: 1,
         opened_queries: 12,
         skipped_queries: 1,
         soft_query_budget: 64,

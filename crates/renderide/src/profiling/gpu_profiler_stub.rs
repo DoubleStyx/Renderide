@@ -63,7 +63,7 @@ impl GpuProfilerHandle {
 
     /// No-op stub; see the `tracy` feature variant for the real implementation.
     #[inline]
-    pub fn end_frame_if_queries_opened(&self) -> bool {
+    pub fn end_frame_if_queries_opened(&self, _frame_order: u64) -> bool {
         false
     }
 
