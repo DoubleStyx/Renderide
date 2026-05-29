@@ -19,7 +19,7 @@ use crate::materials::{
 };
 
 /// Swapchain-relevant state needed to build a [`wgpu::RenderPipeline`].
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MaterialPipelineDesc {
     /// Primary color attachment format (for example swapchain format).
     pub surface_format: wgpu::TextureFormat,

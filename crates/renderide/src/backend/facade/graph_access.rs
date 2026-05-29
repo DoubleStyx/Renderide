@@ -138,6 +138,13 @@ fn material_pass_desc_for_layout(
     )
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct MaterialPipelineWarmupKey {
+    kind: RasterPipelineKind,
+    desc: MaterialPipelineDesc,
+    variant: MaterialPipelineVariantSpec,
+}
+
 /// Narrow backend packet used by the render graph executor.
 ///
 /// This is intentionally a bundle of disjoint backend owners instead of `&mut RenderBackend`:
@@ -330,7 +337,8 @@ impl<'a> BackendGraphAccess<'a> {
         view_layouts: &[Option<PreRecordViewResourceLayout>],
     ) {
         profiling::scope!("graph::pre_warm_material_assets");
-        let mut warmed_batches = 0usize;
+        let mut warmed_pipelines = HashSet::new();
+        let mut warmed_embedded_stems = HashSet::new();
         for (view, layout) in views.iter().zip(view_layouts.iter()) {
             let Some(layout) = *layout else {
                 continue;
@@ -360,19 +368,31 @@ impl<'a> BackendGraphAccess<'a> {
                     front_face,
                     primitive_topology: item.batch_key.primitive_topology,
                 };
-                self.materials.queue_material_pipeline_warmup(
-                    &item.batch_key.pipeline,
-                    &pass_desc,
+                let warmup_key = MaterialPipelineWarmupKey {
+                    kind: item.batch_key.pipeline.clone(),
+                    desc: pass_desc,
                     variant,
-                );
-                if let RasterPipelineKind::EmbeddedStem(stem) = &item.batch_key.pipeline {
+                };
+                if warmed_pipelines.insert(warmup_key.clone()) {
+                    self.materials.queue_material_pipeline_warmup(
+                        &warmup_key.kind,
+                        &warmup_key.desc,
+                        warmup_key.variant,
+                    );
+                }
+                if let RasterPipelineKind::EmbeddedStem(stem) = &item.batch_key.pipeline
+                    && warmed_embedded_stems.insert(Arc::clone(stem))
+                {
                     self.materials
                         .pre_warm_embedded_material_layout(stem.as_ref());
                 }
-                warmed_batches = warmed_batches.saturating_add(1);
             }
         }
-        logger::trace!("graph pre-warm material assets: batches={warmed_batches}");
+        logger::trace!(
+            "graph pre-warm material assets: pipelines={} embedded_layouts={}",
+            warmed_pipelines.len(),
+            warmed_embedded_stems.len()
+        );
     }
 
     fn ensure_view_asset_prewarm_requests(

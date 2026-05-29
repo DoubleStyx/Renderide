@@ -45,12 +45,13 @@ impl PersistentUploadArena {
         }
     }
 
-    /// Drains submitted-work and remap callbacks, then polls once to advance pending remaps.
+    /// Drains submitted-work and remap callbacks, polling only when all writable slots are busy.
     pub(crate) fn maintain(&mut self, device: &wgpu::Device) {
         profiling::scope!("frame_upload_arena::maintain");
         self.drain_completions();
-        let _ = device.poll(wgpu::PollType::Poll);
-        self.drain_completions();
+        if self.should_poll_for_maintenance() {
+            self.poll_for_staging_pressure(device);
+        }
     }
 
     /// Drops all retained staging slots and ignores stale completion callbacks from older slots.
@@ -106,6 +107,13 @@ impl PersistentUploadArena {
 
         if let Some(slot) = select_writable_slot(&self.slots, required) {
             return self.prepare_persistent_slot(device, max_buffer_size, required, slot);
+        }
+
+        if self.should_poll_for_maintenance() {
+            self.poll_for_staging_pressure(device);
+            if let Some(slot) = select_writable_slot(&self.slots, required) {
+                return self.prepare_persistent_slot(device, max_buffer_size, required, slot);
+            }
         }
 
         logger::debug!(
@@ -242,6 +250,26 @@ impl PersistentUploadArena {
         while self.completion_rx.try_recv().is_ok() {}
     }
 
+    fn should_poll_for_maintenance(&self) -> bool {
+        let mut has_pending_completion_work = false;
+        let mut has_writable_slot = false;
+        for slot in &self.slots {
+            has_writable_slot |= slot.state.can_write();
+            has_pending_completion_work |= matches!(
+                slot.state,
+                UploadArenaSlotState::InFlight { .. } | UploadArenaSlotState::Remapping { .. }
+            );
+        }
+        has_pending_completion_work && !has_writable_slot
+    }
+
+    fn poll_for_staging_pressure(&mut self, device: &wgpu::Device) {
+        profiling::scope!("frame_upload_arena::poll");
+        self.drain_completions();
+        let _ = device.poll(wgpu::PollType::Poll);
+        self.drain_completions();
+    }
+
     fn start_remap(&mut self, slot: usize, generation: u64) {
         let Some(arena_slot) = self.slots.get_mut(slot) else {
             return;
@@ -376,5 +404,59 @@ mod tests {
         assert_eq!(pressure.free_slots, 1);
         assert_eq!(pressure.in_flight_slots, 1);
         assert_eq!(pressure.remapping_slots, 1);
+    }
+
+    #[test]
+    fn maintenance_poll_is_skipped_when_empty_slot_can_be_allocated() {
+        let mut arena = PersistentUploadArena::new();
+        arena.slots[0].state = UploadArenaSlotState::InFlight { generation: 1 };
+
+        assert!(!arena.should_poll_for_maintenance());
+    }
+
+    #[test]
+    fn maintenance_poll_is_skipped_when_free_slot_can_be_reused() {
+        let mut arena = PersistentUploadArena::new();
+        arena.slots[0].state = UploadArenaSlotState::InFlight { generation: 1 };
+        arena.slots[1].state = UploadArenaSlotState::Remapping { generation: 2 };
+        arena.slots[2].state = UploadArenaSlotState::Free;
+
+        assert!(!arena.should_poll_for_maintenance());
+    }
+
+    #[test]
+    fn maintenance_poll_is_requested_when_all_slots_wait_on_gpu_work() {
+        let mut arena = PersistentUploadArena::new();
+        for (index, slot) in arena.slots.iter_mut().enumerate() {
+            slot.state = UploadArenaSlotState::InFlight {
+                generation: index as u64 + 1,
+            };
+        }
+
+        assert!(arena.should_poll_for_maintenance());
+    }
+
+    #[test]
+    fn maintenance_poll_is_requested_when_all_slots_wait_on_remap_work() {
+        let mut arena = PersistentUploadArena::new();
+        for (index, slot) in arena.slots.iter_mut().enumerate() {
+            slot.state = UploadArenaSlotState::Remapping {
+                generation: index as u64 + 1,
+            };
+        }
+
+        assert!(arena.should_poll_for_maintenance());
+    }
+
+    #[test]
+    fn maintenance_poll_is_skipped_while_slots_are_only_being_written() {
+        let mut arena = PersistentUploadArena::new();
+        for (index, slot) in arena.slots.iter_mut().enumerate() {
+            slot.state = UploadArenaSlotState::Writing {
+                generation: index as u64 + 1,
+            };
+        }
+
+        assert!(!arena.should_poll_for_maintenance());
     }
 }
