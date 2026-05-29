@@ -2,11 +2,14 @@
 
 use std::time::{Duration, Instant};
 
+use hashbrown::HashMap;
+
 use crate::scene::{ReflectionProbeOnChangesRenderRequest, RenderSpaceId};
 use crate::shared::{CameraRenderTask, ReflectionProbeRenderResult, ReflectionProbeRenderTask};
 
 use crate::runtime::offscreen_tasks::reflection_probe::{
     ActiveOnChangesReflectionProbeCapture, ActiveRealtimeReflectionProbeCapture,
+    OnChangesCaptureInflight,
 };
 
 /// Reflection-probe bake task plus the render space that carried it.
@@ -41,6 +44,10 @@ pub(in crate::runtime) struct RuntimeTickState {
     /// OnChanges reflection-probe capture requests waiting for GPU processing.
     pub(in crate::runtime) pending_onchanges_reflection_probe_requests:
         Vec<ReflectionProbeOnChangesRenderRequest>,
+    /// Probes whose capture has started and whose sharp IBL bake has not yet landed, keyed by
+    /// `(render_space_id, renderable_index)`. Gates the OnChanges capture throttle.
+    pub(in crate::runtime) onchanges_capture_inflight:
+        HashMap<(i32, i32), OnChangesCaptureInflight>,
     /// OnChanges reflection-probe captures that may span multiple ticks.
     pub(in crate::runtime) active_onchanges_reflection_probe_captures:
         Vec<ActiveOnChangesReflectionProbeCapture>,
@@ -67,6 +74,7 @@ impl RuntimeTickState {
             pending_reflection_probe_render_tasks: Vec::new(),
             pending_reflection_probe_render_results: Vec::new(),
             pending_onchanges_reflection_probe_requests: Vec::new(),
+            onchanges_capture_inflight: HashMap::new(),
             active_onchanges_reflection_probe_captures: Vec::new(),
             next_onchanges_reflection_probe_generation: 1,
             active_realtime_reflection_probe_captures: Vec::new(),

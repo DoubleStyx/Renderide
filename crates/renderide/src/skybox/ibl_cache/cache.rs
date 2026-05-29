@@ -211,6 +211,7 @@ impl SkyboxIblCache {
         self.pipelines.ensure_all(gpu.device())?;
         let input_sampler = self.pipelines.ensure_sampler(gpu.device());
         let face_size = key.face_size();
+        let quality = key.bake_quality();
         let mip_levels = mip_levels_for_edge(face_size);
         let textures = BakeTextures::create(gpu.device(), face_size, mip_levels);
         let mut resources = PendingBakeResources::default();
@@ -284,6 +285,7 @@ impl SkyboxIblCache {
                 face_size,
                 mip_levels,
                 src_max_lod: source_max_lod(mip_levels),
+                quality,
                 profiler: profiler.as_deref(),
             },
             &mut resources,

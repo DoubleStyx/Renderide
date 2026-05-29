@@ -1,6 +1,7 @@
 //! Runtime reflection-probe cubemaps captured for OnChanges and realtime probes.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use hashbrown::{HashMap, HashSet};
 
@@ -31,6 +32,8 @@ pub(crate) struct RuntimeReflectionProbeCapture {
     pub(crate) view: Arc<wgpu::TextureView>,
     /// 2D-array view over the captured texture.
     pub(crate) array_view: Arc<wgpu::TextureView>,
+    /// Instant the renderer began this capture, for `probe-timing` diagnostics.
+    pub(crate) requested_at: Instant,
 }
 
 /// Latest captured source for one dynamic reflection probe.
@@ -50,6 +53,8 @@ pub(crate) struct RuntimeReflectionProbeCaptureSource {
     pub(crate) view: Arc<wgpu::TextureView>,
     /// 2D-array view over the captured texture.
     pub(crate) array_view: Arc<wgpu::TextureView>,
+    /// Instant the renderer began this capture, for `probe-timing` diagnostics.
+    pub(crate) requested_at: Instant,
 }
 
 /// Latest runtime cubemap captures keyed by host probe identity.
@@ -71,6 +76,7 @@ impl RuntimeReflectionProbeCaptureStore {
                 texture: capture.texture,
                 view: capture.view,
                 array_view: capture.array_view,
+                requested_at: capture.requested_at,
             },
         );
     }

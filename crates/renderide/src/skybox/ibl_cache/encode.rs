@@ -11,7 +11,7 @@ use super::bind_groups::{
     build_input_output_bind_group, build_sampled_bind_group, build_storage_bind_group,
     make_uniform_buffer,
 };
-use super::key::{convolve_sample_count, dispatch_groups, mip_extent};
+use super::key::{IblBakeQuality, convolve_sample_count_for, dispatch_groups, mip_extent};
 use super::mip_loop::dispatch_mip0_pass;
 use super::pipeline::ComputePipeline;
 use super::resources::{
@@ -309,6 +309,8 @@ pub(super) struct ConvolveEncodeContext<'a> {
     pub(super) face_size: u32,
     pub(super) mip_levels: u32,
     pub(super) src_max_lod: f32,
+    /// Prefilter quality controlling the per-mip GGX sample count.
+    pub(super) quality: IblBakeQuality,
     pub(super) profiler: Option<&'a GpuProfilerHandle>,
 }
 
@@ -330,6 +332,7 @@ pub(super) fn encode_convolve_mips(
         face_size,
         mip_levels,
         src_max_lod,
+        quality,
         profiler,
     } = ctx;
     if mip_levels <= 1 {
@@ -341,7 +344,7 @@ pub(super) fn encode_convolve_mips(
             dst_size,
             mip_index: mip,
             mip_count: mip_levels,
-            sample_count: convolve_sample_count(mip),
+            sample_count: convolve_sample_count_for(quality, mip),
             src_face_size: face_size,
             src_max_lod,
             _pad0: 0,

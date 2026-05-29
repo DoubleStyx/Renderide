@@ -1,6 +1,7 @@
 //! Time-sliced runtime reflection-probe captures.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use hashbrown::HashSet;
 
@@ -26,6 +27,25 @@ use super::{
     host_camera_frame_for_probe_face, render_reflection_probe_faces_offscreen,
 };
 
+/// Upper bound on how long a probe's capture is held waiting for its sharp bake to land.
+///
+/// If the final IBL bake never reports ready within this window (e.g. the source stops resolving),
+/// the throttle releases so a fresh capture can be attempted instead of stalling indefinitely.
+const ONCHANGES_CAPTURE_SETTLE_FALLBACK: Duration = Duration::from_secs(2);
+
+/// Tracks a probe whose capture has been started and whose sharp IBL bake has not yet landed.
+///
+/// While an entry exists the runtime coalesces incoming host re-bake requests for that probe
+/// instead of starting another capture, so a flood of OnChanges changes cannot starve the final
+/// (sharp) bake. The entry clears once [`crate::backend::RenderBackend::reflection_probe_final_ready_generation`]
+/// reaches [`Self::started_generation`] or [`ONCHANGES_CAPTURE_SETTLE_FALLBACK`] elapses.
+pub(in crate::runtime) struct OnChangesCaptureInflight {
+    /// Capture generation started for this probe and awaiting its final bake.
+    started_generation: u64,
+    /// Instant the capture was started, for the settle fallback.
+    started_at: Instant,
+}
+
 /// Active OnChanges probe capture, retained across ticks when host time slicing requests it.
 pub(crate) struct ActiveOnChangesReflectionProbeCapture {
     /// Host render request that started this capture.
@@ -40,6 +60,8 @@ pub(crate) struct ActiveOnChangesReflectionProbeCapture {
     progress: RuntimeProbeCaptureProgress,
     /// Latest host unique id queued while this probe is still capturing.
     pub(in crate::runtime) queued_unique_id: Option<i32>,
+    /// Wall-clock instant the renderer began this capture, for `probe-timing` diagnostics.
+    requested_at: Instant,
 }
 
 /// Active realtime probe capture, retained across ticks while multi-frame time slicing advances.
@@ -54,6 +76,8 @@ pub(crate) struct ActiveRealtimeReflectionProbeCapture {
     targets: ProbeTaskTargets,
     /// Face rendering and post-render time-slice progress.
     progress: RuntimeProbeCaptureProgress,
+    /// Wall-clock instant the renderer began this capture, for `probe-timing` diagnostics.
+    requested_at: Instant,
 }
 
 /// Progress state for a runtime cubemap capture.
@@ -158,11 +182,32 @@ fn capture_faces_for_step(
 }
 
 /// Post-render delay after the last face is rendered.
+///
+/// The async GGX prefilter bake (see [`crate::reflection_probes::specular`]) is what actually
+/// convolves the captured cube, so this delay no longer needs to reserve frames for filtering as
+/// Unity's time slicing did; it only spaces capture publication by a single settle tick.
 fn filter_delay_ticks(mode: ReflectionProbeTimeSlicingMode) -> u8 {
     match mode {
         ReflectionProbeTimeSlicingMode::NoTimeSlicing => 0,
         ReflectionProbeTimeSlicingMode::AllFacesAtOnce
-        | ReflectionProbeTimeSlicingMode::IndividualFaces => 8,
+        | ReflectionProbeTimeSlicingMode::IndividualFaces => 1,
+    }
+}
+
+/// Maps a host time-slicing mode to the mode an OnChanges capture should actually use.
+///
+/// OnChanges probes re-bake in response to a discrete lighting change, so the first usable cube
+/// should appear as fast as possible. We therefore render every remaining face on the first step
+/// (treating `IndividualFaces` as `AllFacesAtOnce`); realtime captures keep host slicing so their
+/// continuous re-capture load can still be spread across frames.
+fn onchanges_face_slicing_mode(
+    mode: ReflectionProbeTimeSlicingMode,
+) -> ReflectionProbeTimeSlicingMode {
+    match mode {
+        ReflectionProbeTimeSlicingMode::IndividualFaces => {
+            ReflectionProbeTimeSlicingMode::AllFacesAtOnce
+        }
+        other => other,
     }
 }
 
@@ -206,6 +251,13 @@ impl RendererRuntime {
                             ..completed_request
                         }
                     });
+                    logger::info!(
+                        "probe-timing: onchanges capture published render_space={} renderable_index={} generation={} capture_ms={:.1}",
+                        completed_request.render_space_id,
+                        completed_request.renderable_index,
+                        capture.generation,
+                        capture.requested_at.elapsed().as_secs_f64() * 1000.0,
+                    );
                     self.backend
                         .register_runtime_reflection_probe_capture(capture.into_runtime_capture());
                     completed_results.push(changed_probe_completion(
@@ -226,6 +278,10 @@ impl RendererRuntime {
                         capture.request.renderable_index,
                         capture.request.unique_id
                     );
+                    self.tick_state.onchanges_capture_inflight.remove(&(
+                        capture.request.render_space_id,
+                        capture.request.renderable_index,
+                    ));
                     completed_results.push(changed_probe_completion(
                         capture.request.render_space_id,
                         capture.request.unique_id,
@@ -239,16 +295,29 @@ impl RendererRuntime {
             .enqueue_rendered_reflection_probes(completed_results);
     }
 
-    /// Starts any queued OnChanges reflection-probe captures.
+    /// Starts queued OnChanges captures, coalescing while a probe's sharp bake is still pending.
     fn start_pending_onchanges_reflection_probe_captures(&mut self, gpu: &GpuContext) {
         profiling::scope!("reflection_probe_onchanges::start_pending");
+        self.release_settled_onchanges_capture_inflight();
         let pending =
             std::mem::take(&mut self.tick_state.pending_onchanges_reflection_probe_requests);
         if pending.is_empty() {
             return;
         }
         let mut completed_results = Vec::new();
+        let mut deferred = Vec::new();
         for request in pending {
+            let probe_key = (request.render_space_id, request.renderable_index);
+            // Hold this request until the previously started generation's sharp bake lands, so a
+            // host flood of OnChanges changes does not keep superseding in-flight final bakes.
+            if self
+                .tick_state
+                .onchanges_capture_inflight
+                .contains_key(&probe_key)
+            {
+                deferred.push(request);
+                continue;
+            }
             let generation = self.tick_state.next_onchanges_reflection_probe_generation;
             self.tick_state.next_onchanges_reflection_probe_generation = self
                 .tick_state
@@ -263,6 +332,13 @@ impl RendererRuntime {
                     ));
                 }
                 Ok(OnChangesCaptureStart::Capture(capture)) => {
+                    self.tick_state.onchanges_capture_inflight.insert(
+                        probe_key,
+                        OnChangesCaptureInflight {
+                            started_generation: generation,
+                            started_at: Instant::now(),
+                        },
+                    );
                     self.tick_state
                         .active_onchanges_reflection_probe_captures
                         .push(*capture);
@@ -282,8 +358,33 @@ impl RendererRuntime {
                 }
             }
         }
+        self.tick_state.pending_onchanges_reflection_probe_requests = deferred;
         self.frontend
             .enqueue_rendered_reflection_probes(completed_results);
+    }
+
+    /// Drops in-flight throttle markers for probes whose sharp bake has landed (or stalled out),
+    /// so the next coalesced request can start a fresh capture.
+    fn release_settled_onchanges_capture_inflight(&mut self) {
+        if self.tick_state.onchanges_capture_inflight.is_empty() {
+            return;
+        }
+        let mut settled: Vec<(i32, i32)> = Vec::new();
+        for (probe_key, inflight) in &self.tick_state.onchanges_capture_inflight {
+            let (render_space_id, renderable_index) = *probe_key;
+            let final_ready = self
+                .backend
+                .reflection_probe_final_ready_generation(render_space_id, renderable_index)
+                .is_some_and(|generation| generation >= inflight.started_generation);
+            if final_ready || inflight.started_at.elapsed() >= ONCHANGES_CAPTURE_SETTLE_FALLBACK {
+                settled.push(*probe_key);
+            }
+        }
+        for probe_key in settled {
+            self.tick_state
+                .onchanges_capture_inflight
+                .remove(&probe_key);
+        }
     }
 
     /// Advances continuously refreshing realtime reflection-probe captures.
@@ -441,6 +542,7 @@ fn start_onchanges_reflection_probe_capture(
             targets,
             progress: RuntimeProbeCaptureProgress::default(),
             queued_unique_id: None,
+            requested_at: Instant::now(),
         },
     )))
 }
@@ -493,6 +595,7 @@ fn start_realtime_reflection_probe_capture(
         extent,
         targets,
         progress: RuntimeProbeCaptureProgress::default(),
+        requested_at: Instant::now(),
     }))
 }
 
@@ -559,7 +662,8 @@ fn step_onchanges_reflection_probe_capture(
 ) -> Result<RuntimeProbeCaptureStep, ReflectionProbeBakeError> {
     profiling::scope!("reflection_probe_onchanges::step");
     let state = onchanges_capture_state(ctx.scene, ctx.capture.request)?;
-    let faces = ctx.capture.progress.faces_for_step(state.time_slicing_mode);
+    let mode = onchanges_face_slicing_mode(state.time_slicing_mode);
+    let faces = ctx.capture.progress.faces_for_step(mode);
     if !faces.is_empty() {
         let plans = plan_onchanges_reflection_probe_faces(
             ctx.scene,
@@ -574,10 +678,7 @@ fn step_onchanges_reflection_probe_capture(
         render_result?;
         ctx.capture.progress.mark_rendered(&faces);
     }
-    Ok(ctx
-        .capture
-        .progress
-        .advance_after_step(state.time_slicing_mode))
+    Ok(ctx.capture.progress.advance_after_step(mode))
 }
 
 /// Returns the current OnChanges probe state for a capture request.
@@ -809,6 +910,7 @@ impl ActiveOnChangesReflectionProbeCapture {
             array_view: self
                 .targets
                 .array_sample_view("renderide-reflection-probe-onchanges-array-view"),
+            requested_at: self.requested_at,
         }
     }
 }
@@ -828,6 +930,7 @@ impl ActiveRealtimeReflectionProbeCapture {
             array_view: self
                 .targets
                 .array_sample_view("renderide-reflection-probe-realtime-array-view"),
+            requested_at: self.requested_at,
         }
     }
 }

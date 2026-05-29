@@ -10,7 +10,7 @@ use super::encode::{
     encode_downsample_mips, encode_stitch_mip,
 };
 use super::errors::SkyboxIblConvolveError;
-use super::key::source_max_lod;
+use super::key::{IblBakeQuality, source_max_lod};
 use super::pipeline_store::{PipelineSlot, PipelineStore};
 use super::resources::{
     PendingBakeResources, copy_cube_mip0, create_full_array_sample_view, create_ibl_cube,
@@ -194,6 +194,7 @@ impl SkyboxIblConvolver {
                 face_size,
                 mip_levels,
                 src_max_lod: source_max_lod(mip_levels),
+                quality: IblBakeQuality::Final,
                 profiler,
             },
             &mut resources,

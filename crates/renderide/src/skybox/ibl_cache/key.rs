@@ -11,6 +11,22 @@ const IBL_WORKGROUP_EDGE: u32 = 8;
 const IBL_BASE_SAMPLE_COUNT: u32 = 64;
 /// Cap on GGX importance sample count for the highest-roughness mips.
 const IBL_MAX_SAMPLES: u32 = 1024;
+/// Flat GGX importance sample count used by fast draft bakes for progressive refinement.
+const IBL_DRAFT_SAMPLE_COUNT: u32 = 16;
+
+/// Prefilter quality for an IBL bake.
+///
+/// Runtime reflection probes bake a cheap [`IblBakeQuality::Draft`] cube first so a usable (blurry)
+/// reflection appears quickly after a lighting change, then a [`IblBakeQuality::Final`] cube that
+/// replaces it once ready.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+pub(crate) enum IblBakeQuality {
+    /// Low sample count for a fast first result.
+    Draft,
+    /// Full per-mip sample ramp for the final result.
+    #[default]
+    Final,
+}
 
 /// Clamps the configured cube face size against the device texture limit.
 pub(crate) fn clamp_face_size(face_size: u32, limits: &GpuLimits) -> u32 {
@@ -64,6 +80,8 @@ pub(crate) enum SkyboxIblKey {
         storage_v_inverted: bool,
         /// Destination cube face edge.
         face_size: u32,
+        /// Prefilter quality, so draft and final bakes coexist in the cache.
+        quality: IblBakeQuality,
     },
 }
 
@@ -76,10 +94,25 @@ impl SkyboxIblKey {
             | Self::RuntimeCubemap { face_size, .. } => face_size,
         }
     }
+
+    /// Returns the prefilter quality requested for this bake.
+    pub(super) fn bake_quality(&self) -> IblBakeQuality {
+        match *self {
+            Self::RuntimeCubemap { quality, .. } => quality,
+            Self::Cubemap { .. } | Self::SolidColor { .. } => IblBakeQuality::Final,
+        }
+    }
 }
 
 /// Builds a cache key for an active source using an already-clamped destination face size.
-pub(crate) fn build_key(source: &SkyboxIblSource, face_size: u32) -> SkyboxIblKey {
+///
+/// `quality` only affects [`SkyboxIblKey::RuntimeCubemap`] sources; other sources always bake at
+/// final quality.
+pub(crate) fn build_key(
+    source: &SkyboxIblSource,
+    face_size: u32,
+    quality: IblBakeQuality,
+) -> SkyboxIblKey {
     match source {
         SkyboxIblSource::Cubemap(src) => SkyboxIblKey::Cubemap {
             material_asset_id: src.material_asset_id,
@@ -104,6 +137,7 @@ pub(crate) fn build_key(source: &SkyboxIblSource, face_size: u32) -> SkyboxIblKe
             mip_levels: src.mip_levels,
             storage_v_inverted: src.storage_v_inverted,
             face_size,
+            quality,
         },
     }
 }
@@ -144,6 +178,19 @@ pub(super) fn convolve_sample_count(mip_index: u32) -> u32 {
     }
     let exponent = (mip_index - 1).min(4);
     (IBL_BASE_SAMPLE_COUNT << exponent).min(IBL_MAX_SAMPLES)
+}
+
+/// Returns the GGX importance sample count for one convolve mip at the requested quality.
+///
+/// Draft bakes use a small flat count for speed; final bakes use the full per-mip ramp.
+pub(super) fn convolve_sample_count_for(quality: IblBakeQuality, mip_index: u32) -> u32 {
+    if mip_index == 0 {
+        return 1;
+    }
+    match quality {
+        IblBakeQuality::Draft => IBL_DRAFT_SAMPLE_COUNT,
+        IblBakeQuality::Final => convolve_sample_count(mip_index),
+    }
 }
 
 #[cfg(test)]
@@ -250,6 +297,7 @@ mod tests {
             mip_levels: 1,
             storage_v_inverted,
             face_size: 128,
+            quality: IblBakeQuality::Final,
         }
     }
 }

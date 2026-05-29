@@ -93,6 +93,15 @@ impl ReflectionProbeServices {
         self.specular.register_runtime_capture(capture);
     }
 
+    /// Highest capture generation whose final IBL bake has completed for an OnChanges probe.
+    pub(super) fn final_ready_generation(
+        &self,
+        space_id: i32,
+        renderable_index: i32,
+    ) -> Option<u64> {
+        self.specular.final_ready_generation(space_id, renderable_index)
+    }
+
     /// Purges reflection-probe resources tied to closed render spaces.
     pub(super) fn purge_render_space_resources(&mut self, spaces: &[RenderSpaceId]) {
         if spaces.is_empty() {

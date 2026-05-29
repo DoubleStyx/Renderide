@@ -102,22 +102,22 @@ fn runtime_capture_no_time_slicing_completes_in_one_tick() {
 }
 
 #[test]
-fn runtime_capture_all_faces_time_slicing_completes_in_nine_ticks() {
+fn runtime_capture_all_faces_time_slicing_completes_in_two_ticks() {
     assert_eq!(
         onchanges::runtime_capture_ticks_to_complete(
             ReflectionProbeTimeSlicingMode::AllFacesAtOnce
         ),
-        9
+        2
     );
 }
 
 #[test]
-fn runtime_capture_individual_faces_time_slicing_completes_in_fourteen_ticks() {
+fn runtime_capture_individual_faces_time_slicing_completes_in_seven_ticks() {
     assert_eq!(
         onchanges::runtime_capture_ticks_to_complete(
             ReflectionProbeTimeSlicingMode::IndividualFaces
         ),
-        14
+        7
     );
 }
 
