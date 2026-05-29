@@ -106,6 +106,28 @@ impl PreparedSpatialIndex {
         }
     }
 
+    /// Refits existing per-space spatial bounds without changing run membership or tree topology.
+    pub(super) fn refit_spaces<I>(
+        &mut self,
+        draws: &[FramePreparedDraw],
+        runs: &[FramePreparedRun],
+        space_ids: I,
+    ) -> usize
+    where
+        I: IntoIterator<Item = RenderSpaceId>,
+    {
+        let mut refit_count = 0usize;
+        for space_id in space_ids {
+            let Some(space) = self.spaces.get_mut(&space_id) else {
+                continue;
+            };
+            profiling::scope!("mesh::prepared_renderables::spatial_refit");
+            space.refit(draws, runs);
+            refit_count = refit_count.saturating_add(1);
+        }
+        refit_count
+    }
+
     /// Returns whether `space_id` uses a BVH instead of only linear buckets.
     #[cfg(test)]
     pub(super) fn space_uses_bvh_for_tests(&self, space_id: RenderSpaceId) -> bool {
@@ -167,6 +189,44 @@ struct PreparedSpatialSpace {
 }
 
 impl PreparedSpatialSpace {
+    fn refit(&mut self, draws: &[FramePreparedDraw], runs: &[FramePreparedRun]) {
+        for entry in &mut self.linear {
+            entry.bounds = refit_linear_bounds(draws, runs, entry);
+        }
+        for entry in &mut self.indexed {
+            let (aabb_min, aabb_max) = refit_indexed_bounds(draws, runs, entry.run_index);
+            entry.aabb_min = aabb_min;
+            entry.aabb_max = aabb_max;
+            entry.center = (aabb_min + aabb_max) * 0.5;
+        }
+        self.refit_nodes();
+    }
+
+    fn refit_nodes(&mut self) {
+        for node_index in (0..self.nodes.len()).rev() {
+            let node = self.nodes[node_index];
+            let (aabb_min, aabb_max, slot_count, run_count) = if node.count > 0 {
+                bounds_for_order(
+                    &self.indexed,
+                    &self.order[node.start..node.start + node.count],
+                )
+            } else {
+                let left = self.nodes[node.left];
+                let right = self.nodes[node.right];
+                (
+                    left.aabb_min.min(right.aabb_min),
+                    left.aabb_max.max(right.aabb_max),
+                    left.slot_count.saturating_add(right.slot_count),
+                    left.run_count.saturating_add(right.run_count),
+                )
+            };
+            self.nodes[node_index].aabb_min = aabb_min;
+            self.nodes[node_index].aabb_max = aabb_max;
+            self.nodes[node_index].slot_count = slot_count;
+            self.nodes[node_index].run_count = run_count;
+        }
+    }
+
     fn query(
         &self,
         space_id: RenderSpaceId,
@@ -282,6 +342,32 @@ impl PreparedSpatialSpace {
     fn uses_bvh(&self) -> bool {
         self.root.is_some()
     }
+}
+
+fn refit_linear_bounds(
+    draws: &[FramePreparedDraw],
+    runs: &[FramePreparedRun],
+    entry: &LinearPreparedRun,
+) -> Option<(Vec3A, Vec3A)> {
+    let run = runs.get(entry.run_index)?;
+    let first = draws.get(run.start as usize)?;
+    indexable_run_bounds(first)
+}
+
+fn refit_indexed_bounds(
+    draws: &[FramePreparedDraw],
+    runs: &[FramePreparedRun],
+    run_index: usize,
+) -> (Vec3A, Vec3A) {
+    runs.get(run_index)
+        .and_then(|run| draws.get(run.start as usize))
+        .and_then(indexable_run_bounds)
+        .unwrap_or_else(conservative_visible_bounds)
+}
+
+fn conservative_visible_bounds() -> (Vec3A, Vec3A) {
+    let extent = f32::MAX * 0.25;
+    (Vec3A::splat(-extent), Vec3A::splat(extent))
 }
 
 /// Shared cull state for one prepared-space spatial query.
@@ -435,5 +521,112 @@ fn axis_value(v: Vec3A, axis: usize) -> f32 {
         0 => v.x,
         1 => v.y,
         _ => v.z,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use glam::Mat4;
+
+    use crate::camera::HostCameraFrame;
+    use crate::scene::{MeshRendererInstanceId, RenderSpaceId, SceneCoordinator};
+    use crate::shared::RenderTransform;
+    use crate::world_mesh::culling::{
+        MeshCullGeometry, WorldMeshCullInput, WorldMeshCullProjParams,
+    };
+
+    fn prepared_draw_with_bounds(
+        space_id: RenderSpaceId,
+        renderable_index: usize,
+        min: Vec3,
+        max: Vec3,
+    ) -> FramePreparedDraw {
+        FramePreparedDraw {
+            space_id,
+            renderable_index,
+            instance_id: MeshRendererInstanceId(renderable_index as u64 + 1),
+            node_id: renderable_index as i32,
+            mesh_asset_id: 10,
+            is_overlay: false,
+            sorting_order: 0,
+            skinned: false,
+            world_space_deformed: false,
+            blendshape_deformed: false,
+            tangent_blendshape_deform_active: false,
+            slot_index: 0,
+            first_index: 0,
+            index_count: 3,
+            material_asset_id: 1,
+            property_block_id: None,
+            cull_geometry: Some(MeshCullGeometry {
+                world_aabb: Some((min, max)),
+                rigid_world_matrix: Some(Mat4::IDENTITY),
+                front_face_world_matrix: Some(Mat4::IDENTITY),
+            }),
+            rigid_world_matrix_override: None,
+        }
+    }
+
+    fn spatial_scene_and_cull(
+        space_id: RenderSpaceId,
+    ) -> (SceneCoordinator, HostCameraFrame, WorldMeshCullProjParams) {
+        let mut scene = SceneCoordinator::new();
+        scene.test_seed_space_identity_worlds(space_id, vec![RenderTransform::default()], vec![-1]);
+        (
+            scene,
+            HostCameraFrame::default(),
+            WorldMeshCullProjParams {
+                world_proj: Mat4::IDENTITY,
+                overlay_proj: Mat4::IDENTITY,
+                vr_stereo: None,
+            },
+        )
+    }
+
+    #[test]
+    fn spatial_refit_updates_bounds_without_rebuilding_run_membership() {
+        let space_id = RenderSpaceId(7);
+        let (scene, host_camera, proj) = spatial_scene_and_cull(space_id);
+        let culling = WorldMeshCullInput {
+            proj,
+            host_camera: &host_camera,
+            hi_z: None,
+            hi_z_temporal: None,
+        };
+        let mut draws = (0..80)
+            .map(|idx| {
+                prepared_draw_with_bounds(
+                    space_id,
+                    idx,
+                    Vec3::new(2.0, -0.5, -0.5),
+                    Vec3::new(3.0, 0.5, 0.5),
+                )
+            })
+            .collect::<Vec<_>>();
+        let runs = (0..draws.len())
+            .map(|idx| FramePreparedRun {
+                start: idx as u32,
+                end: idx as u32 + 1,
+            })
+            .collect::<Vec<_>>();
+        let mut spatial = PreparedSpatialIndex::default();
+        spatial.rebuild(&draws, &runs);
+        let before = spatial.query_runs(&runs, &[space_id], &scene, Some(&culling));
+
+        draws[0].cull_geometry = Some(MeshCullGeometry {
+            world_aabb: Some((Vec3::new(-0.25, -0.25, -0.25), Vec3::new(0.25, 0.25, 0.25))),
+            rigid_world_matrix: Some(Mat4::IDENTITY),
+            front_face_world_matrix: Some(Mat4::IDENTITY),
+        });
+        let refit_count = spatial.refit_spaces(&draws, &runs, [space_id]);
+        let after = spatial.query_runs(&runs, &[space_id], &scene, Some(&culling));
+
+        assert!(spatial.space_uses_bvh_for_tests(space_id));
+        assert_eq!(before.runs.len(), 0);
+        assert_eq!(refit_count, 1);
+        assert_eq!(after.runs.len(), 1);
+        assert_eq!(after.runs[0], FramePreparedRun { start: 0, end: 1 });
     }
 }

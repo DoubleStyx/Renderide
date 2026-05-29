@@ -1,11 +1,14 @@
 //! Unit tests for retained render-world dirty tracking and snapshot maintenance.
 
+use super::snapshot::build_snapshot_rebuild_tasks;
 use super::state::{RenderWorldRendererRef, RenderWorldRendererTemplate};
 use super::*;
 use crate::cpu_parallelism::{FrameParallelPolicy, ParallelAdmission};
-use crate::scene::SceneCacheFlushReport;
+use crate::scene::{SceneCacheFlushReport, StaticMeshRenderer};
 use crate::shared::RenderTransform;
-use glam::{Quat, Vec3};
+use crate::world_mesh::culling::MeshCullGeometry;
+use crate::world_mesh::draw_prep::prepared_renderables::FramePreparedDraw;
+use glam::{Mat4, Quat, Vec3};
 
 /// Returns an identity host transform for scene fixtures.
 fn identity_transform() -> RenderTransform {
@@ -22,6 +25,14 @@ fn dirty_static(space_id: RenderSpaceId, renderable_index: usize) -> RenderWorld
         space_id,
         kind: RenderWorldRendererKind::Static,
         renderable_index,
+    }
+}
+
+/// Builds a retained static renderer table reference for tests.
+fn static_ref(index: usize) -> RenderWorldRendererRef {
+    RenderWorldRendererRef {
+        kind: RenderWorldRendererKind::Static,
+        index,
     }
 }
 
@@ -46,6 +57,15 @@ fn prepared_draw(space_id: RenderSpaceId, renderable_index: usize) -> FramePrepa
         property_block_id: None,
         cull_geometry: None,
         rigid_world_matrix_override: None,
+    }
+}
+
+/// Builds test cull geometry with a recognizable AABB.
+fn test_cull_geometry(min_x: f32, max_x: f32) -> MeshCullGeometry {
+    MeshCullGeometry {
+        world_aabb: Some((Vec3::new(min_x, -0.25, -0.25), Vec3::new(max_x, 0.25, 0.25))),
+        rigid_world_matrix: Some(Mat4::IDENTITY),
+        front_face_world_matrix: Some(Mat4::IDENTITY),
     }
 }
 
@@ -187,6 +207,7 @@ fn rebuild_prepared_snapshot_skips_inactive_cached_spaces() {
         &mesh_pool,
         &point_render_buffers,
         RenderingContext::RenderToAsset,
+        None,
     );
 
     assert_eq!(
@@ -212,7 +233,7 @@ fn transform_roots_expand_to_descendant_renderer_records() {
         node_id: 1,
         ..Default::default()
     });
-    cached.rebuild_reverse_indexes();
+    cached.push_reverse_indexes_for_ref(static_ref(0));
     world.spaces.insert(space_id, cached);
     world.dirty_transform_roots.push(RenderWorldTransformDirty {
         space_id,
@@ -221,7 +242,16 @@ fn transform_roots_expand_to_descendant_renderer_records() {
 
     world.expand_dirty_transform_roots(&scene);
 
-    assert!(world.dirty_renderers.contains(&dirty_static(space_id, 0)));
+    assert!(world.dirty_renderers.is_empty());
+    assert!(
+        world
+            .dirty_bounds_renderers
+            .contains(&RenderWorldBoundsDirty {
+                space_id,
+                kind: RenderWorldRendererKind::Static,
+                renderable_index: 0,
+            })
+    );
 }
 
 #[test]
@@ -233,13 +263,42 @@ fn mesh_asset_dirties_use_reverse_index() {
         mesh_asset_id: 55,
         ..Default::default()
     });
-    cached.rebuild_reverse_indexes();
+    cached.push_reverse_indexes_for_ref(static_ref(0));
     world.spaces.insert(space_id, cached);
     world.dirty_mesh_assets.insert(55);
 
     world.expand_dirty_mesh_assets();
 
     assert!(world.dirty_renderers.contains(&dirty_static(space_id, 0)));
+}
+
+#[test]
+fn full_space_refresh_builds_reverse_indexes_while_refreshing_records() {
+    let mut scene = SceneCoordinator::new();
+    let space_id = RenderSpaceId(41);
+    scene.test_insert_static_mesh_renderers(
+        space_id,
+        vec![StaticMeshRenderer {
+            node_id: 7,
+            mesh_asset_id: 88,
+            ..Default::default()
+        }],
+    );
+    scene.test_set_space_active(space_id, true);
+    let mesh_pool = MeshPool::default_pool();
+    let mut cached = RenderWorldSpace::default();
+
+    let outcome = refresh_render_world_space(
+        &mut cached,
+        &scene,
+        &mesh_pool,
+        RenderingContext::UserView,
+        space_id,
+    );
+
+    assert_eq!(outcome.full_space_count, 1);
+    assert_eq!(cached.mesh_asset_index.get(&88), Some(&vec![static_ref(0)]));
+    assert_eq!(cached.node_index.get(&7), Some(&vec![static_ref(0)]));
 }
 
 #[test]
@@ -298,16 +357,10 @@ fn reverse_index_delta_replaces_stale_renderer_identity() {
         node_id: 11,
         ..Default::default()
     });
-    cached.rebuild_reverse_indexes();
-
-    let first = RenderWorldRendererRef {
-        kind: RenderWorldRendererKind::Static,
-        index: 0,
-    };
-    let second = RenderWorldRendererRef {
-        kind: RenderWorldRendererKind::Static,
-        index: 1,
-    };
+    let first = static_ref(0);
+    let second = static_ref(1);
+    cached.push_reverse_indexes_for_ref(first);
+    cached.push_reverse_indexes_for_ref(second);
     cached.remove_reverse_indexes_for_ref(first);
     cached.static_renderers[0].mesh_asset_id = 99;
     cached.static_renderers[0].node_id = 20;
@@ -318,6 +371,110 @@ fn reverse_index_delta_replaces_stale_renderer_identity() {
     assert_eq!(cached.mesh_asset_index.get(&99), Some(&vec![first]));
     assert_eq!(cached.node_index.get(&20), Some(&vec![first]));
     assert!(!cached.node_index.contains_key(&10));
+}
+
+#[test]
+fn retained_templates_store_cull_geometry_outside_stable_draws() {
+    let space_id = RenderSpaceId(50);
+    let cull_geometry = test_cull_geometry(-1.0, 1.0);
+    let mut draw = prepared_draw(space_id, 0);
+    draw.cull_geometry = Some(cull_geometry);
+    let mut record = RenderWorldRendererTemplate {
+        draws: vec![draw],
+        ..Default::default()
+    };
+
+    record.retain_stable_draw_templates_only();
+
+    assert_eq!(
+        record
+            .cull_geometry
+            .and_then(|geometry| geometry.world_aabb),
+        cull_geometry.world_aabb
+    );
+    assert!(record.draws[0].cull_geometry.is_none());
+    let mut out = Vec::new();
+    let space = RenderWorldSpace {
+        active: true,
+        static_renderers: vec![record],
+        ..Default::default()
+    };
+    space.append_static_draws_range_to(0..1, &mut out);
+    assert_eq!(
+        out[0]
+            .cull_geometry
+            .and_then(|geometry| geometry.world_aabb),
+        cull_geometry.world_aabb
+    );
+}
+
+#[test]
+fn prepared_snapshot_reuses_unchanged_space_draw_ranges() {
+    let first_space = RenderSpaceId(51);
+    let second_space = RenderSpaceId(52);
+    let mut scene = SceneCoordinator::new();
+    scene.test_seed_space_identity_worlds(first_space, vec![identity_transform()], vec![-1]);
+    scene.test_seed_space_identity_worlds(second_space, vec![identity_transform()], vec![-1]);
+    let mesh_pool = MeshPool::default_pool();
+    let point_render_buffers = HashMap::new();
+    let mut world = RenderWorld::default();
+    let mut first_draw = prepared_draw(first_space, 0);
+    first_draw.material_asset_id = 11;
+    let mut second_draw = prepared_draw(second_space, 0);
+    second_draw.material_asset_id = 22;
+    world.spaces.insert(
+        first_space,
+        RenderWorldSpace {
+            active: true,
+            static_renderers: vec![RenderWorldRendererTemplate {
+                draws: vec![first_draw],
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+    );
+    world.spaces.insert(
+        second_space,
+        RenderWorldSpace {
+            active: true,
+            static_renderers: vec![RenderWorldRendererTemplate {
+                draws: vec![second_draw],
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+    );
+    world.rebuild_prepared_snapshot(
+        &scene,
+        &mesh_pool,
+        &point_render_buffers,
+        RenderingContext::UserView,
+        None,
+    );
+    world.spaces.get_mut(&first_space).unwrap().static_renderers[0].draws[0].material_asset_id = 33;
+    world
+        .spaces
+        .get_mut(&second_space)
+        .unwrap()
+        .static_renderers[0]
+        .draws[0]
+        .material_asset_id = 44;
+    let dirty_spaces = HashSet::from([first_space]);
+
+    world.rebuild_prepared_snapshot(
+        &scene,
+        &mesh_pool,
+        &point_render_buffers,
+        RenderingContext::UserView,
+        Some(&dirty_spaces),
+    );
+
+    assert_eq!(
+        world.prepared.active_space_ids(),
+        &[first_space, second_space]
+    );
+    assert_eq!(world.prepared.draws()[0].material_asset_id, 33);
+    assert_eq!(world.prepared.draws()[1].material_asset_id, 22);
 }
 
 #[test]
@@ -372,7 +529,7 @@ fn snapshot_rebuild_tasks_chunk_by_retained_template_count() {
         ..Default::default()
     });
 
-    let tasks = build_snapshot_rebuild_tasks(&[(space_id, &space)]);
+    let tasks = build_snapshot_rebuild_tasks(&[(0, space_id, &space)]);
 
     assert_eq!(tasks.len(), 2);
     assert_eq!(tasks[0].range, 0..2);

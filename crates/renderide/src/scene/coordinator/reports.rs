@@ -25,6 +25,17 @@ pub struct RenderWorldRendererDirty {
     pub renderable_index: usize,
 }
 
+/// One renderer row whose dynamic world bounds need to be refreshed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct RenderWorldBoundsDirty {
+    /// Host render space containing the renderer.
+    pub space_id: RenderSpaceId,
+    /// Renderer table addressed by [`Self::renderable_index`].
+    pub kind: RenderWorldRendererKind,
+    /// Dense renderer index in the selected table.
+    pub renderable_index: usize,
+}
+
 /// Transform roots whose descendant renderers need cached world-dependent template refresh.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RenderWorldTransformDirty {
@@ -52,6 +63,8 @@ pub struct SceneRenderWorldDirtyReport {
     pub full_spaces: Vec<RenderSpaceId>,
     /// Renderer rows that need retained-template refresh.
     pub renderers: Vec<RenderWorldRendererDirty>,
+    /// Renderer rows that only need dynamic world bounds refreshed.
+    pub bounds: Vec<RenderWorldBoundsDirty>,
     /// Transform roots that need descendant renderer records refreshed after world-cache flush.
     pub transform_roots: Vec<RenderWorldTransformDirty>,
     /// Material override targets that need refresh only in matching render contexts.
@@ -63,8 +76,23 @@ impl SceneRenderWorldDirtyReport {
     pub fn is_empty(&self) -> bool {
         self.full_spaces.is_empty()
             && self.renderers.is_empty()
+            && self.bounds.is_empty()
             && self.transform_roots.is_empty()
             && self.material_overrides.is_empty()
+    }
+
+    /// Records a renderer row that needs only dynamic bounds refresh.
+    pub(super) fn note_bounds(
+        &mut self,
+        space_id: RenderSpaceId,
+        kind: RenderWorldRendererKind,
+        renderable_index: usize,
+    ) {
+        self.bounds.push(RenderWorldBoundsDirty {
+            space_id,
+            kind,
+            renderable_index,
+        });
     }
 
     /// Records a render space that needs a full retained-template refresh.

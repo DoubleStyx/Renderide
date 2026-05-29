@@ -38,8 +38,8 @@ use dirty::{
     render_world_header_changed,
 };
 pub use reports::{
-    RenderWorldMaterialOverrideDirty, RenderWorldRendererDirty, RenderWorldRendererKind,
-    RenderWorldTransformDirty, SceneApplyReport, SceneCacheFlushReport,
+    RenderWorldBoundsDirty, RenderWorldMaterialOverrideDirty, RenderWorldRendererDirty,
+    RenderWorldRendererKind, RenderWorldTransformDirty, SceneApplyReport, SceneCacheFlushReport,
 };
 
 const PRIMARY_DESKTOP_DISPLAY_INDEX: i16 = 0;
