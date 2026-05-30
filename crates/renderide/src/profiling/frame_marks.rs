@@ -1,6 +1,6 @@
 /// Starts the Tracy client (if the `tracy` feature is on) and registers the calling thread as
 /// `"renderer-main"` in the active profiler.
-///
+/// 
 /// Must be called exactly once, before any other `profiling::scope!` macro or
 /// [`GpuProfilerHandle::try_new`] runs -- the `profiling` crate's tracy backend expects a running
 /// `tracy_client::Client` on every span, so the client has to be live first.
