@@ -29,8 +29,8 @@ pub fn emit_frame_mark() {
 /// Emits a secondary Tracy frame mark for command-buffer batches handed to the GPU driver thread.
 ///
 /// The default Tracy frame remains the winit redraw tick. This secondary track marks actual GPU
-/// submits so empty redraw ticks, swapchain acquire skips, and delayed GPU timestamp readback
-/// do not make the pass timeline look like graph work vanished.
+/// submits so empty redraw ticks, swapchain acquire skips, and delayed GPU timestamp readback do
+/// not make the pass timeline look like graph work vanished.
 #[inline]
 pub fn emit_render_submit_frame_mark() {
     #[cfg(feature = "tracy")]
