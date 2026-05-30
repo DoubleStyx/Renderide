@@ -1,3 +1,4 @@
+use std::num::Saturating;
 use std::sync::atomic::AtomicU32;
 
 use rayon::prelude::*;
@@ -38,7 +39,7 @@ pub(super) fn build_parallel(
     let chunks = count_parallel_light_chunks(&inputs);
     let (counts, stats) = merge_parallel_chunk_counts(&chunks, total_clusters);
     let (ranges, total_indices) = prefix_counts_to_ranges(&counts)?;
-    let chunk_offsets = build_parallel_chunk_offsets(&chunks, &ranges, total_clusters);
+    let chunk_offsets = build_chunk_offsets(&chunks, &ranges, total_clusters);
     let indices = write_parallel_light_chunks(&inputs, &chunk_offsets, total_indices);
 
     Some(CpuClusterAssignments {
@@ -103,14 +104,17 @@ fn merge_parallel_chunk_counts(
     chunks: &[CpuFroxelCountChunk],
     total_clusters: usize,
 ) -> (Vec<u32>, CpuFroxelStats) {
+    profiling::scope!("clustered_light::merge_parallel_chunk_counts");
     let counts = if should_parallelize_cpu_froxel_prefix(total_clusters) {
         (0..total_clusters)
             .into_par_iter()
             .with_min_len(CPU_FROXEL_PREFIX_CHUNK_SIZE)
             .map(|cluster_id| {
-                chunks.iter().fold(0u32, |total, chunk| {
-                    total.saturating_add(chunk.counts[cluster_id])
-                })
+                chunks
+                    .iter()
+                    .map(|chunk| Saturating(chunk.counts[cluster_id]))
+                    .sum::<Saturating<u32>>()
+                    .0
             })
             .collect()
     } else {
@@ -130,48 +134,28 @@ fn merge_parallel_chunk_counts(
     (counts, stats)
 }
 
-fn build_parallel_chunk_offsets(
+fn build_chunk_offsets(
     chunks: &[CpuFroxelCountChunk],
     ranges: &[[u32; 2]],
     total_clusters: usize,
 ) -> Vec<Vec<u32>> {
+    profiling::scope!("clustered_light::build_chunk_offsets");
     let chunk_count = chunks.len();
-    if should_parallelize_cpu_froxel_prefix(total_clusters) && chunk_count >= 2 {
-        let per_cluster_offsets = (0..total_clusters)
-            .into_par_iter()
-            .with_min_len(CPU_FROXEL_PREFIX_CHUNK_SIZE)
-            .map(|cluster_id| {
-                let mut next = ranges[cluster_id][0];
-                chunks
-                    .iter()
-                    .map(|chunk| {
-                        let offset = next;
-                        next = next.saturating_add(chunk.counts[cluster_id]);
-                        offset
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
-        let mut chunk_offsets = (0..chunk_count)
-            .map(|_| vec![0u32; total_clusters])
-            .collect::<Vec<_>>();
-        for (cluster_id, offsets) in per_cluster_offsets.into_iter().enumerate() {
-            for (chunk_idx, offset) in offsets.into_iter().enumerate() {
-                chunk_offsets[chunk_idx][cluster_id] = offset;
-            }
-        }
-        return chunk_offsets;
-    }
-
+    // The amount of memory allocations/deallocations necessary
+    // to properly parallelize computations and then transpose the Vec<Vec<_>>
+    // is not worth the amount of time spent iterating here
     let mut chunk_offsets = (0..chunk_count)
         .map(|_| vec![0u32; total_clusters])
         .collect::<Vec<_>>();
     for cluster_id in 0..total_clusters {
-        let mut next = ranges[cluster_id][0];
-        for (chunk_idx, chunk) in chunks.iter().enumerate() {
-            chunk_offsets[chunk_idx][cluster_id] = next;
-            next = next.saturating_add(chunk.counts[cluster_id]);
-        }
+        chunks
+            .iter()
+            .map(|chunk| chunk.counts[cluster_id])
+            .enumerate()
+            .fold(ranges[cluster_id][0], |offset, (chunk_idx, chunk)| {
+                chunk_offsets[chunk_idx][cluster_id] = offset;
+                offset.saturating_add(chunk)
+            });
     }
     chunk_offsets
 }
