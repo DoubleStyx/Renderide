@@ -38,7 +38,9 @@ use crate::scene::SceneCoordinator;
 use super::super::context::{GraphResolvedResources, PostSubmitContext};
 use super::super::error::GraphExecuteError;
 use super::super::frame_upload_batch::{FrameUploadBatch, GraphUploadSink};
-use super::{CompiledRenderGraph, FrameView, FrameViewTarget, MultiViewExecutionContext};
+use super::{
+    CompiledRenderGraph, FrameGlobalView, FrameView, FrameViewTarget, MultiViewExecutionContext,
+};
 use crate::camera::{HostCameraFrame, ViewId};
 use crate::graph_inputs::{FrameSystemsShared, PerViewFramePlan};
 use crate::materials::MaterialSystem;
@@ -78,6 +80,7 @@ struct GraphCommandRecordingPlan {
 
 struct GraphCommandRecordingInputs<'a, 'view> {
     views: &'a [FrameView<'view>],
+    frame_global: &'a FrameGlobalView,
     per_view_work_items: Vec<PerViewWorkItem>,
     transient_by_key: &'a mut HashMap<GraphResolveKey, GraphResolvedResources>,
     upload_batch: &'a FrameUploadBatch,
@@ -103,6 +106,7 @@ struct ViewBlackboardPrepareShared<'a> {
 
 struct RecordSubmitFinalizeInputs<'a, 'view> {
     views: &'a [FrameView<'view>],
+    frame_global: &'a FrameGlobalView,
     transient_by_key: HashMap<GraphResolveKey, GraphResolvedResources>,
     upload_batch: &'a FrameUploadBatch,
     per_view_work_items: Vec<PerViewWorkItem>,
@@ -121,10 +125,10 @@ mod types;
 use diagnostics::{CommandEncodingDiagnostics, TransientPoolMetricsDelta};
 use submit::release_transients_and_gc;
 use types::{
-    DrainedUploadCommand, GraphCommandRecordingPath, GraphResolveKey, OwnedResolvedView,
-    PerViewEncodeOutput, PerViewRecordInputs, PerViewRecordOutput, PerViewRecordShared,
-    PerViewWorkItem, PreparedPerViewFrameInput, RecordedPerViewBatch, ResolvedOffscreenColorCopy,
-    SubmitFrameBatchStats, SubmitFrameInputs, TimedCommandBuffer,
+    DrainedUploadCommand, FrameGlobalPassRecordInputs, GraphCommandRecordingPath, GraphResolveKey,
+    OwnedResolvedView, PerViewEncodeOutput, PerViewRecordInputs, PerViewRecordOutput,
+    PerViewRecordShared, PerViewWorkItem, PreparedPerViewFrameInput, RecordedPerViewBatch,
+    ResolvedOffscreenColorCopy, SubmitFrameBatchStats, SubmitFrameInputs, TimedCommandBuffer,
     TransientTextureResolveSurfaceParams,
 };
 
@@ -192,6 +196,7 @@ impl CompiledRenderGraph {
         gpu: &mut GpuContext,
         scene: &SceneCoordinator,
         backend: &mut dyn GraphExecutionBackend,
+        frame_global: &FrameGlobalView,
         views: &mut [FrameView<'_>],
     ) -> Result<(), GraphExecuteError> {
         profiling::scope!("graph::execute_multi_view");
@@ -278,6 +283,7 @@ impl CompiledRenderGraph {
             &mut mv_ctx,
             RecordSubmitFinalizeInputs {
                 views,
+                frame_global,
                 transient_by_key,
                 upload_batch: &upload_batch,
                 per_view_work_items,
@@ -299,6 +305,7 @@ impl CompiledRenderGraph {
     ) -> Result<(), GraphExecuteError> {
         let RecordSubmitFinalizeInputs {
             views,
+            frame_global,
             mut transient_by_key,
             upload_batch,
             per_view_work_items,
@@ -323,6 +330,7 @@ impl CompiledRenderGraph {
             mv_ctx,
             GraphCommandRecordingInputs {
                 views,
+                frame_global,
                 per_view_work_items,
                 transient_by_key: &mut transient_by_key,
                 upload_batch,
@@ -449,6 +457,7 @@ impl CompiledRenderGraph {
     ) -> Result<(Option<wgpu::CommandBuffer>, RecordedPerViewBatch), GraphExecuteError> {
         let GraphCommandRecordingInputs {
             views,
+            frame_global,
             per_view_work_items,
             transient_by_key,
             upload_batch,
@@ -460,6 +469,7 @@ impl CompiledRenderGraph {
                 let frame_global_cmd = self.encode_frame_global_command(
                     mv_ctx,
                     views,
+                    frame_global,
                     transient_by_key,
                     upload_batch,
                     command_diagnostics,
@@ -489,6 +499,7 @@ impl CompiledRenderGraph {
                 let single = self.record_single_swapchain_graph_command(
                     mv_ctx,
                     views,
+                    frame_global,
                     per_view_work_items,
                     transient_by_key,
                     upload_batch,
@@ -533,13 +544,20 @@ impl CompiledRenderGraph {
         &self,
         mv_ctx: &mut MultiViewExecutionContext<'_>,
         views: &[FrameView<'_>],
+        frame_global: &FrameGlobalView,
         transient_by_key: &mut HashMap<GraphResolveKey, GraphResolvedResources>,
         upload_batch: &FrameUploadBatch,
         command_diagnostics: &mut CommandEncodingDiagnostics,
     ) -> Result<Option<wgpu::CommandBuffer>, GraphExecuteError> {
         let frame_global_cmd = {
             profiling::scope!("graph::encode_frame_global_batch");
-            self.encode_frame_global_passes(mv_ctx, views, transient_by_key, upload_batch)?
+            self.encode_frame_global_passes(
+                mv_ctx,
+                views,
+                frame_global,
+                transient_by_key,
+                upload_batch,
+            )?
         };
         Ok(frame_global_cmd.map(|command| {
             command_diagnostics.apply_frame_global(&command);
@@ -707,6 +725,7 @@ impl CompiledRenderGraph {
         &self,
         mv_ctx: &mut MultiViewExecutionContext<'_>,
         views: &[FrameView<'_>],
+        frame_global: &FrameGlobalView,
         per_view_work_items: Vec<PerViewWorkItem>,
         transient_by_key: &mut HashMap<GraphResolveKey, GraphResolvedResources>,
         upload_batch: &FrameUploadBatch,
@@ -724,11 +743,14 @@ impl CompiledRenderGraph {
         let record_result = (|| -> Result<SingleSwapchainGraphRecord, GraphExecuteError> {
             let frame_global_active = self.record_single_swapchain_frame_global(
                 mv_ctx,
-                views,
-                transient_by_key,
-                &mut encoder,
-                upload_batch,
-                graph_profiler.as_ref(),
+                FrameGlobalPassRecordInputs {
+                    views,
+                    frame_global,
+                    transient_by_key,
+                    encoder: &mut encoder,
+                    upload_batch,
+                    pass_profiler: graph_profiler.as_ref(),
+                },
             )?;
 
             let per_view_shared = PerViewRecordShared {
@@ -806,28 +828,35 @@ impl CompiledRenderGraph {
     fn record_single_swapchain_frame_global(
         &self,
         mv_ctx: &mut MultiViewExecutionContext<'_>,
-        views: &[FrameView<'_>],
-        transient_by_key: &mut HashMap<GraphResolveKey, GraphResolvedResources>,
-        encoder: &mut wgpu::CommandEncoder,
-        upload_batch: &FrameUploadBatch,
-        graph_profiler: Option<&crate::profiling::GpuProfilerHandle>,
+        inputs: FrameGlobalPassRecordInputs<'_, '_>,
     ) -> Result<bool, GraphExecuteError> {
         if self.frame_global_passes_are_inactive(&*mv_ctx.backend) {
             return Ok(false);
         }
-        profiling::scope!("graph::single_swapchain_encoder::frame_global");
-        let frame_global_query =
-            graph_profiler.map(|p| p.begin_query("graph::frame_global", encoder));
-        self.record_frame_global_passes_into_encoder(
-            mv_ctx,
+        let FrameGlobalPassRecordInputs {
             views,
+            frame_global,
             transient_by_key,
             encoder,
             upload_batch,
-            graph_profiler,
+            pass_profiler,
+        } = inputs;
+        profiling::scope!("graph::single_swapchain_encoder::frame_global");
+        let frame_global_query =
+            pass_profiler.map(|p| p.begin_query("graph::frame_global", encoder));
+        self.record_frame_global_passes_into_encoder(
+            mv_ctx,
+            FrameGlobalPassRecordInputs {
+                views,
+                frame_global,
+                transient_by_key,
+                encoder: &mut *encoder,
+                upload_batch,
+                pass_profiler,
+            },
         )?;
         if let Some(query) = frame_global_query
-            && let Some(profiler) = graph_profiler
+            && let Some(profiler) = pass_profiler
         {
             profiler.end_query(encoder, query);
         }
@@ -987,6 +1016,7 @@ impl CompiledRenderGraph {
             let resolved = Self::resolve_owned_view_metadata_from_target(
                 view_id,
                 view.profile,
+                &view.host_camera,
                 &view.target,
                 mv_ctx.gpu,
             )?;

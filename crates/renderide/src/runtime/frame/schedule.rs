@@ -225,8 +225,12 @@ pub(in crate::runtime) fn execute_one_shot_view_plans<'a>(
         prepare_assets_for_schedule(backend);
     });
     let prepared_views = schedule.run_phase(CpuRenderPhase::ViewPlanning, || {
+        let frame_global = plans
+            .first()
+            .map(FrameViewPlan::frame_global_view)
+            .unwrap_or_default();
         PreparedViews::new(
-            ViewFamilyPlan::new(plans),
+            ViewFamilyPlan::new(&frame_global, plans),
             Option::<HeadlessOffscreenSnapshot>::None,
         )
     });

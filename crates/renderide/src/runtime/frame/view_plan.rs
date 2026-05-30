@@ -13,7 +13,7 @@ use crate::gpu::OutputDepthMode;
 use crate::materials::{SHADER_PERM_MULTIVIEW_STEREO, ShaderPermutation};
 use crate::render_graph::blackboard::Blackboard;
 use crate::render_graph::{
-    ExternalFrameTargets, ExternalOffscreenTargets, FrameView, FrameViewClear,
+    ExternalFrameTargets, ExternalOffscreenTargets, FrameGlobalView, FrameView, FrameViewClear,
     FrameViewResourceHints, FrameViewTarget, OffscreenColorCopyTarget, RenderPathProfile,
     ViewFamilyGraphRequirements, ViewPostProcessing,
 };
@@ -120,6 +120,8 @@ pub(in crate::runtime) enum FrameViewPlanTarget<'a> {
 
 /// Ordered view family for one render submission plus its aggregate graph requirements.
 pub(in crate::runtime) struct ViewFamilyPlan<'a> {
+    /// Primary-view metadata for frame-global graph passes.
+    frame_global: FrameGlobalView,
     /// Ordered planned views.
     views: Vec<FrameViewPlan<'a>>,
     /// Graph-shaping requirements aggregated from the planned views.
@@ -127,13 +129,17 @@ pub(in crate::runtime) struct ViewFamilyPlan<'a> {
 }
 
 impl<'a> ViewFamilyPlan<'a> {
-    /// Builds a view-family plan from ordered views.
-    pub(in crate::runtime) fn new(views: Vec<FrameViewPlan<'a>>) -> Self {
+    /// Builds a view-family plan from frame-global metadata and ordered views.
+    pub(in crate::runtime) fn new(
+        frame_global: &FrameGlobalView,
+        views: Vec<FrameViewPlan<'a>>,
+    ) -> Self {
         let mut requirements = ViewFamilyGraphRequirements::default();
         for view in &views {
             requirements.include_profile(view.profile, view.is_multiview_stereo_active());
         }
         Self {
+            frame_global: *frame_global,
             views,
             requirements,
         }
@@ -147,6 +153,11 @@ impl<'a> ViewFamilyPlan<'a> {
     /// Shared slice of ordered planned views.
     pub(in crate::runtime) fn plans(&self) -> &[FrameViewPlan<'a>] {
         &self.views
+    }
+
+    /// Primary-view metadata for frame-global graph passes.
+    pub(in crate::runtime) fn frame_global(&self) -> &FrameGlobalView {
+        &self.frame_global
     }
 
     /// Graph-shaping requirements for this family.
@@ -285,6 +296,17 @@ impl FrameViewPlan<'_> {
     pub(in crate::runtime) fn post_processing(&self) -> ViewPostProcessing {
         self.profile.post_processing()
     }
+
+    /// Converts this planned view to frame-global metadata.
+    pub(in crate::runtime) fn frame_global_view(&self) -> FrameGlobalView {
+        FrameGlobalView::new(
+            &self.host_camera,
+            self.render_context,
+            self.frame_time_seconds,
+            self.clear,
+            self.post_processing(),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -340,11 +362,34 @@ mod tests {
 
     #[test]
     fn view_family_plan_aggregates_profile_requirements() {
-        let family = ViewFamilyPlan::new(vec![main_swapchain_plan()]);
+        let plan = main_swapchain_plan();
+        let frame_global = plan.frame_global_view();
+        let family = ViewFamilyPlan::new(&frame_global, vec![plan]);
 
         assert!(!family.is_empty());
         assert_eq!(family.plans().len(), 1);
+        assert_eq!(
+            family.frame_global().render_context,
+            RenderingContext::UserView
+        );
         assert!(family.requirements().any_post_processing);
         assert!(!family.requirements().multiview_stereo);
+    }
+
+    #[test]
+    fn view_family_requirements_match_executable_frame_views() {
+        let plan = main_swapchain_plan();
+        let frame_global = plan.frame_global_view();
+        let family = ViewFamilyPlan::new(&frame_global, vec![plan]);
+        let frame_views = family
+            .plans()
+            .iter()
+            .map(|plan| plan.to_frame_view(FrameViewResourceHints::default(), Blackboard::new()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            family.requirements(),
+            ViewFamilyGraphRequirements::from_frame_views(&frame_views)
+        );
     }
 }

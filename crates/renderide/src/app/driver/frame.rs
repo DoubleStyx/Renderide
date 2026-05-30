@@ -465,13 +465,14 @@ impl AppDriver {
             FrameRenderMode::HmdMultiview => Ok(()),
             FrameRenderMode::VrRenderedWithoutProjection => Ok(()),
             FrameRenderMode::VrSecondaryOnly => {
-                self.runtime.submit_secondary_only(target.gpu_mut())
+                self.runtime.submit_vr_secondaries_only(target.gpu_mut())
             }
             FrameRenderMode::Desktop if desktop_owned_by_blit => {
                 // The desktop window will be filled by the present-time `BlitToDisplay` pass;
                 // skip the world-camera swapchain output and only run secondary RTs (which the
                 // dash camera, mirror previews, and avatar previews still depend on).
-                self.runtime.submit_secondary_only(target.gpu_mut())
+                self.runtime
+                    .render_desktop_secondaries_frame(target.gpu_mut())
             }
             FrameRenderMode::Desktop => self.runtime.render_desktop_frame(target.gpu_mut()),
         };

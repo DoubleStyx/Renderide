@@ -13,13 +13,13 @@ use crate::camera::{
 };
 use crate::diagnostics::log_once::KeyedLogOnce;
 use crate::gpu::GpuContext;
-use crate::render_graph::{FrameViewClear, RenderPathProfile, ViewPostProcessing};
+use crate::render_graph::{FrameGlobalView, FrameViewClear, RenderPathProfile, ViewPostProcessing};
 use crate::scene::RenderSpaceId;
 use crate::shared::RenderingContext;
 use crate::world_mesh::draw_filter_from_camera_entry;
 
 use super::super::RendererRuntime;
-use super::render::FrameRenderMode;
+use super::render::PrimaryViewRequest;
 use super::view_plan::{
     FrameViewPlan, FrameViewPlanTarget, OffscreenRtColorCopy, OffscreenRtHandles, ViewFamilyPlan,
 };
@@ -172,53 +172,70 @@ impl RendererRuntime {
     ///
     /// Ordering -- preserved so the mesh-deform skip flag on
     /// [`crate::backend::FrameResourceManager`] still runs deform exactly once per tick:
-    /// 1. HMD stereo multiview (when `mode = VrWithHmd`).
+    /// 1. HMD stereo multiview (when requested as the primary view).
     /// 2. Secondary render-texture cameras, sorted by camera depth.
-    /// 3. Main desktop swapchain (when `mode = DesktopPlusSecondaries`).
+    /// 3. Main desktop swapchain (when requested as the primary view).
     pub(in crate::runtime) fn collect_prepared_views<'a>(
         &mut self,
         gpu: &GpuContext,
-        mode: FrameRenderMode<'a>,
+        primary: PrimaryViewRequest<'a>,
         swapchain_extent_px: (u32, u32),
         main_profile: RenderPathProfile,
+        fallback_frame_global_profile: RenderPathProfile,
     ) -> ViewFamilyPlan<'a> {
         let secondary_views = self.collect_secondary_rt_views(gpu);
-        self.assemble_prepared_views(mode, swapchain_extent_px, main_profile, secondary_views)
+        self.assemble_prepared_views(
+            primary,
+            swapchain_extent_px,
+            main_profile,
+            fallback_frame_global_profile,
+            secondary_views,
+        )
     }
 
     /// Collects active views without GPU-backed secondary render targets for CPU-only tests.
     #[cfg(test)]
     pub(in crate::runtime) fn collect_prepared_views_without_secondaries<'a>(
         &self,
-        mode: FrameRenderMode<'a>,
+        primary: PrimaryViewRequest<'a>,
         swapchain_extent_px: (u32, u32),
         main_profile: RenderPathProfile,
+        fallback_frame_global_profile: RenderPathProfile,
     ) -> ViewFamilyPlan<'a> {
-        self.assemble_prepared_views(mode, swapchain_extent_px, main_profile, Vec::new())
+        self.assemble_prepared_views(
+            primary,
+            swapchain_extent_px,
+            main_profile,
+            fallback_frame_global_profile,
+            Vec::new(),
+        )
     }
 
     /// Appends HMD, pre-collected secondary, and main swapchain views in submission order.
     fn assemble_prepared_views<'a>(
         &self,
-        mode: FrameRenderMode<'a>,
+        primary: PrimaryViewRequest<'a>,
         swapchain_extent_px: (u32, u32),
         main_profile: RenderPathProfile,
+        fallback_frame_global_profile: RenderPathProfile,
         mut secondary_views: Vec<FrameViewPlan<'a>>,
     ) -> ViewFamilyPlan<'a> {
-        let (includes_main, hmd_target) = match mode {
-            FrameRenderMode::DesktopPlusSecondaries => (true, None),
-            FrameRenderMode::VrWithHmd(ext) => (false, Some(ext)),
-            FrameRenderMode::VrSecondariesOnly => (false, None),
+        let (includes_main, hmd_target) = match primary {
+            PrimaryViewRequest::DesktopSwapchain => (true, None),
+            PrimaryViewRequest::HmdExternalMultiview(ext) => (false, Some(ext)),
+            PrimaryViewRequest::None => (false, None),
         };
 
         let est_capacity =
             usize::from(hmd_target.is_some()) + secondary_views.len() + usize::from(includes_main);
         let mut views: Vec<FrameViewPlan<'a>> = Vec::with_capacity(est_capacity);
         let main_render_context = self.scene.active_main_render_context();
+        let mut frame_global =
+            self.frame_global_from_runtime(main_render_context, fallback_frame_global_profile);
 
         if let Some(ext) = hmd_target {
             let extent_px = ext.extent_px;
-            views.push(FrameViewPlan {
+            let hmd_view = FrameViewPlan {
                 host_camera: self.host_camera,
                 render_context: main_render_context,
                 frame_time_seconds: self.tick_state.frame_time_seconds(),
@@ -229,18 +246,37 @@ impl RendererRuntime {
                 clear: FrameViewClear::skybox(),
                 profile: RenderPathProfile::xr_hmd(),
                 target: FrameViewPlanTarget::Hmd(ext),
-            });
+            };
+            frame_global = hmd_view.frame_global_view();
+            views.push(hmd_view);
         }
 
         views.append(&mut secondary_views);
 
         if includes_main {
-            views.push(
-                self.build_main_swapchain_view_with_profile(swapchain_extent_px, main_profile),
-            );
+            let main_view =
+                self.build_main_swapchain_view_with_profile(swapchain_extent_px, main_profile);
+            frame_global = main_view.frame_global_view();
+            views.push(main_view);
         }
 
-        ViewFamilyPlan::new(views)
+        ViewFamilyPlan::new(&frame_global, views)
+    }
+
+    /// Builds fallback primary-view metadata for frame-global passes when no HMD or main
+    /// swapchain view is submitted.
+    fn frame_global_from_runtime(
+        &self,
+        render_context: RenderingContext,
+        profile: RenderPathProfile,
+    ) -> FrameGlobalView {
+        FrameGlobalView::new(
+            &self.host_camera,
+            render_context,
+            self.tick_state.frame_time_seconds(),
+            FrameViewClear::skybox(),
+            profile.post_processing(),
+        )
     }
 
     /// Builds prepared views for every enabled secondary render-texture camera in the scene,
@@ -432,8 +468,9 @@ mod tests {
 
     fn collect_default_desktop_views(runtime: &RendererRuntime) -> ViewFamilyPlan<'_> {
         runtime.collect_prepared_views_without_secondaries(
-            FrameRenderMode::DesktopPlusSecondaries,
+            PrimaryViewRequest::DesktopSwapchain,
             TEST_EXTENT,
+            RenderPathProfile::desktop_main(),
             RenderPathProfile::desktop_main(),
         )
     }
@@ -471,14 +508,48 @@ mod tests {
     fn empty_scene_vr_secondaries_only_yields_empty_vec() {
         let runtime = build_runtime();
         let views = runtime.collect_prepared_views_without_secondaries(
-            FrameRenderMode::VrSecondariesOnly,
+            PrimaryViewRequest::None,
             TEST_EXTENT,
             RenderPathProfile::desktop_main(),
+            RenderPathProfile::xr_hmd(),
         );
         assert!(
             views.is_empty(),
             "no HMD, no secondaries, and main swapchain excluded -- nothing to render"
         );
+        assert!(views.frame_global().post_processing.is_enabled());
+    }
+
+    #[test]
+    fn empty_scene_desktop_secondaries_only_uses_desktop_frame_global_fallback() {
+        let runtime = build_runtime();
+        let views = runtime.collect_prepared_views_without_secondaries(
+            PrimaryViewRequest::None,
+            TEST_EXTENT,
+            RenderPathProfile::desktop_main(),
+            RenderPathProfile::headless_main(),
+        );
+
+        assert!(views.is_empty());
+        assert!(!views.frame_global().post_processing.is_enabled());
+        assert_eq!(
+            views.frame_global().render_context,
+            runtime.scene.active_main_render_context()
+        );
+    }
+
+    #[test]
+    fn desktop_main_view_overrides_frame_global_fallback() {
+        let runtime = build_runtime();
+        let views = runtime.collect_prepared_views_without_secondaries(
+            PrimaryViewRequest::DesktopSwapchain,
+            TEST_EXTENT,
+            RenderPathProfile::headless_main(),
+            RenderPathProfile::desktop_main(),
+        );
+
+        assert_eq!(views.plans().len(), 1);
+        assert!(!views.frame_global().post_processing.is_enabled());
     }
 
     #[test]
@@ -500,15 +571,16 @@ mod tests {
     fn main_view_viewport_matches_supplied_swapchain_extent() {
         let runtime = build_runtime();
         let views = runtime.collect_prepared_views_without_secondaries(
-            FrameRenderMode::DesktopPlusSecondaries,
+            PrimaryViewRequest::DesktopSwapchain,
             (1280, 720),
+            RenderPathProfile::desktop_main(),
             RenderPathProfile::desktop_main(),
         );
         let main = views
             .plans()
             .iter()
             .find(|v| matches!(v.target, FrameViewPlanTarget::MainSwapchain))
-            .expect("DesktopPlusSecondaries yields a MainSwapchain view");
+            .expect("desktop primary request yields a MainSwapchain view");
         assert_eq!(main.viewport_px, (1280, 720));
     }
 

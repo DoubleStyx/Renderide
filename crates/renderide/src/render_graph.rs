@@ -82,9 +82,9 @@ pub mod validation;
 pub(crate) use crate::graph_inputs::FrameViewClear;
 pub(crate) use compiled::cache::{GraphCache, GraphCacheEnsureResult, GraphCacheKey};
 pub(crate) use compiled::{
-    ExternalFrameTargets, ExternalOffscreenTargets, FrameView, FrameViewResourceHints,
-    FrameViewTarget, OffscreenColorCopyTarget, RenderPathProfile, ViewFamilyGraphRequirements,
-    ViewPostProcessing,
+    ExternalFrameTargets, ExternalOffscreenTargets, FrameGlobalView, FrameView,
+    FrameViewResourceHints, FrameViewTarget, OffscreenColorCopyTarget, RenderPathProfile,
+    ViewFamilyGraphRequirements, ViewPostProcessing,
 };
 pub(crate) use error::GraphExecuteError;
 pub(crate) use execution_backend::{

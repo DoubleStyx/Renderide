@@ -22,9 +22,9 @@ mod resource;
 mod dot;
 
 pub(crate) use frame_view::{
-    ExternalFrameTargets, ExternalOffscreenTargets, FrameView, FrameViewResourceHints,
-    FrameViewTarget, OffscreenColorCopyTarget, RenderPathProfile, ViewFamilyGraphRequirements,
-    ViewPostProcessing,
+    ExternalFrameTargets, ExternalOffscreenTargets, FrameGlobalView, FrameView, FrameViewLayout,
+    FrameViewResourceHints, FrameViewTarget, OffscreenColorCopyTarget, RenderPathProfile,
+    ViewFamilyGraphRequirements, ViewPostProcessing,
 };
 #[cfg(test)]
 pub(crate) use frame_view::{RenderPathProfileId, RenderPathSampleCountPolicy};
@@ -76,8 +76,10 @@ impl CompiledRenderGraph {
 /// ## Frame-global contract
 ///
 /// [`super::pass::PassPhase::FrameGlobal`] passes run once per tick in
-/// [`CompiledRenderGraph::execute_multi_view_frame_global_passes`]. Host/scene context and
-/// resource resolution for that encoder use the **first** [`FrameView`] only.
+/// [`CompiledRenderGraph::execute_multi_view`]. Host camera, render context, clear state, and
+/// post-processing policy come from the explicit [`FrameGlobalView`]. Target resource resolution
+/// still uses the first [`FrameView`] because frame-global passes need one concrete attachment
+/// layout to resolve imports and transient resources.
 ///
 /// ## Submit model
 ///

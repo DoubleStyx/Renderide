@@ -14,7 +14,8 @@ use crate::mesh_deform::SkinCacheKey;
 use crate::occlusion::HiZCullData;
 use crate::render_graph::blackboard::Blackboard;
 use crate::render_graph::{
-    FrameView, FrameViewResourceHints, GraphExecuteError, ViewFamilyGraphRequirements,
+    FrameGlobalView, FrameView, FrameViewResourceHints, GraphExecuteError,
+    ViewFamilyGraphRequirements,
 };
 use crate::world_mesh::QueuedWorldMeshDraws;
 use crate::world_mesh::{
@@ -237,6 +238,11 @@ impl<'a> PreparedViews<'a> {
         self.family.plans()
     }
 
+    /// Primary-view metadata for frame-global graph passes.
+    pub(in crate::runtime) fn frame_global(&self) -> &FrameGlobalView {
+        self.family.frame_global()
+    }
+
     /// Aggregate graph-shaping requirements for the ordered views.
     pub(in crate::runtime) fn graph_requirements(&self) -> ViewFamilyGraphRequirements {
         self.family.requirements()
@@ -324,8 +330,9 @@ impl SubmitFrame<'_> {
         backend: &mut RenderBackend,
     ) -> Result<(), GraphExecuteError> {
         let requirements = self.prepared_views.graph_requirements();
+        let frame_global = *self.prepared_views.frame_global();
         let mut views = self.prepared_views.build_execution_views(self.view_draws);
-        backend.execute_multi_view_frame(gpu, scene, &mut views, requirements, true)
+        backend.execute_multi_view_frame(gpu, scene, &frame_global, &mut views, requirements, true)
     }
 }
 

@@ -123,9 +123,8 @@ impl CompiledRenderGraph {
     ) -> Result<(), GraphExecuteError> {
         profiling::scope!("graph::register_history_resources");
         for view in views {
-            let viewport = view.target.extent_px(mv_ctx.gpu);
-            let mode = OutputDepthMode::from_multiview_stereo(view.is_multiview_stereo_active());
-            let Some(spec) = hi_z_history_spec(viewport, mode) else {
+            let layout = view.layout(mv_ctx.gpu);
+            let Some(spec) = hi_z_history_spec(layout.viewport_px, layout.output_depth_mode) else {
                 continue;
             };
             mv_ctx
@@ -186,6 +185,7 @@ impl CompiledRenderGraph {
             let resolved = Self::resolve_owned_view_metadata_from_target(
                 view.view_id(),
                 view.profile,
+                &view.host_camera,
                 &view.target,
                 mv_ctx.gpu,
             )?;
@@ -244,16 +244,14 @@ fn build_view_layouts(
     views
         .iter()
         .map(|view| {
-            let viewport = view.target.extent_px(mv_ctx.gpu);
-            let stereo = view.is_multiview_stereo_active();
+            let layout = view.layout(mv_ctx.gpu);
             let depth_format = view.target.depth_format(mv_ctx.gpu).ok()?;
-            let sample_count = view.profile.resolve_sample_count(mv_ctx.gpu);
             Some(PreRecordViewResourceLayout {
                 view_id: view.view_id(),
-                width: viewport.0,
-                height: viewport.1,
-                stereo,
-                sample_count,
+                width: layout.viewport_px.0,
+                height: layout.viewport_px.1,
+                stereo: layout.multiview_stereo,
+                sample_count: layout.sample_count,
                 depth_format,
                 color_format,
                 needs_depth_snapshot: view.resource_hints.needs_depth_snapshot,

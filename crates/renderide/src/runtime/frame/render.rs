@@ -15,29 +15,101 @@ use super::schedule::{
 };
 use super::view_plan::{FrameViewPlan, FrameViewPlanTarget, HeadlessOffscreenSnapshot};
 
-/// Which combination of views the compiled render graph records for one tick.
-///
-/// Encodes the three legal render-mode permutations as an enum so the illegal "desktop swapchain
-/// plus OpenXR HMD" state cannot be represented.
-pub(crate) enum FrameRenderMode<'a> {
-    /// Non-VR path: main swapchain view plus any active secondary render-texture cameras.
-    DesktopPlusSecondaries,
-    /// VR path with a successfully acquired HMD swapchain; stereo multiview view plus secondaries.
-    VrWithHmd(ExternalFrameTargets<'a>),
-    /// VR path when HMD rendering did not start this tick; secondaries still render, the
-    /// desktop mirror stays on its last frame.
-    VrSecondariesOnly,
+/// Primary render target requested for a view-family submission.
+pub(in crate::runtime) enum PrimaryViewRequest<'a> {
+    /// Main desktop swapchain view.
+    DesktopSwapchain,
+    /// OpenXR HMD stereo multiview view.
+    HmdExternalMultiview(ExternalFrameTargets<'a>),
+    /// No primary view; render secondary render-texture cameras only.
+    None,
 }
 
-impl FrameRenderMode<'_> {
+impl PrimaryViewRequest<'_> {
     /// `true` when this mode appends the main desktop swapchain view.
     pub(in crate::runtime) fn includes_main_swapchain(&self) -> bool {
-        matches!(self, FrameRenderMode::DesktopPlusSecondaries)
+        matches!(self, PrimaryViewRequest::DesktopSwapchain)
     }
 
     /// `true` when this mode prepends an HMD stereo multiview view.
     fn has_hmd(&self) -> bool {
-        matches!(self, FrameRenderMode::VrWithHmd(_))
+        matches!(self, PrimaryViewRequest::HmdExternalMultiview(_))
+    }
+}
+
+/// Complete render request for one view-family submission.
+pub(crate) struct FrameViewFamilyRequest<'a> {
+    primary: PrimaryViewRequest<'a>,
+    schedule_kind: RenderScheduleKind,
+}
+
+impl<'a> FrameViewFamilyRequest<'a> {
+    /// Desktop world render: secondary render textures plus the main swapchain view.
+    pub(crate) fn desktop() -> Self {
+        Self {
+            primary: PrimaryViewRequest::DesktopSwapchain,
+            schedule_kind: RenderScheduleKind::Desktop,
+        }
+    }
+
+    /// Desktop render when another presentation path owns the swapchain.
+    pub(crate) fn desktop_secondaries_only() -> Self {
+        Self {
+            primary: PrimaryViewRequest::None,
+            schedule_kind: RenderScheduleKind::Desktop,
+        }
+    }
+
+    /// OpenXR HMD render: HMD stereo view plus secondary render textures.
+    pub(crate) fn hmd(hmd: ExternalFrameTargets<'a>) -> Self {
+        Self {
+            primary: PrimaryViewRequest::HmdExternalMultiview(hmd),
+            schedule_kind: RenderScheduleKind::Hmd,
+        }
+    }
+
+    /// VR tick where HMD rendering did not start and only secondary RTs should render.
+    pub(crate) fn vr_secondaries_only() -> Self {
+        Self {
+            primary: PrimaryViewRequest::None,
+            schedule_kind: RenderScheduleKind::VrSecondariesOnly,
+        }
+    }
+
+    /// Primary view request for this family.
+    pub(in crate::runtime) fn primary(self) -> PrimaryViewRequest<'a> {
+        self.primary
+    }
+
+    /// CPU render schedule kind for this family.
+    pub(in crate::runtime) const fn schedule_kind(&self) -> RenderScheduleKind {
+        self.schedule_kind
+    }
+
+    /// `true` when this family appends the main swapchain view.
+    pub(in crate::runtime) fn includes_main_swapchain(&self) -> bool {
+        self.primary.includes_main_swapchain()
+    }
+
+    /// Frame-global fallback profile to use when no HMD or main swapchain view is submitted.
+    pub(in crate::runtime) fn fallback_frame_global_profile(
+        &self,
+        desktop_profile: crate::render_graph::RenderPathProfile,
+    ) -> crate::render_graph::RenderPathProfile {
+        match self.schedule_kind {
+            RenderScheduleKind::Hmd | RenderScheduleKind::VrSecondariesOnly => {
+                crate::render_graph::RenderPathProfile::xr_hmd()
+            }
+            RenderScheduleKind::Desktop
+            | RenderScheduleKind::CameraTask
+            | RenderScheduleKind::Camera360Capture
+            | RenderScheduleKind::ReflectionProbeCapture => desktop_profile,
+        }
+    }
+
+    /// `true` when this family records an HMD stereo primary view.
+    fn has_hmd(&self) -> bool {
+        self.primary.has_hmd()
     }
 }
 
@@ -48,7 +120,18 @@ impl RendererRuntime {
     /// See [`Self::render_frame`] for the shared implementation that also powers the VR entry
     /// points on [`crate::xr::XrFrameRenderer`].
     pub fn render_desktop_frame(&mut self, gpu: &mut GpuContext) -> Result<(), GraphExecuteError> {
-        self.render_frame(gpu, FrameRenderMode::DesktopPlusSecondaries)
+        self.render_frame(gpu, FrameViewFamilyRequest::desktop())
+    }
+
+    /// Desktop entry point for ticks where presentation is supplied by `BlitToDisplay`.
+    ///
+    /// Secondary render-texture cameras still update through the normal desktop schedule, but
+    /// the main swapchain world view is omitted because the display blit pass fills it later.
+    pub(crate) fn render_desktop_secondaries_frame(
+        &mut self,
+        gpu: &mut GpuContext,
+    ) -> Result<(), GraphExecuteError> {
+        self.render_frame(gpu, FrameViewFamilyRequest::desktop_secondaries_only())
     }
 
     /// Unified per-tick world render entry point.
@@ -68,19 +151,19 @@ impl RendererRuntime {
     pub(crate) fn render_frame(
         &mut self,
         gpu: &mut GpuContext,
-        mode: FrameRenderMode<'_>,
+        request: FrameViewFamilyRequest<'_>,
     ) -> Result<(), GraphExecuteError> {
         profiling::scope!("render::render_frame");
-        let schedule = CpuRenderSchedule::new(render_schedule_kind_for_mode(&mode));
+        let schedule = CpuRenderSchedule::new(request.schedule_kind());
         schedule.run_phase(CpuRenderPhase::Extract, || {
             self.sync_debug_hud_diagnostics_from_settings();
         });
         schedule.run_phase(CpuRenderPhase::AssetPrepare, || {
-            self.setup_msaa_for_mode(gpu, &mode);
+            self.setup_msaa_for_request(gpu, &request);
             prepare_assets_for_schedule(&mut self.backend);
         });
         let prepared_views = schedule.run_phase(CpuRenderPhase::ViewPlanning, || {
-            self.prepare_frame_views(gpu, mode)
+            self.prepare_frame_views(gpu, request)
         });
         let inner_parallelism = select_inner_parallelism(prepared_views.plans());
         let scene = &self.scene;
@@ -97,12 +180,16 @@ impl RendererRuntime {
 
     /// Applies the MSAA tier for the active mode and evicts transient textures keyed by stale
     /// sample counts on a tier change.
-    fn setup_msaa_for_mode(&mut self, gpu: &mut GpuContext, mode: &FrameRenderMode<'_>) {
+    fn setup_msaa_for_request(
+        &mut self,
+        gpu: &mut GpuContext,
+        request: &FrameViewFamilyRequest<'_>,
+    ) {
         profiling::scope!("render::setup_msaa");
         self.sync_master_msaa(gpu);
         // Stereo MSAA tier applies to `ExternalMultiview` HMD targets; keep both tiers in sync
         // so transient textures keyed by sample count invalidate on a mode change.
-        if mode.has_hmd() {
+        if request.has_hmd() {
             self.sync_stereo_msaa_from_master(gpu);
         }
     }
@@ -112,9 +199,9 @@ impl RendererRuntime {
     fn prepare_frame_views<'a>(
         &mut self,
         gpu: &mut GpuContext,
-        mode: FrameRenderMode<'a>,
+        request: FrameViewFamilyRequest<'a>,
     ) -> PreparedViews<'a> {
-        let includes_main = mode.includes_main_swapchain();
+        let includes_main = request.includes_main_swapchain();
         // Capture the swapchain extent before the per-view collection. The main desktop view's
         // CPU cull projection (`build_world_mesh_cull_proj_params`) runs against this extent
         // before the render graph dispatches, so passing a stale/zero value produces a degenerate
@@ -125,7 +212,14 @@ impl RendererRuntime {
         } else {
             crate::render_graph::RenderPathProfile::desktop_main()
         };
-        let prepared = self.collect_prepared_views(gpu, mode, swapchain_extent_px, main_profile);
+        let fallback_frame_global_profile = request.fallback_frame_global_profile(main_profile);
+        let prepared = self.collect_prepared_views(
+            gpu,
+            request.primary(),
+            swapchain_extent_px,
+            main_profile,
+            fallback_frame_global_profile,
+        );
         trace_prepared_views(prepared.plans());
         self.backend
             .sync_active_views(prepared.plans().iter().map(|view| view.view_id));
@@ -138,14 +232,6 @@ impl RendererRuntime {
             }
         };
         PreparedViews::new(prepared, headless_snapshot)
-    }
-}
-
-fn render_schedule_kind_for_mode(mode: &FrameRenderMode<'_>) -> RenderScheduleKind {
-    match mode {
-        FrameRenderMode::DesktopPlusSecondaries => RenderScheduleKind::Desktop,
-        FrameRenderMode::VrWithHmd(_) => RenderScheduleKind::Hmd,
-        FrameRenderMode::VrSecondariesOnly => RenderScheduleKind::VrSecondariesOnly,
     }
 }
 
@@ -196,4 +282,60 @@ fn trace_prepared_views(prepared: &[FrameViewPlan<'_>]) {
         main,
         details,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render_graph::RenderPathProfile;
+    use crate::render_graph::compiled::RenderPathProfileId;
+
+    #[test]
+    fn desktop_request_includes_main_swapchain_on_desktop_schedule() {
+        let request = FrameViewFamilyRequest::desktop();
+
+        assert_eq!(request.schedule_kind(), RenderScheduleKind::Desktop);
+        assert!(request.includes_main_swapchain());
+        assert_eq!(
+            request
+                .fallback_frame_global_profile(RenderPathProfile::desktop_main())
+                .id(),
+            RenderPathProfileId::DesktopMain
+        );
+    }
+
+    #[test]
+    fn desktop_secondaries_only_keeps_desktop_schedule() {
+        let request = FrameViewFamilyRequest::desktop_secondaries_only();
+
+        assert_eq!(request.schedule_kind(), RenderScheduleKind::Desktop);
+        assert_eq!(
+            CpuRenderSchedule::new(request.schedule_kind()).mesh_lod_bias(),
+            2.0
+        );
+        assert!(!request.includes_main_swapchain());
+        assert_eq!(
+            request
+                .fallback_frame_global_profile(RenderPathProfile::headless_main())
+                .id(),
+            RenderPathProfileId::HeadlessMain
+        );
+    }
+
+    #[test]
+    fn vr_secondaries_only_keeps_vr_schedule_and_global_profile() {
+        let request = FrameViewFamilyRequest::vr_secondaries_only();
+
+        assert_eq!(
+            request.schedule_kind(),
+            RenderScheduleKind::VrSecondariesOnly
+        );
+        assert!(!request.includes_main_swapchain());
+        assert_eq!(
+            request
+                .fallback_frame_global_profile(RenderPathProfile::desktop_main())
+                .id(),
+            RenderPathProfileId::XrHmd
+        );
+    }
 }
