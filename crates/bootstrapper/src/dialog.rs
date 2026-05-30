@@ -24,6 +24,8 @@ const CANCEL_BUTTON_LABEL: &str = "Cancel";
 const UPDATE_BUTTON_LABEL: &str = "Update";
 /// Custom-button label that shows the release changelog.
 const VIEW_CHANGELOG_BUTTON_LABEL: &str = "View Changelog";
+/// Custom-button label that skips the offered release until the next launch.
+const SKIP_ONCE_BUTTON_LABEL: &str = "Not Now";
 /// Custom-button label that persists a skip for the offered release tag.
 const SKIP_RELEASE_BUTTON_LABEL: &str = "Skip This Release";
 
@@ -139,6 +141,9 @@ fn action_from_dialog_result(result: rfd::MessageDialogResult) -> UpdateDialogAc
         rfd::MessageDialogResult::Custom(label) if label == VIEW_CHANGELOG_BUTTON_LABEL => {
             UpdateDialogAction::ViewChangelog
         }
+        rfd::MessageDialogResult::Custom(label) if label == SKIP_ONCE_BUTTON_LABEL => {
+            UpdateDialogAction::SkipOnce
+        }
         rfd::MessageDialogResult::Custom(label) if label == SKIP_RELEASE_BUTTON_LABEL => {
             UpdateDialogAction::SkipRelease
         }
@@ -160,6 +165,8 @@ fn show_release_update_prompt_with_zenity(description: &str) -> Option<UpdateDia
         .arg(description)
         .arg("--ok-label")
         .arg(UPDATE_BUTTON_LABEL)
+        .arg("--cancel-label")
+        .arg(SKIP_ONCE_BUTTON_LABEL)
         .arg("--extra-button")
         .arg(VIEW_CHANGELOG_BUTTON_LABEL)
         .arg("--extra-button")
@@ -177,6 +184,7 @@ fn show_release_update_prompt_with_zenity(description: &str) -> Option<UpdateDia
     let label = stdout.trim();
     match label {
         VIEW_CHANGELOG_BUTTON_LABEL => Some(UpdateDialogAction::ViewChangelog),
+        SKIP_ONCE_BUTTON_LABEL => Some(UpdateDialogAction::SkipOnce),
         SKIP_RELEASE_BUTTON_LABEL => Some(UpdateDialogAction::SkipRelease),
         _ if output.status.success() => Some(UpdateDialogAction::Update),
         _ => Some(UpdateDialogAction::SkipOnce),
@@ -228,6 +236,12 @@ mod tests {
                 VIEW_CHANGELOG_BUTTON_LABEL.to_owned()
             )),
             UpdateDialogAction::ViewChangelog
+        );
+        assert_eq!(
+            action_from_dialog_result(rfd::MessageDialogResult::Custom(
+                SKIP_ONCE_BUTTON_LABEL.to_owned()
+            )),
+            UpdateDialogAction::SkipOnce
         );
         assert_eq!(
             action_from_dialog_result(rfd::MessageDialogResult::Custom(
