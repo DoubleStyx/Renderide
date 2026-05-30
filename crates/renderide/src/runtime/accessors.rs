@@ -58,6 +58,11 @@ impl RendererRuntime {
         self.config.desktop_frame_pacing_caps()
     }
 
+    /// Effective host-owned skin weight mode for mesh skinning.
+    pub(crate) fn skin_weight_mode(&self) -> crate::shared::SkinWeightMode {
+        self.config.skin_weight_mode()
+    }
+
     /// Toggles the master ImGui overlay visibility setting and clears stale HUD input capture.
     pub fn toggle_imgui_visibility(&mut self) {
         if self.config.toggle_imgui_visibility().is_some() {
@@ -142,6 +147,7 @@ impl RendererRuntime {
         let config_save_path = self.config.cloned_config_save_path();
         let suppress_renderer_config_disk_writes =
             self.config.suppress_renderer_config_disk_writes();
+        self.backend.set_skin_weight_mode(self.skin_weight_mode());
         let (shm, ipc) = self.frontend.transport_pair_mut();
         if let Err(e) = self.backend.attach(
             crate::backend::RenderBackendAttachDesc {

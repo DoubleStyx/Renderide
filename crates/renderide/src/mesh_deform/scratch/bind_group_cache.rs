@@ -30,6 +30,10 @@ pub struct SkinningBindGroupKey {
     pub bone_indices: u64,
     /// Stable identity of the bone-weight buffer.
     pub bone_weights: u64,
+    /// Stable identity of the raw influence offset buffer.
+    pub bone_influence_offsets: u64,
+    /// Stable identity of the raw influence buffer.
+    pub bone_influences: u64,
     /// Stable identity of the destination position buffer.
     pub dst_positions: u64,
     /// Stable identity of the source normal buffer.

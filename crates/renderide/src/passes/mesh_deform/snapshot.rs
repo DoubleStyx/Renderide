@@ -29,6 +29,8 @@ pub(super) struct MeshDeformSnapshot {
     pub(super) blendshape_shape_frame_spans: Vec<BlendshapeFrameSpan>,
     pub(super) bone_indices_buffer: Option<Arc<wgpu::Buffer>>,
     pub(super) bone_weights_vec4_buffer: Option<Arc<wgpu::Buffer>>,
+    pub(super) bone_influence_offsets_buffer: Option<Arc<wgpu::Buffer>>,
+    pub(super) bone_influences_buffer: Option<Arc<wgpu::Buffer>>,
     pub(super) skinning_bind_matrices: Vec<Mat4>,
     pub(super) blendshape_has_position_deltas: bool,
     pub(super) blendshape_has_normal_deltas: bool,
@@ -52,6 +54,8 @@ impl MeshDeformSnapshot {
             blendshape_shape_frame_spans: m.blendshape_shape_frame_spans.clone(),
             bone_indices_buffer: m.bone_indices_buffer.clone(),
             bone_weights_vec4_buffer: m.bone_weights_vec4_buffer.clone(),
+            bone_influence_offsets_buffer: m.bone_influence_offsets_buffer.clone(),
+            bone_influences_buffer: m.bone_influences_buffer.clone(),
             skinning_bind_matrices: if clone_skinning_bind_matrices {
                 m.skinning_bind_matrices.clone()
             } else {
@@ -136,5 +140,7 @@ pub(super) fn deform_needs_skin_snapshot(
         && mesh.normals_buffer.is_some()
         && mesh.bone_indices_buffer.is_some()
         && mesh.bone_weights_vec4_buffer.is_some()
+        && mesh.bone_influence_offsets_buffer.is_some()
+        && mesh.bone_influences_buffer.is_some()
         && !mesh.skinning_bind_matrices.is_empty()
 }

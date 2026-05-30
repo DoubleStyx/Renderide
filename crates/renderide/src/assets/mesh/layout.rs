@@ -21,7 +21,7 @@ pub use buffer_layout::{
     MeshBufferLayout, compute_index_count, compute_mesh_buffer_layout, compute_vertex_stride,
     extract_bind_poses, index_bytes_per_element,
 };
-pub use skinning::split_bone_weights_tail_for_gpu;
+pub(in crate::assets::mesh) use skinning::split_bone_weights_tail_for_gpu;
 #[cfg(test)]
 pub use streams::vertex_float4_stream_bytes;
 pub use streams::{

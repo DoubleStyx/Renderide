@@ -205,6 +205,8 @@ pub(crate) struct BackendGraphAccess<'a> {
     pub(super) gpu_limits: Option<Arc<GpuLimits>>,
     /// MSAA depth-resolve resources selected before graph execution borrows backend fields.
     pub(super) msaa_depth_resolve: Option<Arc<MsaaDepthResolveResources>>,
+    /// Host-owned skin influence mode selected for mesh deform compute.
+    pub(super) skin_weight_mode: crate::shared::SkinWeightMode,
     /// GTAO settings snapshot selected before graph execution borrows backend fields.
     pub(super) live_gtao_settings: crate::config::GtaoSettings,
     /// Bloom settings snapshot selected before graph execution borrows backend fields.
@@ -328,6 +330,11 @@ impl<'a> BackendGraphAccess<'a> {
     /// Optional read-only skin cache for per-view forward draws.
     pub(crate) fn skin_cache(&self) -> Option<&GpuSkinCache> {
         self.skin_cache.as_deref()
+    }
+
+    /// Host-owned skin influence mode selected for mesh deform compute.
+    pub(crate) fn skin_weight_mode(&self) -> crate::shared::SkinWeightMode {
+        self.skin_weight_mode
     }
 
     /// Warms backend-owned assets required by caller-seeded per-view blackboards.
@@ -574,6 +581,7 @@ impl<'a> BackendGraphAccess<'a> {
             skin_cache: None,
             gpu_limits: self.gpu_limits.clone(),
             msaa_depth_resolve: self.msaa_depth_resolve.clone(),
+            skin_weight_mode: self.skin_weight_mode,
             debug_hud: PerViewHudConfig {
                 main_enabled: self.debug_hud.main_enabled(),
                 textures_enabled: self.debug_hud.textures_enabled(),
@@ -645,6 +653,10 @@ impl GraphExecutionBackend for BackendGraphAccess<'_> {
 
     fn skin_cache(&self) -> Option<&GpuSkinCache> {
         BackendGraphAccess::skin_cache(self)
+    }
+
+    fn skin_weight_mode(&self) -> crate::shared::SkinWeightMode {
+        BackendGraphAccess::skin_weight_mode(self)
     }
 
     fn split_for_graph_frame_params(&mut self) -> GraphFrameParamsSplit<'_> {

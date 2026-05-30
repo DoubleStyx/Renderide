@@ -54,6 +54,8 @@ impl GpuMesh {
             && self.normals_buffer.is_some()
             && self.bone_indices_buffer.is_some()
             && self.bone_weights_vec4_buffer.is_some()
+            && self.bone_influence_offsets_buffer.is_some()
+            && self.bone_influences_buffer.is_some()
             && !self.skinning_bind_matrices.is_empty()
     }
 

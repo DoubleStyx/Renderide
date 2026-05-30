@@ -5,7 +5,8 @@ use crate::frontend::dispatch::ipc_init::{self, RendererInitCapabilities};
 use crate::frontend::output_device::head_output_device_wants_openxr;
 use crate::ipc::SharedMemoryAccessor;
 use crate::shared::{
-    DesktopConfig, FrameStartData, RenderDecouplingConfig, RendererCommand, RendererInitData,
+    DesktopConfig, FrameStartData, QualityConfig, RenderDecouplingConfig, RendererCommand,
+    RendererInitData,
 };
 
 use super::super::super::RendererRuntime;
@@ -65,6 +66,15 @@ impl RendererRuntime {
             cfg.v_sync
         );
         self.config.apply_host_desktop_config(&cfg);
+    }
+
+    pub(in crate::runtime) fn apply_quality_config(&mut self, cfg: QualityConfig) {
+        logger::info!(
+            "runtime: quality_config skin_weight_mode={:?}",
+            cfg.skin_weight_mode
+        );
+        self.config.apply_host_quality_config(&cfg);
+        self.backend.set_skin_weight_mode(cfg.skin_weight_mode);
     }
 }
 

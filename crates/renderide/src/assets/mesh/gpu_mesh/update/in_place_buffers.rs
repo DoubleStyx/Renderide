@@ -83,25 +83,39 @@ pub(super) fn compatible_for_in_place_real_skeleton(
     let bc = &raw[layout.bone_counts_start..layout.bone_counts_start + layout.bone_counts_length];
     let bw =
         &raw[layout.bone_weights_start..layout.bone_weights_start + layout.bone_weights_length];
-    match split_bone_weights_tail_for_gpu(bc, bw, vc_usize) {
-        Some((ref ib, ref wb)) => {
-            if !mesh
-                .bone_indices_buffer
-                .as_ref()
-                .is_some_and(|b| queue_init_buffer_size_matches(b.size(), ib.len()))
-            {
+    match split_bone_weights_tail_for_gpu(bc, bw, vc_usize, data.bone_count as usize) {
+        Some(ref streams) => {
+            if !mesh.bone_indices_buffer.as_ref().is_some_and(|b| {
+                queue_init_buffer_size_matches(b.size(), streams.bone_indices_vec4.len())
+            }) {
+                return false;
+            }
+            if !mesh.bone_weights_vec4_buffer.as_ref().is_some_and(|b| {
+                queue_init_buffer_size_matches(b.size(), streams.bone_weights_vec4.len())
+            }) {
                 return false;
             }
             if !mesh
-                .bone_weights_vec4_buffer
+                .bone_influence_offsets_buffer
                 .as_ref()
-                .is_some_and(|b| queue_init_buffer_size_matches(b.size(), wb.len()))
+                .is_some_and(|b| {
+                    queue_init_buffer_size_matches(b.size(), streams.influence_offsets.len())
+                })
             {
+                return false;
+            }
+            if !mesh.bone_influences_buffer.as_ref().is_some_and(|b| {
+                queue_init_buffer_size_matches(b.size(), influence_buffer_len(&streams.influences))
+            }) {
                 return false;
             }
         }
         None => {
-            if mesh.bone_indices_buffer.is_some() || mesh.bone_weights_vec4_buffer.is_some() {
+            if mesh.bone_indices_buffer.is_some()
+                || mesh.bone_weights_vec4_buffer.is_some()
+                || mesh.bone_influence_offsets_buffer.is_some()
+                || mesh.bone_influences_buffer.is_some()
+            {
                 return false;
             }
         }
@@ -388,12 +402,44 @@ pub(super) fn write_in_place_bone_buffers(
             if let Some(bcb) = &ctx.mesh.bone_counts_buffer {
                 write_mesh_upload_buffer(ctx.upload_sink, bcb.as_ref(), 0, bc);
             }
-            if let Some((ib, wb)) = split_bone_weights_tail_for_gpu(bc, bw, ctx.vertex_count) {
+            if let Some(streams) = split_bone_weights_tail_for_gpu(
+                bc,
+                bw,
+                ctx.vertex_count,
+                ctx.data.bone_count as usize,
+            ) {
                 if let Some(bi) = &ctx.mesh.bone_indices_buffer {
-                    write_mesh_upload_buffer(ctx.upload_sink, bi.as_ref(), 0, &ib);
+                    write_mesh_upload_buffer(
+                        ctx.upload_sink,
+                        bi.as_ref(),
+                        0,
+                        &streams.bone_indices_vec4,
+                    );
                 }
                 if let Some(bwt) = &ctx.mesh.bone_weights_vec4_buffer {
-                    write_mesh_upload_buffer(ctx.upload_sink, bwt.as_ref(), 0, &wb);
+                    write_mesh_upload_buffer(
+                        ctx.upload_sink,
+                        bwt.as_ref(),
+                        0,
+                        &streams.bone_weights_vec4,
+                    );
+                }
+                if let Some(offsets) = &ctx.mesh.bone_influence_offsets_buffer {
+                    write_mesh_upload_buffer(
+                        ctx.upload_sink,
+                        offsets.as_ref(),
+                        0,
+                        &streams.influence_offsets,
+                    );
+                }
+                if let Some(influences) = &ctx.mesh.bone_influences_buffer {
+                    let influence_bytes = influence_buffer_bytes(&streams.influences);
+                    write_mesh_upload_buffer(
+                        ctx.upload_sink,
+                        influences.as_ref(),
+                        0,
+                        &influence_bytes,
+                    );
                 }
             }
         }
@@ -411,6 +457,18 @@ pub(super) fn write_in_place_bone_buffers(
         }
     }
     Some(())
+}
+
+fn influence_buffer_len(influences: &[u8]) -> usize {
+    influences.len().max(8)
+}
+
+fn influence_buffer_bytes(influences: &[u8]) -> Vec<u8> {
+    if influences.is_empty() {
+        vec![0; 8]
+    } else {
+        influences.to_vec()
+    }
 }
 
 /// Sparse blendshape GPU buffer and CPU ranges.

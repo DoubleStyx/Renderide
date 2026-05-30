@@ -207,6 +207,8 @@ pub struct FrameSystemsShared<'a> {
     pub mesh_deform_skin_cache: Option<&'a mut GpuSkinCache>,
     /// Deformed mesh arenas for forward draws after mesh deform completes.
     pub skin_cache: Option<&'a GpuSkinCache>,
+    /// Host-owned skin influence mode for mesh deform compute.
+    pub skin_weight_mode: crate::shared::SkinWeightMode,
     /// Read-only HUD capture switches for deferred per-view diagnostics.
     pub debug_hud: crate::diagnostics::PerViewHudConfig,
 }

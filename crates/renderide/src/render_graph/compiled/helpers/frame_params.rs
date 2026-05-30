@@ -135,6 +135,7 @@ pub(in crate::render_graph::compiled) fn frame_render_params_from_resolved<'a>(
             mesh_deform_scratch: split.mesh_deform_scratch,
             mesh_deform_skin_cache: split.mesh_deform_skin_cache,
             skin_cache: split.skin_cache,
+            skin_weight_mode: split.skin_weight_mode,
             debug_hud: split.debug_hud,
         },
         GraphPassFrameViewInputs {

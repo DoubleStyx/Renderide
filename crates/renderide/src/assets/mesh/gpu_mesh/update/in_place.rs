@@ -67,6 +67,8 @@ impl GpuMesh {
         let no_gpu_bones = self.bone_counts_buffer.is_none()
             && self.bone_indices_buffer.is_none()
             && self.bone_weights_vec4_buffer.is_none()
+            && self.bone_influence_offsets_buffer.is_none()
+            && self.bone_influences_buffer.is_none()
             && self.bind_poses_buffer.is_none();
         let no_gpu_blend = self.blendshape_sparse_buffer.is_none()
             && self.num_blendshapes == 0
@@ -106,6 +108,8 @@ impl GpuMesh {
                 || self.bind_poses_buffer.is_some()
                 || self.bone_indices_buffer.is_some()
                 || self.bone_weights_vec4_buffer.is_some()
+                || self.bone_influence_offsets_buffer.is_some()
+                || self.bone_influences_buffer.is_some()
             {
                 return false;
             }
@@ -318,6 +322,8 @@ fn rebuild_mesh_after_in_place_write(
         bone_counts_buffer: mesh.bone_counts_buffer.clone(),
         bone_indices_buffer: mesh.bone_indices_buffer.clone(),
         bone_weights_vec4_buffer: mesh.bone_weights_vec4_buffer.clone(),
+        bone_influence_offsets_buffer: mesh.bone_influence_offsets_buffer.clone(),
+        bone_influences_buffer: mesh.bone_influences_buffer.clone(),
         bind_poses_buffer: mesh.bind_poses_buffer.clone(),
         blendshape_sparse_buffer: mesh.blendshape_sparse_buffer.clone(),
         blendshape_frame_ranges: mesh.blendshape_frame_ranges.clone(),

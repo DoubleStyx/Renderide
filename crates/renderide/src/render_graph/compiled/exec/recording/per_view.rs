@@ -841,6 +841,7 @@ impl CompiledRenderGraph {
                 mesh_deform_scratch: None,
                 mesh_deform_skin_cache: None,
                 skin_cache: shared.skin_cache,
+                skin_weight_mode: shared.skin_weight_mode,
                 debug_hud: shared.debug_hud,
             },
             resolved,

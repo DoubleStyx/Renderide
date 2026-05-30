@@ -24,6 +24,7 @@ use crate::render_graph::context::ComputePassCtx;
 use crate::render_graph::error::{RenderPassError, SetupError};
 use crate::render_graph::pass::{ComputePass, PassBuilder, PassPhase};
 use crate::scene::{RenderSpaceId, SceneCoordinator};
+use crate::shared::SkinWeightMode;
 
 use self::encode::{
     MeshDeformDispatchBatch, MeshDeformEncodeGpu, MeshDeformRecordInputs, MeshDeformRecordStats,
@@ -121,6 +122,7 @@ struct MeshDeformDispatchCtx<'a> {
     scene: &'a SceneCoordinator,
     render_context: crate::shared::RenderingContext,
     head_output_transform: glam::Mat4,
+    skin_weight_mode: SkinWeightMode,
 }
 
 /// Renderer count assigned to one deform collection worker chunk.
@@ -624,6 +626,7 @@ fn dispatch_mesh_deform_work(
                     prepared_skinning_palette_bytes,
                     blend_weights: &item.blend_weights,
                     previous_signature,
+                    skin_weight_mode: dispatch_ctx.skin_weight_mode,
                     bone_cursor: &mut cursors.bone,
                     blend_param_cursor: &mut cursors.blend_param,
                     skin_dispatch_cursor: &mut cursors.skin_dispatch,
@@ -735,6 +738,7 @@ impl ComputePass for MeshDeformPass {
                 scene: frame.shared.scene,
                 render_context,
                 head_output_transform,
+                skin_weight_mode: frame.shared.skin_weight_mode,
             },
         );
         scratch.ready_work_indices = ready_work_indices;

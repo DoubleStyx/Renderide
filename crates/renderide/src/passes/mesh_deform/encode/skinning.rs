@@ -12,6 +12,7 @@ use crate::mesh_deform::{Range, SkinCacheEntry, SkinningBindGroupKey};
 use crate::mesh_deform::{SkinningPaletteParams, write_skinning_palette_bytes};
 use crate::mesh_deform::{advance_slab_cursor, buffer_identity};
 use crate::scene::RenderSpaceId;
+use crate::shared::SkinWeightMode;
 
 use super::super::snapshot::MeshDeformSnapshot;
 use super::{MeshDeformEncodeGpu, MeshDeformRecordStats};
@@ -42,6 +43,7 @@ pub(super) struct SkinningDeformContext<'a, 'b> {
     pub temp_arena: &'a wgpu::Buffer,
     pub skin_dispatch_cursor: &'b mut u64,
     pub prepared_palette_len: u64,
+    pub skin_weight_mode: SkinWeightMode,
 }
 
 /// Skinning `SkinDispatchParams.flags` bit for writing tangents.
@@ -127,6 +129,7 @@ pub(super) fn record_skinning_deform(
         base_dst_nrm_e: required.nrm_range.first_element_index(16),
         base_dst_tan_e: tangent_dispatch.base_dst_tan_e,
         flags: tangent_dispatch.flags,
+        skin_weight_limit: skin_weight_limit(ctx.skin_weight_mode),
     });
     let sd_cursor = *ctx.skin_dispatch_cursor;
     let Some(params_offset) = dynamic_uniform_offset(sd_cursor) else {
@@ -145,6 +148,8 @@ pub(super) fn record_skinning_deform(
             src_positions: src_for_skin,
             bone_idx: required.bone_idx,
             bone_wt: required.bone_wt,
+            bone_influence_offsets: required.bone_influence_offsets,
+            bone_influences: required.bone_influences,
             dst_pos: ctx.positions_arena,
             src_n: src_n_for_skin,
             dst_n: ctx.normals_arena,
@@ -174,6 +179,8 @@ struct RequiredSkinningInputs<'a> {
     src_n: &'a wgpu::Buffer,
     bone_idx: &'a wgpu::Buffer,
     bone_wt: &'a wgpu::Buffer,
+    bone_influence_offsets: &'a wgpu::Buffer,
+    bone_influences: &'a wgpu::Buffer,
     nrm_range: &'a Range,
 }
 
@@ -185,8 +192,19 @@ fn required_skinning_inputs<'a>(
         src_n: ctx.mesh.normals_buffer.as_ref()?.as_ref(),
         bone_idx: ctx.mesh.bone_indices_buffer.as_ref()?.as_ref(),
         bone_wt: ctx.mesh.bone_weights_vec4_buffer.as_ref()?.as_ref(),
+        bone_influence_offsets: ctx.mesh.bone_influence_offsets_buffer.as_ref()?.as_ref(),
+        bone_influences: ctx.mesh.bone_influences_buffer.as_ref()?.as_ref(),
         nrm_range: ctx.cache_entry.normals.as_ref()?,
     })
+}
+
+fn skin_weight_limit(mode: SkinWeightMode) -> u32 {
+    match mode {
+        SkinWeightMode::OneBone => 1,
+        SkinWeightMode::TwoBones => 2,
+        SkinWeightMode::FourBones => 4,
+        SkinWeightMode::Unlimited => 0,
+    }
 }
 
 fn upload_prepared_skinning_palette(
@@ -261,6 +279,8 @@ struct SkinningPaletteDispatch<'a> {
     src_positions: &'a wgpu::Buffer,
     bone_idx: &'a wgpu::Buffer,
     bone_wt: &'a wgpu::Buffer,
+    bone_influence_offsets: &'a wgpu::Buffer,
+    bone_influences: &'a wgpu::Buffer,
     dst_pos: &'a wgpu::Buffer,
     src_n: &'a wgpu::Buffer,
     dst_n: &'a wgpu::Buffer,
@@ -282,6 +302,8 @@ fn skinning_bind_group(
         src_positions: buffer_identity(dispatch.src_positions),
         bone_indices: buffer_identity(dispatch.bone_idx),
         bone_weights: buffer_identity(dispatch.bone_wt),
+        bone_influence_offsets: buffer_identity(dispatch.bone_influence_offsets),
+        bone_influences: buffer_identity(dispatch.bone_influences),
         dst_positions: buffer_identity(dispatch.dst_pos),
         src_normals: buffer_identity(dispatch.src_n),
         dst_normals: buffer_identity(dispatch.dst_n),
@@ -341,6 +363,14 @@ fn skinning_bind_group(
                 wgpu::BindGroupEntry {
                     binding: 9,
                     resource: dst_tangent.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 10,
+                    resource: dispatch.bone_influence_offsets.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 11,
+                    resource: dispatch.bone_influences.as_entire_binding(),
                 },
             ],
         }))
@@ -404,6 +434,7 @@ struct SkinDispatchParamFields {
     base_dst_nrm_e: u32,
     base_dst_tan_e: u32,
     flags: u32,
+    skin_weight_limit: u32,
 }
 
 /// `shaders/passes/compute/mesh_skinning.wgsl` `SkinDispatchParams` (48 bytes).
@@ -418,5 +449,6 @@ fn pack_skin_dispatch_params(fields: SkinDispatchParamFields) -> [u8; 48] {
     o[24..28].copy_from_slice(&fields.base_dst_nrm_e.to_le_bytes());
     o[28..32].copy_from_slice(&fields.base_dst_tan_e.to_le_bytes());
     o[32..36].copy_from_slice(&fields.flags.to_le_bytes());
+    o[36..40].copy_from_slice(&fields.skin_weight_limit.to_le_bytes());
     o
 }

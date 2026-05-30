@@ -197,8 +197,8 @@ fn skinning_derives_tangent_handedness_from_deformed_bitangent() -> io::Result<(
 
     for required in [
         "b_bind = cross(n_bind, t_bind) * bind_sign;",
-        "acc_b += w.x * (mat3_linear(bone_matrices[bx]) * b_bind);",
-        "let bb = safe_normalize(acc_b / ws, b_bind);",
+        "next.bitangent += weight * (linear * b_bind);",
+        "let bb = safe_normalize(accum.bitangent / accum.weight_sum, b_bind);",
         "dot(cross(nn, tt), bb) < 0.0",
     ] {
         assert!(

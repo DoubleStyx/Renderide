@@ -120,6 +120,10 @@ pub struct GpuMesh {
     pub bone_indices_buffer: Option<Arc<wgpu::Buffer>>,
     /// Per-vertex bone weights as `vec4<f32>` for skinning compute.
     pub bone_weights_vec4_buffer: Option<Arc<wgpu::Buffer>>,
+    /// Per-vertex prefix offsets into [`Self::bone_influences_buffer`] for unlimited skinning.
+    pub bone_influence_offsets_buffer: Option<Arc<wgpu::Buffer>>,
+    /// Raw `(u32 bone_index, f32 weight)` influence entries for unlimited skinning.
+    pub bone_influences_buffer: Option<Arc<wgpu::Buffer>>,
     /// Column-major `float4x4` bind poses (64 bytes per bone).
     pub bind_poses_buffer: Option<Arc<wgpu::Buffer>>,
     /// Sparse packed blendshape delta words for all shapes.
@@ -391,6 +395,8 @@ impl GpuMesh {
             bone_counts_buffer: None,
             bone_indices_buffer: None,
             bone_weights_vec4_buffer: None,
+            bone_influence_offsets_buffer: None,
+            bone_influences_buffer: None,
             bind_poses_buffer: None,
             blendshape_sparse_buffer: None,
             blendshape_frame_ranges: Vec::new(),
@@ -496,6 +502,8 @@ impl GpuMesh {
             bone_counts_buffer: bone_skin.bone_counts_buffer,
             bone_indices_buffer: bone_skin.bone_indices_buffer,
             bone_weights_vec4_buffer: bone_skin.bone_weights_vec4_buffer,
+            bone_influence_offsets_buffer: bone_skin.bone_influence_offsets_buffer,
+            bone_influences_buffer: bone_skin.bone_influences_buffer,
             bind_poses_buffer: bone_skin.bind_poses_buffer,
             blendshape_sparse_buffer: blend_up.sparse_buffer,
             blendshape_frame_ranges: blend_up.frame_ranges,

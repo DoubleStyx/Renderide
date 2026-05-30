@@ -10,8 +10,9 @@ use crate::ipc::SharedMemoryAccessor;
 use crate::shared::buffer::SharedMemoryBufferDescriptor;
 use crate::shared::{
     DesktopConfig, FrameSubmitData, FreeSharedMemoryView, Guid, HeadOutputDevice, KeepAlive,
-    MeshRenderablesUpdate, QualityConfig, RenderSpaceUpdate, RendererCommand, RendererEngineReady,
-    RendererInitData, RendererInitFinalizeData, RendererShutdown, SetTexture2DFormat, ShaderUpload,
+    MeshRenderablesUpdate, PostProcessingConfig, QualityConfig, RenderSpaceUpdate, RendererCommand,
+    RendererEngineReady, RendererInitData, RendererInitFinalizeData, RendererShutdown,
+    SetTexture2DFormat, ShaderUpload, SkinWeightMode,
 };
 
 use super::RendererRuntime;
@@ -112,14 +113,18 @@ fn renderer_engine_ready_activates_host_lockstep_gate() {
 }
 
 #[test]
-fn dispatch_quality_config_increments_unhandled_when_no_handler() {
+fn dispatch_quality_config_updates_skin_weight_mode() {
     let mut rt = test_runtime_standalone();
     let before = rt.unhandled_ipc_command_event_total();
     apply_running_command(
         &mut rt,
-        RendererCommand::QualityConfig(QualityConfig::default()),
+        RendererCommand::QualityConfig(QualityConfig {
+            skin_weight_mode: SkinWeightMode::TwoBones,
+            ..Default::default()
+        }),
     );
-    assert_eq!(rt.unhandled_ipc_command_event_total(), before + 1);
+    assert_eq!(rt.skin_weight_mode(), SkinWeightMode::TwoBones);
+    assert_eq!(rt.unhandled_ipc_command_event_total(), before);
 }
 
 #[test]
@@ -273,7 +278,9 @@ fn ipc_init_finalize_then_running_dispatch_unhandled() {
     ));
     assert_eq!(rt.init_state(), crate::frontend::InitState::Finalized);
     let before = rt.unhandled_ipc_command_event_total();
-    rt.handle_ipc_command(RendererCommand::QualityConfig(QualityConfig::default()));
+    rt.handle_ipc_command(RendererCommand::PostProcessingConfig(
+        PostProcessingConfig::default(),
+    ));
     assert_eq!(rt.unhandled_ipc_command_event_total(), before + 1);
 }
 

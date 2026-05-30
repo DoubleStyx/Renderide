@@ -17,6 +17,7 @@ use crate::gpu::GpuLimits;
 use crate::mesh_deform::{DeformSignature, EntryNeed, SkinCacheEntry};
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::scene::RenderSpaceId;
+use crate::shared::SkinWeightMode;
 
 use super::snapshot::{
     MeshDeformSnapshot, deform_needs_blend_snapshot, deform_needs_skin_snapshot,
@@ -72,6 +73,8 @@ pub(super) struct MeshDeformRecordInputs<'a, 'b> {
     pub blend_weights: &'a [f32],
     /// Last cache-line signature, if any.
     pub previous_signature: Option<DeformSignature>,
+    /// Host-owned skin influence mode.
+    pub skin_weight_mode: SkinWeightMode,
     /// Running offset into the bone matrix slab.
     pub bone_cursor: &'b mut u64,
     /// Running offset into the blendshape scatter-param uniform slab.
@@ -186,15 +189,16 @@ pub(super) fn record_mesh_deform(
         .prepared_skinning_palette_bytes
         .filter(|bytes| !bytes.is_empty())
         .unwrap_or(gpu.scratch.bone_palette_bytes.as_slice());
-    let signature = build_deform_signature(
-        inputs.mesh,
-        inputs.mesh_pool_generation,
-        inputs.blend_weights,
-        inputs.bone_transform_indices,
-        inputs.render_context,
-        deform_guard.entry_need,
-        prepared_palette_len.map(|_| palette_bytes_for_signature),
-    );
+    let signature = build_deform_signature(DeformSignatureInputs {
+        mesh: inputs.mesh,
+        mesh_pool_generation: inputs.mesh_pool_generation,
+        blend_weights: inputs.blend_weights,
+        bone_transform_indices: inputs.bone_transform_indices,
+        render_context: inputs.render_context,
+        entry_need: deform_guard.entry_need,
+        skin_weight_mode: inputs.skin_weight_mode,
+        prepared_palette_bytes: prepared_palette_len.map(|_| palette_bytes_for_signature),
+    });
     if inputs.previous_signature == Some(signature) {
         stats.stable_skips = stats.stable_skips.saturating_add(1);
         return MeshDeformRecordResult {
@@ -243,6 +247,7 @@ pub(super) fn record_mesh_deform(
                 temp_arena: inputs.temp_arena,
                 skin_dispatch_cursor: inputs.skin_dispatch_cursor,
                 prepared_palette_len,
+                skin_weight_mode: inputs.skin_weight_mode,
             },
             &mut batch.skinning_jobs,
         ));
@@ -363,38 +368,44 @@ fn validate_deform_preconditions(
     })
 }
 
-fn build_deform_signature(
-    mesh: &MeshDeformSnapshot,
+struct DeformSignatureInputs<'a> {
+    mesh: &'a MeshDeformSnapshot,
     mesh_pool_generation: u64,
-    blend_weights: &[f32],
-    bone_transform_indices: Option<&[i32]>,
+    blend_weights: &'a [f32],
+    bone_transform_indices: Option<&'a [i32]>,
     render_context: crate::shared::RenderingContext,
     entry_need: EntryNeed,
-    prepared_palette_bytes: Option<&[u8]>,
-) -> DeformSignature {
+    skin_weight_mode: SkinWeightMode,
+    prepared_palette_bytes: Option<&'a [u8]>,
+}
+
+fn build_deform_signature(inputs: DeformSignatureInputs<'_>) -> DeformSignature {
     let mut hasher = DefaultHasher::new();
-    mesh.asset_id.hash(&mut hasher);
-    mesh_pool_generation.hash(&mut hasher);
-    mesh.vertex_count.hash(&mut hasher);
-    mesh.num_blendshapes.hash(&mut hasher);
-    entry_need.needs_blend.hash(&mut hasher);
-    entry_need.needs_skin.hash(&mut hasher);
-    entry_need.needs_blend_normals.hash(&mut hasher);
-    entry_need.needs_tangents.hash(&mut hasher);
-    entry_need.needs_blend_tangents.hash(&mut hasher);
-    (render_context as u8).hash(&mut hasher);
-    let weight_count = mesh.num_blendshapes as usize;
+    inputs.mesh.asset_id.hash(&mut hasher);
+    inputs.mesh_pool_generation.hash(&mut hasher);
+    inputs.mesh.vertex_count.hash(&mut hasher);
+    inputs.mesh.num_blendshapes.hash(&mut hasher);
+    inputs.entry_need.needs_blend.hash(&mut hasher);
+    inputs.entry_need.needs_skin.hash(&mut hasher);
+    inputs.entry_need.needs_blend_normals.hash(&mut hasher);
+    inputs.entry_need.needs_tangents.hash(&mut hasher);
+    inputs.entry_need.needs_blend_tangents.hash(&mut hasher);
+    (inputs.render_context as u8).hash(&mut hasher);
+    if inputs.entry_need.needs_skin {
+        (inputs.skin_weight_mode as i32).hash(&mut hasher);
+    }
+    let weight_count = inputs.mesh.num_blendshapes as usize;
     weight_count.hash(&mut hasher);
-    for weight in blend_weights.iter().take(weight_count) {
+    for weight in inputs.blend_weights.iter().take(weight_count) {
         weight.to_bits().hash(&mut hasher);
     }
-    if blend_weights.len() < weight_count {
+    if inputs.blend_weights.len() < weight_count {
         0usize.hash(&mut hasher);
     }
-    if let Some(indices) = bone_transform_indices {
+    if let Some(indices) = inputs.bone_transform_indices {
         indices.hash(&mut hasher);
     }
-    if let Some(bytes) = prepared_palette_bytes {
+    if let Some(bytes) = inputs.prepared_palette_bytes {
         bytes.hash(&mut hasher);
     }
     DeformSignature {
@@ -435,6 +446,8 @@ mod tests {
             blendshape_shape_frame_spans: Vec::new(),
             bone_indices_buffer: None,
             bone_weights_vec4_buffer: None,
+            bone_influence_offsets_buffer: None,
+            bone_influences_buffer: None,
             skinning_bind_matrices: Vec::new(),
             blendshape_has_position_deltas: true,
             blendshape_has_normal_deltas: true,
@@ -442,25 +455,37 @@ mod tests {
         }
     }
 
+    fn test_signature(
+        mesh: &MeshDeformSnapshot,
+        blend_weights: &[f32],
+        skin_weight_mode: SkinWeightMode,
+        prepared_palette_bytes: Option<&[u8]>,
+    ) -> DeformSignature {
+        build_deform_signature(DeformSignatureInputs {
+            mesh,
+            mesh_pool_generation: 11,
+            blend_weights,
+            bone_transform_indices: Some(&[1, 2]),
+            render_context: crate::shared::RenderingContext::UserView,
+            entry_need: test_entry_need(),
+            skin_weight_mode,
+            prepared_palette_bytes,
+        })
+    }
+
     #[test]
     fn deform_signature_changes_with_blend_weight_bits() {
         let mesh = test_snapshot();
-        let a = build_deform_signature(
+        let a = test_signature(
             &mesh,
-            11,
             &[0.25, 0.0],
-            Some(&[1, 2]),
-            crate::shared::RenderingContext::UserView,
-            test_entry_need(),
+            SkinWeightMode::Unlimited,
             Some(&[1, 2, 3, 4]),
         );
-        let b = build_deform_signature(
+        let b = test_signature(
             &mesh,
-            11,
             &[0.5, 0.0],
-            Some(&[1, 2]),
-            crate::shared::RenderingContext::UserView,
-            test_entry_need(),
+            SkinWeightMode::Unlimited,
             Some(&[1, 2, 3, 4]),
         );
 
@@ -470,23 +495,36 @@ mod tests {
     #[test]
     fn deform_signature_changes_with_resolved_palette_bytes() {
         let mesh = test_snapshot();
-        let a = build_deform_signature(
+        let a = test_signature(
             &mesh,
-            11,
             &[0.25, 0.0],
-            Some(&[1, 2]),
-            crate::shared::RenderingContext::UserView,
-            test_entry_need(),
+            SkinWeightMode::Unlimited,
             Some(&[1, 2, 3, 4]),
         );
-        let b = build_deform_signature(
+        let b = test_signature(
             &mesh,
-            11,
             &[0.25, 0.0],
-            Some(&[1, 2]),
-            crate::shared::RenderingContext::UserView,
-            test_entry_need(),
+            SkinWeightMode::Unlimited,
             Some(&[1, 2, 3, 5]),
+        );
+
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn deform_signature_changes_with_skin_weight_mode() {
+        let mesh = test_snapshot();
+        let a = test_signature(
+            &mesh,
+            &[0.25, 0.0],
+            SkinWeightMode::FourBones,
+            Some(&[1, 2, 3, 4]),
+        );
+        let b = test_signature(
+            &mesh,
+            &[0.25, 0.0],
+            SkinWeightMode::Unlimited,
+            Some(&[1, 2, 3, 4]),
         );
 
         assert_ne!(a, b);

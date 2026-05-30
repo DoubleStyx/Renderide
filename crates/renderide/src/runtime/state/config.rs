@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use crate::config::{RendererSettingsHandle, save_renderer_settings};
-use crate::shared::DesktopConfig;
+use crate::shared::{DesktopConfig, QualityConfig, SkinWeightMode};
 
 /// Minimum positive host desktop frame-rate cap accepted from [`DesktopConfig`].
 const MIN_HOST_DESKTOP_FPS_CAP: u32 = 5;
@@ -64,6 +64,8 @@ pub(in crate::runtime) struct RuntimeConfigState {
     suppress_renderer_config_disk_writes: bool,
     /// Optional host frame-pacing overrides from the latest [`DesktopConfig`].
     host_desktop_caps: HostDesktopFramePacingCaps,
+    /// Effective host skinning quality mode from the latest [`QualityConfig`].
+    host_skin_weight_mode: SkinWeightMode,
 }
 
 impl RuntimeConfigState {
@@ -77,12 +79,18 @@ impl RuntimeConfigState {
             config_save_path,
             suppress_renderer_config_disk_writes: false,
             host_desktop_caps: HostDesktopFramePacingCaps::default(),
+            host_skin_weight_mode: SkinWeightMode::Unlimited,
         }
     }
 
     /// Applies host desktop frame-pacing overrides without mutating persisted renderer settings.
     pub(in crate::runtime) fn apply_host_desktop_config(&mut self, cfg: &DesktopConfig) {
         self.host_desktop_caps = HostDesktopFramePacingCaps::from_desktop_config(cfg);
+    }
+
+    /// Applies host rendering quality state without mutating persisted renderer settings.
+    pub(in crate::runtime) fn apply_host_quality_config(&mut self, cfg: &QualityConfig) {
+        self.host_skin_weight_mode = cfg.skin_weight_mode;
     }
 
     /// Returns desktop frame-pacing caps after applying host overrides over renderer settings.
@@ -99,6 +107,11 @@ impl RuntimeConfigState {
                 background_fps_cap: 0,
             });
         self.host_desktop_caps.resolve(fallback)
+    }
+
+    /// Effective host-owned skin weight mode used for mesh skinning.
+    pub(in crate::runtime) fn skin_weight_mode(&self) -> SkinWeightMode {
+        self.host_skin_weight_mode
     }
 
     /// Cloned config save path for backend HUD attach.
@@ -153,7 +166,7 @@ mod tests {
     use std::sync::{Arc, RwLock};
 
     use crate::config::RendererSettings;
-    use crate::shared::DesktopConfig;
+    use crate::shared::{DesktopConfig, QualityConfig, SkinWeightMode};
 
     use super::{DesktopFramePacingCaps, RuntimeConfigState, sanitized_host_fps_cap};
 
@@ -284,5 +297,26 @@ mod tests {
         assert_eq!(sanitized_host_fps_cap(Some(-1)), None);
         assert_eq!(sanitized_host_fps_cap(Some(1)), Some(5));
         assert_eq!(sanitized_host_fps_cap(Some(30)), Some(30));
+    }
+
+    #[test]
+    fn defaults_to_unlimited_skinning_before_host_config() {
+        let settings = Arc::new(RwLock::new(RendererSettings::default()));
+        let state = RuntimeConfigState::new(settings, PathBuf::new());
+
+        assert_eq!(state.skin_weight_mode(), SkinWeightMode::Unlimited);
+    }
+
+    #[test]
+    fn quality_config_updates_skin_weight_mode() {
+        let settings = Arc::new(RwLock::new(RendererSettings::default()));
+        let mut state = RuntimeConfigState::new(settings, PathBuf::new());
+
+        state.apply_host_quality_config(&QualityConfig {
+            skin_weight_mode: SkinWeightMode::TwoBones,
+            ..Default::default()
+        });
+
+        assert_eq!(state.skin_weight_mode(), SkinWeightMode::TwoBones);
     }
 }

@@ -327,7 +327,7 @@ pub(super) fn validate_mesh_upload_layout(
     // bone_weights_vec4) are all `vc * 16` and bound to STORAGE bindings, so a single
     // entry covers all of them. Likewise the largest VERTEX-only derived stream (color)
     // is `vc * 16`.
-    let checks: [(&str, u64, bool); 7] = [
+    let checks: [(&str, u64, bool); 9] = [
         ("interleaved vertices", layout.vertex_size as u64, false),
         ("indices", layout.index_buffer_length as u64, false),
         (
@@ -338,6 +338,12 @@ pub(super) fn validate_mesh_upload_layout(
         ("derived per-vertex storage stream", vc * 16, true),
         ("derived per-vertex vertex stream", vc * 16, false),
         ("bone_counts", layout.bone_counts_length as u64, true),
+        ("bone_influence_offsets", (vc + 1) * 4, true),
+        (
+            "bone_influences",
+            layout.bone_weights_length.max(8) as u64,
+            true,
+        ),
         ("bind_poses", layout.bind_poses_length as u64, true),
     ];
 

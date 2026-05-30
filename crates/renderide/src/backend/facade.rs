@@ -31,6 +31,7 @@ use crate::gpu::GpuLimits;
 use crate::gpu_pools::{MeshPool, RenderTexturePool, TexturePool};
 use crate::materials::host_data::MaterialPropertyStore;
 use crate::render_graph::TransientPool;
+use crate::shared::SkinWeightMode;
 
 use super::FrameResourceManager;
 use super::secondary_rt_scratch::{SecondaryRtScratchCache, SecondaryRtScratchTargets};
@@ -106,6 +107,8 @@ pub struct RenderBackend {
     surface_format: Option<wgpu::TextureFormat>,
     /// Live settings for per-frame graph parameters (scene HDR format, etc.); set in [`Self::attach`].
     renderer_settings: Option<RendererSettingsHandle>,
+    /// Host-owned skin influence mode used by mesh deform compute.
+    skin_weight_mode: SkinWeightMode,
     /// Whether this backend is attached to a headless offscreen target.
     headless: bool,
 }
@@ -132,8 +135,19 @@ impl RenderBackend {
             occlusion: OcclusionSystem::new(),
             surface_format: None,
             renderer_settings: None,
+            skin_weight_mode: SkinWeightMode::Unlimited,
             headless: false,
         }
+    }
+
+    /// Updates the host-owned skin influence mode used by mesh deform compute.
+    pub(crate) fn set_skin_weight_mode(&mut self, mode: SkinWeightMode) {
+        self.skin_weight_mode = mode;
+    }
+
+    /// Host-owned skin influence mode used by mesh deform compute.
+    pub(crate) const fn skin_weight_mode(&self) -> SkinWeightMode {
+        self.skin_weight_mode
     }
 
     /// Requested HDR scene-color [`wgpu::TextureFormat`] from [`crate::config::RenderingSettings`].
@@ -523,6 +537,7 @@ impl RenderBackend {
         let live_motion_blur_settings = self.live_motion_blur_settings();
         let live_auto_exposure_settings = self.live_auto_exposure_settings();
         let wall_frame_time_ms = self.debug_frame_time_ms();
+        let skin_weight_mode = self.skin_weight_mode();
         let (transient_pool, history_registry, upload_arena, latest_upload_stats) =
             self.graph_state.execution_resources_mut();
         let (frame_resources, mesh_preprocess, mesh_deform_scratch, skin_cache) =
@@ -544,6 +559,7 @@ impl RenderBackend {
             scene_color_format,
             gpu_limits,
             msaa_depth_resolve,
+            skin_weight_mode,
             live_gtao_settings,
             live_bloom_settings,
             live_motion_blur_settings,

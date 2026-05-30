@@ -234,6 +234,8 @@ pub struct GraphFrameParamsSplit<'a> {
     pub gpu_limits: Option<Arc<GpuLimits>>,
     /// Optional MSAA depth-resolve helpers.
     pub msaa_depth_resolve: Option<Arc<MsaaDepthResolveResources>>,
+    /// Host-owned skin influence mode for mesh deform compute.
+    pub skin_weight_mode: crate::shared::SkinWeightMode,
     /// Per-view debug HUD switches.
     pub debug_hud: PerViewHudConfig,
 }
@@ -286,6 +288,8 @@ pub trait GraphExecutionBackend {
     fn mesh_preprocess(&self) -> Option<&MeshPreprocessPipelines>;
     /// Optional read-only skin cache.
     fn skin_cache(&self) -> Option<&GpuSkinCache>;
+    /// Host-owned skin influence mode selected for mesh deform compute.
+    fn skin_weight_mode(&self) -> crate::shared::SkinWeightMode;
     /// Split frame params for frame-global recording.
     fn split_for_graph_frame_params(&mut self) -> GraphFrameParamsSplit<'_>;
     /// Warms assets required by caller-seeded per-view blackboards.

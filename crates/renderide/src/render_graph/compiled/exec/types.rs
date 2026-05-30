@@ -290,6 +290,8 @@ pub(super) struct PerViewRecordShared<'a> {
     pub(super) mesh_preprocess: Option<&'a crate::mesh_deform::MeshPreprocessPipelines>,
     /// Optional read-only skin cache for deformed forward draws.
     pub(super) skin_cache: Option<&'a crate::mesh_deform::GpuSkinCache>,
+    /// Host-owned skin influence mode for mesh deform compute.
+    pub(super) skin_weight_mode: crate::shared::SkinWeightMode,
     /// Read-only HUD capture switches for deferred per-view diagnostics.
     pub(super) debug_hud: crate::diagnostics::PerViewHudConfig,
     /// Scene-color format selected for the frame.

@@ -153,6 +153,7 @@ impl RendererRuntime {
                 self.frontend.on_renderer_engine_ready();
             }
             RunningCommandEffect::DesktopConfig(cfg) => self.apply_desktop_config(cfg),
+            RunningCommandEffect::QualityConfig(cfg) => self.apply_quality_config(cfg),
             RunningCommandEffect::RenderDecouplingConfig(cfg) => {
                 self.apply_render_decoupling_config(cfg);
             }

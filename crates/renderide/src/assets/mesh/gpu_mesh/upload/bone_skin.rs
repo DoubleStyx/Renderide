@@ -19,6 +19,10 @@ pub(in crate::assets::mesh::gpu_mesh) struct BoneSkinUpload {
     pub bone_indices_buffer: Option<Arc<wgpu::Buffer>>,
     /// Per-vertex bone-weight storage buffer.
     pub bone_weights_vec4_buffer: Option<Arc<wgpu::Buffer>>,
+    /// Per-vertex raw influence prefix-offset storage buffer.
+    pub bone_influence_offsets_buffer: Option<Arc<wgpu::Buffer>>,
+    /// Raw bone influences for unlimited skinning.
+    pub bone_influences_buffer: Option<Arc<wgpu::Buffer>>,
     /// Bind-pose storage buffer.
     pub bind_poses_buffer: Option<Arc<wgpu::Buffer>>,
     /// CPU skinning bind matrices derived from bind poses.
@@ -47,13 +51,14 @@ fn upload_skeleton_bone_buffers(
     let bc = &raw[layout.bone_counts_start..layout.bone_counts_start + layout.bone_counts_length];
     let bw =
         &raw[layout.bone_weights_start..layout.bone_weights_start + layout.bone_weights_length];
-    let (bi_buf, bw_buf) = if let Some((ib, wb)) = split_bone_weights_tail_for_gpu(bc, bw, vc_usize)
+    let (bi_buf, bw_buf, offsets_buf, influences_buf) = if let Some(streams) =
+        split_bone_weights_tail_for_gpu(bc, bw, vc_usize, data.bone_count as usize)
     {
         let bi = try_create_buffer_init(
             ctx,
             &wgpu::util::BufferInitDescriptor {
                 label: Some(&format!("mesh {} bone_indices", data.asset_id)),
-                contents: &ib,
+                contents: &streams.bone_indices_vec4,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             },
         )?;
@@ -62,18 +67,42 @@ fn upload_skeleton_bone_buffers(
             ctx,
             &wgpu::util::BufferInitDescriptor {
                 label: Some(&format!("mesh {} bone_weights_vec4", data.asset_id)),
-                contents: &wb,
+                contents: &streams.bone_weights_vec4,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             },
         )?;
         crate::profiling::note_resource_churn!(Buffer, "assets::mesh_bone_weights_vec4");
-        (Some(Arc::new(bi)), Some(Arc::new(bwt)))
+        let offsets = try_create_buffer_init(
+            ctx,
+            &wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("mesh {} bone_influence_offsets", data.asset_id)),
+                contents: &streams.influence_offsets,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            },
+        )?;
+        crate::profiling::note_resource_churn!(Buffer, "assets::mesh_bone_influence_offsets");
+        let influence_contents = nonempty_influence_bytes(&streams.influences);
+        let influences = try_create_buffer_init(
+            ctx,
+            &wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("mesh {} bone_influences", data.asset_id)),
+                contents: influence_contents.as_slice(),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            },
+        )?;
+        crate::profiling::note_resource_churn!(Buffer, "assets::mesh_bone_influences");
+        (
+            Some(Arc::new(bi)),
+            Some(Arc::new(bwt)),
+            Some(Arc::new(offsets)),
+            Some(Arc::new(influences)),
+        )
     } else {
         logger::warn!(
             "mesh {}: bone weight tail could not be repacked for GPU skinning",
             data.asset_id
         );
-        (None, None)
+        (None, None, None, None)
     };
 
     let bc_buf = try_create_buffer_init(
@@ -98,6 +127,8 @@ fn upload_skeleton_bone_buffers(
         bone_counts_buffer: Some(Arc::new(bc_buf)),
         bone_indices_buffer: bi_buf,
         bone_weights_vec4_buffer: bw_buf,
+        bone_influence_offsets_buffer: offsets_buf,
+        bone_influences_buffer: influences_buf,
         bind_poses_buffer: Some(Arc::new(bp_buf)),
         skinning_bind_matrices: skinning,
     })
@@ -121,8 +152,18 @@ pub(in crate::assets::mesh::gpu_mesh) fn upload_bone_and_skin_buffers(
             bone_counts_buffer: None,
             bone_indices_buffer: None,
             bone_weights_vec4_buffer: None,
+            bone_influence_offsets_buffer: None,
+            bone_influences_buffer: None,
             bind_poses_buffer: None,
             skinning_bind_matrices: Vec::new(),
         })
+    }
+}
+
+fn nonempty_influence_bytes(influences: &[u8]) -> Vec<u8> {
+    if influences.is_empty() {
+        vec![0; 8]
+    } else {
+        influences.to_vec()
     }
 }

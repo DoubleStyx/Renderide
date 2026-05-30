@@ -28,6 +28,8 @@ pub(in crate::assets::mesh::gpu_mesh) fn resident_bytes_for_mesh_upload(
         bone_skin.bone_counts_buffer.as_ref(),
         bone_skin.bone_indices_buffer.as_ref(),
         bone_skin.bone_weights_vec4_buffer.as_ref(),
+        bone_skin.bone_influence_offsets_buffer.as_ref(),
+        bone_skin.bone_influences_buffer.as_ref(),
         bone_skin.bind_poses_buffer.as_ref(),
         derived.positions_buffer.as_ref(),
         derived.normals_buffer.as_ref(),

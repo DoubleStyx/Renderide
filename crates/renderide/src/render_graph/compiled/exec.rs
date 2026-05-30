@@ -100,6 +100,7 @@ struct ViewBlackboardPrepareShared<'a> {
     asset_resources: &'a dyn GraphAssetResources,
     mesh_preprocess: Option<&'a MeshPreprocessPipelines>,
     skin_cache: Option<&'a GpuSkinCache>,
+    skin_weight_mode: crate::shared::SkinWeightMode,
     debug_hud: PerViewHudConfig,
     scene_color_format: wgpu::TextureFormat,
 }
@@ -656,6 +657,7 @@ impl CompiledRenderGraph {
             asset_resources: mv_ctx.backend.asset_resources(),
             mesh_preprocess: mv_ctx.backend.mesh_preprocess(),
             skin_cache: mv_ctx.backend.skin_cache(),
+            skin_weight_mode: mv_ctx.backend.skin_weight_mode(),
             debug_hud: mv_ctx.backend.per_view_hud_config(),
             scene_color_format: mv_ctx.backend.scene_color_format_wgpu(),
         };
@@ -764,6 +766,7 @@ impl CompiledRenderGraph {
                 asset_resources: mv_ctx.backend.asset_resources(),
                 mesh_preprocess: mv_ctx.backend.mesh_preprocess(),
                 skin_cache: mv_ctx.backend.skin_cache(),
+                skin_weight_mode: mv_ctx.backend.skin_weight_mode(),
                 debug_hud: mv_ctx.backend.per_view_hud_config(),
                 scene_color_format: mv_ctx.backend.scene_color_format_wgpu(),
             };
@@ -934,6 +937,7 @@ impl CompiledRenderGraph {
             asset_resources: backend.asset_resources(),
             mesh_preprocess: backend.mesh_preprocess(),
             skin_cache: backend.skin_cache(),
+            skin_weight_mode: backend.skin_weight_mode(),
             debug_hud: backend.per_view_hud_config(),
             scene_color_format: backend.scene_color_format_wgpu(),
         };
@@ -978,6 +982,7 @@ impl CompiledRenderGraph {
                 mesh_deform_scratch: None,
                 mesh_deform_skin_cache: None,
                 skin_cache: shared.skin_cache,
+                skin_weight_mode: shared.skin_weight_mode,
                 debug_hud: shared.debug_hud,
             },
             &resolved,
