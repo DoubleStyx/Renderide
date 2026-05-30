@@ -6,6 +6,7 @@
 //! `_Rect` clip; both keywords come from Resonite's variant bitmask.
 
 
+//#render_queue Transparent+500
 //#texture_default _ResolutionTex white
 //#mat_default _Resolution vec4 100.0 100.0 0.0 0.0
 

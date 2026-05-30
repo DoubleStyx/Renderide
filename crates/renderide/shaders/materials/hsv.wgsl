@@ -1,6 +1,7 @@
 //! Grab-pass HSV offset/multiply filter (`Shader "Filters/HSV"`).
 
 
+//#render_queue Transparent+500
 //#mat_default _HSVMul vec4 1.0 1.0 1.0 1.0
 //#mat_default _HSVOffset vec4 0.2 0.2 0.2 0.0
 

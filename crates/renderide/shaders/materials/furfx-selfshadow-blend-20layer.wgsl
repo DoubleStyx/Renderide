@@ -1,5 +1,6 @@
 //! FurFX SelfShadow Blend 20Layer material root.
 
+//#render_queue AlphaTest
 //#texture_default _MainTex white
 //#texture_default _NoiseTex white
 //#texture_default _Cube empty

@@ -156,6 +156,8 @@ pub(super) struct CompiledShader {
     pub material_defaults: Vec<MaterialDefaultDirective>,
     /// Required device features embedded alongside each composed target.
     pub wgpu_features: Vec<WgpuFeatureDirective>,
+    /// Shader default render queue embedded alongside each composed target.
+    pub default_render_queue: i32,
     /// One or two output targets depending on whether multiview changes the WGSL.
     pub targets: Vec<CompiledShaderTarget>,
 }

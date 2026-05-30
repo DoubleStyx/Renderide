@@ -1,5 +1,6 @@
 //! Xiexe Toon 2.0 wireframe override A2C (`Shader "Xiexe/Toon2.0/XSToon2.0_WireframeOverride_CutoutA2C"`).
 
+//#render_queue AlphaTest
 //#wgpu_feature shader_barycentrics
 //#texture_default _MainTex white
 //#texture_default _BumpMap bump

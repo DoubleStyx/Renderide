@@ -25,6 +25,8 @@ use crate::materials::pipeline_build_error::PipelineBuildError;
 use crate::materials::raster_pipeline::{
     ShaderModuleBuildRefs, VertexStreamToggles, create_reflective_raster_mesh_forward_pipelines,
 };
+#[cfg(test)]
+use crate::materials::render_queue::UNITY_RENDER_QUEUE_GEOMETRY;
 use crate::materials::{
     MaterialBlendMode, MaterialPassDesc, MaterialRenderState, RasterFrontFace,
     RasterPrimitiveTopology, ReflectedRasterLayout, SceneColorSnapshotMode, SnapshotRequirements,
@@ -87,6 +89,8 @@ struct EmbeddedStemMetadata {
     uses_two_sided_transparency: bool,
     /// How this material expects scene-color snapshots to be refreshed.
     scene_color_snapshot_mode: SceneColorSnapshotMode,
+    /// Shader default render queue used when material `_RenderQueue` is negative or absent.
+    default_render_queue: i32,
     /// Single forward pass that is safe to mirror with the generic depth prepass, if any.
     depth_prepass_pass: Option<MaterialPassDesc>,
 }
@@ -231,6 +235,11 @@ impl EmbeddedStemQuery {
         self.metadata.scene_color_snapshot_mode
     }
 
+    /// Shader default render queue used when material `_RenderQueue` is negative or absent.
+    pub fn default_render_queue(&self) -> i32 {
+        self.metadata.default_render_queue
+    }
+
     /// Returns the single forward pass that can be mirrored by the generic depth prepass.
     pub fn depth_prepass_pass(&self) -> Option<MaterialPassDesc> {
         self.metadata.depth_prepass_pass
@@ -260,6 +269,7 @@ fn embedded_stem_metadata(base_stem: &str, permutation: ShaderPermutation) -> Em
     let composed = embedded_composed_stem_for_permutation(base_stem, permutation);
     let wgsl = embedded_shaders::embedded_target_wgsl(&composed);
     let passes = embedded_shaders::embedded_target_passes(&composed);
+    let default_render_queue = embedded_shaders::embedded_target_default_render_queue(&composed);
     let vertex_entries = passes
         .iter()
         .map(|pass| pass.vertex_entry)
@@ -290,6 +300,7 @@ fn embedded_stem_metadata(base_stem: &str, permutation: ShaderPermutation) -> Em
             base_stem,
             snapshot_requirements,
         ),
+        default_render_queue,
         depth_prepass_pass,
     };
     guard.insert(key, metadata);
@@ -476,6 +487,7 @@ mod tests {
                 uses_blended_depth_write: false,
                 uses_two_sided_transparency: false,
                 scene_color_snapshot_mode: SceneColorSnapshotMode::None,
+                default_render_queue: UNITY_RENDER_QUEUE_GEOMETRY,
                 depth_prepass_pass: None,
             },
         }
@@ -578,6 +590,19 @@ mod tests {
         assert!(
             EmbeddedStemQuery::for_stem("pbsdualsidedtransparent_default", mono)
                 .uses_two_sided_transparency()
+        );
+        assert_eq!(
+            EmbeddedStemQuery::for_stem("unlit_default", mono).default_render_queue(),
+            2650
+        );
+        assert_eq!(
+            EmbeddedStemQuery::for_stem("pixelate_perobject_default", mono).default_render_queue(),
+            3500
+        );
+        assert_eq!(
+            EmbeddedStemQuery::for_stem("pbsdistancelerptransparent_default", mono)
+                .default_render_queue(),
+            UNITY_RENDER_QUEUE_GEOMETRY
         );
     }
 

@@ -8,6 +8,7 @@
 //! `UniqueKeywords` (`_MUL_ALPHA_INTENSITY`, `_NORMALMAP`, `_POLARUV`, `_TEXTURE`).
 
 
+//#render_queue Geometry
 //#texture_default _BehindFarTex white
 //#texture_default _BehindNearTex white
 //#texture_default _FrontFarTex white

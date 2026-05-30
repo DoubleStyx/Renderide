@@ -1,5 +1,6 @@
 //! Fog box volume (`Shader "Volume/FogBox"`).
 
+//#render_queue Transparent
 //#mat_default _AccumulationColor vec4 0.1 0.1 0.1 0.1
 //#mat_default _AccumulationColorBottom vec4 0.1 0.1 0.0 0.1
 //#mat_default _AccumulationColorTop vec4 0.1 0.1 0.1 0.1

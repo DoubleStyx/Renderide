@@ -5,6 +5,7 @@
 //! the `xstoon2.0-outlined.wgsl` outline-plus-forward pass structure.
 
 
+//#render_queue Geometry
 //#mat_default _Color vec4 1.0 1.0 1.0 1.0
 //#mat_default _OutlineColor vec4 0.0 0.0 0.0 1.0
 //#mat_default _OutlineWidth float 0.1

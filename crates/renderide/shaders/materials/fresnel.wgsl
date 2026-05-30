@@ -3,6 +3,7 @@
 //! Froox variant bits populate `_RenderideVariantBits`; this shader decodes Fresnel's
 //! shader-specific keyword bits locally.
 
+//#render_queue AlphaTest+200
 //#texture_default _FarTex white
 //#texture_default _NearTex white
 //#texture_default _NormalMap bump

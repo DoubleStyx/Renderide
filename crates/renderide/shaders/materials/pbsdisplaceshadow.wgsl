@@ -7,6 +7,7 @@
 //! `_VertexOffsetMap.r` and offsets along the mesh normal; the depth-only pass uses the same
 //! displacement so shadow casts line up.
 
+//#render_queue Geometry
 //#texture_default _MainTex white
 //#texture_default _VertexOffsetMap black
 //#mat_default _Color vec4 1.0 1.0 1.0 1.0

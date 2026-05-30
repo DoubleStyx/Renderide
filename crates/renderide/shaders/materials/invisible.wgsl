@@ -26,6 +26,7 @@ fn vs_main(
     return out;
 }
 
+//#render_queue Transparent
 //#pass type=forward
 @fragment
 fn fs_main() -> @location(0) vec4<f32> {

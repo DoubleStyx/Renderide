@@ -9,6 +9,7 @@
 //! defaults to grayscale (`1 - r`).
 
 
+//#render_queue AlphaTest+200
 //#texture_default _MainTex white
 //#texture_default _DepthTex black
 //#mat_default _Angle vec4 90.0 60.0 0.0 0.0

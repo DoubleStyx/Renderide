@@ -1,6 +1,7 @@
 //! Unity GradientSkybox (`Shader "GradientSkybox"`): sky gradient material.
 
 
+//#render_queue Background
 //#mat_default _BaseColor vec4 1.0 1.0 1.0 1.0
 
 #import renderide::draw::per_draw as pd

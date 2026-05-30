@@ -10,6 +10,7 @@
 
 
 
+//#render_queue Transparent
 //#mat_default _FillTint vec4 1.0 1.0 1.0 1.0
 //#mat_default _OutlineTint vec4 1.0 1.0 1.0 1.0
 //#mat_default _OverlayTint vec4 1.0 1.0 1.0 0.5

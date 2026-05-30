@@ -6,6 +6,8 @@ mod defaults;
 mod features;
 #[path = "directives/passes.rs"]
 mod passes;
+#[path = "directives/render_queue.rs"]
+mod render_queue;
 #[path = "directives/source_alias.rs"]
 mod source_alias;
 
@@ -26,4 +28,5 @@ pub(super) use passes::{
     BuildMaterialPassState, BuildPassType, BuildRenderStatePolicy,
 };
 pub(super) use passes::{BuildPassDirective, parse_pass_directives, pass_literal};
+pub(super) use render_queue::{RenderQueueDirective, parse_render_queue_directive};
 pub(super) use source_alias::parse_source_alias;

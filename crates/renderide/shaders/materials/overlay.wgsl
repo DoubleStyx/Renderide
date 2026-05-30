@@ -2,6 +2,7 @@
 //! and `Blend SrcAlpha OneMinusSrcAlpha` for HUD-style overlays.
 
 
+//#render_queue Overlay
 //#texture_default _MainTexture white
 //#mat_default _Blend vec4 1.0 1.0 1.0 1.0
 

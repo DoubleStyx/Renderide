@@ -1,6 +1,7 @@
 //! Per-object grab-pass 3D LUT filter (`Shader "Filters/LUT_PerObject"`).
 
 
+//#render_queue Transparent+500
 //#texture_default _LUT empty
 //#texture_default _SecondaryLUT empty
 

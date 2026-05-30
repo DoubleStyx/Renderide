@@ -1,5 +1,6 @@
 //! FurFX Advanced Shell 5Layer material root.
 
+//#render_queue Transparent
 //#texture_default _MainTex white
 //#texture_default _NoiseTex white
 //#texture_default _Cube empty

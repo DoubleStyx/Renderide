@@ -12,6 +12,7 @@
 //! Froox variant bits populate `_RenderideVariantBits`; this shader decodes Unlit's
 //! shader-specific keyword bits locally.
 
+//#render_queue AlphaTest+200
 //#texture_default _Tex white
 //#texture_default _OffsetTex black
 //#texture_default _MaskTex white

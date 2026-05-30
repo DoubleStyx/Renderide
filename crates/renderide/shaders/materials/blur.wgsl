@@ -5,6 +5,7 @@
 //! perturbation). The `SPREAD_TEX`, `REFRACT`/`REFRACT_NORMALMAP`, `RECTCLIP`, and `POISSON_DISC`
 //! variant bits follow the material keyword groups.
 
+//#render_queue Transparent+500
 //#texture_default _SpreadTex white
 //#texture_default _NormalMap bump
 //#mat_default _DepthDivisor float 1.0

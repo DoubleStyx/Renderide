@@ -1,6 +1,7 @@
 //! Xiexe Toon 2.0 premultiplied transparent (`Shader "Xiexe/Toon2.0/XSToon2.0_Transparent"`).
 
 
+//#render_queue Transparent
 //#texture_default _MainTex white
 //#texture_default _BumpMap bump
 //#texture_default _MetallicGlossMap white

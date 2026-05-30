@@ -11,6 +11,7 @@
 //! PBSRimTransparentSpecular's shader-specific keyword bits locally.
 
 
+//#render_queue Transparent
 //#texture_default _NormalMap bump
 //#texture_default _EmissionMap black
 //#texture_default _OcclusionMap white

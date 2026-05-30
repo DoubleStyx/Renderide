@@ -10,6 +10,8 @@ use super::directives::{
 use super::error::BuildError;
 use super::model::{CompiledShader, ShaderSourceClass};
 
+const DEFAULT_SHADER_RENDER_QUEUE: i32 = 2000;
+
 /// Escapes `s` as a Rust `str` literal token.
 fn rust_string_literal_token(s: &str) -> String {
     format!("{s:?}")
@@ -26,9 +28,20 @@ pub(super) struct ComposedShaders {
     embedded_arms: String,
     embedded_macro_arms: String,
     embedded_pass_arms: String,
+    embedded_render_queue_arms: String,
     embedded_required_features_arms: String,
     embedded_texture_default_arms: String,
     embedded_material_default_arms: String,
+}
+
+struct EmbeddedTargetEmit<'a> {
+    target_stem: &'a str,
+    wgsl: &'a str,
+    pass_directives: &'a [BuildPassDirective],
+    default_render_queue: i32,
+    wgpu_features: &'a [WgpuFeatureDirective],
+    texture_defaults: &'a [TextureDefaultDirective],
+    material_defaults: &'a [MaterialDefaultDirective],
 }
 
 impl ComposedShaders {
@@ -43,6 +56,7 @@ impl ComposedShaders {
             embedded_arms: String::new(),
             embedded_macro_arms: String::new(),
             embedded_pass_arms: String::new(),
+            embedded_render_queue_arms: String::new(),
             embedded_required_features_arms: String::new(),
             embedded_texture_default_arms: String::new(),
             embedded_material_default_arms: String::new(),
@@ -52,14 +66,15 @@ impl ComposedShaders {
     /// Records one compiled shader source into embedded shader registries.
     pub(super) fn record_compiled_shader(&mut self, compiled: &CompiledShader) {
         for target in &compiled.targets {
-            self.emit_embedded_target(
-                &target.target_stem,
-                &target.wgsl,
-                &target.pass_directives,
-                &compiled.wgpu_features,
-                &compiled.texture_defaults,
-                &compiled.material_defaults,
-            );
+            self.emit_embedded_target(EmbeddedTargetEmit {
+                target_stem: &target.target_stem,
+                wgsl: &target.wgsl,
+                pass_directives: &target.pass_directives,
+                default_render_queue: compiled.default_render_queue,
+                wgpu_features: &compiled.wgpu_features,
+                texture_defaults: &compiled.texture_defaults,
+                material_defaults: &compiled.material_defaults,
+            });
             self.push_stem(compiled.source_class, target.target_stem.clone());
         }
     }
@@ -76,17 +91,18 @@ impl ComposedShaders {
     }
 
     /// Emits generated Rust registry fragments for one compiled target.
-    fn emit_embedded_target(
-        &mut self,
-        target_stem: &str,
-        wgsl: &str,
-        pass_directives: &[BuildPassDirective],
-        wgpu_features: &[WgpuFeatureDirective],
-        texture_defaults: &[TextureDefaultDirective],
-        material_defaults: &[MaterialDefaultDirective],
-    ) {
+    fn emit_embedded_target(&mut self, target: EmbeddedTargetEmit<'_>) {
         use std::fmt::Write as _;
 
+        let EmbeddedTargetEmit {
+            target_stem,
+            wgsl,
+            pass_directives,
+            default_render_queue,
+            wgpu_features,
+            texture_defaults,
+            material_defaults,
+        } = target;
         let lit = rust_string_literal_token(wgsl);
         let _ = writeln!(
             self.embedded_arms,
@@ -105,6 +121,12 @@ impl ComposedShaders {
             let _ = writeln!(
                 self.embedded_pass_arms,
                 "        \"{target_stem}\" => const {{ &[\n            {pass_literals},\n        ] }},"
+            );
+        }
+        if default_render_queue != DEFAULT_SHADER_RENDER_QUEUE {
+            let _ = writeln!(
+                self.embedded_render_queue_arms,
+                "        \"{target_stem}\" => {default_render_queue},"
             );
         }
         if !wgpu_features.is_empty() {
@@ -300,6 +322,14 @@ pub fn embedded_target_passes(stem: &str) -> &'static [crate::materials::Materia
     }}
 }}
 
+/// Shader default render queue for `stem`, parsed from `//#render_queue` directives.
+#[expect(clippy::too_many_lines, reason = "match arm per embedded shader target; scales with shader count")]
+pub fn embedded_target_default_render_queue(stem: &str) -> i32 {{
+    match stem {{
+{embedded_render_queue_arms}        _ => 2000,
+    }}
+}}
+
 /// Required device features for `stem`, parsed from `//#wgpu_feature` directives in the source WGSL.
 pub fn embedded_target_required_features(stem: &str) -> wgpu::Features {{
     match stem {{
@@ -332,6 +362,7 @@ pub const COMPILED_MATERIAL_STEMS: &[&str] = &[
         embedded_arms = c.embedded_arms,
         embedded_macro_arms = c.embedded_macro_arms,
         embedded_pass_arms = c.embedded_pass_arms,
+        embedded_render_queue_arms = c.embedded_render_queue_arms,
         embedded_required_features_arms = c.embedded_required_features_arms,
         embedded_texture_default_arms = c.embedded_texture_default_arms,
         embedded_material_default_arms = c.embedded_material_default_arms,
@@ -361,10 +392,7 @@ mod tests {
             0,
             ShaderSourceClass::Material,
             &[("single", "single wgsl")],
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            FakeCompiledShaderMetadata::default(),
         );
         let dual = fake_compiled_shader(
             1,
@@ -373,10 +401,7 @@ mod tests {
                 ("dual_default", "default wgsl"),
                 ("dual_multiview", "multiview wgsl"),
             ],
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            FakeCompiledShaderMetadata::default(),
         );
 
         emit_compiled_shader(&single, target_dir.path(), &mut composed)?;
@@ -399,66 +424,69 @@ mod tests {
             0,
             ShaderSourceClass::Material,
             &[("outline_default", "wgsl body")],
-            vec![
-                BuildPassDirective {
-                    pass_type: BuildPassType::Forward,
-                    name: "forward".to_string(),
-                    fragment_entry: "fs_main".to_string(),
-                    vertex_entry: "vs_main".to_string(),
-                    alpha_to_coverage: true,
-                    depth_compare_domain: BuildDepthCompareDomain::FrooxZTest,
-                    depth_compare: BuildDepthCompare::Main,
-                    depth_write: true,
-                    cull_mode: BuildCullMode::Back,
-                    blend: BuildBlend::Off,
-                    write_mask: BuildColorWrites::Rgb,
-                    depth_bias_slope_scale_bits: 0.0f32.to_bits(),
-                    depth_bias_constant: 0,
-                    material_state: BuildMaterialPassState::Forward,
-                    render_state_policy: BuildRenderStatePolicy::ALL_MATERIAL,
-                },
-                BuildPassDirective {
-                    pass_type: BuildPassType::Forward,
-                    name: "outline".to_string(),
-                    fragment_entry: "fs_outline".to_string(),
-                    vertex_entry: "vs_outline".to_string(),
-                    alpha_to_coverage: false,
-                    depth_compare_domain: BuildDepthCompareDomain::FrooxZTest,
-                    depth_compare: BuildDepthCompare::Main,
-                    depth_write: true,
-                    cull_mode: BuildCullMode::Front,
-                    blend: BuildBlend::Off,
-                    write_mask: BuildColorWrites::Rgb,
-                    depth_bias_slope_scale_bits: 0.0f32.to_bits(),
-                    depth_bias_constant: 0,
-                    material_state: BuildMaterialPassState::Static,
-                    render_state_policy: BuildRenderStatePolicy {
-                        color_mask: true,
+            FakeCompiledShaderMetadata {
+                pass_directives: vec![
+                    BuildPassDirective {
+                        pass_type: BuildPassType::Forward,
+                        name: "forward".to_string(),
+                        fragment_entry: "fs_main".to_string(),
+                        vertex_entry: "vs_main".to_string(),
+                        alpha_to_coverage: true,
+                        depth_compare_domain: BuildDepthCompareDomain::FrooxZTest,
+                        depth_compare: BuildDepthCompare::Main,
                         depth_write: true,
-                        depth_compare: true,
-                        cull: false,
-                        stencil: true,
-                        depth_offset: true,
+                        cull_mode: BuildCullMode::Back,
+                        blend: BuildBlend::Off,
+                        write_mask: BuildColorWrites::Rgb,
+                        depth_bias_slope_scale_bits: 0.0f32.to_bits(),
+                        depth_bias_constant: 0,
+                        material_state: BuildMaterialPassState::Forward,
+                        render_state_policy: BuildRenderStatePolicy::ALL_MATERIAL,
                     },
-                },
-            ],
-            vec![
-                TextureDefaultDirective {
-                    property: "_MainTex".to_string(),
-                    kind: TextureDefaultKind::White,
-                },
-                TextureDefaultDirective {
-                    property: "_EmissionMap".to_string(),
-                    kind: TextureDefaultKind::Black,
-                },
-            ],
-            vec![MaterialDefaultDirective {
-                property: "_GlossMapScale".to_string(),
-                value: MaterialDefaultValue::float_bits(1.0f32.to_bits()),
-            }],
-            vec![WgpuFeatureDirective {
-                feature: crate::shader::directives::BuildWgpuFeature::ShaderBarycentrics,
-            }],
+                    BuildPassDirective {
+                        pass_type: BuildPassType::Forward,
+                        name: "outline".to_string(),
+                        fragment_entry: "fs_outline".to_string(),
+                        vertex_entry: "vs_outline".to_string(),
+                        alpha_to_coverage: false,
+                        depth_compare_domain: BuildDepthCompareDomain::FrooxZTest,
+                        depth_compare: BuildDepthCompare::Main,
+                        depth_write: true,
+                        cull_mode: BuildCullMode::Front,
+                        blend: BuildBlend::Off,
+                        write_mask: BuildColorWrites::Rgb,
+                        depth_bias_slope_scale_bits: 0.0f32.to_bits(),
+                        depth_bias_constant: 0,
+                        material_state: BuildMaterialPassState::Static,
+                        render_state_policy: BuildRenderStatePolicy {
+                            color_mask: true,
+                            depth_write: true,
+                            depth_compare: true,
+                            cull: false,
+                            stencil: true,
+                            depth_offset: true,
+                        },
+                    },
+                ],
+                texture_defaults: vec![
+                    TextureDefaultDirective {
+                        property: "_MainTex".to_string(),
+                        kind: TextureDefaultKind::White,
+                    },
+                    TextureDefaultDirective {
+                        property: "_EmissionMap".to_string(),
+                        kind: TextureDefaultKind::Black,
+                    },
+                ],
+                material_defaults: vec![MaterialDefaultDirective {
+                    property: "_GlossMapScale".to_string(),
+                    value: MaterialDefaultValue::float_bits(1.0f32.to_bits()),
+                }],
+                wgpu_features: vec![WgpuFeatureDirective {
+                    feature: crate::shader::directives::BuildWgpuFeature::ShaderBarycentrics,
+                }],
+                default_render_queue: 3500,
+            },
         );
 
         emit_compiled_shader(&compiled, target_dir.path(), &mut composed)?;
@@ -479,7 +507,9 @@ mod tests {
         ));
         assert!(embedded.contains("embedded_target_texture_defaults"));
         assert!(embedded.contains("embedded_target_material_defaults"));
+        assert!(embedded.contains("embedded_target_default_render_queue"));
         assert!(embedded.contains("embedded_target_required_features"));
+        assert!(embedded.contains("\"outline_default\" => 3500,"));
         assert!(embedded.contains("wgpu::Features::SHADER_BARYCENTRICS"));
         assert!(embedded.contains("macro_rules! embedded_wgsl"));
         assert!(embedded.contains("\"outline_default\" => \"wgsl body\","));
@@ -501,15 +531,39 @@ mod tests {
         Ok(())
     }
 
-    fn fake_compiled_shader(
-        compile_order: usize,
-        source_class: ShaderSourceClass,
-        targets: &[(&str, &str)],
+    struct FakeCompiledShaderMetadata {
         pass_directives: Vec<BuildPassDirective>,
         texture_defaults: Vec<TextureDefaultDirective>,
         material_defaults: Vec<MaterialDefaultDirective>,
         wgpu_features: Vec<WgpuFeatureDirective>,
+        default_render_queue: i32,
+    }
+
+    impl Default for FakeCompiledShaderMetadata {
+        fn default() -> Self {
+            Self {
+                pass_directives: Vec::new(),
+                texture_defaults: Vec::new(),
+                material_defaults: Vec::new(),
+                wgpu_features: Vec::new(),
+                default_render_queue: DEFAULT_SHADER_RENDER_QUEUE,
+            }
+        }
+    }
+
+    fn fake_compiled_shader(
+        compile_order: usize,
+        source_class: ShaderSourceClass,
+        targets: &[(&str, &str)],
+        metadata: FakeCompiledShaderMetadata,
     ) -> CompiledShader {
+        let FakeCompiledShaderMetadata {
+            pass_directives,
+            texture_defaults,
+            material_defaults,
+            wgpu_features,
+            default_render_queue,
+        } = metadata;
         let target_pass_directives = pass_directives.clone();
         CompiledShader {
             compile_order,
@@ -518,6 +572,7 @@ mod tests {
             texture_defaults,
             material_defaults,
             wgpu_features,
+            default_render_queue,
             targets: targets
                 .iter()
                 .map(|(target_stem, wgsl)| CompiledShaderTarget {

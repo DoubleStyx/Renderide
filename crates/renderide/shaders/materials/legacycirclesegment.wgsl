@@ -76,6 +76,7 @@ fn vs_main(
     return out;
 }
 
+//#render_queue Transparent
 //#pass type=forward name=forward_transparent blend=alpha zwrite=off ztest=main cull=off color_mask=rgba offset=0,0
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {

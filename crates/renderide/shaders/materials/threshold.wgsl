@@ -6,6 +6,7 @@
 //! fragments outside the object-space rectangle.
 
 
+//#render_queue Transparent+500
 //#mat_default _Threshold float 0.5
 //#mat_default _Transition float 0.01
 

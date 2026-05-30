@@ -1,6 +1,7 @@
 //! Xiexe Toon 2.0 cutout (`Shader "Xiexe/Toon2.0/XSToon2.0_Cutout"`).
 
 
+//#render_queue AlphaTest
 //#texture_default _MainTex white
 //#texture_default _BumpMap bump
 //#texture_default _MetallicGlossMap white

@@ -3,6 +3,7 @@
 //! Froox variant bits populate `_RenderideVariantBits`; this shader decodes Refract's
 //! shader-specific keyword bits locally.
 
+//#render_queue Transparent+500
 //#texture_default _NormalMap bump
 //#mat_default _DepthBias float 0.01
 //#mat_default _NormalMap_LodBias float 0.0

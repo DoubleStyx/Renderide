@@ -1,5 +1,6 @@
 //! Two-pass surface wireframe material (`Shader "WireframeDoubleSided"`).
 
+//#render_queue Transparent
 //#wgpu_feature shader_barycentrics
 //#texture_default _MainTex white
 //#mat_default _LineColor vec4 1.0 1.0 1.0 1.0

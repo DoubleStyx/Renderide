@@ -9,6 +9,7 @@
 //! default, while preserving `_AnimationOffset` as an explicit host override when supplied.
 
 
+//#render_queue Geometry
 //#texture_default _MainTex white
 
 #import renderide::post::filter_vertex as fv

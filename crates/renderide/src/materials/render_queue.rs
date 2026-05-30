@@ -3,13 +3,13 @@
 use super::host_data::MaterialPropertyValue;
 use super::material_passes::{MaterialPipelinePropertyIds, PropertyMapRef};
 
-/// Unity `Geometry` render queue and the default queue for opaque materials.
+/// Unity `Geometry` render queue and the default shader queue when no `Queue` tag exists.
 pub const UNITY_RENDER_QUEUE_GEOMETRY: i32 = 2000;
 /// Unity `AlphaTest` render queue.
 pub const UNITY_RENDER_QUEUE_ALPHA_TEST: i32 = 2450;
 /// First Unity queue value sorted as transparent by the Built-in Render Pipeline.
 pub const UNITY_TRANSPARENT_RENDER_QUEUE_MIN: i32 = 2501;
-/// Unity `Transparent` render queue and the fallback queue for unqueued alpha-blended materials.
+/// Unity `Transparent` render queue.
 pub const UNITY_RENDER_QUEUE_TRANSPARENT: i32 = 3000;
 /// Unity `Overlay` render queue.
 #[cfg(test)]

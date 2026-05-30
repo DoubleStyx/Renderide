@@ -3,6 +3,7 @@
 //! Froox variant bits populate `_RenderideVariantBits`; this shader decodes Posterize's
 //! shader-specific keyword bits locally.
 
+//#render_queue Transparent+500
 //#mat_default _Levels float 10.0
 
 #import renderide::post::filter_vertex as fv

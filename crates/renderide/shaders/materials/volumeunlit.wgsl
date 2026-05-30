@@ -1,5 +1,6 @@
 //! Volume unlit raymarch material (`Shader "Volume/Unlit"`).
 
+//#render_queue Transparent
 //#texture_default _Volume empty
 //#mat_default _AccumulationCutoff float 100.0
 //#mat_default _Exp float 1.0

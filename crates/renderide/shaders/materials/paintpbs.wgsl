@@ -4,6 +4,7 @@
 //! Unity authors this as a transparent `alpha:fade` surface.
 
 
+//#render_queue Transparent
 //#texture_default _MainTex white
 //#texture_default _PaintTex white
 //#mat_default _Color vec4 1.0 1.0 1.0 1.0

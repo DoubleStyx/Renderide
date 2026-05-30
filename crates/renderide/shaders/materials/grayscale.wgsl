@@ -3,6 +3,7 @@
 //! Froox variant bits populate `_RenderideVariantBits`; this shader decodes Grayscale's
 //! shader-specific keyword bits locally.
 
+//#render_queue Transparent+500
 //#texture_default _Gradient black
 //#mat_default _Lerp float 1.0
 //#mat_default _RatioB float 0.11

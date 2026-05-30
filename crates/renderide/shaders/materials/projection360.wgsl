@@ -4,6 +4,7 @@
 //! Froox variant bits populate `_RenderideVariantBits`; the shared Projection360 module
 //! decodes shader-specific keyword bits and owns the repeated projection sampling.
 
+//#render_queue Transparent-100
 //#texture_default _MainTex black
 //#texture_default _SecondTex black
 //#texture_default _TintTex white

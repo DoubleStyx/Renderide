@@ -259,6 +259,7 @@ mod tests {
             texture_defaults: Vec::new(),
             material_defaults: Vec::new(),
             wgpu_features: Vec::new(),
+            default_render_queue: 2000,
             targets: vec![CompiledShaderTarget {
                 target_stem: target_stem.to_string(),
                 wgsl: "wgsl".to_string(),

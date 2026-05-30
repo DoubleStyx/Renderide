@@ -9,6 +9,7 @@
 //! Froox variant bits populate `_RenderideVariantBits`; this shader decodes
 //! PBSVertexColorTransparentSpecular's shader-specific keyword bits locally.
 
+//#render_queue Transparent
 //#texture_default _MainTex white
 //#texture_default _NormalMap bump
 //#texture_default _EmissionMap black

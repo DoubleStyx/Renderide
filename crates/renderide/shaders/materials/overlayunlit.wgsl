@@ -6,6 +6,7 @@
 //! multiply, vertex-color color-space conversion, polar UV, RGB premultiply, and alpha intensity.
 
 
+//#render_queue Geometry
 //#texture_default _BehindTex white
 //#texture_default _FrontTex white
 //#mat_default _BehindColor vec4 0.5 0.5 0.5 0.5

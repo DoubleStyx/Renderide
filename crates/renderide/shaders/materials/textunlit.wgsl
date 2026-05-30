@@ -7,6 +7,7 @@
 //! sorted `UniqueKeywords` order.
 
 
+//#render_queue AlphaTest
 //#texture_default _FontAtlas white
 //#mat_default _OutlineColor vec4 1.0 1.0 1.0 0.0
 //#mat_default _Range vec4 0.001 0.001 0.0 0.0

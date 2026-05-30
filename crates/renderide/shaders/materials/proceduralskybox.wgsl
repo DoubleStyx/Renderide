@@ -10,6 +10,7 @@
 //! bit table but never consulted because the renderer is linear-only. The sun-disk group has
 //! no `_` placeholder, so the high-quality keyword is the zero-bit default.
 
+//#render_queue Background
 //#mat_default _GroundColor vec4 0.369 0.349 0.341 1.0
 //#mat_default _SkyTint vec4 0.5 0.5 0.5 1.0
 //#mat_default _SunColor vec4 1.0 1.0 1.0 1.0

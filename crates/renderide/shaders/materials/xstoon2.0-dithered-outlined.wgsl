@@ -1,6 +1,7 @@
 //! Xiexe Toon 2.0 outlined dithered transparency (`Shader "Xiexe/Toon2.0/XSToon2.0_Dithered_Outlined"`).
 
 
+//#render_queue AlphaTest
 //#texture_default _MainTex white
 //#texture_default _BumpMap bump
 //#texture_default _MetallicGlossMap white

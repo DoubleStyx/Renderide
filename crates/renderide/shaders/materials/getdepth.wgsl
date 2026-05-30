@@ -8,6 +8,7 @@
 //! shader-specific keyword bits locally (Unity `CLIP` selects clip-range rescaling,
 //! `RECTCLIP` discards fragments outside `_Rect` in object XY).
 
+//#render_queue Transparent+500
 //#mat_default _ClipMax float 1.0
 //#mat_default _Multiply float 1.0
 

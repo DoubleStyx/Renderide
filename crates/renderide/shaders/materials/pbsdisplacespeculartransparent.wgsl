@@ -4,6 +4,7 @@
 //!
 //! Reads tinted f0 + smoothness from `_SpecularColor` / `_SpecularMap` instead of metallic-gloss.
 
+//#render_queue Transparent
 //#texture_default _MainTex white
 //#texture_default _NormalMap bump
 //#texture_default _EmissionMap black

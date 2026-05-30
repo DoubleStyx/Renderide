@@ -5,6 +5,7 @@
 //! shader-specific keyword bits locally.
 
 
+//#render_queue AlphaTest+200
 //#texture_default _NearTex white
 //#texture_default _FarTex white
 //#mat_default _Distance float 1.0

@@ -9,6 +9,7 @@
 //! `texcoord + texscale * (corner - 0.5)` into the expanded quad's UVs), so the WGSL only needs
 //! the bit reserved at its sorted index even though no fragment branch reads it.
 
+//#render_queue AlphaTest+200
 //#texture_default _Tex white
 //#texture_default _OffsetTex black
 //#mat_default _Color vec4 1.0 1.0 1.0 1.0

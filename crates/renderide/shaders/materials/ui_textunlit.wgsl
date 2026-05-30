@@ -14,6 +14,7 @@
 //! Per-draw uniforms (`@group(2)`) use [`renderide::draw::per_draw`].
 
 
+//#render_queue Transparent
 //#texture_default _FontAtlas white
 //#mat_default _OutlineColor vec4 1.0 1.0 1.0 0.0
 //#mat_default _OverlayTint vec4 1.0 1.0 1.0 0.5

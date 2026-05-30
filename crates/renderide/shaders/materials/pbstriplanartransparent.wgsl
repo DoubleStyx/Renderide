@@ -4,6 +4,7 @@
 //! This mirrors `PBSTriplanar` surface evaluation, but declares Unity alpha-style transparent
 //! render-state defaults.
 
+//#render_queue Transparent
 //#texture_default _MainTex white
 //#texture_default _NormalMap bump
 //#texture_default _MetallicMap black

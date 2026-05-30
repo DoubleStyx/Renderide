@@ -135,6 +135,7 @@ struct EmbeddedMaterialFeatures {
     uses_ui_transparent_fallback: bool,
     uses_blended_depth_write: bool,
     uses_two_sided_transparency: bool,
+    default_render_queue: Option<i32>,
 }
 
 fn embedded_material_features(
@@ -168,6 +169,7 @@ fn embedded_material_features(
         uses_ui_transparent_fallback: query.uses_ui_transparent_fallback(),
         uses_blended_depth_write: query.uses_blended_depth_write(),
         uses_two_sided_transparency: query.uses_two_sided_transparency(),
+        default_render_queue: Some(query.default_render_queue()),
     }
 }
 
@@ -273,7 +275,9 @@ pub(crate) fn resolve_material_batch(
         mat_map,
         pb_map,
         pipeline_property_ids,
-        fallback_render_queue_for_material(alpha_blended),
+        embedded
+            .default_render_queue
+            .unwrap_or_else(|| fallback_render_queue_for_material(alpha_blended)),
     );
     let transparent_class = transparent_class_for_material(TransparentMaterialClassInput {
         render_queue,
@@ -404,8 +408,8 @@ mod ui_rect_clip_tests {
         MaterialPropertyStore, MaterialPropertyValue, PropertyIdRegistry,
     };
     use crate::materials::{
-        MaterialRouter, RasterPipelineKind, SceneColorSnapshotMode, UNITY_RENDER_QUEUE_GEOMETRY,
-        UNITY_RENDER_QUEUE_TRANSPARENT,
+        MaterialRouter, RasterPipelineKind, SceneColorSnapshotMode, UNITY_RENDER_QUEUE_ALPHA_TEST,
+        UNITY_RENDER_QUEUE_GEOMETRY, UNITY_RENDER_QUEUE_OVERLAY, UNITY_RENDER_QUEUE_TRANSPARENT,
     };
     use crate::shared::TrailTextureMode;
 
@@ -583,7 +587,7 @@ mod ui_rect_clip_tests {
     }
 
     #[test]
-    fn explicit_opaque_ui_blend_keeps_opaque_queue_fallback() {
+    fn explicit_opaque_ui_blend_keeps_shader_default_queue() {
         let registry = PropertyIdRegistry::new();
         let src = registry.intern("_SrcBlend");
         let dst = registry.intern("_DstBlend");
@@ -603,7 +607,96 @@ mod ui_rect_clip_tests {
             resolve_material_batch(7, None, &dict, &router, &ids, ShaderPermutation::default());
 
         assert!(!resolved.alpha_blended);
+        assert_eq!(resolved.render_queue, UNITY_RENDER_QUEUE_TRANSPARENT);
+    }
+
+    #[test]
+    fn embedded_shader_default_render_queue_handles_negative_material_queue() {
+        let registry = PropertyIdRegistry::new();
+        let render_queue = registry.intern("_RenderQueue");
+        let mut store = MaterialPropertyStore::new();
+        store.set_shader_asset_for_material(7, 99);
+        store.set_material(7, render_queue, MaterialPropertyValue::Float(-1.0));
+        let dict = MaterialDictionary::new(&store);
+        let mut router = MaterialRouter::new(RasterPipelineKind::Null);
+        router.set_shader_pipeline(
+            99,
+            RasterPipelineKind::EmbeddedStem(Arc::from("pbsintersect_default")),
+        );
+        let ids = MaterialPipelinePropertyIds::new(&registry);
+
+        let resolved =
+            resolve_material_batch(7, None, &dict, &router, &ids, ShaderPermutation::default());
+
+        assert_eq!(resolved.render_queue, UNITY_RENDER_QUEUE_TRANSPARENT);
+    }
+
+    #[test]
+    fn embedded_shader_default_render_queue_handles_offsets_and_aliases() {
+        let registry = PropertyIdRegistry::new();
+        let ids = MaterialPipelinePropertyIds::new(&registry);
+        let mut store = MaterialPropertyStore::new();
+        store.set_shader_asset_for_material(7, 70);
+        store.set_shader_asset_for_material(8, 80);
+        let mut router = MaterialRouter::new(RasterPipelineKind::Null);
+        router.set_shader_pipeline(
+            70,
+            RasterPipelineKind::EmbeddedStem(Arc::from("unlit_default")),
+        );
+        router.set_shader_pipeline(
+            80,
+            RasterPipelineKind::EmbeddedStem(Arc::from("pixelate_perobject_default")),
+        );
+        let dict = MaterialDictionary::new(&store);
+
+        let unlit =
+            resolve_material_batch(7, None, &dict, &router, &ids, ShaderPermutation::default());
+        let pixelate =
+            resolve_material_batch(8, None, &dict, &router, &ids, ShaderPermutation::default());
+
+        assert_eq!(unlit.render_queue, UNITY_RENDER_QUEUE_ALPHA_TEST + 200);
+        assert_eq!(pixelate.render_queue, UNITY_RENDER_QUEUE_TRANSPARENT + 500);
+    }
+
+    #[test]
+    fn blended_geometry_shader_keeps_geometry_default_queue() {
+        let registry = PropertyIdRegistry::new();
+        let ids = MaterialPipelinePropertyIds::new(&registry);
+        let mut store = MaterialPropertyStore::new();
+        store.set_shader_asset_for_material(7, 99);
+        let mut router = MaterialRouter::new(RasterPipelineKind::Null);
+        router.set_shader_pipeline(
+            99,
+            RasterPipelineKind::EmbeddedStem(Arc::from("pbsdistancelerptransparent_default")),
+        );
+        let dict = MaterialDictionary::new(&store);
+
+        let resolved =
+            resolve_material_batch(7, None, &dict, &router, &ids, ShaderPermutation::default());
+
+        assert!(resolved.alpha_blended);
         assert_eq!(resolved.render_queue, UNITY_RENDER_QUEUE_GEOMETRY);
+    }
+
+    #[test]
+    fn explicit_material_render_queue_override_still_wins() {
+        let registry = PropertyIdRegistry::new();
+        let render_queue = registry.intern("_RenderQueue");
+        let mut store = MaterialPropertyStore::new();
+        store.set_shader_asset_for_material(7, 99);
+        store.set_material(7, render_queue, MaterialPropertyValue::Float(4000.0));
+        let dict = MaterialDictionary::new(&store);
+        let mut router = MaterialRouter::new(RasterPipelineKind::Null);
+        router.set_shader_pipeline(
+            99,
+            RasterPipelineKind::EmbeddedStem(Arc::from("pbsintersect_default")),
+        );
+        let ids = MaterialPipelinePropertyIds::new(&registry);
+
+        let resolved =
+            resolve_material_batch(7, None, &dict, &router, &ids, ShaderPermutation::default());
+
+        assert_eq!(resolved.render_queue, UNITY_RENDER_QUEUE_OVERLAY);
     }
 
     #[test]

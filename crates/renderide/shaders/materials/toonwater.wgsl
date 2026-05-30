@@ -11,6 +11,7 @@
 //!   through the toon indirect-specular blend.
 
 
+//#render_queue Transparent
 //#texture_default _MainTex white
 //#texture_default _SpecGlossMap white
 //#texture_default _BumpMap bump

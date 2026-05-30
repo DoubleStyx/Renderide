@@ -8,6 +8,7 @@
 //! shader-specific keyword bits locally. `_OFFSET_TEXTURE` is reserved in the bit table so the
 //! serialized layout stays stable, but the shader body never consults it.
 
+//#render_queue AlphaTest+200
 //#texture_default _ReflectionTex white
 //#texture_default _NormalMap bump
 //#mat_default _Color vec4 1.0 1.0 1.0 1.0

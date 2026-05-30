@@ -4,6 +4,7 @@
 //! then clamps the result. The `RECTCLIP` variant bit (Unity `#pragma multi_compile _ RECTCLIP`)
 //! discards fragments outside the object-space `_Rect` rectangle.
 
+//#render_queue Transparent+500
 //#mat_default _ClampMax vec4 2.0 2.0 2.0 0.0
 //#mat_default _LevelsB vec4 1.0 0.0 0.0 0.0
 //#mat_default _LevelsG vec4 0.0 0.0 1.0 0.0

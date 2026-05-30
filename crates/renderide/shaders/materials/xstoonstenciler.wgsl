@@ -32,6 +32,7 @@ fn vs_main(
     return out;
 }
 
+//#render_queue AlphaTest+1
 //#pass type=forward name=stencil blend=off zwrite=material(off) ztest=material_unity(main) cull=material(front) color_mask=material(rgba) offset=0,0 stencil=material
 @fragment
 fn fs_main() -> @location(0) vec4<f32> {

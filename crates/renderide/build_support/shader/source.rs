@@ -4,9 +4,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::directives::{
-    MaterialDefaultDirective, TextureDefaultDirective, WgpuFeatureDirective,
-    parse_material_default_directives, parse_source_alias, parse_texture_default_directives,
-    parse_wgpu_feature_directives,
+    MaterialDefaultDirective, RenderQueueDirective, TextureDefaultDirective, WgpuFeatureDirective,
+    parse_material_default_directives, parse_render_queue_directive, parse_source_alias,
+    parse_texture_default_directives, parse_wgpu_feature_directives,
 };
 use super::error::BuildError;
 use super::model::{ShaderJob, ShaderSourceClass};
@@ -23,7 +23,11 @@ pub(super) struct ShaderCompileSource {
     pub material_defaults: Vec<MaterialDefaultDirective>,
     /// Required wgpu features parsed from the source or merged from alias + wrapper directives.
     pub wgpu_features: Vec<WgpuFeatureDirective>,
+    /// Shader default render queue parsed from the source or inherited from an alias.
+    pub default_render_queue: i32,
 }
+
+const DEFAULT_SHADER_RENDER_QUEUE: i32 = 2000;
 
 /// Lists every `.wgsl` file directly under `dir`, sorted lexicographically.
 pub(super) fn list_wgsl_files(dir: &Path) -> Result<Vec<PathBuf>, BuildError> {
@@ -108,6 +112,16 @@ fn merge_wgpu_features(
     base
 }
 
+/// Selects the wrapper render queue override, then alias default, then Unity's Geometry default.
+fn merge_render_queue(
+    base: Option<RenderQueueDirective>,
+    override_queue: Option<RenderQueueDirective>,
+) -> i32 {
+    override_queue
+        .or(base)
+        .map_or(DEFAULT_SHADER_RENDER_QUEUE, |directive| directive.queue)
+}
+
 /// Loads the WGSL source used for composition, following `//#source_alias` when present.
 pub(super) fn shader_source_for_compile(
     source_path: &Path,
@@ -124,6 +138,7 @@ pub(super) fn shader_source_for_compile(
     let wrapper_material_defaults =
         parse_material_default_directives(&wrapper_source, wrapper_file_path)?;
     let wrapper_wgpu_features = parse_wgpu_feature_directives(&wrapper_source, wrapper_file_path)?;
+    let wrapper_render_queue = parse_render_queue_directive(&wrapper_source, wrapper_file_path)?;
     let Some(alias) = parse_source_alias(&wrapper_source, wrapper_file_path)? else {
         return Ok(ShaderCompileSource {
             source: wrapper_source,
@@ -131,6 +146,7 @@ pub(super) fn shader_source_for_compile(
             texture_defaults: wrapper_defaults,
             material_defaults: wrapper_material_defaults,
             wgpu_features: wrapper_wgpu_features,
+            default_render_queue: merge_render_queue(None, wrapper_render_queue),
         });
     };
     let alias_path = source_path.with_file_name(format!("{alias}.wgsl"));
@@ -151,6 +167,7 @@ pub(super) fn shader_source_for_compile(
     let alias_material_defaults =
         parse_material_default_directives(&alias_source, alias_file_path)?;
     let alias_wgpu_features = parse_wgpu_feature_directives(&alias_source, alias_file_path)?;
+    let alias_render_queue = parse_render_queue_directive(&alias_source, alias_file_path)?;
     Ok(ShaderCompileSource {
         source: alias_source,
         file_path: alias_file_path.to_string(),
@@ -160,6 +177,7 @@ pub(super) fn shader_source_for_compile(
             wrapper_material_defaults,
         ),
         wgpu_features: merge_wgpu_features(alias_wgpu_features, wrapper_wgpu_features),
+        default_render_queue: merge_render_queue(alias_render_queue, wrapper_render_queue),
     })
 }
 
@@ -324,6 +342,42 @@ mod tests {
             source.wgpu_features[0].feature,
             super::super::directives::BuildWgpuFeature::ShaderBarycentrics
         );
+        Ok(())
+    }
+
+    #[test]
+    fn source_without_render_queue_uses_geometry_default() -> Result<(), BuildError> {
+        let root = tempfile::tempdir()?;
+        let source_path = root.path().join("material.wgsl");
+        fs::write(&source_path, "")?;
+
+        let source = shader_source_for_compile(&source_path)?;
+
+        assert_eq!(source.default_render_queue, 2000);
+        Ok(())
+    }
+
+    #[test]
+    fn source_alias_inherits_and_overrides_render_queue() -> Result<(), BuildError> {
+        let root = tempfile::tempdir()?;
+        let alias_path = root.path().join("base.wgsl");
+        let inherited_path = root.path().join("inherited.wgsl");
+        let override_path = root.path().join("override.wgsl");
+        fs::write(&alias_path, "//#render_queue Transparent+500\n")?;
+        fs::write(&inherited_path, "//#source_alias base\n")?;
+        fs::write(
+            &override_path,
+            r#"
+//#source_alias base
+//#render_queue AlphaTest+200
+"#,
+        )?;
+
+        let inherited = shader_source_for_compile(&inherited_path)?;
+        let overridden = shader_source_for_compile(&override_path)?;
+
+        assert_eq!(inherited.default_render_queue, 3500);
+        assert_eq!(overridden.default_render_queue, 2650);
         Ok(())
     }
 }

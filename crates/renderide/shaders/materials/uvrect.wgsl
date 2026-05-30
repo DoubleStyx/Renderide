@@ -3,6 +3,7 @@
 //! Froox variant bits populate `_RenderideVariantBits`; the `RECTCLIP` keyword (host driver
 //! at `UV_RectMaterial.UpdateKeywords`) gates the clip-rect discard.
 
+//#render_queue AlphaTest+200
 //#mat_default _ClipRect vec4 0.0 0.0 1.0 1.0
 //#mat_default _InnerColor vec4 1.0 1.0 1.0 1.0
 //#mat_default _OuterColor vec4 0.0 0.0 0.0 1.0
