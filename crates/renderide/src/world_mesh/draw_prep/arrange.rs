@@ -439,7 +439,7 @@ mod tests {
     }
 
     #[test]
-    fn late_opaque_queue_bins_before_transparent_tail_without_transparent_sorting() {
+    fn geometry_last_queue_bins_before_transparent_tail_without_transparent_sorting() {
         let mut alpha = dummy_world_mesh_draw_item(DummyDrawItemSpec {
             material_asset_id: 1,
             property_block: None,
@@ -454,9 +454,9 @@ mod tests {
         set_render_queue(&mut alpha, UNITY_TRANSPARENT_RENDER_QUEUE_MIN);
         set_camera_distance(&mut alpha, 16.0);
 
-        let mut late_opaque = opaque(1, 2, 1);
-        late_opaque.batch_key.blend_mode = crate::materials::MaterialBlendMode::Opaque;
-        set_render_queue(&mut late_opaque, UNITY_RENDER_QUEUE_TRANSPARENT - 1);
+        let mut geometry_last = opaque(1, 2, 1);
+        geometry_last.batch_key.blend_mode = crate::materials::MaterialBlendMode::Opaque;
+        set_render_queue(&mut geometry_last, UNITY_TRANSPARENT_RENDER_QUEUE_MIN - 1);
 
         let mut transparent = dummy_world_mesh_draw_item(DummyDrawItemSpec {
             material_asset_id: 3,
@@ -472,7 +472,7 @@ mod tests {
         set_render_queue(&mut transparent, UNITY_RENDER_QUEUE_TRANSPARENT);
         set_camera_distance(&mut transparent, 4.0);
 
-        let mut draws = vec![transparent, late_opaque, alpha];
+        let mut draws = vec![transparent, geometry_last, alpha];
         let stats = arrange_draws_by_phase_bins(&mut draws, false);
 
         assert_eq!(stats.nontransparent_binned_draws, 1);
@@ -483,7 +483,7 @@ mod tests {
                 .map(|item| item.batch_key.render_queue)
                 .collect::<Vec<_>>(),
             vec![
-                UNITY_RENDER_QUEUE_TRANSPARENT - 1,
+                UNITY_TRANSPARENT_RENDER_QUEUE_MIN - 1,
                 UNITY_TRANSPARENT_RENDER_QUEUE_MIN,
                 UNITY_RENDER_QUEUE_TRANSPARENT,
             ]

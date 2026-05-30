@@ -357,7 +357,7 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_draw_candidate_uses_alpha_stem_sort_distance_at_late_opaque_queue() {
+    fn evaluate_draw_candidate_uses_alpha_stem_sort_distance_after_geometry_last() {
         let scene = SceneCoordinator::new();
         let mesh_pool = MeshPool::default_pool();
         let mut store = MaterialPropertyStore::new();
