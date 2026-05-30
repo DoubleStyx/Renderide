@@ -5,6 +5,7 @@ use hashbrown::HashMap;
 
 use crate::gpu::GpuContext;
 use crate::gpu_resource::TextureViewDescriptorKey;
+use crate::graph_inputs::OffscreenWriteTarget;
 
 use super::super::super::context::{
     GraphResolvedResources, ResolvedGraphBuffer, ResolvedGraphTexture, ResolvedImportedBuffer,
@@ -19,9 +20,11 @@ use super::super::super::resources::{
     SubresourceHandle, TextureHandle, TransientExtent,
 };
 use super::super::helpers;
-use super::super::{CompiledRenderGraph, FrameViewTarget, RenderPathProfile, ResolvedView};
+use super::super::{
+    CompiledRenderGraph, FrameViewLayout, FrameViewTarget, RenderPathProfile, ResolvedView,
+};
 use super::{OwnedResolvedView, ResolvedOffscreenColorCopy, TransientTextureResolveSurfaceParams};
-use crate::camera::ViewId;
+use crate::camera::{HostCameraFrame, ViewId};
 
 fn subresource_view_dimension(
     dimension: wgpu::TextureDimension,
@@ -385,18 +388,17 @@ impl CompiledRenderGraph {
     pub(super) fn resolve_view_from_target<'a>(
         view_id: ViewId,
         profile: RenderPathProfile,
+        host_camera: &HostCameraFrame,
         target: &'a FrameViewTarget<'a>,
         gpu: &'a mut GpuContext,
         backbuffer_view_holder: Option<&'a wgpu::TextureView>,
     ) -> Result<ResolvedView<'a>, GraphExecuteError> {
+        let layout = FrameViewLayout::resolve(host_camera, profile, target, gpu);
         match target {
             FrameViewTarget::Swapchain => {
-                let surface_format = profile.resolve_color_format(target, gpu);
-                let viewport_px = gpu.surface_extent_px();
                 let Some(bb_ref) = backbuffer_view_holder else {
                     return Err(GraphExecuteError::MissingSwapchainView);
                 };
-                let sample_count = profile.resolve_sample_count(gpu);
                 let (depth_tex, depth_view) = gpu
                     .ensure_depth_target()
                     .map_err(GraphExecuteError::DepthTarget)?;
@@ -405,46 +407,39 @@ impl CompiledRenderGraph {
                     depth_texture: depth_tex,
                     depth_view,
                     backbuffer: Some(bb_ref),
-                    surface_format,
-                    viewport_px,
-                    multiview_stereo: false,
-                    offscreen_write_render_texture_asset_id: None,
+                    surface_format: layout.surface_format,
+                    viewport_px: layout.viewport_px,
+                    multiview_stereo: layout.multiview_stereo,
+                    offscreen_write_target: OffscreenWriteTarget::None,
                     view_id,
-                    sample_count,
-                    post_processing: profile.post_processing(),
+                    sample_count: layout.sample_count,
+                    post_processing: layout.post_processing,
                 })
             }
-            FrameViewTarget::ExternalMultiview(ext) => {
-                let surface_format = profile.resolve_color_format(target, gpu);
-                let sample_count = profile.resolve_sample_count(gpu);
-                Ok(ResolvedView {
-                    depth_texture: ext.depth_texture,
-                    depth_view: ext.depth_view,
-                    backbuffer: Some(ext.color_view),
-                    surface_format,
-                    viewport_px: ext.extent_px,
-                    multiview_stereo: true,
-                    offscreen_write_render_texture_asset_id: None,
-                    view_id,
-                    sample_count,
-                    post_processing: profile.post_processing(),
-                })
-            }
-            FrameViewTarget::OffscreenRt(ext) => {
-                let surface_format = profile.resolve_color_format(target, gpu);
-                Ok(ResolvedView {
-                    depth_texture: ext.depth_texture,
-                    depth_view: ext.depth_view,
-                    backbuffer: Some(ext.color_view),
-                    surface_format,
-                    viewport_px: ext.extent_px,
-                    multiview_stereo: false,
-                    offscreen_write_render_texture_asset_id: Some(ext.render_texture_asset_id),
-                    view_id,
-                    sample_count: profile.resolve_sample_count(gpu),
-                    post_processing: profile.post_processing(),
-                })
-            }
+            FrameViewTarget::ExternalMultiview(ext) => Ok(ResolvedView {
+                depth_texture: ext.depth_texture,
+                depth_view: ext.depth_view,
+                backbuffer: Some(ext.color_view),
+                surface_format: layout.surface_format,
+                viewport_px: layout.viewport_px,
+                multiview_stereo: layout.multiview_stereo,
+                offscreen_write_target: OffscreenWriteTarget::None,
+                view_id,
+                sample_count: layout.sample_count,
+                post_processing: layout.post_processing,
+            }),
+            FrameViewTarget::OffscreenRt(ext) => Ok(ResolvedView {
+                depth_texture: ext.depth_texture,
+                depth_view: ext.depth_view,
+                backbuffer: Some(ext.color_view),
+                surface_format: layout.surface_format,
+                viewport_px: layout.viewport_px,
+                multiview_stereo: layout.multiview_stereo,
+                offscreen_write_target: ext.write_target,
+                view_id,
+                sample_count: layout.sample_count,
+                post_processing: layout.post_processing,
+            }),
         }
     }
 
@@ -453,14 +448,13 @@ impl CompiledRenderGraph {
     pub(super) fn resolve_owned_view_metadata_from_target(
         view_id: ViewId,
         profile: RenderPathProfile,
+        host_camera: &HostCameraFrame,
         target: &FrameViewTarget<'_>,
         gpu: &mut GpuContext,
     ) -> Result<OwnedResolvedView, GraphExecuteError> {
+        let layout = FrameViewLayout::resolve(host_camera, profile, target, gpu);
         match target {
             FrameViewTarget::Swapchain => {
-                let surface_format = profile.resolve_color_format(target, gpu);
-                let viewport_px = gpu.surface_extent_px();
-                let sample_count = profile.resolve_sample_count(gpu);
                 let (depth_texture, depth_view) = gpu
                     .ensure_depth_target()
                     .map_err(GraphExecuteError::DepthTarget)?;
@@ -468,13 +462,13 @@ impl CompiledRenderGraph {
                     depth_texture: depth_texture.clone(),
                     depth_view: depth_view.clone(),
                     backbuffer: None,
-                    surface_format,
-                    viewport_px,
-                    multiview_stereo: false,
-                    offscreen_write_render_texture_asset_id: None,
+                    surface_format: layout.surface_format,
+                    viewport_px: layout.viewport_px,
+                    multiview_stereo: layout.multiview_stereo,
+                    offscreen_write_target: OffscreenWriteTarget::None,
                     view_id,
-                    sample_count,
-                    post_processing: profile.post_processing(),
+                    sample_count: layout.sample_count,
+                    post_processing: layout.post_processing,
                     offscreen_color_copy: None,
                 })
             }
@@ -482,26 +476,26 @@ impl CompiledRenderGraph {
                 depth_texture: (*ext.depth_texture).clone(),
                 depth_view: (*ext.depth_view).clone(),
                 backbuffer: Some((*ext.color_view).clone()),
-                surface_format: profile.resolve_color_format(target, gpu),
-                viewport_px: ext.extent_px,
-                multiview_stereo: true,
-                offscreen_write_render_texture_asset_id: None,
+                surface_format: layout.surface_format,
+                viewport_px: layout.viewport_px,
+                multiview_stereo: layout.multiview_stereo,
+                offscreen_write_target: OffscreenWriteTarget::None,
                 view_id,
-                sample_count: profile.resolve_sample_count(gpu),
-                post_processing: profile.post_processing(),
+                sample_count: layout.sample_count,
+                post_processing: layout.post_processing,
                 offscreen_color_copy: None,
             }),
             FrameViewTarget::OffscreenRt(ext) => Ok(OwnedResolvedView {
                 depth_texture: (*ext.depth_texture).clone(),
                 depth_view: (*ext.depth_view).clone(),
                 backbuffer: Some((*ext.color_view).clone()),
-                surface_format: profile.resolve_color_format(target, gpu),
-                viewport_px: ext.extent_px,
-                multiview_stereo: false,
-                offscreen_write_render_texture_asset_id: Some(ext.render_texture_asset_id),
+                surface_format: layout.surface_format,
+                viewport_px: layout.viewport_px,
+                multiview_stereo: layout.multiview_stereo,
+                offscreen_write_target: ext.write_target,
                 view_id,
-                sample_count: profile.resolve_sample_count(gpu),
-                post_processing: profile.post_processing(),
+                sample_count: layout.sample_count,
+                post_processing: layout.post_processing,
                 offscreen_color_copy: ext.copy_to_color.map(|copy| ResolvedOffscreenColorCopy {
                     source_texture: (*ext.color_texture).clone(),
                     destination_texture: (*copy.destination_texture).clone(),

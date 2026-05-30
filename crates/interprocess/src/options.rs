@@ -13,8 +13,8 @@ pub const LINUX_SHM_MEMORY_DIR: &str = "/dev/shm/.cloudtoid/interprocess/mmf";
 /// If the process environment sets [`RENDERIDE_INTERPROCESS_DIR_ENV`], that path is used for all
 /// platforms (override when the default tmpfs or temp layout is unavailable or wrong).
 ///
-/// - **Linux**: [`LINUX_SHM_MEMORY_DIR`] under `/dev/shm` (tmpfs, matches typical managed layouts).
-/// - **Other Unix** (macOS, BSD, etc.): `std::env::temp_dir()/.cloudtoid/interprocess/mmf`.
+/// - **Linux**: [`LINUX_SHM_MEMORY_DIR`] under `/dev/shm` (tmpfs, matches managed layouts).
+/// - **Other Unix** (macOS, BSD, etc.): [`std::env::temp_dir`] to match managed layouts.
 /// - **Windows**: same temp-dir layout (the named mapping does not use this path, but [`QueueOptions::path`] is populated for consistency).
 pub fn default_memory_dir() -> PathBuf {
     if let Some(env_dir) = std::env::var_os(RENDERIDE_INTERPROCESS_DIR_ENV) {
@@ -26,7 +26,7 @@ pub fn default_memory_dir() -> PathBuf {
     }
     #[cfg(all(unix, not(target_os = "linux")))]
     {
-        std::env::temp_dir().join(".cloudtoid/interprocess/mmf")
+        std::env::temp_dir()
     }
     #[cfg(windows)]
     {
@@ -236,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn default_memory_dir_non_linux_unix_uses_temp_subdir() {
+    fn default_memory_dir_non_linux_unix_uses_temp_dir() {
         let _g = ENV_MUTEX.lock().unwrap();
         // SAFETY: env mutation in test; serialized via ENV_LOCK / cargo test single-thread.
         unsafe {
@@ -246,11 +246,7 @@ mod tests {
             return;
         }
         let d = default_memory_dir();
-        let tmp = std::env::temp_dir();
-        assert!(
-            d.starts_with(&tmp) && d.as_os_str().to_string_lossy().contains(MM_SUBDIR),
-            "expected path under temp containing {MM_SUBDIR}, got {d:?}"
-        );
+        assert_eq!(d, std::env::temp_dir());
     }
 
     #[test]

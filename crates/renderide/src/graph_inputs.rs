@@ -27,6 +27,36 @@ use crate::shared::{CameraClearMode, RenderingContext};
 
 use crate::gpu::OutputDepthMode;
 
+/// Offscreen target currently being written by a view.
+///
+/// The renderer uses this for two separate decisions: any offscreen target needs the offscreen
+/// projection convention, while only host render textures need material self-sampling suppression.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum OffscreenWriteTarget {
+    /// The view writes directly to the desktop swapchain or an external multiview target.
+    #[default]
+    None,
+    /// The view writes to an offscreen target that is not a host render-texture asset.
+    Untracked,
+    /// The view writes to a host render texture with the supplied asset id.
+    HostRenderTexture(i32),
+}
+
+impl OffscreenWriteTarget {
+    /// Returns `true` when the view writes to any offscreen target.
+    pub const fn is_offscreen(self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    /// Returns the host render-texture asset id when self-sampling must be suppressed.
+    pub const fn host_render_texture_asset_id(self) -> Option<i32> {
+        match self {
+            Self::HostRenderTexture(asset_id) => Some(asset_id),
+            Self::None | Self::Untracked => None,
+        }
+    }
+}
+
 /// Per-view background clear contract propagated from host camera state.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FrameViewClear {
@@ -82,7 +112,7 @@ blackboard_slot! {
     /// Blackboard slot for per-view MSAA attachment views resolved from transient graph resources.
     ///
     /// Populated by the executor (before per-view passes run) from
-    /// [`crate::render_graph::compiled::helpers::populate_forward_msaa_from_graph_resources`] output.
+    /// `resolve_forward_msaa_views_from_graph_resources` output.
     /// Replaces the six `msaa_*` fields that previously lived on [`GraphPassFrame`].
     pub MsaaViewsSlot => MsaaViews,
 }
@@ -207,9 +237,8 @@ pub struct GraphPassFrameView<'a> {
     pub frame_time_seconds: f32,
     /// When `true`, the forward pass targets 2-layer array attachments and may use multiview.
     pub multiview_stereo: bool,
-    /// When rendering a secondary camera to a host render texture, the asset id of the color
-    /// target being written. Materials must not sample that texture in the same pass.
-    pub offscreen_write_render_texture_asset_id: Option<i32>,
+    /// Offscreen target currently being written by this view.
+    pub offscreen_write_target: OffscreenWriteTarget,
     /// Which logical view this frame state belongs to.
     pub view_id: ViewId,
     /// Mutex-wrapped Hi-Z state resolved for this view before per-view recording starts.
@@ -245,8 +274,27 @@ impl GraphPassFrame<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::FrameViewClear;
+    use super::{FrameViewClear, OffscreenWriteTarget};
     use crate::shared::{CameraClearMode, CameraState};
+
+    #[test]
+    fn offscreen_write_target_separates_projection_and_self_sampling() {
+        assert!(!OffscreenWriteTarget::None.is_offscreen());
+        assert_eq!(
+            OffscreenWriteTarget::None.host_render_texture_asset_id(),
+            None
+        );
+
+        assert!(OffscreenWriteTarget::Untracked.is_offscreen());
+        assert_eq!(
+            OffscreenWriteTarget::Untracked.host_render_texture_asset_id(),
+            None
+        );
+
+        let host_target = OffscreenWriteTarget::HostRenderTexture(77);
+        assert!(host_target.is_offscreen());
+        assert_eq!(host_target.host_render_texture_asset_id(), Some(77));
+    }
 
     #[test]
     fn main_view_clear_defaults_to_skybox() {

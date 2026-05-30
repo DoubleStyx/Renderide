@@ -13,10 +13,11 @@ use crate::render_graph::pass::PassPhase;
 
 use super::super::super::helpers;
 use super::super::super::{
-    CompiledRenderGraph, FrameView, MultiViewExecutionContext, ResolvedView,
+    CompiledRenderGraph, FrameGlobalView, FrameView, MultiViewExecutionContext, ResolvedView,
 };
 use super::super::{
-    GraphResolveKey, TimedCommandBuffer, TransientTextureResolveSurfaceParams, elapsed_ms,
+    FrameGlobalPassRecordInputs, GraphResolveKey, TimedCommandBuffer,
+    TransientTextureResolveSurfaceParams, elapsed_ms,
 };
 
 /// Mutable state needed to replay frame-global schedule steps.
@@ -72,6 +73,7 @@ impl CompiledRenderGraph {
         &self,
         mv_ctx: &mut MultiViewExecutionContext<'_>,
         views: &[FrameView<'_>],
+        frame_global: &FrameGlobalView,
         transient_by_key: &mut HashMap<GraphResolveKey, GraphResolvedResources>,
         upload_batch: &FrameUploadBatch,
     ) -> Result<Option<TimedCommandBuffer>, GraphExecuteError> {
@@ -95,11 +97,14 @@ impl CompiledRenderGraph {
 
         let record_result = self.record_frame_global_passes_into_encoder(
             mv_ctx,
-            views,
-            transient_by_key,
-            &mut encoder,
-            upload_batch,
-            pass_profiler.as_ref(),
+            FrameGlobalPassRecordInputs {
+                views,
+                frame_global,
+                transient_by_key,
+                encoder: &mut encoder,
+                upload_batch,
+                pass_profiler: pass_profiler.as_ref(),
+            },
         );
         mv_ctx.gpu.restore_gpu_profiler(pass_profiler);
         record_result?;
@@ -125,12 +130,16 @@ impl CompiledRenderGraph {
     pub(in crate::render_graph::compiled::exec) fn record_frame_global_passes_into_encoder(
         &self,
         mv_ctx: &mut MultiViewExecutionContext<'_>,
-        views: &[FrameView<'_>],
-        transient_by_key: &mut HashMap<GraphResolveKey, GraphResolvedResources>,
-        encoder: &mut wgpu::CommandEncoder,
-        upload_batch: &FrameUploadBatch,
-        pass_profiler: Option<&crate::profiling::GpuProfilerHandle>,
+        inputs: FrameGlobalPassRecordInputs<'_, '_>,
     ) -> Result<(), GraphExecuteError> {
+        let FrameGlobalPassRecordInputs {
+            views,
+            frame_global,
+            transient_by_key,
+            encoder,
+            upload_batch,
+            pass_profiler,
+        } = inputs;
         let MultiViewExecutionContext {
             gpu,
             scene,
@@ -146,6 +155,7 @@ impl CompiledRenderGraph {
             Self::resolve_view_from_target(
                 first.view_id(),
                 first.profile,
+                &first.host_camera,
                 &first.target,
                 gpu,
                 backbuffer_view_holder.as_ref(),
@@ -184,11 +194,11 @@ impl CompiledRenderGraph {
                 &mut **backend,
                 helpers::ResolvedFrameRenderParamsInputs {
                     resolved: &resolved,
-                    host_camera: &first.host_camera,
-                    render_context: first.render_context,
-                    frame_time_seconds: first.frame_time_seconds,
-                    clear: first.clear,
-                    post_processing: first.post_processing(),
+                    host_camera: &frame_global.host_camera,
+                    render_context: frame_global.render_context,
+                    frame_time_seconds: frame_global.frame_time_seconds,
+                    clear: frame_global.clear,
+                    post_processing: frame_global.post_processing,
                 },
             )
         };

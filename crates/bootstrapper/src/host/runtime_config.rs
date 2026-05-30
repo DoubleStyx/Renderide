@@ -6,10 +6,10 @@ use std::path::Path;
 use serde_json::Value;
 
 /// Runtime configuration file shipped next to `Renderite.Host.dll`.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const RENDERITE_HOST_RUNTIME_CONFIG: &str = "Renderite.Host.runtimeconfig.json";
 
-/// Removes `Microsoft.WindowsDesktop.App` from `runtimeOptions.frameworks` for Wine compatibility.
+/// Removes `Microsoft.WindowsDesktop.App` from `runtimeOptions.frameworks` for native Unix compatibility.
 pub fn strip_windows_desktop_from_runtime_config(path: &Path) {
     if !path.exists() {
         return;
@@ -57,19 +57,19 @@ pub fn strip_windows_desktop_from_runtime_config(path: &Path) {
 }
 
 /// Returns the runtimeconfig path for a native Host launch directory.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn host_runtime_config_path(resonite_dir: &Path) -> std::path::PathBuf {
     resonite_dir.join(RENDERITE_HOST_RUNTIME_CONFIG)
 }
 
-/// Applies runtimeconfig adjustments needed before native Linux Host startup.
-#[cfg(target_os = "linux")]
+/// Applies runtimeconfig adjustments needed before native Unix Host startup.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) fn prepare_native_host_runtime_config(resonite_dir: &Path) {
     strip_windows_desktop_from_runtime_config(&host_runtime_config_path(resonite_dir));
 }
 
 /// Keeps native Host startup preparation explicit on platforms without runtimeconfig edits.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(super) fn prepare_native_host_runtime_config(_resonite_dir: &Path) {}
 
 #[cfg(test)]
@@ -77,7 +77,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn host_runtime_config_path_uses_host_directory() {
         let root = std::path::PathBuf::from("renderite-host");

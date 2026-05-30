@@ -6,8 +6,8 @@ use crate::camera::{
     HostCameraFrame, ViewId, camera_state_motion_blur, camera_state_post_processing,
     camera_state_screen_space_reflections,
 };
-use crate::gpu::GpuContext;
-use crate::graph_inputs::FrameViewClear;
+use crate::gpu::{GpuContext, OutputDepthMode};
+use crate::graph_inputs::{FrameViewClear, OffscreenWriteTarget};
 use crate::shared::{CameraRenderParameters, CameraState, RenderingContext};
 
 /// MSAA policy selected by a render-path profile.
@@ -39,8 +39,8 @@ impl RenderPathSampleCountPolicy {
 
 /// Single-view color + depth for rendering into an externally owned offscreen target.
 pub struct ExternalOffscreenTargets<'a> {
-    /// Host render-texture asset id for `color_view` (used to suppress self-sampling during this pass).
-    pub render_texture_asset_id: i32,
+    /// Offscreen target identity and self-sampling policy for this view.
+    pub write_target: OffscreenWriteTarget,
     /// Color texture backing `color_view`.
     pub color_texture: &'a wgpu::Texture,
     /// Color attachment (`Rgba16Float` for Unity `ARGBHalf` parity).
@@ -92,7 +92,27 @@ pub enum FrameViewTarget<'a> {
     OffscreenRt(ExternalOffscreenTargets<'a>),
 }
 
+/// Stable classification for a [`FrameViewTarget`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FrameViewTargetKind {
+    /// Main window swapchain target.
+    Swapchain,
+    /// OpenXR external stereo multiview target.
+    ExternalMultiview,
+    /// Single-view offscreen render texture target.
+    OffscreenRt,
+}
+
 impl FrameViewTarget<'_> {
+    /// Stable target classification without borrowing target payloads.
+    pub fn kind(&self) -> FrameViewTargetKind {
+        match self {
+            FrameViewTarget::Swapchain => FrameViewTargetKind::Swapchain,
+            FrameViewTarget::ExternalMultiview(_) => FrameViewTargetKind::ExternalMultiview,
+            FrameViewTarget::OffscreenRt(_) => FrameViewTargetKind::OffscreenRt,
+        }
+    }
+
     /// `true` when this target renders to a 2-layer multiview color attachment.
     pub fn is_multiview_target(&self) -> bool {
         matches!(self, FrameViewTarget::ExternalMultiview(_))
@@ -122,6 +142,56 @@ impl FrameViewTarget<'_> {
                     .map_err(GraphExecuteError::DepthTarget)?;
                 Ok(depth_tex.format())
             }
+        }
+    }
+}
+
+/// Resolved target and profile metadata shared by resource preparation and command recording.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrameViewLayout {
+    /// Stable target classification.
+    pub target_kind: FrameViewTargetKind,
+    /// Pixel extent for attachments and transient resources.
+    pub viewport_px: (u32, u32),
+    /// Whether this view records stereo multiview draws into two-layer attachments.
+    pub multiview_stereo: bool,
+    /// Effective raster sample count for this view.
+    pub sample_count: u32,
+    /// Color attachment format exposed to pipeline resolution.
+    pub surface_format: wgpu::TextureFormat,
+    /// Depth output layout exposed to Hi-Z and occlusion consumers.
+    pub output_depth_mode: OutputDepthMode,
+    /// Post-processing permissions requested by this view.
+    pub post_processing: ViewPostProcessing,
+}
+
+impl FrameViewLayout {
+    /// Returns whether a target kind should use stereo multiview for this host camera.
+    pub fn multiview_stereo_for(
+        target_kind: FrameViewTargetKind,
+        host_camera: &HostCameraFrame,
+    ) -> bool {
+        target_kind == FrameViewTargetKind::ExternalMultiview
+            && host_camera.active_stereo().is_some()
+    }
+
+    /// Resolves layout from the same target, host-camera, profile, and GPU state used for execution.
+    pub fn resolve(
+        host_camera: &HostCameraFrame,
+        profile: RenderPathProfile,
+        target: &FrameViewTarget<'_>,
+        gpu: &GpuContext,
+    ) -> Self {
+        let target_kind = target.kind();
+        let multiview_stereo = Self::multiview_stereo_for(target_kind, host_camera);
+        Self {
+            target_kind,
+            viewport_px: target.extent_px(gpu),
+            multiview_stereo,
+            sample_count: profile.resolve_sample_count(gpu),
+            surface_format: profile.resolve_color_format(target, gpu),
+            output_depth_mode: OutputDepthMode::from_multiview_stereo(multiview_stereo),
+            post_processing: profile.post_processing(),
         }
     }
 }
@@ -567,9 +637,73 @@ impl<'a> FrameView<'a> {
         self.target.is_multiview_target() && self.host_camera.active_stereo().is_some()
     }
 
+    /// Resolves this view's target/profile layout for resource preparation and graph recording.
+    pub fn layout(&self, gpu: &GpuContext) -> FrameViewLayout {
+        FrameViewLayout::resolve(&self.host_camera, self.profile, &self.target, gpu)
+    }
+
     /// Post-processing permissions for this view.
     pub fn post_processing(&self) -> ViewPostProcessing {
         self.profile.post_processing()
+    }
+}
+
+/// View metadata used by frame-global graph passes.
+#[derive(Clone, Copy, Debug)]
+pub struct FrameGlobalView {
+    /// Host camera snapshot selected for frame-global passes.
+    pub host_camera: HostCameraFrame,
+    /// Render-context override scope selected for frame-global passes.
+    pub render_context: RenderingContext,
+    /// Elapsed renderer runtime in seconds for Unity-style shader time inputs.
+    pub frame_time_seconds: f32,
+    /// Background clear/skybox behavior selected for frame-global passes.
+    pub clear: FrameViewClear,
+    /// Post-processing permissions selected for frame-global passes.
+    pub post_processing: ViewPostProcessing,
+}
+
+impl FrameGlobalView {
+    /// Builds frame-global metadata from an executable frame view.
+    #[cfg(test)]
+    pub fn from_frame_view(view: &FrameView<'_>) -> Self {
+        Self {
+            host_camera: view.host_camera,
+            render_context: view.render_context,
+            frame_time_seconds: view.frame_time_seconds,
+            clear: view.clear,
+            post_processing: view.post_processing(),
+        }
+    }
+
+    /// Builds frame-global metadata from explicit primary-view inputs.
+    pub fn new(
+        host_camera: &HostCameraFrame,
+        render_context: RenderingContext,
+        frame_time_seconds: f32,
+        clear: FrameViewClear,
+        post_processing: ViewPostProcessing,
+    ) -> Self {
+        Self {
+            host_camera: *host_camera,
+            render_context,
+            frame_time_seconds,
+            clear,
+            post_processing,
+        }
+    }
+}
+
+impl Default for FrameGlobalView {
+    fn default() -> Self {
+        let host_camera = HostCameraFrame::default();
+        Self::new(
+            &host_camera,
+            RenderingContext::UserView,
+            0.0,
+            FrameViewClear::default(),
+            ViewPostProcessing::default(),
+        )
     }
 }
 
@@ -587,6 +721,35 @@ impl ViewFamilyGraphRequirements {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::camera::{EyeView, StereoViewMatrices};
+
+    fn swapchain_frame_view() -> FrameView<'static> {
+        FrameView {
+            view_id: ViewId::Main,
+            host_camera: HostCameraFrame::default(),
+            render_context: RenderingContext::UserView,
+            frame_time_seconds: 0.25,
+            target: FrameViewTarget::Swapchain,
+            profile: RenderPathProfile::desktop_main(),
+            clear: FrameViewClear::color(glam::Vec4::new(0.1, 0.2, 0.3, 1.0)),
+            resource_hints: FrameViewResourceHints::default(),
+            initial_blackboard: Blackboard::new(),
+        }
+    }
+
+    fn stereo_host_camera() -> HostCameraFrame {
+        let eye = EyeView::new(
+            glam::Mat4::IDENTITY,
+            glam::Mat4::IDENTITY,
+            glam::Mat4::IDENTITY,
+            glam::Vec3::ZERO,
+        );
+        HostCameraFrame {
+            vr_active: true,
+            stereo: Some(StereoViewMatrices::new(eye, eye)),
+            ..Default::default()
+        }
+    }
 
     #[test]
     fn view_post_processing_default_allows_primary_view_effects() {
@@ -739,6 +902,49 @@ mod tests {
     }
 
     #[test]
+    fn frame_view_target_kind_classifies_swapchain() {
+        assert_eq!(
+            FrameViewTarget::Swapchain.kind(),
+            FrameViewTargetKind::Swapchain
+        );
+    }
+
+    #[test]
+    fn layout_stereo_decision_requires_hmd_target_and_active_stereo() {
+        let mono_host = HostCameraFrame::default();
+        let stereo_host = stereo_host_camera();
+
+        assert!(!FrameViewLayout::multiview_stereo_for(
+            FrameViewTargetKind::Swapchain,
+            &stereo_host
+        ));
+        assert!(!FrameViewLayout::multiview_stereo_for(
+            FrameViewTargetKind::OffscreenRt,
+            &stereo_host
+        ));
+        assert!(!FrameViewLayout::multiview_stereo_for(
+            FrameViewTargetKind::ExternalMultiview,
+            &mono_host
+        ));
+        assert!(FrameViewLayout::multiview_stereo_for(
+            FrameViewTargetKind::ExternalMultiview,
+            &stereo_host
+        ));
+    }
+
+    #[test]
+    fn frame_global_view_from_frame_view_preserves_primary_metadata() {
+        let view = swapchain_frame_view();
+        let frame_global = FrameGlobalView::from_frame_view(&view);
+
+        assert_eq!(frame_global.host_camera.frame_index, -1);
+        assert_eq!(frame_global.render_context, RenderingContext::UserView);
+        assert_eq!(frame_global.frame_time_seconds, 0.25);
+        assert_eq!(frame_global.clear, view.clear);
+        assert_eq!(frame_global.post_processing, view.post_processing());
+    }
+
+    #[test]
     fn graph_requirements_aggregate_profiles() {
         let mut requirements = ViewFamilyGraphRequirements::default();
         requirements.include_profile(
@@ -757,5 +963,27 @@ mod tests {
         requirements.include_profile(RenderPathProfile::xr_hmd(), true);
         assert!(requirements.multiview_stereo);
         assert!(requirements.disable_motion_blur_for_vr);
+    }
+
+    #[test]
+    fn graph_requirements_are_order_independent_for_current_profiles() {
+        let profiles = [
+            (RenderPathProfile::desktop_main(), false),
+            (RenderPathProfile::xr_hmd(), true),
+            (
+                RenderPathProfile::secondary_camera(ViewPostProcessing::disabled()),
+                false,
+            ),
+        ];
+        let mut forward = ViewFamilyGraphRequirements::default();
+        for (profile, multiview) in profiles {
+            forward.include_profile(profile, multiview);
+        }
+        let mut reverse = ViewFamilyGraphRequirements::default();
+        for (profile, multiview) in profiles.into_iter().rev() {
+            reverse.include_profile(profile, multiview);
+        }
+
+        assert_eq!(forward, reverse);
     }
 }

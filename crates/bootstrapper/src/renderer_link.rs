@@ -2,7 +2,7 @@
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::fs;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::path::Path;
 
 use crate::config::ResoBootConfig;
@@ -28,12 +28,38 @@ fn symlink_points_to_target(link: &Path, target: &Path) -> bool {
 
 /// Returns `true` when `lhs` and `rhs` refer to the same inode (e.g. a hard link to the renderer binary).
 #[cfg(target_os = "macos")]
-fn same_filesystem_inode(lhs: &std::path::Path, rhs: &std::path::Path) -> bool {
+fn same_filesystem_inode(lhs: &Path, rhs: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
     match (fs::metadata(lhs), fs::metadata(rhs)) {
         (Ok(ma), Ok(mb)) => ma.dev() == mb.dev() && ma.ino() == mb.ino(),
         _ => false,
     }
+}
+
+/// Removes a stale Host-visible renderer path.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn remove_stale_link(link: &Path) -> bool {
+    match fs::remove_file(link) {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        Err(e) => {
+            logger::warn!(
+                "Failed to remove stale Renderite.Renderer at {}: {}",
+                link.display(),
+                e
+            );
+            false
+        }
+    }
+}
+
+/// Copies the renderer binary as a macOS fallback when a hard link cannot be created.
+#[cfg(target_os = "macos")]
+fn copy_renderer_stub(target: &Path, link: &Path) -> std::io::Result<()> {
+    fs::copy(target, link)?;
+    let permissions = fs::metadata(target)?.permissions();
+    fs::set_permissions(link, permissions)?;
+    Ok(())
 }
 
 /// On Linux, creates a symlink; on macOS, a hard link so argv0 / process naming match the real binary.
@@ -42,27 +68,60 @@ fn same_filesystem_inode(lhs: &std::path::Path, rhs: &std::path::Path) -> bool {
 pub fn ensure_link(config: &ResoBootConfig) {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
-        let symlink = &config.renderite_executable;
+        let link = &config.renderite_executable;
         let target = config.renderite_directory.join("renderide-renderer");
-        let needs_renderer_stub = target.exists() && {
-            #[cfg(target_os = "linux")]
-            {
-                !symlink_points_to_target(symlink, &target)
+        if !target.exists() {
+            logger::debug!(
+                "Renderite.Renderer bridge not created because {} is missing",
+                target.display()
+            );
+            return;
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            if symlink_points_to_target(link, &target) {
+                logger::debug!("Renderite.Renderer symlink already points to renderide-renderer");
+                return;
             }
-            #[cfg(target_os = "macos")]
-            {
-                !symlink.exists() || !same_filesystem_inode(symlink, &target)
+            if !remove_stale_link(link) {
+                return;
             }
-        };
-        if needs_renderer_stub {
-            let _ = fs::remove_file(symlink);
-            #[cfg(target_os = "linux")]
-            if let Err(e) = std::os::unix::fs::symlink(&target, symlink) {
+            if let Err(e) = std::os::unix::fs::symlink(&target, link) {
                 logger::warn!("Failed to create Renderite.Renderer symlink: {}", e);
+            } else {
+                logger::info!("Created Renderite.Renderer symlink for renderide-renderer");
             }
-            #[cfg(target_os = "macos")]
-            if let Err(e) = fs::hard_link(&target, symlink) {
-                logger::warn!("Failed to create Renderite.Renderer link: {}", e);
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            if same_filesystem_inode(link, &target) {
+                logger::debug!("Renderite.Renderer hard link already points to renderide-renderer");
+                return;
+            }
+            if !remove_stale_link(link) {
+                return;
+            }
+            match fs::hard_link(&target, link) {
+                Ok(()) => {
+                    logger::info!("Created Renderite.Renderer hard link for renderide-renderer");
+                }
+                Err(hard_link_error) => match copy_renderer_stub(&target, link) {
+                    Ok(()) => {
+                        logger::warn!(
+                            "Could not hard-link Renderite.Renderer: {}; copied renderide-renderer instead",
+                            hard_link_error
+                        );
+                    }
+                    Err(copy_error) => {
+                        logger::warn!(
+                            "Failed to create Renderite.Renderer hard link ({}) or copy fallback ({}).",
+                            hard_link_error,
+                            copy_error
+                        );
+                    }
+                },
             }
         }
     }
@@ -85,6 +144,7 @@ mod tests {
             runtime_config: tmp.join("Renderite.Host.runtimeconfig.json"),
             renderite_directory: tmp.to_path_buf(),
             renderite_executable: renderer_name.to_path_buf(),
+            resonite_dir: None,
             shared_memory_prefix: "t".into(),
             is_wine: false,
             renderide_log_level: None,
@@ -171,6 +231,7 @@ mod tests_macos {
             runtime_config: tmp.join("Renderite.Host.runtimeconfig.json"),
             renderite_directory: tmp.to_path_buf(),
             renderite_executable: link.to_path_buf(),
+            resonite_dir: None,
             shared_memory_prefix: "t".into(),
             is_wine: false,
             renderide_log_level: None,

@@ -2,6 +2,7 @@ use super::*;
 use crate::materials::{
     MaterialBlendMode, MaterialDepthCompareOverride, MaterialDepthOffsetState, RasterFrontFace,
     RasterPipelineKind, UNITY_RENDER_QUEUE_ALPHA_TEST, UNITY_RENDER_QUEUE_TRANSPARENT,
+    UNITY_TRANSPARENT_RENDER_QUEUE_MIN,
 };
 use crate::world_mesh::TransparentMaterialClass;
 use crate::world_mesh::draw_prep::{pack_sort_prefix, sort_draws};
@@ -423,12 +424,12 @@ fn transparent_render_queue_regular_window_emits_post_skybox_singletons() {
 }
 
 #[test]
-fn late_opaque_queue_regular_window_groups_as_alpha_test() {
+fn geometry_last_queue_regular_window_groups_as_alpha_test() {
     let mut draws: Vec<_> = (0..3)
         .map(|n| {
             let mut item = opaque(7, 1, 0, n);
             item.batch_key.blend_mode = MaterialBlendMode::Opaque;
-            set_render_queue(&mut item, UNITY_RENDER_QUEUE_TRANSPARENT - 1);
+            set_render_queue(&mut item, UNITY_TRANSPARENT_RENDER_QUEUE_MIN - 1);
             item
         })
         .collect();
@@ -454,7 +455,7 @@ fn late_opaque_queue_regular_window_groups_as_alpha_test() {
 }
 
 #[test]
-fn zwrite_off_regular_window_emits_post_skybox_singletons() {
+fn zwrite_off_regular_window_stays_before_skybox() {
     let mut draws: Vec<_> = (0..3)
         .map(|n| {
             let mut item = opaque(7, 1, 0, n);
@@ -466,16 +467,20 @@ fn zwrite_off_regular_window_emits_post_skybox_singletons() {
     sort_draws(&mut draws);
 
     let plan = build_plan(&draws, true);
-    assert!(groups(&plan, WorldMeshPhase::ForwardOpaque).is_empty());
-    assert_eq!(groups(&plan, WorldMeshPhase::Transparent).len(), 3);
+    assert_eq!(groups(&plan, WorldMeshPhase::ForwardOpaque).len(), 1);
+    assert_eq!(
+        groups(&plan, WorldMeshPhase::ForwardOpaque)[0].instance_range,
+        0..3
+    );
+    assert_eq!(groups(&plan, WorldMeshPhase::ViewNormals).len(), 1);
     assert_phases_empty(
         &plan,
         &[
             WorldMeshPhase::ForwardAlphaTest,
             WorldMeshPhase::Intersection,
+            WorldMeshPhase::Transparent,
             WorldMeshPhase::TransparentGrab,
             WorldMeshPhase::DepthOnly,
-            WorldMeshPhase::ViewNormals,
         ],
     );
 }
@@ -740,7 +745,10 @@ fn parallel_instance_plan_matches_serial_windows() {
             item.index_count = (6 + (n % 2) * 3) as u32;
             match material % 4 {
                 0 => item.batch_key.embedded_requires_intersection_pass = true,
-                2 => item.batch_key.render_state.depth_write = Some(false),
+                2 => {
+                    set_render_queue(&mut item, UNITY_TRANSPARENT_RENDER_QUEUE_MIN);
+                    item.batch_key.render_state.depth_write = Some(false);
+                }
                 3 => {
                     item.batch_key.embedded_uses_scene_color_snapshot = true;
                     item.batch_key.alpha_blended = true;

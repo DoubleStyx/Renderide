@@ -84,15 +84,18 @@ impl crate::xr::XrFrameRenderer for RendererRuntime {
         RendererRuntime::render_frame(
             self,
             gpu,
-            crate::runtime::frame::render::FrameRenderMode::VrWithHmd(hmd),
+            crate::runtime::frame::render::FrameViewFamilyRequest::hmd(hmd),
         )
     }
 
-    fn submit_secondary_only(&mut self, gpu: &mut GpuContext) -> Result<(), GraphExecuteError> {
+    fn submit_vr_secondaries_only(
+        &mut self,
+        gpu: &mut GpuContext,
+    ) -> Result<(), GraphExecuteError> {
         RendererRuntime::render_frame(
             self,
             gpu,
-            crate::runtime::frame::render::FrameRenderMode::VrSecondariesOnly,
+            crate::runtime::frame::render::FrameViewFamilyRequest::vr_secondaries_only(),
         )
     }
 }

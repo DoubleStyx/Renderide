@@ -46,12 +46,7 @@ pub fn spawn_host(
         apply_host_stdio(&mut cmd, &config.current_directory);
         finish_spawn(cmd, lifetime)
     } else {
-        let resonite_dir = paths::find_resonite_dir().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "Could not find Resonite installation. Set RESONITE_DIR or ensure Steam has Resonite installed.",
-            )
-        })?;
+        let resonite_dir = paths::resolve_resonite_dir(config.resonite_dir.as_deref())?;
         logger::info!("Resonite dir: {:?}", resonite_dir);
         prepare_native_host_runtime_config(&resonite_dir);
 

@@ -328,8 +328,8 @@ fn render_queue_orders_before_transparent_distance() {
 }
 
 #[test]
-fn opaque_blend_late_queue_keeps_opaque_sort_prefix_until_transparent_queue() {
-    let mut late_opaque = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+fn opaque_blend_uses_transparent_sort_prefix_after_geometry_last() {
+    let mut boundary_draw = dummy_world_mesh_draw_item(DummyDrawItemSpec {
         material_asset_id: 1,
         property_block: None,
         skinned: false,
@@ -340,29 +340,29 @@ fn opaque_blend_late_queue_keeps_opaque_sort_prefix_until_transparent_queue() {
         collect_order: 0,
         alpha_blended: false,
     });
-    late_opaque.batch_key.blend_mode = crate::materials::MaterialBlendMode::Opaque;
-    set_render_queue(&mut late_opaque, UNITY_RENDER_QUEUE_TRANSPARENT - 1);
-    set_camera_distance(&mut late_opaque, 64.0);
+    boundary_draw.batch_key.blend_mode = crate::materials::MaterialBlendMode::Opaque;
+    set_render_queue(&mut boundary_draw, UNITY_TRANSPARENT_RENDER_QUEUE_MIN - 1);
+    set_camera_distance(&mut boundary_draw, 64.0);
 
-    assert!(!late_opaque.batch_key.uses_transparent_sorting());
+    assert!(!boundary_draw.batch_key.uses_transparent_sorting());
     assert_ne!(
-        late_opaque.sort_prefix,
+        boundary_draw.sort_prefix,
         pack_sort_prefix(
             false,
-            UNITY_RENDER_QUEUE_TRANSPARENT - 1,
+            UNITY_TRANSPARENT_RENDER_QUEUE_MIN - 1,
             true,
-            late_opaque._opaque_depth_bucket,
-            late_opaque.batch_key_hash,
+            boundary_draw._opaque_depth_bucket,
+            boundary_draw.batch_key_hash,
         )
     );
 
-    set_render_queue(&mut late_opaque, UNITY_RENDER_QUEUE_TRANSPARENT);
+    set_render_queue(&mut boundary_draw, UNITY_TRANSPARENT_RENDER_QUEUE_MIN);
 
-    assert!(late_opaque.batch_key.uses_transparent_sorting());
+    assert!(boundary_draw.batch_key.uses_transparent_sorting());
 }
 
 #[test]
-fn effective_alpha_blend_uses_lower_transparent_sorting_threshold() {
+fn alpha_blend_below_transparent_boundary_keeps_opaque_sorting() {
     let mut alpha = dummy_world_mesh_draw_item(DummyDrawItemSpec {
         material_asset_id: 1,
         property_block: None,
@@ -375,9 +375,9 @@ fn effective_alpha_blend_uses_lower_transparent_sorting_threshold() {
         alpha_blended: true,
     });
     alpha.batch_key.blend_mode = crate::materials::MaterialBlendMode::StemDefault;
-    set_render_queue(&mut alpha, UNITY_TRANSPARENT_RENDER_QUEUE_MIN);
+    set_render_queue(&mut alpha, UNITY_TRANSPARENT_RENDER_QUEUE_MIN - 1);
 
-    assert!(alpha.batch_key.uses_transparent_sorting());
+    assert!(!alpha.batch_key.uses_transparent_sorting());
 }
 
 #[test]

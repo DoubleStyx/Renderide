@@ -106,9 +106,9 @@ mod tests {
     }
 
     #[test]
-    fn classifies_late_opaque_queue_as_alpha_test_without_strict_order() {
+    fn classifies_geometry_last_queue_as_alpha_test_without_strict_order() {
         let mut late_opaque = key(false);
-        late_opaque.render_queue = UNITY_RENDER_QUEUE_TRANSPARENT - 1;
+        late_opaque.render_queue = UNITY_TRANSPARENT_RENDER_QUEUE_MIN - 1;
         late_opaque.blend_mode = MaterialBlendMode::Opaque;
 
         let classification = classify_world_mesh_batch(&late_opaque);
@@ -121,7 +121,7 @@ mod tests {
     #[test]
     fn classifies_transparent_queue_as_strict_ordered_transparent() {
         let mut transparent = key(false);
-        transparent.render_queue = UNITY_RENDER_QUEUE_TRANSPARENT;
+        transparent.render_queue = UNITY_TRANSPARENT_RENDER_QUEUE_MIN;
         transparent.blend_mode = MaterialBlendMode::Opaque;
 
         let classification = classify_world_mesh_batch(&transparent);
@@ -132,7 +132,7 @@ mod tests {
     }
 
     #[test]
-    fn classifies_effective_alpha_blend_at_lower_threshold_as_strict_ordered() {
+    fn classifies_alpha_blend_at_transparent_boundary_as_strict_ordered() {
         let mut alpha = key(true);
         alpha.render_queue = UNITY_TRANSPARENT_RENDER_QUEUE_MIN;
         alpha.blend_mode = MaterialBlendMode::StemDefault;

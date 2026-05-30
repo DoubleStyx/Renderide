@@ -14,7 +14,8 @@ use crate::mesh_deform::SkinCacheKey;
 use crate::occlusion::HiZCullData;
 use crate::render_graph::blackboard::Blackboard;
 use crate::render_graph::{
-    FrameView, FrameViewResourceHints, GraphExecuteError, ViewFamilyGraphRequirements,
+    FrameGlobalView, FrameView, FrameViewResourceHints, GraphExecuteError,
+    ViewFamilyGraphRequirements,
 };
 use crate::world_mesh::QueuedWorldMeshDraws;
 use crate::world_mesh::{
@@ -40,7 +41,7 @@ const VISIBLE_DEFORM_KEYS_PARALLEL_CHUNK_VIEWS: usize = 1;
 /// Prepared views live beside the backend's read-only draw-prep view so later stages no longer
 /// need to reach back into mutable runtime or backend state.
 pub(in crate::runtime) struct ExtractedFrame<'views, 'backend> {
-    /// Ordered per-frame view plans and any headless output substitution snapshot.
+    /// Ordered per-frame view plans and aggregate graph requirements.
     prepared_views: PreparedViews<'views>,
     /// Backend-owned draw-prep view assembled once for the frame.
     shared: ExtractedFrameShared<'backend>,
@@ -110,7 +111,7 @@ impl<'views, 'backend> ExtractedFrame<'views, 'backend> {
 
 /// Queued per-view draw candidates built after view planning and before phase sorting.
 pub(in crate::runtime) struct QueuedDraws<'a> {
-    /// Ordered per-frame view plans and headless output substitution snapshot.
+    /// Ordered per-frame view plans and aggregate graph requirements.
     prepared_views: PreparedViews<'a>,
     /// Queued draw candidates for every prepared view.
     view_draws: Vec<QueuedViewDraws>,
@@ -206,25 +207,16 @@ fn sort_two_view_draws_parallel(
     vec![first, second]
 }
 
-/// Prepared per-frame view list plus any headless swapchain substitution resources needed to
-/// turn it into executable graph views.
+/// Prepared per-frame view list plus aggregate graph requirements.
 pub(in crate::runtime) struct PreparedViews<'a> {
     /// Ordered view family and aggregate graph requirements for this tick.
     family: ViewFamilyPlan<'a>,
-    /// Headless main-target replacement captured before backend execution borrows the GPU.
-    headless_snapshot: Option<super::view_plan::HeadlessOffscreenSnapshot>,
 }
 
 impl<'a> PreparedViews<'a> {
-    /// Builds prepared views from the ordered plan and optional headless target snapshot.
-    pub(in crate::runtime) fn new(
-        family: ViewFamilyPlan<'a>,
-        headless_snapshot: Option<super::view_plan::HeadlessOffscreenSnapshot>,
-    ) -> Self {
-        Self {
-            family,
-            headless_snapshot,
-        }
+    /// Builds prepared views from the ordered plan.
+    pub(in crate::runtime) fn new(family: ViewFamilyPlan<'a>) -> Self {
+        Self { family }
     }
 
     /// Returns `true` when no view should be rendered this tick.
@@ -237,6 +229,11 @@ impl<'a> PreparedViews<'a> {
         self.family.plans()
     }
 
+    /// Primary-view metadata for frame-global graph passes.
+    pub(in crate::runtime) fn frame_global(&self) -> &FrameGlobalView {
+        self.family.frame_global()
+    }
+
     /// Aggregate graph-shaping requirements for the ordered views.
     pub(in crate::runtime) fn graph_requirements(&self) -> ViewFamilyGraphRequirements {
         self.family.requirements()
@@ -247,8 +244,7 @@ impl<'a> PreparedViews<'a> {
     where
         'a: 'b,
     {
-        let mut views: Vec<FrameView<'b>> = self
-            .family
+        self.family
             .plans()
             .iter()
             .zip(draw_plans)
@@ -262,17 +258,13 @@ impl<'a> PreparedViews<'a> {
                 initial_blackboard.insert::<WorldMeshDrawPlanSlot>(draws);
                 prep.to_frame_view(resource_hints, initial_blackboard)
             })
-            .collect();
-        if let Some(snapshot) = self.headless_snapshot.as_ref() {
-            snapshot.substitute_swapchain_views(&mut views);
-        }
-        views
+            .collect()
     }
 }
 
 /// Immutable per-view draw packet built after culling and draw sorting.
 pub(in crate::runtime) struct PreparedDraws<'a> {
-    /// Ordered per-frame view plans and headless output substitution snapshot.
+    /// Ordered per-frame view plans and aggregate graph requirements.
     prepared_views: PreparedViews<'a>,
     /// Explicit draw plan for every prepared view.
     view_draws: Vec<WorldMeshDrawPlan>,
@@ -290,7 +282,7 @@ impl<'a> PreparedDraws<'a> {
 
 /// Final immutable runtime packet handed to backend execution for one frame.
 pub(in crate::runtime) struct SubmitFrame<'a> {
-    /// Ordered per-frame view plans and headless output substitution snapshot.
+    /// Ordered per-frame view plans and aggregate graph requirements.
     prepared_views: PreparedViews<'a>,
     /// Explicit draw plan for every prepared view.
     view_draws: Vec<WorldMeshDrawPlan>,
@@ -324,8 +316,9 @@ impl SubmitFrame<'_> {
         backend: &mut RenderBackend,
     ) -> Result<(), GraphExecuteError> {
         let requirements = self.prepared_views.graph_requirements();
+        let frame_global = *self.prepared_views.frame_global();
         let mut views = self.prepared_views.build_execution_views(self.view_draws);
-        backend.execute_multi_view_frame(gpu, scene, &mut views, requirements, true)
+        backend.execute_multi_view_frame(gpu, scene, &frame_global, &mut views, requirements, true)
     }
 }
 
@@ -758,22 +751,22 @@ mod tests {
     use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
     use crate::world_mesh::{PrefetchedWorldMeshViewDraws, WorldMeshDrawCollection};
 
-    use super::super::view_plan::{FrameViewPlan, FrameViewPlanTarget};
+    use super::super::view_plan::{FrameViewPlan, FrameViewPlanParams, FrameViewPlanTarget};
     use super::*;
 
     fn main_swapchain_plan() -> FrameViewPlan<'static> {
-        FrameViewPlan {
-            host_camera: HostCameraFrame::default(),
-            render_context: crate::shared::RenderingContext::UserView,
-            frame_time_seconds: 0.0,
-            draw_filter: None,
-            render_space_filter: None,
-            view_id: ViewId::Main,
-            viewport_px: (640, 480),
-            clear: FrameViewClear::default(),
-            profile: RenderPathProfile::desktop_main(),
-            target: FrameViewPlanTarget::MainSwapchain,
-        }
+        FrameViewPlan::new(
+            &HostCameraFrame::default(),
+            FrameViewPlanParams {
+                render_context: crate::shared::RenderingContext::UserView,
+                frame_time_seconds: 0.0,
+                view_id: ViewId::Main,
+                viewport_px: (640, 480),
+                clear: FrameViewClear::default(),
+                profile: RenderPathProfile::desktop_main(),
+                target: FrameViewPlanTarget::Swapchain,
+            },
+        )
     }
 
     #[test]

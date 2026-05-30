@@ -119,12 +119,11 @@ pub(crate) use pipeline_build_error::PipelineBuildError;
 pub(crate) use pipeline_kind::RasterPipelineKind;
 /// Pipeline family descriptors, per-property GPU layout, and raster kind flags.
 pub(crate) use raster_pipeline::MaterialPipelineDesc;
-pub(crate) use render_queue::{
-    UNITY_RENDER_QUEUE_ALPHA_TEST, UNITY_RENDER_QUEUE_TRANSPARENT,
-    UNITY_TRANSPARENT_RENDER_QUEUE_MIN,
-};
+pub(crate) use render_queue::{UNITY_RENDER_QUEUE_ALPHA_TEST, UNITY_TRANSPARENT_RENDER_QUEUE_MIN};
 #[cfg(test)]
-pub(crate) use render_queue::{UNITY_RENDER_QUEUE_GEOMETRY, UNITY_RENDER_QUEUE_OVERLAY};
+pub(crate) use render_queue::{
+    UNITY_RENDER_QUEUE_GEOMETRY, UNITY_RENDER_QUEUE_OVERLAY, UNITY_RENDER_QUEUE_TRANSPARENT,
+};
 pub(crate) use render_queue::{
     fallback_render_queue_for_material, material_render_queue_from_maps,
 };

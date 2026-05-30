@@ -51,6 +51,8 @@ pub struct ResoBootConfig {
     pub renderite_directory: PathBuf,
     /// Renderer executable path (`renderide-renderer.exe` on Windows, `Renderite.Renderer` elsewhere).
     pub renderite_executable: PathBuf,
+    /// Explicit Resonite installation directory supplied to the launcher.
+    pub resonite_dir: Option<PathBuf>,
 
     // --- IPC identity ---
     /// Random prefix for `{}.bootstrapper_in` / `{}.bootstrapper_out`.
@@ -71,6 +73,7 @@ impl ResoBootConfig {
     pub(crate) fn new(
         shared_memory_prefix: String,
         renderide_log_level: Option<LogLevel>,
+        resonite_dir: Option<PathBuf>,
     ) -> Result<Self, std::io::Error> {
         let current_directory = env::current_dir()?;
         let runtime_config = current_directory.join("Renderite.Host.runtimeconfig.json");
@@ -91,6 +94,7 @@ impl ResoBootConfig {
             runtime_config,
             renderite_directory,
             renderite_executable,
+            resonite_dir,
             shared_memory_prefix,
             is_wine,
             renderide_log_level,
@@ -138,9 +142,11 @@ mod tests {
 
     #[test]
     fn resonite_config_fields_populated() {
-        let cfg = ResoBootConfig::new("pref".to_string(), Some(LogLevel::Debug)).expect("config");
+        let cfg =
+            ResoBootConfig::new("pref".to_string(), Some(LogLevel::Debug), None).expect("config");
         assert_eq!(cfg.shared_memory_prefix, "pref");
         assert_eq!(cfg.renderide_log_level, Some(LogLevel::Debug));
+        assert!(cfg.resonite_dir.is_none());
         assert!(
             cfg.runtime_config
                 .file_name()

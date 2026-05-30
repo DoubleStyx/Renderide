@@ -7,6 +7,7 @@
 //! `logs/bootstrapper/*.log` rather than producing a silent "nothing happens" failure.
 
 use std::env;
+use std::path::PathBuf;
 
 use logger::LogLevel;
 
@@ -19,6 +20,8 @@ pub struct ParsedArgs {
     pub host_args: Vec<String>,
     /// Optional maximum log level for the bootstrapper and renderer.
     pub log_level: Option<LogLevel>,
+    /// Explicit Resonite install directory supplied to the launcher.
+    pub resonite_dir: Option<PathBuf>,
     /// Whether the launcher should restore the latest update backup and exit.
     pub rollback_update: bool,
 }
@@ -49,6 +52,7 @@ pub fn parse_args() -> ParsedArgs {
 pub fn parse_bootstrap_args_tokens(args: &[String]) -> ParsedArgs {
     let mut host_args = Vec::new();
     let mut log_level = None;
+    let mut resonite_dir = None;
     let mut rollback_update = false;
     let mut i = 0;
     while i < args.len() {
@@ -56,6 +60,15 @@ pub fn parse_bootstrap_args_tokens(args: &[String]) -> ParsedArgs {
         let normalized = normalize_flag_token(arg);
         if (normalized == "-log-level" || normalized == "l") && i + 1 < args.len() {
             log_level = LogLevel::parse(&args[i + 1]);
+            i += 2;
+            continue;
+        }
+        if matches!(
+            normalized.as_str(),
+            "-resonite-dir" | "resonite-dir" | "resonitedir"
+        ) && i + 1 < args.len()
+        {
+            resonite_dir = Some(PathBuf::from(&args[i + 1]));
             i += 2;
             continue;
         }
@@ -70,6 +83,7 @@ pub fn parse_bootstrap_args_tokens(args: &[String]) -> ParsedArgs {
     ParsedArgs {
         host_args,
         log_level,
+        resonite_dir,
         rollback_update,
     }
 }
@@ -237,6 +251,43 @@ mod tests {
         assert_eq!(parsed.host_args, vec!["-Invisible".to_string()]);
         assert_eq!(parsed.log_level, Some(LogLevel::Info));
         assert!(parsed.rollback_update);
+    }
+
+    #[test]
+    fn parse_bootstrap_args_tokens_consumes_resonite_dir_long_flag() {
+        let parsed = parse_bootstrap_args_tokens(&tokens(&[
+            "--resonite-dir",
+            "/games/Resonite",
+            "-Invisible",
+        ]));
+
+        assert_eq!(parsed.host_args, vec!["-Invisible".to_string()]);
+        assert_eq!(parsed.resonite_dir, Some(PathBuf::from("/games/Resonite")));
+    }
+
+    #[test]
+    fn parse_bootstrap_args_tokens_consumes_resonite_dir_resoboot_style_flag() {
+        let parsed =
+            parse_bootstrap_args_tokens(&tokens(&["-ResoniteDir", "C:/Games/Resonite", "-Data"]));
+
+        assert_eq!(parsed.host_args, vec!["-Data".to_string()]);
+        assert_eq!(
+            parsed.resonite_dir,
+            Some(PathBuf::from("C:/Games/Resonite"))
+        );
+    }
+
+    #[test]
+    fn parse_bootstrap_args_tokens_repeated_resonite_dir_last_wins() {
+        let parsed = parse_bootstrap_args_tokens(&tokens(&[
+            "--resonite-dir",
+            "/old",
+            "-ResoniteDir",
+            "/new",
+        ]));
+
+        assert!(parsed.host_args.is_empty());
+        assert_eq!(parsed.resonite_dir, Some(PathBuf::from("/new")));
     }
 
     #[test]

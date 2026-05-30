@@ -43,8 +43,8 @@ pub trait XrHostCameraSync {
 ///
 /// Split from the desktop inherent entry so the VR path does not need to encode mode selection
 /// with boolean flags. [`Self::submit_hmd_view`] renders the HMD stereo view plus any active
-/// secondary render-texture cameras in a single submit; [`Self::submit_secondary_only`] is used
-/// when HMD rendering did not start but secondary RTs should still render.
+/// secondary render-texture cameras in a single submit; [`Self::submit_vr_secondaries_only`] is
+/// used when HMD rendering did not start but VR-owned secondary RTs should still render.
 pub trait XrFrameRenderer: XrHostCameraSync {
     /// Records and submits the compiled render graph for the HMD stereo view plus all active
     /// secondary render-texture cameras. The HMD view replaces the main camera this tick.
@@ -54,7 +54,8 @@ pub trait XrFrameRenderer: XrHostCameraSync {
         hmd: ExternalFrameTargets<'_>,
     ) -> Result<(), GraphExecuteError>;
 
-    /// Records and submits only the active secondary render-texture cameras. Used when HMD
-    /// rendering did not start; the desktop mirror stays on its last frame.
-    fn submit_secondary_only(&mut self, gpu: &mut GpuContext) -> Result<(), GraphExecuteError>;
+    /// Records and submits only the active secondary render-texture cameras on the VR schedule.
+    /// Used when HMD rendering did not start; the desktop mirror stays on its last frame.
+    fn submit_vr_secondaries_only(&mut self, gpu: &mut GpuContext)
+    -> Result<(), GraphExecuteError>;
 }

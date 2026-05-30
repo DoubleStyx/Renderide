@@ -126,7 +126,7 @@ mod queue_loop_tests {
 
         let prefix = format!("cc{}", std::process::id());
         let mut queues = BootstrapQueues::open(&prefix).expect("open queues");
-        let config = ResoBootConfig::new(prefix, None).expect("config");
+        let config = ResoBootConfig::new(prefix, None, None).expect("config");
         let lifetime = ChildLifetimeGroup::new().expect("lifetime");
         let cancel = AtomicBool::new(true);
         let deadline = std::sync::Arc::new(Mutex::new(Instant::now()));
@@ -169,7 +169,7 @@ mod queue_loop_tests {
             "host should enqueue SHUTDOWN before queue_loop runs"
         );
 
-        let config = ResoBootConfig::new(prefix, None).expect("config");
+        let config = ResoBootConfig::new(prefix, None, None).expect("config");
         let lifetime = ChildLifetimeGroup::new().expect("lifetime");
         let cancel = AtomicBool::new(false);
         let deadline = std::sync::Arc::new(Mutex::new(Instant::now()));
@@ -219,7 +219,7 @@ mod queue_loop_tests {
         );
         assert!(host_publisher.try_enqueue(b"SHUTDOWN"), "enqueue shutdown");
 
-        let config = ResoBootConfig::new(prefix, None).expect("config");
+        let config = ResoBootConfig::new(prefix, None, None).expect("config");
         let lifetime = ChildLifetimeGroup::new().expect("lifetime");
         let cancel = AtomicBool::new(false);
         let deadline = std::sync::Arc::new(Mutex::new(Instant::now()));
@@ -272,7 +272,7 @@ mod queue_loop_tests {
         assert!(host_publisher.try_enqueue(b"GETTEXT"), "enqueue gettext");
         assert!(host_publisher.try_enqueue(b"SHUTDOWN"), "enqueue shutdown");
 
-        let config = ResoBootConfig::new(prefix, None).expect("config");
+        let config = ResoBootConfig::new(prefix, None, None).expect("config");
         let lifetime = ChildLifetimeGroup::new().expect("lifetime");
         let cancel = AtomicBool::new(false);
         let deadline = std::sync::Arc::new(Mutex::new(Instant::now()));

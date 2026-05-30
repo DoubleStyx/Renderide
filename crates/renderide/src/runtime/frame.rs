@@ -1,6 +1,6 @@
 //! Per-frame pipeline that turns host scene state into a render-graph submit.
 //!
-//! - [`render`] -- mode dispatch (desktop / VR / VR-secondaries-only) and MSAA prep.
+//! - [`render`] -- view-family dispatch (desktop, HMD, and secondary-only submissions) and MSAA prep.
 //! - [`schedule`] -- explicit CPU render schedule phases shared by main and offscreen graph submissions.
 //! - [`view_planning`] -- collects the HMD, secondary render-texture, and main swapchain views for one tick.
 //! - [`view_plan`] -- per-view CPU intent types (target, clear, viewport, host camera).

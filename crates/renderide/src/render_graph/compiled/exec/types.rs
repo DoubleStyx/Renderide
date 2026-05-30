@@ -7,7 +7,8 @@ use crate::camera::{HostCameraFrame, ViewId};
 use crate::diagnostics::PerViewHudOutputs;
 use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
 use crate::graph_inputs::{
-    FrameSystemsShared, FrameViewClear, GraphPassFrame, GraphPassFrameView, PerViewFramePlan,
+    FrameSystemsShared, FrameViewClear, GraphPassFrame, GraphPassFrameView, OffscreenWriteTarget,
+    PerViewFramePlan,
 };
 use crate::occlusion::gpu::HiZGpuState;
 use crate::scene::SceneCoordinator;
@@ -18,7 +19,7 @@ use super::super::super::context::GraphResolvedResources;
 use super::super::super::frame_upload_batch::{FrameUploadBatch, FrameUploadBatchStats};
 use super::super::super::history::HistoryRegistry;
 use super::super::super::{GraphAssetResources, GraphFrameResources};
-use super::super::{FrameView, ResolvedView, ViewPostProcessing};
+use super::super::{FrameGlobalView, FrameView, ResolvedView, ViewPostProcessing};
 
 /// Key for reusing transient pool allocations across [`FrameView`]s with identical surface layout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -119,8 +120,8 @@ pub(super) struct OwnedResolvedView {
     pub(super) viewport_px: (u32, u32),
     /// Whether the view targets multiview stereo attachments.
     pub(super) multiview_stereo: bool,
-    /// Optional offscreen render-texture asset id being written this pass.
-    pub(super) offscreen_write_render_texture_asset_id: Option<i32>,
+    /// Offscreen target currently being written by this view.
+    pub(super) offscreen_write_target: OffscreenWriteTarget,
     /// Stable occlusion slot for the view.
     pub(super) view_id: ViewId,
     /// Effective sample count for the view.
@@ -141,7 +142,7 @@ impl OwnedResolvedView {
             surface_format: self.surface_format,
             viewport_px: self.viewport_px,
             multiview_stereo: self.multiview_stereo,
-            offscreen_write_render_texture_asset_id: self.offscreen_write_render_texture_asset_id,
+            offscreen_write_target: self.offscreen_write_target,
             view_id: self.view_id,
             sample_count: self.sample_count,
             post_processing: self.post_processing,
@@ -226,8 +227,7 @@ impl PreparedPerViewFrameInput {
                 render_context,
                 frame_time_seconds,
                 multiview_stereo: resolved.multiview_stereo,
-                offscreen_write_render_texture_asset_id: resolved
-                    .offscreen_write_render_texture_asset_id,
+                offscreen_write_target: resolved.offscreen_write_target,
                 view_id: resolved.view_id,
                 hi_z_slot: Arc::clone(&self.hi_z_slot),
                 sample_count: resolved.sample_count,
@@ -365,6 +365,22 @@ pub(super) struct DrainedUploadCommand {
     pub(super) on_submitted_work_done: Option<Box<dyn FnOnce() + Send + 'static>>,
     pub(super) stats: FrameUploadBatchStats,
     pub(super) drain_ms: f64,
+}
+
+/// Inputs for recording frame-global passes into an existing encoder.
+pub(super) struct FrameGlobalPassRecordInputs<'a, 'view> {
+    /// Per-view targets in the input order; the first view anchors resource resolution.
+    pub(super) views: &'a [FrameView<'view>],
+    /// Primary-view metadata used for frame-global pass parameters.
+    pub(super) frame_global: &'a FrameGlobalView,
+    /// Shared transient resources keyed by the resolved view layout.
+    pub(super) transient_by_key: &'a mut HashMap<GraphResolveKey, GraphResolvedResources>,
+    /// Command encoder receiving frame-global work.
+    pub(super) encoder: &'a mut wgpu::CommandEncoder,
+    /// Deferred upload batch for scoped graph uploads.
+    pub(super) upload_batch: &'a FrameUploadBatch,
+    /// Optional profiler handle for pass GPU scopes.
+    pub(super) pass_profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
 }
 
 /// Inputs threaded from [`CompiledRenderGraph::execute_multi_view`] into

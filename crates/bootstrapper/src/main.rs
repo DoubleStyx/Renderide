@@ -5,10 +5,10 @@
 
 mod dialog;
 
-/// Parses CLI args, initializes the bootstrapper log file and panic hook, optionally prompts
-/// for desktop vs VR, then runs [`bootstrapper::run`].
+/// Parses CLI args, initializes the bootstrapper log file and panic hook, shows startup warnings,
+/// optionally prompts for desktop vs VR, then runs [`bootstrapper::run`].
 ///
-/// Logging is initialized **before** the desktop/VR dialog so that an `rfd` backend hang on
+/// Logging is initialized **before** the startup dialogs so that an `rfd` backend hang on
 /// headless or display-less Linux systems leaves an actionable line in
 /// `logs/bootstrapper/*.log` instead of producing a silent "nothing happens" failure.
 ///
@@ -24,6 +24,7 @@ mod dialog;
 fn main() {
     let parsed_args = bootstrapper::cli::parse_args();
     let log_level = parsed_args.log_level;
+    let resonite_dir = parsed_args.resonite_dir.clone();
     let log_timestamp = logger::log_filename_timestamp();
     let max_level = log_level.unwrap_or(logger::LogLevel::Trace);
 
@@ -61,6 +62,10 @@ fn main() {
         return;
     }
 
+    bootstrapper::photosensitivity_warning::run_startup_photosensitivity_warning(
+        dialog::prompt_photosensitivity_warning,
+    );
+
     let Some(host_args) =
         bootstrapper::cli::resolve_vr_choice(parsed_args.host_args, dialog::prompt_desktop_or_vr)
     else {
@@ -70,6 +75,7 @@ fn main() {
 
     let opts = bootstrapper::BootstrapOptions {
         host_args,
+        resonite_dir,
         log_level,
         log_timestamp,
     };

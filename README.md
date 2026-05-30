@@ -6,6 +6,10 @@ Also available as an [AUR package](https://aur.archlinux.org/packages/renderide-
 
 If you're interested in supporting my work, please consider donating on [Ko-Fi](https://ko-fi.com/DoubleStyx) or [GitHub Sponsors](https://github.com/sponsors/DoubleStyx).
 
+## PHOTOSENSITIVITY WARNING
+
+Renderide is experimental and may have visual bugs that are more severe or unexpected than Resonite's default Unity renderer, including flicker, flashing frames, incorrect brightness or contrast, broken post-processing, and rapidly changing patterns. These renderer artifacts, as well as user-created content, can trigger seizures or other symptoms in people with photosensitive epilepsy or related sensitivities. Stop using Renderide immediately and move away from the display if you feel dizzy, disoriented, nauseated, experience eye discomfort, or notice involuntary movement or vision changes.
+
 ## Feedback
 
 Please report crashes, bugs, missing features, performance problems, and other feedback through whichever channel fits best:
@@ -55,6 +59,44 @@ The launcher will start the Resonite host and connect Renderide automatically.
 - Logs are timestamped files under a selected logs root. Source builds normally resolve the active repository and write renderer logs to `logs/renderer/`. Installed release binaries fall back to the current user's platform log root: `$XDG_STATE_HOME/renderide/logs` or `~/.local/state/renderide/logs` on Linux, `~/Library/Logs/Renderide` on macOS, and `%LOCALAPPDATA%\Renderide\logs` on Windows. Set `RENDERIDE_LOGS_ROOT` to choose the root explicitly; component logs then live under `renderer/`, `bootstrapper/`, `host/`, `renderer-test/`, and `SharedTypeGenerator/`. The Renderer config HUD also shows the selected log folder and includes an "Open log folder" button.
 
 - You can add Steam-style launch arguments after the launcher to enable mods: `<path-to-renderide> -LoadAssembly Libraries/ResoniteModLoader.dll`
+
+### macOS
+
+Renderide runs the Resonite Host from the Windows depot and renders natively through Metal. The launcher accepts an explicit Resonite install path, so local builds and release zips should not need hand-written symlinks or `dev-fast` path edits.
+
+1. Install the Windows Resonite depot with SteamCMD:
+
+   ```bash
+   steamcmd +@sSteamCmdForcePlatformType windows \
+     +force_install_dir "$HOME/Games/ResoniteWindows" \
+     +login anonymous \
+     +app_update 2519830 validate \
+     +quit
+   ```
+
+   If anonymous access is unavailable, use the Steam login that owns Resonite.
+
+1. Install the .NET runtime requested by the Resonite Host so `dotnet` is available on `PATH`.
+
+1. Run the launcher with the Windows depot path:
+
+   ```bash
+   ./target/release/renderide --resonite-dir "$HOME/Games/ResoniteWindows"
+   ```
+
+   Release zips use the same argument from the extracted folder:
+
+   ```bash
+   ./renderide --resonite-dir "$HOME/Games/ResoniteWindows"
+   ```
+
+The macOS release zip contains `renderide`, `renderide-renderer`, `xr`, and the bundled OpenXR loader. If macOS quarantine blocks a downloaded zip, remove the quarantine attribute from the extracted Renderide folder:
+
+```bash
+xattr -dr com.apple.quarantine /path/to/renderide-folder
+```
+
+Leave `RENDERIDE_INTERPROCESS_DIR` unset unless every participating Renderide and Host process is configured to the same path. For host-limited framerates, Resonite's forced separation setting can improve throughput, but it is not required for startup.
 
 ## Design goals
 

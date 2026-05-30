@@ -9,6 +9,9 @@
 //! exe failed to load with `STATUS_ENTRYPOINT_NOT_FOUND` (0xc0000139) on Windows CI. Keeping the
 //! `rfd` reference in the bin keeps the lib (and its test exe) free of that import.
 
+use bootstrapper::photosensitivity_warning::{
+    PHOTOSENSITIVITY_WARNING_MESSAGE, PHOTOSENSITIVITY_WARNING_TITLE, PhotosensitivityWarningChoice,
+};
 use bootstrapper::updater::{UpdateNotice, UpdateNoticeLevel, UpdatePrompt, UpdatePromptChoice};
 
 /// Custom-button label for the VR choice; also returned verbatim by `rfd` as the
@@ -28,6 +31,10 @@ const VIEW_CHANGELOG_BUTTON_LABEL: &str = "View Changelog";
 const SKIP_ONCE_BUTTON_LABEL: &str = "Not Now";
 /// Custom-button label that persists a skip for the offered release tag.
 const SKIP_RELEASE_BUTTON_LABEL: &str = "Skip This Release";
+/// Custom-button label that closes the photosensitivity warning for this launch.
+const PHOTOSENSITIVITY_CLOSE_BUTTON_LABEL: &str = "Close";
+/// Custom-button label that suppresses the photosensitivity warning for future launches.
+const PHOTOSENSITIVITY_NEVER_SHOW_BUTTON_LABEL: &str = "Never Show Again";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum UpdateDialogAction {
@@ -35,6 +42,88 @@ enum UpdateDialogAction {
     ViewChangelog,
     SkipOnce,
     SkipRelease,
+}
+
+/// Shows the photosensitivity warning and returns whether the user asked to suppress it.
+pub fn prompt_photosensitivity_warning() -> PhotosensitivityWarningChoice {
+    logger::info!("Showing photosensitivity warning dialog.");
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(choice) = show_photosensitivity_warning_with_zenity() {
+            log_photosensitivity_warning_choice(choice);
+            return choice;
+        }
+    }
+
+    let result = rfd::MessageDialog::new()
+        .set_title(PHOTOSENSITIVITY_WARNING_TITLE)
+        .set_description(PHOTOSENSITIVITY_WARNING_MESSAGE)
+        .set_level(rfd::MessageLevel::Warning)
+        .set_buttons(rfd::MessageButtons::OkCancelCustom(
+            PHOTOSENSITIVITY_CLOSE_BUTTON_LABEL.into(),
+            PHOTOSENSITIVITY_NEVER_SHOW_BUTTON_LABEL.into(),
+        ))
+        .show();
+    let choice = photosensitivity_choice_from_dialog_result(result);
+    log_photosensitivity_warning_choice(choice);
+    choice
+}
+
+fn photosensitivity_choice_from_dialog_result(
+    result: rfd::MessageDialogResult,
+) -> PhotosensitivityWarningChoice {
+    match result {
+        rfd::MessageDialogResult::Custom(label)
+            if label == PHOTOSENSITIVITY_NEVER_SHOW_BUTTON_LABEL =>
+        {
+            PhotosensitivityWarningChoice::NeverShowAgain
+        }
+        other => {
+            logger::debug!("Photosensitivity warning dismissed or closed: {other:?}.");
+            PhotosensitivityWarningChoice::Close
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn show_photosensitivity_warning_with_zenity() -> Option<PhotosensitivityWarningChoice> {
+    let output = match std::process::Command::new("zenity")
+        .arg("--no-markup")
+        .arg("--warning")
+        .arg("--title")
+        .arg(PHOTOSENSITIVITY_WARNING_TITLE)
+        .arg("--text")
+        .arg(PHOTOSENSITIVITY_WARNING_MESSAGE)
+        .arg("--ok-label")
+        .arg(PHOTOSENSITIVITY_CLOSE_BUTTON_LABEL)
+        .arg("--extra-button")
+        .arg(PHOTOSENSITIVITY_NEVER_SHOW_BUTTON_LABEL)
+        .output()
+    {
+        Ok(output) => output,
+        Err(e) => {
+            logger::warn!("Could not show photosensitivity warning via zenity: {e}");
+            return None;
+        }
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if stdout.trim() == PHOTOSENSITIVITY_NEVER_SHOW_BUTTON_LABEL {
+        Some(PhotosensitivityWarningChoice::NeverShowAgain)
+    } else {
+        Some(PhotosensitivityWarningChoice::Close)
+    }
+}
+
+fn log_photosensitivity_warning_choice(choice: PhotosensitivityWarningChoice) {
+    match choice {
+        PhotosensitivityWarningChoice::Close => {
+            logger::info!("Photosensitivity warning closed for this launch.");
+        }
+        PhotosensitivityWarningChoice::NeverShowAgain => {
+            logger::info!("Photosensitivity warning returned: never show again.");
+        }
+    }
 }
 
 /// Shows the desktop vs VR selection dialog and returns the choice: `Some(true)` for VR,
@@ -283,6 +372,32 @@ mod tests {
         assert_eq!(
             action_from_dialog_result(rfd::MessageDialogResult::Cancel),
             UpdateDialogAction::SkipOnce
+        );
+    }
+
+    #[test]
+    fn photosensitivity_dialog_result_maps_only_never_show_again_to_suppression() {
+        assert_eq!(
+            photosensitivity_choice_from_dialog_result(rfd::MessageDialogResult::Custom(
+                PHOTOSENSITIVITY_NEVER_SHOW_BUTTON_LABEL.to_owned()
+            )),
+            PhotosensitivityWarningChoice::NeverShowAgain
+        );
+        assert_eq!(
+            photosensitivity_choice_from_dialog_result(rfd::MessageDialogResult::Custom(
+                PHOTOSENSITIVITY_CLOSE_BUTTON_LABEL.to_owned()
+            )),
+            PhotosensitivityWarningChoice::Close
+        );
+        assert_eq!(
+            photosensitivity_choice_from_dialog_result(rfd::MessageDialogResult::Cancel),
+            PhotosensitivityWarningChoice::Close
+        );
+        assert_eq!(
+            photosensitivity_choice_from_dialog_result(rfd::MessageDialogResult::Custom(
+                "Unexpected".to_owned()
+            )),
+            PhotosensitivityWarningChoice::Close
         );
     }
 

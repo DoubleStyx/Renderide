@@ -8,8 +8,8 @@
 //! ```
 //!
 //! - **Unix**: file-backed read/write mapping under the configured directory. The portable default
-//!   is [`default_memory_dir`]: `/dev/shm/.cloudtoid/...` on Linux (tmpfs), and a
-//!   `.cloudtoid/interprocess/mmf` folder under [`std::env::temp_dir`] on macOS and other non-Linux Unix.
+//!   is [`default_memory_dir`]: `/dev/shm/.cloudtoid/...` on Linux (tmpfs), and
+//!   [`std::env::temp_dir`] on macOS and other non-Linux Unix.
 //! - **Windows**: named file mapping `CT_IP_{queue}` plus `Global\CT.IP.{queue}` semaphore; the default
 //!   [`QueueOptions::path`] uses the same temp-dir subfolder as other platforms for consistency (the mapping does not read from disk).
 //!

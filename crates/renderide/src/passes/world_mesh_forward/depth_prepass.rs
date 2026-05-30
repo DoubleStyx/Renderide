@@ -24,6 +24,7 @@ use crate::render_graph::resources::{
 };
 use crate::world_mesh::{MeshPassKind, WorldMeshDrawItem};
 
+use super::attachments::declare_forward_depth_attachment;
 use super::encode::{DepthPrepassDrawBatch, draw_depth_prepass_subset};
 use super::{WorldMeshForwardPipelineState, WorldMeshForwardPlanSlot};
 
@@ -266,11 +267,12 @@ impl RasterPass for WorldMeshForwardDepthPrepass {
                 load: wgpu::LoadOp::Clear(crate::gpu::MAIN_FORWARD_DEPTH_CLEAR),
                 store: wgpu::StoreOp::Store,
             };
-            if let Some(msaa_depth) = self.resources.msaa_depth {
-                r.frame_sampled_depth(self.resources.depth, msaa_depth, depth_ops, None);
-            } else {
-                r.depth(self.resources.depth, depth_ops, None);
-            }
+            declare_forward_depth_attachment(
+                &mut r,
+                self.resources.depth,
+                self.resources.msaa_depth,
+                depth_ops,
+            );
         }
         b.import_buffer(
             self.resources.per_draw_slab,

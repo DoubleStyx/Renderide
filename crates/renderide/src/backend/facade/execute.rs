@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 use crate::diagnostics::crash_context;
 use crate::gpu::GpuContext;
 use crate::render_graph::{
-    FrameView, FrameViewTarget, GraphExecuteError, ViewFamilyGraphRequirements,
+    FrameGlobalView, FrameView, FrameViewTarget, GraphExecuteError, ViewFamilyGraphRequirements,
 };
 use crate::scene::SceneCoordinator;
 
@@ -37,6 +37,7 @@ impl RenderBackend {
         &mut self,
         gpu: &mut GpuContext,
         scene: &SceneCoordinator,
+        frame_global: &FrameGlobalView,
         views: &mut Vec<FrameView<'_>>,
         requirements: ViewFamilyGraphRequirements,
         skip_hi_z_begin_readback: bool,
@@ -74,7 +75,13 @@ impl RenderBackend {
         };
         let res = {
             let mut backend_access = self.graph_access();
-            graph.execute_multi_view(gpu, scene, &mut backend_access, views.as_mut_slice())
+            graph.execute_multi_view(
+                gpu,
+                scene,
+                &mut backend_access,
+                frame_global,
+                views.as_mut_slice(),
+            )
         };
         self.graph_state.frame_graph_cache.restore_graph(graph);
         if let Err(error) = &res {

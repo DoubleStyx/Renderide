@@ -10,6 +10,7 @@ use super::super::texture_resolve::{
     texture_property_ids_for_binding,
 };
 use crate::gpu_pools::SamplerState;
+use crate::graph_inputs::OffscreenWriteTarget;
 use crate::materials::host_data::{MaterialPropertyLookupIds, MaterialPropertyStore};
 
 /// Number of shards across which the embedded `@group(1)` bind, uniform, and sampler caches are
@@ -123,8 +124,8 @@ pub(crate) struct MaterialBindCacheKey {
     /// Optional renderer-level `MaterialPropertyBlock` id for uniform-backed layouts.
     pub(super) renderer_property_block_id: Option<i32>,
     pub(super) texture_bind_signature: u64,
-    /// Distinguishes main vs secondary-RT passes when self-sampling is masked.
-    pub(super) offscreen_write_render_texture_asset_id: Option<i32>,
+    /// Distinguishes direct, untracked offscreen, and host render-texture write targets.
+    pub(super) offscreen_write_target: OffscreenWriteTarget,
     /// Bumps whenever the shared material uniform arena reallocates to a new GPU buffer.
     pub(super) uniform_arena_generation: u64,
 }
