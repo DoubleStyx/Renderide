@@ -22,6 +22,7 @@ use crate::render_graph::resources::{
     BufferAccess, ImportedBufferHandle, ImportedTextureHandle, StorageAccess, TextureHandle,
 };
 
+use super::attachments::declare_normal_color_depth_attachments;
 use super::raster_recording::{record_world_mesh_forward_normal_graph_raster, stencil_load_ops};
 use super::{WorldMeshForwardPipelineState, WorldMeshForwardPlanSlot};
 
@@ -279,24 +280,7 @@ impl RasterPass for WorldMeshForwardNormalPass {
                 load: wgpu::LoadOp::Load,
                 store: wgpu::StoreOp::Store,
             };
-            if let (Some(normals_msaa), Some(msaa_depth)) =
-                (self.resources.normals_msaa, self.resources.msaa_depth)
-            {
-                r.frame_sampled_color(
-                    self.resources.normals,
-                    normals_msaa,
-                    color_ops,
-                    Some(self.resources.normals),
-                );
-                r.frame_sampled_depth(self.resources.depth, msaa_depth, depth_ops, None);
-            } else {
-                r.color(
-                    self.resources.normals,
-                    color_ops,
-                    Option::<TextureHandle>::None,
-                );
-                r.depth(self.resources.depth, depth_ops, None);
-            }
+            declare_normal_color_depth_attachments(&mut r, self.resources, color_ops, depth_ops);
         }
         b.import_buffer(
             self.resources.per_draw_slab,

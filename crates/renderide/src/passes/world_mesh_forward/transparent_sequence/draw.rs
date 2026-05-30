@@ -6,9 +6,9 @@ use crate::materials::SceneColorSnapshotMode;
 use crate::render_graph::context::EncoderPassCtx;
 use crate::render_graph::error::RenderPassError;
 use crate::render_graph::gpu_cache::stereo_mask_or_template;
-use crate::render_graph::resources::TextureResourceHandle;
 use crate::world_mesh::DrawGroup;
 
+use super::super::attachments::forward_draw_attachment_targets;
 use super::super::raster_recording::{
     frame_bind_group_for_view, record_world_mesh_forward_groups_graph_raster_with_frame_bind_group,
     stencil_load_ops,
@@ -30,30 +30,25 @@ pub(super) fn draw_tail_groups(
 
     let frame = &*ctx.pass_frame;
     let sample_count = frame.view.sample_count.max(1);
-    let (color_handle, depth_handle) = if sample_count > 1 {
-        let Some(msaa) = resources.msaa else {
-            return Err(RenderPassError::FrameParamsRequired {
-                pass: "WorldMeshForwardTransparentSequence missing MSAA resources".to_string(),
-            });
-        };
-        (
-            TextureResourceHandle::Transient(msaa.scene_color_hdr),
-            TextureResourceHandle::Transient(msaa.depth),
-        )
-    } else {
-        (
-            TextureResourceHandle::Transient(resources.scene_color_hdr),
-            TextureResourceHandle::Imported(resources.depth),
-        )
-    };
-    let Some(color_view) = ctx.graph_resources.texture_view(color_handle) else {
+    let Some(targets) = forward_draw_attachment_targets(resources, sample_count) else {
         return Err(RenderPassError::FrameParamsRequired {
-            pass: format!("WorldMeshForwardTransparentSequence missing color {color_handle:?}"),
+            pass: "WorldMeshForwardTransparentSequence missing MSAA resources".to_string(),
         });
     };
-    let Some(depth_view) = ctx.graph_resources.texture_view(depth_handle) else {
+    let Some(color_view) = ctx.graph_resources.texture_view(targets.color) else {
         return Err(RenderPassError::FrameParamsRequired {
-            pass: format!("WorldMeshForwardTransparentSequence missing depth {depth_handle:?}"),
+            pass: format!(
+                "WorldMeshForwardTransparentSequence missing color {:?}",
+                targets.color
+            ),
+        });
+    };
+    let Some(depth_view) = ctx.graph_resources.texture_view(targets.depth) else {
+        return Err(RenderPassError::FrameParamsRequired {
+            pass: format!(
+                "WorldMeshForwardTransparentSequence missing depth {:?}",
+                targets.depth
+            ),
         });
     };
 

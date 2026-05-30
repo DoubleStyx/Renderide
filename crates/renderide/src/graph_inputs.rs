@@ -112,7 +112,7 @@ blackboard_slot! {
     /// Blackboard slot for per-view MSAA attachment views resolved from transient graph resources.
     ///
     /// Populated by the executor (before per-view passes run) from
-    /// [`crate::render_graph::compiled::helpers::populate_forward_msaa_from_graph_resources`] output.
+    /// `resolve_forward_msaa_views_from_graph_resources` output.
     /// Replaces the six `msaa_*` fields that previously lived on [`GraphPassFrame`].
     pub MsaaViewsSlot => MsaaViews,
 }

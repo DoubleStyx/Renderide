@@ -25,10 +25,22 @@ fn color_resolve_resources(
         })
 }
 
-/// Resolves the multisampled scene color before a grab snapshot copies the single-sample target.
-pub(super) fn resolve_for_grab_snapshot(
+fn record_color_resolve_stats(ctx: &mut EncoderPassCtx<'_, '_, '_>, resolved: bool) {
+    if let Some(stats) = ctx
+        .blackboard
+        .get_mut::<crate::render_graph::blackboard::GraphCommandStatsSlot>()
+    {
+        stats.record_resolve_result(resolved);
+        if resolved {
+            stats.record_opened_render_pass();
+        }
+    }
+}
+
+fn encode_color_resolve(
     ctx: &mut EncoderPassCtx<'_, '_, '_>,
     resources: WorldMeshForwardGraphResources,
+    label: &'static str,
 ) -> Result<bool, RenderPassError> {
     let Some(resolve_resources) = color_resolve_resources(resources) else {
         return Ok(false);
@@ -42,18 +54,22 @@ pub(super) fn resolve_for_grab_snapshot(
             uploads: ctx.uploads,
             resources: resolve_resources,
             profiler: ctx.profiler,
-            label: "WorldMeshForwardTransparentSequencePreGrabResolve",
+            label,
         })?;
-    if let Some(stats) = ctx
-        .blackboard
-        .get_mut::<crate::render_graph::blackboard::GraphCommandStatsSlot>()
-    {
-        stats.record_resolve_result(resolved);
-        if resolved {
-            stats.record_opened_render_pass();
-        }
-    }
+    record_color_resolve_stats(ctx, resolved);
     Ok(resolved)
+}
+
+/// Resolves the multisampled scene color before a grab snapshot copies the single-sample target.
+pub(super) fn resolve_for_grab_snapshot(
+    ctx: &mut EncoderPassCtx<'_, '_, '_>,
+    resources: WorldMeshForwardGraphResources,
+) -> Result<bool, RenderPassError> {
+    encode_color_resolve(
+        ctx,
+        resources,
+        "WorldMeshForwardTransparentSequencePreGrabResolve",
+    )
 }
 
 /// Copies the default per-object scene-color snapshot for a grab-pass group.
@@ -182,29 +198,11 @@ fn resolve_final_scene_color(
     ctx: &mut EncoderPassCtx<'_, '_, '_>,
     resources: WorldMeshForwardGraphResources,
 ) -> Result<(), RenderPassError> {
-    let Some(resolve_resources) = color_resolve_resources(resources) else {
-        return Ok(());
-    };
-    let resolved =
-        encode_world_mesh_forward_msaa_color_resolve(WorldMeshForwardColorResolveEncodeContext {
-            device: ctx.device,
-            graph_resources: ctx.graph_resources,
-            encoder: ctx.encoder,
-            frame: ctx.pass_frame,
-            uploads: ctx.uploads,
-            resources: resolve_resources,
-            profiler: ctx.profiler,
-            label: "WorldMeshForwardTransparentSequenceFinalResolve",
-        })?;
-    if let Some(stats) = ctx
-        .blackboard
-        .get_mut::<crate::render_graph::blackboard::GraphCommandStatsSlot>()
-    {
-        stats.record_resolve_result(resolved);
-        if resolved {
-            stats.record_opened_render_pass();
-        }
-    }
+    encode_color_resolve(
+        ctx,
+        resources,
+        "WorldMeshForwardTransparentSequenceFinalResolve",
+    )?;
     Ok(())
 }
 

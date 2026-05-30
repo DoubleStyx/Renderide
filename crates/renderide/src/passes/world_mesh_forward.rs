@@ -33,6 +33,7 @@
 //! `view_transform` world-to-camera to avoid mixing stage with the host rig. Overlays keep
 //! `view` for orthographic / UI alignment. Matrix composition lives in [`vp`].
 
+mod attachments;
 mod camera;
 mod color_resolve;
 mod color_snapshot;
@@ -78,6 +79,7 @@ use crate::render_graph::resources::{
 };
 use crate::world_mesh::{InstancePlan, WorldMeshPhase};
 
+use attachments::declare_forward_color_depth_attachments;
 use depth_resolve::encode_msaa_depth_resolve_after_clear_only;
 use depth_snapshot::{
     EncodeCtx as DepthSnapshotEncodeCtx, encode_world_mesh_forward_depth_snapshot,
@@ -261,10 +263,10 @@ fn declare_msaa_depth_resolve_accesses(
     b: &mut PassBuilder<'_>,
     resources: WorldMeshForwardGraphResources,
 ) {
+    b.read_optional_blackboard::<MsaaViewsSlot>();
     let Some(msaa) = resources.msaa else {
         return;
     };
-    b.read_optional_blackboard::<MsaaViewsSlot>();
     b.read_texture(
         msaa.depth,
         TextureAccess::Sampled {
@@ -380,6 +382,8 @@ impl RasterPass for WorldMeshForwardOpaquePass {
         b.write_blackboard::<WorldMeshForwardPlanSlot>();
         {
             let mut r = b.raster();
+            // No `resolve_target` here: when MSAA is active, the multisampled buffer is preserved
+            // and resolved by the transparent sequence using the Karis HDR-aware bracket.
             let color_ops = wgpu::Operations {
                 load: wgpu::LoadOp::Clear(crate::present::SWAPCHAIN_CLEAR_COLOR),
                 store: wgpu::StoreOp::Store,
@@ -388,22 +392,7 @@ impl RasterPass for WorldMeshForwardOpaquePass {
                 load: wgpu::LoadOp::Load,
                 store: wgpu::StoreOp::Store,
             };
-            if let Some(msaa) = self.resources.msaa {
-                r.frame_sampled_color(
-                    self.resources.scene_color_hdr,
-                    msaa.scene_color_hdr,
-                    color_ops,
-                    Option::<ImportedTextureHandle>::None,
-                );
-                r.frame_sampled_depth(self.resources.depth, msaa.depth, depth_ops, None);
-            } else {
-                r.color(
-                    self.resources.scene_color_hdr,
-                    color_ops,
-                    Option::<ImportedTextureHandle>::None,
-                );
-                r.depth(self.resources.depth, depth_ops, None);
-            }
+            declare_forward_color_depth_attachments(&mut r, self.resources, color_ops, depth_ops);
         };
         declare_forward_draw_reads(b, self.resources);
         Ok(())
@@ -475,39 +464,8 @@ impl EncoderPass for WorldMeshDepthSnapshotPass {
     fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
         b.encoder();
         b.read_optional_blackboard::<WorldMeshForwardPlanSlot>();
-        b.read_optional_blackboard::<MsaaViewsSlot>();
         b.write_blackboard::<WorldMeshForwardPlanSlot>();
-        if let Some(msaa) = self.resources.msaa {
-            b.read_texture(
-                msaa.depth,
-                TextureAccess::Sampled {
-                    stages: wgpu::ShaderStages::COMPUTE,
-                },
-            );
-            b.write_texture(
-                msaa.depth_r32,
-                TextureAccess::Storage {
-                    stages: wgpu::ShaderStages::COMPUTE,
-                    access: StorageAccess::WriteOnly,
-                },
-            );
-            b.read_texture(
-                msaa.depth_r32,
-                TextureAccess::Sampled {
-                    stages: wgpu::ShaderStages::FRAGMENT,
-                },
-            );
-            b.import_texture(
-                self.resources.depth,
-                TextureAccess::DepthAttachment {
-                    depth: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(crate::gpu::MAIN_FORWARD_DEPTH_CLEAR),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    stencil: None,
-                },
-            );
-        }
+        declare_msaa_depth_resolve_accesses(b, self.resources);
         b.import_texture(self.resources.depth, TextureAccess::CopySrc);
         Ok(())
     }
@@ -570,11 +528,6 @@ impl RasterPass for WorldMeshForwardIntersectPass {
         b.write_blackboard::<WorldMeshForwardPlanSlot>();
         {
             let mut r = b.raster();
-            // No `resolve_target` here: when MSAA is active, the multisampled buffer is preserved
-            // and resolved by the transparent sequence using the Karis HDR-aware
-            // bracket. wgpu's automatic linear average underestimates very bright samples at
-            // contrast edges, producing visible aliasing where bright/dark samples meet (e.g.
-            // specular sparks against dark surfaces) -- the custom resolve fixes that.
             let color_ops = wgpu::Operations {
                 load: wgpu::LoadOp::Load,
                 store: wgpu::StoreOp::Store,
@@ -583,22 +536,7 @@ impl RasterPass for WorldMeshForwardIntersectPass {
                 load: wgpu::LoadOp::Load,
                 store: wgpu::StoreOp::Store,
             };
-            if let Some(msaa) = self.resources.msaa {
-                r.frame_sampled_color(
-                    self.resources.scene_color_hdr,
-                    msaa.scene_color_hdr,
-                    color_ops,
-                    Option::<ImportedTextureHandle>::None,
-                );
-                r.frame_sampled_depth(self.resources.depth, msaa.depth, depth_ops, None);
-            } else {
-                r.color(
-                    self.resources.scene_color_hdr,
-                    color_ops,
-                    Option::<ImportedTextureHandle>::None,
-                );
-                r.depth(self.resources.depth, depth_ops, None);
-            }
+            declare_forward_color_depth_attachments(&mut r, self.resources, color_ops, depth_ops);
         };
         declare_forward_draw_reads(b, self.resources);
         Ok(())
