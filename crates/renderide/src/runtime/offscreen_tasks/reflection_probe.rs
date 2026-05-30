@@ -44,7 +44,7 @@ use face::{
 
 use super::super::RendererRuntime;
 use super::super::frame::schedule::RenderScheduleKind;
-use super::super::frame::view_plan::{FrameViewPlan, FrameViewPlanTarget};
+use super::super::frame::view_plan::{FrameViewPlan, FrameViewPlanParams, FrameViewPlanTarget};
 use super::super::state::tick::QueuedReflectionProbeRenderTask;
 
 const RGBA16F_BYTES_PER_PIXEL: usize = 8;
@@ -485,27 +485,33 @@ fn plan_reflection_probe_task(
     let plans = ProbeCubeFace::ALL
         .iter()
         .copied()
-        .map(|face| FrameViewPlan {
-            host_camera: host_camera_frame_for_probe_face(
+        .map(|face| {
+            let host_camera = host_camera_frame_for_probe_face(
                 base_camera,
                 probe.state,
                 extent.tuple(),
                 probe_position,
                 face,
-            ),
-            render_context: RenderingContext::RenderToAsset,
-            frame_time_seconds,
-            draw_filter: Some(filter.clone()),
-            render_space_filter: Some(queued.render_space_id),
-            view_id: ViewId::reflection_probe_render_task(
-                queued.render_space_id,
-                task.render_task_id,
-                face.view_id_face_index(),
-            ),
-            viewport_px: extent.tuple(),
-            clear: clear_from_reflection_probe_state(probe.state),
-            profile: RenderPathProfile::reflection_probe(),
-            target: FrameViewPlanTarget::SecondaryRt(targets.to_offscreen_handles(face)),
+            );
+            let mut plan = FrameViewPlan::new(
+                &host_camera,
+                FrameViewPlanParams {
+                    render_context: RenderingContext::RenderToAsset,
+                    frame_time_seconds,
+                    view_id: ViewId::reflection_probe_render_task(
+                        queued.render_space_id,
+                        task.render_task_id,
+                        face.view_id_face_index(),
+                    ),
+                    viewport_px: extent.tuple(),
+                    clear: clear_from_reflection_probe_state(probe.state),
+                    profile: RenderPathProfile::reflection_probe(),
+                    target: FrameViewPlanTarget::offscreen(targets.to_offscreen_handles(face)),
+                },
+            );
+            plan.draw_filter = Some(filter.clone());
+            plan.render_space_filter = Some(queued.render_space_id);
+            plan
         })
         .collect();
     Ok(PlannedReflectionProbeTask {

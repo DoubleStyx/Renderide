@@ -1,5 +1,6 @@
 //! Material draw-packet resolution entry point for backend world-mesh frame planning.
 
+use crate::graph_inputs::OffscreenWriteTarget;
 use crate::materials::MaterialPipelineDesc;
 use crate::materials::ShaderPermutation;
 use crate::passes::WorldMeshForwardEncodeRefs;
@@ -19,7 +20,7 @@ pub(super) fn precompute_material_resolve_batches(
     draws: &[WorldMeshDrawItem],
     shader_perm: ShaderPermutation,
     pass_desc: &MaterialPipelineDesc,
-    offscreen_write_render_texture_asset_id: Option<i32>,
+    offscreen_write_target: OffscreenWriteTarget,
     boundaries_scratch: &mut Vec<MaterialBatchBoundary>,
 ) -> Vec<MaterialBatchPacket> {
     MaterialDrawResolver::new(
@@ -27,7 +28,7 @@ pub(super) fn precompute_material_resolve_batches(
         uploads,
         *pass_desc,
         shader_perm,
-        offscreen_write_render_texture_asset_id,
+        offscreen_write_target,
     )
     .resolve_batches(draws, boundaries_scratch)
 }

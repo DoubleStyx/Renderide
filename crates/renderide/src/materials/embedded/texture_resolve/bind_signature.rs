@@ -10,6 +10,7 @@ use std::hash::{Hash, Hasher};
 use ahash::AHasher;
 
 use crate::gpu_pools::SamplerState;
+use crate::graph_inputs::OffscreenWriteTarget;
 use crate::materials::ReflectedRasterLayout;
 use crate::materials::host_data::{MaterialPropertyLookupIds, MaterialPropertyStore};
 
@@ -31,8 +32,8 @@ pub(crate) fn hash_sampler_state(state: &SamplerState, h: &mut impl Hasher) {
 
 /// Fingerprint for bind cache invalidation when texture views or residency change.
 ///
-/// When `offscreen_write_render_texture_asset_id` is [`Some`], that render-texture id is treated as
-/// non-resident (offscreen color target; self-sampling is masked).
+/// When `offscreen_write_target` names a host render texture, that render-texture id is treated
+/// as non-resident (offscreen color target; self-sampling is masked).
 pub(crate) fn texture_bind_signature(
     reflected: &ReflectedRasterLayout,
     ids: &StemEmbeddedPropertyIds,
@@ -40,10 +41,10 @@ pub(crate) fn texture_bind_signature(
     lookup: MaterialPropertyLookupIds,
     pools: &EmbeddedTexturePools<'_>,
     primary_texture_2d: i32,
-    offscreen_write_render_texture_asset_id: Option<i32>,
+    offscreen_write_target: OffscreenWriteTarget,
 ) -> u64 {
     let mut h = AHasher::default();
-    offscreen_write_render_texture_asset_id.hash(&mut h);
+    offscreen_write_target.hash(&mut h);
     for entry in &reflected.material_entries {
         if !matches!(entry.ty, wgpu::BindingType::Texture { .. }) {
             continue;
@@ -68,7 +69,7 @@ pub(crate) fn texture_bind_signature(
             name.as_str(),
             binding,
             pools,
-            offscreen_write_render_texture_asset_id,
+            offscreen_write_target,
         );
     }
     h.finish()
@@ -85,7 +86,7 @@ pub(crate) fn hash_texture_entry_signature_contribution(
     host_name: &str,
     binding: ResolvedTextureBinding,
     pools: &EmbeddedTexturePools<'_>,
-    offscreen_write_render_texture_asset_id: Option<i32>,
+    offscreen_write_target: OffscreenWriteTarget,
 ) {
     entry_binding.hash(hasher);
     host_name.hash(hasher);
@@ -126,7 +127,7 @@ pub(crate) fn hash_texture_entry_signature_contribution(
             }
         }
         ResolvedTextureBinding::RenderTexture { asset_id } => {
-            if offscreen_write_render_texture_asset_id == Some(asset_id) {
+            if offscreen_write_target.host_render_texture_asset_id() == Some(asset_id) {
                 false.hash(hasher);
             } else if let Some(t) = pools.render_texture.get(asset_id) {
                 t.is_sampleable().hash(hasher);

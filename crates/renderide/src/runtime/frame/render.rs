@@ -13,7 +13,7 @@ use super::schedule::{
     CpuRenderPhase, CpuRenderSchedule, RenderScheduleKind, execute_prepared_views,
     prepare_assets_for_schedule,
 };
-use super::view_plan::{FrameViewPlan, FrameViewPlanTarget, HeadlessOffscreenSnapshot};
+use super::view_plan::{FrameViewPlan, FrameViewPlanTarget, OffscreenTargetHandles};
 
 /// Which combination of views the compiled render graph records for one tick.
 ///
@@ -62,9 +62,8 @@ impl RendererRuntime {
     /// Callers should not invoke this directly; use [`Self::render_desktop_frame`] for desktop or
     /// the [`crate::xr::XrFrameRenderer`] trait methods for VR paths.
     ///
-    /// In headless mode (`gpu.is_headless()`) the main `Swapchain` view is transparently
-    /// substituted for an `OffscreenRt` view backed by [`GpuContext::primary_offscreen_targets`]
-    /// so the render graph stack stays oblivious to output mode.
+    /// In headless mode (`gpu.is_headless()`) the main view is planned directly as an offscreen
+    /// target backed by [`GpuContext::primary_offscreen_targets`].
     pub(crate) fn render_frame(
         &mut self,
         gpu: &mut GpuContext,
@@ -120,24 +119,30 @@ impl RendererRuntime {
         // before the render graph dispatches, so passing a stale/zero value produces a degenerate
         // frustum and randomly culls scene objects.
         let swapchain_extent_px = gpu.surface_extent_px();
+        let main_offscreen_target = if includes_main && gpu.is_headless() {
+            OffscreenTargetHandles::from_headless_primary(gpu)
+        } else {
+            None
+        };
+        let main_extent_px = main_offscreen_target
+            .as_ref()
+            .map_or(swapchain_extent_px, |target| target.extent_px);
         let main_profile = if includes_main && gpu.is_headless() {
             crate::render_graph::RenderPathProfile::headless_main()
         } else {
             crate::render_graph::RenderPathProfile::desktop_main()
         };
-        let prepared = self.collect_prepared_views(gpu, mode, swapchain_extent_px, main_profile);
+        let prepared = self.collect_prepared_views(
+            gpu,
+            mode,
+            main_extent_px,
+            main_profile,
+            main_offscreen_target,
+        );
         trace_prepared_views(prepared.plans());
         self.backend
             .sync_active_views(prepared.plans().iter().map(|view| view.view_id));
-        let headless_snapshot = {
-            profiling::scope!("render::headless_snapshot");
-            if includes_main && gpu.is_headless() {
-                HeadlessOffscreenSnapshot::from_gpu(gpu)
-            } else {
-                None
-            }
-        };
-        PreparedViews::new(prepared, headless_snapshot)
+        PreparedViews::new(prepared)
     }
 }
 
@@ -155,22 +160,22 @@ fn trace_prepared_views(prepared: &[FrameViewPlan<'_>]) {
         return;
     }
     let mut hmd = 0usize;
-    let mut secondary = 0usize;
+    let mut offscreen = 0usize;
     let mut main = 0usize;
     let mut details = String::new();
     for (idx, view) in prepared.iter().enumerate() {
         let label = match &view.target {
-            FrameViewPlanTarget::Hmd(_) => {
+            FrameViewPlanTarget::ExternalMultiview(_) => {
                 hmd += 1;
                 "hmd"
             }
-            FrameViewPlanTarget::SecondaryRt(_) => {
-                secondary += 1;
-                "secondary_rt"
+            FrameViewPlanTarget::Offscreen(_) => {
+                offscreen += 1;
+                "offscreen"
             }
-            FrameViewPlanTarget::MainSwapchain => {
+            FrameViewPlanTarget::Swapchain => {
                 main += 1;
-                "main_swapchain"
+                "swapchain"
             }
         };
         if idx > 0 {
@@ -189,10 +194,10 @@ fn trace_prepared_views(prepared: &[FrameViewPlan<'_>]) {
         );
     }
     logger::trace!(
-        "render prepared views: count={} hmd={} secondary_rt={} main_swapchain={} [{}]",
+        "render prepared views: count={} hmd={} offscreen={} swapchain={} [{}]",
         prepared.len(),
         hmd,
-        secondary,
+        offscreen,
         main,
         details,
     );

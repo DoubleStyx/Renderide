@@ -13,6 +13,7 @@ use crate::cpu_parallelism::{
     record_parallel_admission,
 };
 use crate::diagnostics::log_throttle::LogThrottle;
+use crate::graph_inputs::OffscreenWriteTarget;
 use crate::materials::ShaderPermutation;
 use crate::materials::embedded::{EmbeddedMaterialBindError, MaterialBindCacheKey};
 use crate::materials::{
@@ -222,8 +223,8 @@ pub(crate) struct MaterialDrawResolver<'a> {
     pass_desc: MaterialPipelineDesc,
     /// Shader permutation for this view.
     shader_perm: ShaderPermutation,
-    /// Offscreen render texture being written by this view, if any.
-    offscreen_write_render_texture_asset_id: Option<i32>,
+    /// Offscreen target being written by this view, if any.
+    offscreen_write_target: OffscreenWriteTarget,
 }
 
 impl<'a> MaterialDrawResolver<'a> {
@@ -233,7 +234,7 @@ impl<'a> MaterialDrawResolver<'a> {
         uploads: GraphUploadSink<'a>,
         pass_desc: MaterialPipelineDesc,
         shader_perm: ShaderPermutation,
-        offscreen_write_render_texture_asset_id: Option<i32>,
+        offscreen_write_target: OffscreenWriteTarget,
     ) -> Self {
         Self {
             registry: encode.materials.material_registry(),
@@ -243,7 +244,7 @@ impl<'a> MaterialDrawResolver<'a> {
             uploads,
             pass_desc,
             shader_perm,
-            offscreen_write_render_texture_asset_id,
+            offscreen_write_target,
         }
     }
 
@@ -301,7 +302,7 @@ impl<'a> MaterialDrawResolver<'a> {
         let item = &draws[first];
         let mut pipeline_key =
             PipelineVariantKey::for_draw_item(item, self.pass_desc, self.shader_perm);
-        if self.offscreen_write_render_texture_asset_id.is_some() {
+        if self.offscreen_write_target.is_offscreen() {
             // View-projection matrices for offscreen-RT views are pre-multiplied by a clip-space
             // Y flip so the resulting render-texture lands in Unity (V=0 bottom) orientation.
             // That mirrors triangle winding, so the pipeline needs the inverted `front_face` to
@@ -454,7 +455,7 @@ impl<'a> MaterialDrawResolver<'a> {
             self.store,
             &self.pools,
             item.lookup_ids,
-            self.offscreen_write_render_texture_asset_id,
+            self.offscreen_write_target,
         )?;
         Ok(MaterialGroup1Binding::Embedded {
             bind_key,

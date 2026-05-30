@@ -61,8 +61,8 @@ struct SkyboxViewUniforms {
     world_to_view_right: [f32; 16],
     /// Background color for `CameraClearMode::Color`.
     clear_color: [f32; 4],
-    /// `.x`: ndc Y sign passed to the fragment shader (1.0 normal, -1.0 for offscreen-RT views).
-    /// Offscreen-RT views pre-multiply a clip-space Y flip into world rendering so the
+    /// `.x`: ndc Y sign passed to the fragment shader (1.0 normal, -1.0 for offscreen views).
+    /// Offscreen views pre-multiply a clip-space Y flip into world rendering so the
     /// render-texture lands V=0 bottom. Skybox shaders reconstruct or project camera rays
     /// explicitly, so they apply this sign while deriving screen-space Y. `.y` is the left/mono
     /// orthographic flag, `.z` is the right-eye orthographic flag, and `.w` is reserved padding.
@@ -73,7 +73,7 @@ impl SkyboxViewUniforms {
     /// Builds view bases and clear color for the current view.
     fn from_frame(frame: &GraphPassFrame<'_>) -> Self {
         let (left, right) = skybox_world_to_view_pair(frame);
-        let ndc_y_sign = if frame.view.offscreen_write_render_texture_asset_id.is_some() {
+        let ndc_y_sign = if frame.view.offscreen_write_target.is_offscreen() {
             -1.0
         } else {
             1.0
@@ -195,7 +195,7 @@ impl SkyboxRenderer {
                 store,
                 &pools,
                 lookup,
-                frame.view.offscreen_write_render_texture_asset_id,
+                frame.view.offscreen_write_target,
             )
             .ok()
             .map(|(_, group)| group)?;

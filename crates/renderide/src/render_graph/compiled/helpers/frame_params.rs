@@ -93,8 +93,7 @@ pub(in crate::render_graph::compiled) fn frame_render_params_from_shared<'a>(
             render_context,
             frame_time_seconds,
             multiview_stereo: resolved.multiview_stereo,
-            offscreen_write_render_texture_asset_id: resolved
-                .offscreen_write_render_texture_asset_id,
+            offscreen_write_target: resolved.offscreen_write_target,
             view_id: resolved.view_id,
             hi_z_slot,
             sample_count: resolved.sample_count,

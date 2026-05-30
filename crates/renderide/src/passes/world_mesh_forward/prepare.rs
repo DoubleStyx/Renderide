@@ -5,7 +5,7 @@ use hashbrown::HashMap;
 use crate::camera::HostCameraFrame;
 use crate::diagnostics::{PerViewHudConfig, PerViewHudOutputs};
 use crate::gpu::GpuLimits;
-use crate::graph_inputs::{GraphPassFrame, PerViewFramePlan};
+use crate::graph_inputs::{GraphPassFrame, OffscreenWriteTarget, PerViewFramePlan};
 use crate::materials::MaterialSystem;
 use crate::materials::ShaderPermutation;
 use crate::materials::embedded::MaterialBindCacheKey;
@@ -136,7 +136,7 @@ pub(super) fn maybe_set_world_mesh_draw_stats(
     draws: &[WorldMeshDrawItem],
     supports_base_instance: bool,
     shader_perm: ShaderPermutation,
-    offscreen_write_render_texture_asset_id: Option<i32>,
+    offscreen_write_target: OffscreenWriteTarget,
 ) -> PerViewHudOutputs {
     let mut outputs = PerViewHudOutputs::default();
     if debug_hud.main_enabled {
@@ -156,7 +156,7 @@ pub(super) fn maybe_set_world_mesh_draw_stats(
         outputs.world_mesh_draw_state_rows = Some(state_rows_from_sorted(draws));
     }
 
-    if debug_hud.textures_enabled && offscreen_write_render_texture_asset_id.is_none() {
+    if debug_hud.textures_enabled && !offscreen_write_target.is_offscreen() {
         super::current_view_textures::current_view_texture2d_asset_ids_from_draws(
             materials,
             draws,
@@ -336,16 +336,16 @@ fn pack_forward_draws_for_view(
             &draws,
         )
     };
-    let offscreen_write_rt = frame.view.offscreen_write_render_texture_asset_id;
+    let offscreen_write_target = frame.view.offscreen_write_target;
     let (world_proj, overlay_proj) =
-        apply_offscreen_projection_flip(world_proj, overlay_proj, offscreen_write_rt);
+        apply_offscreen_projection_flip(world_proj, overlay_proj, offscreen_write_target);
     let precomputed_batches = precompute_material_batches(
         frame,
         encode_refs,
         uploads,
         &draws,
         pipeline,
-        offscreen_write_rt,
+        offscreen_write_target,
     );
     let mut plan = {
         profiling::scope!("world_mesh::prepare_frame::build_instance_plan");
@@ -388,7 +388,7 @@ fn precompute_material_batches(
     uploads: GraphUploadSink<'_>,
     draws: &[WorldMeshDrawItem],
     pipeline: &WorldMeshForwardPipelineState,
-    offscreen_write_rt: Option<i32>,
+    offscreen_write_target: OffscreenWriteTarget,
 ) -> Vec<MaterialBatchPacket> {
     // Resolve per-batch pipelines and @group(1) bind groups in parallel.
     // Results live on `PreparedWorldMeshForwardFrame`; both raster sub-passes consume them.
@@ -401,7 +401,7 @@ fn precompute_material_batches(
             draws,
             pipeline.shader_perm,
             &pipeline.pass_desc,
-            offscreen_write_rt,
+            offscreen_write_target,
             boundaries_scratch,
         );
     };
@@ -496,14 +496,14 @@ fn assign_group_packet_indices(groups: &mut [DrawGroup], packets: &[MaterialBatc
 fn apply_offscreen_projection_flip(
     world_proj: glam::Mat4,
     overlay_proj: Option<glam::Mat4>,
-    offscreen_write_rt: Option<i32>,
+    offscreen_write_target: OffscreenWriteTarget,
 ) -> (glam::Mat4, Option<glam::Mat4>) {
     // Render-texture color attachments must land in Unity (V=0 bottom) orientation so material
     // shaders sample them through the same `apply_st(uv, ST)` convention as host-uploaded textures.
     // Pre-multiply a clip-space Y flip into the projection matrices and flip pipeline winding at
     // the batch resolver below so back-face culling stays correct. The skybox carries the same
     // sign through `SkyboxViewUniforms.clip_y_sign` so its fullscreen pass agrees on orientation.
-    if offscreen_write_rt.is_some() {
+    if offscreen_write_target.is_offscreen() {
         let y_flip = glam::Mat4::from_diagonal(glam::Vec4::new(1.0, -1.0, 1.0, 1.0));
         (y_flip * world_proj, overlay_proj.map(|p| y_flip * p))
     } else {
@@ -525,7 +525,7 @@ fn world_mesh_hud_outputs(
         &collection.items,
         supports_base_instance,
         shader_perm,
-        frame.view.offscreen_write_render_texture_asset_id,
+        frame.view.offscreen_write_target,
     );
     let has_outputs = hud_outputs.world_mesh_draw_stats.is_some()
         || hud_outputs.world_mesh_draw_state_rows.is_some()

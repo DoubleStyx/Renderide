@@ -11,6 +11,7 @@ use super::resources::{
 use super::schedule::{FrameSchedule, ScheduleHudSnapshot};
 use super::validation::{GraphValidationReport, RenderGraphValidationMode};
 use crate::camera::ViewId;
+use crate::graph_inputs::OffscreenWriteTarget;
 
 pub(super) mod cache;
 mod exec;
@@ -129,7 +130,7 @@ pub(super) struct ResolvedView<'a> {
     pub(super) surface_format: wgpu::TextureFormat,
     pub(super) viewport_px: (u32, u32),
     pub(super) multiview_stereo: bool,
-    pub(super) offscreen_write_render_texture_asset_id: Option<i32>,
+    pub(super) offscreen_write_target: OffscreenWriteTarget,
     pub(super) view_id: ViewId,
     pub(super) sample_count: u32,
     pub(super) post_processing: ViewPostProcessing,

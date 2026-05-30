@@ -17,6 +17,7 @@ use super::super::texture_resolve::{
 use super::cache::EmbeddedSamplerCacheKey;
 use super::uniform::MaterialUniformCacheKey;
 use crate::embedded_shaders::EmbeddedTextureDefaultKind;
+use crate::graph_inputs::OffscreenWriteTarget;
 use crate::materials::host_data::{MaterialPropertyLookupIds, MaterialPropertyStore};
 
 /// Texture views, samplers, and the matching bind signature captured from one pool read.
@@ -53,7 +54,7 @@ impl EmbeddedMaterialBindResources {
         store: &MaterialPropertyStore,
         pools: &EmbeddedTexturePools<'_>,
         lookup: MaterialPropertyLookupIds,
-        offscreen_write_render_texture_asset_id: Option<i32>,
+        offscreen_write_target: OffscreenWriteTarget,
     ) -> Result<EmbeddedBindInputResolution, EmbeddedMaterialBindError> {
         profiling::scope!("materials::embedded_resolve_bind_inputs");
         let layout = self.stem_layout(stem)?;
@@ -68,7 +69,7 @@ impl EmbeddedMaterialBindResources {
             lookup,
             pools,
             texture_2d_asset_id,
-            offscreen_write_render_texture_asset_id,
+            offscreen_write_target,
         );
 
         let uniform_key = MaterialUniformCacheKey {
@@ -102,13 +103,13 @@ impl EmbeddedMaterialBindResources {
         pools: &EmbeddedTexturePools<'_>,
         store: &MaterialPropertyStore,
         lookup: MaterialPropertyLookupIds,
-        offscreen_write_render_texture_asset_id: Option<i32>,
+        offscreen_write_target: OffscreenWriteTarget,
     ) -> Result<EmbeddedGroup1Snapshot, EmbeddedMaterialBindError> {
         profiling::scope!("materials::embedded_snapshot_textures_samplers");
         let mut views: Vec<Arc<wgpu::TextureView>> = Vec::new();
         let mut samplers: Vec<Arc<wgpu::Sampler>> = Vec::new();
         let mut hasher = AHasher::default();
-        offscreen_write_render_texture_asset_id.hash(&mut hasher);
+        offscreen_write_target.hash(&mut hasher);
         for entry in &layout.reflected.material_entries {
             let b = entry.binding;
             match entry.ty {
@@ -144,13 +145,13 @@ impl EmbeddedMaterialBindResources {
                         host_name,
                         resolved,
                         pools,
-                        offscreen_write_render_texture_asset_id,
+                        offscreen_write_target,
                     );
                     let tex_view = Self::resolve_texture_view(
                         pools,
                         view_dimension,
                         resolved,
-                        offscreen_write_render_texture_asset_id,
+                        offscreen_write_target,
                     )
                     .unwrap_or_else(|| {
                         self.fallback_texture_view(layout, b, host_name, view_dimension, resolved)
@@ -181,11 +182,7 @@ impl EmbeddedMaterialBindResources {
                         store,
                         lookup,
                     );
-                    let sampler = self.resolve_sampler(
-                        pools,
-                        resolved,
-                        offscreen_write_render_texture_asset_id,
-                    );
+                    let sampler = self.resolve_sampler(pools, resolved, offscreen_write_target);
                     samplers.push(sampler);
                 }
                 _ => {
@@ -285,7 +282,7 @@ impl EmbeddedMaterialBindResources {
         pools: &EmbeddedTexturePools<'_>,
         view_dimension: wgpu::TextureViewDimension,
         binding: ResolvedTextureBinding,
-        offscreen_write_render_texture_asset_id: Option<i32>,
+        offscreen_write_target: OffscreenWriteTarget,
     ) -> Option<Arc<wgpu::TextureView>> {
         match (view_dimension, binding) {
             (_, ResolvedTextureBinding::None) => None,
@@ -326,7 +323,7 @@ impl EmbeddedMaterialBindResources {
                 if asset_id < 0 {
                     return None;
                 }
-                if offscreen_write_render_texture_asset_id == Some(asset_id) {
+                if offscreen_write_target.host_render_texture_asset_id() == Some(asset_id) {
                     return None;
                 }
                 pools
@@ -349,7 +346,7 @@ impl EmbeddedMaterialBindResources {
         &self,
         pools: &EmbeddedTexturePools<'_>,
         binding: ResolvedTextureBinding,
-        offscreen_write_render_texture_asset_id: Option<i32>,
+        offscreen_write_target: OffscreenWriteTarget,
     ) -> Arc<wgpu::Sampler> {
         let sampled: Option<Arc<wgpu::Sampler>> = match binding {
             ResolvedTextureBinding::None => None,
@@ -412,7 +409,9 @@ impl EmbeddedMaterialBindResources {
                 }
             }
             ResolvedTextureBinding::RenderTexture { asset_id } => {
-                if asset_id < 0 || offscreen_write_render_texture_asset_id == Some(asset_id) {
+                if asset_id < 0
+                    || offscreen_write_target.host_render_texture_asset_id() == Some(asset_id)
+                {
                     None
                 } else {
                     pools.render_texture.get(asset_id).map(|tex| {
