@@ -40,6 +40,7 @@ pub fn init_wgpu_openxr(
     let OpenxrInstanceBundle {
         xr_instance,
         profile_gates,
+        composition_layer_depth_enabled,
     } = create_openxr_instance(xr_entry)?;
 
     let openxr_debug_messenger = OpenxrDebugUtilsMessenger::try_create(&xr_instance);
@@ -112,5 +113,6 @@ pub fn init_wgpu_openxr(
         xr_session,
         xr_system_id,
         openxr_input,
+        composition_layer_depth_enabled,
     })
 }

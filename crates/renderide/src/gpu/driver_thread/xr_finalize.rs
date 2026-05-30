@@ -12,6 +12,8 @@
 //! Errors observed on the driver thread are stored in a shared slot and surfaced to the
 //! main thread on the next finalize wait so existing recovery paths react one tick later.
 
+use std::ffi::c_void;
+use std::ptr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
@@ -163,10 +165,51 @@ pub struct XrProjectionFinalize {
     pub views: [xr::View; 2],
     /// Per-eye image rectangle (matches the swapchain extent).
     pub rect: xr::Rect2Di,
+    /// Optional composition-layer depth payload matching the projection views.
+    pub depth: Option<XrProjectionDepthFinalize>,
     /// Atomic mirror of `XrSessionState::frame_open`; cleared after `xrEndFrame`.
     pub frame_open: Arc<AtomicBool>,
     /// Shared shutdown flag used to lower expected compositor-stall log severity.
     pub shutdown_requested: Arc<AtomicBool>,
+}
+
+/// Per-frame depth payload attached to a stereo projection layer when supported by OpenXR.
+pub struct XrProjectionDepthFinalize {
+    /// Depth swapchain whose acquired image must be released before `xrEndFrame`.
+    pub swapchain: Arc<Mutex<xr::Swapchain<xr::Vulkan>>>,
+    /// Per-frame wgpu wrapper for the acquired OpenXR depth image.
+    pub imported_depth_texture: Option<wgpu::Texture>,
+    /// Depth swapchain image index acquired for this frame.
+    pub image_index: u32,
+    /// Per-eye depth rectangle matching the color projection rectangle.
+    pub rect: xr::Rect2Di,
+    /// Reverse-Z depth metadata chained to each projection view.
+    pub depth_info: XrCompositionDepthInfo,
+}
+
+/// Depth range metadata passed to `XrCompositionLayerDepthInfoKHR`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct XrCompositionDepthInfo {
+    /// Minimum normalized depth value written to the submitted depth image.
+    pub min_depth: f32,
+    /// Maximum normalized depth value written to the submitted depth image.
+    pub max_depth: f32,
+    /// Positive distance represented by `min_depth`.
+    pub near_z: f32,
+    /// Positive distance represented by `max_depth`.
+    pub far_z: f32,
+}
+
+impl XrCompositionDepthInfo {
+    /// Builds OpenXR depth metadata for Renderide's reverse-Z depth convention.
+    pub fn from_clip_planes(near_clip: f32, far_clip: f32) -> Self {
+        Self {
+            min_depth: 0.0,
+            max_depth: 1.0,
+            near_z: far_clip,
+            far_z: near_clip,
+        }
+    }
 }
 
 /// Convenience for callers that need to consume a pending finalize on shutdown or before
@@ -248,10 +291,25 @@ fn run_projection_finalize(
 ) -> Result<(), xr::sys::Result> {
     set_projection_crash_context(&payload, submit_context);
     drop(payload.imported_color_texture.take());
+    if let Some(depth) = payload.depth.as_mut() {
+        drop(depth.imported_depth_texture.take());
+    }
     record_release_image_started(&payload, flight_recorder);
     let release_res = release_image_with_watchdog(gate, &payload, submit_context, flight_recorder);
     record_release_image_result(&payload, flight_recorder, release_res);
     release_res?;
+    if let Some(depth) = payload.depth.as_ref() {
+        record_release_depth_image_started(&payload, depth, flight_recorder);
+        let release_depth_res = release_depth_image_with_watchdog(
+            gate,
+            &payload,
+            depth,
+            submit_context,
+            flight_recorder,
+        );
+        record_release_depth_image_result(&payload, depth, flight_recorder, release_depth_res);
+        release_depth_res?;
+    }
     record_end_frame_projection_started(&payload, flight_recorder);
     let res = end_frame_projection(gate, &payload, submit_context, Arc::clone(flight_recorder));
     record_end_frame_projection_result(&payload, flight_recorder, res);
@@ -335,6 +393,63 @@ fn release_image_with_watchdog(
     let release_res = release_swapchain_image_under_gate(gate, &payload.swapchain);
     release_watchdog.disarm();
     release_res
+}
+
+/// Records the start of a projection depth swapchain release.
+fn record_release_depth_image_started(
+    payload: &XrProjectionFinalize,
+    depth: &XrProjectionDepthFinalize,
+    flight_recorder: &GpuFlightRecorder,
+) {
+    flight_recorder.record_openxr_call_started(
+        GpuFlightOpenXrCall::ReleaseImage,
+        Some(depth.image_index),
+        Some(payload.predicted_display_time.as_nanos()),
+    );
+}
+
+/// Releases a projection depth swapchain image with a timeout hook.
+fn release_depth_image_with_watchdog(
+    gate: &GpuQueueAccessGate,
+    payload: &XrProjectionFinalize,
+    depth: &XrProjectionDepthFinalize,
+    submit_context: XrFinalizeSubmitContext,
+    flight_recorder: &Arc<GpuFlightRecorder>,
+) -> Result<(), xr::sys::Result> {
+    let release_timeout_context =
+        XrFinalizeTimeoutContext::projection_depth(payload, depth, submit_context);
+    let release_timeout_recorder = Arc::clone(flight_recorder);
+    let release_watchdog = BlockingCallWatchdog::arm_shutdown_aware_with_timeout_hook(
+        END_FRAME_WATCHDOG_TIMEOUT,
+        "xr::release_depth_image",
+        Arc::clone(&payload.shutdown_requested),
+        move || {
+            record_xr_finalize_timeout(
+                release_timeout_recorder,
+                GpuFlightOpenXrCall::ReleaseImage,
+                "openxr-release-depth-image-stall",
+                release_timeout_context,
+            );
+        },
+    );
+    let release_res = release_swapchain_image_under_gate(gate, &depth.swapchain);
+    release_watchdog.disarm();
+    release_res
+}
+
+/// Records the result of a projection depth swapchain release.
+fn record_release_depth_image_result(
+    payload: &XrProjectionFinalize,
+    depth: &XrProjectionDepthFinalize,
+    flight_recorder: &GpuFlightRecorder,
+    release_res: Result<(), xr::sys::Result>,
+) {
+    flight_recorder.record_openxr_call_result(
+        GpuFlightOpenXrCall::ReleaseImage,
+        flight_result(release_res),
+        Some(depth.image_index),
+        Some(payload.predicted_display_time.as_nanos()),
+    );
 }
 
 /// Records the result of a projection swapchain release.
@@ -452,26 +567,19 @@ fn end_frame_projection(
     let res = {
         let _gate = gate.lock();
         let swapchain_guard = payload.swapchain.lock();
-        let projection_views = [
-            CompositionLayerProjectionView::new()
-                .pose(pose0)
-                .fov(v0.fov)
-                .sub_image(
-                    SwapchainSubImage::new()
-                        .swapchain(&swapchain_guard)
-                        .image_array_index(0)
-                        .image_rect(payload.rect),
-                ),
-            CompositionLayerProjectionView::new()
-                .pose(pose1)
-                .fov(v1.fov)
-                .sub_image(
-                    SwapchainSubImage::new()
-                        .swapchain(&swapchain_guard)
-                        .image_array_index(1)
-                        .image_rect(payload.rect),
-                ),
-        ];
+        let depth_guard = payload.depth.as_ref().map(|depth| depth.swapchain.lock());
+        let depth_infos = depth_guard.as_ref().and_then(|guard| {
+            payload
+                .depth
+                .as_ref()
+                .map(|depth| build_depth_infos(depth, guard))
+        });
+        let projection_views = build_projection_views(
+            payload,
+            &swapchain_guard,
+            [pose0, pose1],
+            depth_infos.as_ref(),
+        );
         let layer = CompositionLayerProjection::new()
             .space(payload.stage.as_ref())
             .views(&projection_views);
@@ -484,6 +592,90 @@ fn end_frame_projection(
     };
     wd.disarm();
     res
+}
+
+fn build_projection_views<'a>(
+    payload: &XrProjectionFinalize,
+    color_swapchain: &'a xr::Swapchain<xr::Vulkan>,
+    poses: [xr::Posef; 2],
+    depth_infos: Option<&'a [xr::sys::CompositionLayerDepthInfoKHR; 2]>,
+) -> [CompositionLayerProjectionView<'a, xr::Vulkan>; 2] {
+    [
+        build_projection_view(
+            color_swapchain,
+            payload.rect,
+            0,
+            poses[0],
+            payload.views[0].fov,
+            depth_infos.map(|infos| &infos[0]),
+        ),
+        build_projection_view(
+            color_swapchain,
+            payload.rect,
+            1,
+            poses[1],
+            payload.views[1].fov,
+            depth_infos.map(|infos| &infos[1]),
+        ),
+    ]
+}
+
+fn build_projection_view<'a>(
+    color_swapchain: &'a xr::Swapchain<xr::Vulkan>,
+    rect: xr::Rect2Di,
+    layer: u32,
+    pose: xr::Posef,
+    fov: xr::Fovf,
+    depth_info: Option<&'a xr::sys::CompositionLayerDepthInfoKHR>,
+) -> CompositionLayerProjectionView<'a, xr::Vulkan> {
+    let next = depth_info.map_or(ptr::null(), |info| ptr::from_ref(info).cast::<c_void>());
+    let sub_image = SwapchainSubImage::new()
+        .swapchain(color_swapchain)
+        .image_array_index(layer)
+        .image_rect(rect)
+        .into_raw();
+    let raw = xr::sys::CompositionLayerProjectionView {
+        ty: xr::sys::CompositionLayerProjectionView::TYPE,
+        next,
+        pose,
+        fov,
+        sub_image,
+    };
+    // SAFETY: `raw.sub_image.swapchain` references `color_swapchain`, which is locked until
+    // `xrEndFrame` returns, and `raw.next` either is null or points at an element of
+    // `depth_infos`, which also lives until `xrEndFrame` consumes the projection layer.
+    unsafe { CompositionLayerProjectionView::from_raw(raw) }
+}
+
+fn build_depth_infos(
+    depth: &XrProjectionDepthFinalize,
+    depth_swapchain: &xr::Swapchain<xr::Vulkan>,
+) -> [xr::sys::CompositionLayerDepthInfoKHR; 2] {
+    [
+        build_depth_info(depth, depth_swapchain, 0),
+        build_depth_info(depth, depth_swapchain, 1),
+    ]
+}
+
+fn build_depth_info(
+    depth: &XrProjectionDepthFinalize,
+    depth_swapchain: &xr::Swapchain<xr::Vulkan>,
+    layer: u32,
+) -> xr::sys::CompositionLayerDepthInfoKHR {
+    let sub_image = SwapchainSubImage::new()
+        .swapchain(depth_swapchain)
+        .image_array_index(layer)
+        .image_rect(depth.rect)
+        .into_raw();
+    xr::sys::CompositionLayerDepthInfoKHR {
+        ty: xr::sys::CompositionLayerDepthInfoKHR::TYPE,
+        next: ptr::null(),
+        sub_image,
+        min_depth: depth.depth_info.min_depth,
+        max_depth: depth.depth_info.max_depth,
+        near_z: depth.depth_info.near_z,
+        far_z: depth.depth_info.far_z,
+    }
 }
 
 /// Calls `xrEndFrame` with no composition layers under the queue access gate.
@@ -547,6 +739,25 @@ impl XrFinalizeTimeoutContext {
         Self {
             kind: "projection",
             image_index: Some(payload.image_index),
+            frame_seq: submit_context.frame_seq,
+            command_buffers: submit_context.command_buffers,
+            extent: width.zip(height),
+            predicted_display_time_nanos: Some(payload.predicted_display_time.as_nanos()),
+        }
+    }
+
+    /// Builds timeout context for stereo projection depth release.
+    fn projection_depth(
+        payload: &XrProjectionFinalize,
+        depth: &XrProjectionDepthFinalize,
+        submit_context: XrFinalizeSubmitContext,
+    ) -> Self {
+        let extent = depth.rect.extent;
+        let width = u32::try_from(extent.width).ok();
+        let height = u32::try_from(extent.height).ok();
+        Self {
+            kind: "projection-depth",
+            image_index: Some(depth.image_index),
             frame_seq: submit_context.frame_seq,
             command_buffers: submit_context.command_buffers,
             extent: width.zip(height),
@@ -668,5 +879,15 @@ mod tests {
 
         assert_send::<XrFinalizeWork>();
         assert_send::<XrProjectionFinalize>();
+    }
+
+    #[test]
+    fn composition_depth_info_matches_reverse_z_clip_planes() {
+        let info = XrCompositionDepthInfo::from_clip_planes(0.05, 500.0);
+
+        assert_eq!(info.min_depth, 0.0);
+        assert_eq!(info.max_depth, 1.0);
+        assert_eq!(info.near_z, 500.0);
+        assert_eq!(info.far_z, 0.05);
     }
 }

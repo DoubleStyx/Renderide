@@ -73,6 +73,7 @@ pub(super) fn load_xr_entry() -> Result<xr::Entry, xr::LoadError> {
 pub(super) struct OpenxrInstanceBundle {
     pub(super) xr_instance: xr::Instance,
     pub(super) profile_gates: ProfileExtensionGates,
+    pub(super) composition_layer_depth_enabled: bool,
 }
 
 /// Loads extension flags, validates `XR_KHR_vulkan_enable2`, and creates the OpenXR [`xr::Instance`].
@@ -125,6 +126,7 @@ pub(super) fn create_openxr_instance(
     Ok(OpenxrInstanceBundle {
         xr_instance,
         profile_gates,
+        composition_layer_depth_enabled: enabled_extensions.khr_composition_layer_depth,
     })
 }
 

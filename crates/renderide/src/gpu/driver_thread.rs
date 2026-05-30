@@ -46,8 +46,9 @@ pub use submit_batch::{SubmitBatch, SubmitWait};
 pub use submit_counters::SubmitToken;
 pub(crate) use watchdog::BlockingCallWatchdog;
 pub use xr_finalize::{
-    XrFinalizeErrorSlot, XrFinalizeKind, XrFinalizeReceiver, XrFinalizeSignal, XrFinalizeWork,
-    XrProjectionFinalize, wait_for_finalize,
+    XrCompositionDepthInfo, XrFinalizeErrorSlot, XrFinalizeKind, XrFinalizeReceiver,
+    XrFinalizeSignal, XrFinalizeWork, XrProjectionDepthFinalize, XrProjectionFinalize,
+    wait_for_finalize,
 };
 
 use error::DriverErrorState;

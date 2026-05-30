@@ -117,6 +117,7 @@ pub(super) struct WgpuHalOpenXrAssembly {
     pub(super) xr_session: XrSessionState,
     pub(super) xr_system_id: xr::SystemId,
     pub(super) openxr_input: Option<OpenxrInput>,
+    pub(super) composition_layer_depth_enabled: bool,
 }
 
 /// Wraps Ash device and wgpu-hal adapter in [`wgpu::Instance`] / [`wgpu::Device`] / [`XrWgpuHandles`].
@@ -160,6 +161,7 @@ pub(super) fn wgpu_from_hal_openxr_chain(
         xr_session: assembly.xr_session,
         xr_system_id: assembly.xr_system_id,
         openxr_input: assembly.openxr_input,
+        composition_layer_depth_enabled: assembly.composition_layer_depth_enabled,
     })
 }
 

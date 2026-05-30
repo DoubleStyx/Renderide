@@ -26,6 +26,18 @@ pub const XR_COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm
 /// Vulkan format passed to OpenXR (`VK_FORMAT_R8G8B8A8_SRGB`).
 pub const XR_VK_FORMAT: vk::Format = vk::Format::R8G8B8A8_SRGB;
 
+/// Preferred OpenXR depth swapchain formats, in selection order.
+const XR_DEPTH_FORMAT_PREFERENCES: [XrDepthSwapchainFormat; 2] = [
+    XrDepthSwapchainFormat {
+        vk_format: vk::Format::D32_SFLOAT,
+        wgpu_format: wgpu::TextureFormat::Depth32Float,
+    },
+    XrDepthSwapchainFormat {
+        vk_format: vk::Format::D16_UNORM,
+        wgpu_format: wgpu::TextureFormat::Depth16Unorm,
+    },
+];
+
 /// Swapchain creation or wgpu import failure.
 #[derive(Debug, Error)]
 pub enum XrSwapchainError {
@@ -35,6 +47,9 @@ pub enum XrSwapchainError {
     /// No view configuration from the runtime.
     #[error("no PRIMARY_STEREO view configuration")]
     NoViewConfiguration,
+    /// Runtime did not expose any depth swapchain format Renderide can import.
+    #[error("no supported OpenXR depth swapchain format")]
+    NoSupportedDepthFormat,
     /// Device is not Vulkan / hal interop unavailable.
     #[error("wgpu device is not Vulkan or as_hal failed")]
     NotVulkanHal,
@@ -61,6 +76,26 @@ pub struct XrStereoSwapchain {
     pub handle: Arc<Mutex<xr::Swapchain<xr::Vulkan>>>,
 }
 
+/// OpenXR depth swapchain format paired with its wgpu attachment format.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct XrDepthSwapchainFormat {
+    /// Vulkan format requested from OpenXR.
+    pub vk_format: vk::Format,
+    /// Matching wgpu format used for imported images and render pipelines.
+    pub wgpu_format: wgpu::TextureFormat,
+}
+
+/// OpenXR stereo depth swapchain plus raw Vulkan image handles from the runtime.
+pub struct XrStereoDepthSwapchain {
+    images: Vec<vk::Image>,
+    /// Per-eye rectangle size in pixels.
+    pub resolution: (u32, u32),
+    /// Selected depth format.
+    pub format: XrDepthSwapchainFormat,
+    /// Runtime swapchain handle used for acquire/release and depth composition subimages.
+    pub handle: Arc<Mutex<xr::Swapchain<xr::Vulkan>>>,
+}
+
 /// Per-frame wgpu wrapper for an acquired OpenXR swapchain image.
 ///
 /// The wrapper owns the imported wgpu texture and its single-layer eye views. It must stay alive
@@ -74,6 +109,33 @@ pub struct XrAcquiredSwapchainImage {
     eye_views: [wgpu::TextureView; 2],
     /// OpenXR swapchain image index acquired for this frame.
     image_index: u32,
+}
+
+/// Per-frame wgpu wrapper for an acquired OpenXR depth swapchain image.
+pub struct XrAcquiredDepthSwapchainImage {
+    /// Imported OpenXR depth swapchain image kept alive until submit reaches the GPU queue.
+    texture: wgpu::Texture,
+    /// Two-layer depth target view for the multiview depth transfer pass.
+    array_view: wgpu::TextureView,
+    /// OpenXR depth swapchain image index acquired for this frame.
+    image_index: u32,
+}
+
+impl XrAcquiredDepthSwapchainImage {
+    /// Two-layer depth target view used by the multiview depth transfer pass.
+    pub fn array_view(&self) -> &wgpu::TextureView {
+        &self.array_view
+    }
+
+    /// OpenXR depth swapchain image index acquired for this frame.
+    pub fn image_index(&self) -> u32 {
+        self.image_index
+    }
+
+    /// Consumes the acquired-image wrapper, leaving the imported wgpu texture alive.
+    pub fn into_texture(self) -> wgpu::Texture {
+        self.texture
+    }
 }
 
 impl XrAcquiredSwapchainImage {
@@ -90,6 +152,94 @@ impl XrAcquiredSwapchainImage {
     /// Consumes the acquired-image wrapper, leaving the imported wgpu texture alive.
     pub fn into_texture(self) -> wgpu::Texture {
         self.texture
+    }
+}
+
+impl XrStereoDepthSwapchain {
+    /// Creates an OpenXR depth swapchain matching the color swapchain extent.
+    pub fn new(handles: &XrWgpuHandles, resolution: (u32, u32)) -> Result<Self, XrSwapchainError> {
+        let session = handles.xr_session.xr_vulkan_session();
+        let available_formats = session
+            .enumerate_swapchain_formats()?
+            .into_iter()
+            .filter_map(vk_format_from_openxr_raw)
+            .collect::<Vec<_>>();
+        let mut last_create_error = None;
+        for format in supported_xr_depth_swapchain_formats(&available_formats) {
+            let handle = match session.create_swapchain(&xr::SwapchainCreateInfo {
+                create_flags: xr::SwapchainCreateFlags::EMPTY,
+                usage_flags: xr_depth_swapchain_usage_flags(),
+                format: format.vk_format.as_raw() as u32,
+                sample_count: 1,
+                width: resolution.0,
+                height: resolution.1,
+                face_count: 1,
+                array_size: XR_VIEW_COUNT,
+                mip_count: 1,
+            }) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    logger::warn!(
+                        "OpenXR depth swapchain create failed for format {:?}: {error:?}",
+                        format.wgpu_format,
+                    );
+                    last_create_error = Some(error);
+                    continue;
+                }
+            };
+
+            let images = handle.enumerate_images()?;
+            logger::info!(
+                "OpenXR depth swapchain images: count={} format={:?} resolution={}x{} array_layers={}",
+                images.len(),
+                format.wgpu_format,
+                resolution.0,
+                resolution.1,
+                XR_VIEW_COUNT,
+            );
+            let images = images.into_iter().map(vk::Image::from_raw).collect();
+
+            return Ok(Self {
+                images,
+                resolution,
+                format,
+                handle: Arc::new(Mutex::new(handle)),
+            });
+        }
+
+        Err(last_create_error.map_or(XrSwapchainError::NoSupportedDepthFormat, Into::into))
+    }
+
+    /// Number of runtime-owned images in the depth swapchain.
+    pub fn image_count(&self) -> usize {
+        self.images.len()
+    }
+
+    /// Imports the acquired depth swapchain image into wgpu for the current frame.
+    pub fn import_acquired_image(
+        &self,
+        device: &wgpu::Device,
+        image_index: usize,
+    ) -> Result<XrAcquiredDepthSwapchainImage, XrSwapchainError> {
+        let Some(vk_image) = self.images.get(image_index).copied() else {
+            return Err(XrSwapchainError::ImageIndexOutOfRange {
+                index: u32_saturating_from_usize(image_index),
+                image_count: u32_saturating_from_usize(self.images.len()),
+            });
+        };
+
+        // SAFETY: `XrWgpuHandles` is produced by XR bootstrap from the same Vulkan device used to
+        // create the OpenXR session, and `self.images` came from the session's swapchain.
+        let hal_device =
+            unsafe { device.as_hal::<HalVulkan>() }.ok_or(XrSwapchainError::NotVulkanHal)?;
+        Ok(import_openxr_depth_swapchain_image(
+            device,
+            &hal_device,
+            vk_image,
+            self.resolution,
+            self.format,
+            u32_saturating_from_usize(image_index),
+        ))
     }
 }
 
@@ -193,7 +343,7 @@ fn import_openxr_swapchain_image(
     // wgpu would double-free during shutdown. A no-op closure is correct because callers import
     // only images enumerated from a live OpenXR swapchain and keep that swapchain alive until the
     // per-frame wrapper has been dropped.
-    let drop_callback: hal::DropCallback = Box::new(|| {});
+    let drop_callback = external_image_drop_callback();
     // SAFETY: `vk_image` was returned by `xrEnumerateSwapchainImages` on a swapchain created from
     // the OpenXR session inside `XrWgpuHandles`; that session and `hal_device` come from the same
     // bootstrap-created Vulkan device. The descriptor mirrors the swapchain create info. The
@@ -225,8 +375,65 @@ fn import_openxr_swapchain_image(
     }
 }
 
+fn import_openxr_depth_swapchain_image(
+    device: &wgpu::Device,
+    hal_device: &<HalVulkan as hal::Api>::Device,
+    vk_image: vk::Image,
+    resolution: (u32, u32),
+    format: XrDepthSwapchainFormat,
+    image_index: u32,
+) -> XrAcquiredDepthSwapchainImage {
+    let hal_desc = xr_depth_swapchain_hal_descriptor(resolution, format);
+    let drop_callback = external_image_drop_callback();
+    // SAFETY: `vk_image` was returned by `xrEnumerateSwapchainImages` on a depth swapchain
+    // created from the OpenXR session inside `XrWgpuHandles`; that session and `hal_device`
+    // come from the same bootstrap-created Vulkan device. The descriptor mirrors the depth
+    // swapchain create info, and the non-null no-op drop callback prevents wgpu from destroying
+    // the OpenXR-owned image.
+    let hal_tex = unsafe {
+        hal_device.texture_from_raw(
+            vk_image,
+            &hal_desc,
+            Some(drop_callback),
+            hal::vulkan::TextureMemory::External,
+        )
+    };
+    let wgpu_desc = xr_depth_swapchain_wgpu_descriptor(&hal_desc, format);
+    // SAFETY: `hal_tex` was imported from the Vulkan device backing `device`, and `wgpu_desc`
+    // matches the HAL descriptor used for the import.
+    let texture = unsafe { device.create_texture_from_hal::<HalVulkan>(hal_tex, &wgpu_desc) };
+    let array_view = texture.create_view(&xr_depth_swapchain_array_view_descriptor(format));
+    crate::profiling::note_resource_churn!(TextureView, "xr::depth_swapchain_array_view");
+    XrAcquiredDepthSwapchainImage {
+        texture,
+        array_view,
+        image_index,
+    }
+}
+
+fn external_image_drop_callback() -> hal::DropCallback {
+    Box::new(|| {})
+}
+
 fn xr_swapchain_usage_flags() -> xr::SwapchainUsageFlags {
     xr::SwapchainUsageFlags::COLOR_ATTACHMENT
+}
+
+fn xr_depth_swapchain_usage_flags() -> xr::SwapchainUsageFlags {
+    xr::SwapchainUsageFlags::DEPTH_STENCIL_ATTACHMENT
+}
+
+fn supported_xr_depth_swapchain_formats(
+    formats: &[vk::Format],
+) -> impl Iterator<Item = XrDepthSwapchainFormat> + '_ {
+    XR_DEPTH_FORMAT_PREFERENCES
+        .iter()
+        .copied()
+        .filter(|candidate| formats.contains(&candidate.vk_format))
+}
+
+fn vk_format_from_openxr_raw(format: u32) -> Option<vk::Format> {
+    i32::try_from(format).ok().map(vk::Format::from_raw)
 }
 
 fn u32_saturating_from_usize(value: usize) -> u32 {
@@ -234,6 +441,43 @@ fn u32_saturating_from_usize(value: usize) -> u32 {
         u32::MAX
     } else {
         value as u32
+    }
+}
+
+fn xr_depth_swapchain_hal_descriptor(
+    resolution: (u32, u32),
+    format: XrDepthSwapchainFormat,
+) -> hal::TextureDescriptor<'static> {
+    hal::TextureDescriptor {
+        label: Some("xr_depth_swapchain"),
+        size: wgpu::Extent3d {
+            width: resolution.0,
+            height: resolution.1,
+            depth_or_array_layers: XR_VIEW_COUNT,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: format.wgpu_format,
+        usage: TextureUses::DEPTH_STENCIL_WRITE,
+        memory_flags: MemoryFlags::empty(),
+        view_formats: Vec::new(),
+    }
+}
+
+fn xr_depth_swapchain_wgpu_descriptor(
+    hal_desc: &hal::TextureDescriptor<'_>,
+    format: XrDepthSwapchainFormat,
+) -> wgpu::TextureDescriptor<'static> {
+    wgpu::TextureDescriptor {
+        label: Some("xr_depth_swapchain"),
+        size: hal_desc.size,
+        mip_level_count: hal_desc.mip_level_count,
+        sample_count: hal_desc.sample_count,
+        dimension: hal_desc.dimension,
+        format: format.wgpu_format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
     }
 }
 
@@ -267,6 +511,19 @@ fn xr_swapchain_wgpu_descriptor(
         format: XR_COLOR_FORMAT,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
+    }
+}
+
+fn xr_depth_swapchain_array_view_descriptor(
+    format: XrDepthSwapchainFormat,
+) -> wgpu::TextureViewDescriptor<'static> {
+    wgpu::TextureViewDescriptor {
+        label: Some("xr_depth_swapchain_array"),
+        format: Some(format.wgpu_format),
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        aspect: wgpu::TextureAspect::DepthOnly,
+        array_layer_count: Some(XR_VIEW_COUNT),
+        ..Default::default()
     }
 }
 
@@ -360,6 +617,48 @@ mod tests {
         );
         assert!(!wgpu_desc.usage.contains(wgpu::TextureUsages::COPY_SRC));
         assert!(!wgpu_desc.usage.contains(wgpu::TextureUsages::COPY_DST));
+    }
+
+    #[test]
+    fn depth_format_selection_prefers_depth32_then_depth16() {
+        assert_eq!(
+            supported_xr_depth_swapchain_formats(&[vk::Format::D16_UNORM, vk::Format::D32_SFLOAT,])
+                .next(),
+            Some(XR_DEPTH_FORMAT_PREFERENCES[0])
+        );
+        assert_eq!(
+            supported_xr_depth_swapchain_formats(&[vk::Format::D16_UNORM]).next(),
+            Some(XR_DEPTH_FORMAT_PREFERENCES[1])
+        );
+        assert_eq!(
+            supported_xr_depth_swapchain_formats(&[vk::Format::D24_UNORM_S8_UINT]).next(),
+            None
+        );
+    }
+
+    #[test]
+    fn depth_swapchain_descriptors_are_depth_render_targets() {
+        let format = XR_DEPTH_FORMAT_PREFERENCES[0];
+        let hal_desc = xr_depth_swapchain_hal_descriptor((2496, 2688), format);
+        assert_eq!(hal_desc.usage, TextureUses::DEPTH_STENCIL_WRITE);
+        assert_eq!(hal_desc.format, wgpu::TextureFormat::Depth32Float);
+
+        let wgpu_desc = xr_depth_swapchain_wgpu_descriptor(&hal_desc, format);
+        assert_eq!(wgpu_desc.usage, wgpu::TextureUsages::RENDER_ATTACHMENT);
+        assert_eq!(wgpu_desc.format, wgpu::TextureFormat::Depth32Float);
+        assert!(
+            !wgpu_desc
+                .usage
+                .contains(wgpu::TextureUsages::TEXTURE_BINDING)
+        );
+    }
+
+    #[test]
+    fn depth_swapchain_array_view_selects_depth_only_layers() {
+        let desc = xr_depth_swapchain_array_view_descriptor(XR_DEPTH_FORMAT_PREFERENCES[0]);
+        assert_eq!(desc.dimension, Some(wgpu::TextureViewDimension::D2Array));
+        assert_eq!(desc.aspect, wgpu::TextureAspect::DepthOnly);
+        assert_eq!(desc.array_layer_count, Some(XR_VIEW_COUNT));
     }
 
     #[test]

@@ -19,6 +19,7 @@ mod view_math;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use state::XrProjectionFinalizeInput;
 pub use state::XrSessionState;
 pub(in crate::xr) use state::XrSessionStateDescriptor;
 pub(crate) use view_math::openxr_tracking_pose_to_host;

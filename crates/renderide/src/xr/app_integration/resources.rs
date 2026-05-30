@@ -1,9 +1,15 @@
 //! Lazy OpenXR stereo swapchain and renderer-owned HMD target allocation.
 
+use crate::diagnostics::log_throttle::LogThrottle;
 use crate::gpu::GpuContext;
-use crate::xr::{XR_COLOR_FORMAT, XR_VIEW_COUNT, XrStereoSwapchain, create_stereo_depth_texture};
+use crate::xr::{
+    XR_COLOR_FORMAT, XR_VIEW_COUNT, XrStereoDepthSwapchain, XrStereoSwapchain,
+    create_stereo_depth_texture,
+};
 
 use super::types::{XrOwnedHmdTargets, XrSessionBundle};
+
+static DEPTH_SWAPCHAIN_FAILURE_LOG: LogThrottle = LogThrottle::new();
 
 /// Creates the lazy stereo swapchain on first successful HMD path.
 pub(super) fn ensure_stereo_swapchain(bundle: &mut XrSessionBundle) -> bool {
@@ -26,6 +32,45 @@ pub(super) fn ensure_stereo_swapchain(bundle: &mut XrSessionBundle) -> bool {
         }
         Err(e) => {
             logger::debug!("OpenXR swapchain not created: {e}");
+            false
+        }
+    }
+}
+
+/// Creates the lazy stereo depth swapchain when composition-layer depth is available.
+pub(super) fn ensure_stereo_depth_swapchain(
+    bundle: &mut XrSessionBundle,
+    extent: (u32, u32),
+) -> bool {
+    profiling::scope!("xr::ensure_stereo_depth_swapchain");
+    if !bundle.handles.composition_layer_depth_enabled {
+        return false;
+    }
+    if bundle
+        .depth_swapchain
+        .as_ref()
+        .is_some_and(|swapchain| swapchain.resolution == extent)
+    {
+        return true;
+    }
+    let res = XrStereoDepthSwapchain::new(&bundle.handles, extent);
+    match res {
+        Ok(sc) => {
+            logger::info!(
+                "OpenXR depth swapchain {}x{} (stereo array) runtime_images={} format={:?}",
+                sc.resolution.0,
+                sc.resolution.1,
+                sc.image_count(),
+                sc.format.wgpu_format,
+            );
+            bundle.depth_swapchain = Some(sc);
+            true
+        }
+        Err(e) => {
+            if let Some(occurrence) = DEPTH_SWAPCHAIN_FAILURE_LOG.should_log(4, 128) {
+                logger::warn!("OpenXR depth swapchain not created: {e} occurrence={occurrence}");
+            }
+            bundle.depth_swapchain = None;
             false
         }
     }
@@ -72,6 +117,8 @@ fn create_owned_hmd_targets(
     }
 
     let (depth_texture, depth_view) = create_stereo_depth_texture(device, limits, (w, h))?;
+    let depth_sample_view = depth_texture.create_view(&owned_hmd_depth_sample_view_descriptor());
+    crate::profiling::note_resource_churn!(TextureView, "xr::owned_hmd_depth_sample_view");
     let color_texture = device.create_texture(&owned_hmd_color_texture_descriptor((w, h)));
     let color_array_view = color_texture.create_view(&owned_hmd_color_array_view_descriptor());
     crate::profiling::note_resource_churn!(TextureView, "xr::owned_hmd_color_array_view");
@@ -86,6 +133,7 @@ fn create_owned_hmd_targets(
         eye_views,
         depth_texture,
         depth_view,
+        depth_sample_view,
         (w, h),
     ))
 }
@@ -110,6 +158,17 @@ fn owned_hmd_color_texture_descriptor(extent: (u32, u32)) -> wgpu::TextureDescri
         format: XR_COLOR_FORMAT,
         usage: owned_hmd_color_texture_usage(),
         view_formats: &[],
+    }
+}
+
+/// Descriptor for the depth-only array view sampled by the OpenXR depth-transfer pass.
+fn owned_hmd_depth_sample_view_descriptor() -> wgpu::TextureViewDescriptor<'static> {
+    wgpu::TextureViewDescriptor {
+        label: Some("xr_owned_hmd_depth_sample_array"),
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        aspect: wgpu::TextureAspect::DepthOnly,
+        array_layer_count: Some(XR_VIEW_COUNT),
+        ..Default::default()
     }
 }
 
@@ -177,5 +236,13 @@ mod tests {
             owned_hmd_eye_view_descriptor(VR_MIRROR_EYE_LAYER).base_array_layer,
             0
         );
+    }
+
+    #[test]
+    fn owned_hmd_depth_sample_view_selects_depth_array() {
+        let desc = owned_hmd_depth_sample_view_descriptor();
+        assert_eq!(desc.dimension, Some(wgpu::TextureViewDimension::D2Array));
+        assert_eq!(desc.aspect, wgpu::TextureAspect::DepthOnly);
+        assert_eq!(desc.array_layer_count, Some(XR_VIEW_COUNT));
     }
 }

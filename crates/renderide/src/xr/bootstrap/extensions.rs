@@ -40,6 +40,12 @@ const OPTIONAL_EXTENSIONS: &[OpenxrExtensionEntry] = &[
         feeds_profile_gate: None,
     },
     OpenxrExtensionEntry {
+        log_name: "KHR_composition_layer_depth",
+        is_available: |set| set.khr_composition_layer_depth,
+        enable: |set, v| set.khr_composition_layer_depth = v,
+        feeds_profile_gate: None,
+    },
+    OpenxrExtensionEntry {
         log_name: "KHR_generic_controller",
         is_available: |set| set.khr_generic_controller,
         enable: |set, v| set.khr_generic_controller = v,
@@ -160,6 +166,7 @@ mod tests {
         let mut set = xr::ExtensionSet::default();
         set.khr_vulkan_enable2 = true;
         set.ext_debug_utils = true;
+        set.khr_composition_layer_depth = true;
         set.khr_generic_controller = true;
         set.bd_controller_interaction = true;
         set.ext_hp_mixed_reality_controller = true;
@@ -180,6 +187,7 @@ mod tests {
         let mut gates = empty_profile_gates();
         enable_optional_extensions(&available, &mut enabled, &mut gates);
         assert!(enabled.ext_debug_utils);
+        assert!(enabled.khr_composition_layer_depth);
         assert!(enabled.khr_generic_controller);
         assert!(enabled.bd_controller_interaction);
         assert!(enabled.ext_hp_mixed_reality_controller);
@@ -217,6 +225,7 @@ mod tests {
         let mut gates = empty_profile_gates();
         enable_optional_extensions(&available, &mut enabled, &mut gates);
         assert!(!enabled.ext_debug_utils);
+        assert!(!enabled.khr_composition_layer_depth);
         assert!(!enabled.khr_generic_controller);
         assert!(!enabled.ext_hand_tracking);
         assert!(!gates.khr_generic_controller);
@@ -244,7 +253,7 @@ mod tests {
         let summary = enabled_extension_summary(&enabled);
         assert_eq!(
             summary,
-            "KHR_vulkan_enable2,EXT_debug_utils,KHR_generic_controller,\
+            "KHR_vulkan_enable2,EXT_debug_utils,KHR_composition_layer_depth,KHR_generic_controller,\
              BD_controller_interaction,EXT_hp_mixed_reality_controller,\
              EXT_samsung_odyssey_controller,HTC_vive_cosmos_controller_interaction,\
              HTC_vive_focus3_controller_interaction,FB_touch_controller_pro,\

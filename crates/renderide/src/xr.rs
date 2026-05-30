@@ -39,7 +39,8 @@ pub use session::{
     tracking_space_to_world_matrix,
 };
 pub use swapchain::{
-    XR_COLOR_FORMAT, XR_VIEW_COUNT, XrStereoSwapchain, create_stereo_depth_texture,
+    XR_COLOR_FORMAT, XR_VIEW_COUNT, XrStereoDepthSwapchain, XrStereoSwapchain,
+    create_stereo_depth_texture,
 };
 
 pub use app_integration::{

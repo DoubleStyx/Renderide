@@ -9,13 +9,19 @@ use crate::diagnostics::log_throttle::LogThrottle;
 use crate::gpu::GpuContext;
 use crate::gpu::driver_thread::BlockingCallWatchdog as EndFrameWatchdog;
 use crate::render_graph::ExternalFrameTargets;
+use crate::xr::session::XrProjectionFinalizeInput;
 use crate::xr::{XR_COLOR_FORMAT, XrFrameRenderer};
 use openxr as xr;
 use parking_lot::Mutex;
 
-use super::super::swapchain::{XrAcquiredSwapchainImage, XrStereoSwapchain};
-use super::resources::{ensure_owned_hmd_targets, ensure_stereo_swapchain};
-use super::types::{OpenxrFrameTick, XrSessionBundle};
+use super::super::swapchain::{
+    XrAcquiredDepthSwapchainImage, XrAcquiredSwapchainImage, XrStereoDepthSwapchain,
+    XrStereoSwapchain,
+};
+use super::resources::{
+    ensure_owned_hmd_targets, ensure_stereo_depth_swapchain, ensure_stereo_swapchain,
+};
+use super::types::{OpenxrFrameTick, XrOwnedHmdTargets, XrSessionBundle};
 
 /// Deadline for a single `xrWaitSwapchainImage` call before the watchdog logs a compositor stall.
 ///
@@ -60,6 +66,8 @@ enum HmdSubmitSkipReason {
     SwapchainWaitFailed,
     /// The acquired OpenXR image could not be imported into wgpu.
     SwapchainImageImportFailed,
+    /// The acquired OpenXR depth image could not be imported into wgpu.
+    DepthSwapchainImageImportFailed,
     /// The renderer-owned HMD targets disappeared after resize handling.
     OwnedHmdTargetsMissingAfterResize,
     /// The renderer failed while submitting the HMD graph.
@@ -88,6 +96,9 @@ impl fmt::Display for HmdSubmitSkipReason {
             Self::SwapchainAcquireFailed => f.write_str("swapchain_acquire_failed"),
             Self::SwapchainWaitFailed => f.write_str("swapchain_wait_failed"),
             Self::SwapchainImageImportFailed => f.write_str("swapchain_image_import_failed"),
+            Self::DepthSwapchainImageImportFailed => {
+                f.write_str("depth_swapchain_image_import_failed")
+            }
             Self::OwnedHmdTargetsMissingAfterResize => {
                 f.write_str("owned_hmd_targets_missing_after_resize")
             }
@@ -145,31 +156,9 @@ pub fn try_openxr_hmd_multiview_submit(
         log_hmd_submit_failure(HmdSubmitSkipReason::OwnedHmdTargetsMissingAfterResize);
         return HmdSubmitOutcome::SkippedBeforeRender;
     };
-    let ext = ExternalFrameTargets {
-        color_view: hmd_targets.color_array_view(),
-        depth_texture: hmd_targets.depth_texture(),
-        depth_view: hmd_targets.depth_view(),
-        extent_px: extent,
-        surface_format: XR_COLOR_FORMAT,
-    };
-    let rect = xr::Rect2Di {
-        offset: xr::Offset2Di { x: 0, y: 0 },
-        extent: xr::Extent2Di {
-            width: extent.0 as i32,
-            height: extent.1 as i32,
-        },
-    };
-    // Unified submit: HMD stereo + every active secondary RT in one `execute_multi_view_frame`
-    // call. The HMD view replaces the main camera for this tick.
-    {
-        profiling::scope!("xr::submit_hmd_view");
-        if let Err(error) = runtime.submit_hmd_view(gpu, ext) {
-            log_hmd_submit_failure_with_display_error(
-                HmdSubmitSkipReason::SubmitHmdViewFailed,
-                &error,
-            );
-            return HmdSubmitOutcome::SkippedBeforeRender;
-        }
+    let rect = projection_rect_for_extent(extent);
+    if !submit_hmd_graph(gpu, runtime, hmd_targets, extent) {
+        return HmdSubmitOutcome::SkippedBeforeRender;
     }
     let Some(projection_views) = stereo_views(&tick.views) else {
         return HmdSubmitOutcome::RenderedWithoutProjection;
@@ -191,19 +180,91 @@ pub fn try_openxr_hmd_multiview_submit(
             acquired_image.eye_views(),
         )
     };
+    let acquired_depth_image =
+        acquire_imported_hmd_depth_image(gpu, bundle.depth_swapchain.as_ref());
+    let depth_transfer_cmd = acquired_depth_image.as_ref().map(|depth_image| {
+        bundle.depth_transfer.encode_hmd_depth_to_openxr(
+            gpu,
+            extent,
+            hmd_targets.depth_sample_view(),
+            depth_image.array_view(),
+            bundle
+                .depth_swapchain
+                .as_ref()
+                .map_or(wgpu::TextureFormat::Depth32Float, |swapchain| {
+                    swapchain.format.wgpu_format
+                }),
+        )
+    });
     let handles = &mut bundle.handles;
     let image_index = acquired_image.image_index();
-    let (finalize, rx) = handles.xr_session.build_projection_finalize(
-        swapchain_handle,
-        acquired_image.into_texture(),
-        image_index,
-        tick.predicted_display_time,
-        projection_views,
-        rect,
-    );
-    gpu.submit_frame_batch_with_xr_finalize(vec![final_copy_cmd], finalize);
+    let depth_finalize = acquired_depth_image.and_then(|depth_image| {
+        let image_index = depth_image.image_index();
+        let imported_depth_texture = depth_image.into_texture();
+        bundle.depth_swapchain.as_ref().map(|depth_swapchain| {
+            crate::gpu::driver_thread::XrProjectionDepthFinalize {
+                swapchain: Arc::clone(&depth_swapchain.handle),
+                imported_depth_texture: Some(imported_depth_texture),
+                image_index,
+                rect,
+                depth_info: crate::gpu::driver_thread::XrCompositionDepthInfo::from_clip_planes(
+                    tick.clip_planes.near,
+                    tick.clip_planes.far,
+                ),
+            }
+        })
+    });
+    let (finalize, rx) = handles
+        .xr_session
+        .build_projection_finalize(XrProjectionFinalizeInput {
+            swapchain: swapchain_handle,
+            imported_color_texture: acquired_image.into_texture(),
+            image_index,
+            predicted_display_time: tick.predicted_display_time,
+            views: projection_views,
+            rect,
+            depth: depth_finalize,
+        });
+    let mut command_buffers = vec![final_copy_cmd];
+    if let Some(depth_transfer_cmd) = depth_transfer_cmd {
+        command_buffers.push(depth_transfer_cmd);
+    }
+    gpu.submit_frame_batch_with_xr_finalize(command_buffers, finalize);
     handles.xr_session.set_pending_finalize(rx);
     HmdSubmitOutcome::ProjectionQueued
+}
+
+/// Rectangle covering both OpenXR swapchain array layers for one eye extent.
+fn projection_rect_for_extent(extent: (u32, u32)) -> xr::Rect2Di {
+    xr::Rect2Di {
+        offset: xr::Offset2Di { x: 0, y: 0 },
+        extent: xr::Extent2Di {
+            width: extent.0 as i32,
+            height: extent.1 as i32,
+        },
+    }
+}
+
+/// Renders the HMD graph into renderer-owned stereo targets.
+fn submit_hmd_graph(
+    gpu: &mut GpuContext,
+    runtime: &mut impl XrFrameRenderer,
+    hmd_targets: &XrOwnedHmdTargets,
+    extent: (u32, u32),
+) -> bool {
+    profiling::scope!("xr::submit_hmd_view");
+    let ext = ExternalFrameTargets {
+        color_view: hmd_targets.color_array_view(),
+        depth_texture: hmd_targets.depth_texture(),
+        depth_view: hmd_targets.depth_view(),
+        extent_px: extent,
+        surface_format: XR_COLOR_FORMAT,
+    };
+    if let Err(error) = runtime.submit_hmd_view(gpu, ext) {
+        log_hmd_submit_failure_with_display_error(HmdSubmitSkipReason::SubmitHmdViewFailed, &error);
+        return false;
+    }
+    true
 }
 
 /// Ensures the OpenXR frame, stereo swapchain, and owned HMD targets can submit HMD work.
@@ -231,6 +292,7 @@ fn ensure_hmd_submit_resources(
         log_hmd_submit_failure(HmdSubmitSkipReason::OwnedHmdTargetsUnavailable);
         return None;
     }
+    let _ = ensure_stereo_depth_swapchain(bundle, extent);
     Some(extent)
 }
 
@@ -294,6 +356,38 @@ fn multiview_submit_prereq_failure(
         });
     }
     None
+}
+
+/// Acquires, waits, and imports the current OpenXR stereo depth swapchain image.
+fn acquire_imported_hmd_depth_image(
+    gpu: &GpuContext,
+    sc: Option<&XrStereoDepthSwapchain>,
+) -> Option<XrAcquiredDepthSwapchainImage> {
+    let sc = sc?;
+    let image_index = {
+        profiling::scope!("xr::depth_swapchain_acquire");
+        match acquire_swapchain_image(gpu, &sc.handle) {
+            Ok(i) => i,
+            Err(e) => {
+                log_hmd_submit_failure_with_error(HmdSubmitSkipReason::SwapchainAcquireFailed, e);
+                return None;
+            }
+        }
+    };
+    if !wait_for_acquired_swapchain_image(gpu, &sc.handle, image_index) {
+        return None;
+    }
+    match sc.import_acquired_image(gpu.device().as_ref(), image_index) {
+        Ok(image) => Some(image),
+        Err(e) => {
+            let _ = release_swapchain_image(gpu, &sc.handle);
+            log_hmd_submit_failure_with_display_error(
+                HmdSubmitSkipReason::DepthSwapchainImageImportFailed,
+                &e,
+            );
+            None
+        }
+    }
 }
 
 /// Acquires one OpenXR swapchain image while holding the shared Vulkan queue access gate.

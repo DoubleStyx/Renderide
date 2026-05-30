@@ -19,7 +19,9 @@ use parking_lot::Mutex;
 pub use lifecycle::TrackedSessionState;
 use lifecycle::is_visible_tracked;
 
-use crate::gpu::driver_thread::{XrFinalizeErrorSlot, XrFinalizeReceiver};
+use crate::gpu::driver_thread::{
+    XrFinalizeErrorSlot, XrFinalizeReceiver, XrProjectionDepthFinalize,
+};
 
 /// Owns OpenXR session objects (constructed in [`super::super::bootstrap::init_wgpu_openxr`]).
 pub struct XrSessionState {
@@ -87,6 +89,24 @@ pub(in crate::xr) struct XrSessionStateDescriptor {
     pub(in crate::xr) frame_stream: xr::FrameStream<xr::Vulkan>,
     /// Stage reference space used for view + controller pose location.
     pub(in crate::xr) stage: xr::Space,
+}
+
+/// Caller-provided data for one deferred OpenXR projection-layer finalize.
+pub(crate) struct XrProjectionFinalizeInput {
+    /// Color swapchain whose acquired image must be released before `xrEndFrame`.
+    pub(crate) swapchain: Arc<Mutex<xr::Swapchain<xr::Vulkan>>>,
+    /// Imported wgpu wrapper for the acquired OpenXR color swapchain image.
+    pub(crate) imported_color_texture: wgpu::Texture,
+    /// Color swapchain image index acquired for this frame.
+    pub(crate) image_index: u32,
+    /// Predicted display time of the OpenXR frame being finalized.
+    pub(crate) predicted_display_time: xr::Time,
+    /// Stereo views returned by `xrLocateViews` for this frame.
+    pub(crate) views: [xr::View; 2],
+    /// Per-eye image rectangle matching the swapchain extent.
+    pub(crate) rect: xr::Rect2Di,
+    /// Optional depth payload for `XR_KHR_composition_layer_depth`.
+    pub(crate) depth: Option<XrProjectionDepthFinalize>,
 }
 
 impl XrSessionState {
@@ -215,27 +235,23 @@ impl XrSessionState {
     /// the next `wait_frame` waits on it.
     pub(crate) fn build_projection_finalize(
         &self,
-        swapchain: Arc<Mutex<xr::Swapchain<xr::Vulkan>>>,
-        imported_color_texture: wgpu::Texture,
-        image_index: u32,
-        predicted_display_time: xr::Time,
-        views: [xr::View; 2],
-        rect: xr::Rect2Di,
+        input: XrProjectionFinalizeInput,
     ) -> (
         crate::gpu::driver_thread::XrFinalizeWork,
         XrFinalizeReceiver,
     ) {
         let (signal, rx) = crate::gpu::driver_thread::XrFinalizeSignal::new();
         let payload = crate::gpu::driver_thread::XrProjectionFinalize {
-            swapchain,
-            imported_color_texture: Some(imported_color_texture),
-            image_index,
+            swapchain: input.swapchain,
+            imported_color_texture: Some(input.imported_color_texture),
+            image_index: input.image_index,
             frame_stream: Arc::clone(&self.frame_stream),
             stage: Arc::clone(&self.stage),
             env_blend_mode: self.environment_blend_mode,
-            predicted_display_time,
-            views,
-            rect,
+            predicted_display_time: input.predicted_display_time,
+            views: input.views,
+            rect: input.rect,
+            depth: input.depth,
             frame_open: Arc::clone(&self.frame_open),
             shutdown_requested: Arc::clone(&self.shutdown_requested),
         };

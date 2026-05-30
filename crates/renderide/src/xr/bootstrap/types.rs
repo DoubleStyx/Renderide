@@ -25,6 +25,8 @@ pub struct XrWgpuHandles {
     pub xr_system_id: xr::SystemId,
     /// Controller actions and spaces; `None` if action creation or Touch bindings failed.
     pub openxr_input: Option<OpenxrInput>,
+    /// Whether `XR_KHR_composition_layer_depth` was enabled for this instance.
+    pub composition_layer_depth_enabled: bool,
 }
 
 /// Bootstrap failure (missing runtime, Vulkan, or extension).

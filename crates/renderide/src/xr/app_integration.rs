@@ -1,5 +1,6 @@
 //! OpenXR helpers used by the winit app driver: frame tick state and HMD multiview submission.
 
+mod depth_transfer;
 mod frame_tick;
 mod resources;
 mod submit;

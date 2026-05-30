@@ -13,7 +13,7 @@ use crate::diagnostics::log_throttle::LogThrottle;
 use crate::gpu::GpuQueueAccessGate;
 use crate::xr::{XrHostCameraSync, XrWgpuHandles};
 
-use super::types::OpenxrFrameTick;
+use super::types::{OpenxrClipPlanes, OpenxrFrameTick};
 
 static WAIT_FRAME_FAILURE_STREAK: AtomicU32 = AtomicU32::new(0);
 static LOCATE_VIEWS_FAILURE_STREAK: AtomicU32 = AtomicU32::new(0);
@@ -164,29 +164,50 @@ fn build_openxr_frame_tick(
     should_render: bool,
     views: Vec<xr::View>,
 ) -> OpenxrFrameTick {
+    let clip_planes = effective_openxr_clip_planes(runtime);
     if views.len() >= 2 && runtime.vr_active() {
-        apply_stereo_views_to_runtime(runtime, &views);
+        apply_stereo_views_to_runtime(runtime, &views, clip_planes);
     }
     OpenxrFrameTick {
         predicted_display_time,
         should_render,
         views,
+        clip_planes,
     }
 }
 
-/// Updates runtime head and eye transforms from the first two located OpenXR views.
-fn apply_stereo_views_to_runtime(runtime: &mut impl XrHostCameraSync, views: &[xr::View]) {
+/// Resolves the effective HMD clip planes for projection and OpenXR depth metadata.
+fn effective_openxr_clip_planes(runtime: &impl XrHostCameraSync) -> OpenxrClipPlanes {
     let (near, far) = effective_head_output_clip_planes(
         runtime.near_clip(),
         runtime.far_clip(),
         runtime.output_device(),
         runtime.scene_root_scale_for_clip(),
     );
+    OpenxrClipPlanes { near, far }
+}
+
+/// Updates runtime head and eye transforms from the first two located OpenXR views.
+fn apply_stereo_views_to_runtime(
+    runtime: &mut impl XrHostCameraSync,
+    views: &[xr::View],
+    clip_planes: OpenxrClipPlanes,
+) {
     let center_pose = crate::xr::headset_center_pose_from_stereo_views(views);
     let world_from_tracking = runtime.world_from_tracking(center_pose);
     runtime.set_head_output_transform(world_from_tracking);
-    let left = crate::xr::eye_view_from_xr_view_aligned(&views[0], near, far, world_from_tracking);
-    let right = crate::xr::eye_view_from_xr_view_aligned(&views[1], near, far, world_from_tracking);
+    let left = crate::xr::eye_view_from_xr_view_aligned(
+        &views[0],
+        clip_planes.near,
+        clip_planes.far,
+        world_from_tracking,
+    );
+    let right = crate::xr::eye_view_from_xr_view_aligned(
+        &views[1],
+        clip_planes.near,
+        clip_planes.far,
+        world_from_tracking,
+    );
     runtime.set_eye_world_position((left.world_position + right.world_position) * 0.5);
     let stereo = StereoViewMatrices::new(left, right);
     runtime.set_stereo(Some(&stereo));

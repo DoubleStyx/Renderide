@@ -1,7 +1,7 @@
 //! App-loop XR session bundle and cached frame tick state.
 
 use crate::gpu::VrMirrorBlitResources;
-use crate::xr::{XrStereoSwapchain, XrWgpuHandles};
+use crate::xr::{XrStereoDepthSwapchain, XrStereoSwapchain, XrWgpuHandles};
 use openxr as xr;
 
 /// App-loop ownership for the OpenXR GPU path: Vulkan/wgpu [`XrWgpuHandles`], lazily created stereo
@@ -14,10 +14,14 @@ pub struct XrSessionBundle {
     pub handles: XrWgpuHandles,
     /// Stereo array swapchain; created on first successful HMD frame path.
     pub stereo_swapchain: Option<XrStereoSwapchain>,
+    /// Optional stereo depth swapchain used by `XR_KHR_composition_layer_depth`.
+    pub depth_swapchain: Option<XrStereoDepthSwapchain>,
     /// Renderer-owned stereo color and depth targets used by the HMD graph.
     pub hmd_targets: Option<XrOwnedHmdTargets>,
     /// Left-eye staging blit to the desktop mirror surface.
     pub mirror_blit: VrMirrorBlitResources,
+    /// Fullscreen pass resources for transferring renderer-owned HMD depth to OpenXR depth.
+    pub(super) depth_transfer: super::depth_transfer::XrDepthTransferResources,
 }
 
 impl XrSessionBundle {
@@ -27,8 +31,10 @@ impl XrSessionBundle {
         Self {
             handles,
             stereo_swapchain: None,
+            depth_swapchain: None,
             hmd_targets: None,
             mirror_blit: VrMirrorBlitResources::new(),
+            depth_transfer: super::depth_transfer::XrDepthTransferResources::new(),
         }
     }
 }
@@ -55,6 +61,17 @@ pub struct OpenxrFrameTick {
     pub should_render: bool,
     /// Stereo views from `locate_views` (may be empty when `should_render` is false).
     pub views: Vec<xr::View>,
+    /// Effective HMD clip planes used by the renderer for this frame.
+    pub(crate) clip_planes: OpenxrClipPlanes,
+}
+
+/// Effective HMD clip planes used for projection and OpenXR depth metadata.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct OpenxrClipPlanes {
+    /// Near clip plane distance in renderer world units.
+    pub(crate) near: f32,
+    /// Far clip plane distance in renderer world units.
+    pub(crate) far: f32,
 }
 
 /// Renderer-owned stereo color/depth target set for the HMD render graph.
@@ -69,6 +86,8 @@ pub struct XrOwnedHmdTargets {
     depth_texture: wgpu::Texture,
     /// Two-layer depth-stencil view used by the HMD graph.
     depth_view: wgpu::TextureView,
+    /// Two-layer depth-only view used when sampling HMD depth for OpenXR composition depth.
+    depth_sample_view: wgpu::TextureView,
     /// Per-eye pixel extent shared by color and depth attachments.
     extent_px: (u32, u32),
 }
@@ -81,6 +100,7 @@ impl XrOwnedHmdTargets {
         eye_views: [wgpu::TextureView; 2],
         depth_texture: wgpu::Texture,
         depth_view: wgpu::TextureView,
+        depth_sample_view: wgpu::TextureView,
         extent_px: (u32, u32),
     ) -> Self {
         Self {
@@ -89,6 +109,7 @@ impl XrOwnedHmdTargets {
             eye_views,
             depth_texture,
             depth_view,
+            depth_sample_view,
             extent_px,
         }
     }
@@ -111,6 +132,11 @@ impl XrOwnedHmdTargets {
     /// Returns the two-layer depth view used by the multiview render graph.
     pub(super) fn depth_view(&self) -> &wgpu::TextureView {
         &self.depth_view
+    }
+
+    /// Returns the two-layer depth-only view used by the OpenXR depth-transfer pass.
+    pub(super) fn depth_sample_view(&self) -> &wgpu::TextureView {
+        &self.depth_sample_view
     }
 
     /// Returns `true` when all target attachments still match `extent_px`.
