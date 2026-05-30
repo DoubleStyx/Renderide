@@ -56,6 +56,44 @@ The launcher will start the Resonite host and connect Renderide automatically.
 
 - You can add Steam-style launch arguments after the launcher to enable mods: `<path-to-renderide> -LoadAssembly Libraries/ResoniteModLoader.dll`
 
+### macOS
+
+Renderide runs the Resonite Host from the Windows depot and renders natively through Metal. The launcher accepts an explicit Resonite install path, so local builds and release zips should not need hand-written symlinks or `dev-fast` path edits.
+
+1. Install the Windows Resonite depot with SteamCMD:
+
+   ```bash
+   steamcmd +@sSteamCmdForcePlatformType windows \
+     +force_install_dir "$HOME/Games/ResoniteWindows" \
+     +login anonymous \
+     +app_update 2519830 validate \
+     +quit
+   ```
+
+   If anonymous access is unavailable, use the Steam login that owns Resonite.
+
+1. Install the .NET runtime requested by the Resonite Host so `dotnet` is available on `PATH`.
+
+1. Run the launcher with the Windows depot path:
+
+   ```bash
+   ./target/release/renderide --resonite-dir "$HOME/Games/ResoniteWindows"
+   ```
+
+   Release zips use the same argument from the extracted folder:
+
+   ```bash
+   ./renderide --resonite-dir "$HOME/Games/ResoniteWindows"
+   ```
+
+The macOS release zip contains `renderide`, `renderide-renderer`, `xr`, and the bundled OpenXR loader. If macOS quarantine blocks a downloaded zip, remove the quarantine attribute from the extracted Renderide folder:
+
+```bash
+xattr -dr com.apple.quarantine /path/to/renderide-folder
+```
+
+Leave `RENDERIDE_INTERPROCESS_DIR` unset unless every participating Renderide and Host process is configured to the same path. For host-limited framerates, Resonite's forced separation setting can improve throughput, but it is not required for startup.
+
 ## Design goals
 
 - **Cross-platform parity** - Linux, macOS, and Windows are all first-class. Mobile is a future direction; portability constraints are respected today.

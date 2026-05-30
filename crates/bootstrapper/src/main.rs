@@ -24,6 +24,7 @@ mod dialog;
 fn main() {
     let parsed_args = bootstrapper::cli::parse_args();
     let log_level = parsed_args.log_level;
+    let resonite_dir = parsed_args.resonite_dir.clone();
     let log_timestamp = logger::log_filename_timestamp();
     let max_level = log_level.unwrap_or(logger::LogLevel::Trace);
 
@@ -70,6 +71,7 @@ fn main() {
 
     let opts = bootstrapper::BootstrapOptions {
         host_args,
+        resonite_dir,
         log_level,
         log_timestamp,
     };

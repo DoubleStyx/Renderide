@@ -10,4 +10,4 @@ mod resonite;
 mod steam;
 
 pub use dotnet::find_dotnet_for_host;
-pub use resonite::{RENDERITE_HOST_DLL, find_resonite_dir};
+pub use resonite::{RENDERITE_HOST_DLL, resolve_resonite_dir};

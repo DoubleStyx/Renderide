@@ -10,6 +10,8 @@
 //!
 //! The binary entry point is [`run`]; use [`BootstrapOptions`] to supply Host arguments and logging.
 
+use std::path::PathBuf;
+
 mod child_lifetime;
 mod cleanup;
 pub mod cli;
@@ -27,6 +29,7 @@ mod protocol_handlers;
 mod renderer_link;
 pub mod updater;
 mod watchdogs;
+
 #[cfg(test)]
 /// Test-only synchronization for process-wide environment variable mutations.
 pub(crate) mod test_env {
@@ -106,6 +109,8 @@ pub use error::BootstrapError;
 pub struct BootstrapOptions {
     /// Arguments forwarded to Renderite Host (before `-Invisible` / `-shmprefix`).
     pub host_args: Vec<String>,
+    /// Explicit Resonite installation directory supplied to the launcher.
+    pub resonite_dir: Option<PathBuf>,
     /// Maximum level written to the bootstrapper log file; also forwarded to Renderide when set.
     pub log_level: Option<logger::LogLevel>,
     /// Filename segment from [`logger::log_filename_timestamp`] (without `.log`).
@@ -123,8 +128,12 @@ pub struct BootstrapOptions {
 pub fn run(options: BootstrapOptions) -> Result<(), BootstrapError> {
     let shared_memory_prefix =
         config::generate_shared_memory_prefix(16).map_err(BootstrapError::Prefix)?;
-    let resonite_config = config::ResoBootConfig::new(shared_memory_prefix, options.log_level)
-        .map_err(BootstrapError::CurrentDir)?;
+    let resonite_config = config::ResoBootConfig::new(
+        shared_memory_prefix,
+        options.log_level,
+        options.resonite_dir,
+    )
+    .map_err(BootstrapError::CurrentDir)?;
 
     let ctx = orchestration::RunContext {
         host_args: options.host_args,

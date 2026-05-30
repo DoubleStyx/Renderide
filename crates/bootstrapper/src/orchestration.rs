@@ -52,11 +52,16 @@ fn log_run_intro(config: &ResoBootConfig) {
     );
     logger::info!("Shared memory prefix: {}", config.shared_memory_prefix);
     logger::info!(
-        "Bootstrapper paths: current_directory={} renderite_directory={} renderite_executable={} runtime_config={}",
+        "Bootstrapper paths: current_directory={} renderite_directory={} renderite_executable={} runtime_config={} resonite_dir_override={}",
         config.current_directory.display(),
         config.renderite_directory.display(),
         config.renderite_executable.display(),
         config.runtime_config.display(),
+        config
+            .resonite_dir
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "<auto>".to_string()),
     );
     let backing = crate::ipc::interprocess_backing_dir();
     logger::info!(

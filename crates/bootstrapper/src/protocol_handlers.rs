@@ -70,6 +70,7 @@ mod tests {
             runtime_config: dir.join("Renderite.Host.runtimeconfig.json"),
             renderite_directory: dir.clone(),
             renderite_executable: exe,
+            resonite_dir: None,
             shared_memory_prefix: "test".into(),
             is_wine: false,
             renderide_log_level: None,
