@@ -74,13 +74,8 @@ pub(super) struct TransparentMaterialClassInput {
 pub(super) fn transparent_class_for_material(
     input: TransparentMaterialClassInput,
 ) -> TransparentMaterialClass {
-    let transparent_like = input.alpha_blended
-        || render_queue_uses_transparent_sorting(
-            input.render_queue,
-            input.alpha_blended || input.blend_mode.is_transparent(),
-        )
-        || input.uses_scene_color_snapshot
-        || input.render_state.depth_write == Some(false);
+    let transparent_like = render_queue_uses_transparent_sorting(input.render_queue)
+        || input.uses_scene_color_snapshot;
     if !transparent_like {
         return TransparentMaterialClass::Opaque;
     }
@@ -148,9 +143,21 @@ mod tests {
     }
 
     #[test]
-    fn stem_alpha_blending_classifies_as_ordered_alpha() {
+    fn stem_alpha_blending_below_transparent_queue_classifies_as_opaque() {
         let mut value = input();
         value.alpha_blended = true;
+
+        assert_eq!(
+            transparent_class_for_material(value),
+            TransparentMaterialClass::Opaque
+        );
+    }
+
+    #[test]
+    fn stem_alpha_blending_in_transparent_queue_classifies_as_ordered_alpha() {
+        let mut value = input();
+        value.alpha_blended = true;
+        value.render_queue = crate::materials::UNITY_TRANSPARENT_RENDER_QUEUE_MIN;
 
         assert_eq!(
             transparent_class_for_material(value),
@@ -176,9 +183,9 @@ mod tests {
     }
 
     #[test]
-    fn late_opaque_queue_classifies_as_opaque_until_transparent_queue() {
+    fn opaque_blend_classifies_by_render_queue_boundary() {
         let mut value = input();
-        value.render_queue = crate::materials::UNITY_RENDER_QUEUE_TRANSPARENT - 1;
+        value.render_queue = crate::materials::UNITY_TRANSPARENT_RENDER_QUEUE_MIN - 1;
         value.blend_mode = MaterialBlendMode::Opaque;
 
         assert_eq!(
@@ -186,7 +193,7 @@ mod tests {
             TransparentMaterialClass::Opaque
         );
 
-        value.render_queue = crate::materials::UNITY_RENDER_QUEUE_TRANSPARENT;
+        value.render_queue = crate::materials::UNITY_TRANSPARENT_RENDER_QUEUE_MIN;
 
         assert_eq!(
             transparent_class_for_material(value),
@@ -209,6 +216,7 @@ mod tests {
     fn blended_depth_write_classifies_as_depth_writing_transparent() {
         let mut value = input();
         value.alpha_blended = true;
+        value.render_queue = crate::materials::UNITY_TRANSPARENT_RENDER_QUEUE_MIN;
         value.uses_blended_depth_write = true;
 
         assert_eq!(
@@ -221,6 +229,7 @@ mod tests {
     fn zwrite_off_override_prevents_depth_writing_transparent_class() {
         let mut value = input();
         value.alpha_blended = true;
+        value.render_queue = crate::materials::UNITY_TRANSPARENT_RENDER_QUEUE_MIN;
         value.uses_blended_depth_write = true;
         value.render_state.depth_write = Some(false);
 
@@ -234,6 +243,7 @@ mod tests {
     fn two_sided_transparency_classifies_before_ordered_alpha() {
         let mut value = input();
         value.alpha_blended = true;
+        value.render_queue = crate::materials::UNITY_TRANSPARENT_RENDER_QUEUE_MIN;
         value.uses_two_sided_transparency = true;
 
         assert_eq!(
