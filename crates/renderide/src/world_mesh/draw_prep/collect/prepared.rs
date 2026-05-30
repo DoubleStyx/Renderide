@@ -264,7 +264,7 @@ fn collect_prepared_renderer_run(
     if !prepared_run_passes_filter(first, ctx, filter_masks) {
         return (0, 0, 0);
     }
-    if !lod_visibility.renderer_visible(first.instance_id) {
+    if !lod_visibility.renderer_visible(first.space_id, first.renderer_ordinal) {
         return (0, 0, 0);
     }
     if transform_chain_has_degenerate_scale(ctx, first.space_id, first.node_id) {

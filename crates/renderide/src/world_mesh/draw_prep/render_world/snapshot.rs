@@ -151,7 +151,7 @@ pub(super) fn rebuild_prepared_snapshot(
     } else {
         rebuild_snapshot_serial(render_world, &inputs, active_space_ids, &reused_space_draws);
     }
-    render_world.prepared.finish_cached_rebuild();
+    render_world.prepared.finish_cached_rebuild(scene);
 }
 
 /// Builds deterministic snapshot-copy tasks from active render spaces.

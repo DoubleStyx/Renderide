@@ -70,6 +70,7 @@ fn prepared_draw(space_id: RenderSpaceId) -> FramePreparedDraw {
         space_id,
         renderable_index: 0,
         instance_id: MeshRendererInstanceId(11),
+        renderer_ordinal: 0,
         node_id: 0,
         mesh_asset_id: 7,
         is_overlay: false,

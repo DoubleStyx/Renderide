@@ -42,6 +42,7 @@ fn prepared_draw(space_id: RenderSpaceId, renderable_index: usize) -> FramePrepa
         space_id,
         renderable_index,
         instance_id: Default::default(),
+        renderer_ordinal: 0,
         node_id: -1,
         mesh_asset_id: 1,
         is_overlay: false,

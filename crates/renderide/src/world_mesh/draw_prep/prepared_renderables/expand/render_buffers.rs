@@ -136,6 +136,7 @@ fn try_expand_render_buffer_renderer(
         space_id: ctx.space_id,
         renderable_index,
         instance_id: particle_renderer_instance_id(kind, renderable_index),
+        renderer_ordinal: 0,
         node_id,
         mesh_asset_id,
         is_overlay: ctx
