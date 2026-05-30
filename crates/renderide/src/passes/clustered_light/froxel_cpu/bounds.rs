@@ -1,4 +1,5 @@
 use glam::{Mat4, Vec2, Vec3, Vec4};
+use rayon::prelude::*;
 
 use crate::gpu::GpuLight;
 use crate::world_mesh::cluster::{ClusterFrameParams, TILE_SIZE, sanitize_cluster_clip_planes};
@@ -190,6 +191,7 @@ pub(super) fn build_eye_froxel_spheres(
         return Some(Vec::new());
     }
 
+    profiling::scope!("clustered_light::build_eye_froxel_spheres");
     let mut all_spheres = Vec::with_capacity(eye_params.len());
     for (params, &layout) in eye_params.iter().zip(layouts.iter()) {
         all_spheres.push(froxel_bounding_spheres(*params, layout)?);
@@ -218,16 +220,43 @@ fn froxel_bounding_spheres(
         return None;
     }
 
-    let cluster_count = layout.cluster_count()?;
-    let mut spheres = Vec::with_capacity(cluster_count);
-    for z in 0..layout.cluster_count_z {
-        for y in 0..layout.cluster_count_y {
-            for x in 0..layout.cluster_count_x {
-                spheres.push(cluster_aabb(params, inv_proj, layout, x, y, z)?.bounding_sphere());
+    (0..layout.cluster_count_z)
+        .into_par_iter()
+        .map(|z| {
+            let depth_bounds = cluster_z_depth_bounds(
+                z,
+                layout.cluster_count_z,
+                params.near_clip,
+                params.far_clip,
+            );
+            ClusterDepthParams {
+                cluster_z: z,
+                near_depth: depth_bounds.0,
+                far_depth: depth_bounds.1,
             }
-        }
-    }
-    Some(spheres)
+        })
+        .flat_map_iter(|depth_params| {
+            (0..layout.cluster_count_y)
+                .into_iter()
+                .map(move |y| (y, depth_params))
+        })
+        .flat_map_iter(|(y, depth_params)| {
+            (0..layout.cluster_count_x)
+                .into_iter()
+                .map(move |x| (x, y, depth_params))
+        })
+        .map(|(x, y, depth_params)| {
+            cluster_aabb(params, inv_proj, layout, x, y, depth_params).map(|c| c.bounding_sphere())
+        })
+        .collect()
+}
+
+/// Cached logarithmic clustered-depth bounds for one Z slice.
+#[derive(Clone, Copy, Debug)]
+struct ClusterDepthParams {
+    cluster_z: u32,
+    near_depth: f32,
+    far_depth: f32,
 }
 
 /// Computes the view-space AABB for one froxel.
@@ -237,14 +266,13 @@ fn cluster_aabb(
     layout: FroxelLayout,
     cluster_x: u32,
     cluster_y: u32,
-    cluster_z: u32,
+    depth_params: ClusterDepthParams,
 ) -> Option<FroxelAabb> {
-    let (near_depth, far_depth) = cluster_z_depth_bounds(
+    let ClusterDepthParams {
         cluster_z,
-        layout.cluster_count_z,
-        params.near_clip,
-        params.far_clip,
-    );
+        near_depth,
+        far_depth,
+    } = depth_params;
     let tile_near = -near_depth;
     let tile_far = -far_depth;
 
