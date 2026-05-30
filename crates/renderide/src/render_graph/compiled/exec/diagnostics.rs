@@ -229,6 +229,21 @@ impl CommandEncodingDiagnostics {
                 .saturating_add(self.command_stats.estimated_bandwidth_bytes),
         };
         crate::profiling::plot_command_encoding(&sample);
+        crate::profiling::plot_frame_upload_arena(
+            &crate::profiling::FrameUploadArenaProfileSample {
+                fallback_writes: self.upload_stats.fallback_writes,
+                persistent_staging_bytes: self.upload_stats.persistent_staging_bytes,
+                persistent_slot_reuses: self.upload_stats.persistent_slot_reuses,
+                persistent_slot_grows: self.upload_stats.persistent_slot_grows,
+                temporary_staging_bytes: self.upload_stats.temporary_staging_bytes,
+                temporary_staging_fallbacks: self.upload_stats.temporary_staging_fallbacks,
+                oversized_queue_fallback_writes: self.upload_stats.oversized_queue_fallback_writes,
+                arena_capacity_bytes: self.upload_stats.arena_capacity_bytes,
+                arena_free_slots: self.upload_stats.arena_free_slots,
+                arena_in_flight_slots: self.upload_stats.arena_in_flight_slots,
+                arena_remapping_slots: self.upload_stats.arena_remapping_slots,
+            },
+        );
     }
 
     pub(super) fn record_flight_event(&self, gpu: &GpuContext) {

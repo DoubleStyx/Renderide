@@ -106,6 +106,7 @@ mod tests {
             frame_graph_estimated_bandwidth_bytes: 6,
             gpu_light_count: 12,
             signed_scene_color_active: true,
+            upload_arena: Default::default(),
         };
 
         let fragment = MeshDrawFragment::capture(&backend, 13, 14, 15, 16);

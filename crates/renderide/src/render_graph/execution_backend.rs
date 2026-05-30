@@ -20,7 +20,7 @@ use crate::mesh_deform::{
     GpuSkinCache, MeshDeformScratch, MeshPreprocessPipelines, PaddedPerDrawUniforms, SkinCacheKey,
 };
 use crate::occlusion::OcclusionGraphHook;
-use crate::render_graph::frame_upload_batch::GraphUploadSink;
+use crate::render_graph::frame_upload_batch::{FrameUploadBatchStats, GraphUploadSink};
 use crate::render_graph::upload_arena::PersistentUploadArena;
 
 /// Cloned references to the shared clustered-light storage buffers.
@@ -262,6 +262,8 @@ pub trait GraphExecutionBackend {
     fn history_registry_mut(&mut self) -> &mut HistoryRegistry;
     /// Persistent upload staging arena.
     fn upload_arena_mut(&mut self) -> &mut PersistentUploadArena;
+    /// Publishes upload drain stats for diagnostics.
+    fn record_frame_upload_stats(&mut self, stats: FrameUploadBatchStats);
     /// Scene-color format selected for this graph frame.
     fn scene_color_format_wgpu(&self) -> wgpu::TextureFormat;
     /// GPU limits snapshot after attach.

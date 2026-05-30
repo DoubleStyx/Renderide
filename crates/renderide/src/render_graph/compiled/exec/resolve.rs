@@ -448,41 +448,68 @@ impl CompiledRenderGraph {
         }
     }
 
-    /// Same as [`Self::resolve_view_from_target`] but owns its color/depth handles.
-    pub(super) fn resolve_owned_view_from_target(
+    /// Resolves a view target into owned metadata and reusable attachments without requiring a
+    /// swapchain image to be acquired.
+    pub(super) fn resolve_owned_view_metadata_from_target(
         view_id: ViewId,
         profile: RenderPathProfile,
         target: &FrameViewTarget<'_>,
         gpu: &mut GpuContext,
-        backbuffer_view_holder: Option<&wgpu::TextureView>,
     ) -> Result<OwnedResolvedView, GraphExecuteError> {
-        let resolved =
-            Self::resolve_view_from_target(view_id, profile, target, gpu, backbuffer_view_holder)?;
-        let offscreen_color_copy = match target {
-            FrameViewTarget::OffscreenRt(ext) => {
-                ext.copy_to_color.map(|copy| ResolvedOffscreenColorCopy {
+        match target {
+            FrameViewTarget::Swapchain => {
+                let surface_format = profile.resolve_color_format(target, gpu);
+                let viewport_px = gpu.surface_extent_px();
+                let sample_count = profile.resolve_sample_count(gpu);
+                let (depth_texture, depth_view) = gpu
+                    .ensure_depth_target()
+                    .map_err(GraphExecuteError::DepthTarget)?;
+                Ok(OwnedResolvedView {
+                    depth_texture: depth_texture.clone(),
+                    depth_view: depth_view.clone(),
+                    backbuffer: None,
+                    surface_format,
+                    viewport_px,
+                    multiview_stereo: false,
+                    offscreen_write_render_texture_asset_id: None,
+                    view_id,
+                    sample_count,
+                    post_processing: profile.post_processing(),
+                    offscreen_color_copy: None,
+                })
+            }
+            FrameViewTarget::ExternalMultiview(ext) => Ok(OwnedResolvedView {
+                depth_texture: (*ext.depth_texture).clone(),
+                depth_view: (*ext.depth_view).clone(),
+                backbuffer: Some((*ext.color_view).clone()),
+                surface_format: profile.resolve_color_format(target, gpu),
+                viewport_px: ext.extent_px,
+                multiview_stereo: true,
+                offscreen_write_render_texture_asset_id: None,
+                view_id,
+                sample_count: profile.resolve_sample_count(gpu),
+                post_processing: profile.post_processing(),
+                offscreen_color_copy: None,
+            }),
+            FrameViewTarget::OffscreenRt(ext) => Ok(OwnedResolvedView {
+                depth_texture: (*ext.depth_texture).clone(),
+                depth_view: (*ext.depth_view).clone(),
+                backbuffer: Some((*ext.color_view).clone()),
+                surface_format: profile.resolve_color_format(target, gpu),
+                viewport_px: ext.extent_px,
+                multiview_stereo: false,
+                offscreen_write_render_texture_asset_id: Some(ext.render_texture_asset_id),
+                view_id,
+                sample_count: profile.resolve_sample_count(gpu),
+                post_processing: profile.post_processing(),
+                offscreen_color_copy: ext.copy_to_color.map(|copy| ResolvedOffscreenColorCopy {
                     source_texture: (*ext.color_texture).clone(),
                     destination_texture: (*copy.destination_texture).clone(),
                     destination_origin_px: copy.destination_origin_px,
                     extent_px: copy.extent_px,
-                })
-            }
-            FrameViewTarget::Swapchain | FrameViewTarget::ExternalMultiview(_) => None,
-        };
-        Ok(OwnedResolvedView {
-            depth_texture: resolved.depth_texture.clone(),
-            depth_view: resolved.depth_view.clone(),
-            backbuffer: resolved.backbuffer.cloned(),
-            surface_format: resolved.surface_format,
-            viewport_px: resolved.viewport_px,
-            multiview_stereo: resolved.multiview_stereo,
-            offscreen_write_render_texture_asset_id: resolved
-                .offscreen_write_render_texture_asset_id,
-            view_id: resolved.view_id,
-            sample_count: resolved.sample_count,
-            post_processing: resolved.post_processing,
-            offscreen_color_copy,
-        })
+                }),
+            }),
+        }
     }
 }
 

@@ -760,6 +760,57 @@ impl StatsSection for FrameGraphSection {
                 "Estimated bandwidth",
                 &hud_fmt::bytes_compact(r.frame_graph_estimated_bandwidth_bytes),
             );
+            kv(
+                ui,
+                "Upload arena slots",
+                &format!(
+                    "{} free / {} in flight / {} remapping",
+                    r.upload_arena.arena_free_slots,
+                    r.upload_arena.arena_in_flight_slots,
+                    r.upload_arena.arena_remapping_slots
+                ),
+            );
+            kv(
+                ui,
+                "Upload arena capacity",
+                &hud_fmt::bytes_compact(r.upload_arena.arena_capacity_bytes),
+            );
+            kv(
+                ui,
+                "Upload staging",
+                &format!(
+                    "{} persistent / {} temporary / {} reuse / {} grow",
+                    hud_fmt::bytes_compact(r.upload_arena.persistent_staging_bytes),
+                    hud_fmt::bytes_compact(r.upload_arena.temporary_staging_bytes),
+                    r.upload_arena.persistent_slot_reuses,
+                    r.upload_arena.persistent_slot_grows
+                ),
+            );
+            let upload_fallbacks = r
+                .upload_arena
+                .fallback_writes
+                .saturating_add(r.upload_arena.temporary_staging_fallbacks)
+                .saturating_add(r.upload_arena.oversized_queue_fallback_writes);
+            kv_err_or_dim(
+                ui,
+                "Upload fallbacks",
+                format!(
+                    "{} write / {} temp / {} oversized",
+                    r.upload_arena.fallback_writes,
+                    r.upload_arena.temporary_staging_fallbacks,
+                    r.upload_arena.oversized_queue_fallback_writes
+                ),
+                upload_fallbacks as u64,
+            );
+            kv(
+                ui,
+                "Upload batch",
+                &format!(
+                    "{} writes / {}",
+                    r.upload_arena.writes,
+                    hud_fmt::bytes_compact(r.upload_arena.bytes as u64)
+                ),
+            );
             kv(ui, "GPU lights (packed)", &format!("{}", r.gpu_light_count));
             let (label, color) = if r.signed_scene_color_active {
                 ("active", TAG_OK)
