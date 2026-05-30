@@ -6,7 +6,7 @@ Also available as an [AUR package](https://aur.archlinux.org/packages/renderide-
 
 If you're interested in supporting my work, please consider donating on [Ko-Fi](https://ko-fi.com/DoubleStyx) or [GitHub Sponsors](https://github.com/sponsors/DoubleStyx).
 
-## PHOTOSENSITIVITY WARNING
+## Photosensitivity Warning
 
 Renderide is experimental and may have visual bugs that are more severe or unexpected than Resonite's default Unity renderer, including flicker, flashing frames, incorrect brightness or contrast, broken post-processing, and rapidly changing patterns. These renderer artifacts, as well as user-created content, can trigger seizures or other symptoms in people with photosensitive epilepsy or related sensitivities. Stop using Renderide immediately and move away from the display if you feel dizzy, disoriented, nauseated, experience eye discomfort, or notice involuntary movement or vision changes.
 
