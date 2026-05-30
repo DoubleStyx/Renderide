@@ -52,7 +52,7 @@ pub struct MaterialDrawBatchKey {
     pub embedded_needs_wide_uvs: bool,
     /// Whether the embedded stem needs any stream outside UV0/color/UV1.
     pub embedded_needs_extended_vertex_streams: bool,
-    /// Whether the material requires the intersection subpass with a depth snapshot.
+    /// Whether the material declares intersection-depth behavior and needs the depth snapshot.
     pub embedded_requires_intersection_pass: bool,
     /// Whether the shader samples the scene-depth snapshot through frame globals.
     pub embedded_uses_scene_depth_snapshot: bool,

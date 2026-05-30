@@ -35,7 +35,7 @@ struct ForwardPassBindGroups<'a> {
     empty_material: &'a Arc<wgpu::BindGroup>,
 }
 
-/// Pipeline and embedded-bind state for one opaque or intersection subpass.
+/// Pipeline and embedded-bind state for one opaque or nontransparent intersection subpass.
 struct ForwardPassRasterConfig {
     /// Whether draw calls may use non-zero `first_instance`.
     supports_base_instance: bool,
@@ -272,7 +272,7 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_normal_gr
     true
 }
 
-/// Records the intersection draw subset into a render pass already opened by the graph.
+/// Records the nontransparent intersection draw subset into a render pass already opened by the graph.
 pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_intersection_graph_raster(
     rpass: &mut wgpu::RenderPass<'_>,
     _device: &wgpu::Device,

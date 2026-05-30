@@ -45,7 +45,7 @@ pub(crate) struct WorldMeshForwardPipelineState {
 pub(crate) struct PreparedWorldMeshForwardFrame {
     /// Sorted world mesh draw items for this view.
     pub draws: Vec<WorldMeshDrawItem>,
-    /// Per-view [`InstancePlan`]: per-draw slab layout plus regular and intersection draw groups.
+    /// Per-view [`InstancePlan`]: per-draw slab layout plus phase-grouped draw submissions.
     pub plan: InstancePlan,
     /// Pipeline format/sample/multiview state.
     pub pipeline: WorldMeshForwardPipelineState,
@@ -55,9 +55,9 @@ pub(crate) struct PreparedWorldMeshForwardFrame {
     pub supports_base_instance: bool,
     /// Whether the opaque/clear forward subpass was already recorded by a split graph node.
     pub opaque_recorded: bool,
-    /// Whether the scene-depth snapshot for intersection draws was already recorded by a split graph node.
+    /// Whether the scene-depth snapshot was already recorded by a split graph node.
     pub depth_snapshot_recorded: bool,
-    /// Whether the intersection/color-resolve tail raster was already recorded by a split graph node.
+    /// Whether tail raster work was already recorded by a split graph node.
     pub tail_raster_recorded: bool,
     /// Freshness state for the single-sample depth target when MSAA rendering is active.
     pub depth_freshness: DepthFreshness,

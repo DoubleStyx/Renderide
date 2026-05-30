@@ -1,6 +1,6 @@
 //! Unity PBS intersect specular (`Shader "Custom/PBSIntersectSpecular"`): specular workflow with
-//! intersection tint/emission parameters sampled from the scene-depth snapshot copied between the
-//! opaque and intersection subpasses.
+//! intersection tint/emission parameters sampled from the scene-depth snapshot copied after the
+//! opaque forward pass.
 //!
 //! Froox variant bits populate `_RenderideVariantBits`; this shader decodes PBSIntersectSpecular's
 //! shader-specific keyword bits locally.

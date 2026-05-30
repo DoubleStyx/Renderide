@@ -136,18 +136,20 @@ mod tests {
             mono
         ));
 
-        assert!(embedded_stem_requires_intersection_pass(
-            "pbsintersect_default",
-            mono
-        ));
-        assert!(!embedded_stem_uses_scene_color_snapshot(
-            "pbsintersect_default",
-            mono
-        ));
-        assert!(embedded_stem_uses_scene_depth_snapshot(
-            "pbsintersect_default",
-            mono
-        ));
+        for stem in ["pbsintersect_default", "pbsintersectspecular_default"] {
+            assert!(
+                embedded_stem_requires_intersection_pass(stem, mono),
+                "{stem}"
+            );
+            assert!(
+                !embedded_stem_uses_scene_color_snapshot(stem, mono),
+                "{stem}"
+            );
+            assert!(
+                embedded_stem_uses_scene_depth_snapshot(stem, mono),
+                "{stem}"
+            );
+        }
     }
 
     #[test]
@@ -160,7 +162,7 @@ mod tests {
                 );
                 assert!(
                     !embedded_stem_requires_intersection_pass(stem, permutation),
-                    "{stem:?} should not route through the intersection subpass",
+                    "{stem:?} should not require intersection-depth routing",
                 );
 
                 let composed = embedded_composed_stem_for_permutation(stem, permutation);

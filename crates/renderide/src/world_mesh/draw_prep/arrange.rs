@@ -518,6 +518,46 @@ mod tests {
     }
 
     #[test]
+    fn transparent_intersection_draws_share_transparent_tail_order() {
+        let mut intersect_near = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 1,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 1,
+            node_id: 1,
+            slot_index: 0,
+            collect_order: 0,
+            alpha_blended: true,
+        });
+        intersect_near.batch_key.embedded_requires_intersection_pass = true;
+        intersect_near.batch_key.embedded_uses_scene_depth_snapshot = true;
+        refresh_keys(&mut intersect_near);
+        set_camera_distance(&mut intersect_near, 4.0);
+
+        let mut transparent_far = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 2,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 1,
+            node_id: 2,
+            slot_index: 0,
+            collect_order: 1,
+            alpha_blended: true,
+        });
+        set_camera_distance(&mut transparent_far, 64.0);
+
+        let mut draws = vec![intersect_near, transparent_far];
+        let stats = arrange_draws_by_phase_bins(&mut draws, false);
+
+        assert_eq!(stats.nontransparent_binned_draws, 0);
+        assert_eq!(stats.strict_sorted_draws, 2);
+        assert!(!draws[0].batch_key.embedded_requires_intersection_pass);
+        assert!(draws[1].batch_key.embedded_requires_intersection_pass);
+    }
+
+    #[test]
     fn grab_and_regular_transparent_share_one_strict_tail_order() {
         let mut grab = dummy_world_mesh_draw_item(DummyDrawItemSpec {
             material_asset_id: 1,
