@@ -235,15 +235,9 @@ fn froxel_bounding_spheres(
                 far_depth: depth_bounds.1,
             }
         })
-        .flat_map_iter(|depth_params| {
-            (0..layout.cluster_count_y)
-                .into_iter()
-                .map(move |y| (y, depth_params))
-        })
+        .flat_map_iter(|depth_params| (0..layout.cluster_count_y).map(move |y| (y, depth_params)))
         .flat_map_iter(|(y, depth_params)| {
-            (0..layout.cluster_count_x)
-                .into_iter()
-                .map(move |x| (x, y, depth_params))
+            (0..layout.cluster_count_x).map(move |x| (x, y, depth_params))
         })
         .map(|(x, y, depth_params)| {
             cluster_aabb(params, inv_proj, layout, x, y, depth_params).map(|c| c.bounding_sphere())
