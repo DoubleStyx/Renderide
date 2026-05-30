@@ -61,7 +61,7 @@ fn download_asset(asset: &ReleaseAsset, stage_dir: &Path) -> Result<PathBuf, Upd
     Ok(archive_path)
 }
 
-/// Extracts the release archive and returns the expected bundle root directory.
+/// Extracts the release archive and returns the validated bundle root directory.
 fn extract_asset(
     archive_path: &Path,
     stage_dir: &Path,
@@ -72,18 +72,92 @@ fn extract_asset(
         context: format!("create extraction directory {}", extract_dir.display()),
         source,
     })?;
-    self_update::Extract::from_source(archive_path)
-        .archive(self_update::ArchiveKind::Zip)
-        .extract_into(&extract_dir)
-        .map_err(to_self_update_error)?;
-    let bundle_root = extract_dir.join(asset_stem(asset_name)?);
-    if !bundle_root.is_dir() {
-        return Err(UpdateError::InvalidBundle(format!(
-            "expected extracted bundle root {}",
-            bundle_root.display()
-        )));
+    extract_zip_archive(archive_path, &extract_dir)?;
+    extracted_bundle_root(&extract_dir, asset_name)
+}
+
+/// Extracts a zip archive into `extract_dir` after validating every entry path.
+fn extract_zip_archive(archive_path: &Path, extract_dir: &Path) -> Result<(), UpdateError> {
+    let archive = fs::File::open(archive_path).map_err(|source| UpdateError::Io {
+        context: format!("open update archive {}", archive_path.display()),
+        source,
+    })?;
+    let mut zip = zip::ZipArchive::new(archive)
+        .map_err(|e| UpdateError::InvalidArchive(format!("{}: {e}", archive_path.display())))?;
+    for index in 0..zip.len() {
+        let mut entry = zip
+            .by_index(index)
+            .map_err(|e| UpdateError::InvalidArchive(e.to_string()))?;
+        bundle::validate_zip_entry_name(entry.name())?;
+        let output_path = extract_dir.join(entry.name());
+        if entry.is_dir() {
+            fs::create_dir_all(&output_path).map_err(|source| UpdateError::Io {
+                context: format!("create extracted directory {}", output_path.display()),
+                source,
+            })?;
+            continue;
+        }
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent).map_err(|source| UpdateError::Io {
+                context: format!("create extracted directory {}", parent.display()),
+                source,
+            })?;
+        }
+        let mut output = fs::File::create(&output_path).map_err(|source| UpdateError::Io {
+            context: format!("create extracted file {}", output_path.display()),
+            source,
+        })?;
+        io::copy(&mut entry, &mut output)
+            .map(|_| ())
+            .map_err(|source| UpdateError::Io {
+                context: format!("extract {} to {}", entry.name(), output_path.display()),
+                source,
+            })?;
+        set_extracted_file_permissions(&output_path, entry.unix_mode())?;
     }
-    Ok(bundle_root)
+    Ok(())
+}
+
+/// Resolves either supported release archive root layout.
+fn extracted_bundle_root(extract_dir: &Path, asset_name: &str) -> Result<PathBuf, UpdateError> {
+    let flat_manifest = extract_dir.join(super::MANIFEST_FILE);
+    if flat_manifest.is_file() {
+        return Ok(extract_dir.to_path_buf());
+    }
+
+    let nested_root = extract_dir.join(asset_stem(asset_name)?);
+    if nested_root.join(super::MANIFEST_FILE).is_file() {
+        return Ok(nested_root);
+    }
+
+    Err(UpdateError::InvalidBundle(format!(
+        "expected release manifest at {} or {}",
+        flat_manifest.display(),
+        nested_root.join(super::MANIFEST_FILE).display()
+    )))
+}
+
+/// Applies executable permissions recorded in the zip metadata on Unix.
+#[cfg(unix)]
+fn set_extracted_file_permissions(path: &Path, unix_mode: Option<u32>) -> Result<(), UpdateError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Some(mode) = unix_mode else {
+        return Ok(());
+    };
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|source| UpdateError::Io {
+        context: format!("set extracted file permissions {}", path.display()),
+        source,
+    })
+}
+
+/// Permissions are not represented portably on non-Unix platforms.
+#[cfg(not(unix))]
+fn set_extracted_file_permissions(
+    _path: &Path,
+    _unix_mode: Option<u32>,
+) -> Result<(), UpdateError> {
+    Ok(())
 }
 
 /// Installs a validated bundle into the current install directory with rollback backup.
@@ -384,5 +458,280 @@ fn sanitize_for_path(value: &str) -> String {
         "unknown".to_owned()
     } else {
         sanitized
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::{fs, process};
+
+    use self_update::update::ReleaseAsset;
+    use zip::write::SimpleFileOptions;
+
+    use super::*;
+    use crate::updater::{RELEASE_CHANNEL, github::asset_name_for};
+
+    const PLATFORM: &str = "linux-x86_64";
+    const CURRENT_TAG: &str = "nightly-2026-05-26-1111111";
+    const UPDATE_TAG: &str = "nightly-2026-05-27-2222222";
+    const CURRENT_COMMIT: &str = "1111111111111111111111111111111111111111";
+    const UPDATE_COMMIT: &str = "2222222222222222222222222222222222222222";
+    const ZIP_REGULAR_FILE_MODE: u32 = 0o100_644;
+    const ZIP_EXECUTABLE_FILE_MODE: u32 = 0o100_755;
+
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            let id = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "renderide_updater_{name}_{}_{}",
+                process::id(),
+                id
+            ));
+            fs::create_dir_all(&path).expect("create test temp dir");
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    enum TestZipEntry<'a> {
+        File {
+            name: &'a str,
+            contents: &'a [u8],
+            unix_mode: Option<u32>,
+        },
+        Directory(&'a str),
+    }
+
+    fn metadata() -> ReleaseBuildMetadata {
+        ReleaseBuildMetadata {
+            channel: RELEASE_CHANNEL.to_owned(),
+            tag: CURRENT_TAG.to_owned(),
+            commit: CURRENT_COMMIT.to_owned(),
+            platform: PLATFORM.to_owned(),
+        }
+    }
+
+    fn candidate(asset_name: String) -> UpdateCandidate {
+        UpdateCandidate {
+            tag: UPDATE_TAG.to_owned(),
+            commit: UPDATE_COMMIT.to_owned(),
+            changelog: String::new(),
+            asset: ReleaseAsset {
+                name: asset_name,
+                download_url: String::new(),
+            },
+        }
+    }
+
+    fn manifest() -> String {
+        serde_json::json!({
+            "schema": 1,
+            "channel": RELEASE_CHANNEL,
+            "tag": UPDATE_TAG,
+            "commit": UPDATE_COMMIT,
+            "platform": PLATFORM,
+            "required_files": ["renderide", "renderide-renderer", "xr"]
+        })
+        .to_string()
+    }
+
+    fn write_test_zip(path: &Path, entries: &[TestZipEntry<'_>]) {
+        let file = fs::File::create(path).expect("create test zip");
+        let mut writer = zip::ZipWriter::new(file);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        for entry in entries {
+            match entry {
+                TestZipEntry::File {
+                    name,
+                    contents,
+                    unix_mode,
+                } => {
+                    let options = unix_mode.map_or(options, |mode| options.unix_permissions(mode));
+                    writer.start_file(name, options).expect("start zip file");
+                    writer.write_all(contents).expect("write zip file");
+                }
+                TestZipEntry::Directory(name) => {
+                    writer.add_directory(*name, options).expect("add zip dir");
+                }
+            }
+        }
+        writer.finish().expect("finish test zip");
+    }
+
+    #[test]
+    fn flat_release_archive_extracts_as_bundle_root() {
+        let tmp = TempDir::new("flat");
+        let asset_name = asset_name_for(PLATFORM, UPDATE_TAG);
+        let archive_path = tmp.path().join(&asset_name);
+        let manifest = manifest();
+        write_test_zip(
+            &archive_path,
+            &[
+                TestZipEntry::Directory("xr/"),
+                TestZipEntry::File {
+                    name: "renderide-release.json",
+                    contents: manifest.as_bytes(),
+                    unix_mode: Some(ZIP_REGULAR_FILE_MODE),
+                },
+                TestZipEntry::File {
+                    name: "renderide",
+                    contents: b"launcher",
+                    unix_mode: Some(ZIP_EXECUTABLE_FILE_MODE),
+                },
+                TestZipEntry::File {
+                    name: "renderide-renderer",
+                    contents: b"renderer",
+                    unix_mode: Some(ZIP_EXECUTABLE_FILE_MODE),
+                },
+                TestZipEntry::File {
+                    name: "xr/actions.json",
+                    contents: b"{}",
+                    unix_mode: Some(ZIP_REGULAR_FILE_MODE),
+                },
+            ],
+        );
+
+        let stage_dir = tmp.path().join("stage");
+        let root = extract_asset(&archive_path, &stage_dir, &asset_name).expect("extract flat zip");
+
+        assert_eq!(root, stage_dir.join("extracted"));
+        bundle::validate_bundle_root(&root, &metadata(), &candidate(asset_name))
+            .expect("flat bundle root validates");
+    }
+
+    #[test]
+    fn nested_release_archive_extracts_as_bundle_root() {
+        let tmp = TempDir::new("nested");
+        let asset_name = asset_name_for(PLATFORM, UPDATE_TAG);
+        let archive_path = tmp.path().join(&asset_name);
+        let root_name = asset_stem(&asset_name).expect("asset stem");
+        let manifest = manifest();
+        write_test_zip(
+            &archive_path,
+            &[
+                TestZipEntry::Directory(&format!("{root_name}/xr/")),
+                TestZipEntry::File {
+                    name: &format!("{root_name}/renderide-release.json"),
+                    contents: manifest.as_bytes(),
+                    unix_mode: Some(ZIP_REGULAR_FILE_MODE),
+                },
+                TestZipEntry::File {
+                    name: &format!("{root_name}/renderide"),
+                    contents: b"launcher",
+                    unix_mode: Some(ZIP_EXECUTABLE_FILE_MODE),
+                },
+                TestZipEntry::File {
+                    name: &format!("{root_name}/renderide-renderer"),
+                    contents: b"renderer",
+                    unix_mode: Some(ZIP_EXECUTABLE_FILE_MODE),
+                },
+                TestZipEntry::File {
+                    name: &format!("{root_name}/xr/actions.json"),
+                    contents: b"{}",
+                    unix_mode: Some(ZIP_REGULAR_FILE_MODE),
+                },
+            ],
+        );
+
+        let stage_dir = tmp.path().join("stage");
+        let root =
+            extract_asset(&archive_path, &stage_dir, &asset_name).expect("extract nested zip");
+
+        assert_eq!(root, stage_dir.join("extracted").join(root_name));
+        bundle::validate_bundle_root(&root, &metadata(), &candidate(asset_name))
+            .expect("nested bundle root validates");
+    }
+
+    #[test]
+    fn zip_directory_entries_extract_without_file_creation() {
+        let tmp = TempDir::new("directory_entry");
+        let archive_path = tmp.path().join("directory-entry.zip");
+        write_test_zip(
+            &archive_path,
+            &[
+                TestZipEntry::Directory("xr/"),
+                TestZipEntry::File {
+                    name: "xr/actions.json",
+                    contents: b"{}",
+                    unix_mode: Some(ZIP_REGULAR_FILE_MODE),
+                },
+            ],
+        );
+        let extract_dir = tmp.path().join("extracted");
+        fs::create_dir_all(&extract_dir).expect("create extraction root");
+
+        extract_zip_archive(&archive_path, &extract_dir).expect("extract directory zip entry");
+
+        assert!(extract_dir.join("xr").is_dir());
+        assert_eq!(
+            fs::read_to_string(extract_dir.join("xr/actions.json")).expect("read extracted file"),
+            "{}"
+        );
+    }
+
+    #[test]
+    fn zip_extraction_rejects_unsafe_paths() {
+        let tmp = TempDir::new("unsafe");
+        let archive_path = tmp.path().join("unsafe.zip");
+        write_test_zip(
+            &archive_path,
+            &[TestZipEntry::File {
+                name: "../escape",
+                contents: b"nope",
+                unix_mode: None,
+            }],
+        );
+        let extract_dir = tmp.path().join("extracted");
+        fs::create_dir_all(&extract_dir).expect("create extraction root");
+
+        assert!(extract_zip_archive(&archive_path, &extract_dir).is_err());
+        assert!(!tmp.path().join("escape").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zip_extraction_preserves_unix_executable_bits() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new("permissions");
+        let archive_path = tmp.path().join("permissions.zip");
+        write_test_zip(
+            &archive_path,
+            &[TestZipEntry::File {
+                name: "renderide",
+                contents: b"launcher",
+                unix_mode: Some(ZIP_EXECUTABLE_FILE_MODE),
+            }],
+        );
+        let extract_dir = tmp.path().join("extracted");
+        fs::create_dir_all(&extract_dir).expect("create extraction root");
+
+        extract_zip_archive(&archive_path, &extract_dir).expect("extract permission zip");
+
+        let mode = fs::metadata(extract_dir.join("renderide"))
+            .expect("inspect extracted launcher")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o755);
     }
 }

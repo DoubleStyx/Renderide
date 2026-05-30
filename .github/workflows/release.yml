@@ -31,6 +31,7 @@ jobs:
     outputs:
       sha: ${{ steps.pick.outputs.sha }}
       short_sha: ${{ steps.pick.outputs.short_sha }}
+      last_sha: ${{ steps.pick.outputs.last_sha }}
       tag: ${{ steps.pick.outputs.tag }}
       should_release: ${{ steps.pick.outputs.should_release }}
     steps:
@@ -79,6 +80,7 @@ jobs:
           {
             echo "sha=$candidate"
             echo "short_sha=$short"
+            echo "last_sha=$last_sha"
             echo "tag=$tag"
             echo "should_release=true"
           } >>"$GITHUB_OUTPUT"
@@ -237,6 +239,11 @@ jobs:
     if: needs.select-commit.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.select-commit.outputs.sha }}
+          fetch-depth: 0
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -245,15 +252,58 @@ jobs:
         id: notes
         env:
           SHA: ${{ needs.select-commit.outputs.sha }}
+          LAST_SHA: ${{ needs.select-commit.outputs.last_sha }}
           TAG: ${{ needs.select-commit.outputs.tag }}
         run: |
           set -euo pipefail
+
+          changelog_range_label=""
+          changelog_args=()
+          if [ -n "${LAST_SHA}" ] &&
+             git cat-file -e "${LAST_SHA}^{commit}" 2>/dev/null &&
+             git merge-base --is-ancestor "${LAST_SHA}" "${SHA}"
+          then
+            changelog_range_label="Changes since [${LAST_SHA:0:8}](https://github.com/${GITHUB_REPOSITORY}/commit/${LAST_SHA})."
+            changelog_args=("${LAST_SHA}..${SHA}")
+          else
+            changelog_range_label="No previous release commit was available, so no commit changelog was generated for this release."
+          fi
+
+          changelog_count=0
+          {
+            echo "${changelog_range_label}"
+            if [ "${#changelog_args[@]}" -gt 0 ]; then
+              echo ""
+              while IFS=$'\x1f' read -r full_sha subject author; do
+                if [ -z "${full_sha}" ]; then
+                  continue
+                fi
+                short_sha="${full_sha:0:8}"
+                printf -- '- [%s](https://github.com/%s/commit/%s) %s by %s\n' \
+                  "${short_sha}" "${GITHUB_REPOSITORY}" "${full_sha}" "${subject}" "${author}"
+                changelog_count=$((changelog_count + 1))
+              done < <(git log --no-merges --reverse --format='%H%x1f%s%x1f%an' "${changelog_args[@]}")
+            fi
+          } > changelog.md
+
+          if [ "${#changelog_args[@]}" -gt 0 ] && [ "${changelog_count}" -eq 0 ]; then
+            {
+              echo "${changelog_range_label}"
+              echo ""
+              echo "_No non-merge commits found since the previous release._"
+            } > changelog.md
+          fi
+
           {
             echo "Commit: ${SHA}"
             echo ""
             echo "Nightly build of [${SHA}](https://github.com/${GITHUB_REPOSITORY}/commit/${SHA})."
             echo ""
             echo "Each zip contains the launcher (\`renderide\`), the renderer (\`renderide-renderer\`), and the XR action manifests. Windows and macOS zips also bundle the Khronos OpenXR loader; Linux uses the system OpenXR loader."
+            echo ""
+            echo "## Changelog"
+            echo ""
+            cat changelog.md
           } > release-notes.md
 
       - uses: softprops/action-gh-release@v2

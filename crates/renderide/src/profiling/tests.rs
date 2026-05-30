@@ -23,6 +23,7 @@ fn stubs_are_accessible_without_tracy_feature() {
     plot_surface_acquire_outcome(true, false, false);
     plot_event_loop_wait_ms(11.0);
     plot_event_loop_idle_ms(11.0);
+    plot_render_world_maintenance(crate::world_mesh::RenderWorldMaintenanceStats::default());
     plot_ipc_poll(&IpcPollProfileSample {
         waited: std::time::Duration::from_millis(1),
         messages: 2,

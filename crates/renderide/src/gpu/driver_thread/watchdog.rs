@@ -8,13 +8,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Arms a background thread that logs if [`Self::disarm`] is not called within `timeout`.
 pub(crate) struct BlockingCallWatchdog {
-    /// Sender whose disconnect signals the worker to exit.
-    tx: Option<mpsc::SyncSender<()>>,
-    /// Joined during [`Self::disarm`] so the worker observes disconnect before return.
+    /// Sender carrying the instant when the guarded call completed.
+    tx: Option<mpsc::Sender<Instant>>,
+    /// Joined during [`Self::disarm`] so the worker exits before return.
     handle: Option<thread::JoinHandle<()>>,
 }
 
@@ -49,18 +49,12 @@ impl BlockingCallWatchdog {
         shutdown_requested: Option<Arc<AtomicBool>>,
         on_timeout: Option<Box<dyn FnOnce() + Send + 'static>>,
     ) -> Self {
-        let (tx, rx) = mpsc::sync_channel::<()>(0);
+        let armed_at = Instant::now();
+        let (tx, rx) = mpsc::channel::<Instant>();
         let handle = thread::Builder::new()
             .name(format!("gpu-blocking-call-watchdog:{label}"))
-            .spawn(move || match rx.recv_timeout(timeout) {
-                Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {}
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    log_watchdog_timeout(label, timeout, shutdown_requested.as_deref());
-                    if let Some(on_timeout) = on_timeout {
-                        on_timeout();
-                    }
-                    let _ = rx.recv();
-                }
+            .spawn(move || {
+                run_watchdog(rx, armed_at, timeout, label, shutdown_requested, on_timeout);
             })
             .ok();
         Self {
@@ -69,12 +63,92 @@ impl BlockingCallWatchdog {
         }
     }
 
-    /// Signals the worker to exit and waits for it to observe the disconnect.
+    /// Signals the worker to exit and waits for it to observe completion.
     pub(crate) fn disarm(mut self) {
-        drop(self.tx.take());
+        self.signal_disarm();
+    }
+
+    fn signal_disarm(&mut self) {
+        if let Some(tx) = self.tx.take() {
+            let _ = tx.send(Instant::now());
+        }
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
+    }
+}
+
+fn run_watchdog(
+    rx: mpsc::Receiver<Instant>,
+    armed_at: Instant,
+    timeout: Duration,
+    label: &'static str,
+    shutdown_requested: Option<Arc<AtomicBool>>,
+    mut on_timeout: Option<Box<dyn FnOnce() + Send + 'static>>,
+) {
+    let Some(deadline) = armed_at.checked_add(timeout) else {
+        let _ = rx.recv();
+        return;
+    };
+
+    if let Ok(disarmed_at) = rx.try_recv() {
+        fire_if_disarm_missed_deadline(
+            disarmed_at,
+            deadline,
+            label,
+            timeout,
+            shutdown_requested.as_deref(),
+            &mut on_timeout,
+        );
+        return;
+    }
+
+    match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        Ok(disarmed_at) => {
+            fire_if_disarm_missed_deadline(
+                disarmed_at,
+                deadline,
+                label,
+                timeout,
+                shutdown_requested.as_deref(),
+                &mut on_timeout,
+            );
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {}
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            fire_watchdog_timeout(
+                label,
+                timeout,
+                shutdown_requested.as_deref(),
+                &mut on_timeout,
+            );
+            let _ = rx.recv();
+        }
+    }
+}
+
+fn fire_if_disarm_missed_deadline(
+    disarmed_at: Instant,
+    deadline: Instant,
+    label: &'static str,
+    timeout: Duration,
+    shutdown_requested: Option<&AtomicBool>,
+    on_timeout: &mut Option<Box<dyn FnOnce() + Send + 'static>>,
+) {
+    if disarmed_at >= deadline {
+        fire_watchdog_timeout(label, timeout, shutdown_requested, on_timeout);
+    }
+}
+
+fn fire_watchdog_timeout(
+    label: &'static str,
+    timeout: Duration,
+    shutdown_requested: Option<&AtomicBool>,
+    on_timeout: &mut Option<Box<dyn FnOnce() + Send + 'static>>,
+) {
+    log_watchdog_timeout(label, timeout, shutdown_requested);
+    if let Some(on_timeout) = on_timeout.take() {
+        on_timeout();
     }
 }
 
@@ -98,18 +172,18 @@ fn log_watchdog_timeout(
 
 impl Drop for BlockingCallWatchdog {
     fn drop(&mut self) {
-        drop(self.tx.take());
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
+        self.signal_disarm();
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::time::Instant;
-
     use super::*;
+
+    fn instant_before_now(offset: Duration) -> Instant {
+        let now = Instant::now();
+        now.checked_sub(offset).unwrap_or(now)
+    }
 
     #[test]
     fn disarm_before_timeout_does_not_block() {
@@ -166,6 +240,52 @@ mod tests {
         );
         thread::sleep(Duration::from_millis(50));
         watchdog.disarm();
+        assert_eq!(fired.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn early_disarm_before_delayed_worker_start_does_not_fire() {
+        let (tx, rx) = mpsc::channel();
+        let armed_at = instant_before_now(Duration::from_millis(50));
+        let disarmed_at = armed_at + Duration::from_millis(1);
+        let fired = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let fired_for_hook = Arc::clone(&fired);
+
+        assert!(tx.send(disarmed_at).is_ok());
+        run_watchdog(
+            rx,
+            armed_at,
+            Duration::from_millis(10),
+            "test_early_disarm_before_delayed_worker_start",
+            None,
+            Some(Box::new(move || {
+                fired_for_hook.fetch_add(1, Ordering::Relaxed);
+            })),
+        );
+
+        assert_eq!(fired.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn late_disarm_before_delayed_worker_start_fires_once() {
+        let (tx, rx) = mpsc::channel();
+        let armed_at = instant_before_now(Duration::from_millis(50));
+        let disarmed_at = armed_at + Duration::from_millis(20);
+        let fired = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let fired_for_hook = Arc::clone(&fired);
+
+        assert!(tx.send(disarmed_at).is_ok());
+        run_watchdog(
+            rx,
+            armed_at,
+            Duration::from_millis(10),
+            "test_late_disarm_before_delayed_worker_start",
+            None,
+            Some(Box::new(move || {
+                fired_for_hook.fetch_add(1, Ordering::Relaxed);
+            })),
+        );
+
         assert_eq!(fired.load(Ordering::Relaxed), 1);
     }
 }

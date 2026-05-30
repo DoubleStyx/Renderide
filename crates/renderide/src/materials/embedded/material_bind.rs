@@ -27,7 +27,7 @@ use super::embedded_material_bind_error::EmbeddedMaterialBindError;
 use super::layout::StemMaterialLayout;
 use super::texture_pools::EmbeddedTexturePools;
 use super::texture_resolve::default_embedded_sampler;
-use crate::gpu_resource::ShardedLru;
+use crate::gpu_resource::{AtomicCacheCounters, CacheStats, ShardedLru};
 use crate::materials::host_data::{
     MaterialPropertyLookupIds, MaterialPropertyStore, PropertyIdRegistry,
 };
@@ -58,6 +58,33 @@ pub(crate) struct EmbeddedMaterialBindGroup {
     pub(crate) bind_group: Arc<wgpu::BindGroup>,
     /// Dynamic offset for `@group(1) @binding(0)` when the shader has a material uniform block.
     pub(crate) uniform_dynamic_offset: Option<u32>,
+}
+
+/// Plain-data diagnostic snapshot for the embedded material bind-group cache.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct EmbeddedMaterialBindCacheDiagnosticSnapshot {
+    /// Cached bind-group entries currently retained across all shards.
+    pub(crate) entries: usize,
+    /// Cache hit counter.
+    pub(crate) hits: u64,
+    /// Cache miss counter.
+    pub(crate) misses: u64,
+    /// Cache insertion counter.
+    pub(crate) insertions: u64,
+    /// Cache eviction counter.
+    pub(crate) evictions: u64,
+}
+
+impl EmbeddedMaterialBindCacheDiagnosticSnapshot {
+    fn from_parts(entries: usize, stats: CacheStats) -> Self {
+        Self {
+            entries,
+            hits: stats.hits,
+            misses: stats.misses,
+            insertions: stats.insertions,
+            evictions: stats.evictions,
+        }
+    }
 }
 
 /// Embedded shader identity needed when resolving a material bind group.
@@ -180,6 +207,7 @@ pub struct EmbeddedMaterialBindResources {
     /// single-`Mutex<LruCache<...>>` whose lock was the dominant contention point during
     /// `graph::per_view_fan_out`.
     bind_cache: ShardedLru<MaterialBindCacheKey, Arc<wgpu::BindGroup>>,
+    bind_cache_stats: AtomicCacheCounters,
     sampler_cache: ShardedLru<EmbeddedSamplerCacheKey, Arc<wgpu::Sampler>>,
     /// Texture-debug HUD cache stays a single mutex: per-stem call frequency is low and the
     /// HUD does not run inside the per-view rayon fan-out, so sharding has no benefit here.
@@ -234,6 +262,7 @@ impl EmbeddedMaterialBindResources {
                 .collect(),
             uniform_arena_hasher: RandomState::new(),
             bind_cache: ShardedLru::new(max_cached_embedded_bind_groups(), EMBEDDED_CACHE_SHARDS),
+            bind_cache_stats: AtomicCacheCounters::default(),
             sampler_cache: ShardedLru::new(max_cached_embedded_samplers(), EMBEDDED_CACHE_SHARDS),
             texture_debug_cache: Mutex::new(LruCache::new(max_cached_texture_debug_ids())),
         })
@@ -281,7 +310,7 @@ impl EmbeddedMaterialBindResources {
             return;
         }
         profiling::scope!("materials::embedded_purge_material_assets");
-        self.bind_cache.clear();
+        self.clear_bind_cache();
         self.texture_debug_cache.lock().clear();
         for shard in &self.uniform_arena_shards {
             shard
@@ -293,7 +322,7 @@ impl EmbeddedMaterialBindResources {
     /// Purges bind groups that may retain texture views after texture assets unload.
     pub(crate) fn purge_texture_reference_caches(&self) {
         profiling::scope!("materials::embedded_purge_texture_reference_caches");
-        self.bind_cache.clear();
+        self.clear_bind_cache();
         self.texture_debug_cache.lock().clear();
     }
 
@@ -301,7 +330,7 @@ impl EmbeddedMaterialBindResources {
     pub(crate) fn invalidate_stem_layout(&self, stem: &str) {
         profiling::scope!("materials::embedded_invalidate_stem_layout");
         self.stem_cache.lock().remove(stem);
-        self.bind_cache.clear();
+        self.clear_bind_cache();
         self.texture_debug_cache.lock().clear();
     }
 
@@ -380,6 +409,7 @@ impl EmbeddedMaterialBindResources {
         };
         if let Some(bg) = hit_bg {
             profiling::scope!("materials::embedded_bind_cache_hit");
+            self.bind_cache_stats.note_hit();
             return Ok(material_bind_group_result(
                 bind_key,
                 bg,
@@ -388,6 +418,7 @@ impl EmbeddedMaterialBindResources {
         }
 
         profiling::scope!("materials::embedded_bind_cache_miss");
+        self.bind_cache_stats.note_miss();
         self.build_and_cache_embedded_bind_group(EmbeddedBindCacheMissInputs {
             layout: &layout,
             stem_hash,
@@ -443,6 +474,7 @@ impl EmbeddedMaterialBindResources {
                 uniform_binding,
             );
             if let Some(bg) = self.bind_cache.get_cloned(&updated) {
+                self.bind_cache_stats.note_hit();
                 return Ok(material_bind_group_result(updated, bg, uniform_binding));
             }
             updated
@@ -465,8 +497,10 @@ impl EmbeddedMaterialBindResources {
             bind_group
         };
         let evicted = self.bind_cache.put(final_bind_key, bind_group.clone());
+        self.bind_cache_stats.note_insertion();
         if let Some(evicted) = evicted {
             drop(evicted);
+            self.bind_cache_stats.note_eviction();
             logger::trace!("EmbeddedMaterialBindResources: evicted LRU bind group cache entry");
         }
         Ok(material_bind_group_result(
@@ -485,11 +519,25 @@ impl EmbeddedMaterialBindResources {
             .map(|layout| layout.bind_group_layout.clone())
     }
 
+    /// Captures embedded bind cache diagnostics.
+    pub(crate) fn bind_cache_diagnostics(&self) -> EmbeddedMaterialBindCacheDiagnosticSnapshot {
+        EmbeddedMaterialBindCacheDiagnosticSnapshot::from_parts(
+            self.bind_cache.len(),
+            self.bind_cache_stats.snapshot(),
+        )
+    }
+
     /// Routes a uniform cache key to its arena shard. A given key always maps to the same shard,
     /// so the per-shard generation tracked by [`MaterialUniformArena`] is self-consistent.
     fn uniform_arena_shard(&self, key: &MaterialUniformCacheKey) -> &Mutex<MaterialUniformArena> {
         let idx = (self.uniform_arena_hasher.hash_one(key) as usize) & (EMBEDDED_CACHE_SHARDS - 1);
         &self.uniform_arena_shards[idx]
+    }
+
+    fn clear_bind_cache(&self) {
+        for _ in 0..self.bind_cache.clear() {
+            self.bind_cache_stats.note_eviction();
+        }
     }
 }
 
@@ -556,5 +604,55 @@ mod tests {
         assert_eq!(a.property_block_slot0, Some(10));
         assert_eq!(a.renderer_property_block_id, Some(20));
         assert_eq!(a.uniform_arena_generation, 7);
+    }
+
+    #[test]
+    fn bind_cache_key_tracks_texture_signature_and_offscreen_mask() {
+        let base = build_material_bind_cache_key_parts(
+            11,
+            lookup_ids(1, Some(10), Some(20)),
+            42,
+            Some(5),
+            Some(7),
+        );
+        let changed_texture = build_material_bind_cache_key_parts(
+            11,
+            lookup_ids(1, Some(10), Some(20)),
+            43,
+            Some(5),
+            Some(7),
+        );
+        let changed_offscreen = build_material_bind_cache_key_parts(
+            11,
+            lookup_ids(1, Some(10), Some(20)),
+            42,
+            Some(6),
+            Some(7),
+        );
+
+        assert_ne!(base, changed_texture);
+        assert_ne!(base, changed_offscreen);
+    }
+
+    #[test]
+    fn bind_cache_key_tracks_uniform_arena_generation() {
+        let first = build_material_bind_cache_key_parts(
+            11,
+            lookup_ids(1, Some(10), Some(20)),
+            42,
+            None,
+            Some(7),
+        );
+        let second = build_material_bind_cache_key_parts(
+            11,
+            lookup_ids(1, Some(10), Some(20)),
+            42,
+            None,
+            Some(8),
+        );
+
+        assert_ne!(first, second);
+        assert_eq!(first.uniform_arena_generation, 7);
+        assert_eq!(second.uniform_arena_generation, 8);
     }
 }

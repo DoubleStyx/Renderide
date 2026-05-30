@@ -1,9 +1,15 @@
 //! Shared execution data structures for compiled render graph execution.
 
 use hashbrown::HashMap;
+use std::sync::Arc;
 
 use crate::camera::{HostCameraFrame, ViewId};
 use crate::diagnostics::PerViewHudOutputs;
+use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
+use crate::graph_inputs::{
+    FrameSystemsShared, FrameViewClear, GraphPassFrame, GraphPassFrameView, PerViewFramePlan,
+};
+use crate::occlusion::gpu::HiZGpuState;
 use crate::scene::SceneCoordinator;
 use crate::shared::RenderingContext;
 
@@ -13,7 +19,6 @@ use super::super::super::frame_upload_batch::{FrameUploadBatch, FrameUploadBatch
 use super::super::super::history::HistoryRegistry;
 use super::super::super::{GraphAssetResources, GraphFrameResources};
 use super::super::{FrameView, ResolvedView, ViewPostProcessing};
-use crate::graph_inputs::FrameViewClear;
 
 /// Key for reusing transient pool allocations across [`FrameView`]s with identical surface layout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -25,7 +30,7 @@ pub(super) struct GraphResolveKey {
     pub(super) multiview_stereo: bool,
 }
 
-/// CPU-side outputs collected while recording one per-view command buffer.
+/// CPU-side outputs collected while recording one view's graph work.
 pub(super) struct PerViewEncodeOutput {
     /// Encoded GPU work for the view, in deterministic submit order.
     pub(super) command_buffers: Vec<wgpu::CommandBuffer>,
@@ -80,6 +85,25 @@ pub(super) struct TimedCommandBuffer {
     pub(super) finish_ms: f64,
 }
 
+/// Command recording strategy selected for the graph work in this frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum GraphCommandRecordingPath {
+    /// Record frame-global and per-view graph work using the existing phase-specific command buffers.
+    StandardCommandBuffers,
+    /// Record frame-global work plus one serial swapchain view into one command encoder.
+    SingleSwapchainEncoder,
+}
+
+impl GraphCommandRecordingPath {
+    /// Numeric value used by Tracy plots and compact diagnostics.
+    pub(super) const fn as_plot_value(self) -> u64 {
+        match self {
+            Self::StandardCommandBuffers => 0,
+            Self::SingleSwapchainEncoder => 1,
+        }
+    }
+}
+
 /// Owned clone of a resolved view so per-view workers can borrow it without touching [`GpuContext`].
 #[derive(Clone)]
 pub(super) struct OwnedResolvedView {
@@ -125,6 +149,92 @@ impl OwnedResolvedView {
     }
 }
 
+/// Prepared view-local frame inputs reused by blackboard preparation and command recording.
+pub(super) struct PreparedPerViewFrameInput {
+    /// Depth-only view used by compute passes that sample the main depth texture.
+    pub(super) depth_sample_view: wgpu::TextureView,
+    /// Per-view frame bind group and backing uniform buffer seeded into the graph blackboard.
+    pub(super) frame_plan: PerViewFramePlan,
+    /// GPU capability limits snapshot exposed through [`GraphPassFrameView`].
+    pub(super) gpu_limits: Option<Arc<GpuLimits>>,
+    /// Optional MSAA depth-resolve helpers exposed through [`GraphPassFrameView`].
+    pub(super) msaa_depth_resolve: Option<Arc<MsaaDepthResolveResources>>,
+    /// Per-camera Hi-Z state slot exposed through [`GraphPassFrameView`].
+    pub(super) hi_z_slot: Arc<parking_lot::Mutex<HiZGpuState>>,
+}
+
+impl PreparedPerViewFrameInput {
+    /// Builds cached view-local inputs from a resolved view and backend-owned frame resources.
+    pub(super) fn from_resolved(
+        resolved: &ResolvedView<'_>,
+        frame_plan: PerViewFramePlan,
+        gpu_limits: Option<Arc<GpuLimits>>,
+        msaa_depth_resolve: Option<Arc<MsaaDepthResolveResources>>,
+        hi_z_slot: Arc<parking_lot::Mutex<HiZGpuState>>,
+    ) -> Self {
+        let depth_sample_view = resolved
+            .depth_texture
+            .create_view(&wgpu::TextureViewDescriptor {
+                label: Some("depth_sample"),
+                aspect: wgpu::TextureAspect::DepthOnly,
+                ..Default::default()
+            });
+        crate::profiling::note_resource_churn!(
+            TextureView,
+            "render_graph::frame_depth_sample_view"
+        );
+        Self {
+            depth_sample_view,
+            frame_plan,
+            gpu_limits,
+            msaa_depth_resolve,
+            hi_z_slot,
+        }
+    }
+
+    /// Builds pass-facing frame parameters around the cached view-local resources.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "keeps graph-facing frame parameter construction explicit"
+    )]
+    pub(super) fn frame_params<'a>(
+        &self,
+        shared: FrameSystemsShared<'a>,
+        resolved: &'a ResolvedView<'a>,
+        scene_color_format: wgpu::TextureFormat,
+        host_camera: &HostCameraFrame,
+        render_context: RenderingContext,
+        frame_time_seconds: f32,
+        clear: FrameViewClear,
+        post_processing: ViewPostProcessing,
+    ) -> GraphPassFrame<'a> {
+        GraphPassFrame {
+            shared,
+            view: GraphPassFrameView {
+                depth_texture: resolved.depth_texture,
+                depth_view: resolved.depth_view,
+                depth_sample_view: Some(self.depth_sample_view.clone()),
+                surface_format: resolved.surface_format,
+                scene_color_format,
+                viewport_px: resolved.viewport_px,
+                host_camera: *host_camera,
+                render_context,
+                frame_time_seconds,
+                multiview_stereo: resolved.multiview_stereo,
+                offscreen_write_render_texture_asset_id: resolved
+                    .offscreen_write_render_texture_asset_id,
+                view_id: resolved.view_id,
+                hi_z_slot: Arc::clone(&self.hi_z_slot),
+                sample_count: resolved.sample_count,
+                gpu_limits: self.gpu_limits.clone(),
+                msaa_depth_resolve: self.msaa_depth_resolve.clone(),
+                clear,
+                post_processing,
+            },
+        }
+    }
+}
+
 /// Serially prepared per-view input that can later be recorded on any rayon worker.
 pub(super) struct PerViewWorkItem {
     /// Original input order for submit stability.
@@ -145,20 +255,20 @@ pub(super) struct PerViewWorkItem {
     pub(super) initial_blackboard: Blackboard,
     /// Owned resolved view snapshot safe to move to a worker thread.
     pub(super) resolved: OwnedResolvedView,
-    /// Per-view `@group(0)` bind group and uniform buffer captured before recording.
-    pub(super) per_view_frame_bg_and_buf: (std::sync::Arc<wgpu::BindGroup>, wgpu::Buffer),
+    /// Prepared view-local frame input reused by pre-record and command recording.
+    pub(super) frame_input: PreparedPerViewFrameInput,
     /// Estimated world-mesh draw work captured before blackboard preparation consumes draw slots.
     pub(super) estimated_draw_count: usize,
 }
 
-/// Immutable shared inputs required to record one per-view command buffer.
+/// Immutable shared inputs required to record one view's graph work.
 pub(super) struct PerViewRecordShared<'a> {
     /// Scene after cache flush for the frame.
     pub(super) scene: &'a SceneCoordinator,
     /// Device used to build encoders and any lazily created views.
     pub(super) device: &'a wgpu::Device,
     /// Effective device limits for this frame.
-    pub(super) gpu_limits: &'a crate::gpu::GpuLimits,
+    pub(super) gpu_limits: &'a GpuLimits,
     /// Shared occlusion system for Hi-Z snapshots and temporal state.
     pub(super) occlusion: &'a dyn crate::occlusion::OcclusionGraphHook,
     /// Shared frame resources for bind groups, lights, and per-view slabs.
@@ -177,10 +287,6 @@ pub(super) struct PerViewRecordShared<'a> {
     pub(super) debug_hud: crate::diagnostics::PerViewHudConfig,
     /// Scene-color format selected for the frame.
     pub(super) scene_color_format: wgpu::TextureFormat,
-    /// GPU limits snapshot cloned into per-view frame params.
-    pub(super) gpu_limits_arc: Option<std::sync::Arc<crate::gpu::GpuLimits>>,
-    /// Optional MSAA depth-resolve resources for the frame.
-    pub(super) msaa_depth_resolve: Option<std::sync::Arc<crate::gpu::MsaaDepthResolveResources>>,
 }
 
 impl GraphResolveKey {
@@ -280,7 +386,7 @@ pub(super) struct SubmitFrameInputs<'a> {
     /// Deferred upload batch drained before submit.
     pub(super) upload_batch: &'a FrameUploadBatch,
     /// Shared queue handle used for the HUD encoder.
-    pub(super) queue_arc: &'a std::sync::Arc<wgpu::Queue>,
+    pub(super) queue_arc: &'a Arc<wgpu::Queue>,
 }
 
 /// View surface properties used when resolving transient [`TextureKey`] values for a graph view.

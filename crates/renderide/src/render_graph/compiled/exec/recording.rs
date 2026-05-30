@@ -174,12 +174,6 @@ impl CompiledRenderGraph {
                     access: violation.access.label(),
                 });
             }
-            logger::warn!(
-                "render graph validation: pass `{}` performed undeclared blackboard {} access to slot `{}`",
-                violation.pass,
-                violation.access.label(),
-                violation.slot
-            );
         }
         Ok(())
     }

@@ -70,6 +70,11 @@ impl<K: Eq + Hash, V> ShardedLru<K, V> {
         }
         dropped
     }
+
+    /// Returns the total number of entries currently retained across all shards.
+    pub(crate) fn len(&self) -> usize {
+        self.shards.iter().map(|shard| shard.lock().len()).sum()
+    }
 }
 
 #[cfg(test)]
@@ -111,5 +116,17 @@ mod tests {
         assert_eq!(cache.get_cloned(&1), None);
         assert_eq!(cache.get_cloned(&2), None);
         assert_eq!(cache.clear(), 0);
+    }
+
+    #[test]
+    fn len_counts_all_shards() {
+        let cache = ShardedLru::<u32, u32>::new(NonZeroUsize::new(4).unwrap(), 2);
+
+        assert_eq!(cache.len(), 0);
+        assert_eq!(cache.put(1, 10), None);
+        assert_eq!(cache.put(2, 20), None);
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.clear(), 2);
+        assert_eq!(cache.len(), 0);
     }
 }

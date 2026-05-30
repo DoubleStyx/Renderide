@@ -16,10 +16,7 @@ pub(super) use attachments::{
     frame_sample_count_from_raster_ctx, pass_info_raster_template, resolve_color_attachments,
     resolve_depth_attachment_with_stencil,
 };
-pub(super) use frame_params::{
-    GraphPassFrameViewInputs, ResolvedFrameRenderParamsInputs, frame_render_params_from_resolved,
-    frame_render_params_from_shared,
-};
+pub(super) use frame_params::{ResolvedFrameRenderParamsInputs, frame_render_params_from_resolved};
 pub(super) use msaa_views::resolve_forward_msaa_views_from_graph_resources;
 pub(super) use transient_extent::{
     clamp_mip_levels_for_transient_extent, clamp_viewport_for_transient_alloc,

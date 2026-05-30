@@ -14,16 +14,12 @@ const PER_VIEW_RECORD_PARALLEL_CHUNK_VIEWS: usize = 1;
 const PER_VIEW_RECORD_PASS_DRAW_EQUIVALENT: usize = 64;
 
 impl CompiledRenderGraph {
-    /// Drives the per-view recording phase serially for a single view or across Rayon workers for
-    /// multi-view batches, returning one [`PerViewRecordOutput`] per input work item in submission
-    /// order.
-    pub(super) fn record_per_view_outputs(
+    /// Computes per-view recording work and Rayon admission for a prepared work-item batch.
+    pub(super) fn per_view_record_admission_for_work_items(
         &self,
-        per_view_work_items: Vec<PerViewWorkItem>,
-        inputs: PerViewRecordInputs<'_>,
+        per_view_work_items: &[PerViewWorkItem],
         n_views: usize,
-    ) -> Result<Vec<PerViewRecordOutput>, GraphExecuteError> {
-        profiling::scope!("graph::record_per_view_outputs");
+    ) -> (usize, ParallelAdmission) {
         let total_draw_count = per_view_work_items
             .iter()
             .map(|work_item| work_item.estimated_draw_count)
@@ -36,6 +32,21 @@ impl CompiledRenderGraph {
             estimated_record_work,
             PER_VIEW_RECORD_PARALLEL_CHUNK_VIEWS,
         );
+        (estimated_record_work, admission)
+    }
+
+    /// Drives the per-view recording phase serially for a single view or across Rayon workers for
+    /// multi-view batches, returning one [`PerViewRecordOutput`] per input work item in submission
+    /// order.
+    pub(super) fn record_per_view_outputs(
+        &self,
+        per_view_work_items: Vec<PerViewWorkItem>,
+        inputs: PerViewRecordInputs<'_>,
+        n_views: usize,
+        estimated_record_work: usize,
+        admission: ParallelAdmission,
+    ) -> Result<Vec<PerViewRecordOutput>, GraphExecuteError> {
+        profiling::scope!("graph::record_per_view_outputs");
         record_parallel_admission(
             "graph_record_per_view",
             estimated_record_work,

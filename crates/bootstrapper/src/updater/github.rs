@@ -40,7 +40,9 @@ fn candidate_from_release(
     release: &Release,
     metadata: &ReleaseBuildMetadata,
 ) -> Option<UpdateCandidate> {
-    let commit = release_commit(release.body.as_deref())?;
+    let body = release.body.as_deref();
+    let commit = release_commit(body)?;
+    let changelog = release_changelog(body).unwrap_or_else(no_changelog_available);
     let asset_name = asset_name_for(&metadata.platform, &release.version);
     let asset = release
         .assets
@@ -50,6 +52,7 @@ fn candidate_from_release(
     Some(UpdateCandidate {
         tag: release.version.clone(),
         commit,
+        changelog,
         asset,
     })
 }
@@ -67,6 +70,33 @@ pub(super) fn release_commit(body: Option<&str>) -> Option<String> {
             is_full_sha(commit).then(|| commit.to_owned())
         })
     })
+}
+
+/// Parses the Markdown changelog section recorded in a GitHub release body.
+fn release_changelog(body: Option<&str>) -> Option<String> {
+    let body = body?;
+    let mut in_changelog = false;
+    let mut lines = Vec::new();
+    for line in body.lines() {
+        if line.trim() == "## Changelog" {
+            in_changelog = true;
+            continue;
+        }
+        if !in_changelog {
+            continue;
+        }
+        if line.trim_start().starts_with("## ") {
+            break;
+        }
+        lines.push(line);
+    }
+    let changelog = lines.join("\n").trim().to_owned();
+    (!changelog.is_empty()).then_some(changelog)
+}
+
+/// Returns the fallback changelog text used for releases created before changelog generation.
+fn no_changelog_available() -> String {
+    "No changelog is available for this release.".to_owned()
 }
 
 #[cfg(test)]
@@ -90,7 +120,10 @@ mod tests {
             name: tag.to_owned(),
             version: tag.to_owned(),
             date: "2026-05-27T00:00:00Z".to_owned(),
-            body: Some(format!("Commit: {commit}\n")),
+            body: Some(format!(
+                "Commit: {commit}\n\n## Changelog\n\n- [{short}](https://github.com/DoubleStyx/Renderide/commit/{commit}) Add updater changelog by Renderer Developer\n",
+                short = &commit[..8]
+            )),
             assets: vec![ReleaseAsset {
                 name: asset_name.to_owned(),
                 download_url: "https://api.github.com/repos/DoubleStyx/Renderide/releases/assets/1"
@@ -108,6 +141,55 @@ mod tests {
         );
         assert_eq!(release_commit(Some("Commit: bad")), None);
         assert_eq!(release_commit(None), None);
+    }
+
+    #[test]
+    fn release_changelog_parses_markdown_section() {
+        let body = "\
+Commit: 2222222222222222222222222222222222222222
+
+Nightly build.
+
+## Changelog
+
+Changes since previous release.
+
+- [22222222](https://example.invalid/commit/22222222) Add feature by Developer
+
+## Assets
+
+Bundle details.
+";
+
+        assert_eq!(
+            release_changelog(Some(body)),
+            Some(
+                "Changes since previous release.\n\n- [22222222](https://example.invalid/commit/22222222) Add feature by Developer"
+                    .to_owned()
+            )
+        );
+        assert_eq!(release_changelog(Some("Commit: abc\n")), None);
+        assert_eq!(release_changelog(Some("## Changelog\n\n")), None);
+        assert_eq!(release_changelog(None), None);
+    }
+
+    #[test]
+    fn release_changelog_preserves_empty_range_explanation() {
+        let body = "\
+Commit: 2222222222222222222222222222222222222222
+
+## Changelog
+
+No previous release commit was available, so no commit changelog was generated for this release.
+";
+
+        assert_eq!(
+            release_changelog(Some(body)),
+            Some(
+                "No previous release commit was available, so no commit changelog was generated for this release."
+                    .to_owned()
+            )
+        );
     }
 
     #[test]
@@ -129,9 +211,32 @@ mod tests {
             Some(candidate) => {
                 assert_eq!(candidate.tag, "nightly-2026-05-27-2222222");
                 assert_eq!(candidate.commit, commit);
+                assert!(candidate.changelog.contains("Add updater changelog"));
             }
             None => panic!("expected update candidate"),
         }
+    }
+
+    #[test]
+    fn candidate_selection_uses_fallback_when_changelog_is_missing() {
+        let metadata = metadata();
+        let commit = "2222222222222222222222222222222222222222";
+        let tag = "nightly-2026-05-27-2222222";
+        let releases = vec![Release {
+            name: tag.to_owned(),
+            version: tag.to_owned(),
+            date: "2026-05-27T00:00:00Z".to_owned(),
+            body: Some(format!("Commit: {commit}\n\nNightly build.")),
+            assets: vec![ReleaseAsset {
+                name: asset_name_for(&metadata.platform, tag),
+                download_url: "https://api.github.com/repos/DoubleStyx/Renderide/releases/assets/1"
+                    .to_owned(),
+            }],
+        }];
+
+        let candidate = select_update_candidate(&releases, &metadata).expect("candidate");
+
+        assert_eq!(candidate.changelog, no_changelog_available());
     }
 
     #[test]

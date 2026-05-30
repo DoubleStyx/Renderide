@@ -304,7 +304,19 @@ impl DualQueueIpc {
     /// Returns `true` when the command was encoded and accepted into the reliable outbox. A `true`
     /// return does not guarantee the host has already received the command; call
     /// [`Self::flush_reliable_outbound`] to retry pending reliable messages.
-    pub fn send_background_reliable(&mut self, mut cmd: RendererCommand) -> bool {
+    pub fn send_background_reliable(&mut self, cmd: RendererCommand) -> bool {
+        if !self.enqueue_background_reliable(cmd) {
+            return false;
+        }
+        self.flush_reliable_outbound();
+        true
+    }
+
+    /// Encodes a reliable background command without flushing the reliable outbox immediately.
+    ///
+    /// Call [`Self::flush_reliable_outbound`] once after a batch of acknowledgements has been
+    /// enqueued to amortize publisher calls.
+    pub fn enqueue_background_reliable(&mut self, mut cmd: RendererCommand) -> bool {
         let written = encode_command(&mut cmd, &mut self.send_buffer, ENCODE_OVERFLOW_LOG_PREFIX);
         if written == 0 {
             return false;
@@ -320,7 +332,6 @@ impl DualQueueIpc {
                 pending_bytes
             );
         }
-        self.flush_reliable_outbound();
         true
     }
 

@@ -24,6 +24,8 @@ pub struct UpdateCandidate {
     pub tag: String,
     /// Release commit SHA parsed from the release body.
     pub commit: String,
+    /// Markdown changelog parsed from the release body.
+    pub changelog: String,
     /// Downloadable GitHub release asset.
     pub asset: ReleaseAsset,
 }
@@ -41,6 +43,8 @@ pub struct UpdatePrompt {
     pub latest_commit: String,
     /// GitHub release asset name.
     pub asset_name: String,
+    /// Markdown changelog for the offered release.
+    pub changelog: String,
 }
 
 /// User choice from the update prompt.

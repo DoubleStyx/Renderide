@@ -65,7 +65,7 @@ impl<T> GpuProfilerPool<T> {
     }
 
     /// Returns whether replacement handles may be created for this pool.
-    #[cfg(any(test, feature = "tracy"))]
+    #[cfg(feature = "tracy")]
     pub(super) const fn enabled(&self) -> bool {
         self.enabled
     }

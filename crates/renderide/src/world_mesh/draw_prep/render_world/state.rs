@@ -1,25 +1,14 @@
 //! Retained render-world state records and reverse indexes.
 
 use hashbrown::HashMap;
-use rayon::prelude::*;
 use std::ops::Range;
 
-use crate::cpu_parallelism::{
-    RENDERABLE_UPDATE_CHUNK_ITEMS, admit_renderable_update_items, current_reference_worker_count,
-    record_parallel_admission,
-};
 use crate::scene::{
     MeshRendererInstanceId, RenderWorldRendererKind, SkinnedMeshRenderer, StaticMeshRenderer,
 };
+use crate::world_mesh::culling::MeshCullGeometry;
 
 use super::super::prepared_renderables::{FramePreparedDraw, FramePreparedRenderables};
-
-/// Renderer count assigned to one reverse-index worker chunk.
-const REVERSE_INDEX_PARALLEL_CHUNK_RENDERERS: usize = RENDERABLE_UPDATE_CHUNK_ITEMS;
-/// Reverse-index chunks assigned to one Rayon worker leaf.
-const REVERSE_INDEX_PARALLEL_CHUNKS_PER_TASK: usize = 1;
-/// Renderer count at which reverse-index rebuilds use worker-local indexes.
-const REVERSE_INDEX_PARALLEL_MIN_RENDERERS: usize = REVERSE_INDEX_PARALLEL_CHUNK_RENDERERS * 2;
 
 /// Retained draw-template storage for one render space.
 #[derive(Default)]
@@ -54,6 +43,8 @@ pub(super) struct RenderWorldRendererTemplate {
     pub(super) node_id: i32,
     /// Mesh asset id used by mesh-pool dirty expansion.
     pub(super) mesh_asset_id: i32,
+    /// Dynamic world/cull geometry shared by this renderer's material-slot templates.
+    pub(super) cull_geometry: Option<MeshCullGeometry>,
     /// Retained draw templates emitted by this renderer.
     pub(super) draws: Vec<FramePreparedDraw>,
 }
@@ -73,6 +64,7 @@ impl RenderWorldRendererTemplate {
         self.instance_id = MeshRendererInstanceId::default();
         self.node_id = -1;
         self.mesh_asset_id = -1;
+        self.cull_geometry = None;
         self.draws.clear();
     }
 
@@ -87,6 +79,14 @@ impl RenderWorldRendererTemplate {
     pub(super) fn copy_skinned_identity(&mut self, renderer: &SkinnedMeshRenderer) {
         self.copy_static_identity(&renderer.base);
     }
+
+    /// Moves dynamic cull geometry out of retained draw rows after renderer expansion.
+    pub(super) fn retain_stable_draw_templates_only(&mut self) {
+        self.cull_geometry = self.draws.iter().find_map(|draw| draw.cull_geometry);
+        for draw in &mut self.draws {
+            draw.cull_geometry = None;
+        }
+    }
 }
 
 impl RenderWorldSpace {
@@ -97,87 +97,6 @@ impl RenderWorldSpace {
             .chain(self.skinned_renderers.iter())
             .map(|renderer| renderer.draws.len())
             .sum()
-    }
-
-    /// Rebuilds reverse indexes after one or more renderer records changed identity.
-    pub(super) fn rebuild_reverse_indexes(&mut self) {
-        profiling::scope!("mesh::render_world::rebuild_reverse_indexes");
-        let table_work = self
-            .static_renderers
-            .len()
-            .max(self.skinned_renderers.len());
-        let admission = admit_renderable_update_items(table_work, current_reference_worker_count());
-        record_parallel_admission(
-            "render_world_reverse_index",
-            self.static_renderers
-                .len()
-                .saturating_add(self.skinned_renderers.len()),
-            table_work,
-            admission,
-        );
-        if table_work >= REVERSE_INDEX_PARALLEL_MIN_RENDERERS && admission.is_parallel() {
-            self.rebuild_reverse_indexes_parallel();
-            return;
-        }
-        self.rebuild_reverse_indexes_serial();
-    }
-
-    fn rebuild_reverse_indexes_serial(&mut self) {
-        let mesh_asset_index = &mut self.mesh_asset_index;
-        let node_index = &mut self.node_index;
-        {
-            profiling::scope!("mesh::render_world::rebuild_reverse_indexes_serial::clear");
-            mesh_asset_index.clear();
-            node_index.clear();
-        }
-        {
-            profiling::scope!("mesh::render_world::rebuild_reverse_indexes_serial::static");
-            for (index, renderer) in self.static_renderers.iter().enumerate() {
-                push_reverse_indexes(
-                    mesh_asset_index,
-                    node_index,
-                    RenderWorldRendererRef {
-                        kind: RenderWorldRendererKind::Static,
-                        index,
-                    },
-                    renderer.index_keys(),
-                );
-            }
-        }
-        {
-            profiling::scope!("mesh::render_world::rebuild_reverse_indexes_serial::skinned");
-            for (index, renderer) in self.skinned_renderers.iter().enumerate() {
-                push_reverse_indexes(
-                    mesh_asset_index,
-                    node_index,
-                    RenderWorldRendererRef {
-                        kind: RenderWorldRendererKind::Skinned,
-                        index,
-                    },
-                    renderer.index_keys(),
-                );
-            }
-        }
-    }
-
-    fn rebuild_reverse_indexes_parallel(&mut self) {
-        profiling::scope!("mesh::render_world::rebuild_reverse_indexes_parallel");
-        let static_chunks =
-            build_reverse_index_chunks(&self.static_renderers, RenderWorldRendererKind::Static);
-        let skinned_chunks =
-            build_reverse_index_chunks(&self.skinned_renderers, RenderWorldRendererKind::Skinned);
-        self.mesh_asset_index.clear();
-        self.node_index.clear();
-        merge_reverse_index_chunks(
-            &mut self.mesh_asset_index,
-            &mut self.node_index,
-            static_chunks,
-        );
-        merge_reverse_index_chunks(
-            &mut self.mesh_asset_index,
-            &mut self.node_index,
-            skinned_chunks,
-        );
     }
 
     /// Removes one renderer's current identity from reverse indexes before refreshing it.
@@ -209,10 +128,12 @@ impl RenderWorldSpace {
     /// Extends a prepared snapshot with this space's retained draw templates.
     pub(super) fn append_to_prepared(&self, prepared: &mut FramePreparedRenderables) {
         for renderer in &self.static_renderers {
-            prepared.extend_cached_draws(&renderer.draws);
+            prepared
+                .extend_cached_draws_with_cull_geometry(&renderer.draws, renderer.cull_geometry);
         }
         for renderer in &self.skinned_renderers {
-            prepared.extend_cached_draws(&renderer.draws);
+            prepared
+                .extend_cached_draws_with_cull_geometry(&renderer.draws, renderer.cull_geometry);
         }
     }
 
@@ -223,7 +144,7 @@ impl RenderWorldSpace {
         draws: &mut Vec<FramePreparedDraw>,
     ) {
         for renderer in &self.static_renderers[range] {
-            draws.extend(renderer.draws.iter().cloned());
+            append_draws_with_cull_geometry(draws, &renderer.draws, renderer.cull_geometry);
         }
     }
 
@@ -234,7 +155,7 @@ impl RenderWorldSpace {
         draws: &mut Vec<FramePreparedDraw>,
     ) {
         for renderer in &self.skinned_renderers[range] {
-            draws.extend(renderer.draws.iter().cloned());
+            append_draws_with_cull_geometry(draws, &renderer.draws, renderer.cull_geometry);
         }
     }
 
@@ -264,79 +185,15 @@ impl RenderWorldSpace {
     }
 }
 
-/// Worker-local mesh-asset and node reverse indexes.
-type ReverseIndexChunk = (
-    HashMap<i32, Vec<RenderWorldRendererRef>>,
-    HashMap<i32, Vec<RenderWorldRendererRef>>,
-);
-
-/// Builds reverse-index chunks for one renderer table.
-fn build_reverse_index_chunks(
-    renderers: &[RenderWorldRendererTemplate],
-    kind: RenderWorldRendererKind,
-) -> Vec<ReverseIndexChunk> {
-    if renderers.len() >= REVERSE_INDEX_PARALLEL_MIN_RENDERERS {
-        renderers
-            .par_chunks(REVERSE_INDEX_PARALLEL_CHUNK_RENDERERS)
-            .with_min_len(REVERSE_INDEX_PARALLEL_CHUNKS_PER_TASK)
-            .enumerate()
-            .map(|(chunk_index, chunk)| {
-                profiling::scope!("mesh::render_world::rebuild_reverse_indexes_parallel::chunk");
-                build_reverse_index_chunk(chunk, kind, chunk_index)
-            })
-            .collect()
-    } else {
-        renderers
-            .chunks(REVERSE_INDEX_PARALLEL_CHUNK_RENDERERS)
-            .enumerate()
-            .map(|(chunk_index, chunk)| build_reverse_index_chunk(chunk, kind, chunk_index))
-            .collect()
-    }
-}
-
-/// Builds one worker-local reverse-index map pair for a renderer-table chunk.
-fn build_reverse_index_chunk(
-    chunk: &[RenderWorldRendererTemplate],
-    kind: RenderWorldRendererKind,
-    chunk_index: usize,
-) -> ReverseIndexChunk {
-    let start_index = chunk_index * REVERSE_INDEX_PARALLEL_CHUNK_RENDERERS;
-    let mut mesh_asset_index = HashMap::new();
-    let mut node_index = HashMap::new();
-    for (offset, renderer) in chunk.iter().enumerate() {
-        push_reverse_indexes(
-            &mut mesh_asset_index,
-            &mut node_index,
-            RenderWorldRendererRef {
-                kind,
-                index: start_index + offset,
-            },
-            renderer.index_keys(),
-        );
-    }
-    (mesh_asset_index, node_index)
-}
-
-/// Merges all worker-local reverse indexes into the destination maps.
-fn merge_reverse_index_chunks(
-    mesh_asset_index: &mut HashMap<i32, Vec<RenderWorldRendererRef>>,
-    node_index: &mut HashMap<i32, Vec<RenderWorldRendererRef>>,
-    chunks: Vec<ReverseIndexChunk>,
+fn append_draws_with_cull_geometry(
+    out: &mut Vec<FramePreparedDraw>,
+    draws: &[FramePreparedDraw],
+    cull_geometry: Option<MeshCullGeometry>,
 ) {
-    for (mesh_chunk, node_chunk) in chunks {
-        merge_reverse_index(mesh_asset_index, mesh_chunk);
-        merge_reverse_index(node_index, node_chunk);
-    }
-}
-
-/// Merges one worker-local reverse index into a destination map.
-fn merge_reverse_index(
-    target: &mut HashMap<i32, Vec<RenderWorldRendererRef>>,
-    source: HashMap<i32, Vec<RenderWorldRendererRef>>,
-) {
-    for (key, mut renderers) in source {
-        target.entry(key).or_default().append(&mut renderers);
-    }
+    out.extend(draws.iter().cloned().map(|mut draw| {
+        draw.cull_geometry = cull_geometry;
+        draw
+    }));
 }
 
 impl RenderWorldRendererTemplate {

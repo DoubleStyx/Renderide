@@ -153,8 +153,9 @@ fn particle_task_gpu<'context, 'handles: 'context>(
     Some(ParticleTaskGpu {
         device: gpu.device,
         gpu_limits: gpu.gpu_limits,
-        queue: gpu.queue,
         mapped_buffer_health: gpu.mapped_buffer_health,
+        mesh_upload_batch: gpu.mesh_upload_batch,
+        mesh_validation_scopes_enabled: gpu.mesh_validation_scopes_enabled,
     })
 }
 
@@ -173,8 +174,9 @@ fn step_mesh_upload_task(
         MeshTaskGpu {
             device: gpu.device,
             gpu_limits: gpu.gpu_limits,
-            queue: gpu.queue,
             mapped_buffer_health: gpu.mapped_buffer_health,
+            mesh_upload_batch: gpu.mesh_upload_batch,
+            mesh_validation_scopes_enabled: gpu.mesh_validation_scopes_enabled,
         },
         shm,
         ipc,

@@ -105,16 +105,16 @@ pub(super) fn derived_streams_compatible_for_in_place(
                 return false;
             }
         }
-        (None, None, None) => {}
+        (None, None, _) => {}
         _ => return false,
     }
 
     let uv_bytes = (vc_usize as u64).saturating_mul(8);
     let vec4_bytes = (vc_usize as u64).saturating_mul(16);
-    if !required_stream_size_matches(gpu.uv0_buffer.as_deref(), uv_bytes) {
+    if !optional_stream_size_matches(gpu.uv0_buffer.as_deref(), Some(uv_bytes)) {
         return false;
     }
-    if !required_stream_size_matches(gpu.color_buffer.as_deref(), vec4_bytes) {
+    if !optional_stream_size_matches(gpu.color_buffer.as_deref(), Some(vec4_bytes)) {
         return false;
     }
     if !optional_stream_size_matches(gpu.tangent_buffer.as_deref(), Some(vec4_bytes)) {
@@ -141,10 +141,6 @@ fn has_supported_position_stream(attrs: &[VertexAttributeDescriptor]) -> bool {
             && attr.format == VertexAttributeFormat::Float32
             && attr.dimensions >= 3
     })
-}
-
-fn required_stream_size_matches(buffer: Option<&wgpu::Buffer>, expected: u64) -> bool {
-    buffer.is_some_and(|buffer| buffer.size() == expected)
 }
 
 fn optional_stream_size_matches(buffer: Option<&wgpu::Buffer>, expected: Option<u64>) -> bool {

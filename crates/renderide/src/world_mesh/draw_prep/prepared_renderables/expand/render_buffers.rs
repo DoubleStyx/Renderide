@@ -122,13 +122,6 @@ fn try_expand_render_buffer_renderer(
     ) {
         return;
     }
-    if ctx.scene.transform_has_degenerate_scale_for_context(
-        ctx.space_id,
-        node_id as usize,
-        ctx.render_context,
-    ) {
-        return;
-    }
     let Some(mesh) = ctx.mesh_pool.get(mesh_asset_id) else {
         return;
     };
