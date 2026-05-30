@@ -19,6 +19,7 @@ use super::super::super::frame_upload_batch::{FrameUploadBatch, FrameUploadBatch
 use super::super::super::history::HistoryRegistry;
 use super::super::super::{GraphAssetResources, GraphFrameResources};
 use super::super::{FrameView, ResolvedView, ViewPostProcessing};
+use crate::graph_inputs::OffscreenWriteTarget;
 
 /// Key for reusing transient pool allocations across [`FrameView`]s with identical surface layout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -119,8 +120,8 @@ pub(super) struct OwnedResolvedView {
     pub(super) viewport_px: (u32, u32),
     /// Whether the view targets multiview stereo attachments.
     pub(super) multiview_stereo: bool,
-    /// Optional offscreen render-texture asset id being written this pass.
-    pub(super) offscreen_write_render_texture_asset_id: Option<i32>,
+    /// Offscreen target currently being written by this view.
+    pub(super) offscreen_write_target: OffscreenWriteTarget,
     /// Stable occlusion slot for the view.
     pub(super) view_id: ViewId,
     /// Effective sample count for the view.
@@ -141,7 +142,7 @@ impl OwnedResolvedView {
             surface_format: self.surface_format,
             viewport_px: self.viewport_px,
             multiview_stereo: self.multiview_stereo,
-            offscreen_write_render_texture_asset_id: self.offscreen_write_render_texture_asset_id,
+            offscreen_write_target: self.offscreen_write_target,
             view_id: self.view_id,
             sample_count: self.sample_count,
             post_processing: self.post_processing,
@@ -226,8 +227,7 @@ impl PreparedPerViewFrameInput {
                 render_context,
                 frame_time_seconds,
                 multiview_stereo: resolved.multiview_stereo,
-                offscreen_write_render_texture_asset_id: resolved
-                    .offscreen_write_render_texture_asset_id,
+                offscreen_write_target: resolved.offscreen_write_target,
                 view_id: resolved.view_id,
                 hi_z_slot: Arc::clone(&self.hi_z_slot),
                 sample_count: resolved.sample_count,

@@ -23,7 +23,9 @@ use crate::scene::RenderSpaceId;
 use crate::shared::{CameraRenderParameters, RenderingContext};
 
 use super::super::super::frame::schedule::RenderScheduleKind;
-use super::super::super::frame::view_plan::{FrameViewPlan, FrameViewPlanTarget};
+use super::super::super::frame::view_plan::{
+    FrameViewPlan, FrameViewPlanParams, FrameViewPlanTarget,
+};
 use super::super::cube_capture::{
     CUBE_FACE_COUNT, CubeCaptureBasisMode, CubeCaptureExtent, CubeCaptureFace,
     CubeCaptureTargetError, CubeCaptureTargets, host_camera_frame_for_cube_face_with_basis,
@@ -168,30 +170,36 @@ fn plan_camera360_task(
     let plans = CubeCaptureFace::ALL
         .iter()
         .copied()
-        .map(|face| FrameViewPlan {
-            host_camera: host_camera_frame_for_cube_face_with_basis(
+        .map(|face| {
+            let host_camera = host_camera_frame_for_cube_face_with_basis(
                 ctx.base_camera,
                 clip,
                 face_viewport,
                 ctx.task.position,
                 face,
                 CAMERA360_CUBE_BASIS_MODE,
-            ),
-            render_context: RenderingContext::RenderToAsset,
-            frame_time_seconds: ctx.frame_time_seconds,
-            draw_filter: Some(filter.clone()),
-            render_space_filter: Some(render_space_id),
-            view_id: ViewId::camera360_render_task_face(
-                render_space_id,
-                ctx.task_index,
-                face.view_id_face_index(),
-            ),
-            viewport_px: face_viewport,
-            clear: FrameViewClear::from_camera_render_parameters(parameters),
-            profile: RenderPathProfile::cube_capture(camera_render_task_post_processing(
-                parameters,
-            )),
-            target: FrameViewPlanTarget::SecondaryRt(cube_targets.to_offscreen_handles(face)),
+            );
+            let mut plan = FrameViewPlan::new(
+                &host_camera,
+                FrameViewPlanParams {
+                    render_context: RenderingContext::RenderToAsset,
+                    frame_time_seconds: ctx.frame_time_seconds,
+                    view_id: ViewId::camera360_render_task_face(
+                        render_space_id,
+                        ctx.task_index,
+                        face.view_id_face_index(),
+                    ),
+                    viewport_px: face_viewport,
+                    clear: FrameViewClear::from_camera_render_parameters(parameters),
+                    profile: RenderPathProfile::cube_capture(camera_render_task_post_processing(
+                        parameters,
+                    )),
+                    target: FrameViewPlanTarget::offscreen(cube_targets.to_offscreen_handles(face)),
+                },
+            );
+            plan.draw_filter = Some(filter.clone());
+            plan.render_space_filter = Some(render_space_id);
+            plan
         })
         .collect();
 

@@ -5,6 +5,7 @@ use hashbrown::HashMap;
 
 use crate::gpu::GpuContext;
 use crate::gpu_resource::TextureViewDescriptorKey;
+use crate::graph_inputs::OffscreenWriteTarget;
 
 use super::super::super::context::{
     GraphResolvedResources, ResolvedGraphBuffer, ResolvedGraphTexture, ResolvedImportedBuffer,
@@ -408,7 +409,7 @@ impl CompiledRenderGraph {
                     surface_format,
                     viewport_px,
                     multiview_stereo: false,
-                    offscreen_write_render_texture_asset_id: None,
+                    offscreen_write_target: OffscreenWriteTarget::None,
                     view_id,
                     sample_count,
                     post_processing: profile.post_processing(),
@@ -424,7 +425,7 @@ impl CompiledRenderGraph {
                     surface_format,
                     viewport_px: ext.extent_px,
                     multiview_stereo: true,
-                    offscreen_write_render_texture_asset_id: None,
+                    offscreen_write_target: OffscreenWriteTarget::None,
                     view_id,
                     sample_count,
                     post_processing: profile.post_processing(),
@@ -439,7 +440,7 @@ impl CompiledRenderGraph {
                     surface_format,
                     viewport_px: ext.extent_px,
                     multiview_stereo: false,
-                    offscreen_write_render_texture_asset_id: Some(ext.render_texture_asset_id),
+                    offscreen_write_target: ext.write_target,
                     view_id,
                     sample_count: profile.resolve_sample_count(gpu),
                     post_processing: profile.post_processing(),
@@ -471,7 +472,7 @@ impl CompiledRenderGraph {
                     surface_format,
                     viewport_px,
                     multiview_stereo: false,
-                    offscreen_write_render_texture_asset_id: None,
+                    offscreen_write_target: OffscreenWriteTarget::None,
                     view_id,
                     sample_count,
                     post_processing: profile.post_processing(),
@@ -485,7 +486,7 @@ impl CompiledRenderGraph {
                 surface_format: profile.resolve_color_format(target, gpu),
                 viewport_px: ext.extent_px,
                 multiview_stereo: true,
-                offscreen_write_render_texture_asset_id: None,
+                offscreen_write_target: OffscreenWriteTarget::None,
                 view_id,
                 sample_count: profile.resolve_sample_count(gpu),
                 post_processing: profile.post_processing(),
@@ -498,7 +499,7 @@ impl CompiledRenderGraph {
                 surface_format: profile.resolve_color_format(target, gpu),
                 viewport_px: ext.extent_px,
                 multiview_stereo: false,
-                offscreen_write_render_texture_asset_id: Some(ext.render_texture_asset_id),
+                offscreen_write_target: ext.write_target,
                 view_id,
                 sample_count: profile.resolve_sample_count(gpu),
                 post_processing: profile.post_processing(),

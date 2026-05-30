@@ -14,11 +14,11 @@ use crate::camera::{
     CameraClipPlanes, CameraPose, CameraProjectionKind, EyeView, HostCameraFrame, Viewport,
 };
 use crate::gpu::{CUBEMAP_ARRAY_LAYERS, GpuContext};
-use crate::render_graph::GraphExecuteError;
+use crate::render_graph::{GraphExecuteError, OffscreenWriteTarget};
 use crate::runtime::frame::schedule::{
     CpuRenderSchedule, RenderScheduleKind, execute_one_shot_view_plans,
 };
-use crate::runtime::frame::view_plan::{FrameViewPlan, OffscreenRtHandles};
+use crate::runtime::frame::view_plan::{FrameViewPlan, OffscreenTargetHandles};
 use crate::scene::SceneCoordinator;
 use crate::world_mesh::WorldMeshDrawCollectParallelism;
 
@@ -366,13 +366,14 @@ impl CubeCaptureTargets {
     pub(in crate::runtime) fn to_offscreen_handles(
         &self,
         face: CubeCaptureFace,
-    ) -> OffscreenRtHandles {
-        OffscreenRtHandles {
-            rt_id: -1,
-            color_texture: Arc::clone(&self.cube_texture),
-            color_view: Arc::clone(&self.face_color_views[face.index()]),
-            depth_texture: Arc::clone(&self.face_depth_textures[face.index()]),
-            depth_view: Arc::clone(&self.face_depth_views[face.index()]),
+    ) -> OffscreenTargetHandles {
+        OffscreenTargetHandles {
+            write_target: OffscreenWriteTarget::Untracked,
+            color_texture: self.cube_texture.as_ref().clone(),
+            color_view: self.face_color_views[face.index()].as_ref().clone(),
+            depth_texture: self.face_depth_textures[face.index()].as_ref().clone(),
+            depth_view: self.face_depth_views[face.index()].as_ref().clone(),
+            extent_px: self.extent.viewport(),
             color_format: self.color_format,
             copy_to_color: None,
         }

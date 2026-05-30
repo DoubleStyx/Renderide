@@ -10,7 +10,7 @@ use crate::camera::{ViewId, camera_render_task_world_matrix, host_camera_frame_f
 use crate::gpu::GpuContext;
 use crate::ipc::SharedMemoryAccessor;
 use crate::render_graph::{
-    FrameViewClear, GraphExecuteError, RenderPathProfile, ViewPostProcessing,
+    FrameViewClear, GraphExecuteError, OffscreenWriteTarget, RenderPathProfile, ViewPostProcessing,
 };
 use crate::scene::{RenderSpaceId, SceneCoordinator};
 use crate::shared::{CameraRenderParameters, CameraRenderTask, RenderingContext, TextureFormat};
@@ -20,7 +20,9 @@ use super::super::RendererRuntime;
 use super::super::frame::schedule::{
     CpuRenderSchedule, RenderScheduleKind, execute_one_shot_view_plans,
 };
-use super::super::frame::view_plan::{FrameViewPlan, FrameViewPlanTarget, OffscreenRtHandles};
+use super::super::frame::view_plan::{
+    FrameViewPlan, FrameViewPlanParams, FrameViewPlanTarget, OffscreenTargetHandles,
+};
 use super::readback::{AwaitBufferMapError, await_buffer_map};
 
 mod alpha_coverage;
@@ -235,13 +237,14 @@ impl CameraTaskTargets {
         })
     }
 
-    fn to_offscreen_handles(&self) -> OffscreenRtHandles {
-        OffscreenRtHandles {
-            rt_id: -1,
-            color_texture: Arc::clone(&self.color_texture),
-            color_view: Arc::clone(&self.color_view),
-            depth_texture: Arc::clone(&self.depth_texture),
-            depth_view: Arc::clone(&self.depth_view),
+    fn to_offscreen_handles(&self) -> OffscreenTargetHandles {
+        OffscreenTargetHandles {
+            write_target: OffscreenWriteTarget::Untracked,
+            color_texture: self.color_texture.as_ref().clone(),
+            color_view: self.color_view.as_ref().clone(),
+            depth_texture: self.depth_texture.as_ref().clone(),
+            depth_view: self.depth_view.as_ref().clone(),
+            extent_px: self.extent.tuple(),
             color_format: self.color_format,
             copy_to_color: None,
         }
@@ -416,21 +419,24 @@ fn plan_camera_task(
         camera_world_matrix,
     );
     let filter = draw_filter_from_camera_render_task(task);
-    Ok(PlannedCameraTask {
-        plan: FrameViewPlan {
-            host_camera,
+    let mut plan = FrameViewPlan::new(
+        &host_camera,
+        FrameViewPlanParams {
             render_context: RenderingContext::RenderToAsset,
             frame_time_seconds,
-            draw_filter: Some(filter),
-            render_space_filter: Some(render_space_id),
             view_id: ViewId::camera_render_task(render_space_id, task_index),
             viewport_px: extent.tuple(),
             clear: FrameViewClear::from_camera_render_parameters(parameters),
             profile: RenderPathProfile::camera_readback(camera_render_task_post_processing(
                 parameters,
             )),
-            target: FrameViewPlanTarget::SecondaryRt(targets.to_offscreen_handles()),
+            target: FrameViewPlanTarget::offscreen(targets.to_offscreen_handles()),
         },
+    );
+    plan.draw_filter = Some(filter);
+    plan.render_space_filter = Some(render_space_id);
+    Ok(PlannedCameraTask {
+        plan,
         targets,
         output_format,
     })

@@ -20,8 +20,8 @@ use crate::shared::{
 };
 
 use super::{
-    FrameViewPlan, FrameViewPlanTarget, ProbeCubeFace, ProbeTaskExtent, ProbeTaskTargets,
-    ReflectionProbeBakeError, RendererRuntime, clear_from_reflection_probe_state,
+    FrameViewPlan, FrameViewPlanParams, FrameViewPlanTarget, ProbeCubeFace, ProbeTaskExtent,
+    ProbeTaskTargets, ReflectionProbeBakeError, RendererRuntime, clear_from_reflection_probe_state,
     create_probe_task_targets, draw_filter_from_reflection_probe_state,
     host_camera_frame_for_probe_face, render_reflection_probe_faces_offscreen,
 };
@@ -727,27 +727,33 @@ fn plan_runtime_reflection_probe_faces(
     Ok(faces
         .iter()
         .copied()
-        .map(|face| FrameViewPlan {
-            host_camera: host_camera_frame_for_probe_face(
+        .map(|face| {
+            let host_camera = host_camera_frame_for_probe_face(
                 base_camera,
                 state,
                 extent.tuple(),
                 probe_position,
                 face,
-            ),
-            render_context: RenderingContext::RenderToAsset,
-            frame_time_seconds,
-            render_space_filter: Some(space_id),
-            draw_filter: Some(filter.clone()),
-            view_id: ViewId::reflection_probe_render_task(
-                space_id,
-                view_task_id,
-                face.view_id_face_index(),
-            ),
-            viewport_px: extent.tuple(),
-            clear: clear_from_reflection_probe_state(state),
-            profile: RenderPathProfile::reflection_probe(),
-            target: FrameViewPlanTarget::SecondaryRt(targets.to_offscreen_handles(face)),
+            );
+            let mut plan = FrameViewPlan::new(
+                &host_camera,
+                FrameViewPlanParams {
+                    render_context: RenderingContext::RenderToAsset,
+                    frame_time_seconds,
+                    view_id: ViewId::reflection_probe_render_task(
+                        space_id,
+                        view_task_id,
+                        face.view_id_face_index(),
+                    ),
+                    viewport_px: extent.tuple(),
+                    clear: clear_from_reflection_probe_state(state),
+                    profile: RenderPathProfile::reflection_probe(),
+                    target: FrameViewPlanTarget::offscreen(targets.to_offscreen_handles(face)),
+                },
+            );
+            plan.render_space_filter = Some(space_id);
+            plan.draw_filter = Some(filter.clone());
+            plan
         })
         .collect())
 }

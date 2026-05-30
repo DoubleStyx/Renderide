@@ -7,7 +7,7 @@ use crate::camera::{
     camera_state_screen_space_reflections,
 };
 use crate::gpu::GpuContext;
-use crate::graph_inputs::FrameViewClear;
+use crate::graph_inputs::{FrameViewClear, OffscreenWriteTarget};
 use crate::shared::{CameraRenderParameters, CameraState, RenderingContext};
 
 /// MSAA policy selected by a render-path profile.
@@ -39,8 +39,8 @@ impl RenderPathSampleCountPolicy {
 
 /// Single-view color + depth for rendering into an externally owned offscreen target.
 pub struct ExternalOffscreenTargets<'a> {
-    /// Host render-texture asset id for `color_view` (used to suppress self-sampling during this pass).
-    pub render_texture_asset_id: i32,
+    /// Offscreen target identity and self-sampling policy for this view.
+    pub write_target: OffscreenWriteTarget,
     /// Color texture backing `color_view`.
     pub color_texture: &'a wgpu::Texture,
     /// Color attachment (`Rgba16Float` for Unity `ARGBHalf` parity).
@@ -757,5 +757,27 @@ mod tests {
         requirements.include_profile(RenderPathProfile::xr_hmd(), true);
         assert!(requirements.multiview_stereo);
         assert!(requirements.disable_motion_blur_for_vr);
+    }
+
+    #[test]
+    fn graph_requirements_are_order_independent_for_current_profiles() {
+        let profiles = [
+            (RenderPathProfile::desktop_main(), false),
+            (RenderPathProfile::xr_hmd(), true),
+            (
+                RenderPathProfile::secondary_camera(ViewPostProcessing::disabled()),
+                false,
+            ),
+        ];
+        let mut forward = ViewFamilyGraphRequirements::default();
+        for (profile, multiview) in profiles {
+            forward.include_profile(profile, multiview);
+        }
+        let mut reverse = ViewFamilyGraphRequirements::default();
+        for (profile, multiview) in profiles.into_iter().rev() {
+            reverse.include_profile(profile, multiview);
+        }
+
+        assert_eq!(forward, reverse);
     }
 }

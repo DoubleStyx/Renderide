@@ -28,6 +28,7 @@ use super::layout::StemMaterialLayout;
 use super::texture_pools::EmbeddedTexturePools;
 use super::texture_resolve::default_embedded_sampler;
 use crate::gpu_resource::{AtomicCacheCounters, CacheStats, ShardedLru};
+use crate::graph_inputs::OffscreenWriteTarget;
 use crate::materials::host_data::{
     MaterialPropertyLookupIds, MaterialPropertyStore, PropertyIdRegistry,
 };
@@ -117,7 +118,7 @@ struct EmbeddedBindCacheMissInputs<'a> {
     pools: &'a EmbeddedTexturePools<'a>,
     store: &'a MaterialPropertyStore,
     lookup: MaterialPropertyLookupIds,
-    offscreen_write_render_texture_asset_id: Option<i32>,
+    offscreen_write_target: OffscreenWriteTarget,
     lookup_bind_key: MaterialBindCacheKey,
     lookup_texture_bind_signature: u64,
     uniform_binding: Option<&'a MaterialUniformArenaSlotBinding>,
@@ -127,14 +128,14 @@ fn build_material_bind_cache_key(
     stem_hash: u64,
     lookup: MaterialPropertyLookupIds,
     texture_bind_signature: u64,
-    offscreen_write_render_texture_asset_id: Option<i32>,
+    offscreen_write_target: OffscreenWriteTarget,
     uniform_binding: Option<&MaterialUniformArenaSlotBinding>,
 ) -> MaterialBindCacheKey {
     build_material_bind_cache_key_parts(
         stem_hash,
         lookup,
         texture_bind_signature,
-        offscreen_write_render_texture_asset_id,
+        offscreen_write_target,
         uniform_binding.map(|binding| binding.buffer_generation),
     )
 }
@@ -143,7 +144,7 @@ fn build_material_bind_cache_key_parts(
     stem_hash: u64,
     lookup: MaterialPropertyLookupIds,
     texture_bind_signature: u64,
-    offscreen_write_render_texture_asset_id: Option<i32>,
+    offscreen_write_target: OffscreenWriteTarget,
     uniform_arena_generation: Option<u64>,
 ) -> MaterialBindCacheKey {
     let (material_asset_id, property_block_slot0, renderer_property_block_id) =
@@ -162,7 +163,7 @@ fn build_material_bind_cache_key_parts(
         property_block_slot0,
         renderer_property_block_id,
         texture_bind_signature,
-        offscreen_write_render_texture_asset_id,
+        offscreen_write_target,
         uniform_arena_generation: uniform_arena_generation.unwrap_or(0),
     }
 }
@@ -347,7 +348,7 @@ impl EmbeddedMaterialBindResources {
         store: &MaterialPropertyStore,
         pools: &EmbeddedTexturePools<'_>,
         lookup: MaterialPropertyLookupIds,
-        offscreen_write_render_texture_asset_id: Option<i32>,
+        offscreen_write_target: OffscreenWriteTarget,
     ) -> Result<(MaterialBindCacheKey, EmbeddedMaterialBindGroup), EmbeddedMaterialBindError> {
         profiling::scope!("materials::embedded_bind_group");
         let EmbeddedBindInputResolution {
@@ -362,7 +363,7 @@ impl EmbeddedMaterialBindResources {
             store,
             pools,
             lookup,
-            offscreen_write_render_texture_asset_id,
+            offscreen_write_target,
         )?;
 
         let mutation_gen = store.mutation_generation(lookup);
@@ -399,7 +400,7 @@ impl EmbeddedMaterialBindResources {
             stem_hash,
             lookup,
             texture_bind_signature,
-            offscreen_write_render_texture_asset_id,
+            offscreen_write_target,
             uniform_binding.as_ref(),
         );
 
@@ -426,7 +427,7 @@ impl EmbeddedMaterialBindResources {
             pools,
             store,
             lookup,
-            offscreen_write_render_texture_asset_id,
+            offscreen_write_target,
             lookup_bind_key: bind_key,
             lookup_texture_bind_signature: texture_bind_signature,
             uniform_binding: uniform_binding.as_ref(),
@@ -444,7 +445,7 @@ impl EmbeddedMaterialBindResources {
             pools,
             store,
             lookup,
-            offscreen_write_render_texture_asset_id,
+            offscreen_write_target,
             lookup_bind_key,
             lookup_texture_bind_signature,
             uniform_binding,
@@ -456,7 +457,7 @@ impl EmbeddedMaterialBindResources {
             pools,
             store,
             lookup,
-            offscreen_write_render_texture_asset_id,
+            offscreen_write_target,
         )?;
 
         // If pool state shifted between the lookup-side signature compute and the snapshot,
@@ -470,7 +471,7 @@ impl EmbeddedMaterialBindResources {
                 stem_hash,
                 lookup,
                 snapshot.texture_bind_signature,
-                offscreen_write_render_texture_asset_id,
+                offscreen_write_target,
                 uniform_binding,
             );
             if let Some(bg) = self.bind_cache.get_cloned(&updated) {
@@ -564,14 +565,14 @@ mod tests {
             11,
             lookup_ids(1, Some(10), Some(20)),
             42,
-            Some(5),
+            OffscreenWriteTarget::HostRenderTexture(5),
             None,
         );
         let b = build_material_bind_cache_key_parts(
             11,
             lookup_ids(2, Some(30), Some(40)),
             42,
-            Some(5),
+            OffscreenWriteTarget::HostRenderTexture(5),
             None,
         );
 
@@ -588,14 +589,14 @@ mod tests {
             11,
             lookup_ids(1, Some(10), Some(20)),
             42,
-            Some(5),
+            OffscreenWriteTarget::HostRenderTexture(5),
             Some(7),
         );
         let b = build_material_bind_cache_key_parts(
             11,
             lookup_ids(2, Some(30), Some(40)),
             42,
-            Some(5),
+            OffscreenWriteTarget::HostRenderTexture(5),
             Some(7),
         );
 
@@ -612,26 +613,34 @@ mod tests {
             11,
             lookup_ids(1, Some(10), Some(20)),
             42,
-            Some(5),
+            OffscreenWriteTarget::HostRenderTexture(5),
             Some(7),
         );
         let changed_texture = build_material_bind_cache_key_parts(
             11,
             lookup_ids(1, Some(10), Some(20)),
             43,
-            Some(5),
+            OffscreenWriteTarget::HostRenderTexture(5),
             Some(7),
         );
         let changed_offscreen = build_material_bind_cache_key_parts(
             11,
             lookup_ids(1, Some(10), Some(20)),
             42,
-            Some(6),
+            OffscreenWriteTarget::HostRenderTexture(6),
+            Some(7),
+        );
+        let untracked_offscreen = build_material_bind_cache_key_parts(
+            11,
+            lookup_ids(1, Some(10), Some(20)),
+            42,
+            OffscreenWriteTarget::Untracked,
             Some(7),
         );
 
         assert_ne!(base, changed_texture);
         assert_ne!(base, changed_offscreen);
+        assert_ne!(base, untracked_offscreen);
     }
 
     #[test]
@@ -640,14 +649,14 @@ mod tests {
             11,
             lookup_ids(1, Some(10), Some(20)),
             42,
-            None,
+            OffscreenWriteTarget::None,
             Some(7),
         );
         let second = build_material_bind_cache_key_parts(
             11,
             lookup_ids(1, Some(10), Some(20)),
             42,
-            None,
+            OffscreenWriteTarget::None,
             Some(8),
         );
 
