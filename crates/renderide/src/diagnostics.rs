@@ -20,8 +20,9 @@ pub use per_view::{PerViewHudConfig, PerViewHudOutputs, PerViewHudOutputsSlot};
 pub use snapshots::{
     BackendDiagSnapshot, FrameDiagnosticsIpcQueues, FrameDiagnosticsSnapshot,
     FrameDiagnosticsSnapshotCapture, FrameTimeHistory, FrameTimingEma, FrameTimingHudCapture,
-    FrameTimingHudSnapshot, FrameTimingOnePercentStats, GpuAllocatorHud, GpuAllocatorHudRefresh,
-    GpuAllocatorReportHud, HostHudGatherer, RendererInfoSnapshot, RendererInfoSnapshotCapture,
-    SceneTransformsSnapshot, ShaderRouteSnapshot, TextureDebugSnapshot, XrRecoverableFailureCounts,
+    FrameTimingHudSnapshot, FrameTimingOnePercentStats, FrameUploadArenaSnapshot, GpuAllocatorHud,
+    GpuAllocatorHudRefresh, GpuAllocatorReportHud, HostHudGatherer, RendererInfoSnapshot,
+    RendererInfoSnapshotCapture, SceneTransformsSnapshot, ShaderRouteSnapshot,
+    TextureDebugSnapshot, XrRecoverableFailureCounts,
 };
 pub use watchdog::{Heartbeat, Watchdog, WatchdogPause};

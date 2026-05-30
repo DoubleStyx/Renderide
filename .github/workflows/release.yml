@@ -31,10 +31,17 @@ jobs:
     outputs:
       sha: ${{ steps.pick.outputs.sha }}
       short_sha: ${{ steps.pick.outputs.short_sha }}
-      last_sha: ${{ steps.pick.outputs.last_sha }}
+      previous_release_tag: ${{ steps.pick.outputs.previous_release_tag }}
+      previous_release_sha: ${{ steps.pick.outputs.previous_release_sha }}
       tag: ${{ steps.pick.outputs.tag }}
       should_release: ${{ steps.pick.outputs.should_release }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+          fetch-tags: true
+
       - name: Find newest green commit on master
         id: pick
         env:
@@ -43,27 +50,24 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Newest SHA from recent successful CI runs on master.
-          candidate=$(
-            gh api -X GET \
-              "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs" \
-              -f branch=master -f status=success -F per_page=100 \
-              | jq -r '[.workflow_runs | sort_by(.created_at) | reverse | .[].head_sha][0] // ""'
-          )
+          green_shas=$(mktemp)
+          gh api -X GET \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs" \
+            -f branch=master -f status=success -F per_page=100 \
+            | jq -r '.workflow_runs[].head_sha' \
+            | sort -u >"${green_shas}"
+
+          master_ref=$(git rev-parse --verify origin/master^{commit})
+          candidate=""
+          while IFS= read -r master_sha; do
+            if grep -qx "${master_sha}" "${green_shas}"; then
+              candidate="${master_sha}"
+              break
+            fi
+          done < <(git rev-list "${master_ref}")
 
           if [ -z "$candidate" ]; then
             echo "No master commit has CI green; skipping." | tee -a "$GITHUB_STEP_SUMMARY"
-            echo "should_release=false" >>"$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # "Last released SHA" comes from the latest release's body. The publish job
-          # writes "Commit: <sha>" on the first line so we can recover it here.
-          last_body=$(gh release view --json body --jq .body 2>/dev/null || echo "")
-          last_sha=$(printf '%s\n' "$last_body" | sed -n 's/^Commit: \([0-9a-f]\{40\}\)$/\1/p' | head -n1)
-
-          if [ "$candidate" = "$last_sha" ] && [ "${FORCE:-false}" != "true" ]; then
-            echo "Candidate $candidate already released; nothing new tonight." | tee -a "$GITHUB_STEP_SUMMARY"
             echo "should_release=false" >>"$GITHUB_OUTPUT"
             exit 0
           fi
@@ -72,15 +76,61 @@ jobs:
           date=$(date -u +%Y-%m-%d)
           tag="nightly-${date}-${short}"
 
+          full_release_tags=$(mktemp)
+          gh api -X GET "repos/${GITHUB_REPOSITORY}/releases" -F per_page=100 \
+            | jq -r --arg prefix "nightly-" '
+                sort_by(.published_at // .created_at // "") | reverse | .[]
+                | select(.draft == false)
+                | select(.prerelease == false)
+                | select(.tag_name | startswith($prefix))
+                | .tag_name
+              ' >"${full_release_tags}"
+
+          resolve_release_sha() {
+            local release_tag="$1"
+            if [ -z "${release_tag}" ]; then
+              return 0
+            fi
+            if ! git cat-file -e "${release_tag}^{commit}" 2>/dev/null; then
+              git fetch --force --tags origin "refs/tags/${release_tag}:refs/tags/${release_tag}" >/dev/null 2>&1 || true
+            fi
+            git rev-parse "${release_tag}^{commit}" 2>/dev/null || true
+          }
+
+          latest_release_tag=$(head -n1 "${full_release_tags}" || true)
+          latest_release_sha=$(resolve_release_sha "${latest_release_tag}")
+
+          previous_release_tag=""
+          while IFS= read -r release_tag; do
+            if [ -z "${release_tag}" ] || [ "${release_tag}" = "${tag}" ]; then
+              continue
+            fi
+            previous_release_tag="${release_tag}"
+            break
+          done <"${full_release_tags}"
+          previous_release_sha=$(resolve_release_sha "${previous_release_tag}")
+
+          if [ -n "${latest_release_sha}" ] &&
+             [ "$candidate" = "${latest_release_sha}" ] &&
+             [ "${FORCE:-false}" != "true" ]; then
+            echo "Candidate $candidate already released as ${latest_release_tag}; nothing new tonight." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "should_release=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           {
             echo "Releasing commit $candidate as tag $tag"
-            echo "Previous release SHA: ${last_sha:-<none>}"
+            echo "Latest full release tag: ${latest_release_tag:-<none>}"
+            echo "Latest full release SHA: ${latest_release_sha:-<none>}"
+            echo "Previous changelog release tag: ${previous_release_tag:-<none>}"
+            echo "Previous changelog release SHA: ${previous_release_sha:-<none>}"
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
           {
             echo "sha=$candidate"
             echo "short_sha=$short"
-            echo "last_sha=$last_sha"
+            echo "previous_release_tag=$previous_release_tag"
+            echo "previous_release_sha=$previous_release_sha"
             echo "tag=$tag"
             echo "should_release=true"
           } >>"$GITHUB_OUTPUT"
@@ -96,8 +146,12 @@ jobs:
         include:
           - os: ubuntu-latest
             platform: linux-x86_64
+          - os: ubuntu-24.04-arm
+            platform: linux-aarch64
           - os: windows-latest
             platform: windows-x86_64
+          - os: windows-11-arm
+            platform: windows-aarch64
           - os: macos-15-intel
             platform: macos-x86_64
           - os: macos-latest
@@ -243,6 +297,7 @@ jobs:
         with:
           ref: ${{ needs.select-commit.outputs.sha }}
           fetch-depth: 0
+          fetch-tags: true
 
       - uses: actions/download-artifact@v4
         with:
@@ -252,21 +307,23 @@ jobs:
         id: notes
         env:
           SHA: ${{ needs.select-commit.outputs.sha }}
-          LAST_SHA: ${{ needs.select-commit.outputs.last_sha }}
+          PREVIOUS_RELEASE_TAG: ${{ needs.select-commit.outputs.previous_release_tag }}
+          PREVIOUS_RELEASE_SHA: ${{ needs.select-commit.outputs.previous_release_sha }}
           TAG: ${{ needs.select-commit.outputs.tag }}
         run: |
           set -euo pipefail
 
           changelog_range_label=""
           changelog_args=()
-          if [ -n "${LAST_SHA}" ] &&
-             git cat-file -e "${LAST_SHA}^{commit}" 2>/dev/null &&
-             git merge-base --is-ancestor "${LAST_SHA}" "${SHA}"
+          if [ -n "${PREVIOUS_RELEASE_TAG}" ] &&
+             [ -n "${PREVIOUS_RELEASE_SHA}" ] &&
+             git cat-file -e "${PREVIOUS_RELEASE_TAG}^{commit}" 2>/dev/null &&
+             git merge-base --is-ancestor "${PREVIOUS_RELEASE_SHA}" "${SHA}"
           then
-            changelog_range_label="Changes since [${LAST_SHA:0:8}](https://github.com/${GITHUB_REPOSITORY}/commit/${LAST_SHA})."
-            changelog_args=("${LAST_SHA}..${SHA}")
+            changelog_range_label="Changes since [${PREVIOUS_RELEASE_TAG}](https://github.com/${GITHUB_REPOSITORY}/releases/tag/${PREVIOUS_RELEASE_TAG}) ([${PREVIOUS_RELEASE_SHA:0:8}](https://github.com/${GITHUB_REPOSITORY}/commit/${PREVIOUS_RELEASE_SHA}))."
+            changelog_args=("${PREVIOUS_RELEASE_TAG}..${SHA}")
           else
-            changelog_range_label="No previous release commit was available, so no commit changelog was generated for this release."
+            changelog_range_label="No previous full release tag was available, so no commit changelog was generated for this release."
           fi
 
           changelog_count=0

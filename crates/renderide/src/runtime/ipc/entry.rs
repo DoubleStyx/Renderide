@@ -68,10 +68,13 @@ impl RendererRuntime {
             self.frontend.init_state(),
             self.ipc_state.pending_shader_resolutions.len(),
         );
-        for cmd in batch.drain(..) {
-            let _tag = renderer_command_variant_tag(&cmd);
-            profiling::scope!("ipc::dispatch", _tag);
-            self.handle_ipc_command(cmd);
+        {
+            profiling::scope!("ipc::command_processing");
+            for cmd in batch.drain(..) {
+                let _tag = renderer_command_variant_tag(&cmd);
+                profiling::scope!("ipc::dispatch", _tag);
+                self.handle_ipc_command(cmd);
+            }
         }
         self.frontend.recycle_command_batch(batch);
         waited

@@ -166,13 +166,13 @@ fn require_manifest_files(value: &serde_json::Value, platform: &str) -> Result<(
 pub(super) fn required_bundle_entries(platform: &str) -> Vec<BundleEntry> {
     let mut entries = Vec::with_capacity(5);
     match platform {
-        "windows-x86_64" => {
+        "windows-x86_64" | "windows-aarch64" => {
             entries.push(BundleEntry::file("renderide.exe", true));
             entries.push(BundleEntry::file("renderide-renderer.exe", false));
             entries.push(BundleEntry::directory("xr"));
             entries.push(BundleEntry::file("openxr_loader.dll", false));
         }
-        "linux-x86_64" => {
+        "linux-x86_64" | "linux-aarch64" => {
             entries.push(BundleEntry::file("renderide", true));
             entries.push(BundleEntry::file("renderide-renderer", false));
             entries.push(BundleEntry::directory("xr"));
@@ -285,7 +285,9 @@ mod tests {
     fn required_bundle_entries_include_launcher_for_known_platforms() {
         for platform in [
             "windows-x86_64",
+            "windows-aarch64",
             "linux-x86_64",
+            "linux-aarch64",
             "macos-x86_64",
             "macos-aarch64",
         ] {

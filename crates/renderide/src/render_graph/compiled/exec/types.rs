@@ -147,6 +147,11 @@ impl OwnedResolvedView {
             post_processing: self.post_processing,
         }
     }
+
+    /// Installs the late-acquired swapchain backbuffer on a previously metadata-only view.
+    pub(super) fn attach_backbuffer(&mut self, backbuffer: &wgpu::TextureView) {
+        self.backbuffer = Some(backbuffer.clone());
+    }
 }
 
 /// Prepared view-local frame inputs reused by blackboard preparation and command recording.
@@ -251,6 +256,8 @@ pub(super) struct PerViewWorkItem {
     pub(super) clear: FrameViewClear,
     /// Post-processing permissions requested by this view.
     pub(super) post_processing: ViewPostProcessing,
+    /// Whether this work item targets the desktop swapchain.
+    pub(super) target_is_swapchain: bool,
     /// Caller-seeded blackboard moved out of the frame view before pass recording.
     pub(super) initial_blackboard: Blackboard,
     /// Owned resolved view snapshot safe to move to a worker thread.
@@ -366,9 +373,9 @@ pub(super) struct DrainedUploadCommand {
 /// Bundles the command buffers produced by each phase, the per-view metadata needed for Hi-Z
 /// callbacks and HUD output application, and the swapchain/queue handles consumed by the single
 /// submit.
-pub(super) struct SubmitFrameInputs<'a> {
+pub(super) struct SubmitFrameInputs<'a, 'view> {
     /// Per-view targets in the input order (used for swapchain detection).
-    pub(super) views: &'a [FrameView<'a>],
+    pub(super) views: &'a [FrameView<'view>],
     /// Optional command buffer produced by frame-global passes.
     pub(super) frame_global_cmd: Option<wgpu::CommandBuffer>,
     /// One command buffer per view in input order.

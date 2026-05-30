@@ -51,7 +51,7 @@ impl FrameUploadBatchStats {
         self.oversized_queue_fallback_writes = stats.oversized_queue_fallback_writes;
     }
 
-    pub(super) fn apply_arena_pressure(&mut self, pressure: UploadArenaPressure) {
+    pub(crate) fn apply_arena_pressure(&mut self, pressure: UploadArenaPressure) {
         self.arena_capacity_bytes = pressure.capacity_bytes;
         self.arena_free_slots = pressure.free_slots;
         self.arena_in_flight_slots = pressure.in_flight_slots;
@@ -108,5 +108,30 @@ mod tests {
         assert_eq!(stats.copy_ops, 0);
         assert_eq!(stats.persistent_staging_bytes, 0);
         assert_eq!(stats.persistent_slot_reuses, 0);
+    }
+
+    #[test]
+    fn apply_arena_pressure_updates_slot_pressure_without_clearing_fallbacks() {
+        let mut stats = FrameUploadBatchStats {
+            fallback_writes: 2,
+            temporary_staging_fallbacks: 3,
+            oversized_queue_fallback_writes: 4,
+            ..FrameUploadBatchStats::default()
+        };
+
+        stats.apply_arena_pressure(UploadArenaPressure {
+            capacity_bytes: 1024,
+            free_slots: 1,
+            in_flight_slots: 2,
+            remapping_slots: 3,
+        });
+
+        assert_eq!(stats.arena_capacity_bytes, 1024);
+        assert_eq!(stats.arena_free_slots, 1);
+        assert_eq!(stats.arena_in_flight_slots, 2);
+        assert_eq!(stats.arena_remapping_slots, 3);
+        assert_eq!(stats.fallback_writes, 2);
+        assert_eq!(stats.temporary_staging_fallbacks, 3);
+        assert_eq!(stats.oversized_queue_fallback_writes, 4);
     }
 }

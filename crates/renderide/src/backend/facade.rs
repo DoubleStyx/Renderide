@@ -480,6 +480,7 @@ impl RenderBackend {
             frame_graph_estimated_bandwidth_bytes: graph_stats.estimated_bandwidth_bytes,
             gpu_light_count: self.frame_services.frame_resources.frame_lights().len(),
             signed_scene_color_active: self.signed_scene_color_active(),
+            upload_arena: self.graph_state.latest_upload_stats().into(),
         }
     }
 
@@ -535,7 +536,7 @@ impl RenderBackend {
         let live_motion_blur_settings = self.live_motion_blur_settings();
         let live_auto_exposure_settings = self.live_auto_exposure_settings();
         let wall_frame_time_ms = self.debug_frame_time_ms();
-        let (transient_pool, history_registry, upload_arena) =
+        let (transient_pool, history_registry, upload_arena, latest_upload_stats) =
             self.graph_state.execution_resources_mut();
         let (frame_resources, mesh_preprocess, mesh_deform_scratch, skin_cache) =
             self.frame_services.graph_access_slices();
@@ -551,6 +552,7 @@ impl RenderBackend {
             transient_pool,
             history_registry,
             upload_arena,
+            latest_upload_stats,
             debug_hud: self.diagnostics.bundle_mut(),
             scene_color_format,
             gpu_limits,

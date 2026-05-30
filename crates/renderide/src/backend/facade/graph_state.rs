@@ -5,7 +5,10 @@
 
 use crate::backend::graph::MainGraphPostProcessingResources;
 use crate::camera::ViewId;
-use crate::render_graph::{GraphCache, TransientPool, upload_arena::PersistentUploadArena};
+use crate::render_graph::{
+    GraphCache, TransientPool, frame_upload_batch::FrameUploadBatchStats,
+    upload_arena::PersistentUploadArena,
+};
 
 use super::super::{HistoryRegistry, ViewResourceRegistry};
 
@@ -20,6 +23,8 @@ pub(super) struct RenderGraphState {
     history_registry: HistoryRegistry,
     /// Persistent staging-buffer arena for frame upload copies.
     upload_arena: PersistentUploadArena,
+    /// Latest upload drain stats published by graph execution for diagnostics.
+    latest_upload_stats: FrameUploadBatchStats,
     /// Retained logical-view ownership for every backend cache that lives beyond one frame.
     view_resources: ViewResourceRegistry,
     /// Post-processing resources that must survive compiled graph rebuilds.
@@ -34,6 +39,7 @@ impl RenderGraphState {
             transient_pool: TransientPool::new(),
             history_registry: HistoryRegistry::new(),
             upload_arena: PersistentUploadArena::new(),
+            latest_upload_stats: FrameUploadBatchStats::default(),
             view_resources: ViewResourceRegistry::new(),
             post_processing_resources: MainGraphPostProcessingResources::default(),
         }
@@ -62,12 +68,19 @@ impl RenderGraphState {
         &mut TransientPool,
         &mut HistoryRegistry,
         &mut PersistentUploadArena,
+        &mut FrameUploadBatchStats,
     ) {
         (
             &mut self.transient_pool,
             &mut self.history_registry,
             &mut self.upload_arena,
+            &mut self.latest_upload_stats,
         )
+    }
+
+    /// Latest upload drain stats published by graph execution.
+    pub(super) fn latest_upload_stats(&self) -> FrameUploadBatchStats {
+        self.latest_upload_stats
     }
 
     /// Long-lived post-processing resources for main-graph rebuilds.

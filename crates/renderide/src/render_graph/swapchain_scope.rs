@@ -1,4 +1,4 @@
-//! RAII guard for the swapchain surface texture acquired at the start of a multi-view frame.
+//! RAII guard for the swapchain surface texture acquired during multi-view frame execution.
 //!
 //! ## Safety contract
 //!
@@ -16,6 +16,26 @@
 use crate::gpu::{GpuContext, GpuQueueAccessGate};
 use crate::present::{SurfaceAcquireTrace, SurfaceFrameOutcome, acquire_surface_outcome_traced};
 use crate::render_graph::error::GraphExecuteError;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SwapchainAcquireDecision {
+    NotNeeded,
+    Acquire,
+}
+
+fn swapchain_acquire_decision(
+    needs_swapchain: bool,
+    graph_needs_surface_acquire: bool,
+    headless: bool,
+) -> Result<SwapchainAcquireDecision, GraphExecuteError> {
+    if !needs_swapchain || !graph_needs_surface_acquire {
+        return Ok(SwapchainAcquireDecision::NotNeeded);
+    }
+    if headless {
+        return Err(GraphExecuteError::SwapchainRequiresWindow);
+    }
+    Ok(SwapchainAcquireDecision::Acquire)
+}
 
 /// Outcome of [`SwapchainScope::enter`].
 pub enum SwapchainEnterOutcome {
@@ -75,11 +95,15 @@ impl SwapchainScope {
         graph_needs_surface_acquire: bool,
         gpu: &mut GpuContext,
     ) -> Result<SwapchainEnterOutcome, GraphExecuteError> {
-        if !needs_swapchain || !graph_needs_surface_acquire {
-            return Ok(SwapchainEnterOutcome::NotNeeded);
-        }
-        if gpu.is_headless() {
-            return Err(GraphExecuteError::SwapchainRequiresWindow);
+        match swapchain_acquire_decision(
+            needs_swapchain,
+            graph_needs_surface_acquire,
+            gpu.is_headless(),
+        )? {
+            SwapchainAcquireDecision::NotNeeded => {
+                return Ok(SwapchainEnterOutcome::NotNeeded);
+            }
+            SwapchainAcquireDecision::Acquire => {}
         }
         profiling::scope!("gpu::swapchain_acquire");
         // wgpu holds the invariant that a `Surface` has at most one outstanding
@@ -139,5 +163,42 @@ impl Drop for SwapchainScope {
                 tex.present();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn acquire_decision_skips_without_swapchain_target() {
+        assert_eq!(
+            swapchain_acquire_decision(false, true, false).expect("decision"),
+            SwapchainAcquireDecision::NotNeeded
+        );
+    }
+
+    #[test]
+    fn acquire_decision_skips_when_graph_does_not_need_surface_import() {
+        assert_eq!(
+            swapchain_acquire_decision(true, false, false).expect("decision"),
+            SwapchainAcquireDecision::NotNeeded
+        );
+    }
+
+    #[test]
+    fn acquire_decision_rejects_headless_swapchain_surface_acquire() {
+        assert!(matches!(
+            swapchain_acquire_decision(true, true, true),
+            Err(GraphExecuteError::SwapchainRequiresWindow)
+        ));
+    }
+
+    #[test]
+    fn acquire_decision_acquires_windowed_swapchain_surface() {
+        assert_eq!(
+            swapchain_acquire_decision(true, true, false).expect("decision"),
+            SwapchainAcquireDecision::Acquire
+        );
     }
 }

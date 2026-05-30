@@ -27,7 +27,7 @@ use crate::render_graph::compiled::{FrameView, FrameViewTarget};
 use crate::render_graph::execution_backend::{
     GraphExecutionBackend, GraphFrameParamsSplit, GraphViewBlackboardPreparer,
 };
-use crate::render_graph::frame_upload_batch::GraphUploadSink;
+use crate::render_graph::frame_upload_batch::{FrameUploadBatchStats, GraphUploadSink};
 use crate::render_graph::upload_arena::PersistentUploadArena;
 use crate::world_mesh::WorldMeshDrawItem;
 
@@ -195,6 +195,8 @@ pub(crate) struct BackendGraphAccess<'a> {
     pub(crate) history_registry: &'a mut HistoryRegistry,
     /// Persistent upload staging arena used by graph buffer upload drains.
     pub(crate) upload_arena: &'a mut PersistentUploadArena,
+    /// Latest frame-upload stats published for diagnostics.
+    pub(crate) latest_upload_stats: &'a mut FrameUploadBatchStats,
     /// Debug HUD state and encoder.
     pub(crate) debug_hud: &'a mut DebugHudBundle,
     /// Scene-color format snapshot selected before graph execution borrows backend fields.
@@ -276,6 +278,11 @@ impl<'a> BackendGraphAccess<'a> {
     /// Persistent upload staging arena.
     pub(crate) fn upload_arena_mut(&mut self) -> &mut PersistentUploadArena {
         self.upload_arena
+    }
+
+    /// Publishes upload drain stats for the diagnostics HUD.
+    pub(crate) fn record_frame_upload_stats(&mut self, stats: FrameUploadBatchStats) {
+        *self.latest_upload_stats = stats;
     }
 
     /// Scene-color format snapshot selected for this graph frame.
@@ -590,6 +597,10 @@ impl GraphExecutionBackend for BackendGraphAccess<'_> {
 
     fn upload_arena_mut(&mut self) -> &mut PersistentUploadArena {
         BackendGraphAccess::upload_arena_mut(self)
+    }
+
+    fn record_frame_upload_stats(&mut self, stats: FrameUploadBatchStats) {
+        BackendGraphAccess::record_frame_upload_stats(self, stats);
     }
 
     fn scene_color_format_wgpu(&self) -> wgpu::TextureFormat {

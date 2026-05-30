@@ -33,6 +33,10 @@ pub struct WorldMeshVisibilityStats {
     pub fallback_runs: usize,
     /// Renderer runs returned to per-run draw collection after broadphase filtering.
     pub candidate_runs: usize,
+    /// Raw spatial candidate marks emitted by queried spaces before duplicate suppression.
+    pub raw_candidate_marks: usize,
+    /// Spatial candidate marks skipped because the renderer run was already marked.
+    pub duplicate_candidate_marks: usize,
     /// Renderer runs rejected by the broadphase before per-run draw collection.
     pub broadphase_culled_runs: usize,
     /// Material-slot draw rows rejected by the broadphase before per-run draw collection.

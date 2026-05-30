@@ -353,6 +353,7 @@ fn expand_renderer_slots(
             space_id,
             renderable_index,
             instance_id,
+            renderer_ordinal: 0,
             node_id: renderer.node_id,
             mesh_asset_id: renderer.mesh_asset_id,
             is_overlay,

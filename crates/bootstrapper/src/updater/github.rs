@@ -23,16 +23,20 @@ pub(super) fn fetch_latest_candidate(
     Ok(select_update_candidate(&releases, metadata))
 }
 
-/// Selects the first eligible release asset that is not the running release tag.
+/// Selects the newest eligible release asset when it is newer than the running build.
 pub(super) fn select_update_candidate(
     releases: &[Release],
     metadata: &ReleaseBuildMetadata,
 ) -> Option<UpdateCandidate> {
-    releases
+    let candidate = releases
         .iter()
         .filter(|release| release.version.starts_with(NIGHTLY_PREFIX))
-        .filter(|release| release.version != metadata.tag)
-        .find_map(|release| candidate_from_release(release, metadata))
+        .find_map(|release| candidate_from_release(release, metadata))?;
+    if candidate.tag == metadata.tag || candidate.commit == metadata.commit {
+        None
+    } else {
+        Some(candidate)
+    }
 }
 
 /// Converts a GitHub release into an update candidate when it has this platform's asset.
@@ -193,16 +197,16 @@ No previous release commit was available, so no commit changelog was generated f
     }
 
     #[test]
-    fn candidate_selection_uses_nightly_tag_and_exact_platform_asset() {
+    fn candidate_selection_uses_newest_nightly_tag_and_exact_platform_asset() {
         let metadata = metadata();
         let commit = "2222222222222222222222222222222222222222";
         let releases = vec![
-            release("v1.0.0", commit, "renderide-linux-x86_64-v1.0.0.zip"),
             release(
                 "nightly-2026-05-27-2222222",
                 commit,
                 "renderide-linux-x86_64-nightly-2026-05-27-2222222.zip",
             ),
+            release("v1.0.0", commit, "renderide-linux-x86_64-v1.0.0.zip"),
         ];
 
         let candidate = select_update_candidate(&releases, &metadata);
@@ -240,13 +244,40 @@ No previous release commit was available, so no commit changelog was generated f
     }
 
     #[test]
-    fn candidate_selection_ignores_current_tag() {
+    fn candidate_selection_does_not_offer_previous_release_when_current_is_latest() {
         let metadata = metadata();
-        let releases = vec![release(
-            &metadata.tag,
-            "2222222222222222222222222222222222222222",
-            &asset_name_for(&metadata.platform, &metadata.tag),
-        )];
+        let releases = vec![
+            release(
+                &metadata.tag,
+                &metadata.commit,
+                &asset_name_for(&metadata.platform, &metadata.tag),
+            ),
+            release(
+                "nightly-2026-05-25-0000000",
+                "0000000000000000000000000000000000000000",
+                &asset_name_for(&metadata.platform, "nightly-2026-05-25-0000000"),
+            ),
+        ];
+
+        assert!(select_update_candidate(&releases, &metadata).is_none());
+    }
+
+    #[test]
+    fn candidate_selection_ignores_duplicate_tag_for_current_commit() {
+        let metadata = metadata();
+        let duplicate_tag = "nightly-2026-05-27-1111111";
+        let releases = vec![
+            release(
+                duplicate_tag,
+                &metadata.commit,
+                &asset_name_for(&metadata.platform, duplicate_tag),
+            ),
+            release(
+                "nightly-2026-05-25-0000000",
+                "0000000000000000000000000000000000000000",
+                &asset_name_for(&metadata.platform, "nightly-2026-05-25-0000000"),
+            ),
+        ];
 
         assert!(select_update_candidate(&releases, &metadata).is_none());
     }

@@ -572,6 +572,8 @@ mod tests {
             indexed_runs: 10,
             fallback_runs: 2,
             candidate_runs: 6,
+            raw_candidate_marks: 8,
+            duplicate_candidate_marks: 2,
             broadphase_culled_runs: 4,
             broadphase_culled_draws: 7,
             linear_fallback_runs: 3,

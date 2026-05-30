@@ -73,12 +73,13 @@ pub use gpu_profiler_impl::GpuProfilerHandle;
 pub use gpu_profiler_stub::GpuProfilerHandle;
 pub(crate) use gpu_scope::GpuEncoderScope;
 pub use plots::{
-    AssetIntegrationProfileSample, CommandEncodingProfileSample, IpcPollProfileSample,
-    MeshDeformProfileSample, RayonAdmissionProfileSample, plot_asset_integration,
-    plot_command_encoding, plot_driver_submit_backlog, plot_event_loop_idle_ms,
-    plot_event_loop_wait_ms, plot_fps_cap_active, plot_frame_upload_batch, plot_ipc_poll,
-    plot_mesh_deform, plot_rayon_admission, plot_render_world_maintenance,
-    plot_surface_acquire_outcome, plot_window_focused, plot_world_mesh_subpass,
+    AssetIntegrationProfileSample, CommandEncodingProfileSample, FrameUploadArenaProfileSample,
+    IpcPollProfileSample, MeshDeformProfileSample, RayonAdmissionProfileSample,
+    plot_asset_integration, plot_command_encoding, plot_driver_submit_backlog,
+    plot_event_loop_idle_ms, plot_event_loop_wait_ms, plot_fps_cap_active, plot_frame_upload_arena,
+    plot_frame_upload_batch, plot_ipc_poll, plot_mesh_deform, plot_rayon_admission,
+    plot_render_world_maintenance, plot_surface_acquire_outcome, plot_window_focused,
+    plot_world_mesh_subpass,
 };
 pub(crate) use plots::{plot_mesh_derived_stream_masks, plot_mesh_upload_batch};
 pub(crate) use resource_churn::{

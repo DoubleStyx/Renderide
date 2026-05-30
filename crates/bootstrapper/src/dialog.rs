@@ -24,6 +24,8 @@ const CANCEL_BUTTON_LABEL: &str = "Cancel";
 const UPDATE_BUTTON_LABEL: &str = "Update";
 /// Custom-button label that shows the release changelog.
 const VIEW_CHANGELOG_BUTTON_LABEL: &str = "View Changelog";
+/// Custom-button label that skips the offered release until the next launch.
+const SKIP_ONCE_BUTTON_LABEL: &str = "Not Now";
 /// Custom-button label that persists a skip for the offered release tag.
 const SKIP_RELEASE_BUTTON_LABEL: &str = "Skip This Release";
 
@@ -139,6 +141,9 @@ fn action_from_dialog_result(result: rfd::MessageDialogResult) -> UpdateDialogAc
         rfd::MessageDialogResult::Custom(label) if label == VIEW_CHANGELOG_BUTTON_LABEL => {
             UpdateDialogAction::ViewChangelog
         }
+        rfd::MessageDialogResult::Custom(label) if label == SKIP_ONCE_BUTTON_LABEL => {
+            UpdateDialogAction::SkipOnce
+        }
         rfd::MessageDialogResult::Custom(label) if label == SKIP_RELEASE_BUTTON_LABEL => {
             UpdateDialogAction::SkipRelease
         }
@@ -160,6 +165,8 @@ fn show_release_update_prompt_with_zenity(description: &str) -> Option<UpdateDia
         .arg(description)
         .arg("--ok-label")
         .arg(UPDATE_BUTTON_LABEL)
+        .arg("--cancel-label")
+        .arg(SKIP_ONCE_BUTTON_LABEL)
         .arg("--extra-button")
         .arg(VIEW_CHANGELOG_BUTTON_LABEL)
         .arg("--extra-button")
@@ -177,6 +184,7 @@ fn show_release_update_prompt_with_zenity(description: &str) -> Option<UpdateDia
     let label = stdout.trim();
     match label {
         VIEW_CHANGELOG_BUTTON_LABEL => Some(UpdateDialogAction::ViewChangelog),
+        SKIP_ONCE_BUTTON_LABEL => Some(UpdateDialogAction::SkipOnce),
         SKIP_RELEASE_BUTTON_LABEL => Some(UpdateDialogAction::SkipRelease),
         _ if output.status.success() => Some(UpdateDialogAction::Update),
         _ => Some(UpdateDialogAction::SkipOnce),
@@ -184,11 +192,42 @@ fn show_release_update_prompt_with_zenity(description: &str) -> Option<UpdateDia
 }
 
 fn show_release_changelog(prompt: &UpdatePrompt) {
+    let changelog = changelog_text_for_dialog(&prompt.changelog);
     let _ = rfd::MessageDialog::new()
         .set_title(format!("Renderide Changelog {}", prompt.latest_tag))
-        .set_description(prompt.changelog.as_str())
+        .set_description(changelog)
         .set_level(rfd::MessageLevel::Info)
         .show();
+}
+
+fn changelog_text_for_dialog(changelog: &str) -> String {
+    let mut output = String::with_capacity(changelog.len());
+    let mut remaining = changelog;
+
+    while let Some(start) = remaining.find('[') {
+        output.push_str(&remaining[..start]);
+        let candidate = &remaining[start..];
+        let Some(label_end) = candidate.find(']') else {
+            output.push_str(candidate);
+            return output;
+        };
+        let after_label = &candidate[label_end + 1..];
+        let Some(after_open) = after_label.strip_prefix('(') else {
+            output.push('[');
+            remaining = &candidate[1..];
+            continue;
+        };
+        let Some(url_end) = after_open.find(')') else {
+            output.push_str(candidate);
+            return output;
+        };
+
+        output.push_str(&candidate[1..label_end]);
+        remaining = &after_open[url_end + 1..];
+    }
+
+    output.push_str(remaining);
+    output
 }
 
 /// Shows an updater notification dialog.
@@ -231,6 +270,12 @@ mod tests {
         );
         assert_eq!(
             action_from_dialog_result(rfd::MessageDialogResult::Custom(
+                SKIP_ONCE_BUTTON_LABEL.to_owned()
+            )),
+            UpdateDialogAction::SkipOnce
+        );
+        assert_eq!(
+            action_from_dialog_result(rfd::MessageDialogResult::Custom(
                 SKIP_RELEASE_BUTTON_LABEL.to_owned()
             )),
             UpdateDialogAction::SkipRelease
@@ -239,5 +284,39 @@ mod tests {
             action_from_dialog_result(rfd::MessageDialogResult::Cancel),
             UpdateDialogAction::SkipOnce
         );
+    }
+
+    #[test]
+    fn changelog_dialog_text_renders_commit_links_as_text() {
+        let changelog = "- [22222222](https://github.com/DoubleStyx/Renderide/commit/2222222222222222222222222222222222222222) Add updater changelog by Renderer Developer";
+
+        assert_eq!(
+            changelog_text_for_dialog(changelog),
+            "- 22222222 Add updater changelog by Renderer Developer"
+        );
+    }
+
+    #[test]
+    fn changelog_dialog_text_renders_range_label_links_as_text() {
+        let changelog = "Changes since [nightly-2026-05-29-1111111](https://github.com/DoubleStyx/Renderide/releases/tag/nightly-2026-05-29-1111111) ([11111111](https://github.com/DoubleStyx/Renderide/commit/1111111111111111111111111111111111111111)).";
+
+        assert_eq!(
+            changelog_text_for_dialog(changelog),
+            "Changes since nightly-2026-05-29-1111111 (11111111)."
+        );
+    }
+
+    #[test]
+    fn changelog_dialog_text_keeps_fallback_text_unchanged() {
+        let changelog = "No changelog is available for this release.";
+
+        assert_eq!(changelog_text_for_dialog(changelog), changelog);
+    }
+
+    #[test]
+    fn changelog_dialog_text_keeps_malformed_links_unchanged() {
+        let changelog = "Keep [unfinished link text and [label] without a target.";
+
+        assert_eq!(changelog_text_for_dialog(changelog), changelog);
     }
 }
