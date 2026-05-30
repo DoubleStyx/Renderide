@@ -127,7 +127,7 @@ pub enum WorldMeshPhase {
     ForwardAlphaTest,
     /// Normal-prepass mirror of pre-skybox forward groups.
     ViewNormals,
-    /// Intersection-material groups that run after the scene-depth snapshot.
+    /// Nontransparent intersection-material groups that run after the scene-depth snapshot.
     Intersection,
     /// Post-skybox transparent groups that do not require a grab snapshot.
     Transparent,

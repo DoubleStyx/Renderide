@@ -18,11 +18,12 @@
 //! 5. [`WorldMeshForwardNormalPass`] -- optional **[`RasterPass`]** that writes smooth
 //!    view-space vertex normals for GTAO, using the opaque depth buffer as an equality mask.
 //! 6. [`WorldMeshDepthSnapshotPass`] -- **[`EncoderPass`]** that resolves MSAA depth (when active)
-//!    and copies single-sample depth into the scene-depth snapshot for intersection materials.
-//! 7. [`WorldMeshForwardIntersectPass`] -- **[`RasterPass`]** that draws intersection materials.
+//!    and copies single-sample depth into the scene-depth snapshot for depth-snapshot materials.
+//! 7. [`WorldMeshForwardIntersectPass`] -- **[`RasterPass`]** that draws nontransparent
+//!    intersection groups.
 //! 8. [`WorldMeshForwardTransparentSequencePass`] -- **[`EncoderPass`]** that draws the sorted
-//!    transparent phase, resolving/copying a fresh scene-color snapshot immediately before each
-//!    grab-pass phase group.
+//!    transparent phase, including transparent intersection materials, resolving/copying a fresh
+//!    scene-color snapshot immediately before each grab-pass phase group.
 //! 9. [`WorldMeshForwardDepthResolvePass`] -- **[`EncoderPass`]** that resolves the final MSAA
 //!    depth into the single-sample frame depth used by Hi-Z.
 //!
@@ -103,13 +104,13 @@ pub struct WorldMeshForwardOpaquePass {
     resources: WorldMeshForwardGraphResources,
 }
 
-/// Copies the resolved forward depth into the scene-depth snapshot for intersection materials.
+/// Copies the resolved forward depth into the scene-depth snapshot for depth-snapshot materials.
 #[derive(Debug)]
 pub struct WorldMeshDepthSnapshotPass {
     resources: WorldMeshForwardGraphResources,
 }
 
-/// Draws intersection materials after the scene-depth snapshot is available.
+/// Draws nontransparent intersection material groups after the scene-depth snapshot is available.
 #[derive(Debug)]
 pub struct WorldMeshForwardIntersectPass {
     resources: WorldMeshForwardGraphResources,

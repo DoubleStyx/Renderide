@@ -2,7 +2,7 @@
 //! driven intersection tint/emission (`_BeginTransition*` / `_EndTransition*` band).
 //!
 //! Metallic-workflow counterpart of [`pbsintersectspecular`]. Depth is sampled from the opaque
-//! scene-depth snapshot bound at `@group(0)` by the intersection subpass -- see
+//! scene-depth snapshot bound at `@group(0)` by the forward depth-snapshot pass -- see
 //! [`crate::backend::frame_gpu::FrameGpuResources::copy_scene_depth_snapshot`].
 //!
 //! Froox variant bits populate `_RenderideVariantBits`; this shader decodes PBSIntersect's

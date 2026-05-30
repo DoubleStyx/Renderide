@@ -84,7 +84,7 @@ pub struct ReflectedRasterLayout {
     pub uses_scene_depth_snapshot: bool,
     /// `true` when the shader declares a scene-color snapshot binding at `@group(0)`.
     pub uses_scene_color_snapshot: bool,
-    /// `true` when the material uniform block declares intersection tint (e.g. `_IntersectColor`), used for a second forward subpass.
+    /// `true` when the material uniform block declares intersection tint (e.g. `_IntersectColor`).
     ///
     /// Derived from reflection only (no shader stem string checks in the render graph).
     pub requires_intersection_pass: bool,

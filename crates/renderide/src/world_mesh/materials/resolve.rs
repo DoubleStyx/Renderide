@@ -61,7 +61,7 @@ pub(crate) struct ResolvedMaterialBatch {
     pub embedded_needs_wide_uvs: bool,
     /// Whether the active shader permutation requires any stream outside UV0/color/UV1.
     pub embedded_needs_extended_vertex_streams: bool,
-    /// Whether the material requires a second forward subpass with a depth snapshot.
+    /// Whether the material declares intersection-depth behavior and needs the depth snapshot.
     pub embedded_requires_intersection_pass: bool,
     /// Whether the active shader permutation declares a scene-depth snapshot binding.
     pub embedded_uses_scene_depth_snapshot: bool,

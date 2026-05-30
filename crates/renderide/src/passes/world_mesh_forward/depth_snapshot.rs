@@ -2,7 +2,7 @@
 //!
 //! When MSAA is active, depth is resolved first (delegating to [`super::depth_resolve`]). The
 //! resolved single-sample depth is then copied into the sampled scene-depth snapshot used by
-//! intersection materials.
+//! depth-snapshot materials.
 
 use crate::gpu::MsaaDepthResolveResources;
 use crate::graph_inputs::{GraphPassFrame, MsaaViews};
@@ -42,7 +42,7 @@ pub(super) struct EncodeCtx<'a, 'encoder, 'frame> {
 }
 
 /// Resolves MSAA depth when needed, then copies the single-sample frame depth into the sampled
-/// scene-depth snapshot used by intersection materials.
+/// scene-depth snapshot used by depth-snapshot materials.
 pub(super) fn encode_world_mesh_forward_depth_snapshot(ctx: EncodeCtx<'_, '_, '_>) -> EncodeResult {
     let EncodeCtx {
         device,

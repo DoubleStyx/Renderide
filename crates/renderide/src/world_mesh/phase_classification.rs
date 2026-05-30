@@ -22,8 +22,8 @@ pub(crate) struct WorldMeshBatchPhase {
 pub(crate) fn classify_world_mesh_batch(key: &MaterialDrawBatchKey) -> WorldMeshBatchPhase {
     let intersect = key.embedded_requires_intersection_pass;
     let grab_pass = key.embedded_uses_scene_color_snapshot;
-    let post_skybox = !intersect && !grab_pass && key.records_after_skybox();
-    let strict_order = grab_pass || (!intersect && key.requires_strict_order());
+    let post_skybox = !grab_pass && key.records_after_skybox();
+    let strict_order = grab_pass || key.requires_strict_order();
     let phase = phase_for_window(key, intersect, grab_pass, post_skybox);
     debug_assert!(
         !(intersect && grab_pass),
@@ -45,12 +45,12 @@ fn phase_for_window(
     grab_pass: bool,
     post_skybox: bool,
 ) -> WorldMeshPhase {
-    if intersect {
-        WorldMeshPhase::Intersection
-    } else if grab_pass {
+    if grab_pass {
         WorldMeshPhase::TransparentGrab
     } else if post_skybox {
         WorldMeshPhase::Transparent
+    } else if intersect {
+        WorldMeshPhase::Intersection
     } else if key.render_queue >= UNITY_RENDER_QUEUE_ALPHA_TEST {
         WorldMeshPhase::ForwardAlphaTest
     } else {
@@ -138,6 +138,20 @@ mod tests {
         alpha.blend_mode = MaterialBlendMode::StemDefault;
 
         let classification = classify_world_mesh_batch(&alpha);
+
+        assert_eq!(classification.phase, WorldMeshPhase::Transparent);
+        assert!(classification.post_skybox);
+        assert!(classification.strict_order);
+    }
+
+    #[test]
+    fn classifies_transparent_intersection_as_strict_ordered_transparent() {
+        let mut intersect = key(true);
+        intersect.render_queue = UNITY_RENDER_QUEUE_TRANSPARENT;
+        intersect.embedded_requires_intersection_pass = true;
+        intersect.embedded_uses_scene_depth_snapshot = true;
+
+        let classification = classify_world_mesh_batch(&intersect);
 
         assert_eq!(classification.phase, WorldMeshPhase::Transparent);
         assert!(classification.post_skybox);

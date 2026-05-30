@@ -424,6 +424,47 @@ fn transparent_render_queue_regular_window_emits_post_skybox_singletons() {
 }
 
 #[test]
+fn transparent_intersection_window_emits_transparent_singletons() {
+    let mut draws: Vec<_> = (0..3)
+        .map(|n| {
+            let mut item = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+                material_asset_id: 1,
+                property_block: None,
+                skinned: false,
+                sorting_order: 0,
+                mesh_asset_id: 7,
+                node_id: n,
+                slot_index: 0,
+                collect_order: n as usize,
+                alpha_blended: true,
+            });
+            item.batch_key.embedded_requires_intersection_pass = true;
+            item.batch_key.embedded_uses_scene_depth_snapshot = true;
+            refresh_sort_keys(&mut item);
+            item
+        })
+        .collect();
+    sort_draws(&mut draws);
+
+    let plan = build_plan(&draws, true);
+    assert!(groups(&plan, WorldMeshPhase::ForwardOpaque).is_empty());
+    assert!(groups(&plan, WorldMeshPhase::Intersection).is_empty());
+    assert_eq!(groups(&plan, WorldMeshPhase::Transparent).len(), 3);
+    for group in groups(&plan, WorldMeshPhase::Transparent) {
+        assert_eq!(group.instance_range.end - group.instance_range.start, 1);
+    }
+    assert_phases_empty(
+        &plan,
+        &[
+            WorldMeshPhase::ForwardAlphaTest,
+            WorldMeshPhase::TransparentGrab,
+            WorldMeshPhase::DepthOnly,
+            WorldMeshPhase::ViewNormals,
+        ],
+    );
+}
+
+#[test]
 fn geometry_last_queue_regular_window_groups_as_alpha_test() {
     let mut draws: Vec<_> = (0..3)
         .map(|n| {

@@ -6,7 +6,7 @@ use crate::world_mesh::draw_prep::WorldMeshDrawCollection;
 /// Snapshot-dependent helper work required by a prefetched world-mesh view.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct WorldMeshHelperNeeds {
-    /// Whether any draw in the view samples the scene-depth snapshot for the intersection subpass.
+    /// Whether any draw in the view samples the scene-depth snapshot.
     pub depth_snapshot: bool,
     /// Whether any draw in the view samples the scene-color snapshot for the grab-pass subpass.
     pub color_snapshot: bool,
