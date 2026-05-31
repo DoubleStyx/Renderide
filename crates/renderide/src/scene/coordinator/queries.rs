@@ -49,6 +49,13 @@ impl SceneCoordinator {
         Some(world)
     }
 
+    /// Returns whether `context` has transform or material overrides that affect retained draw prep.
+    pub fn render_context_affects_draw_prep(&self, context: RenderingContext) -> bool {
+        self.spaces
+            .values()
+            .any(|space| space.has_draw_prep_overrides_in_context(context))
+    }
+
     /// Hierarchy world matrix prepared for actual rendering.
     ///
     /// Overlay spaces are re-rooted against the current `HeadOutput.transform` before drawing

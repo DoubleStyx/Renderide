@@ -14,7 +14,7 @@ use crate::world_mesh::{
     FrameMaterialBatchCache, FramePreparedRenderables, RenderWorld, WorldMeshDrawCollectParallelism,
 };
 
-use super::draw_preparation::DrawPreparationExtractDesc;
+use super::draw_preparation::{DrawPreparationExtractDesc, render_context_cache_key};
 use super::{OcclusionSystem, RenderBackend};
 
 /// Immutable backend-owned extraction snapshot produced by [`RenderBackend::extract_frame_shared`].
@@ -52,7 +52,7 @@ impl ExtractedFrameShared<'_> {
         render_context: RenderingContext,
     ) -> Option<&FramePreparedRenderables> {
         self.render_worlds
-            .get(&render_context_key(render_context))
+            .get(&render_context_cache_key(self.scene, render_context))
             .map(RenderWorld::prepared)
     }
 
@@ -62,13 +62,11 @@ impl ExtractedFrameShared<'_> {
         render_context: RenderingContext,
         shader_perm: ShaderPermutation,
     ) -> Option<&FrameMaterialBatchCache> {
-        self.material_caches
-            .get(&(render_context_key(render_context), shader_perm))
+        self.material_caches.get(&(
+            render_context_cache_key(self.scene, render_context),
+            shader_perm,
+        ))
     }
-}
-
-fn render_context_key(render_context: RenderingContext) -> u8 {
-    render_context as u8
 }
 
 impl RenderBackend {

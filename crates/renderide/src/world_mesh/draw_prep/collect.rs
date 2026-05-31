@@ -655,9 +655,8 @@ fn collect_prepared_world_mesh_chunks(
     lod_visibility: &LodVisibility,
     space_ids: &[RenderSpaceId],
 ) -> WorldMeshCollectedChunks {
-    debug_assert_eq!(
-        prepared.render_context(),
-        ctx.render_context,
+    debug_assert!(
+        prepared.is_compatible_with_render_context(ctx.render_context),
         "prepared renderables were built for a different render context than the per-view draw collection -- material overrides would disagree"
     );
     profiling::scope!("mesh::collect_prepared");
