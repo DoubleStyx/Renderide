@@ -97,16 +97,14 @@ pub(super) fn derived_streams_compatible_for_in_place(
         return false;
     }
 
-    let pos_norm_bytes = has_supported_position_stream(&data.vertex_attributes)
+    let primary_stream_bytes = has_supported_position_stream(&data.vertex_attributes)
         .then(|| (vc_usize as u64).saturating_mul(16));
-    match (&gpu.positions_buffer, &gpu.normals_buffer, pos_norm_bytes) {
-        (Some(pb), Some(nb), Some(bytes)) => {
-            if pb.size() != bytes || nb.size() != bytes {
-                return false;
-            }
-        }
-        (None, None, _) => {}
-        _ => return false,
+    if !primary_stream_sizes_match(
+        gpu.positions_buffer.as_deref().map(wgpu::Buffer::size),
+        gpu.normals_buffer.as_deref().map(wgpu::Buffer::size),
+        primary_stream_bytes,
+    ) {
+        return false;
     }
 
     let uv_bytes = (vc_usize as u64).saturating_mul(8);
@@ -141,6 +139,20 @@ fn has_supported_position_stream(attrs: &[VertexAttributeDescriptor]) -> bool {
             && attr.format == VertexAttributeFormat::Float32
             && attr.dimensions >= 3
     })
+}
+
+fn primary_stream_sizes_match(
+    positions_size: Option<u64>,
+    normals_size: Option<u64>,
+    expected: Option<u64>,
+) -> bool {
+    match (positions_size, normals_size, expected) {
+        (Some(positions_size), Some(normals_size), Some(expected)) => {
+            positions_size == expected && normals_size == expected
+        }
+        (None, None, None) => true,
+        _ => false,
+    }
 }
 
 fn optional_stream_size_matches(buffer: Option<&wgpu::Buffer>, expected: Option<u64>) -> bool {
@@ -224,6 +236,24 @@ mod tests {
             index_count: count,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn primary_streams_match_when_required_buffers_have_expected_size() {
+        assert!(primary_stream_sizes_match(Some(16), Some(16), Some(16)));
+        assert!(!primary_stream_sizes_match(Some(16), Some(12), Some(16)));
+    }
+
+    #[test]
+    fn primary_streams_missing_for_position_meshes_reject_in_place_update() {
+        assert!(!primary_stream_sizes_match(None, None, Some(16)));
+        assert!(!primary_stream_sizes_match(Some(16), None, Some(16)));
+        assert!(!primary_stream_sizes_match(None, Some(16), Some(16)));
+    }
+
+    #[test]
+    fn primary_streams_may_be_absent_when_mesh_has_no_position_stream() {
+        assert!(primary_stream_sizes_match(None, None, None));
     }
 
     #[test]

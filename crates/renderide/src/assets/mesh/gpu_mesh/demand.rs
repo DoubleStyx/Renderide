@@ -97,9 +97,7 @@ impl MeshDerivedStreamMask {
 
     /// Runtime-required streams independent of material reflection.
     pub(crate) fn runtime_required(data: &MeshUploadData) -> Self {
-        let use_blendshapes =
-            data.upload_hint.flags.blendshapes() && !data.blendshape_buffers.is_empty();
-        if data.bone_count > 0 || use_blendshapes {
+        if data.vertex_count > 0 {
             Self::DRAWABLE_PRIMARY
         } else {
             Self::EMPTY
@@ -238,6 +236,34 @@ impl MeshDerivedStreamState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_required_includes_primary_streams_for_non_empty_meshes() {
+        let data = MeshUploadData {
+            vertex_count: 1,
+            ..Default::default()
+        };
+
+        let demand = MeshDerivedStreamDemand::EMPTY.with_runtime_required(&data);
+
+        assert!(
+            demand
+                .mask
+                .contains(MeshDerivedStreamMask::DRAWABLE_PRIMARY)
+        );
+    }
+
+    #[test]
+    fn runtime_required_keeps_empty_meshes_streamless() {
+        let data = MeshUploadData {
+            vertex_count: 0,
+            ..Default::default()
+        };
+
+        let demand = MeshDerivedStreamDemand::EMPTY.with_runtime_required(&data);
+
+        assert!(demand.mask.is_empty());
+    }
 
     #[test]
     fn demand_merge_keeps_all_bits_and_strongest_tangent_mode() {
