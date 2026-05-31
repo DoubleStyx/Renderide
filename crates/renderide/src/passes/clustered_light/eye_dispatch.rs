@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::camera::HostCameraFrame;
 use crate::gpu::{CLUSTER_LIGHT_RANGE_WORDS, CLUSTER_PARAMS_UNIFORM_SIZE, GpuLimits};
+use crate::graph_inputs::OffscreenWriteTarget;
 use crate::profiling::GpuEncoderScope;
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::scene::SceneCoordinator;
@@ -134,16 +135,30 @@ pub(super) fn clustered_light_eye_params_for_viewport(
     hc: &HostCameraFrame,
     scene: &SceneCoordinator,
     viewport: (u32, u32),
+    offscreen_write_target: OffscreenWriteTarget,
 ) -> Option<Vec<ClusterFrameParams>> {
     if stereo {
         if let Some((left, right)) = cluster_frame_params_stereo(hc, scene, viewport) {
-            Some(vec![left, right])
+            Some(vec![
+                apply_render_target_projection(left, offscreen_write_target),
+                apply_render_target_projection(right, offscreen_write_target),
+            ])
         } else {
-            cluster_frame_params(hc, scene, viewport).map(|mono| vec![mono])
+            cluster_frame_params(hc, scene, viewport)
+                .map(|mono| vec![apply_render_target_projection(mono, offscreen_write_target)])
         }
     } else {
-        cluster_frame_params(hc, scene, viewport).map(|mono| vec![mono])
+        cluster_frame_params(hc, scene, viewport)
+            .map(|mono| vec![apply_render_target_projection(mono, offscreen_write_target)])
     }
+}
+
+fn apply_render_target_projection(
+    mut params: ClusterFrameParams,
+    offscreen_write_target: OffscreenWriteTarget,
+) -> ClusterFrameParams {
+    params.proj = offscreen_write_target.render_projection(params.proj);
+    params
 }
 
 /// Returns the byte range for a contiguous cluster-range slice.
@@ -226,12 +241,31 @@ pub(super) fn log_clustered_light_active_once(
 
 #[cfg(test)]
 mod tests {
-    use glam::Mat4;
+    use glam::{Mat4, Vec3};
 
+    use crate::camera::{EyeView, HostCameraFrame, StereoViewMatrices};
+    use crate::graph_inputs::OffscreenWriteTarget;
+    use crate::scene::SceneCoordinator;
     use crate::world_mesh::cluster::{CLUSTER_NEAR_CLIP_MIN, sanitize_cluster_clip_planes};
 
     use super::super::pipeline::{ClusterParamsDesc, build_params};
-    use super::{cluster_count_clear_range, clusters_per_eye_for_params};
+    use super::{
+        cluster_count_clear_range, clustered_light_eye_params_for_viewport,
+        clusters_per_eye_for_params,
+    };
+
+    fn projection_with_non_unit_y(y: f32) -> Mat4 {
+        Mat4::from_cols_array(&[
+            2.0, 0.0, 0.0, 0.0, 0.0, y, 0.0, 0.0, 0.25, 0.5, 1.0, 1.0, 0.0, 0.0, 0.1, 0.0,
+        ])
+    }
+
+    fn explicit_camera(proj: Mat4) -> HostCameraFrame {
+        HostCameraFrame {
+            explicit_view: Some(EyeView::new(Mat4::IDENTITY, proj, proj, Vec3::ZERO)),
+            ..HostCameraFrame::default()
+        }
+    }
 
     /// Compute params apply the same cluster clip-plane sanitization as fragment lookup.
     #[test]
@@ -279,6 +313,72 @@ mod tests {
         assert_eq!(
             clusters_per_eye_for_params(&params),
             Some(4 * 3 * super::CLUSTER_COUNT_Z)
+        );
+    }
+
+    #[test]
+    fn clustered_light_eye_params_keep_primary_projection_unchanged() {
+        let scene = SceneCoordinator::new();
+        let proj = projection_with_non_unit_y(3.0);
+        let eye_params = clustered_light_eye_params_for_viewport(
+            false,
+            &explicit_camera(proj),
+            &scene,
+            (128, 96),
+            OffscreenWriteTarget::None,
+        )
+        .expect("cluster params");
+
+        assert_eq!(eye_params[0].proj, proj);
+    }
+
+    #[test]
+    fn clustered_light_eye_params_use_offscreen_render_projection() {
+        let scene = SceneCoordinator::new();
+        let proj = projection_with_non_unit_y(3.0);
+        let write_target = OffscreenWriteTarget::HostRenderTexture(77);
+        let eye_params = clustered_light_eye_params_for_viewport(
+            false,
+            &explicit_camera(proj),
+            &scene,
+            (128, 96),
+            write_target,
+        )
+        .expect("cluster params");
+
+        assert_eq!(eye_params[0].proj, write_target.render_projection(proj));
+    }
+
+    #[test]
+    fn stereo_clustered_light_eye_params_use_offscreen_render_projection_per_eye() {
+        let scene = SceneCoordinator::new();
+        let left_proj = projection_with_non_unit_y(3.0);
+        let right_proj = projection_with_non_unit_y(4.0);
+        let host_camera = HostCameraFrame {
+            vr_active: true,
+            stereo: Some(StereoViewMatrices::new(
+                EyeView::new(Mat4::IDENTITY, left_proj, left_proj, Vec3::ZERO),
+                EyeView::new(Mat4::IDENTITY, right_proj, right_proj, Vec3::X),
+            )),
+            ..HostCameraFrame::default()
+        };
+        let write_target = OffscreenWriteTarget::Untracked;
+        let eye_params = clustered_light_eye_params_for_viewport(
+            true,
+            &host_camera,
+            &scene,
+            (128, 96),
+            write_target,
+        )
+        .expect("cluster params");
+
+        assert_eq!(
+            eye_params[0].proj,
+            write_target.render_projection(left_proj)
+        );
+        assert_eq!(
+            eye_params[1].proj,
+            write_target.render_projection(right_proj)
         );
     }
 }

@@ -48,6 +48,20 @@ impl OffscreenWriteTarget {
         !matches!(self, Self::None)
     }
 
+    /// Applies the render-target projection convention for this write target.
+    ///
+    /// Offscreen color attachments are written in the host texture orientation, so their
+    /// clip-space projection gets a Y flip. Screen-space consumers built from the view projection,
+    /// including clustered-light froxels and frame unprojection constants, must use the same
+    /// adjusted projection as the forward draw path.
+    pub(crate) fn render_projection(self, projection: glam::Mat4) -> glam::Mat4 {
+        if self.is_offscreen() {
+            offscreen_projection_y_flip() * projection
+        } else {
+            projection
+        }
+    }
+
     /// Returns the host render-texture asset id when self-sampling must be suppressed.
     pub const fn host_render_texture_asset_id(self) -> Option<i32> {
         match self {
@@ -55,6 +69,10 @@ impl OffscreenWriteTarget {
             Self::None | Self::Untracked => None,
         }
     }
+}
+
+fn offscreen_projection_y_flip() -> glam::Mat4 {
+    glam::Mat4::from_diagonal(glam::Vec4::new(1.0, -1.0, 1.0, 1.0))
 }
 
 /// Per-view background clear contract propagated from host camera state.
@@ -296,6 +314,29 @@ mod tests {
         let host_target = OffscreenWriteTarget::HostRenderTexture(77);
         assert!(host_target.is_offscreen());
         assert_eq!(host_target.host_render_texture_asset_id(), Some(77));
+    }
+
+    #[test]
+    fn offscreen_write_target_flips_render_projection_y() {
+        let projection = glam::Mat4::from_cols_array(&[
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+        ]);
+        let expected = super::offscreen_projection_y_flip() * projection;
+
+        assert_eq!(
+            OffscreenWriteTarget::HostRenderTexture(77).render_projection(projection),
+            expected
+        );
+    }
+
+    #[test]
+    fn primary_write_target_keeps_render_projection_unchanged() {
+        let projection = glam::Mat4::from_scale(glam::Vec3::new(2.0, 3.0, 4.0));
+
+        assert_eq!(
+            OffscreenWriteTarget::None.render_projection(projection),
+            projection
+        );
     }
 
     #[test]
