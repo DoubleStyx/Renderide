@@ -28,7 +28,7 @@ use crate::shared::RenderingContext;
 use crate::world_mesh::culling::WorldMeshCullInput;
 use crate::world_mesh::materials::FrameMaterialBatchCache;
 
-use super::arrange::arrange_draws_by_phase_bins;
+use super::arrange::arrange_draw_chunks_by_phase_bins;
 use super::filter::CameraTransformDrawFilter;
 use super::item::{WorldMeshDrawCollection, WorldMeshDrawItem, WorldMeshVisibilityStats};
 use super::prepared_renderables::FramePreparedRenderables;
@@ -163,19 +163,30 @@ pub struct DrawCollectionContext<'a> {
     pub prepared: Option<&'a FramePreparedRenderables>,
 }
 
-/// How [`queue_draws_with_parallelism`] parallelizes per-chunk collection and transparent sorting.
+/// How [`queue_draws_with_parallelism`] parallelizes per-chunk collection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorldMeshDrawCollectParallelism {
-    /// Per-chunk collection and transparent draw sorting both use rayon.
+    /// Per-chunk collection uses rayon.
     Full,
-    /// Serial per-chunk merge and transparent sorting; use when an outer `par_iter` already fans out (e.g. multiple secondary RTs).
+    /// Serial per-chunk collection; use when an outer `par_iter` already fans out (e.g. multiple secondary RTs).
     SerialInnerForNestedBatch,
+}
+
+/// How final per-view draw arrangement may use Rayon.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorldMeshDrawArrangeParallelism {
+    /// Draw chunk partitioning and strict-order sorting may use rayon when the work is large enough.
+    Full,
+    /// Draw arrangement stays on the caller thread.
+    Serial,
 }
 
 /// Draw candidates queued for one view before final phase sorting and arrangement.
 pub struct QueuedWorldMeshDraws {
-    /// Candidate draw items in deterministic scene collection order.
-    items: Vec<WorldMeshDrawItem>,
+    /// Candidate draw chunks in deterministic scene collection order.
+    chunks: Vec<Vec<WorldMeshDrawItem>>,
+    /// Number of queued draw candidates across all chunks.
+    len: usize,
     /// Number of candidate draws before CPU culling.
     draws_pre_cull: usize,
     /// Number of candidate draws rejected by CPU frustum culling.
@@ -214,23 +225,23 @@ struct PreparedViewChunkTask {
 impl QueuedWorldMeshDraws {
     /// Number of queued draw candidates before arrangement.
     pub fn len(&self) -> usize {
-        self.items.len()
+        self.len
     }
 
     /// Sorts and arranges queued draws into render-phase submission order.
     pub fn sort_and_arrange(
-        mut self,
-        parallelism: WorldMeshDrawCollectParallelism,
+        self,
+        parallelism: WorldMeshDrawArrangeParallelism,
     ) -> WorldMeshDrawCollection {
-        let arrangement = {
+        let (items, arrangement) = {
             profiling::scope!("mesh::arrange");
-            arrange_draws_by_phase_bins(
-                &mut self.items,
-                parallelism == WorldMeshDrawCollectParallelism::Full,
+            arrange_draw_chunks_by_phase_bins(
+                self.chunks,
+                parallelism == WorldMeshDrawArrangeParallelism::Full,
             )
         };
         WorldMeshDrawCollection {
-            items: self.items,
+            items,
             draws_pre_cull: self.draws_pre_cull,
             draws_culled: self.draws_culled,
             draws_hi_z_culled: self.draws_hi_z_culled,
@@ -378,28 +389,27 @@ pub(crate) fn queue_prepared_draws_for_views_with_parallelism(
     }
 }
 
-/// Merges per-chunk collection output and assigns stable collection order.
+/// Packages per-chunk collection output for later arrangement.
 fn merge_collected_chunks(
     collected: WorldMeshCollectedChunks,
-    cap_hint: usize,
+    _cap_hint: usize,
 ) -> QueuedWorldMeshDraws {
-    let mut out = Vec::with_capacity(cap_hint);
+    let mut chunks = Vec::with_capacity(collected.chunks.len());
+    let mut len = 0usize;
     let mut cull_stats = (0usize, 0usize, 0usize);
-    profiling::scope!("mesh::collect_and_sort::merge_chunks");
+    profiling::scope!("mesh::collect::package_chunks");
     for (items, cs) in collected.chunks {
         cull_stats.0 += cs.0;
         cull_stats.1 += cs.1;
         cull_stats.2 += cs.2;
-        out.extend(items);
+        len += items.len();
+        if !items.is_empty() {
+            chunks.push(items);
+        }
     }
-
-    profiling::scope!("mesh::queue_draws::assign_collect_order");
-    for (i, item) in out.iter_mut().enumerate() {
-        item.collect_order = i;
-    }
-
     QueuedWorldMeshDraws {
-        items: out,
+        chunks,
+        len,
         draws_pre_cull: cull_stats.0,
         draws_culled: cull_stats.1,
         draws_hi_z_culled: cull_stats.2,

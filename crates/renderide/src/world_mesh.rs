@@ -26,8 +26,8 @@ pub use diagnostics::{
 pub(crate) use draw_prep::WorldMeshDrawCollection;
 pub use draw_prep::{
     CameraTransformDrawFilter, DrawCollectionContext, FramePreparedRenderables, RenderWorld,
-    RenderWorldMaintenanceStats, WorldMeshDrawCollectParallelism, WorldMeshDrawItem,
-    draw_filter_from_camera_entry,
+    RenderWorldMaintenanceStats, WorldMeshDrawArrangeParallelism, WorldMeshDrawCollectParallelism,
+    WorldMeshDrawItem, draw_filter_from_camera_entry,
 };
 pub(crate) use draw_prep::{
     QueuedWorldMeshDraws, queue_draws_with_parallelism,
