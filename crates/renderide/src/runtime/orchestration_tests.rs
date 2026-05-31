@@ -9,13 +9,15 @@ use crate::connection::ConnectionParams;
 use crate::ipc::SharedMemoryAccessor;
 use crate::shared::buffer::SharedMemoryBufferDescriptor;
 use crate::shared::{
-    DesktopConfig, FrameSubmitData, FreeSharedMemoryView, Guid, HeadOutputDevice, KeepAlive,
-    MeshRenderablesUpdate, PostProcessingConfig, QualityConfig, RenderSpaceUpdate, RendererCommand,
-    RendererEngineReady, RendererInitData, RendererInitFinalizeData, RendererShutdown,
-    SetTexture2DFormat, ShaderUpload, SkinWeightMode,
+    CameraRenderTask, DesktopConfig, FrameSubmitData, FreeSharedMemoryView, Guid, HeadOutputDevice,
+    KeepAlive, MeshRenderablesUpdate, PostProcessingConfig, QualityConfig,
+    ReflectionProbeRenderTask, RenderSpaceUpdate, RendererCommand, RendererEngineReady,
+    RendererInitData, RendererInitFinalizeData, RendererShutdown, SetTexture2DFormat, ShaderUpload,
+    SkinWeightMode,
 };
 
 use super::RendererRuntime;
+use super::state::tick::QueuedReflectionProbeRenderTask;
 
 fn test_settings_handle() -> RendererSettingsHandle {
     Arc::new(std::sync::RwLock::new(RendererSettings::default()))
@@ -97,6 +99,33 @@ fn render_attempt_clears_pending_frame_submit_render() {
     rt.note_frame_render_attempted();
 
     assert!(!rt.pending_frame_submit_render());
+}
+
+#[test]
+fn submit_completion_work_drained_waits_for_camera_tasks() {
+    let mut rt = test_runtime_standalone();
+    assert!(rt.submit_completion_work_drained());
+
+    rt.tick_state
+        .pending_camera_render_tasks
+        .push(CameraRenderTask::default());
+
+    assert!(!rt.submit_completion_work_drained());
+}
+
+#[test]
+fn submit_completion_work_drained_waits_for_reflection_probe_tasks() {
+    let mut rt = test_runtime_standalone();
+    assert!(rt.submit_completion_work_drained());
+
+    rt.tick_state
+        .pending_reflection_probe_render_tasks
+        .push(QueuedReflectionProbeRenderTask {
+            render_space_id: crate::scene::RenderSpaceId(1),
+            task: ReflectionProbeRenderTask::default(),
+        });
+
+    assert!(!rt.submit_completion_work_drained());
 }
 
 #[test]

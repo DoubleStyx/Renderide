@@ -45,6 +45,19 @@ impl BeginFrameDecision {
     }
 }
 
+/// Inputs to the pure one-credit begin-frame gate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct OneCreditBeginFrameGateInput {
+    /// Whether init, fatal, IPC, and processed-submit state allow a begin-frame send.
+    pub(crate) base_begin_frame_allowed: bool,
+    /// Whether a `FrameStartData` is already waiting for a matching host submit.
+    pub(crate) awaiting_frame_submit: bool,
+    /// Whether the applied host submit still needs a renderer-side draw attempt.
+    pub(crate) pending_frame_submit_render: bool,
+    /// Whether submit-attached host completion work has been drained before host finalization.
+    pub(crate) submit_completion_work_drained: bool,
+}
+
 /// Inputs to build an outgoing frame-start payload.
 pub(crate) struct BeginFrameBuildInput {
     /// Host frame index echoed to the host.
@@ -85,6 +98,14 @@ pub(crate) fn decide_begin_frame(input: BeginFrameGateInput) -> BeginFrameDecisi
     }
 }
 
+/// Computes whether the renderer may spend its one in-flight credit before rendering a submit.
+pub(crate) fn decide_one_credit_begin_frame(input: OneCreditBeginFrameGateInput) -> bool {
+    input.base_begin_frame_allowed
+        && !input.awaiting_frame_submit
+        && input.pending_frame_submit_render
+        && input.submit_completion_work_drained
+}
+
 /// Builds the outgoing frame-start payload and the commit needed after a successful send.
 pub(crate) fn build_frame_start(input: BeginFrameBuildInput) -> (FrameStartData, BeginFrameCommit) {
     let bootstrap = input.last_frame_index < 0 && !input.sent_bootstrap_frame_start;
@@ -104,7 +125,10 @@ pub(crate) fn build_frame_start(input: BeginFrameBuildInput) -> (FrameStartData,
 
 #[cfg(test)]
 mod tests {
-    use super::{BeginFrameBuildInput, BeginFrameGateInput, build_frame_start, decide_begin_frame};
+    use super::{
+        BeginFrameBuildInput, BeginFrameGateInput, OneCreditBeginFrameGateInput, build_frame_start,
+        decide_begin_frame, decide_one_credit_begin_frame,
+    };
     use crate::shared::InputState;
 
     fn finalized_processed_gate() -> BeginFrameGateInput {
@@ -186,6 +210,50 @@ mod tests {
             })
             .is_allowed()
         );
+    }
+
+    fn one_credit_input() -> OneCreditBeginFrameGateInput {
+        OneCreditBeginFrameGateInput {
+            base_begin_frame_allowed: true,
+            awaiting_frame_submit: false,
+            pending_frame_submit_render: true,
+            submit_completion_work_drained: true,
+        }
+    }
+
+    #[test]
+    fn one_credit_allows_coupled_processed_unrendered_frame() {
+        assert!(decide_one_credit_begin_frame(one_credit_input()));
+    }
+
+    #[test]
+    fn one_credit_blocks_duplicate_begin_while_awaiting_submit() {
+        assert!(!decide_one_credit_begin_frame(
+            OneCreditBeginFrameGateInput {
+                awaiting_frame_submit: true,
+                ..one_credit_input()
+            }
+        ));
+    }
+
+    #[test]
+    fn one_credit_blocks_until_submit_completion_work_is_drained() {
+        assert!(!decide_one_credit_begin_frame(
+            OneCreditBeginFrameGateInput {
+                submit_completion_work_drained: false,
+                ..one_credit_input()
+            }
+        ));
+    }
+
+    #[test]
+    fn one_credit_blocks_without_pending_renderable_submit() {
+        assert!(!decide_one_credit_begin_frame(
+            OneCreditBeginFrameGateInput {
+                pending_frame_submit_render: false,
+                ..one_credit_input()
+            }
+        ));
     }
 
     #[test]

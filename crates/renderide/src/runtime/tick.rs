@@ -3,7 +3,7 @@
 //! Owns the prologue, the lock-step / output forwards the app driver invokes inside one
 //! redraw iteration, and the two top-level tick entry points that compose [`Self::poll_ipc`],
 //! [`Self::maintain_nonblocking_gpu_jobs`], [`Self::drain_reflection_probe_render_tasks`],
-//! [`Self::drain_camera_render_tasks`], [`Self::pre_frame`],
+//! [`Self::drain_camera_render_tasks`], [`Self::pre_frame`], [`Self::pre_frame_one_credit`],
 //! [`Self::run_asset_integration`], and [`Self::render_desktop_frame`] in their fixed order.
 
 use std::time::{Duration, Instant};
@@ -24,8 +24,23 @@ struct BeginFrameBeforeWaitWorkInput {
     should_send_begin_frame: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct OneCreditBeginFrameInput {
+    awaiting_frame_submit: bool,
+    pending_frame_submit_render: bool,
+    should_send_begin_frame: bool,
+    submit_completion_work_drained: bool,
+}
+
 fn should_send_begin_frame_before_wait_work(input: BeginFrameBeforeWaitWorkInput) -> bool {
     input.should_send_begin_frame && !input.awaiting_frame_submit && !input.should_render_frame
+}
+
+fn should_send_one_credit_begin_frame(input: OneCreditBeginFrameInput) -> bool {
+    input.should_send_begin_frame
+        && !input.awaiting_frame_submit
+        && input.pending_frame_submit_render
+        && input.submit_completion_work_drained
 }
 
 impl RendererRuntime {
@@ -42,6 +57,35 @@ impl RendererRuntime {
     /// Whether a `FrameStartData` has been sent and the matching host submit is still outstanding.
     pub fn awaiting_frame_submit(&self) -> bool {
         self.frontend.awaiting_frame_submit()
+    }
+
+    /// Whether submit-attached host completion work is drained before host frame finalization.
+    pub(crate) fn submit_completion_work_drained(&self) -> bool {
+        self.tick_state.pending_camera_render_tasks.is_empty()
+            && self
+                .tick_state
+                .pending_reflection_probe_render_tasks
+                .is_empty()
+            && self
+                .tick_state
+                .pending_reflection_probe_render_results
+                .is_empty()
+    }
+
+    /// Whether the next host frame may be requested before rendering the current submit.
+    pub(crate) fn should_send_one_credit_begin_frame(&self) -> bool {
+        if self.shutdown_requested() || self.fatal_error() {
+            return false;
+        }
+        let submit_completion_work_drained = self.submit_completion_work_drained();
+        should_send_one_credit_begin_frame(OneCreditBeginFrameInput {
+            awaiting_frame_submit: self.awaiting_frame_submit(),
+            pending_frame_submit_render: self.frontend.pending_frame_submit_render(),
+            should_send_begin_frame: self
+                .frontend
+                .should_send_one_credit_begin_frame(submit_completion_work_drained),
+            submit_completion_work_drained,
+        })
     }
 
     /// Whether idle lock-step should send `FrameStartData` before renderer wait-work this tick.
@@ -194,12 +238,25 @@ impl RendererRuntime {
     /// frontend so the next outgoing [`FrameStartData`](crate::shared::FrameStartData::video_clock_errors)
     /// carries them. The drain runs unconditionally because the frontend itself decides whether
     /// the begin-frame send fires; if the send is skipped, samples remain bounded to the latest
-    /// value per video asset until the next allowed send.
-    pub fn pre_frame(&mut self, inputs: InputState) {
+    /// value per video asset until the next allowed send. Returns whether the primary command was
+    /// actually enqueued.
+    pub fn pre_frame(&mut self, inputs: InputState) -> bool {
         profiling::scope!("tick::pre_frame");
         let video_clock_errors = self.backend.take_pending_video_clock_errors();
         self.frontend.enqueue_video_clock_errors(video_clock_errors);
-        self.frontend.pre_frame(inputs);
+        self.frontend.pre_frame(inputs)
+    }
+
+    /// Sends a one-credit [`FrameStartData`](crate::shared::FrameStartData) before rendering.
+    pub(crate) fn pre_frame_one_credit(&mut self, inputs: InputState) -> bool {
+        profiling::scope!("tick::pre_frame_one_credit");
+        if self.shutdown_requested() || self.fatal_error() {
+            return false;
+        }
+        let video_clock_errors = self.backend.take_pending_video_clock_errors();
+        self.frontend.enqueue_video_clock_errors(video_clock_errors);
+        self.frontend
+            .pre_frame_one_credit(inputs, self.submit_completion_work_drained())
     }
 
     /// Drains pending host window policy after [`Self::poll_ipc`].
@@ -240,6 +297,10 @@ impl RendererRuntime {
         self.maintain_nonblocking_gpu_jobs(gpu);
         self.drain_reflection_probe_render_tasks(gpu);
         self.drain_camera_render_tasks(gpu);
+        crash_context::set_tick_phase(TickPhase::Lockstep);
+        if self.should_send_one_credit_begin_frame() {
+            self.pre_frame_one_credit(inputs.clone());
+        }
         crash_context::set_tick_phase(TickPhase::Lockstep);
         if self.should_send_begin_frame_before_wait_work() {
             self.pre_frame(inputs.clone());
@@ -314,6 +375,7 @@ impl RendererRuntime {
 #[cfg(test)]
 mod tests {
     use super::{BeginFrameBeforeWaitWorkInput, should_send_begin_frame_before_wait_work};
+    use super::{OneCreditBeginFrameInput, should_send_one_credit_begin_frame};
 
     fn input() -> BeginFrameBeforeWaitWorkInput {
         BeginFrameBeforeWaitWorkInput {
@@ -344,6 +406,50 @@ mod tests {
             BeginFrameBeforeWaitWorkInput {
                 should_render_frame: true,
                 ..input()
+            }
+        ));
+    }
+
+    fn one_credit_input() -> OneCreditBeginFrameInput {
+        OneCreditBeginFrameInput {
+            awaiting_frame_submit: false,
+            pending_frame_submit_render: true,
+            should_send_begin_frame: true,
+            submit_completion_work_drained: true,
+        }
+    }
+
+    #[test]
+    fn one_credit_sends_for_renderable_processed_submit() {
+        assert!(should_send_one_credit_begin_frame(one_credit_input()));
+    }
+
+    #[test]
+    fn one_credit_does_not_duplicate_in_flight_begin() {
+        assert!(!should_send_one_credit_begin_frame(
+            OneCreditBeginFrameInput {
+                awaiting_frame_submit: true,
+                ..one_credit_input()
+            }
+        ));
+    }
+
+    #[test]
+    fn one_credit_waits_for_submit_completion_work() {
+        assert!(!should_send_one_credit_begin_frame(
+            OneCreditBeginFrameInput {
+                submit_completion_work_drained: false,
+                ..one_credit_input()
+            }
+        ));
+    }
+
+    #[test]
+    fn one_credit_requires_pending_renderable_submit() {
+        assert!(!should_send_one_credit_begin_frame(
+            OneCreditBeginFrameInput {
+                pending_frame_submit_render: false,
+                ..one_credit_input()
             }
         ));
     }

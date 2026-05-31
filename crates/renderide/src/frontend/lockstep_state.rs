@@ -7,7 +7,8 @@ use crate::shared::{
 
 use super::begin_frame::{
     BeginFrameBuildInput, BeginFrameCommit, BeginFrameDecision, BeginFrameGateInput,
-    build_frame_start, decide_begin_frame,
+    OneCreditBeginFrameGateInput, build_frame_start, decide_begin_frame,
+    decide_one_credit_begin_frame,
 };
 
 /// Runtime context supplied to the lockstep begin-frame gate.
@@ -137,6 +138,22 @@ impl LockstepState {
         })
     }
 
+    /// Computes whether the renderer may request the next host frame before rendering this submit.
+    pub(crate) fn one_credit_begin_frame_decision(
+        &self,
+        context: LockstepBeginFrameContext,
+        submit_completion_work_drained: bool,
+    ) -> bool {
+        let base_begin_frame_allowed =
+            context.init_finalized && !context.fatal_error && context.ipc_connected;
+        decide_one_credit_begin_frame(OneCreditBeginFrameGateInput {
+            base_begin_frame_allowed,
+            awaiting_frame_submit: self.awaiting_submit(),
+            pending_frame_submit_render: self.pending_frame_submit_render,
+            submit_completion_work_drained,
+        })
+    }
+
     /// Builds outgoing frame-start data plus the commit that should be applied after a successful send.
     pub(crate) fn build_frame_start(
         &self,
@@ -180,12 +197,21 @@ fn upsert_video_clock_error(
 
 #[cfg(test)]
 mod tests {
-    use super::LockstepState;
+    use super::{LockstepBeginFrameContext, LockstepState};
     use crate::shared::memory_packer::MemoryPacker;
     use crate::shared::polymorphic_memory_packable_entity::PolymorphicEncode;
     use crate::shared::{InputState, RendererCommand, VideoTextureClockErrorState};
 
     const IPC_SEND_BUFFER_CAP: usize = 65_536;
+
+    fn finalized_ipc_context() -> LockstepBeginFrameContext {
+        LockstepBeginFrameContext {
+            init_finalized: true,
+            fatal_error: false,
+            ipc_connected: true,
+            renderer_decoupled: false,
+        }
+    }
 
     #[test]
     fn enqueue_video_clock_errors_keeps_latest_sample_per_asset() {
@@ -213,6 +239,34 @@ mod tests {
         assert_eq!(frame_start.video_clock_errors[0].current_clock_error, 0.75);
         assert_eq!(frame_start.video_clock_errors[1].asset_id, 9);
         assert_eq!(frame_start.video_clock_errors[1].current_clock_error, -0.5);
+    }
+
+    #[test]
+    fn one_credit_begin_keeps_applied_submit_renderable_while_awaiting_next_submit() {
+        let mut state = LockstepState::new(false);
+        state.note_frame_submit_processed(42);
+
+        assert!(state.one_credit_begin_frame_decision(finalized_ipc_context(), true));
+        let (_, commit) = state.build_frame_start(InputState::default(), None);
+        state.commit_begin_frame_sent(commit);
+
+        assert!(state.awaiting_submit());
+        assert!(state.pending_frame_submit_render());
+        assert_eq!(state.last_frame_index(), 42);
+    }
+
+    #[test]
+    fn render_attempt_after_one_credit_consumes_current_submit_only() {
+        let mut state = LockstepState::new(false);
+        state.note_frame_submit_processed(42);
+        let (_, commit) = state.build_frame_start(InputState::default(), None);
+        state.commit_begin_frame_sent(commit);
+
+        state.note_frame_render_attempted();
+
+        assert!(state.awaiting_submit());
+        assert!(!state.pending_frame_submit_render());
+        assert_eq!(state.last_frame_index(), 42);
     }
 
     #[test]

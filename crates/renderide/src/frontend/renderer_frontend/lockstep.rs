@@ -38,6 +38,19 @@ impl RendererFrontend {
             .is_allowed()
     }
 
+    /// Whether the next frame may be requested before rendering the currently applied submit.
+    pub fn should_send_one_credit_begin_frame(&self, submit_completion_work_drained: bool) -> bool {
+        self.lockstep.one_credit_begin_frame_decision(
+            LockstepBeginFrameContext {
+                init_finalized: self.session.init_state().is_finalized(),
+                fatal_error: self.session.fatal_error(),
+                ipc_connected: self.transport.is_ipc_connected(),
+                renderer_decoupled: self.is_renderer_decoupled(),
+            },
+            submit_completion_work_drained,
+        )
+    }
+
     /// Whether the renderer is waiting for the host's next [`crate::shared::FrameSubmitData`].
     pub fn awaiting_frame_submit(&self) -> bool {
         self.lockstep.awaiting_submit()
@@ -50,7 +63,6 @@ impl RendererFrontend {
     }
 
     /// Whether a processed host submit still needs a renderer-side draw attempt.
-    #[cfg(test)]
     pub fn pending_frame_submit_render(&self) -> bool {
         self.lockstep.pending_frame_submit_render()
     }
@@ -93,12 +105,34 @@ impl RendererFrontend {
     }
 
     /// Lock-step begin-frame: sends frame-start data with `inputs` when allowed.
-    pub fn pre_frame(&mut self, inputs: InputState) {
+    ///
+    /// Returns whether the primary command was enqueued and lock-step state was committed.
+    pub fn pre_frame(&mut self, inputs: InputState) -> bool {
         profiling::scope!("frontend::pre_frame_send");
         if !self.should_send_begin_frame() {
-            return;
+            return false;
         }
 
+        self.send_frame_start(inputs)
+    }
+
+    /// One-credit begin-frame: sends the next request before rendering the applied submit.
+    ///
+    /// Returns whether the primary command was enqueued and lock-step state was committed.
+    pub fn pre_frame_one_credit(
+        &mut self,
+        inputs: InputState,
+        submit_completion_work_drained: bool,
+    ) -> bool {
+        profiling::scope!("frontend::pre_frame_one_credit_send");
+        if !self.should_send_one_credit_begin_frame(submit_completion_work_drained) {
+            return false;
+        }
+
+        self.send_frame_start(inputs)
+    }
+
+    fn send_frame_start(&mut self, inputs: InputState) -> bool {
         let performance = self.performance.step_for_frame_start();
         let (frame_start, commit) = self.lockstep.build_frame_start(inputs, performance);
         if let Some(ipc) = self.transport.ipc_mut()
@@ -107,10 +141,11 @@ impl RendererFrontend {
             logger::warn!(
                 "IPC primary queue full: FrameStartData not sent; will retry on the next tick"
             );
-            return;
+            return false;
         }
         self.lockstep.commit_begin_frame_sent(commit);
         self.decoupling.record_frame_start_sent(Instant::now());
+        true
     }
 
     /// Updates lock-step state after the host submits a frame.

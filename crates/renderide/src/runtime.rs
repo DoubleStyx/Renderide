@@ -17,19 +17,22 @@
 //! 3. **GPU/offscreen completion** -- [`RendererRuntime::maintain_nonblocking_gpu_jobs`],
 //!    [`RendererRuntime::drain_reflection_probe_render_tasks`], and
 //!    [`RendererRuntime::drain_camera_render_tasks`] collect completed host-visible GPU work.
-//! 4. **Idle lock-step begin** -- [`RendererRuntime::pre_frame`] emits
+//! 4. **Lock-step begin** -- [`RendererRuntime::pre_frame`] emits
 //!    [`FrameStartData`](crate::shared::FrameStartData) before renderer wait-work when no submitted
-//!    frame is renderable yet, matching the host-overlap order expected by the frame protocol.
+//!    frame is renderable yet; [`RendererRuntime::pre_frame_one_credit`] may also spend the single
+//!    in-flight credit after submit-completion work is drained so the host can prepare the next
+//!    frame while the renderer renders the current one.
 //! 5. **Asset integration** -- [`RendererRuntime::run_asset_integration`]; time-sliced cooperative
 //!    mesh/texture/material uploads via [`crate::backend::RenderBackend::drain_asset_tasks`].
 //! 6. **Optional XR begin** -- `xr_begin_tick` in `app/`; VR waits for coupled host submits before
 //!    this point so `xrBeginFrame` is not opened for a frame that cannot render.
 //! 7. **Lock-step exchange** -- [`RendererRuntime::pre_frame`] emits
 //!    [`FrameStartData`](crate::shared::FrameStartData) when still allowed. Desktop renderable
-//!    frames send before render; VR renderable frames send the next begin-frame after the HMD
-//!    render attempt so the sampled pose is current. The gating predicate
-//!    [`RendererFrontend::should_send_begin_frame`] keeps the lock-step *state* in
-//!    [`RendererFrontend`] (this module owns no lock-step counters).
+//!    frames request the next host frame before asset integration and render. VR renderable frames
+//!    request it after `xrBeginFrame` has refreshed predicted headset/controller input and before
+//!    HMD rendering. Post-render sends remain as a fallback when the one-credit send was not used.
+//!    The gating predicates keep lock-step *state* in [`RendererFrontend`] (this module owns no
+//!    lock-step counters).
 //! 8. **Render** -- desktop multi-view, HMD, and offscreen paths run the explicit CPU render
 //!    schedule in [`frame::schedule`]: extract, asset prepare, view planning, draw queueing,
 //!    sort, resource prepare, command record, cleanup.
@@ -37,6 +40,8 @@
 //!
 //! Lock-step is driven by the `last_frame_index` field of [`FrameStartData`](crate::shared::FrameStartData)
 //! on the **outgoing** `frame_start_data` the renderer sends from [`RendererRuntime::pre_frame`].
+//! That message is both the next-frame request and the host's frame-finalization trigger, so
+//! submit-attached completion work must be drained before a one-credit send.
 //! If the host sends [`RendererCommand::FrameStartData`](crate::shared::RendererCommand::FrameStartData),
 //! optional payloads are trace-logged until consumers exist.
 //!

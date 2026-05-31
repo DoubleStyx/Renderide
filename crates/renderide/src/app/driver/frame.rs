@@ -140,21 +140,11 @@ impl AppDriver {
         if self.handle_gpu_device_loss_request(event_loop) {
             return FrameTickOutcome::ExitRequested;
         }
-        self.runtime.update_decoupling_activation(Instant::now());
-        if let Some(target) = self.target.as_mut() {
-            let gpu = target.gpu_mut();
-            self.runtime.maintain_nonblocking_gpu_jobs(gpu);
-            self.runtime.drain_reflection_probe_render_tasks(gpu);
-            self.runtime.drain_camera_render_tasks(gpu);
-        }
+        let mut one_credit_begin_sent = self.drain_completion_and_try_desktop_one_credit();
         if self.runtime.should_send_begin_frame_before_wait_work() {
             self.lock_step_exchange();
         }
-        self.runtime.update_decoupling_activation(Instant::now());
-        {
-            profiling::scope!("tick::asset_integration");
-            self.runtime.run_asset_integration();
-        };
+        self.run_asset_integration_phase();
         let mut vr_active = self.runtime.vr_active();
         let pre_xr_action = pre_xr_lockstep_action(PreXrLockstepInput {
             vr_active,
@@ -194,6 +184,9 @@ impl AppDriver {
             self.poll_graceful_shutdown(event_loop);
             return FrameTickOutcome::ExitRequested;
         }
+        if vr_active && xr_tick.is_some() && self.runtime.should_send_one_credit_begin_frame() {
+            one_credit_begin_sent = self.one_credit_lock_step_exchange() || one_credit_begin_sent;
+        }
         if !self.runtime.should_render_frame() {
             if !vr_active {
                 self.runtime.wait_for_coupled_submit_or_decoupling();
@@ -203,6 +196,7 @@ impl AppDriver {
                 }
             }
             if !self.runtime.should_render_frame() {
+                self.consume_unrendered_one_credit_submit(one_credit_begin_sent);
                 self.queue_empty_openxr_frame_if_needed(xr_tick);
                 return FrameTickOutcome::RenderSkipped;
             }
@@ -213,9 +207,11 @@ impl AppDriver {
             .as_ref()
             .map(|target| Arc::clone(target.window()))
         else {
+            self.consume_unrendered_one_credit_submit(one_credit_begin_sent);
             return FrameTickOutcome::MissingTarget;
         };
         let Some(render_outcome) = self.render_views(&window, xr_tick.as_ref()) else {
+            self.consume_unrendered_one_credit_submit(one_credit_begin_sent);
             return FrameTickOutcome::MissingTarget;
         };
         self.runtime.note_frame_render_attempted();
@@ -228,10 +224,36 @@ impl AppDriver {
             return FrameTickOutcome::ExitRequested;
         }
         self.present_and_diagnostics(xr_tick, hmd_projection_ended);
-        if vr_active {
+        if vr_active || !one_credit_begin_sent {
             self.lock_step_exchange();
         }
         FrameTickOutcome::Presented
+    }
+
+    fn drain_completion_and_try_desktop_one_credit(&mut self) -> bool {
+        self.runtime.update_decoupling_activation(Instant::now());
+        if let Some(target) = self.target.as_mut() {
+            let gpu = target.gpu_mut();
+            self.runtime.maintain_nonblocking_gpu_jobs(gpu);
+            self.runtime.drain_reflection_probe_render_tasks(gpu);
+            self.runtime.drain_camera_render_tasks(gpu);
+        }
+        if !self.runtime.vr_active()
+            && self.target.is_some()
+            && self.runtime.should_send_one_credit_begin_frame()
+        {
+            self.one_credit_lock_step_exchange()
+        } else {
+            false
+        }
+    }
+
+    fn run_asset_integration_phase(&mut self) {
+        self.runtime.update_decoupling_activation(Instant::now());
+        {
+            profiling::scope!("tick::asset_integration");
+            self.runtime.run_asset_integration();
+        };
     }
 
     fn finish_frame_tick(&mut self, outcome: FrameTickOutcome) {
@@ -314,29 +336,56 @@ impl AppDriver {
         }
     }
 
-    fn lock_step_exchange(&mut self) {
+    fn build_lock_step_inputs(&mut self) -> crate::shared::InputState {
+        let lock = self.runtime.host_cursor_lock_requested();
+        let mut inputs = self.input.take_input_state(lock);
+        crate::diagnostics::sanitize_input_state_for_imgui_host(
+            &mut inputs,
+            self.runtime.debug_hud_last_want_capture_mouse(),
+            self.runtime.debug_hud_last_want_capture_keyboard(),
+        );
+        let output_device = self
+            .target
+            .as_ref()
+            .map_or(crate::shared::HeadOutputDevice::Screen, |target| {
+                target.output_device()
+            });
+        if let Some(vr) = self.xr_input_cache.build_vr_input(output_device) {
+            inputs.vr = Some(vr);
+        }
+        inputs
+    }
+
+    fn lock_step_exchange(&mut self) -> bool {
         profiling::scope!("tick::lock_step_exchange");
         super::tick_phase_trace("lock_step_exchange");
         if self.runtime.should_send_begin_frame() {
-            let lock = self.runtime.host_cursor_lock_requested();
-            let mut inputs = self.input.take_input_state(lock);
-            crate::diagnostics::sanitize_input_state_for_imgui_host(
-                &mut inputs,
-                self.runtime.debug_hud_last_want_capture_mouse(),
-                self.runtime.debug_hud_last_want_capture_keyboard(),
-            );
-            let output_device = self
-                .target
-                .as_ref()
-                .map_or(crate::shared::HeadOutputDevice::Screen, |target| {
-                    target.output_device()
-                });
-            if let Some(vr) = self.xr_input_cache.build_vr_input(output_device) {
-                inputs.vr = Some(vr);
-            }
-            self.runtime.pre_frame(inputs);
+            let inputs = self.build_lock_step_inputs();
+            self.runtime.pre_frame(inputs)
         } else {
             profiling::scope!("lock_step::skipped");
+            false
+        }
+    }
+
+    fn one_credit_lock_step_exchange(&mut self) -> bool {
+        profiling::scope!("tick::one_credit_lock_step_exchange");
+        super::tick_phase_trace("one_credit_lock_step_exchange");
+        if self.runtime.should_send_one_credit_begin_frame() {
+            let inputs = self.build_lock_step_inputs();
+            self.runtime.pre_frame_one_credit(inputs)
+        } else {
+            profiling::scope!("lock_step::one_credit_skipped");
+            false
+        }
+    }
+
+    fn consume_unrendered_one_credit_submit(&mut self, one_credit_begin_sent: bool) {
+        if one_credit_begin_sent {
+            logger::warn!(
+                "one-credit host frame request sent but render was skipped; marking applied submit consumed before the next IPC poll"
+            );
+            self.runtime.note_frame_render_attempted();
         }
     }
 
