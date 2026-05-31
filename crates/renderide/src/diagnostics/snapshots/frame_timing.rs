@@ -1,7 +1,7 @@
 //! Lightweight per-frame timing for the **Frame timing** ImGui window.
 //!
 //! The HUD separates wall-frame cadence from active renderer CPU work, timestamp-backed primary
-//! GPU work, and renderer-observed host lockstep turnaround. The compact view intentionally leaves
+//! GPU work, and renderer-observed host frame-submit turnaround. The compact view intentionally leaves
 //! those lanes separate; compare the visible Frame/CPU/GPU/Host values directly.
 //!
 //! Unlike [`super::FrameDiagnosticsSnapshot`], this avoids heavy shader-route and allocator-detail
@@ -32,7 +32,7 @@ pub struct FrameTimingHudSnapshot {
     pub cpu_frame_ms_smoothed: Option<f64>,
     /// Timestamp-backed primary GPU busy time in milliseconds.
     pub gpu_frame_ms_smoothed: Option<f64>,
-    /// Renderer-observed `FrameStartData` to `FrameSubmitData` turnaround in milliseconds.
+    /// Renderer-observed `FrameStartData` send to inbound `FrameSubmitData` receipt in milliseconds.
     pub host_frame_ms_smoothed: Option<f64>,
     /// Rolling wall-frame samples for the sparkline plot. Raw, not smoothed.
     pub frame_time_history: Vec<f32>,
@@ -56,7 +56,7 @@ pub struct FrameTimingHudCapture<'a> {
     pub gpu: &'a GpuContext,
     /// Wall-clock interval between displayed renderer ticks in milliseconds.
     pub wall_frame_time_ms: f64,
-    /// Renderer-observed host lockstep turnaround for the most recent primary frame.
+    /// Renderer-observed host submit turnaround for the most recent primary frame.
     pub host_frame_begin_to_submit: Option<Duration>,
     /// Host/process CPU and RAM snapshot.
     pub host_hud: &'a HostCpuMemoryHud,

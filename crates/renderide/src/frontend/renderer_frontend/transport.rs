@@ -3,8 +3,8 @@
 use std::time::Duration;
 
 use crate::connection::InitError;
+use crate::ipc::TimedRendererCommand;
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
-use crate::shared::RendererCommand;
 
 use super::RendererFrontend;
 
@@ -67,7 +67,7 @@ impl RendererFrontend {
     }
 
     /// Poll and sort commands by lifecycle priority.
-    pub fn poll_commands(&mut self) -> Vec<RendererCommand> {
+    pub fn poll_commands(&mut self) -> Vec<TimedRendererCommand> {
         self.transport.poll_commands()
     }
 
@@ -75,12 +75,12 @@ impl RendererFrontend {
     pub fn poll_commands_after_primary_wait(
         &mut self,
         timeout: Duration,
-    ) -> (Vec<RendererCommand>, Duration) {
+    ) -> (Vec<TimedRendererCommand>, Duration) {
         self.transport.poll_commands_after_primary_wait(timeout)
     }
 
     /// Returns an empty command batch so its allocation is retained for the next poll.
-    pub fn recycle_command_batch(&mut self, batch: Vec<RendererCommand>) {
+    pub fn recycle_command_batch(&mut self, batch: Vec<TimedRendererCommand>) {
         self.transport.recycle_command_batch(batch);
     }
 }

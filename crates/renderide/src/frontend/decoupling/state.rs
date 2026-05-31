@@ -167,12 +167,12 @@ impl DecouplingState {
     /// flag clears; at-or-above-threshold submits reset the counter.
     pub(crate) fn record_frame_submit_received(
         &mut self,
-        now: Instant,
+        received_at: Instant,
     ) -> DecouplingSubmitDecision {
         let elapsed = self
             .last_frame_start_sent_at
             .take()
-            .map(|sent| now.saturating_duration_since(sent));
+            .map(|sent| received_at.saturating_duration_since(sent));
         self.last_frame_begin_to_submit = elapsed;
 
         let decision = submit_decision(
@@ -518,5 +518,19 @@ mod tests {
         s.record_frame_submit_received(t0 + Duration::from_millis(20));
         let observed = s.last_frame_begin_to_submit().expect("recorded");
         assert!(observed >= Duration::from_millis(20));
+    }
+
+    #[test]
+    fn last_frame_begin_to_submit_uses_receive_time_not_later_processing_time() {
+        let mut s = DecouplingState::default();
+        let sent = Instant::now();
+        let received = sent + Duration::from_millis(20);
+        let later_processing = sent + Duration::from_millis(100);
+        s.record_frame_start_sent(sent);
+        s.record_frame_submit_received(received);
+
+        let observed = s.last_frame_begin_to_submit().expect("recorded");
+        assert_eq!(observed, Duration::from_millis(20));
+        assert_ne!(observed, later_processing.duration_since(sent));
     }
 }

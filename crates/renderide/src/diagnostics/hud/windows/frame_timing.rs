@@ -292,7 +292,7 @@ const FPS_TOOLTIP: &str = "Smoothed wall-frame FPS. Low/High is a raw rolling on
 const FRAME_TOOLTIP: &str = "Wall-clock between consecutive winit ticks. Includes vsync, FPS caps, host lockstep, presentation waits, and event-loop pacing.";
 const CPU_TOOLTIP: &str = "Main-thread active renderer work from frame start to submit dispatch, minus explicit pacing waits.";
 const GPU_TOOLTIP: &str = "Real primary GPU busy time measured by hardware timestamp brackets around primary render submits.";
-const HOST_TOOLTIP: &str = "Renderer-observed host lockstep turnaround: outgoing FrameStartData to matching incoming FrameSubmitData. This is not pure host CPU time; in lockstep it grows whenever the renderer is ready before the host submits the next primary frame.";
+const HOST_TOOLTIP: &str = "Renderer-observed host update turnaround: outgoing FrameStartData send to matching inbound FrameSubmitData queue receipt.";
 const RAM_TOOLTIP: &str = "RAM shows renderer resident process memory plus OS-reported host used/total memory. It is not allocator reserved memory.";
 const VRAM_TOOLTIP: &str = "Wgpu allocator memory tracked by the active backend. Shows live allocated bytes and reserved allocator capacity.";
 
