@@ -2,7 +2,12 @@
 
 use glam::Vec3;
 use hashbrown::{HashMap, HashSet};
+use rayon::prelude::*;
 
+use crate::cpu_parallelism::{
+    admit_blendshape_channel_tasks, admit_blendshape_pack_shapes, current_reference_worker_count,
+    record_parallel_admission,
+};
 use crate::shared::BlendshapeBufferDescriptor;
 
 use super::buffer_layout::MeshBufferLayout;
@@ -98,6 +103,29 @@ struct PendingBlendshapeFrame {
     frame_weight: f32,
     /// Nonzero per-vertex deltas in this frame, keyed by vertex index.
     entries: HashMap<u32, PendingBlendshapeDelta>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PendingBlendshapeChannelTask {
+    descriptor: BlendshapeBufferDescriptor,
+    shape_index: usize,
+    channel: BlendshapeDeltaChannel,
+    byte_offset: usize,
+    duplicate_frame: bool,
+}
+
+struct PendingBlendshapeChannelResult {
+    task: PendingBlendshapeChannelTask,
+    entries: Vec<(u32, Vec3)>,
+}
+
+struct PackedBlendshapeShape {
+    sparse_deltas: Vec<u8>,
+    frame_ranges: Vec<BlendshapeFrameRange>,
+    has_position_deltas: bool,
+    has_normal_deltas: bool,
+    has_tangent_deltas: bool,
+    clamped_packed_deltas: bool,
 }
 
 /// One sparse vertex delta row before deterministic sorting and byte packing.
@@ -324,14 +352,21 @@ fn read_pending_channel_entries(
     Some(entries)
 }
 
-/// Returns the mutable frame accumulator for `descriptor`, creating it if this is the first channel
-/// observed for that shape/frame pair.
-fn pending_frame_for_descriptor<'a>(
-    per_shape: &'a mut [Vec<PendingBlendshapeFrame>],
+fn read_pending_channel_task(
+    raw: &[u8],
+    task: PendingBlendshapeChannelTask,
+    vertex_count: usize,
+) -> Option<PendingBlendshapeChannelResult> {
+    let entries =
+        read_pending_channel_entries(raw, task.byte_offset, vertex_count, task.duplicate_frame)?;
+    Some(PendingBlendshapeChannelResult { task, entries })
+}
+
+fn pending_frame_for_shape_descriptor<'a>(
+    frames: &'a mut Vec<PendingBlendshapeFrame>,
     shape_index: usize,
     descriptor: &BlendshapeBufferDescriptor,
 ) -> Option<&'a mut PendingBlendshapeFrame> {
-    let frames = per_shape.get_mut(shape_index)?;
     let frame_index = descriptor.frame_index;
     let index = if let Some(index) = frames
         .iter()
@@ -376,8 +411,9 @@ fn collect_pending_blendshape_frames(
         Vec::with_capacity(num_blendshapes);
     seen_channels.resize_with(num_blendshapes, HashSet::new);
     let mut byte_offset = layout.blendshape_data_start;
+    let mut tasks = Vec::new();
 
-    for descriptor in blendshape_buffers {
+    for &descriptor in blendshape_buffers {
         let bi = descriptor.blendshape_index.max(0) as usize;
         if bi >= num_blendshapes {
             continue;
@@ -409,21 +445,58 @@ fn collect_pending_blendshape_frames(
                     descriptor.frame_index
                 );
             }
-            let entries =
-                read_pending_channel_entries(raw, byte_offset, vertex_count, duplicate_frame)?;
-            if !duplicate_frame {
-                let frame = pending_frame_for_descriptor(&mut per_shape, bi, descriptor)?;
-                merge_pending_channel_entries(frame, channel, entries);
-            }
+            tasks.push(PendingBlendshapeChannelTask {
+                descriptor,
+                shape_index: bi,
+                channel,
+                byte_offset,
+                duplicate_frame,
+            });
             byte_offset += chunk_len;
         }
+    }
+    let sample_count = tasks.len().saturating_mul(vertex_count);
+    let admission =
+        admit_blendshape_channel_tasks(tasks.len(), sample_count, current_reference_worker_count());
+    record_parallel_admission(
+        "blendshape_channel_extract",
+        sample_count,
+        tasks.len(),
+        admission,
+    );
+    let results = if let Some(chunk_size) = admission.chunk_size() {
+        tasks
+            .par_iter()
+            .copied()
+            .with_min_len(chunk_size)
+            .map(|task| read_pending_channel_task(raw, task, vertex_count))
+            .collect::<Vec<_>>()
+    } else {
+        tasks
+            .iter()
+            .copied()
+            .map(|task| read_pending_channel_task(raw, task, vertex_count))
+            .collect::<Vec<_>>()
+    };
+    for result in results {
+        let result = result?;
+        if result.task.duplicate_frame {
+            continue;
+        }
+        let frames = per_shape.get_mut(result.task.shape_index)?;
+        let frame = pending_frame_for_shape_descriptor(
+            frames,
+            result.task.shape_index,
+            &result.task.descriptor,
+        )?;
+        merge_pending_channel_entries(frame, result.task.channel, result.entries);
     }
     Some(per_shape)
 }
 
 /// Converts pending frames into the packed sparse byte blob and frame spans.
 fn build_blendshape_gpu_pack(
-    mut per_shape: Vec<Vec<PendingBlendshapeFrame>>,
+    per_shape: Vec<Vec<PendingBlendshapeFrame>>,
     num_blendshapes: usize,
 ) -> BlendshapeGpuPack {
     let mut sparse_deltas = Vec::new();
@@ -434,23 +507,52 @@ fn build_blendshape_gpu_pack(
     let mut has_normal_deltas = false;
     let mut has_tangent_deltas = false;
     let mut clamped_packed_deltas = false;
+    let sparse_entry_count = per_shape
+        .iter()
+        .flatten()
+        .map(|frame| frame.entries.len())
+        .sum::<usize>();
 
-    for (s, frames) in per_shape.iter_mut().enumerate() {
-        frames.sort_by(|a, b| {
-            a.frame_weight
-                .total_cmp(&b.frame_weight)
-                .then(a.frame_index.cmp(&b.frame_index))
-        });
+    let shape_jobs = per_shape.into_iter().collect::<Vec<_>>();
+    let admission = admit_blendshape_pack_shapes(
+        shape_jobs.len(),
+        sparse_entry_count,
+        current_reference_worker_count(),
+    );
+    record_parallel_admission(
+        "blendshape_shape_pack",
+        sparse_entry_count,
+        shape_jobs.len(),
+        admission,
+    );
+    let packed_shapes = if let Some(chunk_size) = admission.chunk_size() {
+        shape_jobs
+            .into_par_iter()
+            .with_min_len(chunk_size)
+            .map(pack_pending_shape_frames)
+            .collect::<Vec<_>>()
+    } else {
+        shape_jobs
+            .into_iter()
+            .map(pack_pending_shape_frames)
+            .collect::<Vec<_>>()
+    };
+
+    for (s, packed_shape) in packed_shapes.into_iter().enumerate() {
         let first_frame = frame_ranges.len() as u32;
-        append_sorted_pending_frames(
-            frames,
-            &mut sparse_deltas,
-            &mut frame_ranges,
-            &mut has_position_deltas,
-            &mut has_normal_deltas,
-            &mut has_tangent_deltas,
-            &mut clamped_packed_deltas,
-        );
+        let sparse_word_offset = sparse_word_len(&sparse_deltas);
+        for mut range in packed_shape.frame_ranges {
+            range.position_first_word =
+                range.position_first_word.saturating_add(sparse_word_offset);
+            range.normal_first_word = range.normal_first_word.saturating_add(sparse_word_offset);
+            range.tangent_first_word = range.tangent_first_word.saturating_add(sparse_word_offset);
+            frame_ranges.push(range);
+        }
+        sparse_deltas.extend_from_slice(&packed_shape.sparse_deltas);
+        has_position_deltas |= packed_shape.has_position_deltas;
+        has_normal_deltas |= packed_shape.has_normal_deltas;
+        has_tangent_deltas |= packed_shape.has_tangent_deltas;
+        clamped_packed_deltas |= packed_shape.clamped_packed_deltas;
         shape_frame_spans[s] = BlendshapeFrameSpan {
             first_frame,
             frame_count: frame_ranges.len() as u32 - first_frame,
@@ -462,6 +564,37 @@ fn build_blendshape_gpu_pack(
         frame_ranges,
         shape_frame_spans,
         num_blendshapes: num_blendshapes as i32,
+        has_position_deltas,
+        has_normal_deltas,
+        has_tangent_deltas,
+        clamped_packed_deltas,
+    }
+}
+
+fn pack_pending_shape_frames(mut frames: Vec<PendingBlendshapeFrame>) -> PackedBlendshapeShape {
+    frames.sort_by(|a, b| {
+        a.frame_weight
+            .total_cmp(&b.frame_weight)
+            .then(a.frame_index.cmp(&b.frame_index))
+    });
+    let mut sparse_deltas = Vec::new();
+    let mut frame_ranges = Vec::with_capacity(frames.len());
+    let mut has_position_deltas = false;
+    let mut has_normal_deltas = false;
+    let mut has_tangent_deltas = false;
+    let mut clamped_packed_deltas = false;
+    append_sorted_pending_frames(
+        &frames,
+        &mut sparse_deltas,
+        &mut frame_ranges,
+        &mut has_position_deltas,
+        &mut has_normal_deltas,
+        &mut has_tangent_deltas,
+        &mut clamped_packed_deltas,
+    );
+    PackedBlendshapeShape {
+        sparse_deltas,
+        frame_ranges,
         has_position_deltas,
         has_normal_deltas,
         has_tangent_deltas,

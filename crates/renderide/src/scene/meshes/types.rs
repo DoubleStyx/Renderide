@@ -9,10 +9,11 @@
 //!
 //! ## State row apply
 //!
-//! [`apply_mesh_renderer_state_row`] applies one [`MeshRendererState`] row plus its packed
-//! material / property-block id slab. Ordering matches Renderite `MeshRendererManager.ApplyUpdate`:
-//! `material_count` material asset ids, then when `material_property_block_count >= 0`, that many
-//! property-block ids (possibly fewer than materials).
+//! [`decode_mesh_renderer_state_plan`] consumes one [`MeshRendererState`] row plus its packed
+//! material / property-block id slab. The scene apply paths merge decoded rows by renderer before
+//! writing final plans in parallel. Ordering matches the host update stream: `material_count`
+//! material asset ids, then when `material_property_block_count >= 0`, that many property-block
+//! ids (possibly fewer than materials).
 
 use crate::shared::{
     LayerType, MeshRendererState, MotionVectorMode, RenderBoundingBox, ShadowCastMode,
@@ -123,6 +124,53 @@ pub(crate) trait MeshRendererStateSink {
     );
 }
 
+#[derive(Debug, Clone)]
+struct MeshRendererMaterialApplyPlan {
+    slots: Vec<MeshMaterialSlot>,
+    primary_material: Option<i32>,
+    primary_property_block: Option<i32>,
+}
+
+/// Decoded effect of one or more [`MeshRendererState`] rows on a single mesh renderer.
+#[derive(Debug, Clone)]
+pub(crate) struct MeshRendererStateApplyPlan {
+    mesh_asset_id: i32,
+    sorting_order: i32,
+    shadow_cast_mode: ShadowCastMode,
+    motion_vector_mode: MotionVectorMode,
+    material_update: Option<MeshRendererMaterialApplyPlan>,
+}
+
+impl MeshRendererStateApplyPlan {
+    /// Merges a later decoded row into this plan using the same overwrite behavior as serial row apply.
+    pub(crate) fn merge_later_row(&mut self, later: Self) {
+        self.mesh_asset_id = later.mesh_asset_id;
+        self.sorting_order = later.sorting_order;
+        self.shadow_cast_mode = later.shadow_cast_mode;
+        self.motion_vector_mode = later.motion_vector_mode;
+        if later.material_update.is_some() {
+            self.material_update = later.material_update;
+        }
+    }
+
+    /// Applies this decoded plan to one renderer.
+    pub(crate) fn apply_to<S: MeshRendererStateSink>(self, drawable: &mut S) {
+        drawable.set_mesh_visual_header(
+            self.mesh_asset_id,
+            self.sorting_order,
+            self.shadow_cast_mode,
+            self.motion_vector_mode,
+        );
+        if let Some(materials) = self.material_update {
+            drawable.set_material_slots_and_legacy(
+                materials.slots,
+                materials.primary_material,
+                materials.primary_property_block,
+            );
+        }
+    }
+}
+
 impl MeshRendererStateSink for StaticMeshRenderer {
     fn set_mesh_visual_header(
         &mut self,
@@ -172,53 +220,25 @@ impl MeshRendererStateSink for SkinnedMeshRenderer {
     }
 }
 
-/// Applies `state` to `drawable` and advances `cursor` through `packed_ids`.
+/// Decodes one mesh renderer state row while advancing the packed-material cursor.
 ///
-/// When `drawable` is `None`, mesh fields are not written but packed ids are still consumed when
-/// `material_count >= 0`.
-///
-/// When `material_count < 0`, material slots are left unchanged and the cursor is not advanced.
-pub(crate) fn apply_mesh_renderer_state_row<S: MeshRendererStateSink>(
-    mut drawable: Option<&mut S>,
+/// When `material_count < 0`, the returned plan leaves material slots unchanged and the cursor is
+/// not advanced.
+pub(crate) fn decode_mesh_renderer_state_plan(
     state: &MeshRendererState,
     packed_ids: Option<&[i32]>,
     cursor: &mut usize,
-) {
-    if let Some(d) = drawable.as_mut() {
-        d.set_mesh_visual_header(
-            state.mesh_asset_id,
-            state.sorting_order,
-            state.shadow_cast_mode,
-            state.motion_vector_mode,
-        );
-    }
-
-    if state.material_count < 0 {
-        return;
-    }
-
-    let packed = packed_ids.unwrap_or(&[]);
-    let mc = state.material_count.max(0) as usize;
-
-    let mat_ids: Vec<i32> = if mc > 0 {
-        if *cursor + mc <= packed.len() {
-            let s = packed[*cursor..*cursor + mc].to_vec();
-            *cursor += mc;
-            s
-        } else {
-            *cursor = packed.len();
-            Vec::new()
-        }
+) -> MeshRendererStateApplyPlan {
+    let material_update = if state.material_count < 0 {
+        None
     } else {
-        Vec::new()
-    };
+        let packed = packed_ids.unwrap_or(&[]);
+        let mc = state.material_count.max(0) as usize;
 
-    let pb_ids: Vec<i32> = if state.material_property_block_count >= 0 {
-        let pbc = state.material_property_block_count.max(0) as usize;
-        if pbc > 0 {
-            if *cursor + pbc <= packed.len() {
-                let s = packed[*cursor..*cursor + pbc].to_vec();
-                *cursor += pbc;
+        let mat_ids: Vec<i32> = if mc > 0 {
+            if *cursor + mc <= packed.len() {
+                let s = packed[*cursor..*cursor + mc].to_vec();
+                *cursor += mc;
                 s
             } else {
                 *cursor = packed.len();
@@ -226,33 +246,78 @@ pub(crate) fn apply_mesh_renderer_state_row<S: MeshRendererStateSink>(
             }
         } else {
             Vec::new()
-        }
-    } else {
-        Vec::new()
-    };
-
-    let slots: Vec<MeshMaterialSlot> = mat_ids
-        .iter()
-        .enumerate()
-        .map(|(i, &material_asset_id)| MeshMaterialSlot {
-            material_asset_id,
-            property_block_id: pb_ids.get(i).copied(),
-        })
-        .collect();
-
-    let (primary_mat, primary_pb) = if mat_ids.is_empty() {
-        (None, None)
-    } else {
-        let pb0 = if state.material_property_block_count >= 0 {
-            pb_ids.first().copied()
-        } else {
-            None
         };
-        (Some(mat_ids[0]), pb0)
+
+        let pb_ids: Vec<i32> = if state.material_property_block_count >= 0 {
+            let pbc = state.material_property_block_count.max(0) as usize;
+            if pbc > 0 {
+                if *cursor + pbc <= packed.len() {
+                    let s = packed[*cursor..*cursor + pbc].to_vec();
+                    *cursor += pbc;
+                    s
+                } else {
+                    *cursor = packed.len();
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+
+        let slots: Vec<MeshMaterialSlot> = mat_ids
+            .iter()
+            .enumerate()
+            .map(|(i, &material_asset_id)| MeshMaterialSlot {
+                material_asset_id,
+                property_block_id: pb_ids.get(i).copied(),
+            })
+            .collect();
+
+        let (primary_material, primary_property_block) = if mat_ids.is_empty() {
+            (None, None)
+        } else {
+            let pb0 = if state.material_property_block_count >= 0 {
+                pb_ids.first().copied()
+            } else {
+                None
+            };
+            (Some(mat_ids[0]), pb0)
+        };
+
+        Some(MeshRendererMaterialApplyPlan {
+            slots,
+            primary_material,
+            primary_property_block,
+        })
     };
 
+    MeshRendererStateApplyPlan {
+        mesh_asset_id: state.mesh_asset_id,
+        sorting_order: state.sorting_order,
+        shadow_cast_mode: state.shadow_cast_mode,
+        motion_vector_mode: state.motion_vector_mode,
+        material_update,
+    }
+}
+
+/// Applies `state` to `drawable` and advances `cursor` through `packed_ids`.
+///
+/// When `drawable` is `None`, mesh fields are not written but packed ids are still consumed when
+/// `material_count >= 0`.
+///
+/// When `material_count < 0`, material slots are left unchanged and the cursor is not advanced.
+#[cfg(test)]
+pub(crate) fn apply_mesh_renderer_state_row<S: MeshRendererStateSink>(
+    drawable: Option<&mut S>,
+    state: &MeshRendererState,
+    packed_ids: Option<&[i32]>,
+    cursor: &mut usize,
+) {
+    let plan = decode_mesh_renderer_state_plan(state, packed_ids, cursor);
     if let Some(d) = drawable {
-        d.set_material_slots_and_legacy(slots, primary_mat, primary_pb);
+        plan.apply_to(d);
     }
 }
 

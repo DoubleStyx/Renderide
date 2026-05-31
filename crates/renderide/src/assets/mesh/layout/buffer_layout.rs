@@ -1,5 +1,10 @@
 //! Host mesh buffer layout and basic packed-buffer region extraction.
 
+use rayon::prelude::*;
+
+use crate::cpu_parallelism::{
+    admit_bind_pose_matrices, current_reference_worker_count, record_parallel_admission,
+};
 use crate::shared::{
     BlendshapeBufferDescriptor, IndexBufferFormat, SubmeshBufferDescriptor,
     VertexAttributeDescriptor, VertexAttributeFormat,
@@ -168,11 +173,23 @@ pub fn extract_bind_poses(raw: &[u8], bone_count: usize) -> Option<Vec<[[f32; 4]
     if raw.len() < need {
         return None;
     }
-    let mut poses = Vec::with_capacity(bone_count);
-    for i in 0..bone_count {
-        let start = i * MATRIX_BYTES;
-        let slice = &raw[start..start + MATRIX_BYTES];
-        poses.push(bytemuck::pod_read_unaligned(slice));
+    let admission = admit_bind_pose_matrices(bone_count, current_reference_worker_count());
+    record_parallel_admission("mesh_bind_pose_extract", bone_count, bone_count, admission);
+    if let Some(chunk_size) = admission.chunk_size() {
+        Some(
+            raw[..need]
+                .par_chunks_exact(MATRIX_BYTES)
+                .with_min_len(chunk_size)
+                .map(bytemuck::pod_read_unaligned)
+                .collect(),
+        )
+    } else {
+        let mut poses = Vec::with_capacity(bone_count);
+        for i in 0..bone_count {
+            let start = i * MATRIX_BYTES;
+            let slice = &raw[start..start + MATRIX_BYTES];
+            poses.push(bytemuck::pod_read_unaligned(slice));
+        }
+        Some(poses)
     }
-    Some(poses)
 }

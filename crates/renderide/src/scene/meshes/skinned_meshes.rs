@@ -3,18 +3,23 @@
 
 use rayon::prelude::*;
 
+use crate::cpu_parallelism::{
+    admit_renderable_update_items, current_reference_worker_count, record_parallel_admission,
+};
 use crate::ipc::SharedMemoryAccessor;
 use crate::scene::dense_update::{non_negative_i32s, swap_remove_dense_indices};
 use crate::scene::error::SceneError;
-use crate::scene::meshes::types::apply_mesh_renderer_state_row;
-use crate::scene::meshes::types::{SkinnedMeshRenderer, StaticMeshRenderer};
+use crate::scene::meshes::types::{
+    MeshRendererStateApplyPlan, SkinnedMeshRenderer, StaticMeshRenderer,
+    decode_mesh_renderer_state_plan,
+};
 use crate::scene::render_space::RenderSpaceState;
 use crate::scene::transforms::TransformRemovalEvent;
 use crate::shared::packing_extras::SKINNED_MESH_BOUNDS_UPDATE_HOST_ROW_BYTES;
 use crate::shared::{
     BlendshapeUpdate, BlendshapeUpdateBatch, BoneAssignment, LayerType,
-    MESH_RENDERER_STATE_HOST_ROW_BYTES, MeshRendererState, SkinnedMeshBoundsUpdate,
-    SkinnedMeshRenderablesUpdate,
+    MESH_RENDERER_STATE_HOST_ROW_BYTES, MeshRendererState, RenderBoundingBox,
+    SkinnedMeshBoundsUpdate, SkinnedMeshRenderablesUpdate,
 };
 
 /// Accepted blendshape batches assigned to one grouping threshold grain.
@@ -73,6 +78,12 @@ pub struct ExtractedSkinnedMeshRenderablesUpdate {
 /// data; updates referencing higher indices are silently dropped to prevent attacker-driven
 /// `Vec::resize` on the per-renderable weight array.
 const MAX_BLENDSHAPE_INDEX: usize = 4096;
+
+#[derive(Debug, Clone)]
+struct SkinnedBoneApplyPlan {
+    bone_transform_indices: Vec<i32>,
+    root_bone_transform_id: Option<i32>,
+}
 
 /// Reads every shared-memory buffer referenced by [`SkinnedMeshRenderablesUpdate`] into owned vectors.
 pub(crate) fn extract_skinned_mesh_renderables_update(
@@ -194,13 +205,24 @@ fn apply_skinned_mesh_state_rows_extracted(
     let packed_ref = extracted.mesh_materials_and_property_blocks.as_deref();
     let mut packed_cursor = 0usize;
     let len = space.skinned_mesh_renderers.len();
+    let mut plans: Vec<Option<MeshRendererStateApplyPlan>> = vec![None; len];
+    let mut active_rows = 0usize;
+    let mut valid_plan_count = 0usize;
     for state in &extracted.mesh_states {
         if state.renderable_index < 0 {
             break;
         }
+        active_rows += 1;
         let idx = state.renderable_index as usize;
-        let drawable = space.skinned_mesh_renderers.get_mut(idx);
-        if drawable.is_none() {
+        let plan = decode_mesh_renderer_state_plan(state, packed_ref, &mut packed_cursor);
+        if let Some(slot) = plans.get_mut(idx) {
+            if let Some(existing) = slot {
+                existing.merge_later_row(plan);
+            } else {
+                *slot = Some(plan);
+                valid_plan_count += 1;
+            }
+        } else {
             warn_oob_renderable_index_once(
                 scene_id,
                 "skinned",
@@ -209,7 +231,48 @@ fn apply_skinned_mesh_state_rows_extracted(
                 &SKINNED_MESH_OOB_WARNED_SCENES,
             );
         }
-        apply_mesh_renderer_state_row(drawable, state, packed_ref, &mut packed_cursor);
+    }
+    apply_skinned_mesh_state_plans(
+        &mut space.skinned_mesh_renderers,
+        plans,
+        active_rows,
+        valid_plan_count,
+    );
+}
+
+fn apply_skinned_mesh_state_plans(
+    renderers: &mut [SkinnedMeshRenderer],
+    plans: Vec<Option<MeshRendererStateApplyPlan>>,
+    active_rows: usize,
+    valid_plan_count: usize,
+) {
+    if valid_plan_count == 0 {
+        return;
+    }
+    let admission =
+        admit_renderable_update_items(valid_plan_count, current_reference_worker_count());
+    record_parallel_admission(
+        "skinned_mesh_state_apply",
+        active_rows,
+        valid_plan_count,
+        admission,
+    );
+    if let Some(chunk_size) = admission.chunk_size() {
+        renderers
+            .par_iter_mut()
+            .zip(plans.into_par_iter())
+            .with_min_len(chunk_size)
+            .for_each(|(renderer, plan)| {
+                if let Some(plan) = plan {
+                    plan.apply_to(renderer);
+                }
+            });
+    } else {
+        for (renderer, plan) in renderers.iter_mut().zip(plans) {
+            if let Some(plan) = plan {
+                plan.apply_to(renderer);
+            }
+        }
     }
 }
 
@@ -239,32 +302,88 @@ fn apply_skinned_bone_index_buffers_extracted(
     }
     let indexes = &extracted.bone_transform_indexes;
     let mut index_offset = 0usize;
+    let len = space.skinned_mesh_renderers.len();
+    let mut plans: Vec<Option<SkinnedBoneApplyPlan>> = vec![None; len];
+    let mut active_rows = 0usize;
+    let mut valid_plan_count = 0usize;
     for assignment in &extracted.bone_assignments {
         if assignment.renderable_index < 0 {
             break;
         }
+        active_rows += 1;
         let idx = assignment.renderable_index as usize;
         let bone_count = assignment.bone_count.max(0) as usize;
         let Some(end) = index_offset.checked_add(bone_count) else {
             break;
         };
-        if idx < space.skinned_mesh_renderers.len() {
+        if let Some(slot) = plans.get_mut(idx) {
             if bone_count == 0 {
-                space.skinned_mesh_renderers[idx]
-                    .bone_transform_indices
-                    .clear();
-                space.skinned_mesh_renderers[idx].root_bone_transform_id =
-                    (assignment.root_bone_transform_id >= 0)
-                        .then_some(assignment.root_bone_transform_id);
+                let plan = SkinnedBoneApplyPlan {
+                    bone_transform_indices: Vec::new(),
+                    root_bone_transform_id: (assignment.root_bone_transform_id >= 0)
+                        .then_some(assignment.root_bone_transform_id),
+                };
+                if slot.is_none() {
+                    valid_plan_count += 1;
+                }
+                *slot = Some(plan);
             } else if end <= indexes.len() {
-                let ids: Vec<i32> = indexes[index_offset..end].to_vec();
-                space.skinned_mesh_renderers[idx].bone_transform_indices = ids;
-                space.skinned_mesh_renderers[idx].root_bone_transform_id =
-                    (assignment.root_bone_transform_id >= 0)
-                        .then_some(assignment.root_bone_transform_id);
+                let plan = SkinnedBoneApplyPlan {
+                    bone_transform_indices: indexes[index_offset..end].to_vec(),
+                    root_bone_transform_id: (assignment.root_bone_transform_id >= 0)
+                        .then_some(assignment.root_bone_transform_id),
+                };
+                if slot.is_none() {
+                    valid_plan_count += 1;
+                }
+                *slot = Some(plan);
             }
         }
         index_offset = end;
+    }
+    apply_skinned_bone_plans(
+        &mut space.skinned_mesh_renderers,
+        plans,
+        active_rows,
+        valid_plan_count,
+    );
+}
+
+fn apply_skinned_bone_plans(
+    renderers: &mut [SkinnedMeshRenderer],
+    plans: Vec<Option<SkinnedBoneApplyPlan>>,
+    active_rows: usize,
+    valid_plan_count: usize,
+) {
+    if valid_plan_count == 0 {
+        return;
+    }
+    let admission =
+        admit_renderable_update_items(valid_plan_count, current_reference_worker_count());
+    record_parallel_admission(
+        "skinned_bone_index_apply",
+        active_rows,
+        valid_plan_count,
+        admission,
+    );
+    if let Some(chunk_size) = admission.chunk_size() {
+        renderers
+            .par_iter_mut()
+            .zip(plans.into_par_iter())
+            .with_min_len(chunk_size)
+            .for_each(|(renderer, plan)| {
+                if let Some(plan) = plan {
+                    renderer.bone_transform_indices = plan.bone_transform_indices;
+                    renderer.root_bone_transform_id = plan.root_bone_transform_id;
+                }
+            });
+    } else {
+        for (renderer, plan) in renderers.iter_mut().zip(plans) {
+            if let Some(plan) = plan {
+                renderer.bone_transform_indices = plan.bone_transform_indices;
+                renderer.root_bone_transform_id = plan.root_bone_transform_id;
+            }
+        }
     }
 }
 
@@ -368,13 +487,63 @@ fn apply_skinned_posed_bounds_extracted(
     extracted: &ExtractedSkinnedMeshRenderablesUpdate,
 ) {
     profiling::scope!("scene::apply_skinned_posed_bounds");
+    let len = space.skinned_mesh_renderers.len();
+    let mut plans: Vec<Option<RenderBoundingBox>> = vec![None; len];
+    let mut active_rows = 0usize;
+    let mut valid_plan_count = 0usize;
     for row in &extracted.bounds_updates {
         if row.renderable_index < 0 {
             break;
         }
+        active_rows += 1;
         let idx = row.renderable_index as usize;
-        if let Some(entry) = space.skinned_mesh_renderers.get_mut(idx) {
-            entry.posed_object_bounds = Some(row.local_bounds);
+        if let Some(slot) = plans.get_mut(idx) {
+            if slot.is_none() {
+                valid_plan_count += 1;
+            }
+            *slot = Some(row.local_bounds);
+        }
+    }
+    apply_skinned_bounds_plans(
+        &mut space.skinned_mesh_renderers,
+        plans,
+        active_rows,
+        valid_plan_count,
+    );
+}
+
+fn apply_skinned_bounds_plans(
+    renderers: &mut [SkinnedMeshRenderer],
+    plans: Vec<Option<RenderBoundingBox>>,
+    active_rows: usize,
+    valid_plan_count: usize,
+) {
+    if valid_plan_count == 0 {
+        return;
+    }
+    let admission =
+        admit_renderable_update_items(valid_plan_count, current_reference_worker_count());
+    record_parallel_admission(
+        "skinned_posed_bounds_apply",
+        active_rows,
+        valid_plan_count,
+        admission,
+    );
+    if let Some(chunk_size) = admission.chunk_size() {
+        renderers
+            .par_iter_mut()
+            .zip(plans.into_par_iter())
+            .with_min_len(chunk_size)
+            .for_each(|(renderer, bounds)| {
+                if let Some(bounds) = bounds {
+                    renderer.posed_object_bounds = Some(bounds);
+                }
+            });
+    } else {
+        for (renderer, bounds) in renderers.iter_mut().zip(plans) {
+            if let Some(bounds) = bounds {
+                renderer.posed_object_bounds = Some(bounds);
+            }
         }
     }
 }

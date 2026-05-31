@@ -2,6 +2,11 @@
 
 use std::sync::Arc;
 
+use rayon::prelude::*;
+
+use crate::cpu_parallelism::{
+    admit_texture3d_slices, current_reference_worker_count, record_parallel_admission,
+};
 use crate::gpu::GpuQueueAccessMode;
 use crate::shared::{SetTexture3DData, SetTexture3DFormat};
 
@@ -31,6 +36,18 @@ struct Texture3dMipGeom {
     /// Tight byte length of one depth slice (stride x height).
     slice_bytes: usize,
     /// Tight byte length of the full volume (`slice_bytes x d`).
+    vol_bytes: usize,
+}
+
+#[derive(Copy, Clone)]
+struct Texture3dRgba8SliceDecode {
+    asset_id: i32,
+    fmt_format: crate::shared::TextureFormat,
+    w: u32,
+    h: u32,
+    d: u32,
+    level_idx: u32,
+    slice_bytes: usize,
     vol_bytes: usize,
 }
 
@@ -128,22 +145,19 @@ fn texture3d_mip_to_upload_pixels(
     } = geom;
     let pixels = if is_rgba8_family(wgpu_format) {
         if needs_rgba8_decode || host_format_is_compressed(fmt_format) {
-            let mut out = Vec::with_capacity(vol_bytes);
-            let mut z_off = 0usize;
-            for _z in 0..d {
-                let slice_raw = mip_src
-                    .get(z_off..z_off + slice_bytes)
-                    .ok_or_else(|| TextureUploadError::from("texture3d slice bounds"))?;
-                let decoded =
-                    decode_mip_to_rgba8(fmt_format, w, h, false, slice_raw).ok_or_else(|| {
-                        TextureUploadError::from(format!(
-                            "texture3d {asset_id}: RGBA decode failed mip {level_idx}"
-                        ))
-                    })?;
-                out.extend_from_slice(&decoded);
-                z_off += slice_bytes;
-            }
-            out
+            decode_texture3d_rgba8_slices(
+                Texture3dRgba8SliceDecode {
+                    asset_id,
+                    fmt_format,
+                    w,
+                    h,
+                    d,
+                    level_idx,
+                    slice_bytes,
+                    vol_bytes,
+                },
+                mip_src,
+            )?
         } else {
             mip_src.to_vec()
         }
@@ -156,6 +170,61 @@ fn texture3d_mip_to_upload_pixels(
         mip_src.to_vec()
     };
     Ok(pixels)
+}
+
+fn decode_texture3d_rgba8_slices(
+    ctx: Texture3dRgba8SliceDecode,
+    mip_src: &[u8],
+) -> Result<Vec<u8>, TextureUploadError> {
+    let Texture3dRgba8SliceDecode {
+        asset_id,
+        fmt_format,
+        w,
+        h,
+        d,
+        level_idx,
+        slice_bytes,
+        vol_bytes,
+    } = ctx;
+    let volume_src = mip_src
+        .get(..vol_bytes)
+        .ok_or_else(|| TextureUploadError::from("texture3d slice bounds"))?;
+    let slice_count = d as usize;
+    let texel_count = (w as usize)
+        .saturating_mul(h as usize)
+        .saturating_mul(slice_count);
+    let admission =
+        admit_texture3d_slices(slice_count, texel_count, current_reference_worker_count());
+    record_parallel_admission(
+        "texture3d_slice_decode",
+        texel_count,
+        slice_count,
+        admission,
+    );
+    let decode_slice = |slice_raw: &[u8]| {
+        decode_mip_to_rgba8(fmt_format, w, h, false, slice_raw).ok_or_else(|| {
+            TextureUploadError::from(format!(
+                "texture3d {asset_id}: RGBA decode failed mip {level_idx}"
+            ))
+        })
+    };
+    let decoded_slices = if let Some(chunk_size) = admission.chunk_size() {
+        volume_src
+            .par_chunks_exact(slice_bytes)
+            .with_min_len(chunk_size)
+            .map(decode_slice)
+            .collect::<Vec<_>>()
+    } else {
+        volume_src
+            .chunks_exact(slice_bytes)
+            .map(decode_slice)
+            .collect::<Vec<_>>()
+    };
+    let mut out = Vec::with_capacity(texel_count.saturating_mul(4));
+    for decoded in decoded_slices {
+        out.extend_from_slice(&decoded?);
+    }
+    Ok(out)
 }
 
 /// GPU device, queue, and host upload view for one [`Texture3dMipChainUploader::upload_next_mip`] step.
@@ -542,6 +611,18 @@ mod tests {
         payload
     }
 
+    fn marker_volume_bgra(width: u32, height: u32, depth: u32) -> Vec<u8> {
+        let mut payload = Vec::with_capacity((width * height * depth * 4) as usize);
+        for z in 0..depth {
+            for y in 0..height {
+                for x in 0..width {
+                    payload.extend_from_slice(&[z as u8, y as u8, x as u8, 255]);
+                }
+            }
+        }
+        payload
+    }
+
     /// Reads one marker texel using the same tight `Bitmap3D` linearization.
     fn marker_at(payload: &[u8], width: u32, height: u32, x: u32, y: u32, z: u32) -> [u8; 4] {
         let texel = ((z * width * height + y * width + x) * 4) as usize;
@@ -605,5 +686,36 @@ mod tests {
         assert_eq!(mip_src, mip1.as_slice());
         assert_eq!(marker_at(mip_src, 2, 1, 0, 0, 0), marker_texel(0, 0, 0));
         assert_eq!(marker_at(mip_src, 2, 1, 1, 0, 0), marker_texel(1, 0, 0));
+    }
+
+    #[test]
+    fn texture3d_parallel_slice_decode_preserves_z_order() {
+        let (w, h, d) = (64, 64, 4);
+        let payload = marker_volume_bgra(w, h, d);
+        let slice_bytes = (w * h * 4) as usize;
+        let vol_bytes = payload.len();
+
+        let pixels = texture3d_mip_to_upload_pixels(
+            MipUploadFormatCtx {
+                asset_id: 11,
+                fmt_format: TextureFormat::BGRA32,
+                wgpu_format: wgpu::TextureFormat::Rgba8Unorm,
+                needs_rgba8_decode: true,
+            },
+            Texture3dMipGeom {
+                w,
+                h,
+                d,
+                level_idx: 0,
+                slice_bytes,
+                vol_bytes,
+            },
+            &payload,
+        )
+        .unwrap();
+
+        assert_eq!(marker_at(&pixels, w, h, 0, 0, 0), marker_texel(0, 0, 0));
+        assert_eq!(marker_at(&pixels, w, h, 7, 3, 2), marker_texel(7, 3, 2));
+        assert_eq!(marker_at(&pixels, w, h, 63, 63, 3), marker_texel(63, 63, 3));
     }
 }

@@ -26,6 +26,36 @@ pub(crate) const LIGHT_WORK_CHUNK_LIGHTS: usize = 16;
 pub(crate) const LIGHT_WORK_PARALLEL_MIN_LIGHTS: usize =
     LIGHT_WORK_CHUNK_LIGHTS * MIN_PARALLEL_CHUNKS;
 
+/// Coarse render spaces in one task packet.
+pub(crate) const COARSE_SPACE_CHUNK_ITEMS: usize = 2;
+
+/// Independent mesh stream jobs in one task packet.
+pub(crate) const MESH_STREAM_JOB_CHUNK_ITEMS: usize = 2;
+
+/// Minimum mesh vertices before cross-stream CPU preparation may use Rayon.
+pub(crate) const MESH_STREAM_JOB_MIN_VERTICES: usize = 512;
+
+/// Blendshape extraction channel jobs in one task packet.
+pub(crate) const BLENDSHAPE_CHANNEL_CHUNK_TASKS: usize = 2;
+
+/// Minimum vertex-channel samples before blendshape extraction may use Rayon.
+pub(crate) const BLENDSHAPE_CHANNEL_MIN_SAMPLES: usize = 4096;
+
+/// Blendshape shapes in one sparse-pack task packet.
+pub(crate) const BLENDSHAPE_PACK_CHUNK_SHAPES: usize = 2;
+
+/// Minimum sparse blendshape entries before per-shape packing may use Rayon.
+pub(crate) const BLENDSHAPE_PACK_MIN_SPARSE_ENTRIES: usize = 4096;
+
+/// Bind-pose matrices in one extraction task packet.
+pub(crate) const BIND_POSE_CHUNK_MATRICES: usize = 64;
+
+/// 3D texture depth slices in one conversion task packet.
+pub(crate) const TEXTURE3D_SLICE_CHUNK_SLICES: usize = 2;
+
+/// Minimum 3D texture texels before per-slice conversion may use Rayon.
+pub(crate) const TEXTURE3D_SLICE_MIN_TEXELS: usize = 16_384;
+
 /// Minimum branchy relevance/material items in one task packet.
 pub(crate) const RELEVANCE_PACKET_MIN_ITEMS: usize = 16;
 
@@ -134,6 +164,74 @@ pub(crate) const fn admit_light_work_items(
         ParallelAdmission::Parallel {
             chunk_size: LIGHT_WORK_CHUNK_LIGHTS,
         }
+    } else {
+        ParallelAdmission::Serial
+    }
+}
+
+/// Admits coarse render-space fan-outs when at least two space packets are available.
+pub(crate) const fn admit_coarse_space_items(
+    item_count: usize,
+    worker_count: usize,
+) -> ParallelAdmission {
+    admit_fixed_grain_items(item_count, worker_count, COARSE_SPACE_CHUNK_ITEMS)
+}
+
+/// Admits multi-stream mesh CPU work when both job count and vertex count are large enough.
+pub(crate) const fn admit_mesh_stream_jobs(
+    job_count: usize,
+    vertex_count: usize,
+    worker_count: usize,
+) -> ParallelAdmission {
+    if vertex_count >= MESH_STREAM_JOB_MIN_VERTICES {
+        admit_fixed_grain_items(job_count, worker_count, MESH_STREAM_JOB_CHUNK_ITEMS)
+    } else {
+        ParallelAdmission::Serial
+    }
+}
+
+/// Admits blendshape channel extraction when both task count and sample count are large enough.
+pub(crate) const fn admit_blendshape_channel_tasks(
+    task_count: usize,
+    sample_count: usize,
+    worker_count: usize,
+) -> ParallelAdmission {
+    if sample_count >= BLENDSHAPE_CHANNEL_MIN_SAMPLES {
+        admit_fixed_grain_items(task_count, worker_count, BLENDSHAPE_CHANNEL_CHUNK_TASKS)
+    } else {
+        ParallelAdmission::Serial
+    }
+}
+
+/// Admits per-shape blendshape sparse packing when both shape count and sparse entry count are large enough.
+pub(crate) const fn admit_blendshape_pack_shapes(
+    shape_count: usize,
+    sparse_entry_count: usize,
+    worker_count: usize,
+) -> ParallelAdmission {
+    if sparse_entry_count >= BLENDSHAPE_PACK_MIN_SPARSE_ENTRIES {
+        admit_fixed_grain_items(shape_count, worker_count, BLENDSHAPE_PACK_CHUNK_SHAPES)
+    } else {
+        ParallelAdmission::Serial
+    }
+}
+
+/// Admits bind-pose extraction when at least two matrix packets are available.
+pub(crate) const fn admit_bind_pose_matrices(
+    matrix_count: usize,
+    worker_count: usize,
+) -> ParallelAdmission {
+    admit_fixed_grain_items(matrix_count, worker_count, BIND_POSE_CHUNK_MATRICES)
+}
+
+/// Admits 3D texture slice conversion when both slice count and texel count are large enough.
+pub(crate) const fn admit_texture3d_slices(
+    slice_count: usize,
+    texel_count: usize,
+    worker_count: usize,
+) -> ParallelAdmission {
+    if texel_count >= TEXTURE3D_SLICE_MIN_TEXELS {
+        admit_fixed_grain_items(slice_count, worker_count, TEXTURE3D_SLICE_CHUNK_SLICES)
     } else {
         ParallelAdmission::Serial
     }
@@ -324,12 +422,17 @@ impl FrameParallelPolicy {
 #[cfg(test)]
 mod tests {
     use super::{
+        BIND_POSE_CHUNK_MATRICES, BLENDSHAPE_CHANNEL_CHUNK_TASKS, BLENDSHAPE_CHANNEL_MIN_SAMPLES,
+        BLENDSHAPE_PACK_CHUNK_SHAPES, BLENDSHAPE_PACK_MIN_SPARSE_ENTRIES, COARSE_SPACE_CHUNK_ITEMS,
         FrameCpuWorkload, FrameParallelPolicy, LIGHT_WORK_CHUNK_LIGHTS, ParallelAdmission,
         REFERENCE_WORKER_CAP, RELEVANCE_PACKET_MAX_ITEMS, RELEVANCE_PACKET_MIN_ITEMS,
-        RENDER_COMMAND_CHUNK_DRAWS, RENDERABLE_UPDATE_CHUNK_ITEMS, VISIBILITY_CULL_CHUNK_ITEMS,
-        admit_light_work_items, admit_relevance_items, admit_render_command_items,
-        admit_renderable_update_items, has_two_chunks, has_visibility_parallel_work,
-        reference_worker_count, relevance_packet_size,
+        RENDER_COMMAND_CHUNK_DRAWS, RENDERABLE_UPDATE_CHUNK_ITEMS, TEXTURE3D_SLICE_CHUNK_SLICES,
+        TEXTURE3D_SLICE_MIN_TEXELS, VISIBILITY_CULL_CHUNK_ITEMS, admit_bind_pose_matrices,
+        admit_blendshape_channel_tasks, admit_blendshape_pack_shapes, admit_coarse_space_items,
+        admit_light_work_items, admit_mesh_stream_jobs, admit_relevance_items,
+        admit_render_command_items, admit_renderable_update_items, admit_texture3d_slices,
+        has_two_chunks, has_visibility_parallel_work, reference_worker_count,
+        relevance_packet_size,
     };
 
     #[test]
@@ -449,5 +552,65 @@ mod tests {
             ParallelAdmission::Serial
         );
         assert!(admit_relevance_items(RELEVANCE_PACKET_MIN_ITEMS * 2, 8).is_parallel());
+    }
+
+    #[test]
+    fn new_reference_grains_require_two_full_chunks() {
+        assert_eq!(
+            admit_coarse_space_items(COARSE_SPACE_CHUNK_ITEMS * 2 - 1, 8),
+            ParallelAdmission::Serial
+        );
+        assert_eq!(
+            admit_coarse_space_items(COARSE_SPACE_CHUNK_ITEMS * 2, 8),
+            ParallelAdmission::Parallel {
+                chunk_size: COARSE_SPACE_CHUNK_ITEMS
+            }
+        );
+        assert_eq!(
+            admit_bind_pose_matrices(BIND_POSE_CHUNK_MATRICES * 2 - 1, 8),
+            ParallelAdmission::Serial
+        );
+        assert_eq!(
+            admit_bind_pose_matrices(BIND_POSE_CHUNK_MATRICES * 2, 8),
+            ParallelAdmission::Parallel {
+                chunk_size: BIND_POSE_CHUNK_MATRICES
+            }
+        );
+    }
+
+    #[test]
+    fn new_reference_grains_keep_work_floors() {
+        assert_eq!(admit_mesh_stream_jobs(4, 511, 8), ParallelAdmission::Serial);
+        assert!(admit_mesh_stream_jobs(4, 512, 8).is_parallel());
+        assert_eq!(
+            admit_blendshape_channel_tasks(4, BLENDSHAPE_CHANNEL_MIN_SAMPLES - 1, 8),
+            ParallelAdmission::Serial
+        );
+        assert_eq!(
+            admit_blendshape_channel_tasks(4, BLENDSHAPE_CHANNEL_MIN_SAMPLES, 8),
+            ParallelAdmission::Parallel {
+                chunk_size: BLENDSHAPE_CHANNEL_CHUNK_TASKS
+            }
+        );
+        assert_eq!(
+            admit_blendshape_pack_shapes(4, BLENDSHAPE_PACK_MIN_SPARSE_ENTRIES - 1, 8),
+            ParallelAdmission::Serial
+        );
+        assert_eq!(
+            admit_blendshape_pack_shapes(4, BLENDSHAPE_PACK_MIN_SPARSE_ENTRIES, 8),
+            ParallelAdmission::Parallel {
+                chunk_size: BLENDSHAPE_PACK_CHUNK_SHAPES
+            }
+        );
+        assert_eq!(
+            admit_texture3d_slices(4, TEXTURE3D_SLICE_MIN_TEXELS - 1, 8),
+            ParallelAdmission::Serial
+        );
+        assert_eq!(
+            admit_texture3d_slices(4, TEXTURE3D_SLICE_MIN_TEXELS, 8),
+            ParallelAdmission::Parallel {
+                chunk_size: TEXTURE3D_SLICE_CHUNK_SLICES
+            }
+        );
     }
 }

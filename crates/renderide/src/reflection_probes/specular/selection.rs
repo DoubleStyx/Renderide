@@ -1,6 +1,10 @@
 use glam::{Vec3, Vec3A};
 use hashbrown::HashMap;
+use rayon::prelude::*;
 
+use crate::cpu_parallelism::{
+    admit_coarse_space_items, current_reference_worker_count, record_parallel_admission,
+};
 use crate::scene::RenderSpaceId;
 
 /// Maximum number of probes in one BVH leaf.
@@ -73,6 +77,7 @@ impl ReflectionProbeFrameSelection {
         self.max_local_reflection_probes = clamp_local_probe_limit(max_local_reflection_probes);
     }
 
+    /// Rebuilds per-render-space probe spatial indices from the active probe snapshot.
     pub(super) fn rebuild_spatial<I>(&mut self, probes: I)
     where
         I: IntoIterator<Item = (RenderSpaceId, SpatialProbe)>,
@@ -82,11 +87,38 @@ impl ReflectionProbeFrameSelection {
         for (space_id, probe) in probes {
             by_space.entry(space_id).or_default().push(probe);
         }
-        for (space_id, probes) in by_space {
-            self.spaces.insert(
-                space_id,
-                ReflectionProbeSpatialIndex::build(probes, self.max_local_reflection_probes),
-            );
+        let spaces = by_space.into_iter().collect::<Vec<_>>();
+        let admission = admit_coarse_space_items(spaces.len(), current_reference_worker_count());
+        record_parallel_admission(
+            "reflection_probe_spatial_rebuild",
+            spaces.len(),
+            spaces.len(),
+            admission,
+        );
+        if let Some(chunk_size) = admission.chunk_size() {
+            let indices = spaces
+                .into_par_iter()
+                .with_min_len(chunk_size)
+                .map(|(space_id, probes)| {
+                    (
+                        space_id,
+                        ReflectionProbeSpatialIndex::build(
+                            probes,
+                            self.max_local_reflection_probes,
+                        ),
+                    )
+                })
+                .collect::<Vec<_>>();
+            for (space_id, index) in indices {
+                self.spaces.insert(space_id, index);
+            }
+        } else {
+            for (space_id, probes) in spaces {
+                self.spaces.insert(
+                    space_id,
+                    ReflectionProbeSpatialIndex::build(probes, self.max_local_reflection_probes),
+                );
+            }
         }
     }
 }
