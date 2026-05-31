@@ -44,6 +44,7 @@
 //! [`rayon_thread_start_handler`] to `rayon::ThreadPoolBuilder::start_handler` so Rayon workers
 //! are also named.
 
+mod deferred_span;
 mod frame_marks;
 mod gpu;
 #[cfg(feature = "tracy")]
@@ -58,6 +59,7 @@ mod tests;
 
 pub use profiling::scope;
 
+pub(crate) use deferred_span::DeferredCpuSpan;
 pub use frame_marks::{
     emit_frame_mark, emit_render_submit_frame_mark, rayon_thread_start_handler,
     register_main_thread,

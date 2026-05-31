@@ -115,13 +115,16 @@ fn runtime_exit_reason(shutdown_requested: bool, fatal_error: bool) -> Option<Ex
 impl AppDriver {
     /// One winit redraw tick.
     pub(super) fn tick_frame(&mut self, event_loop: &dyn ActiveEventLoop) {
-        profiling::scope!("tick::frame");
-        let frame_start = Instant::now();
-        if let Some(heartbeat) = self.main_heartbeat.as_ref() {
-            heartbeat.pet();
+        {
+            profiling::scope!("tick::frame");
+            let frame_start = Instant::now();
+            if let Some(heartbeat) = self.main_heartbeat.as_ref() {
+                heartbeat.pet();
+            }
+            let outcome = self.drive_frame_phases(event_loop, frame_start);
+            self.finish_frame_tick(outcome);
         }
-        let outcome = self.drive_frame_phases(event_loop, frame_start);
-        self.finish_frame_tick(outcome);
+        crate::profiling::emit_frame_mark();
     }
 
     fn drive_frame_phases(
@@ -259,7 +262,6 @@ impl AppDriver {
     fn finish_frame_tick(&mut self, outcome: FrameTickOutcome) {
         self.frame_tick_epilogue(outcome);
         crate::profiling::flush_resource_churn_plots();
-        crate::profiling::emit_frame_mark();
     }
 
     fn frame_tick_prologue(&mut self, frame_start: Instant) {
