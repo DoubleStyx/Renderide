@@ -459,7 +459,6 @@ target
 
 #### Other .gitignore rules
 # Local renderer settings (auto-generated at workspace root on first run)
-config.toml
 *.log
 profile.json.gz
 !crates/renderide/src/bin/**
