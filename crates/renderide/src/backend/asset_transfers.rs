@@ -28,7 +28,7 @@ use std::sync::Arc;
 
 use hashbrown::HashMap;
 
-use crate::gpu::{GpuLimits, GpuMappedBufferHealth};
+use crate::gpu::GpuLimits;
 use crate::gpu_pools::{
     CubemapPool, GpuVideoTexture, MeshPool, RenderTexturePool, Texture3dPool, TexturePool,
     VideoTexturePool,
@@ -40,6 +40,7 @@ use crate::shared::{
 
 use catalogs::AssetCatalogs;
 use gpu_runtime::AssetGpuRuntime;
+pub(crate) use gpu_runtime::AssetGpuRuntimeAttach;
 pub(crate) use integrator::AssetIntegratorDiagnosticSnapshot;
 pub use integrator::{
     AssetIntegrationDrainSummary, AssetIntegrator, AssetTask, AssetTaskLane, ShaderRouteTask,
@@ -132,7 +133,7 @@ pub struct AssetTransferQueue {
     pending_point_render_buffer_uploads: HashMap<i32, PendingPointRenderBufferUpload>,
     /// Latest not-yet-started trail render-buffer upload per asset.
     pending_trail_render_buffer_uploads: HashMap<i32, PendingTrailRenderBufferUpload>,
-    /// Active Rayon workers building particle-generated meshes.
+    /// Active asset-worker jobs building particle-generated meshes.
     active_particle_build_workers: usize,
 }
 
@@ -288,23 +289,8 @@ impl AssetTransferQueue {
     }
 
     /// Stores GPU handles and limits after backend attach.
-    pub(crate) fn attach_gpu_runtime(
-        &mut self,
-        device: Arc<wgpu::Device>,
-        queue: Arc<wgpu::Queue>,
-        gate: crate::gpu::GpuQueueAccessGate,
-        limits: Arc<GpuLimits>,
-        mapped_buffer_health: Arc<GpuMappedBufferHealth>,
-        mesh_validation_scopes_enabled: bool,
-    ) {
-        self.gpu.attach(
-            device,
-            queue,
-            gate,
-            limits,
-            mapped_buffer_health,
-            mesh_validation_scopes_enabled,
-        );
+    pub(crate) fn attach_gpu_runtime(&mut self, desc: AssetGpuRuntimeAttach) {
+        self.gpu.attach(desc);
     }
 
     /// Resident mesh pool.

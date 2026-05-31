@@ -142,6 +142,7 @@ impl RendererRuntime {
 
         let device = gpu.device().clone();
         let queue = Arc::clone(gpu.queue());
+        let driver_submitter = gpu.driver_submitter();
         let gpu_queue_access_gate = gpu.gpu_queue_access_gate().clone();
         let renderer_settings = Arc::clone(&self.config.settings);
         let config_save_path = self.config.cloned_config_save_path();
@@ -153,6 +154,7 @@ impl RendererRuntime {
             crate::backend::RenderBackendAttachDesc {
                 device,
                 queue,
+                driver_submitter,
                 gpu_queue_access_gate,
                 gpu_limits: Arc::clone(gpu.limits()),
                 mapped_buffer_health: gpu.mapped_buffer_health(),

@@ -456,7 +456,7 @@ fn integrate_trail_result(
     }
 }
 
-/// Spawns a point render-buffer build on Rayon.
+/// Spawns a point render-buffer build on the asset worker pool.
 fn spawn_point_build(
     upload: PointRenderBufferUpload,
     raw: Arc<[u8]>,
@@ -464,7 +464,7 @@ fn spawn_point_build(
 ) -> crossbeam_channel::Receiver<PointBuildResult> {
     profiling::scope!("particle::point_task_spawn");
     let (tx, rx) = crossbeam_channel::bounded(1);
-    rayon::spawn(move || {
+    crate::assets::worker::spawn_asset_job(move || {
         profiling::scope!("particle::point_task_build_worker");
         let result = build_point_render_buffer_cpu(raw, &upload);
         let _ = tx.send(PointBuildResult { generation, result });
@@ -472,7 +472,7 @@ fn spawn_point_build(
     rx
 }
 
-/// Spawns a trail render-buffer build on Rayon.
+/// Spawns a trail render-buffer build on the asset worker pool.
 fn spawn_trail_build(
     upload: TrailRenderBufferUpload,
     raw: Arc<[u8]>,
@@ -480,7 +480,7 @@ fn spawn_trail_build(
 ) -> crossbeam_channel::Receiver<TrailBuildResult> {
     profiling::scope!("particle::trail_task_spawn");
     let (tx, rx) = crossbeam_channel::bounded(1);
-    rayon::spawn(move || {
+    crate::assets::worker::spawn_asset_job(move || {
         profiling::scope!("particle::trail_task_build_worker");
         let result = build_trail_render_buffer_cpu(raw, &upload);
         let _ = tx.send(TrailBuildResult { generation, result });

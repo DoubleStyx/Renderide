@@ -64,6 +64,36 @@ pub const RING_CAPACITY: usize = 2;
 const SLOW_DRIVER_ENQUEUE_THRESHOLD: Duration = Duration::from_millis(2);
 static SLOW_DRIVER_ENQUEUE_LOG: LogThrottle = LogThrottle::new();
 
+/// Cloneable producer handle for non-primary driver-thread submits.
+///
+/// Use this from subsystems that need ordered `Queue::submit` ownership but do not own the full
+/// [`DriverThread`] lifecycle. It shares the same bounded ring and counters as the main submit path.
+#[derive(Clone)]
+pub(crate) struct DriverSubmitter {
+    ring: Arc<BoundedRing<DriverMessage>>,
+    surface_counters: Arc<SurfaceCounters>,
+    submit_counters: Arc<SubmitCounters>,
+    device_health: Arc<GpuDeviceHealth>,
+    flight_recorder: Arc<GpuFlightRecorder>,
+}
+
+impl DriverSubmitter {
+    /// Enqueues a batch for the driver thread, returning its submit token.
+    pub(crate) fn submit(&self, batch: SubmitBatch) -> Option<SubmitToken> {
+        submit_to_driver_ring(self.submit_queue_refs(), batch)
+    }
+
+    fn submit_queue_refs(&self) -> SubmitQueueRefs<'_> {
+        SubmitQueueRefs {
+            ring: &self.ring,
+            surface_counters: &self.surface_counters,
+            submit_counters: &self.submit_counters,
+            device_health: &self.device_health,
+            flight_recorder: &self.flight_recorder,
+        }
+    }
+}
+
 /// Handle to the driver thread owned by [`crate::gpu::GpuContext`].
 ///
 /// `Drop` pushes a shutdown sentinel and joins the thread, so consumers do not need to
@@ -128,6 +158,17 @@ impl DriverThread {
         })
     }
 
+    /// Returns a cloneable producer handle for background driver-thread submits.
+    pub(crate) fn submitter(&self) -> DriverSubmitter {
+        DriverSubmitter {
+            ring: Arc::clone(&self.ring),
+            surface_counters: Arc::clone(&self.surface_counters),
+            submit_counters: Arc::clone(&self.submit_counters),
+            device_health: Arc::clone(&self.device_health),
+            flight_recorder: Arc::clone(&self.flight_recorder),
+        }
+    }
+
     /// Enqueues a batch for the driver thread to submit and present, returning its submit token.
     /// Blocks while the ring is full -- that block is the frame-pacing backpressure.
     ///
@@ -140,97 +181,17 @@ impl DriverThread {
     /// [`Self::take_pending_error`] path surfaces the underlying failure to the main
     /// render loop on the next tick.
     pub fn submit(&self, batch: SubmitBatch) -> Option<SubmitToken> {
-        let has_surface = batch.surface_texture.is_some();
-        let has_xr_finalize = batch.xr_finalize.is_some();
-        let command_buffers = batch.command_buffers.len();
-        let frame_seq = batch.frame_seq;
-        if has_surface {
-            self.surface_counters.note_submitted();
-        }
-        let token = self.submit_counters.note_pushed();
-        let enqueue_start = Instant::now();
-        if let Err(_dropped) = self.ring.push(DriverMessage::Submit(Box::new(batch))) {
-            if has_surface && self.device_health.is_lost() {
-                logger::warn!(
-                    "driver thread exited after device loss; presenting abandoned surface texture before dropping submit batch"
-                );
-                _dropped.present_surface_texture_after_device_loss();
-            }
-            if has_surface {
-                // Roll back the submitted counter so `wait_for_previous_present` does not
-                // wait on a present that will never happen.
-                self.surface_counters.note_presented();
-            }
-            // Mirror the rollback for the submit counter so the backlog plot does not
-            // show a phantom in-flight batch.
-            self.submit_counters.note_submit_done();
-            logger::warn!("driver thread exited; dropping submit batch");
-            self.record_driver_event(
-                GpuFlightDriverStage::DroppedAfterExit,
-                frame_seq,
-                command_buffers,
-                has_surface,
-                has_xr_finalize,
-                GpuFlightCallResult::failed_static("driver_thread_exited"),
-            );
-            return None;
-        }
-        self.record_driver_event(
-            GpuFlightDriverStage::Enqueued,
-            frame_seq,
-            command_buffers,
-            has_surface,
-            has_xr_finalize,
-            GpuFlightCallResult::Ok,
-        );
-        let enqueue_elapsed = enqueue_start.elapsed();
-        if enqueue_elapsed >= SLOW_DRIVER_ENQUEUE_THRESHOLD
-            && let Some(occurrence) = SLOW_DRIVER_ENQUEUE_LOG.should_log(4, 64)
-        {
-            let (pushed, done) = self.submit_counters.snapshot();
-            logger::warn!(
-                "driver submit enqueue blocked for {:.3}ms occurrence={} ring_depth={} backlog={} pushed={} done={} has_surface={}",
-                enqueue_elapsed.as_secs_f64() * 1000.0,
-                occurrence,
-                self.ring.depth(),
-                pushed.saturating_sub(done),
-                pushed,
-                done,
-                has_surface,
-            );
-        }
-        // Tracy plot of how full the driver ring is right after the push so saturation
-        // (depth equal to RING_CAPACITY = the main thread blocked) and steady-state pipelining
-        // (depth typically 0-1) show up alongside the other gpu metrics. Cheap: one Mutex lock,
-        // once per submit. Gated on the `tracy` feature so non-tracy builds compile without the
-        // `tracy_client` dependency, matching every other plot call in this crate.
-        #[cfg(feature = "tracy")]
-        tracy_client::plot!("driver/ring_depth", self.ring.depth() as f64);
-        Some(token)
+        submit_to_driver_ring(self.submit_queue_refs(), batch)
     }
 
-    /// Records a driver-thread event with the current ring and backlog snapshot.
-    fn record_driver_event(
-        &self,
-        stage: GpuFlightDriverStage,
-        frame_seq: u64,
-        command_buffers: usize,
-        has_surface: bool,
-        has_xr_finalize: bool,
-        result: GpuFlightCallResult,
-    ) {
-        let (pushed, done) = self.submit_counters.snapshot();
-        crash_context::set_driver_stage(stage.crash_context_stage());
-        self.flight_recorder.record(GpuFlightEventKind::Driver {
-            stage,
-            frame_seq,
-            command_buffers,
-            has_surface,
-            has_xr_finalize,
-            ring_depth: self.ring.depth(),
-            backlog: pushed.saturating_sub(done),
-            result,
-        });
+    fn submit_queue_refs(&self) -> SubmitQueueRefs<'_> {
+        SubmitQueueRefs {
+            ring: &self.ring,
+            surface_counters: &self.surface_counters,
+            submit_counters: &self.submit_counters,
+            device_health: &self.device_health,
+            flight_recorder: &self.flight_recorder,
+        }
     }
 
     /// Blocks until every previously-submitted surface-carrying batch has reached
@@ -292,6 +253,118 @@ impl DriverThread {
         // as "driver no longer running" -- callers handle that via the separate error slot.
         let _ = rx.recv_timeout(Duration::from_secs(5));
     }
+}
+
+#[derive(Clone, Copy)]
+struct SubmitQueueRefs<'a> {
+    ring: &'a Arc<BoundedRing<DriverMessage>>,
+    surface_counters: &'a Arc<SurfaceCounters>,
+    submit_counters: &'a Arc<SubmitCounters>,
+    device_health: &'a Arc<GpuDeviceHealth>,
+    flight_recorder: &'a Arc<GpuFlightRecorder>,
+}
+
+fn submit_to_driver_ring(
+    submit_queue: SubmitQueueRefs<'_>,
+    batch: SubmitBatch,
+) -> Option<SubmitToken> {
+    let has_surface = batch.surface_texture.is_some();
+    let has_xr_finalize = batch.xr_finalize.is_some();
+    let command_buffers = batch.command_buffers.len();
+    let frame_seq = batch.frame_seq;
+    if has_surface {
+        submit_queue.surface_counters.note_submitted();
+    }
+    let token = submit_queue.submit_counters.note_pushed();
+    let enqueue_start = Instant::now();
+    if let Err(dropped) = submit_queue
+        .ring
+        .push(DriverMessage::Submit(Box::new(batch)))
+    {
+        if has_surface && submit_queue.device_health.is_lost() {
+            logger::warn!(
+                "driver thread exited after device loss; presenting abandoned surface texture before dropping submit batch"
+            );
+            dropped.present_surface_texture_after_device_loss();
+        }
+        if has_surface {
+            // Roll back the submitted counter so `wait_for_previous_present` does not
+            // wait on a present that will never happen.
+            submit_queue.surface_counters.note_presented();
+        }
+        // Mirror the rollback for the submit counter so the backlog plot does not
+        // show a phantom in-flight batch.
+        submit_queue.submit_counters.note_submit_done();
+        logger::warn!("driver thread exited; dropping submit batch");
+        record_driver_event(
+            submit_queue,
+            GpuFlightDriverStage::DroppedAfterExit,
+            frame_seq,
+            command_buffers,
+            has_surface,
+            has_xr_finalize,
+            GpuFlightCallResult::failed_static("driver_thread_exited"),
+        );
+        return None;
+    }
+    record_driver_event(
+        submit_queue,
+        GpuFlightDriverStage::Enqueued,
+        frame_seq,
+        command_buffers,
+        has_surface,
+        has_xr_finalize,
+        GpuFlightCallResult::Ok,
+    );
+    let enqueue_elapsed = enqueue_start.elapsed();
+    if enqueue_elapsed >= SLOW_DRIVER_ENQUEUE_THRESHOLD
+        && let Some(occurrence) = SLOW_DRIVER_ENQUEUE_LOG.should_log(4, 64)
+    {
+        let (pushed, done) = submit_queue.submit_counters.snapshot();
+        logger::warn!(
+            "driver submit enqueue blocked for {:.3}ms occurrence={} ring_depth={} backlog={} pushed={} done={} has_surface={}",
+            enqueue_elapsed.as_secs_f64() * 1000.0,
+            occurrence,
+            submit_queue.ring.depth(),
+            pushed.saturating_sub(done),
+            pushed,
+            done,
+            has_surface,
+        );
+    }
+    // Tracy plot of how full the driver ring is right after the push so saturation
+    // (depth equal to RING_CAPACITY = the main thread blocked) and steady-state pipelining
+    // (depth typically 0-1) show up alongside the other gpu metrics. Cheap: one Mutex lock,
+    // once per submit. Gated on the `tracy` feature so non-tracy builds compile without the
+    // `tracy_client` dependency, matching every other plot call in this crate.
+    #[cfg(feature = "tracy")]
+    tracy_client::plot!("driver/ring_depth", submit_queue.ring.depth() as f64);
+    Some(token)
+}
+
+fn record_driver_event(
+    submit_queue: SubmitQueueRefs<'_>,
+    stage: GpuFlightDriverStage,
+    frame_seq: u64,
+    command_buffers: usize,
+    has_surface: bool,
+    has_xr_finalize: bool,
+    result: GpuFlightCallResult,
+) {
+    let (pushed, done) = submit_queue.submit_counters.snapshot();
+    crash_context::set_driver_stage(stage.crash_context_stage());
+    submit_queue
+        .flight_recorder
+        .record(GpuFlightEventKind::Driver {
+            stage,
+            frame_seq,
+            command_buffers,
+            has_surface,
+            has_xr_finalize,
+            ring_depth: submit_queue.ring.depth(),
+            backlog: pushed.saturating_sub(done),
+            result,
+        });
 }
 
 impl Drop for DriverThread {

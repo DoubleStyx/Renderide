@@ -94,7 +94,7 @@ pub(super) fn send_mesh_upload_result(
 enum MeshStage {
     /// Compute and cache [`MeshBufferLayout`] (CPU only).
     PendingLayout,
-    /// Derived stream bytes are being prepared on a Rayon worker.
+    /// Derived stream bytes are being prepared on the asset worker pool.
     PreparingDerived {
         raw: Arc<[u8]>,
         layout: MeshBufferLayout,
@@ -430,7 +430,7 @@ fn spawn_prepare_derived_streams(
 ) -> crossbeam_channel::Receiver<PreparedDerivedStreams> {
     profiling::scope!("asset::mesh_prepare_derived_spawn");
     let (tx, rx) = crossbeam_channel::bounded(1);
-    rayon::spawn(move || {
+    crate::assets::worker::spawn_asset_job(move || {
         profiling::scope!("asset::mesh_prepare_derived_worker");
         #[cfg(feature = "tracy")]
         tracy_client::plot!("mesh_upload::background_jobs", 1.0);
