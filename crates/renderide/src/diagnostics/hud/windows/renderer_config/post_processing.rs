@@ -62,12 +62,11 @@ fn post_processing_gtao(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bo
 fn gtao_quality_controls(ui: &imgui::Ui, gtao: &mut GtaoSettings, dirty: &mut bool) {
     ui.text("Quality");
     ui.indent();
-    if drag_u32_slider_setting(
-        ui,
+    if ui.slider(
         "Quality level",
-        &mut gtao.quality_level,
         0,
         GTAO_MAX_QUALITY_LEVEL,
+        &mut gtao.quality_level,
     ) {
         *dirty = true;
     }
