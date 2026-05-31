@@ -17,6 +17,10 @@ pub(crate) fn plot_mesh_upload_batch(stats: &MeshUploadBatchStats) {
         "mesh_upload::queue_gate_fallbacks",
         stats.queue_gate_fallbacks as f64
     );
+    tracy_plot!(
+        "mesh_upload::coalesced_writes",
+        stats.coalesced_writes as f64
+    );
 }
 
 /// Records derived stream demand and dirty masks as raw bit patterns and popcounts.

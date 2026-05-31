@@ -229,8 +229,12 @@ impl RenderBackend {
     }
 
     /// Handle [`PointRenderBufferUnload`](crate::shared::PointRenderBufferUnload).
-    pub fn on_point_render_buffer_unload(&mut self, u: PointRenderBufferUnload) {
-        asset_uploads::on_point_render_buffer_unload(&mut self.asset_transfers, u);
+    pub fn on_point_render_buffer_unload(
+        &mut self,
+        u: PointRenderBufferUnload,
+        ipc: Option<&mut DualQueueIpc>,
+    ) {
+        asset_uploads::on_point_render_buffer_unload(&mut self.asset_transfers, u, ipc);
     }
 
     /// Handle [`TrailRenderBufferUpload`](crate::shared::TrailRenderBufferUpload).
@@ -243,8 +247,12 @@ impl RenderBackend {
     }
 
     /// Handle [`TrailRenderBufferUnload`](crate::shared::TrailRenderBufferUnload).
-    pub fn on_trail_render_buffer_unload(&mut self, u: TrailRenderBufferUnload) {
-        asset_uploads::on_trail_render_buffer_unload(&mut self.asset_transfers, u);
+    pub fn on_trail_render_buffer_unload(
+        &mut self,
+        u: TrailRenderBufferUnload,
+        ipc: Option<&mut DualQueueIpc>,
+    ) {
+        asset_uploads::on_trail_render_buffer_unload(&mut self.asset_transfers, u, ipc);
     }
 
     /// Handle [`GaussianSplatConfig`](crate::shared::GaussianSplatConfig).

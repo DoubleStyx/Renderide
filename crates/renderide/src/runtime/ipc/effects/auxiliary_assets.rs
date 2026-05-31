@@ -25,13 +25,15 @@ impl RendererRuntime {
                 .backend
                 .on_point_render_buffer_upload(u, self.frontend.ipc_mut()),
             RunningCommandEffect::PointRenderBufferUnload(u) => {
-                self.backend.on_point_render_buffer_unload(u);
+                self.backend
+                    .on_point_render_buffer_unload(u, self.frontend.ipc_mut());
             }
             RunningCommandEffect::TrailRenderBufferUpload(u) => self
                 .backend
                 .on_trail_render_buffer_upload(u, self.frontend.ipc_mut()),
             RunningCommandEffect::TrailRenderBufferUnload(u) => {
-                self.backend.on_trail_render_buffer_unload(u);
+                self.backend
+                    .on_trail_render_buffer_unload(u, self.frontend.ipc_mut());
             }
             RunningCommandEffect::GaussianSplatConfig(c) => {
                 self.backend.on_gaussian_splat_config(c);

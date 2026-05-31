@@ -14,7 +14,7 @@ use super::super::tangent_generation::{
 use super::super::upload::{
     padded_sparse_bytes, queue_init_buffer_size_matches, write_mesh_upload_buffer,
 };
-use super::super::{GpuMesh, MeshBufferUploadSink, MeshDerivedStreamMask};
+use super::super::{GpuMesh, MeshBufferUploadSink, MeshDerivedStreamMask, PreparedDerivedStreams};
 
 /// Validates sparse blendshape GPU buffers and scatter ranges against a fresh [`extract_blendshape_offsets`] pass.
 pub(super) fn blendshape_and_deform_buffers_match_for_in_place(
@@ -158,6 +158,8 @@ pub(super) struct MeshInPlaceWriteContext<'a> {
     pub(super) vertex_stride: usize,
     /// Derived streams requested for this write.
     pub(super) demand_mask: MeshDerivedStreamMask,
+    /// CPU-prepared derived stream bytes available for this write.
+    pub(super) prepared_derived_streams: Option<&'a PreparedDerivedStreams>,
 }
 
 /// Writes interleaved VB then optional derived position/normal/uv/color streams.
@@ -216,20 +218,27 @@ pub(super) fn write_in_place_vertex_and_derived_streams(
             submeshes: &ctx.data.submeshes,
         };
         if ctx.demand_mask.contains(MeshDerivedStreamMask::TANGENT)
-            && let (Some(tb), Some(t)) = (
-                ctx.mesh.tangent_buffer.as_ref(),
-                tangent_stream_bytes(source, ctx.mesh.tangent_fallback_mode.generate_missing()),
-            )
+            && let Some(tb) = ctx.mesh.tangent_buffer.as_ref()
+            && let Some(t) = ctx
+                .prepared_derived_streams
+                .and_then(|prepared| prepared.tangent.as_deref())
+                .map(std::borrow::Cow::Borrowed)
+                .or_else(|| {
+                    tangent_stream_bytes(source, ctx.mesh.tangent_fallback_mode.generate_missing())
+                        .map(std::borrow::Cow::Owned)
+                })
         {
-            write_mesh_upload_buffer(ctx.upload_sink, tb.as_ref(), 0, &t);
+            write_mesh_upload_buffer(ctx.upload_sink, tb.as_ref(), 0, t.as_ref());
         }
         if ctx.demand_mask.contains(MeshDerivedStreamMask::RAW_TANGENT)
-            && let (Some(tb), Some(t)) = (
-                ctx.mesh.raw_tangent_buffer.as_ref(),
-                raw_tangent_payload_stream_bytes(source),
-            )
+            && let Some(tb) = ctx.mesh.raw_tangent_buffer.as_ref()
+            && let Some(t) = ctx
+                .prepared_derived_streams
+                .and_then(|prepared| prepared.raw_tangent.as_deref())
+                .map(std::borrow::Cow::Borrowed)
+                .or_else(|| raw_tangent_payload_stream_bytes(source).map(std::borrow::Cow::Owned))
         {
-            write_mesh_upload_buffer(ctx.upload_sink, tb.as_ref(), 0, &t);
+            write_mesh_upload_buffer(ctx.upload_sink, tb.as_ref(), 0, t.as_ref());
         }
     }
 
@@ -246,24 +255,41 @@ pub(super) fn write_in_place_vertex_and_derived_streams(
 
 fn write_in_place_position_normal_streams(ctx: &MeshInPlaceWriteContext<'_>, vertex_slice: &[u8]) {
     profiling::scope!("asset::mesh_write_in_place::write_position_normal_streams");
-    if let (Some(pb), Some(nb), Some((pvec, nvec))) = (
+    let (Some(pb), Some(nb)) = (
         ctx.mesh.positions_buffer.as_ref(),
         ctx.mesh.normals_buffer.as_ref(),
-        extract_float3_position_normal_as_vec4_streams(
-            vertex_slice,
-            ctx.vertex_count,
-            ctx.vertex_stride,
-            &ctx.data.vertex_attributes,
-        )
-        .as_ref(),
+    ) else {
+        return;
+    };
+    if let Some(prepared) = ctx.prepared_derived_streams
+        && let (Some(positions), Some(normals)) =
+            (prepared.positions.as_deref(), prepared.normals.as_deref())
+    {
+        write_mesh_upload_buffer(ctx.upload_sink, pb.as_ref(), 0, positions);
+        write_mesh_upload_buffer(ctx.upload_sink, nb.as_ref(), 0, normals);
+        return;
+    }
+    if let Some((positions, normals)) = extract_float3_position_normal_as_vec4_streams(
+        vertex_slice,
+        ctx.vertex_count,
+        ctx.vertex_stride,
+        &ctx.data.vertex_attributes,
     ) {
-        write_mesh_upload_buffer(ctx.upload_sink, pb.as_ref(), 0, pvec);
-        write_mesh_upload_buffer(ctx.upload_sink, nb.as_ref(), 0, nvec);
+        write_mesh_upload_buffer(ctx.upload_sink, pb.as_ref(), 0, &positions);
+        write_mesh_upload_buffer(ctx.upload_sink, nb.as_ref(), 0, &normals);
     }
 }
 
 fn write_in_place_uv0_stream(ctx: &MeshInPlaceWriteContext<'_>, vertex_slice: &[u8]) {
     profiling::scope!("asset::mesh_write_in_place::write_uv0_stream");
+    if let (Some(uvb), Some(prepared)) = (
+        ctx.mesh.uv0_buffer.as_ref(),
+        ctx.prepared_derived_streams
+            .and_then(|prepared| prepared.uv0.as_deref()),
+    ) {
+        write_mesh_upload_buffer(ctx.upload_sink, uvb.as_ref(), 0, prepared);
+        return;
+    }
     if let (Some(uvb), Some(uv)) = (
         ctx.mesh.uv0_buffer.as_ref(),
         uv0_float2_stream_bytes(
@@ -279,6 +305,14 @@ fn write_in_place_uv0_stream(ctx: &MeshInPlaceWriteContext<'_>, vertex_slice: &[
 
 fn write_in_place_color_stream(ctx: &MeshInPlaceWriteContext<'_>, vertex_slice: &[u8]) {
     profiling::scope!("asset::mesh_write_in_place::write_color_stream");
+    if let (Some(cb), Some(prepared)) = (
+        ctx.mesh.color_buffer.as_ref(),
+        ctx.prepared_derived_streams
+            .and_then(|prepared| prepared.color.as_deref()),
+    ) {
+        write_mesh_upload_buffer(ctx.upload_sink, cb.as_ref(), 0, prepared);
+        return;
+    }
     if let (Some(cb), Some(c)) = (
         ctx.mesh.color_buffer.as_ref(),
         color_float4_stream_bytes(
@@ -294,6 +328,14 @@ fn write_in_place_color_stream(ctx: &MeshInPlaceWriteContext<'_>, vertex_slice: 
 
 fn write_in_place_wide_uv_stream(ctx: &MeshInPlaceWriteContext<'_>, vertex_slice: &[u8]) {
     profiling::scope!("asset::mesh_write_in_place::write_wide_uv_stream");
+    if let (Some(uvb), Some(prepared)) = (
+        ctx.mesh.wide_uv_buffer.as_ref(),
+        ctx.prepared_derived_streams
+            .and_then(|prepared| prepared.wide_uv.as_deref()),
+    ) {
+        write_mesh_upload_buffer(ctx.upload_sink, uvb.as_ref(), 0, prepared);
+        return;
+    }
     if let (Some(uvb), Some(uv)) = (
         ctx.mesh.wide_uv_buffer.as_ref(),
         wide_uv_stream_bytes(
@@ -327,6 +369,22 @@ fn write_in_place_uv1_to_uv3_streams(ctx: &MeshInPlaceWriteContext<'_>, vertex_s
         ),
     ] {
         if !ctx.demand_mask.contains(mask) {
+            continue;
+        }
+        let prepared = match target {
+            VertexAttributeType::UV1 => ctx
+                .prepared_derived_streams
+                .and_then(|prepared| prepared.uv1.as_deref()),
+            VertexAttributeType::UV2 => ctx
+                .prepared_derived_streams
+                .and_then(|prepared| prepared.uv2.as_deref()),
+            VertexAttributeType::UV3 => ctx
+                .prepared_derived_streams
+                .and_then(|prepared| prepared.uv3.as_deref()),
+            _ => None,
+        };
+        if let (Some(buffer), Some(uv)) = (buffer.as_ref(), prepared) {
+            write_mesh_upload_buffer(ctx.upload_sink, buffer.as_ref(), 0, uv);
             continue;
         }
         if let (Some(buffer), Some(uv)) = (

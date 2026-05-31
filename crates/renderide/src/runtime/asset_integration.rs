@@ -127,8 +127,13 @@ impl RendererRuntime {
         let budget_ms = self.asset_integration_budget_ms();
         let now = Instant::now();
         let deadline = now + Duration::from_millis(u64::from(budget_ms));
-        let particle_deadline = deadline
-            + Duration::from_millis(u64::from(self.asset_particle_integration_budget_ms()));
+        let particle_deadline = match queue_access_mode {
+            GpuQueueAccessMode::Blocking => deadline,
+            GpuQueueAccessMode::NonBlocking => {
+                deadline
+                    + Duration::from_millis(u64::from(self.asset_particle_integration_budget_ms()))
+            }
+        };
         let pending_asset_work = self.backend.has_pending_asset_work();
         let (shm, ipc) = self.frontend.transport_pair_mut();
         let Some(shm) = shm else {

@@ -12,7 +12,10 @@ use super::types::{
     ParticleRenderBufferError, TrailRenderBufferAsset, checked_range, nonnegative_count,
     photondust_particle_color_to_linear, read_pod_at,
 };
-use super::upload::{GeneratedMeshUploadInput, generated_vertex_stride, push_generated_vertex};
+use super::upload::{
+    GeneratedMeshUploadInput, generated_vertex_stride, prepared_generated_derived_streams,
+    push_generated_vertex,
+};
 
 /// Minimum trail points before building texture-mode meshes in parallel is worthwhile.
 const TRAIL_PARALLEL_POINT_MIN: usize = 1_024;
@@ -387,6 +390,7 @@ fn build_trail_mesh_input(
         kind: "trail",
         source_asset_id,
         mesh_asset_id,
+        prepared_derived_streams: prepared_generated_derived_streams(&vertices, vertex_count),
         vertices,
         indices,
         vertex_count,

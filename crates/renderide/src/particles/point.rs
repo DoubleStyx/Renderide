@@ -12,7 +12,8 @@ use super::types::{
     checked_range, nonnegative_count, photondust_particle_color_to_linear, read_pod_at,
 };
 use super::upload::{
-    GeneratedMeshUploadInput, generated_vertex_stride, write_generated_vertex, write_u32s,
+    GeneratedMeshUploadInput, generated_vertex_stride, prepared_generated_derived_streams,
+    write_generated_vertex, write_u32s,
 };
 
 /// Number of billboard vertices generated for one point particle.
@@ -167,6 +168,7 @@ fn build_billboard_mesh_input(
     let mut vertices = vec![0u8; vertex_count * generated_vertex_stride()];
     let mut indices = vec![0u8; index_count * size_of::<u32>()];
     fill_billboard_buffers(points, frame_grid_size, &mut vertices, &mut indices);
+    let prepared_derived_streams = prepared_generated_derived_streams(&vertices, vertex_count);
 
     Ok(GeneratedMeshUploadInput {
         kind: "point",
@@ -174,6 +176,7 @@ fn build_billboard_mesh_input(
         mesh_asset_id,
         vertices,
         indices,
+        prepared_derived_streams,
         vertex_count,
         index_count,
         bounds: bounds_for_points(points),

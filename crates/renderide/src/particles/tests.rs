@@ -17,7 +17,7 @@ use super::trail::{
     trail_decode_parallel_is_worthwhile, trail_distances, trail_v_coordinate, trail_vertex_offsets,
 };
 use super::types::PointParticle;
-use super::upload::generated_vertex_stride;
+use super::upload::{generated_vertex_stride, prepared_generated_derived_streams};
 use crate::shared::{PointRenderBufferUpload, TrailRenderBufferUpload, TrailTextureMode};
 
 #[test]
@@ -169,6 +169,38 @@ fn billboard_frame_uvs_advance_top_to_bottom() {
     assert_eq!(uv(2, 3), [0.5, 0.5]);
     assert_eq!(uv(3, 0), [0.5, 0.0]);
     assert_eq!(uv(3, 3), [1.0, 0.5]);
+}
+
+#[test]
+fn generated_particle_derived_streams_match_vertex_payloads() {
+    let points = vec![PointParticle {
+        position: Vec3::new(1.0, 2.0, 3.0),
+        rotation: Quat::IDENTITY,
+        size: Vec3::splat(2.0),
+        color: Vec4::new(0.25, 0.5, 0.75, 1.0),
+        frame_index: None,
+    }];
+    let mut vertices =
+        vec![0u8; points.len() * BILLBOARD_VERTICES_PER_POINT * generated_vertex_stride()];
+    let mut indices = vec![0u8; points.len() * BILLBOARD_INDICES_PER_POINT * size_of::<u32>()];
+
+    fill_billboard_buffers(&points, glam::IVec2::ONE, &mut vertices, &mut indices);
+    let prepared =
+        prepared_generated_derived_streams(&vertices, points.len() * BILLBOARD_VERTICES_PER_POINT);
+
+    let positions = prepared.positions.as_deref().expect("positions");
+    let normals = prepared.normals.as_deref().expect("normals");
+    let uv0 = prepared.uv0.as_deref().expect("uv0");
+    let color = prepared.color.as_deref().expect("color");
+    let first_position: &[f32] = bytemuck::cast_slice(&positions[..16]);
+    let first_normal: &[f32] = bytemuck::cast_slice(&normals[..16]);
+    let first_uv: &[f32] = bytemuck::cast_slice(&uv0[..8]);
+    let first_color: &[f32] = bytemuck::cast_slice(&color[..16]);
+
+    assert_eq!(first_position, &[1.0, 2.0, 3.0, 1.0]);
+    assert_eq!(first_normal, &[1.0, 1.0, 0.0, 0.0]);
+    assert_eq!(first_uv, &[0.0, 0.0]);
+    assert_eq!(first_color, &[0.25, 0.5, 0.75, 1.0]);
 }
 
 #[test]

@@ -13,7 +13,7 @@ use crate::shared::{MeshUploadData, MeshUploadResult, RendererCommand};
 
 use super::AssetTransferQueue;
 use super::integrator::StepResult;
-use super::mesh_upload_batch::MeshUploadStagingBatch;
+use super::mesh_upload_batch::{MeshUploadRecorder, MeshUploadStagingBatch};
 
 const MESH_PREPARE_BACKGROUND_MIN_BYTES: usize = 64 * 1024;
 const MESH_PREPARE_BACKGROUND_MIN_VERTICES: i32 = 1024;
@@ -333,15 +333,17 @@ impl MeshUploadTask {
         };
         let asset_id = self.data.asset_id;
         let upload_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let upload_recorder = MeshUploadRecorder::new(gpu.mesh_upload_batch.as_ref());
+            let validation_scopes_enabled = gpu.mesh_validation_scopes_enabled;
             let ctx = MeshGpuUploadContext {
                 device: gpu.device.as_ref(),
-                upload_sink: gpu.mesh_upload_batch.as_ref(),
+                upload_sink: &upload_recorder,
                 prepared_derived_streams: prepared_derived_streams.as_deref(),
                 gpu_limits: gpu.gpu_limits.as_ref(),
                 mapped_buffer_health: gpu.mapped_buffer_health.as_ref(),
                 mapped_buffer_generation,
                 derived_stream_demand,
-                validation_scopes_enabled: gpu.mesh_validation_scopes_enabled,
+                validation_scopes_enabled,
             };
             crate::profiling::plot_mesh_derived_stream_masks(derived_stream_demand.mask.bits(), 0);
             let upload_result = if ctx.validation_scopes_enabled {
@@ -362,7 +364,10 @@ impl MeshUploadTask {
             } else {
                 try_upload_mesh_from_raw(ctx, &raw, &self.data, existing.map(|mesh| *mesh), &layout)
             };
-            if ctx.validation_scopes_enabled {
+            if upload_result.is_some() {
+                upload_recorder.flush();
+            }
+            if validation_scopes_enabled {
                 #[cfg(feature = "tracy")]
                 tracy_client::plot!("mesh_upload::validation_scope_use", 1.0);
             } else {

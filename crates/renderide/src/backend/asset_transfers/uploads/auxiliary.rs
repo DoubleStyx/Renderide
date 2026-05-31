@@ -11,7 +11,10 @@ use crate::shared::{
 use super::super::AssetTransferQueue;
 use super::super::catalogs::GaussianSplatUploadKind;
 use super::super::integrator::{AssetTask, AssetTaskLane};
-use super::super::particle_task::{PointRenderBufferTask, TrailRenderBufferTask};
+use super::super::particle_task::{
+    PointRenderBufferTask, TrailRenderBufferTask, send_point_render_buffer_consumed,
+    send_trail_render_buffer_consumed,
+};
 
 fn send_desktop_texture_update(
     ipc: Option<&mut DualQueueIpc>,
@@ -93,25 +96,42 @@ pub fn on_unload_desktop_texture(queue: &mut AssetTransferQueue, unload: UnloadD
 pub fn on_point_render_buffer_upload(
     queue: &mut AssetTransferQueue,
     upload: PointRenderBufferUpload,
-    _ipc: Option<&mut DualQueueIpc>,
+    ipc: Option<&mut DualQueueIpc>,
 ) {
     let asset_id = upload.asset_id;
     let count = upload.count;
-    let generation = queue.begin_point_render_buffer_generation(asset_id);
-    queue.integrator_mut().enqueue_lane(
-        AssetTask::PointRenderBuffer(PointRenderBufferTask::new(upload, generation)),
-        AssetTaskLane::Particle,
+    let mut ipc = ipc;
+    let coalesced = queue.retain_latest_point_render_buffer_upload(upload);
+    if coalesced.replaced_pending_upload {
+        send_point_render_buffer_consumed(&mut ipc, asset_id);
+        logger::trace!(
+            "point render buffer {asset_id}: coalesced superseded pending upload generation={}",
+            coalesced.generation
+        );
+    } else {
+        queue.integrator_mut().enqueue_lane(
+            AssetTask::PointRenderBuffer(PointRenderBufferTask::new(asset_id)),
+            AssetTaskLane::Particle,
+        );
+    }
+    logger::trace!(
+        "point render buffer {asset_id}: retained upload count={count} generation={}",
+        coalesced.generation
     );
-    logger::trace!("point render buffer {asset_id}: queued upload count={count}");
 }
 
 /// Removes a resident point render-buffer upload and generated meshes.
 pub fn on_point_render_buffer_unload(
     queue: &mut AssetTransferQueue,
     unload: PointRenderBufferUnload,
+    ipc: Option<&mut DualQueueIpc>,
 ) {
     let asset_id = unload.asset_id;
-    queue.cancel_point_render_buffer_generation(asset_id);
+    let mut ipc = ipc;
+    let removed_pending_upload = queue.cancel_point_render_buffer_generation(asset_id);
+    if removed_pending_upload {
+        send_point_render_buffer_consumed(&mut ipc, asset_id);
+    }
     queue.catalogs.point_render_buffers.remove(&asset_id);
     for mesh_id in crate::particles::point_render_buffer_generated_mesh_ids(asset_id) {
         queue.pools.mesh_pool.remove(mesh_id);
@@ -123,18 +143,28 @@ pub fn on_point_render_buffer_unload(
 pub fn on_trail_render_buffer_upload(
     queue: &mut AssetTransferQueue,
     upload: TrailRenderBufferUpload,
-    _ipc: Option<&mut DualQueueIpc>,
+    ipc: Option<&mut DualQueueIpc>,
 ) {
     let asset_id = upload.asset_id;
     let trails_count = upload.trails_count;
     let trail_point_count = upload.trail_point_count;
-    let generation = queue.begin_trail_render_buffer_generation(asset_id);
-    queue.integrator_mut().enqueue_lane(
-        AssetTask::TrailRenderBuffer(TrailRenderBufferTask::new(upload, generation)),
-        AssetTaskLane::Particle,
-    );
+    let mut ipc = ipc;
+    let coalesced = queue.retain_latest_trail_render_buffer_upload(upload);
+    if coalesced.replaced_pending_upload {
+        send_trail_render_buffer_consumed(&mut ipc, asset_id);
+        logger::trace!(
+            "trail render buffer {asset_id}: coalesced superseded pending upload generation={}",
+            coalesced.generation
+        );
+    } else {
+        queue.integrator_mut().enqueue_lane(
+            AssetTask::TrailRenderBuffer(TrailRenderBufferTask::new(asset_id)),
+            AssetTaskLane::Particle,
+        );
+    }
     logger::trace!(
-        "trail render buffer {asset_id}: queued placeholder upload trails={trails_count} points={trail_point_count}"
+        "trail render buffer {asset_id}: retained upload trails={trails_count} points={trail_point_count} generation={}",
+        coalesced.generation
     );
 }
 
@@ -142,9 +172,14 @@ pub fn on_trail_render_buffer_upload(
 pub fn on_trail_render_buffer_unload(
     queue: &mut AssetTransferQueue,
     unload: TrailRenderBufferUnload,
+    ipc: Option<&mut DualQueueIpc>,
 ) {
     let asset_id = unload.asset_id;
-    queue.cancel_trail_render_buffer_generation(asset_id);
+    let mut ipc = ipc;
+    let removed_pending_upload = queue.cancel_trail_render_buffer_generation(asset_id);
+    if removed_pending_upload {
+        send_trail_render_buffer_consumed(&mut ipc, asset_id);
+    }
     queue.catalogs.trail_render_buffers.remove(&asset_id);
     for mesh_id in crate::particles::trail_render_buffer_generated_mesh_ids(asset_id) {
         queue.pools.mesh_pool.remove(mesh_id);

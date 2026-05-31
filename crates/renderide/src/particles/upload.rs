@@ -1,7 +1,8 @@
 use glam::{Vec2, Vec3, Vec4};
 
 use crate::assets::mesh::{
-    GpuMesh, MeshGpuUploadContext, compute_and_validate_mesh_layout, try_upload_mesh_from_raw,
+    GpuMesh, MeshGpuUploadContext, PreparedDerivedStreams, compute_and_validate_mesh_layout,
+    try_upload_mesh_from_raw,
 };
 use crate::shared::buffer::SharedMemoryBufferDescriptor;
 use crate::shared::{
@@ -59,6 +60,36 @@ pub(super) fn write_u32s(out: &mut [u8], values: &[u32]) {
     out.copy_from_slice(bytemuck::cast_slice(values));
 }
 
+/// Builds derived stream bytes for generated particle vertices on the worker thread.
+pub(super) fn prepared_generated_derived_streams(
+    vertices: &[u8],
+    vertex_count: usize,
+) -> PreparedDerivedStreams {
+    profiling::scope!("particle::prepare_generated_derived_streams");
+    let stride = generated_vertex_stride();
+    let mut positions = vec![0u8; vertex_count * 16];
+    let mut normals = vec![0u8; vertex_count * 16];
+    let mut uv0 = vec![0u8; vertex_count * 8];
+    let mut color = vec![0u8; vertex_count * 16];
+    let one = 1.0f32.to_le_bytes();
+    for (index, vertex) in vertices.chunks_exact(stride).take(vertex_count).enumerate() {
+        let position_start = index * 16;
+        positions[position_start..position_start + 12].copy_from_slice(&vertex[0..12]);
+        positions[position_start + 12..position_start + 16].copy_from_slice(&one);
+        normals[position_start..position_start + 12].copy_from_slice(&vertex[12..24]);
+        let uv_start = index * 8;
+        uv0[uv_start..uv_start + 8].copy_from_slice(&vertex[24..32]);
+        color[position_start..position_start + 16].copy_from_slice(&vertex[32..48]);
+    }
+    PreparedDerivedStreams {
+        positions: Some(positions),
+        normals: Some(normals),
+        uv0: Some(uv0),
+        color: Some(color),
+        ..PreparedDerivedStreams::default()
+    }
+}
+
 /// Inputs needed to publish one renderer-generated mesh into the mesh pool.
 #[derive(Debug)]
 pub(crate) struct GeneratedMeshUploadInput {
@@ -72,6 +103,8 @@ pub(crate) struct GeneratedMeshUploadInput {
     pub(crate) vertices: Vec<u8>,
     /// Packed `u32` index bytes.
     pub(crate) indices: Vec<u8>,
+    /// Worker-prepared derived stream bytes for generated vertices.
+    pub(crate) prepared_derived_streams: PreparedDerivedStreams,
     /// Number of vertices in `vertices`.
     pub(crate) vertex_count: usize,
     /// Number of indices in `indices`.
@@ -110,6 +143,10 @@ pub(crate) fn upload_generated_mesh(
             asset_id: input.source_asset_id,
         });
     }
+    let gpu = MeshGpuUploadContext {
+        prepared_derived_streams: Some(&input.prepared_derived_streams),
+        ..gpu
+    };
     let mesh = if gpu.validation_scopes_enabled {
         profiling::scope!("particle::generated_mesh_validation_scope");
         let validation_scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);

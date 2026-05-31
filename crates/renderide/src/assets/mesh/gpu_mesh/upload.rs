@@ -20,6 +20,7 @@ pub(super) use extended_streams::{
 #[cfg(test)]
 use extended_streams::{tangent_stream_usage, vertex_stream_usage};
 
+#[cfg(test)]
 use std::borrow::Cow;
 use std::sync::Arc;
 
@@ -71,6 +72,20 @@ pub(crate) struct MeshGpuUploadContext<'a> {
 pub(crate) trait MeshBufferUploadSink {
     /// Queues or immediately performs a buffer write.
     fn write_buffer(&self, buffer: &wgpu::Buffer, offset: wgpu::BufferAddress, contents: &[u8]);
+
+    /// Queues a buffer write whose payload needs zero padding to satisfy wgpu copy alignment.
+    fn write_buffer_padded(
+        &self,
+        buffer: &wgpu::Buffer,
+        offset: wgpu::BufferAddress,
+        contents: &[u8],
+        padded_size: usize,
+    ) {
+        let mut padded = Vec::with_capacity(padded_size);
+        padded.extend_from_slice(contents);
+        padded.resize(padded_size, 0);
+        self.write_buffer(buffer, offset, &padded);
+    }
 }
 
 /// Position/normal streams, UV0, and vertex color.
@@ -389,6 +404,7 @@ pub(super) fn queue_init_buffer_size_matches(actual_size: u64, contents_len: usi
     actual_size == queue_init_buffer_size(contents_len)
 }
 
+#[cfg(test)]
 fn queue_write_bytes(contents: &[u8]) -> Cow<'_, [u8]> {
     let padded_size = queue_init_buffer_size(contents.len()) as usize;
     if contents.len() == padded_size {
@@ -412,8 +428,12 @@ pub(super) fn write_mesh_upload_buffer(
         return;
     }
 
-    let bytes = queue_write_bytes(contents);
-    sink.write_buffer(buffer, offset, bytes.as_ref());
+    let padded_size = queue_init_buffer_size(contents.len()) as usize;
+    if contents.len() == padded_size {
+        sink.write_buffer(buffer, offset, contents);
+    } else {
+        sink.write_buffer_padded(buffer, offset, contents, padded_size);
+    }
 }
 
 fn mapped_buffer_generation_still_current(

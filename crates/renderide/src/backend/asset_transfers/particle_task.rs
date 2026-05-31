@@ -2,8 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::assets::mesh::MeshDerivedStreamDemand;
-use crate::assets::mesh::MeshGpuUploadContext;
+use crate::assets::mesh::{MeshBufferUploadSink, MeshDerivedStreamDemand, MeshGpuUploadContext};
 use crate::gpu::{GpuLimits, GpuMappedBufferHealth};
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::particles::{
@@ -17,7 +16,7 @@ use crate::shared::{
 
 use super::AssetTransferQueue;
 use super::integrator::StepResult;
-use super::mesh_upload_batch::MeshUploadStagingBatch;
+use super::mesh_upload_batch::{MeshUploadRecorder, MeshUploadStagingBatch};
 
 /// GPU handles needed to publish particle-generated meshes on the renderer thread.
 pub(in crate::backend::asset_transfers) struct ParticleTaskGpu<'a> {
@@ -50,13 +49,8 @@ pub struct TrailRenderBufferTask {
 /// State for a point render-buffer task.
 #[derive(Debug)]
 enum PointRenderBufferTaskStage {
-    /// Shared-memory payload has not yet been copied.
-    Pending {
-        /// Host upload descriptor.
-        upload: PointRenderBufferUpload,
-        /// Asset generation assigned when the upload was queued.
-        generation: u64,
-    },
+    /// Waiting to claim the newest pending upload for this asset.
+    Pending { asset_id: i32 },
     /// Background build has been spawned and is waiting to publish.
     Building {
         /// Host point render-buffer asset id.
@@ -71,13 +65,8 @@ enum PointRenderBufferTaskStage {
 /// State for a trail render-buffer task.
 #[derive(Debug)]
 enum TrailRenderBufferTaskStage {
-    /// Shared-memory payload has not yet been copied.
-    Pending {
-        /// Host upload descriptor.
-        upload: TrailRenderBufferUpload,
-        /// Asset generation assigned when the upload was queued.
-        generation: u64,
-    },
+    /// Waiting to claim the newest pending upload for this asset.
+    Pending { asset_id: i32 },
     /// Background build has been spawned and is waiting to publish.
     Building {
         /// Host trail render-buffer asset id.
@@ -119,12 +108,9 @@ enum ParticleTaskStart<T> {
 
 impl PointRenderBufferTask {
     /// Creates a task for `upload`.
-    pub(in crate::backend::asset_transfers) fn new(
-        upload: PointRenderBufferUpload,
-        generation: u64,
-    ) -> Self {
+    pub(in crate::backend::asset_transfers) fn new(asset_id: i32) -> Self {
         Self {
-            stage: PointRenderBufferTaskStage::Pending { upload, generation },
+            stage: PointRenderBufferTaskStage::Pending { asset_id },
         }
     }
 
@@ -137,8 +123,8 @@ impl PointRenderBufferTask {
         ipc: &mut Option<&mut DualQueueIpc>,
     ) -> StepResult {
         match &mut self.stage {
-            PointRenderBufferTaskStage::Pending { upload, generation } => {
-                match start_point_task(queue, gpu, shm, ipc, upload, *generation) {
+            PointRenderBufferTaskStage::Pending { asset_id } => {
+                match start_point_task(queue, gpu, shm, ipc, *asset_id) {
                     ParticleTaskStart::Done => StepResult::Done,
                     ParticleTaskStart::YieldPending => StepResult::YieldBackground,
                     ParticleTaskStart::Building(building) => {
@@ -163,12 +149,9 @@ impl PointRenderBufferTask {
 
 impl TrailRenderBufferTask {
     /// Creates a task for `upload`.
-    pub(in crate::backend::asset_transfers) fn new(
-        upload: TrailRenderBufferUpload,
-        generation: u64,
-    ) -> Self {
+    pub(in crate::backend::asset_transfers) fn new(asset_id: i32) -> Self {
         Self {
-            stage: TrailRenderBufferTaskStage::Pending { upload, generation },
+            stage: TrailRenderBufferTaskStage::Pending { asset_id },
         }
     }
 
@@ -181,8 +164,8 @@ impl TrailRenderBufferTask {
         ipc: &mut Option<&mut DualQueueIpc>,
     ) -> StepResult {
         match &mut self.stage {
-            TrailRenderBufferTaskStage::Pending { upload, generation } => {
-                match start_trail_task(queue, gpu, shm, ipc, upload, *generation) {
+            TrailRenderBufferTaskStage::Pending { asset_id } => {
+                match start_trail_task(queue, gpu, shm, ipc, *asset_id) {
                     ParticleTaskStart::Done => StepResult::Done,
                     ParticleTaskStart::YieldPending => StepResult::YieldBackground,
                     ParticleTaskStart::Building(building) => {
@@ -211,15 +194,9 @@ fn start_point_task(
     gpu: Option<ParticleTaskGpu<'_>>,
     shm: &mut SharedMemoryAccessor,
     ipc: &mut Option<&mut DualQueueIpc>,
-    upload: &mut PointRenderBufferUpload,
-    generation: u64,
+    asset_id: i32,
 ) -> ParticleTaskStart<PointRenderBufferTaskStage> {
     profiling::scope!("particle::point_task_start");
-    let asset_id = upload.asset_id;
-    if !queue.point_render_buffer_generation_is_current(asset_id, generation) {
-        send_point_render_buffer_consumed(ipc, asset_id);
-        return ParticleTaskStart::Done;
-    }
     if gpu.is_none() {
         return ParticleTaskStart::YieldPending;
     }
@@ -227,7 +204,17 @@ fn start_point_task(
         return ParticleTaskStart::YieldPending;
     }
 
-    let upload = std::mem::take(upload);
+    let Some(pending) = queue.take_pending_point_render_buffer_upload(asset_id) else {
+        queue.release_particle_build_worker();
+        return ParticleTaskStart::Done;
+    };
+    let upload = pending.upload;
+    let generation = pending.generation;
+    if !queue.point_render_buffer_generation_is_current(asset_id, generation) {
+        queue.release_particle_build_worker();
+        send_point_render_buffer_consumed(ipc, asset_id);
+        return ParticleTaskStart::Done;
+    }
     let raw_len = upload.buffer.length.max(0) as usize;
     let raw = copy_render_buffer_payload(shm, upload.buffer, "point", asset_id, raw_len);
     send_point_render_buffer_consumed(ipc, asset_id);
@@ -253,15 +240,9 @@ fn start_trail_task(
     gpu: Option<ParticleTaskGpu<'_>>,
     shm: &mut SharedMemoryAccessor,
     ipc: &mut Option<&mut DualQueueIpc>,
-    upload: &mut TrailRenderBufferUpload,
-    generation: u64,
+    asset_id: i32,
 ) -> ParticleTaskStart<TrailRenderBufferTaskStage> {
     profiling::scope!("particle::trail_task_start");
-    let asset_id = upload.asset_id;
-    if !queue.trail_render_buffer_generation_is_current(asset_id, generation) {
-        send_trail_render_buffer_consumed(ipc, asset_id);
-        return ParticleTaskStart::Done;
-    }
     if gpu.is_none() {
         return ParticleTaskStart::YieldPending;
     }
@@ -269,7 +250,17 @@ fn start_trail_task(
         return ParticleTaskStart::YieldPending;
     }
 
-    let upload = std::mem::take(upload);
+    let Some(pending) = queue.take_pending_trail_render_buffer_upload(asset_id) else {
+        queue.release_particle_build_worker();
+        return ParticleTaskStart::Done;
+    };
+    let upload = pending.upload;
+    let generation = pending.generation;
+    if !queue.trail_render_buffer_generation_is_current(asset_id, generation) {
+        queue.release_particle_build_worker();
+        send_trail_render_buffer_consumed(ipc, asset_id);
+        return ParticleTaskStart::Done;
+    }
     let raw_len = upload.buffer.length.max(0) as usize;
     let raw = copy_render_buffer_payload(shm, upload.buffer, "trail", asset_id, raw_len);
     send_trail_render_buffer_consumed(ipc, asset_id);
@@ -346,10 +337,13 @@ fn poll_trail_task(
 }
 
 /// Captures the current GPU upload context for generated particle mesh publication.
-fn particle_mesh_gpu_context(gpu: ParticleTaskGpu<'_>) -> MeshGpuUploadContext<'_> {
+fn particle_mesh_gpu_context<'a>(
+    gpu: &'a ParticleTaskGpu<'_>,
+    upload_sink: &'a dyn MeshBufferUploadSink,
+) -> MeshGpuUploadContext<'a> {
     MeshGpuUploadContext {
         device: gpu.device.as_ref(),
-        upload_sink: gpu.mesh_upload_batch.as_ref(),
+        upload_sink,
         prepared_derived_streams: None,
         gpu_limits: gpu.gpu_limits.as_ref(),
         mapped_buffer_health: gpu.mapped_buffer_health.as_ref(),
@@ -378,11 +372,9 @@ fn integrate_point_result(
         Ok(build) => {
             let existing = crate::particles::billboard_render_buffer_mesh_asset_id(asset_id)
                 .and_then(|mesh_id| queue.pools.mesh_pool.get(mesh_id).cloned());
-            let mesh = match upload_generated_mesh(
-                particle_mesh_gpu_context(gpu),
-                build.billboard_mesh,
-                existing,
-            ) {
+            let upload_recorder = MeshUploadRecorder::new(gpu.mesh_upload_batch.as_ref());
+            let ctx = particle_mesh_gpu_context(&gpu, &upload_recorder);
+            let mesh = match upload_generated_mesh(ctx, build.billboard_mesh, existing) {
                 Ok(mesh) => mesh,
                 Err(err) => {
                     logger::warn!("{err}");
@@ -390,6 +382,7 @@ fn integrate_point_result(
                     return;
                 }
             };
+            upload_recorder.flush();
             let stored_asset_id = build.asset.asset_id;
             let count = build.asset.count;
             let frame_grid_size = build.asset.frame_grid_size;
@@ -426,7 +419,8 @@ fn integrate_trail_result(
     }
     match result.result {
         Ok(build) => {
-            let ctx = particle_mesh_gpu_context(gpu);
+            let upload_recorder = MeshUploadRecorder::new(gpu.mesh_upload_batch.as_ref());
+            let ctx = particle_mesh_gpu_context(&gpu, &upload_recorder);
             let mut meshes = Vec::with_capacity(build.meshes.len());
             for input in build.meshes {
                 let existing = queue.pools.mesh_pool.get(input.mesh_asset_id).cloned();
@@ -440,6 +434,7 @@ fn integrate_trail_result(
                 };
                 meshes.push(mesh);
             }
+            upload_recorder.flush();
             let stored_asset_id = build.asset.asset_id;
             let trails_count = build.asset.trails_count;
             let trail_point_count = build.asset.trail_point_count;
@@ -518,7 +513,10 @@ fn copy_render_buffer_payload(
 }
 
 /// Sends a point render-buffer consumed acknowledgement.
-fn send_point_render_buffer_consumed(ipc: &mut Option<&mut DualQueueIpc>, asset_id: i32) {
+pub(super) fn send_point_render_buffer_consumed(
+    ipc: &mut Option<&mut DualQueueIpc>,
+    asset_id: i32,
+) {
     if let Some(ipc) = ipc.as_deref_mut() {
         let ack_queued = ipc.enqueue_background_reliable(
             RendererCommand::PointRenderBufferConsumed(PointRenderBufferConsumed { asset_id }),
@@ -532,7 +530,10 @@ fn send_point_render_buffer_consumed(ipc: &mut Option<&mut DualQueueIpc>, asset_
 }
 
 /// Sends a trail render-buffer consumed acknowledgement.
-fn send_trail_render_buffer_consumed(ipc: &mut Option<&mut DualQueueIpc>, asset_id: i32) {
+pub(super) fn send_trail_render_buffer_consumed(
+    ipc: &mut Option<&mut DualQueueIpc>,
+    asset_id: i32,
+) {
     if let Some(ipc) = ipc.as_deref_mut() {
         let ack_queued = ipc.enqueue_background_reliable(
             RendererCommand::TrailRenderBufferConsumed(TrailRenderBufferConsumed { asset_id }),

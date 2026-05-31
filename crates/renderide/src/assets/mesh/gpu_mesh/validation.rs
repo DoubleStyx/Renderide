@@ -96,14 +96,7 @@ pub fn try_upload_mesh_from_raw(
 
     if let Some(existing) = existing
         && existing.compatible_for_in_place_update(data, layout, raw)
-        && let Some(mesh) = existing.write_in_place(
-            ctx.upload_sink,
-            raw,
-            data,
-            layout,
-            hint,
-            ctx.derived_stream_demand,
-        )
+        && let Some(mesh) = existing.write_in_place(ctx, raw, data, layout, hint)
     {
         if ctx.mapped_buffer_health.generation() != ctx.mapped_buffer_generation {
             logger::debug!(
