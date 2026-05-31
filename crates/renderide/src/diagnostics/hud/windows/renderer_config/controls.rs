@@ -3,7 +3,7 @@
 use imgui::{Drag, SliderFlags};
 
 const SLIDER_DRAG_STEPS: f32 = 200.0;
-const MIN_U32_SLIDER_SPEED: f32 = 1.0;
+const MIN_U32_SLIDER_SPEED: f32 = 0.001;
 const MIN_F32_SLIDER_SPEED: f32 = 0.001;
 
 /// Edits a `u32` setting through an ImGui drag widget with clamped integer output.
