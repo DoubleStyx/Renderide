@@ -240,6 +240,16 @@ impl<'a> FrameViewPlan<'a> {
         }
     }
 
+    /// Offscreen target currently written by this view.
+    pub(in crate::runtime) fn write_target(&self) -> OffscreenWriteTarget {
+        match &self.target {
+            FrameViewPlanTarget::Offscreen(handles) => handles.write_target,
+            FrameViewPlanTarget::Swapchain | FrameViewPlanTarget::ExternalMultiview(_) => {
+                OffscreenWriteTarget::None
+            }
+        }
+    }
+
     /// Converts this view plan plus graph prep state into the render-graph execution input.
     pub(in crate::runtime) fn to_frame_view(
         &self,
@@ -351,6 +361,14 @@ mod tests {
         assert!(!plan.is_multiview_stereo_active());
         assert_eq!(plan.shader_permutation(), ShaderPermutation(0));
         assert_eq!(plan.output_depth_mode(), OutputDepthMode::DesktopSingle);
+    }
+
+    #[test]
+    fn swapchain_plan_reports_no_offscreen_write_target() {
+        assert_eq!(
+            main_swapchain_plan().write_target(),
+            OffscreenWriteTarget::None
+        );
     }
 
     #[test]

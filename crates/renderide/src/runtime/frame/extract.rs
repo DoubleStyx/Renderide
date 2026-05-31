@@ -14,7 +14,7 @@ use crate::mesh_deform::SkinCacheKey;
 use crate::occlusion::HiZCullData;
 use crate::render_graph::blackboard::Blackboard;
 use crate::render_graph::{
-    FrameGlobalView, FrameView, FrameViewResourceHints, GraphExecuteError,
+    FrameGlobalView, FrameView, FrameViewResourceHints, GraphExecuteError, OffscreenWriteTarget,
     ViewFamilyGraphRequirements,
 };
 use crate::world_mesh::QueuedWorldMeshDraws;
@@ -723,7 +723,8 @@ fn build_cull_snapshot_for_view(
     occlusion: &crate::occlusion::OcclusionSystem,
     prep: &FrameViewPlan<'_>,
 ) -> Option<ViewCullSnapshot> {
-    let proj = build_world_mesh_cull_proj_params(scene, prep.viewport_px, &prep.host_camera);
+    let camera_proj = build_world_mesh_cull_proj_params(scene, prep.viewport_px, &prep.host_camera);
+    let proj = cull_projection_for_write_target(&camera_proj, prep.write_target());
     let depth_mode = prep.output_depth_mode();
     let (hi_z, hi_z_temporal) = if prep.host_camera.suppress_occlusion_temporal {
         (None, None)
@@ -740,8 +741,17 @@ fn build_cull_snapshot_for_view(
     })
 }
 
+fn cull_projection_for_write_target(
+    proj: &WorldMeshCullProjParams,
+    write_target: OffscreenWriteTarget,
+) -> WorldMeshCullProjParams {
+    proj.map_projection_matrices(|projection| write_target.render_projection(projection))
+}
+
 #[cfg(test)]
 mod tests {
+    use glam::Mat4;
+
     use crate::camera::{HostCameraFrame, ViewId};
     use crate::mesh_deform::{SkinCacheKey, SkinCacheRendererKind};
     use crate::occlusion::OcclusionSystem;
@@ -782,6 +792,95 @@ mod tests {
         assert!(snapshot.hi_z.is_none());
         assert!(snapshot.hi_z_temporal.is_none());
         assert!(snapshot.proj.vr_stereo.is_none());
+    }
+
+    fn asymmetric_cull_projection_bundle() -> WorldMeshCullProjParams {
+        WorldMeshCullProjParams {
+            world_proj: Mat4::from_cols_array(&[
+                1.0, 0.25, 0.0, 0.0, //
+                0.5, 2.0, 0.0, 0.0, //
+                0.0, 0.0, 3.0, 0.75, //
+                0.0, 0.0, 1.0, 1.0,
+            ]),
+            overlay_proj: Mat4::from_cols_array(&[
+                1.5, 0.125, 0.0, 0.0, //
+                0.75, 1.25, 0.0, 0.0, //
+                0.0, 0.0, 2.5, 0.5, //
+                0.0, 0.0, 1.0, 1.0,
+            ]),
+            vr_stereo: Some((
+                Mat4::from_cols_array(&[
+                    1.0, 0.0, 0.0, 0.0, //
+                    0.1, 1.0, 0.0, 0.0, //
+                    0.0, 0.0, 1.0, 0.0, //
+                    0.0, 0.0, 0.0, 1.0,
+                ]),
+                Mat4::from_cols_array(&[
+                    1.0, 0.0, 0.0, 0.0, //
+                    -0.1, 1.0, 0.0, 0.0, //
+                    0.0, 0.0, 1.0, 0.0, //
+                    0.0, 0.0, 0.0, 1.0,
+                ]),
+            )),
+        }
+    }
+
+    #[test]
+    fn primary_cull_projection_preserves_camera_convention() {
+        let raw = asymmetric_cull_projection_bundle();
+        let adjusted = cull_projection_for_write_target(&raw, OffscreenWriteTarget::None);
+
+        assert_eq!(adjusted.world_proj, raw.world_proj);
+        assert_eq!(adjusted.overlay_proj, raw.overlay_proj);
+        assert_eq!(adjusted.vr_stereo, raw.vr_stereo);
+    }
+
+    #[test]
+    fn host_render_texture_cull_projection_uses_offscreen_convention() {
+        let raw = asymmetric_cull_projection_bundle();
+        let write_target = OffscreenWriteTarget::HostRenderTexture(77);
+        let adjusted = cull_projection_for_write_target(&raw, write_target);
+        let (left, right) = raw.vr_stereo.expect("stereo pair");
+
+        assert_eq!(
+            adjusted.world_proj,
+            write_target.render_projection(raw.world_proj)
+        );
+        assert_eq!(
+            adjusted.overlay_proj,
+            write_target.render_projection(raw.overlay_proj)
+        );
+        assert_eq!(
+            adjusted.vr_stereo,
+            Some((
+                write_target.render_projection(left),
+                write_target.render_projection(right)
+            ))
+        );
+    }
+
+    #[test]
+    fn untracked_offscreen_cull_projection_uses_offscreen_convention() {
+        let raw = asymmetric_cull_projection_bundle();
+        let write_target = OffscreenWriteTarget::Untracked;
+        let adjusted = cull_projection_for_write_target(&raw, write_target);
+        let (left, right) = raw.vr_stereo.expect("stereo pair");
+
+        assert_eq!(
+            adjusted.world_proj,
+            write_target.render_projection(raw.world_proj)
+        );
+        assert_eq!(
+            adjusted.overlay_proj,
+            write_target.render_projection(raw.overlay_proj)
+        );
+        assert_eq!(
+            adjusted.vr_stereo,
+            Some((
+                write_target.render_projection(left),
+                write_target.render_projection(right)
+            ))
+        );
     }
 
     #[test]
