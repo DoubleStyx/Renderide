@@ -23,6 +23,11 @@ use extended_streams::{tangent_stream_usage, vertex_stream_usage};
 use std::borrow::Cow;
 use std::sync::Arc;
 
+use rayon::prelude::*;
+
+use crate::cpu_parallelism::{
+    admit_mesh_stream_jobs, current_reference_worker_count, record_parallel_admission,
+};
 use crate::gpu::{GpuLimits, GpuMappedBufferHealth};
 use crate::shared::{MeshUploadData, VertexAttributeType};
 
@@ -112,6 +117,122 @@ pub(crate) struct PreparedDerivedStreams {
     pub(crate) wide_uv: Option<Vec<u8>>,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum DerivedStreamJob {
+    PositionNormal,
+    Uv0,
+    Color,
+    Tangent,
+    RawTangent,
+    Uv1,
+    Uv2,
+    Uv3,
+    WideUv,
+}
+
+enum DerivedStreamJobResult {
+    PositionNormal(Option<(Vec<u8>, Vec<u8>)>),
+    Uv0(Option<Vec<u8>>),
+    Color(Option<Vec<u8>>),
+    Tangent(Option<Vec<u8>>),
+    RawTangent(Option<Vec<u8>>),
+    Uv1(Option<Vec<u8>>),
+    Uv2(Option<Vec<u8>>),
+    Uv3(Option<Vec<u8>>),
+    WideUv(Option<Vec<u8>>),
+}
+
+impl DerivedStreamJob {
+    fn compute(
+        self,
+        vertex_slice: &[u8],
+        index_slice: &[u8],
+        data: &MeshUploadData,
+        vc_usize: usize,
+        vertex_stride_us: usize,
+        demand: MeshDerivedStreamDemand,
+    ) -> DerivedStreamJobResult {
+        match self {
+            Self::PositionNormal => DerivedStreamJobResult::PositionNormal(
+                extract_float3_position_normal_as_vec4_streams(
+                    vertex_slice,
+                    vc_usize,
+                    vertex_stride_us,
+                    &data.vertex_attributes,
+                ),
+            ),
+            Self::Uv0 => DerivedStreamJobResult::Uv0(uv0_float2_stream_bytes(
+                vertex_slice,
+                vc_usize,
+                vertex_stride_us,
+                &data.vertex_attributes,
+            )),
+            Self::Color => DerivedStreamJobResult::Color(color_float4_stream_bytes(
+                vertex_slice,
+                vc_usize,
+                vertex_stride_us,
+                &data.vertex_attributes,
+            )),
+            Self::Tangent => DerivedStreamJobResult::Tangent(tangent_stream_bytes(
+                tangent_source(vertex_slice, index_slice, data, vc_usize, vertex_stride_us),
+                demand.tangent_fallback_mode.generate_missing(),
+            )),
+            Self::RawTangent => {
+                DerivedStreamJobResult::RawTangent(raw_tangent_payload_stream_bytes(
+                    tangent_source(vertex_slice, index_slice, data, vc_usize, vertex_stride_us),
+                ))
+            }
+            Self::Uv1 => DerivedStreamJobResult::Uv1(vertex_float2_stream_bytes(
+                vertex_slice,
+                vc_usize,
+                vertex_stride_us,
+                &data.vertex_attributes,
+                VertexAttributeType::UV1,
+            )),
+            Self::Uv2 => DerivedStreamJobResult::Uv2(vertex_float2_stream_bytes(
+                vertex_slice,
+                vc_usize,
+                vertex_stride_us,
+                &data.vertex_attributes,
+                VertexAttributeType::UV2,
+            )),
+            Self::Uv3 => DerivedStreamJobResult::Uv3(vertex_float2_stream_bytes(
+                vertex_slice,
+                vc_usize,
+                vertex_stride_us,
+                &data.vertex_attributes,
+                VertexAttributeType::UV3,
+            )),
+            Self::WideUv => DerivedStreamJobResult::WideUv(wide_uv_stream_bytes(
+                vertex_slice,
+                vc_usize,
+                vertex_stride_us,
+                &data.vertex_attributes,
+            )),
+        }
+    }
+}
+
+impl PreparedDerivedStreams {
+    fn apply_job_result(&mut self, result: DerivedStreamJobResult) {
+        match result {
+            DerivedStreamJobResult::PositionNormal(Some((positions, normals))) => {
+                self.positions = Some(positions);
+                self.normals = Some(normals);
+            }
+            DerivedStreamJobResult::PositionNormal(None) => {}
+            DerivedStreamJobResult::Uv0(bytes) => self.uv0 = bytes,
+            DerivedStreamJobResult::Color(bytes) => self.color = bytes,
+            DerivedStreamJobResult::Tangent(bytes) => self.tangent = bytes,
+            DerivedStreamJobResult::RawTangent(bytes) => self.raw_tangent = bytes,
+            DerivedStreamJobResult::Uv1(bytes) => self.uv1 = bytes,
+            DerivedStreamJobResult::Uv2(bytes) => self.uv2 = bytes,
+            DerivedStreamJobResult::Uv3(bytes) => self.uv3 = bytes,
+            DerivedStreamJobResult::WideUv(bytes) => self.wide_uv = bytes,
+        }
+    }
+}
+
 impl DerivedStreams {
     pub(super) fn available_mask(&self) -> MeshDerivedStreamMask {
         let mut mask = MeshDerivedStreamMask::EMPTY;
@@ -163,88 +284,78 @@ pub(crate) fn prepare_derived_stream_bytes(
     let index_slice =
         &raw[layout.index_buffer_start..layout.index_buffer_start + layout.index_buffer_length];
     let mut prepared = PreparedDerivedStreams::default();
+    let mut jobs = Vec::with_capacity(9);
 
     if demand
         .mask
         .intersects(MeshDerivedStreamMask::POSITION | MeshDerivedStreamMask::NORMAL)
-        && let Some((positions, normals)) = extract_float3_position_normal_as_vec4_streams(
-            vertex_slice,
-            vc_usize,
-            vertex_stride_us,
-            &data.vertex_attributes,
-        )
     {
-        prepared.positions = Some(positions);
-        prepared.normals = Some(normals);
+        jobs.push(DerivedStreamJob::PositionNormal);
     }
     if demand.mask.contains(MeshDerivedStreamMask::UV0) {
-        prepared.uv0 = uv0_float2_stream_bytes(
-            vertex_slice,
-            vc_usize,
-            vertex_stride_us,
-            &data.vertex_attributes,
-        );
+        jobs.push(DerivedStreamJob::Uv0);
     }
     if demand.mask.contains(MeshDerivedStreamMask::COLOR) {
-        prepared.color = color_float4_stream_bytes(
-            vertex_slice,
-            vc_usize,
-            vertex_stride_us,
-            &data.vertex_attributes,
-        );
+        jobs.push(DerivedStreamJob::Color);
     }
-    let tangent_source = || TangentStreamSource {
-        vertex_data: vertex_slice,
-        index_data: index_slice,
-        vertex_count: vc_usize,
-        stride: vertex_stride_us,
-        attrs: &data.vertex_attributes,
-        index_format: data.index_buffer_format,
-        submeshes: &data.submeshes,
-    };
     if demand.mask.contains(MeshDerivedStreamMask::TANGENT) {
-        prepared.tangent = tangent_stream_bytes(
-            tangent_source(),
-            demand.tangent_fallback_mode.generate_missing(),
-        );
+        jobs.push(DerivedStreamJob::Tangent);
     }
     if demand.mask.contains(MeshDerivedStreamMask::RAW_TANGENT) {
-        prepared.raw_tangent = raw_tangent_payload_stream_bytes(tangent_source());
+        jobs.push(DerivedStreamJob::RawTangent);
     }
     if demand.mask.contains(MeshDerivedStreamMask::UV1) {
-        prepared.uv1 = vertex_float2_stream_bytes(
-            vertex_slice,
-            vc_usize,
-            vertex_stride_us,
-            &data.vertex_attributes,
-            VertexAttributeType::UV1,
-        );
+        jobs.push(DerivedStreamJob::Uv1);
     }
     if demand.mask.contains(MeshDerivedStreamMask::UV2) {
-        prepared.uv2 = vertex_float2_stream_bytes(
-            vertex_slice,
-            vc_usize,
-            vertex_stride_us,
-            &data.vertex_attributes,
-            VertexAttributeType::UV2,
-        );
+        jobs.push(DerivedStreamJob::Uv2);
     }
     if demand.mask.contains(MeshDerivedStreamMask::UV3) {
-        prepared.uv3 = vertex_float2_stream_bytes(
-            vertex_slice,
-            vc_usize,
-            vertex_stride_us,
-            &data.vertex_attributes,
-            VertexAttributeType::UV3,
-        );
+        jobs.push(DerivedStreamJob::Uv3);
     }
     if demand.mask.contains(MeshDerivedStreamMask::WIDE_UV) {
-        prepared.wide_uv = wide_uv_stream_bytes(
-            vertex_slice,
-            vc_usize,
-            vertex_stride_us,
-            &data.vertex_attributes,
-        );
+        jobs.push(DerivedStreamJob::WideUv);
+    }
+
+    let admission = admit_mesh_stream_jobs(jobs.len(), vc_usize, current_reference_worker_count());
+    record_parallel_admission(
+        "mesh_prepare_derived_streams",
+        vc_usize,
+        jobs.len(),
+        admission,
+    );
+    let results = if let Some(chunk_size) = admission.chunk_size() {
+        jobs.par_iter()
+            .copied()
+            .with_min_len(chunk_size)
+            .map(|job| {
+                job.compute(
+                    vertex_slice,
+                    index_slice,
+                    data,
+                    vc_usize,
+                    vertex_stride_us,
+                    demand,
+                )
+            })
+            .collect::<Vec<_>>()
+    } else {
+        jobs.iter()
+            .copied()
+            .map(|job| {
+                job.compute(
+                    vertex_slice,
+                    index_slice,
+                    data,
+                    vc_usize,
+                    vertex_stride_us,
+                    demand,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    for result in results {
+        prepared.apply_job_result(result);
     }
 
     #[cfg(feature = "tracy")]
@@ -255,6 +366,24 @@ pub(crate) fn prepare_derived_stream_bytes(
         );
     }
     prepared
+}
+
+fn tangent_source<'a>(
+    vertex_slice: &'a [u8],
+    index_slice: &'a [u8],
+    data: &'a MeshUploadData,
+    vc_usize: usize,
+    vertex_stride_us: usize,
+) -> TangentStreamSource<'a> {
+    TangentStreamSource {
+        vertex_data: vertex_slice,
+        index_data: index_slice,
+        vertex_count: vc_usize,
+        stride: vertex_stride_us,
+        attrs: &data.vertex_attributes,
+        index_format: data.index_buffer_format,
+        submeshes: &data.submeshes,
+    }
 }
 
 #[cfg(feature = "tracy")]

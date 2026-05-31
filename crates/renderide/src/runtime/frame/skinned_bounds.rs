@@ -1,7 +1,11 @@
 //! Host writeback for skinned mesh realtime bounds rows requested during frame submit.
 
 use glam::{Mat4, Vec3};
+use rayon::prelude::*;
 
+use crate::cpu_parallelism::{
+    admit_renderable_update_items, current_reference_worker_count, record_parallel_admission,
+};
 use crate::gpu_pools::MeshPool;
 use crate::ipc::SharedMemoryAccessor;
 use crate::scene::{RenderSpaceId, SceneCoordinator};
@@ -96,7 +100,40 @@ pub(super) fn answer_skinned_realtime_bounds(
             "skinned realtime_bounds_updates scene_id={}",
             space_update.id
         );
-        let result = shm
+        let rows = match shm
+            .access_copy_memory_packable_rows_until_with_max::<SkinnedMeshRealtimeBoundsUpdate, _>(
+                &update.realtime_bounds_updates,
+                SKINNED_MESH_REALTIME_BOUNDS_UPDATE_HOST_ROW_BYTES,
+                SharedMemoryAccessor::MAX_ACCESS_COPY_BYTES,
+                Some(&ctx),
+                |row| row.renderable_index < 0,
+            ) {
+            Ok(rows) => rows,
+            Err(err) => {
+                report.shared_memory_failures = report.shared_memory_failures.saturating_add(1);
+                logger::warn!(
+                    "failed to read skinned realtime bounds for scene_id={}: {}",
+                    space_update.id,
+                    err
+                );
+                continue;
+            }
+        };
+
+        let active_rows = rows
+            .iter()
+            .take_while(|row| row.renderable_index >= 0)
+            .count();
+        if active_rows == 0 {
+            continue;
+        }
+        let answers =
+            resolve_realtime_bounds_rows(scene, mesh_pool, space_id, &rows[..active_rows]);
+        for answer in &answers {
+            record_realtime_bounds_answer(&mut report, *answer);
+        }
+        let mut write_index = 0usize;
+        let write_result = shm
             .access_mut_memory_packable_rows_until_with_max::<SkinnedMeshRealtimeBoundsUpdate, _>(
                 &update.realtime_bounds_updates,
                 SKINNED_MESH_REALTIME_BOUNDS_UPDATE_HOST_ROW_BYTES,
@@ -106,47 +143,79 @@ pub(super) fn answer_skinned_realtime_bounds(
                     if row.renderable_index < 0 {
                         return true;
                     }
-                    report.rows_requested = report.rows_requested.saturating_add(1);
-                    let resolved = resolve_row_bounds(
-                        scene,
-                        mesh_pool,
-                        space_id,
-                        row.renderable_index as usize,
-                    );
-                    row.computed_global_bounds = resolved.bounds;
-                    report.rows_answered = report.rows_answered.saturating_add(1);
-                    match resolved.fallback {
-                        None => {}
-                        Some(BoundsFallbackReason::MissingRenderer) => {
-                            report.fallback_rows = report.fallback_rows.saturating_add(1);
-                            report.missing_renderers = report.missing_renderers.saturating_add(1);
-                        }
-                        Some(BoundsFallbackReason::MissingMesh) => {
-                            report.fallback_rows = report.fallback_rows.saturating_add(1);
-                            report.missing_meshes = report.missing_meshes.saturating_add(1);
-                        }
-                        Some(BoundsFallbackReason::MissingTransform) => {
-                            report.fallback_rows = report.fallback_rows.saturating_add(1);
-                            report.missing_transforms = report.missing_transforms.saturating_add(1);
-                        }
-                        Some(BoundsFallbackReason::InvalidBounds) => {
-                            report.fallback_rows = report.fallback_rows.saturating_add(1);
-                            report.invalid_bounds = report.invalid_bounds.saturating_add(1);
-                        }
+                    if let Some(answer) = answers.get(write_index) {
+                        row.computed_global_bounds = answer.bounds;
                     }
+                    write_index = write_index.saturating_add(1);
                     false
                 },
             );
-        if let Err(err) = result {
+        if let Err(err) = write_result {
             report.shared_memory_failures = report.shared_memory_failures.saturating_add(1);
             logger::warn!(
-                "failed to answer skinned realtime bounds for scene_id={}: {}",
+                "failed to write skinned realtime bounds for scene_id={}: {}",
                 space_update.id,
                 err
             );
         }
     }
     report
+}
+
+fn resolve_realtime_bounds_rows(
+    scene: &SceneCoordinator,
+    mesh_pool: &MeshPool,
+    space_id: RenderSpaceId,
+    rows: &[SkinnedMeshRealtimeBoundsUpdate],
+) -> Vec<ResolvedRealtimeBounds> {
+    let admission = admit_renderable_update_items(rows.len(), current_reference_worker_count());
+    record_parallel_admission(
+        "skinned_realtime_bounds_resolve",
+        rows.len(),
+        rows.len(),
+        admission,
+    );
+    if let Some(chunk_size) = admission.chunk_size() {
+        rows.par_iter()
+            .with_min_len(chunk_size)
+            .map(|row| {
+                resolve_row_bounds(scene, mesh_pool, space_id, row.renderable_index as usize)
+            })
+            .collect()
+    } else {
+        rows.iter()
+            .map(|row| {
+                resolve_row_bounds(scene, mesh_pool, space_id, row.renderable_index as usize)
+            })
+            .collect()
+    }
+}
+
+fn record_realtime_bounds_answer(
+    report: &mut SkinnedRealtimeBoundsReport,
+    resolved: ResolvedRealtimeBounds,
+) {
+    report.rows_requested = report.rows_requested.saturating_add(1);
+    report.rows_answered = report.rows_answered.saturating_add(1);
+    match resolved.fallback {
+        None => {}
+        Some(BoundsFallbackReason::MissingRenderer) => {
+            report.fallback_rows = report.fallback_rows.saturating_add(1);
+            report.missing_renderers = report.missing_renderers.saturating_add(1);
+        }
+        Some(BoundsFallbackReason::MissingMesh) => {
+            report.fallback_rows = report.fallback_rows.saturating_add(1);
+            report.missing_meshes = report.missing_meshes.saturating_add(1);
+        }
+        Some(BoundsFallbackReason::MissingTransform) => {
+            report.fallback_rows = report.fallback_rows.saturating_add(1);
+            report.missing_transforms = report.missing_transforms.saturating_add(1);
+        }
+        Some(BoundsFallbackReason::InvalidBounds) => {
+            report.fallback_rows = report.fallback_rows.saturating_add(1);
+            report.invalid_bounds = report.invalid_bounds.saturating_add(1);
+        }
+    }
 }
 
 /// Result of resolving one realtime bounds request.

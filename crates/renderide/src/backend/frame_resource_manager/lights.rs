@@ -1,6 +1,12 @@
 //! Light preparation and per-view light access for [`FrameResourceManager`].
 
+use rayon::prelude::*;
+
 use crate::camera::ViewId;
+use crate::cpu_parallelism::{
+    LIGHT_WORK_PARALLEL_MIN_LIGHTS, admit_coarse_space_items, current_reference_worker_count,
+    record_parallel_admission,
+};
 use crate::render_graph::GraphAssetResources;
 use crate::scene::{
     RenderSpaceId, ResolvedLight, SceneCoordinator, light_contributes,
@@ -96,7 +102,6 @@ impl FrameResourceManager {
         self.light_scratch.clear();
         self.signed_scene_color_required = false;
         let packets = if should_parallelize_light_view_prep(scene, &views) {
-            use rayon::prelude::*;
             profiling::scope!("render::prepare_lights_for_views::parallel");
             views
                 .par_iter()
@@ -250,12 +255,47 @@ fn resolve_lights_for_space_ids(
         return;
     }
     profiling::scope!("render::prepare_lights::resolve_spaces");
-    for &id in light_space_ids {
-        scene.resolve_lights_for_render_context_into(
-            id,
-            desc.render_context,
-            desc.head_output_transform,
-            out,
-        );
+    let candidate_lights = light_space_ids
+        .iter()
+        .map(|&id| scene.candidate_light_count_for_render_space_filter(Some(id)))
+        .sum::<usize>();
+    let admission = if candidate_lights >= LIGHT_WORK_PARALLEL_MIN_LIGHTS {
+        admit_coarse_space_items(light_space_ids.len(), current_reference_worker_count())
+    } else {
+        crate::cpu_parallelism::ParallelAdmission::Serial
+    };
+    record_parallel_admission(
+        "light_space_resolve",
+        candidate_lights,
+        light_space_ids.len(),
+        admission,
+    );
+    if let Some(chunk_size) = admission.chunk_size() {
+        let packets = light_space_ids
+            .par_iter()
+            .with_min_len(chunk_size)
+            .map(|&id| {
+                let mut resolved = Vec::new();
+                scene.resolve_lights_for_render_context_into(
+                    id,
+                    desc.render_context,
+                    desc.head_output_transform,
+                    &mut resolved,
+                );
+                resolved
+            })
+            .collect::<Vec<_>>();
+        for mut packet in packets {
+            out.append(&mut packet);
+        }
+    } else {
+        for &id in light_space_ids {
+            scene.resolve_lights_for_render_context_into(
+                id,
+                desc.render_context,
+                desc.head_output_transform,
+                out,
+            );
+        }
     }
 }

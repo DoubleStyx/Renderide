@@ -2,8 +2,12 @@
 
 use std::sync::Arc;
 
+use rayon::prelude::*;
 use wgpu::util::DeviceExt;
 
+use crate::cpu_parallelism::{
+    admit_mesh_stream_jobs, current_reference_worker_count, record_parallel_admission,
+};
 use crate::shared::{
     IndexBufferFormat, SubmeshBufferDescriptor, VertexAttributeDescriptor, VertexAttributeType,
 };
@@ -91,6 +95,142 @@ fn float2_zero_stream_bytes(vertex_count: usize) -> Vec<u8> {
 
 fn wide_uv_zero_stream_bytes(vertex_count: usize) -> Vec<u8> {
     vec![0u8; vertex_count * WIDE_UV_VERTEX_STRIDE_BYTES]
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ExtendedStreamJob {
+    Tangent,
+    Uv1,
+    Uv2,
+    Uv3,
+}
+
+enum ExtendedStreamJobResult {
+    Tangent(Vec<u8>),
+    Uv1(Vec<u8>),
+    Uv2(Vec<u8>),
+    Uv3(Vec<u8>),
+}
+
+impl ExtendedStreamJob {
+    fn compute(
+        self,
+        source: &ExtendedVertexUploadSource<'_>,
+        generate_missing_tangents: bool,
+    ) -> ExtendedStreamJobResult {
+        match self {
+            Self::Tangent => ExtendedStreamJobResult::Tangent(
+                tangent_stream_bytes(source.tangent_source(), generate_missing_tangents)
+                    .unwrap_or_else(|| {
+                        float4_default_stream_bytes(source.vertex_count, [1.0, 0.0, 0.0, 1.0])
+                    }),
+            ),
+            Self::Uv1 => {
+                ExtendedStreamJobResult::Uv1(extended_uv_bytes(source, VertexAttributeType::UV1))
+            }
+            Self::Uv2 => {
+                ExtendedStreamJobResult::Uv2(extended_uv_bytes(source, VertexAttributeType::UV2))
+            }
+            Self::Uv3 => {
+                ExtendedStreamJobResult::Uv3(extended_uv_bytes(source, VertexAttributeType::UV3))
+            }
+        }
+    }
+}
+
+fn extended_uv_bytes(
+    source: &ExtendedVertexUploadSource<'_>,
+    target: VertexAttributeType,
+) -> Vec<u8> {
+    vertex_float2_stream_bytes(
+        source.vertex_slice,
+        source.vertex_count,
+        source.vertex_stride,
+        source.vertex_attributes,
+        target,
+    )
+    .unwrap_or_else(|| float2_zero_stream_bytes(source.vertex_count))
+}
+
+fn compute_extended_stream_bytes(
+    source: &ExtendedVertexUploadSource<'_>,
+    generate_missing_tangents: bool,
+) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
+    let jobs = [
+        ExtendedStreamJob::Tangent,
+        ExtendedStreamJob::Uv1,
+        ExtendedStreamJob::Uv2,
+        ExtendedStreamJob::Uv3,
+    ];
+    let admission = admit_mesh_stream_jobs(
+        jobs.len(),
+        source.vertex_count,
+        current_reference_worker_count(),
+    );
+    record_parallel_admission(
+        "mesh_lazy_extended_streams",
+        source.vertex_count,
+        jobs.len(),
+        admission,
+    );
+    let results = if let Some(chunk_size) = admission.chunk_size() {
+        jobs.par_iter()
+            .copied()
+            .with_min_len(chunk_size)
+            .map(|job| job.compute(source, generate_missing_tangents))
+            .collect::<Vec<_>>()
+    } else {
+        jobs.iter()
+            .copied()
+            .map(|job| job.compute(source, generate_missing_tangents))
+            .collect::<Vec<_>>()
+    };
+
+    let mut tangent = Vec::new();
+    let mut uv1 = Vec::new();
+    let mut uv2 = Vec::new();
+    let mut uv3 = Vec::new();
+    for result in results {
+        match result {
+            ExtendedStreamJobResult::Tangent(bytes) => tangent = bytes,
+            ExtendedStreamJobResult::Uv1(bytes) => uv1 = bytes,
+            ExtendedStreamJobResult::Uv2(bytes) => uv2 = bytes,
+            ExtendedStreamJobResult::Uv3(bytes) => uv3 = bytes,
+        }
+    }
+    (tangent, uv1, uv2, uv3)
+}
+
+fn compute_default_extended_stream_bytes(
+    vertex_count: usize,
+) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
+    let jobs = [0usize, 1, 2, 3];
+    let admission =
+        admit_mesh_stream_jobs(jobs.len(), vertex_count, current_reference_worker_count());
+    record_parallel_admission(
+        "mesh_default_extended_streams",
+        vertex_count,
+        jobs.len(),
+        admission,
+    );
+    let compute = |job| match job {
+        0 => float4_default_stream_bytes(vertex_count, [1.0, 0.0, 0.0, 1.0]),
+        _ => float2_zero_stream_bytes(vertex_count),
+    };
+    let mut results = if let Some(chunk_size) = admission.chunk_size() {
+        jobs.par_iter()
+            .copied()
+            .with_min_len(chunk_size)
+            .map(compute)
+            .collect::<Vec<_>>()
+    } else {
+        jobs.iter().copied().map(compute).collect::<Vec<_>>()
+    };
+    let uv3 = results.pop().unwrap_or_default();
+    let uv2 = results.pop().unwrap_or_default();
+    let uv1 = results.pop().unwrap_or_default();
+    let tangent = results.pop().unwrap_or_default();
+    (tangent, uv1, uv2, uv3)
 }
 
 #[inline]
@@ -241,20 +381,8 @@ pub(in crate::assets::mesh::gpu_mesh) fn upload_extended_vertex_streams(
         return (None, None, None, None);
     }
 
-    let tangent_bytes = tangent_stream_bytes(source.tangent_source(), generate_missing_tangents)
-        .unwrap_or_else(|| float4_default_stream_bytes(vc_usize, [1.0, 0.0, 0.0, 1.0]));
-
-    let make_uv = |target: VertexAttributeType, label: &str| {
-        let bytes = vertex_float2_stream_bytes(
-            source.vertex_slice,
-            vc_usize,
-            source.vertex_stride,
-            source.vertex_attributes,
-            target,
-        )
-        .unwrap_or_else(|| float2_zero_stream_bytes(vc_usize));
-        create_vertex_stream_buffer(device, asset_id, label, &bytes)
-    };
+    let (tangent_bytes, uv1_bytes, uv2_bytes, uv3_bytes) =
+        compute_extended_stream_bytes(&source, generate_missing_tangents);
 
     (
         Some(create_tangent_stream_buffer(
@@ -262,9 +390,15 @@ pub(in crate::assets::mesh::gpu_mesh) fn upload_extended_vertex_streams(
             asset_id,
             &tangent_bytes,
         )),
-        Some(make_uv(VertexAttributeType::UV1, "uv1")),
-        Some(make_uv(VertexAttributeType::UV2, "uv2")),
-        Some(make_uv(VertexAttributeType::UV3, "uv3")),
+        Some(create_vertex_stream_buffer(
+            device, asset_id, "uv1", &uv1_bytes,
+        )),
+        Some(create_vertex_stream_buffer(
+            device, asset_id, "uv2", &uv2_bytes,
+        )),
+        Some(create_vertex_stream_buffer(
+            device, asset_id, "uv3", &uv3_bytes,
+        )),
     )
 }
 
@@ -428,8 +562,8 @@ pub(in crate::assets::mesh::gpu_mesh) fn upload_default_extended_vertex_streams(
     if vc_usize == 0 {
         return (None, None, None, None);
     }
-    let tangent_bytes = float4_default_stream_bytes(vc_usize, [1.0, 0.0, 0.0, 1.0]);
-    let uv_bytes = float2_zero_stream_bytes(vc_usize);
+    let (tangent_bytes, uv1_bytes, uv2_bytes, uv3_bytes) =
+        compute_default_extended_stream_bytes(vc_usize);
     (
         Some(create_tangent_stream_buffer(
             device,
@@ -437,13 +571,13 @@ pub(in crate::assets::mesh::gpu_mesh) fn upload_default_extended_vertex_streams(
             &tangent_bytes,
         )),
         Some(create_vertex_stream_buffer(
-            device, asset_id, "uv1", &uv_bytes,
+            device, asset_id, "uv1", &uv1_bytes,
         )),
         Some(create_vertex_stream_buffer(
-            device, asset_id, "uv2", &uv_bytes,
+            device, asset_id, "uv2", &uv2_bytes,
         )),
         Some(create_vertex_stream_buffer(
-            device, asset_id, "uv3", &uv_bytes,
+            device, asset_id, "uv3", &uv3_bytes,
         )),
     )
 }

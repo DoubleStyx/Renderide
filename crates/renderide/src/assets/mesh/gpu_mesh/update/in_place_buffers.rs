@@ -1,6 +1,14 @@
 //! Buffer compatibility checks and queue writes used by in-place mesh updates.
 
-use crate::shared::{MeshUploadData, VertexAttributeType};
+use rayon::prelude::*;
+
+use crate::cpu_parallelism::{
+    admit_mesh_stream_jobs, current_reference_worker_count, record_parallel_admission,
+};
+use crate::shared::{
+    IndexBufferFormat, MeshUploadData, SubmeshBufferDescriptor, VertexAttributeDescriptor,
+    VertexAttributeType,
+};
 
 use super::super::super::layout::{
     MeshBufferLayout, color_float4_stream_bytes, extract_bind_poses, extract_blendshape_offsets,
@@ -160,6 +168,117 @@ pub(super) struct MeshInPlaceWriteContext<'a> {
     pub(super) demand_mask: MeshDerivedStreamMask,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum InPlaceDerivedStreamJob {
+    PositionNormal,
+    Uv0,
+    Color,
+    WideUv,
+    Tangent,
+    RawTangent,
+    Uv1,
+    Uv2,
+    Uv3,
+}
+
+enum InPlaceDerivedStreamResult {
+    PositionNormal(Option<(Vec<u8>, Vec<u8>)>),
+    Uv0(Option<Vec<u8>>),
+    Color(Option<Vec<u8>>),
+    WideUv(Option<Vec<u8>>),
+    Tangent(Option<Vec<u8>>),
+    RawTangent(Option<Vec<u8>>),
+    Uv1(Option<Vec<u8>>),
+    Uv2(Option<Vec<u8>>),
+    Uv3(Option<Vec<u8>>),
+}
+
+struct InPlaceDerivedStreamSource<'a> {
+    vertex_slice: &'a [u8],
+    index_slice: &'a [u8],
+    vertex_count: usize,
+    vertex_stride: usize,
+    vertex_attributes: &'a [VertexAttributeDescriptor],
+    index_format: IndexBufferFormat,
+    submeshes: &'a [SubmeshBufferDescriptor],
+    generate_missing_tangents: bool,
+}
+
+impl InPlaceDerivedStreamJob {
+    fn compute(self, source: &InPlaceDerivedStreamSource<'_>) -> InPlaceDerivedStreamResult {
+        match self {
+            Self::PositionNormal => InPlaceDerivedStreamResult::PositionNormal(
+                extract_float3_position_normal_as_vec4_streams(
+                    source.vertex_slice,
+                    source.vertex_count,
+                    source.vertex_stride,
+                    source.vertex_attributes,
+                ),
+            ),
+            Self::Uv0 => InPlaceDerivedStreamResult::Uv0(uv0_float2_stream_bytes(
+                source.vertex_slice,
+                source.vertex_count,
+                source.vertex_stride,
+                source.vertex_attributes,
+            )),
+            Self::Color => InPlaceDerivedStreamResult::Color(color_float4_stream_bytes(
+                source.vertex_slice,
+                source.vertex_count,
+                source.vertex_stride,
+                source.vertex_attributes,
+            )),
+            Self::WideUv => InPlaceDerivedStreamResult::WideUv(wide_uv_stream_bytes(
+                source.vertex_slice,
+                source.vertex_count,
+                source.vertex_stride,
+                source.vertex_attributes,
+            )),
+            Self::Tangent => InPlaceDerivedStreamResult::Tangent(tangent_stream_bytes(
+                in_place_tangent_source(source),
+                source.generate_missing_tangents,
+            )),
+            Self::RawTangent => InPlaceDerivedStreamResult::RawTangent(
+                raw_tangent_payload_stream_bytes(in_place_tangent_source(source)),
+            ),
+            Self::Uv1 => InPlaceDerivedStreamResult::Uv1(vertex_float2_stream_bytes(
+                source.vertex_slice,
+                source.vertex_count,
+                source.vertex_stride,
+                source.vertex_attributes,
+                VertexAttributeType::UV1,
+            )),
+            Self::Uv2 => InPlaceDerivedStreamResult::Uv2(vertex_float2_stream_bytes(
+                source.vertex_slice,
+                source.vertex_count,
+                source.vertex_stride,
+                source.vertex_attributes,
+                VertexAttributeType::UV2,
+            )),
+            Self::Uv3 => InPlaceDerivedStreamResult::Uv3(vertex_float2_stream_bytes(
+                source.vertex_slice,
+                source.vertex_count,
+                source.vertex_stride,
+                source.vertex_attributes,
+                VertexAttributeType::UV3,
+            )),
+        }
+    }
+}
+
+fn in_place_tangent_source<'a>(
+    source: &'a InPlaceDerivedStreamSource<'_>,
+) -> TangentStreamSource<'a> {
+    TangentStreamSource {
+        vertex_data: source.vertex_slice,
+        index_data: source.index_slice,
+        vertex_count: source.vertex_count,
+        stride: source.vertex_stride,
+        attrs: source.vertex_attributes,
+        index_format: source.index_format,
+        submeshes: source.submeshes,
+    }
+}
+
 /// Writes interleaved VB then optional derived position/normal/uv/color streams.
 pub(super) fn write_in_place_vertex_and_derived_streams(
     ctx: &MeshInPlaceWriteContext<'_>,
@@ -180,6 +299,9 @@ pub(super) fn write_in_place_vertex_and_derived_streams(
     }
     let vertex_slice = &ctx.raw[..ctx.layout.vertex_size];
     if !write_vertex && !write_index {
+        return;
+    }
+    if try_write_in_place_derived_streams_parallel(ctx, vertex_slice, write_vertex) {
         return;
     }
     if write_vertex {
@@ -241,6 +363,157 @@ pub(super) fn write_in_place_vertex_and_derived_streams(
         MeshDerivedStreamMask::UV1 | MeshDerivedStreamMask::UV2 | MeshDerivedStreamMask::UV3,
     ) {
         write_in_place_uv1_to_uv3_streams(ctx, vertex_slice);
+    }
+}
+
+fn try_write_in_place_derived_streams_parallel(
+    ctx: &MeshInPlaceWriteContext<'_>,
+    vertex_slice: &[u8],
+    write_vertex: bool,
+) -> bool {
+    let mut jobs = Vec::with_capacity(9);
+    if write_vertex {
+        if ctx
+            .demand_mask
+            .intersects(MeshDerivedStreamMask::POSITION | MeshDerivedStreamMask::NORMAL)
+            && ctx.mesh.positions_buffer.is_some()
+            && ctx.mesh.normals_buffer.is_some()
+        {
+            jobs.push(InPlaceDerivedStreamJob::PositionNormal);
+        }
+        if ctx.demand_mask.contains(MeshDerivedStreamMask::UV0) && ctx.mesh.uv0_buffer.is_some() {
+            jobs.push(InPlaceDerivedStreamJob::Uv0);
+        }
+        if ctx.demand_mask.contains(MeshDerivedStreamMask::COLOR) && ctx.mesh.color_buffer.is_some()
+        {
+            jobs.push(InPlaceDerivedStreamJob::Color);
+        }
+        if ctx.demand_mask.contains(MeshDerivedStreamMask::WIDE_UV)
+            && ctx.mesh.wide_uv_buffer.is_some()
+        {
+            jobs.push(InPlaceDerivedStreamJob::WideUv);
+        }
+    }
+    if ctx.demand_mask.contains(MeshDerivedStreamMask::TANGENT) && ctx.mesh.tangent_buffer.is_some()
+    {
+        jobs.push(InPlaceDerivedStreamJob::Tangent);
+    }
+    if ctx.demand_mask.contains(MeshDerivedStreamMask::RAW_TANGENT)
+        && ctx.mesh.raw_tangent_buffer.is_some()
+    {
+        jobs.push(InPlaceDerivedStreamJob::RawTangent);
+    }
+    if write_vertex {
+        if ctx.demand_mask.contains(MeshDerivedStreamMask::UV1) && ctx.mesh.uv1_buffer.is_some() {
+            jobs.push(InPlaceDerivedStreamJob::Uv1);
+        }
+        if ctx.demand_mask.contains(MeshDerivedStreamMask::UV2) && ctx.mesh.uv2_buffer.is_some() {
+            jobs.push(InPlaceDerivedStreamJob::Uv2);
+        }
+        if ctx.demand_mask.contains(MeshDerivedStreamMask::UV3) && ctx.mesh.uv3_buffer.is_some() {
+            jobs.push(InPlaceDerivedStreamJob::Uv3);
+        }
+    }
+    let admission = admit_mesh_stream_jobs(
+        jobs.len(),
+        ctx.vertex_count,
+        current_reference_worker_count(),
+    );
+    record_parallel_admission(
+        "mesh_write_in_place_derived_streams",
+        ctx.vertex_count,
+        jobs.len(),
+        admission,
+    );
+    let Some(chunk_size) = admission.chunk_size() else {
+        return false;
+    };
+    let source = InPlaceDerivedStreamSource {
+        vertex_slice,
+        index_slice: &ctx.raw[ctx.layout.index_buffer_start
+            ..ctx.layout.index_buffer_start + ctx.layout.index_buffer_length],
+        vertex_count: ctx.vertex_count,
+        vertex_stride: ctx.vertex_stride,
+        vertex_attributes: &ctx.data.vertex_attributes,
+        index_format: ctx.data.index_buffer_format,
+        submeshes: &ctx.data.submeshes,
+        generate_missing_tangents: ctx.mesh.tangent_fallback_mode.generate_missing(),
+    };
+    let results = jobs
+        .par_iter()
+        .copied()
+        .with_min_len(chunk_size)
+        .map(|job| job.compute(&source))
+        .collect::<Vec<_>>();
+    for result in results {
+        write_in_place_derived_stream_result(ctx, result);
+    }
+    true
+}
+
+fn write_in_place_derived_stream_result(
+    ctx: &MeshInPlaceWriteContext<'_>,
+    result: InPlaceDerivedStreamResult,
+) {
+    match result {
+        InPlaceDerivedStreamResult::PositionNormal(Some((positions, normals))) => {
+            if let (Some(pb), Some(nb)) = (
+                ctx.mesh.positions_buffer.as_ref(),
+                ctx.mesh.normals_buffer.as_ref(),
+            ) {
+                write_mesh_upload_buffer(ctx.upload_sink, pb.as_ref(), 0, &positions);
+                write_mesh_upload_buffer(ctx.upload_sink, nb.as_ref(), 0, &normals);
+            }
+        }
+        InPlaceDerivedStreamResult::PositionNormal(None) => {}
+        InPlaceDerivedStreamResult::Uv0(Some(bytes)) => {
+            if let Some(buffer) = ctx.mesh.uv0_buffer.as_ref() {
+                write_mesh_upload_buffer(ctx.upload_sink, buffer.as_ref(), 0, &bytes);
+            }
+        }
+        InPlaceDerivedStreamResult::Uv0(None) => {}
+        InPlaceDerivedStreamResult::Color(Some(bytes)) => {
+            if let Some(buffer) = ctx.mesh.color_buffer.as_ref() {
+                write_mesh_upload_buffer(ctx.upload_sink, buffer.as_ref(), 0, &bytes);
+            }
+        }
+        InPlaceDerivedStreamResult::Color(None) => {}
+        InPlaceDerivedStreamResult::WideUv(Some(bytes)) => {
+            if let Some(buffer) = ctx.mesh.wide_uv_buffer.as_ref() {
+                write_mesh_upload_buffer(ctx.upload_sink, buffer.as_ref(), 0, &bytes);
+            }
+        }
+        InPlaceDerivedStreamResult::WideUv(None) => {}
+        InPlaceDerivedStreamResult::Tangent(Some(bytes)) => {
+            if let Some(buffer) = ctx.mesh.tangent_buffer.as_ref() {
+                write_mesh_upload_buffer(ctx.upload_sink, buffer.as_ref(), 0, &bytes);
+            }
+        }
+        InPlaceDerivedStreamResult::Tangent(None) => {}
+        InPlaceDerivedStreamResult::RawTangent(Some(bytes)) => {
+            if let Some(buffer) = ctx.mesh.raw_tangent_buffer.as_ref() {
+                write_mesh_upload_buffer(ctx.upload_sink, buffer.as_ref(), 0, &bytes);
+            }
+        }
+        InPlaceDerivedStreamResult::RawTangent(None) => {}
+        InPlaceDerivedStreamResult::Uv1(Some(bytes)) => {
+            if let Some(buffer) = ctx.mesh.uv1_buffer.as_ref() {
+                write_mesh_upload_buffer(ctx.upload_sink, buffer.as_ref(), 0, &bytes);
+            }
+        }
+        InPlaceDerivedStreamResult::Uv1(None) => {}
+        InPlaceDerivedStreamResult::Uv2(Some(bytes)) => {
+            if let Some(buffer) = ctx.mesh.uv2_buffer.as_ref() {
+                write_mesh_upload_buffer(ctx.upload_sink, buffer.as_ref(), 0, &bytes);
+            }
+        }
+        InPlaceDerivedStreamResult::Uv2(None) => {}
+        InPlaceDerivedStreamResult::Uv3(Some(bytes)) => {
+            if let Some(buffer) = ctx.mesh.uv3_buffer.as_ref() {
+                write_mesh_upload_buffer(ctx.upload_sink, buffer.as_ref(), 0, &bytes);
+            }
+        }
+        InPlaceDerivedStreamResult::Uv3(None) => {}
     }
 }
 
