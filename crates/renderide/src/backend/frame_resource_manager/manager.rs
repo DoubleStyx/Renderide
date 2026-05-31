@@ -50,8 +50,7 @@ pub struct FrameResourceManager {
     pub(super) mesh_deform_dispatched_this_submission: AtomicBool,
     /// Optional visible deform filter derived from prefetched per-view draw lists.
     pub(super) visible_mesh_deform_keys: Mutex<Option<HashSet<SkinCacheKey>>>,
-    /// Reused per-view scratch for per-draw VP/pack before
-    /// [`crate::mesh_deform::write_per_draw_uniform_slab`].
+    /// Reused per-view scratch for per-draw VP/pack before graph upload.
     ///
     /// Each view owns its own mutex-wrapped slot so rayon workers never alias the same scratch.
     pub(super) per_view_per_draw_scratch: PerViewResourceMap<Mutex<PerViewPerDrawScratch>>,

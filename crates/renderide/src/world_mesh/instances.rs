@@ -46,6 +46,12 @@ const INSTANCE_PLAN_PARALLEL_WINDOW_DRAW_CHUNK: usize = RENDER_COMMAND_CHUNK_DRA
 /// Draw count required before a single large batch window can fan out internally.
 const INSTANCE_PLAN_PARALLEL_MIN_SINGLE_WINDOW_DRAWS: usize =
     INSTANCE_PLAN_PARALLEL_WINDOW_DRAW_CHUNK * 2;
+/// Draws assigned to one resolved-submission grouping worker.
+const SUBMISSION_PLAN_PARALLEL_CHUNK_DRAWS: usize = RENDER_COMMAND_CHUNK_DRAWS;
+/// Submission grouping chunks assigned to one Rayon worker leaf.
+const SUBMISSION_PLAN_PARALLEL_CHUNKS_PER_TASK: usize = 1;
+/// Draw count required before resolved-submission grouping may fan out.
+const SUBMISSION_PLAN_PARALLEL_MIN_DRAWS: usize = SUBMISSION_PLAN_PARALLEL_CHUNK_DRAWS * 2;
 
 /// Worker-local members for one mesh/submesh group inside a large batch window.
 struct LocalGroupedWindowGroup {
@@ -86,12 +92,25 @@ struct SubmissionGroupKey {
 
 /// Pending group built from resolved submission compatibility rather than raw material ids.
 struct PendingSubmissionGroup {
+    /// Merge key for non-singleton groups. Singleton groups are intentionally unkeyed.
+    key: Option<SubmissionGroupKey>,
     /// Primary render phase for the group.
     phase: WorldMeshPhase,
     /// First sorted draw index in the group.
     representative_draw_idx: usize,
     /// Sorted draw indexes belonging to the group.
     members: Vec<usize>,
+}
+
+/// Precomputed per-draw submission routing after strict-order barriers have been assigned.
+#[derive(Clone, Copy)]
+struct SubmissionPlanRow {
+    /// Primary render phase for this draw.
+    phase: WorldMeshPhase,
+    /// Strict-order segment active before this draw is processed.
+    order_segment: u32,
+    /// Whether this draw must emit as an isolated GPU draw group.
+    singleton: bool,
 }
 
 /// One emitted indexed draw covering a contiguous slab range of identical instances.
@@ -383,46 +402,152 @@ pub fn build_plan_for_shader_with_submission_classes(
         return build_plan_for_shader(draws, supports_base_instance, shader_perm);
     }
 
-    build_plan_from_submission_classes_serial(
-        draws,
-        submission_classes,
-        supports_base_instance,
-        shader_perm,
-    )
+    let rows = build_submission_plan_rows(draws, supports_base_instance);
+    let admission = admit_render_command_items(draws.len(), current_reference_worker_count());
+    record_parallel_admission(
+        "world_mesh_submission_class_instance_plan",
+        draws.len(),
+        draws.len(),
+        admission,
+    );
+    if draws.len() >= SUBMISSION_PLAN_PARALLEL_MIN_DRAWS && admission.is_parallel() {
+        let chunk_size = admission
+            .chunk_size()
+            .unwrap_or(SUBMISSION_PLAN_PARALLEL_CHUNK_DRAWS);
+        build_plan_from_submission_classes_parallel(
+            draws,
+            submission_classes,
+            &rows,
+            shader_perm,
+            chunk_size,
+        )
+    } else {
+        build_plan_from_submission_rows_serial(draws, submission_classes, &rows, shader_perm)
+    }
 }
 
-/// Builds a submission-class plan with deterministic first-seen group order.
-fn build_plan_from_submission_classes_serial(
+/// Computes the strict-order segment active at each draw before grouping fans out.
+fn build_submission_plan_rows(
     draws: &[WorldMeshDrawItem],
-    submission_classes: &[u32],
     supports_base_instance: bool,
-    shader_perm: ShaderPermutation,
-) -> InstancePlan {
-    let mut group_index: HashMap<SubmissionGroupKey, usize> = HashMap::new();
-    let mut pending_groups: Vec<PendingSubmissionGroup> = Vec::new();
+) -> Vec<SubmissionPlanRow> {
+    let mut rows = Vec::with_capacity(draws.len());
     let mut order_segments = [0u32; WorldMeshPhase::ALL.len()];
 
-    for (draw_idx, item) in draws.iter().enumerate() {
+    for item in draws {
         let classification =
             crate::world_mesh::phase_classification::classify_world_mesh_batch(&item.batch_key);
         let phase = classification.phase;
-        if draw_requires_singleton(item, supports_base_instance) {
+        let singleton = draw_requires_singleton(item, supports_base_instance);
+        rows.push(SubmissionPlanRow {
+            phase,
+            order_segment: order_segments[phase.index()],
+            singleton,
+        });
+        if singleton && (classification.strict_order || classification.grab_pass) {
+            let segment = &mut order_segments[phase.index()];
+            *segment = segment.saturating_add(1);
+        }
+    }
+
+    rows
+}
+
+/// Builds a submission-class plan with deterministic first-seen group order.
+fn build_plan_from_submission_rows_serial(
+    draws: &[WorldMeshDrawItem],
+    submission_classes: &[u32],
+    rows: &[SubmissionPlanRow],
+    shader_perm: ShaderPermutation,
+) -> InstancePlan {
+    debug_assert_eq!(draws.len(), submission_classes.len());
+    debug_assert_eq!(draws.len(), rows.len());
+    let pending_groups = collect_submission_groups_for_range(draws, submission_classes, rows, 0);
+
+    let mut builder = InstancePlanBuilder::with_capacity(draws.len(), shader_perm);
+    builder.emit_submission_groups(draws, pending_groups);
+    builder.finish()
+}
+
+/// Builds a submission-class plan by grouping fixed draw chunks in parallel.
+fn build_plan_from_submission_classes_parallel(
+    draws: &[WorldMeshDrawItem],
+    submission_classes: &[u32],
+    rows: &[SubmissionPlanRow],
+    shader_perm: ShaderPermutation,
+    chunk_size: usize,
+) -> InstancePlan {
+    profiling::scope!("mesh::build_plan_submission_classes_parallel");
+    debug_assert_eq!(draws.len(), submission_classes.len());
+    debug_assert_eq!(draws.len(), rows.len());
+    let chunk_size = chunk_size.max(1);
+    let chunks = {
+        profiling::scope!("mesh::build_plan_submission_classes_parallel::worker_chunks");
+        draws
+            .par_chunks(chunk_size)
+            .with_min_len(SUBMISSION_PLAN_PARALLEL_CHUNKS_PER_TASK)
+            .zip(
+                submission_classes
+                    .par_chunks(chunk_size)
+                    .with_min_len(SUBMISSION_PLAN_PARALLEL_CHUNKS_PER_TASK),
+            )
+            .zip(
+                rows.par_chunks(chunk_size)
+                    .with_min_len(SUBMISSION_PLAN_PARALLEL_CHUNKS_PER_TASK),
+            )
+            .enumerate()
+            .map(|(chunk_index, ((draw_chunk, class_chunk), row_chunk))| {
+                profiling::scope!("mesh::build_plan_submission_class_chunk_worker");
+                collect_submission_groups_for_range(
+                    draw_chunk,
+                    class_chunk,
+                    row_chunk,
+                    chunk_index * chunk_size,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let pending_groups = {
+        profiling::scope!("mesh::build_plan_submission_classes_parallel::merge");
+        merge_submission_group_chunks(chunks)
+    };
+
+    let mut builder = InstancePlanBuilder::with_capacity(draws.len(), shader_perm);
+    builder.emit_submission_groups(draws, pending_groups);
+    builder.finish()
+}
+
+/// Collects resolved-submission groups for one contiguous draw range.
+fn collect_submission_groups_for_range(
+    draws: &[WorldMeshDrawItem],
+    submission_classes: &[u32],
+    rows: &[SubmissionPlanRow],
+    base_draw_idx: usize,
+) -> Vec<PendingSubmissionGroup> {
+    let mut group_index: HashMap<SubmissionGroupKey, usize> = HashMap::new();
+    let mut pending_groups: Vec<PendingSubmissionGroup> = Vec::new();
+
+    for (offset, ((item, &submission_class), row)) in draws
+        .iter()
+        .zip(submission_classes.iter())
+        .zip(rows.iter())
+        .enumerate()
+    {
+        let draw_idx = base_draw_idx + offset;
+        if row.singleton {
             pending_groups.push(PendingSubmissionGroup {
-                phase,
+                key: None,
+                phase: row.phase,
                 representative_draw_idx: draw_idx,
                 members: vec![draw_idx],
             });
-            if classification.strict_order || classification.grab_pass {
-                let segment = &mut order_segments[phase.index()];
-                *segment = segment.saturating_add(1);
-            }
             continue;
         }
 
         let key = SubmissionGroupKey {
-            phase,
-            order_segment: order_segments[phase.index()],
-            submission_class: submission_classes[draw_idx],
+            phase: row.phase,
+            order_segment: row.order_segment,
+            submission_class,
             mesh: mesh_submesh_key(item),
         };
         if let Some(&group_idx) = group_index.get(&key) {
@@ -431,16 +556,41 @@ fn build_plan_from_submission_classes_serial(
             let group_idx = pending_groups.len();
             group_index.insert(key, group_idx);
             pending_groups.push(PendingSubmissionGroup {
-                phase,
+                key: Some(key),
+                phase: row.phase,
                 representative_draw_idx: draw_idx,
                 members: vec![draw_idx],
             });
         }
     }
 
-    let mut builder = InstancePlanBuilder::with_capacity(draws.len(), shader_perm);
-    builder.emit_submission_groups(draws, pending_groups);
-    builder.finish()
+    pending_groups
+}
+
+/// Merges worker-local submission groups in draw order.
+fn merge_submission_group_chunks(
+    chunks: Vec<Vec<PendingSubmissionGroup>>,
+) -> Vec<PendingSubmissionGroup> {
+    let mut group_index: HashMap<SubmissionGroupKey, usize> = HashMap::new();
+    let mut merged = Vec::new();
+
+    for chunk in chunks {
+        for mut group in chunk {
+            let Some(key) = group.key else {
+                merged.push(group);
+                continue;
+            };
+            if let Some(&group_idx) = group_index.get(&key) {
+                merged[group_idx].members.append(&mut group.members);
+            } else {
+                let group_idx = merged.len();
+                group_index.insert(key, group_idx);
+                merged.push(group);
+            }
+        }
+    }
+
+    merged
 }
 
 /// Returns whether instance planning should use its active Rayon pool.

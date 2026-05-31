@@ -347,9 +347,12 @@ fn pack_forward_draws_for_view(
         pipeline,
         offscreen_write_target,
     );
+    let submission_classes = {
+        profiling::scope!("world_mesh::prepare_frame::build_submission_classes");
+        draw_submission_classes(draws.len(), &precomputed_batches)
+    };
     let mut plan = {
         profiling::scope!("world_mesh::prepare_frame::build_instance_plan");
-        let submission_classes = draw_submission_classes(draws.len(), &precomputed_batches);
         crate::world_mesh::build_plan_for_shader_with_submission_classes(
             &draws,
             &submission_classes,
@@ -357,7 +360,15 @@ fn pack_forward_draws_for_view(
             shader_perm,
         )
     };
-    assign_material_packet_indices(&mut plan, &precomputed_batches);
+    {
+        profiling::scope!("world_mesh::prepare_frame::assign_material_packet_indices");
+        assign_material_packet_indices(&mut plan, &precomputed_batches);
+    }
+    crate::profiling::plot_world_mesh_prepare(
+        draws.len(),
+        precomputed_batches.len(),
+        plan.primary_forward_group_count(),
+    );
     let slab_uploaded = {
         profiling::scope!("world_mesh::prepare_frame::pack_and_upload_slab");
         pack_and_upload_per_draw_slab(

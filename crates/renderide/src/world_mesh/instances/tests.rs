@@ -862,3 +862,89 @@ fn large_singleton_window_parallel_matches_serial_window() {
 
     assert_eq!(parallel, serial);
 }
+
+#[test]
+fn submission_class_parallel_matches_serial_mixed_draws() {
+    let mut draws = Vec::new();
+    for n in 0..(SUBMISSION_PLAN_PARALLEL_MIN_DRAWS + 173) {
+        let mut item = opaque(
+            100 + (n % 9) as i32,
+            200 + (n % 11) as i32,
+            (n % 23) as i32,
+            n as i32,
+        );
+        item.first_index = ((n % 5) * 9) as u32;
+        item.index_count = (3 + (n % 4) * 3) as u32;
+        item.slot_index = n % 4;
+        match n % 13 {
+            0 => item.skinned = true,
+            3 => item.batch_key.embedded_requires_intersection_pass = true,
+            5 => {
+                set_render_queue(&mut item, UNITY_TRANSPARENT_RENDER_QUEUE_MIN);
+                item.batch_key.render_state.depth_write = Some(false);
+            }
+            8 => {
+                item.batch_key.embedded_uses_scene_color_snapshot = true;
+                item.batch_key.alpha_blended = true;
+            }
+            _ => {}
+        }
+        refresh_sort_keys(&mut item);
+        draws.push(item);
+    }
+    sort_draws(&mut draws);
+    let submission_classes = draws
+        .iter()
+        .enumerate()
+        .map(|(index, item)| ((index + item.mesh_asset_id as usize) % 7) as u32)
+        .collect::<Vec<_>>();
+    let rows = build_submission_plan_rows(&draws, true);
+
+    let serial = build_plan_from_submission_rows_serial(
+        &draws,
+        &submission_classes,
+        &rows,
+        ShaderPermutation(0),
+    );
+    let parallel = build_plan_from_submission_classes_parallel(
+        &draws,
+        &submission_classes,
+        &rows,
+        ShaderPermutation(0),
+        17,
+    );
+
+    assert_eq!(parallel, serial);
+    assert!(!groups(&parallel, WorldMeshPhase::ForwardOpaque).is_empty());
+    assert!(!groups(&parallel, WorldMeshPhase::Intersection).is_empty());
+    assert!(!groups(&parallel, WorldMeshPhase::Transparent).is_empty());
+    assert!(!groups(&parallel, WorldMeshPhase::TransparentGrab).is_empty());
+}
+
+#[test]
+fn submission_class_parallel_keeps_downlevel_groups_singleton() {
+    let mut draws: Vec<_> = (0..(SUBMISSION_PLAN_PARALLEL_MIN_DRAWS + 41))
+        .map(|n| opaque(300 + (n % 3) as i32, 400 + (n % 5) as i32, 0, n as i32))
+        .collect();
+    sort_draws(&mut draws);
+    let submission_classes = vec![0; draws.len()];
+    let rows = build_submission_plan_rows(&draws, false);
+
+    let parallel = build_plan_from_submission_classes_parallel(
+        &draws,
+        &submission_classes,
+        &rows,
+        ShaderPermutation(0),
+        11,
+    );
+
+    assert_eq!(
+        groups(&parallel, WorldMeshPhase::ForwardOpaque).len(),
+        draws.len()
+    );
+    assert!(
+        groups(&parallel, WorldMeshPhase::ForwardOpaque)
+            .iter()
+            .all(|group| group.instance_range.end - group.instance_range.start == 1)
+    );
+}
