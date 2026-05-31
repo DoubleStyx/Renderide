@@ -25,6 +25,12 @@ struct BeginFrameBeforeWaitWorkInput {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RegularBeginFrameInput {
+    frontend_allows_begin_frame: bool,
+    submit_completion_work_drained: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct OneCreditBeginFrameInput {
     awaiting_frame_submit: bool,
     pending_frame_submit_render: bool,
@@ -34,6 +40,10 @@ struct OneCreditBeginFrameInput {
 
 fn should_send_begin_frame_before_wait_work(input: BeginFrameBeforeWaitWorkInput) -> bool {
     input.should_send_begin_frame && !input.awaiting_frame_submit && !input.should_render_frame
+}
+
+fn should_send_regular_begin_frame(input: RegularBeginFrameInput) -> bool {
+    input.frontend_allows_begin_frame && input.submit_completion_work_drained
 }
 
 fn should_send_one_credit_begin_frame(input: OneCreditBeginFrameInput) -> bool {
@@ -46,7 +56,10 @@ fn should_send_one_credit_begin_frame(input: OneCreditBeginFrameInput) -> bool {
 impl RendererRuntime {
     /// Whether the next tick should build [`InputState`] and call [`Self::pre_frame`].
     pub fn should_send_begin_frame(&self) -> bool {
-        self.frontend.should_send_begin_frame()
+        should_send_regular_begin_frame(RegularBeginFrameInput {
+            frontend_allows_begin_frame: self.frontend.should_send_begin_frame(),
+            submit_completion_work_drained: self.submit_completion_work_drained(),
+        })
     }
 
     /// Whether the current tick may render world state under host lockstep and decoupling rules.
@@ -242,6 +255,9 @@ impl RendererRuntime {
     /// actually enqueued.
     pub fn pre_frame(&mut self, inputs: InputState) -> bool {
         profiling::scope!("tick::pre_frame");
+        if !self.should_send_begin_frame() {
+            return false;
+        }
         let video_clock_errors = self.backend.take_pending_video_clock_errors();
         self.frontend.enqueue_video_clock_errors(video_clock_errors);
         self.frontend.pre_frame(inputs)
@@ -250,7 +266,7 @@ impl RendererRuntime {
     /// Sends a one-credit [`FrameStartData`](crate::shared::FrameStartData) before rendering.
     pub(crate) fn pre_frame_one_credit(&mut self, inputs: InputState) -> bool {
         profiling::scope!("tick::pre_frame_one_credit");
-        if self.shutdown_requested() || self.fatal_error() {
+        if !self.should_send_one_credit_begin_frame() {
             return false;
         }
         let video_clock_errors = self.backend.take_pending_video_clock_errors();
@@ -376,6 +392,7 @@ impl RendererRuntime {
 mod tests {
     use super::{BeginFrameBeforeWaitWorkInput, should_send_begin_frame_before_wait_work};
     use super::{OneCreditBeginFrameInput, should_send_one_credit_begin_frame};
+    use super::{RegularBeginFrameInput, should_send_regular_begin_frame};
 
     fn input() -> BeginFrameBeforeWaitWorkInput {
         BeginFrameBeforeWaitWorkInput {
@@ -452,5 +469,33 @@ mod tests {
                 ..one_credit_input()
             }
         ));
+    }
+
+    fn regular_begin_input() -> RegularBeginFrameInput {
+        RegularBeginFrameInput {
+            frontend_allows_begin_frame: true,
+            submit_completion_work_drained: true,
+        }
+    }
+
+    #[test]
+    fn regular_begin_sends_when_frontend_and_submit_completion_allow() {
+        assert!(should_send_regular_begin_frame(regular_begin_input()));
+    }
+
+    #[test]
+    fn regular_begin_waits_for_submit_completion_work() {
+        assert!(!should_send_regular_begin_frame(RegularBeginFrameInput {
+            submit_completion_work_drained: false,
+            ..regular_begin_input()
+        }));
+    }
+
+    #[test]
+    fn regular_begin_respects_frontend_gate() {
+        assert!(!should_send_regular_begin_frame(RegularBeginFrameInput {
+            frontend_allows_begin_frame: false,
+            ..regular_begin_input()
+        }));
     }
 }

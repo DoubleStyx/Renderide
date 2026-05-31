@@ -227,6 +227,7 @@ impl AppDriver {
             return FrameTickOutcome::ExitRequested;
         }
         self.present_and_diagnostics(xr_tick, hmd_projection_ended);
+        self.drain_submit_completion_work();
         if vr_active || !one_credit_begin_sent {
             self.lock_step_exchange();
         }
@@ -235,12 +236,7 @@ impl AppDriver {
 
     fn drain_completion_and_try_desktop_one_credit(&mut self) -> bool {
         self.runtime.update_decoupling_activation(Instant::now());
-        if let Some(target) = self.target.as_mut() {
-            let gpu = target.gpu_mut();
-            self.runtime.maintain_nonblocking_gpu_jobs(gpu);
-            self.runtime.drain_reflection_probe_render_tasks(gpu);
-            self.runtime.drain_camera_render_tasks(gpu);
-        }
+        self.drain_submit_completion_work();
         if !self.runtime.vr_active()
             && self.target.is_some()
             && self.runtime.should_send_one_credit_begin_frame()
@@ -248,6 +244,15 @@ impl AppDriver {
             self.one_credit_lock_step_exchange()
         } else {
             false
+        }
+    }
+
+    fn drain_submit_completion_work(&mut self) {
+        if let Some(target) = self.target.as_mut() {
+            let gpu = target.gpu_mut();
+            self.runtime.maintain_nonblocking_gpu_jobs(gpu);
+            self.runtime.drain_reflection_probe_render_tasks(gpu);
+            self.runtime.drain_camera_render_tasks(gpu);
         }
     }
 
