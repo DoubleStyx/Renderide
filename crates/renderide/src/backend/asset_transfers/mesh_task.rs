@@ -118,14 +118,16 @@ enum MeshStage {
 #[derive(Debug)]
 pub struct MeshUploadTask {
     data: MeshUploadData,
+    generation: u64,
     stage: MeshStage,
 }
 
 impl MeshUploadTask {
     /// Builds a task starting at layout validation.
-    pub fn new(data: MeshUploadData) -> Self {
+    pub fn new(data: MeshUploadData, generation: u64) -> Self {
         Self {
             data,
+            generation,
             stage: MeshStage::PendingLayout,
         }
     }
@@ -144,6 +146,9 @@ impl MeshUploadTask {
         shm: &mut SharedMemoryAccessor,
         ipc: &mut Option<&mut DualQueueIpc>,
     ) -> StepResult {
+        if !self.is_current(queue) {
+            return self.drop_stale_upload(queue, "step");
+        }
         if matches!(self.stage, MeshStage::PendingLayout) {
             return self.start_pending_layout(queue, gpu, shm, ipc);
         }
@@ -377,19 +382,28 @@ impl MeshUploadTask {
             upload_result
         }));
         let Ok(upload_result) = upload_result else {
-            complete_failed_mesh_upload(asset_id, "GPU upload panicked", ipc);
+            if self.is_current(queue) {
+                complete_failed_mesh_upload(asset_id, "GPU upload panicked", ipc);
+            } else {
+                Self::log_stale_upload(asset_id, self.generation, queue, "gpu-panic");
+            }
             return StepResult::Done;
         };
-        Self::finalize_gpu_upload(asset_id, upload_result, queue, ipc)
+        Self::finalize_gpu_upload(asset_id, self.generation, upload_result, queue, ipc)
     }
 
     /// Stores a completed GPU upload and sends the host result.
     fn finalize_gpu_upload(
         asset_id: i32,
+        generation: u64,
         upload_result: Option<GpuMesh>,
         queue: &mut AssetTransferQueue,
         ipc: &mut Option<&mut DualQueueIpc>,
     ) -> StepResult {
+        if !queue.mesh_upload_generation_is_current(asset_id, generation) {
+            Self::log_stale_upload(asset_id, generation, queue, "finalize");
+            return StepResult::Done;
+        }
         let Some(mesh) = upload_result else {
             complete_failed_mesh_upload(asset_id, "GPU upload rejected", ipc);
             return StepResult::Done;
@@ -404,6 +418,27 @@ impl MeshUploadTask {
             },
         );
         StepResult::Done
+    }
+
+    fn is_current(&self, queue: &AssetTransferQueue) -> bool {
+        queue.mesh_upload_generation_is_current(self.data.asset_id, self.generation)
+    }
+
+    fn drop_stale_upload(&self, queue: &AssetTransferQueue, stage: &'static str) -> StepResult {
+        Self::log_stale_upload(self.data.asset_id, self.generation, queue, stage);
+        StepResult::Done
+    }
+
+    fn log_stale_upload(
+        asset_id: i32,
+        generation: u64,
+        queue: &AssetTransferQueue,
+        stage: &'static str,
+    ) {
+        logger::trace!(
+            "mesh {asset_id}: dropping stale upload generation {generation} at {stage} (current={:?})",
+            queue.current_mesh_upload_generation(asset_id)
+        );
     }
 }
 
@@ -451,6 +486,17 @@ mod tests {
             asset_id,
             buffer: SharedMemoryBufferDescriptor {
                 length: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn upload(asset_id: i32) -> MeshUploadData {
+        MeshUploadData {
+            asset_id,
+            buffer: SharedMemoryBufferDescriptor {
+                length: 16,
                 ..Default::default()
             },
             ..Default::default()
@@ -514,5 +560,18 @@ mod tests {
         let raw = MeshUploadTask::copy_mesh_payload(&mut shm, &data, 16);
 
         assert!(raw.is_none());
+    }
+
+    #[test]
+    fn superseded_mesh_upload_task_is_not_current() {
+        let mut queue = AssetTransferQueue::new();
+        let first_generation = queue.begin_mesh_upload_generation(45);
+        let task = MeshUploadTask::new(upload(45), first_generation);
+
+        let second_generation = queue.begin_mesh_upload_generation(45);
+
+        assert_ne!(first_generation, second_generation);
+        assert!(!task.is_current(&queue));
+        assert!(queue.mesh_upload_generation_is_current(45, second_generation));
     }
 }
