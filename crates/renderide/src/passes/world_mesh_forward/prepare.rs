@@ -337,8 +337,8 @@ fn pack_forward_draws_for_view(
         )
     };
     let offscreen_write_target = frame.view.offscreen_write_target;
-    let (world_proj, overlay_proj) =
-        apply_offscreen_projection_flip(world_proj, overlay_proj, offscreen_write_target);
+    let world_proj = offscreen_write_target.render_projection(world_proj);
+    let overlay_proj = overlay_proj.map(|proj| offscreen_write_target.render_projection(proj));
     let precomputed_batches = precompute_material_batches(
         frame,
         encode_refs,
@@ -489,25 +489,6 @@ fn assign_group_packet_indices(groups: &mut [DrawGroup], packets: &[MaterialBatc
             "material packet should cover representative draw index {representative}",
         );
         group.material_packet_idx = packet_idx;
-    }
-}
-
-/// Applies the render-texture clip-space Y flip when a view writes to an offscreen target.
-fn apply_offscreen_projection_flip(
-    world_proj: glam::Mat4,
-    overlay_proj: Option<glam::Mat4>,
-    offscreen_write_target: OffscreenWriteTarget,
-) -> (glam::Mat4, Option<glam::Mat4>) {
-    // Render-texture color attachments must land in Unity (V=0 bottom) orientation so material
-    // shaders sample them through the same `apply_st(uv, ST)` convention as host-uploaded textures.
-    // Pre-multiply a clip-space Y flip into the projection matrices and flip pipeline winding at
-    // the batch resolver below so back-face culling stays correct. The skybox carries the same
-    // sign through `SkyboxViewUniforms.clip_y_sign` so its fullscreen pass agrees on orientation.
-    if offscreen_write_target.is_offscreen() {
-        let y_flip = glam::Mat4::from_diagonal(glam::Vec4::new(1.0, -1.0, 1.0, 1.0));
-        (y_flip * world_proj, overlay_proj.map(|p| y_flip * p))
-    } else {
-        (world_proj, overlay_proj)
     }
 }
 

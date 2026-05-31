@@ -186,9 +186,13 @@ impl ClusteredLightPass {
         };
 
         let viewport = (vw, vh);
-        let Some(eye_params) =
-            clustered_light_eye_params_for_viewport(stereo, &hc, scene, viewport)
-        else {
+        let Some(eye_params) = clustered_light_eye_params_for_viewport(
+            stereo,
+            &hc,
+            scene,
+            viewport,
+            frame.view.offscreen_write_target,
+        ) else {
             return ClusteredLightRecordAction::Skip;
         };
         let Some(clusters_per_eye) = clusters_per_eye_for_params(&eye_params[0]) else {
