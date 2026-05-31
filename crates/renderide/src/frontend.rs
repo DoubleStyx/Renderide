@@ -61,7 +61,7 @@ mod tests {
     fn standalone_frontend_mutators_update_exit_state() {
         let mut frontend = RendererFrontend::new(None);
 
-        frontend.note_frame_submit_processed(7);
+        frontend.note_frame_submit_processed(7, Instant::now());
         assert_eq!(frontend.last_frame_index(), 7);
         assert!(frontend.last_frame_data_processed());
 
@@ -94,7 +94,7 @@ mod tests {
         frontend.update_decoupling_activation(Instant::now());
         assert!(!frontend.is_decoupled());
 
-        frontend.note_frame_submit_processed(7);
+        frontend.note_frame_submit_processed(7, Instant::now());
         assert!(!frontend.is_decoupled());
     }
 
@@ -118,7 +118,7 @@ mod tests {
     fn frame_submit_pending_render_clears_after_render_attempt() {
         let mut frontend = RendererFrontend::new(None);
 
-        frontend.note_frame_submit_processed(7);
+        frontend.note_frame_submit_processed(7, Instant::now());
         assert!(frontend.pending_frame_submit_render());
 
         frontend.note_frame_render_attempted();
