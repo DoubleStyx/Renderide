@@ -5,7 +5,7 @@ use hashbrown::HashMap;
 
 use crate::assets::mesh::GpuMesh;
 use crate::gpu_pools::MeshPool;
-use crate::particles::PointRenderBufferAsset;
+use crate::particles::{ParticleDrawParams, PointRenderBufferAsset};
 use crate::scene::{MeshRendererInstanceId, RenderSpaceId, SceneCoordinator};
 use crate::shared::{LayerType, RenderingContext};
 use crate::world_mesh::culling::{
@@ -53,6 +53,12 @@ pub(in crate::world_mesh::draw_prep) fn expand_render_buffer_renderers_into(
             mesh_asset_id,
             renderer.material_asset_id,
             ParticleRenderBufferPreparedKind::Billboard,
+            ParticleDrawParams::billboard(
+                renderer.alignment,
+                renderer.min_billboard_screen_size,
+                renderer.max_billboard_screen_size,
+                renderer.motion_vector_mode,
+            ),
         );
     }
     for (renderable_index, renderer) in space.trail_render_buffers().iter().enumerate() {
@@ -69,6 +75,11 @@ pub(in crate::world_mesh::draw_prep) fn expand_render_buffer_renderers_into(
             mesh_asset_id,
             renderer.material_asset_id,
             ParticleRenderBufferPreparedKind::Trail,
+            ParticleDrawParams::trail(
+                renderer.texture_mode,
+                renderer.motion_vector_mode,
+                renderer.generate_lighting_data,
+            ),
         );
     }
     for (renderable_index, renderer) in space.mesh_render_buffers().iter().enumerate() {
@@ -111,6 +122,7 @@ fn try_expand_render_buffer_renderer(
     mesh_asset_id: i32,
     material_asset_id: i32,
     kind: ParticleRenderBufferPreparedKind,
+    particle_draw: ParticleDrawParams,
 ) {
     if node_id < 0 || material_asset_id < 0 {
         return;
@@ -154,6 +166,7 @@ fn try_expand_render_buffer_renderer(
         property_block_id: None,
         cull_geometry,
         rigid_world_matrix_override: None,
+        particle_draw,
     });
 }
 

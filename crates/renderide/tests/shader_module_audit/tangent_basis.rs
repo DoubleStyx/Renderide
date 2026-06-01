@@ -43,10 +43,16 @@ fn mesh_normals_do_not_use_model_vector_helper_path() -> io::Result<()> {
         );
     }
 
-    assert!(
-        src.contains("out.world_n = world_normal(draw, n);"),
-        "mesh/vertex.wgsl must route world vertex normals through the inverse-transpose helper"
-    );
+    for required in [
+        "fn world_normal_for_view(draw: dt::PerDrawUniforms, n: vec4<f32>, view_idx: u32) -> vec3<f32>",
+        "return world_normal(draw, n);",
+        "out.world_n = world_normal_for_view(draw, n, view_idx);",
+    ] {
+        assert!(
+            src.contains(required),
+            "mesh/vertex.wgsl must route world vertex normals through the inverse-transpose helper `{required}`"
+        );
+    }
 
     Ok(())
 }

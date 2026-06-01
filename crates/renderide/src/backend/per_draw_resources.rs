@@ -9,14 +9,14 @@ use std::sync::Arc;
 use crate::gpu::GpuLimits;
 use crate::mesh_deform::{INITIAL_PER_DRAW_UNIFORM_SLOTS, PER_DRAW_UNIFORM_STRIDE};
 
-/// GPU storage slab: one [`crate::mesh_deform::PaddedPerDrawUniforms`] slot (256 bytes) per
+/// GPU storage slab: one [`crate::mesh_deform::PaddedPerDrawUniforms`] slot per
 /// mesh draw. Shaders use `instance_index` to select the per-draw row; the downlevel path uses a
 /// per-draw dynamic storage offset at bind time instead.
 ///
 /// Each render view owns one `PerDrawResources` instance. Slabs are grown on demand (never shrink)
 /// and are independent -- one view cannot exhaust another view's buffer.
 pub struct PerDrawResources {
-    /// Packed rows (`slot_count * 256` bytes), `STORAGE | COPY_DST`.
+    /// Packed rows (`slot_count * PER_DRAW_UNIFORM_STRIDE` bytes), `STORAGE | COPY_DST`.
     pub per_draw_storage: wgpu::Buffer,
     /// Bind group wiring `per_draw_storage` for raster mesh pipelines (`@group(2)`).
     pub bind_group: Arc<wgpu::BindGroup>,

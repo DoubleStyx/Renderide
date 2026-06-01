@@ -8,17 +8,22 @@ use super::ids::{
     trail_render_buffer_mesh_asset_id,
 };
 use super::point::{
-    BILLBOARD_INDICES_PER_POINT, BILLBOARD_VERTICES_PER_POINT, decode_point_particles,
-    fill_billboard_buffers,
+    BILLBOARD_INDICES_PER_POINT, BILLBOARD_VERTICES_PER_POINT, billboard_extra_streams,
+    decode_point_particles, fill_billboard_buffers,
 };
 use super::trail::{
     TRAIL_DECODE_PARALLEL_MIN_POINTS, TRAIL_OFFSET_BYTES, TrailMeshChunk, TrailOffset, TrailPoint,
     TrailPolyline, build_trail_mesh_chunk, decode_trails, trail_chunks_by_point_budget,
     trail_decode_parallel_is_worthwhile, trail_distances, trail_v_coordinate, trail_vertex_offsets,
 };
-use super::types::PointParticle;
-use super::upload::{generated_vertex_stride, prepared_generated_derived_streams};
-use crate::shared::{PointRenderBufferUpload, TrailRenderBufferUpload, TrailTextureMode};
+use super::types::{ParticleDrawKind, ParticleDrawParams, PointParticle};
+use super::upload::{
+    GeneratedExtraStreams, generated_vertex_stride, prepared_generated_derived_streams,
+};
+use crate::shared::{
+    BillboardAlignment, MeshAlignment, MotionVectorMode, PointRenderBufferUpload,
+    TrailRenderBufferUpload, TrailTextureMode,
+};
 
 #[test]
 fn generated_mesh_ids_are_negative_and_distinct_by_kind() {
@@ -185,8 +190,11 @@ fn generated_particle_derived_streams_match_vertex_payloads() {
     let mut indices = vec![0u8; points.len() * BILLBOARD_INDICES_PER_POINT * size_of::<u32>()];
 
     fill_billboard_buffers(&points, glam::IVec2::ONE, &mut vertices, &mut indices);
-    let prepared =
-        prepared_generated_derived_streams(&vertices, points.len() * BILLBOARD_VERTICES_PER_POINT);
+    let prepared = prepared_generated_derived_streams(
+        &vertices,
+        points.len() * BILLBOARD_VERTICES_PER_POINT,
+        GeneratedExtraStreams::default(),
+    );
 
     let positions = prepared.positions.as_deref().expect("positions");
     let normals = prepared.normals.as_deref().expect("normals");
@@ -201,6 +209,61 @@ fn generated_particle_derived_streams_match_vertex_payloads() {
     assert_eq!(first_normal, &[1.0, 1.0, 0.0, 0.0]);
     assert_eq!(first_uv, &[0.0, 0.0]);
     assert_eq!(first_color, &[0.25, 0.5, 0.75, 1.0]);
+}
+
+#[test]
+fn billboard_extra_streams_pack_particle_orientation() {
+    let points = vec![PointParticle {
+        position: Vec3::ZERO,
+        rotation: Quat::IDENTITY,
+        size: Vec3::ONE,
+        color: Vec4::ONE,
+        frame_index: None,
+    }];
+
+    let streams = billboard_extra_streams(&points);
+    let raw_tangent = streams.raw_tangent.as_deref().expect("raw tangent");
+    let uv1 = streams.uv1.as_deref().expect("uv1");
+    let tangent: &[f32] = bytemuck::cast_slice(&raw_tangent[..16]);
+    let up_xy: &[f32] = bytemuck::cast_slice(&uv1[..8]);
+
+    assert_eq!(tangent, &[0.0, 0.0, 1.0, 0.0]);
+    assert_eq!(up_xy, &[0.0, 1.0]);
+    assert_eq!(raw_tangent.len(), BILLBOARD_VERTICES_PER_POINT * 16);
+    assert_eq!(uv1.len(), BILLBOARD_VERTICES_PER_POINT * 8);
+}
+
+#[test]
+fn particle_draw_params_pack_uniform_rows() {
+    let billboard = ParticleDrawParams::billboard(
+        BillboardAlignment::Direction,
+        0.125,
+        0.75,
+        MotionVectorMode::Object,
+    );
+    assert_eq!(billboard.kind, ParticleDrawKind::Billboard);
+    assert_eq!(
+        billboard.to_uniform_rows()[0],
+        [ParticleDrawKind::Billboard as u32 as f32, 4.0, 0.125, 0.75]
+    );
+
+    let mesh = ParticleDrawParams::mesh(
+        MeshAlignment::Facing,
+        Vec4::new(0.25, 0.5, 0.75, 0.5),
+        Some(13),
+    );
+    let mesh_rows = mesh.to_uniform_rows();
+    assert_eq!(mesh_rows[0][0], ParticleDrawKind::Mesh as u32 as f32);
+    assert_eq!(mesh_rows[0][1], MeshAlignment::Facing as u32 as f32);
+    assert_eq!(mesh_rows[1], [0.25, 0.5, 0.75, 0.5]);
+    assert_eq!(mesh_rows[2][1], 13.0);
+
+    let trail = ParticleDrawParams::trail(TrailTextureMode::Tile, MotionVectorMode::Camera, true);
+    let trail_rows = trail.to_uniform_rows();
+    assert_eq!(trail_rows[0][0], ParticleDrawKind::Trail as u32 as f32);
+    assert_eq!(trail_rows[2][0], MotionVectorMode::Camera as u32 as f32);
+    assert_eq!(trail_rows[2][2], TrailTextureMode::Tile as u32 as f32);
+    assert_eq!(trail_rows[2][3], 1.0);
 }
 
 #[test]

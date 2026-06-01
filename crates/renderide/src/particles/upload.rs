@@ -12,6 +12,15 @@ use crate::shared::{
 
 use super::types::ParticleRenderBufferError;
 
+/// Optional generated streams that are not present in the interleaved upload bytes.
+#[derive(Debug, Default)]
+pub(super) struct GeneratedExtraStreams {
+    /// Raw tangent payload stream at shader location 4.
+    pub(super) raw_tangent: Option<Vec<u8>>,
+    /// UV1 stream at shader location 5.
+    pub(super) uv1: Option<Vec<u8>>,
+}
+
 pub(super) fn generated_vertex_stride() -> usize {
     12 + 12 + 8 + 16
 }
@@ -64,6 +73,7 @@ pub(super) fn write_u32s(out: &mut [u8], values: &[u32]) {
 pub(super) fn prepared_generated_derived_streams(
     vertices: &[u8],
     vertex_count: usize,
+    extra: GeneratedExtraStreams,
 ) -> PreparedDerivedStreams {
     profiling::scope!("particle::prepare_generated_derived_streams");
     let stride = generated_vertex_stride();
@@ -86,6 +96,8 @@ pub(super) fn prepared_generated_derived_streams(
         normals: Some(normals),
         uv0: Some(uv0),
         color: Some(color),
+        raw_tangent: extra.raw_tangent,
+        uv1: extra.uv1,
         ..PreparedDerivedStreams::default()
     }
 }

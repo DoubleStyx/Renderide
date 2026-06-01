@@ -13,8 +13,8 @@ use super::types::{
     photondust_particle_color_to_linear, read_pod_at,
 };
 use super::upload::{
-    GeneratedMeshUploadInput, generated_vertex_stride, prepared_generated_derived_streams,
-    push_generated_vertex,
+    GeneratedExtraStreams, GeneratedMeshUploadInput, generated_vertex_stride,
+    prepared_generated_derived_streams, push_generated_vertex,
 };
 
 /// Minimum trail points before building texture-mode meshes in parallel is worthwhile.
@@ -390,7 +390,11 @@ fn build_trail_mesh_input(
         kind: "trail",
         source_asset_id,
         mesh_asset_id,
-        prepared_derived_streams: prepared_generated_derived_streams(&vertices, vertex_count),
+        prepared_derived_streams: prepared_generated_derived_streams(
+            &vertices,
+            vertex_count,
+            GeneratedExtraStreams::default(),
+        ),
         vertices,
         indices,
         vertex_count,

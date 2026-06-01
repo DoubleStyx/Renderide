@@ -5,6 +5,7 @@ use crate::materials::{
     RasterFrontFace, RasterPipelineKind, UNITY_RENDER_QUEUE_GEOMETRY,
     UNITY_RENDER_QUEUE_TRANSPARENT,
 };
+use crate::particles::ParticleDrawParams;
 use crate::scene::{MeshRendererInstanceId, RenderSpaceId};
 
 use crate::reflection_probes::specular::ReflectionProbeDrawSelection;
@@ -129,5 +130,6 @@ pub fn dummy_world_mesh_draw_item(spec: DummyDrawItemSpec) -> WorldMeshDrawItem 
         rigid_world_matrix: None,
         reflection_probes: ReflectionProbeDrawSelection::default(),
         ui_rect_clip_local: None,
+        particle_draw: ParticleDrawParams::default(),
     }
 }

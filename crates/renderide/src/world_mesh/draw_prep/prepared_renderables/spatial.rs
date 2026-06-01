@@ -3,6 +3,8 @@
 use glam::{Vec3, Vec3A};
 use hashbrown::HashMap;
 
+#[cfg(test)]
+use crate::particles::ParticleDrawParams;
 use crate::scene::{RenderSpaceId, SceneCoordinator};
 use crate::world_mesh::culling::{WorldMeshCullInput, world_aabb_visible_for_cull};
 
@@ -593,6 +595,7 @@ mod tests {
                 front_face_world_matrix: Some(Mat4::IDENTITY),
             }),
             rigid_world_matrix_override: None,
+            particle_draw: ParticleDrawParams::default(),
         }
     }
 

@@ -7,6 +7,7 @@ use glam::Mat4;
 
 use crate::materials::RasterPrimitiveTopology;
 use crate::materials::host_data::MaterialPropertyLookupIds;
+use crate::particles::ParticleDrawParams;
 use crate::reflection_probes::specular::ReflectionProbeDrawSelection;
 #[cfg(test)]
 use crate::scene::MeshMaterialSlot;
@@ -152,6 +153,8 @@ pub struct WorldMeshDrawItem {
     pub reflection_probes: ReflectionProbeDrawSelection,
     /// Object-local UI rect clip. `Some` enables overlay rect-clip cull and per-draw scissor.
     pub ui_rect_clip_local: Option<glam::Vec4>,
+    /// Particle renderer metadata consumed by draw shaders and diagnostics.
+    pub particle_draw: ParticleDrawParams,
 }
 
 /// Returns the submesh index range that should be drawn for one renderer material slot.

@@ -108,6 +108,10 @@ fn frame_sample_count() -> u32 {
     return 1u;
 }
 
+fn viewport_size() -> vec2<f32> {
+    return vec2<f32>(f32(frame.viewport_width), f32(frame.viewport_height));
+}
+
 /// Returns true when the current view layer is orthographic.
 fn view_is_orthographic(view_layer: u32) -> bool {
     return (projection_flags_for_view(view_layer) & ft::FRAME_PROJECTION_FLAG_ORTHOGRAPHIC) != 0u;

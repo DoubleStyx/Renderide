@@ -23,6 +23,7 @@ use std::ops::Range;
 use crate::cpu_parallelism::RENDER_COMMAND_CHUNK_DRAWS;
 #[cfg(test)]
 use crate::gpu_pools::MeshPool;
+use crate::particles::ParticleDrawParams;
 use crate::scene::{MeshRendererInstanceId, RenderSpaceId, SceneCoordinator};
 use crate::shared::RenderingContext;
 use crate::world_mesh::culling::{MeshCullGeometry, WorldMeshCullInput};
@@ -103,6 +104,8 @@ pub(super) struct FramePreparedDraw {
     /// Optional final rigid world matrix for generated draw sources that are not represented by a
     /// scene transform alone.
     pub rigid_world_matrix_override: Option<glam::Mat4>,
+    /// Particle renderer metadata for generated render-buffer draw sources.
+    pub particle_draw: ParticleDrawParams,
 }
 
 /// Contiguous range of [`FramePreparedRenderables::draws`] produced by one source renderer.
@@ -871,6 +874,7 @@ mod tests {
             property_block_id,
             cull_geometry: None,
             rigid_world_matrix_override: None,
+            particle_draw: ParticleDrawParams::default(),
         }
     }
 

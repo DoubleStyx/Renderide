@@ -155,7 +155,7 @@ pub fn embedded_stem_needs_extended_vertex_streams(
 pub(super) fn stem_uses_raw_tangent_payload(base_stem: &str) -> bool {
     matches!(
         canonical_stem_name(base_stem),
-        "ui_circlesegment" | "ui_unlit"
+        "billboardunlit" | "ui_circlesegment" | "ui_unlit"
     )
 }
 
@@ -167,7 +167,10 @@ pub fn embedded_stem_uses_raw_tangent_payload(base_stem: &str) -> bool {
 
 /// `true` when `@location(1)` carries raw shader payload rather than a lighting normal.
 pub(super) fn stem_uses_raw_normal_payload(base_stem: &str) -> bool {
-    matches!(canonical_stem_name(base_stem), "textunlit" | "ui_textunlit")
+    matches!(
+        canonical_stem_name(base_stem),
+        "billboardunlit" | "textunlit" | "ui_textunlit"
+    )
 }
 
 /// `true` when `@location(1)` carries raw shader payload rather than a lighting normal.
@@ -373,15 +376,22 @@ mod tests {
 
     #[test]
     fn ui_payload_stems_mark_raw_semantics() {
-        assert!(embedded_stem_uses_raw_tangent_payload(
-            "ui_circlesegment_default"
-        ));
-        assert!(embedded_stem_uses_raw_tangent_payload("ui_unlit_default"));
+        for stem in [
+            "billboardunlit_default",
+            "ui_circlesegment_default",
+            "ui_unlit_default",
+        ] {
+            assert!(embedded_stem_uses_raw_tangent_payload(stem), "{stem}");
+        }
         assert!(!embedded_stem_uses_raw_tangent_payload(
             "pbsmetallic_default"
         ));
 
-        for stem in ["textunlit_default", "ui_textunlit_default"] {
+        for stem in [
+            "billboardunlit_default",
+            "textunlit_default",
+            "ui_textunlit_default",
+        ] {
             assert!(embedded_stem_uses_raw_normal_payload(stem), "{stem}");
         }
         assert!(!embedded_stem_uses_raw_normal_payload("unlit_default"));

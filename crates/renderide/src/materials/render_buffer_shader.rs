@@ -5,6 +5,8 @@
 /// When set, `billboardunlit.wgsl` treats per-vertex point sizes as final particle sizes instead
 /// of multiplying them by the material `_PointSize`.
 pub(crate) const BILLBOARD_RENDER_BUFFER_ABSOLUTE_SIZE_BIT: u32 = 1u32 << 16;
+/// Billboard/Unlit variant bit that enables per-particle color and alpha.
+pub(crate) const BILLBOARD_RENDER_BUFFER_VERTEX_COLORS_BIT: u32 = 1u32 << 15;
 
 /// Returns whether `stem` names an embedded Unlit-family shader other than Billboard/Unlit.
 pub(crate) fn is_unlit_family_embedded_stem(stem: &str) -> bool {
@@ -22,9 +24,9 @@ pub(crate) fn should_remap_unlit_variant_bits_for_billboard_draw(
         && source_shader_stem.is_some_and(is_unlit_family_embedded_stem)
 }
 
-/// Enables render-buffer sizing semantics for synthetic billboard draws.
+/// Enables render-buffer sizing and particle color semantics for synthetic billboard draws.
 pub(crate) fn ensure_render_buffer_billboard_variant_bits(bits: u32) -> u32 {
-    bits | BILLBOARD_RENDER_BUFFER_ABSOLUTE_SIZE_BIT
+    bits | BILLBOARD_RENDER_BUFFER_ABSOLUTE_SIZE_BIT | BILLBOARD_RENDER_BUFFER_VERTEX_COLORS_BIT
 }
 
 /// Remaps Froox Unlit keyword bits to Billboard/Unlit keyword bits for material binding.
@@ -76,7 +78,7 @@ mod tests {
     fn render_buffer_variant_bit_is_reserved() {
         assert_eq!(
             ensure_render_buffer_billboard_variant_bits(0),
-            BILLBOARD_RENDER_BUFFER_ABSOLUTE_SIZE_BIT
+            BILLBOARD_RENDER_BUFFER_ABSOLUTE_SIZE_BIT | BILLBOARD_RENDER_BUFFER_VERTEX_COLORS_BIT
         );
     }
 }

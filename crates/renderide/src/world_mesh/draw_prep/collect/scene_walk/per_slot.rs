@@ -2,6 +2,7 @@
 
 use glam::Mat4;
 
+use crate::particles::ParticleDrawParams;
 use crate::scene::MeshMaterialSlot;
 use crate::world_mesh::culling::CpuCullFailure;
 use crate::world_mesh::materials::FrameMaterialBatchCache;
@@ -109,6 +110,7 @@ pub(super) fn push_one_slot_draw(
         material_asset_id,
         property_block_id: slot.property_block_id,
         world_aabb,
+        particle_draw: ParticleDrawParams::default(),
     };
     if let Some(item) = evaluate_draw_candidate(
         ctx,

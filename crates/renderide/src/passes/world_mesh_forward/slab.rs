@@ -138,7 +138,8 @@ fn pack_per_draw_vp_uniforms(
             .with_reflection_probe_selection(
                 item.reflection_probes.atlas_indices,
                 item.reflection_probes.importance_mask,
-            );
+            )
+            .with_particle_draw(item.particle_draw);
     };
     let admission =
         admit_render_command_items(inputs.draws.len(), current_reference_worker_count());

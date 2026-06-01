@@ -313,6 +313,41 @@ fn billboard_render_buffer_uses_indexed_corner_separate_from_sample_uv() -> io::
             && src.contains("out.uv = uv;"),
         "Billboard/Unlit must keep atlas sampling UVs separate from generated geometry corners"
     );
+    assert!(
+        src.contains("@location(4) point_forward_upz: vec4<f32>")
+            && src.contains("@location(5) point_up_xy: vec2<f32>")
+            && src.contains("fn render_buffer_billboard_basis("),
+        "Render-buffer billboards must receive particle orientation streams for Unity alignment modes"
+    );
+    assert!(
+        src.contains("pd::particle_alignment(d)")
+            && src.contains("fn screen_clamped_billboard_size("),
+        "Render-buffer billboards must apply renderer alignment and screen-size clamp metadata"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn mesh_particle_vertex_module_applies_alignment_and_color_metadata() -> io::Result<()> {
+    let src = module_source("mesh/vertex.wgsl")?;
+
+    assert!(
+        src.contains("fn mesh_particle_view_basis(")
+            && src.contains("dt::particle_kind(draw) == 2u")
+            && src.contains("dt::particle_alignment(draw)"),
+        "mesh particle vertices must derive Unity view/facing alignment from per-draw metadata"
+    );
+    assert!(
+        src.contains("fn world_position_for_view(")
+            && src.contains("fn world_normal_for_view(")
+            && src.contains("fn world_tangent_for_view("),
+        "mesh particle view/facing alignment must affect positions, normals, and tangents together"
+    );
+    assert!(
+        src.contains("out.color = color * dt::particle_color(draw);"),
+        "mesh particle vertex color output must include the per-particle tint/alpha"
+    );
 
     Ok(())
 }

@@ -3,7 +3,7 @@
 //! Import with `#import renderide::draw::per_draw as pd` from `shaders/materials/*.wgsl` and use
 //! `pd::get_draw(instance_index)` in `vs_main`. Do not redeclare `@group(2)` in material roots.
 //!
-//! CPU packing must match [`crate::backend::mesh_deform::PaddedPerDrawUniforms`].
+//! CPU packing must match [`crate::mesh_deform::PaddedPerDrawUniforms`].
 
 #define_import_path renderide::draw::per_draw
 
@@ -29,4 +29,24 @@ fn reflection_probe_importance_mask(draw: dt::PerDrawUniforms) -> u32 {
 
 fn has_reflection_probe_selection(draw: dt::PerDrawUniforms) -> bool {
     return dt::has_reflection_probe_selection(draw);
+}
+
+fn particle_kind(draw: dt::PerDrawUniforms) -> u32 {
+    return dt::particle_kind(draw);
+}
+
+fn particle_alignment(draw: dt::PerDrawUniforms) -> u32 {
+    return dt::particle_alignment(draw);
+}
+
+fn particle_min_screen_size(draw: dt::PerDrawUniforms) -> f32 {
+    return dt::particle_min_screen_size(draw);
+}
+
+fn particle_max_screen_size(draw: dt::PerDrawUniforms) -> f32 {
+    return dt::particle_max_screen_size(draw);
+}
+
+fn particle_color(draw: dt::PerDrawUniforms) -> vec4<f32> {
+    return dt::particle_color(draw);
 }

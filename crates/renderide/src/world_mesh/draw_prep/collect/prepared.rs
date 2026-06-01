@@ -228,6 +228,7 @@ fn append_prepared_run_draws(
             material_asset_id: d.material_asset_id,
             property_block_id: d.property_block_id,
             world_aabb: state.world_aabb,
+            particle_draw: d.particle_draw,
         };
         if let Some(item) = evaluate_draw_candidate(
             ctx,
