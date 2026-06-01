@@ -53,6 +53,10 @@ fn debug_hud_section(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bool)
         *dirty = true;
     }
     ui.text_disabled("Texture pool rows and current-view usage; can be noisy in large scenes.");
+    if ui.checkbox("Links HUD", &mut g.debug.debug_hud_links) {
+        *dirty = true;
+    }
+    ui.text_disabled("Feedback, bug report, and discussion links.");
     if ui.checkbox("Persist HUD layout", &mut g.debug.hud.persist_layout) {
         *dirty = true;
     }

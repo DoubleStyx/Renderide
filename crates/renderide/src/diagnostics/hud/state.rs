@@ -1,24 +1,16 @@
-//! Mutable per-frame UI state for HUD windows: open flags and tab filters.
+//! Mutable per-frame UI state for HUD windows: tab selections and filters.
 //!
-//! Lives on [`crate::diagnostics::DebugHud`] so window bodies can borrow exactly the field they
-//! need without the host struct exposing seven independent booleans.
+//! Lives on [`crate::diagnostics::DebugHud`] so window bodies can borrow exactly the state they
+//! need without the host struct exposing each individual field.
 
 use crate::config::{
     DebugHudMainTab, DebugHudMainTabVisibility, DebugHudRendererConfigTab,
     DebugHudRendererConfigTabVisibility, DebugHudSettings,
 };
 
-/// Per-window open flags and per-tab filter toggles owned by [`crate::diagnostics::DebugHud`].
-///
-/// Defaults match prior behavior:
-/// - All open flags start `true` so the windows appear on first launch.
-/// - All filter toggles start `false` (no narrowing applied).
+/// Per-tab state and filter toggles owned by [`crate::diagnostics::DebugHud`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HudUiState {
-    /// Whether the **Scene transforms** window is open.
-    pub scene_transforms_open: bool,
-    /// Whether the **Textures** window is open.
-    pub texture_debug_open: bool,
     /// Show only textures referenced by the current view in the **Textures** window.
     pub texture_debug_current_view_only: bool,
     /// Show only overlay/UI-ish draws in the **Draw state** tab.
@@ -27,8 +19,6 @@ pub struct HudUiState {
     pub draw_state_only_overrides: bool,
     /// Show only fallback shader routes in the **Shader routes** tab.
     pub shader_routes_only_fallback: bool,
-    /// Whether the **Renderer config** window is open.
-    pub renderer_config_open: bool,
     /// Last selected tab in **Renderide debug**.
     pub main_tab: DebugHudMainTab,
     /// Open/closed state for tabs in **Renderide debug**.
@@ -57,13 +47,10 @@ impl HudUiState {
     /// Builds process-local HUD state from persisted renderer config fields.
     pub fn from_settings(settings: &DebugHudSettings) -> Self {
         Self {
-            scene_transforms_open: settings.scene_transforms_open,
-            texture_debug_open: settings.texture_debug_open,
             texture_debug_current_view_only: settings.texture_debug_current_view_only,
             draw_state_ui_only: settings.draw_state_ui_only,
             draw_state_only_overrides: settings.draw_state_only_overrides,
             shader_routes_only_fallback: settings.shader_routes_only_fallback,
-            renderer_config_open: settings.renderer_config_open,
             main_tab: settings.main_tab,
             main_tabs: settings.main_tabs,
             renderer_config_tab: settings.renderer_config_tab,
@@ -80,13 +67,10 @@ impl HudUiState {
     /// Returns `true` when this changed any persisted field.
     pub fn write_to_settings(self, settings: &mut DebugHudSettings) -> bool {
         let before = settings.clone();
-        settings.scene_transforms_open = self.scene_transforms_open;
-        settings.texture_debug_open = self.texture_debug_open;
         settings.texture_debug_current_view_only = self.texture_debug_current_view_only;
         settings.draw_state_ui_only = self.draw_state_ui_only;
         settings.draw_state_only_overrides = self.draw_state_only_overrides;
         settings.shader_routes_only_fallback = self.shader_routes_only_fallback;
-        settings.renderer_config_open = self.renderer_config_open;
         settings.main_tab = self.main_tab;
         settings.main_tabs = self.main_tabs;
         settings.renderer_config_tab = self.renderer_config_tab;
@@ -106,11 +90,8 @@ mod tests {
     use super::HudUiState;
 
     #[test]
-    fn default_opens_every_window_and_disables_every_filter() {
+    fn default_restores_tab_state_and_disables_every_filter() {
         let s = HudUiState::default();
-        assert!(s.scene_transforms_open);
-        assert!(s.texture_debug_open);
-        assert!(s.renderer_config_open);
         assert!(!s.texture_debug_current_view_only);
         assert!(!s.draw_state_ui_only);
         assert!(!s.draw_state_only_overrides);
@@ -154,9 +135,6 @@ mod tests {
 
         let state = HudUiState::from_settings(&persisted);
 
-        assert!(!state.renderer_config_open);
-        assert!(!state.scene_transforms_open);
-        assert!(!state.texture_debug_open);
         assert!(state.texture_debug_current_view_only);
         assert!(state.draw_state_ui_only);
         assert!(state.draw_state_only_overrides);
@@ -193,5 +171,22 @@ mod tests {
         state.main_tabs.set_open(DebugHudMainTab::Stats, false);
         assert!(state.write_to_settings(&mut settings));
         assert!(!settings.main_tabs.stats);
+    }
+
+    #[test]
+    fn write_to_settings_preserves_compatibility_window_open_fields() {
+        let mut settings = DebugHudSettings {
+            renderer_config_open: false,
+            scene_transforms_open: false,
+            texture_debug_open: false,
+            ..Default::default()
+        };
+        let mut state = HudUiState::from_settings(&settings);
+        state.texture_debug_current_view_only = true;
+
+        assert!(state.write_to_settings(&mut settings));
+        assert!(!settings.renderer_config_open);
+        assert!(!settings.scene_transforms_open);
+        assert!(!settings.texture_debug_open);
     }
 }

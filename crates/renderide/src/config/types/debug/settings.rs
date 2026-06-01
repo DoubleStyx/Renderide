@@ -34,15 +34,18 @@ pub struct DebugSettings {
     /// config** or `debug_hud_enabled` in config).
     pub debug_hud_enabled: bool,
     /// When true, show the **Scene transforms** ImGui window and capture
-    /// [`crate::diagnostics::SceneTransformsSnapshot`] while that window is open (can be expensive
-    /// on large scenes). Independent of [`Self::debug_hud_enabled`] so you can enable transforms
-    /// inspection without the main debug panels. Default false.
+    /// [`crate::diagnostics::SceneTransformsSnapshot`] (can be expensive on large scenes).
+    /// Independent of [`Self::debug_hud_enabled`] so you can enable transforms inspection without
+    /// the main debug panels. Default false.
     pub debug_hud_transforms: bool,
-    /// When true, show the **Textures** ImGui window and capture GPU texture pool entries while
-    /// that window is open (format, resident/total mips, filter mode, wrap, aniso, and color
-    /// profile). Useful for diagnosing mip / sampler issues. Default false.
+    /// When true, show the **Textures** ImGui window and capture GPU texture pool entries
+    /// (format, resident/total mips, filter mode, wrap, aniso, and color profile). Useful for
+    /// diagnosing mip / sampler issues. Default false.
     #[serde(default)]
     pub debug_hud_textures: bool,
+    /// When true, show the **Feedback / Bug Report** links panel. Default true.
+    #[serde(default = "default_debug_hud_links")]
+    pub debug_hud_links: bool,
     /// Semantic ImGui HUD state persisted through the renderer config.
     pub hud: DebugHudSettings,
     /// Render-graph declaration and runtime validation policy.
@@ -60,6 +63,7 @@ impl Default for DebugSettings {
             debug_hud_enabled: false,
             debug_hud_transforms: false,
             debug_hud_textures: false,
+            debug_hud_links: true,
             hud: DebugHudSettings::default(),
             render_graph_validation: RenderGraphValidationMode::default(),
         }
@@ -67,6 +71,10 @@ impl Default for DebugSettings {
 }
 
 fn default_debug_hud_frame_timing() -> bool {
+    true
+}
+
+fn default_debug_hud_links() -> bool {
     true
 }
 
@@ -87,5 +95,6 @@ mod tests {
 
         assert_eq!(s.debug.hud, DebugHudSettings::default());
         assert!(s.debug.debug_hud_enabled);
+        assert!(s.debug.debug_hud_links);
     }
 }

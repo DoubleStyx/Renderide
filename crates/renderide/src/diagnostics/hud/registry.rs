@@ -40,17 +40,16 @@ impl DebugWindow {
     /// Returns `true` when this window should render this frame.
     ///
     /// The master ImGui visibility toggle hides every window when off.
-    /// The four debug windows are gated by their dedicated [`crate::config::DebugSettings`] flag.
-    /// **Feedback / Bug Report** is always available when ImGui is visible. **Renderer config**
-    /// has no per-window settings gate -- its visibility is driven by the close-button open flag
-    /// persisted in [`crate::diagnostics::HudUiState::renderer_config_open`].
+    /// The optional debug windows are gated by their dedicated
+    /// [`crate::config::DebugSettings`] flag. **Renderer config** has no per-window settings gate
+    /// so configuration remains reachable whenever ImGui is visible.
     pub fn enabled(self, flags: OverlayFeatureFlags) -> bool {
         if !flags.imgui_visible {
             return false;
         }
         match self {
             Self::FrameTiming => flags.frame_timing,
-            Self::Feedback => true,
+            Self::Feedback => flags.links,
             Self::Main => flags.main,
             Self::SceneTransforms => flags.scene_transforms,
             Self::Textures => flags.textures,
@@ -73,6 +72,8 @@ pub struct OverlayFeatureFlags {
     pub scene_transforms: bool,
     /// **Textures** window enabled, before master visibility gating.
     pub textures: bool,
+    /// **Feedback / Bug Report** links panel enabled, before master visibility gating.
+    pub links: bool,
 }
 
 impl Default for OverlayFeatureFlags {
@@ -83,15 +84,16 @@ impl Default for OverlayFeatureFlags {
             main: false,
             scene_transforms: false,
             textures: false,
+            links: true,
         }
     }
 }
 
 impl OverlayFeatureFlags {
-    /// Snapshot the four `debug.debug_hud_*` flags from the current settings handle.
+    /// Snapshot the debug HUD visibility flags from the current settings handle.
     ///
-    /// When the read lock cannot be acquired (poisoned), defaults to `frame_timing = true` and
-    /// the rest off so the renderer's lightweight overlay still appears.
+    /// When the read lock cannot be acquired (poisoned), defaults to the lightweight windows
+    /// enabled and the expensive debug-content windows off.
     pub fn from_settings(settings: &RendererSettingsHandle) -> Self {
         settings
             .read()
@@ -101,6 +103,7 @@ impl OverlayFeatureFlags {
                 main: g.debug.debug_hud_enabled,
                 scene_transforms: g.debug.debug_hud_transforms,
                 textures: g.debug.debug_hud_textures,
+                links: g.debug.debug_hud_links,
             })
             .unwrap_or(OverlayFeatureFlags {
                 imgui_visible: true,
@@ -108,16 +111,8 @@ impl OverlayFeatureFlags {
                 main: false,
                 scene_transforms: false,
                 textures: false,
+                links: true,
             })
-    }
-
-    /// `true` when at least one of the four debug-content windows is enabled.
-    ///
-    /// Useful for gating heavier diagnostics capture; it intentionally excludes the lightweight
-    /// always-available **Feedback / Bug Report** panel.
-    pub fn any_debug_content(self) -> bool {
-        self.imgui_visible
-            && (self.frame_timing || self.main || self.scene_transforms || self.textures)
     }
 }
 
@@ -131,6 +126,7 @@ mod tests {
         main: false,
         scene_transforms: false,
         textures: false,
+        links: false,
     };
     const ALL_ON: OverlayFeatureFlags = OverlayFeatureFlags {
         imgui_visible: true,
@@ -138,13 +134,14 @@ mod tests {
         main: true,
         scene_transforms: true,
         textures: true,
+        links: true,
     };
 
     fn only(window: DebugWindow) -> OverlayFeatureFlags {
         let mut f = ALL_OFF;
         match window {
             DebugWindow::FrameTiming => f.frame_timing = true,
-            DebugWindow::Feedback => {}
+            DebugWindow::Feedback => f.links = true,
             DebugWindow::Main => f.main = true,
             DebugWindow::SceneTransforms => f.scene_transforms = true,
             DebugWindow::Textures => f.textures = true,
@@ -165,7 +162,6 @@ mod tests {
                 "{w:?} must be disabled when ImGui is hidden"
             );
         }
-        assert!(!flags.any_debug_content());
     }
 
     #[test]
@@ -174,23 +170,21 @@ mod tests {
     }
 
     #[test]
-    fn feedback_window_is_enabled_when_master_visible_regardless_of_debug_flags() {
-        assert!(DebugWindow::Feedback.enabled(ALL_OFF));
+    fn feedback_window_gates_on_links_flag() {
+        assert!(!DebugWindow::Feedback.enabled(ALL_OFF));
+        assert!(DebugWindow::Feedback.enabled(only(DebugWindow::Feedback)));
     }
 
     #[test]
     fn each_debug_window_gates_on_its_own_flag() {
         for &w in DebugWindow::ALL {
-            if w == DebugWindow::Feedback || w == DebugWindow::RendererConfig {
+            if w == DebugWindow::RendererConfig {
                 continue;
             }
             let f = only(w);
             assert!(w.enabled(f), "{w:?} should enable when its flag is on");
             for &other in DebugWindow::ALL {
-                if other == w
-                    || other == DebugWindow::Feedback
-                    || other == DebugWindow::RendererConfig
-                {
+                if other == w || other == DebugWindow::RendererConfig {
                     continue;
                 }
                 assert!(
@@ -199,16 +193,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn any_debug_content_truth_table() {
-        assert!(!ALL_OFF.any_debug_content());
-        assert!(only(DebugWindow::FrameTiming).any_debug_content());
-        assert!(only(DebugWindow::Main).any_debug_content());
-        assert!(only(DebugWindow::SceneTransforms).any_debug_content());
-        assert!(only(DebugWindow::Textures).any_debug_content());
-        assert!(ALL_ON.any_debug_content());
     }
 
     #[test]

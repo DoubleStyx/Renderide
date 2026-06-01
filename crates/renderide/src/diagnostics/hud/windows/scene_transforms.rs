@@ -41,14 +41,6 @@ impl HudWindow for SceneTransformsWindow {
         0.85
     }
 
-    fn read_open_flag(&self, state: &Self::State) -> Option<bool> {
-        Some(state.scene_transforms_open)
-    }
-
-    fn write_open_flag(&self, state: &mut Self::State, value: bool) {
-        state.scene_transforms_open = value;
-    }
-
     fn body(&self, ui: &imgui::Ui, snapshot: Self::Data<'_>, state: &mut Self::State) {
         if snapshot.spaces.is_empty() {
             ui.text("No render spaces.");
