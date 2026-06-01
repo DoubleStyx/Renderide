@@ -27,8 +27,8 @@ use crate::materials::embedded::stem_metadata::{
 use crate::materials::null_pipeline::{build_null_wgsl, create_null_render_pipeline};
 use crate::materials::raster_pipeline::ShaderModuleBuildRefs;
 use crate::materials::{
-    MaterialBlendMode, MaterialRenderState, RasterFrontFace, RasterPipelineKind,
-    RasterPrimitiveTopology,
+    MaterialBlendMode, MaterialRenderState, MaterialShaderSpecializationKey, RasterFrontFace,
+    RasterPipelineKind, RasterPrimitiveTopology,
 };
 
 use super::pipeline_build_error::PipelineBuildError;
@@ -59,6 +59,8 @@ fn per_shard_cap() -> NonZeroUsize {
 pub struct MaterialPipelineVariantSpec {
     /// Stereo multiview / single-view permutation for the pipeline.
     pub permutation: ShaderPermutation,
+    /// Renderer-local shader specialization constants for material keyword branches.
+    pub shader_specialization: MaterialShaderSpecializationKey,
     /// Material-level blend override for stems without explicit pass directives.
     pub blend_mode: MaterialBlendMode,
     /// Material-level stencil and color write state.
@@ -89,6 +91,8 @@ pub struct MaterialPipelineCacheKey {
     pub sample_count: u32,
     /// OpenXR / multiview view mask when compiling multiview pipelines.
     pub multiview_mask: Option<NonZeroU32>,
+    /// Renderer-local shader specialization constants for material keyword branches.
+    pub shader_specialization: MaterialShaderSpecializationKey,
     /// Material-level blend override for stems without explicit pass directives.
     pub blend_mode: MaterialBlendMode,
     /// Material-level stencil and color write state.
@@ -100,6 +104,16 @@ pub struct MaterialPipelineCacheKey {
     /// `wgpu::RenderPipeline` immutably bakes its primitive topology, so two draws of the same
     /// shader/material that differ in topology must build separate pipelines.
     pub primitive_topology: RasterPrimitiveTopology,
+}
+
+impl MaterialPipelineVariantSpec {
+    /// Returns the same pipeline state with shader specialization disabled.
+    pub(crate) fn without_shader_specialization(self) -> Self {
+        Self {
+            shader_specialization: MaterialShaderSpecializationKey::disabled(),
+            ..self
+        }
+    }
 }
 
 /// One or more pipelines for a material entry (one per declared `//#pass`).
@@ -494,6 +508,7 @@ impl MaterialPipelineCache {
     ) -> MaterialPipelineCacheKey {
         let MaterialPipelineVariantSpec {
             permutation,
+            shader_specialization,
             blend_mode,
             render_state,
             front_face,
@@ -507,6 +522,7 @@ impl MaterialPipelineCache {
             depth_stencil_format: desc.depth_stencil_format,
             sample_count: desc.sample_count,
             multiview_mask: desc.multiview_mask,
+            shader_specialization,
             blend_mode,
             render_state,
             front_face,
@@ -588,6 +604,7 @@ impl MaterialPipelineCache {
         } = resources;
         let MaterialPipelineVariantSpec {
             permutation,
+            shader_specialization,
             blend_mode,
             render_state,
             front_face,
@@ -609,6 +626,10 @@ impl MaterialPipelineCache {
                     Arc::from(build_null_wgsl(permutation)?.into_boxed_str())
                 }
             }
+        };
+        let shader_specialization = match kind {
+            RasterPipelineKind::EmbeddedStem(_) => shader_specialization.for_wgsl_source(&wgsl),
+            RasterPipelineKind::Null => MaterialShaderSpecializationKey::disabled(),
         };
         let module = shader_module_cache.get_or_create(
             device.as_ref(),
@@ -632,6 +653,7 @@ impl MaterialPipelineCache {
                     module: module.as_ref(),
                     desc,
                     wgsl_source: wgsl.as_ref(),
+                    shader_specialization,
                 },
             )?,
             RasterPipelineKind::Null => {
@@ -789,8 +811,9 @@ mod tests {
         material_pipeline_compile_worker_count, per_shard_cap,
     };
     use crate::materials::{
-        MaterialBlendMode, MaterialPipelineDesc, MaterialRenderState, RasterFrontFace,
-        RasterPipelineKind, RasterPrimitiveTopology, ShaderPermutation,
+        MaterialBlendMode, MaterialPipelineDesc, MaterialRenderState,
+        MaterialShaderSpecializationKey, RasterFrontFace, RasterPipelineKind,
+        RasterPrimitiveTopology, ShaderPermutation,
     };
 
     fn base_desc() -> MaterialPipelineDesc {
@@ -805,6 +828,7 @@ mod tests {
     fn base_variant() -> MaterialPipelineVariantSpec {
         MaterialPipelineVariantSpec {
             permutation: ShaderPermutation::default(),
+            shader_specialization: MaterialShaderSpecializationKey::disabled(),
             blend_mode: MaterialBlendMode::Opaque,
             render_state: MaterialRenderState::default(),
             front_face: RasterFrontFace::default(),
@@ -822,6 +846,27 @@ mod tests {
         assert_ne!(first, second);
         assert_eq!(first.shader_source_generation, 1);
         assert_eq!(second.shader_source_generation, 2);
+    }
+
+    #[test]
+    fn cache_key_includes_shader_specialization() {
+        let kind = RasterPipelineKind::EmbeddedStem(Arc::from("unlit_default"));
+        let first = MaterialPipelineCache::cache_key(&kind, &base_desc(), base_variant(), 1);
+        let second = MaterialPipelineCache::cache_key(
+            &kind,
+            &base_desc(),
+            MaterialPipelineVariantSpec {
+                shader_specialization: MaterialShaderSpecializationKey::from_variant_bits(0x44),
+                ..base_variant()
+            },
+            1,
+        );
+
+        assert_ne!(first, second);
+        assert_eq!(
+            second.shader_specialization,
+            MaterialShaderSpecializationKey::from_variant_bits(0x44)
+        );
     }
 
     #[test]

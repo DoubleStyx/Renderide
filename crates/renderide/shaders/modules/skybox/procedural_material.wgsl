@@ -34,7 +34,7 @@ fn kw_SUNDISK_NONE() -> bool {
 }
 
 fn kw_SUNDISK_HIGH_QUALITY() -> bool {
-    return (mat._RenderideVariantBits & PROCSKY_GROUP_SUNDISK) == 0u
+    return (vb::effective(mat._RenderideVariantBits) & PROCSKY_GROUP_SUNDISK) == 0u
         || procsky_kw(PROCSKY_KW_SUNDISK_HIGH_QUALITY);
 }
 
