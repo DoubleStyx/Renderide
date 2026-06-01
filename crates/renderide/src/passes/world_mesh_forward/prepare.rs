@@ -11,13 +11,16 @@ use crate::materials::ShaderPermutation;
 use crate::materials::embedded::MaterialBindCacheKey;
 use crate::passes::WorldMeshForwardEncodeRefs;
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
+use crate::skybox::PreparedSkybox;
 use crate::world_mesh::draw_prep::{
     WorldMeshDrawArrangementStats, WorldMeshDrawCollection, WorldMeshDrawItem,
     WorldMeshVisibilityStats,
 };
+use crate::world_mesh::instances::InstancePlanBuildScratch;
 use crate::world_mesh::{
-    DrawGroup, InstancePlan, PrefetchedWorldMeshViewDraws, WorldMeshCullProjParams, WorldMeshPhase,
-    state_rows_from_sorted, stats_from_sorted, stats_from_sorted_with_plan,
+    DrawGroup, InstancePlan, PrefetchedWorldMeshViewDraws, WorldMeshCullProjParams,
+    WorldMeshHelperNeeds, WorldMeshPhase, state_rows_from_sorted, stats_from_sorted,
+    stats_from_sorted_with_plan,
 };
 
 use super::camera::{compute_view_projections, resolve_pass_config};
@@ -60,6 +63,35 @@ struct PackedForwardDraws {
     plan: InstancePlan,
     overlay_view_proj: glam::Mat4,
     precomputed_batches: Vec<MaterialBatchPacket>,
+}
+
+struct ForwardViewFinalizeInputs {
+    pipeline: WorldMeshForwardPipelineState,
+    helper_needs: WorldMeshHelperNeeds,
+    supports_base_instance: bool,
+    skybox: Option<PreparedSkybox>,
+    viewport_px: (u32, u32),
+    hud_outputs: Option<PerViewHudOutputs>,
+}
+
+struct ForwardDrawPackContext<'a, 'frame> {
+    device: &'a wgpu::Device,
+    uploads: GraphUploadSink<'a>,
+    frame: &'a GraphPassFrame<'frame>,
+    encode_refs: &'a WorldMeshForwardEncodeRefs<'frame>,
+    pipeline: &'a WorldMeshForwardPipelineState,
+    supports_base_instance: bool,
+}
+
+/// Reusable CPU scratch for one view's world-mesh forward preparation.
+#[derive(Default)]
+pub(crate) struct WorldMeshForwardPrepareScratch {
+    /// Per-draw material submission class, aligned to the sorted draw list.
+    submission_classes: Vec<u32>,
+    /// Compact class ids for resolved material submission identities.
+    submission_class_ids: HashMap<MaterialPacketSubmissionKey, u32>,
+    /// Scratch owned by instance planning.
+    instance_plan: InstancePlanBuildScratch,
 }
 
 /// Inputs used to replace provisional HUD draw stats after instance planning.
@@ -170,6 +202,7 @@ pub(super) fn maybe_set_world_mesh_draw_stats(
 pub(crate) fn prepare_world_mesh_forward_frame(
     ctx: WorldMeshForwardPrepareContext<'_, '_>,
     prefetched: PrefetchedWorldMeshViewDraws,
+    scratch: &mut WorldMeshForwardPrepareScratch,
 ) -> PreparedWorldMeshForwardView {
     profiling::scope!("world_mesh::prepare_frame");
     let WorldMeshForwardPrepareContext {
@@ -213,21 +246,18 @@ pub(crate) fn prepare_world_mesh_forward_frame(
         )
     };
 
-    let Some(PackedForwardDraws {
-        draws,
-        plan,
-        overlay_view_proj,
-        precomputed_batches,
-    }) = pack_forward_draws_for_view(
-        device,
-        uploads,
-        frame,
-        &encode_refs,
-        &pipeline,
-        supports_base_instance,
+    let Some(packed) = pack_forward_draws_for_view(
+        ForwardDrawPackContext {
+            device,
+            uploads,
+            frame,
+            encode_refs: &encode_refs,
+            pipeline: &pipeline,
+            supports_base_instance,
+        },
         prefetched.collection.items,
-    )
-    else {
+        scratch,
+    ) else {
         return PreparedWorldMeshForwardView {
             prepared: None,
             hud_outputs,
@@ -236,13 +266,13 @@ pub(crate) fn prepare_world_mesh_forward_frame(
     update_world_mesh_draw_stats_from_plan(
         &mut hud_outputs,
         WorldMeshForwardDrawStatsUpdate {
-            draws: &draws,
+            draws: &packed.draws,
             cull_counts,
             visibility,
             arrangement,
             supports_base_instance,
             shader_perm,
-            plan: &plan,
+            plan: &packed.plan,
         },
     );
 
@@ -255,7 +285,37 @@ pub(crate) fn prepare_world_mesh_forward_frame(
         skybox_renderer.prepare(device, uploads, frame, &pipeline)
     };
 
-    let viewport_px = frame.view.viewport_px;
+    prepared_forward_view_from_pack(
+        packed,
+        ForwardViewFinalizeInputs {
+            pipeline,
+            helper_needs,
+            supports_base_instance,
+            skybox,
+            viewport_px: frame.view.viewport_px,
+            hud_outputs,
+        },
+    )
+}
+
+fn prepared_forward_view_from_pack(
+    packed: PackedForwardDraws,
+    inputs: ForwardViewFinalizeInputs,
+) -> PreparedWorldMeshForwardView {
+    let PackedForwardDraws {
+        draws,
+        plan,
+        overlay_view_proj,
+        precomputed_batches,
+    } = packed;
+    let ForwardViewFinalizeInputs {
+        pipeline,
+        helper_needs,
+        supports_base_instance,
+        skybox,
+        viewport_px,
+        hud_outputs,
+    } = inputs;
     PreparedWorldMeshForwardView {
         prepared: Some(PreparedWorldMeshForwardFrame {
             draws,
@@ -316,14 +376,18 @@ fn update_world_mesh_draw_stats_from_plan(
 }
 
 fn pack_forward_draws_for_view(
-    device: &wgpu::Device,
-    uploads: GraphUploadSink<'_>,
-    frame: &GraphPassFrame<'_>,
-    encode_refs: &WorldMeshForwardEncodeRefs<'_>,
-    pipeline: &WorldMeshForwardPipelineState,
-    supports_base_instance: bool,
+    ctx: ForwardDrawPackContext<'_, '_>,
     draws: Vec<WorldMeshDrawItem>,
+    scratch: &mut WorldMeshForwardPrepareScratch,
 ) -> Option<PackedForwardDraws> {
+    let ForwardDrawPackContext {
+        device,
+        uploads,
+        frame,
+        encode_refs,
+        pipeline,
+        supports_base_instance,
+    } = ctx;
     let hc = &frame.view.host_camera;
     let shader_perm = pipeline.shader_perm;
     let (render_context, world_proj, overlay_proj) = {
@@ -349,15 +413,22 @@ fn pack_forward_draws_for_view(
     );
     let submission_classes = {
         profiling::scope!("world_mesh::prepare_frame::build_submission_classes");
-        draw_submission_classes(draws.len(), &precomputed_batches)
+        draw_submission_classes_into(
+            draws.len(),
+            &precomputed_batches,
+            &mut scratch.submission_classes,
+            &mut scratch.submission_class_ids,
+        );
+        scratch.submission_classes.as_slice()
     };
     let mut plan = {
         profiling::scope!("world_mesh::prepare_frame::build_instance_plan");
-        crate::world_mesh::build_plan_for_shader_with_submission_classes(
+        crate::world_mesh::instances::build_plan_for_shader_with_submission_classes_scratch(
             &draws,
-            &submission_classes,
+            submission_classes,
             supports_base_instance,
             shader_perm,
+            &mut scratch.instance_plan,
         )
     };
     {
@@ -429,14 +500,20 @@ fn precompute_material_batches(
     precomputed_batches
 }
 
-/// Builds a per-draw submission compatibility class from resolved material packets.
-fn draw_submission_classes(draw_count: usize, packets: &[MaterialBatchPacket]) -> Vec<u32> {
-    let mut classes = vec![0u32; draw_count];
+/// Fills per-draw submission compatibility classes from resolved material packets.
+fn draw_submission_classes_into(
+    draw_count: usize,
+    packets: &[MaterialBatchPacket],
+    classes: &mut Vec<u32>,
+    class_by_key: &mut HashMap<MaterialPacketSubmissionKey, u32>,
+) {
+    classes.clear();
+    classes.resize(draw_count, 0);
+    class_by_key.clear();
     if draw_count == 0 {
-        return classes;
+        return;
     }
 
-    let mut class_by_key: HashMap<MaterialPacketSubmissionKey, u32> = HashMap::new();
     for packet in packets {
         if packet.first_draw_idx >= draw_count {
             continue;
@@ -449,6 +526,13 @@ fn draw_submission_classes(draw_count: usize, packets: &[MaterialBatchPacket]) -
             *slot = class;
         }
     }
+}
+
+#[cfg(test)]
+fn draw_submission_classes(draw_count: usize, packets: &[MaterialBatchPacket]) -> Vec<u32> {
+    let mut classes = Vec::new();
+    let mut class_by_key = HashMap::new();
+    draw_submission_classes_into(draw_count, packets, &mut classes, &mut class_by_key);
     classes
 }
 

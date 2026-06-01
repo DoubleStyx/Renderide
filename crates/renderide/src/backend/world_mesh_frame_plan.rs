@@ -2,12 +2,16 @@
 
 use std::sync::Arc;
 
+use hashbrown::HashMap;
+use parking_lot::Mutex;
+
+use crate::camera::ViewId;
 use crate::diagnostics::PerViewHudOutputs;
 use crate::gpu::GpuLimits;
 use crate::graph_inputs::{GraphPassFrame, PerViewFramePlan};
 use crate::passes::{
-    PreparedWorldMeshForwardFrame, WorldMeshForwardPrepareContext, WorldMeshForwardSkyboxRenderer,
-    prepare_world_mesh_forward_frame,
+    PreparedWorldMeshForwardFrame, WorldMeshForwardPrepareContext, WorldMeshForwardPrepareScratch,
+    WorldMeshForwardSkyboxRenderer, prepare_world_mesh_forward_frame,
 };
 use crate::render_graph::blackboard::{
     Blackboard, GraphCommandStats, GraphCommandStatsSlot, blackboard_slot,
@@ -24,6 +28,8 @@ blackboard_slot! {
 pub(crate) struct BackendWorldMeshFramePlanner {
     /// Skybox/background preparation cache shared across frame plans.
     skybox: WorldMeshForwardSkyboxRenderer,
+    /// Per-view CPU scratch used while building forward draw packets.
+    prepare_scratch: Mutex<HashMap<ViewId, Arc<Mutex<WorldMeshForwardPrepareScratch>>>>,
 }
 
 /// Per-view world-mesh packet prepared before graph pass recording.
@@ -39,12 +45,20 @@ impl BackendWorldMeshFramePlanner {
     pub(crate) fn new() -> Self {
         Self {
             skybox: WorldMeshForwardSkyboxRenderer::default(),
+            prepare_scratch: Mutex::new(HashMap::new()),
         }
     }
 
     /// Releases view-scoped cached planning resources.
-    pub(crate) fn release_view_resources(&self, retired_views: &[crate::camera::ViewId]) {
+    pub(crate) fn release_view_resources(&self, retired_views: &[ViewId]) {
         self.skybox.release_view_resources(retired_views);
+        if retired_views.is_empty() {
+            return;
+        }
+        let mut scratch = self.prepare_scratch.lock();
+        for &view_id in retired_views {
+            scratch.remove(&view_id);
+        }
     }
 
     /// Builds one per-view world-mesh packet from an explicit draw plan.
@@ -66,21 +80,37 @@ impl BackendWorldMeshFramePlanner {
             WorldMeshDrawPlan::Prefetched(draws) => *draws,
             WorldMeshDrawPlan::Empty => PrefetchedWorldMeshViewDraws::empty(),
         };
-        let prepared = prepare_world_mesh_forward_frame(
-            WorldMeshForwardPrepareContext {
-                device,
-                uploads,
-                gpu_limits,
-                frame,
-                frame_plan: &frame_plan,
-                skybox_renderer: &self.skybox,
-            },
-            prefetched,
-        );
+        let scratch_slot = self.prepare_scratch_for_view(frame.view.view_id);
+        let prepared = {
+            let mut scratch = scratch_slot.lock();
+            prepare_world_mesh_forward_frame(
+                WorldMeshForwardPrepareContext {
+                    device,
+                    uploads,
+                    gpu_limits,
+                    frame,
+                    frame_plan: &frame_plan,
+                    skybox_renderer: &self.skybox,
+                },
+                prefetched,
+                &mut scratch,
+            )
+        };
         WorldMeshPreparedView {
             prepared: prepared.prepared,
             hud_outputs: prepared.hud_outputs,
         }
+    }
+
+    fn prepare_scratch_for_view(
+        &self,
+        view_id: ViewId,
+    ) -> Arc<Mutex<WorldMeshForwardPrepareScratch>> {
+        self.prepare_scratch
+            .lock()
+            .entry(view_id)
+            .or_insert_with(|| Arc::new(Mutex::new(WorldMeshForwardPrepareScratch::default())))
+            .clone()
     }
 }
 

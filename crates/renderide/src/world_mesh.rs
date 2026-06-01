@@ -34,10 +34,7 @@ pub(crate) use draw_prep::{
     queue_prepared_draws_for_views_with_parallelism,
 };
 pub(crate) use instances::depth_prepass_group_eligible;
-pub use instances::{
-    DrawGroup, InstancePlan, MeshPassKind, WorldMeshPhase, build_plan_for_shader,
-    build_plan_for_shader_with_submission_classes,
-};
+pub use instances::{DrawGroup, InstancePlan, MeshPassKind, WorldMeshPhase, build_plan_for_shader};
 #[cfg(test)]
 pub(crate) use materials::compute_batch_key_hash;
 pub use materials::{FrameMaterialBatchCache, MaterialDrawBatchKey, TransparentMaterialClass};

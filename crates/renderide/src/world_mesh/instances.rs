@@ -53,6 +53,13 @@ const SUBMISSION_PLAN_PARALLEL_CHUNKS_PER_TASK: usize = 1;
 /// Draw count required before resolved-submission grouping may fan out.
 const SUBMISSION_PLAN_PARALLEL_MIN_DRAWS: usize = SUBMISSION_PLAN_PARALLEL_CHUNK_DRAWS * 2;
 
+/// Reusable CPU scratch for building one [`InstancePlan`] from resolved submission classes.
+#[derive(Default)]
+pub(crate) struct InstancePlanBuildScratch {
+    /// Per-draw submission rows reused across frame planning calls.
+    submission_rows: Vec<SubmissionPlanRow>,
+}
+
 /// Worker-local members for one mesh/submesh group inside a large batch window.
 struct LocalGroupedWindowGroup {
     /// Mesh/submesh key shared by every member.
@@ -383,11 +390,30 @@ pub fn build_plan_for_shader(
 /// will be submitted for `draws[i]`. This lets equivalent materials share GPU instance batches even
 /// when their source material or property-block ids differ. Strict transparent/grab ordering,
 /// skinned draws, and devices without base-instance support still emit singleton groups.
-pub fn build_plan_for_shader_with_submission_classes(
+#[cfg(test)]
+fn build_plan_for_shader_with_submission_classes(
     draws: &[WorldMeshDrawItem],
     submission_classes: &[u32],
     supports_base_instance: bool,
     shader_perm: ShaderPermutation,
+) -> InstancePlan {
+    let mut scratch = InstancePlanBuildScratch::default();
+    build_plan_for_shader_with_submission_classes_scratch(
+        draws,
+        submission_classes,
+        supports_base_instance,
+        shader_perm,
+        &mut scratch,
+    )
+}
+
+/// Builds a per-view [`InstancePlan`] using caller-owned scratch buffers.
+pub(crate) fn build_plan_for_shader_with_submission_classes_scratch(
+    draws: &[WorldMeshDrawItem],
+    submission_classes: &[u32],
+    supports_base_instance: bool,
+    shader_perm: ShaderPermutation,
+    scratch: &mut InstancePlanBuildScratch,
 ) -> InstancePlan {
     profiling::scope!("mesh::build_plan_submission_classes");
     debug_assert_eq!(
@@ -402,7 +428,8 @@ pub fn build_plan_for_shader_with_submission_classes(
         return build_plan_for_shader(draws, supports_base_instance, shader_perm);
     }
 
-    let rows = build_submission_plan_rows(draws, supports_base_instance);
+    build_submission_plan_rows_into(draws, supports_base_instance, &mut scratch.submission_rows);
+    let rows = scratch.submission_rows.as_slice();
     let admission = admit_render_command_items(draws.len(), current_reference_worker_count());
     record_parallel_admission(
         "world_mesh_submission_class_instance_plan",
@@ -417,21 +444,23 @@ pub fn build_plan_for_shader_with_submission_classes(
         build_plan_from_submission_classes_parallel(
             draws,
             submission_classes,
-            &rows,
+            rows,
             shader_perm,
             chunk_size,
         )
     } else {
-        build_plan_from_submission_rows_serial(draws, submission_classes, &rows, shader_perm)
+        build_plan_from_submission_rows_serial(draws, submission_classes, rows, shader_perm)
     }
 }
 
-/// Computes the strict-order segment active at each draw before grouping fans out.
-fn build_submission_plan_rows(
+/// Fills `rows` with the strict-order segment active at each draw.
+fn build_submission_plan_rows_into(
     draws: &[WorldMeshDrawItem],
     supports_base_instance: bool,
-) -> Vec<SubmissionPlanRow> {
-    let mut rows = Vec::with_capacity(draws.len());
+    rows: &mut Vec<SubmissionPlanRow>,
+) {
+    rows.clear();
+    rows.reserve(draws.len());
     let mut order_segments = [0u32; WorldMeshPhase::ALL.len()];
 
     for item in draws {
@@ -449,7 +478,15 @@ fn build_submission_plan_rows(
             *segment = segment.saturating_add(1);
         }
     }
+}
 
+#[cfg(test)]
+fn build_submission_plan_rows(
+    draws: &[WorldMeshDrawItem],
+    supports_base_instance: bool,
+) -> Vec<SubmissionPlanRow> {
+    let mut rows = Vec::new();
+    build_submission_plan_rows_into(draws, supports_base_instance, &mut rows);
     rows
 }
 
