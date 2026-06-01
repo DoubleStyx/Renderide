@@ -31,6 +31,7 @@
 
 #import renderide::material::variant_bits as vb
 #import renderide::mesh::vertex as mv
+#import renderide::pbs::detail as pdet
 #import renderide::pbs::lighting as plight
 #import renderide::pbs::surface as psurf
 #import renderide::pbs::standard as pstd
@@ -148,7 +149,7 @@ fn sample_surface(uv0: vec2<f32>, uv1: vec2<f32>, world_pos: vec3<f32>, world_n:
         _ParallaxMap_sampler,
         mat._ParallaxMap_LodBias,
     );
-    let uv_detail = pstd::detail_uv(uv0, uv1, mat._UVSec, mat._DetailAlbedoMap_ST);
+    let uv_detail = pdet::detail_uv(uv0, uv1, mat._UVSec, mat._DetailAlbedoMap_ST);
 
     let albedo_sample = ts::sample_tex_2d(_MainTex, _MainTex_sampler, uv_main, mat._MainTex_LodBias);
     let base_alpha = pstd::standard_alpha(mat._Color.a, albedo_sample.a, smoothness_from_albedo_alpha());
@@ -174,14 +175,14 @@ fn sample_surface(uv0: vec2<f32>, uv1: vec2<f32>, world_pos: vec3<f32>, world_n:
     let occlusion = pstd::occlusion_from_sample(occlusion_sample, mat._OcclusionStrength);
 
     let detail_enabled = pbs_kw(PBSMETALLIC_KW_DETAIL_MULX2);
-    let detail_mask = pstd::sample_detail_mask(
+    let detail_mask = pdet::sample_detail_mask(
         detail_enabled,
         _DetailMask,
         _DetailMask_sampler,
         uv_main,
         mat._DetailMask_LodBias,
     );
-    base_color = pstd::apply_detail_albedo(
+    base_color = pdet::apply_detail_albedo(
         base_color,
         detail_enabled,
         detail_mask,

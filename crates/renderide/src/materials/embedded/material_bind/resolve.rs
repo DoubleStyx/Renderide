@@ -252,6 +252,11 @@ impl EmbeddedMaterialBindResources {
                 wgpu::TextureViewDimension::Cube => self.gray_cube.view.clone(),
                 _ => self.gray_2d.view.clone(),
             },
+            TextureDefaultPlaceholder::SrgbGray => match view_dimension {
+                wgpu::TextureViewDimension::D3 => self.srgb_gray_3d.view.clone(),
+                wgpu::TextureViewDimension::Cube => self.srgb_gray_cube.view.clone(),
+                _ => self.srgb_gray_2d.view.clone(),
+            },
             TextureDefaultPlaceholder::Red => match view_dimension {
                 wgpu::TextureViewDimension::D3 => self.red_3d.view.clone(),
                 wgpu::TextureViewDimension::Cube => self.red_cube.view.clone(),
@@ -452,6 +457,7 @@ enum TextureDefaultPlaceholder {
     White,
     Black,
     Gray,
+    SrgbGray,
     Red,
     FlatNormal,
 }
@@ -463,9 +469,8 @@ fn texture_default_placeholder(
     match kind {
         EmbeddedTextureDefaultKind::White => TextureDefaultPlaceholder::White,
         EmbeddedTextureDefaultKind::Black => TextureDefaultPlaceholder::Black,
-        EmbeddedTextureDefaultKind::Gray | EmbeddedTextureDefaultKind::Empty => {
-            TextureDefaultPlaceholder::Gray
-        }
+        EmbeddedTextureDefaultKind::Gray => TextureDefaultPlaceholder::SrgbGray,
+        EmbeddedTextureDefaultKind::Empty => TextureDefaultPlaceholder::Gray,
         EmbeddedTextureDefaultKind::Red => TextureDefaultPlaceholder::Red,
         EmbeddedTextureDefaultKind::Bump => match view_dimension {
             wgpu::TextureViewDimension::D2 => TextureDefaultPlaceholder::FlatNormal,
@@ -504,7 +509,7 @@ mod tests {
                 EmbeddedTextureDefaultKind::Gray,
                 wgpu::TextureViewDimension::D2
             ),
-            TextureDefaultPlaceholder::Gray
+            TextureDefaultPlaceholder::SrgbGray
         );
         assert_eq!(
             texture_default_placeholder(

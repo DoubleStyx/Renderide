@@ -28,8 +28,10 @@ pub(super) enum PlaceholderTextureColor {
     White,
     /// Opaque black texel.
     Black,
-    /// Opaque middle-gray texel.
+    /// Opaque middle-gray texel sampled as a linear value.
     Gray,
+    /// Opaque middle-gray texel sampled through sRGB decode.
+    SrgbGray,
     /// Opaque red texel.
     Red,
     /// Unity bump placeholder texel `(0.5, 0.5, 1.0, 0.5)`.
@@ -41,7 +43,7 @@ impl PlaceholderTextureColor {
         match self {
             Self::White => [255, 255, 255, 255],
             Self::Black => [0, 0, 0, 255],
-            Self::Gray => [128, 128, 128, 255],
+            Self::Gray | Self::SrgbGray => [128, 128, 128, 255],
             Self::Red => [255, 0, 0, 255],
             Self::FlatNormal => [128, 128, 255, 128],
         }
@@ -50,12 +52,15 @@ impl PlaceholderTextureColor {
     /// Texture format whose sampler decode preserves [`Self::rgba`] as the intended linear value.
     ///
     /// `White`, `Black`, and `Red` keep the sRGB format the color-slot placeholders shipped with
-    /// so 0 and 1 round-trip identically. `Gray` and `FlatNormal` must stay linear (`Rgba8Unorm`):
-    /// a component of 0.5 is stored as byte 128, and the sRGB EOTF would decode that as ~0.216
-    /// instead of ~0.502.
+    /// so 0 and 1 round-trip identically. `SrgbGray` is reserved for Unity gray color-texture
+    /// defaults such as detail albedo. `Gray` and `FlatNormal` must stay linear (`Rgba8Unorm`):
+    /// a component of 0.5 is stored as byte 128, and the sRGB EOTF would decode that as about
+    /// 0.216 instead of about 0.502.
     fn format(self) -> wgpu::TextureFormat {
         match self {
-            Self::White | Self::Black | Self::Red => wgpu::TextureFormat::Rgba8UnormSrgb,
+            Self::White | Self::Black | Self::SrgbGray | Self::Red => {
+                wgpu::TextureFormat::Rgba8UnormSrgb
+            }
             Self::Gray | Self::FlatNormal => wgpu::TextureFormat::Rgba8Unorm,
         }
     }
@@ -110,6 +115,7 @@ fn tex2d_placeholder_label(color: PlaceholderTextureColor) -> &'static str {
         PlaceholderTextureColor::White => "embedded_default_white",
         PlaceholderTextureColor::Black => "embedded_default_black",
         PlaceholderTextureColor::Gray => "embedded_default_gray",
+        PlaceholderTextureColor::SrgbGray => "embedded_default_gray_srgb",
         PlaceholderTextureColor::Red => "embedded_default_red",
         PlaceholderTextureColor::FlatNormal => "embedded_default_flat_normal",
     }
@@ -128,6 +134,10 @@ fn tex3d_placeholder_labels(color: PlaceholderTextureColor) -> PlaceholderLabels
         PlaceholderTextureColor::Gray => PlaceholderLabels {
             label: "embedded_default_gray_3d",
             view_label: "embedded_default_gray_3d_view",
+        },
+        PlaceholderTextureColor::SrgbGray => PlaceholderLabels {
+            label: "embedded_default_gray_srgb_3d",
+            view_label: "embedded_default_gray_srgb_3d_view",
         },
         PlaceholderTextureColor::Red => PlaceholderLabels {
             label: "embedded_default_red_3d",
@@ -153,6 +163,10 @@ fn cube_placeholder_labels(color: PlaceholderTextureColor) -> PlaceholderLabels 
         PlaceholderTextureColor::Gray => PlaceholderLabels {
             label: "embedded_default_gray_cube",
             view_label: "embedded_default_gray_cube_view",
+        },
+        PlaceholderTextureColor::SrgbGray => PlaceholderLabels {
+            label: "embedded_default_gray_srgb_cube",
+            view_label: "embedded_default_gray_srgb_cube_view",
         },
         PlaceholderTextureColor::Red => PlaceholderLabels {
             label: "embedded_default_red_cube",
@@ -220,6 +234,11 @@ pub(super) fn create_black(device: &wgpu::Device, kind: TextureBindKind) -> Plac
 /// Allocates a 1x1 gray texture and a default view for `kind`.
 pub(super) fn create_gray(device: &wgpu::Device, kind: TextureBindKind) -> PlaceholderTexture {
     create_placeholder(device, kind, PlaceholderTextureColor::Gray)
+}
+
+/// Allocates a 1x1 sRGB gray texture and a default view for `kind`.
+pub(super) fn create_srgb_gray(device: &wgpu::Device, kind: TextureBindKind) -> PlaceholderTexture {
+    create_placeholder(device, kind, PlaceholderTextureColor::SrgbGray)
 }
 
 /// Allocates a 1x1 red texture and a default view for `kind`.
@@ -320,6 +339,15 @@ pub(super) fn upload_gray(queue: &wgpu::Queue, gray: &PlaceholderTexture, kind: 
     upload_placeholder(queue, gray, kind, PlaceholderTextureColor::Gray);
 }
 
+/// Uploads a single sRGB gray texel into every layer of `gray` (1 layer for 2D / 3D, 6 for cubes).
+pub(super) fn upload_srgb_gray(
+    queue: &wgpu::Queue,
+    gray: &PlaceholderTexture,
+    kind: TextureBindKind,
+) {
+    upload_placeholder(queue, gray, kind, PlaceholderTextureColor::SrgbGray);
+}
+
 /// Uploads a single red texel into every layer of `red` (1 layer for 2D / 3D, 6 for cubes).
 pub(super) fn upload_red(queue: &wgpu::Queue, red: &PlaceholderTexture, kind: TextureBindKind) {
     upload_placeholder(queue, red, kind, PlaceholderTextureColor::Red);
@@ -390,7 +418,7 @@ fn checkerboard_texel_rgba(x: u32, y: u32) -> [u8; 4] {
 mod tests {
     use super::{
         CHECKERBOARD_CELL_SIZE, CHECKERBOARD_DARK_RGBA, CHECKERBOARD_LIGHT_RGBA,
-        CHECKERBOARD_TEXTURE_SIZE, checkerboard_rgba8,
+        CHECKERBOARD_TEXTURE_SIZE, PlaceholderTextureColor, checkerboard_rgba8,
     };
 
     /// Returns one RGBA texel from the generated checkerboard byte array.
@@ -433,5 +461,17 @@ mod tests {
     fn checkerboard_generation_is_fully_opaque() {
         let bytes = checkerboard_rgba8();
         assert!(bytes.chunks_exact(4).all(|texel| texel[3] == 255));
+    }
+
+    #[test]
+    fn gray_placeholder_formats_keep_linear_and_srgb_paths_separate() {
+        assert_eq!(
+            PlaceholderTextureColor::Gray.format(),
+            wgpu::TextureFormat::Rgba8Unorm
+        );
+        assert_eq!(
+            PlaceholderTextureColor::SrgbGray.format(),
+            wgpu::TextureFormat::Rgba8UnormSrgb
+        );
     }
 }

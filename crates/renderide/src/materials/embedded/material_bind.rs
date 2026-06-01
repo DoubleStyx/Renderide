@@ -46,8 +46,8 @@ use uniform::{
 };
 use white_texture::{
     PlaceholderTexture, create_black, create_checkerboard_2d, create_flat_normal, create_gray,
-    create_red, create_white, upload_black, upload_checkerboard_2d, upload_flat_normal,
-    upload_gray, upload_red, upload_white,
+    create_red, create_srgb_gray, create_white, upload_black, upload_checkerboard_2d,
+    upload_flat_normal, upload_gray, upload_red, upload_srgb_gray, upload_white,
 };
 
 use resolve::EmbeddedBindInputResolution;
@@ -174,6 +174,7 @@ pub struct EmbeddedMaterialBindResources {
     white_2d: PlaceholderTexture,
     black_2d: PlaceholderTexture,
     gray_2d: PlaceholderTexture,
+    srgb_gray_2d: PlaceholderTexture,
     red_2d: PlaceholderTexture,
     flat_normal_2d: PlaceholderTexture,
     /// Texture2D view bound while a referenced texture asset has no uploaded mip.
@@ -181,10 +182,12 @@ pub struct EmbeddedMaterialBindResources {
     white_3d: PlaceholderTexture,
     black_3d: PlaceholderTexture,
     gray_3d: PlaceholderTexture,
+    srgb_gray_3d: PlaceholderTexture,
     red_3d: PlaceholderTexture,
     white_cube: PlaceholderTexture,
     black_cube: PlaceholderTexture,
     gray_cube: PlaceholderTexture,
+    srgb_gray_cube: PlaceholderTexture,
     red_cube: PlaceholderTexture,
     default_sampler: Arc<wgpu::Sampler>,
     property_registry: Arc<PropertyIdRegistry>,
@@ -225,16 +228,19 @@ impl EmbeddedMaterialBindResources {
         let white_2d = create_white(device.as_ref(), TextureBindKind::Tex2D);
         let black_2d = create_black(device.as_ref(), TextureBindKind::Tex2D);
         let gray_2d = create_gray(device.as_ref(), TextureBindKind::Tex2D);
+        let srgb_gray_2d = create_srgb_gray(device.as_ref(), TextureBindKind::Tex2D);
         let red_2d = create_red(device.as_ref(), TextureBindKind::Tex2D);
         let flat_normal_2d = create_flat_normal(device.as_ref(), TextureBindKind::Tex2D);
         let checkerboard_2d = create_checkerboard_2d(device.as_ref());
         let white_3d = create_white(device.as_ref(), TextureBindKind::Tex3D);
         let black_3d = create_black(device.as_ref(), TextureBindKind::Tex3D);
         let gray_3d = create_gray(device.as_ref(), TextureBindKind::Tex3D);
+        let srgb_gray_3d = create_srgb_gray(device.as_ref(), TextureBindKind::Tex3D);
         let red_3d = create_red(device.as_ref(), TextureBindKind::Tex3D);
         let white_cube = create_white(device.as_ref(), TextureBindKind::Cube);
         let black_cube = create_black(device.as_ref(), TextureBindKind::Cube);
         let gray_cube = create_gray(device.as_ref(), TextureBindKind::Cube);
+        let srgb_gray_cube = create_srgb_gray(device.as_ref(), TextureBindKind::Cube);
         let red_cube = create_red(device.as_ref(), TextureBindKind::Cube);
 
         let default_sampler = Arc::new(default_embedded_sampler(device.as_ref()));
@@ -244,16 +250,19 @@ impl EmbeddedMaterialBindResources {
             white_2d,
             black_2d,
             gray_2d,
+            srgb_gray_2d,
             red_2d,
             flat_normal_2d,
             checkerboard_2d,
             white_3d,
             black_3d,
             gray_3d,
+            srgb_gray_3d,
             red_3d,
             white_cube,
             black_cube,
             gray_cube,
+            srgb_gray_cube,
             red_cube,
             default_sampler,
             property_registry,
@@ -274,16 +283,19 @@ impl EmbeddedMaterialBindResources {
         upload_white(queue, &self.white_2d, TextureBindKind::Tex2D);
         upload_black(queue, &self.black_2d, TextureBindKind::Tex2D);
         upload_gray(queue, &self.gray_2d, TextureBindKind::Tex2D);
+        upload_srgb_gray(queue, &self.srgb_gray_2d, TextureBindKind::Tex2D);
         upload_red(queue, &self.red_2d, TextureBindKind::Tex2D);
         upload_flat_normal(queue, &self.flat_normal_2d, TextureBindKind::Tex2D);
         upload_checkerboard_2d(queue, &self.checkerboard_2d);
         upload_white(queue, &self.white_3d, TextureBindKind::Tex3D);
         upload_black(queue, &self.black_3d, TextureBindKind::Tex3D);
         upload_gray(queue, &self.gray_3d, TextureBindKind::Tex3D);
+        upload_srgb_gray(queue, &self.srgb_gray_3d, TextureBindKind::Tex3D);
         upload_red(queue, &self.red_3d, TextureBindKind::Tex3D);
         upload_white(queue, &self.white_cube, TextureBindKind::Cube);
         upload_black(queue, &self.black_cube, TextureBindKind::Cube);
         upload_gray(queue, &self.gray_cube, TextureBindKind::Cube);
+        upload_srgb_gray(queue, &self.srgb_gray_cube, TextureBindKind::Cube);
         upload_red(queue, &self.red_cube, TextureBindKind::Cube);
     }
 
