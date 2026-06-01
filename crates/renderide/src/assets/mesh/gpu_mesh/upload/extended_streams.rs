@@ -79,10 +79,14 @@ pub(in crate::assets::mesh::gpu_mesh) struct UvVertexUploadSource<'a> {
 }
 
 fn float4_default_stream_bytes(vertex_count: usize, default: [f32; 4]) -> Vec<u8> {
-    default
-        .map(|f| f.to_le_bytes())
-        .as_flattened()
-        .repeat(vertex_count)
+    let mut out = vec![0u8; vertex_count * 16];
+    for chunk in out.chunks_exact_mut(16) {
+        for (component, value) in default.iter().enumerate() {
+            let o = component * 4;
+            chunk[o..o + 4].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+    out
 }
 
 fn float2_zero_stream_bytes(vertex_count: usize) -> Vec<u8> {

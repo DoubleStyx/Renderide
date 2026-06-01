@@ -199,90 +199,15 @@ pub fn uv0_float2_stream_bytes(
 
 /// Dense `vec2<f32>` vertex stream for an arbitrary two-component attribute.
 ///
-/// Missing attributes with supported fallback types will use the first present attribute.
-/// Missing or unsupported attributes return zeros so optional embedded shader streams
-/// can still bind a stable vertex buffer slot.
+/// Missing compact UV attributes fall back to the highest available lower UV channel. Missing or
+/// unsupported non-UV attributes return zeros so optional embedded shader streams can still bind a
+/// stable vertex buffer slot.
 pub fn vertex_float2_stream_bytes(
     vertex_data: &[u8],
     vertex_count: usize,
     stride: usize,
     attrs: &[VertexAttributeDescriptor],
     target: VertexAttributeType,
-) -> Option<Vec<u8>> {
-    vertex_float2_stream_bytes_fallback(
-        vertex_data,
-        vertex_count,
-        stride,
-        attrs,
-        &vertex_attribute_fallbacks(target),
-    )
-}
-
-/// Vector of attribute types that can be used in order of preference
-/// to fill a requested vertex stream with fallback.
-fn vertex_attribute_fallbacks(target: VertexAttributeType) -> Vec<VertexAttributeType> {
-    match target {
-        VertexAttributeType::UV1 => vec![VertexAttributeType::UV1, VertexAttributeType::UV0],
-        VertexAttributeType::UV2 => vec![
-            VertexAttributeType::UV2,
-            VertexAttributeType::UV1,
-            VertexAttributeType::UV0,
-        ],
-        VertexAttributeType::UV3 => vec![
-            VertexAttributeType::UV3,
-            VertexAttributeType::UV2,
-            VertexAttributeType::UV1,
-            VertexAttributeType::UV0,
-        ],
-        VertexAttributeType::UV4 => vec![
-            VertexAttributeType::UV4,
-            VertexAttributeType::UV3,
-            VertexAttributeType::UV2,
-            VertexAttributeType::UV1,
-            VertexAttributeType::UV0,
-        ],
-        VertexAttributeType::UV5 => vec![
-            VertexAttributeType::UV5,
-            VertexAttributeType::UV4,
-            VertexAttributeType::UV3,
-            VertexAttributeType::UV2,
-            VertexAttributeType::UV1,
-            VertexAttributeType::UV0,
-        ],
-        VertexAttributeType::UV6 => vec![
-            VertexAttributeType::UV6,
-            VertexAttributeType::UV5,
-            VertexAttributeType::UV4,
-            VertexAttributeType::UV3,
-            VertexAttributeType::UV2,
-            VertexAttributeType::UV1,
-            VertexAttributeType::UV0,
-        ],
-        VertexAttributeType::UV7 => vec![
-            VertexAttributeType::UV7,
-            VertexAttributeType::UV6,
-            VertexAttributeType::UV5,
-            VertexAttributeType::UV4,
-            VertexAttributeType::UV3,
-            VertexAttributeType::UV2,
-            VertexAttributeType::UV1,
-            VertexAttributeType::UV0,
-        ],
-        _ => vec![target],
-    }
-}
-
-/// Dense `vec2<f32>` vertex stream for an arbitrary two-component attribute,
-/// with a list of fallback targets to use in case of a missing attribute.
-///
-/// Missing or unsupported attributes return zeros so optional embedded shader streams
-/// can still bind a stable vertex buffer slot.
-fn vertex_float2_stream_bytes_fallback(
-    vertex_data: &[u8],
-    vertex_count: usize,
-    stride: usize,
-    attrs: &[VertexAttributeDescriptor],
-    targets: &[VertexAttributeType],
 ) -> Option<Vec<u8>> {
     if vertex_count == 0 || stride == 0 {
         return None;
@@ -292,17 +217,8 @@ fn vertex_float2_stream_bytes_fallback(
         return None;
     }
     let mut out = vec![0u8; vertex_count * 8];
-    let Some(reader) = targets.iter().find_map(|&target| {
-        AttributeReader::from_attrs(
-            vertex_data,
-            vertex_count,
-            stride,
-            attrs,
-            target,
-            VertexDecodeKind::TexCoord,
-            2,
-        )
-    }) else {
+    let Some(reader) = vertex_float2_reader(vertex_data, vertex_count, stride, attrs, target)
+    else {
         return Some(out);
     };
     if should_parallelize_vertex_stream(vertex_count) {
@@ -316,6 +232,47 @@ fn vertex_float2_stream_bytes_fallback(
         }
     }
     Some(out)
+}
+
+fn vertex_float2_reader<'a>(
+    vertex_data: &'a [u8],
+    vertex_count: usize,
+    stride: usize,
+    attrs: &'a [VertexAttributeDescriptor],
+    target: VertexAttributeType,
+) -> Option<AttributeReader<'a>> {
+    if let Some(target_channel) = compact_uv_channel(target) {
+        return UV_VERTEX_ATTRIBUTE_TYPES[..=target_channel]
+            .iter()
+            .rev()
+            .find_map(|&fallback| {
+                AttributeReader::from_attrs(
+                    vertex_data,
+                    vertex_count,
+                    stride,
+                    attrs,
+                    fallback,
+                    VertexDecodeKind::TexCoord,
+                    2,
+                )
+            });
+    }
+
+    AttributeReader::from_attrs(
+        vertex_data,
+        vertex_count,
+        stride,
+        attrs,
+        target,
+        VertexDecodeKind::TexCoord,
+        2,
+    )
+}
+
+fn compact_uv_channel(target: VertexAttributeType) -> Option<usize> {
+    UV_VERTEX_ATTRIBUTE_TYPES[..=3]
+        .iter()
+        .position(|&uv| uv == target)
 }
 
 fn write_vertex_float2(reader: &AttributeReader<'_>, vertex: usize, slot: &mut [u8]) -> Option<()> {
@@ -406,10 +363,8 @@ fn vertex_float4_stream_bytes_with_kind(
     if vertex_data.len() < need {
         return None;
     }
-    let mut out = default
-        .map(|f| f.to_le_bytes())
-        .as_flattened()
-        .repeat(vertex_count);
+    let mut out = vec![0u8; vertex_count * 16];
+    fill_float4_stream_with_default(&mut out, default);
 
     let Some(reader) =
         AttributeReader::from_attrs(vertex_data, vertex_count, stride, attrs, target, kind, 1)
@@ -503,7 +458,8 @@ pub fn color_float4_stream_bytes(
     if vertex_data.len() < need {
         return None;
     }
-    let mut out = 1.0f32.to_le_bytes().repeat(vertex_count * 4);
+    let mut out = vec![0u8; vertex_count * 16];
+    fill_color_stream_with_white(&mut out);
 
     let Some(reader) = AttributeReader::from_attrs(
         vertex_data,
@@ -529,6 +485,27 @@ pub fn color_float4_stream_bytes(
     }
 
     Some(out)
+}
+
+fn fill_float4_stream_with_default(out: &mut [u8], default: [f32; 4]) {
+    let default = default.map(|value| value.to_le_bytes());
+    let write_chunk = |chunk: &mut [u8]| {
+        for (component, value) in default.iter().enumerate() {
+            let offset = component * 4;
+            chunk[offset..offset + 4].copy_from_slice(value);
+        }
+    };
+    if should_parallelize_vertex_stream(out.len() / 16) {
+        out.par_chunks_exact_mut(16)
+            .with_min_len(VERTEX_STREAM_PARALLEL_CHUNK_VERTICES)
+            .for_each(write_chunk);
+    } else {
+        out.chunks_exact_mut(16).for_each(write_chunk);
+    }
+}
+
+fn fill_color_stream_with_white(out: &mut [u8]) {
+    fill_float4_stream_with_default(out, [1.0; 4]);
 }
 
 fn decode_vertex_scalar(
