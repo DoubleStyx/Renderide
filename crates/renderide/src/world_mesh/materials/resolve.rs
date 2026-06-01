@@ -57,8 +57,10 @@ pub(crate) struct ResolvedMaterialBatch {
     pub embedded_needs_uv2: bool,
     /// Whether the active shader permutation requires a UV3 vertex stream.
     pub embedded_needs_uv3: bool,
-    /// Whether the active shader permutation requires the packed UV0-UV7 stream.
-    pub embedded_needs_wide_uvs: bool,
+    /// Whether the active shader permutation requires the packed UV0-UV3 stream.
+    pub embedded_needs_wide_low_uvs: bool,
+    /// Whether the active shader permutation requires the packed UV4-UV7 stream.
+    pub embedded_needs_wide_high_uvs: bool,
     /// Whether the active shader permutation requires any stream outside UV0/color/UV1.
     pub embedded_needs_extended_vertex_streams: bool,
     /// Whether the material declares intersection-depth behavior and needs the depth snapshot.
@@ -125,7 +127,8 @@ struct EmbeddedMaterialFeatures {
     raw_normal_payload: bool,
     needs_uv2: bool,
     needs_uv3: bool,
-    needs_wide_uvs: bool,
+    needs_wide_low_uvs: bool,
+    needs_wide_high_uvs: bool,
     needs_extended_vertex_streams: bool,
     requires_intersection_pass: bool,
     uses_scene_depth_snapshot: bool,
@@ -159,7 +162,8 @@ fn embedded_material_features(
         raw_normal_payload: query.uses_raw_normal_payload(),
         needs_uv2: vertex_streams.uv2,
         needs_uv3: vertex_streams.uv3,
-        needs_wide_uvs: vertex_streams.wide_uvs,
+        needs_wide_low_uvs: vertex_streams.wide_low_uvs,
+        needs_wide_high_uvs: vertex_streams.wide_high_uvs,
         needs_extended_vertex_streams: vertex_streams.needs_extended_vertex_streams(),
         requires_intersection_pass: snapshots.requires_intersection_pass,
         uses_scene_depth_snapshot: snapshots.uses_scene_depth,
@@ -301,7 +305,8 @@ pub(crate) fn resolve_material_batch(
         embedded_raw_normal_payload: embedded.raw_normal_payload,
         embedded_needs_uv2: embedded.needs_uv2,
         embedded_needs_uv3: embedded.needs_uv3,
-        embedded_needs_wide_uvs: embedded.needs_wide_uvs,
+        embedded_needs_wide_low_uvs: embedded.needs_wide_low_uvs,
+        embedded_needs_wide_high_uvs: embedded.needs_wide_high_uvs,
         embedded_needs_extended_vertex_streams: embedded.needs_extended_vertex_streams,
         embedded_requires_intersection_pass: embedded.requires_intersection_pass,
         embedded_uses_scene_depth_snapshot: embedded.uses_scene_depth_snapshot,
@@ -349,7 +354,8 @@ pub(crate) fn apply_render_buffer_mesh_pipeline_override(
     batch_key.embedded_raw_normal_payload = features.raw_normal_payload;
     batch_key.embedded_needs_uv2 = features.needs_uv2;
     batch_key.embedded_needs_uv3 = features.needs_uv3;
-    batch_key.embedded_needs_wide_uvs = features.needs_wide_uvs;
+    batch_key.embedded_needs_wide_low_uvs = features.needs_wide_low_uvs;
+    batch_key.embedded_needs_wide_high_uvs = features.needs_wide_high_uvs;
     batch_key.embedded_needs_extended_vertex_streams = features.needs_extended_vertex_streams;
     batch_key.embedded_requires_intersection_pass = features.requires_intersection_pass;
     batch_key.embedded_uses_scene_depth_snapshot = features.uses_scene_depth_snapshot;
@@ -396,7 +402,8 @@ fn batch_key_from_resolved(
         embedded_raw_normal_payload: r.embedded_raw_normal_payload,
         embedded_needs_uv2: r.embedded_needs_uv2,
         embedded_needs_uv3: r.embedded_needs_uv3,
-        embedded_needs_wide_uvs: r.embedded_needs_wide_uvs,
+        embedded_needs_wide_low_uvs: r.embedded_needs_wide_low_uvs,
+        embedded_needs_wide_high_uvs: r.embedded_needs_wide_high_uvs,
         embedded_needs_extended_vertex_streams: r.embedded_needs_extended_vertex_streams,
         embedded_requires_intersection_pass: r.embedded_requires_intersection_pass,
         embedded_uses_scene_depth_snapshot: r.embedded_uses_scene_depth_snapshot,

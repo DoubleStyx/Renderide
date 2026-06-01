@@ -40,7 +40,8 @@ pub(in crate::assets::mesh::gpu_mesh) fn resident_bytes_for_mesh_upload(
         derived.uv1_buffer.as_ref(),
         derived.uv2_buffer.as_ref(),
         derived.uv3_buffer.as_ref(),
-        derived.wide_uv_buffer.as_ref(),
+        derived.wide_low_uv_buffer.as_ref(),
+        derived.wide_high_uv_buffer.as_ref(),
     ]);
     if let Some(b) = blend_sparse {
         n += b.size();

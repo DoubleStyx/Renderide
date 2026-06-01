@@ -12,10 +12,10 @@ pub(super) use extended_streams::{
     ExtendedVertexUploadSource, UvVertexUploadSource, upload_color_vertex_stream,
     upload_default_extended_vertex_streams, upload_default_raw_tangent_vertex_stream,
     upload_default_tangent_vertex_stream, upload_default_uv_vertex_stream,
-    upload_default_wide_uv_vertex_stream, upload_extended_vertex_streams,
-    upload_position_normal_vertex_streams, upload_raw_tangent_vertex_stream,
-    upload_tangent_vertex_stream, upload_uv_vertex_stream, upload_uv0_vertex_stream,
-    upload_wide_uv_vertex_stream,
+    upload_default_wide_high_uv_vertex_stream, upload_default_wide_low_uv_vertex_stream,
+    upload_extended_vertex_streams, upload_position_normal_vertex_streams,
+    upload_raw_tangent_vertex_stream, upload_tangent_vertex_stream, upload_uv_vertex_stream,
+    upload_uv0_vertex_stream, upload_wide_high_uv_vertex_stream, upload_wide_low_uv_vertex_stream,
 };
 #[cfg(test)]
 use extended_streams::{tangent_stream_usage, vertex_stream_usage};
@@ -36,7 +36,7 @@ use crate::shared::{MeshUploadData, VertexAttributeType};
 use super::super::layout::{
     MeshBufferLayout, color_float4_stream_bytes, compute_index_count, compute_vertex_stride,
     extract_float3_position_normal_as_vec4_streams, uv0_float2_stream_bytes,
-    vertex_float2_stream_bytes, wide_uv_stream_bytes,
+    vertex_float2_stream_bytes, wide_high_uv_stream_bytes, wide_low_uv_stream_bytes,
 };
 use super::demand::{MeshDerivedStreamDemand, MeshDerivedStreamMask, MeshDerivedStreamState};
 use super::hints::{validated_submesh_ranges, validated_submesh_topologies, wgpu_index_format};
@@ -106,7 +106,8 @@ pub(super) struct DerivedStreams {
     pub uv1_buffer: Option<Arc<wgpu::Buffer>>,
     pub uv2_buffer: Option<Arc<wgpu::Buffer>>,
     pub uv3_buffer: Option<Arc<wgpu::Buffer>>,
-    pub wide_uv_buffer: Option<Arc<wgpu::Buffer>>,
+    pub wide_low_uv_buffer: Option<Arc<wgpu::Buffer>>,
+    pub wide_high_uv_buffer: Option<Arc<wgpu::Buffer>>,
 }
 
 /// CPU-prepared derived vertex stream bytes for a full mesh upload.
@@ -130,8 +131,10 @@ pub(crate) struct PreparedDerivedStreams {
     pub(crate) uv2: Option<Vec<u8>>,
     /// UV3 stream bytes.
     pub(crate) uv3: Option<Vec<u8>>,
-    /// Packed wide-UV stream bytes.
-    pub(crate) wide_uv: Option<Vec<u8>>,
+    /// Low wide-UV stream bytes.
+    pub(crate) wide_low_uv: Option<Vec<u8>>,
+    /// High wide-UV stream bytes.
+    pub(crate) wide_high_uv: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -144,7 +147,8 @@ enum DerivedStreamJob {
     Uv1,
     Uv2,
     Uv3,
-    WideUv,
+    WideLowUv,
+    WideHighUv,
 }
 
 enum DerivedStreamJobResult {
@@ -156,7 +160,8 @@ enum DerivedStreamJobResult {
     Uv1(Option<Vec<u8>>),
     Uv2(Option<Vec<u8>>),
     Uv3(Option<Vec<u8>>),
-    WideUv(Option<Vec<u8>>),
+    WideLowUv(Option<Vec<u8>>),
+    WideHighUv(Option<Vec<u8>>),
 }
 
 impl DerivedStreamJob {
@@ -220,7 +225,13 @@ impl DerivedStreamJob {
                 &data.vertex_attributes,
                 VertexAttributeType::UV3,
             )),
-            Self::WideUv => DerivedStreamJobResult::WideUv(wide_uv_stream_bytes(
+            Self::WideLowUv => DerivedStreamJobResult::WideLowUv(wide_low_uv_stream_bytes(
+                vertex_slice,
+                vc_usize,
+                vertex_stride_us,
+                &data.vertex_attributes,
+            )),
+            Self::WideHighUv => DerivedStreamJobResult::WideHighUv(wide_high_uv_stream_bytes(
                 vertex_slice,
                 vc_usize,
                 vertex_stride_us,
@@ -245,7 +256,8 @@ impl PreparedDerivedStreams {
             DerivedStreamJobResult::Uv1(bytes) => self.uv1 = bytes,
             DerivedStreamJobResult::Uv2(bytes) => self.uv2 = bytes,
             DerivedStreamJobResult::Uv3(bytes) => self.uv3 = bytes,
-            DerivedStreamJobResult::WideUv(bytes) => self.wide_uv = bytes,
+            DerivedStreamJobResult::WideLowUv(bytes) => self.wide_low_uv = bytes,
+            DerivedStreamJobResult::WideHighUv(bytes) => self.wide_high_uv = bytes,
         }
     }
 }
@@ -280,8 +292,11 @@ impl DerivedStreams {
         if self.uv3_buffer.is_some() {
             mask |= MeshDerivedStreamMask::UV3;
         }
-        if self.wide_uv_buffer.is_some() {
-            mask |= MeshDerivedStreamMask::WIDE_UV;
+        if self.wide_low_uv_buffer.is_some() {
+            mask |= MeshDerivedStreamMask::WIDE_UV_LOW;
+        }
+        if self.wide_high_uv_buffer.is_some() {
+            mask |= MeshDerivedStreamMask::WIDE_UV_HIGH;
         }
         mask
     }
@@ -330,8 +345,11 @@ pub(crate) fn prepare_derived_stream_bytes(
     if demand.mask.contains(MeshDerivedStreamMask::UV3) {
         jobs.push(DerivedStreamJob::Uv3);
     }
-    if demand.mask.contains(MeshDerivedStreamMask::WIDE_UV) {
-        jobs.push(DerivedStreamJob::WideUv);
+    if demand.mask.contains(MeshDerivedStreamMask::WIDE_UV_LOW) {
+        jobs.push(DerivedStreamJob::WideLowUv);
+    }
+    if demand.mask.contains(MeshDerivedStreamMask::WIDE_UV_HIGH) {
+        jobs.push(DerivedStreamJob::WideHighUv);
     }
 
     let admission = admit_mesh_stream_jobs(jobs.len(), vc_usize, current_reference_worker_count());
@@ -435,8 +453,11 @@ impl PreparedDerivedStreams {
         if self.uv3.is_some() {
             mask |= MeshDerivedStreamMask::UV3;
         }
-        if self.wide_uv.is_some() {
-            mask |= MeshDerivedStreamMask::WIDE_UV;
+        if self.wide_low_uv.is_some() {
+            mask |= MeshDerivedStreamMask::WIDE_UV_LOW;
+        }
+        if self.wide_high_uv.is_some() {
+            mask |= MeshDerivedStreamMask::WIDE_UV_HIGH;
         }
         mask
     }
@@ -778,7 +799,14 @@ fn generated_particle_mesh_input_is_valid(
         ("uv1", prepared.uv1.as_deref().unwrap_or(&[])),
         ("uv2", prepared.uv2.as_deref().unwrap_or(&[])),
         ("uv3", prepared.uv3.as_deref().unwrap_or(&[])),
-        ("wide_uv", prepared.wide_uv.as_deref().unwrap_or(&[])),
+        (
+            "wide_low_uv",
+            prepared.wide_low_uv.as_deref().unwrap_or(&[]),
+        ),
+        (
+            "wide_high_uv",
+            prepared.wide_high_uv.as_deref().unwrap_or(&[]),
+        ),
     ] {
         let size = queue_init_buffer_size(bytes.len());
         if size > max_buf {
@@ -902,7 +930,8 @@ fn upload_generated_derived_streams(
         uv1_buffer: None,
         uv2_buffer: None,
         uv3_buffer: None,
-        wide_uv_buffer: None,
+        wide_low_uv_buffer: None,
+        wide_high_uv_buffer: None,
     })
 }
 
@@ -991,7 +1020,8 @@ pub(crate) fn try_upload_generated_mesh_from_parts(
         uv1_buffer: None,
         uv2_buffer: None,
         uv3_buffer: None,
-        wide_uv_buffer: None,
+        wide_low_uv_buffer: None,
+        wide_high_uv_buffer: None,
         derived_stream_state,
         extended_vertex_stream_source: None,
         has_skeleton: false,
@@ -1111,7 +1141,8 @@ enum DerivedBufferProfile {
     Uv1,
     Uv2,
     Uv3,
-    WideUv,
+    WideLowUv,
+    WideHighUv,
 }
 
 impl DerivedBufferProfile {
@@ -1126,7 +1157,8 @@ impl DerivedBufferProfile {
             Self::Uv1 => "uv1",
             Self::Uv2 => "uv2",
             Self::Uv3 => "uv3",
-            Self::WideUv => "wide_uv",
+            Self::WideLowUv => "wide_low_uv",
+            Self::WideHighUv => "wide_high_uv",
         }
     }
 
@@ -1159,8 +1191,11 @@ impl DerivedBufferProfile {
             Self::Uv3 => {
                 crate::profiling::note_resource_churn!(Buffer, "assets::mesh_uv3_stream");
             }
-            Self::WideUv => {
-                crate::profiling::note_resource_churn!(Buffer, "assets::mesh_wide_uv_stream");
+            Self::WideLowUv => {
+                crate::profiling::note_resource_churn!(Buffer, "assets::mesh_wide_low_uv_stream");
+            }
+            Self::WideHighUv => {
+                crate::profiling::note_resource_churn!(Buffer, "assets::mesh_wide_high_uv_stream");
             }
         }
     }
@@ -1202,6 +1237,127 @@ fn upload_derived_buffer(
     Some(DerivedBufferUpload::Uploaded(buffer))
 }
 
+#[derive(Clone, Copy)]
+struct DerivedBufferUsages {
+    primary: wgpu::BufferUsages,
+    vertex: wgpu::BufferUsages,
+    tangent: wgpu::BufferUsages,
+}
+
+impl DerivedBufferUsages {
+    fn new() -> Self {
+        let primary = wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::VERTEX
+            | wgpu::BufferUsages::COPY_DST
+            | wgpu::BufferUsages::COPY_SRC;
+        let vertex = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
+        let tangent = vertex | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC;
+        Self {
+            primary,
+            vertex,
+            tangent,
+        }
+    }
+}
+
+fn upload_prepared_derived_streams(
+    ctx: MeshGpuUploadContext<'_>,
+    asset_id: i32,
+    prepared: &PreparedDerivedStreams,
+    usages: DerivedBufferUsages,
+) -> Option<DerivedStreams> {
+    Some(DerivedStreams {
+        positions_buffer: upload_derived_buffer(
+            ctx,
+            asset_id,
+            DerivedBufferProfile::Positions,
+            prepared.positions.as_deref(),
+            usages.primary,
+        )?
+        .into_buffer(),
+        normals_buffer: upload_derived_buffer(
+            ctx,
+            asset_id,
+            DerivedBufferProfile::Normals,
+            prepared.normals.as_deref(),
+            usages.primary,
+        )?
+        .into_buffer(),
+        uv0_buffer: upload_derived_buffer(
+            ctx,
+            asset_id,
+            DerivedBufferProfile::Uv0,
+            prepared.uv0.as_deref(),
+            usages.vertex,
+        )?
+        .into_buffer(),
+        color_buffer: upload_derived_buffer(
+            ctx,
+            asset_id,
+            DerivedBufferProfile::Color,
+            prepared.color.as_deref(),
+            usages.vertex,
+        )?
+        .into_buffer(),
+        tangent_buffer: upload_derived_buffer(
+            ctx,
+            asset_id,
+            DerivedBufferProfile::Tangent,
+            prepared.tangent.as_deref(),
+            usages.tangent,
+        )?
+        .into_buffer(),
+        raw_tangent_buffer: upload_derived_buffer(
+            ctx,
+            asset_id,
+            DerivedBufferProfile::RawTangent,
+            prepared.raw_tangent.as_deref(),
+            usages.tangent,
+        )?
+        .into_buffer(),
+        uv1_buffer: upload_derived_buffer(
+            ctx,
+            asset_id,
+            DerivedBufferProfile::Uv1,
+            prepared.uv1.as_deref(),
+            usages.vertex,
+        )?
+        .into_buffer(),
+        uv2_buffer: upload_derived_buffer(
+            ctx,
+            asset_id,
+            DerivedBufferProfile::Uv2,
+            prepared.uv2.as_deref(),
+            usages.vertex,
+        )?
+        .into_buffer(),
+        uv3_buffer: upload_derived_buffer(
+            ctx,
+            asset_id,
+            DerivedBufferProfile::Uv3,
+            prepared.uv3.as_deref(),
+            usages.vertex,
+        )?
+        .into_buffer(),
+        wide_low_uv_buffer: upload_derived_buffer(
+            ctx,
+            asset_id,
+            DerivedBufferProfile::WideLowUv,
+            prepared.wide_low_uv.as_deref(),
+            usages.vertex,
+        )?
+        .into_buffer(),
+        wide_high_uv_buffer: upload_derived_buffer(
+            ctx,
+            asset_id,
+            DerivedBufferProfile::WideHighUv,
+            prepared.wide_high_uv.as_deref(),
+            usages.vertex,
+        )?
+        .into_buffer(),
+    })
+}
+
 /// Builds optional position/normal streams plus UV0 and vertex color buffers.
 pub(super) fn extract_derived_vertex_streams(
     ctx: MeshGpuUploadContext<'_>,
@@ -1218,94 +1374,7 @@ pub(super) fn extract_derived_vertex_streams(
         prepared_owned = prepare_derived_stream_bytes(raw, data, layout, ctx.derived_stream_demand);
         &prepared_owned
     };
-    let primary_usage = wgpu::BufferUsages::STORAGE
-        | wgpu::BufferUsages::VERTEX
-        | wgpu::BufferUsages::COPY_DST
-        | wgpu::BufferUsages::COPY_SRC;
-    let vertex_usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
-    let tangent_usage = vertex_usage | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC;
-    Some(DerivedStreams {
-        positions_buffer: upload_derived_buffer(
-            ctx,
-            data.asset_id,
-            DerivedBufferProfile::Positions,
-            prepared.positions.as_deref(),
-            primary_usage,
-        )?
-        .into_buffer(),
-        normals_buffer: upload_derived_buffer(
-            ctx,
-            data.asset_id,
-            DerivedBufferProfile::Normals,
-            prepared.normals.as_deref(),
-            primary_usage,
-        )?
-        .into_buffer(),
-        uv0_buffer: upload_derived_buffer(
-            ctx,
-            data.asset_id,
-            DerivedBufferProfile::Uv0,
-            prepared.uv0.as_deref(),
-            vertex_usage,
-        )?
-        .into_buffer(),
-        color_buffer: upload_derived_buffer(
-            ctx,
-            data.asset_id,
-            DerivedBufferProfile::Color,
-            prepared.color.as_deref(),
-            vertex_usage,
-        )?
-        .into_buffer(),
-        tangent_buffer: upload_derived_buffer(
-            ctx,
-            data.asset_id,
-            DerivedBufferProfile::Tangent,
-            prepared.tangent.as_deref(),
-            tangent_usage,
-        )?
-        .into_buffer(),
-        raw_tangent_buffer: upload_derived_buffer(
-            ctx,
-            data.asset_id,
-            DerivedBufferProfile::RawTangent,
-            prepared.raw_tangent.as_deref(),
-            tangent_usage,
-        )?
-        .into_buffer(),
-        uv1_buffer: upload_derived_buffer(
-            ctx,
-            data.asset_id,
-            DerivedBufferProfile::Uv1,
-            prepared.uv1.as_deref(),
-            vertex_usage,
-        )?
-        .into_buffer(),
-        uv2_buffer: upload_derived_buffer(
-            ctx,
-            data.asset_id,
-            DerivedBufferProfile::Uv2,
-            prepared.uv2.as_deref(),
-            vertex_usage,
-        )?
-        .into_buffer(),
-        uv3_buffer: upload_derived_buffer(
-            ctx,
-            data.asset_id,
-            DerivedBufferProfile::Uv3,
-            prepared.uv3.as_deref(),
-            vertex_usage,
-        )?
-        .into_buffer(),
-        wide_uv_buffer: upload_derived_buffer(
-            ctx,
-            data.asset_id,
-            DerivedBufferProfile::WideUv,
-            prepared.wide_uv.as_deref(),
-            vertex_usage,
-        )?
-        .into_buffer(),
-    })
+    upload_prepared_derived_streams(ctx, data.asset_id, prepared, DerivedBufferUsages::new())
 }
 
 #[cfg(test)]
@@ -1489,6 +1558,7 @@ mod tests {
         assert!(prepared.uv1.is_none());
         assert!(prepared.uv2.is_none());
         assert!(prepared.uv3.is_none());
-        assert!(prepared.wide_uv.is_none());
+        assert!(prepared.wide_low_uv.is_none());
+        assert!(prepared.wide_high_uv.is_none());
     }
 }

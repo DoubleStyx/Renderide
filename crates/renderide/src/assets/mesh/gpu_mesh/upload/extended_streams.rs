@@ -13,9 +13,9 @@ use crate::shared::{
 };
 
 use super::super::super::layout::{
-    WIDE_UV_VERTEX_STRIDE_BYTES, color_float4_stream_bytes,
+    WIDE_UV_HIGH_VERTEX_STRIDE_BYTES, WIDE_UV_LOW_VERTEX_STRIDE_BYTES, color_float4_stream_bytes,
     extract_float3_position_normal_as_vec4_streams, uv0_float2_stream_bytes,
-    vertex_float2_stream_bytes, wide_uv_stream_bytes,
+    vertex_float2_stream_bytes, wide_high_uv_stream_bytes, wide_low_uv_stream_bytes,
 };
 use super::super::tangent_generation::{
     TangentStreamSource, raw_tangent_payload_stream_bytes, tangent_stream_bytes,
@@ -93,8 +93,12 @@ fn float2_zero_stream_bytes(vertex_count: usize) -> Vec<u8> {
     vec![0u8; vertex_count * 8]
 }
 
-fn wide_uv_zero_stream_bytes(vertex_count: usize) -> Vec<u8> {
-    vec![0u8; vertex_count * WIDE_UV_VERTEX_STRIDE_BYTES]
+fn wide_low_uv_zero_stream_bytes(vertex_count: usize) -> Vec<u8> {
+    vec![0u8; vertex_count * WIDE_UV_LOW_VERTEX_STRIDE_BYTES]
+}
+
+fn wide_high_uv_zero_stream_bytes(vertex_count: usize) -> Vec<u8> {
+    vec![0u8; vertex_count * WIDE_UV_HIGH_VERTEX_STRIDE_BYTES]
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -498,8 +502,8 @@ pub(in crate::assets::mesh::gpu_mesh) fn upload_uv_vertex_stream(
     ))
 }
 
-/// Uploads the wide UV payload stream.
-pub(in crate::assets::mesh::gpu_mesh) fn upload_wide_uv_vertex_stream(
+/// Uploads the low wide UV payload stream.
+pub(in crate::assets::mesh::gpu_mesh) fn upload_wide_low_uv_vertex_stream(
     device: &wgpu::Device,
     asset_id: i32,
     source: UvVertexUploadSource<'_>,
@@ -507,13 +511,13 @@ pub(in crate::assets::mesh::gpu_mesh) fn upload_wide_uv_vertex_stream(
     if source.vertex_count == 0 {
         return None;
     }
-    let uv_bytes = wide_uv_stream_bytes(
+    let uv_bytes = wide_low_uv_stream_bytes(
         source.vertex_slice,
         source.vertex_count,
         source.vertex_stride,
         source.vertex_attributes,
     )
-    .unwrap_or_else(|| wide_uv_zero_stream_bytes(source.vertex_count));
+    .unwrap_or_else(|| wide_low_uv_zero_stream_bytes(source.vertex_count));
     Some(create_vertex_stream_buffer(
         device,
         asset_id,
@@ -522,8 +526,32 @@ pub(in crate::assets::mesh::gpu_mesh) fn upload_wide_uv_vertex_stream(
     ))
 }
 
-/// Uploads a zero-filled wide UV stream.
-pub(in crate::assets::mesh::gpu_mesh) fn upload_default_wide_uv_vertex_stream(
+/// Uploads the high wide UV payload stream.
+pub(in crate::assets::mesh::gpu_mesh) fn upload_wide_high_uv_vertex_stream(
+    device: &wgpu::Device,
+    asset_id: i32,
+    source: UvVertexUploadSource<'_>,
+) -> Option<Arc<wgpu::Buffer>> {
+    if source.vertex_count == 0 {
+        return None;
+    }
+    let uv_bytes = wide_high_uv_stream_bytes(
+        source.vertex_slice,
+        source.vertex_count,
+        source.vertex_stride,
+        source.vertex_attributes,
+    )
+    .unwrap_or_else(|| wide_high_uv_zero_stream_bytes(source.vertex_count));
+    Some(create_vertex_stream_buffer(
+        device,
+        asset_id,
+        source.label,
+        &uv_bytes,
+    ))
+}
+
+/// Uploads a zero-filled low wide UV stream.
+pub(in crate::assets::mesh::gpu_mesh) fn upload_default_wide_low_uv_vertex_stream(
     device: &wgpu::Device,
     asset_id: i32,
     vc_usize: usize,
@@ -531,9 +559,30 @@ pub(in crate::assets::mesh::gpu_mesh) fn upload_default_wide_uv_vertex_stream(
     if vc_usize == 0 {
         return None;
     }
-    let uv_bytes = wide_uv_zero_stream_bytes(vc_usize);
+    let uv_bytes = wide_low_uv_zero_stream_bytes(vc_usize);
     Some(create_vertex_stream_buffer(
-        device, asset_id, "wide_uv", &uv_bytes,
+        device,
+        asset_id,
+        "wide_low_uv",
+        &uv_bytes,
+    ))
+}
+
+/// Uploads a zero-filled high wide UV stream.
+pub(in crate::assets::mesh::gpu_mesh) fn upload_default_wide_high_uv_vertex_stream(
+    device: &wgpu::Device,
+    asset_id: i32,
+    vc_usize: usize,
+) -> Option<Arc<wgpu::Buffer>> {
+    if vc_usize == 0 {
+        return None;
+    }
+    let uv_bytes = wide_high_uv_zero_stream_bytes(vc_usize);
+    Some(create_vertex_stream_buffer(
+        device,
+        asset_id,
+        "wide_high_uv",
+        &uv_bytes,
     ))
 }
 

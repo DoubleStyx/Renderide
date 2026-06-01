@@ -1,10 +1,13 @@
 use super::super::layout::{
-    WIDE_UV_VERTEX_STRIDE_BYTES, color_float4_stream_bytes,
+    WIDE_UV_HIGH_VERTEX_STRIDE_BYTES, WIDE_UV_LOW_VERTEX_STRIDE_BYTES, color_float4_stream_bytes,
     extract_float3_position_normal_as_vec4_streams, raw_float4_stream_bytes,
     uv0_float2_stream_bytes, vertex_float2_stream_bytes, vertex_float4_stream_bytes,
-    wide_uv_stream_bytes,
+    wide_high_uv_stream_bytes, wide_low_uv_stream_bytes,
 };
-use super::{push_f32, read_f32x2_stream, read_f32x4_stream, read_wide_uv_stream};
+use super::{
+    push_f32, read_f32x2_stream, read_f32x4_stream, read_wide_high_uv_stream,
+    read_wide_low_uv_stream,
+};
 use crate::shared::{VertexAttributeDescriptor, VertexAttributeFormat, VertexAttributeType};
 
 #[test]
@@ -248,7 +251,7 @@ fn vertex_float2_extracts_uv3_stream() {
 }
 
 #[test]
-fn wide_uv_stream_packs_all_channels_as_vec4_rows() {
+fn wide_uv_pages_pack_channels_as_vec4_rows() {
     let attrs = [
         VertexAttributeDescriptor {
             attribute: VertexAttributeType::UV0,
@@ -269,18 +272,15 @@ fn wide_uv_stream_packs_all_channels_as_vec4_rows() {
         raw.extend_from_slice(&value.to_le_bytes());
     }
 
-    let out = wide_uv_stream_bytes(&raw, 2, 28, &attrs).expect("wide uv stream");
-    assert_eq!(out.len(), 2 * WIDE_UV_VERTEX_STRIDE_BYTES);
+    let low = wide_low_uv_stream_bytes(&raw, 2, 28, &attrs).expect("wide low uv stream");
+    let high = wide_high_uv_stream_bytes(&raw, 2, 28, &attrs).expect("wide high uv stream");
+    assert_eq!(low.len(), 2 * WIDE_UV_LOW_VERTEX_STRIDE_BYTES);
+    assert_eq!(high.len(), 2 * WIDE_UV_HIGH_VERTEX_STRIDE_BYTES);
 
-    let uv0: [f32; 4] = bytemuck::pod_read_unaligned(&out[..16]);
-    let missing_uv4_offset = 4 * 16;
-    let missing_uv4: [f32; 4] =
-        bytemuck::pod_read_unaligned(&out[missing_uv4_offset..missing_uv4_offset + 16]);
-    let uv7_offset = 7 * 16;
-    let uv7: [f32; 4] = bytemuck::pod_read_unaligned(&out[uv7_offset..uv7_offset + 16]);
-    let second_uv0_offset = WIDE_UV_VERTEX_STRIDE_BYTES;
-    let second_uv0: [f32; 4] =
-        bytemuck::pod_read_unaligned(&out[second_uv0_offset..second_uv0_offset + 16]);
+    let uv0 = read_wide_low_uv_stream(&low, 0, 0);
+    let missing_uv4 = read_wide_high_uv_stream(&high, 0, 4);
+    let uv7 = read_wide_high_uv_stream(&high, 0, 7);
+    let second_uv0 = read_wide_low_uv_stream(&low, 1, 0);
 
     assert_eq!(uv0, [1.0, 2.0, 3.0, 4.0]);
     assert_eq!(missing_uv4, [0.0, 0.0, 0.0, 0.0]);
@@ -289,7 +289,7 @@ fn wide_uv_stream_packs_all_channels_as_vec4_rows() {
 }
 
 #[test]
-fn large_wide_uv_stream_matches_expected() {
+fn large_wide_uv_pages_match_expected() {
     let attrs = [
         VertexAttributeDescriptor {
             attribute: VertexAttributeType::UV0,
@@ -323,22 +323,24 @@ fn large_wide_uv_stream_matches_expected() {
         push_f32(&mut raw, base + 71.0);
     }
 
-    let out = wide_uv_stream_bytes(&raw, verts, stride, &attrs).expect("wide uv stream");
-    assert_eq!(out.len(), verts * WIDE_UV_VERTEX_STRIDE_BYTES);
+    let low = wide_low_uv_stream_bytes(&raw, verts, stride, &attrs).expect("wide low uv stream");
+    let high = wide_high_uv_stream_bytes(&raw, verts, stride, &attrs).expect("wide high uv stream");
+    assert_eq!(low.len(), verts * WIDE_UV_LOW_VERTEX_STRIDE_BYTES);
+    assert_eq!(high.len(), verts * WIDE_UV_HIGH_VERTEX_STRIDE_BYTES);
 
     for vertex in [0usize, 777, 1_099] {
         let base = vertex as f32;
         assert_eq!(
-            read_wide_uv_stream(&out, vertex, 0),
+            read_wide_low_uv_stream(&low, vertex, 0),
             [base, base + 1.0, base + 2.0, base + 3.0]
         );
-        assert_eq!(read_wide_uv_stream(&out, vertex, 3), [0.0; 4]);
+        assert_eq!(read_wide_low_uv_stream(&low, vertex, 3), [0.0; 4]);
         assert_eq!(
-            read_wide_uv_stream(&out, vertex, 5),
+            read_wide_high_uv_stream(&high, vertex, 5),
             [base + 50.0, base + 51.0, base + 52.0, 0.0]
         );
         assert_eq!(
-            read_wide_uv_stream(&out, vertex, 7),
+            read_wide_high_uv_stream(&high, vertex, 7),
             [base + 70.0, base + 71.0, 0.0, 0.0]
         );
     }

@@ -167,10 +167,10 @@ impl EmbeddedStemQuery {
         self.vertex_stream_mask().uv3
     }
 
-    /// `true` when reflected material pass vertex entries need the packed UV0-UV7 stream.
+    /// `true` when reflected material pass vertex entries need any packed wide UV page.
     #[cfg(test)]
     pub fn needs_wide_uv_stream(&self) -> bool {
-        self.vertex_stream_mask().wide_uvs
+        self.vertex_stream_mask().needs_wide_uv_streams()
     }
 
     /// Exact mesh-forward vertex streams declared by reflected material pass vertex entries.

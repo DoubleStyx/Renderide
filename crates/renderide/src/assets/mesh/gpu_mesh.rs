@@ -55,7 +55,9 @@ pub(super) struct ExtendedVertexStreamSource {
     has_uv0_payload: bool,
     has_color_payload: bool,
     has_compact_extended_payload: bool,
-    has_wide_uv_payload: bool,
+    has_low_uv_payload: bool,
+    has_wide_low_uv_payload: bool,
+    has_wide_high_uv_payload: bool,
 }
 
 impl fmt::Debug for ExtendedVertexStreamSource {
@@ -77,7 +79,9 @@ impl fmt::Debug for ExtendedVertexStreamSource {
                 "has_compact_extended_payload",
                 &self.has_compact_extended_payload,
             )
-            .field("has_wide_uv_payload", &self.has_wide_uv_payload)
+            .field("has_low_uv_payload", &self.has_low_uv_payload)
+            .field("has_wide_low_uv_payload", &self.has_wide_low_uv_payload)
+            .field("has_wide_high_uv_payload", &self.has_wide_high_uv_payload)
             .finish()
     }
 }
@@ -161,8 +165,10 @@ pub struct GpuMesh {
     pub uv2_buffer: Option<Arc<wgpu::Buffer>>,
     /// `vec2<f32>` UV3 stream for shaders using extended vertex inputs.
     pub uv3_buffer: Option<Arc<wgpu::Buffer>>,
-    /// Packed UV0-UV7 stream for shaders using UV4-UV7 or 3D/4D UV inputs.
-    pub wide_uv_buffer: Option<Arc<wgpu::Buffer>>,
+    /// Packed UV0-UV3 stream for shaders using 3D/4D low UV inputs.
+    pub wide_low_uv_buffer: Option<Arc<wgpu::Buffer>>,
+    /// Packed UV4-UV7 stream for shaders using high UV inputs.
+    pub wide_high_uv_buffer: Option<Arc<wgpu::Buffer>>,
     /// Demand and dirty-state for lazily maintained derived streams.
     pub(crate) derived_stream_state: MeshDerivedStreamState,
     /// CPU vertex source kept only until lazy extended streams are created.
@@ -189,24 +195,33 @@ fn has_compact_extended_payload(attrs: &[VertexAttributeDescriptor]) -> bool {
     })
 }
 
-fn is_wide_uv_attribute(attr: VertexAttributeDescriptor) -> bool {
-    UV_VERTEX_ATTRIBUTE_TYPES
+fn is_uv_attribute_in_range(
+    attr: VertexAttributeDescriptor,
+    range: std::ops::Range<usize>,
+    min_dimensions: i32,
+) -> bool {
+    UV_VERTEX_ATTRIBUTE_TYPES[range]
         .iter()
         .any(|uv| (attr.attribute as i16) == (*uv as i16))
-        && attr.dimensions > 2
+        && attr.dimensions >= min_dimensions
 }
 
-fn has_wide_uv_payload(attrs: &[VertexAttributeDescriptor]) -> bool {
-    attrs.iter().any(|attr| {
-        is_wide_uv_attribute(*attr)
-            || matches!(
-                attr.attribute,
-                VertexAttributeType::UV4
-                    | VertexAttributeType::UV5
-                    | VertexAttributeType::UV6
-                    | VertexAttributeType::UV7
-            )
-    })
+fn has_low_uv_payload(attrs: &[VertexAttributeDescriptor]) -> bool {
+    attrs
+        .iter()
+        .any(|attr| is_uv_attribute_in_range(*attr, 0..4, 2))
+}
+
+fn has_wide_low_uv_payload(attrs: &[VertexAttributeDescriptor]) -> bool {
+    attrs
+        .iter()
+        .any(|attr| is_uv_attribute_in_range(*attr, 0..4, 3))
+}
+
+fn has_wide_high_uv_payload(attrs: &[VertexAttributeDescriptor]) -> bool {
+    attrs
+        .iter()
+        .any(|attr| is_uv_attribute_in_range(*attr, 4..8, 2))
 }
 
 fn has_supported_vertex_attribute(
@@ -249,7 +264,9 @@ pub(super) fn extended_vertex_stream_source_from_raw(
         has_supported_vertex_attribute(&data.vertex_attributes, VertexAttributeType::Color, 4);
     let has_compact_extended_payload =
         has_compact_extended_payload(&data.vertex_attributes) || can_generate_missing_tangents;
-    let has_wide_uv_payload = has_wide_uv_payload(&data.vertex_attributes);
+    let has_low_uv_payload = has_low_uv_payload(&data.vertex_attributes);
+    let has_wide_low_uv_payload = has_wide_low_uv_payload(&data.vertex_attributes);
+    let has_wide_high_uv_payload = has_wide_high_uv_payload(&data.vertex_attributes);
     if data.vertex_count <= 0
         || (data.vertex_attributes.is_empty() && !can_generate_missing_tangents)
     {
@@ -271,7 +288,9 @@ pub(super) fn extended_vertex_stream_source_from_raw(
         has_uv0_payload,
         has_color_payload,
         has_compact_extended_payload,
-        has_wide_uv_payload,
+        has_low_uv_payload,
+        has_wide_low_uv_payload,
+        has_wide_high_uv_payload,
     })
 }
 
@@ -282,7 +301,8 @@ pub(super) fn extended_vertex_stream_bytes(mesh: &GpuMesh) -> u64 {
         mesh.uv1_buffer.as_ref(),
         mesh.uv2_buffer.as_ref(),
         mesh.uv3_buffer.as_ref(),
-        mesh.wide_uv_buffer.as_ref(),
+        mesh.wide_low_uv_buffer.as_ref(),
+        mesh.wide_high_uv_buffer.as_ref(),
     ]
     .into_iter()
     .flatten()
@@ -312,8 +332,11 @@ fn rebuildable_derived_stream_mask(
                 | MeshDerivedStreamMask::UV2
                 | MeshDerivedStreamMask::UV3;
         }
-        if source.has_wide_uv_payload {
-            mask |= MeshDerivedStreamMask::WIDE_UV;
+        if source.has_low_uv_payload || source.has_wide_low_uv_payload {
+            mask |= MeshDerivedStreamMask::WIDE_UV_LOW;
+        }
+        if source.has_wide_high_uv_payload {
+            mask |= MeshDerivedStreamMask::WIDE_UV_HIGH;
         }
         if source.can_generate_missing_tangents {
             mask |= MeshDerivedStreamMask::TANGENT;
@@ -353,8 +376,11 @@ impl GpuMesh {
         if self.uv3_buffer.is_some() {
             mask |= MeshDerivedStreamMask::UV3;
         }
-        if self.wide_uv_buffer.is_some() {
-            mask |= MeshDerivedStreamMask::WIDE_UV;
+        if self.wide_low_uv_buffer.is_some() {
+            mask |= MeshDerivedStreamMask::WIDE_UV_LOW;
+        }
+        if self.wide_high_uv_buffer.is_some() {
+            mask |= MeshDerivedStreamMask::WIDE_UV_HIGH;
         }
         mask
     }
@@ -415,7 +441,8 @@ impl GpuMesh {
             uv1_buffer: None,
             uv2_buffer: None,
             uv3_buffer: None,
-            wide_uv_buffer: None,
+            wide_low_uv_buffer: None,
+            wide_high_uv_buffer: None,
             derived_stream_state: MeshDerivedStreamState::default(),
             extended_vertex_stream_source: None,
             has_skeleton: false,
@@ -522,7 +549,8 @@ impl GpuMesh {
             uv1_buffer: derived.uv1_buffer,
             uv2_buffer: derived.uv2_buffer,
             uv3_buffer: derived.uv3_buffer,
-            wide_uv_buffer: derived.wide_uv_buffer,
+            wide_low_uv_buffer: derived.wide_low_uv_buffer,
+            wide_high_uv_buffer: derived.wide_high_uv_buffer,
             derived_stream_state,
             extended_vertex_stream_source,
             has_skeleton: data.bone_count > 0,
@@ -576,7 +604,8 @@ mod tests {
             source_for_attrs(vec![uv_attr(VertexAttributeType::UV7, 2)]).expect("wide uv source");
 
         assert!(!source.has_compact_extended_payload);
-        assert!(source.has_wide_uv_payload);
+        assert!(!source.has_wide_low_uv_payload);
+        assert!(source.has_wide_high_uv_payload);
     }
 
     #[test]
@@ -585,7 +614,9 @@ mod tests {
             source_for_attrs(vec![uv_attr(VertexAttributeType::UV0, 4)]).expect("wide uv source");
 
         assert!(!source.has_compact_extended_payload);
-        assert!(source.has_wide_uv_payload);
+        assert!(source.has_low_uv_payload);
+        assert!(source.has_wide_low_uv_payload);
+        assert!(!source.has_wide_high_uv_payload);
     }
 
     #[test]
@@ -594,6 +625,8 @@ mod tests {
             source_for_attrs(vec![uv_attr(VertexAttributeType::UV0, 2)]).expect("uv0 source");
 
         assert!(source.has_uv0_payload);
-        assert!(!source.has_wide_uv_payload);
+        assert!(source.has_low_uv_payload);
+        assert!(!source.has_wide_low_uv_payload);
+        assert!(!source.has_wide_high_uv_payload);
     }
 }
