@@ -1,5 +1,6 @@
 //! Background PhotonDust render-buffer build tasks.
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
 use crate::assets::mesh::{MeshBufferUploadSink, MeshDerivedStreamDemand, MeshGpuUploadContext};
@@ -15,10 +16,11 @@ use crate::shared::{
 };
 
 use super::AssetTransferQueue;
-use super::integrator::StepResult;
+use super::integrator::{AssetTask, AssetTaskLane, StepResult};
 use super::mesh_upload_batch::{MeshUploadRecorder, MeshUploadStagingBatch};
 
 /// GPU handles needed to publish particle-generated meshes on the renderer thread.
+#[derive(Clone, Copy)]
 pub(in crate::backend::asset_transfers) struct ParticleTaskGpu<'a> {
     /// Logical device used to create generated mesh buffers.
     pub(in crate::backend::asset_transfers) device: &'a Arc<wgpu::Device>,
@@ -51,15 +53,6 @@ pub struct TrailRenderBufferTask {
 enum PointRenderBufferTaskStage {
     /// Waiting to claim the newest pending upload for this asset.
     Pending { asset_id: i32 },
-    /// Background build has been spawned and is waiting to publish.
-    Building {
-        /// Host point render-buffer asset id.
-        asset_id: i32,
-        /// Asset generation assigned when the upload was queued.
-        generation: u64,
-        /// Background build result receiver.
-        rx: crossbeam_channel::Receiver<PointBuildResult>,
-    },
 }
 
 /// State for a trail render-buffer task.
@@ -67,20 +60,13 @@ enum PointRenderBufferTaskStage {
 enum TrailRenderBufferTaskStage {
     /// Waiting to claim the newest pending upload for this asset.
     Pending { asset_id: i32 },
-    /// Background build has been spawned and is waiting to publish.
-    Building {
-        /// Host trail render-buffer asset id.
-        asset_id: i32,
-        /// Asset generation assigned when the upload was queued.
-        generation: u64,
-        /// Background build result receiver.
-        rx: crossbeam_channel::Receiver<TrailBuildResult>,
-    },
 }
 
 /// Background point build result.
 #[derive(Debug)]
-struct PointBuildResult {
+pub(in crate::backend::asset_transfers) struct PointBuildResult {
+    /// Host point render-buffer asset id.
+    asset_id: i32,
     /// Upload generation used for stale-result rejection.
     generation: u64,
     /// CPU generated mesh build result.
@@ -89,7 +75,9 @@ struct PointBuildResult {
 
 /// Background trail build result.
 #[derive(Debug)]
-struct TrailBuildResult {
+pub(in crate::backend::asset_transfers) struct TrailBuildResult {
+    /// Host trail render-buffer asset id.
+    asset_id: i32,
     /// Upload generation used for stale-result rejection.
     generation: u64,
     /// CPU generated mesh build result.
@@ -97,13 +85,22 @@ struct TrailBuildResult {
 }
 
 /// Outcome from attempting to start a particle background build.
-enum ParticleTaskStart<T> {
+enum ParticleTaskStart {
     /// The task completed without spawning work.
     Done,
     /// The task should stay queued for another drain.
     YieldPending,
     /// The background build was spawned.
-    Building(T),
+    Spawned,
+}
+
+/// Summary of ready particle build results drained on the renderer thread.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(in crate::backend::asset_transfers) struct ReadyParticleBuildDrainOutcome {
+    /// Ready completions published or discarded by this drain.
+    pub(in crate::backend::asset_transfers) processed: u32,
+    /// Whether more ready completions remain after the deadline or because GPU publication is blocked.
+    pub(in crate::backend::asset_transfers) pending: bool,
 }
 
 impl PointRenderBufferTask {
@@ -127,21 +124,8 @@ impl PointRenderBufferTask {
                 match start_point_task(queue, gpu, shm, ipc, *asset_id) {
                     ParticleTaskStart::Done => StepResult::Done,
                     ParticleTaskStart::YieldPending => StepResult::YieldBackground,
-                    ParticleTaskStart::Building(building) => {
-                        self.stage = building;
-                        StepResult::YieldBackground
-                    }
+                    ParticleTaskStart::Spawned => StepResult::Done,
                 }
-            }
-            PointRenderBufferTaskStage::Building {
-                asset_id,
-                generation,
-                rx,
-            } => {
-                let Some(gpu) = gpu else {
-                    return StepResult::YieldBackground;
-                };
-                poll_point_task(queue, gpu, ipc, *asset_id, *generation, rx)
             }
         }
     }
@@ -168,21 +152,8 @@ impl TrailRenderBufferTask {
                 match start_trail_task(queue, gpu, shm, ipc, *asset_id) {
                     ParticleTaskStart::Done => StepResult::Done,
                     ParticleTaskStart::YieldPending => StepResult::YieldBackground,
-                    ParticleTaskStart::Building(building) => {
-                        self.stage = building;
-                        StepResult::YieldBackground
-                    }
+                    ParticleTaskStart::Spawned => StepResult::Done,
                 }
-            }
-            TrailRenderBufferTaskStage::Building {
-                asset_id,
-                generation,
-                rx,
-            } => {
-                let Some(gpu) = gpu else {
-                    return StepResult::YieldBackground;
-                };
-                poll_trail_task(queue, gpu, ipc, *asset_id, *generation, rx)
             }
         }
     }
@@ -195,10 +166,13 @@ fn start_point_task(
     shm: &mut SharedMemoryAccessor,
     ipc: &mut Option<&mut DualQueueIpc>,
     asset_id: i32,
-) -> ParticleTaskStart<PointRenderBufferTaskStage> {
+) -> ParticleTaskStart {
     profiling::scope!("particle::point_task_start");
     if gpu.is_none() {
         return ParticleTaskStart::YieldPending;
+    }
+    if queue.point_render_buffer_build_is_active(asset_id) {
+        return ParticleTaskStart::Done;
     }
     if !queue.try_acquire_particle_build_worker() {
         return ParticleTaskStart::YieldPending;
@@ -215,23 +189,33 @@ fn start_point_task(
         send_point_render_buffer_consumed(ipc, asset_id);
         return ParticleTaskStart::Done;
     }
+    if !queue.mark_point_render_buffer_build_active(asset_id) {
+        queue.release_particle_build_worker();
+        enqueue_point_task_if_ready(queue, asset_id);
+        return ParticleTaskStart::Done;
+    }
     let raw_len = upload.buffer.length.max(0) as usize;
     let raw = copy_render_buffer_payload(shm, upload.buffer, "point", asset_id, raw_len);
     send_point_render_buffer_consumed(ipc, asset_id);
     let Some(raw) = raw else {
         queue.release_particle_build_worker();
+        queue.clear_point_render_buffer_build_active(asset_id);
         if queue.point_render_buffer_generation_is_current(asset_id, generation) {
             remove_point_render_buffer(queue, asset_id);
         }
+        enqueue_point_task_if_ready(queue, asset_id);
         return ParticleTaskStart::Done;
     };
 
-    let rx = spawn_point_build(upload, raw, generation);
-    ParticleTaskStart::Building(PointRenderBufferTaskStage::Building {
-        asset_id,
+    spawn_point_build(
+        queue.point_render_buffer_build_sender(),
+        upload,
+        raw,
         generation,
-        rx,
-    })
+    );
+    #[cfg(feature = "tracy")]
+    tracy_client::plot!("particle::point_builds_started", 1.0);
+    ParticleTaskStart::Spawned
 }
 
 /// Starts a trail render-buffer background build.
@@ -241,10 +225,13 @@ fn start_trail_task(
     shm: &mut SharedMemoryAccessor,
     ipc: &mut Option<&mut DualQueueIpc>,
     asset_id: i32,
-) -> ParticleTaskStart<TrailRenderBufferTaskStage> {
+) -> ParticleTaskStart {
     profiling::scope!("particle::trail_task_start");
     if gpu.is_none() {
         return ParticleTaskStart::YieldPending;
+    }
+    if queue.trail_render_buffer_build_is_active(asset_id) {
+        return ParticleTaskStart::Done;
     }
     if !queue.try_acquire_particle_build_worker() {
         return ParticleTaskStart::YieldPending;
@@ -261,78 +248,84 @@ fn start_trail_task(
         send_trail_render_buffer_consumed(ipc, asset_id);
         return ParticleTaskStart::Done;
     }
+    if !queue.mark_trail_render_buffer_build_active(asset_id) {
+        queue.release_particle_build_worker();
+        enqueue_trail_task_if_ready(queue, asset_id);
+        return ParticleTaskStart::Done;
+    }
     let raw_len = upload.buffer.length.max(0) as usize;
     let raw = copy_render_buffer_payload(shm, upload.buffer, "trail", asset_id, raw_len);
     send_trail_render_buffer_consumed(ipc, asset_id);
     let Some(raw) = raw else {
         queue.release_particle_build_worker();
+        queue.clear_trail_render_buffer_build_active(asset_id);
         if queue.trail_render_buffer_generation_is_current(asset_id, generation) {
             remove_trail_render_buffer(queue, asset_id);
         }
+        enqueue_trail_task_if_ready(queue, asset_id);
         return ParticleTaskStart::Done;
     };
 
-    let rx = spawn_trail_build(upload, raw, generation);
-    ParticleTaskStart::Building(TrailRenderBufferTaskStage::Building {
-        asset_id,
+    spawn_trail_build(
+        queue.trail_render_buffer_build_sender(),
+        upload,
+        raw,
         generation,
-        rx,
-    })
+    );
+    #[cfg(feature = "tracy")]
+    tracy_client::plot!("particle::trail_builds_started", 1.0);
+    ParticleTaskStart::Spawned
 }
 
-/// Polls a point render-buffer background build.
-fn poll_point_task(
+/// Drains ready particle build results without polling unfinished worker jobs.
+pub(in crate::backend::asset_transfers) fn drain_ready_particle_builds(
     queue: &mut AssetTransferQueue,
-    gpu: ParticleTaskGpu<'_>,
-    _ipc: &mut Option<&mut DualQueueIpc>,
-    asset_id: i32,
-    generation: u64,
-    rx: &crossbeam_channel::Receiver<PointBuildResult>,
-) -> StepResult {
-    profiling::scope!("particle::point_task_poll");
-    match rx.try_recv() {
-        Ok(result) => {
-            queue.release_particle_build_worker();
-            integrate_point_result(queue, gpu, asset_id, generation, result);
-            StepResult::Done
-        }
-        Err(crossbeam_channel::TryRecvError::Empty) => StepResult::YieldBackground,
-        Err(crossbeam_channel::TryRecvError::Disconnected) => {
-            queue.release_particle_build_worker();
-            if queue.point_render_buffer_generation_is_current(asset_id, generation) {
-                remove_point_render_buffer(queue, asset_id);
-                logger::error!("point render buffer {asset_id}: background build thread panicked");
-            }
-            StepResult::Done
-        }
+    gpu: Option<&ParticleTaskGpu<'_>>,
+    deadline: std::time::Instant,
+) -> ReadyParticleBuildDrainOutcome {
+    profiling::scope!("particle::ready_build_drain");
+    if !queue.has_ready_particle_build_results() {
+        return ReadyParticleBuildDrainOutcome::default();
     }
-}
+    let Some(gpu) = gpu else {
+        return ReadyParticleBuildDrainOutcome {
+            processed: 0,
+            pending: true,
+        };
+    };
 
-/// Polls a trail render-buffer background build.
-fn poll_trail_task(
-    queue: &mut AssetTransferQueue,
-    gpu: ParticleTaskGpu<'_>,
-    _ipc: &mut Option<&mut DualQueueIpc>,
-    asset_id: i32,
-    generation: u64,
-    rx: &crossbeam_channel::Receiver<TrailBuildResult>,
-) -> StepResult {
-    profiling::scope!("particle::trail_task_poll");
-    match rx.try_recv() {
-        Ok(result) => {
-            queue.release_particle_build_worker();
-            integrate_trail_result(queue, gpu, asset_id, generation, result);
-            StepResult::Done
+    let mut processed = 0u32;
+    loop {
+        if std::time::Instant::now() >= deadline {
+            return ReadyParticleBuildDrainOutcome {
+                processed,
+                pending: queue.has_ready_particle_build_results(),
+            };
         }
-        Err(crossbeam_channel::TryRecvError::Empty) => StepResult::YieldBackground,
-        Err(crossbeam_channel::TryRecvError::Disconnected) => {
+
+        if let Some(result) = queue.try_recv_point_render_buffer_build() {
+            let asset_id = result.asset_id;
             queue.release_particle_build_worker();
-            if queue.trail_render_buffer_generation_is_current(asset_id, generation) {
-                remove_trail_render_buffer(queue, asset_id);
-                logger::error!("trail render buffer {asset_id}: background build thread panicked");
-            }
-            StepResult::Done
+            queue.clear_point_render_buffer_build_active(asset_id);
+            integrate_point_result(queue, *gpu, result);
+            enqueue_point_task_if_ready(queue, asset_id);
+            processed = processed.saturating_add(1);
+            continue;
         }
+        if let Some(result) = queue.try_recv_trail_render_buffer_build() {
+            let asset_id = result.asset_id;
+            queue.release_particle_build_worker();
+            queue.clear_trail_render_buffer_build_active(asset_id);
+            integrate_trail_result(queue, *gpu, result);
+            enqueue_trail_task_if_ready(queue, asset_id);
+            processed = processed.saturating_add(1);
+            continue;
+        }
+
+        return ReadyParticleBuildDrainOutcome {
+            processed,
+            pending: false,
+        };
     }
 }
 
@@ -357,15 +350,14 @@ fn particle_mesh_gpu_context<'a>(
 fn integrate_point_result(
     queue: &mut AssetTransferQueue,
     gpu: ParticleTaskGpu<'_>,
-    asset_id: i32,
-    generation: u64,
     result: PointBuildResult,
 ) {
-    if result.generation != generation
-        || !queue.point_render_buffer_generation_is_current(asset_id, generation)
-    {
+    let asset_id = result.asset_id;
+    if !queue.point_render_buffer_generation_is_current(asset_id, result.generation) {
         profiling::scope!("particle::point_task_stale");
         logger::trace!("point render buffer {asset_id}: dropped stale generated mesh result");
+        #[cfg(feature = "tracy")]
+        tracy_client::plot!("particle::point_stale_completions", 1.0);
         return;
     }
     match result.result {
@@ -391,6 +383,8 @@ fn integrate_point_result(
                 .point_render_buffers
                 .insert(asset_id, build.asset);
             queue.pools.mesh_pool.insert(mesh);
+            #[cfg(feature = "tracy")]
+            tracy_client::plot!("particle::point_publications", 1.0);
             logger::trace!(
                 "point render buffer {stored_asset_id}: uploaded billboard mesh for {count} particles frame_grid={frame_grid_size:?}"
             );
@@ -406,15 +400,14 @@ fn integrate_point_result(
 fn integrate_trail_result(
     queue: &mut AssetTransferQueue,
     gpu: ParticleTaskGpu<'_>,
-    asset_id: i32,
-    generation: u64,
     result: TrailBuildResult,
 ) {
-    if result.generation != generation
-        || !queue.trail_render_buffer_generation_is_current(asset_id, generation)
-    {
+    let asset_id = result.asset_id;
+    if !queue.trail_render_buffer_generation_is_current(asset_id, result.generation) {
         profiling::scope!("particle::trail_task_stale");
         logger::trace!("trail render buffer {asset_id}: dropped stale generated mesh result");
+        #[cfg(feature = "tracy")]
+        tracy_client::plot!("particle::trail_stale_completions", 1.0);
         return;
     }
     match result.result {
@@ -445,6 +438,8 @@ fn integrate_trail_result(
             for mesh in meshes {
                 queue.pools.mesh_pool.insert(mesh);
             }
+            #[cfg(feature = "tracy")]
+            tracy_client::plot!("particle::trail_publications", 1.0);
             logger::trace!(
                 "trail render buffer {stored_asset_id}: uploaded trail meshes trails={trails_count} points={trail_point_count}"
             );
@@ -458,34 +453,84 @@ fn integrate_trail_result(
 
 /// Spawns a point render-buffer build on the asset worker pool.
 fn spawn_point_build(
+    tx: crossbeam_channel::Sender<PointBuildResult>,
     upload: PointRenderBufferUpload,
     raw: Arc<[u8]>,
     generation: u64,
-) -> crossbeam_channel::Receiver<PointBuildResult> {
+) {
     profiling::scope!("particle::point_task_spawn");
-    let (tx, rx) = crossbeam_channel::bounded(1);
+    let asset_id = upload.asset_id;
     crate::assets::worker::spawn_asset_job(move || {
         profiling::scope!("particle::point_task_build_worker");
-        let result = build_point_render_buffer_cpu(raw, &upload);
-        let _ = tx.send(PointBuildResult { generation, result });
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            build_point_render_buffer_cpu(raw, &upload)
+        }))
+        .unwrap_or({
+            Err(
+                crate::particles::ParticleRenderBufferError::WorkerPanicked {
+                    kind: "point",
+                    asset_id,
+                },
+            )
+        });
+        let _ = tx.send(PointBuildResult {
+            asset_id,
+            generation,
+            result,
+        });
     });
-    rx
 }
 
 /// Spawns a trail render-buffer build on the asset worker pool.
 fn spawn_trail_build(
+    tx: crossbeam_channel::Sender<TrailBuildResult>,
     upload: TrailRenderBufferUpload,
     raw: Arc<[u8]>,
     generation: u64,
-) -> crossbeam_channel::Receiver<TrailBuildResult> {
+) {
     profiling::scope!("particle::trail_task_spawn");
-    let (tx, rx) = crossbeam_channel::bounded(1);
+    let asset_id = upload.asset_id;
     crate::assets::worker::spawn_asset_job(move || {
         profiling::scope!("particle::trail_task_build_worker");
-        let result = build_trail_render_buffer_cpu(raw, &upload);
-        let _ = tx.send(TrailBuildResult { generation, result });
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            build_trail_render_buffer_cpu(raw, &upload)
+        }))
+        .unwrap_or({
+            Err(
+                crate::particles::ParticleRenderBufferError::WorkerPanicked {
+                    kind: "trail",
+                    asset_id,
+                },
+            )
+        });
+        let _ = tx.send(TrailBuildResult {
+            asset_id,
+            generation,
+            result,
+        });
     });
-    rx
+}
+
+fn enqueue_point_task_if_ready(queue: &mut AssetTransferQueue, asset_id: i32) {
+    if queue.has_pending_point_render_buffer_upload(asset_id)
+        && !queue.point_render_buffer_build_is_active(asset_id)
+    {
+        queue.integrator_mut().enqueue_lane(
+            AssetTask::PointRenderBuffer(PointRenderBufferTask::new(asset_id)),
+            AssetTaskLane::Particle,
+        );
+    }
+}
+
+fn enqueue_trail_task_if_ready(queue: &mut AssetTransferQueue, asset_id: i32) {
+    if queue.has_pending_trail_render_buffer_upload(asset_id)
+        && !queue.trail_render_buffer_build_is_active(asset_id)
+    {
+        queue.integrator_mut().enqueue_lane(
+            AssetTask::TrailRenderBuffer(TrailRenderBufferTask::new(asset_id)),
+            AssetTaskLane::Particle,
+        );
+    }
 }
 
 /// Copies a render-buffer shared-memory payload into an owned slice.

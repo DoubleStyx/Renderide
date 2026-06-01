@@ -146,7 +146,7 @@ fn step_shader_route_task(
     StepResult::Done
 }
 
-fn particle_task_gpu<'context, 'handles: 'context>(
+pub(super) fn particle_task_gpu<'context, 'handles: 'context>(
     gpu: Option<&'context AssetUploadGpuContext<'handles>>,
 ) -> Option<ParticleTaskGpu<'context>> {
     let gpu = gpu?;

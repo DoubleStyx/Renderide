@@ -2,7 +2,7 @@ use glam::{Vec2, Vec3, Vec4};
 
 use crate::assets::mesh::{
     GpuMesh, MeshGpuUploadContext, PreparedDerivedStreams, compute_and_validate_mesh_layout,
-    try_upload_mesh_from_raw,
+    try_upload_generated_mesh_from_parts,
 };
 use crate::shared::buffer::SharedMemoryBufferDescriptor;
 use crate::shared::{
@@ -130,19 +130,6 @@ pub(crate) fn upload_generated_mesh(
             asset_id: input.source_asset_id,
         },
     )?;
-    let mut raw = vec![0u8; layout.total_buffer_length];
-    if input.vertices.len() == layout.vertex_size
-        && input.indices.len() == layout.index_buffer_length
-    {
-        raw[..layout.vertex_size].copy_from_slice(&input.vertices);
-        raw[layout.index_buffer_start..layout.index_buffer_start + layout.index_buffer_length]
-            .copy_from_slice(&input.indices);
-    } else {
-        return Err(ParticleRenderBufferError::InvalidMeshLayout {
-            kind: input.kind,
-            asset_id: input.source_asset_id,
-        });
-    }
     let gpu = MeshGpuUploadContext {
         prepared_derived_streams: Some(&input.prepared_derived_streams),
         ..gpu
@@ -150,7 +137,15 @@ pub(crate) fn upload_generated_mesh(
     let mesh = if gpu.validation_scopes_enabled {
         profiling::scope!("particle::generated_mesh_validation_scope");
         let validation_scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let mesh = try_upload_mesh_from_raw(gpu, &raw, &data, existing, &layout);
+        let mesh = try_upload_generated_mesh_from_parts(
+            gpu,
+            &data,
+            &layout,
+            &input.vertices,
+            &input.indices,
+            &input.prepared_derived_streams,
+            existing,
+        );
         let validation_error = pollster::block_on(validation_scope.pop());
         if let Some(err) = validation_error {
             logger::error!(
@@ -166,7 +161,15 @@ pub(crate) fn upload_generated_mesh(
         }
         mesh
     } else {
-        try_upload_mesh_from_raw(gpu, &raw, &data, existing, &layout)
+        try_upload_generated_mesh_from_parts(
+            gpu,
+            &data,
+            &layout,
+            &input.vertices,
+            &input.indices,
+            &input.prepared_derived_streams,
+            existing,
+        )
     };
     mesh.ok_or(ParticleRenderBufferError::GpuUploadFailed {
         kind: input.kind,
