@@ -491,8 +491,15 @@ fn command_cache_row(ui: &imgui::Ui, stats: crate::world_mesh::WorldMeshCommandC
         ui,
         "Command cache",
         &format!(
-            "entries={}  hits={}  misses={}  insertions={}  evictions={}",
-            stats.entries, stats.hits, stats.misses, stats.insertions, stats.evictions
+            "entries={}  hits={}  misses={}  hit={}/1000  small_skip={}  thrash_skip={}  insertions={}  evictions={}",
+            stats.entries,
+            stats.hits,
+            stats.misses,
+            stats.hit_rate_per_mille,
+            stats.skipped_small,
+            stats.skipped_thrash,
+            stats.insertions,
+            stats.evictions
         ),
     );
 }
@@ -506,8 +513,15 @@ fn instance_plan_cache_row(
         ui,
         "Instance plan cache",
         &format!(
-            "entries={}  hits={}  misses={}  insertions={}  evictions={}",
-            stats.entries, stats.hits, stats.misses, stats.insertions, stats.evictions
+            "entries={}  hits={}  misses={}  hit={}/1000  small_skip={}  thrash_skip={}  insertions={}  evictions={}",
+            stats.entries,
+            stats.hits,
+            stats.misses,
+            stats.hit_rate_per_mille,
+            stats.skipped_small,
+            stats.skipped_thrash,
+            stats.insertions,
+            stats.evictions
         ),
     );
 }

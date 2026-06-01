@@ -102,11 +102,17 @@ mod tests {
             world_mesh_command_cache: WorldMeshCommandCacheStats {
                 entries: 18,
                 hits: 19,
+                skipped_small: 20,
+                skipped_thrash: 21,
+                hit_rate_per_mille: 500,
                 ..Default::default()
             },
             world_mesh_instance_plan_cache: WorldMeshForwardInstancePlanCacheStats {
-                entries: 20,
-                hits: 21,
+                entries: 22,
+                hits: 23,
+                skipped_small: 24,
+                skipped_thrash: 25,
+                hit_rate_per_mille: 750,
                 ..Default::default()
             },
             material_property_slots: 7,
@@ -147,8 +153,14 @@ mod tests {
         );
         assert_eq!(fragment.command_cache.entries, 18);
         assert_eq!(fragment.command_cache.hits, 19);
-        assert_eq!(fragment.instance_plan_cache.entries, 20);
-        assert_eq!(fragment.instance_plan_cache.hits, 21);
+        assert_eq!(fragment.command_cache.skipped_small, 20);
+        assert_eq!(fragment.command_cache.skipped_thrash, 21);
+        assert_eq!(fragment.command_cache.hit_rate_per_mille, 500);
+        assert_eq!(fragment.instance_plan_cache.entries, 22);
+        assert_eq!(fragment.instance_plan_cache.hits, 23);
+        assert_eq!(fragment.instance_plan_cache.skipped_small, 24);
+        assert_eq!(fragment.instance_plan_cache.skipped_thrash, 25);
+        assert_eq!(fragment.instance_plan_cache.hit_rate_per_mille, 750);
         assert!(fragment.draw_state_rows.is_empty());
     }
 }
