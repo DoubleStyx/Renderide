@@ -15,7 +15,17 @@ use crate::shared::FrameSubmitData;
 impl RendererRuntime {
     /// Applies a host frame submit to lock-step, output state, camera fields, scene caches, and
     /// head-output transform.
+    #[cfg(test)]
     pub(crate) fn apply_frame_submit_data(&mut self, data: FrameSubmitData) {
+        self.apply_frame_submit_data_received_at(data, Instant::now());
+    }
+
+    /// Applies a host frame submit using the instant when it was removed from the IPC queue.
+    pub(crate) fn apply_frame_submit_data_received_at(
+        &mut self,
+        data: FrameSubmitData,
+        received_at: Instant,
+    ) {
         profiling::scope!("scene::apply_frame_submit");
         let prev_frame_index = self.host_camera.frame_index;
         if prev_frame_index >= 0 {
@@ -30,10 +40,10 @@ impl RendererRuntime {
             }
         }
         lockstep::trace_duplicate_frame_index_if_interesting(data.frame_index, prev_frame_index);
-        self.process_frame_submit(data);
+        self.process_frame_submit(data, received_at);
     }
 
-    fn process_frame_submit(&mut self, data: FrameSubmitData) {
+    fn process_frame_submit(&mut self, data: FrameSubmitData, received_at: Instant) {
         profiling::scope!("scene::frame_submit");
         crash_context::set_tick_phase(TickPhase::FrameSubmit);
         crash_context::set_last_host_frame_index(i64::from(data.frame_index));
@@ -41,7 +51,7 @@ impl RendererRuntime {
         let submitted_render_spaces = data.render_spaces.len();
         let submitted_render_tasks = data.render_tasks.len();
         let shared_memory_available = self.frontend.shared_memory().is_some();
-        self.begin_frame_submit_application(&data);
+        self.begin_frame_submit_application(&data, received_at);
 
         let start = Instant::now();
         let mut apply_failed = false;
@@ -137,10 +147,11 @@ impl RendererRuntime {
         self.trace_frame_submit_processed(&data, reflection_probe_task_count, start);
     }
 
-    fn begin_frame_submit_application(&mut self, data: &FrameSubmitData) {
+    fn begin_frame_submit_application(&mut self, data: &FrameSubmitData, received_at: Instant) {
         {
             profiling::scope!("scene::frame_submit_frontend_bookkeeping");
-            self.frontend.note_frame_submit_processed(data.frame_index);
+            self.frontend
+                .note_frame_submit_processed(data.frame_index, received_at);
             self.frontend
                 .apply_frame_submit_output(data.output_state.clone());
             self.set_last_submit_render_task_count(data.render_tasks.len());

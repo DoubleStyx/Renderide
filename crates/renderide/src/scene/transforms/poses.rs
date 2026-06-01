@@ -1,9 +1,9 @@
 //! Pose row validation, commit, and post-commit dirty-flag propagation.
 //!
-//! Row collection runs in two phases so the in-bounds filtering can fan out across rayon workers
-//! above [`POSE_UPDATE_PARALLEL_MIN_ROWS`]: the parallel pass produces a [`PoseRow`] vector in
-//! input order, and the serial commit pass repairs and writes each row into
-//! [`RenderSpaceState::nodes`] under the lock that already protects the per-space apply.
+//! Row collection runs in two phases so a heavy single render-space update can still feed several
+//! Rayon workers: the serial plan pass keeps the last row for every transform index, then the
+//! parallel repair pass compares those plans against the current node table before the serial
+//! commit updates [`RenderSpaceState::nodes`] and dirty flags.
 
 use crate::scene::pose::repair_render_transform;
 use crate::scene::render_space::RenderSpaceState;
@@ -26,6 +26,11 @@ struct PoseRow {
     pose: RenderTransform,
 }
 
+struct PoseApplyResult {
+    transform_index: usize,
+    pose: RenderTransform,
+}
+
 /// Index of the first sentinel `transform_id < 0` row, or `poses.len()` if no terminator is present.
 #[inline]
 fn pose_terminator_index(poses: &[TransformPoseUpdate]) -> usize {
@@ -35,31 +40,86 @@ fn pose_terminator_index(poses: &[TransformPoseUpdate]) -> usize {
         .unwrap_or(poses.len())
 }
 
-/// Walks the active prefix of `poses` once and produces one [`PoseRow`] per in-bounds entry.
-fn collect_pose_rows(poses: &[TransformPoseUpdate], node_count: usize) -> Vec<PoseRow> {
-    profiling::scope!("scene::collect_pose_rows");
+/// Walks the active prefix of `poses` once and keeps the last pose row for each in-bounds node.
+fn collect_pose_plans(
+    poses: &[TransformPoseUpdate],
+    node_count: usize,
+    plan_indices: &mut [usize],
+) -> Vec<PoseRow> {
+    profiling::scope!("scene::collect_pose_plans");
     let active_len = pose_terminator_index(poses);
     let active = &poses[..active_len];
-    let row_for = |pu: &TransformPoseUpdate| -> Option<PoseRow> {
-        let idx = pu.transform_id as usize;
+    let mut rows = Vec::with_capacity(active.len().min(node_count));
+    for row in active {
+        let idx = row.transform_id as usize;
         if idx >= node_count {
-            return None;
+            continue;
         }
-        Some(PoseRow {
-            transform_index: idx,
-            pose: pu.pose,
-        })
-    };
+        let row_index = plan_indices[idx];
+        if row_index == usize::MAX {
+            plan_indices[idx] = rows.len();
+            rows.push(PoseRow {
+                transform_index: idx,
+                pose: row.pose,
+            });
+        } else if let Some(existing) = rows.get_mut(row_index) {
+            existing.pose = row.pose;
+        }
+    }
+    for row in &rows {
+        plan_indices[row.transform_index] = usize::MAX;
+    }
+    rows
+}
 
-    if active.len() >= POSE_UPDATE_PARALLEL_MIN_ROWS {
+fn plan_pose_apply_result(row: &PoseRow, nodes: &[RenderTransform]) -> Option<PoseApplyResult> {
+    let fallback = nodes[row.transform_index];
+    if pose_matches(&row.pose, &fallback) {
+        return None;
+    }
+    let repaired = repair_render_transform(&row.pose, &fallback);
+    if pose_matches(&repaired, &fallback) {
+        return None;
+    }
+    Some(PoseApplyResult {
+        transform_index: row.transform_index,
+        pose: repaired,
+    })
+}
+
+fn plan_pose_apply_results(rows: &[PoseRow], nodes: &[RenderTransform]) -> Vec<PoseApplyResult> {
+    profiling::scope!("scene::apply_pose_updates::plan");
+    if rows.len() >= POSE_UPDATE_PARALLEL_MIN_ROWS {
         use rayon::prelude::*;
-        active
-            .par_iter()
-            .with_min_len(POSE_UPDATE_PARALLEL_CHUNK_ROWS)
-            .filter_map(row_for)
+        rows.par_chunks(POSE_UPDATE_PARALLEL_CHUNK_ROWS)
+            .with_min_len(1)
+            .map(|chunk| {
+                profiling::scope!("scene::apply_pose_updates::plan_worker");
+                chunk
+                    .iter()
+                    .filter_map(|row| plan_pose_apply_result(row, nodes))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .flatten()
             .collect()
     } else {
-        active.iter().filter_map(row_for).collect()
+        rows.iter()
+            .filter_map(|row| plan_pose_apply_result(row, nodes))
+            .collect()
+    }
+}
+
+fn commit_pose_apply_results(
+    space: &mut RenderSpaceState,
+    results: Vec<PoseApplyResult>,
+    changed: &mut NodeDirtyMask,
+) {
+    profiling::scope!("scene::apply_pose_updates::commit");
+    for result in results {
+        space.nodes[result.transform_index] = result.pose;
+        changed.mark(result.transform_index);
     }
 }
 
@@ -81,23 +141,13 @@ pub(super) fn apply_transform_pose_updates_extracted(
     if poses.is_empty() {
         return;
     }
-    let rows = collect_pose_rows(poses, space.nodes.len());
-    for row in rows {
-        let fallback = space.nodes[row.transform_index];
-        // Bitwise-equal poses repair to themselves, so the cheaper compare lets us skip the dirty
-        // mark that drives downstream world-matrix recompute and prepared-renderables refresh.
-        if pose_matches(&row.pose, &fallback) {
-            continue;
-        }
-        let repaired = repair_render_transform(&row.pose, &fallback);
-        // After repair the value may still equal the existing scene pose (e.g. a clamp produced
-        // the same number as the cached fallback). Treat that case as unchanged too.
-        if pose_matches(&repaired, &fallback) {
-            continue;
-        }
-        space.nodes[row.transform_index] = repaired;
-        changed.mark(row.transform_index);
-    }
+    let rows = collect_pose_plans(
+        poses,
+        space.nodes.len(),
+        &mut changed.pose_plan_indices[..space.nodes.len()],
+    );
+    let results = plan_pose_apply_results(&rows, &space.nodes);
+    commit_pose_apply_results(space, results, changed);
 }
 
 /// Field-wise bitwise equality for [`RenderTransform`]. Defers to `glam`'s `PartialEq` on `Vec3`
@@ -175,10 +225,10 @@ mod tests {
         assert_eq!(pose_terminator_index(&rows), rows.len());
     }
 
-    /// [`collect_pose_rows`] preserves input order, drops out-of-range transform indices, and
-    /// keeps raw pose payloads for the serial repair pass.
+    /// [`collect_pose_plans`] preserves first-seen order, drops out-of-range transform indices,
+    /// and keeps the last raw pose payload for each transform.
     #[test]
-    fn collect_pose_rows_preserves_order_and_raw_payload() {
+    fn collect_pose_plans_preserves_order_and_raw_payload() {
         let valid = pose_at(2.0);
         let mut bad = pose_at(0.0);
         bad.position.x = f32::NAN;
@@ -192,6 +242,10 @@ mod tests {
                 pose: valid,
             },
             TransformPoseUpdate {
+                transform_id: 0,
+                pose: pose_at(4.0),
+            },
+            TransformPoseUpdate {
                 transform_id: 1,
                 pose: bad,
             },
@@ -200,14 +254,15 @@ mod tests {
                 pose: valid,
             },
         ];
-        let out = collect_pose_rows(&rows, 3);
+        let mut plan_indices = vec![usize::MAX; 3];
+        let out = collect_pose_plans(&rows, 3, &mut plan_indices);
         assert_eq!(
             out.len(),
             2,
             "out-of-range and sentinel rows must be dropped"
         );
         assert_eq!(out[0].transform_index, 0);
-        assert_eq!(out[0].pose.position, valid.position);
+        assert_eq!(out[0].pose.position, pose_at(4.0).position);
         assert_eq!(out[1].transform_index, 1);
         assert!(out[1].pose.position.x.is_nan());
         assert_eq!(out[1].pose.position.y, bad.position.y);
@@ -216,9 +271,9 @@ mod tests {
         assert_eq!(out[1].pose.rotation, bad.rotation);
     }
 
-    /// [`collect_pose_rows`] above [`POSE_UPDATE_PARALLEL_MIN_ROWS`] still preserves input order.
+    /// [`collect_pose_plans`] above [`POSE_UPDATE_PARALLEL_MIN_ROWS`] still preserves input order.
     #[test]
-    fn collect_pose_rows_parallel_path_preserves_order() {
+    fn collect_pose_plans_parallel_path_preserves_order() {
         let pose = pose_at(1.0);
         let n = POSE_UPDATE_PARALLEL_MIN_ROWS + 16;
         let mut rows = Vec::with_capacity(n + 1);
@@ -232,7 +287,8 @@ mod tests {
             transform_id: -1,
             pose,
         });
-        let out = collect_pose_rows(&rows, n);
+        let mut plan_indices = vec![usize::MAX; n];
+        let out = collect_pose_plans(&rows, n, &mut plan_indices);
         assert_eq!(out.len(), n);
         for (i, row) in out.iter().enumerate() {
             assert_eq!(row.transform_index, i);
@@ -333,5 +389,62 @@ mod tests {
 
         assert_eq!(space.nodes[0].position.x, 2.0);
         assert!(changed.any());
+    }
+
+    /// Duplicate pose rows for one transform collapse to the last row before repair and commit.
+    #[test]
+    fn duplicate_pose_rows_keep_last_payload() {
+        let mut space = RenderSpaceState::default();
+        space.nodes.push(pose_at(1.0));
+        let mut changed = NodeDirtyMask::new(space.nodes.len());
+
+        apply_transform_pose_updates_extracted(
+            &mut space,
+            &[
+                TransformPoseUpdate {
+                    transform_id: 0,
+                    pose: pose_at(2.0),
+                },
+                TransformPoseUpdate {
+                    transform_id: 0,
+                    pose: pose_at(3.0),
+                },
+            ],
+            15,
+            7,
+            &mut changed,
+        );
+
+        assert_eq!(space.nodes[0].position.x, 3.0);
+        assert!(changed.any());
+    }
+
+    /// When duplicate rows end at the existing pose, the collapsed plan remains a no-op.
+    #[test]
+    fn duplicate_pose_rows_ending_at_existing_pose_remain_clean() {
+        let original = pose_at(1.0);
+        let mut space = RenderSpaceState::default();
+        space.nodes.push(original);
+        let mut changed = NodeDirtyMask::new(space.nodes.len());
+
+        apply_transform_pose_updates_extracted(
+            &mut space,
+            &[
+                TransformPoseUpdate {
+                    transform_id: 0,
+                    pose: pose_at(2.0),
+                },
+                TransformPoseUpdate {
+                    transform_id: 0,
+                    pose: original,
+                },
+            ],
+            17,
+            9,
+            &mut changed,
+        );
+
+        assert_eq!(space.nodes[0].position.x, original.position.x);
+        assert!(!changed.any());
     }
 }

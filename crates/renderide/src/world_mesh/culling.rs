@@ -108,6 +108,22 @@ pub struct WorldMeshCullProjParams {
     pub vr_stereo: Option<(Mat4, Mat4)>,
 }
 
+impl WorldMeshCullProjParams {
+    /// Applies a projection-space transform to every projection matrix in this culling bundle.
+    pub(crate) fn map_projection_matrices(
+        &self,
+        mut map_projection: impl FnMut(Mat4) -> Mat4,
+    ) -> Self {
+        Self {
+            world_proj: map_projection(self.world_proj),
+            overlay_proj: map_projection(self.overlay_proj),
+            vr_stereo: self
+                .vr_stereo
+                .map(|(left, right)| (map_projection(left), map_projection(right))),
+        }
+    }
+}
+
 /// Builds [`WorldMeshCullProjParams`] from viewport size and [`HostCameraFrame`].
 pub fn build_world_mesh_cull_proj_params(
     scene: &SceneCoordinator,
@@ -241,5 +257,50 @@ mod tests {
 
         assert_eq!(p_no.world_proj, p_ortho.world_proj);
         assert_eq!(p_no.overlay_proj, p_ortho.overlay_proj);
+    }
+
+    #[test]
+    fn cull_projection_mapping_applies_to_world_overlay_and_stereo() {
+        let world = Mat4::from_cols_array(&[
+            1.0, 2.0, 3.0, 4.0, //
+            5.0, 6.0, 7.0, 8.0, //
+            9.0, 10.0, 11.0, 12.0, //
+            13.0, 14.0, 15.0, 16.0,
+        ]);
+        let overlay = Mat4::from_cols_array(&[
+            2.0, 3.0, 4.0, 5.0, //
+            6.0, 7.0, 8.0, 9.0, //
+            10.0, 11.0, 12.0, 13.0, //
+            14.0, 15.0, 16.0, 17.0,
+        ]);
+        let stereo_left = Mat4::from_cols_array(&[
+            3.0, 4.0, 5.0, 6.0, //
+            7.0, 8.0, 9.0, 10.0, //
+            11.0, 12.0, 13.0, 14.0, //
+            15.0, 16.0, 17.0, 18.0,
+        ]);
+        let stereo_right = Mat4::from_cols_array(&[
+            4.0, 5.0, 6.0, 7.0, //
+            8.0, 9.0, 10.0, 11.0, //
+            12.0, 13.0, 14.0, 15.0, //
+            16.0, 17.0, 18.0, 19.0,
+        ]);
+        let projection_flip = Mat4::from_scale(glam::Vec3::new(1.0, -1.0, 1.0));
+        let mapped = WorldMeshCullProjParams {
+            world_proj: world,
+            overlay_proj: overlay,
+            vr_stereo: Some((stereo_left, stereo_right)),
+        }
+        .map_projection_matrices(|projection| projection_flip * projection);
+
+        assert_eq!(mapped.world_proj, projection_flip * world);
+        assert_eq!(mapped.overlay_proj, projection_flip * overlay);
+        assert_eq!(
+            mapped.vr_stereo,
+            Some((
+                projection_flip * stereo_left,
+                projection_flip * stereo_right
+            ))
+        );
     }
 }

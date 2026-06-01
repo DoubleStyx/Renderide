@@ -27,8 +27,36 @@ pub fn plot_render_world_maintenance(stats: RenderWorldMaintenanceStats) {
         stats.mesh_asset_dirty_renderer_count as f64
     );
     tracy_plot!(
+        "render_world::dirty_renderers",
+        stats.dirty_renderer_count as f64
+    );
+    tracy_plot!(
+        "render_world::refreshed_renderers",
+        stats.refreshed_renderer_count as f64
+    );
+    tracy_plot!(
+        "render_world::refreshed_templates",
+        stats.refreshed_template_count as f64
+    );
+    tracy_plot!(
+        "render_world::mesh_asset_invalidations",
+        stats.mesh_asset_invalidation_count as f64
+    );
+    tracy_plot!(
         "render_world::full_rebuild",
         stats.full_world_rebuild_count as f64
+    );
+    tracy_plot!(
+        "render_world::particle_snapshot_rebuild",
+        stats.particle_snapshot_rebuild_count as f64
+    );
+    tracy_plot!(
+        "render_world::snapshot_tasks",
+        stats.snapshot_rebuild_task_count as f64
+    );
+    tracy_plot!(
+        "render_world::snapshot_reused_spaces",
+        stats.snapshot_reused_space_count as f64
     );
     tracy_plot!(
         "render_world::spatial_rebuild",
@@ -37,5 +65,17 @@ pub fn plot_render_world_maintenance(stats: RenderWorldMaintenanceStats) {
     tracy_plot!(
         "render_world::spatial_refit",
         stats.spatial_refit_count as f64
+    );
+    tracy_plot!(
+        "render_world::retained_templates",
+        stats.retained_template_count as f64
+    );
+    tracy_plot!(
+        "render_world::context_invariant",
+        stats.context_invariant_count as f64
+    );
+    tracy_plot!(
+        "render_world::steady_state_skip",
+        stats.steady_state_skip_count as f64
     );
 }

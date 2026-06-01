@@ -25,6 +25,7 @@ use refresh::{
     DirtyRendererSet, RefreshOutcome, refresh_render_world_space, refresh_renderer_bounds_set,
     refresh_renderer_set,
 };
+use snapshot::SnapshotRebuildStats;
 use state::RenderWorldSpace;
 
 /// Transform-root dirty records assigned to one expansion worker.
@@ -120,12 +121,18 @@ pub struct RenderWorldMaintenanceStats {
     pub full_world_rebuild_count: usize,
     /// Prepared snapshots rebuilt only because generated particle meshes changed.
     pub particle_snapshot_rebuild_count: usize,
+    /// Prepared-snapshot copy tasks built while rebuilding retained templates.
+    pub snapshot_rebuild_task_count: usize,
+    /// Render spaces reused from the previous prepared snapshot during a partial rebuild.
+    pub snapshot_reused_space_count: usize,
     /// Prepared spatial indexes rebuilt because run membership changed.
     pub spatial_rebuild_count: usize,
     /// Prepared spatial indexes refit because dynamic bounds changed.
     pub spatial_refit_count: usize,
     /// Retained draw templates currently cached after maintenance.
     pub retained_template_count: usize,
+    /// Render-world caches serving contexts with no draw-prep overrides.
+    pub context_invariant_count: usize,
     /// Frames where this render world proved its retained snapshot did not need rebuilding.
     pub steady_state_skip_count: usize,
 }
@@ -144,9 +151,12 @@ impl RenderWorldMaintenanceStats {
         self.full_space_rebuild_count += other.full_space_rebuild_count;
         self.full_world_rebuild_count += other.full_world_rebuild_count;
         self.particle_snapshot_rebuild_count += other.particle_snapshot_rebuild_count;
+        self.snapshot_rebuild_task_count += other.snapshot_rebuild_task_count;
+        self.snapshot_reused_space_count += other.snapshot_reused_space_count;
         self.spatial_rebuild_count += other.spatial_rebuild_count;
         self.spatial_refit_count += other.spatial_refit_count;
         self.retained_template_count += other.retained_template_count;
+        self.context_invariant_count += other.context_invariant_count;
         self.steady_state_skip_count += other.steady_state_skip_count;
     }
 }
@@ -171,6 +181,8 @@ pub struct RenderWorld {
     full_rebuild_requested: bool,
     /// Mesh-pool mutation generation consumed by this cache.
     mesh_pool_generation: u64,
+    /// Whether this cache represents render contexts that have no draw-prep overrides.
+    context_invariant: bool,
     /// Pending topology dirty events accumulated since the last maintenance pass.
     pending_topology_dirty_count: usize,
     /// Pending material dirty events accumulated since the last maintenance pass.
@@ -254,6 +266,16 @@ struct DirtyRendererRefreshWork {
 impl RenderWorld {
     /// Creates an empty render-world cache.
     pub fn new(render_context: RenderingContext) -> Self {
+        Self::new_with_context_mode(render_context, false)
+    }
+
+    /// Creates an empty render-world cache for contexts with no draw-prep overrides.
+    pub fn new_context_invariant(render_context: RenderingContext) -> Self {
+        Self::new_with_context_mode(render_context, true)
+    }
+
+    /// Creates an empty render-world cache with explicit context compatibility.
+    fn new_with_context_mode(render_context: RenderingContext, context_invariant: bool) -> Self {
         Self {
             spaces: HashMap::new(),
             dirty_spaces: HashSet::new(),
@@ -264,11 +286,16 @@ impl RenderWorld {
             particle_snapshot_dirty: false,
             full_rebuild_requested: true,
             mesh_pool_generation: 0,
+            context_invariant,
             pending_topology_dirty_count: 0,
             pending_material_dirty_count: 0,
             pending_transform_only_dirty_count: 0,
             pending_mesh_asset_dirty_renderer_count: 0,
-            prepared: FramePreparedRenderables::empty(render_context),
+            prepared: if context_invariant {
+                FramePreparedRenderables::empty_context_invariant(render_context)
+            } else {
+                FramePreparedRenderables::empty(render_context)
+            },
             maintenance_stats: RenderWorldMaintenanceStats::default(),
         }
     }
@@ -320,8 +347,13 @@ impl RenderWorld {
         render_context: RenderingContext,
     ) -> &FramePreparedRenderables {
         profiling::scope!("mesh::render_world::prepare_for_frame");
-        let mut stats = RenderWorldMaintenanceStats::default();
-        let context_changed = self.prepared.render_context() != render_context;
+        let mut stats = RenderWorldMaintenanceStats {
+            context_invariant_count: usize::from(self.context_invariant),
+            ..Default::default()
+        };
+        let context_changed = !self
+            .prepared
+            .is_compatible_with_render_context(render_context);
         if context_changed {
             self.full_rebuild_requested = true;
         }
@@ -371,13 +403,15 @@ impl RenderWorld {
         if snapshot_dirty {
             profiling::scope!("mesh::render_world::rebuild_snapshot");
             let dirty_spaces = (!force_full_snapshot).then_some(&snapshot_dirty_spaces);
-            self.rebuild_prepared_snapshot(
+            let snapshot_stats = self.rebuild_prepared_snapshot(
                 scene,
                 mesh_pool,
                 point_render_buffers,
                 render_context,
                 dirty_spaces,
             );
+            stats.snapshot_rebuild_task_count = snapshot_stats.task_count;
+            stats.snapshot_reused_space_count = snapshot_stats.reused_space_count;
             self.particle_snapshot_dirty = false;
             stats.spatial_rebuild_count = 1;
         } else {
@@ -437,6 +471,9 @@ impl RenderWorld {
 
     /// Records a material override dirty event for this render context.
     fn note_material_override_dirty(&mut self, dirty: RenderWorldMaterialOverrideDirty) {
+        if self.context_invariant {
+            return;
+        }
         if dirty.context != self.prepared.render_context() {
             return;
         }
@@ -869,7 +906,7 @@ impl RenderWorld {
         point_render_buffers: &HashMap<i32, crate::particles::PointRenderBufferAsset>,
         render_context: RenderingContext,
         dirty_spaces: Option<&HashSet<RenderSpaceId>>,
-    ) {
+    ) -> SnapshotRebuildStats {
         snapshot::rebuild_prepared_snapshot(
             self,
             scene,
@@ -877,7 +914,7 @@ impl RenderWorld {
             point_render_buffers,
             render_context,
             dirty_spaces,
-        );
+        )
     }
 
     /// Number of retained draw templates currently cached.

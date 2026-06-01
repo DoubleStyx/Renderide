@@ -17,7 +17,6 @@ pub use blendshape_bind_chunks::{
 pub use mesh_preprocess::MeshPreprocessPipelines;
 pub use per_draw_uniforms::{
     INITIAL_PER_DRAW_UNIFORM_SLOTS, PER_DRAW_UNIFORM_STRIDE, PaddedPerDrawUniforms,
-    write_per_draw_uniform_slab,
 };
 pub use range_alloc::Range;
 pub use scratch::{

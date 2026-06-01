@@ -948,6 +948,11 @@ impl CompiledRenderGraph {
         );
         if admission.is_parallel() {
             profiling::scope!("graph::prepare_view_blackboards::parallel");
+            {
+                profiling::scope!("graph::prepare_view_blackboards::sort_by_draw_work");
+                work_items
+                    .sort_by_key(|work_item| std::cmp::Reverse(work_item.estimated_draw_count));
+            }
             use rayon::prelude::*;
             work_items
                 .par_iter_mut()
@@ -955,6 +960,10 @@ impl CompiledRenderGraph {
                 .for_each(|work_item| {
                     self.prepare_one_view_blackboard(&shared, work_item);
                 });
+            {
+                profiling::scope!("graph::prepare_view_blackboards::restore_view_order");
+                work_items.sort_by_key(|work_item| work_item.view_idx);
+            }
         } else {
             profiling::scope!("graph::prepare_view_blackboards::serial");
             for work_item in work_items.iter_mut() {

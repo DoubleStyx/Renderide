@@ -59,7 +59,10 @@ pub use depth_prepass::{WorldMeshForwardDepthPrepass, WorldMeshForwardDepthPrepa
 pub(crate) use material_batch::{MaterialBatchBoundary, MaterialBatchPacket, MaterialDrawResolver};
 pub(crate) use normal_pass::GTAO_VIEW_NORMAL_FORMAT;
 pub use normal_pass::{WorldMeshForwardNormalGraphResources, WorldMeshForwardNormalPass};
-pub(crate) use prepare::{WorldMeshForwardPrepareContext, prepare_world_mesh_forward_frame};
+pub(crate) use prepare::{
+    WorldMeshForwardPrepareContext, WorldMeshForwardPrepareScratch,
+    prepare_world_mesh_forward_frame,
+};
 pub(crate) use skybox::SkyboxRenderer as WorldMeshForwardSkyboxRenderer;
 pub(crate) use state::{
     PreparedWorldMeshForwardFrame, WorldMeshForwardPipelineState, WorldMeshForwardPlanSlot,

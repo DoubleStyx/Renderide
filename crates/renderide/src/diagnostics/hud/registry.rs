@@ -14,6 +14,8 @@ use crate::config::RendererSettingsHandle;
 pub enum DebugWindow {
     /// **Frame timing** overlay: FPS, CPU/GPU per-frame ms, RAM/VRAM, frametime sparkline.
     FrameTiming,
+    /// **Feedback / Bug Report** overlay: quick links for reporting and discussion.
+    Feedback,
     /// **Renderide debug** main panel (Stats / Shader routes / Draw state / GPU memory / GPU passes).
     Main,
     /// **Scene transforms** overlay: per-render-space world TRS tables.
@@ -32,20 +34,23 @@ impl DebugWindow {
         Self::SceneTransforms,
         Self::Textures,
         Self::RendererConfig,
+        Self::Feedback,
     ];
 
     /// Returns `true` when this window should render this frame.
     ///
     /// The master ImGui visibility toggle hides every window when off.
     /// The four debug windows are gated by their dedicated [`crate::config::DebugSettings`] flag.
-    /// **Renderer config** has no per-window settings gate -- its visibility is driven by the
-    /// close-button open flag persisted in [`crate::diagnostics::HudUiState::renderer_config_open`].
+    /// **Feedback / Bug Report** is always available when ImGui is visible. **Renderer config**
+    /// has no per-window settings gate -- its visibility is driven by the close-button open flag
+    /// persisted in [`crate::diagnostics::HudUiState::renderer_config_open`].
     pub fn enabled(self, flags: OverlayFeatureFlags) -> bool {
         if !flags.imgui_visible {
             return false;
         }
         match self {
             Self::FrameTiming => flags.frame_timing,
+            Self::Feedback => true,
             Self::Main => flags.main,
             Self::SceneTransforms => flags.scene_transforms,
             Self::Textures => flags.textures,
@@ -108,8 +113,8 @@ impl OverlayFeatureFlags {
 
     /// `true` when at least one of the four debug-content windows is enabled.
     ///
-    /// Used by [`crate::diagnostics::DebugHud::has_visible_content`] to skip the entire HUD
-    /// command encoder + GPU profiler query wrap when no debug windows are open.
+    /// Useful for gating heavier diagnostics capture; it intentionally excludes the lightweight
+    /// always-available **Feedback / Bug Report** panel.
     pub fn any_debug_content(self) -> bool {
         self.imgui_visible
             && (self.frame_timing || self.main || self.scene_transforms || self.textures)
@@ -139,6 +144,7 @@ mod tests {
         let mut f = ALL_OFF;
         match window {
             DebugWindow::FrameTiming => f.frame_timing = true,
+            DebugWindow::Feedback => {}
             DebugWindow::Main => f.main = true,
             DebugWindow::SceneTransforms => f.scene_transforms = true,
             DebugWindow::Textures => f.textures = true,
@@ -168,15 +174,23 @@ mod tests {
     }
 
     #[test]
+    fn feedback_window_is_enabled_when_master_visible_regardless_of_debug_flags() {
+        assert!(DebugWindow::Feedback.enabled(ALL_OFF));
+    }
+
+    #[test]
     fn each_debug_window_gates_on_its_own_flag() {
         for &w in DebugWindow::ALL {
-            if w == DebugWindow::RendererConfig {
+            if w == DebugWindow::Feedback || w == DebugWindow::RendererConfig {
                 continue;
             }
             let f = only(w);
             assert!(w.enabled(f), "{w:?} should enable when its flag is on");
             for &other in DebugWindow::ALL {
-                if other == w || other == DebugWindow::RendererConfig {
+                if other == w
+                    || other == DebugWindow::Feedback
+                    || other == DebugWindow::RendererConfig
+                {
                     continue;
                 }
                 assert!(
@@ -199,14 +213,15 @@ mod tests {
 
     #[test]
     fn all_lists_every_variant_exactly_once() {
-        let mut counts = [0usize; 5];
+        let mut counts = [0usize; 6];
         for &w in DebugWindow::ALL {
             let idx = match w {
                 DebugWindow::FrameTiming => 0,
-                DebugWindow::Main => 1,
-                DebugWindow::SceneTransforms => 2,
-                DebugWindow::Textures => 3,
-                DebugWindow::RendererConfig => 4,
+                DebugWindow::Feedback => 1,
+                DebugWindow::Main => 2,
+                DebugWindow::SceneTransforms => 3,
+                DebugWindow::Textures => 4,
+                DebugWindow::RendererConfig => 5,
             };
             counts[idx] += 1;
         }

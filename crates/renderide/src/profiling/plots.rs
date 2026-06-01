@@ -14,6 +14,7 @@ mod mesh_upload;
 mod rayon_admission;
 mod render_world;
 mod tracy_plot;
+mod world_mesh_prepare;
 
 pub use asset_integration::{AssetIntegrationProfileSample, plot_asset_integration};
 pub use command_encoding::{CommandEncodingProfileSample, plot_command_encoding};
@@ -30,3 +31,4 @@ pub use mesh_deform::{MeshDeformProfileSample, plot_mesh_deform};
 pub(crate) use mesh_upload::{plot_mesh_derived_stream_masks, plot_mesh_upload_batch};
 pub use rayon_admission::{RayonAdmissionProfileSample, plot_rayon_admission};
 pub use render_world::plot_render_world_maintenance;
+pub use world_mesh_prepare::plot_world_mesh_prepare;

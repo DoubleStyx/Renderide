@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use crate::frontend::InitState;
 use crate::frontend::dispatch::renderer_command_kind::renderer_command_variant_tag;
-use crate::shared::RendererCommand;
+use crate::ipc::TimedRendererCommand;
 
 use crate::diagnostics::log_throttle::LogThrottle;
 
@@ -71,9 +71,9 @@ impl RendererRuntime {
         {
             profiling::scope!("ipc::command_processing");
             for cmd in batch.drain(..) {
-                let _tag = renderer_command_variant_tag(&cmd);
+                let _tag = renderer_command_variant_tag(&cmd.command);
                 profiling::scope!("ipc::dispatch", _tag);
-                self.handle_ipc_command(cmd);
+                self.handle_timed_ipc_command(cmd);
             }
         }
         self.frontend.recycle_command_batch(batch);
@@ -81,11 +81,13 @@ impl RendererRuntime {
     }
 }
 
-fn trace_ipc_batch(batch: &[RendererCommand], init_state: InitState, pending_shaders: usize) {
+fn trace_ipc_batch(batch: &[TimedRendererCommand], init_state: InitState, pending_shaders: usize) {
     if batch.is_empty() || !logger::enabled(logger::LogLevel::Trace) {
         return;
     }
-    let kinds = crate::runtime::state::ipc::summarize_renderer_command_mix(batch.iter());
+    let kinds = crate::runtime::state::ipc::summarize_renderer_command_mix(
+        batch.iter().map(|c| &c.command),
+    );
     logger::trace!(
         "IPC poll batch: commands={} init_state={:?} pending_shader_resolutions={} kinds=[{}]",
         batch.len(),
@@ -97,7 +99,7 @@ fn trace_ipc_batch(batch: &[RendererCommand], init_state: InitState, pending_sha
 
 /// Emits a throttled debug summary for unusually large IPC command batches.
 fn log_large_ipc_batch_if_needed(
-    batch: &[RendererCommand],
+    batch: &[TimedRendererCommand],
     init_state: InitState,
     pending_shaders: usize,
 ) {
@@ -110,7 +112,9 @@ fn log_large_ipc_batch_if_needed(
     let Some(observation) = LARGE_IPC_BATCH_LOG.should_log(4, 64) else {
         return;
     };
-    let kinds = crate::runtime::state::ipc::summarize_renderer_command_mix(batch.iter());
+    let kinds = crate::runtime::state::ipc::summarize_renderer_command_mix(
+        batch.iter().map(|c| &c.command),
+    );
     logger::debug!(
         "IPC large poll batch: commands={} init_state={:?} pending_shader_resolutions={} occurrence={} kinds=[{}]",
         batch.len(),

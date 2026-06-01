@@ -14,14 +14,14 @@ use crate::mesh_deform::SkinCacheKey;
 use crate::occlusion::HiZCullData;
 use crate::render_graph::blackboard::Blackboard;
 use crate::render_graph::{
-    FrameGlobalView, FrameView, FrameViewResourceHints, GraphExecuteError,
+    FrameGlobalView, FrameView, FrameViewResourceHints, GraphExecuteError, OffscreenWriteTarget,
     ViewFamilyGraphRequirements,
 };
 use crate::world_mesh::QueuedWorldMeshDraws;
 use crate::world_mesh::{
     DrawCollectionContext, HiZTemporalState, PrefetchedWorldMeshViewDraws, WorldMeshCullInput,
-    WorldMeshCullProjParams, WorldMeshDrawCollectParallelism, WorldMeshDrawPlan,
-    build_world_mesh_cull_proj_params, queue_draws_with_parallelism,
+    WorldMeshCullProjParams, WorldMeshDrawArrangeParallelism, WorldMeshDrawCollectParallelism,
+    WorldMeshDrawPlan, build_world_mesh_cull_proj_params, queue_draws_with_parallelism,
     queue_prepared_draws_for_views_with_parallelism,
 };
 
@@ -101,10 +101,11 @@ impl<'views, 'backend> ExtractedFrame<'views, 'backend> {
             cull_snapshots,
             mesh_lod_bias,
         );
+        let arrange_parallelism = select_arrange_parallelism(&view_draws);
         QueuedDraws {
             prepared_views,
             view_draws,
-            parallelism: shared.inner_parallelism,
+            arrange_parallelism,
         }
     }
 }
@@ -115,14 +116,14 @@ pub(in crate::runtime) struct QueuedDraws<'a> {
     prepared_views: PreparedViews<'a>,
     /// Queued draw candidates for every prepared view.
     view_draws: Vec<QueuedViewDraws>,
-    /// Rayon tier to use for strict-order sorting inside each queued view.
-    parallelism: WorldMeshDrawCollectParallelism,
+    /// Rayon tier to use for final draw arrangement inside each queued view.
+    arrange_parallelism: WorldMeshDrawArrangeParallelism,
 }
 
 impl<'a> QueuedDraws<'a> {
     /// Sorts queued draws and promotes them into final per-view draw plans.
     pub(in crate::runtime) fn sort_draws(self) -> PreparedDraws<'a> {
-        let view_draws = sort_view_draws(self.view_draws, self.parallelism);
+        let view_draws = sort_view_draws(self.view_draws, self.arrange_parallelism);
         {
             profiling::scope!("render::sort_view_draws::trace_plans");
             trace_view_draw_plans(self.prepared_views.plans(), &view_draws);
@@ -137,13 +138,13 @@ impl<'a> QueuedDraws<'a> {
 /// Sorts queued draw packets for each view, preserving view order.
 fn sort_view_draws(
     view_draws: Vec<QueuedViewDraws>,
-    parallelism: WorldMeshDrawCollectParallelism,
+    arrange_parallelism: WorldMeshDrawArrangeParallelism,
 ) -> Vec<WorldMeshDrawPlan> {
     profiling::scope!("render::sort_view_draws");
     if should_parallelize_view_sort(&view_draws) {
-        sort_view_draws_parallel(view_draws, parallelism)
+        sort_view_draws_parallel(view_draws, arrange_parallelism)
     } else {
-        sort_view_draws_serial(view_draws, parallelism)
+        sort_view_draws_serial(view_draws, arrange_parallelism)
     }
 }
 
@@ -161,35 +162,59 @@ fn should_parallelize_view_sort(view_draws: &[QueuedViewDraws]) -> bool {
         .is_parallel()
 }
 
+/// Selects the per-view arrangement tier independently from collection fan-out.
+fn select_arrange_parallelism(view_draws: &[QueuedViewDraws]) -> WorldMeshDrawArrangeParallelism {
+    let total_draws = view_draws
+        .iter()
+        .map(QueuedViewDraws::queued_draw_count)
+        .sum::<usize>();
+    select_arrange_parallelism_for_draws_with_policy(
+        FrameParallelPolicy::for_current_thread_pool(),
+        total_draws,
+    )
+}
+
+/// Policy-injected implementation for deterministic unit tests.
+fn select_arrange_parallelism_for_draws_with_policy(
+    policy: FrameParallelPolicy,
+    total_draws: usize,
+) -> WorldMeshDrawArrangeParallelism {
+    if policy.is_draw_heavy(total_draws) {
+        WorldMeshDrawArrangeParallelism::Full
+    } else {
+        WorldMeshDrawArrangeParallelism::Serial
+    }
+}
+
 fn sort_view_draws_serial(
     view_draws: Vec<QueuedViewDraws>,
-    parallelism: WorldMeshDrawCollectParallelism,
+    arrange_parallelism: WorldMeshDrawArrangeParallelism,
 ) -> Vec<WorldMeshDrawPlan> {
     profiling::scope!("render::sort_view_draws::serial");
     view_draws
         .into_iter()
-        .map(|queued| queued.sort_and_package(parallelism))
+        .map(|queued| queued.sort_and_package(arrange_parallelism))
         .collect()
 }
 
 fn sort_view_draws_parallel(
     view_draws: Vec<QueuedViewDraws>,
-    parallelism: WorldMeshDrawCollectParallelism,
+    arrange_parallelism: WorldMeshDrawArrangeParallelism,
 ) -> Vec<WorldMeshDrawPlan> {
     profiling::scope!("render::sort_view_draws::parallel");
     if view_draws.len() == 2 {
-        return sort_two_view_draws_parallel(view_draws, parallelism);
+        return sort_two_view_draws_parallel(view_draws, arrange_parallelism);
     }
     view_draws
         .into_par_iter()
         .with_min_len(VIEW_SORT_PARALLEL_CHUNK_VIEWS)
-        .map(|queued| queued.sort_and_package(parallelism))
+        .map(|queued| queued.sort_and_package(arrange_parallelism))
         .collect()
 }
 
 fn sort_two_view_draws_parallel(
     view_draws: Vec<QueuedViewDraws>,
-    parallelism: WorldMeshDrawCollectParallelism,
+    arrange_parallelism: WorldMeshDrawArrangeParallelism,
 ) -> Vec<WorldMeshDrawPlan> {
     profiling::scope!("render::sort_view_draws::two_view_join");
     let mut iter = view_draws.into_iter();
@@ -197,12 +222,12 @@ fn sort_two_view_draws_parallel(
         return Vec::new();
     };
     let Some(second) = iter.next() else {
-        return vec![first.sort_and_package(parallelism)];
+        return vec![first.sort_and_package(arrange_parallelism)];
     };
     debug_assert_eq!(iter.count(), 0);
     let (first, second) = rayon::join(
-        || first.sort_and_package(parallelism),
-        || second.sort_and_package(parallelism),
+        || first.sort_and_package(arrange_parallelism),
+        || second.sort_and_package(arrange_parallelism),
     );
     vec![first, second]
 }
@@ -411,7 +436,7 @@ impl QueuedViewDraws {
     }
 
     /// Sorts this view's queued draws and packages the final draw plan.
-    fn sort_and_package(self, parallelism: WorldMeshDrawCollectParallelism) -> WorldMeshDrawPlan {
+    fn sort_and_package(self, parallelism: WorldMeshDrawArrangeParallelism) -> WorldMeshDrawPlan {
         let collection = self.queued.sort_and_arrange(parallelism);
         WorldMeshDrawPlan::Prefetched(Box::new(PrefetchedWorldMeshViewDraws::new(
             collection,
@@ -723,7 +748,8 @@ fn build_cull_snapshot_for_view(
     occlusion: &crate::occlusion::OcclusionSystem,
     prep: &FrameViewPlan<'_>,
 ) -> Option<ViewCullSnapshot> {
-    let proj = build_world_mesh_cull_proj_params(scene, prep.viewport_px, &prep.host_camera);
+    let camera_proj = build_world_mesh_cull_proj_params(scene, prep.viewport_px, &prep.host_camera);
+    let proj = cull_projection_for_write_target(&camera_proj, prep.write_target());
     let depth_mode = prep.output_depth_mode();
     let (hi_z, hi_z_temporal) = if prep.host_camera.suppress_occlusion_temporal {
         (None, None)
@@ -740,16 +766,25 @@ fn build_cull_snapshot_for_view(
     })
 }
 
+fn cull_projection_for_write_target(
+    proj: &WorldMeshCullProjParams,
+    write_target: OffscreenWriteTarget,
+) -> WorldMeshCullProjParams {
+    proj.map_projection_matrices(|projection| write_target.render_projection(projection))
+}
+
 #[cfg(test)]
 mod tests {
+    use glam::Mat4;
+
     use crate::camera::{HostCameraFrame, ViewId};
     use crate::mesh_deform::{SkinCacheKey, SkinCacheRendererKind};
     use crate::occlusion::OcclusionSystem;
     use crate::render_graph::{FrameViewClear, RenderPathProfile};
     use crate::scene::SceneCoordinator;
-    use crate::world_mesh::WorldMeshDrawCollectParallelism;
     use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
     use crate::world_mesh::{PrefetchedWorldMeshViewDraws, WorldMeshDrawCollection};
+    use crate::world_mesh::{WorldMeshDrawArrangeParallelism, WorldMeshDrawCollectParallelism};
 
     use super::super::view_plan::{FrameViewPlan, FrameViewPlanParams, FrameViewPlanTarget};
     use super::*;
@@ -782,6 +817,95 @@ mod tests {
         assert!(snapshot.hi_z.is_none());
         assert!(snapshot.hi_z_temporal.is_none());
         assert!(snapshot.proj.vr_stereo.is_none());
+    }
+
+    fn asymmetric_cull_projection_bundle() -> WorldMeshCullProjParams {
+        WorldMeshCullProjParams {
+            world_proj: Mat4::from_cols_array(&[
+                1.0, 0.25, 0.0, 0.0, //
+                0.5, 2.0, 0.0, 0.0, //
+                0.0, 0.0, 3.0, 0.75, //
+                0.0, 0.0, 1.0, 1.0,
+            ]),
+            overlay_proj: Mat4::from_cols_array(&[
+                1.5, 0.125, 0.0, 0.0, //
+                0.75, 1.25, 0.0, 0.0, //
+                0.0, 0.0, 2.5, 0.5, //
+                0.0, 0.0, 1.0, 1.0,
+            ]),
+            vr_stereo: Some((
+                Mat4::from_cols_array(&[
+                    1.0, 0.0, 0.0, 0.0, //
+                    0.1, 1.0, 0.0, 0.0, //
+                    0.0, 0.0, 1.0, 0.0, //
+                    0.0, 0.0, 0.0, 1.0,
+                ]),
+                Mat4::from_cols_array(&[
+                    1.0, 0.0, 0.0, 0.0, //
+                    -0.1, 1.0, 0.0, 0.0, //
+                    0.0, 0.0, 1.0, 0.0, //
+                    0.0, 0.0, 0.0, 1.0,
+                ]),
+            )),
+        }
+    }
+
+    #[test]
+    fn primary_cull_projection_preserves_camera_convention() {
+        let raw = asymmetric_cull_projection_bundle();
+        let adjusted = cull_projection_for_write_target(&raw, OffscreenWriteTarget::None);
+
+        assert_eq!(adjusted.world_proj, raw.world_proj);
+        assert_eq!(adjusted.overlay_proj, raw.overlay_proj);
+        assert_eq!(adjusted.vr_stereo, raw.vr_stereo);
+    }
+
+    #[test]
+    fn host_render_texture_cull_projection_uses_offscreen_convention() {
+        let raw = asymmetric_cull_projection_bundle();
+        let write_target = OffscreenWriteTarget::HostRenderTexture(77);
+        let adjusted = cull_projection_for_write_target(&raw, write_target);
+        let (left, right) = raw.vr_stereo.expect("stereo pair");
+
+        assert_eq!(
+            adjusted.world_proj,
+            write_target.render_projection(raw.world_proj)
+        );
+        assert_eq!(
+            adjusted.overlay_proj,
+            write_target.render_projection(raw.overlay_proj)
+        );
+        assert_eq!(
+            adjusted.vr_stereo,
+            Some((
+                write_target.render_projection(left),
+                write_target.render_projection(right)
+            ))
+        );
+    }
+
+    #[test]
+    fn untracked_offscreen_cull_projection_uses_offscreen_convention() {
+        let raw = asymmetric_cull_projection_bundle();
+        let write_target = OffscreenWriteTarget::Untracked;
+        let adjusted = cull_projection_for_write_target(&raw, write_target);
+        let (left, right) = raw.vr_stereo.expect("stereo pair");
+
+        assert_eq!(
+            adjusted.world_proj,
+            write_target.render_projection(raw.world_proj)
+        );
+        assert_eq!(
+            adjusted.overlay_proj,
+            write_target.render_projection(raw.overlay_proj)
+        );
+        assert_eq!(
+            adjusted.vr_stereo,
+            Some((
+                write_target.render_projection(left),
+                write_target.render_projection(right)
+            ))
+        );
     }
 
     #[test]
@@ -839,6 +963,23 @@ mod tests {
                 WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch,
             ),
             WorldMeshDrawCollectParallelism::SerialInnerForNestedBatch
+        );
+    }
+
+    #[test]
+    fn arrange_parallelism_uses_draw_heavy_threshold_independent_of_collection() {
+        let policy = FrameParallelPolicy::new(4);
+
+        assert_eq!(
+            select_arrange_parallelism_for_draws_with_policy(
+                policy,
+                policy.draw_heavy_threshold() - 1,
+            ),
+            WorldMeshDrawArrangeParallelism::Serial
+        );
+        assert_eq!(
+            select_arrange_parallelism_for_draws_with_policy(policy, policy.draw_heavy_threshold()),
+            WorldMeshDrawArrangeParallelism::Full
         );
     }
 

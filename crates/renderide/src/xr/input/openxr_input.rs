@@ -2,6 +2,8 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
+use parking_lot::Mutex;
+
 use super::bindings::ProfileExtensionGates;
 use super::frame::{ControllerFrame, resolve_controller_frame};
 use super::manifest::Manifest;
@@ -13,7 +15,10 @@ use super::profile::{
     ActiveControllerProfile, decode_profile_code, is_concrete_profile, log_profile_transition,
     profile_code,
 };
-use super::state::{OpenxrControllerRawInputs, build_controller_state};
+use super::state::{
+    OpenxrControllerRawInputs, OpenxrControllerThresholdState,
+    build_controller_state_with_thresholds,
+};
 use crate::shared::{Chirality, HandState, VRControllerState};
 use crate::xr::input::hand_tracking::{hand_from_openxr, inactive_openxr_hand};
 use crate::xr::synthesize_hand_states;
@@ -151,34 +156,40 @@ fn ipc_vr_controller_from_polled(
     side: Chirality,
     resolved_frame: Option<ControllerFrame>,
     polled: &PolledHandStates,
+    threshold_state: &mut OpenxrControllerThresholdState,
 ) -> VRControllerState {
     let tracking_valid = resolved_frame.is_some();
     let frame = resolved_frame.unwrap_or_else(placeholder_controller_frame);
-    build_controller_state(OpenxrControllerRawInputs {
-        profile,
-        side,
-        is_tracking: tracking_valid,
-        frame,
-        trigger: polled.trigger.current_state,
-        trigger_touch: polled.trigger_touch.current_state,
-        trigger_click: polled.trigger_click.current_state,
-        squeeze: polled.squeeze.current_state,
-        squeeze_click: polled.squeeze_click.current_state,
-        thumbstick: polled.thumbstick_vec(),
-        thumbstick_touch: polled.thumbstick_touch.current_state,
-        thumbstick_click: polled.thumbstick_click.current_state,
-        trackpad: polled.trackpad_vec(),
-        trackpad_touch: polled.trackpad_touch.current_state,
-        trackpad_click: polled.trackpad_click.current_state,
-        trackpad_force: polled.trackpad_force.current_state,
-        primary: polled.primary.current_state,
-        secondary: polled.secondary.current_state,
-        primary_touch: polled.primary_touch.current_state,
-        secondary_touch: polled.secondary_touch.current_state,
-        menu: polled.menu.current_state,
-        thumbrest_touch: polled.thumbrest_touch.current_state,
-        select: polled.select.current_state,
-    })
+    build_controller_state_with_thresholds(
+        OpenxrControllerRawInputs {
+            profile,
+            side,
+            is_tracking: tracking_valid,
+            frame,
+            trigger: polled.trigger.current_state,
+            trigger_active: polled.trigger.is_active,
+            trigger_touch: polled.trigger_touch.current_state,
+            trigger_click: polled.trigger_click.current_state,
+            squeeze: polled.squeeze.current_state,
+            squeeze_active: polled.squeeze.is_active,
+            squeeze_click: polled.squeeze_click.current_state,
+            thumbstick: polled.thumbstick_vec(),
+            thumbstick_touch: polled.thumbstick_touch.current_state,
+            thumbstick_click: polled.thumbstick_click.current_state,
+            trackpad: polled.trackpad_vec(),
+            trackpad_touch: polled.trackpad_touch.current_state,
+            trackpad_click: polled.trackpad_click.current_state,
+            trackpad_force: polled.trackpad_force.current_state,
+            primary: polled.primary.current_state,
+            secondary: polled.secondary.current_state,
+            primary_touch: polled.primary_touch.current_state,
+            secondary_touch: polled.secondary_touch.current_state,
+            menu: polled.menu.current_state,
+            thumbrest_touch: polled.thumbrest_touch.current_state,
+            select: polled.select.current_state,
+        },
+        threshold_state,
+    )
 }
 
 /// OpenXR actions and derived spaces for headset/controller input used by the renderer IPC path.
@@ -196,6 +207,8 @@ pub struct OpenxrInput {
     right_palm_ext_space: xr::Space,
     left_hand_tracker: Option<xr::HandTracker>,
     right_hand_tracker: Option<xr::HandTracker>,
+    left_threshold_state: Mutex<OpenxrControllerThresholdState>,
+    right_threshold_state: Mutex<OpenxrControllerThresholdState>,
 }
 
 impl OpenxrInput {
@@ -229,6 +242,8 @@ impl OpenxrInput {
             right_palm_ext_space: parts.right_palm_ext_space,
             left_hand_tracker: parts.left_hand_tracker,
             right_hand_tracker: parts.right_hand_tracker,
+            left_threshold_state: Mutex::new(OpenxrControllerThresholdState::default()),
+            right_threshold_state: Mutex::new(OpenxrControllerThresholdState::default()),
         }
     }
 
@@ -424,14 +439,26 @@ impl OpenxrInput {
             right_grip_pose,
             right_palm_ext_pose,
         );
-        let left =
-            ipc_vr_controller_from_polled(left_profile, Chirality::Left, left_frame, &left_polled);
-        let right = ipc_vr_controller_from_polled(
-            right_profile,
-            Chirality::Right,
-            right_frame,
-            &right_polled,
-        );
+        let left = {
+            let mut threshold_state = self.left_threshold_state.lock();
+            ipc_vr_controller_from_polled(
+                left_profile,
+                Chirality::Left,
+                left_frame,
+                &left_polled,
+                &mut threshold_state,
+            )
+        };
+        let right = {
+            let mut threshold_state = self.right_threshold_state.lock();
+            ipc_vr_controller_from_polled(
+                right_profile,
+                Chirality::Right,
+                right_frame,
+                &right_polled,
+                &mut threshold_state,
+            )
+        };
 
         let controllers = vec![left, right];
         let hand_states =

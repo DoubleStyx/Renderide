@@ -1,5 +1,8 @@
 //! PhotonDust render-buffer renderer rows mirrored from host render-space updates.
 
+use crate::cpu_parallelism::{
+    admit_renderable_update_items, current_reference_worker_count, record_parallel_admission,
+};
 use crate::ipc::SharedMemoryAccessor;
 use crate::scene::dense_update::{
     for_each_row_with_par_dispatch, non_negative_i32s, swap_remove_dense_indices,
@@ -250,23 +253,7 @@ pub(crate) fn apply_billboard_render_buffer_update_extracted(
                 ..Default::default()
             });
     }
-    for state in &extracted.states {
-        if state.renderable_index < 0 {
-            break;
-        }
-        let Some(entry) = space
-            .billboard_render_buffers
-            .get_mut(state.renderable_index as usize)
-        else {
-            continue;
-        };
-        entry.point_render_buffer_asset_id = state.point_render_buffer_asset_id;
-        entry.material_asset_id = state.material_asset_id;
-        entry.min_billboard_screen_size = state.min_billboard_screen_size;
-        entry.max_billboard_screen_size = state.max_billboard_screen_size;
-        entry.alignment = state.alignment;
-        entry.motion_vector_mode = state.motion_vector_mode;
-    }
+    apply_billboard_state_rows(&mut space.billboard_render_buffers, &extracted.states);
 }
 
 /// Mutates mesh-particle renderer rows using a pre-extracted payload.
@@ -282,21 +269,7 @@ pub(crate) fn apply_mesh_render_buffer_update_extracted(
             ..Default::default()
         });
     }
-    for state in &extracted.states {
-        if state.renderable_index < 0 {
-            break;
-        }
-        let Some(entry) = space
-            .mesh_render_buffers
-            .get_mut(state.renderable_index as usize)
-        else {
-            continue;
-        };
-        entry.point_render_buffer_asset_id = state.point_render_buffer_asset_id;
-        entry.material_asset_id = state.material_asset_id;
-        entry.mesh_asset_id = state.mesh_asset_id;
-        entry.alignment = state.alignment;
-    }
+    apply_mesh_state_rows(&mut space.mesh_render_buffers, &extracted.states);
 }
 
 /// Mutates trail renderer rows using a pre-extracted payload.
@@ -312,22 +285,176 @@ pub(crate) fn apply_trail_renderer_update_extracted(
             ..Default::default()
         });
     }
-    for state in &extracted.states {
-        if state.renderable_index < 0 {
+    apply_trail_state_rows(&mut space.trail_render_buffers, &extracted.states);
+}
+
+fn collect_state_plans<T>(
+    entry_count: usize,
+    states: &[T],
+    renderable_index: impl Fn(T) -> i32,
+) -> (Vec<Option<T>>, usize, usize)
+where
+    T: Copy,
+{
+    let mut plans = Vec::with_capacity(entry_count);
+    plans.resize_with(entry_count, || None);
+    let mut active_rows = 0usize;
+    let mut valid_plan_count = 0usize;
+    for &state in states {
+        let idx = renderable_index(state);
+        if idx < 0 {
             break;
         }
-        let Some(entry) = space
-            .trail_render_buffers
-            .get_mut(state.renderable_index as usize)
-        else {
-            continue;
-        };
-        entry.trails_render_buffer_asset_id = state.trails_render_buffer_asset_id;
-        entry.material_asset_id = state.material_asset_id;
-        entry.texture_mode = state.texture_mode;
-        entry.motion_vector_mode = state.motion_vector_mode;
-        entry.generate_lighting_data = state.generate_lighting_data != 0;
+        active_rows += 1;
+        if let Some(slot) = plans.get_mut(idx as usize) {
+            if slot.is_none() {
+                valid_plan_count += 1;
+            }
+            *slot = Some(state);
+        }
     }
+    (plans, active_rows, valid_plan_count)
+}
+
+fn apply_billboard_state_rows(
+    entries: &mut [BillboardRenderBufferEntry],
+    states: &[BillboardRenderBufferState],
+) {
+    let (plans, active_rows, valid_plan_count) =
+        collect_state_plans(entries.len(), states, |state| state.renderable_index);
+    if valid_plan_count == 0 {
+        return;
+    }
+    let admission =
+        admit_renderable_update_items(valid_plan_count, current_reference_worker_count());
+    record_parallel_admission(
+        "billboard_render_buffer_state_apply",
+        active_rows,
+        valid_plan_count,
+        admission,
+    );
+    if let Some(chunk_size) = admission.chunk_size() {
+        use rayon::prelude::*;
+        entries
+            .par_chunks_mut(chunk_size)
+            .zip(plans.par_chunks(chunk_size))
+            .with_min_len(1)
+            .for_each(|(entry_chunk, plan_chunk)| {
+                profiling::scope!("scene::apply_billboard_render_buffers::state_worker");
+                for (entry, state) in entry_chunk.iter_mut().zip(plan_chunk.iter().copied()) {
+                    if let Some(state) = state {
+                        apply_billboard_state(entry, state);
+                    }
+                }
+            });
+    } else {
+        for (entry, state) in entries.iter_mut().zip(plans) {
+            if let Some(state) = state {
+                apply_billboard_state(entry, state);
+            }
+        }
+    }
+}
+
+fn apply_billboard_state(
+    entry: &mut BillboardRenderBufferEntry,
+    state: BillboardRenderBufferState,
+) {
+    entry.point_render_buffer_asset_id = state.point_render_buffer_asset_id;
+    entry.material_asset_id = state.material_asset_id;
+    entry.min_billboard_screen_size = state.min_billboard_screen_size;
+    entry.max_billboard_screen_size = state.max_billboard_screen_size;
+    entry.alignment = state.alignment;
+    entry.motion_vector_mode = state.motion_vector_mode;
+}
+
+fn apply_mesh_state_rows(entries: &mut [MeshRenderBufferEntry], states: &[MeshRenderBufferState]) {
+    let (plans, active_rows, valid_plan_count) =
+        collect_state_plans(entries.len(), states, |state| state.renderable_index);
+    if valid_plan_count == 0 {
+        return;
+    }
+    let admission =
+        admit_renderable_update_items(valid_plan_count, current_reference_worker_count());
+    record_parallel_admission(
+        "mesh_render_buffer_state_apply",
+        active_rows,
+        valid_plan_count,
+        admission,
+    );
+    if let Some(chunk_size) = admission.chunk_size() {
+        use rayon::prelude::*;
+        entries
+            .par_chunks_mut(chunk_size)
+            .zip(plans.par_chunks(chunk_size))
+            .with_min_len(1)
+            .for_each(|(entry_chunk, plan_chunk)| {
+                profiling::scope!("scene::apply_mesh_render_buffers::state_worker");
+                for (entry, state) in entry_chunk.iter_mut().zip(plan_chunk.iter().copied()) {
+                    if let Some(state) = state {
+                        apply_mesh_state(entry, state);
+                    }
+                }
+            });
+    } else {
+        for (entry, state) in entries.iter_mut().zip(plans) {
+            if let Some(state) = state {
+                apply_mesh_state(entry, state);
+            }
+        }
+    }
+}
+
+fn apply_mesh_state(entry: &mut MeshRenderBufferEntry, state: MeshRenderBufferState) {
+    entry.point_render_buffer_asset_id = state.point_render_buffer_asset_id;
+    entry.material_asset_id = state.material_asset_id;
+    entry.mesh_asset_id = state.mesh_asset_id;
+    entry.alignment = state.alignment;
+}
+
+fn apply_trail_state_rows(entries: &mut [TrailRenderBufferEntry], states: &[TrailsRendererState]) {
+    let (plans, active_rows, valid_plan_count) =
+        collect_state_plans(entries.len(), states, |state| state.renderable_index);
+    if valid_plan_count == 0 {
+        return;
+    }
+    let admission =
+        admit_renderable_update_items(valid_plan_count, current_reference_worker_count());
+    record_parallel_admission(
+        "trail_render_buffer_state_apply",
+        active_rows,
+        valid_plan_count,
+        admission,
+    );
+    if let Some(chunk_size) = admission.chunk_size() {
+        use rayon::prelude::*;
+        entries
+            .par_chunks_mut(chunk_size)
+            .zip(plans.par_chunks(chunk_size))
+            .with_min_len(1)
+            .for_each(|(entry_chunk, plan_chunk)| {
+                profiling::scope!("scene::apply_trail_render_buffers::state_worker");
+                for (entry, state) in entry_chunk.iter_mut().zip(plan_chunk.iter().copied()) {
+                    if let Some(state) = state {
+                        apply_trail_state(entry, state);
+                    }
+                }
+            });
+    } else {
+        for (entry, state) in entries.iter_mut().zip(plans) {
+            if let Some(state) = state {
+                apply_trail_state(entry, state);
+            }
+        }
+    }
+}
+
+fn apply_trail_state(entry: &mut TrailRenderBufferEntry, state: TrailsRendererState) {
+    entry.trails_render_buffer_asset_id = state.trails_render_buffer_asset_id;
+    entry.material_asset_id = state.material_asset_id;
+    entry.texture_mode = state.texture_mode;
+    entry.motion_vector_mode = state.motion_vector_mode;
+    entry.generate_lighting_data = state.generate_lighting_data != 0;
 }
 
 /// Remaps render-buffer renderer transform ids after dense transform swap-removals.
@@ -391,6 +518,145 @@ mod tests {
         assert_eq!(row.point_render_buffer_asset_id, 22);
         assert_eq!(row.material_asset_id, 33);
         assert_eq!(row.alignment, BillboardAlignment::Facing);
+    }
+
+    #[test]
+    fn billboard_state_rows_keep_last_valid_row_before_terminator() {
+        let mut space = RenderSpaceState::default();
+        apply_billboard_render_buffer_update_extracted(
+            &mut space,
+            &ExtractedBillboardRenderBufferUpdate {
+                additions: vec![7, -1],
+                states: vec![
+                    BillboardRenderBufferState {
+                        renderable_index: 0,
+                        material_asset_id: 10,
+                        ..Default::default()
+                    },
+                    BillboardRenderBufferState {
+                        renderable_index: 5,
+                        material_asset_id: 50,
+                        ..Default::default()
+                    },
+                    BillboardRenderBufferState {
+                        renderable_index: 0,
+                        material_asset_id: 20,
+                        alignment: BillboardAlignment::Global,
+                        ..Default::default()
+                    },
+                    BillboardRenderBufferState {
+                        renderable_index: -1,
+                        material_asset_id: 30,
+                        ..Default::default()
+                    },
+                    BillboardRenderBufferState {
+                        renderable_index: 0,
+                        material_asset_id: 40,
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+
+        let row = space.billboard_render_buffers[0];
+        assert_eq!(row.material_asset_id, 20);
+        assert_eq!(row.alignment, BillboardAlignment::Global);
+    }
+
+    #[test]
+    fn mesh_state_rows_update_existing_rows() {
+        let mut space = RenderSpaceState::default();
+        apply_mesh_render_buffer_update_extracted(
+            &mut space,
+            &ExtractedMeshRenderBufferUpdate {
+                additions: vec![3, -1],
+                states: vec![MeshRenderBufferState {
+                    renderable_index: 0,
+                    point_render_buffer_asset_id: 11,
+                    material_asset_id: 12,
+                    mesh_asset_id: 13,
+                    alignment: MeshAlignment::Local,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+
+        let row = space.mesh_render_buffers[0];
+        assert_eq!(row.node_id, 3);
+        assert_eq!(row.point_render_buffer_asset_id, 11);
+        assert_eq!(row.material_asset_id, 12);
+        assert_eq!(row.mesh_asset_id, 13);
+        assert_eq!(row.alignment, MeshAlignment::Local);
+    }
+
+    #[test]
+    fn trail_state_rows_update_existing_rows() {
+        let mut space = RenderSpaceState::default();
+        apply_trail_renderer_update_extracted(
+            &mut space,
+            &ExtractedTrailRendererUpdate {
+                additions: vec![4, -1],
+                states: vec![TrailsRendererState {
+                    renderable_index: 0,
+                    trails_render_buffer_asset_id: 21,
+                    material_asset_id: 22,
+                    texture_mode: TrailTextureMode::RepeatPerSegment,
+                    motion_vector_mode: MotionVectorMode::NoMotion,
+                    generate_lighting_data: 1,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+
+        let row = space.trail_render_buffers[0];
+        assert_eq!(row.node_id, 4);
+        assert_eq!(row.trails_render_buffer_asset_id, 21);
+        assert_eq!(row.material_asset_id, 22);
+        assert_eq!(row.texture_mode, TrailTextureMode::RepeatPerSegment);
+        assert_eq!(row.motion_vector_mode, MotionVectorMode::NoMotion);
+        assert!(row.generate_lighting_data);
+    }
+
+    #[test]
+    fn billboard_parallel_state_apply_matches_dense_indices() {
+        const COUNT: usize = 96;
+        let mut space = RenderSpaceState::default();
+        let additions = (0..COUNT as i32).chain([-1]).collect::<Vec<_>>();
+        let states = (0..COUNT)
+            .map(|i| BillboardRenderBufferState {
+                renderable_index: i as i32,
+                point_render_buffer_asset_id: 1000 + i as i32,
+                material_asset_id: 2000 + i as i32,
+                alignment: BillboardAlignment::Direction,
+                motion_vector_mode: MotionVectorMode::Object,
+                ..Default::default()
+            })
+            .chain([BillboardRenderBufferState {
+                renderable_index: -1,
+                ..Default::default()
+            }])
+            .collect::<Vec<_>>();
+
+        apply_billboard_render_buffer_update_extracted(
+            &mut space,
+            &ExtractedBillboardRenderBufferUpdate {
+                additions,
+                states,
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(space.billboard_render_buffers.len(), COUNT);
+        for (i, row) in space.billboard_render_buffers.iter().enumerate() {
+            assert_eq!(row.node_id, i as i32);
+            assert_eq!(row.point_render_buffer_asset_id, 1000 + i as i32);
+            assert_eq!(row.material_asset_id, 2000 + i as i32);
+            assert_eq!(row.alignment, BillboardAlignment::Direction);
+            assert_eq!(row.motion_vector_mode, MotionVectorMode::Object);
+        }
     }
 
     #[test]

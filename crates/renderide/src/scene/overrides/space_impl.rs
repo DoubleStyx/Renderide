@@ -25,6 +25,25 @@ impl RenderSpaceState {
             .any(|entry| entry.context == context && entry.node_id >= 0)
     }
 
+    /// Returns whether any material override rows exist for `context`.
+    pub(in crate::scene) fn has_material_overrides_in_context(
+        &self,
+        context: RenderingContext,
+    ) -> bool {
+        self.render_material_overrides
+            .iter()
+            .any(|entry| entry.context == context)
+    }
+
+    /// Returns whether draw preparation must be specialized for `context`.
+    pub(in crate::scene) fn has_draw_prep_overrides_in_context(
+        &self,
+        context: RenderingContext,
+    ) -> bool {
+        self.has_transform_overrides_in_context(context)
+            || self.has_material_overrides_in_context(context)
+    }
+
     /// Applies transform overrides for `node_id` in `context` atop the dense local transform.
     pub(in crate::scene) fn overridden_local_transform(
         &self,

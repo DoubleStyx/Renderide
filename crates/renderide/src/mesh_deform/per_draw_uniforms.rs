@@ -1,8 +1,10 @@
 //! Per-draw uniform packing for mesh forward passes (WebGPU dynamic uniform offset = 256 bytes).
 
 use glam::Mat4;
+#[cfg(test)]
 use rayon::prelude::*;
 
+#[cfg(test)]
 use crate::cpu_parallelism::{
     RENDER_COMMAND_CHUNK_DRAWS, admit_render_command_items, current_reference_worker_count,
     record_parallel_admission,
@@ -154,20 +156,24 @@ impl PaddedPerDrawUniforms {
 }
 
 /// Draw slots assigned to one slab-copy worker chunk.
+#[cfg(test)]
 const PER_DRAW_SLAB_PARALLEL_CHUNK_SLOTS: usize = RENDER_COMMAND_CHUNK_DRAWS;
 /// Slab-copy chunks assigned to one Rayon worker leaf.
+#[cfg(test)]
 const PER_DRAW_SLAB_PARALLEL_CHUNKS_PER_TASK: usize = 1;
 /// Slot count above which slab writes fan out to a rayon worker pool.
 ///
 /// Each slot is a 256-byte copy. Two 64-slot chunks make the slab large enough for
 /// memory-bandwidth fan-out to pay off on typical desktop CPUs.
+#[cfg(test)]
 const PER_DRAW_SLAB_PARALLEL_MIN: usize = PER_DRAW_SLAB_PARALLEL_CHUNK_SLOTS * 2;
 
 /// Writes `count` consecutive [`PaddedPerDrawUniforms`] into `out` (must be `count * 256` bytes).
 ///
 /// Parallelizes across rayon when `slots.len() >= PER_DRAW_SLAB_PARALLEL_MIN`. Each worker writes
 /// into a disjoint 256-byte region of `out`, so there is no synchronization on the hot path.
-pub fn write_per_draw_uniform_slab(slots: &[PaddedPerDrawUniforms], out: &mut [u8]) {
+#[cfg(test)]
+fn write_per_draw_uniform_slab(slots: &[PaddedPerDrawUniforms], out: &mut [u8]) {
     let need = slots.len().saturating_mul(PER_DRAW_UNIFORM_STRIDE);
     assert!(
         out.len() >= need,

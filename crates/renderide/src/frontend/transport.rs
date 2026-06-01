@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use crate::connection::{ConnectionParams, InitError};
-use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
+use crate::ipc::{DualQueueIpc, SharedMemoryAccessor, TimedRendererCommand};
 use crate::profiling::{IpcPollProfileSample, plot_ipc_poll};
 use crate::shared::RendererCommand;
 
@@ -11,7 +11,7 @@ use crate::shared::RendererCommand;
 pub(crate) struct FrontendTransport {
     ipc: Option<DualQueueIpc>,
     params: Option<ConnectionParams>,
-    command_batch: Vec<RendererCommand>,
+    command_batch: Vec<TimedRendererCommand>,
     shared_memory: Option<SharedMemoryAccessor>,
 }
 
@@ -113,11 +113,11 @@ impl FrontendTransport {
     }
 
     /// Polls host queues into the reusable batch and prioritizes init data.
-    pub(crate) fn poll_commands(&mut self) -> Vec<RendererCommand> {
+    pub(crate) fn poll_commands(&mut self) -> Vec<TimedRendererCommand> {
         profiling::scope!("frontend::poll_commands");
         let mut batch = std::mem::take(&mut self.command_batch);
         if let Some(ipc) = self.ipc.as_mut() {
-            ipc.poll_into(&mut batch);
+            ipc.poll_timed_into(&mut batch);
             prioritize_renderer_init_data(&mut batch);
         } else {
             batch.clear();
@@ -129,12 +129,12 @@ impl FrontendTransport {
     pub(crate) fn poll_commands_after_primary_wait(
         &mut self,
         timeout: Duration,
-    ) -> (Vec<RendererCommand>, Duration) {
+    ) -> (Vec<TimedRendererCommand>, Duration) {
         profiling::scope!("frontend::poll_commands_after_primary_wait");
         let mut batch = std::mem::take(&mut self.command_batch);
         let mut waited = Duration::ZERO;
         if let Some(ipc) = self.ipc.as_mut() {
-            let stats = ipc.poll_into_after_primary_wait_profiled(&mut batch, timeout);
+            let stats = ipc.poll_timed_into_after_primary_wait_profiled(&mut batch, timeout);
             waited = stats.waited;
             {
                 profiling::scope!("ipc::batch_prioritize");
@@ -155,16 +155,16 @@ impl FrontendTransport {
     }
 
     /// Returns the drained command batch so the allocation is retained for the next poll.
-    pub(crate) fn recycle_command_batch(&mut self, batch: Vec<RendererCommand>) {
+    pub(crate) fn recycle_command_batch(&mut self, batch: Vec<TimedRendererCommand>) {
         self.command_batch = batch;
     }
 }
 
 /// Moves host init data to the front while preserving all other command arrival order.
-fn prioritize_renderer_init_data(batch: &mut [RendererCommand]) {
+fn prioritize_renderer_init_data(batch: &mut [TimedRendererCommand]) {
     let mut insert_at = 0;
     for idx in 0..batch.len() {
-        if matches!(&batch[idx], RendererCommand::RendererInitData(_)) {
+        if matches!(&batch[idx].command, RendererCommand::RendererInitData(_)) {
             batch[insert_at..=idx].rotate_right(1);
             insert_at += 1;
         }
@@ -173,22 +173,34 @@ fn prioritize_renderer_init_data(batch: &mut [RendererCommand]) {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     use super::prioritize_renderer_init_data;
     use crate::frontend::dispatch::renderer_command_kind::renderer_command_variant_tag;
+    use crate::ipc::TimedRendererCommand;
     use crate::shared::{
         FrameSubmitData, QualityConfig, RendererCommand, RendererInitData, SetTexture2DFormat,
     };
 
-    fn command_tags(commands: &[RendererCommand]) -> Vec<&'static str> {
-        commands.iter().map(renderer_command_variant_tag).collect()
+    fn timed(cmd: RendererCommand) -> TimedRendererCommand {
+        TimedRendererCommand::received_now(cmd)
+    }
+
+    fn command_tags(commands: &[TimedRendererCommand]) -> Vec<&'static str> {
+        commands
+            .iter()
+            .map(|timed| renderer_command_variant_tag(&timed.command))
+            .collect()
     }
 
     #[test]
     fn init_data_priority_preserves_non_init_order() {
         let mut batch = vec![
-            RendererCommand::SetTexture2DFormat(SetTexture2DFormat::default()),
-            RendererCommand::FrameSubmitData(FrameSubmitData::default()),
-            RendererCommand::QualityConfig(QualityConfig::default()),
+            timed(RendererCommand::SetTexture2DFormat(
+                SetTexture2DFormat::default(),
+            )),
+            timed(RendererCommand::FrameSubmitData(FrameSubmitData::default())),
+            timed(RendererCommand::QualityConfig(QualityConfig::default())),
         ];
 
         prioritize_renderer_init_data(&mut batch);
@@ -202,11 +214,17 @@ mod tests {
     #[test]
     fn init_data_priority_stably_moves_init_data_to_front() {
         let mut batch = vec![
-            RendererCommand::QualityConfig(QualityConfig::default()),
-            RendererCommand::RendererInitData(RendererInitData::default()),
-            RendererCommand::SetTexture2DFormat(SetTexture2DFormat::default()),
-            RendererCommand::RendererInitData(RendererInitData::default()),
-            RendererCommand::FrameSubmitData(FrameSubmitData::default()),
+            timed(RendererCommand::QualityConfig(QualityConfig::default())),
+            timed(RendererCommand::RendererInitData(
+                RendererInitData::default(),
+            )),
+            timed(RendererCommand::SetTexture2DFormat(
+                SetTexture2DFormat::default(),
+            )),
+            timed(RendererCommand::RendererInitData(
+                RendererInitData::default(),
+            )),
+            timed(RendererCommand::FrameSubmitData(FrameSubmitData::default())),
         ];
 
         prioritize_renderer_init_data(&mut batch);
@@ -221,5 +239,29 @@ mod tests {
                 "FrameSubmitData"
             ]
         );
+    }
+
+    #[test]
+    fn init_data_priority_keeps_timestamps_attached() {
+        let base = Instant::now();
+        let init_received_at = base + Duration::from_millis(7);
+        let mut batch = vec![
+            TimedRendererCommand::new(
+                RendererCommand::QualityConfig(QualityConfig::default()),
+                base,
+            ),
+            TimedRendererCommand::new(
+                RendererCommand::RendererInitData(RendererInitData::default()),
+                init_received_at,
+            ),
+        ];
+
+        prioritize_renderer_init_data(&mut batch);
+
+        assert!(matches!(
+            batch[0].command,
+            RendererCommand::RendererInitData(_)
+        ));
+        assert_eq!(batch[0].received_at, init_received_at);
     }
 }
