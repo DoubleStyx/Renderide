@@ -22,8 +22,9 @@ use crate::passes::post_processing::settings_slots::{
     GtaoSettingsSlot, GtaoSettingsValue, MotionBlurSettingsSlot, MotionBlurSettingsValue,
 };
 use crate::passes::{
-    WorldMeshForwardPipelineState, pre_warm_depth_prepass_pipeline_for_draw,
-    pre_warm_normal_pipeline_for_draw,
+    WorldMeshForwardDepthPrepassPipelineKey, WorldMeshForwardNormalPipelineKey,
+    WorldMeshForwardPipelineState, depth_prepass_pipeline_key_for_draw,
+    normal_pipeline_key_for_draw, pre_warm_depth_prepass_pipeline, pre_warm_normal_pipeline,
 };
 use crate::render_graph::TransientPool;
 use crate::render_graph::blackboard::Blackboard;
@@ -190,6 +191,42 @@ struct MaterialPipelineWarmupKey {
     kind: RasterPipelineKind,
     desc: MaterialPipelineDesc,
     variant: MaterialPipelineVariantSpec,
+}
+
+#[derive(Default)]
+struct WorldMeshPrepassPipelineWarmupKeys {
+    depth: HashSet<WorldMeshForwardDepthPrepassPipelineKey>,
+    normal: HashSet<WorldMeshForwardNormalPipelineKey>,
+}
+
+impl WorldMeshPrepassPipelineWarmupKeys {
+    fn record_item(
+        &mut self,
+        item: &WorldMeshDrawItem,
+        pipeline: &WorldMeshForwardPipelineState,
+        offscreen: bool,
+    ) {
+        if let Some(key) = depth_prepass_pipeline_key_for_draw(item, pipeline) {
+            self.depth.insert(key);
+        }
+        if world_mesh_item_mirrors_to_normal_prepass(item)
+            && let Some(key) = normal_pipeline_key_for_draw(item, pipeline, offscreen)
+        {
+            self.normal.insert(key);
+        }
+    }
+
+    fn warm(self, device: &wgpu::Device) -> (usize, usize) {
+        let depth_count = self.depth.len();
+        let normal_count = self.normal.len();
+        for key in self.depth {
+            pre_warm_depth_prepass_pipeline(device, key);
+        }
+        for key in self.normal {
+            pre_warm_normal_pipeline(device, key);
+        }
+        (depth_count, normal_count)
+    }
 }
 
 /// Narrow backend packet used by the render graph executor.
@@ -467,8 +504,7 @@ impl<'a> BackendGraphAccess<'a> {
         view_layouts: &[Option<PreRecordViewResourceLayout>],
     ) {
         profiling::scope!("graph::pre_warm_world_mesh_prepass_pipelines");
-        let mut depth_prepass_requests = 0usize;
-        let mut normal_prepass_requests = 0usize;
+        let mut keys = WorldMeshPrepassPipelineWarmupKeys::default();
         for (view, layout) in views.iter().zip(view_layouts.iter()) {
             let Some(layout) = *layout else {
                 continue;
@@ -492,16 +528,10 @@ impl<'a> BackendGraphAccess<'a> {
             };
             let offscreen = matches!(view.target, FrameViewTarget::OffscreenRt(_));
             for item in &collection.items {
-                if pre_warm_depth_prepass_pipeline_for_draw(device, item, &pipeline) {
-                    depth_prepass_requests = depth_prepass_requests.saturating_add(1);
-                }
-                if world_mesh_item_mirrors_to_normal_prepass(item)
-                    && pre_warm_normal_pipeline_for_draw(device, item, &pipeline, offscreen)
-                {
-                    normal_prepass_requests = normal_prepass_requests.saturating_add(1);
-                }
+                keys.record_item(item, &pipeline, offscreen);
             }
         }
+        let (depth_prepass_requests, normal_prepass_requests) = keys.warm(device);
         logger::trace!(
             "graph pre-warm world mesh prepass pipelines: depth_requests={} normal_requests={}",
             depth_prepass_requests,
@@ -800,5 +830,65 @@ impl GraphExecutionBackend for BackendGraphAccess<'_> {
 
     fn apply_per_view_hud_outputs(&mut self, outputs: &PerViewHudOutputs) {
         BackendGraphAccess::apply_per_view_hud_outputs(self, outputs);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::materials::MaterialPipelineDesc;
+    use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
+
+    fn pipeline_state() -> WorldMeshForwardPipelineState {
+        WorldMeshForwardPipelineState {
+            use_multiview: false,
+            pass_desc: MaterialPipelineDesc {
+                surface_format: wgpu::TextureFormat::Rgba16Float,
+                depth_stencil_format: Some(wgpu::TextureFormat::Depth24PlusStencil8),
+                sample_count: 1,
+                multiview_mask: None,
+            },
+            shader_perm: ShaderPermutation(0),
+        }
+    }
+
+    fn draw(node_id: i32) -> WorldMeshDrawItem {
+        dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 1,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 1,
+            node_id,
+            slot_index: 0,
+            collect_order: 0,
+            alpha_blended: false,
+        })
+    }
+
+    #[test]
+    fn prepass_warmup_keys_dedupe_identical_draws() {
+        let pipeline = pipeline_state();
+        let item = draw(1);
+        let mut keys = WorldMeshPrepassPipelineWarmupKeys::default();
+
+        keys.record_item(&item, &pipeline, false);
+        keys.record_item(&item, &pipeline, false);
+
+        assert_eq!(keys.depth.len(), 1);
+        assert_eq!(keys.normal.len(), 1);
+    }
+
+    #[test]
+    fn prepass_warmup_keys_keep_offscreen_normal_front_face_distinct() {
+        let pipeline = pipeline_state();
+        let item = draw(1);
+        let mut keys = WorldMeshPrepassPipelineWarmupKeys::default();
+
+        keys.record_item(&item, &pipeline, false);
+        keys.record_item(&item, &pipeline, true);
+
+        assert_eq!(keys.depth.len(), 1);
+        assert_eq!(keys.normal.len(), 2);
     }
 }
