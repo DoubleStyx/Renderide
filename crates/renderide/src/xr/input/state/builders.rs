@@ -25,7 +25,6 @@ pub(super) struct OpenxrHostControllerCtx {
     pub(super) trigger_touch: bool,
     pub(super) trigger_click: bool,
     pub(super) squeeze: f32,
-    pub(super) squeeze_click: bool,
     pub(super) grip_touch: bool,
     pub(super) grip_click: bool,
     pub(super) joystick_touch: bool,
@@ -228,8 +227,7 @@ fn openxr_vive_controller_state(ctx: OpenxrHostControllerCtx) -> VRControllerSta
             trigger,
             trigger_touch,
             trigger_click,
-            squeeze,
-            squeeze_click,
+            grip_click,
             touchpad_touch,
             trackpad,
             trackpad_click,
@@ -237,7 +235,7 @@ fn openxr_vive_controller_state(ctx: OpenxrHostControllerCtx) -> VRControllerSta
         ]
     );
     VRControllerState::ViveControllerState(ViveControllerState {
-        grip: squeeze_click || squeeze > 0.5,
+        grip: grip_click,
         app: menu,
         trigger_hair: trigger_touch,
         trigger_click,
@@ -275,8 +273,7 @@ fn openxr_windows_mr_controller_state(ctx: OpenxrHostControllerCtx) -> VRControl
             trigger,
             trigger_touch,
             trigger_click,
-            squeeze,
-            squeeze_click,
+            grip_click,
             touchpad_touch,
             thumbstick,
             thumbstick_click,
@@ -286,7 +283,7 @@ fn openxr_windows_mr_controller_state(ctx: OpenxrHostControllerCtx) -> VRControl
         ]
     );
     VRControllerState::WindowsMRControllerState(WindowsMRControllerState {
-        grip: squeeze_click || squeeze > 0.5,
+        grip: grip_click,
         app: menu,
         trigger_hair: trigger_touch,
         trigger_click,

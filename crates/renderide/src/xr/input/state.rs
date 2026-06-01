@@ -10,6 +10,7 @@ use crate::shared::{BodyNode, Chirality, VRControllerState};
 use super::frame::ControllerFrame;
 use super::profile::{ActiveControllerProfile, device_label};
 
+pub(super) use axis::OpenxrControllerThresholdState;
 use axis::{OpenxrAnalogAxes, derive_openxr_axis_button_flags};
 use builders::{OpenxrHostControllerCtx, dispatch_openxr_profile_to_host_state};
 
@@ -27,9 +28,11 @@ pub(super) struct OpenxrControllerRawInputs {
     pub is_tracking: bool,
     pub frame: ControllerFrame,
     pub trigger: f32,
+    pub trigger_active: bool,
     pub trigger_touch: bool,
     pub trigger_click: bool,
     pub squeeze: f32,
+    pub squeeze_active: bool,
     pub squeeze_click: bool,
     pub thumbstick: Vec2,
     pub thumbstick_touch: bool,
@@ -55,25 +58,41 @@ pub(super) struct OpenxrControllerRawInputs {
 /// casts the cached instance to the incoming variant's type; emitting the same polymorphic
 /// shape across profile transitions is what keeps that cast valid when OpenXR transiently
 /// reports an unbound profile (`xr::Path::NULL`) after a concrete profile was already observed.
+#[cfg(test)]
 pub(super) fn build_controller_state(inputs: OpenxrControllerRawInputs) -> VRControllerState {
+    let mut threshold_state = OpenxrControllerThresholdState::default();
+    build_controller_state_with_thresholds(inputs, &mut threshold_state)
+}
+
+/// Maps OpenXR input to a host controller state using persistent action threshold latches.
+pub(super) fn build_controller_state_with_thresholds(
+    inputs: OpenxrControllerRawInputs,
+    threshold_state: &mut OpenxrControllerThresholdState,
+) -> VRControllerState {
     let device_id = Some(match inputs.side {
         Chirality::Left => "OpenXR Left".to_string(),
         Chirality::Right => "OpenXR Right".to_string(),
     });
     let device_model = Some(device_label(inputs.profile).to_string());
     let body_node = body_node_for_side(inputs.side);
-    let derived = derive_openxr_axis_button_flags(&OpenxrAnalogAxes {
-        trigger: inputs.trigger,
-        trigger_touch: inputs.trigger_touch,
-        trigger_click: inputs.trigger_click,
-        squeeze: inputs.squeeze,
-        squeeze_click: inputs.squeeze_click,
-        thumbstick: inputs.thumbstick,
-        thumbstick_touch: inputs.thumbstick_touch,
-        trackpad: inputs.trackpad,
-        trackpad_touch: inputs.trackpad_touch,
-        trackpad_force: inputs.trackpad_force,
-    });
+    let derived = derive_openxr_axis_button_flags(
+        &OpenxrAnalogAxes {
+            profile: inputs.profile,
+            trigger: inputs.trigger,
+            trigger_active: inputs.trigger_active,
+            trigger_touch: inputs.trigger_touch,
+            trigger_click: inputs.trigger_click,
+            squeeze: inputs.squeeze,
+            squeeze_active: inputs.squeeze_active,
+            squeeze_click: inputs.squeeze_click,
+            thumbstick: inputs.thumbstick,
+            thumbstick_touch: inputs.thumbstick_touch,
+            trackpad: inputs.trackpad,
+            trackpad_touch: inputs.trackpad_touch,
+            trackpad_force: inputs.trackpad_force,
+        },
+        threshold_state,
+    );
     dispatch_openxr_profile_to_host_state(
         inputs.profile,
         OpenxrHostControllerCtx {
@@ -87,7 +106,6 @@ pub(super) fn build_controller_state(inputs: OpenxrControllerRawInputs) -> VRCon
             trigger_touch: derived.trigger_touch,
             trigger_click: derived.trigger_click,
             squeeze: inputs.squeeze,
-            squeeze_click: inputs.squeeze_click,
             grip_touch: derived.grip_touch,
             grip_click: derived.grip_click,
             joystick_touch: derived.joystick_touch,
