@@ -15,7 +15,7 @@ use crate::config::DebugHudMainTab;
 use crate::diagnostics::{FrameDiagnosticsSnapshot, RendererInfoSnapshot};
 use crate::profiling::GpuProfilerSnapshot;
 
-use super::super::layout::{self, Viewport, WindowAnchor, WindowSlot};
+use super::super::layout::{self, Viewport, WindowSlot};
 use super::super::state::HudUiState;
 use super::super::view::{HudWindow, TabView};
 
@@ -47,10 +47,7 @@ impl HudWindow for MainDebugWindow {
     }
 
     fn anchor(&self, viewport: Viewport) -> WindowSlot {
-        WindowAnchor::TopRight {
-            width: layout::MAIN_DEBUG_PANEL_W,
-        }
-        .resolve(viewport)
+        layout::main_debug_panel_slot(viewport)
     }
 
     fn flags(&self) -> WindowFlags {

@@ -73,11 +73,17 @@ impl NonTransparentBinKey {
 struct BatchIdTable {
     /// Stable ID lookup by resolved material batch key.
     ids: HashMap<MaterialDrawBatchKey, u32>,
+    /// Dense per-draw batch ids indexed by [`WorldMeshDrawItem::collect_order`].
+    draw_ids: Option<Vec<u32>>,
 }
 
 impl BatchIdTable {
     /// Builds compact batch IDs from draw chunks.
-    fn build_from_chunks(chunks: &[Vec<WorldMeshDrawItem>], allow_parallel: bool) -> Self {
+    fn build_from_chunks(
+        chunks: &[Vec<WorldMeshDrawItem>],
+        allow_parallel: bool,
+        build_dense_draw_ids: bool,
+    ) -> Self {
         profiling::scope!("mesh::arrange_draws_by_phase_bins::batch_ids");
         let draw_count = chunks.iter().map(Vec::len).sum::<usize>();
         let admission = arrange_chunk_admission(
@@ -114,7 +120,11 @@ impl BatchIdTable {
             }
             unique
         };
-        Self::from_unique(unique)
+        let mut table = Self::from_unique(unique);
+        if build_dense_draw_ids {
+            table.populate_dense_draw_ids(chunks, draw_count);
+        }
+        table
     }
 
     /// Builds compact batch IDs from an already-deduplicated key map.
@@ -127,12 +137,36 @@ impl BatchIdTable {
         for (index, (key, _)) in ordered.into_iter().enumerate() {
             ids.insert(key, index.min(u32::MAX as usize) as u32);
         }
-        Self { ids }
+        Self {
+            ids,
+            draw_ids: None,
+        }
+    }
+
+    /// Precomputes draw-local batch ids after collection order has been assigned densely.
+    fn populate_dense_draw_ids(&mut self, chunks: &[Vec<WorldMeshDrawItem>], draw_count: usize) {
+        profiling::scope!("mesh::arrange_draws_by_phase_bins::dense_batch_ids");
+        let mut draw_ids = vec![u32::MAX; draw_count];
+        for chunk in chunks {
+            for item in chunk {
+                let Some(slot) = draw_ids.get_mut(item.collect_order) else {
+                    self.draw_ids = None;
+                    return;
+                };
+                *slot = self.ids.get(&item.batch_key).copied().unwrap_or(u32::MAX);
+            }
+        }
+        self.draw_ids = Some(draw_ids);
     }
 
     /// Returns the compact batch ID for a draw item.
     #[inline]
     fn id_for_draw(&self, item: &WorldMeshDrawItem) -> u32 {
+        if let Some(draw_ids) = &self.draw_ids
+            && let Some(&id) = draw_ids.get(item.collect_order)
+        {
+            return id;
+        }
         self.ids.get(&item.batch_key).copied().unwrap_or(u32::MAX)
     }
 }
@@ -189,7 +223,8 @@ fn arrange_draw_chunks_by_phase_bins_impl(
         assign_chunk_collect_order(&mut chunks);
     }
 
-    let batch_ids = BatchIdTable::build_from_chunks(&chunks, allow_parallel_sort);
+    let batch_ids =
+        BatchIdTable::build_from_chunks(&chunks, allow_parallel_sort, assign_collect_order);
     let (bins, mut strict_ordered) =
         partition_draw_chunks(chunks, &batch_ids, allow_parallel_sort, draw_count);
 

@@ -150,6 +150,20 @@ fn world_mesh_item_mirrors_to_normal_prepass(item: &WorldMeshDrawItem) -> bool {
     )
 }
 
+fn next_material_warmup_run_start(items: &[WorldMeshDrawItem], start: usize) -> usize {
+    let Some(first) = items.get(start) else {
+        return start;
+    };
+    let mut next = start + 1;
+    while items
+        .get(next)
+        .is_some_and(|item| item.batch_key == first.batch_key)
+    {
+        next += 1;
+    }
+    next
+}
+
 fn material_pass_desc_for_layout(
     layout: PreRecordViewResourceLayout,
     supports_multiview: bool,
@@ -404,7 +418,8 @@ impl<'a> BackendGraphAccess<'a> {
             let (pass_desc, shader_perm) =
                 material_pass_desc_for_layout(layout, supports_multiview);
             let offscreen = matches!(view.target, FrameViewTarget::OffscreenRt(_));
-            for item in &collection.items {
+            let mut item_index = 0usize;
+            while let Some(item) = collection.items.get(item_index) {
                 let mut front_face = item.batch_key.front_face;
                 if offscreen {
                     front_face = front_face.flipped();
@@ -434,6 +449,7 @@ impl<'a> BackendGraphAccess<'a> {
                     self.materials
                         .pre_warm_embedded_material_layout(stem.as_ref());
                 }
+                item_index = next_material_warmup_run_start(&collection.items, item_index);
             }
         }
         logger::trace!(

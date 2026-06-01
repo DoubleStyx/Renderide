@@ -31,7 +31,7 @@ pub(crate) use world_mesh_forward::{
     WorldMeshForwardInstancePlanCacheStats, WorldMeshForwardIntersectPass,
     WorldMeshForwardNormalGraphResources, WorldMeshForwardNormalPass, WorldMeshForwardOpaquePass,
     WorldMeshForwardPipelineState, WorldMeshForwardPlanSlot, WorldMeshForwardPrepareContext,
-    WorldMeshForwardSkyboxRenderer, WorldMeshForwardTransparentSequencePass,
-    pre_warm_depth_prepass_pipeline_for_draw, pre_warm_normal_pipeline_for_draw,
-    prepare_world_mesh_forward_frame,
+    WorldMeshForwardPrepareScratch, WorldMeshForwardSkyboxRenderer,
+    WorldMeshForwardTransparentSequencePass, pre_warm_depth_prepass_pipeline_for_draw,
+    pre_warm_normal_pipeline_for_draw, prepare_world_mesh_forward_frame,
 };

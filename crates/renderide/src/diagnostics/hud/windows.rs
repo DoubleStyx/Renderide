@@ -3,6 +3,7 @@
 //! Each module under `windows/` is a unit struct + [`super::view::HudWindow`] impl. Shared
 //! formatting helpers and label utilities live alongside as `labels` / `table_helpers`.
 
+pub mod feedback;
 pub mod frame_timing;
 pub mod labels;
 pub mod main_debug;

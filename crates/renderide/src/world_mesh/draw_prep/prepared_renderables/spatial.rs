@@ -12,6 +12,7 @@ use super::{FramePreparedDraw, FramePreparedRun};
 
 const BVH_LEAF_SIZE: usize = 8;
 pub(super) const SPATIAL_LINEAR_RUN_LIMIT: usize = 64;
+const SPATIAL_DENSE_GATHER_MIN_CANDIDATE_DIVISOR: usize = 2;
 
 /// Spatial query output consumed by per-view prepared draw collection.
 pub(in crate::world_mesh::draw_prep) struct PreparedSpatialRunCandidates {
@@ -71,8 +72,7 @@ impl PreparedSpatialIndex {
         culling: Option<&WorldMeshCullInput<'_>>,
     ) -> PreparedSpatialRunCandidates {
         profiling::scope!("mesh::prepared_renderables::spatial_query");
-        let mut candidate_bits = DenseBitSet::default();
-        candidate_bits.clear_and_resize(runs.len());
+        let mut candidate_indices = Vec::new();
         let mut raw_candidate_marks = 0usize;
         let mut cull_stats = (0usize, 0usize, 0usize);
         let mut visibility = WorldMeshVisibilityStats::default();
@@ -87,7 +87,7 @@ impl PreparedSpatialIndex {
                     scene,
                     culling,
                     &mut PreparedSpatialQueryOutput {
-                        candidates: &mut candidate_bits,
+                        candidates: &mut candidate_indices,
                         raw_candidate_marks: &mut raw_candidate_marks,
                         cull_stats: &mut cull_stats,
                         visibility: &mut visibility,
@@ -96,16 +96,7 @@ impl PreparedSpatialIndex {
             }
         }
 
-        let mut out = Vec::with_capacity(raw_candidate_marks.min(runs.len()));
-        {
-            profiling::scope!("mesh::prepared_renderables::spatial_query_gather");
-            for (run_index, run) in runs.iter().copied().enumerate() {
-                if !candidate_bits.contains(run_index) {
-                    continue;
-                }
-                out.push(run);
-            }
-        }
+        let out = gather_spatial_candidate_runs(runs, &mut candidate_indices);
         let candidate_runs = out.len();
         PreparedSpatialRunCandidates {
             runs: out,
@@ -393,7 +384,7 @@ struct PreparedSpatialCullContext<'scene, 'cull_ref, 'cull_data> {
 /// Mutable query output shared across spatial traversal helpers.
 struct PreparedSpatialQueryOutput<'a> {
     /// Unique candidate run marks.
-    candidates: &'a mut DenseBitSet,
+    candidates: &'a mut Vec<usize>,
     /// Raw candidate marks before duplicate suppression.
     raw_candidate_marks: &'a mut usize,
     /// Slot-level cull counters.
@@ -406,8 +397,60 @@ impl PreparedSpatialQueryOutput<'_> {
     /// Marks one visible run candidate.
     fn mark_candidate_run(&mut self, run_index: usize) {
         *self.raw_candidate_marks = self.raw_candidate_marks.saturating_add(1);
-        self.candidates.insert(run_index);
+        self.candidates.push(run_index);
     }
+}
+
+fn gather_spatial_candidate_runs(
+    runs: &[FramePreparedRun],
+    candidate_indices: &mut Vec<usize>,
+) -> Vec<FramePreparedRun> {
+    profiling::scope!("mesh::prepared_renderables::spatial_query_gather");
+    if should_gather_spatial_candidates_dense(candidate_indices.len(), runs.len()) {
+        gather_spatial_candidate_runs_dense(runs, candidate_indices)
+    } else {
+        gather_spatial_candidate_runs_sparse(runs, candidate_indices)
+    }
+}
+
+#[inline]
+fn should_gather_spatial_candidates_dense(candidate_marks: usize, run_count: usize) -> bool {
+    candidate_marks.saturating_mul(SPATIAL_DENSE_GATHER_MIN_CANDIDATE_DIVISOR) >= run_count
+}
+
+fn gather_spatial_candidate_runs_sparse(
+    runs: &[FramePreparedRun],
+    candidate_indices: &mut Vec<usize>,
+) -> Vec<FramePreparedRun> {
+    profiling::scope!("mesh::prepared_renderables::spatial_query_gather_sparse");
+    candidate_indices.sort_unstable();
+    candidate_indices.dedup();
+    let mut out = Vec::with_capacity(candidate_indices.len());
+    for &run_index in candidate_indices.iter() {
+        if let Some(run) = runs.get(run_index).copied() {
+            out.push(run);
+        }
+    }
+    out
+}
+
+fn gather_spatial_candidate_runs_dense(
+    runs: &[FramePreparedRun],
+    candidate_indices: &[usize],
+) -> Vec<FramePreparedRun> {
+    profiling::scope!("mesh::prepared_renderables::spatial_query_gather_dense");
+    let mut candidate_bits = DenseBitSet::default();
+    candidate_bits.clear_and_resize(runs.len());
+    for &run_index in candidate_indices {
+        candidate_bits.insert(run_index);
+    }
+    let mut out = Vec::with_capacity(candidate_indices.len().min(runs.len()));
+    for (run_index, run) in runs.iter().copied().enumerate() {
+        if candidate_bits.contains(run_index) {
+            out.push(run);
+        }
+    }
+    out
 }
 
 #[derive(Clone, Copy)]
@@ -655,5 +698,32 @@ mod tests {
         assert_eq!(refit_count, 1);
         assert_eq!(after.runs.len(), 1);
         assert_eq!(after.runs[0], FramePreparedRun { start: 0, end: 1 });
+    }
+
+    #[test]
+    fn sparse_candidate_gather_preserves_prepared_order_and_dedups() {
+        let runs = [
+            FramePreparedRun { start: 0, end: 1 },
+            FramePreparedRun { start: 1, end: 2 },
+            FramePreparedRun { start: 2, end: 3 },
+            FramePreparedRun { start: 3, end: 4 },
+        ];
+        let mut candidate_indices = vec![2, 0, 2];
+
+        let gathered = gather_spatial_candidate_runs_sparse(&runs, &mut candidate_indices);
+
+        assert_eq!(
+            gathered,
+            vec![
+                FramePreparedRun { start: 0, end: 1 },
+                FramePreparedRun { start: 2, end: 3 },
+            ]
+        );
+    }
+
+    #[test]
+    fn spatial_candidate_gather_switches_to_dense_for_high_density() {
+        assert!(!should_gather_spatial_candidates_dense(1, 3));
+        assert!(should_gather_spatial_candidates_dense(2, 3));
     }
 }

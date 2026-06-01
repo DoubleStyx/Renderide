@@ -62,7 +62,8 @@ pub(crate) use normal_pass::{GTAO_VIEW_NORMAL_FORMAT, pre_warm_normal_pipeline_f
 pub use normal_pass::{WorldMeshForwardNormalGraphResources, WorldMeshForwardNormalPass};
 pub(crate) use prepare::{
     WorldMeshForwardInstancePlanCache, WorldMeshForwardInstancePlanCacheStats,
-    WorldMeshForwardPrepareContext, prepare_world_mesh_forward_frame,
+    WorldMeshForwardPrepareContext, WorldMeshForwardPrepareScratch,
+    prepare_world_mesh_forward_frame,
 };
 pub(crate) use skybox::SkyboxRenderer as WorldMeshForwardSkyboxRenderer;
 pub(crate) use state::{

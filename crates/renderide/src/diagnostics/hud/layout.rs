@@ -3,13 +3,12 @@
 //! Layout has two layers:
 //!
 //! - Stacked-column constants (`MARGIN`, `GAP`, `RENDERER_CONFIG_*`, `FRAME_TIMING_RESERVE_H`)
-//!   and the legacy first-use position helpers (`frame_timing_xy`, `scene_transforms_y`) drive
-//!   the four anchored windows so **Renderer config**, **Frame timing**, **Renderide debug**,
-//!   and **Scene transforms** do not share the same anchor (ImGui `FirstUseEver` only applies
-//!   once).
-//! - The structured [`Viewport`] / [`WindowAnchor`] / [`WindowSlot`] types describe a window's
-//!   first-use placement declaratively. Anchors resolve against the current viewport into a
-//!   concrete [`WindowSlot`] consumed by ImGui `position` and `size_constraints` calls.
+//!   and first-use slot helpers drive the anchored windows so **Renderer config**,
+//!   **Frame timing**, **Feedback / Bug Report**, **Renderide debug**, and **Scene transforms**
+//!   do not share the same anchor (ImGui `FirstUseEver` only applies once).
+//! - The structured [`Viewport`] / [`WindowSlot`] types describe a window's first-use placement
+//!   declaratively. Slot helpers resolve against the current viewport into concrete values
+//!   consumed by ImGui `position` and `size_constraints` calls.
 
 /// Margin from the viewport edge for anchored HUD windows.
 pub const MARGIN: f32 = 12.0;
@@ -27,6 +26,10 @@ pub const FRAME_TIMING_RESERVE_H: f32 = 225.0;
 pub const MAIN_DEBUG_PANEL_W: f32 = 760.0;
 /// First-use height of the **Renderide debug** main panel.
 pub const MAIN_DEBUG_PANEL_H: f32 = 460.0;
+/// First-use width of the compact **Feedback / Bug Report** panel.
+pub const FEEDBACK_PANEL_W: f32 = 292.0;
+/// Reserved first-use height of the compact **Feedback / Bug Report** panel.
+pub const FEEDBACK_PANEL_H: f32 = 54.0;
 
 /// First-use position for **Frame timing**: directly under **Renderer config** (same column).
 pub fn frame_timing_xy() -> [f32; 2] {
@@ -45,7 +48,45 @@ pub fn scene_transforms_y(viewport_h: f32, window_h: f32) -> f32 {
     bottom_anchored.max(scene_transforms_min_y())
 }
 
-/// Current viewport extent in physical pixels, used by [`WindowAnchor::resolve`].
+/// First-use slot for the compact **Feedback / Bug Report** panel.
+pub fn feedback_panel_slot(viewport: Viewport) -> WindowSlot {
+    top_right_slot(
+        viewport,
+        FEEDBACK_PANEL_W,
+        MARGIN,
+        [FEEDBACK_PANEL_W, FEEDBACK_PANEL_H],
+        [0.0, 0.0],
+    )
+}
+
+/// First-use slot for the **Renderide debug** panel below **Feedback / Bug Report**.
+pub fn main_debug_panel_slot(viewport: Viewport) -> WindowSlot {
+    top_right_slot(
+        viewport,
+        MAIN_DEBUG_PANEL_W,
+        MARGIN + FEEDBACK_PANEL_H + GAP,
+        [MAIN_DEBUG_PANEL_W, MAIN_DEBUG_PANEL_H],
+        [420.0, 160.0],
+    )
+}
+
+fn top_right_slot(
+    viewport: Viewport,
+    width: f32,
+    y: f32,
+    size: [f32; 2],
+    size_min: [f32; 2],
+) -> WindowSlot {
+    let panel_x = (viewport.width as f32 - width - MARGIN).max(MARGIN);
+    WindowSlot {
+        position: [panel_x, y],
+        size,
+        size_min,
+        size_max: [1.0e9, 1.0e9],
+    }
+}
+
+/// Current viewport extent in physical pixels.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Viewport {
     /// Viewport width in physical pixels.
@@ -54,21 +95,7 @@ pub struct Viewport {
     pub height: u32,
 }
 
-/// Declarative first-use placement of a HUD window.
-///
-/// Anchors are resolved against the current [`Viewport`] into a concrete [`WindowSlot`]; the
-/// caller hands the slot to ImGui via `position` and `size_constraints`.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum WindowAnchor {
-    /// Pin to the viewport top-right, offset by [`MARGIN`]. Width-only anchor -- ImGui's
-    /// `ALWAYS_AUTO_RESIZE` is expected to drive the height.
-    TopRight {
-        /// First-use width.
-        width: f32,
-    },
-}
-
-/// Concrete first-use position and size-constraint pair resolved from a [`WindowAnchor`].
+/// Concrete first-use position and size-constraint pair resolved from a [`Viewport`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WindowSlot {
     /// First-use top-left position in physical pixels.
@@ -81,48 +108,47 @@ pub struct WindowSlot {
     pub size_max: [f32; 2],
 }
 
-impl WindowAnchor {
-    /// Resolve this anchor against the current viewport into a [`WindowSlot`].
-    pub fn resolve(self, viewport: Viewport) -> WindowSlot {
-        match self {
-            WindowAnchor::TopRight { width } => {
-                let panel_x = (viewport.width as f32 - width - MARGIN).max(MARGIN);
-                WindowSlot {
-                    position: [panel_x, MARGIN],
-                    size: [width, MAIN_DEBUG_PANEL_H],
-                    size_min: [420.0, 160.0],
-                    size_max: [1.0e9, 1.0e9],
-                }
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{MAIN_DEBUG_PANEL_H, MARGIN, Viewport, WindowAnchor};
+    use super::{
+        FEEDBACK_PANEL_H, FEEDBACK_PANEL_W, GAP, MAIN_DEBUG_PANEL_H, MAIN_DEBUG_PANEL_W, MARGIN,
+        Viewport, feedback_panel_slot, main_debug_panel_slot,
+    };
 
     #[test]
-    fn top_right_anchor_pulls_window_in_by_margin_on_wide_viewport() {
+    fn feedback_panel_slot_pins_to_top_right() {
         let v = Viewport {
             width: 1920,
             height: 1080,
         };
-        let slot = WindowAnchor::TopRight { width: 760.0 }.resolve(v);
+        let slot = feedback_panel_slot(v);
+
         assert_eq!(slot.position[1], MARGIN);
-        assert_eq!(slot.size, [760.0, MAIN_DEBUG_PANEL_H]);
-        // 1920 - 760 - 12 = 1148
-        assert!((slot.position[0] - 1148.0).abs() < 0.5);
+        assert_eq!(slot.size, [FEEDBACK_PANEL_W, FEEDBACK_PANEL_H]);
+        assert!((slot.position[0] - (1920.0 - FEEDBACK_PANEL_W - MARGIN)).abs() < 0.5);
     }
 
     #[test]
-    fn top_right_anchor_clamps_to_margin_when_viewport_narrower_than_panel() {
+    fn main_debug_panel_slot_starts_below_feedback_panel() {
         let v = Viewport {
-            width: 600,
+            width: 1920,
+            height: 1080,
+        };
+        let slot = main_debug_panel_slot(v);
+
+        assert_eq!(slot.position[1], MARGIN + FEEDBACK_PANEL_H + GAP);
+        assert_eq!(slot.size, [MAIN_DEBUG_PANEL_W, MAIN_DEBUG_PANEL_H]);
+        assert!((slot.position[0] - (1920.0 - MAIN_DEBUG_PANEL_W - MARGIN)).abs() < 0.5);
+    }
+
+    #[test]
+    fn top_right_panel_slots_clamp_to_margin_on_narrow_viewports() {
+        let v = Viewport {
+            width: 240,
             height: 400,
         };
-        let slot = WindowAnchor::TopRight { width: 760.0 }.resolve(v);
-        // 600 - 760 - 12 < 0; clamp to MARGIN.
-        assert_eq!(slot.position, [MARGIN, MARGIN]);
+
+        assert_eq!(feedback_panel_slot(v).position[0], MARGIN);
+        assert_eq!(main_debug_panel_slot(v).position[0], MARGIN);
     }
 }

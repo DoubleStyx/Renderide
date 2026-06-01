@@ -15,10 +15,12 @@ use crate::materials::ShaderPermutation;
 use crate::materials::embedded::MaterialBindCacheKey;
 use crate::passes::WorldMeshForwardEncodeRefs;
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
+use crate::skybox::PreparedSkybox;
 use crate::world_mesh::draw_prep::{
     WorldMeshDrawArrangementStats, WorldMeshDrawCollection, WorldMeshDrawItem,
     WorldMeshVisibilityStats,
 };
+use crate::world_mesh::instances::InstancePlanBuildScratch;
 use crate::world_mesh::{
     DrawGroup, InstancePlan, PrefetchedWorldMeshViewDraws, WorldMeshCullProjParams,
     WorldMeshHelperNeeds, WorldMeshPhase, fingerprint_world_mesh_draws, state_rows_from_sorted,
@@ -190,7 +192,16 @@ struct PackedForwardDraws {
     precomputed_batches: Vec<MaterialBatchPacket>,
 }
 
-struct PackForwardDrawsContext<'a, 'frame> {
+struct ForwardViewFinalizeInputs {
+    pipeline: WorldMeshForwardPipelineState,
+    helper_needs: WorldMeshHelperNeeds,
+    supports_base_instance: bool,
+    skybox: Option<PreparedSkybox>,
+    viewport_px: (u32, u32),
+    hud_outputs: Option<PerViewHudOutputs>,
+}
+
+struct ForwardDrawPackContext<'a, 'frame> {
     device: &'a wgpu::Device,
     uploads: GraphUploadSink<'a>,
     frame: &'a GraphPassFrame<'frame>,
@@ -198,6 +209,17 @@ struct PackForwardDrawsContext<'a, 'frame> {
     pipeline: &'a WorldMeshForwardPipelineState,
     supports_base_instance: bool,
     instance_plan_cache: &'a WorldMeshForwardInstancePlanCache,
+}
+
+/// Reusable CPU scratch for one view's world-mesh forward preparation.
+#[derive(Default)]
+pub(crate) struct WorldMeshForwardPrepareScratch {
+    /// Per-draw material submission class, aligned to the sorted draw list.
+    submission_classes: Vec<u32>,
+    /// Compact class ids for resolved material submission identities.
+    submission_class_ids: HashMap<MaterialPacketSubmissionKey, u32>,
+    /// Scratch owned by instance planning.
+    instance_plan: InstancePlanBuildScratch,
 }
 
 /// Inputs used to replace provisional HUD draw stats after instance planning.
@@ -308,6 +330,7 @@ pub(super) fn maybe_set_world_mesh_draw_stats(
 pub(crate) fn prepare_world_mesh_forward_frame(
     ctx: WorldMeshForwardPrepareContext<'_, '_>,
     prefetched: PrefetchedWorldMeshViewDraws,
+    scratch: &mut WorldMeshForwardPrepareScratch,
 ) -> PreparedWorldMeshForwardView {
     profiling::scope!("world_mesh::prepare_frame");
     let WorldMeshForwardPrepareContext {
@@ -353,7 +376,7 @@ pub(crate) fn prepare_world_mesh_forward_frame(
     };
 
     let Some(packed) = pack_forward_draws_for_view(
-        PackForwardDrawsContext {
+        ForwardDrawPackContext {
             device,
             uploads,
             frame,
@@ -363,6 +386,7 @@ pub(crate) fn prepare_world_mesh_forward_frame(
             instance_plan_cache,
         },
         prefetched.collection.items,
+        scratch,
     ) else {
         return PreparedWorldMeshForwardView {
             prepared: None,
@@ -391,41 +415,54 @@ pub(crate) fn prepare_world_mesh_forward_frame(
         skybox_renderer.prepare(device, uploads, frame, &pipeline)
     };
 
-    PreparedWorldMeshForwardView {
-        prepared: Some(prepared_forward_frame_from_parts(
-            packed,
+    prepared_forward_view_from_pack(
+        packed,
+        ForwardViewFinalizeInputs {
             pipeline,
             helper_needs,
             supports_base_instance,
             skybox,
-            frame.view.viewport_px,
-        )),
-        hud_outputs,
-    }
+            viewport_px: frame.view.viewport_px,
+            hud_outputs,
+        },
+    )
 }
 
-fn prepared_forward_frame_from_parts(
+fn prepared_forward_view_from_pack(
     packed: PackedForwardDraws,
-    pipeline: WorldMeshForwardPipelineState,
-    helper_needs: WorldMeshHelperNeeds,
-    supports_base_instance: bool,
-    skybox: Option<crate::skybox::PreparedSkybox>,
-    viewport_px: (u32, u32),
-) -> PreparedWorldMeshForwardFrame {
-    PreparedWorldMeshForwardFrame {
-        draws: packed.draws,
-        plan: packed.plan,
+    inputs: ForwardViewFinalizeInputs,
+) -> PreparedWorldMeshForwardView {
+    let PackedForwardDraws {
+        draws,
+        plan,
+        overlay_view_proj,
+        precomputed_batches,
+    } = packed;
+    let ForwardViewFinalizeInputs {
         pipeline,
         helper_needs,
         supports_base_instance,
-        opaque_recorded: false,
-        depth_snapshot_recorded: false,
-        tail_raster_recorded: false,
-        depth_freshness: Default::default(),
-        precomputed_batches: packed.precomputed_batches,
         skybox,
-        overlay_view_proj: packed.overlay_view_proj,
         viewport_px,
+        hud_outputs,
+    } = inputs;
+    PreparedWorldMeshForwardView {
+        prepared: Some(PreparedWorldMeshForwardFrame {
+            draws,
+            plan,
+            pipeline,
+            helper_needs,
+            supports_base_instance,
+            opaque_recorded: false,
+            depth_snapshot_recorded: false,
+            tail_raster_recorded: false,
+            depth_freshness: Default::default(),
+            precomputed_batches,
+            skybox,
+            overlay_view_proj,
+            viewport_px,
+        }),
+        hud_outputs,
     }
 }
 
@@ -469,10 +506,11 @@ fn update_world_mesh_draw_stats_from_plan(
 }
 
 fn pack_forward_draws_for_view(
-    ctx: PackForwardDrawsContext<'_, '_>,
+    ctx: ForwardDrawPackContext<'_, '_>,
     draws: Vec<WorldMeshDrawItem>,
+    scratch: &mut WorldMeshForwardPrepareScratch,
 ) -> Option<PackedForwardDraws> {
-    let PackForwardDrawsContext {
+    let ForwardDrawPackContext {
         device,
         uploads,
         frame,
@@ -481,6 +519,11 @@ fn pack_forward_draws_for_view(
         supports_base_instance,
         instance_plan_cache,
     } = ctx;
+    let WorldMeshForwardPrepareScratch {
+        submission_classes,
+        submission_class_ids,
+        instance_plan,
+    } = scratch;
     let hc = &frame.view.host_camera;
     let shader_perm = pipeline.shader_perm;
     let (render_context, world_proj, overlay_proj) = {
@@ -506,7 +549,13 @@ fn pack_forward_draws_for_view(
     );
     let submission_classes = {
         profiling::scope!("world_mesh::prepare_frame::build_submission_classes");
-        draw_submission_classes(draws.len(), &precomputed_batches)
+        draw_submission_classes_into(
+            draws.len(),
+            &precomputed_batches,
+            submission_classes,
+            submission_class_ids,
+        );
+        submission_classes.as_slice()
     };
     let plan_key = WorldMeshForwardInstancePlanCacheKey::new(
         &draws,
@@ -517,12 +566,14 @@ fn pack_forward_draws_for_view(
     );
     let plan = instance_plan_cache.get_or_build(plan_key, || {
         profiling::scope!("world_mesh::prepare_frame::build_instance_plan");
-        let mut plan = crate::world_mesh::build_plan_for_shader_with_submission_classes(
-            &draws,
-            &submission_classes,
-            supports_base_instance,
-            shader_perm,
-        );
+        let mut plan =
+            crate::world_mesh::instances::build_plan_for_shader_with_submission_classes_scratch(
+                &draws,
+                submission_classes,
+                supports_base_instance,
+                shader_perm,
+                instance_plan,
+            );
         profiling::scope!("world_mesh::prepare_frame::assign_material_packet_indices");
         assign_material_packet_indices(&mut plan, &precomputed_batches);
         plan
@@ -592,14 +643,20 @@ fn precompute_material_batches(
     precomputed_batches
 }
 
-/// Builds a per-draw submission compatibility class from resolved material packets.
-fn draw_submission_classes(draw_count: usize, packets: &[MaterialBatchPacket]) -> Vec<u32> {
-    let mut classes = vec![0u32; draw_count];
+/// Fills per-draw submission compatibility classes from resolved material packets.
+fn draw_submission_classes_into(
+    draw_count: usize,
+    packets: &[MaterialBatchPacket],
+    classes: &mut Vec<u32>,
+    class_by_key: &mut HashMap<MaterialPacketSubmissionKey, u32>,
+) {
+    classes.clear();
+    classes.resize(draw_count, 0);
+    class_by_key.clear();
     if draw_count == 0 {
-        return classes;
+        return;
     }
 
-    let mut class_by_key: HashMap<MaterialPacketSubmissionKey, u32> = HashMap::new();
     for packet in packets {
         if packet.first_draw_idx >= draw_count {
             continue;
@@ -612,6 +669,13 @@ fn draw_submission_classes(draw_count: usize, packets: &[MaterialBatchPacket]) -
             *slot = class;
         }
     }
+}
+
+#[cfg(test)]
+fn draw_submission_classes(draw_count: usize, packets: &[MaterialBatchPacket]) -> Vec<u32> {
+    let mut classes = Vec::new();
+    let mut class_by_key = HashMap::new();
+    draw_submission_classes_into(draw_count, packets, &mut classes, &mut class_by_key);
     classes
 }
 

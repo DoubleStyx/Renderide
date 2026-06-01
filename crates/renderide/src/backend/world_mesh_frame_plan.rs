@@ -2,13 +2,18 @@
 
 use std::sync::Arc;
 
+use hashbrown::HashMap;
+use parking_lot::Mutex;
+
+use crate::camera::ViewId;
 use crate::diagnostics::PerViewHudOutputs;
 use crate::gpu::GpuLimits;
 use crate::graph_inputs::{GraphPassFrame, PerViewFramePlan};
 use crate::passes::{
     PreparedWorldMeshForwardFrame, WorldMeshForwardInstancePlanCache,
     WorldMeshForwardInstancePlanCacheStats, WorldMeshForwardPrepareContext,
-    WorldMeshForwardSkyboxRenderer, prepare_world_mesh_forward_frame,
+    WorldMeshForwardPrepareScratch, WorldMeshForwardSkyboxRenderer,
+    prepare_world_mesh_forward_frame,
 };
 use crate::render_graph::blackboard::{
     Blackboard, GraphCommandStats, GraphCommandStatsSlot, blackboard_slot,
@@ -27,6 +32,8 @@ pub(crate) struct BackendWorldMeshFramePlanner {
     skybox: WorldMeshForwardSkyboxRenderer,
     /// Retained forward instance plans keyed by draw and resolved material submission identity.
     instance_plan_cache: WorldMeshForwardInstancePlanCache,
+    /// Per-view CPU scratch used while building forward draw packets.
+    prepare_scratch: Mutex<HashMap<ViewId, Arc<Mutex<WorldMeshForwardPrepareScratch>>>>,
 }
 
 /// Per-view world-mesh packet prepared before graph pass recording.
@@ -43,12 +50,20 @@ impl BackendWorldMeshFramePlanner {
         Self {
             skybox: WorldMeshForwardSkyboxRenderer::default(),
             instance_plan_cache: WorldMeshForwardInstancePlanCache::default(),
+            prepare_scratch: Mutex::new(HashMap::new()),
         }
     }
 
     /// Releases view-scoped cached planning resources.
-    pub(crate) fn release_view_resources(&self, retired_views: &[crate::camera::ViewId]) {
+    pub(crate) fn release_view_resources(&self, retired_views: &[ViewId]) {
         self.skybox.release_view_resources(retired_views);
+        if retired_views.is_empty() {
+            return;
+        }
+        let mut scratch = self.prepare_scratch.lock();
+        for &view_id in retired_views {
+            scratch.remove(&view_id);
+        }
     }
 
     /// Retained forward instance-plan cache counters for diagnostics.
@@ -75,22 +90,38 @@ impl BackendWorldMeshFramePlanner {
             WorldMeshDrawPlan::Prefetched(draws) => *draws,
             WorldMeshDrawPlan::Empty => PrefetchedWorldMeshViewDraws::empty(),
         };
-        let prepared = prepare_world_mesh_forward_frame(
-            WorldMeshForwardPrepareContext {
-                device,
-                uploads,
-                gpu_limits,
-                frame,
-                frame_plan: &frame_plan,
-                skybox_renderer: &self.skybox,
-                instance_plan_cache: &self.instance_plan_cache,
-            },
-            prefetched,
-        );
+        let scratch_slot = self.prepare_scratch_for_view(frame.view.view_id);
+        let prepared = {
+            let mut scratch = scratch_slot.lock();
+            prepare_world_mesh_forward_frame(
+                WorldMeshForwardPrepareContext {
+                    device,
+                    uploads,
+                    gpu_limits,
+                    frame,
+                    frame_plan: &frame_plan,
+                    skybox_renderer: &self.skybox,
+                    instance_plan_cache: &self.instance_plan_cache,
+                },
+                prefetched,
+                &mut scratch,
+            )
+        };
         WorldMeshPreparedView {
             prepared: prepared.prepared,
             hud_outputs: prepared.hud_outputs,
         }
+    }
+
+    fn prepare_scratch_for_view(
+        &self,
+        view_id: ViewId,
+    ) -> Arc<Mutex<WorldMeshForwardPrepareScratch>> {
+        self.prepare_scratch
+            .lock()
+            .entry(view_id)
+            .or_insert_with(|| Arc::new(Mutex::new(WorldMeshForwardPrepareScratch::default())))
+            .clone()
     }
 }
 
