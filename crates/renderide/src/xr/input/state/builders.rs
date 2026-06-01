@@ -54,15 +54,13 @@ macro_rules! bind_ctx {
     };
 }
 
-/// Dispatches to the concrete [`VRControllerState`] constructor for the active interaction profile.
+/// Dispatches to the concrete [`VRControllerState`] constructor for the latched host profile.
 ///
 /// Every profile without a dedicated host variant (Pico 4, Pico Neo3, HP Reverb G2, Vive Cosmos,
-/// Vive Focus 3, Generic, Simple) routes through the touch-class payload. Holding the wire
-/// variant constant across profile transitions is what prevents the host's per-`device_id`
-/// controller cache from throwing `InvalidCastException` when OpenXR reports a transient
-/// unbound profile after the user has already been assigned a concrete one. The
-/// [`super::super::profile::device_label`] string is what tells the host which physical controller
-/// the payload represents.
+/// Vive Focus 3, Generic, Simple) routes through the touch-class payload. The caller's profile
+/// latch keeps the wire variant constant for the host's per-`device_id` controller cache. The
+/// [`super::super::profile::device_label`] string is what tells the host which profile the payload
+/// represents.
 pub(super) fn dispatch_openxr_profile_to_host_state(
     profile: ActiveControllerProfile,
     ctx: OpenxrHostControllerCtx,

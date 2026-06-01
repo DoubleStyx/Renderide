@@ -50,14 +50,13 @@ pub(super) struct OpenxrControllerRawInputs {
     pub select: bool,
 }
 
-/// Maps the active OpenXR profile to a host [`VRControllerState`] variant.
+/// Maps the selected host OpenXR profile to a host [`VRControllerState`] variant.
 ///
-/// Every profile that lacks a dedicated host variant -- including
-/// [`ActiveControllerProfile::Generic`] and [`ActiveControllerProfile::Simple`] -- is encoded as
-/// [`VRControllerState::TouchControllerState`]. The host caches controllers by `device_id` and
-/// casts the cached instance to the incoming variant's type; emitting the same polymorphic
-/// shape across profile transitions is what keeps that cast valid when OpenXR transiently
-/// reports an unbound profile (`xr::Path::NULL`) after a concrete profile was already observed.
+/// Callers pass the per-hand profile latched by [`super::latch::HostProfileLatch`], not the raw
+/// live OpenXR profile. The host caches controllers by `device_id` and casts the cached instance
+/// to the incoming variant's type, so a device ID must keep the same polymorphic shape for the
+/// process lifetime. Profiles without dedicated host variants still route through
+/// [`VRControllerState::TouchControllerState`].
 #[cfg(test)]
 pub(super) fn build_controller_state(inputs: OpenxrControllerRawInputs) -> VRControllerState {
     let mut threshold_state = OpenxrControllerThresholdState::default();

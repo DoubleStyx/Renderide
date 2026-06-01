@@ -6,6 +6,7 @@ use parking_lot::Mutex;
 
 use super::bindings::ProfileExtensionGates;
 use super::frame::{ControllerFrame, resolve_controller_frame};
+use super::latch::HostProfileLatch;
 use super::manifest::Manifest;
 use super::openxr_actions::{
     OpenxrInputActions, OpenxrInputParts, ResolvedProfilePaths, create_openxr_input_parts,
@@ -200,6 +201,8 @@ pub struct OpenxrInput {
     profile_paths: ResolvedProfilePaths,
     left_profile_cache: AtomicU8,
     right_profile_cache: AtomicU8,
+    left_host_profile_latch: HostProfileLatch,
+    right_host_profile_latch: HostProfileLatch,
     actions: OpenxrInputActions,
     left_space: xr::Space,
     right_space: xr::Space,
@@ -235,6 +238,8 @@ impl OpenxrInput {
             profile_paths: parts.profile_paths,
             left_profile_cache: parts.left_profile_cache,
             right_profile_cache: parts.right_profile_cache,
+            left_host_profile_latch: HostProfileLatch::default(),
+            right_host_profile_latch: HostProfileLatch::default(),
             actions: parts.actions,
             left_space: parts.left_space,
             right_space: parts.right_space,
@@ -304,6 +309,18 @@ impl OpenxrInput {
         decode_profile_code(cache.load(Ordering::Relaxed))
             .filter(|cached| is_concrete_profile(*cached))
             .unwrap_or(live)
+    }
+
+    fn host_profile_for_sample(
+        &self,
+        side: Chirality,
+        profile: ActiveControllerProfile,
+    ) -> Option<ActiveControllerProfile> {
+        let latch = match side {
+            Chirality::Left => &self.left_host_profile_latch,
+            Chirality::Right => &self.right_host_profile_latch,
+        };
+        latch.profile_for_sample(side, profile)
     }
 
     /// Samples every bound action for the given hand after [`xr::Session::sync_actions`].
@@ -439,28 +456,30 @@ impl OpenxrInput {
             right_grip_pose,
             right_palm_ext_pose,
         );
-        let left = {
+        let mut controllers = Vec::with_capacity(2);
+        if let Some(left_host_profile) = self.host_profile_for_sample(Chirality::Left, left_profile)
+        {
             let mut threshold_state = self.left_threshold_state.lock();
-            ipc_vr_controller_from_polled(
-                left_profile,
+            controllers.push(ipc_vr_controller_from_polled(
+                left_host_profile,
                 Chirality::Left,
                 left_frame,
                 &left_polled,
                 &mut threshold_state,
-            )
-        };
-        let right = {
+            ));
+        }
+        if let Some(right_host_profile) =
+            self.host_profile_for_sample(Chirality::Right, right_profile)
+        {
             let mut threshold_state = self.right_threshold_state.lock();
-            ipc_vr_controller_from_polled(
-                right_profile,
+            controllers.push(ipc_vr_controller_from_polled(
+                right_host_profile,
                 Chirality::Right,
                 right_frame,
                 &right_polled,
                 &mut threshold_state,
-            )
-        };
-
-        let controllers = vec![left, right];
+            ));
+        }
         let hand_states =
             hand_states_from_samples(&controllers, left_openxr_hand, right_openxr_hand);
 
