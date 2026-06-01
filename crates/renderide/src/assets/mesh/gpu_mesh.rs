@@ -13,7 +13,7 @@ pub(crate) use demand::{MeshDerivedStreamDemand, MeshDerivedStreamMask, MeshDeri
 pub(crate) use fingerprint::mesh_upload_input_fingerprint;
 pub(crate) use upload::{
     MeshBufferUploadSink, MeshGpuUploadContext, PreparedDerivedStreams,
-    prepare_derived_stream_bytes,
+    prepare_derived_stream_bytes, try_upload_generated_mesh_from_parts,
 };
 pub(crate) use validation::{compute_and_validate_mesh_layout, try_upload_mesh_from_raw};
 
