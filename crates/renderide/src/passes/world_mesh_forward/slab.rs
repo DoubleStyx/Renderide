@@ -10,9 +10,7 @@ use crate::cpu_parallelism::{
     record_parallel_admission,
 };
 use crate::graph_inputs::GraphPassFrame;
-use crate::mesh_deform::{
-    PER_DRAW_UNIFORM_STRIDE, PaddedPerDrawUniforms, write_per_draw_uniform_slab,
-};
+use crate::mesh_deform::PaddedPerDrawUniforms;
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::scene::SceneCoordinator;
 use crate::shared::RenderingContext;
@@ -83,23 +81,17 @@ pub(super) fn pack_and_upload_per_draw_slab(
         return false;
     };
 
-    // Step 2: pack VP uniforms in `slab_layout` order and serialise to byte slab.
+    // Step 2: pack VP uniforms in `slab_layout` order and enqueue the storage-buffer upload.
     let mut uploaded = false;
-    let mut pack_and_upload = |uniforms: &mut Vec<PaddedPerDrawUniforms>, slab: &mut Vec<u8>| {
+    let mut pack_and_upload = |uniforms: &mut Vec<PaddedPerDrawUniforms>| {
         uniforms.clear();
         uniforms.resize_with(inputs.draws.len(), PaddedPerDrawUniforms::zeroed);
 
         pack_per_draw_vp_uniforms(uniforms, &inputs, scene, hc);
 
         {
-            profiling::scope!("world_mesh::serialise_slab");
-            let need = inputs.draws.len().saturating_mul(PER_DRAW_UNIFORM_STRIDE);
-            slab.resize(need, 0);
-            write_per_draw_uniform_slab(uniforms, slab);
-        };
-        {
             profiling::scope!("world_mesh::enqueue_slab_upload");
-            uploads.write_buffer(&per_draw_storage, 0, slab.as_slice());
+            uploads.write_buffer(&per_draw_storage, 0, bytemuck::cast_slice(uniforms));
             uploaded = true;
         }
     };

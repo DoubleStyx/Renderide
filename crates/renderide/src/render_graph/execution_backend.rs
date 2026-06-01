@@ -82,7 +82,7 @@ pub trait GraphFrameResources: Send + Sync {
     fn with_per_view_per_draw_scratch(
         &self,
         view_id: ViewId,
-        f: &mut dyn FnMut(&mut Vec<PaddedPerDrawUniforms>, &mut Vec<u8>),
+        f: &mut dyn FnMut(&mut Vec<PaddedPerDrawUniforms>),
     ) -> bool;
 
     /// Gives callers mutable access to the per-view material-batch boundary scratch so it can be

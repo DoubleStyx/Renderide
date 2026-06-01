@@ -2,9 +2,9 @@
 //!
 //! Two traits compose into one declarative HUD:
 //!
-//! - [`HudWindow`] wraps an ImGui window envelope (title, anchor, flags, optional close-button
-//!   open flag, background alpha) around a body. It exists so each top-level window's
-//!   positioning and styling lives in one impl rather than scattered through
+//! - [`HudWindow`] wraps an ImGui window envelope (title, anchor, flags, background alpha) around
+//!   a body. It exists so each top-level window's positioning and styling lives in one impl
+//!   rather than scattered through
 //!   [`crate::diagnostics::DebugHud::encode_overlay`].
 //! - [`TabView`] is the leaf flavor for tabs in a tab-bar: "render this tab body when the tab is
 //!   active." A single window -- the **Renderide debug** main panel -- composes a fixed list of
@@ -21,14 +21,7 @@ use imgui::WindowFlags;
 
 use super::layout::{Viewport, WindowSlot};
 
-/// A top-level HUD window: ImGui envelope (title, anchor, flags, open flag) + body.
-///
-/// The dispatcher (see [`crate::diagnostics::DebugHud::encode_overlay`]) calls
-/// [`Self::read_open_flag`] before opening the ImGui window, hands the resulting `&mut bool` to
-/// `Window::opened` for the close-button handling, then calls [`Self::write_open_flag`] after
-/// the body returns to persist any user-driven close-button change. Splitting the open-flag
-/// access into read/write halves keeps the body's `&mut Self::State` borrow disjoint from the
-/// open-flag borrow.
+/// A top-level HUD window: ImGui envelope (title, anchor, flags) + body.
 pub trait HudWindow {
     /// Borrowed snapshot data the window body reads.
     type Data<'a>;
@@ -50,15 +43,6 @@ pub trait HudWindow {
     fn bg_alpha(&self) -> f32 {
         0.72
     }
-
-    /// Read the current value of the close-button flag, or `None` for windows whose visibility
-    /// is gated solely by [`crate::config::RendererSettings`] flags.
-    fn read_open_flag(&self, _state: &Self::State) -> Option<bool> {
-        None
-    }
-
-    /// Persist the (possibly-changed) close-button flag back into state.
-    fn write_open_flag(&self, _state: &mut Self::State, _value: bool) {}
 
     /// Render the window body. Called inside the ImGui window scope.
     fn body(&self, ui: &imgui::Ui, data: Self::Data<'_>, state: &mut Self::State);

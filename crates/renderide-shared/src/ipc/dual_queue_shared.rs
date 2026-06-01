@@ -79,25 +79,55 @@ pub(super) fn drain_subscriber(
     let mut stats = IpcDrainStats::default();
     while let Some(msg) = sub.try_dequeue() {
         stats.bytes += msg.len();
-        let mut unpacker = MemoryUnpacker::new(&msg, pool);
-        let decode_started = Instant::now();
-        let decoded = {
-            profiling::scope!("ipc::decode");
-            decode_renderer_command(&mut unpacker)
-        };
-        stats.decode_duration += decode_started.elapsed();
-        match decoded {
-            Ok(cmd) => {
+        let decoded = decode_renderer_command_payload(&msg, pool, invalid_log_prefix);
+        stats.decode_duration += decoded.duration;
+        match decoded.command {
+            Some(cmd) => {
                 stats.messages += 1;
                 out.push(cmd);
             }
-            Err(e) => {
+            None => {
                 stats.invalid_messages += 1;
-                log_invalid_renderer_command(invalid_log_prefix, e);
             }
         }
     }
     stats
+}
+
+/// Result of decoding one renderer-command payload.
+pub(super) struct DecodedRendererCommand {
+    /// Decoded command, or [`None`] when decode failed and the message was logged.
+    pub(super) command: Option<RendererCommand>,
+    /// Wall-clock time spent in the command decoder.
+    pub(super) duration: Duration,
+}
+
+/// Decodes one raw renderer-command payload and logs invalid messages.
+pub(super) fn decode_renderer_command_payload(
+    msg: &[u8],
+    pool: &mut DefaultEntityPool,
+    invalid_log_prefix: &'static str,
+) -> DecodedRendererCommand {
+    let mut unpacker = MemoryUnpacker::new(msg, pool);
+    let decode_started = Instant::now();
+    let decoded = {
+        profiling::scope!("ipc::decode");
+        decode_renderer_command(&mut unpacker)
+    };
+    let duration = decode_started.elapsed();
+    match decoded {
+        Ok(cmd) => DecodedRendererCommand {
+            command: Some(cmd),
+            duration,
+        },
+        Err(e) => {
+            log_invalid_renderer_command(invalid_log_prefix, e);
+            DecodedRendererCommand {
+                command: None,
+                duration,
+            }
+        }
+    }
 }
 
 /// Logs an invalid-renderer-command decode failure at [`logger::warn!`].

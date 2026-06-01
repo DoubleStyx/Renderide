@@ -489,7 +489,7 @@ impl Texture3dMipChainUploader {
             slice_bytes,
             vol_bytes,
         };
-        rayon::spawn(move || {
+        crate::assets::worker::spawn_asset_job(move || {
             profiling::scope!("asset::texture3d_decode_mip");
             let mip_src = &payload_arc[mip_src_range];
             let res = texture3d_mip_to_upload_pixels(ctx, geom, mip_src);

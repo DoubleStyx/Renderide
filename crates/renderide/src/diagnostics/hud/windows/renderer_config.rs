@@ -62,14 +62,6 @@ impl HudWindow for RendererConfigWindow {
         0.88
     }
 
-    fn read_open_flag(&self, state: &Self::State) -> Option<bool> {
-        Some(state.renderer_config_open)
-    }
-
-    fn write_open_flag(&self, state: &mut Self::State, value: bool) {
-        state.renderer_config_open = value;
-    }
-
     fn body(&self, ui: &imgui::Ui, data: Self::Data<'_>, state: &mut Self::State) {
         let RendererConfigData {
             settings,

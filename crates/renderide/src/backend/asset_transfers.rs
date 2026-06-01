@@ -28,7 +28,7 @@ use std::sync::Arc;
 
 use hashbrown::HashMap;
 
-use crate::gpu::{GpuLimits, GpuMappedBufferHealth};
+use crate::gpu::GpuLimits;
 use crate::gpu_pools::{
     CubemapPool, GpuVideoTexture, MeshPool, RenderTexturePool, Texture3dPool, TexturePool,
     VideoTexturePool,
@@ -40,6 +40,7 @@ use crate::shared::{
 
 use catalogs::AssetCatalogs;
 use gpu_runtime::AssetGpuRuntime;
+pub(crate) use gpu_runtime::AssetGpuRuntimeAttach;
 pub(crate) use integrator::AssetIntegratorDiagnosticSnapshot;
 pub use integrator::{
     AssetIntegrationDrainSummary, AssetIntegrator, AssetTask, AssetTaskLane, ShaderRouteTask,
@@ -124,6 +125,8 @@ pub struct AssetTransferQueue {
     pub(crate) video: VideoAssetRuntime,
     /// Cooperative uploads drained by [`drain_asset_tasks`] / [`drain_asset_tasks_unbounded`].
     pub(crate) integrator: AssetIntegrator,
+    /// Latest accepted host mesh upload generation per asset.
+    mesh_upload_generations: HashMap<i32, u64>,
     /// Latest accepted point render-buffer generation per asset.
     point_render_buffer_generations: HashMap<i32, u64>,
     /// Latest accepted trail render-buffer generation per asset.
@@ -132,7 +135,7 @@ pub struct AssetTransferQueue {
     pending_point_render_buffer_uploads: HashMap<i32, PendingPointRenderBufferUpload>,
     /// Latest not-yet-started trail render-buffer upload per asset.
     pending_trail_render_buffer_uploads: HashMap<i32, PendingTrailRenderBufferUpload>,
-    /// Active Rayon workers building particle-generated meshes.
+    /// Active asset-worker jobs building particle-generated meshes.
     active_particle_build_workers: usize,
 }
 
@@ -142,14 +145,34 @@ impl AssetTransferQueue {
         &mut self.integrator
     }
 
+    /// Starts a host mesh upload generation and returns its monotonic token.
+    pub(crate) fn begin_mesh_upload_generation(&mut self, asset_id: i32) -> u64 {
+        next_asset_generation(&mut self.mesh_upload_generations, asset_id)
+    }
+
+    /// Invalidates in-flight host mesh upload work for `asset_id`.
+    pub(crate) fn invalidate_mesh_upload_generation(&mut self, asset_id: i32) -> u64 {
+        self.begin_mesh_upload_generation(asset_id)
+    }
+
+    /// Returns whether `generation` is still the latest host mesh upload work for `asset_id`.
+    pub(crate) fn mesh_upload_generation_is_current(&self, asset_id: i32, generation: u64) -> bool {
+        self.mesh_upload_generations.get(&asset_id).copied() == Some(generation)
+    }
+
+    /// Returns the latest accepted host mesh upload generation for `asset_id`.
+    pub(crate) fn current_mesh_upload_generation(&self, asset_id: i32) -> Option<u64> {
+        self.mesh_upload_generations.get(&asset_id).copied()
+    }
+
     /// Starts a point render-buffer generation and returns its monotonic token.
     pub(crate) fn begin_point_render_buffer_generation(&mut self, asset_id: i32) -> u64 {
-        next_particle_generation(&mut self.point_render_buffer_generations, asset_id)
+        next_asset_generation(&mut self.point_render_buffer_generations, asset_id)
     }
 
     /// Starts a trail render-buffer generation and returns its monotonic token.
     pub(crate) fn begin_trail_render_buffer_generation(&mut self, asset_id: i32) -> u64 {
-        next_particle_generation(&mut self.trail_render_buffer_generations, asset_id)
+        next_asset_generation(&mut self.trail_render_buffer_generations, asset_id)
     }
 
     /// Retains `upload` as the newest pending point render-buffer upload for its asset.
@@ -288,23 +311,8 @@ impl AssetTransferQueue {
     }
 
     /// Stores GPU handles and limits after backend attach.
-    pub(crate) fn attach_gpu_runtime(
-        &mut self,
-        device: Arc<wgpu::Device>,
-        queue: Arc<wgpu::Queue>,
-        gate: crate::gpu::GpuQueueAccessGate,
-        limits: Arc<GpuLimits>,
-        mapped_buffer_health: Arc<GpuMappedBufferHealth>,
-        mesh_validation_scopes_enabled: bool,
-    ) {
-        self.gpu.attach(
-            device,
-            queue,
-            gate,
-            limits,
-            mapped_buffer_health,
-            mesh_validation_scopes_enabled,
-        );
+    pub(crate) fn attach_gpu_runtime(&mut self, desc: AssetGpuRuntimeAttach) {
+        self.gpu.attach(desc);
     }
 
     /// Resident mesh pool.
@@ -439,6 +447,7 @@ impl AssetTransferQueue {
             gpu: AssetGpuRuntime::default(),
             video: VideoAssetRuntime::default(),
             integrator: AssetIntegrator::default(),
+            mesh_upload_generations: HashMap::new(),
             point_render_buffer_generations: HashMap::new(),
             trail_render_buffer_generations: HashMap::new(),
             pending_point_render_buffer_uploads: HashMap::new(),
@@ -448,8 +457,8 @@ impl AssetTransferQueue {
     }
 }
 
-/// Advances and returns the latest accepted particle render-buffer generation for `asset_id`.
-fn next_particle_generation(generations: &mut HashMap<i32, u64>, asset_id: i32) -> u64 {
+/// Advances and returns the latest accepted generation for `asset_id`.
+fn next_asset_generation(generations: &mut HashMap<i32, u64>, asset_id: i32) -> u64 {
     let entry = generations.entry(asset_id).or_insert(0);
     let next = entry.wrapping_add(1).max(1);
     *entry = next;
@@ -524,6 +533,31 @@ mod tests {
         assert_eq!(pending.upload.count, 2);
         assert_eq!(pending.generation, second.generation);
         assert!(queue.take_pending_point_render_buffer_upload(5).is_none());
+    }
+
+    #[test]
+    fn mesh_upload_generation_marks_superseded_work_stale() {
+        let mut queue = AssetTransferQueue::new();
+
+        let first = queue.begin_mesh_upload_generation(5);
+        let second = queue.begin_mesh_upload_generation(5);
+
+        assert_ne!(first, second);
+        assert!(!queue.mesh_upload_generation_is_current(5, first));
+        assert!(queue.mesh_upload_generation_is_current(5, second));
+        assert_eq!(queue.current_mesh_upload_generation(5), Some(second));
+    }
+
+    #[test]
+    fn mesh_upload_generation_invalidation_marks_existing_work_stale() {
+        let mut queue = AssetTransferQueue::new();
+
+        let generation = queue.begin_mesh_upload_generation(7);
+        let invalidating_generation = queue.invalidate_mesh_upload_generation(7);
+
+        assert_ne!(generation, invalidating_generation);
+        assert!(!queue.mesh_upload_generation_is_current(7, generation));
+        assert!(queue.mesh_upload_generation_is_current(7, invalidating_generation));
     }
 
     #[test]

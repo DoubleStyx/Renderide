@@ -57,10 +57,8 @@ pub struct PerViewFrameState {
 /// Per-view CPU scratch used to pack `@group(2)` per-draw uniforms before upload.
 #[derive(Default)]
 pub struct PerViewPerDrawScratch {
-    /// Packed per-draw uniforms before serializing into the byte slab.
+    /// Packed per-draw uniforms before uploading into the per-view storage slab.
     pub uniforms: Vec<PaddedPerDrawUniforms>,
-    /// Serialized byte slab uploaded into per-draw storage.
-    pub slab_bytes: Vec<u8>,
     /// Contiguous `(first_draw_idx, last_draw_idx)` runs of identical material batch keys for
     /// this view's sorted draw list. Cleared and refilled by world-mesh forward frame planning;
     /// held here so the boundary Vec does not reallocate as it grows across frames.

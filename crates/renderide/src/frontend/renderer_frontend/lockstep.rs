@@ -149,9 +149,11 @@ impl RendererFrontend {
     }
 
     /// Updates lock-step state after the host submits a frame.
-    pub fn note_frame_submit_processed(&mut self, frame_index: i32) {
+    pub fn note_frame_submit_processed(&mut self, frame_index: i32, received_at: Instant) {
         self.lockstep.note_frame_submit_processed(frame_index);
-        let decision = self.decoupling.record_frame_submit_received(Instant::now());
+        let decision = self.decoupling.record_frame_submit_received(received_at);
+        self.performance
+            .set_last_frame_begin_to_submit(self.decoupling.last_frame_begin_to_submit());
         log_submit_decision(decision, &self.decoupling, frame_index);
     }
 }

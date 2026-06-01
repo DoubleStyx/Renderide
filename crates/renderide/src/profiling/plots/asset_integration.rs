@@ -18,6 +18,16 @@ pub struct AssetIntegrationProfileSample {
     pub normal_priority_queued: usize,
     /// Particle-lane tasks still queued after the drain.
     pub particle_queued: usize,
+    /// Asset-worker jobs waiting in the bounded queue.
+    pub worker_queued: usize,
+    /// Asset-worker jobs currently executing.
+    pub worker_running: usize,
+    /// Highest asset-worker queue depth observed since startup.
+    pub worker_max_queued: usize,
+    /// Asset-worker jobs executed inline because the bounded queue was saturated or unavailable.
+    pub worker_inline_executed: u64,
+    /// Asset-worker queue-full events.
+    pub worker_saturated: u64,
     /// Main-lane steps processed by the drain.
     pub main_processed: u32,
     /// High-priority steps processed by the drain.
@@ -54,6 +64,14 @@ pub fn plot_asset_integration(sample: AssetIntegrationProfileSample) {
         "asset_integration::particle_queued",
         sample.particle_queued as f64
     );
+    tracy_plot!("asset_worker::queued", sample.worker_queued as f64);
+    tracy_plot!("asset_worker::running", sample.worker_running as f64);
+    tracy_plot!("asset_worker::max_queued", sample.worker_max_queued as f64);
+    tracy_plot!(
+        "asset_worker::inline_executed",
+        sample.worker_inline_executed as f64
+    );
+    tracy_plot!("asset_worker::saturated", sample.worker_saturated as f64);
     tracy_plot!(
         "asset_integration::main_processed",
         sample.main_processed as f64

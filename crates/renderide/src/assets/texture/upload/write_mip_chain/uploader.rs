@@ -402,7 +402,7 @@ impl TextureMipChainUploader {
         };
         let flip = self.flip;
         let payload_arc = Arc::clone(step.payload);
-        rayon::spawn(move || {
+        crate::assets::worker::spawn_asset_job(move || {
             profiling::scope!("asset::texture_decode_mip");
             let mip_src = &payload_arc[mip_src_range];
             let res = mip_src_to_upload_pixels(ctx, gw, gh, flip, mip_src, mip_index);
@@ -461,7 +461,7 @@ impl TextureMipChainUploader {
         let (tx, rx) = crossbeam_channel::bounded(1);
         self.background_rx = Some(rx);
 
-        rayon::spawn(move || {
+        crate::assets::worker::spawn_asset_job(move || {
             profiling::scope!("asset::texture_downsample_tail_mip");
             let res = downsample_rgba8_box(&source.pixels, source.width, source.height, w, h)
                 .map(MipUploadPixels::normal);

@@ -130,6 +130,8 @@ struct ApplyWorkSlot {
     cache: WorldTransformCache,
     /// Pre-extracted host update payload to apply.
     extracted: ExtractedRenderSpaceUpdate,
+    /// Estimated row work carried by [`Self::extracted`].
+    work_units: usize,
     /// Reused transform-removal side buffer for this work item.
     removal_events: Vec<TransformRemovalEvent>,
     /// Whether applying this slot dirtied the world transform cache.

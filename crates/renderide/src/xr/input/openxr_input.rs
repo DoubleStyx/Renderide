@@ -2,8 +2,11 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
+use parking_lot::Mutex;
+
 use super::bindings::ProfileExtensionGates;
 use super::frame::{ControllerFrame, resolve_controller_frame};
+use super::latch::HostProfileLatch;
 use super::manifest::Manifest;
 use super::openxr_actions::{
     OpenxrInputActions, OpenxrInputParts, ResolvedProfilePaths, create_openxr_input_parts,
@@ -13,7 +16,10 @@ use super::profile::{
     ActiveControllerProfile, decode_profile_code, is_concrete_profile, log_profile_transition,
     profile_code,
 };
-use super::state::{OpenxrControllerRawInputs, build_controller_state};
+use super::state::{
+    OpenxrControllerRawInputs, OpenxrControllerThresholdState,
+    build_controller_state_with_thresholds,
+};
 use crate::shared::{Chirality, HandState, VRControllerState};
 use crate::xr::input::hand_tracking::{hand_from_openxr, inactive_openxr_hand};
 use crate::xr::synthesize_hand_states;
@@ -151,34 +157,40 @@ fn ipc_vr_controller_from_polled(
     side: Chirality,
     resolved_frame: Option<ControllerFrame>,
     polled: &PolledHandStates,
+    threshold_state: &mut OpenxrControllerThresholdState,
 ) -> VRControllerState {
     let tracking_valid = resolved_frame.is_some();
     let frame = resolved_frame.unwrap_or_else(placeholder_controller_frame);
-    build_controller_state(OpenxrControllerRawInputs {
-        profile,
-        side,
-        is_tracking: tracking_valid,
-        frame,
-        trigger: polled.trigger.current_state,
-        trigger_touch: polled.trigger_touch.current_state,
-        trigger_click: polled.trigger_click.current_state,
-        squeeze: polled.squeeze.current_state,
-        squeeze_click: polled.squeeze_click.current_state,
-        thumbstick: polled.thumbstick_vec(),
-        thumbstick_touch: polled.thumbstick_touch.current_state,
-        thumbstick_click: polled.thumbstick_click.current_state,
-        trackpad: polled.trackpad_vec(),
-        trackpad_touch: polled.trackpad_touch.current_state,
-        trackpad_click: polled.trackpad_click.current_state,
-        trackpad_force: polled.trackpad_force.current_state,
-        primary: polled.primary.current_state,
-        secondary: polled.secondary.current_state,
-        primary_touch: polled.primary_touch.current_state,
-        secondary_touch: polled.secondary_touch.current_state,
-        menu: polled.menu.current_state,
-        thumbrest_touch: polled.thumbrest_touch.current_state,
-        select: polled.select.current_state,
-    })
+    build_controller_state_with_thresholds(
+        OpenxrControllerRawInputs {
+            profile,
+            side,
+            is_tracking: tracking_valid,
+            frame,
+            trigger: polled.trigger.current_state,
+            trigger_active: polled.trigger.is_active,
+            trigger_touch: polled.trigger_touch.current_state,
+            trigger_click: polled.trigger_click.current_state,
+            squeeze: polled.squeeze.current_state,
+            squeeze_active: polled.squeeze.is_active,
+            squeeze_click: polled.squeeze_click.current_state,
+            thumbstick: polled.thumbstick_vec(),
+            thumbstick_touch: polled.thumbstick_touch.current_state,
+            thumbstick_click: polled.thumbstick_click.current_state,
+            trackpad: polled.trackpad_vec(),
+            trackpad_touch: polled.trackpad_touch.current_state,
+            trackpad_click: polled.trackpad_click.current_state,
+            trackpad_force: polled.trackpad_force.current_state,
+            primary: polled.primary.current_state,
+            secondary: polled.secondary.current_state,
+            primary_touch: polled.primary_touch.current_state,
+            secondary_touch: polled.secondary_touch.current_state,
+            menu: polled.menu.current_state,
+            thumbrest_touch: polled.thumbrest_touch.current_state,
+            select: polled.select.current_state,
+        },
+        threshold_state,
+    )
 }
 
 /// OpenXR actions and derived spaces for headset/controller input used by the renderer IPC path.
@@ -189,6 +201,8 @@ pub struct OpenxrInput {
     profile_paths: ResolvedProfilePaths,
     left_profile_cache: AtomicU8,
     right_profile_cache: AtomicU8,
+    left_host_profile_latch: HostProfileLatch,
+    right_host_profile_latch: HostProfileLatch,
     actions: OpenxrInputActions,
     left_space: xr::Space,
     right_space: xr::Space,
@@ -196,6 +210,8 @@ pub struct OpenxrInput {
     right_palm_ext_space: xr::Space,
     left_hand_tracker: Option<xr::HandTracker>,
     right_hand_tracker: Option<xr::HandTracker>,
+    left_threshold_state: Mutex<OpenxrControllerThresholdState>,
+    right_threshold_state: Mutex<OpenxrControllerThresholdState>,
 }
 
 impl OpenxrInput {
@@ -222,6 +238,8 @@ impl OpenxrInput {
             profile_paths: parts.profile_paths,
             left_profile_cache: parts.left_profile_cache,
             right_profile_cache: parts.right_profile_cache,
+            left_host_profile_latch: HostProfileLatch::default(),
+            right_host_profile_latch: HostProfileLatch::default(),
             actions: parts.actions,
             left_space: parts.left_space,
             right_space: parts.right_space,
@@ -229,6 +247,8 @@ impl OpenxrInput {
             right_palm_ext_space: parts.right_palm_ext_space,
             left_hand_tracker: parts.left_hand_tracker,
             right_hand_tracker: parts.right_hand_tracker,
+            left_threshold_state: Mutex::new(OpenxrControllerThresholdState::default()),
+            right_threshold_state: Mutex::new(OpenxrControllerThresholdState::default()),
         }
     }
 
@@ -289,6 +309,18 @@ impl OpenxrInput {
         decode_profile_code(cache.load(Ordering::Relaxed))
             .filter(|cached| is_concrete_profile(*cached))
             .unwrap_or(live)
+    }
+
+    fn host_profile_for_sample(
+        &self,
+        side: Chirality,
+        profile: ActiveControllerProfile,
+    ) -> Option<ActiveControllerProfile> {
+        let latch = match side {
+            Chirality::Left => &self.left_host_profile_latch,
+            Chirality::Right => &self.right_host_profile_latch,
+        };
+        latch.profile_for_sample(side, profile)
     }
 
     /// Samples every bound action for the given hand after [`xr::Session::sync_actions`].
@@ -424,16 +456,30 @@ impl OpenxrInput {
             right_grip_pose,
             right_palm_ext_pose,
         );
-        let left =
-            ipc_vr_controller_from_polled(left_profile, Chirality::Left, left_frame, &left_polled);
-        let right = ipc_vr_controller_from_polled(
-            right_profile,
-            Chirality::Right,
-            right_frame,
-            &right_polled,
-        );
-
-        let controllers = vec![left, right];
+        let mut controllers = Vec::with_capacity(2);
+        if let Some(left_host_profile) = self.host_profile_for_sample(Chirality::Left, left_profile)
+        {
+            let mut threshold_state = self.left_threshold_state.lock();
+            controllers.push(ipc_vr_controller_from_polled(
+                left_host_profile,
+                Chirality::Left,
+                left_frame,
+                &left_polled,
+                &mut threshold_state,
+            ));
+        }
+        if let Some(right_host_profile) =
+            self.host_profile_for_sample(Chirality::Right, right_profile)
+        {
+            let mut threshold_state = self.right_threshold_state.lock();
+            controllers.push(ipc_vr_controller_from_polled(
+                right_host_profile,
+                Chirality::Right,
+                right_frame,
+                &right_polled,
+                &mut threshold_state,
+            ));
+        }
         let hand_states =
             hand_states_from_samples(&controllers, left_openxr_hand, right_openxr_hand);
 

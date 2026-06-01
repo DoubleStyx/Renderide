@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
-use crate::backend::asset_transfers as asset_uploads;
+use crate::backend::asset_transfers::{self as asset_uploads, AssetGpuRuntimeAttach};
 use crate::config::{PostProcessingSettings, RendererSettingsHandle};
 use crate::gpu::{GpuLimits, GpuMappedBufferHealth};
 use crate::materials::embedded::EmbeddedMaterialBindError;
@@ -33,6 +33,8 @@ pub struct RenderBackendAttachDesc {
     pub device: Arc<wgpu::Device>,
     /// Queue used for submits and GPU writes.
     pub queue: Arc<wgpu::Queue>,
+    /// Cloneable producer for non-primary command-buffer submits on the driver thread.
+    pub driver_submitter: crate::gpu::driver_thread::DriverSubmitter,
     /// Shared GPU queue access gate cloned from [`crate::gpu::GpuContext`]; acquired by
     /// upload, submit, and OpenXR queue-access paths. See [`crate::gpu::GpuQueueAccessGate`].
     pub gpu_queue_access_gate: crate::gpu::GpuQueueAccessGate,
@@ -71,6 +73,7 @@ impl RenderBackend {
         let RenderBackendAttachDesc {
             device,
             queue,
+            driver_submitter,
             gpu_queue_access_gate,
             gpu_limits,
             mapped_buffer_health,
@@ -88,14 +91,16 @@ impl RenderBackend {
                 .read()
                 .ok()
                 .is_some_and(|settings| settings.debug.gpu_validation_layers);
-        self.asset_transfers.attach_gpu_runtime(
-            device.clone(),
-            queue.clone(),
-            gpu_queue_access_gate,
-            Arc::clone(&gpu_limits),
-            mapped_buffer_health,
-            mesh_validation_scopes_enabled,
-        );
+        self.asset_transfers
+            .attach_gpu_runtime(AssetGpuRuntimeAttach {
+                device: device.clone(),
+                queue: queue.clone(),
+                driver_submitter,
+                gate: gpu_queue_access_gate,
+                limits: Arc::clone(&gpu_limits),
+                mapped_buffer_health,
+                mesh_validation_scopes_enabled,
+            });
         self.frame_services
             .attach(device.as_ref(), queue.as_ref(), Arc::clone(&gpu_limits))?;
         if headless {
@@ -122,25 +127,23 @@ impl RenderBackend {
             ipc,
         );
 
-        let (post_processing_settings, msaa_sample_count, validation_mode) = self
-            .renderer_settings
-            .as_ref()
-            .and_then(|h| {
-                h.read().ok().map(|g| {
-                    (
-                        g.post_processing.clone(),
-                        g.rendering.msaa.as_count() as u8,
-                        g.debug.render_graph_validation,
-                    )
-                })
-            })
-            .unwrap_or_else(|| {
-                (
-                    PostProcessingSettings::default(),
-                    1,
-                    crate::render_graph::RenderGraphValidationMode::default(),
-                )
-            });
+        let msaa_sample_count = self.sync_initial_frame_graph_after_attach();
+        logger::info!(
+            "backend attached: surface_format={:?} scene_color_format={:?} msaa_sample_count={} mesh_preprocess={} msaa_depth_resolve={} frame_graph_passes={} frame_graph_topo_levels={}",
+            surface_format,
+            self.scene_color_format_wgpu(),
+            msaa_sample_count,
+            self.frame_services.mesh_preprocess_enabled(),
+            self.frame_services.msaa_depth_resolve_enabled(),
+            self.frame_graph_pass_count(),
+            self.frame_graph_topo_levels(),
+        );
+        Ok(())
+    }
+
+    fn sync_initial_frame_graph_after_attach(&mut self) -> u8 {
+        let (post_processing_settings, msaa_sample_count, validation_mode) =
+            self.initial_frame_graph_settings();
         let initial_profile = if self.headless {
             RenderPathProfile::headless_main()
         } else {
@@ -158,16 +161,33 @@ impl RenderBackend {
             validation_mode,
         );
         self.sync_frame_graph_cache(&graph_post_processing, shape);
-        logger::info!(
-            "backend attached: surface_format={:?} scene_color_format={:?} msaa_sample_count={} mesh_preprocess={} msaa_depth_resolve={} frame_graph_passes={} frame_graph_topo_levels={}",
-            surface_format,
-            self.scene_color_format_wgpu(),
-            msaa_sample_count,
-            self.frame_services.mesh_preprocess_enabled(),
-            self.frame_services.msaa_depth_resolve_enabled(),
-            self.frame_graph_pass_count(),
-            self.frame_graph_topo_levels(),
-        );
-        Ok(())
+        msaa_sample_count
+    }
+
+    fn initial_frame_graph_settings(
+        &self,
+    ) -> (
+        PostProcessingSettings,
+        u8,
+        crate::render_graph::RenderGraphValidationMode,
+    ) {
+        self.renderer_settings
+            .as_ref()
+            .and_then(|h| {
+                h.read().ok().map(|g| {
+                    (
+                        g.post_processing.clone(),
+                        g.rendering.msaa.as_count() as u8,
+                        g.debug.render_graph_validation,
+                    )
+                })
+            })
+            .unwrap_or_else(|| {
+                (
+                    PostProcessingSettings::default(),
+                    1,
+                    crate::render_graph::RenderGraphValidationMode::default(),
+                )
+            })
     }
 }

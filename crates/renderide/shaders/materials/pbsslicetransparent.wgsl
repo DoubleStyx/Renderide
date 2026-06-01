@@ -25,6 +25,7 @@
 #import renderide::mesh::vertex as mv
 #import renderide::material::variant_bits as vb
 #import renderide::pbs::families::slice as pslice
+#import renderide::pbs::detail as pdet
 #import renderide::pbs::lighting as plight
 #import renderide::pbs::sampling as psamp
 #import renderide::pbs::surface as psurf
@@ -149,8 +150,18 @@ fn fs_main(
 
     var c = sample_albedo_color(uv_main, edge_lerp);
     if (pbs_kw(PBSSLICETRANSPARENT_KW_DETAIL_ALBEDOTEX)) {
-        let detail = ts::sample_tex_2d(_DetailAlbedoMap, _DetailAlbedoMap_sampler, uv_detail_albedo, mat._DetailAlbedoMap_LodBias).rgb * 2.0;
-        c = vec4<f32>(c.rgb * detail, c.a);
+        c = vec4<f32>(
+            pdet::apply_detail_albedo(
+                c.rgb,
+                true,
+                1.0,
+                _DetailAlbedoMap,
+                _DetailAlbedoMap_sampler,
+                uv_detail_albedo,
+                mat._DetailAlbedoMap_LodBias,
+            ),
+            c.a
+        );
     }
 
     let n = pslice::sample_world_normal(

@@ -11,10 +11,11 @@ use crate::reflection_probes::specular::ReflectionProbeFrameSelection;
 use crate::scene::{RenderSpaceId, SceneApplyReport, SceneCacheFlushReport, SceneCoordinator};
 use crate::shared::RenderingContext;
 use crate::world_mesh::{
-    FrameMaterialBatchCache, FramePreparedRenderables, RenderWorld, WorldMeshDrawCollectParallelism,
+    FrameMaterialBatchCache, FramePreparedRenderables, RenderWorld, WorldMeshCommandCache,
+    WorldMeshDrawCollectParallelism,
 };
 
-use super::draw_preparation::DrawPreparationExtractDesc;
+use super::draw_preparation::{DrawPreparationExtractDesc, render_context_cache_key};
 use super::{OcclusionSystem, RenderBackend};
 
 /// Immutable backend-owned extraction snapshot produced by [`RenderBackend::extract_frame_shared`].
@@ -37,6 +38,8 @@ pub(crate) struct ExtractedFrameShared<'a> {
     pub(crate) render_worlds: &'a HashMap<u8, RenderWorld>,
     /// Persistent material batch caches keyed by render context and [`ShaderPermutation`].
     pub(crate) material_caches: &'a HashMap<(u8, ShaderPermutation), FrameMaterialBatchCache>,
+    /// Persistent arranged draw command-list cache shared by per-view sorting.
+    pub(crate) command_cache: &'a WorldMeshCommandCache,
     /// Shared occlusion state used for Hi-Z snapshots and temporal cull data.
     pub(crate) occlusion: &'a OcclusionSystem,
     /// CPU-side specular reflection-probe selector for per-object probe assignment.
@@ -52,7 +55,7 @@ impl ExtractedFrameShared<'_> {
         render_context: RenderingContext,
     ) -> Option<&FramePreparedRenderables> {
         self.render_worlds
-            .get(&render_context_key(render_context))
+            .get(&render_context_cache_key(self.scene, render_context))
             .map(RenderWorld::prepared)
     }
 
@@ -62,13 +65,11 @@ impl ExtractedFrameShared<'_> {
         render_context: RenderingContext,
         shader_perm: ShaderPermutation,
     ) -> Option<&FrameMaterialBatchCache> {
-        self.material_caches
-            .get(&(render_context_key(render_context), shader_perm))
+        self.material_caches.get(&(
+            render_context_cache_key(self.scene, render_context),
+            shader_perm,
+        ))
     }
-}
-
-fn render_context_key(render_context: RenderingContext) -> u8 {
-    render_context as u8
 }
 
 impl RenderBackend {

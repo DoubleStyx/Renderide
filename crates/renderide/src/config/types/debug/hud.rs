@@ -211,11 +211,11 @@ pub struct DebugHudSettings {
     pub imgui_visible: bool,
     /// Global HUD text scale. Clamped at use sites by [`Self::resolved_ui_scale`].
     pub ui_scale: f32,
-    /// Whether the **Renderer config** window is open.
+    /// Retained for existing config files; **Renderer config** now stays visible whenever ImGui is visible.
     pub renderer_config_open: bool,
-    /// Whether the **Scene transforms** window is open.
+    /// Retained for existing config files; **Scene transforms** visibility now uses `debug_hud_transforms`.
     pub scene_transforms_open: bool,
-    /// Whether the **Textures** window is open.
+    /// Retained for existing config files; **Textures** visibility now uses `debug_hud_textures`.
     pub texture_debug_open: bool,
     /// Show only textures referenced by the current view in the **Textures** window.
     pub texture_debug_current_view_only: bool,

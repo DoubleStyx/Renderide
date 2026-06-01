@@ -1,7 +1,11 @@
 //! Mesh draw stats and resident-pool counts fragment of [`super::FrameDiagnosticsSnapshot`].
 
 use crate::diagnostics::BackendDiagSnapshot;
-use crate::world_mesh::{RenderWorldMaintenanceStats, WorldMeshDrawStateRow, WorldMeshDrawStats};
+use crate::passes::WorldMeshForwardInstancePlanCacheStats;
+use crate::world_mesh::{
+    RenderWorldMaintenanceStats, WorldMeshCommandCacheStats, WorldMeshDrawStateRow,
+    WorldMeshDrawStats,
+};
 
 /// Mesh draw / batching / culling stats plus resident pool counts captured for the **Stats** and
 /// **Draw state** tabs.
@@ -31,6 +35,10 @@ pub struct MeshDrawFragment {
     pub mesh_pool_entry_count: usize,
     /// Retained render-world maintenance counters captured after backend extraction.
     pub render_world_maintenance: RenderWorldMaintenanceStats,
+    /// Retained arranged draw command-list cache counters.
+    pub command_cache: WorldMeshCommandCacheStats,
+    /// Retained forward instance-plan cache counters.
+    pub instance_plan_cache: WorldMeshForwardInstancePlanCacheStats,
 }
 
 impl MeshDrawFragment {
@@ -55,6 +63,8 @@ impl MeshDrawFragment {
             render_textures_gpu_resident: backend.render_texture_pool_len,
             mesh_pool_entry_count: backend.mesh_pool_entry_count,
             render_world_maintenance: backend.render_world_maintenance,
+            command_cache: backend.world_mesh_command_cache,
+            instance_plan_cache: backend.world_mesh_instance_plan_cache,
         }
     }
 }
@@ -87,6 +97,16 @@ mod tests {
             last_world_mesh_draw_state_rows: Vec::new(),
             render_world_maintenance: RenderWorldMaintenanceStats {
                 retained_template_count: 17,
+                ..Default::default()
+            },
+            world_mesh_command_cache: WorldMeshCommandCacheStats {
+                entries: 18,
+                hits: 19,
+                ..Default::default()
+            },
+            world_mesh_instance_plan_cache: WorldMeshForwardInstancePlanCacheStats {
+                entries: 20,
+                hits: 21,
                 ..Default::default()
             },
             material_property_slots: 7,
@@ -125,6 +145,10 @@ mod tests {
             fragment.render_world_maintenance.retained_template_count,
             17
         );
+        assert_eq!(fragment.command_cache.entries, 18);
+        assert_eq!(fragment.command_cache.hits, 19);
+        assert_eq!(fragment.instance_plan_cache.entries, 20);
+        assert_eq!(fragment.instance_plan_cache.hits, 21);
         assert!(fragment.draw_state_rows.is_empty());
     }
 }

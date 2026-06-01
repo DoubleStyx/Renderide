@@ -49,6 +49,8 @@ struct NodeDirtyMask {
     flags: Vec<bool>,
     /// Dense list of indices marked dirty this call, without duplicates.
     indices: Vec<usize>,
+    /// Dense transform index to pose-plan row while pose updates collapse duplicate rows.
+    pose_plan_indices: Vec<usize>,
     /// `true` when at least one entry was set this call.
     any: bool,
 }
@@ -60,6 +62,7 @@ impl NodeDirtyMask {
         Self {
             flags: Vec::new(),
             indices: Vec::with_capacity(node_count.min(64)),
+            pose_plan_indices: vec![usize::MAX; node_count],
             any: false,
         }
     }
@@ -78,9 +81,15 @@ impl NodeDirtyMask {
         if flags.len() < node_count {
             flags.resize(node_count, false);
         }
+        let mut pose_plan_indices = std::mem::take(&mut cache.transform_pose_plan_indices);
+        if pose_plan_indices.len() < node_count {
+            pose_plan_indices.resize(node_count, usize::MAX);
+        }
+        pose_plan_indices[..node_count].fill(usize::MAX);
         Self {
             flags,
             indices,
+            pose_plan_indices,
             any: false,
         }
     }
@@ -89,6 +98,7 @@ impl NodeDirtyMask {
     fn restore_into(self, cache: &mut WorldTransformCache) {
         cache.transform_dirty_flags = self.flags;
         cache.transform_dirty_indices = self.indices;
+        cache.transform_pose_plan_indices = self.pose_plan_indices;
     }
 
     /// Sets the dirty flag for `index`, growing the mask if a host row referenced an index past

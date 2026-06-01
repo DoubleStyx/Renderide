@@ -128,6 +128,8 @@ pub struct WorldTransformCache {
     pub(super) transform_dirty_flags: Vec<bool>,
     /// Transform-apply scratch: dense list of nodes marked in [`Self::transform_dirty_flags`].
     pub(super) transform_dirty_indices: Vec<usize>,
+    /// Transform-apply scratch: node index to pose-plan row while collapsing duplicate pose rows.
+    pub(super) transform_pose_plan_indices: Vec<usize>,
 }
 
 impl Default for WorldTransformCache {
@@ -150,6 +152,7 @@ impl Default for WorldTransformCache {
             bfs_dirty_level_indices: Vec::new(),
             transform_dirty_flags: Vec::new(),
             transform_dirty_indices: Vec::new(),
+            transform_pose_plan_indices: Vec::new(),
         }
     }
 }

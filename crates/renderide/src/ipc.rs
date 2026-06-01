@@ -8,7 +8,7 @@ pub use renderide_shared::ipc::connection;
 
 pub mod headless_config;
 
-pub use renderide_shared::ipc::dual_queue::DualQueueIpc;
+pub use renderide_shared::ipc::dual_queue::{DualQueueIpc, TimedRendererCommand};
 pub use renderide_shared::ipc::shared_memory::SharedMemoryAccessor;
 
 pub use headless_config::{HeadlessParams, get_headless_params, get_ignore_config};

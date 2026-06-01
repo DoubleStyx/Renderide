@@ -5,7 +5,10 @@ use crate::shared::{BodyNode, Chirality, VRControllerState};
 use super::super::frame::ControllerFrame;
 use super::super::profile::ActiveControllerProfile;
 use super::axis::vec2_nonzero;
-use super::{OpenxrControllerRawInputs, body_node_for_side, build_controller_state};
+use super::{
+    OpenxrControllerRawInputs, OpenxrControllerThresholdState, body_node_for_side,
+    build_controller_state, build_controller_state_with_thresholds,
+};
 
 fn frame() -> ControllerFrame {
     ControllerFrame {
@@ -24,9 +27,11 @@ fn raw(profile: ActiveControllerProfile, side: Chirality) -> OpenxrControllerRaw
         is_tracking: true,
         frame: frame(),
         trigger: 0.8,
+        trigger_active: true,
         trigger_touch: false,
         trigger_click: false,
         squeeze: 0.9,
+        squeeze_active: true,
         squeeze_click: false,
         thumbstick: Vec2::new(0.25, -0.5),
         thumbstick_touch: false,
@@ -77,7 +82,11 @@ fn touch_class_profiles_share_touch_payload_shape() {
         ActiveControllerProfile::Generic,
         ActiveControllerProfile::Simple,
     ] {
-        let state = build_controller_state(raw(profile, Chirality::Left));
+        let mut input = raw(profile, Chirality::Left);
+        if profile == ActiveControllerProfile::HpReverbG2 {
+            input.trigger = 0.95;
+        }
+        let state = build_controller_state(input);
         let VRControllerState::TouchControllerState(touch) = state else {
             panic!("profile {profile:?} should use touch payload");
         };
@@ -157,9 +166,9 @@ fn vive_profile_maps_menu_grip_trigger_and_trackpad() {
 
 #[test]
 fn windows_mr_profile_maps_thumbstick_and_touchpad() {
-    let VRControllerState::WindowsMRControllerState(wmr) =
-        build_controller_state(raw(ActiveControllerProfile::WindowsMr, Chirality::Right))
-    else {
+    let mut input = raw(ActiveControllerProfile::WindowsMr, Chirality::Right);
+    input.trigger = 0.95;
+    let VRControllerState::WindowsMRControllerState(wmr) = build_controller_state(input) else {
         panic!("windows mr profile should use wmr payload");
     };
     assert_eq!(wmr.side, Chirality::Right);
@@ -172,4 +181,134 @@ fn windows_mr_profile_maps_thumbstick_and_touchpad() {
     assert_eq!(wmr.touchpad, Vec2::new(-0.2, 0.3));
     assert!(wmr.touchpad_touch);
     assert!(wmr.touchpad_click);
+}
+
+#[test]
+fn index_grip_click_uses_steamvr_threshold_hysteresis() {
+    let mut thresholds = OpenxrControllerThresholdState::default();
+    let mut input = raw(ActiveControllerProfile::Index, Chirality::Left);
+    input.squeeze = 0.29;
+
+    let VRControllerState::IndexControllerState(index) =
+        build_controller_state_with_thresholds(input, &mut thresholds)
+    else {
+        panic!("index profile should use index payload");
+    };
+    assert!(!index.grip_click);
+
+    let mut input = raw(ActiveControllerProfile::Index, Chirality::Left);
+    input.squeeze = 0.30;
+    let VRControllerState::IndexControllerState(index) =
+        build_controller_state_with_thresholds(input, &mut thresholds)
+    else {
+        panic!("index profile should use index payload");
+    };
+    assert!(index.grip_click);
+
+    let mut input = raw(ActiveControllerProfile::Index, Chirality::Left);
+    input.squeeze = 0.26;
+    let VRControllerState::IndexControllerState(index) =
+        build_controller_state_with_thresholds(input, &mut thresholds)
+    else {
+        panic!("index profile should use index payload");
+    };
+    assert!(index.grip_click);
+
+    let mut input = raw(ActiveControllerProfile::Index, Chirality::Left);
+    input.squeeze = 0.24;
+    let VRControllerState::IndexControllerState(index) =
+        build_controller_state_with_thresholds(input, &mut thresholds)
+    else {
+        panic!("index profile should use index payload");
+    };
+    assert!(!index.grip_click);
+}
+
+#[test]
+fn touch_class_trigger_and_grip_use_default_action_thresholds() {
+    let mut thresholds = OpenxrControllerThresholdState::default();
+    let mut input = raw(ActiveControllerProfile::Touch, Chirality::Left);
+    input.trigger = 0.79;
+    input.squeeze = 0.79;
+
+    let VRControllerState::TouchControllerState(touch) =
+        build_controller_state_with_thresholds(input, &mut thresholds)
+    else {
+        panic!("touch profile should use touch payload");
+    };
+    assert!(!touch.trigger_click);
+    assert!(!touch.grip_click);
+
+    let mut input = raw(ActiveControllerProfile::Touch, Chirality::Left);
+    input.trigger = 0.80;
+    input.squeeze = 0.80;
+    let VRControllerState::TouchControllerState(touch) =
+        build_controller_state_with_thresholds(input, &mut thresholds)
+    else {
+        panic!("touch profile should use touch payload");
+    };
+    assert!(touch.trigger_click);
+    assert!(touch.grip_click);
+
+    let mut input = raw(ActiveControllerProfile::Touch, Chirality::Left);
+    input.trigger = 0.71;
+    input.squeeze = 0.71;
+    let VRControllerState::TouchControllerState(touch) =
+        build_controller_state_with_thresholds(input, &mut thresholds)
+    else {
+        panic!("touch profile should use touch payload");
+    };
+    assert!(touch.trigger_click);
+    assert!(touch.grip_click);
+
+    let mut input = raw(ActiveControllerProfile::Touch, Chirality::Left);
+    input.trigger = 0.69;
+    input.squeeze = 0.69;
+    let VRControllerState::TouchControllerState(touch) =
+        build_controller_state_with_thresholds(input, &mut thresholds)
+    else {
+        panic!("touch profile should use touch payload");
+    };
+    assert!(!touch.trigger_click);
+    assert!(!touch.grip_click);
+}
+
+#[test]
+fn windows_mr_trigger_uses_high_action_threshold() {
+    let mut thresholds = OpenxrControllerThresholdState::default();
+    let mut input = raw(ActiveControllerProfile::WindowsMr, Chirality::Right);
+    input.trigger = 0.94;
+
+    let VRControllerState::WindowsMRControllerState(wmr) =
+        build_controller_state_with_thresholds(input, &mut thresholds)
+    else {
+        panic!("windows mr profile should use wmr payload");
+    };
+    assert!(!wmr.trigger_click);
+
+    let mut input = raw(ActiveControllerProfile::WindowsMr, Chirality::Right);
+    input.trigger = 0.95;
+    let VRControllerState::WindowsMRControllerState(wmr) =
+        build_controller_state_with_thresholds(input, &mut thresholds)
+    else {
+        panic!("windows mr profile should use wmr payload");
+    };
+    assert!(wmr.trigger_click);
+}
+
+#[test]
+fn inactive_analog_actions_preserve_explicit_clicks() {
+    let mut input = raw(ActiveControllerProfile::Touch, Chirality::Left);
+    input.trigger = 0.0;
+    input.trigger_active = false;
+    input.trigger_click = true;
+    input.squeeze = 0.0;
+    input.squeeze_active = false;
+    input.squeeze_click = true;
+
+    let VRControllerState::TouchControllerState(touch) = build_controller_state(input) else {
+        panic!("touch profile should use touch payload");
+    };
+    assert!(touch.trigger_click);
+    assert!(touch.grip_click);
 }
