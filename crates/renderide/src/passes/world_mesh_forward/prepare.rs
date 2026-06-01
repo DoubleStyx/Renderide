@@ -1,6 +1,10 @@
 //! Backend frame-plan helpers for world-mesh forward passes.
 
+use std::collections::VecDeque;
+use std::hash::{Hash, Hasher};
+
 use hashbrown::HashMap;
+use parking_lot::Mutex;
 
 use crate::camera::HostCameraFrame;
 use crate::diagnostics::{PerViewHudConfig, PerViewHudOutputs};
@@ -16,8 +20,9 @@ use crate::world_mesh::draw_prep::{
     WorldMeshVisibilityStats,
 };
 use crate::world_mesh::{
-    DrawGroup, InstancePlan, PrefetchedWorldMeshViewDraws, WorldMeshCullProjParams, WorldMeshPhase,
-    state_rows_from_sorted, stats_from_sorted, stats_from_sorted_with_plan,
+    DrawGroup, InstancePlan, PrefetchedWorldMeshViewDraws, WorldMeshCullProjParams,
+    WorldMeshHelperNeeds, WorldMeshPhase, fingerprint_world_mesh_draws, state_rows_from_sorted,
+    stats_from_sorted, stats_from_sorted_with_plan,
 };
 
 use super::camera::{compute_view_projections, resolve_pass_config};
@@ -30,6 +35,127 @@ use super::{
     MaterialBatchBoundary, MaterialBatchPacket, PreparedWorldMeshForwardFrame,
     WorldMeshForwardPipelineState,
 };
+
+const WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_CAPACITY: usize = 256;
+
+/// Runtime counters for the retained forward instance-plan cache.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct WorldMeshForwardInstancePlanCacheStats {
+    /// Retained instance plans currently resident in the cache.
+    pub(crate) entries: usize,
+    /// Cache lookups that reused an instance plan.
+    pub(crate) hits: u64,
+    /// Cache lookups that had to rebuild an instance plan.
+    pub(crate) misses: u64,
+    /// New instance plans inserted into the cache.
+    pub(crate) insertions: u64,
+    /// Entries evicted to keep the cache bounded.
+    pub(crate) evictions: u64,
+}
+
+/// Bounded cache for per-view world-mesh forward instance plans.
+#[derive(Debug, Default)]
+pub(crate) struct WorldMeshForwardInstancePlanCache {
+    inner: Mutex<WorldMeshForwardInstancePlanCacheInner>,
+}
+
+#[derive(Debug, Default)]
+struct WorldMeshForwardInstancePlanCacheInner {
+    entries: HashMap<WorldMeshForwardInstancePlanCacheKey, InstancePlan>,
+    recency: VecDeque<WorldMeshForwardInstancePlanCacheKey>,
+    stats: WorldMeshForwardInstancePlanCacheStats,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct WorldMeshForwardInstancePlanCacheKey {
+    draw_fingerprint: u64,
+    draw_count: usize,
+    submission_fingerprint: u64,
+    packet_count: usize,
+    supports_base_instance: bool,
+    shader_perm: ShaderPermutation,
+    pass_desc: crate::materials::MaterialPipelineDesc,
+    offscreen_write_target: OffscreenWriteTarget,
+}
+
+impl WorldMeshForwardInstancePlanCache {
+    /// Returns a cached instance plan for `key` or stores the plan produced by `build`.
+    fn get_or_build(
+        &self,
+        key: WorldMeshForwardInstancePlanCacheKey,
+        build: impl FnOnce() -> InstancePlan,
+    ) -> InstancePlan {
+        if let Some(plan) = self.entry(&key) {
+            return plan;
+        }
+        let plan = build();
+        self.insert(key, plan.clone());
+        plan
+    }
+
+    /// Captures a point-in-time diagnostic snapshot of the instance-plan cache.
+    pub(crate) fn stats(&self) -> WorldMeshForwardInstancePlanCacheStats {
+        let inner = self.inner.lock();
+        let mut stats = inner.stats;
+        stats.entries = inner.entries.len();
+        stats
+    }
+
+    fn entry(&self, key: &WorldMeshForwardInstancePlanCacheKey) -> Option<InstancePlan> {
+        let mut inner = self.inner.lock();
+        let plan = inner.entries.get(key).cloned();
+        if plan.is_some() {
+            inner.stats.hits = inner.stats.hits.saturating_add(1);
+            inner.recency.push_back(key.clone());
+        } else {
+            inner.stats.misses = inner.stats.misses.saturating_add(1);
+        }
+        plan
+    }
+
+    fn insert(&self, key: WorldMeshForwardInstancePlanCacheKey, plan: InstancePlan) {
+        let mut inner = self.inner.lock();
+        if let Some(entry) = inner.entries.get_mut(&key) {
+            *entry = plan;
+            inner.recency.push_back(key);
+            drop(inner);
+            return;
+        }
+        inner.entries.insert(key.clone(), plan);
+        inner.recency.push_back(key);
+        inner.stats.insertions = inner.stats.insertions.saturating_add(1);
+        while inner.entries.len() > WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_CAPACITY {
+            let Some(candidate) = inner.recency.pop_front() else {
+                break;
+            };
+            if inner.entries.remove(&candidate).is_some() {
+                inner.stats.evictions = inner.stats.evictions.saturating_add(1);
+            }
+        }
+        drop(inner);
+    }
+}
+
+impl WorldMeshForwardInstancePlanCacheKey {
+    fn new(
+        draws: &[WorldMeshDrawItem],
+        packets: &[MaterialBatchPacket],
+        pipeline: &WorldMeshForwardPipelineState,
+        supports_base_instance: bool,
+        offscreen_write_target: OffscreenWriteTarget,
+    ) -> Self {
+        Self {
+            draw_fingerprint: fingerprint_world_mesh_draws(draws),
+            draw_count: draws.len(),
+            submission_fingerprint: material_packet_submission_fingerprint(packets),
+            packet_count: packets.len(),
+            supports_base_instance,
+            shader_perm: pipeline.shader_perm,
+            pass_desc: pipeline.pass_desc,
+            offscreen_write_target,
+        }
+    }
+}
 
 /// Prepared world-mesh forward state plus deferred per-view HUD output.
 pub(crate) struct PreparedWorldMeshForwardView {
@@ -53,6 +179,8 @@ pub(crate) struct WorldMeshForwardPrepareContext<'a, 'frame> {
     pub(crate) frame_plan: &'a PerViewFramePlan,
     /// Backend-owned skybox preparation cache.
     pub(crate) skybox_renderer: &'a SkyboxRenderer,
+    /// Backend-owned retained instance-plan cache.
+    pub(crate) instance_plan_cache: &'a WorldMeshForwardInstancePlanCache,
 }
 
 struct PackedForwardDraws {
@@ -60,6 +188,16 @@ struct PackedForwardDraws {
     plan: InstancePlan,
     overlay_view_proj: glam::Mat4,
     precomputed_batches: Vec<MaterialBatchPacket>,
+}
+
+struct PackForwardDrawsContext<'a, 'frame> {
+    device: &'a wgpu::Device,
+    uploads: GraphUploadSink<'a>,
+    frame: &'a GraphPassFrame<'frame>,
+    encode_refs: &'a WorldMeshForwardEncodeRefs<'frame>,
+    pipeline: &'a WorldMeshForwardPipelineState,
+    supports_base_instance: bool,
+    instance_plan_cache: &'a WorldMeshForwardInstancePlanCache,
 }
 
 /// Inputs used to replace provisional HUD draw stats after instance planning.
@@ -179,6 +317,7 @@ pub(crate) fn prepare_world_mesh_forward_frame(
         frame,
         frame_plan,
         skybox_renderer,
+        instance_plan_cache,
     } = ctx;
     let supports_base_instance = gpu_limits.supports_base_instance;
     let hc = &frame.view.host_camera;
@@ -213,21 +352,18 @@ pub(crate) fn prepare_world_mesh_forward_frame(
         )
     };
 
-    let Some(PackedForwardDraws {
-        draws,
-        plan,
-        overlay_view_proj,
-        precomputed_batches,
-    }) = pack_forward_draws_for_view(
-        device,
-        uploads,
-        frame,
-        &encode_refs,
-        &pipeline,
-        supports_base_instance,
+    let Some(packed) = pack_forward_draws_for_view(
+        PackForwardDrawsContext {
+            device,
+            uploads,
+            frame,
+            encode_refs: &encode_refs,
+            pipeline: &pipeline,
+            supports_base_instance,
+            instance_plan_cache,
+        },
         prefetched.collection.items,
-    )
-    else {
+    ) else {
         return PreparedWorldMeshForwardView {
             prepared: None,
             hud_outputs,
@@ -236,13 +372,13 @@ pub(crate) fn prepare_world_mesh_forward_frame(
     update_world_mesh_draw_stats_from_plan(
         &mut hud_outputs,
         WorldMeshForwardDrawStatsUpdate {
-            draws: &draws,
+            draws: &packed.draws,
             cull_counts,
             visibility,
             arrangement,
             supports_base_instance,
             shader_perm,
-            plan: &plan,
+            plan: &packed.plan,
         },
     );
 
@@ -255,24 +391,41 @@ pub(crate) fn prepare_world_mesh_forward_frame(
         skybox_renderer.prepare(device, uploads, frame, &pipeline)
     };
 
-    let viewport_px = frame.view.viewport_px;
     PreparedWorldMeshForwardView {
-        prepared: Some(PreparedWorldMeshForwardFrame {
-            draws,
-            plan,
+        prepared: Some(prepared_forward_frame_from_parts(
+            packed,
             pipeline,
             helper_needs,
             supports_base_instance,
-            opaque_recorded: false,
-            depth_snapshot_recorded: false,
-            tail_raster_recorded: false,
-            depth_freshness: Default::default(),
-            precomputed_batches,
             skybox,
-            overlay_view_proj,
-            viewport_px,
-        }),
+            frame.view.viewport_px,
+        )),
         hud_outputs,
+    }
+}
+
+fn prepared_forward_frame_from_parts(
+    packed: PackedForwardDraws,
+    pipeline: WorldMeshForwardPipelineState,
+    helper_needs: WorldMeshHelperNeeds,
+    supports_base_instance: bool,
+    skybox: Option<crate::skybox::PreparedSkybox>,
+    viewport_px: (u32, u32),
+) -> PreparedWorldMeshForwardFrame {
+    PreparedWorldMeshForwardFrame {
+        draws: packed.draws,
+        plan: packed.plan,
+        pipeline,
+        helper_needs,
+        supports_base_instance,
+        opaque_recorded: false,
+        depth_snapshot_recorded: false,
+        tail_raster_recorded: false,
+        depth_freshness: Default::default(),
+        precomputed_batches: packed.precomputed_batches,
+        skybox,
+        overlay_view_proj: packed.overlay_view_proj,
+        viewport_px,
     }
 }
 
@@ -316,14 +469,18 @@ fn update_world_mesh_draw_stats_from_plan(
 }
 
 fn pack_forward_draws_for_view(
-    device: &wgpu::Device,
-    uploads: GraphUploadSink<'_>,
-    frame: &GraphPassFrame<'_>,
-    encode_refs: &WorldMeshForwardEncodeRefs<'_>,
-    pipeline: &WorldMeshForwardPipelineState,
-    supports_base_instance: bool,
+    ctx: PackForwardDrawsContext<'_, '_>,
     draws: Vec<WorldMeshDrawItem>,
 ) -> Option<PackedForwardDraws> {
+    let PackForwardDrawsContext {
+        device,
+        uploads,
+        frame,
+        encode_refs,
+        pipeline,
+        supports_base_instance,
+        instance_plan_cache,
+    } = ctx;
     let hc = &frame.view.host_camera;
     let shader_perm = pipeline.shader_perm;
     let (render_context, world_proj, overlay_proj) = {
@@ -351,19 +508,25 @@ fn pack_forward_draws_for_view(
         profiling::scope!("world_mesh::prepare_frame::build_submission_classes");
         draw_submission_classes(draws.len(), &precomputed_batches)
     };
-    let mut plan = {
+    let plan_key = WorldMeshForwardInstancePlanCacheKey::new(
+        &draws,
+        &precomputed_batches,
+        pipeline,
+        supports_base_instance,
+        offscreen_write_target,
+    );
+    let plan = instance_plan_cache.get_or_build(plan_key, || {
         profiling::scope!("world_mesh::prepare_frame::build_instance_plan");
-        crate::world_mesh::build_plan_for_shader_with_submission_classes(
+        let mut plan = crate::world_mesh::build_plan_for_shader_with_submission_classes(
             &draws,
             &submission_classes,
             supports_base_instance,
             shader_perm,
-        )
-    };
-    {
+        );
         profiling::scope!("world_mesh::prepare_frame::assign_material_packet_indices");
         assign_material_packet_indices(&mut plan, &precomputed_batches);
-    }
+        plan
+    });
     crate::profiling::plot_world_mesh_prepare(
         draws.len(),
         precomputed_batches.len(),
@@ -460,6 +623,17 @@ fn material_packet_submission_key(packet: &MaterialBatchPacket) -> MaterialPacke
         group1: material_group1_submission_key(&packet.group1_binding),
         pipelines_ready: packet.pipelines.is_some(),
     }
+}
+
+fn material_packet_submission_fingerprint(packets: &[MaterialBatchPacket]) -> u64 {
+    let mut hasher = ahash::AHasher::default();
+    packets.len().hash(&mut hasher);
+    for packet in packets {
+        packet.first_draw_idx.hash(&mut hasher);
+        packet.last_draw_idx.hash(&mut hasher);
+        material_packet_submission_key(packet).hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 /// Extracts the concrete group-1 bind command identity from a material packet.

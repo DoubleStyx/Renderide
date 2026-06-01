@@ -6,8 +6,9 @@ use crate::diagnostics::PerViewHudOutputs;
 use crate::gpu::GpuLimits;
 use crate::graph_inputs::{GraphPassFrame, PerViewFramePlan};
 use crate::passes::{
-    PreparedWorldMeshForwardFrame, WorldMeshForwardPrepareContext, WorldMeshForwardSkyboxRenderer,
-    prepare_world_mesh_forward_frame,
+    PreparedWorldMeshForwardFrame, WorldMeshForwardInstancePlanCache,
+    WorldMeshForwardInstancePlanCacheStats, WorldMeshForwardPrepareContext,
+    WorldMeshForwardSkyboxRenderer, prepare_world_mesh_forward_frame,
 };
 use crate::render_graph::blackboard::{
     Blackboard, GraphCommandStats, GraphCommandStatsSlot, blackboard_slot,
@@ -24,6 +25,8 @@ blackboard_slot! {
 pub(crate) struct BackendWorldMeshFramePlanner {
     /// Skybox/background preparation cache shared across frame plans.
     skybox: WorldMeshForwardSkyboxRenderer,
+    /// Retained forward instance plans keyed by draw and resolved material submission identity.
+    instance_plan_cache: WorldMeshForwardInstancePlanCache,
 }
 
 /// Per-view world-mesh packet prepared before graph pass recording.
@@ -39,12 +42,18 @@ impl BackendWorldMeshFramePlanner {
     pub(crate) fn new() -> Self {
         Self {
             skybox: WorldMeshForwardSkyboxRenderer::default(),
+            instance_plan_cache: WorldMeshForwardInstancePlanCache::default(),
         }
     }
 
     /// Releases view-scoped cached planning resources.
     pub(crate) fn release_view_resources(&self, retired_views: &[crate::camera::ViewId]) {
         self.skybox.release_view_resources(retired_views);
+    }
+
+    /// Retained forward instance-plan cache counters for diagnostics.
+    pub(crate) fn instance_plan_cache_stats(&self) -> WorldMeshForwardInstancePlanCacheStats {
+        self.instance_plan_cache.stats()
     }
 
     /// Builds one per-view world-mesh packet from an explicit draw plan.
@@ -74,6 +83,7 @@ impl BackendWorldMeshFramePlanner {
                 frame,
                 frame_plan: &frame_plan,
                 skybox_renderer: &self.skybox,
+                instance_plan_cache: &self.instance_plan_cache,
             },
             prefetched,
         );

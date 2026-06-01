@@ -9,7 +9,10 @@ use crate::materials::{MaterialPipelinePropertyIds, MaterialRouter, RasterPipeli
 use crate::reflection_probes::specular::ReflectionProbeFrameSelection;
 use crate::scene::{SceneApplyReport, SceneCacheFlushReport, SceneCoordinator};
 use crate::shared::RenderingContext;
-use crate::world_mesh::{FrameMaterialBatchCache, RenderWorld, RenderWorldMaintenanceStats};
+use crate::world_mesh::{
+    FrameMaterialBatchCache, RenderWorld, RenderWorldMaintenanceStats, WorldMeshCommandCache,
+    WorldMeshCommandCacheStats,
+};
 
 use crate::backend::AssetTransferQueue;
 use crate::materials::{MaterialSystem, ShaderPermutation};
@@ -50,6 +53,8 @@ pub(super) struct BackendDrawPreparation {
     material_batch_caches: HashMap<(u8, ShaderPermutation), FrameMaterialBatchCache>,
     /// Backend-owned CPU render-world caches used to amortize draw preparation per context.
     render_worlds: HashMap<u8, RenderWorld>,
+    /// Retained arranged draw command lists keyed by visible draw fingerprints.
+    command_cache: WorldMeshCommandCache,
 }
 
 impl BackendDrawPreparation {
@@ -59,6 +64,7 @@ impl BackendDrawPreparation {
             null_material_router: MaterialRouter::new(RasterPipelineKind::Null),
             material_batch_caches: HashMap::new(),
             render_worlds: HashMap::new(),
+            command_cache: WorldMeshCommandCache::default(),
         }
     }
 
@@ -94,6 +100,7 @@ impl BackendDrawPreparation {
             null_material_router,
             material_batch_caches,
             render_worlds,
+            command_cache,
         } = self;
         let (property_store, router, pipeline_property_ids) = {
             profiling::scope!("render::extract_frame_shared::material_inputs");
@@ -133,6 +140,7 @@ impl BackendDrawPreparation {
             pipeline_property_ids,
             render_worlds,
             material_caches: material_batch_caches,
+            command_cache,
             occlusion,
             reflection_probes,
             inner_parallelism,
@@ -146,6 +154,11 @@ impl BackendDrawPreparation {
             stats.accumulate(render_world.maintenance_stats());
         }
         stats
+    }
+
+    /// Retained draw command-list cache counters for diagnostics.
+    pub(super) fn command_cache_stats(&self) -> WorldMeshCommandCacheStats {
+        self.command_cache.stats()
     }
 }
 

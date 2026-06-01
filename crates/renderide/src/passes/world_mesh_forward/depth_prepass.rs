@@ -198,6 +198,22 @@ impl WorldMeshForwardDepthPrepassPipelineKey {
     }
 }
 
+/// Pre-warms the generic depth-prepass pipeline needed by `item`, when the draw is eligible.
+pub(crate) fn pre_warm_depth_prepass_pipeline_for_draw(
+    device: &wgpu::Device,
+    item: &WorldMeshDrawItem,
+    pipeline: &WorldMeshForwardPipelineState,
+) -> bool {
+    if !crate::world_mesh::depth_prepass_item_eligible(item, pipeline.shader_perm) {
+        return false;
+    }
+    let Some(key) = WorldMeshForwardDepthPrepassPipelineKey::for_draw(item, pipeline) else {
+        return false;
+    };
+    let _ = depth_prepass_pipelines().pipeline(device, key);
+    true
+}
+
 fn depth_prepass_cull_mode(
     item: &WorldMeshDrawItem,
     shader_perm: crate::materials::ShaderPermutation,

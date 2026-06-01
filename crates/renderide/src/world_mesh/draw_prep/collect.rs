@@ -29,6 +29,7 @@ use crate::world_mesh::culling::WorldMeshCullInput;
 use crate::world_mesh::materials::FrameMaterialBatchCache;
 
 use super::arrange::arrange_draw_chunks_by_phase_bins;
+use super::command_cache::WorldMeshCommandCache;
 use super::filter::CameraTransformDrawFilter;
 use super::item::{WorldMeshDrawCollection, WorldMeshDrawItem, WorldMeshVisibilityStats};
 use super::prepared_renderables::FramePreparedRenderables;
@@ -228,17 +229,20 @@ impl QueuedWorldMeshDraws {
         self.len
     }
 
-    /// Sorts and arranges queued draws into render-phase submission order.
-    pub fn sort_and_arrange(
+    /// Sorts and arranges queued draws, reusing a retained command-list cache when provided.
+    pub(crate) fn sort_and_arrange_with_cache(
         self,
         parallelism: WorldMeshDrawArrangeParallelism,
+        command_cache: Option<&WorldMeshCommandCache>,
     ) -> WorldMeshDrawCollection {
+        let allow_parallel_sort = parallelism == WorldMeshDrawArrangeParallelism::Full;
         let (items, arrangement) = {
             profiling::scope!("mesh::arrange");
-            arrange_draw_chunks_by_phase_bins(
-                self.chunks,
-                parallelism == WorldMeshDrawArrangeParallelism::Full,
-            )
+            if let Some(command_cache) = command_cache {
+                command_cache.arrange_draw_chunks(self.chunks, allow_parallel_sort)
+            } else {
+                arrange_draw_chunks_by_phase_bins(self.chunks, allow_parallel_sort)
+            }
         };
         WorldMeshDrawCollection {
             items,

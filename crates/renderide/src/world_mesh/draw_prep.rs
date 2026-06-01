@@ -17,6 +17,7 @@
 mod arrange;
 mod bitset;
 mod collect;
+mod command_cache;
 mod filter;
 pub(crate) mod item;
 mod prepared_renderables;
@@ -28,6 +29,8 @@ pub use collect::{
     DrawCollectionContext, QueuedWorldMeshDraws, WorldMeshDrawArrangeParallelism,
     WorldMeshDrawCollectParallelism, queue_draws_with_parallelism,
 };
+pub use command_cache::WorldMeshCommandCacheStats;
+pub(crate) use command_cache::{WorldMeshCommandCache, fingerprint_world_mesh_draws};
 pub use filter::{CameraTransformDrawFilter, draw_filter_from_camera_entry};
 pub use item::{
     WorldMeshDrawArrangementStats, WorldMeshDrawCollection, WorldMeshDrawItem,

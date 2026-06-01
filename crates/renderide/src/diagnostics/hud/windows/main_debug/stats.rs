@@ -318,6 +318,8 @@ impl StatsSection for DrawStatsSection {
             draw_submission_rows(ui, m);
             draw_culling_rows(ui, m);
             render_world_maintenance_row(ui, f.mesh_draw.render_world_maintenance);
+            command_cache_row(ui, f.mesh_draw.command_cache);
+            instance_plan_cache_row(ui, f.mesh_draw.instance_plan_cache);
         });
     }
 }
@@ -479,6 +481,33 @@ fn render_world_maintenance_row(ui: &imgui::Ui, stats: RenderWorldMaintenanceSta
             stats.spatial_refit_count,
             stats.particle_snapshot_rebuild_count,
             stats.steady_state_skip_count
+        ),
+    );
+}
+
+/// Renders retained world-mesh command cache counters.
+fn command_cache_row(ui: &imgui::Ui, stats: crate::world_mesh::WorldMeshCommandCacheStats) {
+    kv(
+        ui,
+        "Command cache",
+        &format!(
+            "entries={}  hits={}  misses={}  insertions={}  evictions={}",
+            stats.entries, stats.hits, stats.misses, stats.insertions, stats.evictions
+        ),
+    );
+}
+
+/// Renders retained world-mesh instance-plan cache counters.
+fn instance_plan_cache_row(
+    ui: &imgui::Ui,
+    stats: crate::passes::WorldMeshForwardInstancePlanCacheStats,
+) {
+    kv(
+        ui,
+        "Instance plan cache",
+        &format!(
+            "entries={}  hits={}  misses={}  insertions={}  evictions={}",
+            stats.entries, stats.hits, stats.misses, stats.insertions, stats.evictions
         ),
     );
 }

@@ -11,7 +11,8 @@ use crate::reflection_probes::specular::ReflectionProbeFrameSelection;
 use crate::scene::{RenderSpaceId, SceneApplyReport, SceneCacheFlushReport, SceneCoordinator};
 use crate::shared::RenderingContext;
 use crate::world_mesh::{
-    FrameMaterialBatchCache, FramePreparedRenderables, RenderWorld, WorldMeshDrawCollectParallelism,
+    FrameMaterialBatchCache, FramePreparedRenderables, RenderWorld, WorldMeshCommandCache,
+    WorldMeshDrawCollectParallelism,
 };
 
 use super::draw_preparation::{DrawPreparationExtractDesc, render_context_cache_key};
@@ -37,6 +38,8 @@ pub(crate) struct ExtractedFrameShared<'a> {
     pub(crate) render_worlds: &'a HashMap<u8, RenderWorld>,
     /// Persistent material batch caches keyed by render context and [`ShaderPermutation`].
     pub(crate) material_caches: &'a HashMap<(u8, ShaderPermutation), FrameMaterialBatchCache>,
+    /// Persistent arranged draw command-list cache shared by per-view sorting.
+    pub(crate) command_cache: &'a WorldMeshCommandCache,
     /// Shared occlusion state used for Hi-Z snapshots and temporal cull data.
     pub(crate) occlusion: &'a OcclusionSystem,
     /// CPU-side specular reflection-probe selector for per-object probe assignment.

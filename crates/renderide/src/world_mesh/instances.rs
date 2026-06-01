@@ -921,7 +921,10 @@ pub(crate) fn depth_prepass_group_eligible(
 }
 
 /// Returns whether a draw may be submitted through the conservative generic depth prepass.
-fn depth_prepass_item_eligible(item: &WorldMeshDrawItem, shader_perm: ShaderPermutation) -> bool {
+pub(crate) fn depth_prepass_item_eligible(
+    item: &WorldMeshDrawItem,
+    shader_perm: ShaderPermutation,
+) -> bool {
     let key = &item.batch_key;
     !item.is_overlay
         && key.render_queue < UNITY_RENDER_QUEUE_ALPHA_TEST

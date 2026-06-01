@@ -19,10 +19,10 @@ use crate::render_graph::{
 };
 use crate::world_mesh::QueuedWorldMeshDraws;
 use crate::world_mesh::{
-    DrawCollectionContext, HiZTemporalState, PrefetchedWorldMeshViewDraws, WorldMeshCullInput,
-    WorldMeshCullProjParams, WorldMeshDrawArrangeParallelism, WorldMeshDrawCollectParallelism,
-    WorldMeshDrawPlan, build_world_mesh_cull_proj_params, queue_draws_with_parallelism,
-    queue_prepared_draws_for_views_with_parallelism,
+    DrawCollectionContext, HiZTemporalState, PrefetchedWorldMeshViewDraws, WorldMeshCommandCache,
+    WorldMeshCullInput, WorldMeshCullProjParams, WorldMeshDrawArrangeParallelism,
+    WorldMeshDrawCollectParallelism, WorldMeshDrawPlan, build_world_mesh_cull_proj_params,
+    queue_draws_with_parallelism, queue_prepared_draws_for_views_with_parallelism,
 };
 
 use super::view_plan::{FrameViewPlan, ViewFamilyPlan};
@@ -64,7 +64,7 @@ impl<'views, 'backend> ExtractedFrame<'views, 'backend> {
     }
 
     /// Queues explicit world-mesh draw candidates for each prepared view.
-    pub(in crate::runtime) fn queue_draws(self) -> QueuedDraws<'views> {
+    pub(in crate::runtime) fn queue_draws(self) -> QueuedDraws<'views, 'backend> {
         let ExtractedFrame {
             prepared_views,
             shared,
@@ -106,24 +106,31 @@ impl<'views, 'backend> ExtractedFrame<'views, 'backend> {
             prepared_views,
             view_draws,
             arrange_parallelism,
+            command_cache: shared.command_cache,
         }
     }
 }
 
 /// Queued per-view draw candidates built after view planning and before phase sorting.
-pub(in crate::runtime) struct QueuedDraws<'a> {
+pub(in crate::runtime) struct QueuedDraws<'a, 'backend> {
     /// Ordered per-frame view plans and aggregate graph requirements.
     prepared_views: PreparedViews<'a>,
     /// Queued draw candidates for every prepared view.
     view_draws: Vec<QueuedViewDraws>,
     /// Rayon tier to use for final draw arrangement inside each queued view.
     arrange_parallelism: WorldMeshDrawArrangeParallelism,
+    /// Persistent arranged draw command-list cache owned by the backend.
+    command_cache: &'backend WorldMeshCommandCache,
 }
 
-impl<'a> QueuedDraws<'a> {
+impl<'a, 'backend> QueuedDraws<'a, 'backend> {
     /// Sorts queued draws and promotes them into final per-view draw plans.
     pub(in crate::runtime) fn sort_draws(self) -> PreparedDraws<'a> {
-        let view_draws = sort_view_draws(self.view_draws, self.arrange_parallelism);
+        let view_draws = sort_view_draws(
+            self.view_draws,
+            self.arrange_parallelism,
+            self.command_cache,
+        );
         {
             profiling::scope!("render::sort_view_draws::trace_plans");
             trace_view_draw_plans(self.prepared_views.plans(), &view_draws);
@@ -139,12 +146,13 @@ impl<'a> QueuedDraws<'a> {
 fn sort_view_draws(
     view_draws: Vec<QueuedViewDraws>,
     arrange_parallelism: WorldMeshDrawArrangeParallelism,
+    command_cache: &WorldMeshCommandCache,
 ) -> Vec<WorldMeshDrawPlan> {
     profiling::scope!("render::sort_view_draws");
     if should_parallelize_view_sort(&view_draws) {
-        sort_view_draws_parallel(view_draws, arrange_parallelism)
+        sort_view_draws_parallel(view_draws, arrange_parallelism, command_cache)
     } else {
-        sort_view_draws_serial(view_draws, arrange_parallelism)
+        sort_view_draws_serial(view_draws, arrange_parallelism, command_cache)
     }
 }
 
@@ -189,32 +197,35 @@ fn select_arrange_parallelism_for_draws_with_policy(
 fn sort_view_draws_serial(
     view_draws: Vec<QueuedViewDraws>,
     arrange_parallelism: WorldMeshDrawArrangeParallelism,
+    command_cache: &WorldMeshCommandCache,
 ) -> Vec<WorldMeshDrawPlan> {
     profiling::scope!("render::sort_view_draws::serial");
     view_draws
         .into_iter()
-        .map(|queued| queued.sort_and_package(arrange_parallelism))
+        .map(|queued| queued.sort_and_package(arrange_parallelism, command_cache))
         .collect()
 }
 
 fn sort_view_draws_parallel(
     view_draws: Vec<QueuedViewDraws>,
     arrange_parallelism: WorldMeshDrawArrangeParallelism,
+    command_cache: &WorldMeshCommandCache,
 ) -> Vec<WorldMeshDrawPlan> {
     profiling::scope!("render::sort_view_draws::parallel");
     if view_draws.len() == 2 {
-        return sort_two_view_draws_parallel(view_draws, arrange_parallelism);
+        return sort_two_view_draws_parallel(view_draws, arrange_parallelism, command_cache);
     }
     view_draws
         .into_par_iter()
         .with_min_len(VIEW_SORT_PARALLEL_CHUNK_VIEWS)
-        .map(|queued| queued.sort_and_package(arrange_parallelism))
+        .map(|queued| queued.sort_and_package(arrange_parallelism, command_cache))
         .collect()
 }
 
 fn sort_two_view_draws_parallel(
     view_draws: Vec<QueuedViewDraws>,
     arrange_parallelism: WorldMeshDrawArrangeParallelism,
+    command_cache: &WorldMeshCommandCache,
 ) -> Vec<WorldMeshDrawPlan> {
     profiling::scope!("render::sort_view_draws::two_view_join");
     let mut iter = view_draws.into_iter();
@@ -222,12 +233,12 @@ fn sort_two_view_draws_parallel(
         return Vec::new();
     };
     let Some(second) = iter.next() else {
-        return vec![first.sort_and_package(arrange_parallelism)];
+        return vec![first.sort_and_package(arrange_parallelism, command_cache)];
     };
     debug_assert_eq!(iter.count(), 0);
     let (first, second) = rayon::join(
-        || first.sort_and_package(arrange_parallelism),
-        || second.sort_and_package(arrange_parallelism),
+        || first.sort_and_package(arrange_parallelism, command_cache),
+        || second.sort_and_package(arrange_parallelism, command_cache),
     );
     vec![first, second]
 }
@@ -436,8 +447,14 @@ impl QueuedViewDraws {
     }
 
     /// Sorts this view's queued draws and packages the final draw plan.
-    fn sort_and_package(self, parallelism: WorldMeshDrawArrangeParallelism) -> WorldMeshDrawPlan {
-        let collection = self.queued.sort_and_arrange(parallelism);
+    fn sort_and_package(
+        self,
+        parallelism: WorldMeshDrawArrangeParallelism,
+        command_cache: &WorldMeshCommandCache,
+    ) -> WorldMeshDrawPlan {
+        let collection = self
+            .queued
+            .sort_and_arrange_with_cache(parallelism, Some(command_cache));
         WorldMeshDrawPlan::Prefetched(Box::new(PrefetchedWorldMeshViewDraws::new(
             collection,
             self.cull_proj.as_ref(),

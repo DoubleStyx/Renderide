@@ -226,6 +226,28 @@ impl WorldMeshForwardNormalPipelineKey {
     }
 }
 
+/// Pre-warms the GTAO normal-prepass pipeline needed by `item`, when the topology is supported.
+pub(crate) fn pre_warm_normal_pipeline_for_draw(
+    device: &wgpu::Device,
+    item: &crate::world_mesh::WorldMeshDrawItem,
+    pipeline: &WorldMeshForwardPipelineState,
+    offscreen: bool,
+) -> bool {
+    let mut front_face = item.batch_key.front_face;
+    if offscreen {
+        front_face = front_face.flipped();
+    }
+    let Some(key) = WorldMeshForwardNormalPipelineKey::for_draw(
+        pipeline,
+        front_face,
+        item.batch_key.primitive_topology,
+    ) else {
+        return false;
+    };
+    let _ = normal_pipelines().pipeline(device, key);
+    true
+}
+
 fn normal_pipelines() -> &'static WorldMeshForwardNormalPipelineCache {
     static CACHE: LazyLock<WorldMeshForwardNormalPipelineCache> =
         LazyLock::new(WorldMeshForwardNormalPipelineCache::default);

@@ -21,6 +21,10 @@ use crate::passes::post_processing::settings_slots::{
     AutoExposureSettingsSlot, AutoExposureSettingsValue, BloomSettingsSlot, BloomSettingsValue,
     GtaoSettingsSlot, GtaoSettingsValue, MotionBlurSettingsSlot, MotionBlurSettingsValue,
 };
+use crate::passes::{
+    WorldMeshForwardPipelineState, pre_warm_depth_prepass_pipeline_for_draw,
+    pre_warm_normal_pipeline_for_draw,
+};
 use crate::render_graph::TransientPool;
 use crate::render_graph::blackboard::Blackboard;
 use crate::render_graph::compiled::{FrameView, FrameViewTarget};
@@ -29,7 +33,7 @@ use crate::render_graph::execution_backend::{
 };
 use crate::render_graph::frame_upload_batch::{FrameUploadBatchStats, GraphUploadSink};
 use crate::render_graph::upload_arena::PersistentUploadArena;
-use crate::world_mesh::WorldMeshDrawItem;
+use crate::world_mesh::{WorldMeshDrawItem, WorldMeshPhase};
 
 use super::super::debug_hud_bundle::DebugHudBundle;
 use super::super::{FrameResourceManager, HistoryRegistry, WorldMeshDrawPlanSlot};
@@ -137,6 +141,13 @@ fn collect_view_asset_prewarm_requests(views: &[FrameView<'_>]) -> ViewAssetPrew
         }
     }
     requests
+}
+
+fn world_mesh_item_mirrors_to_normal_prepass(item: &WorldMeshDrawItem) -> bool {
+    matches!(
+        crate::world_mesh::phase_classification::classify_world_mesh_batch(&item.batch_key).phase,
+        WorldMeshPhase::ForwardOpaque | WorldMeshPhase::ForwardAlphaTest
+    )
 }
 
 fn material_pass_desc_for_layout(
@@ -364,6 +375,7 @@ impl<'a> BackendGraphAccess<'a> {
             &mesh_ids_needing_all_extended_streams,
         );
         self.pre_warm_material_assets_from_blackboards(views, view_layouts);
+        self.pre_warm_world_mesh_prepass_pipelines_from_blackboards(device, views, view_layouts);
     }
 
     /// Warms material graph, reflected group-1 layouts, and pipeline cache entries from prepared draws.
@@ -428,6 +440,56 @@ impl<'a> BackendGraphAccess<'a> {
             "graph pre-warm material assets: pipelines={} embedded_layouts={}",
             warmed_pipelines.len(),
             warmed_embedded_stems.len()
+        );
+    }
+
+    /// Warms world-mesh depth and normal prepass pipelines before graph raster recording.
+    fn pre_warm_world_mesh_prepass_pipelines_from_blackboards(
+        &self,
+        device: &wgpu::Device,
+        views: &[FrameView<'_>],
+        view_layouts: &[Option<PreRecordViewResourceLayout>],
+    ) {
+        profiling::scope!("graph::pre_warm_world_mesh_prepass_pipelines");
+        let mut depth_prepass_requests = 0usize;
+        let mut normal_prepass_requests = 0usize;
+        for (view, layout) in views.iter().zip(view_layouts.iter()) {
+            let Some(layout) = *layout else {
+                continue;
+            };
+            let Some(draw_plan) = view.initial_blackboard.get::<WorldMeshDrawPlanSlot>() else {
+                continue;
+            };
+            let Some(collection) = draw_plan.as_prefetched() else {
+                continue;
+            };
+            let supports_multiview = self
+                .gpu_limits
+                .as_ref()
+                .is_some_and(|limits| limits.supports_multiview);
+            let (pass_desc, shader_perm) =
+                material_pass_desc_for_layout(layout, supports_multiview);
+            let pipeline = WorldMeshForwardPipelineState {
+                use_multiview: pass_desc.multiview_mask.is_some(),
+                pass_desc,
+                shader_perm,
+            };
+            let offscreen = matches!(view.target, FrameViewTarget::OffscreenRt(_));
+            for item in &collection.items {
+                if pre_warm_depth_prepass_pipeline_for_draw(device, item, &pipeline) {
+                    depth_prepass_requests = depth_prepass_requests.saturating_add(1);
+                }
+                if world_mesh_item_mirrors_to_normal_prepass(item)
+                    && pre_warm_normal_pipeline_for_draw(device, item, &pipeline, offscreen)
+                {
+                    normal_prepass_requests = normal_prepass_requests.saturating_add(1);
+                }
+            }
+        }
+        logger::trace!(
+            "graph pre-warm world mesh prepass pipelines: depth_requests={} normal_requests={}",
+            depth_prepass_requests,
+            normal_prepass_requests
         );
     }
 
