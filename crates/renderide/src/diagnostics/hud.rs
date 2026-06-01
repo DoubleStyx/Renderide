@@ -1,6 +1,7 @@
 //! Dear ImGui overlay for developer diagnostics.
 //!
 //! The **Frame timing** window shows FPS, CPU/GPU frame intervals, RAM/VRAM, and a frametime graph.
+//! **Feedback / Bug Report** shows quick links for reporting issues and joining discussion.
 //! **[`crate::config::DebugSettings::debug_hud_frame_timing`]** toggles the **Frame timing** window (default on).
 //! **[`crate::config::DebugSettings::debug_hud_enabled`]** toggles **Renderide debug** (Stats / Shader routes / Draw state / GPU memory).
 //! **[`crate::config::DebugSettings::debug_hud_transforms`]** toggles the **Scene transforms** window.
@@ -8,8 +9,8 @@
 //!
 //! HUD-rendering infrastructure lives in submodules:
 //!
-//! - [`layout`]: declarative window placement (`Viewport`, `WindowAnchor`, `WindowSlot`) plus
-//!   the stacked-column constants and helpers used by the four anchored HUD windows.
+//! - [`layout`]: declarative window placement (`Viewport`, `WindowSlot`) plus
+//!   the stacked-column constants and helpers used by the anchored HUD windows.
 //! - [`state`]: [`state::HudUiState`], the grouped per-window open flags and per-tab filter
 //!   toggles owned by [`DebugHud`].
 //! - [`view`]: rendering algebra (`HudWindow`, `TabView`).
@@ -65,6 +66,7 @@ use self::persistence::{
 };
 use self::registry::{DebugWindow, OverlayFeatureFlags};
 use self::view::HudWindow;
+use self::windows::feedback::FeedbackWindow;
 use self::windows::frame_timing::FrameTimingWindow;
 use self::windows::main_debug::{MainDebugWindow, MainDebugWindowData};
 use self::windows::renderer_config::{RendererConfigData, RendererConfigWindow};
@@ -78,7 +80,7 @@ use super::snapshots::texture_debug::TextureDebugSnapshot;
 
 const IMGUI_INI_SAVE_RATE_SECS: f32 = 0.25;
 
-/// Dear ImGui overlay: frame timing, renderer stats, shader routes, scene transforms, and config UI.
+/// Dear ImGui overlay: feedback links, frame timing, renderer stats, shader routes, scene transforms, and config UI.
 pub struct DebugHud {
     imgui: Context,
     renderer: ImguiWgpuRenderer,
@@ -324,13 +326,17 @@ impl DebugHud {
     /// Returns `true` when at least one HUD window will draw something this frame.
     ///
     /// Used by the render-graph executor to skip the entire HUD command encoder + GPU profiler
-    /// query wrap when no debug windows are open. Skipping is safe even when the HUD has been open
-    /// in prior frames: ImGui's per-frame state lives on [`Self::imgui`] and is only consumed when
+    /// query wrap when ImGui is hidden. Skipping is safe even when the HUD has been open in prior
+    /// frames: ImGui's per-frame state lives on [`Self::imgui`] and is only consumed when
     /// [`Self::encode_overlay`] runs, so dropping a frame's encode does not corrupt later frames'
-    /// drawing.
+    /// drawing. When ImGui is visible, the lightweight **Feedback / Bug Report** panel always
+    /// draws even if every diagnostics window is disabled.
     pub fn has_visible_content(&self) -> bool {
         let flags = OverlayFeatureFlags::from_settings(&self.renderer_settings);
-        flags.imgui_visible && (flags.any_debug_content() || self.ui_state.renderer_config_open)
+        flags.imgui_visible
+            && (DebugWindow::Feedback.enabled(flags)
+                || flags.any_debug_content()
+                || self.ui_state.renderer_config_open)
     }
 
     /// Encodes ImGui draw lists into a load-on-top pass over `backbuffer` and returns want-capture flags.
@@ -421,6 +427,9 @@ impl DebugHud {
             match window {
                 DebugWindow::FrameTiming => {
                     render_window(ui, viewport, &FrameTimingWindow, frame_timing, ui_state);
+                }
+                DebugWindow::Feedback => {
+                    render_window(ui, viewport, &FeedbackWindow, (), ui_state);
                 }
                 DebugWindow::Main => render_window(
                     ui,
