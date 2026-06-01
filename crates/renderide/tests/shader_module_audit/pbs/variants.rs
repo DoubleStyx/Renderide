@@ -150,6 +150,39 @@ fn pbs_lerp_preserves_variant_channels_and_raw_lerp() -> io::Result<()> {
     Ok(())
 }
 
+#[test]
+fn standard_pbs_optional_gloss_maps_sample_inside_keyword_branches() -> io::Result<()> {
+    let metallic = material_source("pbsmetallic.wgsl")?;
+    assert!(
+        metallic.contains(
+            "if (metallic_gloss_map_enabled()) {\n        let mg = ts::sample_tex_2d(_MetallicGlossMap"
+        ),
+        "pbsmetallic.wgsl must sample _MetallicGlossMap inside the keyword branch"
+    );
+    assert!(
+        !metallic.contains(
+            "let mg = ts::sample_tex_2d(_MetallicGlossMap, _MetallicGlossMap_sampler, uv_main, mat._MetallicGlossMap_LodBias);\n    var metallic"
+        ),
+        "pbsmetallic.wgsl must not pre-sample _MetallicGlossMap before testing the keyword"
+    );
+
+    let specular = material_source("pbsspecular.wgsl")?;
+    assert!(
+        specular.contains(
+            "if (spec_gloss_map_enabled()) {\n        let spec_gloss = ts::sample_tex_2d(_SpecGlossMap"
+        ),
+        "pbsspecular.wgsl must sample _SpecGlossMap inside the keyword branch"
+    );
+    assert!(
+        !specular.contains(
+            "let spec_gloss = ts::sample_tex_2d(_SpecGlossMap, _SpecGlossMap_sampler, uv_main, mat._SpecGlossMap_LodBias);\n    var specular_color"
+        ),
+        "pbsspecular.wgsl must not pre-sample _SpecGlossMap before testing the keyword"
+    );
+
+    Ok(())
+}
+
 /// Verifies PBSMultiUVSpecular propagates specular RGB and smoothness alpha.
 #[test]
 fn pbs_multiuv_specular_uses_specular_channels() -> io::Result<()> {

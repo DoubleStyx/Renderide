@@ -12,7 +12,9 @@ use crate::gpu::{
 use crate::materials::material_passes::{DefaultPassParams, MaterialPassDesc, default_pass};
 use crate::materials::pipeline_build_error::PipelineBuildError;
 use crate::materials::wgsl_reflect::reflect_raster_material_wgsl_with_vertex_entries;
-use crate::materials::{MaterialRenderState, RasterFrontFace, RasterPrimitiveTopology};
+use crate::materials::{
+    MaterialRenderState, MaterialShaderSpecializationKey, RasterFrontFace, RasterPrimitiveTopology,
+};
 use crate::materials::{
     ReflectedRasterLayout, ReflectedVertexInputFormat, validate_layout_against_limits,
     validate_per_draw_group2, validate_vertex_layout_against_limits,
@@ -43,6 +45,8 @@ pub(crate) struct ShaderModuleBuildRefs<'a> {
     pub desc: &'a MaterialPipelineDesc,
     /// Full WGSL source for reflection.
     pub wgsl_source: &'a str,
+    /// Renderer-local shader specialization constants.
+    pub shader_specialization: MaterialShaderSpecializationKey,
 }
 
 impl<'a> ShaderModuleBuildRefs<'a> {
@@ -54,6 +58,7 @@ impl<'a> ShaderModuleBuildRefs<'a> {
             module: self.module,
             desc: self.desc,
             wgsl_source: self.wgsl_source,
+            shader_specialization: self.shader_specialization,
             label: label.into(),
         }
     }
@@ -71,6 +76,8 @@ pub(crate) struct ReflectiveRasterShaderContext<'a> {
     pub desc: &'a MaterialPipelineDesc,
     /// Full WGSL source for reflection (vertex stream layout).
     pub wgsl_source: &'a str,
+    /// Renderer-local shader specialization constants.
+    pub shader_specialization: MaterialShaderSpecializationKey,
     /// Label prefix for pipeline layout and pipelines.
     pub label: String,
 }
@@ -104,6 +111,8 @@ pub(crate) struct MeshForwardSharedPipelineBuild<'a> {
     pub front_face: RasterFrontFace,
     /// Primitive topology baked into [`wgpu::PrimitiveState::topology`] for this variant.
     pub primitive_topology: RasterPrimitiveTopology,
+    /// Renderer-local shader specialization constants.
+    pub shader_specialization: MaterialShaderSpecializationKey,
 }
 
 /// Vertex stream toggles, blending, depth write, and material overrides for
@@ -325,6 +334,7 @@ pub(crate) fn build_pipeline_from_pass(
         "{}__{}__vs_{}__fs_{}",
         shared.label, pass.name, pass.vertex_entry, pass.fragment_entry
     );
+    let specialization_constants = shared.shader_specialization.pipeline_constants();
     {
         profiling::scope!("materials::create_render_pipeline_wgpu");
         let pipeline = shared
@@ -335,13 +345,19 @@ pub(crate) fn build_pipeline_from_pass(
                 vertex: wgpu::VertexState {
                     module: shared.module,
                     entry_point: Some(pass.vertex_entry),
-                    compilation_options: Default::default(),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: specialization_constants.as_slice(),
+                        ..Default::default()
+                    },
                     buffers: shared.vertex_buffers,
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: shared.module,
                     entry_point: Some(pass.fragment_entry),
-                    compilation_options: Default::default(),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: specialization_constants.as_slice(),
+                        ..Default::default()
+                    },
                     targets: &[Some(wgpu::ColorTargetState {
                         format: shared.desc.surface_format,
                         blend: pass.blend,
@@ -448,6 +464,7 @@ pub(crate) fn create_reflective_raster_mesh_forward_pipeline(
         vertex_buffers: &vertex_buffers,
         front_face: raster.front_face,
         primitive_topology: raster.primitive_topology,
+        shader_specialization: MaterialShaderSpecializationKey::disabled(),
     };
     Ok(build_pipeline_from_pass(
         &shared,
@@ -504,6 +521,7 @@ pub(crate) fn create_reflective_raster_mesh_forward_pipelines(
         vertex_buffers: &vertex_buffers,
         front_face,
         primitive_topology,
+        shader_specialization: shader.shader_specialization,
     };
     Ok(passes
         .iter()

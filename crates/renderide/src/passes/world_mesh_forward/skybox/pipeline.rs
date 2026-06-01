@@ -6,6 +6,7 @@
 
 use super::super::state::WorldMeshForwardPipelineState;
 use crate::gpu::MAIN_FORWARD_DEPTH_COMPARE;
+use crate::materials::MaterialShaderSpecializationKey;
 
 /// Skybox material family supported by the dedicated background draw.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -113,34 +114,65 @@ pub(super) struct SkyboxPipelineKey {
     pub(super) family: SkyboxFamily,
     /// Render-target state required by wgpu pipeline/pass compatibility.
     pub(super) target: SkyboxPipelineTarget,
+    /// Renderer-local shader specialization constants for material keyword branches.
+    pub(super) shader_specialization: MaterialShaderSpecializationKey,
 }
 
 /// Cached solid-color background pipeline key.
 pub(super) type ClearPipelineKey = SkyboxPipelineTarget;
 
+/// Inputs for constructing a fullscreen skybox/background render pipeline.
+pub(super) struct SkyboxPipelineBuildDesc<'a> {
+    /// Pipeline and shader label.
+    pub(super) label: &'a str,
+    /// Compiled shader module.
+    pub(super) shader: &'a wgpu::ShaderModule,
+    /// Pipeline layout matching the active skybox family.
+    pub(super) layout: &'a wgpu::PipelineLayout,
+    /// Vertex buffer layouts required by the skybox family.
+    pub(super) vertex_buffer_layouts: &'static [wgpu::VertexBufferLayout<'static>],
+    /// Render target state required by wgpu pipeline/pass compatibility.
+    pub(super) target: SkyboxPipelineTarget,
+    /// Depth state used for the skybox draw.
+    pub(super) depth: SkyboxDepthState,
+    /// Renderer-local shader specialization constants for material keyword branches.
+    pub(super) shader_specialization: MaterialShaderSpecializationKey,
+}
+
 /// Creates a fullscreen skybox/background render pipeline compatible with the world pass.
 pub(super) fn create_skybox_pipeline(
     device: &wgpu::Device,
-    label: &str,
-    shader: &wgpu::ShaderModule,
-    layout: &wgpu::PipelineLayout,
-    vertex_buffer_layouts: &'static [wgpu::VertexBufferLayout<'static>],
-    target: SkyboxPipelineTarget,
-    depth: SkyboxDepthState,
+    desc: SkyboxPipelineBuildDesc<'_>,
 ) -> wgpu::RenderPipeline {
+    let SkyboxPipelineBuildDesc {
+        label,
+        shader,
+        layout,
+        vertex_buffer_layouts,
+        target,
+        depth,
+        shader_specialization,
+    } = desc;
+    let specialization_constants = shader_specialization.pipeline_constants();
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(label),
         layout: Some(layout),
         vertex: wgpu::VertexState {
             module: shader,
             entry_point: Some("vs_main"),
-            compilation_options: Default::default(),
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: specialization_constants.as_slice(),
+                ..Default::default()
+            },
             buffers: vertex_buffer_layouts,
         },
         fragment: Some(wgpu::FragmentState {
             module: shader,
             entry_point: Some("fs_main"),
-            compilation_options: Default::default(),
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: specialization_constants.as_slice(),
+                ..Default::default()
+            },
             targets: &[Some(wgpu::ColorTargetState {
                 format: target.color_format,
                 blend: None,
@@ -191,6 +223,7 @@ const PROCEDURAL_SKYBOX_VERTEX_BUFFER_LAYOUTS: [wgpu::VertexBufferLayout<'static
 mod tests {
     use super::{SkyboxDepthState, SkyboxFamily};
     use crate::gpu::MAIN_FORWARD_DEPTH_COMPARE;
+    use crate::materials::MaterialShaderSpecializationKey;
 
     #[test]
     fn skybox_family_resolves_supported_stems() {
@@ -252,6 +285,7 @@ mod tests {
         let key = super::SkyboxPipelineKey {
             family: SkyboxFamily::Projection360,
             target,
+            shader_specialization: MaterialShaderSpecializationKey::disabled(),
         };
 
         assert_eq!(key.family, SkyboxFamily::Projection360);

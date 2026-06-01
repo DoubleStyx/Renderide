@@ -157,11 +157,11 @@ fn sample_surface(uv0: vec2<f32>, uv1: vec2<f32>, world_pos: vec3<f32>, world_n:
 
     var base_color = mat._Color.rgb * albedo_sample.rgb;
 
-    let spec_gloss = ts::sample_tex_2d(_SpecGlossMap, _SpecGlossMap_sampler, uv_main, mat._SpecGlossMap_LodBias);
     var specular_color = mat._SpecColor.rgb;
     var smoothness = mat._Glossiness;
     let smoothness_scale = mat._GlossMapScale;
     if (spec_gloss_map_enabled()) {
+        let spec_gloss = ts::sample_tex_2d(_SpecGlossMap, _SpecGlossMap_sampler, uv_main, mat._SpecGlossMap_LodBias);
         specular_color = spec_gloss.rgb;
         smoothness = spec_gloss.a * smoothness_scale;
     }

@@ -82,6 +82,25 @@ fn module_source(file_name: &str) -> io::Result<String> {
 }
 
 #[test]
+fn material_variant_bits_helper_supports_pipeline_constants() -> io::Result<()> {
+    let src = module_source("material/variant_bits.wgsl")?;
+
+    for required in [
+        "override renderide_static_variant_bits_mode: u32 = 0u;",
+        "override renderide_static_variant_bits: u32 = 0u;",
+        "fn effective(bits: u32) -> u32",
+        "return (effective(bits) & mask) != 0u;",
+    ] {
+        assert!(
+            src.contains(required),
+            "variant_bits.wgsl must contain `{required}`"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn auto_exposure_histogram_meters_linear_luminance() -> io::Result<()> {
     let src = source_file(
         manifest_dir()
@@ -333,7 +352,9 @@ fn unlitdistancelerp_matches_sorted_keyword_bits_and_fragment_parity() -> io::Re
     }
     assert!(
         src.contains("UNLITDISTANCELERP_SPACE_GROUP")
-            && src.contains("(mat._RenderideVariantBits & UNLITDISTANCELERP_SPACE_GROUP) == 0u")
+            && src.contains(
+                "(vb::effective(mat._RenderideVariantBits) & UNLITDISTANCELERP_SPACE_GROUP) == 0u"
+            )
             && src.contains("return true;"),
         "UnlitDistanceLerp must default the WORLD_SPACE/LOCAL_SPACE group to WORLD_SPACE"
     );

@@ -156,11 +156,11 @@ fn sample_surface(uv0: vec2<f32>, uv1: vec2<f32>, world_pos: vec3<f32>, world_n:
 
     var base_color = mat._Color.rgb * albedo_sample.rgb;
 
-    let mg = ts::sample_tex_2d(_MetallicGlossMap, _MetallicGlossMap_sampler, uv_main, mat._MetallicGlossMap_LodBias);
     var metallic = mat._Metallic;
     var smoothness = mat._Glossiness;
     let smoothness_scale = mat._GlossMapScale;
     if (metallic_gloss_map_enabled()) {
+        let mg = ts::sample_tex_2d(_MetallicGlossMap, _MetallicGlossMap_sampler, uv_main, mat._MetallicGlossMap_LodBias);
         metallic = mg.r;
         smoothness = mg.a * smoothness_scale;
     }

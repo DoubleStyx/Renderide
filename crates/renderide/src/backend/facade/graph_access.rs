@@ -414,6 +414,7 @@ impl<'a> BackendGraphAccess<'a> {
                 }
                 let variant = MaterialPipelineVariantSpec {
                     permutation: shader_perm,
+                    shader_specialization: item.batch_key.shader_specialization,
                     blend_mode: item.batch_key.blend_mode,
                     render_state: item.batch_key.render_state,
                     front_face,

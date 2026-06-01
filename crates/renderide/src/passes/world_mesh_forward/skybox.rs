@@ -17,7 +17,9 @@ use crate::embedded_shaders;
 use crate::gpu::frame_bind_group_layout;
 use crate::graph_inputs::GraphPassFrame;
 use crate::materials::host_data::MaterialPropertyLookupIds;
-use crate::materials::{EmbeddedMaterialBindShader, EmbeddedTexturePools};
+use crate::materials::{
+    EmbeddedMaterialBindShader, EmbeddedTexturePools, MaterialShaderSpecializationKey,
+};
 use crate::render_graph::blackboard::Blackboard;
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::shared::CameraClearMode;
@@ -27,8 +29,8 @@ use crate::skybox::{
 };
 
 use pipeline::{
-    ClearPipelineKey, SkyboxDepthState, SkyboxFamily, SkyboxPipelineKey, SkyboxPipelineTarget,
-    create_skybox_pipeline,
+    ClearPipelineKey, SkyboxDepthState, SkyboxFamily, SkyboxPipelineBuildDesc, SkyboxPipelineKey,
+    SkyboxPipelineTarget, create_skybox_pipeline,
 };
 
 include!(concat!(env!("OUT_DIR"), "/procedural_skybox_mesh.rs"));
@@ -204,7 +206,13 @@ impl SkyboxRenderer {
             .ok()?;
         let view_bind_group = self.view_bind_group(device, uploads, frame);
         let target = SkyboxPipelineTarget::from_forward_state(pipeline_state);
-        let pipeline = self.material_pipeline(device, &material_layout, family, target)?;
+        let pipeline = self.material_pipeline(
+            device,
+            &material_layout,
+            family,
+            target,
+            shader_variant_bits,
+        )?;
         let geometry = self.material_geometry(device, family);
         Some(PreparedSkybox::Material(PreparedMaterialSkybox {
             pipeline,
@@ -296,8 +304,18 @@ impl SkyboxRenderer {
         material_layout: &wgpu::BindGroupLayout,
         family: SkyboxFamily,
         target: SkyboxPipelineTarget,
+        shader_variant_bits: Option<u32>,
     ) -> Option<Arc<wgpu::RenderPipeline>> {
-        let key = SkyboxPipelineKey { family, target };
+        let shader_target = family.shader_target(target.multiview);
+        let source = embedded_shaders::embedded_target_wgsl(shader_target)?;
+        let shader_specialization =
+            MaterialShaderSpecializationKey::from_optional_variant_bits(shader_variant_bits)
+                .for_wgsl_source(source);
+        let key = SkyboxPipelineKey {
+            family,
+            target,
+            shader_specialization,
+        };
         {
             let guard = self.material_pipelines.lock();
             if let Some(pipeline) = guard.get(&key) {
@@ -305,8 +323,6 @@ impl SkyboxRenderer {
             }
         }
 
-        let shader_target = family.shader_target(target.multiview);
-        let source = embedded_shaders::embedded_target_wgsl(shader_target)?;
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some(shader_target),
             source: wgpu::ShaderSource::Wgsl(source.into()),
@@ -323,12 +339,15 @@ impl SkyboxRenderer {
         });
         let pipeline = Arc::new(create_skybox_pipeline(
             device,
-            shader_target,
-            &shader,
-            &layout,
-            family.vertex_buffer_layouts(),
-            target,
-            SkyboxDepthState::fixed_background(),
+            SkyboxPipelineBuildDesc {
+                label: shader_target,
+                shader: &shader,
+                layout: &layout,
+                vertex_buffer_layouts: family.vertex_buffer_layouts(),
+                target,
+                depth: SkyboxDepthState::fixed_background(),
+                shader_specialization,
+            },
         ));
         let mut guard = self.material_pipelines.lock();
         if let Some(existing) = guard.get(&key) {
@@ -366,12 +385,15 @@ impl SkyboxRenderer {
         });
         let pipeline = Arc::new(create_skybox_pipeline(
             device,
-            shader_target,
-            &shader,
-            &layout,
-            &[],
-            key,
-            SkyboxDepthState::fixed_background(),
+            SkyboxPipelineBuildDesc {
+                label: shader_target,
+                shader: &shader,
+                layout: &layout,
+                vertex_buffer_layouts: &[],
+                target: key,
+                depth: SkyboxDepthState::fixed_background(),
+                shader_specialization: MaterialShaderSpecializationKey::disabled(),
+            },
         ));
         let mut guard = self.clear_pipelines.lock();
         if let Some(existing) = guard.get(&key) {
