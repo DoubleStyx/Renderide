@@ -43,7 +43,7 @@ pub(crate) struct ShaderModuleBuildRefs<'a> {
     pub module: &'a wgpu::ShaderModule,
     /// Surface and attachment formats for the material.
     pub desc: &'a MaterialPipelineDesc,
-    /// Full WGSL source for reflection.
+    /// Full WGSL source for reflection and source-mangled pipeline constants.
     pub wgsl_source: &'a str,
     /// Renderer-local shader specialization constants.
     pub shader_specialization: MaterialShaderSpecializationKey,
@@ -99,6 +99,8 @@ pub(crate) struct MeshForwardSharedPipelineBuild<'a> {
     pub device: &'a wgpu::Device,
     /// Compiled WGSL module.
     pub module: &'a wgpu::ShaderModule,
+    /// Full composed WGSL source for source-mangled pipeline constants.
+    pub wgsl_source: &'a str,
     /// Surface and attachment formats for the material.
     pub desc: &'a MaterialPipelineDesc,
     /// Label prefix for pipeline naming (`{label}__{pass}`).
@@ -334,7 +336,9 @@ pub(crate) fn build_pipeline_from_pass(
         "{}__{}__vs_{}__fs_{}",
         shared.label, pass.name, pass.vertex_entry, pass.fragment_entry
     );
-    let specialization_constants = shared.shader_specialization.pipeline_constants();
+    let fragment_specialization_constants = shared
+        .shader_specialization
+        .pipeline_constants_for_wgsl_source(shared.wgsl_source);
     {
         profiling::scope!("materials::create_render_pipeline_wgpu");
         let pipeline = shared
@@ -345,17 +349,14 @@ pub(crate) fn build_pipeline_from_pass(
                 vertex: wgpu::VertexState {
                     module: shared.module,
                     entry_point: Some(pass.vertex_entry),
-                    compilation_options: wgpu::PipelineCompilationOptions {
-                        constants: specialization_constants.as_slice(),
-                        ..Default::default()
-                    },
+                    compilation_options: Default::default(),
                     buffers: shared.vertex_buffers,
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: shared.module,
                     entry_point: Some(pass.fragment_entry),
                     compilation_options: wgpu::PipelineCompilationOptions {
-                        constants: specialization_constants.as_slice(),
+                        constants: fragment_specialization_constants.as_slice(),
                         ..Default::default()
                     },
                     targets: &[Some(wgpu::ColorTargetState {
@@ -458,6 +459,7 @@ pub(crate) fn create_reflective_raster_mesh_forward_pipeline(
     let shared = MeshForwardSharedPipelineBuild {
         device,
         module,
+        wgsl_source,
         desc,
         label,
         layout: &layout,
@@ -515,6 +517,7 @@ pub(crate) fn create_reflective_raster_mesh_forward_pipelines(
     let shared = MeshForwardSharedPipelineBuild {
         device: shader.device,
         module: shader.module,
+        wgsl_source: shader.wgsl_source,
         desc: shader.desc,
         label: shader.label.as_str(),
         layout: &layout,

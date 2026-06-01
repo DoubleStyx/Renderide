@@ -342,6 +342,7 @@ impl SkyboxRenderer {
             SkyboxPipelineBuildDesc {
                 label: shader_target,
                 shader: &shader,
+                wgsl_source: source,
                 layout: &layout,
                 vertex_buffer_layouts: family.vertex_buffer_layouts(),
                 target,
@@ -388,6 +389,7 @@ impl SkyboxRenderer {
             SkyboxPipelineBuildDesc {
                 label: shader_target,
                 shader: &shader,
+                wgsl_source: source,
                 layout: &layout,
                 vertex_buffer_layouts: &[],
                 target: key,

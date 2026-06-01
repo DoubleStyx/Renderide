@@ -127,6 +127,8 @@ pub(super) struct SkyboxPipelineBuildDesc<'a> {
     pub(super) label: &'a str,
     /// Compiled shader module.
     pub(super) shader: &'a wgpu::ShaderModule,
+    /// Full composed WGSL source for source-mangled pipeline constants.
+    pub(super) wgsl_source: &'a str,
     /// Pipeline layout matching the active skybox family.
     pub(super) layout: &'a wgpu::PipelineLayout,
     /// Vertex buffer layouts required by the skybox family.
@@ -147,30 +149,29 @@ pub(super) fn create_skybox_pipeline(
     let SkyboxPipelineBuildDesc {
         label,
         shader,
+        wgsl_source,
         layout,
         vertex_buffer_layouts,
         target,
         depth,
         shader_specialization,
     } = desc;
-    let specialization_constants = shader_specialization.pipeline_constants();
+    let fragment_specialization_constants =
+        shader_specialization.pipeline_constants_for_wgsl_source(wgsl_source);
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(label),
         layout: Some(layout),
         vertex: wgpu::VertexState {
             module: shader,
             entry_point: Some("vs_main"),
-            compilation_options: wgpu::PipelineCompilationOptions {
-                constants: specialization_constants.as_slice(),
-                ..Default::default()
-            },
+            compilation_options: Default::default(),
             buffers: vertex_buffer_layouts,
         },
         fragment: Some(wgpu::FragmentState {
             module: shader,
             entry_point: Some("fs_main"),
             compilation_options: wgpu::PipelineCompilationOptions {
-                constants: specialization_constants.as_slice(),
+                constants: fragment_specialization_constants.as_slice(),
                 ..Default::default()
             },
             targets: &[Some(wgpu::ColorTargetState {

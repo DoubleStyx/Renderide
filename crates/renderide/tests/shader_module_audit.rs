@@ -101,6 +101,36 @@ fn material_variant_bits_helper_supports_pipeline_constants() -> io::Result<()> 
 }
 
 #[test]
+fn material_variant_pipeline_constants_are_fragment_only() -> io::Result<()> {
+    for path in [
+        "src/materials/raster_pipeline.rs",
+        "src/passes/world_mesh_forward/skybox/pipeline.rs",
+    ] {
+        let src = source_file(manifest_dir().join(path))?;
+        assert!(
+            src.contains("fragment_specialization_constants.as_slice()"),
+            "{path} must pass material specialization constants to fragment compilation"
+        );
+
+        let vertex_state = src
+            .split("vertex: wgpu::VertexState {")
+            .nth(1)
+            .and_then(|tail| tail.split("fragment: Some(wgpu::FragmentState {").next())
+            .unwrap_or("");
+        assert!(
+            vertex_state.contains("compilation_options: Default::default()"),
+            "{path} must not pass material specialization constants to vertex compilation"
+        );
+        assert!(
+            !vertex_state.contains("specialization_constants.as_slice()"),
+            "{path} must keep material variant constants off vertex stages unless stage-aware reflection is added"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn auto_exposure_histogram_meters_linear_luminance() -> io::Result<()> {
     let src = source_file(
         manifest_dir()
