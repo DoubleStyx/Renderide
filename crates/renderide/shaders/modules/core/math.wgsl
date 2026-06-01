@@ -2,8 +2,7 @@
 
 #define_import_path renderide::core::math
 
-const EPSILON: f32 = 1e-4;
-const EPSILON_AREA: f32 = 1e-6;
+const EPSILON: f32 = 1e-6;
 
 fn saturate(v: f32) -> f32 {
     return clamp(v, 0.0, 1.0);
@@ -22,21 +21,19 @@ fn safe_normalize(v: vec3<f32>, fallback: vec3<f32>) -> vec3<f32> {
 }
 
 fn safe_lerp_factor(start_value: f32, end_value: f32, value: f32) -> f32 {
-    let num = value - start_value;
     let denom = end_value - start_value;
     if (abs(denom) < EPSILON) {
-        return select(0.0, 1.0, num < EPSILON);
+        return select(0.0, 1.0, value <= start_value);
     }
-    return saturate(num / denom);
+    return saturate((value - start_value) / denom);
 }
 
 fn safe_linear_factor(start_value: f32, end_value: f32, value: f32) -> f32 {
-    let num = value - start_value;
     let denom = end_value - start_value;
     if (abs(denom) < EPSILON) {
-        return select(0.0, 1.0, num >= EPSILON);
+        return select(0.0, 1.0, value >= end_value);
     }
-    return saturate(num / denom);
+    return saturate((value - start_value) / denom);
 }
 
 fn rotate2(v: vec2<f32>, angle: f32) -> vec2<f32> {
@@ -47,7 +44,7 @@ fn rotate2(v: vec2<f32>, angle: f32) -> vec2<f32> {
 
 fn rect_has_area(rect: vec4<f32>) -> bool {
     let size = rect.zw - rect.xy;
-    return abs(size.x * size.y) > EPSILON_AREA;
+    return abs(size.x * size.y) > EPSILON;
 }
 
 fn outside_rect(p: vec2<f32>, rect: vec4<f32>) -> bool {

@@ -5,7 +5,7 @@
 #import renderide::core::math as rmath
 #import renderide::frame::scene_depth_sample as sds
 
-const EPSILON: f32 = 1e-4;
+const INTERSECTION_DEPTH_GRACE: f32 = 1e-4;
 
 fn intersection_lerp(
     frag_pos: vec4<f32>,
@@ -17,7 +17,7 @@ fn intersection_lerp(
     end_end: f32,
 ) -> f32 {
     let diff = sds::scene_linear_depth(frag_pos, view_layer) - sds::fragment_linear_depth(world_pos, view_layer);
-    if (diff < min(begin_end, end_start) + EPSILON) {
+    if (diff < min(begin_end, end_start) + INTERSECTION_DEPTH_GRACE) {
         return rmath::safe_linear_factor(begin_start, begin_end, diff);
     }
     return 1.0 - rmath::safe_linear_factor(end_start, end_end, diff);
