@@ -24,6 +24,7 @@
 #import renderide::core::uv as uvu
 #import renderide::core::math as rmath
 #import renderide::frame::globals as rg
+#import renderide::frame::fog as rfog
 #import renderide::draw::per_draw as pd
 #import renderide::draw::types as dt
 #import renderide::material::variant_bits as vb
@@ -139,6 +140,7 @@ struct VertexOutput {
     @location(0) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
     @location(2) @interpolate(flat) view_layer: u32,
+    @location(3) fog_coord: f32,
 }
 
 struct RenderBufferBillboardBasis {
@@ -334,6 +336,7 @@ fn vs_main(
     out.uv = uv;
     out.color = color;
     out.view_layer = layer;
+    out.fog_coord = rfog::coord_from_world_pos(world_p, layer);
     return out;
 }
 
@@ -417,7 +420,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         clip_alpha = 1.0;
     }
 
-    if (kw_ALPHATEST() && clip_alpha <= mat._Cutoff) {
+    if (kw_ALPHATEST() && clip_alpha < mat._Cutoff) {
         discard;
     }
 
@@ -433,5 +436,5 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         col = vec4<f32>(col.rgb, col.a * dot(col.rgb, vec3<f32>(0.3333333)));
     }
 
-    return rg::retain_globals_additive(col);
+    return rg::retain_globals_additive(rfog::apply_rgba(col, in.fog_coord));
 }

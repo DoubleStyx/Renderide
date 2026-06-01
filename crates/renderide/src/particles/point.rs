@@ -19,7 +19,7 @@ use super::upload::{
 /// Number of billboard vertices generated for one point particle.
 pub(super) const BILLBOARD_VERTICES_PER_POINT: usize = 4;
 /// Number of billboard indices generated for one point particle.
-pub(super) const BILLBOARD_INDICES_PER_POINT: usize = 12;
+pub(super) const BILLBOARD_INDICES_PER_POINT: usize = 6;
 /// Point particle chunk size used by parallel vertex/index fill.
 const POINT_PARTICLE_PARALLEL_CHUNK: usize = 256;
 /// Minimum point particles before Rayon decode/fill scheduling is worthwhile.
@@ -274,7 +274,7 @@ fn fill_billboard_chunk(
     }
 }
 
-/// Fills the four billboard vertices and twelve duplicated indices for one point.
+/// Fills the four billboard vertices and one front-facing quad for one point.
 fn fill_billboard_particle(
     point: &PointParticle,
     particle_index: usize,
@@ -309,12 +309,6 @@ fn fill_billboard_particle(
     write_u32s(
         indices,
         &[
-            base_vertex,
-            base_vertex + 1,
-            base_vertex + 2,
-            base_vertex + 2,
-            base_vertex + 1,
-            base_vertex + 3,
             base_vertex,
             base_vertex + 2,
             base_vertex + 1,
