@@ -310,11 +310,11 @@ fn fill_billboard_particle(
         indices,
         &[
             base_vertex,
-            base_vertex + 2,
             base_vertex + 1,
             base_vertex + 2,
+            base_vertex + 2,
+            base_vertex + 1,
             base_vertex + 3,
-            base_vertex + 1,
         ],
     );
 }
