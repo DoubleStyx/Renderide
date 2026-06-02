@@ -69,12 +69,15 @@ fn remap_unlit_variant_bits_for_billboard(unlit_bits: u32) -> u32 {
 /// for material binding with non-Unlit materials.
 fn map_billboard_alpha_clip_variant_bits(stem: &str, source_bits: u32) -> u32 {
     let lower = stem.to_ascii_lowercase();
-    const ALPHA_CLIP_ZERO: &[&str] = &["fresnel_", "pbsmultiuv", "reflection"];
-    if ALPHA_CLIP_ZERO
+    if lower.starts_with("xstoon2.0-cutout") {
+        return 1;
+    }
+    const ALPHA_CLIP_TWO: &[&str] = &["pbsmetallic", "pbsspecular"];
+    if ALPHA_CLIP_TWO
         .iter()
         .any(|prefix| lower.starts_with(prefix))
     {
-        return source_bits & 1;
+        return (source_bits >> 2) & 1;
     }
     const ALPHA_CLIP_ONE: &[&str] = &[
         "pbsdisplace",
@@ -92,12 +95,12 @@ fn map_billboard_alpha_clip_variant_bits(stem: &str, source_bits: u32) -> u32 {
     {
         return (source_bits >> 1) & 1;
     }
-    const ALPHA_CLIP_TWO: &[&str] = &["pbsmetallic", "pbsspecular"];
-    if ALPHA_CLIP_TWO
+    const ALPHA_CLIP_ZERO: &[&str] = &["fresnel_", "pbsmultiuv", "reflection"];
+    if ALPHA_CLIP_ZERO
         .iter()
         .any(|prefix| lower.starts_with(prefix))
     {
-        return (source_bits >> 2) & 1;
+        return source_bits & 1;
     }
     0u32
 }
