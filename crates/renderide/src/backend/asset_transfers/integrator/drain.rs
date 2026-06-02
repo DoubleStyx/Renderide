@@ -8,7 +8,6 @@ use crate::materials::MaterialSystem;
 use crate::profiling::{AssetIntegrationProfileSample, plot_asset_integration};
 
 use super::super::AssetTransferQueue;
-use super::super::particle_task::drain_ready_particle_builds;
 use super::gpu_context::{AssetUploadGpuContext, GpuHandles, collect_gpu_handles};
 use super::queue::AssetTaskLane;
 use super::step::{StepResult, step_asset_task};
@@ -452,9 +451,7 @@ fn drain_particle_asset_tasks(
     particle_deadline: Instant,
 ) -> LaneDrainOutcome {
     profiling::scope!("asset::particle_drain");
-    let particle_gpu = super::step::particle_task_gpu(gpu);
-    let ready_before = drain_ready_particle_builds(asset, particle_gpu.as_ref(), particle_deadline);
-    let queued = drain_lane(
+    drain_lane(
         asset,
         materials,
         gpu,
@@ -462,18 +459,7 @@ fn drain_particle_asset_tasks(
         ipc,
         particle_deadline,
         AssetTaskLane::Particle,
-    );
-    let ready_after = drain_ready_particle_builds(asset, particle_gpu.as_ref(), particle_deadline);
-    LaneDrainOutcome {
-        pending: ready_before.pending
-            || queued.pending
-            || ready_after.pending
-            || asset.has_ready_particle_build_results(),
-        processed: ready_before
-            .processed
-            .saturating_add(queued.processed)
-            .saturating_add(ready_after.processed),
-    }
+    )
 }
 
 /// Shared inner loop for scheduler lane drains.

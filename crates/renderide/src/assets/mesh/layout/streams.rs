@@ -205,8 +205,9 @@ pub fn uv0_float2_stream_bytes(
 
 /// Dense `vec2<f32>` vertex stream for an arbitrary two-component attribute.
 ///
-/// Missing or unsupported attributes return zeros so optional embedded shader streams can still
-/// bind a stable vertex buffer slot.
+/// Missing compact UV attributes fall back to the highest available lower UV channel. Missing or
+/// unsupported non-UV attributes return zeros so optional embedded shader streams can still bind a
+/// stable vertex buffer slot.
 pub fn vertex_float2_stream_bytes(
     vertex_data: &[u8],
     vertex_count: usize,
@@ -222,15 +223,8 @@ pub fn vertex_float2_stream_bytes(
         return None;
     }
     let mut out = vec![0u8; vertex_count * 8];
-    let Some(reader) = AttributeReader::from_attrs(
-        vertex_data,
-        vertex_count,
-        stride,
-        attrs,
-        target,
-        VertexDecodeKind::TexCoord,
-        2,
-    ) else {
+    let Some(reader) = vertex_float2_reader(vertex_data, vertex_count, stride, attrs, target)
+    else {
         return Some(out);
     };
     if should_parallelize_vertex_stream(vertex_count) {
@@ -244,6 +238,47 @@ pub fn vertex_float2_stream_bytes(
         }
     }
     Some(out)
+}
+
+fn vertex_float2_reader<'a>(
+    vertex_data: &'a [u8],
+    vertex_count: usize,
+    stride: usize,
+    attrs: &'a [VertexAttributeDescriptor],
+    target: VertexAttributeType,
+) -> Option<AttributeReader<'a>> {
+    if let Some(target_channel) = compact_uv_channel(target) {
+        return UV_VERTEX_ATTRIBUTE_TYPES[..=target_channel]
+            .iter()
+            .rev()
+            .find_map(|&fallback| {
+                AttributeReader::from_attrs(
+                    vertex_data,
+                    vertex_count,
+                    stride,
+                    attrs,
+                    fallback,
+                    VertexDecodeKind::TexCoord,
+                    2,
+                )
+            });
+    }
+
+    AttributeReader::from_attrs(
+        vertex_data,
+        vertex_count,
+        stride,
+        attrs,
+        target,
+        VertexDecodeKind::TexCoord,
+        2,
+    )
+}
+
+fn compact_uv_channel(target: VertexAttributeType) -> Option<usize> {
+    UV_VERTEX_ATTRIBUTE_TYPES[..=3]
+        .iter()
+        .position(|&uv| uv == target)
 }
 
 fn write_vertex_float2(reader: &AttributeReader<'_>, vertex: usize, slot: &mut [u8]) -> Option<()> {

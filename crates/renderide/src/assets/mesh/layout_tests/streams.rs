@@ -10,6 +10,14 @@ use super::{
 };
 use crate::shared::{VertexAttributeDescriptor, VertexAttributeFormat, VertexAttributeType};
 
+fn float_attr(attribute: VertexAttributeType, dimensions: i32) -> VertexAttributeDescriptor {
+    VertexAttributeDescriptor {
+        attribute,
+        format: VertexAttributeFormat::Float32,
+        dimensions,
+    }
+}
+
 #[test]
 fn position_stream_synthesizes_normals_when_normal_missing() {
     let attrs = [VertexAttributeDescriptor {
@@ -248,6 +256,93 @@ fn vertex_float2_extracts_uv3_stream() {
         .expect("uv3 stream");
     let uv: [f32; 2] = bytemuck::pod_read_unaligned(&out[..8]);
     assert_eq!(uv, [5.25, 6.125]);
+}
+
+#[test]
+fn vertex_float2_prefers_requested_uv_over_fallback() {
+    let attrs = [
+        float_attr(VertexAttributeType::UV0, 2),
+        float_attr(VertexAttributeType::UV1, 2),
+        float_attr(VertexAttributeType::UV2, 2),
+    ];
+    let mut raw = Vec::new();
+    for value in [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0] {
+        push_f32(&mut raw, value);
+    }
+
+    let out = vertex_float2_stream_bytes(&raw, 1, 24, &attrs, VertexAttributeType::UV2)
+        .expect("uv2 stream");
+    assert_eq!(read_f32x2_stream(&out, 0), [5.0, 6.0]);
+}
+
+#[test]
+fn vertex_float2_falls_back_from_uv2_to_uv1_then_uv0() {
+    let attrs = [
+        float_attr(VertexAttributeType::UV0, 2),
+        float_attr(VertexAttributeType::UV1, 2),
+    ];
+    let mut raw = Vec::new();
+    for value in [1.0f32, 2.0, 3.0, 4.0] {
+        push_f32(&mut raw, value);
+    }
+
+    let out = vertex_float2_stream_bytes(&raw, 1, 16, &attrs, VertexAttributeType::UV2)
+        .expect("uv2 stream");
+    assert_eq!(read_f32x2_stream(&out, 0), [3.0, 4.0]);
+
+    let attrs = [float_attr(VertexAttributeType::UV0, 2)];
+    let mut raw = Vec::new();
+    for value in [7.0f32, 8.0] {
+        push_f32(&mut raw, value);
+    }
+
+    let out = vertex_float2_stream_bytes(&raw, 1, 8, &attrs, VertexAttributeType::UV2)
+        .expect("uv2 stream");
+    assert_eq!(read_f32x2_stream(&out, 0), [7.0, 8.0]);
+}
+
+#[test]
+fn vertex_float2_falls_back_from_uv3_to_highest_available_lower_uv() {
+    let attrs = [
+        float_attr(VertexAttributeType::UV0, 2),
+        float_attr(VertexAttributeType::UV2, 2),
+    ];
+    let mut raw = Vec::new();
+    for value in [1.0f32, 2.0, 5.0, 6.0] {
+        push_f32(&mut raw, value);
+    }
+
+    let out = vertex_float2_stream_bytes(&raw, 1, 16, &attrs, VertexAttributeType::UV3)
+        .expect("uv3 stream");
+    assert_eq!(read_f32x2_stream(&out, 0), [5.0, 6.0]);
+}
+
+#[test]
+fn vertex_float2_skips_unsupported_uv_fallback_attributes() {
+    let attrs = [
+        float_attr(VertexAttributeType::UV2, 1),
+        float_attr(VertexAttributeType::UV1, 2),
+        float_attr(VertexAttributeType::UV0, 2),
+    ];
+    let mut raw = Vec::new();
+    for value in [9.0f32, 3.0, 4.0, 1.0, 2.0] {
+        push_f32(&mut raw, value);
+    }
+
+    let out = vertex_float2_stream_bytes(&raw, 1, 20, &attrs, VertexAttributeType::UV2)
+        .expect("uv2 stream");
+    assert_eq!(read_f32x2_stream(&out, 0), [3.0, 4.0]);
+}
+
+#[test]
+fn vertex_float2_zeros_when_no_uv_fallback_is_available() {
+    let attrs = [float_attr(VertexAttributeType::Position, 3)];
+    let raw = vec![0u8; 12];
+
+    let out = vertex_float2_stream_bytes(&raw, 1, 12, &attrs, VertexAttributeType::UV3)
+        .expect("uv3 stream");
+    assert_eq!(out.len(), 8);
+    assert!(out.iter().all(|&b| b == 0));
 }
 
 #[test]

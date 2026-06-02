@@ -91,6 +91,8 @@ struct EmbeddedStemMetadata {
     scene_color_snapshot_mode: SceneColorSnapshotMode,
     /// Shader default render queue used when material `_RenderQueue` is negative or absent.
     default_render_queue: i32,
+    /// Whether the composed WGSL target decodes `_RenderideVariantBits`.
+    uses_renderide_variant_bits: bool,
     /// Single forward pass that is safe to mirror with the generic depth prepass, if any.
     depth_prepass_pass: Option<MaterialPassDesc>,
 }
@@ -240,6 +242,11 @@ impl EmbeddedStemQuery {
         self.metadata.default_render_queue
     }
 
+    /// `true` when this target decodes `_RenderideVariantBits` through the shared helper module.
+    pub fn uses_renderide_variant_bits(&self) -> bool {
+        self.metadata.uses_renderide_variant_bits
+    }
+
     /// Returns the single forward pass that can be mirrored by the generic depth prepass.
     pub fn depth_prepass_pass(&self) -> Option<MaterialPassDesc> {
         self.metadata.depth_prepass_pass
@@ -301,6 +308,7 @@ fn embedded_stem_metadata(base_stem: &str, permutation: ShaderPermutation) -> Em
             snapshot_requirements,
         ),
         default_render_queue,
+        uses_renderide_variant_bits: wgsl.is_some_and(uses_renderide_variant_bits),
         depth_prepass_pass,
     };
     guard.insert(key, metadata);
@@ -361,6 +369,10 @@ fn depth_prepass_pass_for_target(
         && !wgsl.contains("discard")
         && snapshots == SnapshotRequirements::default())
     .then_some(*pass)
+}
+
+fn uses_renderide_variant_bits(wgsl: &str) -> bool {
+    wgsl.contains("renderide_static_variant_bits")
 }
 
 /// Composed target stem for an embedded base stem (e.g. `unlit_default` -> `unlit_multiview`).
@@ -488,6 +500,7 @@ mod tests {
                 uses_two_sided_transparency: false,
                 scene_color_snapshot_mode: SceneColorSnapshotMode::None,
                 default_render_queue: UNITY_RENDER_QUEUE_GEOMETRY,
+                uses_renderide_variant_bits: false,
                 depth_prepass_pass: None,
             },
         }

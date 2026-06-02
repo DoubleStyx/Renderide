@@ -1,6 +1,9 @@
 use super::item::resolved_material_slots;
 use super::sort::sort_draws;
-use crate::materials::{RasterFrontFace, RasterPipelineKind, UNITY_RENDER_QUEUE_GEOMETRY};
+use crate::materials::{
+    MaterialShaderSpecializationKey, RasterFrontFace, RasterPipelineKind,
+    UNITY_RENDER_QUEUE_GEOMETRY,
+};
 use crate::scene::{MeshMaterialSlot, StaticMeshRenderer};
 use crate::world_mesh::materials::{MaterialDrawBatchKey, TransparentMaterialClass};
 use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
@@ -130,6 +133,7 @@ fn property_block_splits_batch_keys() {
     let a = MaterialDrawBatchKey {
         pipeline: RasterPipelineKind::Null,
         shader_asset_id: -1,
+        shader_specialization: MaterialShaderSpecializationKey::disabled(),
         material_asset_id: 1,
         property_block_slot0: None,
         skinned: false,
@@ -160,6 +164,7 @@ fn property_block_splits_batch_keys() {
     let b = MaterialDrawBatchKey {
         pipeline: RasterPipelineKind::Null,
         shader_asset_id: -1,
+        shader_specialization: MaterialShaderSpecializationKey::disabled(),
         material_asset_id: 1,
         property_block_slot0: Some(99),
         skinned: false,

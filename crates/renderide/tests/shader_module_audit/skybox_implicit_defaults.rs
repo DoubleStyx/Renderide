@@ -92,7 +92,8 @@ fn proceduralskybox_defaults_sun_disk_to_high_quality() -> io::Result<()> {
          (no-`_` multi_compile group)",
     );
     assert!(
-        module_src.contains("(mat._RenderideVariantBits & PROCSKY_GROUP_SUNDISK) == 0u")
+        module_src
+            .contains("(vb::effective(mat._RenderideVariantBits) & PROCSKY_GROUP_SUNDISK) == 0u")
             && module_src.contains("procsky_kw(PROCSKY_KW_SUNDISK_HIGH_QUALITY)"),
         "skybox/procedural_material.wgsl must default kw_SUNDISK_HIGH_QUALITY() to true \
          when no _SUNDISK_* bit is set.",
@@ -263,11 +264,16 @@ fn skybox_pass_uses_dedicated_background_depth_state() -> io::Result<()> {
 
     let pipeline_src =
         source_file(manifest_dir().join("src/passes/world_mesh_forward/skybox/pipeline.rs"))?;
+    let key_struct = pipeline_src
+        .split("pub(super) struct SkyboxPipelineKey")
+        .nth(1)
+        .and_then(|tail| tail.split("pub(super) type ClearPipelineKey").next())
+        .unwrap_or("");
     assert!(
         !pipeline_src.contains("fn for_family(")
             && !pipeline_src.contains("render_state.depth_write")
             && !pipeline_src.contains("render_state.depth_compare")
-            && !pipeline_src.contains("pub(super) depth: SkyboxDepthState"),
+            && !key_struct.contains("depth"),
         "skybox pipeline keys must not vary with material depth state; Projection360 mesh/UI \
          render-state overrides do not belong to the dedicated skybox pass",
     );

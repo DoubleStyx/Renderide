@@ -1,9 +1,9 @@
 //! Material batch-key identity for world-mesh draw ordering and binding.
 
 use crate::materials::{
-    EmbeddedTangentFallbackMode, MaterialBlendMode, MaterialRenderState, RasterFrontFace,
-    RasterPipelineKind, RasterPrimitiveTopology, SceneColorSnapshotMode,
-    UNITY_TRANSPARENT_RENDER_QUEUE_MIN,
+    EmbeddedTangentFallbackMode, MaterialBlendMode, MaterialRenderState,
+    MaterialShaderSpecializationKey, RasterFrontFace, RasterPipelineKind, RasterPrimitiveTopology,
+    SceneColorSnapshotMode, UNITY_TRANSPARENT_RENDER_QUEUE_MIN,
 };
 
 use super::transparent::TransparentMaterialClass;
@@ -17,6 +17,8 @@ pub struct MaterialDrawBatchKey {
     pub pipeline: RasterPipelineKind,
     /// Host shader asset id from material `set_shader` (or `-1` when unknown).
     pub shader_asset_id: i32,
+    /// Renderer-local shader specialization constants for material keyword branches.
+    pub shader_specialization: MaterialShaderSpecializationKey,
     /// Material asset id for this renderer material slot (or `-1` when missing).
     pub material_asset_id: i32,
     /// Per-slot property block id when present; `None` is distinct from `Some` for batching.

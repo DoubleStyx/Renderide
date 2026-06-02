@@ -228,14 +228,6 @@ pub(crate) enum ParticleRenderBufferError {
         /// Source asset id.
         asset_id: i32,
     },
-    /// CPU worker panicked while generating particle geometry.
-    #[error("{kind} render buffer {asset_id}: CPU mesh generation worker panicked")]
-    WorkerPanicked {
-        /// Render-buffer family.
-        kind: &'static str,
-        /// Source asset id.
-        asset_id: i32,
-    },
 }
 
 pub(super) fn nonnegative_count(

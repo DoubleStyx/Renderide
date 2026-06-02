@@ -869,69 +869,199 @@ fn upload_generated_core_buffers(
     Some((vertex_buffer, index_buffer))
 }
 
+#[derive(Clone, Copy)]
+struct GeneratedDerivedUploadLimits {
+    usages: DerivedBufferUsages,
+    storage_size_limit: u64,
+    max_buffer_size: u64,
+}
+
+impl GeneratedDerivedUploadLimits {
+    fn from_context(ctx: MeshGpuUploadContext<'_>) -> Self {
+        let usages = DerivedBufferUsages::new();
+        let max_buffer_size = ctx.gpu_limits.max_buffer_size();
+        let storage_size_limit =
+            max_buffer_size.min(ctx.gpu_limits.max_storage_buffer_binding_size());
+        Self {
+            usages,
+            storage_size_limit,
+            max_buffer_size,
+        }
+    }
+}
+
+struct GeneratedPrimaryDerivedBuffers {
+    positions_buffer: Option<Arc<wgpu::Buffer>>,
+    normals_buffer: Option<Arc<wgpu::Buffer>>,
+    uv0_buffer: Option<Arc<wgpu::Buffer>>,
+    color_buffer: Option<Arc<wgpu::Buffer>>,
+}
+
+struct GeneratedExtendedDerivedBuffers {
+    tangent_buffer: Option<Arc<wgpu::Buffer>>,
+    raw_tangent_buffer: Option<Arc<wgpu::Buffer>>,
+    uv1_buffer: Option<Arc<wgpu::Buffer>>,
+    uv2_buffer: Option<Arc<wgpu::Buffer>>,
+    uv3_buffer: Option<Arc<wgpu::Buffer>>,
+    wide_low_uv_buffer: Option<Arc<wgpu::Buffer>>,
+    wide_high_uv_buffer: Option<Arc<wgpu::Buffer>>,
+}
+
+fn upload_generated_primary_derived_streams(
+    ctx: MeshGpuUploadContext<'_>,
+    asset_id: i32,
+    existing: Option<&GpuMesh>,
+    prepared: &PreparedDerivedStreams,
+    limits: GeneratedDerivedUploadLimits,
+) -> Option<GeneratedPrimaryDerivedBuffers> {
+    Some(GeneratedPrimaryDerivedBuffers {
+        positions_buffer: upload_generated_derived_buffer(
+            ctx,
+            existing.and_then(|mesh| mesh.positions_buffer.as_ref()),
+            asset_id,
+            DerivedBufferProfile::Positions,
+            prepared.positions.as_deref(),
+            limits.usages.primary,
+            limits.storage_size_limit,
+        )?
+        .into_buffer(),
+        normals_buffer: upload_generated_derived_buffer(
+            ctx,
+            existing.and_then(|mesh| mesh.normals_buffer.as_ref()),
+            asset_id,
+            DerivedBufferProfile::Normals,
+            prepared.normals.as_deref(),
+            limits.usages.primary,
+            limits.storage_size_limit,
+        )?
+        .into_buffer(),
+        uv0_buffer: upload_generated_derived_buffer(
+            ctx,
+            existing.and_then(|mesh| mesh.uv0_buffer.as_ref()),
+            asset_id,
+            DerivedBufferProfile::Uv0,
+            prepared.uv0.as_deref(),
+            limits.usages.vertex,
+            limits.max_buffer_size,
+        )?
+        .into_buffer(),
+        color_buffer: upload_generated_derived_buffer(
+            ctx,
+            existing.and_then(|mesh| mesh.color_buffer.as_ref()),
+            asset_id,
+            DerivedBufferProfile::Color,
+            prepared.color.as_deref(),
+            limits.usages.vertex,
+            limits.max_buffer_size,
+        )?
+        .into_buffer(),
+    })
+}
+
+fn upload_generated_extended_derived_streams(
+    ctx: MeshGpuUploadContext<'_>,
+    asset_id: i32,
+    existing: Option<&GpuMesh>,
+    prepared: &PreparedDerivedStreams,
+    limits: GeneratedDerivedUploadLimits,
+) -> Option<GeneratedExtendedDerivedBuffers> {
+    Some(GeneratedExtendedDerivedBuffers {
+        tangent_buffer: upload_generated_derived_buffer(
+            ctx,
+            existing.and_then(|mesh| mesh.tangent_buffer.as_ref()),
+            asset_id,
+            DerivedBufferProfile::Tangent,
+            prepared.tangent.as_deref(),
+            limits.usages.tangent,
+            limits.storage_size_limit,
+        )?
+        .into_buffer(),
+        raw_tangent_buffer: upload_generated_derived_buffer(
+            ctx,
+            existing.and_then(|mesh| mesh.raw_tangent_buffer.as_ref()),
+            asset_id,
+            DerivedBufferProfile::RawTangent,
+            prepared.raw_tangent.as_deref(),
+            limits.usages.tangent,
+            limits.storage_size_limit,
+        )?
+        .into_buffer(),
+        uv1_buffer: upload_generated_derived_buffer(
+            ctx,
+            existing.and_then(|mesh| mesh.uv1_buffer.as_ref()),
+            asset_id,
+            DerivedBufferProfile::Uv1,
+            prepared.uv1.as_deref(),
+            limits.usages.vertex,
+            limits.max_buffer_size,
+        )?
+        .into_buffer(),
+        uv2_buffer: upload_generated_derived_buffer(
+            ctx,
+            existing.and_then(|mesh| mesh.uv2_buffer.as_ref()),
+            asset_id,
+            DerivedBufferProfile::Uv2,
+            prepared.uv2.as_deref(),
+            limits.usages.vertex,
+            limits.max_buffer_size,
+        )?
+        .into_buffer(),
+        uv3_buffer: upload_generated_derived_buffer(
+            ctx,
+            existing.and_then(|mesh| mesh.uv3_buffer.as_ref()),
+            asset_id,
+            DerivedBufferProfile::Uv3,
+            prepared.uv3.as_deref(),
+            limits.usages.vertex,
+            limits.max_buffer_size,
+        )?
+        .into_buffer(),
+        wide_low_uv_buffer: upload_generated_derived_buffer(
+            ctx,
+            existing.and_then(|mesh| mesh.wide_low_uv_buffer.as_ref()),
+            asset_id,
+            DerivedBufferProfile::WideLowUv,
+            prepared.wide_low_uv.as_deref(),
+            limits.usages.vertex,
+            limits.max_buffer_size,
+        )?
+        .into_buffer(),
+        wide_high_uv_buffer: upload_generated_derived_buffer(
+            ctx,
+            existing.and_then(|mesh| mesh.wide_high_uv_buffer.as_ref()),
+            asset_id,
+            DerivedBufferProfile::WideHighUv,
+            prepared.wide_high_uv.as_deref(),
+            limits.usages.vertex,
+            limits.max_buffer_size,
+        )?
+        .into_buffer(),
+    })
+}
+
 fn upload_generated_derived_streams(
     ctx: MeshGpuUploadContext<'_>,
     data: &MeshUploadData,
     existing: Option<&GpuMesh>,
     prepared: &PreparedDerivedStreams,
 ) -> Option<DerivedStreams> {
-    let primary_usage = wgpu::BufferUsages::STORAGE
-        | wgpu::BufferUsages::VERTEX
-        | wgpu::BufferUsages::COPY_DST
-        | wgpu::BufferUsages::COPY_SRC;
-    let vertex_usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
-    let storage_size_limit = ctx
-        .gpu_limits
-        .max_buffer_size()
-        .min(ctx.gpu_limits.max_storage_buffer_binding_size());
+    let limits = GeneratedDerivedUploadLimits::from_context(ctx);
+    let primary =
+        upload_generated_primary_derived_streams(ctx, data.asset_id, existing, prepared, limits)?;
+    let extended =
+        upload_generated_extended_derived_streams(ctx, data.asset_id, existing, prepared, limits)?;
     Some(DerivedStreams {
-        positions_buffer: upload_generated_derived_buffer(
-            ctx,
-            existing.and_then(|mesh| mesh.positions_buffer.as_ref()),
-            data.asset_id,
-            DerivedBufferProfile::Positions,
-            prepared.positions.as_deref(),
-            primary_usage,
-            storage_size_limit,
-        )?
-        .into_buffer(),
-        normals_buffer: upload_generated_derived_buffer(
-            ctx,
-            existing.and_then(|mesh| mesh.normals_buffer.as_ref()),
-            data.asset_id,
-            DerivedBufferProfile::Normals,
-            prepared.normals.as_deref(),
-            primary_usage,
-            storage_size_limit,
-        )?
-        .into_buffer(),
-        uv0_buffer: upload_generated_derived_buffer(
-            ctx,
-            existing.and_then(|mesh| mesh.uv0_buffer.as_ref()),
-            data.asset_id,
-            DerivedBufferProfile::Uv0,
-            prepared.uv0.as_deref(),
-            vertex_usage,
-            ctx.gpu_limits.max_buffer_size(),
-        )?
-        .into_buffer(),
-        color_buffer: upload_generated_derived_buffer(
-            ctx,
-            existing.and_then(|mesh| mesh.color_buffer.as_ref()),
-            data.asset_id,
-            DerivedBufferProfile::Color,
-            prepared.color.as_deref(),
-            vertex_usage,
-            ctx.gpu_limits.max_buffer_size(),
-        )?
-        .into_buffer(),
-        tangent_buffer: None,
-        raw_tangent_buffer: None,
-        uv1_buffer: None,
-        uv2_buffer: None,
-        uv3_buffer: None,
-        wide_low_uv_buffer: None,
-        wide_high_uv_buffer: None,
+        positions_buffer: primary.positions_buffer,
+        normals_buffer: primary.normals_buffer,
+        uv0_buffer: primary.uv0_buffer,
+        color_buffer: primary.color_buffer,
+        tangent_buffer: extended.tangent_buffer,
+        raw_tangent_buffer: extended.raw_tangent_buffer,
+        uv1_buffer: extended.uv1_buffer,
+        uv2_buffer: extended.uv2_buffer,
+        uv3_buffer: extended.uv3_buffer,
+        wide_low_uv_buffer: extended.wide_low_uv_buffer,
+        wide_high_uv_buffer: extended.wide_high_uv_buffer,
     })
 }
 
@@ -947,6 +1077,13 @@ fn generated_mesh_resident_bytes(
             derived.normals_buffer.as_ref(),
             derived.uv0_buffer.as_ref(),
             derived.color_buffer.as_ref(),
+            derived.tangent_buffer.as_ref(),
+            derived.raw_tangent_buffer.as_ref(),
+            derived.uv1_buffer.as_ref(),
+            derived.uv2_buffer.as_ref(),
+            derived.uv3_buffer.as_ref(),
+            derived.wide_low_uv_buffer.as_ref(),
+            derived.wide_high_uv_buffer.as_ref(),
         ])
 }
 
@@ -1014,14 +1151,14 @@ pub(crate) fn try_upload_generated_mesh_from_parts(
         normals_buffer: derived.normals_buffer,
         uv0_buffer: derived.uv0_buffer,
         color_buffer: derived.color_buffer,
-        tangent_buffer: None,
-        raw_tangent_buffer: None,
+        tangent_buffer: derived.tangent_buffer,
+        raw_tangent_buffer: derived.raw_tangent_buffer,
         tangent_fallback_mode: EmbeddedTangentFallbackMode::default(),
-        uv1_buffer: None,
-        uv2_buffer: None,
-        uv3_buffer: None,
-        wide_low_uv_buffer: None,
-        wide_high_uv_buffer: None,
+        uv1_buffer: derived.uv1_buffer,
+        uv2_buffer: derived.uv2_buffer,
+        uv3_buffer: derived.uv3_buffer,
+        wide_low_uv_buffer: derived.wide_low_uv_buffer,
+        wide_high_uv_buffer: derived.wide_high_uv_buffer,
         derived_stream_state,
         extended_vertex_stream_source: None,
         has_skeleton: false,

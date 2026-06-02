@@ -64,7 +64,7 @@ impl WorldMeshForwardDepthPrepass {
 
 /// Pipeline selectors for one depth-prepass variant.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(super) struct WorldMeshForwardDepthPrepassPipelineKey {
+pub(crate) struct WorldMeshForwardDepthPrepassPipelineKey {
     /// Depth/stencil format of the active forward depth target.
     pub depth_stencil_format: wgpu::TextureFormat,
     /// Active depth sample count.
@@ -181,7 +181,7 @@ impl WorldMeshForwardDepthPrepassPipelineCache {
 
 impl WorldMeshForwardDepthPrepassPipelineKey {
     /// Builds a depth-prepass pipeline key for one draw group.
-    pub(super) fn for_draw(
+    pub(crate) fn for_draw(
         item: &WorldMeshDrawItem,
         pipeline: &WorldMeshForwardPipelineState,
     ) -> Option<Self> {
@@ -198,20 +198,23 @@ impl WorldMeshForwardDepthPrepassPipelineKey {
     }
 }
 
-/// Pre-warms the generic depth-prepass pipeline needed by `item`, when the draw is eligible.
-pub(crate) fn pre_warm_depth_prepass_pipeline_for_draw(
-    device: &wgpu::Device,
+/// Returns the generic depth-prepass pipeline key needed by `item`, when eligible.
+pub(crate) fn depth_prepass_pipeline_key_for_draw(
     item: &WorldMeshDrawItem,
     pipeline: &WorldMeshForwardPipelineState,
-) -> bool {
+) -> Option<WorldMeshForwardDepthPrepassPipelineKey> {
     if !crate::world_mesh::depth_prepass_item_eligible(item, pipeline.shader_perm) {
-        return false;
+        return None;
     }
-    let Some(key) = WorldMeshForwardDepthPrepassPipelineKey::for_draw(item, pipeline) else {
-        return false;
-    };
+    WorldMeshForwardDepthPrepassPipelineKey::for_draw(item, pipeline)
+}
+
+/// Pre-warms the generic depth-prepass pipeline matching `key`.
+pub(crate) fn pre_warm_depth_prepass_pipeline(
+    device: &wgpu::Device,
+    key: WorldMeshForwardDepthPrepassPipelineKey,
+) {
     let _ = depth_prepass_pipelines().pipeline(device, key);
-    true
 }
 
 fn depth_prepass_cull_mode(

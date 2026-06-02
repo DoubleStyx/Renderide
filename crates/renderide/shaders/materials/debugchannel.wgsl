@@ -38,7 +38,7 @@ fn debugchannel_kw(mask: u32) -> bool {
 }
 
 fn selector_defaults_to_r() -> bool {
-    return (mat._RenderideVariantBits & DEBUGCHANNEL_SELECTOR_MASK) == 0u;
+    return (vb::effective(mat._RenderideVariantBits) & DEBUGCHANNEL_SELECTOR_MASK) == 0u;
 }
 
 @vertex

@@ -6,10 +6,11 @@ use crate::materials::ShaderPermutation;
 use crate::materials::host_data::{MaterialDictionary, MaterialPropertyLookupIds};
 use crate::materials::{
     EmbeddedStemQuery, EmbeddedTangentFallbackMode, MaterialBlendMode, MaterialPipelinePropertyIds,
-    MaterialRenderState, MaterialRouter, PropertyMapRef, RasterFrontFace, RasterPipelineKind,
-    RasterPrimitiveTopology, SceneColorSnapshotMode, fallback_render_queue_for_material,
-    first_float_from_maps, first_vec4_from_maps, material_blend_mode_from_maps,
-    material_render_queue_from_maps, material_render_state_from_maps, resolve_raster_pipeline,
+    MaterialRenderState, MaterialRouter, MaterialShaderSpecializationKey, PropertyMapRef,
+    RasterFrontFace, RasterPipelineKind, RasterPrimitiveTopology, SceneColorSnapshotMode,
+    fallback_render_queue_for_material, first_float_from_maps, first_vec4_from_maps,
+    material_blend_mode_from_maps, material_render_queue_from_maps,
+    material_render_state_from_maps, resolve_raster_pipeline,
 };
 
 use super::FrameMaterialBatchCache;
@@ -39,6 +40,8 @@ pub(crate) struct ResolvedMaterialBatch {
     pub shader_asset_id: i32,
     /// Resolved raster pipeline kind for this material's shader.
     pub pipeline: RasterPipelineKind,
+    /// Renderer-local shader specialization constants for material keyword branches.
+    pub shader_specialization: MaterialShaderSpecializationKey,
     /// Whether the active shader permutation requires a UV0 vertex stream.
     pub embedded_needs_uv0: bool,
     /// Whether the active shader permutation requires a color vertex stream.
@@ -138,6 +141,7 @@ struct EmbeddedMaterialFeatures {
     uses_ui_transparent_fallback: bool,
     uses_blended_depth_write: bool,
     uses_two_sided_transparency: bool,
+    uses_renderide_variant_bits: bool,
     default_render_queue: Option<i32>,
 }
 
@@ -173,6 +177,7 @@ fn embedded_material_features(
         uses_ui_transparent_fallback: query.uses_ui_transparent_fallback(),
         uses_blended_depth_write: query.uses_blended_depth_write(),
         uses_two_sided_transparency: query.uses_two_sided_transparency(),
+        uses_renderide_variant_bits: query.uses_renderide_variant_bits(),
         default_render_queue: Some(query.default_render_queue()),
     }
 }
@@ -261,6 +266,13 @@ pub(crate) fn resolve_material_batch(
         .unwrap_or(-1);
     let pipeline = resolve_raster_pipeline(shader_asset_id, router);
     let embedded = embedded_material_features(&pipeline, shader_perm);
+    let shader_specialization = if embedded.uses_renderide_variant_bits {
+        MaterialShaderSpecializationKey::from_optional_variant_bits(
+            router.variant_bits_for_shader_asset(shader_asset_id),
+        )
+    } else {
+        MaterialShaderSpecializationKey::disabled()
+    };
     let lookup_ids = MaterialPropertyLookupIds {
         material_asset_id,
         mesh_property_block_slot0: property_block_id,
@@ -296,6 +308,7 @@ pub(crate) fn resolve_material_batch(
     ResolvedMaterialBatch {
         shader_asset_id,
         pipeline,
+        shader_specialization,
         embedded_needs_uv0: embedded.needs_uv0,
         embedded_needs_color: embedded.needs_color,
         embedded_needs_uv1: embedded.needs_uv1,
@@ -340,11 +353,13 @@ pub(crate) fn apply_render_buffer_mesh_pipeline_override(
     if let RasterPipelineKind::EmbeddedStem(stem) = &batch_key.pipeline
         && stem.as_ref().starts_with("billboardunlit")
     {
+        batch_key.shader_specialization = MaterialShaderSpecializationKey::disabled();
         return;
     }
     let pipeline = RasterPipelineKind::EmbeddedStem(Arc::from(RENDER_BUFFER_BILLBOARD_STEM));
     let features = embedded_material_features(&pipeline, shader_perm);
     batch_key.pipeline = pipeline;
+    batch_key.shader_specialization = MaterialShaderSpecializationKey::disabled();
     batch_key.embedded_needs_uv0 = features.needs_uv0;
     batch_key.embedded_needs_color = features.needs_color;
     batch_key.embedded_needs_uv1 = features.needs_uv1;
@@ -388,6 +403,7 @@ fn batch_key_from_resolved(
     MaterialDrawBatchKey {
         pipeline: r.pipeline.clone(),
         shader_asset_id: r.shader_asset_id,
+        shader_specialization: r.shader_specialization,
         material_asset_id,
         property_block_slot0: property_block_id,
         skinned,
