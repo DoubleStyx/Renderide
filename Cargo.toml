@@ -21,8 +21,11 @@ debug = true
 strip = "debuginfo"
 opt-level = 3
 debug-assertions = false
-incremental = true
-codegen-units = 16
+lto = "thin"
+codegen-units = 1
+incremental = false
+overflow-checks = false
+
 
 [workspace.lints.rustdoc]
 all = "warn"
