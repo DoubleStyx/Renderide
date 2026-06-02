@@ -388,6 +388,12 @@ pub(crate) fn apply_render_buffer_mesh_pipeline_override(
         uses_blended_depth_write: features.uses_blended_depth_write,
         uses_two_sided_transparency: features.uses_two_sided_transparency,
     });
+    if batch_key.blend_mode == MaterialBlendMode::StemDefault
+        && batch_key.transparent_class == TransparentMaterialClass::OrderedAlpha
+    {
+        // Enforce transparent blend mode to match source material transparency
+        batch_key.blend_mode = MaterialBlendMode::UnityBlend { src: 5, dst: 10 }
+    }
 }
 
 /// Assembles a [`MaterialDrawBatchKey`] from a pre-resolved [`ResolvedMaterialBatch`] entry.
