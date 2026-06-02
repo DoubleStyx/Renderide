@@ -73,6 +73,10 @@ fn plot_acquire_error(status: &wgpu::CurrentSurfaceTexture) {
 pub enum SurfaceAcquireTrace {
     /// Render graph acquisition for the main desktop backbuffer.
     DesktopGraph,
+    /// Terminal desktop acquire for presenting the offscreen final target.
+    DesktopFinalBlit,
+    /// Desktop acquire for the host `BlitToDisplay` pass on the local user's display.
+    DesktopBlitToDisplay,
     /// VR mirror acquisition for blitting the latest HMD eye to the desktop window.
     VrMirror,
     /// VR clear/fallback acquisition when no mirror image is available or mirror blit fails.
@@ -90,14 +94,18 @@ pub enum SurfaceSubmitTrace {
     VrClear,
     /// Generic clear submit used outside the VR-specific fallback path.
     ClearFallback,
+    /// Terminal desktop submit for presenting the offscreen final target.
+    DesktopFinalBlit,
     /// Desktop submit for the host `BlitToDisplay` pass on the local user's display.
-    Desktop,
+    DesktopBlitToDisplay,
 }
 
 impl From<SurfaceAcquireTrace> for GpuFlightSurfaceSite {
     fn from(trace: SurfaceAcquireTrace) -> Self {
         match trace {
             SurfaceAcquireTrace::DesktopGraph => Self::DesktopGraph,
+            SurfaceAcquireTrace::DesktopFinalBlit => Self::DesktopFinalBlit,
+            SurfaceAcquireTrace::DesktopBlitToDisplay => Self::DesktopBlitToDisplay,
             SurfaceAcquireTrace::VrMirror => Self::VrMirror,
             SurfaceAcquireTrace::VrClear => Self::VrClear,
             SurfaceAcquireTrace::ClearFallback => Self::ClearFallback,
@@ -108,7 +116,8 @@ impl From<SurfaceAcquireTrace> for GpuFlightSurfaceSite {
 impl From<SurfaceSubmitTrace> for GpuFlightSurfaceSubmitSite {
     fn from(trace: SurfaceSubmitTrace) -> Self {
         match trace {
-            SurfaceSubmitTrace::Desktop => Self::Desktop,
+            SurfaceSubmitTrace::DesktopFinalBlit => Self::DesktopFinalBlit,
+            SurfaceSubmitTrace::DesktopBlitToDisplay => Self::DesktopBlitToDisplay,
             SurfaceSubmitTrace::VrMirror => Self::VrMirror,
             SurfaceSubmitTrace::VrClear => Self::VrClear,
             SurfaceSubmitTrace::ClearFallback => Self::ClearFallback,
@@ -155,6 +164,14 @@ pub fn acquire_surface_outcome_traced(
     let outcome = match trace {
         SurfaceAcquireTrace::DesktopGraph => {
             profiling::scope!("gpu::surface_acquire.desktop_graph");
+            acquire_surface_outcome(gpu)
+        }
+        SurfaceAcquireTrace::DesktopFinalBlit => {
+            profiling::scope!("gpu::surface_acquire.desktop_final_blit");
+            acquire_surface_outcome(gpu)
+        }
+        SurfaceAcquireTrace::DesktopBlitToDisplay => {
+            profiling::scope!("gpu::surface_acquire.desktop_blit_to_display");
             acquire_surface_outcome(gpu)
         }
         SurfaceAcquireTrace::VrMirror => {
@@ -212,8 +229,12 @@ pub fn submit_surface_frame_traced(
             profiling::scope!("gpu::surface_submit.clear_fallback");
             submit_surface_command_buffers(gpu, command_buffers, frame, trace);
         }
-        SurfaceSubmitTrace::Desktop => {
-            profiling::scope!("gpu::surface_submit.desktop");
+        SurfaceSubmitTrace::DesktopFinalBlit => {
+            profiling::scope!("gpu::surface_submit.desktop_final_blit");
+            submit_surface_command_buffers(gpu, command_buffers, frame, trace);
+        }
+        SurfaceSubmitTrace::DesktopBlitToDisplay => {
+            profiling::scope!("gpu::surface_submit.desktop_blit_to_display");
             submit_surface_command_buffers(gpu, command_buffers, frame, trace);
         }
     }
@@ -227,9 +248,17 @@ fn submit_surface_command_buffers(
     trace: SurfaceSubmitTrace,
 ) {
     match trace {
-        SurfaceSubmitTrace::Desktop => {
+        SurfaceSubmitTrace::DesktopBlitToDisplay => {
             gpu.submit_frame_batch(
                 FrameSubmitKind::PrimaryRender,
+                command_buffers,
+                Some(frame),
+                None,
+            );
+        }
+        SurfaceSubmitTrace::DesktopFinalBlit => {
+            gpu.submit_frame_batch_untracked(
+                FrameSubmitKind::Presentation,
                 command_buffers,
                 Some(frame),
                 None,

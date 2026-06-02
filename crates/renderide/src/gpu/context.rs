@@ -100,13 +100,11 @@ pub struct GpuContext {
     /// Depth target matching [`Self::config`] extent; recreated after resize.
     depth_attachment: Option<(wgpu::Texture, wgpu::TextureView)>,
     depth_extent_px: (u32, u32),
-    /// Headless primary color/depth target (lazy). Allocated on the first call to
-    /// [`Self::primary_offscreen_targets`] when [`Self::is_headless`] is true so the
-    /// headless `render_frame` substitution can render the main view to a persistent
-    /// offscreen RT and the headless driver can copy it back to a PNG. The wrapping `Arc` lets
-    /// callers obtain an owned handle that does not borrow from [`GpuContext`], avoiding the
-    /// `&mut GpuContext` aliasing that would otherwise prevent passing `gpu` to the backend
-    /// after substituting view targets.
+    /// Primary final color/depth target (lazy). Allocated on the first call to
+    /// [`Self::primary_offscreen_targets`] so the main view can render to a persistent
+    /// offscreen RT before desktop presentation blits the final color to the swapchain. The
+    /// texture handles are cheap clones, which lets callers build view plans without keeping
+    /// a borrow on [`GpuContext`] through render-graph execution.
     primary_offscreen: Option<PrimaryOffscreenTargets>,
 }
 

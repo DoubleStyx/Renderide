@@ -11,6 +11,7 @@ use crate::runtime::RendererRuntime;
 use crate::runtime::display::DisplayBlitSource;
 use crate::shared::BlitToDisplayState;
 use crate::xr::OpenxrFrameTick;
+use glam::Vec4;
 
 use super::AppDriver;
 
@@ -20,15 +21,15 @@ use super::AppDriver;
 /// enum is `Copy` + `Debug` only; tests use `matches!` to check the variant.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum PresentationPlan {
-    /// No explicit app-side present step is needed.
-    None,
+    /// Present the normal desktop offscreen final target to the window surface.
+    DesktopFinalBlit,
     /// Present the latest HMD eye staging texture to the desktop mirror surface.
     VrMirrorBlit,
     /// Clear the VR mirror surface because no HMD frame was submitted.
     VrClear,
     /// Run the desktop display blit pass for the desktop window's display index.
     ///
-    /// Implies that the world-camera path skipped the main swapchain this tick (`render_views`
+    /// Implies that the world-camera path skipped the main desktop view this tick (`render_views`
     /// routed only secondary RTs to the GPU); this stage acquires the swapchain, clears it to
     /// `state.background_color`, and blits the `state.texture_id` source into the centered
     /// fitted rect.
@@ -39,7 +40,7 @@ impl PresentationPlan {
     /// Builds a presentation plan from current VR state and HMD submission result.
     pub(super) const fn from_frame(vr_active: bool, hmd_projection_ended: bool) -> Self {
         if !vr_active {
-            Self::None
+            Self::DesktopFinalBlit
         } else if hmd_projection_ended {
             Self::VrMirrorBlit
         } else {
@@ -67,8 +68,7 @@ impl AppDriver {
     /// desktop display blit source.
     fn compute_presentation_plan(&self, hmd_projection_ended: bool) -> PresentationPlan {
         let vr_active = self.runtime.vr_active();
-        let plan = PresentationPlan::from_frame(vr_active, hmd_projection_ended);
-        if matches!(plan, PresentationPlan::None)
+        if !vr_active
             && let Some(state) = self
                 .runtime
                 .scene()
@@ -76,12 +76,12 @@ impl AppDriver {
         {
             return PresentationPlan::DesktopBlitToDisplay { state };
         }
-        plan
+        PresentationPlan::from_frame(vr_active, hmd_projection_ended)
     }
 
     fn present_plan(&mut self, plan: PresentationPlan) {
         match plan {
-            PresentationPlan::None => {}
+            PresentationPlan::DesktopFinalBlit => self.present_desktop_final_blit(),
             PresentationPlan::VrMirrorBlit => self.present_vr_mirror_blit(),
             PresentationPlan::VrClear => self.present_vr_clear(),
             PresentationPlan::DesktopBlitToDisplay { state } => {
@@ -115,8 +115,8 @@ impl AppDriver {
             };
             if let Err(error) = present_clear_frame_overlay_traced_with_color(
                 gpu,
-                SurfaceAcquireTrace::DesktopGraph,
-                SurfaceSubmitTrace::Desktop,
+                SurfaceAcquireTrace::DesktopBlitToDisplay,
+                SurfaceSubmitTrace::DesktopBlitToDisplay,
                 clear,
                 |encoder, view, gpu| encode_debug_hud_overlay(runtime, gpu, encoder, view),
             ) {
@@ -137,6 +137,45 @@ impl AppDriver {
             encode_debug_hud_overlay_via_backend(backend, gpu, encoder, view)
         }) {
             logger::debug!("display blit failed: {error:?}");
+        }
+    }
+
+    /// Acquires the desktop swapchain and presents the offscreen final target rendered by the
+    /// normal desktop world path.
+    fn present_desktop_final_blit(&mut self) {
+        let Some(target) = self.target.as_mut() else {
+            return;
+        };
+        let gpu = target.gpu_mut();
+        let Some((final_view, (width, height))) = gpu.primary_offscreen_color_source() else {
+            let runtime = &mut self.runtime;
+            if let Err(error) = present_clear_frame_overlay_traced(
+                gpu,
+                SurfaceAcquireTrace::DesktopFinalBlit,
+                SurfaceSubmitTrace::DesktopFinalBlit,
+                |encoder, view, gpu| encode_debug_hud_overlay(runtime, gpu, encoder, view),
+            ) {
+                logger::debug!("desktop final fallback clear failed: {error:?}");
+            }
+            return;
+        };
+        let (blit, backend) = self.runtime.display_blit_and_backend_mut();
+        let source = DisplayBlitSource {
+            view: &final_view,
+            width,
+            height,
+            flip_horizontally: false,
+            flip_vertically: false,
+            background_color: Vec4::new(0.0, 0.0, 0.0, 1.0),
+        };
+        if let Err(error) = blit.present_blit_to_surface_traced(
+            gpu,
+            source,
+            SurfaceAcquireTrace::DesktopFinalBlit,
+            SurfaceSubmitTrace::DesktopFinalBlit,
+            |encoder, view, gpu| encode_debug_hud_overlay_via_backend(backend, gpu, encoder, view),
+        ) {
+            logger::debug!("desktop final blit failed: {error:?}");
         }
     }
 
@@ -222,14 +261,14 @@ mod tests {
     use super::PresentationPlan;
 
     #[test]
-    fn desktop_needs_no_app_presentation() {
+    fn desktop_uses_final_blit_presentation() {
         assert!(matches!(
             PresentationPlan::from_frame(false, false),
-            PresentationPlan::None
+            PresentationPlan::DesktopFinalBlit
         ));
         assert!(matches!(
             PresentationPlan::from_frame(false, true),
-            PresentationPlan::None
+            PresentationPlan::DesktopFinalBlit
         ));
     }
 
