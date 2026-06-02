@@ -4,9 +4,9 @@
 ///
 /// When set, `billboardunlit.wgsl` treats per-vertex point sizes as final particle sizes instead
 /// of multiplying them by the material `_PointSize`.
-pub(crate) const BILLBOARD_RENDER_BUFFER_ABSOLUTE_SIZE_BIT: u32 = 1u32 << 16;
+pub(crate) const BILLBOARD_RENDER_BUFFER_ABSOLUTE_SIZE_BIT: u32 = 1u32 << 18;
 /// Billboard/Unlit variant bit that enables per-particle color and alpha.
-pub(crate) const BILLBOARD_RENDER_BUFFER_VERTEX_COLORS_BIT: u32 = 1u32 << 15;
+pub(crate) const BILLBOARD_RENDER_BUFFER_VERTEX_COLORS_BIT: u32 = 1u32 << 17;
 
 /// Returns whether `stem` names an embedded Unlit-family shader other than Billboard/Unlit.
 pub(crate) fn is_unlit_family_embedded_stem(stem: &str) -> bool {
@@ -34,15 +34,17 @@ pub(crate) fn remap_unlit_variant_bits_for_billboard(unlit_bits: u32) -> u32 {
     const PAIRS: &[(u32, u32)] = &[
         (0, 0),
         (1, 1),
-        (4, 2),
-        (5, 3),
-        (6, 4),
-        (7, 8),
-        (8, 9),
-        (9, 10),
-        (11, 13),
-        (12, 14),
-        (13, 15),
+        (2, 2),
+        (3, 3),
+        (4, 4),
+        (5, 5),
+        (6, 6),
+        (7, 10),
+        (8, 11),
+        (9, 12),
+        (11, 15),
+        (12, 16),
+        (13, 17),
     ];
     let mut out = 0u32;
     for &(from, to) in PAIRS {
@@ -70,8 +72,8 @@ mod tests {
         let billboard = remap_unlit_variant_bits_for_billboard(unlit);
 
         assert_eq!(billboard & (1u32 << 1), 1u32 << 1);
-        assert_eq!(billboard & (1u32 << 10), 1u32 << 10);
-        assert_eq!(billboard & (1u32 << 9), 0);
+        assert_eq!(billboard & (1u32 << 12), 1u32 << 12);
+        assert_eq!(billboard & (1u32 << 11), 0);
     }
 
     #[test]

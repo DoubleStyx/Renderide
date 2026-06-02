@@ -374,8 +374,9 @@ fn billboard_render_buffer_uses_indexed_corner_separate_from_sample_uv() -> io::
         "Render-buffer billboards must apply renderer alignment and screen-size clamp metadata"
     );
     assert!(
-        src.contains("if (kw_ALPHATEST() && clip_alpha < mat._Cutoff)")
-            && !src.contains("clip_alpha <= mat._Cutoff"),
+        src.contains("if (kw_ALPHATEST() && !mask_clip && col.a < mat._Cutoff)")
+            && src.contains("if (mask_clip && mask_lum < mat._Cutoff)")
+            && !src.contains("<= mat._Cutoff"),
         "Billboard/Unlit alpha test must match Unity clip(col.a - _Cutoff) equality semantics"
     );
     assert!(

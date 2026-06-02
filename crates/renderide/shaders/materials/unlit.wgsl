@@ -228,12 +228,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let alpha_test = kw_ALPHATEST();
     let mask_clip = kw_MASK_TEXTURE_CLIP();
     let mask_mul = kw_MASK_TEXTURE_MUL();
-    let mul_rgb_by_alpha = kw_MUL_RGB_BY_ALPHA();
 
-    let uv_mask = uvu::apply_st(in.uv, mat._MaskTex_ST);
     var mask_lum_for_clip = 1.0;
-
     if (mask_mul || mask_clip) {
+        let uv_mask = uvu::apply_st(in.uv, mat._MaskTex_ST);
         let mask_sample = ts::sample_tex_2d(_MaskTex, _MaskTex_sampler, uv_mask, mat._MaskTex_LodBias);
         let mask_lum = ma::mask_luminance(mask_sample);
         mask_lum_for_clip = mask_lum;
@@ -266,7 +264,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         color = color * vertex_color_to_linear(in.color);
     }
 
-    if (mul_rgb_by_alpha) {
+    if (kw_MUL_RGB_BY_ALPHA()) {
         color = vec4<f32>(ma::apply_premultiply(color.rgb, color.a, true), color.a);
     }
 
