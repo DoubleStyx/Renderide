@@ -282,9 +282,26 @@ impl MeshPool {
         self.ensure_stream(asset_id, |mesh| mesh.ensure_uv3_vertex_stream(device))
     }
 
-    /// Lazily creates the packed UV0-UV7 buffer for shaders with wide UV inputs.
-    pub fn ensure_wide_uv_vertex_stream(&mut self, device: &wgpu::Device, asset_id: i32) -> bool {
-        self.ensure_stream(asset_id, |mesh| mesh.ensure_wide_uv_vertex_stream(device))
+    /// Lazily creates the packed UV0-UV3 buffer for shaders with wide low UV inputs.
+    pub fn ensure_wide_low_uv_vertex_stream(
+        &mut self,
+        device: &wgpu::Device,
+        asset_id: i32,
+    ) -> bool {
+        self.ensure_stream(asset_id, |mesh| {
+            mesh.ensure_wide_low_uv_vertex_stream(device)
+        })
+    }
+
+    /// Lazily creates the packed UV4-UV7 buffer for shaders with high UV inputs.
+    pub fn ensure_wide_high_uv_vertex_stream(
+        &mut self,
+        device: &wgpu::Device,
+        asset_id: i32,
+    ) -> bool {
+        self.ensure_stream(asset_id, |mesh| {
+            mesh.ensure_wide_high_uv_vertex_stream(device)
+        })
     }
 
     /// Runs `op` against the resident mesh for `asset_id` (if any), then

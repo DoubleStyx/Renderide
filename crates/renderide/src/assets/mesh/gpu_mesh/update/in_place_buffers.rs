@@ -13,7 +13,8 @@ use crate::shared::{
 use super::super::super::layout::{
     MeshBufferLayout, color_float4_stream_bytes, extract_bind_poses, extract_blendshape_offsets,
     extract_float3_position_normal_as_vec4_streams, split_bone_weights_tail_for_gpu,
-    uv0_float2_stream_bytes, vertex_float2_stream_bytes, wide_uv_stream_bytes,
+    uv0_float2_stream_bytes, vertex_float2_stream_bytes, wide_high_uv_stream_bytes,
+    wide_low_uv_stream_bytes,
 };
 use super::super::hints::{blendshape_descriptor_count, derived_streams_compatible_for_in_place};
 use super::super::tangent_generation::{
@@ -175,7 +176,8 @@ enum InPlaceDerivedStreamJob {
     PositionNormal,
     Uv0,
     Color,
-    WideUv,
+    WideLowUv,
+    WideHighUv,
     Tangent,
     RawTangent,
     Uv1,
@@ -187,7 +189,8 @@ enum InPlaceDerivedStreamResult {
     PositionNormal(Option<(Vec<u8>, Vec<u8>)>),
     Uv0(Option<Vec<u8>>),
     Color(Option<Vec<u8>>),
-    WideUv(Option<Vec<u8>>),
+    WideLowUv(Option<Vec<u8>>),
+    WideHighUv(Option<Vec<u8>>),
     Tangent(Option<Vec<u8>>),
     RawTangent(Option<Vec<u8>>),
     Uv1(Option<Vec<u8>>),
@@ -229,7 +232,13 @@ impl InPlaceDerivedStreamJob {
                 source.vertex_stride,
                 source.vertex_attributes,
             )),
-            Self::WideUv => InPlaceDerivedStreamResult::WideUv(wide_uv_stream_bytes(
+            Self::WideLowUv => InPlaceDerivedStreamResult::WideLowUv(wide_low_uv_stream_bytes(
+                source.vertex_slice,
+                source.vertex_count,
+                source.vertex_stride,
+                source.vertex_attributes,
+            )),
+            Self::WideHighUv => InPlaceDerivedStreamResult::WideHighUv(wide_high_uv_stream_bytes(
                 source.vertex_slice,
                 source.vertex_count,
                 source.vertex_stride,
@@ -319,8 +328,14 @@ pub(super) fn write_in_place_vertex_and_derived_streams(
         if ctx.demand_mask.contains(MeshDerivedStreamMask::COLOR) {
             write_in_place_color_stream(ctx, vertex_slice);
         }
-        if ctx.demand_mask.contains(MeshDerivedStreamMask::WIDE_UV) {
-            write_in_place_wide_uv_stream(ctx, vertex_slice);
+        if ctx.demand_mask.contains(MeshDerivedStreamMask::WIDE_UV_LOW) {
+            write_in_place_wide_low_uv_stream(ctx, vertex_slice);
+        }
+        if ctx
+            .demand_mask
+            .contains(MeshDerivedStreamMask::WIDE_UV_HIGH)
+        {
+            write_in_place_wide_high_uv_stream(ctx, vertex_slice);
         }
     }
 
@@ -397,10 +412,17 @@ fn try_write_in_place_derived_streams_parallel(
         {
             jobs.push(InPlaceDerivedStreamJob::Color);
         }
-        if ctx.demand_mask.contains(MeshDerivedStreamMask::WIDE_UV)
-            && ctx.mesh.wide_uv_buffer.is_some()
+        if ctx.demand_mask.contains(MeshDerivedStreamMask::WIDE_UV_LOW)
+            && ctx.mesh.wide_low_uv_buffer.is_some()
         {
-            jobs.push(InPlaceDerivedStreamJob::WideUv);
+            jobs.push(InPlaceDerivedStreamJob::WideLowUv);
+        }
+        if ctx
+            .demand_mask
+            .contains(MeshDerivedStreamMask::WIDE_UV_HIGH)
+            && ctx.mesh.wide_high_uv_buffer.is_some()
+        {
+            jobs.push(InPlaceDerivedStreamJob::WideHighUv);
         }
     }
     if ctx.demand_mask.contains(MeshDerivedStreamMask::TANGENT) && ctx.mesh.tangent_buffer.is_some()
@@ -487,12 +509,18 @@ fn write_in_place_derived_stream_result(
             }
         }
         InPlaceDerivedStreamResult::Color(None) => {}
-        InPlaceDerivedStreamResult::WideUv(Some(bytes)) => {
-            if let Some(buffer) = ctx.mesh.wide_uv_buffer.as_ref() {
+        InPlaceDerivedStreamResult::WideLowUv(Some(bytes)) => {
+            if let Some(buffer) = ctx.mesh.wide_low_uv_buffer.as_ref() {
                 write_mesh_upload_buffer(ctx.upload_sink, buffer.as_ref(), 0, &bytes);
             }
         }
-        InPlaceDerivedStreamResult::WideUv(None) => {}
+        InPlaceDerivedStreamResult::WideLowUv(None) => {}
+        InPlaceDerivedStreamResult::WideHighUv(Some(bytes)) => {
+            if let Some(buffer) = ctx.mesh.wide_high_uv_buffer.as_ref() {
+                write_mesh_upload_buffer(ctx.upload_sink, buffer.as_ref(), 0, &bytes);
+            }
+        }
+        InPlaceDerivedStreamResult::WideHighUv(None) => {}
         InPlaceDerivedStreamResult::Tangent(Some(bytes)) => {
             if let Some(buffer) = ctx.mesh.tangent_buffer.as_ref() {
                 write_mesh_upload_buffer(ctx.upload_sink, buffer.as_ref(), 0, &bytes);
@@ -599,19 +627,42 @@ fn write_in_place_color_stream(ctx: &MeshInPlaceWriteContext<'_>, vertex_slice: 
     }
 }
 
-fn write_in_place_wide_uv_stream(ctx: &MeshInPlaceWriteContext<'_>, vertex_slice: &[u8]) {
-    profiling::scope!("asset::mesh_write_in_place::write_wide_uv_stream");
+fn write_in_place_wide_low_uv_stream(ctx: &MeshInPlaceWriteContext<'_>, vertex_slice: &[u8]) {
+    profiling::scope!("asset::mesh_write_in_place::write_wide_low_uv_stream");
     if let (Some(uvb), Some(prepared)) = (
-        ctx.mesh.wide_uv_buffer.as_ref(),
+        ctx.mesh.wide_low_uv_buffer.as_ref(),
         ctx.prepared_derived_streams
-            .and_then(|prepared| prepared.wide_uv.as_deref()),
+            .and_then(|prepared| prepared.wide_low_uv.as_deref()),
     ) {
         write_mesh_upload_buffer(ctx.upload_sink, uvb.as_ref(), 0, prepared);
         return;
     }
     if let (Some(uvb), Some(uv)) = (
-        ctx.mesh.wide_uv_buffer.as_ref(),
-        wide_uv_stream_bytes(
+        ctx.mesh.wide_low_uv_buffer.as_ref(),
+        wide_low_uv_stream_bytes(
+            vertex_slice,
+            ctx.vertex_count,
+            ctx.vertex_stride,
+            &ctx.data.vertex_attributes,
+        ),
+    ) {
+        write_mesh_upload_buffer(ctx.upload_sink, uvb.as_ref(), 0, &uv);
+    }
+}
+
+fn write_in_place_wide_high_uv_stream(ctx: &MeshInPlaceWriteContext<'_>, vertex_slice: &[u8]) {
+    profiling::scope!("asset::mesh_write_in_place::write_wide_high_uv_stream");
+    if let (Some(uvb), Some(prepared)) = (
+        ctx.mesh.wide_high_uv_buffer.as_ref(),
+        ctx.prepared_derived_streams
+            .and_then(|prepared| prepared.wide_high_uv.as_deref()),
+    ) {
+        write_mesh_upload_buffer(ctx.upload_sink, uvb.as_ref(), 0, prepared);
+        return;
+    }
+    if let (Some(uvb), Some(uv)) = (
+        ctx.mesh.wide_high_uv_buffer.as_ref(),
+        wide_high_uv_stream_bytes(
             vertex_slice,
             ctx.vertex_count,
             ctx.vertex_stride,
