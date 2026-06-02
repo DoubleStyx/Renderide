@@ -14,11 +14,23 @@ use super::shortcuts::{fullscreen_toggle_shortcut, imgui_visibility_shortcut};
 use super::{AppDriver, RenderTarget};
 
 impl AppDriver {
+    #[cfg(feature = "tracy")]
     fn begin_about_to_wait_span(&mut self) {
         self.about_to_wait_span.begin_if_empty("app::about_to_wait");
     }
 
+    #[cfg(not(feature = "tracy"))]
+    fn begin_about_to_wait_span(&self) {
+        self.about_to_wait_span.begin_if_empty("app::about_to_wait");
+    }
+
+    #[cfg(feature = "tracy")]
     fn end_about_to_wait_span(&mut self) {
+        self.about_to_wait_span.end();
+    }
+
+    #[cfg(not(feature = "tracy"))]
+    fn end_about_to_wait_span(&self) {
         self.about_to_wait_span.end();
     }
 

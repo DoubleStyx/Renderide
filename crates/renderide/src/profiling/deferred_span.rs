@@ -9,6 +9,7 @@ pub(crate) struct DeferredCpuSpan {
 
 impl DeferredCpuSpan {
     /// Starts the span when no span is already open.
+    #[cfg(feature = "tracy")]
     #[inline]
     pub(crate) fn begin_if_empty(&mut self, name: &'static str) {
         if self.is_open() {
@@ -17,31 +18,46 @@ impl DeferredCpuSpan {
         self.begin(name);
     }
 
+    /// Starts the span when no span is already open.
+    #[cfg(not(feature = "tracy"))]
+    #[inline]
+    pub(crate) fn begin_if_empty(&self, name: &'static str) {
+        if self.is_open() {
+            return;
+        }
+        self.begin(name);
+    }
+
     /// Starts the span, ending any span already held by this handle.
+    #[cfg(feature = "tracy")]
     #[inline]
     pub(crate) fn begin(&mut self, name: &'static str) {
         self.end();
-        #[cfg(feature = "tracy")]
-        {
-            let function = "renderide::profiling::DeferredCpuSpan";
-            if let Some(client) = tracy_client::Client::running() {
-                self.span = Some(client.span_alloc(Some(name), function, file!(), line!(), 0));
-            }
-        }
-        #[cfg(not(feature = "tracy"))]
-        {
-            let _ = name;
+        let function = "renderide::profiling::DeferredCpuSpan";
+        if let Some(client) = tracy_client::Client::running() {
+            self.span = Some(client.span_alloc(Some(name), function, file!(), line!(), 0));
         }
     }
 
+    /// Starts the span, ending any span already held by this handle.
+    #[cfg(not(feature = "tracy"))]
+    #[inline]
+    pub(crate) fn begin(&self, name: &'static str) {
+        self.end();
+        let _ = name;
+    }
+
     /// Ends the span if one is currently open.
+    #[cfg(feature = "tracy")]
     #[inline]
     pub(crate) fn end(&mut self) {
-        #[cfg(feature = "tracy")]
-        {
-            self.span = None;
-        }
+        self.span = None;
     }
+
+    /// Ends the span if one is currently open.
+    #[cfg(not(feature = "tracy"))]
+    #[inline]
+    pub(crate) fn end(&self) {}
 
     /// Returns whether this handle currently owns an open span.
     #[inline]
