@@ -104,11 +104,13 @@ pub fn on_point_render_buffer_upload(
     let coalesced = queue.retain_latest_point_render_buffer_upload(upload);
     if coalesced.replaced_pending_upload {
         send_point_render_buffer_consumed(&mut ipc, asset_id);
+        #[cfg(feature = "tracy")]
+        tracy_client::plot!("particle::point_pending_replacements", 1.0);
         logger::trace!(
             "point render buffer {asset_id}: coalesced superseded pending upload generation={}",
             coalesced.generation
         );
-    } else {
+    } else if !queue.point_render_buffer_build_is_active(asset_id) {
         queue.integrator_mut().enqueue_lane(
             AssetTask::PointRenderBuffer(PointRenderBufferTask::new(asset_id)),
             AssetTaskLane::Particle,
@@ -152,11 +154,13 @@ pub fn on_trail_render_buffer_upload(
     let coalesced = queue.retain_latest_trail_render_buffer_upload(upload);
     if coalesced.replaced_pending_upload {
         send_trail_render_buffer_consumed(&mut ipc, asset_id);
+        #[cfg(feature = "tracy")]
+        tracy_client::plot!("particle::trail_pending_replacements", 1.0);
         logger::trace!(
             "trail render buffer {asset_id}: coalesced superseded pending upload generation={}",
             coalesced.generation
         );
-    } else {
+    } else if !queue.trail_render_buffer_build_is_active(asset_id) {
         queue.integrator_mut().enqueue_lane(
             AssetTask::TrailRenderBuffer(TrailRenderBufferTask::new(asset_id)),
             AssetTaskLane::Particle,
