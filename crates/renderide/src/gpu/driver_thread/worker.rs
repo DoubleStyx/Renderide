@@ -118,6 +118,7 @@ pub(super) fn driver_loop(
 fn process_batch(ctx: DriverLoopContext<'_>, ring_depth: usize, batch: SubmitBatch) {
     profiling::scope!("driver::frame");
     let SubmitBatch {
+        submit_kind: _submit_kind,
         command_buffers,
         surface_texture,
         on_submitted_work_done,
@@ -263,6 +264,7 @@ fn present_surface_if_present(
     // outstanding so its next `get_current_texture` call can proceed without a
     // full ring flush.
     ctx.surface_counters.note_presented();
+    crate::profiling::plot_surface_in_flight_count(ctx.surface_counters.in_flight_count());
     record_driver_event(
         ctx,
         summary,

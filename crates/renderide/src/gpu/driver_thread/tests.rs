@@ -7,6 +7,20 @@ use std::time::Duration;
 
 use super::ring::BoundedRing;
 use super::submit_batch::SubmitWait;
+use super::{
+    DESKTOP_SUBMIT_BATCHES_PER_VISIBLE_FRAME, DRIVER_VISIBLE_FRAMES_IN_FLIGHT, RING_CAPACITY,
+};
+
+/// The driver ring is sized in visible desktop frames, not raw submit batches.
+#[test]
+fn ring_capacity_covers_two_desktop_visible_frames() {
+    assert_eq!(DESKTOP_SUBMIT_BATCHES_PER_VISIBLE_FRAME, 2);
+    assert_eq!(DRIVER_VISIBLE_FRAMES_IN_FLIGHT, 2);
+    assert_eq!(
+        RING_CAPACITY,
+        DESKTOP_SUBMIT_BATCHES_PER_VISIBLE_FRAME * DRIVER_VISIBLE_FRAMES_IN_FLIGHT
+    );
+}
 
 /// Push blocks when the ring is full and wakes once a pop makes space available.
 #[test]
