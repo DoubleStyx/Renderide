@@ -131,6 +131,7 @@ impl RendererRuntime {
                 gpu,
                 wall_frame_time_ms: wall_ms,
                 host_frame_begin_to_submit: self.last_frame_begin_to_submit(),
+                lockstep_pipeline: self.tick_state.lockstep_pipeline_hud_labels(),
                 host_hud: &host,
                 gpu_allocator: self.diagnostics.allocator_report_totals,
                 history: &mut self.diagnostics.frame_time_history,

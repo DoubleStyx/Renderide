@@ -80,7 +80,7 @@ pub struct XrOwnedHmdTargets {
     color_texture: wgpu::Texture,
     /// Two-layer color view used as the graph's multiview render target.
     color_array_view: wgpu::TextureView,
-    /// Single-layer color views used by final per-eye blits and the desktop VR mirror.
+    /// Single-layer color views used by the desktop VR mirror.
     eye_views: [wgpu::TextureView; 2],
     /// Two-layer depth texture used by the HMD graph.
     depth_texture: wgpu::Texture,
@@ -119,9 +119,9 @@ impl XrOwnedHmdTargets {
         &self.color_array_view
     }
 
-    /// Returns the single-layer color views used by final per-eye OpenXR copies.
-    pub(super) fn eye_views(&self) -> [&wgpu::TextureView; 2] {
-        [&self.eye_views[0], &self.eye_views[1]]
+    /// Returns the single-layer color view copied into desktop mirror staging.
+    pub(super) fn mirror_eye_view(&self) -> &wgpu::TextureView {
+        &self.eye_views[crate::gpu::VR_MIRROR_EYE_LAYER as usize]
     }
 
     /// Returns the backing depth texture used by graph depth/snapshot helpers.

@@ -13,6 +13,7 @@ mod decoupling;
 pub(crate) mod dispatch;
 mod frame_start_performance;
 mod init_state;
+pub(crate) mod lockstep_pipeline;
 mod lockstep_state;
 pub(crate) mod output_device;
 mod output_policy;
@@ -26,6 +27,10 @@ pub mod input;
 
 pub(crate) use frame_start_performance::AssetIntegrationPerformanceSample;
 pub use init_state::InitState;
+pub(crate) use lockstep_pipeline::{
+    HostWaitReason, LockstepPipelineAction, LockstepPipelineHudLabels, LockstepPipelineInput,
+    OneCreditBlockReason, decide_lockstep_pipeline, one_credit_block_reason,
+};
 pub use renderer_frontend::RendererFrontend;
 
 #[cfg(test)]

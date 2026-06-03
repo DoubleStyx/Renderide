@@ -15,6 +15,21 @@ pub(crate) fn color_blit_pipeline(
     label: &'static str,
     color_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
+    color_blit_pipeline_with_multiview_mask(device, shader, layout, label, color_format, None)
+}
+
+/// Builds a vertex-less triangle-list color-target render pipeline with optional multiview.
+///
+/// `shader` must expose `vs_main` and `fs_main` entry points and read all bindings through the
+/// pipeline's single bind-group layout.
+pub(crate) fn color_blit_pipeline_with_multiview_mask(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+    label: &'static str,
+    color_format: wgpu::TextureFormat,
+    multiview_mask: Option<std::num::NonZeroU32>,
+) -> wgpu::RenderPipeline {
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(label),
         layout: Some(layout),
@@ -40,7 +55,7 @@ pub(crate) fn color_blit_pipeline(
         },
         depth_stencil: None,
         multisample: Default::default(),
-        multiview_mask: None,
+        multiview_mask,
         cache: None,
     })
 }

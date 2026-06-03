@@ -195,7 +195,7 @@ fn regular_begin_frame_waits_for_reflection_probe_task_after_render_attempt() {
 }
 
 #[test]
-fn regular_begin_frame_waits_for_reflection_probe_result_flush_after_render_attempt() {
+fn reflection_probe_result_backlog_does_not_block_regular_begin_frame() {
     let (_host, mut rt) = test_runtime_connected_ipc();
     rt.apply_frame_submit_data(FrameSubmitData {
         frame_index: 101,
@@ -210,8 +210,8 @@ fn regular_begin_frame_waits_for_reflection_probe_result_flush_after_render_atte
             success: true,
         });
 
-    assert!(!rt.submit_completion_work_drained());
-    assert!(!rt.should_send_begin_frame());
+    assert!(rt.submit_completion_work_drained());
+    assert!(rt.should_send_begin_frame());
 
     rt.tick_state
         .pending_reflection_probe_render_results
@@ -219,6 +219,25 @@ fn regular_begin_frame_waits_for_reflection_probe_result_flush_after_render_atte
 
     assert!(rt.submit_completion_work_drained());
     assert!(rt.should_send_begin_frame());
+}
+
+#[test]
+fn reflection_probe_result_backlog_does_not_block_one_credit_begin_frame() {
+    let (_host, mut rt) = test_runtime_connected_ipc();
+    rt.apply_frame_submit_data(FrameSubmitData {
+        frame_index: 101,
+        ..Default::default()
+    });
+    rt.tick_state
+        .pending_reflection_probe_render_results
+        .push(ReflectionProbeRenderResult {
+            render_task_id: 7,
+            success: true,
+        });
+
+    assert!(rt.pending_frame_submit_render());
+    assert!(rt.submit_completion_work_drained());
+    assert!(rt.should_send_one_credit_begin_frame());
 }
 
 #[test]

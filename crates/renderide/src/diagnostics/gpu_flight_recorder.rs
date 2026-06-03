@@ -398,6 +398,10 @@ impl fmt::Display for GpuFlightEventKind {
 pub(crate) enum GpuFlightSurfaceSite {
     /// Desktop render-graph swapchain acquire.
     DesktopGraph,
+    /// Terminal desktop acquire for presenting the offscreen final target.
+    DesktopFinalBlit,
+    /// Desktop acquire for the host `BlitToDisplay` pass.
+    DesktopBlitToDisplay,
     /// VR mirror blit acquire.
     VrMirror,
     /// VR clear fallback acquire.
@@ -410,6 +414,8 @@ impl fmt::Display for GpuFlightSurfaceSite {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::DesktopGraph => "desktop_graph",
+            Self::DesktopFinalBlit => "desktop_final_blit",
+            Self::DesktopBlitToDisplay => "desktop_blit_to_display",
             Self::VrMirror => "vr_mirror",
             Self::VrClear => "vr_clear",
             Self::ClearFallback => "clear_fallback",
@@ -498,8 +504,10 @@ impl fmt::Display for GpuFlightSurfaceReconfigureOutcome {
 /// Surface submit site.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum GpuFlightSurfaceSubmitSite {
-    /// Desktop render graph submit.
-    Desktop,
+    /// Terminal desktop submit for presenting the offscreen final target.
+    DesktopFinalBlit,
+    /// Desktop submit for the host `BlitToDisplay` pass.
+    DesktopBlitToDisplay,
     /// VR mirror blit submit.
     VrMirror,
     /// VR clear fallback submit.
@@ -511,7 +519,8 @@ pub(crate) enum GpuFlightSurfaceSubmitSite {
 impl fmt::Display for GpuFlightSurfaceSubmitSite {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::Desktop => "desktop",
+            Self::DesktopFinalBlit => "desktop_final_blit",
+            Self::DesktopBlitToDisplay => "desktop_blit_to_display",
             Self::VrMirror => "vr_mirror",
             Self::VrClear => "vr_clear",
             Self::ClearFallback => "clear_fallback",

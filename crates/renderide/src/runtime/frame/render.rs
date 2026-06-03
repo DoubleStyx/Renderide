@@ -17,8 +17,8 @@ use super::view_plan::{FrameViewPlan, FrameViewPlanTarget, OffscreenTargetHandle
 
 /// Primary render target requested for a view-family submission.
 pub(in crate::runtime) enum PrimaryViewRequest<'a> {
-    /// Main desktop swapchain view.
-    DesktopSwapchain,
+    /// Main desktop view.
+    DesktopMain,
     /// OpenXR HMD stereo multiview view.
     HmdExternalMultiview(ExternalFrameTargets<'a>),
     /// No primary view; render secondary render-texture cameras only.
@@ -26,9 +26,9 @@ pub(in crate::runtime) enum PrimaryViewRequest<'a> {
 }
 
 impl PrimaryViewRequest<'_> {
-    /// `true` when this mode appends the main desktop swapchain view.
-    pub(in crate::runtime) fn includes_main_swapchain(&self) -> bool {
-        matches!(self, PrimaryViewRequest::DesktopSwapchain)
+    /// `true` when this mode appends the main desktop view.
+    pub(in crate::runtime) fn includes_main_view(&self) -> bool {
+        matches!(self, PrimaryViewRequest::DesktopMain)
     }
 
     /// `true` when this mode prepends an HMD stereo multiview view.
@@ -44,10 +44,10 @@ pub(crate) struct FrameViewFamilyRequest<'a> {
 }
 
 impl<'a> FrameViewFamilyRequest<'a> {
-    /// Desktop world render: secondary render textures plus the main swapchain view.
+    /// Desktop world render: secondary render textures plus the main desktop view.
     pub(crate) fn desktop() -> Self {
         Self {
-            primary: PrimaryViewRequest::DesktopSwapchain,
+            primary: PrimaryViewRequest::DesktopMain,
             schedule_kind: RenderScheduleKind::Desktop,
         }
     }
@@ -86,12 +86,12 @@ impl<'a> FrameViewFamilyRequest<'a> {
         self.schedule_kind
     }
 
-    /// `true` when this family appends the main swapchain view.
-    pub(in crate::runtime) fn includes_main_swapchain(&self) -> bool {
-        self.primary.includes_main_swapchain()
+    /// `true` when this family appends the main desktop view.
+    pub(in crate::runtime) fn includes_main_view(&self) -> bool {
+        self.primary.includes_main_view()
     }
 
-    /// Frame-global fallback profile to use when no HMD or main swapchain view is submitted.
+    /// Frame-global fallback profile to use when no HMD or main desktop view is submitted.
     pub(in crate::runtime) fn fallback_frame_global_profile(
         &self,
         desktop_profile: crate::render_graph::RenderPathProfile,
@@ -114,7 +114,7 @@ impl<'a> FrameViewFamilyRequest<'a> {
 }
 
 impl RendererRuntime {
-    /// Desktop entry point: renders the main swapchain view plus any active secondary render-texture
+    /// Desktop entry point: renders the main desktop view plus any active secondary render-texture
     /// cameras in a single submit. Used when OpenXR is not active.
     ///
     /// See [`Self::render_frame`] for the shared implementation that also powers the VR entry
@@ -126,7 +126,7 @@ impl RendererRuntime {
     /// Desktop entry point for ticks where presentation is supplied by `BlitToDisplay`.
     ///
     /// Secondary render-texture cameras still update through the normal desktop schedule, but
-    /// the main swapchain world view is omitted because the display blit pass fills it later.
+    /// the main desktop world view is omitted because the display blit pass fills it later.
     pub(crate) fn render_desktop_secondaries_frame(
         &mut self,
         gpu: &mut GpuContext,
@@ -137,7 +137,7 @@ impl RendererRuntime {
     /// Unified per-tick world render entry point.
     ///
     /// Builds a single prepared-view list (HMD first when present, secondary RTs in depth order,
-    /// main swapchain last when requested) and dispatches the compiled render graph in one
+    /// main desktop view last when requested) and dispatches the compiled render graph in one
     /// [`RenderBackend::execute_multi_view_frame`](crate::backend::RenderBackend::execute_multi_view_frame)
     /// call. Hi-Z readback has already been drained once at the top of the tick (see
     /// [`Self::drain_hi_z_readback`]), so the caller always skips the readback pass here.
@@ -145,8 +145,8 @@ impl RendererRuntime {
     /// Callers should not invoke this directly; use [`Self::render_desktop_frame`] for desktop or
     /// the [`crate::xr::XrFrameRenderer`] trait methods for VR paths.
     ///
-    /// In headless mode (`gpu.is_headless()`) the main view is planned directly as an offscreen
-    /// target backed by [`GpuContext::primary_offscreen_targets`].
+    /// The main desktop/headless view is planned directly as an offscreen target backed by
+    /// [`GpuContext::primary_offscreen_targets`].
     pub(crate) fn render_frame(
         &mut self,
         gpu: &mut GpuContext,
@@ -193,27 +193,23 @@ impl RendererRuntime {
         }
     }
 
-    /// Builds the explicit prepared-view stage for this tick, including any headless main-target
-    /// substitution resources that must outlive graph-view creation.
+    /// Builds the explicit prepared-view stage for this tick, including any main-target
+    /// offscreen resources that must outlive graph-view creation.
     fn prepare_frame_views<'a>(
         &mut self,
         gpu: &mut GpuContext,
         request: FrameViewFamilyRequest<'a>,
     ) -> PreparedViews<'a> {
-        let includes_main = request.includes_main_swapchain();
-        // Capture the swapchain extent before the per-view collection. The main desktop view's
-        // CPU cull projection (`build_world_mesh_cull_proj_params`) runs against this extent
-        // before the render graph dispatches, so passing a stale/zero value produces a degenerate
-        // frustum and randomly culls scene objects.
-        let swapchain_extent_px = gpu.surface_extent_px();
-        let main_offscreen_target = if includes_main && gpu.is_headless() {
-            OffscreenTargetHandles::from_headless_primary(gpu)
-        } else {
-            None
-        };
+        let includes_main = request.includes_main_view();
+        // Capture the configured surface extent before the per-view collection. When no primary
+        // offscreen target is needed, this still supplies the main-view CPU cull projection
+        // extent before render-graph dispatch.
+        let configured_extent_px = gpu.surface_extent_px();
+        let main_offscreen_target =
+            includes_main.then(|| OffscreenTargetHandles::from_primary_offscreen(gpu));
         let main_extent_px = main_offscreen_target
             .as_ref()
-            .map_or(swapchain_extent_px, |target| target.extent_px);
+            .map_or(configured_extent_px, |target| target.extent_px);
         let main_profile = if includes_main && gpu.is_headless() {
             crate::render_graph::RenderPathProfile::headless_main()
         } else {
@@ -291,11 +287,11 @@ mod tests {
     use crate::render_graph::compiled::RenderPathProfileId;
 
     #[test]
-    fn desktop_request_includes_main_swapchain_on_desktop_schedule() {
+    fn desktop_request_includes_main_view_on_desktop_schedule() {
         let request = FrameViewFamilyRequest::desktop();
 
         assert_eq!(request.schedule_kind(), RenderScheduleKind::Desktop);
-        assert!(request.includes_main_swapchain());
+        assert!(request.includes_main_view());
         assert_eq!(
             request
                 .fallback_frame_global_profile(RenderPathProfile::desktop_main())
@@ -313,7 +309,7 @@ mod tests {
             CpuRenderSchedule::new(request.schedule_kind()).mesh_lod_bias(),
             2.0
         );
-        assert!(!request.includes_main_swapchain());
+        assert!(!request.includes_main_view());
         assert_eq!(
             request
                 .fallback_frame_global_profile(RenderPathProfile::headless_main())
@@ -330,7 +326,7 @@ mod tests {
             request.schedule_kind(),
             RenderScheduleKind::VrSecondariesOnly
         );
-        assert!(!request.includes_main_swapchain());
+        assert!(!request.includes_main_view());
         assert_eq!(
             request
                 .fallback_frame_global_profile(RenderPathProfile::desktop_main())
