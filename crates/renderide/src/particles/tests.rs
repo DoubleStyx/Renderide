@@ -94,7 +94,7 @@ fn point_decode_reads_float3_sizes() {
 }
 
 #[test]
-fn billboard_fill_writes_stable_point_indices() {
+fn billboard_fill_writes_front_facing_point_indices() {
     let points = vec![
         PointParticle {
             position: Vec3::new(1.0, 2.0, 3.0),
