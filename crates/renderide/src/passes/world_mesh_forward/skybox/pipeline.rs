@@ -156,7 +156,7 @@ pub(super) fn create_skybox_pipeline(
         depth,
         shader_specialization,
     } = desc;
-    let fragment_specialization_constants =
+    let shader_specialization_constants =
         shader_specialization.pipeline_constants_for_wgsl_source(wgsl_source);
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(label),
@@ -164,14 +164,17 @@ pub(super) fn create_skybox_pipeline(
         vertex: wgpu::VertexState {
             module: shader,
             entry_point: Some("vs_main"),
-            compilation_options: Default::default(),
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: shader_specialization_constants.as_slice(),
+                ..Default::default()
+            },
             buffers: vertex_buffer_layouts,
         },
         fragment: Some(wgpu::FragmentState {
             module: shader,
             entry_point: Some("fs_main"),
             compilation_options: wgpu::PipelineCompilationOptions {
-                constants: fragment_specialization_constants.as_slice(),
+                constants: shader_specialization_constants.as_slice(),
                 ..Default::default()
             },
             targets: &[Some(wgpu::ColorTargetState {

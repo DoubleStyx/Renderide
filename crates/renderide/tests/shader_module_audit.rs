@@ -101,15 +101,15 @@ fn material_variant_bits_helper_supports_pipeline_constants() -> io::Result<()> 
 }
 
 #[test]
-fn material_variant_pipeline_constants_are_fragment_only() -> io::Result<()> {
+fn material_variant_pipeline_constants_apply_to_vertex_and_fragment() -> io::Result<()> {
     for path in [
         "src/materials/raster_pipeline.rs",
         "src/passes/world_mesh_forward/skybox/pipeline.rs",
     ] {
         let src = source_file(manifest_dir().join(path))?;
         assert!(
-            src.contains("fragment_specialization_constants.as_slice()"),
-            "{path} must pass material specialization constants to fragment compilation"
+            src.contains("shader_specialization_constants.as_slice()"),
+            "{path} must build material specialization constants for shader compilation"
         );
 
         let vertex_state = src
@@ -118,12 +118,21 @@ fn material_variant_pipeline_constants_are_fragment_only() -> io::Result<()> {
             .and_then(|tail| tail.split("fragment: Some(wgpu::FragmentState {").next())
             .unwrap_or("");
         assert!(
-            vertex_state.contains("compilation_options: Default::default()"),
-            "{path} must not pass material specialization constants to vertex compilation"
+            vertex_state.contains("constants: shader_specialization_constants.as_slice()"),
+            "{path} must pass material specialization constants to vertex compilation"
         );
+
+        let fragment_state = src
+            .split("fragment: Some(wgpu::FragmentState {")
+            .nth(1)
+            .and_then(|tail| {
+                tail.split("targets: &[Some(wgpu::ColorTargetState {")
+                    .next()
+            })
+            .unwrap_or("");
         assert!(
-            !vertex_state.contains("specialization_constants.as_slice()"),
-            "{path} must keep material variant constants off vertex stages unless stage-aware reflection is added"
+            fragment_state.contains("constants: shader_specialization_constants.as_slice()"),
+            "{path} must pass material specialization constants to fragment compilation"
         );
     }
 

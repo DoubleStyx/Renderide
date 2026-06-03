@@ -83,20 +83,20 @@ impl Default for GtaoSettings {
         Self {
             enabled: true,
             quality_level: 2,
-            slice_count_override: 16,
-            resolution_divisor: 1,
+            slice_count_override: 0,
+            resolution_divisor: 2,
             radius_meters: 1.0,
             radius_multiplier: 1.457,
             intensity: 0.5,
-            max_pixel_radius: 1024.0,
-            step_count: 1,
+            max_pixel_radius: 256.0,
+            step_count: 0,
             falloff_range: 1.0,
             sample_distribution_power: 2.0,
             thin_occluder_compensation: 0.0,
             final_value_power: 2.2,
             depth_mip_sampling_offset: 3.3,
             albedo_multibounce: 0.0,
-            denoise_passes: 6,
+            denoise_passes: 2,
             denoise_blur_beta: 1.2,
         }
     }
@@ -145,5 +145,25 @@ impl GtaoSettings {
     pub fn approximate_depth_samples_per_pixel(self) -> u32 {
         let (slices, steps) = self.effective_sample_counts();
         slices.saturating_mul(steps).saturating_mul(2)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GtaoSettings;
+
+    #[test]
+    fn defaults_use_preset_sampling_and_half_resolution_budget() {
+        let settings = GtaoSettings::default();
+
+        assert_eq!(settings.slice_count_override, 0);
+        assert_eq!(settings.step_count, 0);
+        assert_eq!(settings.effective_sample_counts(), (3, 3));
+        assert_eq!(settings.approximate_depth_samples_per_pixel(), 18);
+        assert_eq!(settings.resolution_divisor, 2);
+        assert_eq!(settings.effective_resolution_divisor(), 2);
+        assert_eq!(settings.max_pixel_radius, 256.0);
+        assert_eq!(settings.denoise_passes, 2);
+        assert_eq!(settings.effective_denoise_passes(), 2);
     }
 }
