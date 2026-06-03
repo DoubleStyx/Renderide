@@ -27,6 +27,8 @@ pub struct FrameGpuUniformBuildParams {
     pub right_view_to_world_y_coeffs: [f32; 4],
     /// Right-eye projection parameters, or the mono parameters for non-stereo frames.
     pub right_proj_params: [f32; 4],
+    /// Right-eye projection matrix, or the mono projection matrix for non-stereo frames.
+    pub right_proj: [f32; 16],
     /// Right-eye projection flags, or the mono flags for non-stereo frames.
     pub right_projection_flags: u32,
     /// Raster sample count for the current frame target.
@@ -50,7 +52,7 @@ pub struct FrameGpuUniformBuildParams {
 /// match what the compute uses for cluster tile / Z-slice math.
 pub(super) fn build_frame_gpu_uniforms(
     cfp: &ClusterFrameParams,
-    params: FrameGpuUniformBuildParams,
+    params: &FrameGpuUniformBuildParams,
 ) -> FrameGpuUniforms {
     let params = ClusteredFrameGlobalsParams {
         camera_world_pos: params.camera_world_pos,
@@ -71,6 +73,8 @@ pub(super) fn build_frame_gpu_uniforms(
         viewport_height: cfp.viewport_height.max(1),
         proj_params_left: cfp.proj_params(),
         proj_params_right: params.right_proj_params,
+        proj_left: cfp.proj.to_cols_array(),
+        proj_right: params.right_proj,
         frame_index: params.frame_index,
         projection_flags_left: cfp.projection_flags,
         projection_flags_right: params.right_projection_flags,

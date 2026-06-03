@@ -82,6 +82,10 @@ struct FrameGlobals {
     proj_params_left: vec4<f32>,
     /// Right-eye projection coefficients (equals left in mono mode).
     proj_params_right: vec4<f32>,
+    /// Left-eye (or mono) projection matrix.
+    proj_left: mat4x4<f32>,
+    /// Right-eye projection matrix (equals left in mono mode).
+    proj_right: mat4x4<f32>,
     /// Packed frame metadata, projection flags, ambient-light flags, and raster sample count.
     frame_tail: vec4<u32>,
     /// Reserved. Skybox specular lighting is supplied by reflection probes.

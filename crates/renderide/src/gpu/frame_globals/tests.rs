@@ -12,8 +12,8 @@ mod offset_and_packing_tests {
     use glam::Mat4;
 
     #[test]
-    fn frame_globals_size_384() {
-        assert_eq!(size_of::<FrameGpuUniforms>(), 384);
+    fn frame_globals_size_512() {
+        assert_eq!(size_of::<FrameGpuUniforms>(), 512);
         assert_eq!(size_of::<FrameGpuUniforms>() % 16, 0);
     }
 
@@ -49,12 +49,14 @@ mod offset_and_packing_tests {
             std::mem::offset_of!(FrameGpuUniforms, proj_params_right),
             144
         );
-        assert_eq!(std::mem::offset_of!(FrameGpuUniforms, frame_tail), 160);
-        assert_eq!(std::mem::offset_of!(FrameGpuUniforms, skybox_specular), 176);
-        assert_eq!(std::mem::offset_of!(FrameGpuUniforms, frame_time), 192);
-        assert_eq!(std::mem::offset_of!(FrameGpuUniforms, ambient_sh), 208);
-        assert_eq!(std::mem::offset_of!(FrameGpuUniforms, fog_color_mode), 352);
-        assert_eq!(std::mem::offset_of!(FrameGpuUniforms, fog_params), 368);
+        assert_eq!(std::mem::offset_of!(FrameGpuUniforms, proj_left), 160);
+        assert_eq!(std::mem::offset_of!(FrameGpuUniforms, proj_right), 224);
+        assert_eq!(std::mem::offset_of!(FrameGpuUniforms, frame_tail), 288);
+        assert_eq!(std::mem::offset_of!(FrameGpuUniforms, skybox_specular), 304);
+        assert_eq!(std::mem::offset_of!(FrameGpuUniforms, frame_time), 320);
+        assert_eq!(std::mem::offset_of!(FrameGpuUniforms, ambient_sh), 336);
+        assert_eq!(std::mem::offset_of!(FrameGpuUniforms, fog_color_mode), 480);
+        assert_eq!(std::mem::offset_of!(FrameGpuUniforms, fog_params), 496);
     }
 
     #[test]
@@ -127,6 +129,8 @@ mod offset_and_packing_tests {
             viewport_height: 1080,
             proj_params_left: [1.5, 2.5, 0.0, 0.0],
             proj_params_right: [1.5, 2.5, 0.1, -0.2],
+            proj_left: Mat4::IDENTITY.to_cols_array(),
+            proj_right: Mat4::from_scale(glam::Vec3::new(2.0, 3.0, 4.0)).to_cols_array(),
             frame_index: 7,
             projection_flags_left: FRAME_PROJECTION_FLAG_ORTHOGRAPHIC,
             projection_flags_right: 0,
@@ -153,6 +157,11 @@ mod offset_and_packing_tests {
         assert_eq!(u.viewport_height, 1080);
         assert_eq!(u.proj_params_left, [1.5, 2.5, 0.0, 0.0]);
         assert_eq!(u.proj_params_right, [1.5, 2.5, 0.1, -0.2]);
+        assert_eq!(u.proj_left, Mat4::IDENTITY.to_cols_array());
+        assert_eq!(
+            u.proj_right,
+            Mat4::from_scale(glam::Vec3::new(2.0, 3.0, 4.0)).to_cols_array()
+        );
         assert_eq!(
             u.frame_tail,
             [
@@ -187,6 +196,8 @@ mod offset_and_packing_tests {
             viewport_height: 1,
             proj_params_left: [1.0, 1.0, 0.0, 0.0],
             proj_params_right: [1.0, 1.0, 0.0, 0.0],
+            proj_left: Mat4::IDENTITY.to_cols_array(),
+            proj_right: Mat4::IDENTITY.to_cols_array(),
             frame_index: 0,
             projection_flags_left: 0,
             projection_flags_right: 0,

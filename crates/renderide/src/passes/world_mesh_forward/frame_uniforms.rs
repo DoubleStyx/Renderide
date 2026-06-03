@@ -83,13 +83,14 @@ fn build_frame_gpu_uniforms(
     {
         let left = apply_render_target_projection(left, inputs.offscreen_write_target);
         let right = apply_render_target_projection(right, inputs.offscreen_write_target);
-        return left.frame_gpu_uniforms(FrameGpuUniformBuildParams {
+        return left.frame_gpu_uniforms(&FrameGpuUniformBuildParams {
             camera_world_pos: camera_world,
             camera_world_pos_right: camera_world_right,
             right_z_coeffs: right.view_space_z_coeffs(),
             right_view_to_world_y_coeffs:
                 FrameGpuUniforms::view_to_world_y_coeffs_from_world_to_view(right.world_to_view),
             right_proj_params: right.proj_params(),
+            right_proj: right.proj.to_cols_array(),
             right_projection_flags: right.projection_flags,
             light_count: inputs.light_count,
             sample_count: inputs.sample_count,
@@ -104,7 +105,7 @@ fn build_frame_gpu_uniforms(
         let mono = apply_render_target_projection(mono, inputs.offscreen_write_target);
         let z = mono.view_space_z_coeffs();
         let p = mono.proj_params();
-        return mono.frame_gpu_uniforms(FrameGpuUniformBuildParams {
+        return mono.frame_gpu_uniforms(&FrameGpuUniformBuildParams {
             camera_world_pos: camera_world,
             camera_world_pos_right: camera_world_right,
             light_count: inputs.light_count,
@@ -112,6 +113,7 @@ fn build_frame_gpu_uniforms(
             right_view_to_world_y_coeffs:
                 FrameGpuUniforms::view_to_world_y_coeffs_from_world_to_view(mono.world_to_view),
             right_proj_params: p,
+            right_proj: mono.proj.to_cols_array(),
             right_projection_flags: mono.projection_flags,
             sample_count: inputs.sample_count,
             frame_index: frame_idx,
@@ -179,6 +181,7 @@ mod tests {
             uniforms.proj_params_left,
             FrameGpuUniforms::proj_params_from_proj(proj)
         );
+        assert_eq!(uniforms.proj_left, proj.to_cols_array());
     }
 
     #[test]
@@ -194,5 +197,6 @@ mod tests {
             uniforms.proj_params_left,
             FrameGpuUniforms::proj_params_from_proj(expected_proj)
         );
+        assert_eq!(uniforms.proj_left, expected_proj.to_cols_array());
     }
 }
