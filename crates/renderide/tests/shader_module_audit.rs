@@ -374,6 +374,23 @@ fn billboard_render_buffer_uses_indexed_corner_separate_from_sample_uv() -> io::
         "Render-buffer billboards must apply renderer alignment and screen-size clamp metadata"
     );
     assert!(
+        src.contains("return facing_basis(center_world, view_layer, pointdata.z, false);"),
+        "Render-buffer Facing alignment must keep Unity-style roll disabled"
+    );
+    assert!(
+        src.contains("fn direction_stretch_particle_basis(")
+            && src.contains("let velocity_world = mv::model_vector(d, point_forward_upz.xyz);")
+            && src.contains(
+                "let velocity_in_plane = velocity_world - to_camera * dot(velocity_world, to_camera);"
+            )
+            && src.contains("let view_up_in_plane = view_up - to_camera * dot(view_up, to_camera);")
+            && src.contains("up = rmath::safe_normalize(cross(to_camera, right), up);")
+            && src.contains(
+                "return direction_stretch_particle_basis(d, center_world, point_forward_upz, view_layer);"
+            ),
+        "Render-buffer Direction alignment must project velocity into the camera-facing stretch plane"
+    );
+    assert!(
         src.contains("if (kw_ALPHATEST() && clip_alpha < mat._Cutoff)")
             && !src.contains("clip_alpha <= mat._Cutoff"),
         "Billboard/Unlit alpha test must match Unity clip(col.a - _Cutoff) equality semantics"

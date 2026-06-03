@@ -94,7 +94,7 @@ fn point_decode_reads_float3_sizes() {
 }
 
 #[test]
-fn billboard_fill_writes_stable_point_indices() {
+fn billboard_fill_writes_front_facing_point_indices() {
     let points = vec![
         PointParticle {
             position: Vec3::new(1.0, 2.0, 3.0),
@@ -118,7 +118,7 @@ fn billboard_fill_writes_stable_point_indices() {
     fill_billboard_buffers(&points, glam::IVec2::new(2, 1), &mut vertices, &mut indices);
 
     let index_words: &[u32] = bytemuck::cast_slice(&indices);
-    assert_eq!(index_words, &[0, 2, 1, 2, 3, 1, 4, 6, 5, 6, 7, 5]);
+    assert_eq!(index_words, &[0, 1, 2, 2, 1, 3, 4, 5, 6, 6, 5, 7]);
     let first_vertex: &[f32] = bytemuck::cast_slice(&vertices[..generated_vertex_stride()]);
     assert_eq!(&first_vertex[..3], &[1.0, 2.0, 3.0]);
     assert_eq!(&first_vertex[3..5], &[0.5, 0.5]);

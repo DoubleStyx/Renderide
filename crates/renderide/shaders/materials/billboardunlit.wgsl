@@ -187,28 +187,38 @@ fn facing_basis(center_world: vec3<f32>, view_layer: u32, roll: f32, allow_roll:
     return RenderBufferBillboardBasis(right, up);
 }
 
-fn local_particle_basis(
+fn direction_stretch_particle_basis(
     d: dt::PerDrawUniforms,
     center_world: vec3<f32>,
+    point_forward_upz: vec4<f32>,
+    view_layer: u32,
+) -> RenderBufferBillboardBasis {
+    let to_camera = rg::view_dir_for_world_pos(center_world, view_layer);
+    let velocity_world = mv::model_vector(d, point_forward_upz.xyz);
+    let velocity_in_plane = velocity_world - to_camera * dot(velocity_world, to_camera);
+    let view_up = rg::view_to_world_y_coeffs_for_view(view_layer).xyz;
+    let view_up_in_plane = view_up - to_camera * dot(view_up, to_camera);
+    var up = rmath::safe_normalize(
+        velocity_in_plane,
+        rmath::safe_normalize(view_up_in_plane, vec3<f32>(0.0, 1.0, 0.0)),
+    );
+    let right = rmath::safe_normalize(cross(up, to_camera), vec3<f32>(1.0, 0.0, 0.0));
+    up = rmath::safe_normalize(cross(to_camera, right), up);
+    return RenderBufferBillboardBasis(right, up);
+}
+
+fn local_particle_basis(
+    d: dt::PerDrawUniforms,
     pointdata: vec3<f32>,
     point_forward_upz: vec4<f32>,
     point_up_xy: vec2<f32>,
-    view_layer: u32,
-    direction_stretch: bool,
 ) -> RenderBufferBillboardBasis {
     let raw_forward = rmath::safe_normalize(point_forward_upz.xyz, vec3<f32>(0.0, 0.0, 1.0));
     let raw_up = rmath::safe_normalize(vec3<f32>(point_up_xy, point_forward_upz.w), vec3<f32>(0.0, 1.0, 0.0));
     let world_forward = rmath::safe_normalize(mv::model_vector(d, raw_forward), vec3<f32>(0.0, 0.0, 1.0));
     let world_up = rmath::safe_normalize(mv::model_vector(d, raw_up), vec3<f32>(0.0, 1.0, 0.0));
-    if (direction_stretch) {
-        let to_camera = rg::view_dir_for_world_pos(center_world, view_layer);
-        let up = world_forward;
-        let right = rmath::safe_normalize(cross(to_camera, up), vec3<f32>(1.0, 0.0, 0.0));
-        return RenderBufferBillboardBasis(right, up);
-    }
-
-    var right = rmath::safe_normalize(cross(world_up, world_forward), vec3<f32>(1.0, 0.0, 0.0));
-    var up = rmath::safe_normalize(cross(world_forward, right), world_up);
+    var right = rmath::safe_normalize(cross(world_forward, world_up), vec3<f32>(1.0, 0.0, 0.0));
+    var up = rmath::safe_normalize(cross(right, world_forward), world_up);
     if (abs(pointdata.z) > 1e-4) {
         let rotated = rotate_render_buffer_axes(pointdata.z, right, up);
         right = rotated.right;
@@ -230,10 +240,10 @@ fn render_buffer_billboard_basis(
         return facing_basis(center_world, view_layer, pointdata.z, false);
     }
     if (alignment == 2u || alignment == 3u) {
-        return local_particle_basis(d, center_world, pointdata, point_forward_upz, point_up_xy, view_layer, false);
+        return local_particle_basis(d, pointdata, point_forward_upz, point_up_xy);
     }
     if (alignment == 4u) {
-        return local_particle_basis(d, center_world, pointdata, point_forward_upz, point_up_xy, view_layer, true);
+        return direction_stretch_particle_basis(d, center_world, point_forward_upz, view_layer);
     }
     return view_plane_basis(view_layer, pointdata.z, true);
 }
