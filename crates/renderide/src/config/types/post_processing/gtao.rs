@@ -153,17 +153,17 @@ mod tests {
     use super::GtaoSettings;
 
     #[test]
-    fn defaults_use_preset_sampling_and_half_resolution_budget() {
+    fn defaults_use_explicit_sampling_and_full_resolution_budget() {
         let settings = GtaoSettings::default();
 
-        assert_eq!(settings.slice_count_override, 0);
-        assert_eq!(settings.step_count, 0);
-        assert_eq!(settings.effective_sample_counts(), (3, 3));
-        assert_eq!(settings.approximate_depth_samples_per_pixel(), 18);
-        assert_eq!(settings.resolution_divisor, 2);
-        assert_eq!(settings.effective_resolution_divisor(), 2);
+        assert_eq!(settings.slice_count_override, 16);
+        assert_eq!(settings.step_count, 1);
+        assert_eq!(settings.effective_sample_counts(), (16, 1));
+        assert_eq!(settings.approximate_depth_samples_per_pixel(), 32);
+        assert_eq!(settings.resolution_divisor, 1);
+        assert_eq!(settings.effective_resolution_divisor(), 1);
         assert_eq!(settings.max_pixel_radius, 256.0);
-        assert_eq!(settings.denoise_passes, 2);
-        assert_eq!(settings.effective_denoise_passes(), 2);
+        assert_eq!(settings.denoise_passes, 3);
+        assert_eq!(settings.effective_denoise_passes(), 3);
     }
 }

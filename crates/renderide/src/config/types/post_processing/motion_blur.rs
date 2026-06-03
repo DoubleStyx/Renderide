@@ -75,13 +75,13 @@ mod tests {
     use super::MotionBlurSettings;
 
     #[test]
-    fn defaults_use_lower_runtime_blur_budget() {
+    fn defaults_use_full_runtime_blur_budget() {
         let settings = MotionBlurSettings::default();
 
-        assert_eq!(settings.shutter_angle, 0.35);
-        assert_eq!(settings.effective_shutter_angle(), 0.35);
-        assert_eq!(settings.sample_count, 8);
-        assert_eq!(settings.effective_sample_count(), 8);
+        assert_eq!(settings.shutter_angle, 0.5);
+        assert_eq!(settings.effective_shutter_angle(), 0.5);
+        assert_eq!(settings.sample_count, 16);
+        assert_eq!(settings.effective_sample_count(), 16);
         assert_eq!(settings.max_velocity_pixels, 256.0);
         assert_eq!(settings.effective_max_velocity_pixels(), 256.0);
     }

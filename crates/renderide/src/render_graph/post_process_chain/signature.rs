@@ -232,12 +232,12 @@ mod tests {
         s.motion_blur.enabled = false;
         s.auto_exposure.enabled = false;
 
-        let half_res = PostProcessChainSignature::from_settings(&s);
+        let full_res = PostProcessChainSignature::from_settings(&s);
         s.gtao.resolution_divisor = 4;
         let quarter_res = PostProcessChainSignature::from_settings(&s);
 
-        assert_ne!(half_res, quarter_res);
-        assert_eq!(half_res.gtao_resolution_divisor, 2);
+        assert_ne!(full_res, quarter_res);
+        assert_eq!(full_res.gtao_resolution_divisor, 1);
         assert_eq!(quarter_res.gtao_resolution_divisor, 4);
     }
 
