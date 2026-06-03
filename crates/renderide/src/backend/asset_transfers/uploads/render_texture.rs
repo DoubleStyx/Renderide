@@ -46,8 +46,8 @@ pub fn on_set_render_texture_format(
         send_render_texture_result(ipc, id, false);
         return;
     };
-    let existed_before = queue.pools.render_texture_pool.insert(tex);
-    send_render_texture_result(ipc, id, !existed_before);
+    queue.pools.render_texture_pool.insert(tex);
+    send_render_texture_result(ipc, id, true);
     logger::trace!(
         "render texture {} {}x{} depth_bits={} (resident_bytes~={})",
         id,
