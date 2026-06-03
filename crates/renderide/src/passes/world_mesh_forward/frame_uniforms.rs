@@ -185,7 +185,7 @@ mod tests {
     fn frame_uniforms_use_offscreen_render_projection_params() {
         let scene = SceneCoordinator::new();
         let proj = projection_with_non_unit_y();
-        let write_target = OffscreenWriteTarget::HostRenderTexture(77);
+        let write_target = OffscreenWriteTarget::host_render_texture(77);
         let uniforms =
             build_frame_gpu_uniforms(&explicit_camera(proj), &scene, frame_inputs(write_target));
         let expected_proj = write_target.render_projection(proj);

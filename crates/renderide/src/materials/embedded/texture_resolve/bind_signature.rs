@@ -32,8 +32,8 @@ pub(crate) fn hash_sampler_state(state: &SamplerState, h: &mut impl Hasher) {
 
 /// Fingerprint for bind cache invalidation when texture views or residency change.
 ///
-/// When `offscreen_write_target` names a host render texture, that render-texture id is treated
-/// as non-resident (offscreen color target; self-sampling is masked).
+/// When `offscreen_write_target` suppresses a host render texture, that render-texture id is
+/// treated as non-resident so same-target material sampling stays masked.
 pub(crate) fn texture_bind_signature(
     reflected: &ReflectedRasterLayout,
     ids: &StemEmbeddedPropertyIds,
@@ -127,7 +127,7 @@ pub(crate) fn hash_texture_entry_signature_contribution(
             }
         }
         ResolvedTextureBinding::RenderTexture { asset_id } => {
-            if offscreen_write_target.host_render_texture_asset_id() == Some(asset_id) {
+            if offscreen_write_target.suppresses_render_texture_sampling(asset_id) {
                 false.hash(hasher);
             } else if let Some(t) = pools.render_texture.get(asset_id) {
                 t.is_sampleable().hash(hasher);

@@ -880,7 +880,7 @@ mod tests {
     #[test]
     fn host_render_texture_cull_projection_uses_offscreen_convention() {
         let raw = asymmetric_cull_projection_bundle();
-        let write_target = OffscreenWriteTarget::HostRenderTexture(77);
+        let write_target = OffscreenWriteTarget::host_render_texture(77);
         let adjusted = cull_projection_for_write_target(&raw, write_target);
         let (left, right) = raw.vr_stereo.expect("stereo pair");
 

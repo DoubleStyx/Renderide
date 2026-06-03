@@ -9,10 +9,12 @@
 use std::sync::{Arc, LazyLock};
 
 use crate::camera::{
-    CameraRenderRect, ViewId, camera_state_enabled, host_camera_frame_for_render_texture,
+    CameraRenderRect, ViewId, camera_state_double_buffered, camera_state_enabled,
+    camera_state_post_processing, host_camera_frame_for_render_texture,
 };
 use crate::diagnostics::log_once::KeyedLogOnce;
 use crate::gpu::GpuContext;
+use crate::graph_inputs::RenderTextureSelfSampling;
 use crate::render_graph::{
     FrameGlobalView, FrameViewClear, OffscreenWriteTarget, RenderPathProfile, ViewPostProcessing,
 };
@@ -63,6 +65,17 @@ fn secondary_camera_render_context() -> RenderingContext {
     RenderingContext::Camera
 }
 
+fn secondary_camera_write_target(rt_id: i32, flags: u16) -> OffscreenWriteTarget {
+    if camera_state_double_buffered(flags) && !camera_state_post_processing(flags) {
+        OffscreenWriteTarget::host_render_texture_with_self_sampling(
+            rt_id,
+            RenderTextureSelfSampling::AllowPreviousContents,
+        )
+    } else {
+        OffscreenWriteTarget::host_render_texture(rt_id)
+    }
+}
+
 /// Logs a missing secondary render-texture depth attachment once per render texture id.
 fn log_secondary_rt_missing_depth(rt_id: i32, sid: RenderSpaceId, cam_idx: usize) {
     if SECONDARY_RT_MISSING_DEPTH_LOG.should_log(rt_id) {
@@ -103,13 +116,13 @@ struct ResidentSecondaryRenderTexture {
 fn secondary_rt_handles_for_rect(
     backend: &mut crate::backend::RenderBackend,
     gpu: &GpuContext,
-    rt_id: i32,
+    write_target: OffscreenWriteTarget,
     rt: ResidentSecondaryRenderTexture,
     render_rect: CameraRenderRect,
 ) -> Option<OffscreenTargetHandles> {
     if render_rect.is_full_target(rt.extent_px) {
         return Some(OffscreenTargetHandles {
-            write_target: OffscreenWriteTarget::HostRenderTexture(rt_id),
+            write_target,
             color_texture: rt.color_texture.as_ref().clone(),
             color_view: rt.color_view.as_ref().clone(),
             depth_texture: rt.depth_texture.as_ref().clone(),
@@ -127,7 +140,7 @@ fn secondary_rt_handles_for_rect(
         rt.depth_format,
     )?;
     Some(OffscreenTargetHandles {
-        write_target: OffscreenWriteTarget::HostRenderTexture(rt_id),
+        write_target,
         color_texture: scratch.color_texture.as_ref().clone(),
         color_view: scratch.color_view.as_ref().clone(),
         depth_texture: scratch.depth_texture.as_ref().clone(),
@@ -354,9 +367,14 @@ impl RendererRuntime {
                 continue;
             };
             let viewport_px = render_rect.extent_px;
-            let Some(rt_handles) =
-                secondary_rt_handles_for_rect(&mut self.backend, gpu, rt_id, rt, render_rect)
-            else {
+            let write_target = secondary_camera_write_target(rt_id, entry.state.flags);
+            let Some(rt_handles) = secondary_rt_handles_for_rect(
+                &mut self.backend,
+                gpu,
+                write_target,
+                rt,
+                render_rect,
+            ) else {
                 logger::trace!(
                     "secondary camera: render texture asset {rt_id} viewport {:?} scratch unavailable; skipping",
                     entry.state.viewport
@@ -502,6 +520,26 @@ mod tests {
     #[test]
     fn secondary_cameras_use_camera_render_context() {
         assert_eq!(secondary_camera_render_context(), RenderingContext::Camera);
+    }
+
+    #[test]
+    fn secondary_camera_write_target_uses_double_buffer_policy() {
+        let double_buffered = 1u16 << 2;
+        let post_processing = 1u16 << 6;
+
+        assert_eq!(
+            secondary_camera_write_target(9, 0).render_texture_self_sampling(),
+            Some(RenderTextureSelfSampling::Suppress)
+        );
+        assert_eq!(
+            secondary_camera_write_target(9, double_buffered).render_texture_self_sampling(),
+            Some(RenderTextureSelfSampling::AllowPreviousContents)
+        );
+        assert_eq!(
+            secondary_camera_write_target(9, double_buffered | post_processing)
+                .render_texture_self_sampling(),
+            Some(RenderTextureSelfSampling::Suppress)
+        );
     }
 
     #[test]
