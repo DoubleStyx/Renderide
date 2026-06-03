@@ -9,7 +9,7 @@ use crate::scene::{
     MeshMaterialSlot, MeshRendererInstanceId, RenderSpaceId, SceneCoordinator, SkinnedMeshRenderer,
     StaticMeshRenderer,
 };
-use crate::shared::RenderingContext;
+use crate::shared::{LayerType, RenderingContext};
 use crate::world_mesh::culling::{
     MeshCullGeometry, MeshCullTarget, mesh_world_geometry_for_cull_with_head,
 };
@@ -326,8 +326,13 @@ fn expand_renderer_slots(
         return;
     }
 
-    let is_overlay = renderer.node_id >= 0
-        && scene.transform_is_in_overlay_layer(space_id, renderer.node_id as usize);
+    let special_layer = if renderer.node_id >= 0 {
+        scene.transform_special_layer(space_id, renderer.node_id as usize)
+    } else {
+        None
+    };
+    let is_overlay = matches!(special_layer, Some(LayerType::Overlay));
+    let is_hidden = matches!(special_layer, Some(LayerType::Hidden));
 
     for (slot_index, slot) in slots.iter().enumerate() {
         let Some((first_index, index_count)) =
@@ -358,6 +363,7 @@ fn expand_renderer_slots(
             node_id: renderer.node_id,
             mesh_asset_id: renderer.mesh_asset_id,
             is_overlay,
+            is_hidden,
             sorting_order: renderer.sorting_order,
             skinned,
             world_space_deformed,

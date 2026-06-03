@@ -17,6 +17,7 @@ use super::super::item::{WorldMeshDrawItem, stacked_material_submesh_topology};
 use super::super::prepared_renderables::{FramePreparedDraw, FramePreparedRun};
 use super::DrawCollectionContext;
 use super::candidate::{DrawCandidate, evaluate_draw_candidate};
+use super::hidden_layers_visible_in_view;
 use super::lod::LodVisibility;
 use super::scene_walk::transform_chain_has_degenerate_scale;
 use super::world_matrix::{front_face_for_draw_matrices, world_matrix_for_local_vertex_stream};
@@ -33,6 +34,7 @@ pub(in crate::world_mesh::draw_prep) fn prepared_draws_share_renderer(
         && a.node_id == b.node_id
         && a.mesh_asset_id == b.mesh_asset_id
         && a.is_overlay == b.is_overlay
+        && a.is_hidden == b.is_hidden
         && a.sorting_order == b.sorting_order
         && a.skinned == b.skinned
         && a.world_space_deformed == b.world_space_deformed
@@ -263,6 +265,9 @@ fn collect_prepared_renderer_run(
         return (0, 0, 0);
     }
     if !prepared_run_passes_filter(first, ctx, filter_masks) {
+        return (0, 0, 0);
+    }
+    if first.is_hidden && !hidden_layers_visible_in_view(ctx) {
         return (0, 0, 0);
     }
     if !lod_visibility.renderer_visible(first.space_id, first.renderer_ordinal) {

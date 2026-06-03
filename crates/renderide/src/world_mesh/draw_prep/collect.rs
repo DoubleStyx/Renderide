@@ -223,6 +223,12 @@ struct PreparedViewChunkTask {
     chunk_index: usize,
 }
 
+/// Returns whether Hidden-layer renderers should be visible in `ctx`.
+fn hidden_layers_visible_in_view(ctx: &DrawCollectionContext<'_>) -> bool {
+    ctx.transform_filter
+        .is_some_and(CameraTransformDrawFilter::has_selective_roots)
+}
+
 impl QueuedWorldMeshDraws {
     /// Number of queued draw candidates before arrangement.
     pub fn len(&self) -> usize {

@@ -622,6 +622,7 @@ mod tests {
             node_id: renderable_index as i32,
             mesh_asset_id: 10,
             is_overlay: false,
+            is_hidden: false,
             sorting_order: 0,
             skinned: false,
             world_space_deformed: false,

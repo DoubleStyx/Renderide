@@ -46,6 +46,7 @@ fn prepared_draw(space_id: RenderSpaceId, renderable_index: usize) -> FramePrepa
         node_id: -1,
         mesh_asset_id: 1,
         is_overlay: false,
+        is_hidden: false,
         sorting_order: 0,
         skinned: false,
         world_space_deformed: false,

@@ -9,17 +9,22 @@ use crate::scene::{RenderSpaceId, SceneCoordinator};
 pub struct CameraTransformDrawFilter {
     /// When `Some`, only these transform node ids are drawn.
     pub only: Option<HashSet<i32>>,
-    /// When [`Self::only`] is `None`, transforms in this set are skipped.
+    /// Transform roots skipped after the optional selective list has been applied.
     pub exclude: HashSet<i32>,
 }
 
 impl CameraTransformDrawFilter {
+    /// Returns whether this filter has at least one selective transform root.
+    pub(crate) fn has_selective_roots(&self) -> bool {
+        self.only.as_ref().is_some_and(|only| !only.is_empty())
+    }
+
     /// Returns `true` if `node_id` should be rendered under this filter.
     #[inline]
     #[cfg(test)]
     pub fn passes(&self, node_id: i32) -> bool {
         if let Some(only) = &self.only {
-            only.contains(&node_id)
+            only.contains(&node_id) && !self.exclude.contains(&node_id)
         } else {
             !self.exclude.contains(&node_id)
         }
@@ -40,6 +45,8 @@ impl CameraTransformDrawFilter {
                 return false;
             }
             node_or_ancestor_in_set(scene, space_id, node_id, only)
+                && (self.exclude.is_empty()
+                    || !node_or_ancestor_in_set(scene, space_id, node_id, &self.exclude))
         } else {
             if self.exclude.is_empty() {
                 return true;
@@ -64,7 +71,14 @@ impl CameraTransformDrawFilter {
             if only.is_empty() {
                 return Some(vec![false; n]);
             }
-            Some(ancestor_membership_mask(scene, space_id, only))
+            let mut mask = ancestor_membership_mask(scene, space_id, only);
+            if !self.exclude.is_empty() {
+                let excl = ancestor_membership_mask(scene, space_id, &self.exclude);
+                for (pass, excluded) in mask.iter_mut().zip(excl) {
+                    *pass &= !excluded;
+                }
+            }
+            Some(mask)
         } else if self.exclude.is_empty() {
             Some(vec![true; n])
         } else {
@@ -189,7 +203,7 @@ pub fn draw_filter_from_camera_entry(
     } else {
         CameraTransformDrawFilter {
             only: Some(entry.selective_transform_ids.iter().copied().collect()),
-            exclude: HashSet::new(),
+            exclude: entry.exclude_transform_ids.iter().copied().collect(),
         }
     }
 }

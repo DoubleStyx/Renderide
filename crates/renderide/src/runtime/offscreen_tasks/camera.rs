@@ -460,7 +460,7 @@ fn draw_filter_from_camera_render_task(task: &CameraRenderTask) -> CameraTransfo
                     .copied()
                     .collect::<HashSet<_>>(),
             ),
-            exclude: HashSet::new(),
+            exclude: task.exclude_render_list.iter().copied().collect(),
         }
     }
 }

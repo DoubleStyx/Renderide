@@ -1,6 +1,7 @@
 //! Tests for world-mesh draw collection helpers.
 
 use glam::{Mat4, Quat, Vec3};
+use hashbrown::HashSet;
 
 use super::world_matrix::front_face_for_draw_matrices;
 use super::*;
@@ -12,6 +13,7 @@ use crate::materials::{
 };
 use crate::scene::{MeshRendererInstanceId, RenderSpaceId, SceneCoordinator};
 use crate::shared::{RenderTransform, RenderingContext};
+use crate::world_mesh::CameraTransformDrawFilter;
 
 /// Builds a unit-scale transform for draw-prep tests.
 fn identity_transform() -> RenderTransform {
@@ -64,6 +66,36 @@ fn transform_scale_filter_result(scale: Vec3) -> bool {
     transform_chain_has_degenerate_scale(&ctx, space_id, 0)
 }
 
+/// Evaluates the Hidden-layer view policy for one optional camera transform filter.
+fn hidden_visibility_for_filter(filter: Option<&CameraTransformDrawFilter>) -> bool {
+    let scene = SceneCoordinator::new();
+    let mesh_pool = MeshPool::default_pool();
+    let store = MaterialPropertyStore::new();
+    let material_dict = MaterialDictionary::new(&store);
+    let router = MaterialRouter::new(RasterPipelineKind::Null);
+    let registry = PropertyIdRegistry::new();
+    let property_ids = MaterialPipelinePropertyIds::new(&registry);
+    let ctx = DrawCollectionContext {
+        scene: &scene,
+        mesh_pool: &mesh_pool,
+        material_dict: &material_dict,
+        material_router: &router,
+        pipeline_property_ids: &property_ids,
+        shader_perm: ShaderPermutation::default(),
+        render_context: RenderingContext::UserView,
+        head_output_transform: Mat4::IDENTITY,
+        view_origin_world: Vec3::ZERO,
+        culling: None,
+        mesh_lod_bias: 2.0,
+        transform_filter: filter,
+        render_space_filter: None,
+        material_cache: None,
+        reflection_probes: None,
+        prepared: None,
+    };
+    hidden_layers_visible_in_view(&ctx)
+}
+
 /// Minimal prepared draw used to exercise transform-scale filtering before mesh lookup.
 fn prepared_draw(space_id: RenderSpaceId) -> FramePreparedDraw {
     FramePreparedDraw {
@@ -74,6 +106,7 @@ fn prepared_draw(space_id: RenderSpaceId) -> FramePreparedDraw {
         node_id: 0,
         mesh_asset_id: 7,
         is_overlay: false,
+        is_hidden: false,
         sorting_order: 0,
         skinned: false,
         world_space_deformed: false,
@@ -102,8 +135,11 @@ fn prepared_draws_share_renderer_groups_material_slots_only() {
     let mut next_renderer = second_slot.clone();
     next_renderer.renderable_index = 1;
     next_renderer.instance_id = MeshRendererInstanceId(12);
+    let mut hidden_slot = second_slot.clone();
+    hidden_slot.is_hidden = true;
 
     assert!(prepared_draws_share_renderer(&first_slot, &second_slot));
+    assert!(!prepared_draws_share_renderer(&second_slot, &hidden_slot));
     assert!(!prepared_draws_share_renderer(&second_slot, &next_renderer));
 }
 
@@ -143,6 +179,27 @@ fn draw_transform_scale_filter_rejects_line_scale() {
 #[test]
 fn draw_transform_scale_filter_rejects_point_scale() {
     assert!(transform_scale_filter_result(Vec3::ZERO));
+}
+
+#[test]
+fn hidden_layer_visibility_requires_non_empty_selective_filter() {
+    let exclude_only = CameraTransformDrawFilter {
+        only: None,
+        exclude: HashSet::from_iter([1]),
+    };
+    let empty_selective = CameraTransformDrawFilter {
+        only: Some(HashSet::new()),
+        exclude: HashSet::new(),
+    };
+    let selective = CameraTransformDrawFilter {
+        only: Some(HashSet::from_iter([1])),
+        exclude: HashSet::new(),
+    };
+
+    assert!(!hidden_visibility_for_filter(None));
+    assert!(!hidden_visibility_for_filter(Some(&exclude_only)));
+    assert!(!hidden_visibility_for_filter(Some(&empty_selective)));
+    assert!(hidden_visibility_for_filter(Some(&selective)));
 }
 
 #[test]

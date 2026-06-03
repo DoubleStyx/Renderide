@@ -75,6 +75,8 @@ pub(super) struct FramePreparedDraw {
     pub mesh_asset_id: i32,
     /// Precomputed overlay flag from the renderer's inherited layer state.
     pub is_overlay: bool,
+    /// Precomputed hidden flag from the renderer's inherited layer state.
+    pub is_hidden: bool,
     /// Host-side sorting order propagated to [`super::item::WorldMeshDrawItem::sorting_order`].
     pub sorting_order: i32,
     /// `true` when the source came from the skinned renderer list.
@@ -862,6 +864,7 @@ mod tests {
             node_id: renderable_index as i32,
             mesh_asset_id: 10,
             is_overlay: false,
+            is_hidden: false,
             sorting_order: 0,
             skinned: false,
             world_space_deformed: false,

@@ -351,7 +351,7 @@ fn output_byte_count_detects_overflow() {
 }
 
 #[test]
-fn draw_filter_prefers_only_render_list_over_excludes() {
+fn draw_filter_keeps_excludes_with_only_render_list() {
     let task = CameraRenderTask {
         only_render_list: vec![1, 2],
         exclude_render_list: vec![3],
@@ -361,7 +361,8 @@ fn draw_filter_prefers_only_render_list_over_excludes() {
     let filter = draw_filter_from_camera_render_task(&task);
 
     assert!(filter.only.as_ref().is_some_and(|only| only.contains(&1)));
-    assert!(filter.exclude.is_empty());
+    assert_eq!(filter.exclude.len(), 1);
+    assert!(filter.exclude.contains(&3));
 }
 
 #[test]
