@@ -3,9 +3,29 @@
 use crate::occlusion::cpu::pyramid::{mip_dimensions, mip_levels_for_extent};
 
 use super::readback_ring::HIZ_STAGING_RING;
+use bytemuck::{Pod, Zeroable};
+use wgpu::util::DeviceExt;
 
 /// Maximum number of mip levels retained in each Hi-Z pyramid.
 pub(crate) const HIZ_MAX_MIPS: u32 = 8;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
+struct LayerUniform {
+    layer: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
+struct DownsampleUniform {
+    src_w: u32,
+    src_h: u32,
+    dst_w: u32,
+    dst_h: u32,
+}
 
 /// Transient GPU resources reused while extent and mip count stay stable.
 pub(crate) struct HiZGpuScratch {
@@ -17,10 +37,10 @@ pub(crate) struct HiZGpuScratch {
     pub staging_desktop: [wgpu::Buffer; HIZ_STAGING_RING],
     /// Triple-buffered staging for the stereo-right pyramid.
     pub staging_r: Option<[wgpu::Buffer; HIZ_STAGING_RING]>,
-    /// Uniform buffer carrying the current target array layer for stereo mip0 dispatches.
-    pub layer_uniform: wgpu::Buffer,
-    /// Uniform buffer carrying src/dst extents for the active downsample dispatch.
-    pub downsample_uniform: wgpu::Buffer,
+    /// Immutable per-layer uniforms used by stereo mip0 dispatches.
+    pub layer_uniforms: Option<[wgpu::Buffer; 2]>,
+    /// Immutable per-mip uniforms used by downsample dispatches.
+    pub downsample_uniforms: Vec<wgpu::Buffer>,
     /// Cached bind groups for this scratch's pipelines. Invalidated alongside the scratch itself
     /// (i.e. when `extent` / `mip_levels` / stereo layout changes trigger a fresh allocation).
     pub bind_groups: HiZBindGroupCache,
@@ -60,20 +80,8 @@ impl HiZGpuScratch {
         let staging_desktop = make_staging_ring(device, staging_size, "hi_z_staging_desktop");
         let staging_r = stereo.then(|| make_staging_ring(device, staging_size, "hi_z_staging_r"));
 
-        let layer_uniform = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("hi_z_layer_uniform"),
-            size: 16,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        crate::profiling::note_resource_churn!(Buffer, "occlusion::hi_z_layer_uniform");
-        let downsample_uniform = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("hi_z_downsample_uniform"),
-            size: 16,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        crate::profiling::note_resource_churn!(Buffer, "occlusion::hi_z_downsample_uniform");
+        let layer_uniforms = stereo.then(|| make_layer_uniforms(device));
+        let downsample_uniforms = make_downsample_uniforms(device, (bw, bh), mip_levels);
 
         let bind_groups = HiZBindGroupCache::with_shape(mip_levels, stereo);
         Some(Self {
@@ -81,8 +89,8 @@ impl HiZGpuScratch {
             mip_levels,
             staging_desktop,
             staging_r,
-            layer_uniform,
-            downsample_uniform,
+            layer_uniforms,
+            downsample_uniforms,
             bind_groups,
         })
     }
@@ -222,6 +230,63 @@ fn staging_size_pyramid(base_w: u32, base_h: u32, mip_levels: u32) -> u64 {
     total
 }
 
+fn make_layer_uniforms(device: &wgpu::Device) -> [wgpu::Buffer; 2] {
+    std::array::from_fn(|layer| {
+        let payload = layer_uniform_for_layer(layer as u32);
+        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(match layer {
+                0 => "hi_z_layer_uniform_0",
+                _ => "hi_z_layer_uniform_1",
+            }),
+            contents: bytemuck::bytes_of(&payload),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        crate::profiling::note_resource_churn!(Buffer, "occlusion::hi_z_layer_uniform");
+        buffer
+    })
+}
+
+fn layer_uniform_for_layer(layer: u32) -> LayerUniform {
+    LayerUniform {
+        layer,
+        _pad0: 0,
+        _pad1: 0,
+        _pad2: 0,
+    }
+}
+
+fn make_downsample_uniforms(
+    device: &wgpu::Device,
+    extent: (u32, u32),
+    mip_levels: u32,
+) -> Vec<wgpu::Buffer> {
+    (0..mip_levels.saturating_sub(1))
+        .filter_map(|mip| {
+            let payload = downsample_uniform_for_mip(extent, mip)?;
+            let label = format!("hi_z_downsample_uniform_{mip}");
+            let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(label.as_str()),
+                contents: bytemuck::bytes_of(&payload),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            crate::profiling::note_resource_churn!(Buffer, "occlusion::hi_z_downsample_uniform");
+            Some(buffer)
+        })
+        .collect()
+}
+
+fn downsample_uniform_for_mip(extent: (u32, u32), mip: u32) -> Option<DownsampleUniform> {
+    let (base_w, base_h) = extent;
+    let (src_w, src_h) = mip_dimensions(base_w, base_h, mip)?;
+    let (dst_w, dst_h) = mip_dimensions(base_w, base_h, mip + 1)?;
+    Some(DownsampleUniform {
+        src_w,
+        src_h,
+        dst_w,
+        dst_h,
+    })
+}
+
 fn make_staging_ring(
     device: &wgpu::Device,
     staging_size: u64,
@@ -237,4 +302,36 @@ fn make_staging_ring(
         crate::profiling::note_resource_churn!(Buffer, "occlusion::hi_z_staging_ring");
         buffer
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::mem::size_of;
+
+    use super::{LayerUniform, downsample_uniform_for_mip, layer_uniform_for_layer};
+
+    #[test]
+    fn layer_uniform_payloads_select_expected_layers() {
+        let left = layer_uniform_for_layer(0);
+        let right = layer_uniform_for_layer(1);
+
+        assert_eq!(left.layer, 0);
+        assert_eq!(right.layer, 1);
+        assert_eq!(size_of::<LayerUniform>(), 16);
+    }
+
+    #[test]
+    fn downsample_uniform_payloads_match_mip_dimensions() {
+        let mip0 = downsample_uniform_for_mip((9, 5), 0).unwrap();
+        let mip1 = downsample_uniform_for_mip((9, 5), 1).unwrap();
+
+        assert_eq!(
+            (mip0.src_w, mip0.src_h, mip0.dst_w, mip0.dst_h),
+            (9, 5, 4, 2)
+        );
+        assert_eq!(
+            (mip1.src_w, mip1.src_h, mip1.dst_w, mip1.dst_h),
+            (4, 2, 2, 1)
+        );
+    }
 }
