@@ -64,6 +64,13 @@ impl SurfaceCounters {
         self.present_cvar.notify_all();
     }
 
+    /// Number of submitted surface-carrying batches whose present call has not completed.
+    pub(super) fn in_flight_count(&self) -> u64 {
+        let submitted = self.frames_submitted.load(Ordering::Acquire);
+        let presented = self.frames_presented.load(Ordering::Acquire);
+        submitted.saturating_sub(presented)
+    }
+
     /// Blocks until the number of in-flight surface-carrying batches is `<= max_in_flight`.
     ///
     /// With `max_in_flight == 0`, this waits until every previously-submitted surface
@@ -85,9 +92,7 @@ impl SurfaceCounters {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         loop {
-            let submitted = self.frames_submitted.load(Ordering::Acquire);
-            let presented = self.frames_presented.load(Ordering::Acquire);
-            if submitted.saturating_sub(presented) <= max_in_flight {
+            if self.in_flight_count() <= max_in_flight {
                 return;
             }
             guard = self
@@ -110,6 +115,19 @@ mod tests {
         let counters = SurfaceCounters::default();
         // No submissions made; presented == submitted == 0, so wait returns at once.
         counters.wait_for_present_catchup(0);
+        assert_eq!(counters.in_flight_count(), 0);
+    }
+
+    #[test]
+    fn in_flight_count_tracks_submitted_minus_presented() {
+        let counters = SurfaceCounters::default();
+        counters.note_submitted();
+        counters.note_submitted();
+        assert_eq!(counters.in_flight_count(), 2);
+        counters.note_presented();
+        assert_eq!(counters.in_flight_count(), 1);
+        counters.note_presented();
+        assert_eq!(counters.in_flight_count(), 0);
     }
 
     #[test]

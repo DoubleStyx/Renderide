@@ -21,6 +21,9 @@ fn stubs_are_accessible_without_tracy_feature() {
     plot_fps_cap_active(240);
     plot_window_focused(true);
     plot_surface_acquire_outcome(true, false, false);
+    plot_surface_in_flight_count(1);
+    plot_surface_previous_present_wait_ms(std::time::Duration::from_millis(2));
+    plot_surface_get_current_texture_ms(std::time::Duration::from_millis(3));
     plot_event_loop_wait_ms(11.0);
     plot_event_loop_idle_ms(11.0);
     plot_render_world_maintenance(crate::world_mesh::RenderWorldMaintenanceStats::default());
