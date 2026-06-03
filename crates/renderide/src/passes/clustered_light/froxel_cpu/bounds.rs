@@ -1,6 +1,7 @@
 use glam::{Mat4, Vec2, Vec3, Vec4};
 use rayon::prelude::*;
 
+use crate::cpu_parallelism::{current_reference_worker_count, reference_worker_count};
 use crate::gpu::GpuLight;
 use crate::world_mesh::cluster::{ClusterFrameParams, TILE_SIZE, sanitize_cluster_clip_planes};
 
@@ -20,6 +21,11 @@ const SPOT_CULL_MIN_COS_HALF: f32 = 0.999_961_9;
 const SPOT_CULL_WIDE_COS_HALF: f32 = 0.5;
 /// Small distance pad for cone/sphere boundary comparisons.
 const SPOT_CULL_DISTANCE_EPSILON: f32 = 0.00001;
+/// Froxel spheres assigned to one Rayon leaf when building spotlight culling bounds.
+const FROXEL_SPHERE_PARALLEL_CHUNK_FROXELS: usize = 512;
+/// Froxel count at which spotlight culling sphere generation may use Rayon.
+pub(super) const FROXEL_SPHERE_PARALLEL_MIN_FROXELS: usize =
+    FROXEL_SPHERE_PARALLEL_CHUNK_FROXELS * 2;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct FroxelBounds {
@@ -64,6 +70,39 @@ pub(super) struct FroxelSphere {
     pub(super) center: Vec3,
     /// Sphere radius in view-space units.
     pub(super) radius: f32,
+}
+
+/// Flat per-eye froxel sphere cache used by spotlight fine culling.
+#[derive(Clone, Debug, Default)]
+pub(super) struct EyeFroxelSpheres {
+    spheres: Vec<FroxelSphere>,
+    clusters_per_eye: usize,
+}
+
+impl EyeFroxelSpheres {
+    fn empty() -> Self {
+        Self::default()
+    }
+
+    fn new(spheres: Vec<FroxelSphere>, clusters_per_eye: usize) -> Self {
+        Self {
+            spheres,
+            clusters_per_eye,
+        }
+    }
+
+    fn eye(&self, eye_idx: usize) -> &[FroxelSphere] {
+        if self.clusters_per_eye == 0 {
+            return &[];
+        }
+        let Some(start) = eye_idx.checked_mul(self.clusters_per_eye) else {
+            return &[];
+        };
+        let Some(end) = start.checked_add(self.clusters_per_eye) else {
+            return &[];
+        };
+        self.spheres.get(start..end).unwrap_or(&[])
+    }
 }
 
 /// Conservative assignment data for one point or spot light.
@@ -183,31 +222,36 @@ pub(super) fn build_eye_froxel_spheres(
     lights: &[GpuLight],
     eye_params: &[ClusterFrameParams],
     layouts: &[FroxelLayout],
-) -> Option<Vec<Vec<FroxelSphere>>> {
+) -> Option<EyeFroxelSpheres> {
     if !lights
         .iter()
         .any(|light| light.light_type == LIGHT_TYPE_SPOT)
     {
-        return Some(Vec::new());
+        return Some(EyeFroxelSpheres::empty());
     }
 
     profiling::scope!("clustered_light::build_eye_froxel_spheres");
-    let mut all_spheres = Vec::with_capacity(eye_params.len());
+    let Some(&first_layout) = layouts.first() else {
+        return Some(EyeFroxelSpheres::empty());
+    };
+    let clusters_per_eye = first_layout.cluster_count()?;
+    let total_spheres = clusters_per_eye.checked_mul(eye_params.len())?;
+    let mut all_spheres = Vec::with_capacity(total_spheres);
     for (params, &layout) in eye_params.iter().zip(layouts.iter()) {
-        all_spheres.push(froxel_bounding_spheres(*params, layout)?);
+        if layout.cluster_count()? != clusters_per_eye {
+            return None;
+        }
+        all_spheres.extend(froxel_bounding_spheres(*params, layout)?);
     }
-    Some(all_spheres)
+    Some(EyeFroxelSpheres::new(all_spheres, clusters_per_eye))
 }
 
 /// Returns one eye's froxel spheres, or an empty slice when no spotlights need them.
 pub(super) fn eye_froxel_spheres(
-    froxel_spheres_by_eye: &[Vec<FroxelSphere>],
+    froxel_spheres_by_eye: &EyeFroxelSpheres,
     eye_idx: usize,
 ) -> &[FroxelSphere] {
-    froxel_spheres_by_eye
-        .get(eye_idx)
-        .map(Vec::as_slice)
-        .unwrap_or(&[])
+    froxel_spheres_by_eye.eye(eye_idx)
 }
 
 /// Builds bounding spheres for every froxel in one eye.
@@ -220,8 +264,60 @@ fn froxel_bounding_spheres(
         return None;
     }
 
-    (0..layout.cluster_count_z)
+    let cluster_count = layout.cluster_count()?;
+    let depth_params = cluster_depth_params(params, layout);
+    if should_parallelize_froxel_spheres(cluster_count) {
+        return froxel_bounding_spheres_parallel(
+            params,
+            inv_proj,
+            layout,
+            &depth_params,
+            cluster_count,
+        );
+    }
+    froxel_bounding_spheres_serial(params, inv_proj, layout, &depth_params, cluster_count)
+}
+
+fn froxel_bounding_spheres_serial(
+    params: ClusterFrameParams,
+    inv_proj: Mat4,
+    layout: FroxelLayout,
+    depth_params: &[ClusterDepthParams],
+    cluster_count: usize,
+) -> Option<Vec<FroxelSphere>> {
+    let mut spheres = Vec::with_capacity(cluster_count);
+    for cluster_idx in 0..cluster_count {
+        let (x, y, depth_params) = cluster_coords_from_linear(layout, depth_params, cluster_idx)?;
+        spheres.push(cluster_aabb(params, inv_proj, layout, x, y, depth_params)?.bounding_sphere());
+    }
+    Some(spheres)
+}
+
+fn froxel_bounding_spheres_parallel(
+    params: ClusterFrameParams,
+    inv_proj: Mat4,
+    layout: FroxelLayout,
+    depth_params: &[ClusterDepthParams],
+    cluster_count: usize,
+) -> Option<Vec<FroxelSphere>> {
+    profiling::scope!("clustered_light::build_eye_froxel_spheres_parallel");
+    (0..cluster_count)
         .into_par_iter()
+        .with_min_len(FROXEL_SPHERE_PARALLEL_CHUNK_FROXELS)
+        .map(|cluster_idx| {
+            let (x, y, depth_params) =
+                cluster_coords_from_linear(layout, depth_params, cluster_idx)?;
+            cluster_aabb(params, inv_proj, layout, x, y, depth_params)
+                .map(FroxelAabb::bounding_sphere)
+        })
+        .collect()
+}
+
+fn cluster_depth_params(
+    params: ClusterFrameParams,
+    layout: FroxelLayout,
+) -> Vec<ClusterDepthParams> {
+    (0..layout.cluster_count_z)
         .map(|z| {
             let depth_bounds = cluster_z_depth_bounds(
                 z,
@@ -235,14 +331,38 @@ fn froxel_bounding_spheres(
                 far_depth: depth_bounds.1,
             }
         })
-        .flat_map_iter(|depth_params| (0..layout.cluster_count_y).map(move |y| (y, depth_params)))
-        .flat_map_iter(|(y, depth_params)| {
-            (0..layout.cluster_count_x).map(move |x| (x, y, depth_params))
-        })
-        .map(|(x, y, depth_params)| {
-            cluster_aabb(params, inv_proj, layout, x, y, depth_params).map(|c| c.bounding_sphere())
-        })
         .collect()
+}
+
+fn cluster_coords_from_linear(
+    layout: FroxelLayout,
+    depth_params: &[ClusterDepthParams],
+    cluster_idx: usize,
+) -> Option<(u32, u32, ClusterDepthParams)> {
+    let cluster_count_x = layout.cluster_count_x as usize;
+    let cluster_count_y = layout.cluster_count_y as usize;
+    let xy_count = cluster_count_x.saturating_mul(cluster_count_y).max(1);
+    let z = cluster_idx / xy_count;
+    let xy = cluster_idx % xy_count;
+    let y = xy / cluster_count_x.max(1);
+    let x = xy % cluster_count_x.max(1);
+    let depth_params = depth_params.get(z).copied()?;
+    Some((x as u32, y as u32, depth_params))
+}
+
+/// Returns whether spotlight froxel sphere generation should fan out over Rayon.
+#[inline]
+pub(super) fn should_parallelize_froxel_spheres(froxel_count: usize) -> bool {
+    should_parallelize_froxel_spheres_with_workers(froxel_count, current_reference_worker_count())
+}
+
+/// Returns whether spotlight froxel sphere generation should fan out for a known worker count.
+#[inline]
+pub(super) const fn should_parallelize_froxel_spheres_with_workers(
+    froxel_count: usize,
+    worker_count: usize,
+) -> bool {
+    reference_worker_count(worker_count) > 1 && froxel_count >= FROXEL_SPHERE_PARALLEL_MIN_FROXELS
 }
 
 /// Cached logarithmic clustered-depth bounds for one Z slice.

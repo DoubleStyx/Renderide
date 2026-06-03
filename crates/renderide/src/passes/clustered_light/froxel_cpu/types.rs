@@ -1,7 +1,7 @@
 use crate::gpu::GpuLight;
 use crate::world_mesh::cluster::{CLUSTER_COUNT_Z, ClusterFrameParams};
 
-use super::bounds::FroxelSphere;
+use super::bounds::EyeFroxelSpheres;
 
 /// Cluster-grid layout for one eye.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,9 +59,16 @@ pub(in crate::passes::clustered_light) struct CpuFroxelStats {
     pub culled_lights: u32,
 }
 
-pub(super) struct CpuFroxelCountChunk {
+/// Flat per-light-chunk froxel membership counts for the parallel CPU path.
+pub(super) struct CpuFroxelChunkCounts {
+    /// Chunk-major count rows addressed by `chunk_idx * total_clusters + cluster_id`.
     pub(super) counts: Vec<u32>,
-    pub(super) stats: CpuFroxelStats,
+    /// Per-light-chunk assignment diagnostics.
+    pub(super) stats: Vec<CpuFroxelStats>,
+    /// Number of light chunks in this frame's parallel build.
+    pub(super) chunk_count: usize,
+    /// Number of froxels across all eyes in this frame.
+    pub(super) total_clusters: usize,
 }
 
 /// Local prefix-sum result for one cluster-count chunk.
@@ -72,11 +79,18 @@ pub(super) struct CpuFroxelPrefixChunk {
     pub(super) total_count: u64,
 }
 
+/// Shared read-only inputs used by the parallel CPU froxel passes.
 pub(super) struct CpuFroxelParallelInputs<'a> {
+    /// Lights submitted for the current clustered-light build.
     pub(super) lights: &'a [GpuLight],
+    /// Per-eye cluster frame parameters.
     pub(super) eye_params: &'a [ClusterFrameParams],
+    /// Validated per-eye froxel layouts.
     pub(super) layouts: &'a [FroxelLayout],
-    pub(super) froxel_spheres_by_eye: &'a [Vec<FroxelSphere>],
+    /// Flat spotlight culling sphere cache.
+    pub(super) froxel_spheres_by_eye: &'a EyeFroxelSpheres,
+    /// Froxel count expected for each eye.
     pub(super) expected_clusters: usize,
+    /// Froxel count across every eye.
     pub(super) total_clusters: usize,
 }

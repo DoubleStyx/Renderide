@@ -1,6 +1,6 @@
 use crate::cpu_parallelism::{
     LIGHT_WORK_CHUNK_LIGHTS, LIGHT_WORK_PARALLEL_MIN_LIGHTS, admit_light_work_items,
-    current_reference_worker_count, record_parallel_admission,
+    current_reference_worker_count, record_parallel_admission, reference_worker_count,
 };
 use crate::gpu::GpuLight;
 use crate::world_mesh::cluster::ClusterFrameParams;
@@ -19,8 +19,8 @@ pub(super) const CPU_FROXEL_LIGHT_CHUNK_SIZE: usize = LIGHT_WORK_CHUNK_LIGHTS;
 pub(super) const CPU_FROXEL_PARALLEL_MIN_LIGHTS: usize = LIGHT_WORK_PARALLEL_MIN_LIGHTS;
 /// CPU froxel light chunks assigned to one worker task.
 pub(super) const CPU_FROXEL_PARALLEL_CHUNK_TASKS: usize = 1;
-/// Cluster-count stride for local prefix-sum chunks.
-pub(super) const CPU_FROXEL_PREFIX_CHUNK_SIZE: usize = 128;
+/// Cluster-count stride for local prefix-sum and offset chunks.
+pub(super) const CPU_FROXEL_PREFIX_CHUNK_SIZE: usize = 512;
 /// Prefix chunks assigned to one Rayon worker leaf.
 pub(super) const CPU_FROXEL_PREFIX_CHUNKS_PER_TASK: usize = 1;
 /// Froxel count at which count merge, offset, and prefix work uses Rayon.
@@ -69,7 +69,44 @@ pub(super) const fn should_parallelize_cpu_froxel_lights_with_workers(
 /// Returns whether CPU froxel prefix and merge helpers should use Rayon.
 #[inline]
 pub(super) fn should_parallelize_cpu_froxel_prefix(cluster_count: usize) -> bool {
-    cluster_count >= CPU_FROXEL_PREFIX_PARALLEL_MIN_CLUSTERS
+    should_parallelize_cpu_froxel_prefix_with_workers(
+        cluster_count,
+        current_reference_worker_count(),
+    )
+}
+
+/// Returns whether CPU froxel prefix and merge helpers should use Rayon for a known worker count.
+#[inline]
+pub(super) const fn should_parallelize_cpu_froxel_prefix_with_workers(
+    cluster_count: usize,
+    worker_count: usize,
+) -> bool {
+    reference_worker_count(worker_count) > 1
+        && cluster_count >= CPU_FROXEL_PREFIX_PARALLEL_MIN_CLUSTERS
+}
+
+/// Returns whether CPU froxel chunk-offset building should use Rayon.
+#[inline]
+pub(super) fn should_parallelize_cpu_froxel_offsets(
+    cluster_count: usize,
+    chunk_count: usize,
+) -> bool {
+    should_parallelize_cpu_froxel_offsets_with_workers(
+        cluster_count,
+        chunk_count,
+        current_reference_worker_count(),
+    )
+}
+
+/// Returns whether CPU froxel chunk-offset building should use Rayon for a known worker count.
+#[inline]
+pub(super) const fn should_parallelize_cpu_froxel_offsets_with_workers(
+    cluster_count: usize,
+    chunk_count: usize,
+    worker_count: usize,
+) -> bool {
+    chunk_count >= 2
+        && should_parallelize_cpu_froxel_prefix_with_workers(cluster_count, worker_count)
 }
 
 pub(super) fn validated_eye_layouts(
