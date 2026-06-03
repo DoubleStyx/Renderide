@@ -382,11 +382,40 @@ fn billboard_render_buffer_uses_indexed_corner_separate_from_sample_uv() -> io::
             && src.contains("fn screen_clamped_billboard_size("),
         "Render-buffer billboards must apply renderer alignment and screen-size clamp metadata"
     );
+    for (constant_name, bit_index) in [
+        ("BILLBOARDUNLIT_KW_MUL_ALPHA_INTENSITY", 2),
+        ("BILLBOARDUNLIT_KW_MUL_RGB_BY_ALPHA", 3),
+        ("BILLBOARDUNLIT_KW_OFFSET_TEXTURE", 4),
+        ("BILLBOARDUNLIT_KW_POINT_ROTATION", 5),
+        ("BILLBOARDUNLIT_KW_POINT_SIZE", 6),
+        ("BILLBOARDUNLIT_KW_POINT_UV", 7),
+        ("BILLBOARDUNLIT_KW_POLARUV", 8),
+        ("BILLBOARDUNLIT_KW_RIGHT_EYE_ST", 9),
+        ("BILLBOARDUNLIT_KW_TEXTURE", 10),
+        ("BILLBOARDUNLIT_KW_VERTEX_HDRSRGB_COLOR", 11),
+        ("BILLBOARDUNLIT_KW_VERTEX_HDRSRGBALPHA_COLOR", 12),
+        ("BILLBOARDUNLIT_KW_VERTEX_LINEAR_COLOR", 13),
+        ("BILLBOARDUNLIT_KW_VERTEX_SRGB_COLOR", 14),
+        ("BILLBOARDUNLIT_KW_VERTEXCOLORS", 15),
+        ("BILLBOARDUNLIT_KW_RENDER_BUFFER", 16),
+    ] {
+        assert!(
+            src.contains(&format!("const {constant_name}: u32 = 1u << {bit_index}u;")),
+            "{constant_name} must keep Billboard/Unlit's native sorted keyword bit order"
+        );
+    }
     assert!(
-        src.contains("if (kw_ALPHATEST() && !mask_clip && col.a < mat._Cutoff)")
-            && src.contains("if (mask_clip && mask_lum < mat._Cutoff)")
-            && !src.contains("<= mat._Cutoff"),
+        src.contains("const BILLBOARDUNLIT_KW_UNLIT_MASK_TEXTURE_CLIP: u32 = 1u << 17u;")
+            && src.contains("const BILLBOARDUNLIT_KW_UNLIT_MASK_TEXTURE_MUL: u32 = 1u << 18u;"),
+        "Unlit mask support for render-buffer billboards must use compatibility bits after native Billboard/Unlit keywords"
+    );
+    assert!(
+        src.contains("if (kw_ALPHATEST() && !mask_clip && col.a < mat._Cutoff)"),
         "Billboard/Unlit alpha test must match Unity clip(col.a - _Cutoff) equality semantics"
+    );
+    assert!(
+        src.contains("if (mask_clip && mask_lum <= mat._Cutoff)"),
+        "Unlit mask compatibility for render-buffer billboards must preserve Unlit's mask discard threshold"
     );
     assert!(
         src.contains("return facing_basis(center_world, view_layer, pointdata.z, false);"),

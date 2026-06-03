@@ -54,23 +54,23 @@ struct BillboardUnlitMaterial {
 
 const BILLBOARDUNLIT_KW_ALPHATEST: u32 = 1u << 0u;
 const BILLBOARDUNLIT_KW_COLOR: u32 = 1u << 1u;
-const BILLBOARDUNLIT_KW_MASK_TEXTURE_CLIP: u32 = 1u << 2u;
-const BILLBOARDUNLIT_KW_MASK_TEXTURE_MUL: u32 = 1u << 3u;
-const BILLBOARDUNLIT_KW_MUL_ALPHA_INTENSITY: u32 = 1u << 4u;
-const BILLBOARDUNLIT_KW_MUL_RGB_BY_ALPHA: u32 = 1u << 5u;
-const BILLBOARDUNLIT_KW_OFFSET_TEXTURE: u32 = 1u << 6u;
-const BILLBOARDUNLIT_KW_POINT_ROTATION: u32 = 1u << 7u;
-const BILLBOARDUNLIT_KW_POINT_SIZE: u32 = 1u << 8u;
-const BILLBOARDUNLIT_KW_POINT_UV: u32 = 1u << 9u;
-const BILLBOARDUNLIT_KW_POLARUV: u32 = 1u << 10u;
-const BILLBOARDUNLIT_KW_RIGHT_EYE_ST: u32 = 1u << 11u;
-const BILLBOARDUNLIT_KW_TEXTURE: u32 = 1u << 12u;
-const BILLBOARDUNLIT_KW_VERTEX_HDRSRGB_COLOR: u32 = 1u << 13u;
-const BILLBOARDUNLIT_KW_VERTEX_HDRSRGBALPHA_COLOR: u32 = 1u << 14u;
-const BILLBOARDUNLIT_KW_VERTEX_LINEAR_COLOR: u32 = 1u << 15u;
-const BILLBOARDUNLIT_KW_VERTEX_SRGB_COLOR: u32 = 1u << 16u;
-const BILLBOARDUNLIT_KW_VERTEXCOLORS: u32 = 1u << 17u;
-const BILLBOARDUNLIT_KW_RENDER_BUFFER: u32 = 1u << 18u;
+const BILLBOARDUNLIT_KW_MUL_ALPHA_INTENSITY: u32 = 1u << 2u;
+const BILLBOARDUNLIT_KW_MUL_RGB_BY_ALPHA: u32 = 1u << 3u;
+const BILLBOARDUNLIT_KW_OFFSET_TEXTURE: u32 = 1u << 4u;
+const BILLBOARDUNLIT_KW_POINT_ROTATION: u32 = 1u << 5u;
+const BILLBOARDUNLIT_KW_POINT_SIZE: u32 = 1u << 6u;
+const BILLBOARDUNLIT_KW_POINT_UV: u32 = 1u << 7u;
+const BILLBOARDUNLIT_KW_POLARUV: u32 = 1u << 8u;
+const BILLBOARDUNLIT_KW_RIGHT_EYE_ST: u32 = 1u << 9u;
+const BILLBOARDUNLIT_KW_TEXTURE: u32 = 1u << 10u;
+const BILLBOARDUNLIT_KW_VERTEX_HDRSRGB_COLOR: u32 = 1u << 11u;
+const BILLBOARDUNLIT_KW_VERTEX_HDRSRGBALPHA_COLOR: u32 = 1u << 12u;
+const BILLBOARDUNLIT_KW_VERTEX_LINEAR_COLOR: u32 = 1u << 13u;
+const BILLBOARDUNLIT_KW_VERTEX_SRGB_COLOR: u32 = 1u << 14u;
+const BILLBOARDUNLIT_KW_VERTEXCOLORS: u32 = 1u << 15u;
+const BILLBOARDUNLIT_KW_RENDER_BUFFER: u32 = 1u << 16u;
+const BILLBOARDUNLIT_KW_UNLIT_MASK_TEXTURE_CLIP: u32 = 1u << 17u;
+const BILLBOARDUNLIT_KW_UNLIT_MASK_TEXTURE_MUL: u32 = 1u << 18u;
 
 @group(1) @binding(0) var<uniform> mat: BillboardUnlitMaterial;
 @group(1) @binding(1) var _Tex: texture_2d<f32>;
@@ -92,12 +92,12 @@ fn kw_COLOR() -> bool {
     return bb_kw(BILLBOARDUNLIT_KW_COLOR);
 }
 
-fn kw_MASK_TEXTURE_CLIP() -> bool {
-    return bb_kw(BILLBOARDUNLIT_KW_MASK_TEXTURE_CLIP);
+fn kw_UNLIT_MASK_TEXTURE_CLIP() -> bool {
+    return bb_kw(BILLBOARDUNLIT_KW_UNLIT_MASK_TEXTURE_CLIP);
 }
 
-fn kw_MASK_TEXTURE_MUL() -> bool {
-    return bb_kw(BILLBOARDUNLIT_KW_MASK_TEXTURE_MUL);
+fn kw_UNLIT_MASK_TEXTURE_MUL() -> bool {
+    return bb_kw(BILLBOARDUNLIT_KW_UNLIT_MASK_TEXTURE_MUL);
 }
 
 fn kw_MUL_ALPHA_INTENSITY() -> bool {
@@ -442,8 +442,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         col = vec4<f32>(1.0);
     }
 
-    let mask_clip = kw_MASK_TEXTURE_CLIP();
-    let mask_mul = kw_MASK_TEXTURE_MUL();
+    let mask_clip = kw_UNLIT_MASK_TEXTURE_CLIP();
+    let mask_mul = kw_UNLIT_MASK_TEXTURE_MUL();
     if (mask_mul || mask_clip) {
         let uv_mask = uvu::apply_st(in.uv, mat._MaskTex_ST);
         let mask_sample = ts::sample_tex_2d(_MaskTex, _MaskTex_sampler, uv_mask, mat._MaskTex_LodBias);
@@ -452,7 +452,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         if (mask_mul) {
             col.a = col.a * mask_lum;
         }
-        if (mask_clip && mask_lum < mat._Cutoff) {
+        if (mask_clip && mask_lum <= mat._Cutoff) {
             discard;
         }
     }
