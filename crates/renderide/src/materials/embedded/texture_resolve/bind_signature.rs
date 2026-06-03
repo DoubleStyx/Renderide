@@ -109,6 +109,7 @@ pub(crate) fn hash_texture_entry_signature_contribution(
             if let Some(t) = pools.texture3d.get(asset_id) {
                 let resident = t.mip_levels_resident > 0;
                 resident.hash(hasher);
+                t.view_generation.hash(hasher);
                 t.mip_levels_resident.hash(hasher);
                 hash_sampler_state(&t.sampler, hasher);
             } else {
@@ -119,6 +120,7 @@ pub(crate) fn hash_texture_entry_signature_contribution(
             if let Some(t) = pools.cubemap.get(asset_id) {
                 let resident = t.mip_levels_resident > 0;
                 resident.hash(hasher);
+                t.allocation_generation.hash(hasher);
                 t.mip_levels_resident.hash(hasher);
                 t.storage_v_inverted.hash(hasher);
                 hash_sampler_state(&t.sampler, hasher);
@@ -131,6 +133,7 @@ pub(crate) fn hash_texture_entry_signature_contribution(
                 false.hash(hasher);
             } else if let Some(t) = pools.render_texture.get(asset_id) {
                 t.is_sampleable().hash(hasher);
+                t.color_view_generation.hash(hasher);
                 hash_sampler_state(&t.sampler, hasher);
             } else {
                 false.hash(hasher);
@@ -139,6 +142,7 @@ pub(crate) fn hash_texture_entry_signature_contribution(
         ResolvedTextureBinding::VideoTexture { asset_id } => {
             if let Some(t) = pools.video_texture.get(asset_id) {
                 t.is_sampleable().hash(hasher);
+                t.view_generation.hash(hasher);
                 hash_sampler_state(&t.sampler, hasher);
             } else {
                 false.hash(hasher);

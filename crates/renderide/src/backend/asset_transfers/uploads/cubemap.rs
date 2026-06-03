@@ -38,7 +38,7 @@ pub fn on_set_cubemap_format(
 ) {
     let id = f.asset_id;
     queue.catalogs.cubemap_formats.insert(id, f.clone());
-    let props = queue.catalogs.cubemap_properties.get(&id);
+    let props = queue.catalogs.cubemap_properties.get(&id).cloned();
     let Some(device) = queue.gpu.gpu_device.clone() else {
         send_cubemap_result(
             ipc,
@@ -58,7 +58,24 @@ pub fn on_set_cubemap_format(
         );
         return;
     };
-    let Some(tex) = GpuCubemap::new_from_format(device.as_ref(), limits.as_ref(), &f, props) else {
+    if let Some(cubemap) = queue.pools.cubemap_pool.get_mut(id)
+        && cubemap.allocation_matches_format(device.as_ref(), limits.as_ref(), &f)
+    {
+        cubemap.apply_format_metadata(&f, props.as_ref());
+        replay_pending_cubemap_uploads_for_asset(queue, id);
+        send_cubemap_result(ipc, id, TextureUpdateResultType::FORMAT_SET, false);
+        logger::trace!(
+            "cubemap {} format {:?} size={} mips={} reused resident allocation",
+            id,
+            f.format,
+            f.size,
+            f.mipmap_count
+        );
+        return;
+    }
+    let Some(tex) =
+        GpuCubemap::new_from_format(device.as_ref(), limits.as_ref(), &f, props.as_ref())
+    else {
         logger::warn!("cubemap {id}: SetCubemapFormat rejected (bad size or device)");
         send_cubemap_result(ipc, id, TextureUpdateResultType::FORMAT_SET, false);
         return;
