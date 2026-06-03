@@ -1,5 +1,5 @@
 use super::parser::{build_manifest, parse_action_manifest};
-use super::types::{ActionType, ExtensionGate, ManifestError};
+use super::types::{ActionType, ExtensionGate, Manifest, ManifestError};
 
 const ACTIONS_OK: &str = r#"
 [action_set]
@@ -172,16 +172,12 @@ fn rejects_duplicate_profile_path() {
     }
 }
 
-/// Asserts the shipped `assets/xr/*` files parse cleanly and cover every expected profile.
-///
-/// Anchors the transliteration so future edits that typo an action id, mis-route a haptic
-/// binding, or drop a profile fail fast at `cargo test` rather than only at session init.
-#[test]
-fn shipped_manifest_loads() {
+fn shipped_manifest() -> Manifest {
     const ACTIONS: &str = include_str!("../../../../assets/xr/actions.toml");
     const TOUCH: &str = include_str!("../../../../assets/xr/bindings/oculus_touch_controller.toml");
     const INDEX: &str = include_str!("../../../../assets/xr/bindings/valve_index_controller.toml");
     const VIVE: &str = include_str!("../../../../assets/xr/bindings/htc_vive_controller.toml");
+    const VIVE_TRACKER: &str = include_str!("../../../../assets/xr/bindings/htc_vive_tracker.toml");
     const VIVE_COSMOS: &str =
         include_str!("../../../../assets/xr/bindings/htc_vive_cosmos_controller.toml");
     const VIVE_FOCUS3: &str =
@@ -208,6 +204,7 @@ fn shipped_manifest_loads() {
         ("oculus_touch_controller.toml", TOUCH),
         ("valve_index_controller.toml", INDEX),
         ("htc_vive_controller.toml", VIVE),
+        ("htc_vive_tracker.toml", VIVE_TRACKER),
         ("htc_vive_cosmos_controller.toml", VIVE_COSMOS),
         ("htc_vive_focus3_controller.toml", VIVE_FOCUS3),
         ("microsoft_motion_controller.toml", WMR),
@@ -220,12 +217,21 @@ fn shipped_manifest_loads() {
         ("khr_generic_controller.toml", GENERIC),
         ("khr_simple_controller.toml", SIMPLE),
     ];
-    let manifest = build_manifest(ACTIONS, &sources).expect("shipped manifest validates");
+    build_manifest(ACTIONS, &sources).expect("shipped manifest validates")
+}
+
+/// Asserts the shipped `assets/xr/*` files parse cleanly and cover every expected profile.
+///
+/// Anchors the transliteration so future edits that typo an action id, mis-route a haptic
+/// binding, or drop a profile fail fast at `cargo test` rather than only at session init.
+#[test]
+fn shipped_manifest_loads() {
+    let manifest = shipped_manifest();
 
     assert_eq!(
         manifest.profiles.len(),
-        14,
-        "expected 14 shipped profiles, got {}",
+        15,
+        "expected 15 shipped profiles, got {}",
         manifest.profiles.len()
     );
     assert!(
@@ -264,6 +270,7 @@ fn shipped_manifest_loads() {
         "/interaction_profiles/oculus/touch_controller",
         "/interaction_profiles/valve/index_controller",
         "/interaction_profiles/htc/vive_controller",
+        "/interaction_profiles/htc/vive_tracker_htcx",
         "/interaction_profiles/htc/vive_cosmos_controller",
         "/interaction_profiles/htc/vive_focus3_controller",
         "/interaction_profiles/microsoft/motion_controller",
@@ -284,6 +291,28 @@ fn shipped_manifest_loads() {
 }
 
 #[test]
+fn shipped_vive_tracker_profile_is_body_pose_only() {
+    let manifest = shipped_manifest();
+    let tracker_profile = manifest
+        .profiles
+        .iter()
+        .find(|profile| profile.profile == "/interaction_profiles/htc/vive_tracker_htcx")
+        .expect("tracker profile");
+    assert_eq!(
+        tracker_profile.extension_gate,
+        Some(ExtensionGate::HtcxViveTrackerInteraction)
+    );
+    assert_eq!(tracker_profile.bindings.len(), 14);
+    for binding in &tracker_profile.bindings {
+        assert!(binding.action.starts_with("tracker_"));
+        assert!(binding.action.ends_with("_grip_pose"));
+        assert!(binding.path.starts_with("/user/vive_tracker_htcx/role/"));
+        assert!(binding.path.ends_with("/input/grip/pose"));
+        assert_eq!(binding.extension_gate, None);
+    }
+}
+
+#[test]
 fn accepts_known_extension_gate() {
     let src = r#"
 profile = "/interaction_profiles/hp/mixed_reality_controller"
@@ -297,6 +326,23 @@ path = "/user/hand/left/input/trigger/value"
     assert_eq!(
         m.profiles[0].extension_gate,
         Some(ExtensionGate::ExtHpMixedRealityController)
+    );
+}
+
+#[test]
+fn accepts_tracker_extension_gate() {
+    let src = r#"
+profile = "/interaction_profiles/htc/vive_tracker_htcx"
+extension_gate = "htcx_vive_tracker_interaction"
+
+[[binding]]
+action = "left_grip_pose"
+path = "/user/vive_tracker_htcx/role/waist/input/grip/pose"
+"#;
+    let m = build_manifest(ACTIONS_OK, &[("p.toml", src)]).expect("manifest");
+    assert_eq!(
+        m.profiles[0].extension_gate,
+        Some(ExtensionGate::HtcxViveTrackerInteraction)
     );
 }
 

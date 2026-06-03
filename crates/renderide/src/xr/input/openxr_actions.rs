@@ -20,6 +20,7 @@ use super::bindings::{
     ProfileExtensionGates, apply_suggested_interaction_bindings, build_action_handle_map,
 };
 use super::manifest::Manifest;
+use super::tracker::{TrackerPoseSpace, create_tracker_pose_spaces};
 
 pub(super) use action_handles::OpenxrInputActions;
 use action_handles::build_actions;
@@ -108,6 +109,8 @@ pub(super) struct OpenxrInputParts {
     pub(super) left_palm_ext_space: xr::Space,
     /// Right palm pose space.
     pub(super) right_palm_ext_space: xr::Space,
+    /// Body tracker role pose spaces.
+    pub(super) tracker_spaces: Vec<TrackerPoseSpace>,
     /// Left hand OpenXR hand tracker.
     pub(super) left_hand_tracker: Option<xr::HandTracker>,
     /// Right hand OpenXR hand tracker.
@@ -151,6 +154,11 @@ pub(super) fn create_openxr_input_parts(
 
     let (left_space, right_space, left_palm_space, right_palm_space) =
         create_pose_spaces(session, &actions)?;
+    let tracker_spaces = if gates.htcx_vive_tracker_interaction {
+        create_tracker_pose_spaces(session, &actions.tracker_grip_poses)
+    } else {
+        Vec::new()
+    };
 
     let (left_hand_tracker, right_hand_tracker) = if gates.hand_tracking_ext {
         (
@@ -173,6 +181,7 @@ pub(super) fn create_openxr_input_parts(
         right_space,
         left_palm_ext_space: left_palm_space,
         right_palm_ext_space: right_palm_space,
+        tracker_spaces,
         left_hand_tracker,
         right_hand_tracker,
     })

@@ -94,6 +94,12 @@ const OPTIONAL_EXTENSIONS: &[OpenxrExtensionEntry] = &[
         feeds_profile_gate: Some(|gates, v| gates.meta_touch_controller_plus = v),
     },
     OpenxrExtensionEntry {
+        log_name: "HTCX_vive_tracker_interaction",
+        is_available: |set| set.htcx_vive_tracker_interaction,
+        enable: |set, v| set.htcx_vive_tracker_interaction = v,
+        feeds_profile_gate: Some(|gates, v| gates.htcx_vive_tracker_interaction = v),
+    },
+    OpenxrExtensionEntry {
         log_name: "EXT_palm_pose",
         is_available: |set| set.ext_palm_pose,
         enable: |set, v| set.ext_palm_pose = v,
@@ -136,6 +142,7 @@ pub(super) fn empty_profile_gates() -> ProfileExtensionGates {
         htc_vive_focus3_controller_interaction: false,
         fb_touch_controller_pro: false,
         meta_touch_controller_plus: false,
+        htcx_vive_tracker_interaction: false,
         palm_pose: false,
         hand_tracking_ext: false,
     }
@@ -175,6 +182,7 @@ mod tests {
         set.htc_vive_focus3_controller_interaction = true;
         set.fb_touch_controller_pro = true;
         set.meta_touch_controller_plus = true;
+        set.htcx_vive_tracker_interaction = true;
         set.ext_palm_pose = true;
         set.ext_hand_tracking = true;
         set
@@ -196,6 +204,7 @@ mod tests {
         assert!(enabled.htc_vive_focus3_controller_interaction);
         assert!(enabled.fb_touch_controller_pro);
         assert!(enabled.meta_touch_controller_plus);
+        assert!(enabled.htcx_vive_tracker_interaction);
         assert!(enabled.ext_palm_pose);
         assert!(enabled.ext_hand_tracking);
     }
@@ -214,6 +223,7 @@ mod tests {
         assert!(gates.htc_vive_focus3_controller_interaction);
         assert!(gates.fb_touch_controller_pro);
         assert!(gates.meta_touch_controller_plus);
+        assert!(gates.htcx_vive_tracker_interaction);
         assert!(gates.palm_pose);
         assert!(gates.hand_tracking_ext);
     }
@@ -230,6 +240,7 @@ mod tests {
         assert!(!enabled.ext_hand_tracking);
         assert!(!gates.khr_generic_controller);
         assert!(!gates.bd_controller);
+        assert!(!gates.htcx_vive_tracker_interaction);
         assert!(!gates.palm_pose);
         assert!(!gates.hand_tracking_ext);
     }
@@ -257,7 +268,8 @@ mod tests {
              BD_controller_interaction,EXT_hp_mixed_reality_controller,\
              EXT_samsung_odyssey_controller,HTC_vive_cosmos_controller_interaction,\
              HTC_vive_focus3_controller_interaction,FB_touch_controller_pro,\
-             META_touch_controller_plus,EXT_palm_pose,EXT_hand_tracking"
+             META_touch_controller_plus,HTCX_vive_tracker_interaction,EXT_palm_pose,\
+             EXT_hand_tracking"
         );
     }
 
