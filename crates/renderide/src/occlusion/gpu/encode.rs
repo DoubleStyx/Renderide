@@ -12,7 +12,6 @@ mod staging_copy;
 use crate::gpu::OutputDepthMode;
 use crate::occlusion::cpu::pyramid::{hi_z_pyramid_dimensions, mip_levels_for_extent};
 use crate::render_graph::HistoryTextureMipViews;
-use crate::render_graph::frame_upload_batch::GraphUploadSink;
 
 use self::mip0::DepthBinding;
 use super::pipelines::HiZPipelines;
@@ -25,8 +24,6 @@ pub struct HiZBuildRecord<'a> {
     pub device: &'a wgpu::Device,
     /// Effective device caps used to validate scratch allocations and dispatches.
     pub limits: &'a crate::gpu::GpuLimits,
-    /// Graph upload sink for uniform writes (`layer_uniform`, `downsample_uniform`).
-    pub uploads: GraphUploadSink<'a>,
     /// Command encoder receiving the mip0, downsample, and staging copy commands.
     pub encoder: &'a mut wgpu::CommandEncoder,
 }
@@ -66,8 +63,6 @@ struct HiZHistoryViews<'a> {
 pub(super) struct EncodeSession<'a> {
     /// Device for on-demand bind-group creation.
     pub(super) device: &'a wgpu::Device,
-    /// Graph upload sink for uniform writes (`layer_uniform`, `downsample_uniform`).
-    pub(super) uploads: GraphUploadSink<'a>,
     /// Active command encoder receiving compute passes and staging copies.
     pub(super) encoder: &'a mut wgpu::CommandEncoder,
     /// Source depth view (sampled in the mip0 pass).
@@ -103,7 +98,6 @@ pub fn encode_hi_z_build(
     let HiZBuildRecord {
         device,
         limits,
-        uploads,
         encoder,
     } = record;
     if !prepare_scratch(device, limits, extent, mode, state) {
@@ -124,7 +118,6 @@ pub fn encode_hi_z_build(
 
     let mut session = EncodeSession {
         device,
-        uploads,
         encoder,
         depth_view,
         scratch,
@@ -301,4 +294,18 @@ fn record_pyramid_side(
 ) {
     mip0::dispatch(session, pyramid_views, depth_bind);
     downsample::dispatch(session, pyramid_views, side);
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn hi_z_encode_avoids_deferred_uploads_for_dispatch_local_uniforms() {
+        let mip0 = include_str!("encode/mip0.rs");
+        let downsample = include_str!("encode/downsample.rs");
+
+        assert!(!mip0.contains("GraphUploadSink"));
+        assert!(!mip0.contains("uploads.write_buffer"));
+        assert!(!downsample.contains("GraphUploadSink"));
+        assert!(!downsample.contains("uploads.write_buffer"));
+    }
 }
