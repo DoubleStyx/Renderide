@@ -228,6 +228,12 @@ impl MeshDerivedStreamState {
         *self != before
     }
 
+    /// Returns whether all streams in `mask` have resident buffers with current contents.
+    #[inline]
+    pub(crate) fn streams_ready(self, buffers_present: bool, mask: MeshDerivedStreamMask) -> bool {
+        buffers_present && !self.dirty_mask.intersects(mask)
+    }
+
     /// Marks a stream rebuilt from current retained source.
     #[inline]
     pub(crate) fn mark_clean(&mut self, mask: MeshDerivedStreamMask) {
@@ -333,5 +339,21 @@ mod tests {
 
         assert!(!state.dirty_mask.contains(MeshDerivedStreamMask::COLOR));
         assert!(state.dirty_mask.contains(MeshDerivedStreamMask::UV1));
+    }
+
+    #[test]
+    fn streams_ready_requires_buffers_and_clean_streams() {
+        let state = MeshDerivedStreamState {
+            demand_mask: MeshDerivedStreamMask::COLOR | MeshDerivedStreamMask::UV0,
+            dirty_mask: MeshDerivedStreamMask::COLOR,
+        };
+
+        assert!(!state.streams_ready(true, MeshDerivedStreamMask::COLOR));
+        assert!(state.streams_ready(true, MeshDerivedStreamMask::UV0));
+        assert!(!state.streams_ready(false, MeshDerivedStreamMask::UV0));
+        assert!(!state.streams_ready(
+            true,
+            MeshDerivedStreamMask::COLOR | MeshDerivedStreamMask::UV0
+        ));
     }
 }

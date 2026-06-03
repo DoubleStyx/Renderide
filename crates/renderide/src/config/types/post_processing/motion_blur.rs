@@ -34,7 +34,7 @@ impl MotionBlurSettings {
             && self.effective_max_velocity_pixels() > 0.0
     }
 
-    /// Returns the sample count clamped to the shader's fixed loop bound.
+    /// Returns the sample count clamped to the shader's loop bound.
     pub fn effective_sample_count(self) -> u32 {
         self.sample_count.min(Self::MAX_SAMPLE_COUNT)
     }
@@ -65,7 +65,24 @@ impl Default for MotionBlurSettings {
             allow_vr: false,
             shutter_angle: 0.5,
             sample_count: 16,
-            max_velocity_pixels: 512.0,
+            max_velocity_pixels: 256.0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MotionBlurSettings;
+
+    #[test]
+    fn defaults_use_lower_runtime_blur_budget() {
+        let settings = MotionBlurSettings::default();
+
+        assert_eq!(settings.shutter_angle, 0.35);
+        assert_eq!(settings.effective_shutter_angle(), 0.35);
+        assert_eq!(settings.sample_count, 8);
+        assert_eq!(settings.effective_sample_count(), 8);
+        assert_eq!(settings.max_velocity_pixels, 256.0);
+        assert_eq!(settings.effective_max_velocity_pixels(), 256.0);
     }
 }

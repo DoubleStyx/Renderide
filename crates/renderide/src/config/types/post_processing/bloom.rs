@@ -46,7 +46,7 @@ pub struct BloomSettings {
     /// Target height (in pixels) of the largest bloom mip. Each subsequent mip halves the
     /// resolution; smaller values are faster but less wide-spread. Arbitrary values are accepted
     /// in config/UI, then clamped and rounded down to a power of two by
-    /// [`Self::effective_max_mip_dimension`]. The default is 512.
+    /// [`Self::effective_max_mip_dimension`].
     pub max_mip_dimension: u32,
 }
 
@@ -106,5 +106,18 @@ labeled_enum! {
             persist: "additive",
             label: "Additive (stylized)",
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BloomSettings;
+
+    #[test]
+    fn default_pyramid_budget_uses_256_px_mip_zero() {
+        let settings = BloomSettings::default();
+
+        assert_eq!(settings.max_mip_dimension, 256);
+        assert_eq!(settings.effective_max_mip_dimension(), 256);
     }
 }

@@ -933,6 +933,26 @@ mod tests {
     }
 
     #[test]
+    fn hmd_stereo_layout_selects_stereo_output_depth_mode() {
+        let stereo_host = stereo_host_camera();
+        let hmd_stereo = FrameViewLayout::multiview_stereo_for(
+            FrameViewTargetKind::ExternalMultiview,
+            &stereo_host,
+        );
+        let mirror_stereo =
+            FrameViewLayout::multiview_stereo_for(FrameViewTargetKind::Swapchain, &stereo_host);
+
+        assert_eq!(
+            OutputDepthMode::from_multiview_stereo(hmd_stereo).try_stereo_layer_count(),
+            Ok(2)
+        );
+        assert_eq!(
+            OutputDepthMode::from_multiview_stereo(mirror_stereo),
+            OutputDepthMode::DesktopSingle
+        );
+    }
+
+    #[test]
     fn frame_global_view_from_frame_view_preserves_primary_metadata() {
         let view = swapchain_frame_view();
         let frame_global = FrameGlobalView::from_frame_view(&view);

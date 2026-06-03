@@ -11,6 +11,7 @@ use crate::diagnostics::crash_context::{self, RenderMode};
 use crate::frontend::input::{
     apply_output_state_to_window, apply_per_frame_cursor_lock_when_locked,
 };
+use crate::frontend::{HostWaitReason, LockstepPipelineAction};
 use crate::present::present_clear_frame;
 use crate::render_graph::GraphExecuteError;
 use crate::xr::{HmdSubmitOutcome, OpenxrFrameTick};
@@ -192,7 +193,8 @@ impl AppDriver {
         }
         if !self.runtime.should_render_frame() {
             if !vr_active {
-                self.runtime.wait_for_coupled_submit_or_decoupling();
+                self.runtime
+                    .wait_for_coupled_submit_or_decoupling(HostWaitReason::DesktopAwaitingSubmit);
                 if self.handle_runtime_exit_requests(event_loop) {
                     self.queue_empty_openxr_frame_if_needed(xr_tick);
                     return FrameTickOutcome::ExitRequested;
@@ -237,9 +239,10 @@ impl AppDriver {
     fn drain_completion_and_try_desktop_one_credit(&mut self) -> bool {
         self.runtime.update_decoupling_activation(Instant::now());
         self.drain_submit_completion_work();
+        let action = self.runtime.record_lockstep_pipeline_decision();
         if !self.runtime.vr_active()
             && self.target.is_some()
-            && self.runtime.should_send_one_credit_begin_frame()
+            && action == LockstepPipelineAction::SendEarlyNextFrame
         {
             self.one_credit_lock_step_exchange()
         } else {
@@ -332,7 +335,8 @@ impl AppDriver {
         &mut self,
         event_loop: &dyn ActiveEventLoop,
     ) -> Option<FrameTickOutcome> {
-        self.runtime.wait_for_coupled_submit_or_decoupling();
+        self.runtime
+            .wait_for_coupled_submit_or_decoupling(HostWaitReason::XrBeforeFrame);
         if self.handle_runtime_exit_requests(event_loop) {
             return Some(FrameTickOutcome::ExitRequested);
         }
@@ -366,6 +370,7 @@ impl AppDriver {
     fn lock_step_exchange(&mut self) -> bool {
         profiling::scope!("tick::lock_step_exchange");
         super::tick_phase_trace("lock_step_exchange");
+        self.runtime.record_lockstep_pipeline_decision();
         if self.runtime.should_send_begin_frame() {
             let inputs = self.build_lock_step_inputs();
             self.runtime.pre_frame(inputs)
@@ -378,7 +383,9 @@ impl AppDriver {
     fn one_credit_lock_step_exchange(&mut self) -> bool {
         profiling::scope!("tick::one_credit_lock_step_exchange");
         super::tick_phase_trace("one_credit_lock_step_exchange");
-        if self.runtime.should_send_one_credit_begin_frame() {
+        if self.runtime.record_lockstep_pipeline_decision()
+            == LockstepPipelineAction::SendEarlyNextFrame
+        {
             let inputs = self.build_lock_step_inputs();
             self.runtime.pre_frame_one_credit(inputs)
         } else {

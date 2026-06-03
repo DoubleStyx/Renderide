@@ -98,15 +98,15 @@ pub struct XrStereoDepthSwapchain {
 
 /// Per-frame wgpu wrapper for an acquired OpenXR swapchain image.
 ///
-/// The wrapper owns the imported wgpu texture and its single-layer eye views. It must stay alive
-/// until all command buffers referencing the acquired image have been submitted to the GPU queue.
-/// The OpenXR runtime owns the underlying `VkImage`; dropping this value only releases wgpu's
-/// tracking wrapper.
+/// The wrapper owns the imported wgpu texture and its two-layer color view. It must stay alive until
+/// all command buffers referencing the acquired image have been submitted to the GPU queue. The
+/// OpenXR runtime owns the underlying `VkImage`; dropping this value only releases wgpu's tracking
+/// wrapper.
 pub struct XrAcquiredSwapchainImage {
     /// Imported OpenXR swapchain image kept alive until submit reaches the GPU queue.
     texture: wgpu::Texture,
-    /// Single-layer color target views for the left and right OpenXR swapchain layers.
-    eye_views: [wgpu::TextureView; 2],
+    /// Two-layer color target view used by the final multiview HMD copy.
+    array_view: wgpu::TextureView,
     /// OpenXR swapchain image index acquired for this frame.
     image_index: u32,
 }
@@ -139,9 +139,9 @@ impl XrAcquiredDepthSwapchainImage {
 }
 
 impl XrAcquiredSwapchainImage {
-    /// Single-layer color target views used by the final per-eye OpenXR copy.
-    pub fn eye_views(&self) -> [&wgpu::TextureView; 2] {
-        [&self.eye_views[0], &self.eye_views[1]]
+    /// Two-layer color target view used by the final multiview HMD copy.
+    pub fn array_view(&self) -> &wgpu::TextureView {
+        &self.array_view
     }
 
     /// OpenXR swapchain image index acquired for this frame.
@@ -363,14 +363,11 @@ fn import_openxr_swapchain_image(
     // SAFETY: `hal_tex` was imported from the Vulkan device backing `device`, and `wgpu_desc`
     // matches the HAL descriptor used for the import.
     let texture = unsafe { device.create_texture_from_hal::<HalVulkan>(hal_tex, &wgpu_desc) };
-    let eye_views = [
-        texture.create_view(&xr_swapchain_eye_view_descriptor(0)),
-        texture.create_view(&xr_swapchain_eye_view_descriptor(1)),
-    ];
-    crate::profiling::note_resource_churn!(TextureView, "xr::swapchain_eye_views");
+    let array_view = texture.create_view(&xr_swapchain_array_view_descriptor());
+    crate::profiling::note_resource_churn!(TextureView, "xr::swapchain_array_view");
     XrAcquiredSwapchainImage {
         texture,
-        eye_views,
+        array_view,
         image_index,
     }
 }
@@ -527,17 +524,13 @@ fn xr_depth_swapchain_array_view_descriptor(
     }
 }
 
-/// Descriptor for one OpenXR swapchain array layer used as a 2D render target.
-fn xr_swapchain_eye_view_descriptor(layer: u32) -> wgpu::TextureViewDescriptor<'static> {
+/// Descriptor for the two-layer OpenXR color target used by the multiview final copy.
+fn xr_swapchain_array_view_descriptor() -> wgpu::TextureViewDescriptor<'static> {
     wgpu::TextureViewDescriptor {
-        label: Some(match layer {
-            0 => "xr_swapchain_left_eye",
-            1 => "xr_swapchain_right_eye",
-            _ => "xr_swapchain_eye",
-        }),
-        dimension: Some(wgpu::TextureViewDimension::D2),
-        base_array_layer: layer,
-        array_layer_count: Some(1),
+        label: Some("xr_swapchain_color_array"),
+        format: Some(XR_COLOR_FORMAT),
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        array_layer_count: Some(XR_VIEW_COUNT),
         ..Default::default()
     }
 }
@@ -662,15 +655,10 @@ mod tests {
     }
 
     #[test]
-    fn swapchain_eye_views_select_single_layers() {
-        let left = xr_swapchain_eye_view_descriptor(0);
-        assert_eq!(left.dimension, Some(wgpu::TextureViewDimension::D2));
-        assert_eq!(left.base_array_layer, 0);
-        assert_eq!(left.array_layer_count, Some(1));
-
-        let right = xr_swapchain_eye_view_descriptor(1);
-        assert_eq!(right.dimension, Some(wgpu::TextureViewDimension::D2));
-        assert_eq!(right.base_array_layer, 1);
-        assert_eq!(right.array_layer_count, Some(1));
+    fn swapchain_array_view_selects_color_layers() {
+        let desc = xr_swapchain_array_view_descriptor();
+        assert_eq!(desc.format, Some(XR_COLOR_FORMAT));
+        assert_eq!(desc.dimension, Some(wgpu::TextureViewDimension::D2Array));
+        assert_eq!(desc.array_layer_count, Some(XR_VIEW_COUNT));
     }
 }

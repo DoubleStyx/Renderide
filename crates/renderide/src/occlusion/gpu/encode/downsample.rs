@@ -1,24 +1,12 @@
 //! Hi-Z hierarchical downsample chain.
 //!
 //! Issues one min-reduction compute dispatch per mip transition (mip0 -> mip1, mip1 -> mip2, ...)
-//! within the active pyramid layer, sharing the cached pipeline and uniform buffer in
+//! within the active pyramid layer, sharing the cached pipeline and per-mip uniform buffers in
 //! [`super::EncodeSession`].
-
-use bytemuck::{Pod, Zeroable};
 
 use crate::occlusion::cpu::pyramid::mip_dimensions;
 
 use super::{EncodeSession, PyramidSide};
-
-/// Per-mip extent uniform consumed by the downsample compute shader.
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct DownsampleUniform {
-    src_w: u32,
-    src_h: u32,
-    dst_w: u32,
-    dst_h: u32,
-}
 
 /// Farthest-depth min-reduction chain from mip0 through the rest of the R32F pyramid.
 pub(super) fn dispatch(
@@ -28,25 +16,20 @@ pub(super) fn dispatch(
 ) {
     let (bw, bh) = session.scratch.extent;
     for mip in 0..session.scratch.mip_levels.saturating_sub(1) {
-        let (sw, sh) = mip_dimensions(bw, bh, mip).unwrap_or((1, 1));
         let (dw, dh) = mip_dimensions(bw, bh, mip + 1).unwrap_or((1, 1));
-        let du = DownsampleUniform {
-            src_w: sw,
-            src_h: sh,
-            dst_w: dw,
-            dst_h: dh,
-        };
-        session.uploads.write_buffer(
-            &session.scratch.downsample_uniform,
-            0,
-            bytemuck::bytes_of(&du),
-        );
         let device = session.device;
         let layout = &session.pipes.bgl_downsample;
         // Clone the uniform buffer handle so the bind-group build closure does not borrow
         // `session.scratch` for the duration of `downsample_*_or_build`'s `&mut bind_groups`
         // borrow.
-        let downsample_uniform = session.scratch.downsample_uniform.clone();
+        let Some(downsample_uniform) = session
+            .scratch
+            .downsample_uniforms
+            .get(mip as usize)
+            .cloned()
+        else {
+            return;
+        };
         let build = || {
             let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("hi_z_ds_bg"),

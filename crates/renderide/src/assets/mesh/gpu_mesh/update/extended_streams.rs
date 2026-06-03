@@ -21,9 +21,10 @@ impl GpuMesh {
     /// Creates position and normal streams when later material/runtime demand requires them.
     pub(crate) fn ensure_position_normal_vertex_streams(&mut self, device: &wgpu::Device) -> bool {
         profiling::scope!("asset::mesh_ensure_position_normal_streams");
-        if self.positions_buffer.is_some() && self.normals_buffer.is_some() {
-            self.derived_stream_state
-                .mark_clean(MeshDerivedStreamMask::POSITION | MeshDerivedStreamMask::NORMAL);
+        if self.derived_stream_state.streams_ready(
+            self.positions_buffer.is_some() && self.normals_buffer.is_some(),
+            MeshDerivedStreamMask::POSITION | MeshDerivedStreamMask::NORMAL,
+        ) {
             return true;
         }
         let Some(source) = self.extended_vertex_stream_source.as_ref() else {
@@ -77,9 +78,10 @@ impl GpuMesh {
     /// Creates the UV0 stream when later material demand requires it.
     pub(crate) fn ensure_uv0_vertex_stream(&mut self, device: &wgpu::Device) -> bool {
         profiling::scope!("asset::mesh_ensure_uv0_vertex_stream");
-        if self.uv0_buffer.is_some() {
-            self.derived_stream_state
-                .mark_clean(MeshDerivedStreamMask::UV0);
+        if self
+            .derived_stream_state
+            .streams_ready(self.uv0_buffer.is_some(), MeshDerivedStreamMask::UV0)
+        {
             return true;
         }
         let Some(source) = self.extended_vertex_stream_source.as_ref() else {
@@ -116,9 +118,10 @@ impl GpuMesh {
     /// Creates the color stream when later material demand requires it.
     pub(crate) fn ensure_color_vertex_stream(&mut self, device: &wgpu::Device) -> bool {
         profiling::scope!("asset::mesh_ensure_color_vertex_stream");
-        if self.color_buffer.is_some() {
-            self.derived_stream_state
-                .mark_clean(MeshDerivedStreamMask::COLOR);
+        if self
+            .derived_stream_state
+            .streams_ready(self.color_buffer.is_some(), MeshDerivedStreamMask::COLOR)
+        {
             return true;
         }
         let Some(source) = self.extended_vertex_stream_source.as_ref() else {

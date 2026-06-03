@@ -208,20 +208,28 @@ mod tests {
     fn build_world_mesh_cull_proj_params_sets_vr_stereo_only_when_active_and_pair_present() {
         use crate::camera::{EyeView, StereoViewMatrices};
         let scene = SceneCoordinator::new();
-        let eye = EyeView::new(
+        let left_view_proj = Mat4::from_translation(glam::Vec3::new(1.0, 0.0, 0.0));
+        let right_view_proj = Mat4::from_translation(glam::Vec3::new(-1.0, 0.0, 0.0));
+        let left_eye = EyeView::new(
             Mat4::IDENTITY,
             Mat4::IDENTITY,
-            Mat4::IDENTITY,
-            glam::Vec3::ZERO,
+            left_view_proj,
+            glam::Vec3::new(-0.03, 0.0, 0.0),
         );
-        let stereo = Some(StereoViewMatrices::new(eye, eye));
+        let right_eye = EyeView::new(
+            Mat4::IDENTITY,
+            Mat4::IDENTITY,
+            right_view_proj,
+            glam::Vec3::new(0.03, 0.0, 0.0),
+        );
+        let stereo = Some(StereoViewMatrices::new(left_eye, right_eye));
         let hc = HostCameraFrame {
             vr_active: true,
             stereo,
             ..Default::default()
         };
         let p = build_world_mesh_cull_proj_params(&scene, (1280, 720), &hc);
-        assert!(p.vr_stereo.is_some());
+        assert_eq!(p.vr_stereo, Some((left_view_proj, right_view_proj)));
 
         let hc2 = HostCameraFrame {
             vr_active: false,

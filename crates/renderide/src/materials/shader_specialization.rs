@@ -160,6 +160,22 @@ mod tests {
     }
 
     #[test]
+    fn static_variant_bits_emit_for_vertex_only_branch_source() {
+        validate_wgsl(vertex_only_override_source());
+
+        let constants = MaterialShaderSpecializationKey::from_variant_bits(0x2)
+            .pipeline_constants_for_wgsl_source(vertex_only_override_source());
+
+        assert_eq!(
+            constants.as_slice(),
+            &[
+                ("renderide_static_variant_bits_mode", 1.0),
+                ("renderide_static_variant_bits", 2.0),
+            ]
+        );
+    }
+
+    #[test]
     fn source_without_override_disables_static_variant_bits() {
         let key = MaterialShaderSpecializationKey::from_variant_bits(0x40)
             .for_wgsl_source("fn fs_main() {}");
@@ -193,5 +209,44 @@ mod tests {
 override renderide_static_variant_bits_modeX_naga_oil_mod_TEST: u32 = 0u;
 override renderide_static_variant_bitsX_naga_oil_mod_TEST: u32 = 0u;
 "
+    }
+
+    fn vertex_only_override_source() -> &'static str {
+        "\
+override renderide_static_variant_bits_mode: u32 = 0u;
+override renderide_static_variant_bits: u32 = 0u;
+
+struct VertexOut {
+    @builtin(position) clip_pos: vec4<f32>,
+    @location(0) tint: vec4<f32>,
+}
+
+@vertex
+fn vs_main() -> VertexOut {
+    var out: VertexOut;
+    var x = 0.0;
+    if (renderide_static_variant_bits_mode != 0u && (renderide_static_variant_bits & 2u) != 0u) {
+        x = 1.0;
+    }
+    out.clip_pos = vec4<f32>(x, 0.0, 0.0, 1.0);
+    out.tint = vec4<f32>(x, 0.0, 0.0, 1.0);
+    return out;
+}
+
+@fragment
+fn fs_main(@location(0) tint: vec4<f32>) -> @location(0) vec4<f32> {
+    return tint;
+}
+"
+    }
+
+    fn validate_wgsl(source: &str) {
+        let module = naga::front::wgsl::parse_str(source).expect("parse wgsl source");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("validate wgsl source");
     }
 }

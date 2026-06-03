@@ -4,19 +4,7 @@
 //! eye layer) layouts. Each path writes one bind group's worth of pyramid mip0 texels via the
 //! compute pipeline cached in [`super::EncodeSession::pipes`].
 
-use bytemuck::{Pod, Zeroable};
-
 use super::EncodeSession;
-
-/// Layer-selection uniform consumed by the stereo mip0 shader.
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct LayerUniform {
-    layer: u32,
-    _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
-}
 
 /// Whether the depth source is a 2D view (desktop) or a 2D array slice (one eye of a stereo target).
 #[derive(Clone, Copy)]
@@ -95,23 +83,17 @@ fn dispatch_stereo(
     pyramid_views: &[wgpu::TextureView],
     layer: u32,
 ) {
-    let layer_u = LayerUniform {
-        layer,
-        _pad0: 0,
-        _pad1: 0,
-        _pad2: 0,
-    };
-    session.uploads.write_buffer(
-        &session.scratch.layer_uniform,
-        0,
-        bytemuck::bytes_of(&layer_u),
-    );
     let device = session.device;
     let depth_view = session.depth_view;
     let layout = &session.pipes.bgl_mip0_stereo;
     // Clone the uniform buffer handle so the bind-group build closure does not borrow
     // `session.scratch` for the duration of `mip0_stereo_or_build`'s `&mut bind_groups` borrow.
-    let layer_uniform = session.scratch.layer_uniform.clone();
+    let Some(layer_uniforms) = session.scratch.layer_uniforms.as_ref() else {
+        return;
+    };
+    let Some(layer_uniform) = layer_uniforms.get(layer as usize).cloned() else {
+        return;
+    };
     let bg = session.scratch.bind_groups.mip0_stereo_or_build(layer, || {
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("hi_z_mip0_s_bg"),

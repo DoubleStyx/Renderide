@@ -101,15 +101,15 @@ fn material_variant_bits_helper_supports_pipeline_constants() -> io::Result<()> 
 }
 
 #[test]
-fn material_variant_pipeline_constants_are_fragment_only() -> io::Result<()> {
+fn material_variant_pipeline_constants_apply_to_vertex_and_fragment() -> io::Result<()> {
     for path in [
         "src/materials/raster_pipeline.rs",
         "src/passes/world_mesh_forward/skybox/pipeline.rs",
     ] {
         let src = source_file(manifest_dir().join(path))?;
         assert!(
-            src.contains("fragment_specialization_constants.as_slice()"),
-            "{path} must pass material specialization constants to fragment compilation"
+            src.contains("shader_specialization_constants.as_slice()"),
+            "{path} must build material specialization constants for shader compilation"
         );
 
         let vertex_state = src
@@ -118,12 +118,21 @@ fn material_variant_pipeline_constants_are_fragment_only() -> io::Result<()> {
             .and_then(|tail| tail.split("fragment: Some(wgpu::FragmentState {").next())
             .unwrap_or("");
         assert!(
-            vertex_state.contains("compilation_options: Default::default()"),
-            "{path} must not pass material specialization constants to vertex compilation"
+            vertex_state.contains("constants: shader_specialization_constants.as_slice()"),
+            "{path} must pass material specialization constants to vertex compilation"
         );
+
+        let fragment_state = src
+            .split("fragment: Some(wgpu::FragmentState {")
+            .nth(1)
+            .and_then(|tail| {
+                tail.split("targets: &[Some(wgpu::ColorTargetState {")
+                    .next()
+            })
+            .unwrap_or("");
         assert!(
-            !vertex_state.contains("specialization_constants.as_slice()"),
-            "{path} must keep material variant constants off vertex stages unless stage-aware reflection is added"
+            fragment_state.contains("constants: shader_specialization_constants.as_slice()"),
+            "{path} must pass material specialization constants to fragment compilation"
         );
     }
 
@@ -378,6 +387,23 @@ fn billboard_render_buffer_uses_indexed_corner_separate_from_sample_uv() -> io::
             && src.contains("if (mask_clip && mask_lum < mat._Cutoff)")
             && !src.contains("<= mat._Cutoff"),
         "Billboard/Unlit alpha test must match Unity clip(col.a - _Cutoff) equality semantics"
+    );
+    assert!(
+        src.contains("return facing_basis(center_world, view_layer, pointdata.z, false);"),
+        "Render-buffer Facing alignment must keep Unity-style roll disabled"
+    );
+    assert!(
+        src.contains("fn direction_stretch_particle_basis(")
+            && src.contains("let velocity_world = mv::model_vector(d, point_forward_upz.xyz);")
+            && src.contains(
+                "let velocity_in_plane = velocity_world - to_camera * dot(velocity_world, to_camera);"
+            )
+            && src.contains("let view_up_in_plane = view_up - to_camera * dot(view_up, to_camera);")
+            && src.contains("up = rmath::safe_normalize(cross(to_camera, right), up);")
+            && src.contains(
+                "return direction_stretch_particle_basis(d, center_world, point_forward_upz, view_layer);"
+            ),
+        "Render-buffer Direction alignment must project velocity into the camera-facing stretch plane"
     );
     assert!(
         src.contains("#import renderide::frame::fog as rfog")

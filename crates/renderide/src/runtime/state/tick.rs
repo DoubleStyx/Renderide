@@ -2,6 +2,7 @@
 
 use std::time::{Duration, Instant};
 
+use crate::frontend::{HostWaitReason, LockstepPipelineAction, OneCreditBlockReason};
 use crate::scene::{ReflectionProbeOnChangesRenderRequest, RenderSpaceId};
 use crate::shared::{CameraRenderTask, ReflectionProbeRenderResult, ReflectionProbeRenderTask};
 
@@ -28,6 +29,12 @@ pub(in crate::runtime) struct RuntimeTickState {
     did_integrate_this_tick: bool,
     /// Main-thread compositor pacing waits observed outside [`crate::gpu::GpuContext`] this tick.
     frame_timing_excluded_wait: Duration,
+    /// Last host/renderer lock-step pipeline action selected this tick.
+    lockstep_pipeline_action: LockstepPipelineAction,
+    /// Last reason an early one-credit begin-frame was blocked this tick.
+    lockstep_one_credit_block: OneCreditBlockReason,
+    /// Last reason the runtime waited for a host submit this tick.
+    lockstep_wait_reason: HostWaitReason,
     /// Reusable per-frame scratch for secondary render-texture view collection.
     pub(in crate::runtime) secondary_view_tasks_scratch: Vec<(RenderSpaceId, f32, usize)>,
     /// Host camera readback tasks waiting for a GPU context before the next begin-frame send.
@@ -62,6 +69,9 @@ impl RuntimeTickState {
             frame_time_seconds: 0.0,
             did_integrate_this_tick: false,
             frame_timing_excluded_wait: Duration::ZERO,
+            lockstep_pipeline_action: LockstepPipelineAction::None,
+            lockstep_one_credit_block: OneCreditBlockReason::None,
+            lockstep_wait_reason: HostWaitReason::None,
             secondary_view_tasks_scratch: Vec::new(),
             pending_camera_render_tasks: Vec::new(),
             pending_reflection_probe_render_tasks: Vec::new(),
@@ -78,6 +88,9 @@ impl RuntimeTickState {
     pub(in crate::runtime) fn reset_for_tick(&mut self) {
         self.did_integrate_this_tick = false;
         self.frame_timing_excluded_wait = Duration::ZERO;
+        self.lockstep_pipeline_action = LockstepPipelineAction::None;
+        self.lockstep_one_credit_block = OneCreditBlockReason::None;
+        self.lockstep_wait_reason = HostWaitReason::None;
     }
 
     /// Captures the frame-start wall clock for material shader time inputs.
@@ -110,6 +123,34 @@ impl RuntimeTickState {
         let wait = self.frame_timing_excluded_wait;
         self.frame_timing_excluded_wait = Duration::ZERO;
         wait
+    }
+
+    /// Records the latest lock-step pipeline decision for profiling diagnostics.
+    pub(in crate::runtime) fn record_lockstep_pipeline_decision(
+        &mut self,
+        action: LockstepPipelineAction,
+        one_credit_block: OneCreditBlockReason,
+    ) {
+        self.lockstep_pipeline_action = action;
+        self.lockstep_one_credit_block = one_credit_block;
+        self.plot_lockstep_pipeline();
+    }
+
+    /// Records why the runtime entered a host-submit wait fallback.
+    pub(in crate::runtime) fn record_lockstep_wait_reason(&mut self, reason: HostWaitReason) {
+        self.lockstep_pipeline_action = LockstepPipelineAction::WaitForSubmit;
+        self.lockstep_wait_reason = reason;
+        self.plot_lockstep_pipeline();
+    }
+
+    fn plot_lockstep_pipeline(&self) {
+        crate::profiling::plot_lockstep_pipeline(
+            &crate::profiling::LockstepPipelineProfileSample {
+                action: self.lockstep_pipeline_action.plot_code(),
+                one_credit_block: self.lockstep_one_credit_block.plot_code(),
+                wait_reason: self.lockstep_wait_reason.plot_code(),
+            },
+        );
     }
 }
 
