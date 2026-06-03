@@ -1,8 +1,10 @@
-//! Per-draw uniform packing for mesh forward passes (WebGPU dynamic uniform offset = 256 bytes).
+//! Per-draw uniform packing for mesh forward passes.
 
 use glam::Mat4;
+#[cfg(test)]
 use rayon::prelude::*;
 
+#[cfg(test)]
 use crate::cpu_parallelism::{
     RENDER_COMMAND_CHUNK_DRAWS, admit_render_command_items, current_reference_worker_count,
     record_parallel_admission,
@@ -10,8 +12,8 @@ use crate::cpu_parallelism::{
 
 use super::wgsl_mat3x3::WgslMat3x3;
 
-/// Stride between consecutive draw slots in the uniform slab (`mat4`x3 + WGSL padding).
-pub const PER_DRAW_UNIFORM_STRIDE: usize = 256;
+/// Stride between consecutive draw slots in the uniform slab.
+pub const PER_DRAW_UNIFORM_STRIDE: usize = 512;
 
 /// Initial number of draw slots allocated for [`crate::backend::PerDrawResources`].
 pub const INITIAL_PER_DRAW_UNIFORM_SLOTS: usize = 256;
@@ -24,7 +26,7 @@ const PER_DRAW_POSITION_STREAM_WORLD_SPACE_PAD_SLOT: usize = 0;
 /// Packed reflection-probe atlas indices offset inside [`PaddedPerDrawUniforms::_pad`].
 const PER_DRAW_REFLECTION_PROBE_INDICES_PAD_SLOT: usize = 1;
 
-/// GPU layout: left/right view-projection, `model`, inverse-transpose normal matrix, padding to 256 bytes.
+/// GPU layout: left/right view-projection, `model`, inverse-transpose normal matrix, and metadata.
 ///
 /// Matches composed `shaders/target/null_*.wgsl` (`PerDrawUniforms` at `@group(2)`).
 ///
@@ -52,7 +54,7 @@ pub struct PaddedPerDrawUniforms {
     pub model: [f32; 16],
     /// Inverse transpose of the upper 3x3 of [`Self::model`] for normal transforms.
     pub(super) normal_matrix: WgslMat3x3,
-    /// Metadata plus padding to [`PER_DRAW_UNIFORM_STRIDE`] bytes.
+    /// Metadata plus padding for the fixed matrix row prefix.
     ///
     /// Slot 0 is [`PER_DRAW_POSITION_STREAM_WORLD_SPACE_FLAG`] when the vertex position stream is
     /// already world-space. Slots 1 stores a bit mask indicating if each local reflection-probe
@@ -63,6 +65,10 @@ pub struct PaddedPerDrawUniforms {
     /// in the per-draw uniforms, we can lower the system down to 2 local reflection probes
     /// and reuse Slot 3 for other purposes.
     pub _pad: [f32; 4],
+    /// Particle draw metadata rows consumed by generated render-buffer shaders.
+    pub particle: [[f32; 4]; 3],
+    /// Padding to keep every dynamic storage offset aligned across supported adapters.
+    pub _pad2: [[f32; 4]; 13],
 }
 
 impl PaddedPerDrawUniforms {
@@ -79,6 +85,8 @@ impl PaddedPerDrawUniforms {
             model: model.to_cols_array(),
             normal_matrix: WgslMat3x3::from_model_upper_3x3(model),
             _pad: [0.0; 4],
+            particle: crate::particles::ParticleDrawParams::default().to_uniform_rows(),
+            _pad2: [[0.0; 4]; 13],
         }
     }
 
@@ -94,7 +102,17 @@ impl PaddedPerDrawUniforms {
             model: model.to_cols_array(),
             normal_matrix: WgslMat3x3::from_model_upper_3x3(model),
             _pad: [0.0; 4],
+            particle: crate::particles::ParticleDrawParams::default().to_uniform_rows(),
+            _pad2: [[0.0; 4]; 13],
         }
+    }
+
+    /// Returns a copy with particle draw metadata encoded for WGSL.
+    #[inline]
+    #[must_use]
+    pub fn with_particle_draw(mut self, particle: crate::particles::ParticleDrawParams) -> Self {
+        self.particle = particle.to_uniform_rows();
+        self
     }
 
     /// Returns a copy with the position-stream space metadata set for shaders that need it.
@@ -154,20 +172,24 @@ impl PaddedPerDrawUniforms {
 }
 
 /// Draw slots assigned to one slab-copy worker chunk.
+#[cfg(test)]
 const PER_DRAW_SLAB_PARALLEL_CHUNK_SLOTS: usize = RENDER_COMMAND_CHUNK_DRAWS;
 /// Slab-copy chunks assigned to one Rayon worker leaf.
+#[cfg(test)]
 const PER_DRAW_SLAB_PARALLEL_CHUNKS_PER_TASK: usize = 1;
 /// Slot count above which slab writes fan out to a rayon worker pool.
 ///
-/// Each slot is a 256-byte copy. Two 64-slot chunks make the slab large enough for
+/// Each slot is a fixed-stride copy. Two 64-slot chunks make the slab large enough for
 /// memory-bandwidth fan-out to pay off on typical desktop CPUs.
+#[cfg(test)]
 const PER_DRAW_SLAB_PARALLEL_MIN: usize = PER_DRAW_SLAB_PARALLEL_CHUNK_SLOTS * 2;
 
-/// Writes `count` consecutive [`PaddedPerDrawUniforms`] into `out` (must be `count * 256` bytes).
+/// Writes `count` consecutive [`PaddedPerDrawUniforms`] into `out`.
 ///
 /// Parallelizes across rayon when `slots.len() >= PER_DRAW_SLAB_PARALLEL_MIN`. Each worker writes
-/// into a disjoint 256-byte region of `out`, so there is no synchronization on the hot path.
-pub fn write_per_draw_uniform_slab(slots: &[PaddedPerDrawUniforms], out: &mut [u8]) {
+/// into a disjoint fixed-stride region of `out`, so there is no synchronization on the hot path.
+#[cfg(test)]
+fn write_per_draw_uniform_slab(slots: &[PaddedPerDrawUniforms], out: &mut [u8]) {
     let need = slots.len().saturating_mul(PER_DRAW_UNIFORM_STRIDE);
     assert!(
         out.len() >= need,
@@ -215,7 +237,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn padded_size_is_256() {
+    fn padded_size_matches_stride() {
         assert_eq!(size_of::<PaddedPerDrawUniforms>(), PER_DRAW_UNIFORM_STRIDE);
     }
 
@@ -252,7 +274,15 @@ mod tests {
     fn slab_roundtrip_bytes() {
         let vp = Mat4::from_translation(glam::Vec3::new(1.0, 2.0, 3.0));
         let m = Mat4::from_scale(glam::Vec3::new(4.0, 5.0, 6.0));
-        let slot = PaddedPerDrawUniforms::new_single(vp, m).with_position_stream_world_space(true);
+        let particle = crate::particles::ParticleDrawParams::billboard(
+            crate::shared::BillboardAlignment::Direction,
+            0.25,
+            0.75,
+            crate::shared::MotionVectorMode::Object,
+        );
+        let slot = PaddedPerDrawUniforms::new_single(vp, m)
+            .with_position_stream_world_space(true)
+            .with_particle_draw(particle);
         let mut buf = vec![0u8; PER_DRAW_UNIFORM_STRIDE * 2];
         write_per_draw_uniform_slab(
             &[
@@ -271,9 +301,14 @@ mod tests {
             a._pad[PER_DRAW_POSITION_STREAM_WORLD_SPACE_PAD_SLOT],
             PER_DRAW_POSITION_STREAM_WORLD_SPACE_FLAG
         );
+        assert_eq!(a.particle, particle.to_uniform_rows());
         let b: &PaddedPerDrawUniforms =
             bytemuck::from_bytes(&buf[PER_DRAW_UNIFORM_STRIDE..PER_DRAW_UNIFORM_STRIDE * 2]);
         assert!(!b.position_stream_world_space());
+        assert_eq!(
+            b.particle,
+            crate::particles::ParticleDrawParams::default().to_uniform_rows()
+        );
     }
 
     #[test]

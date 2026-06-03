@@ -2,7 +2,7 @@
 //!
 //! Builds the ordered list of [`FrameViewPlan`]s that drive draw collection and graph
 //! execution: HMD stereo multiview (when present), then enabled secondary render-texture
-//! cameras sorted by camera depth, then the main desktop swapchain (when included). Logic
+//! cameras sorted by camera depth, then the main desktop view (when included). Logic
 //! sits between the render entry point in [`super::render`] and the per-view extraction
 //! pipeline in [`super::extract`].
 
@@ -219,7 +219,7 @@ impl RendererRuntime {
         )
     }
 
-    /// Appends HMD, pre-collected secondary, and main swapchain views in submission order.
+    /// Appends HMD, pre-collected secondary, and main desktop views in submission order.
     fn assemble_prepared_views<'a>(
         &self,
         primary: PrimaryViewRequest<'a>,
@@ -230,7 +230,7 @@ impl RendererRuntime {
         mut secondary_views: Vec<FrameViewPlan<'a>>,
     ) -> ViewFamilyPlan<'a> {
         let (includes_main, hmd_target) = match primary {
-            PrimaryViewRequest::DesktopSwapchain => (true, None),
+            PrimaryViewRequest::DesktopMain => (true, None),
             PrimaryViewRequest::HmdExternalMultiview(ext) => (false, Some(ext)),
             PrimaryViewRequest::None => (false, None),
         };
@@ -275,8 +275,8 @@ impl RendererRuntime {
         ViewFamilyPlan::new(&frame_global, views)
     }
 
-    /// Builds fallback primary-view metadata for frame-global passes when no HMD or main
-    /// swapchain view is submitted.
+    /// Builds fallback primary-view metadata for frame-global passes when no HMD or main view is
+    /// submitted.
     fn frame_global_from_runtime(
         &self,
         render_context: RenderingContext,
@@ -419,22 +419,16 @@ impl RendererRuntime {
     /// Builds the main desktop/headless [`FrameViewPlan`] from the cached
     /// [`RendererRuntime::host_camera`].
     ///
-    /// `swapchain_extent_px` must be the current GPU surface extent: it feeds
+    /// `main_extent_px` must match the current main-view target extent: it feeds
     /// [`crate::world_mesh::build_world_mesh_cull_proj_params`] on the pre-dispatch CPU cull
     /// path. A stale or zero extent produces a degenerate frustum and random scene-object
-    /// culling. The render graph resolves its own rendering extent from
-    /// [`crate::render_graph::FrameViewTarget::Swapchain::extent_px`] at record time -- that is a
-    /// separate concern from cull math, which has already run by then.
+    /// culling.
     #[cfg(test)]
-    pub(in crate::runtime) fn build_main_swapchain_view<'a>(
+    pub(in crate::runtime) fn build_main_desktop_view<'a>(
         &self,
-        swapchain_extent_px: (u32, u32),
+        main_extent_px: (u32, u32),
     ) -> FrameViewPlan<'a> {
-        self.build_main_view_with_profile(
-            swapchain_extent_px,
-            RenderPathProfile::desktop_main(),
-            None,
-        )
+        self.build_main_view_with_profile(main_extent_px, RenderPathProfile::desktop_main(), None)
     }
 
     fn build_main_view_with_profile<'a>(
@@ -489,7 +483,7 @@ mod tests {
 
     fn collect_default_desktop_views(runtime: &RendererRuntime) -> ViewFamilyPlan<'_> {
         runtime.collect_prepared_views_without_secondaries(
-            PrimaryViewRequest::DesktopSwapchain,
+            PrimaryViewRequest::DesktopMain,
             TEST_EXTENT,
             RenderPathProfile::desktop_main(),
             RenderPathProfile::desktop_main(),
@@ -533,7 +527,7 @@ mod tests {
         );
         assert!(
             views.is_empty(),
-            "no HMD, no secondaries, and main swapchain excluded -- nothing to render"
+            "no HMD, no secondaries, and main view excluded -- nothing to render"
         );
         assert!(views.frame_global().post_processing.is_enabled());
     }
@@ -560,7 +554,7 @@ mod tests {
     fn desktop_main_view_overrides_frame_global_fallback() {
         let runtime = build_runtime();
         let views = runtime.collect_prepared_views_without_secondaries(
-            PrimaryViewRequest::DesktopSwapchain,
+            PrimaryViewRequest::DesktopMain,
             TEST_EXTENT,
             RenderPathProfile::headless_main(),
             RenderPathProfile::desktop_main(),
@@ -582,14 +576,14 @@ mod tests {
     }
 
     /// Pins the contract from the April 2026 cull regression: the main desktop `FrameViewPlan`
-    /// must carry the swapchain extent supplied to `collect_prepared_views`. A zero or stale
+    /// must carry the main target extent supplied to `collect_prepared_views`. A zero or stale
     /// extent produces a degenerate `build_world_mesh_cull_proj_params` frustum and flickering
     /// scene-object culling.
     #[test]
-    fn main_view_viewport_matches_supplied_swapchain_extent() {
+    fn main_view_viewport_matches_supplied_target_extent() {
         let runtime = build_runtime();
         let views = runtime.collect_prepared_views_without_secondaries(
-            PrimaryViewRequest::DesktopSwapchain,
+            PrimaryViewRequest::DesktopMain,
             (1280, 720),
             RenderPathProfile::desktop_main(),
             RenderPathProfile::desktop_main(),
@@ -597,15 +591,15 @@ mod tests {
         let main = views
             .plans()
             .iter()
-            .find(|v| matches!(v.target, FrameViewPlanTarget::Swapchain))
-            .expect("desktop primary request yields a swapchain view");
+            .find(|v| v.view_id == ViewId::Main)
+            .expect("desktop primary request yields a main view");
         assert_eq!(main.viewport_px, (1280, 720));
     }
 
     #[test]
     fn main_view_uses_default_shader_permutation_and_depth_mode() {
         let runtime = build_runtime();
-        let view = runtime.build_main_swapchain_view(TEST_EXTENT);
+        let view = runtime.build_main_desktop_view(TEST_EXTENT);
         assert_eq!(view.shader_permutation(), ShaderPermutation(0));
         assert_eq!(view.output_depth_mode(), OutputDepthMode::DesktopSingle);
         assert_eq!(view.clear.mode, crate::shared::CameraClearMode::Skybox);
@@ -672,7 +666,7 @@ mod tests {
     #[test]
     fn prepared_view_helpers_honor_explicit_camera_view_origin() {
         let runtime = build_runtime();
-        let mut view = runtime.build_main_swapchain_view(TEST_EXTENT);
+        let mut view = runtime.build_main_desktop_view(TEST_EXTENT);
         view.host_camera.head_output_transform =
             glam::Mat4::from_translation(glam::Vec3::new(1.0, 2.0, 3.0));
         assert_eq!(view.view_origin_world(), glam::Vec3::new(1.0, 2.0, 3.0));
@@ -688,7 +682,7 @@ mod tests {
     #[test]
     fn prepared_view_helpers_prefer_eye_world_position_over_head_output() {
         let runtime = build_runtime();
-        let mut view = runtime.build_main_swapchain_view(TEST_EXTENT);
+        let mut view = runtime.build_main_desktop_view(TEST_EXTENT);
         view.host_camera.head_output_transform =
             glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, 0.0));
         view.host_camera.eye_world_position = Some(glam::Vec3::new(4.0, 5.0, 6.0));

@@ -4,6 +4,7 @@ use glam::Mat4;
 
 use crate::assets::mesh::GpuMesh;
 use crate::gpu_pools::MeshPool;
+use crate::particles::ParticleDrawParams;
 use crate::scene::{
     MeshMaterialSlot, MeshRendererInstanceId, RenderSpaceId, SceneCoordinator, SkinnedMeshRenderer,
     StaticMeshRenderer,
@@ -369,6 +370,7 @@ fn expand_renderer_slots(
             property_block_id: slot.property_block_id,
             cull_geometry,
             rigid_world_matrix_override: None,
+            particle_draw: ParticleDrawParams::default(),
         });
     }
 }

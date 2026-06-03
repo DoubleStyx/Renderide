@@ -82,6 +82,55 @@ fn module_source(file_name: &str) -> io::Result<String> {
 }
 
 #[test]
+fn material_variant_bits_helper_supports_pipeline_constants() -> io::Result<()> {
+    let src = module_source("material/variant_bits.wgsl")?;
+
+    for required in [
+        "override renderide_static_variant_bits_mode: u32 = 0u;",
+        "override renderide_static_variant_bits: u32 = 0u;",
+        "fn effective(bits: u32) -> u32",
+        "return (effective(bits) & mask) != 0u;",
+    ] {
+        assert!(
+            src.contains(required),
+            "variant_bits.wgsl must contain `{required}`"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn material_variant_pipeline_constants_are_fragment_only() -> io::Result<()> {
+    for path in [
+        "src/materials/raster_pipeline.rs",
+        "src/passes/world_mesh_forward/skybox/pipeline.rs",
+    ] {
+        let src = source_file(manifest_dir().join(path))?;
+        assert!(
+            src.contains("fragment_specialization_constants.as_slice()"),
+            "{path} must pass material specialization constants to fragment compilation"
+        );
+
+        let vertex_state = src
+            .split("vertex: wgpu::VertexState {")
+            .nth(1)
+            .and_then(|tail| tail.split("fragment: Some(wgpu::FragmentState {").next())
+            .unwrap_or("");
+        assert!(
+            vertex_state.contains("compilation_options: Default::default()"),
+            "{path} must not pass material specialization constants to vertex compilation"
+        );
+        assert!(
+            !vertex_state.contains("specialization_constants.as_slice()"),
+            "{path} must keep material variant constants off vertex stages unless stage-aware reflection is added"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn auto_exposure_histogram_meters_linear_luminance() -> io::Result<()> {
     let src = source_file(
         manifest_dir()
@@ -313,6 +362,52 @@ fn billboard_render_buffer_uses_indexed_corner_separate_from_sample_uv() -> io::
             && src.contains("out.uv = uv;"),
         "Billboard/Unlit must keep atlas sampling UVs separate from generated geometry corners"
     );
+    assert!(
+        src.contains("@location(4) point_forward_upz: vec4<f32>")
+            && src.contains("@location(5) point_up_xy: vec2<f32>")
+            && src.contains("fn render_buffer_billboard_basis("),
+        "Render-buffer billboards must receive particle orientation streams for Unity alignment modes"
+    );
+    assert!(
+        src.contains("pd::particle_alignment(d)")
+            && src.contains("fn screen_clamped_billboard_size("),
+        "Render-buffer billboards must apply renderer alignment and screen-size clamp metadata"
+    );
+    assert!(
+        src.contains("if (kw_ALPHATEST() && clip_alpha < mat._Cutoff)")
+            && !src.contains("clip_alpha <= mat._Cutoff"),
+        "Billboard/Unlit alpha test must match Unity clip(col.a - _Cutoff) equality semantics"
+    );
+    assert!(
+        src.contains("#import renderide::frame::fog as rfog")
+            && src.contains("out.fog_coord = rfog::coord_from_world_pos(world_p, layer);")
+            && src.contains("rfog::apply_rgba(col, in.fog_coord)"),
+        "Billboard/Unlit must preserve the source-authored UNITY_APPLY_FOG hook"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn mesh_particle_vertex_module_applies_alignment_and_color_metadata() -> io::Result<()> {
+    let src = module_source("mesh/vertex.wgsl")?;
+
+    assert!(
+        src.contains("fn mesh_particle_view_basis(")
+            && src.contains("dt::particle_kind(draw) == 2u")
+            && src.contains("dt::particle_alignment(draw)"),
+        "mesh particle vertices must derive Unity view/facing alignment from per-draw metadata"
+    );
+    assert!(
+        src.contains("fn world_position_for_view(")
+            && src.contains("fn world_normal_for_view(")
+            && src.contains("fn world_tangent_for_view("),
+        "mesh particle view/facing alignment must affect positions, normals, and tangents together"
+    );
+    assert!(
+        src.contains("out.color = color * dt::particle_color(draw);"),
+        "mesh particle vertex color output must include the per-particle tint/alpha"
+    );
 
     Ok(())
 }
@@ -333,7 +428,9 @@ fn unlitdistancelerp_matches_sorted_keyword_bits_and_fragment_parity() -> io::Re
     }
     assert!(
         src.contains("UNLITDISTANCELERP_SPACE_GROUP")
-            && src.contains("(mat._RenderideVariantBits & UNLITDISTANCELERP_SPACE_GROUP) == 0u")
+            && src.contains(
+                "(vb::effective(mat._RenderideVariantBits) & UNLITDISTANCELERP_SPACE_GROUP) == 0u"
+            )
             && src.contains("return true;"),
         "UnlitDistanceLerp must default the WORLD_SPACE/LOCAL_SPACE group to WORLD_SPACE"
     );

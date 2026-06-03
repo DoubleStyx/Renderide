@@ -29,22 +29,35 @@ pub(super) struct EmbeddedVertexStreamFlags {
     embedded_uv2: bool,
     /// UV3 at `@location(7)`.
     embedded_uv3: bool,
-    /// Packed UV0-UV7 stream.
-    embedded_wide_uvs: bool,
+    /// Packed UV0-UV3 stream.
+    embedded_wide_low_uvs: bool,
+    /// Packed UV4-UV7 stream.
+    embedded_wide_high_uvs: bool,
 }
 
 impl EmbeddedVertexStreamFlags {
-    fn wide_uv_slot(self) -> Option<usize> {
-        self.embedded_wide_uvs.then_some(2)
+    fn wide_low_uv_slot(self) -> Option<usize> {
+        self.embedded_wide_low_uvs.then_some(2)
+    }
+
+    fn wide_high_uv_slot(self) -> Option<usize> {
+        self.slot_after([self.embedded_wide_low_uvs], self.embedded_wide_high_uvs)
     }
 
     fn uv_slot(self) -> Option<usize> {
-        self.compact_uv_enabled().then_some(2)
+        self.slot_after(
+            [self.embedded_wide_low_uvs, self.embedded_wide_high_uvs],
+            self.compact_uv_enabled(),
+        )
     }
 
     fn color_slot(self) -> Option<usize> {
         self.slot_after(
-            [self.embedded_wide_uvs, self.compact_uv_enabled()],
+            [
+                self.embedded_wide_low_uvs,
+                self.embedded_wide_high_uvs,
+                self.compact_uv_enabled(),
+            ],
             self.embedded_color,
         )
     }
@@ -52,7 +65,8 @@ impl EmbeddedVertexStreamFlags {
     fn tangent_slot(self) -> Option<usize> {
         self.slot_after(
             [
-                self.embedded_wide_uvs,
+                self.embedded_wide_low_uvs,
+                self.embedded_wide_high_uvs,
                 self.compact_uv_enabled(),
                 self.embedded_color,
             ],
@@ -61,11 +75,12 @@ impl EmbeddedVertexStreamFlags {
     }
 
     fn uv1_slot(self) -> Option<usize> {
-        if self.embedded_wide_uvs {
+        if self.embedded_wide_low_uvs {
             return None;
         }
         self.slot_after(
             [
+                self.embedded_wide_high_uvs,
                 self.compact_uv_enabled(),
                 self.embedded_color,
                 self.embedded_tangent,
@@ -75,11 +90,12 @@ impl EmbeddedVertexStreamFlags {
     }
 
     fn uv2_slot(self) -> Option<usize> {
-        if self.embedded_wide_uvs {
+        if self.embedded_wide_low_uvs {
             return None;
         }
         self.slot_after(
             [
+                self.embedded_wide_high_uvs,
                 self.compact_uv_enabled(),
                 self.embedded_color,
                 self.embedded_tangent,
@@ -90,11 +106,12 @@ impl EmbeddedVertexStreamFlags {
     }
 
     fn uv3_slot(self) -> Option<usize> {
-        if self.embedded_wide_uvs {
+        if self.embedded_wide_low_uvs {
             return None;
         }
         self.slot_after(
             [
+                self.embedded_wide_high_uvs,
                 self.compact_uv_enabled(),
                 self.embedded_color,
                 self.embedded_tangent,
@@ -113,7 +130,7 @@ impl EmbeddedVertexStreamFlags {
     }
 
     fn compact_uv_enabled(self) -> bool {
-        self.embedded_uv && !self.embedded_wide_uvs
+        self.embedded_uv && !self.embedded_wide_low_uvs
     }
 }
 
@@ -164,13 +181,15 @@ impl BufferBindId {
     }
 }
 
+const MESH_FORWARD_VERTEX_BIND_SLOTS: usize = 16;
+
 /// Per-render-pass last-bound vertex and index buffer state for bind deduplication.
 ///
-/// Tracks the last-submitted buffer identity for each of the 8 vertex slots and the index
+/// Tracks the last-submitted buffer identity for each mesh-forward vertex slot and the index
 /// buffer. Reset at every new render pass (i.e. at the start of [`super::draw_subset`]).
 pub(super) struct LastMeshBindState {
-    /// Last bound buffer identity per vertex slot 0-7; `None` = never bound this pass.
-    vertex: [Option<BufferBindId>; 8],
+    /// Last bound buffer identity per vertex slot; `None` = never bound this pass.
+    vertex: [Option<BufferBindId>; MESH_FORWARD_VERTEX_BIND_SLOTS],
     /// Last bound index buffer (pointer-as-usize identity) and format; `None` = never bound.
     index: Option<(usize, wgpu::IndexFormat)>,
 }
@@ -179,7 +198,7 @@ impl LastMeshBindState {
     /// Builds empty bind-state tracking for a fresh render pass.
     pub(super) fn new() -> Self {
         Self {
-            vertex: [None; 8],
+            vertex: [None; MESH_FORWARD_VERTEX_BIND_SLOTS],
             index: None,
         }
     }
@@ -333,30 +352,37 @@ fn resident_draw_mesh<'a>(
         );
         return None;
     }
-    if !streams.embedded_wide_uvs && streams.embedded_uv1 && !mesh.uv1_vertex_stream_ready() {
+    if !streams.embedded_wide_low_uvs && streams.embedded_uv1 && !mesh.uv1_vertex_stream_ready() {
         logger::trace!(
             "WorldMeshForward: UV1 vertex stream missing for mesh_asset_id {}; draw skipped until pre-warm catches up",
             item.mesh_asset_id
         );
         return None;
     }
-    if !streams.embedded_wide_uvs && streams.embedded_uv2 && !mesh.uv2_vertex_stream_ready() {
+    if !streams.embedded_wide_low_uvs && streams.embedded_uv2 && !mesh.uv2_vertex_stream_ready() {
         logger::trace!(
             "WorldMeshForward: UV2 vertex stream missing for mesh_asset_id {}; draw skipped until pre-warm catches up",
             item.mesh_asset_id
         );
         return None;
     }
-    if !streams.embedded_wide_uvs && streams.embedded_uv3 && !mesh.uv3_vertex_stream_ready() {
+    if !streams.embedded_wide_low_uvs && streams.embedded_uv3 && !mesh.uv3_vertex_stream_ready() {
         logger::trace!(
             "WorldMeshForward: UV3 vertex stream missing for mesh_asset_id {}; draw skipped until pre-warm catches up",
             item.mesh_asset_id
         );
         return None;
     }
-    if streams.embedded_wide_uvs && !mesh.wide_uv_vertex_stream_ready() {
+    if streams.embedded_wide_low_uvs && !mesh.wide_low_uv_vertex_stream_ready() {
         logger::trace!(
-            "WorldMeshForward: wide UV vertex stream missing for mesh_asset_id {}; draw skipped until pre-warm catches up",
+            "WorldMeshForward: wide low UV vertex stream missing for mesh_asset_id {}; draw skipped until pre-warm catches up",
+            item.mesh_asset_id
+        );
+        return None;
+    }
+    if streams.embedded_wide_high_uvs && !mesh.wide_high_uv_vertex_stream_ready() {
+        logger::trace!(
+            "WorldMeshForward: wide high UV vertex stream missing for mesh_asset_id {}; draw skipped until pre-warm catches up",
             item.mesh_asset_id
         );
         return None;
@@ -579,8 +605,20 @@ fn bind_optional_vertex_streams(
     streams: EmbeddedVertexStreamFlags,
     last_mesh: &mut LastMeshBindState,
 ) -> bool {
-    if let Some(slot) = streams.wide_uv_slot() {
-        let Some(uv) = mesh.wide_uv_buffer.as_deref() else {
+    if let Some(slot) = streams.wide_low_uv_slot() {
+        let Some(uv) = mesh.wide_low_uv_buffer.as_deref() else {
+            return false;
+        };
+        bind_vertex_if_changed!(
+            rpass,
+            slot,
+            uv.slice(..),
+            BufferBindId::full(uv),
+            last_mesh.vertex
+        );
+    }
+    if let Some(slot) = streams.wide_high_uv_slot() {
+        let Some(uv) = mesh.wide_high_uv_buffer.as_deref() else {
             return false;
         };
         bind_vertex_if_changed!(
@@ -764,7 +802,8 @@ pub(super) fn streams_for_item(item: &WorldMeshDrawItem) -> EmbeddedVertexStream
         embedded_uv1: item.batch_key.embedded_needs_uv1,
         embedded_uv2: item.batch_key.embedded_needs_uv2,
         embedded_uv3: item.batch_key.embedded_needs_uv3,
-        embedded_wide_uvs: item.batch_key.embedded_needs_wide_uvs,
+        embedded_wide_low_uvs: item.batch_key.embedded_needs_wide_low_uvs,
+        embedded_wide_high_uvs: item.batch_key.embedded_needs_wide_high_uvs,
     }
 }
 

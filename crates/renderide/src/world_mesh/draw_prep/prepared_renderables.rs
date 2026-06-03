@@ -23,6 +23,7 @@ use std::ops::Range;
 use crate::cpu_parallelism::RENDER_COMMAND_CHUNK_DRAWS;
 #[cfg(test)]
 use crate::gpu_pools::MeshPool;
+use crate::particles::ParticleDrawParams;
 use crate::scene::{MeshRendererInstanceId, RenderSpaceId, SceneCoordinator};
 use crate::shared::RenderingContext;
 use crate::world_mesh::culling::{MeshCullGeometry, WorldMeshCullInput};
@@ -103,6 +104,8 @@ pub(super) struct FramePreparedDraw {
     /// Optional final rigid world matrix for generated draw sources that are not represented by a
     /// scene transform alone.
     pub rigid_world_matrix_override: Option<glam::Mat4>,
+    /// Particle renderer metadata for generated render-buffer draw sources.
+    pub particle_draw: ParticleDrawParams,
 }
 
 /// Contiguous range of [`FramePreparedRenderables::draws`] produced by one source renderer.
@@ -112,6 +115,19 @@ pub(super) struct FramePreparedRun {
     pub start: u32,
     /// One-past-last draw index in this renderer run.
     pub end: u32,
+}
+
+/// Stable renderer identity used to patch one prepared run without scanning all draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct FramePreparedRunLookupKey {
+    /// Host render space that owns the renderer.
+    space_id: RenderSpaceId,
+    /// `true` when the renderer came from the skinned renderer table.
+    skinned: bool,
+    /// Dense renderer index in the source scene table.
+    renderable_index: usize,
+    /// Renderer-local identity that survives dense-table reindexing.
+    instance_id: MeshRendererInstanceId,
 }
 
 /// Contiguous range of [`FramePreparedRenderables::runs`] consumed as one collection task.
@@ -182,6 +198,30 @@ fn populate_run_chunks(
     }
 }
 
+/// Rebuilds direct renderer-run lookup entries from finalized run ranges.
+fn populate_renderer_run_lookup(
+    draws: &[FramePreparedDraw],
+    runs: &[FramePreparedRun],
+    lookup: &mut HashMap<FramePreparedRunLookupKey, FramePreparedRun>,
+) {
+    lookup.clear();
+    lookup.reserve(runs.len());
+    for &run in runs {
+        let Some(first) = draws.get(run.start as usize) else {
+            continue;
+        };
+        lookup.insert(
+            FramePreparedRunLookupKey {
+                space_id: first.space_id,
+                skinned: first.skinned,
+                renderable_index: first.renderable_index,
+                instance_id: first.instance_id,
+            },
+            run,
+        );
+    }
+}
+
 /// Frame-scope dense list of [`FramePreparedDraw`] entries across every active render space.
 ///
 /// Build once per frame via [`FramePreparedRenderables::build_for_frame`] and hand as a borrow to
@@ -204,6 +244,8 @@ pub struct FramePreparedRenderables {
     /// Cached chunks over [`Self::runs`] so per-view collection can fan out without allocating a
     /// chunk-list vector per view.
     run_chunks: Vec<FramePreparedRunChunk>,
+    /// Direct lookup from renderer identity to its prepared run.
+    renderer_run_lookup: HashMap<FramePreparedRunLookupKey, FramePreparedRun>,
     /// First-seen unique `(material_asset_id, property_block_id)` keys referenced by
     /// [`Self::draws`]. Material caches consume this list once per shader permutation instead of
     /// materializing and deduping every prepared draw.
@@ -216,6 +258,12 @@ pub struct FramePreparedRenderables {
     lod_groups: Vec<FramePreparedLodGroup>,
     /// Render context used when resolving material overrides; must match the per-view context.
     render_context: RenderingContext,
+    /// Whether this snapshot was built for a context with no draw-prep overrides and can be used by any such context.
+    context_invariant: bool,
+    /// Previous rebuild's draw buffer, used for range-based partial snapshot reuse.
+    previous_draws: Vec<FramePreparedDraw>,
+    /// Previous rebuild's per-space draw ranges, paired with [`Self::previous_draws`].
+    previous_cached_space_draw_ranges: HashMap<RenderSpaceId, Range<usize>>,
     /// Reused per-worker output buffers for the multi-space parallel expansion path. Outer
     /// [`Vec`] is resized to [`Self::active_space_ids`] length; each inner [`Vec`] is cleared and
     /// re-filled inside the rayon worker before [`expand_space_into`] runs. Capacities persist
@@ -230,17 +278,31 @@ impl FramePreparedRenderables {
     /// Empty list (no active spaces / no valid renderers); used by tests and scenes where every
     /// mesh is non-resident.
     pub fn empty(render_context: RenderingContext) -> Self {
+        Self::empty_with_context_mode(render_context, false)
+    }
+
+    /// Empty list that may be reused for any render context without draw-prep overrides.
+    pub(super) fn empty_context_invariant(render_context: RenderingContext) -> Self {
+        Self::empty_with_context_mode(render_context, true)
+    }
+
+    /// Empty list with an explicit context-compatibility mode.
+    fn empty_with_context_mode(render_context: RenderingContext, context_invariant: bool) -> Self {
         Self {
             active_space_ids: Vec::new(),
             cached_space_draw_ranges: HashMap::new(),
             draws: Vec::new(),
             runs: Vec::new(),
             run_chunks: Vec::new(),
+            renderer_run_lookup: HashMap::new(),
             material_property_keys: Vec::new(),
             material_property_key_signature: empty_material_key_signature(),
             spatial: PreparedSpatialIndex::default(),
             lod_groups: Vec::new(),
             render_context,
+            context_invariant,
+            previous_draws: Vec::new(),
+            previous_cached_space_draw_ranges: HashMap::new(),
             #[cfg(test)]
             space_scratch: Vec::new(),
             material_property_seen_scratch: HashSet::new(),
@@ -286,6 +348,7 @@ impl FramePreparedRenderables {
         self.draws.clear();
         self.runs.clear();
         self.run_chunks.clear();
+        self.renderer_run_lookup.clear();
         self.material_property_keys.clear();
         self.lod_groups.clear();
 
@@ -383,6 +446,7 @@ impl FramePreparedRenderables {
             &mut self.run_chunks,
             PREPARED_RUN_CHUNK_DRAW_TARGET,
         );
+        populate_renderer_run_lookup(&self.draws, &self.runs, &mut self.renderer_run_lookup);
         self.rebuild_lod_groups(scene);
         self.spatial.rebuild(&self.draws, &self.runs);
     }
@@ -462,16 +526,22 @@ impl FramePreparedRenderables {
         self.render_context
     }
 
+    /// Returns whether this snapshot can be consumed by `render_context`.
+    #[inline]
+    pub fn is_compatible_with_render_context(&self, render_context: RenderingContext) -> bool {
+        self.context_invariant || self.render_context == render_context
+    }
+
     /// Active render spaces captured by this prepared snapshot.
     #[inline]
     pub fn active_space_ids(&self) -> &[RenderSpaceId] {
         &self.active_space_ids
     }
 
-    /// Cached prepared draw rows for one render space.
-    pub(super) fn cached_draws_for_space(&self, id: RenderSpaceId) -> Option<&[FramePreparedDraw]> {
-        let range = self.cached_space_draw_ranges.get(&id)?;
-        self.draws.get(range.clone())
+    /// Returns whether the previous rebuild has retained draw rows for `id`.
+    #[inline]
+    pub(super) fn has_previous_cached_draws_for_space(&self, id: RenderSpaceId) -> bool {
+        self.previous_cached_space_draw_ranges.contains_key(&id)
     }
 
     /// Returns whether `space_id` uses a BVH instead of only linear buckets.
@@ -506,11 +576,19 @@ impl FramePreparedRenderables {
     /// Starts a retained render-world snapshot rebuild, preserving backing buffer capacity.
     pub(super) fn begin_cached_rebuild(&mut self, render_context: RenderingContext) {
         self.render_context = render_context;
+        self.previous_draws.clear();
+        std::mem::swap(&mut self.draws, &mut self.previous_draws);
+        self.previous_cached_space_draw_ranges.clear();
+        std::mem::swap(
+            &mut self.cached_space_draw_ranges,
+            &mut self.previous_cached_space_draw_ranges,
+        );
         self.active_space_ids.clear();
         self.cached_space_draw_ranges.clear();
         self.draws.clear();
         self.runs.clear();
         self.run_chunks.clear();
+        self.renderer_run_lookup.clear();
         self.lod_groups.clear();
     }
 
@@ -522,6 +600,18 @@ impl FramePreparedRenderables {
     /// Appends retained draw-template rows to the snapshot under construction.
     pub(super) fn extend_cached_draws(&mut self, draws: &[FramePreparedDraw]) {
         self.draws.extend(draws.iter().cloned());
+    }
+
+    /// Appends retained draw rows for `id` from the previous rebuild, if available.
+    pub(super) fn extend_previous_cached_draws_for_space(&mut self, id: RenderSpaceId) -> bool {
+        let Some(range) = self.previous_cached_space_draw_ranges.get(&id).cloned() else {
+            return false;
+        };
+        let Some(draws) = self.previous_draws.get(range) else {
+            return false;
+        };
+        self.draws.extend(draws.iter().cloned());
+        true
     }
 
     /// Appends retained draw-template rows with dynamic cull geometry filled from renderer state.
@@ -550,12 +640,19 @@ impl FramePreparedRenderables {
         instance_id: MeshRendererInstanceId,
         cull_geometry: Option<MeshCullGeometry>,
     ) {
-        for draw in &mut self.draws {
-            if draw.space_id == space_id
-                && draw.skinned == skinned
-                && draw.renderable_index == renderable_index
-                && draw.instance_id == instance_id
-            {
+        let key = FramePreparedRunLookupKey {
+            space_id,
+            skinned,
+            renderable_index,
+            instance_id,
+        };
+        let Some(run) = self.renderer_run_lookup.get(&key).copied() else {
+            return;
+        };
+        let start = run.start as usize;
+        let end = run.end as usize;
+        if let Some(draws) = self.draws.get_mut(start..end) {
+            for draw in draws {
                 draw.cull_geometry = cull_geometry;
             }
         }
@@ -777,6 +874,7 @@ mod tests {
             property_block_id,
             cull_geometry: None,
             rigid_world_matrix_override: None,
+            particle_draw: ParticleDrawParams::default(),
         }
     }
 
@@ -838,6 +936,73 @@ mod tests {
             [(space_id, adjusted.as_slice())],
         );
         prepared
+    }
+
+    #[test]
+    fn cached_rebuild_can_reuse_previous_space_ranges() {
+        let mut prepared = FramePreparedRenderables::empty(RenderingContext::UserView);
+        let draws = [prepared_draw(0, 10, None), prepared_draw(1, 11, None)];
+        prepared.rebuild_from_cached_spaces(
+            RenderingContext::UserView,
+            [(RenderSpaceId(1), draws.as_slice())],
+        );
+
+        prepared.begin_cached_rebuild(RenderingContext::Camera);
+        assert!(prepared.has_previous_cached_draws_for_space(RenderSpaceId(1)));
+        prepared.push_cached_space(RenderSpaceId(1));
+        assert!(prepared.extend_previous_cached_draws_for_space(RenderSpaceId(1)));
+        prepared.finish_cached_rebuild(&empty_scene());
+
+        assert_eq!(prepared.draws.len(), 2);
+        assert_eq!(prepared.draws[0].material_asset_id, 10);
+        assert_eq!(prepared.draws[1].material_asset_id, 11);
+        assert!(
+            prepared
+                .cached_space_draw_ranges
+                .contains_key(&RenderSpaceId(1))
+        );
+    }
+
+    #[test]
+    fn cull_geometry_update_uses_renderer_run_lookup() {
+        let mut prepared = FramePreparedRenderables::empty(RenderingContext::UserView);
+        let instance = MeshRendererInstanceId(42);
+        let mut first_slot = prepared_draw(0, 10, None);
+        first_slot.instance_id = instance;
+        first_slot.slot_index = 0;
+        let mut second_slot = first_slot.clone();
+        second_slot.slot_index = 1;
+        second_slot.material_asset_id = 11;
+        let other = prepared_draw(1, 12, None);
+        let draws = vec![first_slot, second_slot, other];
+        prepared.rebuild_from_cached_spaces(
+            RenderingContext::UserView,
+            [(RenderSpaceId(1), draws.as_slice())],
+        );
+
+        let bounds = (Vec3::splat(-1.0), Vec3::splat(1.0));
+        let geometry = MeshCullGeometry {
+            world_aabb: Some(bounds),
+            rigid_world_matrix: Some(Mat4::IDENTITY),
+            front_face_world_matrix: Some(Mat4::IDENTITY),
+        };
+        prepared.update_cached_renderer_cull_geometry(
+            RenderSpaceId(1),
+            false,
+            0,
+            instance,
+            Some(geometry),
+        );
+
+        assert_eq!(
+            prepared.draws[0].cull_geometry.and_then(|g| g.world_aabb),
+            Some(bounds)
+        );
+        assert_eq!(
+            prepared.draws[1].cull_geometry.and_then(|g| g.world_aabb),
+            Some(bounds)
+        );
+        assert!(prepared.draws[2].cull_geometry.is_none());
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //! and asset-integration accumulator into the outgoing
 //! [`crate::shared::PerformanceState`] payload.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::shared::PerformanceState;
 
@@ -19,6 +19,7 @@ pub(crate) struct FrameStartPerformanceState {
     last_render_time_seconds: f32,
     fps_window: FpsWindow,
     rendered_frames_since_last: i32,
+    frame_begin_to_submit_seconds: f32,
     asset_integration: AssetIntegrationPerformanceState,
 }
 
@@ -30,6 +31,7 @@ impl Default for FrameStartPerformanceState {
             last_render_time_seconds: RENDER_TIME_UNAVAILABLE,
             fps_window: FpsWindow::default(),
             rendered_frames_since_last: 0,
+            frame_begin_to_submit_seconds: 0.0,
             asset_integration: AssetIntegrationPerformanceState::default(),
         }
     }
@@ -60,6 +62,12 @@ impl FrameStartPerformanceState {
         self.rendered_frames_since_last = self.rendered_frames_since_last.saturating_add(1);
     }
 
+    /// Stores the most recent host frame-start to frame-submit turnaround.
+    pub(crate) fn set_last_frame_begin_to_submit(&mut self, duration: Option<Duration>) {
+        self.frame_begin_to_submit_seconds =
+            duration.map_or(0.0, |duration| duration.as_secs_f32());
+    }
+
     /// Accumulates one cooperative asset-integration drain for the next frame-start payload.
     pub(crate) fn record_asset_integration_stats(
         &mut self,
@@ -82,6 +90,7 @@ impl FrameStartPerformanceState {
             self.last_render_time_seconds,
             self.fps_window.last_fps(),
             rendered_frames_since_last,
+            self.frame_begin_to_submit_seconds,
             asset_integration,
         )
     }

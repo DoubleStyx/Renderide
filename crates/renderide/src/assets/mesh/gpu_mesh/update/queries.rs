@@ -42,9 +42,14 @@ impl GpuMesh {
         self.uv3_buffer.is_some()
     }
 
-    /// `true` when this mesh has the packed UV0-UV7 stream required by wide UV shaders.
-    pub fn wide_uv_vertex_stream_ready(&self) -> bool {
-        self.wide_uv_buffer.is_some()
+    /// `true` when this mesh has the packed UV0-UV3 stream required by wide low UV shaders.
+    pub fn wide_low_uv_vertex_stream_ready(&self) -> bool {
+        self.wide_low_uv_buffer.is_some()
+    }
+
+    /// `true` when this mesh has the packed UV4-UV7 stream required by high UV shaders.
+    pub fn wide_high_uv_vertex_stream_ready(&self) -> bool {
+        self.wide_high_uv_buffer.is_some()
     }
 
     /// Returns whether this mesh has every GPU stream needed to produce world-space skinned output.

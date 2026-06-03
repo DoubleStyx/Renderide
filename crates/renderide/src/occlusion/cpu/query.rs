@@ -207,6 +207,31 @@ mod tests {
     }
 
     #[test]
+    fn offscreen_hiz_projection_samples_flipped_depth_region() {
+        let mut base = vec![0.95f32; 16 * 16];
+        for y in 8..16 {
+            for x in 0..16 {
+                base[y * 16 + x] = 0.0;
+            }
+        }
+        let snap = snapshot_from_base(16, 16, 5, base);
+        assert!(snap.validate().is_some());
+
+        let wmin = Vec3::new(-0.05, 0.45, 0.82);
+        let wmax = Vec3::new(0.05, 0.55, 0.85);
+        assert!(
+            mesh_fully_occluded_in_hiz(&snap, Mat4::IDENTITY, wmin, wmax),
+            "raw projection samples the top occluder and demonstrates the offscreen mismatch"
+        );
+
+        let offscreen_view_proj = Mat4::from_scale(Vec3::new(1.0, -1.0, 1.0));
+        assert!(
+            !mesh_fully_occluded_in_hiz(&snap, offscreen_view_proj, wmin, wmax),
+            "offscreen projection samples the vertically flipped visible depth region"
+        );
+    }
+
+    #[test]
     fn broad_visible_rect_exceeding_sample_budget_is_kept() {
         let vp = Mat4::IDENTITY;
         let snap = snapshot_from_base(128, 128, 8, vec![0.0f32; 128 * 128]);

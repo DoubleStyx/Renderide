@@ -97,7 +97,7 @@ fn kw_VERTEXCOLORS() -> bool {
 }
 
 fn kw_WORLD_SPACE() -> bool {
-    if ((mat._RenderideVariantBits & UNLITDISTANCELERP_SPACE_GROUP) == 0u) {
+    if ((vb::effective(mat._RenderideVariantBits) & UNLITDISTANCELERP_SPACE_GROUP) == 0u) {
         return true;
     }
     return unlitdistancelerp_kw(UNLITDISTANCELERP_KW_WORLD_SPACE);

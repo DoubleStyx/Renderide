@@ -284,7 +284,7 @@ pub fn validate_vertex_layout_against_limits(
     Ok(())
 }
 
-/// Validates that `@group(2)` matches the per-draw storage slab (single binding, 256-byte element stride).
+/// Validates that `@group(2)` matches the per-draw storage slab.
 pub fn validate_per_draw_group2(
     entries: &[wgpu::BindGroupLayoutEntry],
 ) -> Result<(), ReflectError> {
@@ -316,7 +316,7 @@ pub fn validate_per_draw_group2(
             group: 2,
             binding: 0,
             reason:
-                "expected var<storage, read> array with dynamic offset and min_binding_size 256"
+                "expected var<storage, read> array with dynamic offset and per-draw min_binding_size"
                     .into(),
         }),
     }

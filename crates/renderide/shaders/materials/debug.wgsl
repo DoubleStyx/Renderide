@@ -57,7 +57,7 @@ fn debug_kw(mask: u32) -> bool {
 }
 
 fn selector_defaults_to_position() -> bool {
-    return (mat._RenderideVariantBits & DEBUG_SELECTOR_MASK) == 0u;
+    return (vb::effective(mat._RenderideVariantBits) & DEBUG_SELECTOR_MASK) == 0u;
 }
 
 fn selected_mesh_data(

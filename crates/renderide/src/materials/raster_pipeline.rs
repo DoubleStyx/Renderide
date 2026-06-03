@@ -12,7 +12,9 @@ use crate::gpu::{
 use crate::materials::material_passes::{DefaultPassParams, MaterialPassDesc, default_pass};
 use crate::materials::pipeline_build_error::PipelineBuildError;
 use crate::materials::wgsl_reflect::reflect_raster_material_wgsl_with_vertex_entries;
-use crate::materials::{MaterialRenderState, RasterFrontFace, RasterPrimitiveTopology};
+use crate::materials::{
+    MaterialRenderState, MaterialShaderSpecializationKey, RasterFrontFace, RasterPrimitiveTopology,
+};
 use crate::materials::{
     ReflectedRasterLayout, ReflectedVertexInputFormat, validate_layout_against_limits,
     validate_per_draw_group2, validate_vertex_layout_against_limits,
@@ -41,8 +43,10 @@ pub(crate) struct ShaderModuleBuildRefs<'a> {
     pub module: &'a wgpu::ShaderModule,
     /// Surface and attachment formats for the material.
     pub desc: &'a MaterialPipelineDesc,
-    /// Full WGSL source for reflection.
+    /// Full WGSL source for reflection and source-mangled pipeline constants.
     pub wgsl_source: &'a str,
+    /// Renderer-local shader specialization constants.
+    pub shader_specialization: MaterialShaderSpecializationKey,
 }
 
 impl<'a> ShaderModuleBuildRefs<'a> {
@@ -54,6 +58,7 @@ impl<'a> ShaderModuleBuildRefs<'a> {
             module: self.module,
             desc: self.desc,
             wgsl_source: self.wgsl_source,
+            shader_specialization: self.shader_specialization,
             label: label.into(),
         }
     }
@@ -71,6 +76,8 @@ pub(crate) struct ReflectiveRasterShaderContext<'a> {
     pub desc: &'a MaterialPipelineDesc,
     /// Full WGSL source for reflection (vertex stream layout).
     pub wgsl_source: &'a str,
+    /// Renderer-local shader specialization constants.
+    pub shader_specialization: MaterialShaderSpecializationKey,
     /// Label prefix for pipeline layout and pipelines.
     pub label: String,
 }
@@ -92,6 +99,8 @@ pub(crate) struct MeshForwardSharedPipelineBuild<'a> {
     pub device: &'a wgpu::Device,
     /// Compiled WGSL module.
     pub module: &'a wgpu::ShaderModule,
+    /// Full composed WGSL source for source-mangled pipeline constants.
+    pub wgsl_source: &'a str,
     /// Surface and attachment formats for the material.
     pub desc: &'a MaterialPipelineDesc,
     /// Label prefix for pipeline naming (`{label}__{pass}`).
@@ -104,6 +113,8 @@ pub(crate) struct MeshForwardSharedPipelineBuild<'a> {
     pub front_face: RasterFrontFace,
     /// Primitive topology baked into [`wgpu::PrimitiveState::topology`] for this variant.
     pub primitive_topology: RasterPrimitiveTopology,
+    /// Renderer-local shader specialization constants.
+    pub shader_specialization: MaterialShaderSpecializationKey,
 }
 
 /// Vertex stream toggles, blending, depth write, and material overrides for
@@ -130,7 +141,7 @@ pub(crate) struct ReflectiveRasterMeshForwardPipelineDesc {
 mod vertex_layouts;
 
 use vertex_layouts::{
-    mesh_forward_vertex_buffer_layout, mesh_forward_wide_uv_vertex_buffer_layout,
+    mesh_forward_vertex_buffer_layout, mesh_forward_wide_uv_page_vertex_buffer_layout,
 };
 
 const UV_SHADER_LOCATIONS: [u32; 8] = [2, 5, 6, 7, 8, 9, 10, 11];
@@ -148,12 +159,16 @@ impl ReflectedMeshForwardVertexStreams {
         self.uv_formats[channel].is_some()
     }
 
-    fn needs_wide_uvs(&self) -> bool {
+    fn needs_wide_low_uvs(&self) -> bool {
         self.uv_formats.iter().enumerate().any(|(channel, format)| {
             format.is_some_and(|format| {
-                channel >= 4 || format != ReflectedVertexInputFormat::Float32x2
+                channel < 4 && format != ReflectedVertexInputFormat::Float32x2
             })
         })
+    }
+
+    fn needs_wide_high_uvs(&self) -> bool {
+        self.uv_formats[4..].iter().any(Option::is_some)
     }
 }
 
@@ -215,16 +230,16 @@ fn include_uv_channel(
     }
 }
 
-fn wide_uv_attributes_for_streams(
+fn wide_low_uv_attributes_for_streams(
     streams: &ReflectedMeshForwardVertexStreams,
     include_uv_vertex_buffer: bool,
     include_uv1_vertex_buffer: bool,
 ) -> Vec<wgpu::VertexAttribute> {
-    if !streams.needs_wide_uvs() {
+    if !streams.needs_wide_low_uvs() {
         return Vec::new();
     }
     let mut attributes = Vec::new();
-    for (channel, format) in streams.uv_formats.iter().copied().enumerate() {
+    for (channel, format) in streams.uv_formats[..4].iter().copied().enumerate() {
         if !include_uv_channel(channel, include_uv_vertex_buffer, include_uv1_vertex_buffer) {
             continue;
         }
@@ -240,9 +255,31 @@ fn wide_uv_attributes_for_streams(
     attributes
 }
 
+fn wide_high_uv_attributes_for_streams(
+    streams: &ReflectedMeshForwardVertexStreams,
+) -> Vec<wgpu::VertexAttribute> {
+    if !streams.needs_wide_high_uvs() {
+        return Vec::new();
+    }
+    let mut attributes = Vec::new();
+    for (page_channel, format) in streams.uv_formats[4..].iter().copied().enumerate() {
+        let Some(format) = format.and_then(reflected_vertex_format_to_wgpu) else {
+            continue;
+        };
+        let channel = page_channel + 4;
+        attributes.push(wgpu::VertexAttribute {
+            offset: page_channel as u64 * WIDE_UV_ROW_BYTES,
+            shader_location: UV_SHADER_LOCATIONS[channel],
+            format,
+        });
+    }
+    attributes
+}
+
 fn mesh_forward_vertex_buffers_for_streams<'a>(
     streams: &ReflectedMeshForwardVertexStreams,
-    wide_uv_attributes: &'a [wgpu::VertexAttribute],
+    wide_low_uv_attributes: &'a [wgpu::VertexAttribute],
+    wide_high_uv_attributes: &'a [wgpu::VertexAttribute],
     include_uv_vertex_buffer: bool,
     include_color_vertex_buffer: bool,
     include_uv1_vertex_buffer: bool,
@@ -251,12 +288,18 @@ fn mesh_forward_vertex_buffers_for_streams<'a>(
         mesh_forward_vertex_buffer_layout(0),
         mesh_forward_vertex_buffer_layout(1),
     ];
-    let uses_wide_uvs = !wide_uv_attributes.is_empty();
-    if uses_wide_uvs {
-        vertex_buffers.push(mesh_forward_wide_uv_vertex_buffer_layout(
-            wide_uv_attributes,
+    let uses_wide_low_uvs = !wide_low_uv_attributes.is_empty();
+    if uses_wide_low_uvs {
+        vertex_buffers.push(mesh_forward_wide_uv_page_vertex_buffer_layout(
+            wide_low_uv_attributes,
         ));
-    } else if include_uv_vertex_buffer && streams.uv(0) {
+    }
+    if !wide_high_uv_attributes.is_empty() {
+        vertex_buffers.push(mesh_forward_wide_uv_page_vertex_buffer_layout(
+            wide_high_uv_attributes,
+        ));
+    }
+    if !uses_wide_low_uvs && include_uv_vertex_buffer && streams.uv(0) {
         vertex_buffers.push(mesh_forward_vertex_buffer_layout(2));
     }
     if include_color_vertex_buffer && streams.color {
@@ -265,7 +308,7 @@ fn mesh_forward_vertex_buffers_for_streams<'a>(
     if streams.tangent {
         vertex_buffers.push(mesh_forward_vertex_buffer_layout(4));
     }
-    if !uses_wide_uvs {
+    if !uses_wide_low_uvs {
         if include_uv1_vertex_buffer && streams.uv(1) {
             vertex_buffers.push(mesh_forward_vertex_buffer_layout(5));
         }
@@ -325,6 +368,9 @@ pub(crate) fn build_pipeline_from_pass(
         "{}__{}__vs_{}__fs_{}",
         shared.label, pass.name, pass.vertex_entry, pass.fragment_entry
     );
+    let fragment_specialization_constants = shared
+        .shader_specialization
+        .pipeline_constants_for_wgsl_source(shared.wgsl_source);
     {
         profiling::scope!("materials::create_render_pipeline_wgpu");
         let pipeline = shared
@@ -341,7 +387,10 @@ pub(crate) fn build_pipeline_from_pass(
                 fragment: Some(wgpu::FragmentState {
                     module: shared.module,
                     entry_point: Some(pass.fragment_entry),
-                    compilation_options: Default::default(),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: fragment_specialization_constants.as_slice(),
+                        ..Default::default()
+                    },
                     targets: &[Some(wgpu::ColorTargetState {
                         format: shared.desc.surface_format,
                         blend: pass.blend,
@@ -426,14 +475,16 @@ pub(crate) fn create_reflective_raster_mesh_forward_pipeline(
     let vertex_entries = [pass.vertex_entry];
     let (layout, vertex_streams) =
         pipeline_layout_and_vertex_streams(device, limits, wgsl_source, label, &vertex_entries)?;
-    let wide_uv_attributes = wide_uv_attributes_for_streams(
+    let wide_low_uv_attributes = wide_low_uv_attributes_for_streams(
         &vertex_streams,
         raster.include_uv_vertex_buffer,
         raster.include_uv1_vertex_buffer,
     );
+    let wide_high_uv_attributes = wide_high_uv_attributes_for_streams(&vertex_streams);
     let vertex_buffers = mesh_forward_vertex_buffers_for_streams(
         &vertex_streams,
-        &wide_uv_attributes,
+        &wide_low_uv_attributes,
+        &wide_high_uv_attributes,
         raster.include_uv_vertex_buffer,
         raster.include_color_vertex_buffer,
         raster.include_uv1_vertex_buffer,
@@ -442,12 +493,14 @@ pub(crate) fn create_reflective_raster_mesh_forward_pipeline(
     let shared = MeshForwardSharedPipelineBuild {
         device,
         module,
+        wgsl_source,
         desc,
         label,
         layout: &layout,
         vertex_buffers: &vertex_buffers,
         front_face: raster.front_face,
         primitive_topology: raster.primitive_topology,
+        shader_specialization: MaterialShaderSpecializationKey::disabled(),
     };
     Ok(build_pipeline_from_pass(
         &shared,
@@ -481,14 +534,16 @@ pub(crate) fn create_reflective_raster_mesh_forward_pipelines(
         shader.label.as_str(),
         &vertex_entries,
     )?;
-    let wide_uv_attributes = wide_uv_attributes_for_streams(
+    let wide_low_uv_attributes = wide_low_uv_attributes_for_streams(
         &vertex_streams,
         streams.include_uv_vertex_buffer,
         streams.include_uv1_vertex_buffer,
     );
+    let wide_high_uv_attributes = wide_high_uv_attributes_for_streams(&vertex_streams);
     let vertex_buffers = mesh_forward_vertex_buffers_for_streams(
         &vertex_streams,
-        &wide_uv_attributes,
+        &wide_low_uv_attributes,
+        &wide_high_uv_attributes,
         streams.include_uv_vertex_buffer,
         streams.include_color_vertex_buffer,
         streams.include_uv1_vertex_buffer,
@@ -498,12 +553,14 @@ pub(crate) fn create_reflective_raster_mesh_forward_pipelines(
     let shared = MeshForwardSharedPipelineBuild {
         device: shader.device,
         module: shader.module,
+        wgsl_source: shader.wgsl_source,
         desc: shader.desc,
         label: shader.label.as_str(),
         layout: &layout,
         vertex_buffers: &vertex_buffers,
         front_face,
         primitive_topology,
+        shader_specialization: shader.shader_specialization,
     };
     Ok(passes
         .iter()
@@ -586,21 +643,100 @@ mod tests {
         streams.uv_formats[2] = Some(ReflectedVertexInputFormat::Float32x2);
         streams.uv_formats[3] = Some(ReflectedVertexInputFormat::Float32x2);
 
-        let wide_uv_attributes = wide_uv_attributes_for_streams(&streams, true, true);
+        let wide_low_uv_attributes = wide_low_uv_attributes_for_streams(&streams, true, true);
+        let wide_high_uv_attributes = wide_high_uv_attributes_for_streams(&streams);
         let layouts = mesh_forward_vertex_buffers_for_streams(
             &streams,
-            &wide_uv_attributes,
+            &wide_low_uv_attributes,
+            &wide_high_uv_attributes,
             true,
             false,
             true,
         );
 
-        assert!(wide_uv_attributes.is_empty());
+        assert!(wide_low_uv_attributes.is_empty());
+        assert!(wide_high_uv_attributes.is_empty());
         assert_eq!(shader_locations(&layouts), vec![0, 1, 2, 5, 6, 7]);
     }
 
     #[test]
-    fn wide_uv_layout_replaces_compact_uv_slots() {
+    fn wide_low_uv_layout_replaces_compact_low_uv_slots() {
+        let mut streams = ReflectedMeshForwardVertexStreams::default();
+        streams.uv_formats[0] = Some(ReflectedVertexInputFormat::Float32x4);
+        streams.uv_formats[3] = Some(ReflectedVertexInputFormat::Float32x3);
+        streams.color = true;
+        streams.tangent = true;
+
+        let wide_low_uv_attributes = wide_low_uv_attributes_for_streams(&streams, true, true);
+        let wide_high_uv_attributes = wide_high_uv_attributes_for_streams(&streams);
+        let layouts = mesh_forward_vertex_buffers_for_streams(
+            &streams,
+            &wide_low_uv_attributes,
+            &wide_high_uv_attributes,
+            true,
+            true,
+            true,
+        );
+
+        assert_eq!(wide_low_uv_attributes.len(), 2);
+        assert_eq!(wide_low_uv_attributes[0].shader_location, 2);
+        assert_eq!(wide_low_uv_attributes[0].offset, 0);
+        assert_eq!(
+            wide_low_uv_attributes[0].format,
+            wgpu::VertexFormat::Float32x4
+        );
+        assert_eq!(wide_low_uv_attributes[1].shader_location, 7);
+        assert_eq!(wide_low_uv_attributes[1].offset, 48);
+        assert_eq!(
+            wide_low_uv_attributes[1].format,
+            wgpu::VertexFormat::Float32x3
+        );
+        assert!(wide_high_uv_attributes.is_empty());
+
+        assert_eq!(shader_locations(&layouts), vec![0, 1, 2, 7, 3, 4]);
+        assert_eq!(layouts[2].array_stride, 64);
+    }
+
+    #[test]
+    fn wide_high_uv_layout_keeps_compact_low_uv_slots() {
+        let mut streams = ReflectedMeshForwardVertexStreams::default();
+        streams.uv_formats[0] = Some(ReflectedVertexInputFormat::Float32x2);
+        streams.uv_formats[1] = Some(ReflectedVertexInputFormat::Float32x2);
+        streams.uv_formats[4] = Some(ReflectedVertexInputFormat::Float32x2);
+        streams.uv_formats[7] = Some(ReflectedVertexInputFormat::Float32x3);
+
+        let wide_low_uv_attributes = wide_low_uv_attributes_for_streams(&streams, true, true);
+        let wide_high_uv_attributes = wide_high_uv_attributes_for_streams(&streams);
+        let layouts = mesh_forward_vertex_buffers_for_streams(
+            &streams,
+            &wide_low_uv_attributes,
+            &wide_high_uv_attributes,
+            true,
+            false,
+            true,
+        );
+
+        assert!(wide_low_uv_attributes.is_empty());
+        assert_eq!(wide_high_uv_attributes.len(), 2);
+        assert_eq!(wide_high_uv_attributes[0].shader_location, 8);
+        assert_eq!(wide_high_uv_attributes[0].offset, 0);
+        assert_eq!(
+            wide_high_uv_attributes[0].format,
+            wgpu::VertexFormat::Float32x2
+        );
+        assert_eq!(wide_high_uv_attributes[1].shader_location, 11);
+        assert_eq!(wide_high_uv_attributes[1].offset, 48);
+        assert_eq!(
+            wide_high_uv_attributes[1].format,
+            wgpu::VertexFormat::Float32x3
+        );
+
+        assert_eq!(shader_locations(&layouts), vec![0, 1, 8, 11, 2, 5]);
+        assert_eq!(layouts[2].array_stride, 64);
+    }
+
+    #[test]
+    fn wide_low_and_high_uv_layouts_use_two_pages() {
         let mut streams = ReflectedMeshForwardVertexStreams::default();
         streams.uv_formats[0] = Some(ReflectedVertexInputFormat::Float32x4);
         streams.uv_formats[4] = Some(ReflectedVertexInputFormat::Float32x2);
@@ -608,27 +744,40 @@ mod tests {
         streams.color = true;
         streams.tangent = true;
 
-        let wide_uv_attributes = wide_uv_attributes_for_streams(&streams, true, true);
+        let wide_low_uv_attributes = wide_low_uv_attributes_for_streams(&streams, true, true);
+        let wide_high_uv_attributes = wide_high_uv_attributes_for_streams(&streams);
         let layouts = mesh_forward_vertex_buffers_for_streams(
             &streams,
-            &wide_uv_attributes,
+            &wide_low_uv_attributes,
+            &wide_high_uv_attributes,
             true,
             true,
             true,
         );
 
-        assert_eq!(wide_uv_attributes.len(), 3);
-        assert_eq!(wide_uv_attributes[0].shader_location, 2);
-        assert_eq!(wide_uv_attributes[0].offset, 0);
-        assert_eq!(wide_uv_attributes[0].format, wgpu::VertexFormat::Float32x4);
-        assert_eq!(wide_uv_attributes[1].shader_location, 8);
-        assert_eq!(wide_uv_attributes[1].offset, 64);
-        assert_eq!(wide_uv_attributes[1].format, wgpu::VertexFormat::Float32x2);
-        assert_eq!(wide_uv_attributes[2].shader_location, 11);
-        assert_eq!(wide_uv_attributes[2].offset, 112);
-        assert_eq!(wide_uv_attributes[2].format, wgpu::VertexFormat::Float32x3);
+        assert_eq!(wide_low_uv_attributes.len(), 1);
+        assert_eq!(wide_low_uv_attributes[0].shader_location, 2);
+        assert_eq!(wide_low_uv_attributes[0].offset, 0);
+        assert_eq!(
+            wide_low_uv_attributes[0].format,
+            wgpu::VertexFormat::Float32x4
+        );
+        assert_eq!(wide_high_uv_attributes.len(), 2);
+        assert_eq!(wide_high_uv_attributes[0].shader_location, 8);
+        assert_eq!(wide_high_uv_attributes[0].offset, 0);
+        assert_eq!(
+            wide_high_uv_attributes[0].format,
+            wgpu::VertexFormat::Float32x2
+        );
+        assert_eq!(wide_high_uv_attributes[1].shader_location, 11);
+        assert_eq!(wide_high_uv_attributes[1].offset, 48);
+        assert_eq!(
+            wide_high_uv_attributes[1].format,
+            wgpu::VertexFormat::Float32x3
+        );
 
         assert_eq!(shader_locations(&layouts), vec![0, 1, 2, 8, 11, 3, 4]);
-        assert_eq!(layouts[2].array_stride, 128);
+        assert_eq!(layouts[2].array_stride, 64);
+        assert_eq!(layouts[3].array_stride, 64);
     }
 }

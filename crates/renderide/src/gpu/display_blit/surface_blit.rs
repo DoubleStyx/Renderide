@@ -59,8 +59,30 @@ impl DisplayBlitResources {
         F: FnOnce(&mut wgpu::CommandEncoder, &wgpu::TextureView, &mut GpuContext) -> Result<(), E>,
         E: std::fmt::Display,
     {
+        self.present_blit_to_surface_traced(
+            gpu,
+            source,
+            SurfaceAcquireTrace::DesktopBlitToDisplay,
+            SurfaceSubmitTrace::DesktopBlitToDisplay,
+            overlay,
+        )
+    }
+
+    /// Acquires the desktop swapchain, blits `source`, and presents under source-specific traces.
+    pub fn present_blit_to_surface_traced<F, E>(
+        &mut self,
+        gpu: &mut GpuContext,
+        source: DisplayBlitSource<'_>,
+        acquire_trace: SurfaceAcquireTrace,
+        submit_trace: SurfaceSubmitTrace,
+        overlay: F,
+    ) -> Result<(), PresentClearError>
+    where
+        F: FnOnce(&mut wgpu::CommandEncoder, &wgpu::TextureView, &mut GpuContext) -> Result<(), E>,
+        E: std::fmt::Display,
+    {
         profiling::scope!("display_blit::present");
-        let frame = match acquire_surface_outcome_traced(gpu, SurfaceAcquireTrace::DesktopGraph)? {
+        let frame = match acquire_surface_outcome_traced(gpu, acquire_trace)? {
             SurfaceFrameOutcome::Skip | SurfaceFrameOutcome::Reconfigured => return Ok(()),
             SurfaceFrameOutcome::Acquired(f) => f,
         };
@@ -82,7 +104,7 @@ impl DisplayBlitResources {
         self.ensure_uniform(device);
         let Some(uniform_buf) = self.uniform().get() else {
             logger::warn!("display_blit: uniform buffer missing after ensure_uniform");
-            submit_surface_frame_traced(gpu, Vec::new(), frame, SurfaceSubmitTrace::Desktop);
+            submit_surface_frame_traced(gpu, Vec::new(), frame, submit_trace);
             return Ok(());
         };
         self.uniform().write(gpu.queue(), uv_bytes);
@@ -158,12 +180,7 @@ impl DisplayBlitResources {
             profiling::scope!("CommandEncoder::finish::display_blit_surface");
             encoder.finish()
         };
-        submit_surface_frame_traced(
-            gpu,
-            vec![command_buffer],
-            frame,
-            SurfaceSubmitTrace::Desktop,
-        );
+        submit_surface_frame_traced(gpu, vec![command_buffer], frame, submit_trace);
         Ok(())
     }
 }

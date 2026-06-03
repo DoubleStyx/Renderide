@@ -21,10 +21,8 @@ fn debug_hud_capture_flags(settings: &crate::config::RendererSettings) -> DebugH
     DebugHudCaptureFlags {
         frame_timing: imgui_visible && settings.debug.debug_hud_frame_timing,
         main: imgui_visible && settings.debug.debug_hud_enabled,
-        scene_transforms: imgui_visible
-            && settings.debug.debug_hud_transforms
-            && hud.scene_transforms_open,
-        textures: imgui_visible && settings.debug.debug_hud_textures && hud.texture_debug_open,
+        scene_transforms: imgui_visible && settings.debug.debug_hud_transforms,
+        textures: imgui_visible && settings.debug.debug_hud_textures,
     }
 }
 
@@ -133,6 +131,7 @@ impl RendererRuntime {
                 gpu,
                 wall_frame_time_ms: wall_ms,
                 host_frame_begin_to_submit: self.last_frame_begin_to_submit(),
+                lockstep_pipeline: self.tick_state.lockstep_pipeline_hud_labels(),
                 host_hud: &host,
                 gpu_allocator: self.diagnostics.allocator_report_totals,
                 history: &mut self.diagnostics.frame_time_history,
@@ -237,26 +236,20 @@ mod tests {
     }
 
     #[test]
-    fn scene_transform_capture_requires_window_open() {
+    fn scene_transform_capture_ignores_retained_open_flag() {
         let mut settings = RendererSettings::default();
         settings.debug.debug_hud_transforms = true;
         settings.debug.hud.scene_transforms_open = false;
 
-        assert!(!debug_hud_capture_flags(&settings).scene_transforms);
-
-        settings.debug.hud.scene_transforms_open = true;
         assert!(debug_hud_capture_flags(&settings).scene_transforms);
     }
 
     #[test]
-    fn texture_capture_requires_window_open() {
+    fn texture_capture_ignores_retained_open_flag() {
         let mut settings = RendererSettings::default();
         settings.debug.debug_hud_textures = true;
         settings.debug.hud.texture_debug_open = false;
 
-        assert!(!debug_hud_capture_flags(&settings).textures);
-
-        settings.debug.hud.texture_debug_open = true;
         assert!(debug_hud_capture_flags(&settings).textures);
     }
 }

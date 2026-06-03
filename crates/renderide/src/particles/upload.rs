@@ -2,7 +2,7 @@ use glam::{Vec2, Vec3, Vec4};
 
 use crate::assets::mesh::{
     GpuMesh, MeshGpuUploadContext, PreparedDerivedStreams, compute_and_validate_mesh_layout,
-    try_upload_mesh_from_raw,
+    try_upload_generated_mesh_from_parts,
 };
 use crate::shared::buffer::SharedMemoryBufferDescriptor;
 use crate::shared::{
@@ -11,6 +11,15 @@ use crate::shared::{
 };
 
 use super::types::ParticleRenderBufferError;
+
+/// Optional generated streams that are not present in the interleaved upload bytes.
+#[derive(Debug, Default)]
+pub(super) struct GeneratedExtraStreams {
+    /// Raw tangent payload stream at shader location 4.
+    pub(super) raw_tangent: Option<Vec<u8>>,
+    /// UV1 stream at shader location 5.
+    pub(super) uv1: Option<Vec<u8>>,
+}
 
 pub(super) fn generated_vertex_stride() -> usize {
     12 + 12 + 8 + 16
@@ -64,6 +73,7 @@ pub(super) fn write_u32s(out: &mut [u8], values: &[u32]) {
 pub(super) fn prepared_generated_derived_streams(
     vertices: &[u8],
     vertex_count: usize,
+    extra: GeneratedExtraStreams,
 ) -> PreparedDerivedStreams {
     profiling::scope!("particle::prepare_generated_derived_streams");
     let stride = generated_vertex_stride();
@@ -86,6 +96,8 @@ pub(super) fn prepared_generated_derived_streams(
         normals: Some(normals),
         uv0: Some(uv0),
         color: Some(color),
+        raw_tangent: extra.raw_tangent,
+        uv1: extra.uv1,
         ..PreparedDerivedStreams::default()
     }
 }
@@ -130,19 +142,6 @@ pub(crate) fn upload_generated_mesh(
             asset_id: input.source_asset_id,
         },
     )?;
-    let mut raw = vec![0u8; layout.total_buffer_length];
-    if input.vertices.len() == layout.vertex_size
-        && input.indices.len() == layout.index_buffer_length
-    {
-        raw[..layout.vertex_size].copy_from_slice(&input.vertices);
-        raw[layout.index_buffer_start..layout.index_buffer_start + layout.index_buffer_length]
-            .copy_from_slice(&input.indices);
-    } else {
-        return Err(ParticleRenderBufferError::InvalidMeshLayout {
-            kind: input.kind,
-            asset_id: input.source_asset_id,
-        });
-    }
     let gpu = MeshGpuUploadContext {
         prepared_derived_streams: Some(&input.prepared_derived_streams),
         ..gpu
@@ -150,7 +149,15 @@ pub(crate) fn upload_generated_mesh(
     let mesh = if gpu.validation_scopes_enabled {
         profiling::scope!("particle::generated_mesh_validation_scope");
         let validation_scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let mesh = try_upload_mesh_from_raw(gpu, &raw, &data, existing, &layout);
+        let mesh = try_upload_generated_mesh_from_parts(
+            gpu,
+            &data,
+            &layout,
+            &input.vertices,
+            &input.indices,
+            &input.prepared_derived_streams,
+            existing,
+        );
         let validation_error = pollster::block_on(validation_scope.pop());
         if let Some(err) = validation_error {
             logger::error!(
@@ -166,7 +173,15 @@ pub(crate) fn upload_generated_mesh(
         }
         mesh
     } else {
-        try_upload_mesh_from_raw(gpu, &raw, &data, existing, &layout)
+        try_upload_generated_mesh_from_parts(
+            gpu,
+            &data,
+            &layout,
+            &input.vertices,
+            &input.indices,
+            &input.prepared_derived_streams,
+            existing,
+        )
     };
     mesh.ok_or(ParticleRenderBufferError::GpuUploadFailed {
         kind: input.kind,

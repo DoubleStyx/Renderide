@@ -38,6 +38,13 @@ impl RendererFrontend {
             .is_allowed()
     }
 
+    /// Whether init, fatal, and IPC state allow any begin-frame send.
+    pub(crate) fn begin_frame_base_allowed(&self) -> bool {
+        self.session.init_state().is_finalized()
+            && !self.session.fatal_error()
+            && self.transport.is_ipc_connected()
+    }
+
     /// Whether the next frame may be requested before rendering the currently applied submit.
     pub fn should_send_one_credit_begin_frame(&self, submit_completion_work_drained: bool) -> bool {
         self.lockstep.one_credit_begin_frame_decision(
@@ -149,9 +156,11 @@ impl RendererFrontend {
     }
 
     /// Updates lock-step state after the host submits a frame.
-    pub fn note_frame_submit_processed(&mut self, frame_index: i32) {
+    pub fn note_frame_submit_processed(&mut self, frame_index: i32, received_at: Instant) {
         self.lockstep.note_frame_submit_processed(frame_index);
-        let decision = self.decoupling.record_frame_submit_received(Instant::now());
+        let decision = self.decoupling.record_frame_submit_received(received_at);
+        self.performance
+            .set_last_frame_begin_to_submit(self.decoupling.last_frame_begin_to_submit());
         log_submit_decision(decision, &self.decoupling, frame_index);
     }
 }

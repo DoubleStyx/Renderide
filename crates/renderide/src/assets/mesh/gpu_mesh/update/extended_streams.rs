@@ -7,10 +7,10 @@ use super::super::upload::{
     ExtendedVertexUploadSource, UvVertexUploadSource, upload_color_vertex_stream,
     upload_default_extended_vertex_streams, upload_default_raw_tangent_vertex_stream,
     upload_default_tangent_vertex_stream, upload_default_uv_vertex_stream,
-    upload_default_wide_uv_vertex_stream, upload_extended_vertex_streams,
-    upload_position_normal_vertex_streams, upload_raw_tangent_vertex_stream,
-    upload_tangent_vertex_stream, upload_uv_vertex_stream, upload_uv0_vertex_stream,
-    upload_wide_uv_vertex_stream,
+    upload_default_wide_high_uv_vertex_stream, upload_default_wide_low_uv_vertex_stream,
+    upload_extended_vertex_streams, upload_position_normal_vertex_streams,
+    upload_raw_tangent_vertex_stream, upload_tangent_vertex_stream, upload_uv_vertex_stream,
+    upload_uv0_vertex_stream, upload_wide_high_uv_vertex_stream, upload_wide_low_uv_vertex_stream,
 };
 use super::super::{
     ExtendedVertexStreamSource, GpuMesh, MeshDerivedStreamMask, extended_vertex_stream_bytes,
@@ -382,20 +382,20 @@ impl GpuMesh {
         )
     }
 
-    /// Creates the packed UV0-UV7 stream the first time a shader needs wide UV inputs.
-    pub(crate) fn ensure_wide_uv_vertex_stream(&mut self, device: &wgpu::Device) -> bool {
-        profiling::scope!("asset::mesh_ensure_wide_uv_vertex_stream");
-        if self.wide_uv_vertex_stream_ready() {
+    /// Creates the packed UV0-UV3 stream the first time a shader needs wide low UV inputs.
+    pub(crate) fn ensure_wide_low_uv_vertex_stream(&mut self, device: &wgpu::Device) -> bool {
+        profiling::scope!("asset::mesh_ensure_wide_low_uv_vertex_stream");
+        if self.wide_low_uv_vertex_stream_ready() {
             return true;
         }
 
         let old_bytes = self
-            .wide_uv_buffer
+            .wide_low_uv_buffer
             .as_ref()
             .map_or(0, |buffer| buffer.size());
         let vc_usize = self.vertex_count as usize;
-        let wide_uv_buffer = if let Some(source) = self.extended_vertex_stream_source.as_ref() {
-            upload_wide_uv_vertex_stream(
+        let wide_low_uv_buffer = if let Some(source) = self.extended_vertex_stream_source.as_ref() {
+            upload_wide_low_uv_vertex_stream(
                 device,
                 self.asset_id,
                 UvVertexUploadSource {
@@ -404,19 +404,19 @@ impl GpuMesh {
                     vertex_stride: self.vertex_stride as usize,
                     vertex_attributes: source.vertex_attributes.as_ref(),
                     target: VertexAttributeType::UV0,
-                    label: "wide_uv",
+                    label: "wide_low_uv",
                 },
             )
         } else {
-            upload_default_wide_uv_vertex_stream(device, self.asset_id, vc_usize)
+            upload_default_wide_low_uv_vertex_stream(device, self.asset_id, vc_usize)
         };
 
-        let Some(wide_uv_buffer) = wide_uv_buffer else {
+        let Some(wide_low_uv_buffer) = wide_low_uv_buffer else {
             return false;
         };
-        self.wide_uv_buffer = Some(wide_uv_buffer);
+        self.wide_low_uv_buffer = Some(wide_low_uv_buffer);
         let new_bytes = self
-            .wide_uv_buffer
+            .wide_low_uv_buffer
             .as_ref()
             .map_or(0, |buffer| buffer.size());
         self.resident_bytes = self
@@ -424,7 +424,55 @@ impl GpuMesh {
             .saturating_sub(old_bytes)
             .saturating_add(new_bytes);
         self.derived_stream_state
-            .mark_clean(MeshDerivedStreamMask::WIDE_UV);
+            .mark_clean(MeshDerivedStreamMask::WIDE_UV_LOW);
+        self.drop_extended_vertex_stream_source_if_complete();
+        true
+    }
+
+    /// Creates the packed UV4-UV7 stream the first time a shader needs high UV inputs.
+    pub(crate) fn ensure_wide_high_uv_vertex_stream(&mut self, device: &wgpu::Device) -> bool {
+        profiling::scope!("asset::mesh_ensure_wide_high_uv_vertex_stream");
+        if self.wide_high_uv_vertex_stream_ready() {
+            return true;
+        }
+
+        let old_bytes = self
+            .wide_high_uv_buffer
+            .as_ref()
+            .map_or(0, |buffer| buffer.size());
+        let vc_usize = self.vertex_count as usize;
+        let wide_high_uv_buffer = if let Some(source) = self.extended_vertex_stream_source.as_ref()
+        {
+            upload_wide_high_uv_vertex_stream(
+                device,
+                self.asset_id,
+                UvVertexUploadSource {
+                    vertex_slice: source.vertex_bytes.as_ref(),
+                    vertex_count: vc_usize,
+                    vertex_stride: self.vertex_stride as usize,
+                    vertex_attributes: source.vertex_attributes.as_ref(),
+                    target: VertexAttributeType::UV4,
+                    label: "wide_high_uv",
+                },
+            )
+        } else {
+            upload_default_wide_high_uv_vertex_stream(device, self.asset_id, vc_usize)
+        };
+
+        let Some(wide_high_uv_buffer) = wide_high_uv_buffer else {
+            return false;
+        };
+        self.wide_high_uv_buffer = Some(wide_high_uv_buffer);
+        let new_bytes = self
+            .wide_high_uv_buffer
+            .as_ref()
+            .map_or(0, |buffer| buffer.size());
+        self.resident_bytes = self
+            .resident_bytes
+            .saturating_sub(old_bytes)
+            .saturating_add(new_bytes);
+        self.derived_stream_state
+            .mark_clean(MeshDerivedStreamMask::WIDE_UV_HIGH);
         self.drop_extended_vertex_stream_source_if_complete();
         true
     }
@@ -502,7 +550,7 @@ impl GpuMesh {
         source: &ExtendedVertexStreamSource,
     ) -> bool {
         self.should_keep_extended_vertex_stream_source_for_compact_streams(source)
-            || self.should_keep_extended_vertex_stream_source_for_wide_uv(source)
+            || self.should_keep_extended_vertex_stream_source_for_wide_uv_pages(source)
             || self.should_keep_extended_vertex_stream_source_for_dirty_streams(source)
             || self.should_keep_extended_vertex_stream_source_for_tangent_upgrade_from(
                 source.can_generate_missing_tangents,
@@ -516,11 +564,12 @@ impl GpuMesh {
         !self.extended_vertex_streams_ready() && source.has_compact_extended_payload
     }
 
-    fn should_keep_extended_vertex_stream_source_for_wide_uv(
+    fn should_keep_extended_vertex_stream_source_for_wide_uv_pages(
         &self,
         source: &ExtendedVertexStreamSource,
     ) -> bool {
-        self.wide_uv_buffer.is_none() && source.has_wide_uv_payload
+        (self.wide_low_uv_buffer.is_none() && source.has_wide_low_uv_payload)
+            || (self.wide_high_uv_buffer.is_none() && source.has_wide_high_uv_payload)
     }
 
     fn should_keep_extended_vertex_stream_source_for_dirty_streams(

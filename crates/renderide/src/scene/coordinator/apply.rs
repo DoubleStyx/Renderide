@@ -76,6 +76,8 @@ const MIN_SPACES_FOR_PARALLEL_APPLY: usize = APPLY_PARALLEL_CHUNK_SPACES * 2;
 
 /// Minimum extracted row count before Phase B may fan out across render-space slots.
 const MIN_APPLY_PARALLEL_WORK_UNITS: usize = VISIBILITY_CULL_CHUNK_ITEMS * 2;
+/// Dominant-slot ratio numerator for switching to intra-space work splitting.
+const SPACE_SPLIT_DOMINANCE_NUMERATOR: usize = 2;
 
 macro_rules! extract_optional_render_space_update {
     ($shm:expr, $update:expr, $field:ident, $scope:literal, $extract:path $(, $extra:expr)* $(,)?) => {{
@@ -162,12 +164,6 @@ fn extracted_apply_work_units(e: &ExtractedRenderSpaceUpdate) -> usize {
     units
 }
 
-/// Returns whether the apply workload has enough independent row work to use rayon.
-#[inline]
-fn apply_parallel_admission(slot_count: usize, work_units: usize) -> ParallelAdmission {
-    apply_parallel_admission_with_workers(slot_count, work_units, current_reference_worker_count())
-}
-
 /// Returns the apply admission decision for a known worker count.
 #[inline]
 fn apply_parallel_admission_with_workers(
@@ -190,9 +186,39 @@ fn apply_parallel_admission_with_workers(
 /// Returns the total Phase B row estimate for all lifted work slots.
 #[inline]
 fn apply_work_units(work: &[ApplyWorkSlot]) -> usize {
-    work.iter()
-        .map(|slot| extracted_apply_work_units(&slot.extracted))
-        .sum()
+    work.iter().map(|slot| slot.work_units).sum()
+}
+
+/// Returns the largest estimated work carried by one render-space slot.
+#[inline]
+fn dominant_slot_work_units(work: &[ApplyWorkSlot]) -> usize {
+    work.iter().map(|slot| slot.work_units).max().unwrap_or(0)
+}
+
+/// Returns whether a dominant render-space slot should avoid the outer per-space fan-out.
+#[inline]
+fn space_split_apply_preferred(
+    slot_count: usize,
+    total_work_units: usize,
+    dominant_work_units: usize,
+    worker_count: usize,
+) -> bool {
+    worker_count > 1
+        && slot_count > 0
+        && slot_count < worker_count
+        && dominant_work_units >= MIN_APPLY_PARALLEL_WORK_UNITS
+        && dominant_work_units.saturating_mul(SPACE_SPLIT_DOMINANCE_NUMERATOR) >= total_work_units
+}
+
+fn apply_work_slot_mutation(slot: &mut ApplyWorkSlot) {
+    slot.world_dirty = apply_extracted_render_space_update(
+        &slot.extracted,
+        PerSpaceApplyInputs {
+            space: &mut slot.space,
+            cache: &mut slot.cache,
+            removal_events: &mut slot.removal_events,
+        },
+    );
 }
 
 /// Counts extracted camera rows and side slabs.
@@ -554,16 +580,35 @@ pub(in crate::scene::coordinator) fn apply_extracted_render_space_update(
         removal_events,
     } = inputs;
 
-    let mut world_dirty = false;
+    let world_dirty = apply_render_space_transform_phase(extracted, space, cache, removal_events);
+    let transform_removals: &[TransformRemovalEvent] = removal_events;
+    apply_render_space_geometry_phase(extracted, space, transform_removals, scene_id);
+    apply_render_space_layer_phase(extracted, space, transform_removals);
+    apply_render_space_context_phase(extracted, space, transform_removals);
+    world_dirty
+}
+
+fn apply_render_space_transform_phase(
+    extracted: &ExtractedRenderSpaceUpdate,
+    space: &mut crate::scene::render_space::RenderSpaceState,
+    cache: &mut crate::scene::world::WorldTransformCache,
+    removal_events: &mut Vec<TransformRemovalEvent>,
+) -> bool {
     if let Some(ref tu) = extracted.transforms {
         profiling::scope!("scene::apply_render_space_chunk::transforms");
-        if apply_transforms_update_extracted(space, cache, extracted.space_id, tu, removal_events) {
-            world_dirty = true;
-        }
+        apply_transforms_update_extracted(space, cache, extracted.space_id, tu, removal_events)
     } else {
         removal_events.clear();
+        false
     }
-    let transform_removals: &[TransformRemovalEvent] = removal_events;
+}
+
+fn apply_render_space_geometry_phase(
+    extracted: &ExtractedRenderSpaceUpdate,
+    space: &mut crate::scene::render_space::RenderSpaceState,
+    transform_removals: &[TransformRemovalEvent],
+    scene_id: i32,
+) {
     let has_transform_removals = !transform_removals.is_empty();
 
     // Roll pre-existing cameras' transform ids forward through this frame's swap-removes before
@@ -603,6 +648,14 @@ pub(in crate::scene::coordinator) fn apply_extracted_render_space_update(
         profiling::scope!("scene::apply_render_space_chunk::lod_groups");
         apply_lod_group_renderables_update_extracted(space, lgu, scene_id);
     }
+}
+
+fn apply_render_space_layer_phase(
+    extracted: &ExtractedRenderSpaceUpdate,
+    space: &mut crate::scene::render_space::RenderSpaceState,
+    transform_removals: &[TransformRemovalEvent],
+) {
+    let has_transform_removals = !transform_removals.is_empty();
     let mesh_membership_or_nodes_changed =
         extracted.meshes.is_some() || extracted.skinned_meshes.is_some();
     let layer_inputs_changed =
@@ -620,6 +673,14 @@ pub(in crate::scene::coordinator) fn apply_extracted_render_space_update(
         }
         super::super::layer::resolve_mesh_layers_from_assignments(space);
     }
+}
+
+fn apply_render_space_context_phase(
+    extracted: &ExtractedRenderSpaceUpdate,
+    space: &mut crate::scene::render_space::RenderSpaceState,
+    transform_removals: &[TransformRemovalEvent],
+) {
+    let has_transform_removals = !transform_removals.is_empty();
     if let Some(ref rtu) = extracted.transform_overrides {
         profiling::scope!("scene::apply_render_space_chunk::transform_overrides");
         apply_render_transform_overrides_update_extracted(space, rtu, transform_removals);
@@ -648,7 +709,6 @@ pub(in crate::scene::coordinator) fn apply_extracted_render_space_update(
         profiling::scope!("scene::apply_render_space_chunk::trail_renderers");
         apply_trail_renderer_update_extracted(space, tu);
     }
-    world_dirty
 }
 
 /// Borrowed view of the still-serial light-update payloads for a [`RenderSpaceUpdate`].
@@ -683,10 +743,6 @@ impl SceneCoordinator {
     /// merged into [`SceneCoordinator::world_dirty`] on the main thread before reinsert. The
     /// caller's `extracted_per_space` is drained in place so the backing [`Vec`] capacity persists
     /// across frames.
-    #[expect(
-        clippy::iter_with_drain,
-        reason = "per-frame apply scratch drains keep Vec capacity for reuse after reinsertion"
-    )]
     pub(super) fn apply_extracted_per_space(
         &mut self,
         extracted_per_space: &mut Vec<ExtractedRenderSpaceUpdate>,
@@ -711,6 +767,7 @@ impl SceneCoordinator {
                 if is_extracted_empty(&extracted) {
                     continue;
                 }
+                let work_units = extracted_apply_work_units(&extracted);
                 let Some(space) = self.spaces.remove(&id) else {
                     continue;
                 };
@@ -724,6 +781,7 @@ impl SceneCoordinator {
                     space,
                     cache,
                     extracted,
+                    work_units,
                     removal_events,
                     world_dirty: false,
                 });
@@ -734,27 +792,35 @@ impl SceneCoordinator {
             profiling::scope!("scene::apply::estimate_parallel_work");
             apply_work_units(&work)
         };
-        let admission = apply_parallel_admission(work.len(), work_units);
+        let worker_count = current_reference_worker_count();
+        let admission = apply_parallel_admission_with_workers(work.len(), work_units, worker_count);
         record_parallel_admission("scene_apply", work_units, work.len(), admission);
+        if space_split_apply_preferred(
+            work.len(),
+            work_units,
+            dominant_slot_work_units(&work),
+            worker_count,
+        ) {
+            profiling::scope!("scene::apply::mutate::space_split");
+            for slot in &mut work {
+                if slot.work_units >= MIN_APPLY_PARALLEL_WORK_UNITS {
+                    profiling::scope!("scene::apply::mutate::space_split_slot");
+                    apply_work_slot_mutation(slot);
+                } else {
+                    apply_work_slot_mutation(slot);
+                }
+            }
+            self.reinsert_applied_work_slots(&mut work);
+            self.apply_work_scratch = work;
+            return Ok(());
+        }
         if !admission.is_parallel() {
             profiling::scope!("scene::apply::mutate::serial_small_batch");
-            for mut slot in work.drain(..) {
+            for slot in &mut work {
                 profiling::scope!("scene::apply::mutate::serial_slot");
-                slot.world_dirty = apply_extracted_render_space_update(
-                    &slot.extracted,
-                    PerSpaceApplyInputs {
-                        space: &mut slot.space,
-                        cache: &mut slot.cache,
-                        removal_events: &mut slot.removal_events,
-                    },
-                );
-                if slot.world_dirty {
-                    self.world_dirty.insert(slot.id);
-                }
-                self.spaces.insert(slot.id, slot.space);
-                self.world_caches.insert(slot.id, slot.cache);
-                self.stash_transform_removals(slot.id, slot.removal_events);
+                apply_work_slot_mutation(slot);
             }
+            self.reinsert_applied_work_slots(&mut work);
             self.apply_work_scratch = work;
             return Ok(());
         }
@@ -766,29 +832,24 @@ impl SceneCoordinator {
                 .with_min_len(APPLY_PARALLEL_CHUNK_SPACES)
                 .for_each(|slot| {
                     profiling::scope!("scene::apply::mutate::worker_slot");
-                    slot.world_dirty = apply_extracted_render_space_update(
-                        &slot.extracted,
-                        PerSpaceApplyInputs {
-                            space: &mut slot.space,
-                            cache: &mut slot.cache,
-                            removal_events: &mut slot.removal_events,
-                        },
-                    );
+                    apply_work_slot_mutation(slot);
                 });
         };
-        {
-            profiling::scope!("scene::apply::reinsert");
-            for slot in work.drain(..) {
-                if slot.world_dirty {
-                    self.world_dirty.insert(slot.id);
-                }
-                self.spaces.insert(slot.id, slot.space);
-                self.world_caches.insert(slot.id, slot.cache);
-                self.stash_transform_removals(slot.id, slot.removal_events);
-            }
-        }
+        self.reinsert_applied_work_slots(&mut work);
         self.apply_work_scratch = work;
         Ok(())
+    }
+
+    fn reinsert_applied_work_slots(&mut self, work: &mut Vec<ApplyWorkSlot>) {
+        profiling::scope!("scene::apply::reinsert");
+        for slot in work.drain(..) {
+            if slot.world_dirty {
+                self.world_dirty.insert(slot.id);
+            }
+            self.spaces.insert(slot.id, slot.space);
+            self.world_caches.insert(slot.id, slot.cache);
+            self.stash_transform_removals(slot.id, slot.removal_events);
+        }
     }
 
     /// Moves a per-space transform-removal buffer back into
@@ -876,5 +937,34 @@ mod tests {
             )
             .is_parallel()
         );
+    }
+
+    /// A single dominant slot should use inner row-level splitting instead of outer slot fan-out.
+    #[test]
+    fn space_split_apply_prefers_dominant_underfilled_slots() {
+        assert!(space_split_apply_preferred(
+            2,
+            MIN_APPLY_PARALLEL_WORK_UNITS + 64,
+            MIN_APPLY_PARALLEL_WORK_UNITS,
+            8
+        ));
+        assert!(!space_split_apply_preferred(
+            2,
+            MIN_APPLY_PARALLEL_WORK_UNITS * 2,
+            MIN_APPLY_PARALLEL_WORK_UNITS - 1,
+            8
+        ));
+        assert!(!space_split_apply_preferred(
+            8,
+            MIN_APPLY_PARALLEL_WORK_UNITS * 8,
+            MIN_APPLY_PARALLEL_WORK_UNITS * 2,
+            8
+        ));
+        assert!(!space_split_apply_preferred(
+            2,
+            MIN_APPLY_PARALLEL_WORK_UNITS,
+            MIN_APPLY_PARALLEL_WORK_UNITS,
+            1
+        ));
     }
 }

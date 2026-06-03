@@ -74,7 +74,7 @@ impl WorldMeshForwardNormalPass {
 
 /// Pipeline selectors for one GTAO normal prepass variant.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(super) struct WorldMeshForwardNormalPipelineKey {
+pub(crate) struct WorldMeshForwardNormalPipelineKey {
     /// Depth/stencil format of the active forward depth target.
     pub depth_stencil_format: wgpu::TextureFormat,
     /// Active color/depth sample count.
@@ -210,7 +210,7 @@ fn normal_per_draw_layout_entries() -> [wgpu::BindGroupLayoutEntry; 1] {
 
 impl WorldMeshForwardNormalPipelineKey {
     /// Builds a normal-prepass pipeline key for one draw group.
-    pub(super) fn for_draw(
+    pub(crate) fn for_draw(
         pipeline: &WorldMeshForwardPipelineState,
         front_face: RasterFrontFace,
         primitive_topology: RasterPrimitiveTopology,
@@ -224,6 +224,31 @@ impl WorldMeshForwardNormalPipelineKey {
             primitive_topology,
         })
     }
+}
+
+/// Returns the GTAO normal-prepass pipeline key needed by `item`, when supported.
+pub(crate) fn normal_pipeline_key_for_draw(
+    item: &crate::world_mesh::WorldMeshDrawItem,
+    pipeline: &WorldMeshForwardPipelineState,
+    offscreen: bool,
+) -> Option<WorldMeshForwardNormalPipelineKey> {
+    let mut front_face = item.batch_key.front_face;
+    if offscreen {
+        front_face = front_face.flipped();
+    }
+    WorldMeshForwardNormalPipelineKey::for_draw(
+        pipeline,
+        front_face,
+        item.batch_key.primitive_topology,
+    )
+}
+
+/// Pre-warms the GTAO normal-prepass pipeline matching `key`.
+pub(crate) fn pre_warm_normal_pipeline(
+    device: &wgpu::Device,
+    key: WorldMeshForwardNormalPipelineKey,
+) {
+    let _ = normal_pipelines().pipeline(device, key);
 }
 
 fn normal_pipelines() -> &'static WorldMeshForwardNormalPipelineCache {

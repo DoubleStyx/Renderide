@@ -111,6 +111,7 @@ impl MaterialRegistry {
         variant: MaterialPipelineVariantSpec,
     ) -> Option<MaterialPipelineResolution> {
         let fallback = RasterPipelineKind::Null;
+        let variant = variant.without_shader_specialization();
         let source = self
             .asset_graph
             .shader_source_snapshot(&fallback, variant.permutation);

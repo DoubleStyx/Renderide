@@ -16,6 +16,8 @@
 //!   `FrameStartData` send. `1` in lockstep, `> 1` when the renderer ticked multiple times per
 //!   host submit (i.e. host is slow and the renderer kept rendering). Drives
 //!   `FrooxEngine.PerformanceStats.RenderedFramesSinceLastTick`.
+//! - `frame_begin_to_submit_time` -- most recently completed renderer-observed host turnaround:
+//!   outgoing `FrameStartData` send to the matching inbound `FrameSubmitData` queue receipt.
 //!
 //! A new [`PerformanceState`] is built on every tick where `wall_interval_us > 0` (i.e. starting
 //! from the second tick); the host treats a non-null `FrameStartData.performance` as the latest
@@ -68,6 +70,7 @@ pub(crate) fn step_frame_performance(
     last_frame_render_time_seconds: f32,
     windowed_fps: f32,
     rendered_frames_since_last: i32,
+    frame_begin_to_submit_seconds: f32,
     asset_integration: AssetIntegrationPerformanceState,
 ) -> Option<PerformanceState> {
     if wall_interval_us == 0 {
@@ -79,6 +82,7 @@ pub(crate) fn step_frame_performance(
         immediate_fps: instant_fps,
         render_time: last_frame_render_time_seconds,
         rendered_frames_since_last,
+        frame_begin_to_submit_time: frame_begin_to_submit_seconds,
         integration_processing_time: asset_integration.integration_processing_time,
         extra_particle_processing_time: asset_integration.extra_particle_processing_time,
         processed_asset_integrator_tasks: asset_integration.processed_asset_integrator_tasks,
@@ -104,6 +108,7 @@ mod tests {
             0.005,
             0.0,
             0,
+            0.0,
             AssetIntegrationPerformanceState::default(),
         );
         assert!(p.is_none());
@@ -116,6 +121,7 @@ mod tests {
             0.005,
             60.0,
             1,
+            0.0,
             AssetIntegrationPerformanceState::default(),
         )
         .expect("payload built when wall_interval_us > 0");
@@ -131,6 +137,7 @@ mod tests {
             0.005,
             60.0,
             1,
+            0.0,
             AssetIntegrationPerformanceState::default(),
         );
         let b = step_frame_performance(
@@ -138,6 +145,7 @@ mod tests {
             0.005,
             60.0,
             1,
+            0.0,
             AssetIntegrationPerformanceState::default(),
         );
         assert!(a.is_some(), "first non-zero interval must emit");
@@ -151,6 +159,7 @@ mod tests {
             RENDER_TIME_UNAVAILABLE,
             0.0,
             0,
+            0.0,
             AssetIntegrationPerformanceState::default(),
         )
         .expect("payload built");
@@ -164,6 +173,7 @@ mod tests {
             0.005,
             60.0,
             1,
+            0.0,
             AssetIntegrationPerformanceState::default(),
         )
         .expect("lockstep payload built");
@@ -173,10 +183,25 @@ mod tests {
             0.005,
             60.0,
             7,
+            0.0,
             AssetIntegrationPerformanceState::default(),
         )
         .expect("decoupled payload built");
         assert_eq!(decoupled.rendered_frames_since_last, 7);
+    }
+
+    #[test]
+    fn step_frame_performance_propagates_host_turnaround_time() {
+        let p = step_frame_performance(
+            16_666,
+            0.005,
+            60.0,
+            1,
+            0.0125,
+            AssetIntegrationPerformanceState::default(),
+        )
+        .expect("payload built");
+        assert!((p.frame_begin_to_submit_time - 0.0125).abs() < f32::EPSILON);
     }
 
     #[test]

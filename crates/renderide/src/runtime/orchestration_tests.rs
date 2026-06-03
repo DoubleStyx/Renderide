@@ -2,22 +2,28 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+use glam::IVec2;
+use renderide_shared::ipc::HostDualQueueIpc;
 
 use crate::config::{RendererSettings, RendererSettingsHandle, VsyncMode};
 use crate::connection::ConnectionParams;
 use crate::ipc::SharedMemoryAccessor;
 use crate::shared::buffer::SharedMemoryBufferDescriptor;
 use crate::shared::{
-    CameraRenderTask, DesktopConfig, FrameSubmitData, FreeSharedMemoryView, Guid, HeadOutputDevice,
-    KeepAlive, MeshRenderablesUpdate, PostProcessingConfig, QualityConfig,
-    ReflectionProbeRenderTask, RenderSpaceUpdate, RendererCommand, RendererEngineReady,
-    RendererInitData, RendererInitFinalizeData, RendererShutdown, SetTexture2DFormat, ShaderUpload,
-    SkinWeightMode,
+    CameraRenderParameters, CameraRenderTask, DesktopConfig, FrameSubmitData, FreeSharedMemoryView,
+    Guid, HeadOutputDevice, KeepAlive, MeshRenderablesUpdate, PostProcessingConfig, QualityConfig,
+    ReflectionProbeRenderResult, ReflectionProbeRenderTask, RenderSpaceUpdate, RendererCommand,
+    RendererEngineReady, RendererInitData, RendererInitFinalizeData, RendererShutdown,
+    SetTexture2DFormat, ShaderUpload, SkinWeightMode, TextureFormat,
 };
 
 use super::RendererRuntime;
 use super::state::tick::QueuedReflectionProbeRenderTask;
+
+static IPC_TEST_QUEUE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn test_settings_handle() -> RendererSettingsHandle {
     Arc::new(std::sync::RwLock::new(RendererSettings::default()))
@@ -40,6 +46,26 @@ fn test_runtime_ipc_shape() -> RendererRuntime {
         test_settings_handle(),
         PathBuf::from("/tmp/renderide_orchestration_test_config_ipc.toml"),
     )
+}
+
+fn test_runtime_connected_ipc() -> (HostDualQueueIpc, RendererRuntime) {
+    let seq = IPC_TEST_QUEUE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let params = ConnectionParams {
+        queue_name: format!("orchestration_test_queue_{}_{}", std::process::id(), seq),
+        queue_capacity: 4096,
+    };
+    let host = HostDualQueueIpc::connect(&params).expect("host IPC connects");
+    let mut runtime = RendererRuntime::new(
+        Some(params),
+        test_settings_handle(),
+        PathBuf::from("/tmp/renderide_orchestration_test_config_connected_ipc.toml"),
+    );
+    runtime.connect_ipc().expect("renderer IPC connects");
+    runtime.handle_ipc_command(RendererCommand::RendererInitData(test_renderer_init_data()));
+    runtime.handle_ipc_command(RendererCommand::RendererInitFinalizeData(
+        RendererInitFinalizeData::default(),
+    ));
+    (host, runtime)
 }
 
 fn test_renderer_init_data() -> RendererInitData {
@@ -111,6 +137,107 @@ fn submit_completion_work_drained_waits_for_camera_tasks() {
         .push(CameraRenderTask::default());
 
     assert!(!rt.submit_completion_work_drained());
+}
+
+#[test]
+fn regular_begin_frame_waits_for_late_camera_task_after_render_attempt() {
+    let (_host, mut rt) = test_runtime_connected_ipc();
+    rt.test_set_shared_memory("test_late_camera_task");
+    rt.apply_frame_submit_data(FrameSubmitData {
+        frame_index: 101,
+        render_tasks: vec![CameraRenderTask {
+            parameters: Some(CameraRenderParameters {
+                resolution: IVec2 { x: 1, y: 1 },
+                texture_format: TextureFormat::RGBA32,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    assert_eq!(rt.pending_camera_render_task_count(), 1);
+
+    rt.note_frame_render_attempted();
+
+    assert!(!rt.pending_frame_submit_render());
+    assert!(!rt.submit_completion_work_drained());
+    assert!(!rt.should_send_begin_frame());
+
+    rt.tick_state.pending_camera_render_tasks.clear();
+
+    assert!(rt.submit_completion_work_drained());
+    assert!(rt.should_send_begin_frame());
+}
+
+#[test]
+fn regular_begin_frame_waits_for_reflection_probe_task_after_render_attempt() {
+    let (_host, mut rt) = test_runtime_connected_ipc();
+    rt.apply_frame_submit_data(FrameSubmitData {
+        frame_index: 101,
+        ..Default::default()
+    });
+    rt.note_frame_render_attempted();
+
+    rt.tick_state
+        .pending_reflection_probe_render_tasks
+        .push(QueuedReflectionProbeRenderTask {
+            render_space_id: crate::scene::RenderSpaceId(1),
+            task: ReflectionProbeRenderTask::default(),
+        });
+
+    assert!(!rt.submit_completion_work_drained());
+    assert!(!rt.should_send_begin_frame());
+
+    rt.tick_state.pending_reflection_probe_render_tasks.clear();
+
+    assert!(rt.submit_completion_work_drained());
+    assert!(rt.should_send_begin_frame());
+}
+
+#[test]
+fn reflection_probe_result_backlog_does_not_block_regular_begin_frame() {
+    let (_host, mut rt) = test_runtime_connected_ipc();
+    rt.apply_frame_submit_data(FrameSubmitData {
+        frame_index: 101,
+        ..Default::default()
+    });
+    rt.note_frame_render_attempted();
+
+    rt.tick_state
+        .pending_reflection_probe_render_results
+        .push(ReflectionProbeRenderResult {
+            render_task_id: 7,
+            success: true,
+        });
+
+    assert!(rt.submit_completion_work_drained());
+    assert!(rt.should_send_begin_frame());
+
+    rt.tick_state
+        .pending_reflection_probe_render_results
+        .clear();
+
+    assert!(rt.submit_completion_work_drained());
+    assert!(rt.should_send_begin_frame());
+}
+
+#[test]
+fn reflection_probe_result_backlog_does_not_block_one_credit_begin_frame() {
+    let (_host, mut rt) = test_runtime_connected_ipc();
+    rt.apply_frame_submit_data(FrameSubmitData {
+        frame_index: 101,
+        ..Default::default()
+    });
+    rt.tick_state
+        .pending_reflection_probe_render_results
+        .push(ReflectionProbeRenderResult {
+            render_task_id: 7,
+            success: true,
+        });
+
+    assert!(rt.pending_frame_submit_render());
+    assert!(rt.submit_completion_work_drained());
+    assert!(rt.should_send_one_credit_begin_frame());
 }
 
 #[test]

@@ -1,14 +1,17 @@
 //! IPC dispatch effect application on [`RendererRuntime`].
 //!
-//! [`Self::handle_ipc_command`] decodes one renderer command via
+//! [`Self::handle_timed_ipc_command`] decodes one renderer command via
 //! [`crate::frontend::dispatch`] and routes it through [`Self::apply_ipc_dispatch_effect`].
-//! Post-handshake commands fan out from [`Self::apply_running_command_effect`] to per-domain
-//! effect handlers under [`mod@self`]'s submodules.
+//! Post-handshake commands fan out to per-domain effect handlers under [`mod@self`]'s submodules.
+
+use std::time::Instant;
 
 use crate::diagnostics::crash_context::{self, InitState as CrashInitState};
 use crate::frontend::InitState;
 use crate::frontend::dispatch::command_dispatch::RunningCommandEffect;
 use crate::frontend::dispatch::ipc_init::{self, IpcDispatchEffect};
+use crate::ipc::TimedRendererCommand;
+#[cfg(test)]
 use crate::shared::RendererCommand;
 
 use super::super::RendererRuntime;
@@ -23,13 +26,24 @@ use init_capabilities::log_frame_start_data_trace;
 
 impl RendererRuntime {
     /// Decodes and applies one IPC command according to the current init state.
+    #[cfg(test)]
     pub(crate) fn handle_ipc_command(&mut self, cmd: RendererCommand) {
-        let effect = ipc_init::dispatch_ipc_command(self.frontend.init_state(), cmd);
-        self.apply_ipc_dispatch_effect(effect);
+        self.handle_timed_ipc_command(TimedRendererCommand::received_now(cmd));
+    }
+
+    /// Decodes and applies one timestamped IPC command according to the current init state.
+    pub(crate) fn handle_timed_ipc_command(&mut self, cmd: TimedRendererCommand) {
+        let received_at = cmd.received_at;
+        let effect = ipc_init::dispatch_ipc_command(self.frontend.init_state(), cmd.command);
+        self.apply_ipc_dispatch_effect(effect, received_at);
     }
 
     /// Applies an init-routed command effect.
-    pub(crate) fn apply_ipc_dispatch_effect(&mut self, effect: IpcDispatchEffect) {
+    pub(crate) fn apply_ipc_dispatch_effect(
+        &mut self,
+        effect: IpcDispatchEffect,
+        received_at: Instant,
+    ) {
         match effect {
             IpcDispatchEffect::Ignore => {}
             IpcDispatchEffect::ApplyInitData(d) => {
@@ -43,11 +57,12 @@ impl RendererRuntime {
                 self.replay_deferred_pre_finalize_commands();
             }
             IpcDispatchEffect::DispatchRunning(effect) => {
-                self.apply_running_command_effect(effect);
+                self.apply_running_command_effect_received_at(effect, received_at);
             }
             IpcDispatchEffect::DeferUntilFinalized(cmd) => {
                 logger::trace!("IPC: deferring command until init finalized");
-                self.ipc_state.defer_pre_finalize_command(*cmd);
+                self.ipc_state
+                    .defer_pre_finalize_command(TimedRendererCommand::new(*cmd, received_at));
             }
             IpcDispatchEffect::FatalExpectedInitData { actual_tag } => {
                 logger::error!(
@@ -65,13 +80,16 @@ impl RendererRuntime {
         if deferred.is_empty() {
             return;
         }
+        let mix = super::super::state::ipc::summarize_renderer_command_mix(
+            deferred.iter().map(|cmd| &cmd.command),
+        );
         logger::info!(
             "IPC init finalized; replaying {} deferred command(s) mix=[{}]",
             deferred.len(),
-            super::super::state::ipc::summarize_renderer_command_mix(deferred.iter())
+            mix
         );
         while let Some(cmd) = deferred.pop_front() {
-            self.handle_ipc_command(cmd);
+            self.handle_timed_ipc_command(cmd);
             if self.frontend.fatal_error() {
                 break;
             }
@@ -79,11 +97,22 @@ impl RendererRuntime {
     }
 
     /// Applies a decoded post-init command effect to runtime-owned domains.
+    #[cfg(test)]
     pub(crate) fn apply_running_command_effect(&mut self, effect: RunningCommandEffect) {
+        self.apply_running_command_effect_received_at(effect, Instant::now());
+    }
+
+    fn apply_running_command_effect_received_at(
+        &mut self,
+        effect: RunningCommandEffect,
+        received_at: Instant,
+    ) {
         match effect {
             RunningCommandEffect::KeepAlive => {}
             RunningCommandEffect::RequestShutdown => self.frontend.set_shutdown_requested(true),
-            RunningCommandEffect::FrameSubmit(data) => self.apply_frame_submit_data(data),
+            RunningCommandEffect::FrameSubmit(data) => {
+                self.apply_frame_submit_data_received_at(data, received_at);
+            }
             RunningCommandEffect::MeshUpload(d) => self.process_mesh_upload(d),
             RunningCommandEffect::MeshUnload(u) => self.backend.on_mesh_unload(u),
             effect @ (RunningCommandEffect::SetTexture2DFormat(_)

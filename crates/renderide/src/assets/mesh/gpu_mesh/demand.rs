@@ -29,9 +29,10 @@ impl MeshDerivedStreamMask {
     pub(crate) const UV2: Self = Self(1 << 7);
     /// Compact UV3 stream.
     pub(crate) const UV3: Self = Self(1 << 8);
-    /// Packed UV0-UV7 stream.
-    pub(crate) const WIDE_UV: Self = Self(1 << 9);
-
+    /// Packed UV0-UV3 stream for wide low UV inputs.
+    pub(crate) const WIDE_UV_LOW: Self = Self(1 << 9);
+    /// Packed UV4-UV7 stream for high UV inputs.
+    pub(crate) const WIDE_UV_HIGH: Self = Self(1 << 10);
     /// Streams affected when interleaved vertex data changes.
     pub(crate) const VERTEX_DERIVED: Self = Self(
         Self::POSITION.0
@@ -43,7 +44,8 @@ impl MeshDerivedStreamMask {
             | Self::UV1.0
             | Self::UV2.0
             | Self::UV3.0
-            | Self::WIDE_UV.0,
+            | Self::WIDE_UV_LOW.0
+            | Self::WIDE_UV_HIGH.0,
     );
     /// Streams affected when index order changes.
     pub(crate) const INDEX_DERIVED: Self = Self(Self::TANGENT.0);

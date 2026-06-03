@@ -2,9 +2,14 @@
 //! dependency on Common Controls v6, so `rfd`'s `TaskDialogIndirect` import
 //! resolves at process load time instead of failing with "Entry Point Not
 //! Found in comctl32.dll".
+mod build_support;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=build_support.rs");
+    println!("cargo:rerun-if-changed=build_support");
     emit_release_metadata();
+    remove_stale_bootstrapper_artifacts();
     if std::env::var_os("CARGO_CFG_WINDOWS").is_some() {
         use embed_manifest::{embed_manifest, new_manifest};
         embed_manifest(new_manifest("Renderide.Bootstrapper"))?;
@@ -29,4 +34,16 @@ fn emit_release_metadata() {
             println!("cargo:rustc-env={key}={value}");
         }
     }
+}
+
+fn remove_stale_bootstrapper_artifacts() {
+    let Some(out_dir) = std::env::var_os("OUT_DIR") else {
+        println!("cargo:warning=bootstrapper cleanup: OUT_DIR is not set");
+        return;
+    };
+
+    //TODO: Remove this migration cleanup after stale pre-rename bootstrapper artifacts have aged out of developer build directories.
+    build_support::stale_bootstrapper_artifacts::remove_stale_bootstrapper_artifacts(
+        &std::path::PathBuf::from(out_dir),
+    );
 }

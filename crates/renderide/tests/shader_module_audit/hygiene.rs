@@ -153,6 +153,14 @@ fn pbs_family_roots_use_shared_shader_modules() -> io::Result<()> {
         );
     }
 
+    let intersect = module_source("pbs/families/intersect.wgsl")?;
+    assert!(
+        intersect.contains("fn intersect_linear_factor(")
+            && intersect.contains("num >= INTERSECTION_DEPTH_GRACE")
+            && !intersect.contains("rmath::safe_linear_factor("),
+        "PBS intersect must keep its zero-width transition grace local to the intersect family module"
+    );
+
     for material in [
         "pbsdisplace.wgsl",
         "pbsdisplacespecular.wgsl",

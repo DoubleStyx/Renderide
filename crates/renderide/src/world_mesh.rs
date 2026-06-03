@@ -26,18 +26,15 @@ pub use diagnostics::{
 pub(crate) use draw_prep::WorldMeshDrawCollection;
 pub use draw_prep::{
     CameraTransformDrawFilter, DrawCollectionContext, FramePreparedRenderables, RenderWorld,
-    RenderWorldMaintenanceStats, WorldMeshDrawCollectParallelism, WorldMeshDrawItem,
-    draw_filter_from_camera_entry,
+    RenderWorldMaintenanceStats, WorldMeshCommandCacheStats, WorldMeshDrawArrangeParallelism,
+    WorldMeshDrawCollectParallelism, WorldMeshDrawItem, draw_filter_from_camera_entry,
 };
 pub(crate) use draw_prep::{
-    QueuedWorldMeshDraws, queue_draws_with_parallelism,
-    queue_prepared_draws_for_views_with_parallelism,
+    QueuedWorldMeshDraws, WorldMeshCommandCache, fingerprint_world_mesh_draws,
+    queue_draws_with_parallelism, queue_prepared_draws_for_views_with_parallelism,
 };
-pub(crate) use instances::depth_prepass_group_eligible;
-pub use instances::{
-    DrawGroup, InstancePlan, MeshPassKind, WorldMeshPhase, build_plan_for_shader,
-    build_plan_for_shader_with_submission_classes,
-};
+pub use instances::{DrawGroup, InstancePlan, MeshPassKind, WorldMeshPhase, build_plan_for_shader};
+pub(crate) use instances::{depth_prepass_group_eligible, depth_prepass_item_eligible};
 #[cfg(test)]
 pub(crate) use materials::compute_batch_key_hash;
 pub use materials::{FrameMaterialBatchCache, MaterialDrawBatchKey, TransparentMaterialClass};

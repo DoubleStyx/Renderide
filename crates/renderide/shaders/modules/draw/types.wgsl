@@ -10,10 +10,31 @@ struct PerDrawUniforms {
     normal_matrix: mat3x3<f32>,
     /// Metadata. `x` marks world-space position streams; `yzw` pack reflection-probe selection.
     _pad: vec4<f32>,
+    /// Particle draw metadata: kind, alignment, min screen size, max screen size.
+    particle_header: vec4<f32>,
+    /// Particle draw color/tint.
+    particle_tint: vec4<f32>,
+    /// Particle draw metadata: motion mode, frame index, trail texture mode, trail lighting flag.
+    particle_extra: vec4<f32>,
+    /// Padding so each dynamic storage row remains aligned to 512 bytes.
+    particle_padding: array<vec4<f32>, 13>,
 }
 
 /// `_pad.x` marker for world-space position streams.
 const POSITION_STREAM_WORLD_SPACE_FLAG: f32 = 1.0;
+const PARTICLE_KIND_NONE: u32 = 0u;
+const PARTICLE_KIND_BILLBOARD: u32 = 1u;
+const PARTICLE_KIND_MESH: u32 = 2u;
+const PARTICLE_KIND_TRAIL: u32 = 3u;
+const BILLBOARD_ALIGNMENT_VIEW: u32 = 0u;
+const BILLBOARD_ALIGNMENT_FACING: u32 = 1u;
+const BILLBOARD_ALIGNMENT_LOCAL: u32 = 2u;
+const BILLBOARD_ALIGNMENT_GLOBAL: u32 = 3u;
+const BILLBOARD_ALIGNMENT_DIRECTION: u32 = 4u;
+const MESH_ALIGNMENT_VIEW: u32 = 0u;
+const MESH_ALIGNMENT_FACING: u32 = 1u;
+const MESH_ALIGNMENT_LOCAL: u32 = 2u;
+const MESH_ALIGNMENT_GLOBAL: u32 = 3u;
 
 /// Selects the view-projection matrix for a mono or stereo draw.
 fn select_view_proj(draw: PerDrawUniforms, view_idx: u32) -> mat4x4<f32> {
@@ -52,4 +73,35 @@ fn local_reflection_probe_indices(draw: PerDrawUniforms) -> vec4<u32> {
 fn has_reflection_probe_selection(draw: PerDrawUniforms) -> bool {
     let locals = local_reflection_probe_indices(draw);
     return fallback_reflection_probe_index(draw) != 0u || any(locals != vec4<u32>(0u));
+}
+
+fn particle_kind(draw: PerDrawUniforms) -> u32 {
+    return u32(max(draw.particle_header.x, 0.0) + 0.5);
+}
+
+fn particle_alignment(draw: PerDrawUniforms) -> u32 {
+    return u32(max(draw.particle_header.y, 0.0) + 0.5);
+}
+
+fn particle_min_screen_size(draw: PerDrawUniforms) -> f32 {
+    return max(draw.particle_header.z, 0.0);
+}
+
+fn particle_max_screen_size(draw: PerDrawUniforms) -> f32 {
+    return max(draw.particle_header.w, 0.0);
+}
+
+fn particle_color(draw: PerDrawUniforms) -> vec4<f32> {
+    return draw.particle_tint;
+}
+
+fn particle_frame_index(draw: PerDrawUniforms) -> u32 {
+    if (draw.particle_extra.y >= 4294967040.0) {
+        return 0xffffffffu;
+    }
+    return u32(max(draw.particle_extra.y, 0.0) + 0.5);
+}
+
+fn particle_trail_generates_lighting_data(draw: PerDrawUniforms) -> bool {
+    return draw.particle_extra.w > 0.5;
 }

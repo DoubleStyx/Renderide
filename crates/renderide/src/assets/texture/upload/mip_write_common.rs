@@ -26,7 +26,7 @@ use super::mip_chain_walk::{MipChainStop, resolve_mip_payload_slot};
 /// Format-side context shared by every mip in one texture upload (2D, cubemap, 3D).
 ///
 /// Bundled so the per-mip decode functions don't take the same four handles on every call.
-/// Fields are [`Copy`] so the context can be captured into a `rayon::spawn` closure by value.
+/// Fields are [`Copy`] so the context can be captured into an asset-worker closure by value.
 #[derive(Copy, Clone)]
 pub(super) struct MipUploadFormatCtx {
     /// Host asset id for logging and diagnostics.

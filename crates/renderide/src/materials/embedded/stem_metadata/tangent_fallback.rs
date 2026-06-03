@@ -144,7 +144,15 @@ mod tests {
             "ui_circlesegment_default",
             mono
         ));
+        assert!(embedded_stem_needs_tangent_stream(
+            "billboardunlit_default",
+            mono
+        ));
         assert!(embedded_stem_needs_tangent_stream("ui_unlit_default", mono));
+        assert_eq!(
+            embedded_stem_tangent_fallback_mode("billboardunlit_default", mono),
+            EmbeddedTangentFallbackMode::PreserveHostOrDefault
+        );
         assert_eq!(
             embedded_stem_tangent_fallback_mode("ui_circlesegment_default", mono),
             EmbeddedTangentFallbackMode::PreserveHostOrDefault

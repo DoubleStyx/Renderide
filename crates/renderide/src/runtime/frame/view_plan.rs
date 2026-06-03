@@ -50,10 +50,10 @@ pub(in crate::runtime) struct OffscreenTargetHandles {
 }
 
 impl OffscreenTargetHandles {
-    /// Lazily allocates and clones the headless primary target handles.
-    pub(in crate::runtime) fn from_headless_primary(gpu: &mut GpuContext) -> Option<Self> {
-        let targets = gpu.primary_offscreen_targets()?;
-        Some(Self {
+    /// Lazily allocates and clones the primary final target handles.
+    pub(in crate::runtime) fn from_primary_offscreen(gpu: &mut GpuContext) -> Self {
+        let targets = gpu.primary_offscreen_targets();
+        Self {
             write_target: OffscreenWriteTarget::Untracked,
             color_texture: targets.color_texture.clone(),
             color_view: targets.color_view.clone(),
@@ -62,7 +62,7 @@ impl OffscreenTargetHandles {
             extent_px: targets.extent_px,
             color_format: targets.color_format,
             copy_to_color: None,
-        })
+        }
     }
 }
 
@@ -134,7 +134,7 @@ impl<'a> ViewFamilyPlan<'a> {
 /// One CPU-planned view ready for draw collection and render-graph conversion.
 ///
 /// Built for every active view in the tick -- HMD stereo multiview, secondary render-texture
-/// cameras, and the main desktop swapchain -- so downstream draw and pass code consume a stable
+/// cameras, and the main desktop view -- so downstream draw and pass code consume a stable
 /// view-intent object instead of branching on runtime mode.
 pub(in crate::runtime) struct FrameViewPlan<'a> {
     /// Per-view camera parameters (clip planes, matrices, stereo, overrides).
@@ -155,7 +155,7 @@ pub(in crate::runtime) struct FrameViewPlan<'a> {
     pub(in crate::runtime) clear: FrameViewClear,
     /// Render-path profile that owns MSAA, post-processing, snapshots, topology, and fallbacks.
     pub(in crate::runtime) profile: RenderPathProfile,
-    /// Target-specific payload (HMD, secondary RT, main swapchain).
+    /// Target-specific payload (HMD, secondary RT, main desktop view).
     pub(in crate::runtime) target: FrameViewPlanTarget<'a>,
 }
 
@@ -237,6 +237,16 @@ impl<'a> FrameViewPlan<'a> {
                 })
             }
             FrameViewPlanTarget::Swapchain => FrameViewTarget::Swapchain,
+        }
+    }
+
+    /// Offscreen target currently written by this view.
+    pub(in crate::runtime) fn write_target(&self) -> OffscreenWriteTarget {
+        match &self.target {
+            FrameViewPlanTarget::Offscreen(handles) => handles.write_target,
+            FrameViewPlanTarget::Swapchain | FrameViewPlanTarget::ExternalMultiview(_) => {
+                OffscreenWriteTarget::None
+            }
         }
     }
 
@@ -351,6 +361,14 @@ mod tests {
         assert!(!plan.is_multiview_stereo_active());
         assert_eq!(plan.shader_permutation(), ShaderPermutation(0));
         assert_eq!(plan.output_depth_mode(), OutputDepthMode::DesktopSingle);
+    }
+
+    #[test]
+    fn swapchain_plan_reports_no_offscreen_write_target() {
+        assert_eq!(
+            main_swapchain_plan().write_target(),
+            OffscreenWriteTarget::None
+        );
     }
 
     #[test]

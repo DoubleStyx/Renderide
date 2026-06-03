@@ -14,6 +14,26 @@ use super::shortcuts::{fullscreen_toggle_shortcut, imgui_visibility_shortcut};
 use super::{AppDriver, RenderTarget};
 
 impl AppDriver {
+    #[cfg(feature = "tracy")]
+    fn begin_about_to_wait_span(&mut self) {
+        self.about_to_wait_span.begin_if_empty("app::about_to_wait");
+    }
+
+    #[cfg(not(feature = "tracy"))]
+    fn begin_about_to_wait_span(&self) {
+        self.about_to_wait_span.begin_if_empty("app::about_to_wait");
+    }
+
+    #[cfg(feature = "tracy")]
+    fn end_about_to_wait_span(&mut self) {
+        self.about_to_wait_span.end();
+    }
+
+    #[cfg(not(feature = "tracy"))]
+    fn end_about_to_wait_span(&self) {
+        self.about_to_wait_span.end();
+    }
+
     fn ensure_render_target(&mut self, event_loop: &dyn ActiveEventLoop) {
         if self.target.is_some() {
             return;
@@ -33,14 +53,30 @@ impl AppDriver {
             }
         }
     }
+
+    fn handle_redraw_requested(&mut self, event_loop: &dyn ActiveEventLoop) {
+        profiling::scope!("app::redraw_requested");
+        if self.exit_is_requested() {
+            self.poll_graceful_shutdown(event_loop);
+            return;
+        }
+        if let Some(target) = self.target.as_ref() {
+            self.input.set_fullscreen(target.is_fullscreen());
+            self.input
+                .sync_window_resolution_logical(target.window().as_ref());
+        }
+        self.tick_frame(event_loop);
+    }
 }
 
 impl ApplicationHandler for AppDriver {
     fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
+        self.end_about_to_wait_span();
         self.ensure_render_target(event_loop);
     }
 
     fn resumed(&mut self, event_loop: &dyn ActiveEventLoop) {
+        self.end_about_to_wait_span();
         profiling::scope!("app::resumed");
         if self.exit_is_requested() {
             return;
@@ -55,6 +91,7 @@ impl ApplicationHandler for AppDriver {
         _device_id: Option<winit::event::DeviceId>,
         event: DeviceEvent,
     ) {
+        self.end_about_to_wait_span();
         profiling::scope!("app::device_event");
         if self.exit_is_requested() {
             return;
@@ -68,79 +105,34 @@ impl ApplicationHandler for AppDriver {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        let Some(target) = self.target.as_ref() else {
-            return;
+        let redraw_requested = {
+            self.end_about_to_wait_span();
+            profiling::scope!("app::window_event");
+            let Some(target) = self.target.as_ref() else {
+                return;
+            };
+            if target.window().id() != window_id {
+                return;
+            }
+            if matches!(event, WindowEvent::RedrawRequested) {
+                true
+            } else {
+                let window = std::sync::Arc::clone(target.window());
+
+                self.handle_window_event(event_loop, window, event);
+                false
+            }
         };
-        if target.window().id() != window_id {
-            return;
-        }
-        let window = std::sync::Arc::clone(target.window());
 
-        profiling::scope!("app::window_event");
-        if imgui_visibility_shortcut(&event) {
-            self.runtime.toggle_imgui_visibility();
-            window.request_redraw();
+        if redraw_requested {
+            self.handle_redraw_requested(event_loop);
             self.flush_logs_if_due();
-            return;
         }
-
-        apply_window_event(&mut self.input, window.as_ref(), &event);
-
-        if fullscreen_toggle_shortcut(&event, self.input.keyboard_modifiers())
-            && let Some(target) = self.target.as_ref()
-        {
-            let fullscreen = target.toggle_borderless_fullscreen();
-            self.input.set_fullscreen(fullscreen);
-            logger::info!(
-                "Window fullscreen {}",
-                if fullscreen { "enabled" } else { "disabled" }
-            );
-            window.request_redraw();
-        }
-
-        match event {
-            WindowEvent::CloseRequested => {
-                logger::info!("Window close requested");
-                self.request_exit(ExitReason::WindowClosed, event_loop);
-            }
-            WindowEvent::SurfaceResized(size) => {
-                profiling::scope!("app::window_event_resize");
-                if !self.exit_is_requested()
-                    && let Some(target) = self.target.as_mut()
-                {
-                    target.reconfigure_physical_size(size.width, size.height);
-                }
-            }
-            WindowEvent::RedrawRequested => {
-                profiling::scope!("app::redraw_requested");
-                if self.exit_is_requested() {
-                    self.poll_graceful_shutdown(event_loop);
-                    self.flush_logs_if_due();
-                    return;
-                }
-                if let Some(target) = self.target.as_ref() {
-                    self.input.set_fullscreen(target.is_fullscreen());
-                    self.input
-                        .sync_window_resolution_logical(target.window().as_ref());
-                }
-                self.tick_frame(event_loop);
-            }
-            WindowEvent::ScaleFactorChanged { .. } => {
-                profiling::scope!("app::window_event_scale_factor");
-                if !self.exit_is_requested()
-                    && let Some(target) = self.target.as_mut()
-                {
-                    target.reconfigure_for_window();
-                }
-            }
-            _ => {}
-        }
-
-        self.flush_logs_if_due();
     }
 
     fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
-        profiling::scope!("app::about_to_wait");
+        self.begin_about_to_wait_span();
+        profiling::scope!("app::about_to_wait_body");
         let window_has_keyboard_focus = self
             .target
             .as_ref()
@@ -209,6 +201,62 @@ impl ApplicationHandler for AppDriver {
         if !self.exit_is_requested() {
             event_loop.set_control_flow(ControlFlow::Poll);
         }
+        self.flush_logs_if_due();
+    }
+}
+
+impl AppDriver {
+    fn handle_window_event(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        window: std::sync::Arc<dyn winit::window::Window>,
+        event: WindowEvent,
+    ) {
+        if imgui_visibility_shortcut(&event) {
+            self.runtime.toggle_imgui_visibility();
+            window.request_redraw();
+            self.flush_logs_if_due();
+            return;
+        }
+
+        apply_window_event(&mut self.input, window.as_ref(), &event);
+
+        if fullscreen_toggle_shortcut(&event, self.input.keyboard_modifiers())
+            && let Some(target) = self.target.as_ref()
+        {
+            let fullscreen = target.toggle_borderless_fullscreen();
+            self.input.set_fullscreen(fullscreen);
+            logger::info!(
+                "Window fullscreen {}",
+                if fullscreen { "enabled" } else { "disabled" }
+            );
+            window.request_redraw();
+        }
+
+        match event {
+            WindowEvent::CloseRequested => {
+                logger::info!("Window close requested");
+                self.request_exit(ExitReason::WindowClosed, event_loop);
+            }
+            WindowEvent::SurfaceResized(size) => {
+                profiling::scope!("app::window_event_resize");
+                if !self.exit_is_requested()
+                    && let Some(target) = self.target.as_mut()
+                {
+                    target.reconfigure_physical_size(size.width, size.height);
+                }
+            }
+            WindowEvent::ScaleFactorChanged { .. } => {
+                profiling::scope!("app::window_event_scale_factor");
+                if !self.exit_is_requested()
+                    && let Some(target) = self.target.as_mut()
+                {
+                    target.reconfigure_for_window();
+                }
+            }
+            _ => {}
+        }
+
         self.flush_logs_if_due();
     }
 }

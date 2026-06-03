@@ -9,6 +9,10 @@
 use std::time::{Duration, Instant};
 
 use crate::diagnostics::crash_context::{self, TickPhase};
+use crate::frontend::{
+    HostWaitReason, LockstepPipelineAction, LockstepPipelineInput, OneCreditBlockReason,
+    decide_lockstep_pipeline, one_credit_block_reason,
+};
 use crate::gpu::GpuContext;
 use crate::shared::{InputState, OutputState};
 
@@ -25,6 +29,12 @@ struct BeginFrameBeforeWaitWorkInput {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RegularBeginFrameInput {
+    frontend_allows_begin_frame: bool,
+    submit_completion_work_drained: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct OneCreditBeginFrameInput {
     awaiting_frame_submit: bool,
     pending_frame_submit_render: bool,
@@ -34,6 +44,10 @@ struct OneCreditBeginFrameInput {
 
 fn should_send_begin_frame_before_wait_work(input: BeginFrameBeforeWaitWorkInput) -> bool {
     input.should_send_begin_frame && !input.awaiting_frame_submit && !input.should_render_frame
+}
+
+fn should_send_regular_begin_frame(input: RegularBeginFrameInput) -> bool {
+    input.frontend_allows_begin_frame && input.submit_completion_work_drained
 }
 
 fn should_send_one_credit_begin_frame(input: OneCreditBeginFrameInput) -> bool {
@@ -46,7 +60,10 @@ fn should_send_one_credit_begin_frame(input: OneCreditBeginFrameInput) -> bool {
 impl RendererRuntime {
     /// Whether the next tick should build [`InputState`] and call [`Self::pre_frame`].
     pub fn should_send_begin_frame(&self) -> bool {
-        self.frontend.should_send_begin_frame()
+        should_send_regular_begin_frame(RegularBeginFrameInput {
+            frontend_allows_begin_frame: self.frontend.should_send_begin_frame(),
+            submit_completion_work_drained: self.submit_completion_work_drained(),
+        })
     }
 
     /// Whether the current tick may render world state under host lockstep and decoupling rules.
@@ -59,17 +76,44 @@ impl RendererRuntime {
         self.frontend.awaiting_frame_submit()
     }
 
-    /// Whether submit-attached host completion work is drained before host frame finalization.
+    /// Whether submit-attached host-critical completion work is drained before host frame finalization.
     pub(crate) fn submit_completion_work_drained(&self) -> bool {
         self.tick_state.pending_camera_render_tasks.is_empty()
             && self
                 .tick_state
                 .pending_reflection_probe_render_tasks
                 .is_empty()
-            && self
-                .tick_state
-                .pending_reflection_probe_render_results
-                .is_empty()
+    }
+
+    /// Computes the current one-credit lock-step pipeline decision.
+    pub(crate) fn lockstep_pipeline_decision(
+        &self,
+    ) -> (LockstepPipelineAction, OneCreditBlockReason) {
+        let input = LockstepPipelineInput {
+            begin_frame_base_allowed: self.frontend.begin_frame_base_allowed(),
+            regular_begin_frame_allowed: self.should_send_begin_frame(),
+            awaiting_frame_submit: self.awaiting_frame_submit(),
+            pending_frame_submit_render: self.frontend.pending_frame_submit_render(),
+            should_render_frame: self.should_render_frame(),
+            submit_completion_work_drained: self.submit_completion_work_drained(),
+        };
+        (
+            decide_lockstep_pipeline(input),
+            one_credit_block_reason(input),
+        )
+    }
+
+    /// Records and returns the current lock-step pipeline decision.
+    pub(crate) fn record_lockstep_pipeline_decision(&mut self) -> LockstepPipelineAction {
+        let (action, block) = self.lockstep_pipeline_decision();
+        self.tick_state
+            .record_lockstep_pipeline_decision(action, block);
+        action
+    }
+
+    /// Records why a host-submit wait fallback is active.
+    pub(crate) fn record_lockstep_wait_reason(&mut self, reason: HostWaitReason) {
+        self.tick_state.record_lockstep_wait_reason(reason);
     }
 
     /// Whether the next host frame may be requested before rendering the current submit.
@@ -148,8 +192,9 @@ impl RendererRuntime {
     /// before `xrBeginFrame` so host waits cannot produce empty OpenXR frames. Active asset
     /// integration remains counted as CPU work; only the semaphore wait itself is excluded from HUD
     /// CPU-frame timing.
-    pub fn wait_for_coupled_submit_or_decoupling(&mut self) {
+    pub fn wait_for_coupled_submit_or_decoupling(&mut self, wait_reason: HostWaitReason) {
         profiling::scope!("tick::coupled_lockstep_wait");
+        self.record_lockstep_wait_reason(wait_reason);
         let mut excluded_wait = Duration::ZERO;
         loop {
             let now = Instant::now();
@@ -207,6 +252,7 @@ impl RendererRuntime {
             }
         }
         self.note_frame_timing_excluded_wait(excluded_wait);
+        self.record_lockstep_pipeline_decision();
     }
 
     /// Increments the renderer-tick counter feeding
@@ -242,6 +288,9 @@ impl RendererRuntime {
     /// actually enqueued.
     pub fn pre_frame(&mut self, inputs: InputState) -> bool {
         profiling::scope!("tick::pre_frame");
+        if !self.should_send_begin_frame() {
+            return false;
+        }
         let video_clock_errors = self.backend.take_pending_video_clock_errors();
         self.frontend.enqueue_video_clock_errors(video_clock_errors);
         self.frontend.pre_frame(inputs)
@@ -250,7 +299,7 @@ impl RendererRuntime {
     /// Sends a one-credit [`FrameStartData`](crate::shared::FrameStartData) before rendering.
     pub(crate) fn pre_frame_one_credit(&mut self, inputs: InputState) -> bool {
         profiling::scope!("tick::pre_frame_one_credit");
-        if self.shutdown_requested() || self.fatal_error() {
+        if !self.should_send_one_credit_begin_frame() {
             return false;
         }
         let video_clock_errors = self.backend.take_pending_video_clock_errors();
@@ -298,7 +347,7 @@ impl RendererRuntime {
         self.drain_reflection_probe_render_tasks(gpu);
         self.drain_camera_render_tasks(gpu);
         crash_context::set_tick_phase(TickPhase::Lockstep);
-        if self.should_send_one_credit_begin_frame() {
+        if self.record_lockstep_pipeline_decision() == LockstepPipelineAction::SendEarlyNextFrame {
             self.pre_frame_one_credit(inputs.clone());
         }
         crash_context::set_tick_phase(TickPhase::Lockstep);
@@ -309,6 +358,7 @@ impl RendererRuntime {
         crash_context::set_tick_phase(TickPhase::AssetIntegration);
         self.run_asset_integration();
         crash_context::set_tick_phase(TickPhase::Lockstep);
+        self.record_lockstep_pipeline_decision();
         if self.should_send_begin_frame() {
             self.pre_frame(inputs);
         }
@@ -365,6 +415,7 @@ impl RendererRuntime {
         crash_context::set_tick_phase(TickPhase::AssetIntegration);
         self.run_asset_integration();
         crash_context::set_tick_phase(TickPhase::Lockstep);
+        self.record_lockstep_pipeline_decision();
         if self.should_send_begin_frame() {
             self.pre_frame(inputs);
         }
@@ -376,6 +427,7 @@ impl RendererRuntime {
 mod tests {
     use super::{BeginFrameBeforeWaitWorkInput, should_send_begin_frame_before_wait_work};
     use super::{OneCreditBeginFrameInput, should_send_one_credit_begin_frame};
+    use super::{RegularBeginFrameInput, should_send_regular_begin_frame};
 
     fn input() -> BeginFrameBeforeWaitWorkInput {
         BeginFrameBeforeWaitWorkInput {
@@ -452,5 +504,33 @@ mod tests {
                 ..one_credit_input()
             }
         ));
+    }
+
+    fn regular_begin_input() -> RegularBeginFrameInput {
+        RegularBeginFrameInput {
+            frontend_allows_begin_frame: true,
+            submit_completion_work_drained: true,
+        }
+    }
+
+    #[test]
+    fn regular_begin_sends_when_frontend_and_submit_completion_allow() {
+        assert!(should_send_regular_begin_frame(regular_begin_input()));
+    }
+
+    #[test]
+    fn regular_begin_waits_for_submit_completion_work() {
+        assert!(!should_send_regular_begin_frame(RegularBeginFrameInput {
+            submit_completion_work_drained: false,
+            ..regular_begin_input()
+        }));
+    }
+
+    #[test]
+    fn regular_begin_respects_frontend_gate() {
+        assert!(!should_send_regular_begin_frame(RegularBeginFrameInput {
+            frontend_allows_begin_frame: false,
+            ..regular_begin_input()
+        }));
     }
 }

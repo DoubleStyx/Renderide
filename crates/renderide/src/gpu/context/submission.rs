@@ -35,6 +35,11 @@ impl FrameSubmitKind {
 }
 
 impl GpuContext {
+    /// Returns a cloneable producer handle for background driver-thread submits.
+    pub(crate) fn driver_submitter(&self) -> crate::gpu::driver_thread::DriverSubmitter {
+        self.submission.driver_thread.submitter()
+    }
+
     /// Hands a command-buffer batch off to the driver thread for submit + optional present.
     ///
     /// The surface texture is optional: pass `Some` for the main swapchain frame (the

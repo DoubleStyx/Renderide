@@ -21,9 +21,10 @@ use crate::materials::{
 };
 use crate::materials::{
     MaterialBlendMode, MaterialPipelineDesc, MaterialPipelineResolution, MaterialPipelineSet,
-    MaterialPipelineVariantSpec, MaterialRegistry, MaterialRenderState, RasterFrontFace,
-    RasterPipelineKind, RasterPrimitiveTopology, ensure_render_buffer_billboard_variant_bits,
-    remap_unlit_variant_bits_for_billboard, should_remap_unlit_variant_bits_for_billboard_draw,
+    MaterialPipelineVariantSpec, MaterialRegistry, MaterialRenderState,
+    MaterialShaderSpecializationKey, RasterFrontFace, RasterPipelineKind, RasterPrimitiveTopology,
+    ensure_render_buffer_billboard_variant_bits, remap_unlit_variant_bits_for_billboard,
+    should_remap_unlit_variant_bits_for_billboard_draw,
 };
 use crate::passes::WorldMeshForwardEncodeRefs;
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
@@ -104,6 +105,8 @@ pub(crate) struct PipelineVariantKeyInput {
     pub pass_desc: MaterialPipelineDesc,
     /// Shader permutation selected for the owning view.
     pub shader_perm: ShaderPermutation,
+    /// Renderer-local shader specialization constants for material keyword branches.
+    pub shader_specialization: MaterialShaderSpecializationKey,
     /// Host shader asset id for diagnostics and material registry lookup.
     pub shader_asset_id: i32,
     /// Resolved material blend state.
@@ -131,6 +134,8 @@ pub(crate) struct PipelineVariantKey {
     pub multiview_mask: Option<std::num::NonZeroU32>,
     /// Shader permutation selected for the view.
     pub shader_perm: ShaderPermutation,
+    /// Renderer-local shader specialization constants for material keyword branches.
+    pub shader_specialization: MaterialShaderSpecializationKey,
     /// Resolved material blend state.
     pub blend_mode: MaterialBlendMode,
     /// Resolved material render state.
@@ -147,6 +152,7 @@ impl PipelineVariantKey {
         let PipelineVariantKeyInput {
             pass_desc,
             shader_perm,
+            shader_specialization,
             shader_asset_id,
             blend_mode,
             render_state,
@@ -160,6 +166,7 @@ impl PipelineVariantKey {
             sample_count: pass_desc.sample_count,
             multiview_mask: pass_desc.multiview_mask,
             shader_perm,
+            shader_specialization,
             blend_mode,
             render_state,
             front_face,
@@ -181,6 +188,7 @@ impl PipelineVariantKey {
     pub(crate) fn variant_spec(self) -> MaterialPipelineVariantSpec {
         MaterialPipelineVariantSpec {
             permutation: self.shader_perm,
+            shader_specialization: self.shader_specialization,
             blend_mode: self.blend_mode,
             render_state: self.render_state,
             front_face: self.front_face,
@@ -198,6 +206,7 @@ impl PipelineVariantKey {
         Self::new(PipelineVariantKeyInput {
             pass_desc,
             shader_perm,
+            shader_specialization: batch_key.shader_specialization,
             shader_asset_id: batch_key.shader_asset_id,
             blend_mode: batch_key.blend_mode,
             render_state: batch_key.render_state,
@@ -579,6 +588,7 @@ mod tests {
         PipelineVariantKey::new(PipelineVariantKeyInput {
             pass_desc: base_desc(),
             shader_perm: ShaderPermutation(1),
+            shader_specialization: MaterialShaderSpecializationKey::disabled(),
             shader_asset_id: 42,
             blend_mode: MaterialBlendMode::Opaque,
             render_state: MaterialRenderState::default(),

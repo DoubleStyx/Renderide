@@ -447,7 +447,7 @@ impl CubemapMipChainUploader {
         let payload_arc = std::sync::Arc::clone(step.payload);
         let flip = self.flip;
         let face = self.face;
-        rayon::spawn(move || {
+        crate::assets::worker::spawn_asset_job(move || {
             profiling::scope!("asset::cubemap_decode_mip");
             let mip_src = &payload_arc[mip_src_range];
             let res = cubemap_mip_src_to_upload_pixels(ctx, w, h, flip, mip_i, face, mip_src);

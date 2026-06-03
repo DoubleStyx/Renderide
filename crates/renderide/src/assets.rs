@@ -9,11 +9,13 @@
 //! - **`texture`** -- Host Texture2D format/layout, decode/swizzle, mip packing, and
 //!   [`wgpu::Queue::write_texture`] uploads.
 //! - **`util`** -- Small string helpers shared with [`crate::materials`] (e.g. Unity shader key normalization).
+//! - **`worker`** -- Dedicated bounded CPU worker pool for asset preparation jobs.
 
 pub mod mesh;
 pub mod shader;
 pub mod texture;
 pub mod util;
 pub mod video;
+pub(crate) mod worker;
 
 pub use shader::{ResolvedShaderUpload, resolve_shader_upload};

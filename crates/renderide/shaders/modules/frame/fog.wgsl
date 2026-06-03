@@ -39,3 +39,9 @@ fn apply_rgb(color: vec3<f32>, coord: f32) -> vec3<f32> {
 fn apply_rgba(color: vec4<f32>, coord: f32) -> vec4<f32> {
     return vec4<f32>(apply_rgb(color.rgb, coord), color.a);
 }
+
+/// Computes a Unity-style fog coordinate from a world-space position.
+fn coord_from_world_pos(world_pos: vec3<f32>, view_layer: u32) -> f32 {
+    let coeffs = rg::view_space_z_coeffs_for_view(view_layer);
+    return abs(dot(coeffs.xyz, world_pos) + coeffs.w);
+}

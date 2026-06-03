@@ -4,7 +4,7 @@ use glam::Mat4;
 use hashbrown::HashMap;
 use rayon::prelude::*;
 
-use crate::particles::{PointParticle, PointRenderBufferAsset};
+use crate::particles::{ParticleDrawParams, PointParticle, PointRenderBufferAsset};
 use crate::scene::{MeshRenderBufferEntry, MeshRendererInstanceId, RenderSpaceId};
 use crate::shared::LayerType;
 
@@ -197,6 +197,11 @@ fn append_mesh_particle_draws_serial(
                 property_block_id: None,
                 cull_geometry: None,
                 rigid_world_matrix_override: Some(model),
+                particle_draw: ParticleDrawParams::mesh(
+                    input.renderer.alignment,
+                    point.color,
+                    point.frame_index,
+                ),
             });
         }
     }
@@ -237,6 +242,11 @@ fn build_mesh_particle_draw_chunk(input: MeshParticleDrawChunkInput<'_>) -> Vec<
                 property_block_id: None,
                 cull_geometry: None,
                 rigid_world_matrix_override: Some(model),
+                particle_draw: ParticleDrawParams::mesh(
+                    input.renderer.alignment,
+                    point.color,
+                    point.frame_index,
+                ),
             });
         }
     }

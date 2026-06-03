@@ -16,6 +16,11 @@
 //! | Shader uniform -- keyword | `_NORMALMAP`, `_ALPHATEST_ON`, `_ALPHABLEND_ON`, `_RenderideVariantBits` | Reflected keyword uniforms use compatibility inference; `_RenderideVariantBits` is the raw parsed variant bitmask and is decoded only by WGSL | `@group(1) @binding(0)` material struct |
 //! | Texture | `_MainTex`, `_NormalMap`, ... | Host texture pools, bound by reflection | `@group(1) @binding(N)` |
 //!
+//! When the host shader route carries a concrete `_RenderideVariantBits` value, material pipelines
+//! also mirror that bitmask into WGSL pipeline constants so keyword-only branches can be compiled
+//! out. The uniform field remains authoritative for inferred, missing, or draw-rerouted cases, so
+//! this specialization does not change the host wire contract.
+//!
 //! **Pipeline-state property names must NEVER appear in a shader's `@group(1) @binding(0)`
 //! uniform struct.** They are dead weight there: shaders never read them, but the host writes
 //! them and reflection allocates uniform space for them. The canonical list lives in
@@ -83,6 +88,7 @@ mod render_queue;
 mod render_state;
 mod router;
 pub(crate) mod shader_permutation;
+mod shader_specialization;
 mod system;
 #[cfg(test)]
 mod wgsl;
@@ -160,5 +166,6 @@ pub(crate) use router::{MaterialRouter, resolve_raster_pipeline};
 
 /// Static shader feature flags (multiview, etc.) keyed into the pipeline cache.
 pub(crate) use shader_permutation::{SHADER_PERM_MULTIVIEW_STEREO, ShaderPermutation};
+pub(crate) use shader_specialization::MaterialShaderSpecializationKey;
 
 pub(crate) use system::{MaterialSystem, MaterialSystemDiagnosticSnapshot};

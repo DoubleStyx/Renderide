@@ -12,12 +12,8 @@ use super::MAX_PENDING_MESH_UPLOADS;
 
 /// Remove a mesh from the pool.
 pub fn on_mesh_unload(queue: &mut AssetTransferQueue, u: MeshUnload) {
-    let pending_before = queue.pending.pending_mesh_uploads.len();
-    queue
-        .pending
-        .pending_mesh_uploads
-        .retain(|upload| upload.asset_id != u.asset_id);
-    let pending_removed = pending_before.saturating_sub(queue.pending.pending_mesh_uploads.len());
+    queue.invalidate_mesh_upload_generation(u.asset_id);
+    let pending_removed = remove_deferred_mesh_uploads_for_asset(queue, u.asset_id);
     if pending_removed > 0 {
         logger::debug!(
             "mesh {} unload removed {} deferred upload(s)",
@@ -48,6 +44,16 @@ pub fn try_process_mesh_upload(
             &mut ipc,
         ));
     }
+    let asset_id = data.asset_id;
+    let generation = queue.begin_mesh_upload_generation(asset_id);
+    let pending_removed = remove_deferred_mesh_uploads_for_asset(queue, asset_id);
+    if pending_removed > 0 {
+        logger::trace!(
+            "mesh {asset_id}: superseded {} deferred upload(s) with generation {}",
+            pending_removed,
+            generation
+        );
+    }
     if data.buffer.length <= 0 {
         let device = queue.gpu.gpu_device.clone();
         return Some(complete_empty_mesh_upload(
@@ -58,7 +64,6 @@ pub fn try_process_mesh_upload(
         ));
     }
     if queue.gpu.gpu_device.is_none() {
-        let asset_id = data.asset_id;
         queue.pending.pending_mesh_uploads.push_back(data);
         logger::debug!(
             "mesh {asset_id}: deferred upload until GPU attach (pending={})",
@@ -69,9 +74,18 @@ pub fn try_process_mesh_upload(
     }
 
     let high = data.high_priority;
-    let task = AssetTask::Mesh(MeshUploadTask::new(data));
+    let task = AssetTask::Mesh(MeshUploadTask::new(data, generation));
     queue.integrator_mut().enqueue(task, high);
     None
+}
+
+fn remove_deferred_mesh_uploads_for_asset(queue: &mut AssetTransferQueue, asset_id: i32) -> usize {
+    let pending_before = queue.pending.pending_mesh_uploads.len();
+    queue
+        .pending
+        .pending_mesh_uploads
+        .retain(|upload| upload.asset_id != asset_id);
+    pending_before.saturating_sub(queue.pending.pending_mesh_uploads.len())
 }
 
 fn log_mesh_upload_received(data: &MeshUploadData) {
@@ -134,11 +148,35 @@ mod tests {
         let mut shm = SharedMemoryAccessor::new(String::new());
 
         try_process_mesh_upload(&mut queue, upload(7), Some(&mut shm), None);
+        let generation = queue
+            .current_mesh_upload_generation(7)
+            .expect("mesh generation");
         try_process_mesh_upload(&mut queue, upload(8), Some(&mut shm), None);
         on_mesh_unload(&mut queue, MeshUnload { asset_id: 7 });
 
         assert_eq!(queue.pending.pending_mesh_uploads.len(), 1);
         assert_eq!(queue.pending.pending_mesh_uploads[0].asset_id, 8);
+        assert!(!queue.mesh_upload_generation_is_current(7, generation));
+    }
+
+    #[test]
+    fn mesh_without_gpu_keeps_only_latest_deferred_upload_per_asset() {
+        let mut queue = AssetTransferQueue::new();
+        let mut shm = SharedMemoryAccessor::new(String::new());
+        let first = upload(7);
+        let mut second = upload(7);
+        second.high_priority = true;
+
+        try_process_mesh_upload(&mut queue, first, Some(&mut shm), None);
+        let first_generation = queue
+            .current_mesh_upload_generation(7)
+            .expect("first mesh generation");
+        try_process_mesh_upload(&mut queue, second, Some(&mut shm), None);
+
+        assert_eq!(queue.pending.pending_mesh_uploads.len(), 1);
+        assert_eq!(queue.pending.pending_mesh_uploads[0].asset_id, 7);
+        assert!(queue.pending.pending_mesh_uploads[0].high_priority);
+        assert!(!queue.mesh_upload_generation_is_current(7, first_generation));
     }
 
     #[test]

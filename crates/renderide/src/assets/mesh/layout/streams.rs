@@ -24,8 +24,14 @@ pub const UV_VERTEX_ATTRIBUTE_TYPES: [VertexAttributeType; 8] = [
     VertexAttributeType::UV7,
 ];
 
-/// Bytes per vertex in the wide UV pack: eight `vec4<f32>` rows.
-pub const WIDE_UV_VERTEX_STRIDE_BYTES: usize = UV_VERTEX_ATTRIBUTE_TYPES.len() * 16;
+/// UV channels stored in one wide UV page.
+pub const WIDE_UV_PAGE_CHANNEL_COUNT: usize = 4;
+/// Bytes per vertex in one wide UV page: four `vec4<f32>` rows.
+pub const WIDE_UV_PAGE_VERTEX_STRIDE_BYTES: usize = WIDE_UV_PAGE_CHANNEL_COUNT * 16;
+/// Bytes per vertex in the low wide UV page containing UV0 through UV3.
+pub const WIDE_UV_LOW_VERTEX_STRIDE_BYTES: usize = WIDE_UV_PAGE_VERTEX_STRIDE_BYTES;
+/// Bytes per vertex in the high wide UV page containing UV4 through UV7.
+pub const WIDE_UV_HIGH_VERTEX_STRIDE_BYTES: usize = WIDE_UV_PAGE_VERTEX_STRIDE_BYTES;
 
 /// Attribute semantic used when expanding host vertex scalars into float streams.
 #[derive(Clone, Copy)]
@@ -199,8 +205,9 @@ pub fn uv0_float2_stream_bytes(
 
 /// Dense `vec2<f32>` vertex stream for an arbitrary two-component attribute.
 ///
-/// Missing or unsupported attributes return zeros so optional embedded shader streams can still
-/// bind a stable vertex buffer slot.
+/// Missing compact UV attributes fall back to the highest available lower UV channel. Missing or
+/// unsupported non-UV attributes return zeros so optional embedded shader streams can still bind a
+/// stable vertex buffer slot.
 pub fn vertex_float2_stream_bytes(
     vertex_data: &[u8],
     vertex_count: usize,
@@ -216,15 +223,8 @@ pub fn vertex_float2_stream_bytes(
         return None;
     }
     let mut out = vec![0u8; vertex_count * 8];
-    let Some(reader) = AttributeReader::from_attrs(
-        vertex_data,
-        vertex_count,
-        stride,
-        attrs,
-        target,
-        VertexDecodeKind::TexCoord,
-        2,
-    ) else {
+    let Some(reader) = vertex_float2_reader(vertex_data, vertex_count, stride, attrs, target)
+    else {
         return Some(out);
     };
     if should_parallelize_vertex_stream(vertex_count) {
@@ -240,21 +240,85 @@ pub fn vertex_float2_stream_bytes(
     Some(out)
 }
 
+fn vertex_float2_reader<'a>(
+    vertex_data: &'a [u8],
+    vertex_count: usize,
+    stride: usize,
+    attrs: &'a [VertexAttributeDescriptor],
+    target: VertexAttributeType,
+) -> Option<AttributeReader<'a>> {
+    if let Some(target_channel) = compact_uv_channel(target) {
+        return UV_VERTEX_ATTRIBUTE_TYPES[..=target_channel]
+            .iter()
+            .rev()
+            .find_map(|&fallback| {
+                AttributeReader::from_attrs(
+                    vertex_data,
+                    vertex_count,
+                    stride,
+                    attrs,
+                    fallback,
+                    VertexDecodeKind::TexCoord,
+                    2,
+                )
+            });
+    }
+
+    AttributeReader::from_attrs(
+        vertex_data,
+        vertex_count,
+        stride,
+        attrs,
+        target,
+        VertexDecodeKind::TexCoord,
+        2,
+    )
+}
+
+fn compact_uv_channel(target: VertexAttributeType) -> Option<usize> {
+    UV_VERTEX_ATTRIBUTE_TYPES[..=3]
+        .iter()
+        .position(|&uv| uv == target)
+}
+
 fn write_vertex_float2(reader: &AttributeReader<'_>, vertex: usize, slot: &mut [u8]) -> Option<()> {
     let uv = reader.read_vec2(vertex)?;
     write_f32s(slot, &uv);
     Some(())
 }
 
-/// Dense wide UV stream for shaders that consume UV4-UV7 or 3D/4D UV channels.
+/// Dense low wide UV stream for shaders that consume 3D/4D UV0-UV3 channels.
 ///
-/// Each vertex stores eight consecutive `vec4<f32>` rows (`UV0` through `UV7`). Missing UV
+/// Each vertex stores four consecutive `vec4<f32>` rows (`UV0` through `UV3`). Missing UV
 /// channels and missing z/w components are zero-filled.
-pub fn wide_uv_stream_bytes(
+pub fn wide_low_uv_stream_bytes(
     vertex_data: &[u8],
     vertex_count: usize,
     stride: usize,
     attrs: &[VertexAttributeDescriptor],
+) -> Option<Vec<u8>> {
+    wide_uv_page_stream_bytes(vertex_data, vertex_count, stride, attrs, 0)
+}
+
+/// Dense high wide UV stream for shaders that consume UV4-UV7 channels.
+///
+/// Each vertex stores four consecutive `vec4<f32>` rows (`UV4` through `UV7`). Missing UV
+/// channels and missing z/w components are zero-filled.
+pub fn wide_high_uv_stream_bytes(
+    vertex_data: &[u8],
+    vertex_count: usize,
+    stride: usize,
+    attrs: &[VertexAttributeDescriptor],
+) -> Option<Vec<u8>> {
+    wide_uv_page_stream_bytes(vertex_data, vertex_count, stride, attrs, 4)
+}
+
+fn wide_uv_page_stream_bytes(
+    vertex_data: &[u8],
+    vertex_count: usize,
+    stride: usize,
+    attrs: &[VertexAttributeDescriptor],
+    start_channel: usize,
 ) -> Option<Vec<u8>> {
     if vertex_count == 0 || stride == 0 {
         return None;
@@ -264,46 +328,49 @@ pub fn wide_uv_stream_bytes(
         return None;
     }
 
-    let mut out = vec![0u8; vertex_count.checked_mul(WIDE_UV_VERTEX_STRIDE_BYTES)?];
-    let readers: [Option<AttributeReader<'_>>; 8] = UV_VERTEX_ATTRIBUTE_TYPES.map(|target| {
-        AttributeReader::from_attrs(
-            vertex_data,
-            vertex_count,
-            stride,
-            attrs,
-            target,
-            VertexDecodeKind::TexCoord,
-            2,
-        )
-    });
+    let end_channel = start_channel.checked_add(WIDE_UV_PAGE_CHANNEL_COUNT)?;
+    let page_channels = UV_VERTEX_ATTRIBUTE_TYPES.get(start_channel..end_channel)?;
+    let mut out = vec![0u8; vertex_count.checked_mul(WIDE_UV_PAGE_VERTEX_STRIDE_BYTES)?];
+    let readers: [Option<AttributeReader<'_>>; WIDE_UV_PAGE_CHANNEL_COUNT] =
+        core::array::from_fn(|channel| {
+            AttributeReader::from_attrs(
+                vertex_data,
+                vertex_count,
+                stride,
+                attrs,
+                page_channels[channel],
+                VertexDecodeKind::TexCoord,
+                2,
+            )
+        });
 
     if should_parallelize_vertex_stream(vertex_count) {
-        out.par_chunks_exact_mut(WIDE_UV_VERTEX_STRIDE_BYTES)
+        out.par_chunks_exact_mut(WIDE_UV_PAGE_VERTEX_STRIDE_BYTES)
             .with_min_len(VERTEX_STREAM_PARALLEL_CHUNK_VERTICES)
             .enumerate()
-            .try_for_each(|(vertex, slot)| write_wide_uv_vertex(&readers, vertex, slot))?;
+            .try_for_each(|(vertex, slot)| write_wide_uv_page_vertex(&readers, vertex, slot))?;
     } else {
         for (vertex, slot) in out
-            .chunks_exact_mut(WIDE_UV_VERTEX_STRIDE_BYTES)
+            .chunks_exact_mut(WIDE_UV_PAGE_VERTEX_STRIDE_BYTES)
             .enumerate()
         {
-            write_wide_uv_vertex(&readers, vertex, slot)?;
+            write_wide_uv_page_vertex(&readers, vertex, slot)?;
         }
     }
     Some(out)
 }
 
-fn write_wide_uv_vertex(
-    readers: &[Option<AttributeReader<'_>>; 8],
+fn write_wide_uv_page_vertex(
+    readers: &[Option<AttributeReader<'_>>; WIDE_UV_PAGE_CHANNEL_COUNT],
     vertex: usize,
     slot: &mut [u8],
 ) -> Option<()> {
-    for (channel, reader) in readers.iter().enumerate() {
+    for (page_channel, reader) in readers.iter().enumerate() {
         let Some(reader) = reader else {
             continue;
         };
         let uv = reader.read_vec4(vertex, [0.0; 4])?;
-        let offset = channel * 16;
+        let offset = page_channel * 16;
         write_f32s(&mut slot[offset..offset + 16], &uv);
     }
     Some(())

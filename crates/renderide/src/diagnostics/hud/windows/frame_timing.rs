@@ -13,6 +13,7 @@ const DIM_COLOR: [f32; 4] = [0.62, 0.62, 0.68, 1.0];
 const CPU_HEAD_COLOR: [f32; 4] = [0.42, 0.82, 1.00, 1.0];
 const GPU_HEAD_COLOR: [f32; 4] = [0.60, 0.90, 0.50, 1.0];
 const HOST_HEAD_COLOR: [f32; 4] = [1.00, 0.82, 0.35, 1.0];
+const PIPE_HEAD_COLOR: [f32; 4] = [0.85, 0.80, 1.00, 1.0];
 const RAM_HEAD_COLOR: [f32; 4] = [1.00, 0.75, 0.35, 1.0];
 const FPS_HEAD_COLOR: [f32; 4] = [1.00, 1.00, 1.00, 1.0];
 const GRAPH_COLOR: [f32; 4] = [0.50, 1.00, 0.55, 1.0];
@@ -39,7 +40,7 @@ impl HudWindow for FrameTimingWindow {
         let xy = layout::frame_timing_xy();
         WindowSlot {
             position: xy,
-            size: [CONTENT_WIDTH, 185.0],
+            size: [CONTENT_WIDTH, 220.0],
             size_min: [CONTENT_WIDTH, 0.0],
             size_max: [f32::INFINITY, f32::INFINITY],
         }
@@ -78,6 +79,7 @@ fn fps_color(fps: f64) -> [f32; 4] {
 fn render_rows(ui: &imgui::Ui, t: &FrameTimingHudSnapshot) {
     render_cadence_rows(ui, t);
     render_work_rows(ui, t);
+    render_pipeline_rows(ui, t);
     render_memory_rows(ui, t);
 }
 
@@ -135,6 +137,24 @@ fn render_work_rows(ui: &imgui::Ui, t: &FrameTimingHudSnapshot) {
         ),
         Some(("Low/High", format_percent_pair_ms(t.history_stats.host_ms))),
         Some(HOST_TOOLTIP),
+    );
+}
+
+fn render_pipeline_rows(ui: &imgui::Ui, t: &FrameTimingHudSnapshot) {
+    metric_row(
+        ui,
+        ("Pipe", PIPE_HEAD_COLOR),
+        (t.lockstep_pipeline_action.to_string(), VALUE_COLOR),
+        Some(("Block", t.lockstep_one_credit_block.to_string())),
+        Some(PIPE_TOOLTIP),
+    );
+
+    metric_row(
+        ui,
+        ("Wait", PIPE_HEAD_COLOR),
+        (t.lockstep_wait_reason.to_string(), VALUE_COLOR),
+        None,
+        Some(WAIT_TOOLTIP),
     );
 }
 
@@ -292,7 +312,10 @@ const FPS_TOOLTIP: &str = "Smoothed wall-frame FPS. Low/High is a raw rolling on
 const FRAME_TOOLTIP: &str = "Wall-clock between consecutive winit ticks. Includes vsync, FPS caps, host lockstep, presentation waits, and event-loop pacing.";
 const CPU_TOOLTIP: &str = "Main-thread active renderer work from frame start to submit dispatch, minus explicit pacing waits.";
 const GPU_TOOLTIP: &str = "Real primary GPU busy time measured by hardware timestamp brackets around primary render submits.";
-const HOST_TOOLTIP: &str = "Renderer-observed host lockstep turnaround: outgoing FrameStartData to matching incoming FrameSubmitData. This is not pure host CPU time; in lockstep it grows whenever the renderer is ready before the host submits the next primary frame.";
+const HOST_TOOLTIP: &str = "Renderer-observed host update turnaround: outgoing FrameStartData send to matching inbound FrameSubmitData queue receipt.";
+const PIPE_TOOLTIP: &str =
+    "Host/renderer frame pipeline decision and why early next-frame request was blocked.";
+const WAIT_TOOLTIP: &str = "Reason a primary host-submit wait fallback ran this tick.";
 const RAM_TOOLTIP: &str = "RAM shows renderer resident process memory plus OS-reported host used/total memory. It is not allocator reserved memory.";
 const VRAM_TOOLTIP: &str = "Wgpu allocator memory tracked by the active backend. Shows live allocated bytes and reserved allocator capacity.";
 

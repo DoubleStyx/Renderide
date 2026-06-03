@@ -12,6 +12,9 @@ use std::sync::Arc;
 use hashbrown::HashMap;
 use thiserror::Error;
 
+#[cfg(test)]
+use crate::mesh_deform::PER_DRAW_UNIFORM_STRIDE;
+
 mod alignment;
 mod binding_caps;
 mod buffer_bounds;
@@ -41,7 +44,7 @@ pub struct GpuLimits {
     pub supports_float32_filterable: bool,
     /// BC / ETC2 / ASTC bits that were requested and enabled (for diagnostics).
     pub texture_compression_features: wgpu::Features,
-    /// Maximum rows in the mesh-forward `@group(2)` storage slab (`max_storage_buffer_binding_size / 256`).
+    /// Maximum rows in the mesh-forward `@group(2)` storage slab.
     pub max_per_draw_slab_slots: usize,
     pub(super) features: wgpu::Features,
     pub(super) texture_format_features: HashMap<wgpu::TextureFormat, wgpu::TextureFormatFeatures>,
@@ -73,7 +76,8 @@ impl GpuLimits {
         features: wgpu::Features,
         texture_format_features: HashMap<wgpu::TextureFormat, wgpu::TextureFormatFeatures>,
     ) -> Self {
-        let max_per_draw_slab_slots = (wgpu_limits.max_storage_buffer_binding_size / 256) as usize;
+        let max_per_draw_slab_slots =
+            (wgpu_limits.max_storage_buffer_binding_size / PER_DRAW_UNIFORM_STRIDE as u64) as usize;
         Self {
             wgpu: wgpu_limits,
             supports_base_instance: true,

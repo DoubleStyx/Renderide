@@ -464,6 +464,10 @@ impl RenderBackend {
             last_world_mesh_draw_stats: self.last_world_mesh_draw_stats(),
             last_world_mesh_draw_state_rows: self.last_world_mesh_draw_state_rows(),
             render_world_maintenance: self.draw_preparation.render_world_maintenance_stats(),
+            world_mesh_command_cache: self.draw_preparation.command_cache_stats(),
+            world_mesh_instance_plan_cache: self
+                .world_mesh_frame_planner
+                .instance_plan_cache_stats(),
             material_property_slots: store.material_property_slot_count(),
             property_block_slots: store.property_block_slot_count(),
             material_shader_bindings: store.material_shader_binding_count(),

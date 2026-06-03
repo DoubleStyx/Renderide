@@ -86,6 +86,7 @@ fn prepared_draw(space_id: RenderSpaceId) -> FramePreparedDraw {
         property_block_id: None,
         cull_geometry: None,
         rigid_world_matrix_override: None,
+        particle_draw: crate::particles::ParticleDrawParams::default(),
     }
 }
 

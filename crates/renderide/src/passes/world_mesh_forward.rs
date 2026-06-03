@@ -56,10 +56,21 @@ mod transparent_sequence;
 mod vp;
 
 pub use depth_prepass::{WorldMeshForwardDepthPrepass, WorldMeshForwardDepthPrepassGraphResources};
+pub(crate) use depth_prepass::{
+    WorldMeshForwardDepthPrepassPipelineKey, depth_prepass_pipeline_key_for_draw,
+    pre_warm_depth_prepass_pipeline,
+};
 pub(crate) use material_batch::{MaterialBatchBoundary, MaterialBatchPacket, MaterialDrawResolver};
-pub(crate) use normal_pass::GTAO_VIEW_NORMAL_FORMAT;
+pub(crate) use normal_pass::{
+    GTAO_VIEW_NORMAL_FORMAT, WorldMeshForwardNormalPipelineKey, normal_pipeline_key_for_draw,
+    pre_warm_normal_pipeline,
+};
 pub use normal_pass::{WorldMeshForwardNormalGraphResources, WorldMeshForwardNormalPass};
-pub(crate) use prepare::{WorldMeshForwardPrepareContext, prepare_world_mesh_forward_frame};
+pub(crate) use prepare::{
+    WorldMeshForwardInstancePlanCache, WorldMeshForwardInstancePlanCacheStats,
+    WorldMeshForwardPrepareContext, WorldMeshForwardPrepareScratch,
+    prepare_world_mesh_forward_frame,
+};
 pub(crate) use skybox::SkyboxRenderer as WorldMeshForwardSkyboxRenderer;
 pub(crate) use state::{
     PreparedWorldMeshForwardFrame, WorldMeshForwardPipelineState, WorldMeshForwardPlanSlot,

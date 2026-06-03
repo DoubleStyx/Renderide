@@ -39,14 +39,6 @@ impl HudWindow for TextureDebugWindow {
         0.85
     }
 
-    fn read_open_flag(&self, state: &Self::State) -> Option<bool> {
-        Some(state.texture_debug_open)
-    }
-
-    fn write_open_flag(&self, state: &mut Self::State, value: bool) {
-        state.texture_debug_open = value;
-    }
-
     fn body(&self, ui: &imgui::Ui, snapshot: Self::Data<'_>, state: &mut Self::State) {
         ui.checkbox(
             "Only current view",

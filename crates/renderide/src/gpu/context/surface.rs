@@ -142,6 +142,7 @@ impl GpuContext {
         self.config.height = height.max(1);
         self.depth_attachment = None;
         self.depth_extent_px = (0, 0);
+        self.invalidate_primary_offscreen_targets();
         if let Err(error) = self.configure_current_surface() {
             self.record_surface_reconfigure(
                 GpuFlightSurfaceReconfigureSite::Resize,

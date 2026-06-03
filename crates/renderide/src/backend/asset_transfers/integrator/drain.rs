@@ -8,6 +8,7 @@ use crate::materials::MaterialSystem;
 use crate::profiling::{AssetIntegrationProfileSample, plot_asset_integration};
 
 use super::super::AssetTransferQueue;
+use super::super::particle_task::drain_ready_particle_builds;
 use super::gpu_context::{AssetUploadGpuContext, GpuHandles, collect_gpu_handles};
 use super::queue::AssetTaskLane;
 use super::step::{StepResult, step_asset_task};
@@ -157,17 +158,42 @@ fn flush_mesh_upload_batch(
             false,
         )
     };
+    drop(gate);
     let Some(flush) = flush else {
         return;
     };
-    let _flush_stats = flush.stats;
-    if let Some(command_buffer) = flush.command_buffer {
-        gpu.queue.submit([command_buffer]);
-        if let Some(on_submitted_work_done) = flush.on_submitted_work_done {
-            gpu.queue.on_submitted_work_done(on_submitted_work_done);
-        }
+    submit_mesh_upload_flush(gpu, flush);
+}
+
+fn submit_mesh_upload_flush(
+    gpu: &GpuHandles,
+    flush: super::super::mesh_upload_batch::MeshUploadFlush,
+) {
+    profiling::scope!("asset::mesh_upload_driver_submit");
+    let super::super::mesh_upload_batch::MeshUploadFlush {
+        command_buffer,
+        on_submitted_work_done: upload_done_callback,
+        stats: _stats,
+    } = flush;
+    let Some(command_buffer) = command_buffer else {
+        return;
+    };
+    let mut on_submitted_work_done = Vec::new();
+    if let Some(callback) = upload_done_callback {
+        on_submitted_work_done.push(callback);
     }
-    drop(gate);
+    let _ = gpu
+        .driver_submitter
+        .submit(crate::gpu::driver_thread::SubmitBatch {
+            command_buffers: vec![command_buffer],
+            surface_texture: None,
+            on_submitted_work_done,
+            frame_timing: None,
+            frame_bracket_readback: None,
+            wait: None,
+            xr_finalize: None,
+            frame_seq: 0,
+        });
 }
 
 /// Drains all queued tasks without a time limit (used on GPU attach before first frame).
@@ -208,12 +234,18 @@ pub(super) fn high_priority_emergency_deadline(
 
 /// Emits current asset integration queue pressure to the profiler.
 fn plot_asset_integrator_backlog(asset: &AssetTransferQueue, outcomes: &DrainOutcomes) {
+    let worker = crate::assets::worker::diagnostic_snapshot();
     plot_asset_integration(AssetIntegrationProfileSample {
         main_queued: asset.integrator.main.len(),
         high_priority_queued: asset.integrator.high_priority.len(),
         render_queued: asset.integrator.render.len(),
         normal_priority_queued: asset.integrator.normal_priority.len(),
         particle_queued: asset.integrator.particle.len(),
+        worker_queued: worker.queued,
+        worker_running: worker.running,
+        worker_max_queued: worker.max_queued,
+        worker_inline_executed: worker.inline_executed,
+        worker_saturated: worker.saturated,
         main_processed: outcomes.integration.main.processed,
         high_priority_processed: outcomes.integration.high_priority.processed,
         render_processed: outcomes.integration.render.processed,
@@ -222,6 +254,47 @@ fn plot_asset_integrator_backlog(asset: &AssetTransferQueue, outcomes: &DrainOut
         high_priority_budget_exhausted: outcomes.integration.high_priority.pending,
         normal_priority_budget_exhausted: outcomes.integration.normal_priority.pending,
     });
+    plot_particle_scheduler_backlog(asset);
+}
+
+fn plot_particle_scheduler_backlog(asset: &AssetTransferQueue) {
+    let _ = asset;
+    #[cfg(feature = "tracy")]
+    {
+        let snapshot = asset.particle_scheduler_snapshot();
+        tracy_client::plot!(
+            "particle::active_point_builds",
+            snapshot.active_point_builds as f64
+        );
+        tracy_client::plot!(
+            "particle::active_trail_builds",
+            snapshot.active_trail_builds as f64
+        );
+        tracy_client::plot!(
+            "particle::pending_point_uploads",
+            snapshot.pending_point_uploads as f64
+        );
+        tracy_client::plot!(
+            "particle::pending_trail_uploads",
+            snapshot.pending_trail_uploads as f64
+        );
+        tracy_client::plot!(
+            "particle::ready_point_builds",
+            snapshot.ready_point_builds as f64
+        );
+        tracy_client::plot!(
+            "particle::ready_trail_builds",
+            snapshot.ready_trail_builds as f64
+        );
+        tracy_client::plot!(
+            "particle::active_build_workers",
+            snapshot.active_workers as f64
+        );
+        tracy_client::plot!(
+            "particle::startable_uploads",
+            snapshot.startable_uploads as f64
+        );
+    }
 }
 
 fn run_integration_lanes(
@@ -420,7 +493,9 @@ fn drain_particle_asset_tasks(
     particle_deadline: Instant,
 ) -> LaneDrainOutcome {
     profiling::scope!("asset::particle_drain");
-    drain_lane(
+    let particle_gpu = super::step::particle_task_gpu(gpu);
+    let ready_before = drain_ready_particle_builds(asset, particle_gpu.as_ref(), particle_deadline);
+    let queued = drain_lane(
         asset,
         materials,
         gpu,
@@ -428,7 +503,18 @@ fn drain_particle_asset_tasks(
         ipc,
         particle_deadline,
         AssetTaskLane::Particle,
-    )
+    );
+    let ready_after = drain_ready_particle_builds(asset, particle_gpu.as_ref(), particle_deadline);
+    LaneDrainOutcome {
+        pending: ready_before.pending
+            || queued.pending
+            || ready_after.pending
+            || asset.has_ready_particle_build_results(),
+        processed: ready_before
+            .processed
+            .saturating_add(queued.processed)
+            .saturating_add(ready_after.processed),
+    }
 }
 
 /// Shared inner loop for scheduler lane drains.

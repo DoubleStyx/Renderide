@@ -4,6 +4,7 @@ use glam::{Mat4, Vec3};
 
 use crate::materials::host_data::MaterialPropertyLookupIds;
 use crate::materials::{MaterialDepthCompareOverride, RasterFrontFace, RasterPrimitiveTopology};
+use crate::particles::ParticleDrawParams;
 use crate::reflection_probes::specular::ReflectionProbeDrawSelection;
 use crate::scene::{MeshRendererInstanceId, RenderSpaceId};
 use crate::world_mesh::culling::overlay_rect_clip_visible;
@@ -51,6 +52,8 @@ pub(super) struct DrawCandidate {
     pub(super) property_block_id: Option<i32>,
     /// World-space object AABB used for transparent sorting and CPU reflection-probe selection.
     pub(super) world_aabb: Option<(Vec3, Vec3)>,
+    /// Particle renderer metadata for generated render-buffer draws.
+    pub(super) particle_draw: ParticleDrawParams,
 }
 
 /// Builds a draw item from a cull-surviving material-slot candidate without allocating.
@@ -158,6 +161,7 @@ pub(super) fn evaluate_draw_candidate(
         rigid_world_matrix,
         reflection_probes,
         ui_rect_clip_local,
+        particle_draw: candidate.particle_draw,
     })
 }
 
@@ -272,6 +276,7 @@ mod tests {
             material_asset_id: 11,
             property_block_id: None,
             world_aabb: None,
+            particle_draw: ParticleDrawParams::default(),
         };
 
         let item = evaluate_draw_candidate(
@@ -336,6 +341,7 @@ mod tests {
             material_asset_id: 11,
             property_block_id: None,
             world_aabb: None,
+            particle_draw: ParticleDrawParams::default(),
         };
 
         let item = evaluate_draw_candidate(
@@ -414,6 +420,7 @@ mod tests {
             material_asset_id: 11,
             property_block_id: None,
             world_aabb: Some((Vec3::new(9.0, -2.0, 0.0), Vec3::new(11.0, 2.0, 0.0))),
+            particle_draw: ParticleDrawParams::default(),
         };
 
         let item = evaluate_draw_candidate(
@@ -502,6 +509,7 @@ mod tests {
             material_asset_id: 11,
             property_block_id: None,
             world_aabb: None,
+            particle_draw: ParticleDrawParams::default(),
         };
 
         let item = evaluate_draw_candidate(

@@ -12,14 +12,14 @@ use super::types::{
     checked_range, nonnegative_count, photondust_particle_color_to_linear, read_pod_at,
 };
 use super::upload::{
-    GeneratedMeshUploadInput, generated_vertex_stride, prepared_generated_derived_streams,
-    write_generated_vertex, write_u32s,
+    GeneratedExtraStreams, GeneratedMeshUploadInput, generated_vertex_stride,
+    prepared_generated_derived_streams, write_generated_vertex, write_u32s,
 };
 
 /// Number of billboard vertices generated for one point particle.
 pub(super) const BILLBOARD_VERTICES_PER_POINT: usize = 4;
 /// Number of billboard indices generated for one point particle.
-pub(super) const BILLBOARD_INDICES_PER_POINT: usize = 12;
+pub(super) const BILLBOARD_INDICES_PER_POINT: usize = 6;
 /// Point particle chunk size used by parallel vertex/index fill.
 const POINT_PARTICLE_PARALLEL_CHUNK: usize = 256;
 /// Minimum point particles before Rayon decode/fill scheduling is worthwhile.
@@ -168,7 +168,11 @@ fn build_billboard_mesh_input(
     let mut vertices = vec![0u8; vertex_count * generated_vertex_stride()];
     let mut indices = vec![0u8; index_count * size_of::<u32>()];
     fill_billboard_buffers(points, frame_grid_size, &mut vertices, &mut indices);
-    let prepared_derived_streams = prepared_generated_derived_streams(&vertices, vertex_count);
+    let prepared_derived_streams = prepared_generated_derived_streams(
+        &vertices,
+        vertex_count,
+        billboard_extra_streams(points),
+    );
 
     Ok(GeneratedMeshUploadInput {
         kind: "point",
@@ -181,6 +185,31 @@ fn build_billboard_mesh_input(
         index_count,
         bounds: bounds_for_points(points),
     })
+}
+
+/// Builds raw orientation streams consumed by Billboard/Unlit render-buffer alignment.
+pub(super) fn billboard_extra_streams(points: &[PointParticle]) -> GeneratedExtraStreams {
+    let vertex_count = points.len() * BILLBOARD_VERTICES_PER_POINT;
+    let mut raw_tangent = vec![0u8; vertex_count * 16];
+    let mut uv1 = vec![0u8; vertex_count * 8];
+    for (point_index, point) in points.iter().enumerate() {
+        let forward = point.rotation * Vec3::Z;
+        let up = point.rotation * Vec3::Y;
+        let tangent = [forward.x, forward.y, forward.z, up.z];
+        let up_xy = [up.x, up.y];
+        for corner_index in 0..BILLBOARD_VERTICES_PER_POINT {
+            let vertex_index = point_index * BILLBOARD_VERTICES_PER_POINT + corner_index;
+            let tangent_start = vertex_index * 16;
+            raw_tangent[tangent_start..tangent_start + 16]
+                .copy_from_slice(bytemuck::cast_slice(&tangent));
+            let uv1_start = vertex_index * 8;
+            uv1[uv1_start..uv1_start + 8].copy_from_slice(bytemuck::cast_slice(&up_xy));
+        }
+    }
+    GeneratedExtraStreams {
+        raw_tangent: Some(raw_tangent),
+        uv1: Some(uv1),
+    }
 }
 
 /// Returns whether point decode/fill work is large enough to amortize Rayon scheduling.
@@ -245,7 +274,7 @@ fn fill_billboard_chunk(
     }
 }
 
-/// Fills the four billboard vertices and twelve duplicated indices for one point.
+/// Fills the four billboard vertices and one front-facing quad for one point.
 fn fill_billboard_particle(
     point: &PointParticle,
     particle_index: usize,
@@ -280,12 +309,6 @@ fn fill_billboard_particle(
     write_u32s(
         indices,
         &[
-            base_vertex,
-            base_vertex + 1,
-            base_vertex + 2,
-            base_vertex + 2,
-            base_vertex + 1,
-            base_vertex + 3,
             base_vertex,
             base_vertex + 2,
             base_vertex + 1,

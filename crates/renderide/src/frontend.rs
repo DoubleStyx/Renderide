@@ -13,6 +13,7 @@ mod decoupling;
 pub(crate) mod dispatch;
 mod frame_start_performance;
 mod init_state;
+pub(crate) mod lockstep_pipeline;
 mod lockstep_state;
 pub(crate) mod output_device;
 mod output_policy;
@@ -26,6 +27,10 @@ pub mod input;
 
 pub(crate) use frame_start_performance::AssetIntegrationPerformanceSample;
 pub use init_state::InitState;
+pub(crate) use lockstep_pipeline::{
+    HostWaitReason, LockstepPipelineAction, LockstepPipelineHudLabels, LockstepPipelineInput,
+    OneCreditBlockReason, decide_lockstep_pipeline, one_credit_block_reason,
+};
 pub use renderer_frontend::RendererFrontend;
 
 #[cfg(test)]
@@ -61,7 +66,7 @@ mod tests {
     fn standalone_frontend_mutators_update_exit_state() {
         let mut frontend = RendererFrontend::new(None);
 
-        frontend.note_frame_submit_processed(7);
+        frontend.note_frame_submit_processed(7, Instant::now());
         assert_eq!(frontend.last_frame_index(), 7);
         assert!(frontend.last_frame_data_processed());
 
@@ -94,7 +99,7 @@ mod tests {
         frontend.update_decoupling_activation(Instant::now());
         assert!(!frontend.is_decoupled());
 
-        frontend.note_frame_submit_processed(7);
+        frontend.note_frame_submit_processed(7, Instant::now());
         assert!(!frontend.is_decoupled());
     }
 
@@ -118,7 +123,7 @@ mod tests {
     fn frame_submit_pending_render_clears_after_render_attempt() {
         let mut frontend = RendererFrontend::new(None);
 
-        frontend.note_frame_submit_processed(7);
+        frontend.note_frame_submit_processed(7, Instant::now());
         assert!(frontend.pending_frame_submit_render());
 
         frontend.note_frame_render_attempted();

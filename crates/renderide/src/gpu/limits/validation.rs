@@ -13,9 +13,10 @@ use hashbrown::HashMap;
 use super::{GpuLimits, GpuLimitsError};
 
 /// Per-draw row size in bytes; must match [`crate::mesh_deform::PER_DRAW_UNIFORM_STRIDE`].
-pub(super) const PER_DRAW_UNIFORM_STRIDE: usize = 256;
+pub(super) const PER_DRAW_UNIFORM_STRIDE: usize = crate::mesh_deform::PER_DRAW_UNIFORM_STRIDE;
 /// Initial slab row count; must match [`crate::mesh_deform::INITIAL_PER_DRAW_UNIFORM_SLOTS`].
-pub(super) const INITIAL_PER_DRAW_UNIFORM_SLOTS: usize = 256;
+pub(super) const INITIAL_PER_DRAW_UNIFORM_SLOTS: usize =
+    crate::mesh_deform::INITIAL_PER_DRAW_UNIFORM_SLOTS;
 
 /// Builds a [`GpuLimits`] snapshot from a device and adapter (downlevel flags from `adapter`).
 ///
@@ -49,7 +50,7 @@ pub(super) fn try_new(
 
     if max_per_draw_slab_slots < INITIAL_PER_DRAW_UNIFORM_SLOTS {
         return Err(GpuLimitsError::Requirement(
-            "max_storage_buffer_binding_size too small for initial per-draw slab (256x256 B rows)",
+            "max_storage_buffer_binding_size too small for initial per-draw slab (256x512 B rows)",
         ));
     }
 
@@ -155,17 +156,17 @@ fn validate_wgpu_minimums(l: &wgpu::Limits) -> Result<(), GpuLimitsError> {
     let min_slab = (INITIAL_PER_DRAW_UNIFORM_SLOTS * PER_DRAW_UNIFORM_STRIDE) as u64;
     if l.max_storage_buffer_binding_size < min_slab {
         return Err(GpuLimitsError::Requirement(
-            "max_storage_buffer_binding_size must fit initial per-draw slab (65536 bytes)",
+            "max_storage_buffer_binding_size must fit initial per-draw slab (131072 bytes)",
         ));
     }
     if l.min_storage_buffer_offset_alignment > PER_DRAW_UNIFORM_STRIDE as u32 {
         return Err(GpuLimitsError::Requirement(
-            "min_storage_buffer_offset_alignment must be <= 256 (per-draw slab stride)",
+            "min_storage_buffer_offset_alignment must be <= 512 (per-draw slab stride)",
         ));
     }
     if l.min_uniform_buffer_offset_alignment > PER_DRAW_UNIFORM_STRIDE as u32 {
         return Err(GpuLimitsError::Requirement(
-            "min_uniform_buffer_offset_alignment must be <= 256 (per-draw slab stride)",
+            "min_uniform_buffer_offset_alignment must be <= 512 (per-draw slab stride)",
         ));
     }
     Ok(())
@@ -185,7 +186,7 @@ mod tests {
         let max_binding = l.max_storage_buffer_binding_size;
         let stride = PER_DRAW_UNIFORM_STRIDE as u64;
         let slots = (max_binding / stride) as usize;
-        assert_eq!(slots, 1024);
+        assert_eq!(slots, 512);
     }
 
     #[test]
@@ -203,7 +204,8 @@ mod tests {
         assert!(validate_wgpu_minimums(&l).is_err());
 
         l.max_texture_dimension_2d = 4096;
-        l.max_storage_buffer_binding_size = 65_535;
+        l.max_storage_buffer_binding_size =
+            (super::INITIAL_PER_DRAW_UNIFORM_SLOTS * PER_DRAW_UNIFORM_STRIDE - 1) as u64;
         assert!(validate_wgpu_minimums(&l).is_err());
     }
 
@@ -212,17 +214,18 @@ mod tests {
         let mut l = wgpu::Limits {
             max_bind_groups: 4,
             max_texture_dimension_2d: 4096,
-            max_storage_buffer_binding_size: 65_536,
-            min_storage_buffer_offset_alignment: 512,
+            max_storage_buffer_binding_size: (super::INITIAL_PER_DRAW_UNIFORM_SLOTS
+                * PER_DRAW_UNIFORM_STRIDE) as u64,
+            min_storage_buffer_offset_alignment: 1024,
             ..Default::default()
         };
         assert!(validate_wgpu_minimums(&l).is_err());
 
-        l.min_storage_buffer_offset_alignment = 256;
-        l.min_uniform_buffer_offset_alignment = 512;
+        l.min_storage_buffer_offset_alignment = 512;
+        l.min_uniform_buffer_offset_alignment = 1024;
         assert!(validate_wgpu_minimums(&l).is_err());
 
-        l.min_uniform_buffer_offset_alignment = 256;
+        l.min_uniform_buffer_offset_alignment = 512;
         assert!(validate_wgpu_minimums(&l).is_ok());
     }
 }

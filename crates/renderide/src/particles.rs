@@ -24,6 +24,7 @@ pub(crate) use ids::{
 pub(crate) use point::{PointRenderBufferBuild, build_point_render_buffer_cpu};
 pub(crate) use trail::{TrailRenderBufferBuild, build_trail_render_buffer_cpu};
 pub(crate) use types::{
-    ParticleRenderBufferError, PointParticle, PointRenderBufferAsset, TrailRenderBufferAsset,
+    ParticleDrawParams, ParticleRenderBufferError, PointParticle, PointRenderBufferAsset,
+    TrailRenderBufferAsset,
 };
 pub(crate) use upload::upload_generated_mesh;

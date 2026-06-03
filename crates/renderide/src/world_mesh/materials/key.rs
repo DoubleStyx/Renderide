@@ -1,9 +1,9 @@
 //! Material batch-key identity for world-mesh draw ordering and binding.
 
 use crate::materials::{
-    EmbeddedTangentFallbackMode, MaterialBlendMode, MaterialRenderState, RasterFrontFace,
-    RasterPipelineKind, RasterPrimitiveTopology, SceneColorSnapshotMode,
-    UNITY_TRANSPARENT_RENDER_QUEUE_MIN,
+    EmbeddedTangentFallbackMode, MaterialBlendMode, MaterialRenderState,
+    MaterialShaderSpecializationKey, RasterFrontFace, RasterPipelineKind, RasterPrimitiveTopology,
+    SceneColorSnapshotMode, UNITY_TRANSPARENT_RENDER_QUEUE_MIN,
 };
 
 use super::transparent::TransparentMaterialClass;
@@ -17,6 +17,8 @@ pub struct MaterialDrawBatchKey {
     pub pipeline: RasterPipelineKind,
     /// Host shader asset id from material `set_shader` (or `-1` when unknown).
     pub shader_asset_id: i32,
+    /// Renderer-local shader specialization constants for material keyword branches.
+    pub shader_specialization: MaterialShaderSpecializationKey,
     /// Material asset id for this renderer material slot (or `-1` when missing).
     pub material_asset_id: i32,
     /// Per-slot property block id when present; `None` is distinct from `Some` for batching.
@@ -48,8 +50,10 @@ pub struct MaterialDrawBatchKey {
     pub embedded_needs_uv2: bool,
     /// Whether the embedded stem needs a UV3 vertex stream at `@location(7)`.
     pub embedded_needs_uv3: bool,
-    /// Whether the embedded stem needs the packed UV0-UV7 stream.
-    pub embedded_needs_wide_uvs: bool,
+    /// Whether the embedded stem needs the packed UV0-UV3 stream.
+    pub embedded_needs_wide_low_uvs: bool,
+    /// Whether the embedded stem needs the packed UV4-UV7 stream.
+    pub embedded_needs_wide_high_uvs: bool,
     /// Whether the embedded stem needs any stream outside UV0/color/UV1.
     pub embedded_needs_extended_vertex_streams: bool,
     /// Whether the material declares intersection-depth behavior and needs the depth snapshot.

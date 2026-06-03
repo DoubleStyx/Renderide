@@ -13,6 +13,7 @@ pub(super) struct GpuHandles {
     pub(super) device: Arc<wgpu::Device>,
     pub(super) gpu_limits: Arc<GpuLimits>,
     pub(super) queue: Arc<wgpu::Queue>,
+    pub(super) driver_submitter: crate::gpu::driver_thread::DriverSubmitter,
     pub(super) gate: GpuQueueAccessGate,
     pub(super) mapped_buffer_health: Arc<GpuMappedBufferHealth>,
     pub(super) mesh_upload_batch: Arc<MeshUploadStagingBatch>,
@@ -45,20 +46,27 @@ pub(super) fn collect_gpu_handles(asset: &AssetTransferQueue) -> Option<GpuHandl
         asset.gpu.gpu_device.clone(),
         asset.gpu.gpu_limits.clone(),
         asset.gpu.gpu_queue.clone(),
+        asset.gpu.driver_submitter.clone(),
         asset.gpu.gpu_queue_access_gate.clone(),
         asset.gpu.mapped_buffer_health.clone(),
     ) {
-        (Some(device), Some(gpu_limits), Some(queue), Some(gate), Some(mapped_buffer_health)) => {
-            Some(GpuHandles {
-                device,
-                gpu_limits,
-                queue,
-                gate,
-                mapped_buffer_health,
-                mesh_upload_batch: Arc::clone(&asset.gpu.mesh_upload_batch),
-                mesh_validation_scopes_enabled: asset.gpu.mesh_validation_scopes_enabled,
-            })
-        }
+        (
+            Some(device),
+            Some(gpu_limits),
+            Some(queue),
+            Some(driver_submitter),
+            Some(gate),
+            Some(mapped_buffer_health),
+        ) => Some(GpuHandles {
+            device,
+            gpu_limits,
+            queue,
+            driver_submitter,
+            gate,
+            mapped_buffer_health,
+            mesh_upload_batch: Arc::clone(&asset.gpu.mesh_upload_batch),
+            mesh_validation_scopes_enabled: asset.gpu.mesh_validation_scopes_enabled,
+        }),
         _ => None,
     }
 }

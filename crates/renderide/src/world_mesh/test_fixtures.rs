@@ -2,9 +2,10 @@
 
 use crate::materials::host_data::MaterialPropertyLookupIds;
 use crate::materials::{
-    RasterFrontFace, RasterPipelineKind, UNITY_RENDER_QUEUE_GEOMETRY,
-    UNITY_RENDER_QUEUE_TRANSPARENT,
+    MaterialShaderSpecializationKey, RasterFrontFace, RasterPipelineKind,
+    UNITY_RENDER_QUEUE_GEOMETRY, UNITY_RENDER_QUEUE_TRANSPARENT,
 };
+use crate::particles::ParticleDrawParams;
 use crate::scene::{MeshRendererInstanceId, RenderSpaceId};
 
 use crate::reflection_probes::specular::ReflectionProbeDrawSelection;
@@ -63,6 +64,7 @@ pub fn dummy_world_mesh_draw_item(spec: DummyDrawItemSpec) -> WorldMeshDrawItem 
     let batch_key = MaterialDrawBatchKey {
         pipeline: RasterPipelineKind::Null,
         shader_asset_id: -1,
+        shader_specialization: MaterialShaderSpecializationKey::disabled(),
         material_asset_id: mid,
         property_block_slot0: pb,
         skinned,
@@ -77,7 +79,8 @@ pub fn dummy_world_mesh_draw_item(spec: DummyDrawItemSpec) -> WorldMeshDrawItem 
         embedded_raw_normal_payload: false,
         embedded_needs_uv2: false,
         embedded_needs_uv3: false,
-        embedded_needs_wide_uvs: false,
+        embedded_needs_wide_low_uvs: false,
+        embedded_needs_wide_high_uvs: false,
         embedded_needs_extended_vertex_streams: false,
         embedded_requires_intersection_pass: false,
         embedded_uses_scene_depth_snapshot: false,
@@ -129,5 +132,6 @@ pub fn dummy_world_mesh_draw_item(spec: DummyDrawItemSpec) -> WorldMeshDrawItem 
         rigid_world_matrix: None,
         reflection_probes: ReflectionProbeDrawSelection::default(),
         ui_rect_clip_local: None,
+        particle_draw: ParticleDrawParams::default(),
     }
 }

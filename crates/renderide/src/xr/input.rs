@@ -5,6 +5,7 @@ mod frame;
 mod hand_synth;
 mod hand_tracking;
 mod haptics;
+mod latch;
 mod manifest;
 mod openxr_actions;
 mod openxr_input;

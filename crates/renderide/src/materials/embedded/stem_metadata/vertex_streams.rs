@@ -29,14 +29,22 @@ pub struct EmbeddedVertexStreamMask {
     pub uv2: bool,
     /// UV3 stream at `@location(7)`.
     pub uv3: bool,
-    /// Packed UV0-UV7 stream for UV4-UV7 or 3D/4D UV inputs.
-    pub wide_uvs: bool,
+    /// Packed UV0-UV3 stream for 3D/4D low UV inputs.
+    pub wide_low_uvs: bool,
+    /// Packed UV4-UV7 stream for high UV inputs.
+    pub wide_high_uvs: bool,
 }
 
 impl EmbeddedVertexStreamMask {
     /// `true` when any stream outside UV0/color/UV1 is needed.
     pub fn needs_extended_vertex_streams(self) -> bool {
-        self.tangent || self.uv2 || self.uv3 || self.wide_uvs
+        self.tangent || self.uv2 || self.uv3 || self.wide_low_uvs || self.wide_high_uvs
+    }
+
+    /// `true` when any wide UV page is needed.
+    #[cfg(test)]
+    pub fn needs_wide_uv_streams(self) -> bool {
+        self.wide_low_uvs || self.wide_high_uvs
     }
 }
 
@@ -89,8 +97,10 @@ fn apply_uv_requirement(
         3 => mask.uv3 = true,
         _ => {}
     }
-    if channel >= 4 || format != ReflectedVertexInputFormat::Float32x2 {
-        mask.wide_uvs = true;
+    if channel >= 4 {
+        mask.wide_high_uvs = true;
+    } else if format != ReflectedVertexInputFormat::Float32x2 {
+        mask.wide_low_uvs = true;
     }
 }
 
@@ -136,7 +146,7 @@ pub fn embedded_stem_needs_uv3_stream(base_stem: &str, permutation: ShaderPermut
     EmbeddedStemQuery::for_stem(base_stem, permutation).needs_uv3_stream()
 }
 
-/// `true` when composed embedded WGSL's reflected pass vertex entries need the packed UV0-UV7 stream.
+/// `true` when composed embedded WGSL's reflected pass vertex entries need any packed wide UV page.
 #[cfg(test)]
 pub fn embedded_stem_needs_wide_uv_stream(base_stem: &str, permutation: ShaderPermutation) -> bool {
     EmbeddedStemQuery::for_stem(base_stem, permutation).needs_wide_uv_stream()
@@ -155,7 +165,7 @@ pub fn embedded_stem_needs_extended_vertex_streams(
 pub(super) fn stem_uses_raw_tangent_payload(base_stem: &str) -> bool {
     matches!(
         canonical_stem_name(base_stem),
-        "ui_circlesegment" | "ui_unlit"
+        "billboardunlit" | "ui_circlesegment" | "ui_unlit"
     )
 }
 
@@ -167,7 +177,10 @@ pub fn embedded_stem_uses_raw_tangent_payload(base_stem: &str) -> bool {
 
 /// `true` when `@location(1)` carries raw shader payload rather than a lighting normal.
 pub(super) fn stem_uses_raw_normal_payload(base_stem: &str) -> bool {
-    matches!(canonical_stem_name(base_stem), "textunlit" | "ui_textunlit")
+    matches!(
+        canonical_stem_name(base_stem),
+        "billboardunlit" | "textunlit" | "ui_textunlit"
+    )
 }
 
 /// `true` when `@location(1)` carries raw shader payload rather than a lighting normal.
@@ -341,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn reflected_vec4_uv0_requests_compact_uv0_and_wide_uvs() {
+    fn reflected_vec4_uv0_requests_compact_uv0_and_wide_low_uvs() {
         let reflected = reflected_with_inputs(vec![ReflectedVertexInput {
             location: 2,
             format: ReflectedVertexInputFormat::Float32x4,
@@ -350,12 +363,13 @@ mod tests {
         let mask = derive_vertex_stream_mask(Some(&reflected));
 
         assert!(mask.uv0);
-        assert!(mask.wide_uvs);
+        assert!(mask.wide_low_uvs);
+        assert!(!mask.wide_high_uvs);
         assert!(mask.needs_extended_vertex_streams());
     }
 
     #[test]
-    fn reflected_uv7_requests_wide_uvs_without_compact_uv_alias() {
+    fn reflected_uv7_requests_wide_high_uvs_without_compact_uv_alias() {
         let reflected = reflected_with_inputs(vec![ReflectedVertexInput {
             location: 11,
             format: ReflectedVertexInputFormat::Float32x2,
@@ -367,21 +381,29 @@ mod tests {
         assert!(!mask.uv1);
         assert!(!mask.uv2);
         assert!(!mask.uv3);
-        assert!(mask.wide_uvs);
+        assert!(!mask.wide_low_uvs);
+        assert!(mask.wide_high_uvs);
         assert!(mask.needs_extended_vertex_streams());
     }
 
     #[test]
     fn ui_payload_stems_mark_raw_semantics() {
-        assert!(embedded_stem_uses_raw_tangent_payload(
-            "ui_circlesegment_default"
-        ));
-        assert!(embedded_stem_uses_raw_tangent_payload("ui_unlit_default"));
+        for stem in [
+            "billboardunlit_default",
+            "ui_circlesegment_default",
+            "ui_unlit_default",
+        ] {
+            assert!(embedded_stem_uses_raw_tangent_payload(stem), "{stem}");
+        }
         assert!(!embedded_stem_uses_raw_tangent_payload(
             "pbsmetallic_default"
         ));
 
-        for stem in ["textunlit_default", "ui_textunlit_default"] {
+        for stem in [
+            "billboardunlit_default",
+            "textunlit_default",
+            "ui_textunlit_default",
+        ] {
             assert!(embedded_stem_uses_raw_normal_payload(stem), "{stem}");
         }
         assert!(!embedded_stem_uses_raw_normal_payload("unlit_default"));

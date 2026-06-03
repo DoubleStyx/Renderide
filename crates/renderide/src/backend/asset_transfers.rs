@@ -26,9 +26,10 @@ mod video_runtime;
 
 use std::sync::Arc;
 
-use hashbrown::HashMap;
+use crossbeam_channel::{Receiver, Sender};
+use hashbrown::{HashMap, HashSet};
 
-use crate::gpu::{GpuLimits, GpuMappedBufferHealth};
+use crate::gpu::GpuLimits;
 use crate::gpu_pools::{
     CubemapPool, GpuVideoTexture, MeshPool, RenderTexturePool, Texture3dPool, TexturePool,
     VideoTexturePool,
@@ -40,12 +41,14 @@ use crate::shared::{
 
 use catalogs::AssetCatalogs;
 use gpu_runtime::AssetGpuRuntime;
+pub(crate) use gpu_runtime::AssetGpuRuntimeAttach;
 pub(crate) use integrator::AssetIntegratorDiagnosticSnapshot;
 pub use integrator::{
     AssetIntegrationDrainSummary, AssetIntegrator, AssetTask, AssetTaskLane, ShaderRouteTask,
     drain_asset_tasks, drain_asset_tasks_unbounded,
 };
 pub(crate) use mesh_upload_batch::{MeshUploadBatchStats, MeshUploadStagingBatch};
+use particle_task::{PointBuildResult, TrailBuildResult};
 use pending::PendingAssetUploads;
 use pools::ResidentAssetPools;
 pub use uploads::{
@@ -93,6 +96,28 @@ pub(crate) struct ParticleUploadCoalesceResult {
     pub(crate) replaced_pending_upload: bool,
 }
 
+/// Snapshot of particle upload scheduler pressure.
+#[cfg(feature = "tracy")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(in crate::backend::asset_transfers) struct ParticleSchedulerSnapshot {
+    /// Active point render-buffer background builds.
+    pub(in crate::backend::asset_transfers) active_point_builds: usize,
+    /// Active trail render-buffer background builds.
+    pub(in crate::backend::asset_transfers) active_trail_builds: usize,
+    /// Not-yet-started point render-buffer uploads retained as newest-per-asset work.
+    pub(in crate::backend::asset_transfers) pending_point_uploads: usize,
+    /// Not-yet-started trail render-buffer uploads retained as newest-per-asset work.
+    pub(in crate::backend::asset_transfers) pending_trail_uploads: usize,
+    /// Ready point render-buffer build completions waiting for publication.
+    pub(in crate::backend::asset_transfers) ready_point_builds: usize,
+    /// Ready trail render-buffer build completions waiting for publication.
+    pub(in crate::backend::asset_transfers) ready_trail_builds: usize,
+    /// Total active background particle build worker slots.
+    pub(in crate::backend::asset_transfers) active_workers: usize,
+    /// Pending uploads that can start immediately because no build is active for their asset.
+    pub(in crate::backend::asset_transfers) startable_uploads: usize,
+}
+
 /// Snapshot of queued and deferred asset-transfer work.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct AssetTransferDiagnosticSnapshot {
@@ -124,6 +149,8 @@ pub struct AssetTransferQueue {
     pub(crate) video: VideoAssetRuntime,
     /// Cooperative uploads drained by [`drain_asset_tasks`] / [`drain_asset_tasks_unbounded`].
     pub(crate) integrator: AssetIntegrator,
+    /// Latest accepted host mesh upload generation per asset.
+    mesh_upload_generations: HashMap<i32, u64>,
     /// Latest accepted point render-buffer generation per asset.
     point_render_buffer_generations: HashMap<i32, u64>,
     /// Latest accepted trail render-buffer generation per asset.
@@ -132,8 +159,20 @@ pub struct AssetTransferQueue {
     pending_point_render_buffer_uploads: HashMap<i32, PendingPointRenderBufferUpload>,
     /// Latest not-yet-started trail render-buffer upload per asset.
     pending_trail_render_buffer_uploads: HashMap<i32, PendingTrailRenderBufferUpload>,
-    /// Active Rayon workers building particle-generated meshes.
+    /// Active asset-worker jobs building particle-generated meshes.
     active_particle_build_workers: usize,
+    /// Point render-buffer assets with one active background build.
+    active_point_render_buffer_builds: HashSet<i32>,
+    /// Trail render-buffer assets with one active background build.
+    active_trail_render_buffer_builds: HashSet<i32>,
+    /// Sender used by point render-buffer build workers to publish completed CPU work.
+    point_render_buffer_build_tx: Sender<PointBuildResult>,
+    /// Ready point render-buffer build results waiting for renderer-thread publication.
+    point_render_buffer_build_rx: Receiver<PointBuildResult>,
+    /// Sender used by trail render-buffer build workers to publish completed CPU work.
+    trail_render_buffer_build_tx: Sender<TrailBuildResult>,
+    /// Ready trail render-buffer build results waiting for renderer-thread publication.
+    trail_render_buffer_build_rx: Receiver<TrailBuildResult>,
 }
 
 impl AssetTransferQueue {
@@ -142,14 +181,34 @@ impl AssetTransferQueue {
         &mut self.integrator
     }
 
+    /// Starts a host mesh upload generation and returns its monotonic token.
+    pub(crate) fn begin_mesh_upload_generation(&mut self, asset_id: i32) -> u64 {
+        next_asset_generation(&mut self.mesh_upload_generations, asset_id)
+    }
+
+    /// Invalidates in-flight host mesh upload work for `asset_id`.
+    pub(crate) fn invalidate_mesh_upload_generation(&mut self, asset_id: i32) -> u64 {
+        self.begin_mesh_upload_generation(asset_id)
+    }
+
+    /// Returns whether `generation` is still the latest host mesh upload work for `asset_id`.
+    pub(crate) fn mesh_upload_generation_is_current(&self, asset_id: i32, generation: u64) -> bool {
+        self.mesh_upload_generations.get(&asset_id).copied() == Some(generation)
+    }
+
+    /// Returns the latest accepted host mesh upload generation for `asset_id`.
+    pub(crate) fn current_mesh_upload_generation(&self, asset_id: i32) -> Option<u64> {
+        self.mesh_upload_generations.get(&asset_id).copied()
+    }
+
     /// Starts a point render-buffer generation and returns its monotonic token.
     pub(crate) fn begin_point_render_buffer_generation(&mut self, asset_id: i32) -> u64 {
-        next_particle_generation(&mut self.point_render_buffer_generations, asset_id)
+        next_asset_generation(&mut self.point_render_buffer_generations, asset_id)
     }
 
     /// Starts a trail render-buffer generation and returns its monotonic token.
     pub(crate) fn begin_trail_render_buffer_generation(&mut self, asset_id: i32) -> u64 {
-        next_particle_generation(&mut self.trail_render_buffer_generations, asset_id)
+        next_asset_generation(&mut self.trail_render_buffer_generations, asset_id)
     }
 
     /// Retains `upload` as the newest pending point render-buffer upload for its asset.
@@ -208,6 +267,24 @@ impl AssetTransferQueue {
         self.pending_trail_render_buffer_uploads.remove(&asset_id)
     }
 
+    /// Returns whether a pending point render-buffer upload exists for `asset_id`.
+    pub(in crate::backend::asset_transfers) fn has_pending_point_render_buffer_upload(
+        &self,
+        asset_id: i32,
+    ) -> bool {
+        self.pending_point_render_buffer_uploads
+            .contains_key(&asset_id)
+    }
+
+    /// Returns whether a pending trail render-buffer upload exists for `asset_id`.
+    pub(in crate::backend::asset_transfers) fn has_pending_trail_render_buffer_upload(
+        &self,
+        asset_id: i32,
+    ) -> bool {
+        self.pending_trail_render_buffer_uploads
+            .contains_key(&asset_id)
+    }
+
     /// Invalidates in-flight point render-buffer work for `asset_id`.
     pub(crate) fn cancel_point_render_buffer_generation(&mut self, asset_id: i32) -> bool {
         let removed_pending_upload = self
@@ -246,6 +323,122 @@ impl AssetTransferQueue {
         self.trail_render_buffer_generations.get(&asset_id).copied() == Some(generation)
     }
 
+    /// Returns whether `asset_id` already has an active point render-buffer build.
+    pub(in crate::backend::asset_transfers) fn point_render_buffer_build_is_active(
+        &self,
+        asset_id: i32,
+    ) -> bool {
+        self.active_point_render_buffer_builds.contains(&asset_id)
+    }
+
+    /// Returns whether `asset_id` already has an active trail render-buffer build.
+    pub(in crate::backend::asset_transfers) fn trail_render_buffer_build_is_active(
+        &self,
+        asset_id: i32,
+    ) -> bool {
+        self.active_trail_render_buffer_builds.contains(&asset_id)
+    }
+
+    /// Marks `asset_id` as having an active point render-buffer build.
+    pub(in crate::backend::asset_transfers) fn mark_point_render_buffer_build_active(
+        &mut self,
+        asset_id: i32,
+    ) -> bool {
+        self.active_point_render_buffer_builds.insert(asset_id)
+    }
+
+    /// Marks `asset_id` as having an active trail render-buffer build.
+    pub(in crate::backend::asset_transfers) fn mark_trail_render_buffer_build_active(
+        &mut self,
+        asset_id: i32,
+    ) -> bool {
+        self.active_trail_render_buffer_builds.insert(asset_id)
+    }
+
+    /// Clears the active point render-buffer build marker for `asset_id`.
+    pub(in crate::backend::asset_transfers) fn clear_point_render_buffer_build_active(
+        &mut self,
+        asset_id: i32,
+    ) {
+        self.active_point_render_buffer_builds.remove(&asset_id);
+    }
+
+    /// Clears the active trail render-buffer build marker for `asset_id`.
+    pub(in crate::backend::asset_transfers) fn clear_trail_render_buffer_build_active(
+        &mut self,
+        asset_id: i32,
+    ) {
+        self.active_trail_render_buffer_builds.remove(&asset_id);
+    }
+
+    /// Clones the completion sender for a point render-buffer build worker.
+    pub(in crate::backend::asset_transfers) fn point_render_buffer_build_sender(
+        &self,
+    ) -> Sender<PointBuildResult> {
+        self.point_render_buffer_build_tx.clone()
+    }
+
+    /// Clones the completion sender for a trail render-buffer build worker.
+    pub(in crate::backend::asset_transfers) fn trail_render_buffer_build_sender(
+        &self,
+    ) -> Sender<TrailBuildResult> {
+        self.trail_render_buffer_build_tx.clone()
+    }
+
+    /// Attempts to receive one ready point render-buffer build result.
+    pub(in crate::backend::asset_transfers) fn try_recv_point_render_buffer_build(
+        &self,
+    ) -> Option<PointBuildResult> {
+        self.point_render_buffer_build_rx.try_recv().ok()
+    }
+
+    /// Attempts to receive one ready trail render-buffer build result.
+    pub(in crate::backend::asset_transfers) fn try_recv_trail_render_buffer_build(
+        &self,
+    ) -> Option<TrailBuildResult> {
+        self.trail_render_buffer_build_rx.try_recv().ok()
+    }
+
+    /// Returns whether any worker-completed particle builds are ready to publish.
+    pub(in crate::backend::asset_transfers) fn has_ready_particle_build_results(&self) -> bool {
+        !self.point_render_buffer_build_rx.is_empty()
+            || !self.trail_render_buffer_build_rx.is_empty()
+    }
+
+    /// Returns whether any retained particle upload can start without waiting for active work.
+    pub(in crate::backend::asset_transfers) fn has_startable_particle_upload(&self) -> bool {
+        self.startable_particle_upload_count() > 0
+    }
+
+    /// Returns a compact snapshot of particle scheduler state for profiling.
+    #[cfg(feature = "tracy")]
+    pub(in crate::backend::asset_transfers) fn particle_scheduler_snapshot(
+        &self,
+    ) -> ParticleSchedulerSnapshot {
+        ParticleSchedulerSnapshot {
+            active_point_builds: self.active_point_render_buffer_builds.len(),
+            active_trail_builds: self.active_trail_render_buffer_builds.len(),
+            pending_point_uploads: self.pending_point_render_buffer_uploads.len(),
+            pending_trail_uploads: self.pending_trail_render_buffer_uploads.len(),
+            ready_point_builds: self.point_render_buffer_build_rx.len(),
+            ready_trail_builds: self.trail_render_buffer_build_rx.len(),
+            active_workers: self.active_particle_build_workers,
+            startable_uploads: self.startable_particle_upload_count(),
+        }
+    }
+
+    fn startable_particle_upload_count(&self) -> usize {
+        self.pending_point_render_buffer_uploads
+            .keys()
+            .filter(|asset_id| !self.active_point_render_buffer_builds.contains(*asset_id))
+            .count()
+            + self
+                .pending_trail_render_buffer_uploads
+                .keys()
+                .filter(|asset_id| !self.active_trail_render_buffer_builds.contains(*asset_id))
+                .count()
+    }
+
     /// Attempts to reserve one background particle build slot.
     pub(crate) fn try_acquire_particle_build_worker(&mut self) -> bool {
         if self.active_particle_build_workers >= PARTICLE_BACKGROUND_WORKER_LIMIT {
@@ -271,8 +464,8 @@ impl AssetTransferQueue {
             || !self.pending.pending_texture_uploads.is_empty()
             || !self.pending.pending_texture3d_uploads.is_empty()
             || !self.pending.pending_cubemap_uploads.is_empty()
-            || !self.pending_point_render_buffer_uploads.is_empty()
-            || !self.pending_trail_render_buffer_uploads.is_empty()
+            || self.has_ready_particle_build_results()
+            || self.has_startable_particle_upload()
     }
 
     /// Returns a compact queue-depth snapshot for lifecycle diagnostics.
@@ -288,23 +481,8 @@ impl AssetTransferQueue {
     }
 
     /// Stores GPU handles and limits after backend attach.
-    pub(crate) fn attach_gpu_runtime(
-        &mut self,
-        device: Arc<wgpu::Device>,
-        queue: Arc<wgpu::Queue>,
-        gate: crate::gpu::GpuQueueAccessGate,
-        limits: Arc<GpuLimits>,
-        mapped_buffer_health: Arc<GpuMappedBufferHealth>,
-        mesh_validation_scopes_enabled: bool,
-    ) {
-        self.gpu.attach(
-            device,
-            queue,
-            gate,
-            limits,
-            mapped_buffer_health,
-            mesh_validation_scopes_enabled,
-        );
+    pub(crate) fn attach_gpu_runtime(&mut self, desc: AssetGpuRuntimeAttach) {
+        self.gpu.attach(desc);
     }
 
     /// Resident mesh pool.
@@ -432,6 +610,10 @@ impl Default for AssetTransferQueue {
 impl AssetTransferQueue {
     /// Empty pools and tables; no GPU until the backend calls attach.
     pub fn new() -> Self {
+        let (point_render_buffer_build_tx, point_render_buffer_build_rx) =
+            crossbeam_channel::unbounded();
+        let (trail_render_buffer_build_tx, trail_render_buffer_build_rx) =
+            crossbeam_channel::unbounded();
         Self {
             pools: ResidentAssetPools::default(),
             catalogs: AssetCatalogs::default(),
@@ -439,17 +621,24 @@ impl AssetTransferQueue {
             gpu: AssetGpuRuntime::default(),
             video: VideoAssetRuntime::default(),
             integrator: AssetIntegrator::default(),
+            mesh_upload_generations: HashMap::new(),
             point_render_buffer_generations: HashMap::new(),
             trail_render_buffer_generations: HashMap::new(),
             pending_point_render_buffer_uploads: HashMap::new(),
             pending_trail_render_buffer_uploads: HashMap::new(),
             active_particle_build_workers: 0,
+            active_point_render_buffer_builds: HashSet::new(),
+            active_trail_render_buffer_builds: HashSet::new(),
+            point_render_buffer_build_tx,
+            point_render_buffer_build_rx,
+            trail_render_buffer_build_tx,
+            trail_render_buffer_build_rx,
         }
     }
 }
 
-/// Advances and returns the latest accepted particle render-buffer generation for `asset_id`.
-fn next_particle_generation(generations: &mut HashMap<i32, u64>, asset_id: i32) -> u64 {
+/// Advances and returns the latest accepted generation for `asset_id`.
+fn next_asset_generation(generations: &mut HashMap<i32, u64>, asset_id: i32) -> u64 {
     let entry = generations.entry(asset_id).or_insert(0);
     let next = entry.wrapping_add(1).max(1);
     *entry = next;
@@ -527,6 +716,82 @@ mod tests {
     }
 
     #[test]
+    fn point_render_buffer_pending_upload_waits_behind_active_build() {
+        let mut queue = AssetTransferQueue::new();
+        let first = queue.retain_latest_point_render_buffer_upload(PointRenderBufferUpload {
+            asset_id: 5,
+            count: 1,
+            ..Default::default()
+        });
+
+        assert!(queue.mark_point_render_buffer_build_active(5));
+        let claimed = queue
+            .take_pending_point_render_buffer_upload(5)
+            .expect("claimed point upload");
+        let second = queue.retain_latest_point_render_buffer_upload(PointRenderBufferUpload {
+            asset_id: 5,
+            count: 2,
+            ..Default::default()
+        });
+
+        assert_eq!(claimed.generation, first.generation);
+        assert!(!second.replaced_pending_upload);
+        assert!(!queue.has_pending_asset_work());
+
+        queue.clear_point_render_buffer_build_active(5);
+
+        assert!(queue.has_pending_asset_work());
+        assert!(queue.has_startable_particle_upload());
+    }
+
+    #[test]
+    fn ready_particle_completion_counts_as_pending_work() {
+        let mut queue = AssetTransferQueue::new();
+        let generation = queue.begin_point_render_buffer_generation(11);
+        let tx = queue.point_render_buffer_build_sender();
+
+        tx.send(PointBuildResult {
+            asset_id: 11,
+            generation,
+            result: Err(
+                crate::particles::ParticleRenderBufferError::WorkerPanicked {
+                    kind: "point",
+                    asset_id: 11,
+                },
+            ),
+        })
+        .expect("ready point build result");
+
+        assert!(queue.has_ready_particle_build_results());
+        assert!(queue.has_pending_asset_work());
+    }
+
+    #[test]
+    fn mesh_upload_generation_marks_superseded_work_stale() {
+        let mut queue = AssetTransferQueue::new();
+
+        let first = queue.begin_mesh_upload_generation(5);
+        let second = queue.begin_mesh_upload_generation(5);
+
+        assert_ne!(first, second);
+        assert!(!queue.mesh_upload_generation_is_current(5, first));
+        assert!(queue.mesh_upload_generation_is_current(5, second));
+        assert_eq!(queue.current_mesh_upload_generation(5), Some(second));
+    }
+
+    #[test]
+    fn mesh_upload_generation_invalidation_marks_existing_work_stale() {
+        let mut queue = AssetTransferQueue::new();
+
+        let generation = queue.begin_mesh_upload_generation(7);
+        let invalidating_generation = queue.invalidate_mesh_upload_generation(7);
+
+        assert_ne!(generation, invalidating_generation);
+        assert!(!queue.mesh_upload_generation_is_current(7, generation));
+        assert!(queue.mesh_upload_generation_is_current(7, invalidating_generation));
+    }
+
+    #[test]
     fn trail_render_buffer_upload_after_worker_claim_enqueues_new_pending_upload() {
         let mut queue = AssetTransferQueue::new();
         let first = queue.retain_latest_trail_render_buffer_upload(TrailRenderBufferUpload {
@@ -550,6 +815,37 @@ mod tests {
             .expect("new pending trail upload");
         assert_eq!(pending.upload.trails_count, 2);
         assert_eq!(pending.generation, second.generation);
+    }
+
+    #[test]
+    fn trail_render_buffer_pending_replacement_stays_newest_during_active_build() {
+        let mut queue = AssetTransferQueue::new();
+
+        queue.retain_latest_trail_render_buffer_upload(TrailRenderBufferUpload {
+            asset_id: 9,
+            trails_count: 1,
+            ..Default::default()
+        });
+        assert!(queue.mark_trail_render_buffer_build_active(9));
+        queue.take_pending_trail_render_buffer_upload(9);
+        let first_pending =
+            queue.retain_latest_trail_render_buffer_upload(TrailRenderBufferUpload {
+                asset_id: 9,
+                trails_count: 2,
+                ..Default::default()
+            });
+        let newest = queue.retain_latest_trail_render_buffer_upload(TrailRenderBufferUpload {
+            asset_id: 9,
+            trails_count: 3,
+            ..Default::default()
+        });
+
+        assert!(!first_pending.replaced_pending_upload);
+        assert!(newest.replaced_pending_upload);
+        let pending = queue
+            .take_pending_trail_render_buffer_upload(9)
+            .expect("newest trail upload");
+        assert_eq!(pending.upload.trails_count, 3);
     }
 
     #[test]

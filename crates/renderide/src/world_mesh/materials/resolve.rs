@@ -6,10 +6,11 @@ use crate::materials::ShaderPermutation;
 use crate::materials::host_data::{MaterialDictionary, MaterialPropertyLookupIds};
 use crate::materials::{
     EmbeddedStemQuery, EmbeddedTangentFallbackMode, MaterialBlendMode, MaterialPipelinePropertyIds,
-    MaterialRenderState, MaterialRouter, PropertyMapRef, RasterFrontFace, RasterPipelineKind,
-    RasterPrimitiveTopology, SceneColorSnapshotMode, fallback_render_queue_for_material,
-    first_float_from_maps, first_vec4_from_maps, material_blend_mode_from_maps,
-    material_render_queue_from_maps, material_render_state_from_maps, resolve_raster_pipeline,
+    MaterialRenderState, MaterialRouter, MaterialShaderSpecializationKey, PropertyMapRef,
+    RasterFrontFace, RasterPipelineKind, RasterPrimitiveTopology, SceneColorSnapshotMode,
+    fallback_render_queue_for_material, first_float_from_maps, first_vec4_from_maps,
+    material_blend_mode_from_maps, material_render_queue_from_maps,
+    material_render_state_from_maps, resolve_raster_pipeline,
 };
 
 use super::FrameMaterialBatchCache;
@@ -39,6 +40,8 @@ pub(crate) struct ResolvedMaterialBatch {
     pub shader_asset_id: i32,
     /// Resolved raster pipeline kind for this material's shader.
     pub pipeline: RasterPipelineKind,
+    /// Renderer-local shader specialization constants for material keyword branches.
+    pub shader_specialization: MaterialShaderSpecializationKey,
     /// Whether the active shader permutation requires a UV0 vertex stream.
     pub embedded_needs_uv0: bool,
     /// Whether the active shader permutation requires a color vertex stream.
@@ -57,8 +60,10 @@ pub(crate) struct ResolvedMaterialBatch {
     pub embedded_needs_uv2: bool,
     /// Whether the active shader permutation requires a UV3 vertex stream.
     pub embedded_needs_uv3: bool,
-    /// Whether the active shader permutation requires the packed UV0-UV7 stream.
-    pub embedded_needs_wide_uvs: bool,
+    /// Whether the active shader permutation requires the packed UV0-UV3 stream.
+    pub embedded_needs_wide_low_uvs: bool,
+    /// Whether the active shader permutation requires the packed UV4-UV7 stream.
+    pub embedded_needs_wide_high_uvs: bool,
     /// Whether the active shader permutation requires any stream outside UV0/color/UV1.
     pub embedded_needs_extended_vertex_streams: bool,
     /// Whether the material declares intersection-depth behavior and needs the depth snapshot.
@@ -125,7 +130,8 @@ struct EmbeddedMaterialFeatures {
     raw_normal_payload: bool,
     needs_uv2: bool,
     needs_uv3: bool,
-    needs_wide_uvs: bool,
+    needs_wide_low_uvs: bool,
+    needs_wide_high_uvs: bool,
     needs_extended_vertex_streams: bool,
     requires_intersection_pass: bool,
     uses_scene_depth_snapshot: bool,
@@ -135,6 +141,7 @@ struct EmbeddedMaterialFeatures {
     uses_ui_transparent_fallback: bool,
     uses_blended_depth_write: bool,
     uses_two_sided_transparency: bool,
+    uses_renderide_variant_bits: bool,
     default_render_queue: Option<i32>,
 }
 
@@ -159,7 +166,8 @@ fn embedded_material_features(
         raw_normal_payload: query.uses_raw_normal_payload(),
         needs_uv2: vertex_streams.uv2,
         needs_uv3: vertex_streams.uv3,
-        needs_wide_uvs: vertex_streams.wide_uvs,
+        needs_wide_low_uvs: vertex_streams.wide_low_uvs,
+        needs_wide_high_uvs: vertex_streams.wide_high_uvs,
         needs_extended_vertex_streams: vertex_streams.needs_extended_vertex_streams(),
         requires_intersection_pass: snapshots.requires_intersection_pass,
         uses_scene_depth_snapshot: snapshots.uses_scene_depth,
@@ -169,6 +177,7 @@ fn embedded_material_features(
         uses_ui_transparent_fallback: query.uses_ui_transparent_fallback(),
         uses_blended_depth_write: query.uses_blended_depth_write(),
         uses_two_sided_transparency: query.uses_two_sided_transparency(),
+        uses_renderide_variant_bits: query.uses_renderide_variant_bits(),
         default_render_queue: Some(query.default_render_queue()),
     }
 }
@@ -257,6 +266,13 @@ pub(crate) fn resolve_material_batch(
         .unwrap_or(-1);
     let pipeline = resolve_raster_pipeline(shader_asset_id, router);
     let embedded = embedded_material_features(&pipeline, shader_perm);
+    let shader_specialization = if embedded.uses_renderide_variant_bits {
+        MaterialShaderSpecializationKey::from_optional_variant_bits(
+            router.variant_bits_for_shader_asset(shader_asset_id),
+        )
+    } else {
+        MaterialShaderSpecializationKey::disabled()
+    };
     let lookup_ids = MaterialPropertyLookupIds {
         material_asset_id,
         mesh_property_block_slot0: property_block_id,
@@ -292,6 +308,7 @@ pub(crate) fn resolve_material_batch(
     ResolvedMaterialBatch {
         shader_asset_id,
         pipeline,
+        shader_specialization,
         embedded_needs_uv0: embedded.needs_uv0,
         embedded_needs_color: embedded.needs_color,
         embedded_needs_uv1: embedded.needs_uv1,
@@ -301,7 +318,8 @@ pub(crate) fn resolve_material_batch(
         embedded_raw_normal_payload: embedded.raw_normal_payload,
         embedded_needs_uv2: embedded.needs_uv2,
         embedded_needs_uv3: embedded.needs_uv3,
-        embedded_needs_wide_uvs: embedded.needs_wide_uvs,
+        embedded_needs_wide_low_uvs: embedded.needs_wide_low_uvs,
+        embedded_needs_wide_high_uvs: embedded.needs_wide_high_uvs,
         embedded_needs_extended_vertex_streams: embedded.needs_extended_vertex_streams,
         embedded_requires_intersection_pass: embedded.requires_intersection_pass,
         embedded_uses_scene_depth_snapshot: embedded.uses_scene_depth_snapshot,
@@ -335,11 +353,13 @@ pub(crate) fn apply_render_buffer_mesh_pipeline_override(
     if let RasterPipelineKind::EmbeddedStem(stem) = &batch_key.pipeline
         && stem.as_ref().starts_with("billboardunlit")
     {
+        batch_key.shader_specialization = MaterialShaderSpecializationKey::disabled();
         return;
     }
     let pipeline = RasterPipelineKind::EmbeddedStem(Arc::from(RENDER_BUFFER_BILLBOARD_STEM));
     let features = embedded_material_features(&pipeline, shader_perm);
     batch_key.pipeline = pipeline;
+    batch_key.shader_specialization = MaterialShaderSpecializationKey::disabled();
     batch_key.embedded_needs_uv0 = features.needs_uv0;
     batch_key.embedded_needs_color = features.needs_color;
     batch_key.embedded_needs_uv1 = features.needs_uv1;
@@ -349,12 +369,25 @@ pub(crate) fn apply_render_buffer_mesh_pipeline_override(
     batch_key.embedded_raw_normal_payload = features.raw_normal_payload;
     batch_key.embedded_needs_uv2 = features.needs_uv2;
     batch_key.embedded_needs_uv3 = features.needs_uv3;
-    batch_key.embedded_needs_wide_uvs = features.needs_wide_uvs;
+    batch_key.embedded_needs_wide_low_uvs = features.needs_wide_low_uvs;
+    batch_key.embedded_needs_wide_high_uvs = features.needs_wide_high_uvs;
     batch_key.embedded_needs_extended_vertex_streams = features.needs_extended_vertex_streams;
     batch_key.embedded_requires_intersection_pass = features.requires_intersection_pass;
     batch_key.embedded_uses_scene_depth_snapshot = features.uses_scene_depth_snapshot;
     batch_key.embedded_uses_scene_color_snapshot = features.uses_scene_color_snapshot;
     batch_key.scene_color_snapshot_mode = features.scene_color_snapshot_mode;
+    batch_key.alpha_blended = batch_key.alpha_blended
+        || features.uses_alpha_blending
+        || features.uses_scene_color_snapshot;
+    batch_key.transparent_class = transparent_class_for_material(TransparentMaterialClassInput {
+        render_queue: batch_key.render_queue,
+        render_state: batch_key.render_state,
+        blend_mode: batch_key.blend_mode,
+        alpha_blended: batch_key.alpha_blended,
+        uses_scene_color_snapshot: features.uses_scene_color_snapshot,
+        uses_blended_depth_write: features.uses_blended_depth_write,
+        uses_two_sided_transparency: features.uses_two_sided_transparency,
+    });
 }
 
 /// Assembles a [`MaterialDrawBatchKey`] from a pre-resolved [`ResolvedMaterialBatch`] entry.
@@ -370,6 +403,7 @@ fn batch_key_from_resolved(
     MaterialDrawBatchKey {
         pipeline: r.pipeline.clone(),
         shader_asset_id: r.shader_asset_id,
+        shader_specialization: r.shader_specialization,
         material_asset_id,
         property_block_slot0: property_block_id,
         skinned,
@@ -384,7 +418,8 @@ fn batch_key_from_resolved(
         embedded_raw_normal_payload: r.embedded_raw_normal_payload,
         embedded_needs_uv2: r.embedded_needs_uv2,
         embedded_needs_uv3: r.embedded_needs_uv3,
-        embedded_needs_wide_uvs: r.embedded_needs_wide_uvs,
+        embedded_needs_wide_low_uvs: r.embedded_needs_wide_low_uvs,
+        embedded_needs_wide_high_uvs: r.embedded_needs_wide_high_uvs,
         embedded_needs_extended_vertex_streams: r.embedded_needs_extended_vertex_streams,
         embedded_requires_intersection_pass: r.embedded_requires_intersection_pass,
         embedded_uses_scene_depth_snapshot: r.embedded_uses_scene_depth_snapshot,
@@ -734,6 +769,54 @@ mod ui_rect_clip_tests {
         assert_eq!(stem.as_ref(), "billboardunlit_default");
         assert!(key.embedded_needs_uv0);
         assert!(key.embedded_needs_color);
+        assert!(key.embedded_needs_tangent);
+        assert!(key.embedded_raw_tangent_payload);
+        assert!(key.embedded_raw_normal_payload);
+    }
+
+    #[test]
+    fn generated_billboard_mesh_preserves_transparent_material_class() {
+        let registry = PropertyIdRegistry::new();
+        let src = registry.intern("_SrcBlend");
+        let dst = registry.intern("_DstBlend");
+        let render_queue = registry.intern("_RenderQueue");
+        let mut store = MaterialPropertyStore::new();
+        store.set_shader_asset_for_material(7, 99);
+        store.set_material(7, src, MaterialPropertyValue::Float(5.0));
+        store.set_material(7, dst, MaterialPropertyValue::Float(10.0));
+        store.set_material(
+            7,
+            render_queue,
+            MaterialPropertyValue::Float(UNITY_RENDER_QUEUE_TRANSPARENT as f32),
+        );
+        let dict = MaterialDictionary::new(&store);
+        let mut router = MaterialRouter::new(RasterPipelineKind::Null);
+        router.set_shader_pipeline(
+            99,
+            RasterPipelineKind::EmbeddedStem(Arc::from("unlit_default")),
+        );
+        let ids = MaterialPipelinePropertyIds::new(&registry);
+        let resolved =
+            resolve_material_batch(7, None, &dict, &router, &ids, ShaderPermutation::default());
+        let mut key = batch_key_from_resolved(
+            7,
+            None,
+            false,
+            RasterFrontFace::Clockwise,
+            RasterPrimitiveTopology::TriangleList,
+            &resolved,
+        );
+        let mesh_asset_id = crate::particles::billboard_render_buffer_mesh_asset_id(3).unwrap();
+
+        apply_render_buffer_mesh_pipeline_override(
+            &mut key,
+            mesh_asset_id,
+            ShaderPermutation::default(),
+        );
+
+        assert!(key.alpha_blended);
+        assert_eq!(key.render_queue, UNITY_RENDER_QUEUE_TRANSPARENT);
+        assert!(key.transparent_class.is_transparent());
     }
 
     #[test]
