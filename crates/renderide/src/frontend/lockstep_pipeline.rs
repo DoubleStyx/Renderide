@@ -34,18 +34,6 @@ impl LockstepPipelineAction {
             Self::SkipIdle => 5.0,
         }
     }
-
-    /// Short label for HUD rows and trace logs.
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::SendEarlyNextFrame => "early begin",
-            Self::RenderCurrentSubmit => "render submit",
-            Self::SendPostRender => "post begin",
-            Self::WaitForSubmit => "wait submit",
-            Self::SkipIdle => "idle",
-        }
-    }
 }
 
 /// Reason an early one-credit begin-frame could not be sent.
@@ -75,17 +63,6 @@ impl OneCreditBlockReason {
             Self::SubmitCompletionWorkPending => 4.0,
         }
     }
-
-    /// Short label for HUD rows and trace logs.
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::BeginFrameBlocked => "begin blocked",
-            Self::AwaitingSubmit => "awaiting submit",
-            Self::NoPendingSubmitRender => "no submitted frame",
-            Self::SubmitCompletionWorkPending => "completion work",
-        }
-    }
 }
 
 /// Reason the runtime entered a host-submit wait fallback.
@@ -109,26 +86,6 @@ impl HostWaitReason {
             Self::XrBeforeFrame => 2.0,
         }
     }
-
-    /// Short label for HUD rows and trace logs.
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::DesktopAwaitingSubmit => "desktop await",
-            Self::XrBeforeFrame => "xr pre-frame",
-        }
-    }
-}
-
-/// Labels captured by the frame-timing HUD.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct LockstepPipelineHudLabels {
-    /// Last high-level pipeline action.
-    pub(crate) action: &'static str,
-    /// Last early-send block reason.
-    pub(crate) one_credit_block: &'static str,
-    /// Last host-wait fallback reason.
-    pub(crate) wait_reason: &'static str,
 }
 
 /// Inputs for the pure pipeline decision.
@@ -185,8 +142,8 @@ pub(crate) fn one_credit_block_reason(input: LockstepPipelineInput) -> OneCredit
 #[cfg(test)]
 mod tests {
     use super::{
-        HostWaitReason, LockstepPipelineAction, LockstepPipelineHudLabels, LockstepPipelineInput,
-        OneCreditBlockReason, decide_lockstep_pipeline, one_credit_block_reason,
+        LockstepPipelineAction, LockstepPipelineInput, OneCreditBlockReason,
+        decide_lockstep_pipeline, one_credit_block_reason,
     };
 
     fn renderable_submit() -> LockstepPipelineInput {
@@ -307,17 +264,5 @@ mod tests {
             decide_lockstep_pipeline(input),
             LockstepPipelineAction::SkipIdle
         );
-    }
-
-    #[test]
-    fn labels_are_stable_for_hud_defaults() {
-        let labels = LockstepPipelineHudLabels {
-            action: LockstepPipelineAction::SendEarlyNextFrame.label(),
-            one_credit_block: OneCreditBlockReason::None.label(),
-            wait_reason: HostWaitReason::None.label(),
-        };
-        assert_eq!(labels.action, "early begin");
-        assert_eq!(labels.one_credit_block, "none");
-        assert_eq!(labels.wait_reason, "none");
     }
 }
