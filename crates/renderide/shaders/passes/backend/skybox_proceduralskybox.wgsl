@@ -105,14 +105,13 @@ fn clip_pos_from_view_ray(
     proj_params: vec4<f32>,
     orthographic: bool,
 ) -> vec4<f32> {
-    let camera_ray = view_ray * vec3<f32>(1.0, view.ndc_y_sign_pad.x, 1.0);
-    if (camera_ray.z >= -1e-6) {
-        return vec4<f32>(camera_ray.xy, 2.0, 1.0);
+    if (view_ray.z >= -1e-6) {
+        return vec4<f32>(view_ray.xy, 2.0, 1.0);
     }
     if (orthographic) {
-        return vec4<f32>(sign(camera_ray.xy), 0.0, 1.0);
+        return vec4<f32>(sign(view_ray.xy), 0.0, 1.0);
     }
-    return vec4<f32>(camera_ray.xy * proj_params.xy / (-camera_ray.z) - proj_params.zw, 0.0, 1.0);
+    return vec4<f32>(view_ray.xy * proj_params.xy / (-view_ray.z) - proj_params.zw, 0.0, 1.0);
 }
 
 fn view_ray_from_world_ray(world_ray: vec3<f32>, view_layer: u32) -> vec3<f32> {
