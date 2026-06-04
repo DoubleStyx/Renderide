@@ -5,11 +5,15 @@ use std::path::Path;
 
 use super::directives::{
     BuildPassDirective, MaterialDefaultDirective, TextureDefaultDirective, WgpuFeatureDirective,
-    material_default_literal, pass_literal, texture_default_literal, wgpu_features_literal,
+    material_default_literal, pass_literal, texture_default_literal,
 };
 use super::error::BuildError;
-use super::model::{CompiledShader, ShaderSourceClass};
+use super::model::{
+    BuildShaderReflection, BuildSnapshotRequirements, BuildVertexStreamMask, CompiledShader,
+    ShaderSourceClass,
+};
 
+#[cfg(test)]
 const DEFAULT_SHADER_RENDER_QUEUE: i32 = 2000;
 
 /// Escapes `s` as a Rust `str` literal token.
@@ -25,13 +29,8 @@ pub(super) struct ComposedShaders {
     backend_stems: Vec<String>,
     compute_stems: Vec<String>,
     present_stems: Vec<String>,
-    embedded_arms: String,
     embedded_macro_arms: String,
-    embedded_pass_arms: String,
-    embedded_render_queue_arms: String,
-    embedded_required_features_arms: String,
-    embedded_texture_default_arms: String,
-    embedded_material_default_arms: String,
+    embedded_descriptor_entries: String,
 }
 
 struct EmbeddedTargetEmit<'a> {
@@ -42,6 +41,7 @@ struct EmbeddedTargetEmit<'a> {
     wgpu_features: &'a [WgpuFeatureDirective],
     texture_defaults: &'a [TextureDefaultDirective],
     material_defaults: &'a [MaterialDefaultDirective],
+    reflection: BuildShaderReflection,
 }
 
 impl ComposedShaders {
@@ -53,13 +53,8 @@ impl ComposedShaders {
             backend_stems: Vec::new(),
             compute_stems: Vec::new(),
             present_stems: Vec::new(),
-            embedded_arms: String::new(),
             embedded_macro_arms: String::new(),
-            embedded_pass_arms: String::new(),
-            embedded_render_queue_arms: String::new(),
-            embedded_required_features_arms: String::new(),
-            embedded_texture_default_arms: String::new(),
-            embedded_material_default_arms: String::new(),
+            embedded_descriptor_entries: String::new(),
         }
     }
 
@@ -74,6 +69,7 @@ impl ComposedShaders {
                 wgpu_features: &compiled.wgpu_features,
                 texture_defaults: &compiled.texture_defaults,
                 material_defaults: &compiled.material_defaults,
+                reflection: target.reflection,
             });
             self.push_stem(compiled.source_class, target.target_stem.clone());
         }
@@ -102,63 +98,75 @@ impl ComposedShaders {
             wgpu_features,
             texture_defaults,
             material_defaults,
+            reflection,
         } = target;
         let lit = rust_string_literal_token(wgsl);
-        let _ = writeln!(
-            self.embedded_arms,
-            "        \"{target_stem}\" => Some({lit}),"
-        );
         let _ = writeln!(
             self.embedded_macro_arms,
             "            \"{target_stem}\" => {lit},"
         );
-        if !pass_directives.is_empty() {
-            let pass_literals = pass_directives
-                .iter()
-                .map(pass_literal)
-                .collect::<Vec<_>>()
-                .join(",\n            ");
-            let _ = writeln!(
-                self.embedded_pass_arms,
-                "        \"{target_stem}\" => const {{ &[\n            {pass_literals},\n        ] }},"
-            );
-        }
-        if default_render_queue != DEFAULT_SHADER_RENDER_QUEUE {
-            let _ = writeln!(
-                self.embedded_render_queue_arms,
-                "        \"{target_stem}\" => {default_render_queue},"
-            );
-        }
-        if !wgpu_features.is_empty() {
-            let features = wgpu_features_literal(wgpu_features);
-            let _ = writeln!(
-                self.embedded_required_features_arms,
-                "        \"{target_stem}\" => {features},"
-            );
-        }
-        if !texture_defaults.is_empty() {
-            let default_literals = texture_defaults
-                .iter()
-                .map(texture_default_literal)
-                .collect::<Vec<_>>()
-                .join(",\n            ");
-            let _ = writeln!(
-                self.embedded_texture_default_arms,
-                "        \"{target_stem}\" => const {{ &[\n            {default_literals},\n        ] }},"
-            );
-        }
-        if !material_defaults.is_empty() {
-            let default_literals = material_defaults
-                .iter()
-                .map(material_default_literal)
-                .collect::<Vec<_>>()
-                .join(",\n            ");
-            let _ = writeln!(
-                self.embedded_material_default_arms,
-                "        \"{target_stem}\" => const {{ &[\n            {default_literals},\n        ] }},"
-            );
-        }
+        let pass_slice = slice_literal(pass_directives, pass_literal);
+        let texture_defaults = slice_literal(texture_defaults, texture_default_literal);
+        let material_defaults = slice_literal(material_defaults, material_default_literal);
+        let features = feature_set_literal(wgpu_features);
+        let reflection = reflection_literal(reflection);
+        let _ = writeln!(
+            self.embedded_descriptor_entries,
+            "    EmbeddedShaderTargetDesc {{ stem: {target_stem:?}, wgsl: {lit}, passes: {pass_slice}, default_render_queue: {default_render_queue}, required_features: {features}, texture_defaults: {texture_defaults}, material_defaults: {material_defaults}, reflection: {reflection} }},"
+        );
     }
+}
+
+fn slice_literal<T>(items: &[T], item_literal: impl Fn(&T) -> String) -> String {
+    if items.is_empty() {
+        return "&[]".to_string();
+    }
+    let item_literals = items
+        .iter()
+        .map(item_literal)
+        .collect::<Vec<_>>()
+        .join(",\n        ");
+    format!("const {{ &[\n        {item_literals},\n    ] }}")
+}
+
+fn feature_set_literal(features: &[WgpuFeatureDirective]) -> String {
+    let shader_barycentrics = features
+        .iter()
+        .any(|feature| feature.requires_shader_barycentrics());
+    format!("EmbeddedWgpuFeatures {{ shader_barycentrics: {shader_barycentrics} }}")
+}
+
+fn reflection_literal(reflection: BuildShaderReflection) -> String {
+    format!(
+        "EmbeddedShaderReflection {{ vertex_stream_mask: {vertex_stream_mask}, snapshot_requirements: {snapshot_requirements}, uses_renderide_variant_bits: {uses_renderide_variant_bits}, supports_generic_depth_prepass: {supports_generic_depth_prepass} }}",
+        vertex_stream_mask = vertex_stream_mask_literal(reflection.vertex_stream_mask),
+        snapshot_requirements = snapshot_requirements_literal(reflection.snapshot_requirements),
+        uses_renderide_variant_bits = reflection.uses_renderide_variant_bits,
+        supports_generic_depth_prepass = reflection.supports_generic_depth_prepass,
+    )
+}
+
+fn vertex_stream_mask_literal(mask: BuildVertexStreamMask) -> String {
+    format!(
+        "EmbeddedVertexStreamMask {{ uv0: {uv0}, color: {color}, tangent: {tangent}, uv1: {uv1}, uv2: {uv2}, uv3: {uv3}, wide_low_uvs: {wide_low_uvs}, wide_high_uvs: {wide_high_uvs} }}",
+        uv0 = mask.uv0,
+        color = mask.color,
+        tangent = mask.tangent,
+        uv1 = mask.uv1,
+        uv2 = mask.uv2,
+        uv3 = mask.uv3,
+        wide_low_uvs = mask.wide_low_uvs,
+        wide_high_uvs = mask.wide_high_uvs,
+    )
+}
+
+fn snapshot_requirements_literal(requirements: BuildSnapshotRequirements) -> String {
+    format!(
+        "EmbeddedSnapshotRequirements {{ uses_scene_color: {uses_scene_color}, uses_scene_depth: {uses_scene_depth}, requires_intersection_pass: {requires_intersection_pass} }}",
+        uses_scene_color = requirements.uses_scene_color,
+        uses_scene_depth = requirements.uses_scene_depth,
+        requires_intersection_pass = requirements.requires_intersection_pass,
+    )
 }
 
 /// Removes generated `.wgsl` inspection outputs so deleted/renamed shader sources do not linger.
@@ -246,6 +254,144 @@ pub struct EmbeddedMaterialDefault {
 "#
 }
 
+/// Generated Rust definitions for embedded shader descriptors.
+fn embedded_shader_descriptor_type_defs() -> &'static str {
+    r#"/// Required device features parsed from `//#wgpu_feature` directives.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EmbeddedWgpuFeatures {
+    /// Fragment shader barycentric coordinates are required.
+    pub shader_barycentrics: bool,
+}
+
+impl EmbeddedWgpuFeatures {
+    /// Converts generated feature flags into `wgpu::Features`.
+    pub fn to_wgpu_features(self) -> wgpu::Features {
+        let mut features = wgpu::Features::empty();
+        if self.shader_barycentrics {
+            features |= wgpu::Features::SHADER_BARYCENTRICS;
+        }
+        features
+    }
+}
+
+/// Mesh streams required by the reflected material vertex entries.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct EmbeddedVertexStreamMask {
+    /// UV0 stream at `@location(2)`.
+    pub uv0: bool,
+    /// Vertex color stream at `@location(3)`.
+    pub color: bool,
+    /// Tangent stream at `@location(4)`.
+    pub tangent: bool,
+    /// UV1 stream at `@location(5)`.
+    pub uv1: bool,
+    /// UV2 stream at `@location(6)`.
+    pub uv2: bool,
+    /// UV3 stream at `@location(7)`.
+    pub uv3: bool,
+    /// Packed UV0-UV3 stream for 3D/4D low UV inputs.
+    pub wide_low_uvs: bool,
+    /// Packed UV4-UV7 stream for high UV inputs.
+    pub wide_high_uvs: bool,
+}
+
+/// Scene-snapshot and intersection requirements reflected at build time.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct EmbeddedSnapshotRequirements {
+    /// True when the shader declares a scene-color snapshot binding.
+    pub uses_scene_color: bool,
+    /// True when the shader declares a scene-depth snapshot binding.
+    pub uses_scene_depth: bool,
+    /// True when the material uniform block declares intersection tint.
+    pub requires_intersection_pass: bool,
+}
+
+/// Stable reflected metadata for a compiled shader target.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct EmbeddedShaderReflection {
+    /// Mesh streams required by the material vertex entries.
+    pub vertex_stream_mask: EmbeddedVertexStreamMask,
+    /// Scene-snapshot and intersection requirements.
+    pub snapshot_requirements: EmbeddedSnapshotRequirements,
+    /// Whether the target decodes `_RenderideVariantBits`.
+    pub uses_renderide_variant_bits: bool,
+    /// Whether the single forward pass can be mirrored by the generic depth prepass.
+    pub supports_generic_depth_prepass: bool,
+}
+
+/// Complete embedded metadata package for one composed shader target.
+#[derive(Clone, Copy, Debug)]
+pub struct EmbeddedShaderTargetDesc {
+    /// Target stem used by routing and `shaders/target/{stem}.wgsl`.
+    pub stem: &'static str,
+    /// Flattened WGSL source.
+    pub wgsl: &'static str,
+    /// Declared render passes parsed from `//#pass` directives.
+    pub passes: &'static [crate::materials::MaterialPassDesc],
+    /// Shader default render queue parsed from `//#render_queue`.
+    pub default_render_queue: i32,
+    /// Required device features parsed from `//#wgpu_feature`.
+    pub required_features: EmbeddedWgpuFeatures,
+    /// Declared texture fallbacks parsed from `//#texture_default`.
+    pub texture_defaults: &'static [EmbeddedTextureDefault],
+    /// Declared material uniform fallbacks parsed from `//#mat_default`.
+    pub material_defaults: &'static [EmbeddedMaterialDefault],
+    /// Stable device-independent reflection metadata.
+    pub reflection: EmbeddedShaderReflection,
+}
+"#
+}
+
+/// Generated Rust lookup wrappers over the embedded shader descriptor table.
+fn embedded_shader_lookup_fn_defs() -> &'static str {
+    r#"/// Returns the complete embedded descriptor for `stem`.
+pub fn embedded_target_desc(stem: &str) -> Option<&'static EmbeddedShaderTargetDesc> {
+    EMBEDDED_SHADER_TARGETS
+        .iter()
+        .find(|target| target.stem == stem)
+}
+
+/// Flattened WGSL for `stem` (also written under `shaders/target/{stem}.wgsl` at build time).
+pub fn embedded_target_wgsl(stem: &str) -> Option<&'static str> {
+    embedded_target_desc(stem).map(|target| target.wgsl)
+}
+
+/// Declared render passes for `stem`, parsed from `//#pass` directives in the source WGSL.
+pub fn embedded_target_passes(stem: &str) -> &'static [crate::materials::MaterialPassDesc] {
+    embedded_target_desc(stem).map_or(&[], |target| target.passes)
+}
+
+/// Shader default render queue for `stem`, parsed from `//#render_queue` directives.
+pub fn embedded_target_default_render_queue(stem: &str) -> i32 {
+    embedded_target_desc(stem).map_or(2000, |target| target.default_render_queue)
+}
+
+/// Required device features for `stem`, parsed from `//#wgpu_feature` directives in the source WGSL.
+pub fn embedded_target_required_features(stem: &str) -> wgpu::Features {
+    embedded_target_desc(stem).map_or(wgpu::Features::empty(), |target| {
+        target.required_features.to_wgpu_features()
+    })
+}
+
+/// Declared texture fallbacks for `stem`, parsed from `//#texture_default` directives in the source WGSL.
+pub fn embedded_target_texture_defaults(stem: &str) -> &'static [EmbeddedTextureDefault] {
+    embedded_target_desc(stem).map_or(&[], |target| target.texture_defaults)
+}
+
+/// Declared material uniform fallbacks for `stem`, parsed from `//#mat_default` directives in the source WGSL.
+pub fn embedded_target_material_defaults(stem: &str) -> &'static [EmbeddedMaterialDefault] {
+    embedded_target_desc(stem).map_or(&[], |target| target.material_defaults)
+}
+
+/// Stable reflection metadata for `stem`.
+pub fn embedded_target_reflection(stem: &str) -> EmbeddedShaderReflection {
+    embedded_target_desc(stem).map_or_else(EmbeddedShaderReflection::default, |target| {
+        target.reflection
+    })
+}
+"#
+}
+
 /// Renders generated `embedded_shaders.rs`.
 pub(super) fn render_embedded_shaders_rs(c: &ComposedShaders) -> String {
     let stems_list = |stems: &[String]| {
@@ -306,52 +452,12 @@ pub struct EmbeddedTextureDefault {{
 
 {material_default_type_defs}
 
-/// Flattened WGSL for `stem` (also written under `shaders/target/{{stem}}.wgsl` at build time).
-#[expect(clippy::too_many_lines, reason = "match arm per embedded shader target; scales with shader count")]
-pub fn embedded_target_wgsl(stem: &str) -> Option<&'static str> {{
-    match stem {{
-{embedded_arms}        _ => None,
-    }}
-}}
+{descriptor_type_defs}
 
-/// Declared render passes for `stem`, parsed from `//#pass` directives in the source WGSL.
-#[expect(clippy::too_many_lines, reason = "match arm per embedded shader target; scales with shader count")]
-pub fn embedded_target_passes(stem: &str) -> &'static [crate::materials::MaterialPassDesc] {{
-    match stem {{
-{embedded_pass_arms}        _ => &[],
-    }}
-}}
+const EMBEDDED_SHADER_TARGETS: &[EmbeddedShaderTargetDesc] = &[
+{embedded_descriptor_entries}];
 
-/// Shader default render queue for `stem`, parsed from `//#render_queue` directives.
-#[expect(clippy::too_many_lines, reason = "match arm per embedded shader target; scales with shader count")]
-pub fn embedded_target_default_render_queue(stem: &str) -> i32 {{
-    match stem {{
-{embedded_render_queue_arms}        _ => 2000,
-    }}
-}}
-
-/// Required device features for `stem`, parsed from `//#wgpu_feature` directives in the source WGSL.
-pub fn embedded_target_required_features(stem: &str) -> wgpu::Features {{
-    match stem {{
-{embedded_required_features_arms}        _ => wgpu::Features::empty(),
-    }}
-}}
-
-/// Declared texture fallbacks for `stem`, parsed from `//#texture_default` directives in the source WGSL.
-#[expect(clippy::too_many_lines, reason = "match arm per embedded shader target; scales with shader count")]
-pub fn embedded_target_texture_defaults(stem: &str) -> &'static [EmbeddedTextureDefault] {{
-    match stem {{
-{embedded_texture_default_arms}        _ => &[],
-    }}
-}}
-
-/// Declared material uniform fallbacks for `stem`, parsed from `//#mat_default` directives in the source WGSL.
-#[expect(clippy::too_many_lines, reason = "match arm per embedded shader target; scales with shader count")]
-pub fn embedded_target_material_defaults(stem: &str) -> &'static [EmbeddedMaterialDefault] {{
-    match stem {{
-{embedded_material_default_arms}        _ => &[],
-    }}
-}}
+{lookup_fn_defs}
 
 /// Material target stems (composed from `shaders/materials/*.wgsl`).
 #[cfg(test)]
@@ -359,14 +465,11 @@ pub const COMPILED_MATERIAL_STEMS: &[&str] = &[
 {material_stems}
 ];
 "#,
-        embedded_arms = c.embedded_arms,
         embedded_macro_arms = c.embedded_macro_arms,
-        embedded_pass_arms = c.embedded_pass_arms,
-        embedded_render_queue_arms = c.embedded_render_queue_arms,
-        embedded_required_features_arms = c.embedded_required_features_arms,
-        embedded_texture_default_arms = c.embedded_texture_default_arms,
-        embedded_material_default_arms = c.embedded_material_default_arms,
+        embedded_descriptor_entries = c.embedded_descriptor_entries,
         material_default_type_defs = embedded_material_default_type_defs(),
+        descriptor_type_defs = embedded_shader_descriptor_type_defs(),
+        lookup_fn_defs = embedded_shader_lookup_fn_defs(),
         material_stems = stems_list(&c.material_stems),
     )
 }
@@ -379,7 +482,9 @@ mod tests {
         MaterialDefaultDirective, MaterialDefaultValue, TextureDefaultDirective,
         TextureDefaultKind, WgpuFeatureDirective,
     };
-    use crate::shader::model::{CompiledShader, CompiledShaderTarget, ShaderSourceClass};
+    use crate::shader::model::{
+        BuildShaderReflection, CompiledShader, CompiledShaderTarget, ShaderSourceClass,
+    };
 
     use super::*;
 
@@ -509,8 +614,11 @@ mod tests {
         assert!(embedded.contains("embedded_target_material_defaults"));
         assert!(embedded.contains("embedded_target_default_render_queue"));
         assert!(embedded.contains("embedded_target_required_features"));
-        assert!(embedded.contains("\"outline_default\" => 3500,"));
-        assert!(embedded.contains("wgpu::Features::SHADER_BARYCENTRICS"));
+        assert!(embedded.contains("pub struct EmbeddedShaderTargetDesc"));
+        assert!(embedded.contains("pub fn embedded_target_desc"));
+        assert!(embedded.contains("default_render_queue: 3500"));
+        assert!(embedded.contains("shader_barycentrics: true"));
+        assert!(embedded.contains("pub fn embedded_target_reflection"));
         assert!(embedded.contains("macro_rules! embedded_wgsl"));
         assert!(embedded.contains("\"outline_default\" => \"wgsl body\","));
         assert!(!embedded.contains("pub const OUTLINE_DEFAULT_WGSL"));
@@ -579,6 +687,7 @@ mod tests {
                     target_stem: (*target_stem).to_string(),
                     wgsl: (*wgsl).to_string(),
                     pass_directives: target_pass_directives.clone(),
+                    reflection: BuildShaderReflection::default(),
                 })
                 .collect(),
         }

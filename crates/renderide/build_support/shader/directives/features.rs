@@ -19,13 +19,6 @@ impl BuildWgpuFeature {
             ))),
         }
     }
-
-    /// Rust expression used in generated embedded metadata.
-    const fn rust_literal(self) -> &'static str {
-        match self {
-            Self::ShaderBarycentrics => "wgpu::Features::SHADER_BARYCENTRICS",
-        }
-    }
 }
 
 /// One required wgpu feature directive attached to a WGSL source.
@@ -33,6 +26,13 @@ impl BuildWgpuFeature {
 pub(in super::super) struct WgpuFeatureDirective {
     /// Required feature bit for the composed target.
     pub feature: BuildWgpuFeature,
+}
+
+impl WgpuFeatureDirective {
+    /// Returns whether this directive requires fragment shader barycentric coordinates.
+    pub(in super::super) const fn requires_shader_barycentrics(self) -> bool {
+        matches!(self.feature, BuildWgpuFeature::ShaderBarycentrics)
+    }
 }
 
 /// Parses required wgpu feature directives from WGSL source.
@@ -71,18 +71,6 @@ pub(in super::super) fn parse_wgpu_feature_directives(
     Ok(features)
 }
 
-/// Renders a generated Rust expression for required wgpu features.
-pub(in super::super) fn wgpu_features_literal(features: &[WgpuFeatureDirective]) -> String {
-    if features.is_empty() {
-        return "wgpu::Features::empty()".to_string();
-    }
-    features
-        .iter()
-        .map(|feature| feature.feature.rust_literal())
-        .collect::<Vec<_>>()
-        .join(" | ")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,10 +86,7 @@ mod tests {
                 feature: BuildWgpuFeature::ShaderBarycentrics,
             }]
         );
-        assert_eq!(
-            wgpu_features_literal(&features),
-            "wgpu::Features::SHADER_BARYCENTRICS"
-        );
+        assert!(features[0].requires_shader_barycentrics());
         Ok(())
     }
 

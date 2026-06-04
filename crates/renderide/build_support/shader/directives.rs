@@ -19,9 +19,7 @@ pub(super) use defaults::{
 pub(super) use defaults::{MaterialDefaultValue, TextureDefaultKind};
 #[cfg(test)]
 pub(super) use features::BuildWgpuFeature;
-pub(super) use features::{
-    WgpuFeatureDirective, parse_wgpu_feature_directives, wgpu_features_literal,
-};
+pub(super) use features::{WgpuFeatureDirective, parse_wgpu_feature_directives};
 #[cfg(test)]
 pub(super) use passes::{
     BuildBlend, BuildColorWrites, BuildCullMode, BuildDepthCompare, BuildDepthCompareDomain,

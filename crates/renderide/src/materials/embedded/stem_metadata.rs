@@ -19,6 +19,8 @@ use hashbrown::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use crate::embedded_shaders;
+#[cfg(test)]
+use crate::materials::ReflectedRasterLayout;
 use crate::materials::SHADER_PERM_MULTIVIEW_STEREO;
 use crate::materials::ShaderPermutation;
 use crate::materials::pipeline_build_error::PipelineBuildError;
@@ -29,14 +31,15 @@ use crate::materials::raster_pipeline::{
 use crate::materials::render_queue::UNITY_RENDER_QUEUE_GEOMETRY;
 use crate::materials::{
     MaterialBlendMode, MaterialPassDesc, MaterialRenderState, RasterFrontFace,
-    RasterPrimitiveTopology, ReflectedRasterLayout, SceneColorSnapshotMode, SnapshotRequirements,
+    RasterPrimitiveTopology, SceneColorSnapshotMode, SnapshotRequirements,
     materialized_embedded_pass_for_blend_mode,
 };
 
 use self::tangent_fallback::tangent_fallback_mode_for_stem;
+#[cfg(test)]
+use self::vertex_streams::derive_vertex_stream_mask;
 use self::vertex_streams::{
-    derive_vertex_stream_mask, stem_uses_raw_normal_payload, stem_uses_raw_tangent_payload,
-    stem_uses_ui_transparent_fallback,
+    stem_uses_raw_normal_payload, stem_uses_raw_tangent_payload, stem_uses_ui_transparent_fallback,
 };
 
 /// Host material identity and blend/render state for embedded raster pipeline creation (separate from WGSL build inputs).
@@ -274,26 +277,14 @@ fn embedded_stem_metadata(base_stem: &str, permutation: ShaderPermutation) -> Em
     }
 
     let composed = embedded_composed_stem_for_permutation(base_stem, permutation);
-    let wgsl = embedded_shaders::embedded_target_wgsl(&composed);
     let passes = embedded_shaders::embedded_target_passes(&composed);
     let default_render_queue = embedded_shaders::embedded_target_default_render_queue(&composed);
-    let vertex_entries = passes
-        .iter()
-        .map(|pass| pass.vertex_entry)
-        .collect::<Vec<_>>();
-    let reflected = wgsl.and_then(|wgsl| {
-        crate::materials::wgsl_reflect::reflect_raster_material_wgsl_with_vertex_entries(
-            wgsl,
-            &vertex_entries,
-        )
-        .ok()
-    });
-    let depth_prepass_pass = depth_prepass_pass_for_target(wgsl, reflected.as_ref(), passes);
-    let snapshot_requirements = reflected
-        .as_ref()
-        .map_or_else(SnapshotRequirements::default, |r| r.snapshot_requirements());
+    let reflection = embedded_shaders::embedded_target_reflection(&composed);
+    let depth_prepass_pass = depth_prepass_pass_for_target(reflection, passes);
+    let snapshot_requirements =
+        snapshot_requirements_from_embedded(reflection.snapshot_requirements);
     let metadata = EmbeddedStemMetadata {
-        vertex_stream_mask: derive_vertex_stream_mask(reflected.as_ref()),
+        vertex_stream_mask: vertex_stream_mask_from_embedded(reflection.vertex_stream_mask),
         snapshot_requirements,
         tangent_fallback_mode: tangent_fallback_mode_for_stem(base_stem),
         pass_count: passes.len().max(1),
@@ -308,7 +299,7 @@ fn embedded_stem_metadata(base_stem: &str, permutation: ShaderPermutation) -> Em
             snapshot_requirements,
         ),
         default_render_queue,
-        uses_renderide_variant_bits: wgsl.is_some_and(uses_renderide_variant_bits),
+        uses_renderide_variant_bits: reflection.uses_renderide_variant_bits,
         depth_prepass_pass,
     };
     guard.insert(key, metadata);
@@ -351,28 +342,40 @@ fn passes_use_two_sided_transparency(passes: &[MaterialPassDesc]) -> bool {
 }
 
 fn depth_prepass_pass_for_target(
-    wgsl: Option<&str>,
-    reflected: Option<&ReflectedRasterLayout>,
+    reflection: embedded_shaders::EmbeddedShaderReflection,
     passes: &[MaterialPassDesc],
 ) -> Option<MaterialPassDesc> {
-    let wgsl = wgsl?;
-    let reflected = reflected?;
     let [pass] = passes else {
         return None;
     };
-    let snapshots = reflected.snapshot_requirements();
-    let pass_is_opaque_forward = pass.pass_type == crate::materials::PassType::Forward;
-    (pass_is_opaque_forward
-        && pass.blend.is_none()
-        && pass.depth_write
-        && !pass.alpha_to_coverage
-        && !wgsl.contains("discard")
-        && snapshots == SnapshotRequirements::default())
-    .then_some(*pass)
+    (reflection.supports_generic_depth_prepass
+        && pass.pass_type == crate::materials::PassType::Forward)
+        .then_some(*pass)
 }
 
-fn uses_renderide_variant_bits(wgsl: &str) -> bool {
-    wgsl.contains("renderide_static_variant_bits")
+fn vertex_stream_mask_from_embedded(
+    mask: embedded_shaders::EmbeddedVertexStreamMask,
+) -> EmbeddedVertexStreamMask {
+    EmbeddedVertexStreamMask {
+        uv0: mask.uv0,
+        color: mask.color,
+        tangent: mask.tangent,
+        uv1: mask.uv1,
+        uv2: mask.uv2,
+        uv3: mask.uv3,
+        wide_low_uvs: mask.wide_low_uvs,
+        wide_high_uvs: mask.wide_high_uvs,
+    }
+}
+
+fn snapshot_requirements_from_embedded(
+    requirements: embedded_shaders::EmbeddedSnapshotRequirements,
+) -> SnapshotRequirements {
+    SnapshotRequirements {
+        uses_scene_color: requirements.uses_scene_color,
+        uses_scene_depth: requirements.uses_scene_depth,
+        requires_intersection_pass: requirements.requires_intersection_pass,
+    }
 }
 
 /// Composed target stem for an embedded base stem (e.g. `unlit_default` -> `unlit_multiview`).
