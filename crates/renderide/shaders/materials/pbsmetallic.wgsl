@@ -23,6 +23,7 @@
 //#mat_default _UVSec float 0.0
 //#mat_default _OcclusionStrength float 1.0
 //#mat_default _BumpScale float 1.0
+//#mat_default _Parallax float 0.02
 //#mat_default _Color vec4 1.0 1.0 1.0 1.0
 //#mat_default _DetailNormalMapScale float 1.0
 //#mat_default _EmissionColor vec4 0.0 0.0 0.0 1.0

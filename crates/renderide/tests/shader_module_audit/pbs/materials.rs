@@ -238,6 +238,14 @@ fn standard_pbs_roots_enforce_unity_default_for_unsent_parameters() -> io::Resul
         for required in [
             "//#mat_default _GlossMapScale float 1.0",
             "//#mat_default _OcclusionStrength float 1.0",
+            "//#mat_default _BumpScale float 1.0",
+            "//#mat_default _Parallax float 0.02",
+            "//#mat_default _Color vec4 1.0 1.0 1.0 1.0",
+            "//#mat_default _DetailNormalMapScale float 1.0",
+            "//#mat_default _EmissionColor vec4 0.0 0.0 0.0 1.0",
+            "//#mat_default _Cutoff float 0.5",
+            "//#mat_default _Glossiness float 0.5",
+            "mat._Parallax,",
             "let smoothness_scale = mat._GlossMapScale;",
             "pstd::occlusion_from_sample(occlusion_sample, mat._OcclusionStrength);",
         ] {
