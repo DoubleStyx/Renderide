@@ -11,7 +11,8 @@ use glam::{Quat, Vec3};
 
 use crate::frontend::output_device::head_output_device_is_vr;
 use crate::shared::{
-    HandState, HeadOutputDevice, HeadsetConnection, HeadsetState, VRControllerState, VRInputsState,
+    HandState, HeadOutputDevice, HeadsetConnection, HeadsetState, TrackerState, VRControllerState,
+    VRInputsState,
 };
 
 /// Builds VR input for the host when the session targets a VR [`HeadOutputDevice`].
@@ -25,6 +26,8 @@ use crate::shared::{
 /// **TrackingSpace** applies position/rotation offsets; compare IPC trace logs to **RawPosition**
 /// when debugging avatar alignment.
 /// `openxr_controllers` is filled from the same XR tick's `sync_actions` before `pre_frame` runs.
+/// `openxr_trackers` is filled from OpenXR Vive tracker role actions and uses OpenXR persistent
+/// tracker paths as stable device ids.
 /// `hands` carries per-finger [`HandState`] snapshots (synthesised from controller input by
 /// [`crate::xr::input::synthesize_hand_states`]) so the host avoids the idle-reset fallback in
 /// `HandPoser` and drives avatar fingers from tracked data.
@@ -32,6 +35,7 @@ pub fn vr_inputs_for_session(
     session_output_device: HeadOutputDevice,
     head_pose: Option<(Vec3, Quat)>,
     openxr_controllers: &[VRControllerState],
+    openxr_trackers: &[TrackerState],
     hands: Vec<HandState>,
 ) -> Option<VRInputsState> {
     if !head_output_device_is_vr(session_output_device) {
@@ -53,7 +57,7 @@ pub fn vr_inputs_for_session(
             headset_model: Some("SteamVR".to_string()),
         }),
         controllers: openxr_controllers.to_vec(),
-        trackers: Vec::new(),
+        trackers: openxr_trackers.to_vec(),
         tracking_references: Vec::new(),
         hands,
         vive_hand_tracking: None,
@@ -67,13 +71,17 @@ mod tests {
 
     #[test]
     fn non_vr_session_returns_none() {
-        assert!(vr_inputs_for_session(HeadOutputDevice::Screen, None, &[], Vec::new()).is_none());
-        assert!(vr_inputs_for_session(HeadOutputDevice::UNKNOWN, None, &[], Vec::new()).is_none());
+        assert!(
+            vr_inputs_for_session(HeadOutputDevice::Screen, None, &[], &[], Vec::new()).is_none()
+        );
+        assert!(
+            vr_inputs_for_session(HeadOutputDevice::UNKNOWN, None, &[], &[], Vec::new()).is_none()
+        );
     }
 
     #[test]
     fn steam_vr_includes_headset_and_wired_connection() {
-        let vr = vr_inputs_for_session(HeadOutputDevice::SteamVR, None, &[], Vec::new())
+        let vr = vr_inputs_for_session(HeadOutputDevice::SteamVR, None, &[], &[], Vec::new())
             .expect("vr session");
         assert!(vr.user_present_in_headset);
         let hs = vr.headset_state.expect("headset");
@@ -88,12 +96,33 @@ mod tests {
     fn steam_vr_accepts_cached_pose() {
         let pos = Vec3::new(1.0, 2.0, 3.0);
         let rot = Quat::from_rotation_x(0.5);
-        let vr =
-            vr_inputs_for_session(HeadOutputDevice::SteamVR, Some((pos, rot)), &[], Vec::new())
-                .expect("vr");
+        let vr = vr_inputs_for_session(
+            HeadOutputDevice::SteamVR,
+            Some((pos, rot)),
+            &[],
+            &[],
+            Vec::new(),
+        )
+        .expect("vr");
         let hs = vr.headset_state.expect("headset");
         assert!(hs.is_tracking);
         assert_eq!(hs.position, pos);
         assert_eq!(hs.rotation, rot);
+    }
+
+    #[test]
+    fn steam_vr_forwards_trackers() {
+        let trackers = [TrackerState {
+            unique_id: Some("tracker-1".to_string()),
+            is_tracking: false,
+            position: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+            battery_level: -1.0,
+            battery_charging: false,
+        }];
+        let vr = vr_inputs_for_session(HeadOutputDevice::SteamVR, None, &[], &trackers, Vec::new())
+            .expect("vr");
+        assert_eq!(vr.trackers.len(), 1);
+        assert_eq!(vr.trackers[0].unique_id.as_deref(), Some("tracker-1"));
     }
 }

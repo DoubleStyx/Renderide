@@ -38,7 +38,7 @@ pub fn on_set_texture_3d_format(
 ) {
     let id = f.asset_id;
     queue.catalogs.texture3d_formats.insert(id, f.clone());
-    let props = queue.catalogs.texture3d_properties.get(&id);
+    let props = queue.catalogs.texture3d_properties.get(&id).cloned();
     let Some(device) = queue.gpu.gpu_device.clone() else {
         send_texture_3d_result(
             ipc,
@@ -58,7 +58,25 @@ pub fn on_set_texture_3d_format(
         );
         return;
     };
-    let Some(tex) = GpuTexture3d::new_from_format(device.as_ref(), limits.as_ref(), &f, props)
+    if let Some(texture) = queue.pools.texture3d_pool.get_mut(id)
+        && texture.allocation_matches_format(device.as_ref(), limits.as_ref(), &f)
+    {
+        texture.apply_format_metadata(&f, props.as_ref());
+        replay_pending_texture3d_uploads_for_asset(queue, id);
+        send_texture_3d_result(ipc, id, TextureUpdateResultType::FORMAT_SET, false);
+        logger::trace!(
+            "texture3d {} format {:?} {}x{}x{} mips={} reused resident allocation",
+            id,
+            f.format,
+            f.width,
+            f.height,
+            f.depth,
+            f.mipmap_count
+        );
+        return;
+    }
+    let Some(tex) =
+        GpuTexture3d::new_from_format(device.as_ref(), limits.as_ref(), &f, props.as_ref())
     else {
         logger::warn!("texture3d {id}: SetTexture3DFormat rejected (bad size or device)");
         send_texture_3d_result(ipc, id, TextureUpdateResultType::FORMAT_SET, false);

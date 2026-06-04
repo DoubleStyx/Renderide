@@ -1,6 +1,7 @@
 //! GPU-resident video texture pool: dummy 1x1 storage replaced by external views from the host.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use renderide_shared::VideoTextureProperties;
 
@@ -14,6 +15,8 @@ use crate::gpu_pools::sampler_state::SamplerState;
 /// Bytes per resident RGBA8 video pixel.
 const RGBA8_BYTES_PER_PIXEL: u64 = 4;
 
+static NEXT_VIDEO_TEXTURE_VIEW_GENERATION: AtomicU64 = AtomicU64::new(1);
+
 /// Host video texture; holds a dummy texture before an external view gets assigned from the
 /// video player.
 #[derive(Debug)]
@@ -24,6 +27,8 @@ pub struct GpuVideoTexture {
     _dummy_texture: Option<Arc<wgpu::Texture>>,
     /// Current view, initially from `dummy_texture` and then replaced by [`Self::set_view`].
     pub view: Arc<wgpu::TextureView>,
+    /// Monotonic identifier for the current bindable view.
+    pub view_generation: u64,
     /// Estimated VRAM for the current view.
     pub resident_bytes: u64,
     /// Sampler state mirrored from host format for material binds.
@@ -57,6 +62,7 @@ impl GpuVideoTexture {
             asset_id,
             _dummy_texture: Some(dummy),
             view,
+            view_generation: NEXT_VIDEO_TEXTURE_VIEW_GENERATION.fetch_add(1, Ordering::Relaxed),
             resident_bytes: RGBA8_BYTES_PER_PIXEL,
             sampler: SamplerState::from_video_props(props),
         }
@@ -71,6 +77,10 @@ impl GpuVideoTexture {
         _height: u32,
         resident_bytes: u64,
     ) {
+        if !Arc::ptr_eq(&self.view, &view) {
+            self.view_generation =
+                NEXT_VIDEO_TEXTURE_VIEW_GENERATION.fetch_add(1, Ordering::Relaxed);
+        }
         self._dummy_texture = None;
         self.view = view;
         self.resident_bytes = resident_bytes;

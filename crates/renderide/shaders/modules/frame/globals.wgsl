@@ -89,6 +89,16 @@ fn proj_params_for_view(view_layer: u32) -> vec4<f32> {
     return frame.proj_params_left;
 }
 
+/// Projection matrix for the current view layer.
+fn projection_for_view(view_layer: u32) -> mat4x4<f32> {
+#ifdef MULTIVIEW
+    if (view_index_from_layer(view_layer) != 0u) {
+        return frame.proj_right;
+    }
+#endif
+    return frame.proj_left;
+}
+
 /// Projection flags for the current view layer.
 fn projection_flags_for_view(view_layer: u32) -> u32 {
 #ifdef MULTIVIEW

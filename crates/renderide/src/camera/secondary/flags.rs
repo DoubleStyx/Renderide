@@ -12,6 +12,12 @@ pub fn camera_state_use_transform_scale(flags: u16) -> bool {
     flags & (1 << 1) != 0
 }
 
+/// Returns `true` when [`crate::shared::CameraState::flags`] bit 2 is set.
+#[inline]
+pub fn camera_state_double_buffered(flags: u16) -> bool {
+    flags & (1 << 2) != 0
+}
+
 /// Returns `true` when [`crate::shared::CameraState::flags`] bit 6 is set.
 #[inline]
 pub fn camera_state_post_processing(flags: u16) -> bool {
@@ -40,9 +46,9 @@ pub fn camera_state_render_private_ui(flags: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        camera_state_enabled, camera_state_motion_blur, camera_state_post_processing,
-        camera_state_render_private_ui, camera_state_screen_space_reflections,
-        camera_state_use_transform_scale,
+        camera_state_double_buffered, camera_state_enabled, camera_state_motion_blur,
+        camera_state_post_processing, camera_state_render_private_ui,
+        camera_state_screen_space_reflections, camera_state_use_transform_scale,
     };
 
     #[test]
@@ -57,6 +63,8 @@ mod tests {
     fn camera_state_flags_decode_scale_and_private_ui_bits() {
         assert!(!camera_state_use_transform_scale(0));
         assert!(camera_state_use_transform_scale(1 << 1));
+        assert!(!camera_state_double_buffered(0));
+        assert!(camera_state_double_buffered(1 << 2));
         assert!(!camera_state_render_private_ui(0));
         assert!(camera_state_render_private_ui(1 << 3));
     }

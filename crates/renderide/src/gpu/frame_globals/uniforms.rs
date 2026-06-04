@@ -18,7 +18,7 @@ pub const FRAME_TAIL_SAMPLE_COUNT_MASK: u32 = 0xF << FRAME_TAIL_SAMPLE_COUNT_SHI
 /// Frame projection flag indicating that the corresponding view uses orthographic projection.
 pub const FRAME_PROJECTION_FLAG_ORTHOGRAPHIC: u32 = 1;
 
-/// Uniform block matching WGSL `FrameGlobals` (384-byte size, 16-byte aligned).
+/// Uniform block matching WGSL `FrameGlobals` (512-byte size, 16-byte aligned).
 ///
 /// per-eye coefficients for reconstructing world Y from view position, clustered grid dimensions,
 /// clip planes, light count, viewport size, per-eye projection coefficients for screen-space-to-view
@@ -66,6 +66,10 @@ pub struct FrameGpuUniforms {
     ///
     /// Equals [`Self::proj_params_left`] in mono mode.
     pub proj_params_right: [f32; 4],
+    /// Left-eye or mono projection matrix, column-major.
+    pub proj_left: [f32; 16],
+    /// Right-eye projection matrix, column-major; equals [`Self::proj_left`] in mono mode.
+    pub proj_right: [f32; 16],
     /// Packed trailing `vec4<u32>` slot: `.x` is the monotonic frame index (wraps
     /// `host_camera.frame_index`; used for temporal / jittered screen-space effects), `.y` holds
     /// left/mono projection flags, `.z` holds right-eye projection flags, and `.w` packs

@@ -93,7 +93,7 @@ impl ClusterFrameParams {
     ///
     /// Right-eye fields in `params` should be the right-eye equivalents in stereo, or equal to the
     /// left/mono coefficients in desktop mode.
-    pub fn frame_gpu_uniforms(&self, params: FrameGpuUniformBuildParams) -> FrameGpuUniforms {
+    pub fn frame_gpu_uniforms(&self, params: &FrameGpuUniformBuildParams) -> FrameGpuUniforms {
         frame_uniforms::build_frame_gpu_uniforms(self, params)
     }
 }

@@ -37,7 +37,7 @@ pub fn on_set_texture_2d_format(
 ) {
     let id = f.asset_id;
     queue.catalogs.texture_formats.insert(id, f.clone());
-    let props = queue.catalogs.texture_properties.get(&id);
+    let props = queue.catalogs.texture_properties.get(&id).cloned();
     let Some(device) = queue.gpu.gpu_device.clone() else {
         send_texture_2d_result(
             ipc,
@@ -57,11 +57,27 @@ pub fn on_set_texture_2d_format(
         );
         return;
     };
+    if let Some(texture) = queue.pools.texture_pool.get_mut(id)
+        && texture.allocation_matches_format(device.as_ref(), limits.as_ref(), &f)
+    {
+        texture.apply_format_metadata(&f, props.as_ref());
+        replay_pending_texture_uploads_for_asset(queue, id);
+        send_texture_2d_result(ipc, id, TextureUpdateResultType::FORMAT_SET, false);
+        logger::trace!(
+            "texture {} format {:?} {}x{} mips={} reused resident allocation",
+            id,
+            f.format,
+            f.width,
+            f.height,
+            f.mipmap_count
+        );
+        return;
+    }
     let Some(tex) = crate::gpu_pools::GpuTexture2d::new_from_format(
         device.as_ref(),
         limits.as_ref(),
         &f,
-        props,
+        props.as_ref(),
     ) else {
         logger::warn!("texture {id}: SetTexture2DFormat rejected (bad size or device)");
         send_texture_2d_result(ipc, id, TextureUpdateResultType::FORMAT_SET, false);

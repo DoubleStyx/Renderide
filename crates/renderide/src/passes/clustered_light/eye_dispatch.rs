@@ -336,7 +336,7 @@ mod tests {
     fn clustered_light_eye_params_use_offscreen_render_projection() {
         let scene = SceneCoordinator::new();
         let proj = projection_with_non_unit_y(3.0);
-        let write_target = OffscreenWriteTarget::HostRenderTexture(77);
+        let write_target = OffscreenWriteTarget::host_render_texture(77);
         let eye_params = clustered_light_eye_params_for_viewport(
             false,
             &explicit_camera(proj),

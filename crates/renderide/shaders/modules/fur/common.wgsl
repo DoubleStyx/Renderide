@@ -3,6 +3,7 @@
 #define_import_path renderide::fur::common
 
 #import renderide::draw::per_draw as pd
+#import renderide::frame::globals as rg
 #import renderide::mesh::vertex as mv
 #import renderide::core::uv as uvu
 
@@ -36,6 +37,11 @@ fn noise_uv(uv: vec2<f32>, noise_st: vec4<f32>, hair_thinness: f32) -> vec2<f32>
     return uvu::apply_st(uv, noise_st) * max(hair_thinness, 0.0001);
 }
 
+fn projected_local_force(force_local: vec4<f32>, view_idx: u32) -> vec3<f32> {
+    let clamped_force = clamp(force_local, vec4<f32>(-1.0), vec4<f32>(1.0));
+    return (rg::projection_for_view(view_idx) * clamped_force).xyz;
+}
+
 fn fur_vertex_main(
     instance_index: u32,
     view_idx: u32,
@@ -56,12 +62,14 @@ fn fur_vertex_main(
     let world_t = mv::world_tangent(draw, t);
     let base_world_pos = mv::world_position(draw, pos).xyz;
     let shell_offset = n.xyz * fur_length * fur_multiplier * hair_hardness;
-    let shell_pos = vec4<f32>(pos.xyz + shell_offset, pos.w);
+    let force_scale = fur_multiplier * fur_multiplier * fur_length;
+    let local_force_offset = projected_local_force(force_local, view_idx) * force_scale;
+    let shell_model_pos = pos.xyz + shell_offset + local_force_offset;
+    let shell_pos = vec4<f32>(shell_model_pos, pos.w);
     let shell_world_pos = mv::world_position(draw, shell_pos).xyz;
     let global_force = clamp(force_global.xyz, vec3<f32>(-1.0), vec3<f32>(1.0));
-    let local_force = mv::model_vector(draw, clamp(force_local.xyz, vec3<f32>(-1.0), vec3<f32>(1.0)));
-    let force_offset = (global_force + local_force) * fur_multiplier * fur_multiplier * fur_length;
-    let world_p = shell_world_pos + force_offset;
+    let global_force_offset = global_force * force_scale;
+    let world_p = shell_world_pos + global_force_offset;
     let vp = mv::select_view_proj(draw, view_idx);
 
     var out: VertexOutput;

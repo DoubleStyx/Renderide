@@ -43,6 +43,10 @@ pub struct ClusteredFrameGlobalsParams {
     pub proj_params_left: [f32; 4],
     /// Right-eye projection coefficients; equals `proj_params_left` in mono.
     pub proj_params_right: [f32; 4],
+    /// Left-eye or mono projection matrix, column-major.
+    pub proj_left: [f32; 16],
+    /// Right-eye projection matrix, column-major; equals `proj_left` in mono.
+    pub proj_right: [f32; 16],
     /// Monotonic frame index (wraps `HostCameraFrame::frame_index`).
     pub frame_index: u32,
     /// Left-eye or mono projection flags.
@@ -94,6 +98,8 @@ impl FrameGpuUniforms {
             viewport_height: params.viewport_height,
             proj_params_left: params.proj_params_left,
             proj_params_right: params.proj_params_right,
+            proj_left: params.proj_left,
+            proj_right: params.proj_right,
             frame_tail: [
                 params.frame_index,
                 params.projection_flags_left,

@@ -23,6 +23,14 @@ use crate::gpu_pools::texture_allocation::{
 
 static NEXT_TEXTURE2D_VIEW_GENERATION: AtomicU64 = AtomicU64::new(1);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Texture2dAllocationDesc {
+    width: u32,
+    height: u32,
+    mip_levels_total: u32,
+    wgpu_format: wgpu::TextureFormat,
+}
+
 /// GPU Texture2D: no CPU mip storage; mips live only in [`wgpu::Texture`].
 ///
 /// **`mip_levels_resident`** tracks how many mips currently hold uploaded or synthesized texels. A future
@@ -78,36 +86,10 @@ impl GpuTexture2d {
         fmt: &SetTexture2DFormat,
         props: Option<&SetTexture2DProperties>,
     ) -> Option<Self> {
-        let w = fmt.width.max(0) as u32;
-        let h = fmt.height.max(0) as u32;
-        if w == 0 || h == 0 {
-            return None;
-        }
-        let max_dim = limits.max_texture_dimension_2d();
-        if !validate_texture_extent(
-            fmt.asset_id,
-            "texture",
-            "format size",
-            &format_args!("{w}x{h}"),
-            &[w, h],
-            max_dim,
-            "max_texture_dimension_2d",
-        ) {
-            return None;
-        }
-        let requested_mips = host_texture_mip_count(fmt.mipmap_count);
-        let legal_mips = legal_texture2d_mip_level_count(w, h);
-        let mips = clamp_texture_mip_count(
-            fmt.asset_id,
-            "texture",
-            &format_args!("{w}x{h}"),
-            requested_mips,
-            legal_mips,
-        );
-        let wgpu_format = resolve_texture2d_wgpu_format(device, fmt);
+        let desc = Self::allocation_desc_from_format(device, limits, fmt)?;
         let size = wgpu::Extent3d {
-            width: w,
-            height: h,
+            width: desc.width,
+            height: desc.height,
             depth_or_array_layers: 1,
         };
         let label = format!("Texture2D {}", fmt.asset_id);
@@ -116,16 +98,21 @@ impl GpuTexture2d {
             SampledTextureAllocation {
                 label: &label,
                 size,
-                mip_level_count: mips,
+                mip_level_count: desc.mip_levels_total,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu_format,
+                format: desc.wgpu_format,
                 view: TextureViewInit {
                     label: None,
                     dimension: None,
                 },
             },
         );
-        let resident_bytes = estimate_gpu_texture_bytes(wgpu_format, w, h, mips);
+        let resident_bytes = estimate_gpu_texture_bytes(
+            desc.wgpu_format,
+            desc.width,
+            desc.height,
+            desc.mip_levels_total,
+        );
         let sampler = SamplerState::from_texture2d_props(props);
         let residency = props
             .map(TextureResidencyMeta::from_host_props)
@@ -135,12 +122,12 @@ impl GpuTexture2d {
             texture,
             view,
             view_generation: NEXT_TEXTURE2D_VIEW_GENERATION.fetch_add(1, Ordering::Relaxed),
-            wgpu_format,
+            wgpu_format: desc.wgpu_format,
             host_format: fmt.format,
             color_profile: fmt.profile,
-            width: w,
-            height: h,
-            mip_levels_total: mips,
+            width: desc.width,
+            height: desc.height,
+            mip_levels_total: desc.mip_levels_total,
             mip_levels_resident: 0,
             content_generation: 0,
             storage_v_inverted: false,
@@ -149,6 +136,47 @@ impl GpuTexture2d {
             sampler,
             residency,
         })
+    }
+
+    /// Returns `true` when `fmt` resolves to this texture's current GPU allocation shape.
+    pub(crate) fn allocation_matches_format(
+        &self,
+        device: &wgpu::Device,
+        limits: &GpuLimits,
+        fmt: &SetTexture2DFormat,
+    ) -> bool {
+        Self::allocation_desc_from_format(device, limits, fmt)
+            .is_some_and(|desc| self.allocation_matches_desc(desc))
+    }
+
+    /// Updates format metadata without changing the GPU allocation or resident mip state.
+    pub(crate) fn apply_format_metadata(
+        &mut self,
+        fmt: &SetTexture2DFormat,
+        props: Option<&SetTexture2DProperties>,
+    ) {
+        self.host_format = fmt.format;
+        self.color_profile = fmt.profile;
+        self.sampler = SamplerState::from_texture2d_props(props);
+        self.residency = props
+            .map(TextureResidencyMeta::from_host_props)
+            .unwrap_or_default();
+    }
+
+    fn allocation_desc_from_format(
+        device: &wgpu::Device,
+        limits: &GpuLimits,
+        fmt: &SetTexture2DFormat,
+    ) -> Option<Texture2dAllocationDesc> {
+        let wgpu_format = resolve_texture2d_wgpu_format(device, fmt);
+        texture2d_allocation_desc(limits, fmt, wgpu_format)
+    }
+
+    fn allocation_matches_desc(&self, desc: Texture2dAllocationDesc) -> bool {
+        self.width == desc.width
+            && self.height == desc.height
+            && self.mip_levels_total == desc.mip_levels_total
+            && self.wgpu_format == desc.wgpu_format
     }
 
     /// Marks uploaded mip levels and updates the contiguous resident prefix used for sampler LOD clamps.
@@ -177,6 +205,45 @@ impl GpuTexture2d {
 }
 
 impl_gpu_resource!(GpuTexture2d);
+
+fn texture2d_allocation_desc(
+    limits: &GpuLimits,
+    fmt: &SetTexture2DFormat,
+    wgpu_format: wgpu::TextureFormat,
+) -> Option<Texture2dAllocationDesc> {
+    let w = fmt.width.max(0) as u32;
+    let h = fmt.height.max(0) as u32;
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let max_dim = limits.max_texture_dimension_2d();
+    if !validate_texture_extent(
+        fmt.asset_id,
+        "texture",
+        "format size",
+        &format_args!("{w}x{h}"),
+        &[w, h],
+        max_dim,
+        "max_texture_dimension_2d",
+    ) {
+        return None;
+    }
+    let requested_mips = host_texture_mip_count(fmt.mipmap_count);
+    let legal_mips = legal_texture2d_mip_level_count(w, h);
+    let mip_levels_total = clamp_texture_mip_count(
+        fmt.asset_id,
+        "texture",
+        &format_args!("{w}x{h}"),
+        requested_mips,
+        legal_mips,
+    );
+    Some(Texture2dAllocationDesc {
+        width: w,
+        height: h,
+        mip_levels_total,
+        wgpu_format,
+    })
+}
 
 fn mark_resident_mip_mask(
     resident_mip_mask: &mut u64,
@@ -236,14 +303,130 @@ impl TexturePool {
 
 #[cfg(test)]
 mod tests {
-    use super::{NEXT_TEXTURE2D_VIEW_GENERATION, mark_resident_mip_mask};
     use std::sync::atomic::Ordering;
+
+    use hashbrown::HashMap;
+
+    use crate::gpu::GpuLimits;
+    use crate::shared::{ColorProfile, SetTexture2DFormat, TextureFormat};
+
+    use super::{
+        NEXT_TEXTURE2D_VIEW_GENERATION, mark_resident_mip_mask, texture2d_allocation_desc,
+    };
+
+    fn test_limits(max_texture_dimension_2d: u32) -> GpuLimits {
+        GpuLimits::synthetic_for_tests(
+            wgpu::Limits {
+                max_texture_dimension_2d,
+                ..Default::default()
+            },
+            wgpu::Features::empty(),
+            HashMap::new(),
+        )
+    }
+
+    fn format(
+        width: i32,
+        height: i32,
+        mipmap_count: i32,
+        format: TextureFormat,
+        profile: ColorProfile,
+    ) -> SetTexture2DFormat {
+        SetTexture2DFormat {
+            asset_id: 7,
+            width,
+            height,
+            mipmap_count,
+            format,
+            profile,
+        }
+    }
 
     #[test]
     fn texture_view_generation_is_unique() {
         let first = NEXT_TEXTURE2D_VIEW_GENERATION.fetch_add(1, Ordering::Relaxed);
         let second = NEXT_TEXTURE2D_VIEW_GENERATION.fetch_add(1, Ordering::Relaxed);
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn allocation_desc_reuses_same_gpu_shape() {
+        let limits = test_limits(4096);
+        let base = texture2d_allocation_desc(
+            &limits,
+            &format(64, 32, 4, TextureFormat::RGBA32, ColorProfile::Linear),
+            wgpu::TextureFormat::Rgba8Unorm,
+        )
+        .expect("base allocation");
+        let same_storage = texture2d_allocation_desc(
+            &limits,
+            &format(64, 32, 4, TextureFormat::RGB24, ColorProfile::Linear),
+            wgpu::TextureFormat::Rgba8Unorm,
+        )
+        .expect("same allocation");
+
+        assert_eq!(base, same_storage);
+    }
+
+    #[test]
+    fn allocation_desc_changes_for_size_mips_or_storage() {
+        let limits = test_limits(4096);
+        let base = texture2d_allocation_desc(
+            &limits,
+            &format(64, 32, 4, TextureFormat::RGBA32, ColorProfile::Linear),
+            wgpu::TextureFormat::Rgba8Unorm,
+        )
+        .expect("base allocation");
+
+        assert_ne!(
+            base,
+            texture2d_allocation_desc(
+                &limits,
+                &format(128, 32, 4, TextureFormat::RGBA32, ColorProfile::Linear),
+                wgpu::TextureFormat::Rgba8Unorm,
+            )
+            .expect("different width")
+        );
+        assert_ne!(
+            base,
+            texture2d_allocation_desc(
+                &limits,
+                &format(64, 32, 2, TextureFormat::RGBA32, ColorProfile::Linear),
+                wgpu::TextureFormat::Rgba8Unorm,
+            )
+            .expect("different mips")
+        );
+        assert_ne!(
+            base,
+            texture2d_allocation_desc(
+                &limits,
+                &format(64, 32, 4, TextureFormat::RGBA32, ColorProfile::SRGB),
+                wgpu::TextureFormat::Rgba8UnormSrgb,
+            )
+            .expect("different storage")
+        );
+    }
+
+    #[test]
+    fn allocation_desc_rejects_invalid_size() {
+        let limits = test_limits(64);
+
+        assert!(
+            texture2d_allocation_desc(
+                &limits,
+                &format(0, 32, 1, TextureFormat::RGBA32, ColorProfile::Linear),
+                wgpu::TextureFormat::Rgba8Unorm,
+            )
+            .is_none()
+        );
+        assert!(
+            texture2d_allocation_desc(
+                &limits,
+                &format(128, 32, 1, TextureFormat::RGBA32, ColorProfile::Linear),
+                wgpu::TextureFormat::Rgba8Unorm,
+            )
+            .is_none()
+        );
     }
 
     #[test]
