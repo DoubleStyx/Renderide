@@ -19,6 +19,7 @@ use super::super::{
     FrameGlobalPassRecordInputs, GraphResolveKey, TimedCommandBuffer,
     TransientTextureResolveSurfaceParams, elapsed_ms,
 };
+use super::{PassGpuInputs, PassRecordTargets, PassViewInputs, PhaseRecordingScope};
 
 /// Mutable state needed to replay frame-global schedule steps.
 struct FrameGlobalPassLoop<'record, 'frame> {
@@ -49,17 +50,25 @@ impl FrameGlobalPassLoop<'_, '_> {
     fn record(self) -> Result<(), GraphExecuteError> {
         profiling::scope!("graph::frame_global::pass_loop");
         self.graph.record_phase_steps(
-            PassPhase::FrameGlobal,
-            None,
-            self.resolved,
-            self.graph_resources,
-            self.frame_params,
-            self.frame_blackboard,
-            self.encoder,
-            self.device,
-            self.gpu_limits,
+            PhaseRecordingScope {
+                phase: PassPhase::FrameGlobal,
+                view_idx: None,
+            },
+            PassViewInputs {
+                resolved: self.resolved,
+                graph_resources: self.graph_resources,
+            },
+            PassRecordTargets {
+                frame_params: self.frame_params,
+                blackboard: self.frame_blackboard,
+                encoder: self.encoder,
+            },
+            PassGpuInputs {
+                device: self.device,
+                gpu_limits: self.gpu_limits,
+                profiler: self.pass_profiler,
+            },
             self.upload_batch,
-            self.pass_profiler,
         )
     }
 }

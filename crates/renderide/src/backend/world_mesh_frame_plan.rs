@@ -11,9 +11,9 @@ use crate::gpu::GpuLimits;
 use crate::graph_inputs::{GraphPassFrame, PerViewFramePlan};
 use crate::passes::{
     PreparedWorldMeshForwardFrame, WorldMeshForwardInstancePlanCache,
-    WorldMeshForwardInstancePlanCacheStats, WorldMeshForwardPrepareContext,
-    WorldMeshForwardPrepareScratch, WorldMeshForwardSkyboxRenderer,
-    prepare_world_mesh_forward_frame,
+    WorldMeshForwardInstancePlanCacheStats, WorldMeshForwardPrepareCaches,
+    WorldMeshForwardPrepareGpu, WorldMeshForwardPrepareInputs, WorldMeshForwardPrepareScratch,
+    WorldMeshForwardPrepareView, WorldMeshForwardSkyboxRenderer, prepare_world_mesh_forward_frame,
 };
 use crate::render_graph::blackboard::{
     Blackboard, GraphCommandStats, GraphCommandStatsSlot, blackboard_slot,
@@ -94,14 +94,20 @@ impl BackendWorldMeshFramePlanner {
         let prepared = {
             let mut scratch = scratch_slot.lock();
             prepare_world_mesh_forward_frame(
-                WorldMeshForwardPrepareContext {
-                    device,
-                    uploads,
-                    gpu_limits,
-                    frame,
-                    frame_plan: &frame_plan,
-                    skybox_renderer: &self.skybox,
-                    instance_plan_cache: &self.instance_plan_cache,
+                WorldMeshForwardPrepareInputs {
+                    gpu: WorldMeshForwardPrepareGpu {
+                        device,
+                        uploads,
+                        gpu_limits,
+                    },
+                    view: WorldMeshForwardPrepareView {
+                        frame,
+                        frame_plan: &frame_plan,
+                    },
+                    caches: WorldMeshForwardPrepareCaches {
+                        skybox_renderer: &self.skybox,
+                        instance_plan_cache: &self.instance_plan_cache,
+                    },
                 },
                 prefetched,
                 &mut scratch,

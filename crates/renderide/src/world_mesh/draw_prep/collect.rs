@@ -114,20 +114,31 @@ impl WorldMeshCollectedChunks {
     }
 }
 
-/// Read-only scene, material, and cull state shared across all spaces during draw collection.
-pub struct DrawCollectionContext<'a> {
+/// Scene and resident asset tables shared across draw collection helpers.
+#[derive(Clone, Copy)]
+pub struct DrawCollectionSceneAssets<'a> {
     /// Scene graph for mesh renderables.
     pub scene: &'a SceneCoordinator,
     /// Resident meshes (submeshes, deform buffers).
     pub mesh_pool: &'a MeshPool,
+}
+
+/// Material routing inputs used to resolve draw batch keys.
+#[derive(Clone, Copy)]
+pub struct DrawCollectionMaterialInputs<'a> {
     /// Material property dictionary for batch keys.
-    pub material_dict: &'a MaterialDictionary<'a>,
+    pub dict: &'a MaterialDictionary<'a>,
     /// Shader stem / pipeline routing.
-    pub material_router: &'a MaterialRouter,
+    pub router: &'a MaterialRouter,
     /// Interned material property ids that affect pipeline state.
     pub pipeline_property_ids: &'a MaterialPipelinePropertyIds,
     /// Default vs multiview permutation for embedded materials.
     pub shader_perm: ShaderPermutation,
+}
+
+/// Per-view draw selection, culling, and sorting inputs.
+#[derive(Clone, Copy)]
+pub struct DrawCollectionViewInputs<'a> {
     /// Mono vs stereo / overlay render context.
     pub render_context: RenderingContext,
     /// Head / rig transform for world matrix resolution.
@@ -144,6 +155,13 @@ pub struct DrawCollectionContext<'a> {
     pub transform_filter: Option<&'a CameraTransformDrawFilter>,
     /// Optional render-space scope for offscreen cameras/tasks.
     pub render_space_filter: Option<RenderSpaceId>,
+    /// Optional frame reflection-probe selector used to choose the set of specular IBL probes to use per draw.
+    pub reflection_probes: Option<&'a ReflectionProbeFrameSelection>,
+}
+
+/// Optional frame-level caches shared by all draw collection workers for one view.
+#[derive(Clone, Copy)]
+pub struct DrawCollectionFrameCaches<'a> {
     /// Optional pre-built material batch cache shared across multiple views in the same frame.
     ///
     /// When `Some`, collection reuses the shared cache instead of rebuilding one per call. Callers
@@ -152,16 +170,27 @@ pub struct DrawCollectionContext<'a> {
     /// hand the same borrow to every per-view context. When `None`, a fresh cache is built
     /// internally for this call (backwards-compatible single-view path).
     pub material_cache: Option<&'a FrameMaterialBatchCache>,
-    /// Optional frame reflection-probe selector used to choose the set of specular IBL probes to use per draw.
-    pub reflection_probes: Option<&'a ReflectionProbeFrameSelection>,
     /// Optional pre-expanded dense draw list shared across multiple views in the same frame.
     ///
     /// When `Some`, collection iterates the flat list instead of walking every active render
-    /// space and looking up mesh pool entries per view. The prepared list must have been built
-    /// for the **same** [`Self::render_context`] used here; otherwise material-override
+    /// space and looking up mesh pool entries per view. The prepared list must have been built for
+    /// the same [`DrawCollectionViewInputs::render_context`] used here; otherwise material-override
     /// resolution may disagree. Single-view callers can leave this `None` and fall back to the
     /// scene-walk path.
     pub prepared: Option<&'a FramePreparedRenderables>,
+}
+
+/// Read-only scene, material, and cull state shared across all spaces during draw collection.
+#[derive(Clone, Copy)]
+pub struct DrawCollectionInputs<'a> {
+    /// Scene graph and resident mesh tables.
+    pub scene_assets: DrawCollectionSceneAssets<'a>,
+    /// Material routing inputs used by batch-key resolution.
+    pub materials: DrawCollectionMaterialInputs<'a>,
+    /// Per-view transform, culling, filtering, and sorting inputs.
+    pub view: DrawCollectionViewInputs<'a>,
+    /// Optional frame-level caches reused across this view.
+    pub caches: DrawCollectionFrameCaches<'a>,
 }
 
 /// How [`queue_draws_with_parallelism`] parallelizes per-chunk collection.
@@ -224,8 +253,9 @@ struct PreparedViewChunkTask {
 }
 
 /// Returns whether Hidden-layer renderers should be visible in `ctx`.
-fn hidden_layers_visible_in_view(ctx: &DrawCollectionContext<'_>) -> bool {
-    ctx.transform_filter
+fn hidden_layers_visible_in_view(ctx: &DrawCollectionInputs<'_>) -> bool {
+    ctx.view
+        .transform_filter
         .is_some_and(CameraTransformDrawFilter::has_selective_roots)
 }
 
@@ -263,15 +293,15 @@ impl QueuedWorldMeshDraws {
 
 /// Queues draws from active spaces with control over inner rayon use.
 pub fn queue_draws_with_parallelism(
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     parallelism: WorldMeshDrawCollectParallelism,
 ) -> QueuedWorldMeshDraws {
     profiling::scope!("mesh::queue_draws");
     let owned_space_ids;
     let space_ids: &[RenderSpaceId] = {
         profiling::scope!("mesh::queue_draws::resolve_space_ids");
-        if let Some(prepared) = ctx.prepared {
-            if let Some(space_id) = ctx.render_space_filter {
+        if let Some(prepared) = ctx.caches.prepared {
+            if let Some(space_id) = ctx.view.render_space_filter {
                 owned_space_ids = prepared
                     .active_space_ids()
                     .iter()
@@ -283,21 +313,26 @@ pub fn queue_draws_with_parallelism(
                 prepared.active_space_ids()
             }
         } else {
-            owned_space_ids = match ctx.render_space_filter {
+            owned_space_ids = match ctx.view.render_space_filter {
                 Some(space_id) => ctx
+                    .scene_assets
                     .scene
                     .space(space_id)
                     .filter(|space| space.is_active())
                     .map_or_else(Vec::new, |_| vec![space_id]),
-                None => ctx.scene.render_space_ids().collect::<Vec<_>>(),
+                None => ctx
+                    .scene_assets
+                    .scene
+                    .render_space_ids()
+                    .collect::<Vec<_>>(),
             };
             &owned_space_ids
         }
     };
     let cap_hint = {
         profiling::scope!("mesh::queue_draws::estimate_capacity");
-        if let Some(prepared) = ctx.prepared {
-            match ctx.render_space_filter {
+        if let Some(prepared) = ctx.caches.prepared {
+            match ctx.view.render_space_filter {
                 Some(space_id) => prepared
                     .draws()
                     .iter()
@@ -313,16 +348,16 @@ pub fn queue_draws_with_parallelism(
     let owned_cache;
     let cache: &FrameMaterialBatchCache = {
         profiling::scope!("mesh::queue_draws::resolve_material_cache");
-        if let Some(shared) = ctx.material_cache {
+        if let Some(shared) = ctx.caches.material_cache {
             shared
         } else {
             let mut local = FrameMaterialBatchCache::new();
             local.refresh_for_frame(
-                ctx.scene,
-                ctx.material_dict,
-                ctx.material_router,
-                ctx.pipeline_property_ids,
-                ctx.shader_perm,
+                ctx.scene_assets.scene,
+                ctx.materials.dict,
+                ctx.materials.router,
+                ctx.materials.pipeline_property_ids,
+                ctx.materials.shader_perm,
             );
             owned_cache = local;
             &owned_cache
@@ -358,7 +393,7 @@ pub fn queue_draws_with_parallelism(
 /// fall back to the general per-view queue path. When the combined prepared work is large enough,
 /// this avoids spawning one Rayon job per view that then serially walks every prepared chunk.
 pub(crate) fn queue_prepared_draws_for_views_with_parallelism(
-    contexts: &[DrawCollectionContext<'_>],
+    contexts: &[DrawCollectionInputs<'_>],
     parallelism: WorldMeshDrawCollectParallelism,
 ) -> Option<Vec<QueuedWorldMeshDraws>> {
     profiling::scope!("mesh::queue_prepared_draws_for_views");
@@ -375,7 +410,7 @@ pub(crate) fn queue_prepared_draws_for_views_with_parallelism(
         prepared_collect_admission(task_count, draw_count, current_reference_worker_count());
     record_parallel_admission("prepared_draw_collect", draw_count, draw_count, admission);
     if contexts.len() > 1
-        && contexts.iter().all(|ctx| ctx.culling.is_none())
+        && contexts.iter().all(|ctx| ctx.view.culling.is_none())
         && admission.is_parallel()
     {
         Some(collect_prepared_views_flat(contexts, &states, task_count))
@@ -429,12 +464,12 @@ fn merge_collected_chunks(
 
 /// Builds per-view prepared collection state for all contexts.
 fn build_prepared_collection_states<'a>(
-    contexts: &[DrawCollectionContext<'a>],
+    contexts: &[DrawCollectionInputs<'a>],
 ) -> Option<Vec<PreparedCollectionState<'a>>> {
     let mut states = Vec::with_capacity(contexts.len());
     for ctx in contexts {
-        let prepared = ctx.prepared?;
-        let cache = ctx.material_cache?;
+        let prepared = ctx.caches.prepared?;
+        let cache = ctx.caches.material_cache?;
         let space_ids = prepared_space_ids_for_context(ctx, prepared);
         let cap_hint = prepared_capacity_hint_for_context(ctx, prepared);
         let filter_masks = {
@@ -459,10 +494,10 @@ fn build_prepared_collection_states<'a>(
 
 /// Resolves the active prepared render spaces relevant to one view context.
 fn prepared_space_ids_for_context(
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     prepared: &FramePreparedRenderables,
 ) -> Vec<RenderSpaceId> {
-    match ctx.render_space_filter {
+    match ctx.view.render_space_filter {
         Some(space_id) => prepared
             .active_space_ids()
             .iter()
@@ -475,10 +510,10 @@ fn prepared_space_ids_for_context(
 
 /// Estimates output capacity for one prepared view context.
 fn prepared_capacity_hint_for_context(
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     prepared: &FramePreparedRenderables,
 ) -> usize {
-    match ctx.render_space_filter {
+    match ctx.view.render_space_filter {
         Some(space_id) => prepared
             .draws()
             .iter()
@@ -490,7 +525,7 @@ fn prepared_capacity_hint_for_context(
 
 /// Collects all prepared view chunks through one flat Rayon workload.
 fn collect_prepared_views_flat(
-    contexts: &[DrawCollectionContext<'_>],
+    contexts: &[DrawCollectionInputs<'_>],
     states: &[PreparedCollectionState<'_>],
     task_count: usize,
 ) -> Vec<QueuedWorldMeshDraws> {
@@ -560,11 +595,11 @@ fn build_prepared_view_chunk_tasks(
 
 /// Collects prepared chunks for one view state.
 fn collect_prepared_chunks_for_state(
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     state: &PreparedCollectionState<'_>,
     allow_parallel_chunks: bool,
 ) -> WorldMeshCollectedChunks {
-    if ctx.culling.is_some() {
+    if ctx.view.culling.is_some() {
         let parallelism = if allow_parallel_chunks {
             WorldMeshDrawCollectParallelism::Full
         } else {
@@ -596,7 +631,7 @@ fn collect_prepared_chunks_for_state(
 
 /// Collects prepared chunks for one view from borrowed per-view state.
 fn collect_prepared_chunks(
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     prepared: &FramePreparedRenderables,
     cache: &FrameMaterialBatchCache,
     filter_masks: &HashMap<RenderSpaceId, Vec<bool>>,
@@ -637,14 +672,14 @@ fn collect_prepared_chunks(
 /// `Full` parallelism maps chunks via rayon; `SerialInnerForNestedBatch` keeps iteration serial
 /// so nested multi-view batches don't hammer rayon with contention.
 fn collect_world_mesh_chunks(
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     parallelism: WorldMeshDrawCollectParallelism,
     cache: &FrameMaterialBatchCache,
     filter_masks: &HashMap<RenderSpaceId, Vec<bool>>,
     lod_visibility: &LodVisibility,
     space_ids: &[RenderSpaceId],
 ) -> WorldMeshCollectedChunks {
-    if let Some(prepared) = ctx.prepared {
+    if let Some(prepared) = ctx.caches.prepared {
         return collect_prepared_world_mesh_chunks(
             prepared,
             ctx,
@@ -668,7 +703,7 @@ fn collect_world_mesh_chunks(
 /// Collects chunks from the prepared draw snapshot.
 fn collect_prepared_world_mesh_chunks(
     prepared: &FramePreparedRenderables,
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     parallelism: WorldMeshDrawCollectParallelism,
     cache: &FrameMaterialBatchCache,
     filter_masks: &HashMap<RenderSpaceId, Vec<bool>>,
@@ -676,11 +711,11 @@ fn collect_prepared_world_mesh_chunks(
     space_ids: &[RenderSpaceId],
 ) -> WorldMeshCollectedChunks {
     debug_assert!(
-        prepared.is_compatible_with_render_context(ctx.render_context),
+        prepared.is_compatible_with_render_context(ctx.view.render_context),
         "prepared renderables were built for a different render context than the per-view draw collection -- material overrides would disagree"
     );
     profiling::scope!("mesh::collect_prepared");
-    if ctx.culling.is_some() {
+    if ctx.view.culling.is_some() {
         return collect_prepared_spatial_chunks(
             prepared,
             ctx,
@@ -708,7 +743,7 @@ fn collect_prepared_world_mesh_chunks(
 /// Collects prepared chunks from spatial broadphase candidates.
 fn collect_prepared_spatial_chunks(
     prepared: &FramePreparedRenderables,
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     parallelism: WorldMeshDrawCollectParallelism,
     cache: &FrameMaterialBatchCache,
     filter_masks: &HashMap<RenderSpaceId, Vec<bool>>,
@@ -717,7 +752,8 @@ fn collect_prepared_spatial_chunks(
 ) -> WorldMeshCollectedChunks {
     profiling::scope!("mesh::collect_prepared::spatial_candidates");
     let draws = prepared.draws();
-    let candidates = prepared.spatial_run_candidates(space_ids, ctx.scene, ctx.culling);
+    let candidates =
+        prepared.spatial_run_candidates(space_ids, ctx.scene_assets.scene, ctx.view.culling);
     let candidate_draw_count = candidates
         .runs
         .iter()
@@ -780,7 +816,7 @@ fn merge_spatial_candidate_cull_stats(
 
 /// Collects chunks by walking scene render spaces when no prepared draw snapshot exists.
 fn collect_scene_world_mesh_chunks(
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     parallelism: WorldMeshDrawCollectParallelism,
     cache: &FrameMaterialBatchCache,
     filter_masks: &HashMap<RenderSpaceId, Vec<bool>>,

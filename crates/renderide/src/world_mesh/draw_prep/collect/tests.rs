@@ -44,23 +44,31 @@ fn transform_scale_filter_result(scale: Vec3) -> bool {
     let router = MaterialRouter::new(RasterPipelineKind::Null);
     let registry = PropertyIdRegistry::new();
     let property_ids = MaterialPipelinePropertyIds::new(&registry);
-    let ctx = DrawCollectionContext {
-        scene: &scene,
-        mesh_pool: &mesh_pool,
-        material_dict: &material_dict,
-        material_router: &router,
-        pipeline_property_ids: &property_ids,
-        shader_perm: ShaderPermutation::default(),
-        render_context: RenderingContext::UserView,
-        head_output_transform: Mat4::IDENTITY,
-        view_origin_world: Vec3::ZERO,
-        culling: None,
-        mesh_lod_bias: 2.0,
-        transform_filter: None,
-        render_space_filter: None,
-        material_cache: None,
-        reflection_probes: None,
-        prepared: None,
+    let ctx = DrawCollectionInputs {
+        scene_assets: DrawCollectionSceneAssets {
+            scene: &scene,
+            mesh_pool: &mesh_pool,
+        },
+        materials: DrawCollectionMaterialInputs {
+            dict: &material_dict,
+            router: &router,
+            pipeline_property_ids: &property_ids,
+            shader_perm: ShaderPermutation::default(),
+        },
+        view: DrawCollectionViewInputs {
+            render_context: RenderingContext::UserView,
+            head_output_transform: Mat4::IDENTITY,
+            view_origin_world: Vec3::ZERO,
+            culling: None,
+            mesh_lod_bias: 2.0,
+            transform_filter: None,
+            render_space_filter: None,
+            reflection_probes: None,
+        },
+        caches: DrawCollectionFrameCaches {
+            material_cache: None,
+            prepared: None,
+        },
     };
 
     transform_chain_has_degenerate_scale(&ctx, space_id, 0)
@@ -75,23 +83,31 @@ fn hidden_visibility_for_filter(filter: Option<&CameraTransformDrawFilter>) -> b
     let router = MaterialRouter::new(RasterPipelineKind::Null);
     let registry = PropertyIdRegistry::new();
     let property_ids = MaterialPipelinePropertyIds::new(&registry);
-    let ctx = DrawCollectionContext {
-        scene: &scene,
-        mesh_pool: &mesh_pool,
-        material_dict: &material_dict,
-        material_router: &router,
-        pipeline_property_ids: &property_ids,
-        shader_perm: ShaderPermutation::default(),
-        render_context: RenderingContext::UserView,
-        head_output_transform: Mat4::IDENTITY,
-        view_origin_world: Vec3::ZERO,
-        culling: None,
-        mesh_lod_bias: 2.0,
-        transform_filter: filter,
-        render_space_filter: None,
-        material_cache: None,
-        reflection_probes: None,
-        prepared: None,
+    let ctx = DrawCollectionInputs {
+        scene_assets: DrawCollectionSceneAssets {
+            scene: &scene,
+            mesh_pool: &mesh_pool,
+        },
+        materials: DrawCollectionMaterialInputs {
+            dict: &material_dict,
+            router: &router,
+            pipeline_property_ids: &property_ids,
+            shader_perm: ShaderPermutation::default(),
+        },
+        view: DrawCollectionViewInputs {
+            render_context: RenderingContext::UserView,
+            head_output_transform: Mat4::IDENTITY,
+            view_origin_world: Vec3::ZERO,
+            culling: None,
+            mesh_lod_bias: 2.0,
+            transform_filter: filter,
+            render_space_filter: None,
+            reflection_probes: None,
+        },
+        caches: DrawCollectionFrameCaches {
+            material_cache: None,
+            prepared: None,
+        },
     };
     hidden_layers_visible_in_view(&ctx)
 }

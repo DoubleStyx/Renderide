@@ -481,8 +481,8 @@ pub enum TextureDataStart {
     MipChain(TextureMipChainUploader),
 }
 
-/// GPU target, host format, and raw payload for one [`texture_upload_start`] call.
-pub struct Texture2dUploadContext<'a> {
+/// Queue and device access used by one [`texture_upload_start`] call.
+pub struct Texture2dUploadQueueInputs<'a> {
     /// Device for decode-path capability checks.
     pub device: &'a wgpu::Device,
     /// Queue for texel copies.
@@ -492,36 +492,55 @@ pub struct Texture2dUploadContext<'a> {
     pub gpu_queue_access_gate: &'a crate::gpu::GpuQueueAccessGate,
     /// Queue-gate acquisition policy for this upload start.
     pub queue_access_mode: GpuQueueAccessMode,
+}
+
+/// Destination texture and format metadata for one 2D texture upload.
+pub struct Texture2dUploadTarget<'a> {
     /// Destination texture (must match `fmt` dimensions).
     pub texture: &'a wgpu::Texture,
     /// Host-side format descriptor (dimensions, mip count, texel format).
     pub fmt: &'a SetTexture2DFormat,
     /// Resolved GPU storage format.
     pub wgpu_format: wgpu::TextureFormat,
+}
+
+/// Host upload descriptor and raw shared-memory bytes for one 2D texture upload.
+pub struct Texture2dUploadPayload<'a> {
     /// Upload record (mip starts, region hint, descriptor length).
     pub upload: &'a SetTexture2DData,
     /// Raw shared-memory bytes covering the descriptor window.
     pub raw: &'a [u8],
 }
 
+/// Inputs for selecting the 2D texture upload path.
+pub struct Texture2dUploadInputs<'a> {
+    /// Queue, gate, and device handles for upload work.
+    pub queue: Texture2dUploadQueueInputs<'a>,
+    /// Destination texture and texture format metadata.
+    pub target: Texture2dUploadTarget<'a>,
+    /// Host upload descriptor and payload bytes.
+    pub payload: Texture2dUploadPayload<'a>,
+}
+
 /// Classifies sub-region vs full mip chain and runs the sub-region upload when applicable.
 pub fn texture_upload_start(
-    ctx: &Texture2dUploadContext<'_>,
+    inputs: &Texture2dUploadInputs<'_>,
 ) -> Result<TextureDataStart, TextureUploadError> {
     profiling::scope!("asset::texture_upload_start");
-    if ctx.upload.hint.has_region != 0 {
-        if hint_region_is_empty(&ctx.upload.hint) {
+    let upload = inputs.payload.upload;
+    if upload.hint.has_region != 0 {
+        if hint_region_is_empty(&upload.hint) {
             logger::trace!(
                 "texture {}: TextureUploadHint.has_region set but region empty; skipping upload",
-                ctx.upload.asset_id
+                upload.asset_id
             );
             return Ok(TextureDataStart::SubregionComplete(0));
         }
-        match try_write_texture2d_subregion(ctx) {
+        match try_write_texture2d_subregion(inputs) {
             Some(Ok(n)) => {
                 logger::trace!(
                     "texture {}: sub-region texture upload ({} mips equivalent)",
-                    ctx.upload.asset_id,
+                    upload.asset_id,
                     n
                 );
                 return Ok(TextureDataStart::SubregionComplete(n));
@@ -530,15 +549,15 @@ pub fn texture_upload_start(
             None => {
                 logger::trace!(
                     "texture {}: TextureUploadHint.has_region set; using full mip upload path",
-                    ctx.upload.asset_id
+                    upload.asset_id
                 );
             }
         }
     }
     Ok(TextureDataStart::MipChain(TextureMipChainUploader::new(
-        ctx.texture,
-        ctx.fmt,
-        ctx.upload,
-        ctx.raw,
+        inputs.target.texture,
+        inputs.target.fmt,
+        upload,
+        inputs.payload.raw,
     )?))
 }

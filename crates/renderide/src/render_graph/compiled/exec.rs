@@ -128,9 +128,9 @@ use submit::release_transients_and_gc;
 use types::{
     DrainedUploadCommand, FrameGlobalPassRecordInputs, GraphCommandRecordingPath, GraphResolveKey,
     OwnedResolvedView, PerViewEncodeOutput, PerViewRecordInputs, PerViewRecordOutput,
-    PerViewRecordShared, PerViewWorkItem, PreparedPerViewFrameInput, RecordedPerViewBatch,
-    ResolvedOffscreenColorCopy, SubmitFrameBatchStats, SubmitFrameInputs, TimedCommandBuffer,
-    TransientTextureResolveSurfaceParams,
+    PerViewRecordShared, PerViewWorkItem, PreparedPerViewFrameInput, PreparedPerViewFrameParams,
+    RecordedPerViewBatch, ResolvedOffscreenColorCopy, SubmitFrameBatchStats, SubmitFrameInputs,
+    TimedCommandBuffer, TransientTextureResolveSurfaceParams,
 };
 
 impl CompiledRenderGraph {
@@ -994,13 +994,15 @@ impl CompiledRenderGraph {
                 skin_weight_mode: shared.skin_weight_mode,
                 debug_hud: shared.debug_hud,
             },
-            &resolved,
-            shared.scene_color_format,
-            &work_item.host_camera,
-            work_item.render_context,
-            work_item.frame_time_seconds,
-            work_item.clear,
-            resolved.post_processing,
+            PreparedPerViewFrameParams {
+                resolved: &resolved,
+                scene_color_format: shared.scene_color_format,
+                host_camera: &work_item.host_camera,
+                render_context: work_item.render_context,
+                frame_time_seconds: work_item.frame_time_seconds,
+                clear: work_item.clear,
+                post_processing: resolved.post_processing,
+            },
         );
         shared.preparer.prepare_view_blackboard(
             shared.device,

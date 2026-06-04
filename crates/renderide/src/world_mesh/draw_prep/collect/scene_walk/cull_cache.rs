@@ -12,7 +12,7 @@ use crate::world_mesh::culling::{
     mesh_world_geometry_for_cull_with_head,
 };
 
-use super::super::DrawCollectionContext;
+use super::super::DrawCollectionInputs;
 use super::StaticMeshDrawSource;
 
 /// Per-renderer CPU cull outcome shared across the renderer's material slots.
@@ -30,23 +30,23 @@ pub(super) enum CachedCull {
 /// Skinned renderers and frames without a culling pass return `None`; otherwise the result is
 /// translated into [`CachedCull`] so per-slot expansion never reruns the same test.
 pub(super) fn compute_cached_cull(
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     draw: &StaticMeshDrawSource<'_>,
     is_overlay: bool,
 ) -> Option<CachedCull> {
     if draw.skinned {
         return None;
     }
-    let culling = ctx.culling?;
+    let culling = ctx.view.culling?;
     let target = MeshCullTarget {
-        scene: ctx.scene,
+        scene: ctx.scene_assets.scene,
         space_id: draw.space_id,
         mesh: draw.mesh,
         skinned: draw.skinned,
         skinned_renderer: draw.skinned_renderer,
         node_id: draw.renderer.node_id,
     };
-    match mesh_draw_passes_cpu_cull(&target, is_overlay, culling, ctx.render_context, None) {
+    match mesh_draw_passes_cpu_cull(&target, is_overlay, culling, ctx.view.render_context, None) {
         Ok(rigid_world_matrix) => Some(CachedCull::Accepted(rigid_world_matrix)),
         Err(CpuCullFailure::Frustum) => Some(CachedCull::RejectedFrustum),
         Err(CpuCullFailure::HiZ) => Some(CachedCull::RejectedHiZ),
@@ -57,7 +57,7 @@ pub(super) fn compute_cached_cull(
 /// Returns the cull outcome for a single slot, falling back to an inline cull for single-slot
 /// renderers that bypassed the cache hoist.
 pub(super) fn cull_result_for_slot(
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     draw: &StaticMeshDrawSource<'_>,
     is_overlay: bool,
     cached_cull: Option<&CachedCull>,
@@ -68,10 +68,10 @@ pub(super) fn cull_result_for_slot(
         Some(CachedCull::RejectedHiZ) => Some(Err(CpuCullFailure::HiZ)),
         // Single-slot renderer bypassed the hoist: cull inline so per-slot work matches the
         // cached path without paying the CachedCull wrapper cost.
-        None if !draw.skinned => ctx.culling.map(|culling| {
+        None if !draw.skinned => ctx.view.culling.map(|culling| {
             mesh_draw_passes_cpu_cull(
                 &MeshCullTarget {
-                    scene: ctx.scene,
+                    scene: ctx.scene_assets.scene,
                     space_id: draw.space_id,
                     mesh: draw.mesh,
                     skinned: draw.skinned,
@@ -80,7 +80,7 @@ pub(super) fn cull_result_for_slot(
                 },
                 is_overlay,
                 culling,
-                ctx.render_context,
+                ctx.view.render_context,
                 None,
             )
         }),
@@ -94,18 +94,22 @@ pub(super) fn cull_result_for_slot(
 /// expressed as an AABB (e.g. instantly skinned). Probe selection compares against the centroid
 /// of the AABB.
 pub(super) fn world_aabb_for_reflection_probe_selection(
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     draw: &StaticMeshDrawSource<'_>,
 ) -> Option<(Vec3, Vec3)> {
-    ctx.reflection_probes?;
+    ctx.view.reflection_probes?;
     let target = MeshCullTarget {
-        scene: ctx.scene,
+        scene: ctx.scene_assets.scene,
         space_id: draw.space_id,
         mesh: draw.mesh,
         skinned: draw.skinned,
         skinned_renderer: draw.skinned_renderer,
         node_id: draw.renderer.node_id,
     };
-    mesh_world_geometry_for_cull_with_head(&target, ctx.head_output_transform, ctx.render_context)
-        .world_aabb
+    mesh_world_geometry_for_cull_with_head(
+        &target,
+        ctx.view.head_output_transform,
+        ctx.view.render_context,
+    )
+    .world_aabb
 }

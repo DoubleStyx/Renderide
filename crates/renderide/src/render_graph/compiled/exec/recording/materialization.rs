@@ -1,14 +1,16 @@
 //! Raster pass materialization and phase-step recording helpers.
 
-use super::super::super::super::blackboard::Blackboard;
-use super::super::super::super::context::{GraphResolvedResources, RasterPassCtx};
+use super::super::super::super::context::RasterPassCtx;
 use super::super::super::super::error::GraphExecuteError;
 use super::super::super::super::frame_upload_batch::{FrameUploadBatch, GraphUploadSink};
-use super::super::super::super::pass::{PassKind, PassNode, PassPhase};
+use super::super::super::super::pass::{PassKind, PassNode};
 use super::super::super::super::schedule::{RenderPassMaterializationGroup, ScheduleStep};
+use super::super::super::CompiledRenderGraph;
 use super::super::super::helpers;
-use super::super::super::{CompiledRenderGraph, ResolvedView};
-use super::update_command_stats;
+use super::{
+    PassExecution, PassGpuInputs, PassRecordTargets, PassViewInputs, PhaseRecordingScope,
+    update_command_stats,
+};
 use crate::render_graph::blackboard::GraphCommandStats;
 
 impl CompiledRenderGraph {
@@ -47,60 +49,43 @@ impl CompiledRenderGraph {
     }
 
     /// Records all schedule steps for one pass phase in flat topological order.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "recording loop borrows must stay independent"
-    )]
     pub(super) fn record_phase_steps<'a>(
         &self,
-        phase: PassPhase,
-        view_idx: Option<usize>,
-        resolved: &'a ResolvedView<'a>,
-        graph_resources: &'a GraphResolvedResources,
-        frame_params: &mut crate::graph_inputs::GraphPassFrame<'a>,
-        blackboard: &mut Blackboard,
-        encoder: &mut wgpu::CommandEncoder,
-        device: &'a wgpu::Device,
-        gpu_limits: &'a crate::gpu::GpuLimits,
+        scope: PhaseRecordingScope,
+        view: PassViewInputs<'a>,
+        mut targets: PassRecordTargets<'a, '_, '_>,
+        gpu: PassGpuInputs<'a>,
         upload_batch: &FrameUploadBatch,
-        profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
     ) -> Result<(), GraphExecuteError> {
         let mut step_idx = 0usize;
         while step_idx < self.schedule.steps.len() {
             let step = self.schedule.steps[step_idx];
-            if step.phase != phase {
+            if step.phase != scope.phase {
                 step_idx += 1;
                 continue;
             }
             if let Some(group) = self.materialization_group_starting_at(step_idx)
                 && self.try_execute_raster_materialization_group(
                     group,
-                    phase,
-                    view_idx,
-                    graph_resources,
-                    frame_params,
-                    blackboard,
-                    encoder,
-                    device,
+                    scope,
+                    view,
+                    targets.reborrow(),
+                    gpu,
                     upload_batch,
-                    profiler,
                 )?
             {
                 step_idx = group.end_step;
                 continue;
             }
             self.execute_pass_node(
-                step.pass_idx,
-                step.frame_upload_scope(view_idx),
-                resolved,
-                graph_resources,
-                frame_params,
-                blackboard,
-                encoder,
-                device,
-                gpu_limits,
+                PassExecution {
+                    pass_idx: step.pass_idx,
+                    upload_scope: step.frame_upload_scope(scope.view_idx),
+                },
+                view,
+                targets.reborrow(),
+                gpu,
                 upload_batch,
-                profiler,
             )?;
             step_idx += 1;
         }
@@ -108,25 +93,17 @@ impl CompiledRenderGraph {
     }
 
     /// Attempts to record one compatible raster group inside a single `wgpu::RenderPass`.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "merged raster recording shares the same pass context borrows"
-    )]
     pub(super) fn try_execute_raster_materialization_group<'a>(
         &self,
         group: RenderPassMaterializationGroup,
-        phase: PassPhase,
-        view_idx: Option<usize>,
-        graph_resources: &'a GraphResolvedResources,
-        frame_params: &mut crate::graph_inputs::GraphPassFrame<'a>,
-        blackboard: &mut Blackboard,
-        encoder: &mut wgpu::CommandEncoder,
-        device: &'a wgpu::Device,
+        scope: PhaseRecordingScope,
+        view: PassViewInputs<'a>,
+        targets: PassRecordTargets<'a, '_, '_>,
+        gpu: PassGpuInputs<'a>,
         upload_batch: &FrameUploadBatch,
-        profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
     ) -> Result<bool, GraphExecuteError> {
         let steps = &self.schedule.steps[group.start_step..group.end_step];
-        if steps.len() < 2 || !steps.iter().all(|step| step.phase == phase) {
+        if steps.len() < 2 || !steps.iter().all(|step| step.phase == scope.phase) {
             return Ok(false);
         }
         let Some(first_step) = steps.first().copied() else {
@@ -139,14 +116,20 @@ impl CompiledRenderGraph {
             return Ok(false);
         };
 
-        let uploads = GraphUploadSink::new(upload_batch, first_step.frame_upload_scope(view_idx));
+        let PassRecordTargets {
+            frame_params,
+            blackboard,
+            encoder,
+        } = targets;
+        let uploads =
+            GraphUploadSink::new(upload_batch, first_step.frame_upload_scope(scope.view_idx));
         let mut ctx = RasterPassCtx {
-            device,
+            device: gpu.device,
             pass_frame: frame_params,
             uploads,
-            graph_resources,
+            graph_resources: view.graph_resources,
             blackboard,
-            profiler,
+            profiler: gpu.profiler,
         };
         if !self.materialized_group_dynamic_state_matches(steps, &templates, &ctx) {
             return Ok(false);
@@ -161,7 +144,7 @@ impl CompiledRenderGraph {
         let color_attachments = helpers::resolve_color_attachments(
             "render-graph-raster-merged",
             &merged_template,
-            graph_resources,
+            view.graph_resources,
             sample_count,
         )?;
         let stencil_ops = merged_template
@@ -171,7 +154,7 @@ impl CompiledRenderGraph {
         let depth_stencil_attachment = helpers::resolve_depth_attachment_with_stencil(
             "render-graph-raster-merged",
             &merged_template,
-            graph_resources,
+            view.graph_resources,
             sample_count,
             stencil_ops,
         )?;
@@ -191,9 +174,9 @@ impl CompiledRenderGraph {
         });
         for (idx, step) in steps.iter().copied().enumerate() {
             let pass = &self.passes[step.pass_idx];
-            let scope = step.frame_upload_scope(view_idx);
-            let _upload_scope = upload_batch.enter_scope(scope);
-            ctx.uploads = GraphUploadSink::new(upload_batch, scope);
+            let upload_scope = step.frame_upload_scope(scope.view_idx);
+            let _upload_scope = upload_batch.enter_scope(upload_scope);
+            ctx.uploads = GraphUploadSink::new(upload_batch, upload_scope);
             let should_record = if idx == 0 {
                 true
             } else {

@@ -14,7 +14,7 @@ use crate::world_mesh::materials::{
 };
 
 use super::super::item::WorldMeshDrawItem;
-use super::DrawCollectionContext;
+use super::DrawCollectionInputs;
 
 /// View-local material-slot draw candidate shared by scene-walk and prepared collection.
 pub(super) struct DrawCandidate {
@@ -58,7 +58,7 @@ pub(super) struct DrawCandidate {
 
 /// Builds a draw item from a cull-surviving material-slot candidate without allocating.
 pub(super) fn evaluate_draw_candidate(
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     cache: &FrameMaterialBatchCache,
     candidate: DrawCandidate,
     front_face: RasterFrontFace,
@@ -82,16 +82,16 @@ pub(super) fn evaluate_draw_candidate(
         primitive_topology,
         cache,
         MaterialResolveCtx {
-            dict: ctx.material_dict,
-            router: ctx.material_router,
-            pipeline_property_ids: ctx.pipeline_property_ids,
-            shader_perm: ctx.shader_perm,
+            dict: ctx.materials.dict,
+            router: ctx.materials.router,
+            pipeline_property_ids: ctx.materials.pipeline_property_ids,
+            shader_perm: ctx.materials.shader_perm,
         },
     );
     apply_render_buffer_mesh_pipeline_override(
         &mut batch_key,
         candidate.mesh_asset_id,
-        ctx.shader_perm,
+        ctx.materials.shader_perm,
     );
     // Per-slot UI rect-mask CPU cull: the per-renderer cull above runs once per renderer (and
     // bypasses overlay anyway), so the actual rect-vs-viewport check has to live here, where
@@ -100,8 +100,14 @@ pub(super) fn evaluate_draw_candidate(
     // is what tanks the friend list FPS.
     if candidate.is_overlay
         && let (Some(rect), Some(model), Some(culling)) =
-            (ui_rect_clip_local, rigid_world_matrix, ctx.culling)
-        && !overlay_rect_clip_visible(ctx.scene, candidate.space_id, culling, rect, model)
+            (ui_rect_clip_local, rigid_world_matrix, ctx.view.culling)
+        && !overlay_rect_clip_visible(
+            ctx.scene_assets.scene,
+            candidate.space_id,
+            culling,
+            rect,
+            model,
+        )
     {
         return None;
     }
@@ -110,7 +116,7 @@ pub(super) fn evaluate_draw_candidate(
         || (candidate.tangent_blendshape_deform_active && batch_key.embedded_needs_tangent);
     let camera_distance_sq = if batch_key.uses_transparent_sorting() {
         transparent_sort_distance_sq(
-            ctx.view_origin_world,
+            ctx.view.view_origin_world,
             candidate.world_aabb,
             alpha_distance_sq,
         )
@@ -133,7 +139,7 @@ pub(super) fn evaluate_draw_candidate(
         opaque_depth_bucket,
         batch_key_hash,
     );
-    let reflection_probes = match (ctx.reflection_probes, candidate.world_aabb) {
+    let reflection_probes = match (ctx.view.reflection_probes, candidate.world_aabb) {
         (Some(selection), Some(aabb)) => selection.select(candidate.space_id, aabb),
         _ => ReflectionProbeDrawSelection::default(),
     };
@@ -229,6 +235,42 @@ mod tests {
     };
     use crate::scene::SceneCoordinator;
     use crate::shared::RenderingContext;
+    use crate::world_mesh::draw_prep::collect::{
+        DrawCollectionFrameCaches, DrawCollectionMaterialInputs, DrawCollectionSceneAssets,
+        DrawCollectionViewInputs,
+    };
+
+    fn test_draw_context<'a>(
+        scene: &'a SceneCoordinator,
+        mesh_pool: &'a MeshPool,
+        material_dict: &'a MaterialDictionary<'a>,
+        router: &'a MaterialRouter,
+        property_ids: &'a MaterialPipelinePropertyIds,
+    ) -> DrawCollectionInputs<'a> {
+        DrawCollectionInputs {
+            scene_assets: DrawCollectionSceneAssets { scene, mesh_pool },
+            materials: DrawCollectionMaterialInputs {
+                dict: material_dict,
+                router,
+                pipeline_property_ids: property_ids,
+                shader_perm: ShaderPermutation::default(),
+            },
+            view: DrawCollectionViewInputs {
+                render_context: RenderingContext::UserView,
+                head_output_transform: Mat4::IDENTITY,
+                view_origin_world: Vec3::ZERO,
+                culling: None,
+                mesh_lod_bias: 2.0,
+                transform_filter: None,
+                render_space_filter: None,
+                reflection_probes: None,
+            },
+            caches: DrawCollectionFrameCaches {
+                material_cache: None,
+                prepared: None,
+            },
+        }
+    }
 
     #[test]
     fn evaluate_draw_candidate_preserves_renderer_identity_separate_from_node_id() {
@@ -240,24 +282,7 @@ mod tests {
         let registry = PropertyIdRegistry::new();
         let property_ids = MaterialPipelinePropertyIds::new(&registry);
         let cache = FrameMaterialBatchCache::new();
-        let ctx = DrawCollectionContext {
-            scene: &scene,
-            mesh_pool: &mesh_pool,
-            material_dict: &material_dict,
-            material_router: &router,
-            pipeline_property_ids: &property_ids,
-            shader_perm: ShaderPermutation::default(),
-            render_context: RenderingContext::UserView,
-            head_output_transform: Mat4::IDENTITY,
-            view_origin_world: Vec3::ZERO,
-            culling: None,
-            mesh_lod_bias: 2.0,
-            transform_filter: None,
-            render_space_filter: None,
-            material_cache: None,
-            reflection_probes: None,
-            prepared: None,
-        };
+        let ctx = test_draw_context(&scene, &mesh_pool, &material_dict, &router, &property_ids);
         let candidate = DrawCandidate {
             space_id: RenderSpaceId(3),
             node_id: 9,
@@ -305,24 +330,7 @@ mod tests {
         let registry = PropertyIdRegistry::new();
         let property_ids = MaterialPipelinePropertyIds::new(&registry);
         let cache = FrameMaterialBatchCache::new();
-        let ctx = DrawCollectionContext {
-            scene: &scene,
-            mesh_pool: &mesh_pool,
-            material_dict: &material_dict,
-            material_router: &router,
-            pipeline_property_ids: &property_ids,
-            shader_perm: ShaderPermutation::default(),
-            render_context: RenderingContext::UserView,
-            head_output_transform: Mat4::IDENTITY,
-            view_origin_world: Vec3::ZERO,
-            culling: None,
-            mesh_lod_bias: 2.0,
-            transform_filter: None,
-            render_space_filter: None,
-            material_cache: None,
-            reflection_probes: None,
-            prepared: None,
-        };
+        let ctx = test_draw_context(&scene, &mesh_pool, &material_dict, &router, &property_ids);
         let candidate = DrawCandidate {
             space_id: RenderSpaceId(3),
             node_id: 9,
@@ -384,24 +392,7 @@ mod tests {
             RasterPipelineKind::EmbeddedStem(std::sync::Arc::<str>::from("ui_unlit_default")),
         );
         let cache = FrameMaterialBatchCache::new();
-        let ctx = DrawCollectionContext {
-            scene: &scene,
-            mesh_pool: &mesh_pool,
-            material_dict: &material_dict,
-            material_router: &router,
-            pipeline_property_ids: &property_ids,
-            shader_perm: ShaderPermutation::default(),
-            render_context: RenderingContext::UserView,
-            head_output_transform: Mat4::IDENTITY,
-            view_origin_world: Vec3::ZERO,
-            culling: None,
-            mesh_lod_bias: 2.0,
-            transform_filter: None,
-            render_space_filter: None,
-            material_cache: None,
-            reflection_probes: None,
-            prepared: None,
-        };
+        let ctx = test_draw_context(&scene, &mesh_pool, &material_dict, &router, &property_ids);
         let candidate = DrawCandidate {
             space_id: RenderSpaceId(3),
             node_id: 9,
@@ -473,24 +464,7 @@ mod tests {
         let registry = PropertyIdRegistry::new();
         let property_ids = MaterialPipelinePropertyIds::new(&registry);
         let cache = FrameMaterialBatchCache::new();
-        let ctx = DrawCollectionContext {
-            scene: &scene,
-            mesh_pool: &mesh_pool,
-            material_dict: &material_dict,
-            material_router: &router,
-            pipeline_property_ids: &property_ids,
-            shader_perm: ShaderPermutation::default(),
-            render_context: RenderingContext::UserView,
-            head_output_transform: Mat4::IDENTITY,
-            view_origin_world: Vec3::ZERO,
-            culling: None,
-            mesh_lod_bias: 2.0,
-            transform_filter: None,
-            render_space_filter: None,
-            material_cache: None,
-            reflection_probes: None,
-            prepared: None,
-        };
+        let ctx = test_draw_context(&scene, &mesh_pool, &material_dict, &router, &property_ids);
         let candidate = DrawCandidate {
             space_id: RenderSpaceId(3),
             node_id: 9,

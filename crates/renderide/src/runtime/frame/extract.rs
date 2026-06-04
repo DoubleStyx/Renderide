@@ -19,10 +19,12 @@ use crate::render_graph::{
 };
 use crate::world_mesh::QueuedWorldMeshDraws;
 use crate::world_mesh::{
-    DrawCollectionContext, HiZTemporalState, PrefetchedWorldMeshViewDraws, WorldMeshCommandCache,
-    WorldMeshCullInput, WorldMeshCullProjParams, WorldMeshDrawArrangeParallelism,
-    WorldMeshDrawCollectParallelism, WorldMeshDrawPlan, build_world_mesh_cull_proj_params,
-    queue_draws_with_parallelism, queue_prepared_draws_for_views_with_parallelism,
+    DrawCollectionFrameCaches, DrawCollectionInputs, DrawCollectionMaterialInputs,
+    DrawCollectionSceneAssets, DrawCollectionViewInputs, HiZTemporalState,
+    PrefetchedWorldMeshViewDraws, WorldMeshCommandCache, WorldMeshCullInput,
+    WorldMeshCullProjParams, WorldMeshDrawArrangeParallelism, WorldMeshDrawCollectParallelism,
+    WorldMeshDrawPlan, build_world_mesh_cull_proj_params, queue_draws_with_parallelism,
+    queue_prepared_draws_for_views_with_parallelism,
 };
 
 use super::view_plan::{FrameViewPlan, ViewFamilyPlan};
@@ -528,23 +530,31 @@ fn queue_view_draws(
                     profiling::scope!("render::queue_view_draws::material_cache_lookup");
                     setup.material_cache_for(render_context, shader_perm)
                 };
-                DrawCollectionContext {
-                    scene: setup.scene,
-                    mesh_pool: setup.mesh_pool,
-                    material_dict: &dict,
-                    material_router: setup.router,
-                    pipeline_property_ids: &setup.pipeline_property_ids,
-                    shader_perm,
-                    render_context,
-                    head_output_transform: prep.host_camera.head_output_transform,
-                    view_origin_world: prep.view_origin_world(),
-                    culling: culling.as_ref(),
-                    mesh_lod_bias,
-                    transform_filter: prep.draw_filter.as_ref(),
-                    render_space_filter: prep.render_space_filter,
-                    material_cache,
-                    reflection_probes: Some(setup.reflection_probes),
-                    prepared: setup.prepared_renderables_for(render_context),
+                DrawCollectionInputs {
+                    scene_assets: DrawCollectionSceneAssets {
+                        scene: setup.scene,
+                        mesh_pool: setup.mesh_pool,
+                    },
+                    materials: DrawCollectionMaterialInputs {
+                        dict: &dict,
+                        router: setup.router,
+                        pipeline_property_ids: &setup.pipeline_property_ids,
+                        shader_perm,
+                    },
+                    view: DrawCollectionViewInputs {
+                        render_context,
+                        head_output_transform: prep.host_camera.head_output_transform,
+                        view_origin_world: prep.view_origin_world(),
+                        culling: culling.as_ref(),
+                        mesh_lod_bias,
+                        transform_filter: prep.draw_filter.as_ref(),
+                        render_space_filter: prep.render_space_filter,
+                        reflection_probes: Some(setup.reflection_probes),
+                    },
+                    caches: DrawCollectionFrameCaches {
+                        material_cache,
+                        prepared: setup.prepared_renderables_for(render_context),
+                    },
                 }
             })
             .collect::<Vec<_>>()
@@ -563,7 +573,7 @@ fn queue_view_draws(
 
 /// Queues one view through the general draw-collection path.
 fn collect_one_view_draws(
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     cull_proj: Option<&WorldMeshCullProjParams>,
     parallelism: WorldMeshDrawCollectParallelism,
 ) -> QueuedViewDraws {
@@ -585,7 +595,7 @@ fn cull_proj_or_none(
 
 /// Dispatches queued draw collection using the selected view-level parallelism strategy.
 fn collect_view_draws_with_strategy(
-    contexts: &[DrawCollectionContext<'_>],
+    contexts: &[DrawCollectionInputs<'_>],
     cull_projs: &[Option<WorldMeshCullProjParams>],
     parallelize_views: bool,
     parallelism: WorldMeshDrawCollectParallelism,

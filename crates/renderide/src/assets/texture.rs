@@ -23,8 +23,9 @@ pub use unpack::{
 };
 pub(crate) use upload::upload_uses_storage_v_inversion;
 pub use upload::{
-    CubemapFaceMipUploadStep, CubemapMipChainUploader, MipChainAdvance, Texture2dUploadContext,
-    Texture3dMipAdvance, Texture3dMipChainUploader, Texture3dMipUploadStep, TextureDataStart,
-    TextureMipChainUploader, TextureMipUploadStep, TextureUploadError, resolve_cubemap_wgpu_format,
+    CubemapFaceMipUploadStep, CubemapMipChainUploader, MipChainAdvance, Texture2dUploadInputs,
+    Texture2dUploadPayload, Texture2dUploadQueueInputs, Texture2dUploadTarget, Texture3dMipAdvance,
+    Texture3dMipChainUploader, Texture3dMipUploadStep, TextureDataStart, TextureMipChainUploader,
+    TextureMipUploadStep, TextureUploadError, resolve_cubemap_wgpu_format,
     resolve_texture2d_wgpu_format, resolve_texture3d_wgpu_format, texture_upload_start,
 };

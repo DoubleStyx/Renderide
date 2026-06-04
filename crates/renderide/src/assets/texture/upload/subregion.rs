@@ -8,7 +8,7 @@ use super::error::TextureUploadError;
 use super::mip_write_common::{
     TextureRegionWrite, choose_mip_start_bias, is_rgba8_family, write_texture_region,
 };
-use super::write_mip_chain::Texture2dUploadContext;
+use super::write_mip_chain::Texture2dUploadInputs;
 
 /// Describes a sub-rectangle within a full mip for tight row-major extraction (uncompressed).
 pub(super) struct MipSubrectCopy {
@@ -217,28 +217,32 @@ fn subregion_rect_from_hint(
 ///
 /// Returns [`None`] when the fast path does not apply (caller uses the full mip chain path).
 pub(super) fn try_write_texture2d_subregion(
-    ctx: &Texture2dUploadContext<'_>,
+    inputs: &Texture2dUploadInputs<'_>,
 ) -> Option<Result<u32, TextureUploadError>> {
     profiling::scope!("asset::texture_try_subregion");
-    subregion_fast_path_supported(ctx.device, ctx.upload, ctx.fmt, ctx.wgpu_format)?;
+    let queue = &inputs.queue;
+    let target = &inputs.target;
+    let payload = &inputs.payload;
+    let upload = payload.upload;
+    subregion_fast_path_supported(queue.device, upload, target.fmt, target.wgpu_format)?;
 
-    let want = ctx.upload.data.length.max(0) as usize;
-    if ctx.raw.len() < want {
+    let want = upload.data.length.max(0) as usize;
+    if payload.raw.len() < want {
         return Some(Err(TextureUploadError::from(format!(
             "raw shorter than descriptor (need {want}, got {})",
-            ctx.raw.len()
+            payload.raw.len()
         ))));
     }
-    let payload = &ctx.raw[..want];
+    let raw = &payload.raw[..want];
 
-    let tex_extent = ctx.texture.size();
-    let w0 = ctx.upload.mip_map_sizes[0].x.max(0) as u32;
-    let h0 = ctx.upload.mip_map_sizes[0].y.max(0) as u32;
+    let tex_extent = target.texture.size();
+    let w0 = upload.mip_map_sizes[0].x.max(0) as u32;
+    let h0 = upload.mip_map_sizes[0].y.max(0) as u32;
     if tex_extent.width != w0 || tex_extent.height != h0 {
         return None;
     }
 
-    let (w, h, mip_src) = match subregion_resolve_mip0_slice(ctx.fmt, ctx.upload, payload) {
+    let (w, h, mip_src) = match subregion_resolve_mip0_slice(target.fmt, upload, raw) {
         Ok(v) => v,
         Err(e) => return Some(Err(e)),
     };
@@ -248,7 +252,7 @@ pub(super) fn try_write_texture2d_subregion(
         return None;
     }
 
-    let (rx, ry, rw, rh) = match subregion_rect_from_hint(&ctx.upload.hint, w, h) {
+    let (rx, ry, rw, rh) = match subregion_rect_from_hint(&upload.hint, w, h) {
         Ok(r) => r,
         Err(e) => return Some(Err(e)),
     };
@@ -264,23 +268,23 @@ pub(super) fn try_write_texture2d_subregion(
             w: rw,
             h: rh,
         },
-        ctx.upload.flip_y,
+        upload.flip_y,
     ) {
         Ok(p) => p,
         Err(e) => return Some(Err(e)),
     };
 
     match write_texture_subregion(TextureWriteSubregion {
-        queue: ctx.queue,
-        gpu_queue_access_gate: ctx.gpu_queue_access_gate,
-        queue_access_mode: ctx.queue_access_mode,
-        texture: ctx.texture,
+        queue: queue.queue,
+        gpu_queue_access_gate: queue.gpu_queue_access_gate,
+        queue_access_mode: queue.queue_access_mode,
+        texture: target.texture,
         mip_level: 0,
         origin_x: rx,
         origin_y: ry,
         width: rw,
         height: rh,
-        format: ctx.wgpu_format,
+        format: target.wgpu_format,
         bytes: &packed,
     }) {
         Ok(()) => Some(Ok(1)),

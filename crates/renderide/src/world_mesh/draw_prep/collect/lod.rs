@@ -14,7 +14,7 @@ use crate::world_mesh::culling::{
 
 use super::super::bitset::DenseBitSet;
 use super::super::prepared_renderables::{FramePreparedLodEntry, FramePreparedLodGroup};
-use super::DrawCollectionContext;
+use super::DrawCollectionInputs;
 
 /// Conservative relative screen height used when bounds cross the camera plane.
 const CAMERA_INTERSECTING_RELATIVE_HEIGHT: f32 = 1.0;
@@ -29,10 +29,10 @@ pub(super) struct LodVisibility {
 
 impl LodVisibility {
     /// Creates a visibility map with stable renderer ordinals for the queried spaces.
-    fn for_spaces(ctx: &DrawCollectionContext<'_>, space_ids: &[RenderSpaceId]) -> Self {
+    fn for_spaces(ctx: &DrawCollectionInputs<'_>, space_ids: &[RenderSpaceId]) -> Self {
         let mut spaces = HashMap::with_capacity(space_ids.len());
         for &space_id in space_ids {
-            let Some(space) = ctx.scene.space(space_id) else {
+            let Some(space) = ctx.scene_assets.scene.space(space_id) else {
                 continue;
             };
             if !space.is_active() {
@@ -201,14 +201,14 @@ struct ResolvedLodEntry {
 
 /// Builds the view-local LOD visibility map used by prepared and scene-walk collection.
 pub(super) fn build_lod_visibility(
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     space_ids: &[RenderSpaceId],
 ) -> LodVisibility {
     profiling::scope!("mesh::lod_visibility");
-    let Some(culling) = ctx.culling else {
+    let Some(culling) = ctx.view.culling else {
         return LodVisibility::default();
     };
-    if let Some(prepared) = ctx.prepared {
+    if let Some(prepared) = ctx.caches.prepared {
         let group_work = collect_prepared_lod_group_work(prepared.lod_groups(), space_ids);
         if group_work.is_empty() {
             return LodVisibility::default();
@@ -261,7 +261,7 @@ fn collect_prepared_lod_group_work<'a>(
 
 /// Selects one pre-resolved LOD group.
 fn select_prepared_group_lod(
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     culling: &WorldMeshCullInput<'_>,
     group: &FramePreparedLodGroup,
     visibility: &mut LodVisibility,
@@ -284,7 +284,7 @@ fn select_prepared_group_lod(
         Some((any_overlay, (wmin, wmax))) => {
             relative_screen_height_for_group(ctx, culling, group.space_id, any_overlay, wmin, wmax)
                 .and_then(|relative_height| {
-                    select_prepared_lod_index(&group.lods, relative_height, ctx.mesh_lod_bias)
+                    select_prepared_lod_index(&group.lods, relative_height, ctx.view.mesh_lod_bias)
                 })
         }
         None => first_non_empty_prepared_lod(&group.lods),
@@ -300,10 +300,10 @@ fn select_prepared_group_lod(
 
 /// Recomputes view-dependent bounds for a prepared LOD group when cached bounds are unavailable.
 fn scene_lod_group_view_bounds(
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     group: &FramePreparedLodGroup,
 ) -> Option<(bool, (Vec3, Vec3))> {
-    let space = ctx.scene.space(group.space_id)?;
+    let space = ctx.scene_assets.scene.space(group.space_id)?;
     let scene_group = space.lod_groups().get(group.scene_group_index)?;
     let mut world_aabb = None;
     let mut any_overlay = false;
@@ -339,12 +339,12 @@ fn lod_group_chunk_capacity(
 
 /// Collects active LOD groups into a dense work list for serial or parallel selection.
 fn collect_lod_group_work<'a>(
-    ctx: &DrawCollectionContext<'a>,
+    ctx: &DrawCollectionInputs<'a>,
     space_ids: &[RenderSpaceId],
 ) -> Vec<LodGroupWork<'a>> {
     let mut work = Vec::new();
     for &space_id in space_ids {
-        let Some(space) = ctx.scene.space(space_id) else {
+        let Some(space) = ctx.scene_assets.scene.space(space_id) else {
             continue;
         };
         if !space.is_active() || space.lod_groups().is_empty() {
@@ -362,13 +362,10 @@ fn collect_lod_group_work<'a>(
 }
 
 /// Counts renderer refs present in active LOD groups for visibility capacity planning.
-fn lod_renderer_ref_capacity(
-    ctx: &DrawCollectionContext<'_>,
-    space_ids: &[RenderSpaceId],
-) -> usize {
+fn lod_renderer_ref_capacity(ctx: &DrawCollectionInputs<'_>, space_ids: &[RenderSpaceId]) -> usize {
     space_ids
         .iter()
-        .filter_map(|&space_id| ctx.scene.space(space_id))
+        .filter_map(|&space_id| ctx.scene_assets.scene.space(space_id))
         .filter(|space| space.is_active())
         .flat_map(|space| space.lod_groups().iter())
         .flat_map(|group| group.lods.iter())
@@ -378,7 +375,7 @@ fn lod_renderer_ref_capacity(
 
 /// Resolves, bounds, and selects one LOD group.
 fn select_group_lod(
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     culling: &WorldMeshCullInput<'_>,
     space_id: RenderSpaceId,
     space: RenderSpaceView<'_>,
@@ -420,7 +417,7 @@ fn select_group_lod(
         Some((wmin, wmax)) => {
             relative_screen_height_for_group(ctx, culling, space_id, any_overlay, wmin, wmax)
                 .and_then(|relative_height| {
-                    select_lod_index(&resolved_lods, relative_height, ctx.mesh_lod_bias)
+                    select_lod_index(&resolved_lods, relative_height, ctx.view.mesh_lod_bias)
                 })
         }
         None => first_non_empty_lod(&resolved_lods),
@@ -436,7 +433,7 @@ fn select_group_lod(
 
 /// Resolves a scene renderer from a stable LOD renderer reference.
 fn resolve_lod_renderer<'a>(
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     space_id: RenderSpaceId,
     space: RenderSpaceView<'a>,
     renderer_ref: &LodRendererRef,
@@ -447,7 +444,11 @@ fn resolve_lod_renderer<'a>(
             if !renderer.emits_visible_color_draws()
                 || renderer.mesh_asset_id < 0
                 || renderer.node_id < 0
-                || ctx.mesh_pool.get(renderer.mesh_asset_id).is_none()
+                || ctx
+                    .scene_assets
+                    .mesh_pool
+                    .get(renderer.mesh_asset_id)
+                    .is_none()
             {
                 return None;
             }
@@ -455,7 +456,7 @@ fn resolve_lod_renderer<'a>(
                 instance_id: renderer.instance_id,
                 kind: LodRendererKind::Static,
                 node_id: renderer.node_id,
-                is_overlay: renderer_is_overlay(ctx.scene, space_id, renderer.node_id),
+                is_overlay: renderer_is_overlay(ctx.scene_assets.scene, space_id, renderer.node_id),
                 mesh_asset_id: renderer.mesh_asset_id,
                 skinned_renderer: None,
             })
@@ -466,7 +467,7 @@ fn resolve_lod_renderer<'a>(
             if !base.emits_visible_color_draws()
                 || base.mesh_asset_id < 0
                 || base.node_id < 0
-                || ctx.mesh_pool.get(base.mesh_asset_id).is_none()
+                || ctx.scene_assets.mesh_pool.get(base.mesh_asset_id).is_none()
             {
                 return None;
             }
@@ -474,7 +475,7 @@ fn resolve_lod_renderer<'a>(
                 instance_id: base.instance_id,
                 kind: LodRendererKind::Skinned,
                 node_id: base.node_id,
-                is_overlay: renderer_is_overlay(ctx.scene, space_id, base.node_id),
+                is_overlay: renderer_is_overlay(ctx.scene_assets.scene, space_id, base.node_id),
                 mesh_asset_id: base.mesh_asset_id,
                 skinned_renderer: Some(renderer),
             })
@@ -523,21 +524,25 @@ fn renderer_is_overlay(scene: &SceneCoordinator, space_id: RenderSpaceId, node_i
 
 /// Computes a renderer's world-space AABB for LOD group bounds.
 fn world_aabb_for_lod_renderer(
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     space_id: RenderSpaceId,
     renderer: &ResolvedLodRenderer<'_>,
 ) -> Option<(Vec3, Vec3)> {
-    let mesh = ctx.mesh_pool.get(renderer.mesh_asset_id)?;
+    let mesh = ctx.scene_assets.mesh_pool.get(renderer.mesh_asset_id)?;
     let target = MeshCullTarget {
-        scene: ctx.scene,
+        scene: ctx.scene_assets.scene,
         space_id,
         mesh,
         skinned: renderer.kind == LodRendererKind::Skinned,
         skinned_renderer: renderer.skinned_renderer,
         node_id: renderer.node_id,
     };
-    mesh_world_geometry_for_cull_with_head(&target, ctx.head_output_transform, ctx.render_context)
-        .world_aabb
+    mesh_world_geometry_for_cull_with_head(
+        &target,
+        ctx.view.head_output_transform,
+        ctx.view.render_context,
+    )
+    .world_aabb
 }
 
 /// Expands `dst` to include `bounds`.
@@ -553,18 +558,18 @@ fn union_aabb(dst: &mut Option<(Vec3, Vec3)>, bounds: (Vec3, Vec3)) {
 
 /// Computes group relative screen height for the active view.
 fn relative_screen_height_for_group(
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     culling: &WorldMeshCullInput<'_>,
     space_id: RenderSpaceId,
     is_overlay: bool,
     wmin: Vec3,
     wmax: Vec3,
 ) -> Option<f32> {
-    let space = ctx.scene.space(space_id)?;
+    let space = ctx.scene_assets.scene.space(space_id)?;
     let view = culling
         .host_camera
         .explicit_world_to_view()
-        .unwrap_or_else(|| view_matrix_for_world_mesh_render_space(ctx.scene, space));
+        .unwrap_or_else(|| view_matrix_for_world_mesh_render_space(ctx.scene_assets.scene, space));
     let first = if let Some((left, right)) = culling.proj.vr_stereo {
         if is_overlay {
             culling.proj.overlay_proj * view

@@ -252,22 +252,40 @@ pub(crate) struct PreparedWorldMeshForwardView {
     pub hud_outputs: Option<PerViewHudOutputs>,
 }
 
-/// Shared context needed to prepare one world-mesh forward view.
-pub(crate) struct WorldMeshForwardPrepareContext<'a, 'frame> {
+/// GPU handles and upload sink used while preparing one world-mesh forward view.
+pub(crate) struct WorldMeshForwardPrepareGpu<'a> {
     /// Device used for GPU resource creation.
     pub(crate) device: &'a wgpu::Device,
     /// Deferred frame upload sink drained before submit.
     pub(crate) uploads: GraphUploadSink<'a>,
     /// Effective device limits for this frame.
     pub(crate) gpu_limits: &'a GpuLimits,
+}
+
+/// Per-view frame inputs used while preparing world-mesh forward state.
+pub(crate) struct WorldMeshForwardPrepareView<'a, 'frame> {
     /// Per-view graph frame state.
     pub(crate) frame: &'a GraphPassFrame<'frame>,
     /// Per-view frame bind resources.
     pub(crate) frame_plan: &'a PerViewFramePlan,
+}
+
+/// Backend-owned retained caches used by world-mesh forward preparation.
+pub(crate) struct WorldMeshForwardPrepareCaches<'a> {
     /// Backend-owned skybox preparation cache.
     pub(crate) skybox_renderer: &'a SkyboxRenderer,
     /// Backend-owned retained instance-plan cache.
     pub(crate) instance_plan_cache: &'a WorldMeshForwardInstancePlanCache,
+}
+
+/// Inputs needed to prepare one world-mesh forward view.
+pub(crate) struct WorldMeshForwardPrepareInputs<'a, 'frame> {
+    /// GPU handles and deferred upload sink.
+    pub(crate) gpu: WorldMeshForwardPrepareGpu<'a>,
+    /// Per-view frame data and frame bind resources.
+    pub(crate) view: WorldMeshForwardPrepareView<'a, 'frame>,
+    /// Backend-owned retained caches.
+    pub(crate) caches: WorldMeshForwardPrepareCaches<'a>,
 }
 
 struct PackedForwardDraws {
@@ -286,14 +304,26 @@ struct ForwardViewFinalizeInputs {
     hud_outputs: Option<PerViewHudOutputs>,
 }
 
-struct ForwardDrawPackContext<'a, 'frame> {
+struct ForwardDrawPackGpu<'a> {
     device: &'a wgpu::Device,
     uploads: GraphUploadSink<'a>,
+}
+
+struct ForwardDrawPackView<'a, 'frame> {
     frame: &'a GraphPassFrame<'frame>,
     encode_refs: &'a WorldMeshForwardEncodeRefs<'frame>,
+}
+
+struct ForwardDrawPackPipeline<'a> {
     pipeline: &'a WorldMeshForwardPipelineState,
     supports_base_instance: bool,
     instance_plan_cache: &'a WorldMeshForwardInstancePlanCache,
+}
+
+struct ForwardDrawPackInputs<'a, 'frame> {
+    gpu: ForwardDrawPackGpu<'a>,
+    view: ForwardDrawPackView<'a, 'frame>,
+    pipeline: ForwardDrawPackPipeline<'a>,
 }
 
 struct ForwardInstancePlanBuildInputs<'a> {
@@ -424,20 +454,22 @@ pub(super) fn maybe_set_world_mesh_draw_stats(
 
 /// Prepares forward draws and uploads per-view data.
 pub(crate) fn prepare_world_mesh_forward_frame(
-    ctx: WorldMeshForwardPrepareContext<'_, '_>,
+    inputs: WorldMeshForwardPrepareInputs<'_, '_>,
     prefetched: PrefetchedWorldMeshViewDraws,
     scratch: &mut WorldMeshForwardPrepareScratch,
 ) -> PreparedWorldMeshForwardView {
     profiling::scope!("world_mesh::prepare_frame");
-    let WorldMeshForwardPrepareContext {
+    let WorldMeshForwardPrepareInputs { gpu, view, caches } = inputs;
+    let WorldMeshForwardPrepareGpu {
         device,
         uploads,
         gpu_limits,
-        frame,
-        frame_plan,
+    } = gpu;
+    let WorldMeshForwardPrepareView { frame, frame_plan } = view;
+    let WorldMeshForwardPrepareCaches {
         skybox_renderer,
         instance_plan_cache,
-    } = ctx;
+    } = caches;
     let supports_base_instance = gpu_limits.supports_base_instance;
     let hc = &frame.view.host_camera;
     let pipeline = resolve_world_mesh_forward_pipeline(frame, gpu_limits, hc);
@@ -472,14 +504,17 @@ pub(crate) fn prepare_world_mesh_forward_frame(
     };
 
     let Some(packed) = pack_forward_draws_for_view(
-        ForwardDrawPackContext {
-            device,
-            uploads,
-            frame,
-            encode_refs: &encode_refs,
-            pipeline: &pipeline,
-            supports_base_instance,
-            instance_plan_cache,
+        ForwardDrawPackInputs {
+            gpu: ForwardDrawPackGpu { device, uploads },
+            view: ForwardDrawPackView {
+                frame,
+                encode_refs: &encode_refs,
+            },
+            pipeline: ForwardDrawPackPipeline {
+                pipeline: &pipeline,
+                supports_base_instance,
+                instance_plan_cache,
+            },
         },
         prefetched.collection.items,
         scratch,
@@ -602,19 +637,22 @@ fn update_world_mesh_draw_stats_from_plan(
 }
 
 fn pack_forward_draws_for_view(
-    ctx: ForwardDrawPackContext<'_, '_>,
+    inputs: ForwardDrawPackInputs<'_, '_>,
     draws: Vec<WorldMeshDrawItem>,
     scratch: &mut WorldMeshForwardPrepareScratch,
 ) -> Option<PackedForwardDraws> {
-    let ForwardDrawPackContext {
-        device,
-        uploads,
-        frame,
-        encode_refs,
+    let ForwardDrawPackInputs {
+        gpu,
+        view,
+        pipeline,
+    } = inputs;
+    let ForwardDrawPackGpu { device, uploads } = gpu;
+    let ForwardDrawPackView { frame, encode_refs } = view;
+    let ForwardDrawPackPipeline {
         pipeline,
         supports_base_instance,
         instance_plan_cache,
-    } = ctx;
+    } = pipeline;
     let WorldMeshForwardPrepareScratch {
         submission_classes,
         submission_class_ids,
