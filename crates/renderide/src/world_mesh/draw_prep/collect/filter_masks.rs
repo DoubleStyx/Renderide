@@ -9,7 +9,7 @@ use crate::cpu_parallelism::{
 };
 use crate::scene::RenderSpaceId;
 
-use super::DrawCollectionContext;
+use super::DrawCollectionInputs;
 
 /// Render spaces assigned to one filter-mask construction worker.
 const FILTER_MASK_PARALLEL_CHUNK_SPACES: usize = 1;
@@ -36,25 +36,26 @@ fn filter_mask_admission(
 
 /// Estimates transform rows scanned by per-space filter-mask construction.
 #[inline]
-fn filter_mask_work_units(space_ids: &[RenderSpaceId], ctx: &DrawCollectionContext<'_>) -> usize {
+fn filter_mask_work_units(space_ids: &[RenderSpaceId], ctx: &DrawCollectionInputs<'_>) -> usize {
     space_ids
         .iter()
         .filter_map(|sid| {
-            ctx.scene
+            ctx.scene_assets
+                .scene
                 .space(*sid)
                 .map(|space| space.local_transforms().len())
         })
         .sum()
 }
 
-/// Builds per-space `Vec<bool>` masks from [`DrawCollectionContext::transform_filter`].
+/// Builds per-space `Vec<bool>` masks from [`DrawCollectionViewInputs::transform_filter`].
 ///
 /// Returns an empty map when no transform filter was provided.
 pub(super) fn build_per_space_filter_masks(
     space_ids: &[RenderSpaceId],
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
 ) -> HashMap<RenderSpaceId, Vec<bool>> {
-    let Some(transform_filter) = ctx.transform_filter else {
+    let Some(transform_filter) = ctx.view.transform_filter else {
         return HashMap::new();
     };
 
@@ -72,7 +73,7 @@ pub(super) fn build_per_space_filter_masks(
             .with_min_len(FILTER_MASK_PARALLEL_CHUNK_SPACES)
             .copied()
             .filter_map(|sid| {
-                let mask = transform_filter.build_pass_mask(ctx.scene, sid)?;
+                let mask = transform_filter.build_pass_mask(ctx.scene_assets.scene, sid)?;
                 Some((sid, mask))
             })
             .collect::<Vec<_>>()
@@ -81,7 +82,7 @@ pub(super) fn build_per_space_filter_masks(
             .iter()
             .copied()
             .filter_map(|sid| {
-                let mask = transform_filter.build_pass_mask(ctx.scene, sid)?;
+                let mask = transform_filter.build_pass_mask(ctx.scene_assets.scene, sid)?;
                 Some((sid, mask))
             })
             .collect::<Vec<_>>()
@@ -102,12 +103,16 @@ mod tests {
     use crate::materials::{MaterialPipelinePropertyIds, MaterialRouter, RasterPipelineKind};
     use crate::scene::SceneCoordinator;
     use crate::shared::{RenderTransform, RenderingContext};
+    use crate::world_mesh::draw_prep::collect::{
+        DrawCollectionFrameCaches, DrawCollectionMaterialInputs, DrawCollectionSceneAssets,
+        DrawCollectionViewInputs,
+    };
     use crate::world_mesh::draw_prep::filter::CameraTransformDrawFilter;
 
     fn with_draw_context(
         scene: &SceneCoordinator,
         transform_filter: Option<&CameraTransformDrawFilter>,
-        test: impl FnOnce(&DrawCollectionContext<'_>),
+        test: impl FnOnce(&DrawCollectionInputs<'_>),
     ) {
         let mesh_pool = MeshPool::default_pool();
         let store = MaterialPropertyStore::new();
@@ -115,24 +120,32 @@ mod tests {
         let router = MaterialRouter::new(RasterPipelineKind::Null);
         let registry = PropertyIdRegistry::new();
         let property_ids = MaterialPipelinePropertyIds::new(&registry);
-        let ctx = DrawCollectionContext {
-            scene,
-            mesh_pool: &mesh_pool,
-            material_dict: &material_dict,
-            material_router: &router,
-            pipeline_property_ids: &property_ids,
-            shader_perm: Default::default(),
-            render_context: RenderingContext::UserView,
-            head_output_transform: Mat4::IDENTITY,
-            view_origin_world: Vec3::ZERO,
-            culling: None,
-            mesh_lod_bias: 2.0,
-            transform_filter,
-            render_space_filter: None,
-            layer_policy: crate::world_mesh::ViewLayerPolicy::MainView,
-            material_cache: None,
-            reflection_probes: None,
-            prepared: None,
+        let ctx = DrawCollectionInputs {
+            scene_assets: DrawCollectionSceneAssets {
+                scene,
+                mesh_pool: &mesh_pool,
+            },
+            materials: DrawCollectionMaterialInputs {
+                dict: &material_dict,
+                router: &router,
+                pipeline_property_ids: &property_ids,
+                shader_perm: Default::default(),
+            },
+            view: DrawCollectionViewInputs {
+                render_context: RenderingContext::UserView,
+                head_output_transform: Mat4::IDENTITY,
+                view_origin_world: Vec3::ZERO,
+                culling: None,
+                mesh_lod_bias: 2.0,
+                transform_filter,
+                render_space_filter: None,
+                layer_policy: crate::world_mesh::ViewLayerPolicy::MainView,
+                reflection_probes: None,
+            },
+            caches: DrawCollectionFrameCaches {
+                material_cache: None,
+                prepared: None,
+            },
         };
         test(&ctx);
     }

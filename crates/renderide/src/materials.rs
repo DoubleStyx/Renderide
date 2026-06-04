@@ -159,8 +159,7 @@ pub(crate) use pipeline_property_resolver::PipelinePropertyResolver;
 /// Shader route table, optional material asset registry, and WGSL composition patches.
 pub(crate) use registry::{MaterialPipelineResolution, MaterialRegistry};
 pub(crate) use render_buffer_shader::{
-    ensure_render_buffer_billboard_variant_bits, remap_unlit_variant_bits_for_billboard,
-    should_remap_unlit_variant_bits_for_billboard_draw,
+    ensure_render_buffer_billboard_variant_bits, remap_variant_bits_for_billboard,
 };
 pub(crate) use router::{MaterialRouter, resolve_raster_pipeline};
 

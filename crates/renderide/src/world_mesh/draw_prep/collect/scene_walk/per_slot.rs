@@ -8,7 +8,7 @@ use crate::world_mesh::culling::CpuCullFailure;
 use crate::world_mesh::materials::FrameMaterialBatchCache;
 
 use super::super::super::item::stacked_material_submesh_topology;
-use super::super::DrawCollectionContext;
+use super::super::DrawCollectionInputs;
 use super::super::candidate::{DrawCandidate, evaluate_draw_candidate};
 use super::super::world_matrix::{
     front_face_for_draw_matrices, skinned_front_face_world_matrix,
@@ -33,7 +33,7 @@ enum SlotCullDecision {
 
 /// One material slot mapped to a submesh range: optional CPU cull, batch key, and [`WorldMeshDrawItem`] push.
 pub(super) fn push_one_slot_draw(
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     acc: &mut DrawCollectionAccumulator<'_>,
     draw: &StaticMeshDrawSource<'_>,
     slot: &MeshMaterialSlot,
@@ -89,7 +89,7 @@ pub(super) fn push_one_slot_draw(
     let primitive_topology =
         stacked_material_submesh_topology(slot_index, &draw.mesh.submesh_topologies);
     let alpha_distance_sq = rigid_world_matrix.map_or(0.0, |m| {
-        (m.col(3).truncate() - ctx.view_origin_world).length_squared()
+        (m.col(3).truncate() - ctx.view.view_origin_world).length_squared()
     });
     let world_aabb = world_aabb_for_reflection_probe_selection(ctx, draw);
     let candidate = DrawCandidate {
@@ -127,16 +127,17 @@ pub(super) fn push_one_slot_draw(
 
 /// Resolves the effective material id for this slot, honoring scene-level overrides.
 fn resolve_material_asset_id(
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     draw: &StaticMeshDrawSource<'_>,
     slot: &MeshMaterialSlot,
     slot_index: usize,
 ) -> Option<i32> {
     let material_asset_id = ctx
+        .scene_assets
         .scene
         .overridden_material_asset_id(
             draw.space_id,
-            ctx.render_context,
+            ctx.view.render_context,
             draw.skinned,
             draw.renderable_index,
             slot_index,
@@ -148,7 +149,7 @@ fn resolve_material_asset_id(
 /// Reads the cached per-renderer cull outcome (or runs an inline cull for single-slot renderers)
 /// and folds it into a [`SlotCullDecision`], updating the running pre-cull / culled counters.
 fn resolve_cull_decision(
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     acc: &mut DrawCollectionAccumulator<'_>,
     draw: &StaticMeshDrawSource<'_>,
     is_overlay: bool,
@@ -174,7 +175,7 @@ fn resolve_cull_decision(
 /// Picks the rigid world matrix for the local-vertex-stream path: prefer the value the cull cache
 /// already computed; otherwise fall back to the overlay-aware scene lookup.
 fn fill_rigid_world_matrix(
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     draw: &StaticMeshDrawSource<'_>,
     is_overlay: bool,
     world_space_deformed: bool,

@@ -29,6 +29,7 @@
 #import renderide::frame::fog as rfog
 #import renderide::draw::per_draw as pd
 #import renderide::draw::types as dt
+#import renderide::lighting::diffuse as dl
 #import renderide::material::alpha as ma
 #import renderide::material::variant_bits as vb
 #import renderide::material::vertex_color as vc
@@ -69,8 +70,9 @@ const BILLBOARDUNLIT_KW_VERTEX_LINEAR_COLOR: u32 = 1u << 13u;
 const BILLBOARDUNLIT_KW_VERTEX_SRGB_COLOR: u32 = 1u << 14u;
 const BILLBOARDUNLIT_KW_VERTEXCOLORS: u32 = 1u << 15u;
 const BILLBOARDUNLIT_KW_RENDER_BUFFER: u32 = 1u << 16u;
-const BILLBOARDUNLIT_KW_UNLIT_MASK_TEXTURE_CLIP: u32 = 1u << 17u;
-const BILLBOARDUNLIT_KW_UNLIT_MASK_TEXTURE_MUL: u32 = 1u << 18u;
+const BILLBOARDUNLIT_KW_SIMPLE_LIT: u32 = 1u << 17u;
+const BILLBOARDUNLIT_KW_UNLIT_MASK_TEXTURE_CLIP: u32 = 1u << 18u;
+const BILLBOARDUNLIT_KW_UNLIT_MASK_TEXTURE_MUL: u32 = 1u << 19u;
 
 @group(1) @binding(0) var<uniform> mat: BillboardUnlitMaterial;
 @group(1) @binding(1) var _Tex: texture_2d<f32>;
@@ -152,12 +154,18 @@ fn kw_VERTEXCOLORS() -> bool {
     return bb_kw(BILLBOARDUNLIT_KW_VERTEXCOLORS);
 }
 
+fn kw_SIMPLE_LIT() -> bool {
+    return bb_kw(BILLBOARDUNLIT_KW_SIMPLE_LIT);
+}
+
 struct VertexOutput {
     @builtin(position) clip_pos: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
     @location(2) @interpolate(flat) view_layer: u32,
     @location(3) fog_coord: f32,
+    @location(4) world_p: vec3<f32>,
+    @location(5) n: vec3<f32>,
 }
 
 struct RenderBufferBillboardBasis {
@@ -364,6 +372,8 @@ fn vs_main(
     out.color = color;
     out.view_layer = layer;
     out.fog_coord = rfog::coord_from_world_pos(world_p, layer);
+    out.world_p = world_p;
+    out.n = rmath::safe_normalize(cross(axes.right, axes.up), vec3<f32>(0.0, 0.0, 1.0));
     return out;
 }
 
@@ -422,9 +432,17 @@ fn vertex_color(color: vec4<f32>) -> vec4<f32> {
     return color;
 }
 
+fn two_sided_geometric_normal(world_n: vec3<f32>, front_facing: bool) -> vec3<f32> {
+    let n = normalize(world_n);
+    return select(-n, n, front_facing);
+}
+
 //#pass type=forward name=forward_billboard blend=material_filter offset=0,0
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_main(
+    in: VertexOutput,
+    @builtin(front_facing) front_facing: bool,
+) -> @location(0) vec4<f32> {
     let use_texture = kw_TEXTURE();
     let use_color = kw_COLOR();
 
@@ -471,6 +489,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     if (kw_MUL_ALPHA_INTENSITY()) {
         col = vec4<f32>(col.rgb, ma::alpha_intensity(col.a, col.rgb));
+    }
+
+    if (kw_SIMPLE_LIT()) {
+        let n = two_sided_geometric_normal(in.n, front_facing);
+        let base = clamp(col.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+        let lit = dl::shade_clustered_diffuse(in.clip_pos.xy, in.world_p, n, base, in.view_layer);
+        col = vec4<f32>(lit, col.a);
     }
 
     return rg::retain_globals_additive(rfog::apply_rgba(col, in.fog_coord));

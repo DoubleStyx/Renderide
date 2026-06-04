@@ -227,7 +227,7 @@ fn populate_renderer_run_lookup(
 /// Frame-scope dense list of [`FramePreparedDraw`] entries across every active render space.
 ///
 /// Build once per frame via [`FramePreparedRenderables::build_for_frame`] and hand as a borrow to
-/// every per-view [`super::collect::DrawCollectionContext`]. Per-view collection walks this list,
+/// every per-view [`super::collect::DrawCollectionInputs`]. Per-view collection walks this list,
 /// applies frustum / Hi-Z culling, and emits [`super::item::WorldMeshDrawItem`]s -- no scene
 /// walk, no repeated mesh-pool lookup, no repeated material-override resolution.
 pub struct FramePreparedRenderables {
@@ -521,7 +521,7 @@ impl FramePreparedRenderables {
     }
 
     /// Render context the list was built against (used for `debug_assert` parity with the
-    /// per-view [`super::collect::DrawCollectionContext::render_context`] so material-override
+    /// per-view [`super::collect::DrawCollectionViewInputs::render_context`] so material-override
     /// resolution matches downstream culling).
     #[inline]
     pub fn render_context(&self) -> RenderingContext {

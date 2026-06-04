@@ -32,6 +32,50 @@ fn scaled_transform(scale: Vec3) -> RenderTransform {
     }
 }
 
+struct TestDrawContextResources<'a> {
+    scene: &'a SceneCoordinator,
+    mesh_pool: &'a MeshPool,
+    material_dict: &'a MaterialDictionary<'a>,
+    router: &'a MaterialRouter,
+    property_ids: &'a MaterialPipelinePropertyIds,
+}
+
+/// Builds a draw-collection context for CPU-only draw-prep tests.
+fn test_draw_context<'a>(
+    resources: TestDrawContextResources<'a>,
+    transform_filter: Option<&'a CameraTransformDrawFilter>,
+    render_space_filter: Option<RenderSpaceId>,
+    layer_policy: ViewLayerPolicy,
+) -> DrawCollectionInputs<'a> {
+    DrawCollectionInputs {
+        scene_assets: DrawCollectionSceneAssets {
+            scene: resources.scene,
+            mesh_pool: resources.mesh_pool,
+        },
+        materials: DrawCollectionMaterialInputs {
+            dict: resources.material_dict,
+            router: resources.router,
+            pipeline_property_ids: resources.property_ids,
+            shader_perm: ShaderPermutation::default(),
+        },
+        view: DrawCollectionViewInputs {
+            render_context: RenderingContext::UserView,
+            head_output_transform: Mat4::IDENTITY,
+            view_origin_world: Vec3::ZERO,
+            culling: None,
+            mesh_lod_bias: 2.0,
+            transform_filter,
+            render_space_filter,
+            layer_policy,
+            reflection_probes: None,
+        },
+        caches: DrawCollectionFrameCaches {
+            material_cache: None,
+            prepared: None,
+        },
+    }
+}
+
 /// Evaluates the draw transform-scale filter for one root node.
 fn transform_scale_filter_result(scale: Vec3) -> bool {
     let mut scene = SceneCoordinator::new();
@@ -44,25 +88,18 @@ fn transform_scale_filter_result(scale: Vec3) -> bool {
     let router = MaterialRouter::new(RasterPipelineKind::Null);
     let registry = PropertyIdRegistry::new();
     let property_ids = MaterialPipelinePropertyIds::new(&registry);
-    let ctx = DrawCollectionContext {
-        scene: &scene,
-        mesh_pool: &mesh_pool,
-        material_dict: &material_dict,
-        material_router: &router,
-        pipeline_property_ids: &property_ids,
-        shader_perm: ShaderPermutation::default(),
-        render_context: RenderingContext::UserView,
-        head_output_transform: Mat4::IDENTITY,
-        view_origin_world: Vec3::ZERO,
-        culling: None,
-        mesh_lod_bias: 2.0,
-        transform_filter: None,
-        render_space_filter: None,
-        layer_policy: ViewLayerPolicy::MainView,
-        material_cache: None,
-        reflection_probes: None,
-        prepared: None,
-    };
+    let ctx = test_draw_context(
+        TestDrawContextResources {
+            scene: &scene,
+            mesh_pool: &mesh_pool,
+            material_dict: &material_dict,
+            router: &router,
+            property_ids: &property_ids,
+        },
+        None,
+        None,
+        ViewLayerPolicy::MainView,
+    );
 
     transform_chain_has_degenerate_scale(&ctx, space_id, 0)
 }
@@ -80,25 +117,18 @@ fn special_layer_visibility_for_filter(
     let router = MaterialRouter::new(RasterPipelineKind::Null);
     let registry = PropertyIdRegistry::new();
     let property_ids = MaterialPipelinePropertyIds::new(&registry);
-    let ctx = DrawCollectionContext {
-        scene: &scene,
-        mesh_pool: &mesh_pool,
-        material_dict: &material_dict,
-        material_router: &router,
-        pipeline_property_ids: &property_ids,
-        shader_perm: ShaderPermutation::default(),
-        render_context: RenderingContext::UserView,
-        head_output_transform: Mat4::IDENTITY,
-        view_origin_world: Vec3::ZERO,
-        culling: None,
-        mesh_lod_bias: 2.0,
-        transform_filter: filter,
-        render_space_filter: None,
+    let ctx = test_draw_context(
+        TestDrawContextResources {
+            scene: &scene,
+            mesh_pool: &mesh_pool,
+            material_dict: &material_dict,
+            router: &router,
+            property_ids: &property_ids,
+        },
+        filter,
+        None,
         layer_policy,
-        material_cache: None,
-        reflection_probes: None,
-        prepared: None,
-    };
+    );
     special_layer_visible_in_view(&ctx, Some(special_layer))
 }
 
@@ -117,25 +147,18 @@ fn private_space_visibility_for_filter(
     let router = MaterialRouter::new(RasterPipelineKind::Null);
     let registry = PropertyIdRegistry::new();
     let property_ids = MaterialPipelinePropertyIds::new(&registry);
-    let ctx = DrawCollectionContext {
-        scene: &scene,
-        mesh_pool: &mesh_pool,
-        material_dict: &material_dict,
-        material_router: &router,
-        pipeline_property_ids: &property_ids,
-        shader_perm: ShaderPermutation::default(),
-        render_context: RenderingContext::UserView,
-        head_output_transform: Mat4::IDENTITY,
-        view_origin_world: Vec3::ZERO,
-        culling: None,
-        mesh_lod_bias: 2.0,
-        transform_filter: filter,
-        render_space_filter: Some(space_id),
+    let ctx = test_draw_context(
+        TestDrawContextResources {
+            scene: &scene,
+            mesh_pool: &mesh_pool,
+            material_dict: &material_dict,
+            router: &router,
+            property_ids: &property_ids,
+        },
+        filter,
+        Some(space_id),
         layer_policy,
-        material_cache: None,
-        reflection_probes: None,
-        prepared: None,
-    };
+    );
     render_space_visible_in_view(&ctx, space_id)
 }
 
@@ -288,25 +311,18 @@ fn selected_camera_overlay_renders_as_non_overlay() {
         only: Some(HashSet::from_iter([1])),
         exclude: HashSet::new(),
     };
-    let ctx = DrawCollectionContext {
-        scene: &scene,
-        mesh_pool: &mesh_pool,
-        material_dict: &material_dict,
-        material_router: &router,
-        pipeline_property_ids: &property_ids,
-        shader_perm: ShaderPermutation::default(),
-        render_context: RenderingContext::UserView,
-        head_output_transform: Mat4::IDENTITY,
-        view_origin_world: Vec3::ZERO,
-        culling: None,
-        mesh_lod_bias: 2.0,
-        transform_filter: Some(&filter),
-        render_space_filter: None,
-        layer_policy: ViewLayerPolicy::camera(false),
-        material_cache: None,
-        reflection_probes: None,
-        prepared: None,
-    };
+    let ctx = test_draw_context(
+        TestDrawContextResources {
+            scene: &scene,
+            mesh_pool: &mesh_pool,
+            material_dict: &material_dict,
+            router: &router,
+            property_ids: &property_ids,
+        },
+        Some(&filter),
+        None,
+        ViewLayerPolicy::camera(false),
+    );
 
     assert!(!effective_overlay_in_view(&ctx, true));
 }

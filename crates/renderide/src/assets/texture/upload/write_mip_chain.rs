@@ -8,6 +8,7 @@ mod uploader;
 mod tests;
 
 pub use uploader::{
-    MipChainAdvance, Texture2dUploadContext, TextureDataStart, TextureMipChainUploader,
-    TextureMipUploadStep, texture_upload_start,
+    MipChainAdvance, Texture2dUploadInputs, Texture2dUploadPayload, Texture2dUploadQueueInputs,
+    Texture2dUploadTarget, TextureDataStart, TextureMipChainUploader, TextureMipUploadStep,
+    texture_upload_start,
 };

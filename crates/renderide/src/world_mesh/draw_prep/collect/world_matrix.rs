@@ -6,12 +6,12 @@ use glam::Mat4;
 use crate::materials::RasterFrontFace;
 use crate::scene::{RenderSpaceId, SkinnedMeshRenderer};
 
-use super::DrawCollectionContext;
+use super::DrawCollectionInputs;
 
 /// Resolves the draw's world matrix when the selected vertex stream is still local-space.
 #[inline]
 pub(super) fn world_matrix_for_local_vertex_stream(
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     space_id: RenderSpaceId,
     node_id: i32,
     is_overlay: bool,
@@ -21,18 +21,26 @@ pub(super) fn world_matrix_for_local_vertex_stream(
     }
     if is_overlay {
         return ctx
+            .scene_assets
             .scene
-            .overlay_layer_model_matrix_for_context(space_id, node_id as usize, ctx.render_context)
+            .overlay_layer_model_matrix_for_context(
+                space_id,
+                node_id as usize,
+                ctx.view.render_context,
+            )
             .or_else(|| {
-                ctx.scene
-                    .world_matrix_for_context(space_id, node_id as usize, ctx.render_context)
+                ctx.scene_assets.scene.world_matrix_for_context(
+                    space_id,
+                    node_id as usize,
+                    ctx.view.render_context,
+                )
             });
     }
-    ctx.scene.world_matrix_for_render_context(
+    ctx.scene_assets.scene.world_matrix_for_render_context(
         space_id,
         node_id as usize,
-        ctx.render_context,
-        ctx.head_output_transform,
+        ctx.view.render_context,
+        ctx.view.head_output_transform,
     )
 }
 
@@ -47,7 +55,7 @@ pub(super) fn front_face_for_world_matrix(world_matrix: Option<Mat4>) -> RasterF
 /// Resolves root-transform parity for skinned world-space vertex streams.
 #[inline]
 pub(super) fn skinned_front_face_world_matrix(
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     space_id: RenderSpaceId,
     node_id: i32,
     skinned: Option<&SkinnedMeshRenderer>,
@@ -59,11 +67,11 @@ pub(super) fn skinned_front_face_world_matrix(
     if root_node < 0 {
         return None;
     }
-    ctx.scene.world_matrix_for_render_context(
+    ctx.scene_assets.scene.world_matrix_for_render_context(
         space_id,
         root_node as usize,
-        ctx.render_context,
-        ctx.head_output_transform,
+        ctx.view.render_context,
+        ctx.view.head_output_transform,
     )
 }
 

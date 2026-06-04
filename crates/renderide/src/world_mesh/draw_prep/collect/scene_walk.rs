@@ -10,7 +10,7 @@ use crate::scene::{RenderSpaceId, SkinnedMeshRenderer, StaticMeshRenderer};
 use crate::world_mesh::materials::FrameMaterialBatchCache;
 
 use super::super::item::{WorldMeshDrawItem, resolved_material_slot_count};
-use super::DrawCollectionContext;
+use super::DrawCollectionInputs;
 use super::lod::LodVisibility;
 
 use cull_cache::CachedCull;
@@ -100,27 +100,30 @@ pub(super) struct WorldMeshChunkSpec {
 /// Returns `true` when a renderer node's effective transform chain collapses object scale.
 #[inline]
 pub(super) fn transform_chain_has_degenerate_scale(
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     space_id: RenderSpaceId,
     node_id: i32,
 ) -> bool {
     node_id >= 0
-        && ctx.scene.transform_has_degenerate_scale_for_context(
-            space_id,
-            node_id as usize,
-            ctx.render_context,
-        )
+        && ctx
+            .scene_assets
+            .scene
+            .transform_has_degenerate_scale_for_context(
+                space_id,
+                node_id as usize,
+                ctx.view.render_context,
+            )
 }
 
 /// Builds the chunk list: one entry per 128-renderer slice of static or skinned renderers per space.
 pub(super) fn build_chunk_specs(
     space_ids: &[RenderSpaceId],
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
 ) -> Vec<WorldMeshChunkSpec> {
     profiling::scope!("mesh::build_chunk_specs");
     let mut chunks = Vec::new();
     for &space_id in space_ids {
-        let Some(space) = ctx.scene.space(space_id) else {
+        let Some(space) = ctx.scene_assets.scene.space(space_id) else {
             continue;
         };
         if !space.is_active() {
@@ -155,7 +158,7 @@ pub(super) fn build_chunk_specs(
 /// Collects draw items for one chunk (one 128-renderer slice of static or skinned renderers).
 pub(super) fn collect_chunk(
     spec: &WorldMeshChunkSpec,
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     cache: &FrameMaterialBatchCache,
     filter_masks: &HashMap<RenderSpaceId, Vec<bool>>,
     lod_visibility: &LodVisibility,
@@ -163,7 +166,7 @@ pub(super) fn collect_chunk(
     let mut out = Vec::new();
     let mut cull_stats = (0usize, 0usize, 0usize);
 
-    let Some(space) = ctx.scene.space(spec.space_id) else {
+    let Some(space) = ctx.scene_assets.scene.space(spec.space_id) else {
         return (out, cull_stats);
     };
     if !space.is_active() {
@@ -214,7 +217,7 @@ pub(super) fn collect_chunk(
 /// Builds a [`StaticMeshDrawSource`] from a static renderer entry, or returns `None` if the
 /// renderer is filtered out by mesh availability or trivial validity checks.
 fn static_draw_source<'a>(
-    ctx: &DrawCollectionContext<'a>,
+    ctx: &DrawCollectionInputs<'a>,
     space_id: RenderSpaceId,
     renderable_index: usize,
     r: &'a StaticMeshRenderer,
@@ -222,7 +225,7 @@ fn static_draw_source<'a>(
     if !r.emits_visible_color_draws() || r.mesh_asset_id < 0 || r.node_id < 0 {
         return None;
     }
-    let mesh = ctx.mesh_pool.get(r.mesh_asset_id)?;
+    let mesh = ctx.scene_assets.mesh_pool.get(r.mesh_asset_id)?;
     if mesh.submeshes.is_empty() {
         return None;
     }
@@ -240,7 +243,7 @@ fn static_draw_source<'a>(
 
 /// Builds a [`StaticMeshDrawSource`] from a skinned renderer entry, or returns `None` when filtered out.
 fn skinned_draw_source<'a>(
-    ctx: &DrawCollectionContext<'a>,
+    ctx: &DrawCollectionInputs<'a>,
     space_id: RenderSpaceId,
     renderable_index: usize,
     sk: &'a SkinnedMeshRenderer,
@@ -249,7 +252,7 @@ fn skinned_draw_source<'a>(
     if !r.emits_visible_color_draws() || r.mesh_asset_id < 0 || r.node_id < 0 {
         return None;
     }
-    let mesh = ctx.mesh_pool.get(r.mesh_asset_id)?;
+    let mesh = ctx.scene_assets.mesh_pool.get(r.mesh_asset_id)?;
     if mesh.submeshes.is_empty() {
         return None;
     }
@@ -268,11 +271,11 @@ fn skinned_draw_source<'a>(
 /// Upper bound on expanded draw slots across active render spaces (capacity hint for the output vec).
 pub(super) fn estimate_active_renderable_count(
     space_ids: &[RenderSpaceId],
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
 ) -> usize {
     let mut cap_hint = 0usize;
     for space_id in space_ids {
-        let Some(space) = ctx.scene.space(*space_id) else {
+        let Some(space) = ctx.scene_assets.scene.space(*space_id) else {
             continue;
         };
         if !space.is_active() {
@@ -286,6 +289,7 @@ pub(super) fn estimate_active_renderable_count(
                 continue;
             }
             if ctx
+                .scene_assets
                 .mesh_pool
                 .get(renderer.mesh_asset_id)
                 .is_some_and(|mesh| !mesh.submeshes.is_empty())
@@ -302,6 +306,7 @@ pub(super) fn estimate_active_renderable_count(
                 continue;
             }
             if ctx
+                .scene_assets
                 .mesh_pool
                 .get(renderer.mesh_asset_id)
                 .is_some_and(|mesh| !mesh.submeshes.is_empty())

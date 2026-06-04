@@ -169,6 +169,24 @@ pub(super) struct PreparedPerViewFrameInput {
     pub(super) hi_z_slot: Arc<parking_lot::Mutex<HiZGpuState>>,
 }
 
+/// Per-view fields used to build a pass-facing [`GraphPassFrame`].
+pub(super) struct PreparedPerViewFrameParams<'a, 'view> {
+    /// Resolved surface targets, viewport, and view flags for this view.
+    pub(super) resolved: &'view ResolvedView<'a>,
+    /// Scene color format selected for the frame.
+    pub(super) scene_color_format: wgpu::TextureFormat,
+    /// Host camera snapshot for the view.
+    pub(super) host_camera: &'view HostCameraFrame,
+    /// Render-context override scope used by this view.
+    pub(super) render_context: RenderingContext,
+    /// Elapsed renderer runtime in seconds for Unity-style shader time inputs.
+    pub(super) frame_time_seconds: f32,
+    /// Background clear/skybox behavior for this view.
+    pub(super) clear: FrameViewClear,
+    /// Post-processing permissions requested by this view.
+    pub(super) post_processing: ViewPostProcessing,
+}
+
 impl PreparedPerViewFrameInput {
     /// Builds cached view-local inputs from a resolved view and backend-owned frame resources.
     pub(super) fn from_resolved(
@@ -199,42 +217,32 @@ impl PreparedPerViewFrameInput {
     }
 
     /// Builds pass-facing frame parameters around the cached view-local resources.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "keeps graph-facing frame parameter construction explicit"
-    )]
     pub(super) fn frame_params<'a>(
         &self,
         shared: FrameSystemsShared<'a>,
-        resolved: &'a ResolvedView<'a>,
-        scene_color_format: wgpu::TextureFormat,
-        host_camera: &HostCameraFrame,
-        render_context: RenderingContext,
-        frame_time_seconds: f32,
-        clear: FrameViewClear,
-        post_processing: ViewPostProcessing,
+        inputs: PreparedPerViewFrameParams<'a, '_>,
     ) -> GraphPassFrame<'a> {
         GraphPassFrame {
             shared,
             view: GraphPassFrameView {
-                depth_texture: resolved.depth_texture,
-                depth_view: resolved.depth_view,
+                depth_texture: inputs.resolved.depth_texture,
+                depth_view: inputs.resolved.depth_view,
                 depth_sample_view: Some(self.depth_sample_view.clone()),
-                surface_format: resolved.surface_format,
-                scene_color_format,
-                viewport_px: resolved.viewport_px,
-                host_camera: *host_camera,
-                render_context,
-                frame_time_seconds,
-                multiview_stereo: resolved.multiview_stereo,
-                offscreen_write_target: resolved.offscreen_write_target,
-                view_id: resolved.view_id,
+                surface_format: inputs.resolved.surface_format,
+                scene_color_format: inputs.scene_color_format,
+                viewport_px: inputs.resolved.viewport_px,
+                host_camera: *inputs.host_camera,
+                render_context: inputs.render_context,
+                frame_time_seconds: inputs.frame_time_seconds,
+                multiview_stereo: inputs.resolved.multiview_stereo,
+                offscreen_write_target: inputs.resolved.offscreen_write_target,
+                view_id: inputs.resolved.view_id,
                 hi_z_slot: Arc::clone(&self.hi_z_slot),
-                sample_count: resolved.sample_count,
+                sample_count: inputs.resolved.sample_count,
                 gpu_limits: self.gpu_limits.clone(),
                 msaa_depth_resolve: self.msaa_depth_resolve.clone(),
-                clear,
-                post_processing,
+                clear: inputs.clear,
+                post_processing: inputs.post_processing,
             },
         }
     }
