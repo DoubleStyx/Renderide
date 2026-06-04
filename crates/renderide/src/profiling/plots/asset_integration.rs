@@ -45,7 +45,6 @@ pub struct AssetIntegrationProfileSample {
 }
 
 /// Records asset-integration backlog and budget pressure for the current frame.
-#[inline]
 pub fn plot_asset_integration(sample: AssetIntegrationProfileSample) {
     tracy_plot!("asset_integration::main_queued", sample.main_queued as f64);
     tracy_plot!(

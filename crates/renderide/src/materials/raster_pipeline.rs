@@ -368,7 +368,7 @@ pub(crate) fn build_pipeline_from_pass(
         "{}__{}__vs_{}__fs_{}",
         shared.label, pass.name, pass.vertex_entry, pass.fragment_entry
     );
-    let fragment_specialization_constants = shared
+    let shader_specialization_constants = shared
         .shader_specialization
         .pipeline_constants_for_wgsl_source(shared.wgsl_source);
     {
@@ -381,14 +381,17 @@ pub(crate) fn build_pipeline_from_pass(
                 vertex: wgpu::VertexState {
                     module: shared.module,
                     entry_point: Some(pass.vertex_entry),
-                    compilation_options: Default::default(),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: shader_specialization_constants.as_slice(),
+                        ..Default::default()
+                    },
                     buffers: shared.vertex_buffers,
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: shared.module,
                     entry_point: Some(pass.fragment_entry),
                     compilation_options: wgpu::PipelineCompilationOptions {
-                        constants: fragment_specialization_constants.as_slice(),
+                        constants: shader_specialization_constants.as_slice(),
                         ..Default::default()
                     },
                     targets: &[Some(wgpu::ColorTargetState {

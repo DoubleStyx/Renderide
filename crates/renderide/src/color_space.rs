@@ -8,6 +8,7 @@ pub(crate) const DEFAULT_SKYBOX_CLEAR_COLOR: Vec4 = Vec4::new(0.1, 0.1, 0.1, 1.0
 /// Converts one sRGB channel to linear-light space.
 ///
 /// The transfer function is applied directly to the input value without clamping.
+#[inline]
 pub(crate) fn srgb_channel_to_linear(value: f32) -> f32 {
     if value <= 0.04045 {
         value / 12.92
@@ -19,6 +20,7 @@ pub(crate) fn srgb_channel_to_linear(value: f32) -> f32 {
 }
 
 /// Converts sRGB RGB channels to linear RGB while preserving alpha.
+#[inline]
 pub(crate) fn srgb_vec4_rgb_to_linear(color: Vec4) -> Vec4 {
     Vec4::new(
         srgb_channel_to_linear(color.x),
@@ -29,6 +31,7 @@ pub(crate) fn srgb_vec4_rgb_to_linear(color: Vec4) -> Vec4 {
 }
 
 /// Converts an sRGB `float4` color to linear RGB while preserving alpha.
+#[inline]
 pub(crate) fn srgb_f32x4_rgb_to_linear(color: [f32; 4]) -> [f32; 4] {
     srgb_vec4_rgb_to_linear(Vec4::from_array(color)).to_array()
 }

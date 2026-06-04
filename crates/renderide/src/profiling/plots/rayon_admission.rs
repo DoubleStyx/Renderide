@@ -23,7 +23,6 @@ pub struct RayonAdmissionProfileSample {
 }
 
 /// Records one Rayon admission decision.
-#[inline]
 pub fn plot_rayon_admission(sample: RayonAdmissionProfileSample) {
     tracy_plot!("rayon_admission::work_units", sample.work_units as f64);
     tracy_plot!(

@@ -3,7 +3,7 @@
 //! The main tick records command buffers, assembles a [`SubmitBatch`], and hands it to
 //! [`DriverThread::submit`]. The driver thread drains a bounded FIFO ring
 //! ([`ring::BoundedRing`]) and runs `Queue::submit` + `SurfaceTexture::present` off the
-//! main thread. The ring's fixed capacity enforces at most one frame of pipelining
+//! main thread. The ring's fixed capacity enforces a small amount of visible-frame pipelining
 //! (backpressure when the driver falls behind).
 //!
 //! # Ordering
@@ -42,7 +42,7 @@ use crate::diagnostics::gpu_flight_recorder::{
 use crate::diagnostics::log_throttle::LogThrottle;
 use crate::gpu::sync::device_health::GpuDeviceHealth;
 pub use error::DriverError;
-pub use submit_batch::{SubmitBatch, SubmitWait};
+pub use submit_batch::{DriverSubmitKind, SubmitBatch, SubmitWait};
 pub use submit_counters::SubmitToken;
 pub(crate) use watchdog::BlockingCallWatchdog;
 pub use xr_finalize::{
@@ -57,9 +57,18 @@ use submit_batch::DriverMessage;
 use submit_counters::SubmitCounters;
 use surface_counters::SurfaceCounters;
 
-/// Maximum number of frames queued in the ring at once: one frame in flight on the driver, one
-/// being recorded by the main thread.
-pub const RING_CAPACITY: usize = 2;
+/// Number of driver-thread submit batches in the normal desktop offscreen presentation path.
+///
+/// A visible desktop frame submits the world render to the persistent offscreen target, then a
+/// separate terminal blit submits the swapchain surface texture for presentation.
+pub const DESKTOP_SUBMIT_BATCHES_PER_VISIBLE_FRAME: usize = 2;
+
+/// Number of visible frames the driver ring may cover before applying producer backpressure.
+pub const DRIVER_VISIBLE_FRAMES_IN_FLIGHT: usize = 2;
+
+/// Maximum number of submit batches queued in the ring at once.
+pub const RING_CAPACITY: usize =
+    DESKTOP_SUBMIT_BATCHES_PER_VISIBLE_FRAME * DRIVER_VISIBLE_FRAMES_IN_FLIGHT;
 
 const SLOW_DRIVER_ENQUEUE_THRESHOLD: Duration = Duration::from_millis(2);
 static SLOW_DRIVER_ENQUEUE_LOG: LogThrottle = LogThrottle::new();
@@ -236,6 +245,7 @@ impl DriverThread {
     pub fn flush(&self) {
         let (wait, rx) = SubmitWait::new();
         let batch = SubmitBatch {
+            submit_kind: DriverSubmitKind::Flush,
             command_buffers: Vec::new(),
             surface_texture: None,
             on_submitted_work_done: Vec::new(),
@@ -270,10 +280,14 @@ fn submit_to_driver_ring(
 ) -> Option<SubmitToken> {
     let has_surface = batch.surface_texture.is_some();
     let has_xr_finalize = batch.xr_finalize.is_some();
+    let submit_kind = batch.submit_kind;
     let command_buffers = batch.command_buffers.len();
     let frame_seq = batch.frame_seq;
     if has_surface {
         submit_queue.surface_counters.note_submitted();
+        crate::profiling::plot_surface_in_flight_count(
+            submit_queue.surface_counters.in_flight_count(),
+        );
     }
     let token = submit_queue.submit_counters.note_pushed();
     let enqueue_start = Instant::now();
@@ -291,6 +305,9 @@ fn submit_to_driver_ring(
             // Roll back the submitted counter so `wait_for_previous_present` does not
             // wait on a present that will never happen.
             submit_queue.surface_counters.note_presented();
+            crate::profiling::plot_surface_in_flight_count(
+                submit_queue.surface_counters.in_flight_count(),
+            );
         }
         // Mirror the rollback for the submit counter so the backlog plot does not
         // show a phantom in-flight batch.
@@ -321,15 +338,18 @@ fn submit_to_driver_ring(
         && let Some(occurrence) = SLOW_DRIVER_ENQUEUE_LOG.should_log(4, 64)
     {
         let (pushed, done) = submit_queue.submit_counters.snapshot();
+        let surface_in_flight = submit_queue.surface_counters.in_flight_count();
         logger::warn!(
-            "driver submit enqueue blocked for {:.3}ms occurrence={} ring_depth={} backlog={} pushed={} done={} has_surface={}",
+            "driver submit enqueue blocked for {:.3}ms occurrence={} kind={} ring_depth={} backlog={} pushed={} done={} has_surface={} surface_in_flight={}",
             enqueue_elapsed.as_secs_f64() * 1000.0,
             occurrence,
+            submit_kind.label(),
             submit_queue.ring.depth(),
             pushed.saturating_sub(done),
             pushed,
             done,
             has_surface,
+            surface_in_flight,
         );
     }
     // Tracy plot of how full the driver ring is right after the push so saturation

@@ -45,6 +45,78 @@ id = "right_palm_ext_pose"
 type = "pose"
 localized_name = "Right palm pose"
 
+# --- Vive tracker body roles ---
+
+[[action]]
+id = "tracker_waist_grip_pose"
+type = "pose"
+localized_name = "Waist tracker grip pose"
+
+[[action]]
+id = "tracker_chest_grip_pose"
+type = "pose"
+localized_name = "Chest tracker grip pose"
+
+[[action]]
+id = "tracker_left_foot_grip_pose"
+type = "pose"
+localized_name = "Left foot tracker grip pose"
+
+[[action]]
+id = "tracker_right_foot_grip_pose"
+type = "pose"
+localized_name = "Right foot tracker grip pose"
+
+[[action]]
+id = "tracker_left_knee_grip_pose"
+type = "pose"
+localized_name = "Left knee tracker grip pose"
+
+[[action]]
+id = "tracker_right_knee_grip_pose"
+type = "pose"
+localized_name = "Right knee tracker grip pose"
+
+[[action]]
+id = "tracker_left_elbow_grip_pose"
+type = "pose"
+localized_name = "Left elbow tracker grip pose"
+
+[[action]]
+id = "tracker_right_elbow_grip_pose"
+type = "pose"
+localized_name = "Right elbow tracker grip pose"
+
+[[action]]
+id = "tracker_left_shoulder_grip_pose"
+type = "pose"
+localized_name = "Left shoulder tracker grip pose"
+
+[[action]]
+id = "tracker_right_shoulder_grip_pose"
+type = "pose"
+localized_name = "Right shoulder tracker grip pose"
+
+[[action]]
+id = "tracker_left_wrist_grip_pose"
+type = "pose"
+localized_name = "Left wrist tracker grip pose"
+
+[[action]]
+id = "tracker_right_wrist_grip_pose"
+type = "pose"
+localized_name = "Right wrist tracker grip pose"
+
+[[action]]
+id = "tracker_left_ankle_grip_pose"
+type = "pose"
+localized_name = "Left ankle tracker grip pose"
+
+[[action]]
+id = "tracker_right_ankle_grip_pose"
+type = "pose"
+localized_name = "Right ankle tracker grip pose"
+
 # --- Trigger ---
 
 [[action]]

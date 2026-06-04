@@ -283,9 +283,12 @@ impl GpuContext {
 fn timed_surface_get_current_texture(
     surface: &wgpu::Surface<'_>,
 ) -> (wgpu::CurrentSurfaceTexture, Duration) {
+    profiling::scope!("gpu::surface_get_current_texture");
     let start = Instant::now();
     let texture = surface.get_current_texture();
-    (texture, start.elapsed())
+    let wait = start.elapsed();
+    crate::profiling::plot_surface_get_current_texture_ms(wait);
+    (texture, wait)
 }
 
 fn format_wgpu_error(error: wgpu::Error) -> String {

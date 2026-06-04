@@ -40,21 +40,18 @@ pub struct FrameUploadArenaProfileSample {
 /// when batches << draws, instancing is collapsing same-mesh runs as intended. Pair with
 /// [`crate::world_mesh::WorldMeshDrawStats::gpu_instances_emitted`] in the HUD for a
 /// per-frame integral. Expands to nothing when the `tracy` feature is off.
-#[inline]
 pub fn plot_world_mesh_subpass(batches: usize, draws: usize) {
     tracy_plot!("world_mesh::subpass_batches", batches as f64);
     tracy_plot!("world_mesh::subpass_draws", draws as f64);
 }
 
 /// Records deferred queue-write traffic for one frame.
-#[inline]
 pub fn plot_frame_upload_batch(writes: usize, bytes: usize) {
     tracy_plot!("frame_upload::writes", writes as f64);
     tracy_plot!("frame_upload::bytes", bytes as f64);
 }
 
 /// Records persistent upload arena pressure and fallback counters for one frame.
-#[inline]
 pub fn plot_frame_upload_arena(sample: &FrameUploadArenaProfileSample) {
     tracy_plot!(
         "frame_upload::fallback_writes",

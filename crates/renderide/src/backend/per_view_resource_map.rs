@@ -11,6 +11,7 @@ pub(crate) struct PerViewResourceMap<T> {
 }
 
 impl<T> Default for PerViewResourceMap<T> {
+    #[inline]
     fn default() -> Self {
         Self::new()
     }
@@ -18,6 +19,7 @@ impl<T> Default for PerViewResourceMap<T> {
 
 impl<T> PerViewResourceMap<T> {
     /// Creates an empty per-view resource map.
+    #[inline]
     pub(crate) fn new() -> Self {
         Self {
             entries: HashMap::new(),
@@ -25,21 +27,25 @@ impl<T> PerViewResourceMap<T> {
     }
 
     /// Returns a shared reference for `view_id`.
+    #[inline]
     pub(crate) fn get(&self, view_id: ViewId) -> Option<&T> {
         self.entries.get(&view_id)
     }
 
     /// Returns a mutable reference for `view_id`.
+    #[inline]
     pub(crate) fn get_mut(&mut self, view_id: ViewId) -> Option<&mut T> {
         self.entries.get_mut(&view_id)
     }
 
     /// Returns true when a resource exists for `view_id`.
+    #[inline]
     pub(crate) fn contains_key(&self, view_id: ViewId) -> bool {
         self.entries.contains_key(&view_id)
     }
 
     /// Returns the existing resource or inserts one built by `create`.
+    #[inline]
     pub(crate) fn get_or_insert_with<F>(&mut self, view_id: ViewId, create: F) -> &mut T
     where
         F: FnOnce() -> T,
@@ -48,6 +54,7 @@ impl<T> PerViewResourceMap<T> {
     }
 
     /// Removes the resource for `view_id`, returning true when one existed.
+    #[inline]
     pub(crate) fn retire(&mut self, view_id: ViewId) -> bool {
         self.entries.remove(&view_id).is_some()
     }

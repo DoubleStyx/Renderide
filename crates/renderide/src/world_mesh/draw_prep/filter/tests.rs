@@ -56,6 +56,15 @@ fn precomputed_pass_mask_matches_per_node_walk() {
     let mask = selective.build_pass_mask(&scene, space_id).unwrap();
     assert_eq!(mask, vec![false, true, true]);
 
+    let selective_with_exclude = CameraTransformDrawFilter {
+        only: Some(HashSet::from_iter([0])),
+        exclude: HashSet::from_iter([1]),
+    };
+    let mask = selective_with_exclude
+        .build_pass_mask(&scene, space_id)
+        .unwrap();
+    assert_eq!(mask, vec![true, false, false]);
+
     let exclude = CameraTransformDrawFilter {
         only: None,
         exclude: HashSet::from_iter([1]),
@@ -103,7 +112,7 @@ fn direct_filter_passes_respects_only_and_exclude_sets() {
         exclude: HashSet::from_iter([2, 3]),
     };
     assert!(!only.passes(1));
-    assert!(only.passes(2));
+    assert!(!only.passes(2));
     assert!(!only.passes(3));
 
     let exclude = CameraTransformDrawFilter {
@@ -112,6 +121,19 @@ fn direct_filter_passes_respects_only_and_exclude_sets() {
     };
     assert!(exclude.passes(3));
     assert!(!exclude.passes(4));
+}
+
+#[test]
+fn selective_filter_excludes_descendants_of_excluded_transform() {
+    let (scene, space_id) = seeded_scene();
+    let filter = CameraTransformDrawFilter {
+        only: Some(HashSet::from_iter([0])),
+        exclude: HashSet::from_iter([1]),
+    };
+
+    assert!(filter.passes_scene_node(&scene, space_id, 0));
+    assert!(!filter.passes_scene_node(&scene, space_id, 1));
+    assert!(!filter.passes_scene_node(&scene, space_id, 2));
 }
 
 #[test]

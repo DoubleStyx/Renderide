@@ -14,12 +14,45 @@ use super::xr_finalize::XrFinalizeWork;
 use crate::gpu::frame_bracket::FrameBracketReadback;
 use crate::gpu::frame_cpu_gpu_timing::FrameTimingTrack;
 
+/// Coarse purpose of a submit batch as seen by the driver thread.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DriverSubmitKind {
+    /// Main render-graph work for the user-visible frame.
+    PrimaryRender,
+    /// Primary clear-only fallback when no normal render graph work is submitted.
+    PrimaryClear,
+    /// Offscreen, upload, probe, or cache work outside the primary visible frame timing.
+    BackgroundGpuWork,
+    /// Mirror, compositor handoff, or other presentation work after the primary render.
+    Presentation,
+    /// OpenXR finalize-only work associated with compositor frame handoff.
+    XrFinalize,
+    /// Zero-work synchronization batch used by callers that need to flush the driver ring.
+    Flush,
+}
+
+impl DriverSubmitKind {
+    /// Stable log label for slow enqueue and driver diagnostics.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::PrimaryRender => "primary_render",
+            Self::PrimaryClear => "primary_clear",
+            Self::BackgroundGpuWork => "background_gpu_work",
+            Self::Presentation => "presentation",
+            Self::XrFinalize => "xr_finalize",
+            Self::Flush => "flush",
+        }
+    }
+}
+
 /// One frame's worth of GPU work queued for the driver thread.
 ///
 /// Built by the main thread after all command encoders for the frame have been finished.
 /// Ownership is moved into the ring; the main thread continues executing while the driver
 /// thread processes the batch.
 pub struct SubmitBatch {
+    /// Coarse purpose of this batch for diagnostics and profiler interpretation.
+    pub submit_kind: DriverSubmitKind,
     /// Ordered list of command buffers. Submitted in one `Queue::submit` call.
     pub command_buffers: Vec<wgpu::CommandBuffer>,
     /// Swapchain texture to present after submit. `None` when the frame targets an

@@ -20,31 +20,37 @@ pub(crate) struct RenderPhase<T> {
 
 impl<T> RenderPhase<T> {
     /// Creates an empty render phase.
+    #[inline]
     pub(crate) fn new() -> Self {
         Self { items: Vec::new() }
     }
 
     /// Appends one item to the phase.
+    #[inline]
     pub(crate) fn push(&mut self, item: T) {
         self.items.push(item);
     }
 
     /// Returns the queued items.
+    #[inline]
     pub(crate) fn items(&self) -> &[T] {
         &self.items
     }
 
     /// Returns the queued items mutably.
+    #[inline]
     pub(crate) fn items_mut(&mut self) -> &mut Vec<T> {
         &mut self.items
     }
 
     /// Returns the number of queued items.
+    #[inline]
     pub(crate) fn len(&self) -> usize {
         self.items.len()
     }
 
     /// Returns whether the phase has no queued items.
+    #[inline]
     pub(crate) fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
@@ -67,6 +73,7 @@ where
     K: RenderPhaseKey,
 {
     /// Creates an empty set containing one queue for every key value.
+    #[inline]
     pub(crate) fn new() -> Self {
         Self {
             phases: std::iter::repeat_with(RenderPhase::new)
@@ -77,11 +84,13 @@ where
     }
 
     /// Returns the queue for `key`.
+    #[inline]
     pub(crate) fn phase(&self, key: K) -> &RenderPhase<T> {
         &self.phases[key.index()]
     }
 
     /// Returns the queue for `key` mutably.
+    #[inline]
     pub(crate) fn phase_mut(&mut self, key: K) -> &mut RenderPhase<T> {
         &mut self.phases[key.index()]
     }
@@ -91,6 +100,7 @@ impl<K, T> Default for RenderPhaseSet<K, T>
 where
     K: RenderPhaseKey,
 {
+    #[inline]
     fn default() -> Self {
         Self::new()
     }

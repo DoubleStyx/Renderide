@@ -32,6 +32,7 @@ struct PreparedViewLightPacket {
     view_id: ViewId,
     render_context: crate::shared::RenderingContext,
     render_space_filter: Option<RenderSpaceId>,
+    render_shadows: bool,
     resolved_len: usize,
     signed_scene_color_required: bool,
     resolved: Vec<ResolvedLight>,
@@ -77,6 +78,7 @@ impl FrameResourceManager {
                 render_context: scene.active_main_render_context(),
                 render_space_filter: None,
                 head_output_transform: glam::Mat4::IDENTITY,
+                render_shadows: true,
             }],
             None,
         );
@@ -154,7 +156,11 @@ impl FrameResourceManager {
                 crate::backend::light_gpu::LightCookieBinding::NONE,
                 |fgpu| fgpu.assign_light_cookie(light, asset_resources),
             );
-            packed_lights.push(gpu_light_from_resolved_with_cookie(light, cookie));
+            let mut gpu_light = gpu_light_from_resolved_with_cookie(light, cookie);
+            if !packet.render_shadows {
+                disable_gpu_light_shadows(&mut gpu_light);
+            }
+            packed_lights.push(gpu_light);
         }
         if !*wrote_fallback {
             self.light_scratch
@@ -171,13 +177,22 @@ impl FrameResourceManager {
         entry.lights.extend_from_slice(packed_lights.as_slice());
         entry.signed_scene_color_required = signed_scene_color_required;
         logger::trace!(
-            "prepared lights for view {:?}: lights={} render_context={:?} render_space_filter={:?}",
+            "prepared lights for view {:?}: lights={} render_context={:?} render_space_filter={:?} render_shadows={}",
             packet.view_id,
             light_count,
             packet.render_context,
-            packet.render_space_filter
+            packet.render_space_filter,
+            packet.render_shadows
         );
     }
+}
+
+fn disable_gpu_light_shadows(light: &mut GpuLight) {
+    light.shadow_type = 0;
+    light.shadow_strength = 0.0;
+    light.shadow_near_plane = 0.0;
+    light.shadow_bias = 0.0;
+    light.shadow_normal_bias = 0.0;
 }
 
 fn should_parallelize_light_view_prep(
@@ -219,6 +234,7 @@ fn prepare_lights_for_view_packet(
         view_id: desc.view_id,
         render_context: desc.render_context,
         render_space_filter: desc.render_space_filter,
+        render_shadows: desc.render_shadows,
         resolved_len,
         signed_scene_color_required,
         resolved,

@@ -577,14 +577,14 @@ mod tests {
             11,
             lookup_ids(1, Some(10), Some(20)),
             42,
-            OffscreenWriteTarget::HostRenderTexture(5),
+            OffscreenWriteTarget::host_render_texture(5),
             None,
         );
         let b = build_material_bind_cache_key_parts(
             11,
             lookup_ids(2, Some(30), Some(40)),
             42,
-            OffscreenWriteTarget::HostRenderTexture(5),
+            OffscreenWriteTarget::host_render_texture(5),
             None,
         );
 
@@ -601,14 +601,14 @@ mod tests {
             11,
             lookup_ids(1, Some(10), Some(20)),
             42,
-            OffscreenWriteTarget::HostRenderTexture(5),
+            OffscreenWriteTarget::host_render_texture(5),
             Some(7),
         );
         let b = build_material_bind_cache_key_parts(
             11,
             lookup_ids(2, Some(30), Some(40)),
             42,
-            OffscreenWriteTarget::HostRenderTexture(5),
+            OffscreenWriteTarget::host_render_texture(5),
             Some(7),
         );
 
@@ -625,21 +625,21 @@ mod tests {
             11,
             lookup_ids(1, Some(10), Some(20)),
             42,
-            OffscreenWriteTarget::HostRenderTexture(5),
+            OffscreenWriteTarget::host_render_texture(5),
             Some(7),
         );
         let changed_texture = build_material_bind_cache_key_parts(
             11,
             lookup_ids(1, Some(10), Some(20)),
             43,
-            OffscreenWriteTarget::HostRenderTexture(5),
+            OffscreenWriteTarget::host_render_texture(5),
             Some(7),
         );
         let changed_offscreen = build_material_bind_cache_key_parts(
             11,
             lookup_ids(1, Some(10), Some(20)),
             42,
-            OffscreenWriteTarget::HostRenderTexture(6),
+            OffscreenWriteTarget::host_render_texture(6),
             Some(7),
         );
         let untracked_offscreen = build_material_bind_cache_key_parts(
@@ -653,6 +653,29 @@ mod tests {
         assert_ne!(base, changed_texture);
         assert_ne!(base, changed_offscreen);
         assert_ne!(base, untracked_offscreen);
+    }
+
+    #[test]
+    fn bind_cache_key_tracks_render_texture_self_sampling_policy() {
+        let suppressed = build_material_bind_cache_key_parts(
+            11,
+            lookup_ids(1, Some(10), Some(20)),
+            42,
+            OffscreenWriteTarget::host_render_texture(5),
+            Some(7),
+        );
+        let allowed = build_material_bind_cache_key_parts(
+            11,
+            lookup_ids(1, Some(10), Some(20)),
+            42,
+            OffscreenWriteTarget::host_render_texture_with_self_sampling(
+                5,
+                crate::graph_inputs::RenderTextureSelfSampling::AllowPreviousContents,
+            ),
+            Some(7),
+        );
+
+        assert_ne!(suppressed, allowed);
     }
 
     #[test]

@@ -41,7 +41,6 @@ pub struct MeshDeformProfileSample {
 }
 
 /// Records mesh-deform workload and cache pressure counters for the current frame.
-#[inline]
 pub fn plot_mesh_deform(sample: MeshDeformProfileSample) {
     tracy_plot!("mesh_deform::work_items", sample.work_items as f64);
     tracy_plot!("mesh_deform::compute_passes", sample.compute_passes as f64);

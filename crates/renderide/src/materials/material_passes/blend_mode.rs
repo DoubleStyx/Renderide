@@ -33,6 +33,7 @@ pub enum MaterialBlendMode {
 
 impl MaterialBlendMode {
     /// Returns the `(src, dst)` Unity blend factor pair, or `None` when the mode is `StemDefault`.
+    #[inline]
     pub(crate) fn unity_blend_factors(self) -> Option<(u8, u8)> {
         match self {
             Self::StemDefault => None,
@@ -42,6 +43,7 @@ impl MaterialBlendMode {
     }
 
     /// Converts Unity `BlendMode` factor property values (`_SrcBlend`, `_DstBlend`).
+    #[inline]
     pub fn from_unity_blend_factors(src: f32, dst: f32) -> Self {
         let src = src.round().clamp(0.0, 255.0) as u8;
         let dst = dst.round().clamp(0.0, 255.0) as u8;
@@ -56,6 +58,7 @@ impl MaterialBlendMode {
     }
 
     /// Returns true when the mode must be sorted/drawn as transparent.
+    #[inline]
     pub fn is_transparent(self) -> bool {
         matches!(self, Self::UnityBlend { .. })
     }
@@ -69,6 +72,7 @@ pub(crate) type PropertyMapRef<'a> = Option<&'a hashbrown::HashMap<i32, Material
 /// Iterates `pids` against pre-fetched material / property-block inner maps, matching the
 /// [`crate::materials::host_data::MaterialPropertyStore::get_merged`] "property block overrides
 /// material" semantics across all aliases.
+#[inline]
 pub(crate) fn first_float_from_maps(
     material_map: PropertyMapRef<'_>,
     property_block_map: PropertyMapRef<'_>,
@@ -80,6 +84,7 @@ pub(crate) fn first_float_from_maps(
 
 /// Like [`first_float_from_maps`] but reads `Float4` (vec4) values for `pids`. Used by the UI
 /// rect-mask CPU cull to read `_Rect` from the merged material/property-block view.
+#[inline]
 pub(crate) fn first_vec4_from_maps(
     material_map: PropertyMapRef<'_>,
     property_block_map: PropertyMapRef<'_>,
@@ -89,6 +94,7 @@ pub(crate) fn first_vec4_from_maps(
         .or_else(|| first_vec4_from_map(material_map, pids))
 }
 
+#[inline]
 fn first_float_from_map(map: PropertyMapRef<'_>, pids: &[i32]) -> Option<f32> {
     let map = map?;
     pids.iter().find_map(|&pid| match map.get(&pid)? {
@@ -98,6 +104,7 @@ fn first_float_from_map(map: PropertyMapRef<'_>, pids: &[i32]) -> Option<f32> {
     })
 }
 
+#[inline]
 fn first_vec4_from_map(map: PropertyMapRef<'_>, pids: &[i32]) -> Option<[f32; 4]> {
     let map = map?;
     pids.iter().find_map(|&pid| match map.get(&pid)? {
@@ -109,6 +116,7 @@ fn first_vec4_from_map(map: PropertyMapRef<'_>, pids: &[i32]) -> Option<[f32; 4]
 /// Resolves a material/property-block `BlendMode` override using pre-fetched inner maps. Prefer
 /// this in hot paths that also call [`crate::materials::material_render_state_from_maps`] for
 /// the same lookup -- the two outer-map probes are amortised across both calls.
+#[inline]
 pub fn material_blend_mode_from_maps(
     material_map: PropertyMapRef<'_>,
     property_block_map: PropertyMapRef<'_>,

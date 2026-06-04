@@ -185,6 +185,7 @@ fn submit_mesh_upload_flush(
     let _ = gpu
         .driver_submitter
         .submit(crate::gpu::driver_thread::SubmitBatch {
+            submit_kind: crate::gpu::driver_thread::DriverSubmitKind::BackgroundGpuWork,
             command_buffers: vec![command_buffer],
             surface_texture: None,
             on_submitted_work_done,

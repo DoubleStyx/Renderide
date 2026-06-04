@@ -96,6 +96,7 @@ mod offscreen_tasks;
 mod shutdown;
 mod state;
 mod tick;
+mod window_icon;
 mod xr_glue;
 
 use std::path::PathBuf;

@@ -28,13 +28,11 @@ pub(super) fn try_expand_mesh_render_buffer_renderer(
     if renderer.node_id < 0 || renderer.material_asset_id < 0 || renderer.mesh_asset_id < 0 {
         return;
     }
-    if matches!(
-        ctx.scene
-            .transform_special_layer(ctx.space_id, renderer.node_id as usize),
-        Some(LayerType::Hidden)
-    ) {
-        return;
-    }
+    let special_layer = ctx
+        .scene
+        .transform_special_layer(ctx.space_id, renderer.node_id as usize);
+    let is_overlay = matches!(special_layer, Some(LayerType::Overlay));
+    let is_hidden = matches!(special_layer, Some(LayerType::Hidden));
     let Some(point_buffer) = point_render_buffers.get(&renderer.point_render_buffer_asset_id)
     else {
         return;
@@ -60,9 +58,6 @@ pub(super) fn try_expand_mesh_render_buffer_renderer(
     ) else {
         return;
     };
-    let is_overlay = ctx
-        .scene
-        .transform_is_in_overlay_layer(ctx.space_id, renderer.node_id as usize);
     let generated_draw_count = point_buffer
         .points
         .len()
@@ -96,6 +91,7 @@ pub(super) fn try_expand_mesh_render_buffer_renderer(
                     renderable_index,
                     renderer,
                     is_overlay,
+                    is_hidden,
                 })
             })
             .collect::<Vec<_>>();
@@ -115,6 +111,7 @@ pub(super) fn try_expand_mesh_render_buffer_renderer(
             renderable_index,
             renderer,
             is_overlay,
+            is_hidden,
         },
     );
 }
@@ -135,6 +132,8 @@ struct MeshParticleSerialDrawInput<'a> {
     renderer: &'a MeshRenderBufferEntry,
     /// Precomputed overlay-layer flag.
     is_overlay: bool,
+    /// Precomputed hidden-layer flag.
+    is_hidden: bool,
 }
 
 /// Inputs for expanding one chunk of mesh-particle points.
@@ -155,6 +154,8 @@ struct MeshParticleDrawChunkInput<'a> {
     renderer: &'a MeshRenderBufferEntry,
     /// Precomputed overlay-layer flag.
     is_overlay: bool,
+    /// Precomputed hidden-layer flag.
+    is_hidden: bool,
 }
 
 /// Returns whether mesh-particle draw expansion has at least two useful chunks.
@@ -185,6 +186,7 @@ fn append_mesh_particle_draws_serial(
                 node_id: input.renderer.node_id,
                 mesh_asset_id: input.renderer.mesh_asset_id,
                 is_overlay: input.is_overlay,
+                is_hidden: input.is_hidden,
                 sorting_order: 0,
                 skinned: false,
                 world_space_deformed: false,
@@ -230,6 +232,7 @@ fn build_mesh_particle_draw_chunk(input: MeshParticleDrawChunkInput<'_>) -> Vec<
                 node_id: input.renderer.node_id,
                 mesh_asset_id: input.renderer.mesh_asset_id,
                 is_overlay: input.is_overlay,
+                is_hidden: input.is_hidden,
                 sorting_order: 0,
                 skinned: false,
                 world_space_deformed: false,

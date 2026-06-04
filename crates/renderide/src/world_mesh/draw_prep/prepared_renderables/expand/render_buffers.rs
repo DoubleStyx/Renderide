@@ -127,13 +127,11 @@ fn try_expand_render_buffer_renderer(
     if node_id < 0 || material_asset_id < 0 {
         return;
     }
-    if matches!(
-        ctx.scene
-            .transform_special_layer(ctx.space_id, node_id as usize),
-        Some(LayerType::Hidden)
-    ) {
-        return;
-    }
+    let special_layer = ctx
+        .scene
+        .transform_special_layer(ctx.space_id, node_id as usize);
+    let is_overlay = matches!(special_layer, Some(LayerType::Overlay));
+    let is_hidden = matches!(special_layer, Some(LayerType::Hidden));
     let Some(mesh) = ctx.mesh_pool.get(mesh_asset_id) else {
         return;
     };
@@ -151,9 +149,8 @@ fn try_expand_render_buffer_renderer(
         renderer_ordinal: 0,
         node_id,
         mesh_asset_id,
-        is_overlay: ctx
-            .scene
-            .transform_is_in_overlay_layer(ctx.space_id, node_id as usize),
+        is_overlay,
+        is_hidden,
         sorting_order: 0,
         skinned: false,
         world_space_deformed: false,

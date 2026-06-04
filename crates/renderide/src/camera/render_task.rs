@@ -29,6 +29,7 @@ pub fn host_camera_frame_for_render_task(
 }
 
 /// Returns sanitized clip planes for a host camera readback task.
+#[inline]
 pub(crate) fn camera_render_task_clip(parameters: &CameraRenderParameters) -> CameraClipPlanes {
     let near = finite_positive_or(parameters.near_clip, CameraClipPlanes::default().near).max(0.01);
     let far_default = CameraClipPlanes::default().far;
@@ -36,6 +37,7 @@ pub(crate) fn camera_render_task_clip(parameters: &CameraRenderParameters) -> Ca
     CameraClipPlanes::new(near, far)
 }
 
+#[inline]
 fn finite_positive_or(value: f32, fallback: f32) -> f32 {
     if value.is_finite() && value > 0.0 {
         value
@@ -45,6 +47,7 @@ fn finite_positive_or(value: f32, fallback: f32) -> f32 {
 }
 
 /// Builds a camera world matrix from a host task position and rotation.
+#[inline]
 pub fn camera_render_task_world_matrix(position: Vec3, rotation: glam::Quat) -> Mat4 {
     Mat4::from_scale_rotation_translation(Vec3::ONE, rotation, position)
 }

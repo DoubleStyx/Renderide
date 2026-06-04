@@ -66,27 +66,32 @@ impl<T> GpuProfilerPool<T> {
 
     /// Returns whether replacement handles may be created for this pool.
     #[cfg(feature = "tracy")]
+    #[inline]
     pub(super) const fn enabled(&self) -> bool {
         self.enabled
     }
 
     /// Returns the active profiler handle, when available.
+    #[inline]
     pub(super) fn active(&self) -> Option<&T> {
         self.active.as_ref()
     }
 
     /// Returns the active profiler handle mutably, when available.
+    #[inline]
     pub(super) fn active_mut(&mut self) -> Option<&mut T> {
         self.active.as_mut()
     }
 
     /// Returns mutable access to handles that are ready for reuse.
     #[cfg(feature = "tracy")]
+    #[inline]
     pub(super) fn ready_mut(&mut self) -> &mut [T] {
         self.ready.as_mut_slice()
     }
 
     /// Temporarily removes the active handle for nested recording code.
+    #[inline]
     pub(super) fn take_active(&mut self) -> Option<T> {
         let active = self.active.take();
         if active.is_some() {
@@ -126,6 +131,7 @@ impl<T> GpuProfilerPool<T> {
     }
 
     /// Returns the oldest submit token that still needs a profiler frame end.
+    #[inline]
     pub(super) fn front_pending_submit_token(&self) -> Option<SubmitToken> {
         self.pending_submit_end
             .front()
@@ -133,11 +139,13 @@ impl<T> GpuProfilerPool<T> {
     }
 
     /// Pops the oldest pending-submit profiler frame.
+    #[inline]
     pub(super) fn pop_front_pending_submit(&mut self) -> Option<PendingGpuProfilerEnd<T>> {
         self.pending_submit_end.pop_front()
     }
 
     /// Pushes a handle whose frame has ended back into the ready pool.
+    #[inline]
     pub(super) fn push_ready(&mut self, profiler: T) {
         self.ready.push(profiler);
     }
@@ -157,6 +165,7 @@ impl<T> GpuProfilerPool<T> {
 
     /// Returns whether a new replacement handle may be allocated.
     #[cfg(any(test, feature = "tracy"))]
+    #[inline]
     pub(super) fn can_allocate_replacement(&self) -> bool {
         self.enabled
             && self.active.is_none()
@@ -166,6 +175,7 @@ impl<T> GpuProfilerPool<T> {
 
     /// Inserts a newly allocated replacement handle into the active slot.
     #[cfg(any(test, feature = "tracy"))]
+    #[inline]
     pub(super) fn insert_allocated_active(&mut self, profiler: T) -> bool {
         if !self.can_allocate_replacement() {
             return false;
@@ -175,11 +185,13 @@ impl<T> GpuProfilerPool<T> {
     }
 
     /// Returns whether any profiler frame is waiting for driver-thread submit completion.
+    #[inline]
     pub(super) fn has_pending_submit_end(&self) -> bool {
         !self.pending_submit_end.is_empty()
     }
 
     /// Assigns and returns a monotonic profiler-frame order.
+    #[inline]
     pub(super) fn allocate_frame_order(&mut self) -> u64 {
         let order = self.next_frame_order;
         self.next_frame_order = self.next_frame_order.saturating_add(1);
@@ -187,18 +199,21 @@ impl<T> GpuProfilerPool<T> {
     }
 
     /// Newest profiler-frame order already published to diagnostics.
+    #[inline]
     pub(super) const fn latest_published_frame_order(&self) -> u64 {
         self.latest_published_frame_order
     }
 
     /// Records the newest profiler-frame order published to diagnostics.
     #[cfg(any(test, feature = "tracy"))]
+    #[inline]
     pub(super) fn mark_published_frame_order(&mut self, frame_order: u64) {
         self.latest_published_frame_order = self.latest_published_frame_order.max(frame_order);
     }
 
     /// Returns the number of live handles owned or temporarily checked out by the pool.
     #[cfg(any(test, feature = "tracy"))]
+    #[inline]
     pub(super) fn live_handle_count(&self) -> usize {
         self.active.is_some() as usize
             + self.checked_out_active as usize

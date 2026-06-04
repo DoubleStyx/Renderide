@@ -141,11 +141,13 @@ impl RenderBackend {
     }
 
     /// Updates the host-owned skin influence mode used by mesh deform compute.
+    #[inline]
     pub(crate) fn set_skin_weight_mode(&mut self, mode: SkinWeightMode) {
         self.skin_weight_mode = mode;
     }
 
     /// Host-owned skin influence mode used by mesh deform compute.
+    #[inline]
     pub(crate) const fn skin_weight_mode(&self) -> SkinWeightMode {
         self.skin_weight_mode
     }
@@ -271,6 +273,7 @@ impl RenderBackend {
     }
 
     /// Count of host Texture2D asset ids that have received a [`crate::shared::SetTexture2DFormat`] (CPU-side table).
+    #[inline]
     pub fn texture_format_registration_count(&self) -> usize {
         self.asset_transfers.texture_format_registration_count()
     }
@@ -292,11 +295,13 @@ impl RenderBackend {
     }
 
     /// GPU limits snapshot after [`Self::attach`], if attach succeeded.
+    #[inline]
     pub fn gpu_limits(&self) -> Option<&Arc<GpuLimits>> {
         self.asset_transfers.gpu_limits()
     }
 
     /// Mutable frame resources for runtime draw-preparation handoffs.
+    #[inline]
     pub(crate) fn frame_resources_mut(&mut self) -> &mut FrameResourceManager {
         &mut self.frame_services.frame_resources
     }
@@ -309,16 +314,19 @@ impl RenderBackend {
     }
 
     /// Mesh pool and VRAM accounting (draw prep, debugging).
+    #[inline]
     pub fn mesh_pool(&self) -> &MeshPool {
         self.asset_transfers.mesh_pool()
     }
 
     /// Resident Texture2D table (bind-group prep).
+    #[inline]
     pub fn texture_pool(&self) -> &TexturePool {
         self.asset_transfers.texture_pool()
     }
 
     /// Host render texture targets (secondary cameras, material sampling).
+    #[inline]
     pub fn render_texture_pool(&self) -> &RenderTexturePool {
         self.asset_transfers.render_texture_pool()
     }
@@ -387,16 +395,19 @@ impl RenderBackend {
     }
 
     /// Material property store (host uniforms, textures, shader asset bindings).
+    #[inline]
     pub fn material_property_store(&self) -> &MaterialPropertyStore {
         self.materials.material_property_store()
     }
 
     /// Property name interning for material batches.
+    #[inline]
     pub fn property_id_registry(&self) -> &crate::materials::host_data::PropertyIdRegistry {
         self.materials.property_id_registry()
     }
 
     /// Registered material families and pipeline cache (after GPU attach).
+    #[inline]
     pub fn material_registry(&self) -> Option<&crate::materials::MaterialRegistry> {
         self.materials.material_registry()
     }
@@ -410,11 +421,13 @@ impl RenderBackend {
     }
 
     /// Number of schedules passes in the compiled frame graph, or `0` if none.
+    #[inline]
     pub fn frame_graph_pass_count(&self) -> usize {
         self.graph_state.frame_graph_cache.pass_count()
     }
 
     /// Compile-time topological wave count for the cached frame graph, or `0` if none has been built yet.
+    #[inline]
     pub fn frame_graph_topo_levels(&self) -> usize {
         self.graph_state.frame_graph_cache.topo_levels()
     }

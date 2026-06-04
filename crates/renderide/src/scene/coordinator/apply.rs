@@ -119,7 +119,6 @@ pub(in crate::scene::coordinator) fn is_extracted_empty(e: &ExtractedRenderSpace
 ///
 /// The estimate intentionally uses extracted payload lengths rather than render-space size so sparse
 /// ticks with many tiny spaces stay on the serial path, while dense multi-space ticks still fan out.
-#[inline]
 fn extracted_apply_work_units(e: &ExtractedRenderSpaceUpdate) -> usize {
     let mut units = 0usize;
     if let Some(update) = &e.cameras {

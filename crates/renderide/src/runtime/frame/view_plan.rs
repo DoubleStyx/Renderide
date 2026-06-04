@@ -17,7 +17,7 @@ use crate::render_graph::{
 };
 use crate::scene::RenderSpaceId;
 use crate::shared::RenderingContext;
-use crate::world_mesh::CameraTransformDrawFilter;
+use crate::world_mesh::{CameraTransformDrawFilter, ViewLayerPolicy};
 
 /// Final color-copy destination for a partial secondary render-texture camera viewport.
 pub(in crate::runtime) struct OffscreenColorCopy {
@@ -147,6 +147,10 @@ pub(in crate::runtime) struct FrameViewPlan<'a> {
     pub(in crate::runtime) draw_filter: Option<CameraTransformDrawFilter>,
     /// Optional render-space scope for offscreen cameras/tasks.
     pub(in crate::runtime) render_space_filter: Option<RenderSpaceId>,
+    /// Per-view Unity layer visibility policy used during draw collection.
+    pub(in crate::runtime) layer_policy: ViewLayerPolicy,
+    /// Whether this view should include shadow metadata in its light pack.
+    pub(in crate::runtime) render_shadows: bool,
     /// Stable logical identity for view-scoped resources and temporal state.
     pub(in crate::runtime) view_id: ViewId,
     /// Attachment extent in pixels for this view.
@@ -198,6 +202,8 @@ impl<'a> FrameViewPlan<'a> {
             frame_time_seconds,
             draw_filter: None,
             render_space_filter: None,
+            layer_policy: ViewLayerPolicy::MainView,
+            render_shadows: true,
             view_id,
             viewport_px,
             clear,
@@ -290,6 +296,7 @@ impl<'a> FrameViewPlan<'a> {
             render_context: self.render_context,
             render_space_filter: self.render_space_filter,
             head_output_transform: self.host_camera.head_output_transform,
+            render_shadows: self.render_shadows,
         }
     }
 
@@ -361,6 +368,8 @@ mod tests {
         assert!(!plan.is_multiview_stereo_active());
         assert_eq!(plan.shader_permutation(), ShaderPermutation(0));
         assert_eq!(plan.output_depth_mode(), OutputDepthMode::DesktopSingle);
+        assert_eq!(plan.layer_policy, ViewLayerPolicy::MainView);
+        assert!(plan.render_shadows);
     }
 
     #[test]

@@ -22,6 +22,7 @@ pub(crate) const DEFAULT_DESKTOP_FOV_DEGREES: f32 = 60.0;
 ///
 /// [`f32::NAN`] falls back to [`DEFAULT_DESKTOP_FOV_DEGREES`]. Infinities clamp to the min/max
 /// bounds like any other out-of-range value.
+#[inline]
 pub fn clamp_desktop_fov_degrees(degrees: f32) -> f32 {
     if degrees.is_nan() {
         DEFAULT_DESKTOP_FOV_DEGREES
@@ -63,6 +64,7 @@ pub fn effective_head_output_clip_planes(
 ///
 /// * `vertical_fov` -- vertical field of view in **radians**
 /// * `near` / `far` -- positive distances (`far > near`)
+#[inline]
 pub fn reverse_z_perspective(aspect: f32, vertical_fov: f32, near: f32, far: f32) -> Mat4 {
     let tan_vertical_half = (vertical_fov / 2.0).tan();
     let f_y = 1.0 / tan_vertical_half;

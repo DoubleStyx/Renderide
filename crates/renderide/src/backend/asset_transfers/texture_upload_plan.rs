@@ -3,8 +3,9 @@
 use std::sync::Arc;
 
 use crate::assets::texture::{
-    MipChainAdvance, Texture2dUploadContext, TextureDataStart, TextureMipChainUploader,
-    TextureMipUploadStep, TextureUploadError, texture_upload_start,
+    MipChainAdvance, Texture2dUploadInputs, Texture2dUploadPayload, Texture2dUploadQueueInputs,
+    Texture2dUploadTarget, TextureDataStart, TextureMipChainUploader, TextureMipUploadStep,
+    TextureUploadError, texture_upload_start,
 };
 use crate::gpu::GpuQueueAccessMode;
 use crate::ipc::SharedMemoryAccessor;
@@ -114,16 +115,22 @@ impl TextureUploadStepper {
             shm,
             &plan.upload.data,
             |raw| {
-                texture_upload_start(&Texture2dUploadContext {
-                    device: plan.device,
-                    queue: plan.queue,
-                    gpu_queue_access_gate: plan.gpu_queue_access_gate,
-                    queue_access_mode: plan.queue_access_mode,
-                    texture: plan.texture,
-                    fmt: plan.format,
-                    wgpu_format: plan.wgpu_format,
-                    upload: plan.upload,
-                    raw,
+                texture_upload_start(&Texture2dUploadInputs {
+                    queue: Texture2dUploadQueueInputs {
+                        device: plan.device,
+                        queue: plan.queue,
+                        gpu_queue_access_gate: plan.gpu_queue_access_gate,
+                        queue_access_mode: plan.queue_access_mode,
+                    },
+                    target: Texture2dUploadTarget {
+                        texture: plan.texture,
+                        fmt: plan.format,
+                        wgpu_format: plan.wgpu_format,
+                    },
+                    payload: Texture2dUploadPayload {
+                        upload: plan.upload,
+                        raw,
+                    },
                 })
             },
             |start| matches!(start, TextureDataStart::MipChain(_)),

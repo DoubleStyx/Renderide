@@ -136,16 +136,19 @@ pub enum GpuError {
 
 impl GpuContext {
     /// Centralized device limits and derived caps ([`GpuLimits`]).
+    #[inline]
     pub fn limits(&self) -> &Arc<GpuLimits> {
         &self.limits
     }
 
     /// WGPU device for buffer/texture/pipeline creation.
+    #[inline]
     pub fn device(&self) -> &Arc<wgpu::Device> {
         &self.device
     }
 
     /// Shared handle also passed to [`crate::runtime::RendererRuntime`] for uploads.
+    #[inline]
     pub fn queue(&self) -> &Arc<wgpu::Queue> {
         &self.queue
     }
@@ -153,61 +156,72 @@ impl GpuContext {
     /// Gate acquired around short operations that may access the Vulkan queue shared by wgpu and
     /// OpenXR. The driver thread, texture upload path, and OpenXR frame submission all use this
     /// handle.
+    #[inline]
     pub fn gpu_queue_access_gate(&self) -> &super::GpuQueueAccessGate {
         &self.gpu_queue_access_gate
     }
 
     /// WGPU adapter description captured at init ([`Self::new`]).
+    #[inline]
     pub fn adapter_info(&self) -> &wgpu::AdapterInfo {
         &self.adapter_info
     }
 
     /// MSAA tier state ([`GpuMsaa`]).
+    #[inline]
     pub fn msaa(&self) -> &GpuMsaa {
         &self.msaa
     }
 
     /// Mutable MSAA tier state for setting requested sample counts each frame.
+    #[inline]
     pub fn msaa_mut(&mut self) -> &mut GpuMsaa {
         &mut self.msaa
     }
 
     /// Records that mapped staging/readback buffers should be discarded before reuse.
+    #[inline]
     pub(crate) fn mark_mapped_buffers_invalid(&self, reason: impl AsRef<str>) {
         self.mapped_buffer_recovery
             .mark_mapped_buffers_invalid(reason);
     }
 
     /// Shared mapped-buffer invalidation generation used by async GPU owners.
+    #[inline]
     pub(crate) fn mapped_buffer_health(&self) -> Arc<GpuMappedBufferHealth> {
         self.mapped_buffer_recovery.health()
     }
 
     /// Begins mapped-buffer recovery bookkeeping for a render frame.
+    #[inline]
     pub(crate) fn begin_mapped_buffer_recovery_frame(&mut self) -> MappedBufferRecoveryFrame {
         self.mapped_buffer_recovery
             .begin_mapped_buffer_recovery_frame()
     }
 
     /// Observes invalidations reported by wgpu while the current frame is already running.
+    #[inline]
     pub(crate) fn observe_mapped_buffer_invalidation_during_frame(&mut self) -> bool {
         self.mapped_buffer_recovery
             .observe_mapped_buffer_invalidation_during_frame()
     }
 
     /// Whether this frame should avoid CPU-mapped staging/readback buffers.
+    #[inline]
     pub(crate) fn avoid_mapped_buffers_this_frame(&self) -> bool {
         self.mapped_buffer_recovery
             .avoid_mapped_buffers_this_frame()
     }
 
     /// Current mapped-buffer invalidation generation.
+    #[inline]
     pub(crate) fn mapped_buffer_invalidation_generation(&self) -> u64 {
         self.mapped_buffer_recovery
             .mapped_buffer_invalidation_generation()
     }
 
     /// Whether the active `wgpu::Device` has been reported lost.
+    #[inline]
     pub(crate) fn device_lost(&self) -> bool {
         self.device_health.is_lost()
     }

@@ -32,6 +32,23 @@ impl FrameSubmitKind {
     const fn tracks_primary_frame_timing(self) -> bool {
         matches!(self, Self::PrimaryRender | Self::PrimaryClear)
     }
+
+    /// Returns `true` when this submit should advance Tracy's logical render-submit frame track.
+    const fn emits_render_submit_frame_mark(self) -> bool {
+        self.tracks_primary_frame_timing()
+    }
+}
+
+impl From<FrameSubmitKind> for crate::gpu::driver_thread::DriverSubmitKind {
+    fn from(value: FrameSubmitKind) -> Self {
+        match value {
+            FrameSubmitKind::PrimaryRender => Self::PrimaryRender,
+            FrameSubmitKind::PrimaryClear => Self::PrimaryClear,
+            FrameSubmitKind::BackgroundGpuWork => Self::BackgroundGpuWork,
+            FrameSubmitKind::Presentation => Self::Presentation,
+            FrameSubmitKind::XrFinalize => Self::XrFinalize,
+        }
+    }
 }
 
 impl GpuContext {
@@ -129,6 +146,7 @@ impl GpuContext {
     pub fn submit_finalize_only(&self, mut xr_finalize: crate::gpu::driver_thread::XrFinalizeWork) {
         xr_finalize.set_submit_context(0, 0);
         let batch = crate::gpu::driver_thread::SubmitBatch {
+            submit_kind: crate::gpu::driver_thread::DriverSubmitKind::XrFinalize,
             command_buffers: Vec::new(),
             surface_texture: None,
             on_submitted_work_done: Vec::new(),
@@ -175,10 +193,10 @@ impl GpuContext {
         extra_on_submitted_work_done: Vec<Box<dyn FnOnce() + Send + 'static>>,
         mut xr_finalize: Option<crate::gpu::driver_thread::XrFinalizeWork>,
     ) {
-        if !command_buffers.is_empty() {
+        let has_gpu_work = !command_buffers.is_empty();
+        if has_gpu_work && kind.emits_render_submit_frame_mark() {
             crate::profiling::emit_render_submit_frame_mark();
         }
-        let has_gpu_work = !command_buffers.is_empty();
         let track = if kind.tracks_primary_frame_timing() && has_gpu_work {
             let mut ft = self
                 .submission
@@ -218,6 +236,7 @@ impl GpuContext {
             finalize.set_submit_context(frame_seq, command_buffers.len());
         }
         let batch = crate::gpu::driver_thread::SubmitBatch {
+            submit_kind: kind.into(),
             command_buffers,
             surface_texture,
             on_submitted_work_done: extra_on_submitted_work_done,
@@ -270,6 +289,48 @@ impl GpuContext {
     pub fn wait_for_previous_present(&self) {
         let start = Instant::now();
         self.submission.driver_thread.wait_for_previous_present();
-        self.record_frame_timing_excluded_wait(start.elapsed());
+        let wait = start.elapsed();
+        self.record_frame_timing_excluded_wait(wait);
+        crate::profiling::plot_surface_previous_present_wait_ms(wait);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FrameSubmitKind;
+
+    #[test]
+    fn render_submit_frame_mark_only_tracks_primary_frame_work() {
+        assert!(FrameSubmitKind::PrimaryRender.emits_render_submit_frame_mark());
+        assert!(FrameSubmitKind::PrimaryClear.emits_render_submit_frame_mark());
+        assert!(!FrameSubmitKind::BackgroundGpuWork.emits_render_submit_frame_mark());
+        assert!(!FrameSubmitKind::Presentation.emits_render_submit_frame_mark());
+        assert!(!FrameSubmitKind::XrFinalize.emits_render_submit_frame_mark());
+    }
+
+    #[test]
+    fn driver_submit_kind_labels_match_frame_submit_kind() {
+        use crate::gpu::driver_thread::DriverSubmitKind;
+
+        assert_eq!(
+            DriverSubmitKind::from(FrameSubmitKind::PrimaryRender).label(),
+            "primary_render"
+        );
+        assert_eq!(
+            DriverSubmitKind::from(FrameSubmitKind::PrimaryClear).label(),
+            "primary_clear"
+        );
+        assert_eq!(
+            DriverSubmitKind::from(FrameSubmitKind::BackgroundGpuWork).label(),
+            "background_gpu_work"
+        );
+        assert_eq!(
+            DriverSubmitKind::from(FrameSubmitKind::Presentation).label(),
+            "presentation"
+        );
+        assert_eq!(
+            DriverSubmitKind::from(FrameSubmitKind::XrFinalize).label(),
+            "xr_finalize"
+        );
     }
 }

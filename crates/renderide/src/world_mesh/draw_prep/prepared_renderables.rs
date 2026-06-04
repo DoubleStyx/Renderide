@@ -75,6 +75,8 @@ pub(super) struct FramePreparedDraw {
     pub mesh_asset_id: i32,
     /// Precomputed overlay flag from the renderer's inherited layer state.
     pub is_overlay: bool,
+    /// Precomputed hidden flag from the renderer's inherited layer state.
+    pub is_hidden: bool,
     /// Host-side sorting order propagated to [`super::item::WorldMeshDrawItem::sorting_order`].
     pub sorting_order: i32,
     /// `true` when the source came from the skinned renderer list.
@@ -225,7 +227,7 @@ fn populate_renderer_run_lookup(
 /// Frame-scope dense list of [`FramePreparedDraw`] entries across every active render space.
 ///
 /// Build once per frame via [`FramePreparedRenderables::build_for_frame`] and hand as a borrow to
-/// every per-view [`super::collect::DrawCollectionContext`]. Per-view collection walks this list,
+/// every per-view [`super::collect::DrawCollectionInputs`]. Per-view collection walks this list,
 /// applies frustum / Hi-Z culling, and emits [`super::item::WorldMeshDrawItem`]s -- no scene
 /// walk, no repeated mesh-pool lookup, no repeated material-override resolution.
 pub struct FramePreparedRenderables {
@@ -519,7 +521,7 @@ impl FramePreparedRenderables {
     }
 
     /// Render context the list was built against (used for `debug_assert` parity with the
-    /// per-view [`super::collect::DrawCollectionContext::render_context`] so material-override
+    /// per-view [`super::collect::DrawCollectionViewInputs::render_context`] so material-override
     /// resolution matches downstream culling).
     #[inline]
     pub fn render_context(&self) -> RenderingContext {
@@ -862,6 +864,7 @@ mod tests {
             node_id: renderable_index as i32,
             mesh_asset_id: 10,
             is_overlay: false,
+            is_hidden: false,
             sorting_order: 0,
             skinned: false,
             world_space_deformed: false,

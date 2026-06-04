@@ -102,7 +102,6 @@ impl ResourceChurnKind {
 }
 
 /// Plots all registered resource creation sites and resets their counters for the next frame.
-#[inline]
 pub(crate) fn flush_resource_churn_plots() {
     let mut totals = ResourceChurnTotals::default();
     let Some(client) = tracy_client::Client::running() else {

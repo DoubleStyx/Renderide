@@ -4,7 +4,8 @@ use std::sync::{Arc, RwLock};
 
 use super::*;
 use crate::config::{
-    GtaoSettings, PostProcessingSettings, RendererSettings, TonemapMode, TonemapSettings,
+    BloomSettings, GtaoSettings, PostProcessingSettings, RendererSettings, TonemapMode,
+    TonemapSettings,
 };
 use crate::render_graph::{
     GraphCacheKey, RenderPathProfile, ViewFamilyGraphRequirements, ViewPostProcessing,
@@ -98,7 +99,7 @@ fn first_sync_builds_graph_and_records_signature() {
             agx_tonemap: false,
             auto_exposure: true,
             bloom: true,
-            bloom_max_mip_dimension: 512,
+            bloom_max_mip_dimension: BloomSettings::default().effective_max_mip_dimension(),
             gtao: true,
             gtao_denoise_passes: GtaoSettings::default().effective_denoise_passes(),
             gtao_resolution_divisor: GtaoSettings::default().effective_resolution_divisor(),

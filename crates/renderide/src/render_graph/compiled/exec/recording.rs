@@ -19,6 +19,65 @@ use super::super::super::pass::{PassKind, PassNode};
 use super::super::helpers;
 use super::super::{CompiledRenderGraph, ResolvedView};
 
+/// Pass phase and optional per-view index used to derive schedule and upload scopes.
+#[derive(Clone, Copy)]
+pub(super) struct PhaseRecordingScope {
+    /// Schedule phase being recorded.
+    pub(super) phase: super::super::super::pass::PassPhase,
+    /// Per-view index for view-scoped passes.
+    pub(super) view_idx: Option<usize>,
+}
+
+/// Concrete pass index and upload scope for one pass dispatch.
+#[derive(Clone, Copy)]
+pub(super) struct PassExecution {
+    /// Pass index in the compiled pass list.
+    pub(super) pass_idx: usize,
+    /// Deferred upload scope used while this pass records.
+    pub(super) upload_scope: FrameUploadScope,
+}
+
+/// Resolved view and resource table seen by one pass dispatch.
+#[derive(Clone, Copy)]
+pub(super) struct PassViewInputs<'a> {
+    /// Resolved target, depth, and view metadata.
+    pub(super) resolved: &'a ResolvedView<'a>,
+    /// Typed graph resources resolved for this execution scope.
+    pub(super) graph_resources: &'a GraphResolvedResources,
+}
+
+/// GPU handles shared by pass dispatch helpers.
+#[derive(Clone, Copy)]
+pub(super) struct PassGpuInputs<'a> {
+    /// WGPU device used for pass-side resource creation.
+    pub(super) device: &'a wgpu::Device,
+    /// Effective device limits for this frame.
+    pub(super) gpu_limits: &'a crate::gpu::GpuLimits,
+    /// Optional GPU profiler handle for pass timestamp queries.
+    pub(super) profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
+}
+
+/// Mutable recording targets reborrowed for each pass or recording unit.
+pub(super) struct PassRecordTargets<'a, 'frame, 'encoder> {
+    /// Scene, backend system handles, and per-view frame state for this pass.
+    pub(super) frame_params: &'frame mut crate::graph_inputs::GraphPassFrame<'a>,
+    /// Per-scope typed blackboard populated before or during this scope.
+    pub(super) blackboard: &'frame mut Blackboard,
+    /// Active command encoder for this recording slice.
+    pub(super) encoder: &'encoder mut wgpu::CommandEncoder,
+}
+
+impl<'a> PassRecordTargets<'a, '_, '_> {
+    /// Reborrows the mutable targets for one nested pass dispatch.
+    pub(super) fn reborrow(&mut self) -> PassRecordTargets<'a, '_, '_> {
+        PassRecordTargets {
+            frame_params: &mut *self.frame_params,
+            blackboard: &mut *self.blackboard,
+            encoder: &mut *self.encoder,
+        }
+    }
+}
+
 fn update_command_stats(blackboard: &mut Blackboard, update: impl FnOnce(&mut GraphCommandStats)) {
     if blackboard
         .get_untracked::<GraphCommandStatsSlot>()
@@ -41,54 +100,44 @@ impl CompiledRenderGraph {
     /// Takes `&self` so per-view recording can be hoisted onto rayon workers without serialising
     /// on the [`CompiledRenderGraph`] handle. All pass `record_*` methods already require only
     /// `&self`, so the dispatch loop is structurally Send/Sync-safe at this layer.
-    //
-    // This function intentionally keeps independent parameters rather than bundling into a
-    // context struct: `encoder` uses an anonymous `'_` lifetime so each call's mutable borrow
-    // ends at the call boundary, and the other `&'a` references must all share the per-view
-    // lifetime `'a` without being pulled into a single `'a`-bound struct that would couple
-    // their borrow scopes.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "borrow scopes forbid a single context struct"
-    )]
     pub(super) fn execute_pass_node<'a>(
         &self,
-        pass_idx: usize,
-        upload_scope: FrameUploadScope,
-        resolved: &'a ResolvedView<'a>,
-        graph_resources: &'a GraphResolvedResources,
-        frame_params: &mut crate::graph_inputs::GraphPassFrame<'a>,
-        blackboard: &mut Blackboard,
-        encoder: &mut wgpu::CommandEncoder,
-        device: &'a wgpu::Device,
-        gpu_limits: &'a crate::gpu::GpuLimits,
+        execution: PassExecution,
+        view: PassViewInputs<'a>,
+        targets: PassRecordTargets<'a, '_, '_>,
+        gpu: PassGpuInputs<'a>,
         upload_batch: &FrameUploadBatch,
-        profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
     ) -> Result<(), GraphExecuteError> {
-        let _upload_scope = upload_batch.enter_scope(upload_scope);
-        let uploads = GraphUploadSink::new(upload_batch, upload_scope);
-        let pass = &self.passes[pass_idx];
+        let PassRecordTargets {
+            frame_params,
+            blackboard,
+            encoder,
+        } = targets;
+        let _upload_scope = upload_batch.enter_scope(execution.upload_scope);
+        let uploads = GraphUploadSink::new(upload_batch, execution.upload_scope);
+        let pass = &self.passes[execution.pass_idx];
         let _pass_label = pass.profiling_label();
         profiling::scope!("graph::execute_pass_node", _pass_label.as_ref());
-        self.validate_blackboard_inputs(pass_idx, pass.name(), blackboard)?;
-        self.begin_blackboard_access_validation(pass_idx, pass.name(), blackboard);
+        self.validate_blackboard_inputs(execution.pass_idx, pass.name(), blackboard)?;
+        self.begin_blackboard_access_validation(execution.pass_idx, pass.name(), blackboard);
         let record_result = (|| -> Result<(), GraphExecuteError> {
             match pass.kind() {
                 PassKind::Raster => {
                     profiling::scope!("graph::record_raster");
-                    let template = helpers::pass_info_raster_template(&self.pass_info, pass_idx)?;
+                    let template =
+                        helpers::pass_info_raster_template(&self.pass_info, execution.pass_idx)?;
                     let mut ctx = RasterPassCtx {
-                        device,
-                        pass_frame: frame_params,
+                        device: gpu.device,
+                        pass_frame: &mut *frame_params,
                         uploads,
-                        graph_resources,
-                        blackboard,
-                        profiler,
+                        graph_resources: view.graph_resources,
+                        blackboard: &mut *blackboard,
+                        profiler: gpu.profiler,
                     };
                     helpers::execute_graph_raster_pass_node(
                         pass,
                         &template,
-                        graph_resources,
+                        view.graph_resources,
                         encoder,
                         &mut ctx,
                     )
@@ -98,15 +147,15 @@ impl CompiledRenderGraph {
                     let ctx = {
                         profiling::scope!("graph::record_compute::build_context");
                         ComputePassCtx {
-                            device,
-                            gpu_limits,
+                            device: gpu.device,
+                            gpu_limits: gpu.gpu_limits,
                             encoder,
-                            depth_view: Some(resolved.depth_view),
-                            pass_frame: frame_params,
+                            depth_view: Some(view.resolved.depth_view),
+                            pass_frame: &mut *frame_params,
                             uploads,
-                            graph_resources,
-                            blackboard,
-                            profiler,
+                            graph_resources: view.graph_resources,
+                            blackboard: &mut *blackboard,
+                            profiler: gpu.profiler,
                         }
                     };
                     record_compute_pass(pass, ctx)
@@ -116,13 +165,13 @@ impl CompiledRenderGraph {
                     let ctx = {
                         profiling::scope!("graph::record_encoder::build_context");
                         EncoderPassCtx {
-                            device,
+                            device: gpu.device,
                             encoder,
-                            pass_frame: frame_params,
+                            pass_frame: &mut *frame_params,
                             uploads,
-                            graph_resources,
-                            blackboard,
-                            profiler,
+                            graph_resources: view.graph_resources,
+                            blackboard: &mut *blackboard,
+                            profiler: gpu.profiler,
                         }
                     };
                     record_encoder_pass(pass, ctx)

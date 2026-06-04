@@ -13,7 +13,6 @@ pub struct LockstepPipelineProfileSample {
 }
 
 /// Records lock-step pipeline diagnostics on Tracy plots.
-#[inline]
 pub fn plot_lockstep_pipeline(sample: &LockstepPipelineProfileSample) {
     tracy_plot!("lockstep::pipeline_action", sample.action);
     tracy_plot!("lockstep::one_credit_block_reason", sample.one_credit_block);

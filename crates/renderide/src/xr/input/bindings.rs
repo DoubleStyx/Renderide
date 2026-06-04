@@ -35,6 +35,8 @@ pub struct ProfileExtensionGates {
     pub fb_touch_controller_pro: bool,
     /// `XR_META_touch_controller_plus`.
     pub meta_touch_controller_plus: bool,
+    /// `XR_HTCX_vive_tracker_interaction`.
+    pub htcx_vive_tracker_interaction: bool,
     /// `XR_EXT_palm_pose`.
     pub palm_pose: bool,
     /// `XR_EXT_hand_tracking`.
@@ -57,6 +59,7 @@ impl ProfileExtensionGates {
             }
             ExtensionGate::FbTouchControllerPro => self.fb_touch_controller_pro,
             ExtensionGate::MetaTouchControllerPlus => self.meta_touch_controller_plus,
+            ExtensionGate::HtcxViveTrackerInteraction => self.htcx_vive_tracker_interaction,
             ExtensionGate::PalmPose => self.palm_pose,
         }
     }
@@ -165,7 +168,7 @@ pub(super) fn apply_suggested_interaction_bindings(
 pub(super) fn build_action_handle_map(
     actions: &OpenxrInputActions,
 ) -> HashMap<String, ActionHandleRef<'_>> {
-    let mut map = HashMap::with_capacity(44);
+    let mut map = HashMap::with_capacity(44 + actions.tracker_grip_poses.len());
     macro_rules! put {
         ($variant:ident, $field:ident) => {
             map.insert(
@@ -229,6 +232,13 @@ pub(super) fn build_action_handle_map(
     put!(Haptic, left_haptic);
     put!(Haptic, right_haptic);
 
+    for tracker_action in &actions.tracker_grip_poses {
+        map.insert(
+            tracker_action.role.action_id.into(),
+            ActionHandleRef::Pose(&tracker_action.action),
+        );
+    }
+
     map
 }
 
@@ -247,6 +257,7 @@ mod tests {
             htc_vive_focus3_controller_interaction: enabled,
             fb_touch_controller_pro: enabled,
             meta_touch_controller_plus: enabled,
+            htcx_vive_tracker_interaction: enabled,
             palm_pose: enabled,
             hand_tracking_ext: enabled,
         }
@@ -264,6 +275,7 @@ mod tests {
         assert!(!gates.is_enabled(ExtensionGate::HtcViveFocus3ControllerInteraction));
         assert!(!gates.is_enabled(ExtensionGate::FbTouchControllerPro));
         assert!(!gates.is_enabled(ExtensionGate::MetaTouchControllerPlus));
+        assert!(!gates.is_enabled(ExtensionGate::HtcxViveTrackerInteraction));
         assert!(!gates.is_enabled(ExtensionGate::PalmPose));
     }
 
@@ -279,6 +291,7 @@ mod tests {
         assert!(gates.is_enabled(ExtensionGate::HtcViveFocus3ControllerInteraction));
         assert!(gates.is_enabled(ExtensionGate::FbTouchControllerPro));
         assert!(gates.is_enabled(ExtensionGate::MetaTouchControllerPlus));
+        assert!(gates.is_enabled(ExtensionGate::HtcxViveTrackerInteraction));
         assert!(gates.is_enabled(ExtensionGate::PalmPose));
     }
 }

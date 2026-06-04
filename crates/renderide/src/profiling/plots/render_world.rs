@@ -8,7 +8,6 @@ use crate::world_mesh::RenderWorldMaintenanceStats;
 use super::tracy_plot::tracy_plot;
 
 /// Records retained render-world dirty, rebuild, and spatial maintenance counters.
-#[inline]
 pub fn plot_render_world_maintenance(stats: RenderWorldMaintenanceStats) {
     tracy_plot!(
         "render_world::topology_dirty",

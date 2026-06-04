@@ -44,6 +44,7 @@ pub(crate) struct StreamingAccess {
 
 impl StreamingAccess {
     /// Mesh-pool access wired to `streaming`.
+    #[inline]
     pub(crate) fn mesh(streaming: Box<dyn StreamingPolicy>) -> Self {
         Self {
             kind: VramResourceKind::Mesh,
@@ -52,11 +53,13 @@ impl StreamingAccess {
     }
 
     /// Mesh-pool access using [`NoopStreamingPolicy`].
+    #[inline]
     pub(crate) fn mesh_noop() -> Self {
         Self::mesh(Box::new(NoopStreamingPolicy))
     }
 
     /// Texture-pool access wired to `streaming`.
+    #[inline]
     pub(crate) fn texture(streaming: Box<dyn StreamingPolicy>) -> Self {
         Self {
             kind: VramResourceKind::Texture,
@@ -65,16 +68,19 @@ impl StreamingAccess {
     }
 
     /// Texture-pool access using [`NoopStreamingPolicy`].
+    #[inline]
     pub(crate) fn texture_noop() -> Self {
         Self::texture(Box::new(NoopStreamingPolicy))
     }
 }
 
 impl PoolResourceAccess for StreamingAccess {
+    #[inline]
     fn kind(&self) -> VramResourceKind {
         self.kind
     }
 
+    #[inline]
     fn note_access(&mut self, asset_id: i32) {
         match self.kind {
             VramResourceKind::Mesh => self.streaming.note_mesh_access(asset_id),
@@ -93,16 +99,19 @@ pub(crate) struct UntrackedAccess {
 
 impl UntrackedAccess {
     /// Creates an untracked access policy charging into `kind`.
+    #[inline]
     pub(crate) fn new(kind: VramResourceKind) -> Self {
         Self { kind }
     }
 }
 
 impl PoolResourceAccess for UntrackedAccess {
+    #[inline]
     fn kind(&self) -> VramResourceKind {
         self.kind
     }
 
+    #[inline]
     fn note_access(&mut self, _asset_id: i32) {}
 }
 
@@ -127,6 +136,7 @@ where
     A: PoolResourceAccess,
 {
     /// Creates an empty resident table using `access` for accounting and streaming hooks.
+    #[inline]
     pub(crate) fn new(access: A) -> Self {
         Self {
             resources: HashMap::new(),
@@ -136,6 +146,7 @@ where
     }
 
     /// VRAM accounting totals for resident resources.
+    #[inline]
     pub(crate) fn accounting(&self) -> &VramAccounting {
         &self.accounting
     }
@@ -178,6 +189,7 @@ where
     }
 
     /// Removes a resident resource by host asset id and returns whether it existed.
+    #[inline]
     pub(crate) fn remove(&mut self, asset_id: i32) -> bool {
         self.take(asset_id).is_some()
     }
@@ -224,6 +236,7 @@ where
     }
 
     /// Records a resource access without changing residency.
+    #[inline]
     pub(crate) fn note_access(&mut self, asset_id: i32) {
         self.access.note_access(asset_id);
     }
@@ -275,6 +288,7 @@ macro_rules! impl_streaming_pool_facade {
 
         impl $pool {
             /// Default pool with [`crate::gpu_pools::NoopStreamingPolicy`].
+            #[inline]
             pub fn default_pool() -> Self {
                 let access_noop: fn() -> $crate::gpu_pools::resource_pool::StreamingAccess =
                     $access_noop;
@@ -300,6 +314,7 @@ macro_rules! impl_resident_pool_facade {
 
         impl $pool {
             /// Creates an empty pool.
+            #[inline]
             pub fn new() -> Self {
                 Self {
                     inner: $crate::gpu_pools::resource_pool::GpuResourcePool::new(
@@ -310,6 +325,7 @@ macro_rules! impl_resident_pool_facade {
         }
 
         impl Default for $pool {
+            #[inline]
             fn default() -> Self {
                 Self::new()
             }

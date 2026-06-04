@@ -133,7 +133,6 @@ pub(super) fn mip_extent(snapshot: &HiZCpuSnapshot, mip: u32) -> Option<(u32, u3
 }
 
 /// Tests a projected rectangle against a farthest-depth reverse-Z pyramid.
-#[inline]
 pub(super) fn sample_hiz_rect(
     snapshot: &HiZCpuSnapshot,
     rect: HiZUvRect,

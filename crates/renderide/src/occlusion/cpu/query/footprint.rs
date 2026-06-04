@@ -32,7 +32,6 @@ pub(super) struct AabbScreenFootprint {
 ///
 /// `project_aabb_to_screen_scalar_for_tests` (private, `#[cfg(test)]`) preserves the original
 /// corner-by-corner scalar implementation as a parity reference for the property test below.
-#[inline]
 pub(super) fn project_aabb_to_screen(
     view_proj: Mat4,
     world_min: Vec3,

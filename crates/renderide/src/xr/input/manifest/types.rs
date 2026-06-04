@@ -200,6 +200,8 @@ pub enum ExtensionGate {
     FbTouchControllerPro,
     /// `XR_META_touch_controller_plus`.
     MetaTouchControllerPlus,
+    /// `XR_HTCX_vive_tracker_interaction`.
+    HtcxViveTrackerInteraction,
     /// `XR_EXT_palm_pose`.
     PalmPose,
 }
@@ -216,6 +218,7 @@ impl ExtensionGate {
             "htc_vive_focus3_controller_interaction" => Self::HtcViveFocus3ControllerInteraction,
             "fb_touch_controller_pro" => Self::FbTouchControllerPro,
             "meta_touch_controller_plus" => Self::MetaTouchControllerPlus,
+            "htcx_vive_tracker_interaction" => Self::HtcxViveTrackerInteraction,
             "palm_pose" => Self::PalmPose,
             _ => return None,
         };

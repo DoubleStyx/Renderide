@@ -24,6 +24,7 @@ pub use format_resolve::{
 pub(crate) use mip_write_common::upload_uses_storage_v_inversion;
 pub use texture3d_write::{Texture3dMipAdvance, Texture3dMipChainUploader, Texture3dMipUploadStep};
 pub use write_mip_chain::{
-    MipChainAdvance, Texture2dUploadContext, TextureDataStart, TextureMipChainUploader,
-    TextureMipUploadStep, texture_upload_start,
+    MipChainAdvance, Texture2dUploadInputs, Texture2dUploadPayload, Texture2dUploadQueueInputs,
+    Texture2dUploadTarget, TextureDataStart, TextureMipChainUploader, TextureMipUploadStep,
+    texture_upload_start,
 };

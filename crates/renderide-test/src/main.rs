@@ -7,7 +7,11 @@
 //!
 //! All harness logic lives in the library at [`renderide_test`]; this binary only dispatches.
 
+use mimalloc::MiMalloc;
 use std::process::ExitCode;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 fn main() -> ExitCode {
     renderide_test::cli::run()

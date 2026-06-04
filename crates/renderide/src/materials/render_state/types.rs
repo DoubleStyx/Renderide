@@ -23,6 +23,7 @@ impl RasterFrontFace {
 
     /// Resolves a front-face winding from the upper 3x3 determinant of a draw model matrix.
     #[must_use]
+    #[inline]
     pub fn from_model_matrix(model: Mat4) -> Self {
         let det = Mat3::from_mat4(model).determinant();
         if det.is_finite() && det < -Self::MIN_DETERMINANT {
@@ -34,6 +35,7 @@ impl RasterFrontFace {
 
     /// Converts the renderer's draw-facing front-face tag into a wgpu primitive setting.
     #[must_use]
+    #[inline]
     pub fn to_wgpu(self) -> wgpu::FrontFace {
         match self {
             Self::Clockwise => wgpu::FrontFace::Cw,
@@ -45,6 +47,7 @@ impl RasterFrontFace {
     /// clip-space Y flip into the view-projection matrix; the Y flip mirrors triangle winding in
     /// framebuffer space, so back-face culling needs the inverted `front_face` to match.
     #[must_use]
+    #[inline]
     pub fn flipped(self) -> Self {
         match self {
             Self::Clockwise => Self::CounterClockwise,
@@ -72,6 +75,7 @@ pub enum RasterPrimitiveTopology {
 impl RasterPrimitiveTopology {
     /// Lowers the renderer's topology tag into the wgpu primitive setting used at pipeline build.
     #[must_use]
+    #[inline]
     pub fn to_wgpu(self) -> wgpu::PrimitiveTopology {
         match self {
             Self::PointList => wgpu::PrimitiveTopology::PointList,
@@ -81,6 +85,7 @@ impl RasterPrimitiveTopology {
 }
 
 impl From<crate::shared::SubmeshTopology> for RasterPrimitiveTopology {
+    #[inline]
     fn from(t: crate::shared::SubmeshTopology) -> Self {
         match t {
             crate::shared::SubmeshTopology::Points => Self::PointList,
@@ -149,6 +154,7 @@ pub struct MaterialDepthOffsetState {
 
 impl MaterialDepthOffsetState {
     /// Creates non-zero Unity `Offset factor, units` state for a material pipeline key.
+    #[inline]
     pub fn new(factor: f32, units: i32) -> Option<Self> {
         let factor = if factor.is_finite() { factor } else { 0.0 };
         let factor = if factor == 0.0 { 0.0 } else { factor };
@@ -162,16 +168,19 @@ impl MaterialDepthOffsetState {
     }
 
     /// Unity slope-scaled offset factor as raw bits for ordered/hashable diagnostics.
+    #[inline]
     pub fn factor_bits(self) -> u32 {
         self.factor_bits
     }
 
     /// Unity slope-scaled offset factor.
+    #[inline]
     pub fn factor(self) -> f32 {
         f32::from_bits(self.factor_bits)
     }
 
     /// Unity constant offset units.
+    #[inline]
     pub fn units(self) -> i32 {
         self.units
     }
@@ -179,16 +188,19 @@ impl MaterialDepthOffsetState {
 
 impl MaterialRenderState {
     /// Stencil reference passed via dynamic render pass state.
+    #[inline]
     pub fn stencil_reference(self) -> u32 {
         self.stencil.reference
     }
 
     /// Applies the optional Unity color-mask override to a pass write mask.
+    #[inline]
     pub fn color_writes(self, fallback: wgpu::ColorWrites) -> wgpu::ColorWrites {
         self.color_mask.map_or(fallback, unity_color_writes)
     }
 
     /// Applies the optional Unity depth-write override to a pass default.
+    #[inline]
     pub fn depth_write(self, fallback: bool) -> bool {
         self.depth_write.unwrap_or(fallback)
     }
@@ -200,6 +212,7 @@ impl MaterialRenderState {
     }
 
     /// Applies the optional `_ZTest` override using the pass-selected enum layout.
+    #[inline]
     pub fn depth_compare_for_domain(
         self,
         fallback: wgpu::CompareFunction,
@@ -221,6 +234,7 @@ impl MaterialRenderState {
     }
 
     /// Applies [`Self::cull_override`] to a pass default (`None` = culling disabled).
+    #[inline]
     pub fn resolved_cull_mode(self, fallback: Option<wgpu::Face>) -> Option<wgpu::Face> {
         match self.cull_override {
             MaterialCullOverride::Unspecified => fallback,
@@ -231,6 +245,7 @@ impl MaterialRenderState {
     }
 
     /// Applies Unity `Offset` to wgpu depth bias, accounting for reverse-Z.
+    #[inline]
     pub fn depth_bias(
         self,
         fallback_constant: i32,
@@ -251,6 +266,7 @@ impl MaterialRenderState {
     }
 
     /// Converts the resolved material state into a wgpu stencil state.
+    #[inline]
     pub fn stencil_state(self) -> wgpu::StencilState {
         if !self.stencil.enabled {
             return wgpu::StencilState::default();
@@ -292,6 +308,7 @@ pub struct MaterialStencilState {
 }
 
 impl Default for MaterialStencilState {
+    #[inline]
     fn default() -> Self {
         Self {
             enabled: false,

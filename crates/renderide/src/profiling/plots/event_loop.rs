@@ -2,7 +2,9 @@
 //!
 //! Plot names emitted here are an external contract with the Tracy GUI and dashboards; do not
 //! rename them. New signals belong in this file when they describe the winit event loop, the
-//! window's focus/cap state, or the surface-acquire outcome.
+//! window's focus/cap state, or the surface-acquire and present-backpressure state.
+
+use std::time::Duration;
 
 use super::tracy_plot::tracy_plot;
 
@@ -13,7 +15,6 @@ use super::tracy_plot::tracy_plot;
 /// Call once per winit iteration so the Tracy plot sits adjacent to the frame-mark timeline and
 /// the value-per-frame is an exact reading rather than an interpolation. Expands to nothing when
 /// the `tracy` feature is off.
-#[inline]
 pub fn plot_fps_cap_active(cap: u32) {
     tracy_plot!("fps_cap_active", f64::from(cap));
 }
@@ -26,7 +27,6 @@ pub fn plot_fps_cap_active(cap: u32) {
 /// off, which is the usual cause of a sudden frame-time change while profiling.
 ///
 /// Expands to nothing when the `tracy` feature is off.
-#[inline]
 pub fn plot_window_focused(focused: bool) {
     tracy_plot!("window_focused", if focused { 1.0 } else { 0.0 });
 }
@@ -41,7 +41,6 @@ pub fn plot_window_focused(focused: bool) {
 /// is parked inside winit) shows up on this plot as a non-zero value, attributing the idle time
 /// to the CPU-side frame-pacing cap rather than missing instrumentation. Expands to nothing when
 /// the `tracy` feature is off.
-#[inline]
 pub fn plot_event_loop_wait_ms(ms: f64) {
     tracy_plot!("event_loop_wait_ms", ms);
 }
@@ -56,21 +55,53 @@ pub fn plot_event_loop_wait_ms(ms: f64) {
 /// [`plot_event_loop_idle_ms`] when diagnosing why the main thread is sleeping.
 ///
 /// Expands to nothing when the `tracy` feature is off.
-#[inline]
 pub fn plot_driver_submit_backlog(count: u64) {
     tracy_plot!("driver_submit_backlog", count as f64);
+}
+
+/// Records the number of surface-carrying driver batches that have been submitted but not yet
+/// presented.
+///
+/// A non-zero value means the next surface acquire must wait for the driver thread to call
+/// [`wgpu::SurfaceTexture::present`] before wgpu will allow another
+/// [`wgpu::SurfaceTexture`] to be acquired. This is the visible-frame backpressure signal for
+/// the offscreen desktop path, where the final blit owns the only surface texture.
+pub fn plot_surface_in_flight_count(count: u64) {
+    tracy_plot!("surface_acquire::in_flight", count as f64);
+}
+
+/// Records how long the main thread waited for the previous surface texture to be presented
+/// before attempting a new [`wgpu::Surface::get_current_texture`] call.
+///
+/// This separates Renderide's explicit single-surface-texture barrier from the raw wgpu acquire
+/// call below, so a Tracy spike can be attributed to driver-thread present catch-up rather than
+/// being lumped into `get_current_texture`.
+pub fn plot_surface_previous_present_wait_ms(wait: Duration) {
+    tracy_plot!(
+        "surface_acquire::previous_present_wait_ms",
+        wait.as_secs_f64() * 1000.0
+    );
+}
+
+/// Records the raw wall-clock duration spent inside [`wgpu::Surface::get_current_texture`].
+///
+/// This excludes Renderide's explicit previous-present barrier, making compositor/swapchain
+/// acquire stalls visible independently from driver-ring present catch-up.
+pub fn plot_surface_get_current_texture_ms(wait: Duration) {
+    tracy_plot!(
+        "surface_acquire::get_current_texture_ms",
+        wait.as_secs_f64() * 1000.0
+    );
 }
 
 /// Records, in milliseconds, the wall-clock gap between the end of the previous
 /// app-driver redraw tick and the start of the current one.
 ///
 /// Complements [`plot_event_loop_wait_ms`] (the *requested* wait) by showing the *actual* slept
-/// duration -- divergence between the two points at additional blocking outside the pacing cap
-/// (for example compositor vsync via `surface.get_current_texture`, which is itself already
-/// covered by a dedicated `gpu::get_current_texture` scope).
+/// duration -- divergence between the two points at additional blocking outside the pacing cap,
+/// for example surface acquire or previous-present waits.
 ///
 /// Expands to nothing when the `tracy` feature is off.
-#[inline]
 pub fn plot_event_loop_idle_ms(ms: f64) {
     tracy_plot!("event_loop_idle_ms", ms);
 }
@@ -80,7 +111,6 @@ pub fn plot_event_loop_idle_ms(ms: f64) {
 /// These samples explain CPU frames that have a frame mark but no render-graph GPU markers: a
 /// timeout or occluded surface intentionally skips graph recording for that tick, while a
 /// reconfigure means the graph will resume on a later acquire.
-#[inline]
 pub fn plot_surface_acquire_outcome(acquired: bool, skipped: bool, reconfigured: bool) {
     tracy_plot!(
         "surface_acquire::acquired",

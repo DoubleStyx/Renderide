@@ -127,10 +127,7 @@ fn motion_blur_sample(uv: vec2<f32>, view: u32) -> vec4<f32> {
 
     var sum = vec4<f32>(0.0);
     var weight = 0.0;
-    for (var i = 0u; i < MAX_MOTION_BLUR_SAMPLES; i = i + 1u) {
-        if (i >= count) {
-            continue;
-        }
+    for (var i = 0u; i < count; i = i + 1u) {
         let t = (f32(i) + 0.5 + jitter) / denom - 0.5;
         let sample_uv = uv + velocity * t;
         if (any(sample_uv < vec2<f32>(0.0)) || any(sample_uv > vec2<f32>(1.0))) {

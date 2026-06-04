@@ -157,6 +157,7 @@ impl RendererRuntime {
             RunningCommandEffect::FreeSharedMemoryView { buffer_id } => {
                 self.release_shared_memory_view(buffer_id);
             }
+            RunningCommandEffect::SetWindowIcon(icon) => self.queue_window_icon_request(icon),
             effect @ (RunningCommandEffect::MaterialPropertyIdRequest(_)
             | RunningCommandEffect::MaterialsUpdateBatch(_)
             | RunningCommandEffect::UnloadMaterial { .. }

@@ -60,7 +60,6 @@ pub fn hi_z_view_proj_matrices(
 /// to the farthest depth stored in a padded projected-rectangle query. The query starts at the mip
 /// matching the projected footprint size, walks back to mip0, and fails open when the rectangle
 /// would require too many samples.
-#[inline]
 pub fn mesh_fully_occluded_in_hiz(
     snapshot: &HiZCpuSnapshot,
     view_proj: Mat4,

@@ -220,7 +220,6 @@ impl GpuProfilerHandle {
     }
 
     /// Returns whether ended profiler frames still have unread timestamp results.
-    #[inline]
     pub fn has_unresolved_result_frames(&self) -> bool {
         !self.pending_frame_stats.lock().is_empty()
     }
@@ -232,7 +231,6 @@ impl GpuProfilerHandle {
     /// feature the query is silently a no-op. Prefer [`Self::begin_pass_query`] for
     /// individual passes. The returned [`PhaseQuery`] must be closed via [`Self::end_query`]
     /// before [`Self::resolve_queries`] is called.
-    #[inline]
     pub fn begin_query(
         &self,
         label: impl Into<String>,
@@ -249,7 +247,6 @@ impl GpuProfilerHandle {
     /// [`super::render_pass_timestamp_writes`] or [`super::compute_pass_timestamp_writes`].
     /// After the pass drops, close the query with [`Self::end_query`]. Requires only
     /// [`wgpu::Features::TIMESTAMP_QUERY`].
-    #[inline]
     pub fn begin_pass_query(
         &self,
         label: impl Into<String>,
@@ -261,7 +258,6 @@ impl GpuProfilerHandle {
 
     /// Closes a query previously opened with [`Self::begin_query`] or
     /// [`Self::begin_pass_query`].
-    #[inline]
     pub fn end_query(&self, encoder: &mut wgpu::CommandEncoder, query: PhaseQuery) {
         self.inner.end_query(encoder, query);
     }
@@ -271,7 +267,6 @@ impl GpuProfilerHandle {
     /// Call once per encoder just before [`wgpu::CommandEncoder::finish`]. The encoder used
     /// for resolution must be submitted **after** all encoders that opened queries in this
     /// profiling frame.
-    #[inline]
     pub fn resolve_queries(&mut self, encoder: &mut wgpu::CommandEncoder) {
         self.inner.resolve_queries(encoder);
     }
@@ -282,7 +277,6 @@ impl GpuProfilerHandle {
     /// Empty CPU ticks are intentionally ignored so `wgpu-profiler` does not enqueue empty GPU
     /// frames that later appear as missing markers in Tracy. `frame_order` is the renderer-local
     /// monotonic order used to publish completed frames from a multi-handle pool.
-    #[inline]
     pub fn end_frame_if_queries_opened(&mut self, frame_order: u64) -> bool {
         let had_queries = self
             .queries_opened_since_frame_end
@@ -340,7 +334,6 @@ impl GpuProfilerHandle {
     /// Returns [`None`] when no frame has completed yet or when `wgpu_profiler` could not
     /// resolve the frame's timestamps. Otherwise returns a depth-annotated preorder traversal
     /// of the query tree so callers can render it as a flat table.
-    #[inline]
     pub fn process_finished_frame(
         &mut self,
         timestamp_period: f32,

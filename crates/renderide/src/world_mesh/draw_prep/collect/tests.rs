@@ -1,6 +1,7 @@
 //! Tests for world-mesh draw collection helpers.
 
 use glam::{Mat4, Quat, Vec3};
+use hashbrown::HashSet;
 
 use super::world_matrix::front_face_for_draw_matrices;
 use super::*;
@@ -11,7 +12,8 @@ use crate::materials::{
     MaterialPipelinePropertyIds, MaterialRouter, RasterFrontFace, RasterPipelineKind,
 };
 use crate::scene::{MeshRendererInstanceId, RenderSpaceId, SceneCoordinator};
-use crate::shared::{RenderTransform, RenderingContext};
+use crate::shared::{LayerType, RenderTransform, RenderingContext};
+use crate::world_mesh::CameraTransformDrawFilter;
 
 /// Builds a unit-scale transform for draw-prep tests.
 fn identity_transform() -> RenderTransform {
@@ -30,6 +32,50 @@ fn scaled_transform(scale: Vec3) -> RenderTransform {
     }
 }
 
+struct TestDrawContextResources<'a> {
+    scene: &'a SceneCoordinator,
+    mesh_pool: &'a MeshPool,
+    material_dict: &'a MaterialDictionary<'a>,
+    router: &'a MaterialRouter,
+    property_ids: &'a MaterialPipelinePropertyIds,
+}
+
+/// Builds a draw-collection context for CPU-only draw-prep tests.
+fn test_draw_context<'a>(
+    resources: TestDrawContextResources<'a>,
+    transform_filter: Option<&'a CameraTransformDrawFilter>,
+    render_space_filter: Option<RenderSpaceId>,
+    layer_policy: ViewLayerPolicy,
+) -> DrawCollectionInputs<'a> {
+    DrawCollectionInputs {
+        scene_assets: DrawCollectionSceneAssets {
+            scene: resources.scene,
+            mesh_pool: resources.mesh_pool,
+        },
+        materials: DrawCollectionMaterialInputs {
+            dict: resources.material_dict,
+            router: resources.router,
+            pipeline_property_ids: resources.property_ids,
+            shader_perm: ShaderPermutation::default(),
+        },
+        view: DrawCollectionViewInputs {
+            render_context: RenderingContext::UserView,
+            head_output_transform: Mat4::IDENTITY,
+            view_origin_world: Vec3::ZERO,
+            culling: None,
+            mesh_lod_bias: 2.0,
+            transform_filter,
+            render_space_filter,
+            layer_policy,
+            reflection_probes: None,
+        },
+        caches: DrawCollectionFrameCaches {
+            material_cache: None,
+            prepared: None,
+        },
+    }
+}
+
 /// Evaluates the draw transform-scale filter for one root node.
 fn transform_scale_filter_result(scale: Vec3) -> bool {
     let mut scene = SceneCoordinator::new();
@@ -42,26 +88,78 @@ fn transform_scale_filter_result(scale: Vec3) -> bool {
     let router = MaterialRouter::new(RasterPipelineKind::Null);
     let registry = PropertyIdRegistry::new();
     let property_ids = MaterialPipelinePropertyIds::new(&registry);
-    let ctx = DrawCollectionContext {
-        scene: &scene,
-        mesh_pool: &mesh_pool,
-        material_dict: &material_dict,
-        material_router: &router,
-        pipeline_property_ids: &property_ids,
-        shader_perm: ShaderPermutation::default(),
-        render_context: RenderingContext::UserView,
-        head_output_transform: Mat4::IDENTITY,
-        view_origin_world: Vec3::ZERO,
-        culling: None,
-        mesh_lod_bias: 2.0,
-        transform_filter: None,
-        render_space_filter: None,
-        material_cache: None,
-        reflection_probes: None,
-        prepared: None,
-    };
+    let ctx = test_draw_context(
+        TestDrawContextResources {
+            scene: &scene,
+            mesh_pool: &mesh_pool,
+            material_dict: &material_dict,
+            router: &router,
+            property_ids: &property_ids,
+        },
+        None,
+        None,
+        ViewLayerPolicy::MainView,
+    );
 
     transform_chain_has_degenerate_scale(&ctx, space_id, 0)
+}
+
+/// Evaluates the special-layer view policy for one optional camera transform filter.
+fn special_layer_visibility_for_filter(
+    filter: Option<&CameraTransformDrawFilter>,
+    layer_policy: ViewLayerPolicy,
+    special_layer: LayerType,
+) -> bool {
+    let scene = SceneCoordinator::new();
+    let mesh_pool = MeshPool::default_pool();
+    let store = MaterialPropertyStore::new();
+    let material_dict = MaterialDictionary::new(&store);
+    let router = MaterialRouter::new(RasterPipelineKind::Null);
+    let registry = PropertyIdRegistry::new();
+    let property_ids = MaterialPipelinePropertyIds::new(&registry);
+    let ctx = test_draw_context(
+        TestDrawContextResources {
+            scene: &scene,
+            mesh_pool: &mesh_pool,
+            material_dict: &material_dict,
+            router: &router,
+            property_ids: &property_ids,
+        },
+        filter,
+        None,
+        layer_policy,
+    );
+    special_layer_visible_in_view(&ctx, Some(special_layer))
+}
+
+/// Evaluates whether a private render space is visible under one draw context.
+fn private_space_visibility_for_filter(
+    filter: Option<&CameraTransformDrawFilter>,
+    layer_policy: ViewLayerPolicy,
+) -> bool {
+    let mut scene = SceneCoordinator::new();
+    let space_id = RenderSpaceId(29);
+    scene.test_seed_space_identity_worlds(space_id, vec![identity_transform()], vec![-1]);
+    scene.test_set_space_private(space_id, true);
+    let mesh_pool = MeshPool::default_pool();
+    let store = MaterialPropertyStore::new();
+    let material_dict = MaterialDictionary::new(&store);
+    let router = MaterialRouter::new(RasterPipelineKind::Null);
+    let registry = PropertyIdRegistry::new();
+    let property_ids = MaterialPipelinePropertyIds::new(&registry);
+    let ctx = test_draw_context(
+        TestDrawContextResources {
+            scene: &scene,
+            mesh_pool: &mesh_pool,
+            material_dict: &material_dict,
+            router: &router,
+            property_ids: &property_ids,
+        },
+        filter,
+        Some(space_id),
+        layer_policy,
+    );
+    render_space_visible_in_view(&ctx, space_id)
 }
 
 /// Minimal prepared draw used to exercise transform-scale filtering before mesh lookup.
@@ -74,6 +172,7 @@ fn prepared_draw(space_id: RenderSpaceId) -> FramePreparedDraw {
         node_id: 0,
         mesh_asset_id: 7,
         is_overlay: false,
+        is_hidden: false,
         sorting_order: 0,
         skinned: false,
         world_space_deformed: false,
@@ -102,8 +201,11 @@ fn prepared_draws_share_renderer_groups_material_slots_only() {
     let mut next_renderer = second_slot.clone();
     next_renderer.renderable_index = 1;
     next_renderer.instance_id = MeshRendererInstanceId(12);
+    let mut hidden_slot = second_slot.clone();
+    hidden_slot.is_hidden = true;
 
     assert!(prepared_draws_share_renderer(&first_slot, &second_slot));
+    assert!(!prepared_draws_share_renderer(&second_slot, &hidden_slot));
     assert!(!prepared_draws_share_renderer(&second_slot, &next_renderer));
 }
 
@@ -143,6 +245,107 @@ fn draw_transform_scale_filter_rejects_line_scale() {
 #[test]
 fn draw_transform_scale_filter_rejects_point_scale() {
     assert!(transform_scale_filter_result(Vec3::ZERO));
+}
+
+#[test]
+fn camera_layer_policy_hides_hidden_and_overlay_without_selective_roots() {
+    assert!(!special_layer_visibility_for_filter(
+        None,
+        ViewLayerPolicy::camera(false),
+        LayerType::Hidden
+    ));
+    assert!(!special_layer_visibility_for_filter(
+        None,
+        ViewLayerPolicy::camera(false),
+        LayerType::Overlay
+    ));
+}
+
+#[test]
+fn camera_layer_policy_shows_hidden_and_overlay_for_selective_roots() {
+    let exclude_only = CameraTransformDrawFilter {
+        only: None,
+        exclude: HashSet::from_iter([1]),
+    };
+    let empty_selective = CameraTransformDrawFilter {
+        only: Some(HashSet::new()),
+        exclude: HashSet::new(),
+    };
+    let selective = CameraTransformDrawFilter {
+        only: Some(HashSet::from_iter([1])),
+        exclude: HashSet::new(),
+    };
+
+    assert!(!special_layer_visibility_for_filter(
+        Some(&exclude_only),
+        ViewLayerPolicy::camera(false),
+        LayerType::Hidden
+    ));
+    assert!(!special_layer_visibility_for_filter(
+        Some(&empty_selective),
+        ViewLayerPolicy::camera(false),
+        LayerType::Hidden
+    ));
+    assert!(special_layer_visibility_for_filter(
+        Some(&selective),
+        ViewLayerPolicy::camera(false),
+        LayerType::Hidden
+    ));
+    assert!(special_layer_visibility_for_filter(
+        Some(&selective),
+        ViewLayerPolicy::camera(false),
+        LayerType::Overlay
+    ));
+}
+
+#[test]
+fn selected_camera_overlay_renders_as_non_overlay() {
+    let scene = SceneCoordinator::new();
+    let mesh_pool = MeshPool::default_pool();
+    let store = MaterialPropertyStore::new();
+    let material_dict = MaterialDictionary::new(&store);
+    let router = MaterialRouter::new(RasterPipelineKind::Null);
+    let registry = PropertyIdRegistry::new();
+    let property_ids = MaterialPipelinePropertyIds::new(&registry);
+    let filter = CameraTransformDrawFilter {
+        only: Some(HashSet::from_iter([1])),
+        exclude: HashSet::new(),
+    };
+    let ctx = test_draw_context(
+        TestDrawContextResources {
+            scene: &scene,
+            mesh_pool: &mesh_pool,
+            material_dict: &material_dict,
+            router: &router,
+            property_ids: &property_ids,
+        },
+        Some(&filter),
+        None,
+        ViewLayerPolicy::camera(false),
+    );
+
+    assert!(!effective_overlay_in_view(&ctx, true));
+}
+
+#[test]
+fn camera_layer_policy_filters_private_spaces_without_private_ui() {
+    let selective = CameraTransformDrawFilter {
+        only: Some(HashSet::from_iter([0])),
+        exclude: HashSet::new(),
+    };
+
+    assert!(!private_space_visibility_for_filter(
+        None,
+        ViewLayerPolicy::camera(false)
+    ));
+    assert!(private_space_visibility_for_filter(
+        None,
+        ViewLayerPolicy::camera(true)
+    ));
+    assert!(private_space_visibility_for_filter(
+        Some(&selective),
+        ViewLayerPolicy::camera(false)
+    ));
 }
 
 #[test]

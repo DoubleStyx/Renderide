@@ -30,6 +30,7 @@ self_update = { version = "0.44", default-features = false, features = [
   "rustls",
 ] }
 zip = { version = "8.6", default-features = false, features = ["deflate"] }
+mimalloc = "0.1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libloading = "0.9"

@@ -34,6 +34,13 @@ impl SceneCoordinator {
         }
     }
 
+    /// Overrides [`RenderSpaceState::is_private`] for a seeded space (unit tests only).
+    pub(crate) fn test_set_space_private(&mut self, id: RenderSpaceId, is_private: bool) {
+        if let Some(space) = self.spaces.get_mut(&id) {
+            space.is_private = is_private;
+        }
+    }
+
     /// Overrides [`RenderSpaceState::root_transform`] for a seeded space (unit tests only).
     pub(crate) fn test_set_space_root_transform(
         &mut self,

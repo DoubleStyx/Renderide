@@ -20,7 +20,6 @@ use crate::xr::XrSessionBundle;
 
 use super::super::bootstrap::GpuStartupConfig;
 use super::super::exit::ExitReason;
-use super::super::window_icon::try_embedded_window_icon;
 use super::shutdown::GracefulShutdown;
 
 /// Upper bound on the device-wide GPU drain performed before tearing down the OpenXR
@@ -88,6 +87,9 @@ impl RenderTarget {
 
         if let Some(init) = runtime.take_pending_init() {
             apply_window_title_from_init(&window, &init);
+            if let Some(icon) = init.set_window_icon {
+                runtime.queue_window_icon_request(icon);
+            }
         }
 
         let (gpu, mode) = if head_output_device_wants_openxr(output_device) {
@@ -280,8 +282,7 @@ fn create_main_window(
     let attrs = WindowAttributes::default()
         .with_title("Renderide")
         .with_maximized(true)
-        .with_visible(true)
-        .with_window_icon(try_embedded_window_icon());
+        .with_visible(true);
     #[cfg(target_os = "windows")]
     let attrs = attrs.with_platform_attributes(Box::new(
         WindowAttributesWindows::default().with_use_system_scroll_speed(false),

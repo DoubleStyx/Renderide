@@ -16,4 +16,6 @@ pub(crate) struct FrameLightViewDesc {
     pub render_space_filter: Option<crate::scene::RenderSpaceId>,
     /// Head-output transform used when resolving overlay-space world matrices.
     pub head_output_transform: Mat4,
+    /// Whether this view should pack shadow metadata for contributing lights.
+    pub render_shadows: bool,
 }

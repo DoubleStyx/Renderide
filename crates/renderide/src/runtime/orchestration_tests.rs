@@ -17,7 +17,7 @@ use crate::shared::{
     Guid, HeadOutputDevice, KeepAlive, MeshRenderablesUpdate, PostProcessingConfig, QualityConfig,
     ReflectionProbeRenderResult, ReflectionProbeRenderTask, RenderSpaceUpdate, RendererCommand,
     RendererEngineReady, RendererInitData, RendererInitFinalizeData, RendererShutdown,
-    SetTexture2DFormat, ShaderUpload, SkinWeightMode, TextureFormat,
+    SetTexture2DFormat, SetWindowIcon, ShaderUpload, SkinWeightMode, TextureFormat,
 };
 
 use super::RendererRuntime;
@@ -363,6 +363,44 @@ fn dispatch_free_shared_memory_view_routes_without_fatal() {
         RendererCommand::FreeSharedMemoryView(FreeSharedMemoryView { buffer_id: 42 }),
     );
     assert!(!rt.fatal_error());
+}
+
+#[test]
+fn dispatch_window_icon_request_queues_for_app_driver() {
+    let mut rt = test_runtime_standalone();
+
+    apply_running_command(
+        &mut rt,
+        RendererCommand::SetWindowIcon(SetWindowIcon {
+            request_id: 9,
+            size: IVec2::new(1, 1),
+            icon_data: SharedMemoryBufferDescriptor {
+                length: 4,
+                ..Default::default()
+            },
+            ..Default::default()
+        }),
+    );
+
+    assert_eq!(rt.pending_window_icon_request_count(), 1);
+    assert_eq!(rt.unhandled_ipc_command_event_total(), 0);
+}
+
+#[test]
+fn dispatch_overlay_window_icon_request_is_acknowledged_as_unsupported() {
+    let mut rt = test_runtime_standalone();
+
+    apply_running_command(
+        &mut rt,
+        RendererCommand::SetWindowIcon(SetWindowIcon {
+            request_id: 10,
+            is_overlay: true,
+            ..Default::default()
+        }),
+    );
+
+    assert_eq!(rt.pending_window_icon_request_count(), 0);
+    assert_eq!(rt.unhandled_ipc_command_event_total(), 0);
 }
 
 #[test]

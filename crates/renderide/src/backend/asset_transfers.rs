@@ -177,36 +177,43 @@ pub struct AssetTransferQueue {
 
 impl AssetTransferQueue {
     /// Mutably borrows the cooperative asset integrator.
+    #[inline]
     pub(crate) fn integrator_mut(&mut self) -> &mut AssetIntegrator {
         &mut self.integrator
     }
 
     /// Starts a host mesh upload generation and returns its monotonic token.
+    #[inline]
     pub(crate) fn begin_mesh_upload_generation(&mut self, asset_id: i32) -> u64 {
         next_asset_generation(&mut self.mesh_upload_generations, asset_id)
     }
 
     /// Invalidates in-flight host mesh upload work for `asset_id`.
+    #[inline]
     pub(crate) fn invalidate_mesh_upload_generation(&mut self, asset_id: i32) -> u64 {
         self.begin_mesh_upload_generation(asset_id)
     }
 
     /// Returns whether `generation` is still the latest host mesh upload work for `asset_id`.
+    #[inline]
     pub(crate) fn mesh_upload_generation_is_current(&self, asset_id: i32, generation: u64) -> bool {
         self.mesh_upload_generations.get(&asset_id).copied() == Some(generation)
     }
 
     /// Returns the latest accepted host mesh upload generation for `asset_id`.
+    #[inline]
     pub(crate) fn current_mesh_upload_generation(&self, asset_id: i32) -> Option<u64> {
         self.mesh_upload_generations.get(&asset_id).copied()
     }
 
     /// Starts a point render-buffer generation and returns its monotonic token.
+    #[inline]
     pub(crate) fn begin_point_render_buffer_generation(&mut self, asset_id: i32) -> u64 {
         next_asset_generation(&mut self.point_render_buffer_generations, asset_id)
     }
 
     /// Starts a trail render-buffer generation and returns its monotonic token.
+    #[inline]
     pub(crate) fn begin_trail_render_buffer_generation(&mut self, asset_id: i32) -> u64 {
         next_asset_generation(&mut self.trail_render_buffer_generations, asset_id)
     }
@@ -252,6 +259,7 @@ impl AssetTransferQueue {
     }
 
     /// Removes and returns the newest pending point render-buffer upload for `asset_id`.
+    #[inline]
     pub(crate) fn take_pending_point_render_buffer_upload(
         &mut self,
         asset_id: i32,
@@ -260,6 +268,7 @@ impl AssetTransferQueue {
     }
 
     /// Removes and returns the newest pending trail render-buffer upload for `asset_id`.
+    #[inline]
     pub(crate) fn take_pending_trail_render_buffer_upload(
         &mut self,
         asset_id: i32,
@@ -268,6 +277,7 @@ impl AssetTransferQueue {
     }
 
     /// Returns whether a pending point render-buffer upload exists for `asset_id`.
+    #[inline]
     pub(in crate::backend::asset_transfers) fn has_pending_point_render_buffer_upload(
         &self,
         asset_id: i32,
@@ -277,6 +287,7 @@ impl AssetTransferQueue {
     }
 
     /// Returns whether a pending trail render-buffer upload exists for `asset_id`.
+    #[inline]
     pub(in crate::backend::asset_transfers) fn has_pending_trail_render_buffer_upload(
         &self,
         asset_id: i32,
@@ -286,6 +297,7 @@ impl AssetTransferQueue {
     }
 
     /// Invalidates in-flight point render-buffer work for `asset_id`.
+    #[inline]
     pub(crate) fn cancel_point_render_buffer_generation(&mut self, asset_id: i32) -> bool {
         let removed_pending_upload = self
             .pending_point_render_buffer_uploads
@@ -296,6 +308,7 @@ impl AssetTransferQueue {
     }
 
     /// Invalidates in-flight trail render-buffer work for `asset_id`.
+    #[inline]
     pub(crate) fn cancel_trail_render_buffer_generation(&mut self, asset_id: i32) -> bool {
         let removed_pending_upload = self
             .pending_trail_render_buffer_uploads
@@ -306,6 +319,7 @@ impl AssetTransferQueue {
     }
 
     /// Returns whether `generation` is still the latest point render-buffer work for `asset_id`.
+    #[inline]
     pub(crate) fn point_render_buffer_generation_is_current(
         &self,
         asset_id: i32,
@@ -315,6 +329,7 @@ impl AssetTransferQueue {
     }
 
     /// Returns whether `generation` is still the latest trail render-buffer work for `asset_id`.
+    #[inline]
     pub(crate) fn trail_render_buffer_generation_is_current(
         &self,
         asset_id: i32,
@@ -324,6 +339,7 @@ impl AssetTransferQueue {
     }
 
     /// Returns whether `asset_id` already has an active point render-buffer build.
+    #[inline]
     pub(in crate::backend::asset_transfers) fn point_render_buffer_build_is_active(
         &self,
         asset_id: i32,
@@ -332,6 +348,7 @@ impl AssetTransferQueue {
     }
 
     /// Returns whether `asset_id` already has an active trail render-buffer build.
+    #[inline]
     pub(in crate::backend::asset_transfers) fn trail_render_buffer_build_is_active(
         &self,
         asset_id: i32,
@@ -340,6 +357,7 @@ impl AssetTransferQueue {
     }
 
     /// Marks `asset_id` as having an active point render-buffer build.
+    #[inline]
     pub(in crate::backend::asset_transfers) fn mark_point_render_buffer_build_active(
         &mut self,
         asset_id: i32,
@@ -348,6 +366,7 @@ impl AssetTransferQueue {
     }
 
     /// Marks `asset_id` as having an active trail render-buffer build.
+    #[inline]
     pub(in crate::backend::asset_transfers) fn mark_trail_render_buffer_build_active(
         &mut self,
         asset_id: i32,
@@ -356,6 +375,7 @@ impl AssetTransferQueue {
     }
 
     /// Clears the active point render-buffer build marker for `asset_id`.
+    #[inline]
     pub(in crate::backend::asset_transfers) fn clear_point_render_buffer_build_active(
         &mut self,
         asset_id: i32,
@@ -364,6 +384,7 @@ impl AssetTransferQueue {
     }
 
     /// Clears the active trail render-buffer build marker for `asset_id`.
+    #[inline]
     pub(in crate::backend::asset_transfers) fn clear_trail_render_buffer_build_active(
         &mut self,
         asset_id: i32,
@@ -400,12 +421,14 @@ impl AssetTransferQueue {
     }
 
     /// Returns whether any worker-completed particle builds are ready to publish.
+    #[inline]
     pub(in crate::backend::asset_transfers) fn has_ready_particle_build_results(&self) -> bool {
         !self.point_render_buffer_build_rx.is_empty()
             || !self.trail_render_buffer_build_rx.is_empty()
     }
 
     /// Returns whether any retained particle upload can start without waiting for active work.
+    #[inline]
     pub(in crate::backend::asset_transfers) fn has_startable_particle_upload(&self) -> bool {
         self.startable_particle_upload_count() > 0
     }
@@ -440,6 +463,7 @@ impl AssetTransferQueue {
     }
 
     /// Attempts to reserve one background particle build slot.
+    #[inline]
     pub(crate) fn try_acquire_particle_build_worker(&mut self) -> bool {
         if self.active_particle_build_workers >= PARTICLE_BACKGROUND_WORKER_LIMIT {
             return false;
@@ -481,16 +505,19 @@ impl AssetTransferQueue {
     }
 
     /// Stores GPU handles and limits after backend attach.
+    #[inline]
     pub(crate) fn attach_gpu_runtime(&mut self, desc: AssetGpuRuntimeAttach) {
         self.gpu.attach(desc);
     }
 
     /// Resident mesh pool.
+    #[inline]
     pub(crate) fn mesh_pool(&self) -> &MeshPool {
         &self.pools.mesh_pool
     }
 
     /// Resident PhotonDust point render buffers.
+    #[inline]
     pub(crate) fn point_render_buffers(
         &self,
     ) -> &HashMap<i32, crate::particles::PointRenderBufferAsset> {
@@ -498,41 +525,49 @@ impl AssetTransferQueue {
     }
 
     /// Mutable resident mesh pool.
+    #[inline]
     pub(crate) fn mesh_pool_mut(&mut self) -> &mut MeshPool {
         &mut self.pools.mesh_pool
     }
 
     /// Resident Texture2D pool.
+    #[inline]
     pub(crate) fn texture_pool(&self) -> &TexturePool {
         &self.pools.texture_pool
     }
 
     /// Resident Texture3D pool.
+    #[inline]
     pub(crate) fn texture3d_pool(&self) -> &Texture3dPool {
         &self.pools.texture3d_pool
     }
 
     /// Resident cubemap pool.
+    #[inline]
     pub(crate) fn cubemap_pool(&self) -> &CubemapPool {
         &self.pools.cubemap_pool
     }
 
     /// Resident render-texture pool.
+    #[inline]
     pub(crate) fn render_texture_pool(&self) -> &RenderTexturePool {
         &self.pools.render_texture_pool
     }
 
     /// Resident video-texture pool.
+    #[inline]
     pub(crate) fn video_texture_pool(&self) -> &VideoTexturePool {
         &self.pools.video_texture_pool
     }
 
     /// GPU limits snapshot after attach.
+    #[inline]
     pub(crate) fn gpu_limits(&self) -> Option<&Arc<GpuLimits>> {
         self.gpu.gpu_limits.as_ref()
     }
 
     /// Number of host Texture2D format rows known to the asset catalog.
+    #[inline]
     pub(crate) fn texture_format_registration_count(&self) -> usize {
         self.catalogs.texture_formats.len()
     }

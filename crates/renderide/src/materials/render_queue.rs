@@ -29,6 +29,7 @@ pub(crate) fn fallback_render_queue_for_material(alpha_blended: bool) -> i32 {
 ///
 /// The property-block map is intentionally ignored: Unity render queue is material state, not a
 /// per-renderer property-block override.
+#[inline]
 pub(crate) fn material_render_queue_from_maps(
     material_map: PropertyMapRef<'_>,
     _property_block_map: PropertyMapRef<'_>,
@@ -40,6 +41,7 @@ pub(crate) fn material_render_queue_from_maps(
         .unwrap_or(fallback_render_queue)
 }
 
+#[inline]
 fn first_material_float(material_map: PropertyMapRef<'_>, pids: &[i32]) -> Option<f32> {
     pids.iter().find_map(|&pid| {
         let value = material_map?.get(&pid)?;
@@ -51,6 +53,7 @@ fn first_material_float(material_map: PropertyMapRef<'_>, pids: &[i32]) -> Optio
     })
 }
 
+#[inline]
 fn sanitized_render_queue_override(raw: f32) -> Option<i32> {
     if !raw.is_finite() {
         return None;
@@ -67,6 +70,7 @@ fn sanitized_render_queue_override(raw: f32) -> Option<i32> {
 /// Then the cycle continues: as expected of (x-2^16)
 /// until they reach 2^16+2^15, at which point they return to 2000,
 /// and so on... Repeating every 2^16. Tested manually up to 163840 (2^17 + 2^15).
+#[inline]
 fn unity_render_queue_conversion(queue: i32) -> i32 {
     if queue < 0x8000 {
         return queue;

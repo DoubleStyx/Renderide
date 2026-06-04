@@ -18,6 +18,7 @@ pub struct SecondaryCameraId {
 
 impl SecondaryCameraId {
     /// Builds a secondary-camera id from the host render-space and dense camera row.
+    #[inline]
     pub const fn new(render_space_id: RenderSpaceId, renderable_index: i32) -> Self {
         Self {
             render_space_id,
@@ -37,6 +38,7 @@ pub struct CameraRenderTaskViewId {
 
 impl CameraRenderTaskViewId {
     /// Builds a camera readback view id from the host render-space and task batch index.
+    #[inline]
     pub const fn new(render_space_id: RenderSpaceId, task_index: i32) -> Self {
         Self {
             render_space_id,
@@ -58,6 +60,7 @@ pub struct Camera360RenderTaskFaceViewId {
 
 impl Camera360RenderTaskFaceViewId {
     /// Builds a Camera360 cubemap face view id.
+    #[inline]
     pub const fn new(render_space_id: RenderSpaceId, task_index: i32, face_index: u8) -> Self {
         Self {
             render_space_id,
@@ -80,6 +83,7 @@ pub struct ReflectionProbeRenderTaskViewId {
 
 impl ReflectionProbeRenderTaskViewId {
     /// Builds a reflection-probe bake face view id.
+    #[inline]
     pub const fn new(render_space_id: RenderSpaceId, render_task_id: i32, face_index: u8) -> Self {
         Self {
             render_space_id,
@@ -106,16 +110,19 @@ pub enum ViewId {
 
 impl ViewId {
     /// Builds the stable logical identity for one secondary camera view.
+    #[inline]
     pub const fn secondary_camera(render_space_id: RenderSpaceId, renderable_index: i32) -> Self {
         Self::SecondaryCamera(SecondaryCameraId::new(render_space_id, renderable_index))
     }
 
     /// Builds the stable logical identity for one camera readback task view.
+    #[inline]
     pub const fn camera_render_task(render_space_id: RenderSpaceId, task_index: i32) -> Self {
         Self::CameraRenderTask(CameraRenderTaskViewId::new(render_space_id, task_index))
     }
 
     /// Builds the stable logical identity for one Camera360 cubemap bake face.
+    #[inline]
     pub const fn camera360_render_task_face(
         render_space_id: RenderSpaceId,
         task_index: i32,
@@ -129,6 +136,7 @@ impl ViewId {
     }
 
     /// Builds the stable logical identity for one reflection-probe bake face view.
+    #[inline]
     pub const fn reflection_probe_render_task(
         render_space_id: RenderSpaceId,
         render_task_id: i32,

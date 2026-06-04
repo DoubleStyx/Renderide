@@ -4,7 +4,9 @@ use crate::scene::MeshMaterialSlot;
 use crate::world_mesh::materials::FrameMaterialBatchCache;
 
 use super::super::super::item::stacked_material_submesh_range;
-use super::super::DrawCollectionContext;
+use super::super::{
+    DrawCollectionInputs, effective_overlay_in_view, special_layer_visible_in_view,
+};
 use super::cull_cache::compute_cached_cull;
 use super::per_slot::push_one_slot_draw;
 use super::{
@@ -18,12 +20,22 @@ use super::{
 /// [`super::super::queue_draws_with_parallelism`] assigns the final stable index after
 /// per-chunk results are merged.
 pub(super) fn push_draws_for_renderer(
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     acc: &mut DrawCollectionAccumulator<'_>,
     draw: StaticMeshDrawSource<'_>,
     cache: &FrameMaterialBatchCache,
 ) {
     if !renderer_passes_view_filters(ctx, acc, &draw) {
+        return;
+    }
+    let special_layer = if draw.renderer.node_id >= 0 {
+        ctx.scene_assets
+            .scene
+            .transform_special_layer(draw.space_id, draw.renderer.node_id as usize)
+    } else {
+        None
+    };
+    if !special_layer_visible_in_view(ctx, special_layer) {
         return;
     }
 
@@ -46,10 +58,10 @@ pub(super) fn push_draws_for_renderer(
         return;
     }
 
-    let is_overlay = draw.renderer.node_id >= 0
-        && ctx
-            .scene
-            .transform_is_in_overlay_layer(draw.space_id, draw.renderer.node_id as usize);
+    let is_overlay = effective_overlay_in_view(
+        ctx,
+        matches!(special_layer, Some(crate::shared::LayerType::Overlay)),
+    );
     let world_space_deformed = draw.skinned
         && draw.mesh.supports_world_space_skin_deform(
             draw.skinned_renderer
@@ -102,17 +114,19 @@ pub(super) fn push_draws_for_renderer(
 
 /// Applies the per-view transform filter and the renderer's transform-scale gate.
 fn renderer_passes_view_filters(
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     acc: &DrawCollectionAccumulator<'_>,
     draw: &StaticMeshDrawSource<'_>,
 ) -> bool {
-    if let Some(f) = ctx.transform_filter {
+    if let Some(f) = ctx.view.transform_filter {
         let passes = match acc.filter_pass_mask {
             Some(mask) => {
                 let nid = draw.renderer.node_id;
                 nid >= 0 && (nid as usize) < mask.len() && mask[nid as usize]
             }
-            None => f.passes_scene_node(ctx.scene, draw.space_id, draw.renderer.node_id),
+            None => {
+                f.passes_scene_node(ctx.scene_assets.scene, draw.space_id, draw.renderer.node_id)
+            }
         };
         if !passes {
             return false;

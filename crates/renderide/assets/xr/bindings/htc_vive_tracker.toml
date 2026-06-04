@@ -1,0 +1,58 @@
+profile = "/interaction_profiles/htc/vive_tracker_htcx"
+extension_gate = "htcx_vive_tracker_interaction"
+
+[[binding]]
+action = "tracker_waist_grip_pose"
+path = "/user/vive_tracker_htcx/role/waist/input/grip/pose"
+
+[[binding]]
+action = "tracker_chest_grip_pose"
+path = "/user/vive_tracker_htcx/role/chest/input/grip/pose"
+
+[[binding]]
+action = "tracker_left_foot_grip_pose"
+path = "/user/vive_tracker_htcx/role/left_foot/input/grip/pose"
+
+[[binding]]
+action = "tracker_right_foot_grip_pose"
+path = "/user/vive_tracker_htcx/role/right_foot/input/grip/pose"
+
+[[binding]]
+action = "tracker_left_knee_grip_pose"
+path = "/user/vive_tracker_htcx/role/left_knee/input/grip/pose"
+
+[[binding]]
+action = "tracker_right_knee_grip_pose"
+path = "/user/vive_tracker_htcx/role/right_knee/input/grip/pose"
+
+[[binding]]
+action = "tracker_left_elbow_grip_pose"
+path = "/user/vive_tracker_htcx/role/left_elbow/input/grip/pose"
+
+[[binding]]
+action = "tracker_right_elbow_grip_pose"
+path = "/user/vive_tracker_htcx/role/right_elbow/input/grip/pose"
+
+[[binding]]
+action = "tracker_left_shoulder_grip_pose"
+path = "/user/vive_tracker_htcx/role/left_shoulder/input/grip/pose"
+
+[[binding]]
+action = "tracker_right_shoulder_grip_pose"
+path = "/user/vive_tracker_htcx/role/right_shoulder/input/grip/pose"
+
+[[binding]]
+action = "tracker_left_wrist_grip_pose"
+path = "/user/vive_tracker_htcx/role/left_wrist/input/grip/pose"
+
+[[binding]]
+action = "tracker_right_wrist_grip_pose"
+path = "/user/vive_tracker_htcx/role/right_wrist/input/grip/pose"
+
+[[binding]]
+action = "tracker_left_ankle_grip_pose"
+path = "/user/vive_tracker_htcx/role/left_ankle/input/grip/pose"
+
+[[binding]]
+action = "tracker_right_ankle_grip_pose"
+path = "/user/vive_tracker_htcx/role/right_ankle/input/grip/pose"

@@ -109,7 +109,6 @@ pub struct CommandEncodingProfileSample {
 }
 
 /// Records command-encoding timings and pressure counters for the current frame.
-#[inline]
 pub fn plot_command_encoding(sample: &CommandEncodingProfileSample) {
     plot_pass_counts(sample);
     plot_upload_traffic(sample);

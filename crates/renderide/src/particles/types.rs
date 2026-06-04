@@ -70,6 +70,7 @@ pub(crate) struct ParticleDrawParams {
 }
 
 impl Default for ParticleDrawParams {
+    #[inline]
     fn default() -> Self {
         Self {
             kind: ParticleDrawKind::None,
@@ -87,6 +88,7 @@ impl Default for ParticleDrawParams {
 
 impl ParticleDrawParams {
     /// Builds draw metadata for a BillboardRenderBufferRenderer row.
+    #[inline]
     pub(crate) fn billboard(
         alignment: BillboardAlignment,
         min_screen_size: f32,
@@ -104,6 +106,7 @@ impl ParticleDrawParams {
     }
 
     /// Builds draw metadata for one MeshRenderBufferRenderer particle instance.
+    #[inline]
     pub(crate) fn mesh(alignment: MeshAlignment, color: Vec4, frame_index: Option<u16>) -> Self {
         Self {
             kind: ParticleDrawKind::Mesh,
@@ -115,6 +118,7 @@ impl ParticleDrawParams {
     }
 
     /// Builds draw metadata for a TrailsRenderBufferRenderer row.
+    #[inline]
     pub(crate) fn trail(
         texture_mode: TrailTextureMode,
         motion_vector_mode: MotionVectorMode,
@@ -130,6 +134,7 @@ impl ParticleDrawParams {
     }
 
     /// Encodes the metadata into WGSL `vec4<f32>` rows.
+    #[inline]
     pub(crate) fn to_uniform_rows(self) -> [[f32; 4]; 3] {
         [
             [
@@ -238,6 +243,7 @@ pub(crate) enum ParticleRenderBufferError {
     },
 }
 
+#[inline]
 pub(super) fn nonnegative_count(
     kind: &'static str,
     asset_id: i32,
@@ -305,6 +311,7 @@ pub(super) fn checked_range(
     Ok(start..end)
 }
 
+#[inline]
 pub(super) fn checked_optional_range(
     kind: &'static str,
     asset_id: i32,
@@ -320,6 +327,7 @@ pub(super) fn checked_optional_range(
     checked_range(kind, asset_id, raw_len, field, offset, count, stride).map(Some)
 }
 
+#[inline]
 pub(super) fn read_pod_at<T: bytemuck::Pod>(raw: &[u8], range: &Range<usize>, index: usize) -> T {
     let stride = size_of::<T>();
     let start = range.start + index * stride;
@@ -327,6 +335,7 @@ pub(super) fn read_pod_at<T: bytemuck::Pod>(raw: &[u8], range: &Range<usize>, in
 }
 
 /// Converts one PhotonDust LDR sRGB vertex-color channel into renderer-linear space.
+#[inline]
 fn photondust_srgb_ldr_channel_to_linear(value: f32) -> f32 {
     if value > -1.0 && value < 1.0 {
         srgb_channel_to_linear(value)
@@ -336,6 +345,7 @@ fn photondust_srgb_ldr_channel_to_linear(value: f32) -> f32 {
 }
 
 /// Converts PhotonDust sRGB particle color into renderer-linear vertex color.
+#[inline]
 pub(super) fn photondust_particle_color_to_linear(color: Vec4) -> Vec4 {
     Vec4::new(
         photondust_srgb_ldr_channel_to_linear(color.x),

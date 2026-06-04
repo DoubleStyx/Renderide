@@ -101,15 +101,15 @@ fn material_variant_bits_helper_supports_pipeline_constants() -> io::Result<()> 
 }
 
 #[test]
-fn material_variant_pipeline_constants_are_fragment_only() -> io::Result<()> {
+fn material_variant_pipeline_constants_apply_to_vertex_and_fragment() -> io::Result<()> {
     for path in [
         "src/materials/raster_pipeline.rs",
         "src/passes/world_mesh_forward/skybox/pipeline.rs",
     ] {
         let src = source_file(manifest_dir().join(path))?;
         assert!(
-            src.contains("fragment_specialization_constants.as_slice()"),
-            "{path} must pass material specialization constants to fragment compilation"
+            src.contains("shader_specialization_constants.as_slice()"),
+            "{path} must build material specialization constants for shader compilation"
         );
 
         let vertex_state = src
@@ -118,12 +118,21 @@ fn material_variant_pipeline_constants_are_fragment_only() -> io::Result<()> {
             .and_then(|tail| tail.split("fragment: Some(wgpu::FragmentState {").next())
             .unwrap_or("");
         assert!(
-            vertex_state.contains("compilation_options: Default::default()"),
-            "{path} must not pass material specialization constants to vertex compilation"
+            vertex_state.contains("constants: shader_specialization_constants.as_slice()"),
+            "{path} must pass material specialization constants to vertex compilation"
         );
+
+        let fragment_state = src
+            .split("fragment: Some(wgpu::FragmentState {")
+            .nth(1)
+            .and_then(|tail| {
+                tail.split("targets: &[Some(wgpu::ColorTargetState {")
+                    .next()
+            })
+            .unwrap_or("");
         assert!(
-            !vertex_state.contains("specialization_constants.as_slice()"),
-            "{path} must keep material variant constants off vertex stages unless stage-aware reflection is added"
+            fragment_state.contains("constants: shader_specialization_constants.as_slice()"),
+            "{path} must pass material specialization constants to fragment compilation"
         );
     }
 
@@ -373,16 +382,107 @@ fn billboard_render_buffer_uses_indexed_corner_separate_from_sample_uv() -> io::
             && src.contains("fn screen_clamped_billboard_size("),
         "Render-buffer billboards must apply renderer alignment and screen-size clamp metadata"
     );
+
+    Ok(())
+}
+
+#[test]
+fn billboard_render_buffer_variant_bits_keep_native_and_compatibility_layout() -> io::Result<()> {
+    let src = material_source("billboardunlit.wgsl")?;
+
+    for (constant_name, bit_index) in [
+        ("BILLBOARDUNLIT_KW_MUL_ALPHA_INTENSITY", 2),
+        ("BILLBOARDUNLIT_KW_MUL_RGB_BY_ALPHA", 3),
+        ("BILLBOARDUNLIT_KW_OFFSET_TEXTURE", 4),
+        ("BILLBOARDUNLIT_KW_POINT_ROTATION", 5),
+        ("BILLBOARDUNLIT_KW_POINT_SIZE", 6),
+        ("BILLBOARDUNLIT_KW_POINT_UV", 7),
+        ("BILLBOARDUNLIT_KW_POLARUV", 8),
+        ("BILLBOARDUNLIT_KW_RIGHT_EYE_ST", 9),
+        ("BILLBOARDUNLIT_KW_TEXTURE", 10),
+        ("BILLBOARDUNLIT_KW_VERTEX_HDRSRGB_COLOR", 11),
+        ("BILLBOARDUNLIT_KW_VERTEX_HDRSRGBALPHA_COLOR", 12),
+        ("BILLBOARDUNLIT_KW_VERTEX_LINEAR_COLOR", 13),
+        ("BILLBOARDUNLIT_KW_VERTEX_SRGB_COLOR", 14),
+        ("BILLBOARDUNLIT_KW_VERTEXCOLORS", 15),
+        ("BILLBOARDUNLIT_KW_RENDER_BUFFER", 16),
+    ] {
+        assert!(
+            src.contains(&format!("const {constant_name}: u32 = 1u << {bit_index}u;")),
+            "{constant_name} must keep Billboard/Unlit's native sorted keyword bit order"
+        );
+    }
     assert!(
-        src.contains("if (kw_ALPHATEST() && clip_alpha < mat._Cutoff)")
-            && !src.contains("clip_alpha <= mat._Cutoff"),
+        src.contains("const BILLBOARDUNLIT_KW_SIMPLE_LIT: u32 = 1u << 17u;"),
+        "Non-Unlit shading support for render-buffer billboards must use compatibility bit after native Billboard/Unlit keywords"
+    );
+    assert!(
+        src.contains("const BILLBOARDUNLIT_KW_UNLIT_MASK_TEXTURE_CLIP: u32 = 1u << 18u;")
+            && src.contains("const BILLBOARDUNLIT_KW_UNLIT_MASK_TEXTURE_MUL: u32 = 1u << 19u;"),
+        "Unlit mask support for render-buffer billboards must use compatibility bits after native Billboard/Unlit keywords"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn billboard_render_buffer_preserves_fragment_alpha_and_fog_behavior() -> io::Result<()> {
+    let src = material_source("billboardunlit.wgsl")?;
+
+    assert!(
+        src.contains("if (kw_ALPHATEST() && !mask_clip && col.a < mat._Cutoff)"),
         "Billboard/Unlit alpha test must match Unity clip(col.a - _Cutoff) equality semantics"
+    );
+    assert!(
+        src.contains("if (mask_clip && mask_lum <= mat._Cutoff)"),
+        "Unlit mask compatibility for render-buffer billboards must preserve Unlit's mask discard threshold"
     );
     assert!(
         src.contains("#import renderide::frame::fog as rfog")
             && src.contains("out.fog_coord = rfog::coord_from_world_pos(world_p, layer);")
             && src.contains("rfog::apply_rgba(col, in.fog_coord)"),
         "Billboard/Unlit must preserve the source-authored UNITY_APPLY_FOG hook"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn billboard_render_buffer_alignment_matches_unity_modes() -> io::Result<()> {
+    let src = material_source("billboardunlit.wgsl")?;
+
+    assert!(
+        src.contains("return facing_basis(center_world, view_layer, pointdata.z, false);"),
+        "Render-buffer Facing alignment must keep Unity-style roll disabled"
+    );
+    assert!(
+        src.contains("fn direction_stretch_particle_basis(")
+            && src.contains("let velocity_world = mv::model_vector(d, point_forward_upz.xyz);")
+            && src.contains(
+                "let velocity_in_plane = velocity_world - to_camera * dot(velocity_world, to_camera);"
+            )
+            && src.contains("let view_up_in_plane = view_up - to_camera * dot(view_up, to_camera);")
+            && src.contains("up = rmath::safe_normalize(cross(to_camera, right), up);")
+            && src.contains(
+                "return direction_stretch_particle_basis(d, center_world, point_forward_upz, view_layer);"
+            ),
+        "Render-buffer Direction alignment must project velocity into the camera-facing stretch plane"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn billboard_render_buffer_supports_simple_lit_non_unlit_sources() -> io::Result<()> {
+    let src = material_source("billboardunlit.wgsl")?;
+
+    assert!(
+        src.contains("if (kw_SIMPLE_LIT())")
+            && src.contains("out.world_p = world_p;")
+            && src.contains("out.n = rmath::safe_normalize(cross(axes.right, axes.up)")
+            && src.contains("let base = clamp(col.rgb, vec3<f32>(0.0), vec3<f32>(1.0));")
+            && src.contains("dl::shade_clustered_diffuse"),
+        "Billboard/Unlit must offer simple shading capabilities for non-Unlit source materials"
     );
 
     Ok(())

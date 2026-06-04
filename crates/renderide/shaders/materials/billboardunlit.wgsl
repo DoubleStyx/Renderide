@@ -12,6 +12,7 @@
 //#render_queue AlphaTest+200
 //#texture_default _Tex white
 //#texture_default _OffsetTex black
+//#texture_default _MaskTex white
 //#mat_default _Color vec4 1.0 1.0 1.0 1.0
 //#mat_default _OffsetMagnitude vec4 0.1 0.1 0.0 0.0
 //#mat_default _PointSize vec4 0.1 0.1 0.0 0.0
@@ -19,6 +20,7 @@
 //#mat_default _Cutoff float 0.5
 //#mat_default _Tex_LodBias float 0.0
 //#mat_default _OffsetTex_LodBias float 0.0
+//#mat_default _MaskTex_LodBias float 0.0
 
 #import renderide::core::texture_sampling as ts
 #import renderide::core::uv as uvu
@@ -27,6 +29,8 @@
 #import renderide::frame::fog as rfog
 #import renderide::draw::per_draw as pd
 #import renderide::draw::types as dt
+#import renderide::lighting::diffuse as dl
+#import renderide::material::alpha as ma
 #import renderide::material::variant_bits as vb
 #import renderide::material::vertex_color as vc
 #import renderide::mesh::billboard as mb
@@ -36,6 +40,7 @@ struct BillboardUnlitMaterial {
     _Color: vec4<f32>,
     _Tex_ST: vec4<f32>,
     _RightEye_ST: vec4<f32>,
+    _MaskTex_ST: vec4<f32>,
     _OffsetTex_ST: vec4<f32>,
     _OffsetMagnitude: vec4<f32>,
     _PointSize: vec4<f32>,
@@ -44,7 +49,8 @@ struct BillboardUnlitMaterial {
     _RenderideVariantBits: u32,
     _Tex_LodBias: f32,
     _OffsetTex_LodBias: f32,
-    _pad0: vec2<f32>,
+    _MaskTex_LodBias: f32,
+    _pad0: f32,
 }
 
 const BILLBOARDUNLIT_KW_ALPHATEST: u32 = 1u << 0u;
@@ -64,12 +70,17 @@ const BILLBOARDUNLIT_KW_VERTEX_LINEAR_COLOR: u32 = 1u << 13u;
 const BILLBOARDUNLIT_KW_VERTEX_SRGB_COLOR: u32 = 1u << 14u;
 const BILLBOARDUNLIT_KW_VERTEXCOLORS: u32 = 1u << 15u;
 const BILLBOARDUNLIT_KW_RENDER_BUFFER: u32 = 1u << 16u;
+const BILLBOARDUNLIT_KW_SIMPLE_LIT: u32 = 1u << 17u;
+const BILLBOARDUNLIT_KW_UNLIT_MASK_TEXTURE_CLIP: u32 = 1u << 18u;
+const BILLBOARDUNLIT_KW_UNLIT_MASK_TEXTURE_MUL: u32 = 1u << 19u;
 
 @group(1) @binding(0) var<uniform> mat: BillboardUnlitMaterial;
 @group(1) @binding(1) var _Tex: texture_2d<f32>;
 @group(1) @binding(2) var _Tex_sampler: sampler;
 @group(1) @binding(3) var _OffsetTex: texture_2d<f32>;
 @group(1) @binding(4) var _OffsetTex_sampler: sampler;
+@group(1) @binding(5) var _MaskTex: texture_2d<f32>;
+@group(1) @binding(6) var _MaskTex_sampler: sampler;
 
 fn bb_kw(mask: u32) -> bool {
     return vb::enabled(mat._RenderideVariantBits, mask);
@@ -81,6 +92,14 @@ fn kw_ALPHATEST() -> bool {
 
 fn kw_COLOR() -> bool {
     return bb_kw(BILLBOARDUNLIT_KW_COLOR);
+}
+
+fn kw_UNLIT_MASK_TEXTURE_CLIP() -> bool {
+    return bb_kw(BILLBOARDUNLIT_KW_UNLIT_MASK_TEXTURE_CLIP);
+}
+
+fn kw_UNLIT_MASK_TEXTURE_MUL() -> bool {
+    return bb_kw(BILLBOARDUNLIT_KW_UNLIT_MASK_TEXTURE_MUL);
 }
 
 fn kw_MUL_ALPHA_INTENSITY() -> bool {
@@ -135,12 +154,18 @@ fn kw_VERTEXCOLORS() -> bool {
     return bb_kw(BILLBOARDUNLIT_KW_VERTEXCOLORS);
 }
 
+fn kw_SIMPLE_LIT() -> bool {
+    return bb_kw(BILLBOARDUNLIT_KW_SIMPLE_LIT);
+}
+
 struct VertexOutput {
     @builtin(position) clip_pos: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
     @location(2) @interpolate(flat) view_layer: u32,
     @location(3) fog_coord: f32,
+    @location(4) world_p: vec3<f32>,
+    @location(5) n: vec3<f32>,
 }
 
 struct RenderBufferBillboardBasis {
@@ -187,28 +212,38 @@ fn facing_basis(center_world: vec3<f32>, view_layer: u32, roll: f32, allow_roll:
     return RenderBufferBillboardBasis(right, up);
 }
 
-fn local_particle_basis(
+fn direction_stretch_particle_basis(
     d: dt::PerDrawUniforms,
     center_world: vec3<f32>,
+    point_forward_upz: vec4<f32>,
+    view_layer: u32,
+) -> RenderBufferBillboardBasis {
+    let to_camera = rg::view_dir_for_world_pos(center_world, view_layer);
+    let velocity_world = mv::model_vector(d, point_forward_upz.xyz);
+    let velocity_in_plane = velocity_world - to_camera * dot(velocity_world, to_camera);
+    let view_up = rg::view_to_world_y_coeffs_for_view(view_layer).xyz;
+    let view_up_in_plane = view_up - to_camera * dot(view_up, to_camera);
+    var up = rmath::safe_normalize(
+        velocity_in_plane,
+        rmath::safe_normalize(view_up_in_plane, vec3<f32>(0.0, 1.0, 0.0)),
+    );
+    let right = rmath::safe_normalize(cross(up, to_camera), vec3<f32>(1.0, 0.0, 0.0));
+    up = rmath::safe_normalize(cross(to_camera, right), up);
+    return RenderBufferBillboardBasis(right, up);
+}
+
+fn local_particle_basis(
+    d: dt::PerDrawUniforms,
     pointdata: vec3<f32>,
     point_forward_upz: vec4<f32>,
     point_up_xy: vec2<f32>,
-    view_layer: u32,
-    direction_stretch: bool,
 ) -> RenderBufferBillboardBasis {
     let raw_forward = rmath::safe_normalize(point_forward_upz.xyz, vec3<f32>(0.0, 0.0, 1.0));
     let raw_up = rmath::safe_normalize(vec3<f32>(point_up_xy, point_forward_upz.w), vec3<f32>(0.0, 1.0, 0.0));
     let world_forward = rmath::safe_normalize(mv::model_vector(d, raw_forward), vec3<f32>(0.0, 0.0, 1.0));
     let world_up = rmath::safe_normalize(mv::model_vector(d, raw_up), vec3<f32>(0.0, 1.0, 0.0));
-    if (direction_stretch) {
-        let to_camera = rg::view_dir_for_world_pos(center_world, view_layer);
-        let up = world_forward;
-        let right = rmath::safe_normalize(cross(to_camera, up), vec3<f32>(1.0, 0.0, 0.0));
-        return RenderBufferBillboardBasis(right, up);
-    }
-
-    var right = rmath::safe_normalize(cross(world_up, world_forward), vec3<f32>(1.0, 0.0, 0.0));
-    var up = rmath::safe_normalize(cross(world_forward, right), world_up);
+    var right = rmath::safe_normalize(cross(world_forward, world_up), vec3<f32>(1.0, 0.0, 0.0));
+    var up = rmath::safe_normalize(cross(right, world_forward), world_up);
     if (abs(pointdata.z) > 1e-4) {
         let rotated = rotate_render_buffer_axes(pointdata.z, right, up);
         right = rotated.right;
@@ -230,10 +265,10 @@ fn render_buffer_billboard_basis(
         return facing_basis(center_world, view_layer, pointdata.z, false);
     }
     if (alignment == 2u || alignment == 3u) {
-        return local_particle_basis(d, center_world, pointdata, point_forward_upz, point_up_xy, view_layer, false);
+        return local_particle_basis(d, pointdata, point_forward_upz, point_up_xy);
     }
     if (alignment == 4u) {
-        return local_particle_basis(d, center_world, pointdata, point_forward_upz, point_up_xy, view_layer, true);
+        return direction_stretch_particle_basis(d, center_world, point_forward_upz, view_layer);
     }
     return view_plane_basis(view_layer, pointdata.z, true);
 }
@@ -337,6 +372,8 @@ fn vs_main(
     out.color = color;
     out.view_layer = layer;
     out.fog_coord = rfog::coord_from_world_pos(world_p, layer);
+    out.world_p = world_p;
+    out.n = rmath::safe_normalize(cross(axes.right, axes.up), vec3<f32>(0.0, 0.0, 1.0));
     return out;
 }
 
@@ -395,32 +432,50 @@ fn vertex_color(color: vec4<f32>) -> vec4<f32> {
     return color;
 }
 
+fn two_sided_geometric_normal(world_n: vec3<f32>, front_facing: bool) -> vec3<f32> {
+    let n = normalize(world_n);
+    return select(-n, n, front_facing);
+}
+
 //#pass type=forward name=forward_billboard blend=material_filter offset=0,0
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_main(
+    in: VertexOutput,
+    @builtin(front_facing) front_facing: bool,
+) -> @location(0) vec4<f32> {
     let use_texture = kw_TEXTURE();
     let use_color = kw_COLOR();
 
     var col: vec4<f32>;
-    var clip_alpha: f32;
     if (use_texture) {
         let tex = sample_main_texture(in.uv, in.view_layer);
-        clip_alpha = tex.a;
         if (use_color) {
             col = tex * mat._Color;
-            clip_alpha = clip_alpha * mat._Color.a;
         } else {
             col = tex;
         }
     } else if (use_color) {
         col = mat._Color;
-        clip_alpha = mat._Color.a;
     } else {
         col = vec4<f32>(1.0);
-        clip_alpha = 1.0;
     }
 
-    if (kw_ALPHATEST() && clip_alpha < mat._Cutoff) {
+    let mask_clip = kw_UNLIT_MASK_TEXTURE_CLIP();
+    let mask_mul = kw_UNLIT_MASK_TEXTURE_MUL();
+    if (mask_mul || mask_clip) {
+        let uv_mask = uvu::apply_st(in.uv, mat._MaskTex_ST);
+        let mask_sample = ts::sample_tex_2d(_MaskTex, _MaskTex_sampler, uv_mask, mat._MaskTex_LodBias);
+        let mask_lum = ma::mask_luminance(mask_sample);
+
+        if (mask_mul) {
+            col.a = col.a * mask_lum;
+        }
+        if (mask_clip && mask_lum <= mat._Cutoff) {
+            discard;
+        }
+    }
+
+    if (kw_ALPHATEST() && !mask_clip && col.a < mat._Cutoff) {
         discard;
     }
 
@@ -433,7 +488,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     if (kw_MUL_ALPHA_INTENSITY()) {
-        col = vec4<f32>(col.rgb, col.a * dot(col.rgb, vec3<f32>(0.3333333)));
+        col = vec4<f32>(col.rgb, ma::alpha_intensity(col.a, col.rgb));
+    }
+
+    if (kw_SIMPLE_LIT()) {
+        let n = two_sided_geometric_normal(in.n, front_facing);
+        let base = clamp(col.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+        let lit = dl::shade_clustered_diffuse(in.clip_pos.xy, in.world_p, n, base, in.view_layer);
+        col = vec4<f32>(lit, col.a);
     }
 
     return rg::retain_globals_additive(rfog::apply_rgba(col, in.fog_coord));

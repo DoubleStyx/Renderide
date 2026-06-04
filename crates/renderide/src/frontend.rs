@@ -28,8 +28,8 @@ pub mod input;
 pub(crate) use frame_start_performance::AssetIntegrationPerformanceSample;
 pub use init_state::InitState;
 pub(crate) use lockstep_pipeline::{
-    HostWaitReason, LockstepPipelineAction, LockstepPipelineHudLabels, LockstepPipelineInput,
-    OneCreditBlockReason, decide_lockstep_pipeline, one_credit_block_reason,
+    HostWaitReason, LockstepPipelineAction, LockstepPipelineInput, OneCreditBlockReason,
+    decide_lockstep_pipeline, one_credit_block_reason,
 };
 pub use renderer_frontend::RendererFrontend;
 

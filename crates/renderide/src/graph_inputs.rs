@@ -38,12 +38,46 @@ pub enum OffscreenWriteTarget {
     None,
     /// The view writes to an offscreen target that is not a host render-texture asset.
     Untracked,
-    /// The view writes to a host render texture with the supplied asset id.
-    HostRenderTexture(i32),
+    /// The view writes to a host render texture with the supplied asset id and sampling policy.
+    HostRenderTexture {
+        /// Host render-texture asset id.
+        asset_id: i32,
+        /// Material sampling policy for this render texture while it is being written.
+        self_sampling: RenderTextureSelfSampling,
+    },
+}
+
+/// Material sampling policy for a render texture while a camera writes that same texture.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum RenderTextureSelfSampling {
+    /// Hide the render texture from materials while the view writes it.
+    #[default]
+    Suppress,
+    /// Allow materials to sample the render texture contents completed before this view.
+    AllowPreviousContents,
 }
 
 impl OffscreenWriteTarget {
+    /// Builds a host render-texture target using the default same-target sampling suppression.
+    #[inline]
+    pub const fn host_render_texture(asset_id: i32) -> Self {
+        Self::host_render_texture_with_self_sampling(asset_id, RenderTextureSelfSampling::Suppress)
+    }
+
+    /// Builds a host render-texture target with an explicit same-target sampling policy.
+    #[inline]
+    pub const fn host_render_texture_with_self_sampling(
+        asset_id: i32,
+        self_sampling: RenderTextureSelfSampling,
+    ) -> Self {
+        Self::HostRenderTexture {
+            asset_id,
+            self_sampling,
+        }
+    }
+
     /// Returns `true` when the view writes to any offscreen target.
+    #[inline]
     pub const fn is_offscreen(self) -> bool {
         !matches!(self, Self::None)
     }
@@ -54,6 +88,7 @@ impl OffscreenWriteTarget {
     /// clip-space projection gets a Y flip. Screen-space consumers built from the view projection,
     /// including clustered-light froxels and frame unprojection constants, must use the same
     /// adjusted projection as the forward draw path.
+    #[inline]
     pub(crate) fn render_projection(self, projection: glam::Mat4) -> glam::Mat4 {
         if self.is_offscreen() {
             offscreen_projection_y_flip() * projection
@@ -62,15 +97,33 @@ impl OffscreenWriteTarget {
         }
     }
 
-    /// Returns the host render-texture asset id when self-sampling must be suppressed.
+    /// Returns the host render-texture asset id for this write target.
+    #[inline]
     pub const fn host_render_texture_asset_id(self) -> Option<i32> {
         match self {
-            Self::HostRenderTexture(asset_id) => Some(asset_id),
+            Self::HostRenderTexture { asset_id, .. } => Some(asset_id),
             Self::None | Self::Untracked => None,
         }
     }
+
+    /// Returns the same-target material sampling policy for this write target.
+    #[inline]
+    pub const fn render_texture_self_sampling(self) -> Option<RenderTextureSelfSampling> {
+        match self {
+            Self::HostRenderTexture { self_sampling, .. } => Some(self_sampling),
+            Self::None | Self::Untracked => None,
+        }
+    }
+
+    /// Returns `true` when material bindings should mask this render texture while rendering.
+    #[inline]
+    pub fn suppresses_render_texture_sampling(self, sampled_asset_id: i32) -> bool {
+        self.host_render_texture_asset_id() == Some(sampled_asset_id)
+            && self.render_texture_self_sampling() == Some(RenderTextureSelfSampling::Suppress)
+    }
 }
 
+#[inline]
 fn offscreen_projection_y_flip() -> glam::Mat4 {
     glam::Mat4::from_diagonal(glam::Vec4::new(1.0, -1.0, 1.0, 1.0))
 }
@@ -86,6 +139,7 @@ pub struct FrameViewClear {
 
 impl FrameViewClear {
     /// Main-view clear mode: render the active render-space skybox.
+    #[inline]
     pub fn skybox() -> Self {
         Self {
             mode: CameraClearMode::Skybox,
@@ -94,6 +148,7 @@ impl FrameViewClear {
     }
 
     /// Color clear mode with the supplied linear RGBA background.
+    #[inline]
     pub fn color(color: glam::Vec4) -> Self {
         Self {
             mode: CameraClearMode::Color,
@@ -102,6 +157,7 @@ impl FrameViewClear {
     }
 
     /// Converts host camera state into a frame-view clear descriptor.
+    #[inline]
     pub fn from_camera_state(state: &crate::shared::CameraState) -> Self {
         Self {
             mode: state.clear_mode,
@@ -110,6 +166,7 @@ impl FrameViewClear {
     }
 
     /// Converts host camera readback parameters into a frame-view clear descriptor.
+    #[inline]
     pub fn from_camera_render_parameters(
         parameters: &crate::shared::CameraRenderParameters,
     ) -> Self {
@@ -121,6 +178,7 @@ impl FrameViewClear {
 }
 
 impl Default for FrameViewClear {
+    #[inline]
     fn default() -> Self {
         Self::skybox()
     }
@@ -287,6 +345,7 @@ pub struct GraphPassFrame<'a> {
 
 impl GraphPassFrame<'_> {
     /// Output depth layout for Hi-Z and occlusion ([`OutputDepthMode::from_multiview_stereo`]).
+    #[inline]
     pub fn output_depth_mode(&self) -> OutputDepthMode {
         OutputDepthMode::from_multiview_stereo(self.view.multiview_stereo)
     }
@@ -294,7 +353,7 @@ impl GraphPassFrame<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{FrameViewClear, OffscreenWriteTarget};
+    use super::{FrameViewClear, OffscreenWriteTarget, RenderTextureSelfSampling};
     use crate::shared::{CameraClearMode, CameraState};
 
     #[test]
@@ -311,9 +370,31 @@ mod tests {
             None
         );
 
-        let host_target = OffscreenWriteTarget::HostRenderTexture(77);
+        let host_target = OffscreenWriteTarget::host_render_texture(77);
         assert!(host_target.is_offscreen());
         assert_eq!(host_target.host_render_texture_asset_id(), Some(77));
+        assert_eq!(
+            host_target.render_texture_self_sampling(),
+            Some(RenderTextureSelfSampling::Suppress)
+        );
+        assert!(host_target.suppresses_render_texture_sampling(77));
+        assert!(!host_target.suppresses_render_texture_sampling(78));
+    }
+
+    #[test]
+    fn offscreen_write_target_allows_previous_contents_for_self_sampling() {
+        let host_target = OffscreenWriteTarget::host_render_texture_with_self_sampling(
+            77,
+            RenderTextureSelfSampling::AllowPreviousContents,
+        );
+
+        assert!(host_target.is_offscreen());
+        assert_eq!(host_target.host_render_texture_asset_id(), Some(77));
+        assert_eq!(
+            host_target.render_texture_self_sampling(),
+            Some(RenderTextureSelfSampling::AllowPreviousContents)
+        );
+        assert!(!host_target.suppresses_render_texture_sampling(77));
     }
 
     #[test]
@@ -324,7 +405,7 @@ mod tests {
         let expected = super::offscreen_projection_y_flip() * projection;
 
         assert_eq!(
-            OffscreenWriteTarget::HostRenderTexture(77).render_projection(projection),
+            OffscreenWriteTarget::host_render_texture(77).render_projection(projection),
             expected
         );
     }

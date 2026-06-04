@@ -17,6 +17,7 @@ pub(crate) struct CacheStats {
 
 impl CacheStats {
     /// Returns the saturating delta from `previous` to `self`.
+    #[inline]
     pub(crate) fn delta_since(self, previous: Self) -> CacheStatsDelta {
         CacheStatsDelta {
             hits: self.hits.saturating_sub(previous.hits),
@@ -48,26 +49,31 @@ pub(crate) struct CacheCounters {
 
 impl CacheCounters {
     /// Records a cache hit.
+    #[inline]
     pub(crate) fn note_hit(&mut self) {
         self.stats.hits = self.stats.hits.saturating_add(1);
     }
 
     /// Records a cache miss.
+    #[inline]
     pub(crate) fn note_miss(&mut self) {
         self.stats.misses = self.stats.misses.saturating_add(1);
     }
 
     /// Records a cache insertion.
+    #[inline]
     pub(crate) fn note_insertion(&mut self) {
         self.stats.insertions = self.stats.insertions.saturating_add(1);
     }
 
     /// Records a cache eviction.
+    #[inline]
     pub(crate) fn note_eviction(&mut self) {
         self.stats.evictions = self.stats.evictions.saturating_add(1);
     }
 
     /// Returns a point-in-time snapshot.
+    #[inline]
     pub(crate) fn snapshot(&self) -> CacheStats {
         self.stats
     }
@@ -84,26 +90,31 @@ pub(crate) struct AtomicCacheCounters {
 
 impl AtomicCacheCounters {
     /// Records a cache hit.
+    #[inline]
     pub(crate) fn note_hit(&self) {
         self.hits.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Records a cache miss.
+    #[inline]
     pub(crate) fn note_miss(&self) {
         self.misses.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Records a cache insertion.
+    #[inline]
     pub(crate) fn note_insertion(&self) {
         self.insertions.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Records a cache eviction.
+    #[inline]
     pub(crate) fn note_eviction(&self) {
         self.evictions.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Returns a point-in-time snapshot.
+    #[inline]
     pub(crate) fn snapshot(&self) -> CacheStats {
         CacheStats {
             hits: self.hits.load(Ordering::Relaxed),

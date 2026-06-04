@@ -3,6 +3,11 @@
 #![warn(missing_docs)]
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+use mimalloc::MiMalloc;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
 mod dialog;
 
 /// Parses CLI args, initializes the bootstrapper log file and panic hook, shows startup warnings,

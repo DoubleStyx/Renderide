@@ -330,6 +330,58 @@ fn classic_furfx_modules_keep_source_parity_details() -> io::Result<()> {
 }
 
 #[test]
+fn furfx_shell_force_uses_projection_local_offset() -> io::Result<()> {
+    let common = module_source("fur/common.wgsl")?;
+    for required in [
+        "#import renderide::frame::globals as rg",
+        "fn projected_local_force(force_local: vec4<f32>, view_idx: u32) -> vec3<f32>",
+        "let clamped_force = clamp(force_local, vec4<f32>(-1.0), vec4<f32>(1.0));",
+        "return (rg::projection_for_view(view_idx) * clamped_force).xyz;",
+        "let shell_offset = n.xyz * fur_length * fur_multiplier * hair_hardness;",
+        "let local_force_offset = projected_local_force(force_local, view_idx) * force_scale;",
+        "let shell_model_pos = pos.xyz + shell_offset + local_force_offset;",
+        "let shell_pos = vec4<f32>(shell_model_pos, pos.w);",
+        "let global_force_offset = global_force * force_scale;",
+        "let world_p = shell_world_pos + global_force_offset;",
+    ] {
+        assert!(
+            common.contains(required),
+            "fur/common.wgsl must preserve FurFX shell force detail `{required}`"
+        );
+    }
+
+    for forbidden in [
+        "mv::model_vector(draw, clamp(force_local.xyz",
+        "let force_offset = (global_force + local_force)",
+        "let shell_pos = vec4<f32>(pos.xyz + shell_offset, pos.w);",
+    ] {
+        assert!(
+            !common.contains(forbidden),
+            "fur/common.wgsl must not keep old shell force path `{forbidden}`"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn furfx_roots_do_not_use_shader_variant_bits() -> io::Result<()> {
+    for path in wgsl_files_recursive("shaders/materials")? {
+        let label = file_label(&path);
+        if !label.contains("/furfx") {
+            continue;
+        }
+        let src = source_file(&path)?;
+        assert!(
+            !src.contains("_RenderideVariantBits"),
+            "{label} must not decode shader variant bits for FurFX shell behavior"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn fur_lighting_uses_full_pbs_brdf_stack() -> io::Result<()> {
     let fur_lighting = module_source("fur/lighting.wgsl")?;
     for required in [

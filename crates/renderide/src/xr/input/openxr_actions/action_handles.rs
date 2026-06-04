@@ -3,6 +3,7 @@
 use openxr as xr;
 
 use super::super::manifest::{ActionManifest, ActionType};
+use super::super::tracker::{TRACKER_ROLES, TrackerPoseAction};
 
 /// Typed [`xr::Action`] handles for every action created by the renderer.
 ///
@@ -107,6 +108,9 @@ pub(in crate::xr::input) struct OpenxrInputActions {
     pub(in crate::xr::input) left_haptic: xr::Action<xr::Haptic>,
     /// Right hand haptic output.
     pub(in crate::xr::input) right_haptic: xr::Action<xr::Haptic>,
+
+    /// Body-tracker role grip pose actions from `XR_HTCX_vive_tracker_interaction`.
+    pub(in crate::xr::input) tracker_grip_poses: Vec<TrackerPoseAction>,
 }
 
 /// Creates a typed action, verifying the declared manifest type matches `expected`.
@@ -185,6 +189,14 @@ pub(in crate::xr::input) fn build_actions(
     action_set: &xr::ActionSet,
     manifest: &ActionManifest,
 ) -> Result<OpenxrInputActions, xr::sys::Result> {
+    let mut tracker_grip_poses = Vec::with_capacity(TRACKER_ROLES.len());
+    for role in TRACKER_ROLES {
+        tracker_grip_poses.push(TrackerPoseAction {
+            role,
+            action: create_pose(action_set, manifest, role.action_id)?,
+        });
+    }
+
     Ok(OpenxrInputActions {
         left_grip_pose: create_pose(action_set, manifest, "left_grip_pose")?,
         right_grip_pose: create_pose(action_set, manifest, "right_grip_pose")?,
@@ -239,5 +251,7 @@ pub(in crate::xr::input) fn build_actions(
 
         left_haptic: create_haptic(action_set, manifest, "left_haptic")?,
         right_haptic: create_haptic(action_set, manifest, "right_haptic")?,
+
+        tracker_grip_poses,
     })
 }

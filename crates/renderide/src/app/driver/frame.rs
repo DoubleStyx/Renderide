@@ -17,6 +17,7 @@ use crate::render_graph::GraphExecuteError;
 use crate::xr::{HmdSubmitOutcome, OpenxrFrameTick};
 
 use super::super::exit::ExitReason;
+use super::super::window_icon::apply_host_window_icon;
 use super::AppDriver;
 
 /// Sentinel used before the first frame render mode has been observed.
@@ -298,6 +299,7 @@ impl AppDriver {
         profiling::scope!("tick::poll_ipc_and_window");
         super::tick_phase_trace("poll_ipc_and_window");
         self.runtime.poll_ipc();
+        self.apply_pending_window_icons();
 
         if let Some(output_state) = self.runtime.take_pending_output_state() {
             self.apply_host_vr_haptics(&output_state);
@@ -327,6 +329,58 @@ impl AppDriver {
                 &self.cursor_output_tracking,
             ) {
                 logger::trace!("apply_per_frame_cursor_lock_when_locked: {error:?}");
+            }
+        }
+    }
+
+    pub(super) fn apply_pending_window_icons(&mut self) {
+        let Some(window) = self
+            .target
+            .as_ref()
+            .map(|target| Arc::clone(target.window()))
+        else {
+            return;
+        };
+        let mut requests = self.runtime.take_pending_window_icon_requests();
+        while let Some(request) = requests.pop_front() {
+            let success = if request.is_overlay {
+                logger::warn!(
+                    "runtime: taskbar overlay window icons are unsupported request_id={}",
+                    request.request_id
+                );
+                false
+            } else {
+                self.apply_main_window_icon_request(window.as_ref(), &request)
+            };
+            self.runtime
+                .send_window_icon_result(request.request_id, success);
+        }
+    }
+
+    fn apply_main_window_icon_request(
+        &mut self,
+        window: &dyn Window,
+        request: &crate::shared::SetWindowIcon,
+    ) -> bool {
+        let Some(bgra) = self.runtime.load_window_icon_bgra(request) else {
+            return false;
+        };
+        match apply_host_window_icon(window, request.size, &bgra) {
+            Ok(()) => {
+                logger::info!(
+                    "runtime: applied host window icon request_id={} size={}x{}",
+                    request.request_id,
+                    request.size.x,
+                    request.size.y
+                );
+                true
+            }
+            Err(error) => {
+                logger::warn!(
+                    "runtime: failed to apply host window icon request_id={}: {error}",
+                    request.request_id
+                );
+                false
             }
         }
     }

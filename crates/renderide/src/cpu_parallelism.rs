@@ -85,11 +85,13 @@ pub(crate) enum ParallelAdmission {
 
 impl ParallelAdmission {
     /// Returns `true` when the work site should use Rayon.
+    #[inline]
     pub(crate) const fn is_parallel(self) -> bool {
         matches!(self, Self::Parallel { .. })
     }
 
     /// Returns the admitted chunk size, or `None` for serial execution.
+    #[inline]
     pub(crate) const fn chunk_size(self) -> Option<usize> {
         match self {
             Self::Serial => None,
@@ -99,6 +101,7 @@ impl ParallelAdmission {
 }
 
 /// Caps a Rayon worker count to the reference renderer scheduling bound.
+#[inline]
 pub(crate) const fn reference_worker_count(worker_count: usize) -> usize {
     let workers = if worker_count == 0 { 1 } else { worker_count };
     if workers > REFERENCE_WORKER_CAP {
@@ -109,17 +112,20 @@ pub(crate) const fn reference_worker_count(worker_count: usize) -> usize {
 }
 
 /// Returns the current Rayon worker count after applying the renderer scheduling cap.
+#[inline]
 pub(crate) fn current_reference_worker_count() -> usize {
     reference_worker_count(rayon::current_num_threads())
 }
 
 /// Returns `true` when `item_count` contains at least two full packets.
+#[inline]
 pub(crate) const fn has_two_chunks(item_count: usize, chunk_size: usize) -> bool {
     let chunk_size = if chunk_size == 0 { 1 } else { chunk_size };
     item_count >= chunk_size.saturating_mul(MIN_PARALLEL_CHUNKS)
 }
 
 /// Admits fixed-grain work when at least two task packets are available.
+#[inline]
 pub(crate) const fn admit_fixed_grain_items(
     item_count: usize,
     worker_count: usize,
@@ -134,6 +140,7 @@ pub(crate) const fn admit_fixed_grain_items(
 }
 
 /// Admits visible draw-command work using the reference draw packet size.
+#[inline]
 pub(crate) const fn admit_render_command_items(
     item_count: usize,
     worker_count: usize,
@@ -142,6 +149,7 @@ pub(crate) const fn admit_render_command_items(
 }
 
 /// Admits renderable update work using the reference renderable packet size.
+#[inline]
 pub(crate) const fn admit_renderable_update_items(
     item_count: usize,
     worker_count: usize,
@@ -150,12 +158,14 @@ pub(crate) const fn admit_renderable_update_items(
 }
 
 /// Returns `true` when a space-level visibility-style fan-out has enough total work.
+#[inline]
 pub(crate) const fn has_visibility_parallel_work(item_count: usize, worker_count: usize) -> bool {
     reference_worker_count(worker_count) > 1
         && has_two_chunks(item_count, VISIBILITY_CULL_CHUNK_ITEMS)
 }
 
 /// Admits light work using the reference light packet size and light-count floor.
+#[inline]
 pub(crate) const fn admit_light_work_items(
     item_count: usize,
     worker_count: usize,
@@ -170,6 +180,7 @@ pub(crate) const fn admit_light_work_items(
 }
 
 /// Admits coarse render-space fan-outs when at least two space packets are available.
+#[inline]
 pub(crate) const fn admit_coarse_space_items(
     item_count: usize,
     worker_count: usize,
@@ -178,6 +189,7 @@ pub(crate) const fn admit_coarse_space_items(
 }
 
 /// Admits multi-stream mesh CPU work when both job count and vertex count are large enough.
+#[inline]
 pub(crate) const fn admit_mesh_stream_jobs(
     job_count: usize,
     vertex_count: usize,
@@ -191,6 +203,7 @@ pub(crate) const fn admit_mesh_stream_jobs(
 }
 
 /// Admits blendshape channel extraction when both task count and sample count are large enough.
+#[inline]
 pub(crate) const fn admit_blendshape_channel_tasks(
     task_count: usize,
     sample_count: usize,
@@ -204,6 +217,7 @@ pub(crate) const fn admit_blendshape_channel_tasks(
 }
 
 /// Admits per-shape blendshape sparse packing when both shape count and sparse entry count are large enough.
+#[inline]
 pub(crate) const fn admit_blendshape_pack_shapes(
     shape_count: usize,
     sparse_entry_count: usize,
@@ -217,6 +231,7 @@ pub(crate) const fn admit_blendshape_pack_shapes(
 }
 
 /// Admits bind-pose extraction when at least two matrix packets are available.
+#[inline]
 pub(crate) const fn admit_bind_pose_matrices(
     matrix_count: usize,
     worker_count: usize,
@@ -225,6 +240,7 @@ pub(crate) const fn admit_bind_pose_matrices(
 }
 
 /// Admits 3D texture slice conversion when both slice count and texel count are large enough.
+#[inline]
 pub(crate) const fn admit_texture3d_slices(
     slice_count: usize,
     texel_count: usize,
@@ -238,6 +254,7 @@ pub(crate) const fn admit_texture3d_slices(
 }
 
 /// Computes branchy relevance/material packet size using Unreal-style target packet counts.
+#[inline]
 pub(crate) const fn relevance_packet_size(item_count: usize, worker_count: usize) -> usize {
     let workers = reference_worker_count(worker_count);
     let target_packets = workers.saturating_mul(RELEVANCE_TARGET_PACKETS_PER_WORKER);
@@ -256,6 +273,7 @@ pub(crate) const fn relevance_packet_size(item_count: usize, worker_count: usize
 }
 
 /// Admits branchy relevance/material work using Unreal-style packet sizing.
+#[inline]
 pub(crate) const fn admit_relevance_items(
     item_count: usize,
     worker_count: usize,
@@ -265,7 +283,6 @@ pub(crate) const fn admit_relevance_items(
 }
 
 /// Records the admission decision for a reference-grain Rayon work site.
-#[inline]
 pub(crate) fn record_parallel_admission(
     _site_label: &'static str,
     work_units: usize,
@@ -302,6 +319,7 @@ pub(crate) struct FrameCpuWorkload {
 
 impl FrameCpuWorkload {
     /// Creates a workload from explicit view, draw, and independent-item counts.
+    #[inline]
     pub(crate) const fn new(
         view_count: usize,
         total_draw_count: usize,
@@ -315,26 +333,31 @@ impl FrameCpuWorkload {
     }
 
     /// Creates a workload for independent non-draw items such as render contexts.
+    #[inline]
     pub(crate) const fn independent_items(item_count: usize) -> Self {
         Self::new(0, 0, item_count)
     }
 
     /// Creates a workload for view-owned draw work.
+    #[inline]
     pub(crate) const fn view_draws(view_count: usize, total_draw_count: usize) -> Self {
         Self::new(view_count, total_draw_count, view_count)
     }
 
     /// Independent domain item count available for worker splits.
+    #[inline]
     pub(crate) const fn independent_item_count(self) -> usize {
         self.independent_item_count
     }
 
     /// Independent view count represented by the work.
+    #[inline]
     pub(crate) const fn view_count(self) -> usize {
         self.view_count
     }
 
     /// Estimated draw or renderer count represented by the work.
+    #[inline]
     pub(crate) const fn total_draw_count(self) -> usize {
         self.total_draw_count
     }
@@ -349,6 +372,7 @@ pub(crate) struct FrameParallelPolicy {
 
 impl FrameParallelPolicy {
     /// Builds a policy from Rayon worker count.
+    #[inline]
     pub(crate) const fn new(worker_count: usize) -> Self {
         Self {
             worker_count: reference_worker_count(worker_count),
@@ -356,11 +380,13 @@ impl FrameParallelPolicy {
     }
 
     /// Builds a policy for the currently executing Rayon pool.
+    #[inline]
     pub(crate) fn for_current_thread_pool() -> Self {
         Self::new(rayon::current_num_threads())
     }
 
     /// Draw count required before view-level frame work is considered heavy.
+    #[inline]
     pub(crate) const fn draw_heavy_threshold(self) -> usize {
         let scaled = self
             .worker_count
@@ -373,6 +399,7 @@ impl FrameParallelPolicy {
     }
 
     /// Minimum independent non-draw items required before worker fan-out is useful.
+    #[inline]
     pub(crate) const fn independent_item_threshold(self) -> usize {
         if self.worker_count <= 1 {
             usize::MAX
@@ -382,11 +409,13 @@ impl FrameParallelPolicy {
     }
 
     /// Returns `true` when the estimated draw work crosses the draw-heavy gate.
+    #[inline]
     pub(crate) const fn is_draw_heavy(self, total_draw_count: usize) -> bool {
         self.worker_count > 1 && total_draw_count >= self.draw_heavy_threshold()
     }
 
     /// Decides whether independent item work should fan out through Rayon.
+    #[inline]
     pub(crate) const fn admit_independent_items(
         self,
         workload: FrameCpuWorkload,
@@ -404,6 +433,7 @@ impl FrameParallelPolicy {
     }
 
     /// Decides whether view-level draw work should fan out through Rayon.
+    #[inline]
     pub(crate) const fn admit_draw_heavy_views(
         self,
         workload: FrameCpuWorkload,

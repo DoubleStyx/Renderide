@@ -11,7 +11,7 @@ use crate::shared::{
     RenderDecouplingConfig, RendererCommand, SetCubemapData, SetCubemapFormat,
     SetCubemapProperties, SetDesktopTextureProperties, SetRenderTextureFormat, SetTexture2DData,
     SetTexture2DFormat, SetTexture2DProperties, SetTexture3DData, SetTexture3DFormat,
-    SetTexture3DProperties, ShaderUnload, ShaderUpload, TrailRenderBufferUnload,
+    SetTexture3DProperties, SetWindowIcon, ShaderUnload, ShaderUpload, TrailRenderBufferUnload,
     TrailRenderBufferUpload, UnloadCubemap, UnloadDesktopTexture, UnloadGaussianSplat,
     UnloadRenderTexture, UnloadTexture2D, UnloadTexture3D, UnloadVideoTexture, VideoTextureLoad,
     VideoTextureProperties, VideoTextureStartAudioTrack, VideoTextureUpdate,
@@ -100,6 +100,8 @@ pub(crate) enum RunningCommandEffect {
     UnloadVideoTexture(UnloadVideoTexture),
     /// Host released a shared-memory view lease.
     FreeSharedMemoryView { buffer_id: i32 },
+    /// Host requested a desktop-window icon update.
+    SetWindowIcon(SetWindowIcon),
     /// Host request for material property IDs.
     MaterialPropertyIdRequest(MaterialPropertyIdRequest),
     /// Host material/property-block update batch.
@@ -174,6 +176,7 @@ pub(crate) fn dispatch_running_command(cmd: RendererCommand) -> RunningCommandEf
         RendererCommand::FreeSharedMemoryView(f) => RunningCommandEffect::FreeSharedMemoryView {
             buffer_id: f.buffer_id,
         },
+        RendererCommand::SetWindowIcon(icon) => RunningCommandEffect::SetWindowIcon(icon),
         RendererCommand::MaterialPropertyIdRequest(req) => {
             RunningCommandEffect::MaterialPropertyIdRequest(req)
         }
@@ -259,7 +262,7 @@ mod tests {
     use crate::shared::{
         DesktopConfig, FrameSubmitData, GaussianSplatUploadRaw, MaterialPropertyIdRequest,
         PointRenderBufferUpload, QualityConfig, RendererCommand, RendererShutdown,
-        SetDesktopTextureProperties, SetTexture2DFormat, TrailRenderBufferUpload,
+        SetDesktopTextureProperties, SetTexture2DFormat, SetWindowIcon, TrailRenderBufferUpload,
     };
 
     #[test]
@@ -292,6 +295,14 @@ mod tests {
                 SetTexture2DFormat::default()
             )),
             RunningCommandEffect::SetTexture2DFormat(_)
+        ));
+    }
+
+    #[test]
+    fn decodes_window_icon_request() {
+        assert!(matches!(
+            dispatch_running_command(RendererCommand::SetWindowIcon(SetWindowIcon::default())),
+            RunningCommandEffect::SetWindowIcon(_)
         ));
     }
 

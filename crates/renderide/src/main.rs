@@ -1,5 +1,10 @@
 //! Renderer binary entry point.
 
+use mimalloc::MiMalloc;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
 fn main() {
     match renderide::run() {
         Ok(exit) => std::process::exit(exit.process_code()),

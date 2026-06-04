@@ -108,6 +108,7 @@ pub struct MaterialPipelineCacheKey {
 
 impl MaterialPipelineVariantSpec {
     /// Returns the same pipeline state with shader specialization disabled.
+    #[inline]
     pub(crate) fn without_shader_specialization(self) -> Self {
         Self {
             shader_specialization: MaterialShaderSpecializationKey::disabled(),

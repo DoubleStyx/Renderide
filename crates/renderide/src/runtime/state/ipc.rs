@@ -6,7 +6,7 @@ use hashbrown::HashMap;
 
 use crate::frontend::dispatch::renderer_command_kind::renderer_command_variant_tag;
 use crate::ipc::TimedRendererCommand;
-use crate::shared::RendererCommand;
+use crate::shared::{RendererCommand, SetWindowIcon};
 
 const DEFERRED_PRE_FINALIZE_WARN_THRESHOLD: usize = 1024;
 
@@ -17,6 +17,8 @@ pub(in crate::runtime) struct RuntimeIpcState {
         Vec<crate::runtime::ipc::shader_material::PendingShaderResolution>,
     /// Host commands received after init data but before init finalization.
     deferred_pre_finalize_commands: VecDeque<TimedRendererCommand>,
+    /// Host window-icon requests waiting for the app driver to apply them to the winit window.
+    pending_window_icon_requests: VecDeque<SetWindowIcon>,
     /// Running counts of post-init renderer command variants seen without a running handler.
     unhandled_ipc_command_counts: HashMap<&'static str, u64>,
 }
@@ -52,6 +54,7 @@ impl RuntimeIpcState {
         Self {
             pending_shader_resolutions: Vec::new(),
             deferred_pre_finalize_commands: VecDeque::new(),
+            pending_window_icon_requests: VecDeque::new(),
             unhandled_ipc_command_counts: HashMap::new(),
         }
     }
@@ -83,6 +86,18 @@ impl RuntimeIpcState {
         std::mem::take(&mut self.deferred_pre_finalize_commands)
     }
 
+    /// Queues a host window-icon request for app-thread application.
+    pub(in crate::runtime) fn queue_window_icon_request(&mut self, request: SetWindowIcon) {
+        self.pending_window_icon_requests.push_back(request);
+    }
+
+    /// Drains host window-icon requests in arrival order.
+    pub(in crate::runtime) fn take_pending_window_icon_requests(
+        &mut self,
+    ) -> VecDeque<SetWindowIcon> {
+        std::mem::take(&mut self.pending_window_icon_requests)
+    }
+
     /// Records one unhandled renderer command variant.
     pub(in crate::runtime) fn record_unhandled_renderer_command(
         &mut self,
@@ -96,6 +111,12 @@ impl RuntimeIpcState {
     /// Total number of unhandled post-handshake renderer commands.
     pub(in crate::runtime) fn unhandled_command_event_total(&self) -> u64 {
         self.unhandled_ipc_command_counts.values().copied().sum()
+    }
+
+    /// Number of pending host window-icon requests.
+    #[cfg(test)]
+    pub(in crate::runtime) fn pending_window_icon_request_count(&self) -> usize {
+        self.pending_window_icon_requests.len()
     }
 
     /// Number of commands waiting for init finalization replay.

@@ -4,14 +4,16 @@ use crate::gpu::GpuLight;
 use crate::world_mesh::cluster::{CLUSTER_COUNT_Z, ClusterFrameParams};
 
 use super::bounds::{
-    FroxelSphere, LIGHT_TYPE_DIRECTIONAL, LIGHT_TYPE_POINT, LIGHT_TYPE_SPOT, SpotCull,
+    FROXEL_SPHERE_PARALLEL_MIN_FROXELS, FroxelSphere, LIGHT_TYPE_DIRECTIONAL, LIGHT_TYPE_POINT,
+    LIGHT_TYPE_SPOT, SpotCull, should_parallelize_froxel_spheres_with_workers,
 };
 use super::parallel::build_parallel;
 use super::planner::{
     CPU_FROXEL_LIGHT_CHUNK_SIZE, CPU_FROXEL_PARALLEL_MIN_LIGHTS, CPU_FROXEL_PREFIX_CHUNK_SIZE,
     CPU_FROXEL_PREFIX_PARALLEL_MIN_CLUSTERS, FroxelLightPlanner, build_serial,
-    should_parallelize_cpu_froxel_lights_with_workers, should_parallelize_cpu_froxel_prefix,
-    validated_eye_layouts,
+    should_parallelize_cpu_froxel_lights_with_workers,
+    should_parallelize_cpu_froxel_offsets_with_workers,
+    should_parallelize_cpu_froxel_prefix_with_workers, validated_eye_layouts,
 };
 use super::prefix::{prefix_counts_to_ranges_parallel, prefix_counts_to_ranges_serial};
 use super::types::CpuClusterAssignments;
@@ -112,16 +114,57 @@ fn cpu_froxel_light_parallel_gate_starts_at_two_chunks() {
 }
 
 #[test]
-fn cpu_froxel_prefix_parallel_gate_starts_at_prefix_chunk() {
+fn cpu_froxel_prefix_parallel_gate_requires_workers_and_two_chunks() {
     assert_eq!(
         CPU_FROXEL_PREFIX_PARALLEL_MIN_CLUSTERS,
         CPU_FROXEL_PREFIX_CHUNK_SIZE * 2
     );
-    assert!(!should_parallelize_cpu_froxel_prefix(
-        CPU_FROXEL_PREFIX_PARALLEL_MIN_CLUSTERS - 1
+    assert!(!should_parallelize_cpu_froxel_prefix_with_workers(
+        CPU_FROXEL_PREFIX_PARALLEL_MIN_CLUSTERS - 1,
+        4
     ));
-    assert!(should_parallelize_cpu_froxel_prefix(
-        CPU_FROXEL_PREFIX_PARALLEL_MIN_CLUSTERS
+    assert!(should_parallelize_cpu_froxel_prefix_with_workers(
+        CPU_FROXEL_PREFIX_PARALLEL_MIN_CLUSTERS,
+        4
+    ));
+    assert!(!should_parallelize_cpu_froxel_prefix_with_workers(
+        CPU_FROXEL_PREFIX_PARALLEL_MIN_CLUSTERS,
+        1
+    ));
+}
+
+#[test]
+fn cpu_froxel_offset_parallel_gate_requires_multiple_light_chunks() {
+    assert!(!should_parallelize_cpu_froxel_offsets_with_workers(
+        CPU_FROXEL_PREFIX_PARALLEL_MIN_CLUSTERS,
+        1,
+        4
+    ));
+    assert!(should_parallelize_cpu_froxel_offsets_with_workers(
+        CPU_FROXEL_PREFIX_PARALLEL_MIN_CLUSTERS,
+        2,
+        4
+    ));
+    assert!(!should_parallelize_cpu_froxel_offsets_with_workers(
+        CPU_FROXEL_PREFIX_PARALLEL_MIN_CLUSTERS,
+        2,
+        1
+    ));
+}
+
+#[test]
+fn froxel_sphere_parallel_gate_requires_workers_and_two_chunks() {
+    assert!(!should_parallelize_froxel_spheres_with_workers(
+        FROXEL_SPHERE_PARALLEL_MIN_FROXELS - 1,
+        4
+    ));
+    assert!(should_parallelize_froxel_spheres_with_workers(
+        FROXEL_SPHERE_PARALLEL_MIN_FROXELS,
+        4
+    ));
+    assert!(!should_parallelize_froxel_spheres_with_workers(
+        FROXEL_SPHERE_PARALLEL_MIN_FROXELS,
+        1
     ));
 }
 

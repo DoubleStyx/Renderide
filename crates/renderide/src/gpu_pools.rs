@@ -43,10 +43,12 @@ pub(crate) trait GpuResource {
 macro_rules! impl_gpu_resource {
     ($ty:ty) => {
         impl $crate::gpu_pools::GpuResource for $ty {
+            #[inline]
             fn resident_bytes(&self) -> u64 {
                 self.resident_bytes
             }
 
+            #[inline]
             fn asset_id(&self) -> i32 {
                 self.asset_id
             }

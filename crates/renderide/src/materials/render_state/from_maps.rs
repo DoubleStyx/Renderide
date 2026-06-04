@@ -88,6 +88,7 @@ fn resolve_stencil(
     }
 }
 
+#[inline]
 fn resolve_cull_override(value: Option<f32>) -> MaterialCullOverride {
     match value.map(unity_u8) {
         None => MaterialCullOverride::Unspecified,
@@ -99,6 +100,7 @@ fn resolve_cull_override(value: Option<f32>) -> MaterialCullOverride {
     }
 }
 
+#[inline]
 fn resolve_depth_offset(
     factor: Option<f32>,
     units: Option<f32>,

@@ -26,6 +26,13 @@ static NEXT_CUBEMAP_ALLOCATION_GENERATION: AtomicU64 = AtomicU64::new(1);
 /// One full-mip 2D texture view for each cubemap face.
 type CubemapFaceViews = [Arc<wgpu::TextureView>; crate::gpu::CUBEMAP_ARRAY_LAYERS as usize];
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CubemapAllocationDesc {
+    size: u32,
+    mip_levels_total: u32,
+    wgpu_format: wgpu::TextureFormat,
+}
+
 /// GPU cubemap: six faces in one array texture (`TextureViewDimension::Cube`).
 #[derive(Debug)]
 pub struct GpuCubemap {
@@ -74,44 +81,10 @@ impl GpuCubemap {
         fmt: &SetCubemapFormat,
         props: Option<&SetCubemapProperties>,
     ) -> Option<Self> {
-        let s = fmt.size.max(0) as u32;
-        if s == 0 {
-            return None;
-        }
-        let max_dim = limits.max_texture_dimension_2d();
-        if !validate_texture_extent(
-            fmt.asset_id,
-            "cubemap",
-            "face size",
-            &s,
-            &[s],
-            max_dim,
-            "max_texture_dimension_2d",
-        ) {
-            return None;
-        }
-        if !limits.cubemap_fits_texture_array_layers() {
-            let max_layers = limits.max_texture_array_layers();
-            logger::warn!(
-                "cubemap {}: max_texture_array_layers ({max_layers}) < {}; GPU texture not created",
-                fmt.asset_id,
-                crate::gpu::CUBEMAP_ARRAY_LAYERS
-            );
-            return None;
-        }
-        let requested_mips = host_texture_mip_count(fmt.mipmap_count);
-        let legal_mips = legal_texture2d_mip_level_count(s, s);
-        let mips = clamp_texture_mip_count(
-            fmt.asset_id,
-            "cubemap",
-            &format_args!("face size {s}"),
-            requested_mips,
-            legal_mips,
-        );
-        let wgpu_format = resolve_cubemap_wgpu_format(device, fmt);
+        let desc = Self::allocation_desc_from_format(device, limits, fmt)?;
         let size = wgpu::Extent3d {
-            width: s,
-            height: s,
+            width: desc.size,
+            height: desc.size,
             depth_or_array_layers: 6,
         };
         let texture_label = format!("Cubemap {}", fmt.asset_id);
@@ -121,20 +94,29 @@ impl GpuCubemap {
             SampledTextureAllocation {
                 label: &texture_label,
                 size,
-                mip_level_count: mips,
+                mip_level_count: desc.mip_levels_total,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu_format,
+                format: desc.wgpu_format,
                 view: TextureViewInit {
                     label: Some(&view_label),
                     dimension: Some(wgpu::TextureViewDimension::Cube),
                 },
             },
         );
-        let array_view =
-            create_cubemap_array_view(texture.as_ref(), fmt.asset_id, wgpu_format, mips);
-        let face_views =
-            create_cubemap_face_views(texture.as_ref(), fmt.asset_id, wgpu_format, mips);
-        let resident_bytes = estimate_gpu_cubemap_bytes(wgpu_format, s, mips);
+        let array_view = create_cubemap_array_view(
+            texture.as_ref(),
+            fmt.asset_id,
+            desc.wgpu_format,
+            desc.mip_levels_total,
+        );
+        let face_views = create_cubemap_face_views(
+            texture.as_ref(),
+            fmt.asset_id,
+            desc.wgpu_format,
+            desc.mip_levels_total,
+        );
+        let resident_bytes =
+            estimate_gpu_cubemap_bytes(desc.wgpu_format, desc.size, desc.mip_levels_total);
         let sampler = SamplerState::from_cubemap_props(props);
         let residency = props
             .map(TextureResidencyMeta::from_host_props)
@@ -145,10 +127,10 @@ impl GpuCubemap {
             view,
             array_view,
             face_views,
-            wgpu_format,
+            wgpu_format: desc.wgpu_format,
             host_format: fmt.format,
-            size: s,
-            mip_levels_total: mips,
+            size: desc.size,
+            mip_levels_total: desc.mip_levels_total,
             mip_levels_resident: 0,
             content_generation: 0,
             allocation_generation: NEXT_CUBEMAP_ALLOCATION_GENERATION
@@ -158,6 +140,45 @@ impl GpuCubemap {
             sampler,
             residency,
         })
+    }
+
+    /// Returns `true` when `fmt` resolves to this cubemap's current GPU allocation shape.
+    pub(crate) fn allocation_matches_format(
+        &self,
+        device: &wgpu::Device,
+        limits: &GpuLimits,
+        fmt: &SetCubemapFormat,
+    ) -> bool {
+        Self::allocation_desc_from_format(device, limits, fmt)
+            .is_some_and(|desc| self.allocation_matches_desc(desc))
+    }
+
+    /// Updates format metadata without changing the GPU allocation or resident mip state.
+    pub(crate) fn apply_format_metadata(
+        &mut self,
+        fmt: &SetCubemapFormat,
+        props: Option<&SetCubemapProperties>,
+    ) {
+        self.host_format = fmt.format;
+        self.sampler = SamplerState::from_cubemap_props(props);
+        self.residency = props
+            .map(TextureResidencyMeta::from_host_props)
+            .unwrap_or_default();
+    }
+
+    fn allocation_desc_from_format(
+        device: &wgpu::Device,
+        limits: &GpuLimits,
+        fmt: &SetCubemapFormat,
+    ) -> Option<CubemapAllocationDesc> {
+        let wgpu_format = resolve_cubemap_wgpu_format(device, fmt);
+        cubemap_allocation_desc(limits, fmt, wgpu_format)
+    }
+
+    fn allocation_matches_desc(&self, desc: CubemapAllocationDesc) -> bool {
+        self.size == desc.size
+            && self.mip_levels_total == desc.mip_levels_total
+            && self.wgpu_format == desc.wgpu_format
     }
 
     /// Marks that at least one face/mip upload changed this cubemap's GPU contents.
@@ -170,6 +191,52 @@ impl GpuCubemap {
         self.sampler = SamplerState::from_cubemap_props(Some(p));
         self.residency = TextureResidencyMeta::from_host_props(p);
     }
+}
+
+fn cubemap_allocation_desc(
+    limits: &GpuLimits,
+    fmt: &SetCubemapFormat,
+    wgpu_format: wgpu::TextureFormat,
+) -> Option<CubemapAllocationDesc> {
+    let s = fmt.size.max(0) as u32;
+    if s == 0 {
+        return None;
+    }
+    let max_dim = limits.max_texture_dimension_2d();
+    if !validate_texture_extent(
+        fmt.asset_id,
+        "cubemap",
+        "face size",
+        &s,
+        &[s],
+        max_dim,
+        "max_texture_dimension_2d",
+    ) {
+        return None;
+    }
+    if !limits.cubemap_fits_texture_array_layers() {
+        let max_layers = limits.max_texture_array_layers();
+        logger::warn!(
+            "cubemap {}: max_texture_array_layers ({max_layers}) < {}; GPU texture not created",
+            fmt.asset_id,
+            crate::gpu::CUBEMAP_ARRAY_LAYERS
+        );
+        return None;
+    }
+    let requested_mips = host_texture_mip_count(fmt.mipmap_count);
+    let legal_mips = legal_texture2d_mip_level_count(s, s);
+    let mip_levels_total = clamp_texture_mip_count(
+        fmt.asset_id,
+        "cubemap",
+        &format_args!("face size {s}"),
+        requested_mips,
+        legal_mips,
+    );
+    Some(CubemapAllocationDesc {
+        size: s,
+        mip_levels_total,
+        wgpu_format,
+    })
 }
 
 /// Creates the full cubemap array view used by shaders that sample faces manually.
@@ -232,3 +299,129 @@ impl_streaming_pool_facade!(
     StreamingAccess::texture,
     StreamingAccess::texture_noop,
 );
+
+#[cfg(test)]
+mod tests {
+    use hashbrown::HashMap;
+
+    use crate::gpu::GpuLimits;
+    use crate::shared::{ColorProfile, SetCubemapFormat, TextureFormat};
+
+    use super::cubemap_allocation_desc;
+
+    fn test_limits(max_texture_dimension_2d: u32, max_texture_array_layers: u32) -> GpuLimits {
+        GpuLimits::synthetic_for_tests(
+            wgpu::Limits {
+                max_texture_dimension_2d,
+                max_texture_array_layers,
+                ..Default::default()
+            },
+            wgpu::Features::empty(),
+            HashMap::new(),
+        )
+    }
+
+    fn format(
+        size: i32,
+        mipmap_count: i32,
+        format: TextureFormat,
+        profile: ColorProfile,
+    ) -> SetCubemapFormat {
+        SetCubemapFormat {
+            asset_id: 11,
+            size,
+            mipmap_count,
+            format,
+            profile,
+        }
+    }
+
+    #[test]
+    fn allocation_desc_reuses_same_gpu_shape() {
+        let limits = test_limits(4096, crate::gpu::CUBEMAP_ARRAY_LAYERS);
+        let base = cubemap_allocation_desc(
+            &limits,
+            &format(64, 4, TextureFormat::RGBA32, ColorProfile::Linear),
+            wgpu::TextureFormat::Rgba8Unorm,
+        )
+        .expect("base allocation");
+        let same_storage = cubemap_allocation_desc(
+            &limits,
+            &format(64, 4, TextureFormat::RGB24, ColorProfile::Linear),
+            wgpu::TextureFormat::Rgba8Unorm,
+        )
+        .expect("same allocation");
+
+        assert_eq!(base, same_storage);
+    }
+
+    #[test]
+    fn allocation_desc_changes_for_size_mips_or_storage() {
+        let limits = test_limits(4096, crate::gpu::CUBEMAP_ARRAY_LAYERS);
+        let base = cubemap_allocation_desc(
+            &limits,
+            &format(64, 4, TextureFormat::RGBA32, ColorProfile::Linear),
+            wgpu::TextureFormat::Rgba8Unorm,
+        )
+        .expect("base allocation");
+
+        assert_ne!(
+            base,
+            cubemap_allocation_desc(
+                &limits,
+                &format(128, 4, TextureFormat::RGBA32, ColorProfile::Linear),
+                wgpu::TextureFormat::Rgba8Unorm,
+            )
+            .expect("different size")
+        );
+        assert_ne!(
+            base,
+            cubemap_allocation_desc(
+                &limits,
+                &format(64, 2, TextureFormat::RGBA32, ColorProfile::Linear),
+                wgpu::TextureFormat::Rgba8Unorm,
+            )
+            .expect("different mips")
+        );
+        assert_ne!(
+            base,
+            cubemap_allocation_desc(
+                &limits,
+                &format(64, 4, TextureFormat::RGBA32, ColorProfile::SRGB),
+                wgpu::TextureFormat::Rgba8UnormSrgb,
+            )
+            .expect("different storage")
+        );
+    }
+
+    #[test]
+    fn allocation_desc_rejects_invalid_size_or_array_layers() {
+        let valid_limits = test_limits(64, crate::gpu::CUBEMAP_ARRAY_LAYERS);
+        let short_array_limits = test_limits(64, crate::gpu::CUBEMAP_ARRAY_LAYERS - 1);
+
+        assert!(
+            cubemap_allocation_desc(
+                &valid_limits,
+                &format(0, 1, TextureFormat::RGBA32, ColorProfile::Linear),
+                wgpu::TextureFormat::Rgba8Unorm,
+            )
+            .is_none()
+        );
+        assert!(
+            cubemap_allocation_desc(
+                &valid_limits,
+                &format(128, 1, TextureFormat::RGBA32, ColorProfile::Linear),
+                wgpu::TextureFormat::Rgba8Unorm,
+            )
+            .is_none()
+        );
+        assert!(
+            cubemap_allocation_desc(
+                &short_array_limits,
+                &format(64, 1, TextureFormat::RGBA32, ColorProfile::Linear),
+                wgpu::TextureFormat::Rgba8Unorm,
+            )
+            .is_none()
+        );
+    }
+}

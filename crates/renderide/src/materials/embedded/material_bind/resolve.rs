@@ -328,7 +328,7 @@ impl EmbeddedMaterialBindResources {
                 if asset_id < 0 {
                     return None;
                 }
-                if offscreen_write_target.host_render_texture_asset_id() == Some(asset_id) {
+                if offscreen_write_target.suppresses_render_texture_sampling(asset_id) {
                     return None;
                 }
                 pools
@@ -415,7 +415,7 @@ impl EmbeddedMaterialBindResources {
             }
             ResolvedTextureBinding::RenderTexture { asset_id } => {
                 if asset_id < 0
-                    || offscreen_write_target.host_render_texture_asset_id() == Some(asset_id)
+                    || offscreen_write_target.suppresses_render_texture_sampling(asset_id)
                 {
                     None
                 } else {

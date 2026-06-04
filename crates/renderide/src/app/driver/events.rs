@@ -46,6 +46,7 @@ impl AppDriver {
                 self.input.set_window_focused(window.has_focus());
                 self.input.set_fullscreen(target.is_fullscreen());
                 self.target = Some(target);
+                self.apply_pending_window_icons();
             }
             Err(error) => {
                 logger::error!("{error}");

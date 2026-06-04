@@ -4,6 +4,7 @@
 //! blend materialization in [`super::material_passes`].
 
 /// Maps a Unity `CompareFunction` stencil enum value to `wgpu::CompareFunction`.
+#[inline]
 pub(crate) fn unity_compare_function(value: u8) -> wgpu::CompareFunction {
     match value {
         1 => wgpu::CompareFunction::Never,
@@ -26,6 +27,7 @@ pub(crate) fn unity_compare_function(value: u8) -> wgpu::CompareFunction {
 ///
 /// This table is intentionally direct: raw host value `6` is not renderer "always"; after
 /// ShaderLab parsing and reverse-Z conversion it resolves to `NotEqual`.
+#[inline]
 pub(crate) fn froox_shaderlab_ztest_depth_compare_function(
     value: u8,
 ) -> Option<wgpu::CompareFunction> {
@@ -49,6 +51,7 @@ pub(crate) fn froox_shaderlab_ztest_depth_compare_function(
 /// NotEqual=6, GreaterEqual=7, Always=8`. Depth comparisons invert under reverse-Z, while exact
 /// equality and always/never outcomes keep their meaning. `Disabled` is treated as `Always`
 /// because the renderer keeps a depth attachment bound for material passes.
+#[inline]
 pub(crate) fn unity_ztest_depth_compare_function(value: u8) -> Option<wgpu::CompareFunction> {
     match value {
         0 => Some(wgpu::CompareFunction::Always),
@@ -65,6 +68,7 @@ pub(crate) fn unity_ztest_depth_compare_function(value: u8) -> Option<wgpu::Comp
 }
 
 /// Maps a Unity `StencilOp` enum value to `wgpu::StencilOperation`.
+#[inline]
 pub(crate) fn unity_stencil_operation(value: u8) -> wgpu::StencilOperation {
     match value {
         1 => wgpu::StencilOperation::Zero,
@@ -79,6 +83,7 @@ pub(crate) fn unity_stencil_operation(value: u8) -> wgpu::StencilOperation {
 }
 
 /// Converts Unity `ColorMask` bitmask (RGBA nibble order) to `wgpu::ColorWrites`.
+#[inline]
 pub(crate) fn unity_color_writes(mask: u8) -> wgpu::ColorWrites {
     let mut writes = wgpu::ColorWrites::empty();
     if mask & 8 != 0 {
@@ -97,6 +102,7 @@ pub(crate) fn unity_color_writes(mask: u8) -> wgpu::ColorWrites {
 }
 
 /// Maps `UnityEngine.Rendering.BlendMode` enum indices to `wgpu::BlendFactor`.
+#[inline]
 pub(crate) fn unity_blend_factor(value: u8) -> Option<wgpu::BlendFactor> {
     match value {
         0 => Some(wgpu::BlendFactor::Zero),
@@ -115,6 +121,7 @@ pub(crate) fn unity_blend_factor(value: u8) -> Option<wgpu::BlendFactor> {
 }
 
 /// Builds separate RGBA blend state for `Blend[src][dst], One One` + `BlendOp Add, Max` on alpha.
+#[inline]
 pub(crate) fn unity_blend_state(src: u8, dst: u8) -> Option<wgpu::BlendState> {
     if src == 1 && dst == 0 {
         return None;

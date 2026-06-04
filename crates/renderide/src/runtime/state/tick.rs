@@ -2,9 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::frontend::{
-    HostWaitReason, LockstepPipelineAction, LockstepPipelineHudLabels, OneCreditBlockReason,
-};
+use crate::frontend::{HostWaitReason, LockstepPipelineAction, OneCreditBlockReason};
 use crate::scene::{ReflectionProbeOnChangesRenderRequest, RenderSpaceId};
 use crate::shared::{CameraRenderTask, ReflectionProbeRenderResult, ReflectionProbeRenderTask};
 
@@ -127,7 +125,7 @@ impl RuntimeTickState {
         wait
     }
 
-    /// Records the latest lock-step pipeline decision for profiling and HUD diagnostics.
+    /// Records the latest lock-step pipeline decision for profiling diagnostics.
     pub(in crate::runtime) fn record_lockstep_pipeline_decision(
         &mut self,
         action: LockstepPipelineAction,
@@ -143,15 +141,6 @@ impl RuntimeTickState {
         self.lockstep_pipeline_action = LockstepPipelineAction::WaitForSubmit;
         self.lockstep_wait_reason = reason;
         self.plot_lockstep_pipeline();
-    }
-
-    /// Labels for the frame-timing HUD.
-    pub(in crate::runtime) fn lockstep_pipeline_hud_labels(&self) -> LockstepPipelineHudLabels {
-        LockstepPipelineHudLabels {
-            action: self.lockstep_pipeline_action.label(),
-            one_credit_block: self.lockstep_one_credit_block.label(),
-            wait_reason: self.lockstep_wait_reason.label(),
-        }
     }
 
     fn plot_lockstep_pipeline(&self) {

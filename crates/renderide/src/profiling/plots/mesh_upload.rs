@@ -5,7 +5,6 @@ use crate::backend::asset_transfers::MeshUploadBatchStats;
 use super::tracy_plot::tracy_plot;
 
 /// Records one mesh upload batch flush.
-#[inline]
 pub(crate) fn plot_mesh_upload_batch(stats: &MeshUploadBatchStats) {
     tracy_plot!("mesh_upload::writes", stats.writes as f64);
     tracy_plot!("mesh_upload::bytes", stats.bytes as f64);
@@ -24,7 +23,6 @@ pub(crate) fn plot_mesh_upload_batch(stats: &MeshUploadBatchStats) {
 }
 
 /// Records derived stream demand and dirty masks as raw bit patterns and popcounts.
-#[inline]
 pub(crate) fn plot_mesh_derived_stream_masks(demand_bits: u16, dirty_bits: u16) {
     tracy_plot!("mesh_upload::derived_demand_mask", demand_bits as f64);
     tracy_plot!("mesh_upload::derived_dirty_mask", dirty_bits as f64);

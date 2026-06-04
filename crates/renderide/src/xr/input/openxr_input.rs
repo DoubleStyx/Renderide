@@ -20,7 +20,8 @@ use super::state::{
     OpenxrControllerRawInputs, OpenxrControllerThresholdState,
     build_controller_state_with_thresholds,
 };
-use crate::shared::{Chirality, HandState, VRControllerState};
+use super::tracker::{TrackerCache, TrackerPoseSpace};
+use crate::shared::{Chirality, HandState, TrackerState, VRControllerState};
 use crate::xr::input::hand_tracking::{hand_from_openxr, inactive_openxr_hand};
 use crate::xr::synthesize_hand_states;
 use glam::{Quat, Vec2, Vec3};
@@ -193,8 +194,19 @@ fn ipc_vr_controller_from_polled(
     )
 }
 
+/// Host-facing OpenXR input sample for one predicted display tick.
+pub struct OpenxrInputSample {
+    /// Active controller states to forward over IPC.
+    pub controllers: Vec<VRControllerState>,
+    /// Active and previously seen body tracker states to forward over IPC.
+    pub trackers: Vec<TrackerState>,
+    /// Hand skeleton states from OpenXR hand tracking or controller synthesis.
+    pub hands: Vec<HandState>,
+}
+
 /// OpenXR actions and derived spaces for headset/controller input used by the renderer IPC path.
 pub struct OpenxrInput {
+    instance: xr::Instance,
     action_set: xr::ActionSet,
     left_user_path: xr::Path,
     right_user_path: xr::Path,
@@ -208,8 +220,10 @@ pub struct OpenxrInput {
     right_space: xr::Space,
     left_palm_ext_space: xr::Space,
     right_palm_ext_space: xr::Space,
+    tracker_spaces: Vec<TrackerPoseSpace>,
     left_hand_tracker: Option<xr::HandTracker>,
     right_hand_tracker: Option<xr::HandTracker>,
+    tracker_cache: Mutex<TrackerCache>,
     left_threshold_state: Mutex<OpenxrControllerThresholdState>,
     right_threshold_state: Mutex<OpenxrControllerThresholdState>,
 }
@@ -227,11 +241,12 @@ impl OpenxrInput {
         manifest: &Manifest,
     ) -> Result<Self, xr::sys::Result> {
         let parts = create_openxr_input_parts(instance, session, gates, manifest)?;
-        Ok(Self::from_parts(parts))
+        Ok(Self::from_parts(instance.clone(), parts))
     }
 
-    fn from_parts(parts: OpenxrInputParts) -> Self {
+    fn from_parts(instance: xr::Instance, parts: OpenxrInputParts) -> Self {
         Self {
+            instance,
             action_set: parts.action_set,
             left_user_path: parts.left_user_path,
             right_user_path: parts.right_user_path,
@@ -245,8 +260,10 @@ impl OpenxrInput {
             right_space: parts.right_space,
             left_palm_ext_space: parts.left_palm_ext_space,
             right_palm_ext_space: parts.right_palm_ext_space,
+            tracker_spaces: parts.tracker_spaces,
             left_hand_tracker: parts.left_hand_tracker,
             right_hand_tracker: parts.right_hand_tracker,
+            tracker_cache: Mutex::new(TrackerCache::default()),
             left_threshold_state: Mutex::new(OpenxrControllerThresholdState::default()),
             right_threshold_state: Mutex::new(OpenxrControllerThresholdState::default()),
         }
@@ -396,13 +413,13 @@ impl OpenxrInput {
         action.apply_feedback(session, xr::Path::NULL, &event)
     }
 
-    /// Syncs actions, samples poses and digital/analog state, and returns left/right [`VRControllerState`] values.
+    /// Syncs actions, samples poses and digital/analog state, and returns host-facing input.
     pub fn sync_and_sample(
         &self,
         session: &xr::Session<xr::Vulkan>,
         stage: &xr::Space,
         predicted_time: xr::Time,
-    ) -> Result<(Vec<VRControllerState>, Vec<HandState>), xr::sys::Result> {
+    ) -> Result<OpenxrInputSample, xr::sys::Result> {
         profiling::scope!("xr::input_sync_and_sample");
         session.sync_actions(&[xr::ActiveActionSet::new(&self.action_set)])?;
         let left_loc = self.left_space.locate(stage, predicted_time)?;
@@ -482,8 +499,18 @@ impl OpenxrInput {
         }
         let hand_states =
             hand_states_from_samples(&controllers, left_openxr_hand, right_openxr_hand);
+        let trackers = self.tracker_cache.lock().sample(
+            &self.instance,
+            stage,
+            predicted_time,
+            &self.tracker_spaces,
+        );
 
-        Ok((controllers, hand_states))
+        Ok(OpenxrInputSample {
+            controllers,
+            trackers,
+            hands: hand_states,
+        })
     }
 
     /// Logs at most once every 300 frames per hand when `palm_ext` is unavailable but grip is valid.

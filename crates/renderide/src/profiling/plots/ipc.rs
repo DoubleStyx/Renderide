@@ -23,7 +23,6 @@ pub struct IpcPollProfileSample {
 }
 
 /// Records IPC poll counters on Tracy plots.
-#[inline]
 pub fn plot_ipc_poll(sample: &IpcPollProfileSample) {
     tracy_plot!("ipc::primary_wait_ms", sample.waited.as_secs_f64() * 1000.0);
     tracy_plot!("ipc::messages", sample.messages as f64);

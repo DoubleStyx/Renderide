@@ -68,8 +68,8 @@ pub(crate) use normal_pass::{
 pub use normal_pass::{WorldMeshForwardNormalGraphResources, WorldMeshForwardNormalPass};
 pub(crate) use prepare::{
     WorldMeshForwardInstancePlanCache, WorldMeshForwardInstancePlanCacheStats,
-    WorldMeshForwardPrepareContext, WorldMeshForwardPrepareScratch,
-    prepare_world_mesh_forward_frame,
+    WorldMeshForwardPrepareCaches, WorldMeshForwardPrepareGpu, WorldMeshForwardPrepareInputs,
+    WorldMeshForwardPrepareScratch, WorldMeshForwardPrepareView, prepare_world_mesh_forward_frame,
 };
 pub(crate) use skybox::SkyboxRenderer as WorldMeshForwardSkyboxRenderer;
 pub(crate) use state::{

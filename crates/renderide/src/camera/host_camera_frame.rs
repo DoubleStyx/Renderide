@@ -88,21 +88,25 @@ impl HostCameraFrame {
     }
 
     /// Returns the explicit world-to-view override when present.
+    #[inline]
     pub fn explicit_world_to_view(&self) -> Option<Mat4> {
         self.explicit_view.map(|view| view.view)
     }
 
     /// Returns the explicit camera world position when present.
+    #[inline]
     pub fn explicit_world_position(&self) -> Option<Vec3> {
         self.explicit_view.map(|view| view.world_position)
     }
 
     /// Returns the explicit view and projection override when present.
+    #[inline]
     pub fn explicit_view_projection(&self) -> Option<(Mat4, Mat4)> {
         self.explicit_view.map(|view| (view.view, view.proj))
     }
 
     /// Returns active stereo only when the host frame is currently VR-active.
+    #[inline]
     pub fn active_stereo(&self) -> Option<&StereoViewMatrices> {
         if self.vr_active {
             self.stereo.as_ref()
@@ -112,11 +116,13 @@ impl HostCameraFrame {
     }
 
     /// Returns the dedicated screen-overlay orthographic projection.
+    #[inline]
     pub fn overlay_projection(viewport: Viewport, fallback_clip: CameraClipPlanes) -> Mat4 {
         OrthographicProjectionSpec::new(1.0, fallback_clip).projection(viewport)
     }
 
     /// Resolves the world-space origin used for view-distance sorting.
+    #[inline]
     pub fn view_origin_world(&self) -> Vec3 {
         self.explicit_world_position()
             .or(self.eye_world_position)

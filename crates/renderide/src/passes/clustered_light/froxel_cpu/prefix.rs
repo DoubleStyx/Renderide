@@ -99,16 +99,14 @@ pub(super) fn write_membership(
     *cursor += 1;
 }
 
+/// Atomically writes one light index at a chunk-local base offset.
 pub(super) fn write_membership_atomic(
     cluster_id: usize,
     light_idx: u32,
-    offsets: &[u32],
+    base: u32,
     cursors: &mut [u32],
     indices: &[AtomicU32],
 ) {
-    let Some(&base) = offsets.get(cluster_id) else {
-        return;
-    };
     let Some(cursor) = cursors.get_mut(cluster_id) else {
         return;
     };

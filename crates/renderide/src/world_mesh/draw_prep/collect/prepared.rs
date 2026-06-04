@@ -15,11 +15,12 @@ use crate::world_mesh::materials::FrameMaterialBatchCache;
 
 use super::super::item::{WorldMeshDrawItem, stacked_material_submesh_topology};
 use super::super::prepared_renderables::{FramePreparedDraw, FramePreparedRun};
-use super::DrawCollectionContext;
+use super::DrawCollectionInputs;
 use super::candidate::{DrawCandidate, evaluate_draw_candidate};
 use super::lod::LodVisibility;
 use super::scene_walk::transform_chain_has_degenerate_scale;
 use super::world_matrix::{front_face_for_draw_matrices, world_matrix_for_local_vertex_stream};
+use super::{effective_overlay_in_view, special_layer_visible_in_view};
 
 /// Returns true when two prepared slot entries came from the same source renderer.
 #[inline]
@@ -33,6 +34,7 @@ pub(in crate::world_mesh::draw_prep) fn prepared_draws_share_renderer(
         && a.node_id == b.node_id
         && a.mesh_asset_id == b.mesh_asset_id
         && a.is_overlay == b.is_overlay
+        && a.is_hidden == b.is_hidden
         && a.sorting_order == b.sorting_order
         && a.skinned == b.skinned
         && a.world_space_deformed == b.world_space_deformed
@@ -77,10 +79,10 @@ impl<'a> PreparedRunSkinning<'a> {
 /// Returns whether the renderer run passes the view's optional transform filter.
 fn prepared_run_passes_filter(
     first: &FramePreparedDraw,
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     filter_masks: &HashMap<RenderSpaceId, Vec<bool>>,
 ) -> bool {
-    let Some(filter) = ctx.transform_filter else {
+    let Some(filter) = ctx.view.transform_filter else {
         return true;
     };
     match filter_masks.get(&first.space_id) {
@@ -89,19 +91,19 @@ fn prepared_run_passes_filter(
                 && (first.node_id as usize) < mask.len()
                 && mask[first.node_id as usize]
         }
-        None => filter.passes_scene_node(ctx.scene, first.space_id, first.node_id),
+        None => filter.passes_scene_node(ctx.scene_assets.scene, first.space_id, first.node_id),
     }
 }
 
 /// Returns the skinned renderer backing a prepared run, or `None` when stale scene indices should skip it.
 fn prepared_run_skinned_renderer<'a>(
     first: &FramePreparedDraw,
-    ctx: &'a DrawCollectionContext<'_>,
+    ctx: &'a DrawCollectionInputs<'_>,
 ) -> PreparedRunSkinning<'a> {
     if !first.skinned {
         return PreparedRunSkinning::Rigid;
     }
-    let Some(space) = ctx.scene.space(first.space_id) else {
+    let Some(space) = ctx.scene_assets.scene.space(first.space_id) else {
         return PreparedRunSkinning::Stale;
     };
     space
@@ -117,7 +119,7 @@ fn prepared_run_view_state(
     is_overlay: bool,
     mesh: &crate::assets::mesh::GpuMesh,
     skinning: &PreparedRunSkinning<'_>,
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
 ) -> (Option<PreparedRunViewState>, (usize, usize, usize)) {
     let mut cull_stats = (0usize, 0usize, 0usize);
     let mut rigid_world_matrix = None;
@@ -126,15 +128,16 @@ fn prepared_run_view_state(
     if let Some(override_matrix) = first.rigid_world_matrix_override {
         rigid_world_matrix = Some(override_matrix);
     }
-    let needs_geometry =
-        ctx.reflection_probes.is_some() || ctx.culling.is_some() || first.world_space_deformed;
+    let needs_geometry = ctx.view.reflection_probes.is_some()
+        || ctx.view.culling.is_some()
+        || first.world_space_deformed;
     let geometry = (needs_geometry && first.rigid_world_matrix_override.is_none()).then(|| {
         // Reuse the per-renderer geometry that `FramePreparedRenderables::build_for_frame` already
         // computed for non-overlay spaces. Overlay spaces (geometry depends on the per-view
         // `head_output_transform`) keep recomputing per-view via the fallback path below.
         first.cull_geometry.unwrap_or_else(|| {
             let target = MeshCullTarget {
-                scene: ctx.scene,
+                scene: ctx.scene_assets.scene,
                 space_id: first.space_id,
                 mesh,
                 skinned: first.skinned,
@@ -143,18 +146,24 @@ fn prepared_run_view_state(
             };
             mesh_world_geometry_for_cull_with_head(
                 &target,
-                ctx.head_output_transform,
-                ctx.render_context,
+                ctx.view.head_output_transform,
+                ctx.view.render_context,
             )
         })
     });
     if let Some(geom) = geometry {
         world_aabb = geom.world_aabb;
         deformed_front_face_world_matrix = geom.front_face_world_matrix;
-        if let Some(c) = ctx.culling {
+        if let Some(c) = ctx.view.culling {
             cull_stats.0 += run.len();
-            match mesh_cpu_cull_with_geometry(geom, ctx.scene, first.space_id, is_overlay, c, None)
-            {
+            match mesh_cpu_cull_with_geometry(
+                geom,
+                ctx.scene_assets.scene,
+                first.space_id,
+                is_overlay,
+                c,
+                None,
+            ) {
                 Err(CpuCullFailure::Frustum | CpuCullFailure::UiRectMask) => {
                     cull_stats.1 += run.len();
                     return (None, cull_stats);
@@ -184,7 +193,7 @@ fn prepared_run_view_state(
         deformed_front_face_world_matrix,
     );
     let alpha_distance_sq = rigid_world_matrix.map_or(0.0, |m| {
-        (m.col(3).truncate() - ctx.view_origin_world).length_squared()
+        (m.col(3).truncate() - ctx.view.view_origin_world).length_squared()
     });
     (
         Some(PreparedRunViewState {
@@ -200,7 +209,7 @@ fn prepared_run_view_state(
 /// Emits one [`WorldMeshDrawItem`] per material slot in a surviving prepared renderer run.
 fn append_prepared_run_draws(
     run: &[FramePreparedDraw],
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     cache: &FrameMaterialBatchCache,
     mesh: &crate::assets::mesh::GpuMesh,
     is_overlay: bool,
@@ -247,7 +256,7 @@ fn append_prepared_run_draws(
 /// Collects one prepared renderer run after frame-global slot expansion.
 fn collect_prepared_renderer_run(
     run: &[FramePreparedDraw],
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     cache: &FrameMaterialBatchCache,
     filter_masks: &HashMap<RenderSpaceId, Vec<bool>>,
     lod_visibility: &LodVisibility,
@@ -257,6 +266,7 @@ fn collect_prepared_renderer_run(
         return (0, 0, 0);
     };
     if ctx
+        .view
         .render_space_filter
         .is_some_and(|space_id| first.space_id != space_id)
     {
@@ -265,14 +275,25 @@ fn collect_prepared_renderer_run(
     if !prepared_run_passes_filter(first, ctx, filter_masks) {
         return (0, 0, 0);
     }
+    let source_is_overlay = first.is_overlay;
+    let source_special_layer = if first.is_hidden {
+        Some(crate::shared::LayerType::Hidden)
+    } else if source_is_overlay {
+        Some(crate::shared::LayerType::Overlay)
+    } else {
+        None
+    };
+    if !special_layer_visible_in_view(ctx, source_special_layer) {
+        return (0, 0, 0);
+    }
     if !lod_visibility.renderer_visible(first.space_id, first.renderer_ordinal) {
         return (0, 0, 0);
     }
     if transform_chain_has_degenerate_scale(ctx, first.space_id, first.node_id) {
         return (0, 0, 0);
     }
-    let is_overlay = first.is_overlay;
-    let Some(mesh) = ctx.mesh_pool.get(first.mesh_asset_id) else {
+    let is_overlay = effective_overlay_in_view(ctx, source_is_overlay);
+    let Some(mesh) = ctx.scene_assets.mesh_pool.get(first.mesh_asset_id) else {
         return (0, 0, 0);
     };
     let skinning = prepared_run_skinned_renderer(first, ctx);
@@ -296,7 +317,7 @@ fn collect_prepared_renderer_run(
 pub(super) fn collect_prepared_chunk(
     draws: &[FramePreparedDraw],
     runs: &[FramePreparedRun],
-    ctx: &DrawCollectionContext<'_>,
+    ctx: &DrawCollectionInputs<'_>,
     cache: &FrameMaterialBatchCache,
     filter_masks: &HashMap<RenderSpaceId, Vec<bool>>,
     lod_visibility: &LodVisibility,

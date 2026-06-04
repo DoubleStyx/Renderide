@@ -5,7 +5,9 @@ use glam::{Quat, Vec3};
 use crate::diagnostics::gpu_flight_recorder::GpuFlightRecorder;
 use crate::frontend::input::vr_inputs_for_session;
 use crate::gpu::GpuQueueAccessGate;
-use crate::shared::{HandState, HeadOutputDevice, OutputState, VRControllerState, VRInputsState};
+use crate::shared::{
+    HandState, HeadOutputDevice, OutputState, TrackerState, VRControllerState, VRInputsState,
+};
 use crate::xr::OpenxrFrameTick;
 
 use super::AppDriver;
@@ -16,6 +18,7 @@ use std::sync::Arc;
 pub(super) struct XrInputCache {
     head_pose: Option<(Vec3, Quat)>,
     controllers: Vec<VRControllerState>,
+    trackers: Vec<TrackerState>,
     hand_states: Vec<HandState>,
 }
 
@@ -26,6 +29,7 @@ impl XrInputCache {
             output_device,
             self.head_pose,
             &self.controllers,
+            &self.trackers,
             self.hand_states.clone(),
         )
     }
@@ -68,7 +72,7 @@ impl AppDriver {
 
     fn update_xr_input_cache(&mut self, tick: &OpenxrFrameTick) {
         crate::xr::OpenxrInput::log_stereo_view_order_once(&tick.views);
-        self.sample_openxr_controllers(tick);
+        self.sample_openxr_input(tick);
         self.xr_input_cache.head_pose =
             crate::xr::headset_center_pose_from_stereo_views(tick.views.as_slice());
         if let Some(head_pose) = self.xr_input_cache.head_pose {
@@ -76,7 +80,7 @@ impl AppDriver {
         }
     }
 
-    fn sample_openxr_controllers(&mut self, tick: &OpenxrFrameTick) {
+    fn sample_openxr_input(&mut self, tick: &OpenxrFrameTick) {
         let Some(target) = self.target.as_ref() else {
             return;
         };
@@ -95,9 +99,10 @@ impl AppDriver {
             session.handles.xr_session.stage_space(),
             tick.predicted_display_time,
         ) {
-            Ok((controllers, hand_states)) => {
-                self.xr_input_cache.controllers = controllers;
-                self.xr_input_cache.hand_states = hand_states;
+            Ok(sample) => {
+                self.xr_input_cache.controllers = sample.controllers;
+                self.xr_input_cache.trackers = sample.trackers;
+                self.xr_input_cache.hand_states = sample.hands;
             }
             Err(error) => logger::trace!("OpenXR input sync: {error:?}"),
         }

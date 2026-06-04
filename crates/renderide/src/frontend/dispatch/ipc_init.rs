@@ -105,6 +105,7 @@ pub(crate) fn can_dispatch_before_init_finalize(cmd: &RendererCommand) -> bool {
     matches!(
         cmd,
         RendererCommand::FreeSharedMemoryView(_)
+            | RendererCommand::SetWindowIcon(_)
             | RendererCommand::MeshUploadData(_)
             | RendererCommand::MeshUnload(_)
             | RendererCommand::ShaderUpload(_)
@@ -282,6 +283,7 @@ mod tests {
     fn pre_finalize_asset_commands() -> Vec<RendererCommand> {
         vec![
             RendererCommand::FreeSharedMemoryView(FreeSharedMemoryView::default()),
+            RendererCommand::SetWindowIcon(SetWindowIcon::default()),
             RendererCommand::MeshUploadData(MeshUploadData::default()),
             RendererCommand::MeshUnload(MeshUnload::default()),
             RendererCommand::ShaderUpload(ShaderUpload::default()),

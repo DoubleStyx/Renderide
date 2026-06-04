@@ -351,7 +351,7 @@ fn output_byte_count_detects_overflow() {
 }
 
 #[test]
-fn draw_filter_prefers_only_render_list_over_excludes() {
+fn draw_filter_keeps_excludes_with_only_render_list() {
     let task = CameraRenderTask {
         only_render_list: vec![1, 2],
         exclude_render_list: vec![3],
@@ -361,7 +361,8 @@ fn draw_filter_prefers_only_render_list_over_excludes() {
     let filter = draw_filter_from_camera_render_task(&task);
 
     assert!(filter.only.as_ref().is_some_and(|only| only.contains(&1)));
-    assert!(filter.exclude.is_empty());
+    assert_eq!(filter.exclude.len(), 1);
+    assert!(filter.exclude.contains(&3));
 }
 
 #[test]
@@ -377,6 +378,27 @@ fn draw_filter_uses_excludes_when_only_list_is_empty() {
     assert_eq!(filter.exclude.len(), 2);
     assert!(filter.exclude.contains(&7));
     assert!(filter.exclude.contains(&9));
+}
+
+#[test]
+fn camera_task_layer_policy_uses_render_private_ui_parameter() {
+    let public = CameraRenderParameters {
+        render_private_ui: false,
+        ..Default::default()
+    };
+    let private = CameraRenderParameters {
+        render_private_ui: true,
+        ..Default::default()
+    };
+
+    assert_eq!(
+        camera_render_task_layer_policy(&public),
+        ViewLayerPolicy::camera(false)
+    );
+    assert_eq!(
+        camera_render_task_layer_policy(&private),
+        ViewLayerPolicy::camera(true)
+    );
 }
 
 #[test]

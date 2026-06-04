@@ -21,6 +21,7 @@
 //! textures.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::assets::texture::estimate_gpu_texture_bytes;
 use crate::gpu::GpuLimits;
@@ -32,6 +33,8 @@ use crate::gpu_pools::resource_pool::{
 use crate::gpu_pools::sampler_state::SamplerState;
 use crate::shared::SetRenderTextureFormat;
 
+static NEXT_RENDER_TEXTURE_VIEW_GENERATION: AtomicU64 = AtomicU64::new(1);
+
 /// Host render texture mirrored as a wgpu color target + optional depth.
 #[derive(Debug)]
 pub struct GpuRenderTexture {
@@ -41,6 +44,8 @@ pub struct GpuRenderTexture {
     pub color_texture: Arc<wgpu::Texture>,
     /// Default view over the full color mip.
     pub color_view: Arc<wgpu::TextureView>,
+    /// Monotonic identifier for the current bindable color view.
+    pub color_view_generation: u64,
     /// Optional depth texture (always allocated for scene draws in [`Self::new_from_format`]).
     pub depth_texture: Option<Arc<wgpu::Texture>>,
     /// View over `depth_texture` when present.
@@ -142,6 +147,8 @@ impl GpuRenderTexture {
             asset_id: fmt.asset_id,
             color_texture,
             color_view,
+            color_view_generation: NEXT_RENDER_TEXTURE_VIEW_GENERATION
+                .fetch_add(1, Ordering::Relaxed),
             depth_texture,
             depth_view,
             wgpu_color_format,

@@ -23,8 +23,7 @@ use crate::materials::{
     MaterialBlendMode, MaterialPipelineDesc, MaterialPipelineResolution, MaterialPipelineSet,
     MaterialPipelineVariantSpec, MaterialRegistry, MaterialRenderState,
     MaterialShaderSpecializationKey, RasterFrontFace, RasterPipelineKind, RasterPrimitiveTopology,
-    ensure_render_buffer_billboard_variant_bits, remap_unlit_variant_bits_for_billboard,
-    should_remap_unlit_variant_bits_for_billboard_draw,
+    ensure_render_buffer_billboard_variant_bits, remap_variant_bits_for_billboard,
 };
 use crate::passes::WorldMeshForwardEncodeRefs;
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
@@ -483,17 +482,17 @@ impl<'a> MaterialDrawResolver<'a> {
         let source_bits = self
             .registry
             .and_then(|registry| registry.variant_bits_for_shader_asset(batch_key.shader_asset_id));
-        let mut bits = source_bits.unwrap_or(0);
-        if should_remap_unlit_variant_bits_for_billboard_draw(
-            stem,
-            self.registry
-                .and_then(|registry| registry.stem_for_shader_asset(batch_key.shader_asset_id)),
-        ) {
-            bits = remap_unlit_variant_bits_for_billboard(bits);
+        if !stem.starts_with("billboardunlit") {
+            return source_bits;
         }
-        if crate::particles::is_generated_billboard_mesh_asset_id(item.mesh_asset_id)
-            && stem.starts_with("billboardunlit")
+        let mut bits = source_bits.unwrap_or(0);
+        if let Some(source_stem) = self
+            .registry
+            .and_then(|registry| registry.stem_for_shader_asset(batch_key.shader_asset_id))
         {
+            bits = remap_variant_bits_for_billboard(source_stem, bits);
+        }
+        if crate::particles::is_generated_billboard_mesh_asset_id(item.mesh_asset_id) {
             Some(ensure_render_buffer_billboard_variant_bits(bits))
         } else {
             source_bits.map(|_| bits)
