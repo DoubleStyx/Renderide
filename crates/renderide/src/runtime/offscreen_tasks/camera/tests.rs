@@ -381,6 +381,27 @@ fn draw_filter_uses_excludes_when_only_list_is_empty() {
 }
 
 #[test]
+fn camera_task_layer_policy_uses_render_private_ui_parameter() {
+    let public = CameraRenderParameters {
+        render_private_ui: false,
+        ..Default::default()
+    };
+    let private = CameraRenderParameters {
+        render_private_ui: true,
+        ..Default::default()
+    };
+
+    assert_eq!(
+        camera_render_task_layer_policy(&public),
+        ViewLayerPolicy::camera(false)
+    );
+    assert_eq!(
+        camera_render_task_layer_policy(&private),
+        ViewLayerPolicy::camera(true)
+    );
+}
+
+#[test]
 fn output_format_accepts_initial_cpu_formats() {
     assert_eq!(
         CameraTaskOutputFormat::from_texture_format(TextureFormat::ARGB32),

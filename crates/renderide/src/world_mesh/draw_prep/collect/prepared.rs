@@ -17,10 +17,10 @@ use super::super::item::{WorldMeshDrawItem, stacked_material_submesh_topology};
 use super::super::prepared_renderables::{FramePreparedDraw, FramePreparedRun};
 use super::DrawCollectionInputs;
 use super::candidate::{DrawCandidate, evaluate_draw_candidate};
-use super::hidden_layers_visible_in_view;
 use super::lod::LodVisibility;
 use super::scene_walk::transform_chain_has_degenerate_scale;
 use super::world_matrix::{front_face_for_draw_matrices, world_matrix_for_local_vertex_stream};
+use super::{effective_overlay_in_view, special_layer_visible_in_view};
 
 /// Returns true when two prepared slot entries came from the same source renderer.
 #[inline]
@@ -275,7 +275,15 @@ fn collect_prepared_renderer_run(
     if !prepared_run_passes_filter(first, ctx, filter_masks) {
         return (0, 0, 0);
     }
-    if first.is_hidden && !hidden_layers_visible_in_view(ctx) {
+    let source_is_overlay = first.is_overlay;
+    let source_special_layer = if first.is_hidden {
+        Some(crate::shared::LayerType::Hidden)
+    } else if source_is_overlay {
+        Some(crate::shared::LayerType::Overlay)
+    } else {
+        None
+    };
+    if !special_layer_visible_in_view(ctx, source_special_layer) {
         return (0, 0, 0);
     }
     if !lod_visibility.renderer_visible(first.space_id, first.renderer_ordinal) {
@@ -284,7 +292,7 @@ fn collect_prepared_renderer_run(
     if transform_chain_has_degenerate_scale(ctx, first.space_id, first.node_id) {
         return (0, 0, 0);
     }
-    let is_overlay = first.is_overlay;
+    let is_overlay = effective_overlay_in_view(ctx, source_is_overlay);
     let Some(mesh) = ctx.scene_assets.mesh_pool.get(first.mesh_asset_id) else {
         return (0, 0, 0);
     };

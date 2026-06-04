@@ -1,11 +1,12 @@
 //! Per-renderer fan-out for the scene-walk collection path.
 
 use crate::scene::MeshMaterialSlot;
-use crate::shared::LayerType;
 use crate::world_mesh::materials::FrameMaterialBatchCache;
 
 use super::super::super::item::stacked_material_submesh_range;
-use super::super::{DrawCollectionInputs, hidden_layers_visible_in_view};
+use super::super::{
+    DrawCollectionInputs, effective_overlay_in_view, special_layer_visible_in_view,
+};
 use super::cull_cache::compute_cached_cull;
 use super::per_slot::push_one_slot_draw;
 use super::{
@@ -34,7 +35,7 @@ pub(super) fn push_draws_for_renderer(
     } else {
         None
     };
-    if matches!(special_layer, Some(LayerType::Hidden)) && !hidden_layers_visible_in_view(ctx) {
+    if !special_layer_visible_in_view(ctx, special_layer) {
         return;
     }
 
@@ -57,7 +58,10 @@ pub(super) fn push_draws_for_renderer(
         return;
     }
 
-    let is_overlay = matches!(special_layer, Some(LayerType::Overlay));
+    let is_overlay = effective_overlay_in_view(
+        ctx,
+        matches!(special_layer, Some(crate::shared::LayerType::Overlay)),
+    );
     let world_space_deformed = draw.skinned
         && draw.mesh.supports_world_space_skin_deform(
             draw.skinned_renderer

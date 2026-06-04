@@ -27,9 +27,9 @@ pub(crate) use draw_prep::WorldMeshDrawCollection;
 pub use draw_prep::{
     CameraTransformDrawFilter, DrawCollectionFrameCaches, DrawCollectionInputs,
     DrawCollectionMaterialInputs, DrawCollectionSceneAssets, DrawCollectionViewInputs,
-    FramePreparedRenderables, RenderWorld, RenderWorldMaintenanceStats, WorldMeshCommandCacheStats,
-    WorldMeshDrawArrangeParallelism, WorldMeshDrawCollectParallelism, WorldMeshDrawItem,
-    draw_filter_from_camera_entry,
+    FramePreparedRenderables, RenderWorld, RenderWorldMaintenanceStats, ViewLayerPolicy,
+    WorldMeshCommandCacheStats, WorldMeshDrawArrangeParallelism, WorldMeshDrawCollectParallelism,
+    WorldMeshDrawItem, draw_filter_from_camera_entry,
 };
 pub(crate) use draw_prep::{
     QueuedWorldMeshDraws, WorldMeshCommandCache, fingerprint_world_mesh_draws,

@@ -10,7 +10,8 @@ use std::sync::{Arc, LazyLock};
 
 use crate::camera::{
     CameraRenderRect, ViewId, camera_state_double_buffered, camera_state_enabled,
-    camera_state_post_processing, host_camera_frame_for_render_texture,
+    camera_state_post_processing, camera_state_render_private_ui, camera_state_render_shadows,
+    host_camera_frame_for_render_texture,
 };
 use crate::diagnostics::log_once::KeyedLogOnce;
 use crate::gpu::GpuContext;
@@ -20,7 +21,7 @@ use crate::render_graph::{
 };
 use crate::scene::RenderSpaceId;
 use crate::shared::RenderingContext;
-use crate::world_mesh::draw_filter_from_camera_entry;
+use crate::world_mesh::{ViewLayerPolicy, draw_filter_from_camera_entry};
 
 use super::super::RendererRuntime;
 use super::render::PrimaryViewRequest;
@@ -74,6 +75,14 @@ fn secondary_camera_write_target(rt_id: i32, flags: u16) -> OffscreenWriteTarget
     } else {
         OffscreenWriteTarget::host_render_texture(rt_id)
     }
+}
+
+fn secondary_camera_layer_policy(flags: u16) -> ViewLayerPolicy {
+    ViewLayerPolicy::camera(camera_state_render_private_ui(flags))
+}
+
+fn secondary_camera_shadows_enabled(flags: u16) -> bool {
+    camera_state_render_shadows(flags)
 }
 
 /// Logs a missing secondary render-texture depth attachment once per render texture id.
@@ -429,6 +438,8 @@ impl RendererRuntime {
             );
             plan.draw_filter = Some(filter);
             plan.render_space_filter = Some(sid);
+            plan.layer_policy = secondary_camera_layer_policy(entry.state.flags);
+            plan.render_shadows = secondary_camera_shadows_enabled(entry.state.flags);
             views.push(plan);
         }
         views
@@ -540,6 +551,23 @@ mod tests {
                 .render_texture_self_sampling(),
             Some(RenderTextureSelfSampling::Suppress)
         );
+    }
+
+    #[test]
+    fn secondary_camera_flags_drive_layer_and_shadow_policy() {
+        let render_private_ui = 1u16 << 3;
+        let render_shadows = 1u16 << 5;
+
+        assert_eq!(
+            secondary_camera_layer_policy(0),
+            ViewLayerPolicy::camera(false)
+        );
+        assert_eq!(
+            secondary_camera_layer_policy(render_private_ui),
+            ViewLayerPolicy::camera(true)
+        );
+        assert!(!secondary_camera_shadows_enabled(0));
+        assert!(secondary_camera_shadows_enabled(render_shadows));
     }
 
     #[test]

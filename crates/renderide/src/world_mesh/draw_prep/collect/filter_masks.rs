@@ -139,6 +139,7 @@ mod tests {
                 mesh_lod_bias: 2.0,
                 transform_filter,
                 render_space_filter: None,
+                layer_policy: crate::world_mesh::ViewLayerPolicy::MainView,
                 reflection_probes: None,
             },
             caches: DrawCollectionFrameCaches {

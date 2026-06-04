@@ -192,6 +192,17 @@ fn make_state(global_unique_id: i32) -> LightsBufferRendererState {
     }
 }
 
+fn make_shadowed_state(global_unique_id: i32) -> LightsBufferRendererState {
+    LightsBufferRendererState {
+        shadow_strength: 0.75,
+        shadow_near_plane: 0.25,
+        shadow_bias: 0.01,
+        shadow_normal_bias: 0.02,
+        shadow_type: ShadowType::Soft,
+        ..make_state(global_unique_id)
+    }
+}
+
 fn seed_space_with_light(
     scene: &mut SceneCoordinator,
     space_id: RenderSpaceId,
@@ -305,12 +316,14 @@ fn prepare_lights_for_views_keeps_secondary_light_positions_view_local() {
                 render_context: RenderingContext::UserView,
                 render_space_filter: Some(space),
                 head_output_transform: Mat4::from_translation(Vec3::new(10.0, 0.0, 0.0)),
+                render_shadows: true,
             },
             FrameLightViewDesc {
                 view_id: second,
                 render_context: RenderingContext::UserView,
                 render_space_filter: Some(space),
                 head_output_transform: Mat4::from_translation(Vec3::new(30.0, 0.0, 0.0)),
+                render_shadows: true,
             },
         ],
         None,
@@ -322,4 +335,52 @@ fn prepare_lights_for_views_keeps_secondary_light_positions_view_local() {
     assert_eq!(second_lights.len(), 1);
     assert!((first_lights[0].position[0] - 9.0).abs() < 1e-4);
     assert!((second_lights[0].position[0] - 29.0).abs() < 1e-4);
+}
+
+#[test]
+fn prepare_lights_for_views_can_disable_shadow_metadata_per_view() {
+    let mut scene = SceneCoordinator::new();
+    let space = RenderSpaceId(8);
+    scene.test_seed_space_identity_worlds(space, vec![identity_transform()], vec![-1]);
+    let cache = scene.light_cache_mut();
+    cache.store_full(100, vec![make_light_data(1.0)]);
+    cache.apply_update(space.0, &[], &[0], &[make_shadowed_state(100)]);
+
+    let shadows_on = ViewId::secondary_camera(space, 0);
+    let shadows_off = ViewId::secondary_camera(space, 1);
+    let mut mgr = FrameResourceManager::new();
+    mgr.prepare_lights_for_views(
+        &scene,
+        [
+            FrameLightViewDesc {
+                view_id: shadows_on,
+                render_context: RenderingContext::UserView,
+                render_space_filter: Some(space),
+                head_output_transform: Mat4::IDENTITY,
+                render_shadows: true,
+            },
+            FrameLightViewDesc {
+                view_id: shadows_off,
+                render_context: RenderingContext::UserView,
+                render_space_filter: Some(space),
+                head_output_transform: Mat4::IDENTITY,
+                render_shadows: false,
+            },
+        ],
+        None,
+    );
+
+    let on = mgr.frame_lights_for_view(shadows_on);
+    let off = mgr.frame_lights_for_view(shadows_off);
+    assert_eq!(on.len(), 1);
+    assert_eq!(off.len(), 1);
+    assert_eq!(on[0].color, off[0].color);
+    assert_eq!(on[0].intensity, off[0].intensity);
+    assert_eq!(on[0].shadow_type, 2);
+    assert_eq!(on[0].shadow_strength, 0.75);
+    assert_eq!(off[0].shadow_type, 0);
+    assert_eq!(off[0].shadow_strength, 0.0);
+    assert_eq!(off[0].shadow_near_plane, 0.0);
+    assert_eq!(off[0].shadow_bias, 0.0);
+    assert_eq!(off[0].shadow_normal_bias, 0.0);
 }

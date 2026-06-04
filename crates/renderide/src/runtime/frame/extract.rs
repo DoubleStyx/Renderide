@@ -549,6 +549,7 @@ fn queue_view_draws(
                         mesh_lod_bias,
                         transform_filter: prep.draw_filter.as_ref(),
                         render_space_filter: prep.render_space_filter,
+                        layer_policy: prep.layer_policy,
                         reflection_probes: Some(setup.reflection_probes),
                     },
                     caches: DrawCollectionFrameCaches {

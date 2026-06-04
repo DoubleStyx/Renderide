@@ -14,7 +14,9 @@ use crate::render_graph::{
 };
 use crate::scene::{RenderSpaceId, SceneCoordinator};
 use crate::shared::{CameraRenderParameters, CameraRenderTask, RenderingContext, TextureFormat};
-use crate::world_mesh::{CameraTransformDrawFilter, WorldMeshDrawCollectParallelism};
+use crate::world_mesh::{
+    CameraTransformDrawFilter, ViewLayerPolicy, WorldMeshDrawCollectParallelism,
+};
 
 use super::super::RendererRuntime;
 use super::super::frame::schedule::{
@@ -435,6 +437,7 @@ fn plan_camera_task(
     );
     plan.draw_filter = Some(filter);
     plan.render_space_filter = Some(render_space_id);
+    plan.layer_policy = camera_render_task_layer_policy(parameters);
     Ok(PlannedCameraTask {
         plan,
         targets,
@@ -444,6 +447,10 @@ fn plan_camera_task(
 
 fn camera_render_task_post_processing(parameters: &CameraRenderParameters) -> ViewPostProcessing {
     ViewPostProcessing::from_camera_render_parameters(parameters)
+}
+
+fn camera_render_task_layer_policy(parameters: &CameraRenderParameters) -> ViewLayerPolicy {
+    ViewLayerPolicy::camera(parameters.render_private_ui)
 }
 
 fn draw_filter_from_camera_render_task(task: &CameraRenderTask) -> CameraTransformDrawFilter {
