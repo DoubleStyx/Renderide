@@ -201,6 +201,47 @@ fn dedicated_skyboxes_keep_family_specific_ray_reconstruction() -> io::Result<()
 }
 
 #[test]
+fn procedural_skybox_vertex_projection_uses_frame_projection_orientation() -> io::Result<()> {
+    let procedural_src =
+        source_file(manifest_dir().join("shaders/passes/backend/skybox_proceduralskybox.wgsl"))?;
+    let clip_fn = procedural_src
+        .split("fn clip_pos_from_view_ray(")
+        .nth(1)
+        .and_then(|tail| tail.split("fn view_ray_from_world_ray(").next())
+        .unwrap_or("");
+
+    assert!(
+        !clip_fn.contains("ndc_y_sign_pad") && !clip_fn.contains("camera_ray"),
+        "clip_pos_from_view_ray must not apply the skybox fragment NDC Y sign; offscreen \
+         orientation is already encoded in rg::frame.proj_params_*.",
+    );
+    assert!(
+        clip_fn.contains(
+            "return vec4<f32>(view_ray.xy * proj_params.xy / (-view_ray.z) - proj_params.zw, 0.0, 1.0);",
+        ),
+        "perspective ProceduralSkybox vertices must project with signed frame projection \
+         coefficients instead of a separately flipped view ray.",
+    );
+    assert!(
+        clip_fn.contains("return vec4<f32>(sign(view_ray.xy * proj_params.xy), 0.0, 1.0);"),
+        "orthographic ProceduralSkybox vertices must preserve projection-axis sign from \
+         proj_params.xy.",
+    );
+
+    let fragment_reconstruct_fn = procedural_src
+        .split("fn world_ray_from_clip_pos(")
+        .nth(1)
+        .and_then(|tail| tail.split("fn clip_pos_from_view_ray(").next())
+        .unwrap_or("");
+    assert!(
+        fragment_reconstruct_fn.contains("skybox::ndc_from_fragment_position"),
+        "high-quality ProceduralSkybox sun disk reconstruction must keep the fragment-position \
+         path that applies the skybox NDC Y sign exactly once.",
+    );
+    Ok(())
+}
+
+#[test]
 fn projection360_skybox_has_no_clip_depth_nudge() -> io::Result<()> {
     let src = source_file(manifest_dir().join("shaders/passes/backend/skybox_projection360.wgsl"))?;
     for forbidden in ["MIN_FLOAT", "math::", "clip + vec4"] {

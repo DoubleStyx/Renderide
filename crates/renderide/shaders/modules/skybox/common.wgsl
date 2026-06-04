@@ -8,11 +8,12 @@ struct SkyboxView {
     world_to_view_left: mat4x4<f32>,
     world_to_view_right: mat4x4<f32>,
     clear_color: vec4<f32>,
-    /// `.x`: ndc Y sign passed to the fragment shader (1.0 normal, -1.0 for offscreen-RT views).
+    /// `.x`: NDC Y sign for fragment-position reconstruction (1.0 normal, -1.0 for offscreen-RT views).
     /// Offscreen-RT views pre-multiply a clip-space Y flip into world rendering so the
-    /// render-texture lands V=0 bottom. Skybox shaders reconstruct or project camera rays
-    /// explicitly, so they apply this sign while deriving screen-space Y. `.y` is the left/mono
-    /// orthographic flag, `.z` is the right-eye orthographic flag, and `.w` is reserved padding.
+    /// render-texture lands V=0 bottom. Fragment-position skybox paths apply this sign while
+    /// deriving screen-space Y; fixed-mesh skybox vertex projection uses already-adjusted frame
+    /// projection coefficients. `.y` is the left/mono orthographic flag, `.z` is the right-eye
+    /// orthographic flag, and `.w` is reserved padding.
     ndc_y_sign_pad: vec4<f32>,
 }
 
