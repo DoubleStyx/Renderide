@@ -110,12 +110,14 @@ mod tests {
             crate::reflection_probes::specular::MAX_LOCAL_PROBES
         );
         assert!(!settings.experimental.reflection_probe_sh2_enabled);
+        assert!(!settings.experimental.main_view_360_enabled);
     }
 
     #[test]
     fn experimental_section_round_trips() {
         let mut settings = RendererSettings::default();
         settings.experimental.reflection_probe_sh2_enabled = false;
+        settings.experimental.main_view_360_enabled = true;
 
         let text = toml::to_string_pretty(&settings).expect("serialize");
         let decoded: RendererSettings = toml::from_str(&text).expect("deserialize");
@@ -126,5 +128,6 @@ mod tests {
             crate::reflection_probes::specular::MAX_LOCAL_PROBES
         );
         assert!(!decoded.experimental.reflection_probe_sh2_enabled);
+        assert!(decoded.experimental.main_view_360_enabled);
     }
 }

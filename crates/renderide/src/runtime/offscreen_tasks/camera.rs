@@ -26,7 +26,7 @@ use super::super::frame::view_plan::{
 use super::readback::{AwaitBufferMapError, await_buffer_map};
 
 mod alpha_coverage;
-mod camera360;
+pub(in crate::runtime) mod camera360;
 mod result_write;
 #[cfg(test)]
 mod tests;
@@ -37,7 +37,8 @@ use result_write::{output_byte_count, write_camera_task_result, zero_task_result
 /// Maximum time to wait for the blocking task readback callback after `device.poll`.
 const CAMERA_READBACK_TIMEOUT: Duration = Duration::from_secs(5);
 /// Color attachment format used for CPU camera readback tasks.
-const CAMERA_TASK_COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+pub(in crate::runtime) const CAMERA_TASK_COLOR_FORMAT: wgpu::TextureFormat =
+    wgpu::TextureFormat::Rgba8UnormSrgb;
 /// Bytes per texel copied from the readback color target.
 pub(super) const RGBA8_BYTES_PER_PIXEL: usize = 4;
 

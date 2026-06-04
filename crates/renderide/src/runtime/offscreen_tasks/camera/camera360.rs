@@ -39,7 +39,7 @@ use super::{
 };
 
 /// Cubemap orientation mode used by Camera360 before equirectangular projection.
-pub(super) const CAMERA360_CUBE_BASIS_MODE: CubeCaptureBasisMode =
+pub(in crate::runtime) const CAMERA360_CUBE_BASIS_MODE: CubeCaptureBasisMode =
     CubeCaptureBasisMode::Camera360Copied;
 
 /// Uniforms consumed by the Camera360 cubemap-to-equirect projection pass.
@@ -53,7 +53,7 @@ struct Camera360ProjectionUniform {
 }
 
 impl Camera360ProjectionUniform {
-    /// Builds projection uniforms from the host task rotation.
+    /// Builds projection uniforms from the equirectangular output rotation.
     fn from_task_rotation(rotation: glam::Quat) -> Self {
         Self {
             rotation: glam::Mat4::from_quat(rotation).to_cols_array_2d(),
@@ -70,15 +70,16 @@ pub(super) fn camera_render_parameters_request_camera360(
 }
 
 /// Computes the square cubemap face size used for a Camera360 output extent.
-pub(super) fn camera360_face_size_for_extent(
-    extent: CameraTaskExtent,
-) -> Result<u32, CameraReadbackError> {
-    let total_texels = u64::from(extent.width)
-        .checked_mul(u64::from(extent.height))
-        .ok_or(CameraReadbackError::OutputByteCountOverflow)?;
+pub(super) fn camera360_face_size_for_extent(extent: CameraTaskExtent) -> u32 {
+    camera360_face_size_for_dimensions(extent.width, extent.height)
+}
+
+/// Computes the square cubemap face size used for a Camera360 output size.
+pub(in crate::runtime) fn camera360_face_size_for_dimensions(width: u32, height: u32) -> u32 {
+    let total_texels = u64::from(width) * u64::from(height);
     let texels_per_face = total_texels as f64 / CUBE_FACE_COUNT as f64;
     let root = texels_per_face.sqrt() as u32;
-    Ok(root.max(1).next_power_of_two())
+    root.max(1).next_power_of_two()
 }
 
 /// Renders and writes one Camera360 photo task.
@@ -103,8 +104,10 @@ pub(super) fn render_camera360_task(
     project_camera360_to_equirect(
         ctx.gpu,
         &planned.cube_targets,
-        &planned.output_targets,
+        planned.output_targets.color_view.as_ref(),
+        planned.output_targets.color_format,
         ctx.task.rotation,
+        "camera360_projection",
     );
     let rgba =
         readback_camera_task_texture(ctx.gpu, planned.output_targets.color_texture.as_ref())?;
@@ -161,7 +164,7 @@ fn plan_camera360_task(
         ));
     }
 
-    let face_size = camera360_face_size_for_extent(output_extent)?;
+    let face_size = camera360_face_size_for_extent(output_extent);
     let cube_targets = create_camera360_cube_targets(ctx.gpu, face_size)?;
     let output_targets = CameraTaskTargets::create(ctx.gpu, output_extent)?;
     let face_viewport = cube_targets.extent.viewport();
@@ -259,11 +262,13 @@ fn apply_camera360_alpha_coverage(gpu: &mut GpuContext, targets: &CubeCaptureTar
 }
 
 /// Projects the captured cubemap to the final equirectangular output texture.
-fn project_camera360_to_equirect(
+pub(in crate::runtime) fn project_camera360_to_equirect(
     gpu: &mut GpuContext,
     cube_targets: &CubeCaptureTargets,
-    output_targets: &CameraTaskTargets,
+    output_view: &wgpu::TextureView,
+    output_format: wgpu::TextureFormat,
     rotation: glam::Quat,
+    label: &'static str,
 ) {
     profiling::scope!("camera360_task::project_equirect");
     let pipelines = projection_pipeline_cache();
@@ -278,7 +283,7 @@ fn project_camera360_to_equirect(
     crate::profiling::note_resource_churn!(Buffer, "runtime::camera360_projection_uniform");
     let cube_view = cube_targets.cube_sample_view("renderide-camera360-task-cube-view");
     let bind_group = gpu.device().create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("camera360_projection"),
+        label: Some(label),
         layout: pipelines.bind_group_layout(gpu.device()),
         entries: &[
             wgpu::BindGroupEntry {
@@ -298,18 +303,16 @@ fn project_camera360_to_equirect(
     crate::profiling::note_resource_churn!(BindGroup, "runtime::camera360_projection_bind_group");
     let mut encoder = gpu
         .device()
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("camera360_projection"),
-        });
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) });
     let pass_query = gpu
         .gpu_profiler_mut()
         .map(|p| p.begin_pass_query("camera360_task::project_equirect.pass", &mut encoder));
     let timestamp_writes = crate::profiling::render_pass_timestamp_writes(pass_query.as_ref());
     {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("camera360_projection"),
+            label: Some(label),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: output_targets.color_view.as_ref(),
+                view: output_view,
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
@@ -322,11 +325,7 @@ fn project_camera360_to_equirect(
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_pipeline(
-            pipelines
-                .pipeline(gpu.device(), output_targets.color_format)
-                .as_ref(),
-        );
+        pass.set_pipeline(pipelines.pipeline(gpu.device(), output_format).as_ref());
         pass.set_bind_group(0, &bind_group, &[]);
         pass.draw(0..3, 0..1);
     }

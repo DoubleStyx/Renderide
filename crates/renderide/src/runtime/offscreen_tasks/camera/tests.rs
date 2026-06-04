@@ -46,24 +46,21 @@ fn camera360_face_size_matches_output_texel_budget() {
         camera360::camera360_face_size_for_extent(CameraTaskExtent {
             width: 3840,
             height: 2160
-        })
-        .expect("face size"),
+        }),
         2048
     );
     assert_eq!(
         camera360::camera360_face_size_for_extent(CameraTaskExtent {
             width: 6,
             height: 1
-        })
-        .expect("face size"),
+        }),
         1
     );
     assert_eq!(
         camera360::camera360_face_size_for_extent(CameraTaskExtent {
             width: 48,
             height: 32
-        })
-        .expect("face size"),
+        }),
         16
     );
 }
