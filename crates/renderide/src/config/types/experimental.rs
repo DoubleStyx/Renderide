@@ -14,6 +14,8 @@ pub struct ExperimentalSettings {
     pub reflection_probe_sh2_enabled: bool,
     /// Whether local `shaders/target/*.wgsl` edits invalidate and reload material pipelines in development builds.
     pub material_shader_hot_reload_enabled: bool,
+    /// Whether the desktop/headless main view renders through a cubemap-backed 360 projection.
+    pub main_view_360_enabled: bool,
 }
 
 impl Default for ExperimentalSettings {
@@ -22,6 +24,7 @@ impl Default for ExperimentalSettings {
             max_local_reflection_probes: MAX_LOCAL_PROBES,
             reflection_probe_sh2_enabled: false,
             material_shader_hot_reload_enabled: false,
+            main_view_360_enabled: false,
         }
     }
 }

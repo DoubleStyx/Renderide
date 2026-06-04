@@ -38,5 +38,14 @@ pub(super) fn experimental_section(ui: &imgui::Ui, g: &mut RendererSettings, dir
     ui.text_disabled(
         "When enabled, local material WGSL target edits invalidate shader generations and requeue affected pipelines.",
     );
+    if ui.checkbox(
+        "360 degree main view",
+        &mut g.experimental.main_view_360_enabled,
+    ) {
+        *dirty = true;
+    }
+    ui.text_disabled(
+        "When enabled, the desktop/headless main view renders through a cubemap-backed equirectangular projection.",
+    );
     ui.unindent();
 }

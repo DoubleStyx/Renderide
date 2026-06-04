@@ -109,6 +109,7 @@ use crate::render_graph::GraphExecuteError;
 use crate::scene::SceneCoordinator;
 
 use self::display::DisplayBlitResources;
+use self::frame::main_view_360::MainView360Resources;
 use state::{
     RuntimeConfigState, RuntimeDiagnosticsState, RuntimeIpcState, RuntimeTickState, RuntimeXrStats,
 };
@@ -150,6 +151,8 @@ pub struct RendererRuntime {
     tick_state: RuntimeTickState,
     /// Cumulative recoverable OpenXR failure counts.
     xr_stats: RuntimeXrStats,
+    /// Cached GPU targets for the experimental 360 desktop/headless main view.
+    main_view_360: MainView360Resources,
     /// Lazy GPU resources for the host `BlitToDisplay` desktop pass; created on first use.
     display_blit: DisplayBlitResources,
 }
@@ -171,6 +174,7 @@ impl RendererRuntime {
             ipc_state: RuntimeIpcState::new(),
             tick_state: RuntimeTickState::new(),
             xr_stats: RuntimeXrStats::default(),
+            main_view_360: MainView360Resources::new(),
             display_blit: DisplayBlitResources::new(),
         }
     }

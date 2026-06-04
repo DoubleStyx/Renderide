@@ -120,6 +120,9 @@ impl RendererRuntime {
     /// See [`Self::render_frame`] for the shared implementation that also powers the VR entry
     /// points on [`crate::xr::XrFrameRenderer`].
     pub fn render_desktop_frame(&mut self, gpu: &mut GpuContext) -> Result<(), GraphExecuteError> {
+        if self.main_view_360_enabled() {
+            return self.render_desktop_360_frame(gpu);
+        }
         self.render_frame(gpu, FrameViewFamilyRequest::desktop())
     }
 
