@@ -23,6 +23,7 @@ serde_json = "1.0"
 rayon = "1.12"
 thiserror = "2.0"
 tempfile = "3.27"
+mimalloc = "0.1"
 
 [lints]
 workspace = true
