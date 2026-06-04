@@ -139,7 +139,7 @@ impl RendererRuntime {
             cube_targets,
             &output_targets.color_view,
             output_targets.color_format,
-            pose.rotation,
+            pose.projection_rotation,
             "main_view_360_projection",
         );
         Ok(())
@@ -188,15 +188,22 @@ fn plan_main_view_360_faces(
 
 fn main_view_360_pose(scene: &SceneCoordinator, base_camera: &HostCameraFrame) -> MainView360Pose {
     let position = base_camera.view_origin_world();
-    let rotation = main_view_360_rotation(scene);
-    MainView360Pose { position, rotation }
+    let projection_rotation = main_view_360_projection_rotation(main_view_360_view_rotation(scene));
+    MainView360Pose {
+        position,
+        projection_rotation,
+    }
 }
 
-fn main_view_360_rotation(scene: &SceneCoordinator) -> glam::Quat {
+fn main_view_360_view_rotation(scene: &SceneCoordinator) -> glam::Quat {
     scene
         .active_main_space()
         .map(|space| space.view_transform().rotation)
         .unwrap_or(glam::Quat::IDENTITY)
+}
+
+fn main_view_360_projection_rotation(view_rotation: glam::Quat) -> glam::Quat {
+    view_rotation * glam::Quat::from_rotation_y(std::f32::consts::PI)
 }
 
 fn main_view_360_face_view_id(face: CubeCaptureFace) -> ViewId {
@@ -206,7 +213,7 @@ fn main_view_360_face_view_id(face: CubeCaptureFace) -> ViewId {
 #[derive(Clone, Copy)]
 struct MainView360Pose {
     position: glam::Vec3,
-    rotation: glam::Quat,
+    projection_rotation: glam::Quat,
 }
 
 #[cfg(test)]
@@ -230,6 +237,17 @@ mod tests {
         )
     }
 
+    fn copied_cubemap_center_world_direction(projection_rotation: Quat) -> Vec3 {
+        -(projection_rotation * Vec3::Z)
+    }
+
+    fn assert_vec3_nearly_eq(actual: Vec3, expected: Vec3) {
+        assert!(
+            (actual - expected).length() < 1e-6,
+            "actual={actual:?} expected={expected:?}"
+        );
+    }
+
     #[test]
     fn main_view_360_setting_defaults_disabled() {
         let runtime = build_runtime();
@@ -251,7 +269,7 @@ mod tests {
     }
 
     #[test]
-    fn main_view_360_pose_uses_main_view_rotation() {
+    fn main_view_360_pose_uses_corrected_projection_rotation() {
         let mut scene = SceneCoordinator::new();
         let rotation = Quat::from_rotation_y(1.25);
         scene.test_seed_space_identity_worlds(
@@ -275,7 +293,31 @@ mod tests {
         let pose = main_view_360_pose(&scene, &base_camera);
 
         assert_eq!(pose.position, Vec3::new(2.0, 3.0, 4.0));
-        assert!((pose.rotation.dot(rotation).abs() - 1.0).abs() < 1e-6);
+        assert!(
+            (pose
+                .projection_rotation
+                .dot(main_view_360_projection_rotation(rotation))
+                .abs()
+                - 1.0)
+                .abs()
+                < 1e-6
+        );
+        assert_vec3_nearly_eq(
+            copied_cubemap_center_world_direction(pose.projection_rotation),
+            rotation * Vec3::Z,
+        );
+    }
+
+    #[test]
+    fn main_view_360_projection_rotation_defaults_to_forward_center() {
+        let scene = SceneCoordinator::new();
+        let projection_rotation =
+            main_view_360_projection_rotation(main_view_360_view_rotation(&scene));
+
+        assert_vec3_nearly_eq(
+            copied_cubemap_center_world_direction(projection_rotation),
+            Vec3::Z,
+        );
     }
 
     #[test]
