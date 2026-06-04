@@ -14,6 +14,8 @@ pub(crate) const BILLBOARD_RENDER_BUFFER_COLOR_BIT: u32 = 1u32 << 1;
 /// Billboard variant bit that enables simple lighting for non-unlit source materials.
 pub(crate) const BILLBOARD_RENDER_BUFFER_SIMPLE_LIT_BIT: u32 = 1u32 << 17;
 
+const BILLBOARD_ALPHA_TEST_BIT: u32 = 1u32;
+
 pub(crate) fn remap_variant_bits_for_billboard(stem: &str, source_bits: u32) -> u32 {
     if is_unlit_family_embedded_stem(stem) {
         BILLBOARD_RENDER_BUFFER_VERTEX_COLORS_BIT
@@ -70,14 +72,14 @@ fn remap_unlit_variant_bits_for_billboard(unlit_bits: u32) -> u32 {
 fn map_billboard_alpha_clip_variant_bits(stem: &str, source_bits: u32) -> u32 {
     let lower = stem.to_ascii_lowercase();
     if lower.starts_with("xstoon2.0-cutout") {
-        return 1;
+        return BILLBOARD_ALPHA_TEST_BIT;
     }
     const ALPHA_CLIP_TWO: &[&str] = &["pbsmetallic", "pbsspecular"];
     if ALPHA_CLIP_TWO
         .iter()
         .any(|prefix| lower.starts_with(prefix))
     {
-        return (source_bits >> 2) & 1;
+        return ((source_bits >> 2) & 1) * BILLBOARD_ALPHA_TEST_BIT;
     }
     const ALPHA_CLIP_ONE: &[&str] = &[
         "pbsdisplace",
@@ -93,14 +95,14 @@ fn map_billboard_alpha_clip_variant_bits(stem: &str, source_bits: u32) -> u32 {
         .iter()
         .any(|prefix| lower.starts_with(prefix))
     {
-        return (source_bits >> 1) & 1;
+        return ((source_bits >> 1) & 1) * BILLBOARD_ALPHA_TEST_BIT;
     }
     const ALPHA_CLIP_ZERO: &[&str] = &["fresnel_", "pbsmultiuv", "reflection"];
     if ALPHA_CLIP_ZERO
         .iter()
         .any(|prefix| lower.starts_with(prefix))
     {
-        return source_bits & 1;
+        return (source_bits & 1) * BILLBOARD_ALPHA_TEST_BIT;
     }
     0u32
 }
@@ -109,19 +111,21 @@ fn map_billboard_alpha_clip_variant_bits(stem: &str, source_bits: u32) -> u32 {
 /// for material binding with non-Unlit materials.
 fn map_billboard_vertex_color_variant_bits(stem: &str, source_bits: u32) -> u32 {
     let lower = stem.to_ascii_lowercase();
-    if lower.starts_with("fresnel_") {
-        return ((source_bits >> 10) & 1) << 17;
-    }
-    if lower.starts_with("pbsdualsidedtransparent") {
-        return ((source_bits >> 5) & 1) << 17;
-    }
-    if lower.starts_with("pbsvertexcolor") || lower.starts_with("pbsdualsided") {
-        return ((source_bits >> 6) & 1) << 17;
-    }
-    if lower.starts_with("xstoon") {
-        return ((source_bits >> 8) & 1) << 17;
-    }
-    0u32
+    let source_bit: Option<u32> = if lower.starts_with("fresnel_") {
+        Some(10)
+    } else if lower.starts_with("pbsdualsidedtransparent") {
+        Some(5)
+    } else if lower.starts_with("pbsvertexcolor") || lower.starts_with("pbsdualsided") {
+        Some(6)
+    } else if lower.starts_with("xstoon") {
+        Some(8)
+    } else {
+        None
+    };
+
+    source_bit.map_or(0, |bit| {
+        ((source_bits >> bit) & 1) * BILLBOARD_RENDER_BUFFER_VERTEX_COLORS_BIT
+    })
 }
 
 #[cfg(test)]
@@ -190,6 +194,48 @@ mod tests {
                 | BILLBOARD_RENDER_BUFFER_TEXTURE_BIT
                 | BILLBOARD_RENDER_BUFFER_SIMPLE_LIT_BIT
         );
+    }
+
+    #[test]
+    fn remaps_supported_non_unlit_vertex_color_bits_to_billboard_vertex_colors() {
+        for (stem, bit) in [
+            ("fresnel_default", 10),
+            ("pbsdualsidedtransparent_default", 5),
+            ("pbsdualsidedspecular_default", 6),
+            ("pbsvertexcolortransparent_default", 6),
+            ("xstoon2.0_default", 8),
+        ] {
+            let billboard = remap_variant_bits_for_billboard(stem, 1u32 << bit);
+
+            assert_eq!(
+                billboard & BILLBOARD_RENDER_BUFFER_VERTEX_COLORS_BIT,
+                BILLBOARD_RENDER_BUFFER_VERTEX_COLORS_BIT,
+                "{stem}"
+            );
+            assert_eq!(
+                billboard & BILLBOARD_RENDER_BUFFER_SIMPLE_LIT_BIT,
+                BILLBOARD_RENDER_BUFFER_SIMPLE_LIT_BIT,
+                "{stem}"
+            );
+        }
+    }
+
+    #[test]
+    fn leaves_unsupported_non_unlit_vertex_color_bits_disabled() {
+        let billboard = remap_variant_bits_for_billboard("pbsmetallic_default", 1u32 << 7);
+
+        assert_eq!(billboard & BILLBOARD_RENDER_BUFFER_VERTEX_COLORS_BIT, 0);
+        assert_eq!(
+            billboard & BILLBOARD_RENDER_BUFFER_SIMPLE_LIT_BIT,
+            BILLBOARD_RENDER_BUFFER_SIMPLE_LIT_BIT
+        );
+    }
+
+    #[test]
+    fn forces_cutout_for_xiexe_cutout_stems() {
+        let billboard = remap_variant_bits_for_billboard("xstoon2.0-cutout_default", 0);
+
+        assert_eq!(billboard & BILLBOARD_ALPHA_TEST_BIT, BILLBOARD_ALPHA_TEST_BIT);
     }
 
     #[test]

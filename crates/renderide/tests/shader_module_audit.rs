@@ -382,6 +382,14 @@ fn billboard_render_buffer_uses_indexed_corner_separate_from_sample_uv() -> io::
             && src.contains("fn screen_clamped_billboard_size("),
         "Render-buffer billboards must apply renderer alignment and screen-size clamp metadata"
     );
+
+    Ok(())
+}
+
+#[test]
+fn billboard_render_buffer_variant_bits_keep_native_and_compatibility_layout() -> io::Result<()> {
+    let src = material_source("billboardunlit.wgsl")?;
+
     for (constant_name, bit_index) in [
         ("BILLBOARDUNLIT_KW_MUL_ALPHA_INTENSITY", 2),
         ("BILLBOARDUNLIT_KW_MUL_RGB_BY_ALPHA", 3),
@@ -413,6 +421,14 @@ fn billboard_render_buffer_uses_indexed_corner_separate_from_sample_uv() -> io::
             && src.contains("const BILLBOARDUNLIT_KW_UNLIT_MASK_TEXTURE_MUL: u32 = 1u << 19u;"),
         "Unlit mask support for render-buffer billboards must use compatibility bits after native Billboard/Unlit keywords"
     );
+
+    Ok(())
+}
+
+#[test]
+fn billboard_render_buffer_preserves_fragment_alpha_and_fog_behavior() -> io::Result<()> {
+    let src = material_source("billboardunlit.wgsl")?;
+
     assert!(
         src.contains("if (kw_ALPHATEST() && !mask_clip && col.a < mat._Cutoff)"),
         "Billboard/Unlit alpha test must match Unity clip(col.a - _Cutoff) equality semantics"
@@ -421,6 +437,20 @@ fn billboard_render_buffer_uses_indexed_corner_separate_from_sample_uv() -> io::
         src.contains("if (mask_clip && mask_lum <= mat._Cutoff)"),
         "Unlit mask compatibility for render-buffer billboards must preserve Unlit's mask discard threshold"
     );
+    assert!(
+        src.contains("#import renderide::frame::fog as rfog")
+            && src.contains("out.fog_coord = rfog::coord_from_world_pos(world_p, layer);")
+            && src.contains("rfog::apply_rgba(col, in.fog_coord)"),
+        "Billboard/Unlit must preserve the source-authored UNITY_APPLY_FOG hook"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn billboard_render_buffer_alignment_matches_unity_modes() -> io::Result<()> {
+    let src = material_source("billboardunlit.wgsl")?;
+
     assert!(
         src.contains("return facing_basis(center_world, view_layer, pointdata.z, false);"),
         "Render-buffer Facing alignment must keep Unity-style roll disabled"
@@ -438,15 +468,19 @@ fn billboard_render_buffer_uses_indexed_corner_separate_from_sample_uv() -> io::
             ),
         "Render-buffer Direction alignment must project velocity into the camera-facing stretch plane"
     );
-    assert!(
-        src.contains("#import renderide::frame::fog as rfog")
-            && src.contains("out.fog_coord = rfog::coord_from_world_pos(world_p, layer);")
-            && src.contains("rfog::apply_rgba(col, in.fog_coord)"),
-        "Billboard/Unlit must preserve the source-authored UNITY_APPLY_FOG hook"
-    );
+
+    Ok(())
+}
+
+#[test]
+fn billboard_render_buffer_supports_simple_lit_non_unlit_sources() -> io::Result<()> {
+    let src = material_source("billboardunlit.wgsl")?;
+
     assert!(
         src.contains("if (kw_SIMPLE_LIT())")
-            && src.contains("out.n = ")
+            && src.contains("out.world_p = world_p;")
+            && src.contains("out.n = rmath::safe_normalize(cross(axes.right, axes.up)")
+            && src.contains("let base = clamp(col.rgb, vec3<f32>(0.0), vec3<f32>(1.0));")
             && src.contains("dl::shade_clustered_diffuse"),
         "Billboard/Unlit must offer simple shading capabilities for non-Unlit source materials"
     );

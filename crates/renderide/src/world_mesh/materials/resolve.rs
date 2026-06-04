@@ -337,6 +337,9 @@ pub(crate) fn resolve_material_batch(
 /// WGSL stem used for generated PhotonDust billboard mesh draws.
 const RENDER_BUFFER_BILLBOARD_STEM: &str = "billboardunlit_default";
 
+const RENDER_BUFFER_ORDERED_ALPHA_FALLBACK_BLEND: MaterialBlendMode =
+    MaterialBlendMode::UnityBlend { src: 5, dst: 10 };
+
 /// Routes generated PhotonDust billboard meshes through Billboard/Unlit.
 ///
 /// Point render-buffer uploads expand each particle into four co-located quad vertices. Ordinary
@@ -388,11 +391,22 @@ pub(crate) fn apply_render_buffer_mesh_pipeline_override(
         uses_blended_depth_write: features.uses_blended_depth_write,
         uses_two_sided_transparency: features.uses_two_sided_transparency,
     });
-    if batch_key.blend_mode == MaterialBlendMode::StemDefault
-        && batch_key.transparent_class == TransparentMaterialClass::OrderedAlpha
+    batch_key.blend_mode = render_buffer_billboard_blend_mode_for_source(
+        batch_key.blend_mode,
+        batch_key.transparent_class,
+    );
+}
+
+fn render_buffer_billboard_blend_mode_for_source(
+    blend_mode: MaterialBlendMode,
+    transparent_class: TransparentMaterialClass,
+) -> MaterialBlendMode {
+    if blend_mode == MaterialBlendMode::StemDefault
+        && transparent_class == TransparentMaterialClass::OrderedAlpha
     {
-        // Enforce transparent blend mode to match source material transparency
-        batch_key.blend_mode = MaterialBlendMode::UnityBlend { src: 5, dst: 10 }
+        RENDER_BUFFER_ORDERED_ALPHA_FALLBACK_BLEND
+    } else {
+        blend_mode
     }
 }
 
@@ -823,6 +837,74 @@ mod ui_rect_clip_tests {
         assert!(key.alpha_blended);
         assert_eq!(key.render_queue, UNITY_RENDER_QUEUE_TRANSPARENT);
         assert!(key.transparent_class.is_transparent());
+    }
+
+    #[test]
+    fn generated_billboard_mesh_uses_alpha_blend_for_stem_default_ordered_transparency() {
+        let registry = PropertyIdRegistry::new();
+        let render_queue = registry.intern("_RenderQueue");
+        let mut store = MaterialPropertyStore::new();
+        store.set_shader_asset_for_material(7, 99);
+        store.set_material(
+            7,
+            render_queue,
+            MaterialPropertyValue::Float(UNITY_RENDER_QUEUE_TRANSPARENT as f32),
+        );
+        let dict = MaterialDictionary::new(&store);
+        let mut router = MaterialRouter::new(RasterPipelineKind::Null);
+        router.set_shader_pipeline(
+            99,
+            RasterPipelineKind::EmbeddedStem(Arc::from("pbsvertexcolortransparent_default")),
+        );
+        let ids = MaterialPipelinePropertyIds::new(&registry);
+        let resolved =
+            resolve_material_batch(7, None, &dict, &router, &ids, ShaderPermutation::default());
+        let mut key = batch_key_from_resolved(
+            7,
+            None,
+            false,
+            RasterFrontFace::Clockwise,
+            RasterPrimitiveTopology::TriangleList,
+            &resolved,
+        );
+        let mesh_asset_id = crate::particles::billboard_render_buffer_mesh_asset_id(3).unwrap();
+
+        assert_eq!(key.blend_mode, MaterialBlendMode::StemDefault);
+        assert_eq!(key.transparent_class, TransparentMaterialClass::OrderedAlpha);
+
+        apply_render_buffer_mesh_pipeline_override(
+            &mut key,
+            mesh_asset_id,
+            ShaderPermutation::default(),
+        );
+
+        assert_eq!(key.blend_mode, RENDER_BUFFER_ORDERED_ALPHA_FALLBACK_BLEND);
+        assert_eq!(key.transparent_class, TransparentMaterialClass::OrderedAlpha);
+    }
+
+    #[test]
+    fn render_buffer_billboard_blend_fallback_keeps_explicit_and_non_ordered_modes() {
+        assert_eq!(
+            render_buffer_billboard_blend_mode_for_source(
+                MaterialBlendMode::UnityBlend { src: 1, dst: 1 },
+                TransparentMaterialClass::OrderedAlpha,
+            ),
+            MaterialBlendMode::UnityBlend { src: 1, dst: 1 }
+        );
+        assert_eq!(
+            render_buffer_billboard_blend_mode_for_source(
+                MaterialBlendMode::Opaque,
+                TransparentMaterialClass::OrderedAlpha,
+            ),
+            MaterialBlendMode::Opaque
+        );
+        assert_eq!(
+            render_buffer_billboard_blend_mode_for_source(
+                MaterialBlendMode::StemDefault,
+                TransparentMaterialClass::DepthWritingTransparent,
+            ),
+            MaterialBlendMode::StemDefault
+        );
     }
 
     #[test]

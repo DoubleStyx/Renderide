@@ -372,10 +372,8 @@ fn vs_main(
     out.color = color;
     out.view_layer = layer;
     out.fog_coord = rfog::coord_from_world_pos(world_p, layer);
-    if (kw_SIMPLE_LIT()) {
-        out.world_p = world_p;
-        out.n = rmath::safe_normalize(cross(axes.right, axes.up), vec3<f32>(0.0, 0.0, 1.0));
-    }
+    out.world_p = world_p;
+    out.n = rmath::safe_normalize(cross(axes.right, axes.up), vec3<f32>(0.0, 0.0, 1.0));
     return out;
 }
 
@@ -495,7 +493,7 @@ fn fs_main(
 
     if (kw_SIMPLE_LIT()) {
         let n = two_sided_geometric_normal(in.n, front_facing);
-        let base = saturate(col.rgb);
+        let base = clamp(col.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
         let lit = dl::shade_clustered_diffuse(in.clip_pos.xy, in.world_p, n, base, in.view_layer);
         col = vec4<f32>(lit, col.a);
     }
