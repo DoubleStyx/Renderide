@@ -5,9 +5,7 @@ use std::sync::Arc;
 use rayon::prelude::*;
 use wgpu::util::DeviceExt;
 
-use crate::cpu_parallelism::{
-    admit_mesh_stream_jobs, current_reference_worker_count, record_parallel_admission,
-};
+use crate::cpu_parallelism::admit_current_mesh_stream_jobs;
 use crate::shared::{
     IndexBufferFormat, SubmeshBufferDescriptor, VertexAttributeDescriptor, VertexAttributeType,
 };
@@ -166,16 +164,10 @@ fn compute_extended_stream_bytes(
         ExtendedStreamJob::Uv2,
         ExtendedStreamJob::Uv3,
     ];
-    let admission = admit_mesh_stream_jobs(
-        jobs.len(),
-        source.vertex_count,
-        current_reference_worker_count(),
-    );
-    record_parallel_admission(
+    let admission = admit_current_mesh_stream_jobs(
         "mesh_lazy_extended_streams",
-        source.vertex_count,
         jobs.len(),
-        admission,
+        source.vertex_count,
     );
     let results = if let Some(chunk_size) = admission.chunk_size() {
         jobs.par_iter()
@@ -210,13 +202,7 @@ fn compute_default_extended_stream_bytes(
 ) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
     let jobs = [0usize, 1, 2, 3];
     let admission =
-        admit_mesh_stream_jobs(jobs.len(), vertex_count, current_reference_worker_count());
-    record_parallel_admission(
-        "mesh_default_extended_streams",
-        vertex_count,
-        jobs.len(),
-        admission,
-    );
+        admit_current_mesh_stream_jobs("mesh_default_extended_streams", jobs.len(), vertex_count);
     let compute = |job| match job {
         0 => float4_default_stream_bytes(vertex_count, [1.0, 0.0, 0.0, 1.0]),
         _ => float2_zero_stream_bytes(vertex_count),

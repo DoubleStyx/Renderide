@@ -3,6 +3,9 @@
 use crate::occlusion::HiZBuildInput;
 use crate::render_graph::context::{ComputePassCtx, PostSubmitContext};
 use crate::render_graph::error::{RenderPassError, SetupError};
+use crate::render_graph::pass::params::{
+    GraphPassParameters, PassParameterField, PassParameterSchema,
+};
 use crate::render_graph::pass::{ComputePass, PassBuilder};
 use crate::render_graph::resources::{ImportedTextureHandle, StorageAccess, TextureAccess};
 
@@ -28,6 +31,31 @@ impl HiZBuildPass {
     }
 }
 
+impl GraphPassParameters for HiZBuildGraphResources {
+    fn schema(&self) -> PassParameterSchema {
+        PassParameterSchema::new("HiZBuildGraphResources")
+            .with_field(PassParameterField::new("depth", "sampled_input"))
+            .with_field(PassParameterField::new("hi_z_current", "storage_output"))
+    }
+
+    fn declare(&self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
+        b.import_texture(
+            self.depth,
+            TextureAccess::Sampled {
+                stages: wgpu::ShaderStages::COMPUTE,
+            },
+        );
+        b.import_texture(
+            self.hi_z_current,
+            TextureAccess::Storage {
+                stages: wgpu::ShaderStages::COMPUTE,
+                access: StorageAccess::WriteOnly,
+            },
+        );
+        Ok(())
+    }
+}
+
 impl ComputePass for HiZBuildPass {
     fn name(&self) -> &str {
         "HiZBuild"
@@ -35,20 +63,7 @@ impl ComputePass for HiZBuildPass {
 
     fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
         b.compute();
-        b.import_texture(
-            self.resources.depth,
-            TextureAccess::Sampled {
-                stages: wgpu::ShaderStages::COMPUTE,
-            },
-        );
-        b.import_texture(
-            self.resources.hi_z_current,
-            TextureAccess::Storage {
-                stages: wgpu::ShaderStages::COMPUTE,
-                access: StorageAccess::WriteOnly,
-            },
-        );
-        Ok(())
+        b.parameters(&self.resources)
     }
 
     fn should_record(&self, ctx: &ComputePassCtx<'_, '_, '_>) -> Result<bool, RenderPassError> {
@@ -106,5 +121,65 @@ impl ComputePass for HiZBuildPass {
         // [`crate::render_graph::compiled::exec::CompiledRenderGraph::execute_multi_view`],
         // so this post-submit hook is a no-op on the main thread.
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render_graph::pass::PassKind;
+    use crate::render_graph::resources::{AccessKind, ResourceAccess, TextureResourceHandle};
+
+    #[test]
+    fn setup_declares_typed_depth_and_hiz_imports() {
+        let mut pass = HiZBuildPass::new(HiZBuildGraphResources {
+            depth: ImportedTextureHandle(1),
+            hi_z_current: ImportedTextureHandle(2),
+        });
+        let mut builder = PassBuilder::new("HiZBuild");
+        pass.setup(&mut builder).expect("setup");
+        let setup = builder.finish().expect("finish");
+
+        assert_eq!(setup.kind, PassKind::Compute);
+        assert_eq!(setup.accesses.len(), 2);
+        assert!(
+            setup.accesses.iter().any(|access| {
+                matches!(
+                    access,
+                    ResourceAccess {
+                        resource: crate::render_graph::resources::ResourceHandle::Texture(
+                            TextureResourceHandle::Imported(ImportedTextureHandle(1))
+                        ),
+                        access: AccessKind::Texture(TextureAccess::Sampled {
+                            stages: wgpu::ShaderStages::COMPUTE,
+                            ..
+                        }),
+                        ..
+                    }
+                )
+            }),
+            "expected sampled depth import"
+        );
+        assert!(
+            setup.accesses.iter().any(|access| {
+                matches!(
+                    access,
+                    ResourceAccess {
+                        resource: crate::render_graph::resources::ResourceHandle::Texture(
+                            TextureResourceHandle::Imported(ImportedTextureHandle(2))
+                        ),
+                        access: AccessKind::Texture(TextureAccess::Storage {
+                            stages: wgpu::ShaderStages::COMPUTE,
+                            access: StorageAccess::WriteOnly,
+                            ..
+                        }),
+                        ..
+                    }
+                )
+            }),
+            "expected write-only Hi-Z storage import"
+        );
+        let schema = setup.parameter_schema.expect("parameter schema");
+        assert_eq!(schema.name, "HiZBuildGraphResources");
     }
 }

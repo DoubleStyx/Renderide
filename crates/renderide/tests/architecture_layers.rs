@@ -101,6 +101,35 @@ const FORBIDDEN_EDGES: &[Edge] = &[
     },
 ];
 
+const REFACTORED_MODULE_FILES: &[&str] = &[
+    "assets/mesh/gpu_mesh/upload.rs",
+    "assets/mesh/gpu_mesh/upload/derived_streams.rs",
+    "assets/mesh/gpu_mesh/upload/generated.rs",
+    "backend/facade/graph_access.rs",
+    "backend/facade/graph_access/warmup.rs",
+    "render_graph/compiled/exec.rs",
+    "render_graph/compiled/exec/command_recording.rs",
+    "render_graph/compiled/exec/prepare.rs",
+    "render_graph/compiled/exec/recording_path.rs",
+    "render_graph/compiled/exec/swapchain.rs",
+    "runtime/frame/extract.rs",
+    "runtime/frame/extract/cull.rs",
+    "runtime/frame/extract/queue.rs",
+    "runtime/frame/extract/sort.rs",
+    "runtime/frame/extract/visible_deform.rs",
+    "world_mesh/draw_prep/prepared_renderables.rs",
+    "world_mesh/draw_prep/prepared_renderables/lod.rs",
+    "world_mesh/draw_prep/prepared_renderables/tests.rs",
+];
+
+const REFACTORED_PARENT_MODULE_FILES: &[&str] = &[
+    "assets/mesh/gpu_mesh/upload.rs",
+    "backend/facade/graph_access.rs",
+    "render_graph/compiled/exec.rs",
+    "runtime/frame/extract.rs",
+    "world_mesh/draw_prep/prepared_renderables.rs",
+];
+
 #[test]
 fn layer_boundary_edges_do_not_regress() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -124,6 +153,42 @@ fn layer_boundary_edges_do_not_regress() {
         violations.is_empty(),
         "forbidden renderide layer import(s):\n{}",
         violations.join("\n")
+    );
+}
+
+#[test]
+fn refactored_renderer_modules_stay_split() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let missing = REFACTORED_MODULE_FILES
+        .iter()
+        .filter(|relative| !src.join(relative).exists())
+        .copied()
+        .collect::<Vec<_>>();
+
+    assert!(
+        missing.is_empty(),
+        "refactored renderer module file(s) are missing:\n{}",
+        missing.join("\n")
+    );
+}
+
+#[test]
+fn refactored_parent_modules_stay_under_line_limit() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let oversized = REFACTORED_PARENT_MODULE_FILES
+        .iter()
+        .filter_map(|relative| {
+            let path = src.join(relative);
+            let source = fs::read_to_string(&path).ok()?;
+            let line_count = source.lines().count();
+            (line_count > 1_000).then(|| format!("{relative}: {line_count} lines"))
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        oversized.is_empty(),
+        "refactored parent module(s) exceeded the 1,000-line limit:\n{}",
+        oversized.join("\n")
     );
 }
 

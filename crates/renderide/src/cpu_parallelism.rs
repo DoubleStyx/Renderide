@@ -306,6 +306,19 @@ pub(crate) fn record_parallel_admission(
     });
 }
 
+/// Admits mesh stream work against the active Rayon pool and records the decision.
+#[inline]
+pub(crate) fn admit_current_mesh_stream_jobs(
+    site_label: &'static str,
+    job_count: usize,
+    vertex_count: usize,
+) -> ParallelAdmission {
+    let admission =
+        admit_mesh_stream_jobs(job_count, vertex_count, current_reference_worker_count());
+    record_parallel_admission(site_label, vertex_count, job_count, admission);
+    admission
+}
+
 /// Compact description of one frame-critical CPU work site.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FrameCpuWorkload {

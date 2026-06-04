@@ -2,9 +2,7 @@
 
 use rayon::prelude::*;
 
-use crate::cpu_parallelism::{
-    admit_mesh_stream_jobs, current_reference_worker_count, record_parallel_admission,
-};
+use crate::cpu_parallelism::admit_current_mesh_stream_jobs;
 use crate::shared::{
     IndexBufferFormat, MeshUploadData, SubmeshBufferDescriptor, VertexAttributeDescriptor,
     VertexAttributeType,
@@ -445,16 +443,10 @@ fn try_write_in_place_derived_streams_parallel(
             jobs.push(InPlaceDerivedStreamJob::Uv3);
         }
     }
-    let admission = admit_mesh_stream_jobs(
-        jobs.len(),
-        ctx.vertex_count,
-        current_reference_worker_count(),
-    );
-    record_parallel_admission(
+    let admission = admit_current_mesh_stream_jobs(
         "mesh_write_in_place_derived_streams",
-        ctx.vertex_count,
         jobs.len(),
-        admission,
+        ctx.vertex_count,
     );
     let Some(chunk_size) = admission.chunk_size() else {
         return false;
