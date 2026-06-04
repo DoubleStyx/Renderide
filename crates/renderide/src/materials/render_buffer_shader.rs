@@ -235,7 +235,10 @@ mod tests {
     fn forces_cutout_for_xiexe_cutout_stems() {
         let billboard = remap_variant_bits_for_billboard("xstoon2.0-cutout_default", 0);
 
-        assert_eq!(billboard & BILLBOARD_ALPHA_TEST_BIT, BILLBOARD_ALPHA_TEST_BIT);
+        assert_eq!(
+            billboard & BILLBOARD_ALPHA_TEST_BIT,
+            BILLBOARD_ALPHA_TEST_BIT
+        );
     }
 
     #[test]

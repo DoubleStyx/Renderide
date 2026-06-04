@@ -870,7 +870,10 @@ mod ui_rect_clip_tests {
         let mesh_asset_id = crate::particles::billboard_render_buffer_mesh_asset_id(3).unwrap();
 
         assert_eq!(key.blend_mode, MaterialBlendMode::StemDefault);
-        assert_eq!(key.transparent_class, TransparentMaterialClass::OrderedAlpha);
+        assert_eq!(
+            key.transparent_class,
+            TransparentMaterialClass::OrderedAlpha
+        );
 
         apply_render_buffer_mesh_pipeline_override(
             &mut key,
@@ -879,7 +882,10 @@ mod ui_rect_clip_tests {
         );
 
         assert_eq!(key.blend_mode, RENDER_BUFFER_ORDERED_ALPHA_FALLBACK_BLEND);
-        assert_eq!(key.transparent_class, TransparentMaterialClass::OrderedAlpha);
+        assert_eq!(
+            key.transparent_class,
+            TransparentMaterialClass::OrderedAlpha
+        );
     }
 
     #[test]
