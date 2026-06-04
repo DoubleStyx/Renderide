@@ -42,7 +42,7 @@ fn view_is_orthographic(sky: SkyboxView, view_layer: u32) -> bool {
 /// Reconstructs a view-space sky ray from NDC and packed projection coefficients.
 fn view_ray_from_ndc(ndc: vec2<f32>, proj_params: vec4<f32>, orthographic: bool) -> vec3<f32> {
     if (orthographic) {
-        return vec3<f32>(0.0, 0.0, -1.0);
+        return vec3<f32>(ndc.xy, -1.0);
     }
     // Asymmetric OpenXR projections store skew on the Z column. With sky rays fixed at z = -1
     // and clip_w = -view_z, inverse projection uses ndc + skew.
