@@ -19,7 +19,7 @@ use crate::passes::{
 use crate::render_graph::compiled::{FrameView, FrameViewTarget};
 use crate::world_mesh::{WorldMeshDrawItem, WorldMeshPhase};
 
-use super::super::super::WorldMeshDrawPlanSlot;
+use super::super::super::{WorldMeshDrawPlanSlot, WorldMeshOverlayDrawPlanSlot};
 use super::BackendGraphAccess;
 
 #[derive(Default)]
@@ -118,17 +118,30 @@ impl ViewAssetPrewarmRequests {
 fn collect_view_asset_prewarm_requests(views: &[FrameView<'_>]) -> ViewAssetPrewarmRequests {
     let mut requests = ViewAssetPrewarmRequests::default();
     for view in views {
-        let Some(draw_plan) = view.initial_blackboard.get::<WorldMeshDrawPlanSlot>() else {
-            continue;
-        };
-        let Some(collection) = draw_plan.as_prefetched() else {
-            continue;
-        };
-        for item in &collection.items {
-            requests.record_item(item);
-        }
+        record_plan_asset_prewarm_requests(
+            view.initial_blackboard.get::<WorldMeshDrawPlanSlot>(),
+            &mut requests,
+        );
+        record_plan_asset_prewarm_requests(
+            view.initial_blackboard
+                .get::<WorldMeshOverlayDrawPlanSlot>(),
+            &mut requests,
+        );
     }
     requests
+}
+
+fn record_plan_asset_prewarm_requests(
+    draw_plan: Option<&crate::world_mesh::WorldMeshDrawPlan>,
+    requests: &mut ViewAssetPrewarmRequests,
+) {
+    let Some(collection) = draw_plan.and_then(crate::world_mesh::WorldMeshDrawPlan::as_prefetched)
+    else {
+        return;
+    };
+    for item in &collection.items {
+        requests.record_item(item);
+    }
 }
 
 fn world_mesh_item_mirrors_to_normal_prepass(item: &WorldMeshDrawItem) -> bool {
@@ -223,6 +236,7 @@ impl<'a> BackendGraphAccess<'a> {
         device: &wgpu::Device,
         views: &[FrameView<'_>],
         view_layouts: &[Option<PreRecordViewResourceLayout>],
+        resource_layouts: &[PreRecordViewResourceLayout],
     ) {
         profiling::scope!("graph::pre_warm_view_assets");
         let requests = collect_view_asset_prewarm_requests(views);
@@ -244,7 +258,7 @@ impl<'a> BackendGraphAccess<'a> {
             &requests,
             &mesh_ids_needing_all_extended_streams,
         );
-        self.pre_warm_material_assets_from_blackboards(views, view_layouts);
+        self.pre_warm_material_assets_from_blackboards(views, view_layouts, resource_layouts);
         self.pre_warm_world_mesh_prepass_pipelines_from_blackboards(device, views, view_layouts);
     }
 
@@ -252,6 +266,7 @@ impl<'a> BackendGraphAccess<'a> {
         &self,
         views: &[FrameView<'_>],
         view_layouts: &[Option<PreRecordViewResourceLayout>],
+        resource_layouts: &[PreRecordViewResourceLayout],
     ) {
         profiling::scope!("graph::pre_warm_material_assets");
         let mut warmed_pipelines = HashSet::new();
@@ -260,52 +275,37 @@ impl<'a> BackendGraphAccess<'a> {
             let Some(layout) = *layout else {
                 continue;
             };
-            let Some(draw_plan) = view.initial_blackboard.get::<WorldMeshDrawPlanSlot>() else {
-                continue;
-            };
-            let Some(collection) = draw_plan.as_prefetched() else {
-                continue;
-            };
             let supports_multiview = self
                 .gpu_limits
                 .as_ref()
                 .is_some_and(|limits| limits.supports_multiview);
-            let (pass_desc, shader_perm) =
-                material_pass_desc_for_layout(layout, supports_multiview);
             let offscreen = matches!(view.target, FrameViewTarget::OffscreenRt(_));
-            let mut item_index = 0usize;
-            while let Some(item) = collection.items.get(item_index) {
-                let mut front_face = item.batch_key.front_face;
-                if offscreen {
-                    front_face = front_face.flipped();
-                }
-                let variant = MaterialPipelineVariantSpec {
-                    permutation: shader_perm,
-                    shader_specialization: item.batch_key.shader_specialization,
-                    blend_mode: item.batch_key.blend_mode,
-                    render_state: item.batch_key.render_state,
-                    front_face,
-                    primitive_topology: item.batch_key.primitive_topology,
-                };
-                let warmup_key = MaterialPipelineWarmupKey {
-                    kind: item.batch_key.pipeline.clone(),
-                    desc: pass_desc,
-                    variant,
-                };
-                if warmed_pipelines.insert(warmup_key.clone()) {
-                    self.materials.queue_material_pipeline_warmup(
-                        &warmup_key.kind,
-                        &warmup_key.desc,
-                        warmup_key.variant,
-                    );
-                }
-                if let RasterPipelineKind::EmbeddedStem(stem) = &item.batch_key.pipeline
-                    && warmed_embedded_stems.insert(Arc::clone(stem))
-                {
-                    self.materials
-                        .pre_warm_embedded_material_layout(stem.as_ref());
-                }
-                item_index = next_material_warmup_run_start(&collection.items, item_index);
+            self.pre_warm_material_draw_plan(
+                view.initial_blackboard.get::<WorldMeshDrawPlanSlot>(),
+                layout,
+                supports_multiview,
+                offscreen,
+                &mut warmed_pipelines,
+                &mut warmed_embedded_stems,
+            );
+            if let Some(overlay_layout) = view
+                .desktop_overlay_resource_view_id()
+                .and_then(|view_id| {
+                    resource_layouts
+                        .iter()
+                        .find(|layout| layout.view_id == view_id)
+                })
+                .copied()
+            {
+                self.pre_warm_material_draw_plan(
+                    view.initial_blackboard
+                        .get::<WorldMeshOverlayDrawPlanSlot>(),
+                    overlay_layout,
+                    supports_multiview,
+                    offscreen,
+                    &mut warmed_pipelines,
+                    &mut warmed_embedded_stems,
+                );
             }
         }
         logger::trace!(
@@ -313,6 +313,57 @@ impl<'a> BackendGraphAccess<'a> {
             warmed_pipelines.len(),
             warmed_embedded_stems.len()
         );
+    }
+
+    fn pre_warm_material_draw_plan(
+        &self,
+        draw_plan: Option<&crate::world_mesh::WorldMeshDrawPlan>,
+        layout: PreRecordViewResourceLayout,
+        supports_multiview: bool,
+        offscreen: bool,
+        warmed_pipelines: &mut HashSet<MaterialPipelineWarmupKey>,
+        warmed_embedded_stems: &mut HashSet<Arc<str>>,
+    ) {
+        let Some(collection) =
+            draw_plan.and_then(crate::world_mesh::WorldMeshDrawPlan::as_prefetched)
+        else {
+            return;
+        };
+        let (pass_desc, shader_perm) = material_pass_desc_for_layout(layout, supports_multiview);
+        let mut item_index = 0usize;
+        while let Some(item) = collection.items.get(item_index) {
+            let mut front_face = item.batch_key.front_face;
+            if offscreen {
+                front_face = front_face.flipped();
+            }
+            let variant = MaterialPipelineVariantSpec {
+                permutation: shader_perm,
+                shader_specialization: item.batch_key.shader_specialization,
+                blend_mode: item.batch_key.blend_mode,
+                render_state: item.batch_key.render_state,
+                front_face,
+                primitive_topology: item.batch_key.primitive_topology,
+            };
+            let warmup_key = MaterialPipelineWarmupKey {
+                kind: item.batch_key.pipeline.clone(),
+                desc: pass_desc,
+                variant,
+            };
+            if warmed_pipelines.insert(warmup_key.clone()) {
+                self.materials.queue_material_pipeline_warmup(
+                    &warmup_key.kind,
+                    &warmup_key.desc,
+                    warmup_key.variant,
+                );
+            }
+            if let RasterPipelineKind::EmbeddedStem(stem) = &item.batch_key.pipeline
+                && warmed_embedded_stems.insert(Arc::clone(stem))
+            {
+                self.materials
+                    .pre_warm_embedded_material_layout(stem.as_ref());
+            }
+            item_index = next_material_warmup_run_start(&collection.items, item_index);
+        }
     }
 
     fn pre_warm_world_mesh_prepass_pipelines_from_blackboards(

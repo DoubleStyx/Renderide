@@ -82,6 +82,11 @@ blackboard_slot! {
     pub(crate) WorldMeshForwardPlanSlot => PreparedWorldMeshForwardFrame,
 }
 
+blackboard_slot! {
+    /// Blackboard slot key for the per-view desktop overlay forward plan.
+    pub(crate) WorldMeshOverlayForwardPlanSlot => PreparedWorldMeshForwardFrame,
+}
+
 #[cfg(test)]
 mod tests {
     use super::DepthFreshness;

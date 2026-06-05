@@ -298,6 +298,7 @@ pub trait GraphExecutionBackend {
         device: &wgpu::Device,
         views: &[FrameView<'_>],
         view_layouts: &[Option<PreRecordViewResourceLayout>],
+        resource_layouts: &[PreRecordViewResourceLayout],
     );
     /// Creates a thread-shareable per-view blackboard preparer for this graph execution.
     fn view_blackboard_preparer(&self) -> Box<dyn GraphViewBlackboardPreparer + '_>;

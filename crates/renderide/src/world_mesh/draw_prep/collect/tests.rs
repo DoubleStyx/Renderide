@@ -108,7 +108,7 @@ fn transform_scale_filter_result(scale: Vec3) -> bool {
 fn special_layer_visibility_for_filter(
     filter: Option<&CameraTransformDrawFilter>,
     layer_policy: ViewLayerPolicy,
-    special_layer: LayerType,
+    special_layer: Option<LayerType>,
 ) -> bool {
     let scene = SceneCoordinator::new();
     let mesh_pool = MeshPool::default_pool();
@@ -129,7 +129,7 @@ fn special_layer_visibility_for_filter(
         None,
         layer_policy,
     );
-    special_layer_visible_in_view(&ctx, Some(special_layer))
+    special_layer_visible_in_view(&ctx, special_layer)
 }
 
 /// Evaluates whether a private render space is visible under one draw context.
@@ -252,12 +252,12 @@ fn camera_layer_policy_hides_hidden_and_overlay_without_selective_roots() {
     assert!(!special_layer_visibility_for_filter(
         None,
         ViewLayerPolicy::camera(false),
-        LayerType::Hidden
+        Some(LayerType::Hidden)
     ));
     assert!(!special_layer_visibility_for_filter(
         None,
         ViewLayerPolicy::camera(false),
-        LayerType::Overlay
+        Some(LayerType::Overlay)
     ));
 }
 
@@ -279,22 +279,94 @@ fn camera_layer_policy_shows_hidden_and_overlay_for_selective_roots() {
     assert!(!special_layer_visibility_for_filter(
         Some(&exclude_only),
         ViewLayerPolicy::camera(false),
-        LayerType::Hidden
+        Some(LayerType::Hidden)
     ));
     assert!(!special_layer_visibility_for_filter(
         Some(&empty_selective),
         ViewLayerPolicy::camera(false),
-        LayerType::Hidden
+        Some(LayerType::Hidden)
     ));
     assert!(special_layer_visibility_for_filter(
         Some(&selective),
         ViewLayerPolicy::camera(false),
-        LayerType::Hidden
+        Some(LayerType::Hidden)
     ));
     assert!(special_layer_visibility_for_filter(
         Some(&selective),
         ViewLayerPolicy::camera(false),
-        LayerType::Overlay
+        Some(LayerType::Overlay)
+    ));
+}
+
+#[test]
+fn main_view_layer_policy_excludes_special_layers_unless_selective() {
+    let selective = CameraTransformDrawFilter {
+        only: Some(HashSet::from_iter([1])),
+        exclude: HashSet::new(),
+    };
+
+    assert!(!special_layer_visibility_for_filter(
+        None,
+        ViewLayerPolicy::MainView,
+        Some(LayerType::Hidden)
+    ));
+    assert!(!special_layer_visibility_for_filter(
+        None,
+        ViewLayerPolicy::MainView,
+        Some(LayerType::Overlay)
+    ));
+    assert!(special_layer_visibility_for_filter(
+        Some(&selective),
+        ViewLayerPolicy::MainView,
+        Some(LayerType::Hidden)
+    ));
+    assert!(special_layer_visibility_for_filter(
+        Some(&selective),
+        ViewLayerPolicy::MainView,
+        Some(LayerType::Overlay)
+    ));
+}
+
+#[test]
+fn desktop_overlay_layer_policy_includes_only_overlay_layer() {
+    assert!(special_layer_visibility_for_filter(
+        None,
+        ViewLayerPolicy::DesktopOverlay,
+        Some(LayerType::Overlay)
+    ));
+    assert!(!special_layer_visibility_for_filter(
+        None,
+        ViewLayerPolicy::DesktopOverlay,
+        Some(LayerType::Hidden)
+    ));
+    assert!(!special_layer_visibility_for_filter(
+        None,
+        ViewLayerPolicy::DesktopOverlay,
+        None
+    ));
+}
+
+#[test]
+fn desktop_overlay_layer_policy_ignores_selective_camera_roots() {
+    let selective = CameraTransformDrawFilter {
+        only: Some(HashSet::from_iter([1])),
+        exclude: HashSet::new(),
+    };
+
+    assert!(special_layer_visibility_for_filter(
+        Some(&selective),
+        ViewLayerPolicy::DesktopOverlay,
+        Some(LayerType::Overlay)
+    ));
+    assert!(!special_layer_visibility_for_filter(
+        Some(&selective),
+        ViewLayerPolicy::DesktopOverlay,
+        Some(LayerType::Hidden)
+    ));
+    assert!(!special_layer_visibility_for_filter(
+        Some(&selective),
+        ViewLayerPolicy::DesktopOverlay,
+        None
     ));
 }
 

@@ -31,8 +31,14 @@ impl CompiledRenderGraph {
         // aligned across every phase for that index.
         let view_layouts: Vec<Option<PreRecordViewResourceLayout>> =
             build_view_layouts(mv_ctx, views);
-        Self::pre_warm_per_view_resources_for_views(mv_ctx, views, &view_layouts)?;
-        Self::pre_sync_shared_frame_resources_for_views(mv_ctx, &view_layouts, upload_batch);
+        let resource_layouts = build_resource_layouts(mv_ctx, views, &view_layouts);
+        Self::pre_warm_per_view_resources_for_views(
+            mv_ctx,
+            views,
+            &view_layouts,
+            &resource_layouts,
+        )?;
+        Self::pre_sync_shared_frame_resources_for_views(mv_ctx, &resource_layouts, upload_batch);
         Self::register_history_resources_for_views(mv_ctx, views)?;
         Ok(())
     }
@@ -49,14 +55,12 @@ impl CompiledRenderGraph {
         mv_ctx: &mut MultiViewExecutionContext<'_>,
         views: &[FrameView<'_>],
         view_layouts: &[Option<PreRecordViewResourceLayout>],
+        resource_layouts: &[PreRecordViewResourceLayout],
     ) -> Result<(), GraphExecuteError> {
         profiling::scope!("graph::pre_warm_per_view");
-        let mut prepared_frame_layouts = Vec::with_capacity(views.len());
-        for (view, layout_opt) in views.iter().zip(view_layouts.iter()) {
-            let view_id = view.view_id();
-            let Some(layout) = *layout_opt else {
-                continue;
-            };
+        let mut prepared_frame_layouts = Vec::with_capacity(resource_layouts.len());
+        for &layout in resource_layouts {
+            let view_id = layout.view_id;
             if !mv_ctx
                 .backend
                 .frame_resources_mut()
@@ -105,10 +109,17 @@ impl CompiledRenderGraph {
                 });
             }
         }
-        logger::trace!("graph pre-warm per-view resources: views={}", views.len(),);
-        mv_ctx
-            .backend
-            .pre_warm_view_assets_from_blackboards(mv_ctx.device, views, view_layouts);
+        logger::trace!(
+            "graph pre-warm per-view resources: views={} resource_views={}",
+            views.len(),
+            resource_layouts.len(),
+        );
+        mv_ctx.backend.pre_warm_view_assets_from_blackboards(
+            mv_ctx.device,
+            views,
+            view_layouts,
+            resource_layouts,
+        );
         Ok(())
     }
 
@@ -149,21 +160,17 @@ impl CompiledRenderGraph {
     /// record path so rayon workers only read view-local state during recording.
     pub(super) fn pre_sync_shared_frame_resources_for_views(
         mv_ctx: &mut MultiViewExecutionContext<'_>,
-        view_layouts: &[Option<PreRecordViewResourceLayout>],
+        layouts: &[PreRecordViewResourceLayout],
         upload_batch: &FrameUploadBatch,
     ) {
         profiling::scope!("graph::pre_sync_frame_gpu");
-        // Reuse the precomputed layouts from `prepare_view_resources_for_views` so every shared
-        // frame sync phase sees the same valid-view set.
-        let layouts: Vec<PreRecordViewResourceLayout> =
-            view_layouts.iter().filter_map(|layout| *layout).collect();
         mv_ctx
             .backend
             .frame_resources_mut()
             .pre_record_sync_for_views(
                 mv_ctx.device,
                 GraphUploadSink::pre_record(upload_batch),
-                &layouts,
+                layouts,
             );
     }
 
@@ -259,6 +266,33 @@ fn build_view_layouts(
             })
         })
         .collect()
+}
+
+fn build_resource_layouts(
+    mv_ctx: &MultiViewExecutionContext<'_>,
+    views: &[FrameView<'_>],
+    view_layouts: &[Option<PreRecordViewResourceLayout>],
+) -> Vec<PreRecordViewResourceLayout> {
+    let mut layouts = Vec::with_capacity(views.len());
+    for (view, layout_opt) in views.iter().zip(view_layouts.iter()) {
+        let Some(layout) = *layout_opt else {
+            continue;
+        };
+        layouts.push(layout);
+        if let Some(view_id) = view.desktop_overlay_resource_view_id() {
+            let surface_format = view.layout(mv_ctx.gpu).surface_format;
+            layouts.push(PreRecordViewResourceLayout {
+                view_id,
+                stereo: false,
+                sample_count: 1,
+                color_format: surface_format,
+                needs_depth_snapshot: false,
+                needs_color_snapshot: false,
+                ..layout
+            });
+        }
+    }
+    layouts
 }
 
 /// Builds the registry spec for the current view's Hi-Z pyramid texture.

@@ -42,5 +42,6 @@ pub(crate) use gpu_jobs::{
 };
 pub(crate) use view_resource_registry::ViewResourceRegistry;
 pub(crate) use world_mesh_frame_plan::{
-    BackendWorldMeshFramePlanner, WorldMeshDrawPlanSlot, prepare_world_mesh_view_blackboard,
+    BackendWorldMeshFramePlanner, WorldMeshDrawPlanSlot, WorldMeshOverlayDrawPlanSlot,
+    prepare_world_mesh_view_blackboard,
 };

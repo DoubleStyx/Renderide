@@ -6,6 +6,7 @@ use glam::{Mat4, Vec3};
 
 use crate::materials::RasterFrontFace;
 use crate::scene::{RenderSpaceId, SkinnedMeshRenderer};
+use crate::shared::LayerType;
 
 use crate::world_mesh::culling::{
     CpuCullFailure, MeshCullTarget, mesh_cpu_cull_with_geometry,
@@ -277,9 +278,9 @@ fn collect_prepared_renderer_run(
     }
     let source_is_overlay = first.is_overlay;
     let source_special_layer = if first.is_hidden {
-        Some(crate::shared::LayerType::Hidden)
+        Some(LayerType::Hidden)
     } else if source_is_overlay {
-        Some(crate::shared::LayerType::Overlay)
+        Some(LayerType::Overlay)
     } else {
         None
     };

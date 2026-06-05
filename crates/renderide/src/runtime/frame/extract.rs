@@ -14,7 +14,9 @@ pub(in crate::runtime) use queue::select_inner_parallelism;
 
 use rayon::prelude::*;
 
-use crate::backend::{ExtractedFrameShared, RenderBackend, WorldMeshDrawPlanSlot};
+use crate::backend::{
+    ExtractedFrameShared, RenderBackend, WorldMeshDrawPlanSlot, WorldMeshOverlayDrawPlanSlot,
+};
 use crate::cpu_parallelism::{FrameCpuWorkload, FrameParallelPolicy};
 use crate::gpu::GpuContext;
 use crate::render_graph::blackboard::Blackboard;
@@ -179,7 +181,10 @@ impl<'a> PreparedViews<'a> {
     }
 
     /// Builds executable graph views from the prepared plans and collected draw plans.
-    fn build_execution_views<'b>(&'b self, draw_plans: Vec<WorldMeshDrawPlan>) -> Vec<FrameView<'b>>
+    fn build_execution_views<'b>(
+        &'b self,
+        draw_plans: Vec<ViewWorldMeshDrawPlans>,
+    ) -> Vec<FrameView<'b>>
     where
         'a: 'b,
     {
@@ -188,13 +193,16 @@ impl<'a> PreparedViews<'a> {
             .iter()
             .zip(draw_plans)
             .map(|(prep, draws)| {
-                let helper_needs = draws.helper_needs();
+                let helper_needs = draws.world.helper_needs();
                 let resource_hints = FrameViewResourceHints {
                     needs_depth_snapshot: helper_needs.depth_snapshot,
                     needs_color_snapshot: helper_needs.color_snapshot,
                 };
                 let mut initial_blackboard = Blackboard::new();
-                initial_blackboard.insert::<WorldMeshDrawPlanSlot>(draws);
+                initial_blackboard.insert::<WorldMeshDrawPlanSlot>(draws.world);
+                if let Some(overlay) = draws.desktop_overlay {
+                    initial_blackboard.insert::<WorldMeshOverlayDrawPlanSlot>(overlay);
+                }
                 prep.to_frame_view(resource_hints, initial_blackboard)
             })
             .collect()
@@ -206,7 +214,7 @@ pub(in crate::runtime) struct PreparedDraws<'a> {
     /// Ordered per-frame view plans and aggregate graph requirements.
     prepared_views: PreparedViews<'a>,
     /// Explicit draw plan for every prepared view.
-    view_draws: Vec<WorldMeshDrawPlan>,
+    view_draws: Vec<ViewWorldMeshDrawPlans>,
 }
 
 impl<'a> PreparedDraws<'a> {
@@ -224,7 +232,7 @@ pub(in crate::runtime) struct SubmitFrame<'a> {
     /// Ordered per-frame view plans and aggregate graph requirements.
     prepared_views: PreparedViews<'a>,
     /// Explicit draw plan for every prepared view.
-    view_draws: Vec<WorldMeshDrawPlan>,
+    view_draws: Vec<ViewWorldMeshDrawPlans>,
 }
 
 impl SubmitFrame<'_> {
@@ -236,10 +244,15 @@ impl SubmitFrame<'_> {
     ) {
         backend.prepare_lights_for_views(
             scene,
-            self.prepared_views
-                .plans()
-                .iter()
-                .map(FrameViewPlan::light_view_desc),
+            self.prepared_views.plans().iter().flat_map(|view| {
+                let desc = view.light_view_desc();
+                let overlay = view.desktop_overlay_resource_view_id().map(|view_id| {
+                    let mut desc = desc;
+                    desc.view_id = view_id;
+                    desc
+                });
+                std::iter::once(desc).chain(overlay)
+            }),
         );
         let visible_deform_keys = visible_mesh_deform_keys_from_draw_plans(&self.view_draws);
         backend
@@ -261,28 +274,54 @@ impl SubmitFrame<'_> {
     }
 }
 
+/// Sorted draw plans for one executable view.
+pub(in crate::runtime) struct ViewWorldMeshDrawPlans {
+    /// Regular camera-world draw plan consumed by the main world-mesh pass stack.
+    pub(super) world: WorldMeshDrawPlan,
+    /// Desktop overlay draw plan consumed by the post-compose overlay pass.
+    pub(super) desktop_overlay: Option<WorldMeshDrawPlan>,
+}
+
+impl ViewWorldMeshDrawPlans {
+    /// Total draw count represented by all draw plans for this view.
+    pub(super) fn draw_count(&self) -> usize {
+        self.world.draw_count()
+            + self
+                .desktop_overlay
+                .as_ref()
+                .map_or(0, WorldMeshDrawPlan::draw_count)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use hashbrown::HashSet;
+
     use glam::Mat4;
 
     use crate::camera::{HostCameraFrame, ViewId};
     use crate::mesh_deform::{SkinCacheKey, SkinCacheRendererKind};
     use crate::occlusion::OcclusionSystem;
     use crate::render_graph::{FrameViewClear, OffscreenWriteTarget, RenderPathProfile};
-    use crate::scene::SceneCoordinator;
+    use crate::scene::{RenderSpaceId, SceneCoordinator};
+    use crate::shared::RenderingContext;
+    use crate::world_mesh::CameraTransformDrawFilter;
     use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
     use crate::world_mesh::{
-        PrefetchedWorldMeshViewDraws, WorldMeshCullProjParams, WorldMeshDrawArrangeParallelism,
-        WorldMeshDrawCollectParallelism, WorldMeshDrawCollection, WorldMeshDrawPlan,
+        PrefetchedWorldMeshViewDraws, ViewLayerPolicy, WorldMeshCullProjParams,
+        WorldMeshDrawArrangeParallelism, WorldMeshDrawCollectParallelism, WorldMeshDrawCollection,
+        WorldMeshDrawPlan,
     };
 
     use super::super::view_plan::{FrameViewPlan, FrameViewPlanParams, FrameViewPlanTarget};
     use super::cull::{build_cull_snapshot_for_view, cull_projection_for_write_target};
     use super::queue::{
-        select_inner_parallelism_for_prepared_work_with_policy,
+        desktop_overlay_view_inputs, select_inner_parallelism_for_prepared_work_with_policy,
         should_parallelize_view_collection_with_policy,
     };
-    use super::sort::select_arrange_parallelism_for_draws_with_policy;
+    use super::sort::{
+        OverlayTraceStats, overlay_trace_stats, select_arrange_parallelism_for_draws_with_policy,
+    };
     use super::visible_deform::visible_mesh_deform_keys_from_draw_plans;
     use super::*;
 
@@ -290,7 +329,7 @@ mod tests {
         FrameViewPlan::new(
             &HostCameraFrame::default(),
             FrameViewPlanParams {
-                render_context: crate::shared::RenderingContext::UserView,
+                render_context: RenderingContext::UserView,
                 frame_time_seconds: 0.0,
                 view_id: ViewId::Main,
                 viewport_px: (640, 480),
@@ -402,6 +441,80 @@ mod tests {
                 write_target.render_projection(left),
                 write_target.render_projection(right)
             ))
+        );
+    }
+
+    #[test]
+    fn desktop_overlay_view_inputs_do_not_inherit_main_camera_filters_or_culling() {
+        let mut plan = main_swapchain_plan();
+        plan.draw_filter = Some(CameraTransformDrawFilter {
+            only: Some(HashSet::from_iter([42])),
+            exclude: HashSet::from_iter([7]),
+        });
+        plan.render_space_filter = Some(RenderSpaceId(99));
+
+        let inputs = desktop_overlay_view_inputs(&plan, 1.25);
+
+        assert_eq!(inputs.render_context, RenderingContext::UserView);
+        assert_eq!(
+            inputs.head_output_transform,
+            plan.host_camera.head_output_transform
+        );
+        assert_eq!(inputs.view_origin_world, plan.view_origin_world());
+        assert!(inputs.culling.is_none());
+        assert!(inputs.transform_filter.is_none());
+        assert!(inputs.render_space_filter.is_none());
+        assert!(inputs.reflection_probes.is_none());
+        assert_eq!(inputs.mesh_lod_bias, 1.25);
+        assert_eq!(inputs.layer_policy, ViewLayerPolicy::DesktopOverlay);
+    }
+
+    #[test]
+    fn overlay_trace_stats_reports_plan_presence_and_counters() {
+        assert_eq!(overlay_trace_stats(None), OverlayTraceStats::default());
+
+        let empty = WorldMeshDrawPlan::Empty;
+        assert_eq!(
+            overlay_trace_stats(Some(&empty)),
+            OverlayTraceStats {
+                plan_present: true,
+                ..Default::default()
+            }
+        );
+
+        let draw = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 1,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 10,
+            node_id: 0,
+            slot_index: 0,
+            collect_order: 0,
+            alpha_blended: false,
+        });
+        let prefetched =
+            WorldMeshDrawPlan::Prefetched(Box::new(PrefetchedWorldMeshViewDraws::new(
+                WorldMeshDrawCollection {
+                    items: vec![draw],
+                    draws_pre_cull: 5,
+                    draws_culled: 2,
+                    draws_hi_z_culled: 1,
+                    visibility: Default::default(),
+                    arrangement: Default::default(),
+                },
+                None,
+            )));
+
+        assert_eq!(
+            overlay_trace_stats(Some(&prefetched)),
+            OverlayTraceStats {
+                plan_present: true,
+                draws: 1,
+                draws_pre_cull: 5,
+                draws_culled: 2,
+                draws_hi_z_culled: 1,
+            }
         );
     }
 
@@ -536,8 +649,14 @@ mod tests {
         });
         skinned.world_space_deformed = true;
 
-        let plans = [WorldMeshDrawPlan::Prefetched(Box::new(
-            PrefetchedWorldMeshViewDraws::new(
+        let mut overlay = rigid.clone();
+        overlay.node_id = 9;
+        overlay.renderable_index = 9;
+        overlay.instance_id = crate::scene::MeshRendererInstanceId(9);
+        overlay.blendshape_deformed = true;
+
+        let plans = [ViewWorldMeshDrawPlans {
+            world: WorldMeshDrawPlan::Prefetched(Box::new(PrefetchedWorldMeshViewDraws::new(
                 WorldMeshDrawCollection {
                     items: vec![rigid, blend.clone(), skinned.clone()],
                     draws_pre_cull: 3,
@@ -547,12 +666,25 @@ mod tests {
                     arrangement: Default::default(),
                 },
                 None,
-            ),
-        ))];
+            ))),
+            desktop_overlay: Some(WorldMeshDrawPlan::Prefetched(Box::new(
+                PrefetchedWorldMeshViewDraws::new(
+                    WorldMeshDrawCollection {
+                        items: vec![overlay.clone()],
+                        draws_pre_cull: 1,
+                        draws_culled: 0,
+                        draws_hi_z_culled: 0,
+                        visibility: Default::default(),
+                        arrangement: Default::default(),
+                    },
+                    None,
+                ),
+            ))),
+        }];
 
         let keys = visible_mesh_deform_keys_from_draw_plans(&plans);
 
-        assert_eq!(keys.len(), 2);
+        assert_eq!(keys.len(), 3);
         assert!(keys.contains(&SkinCacheKey::new(
             blend.space_id,
             SkinCacheRendererKind::Static,
@@ -562,6 +694,11 @@ mod tests {
             skinned.space_id,
             SkinCacheRendererKind::Skinned,
             skinned.instance_id,
+        )));
+        assert!(keys.contains(&SkinCacheKey::new(
+            overlay.space_id,
+            SkinCacheRendererKind::Static,
+            overlay.instance_id,
         )));
     }
 }

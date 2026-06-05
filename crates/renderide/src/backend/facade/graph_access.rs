@@ -12,6 +12,7 @@ use crate::graph_inputs::{
 };
 use crate::materials::MaterialSystem;
 use crate::mesh_deform::{GpuSkinCache, MeshDeformScratch, MeshPreprocessPipelines};
+use crate::occlusion::OcclusionSystem;
 use crate::passes::post_processing::settings_slots::{
     AutoExposureSettingsSlot, AutoExposureSettingsValue, BloomSettingsSlot, BloomSettingsValue,
     GtaoSettingsSlot, GtaoSettingsValue, MotionBlurSettingsSlot, MotionBlurSettingsValue,
@@ -26,8 +27,9 @@ use crate::render_graph::frame_upload_batch::{FrameUploadBatchStats, GraphUpload
 use crate::render_graph::upload_arena::PersistentUploadArena;
 
 use super::super::debug_hud_bundle::DebugHudBundle;
-use super::super::{FrameResourceManager, HistoryRegistry, WorldMeshDrawPlanSlot};
-use crate::occlusion::OcclusionSystem;
+use super::super::{
+    FrameResourceManager, HistoryRegistry, WorldMeshDrawPlanSlot, WorldMeshOverlayDrawPlanSlot,
+};
 
 /// Narrow backend packet used by the render graph executor.
 ///
@@ -337,12 +339,14 @@ impl GraphExecutionBackend for BackendGraphAccess<'_> {
         device: &wgpu::Device,
         views: &[FrameView<'_>],
         view_layouts: &[Option<PreRecordViewResourceLayout>],
+        resource_layouts: &[PreRecordViewResourceLayout],
     ) {
         BackendGraphAccess::pre_warm_view_assets_from_blackboards(
             self,
             device,
             views,
             view_layouts,
+            resource_layouts,
         );
     }
 
@@ -358,9 +362,13 @@ impl GraphExecutionBackend for BackendGraphAccess<'_> {
     }
 
     fn estimate_view_blackboard_prepare_draw_count(&self, blackboard: &Blackboard) -> usize {
-        blackboard
+        let world = blackboard
             .get::<WorldMeshDrawPlanSlot>()
-            .map_or(0, crate::world_mesh::WorldMeshDrawPlan::draw_count)
+            .map_or(0, crate::world_mesh::WorldMeshDrawPlan::draw_count);
+        let overlay = blackboard
+            .get::<WorldMeshOverlayDrawPlanSlot>()
+            .map_or(0, crate::world_mesh::WorldMeshDrawPlan::draw_count);
+        world.saturating_add(overlay)
     }
 
     fn per_view_hud_config(&self) -> PerViewHudConfig {

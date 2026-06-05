@@ -8,6 +8,7 @@ use crate::world_mesh::{
 };
 
 use super::super::view_plan::FrameViewPlan;
+use super::ViewWorldMeshDrawPlans;
 use super::queue::QueuedViewDraws;
 
 /// Queued view draw packets assigned to one sort worker.
@@ -18,7 +19,7 @@ pub(super) fn sort_view_draws(
     view_draws: Vec<QueuedViewDraws>,
     arrange_parallelism: WorldMeshDrawArrangeParallelism,
     command_cache: &WorldMeshCommandCache,
-) -> Vec<WorldMeshDrawPlan> {
+) -> Vec<ViewWorldMeshDrawPlans> {
     profiling::scope!("render::sort_view_draws");
     if should_parallelize_view_sort(&view_draws) {
         sort_view_draws_parallel(view_draws, arrange_parallelism, command_cache)
@@ -71,7 +72,7 @@ fn sort_view_draws_serial(
     view_draws: Vec<QueuedViewDraws>,
     arrange_parallelism: WorldMeshDrawArrangeParallelism,
     command_cache: &WorldMeshCommandCache,
-) -> Vec<WorldMeshDrawPlan> {
+) -> Vec<ViewWorldMeshDrawPlans> {
     profiling::scope!("render::sort_view_draws::serial");
     view_draws
         .into_iter()
@@ -83,7 +84,7 @@ fn sort_view_draws_parallel(
     view_draws: Vec<QueuedViewDraws>,
     arrange_parallelism: WorldMeshDrawArrangeParallelism,
     command_cache: &WorldMeshCommandCache,
-) -> Vec<WorldMeshDrawPlan> {
+) -> Vec<ViewWorldMeshDrawPlans> {
     profiling::scope!("render::sort_view_draws::parallel");
     if view_draws.len() == 2 {
         return sort_two_view_draws_parallel(view_draws, arrange_parallelism, command_cache);
@@ -99,7 +100,7 @@ fn sort_two_view_draws_parallel(
     view_draws: Vec<QueuedViewDraws>,
     arrange_parallelism: WorldMeshDrawArrangeParallelism,
     command_cache: &WorldMeshCommandCache,
-) -> Vec<WorldMeshDrawPlan> {
+) -> Vec<ViewWorldMeshDrawPlans> {
     profiling::scope!("render::sort_view_draws::two_view_join");
     let mut iter = view_draws.into_iter();
     let Some(first) = iter.next() else {
@@ -116,37 +117,83 @@ fn sort_two_view_draws_parallel(
     vec![first, second]
 }
 
+/// Emits trace-level draw statistics for each prepared view.
 pub(super) fn trace_view_draw_plans(
     prepared: &[FrameViewPlan<'_>],
-    draw_plans: &[WorldMeshDrawPlan],
+    draw_plans: &[ViewWorldMeshDrawPlans],
 ) {
     if !logger::enabled(logger::LogLevel::Trace) {
         return;
     }
     for (prep, draw_plan) in prepared.iter().zip(draw_plans.iter()) {
-        let Some(collection) = draw_plan.as_prefetched() else {
+        let overlay = overlay_trace_stats(draw_plan.desktop_overlay.as_ref());
+        let Some(collection) = draw_plan.world.as_prefetched() else {
             logger::trace!(
-                "render view draws: view_id={:?} extent={}x{} shader_perm={:?} empty_plan=true",
+                "render view draws: view_id={:?} extent={}x{} shader_perm={:?} empty_plan=true overlay_plan_present={} overlay_draws={} overlay_pre_cull={} overlay_frustum_culled={} overlay_hi_z_culled={}",
                 prep.view_id,
                 prep.viewport_px.0,
                 prep.viewport_px.1,
                 prep.shader_permutation(),
+                overlay.plan_present,
+                overlay.draws,
+                overlay.draws_pre_cull,
+                overlay.draws_culled,
+                overlay.draws_hi_z_culled,
             );
             continue;
         };
-        let helper_needs = draw_plan.helper_needs();
+        let helper_needs = draw_plan.world.helper_needs();
         logger::trace!(
-            "render view draws: view_id={:?} extent={}x{} shader_perm={:?} draws={} pre_cull={} frustum_culled={} hi_z_culled={} helper_depth_snapshot={} helper_color_snapshot={}",
+            "render view draws: view_id={:?} extent={}x{} shader_perm={:?} draws={} overlay_plan_present={} overlay_draws={} pre_cull={} frustum_culled={} hi_z_culled={} overlay_pre_cull={} overlay_frustum_culled={} overlay_hi_z_culled={} helper_depth_snapshot={} helper_color_snapshot={}",
             prep.view_id,
             prep.viewport_px.0,
             prep.viewport_px.1,
             prep.shader_permutation(),
             collection.items.len(),
+            overlay.plan_present,
+            overlay.draws,
             collection.draws_pre_cull,
             collection.draws_culled,
             collection.draws_hi_z_culled,
+            overlay.draws_pre_cull,
+            overlay.draws_culled,
+            overlay.draws_hi_z_culled,
             helper_needs.depth_snapshot,
             helper_needs.color_snapshot,
         );
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct OverlayTraceStats {
+    /// Whether an overlay draw plan was attached to the view.
+    pub(super) plan_present: bool,
+    /// Prefetched overlay draw item count.
+    pub(super) draws: usize,
+    /// Overlay draw count before culling.
+    pub(super) draws_pre_cull: usize,
+    /// Overlay draw count rejected by frustum culling.
+    pub(super) draws_culled: usize,
+    /// Overlay draw count rejected by Hi-Z culling.
+    pub(super) draws_hi_z_culled: usize,
+}
+
+/// Summarizes optional overlay draw-plan counters for trace diagnostics.
+pub(super) fn overlay_trace_stats(plan: Option<&WorldMeshDrawPlan>) -> OverlayTraceStats {
+    let Some(plan) = plan else {
+        return OverlayTraceStats::default();
+    };
+    let Some(collection) = plan.as_prefetched() else {
+        return OverlayTraceStats {
+            plan_present: true,
+            ..Default::default()
+        };
+    };
+    OverlayTraceStats {
+        plan_present: true,
+        draws: collection.items.len(),
+        draws_pre_cull: collection.draws_pre_cull,
+        draws_culled: collection.draws_culled,
+        draws_hi_z_culled: collection.draws_hi_z_culled,
     }
 }

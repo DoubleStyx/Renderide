@@ -104,7 +104,6 @@ pub(super) fn ztest_label(value: Option<MaterialDepthCompareOverride>) -> &'stat
         Some(MaterialDepthCompareOverride::HostValue(7)) => "gequal",
         Some(MaterialDepthCompareOverride::HostValue(8)) => "always",
         Some(MaterialDepthCompareOverride::HostValue(_)) => "invalid",
-        Some(MaterialDepthCompareOverride::Always) => "always",
         None => "pass",
     }
 }
@@ -135,13 +134,9 @@ mod tests {
         );
     }
 
-    /// Renderer-authored always-pass depth shows the same compact label as Unity `Always`.
+    /// Missing pass overrides keep their fallback label.
     #[test]
-    fn ztest_label_shows_renderer_authored_always() {
-        assert_eq!(
-            ztest_label(Some(MaterialDepthCompareOverride::Always)),
-            "always"
-        );
+    fn ztest_label_shows_missing_override_as_pass() {
         assert_eq!(ztest_label(None), "pass");
     }
 }

@@ -7,12 +7,13 @@ use crate::cpu_parallelism::{FrameCpuWorkload, FrameParallelPolicy};
 use crate::world_mesh::{
     DrawCollectionFrameCaches, DrawCollectionInputs, DrawCollectionMaterialInputs,
     DrawCollectionSceneAssets, DrawCollectionViewInputs, PrefetchedWorldMeshViewDraws,
-    QueuedWorldMeshDraws, WorldMeshCullInput, WorldMeshCullProjParams,
+    QueuedWorldMeshDraws, ViewLayerPolicy, WorldMeshCullInput, WorldMeshCullProjParams,
     WorldMeshDrawCollectParallelism, WorldMeshDrawPlan, queue_draws_with_parallelism,
     queue_prepared_draws_for_views_with_parallelism,
 };
 
 use super::super::view_plan::FrameViewPlan;
+use super::ViewWorldMeshDrawPlans;
 use super::cull::ViewCullSnapshot;
 
 /// Prepared view plans assigned to one draw-collection worker.
@@ -20,8 +21,10 @@ const VIEW_COLLECTION_PARALLEL_CHUNK_VIEWS: usize = 1;
 
 /// Queued draw candidates and cull projection for one view.
 pub(super) struct QueuedViewDraws {
-    /// Draw candidates before final phase sorting.
-    queued: QueuedWorldMeshDraws,
+    /// Regular camera-world draw candidates before final phase sorting.
+    world: QueuedWorldMeshDraws,
+    /// Desktop overlay draw candidates before final phase sorting.
+    desktop_overlay: Option<QueuedWorldMeshDraws>,
     /// Projection parameters matching the view's camera/viewport.
     cull_proj: Option<WorldMeshCullProjParams>,
 }
@@ -29,7 +32,11 @@ pub(super) struct QueuedViewDraws {
 impl QueuedViewDraws {
     /// Number of queued draw candidates before final sorting and arrangement.
     pub(super) fn queued_draw_count(&self) -> usize {
-        self.queued.len()
+        self.world.len()
+            + self
+                .desktop_overlay
+                .as_ref()
+                .map_or(0, QueuedWorldMeshDraws::len)
     }
 
     /// Sorts this view's queued draws and packages the final draw plan.
@@ -37,15 +44,33 @@ impl QueuedViewDraws {
         self,
         parallelism: crate::world_mesh::WorldMeshDrawArrangeParallelism,
         command_cache: &crate::world_mesh::WorldMeshCommandCache,
-    ) -> WorldMeshDrawPlan {
-        let collection = self
-            .queued
-            .sort_and_arrange_with_cache(parallelism, Some(command_cache));
-        WorldMeshDrawPlan::Prefetched(Box::new(PrefetchedWorldMeshViewDraws::new(
-            collection,
+    ) -> ViewWorldMeshDrawPlans {
+        let world = sort_and_package_one_view_draw_plan(
+            self.world,
             self.cull_proj.as_ref(),
-        )))
+            parallelism,
+            command_cache,
+        );
+        let desktop_overlay = self.desktop_overlay.map(|queued| {
+            sort_and_package_one_view_draw_plan(queued, None, parallelism, command_cache)
+        });
+        ViewWorldMeshDrawPlans {
+            world,
+            desktop_overlay,
+        }
     }
+}
+
+fn sort_and_package_one_view_draw_plan(
+    queued: QueuedWorldMeshDraws,
+    cull_proj: Option<&WorldMeshCullProjParams>,
+    parallelism: crate::world_mesh::WorldMeshDrawArrangeParallelism,
+    command_cache: &crate::world_mesh::WorldMeshCommandCache,
+) -> WorldMeshDrawPlan {
+    let collection = queued.sort_and_arrange_with_cache(parallelism, Some(command_cache));
+    WorldMeshDrawPlan::Prefetched(Box::new(PrefetchedWorldMeshViewDraws::new(
+        collection, cull_proj,
+    )))
 }
 
 /// Queues world-mesh draws for every prepared view in parallel.
@@ -67,12 +92,7 @@ pub(super) fn queue_view_draws(
         profiling::scope!("queue::shared_dictionary");
         crate::materials::host_data::MaterialDictionary::new(setup.property_store)
     };
-    let max_prepared_draw_count = prepared
-        .iter()
-        .filter_map(|prep| setup.prepared_renderables_for(prep.render_context()))
-        .map(crate::world_mesh::FramePreparedRenderables::len)
-        .max()
-        .unwrap_or(0);
+    let max_prepared_draw_count = max_prepared_draw_count_for_views(setup, prepared);
     let inner_parallelism = select_inner_parallelism_for_prepared_work(
         prepared.len(),
         max_prepared_draw_count,
@@ -80,24 +100,7 @@ pub(super) fn queue_view_draws(
     );
     let parallelize_views =
         should_parallelize_view_collection(prepared.len(), max_prepared_draw_count);
-    let mut cull_inputs = Vec::with_capacity(prepared.len());
-    let mut cull_projs = Vec::with_capacity(prepared.len());
-    {
-        profiling::scope!("render::queue_view_draws::build_cull_inputs");
-        let mut snapshots = cull_snapshots.into_iter();
-        for prep in prepared {
-            let snap = snapshots.next().unwrap_or(None);
-            let cull_proj = snap.as_ref().map(|s| s.proj);
-            let culling = snap.map(|s| WorldMeshCullInput {
-                proj: s.proj,
-                host_camera: &prep.host_camera,
-                hi_z: s.hi_z,
-                hi_z_temporal: s.hi_z_temporal,
-            });
-            cull_projs.push(cull_proj);
-            cull_inputs.push(culling);
-        }
-    }
+    let (cull_inputs, cull_projs) = build_view_cull_inputs(prepared, cull_snapshots);
     let contexts = {
         profiling::scope!("render::queue_view_draws::build_contexts");
         prepared
@@ -140,16 +143,133 @@ pub(super) fn queue_view_draws(
             })
             .collect::<Vec<_>>()
     };
-    if let Some(queued) =
+    let mut view_draws = if let Some(queued) =
         queue_prepared_draws_for_views_with_parallelism(&contexts, inner_parallelism)
     {
-        return queued
+        queued
             .into_iter()
             .zip(cull_projs)
-            .map(|(queued, cull_proj)| QueuedViewDraws { queued, cull_proj })
-            .collect();
+            .map(|(world, cull_proj)| QueuedViewDraws {
+                world,
+                desktop_overlay: None,
+                cull_proj,
+            })
+            .collect()
+    } else {
+        collect_view_draws_with_strategy(
+            &contexts,
+            &cull_projs,
+            parallelize_views,
+            inner_parallelism,
+        )
+    };
+    queue_desktop_overlay_draws(
+        setup,
+        prepared,
+        &dict,
+        mesh_lod_bias,
+        inner_parallelism,
+        &mut view_draws,
+    );
+    view_draws
+}
+
+fn max_prepared_draw_count_for_views(
+    setup: &ExtractedFrameShared<'_>,
+    prepared: &[FrameViewPlan<'_>],
+) -> usize {
+    prepared
+        .iter()
+        .filter_map(|prep| setup.prepared_renderables_for(prep.render_context()))
+        .map(crate::world_mesh::FramePreparedRenderables::len)
+        .max()
+        .unwrap_or(0)
+}
+
+fn build_view_cull_inputs<'a>(
+    prepared: &'a [FrameViewPlan<'_>],
+    cull_snapshots: Vec<Option<ViewCullSnapshot>>,
+) -> (
+    Vec<Option<WorldMeshCullInput<'a>>>,
+    Vec<Option<WorldMeshCullProjParams>>,
+) {
+    profiling::scope!("render::queue_view_draws::build_cull_inputs");
+    let mut cull_inputs = Vec::with_capacity(prepared.len());
+    let mut cull_projs = Vec::with_capacity(prepared.len());
+    let mut snapshots = cull_snapshots.into_iter();
+    for prep in prepared {
+        let snap = snapshots.next().unwrap_or(None);
+        let cull_proj = snap.as_ref().map(|s| s.proj);
+        let culling = snap.map(|s| WorldMeshCullInput {
+            proj: s.proj,
+            host_camera: &prep.host_camera,
+            hi_z: s.hi_z,
+            hi_z_temporal: s.hi_z_temporal,
+        });
+        cull_projs.push(cull_proj);
+        cull_inputs.push(culling);
     }
-    collect_view_draws_with_strategy(&contexts, &cull_projs, parallelize_views, inner_parallelism)
+    (cull_inputs, cull_projs)
+}
+
+fn queue_desktop_overlay_draws(
+    setup: &ExtractedFrameShared<'_>,
+    prepared: &[FrameViewPlan<'_>],
+    dict: &crate::materials::host_data::MaterialDictionary<'_>,
+    mesh_lod_bias: f32,
+    parallelism: WorldMeshDrawCollectParallelism,
+    view_draws: &mut [QueuedViewDraws],
+) {
+    profiling::scope!("render::queue_view_draws::desktop_overlay");
+    for (index, prep) in prepared.iter().enumerate() {
+        if prep.desktop_overlay_resource_view_id().is_none() {
+            continue;
+        }
+        let shader_perm = prep.shader_permutation();
+        let render_context = prep.render_context();
+        let material_cache = {
+            profiling::scope!("render::queue_view_draws::desktop_overlay::material_cache_lookup");
+            setup.material_cache_for(render_context, shader_perm)
+        };
+        let ctx = DrawCollectionInputs {
+            scene_assets: DrawCollectionSceneAssets {
+                scene: setup.scene,
+                mesh_pool: setup.mesh_pool,
+            },
+            materials: DrawCollectionMaterialInputs {
+                dict,
+                router: setup.router,
+                pipeline_property_ids: &setup.pipeline_property_ids,
+                shader_perm,
+            },
+            view: desktop_overlay_view_inputs(prep, mesh_lod_bias),
+            caches: DrawCollectionFrameCaches {
+                material_cache,
+                prepared: setup.prepared_renderables_for(render_context),
+            },
+        };
+        if let Some(view_draws) = view_draws.get_mut(index) {
+            view_draws.desktop_overlay = Some(queue_draws_with_parallelism(&ctx, parallelism));
+        }
+    }
+}
+
+/// Builds overlay draw-collection inputs for the desktop overlay pass.
+pub(super) fn desktop_overlay_view_inputs<'a>(
+    prep: &FrameViewPlan<'_>,
+    mesh_lod_bias: f32,
+) -> DrawCollectionViewInputs<'a> {
+    DrawCollectionViewInputs {
+        render_context: prep.render_context(),
+        head_output_transform: prep.host_camera.head_output_transform,
+        view_origin_world: prep.view_origin_world(),
+        culling: None,
+        mesh_lod_bias,
+        transform_filter: None,
+        render_space_filter: None,
+        layer_policy: ViewLayerPolicy::DesktopOverlay,
+        reflection_probes: None,
+    }
 }
 
 /// Queues one view through the general draw-collection path.
@@ -161,7 +281,8 @@ fn collect_one_view_draws(
     profiling::scope!("render::queue_view_draws::queue_one");
     let queued = queue_draws_with_parallelism(ctx, parallelism);
     QueuedViewDraws {
-        queued,
+        world: queued,
+        desktop_overlay: None,
         cull_proj: cull_proj.copied(),
     }
 }

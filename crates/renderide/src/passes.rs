@@ -24,9 +24,10 @@ pub(crate) use scene_color_compose::{SceneColorComposeGraphResources, SceneColor
 pub(crate) use world_mesh_forward::ForwardMsaaResources;
 pub(crate) use world_mesh_forward::{
     GTAO_VIEW_NORMAL_FORMAT, MaterialBatchBoundary, PreparedWorldMeshForwardFrame,
-    WorldMeshDepthSnapshotPass, WorldMeshForwardDepthPrepass,
-    WorldMeshForwardDepthPrepassGraphResources, WorldMeshForwardDepthPrepassPipelineKey,
-    WorldMeshForwardDepthResolvePass, WorldMeshForwardEncodeRefs, WorldMeshForwardGraphResources,
+    WorldMeshDepthSnapshotPass, WorldMeshDesktopOverlayGraphResources, WorldMeshDesktopOverlayPass,
+    WorldMeshForwardDepthPrepass, WorldMeshForwardDepthPrepassGraphResources,
+    WorldMeshForwardDepthPrepassPipelineKey, WorldMeshForwardDepthResolvePass,
+    WorldMeshForwardEncodeRefs, WorldMeshForwardGraphResources,
     WorldMeshForwardGtaoDepthResolvePass, WorldMeshForwardInstancePlanCache,
     WorldMeshForwardInstancePlanCacheStats, WorldMeshForwardIntersectPass,
     WorldMeshForwardNormalGraphResources, WorldMeshForwardNormalPass,
@@ -34,6 +35,7 @@ pub(crate) use world_mesh_forward::{
     WorldMeshForwardPlanSlot, WorldMeshForwardPrepareCaches, WorldMeshForwardPrepareGpu,
     WorldMeshForwardPrepareInputs, WorldMeshForwardPrepareScratch, WorldMeshForwardPrepareView,
     WorldMeshForwardSkyboxRenderer, WorldMeshForwardTransparentSequencePass,
-    depth_prepass_pipeline_key_for_draw, normal_pipeline_key_for_draw,
-    pre_warm_depth_prepass_pipeline, pre_warm_normal_pipeline, prepare_world_mesh_forward_frame,
+    WorldMeshOverlayForwardPlanSlot, depth_prepass_pipeline_key_for_draw,
+    normal_pipeline_key_for_draw, pre_warm_depth_prepass_pipeline, pre_warm_normal_pipeline,
+    prepare_world_mesh_forward_frame,
 };

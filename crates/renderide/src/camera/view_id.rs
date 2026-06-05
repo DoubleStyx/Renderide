@@ -98,6 +98,8 @@ impl ReflectionProbeRenderTaskViewId {
 pub enum ViewId {
     /// Main window or OpenXR multiview (shared primary-view state).
     Main,
+    /// Desktop dashboard overlay camera pass for the main window.
+    MainOverlay,
     /// Secondary camera, tracked independently from the render target asset it writes.
     SecondaryCamera(SecondaryCameraId),
     /// One-shot host camera readback task view.
@@ -152,7 +154,7 @@ impl ViewId {
     /// Render space that owns this view, when the view is scoped to one host render space.
     pub const fn render_space_id(self) -> Option<RenderSpaceId> {
         match self {
-            Self::Main => None,
+            Self::Main | Self::MainOverlay => None,
             Self::SecondaryCamera(id) => Some(id.render_space_id),
             Self::CameraRenderTask(id) => Some(id.render_space_id),
             Self::Camera360RenderTaskFace(id) => Some(id.render_space_id),

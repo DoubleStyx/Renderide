@@ -27,7 +27,7 @@ pub(crate) use handles::MainGraphPostProcessingResources;
 use default_chain::build_default_post_processing_chain;
 use edges::add_main_graph_edges;
 use handles::{MainGraphHandles, import_main_graph_resources};
-use passes::register_main_graph_passes;
+use passes::{main_desktop_overlay_resources, register_main_graph_passes};
 
 /// Declares blackboard slots that graph preparation seeds before per-view pass recording.
 fn seed_main_graph_blackboard(builder: &mut GraphBuilder) {
@@ -36,6 +36,9 @@ fn seed_main_graph_blackboard(builder: &mut GraphBuilder) {
         "per-view graph resource resolution",
     );
     builder.seed_blackboard::<crate::passes::WorldMeshForwardPlanSlot>("world-mesh frame planning");
+    builder.seed_blackboard::<crate::passes::WorldMeshOverlayForwardPlanSlot>(
+        "world-mesh desktop overlay planning",
+    );
     builder.seed_blackboard::<crate::passes::post_processing::settings_slots::GtaoSettingsSlot>(
         "live post-processing settings",
     );
@@ -85,7 +88,16 @@ fn add_main_graph_passes_and_edges(
             frame_color: h.color,
         },
     )));
-    add_main_graph_edges(&mut builder, &passes, chain_output, compose);
+    let desktop_overlay = builder.add_raster_pass(Box::new(
+        crate::passes::WorldMeshDesktopOverlayPass::new(main_desktop_overlay_resources(&h)),
+    ));
+    add_main_graph_edges(
+        &mut builder,
+        &passes,
+        chain_output,
+        compose,
+        desktop_overlay,
+    );
     builder.build()
 }
 

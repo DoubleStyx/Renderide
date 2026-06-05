@@ -226,7 +226,9 @@ impl RendererRuntime {
         );
         trace_prepared_views(prepared.plans());
         self.backend
-            .sync_active_views(prepared.plans().iter().map(|view| view.view_id));
+            .sync_active_views(prepared.plans().iter().flat_map(|view| {
+                std::iter::once(view.view_id).chain(view.desktop_overlay_resource_view_id())
+            }));
         PreparedViews::new(prepared)
     }
 }

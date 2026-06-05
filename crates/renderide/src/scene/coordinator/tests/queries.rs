@@ -4,6 +4,7 @@
 
 use glam::{Mat4, Quat, Vec3};
 
+use crate::assets::texture::{HostTextureAssetKind, pack_host_texture_id};
 use crate::camera::{view_matrix_for_world_mesh_render_space, view_matrix_from_render_transform};
 use crate::color_space::DEFAULT_SKYBOX_CLEAR_COLOR;
 use crate::scene::CameraRenderableEntry;
@@ -34,6 +35,23 @@ fn initialized_blit(state: BlitToDisplayState) -> BlitToDisplayEntry {
     BlitToDisplayEntry {
         state,
         state_initialized: true,
+    }
+}
+
+fn dashboard_camera_entry(render_texture_asset_id: i32, depth: f32) -> CameraRenderableEntry {
+    CameraRenderableEntry {
+        renderable_index: 0,
+        transform_id: 0,
+        state: CameraState {
+            projection: CameraProjection::Orthographic,
+            render_texture_asset_id,
+            selective_render_count: 1,
+            depth,
+            flags: 1,
+            ..Default::default()
+        },
+        selective_transform_ids: vec![5],
+        exclude_transform_ids: Vec::new(),
     }
 }
 
@@ -195,10 +213,7 @@ fn active_blit_for_display_skips_inactive_uninitialized_and_invalid_sources() {
 }
 
 #[test]
-fn active_blit_for_display_ignores_overlay_dash_camera() {
-    // Regression: the desktop dash camera (overlay render-space + orthographic + selective RT)
-    // must NOT synthesize a synthetic blit. The CurvedPlaneMeshes draw through the overlay-layer
-    // mesh path in `world_mesh_forward`, not a fullscreen blit of the dash RT.
+fn active_blit_for_display_includes_overlay_render_spaces() {
     let mut scene = SceneCoordinator::new();
     let overlay = RenderSpaceId(3);
     scene.spaces.insert(
@@ -207,19 +222,29 @@ fn active_blit_for_display_ignores_overlay_dash_camera() {
             id: overlay,
             is_active: true,
             is_overlay: true,
-            cameras: vec![CameraRenderableEntry {
-                renderable_index: 0,
-                transform_id: 0,
-                state: CameraState {
-                    projection: CameraProjection::Orthographic,
-                    render_texture_asset_id: 77,
-                    selective_render_count: 1,
-                    flags: 1,
-                    ..Default::default()
-                },
-                selective_transform_ids: vec![5],
-                exclude_transform_ids: Vec::new(),
-            }],
+            blit_to_displays: vec![initialized_blit(blit_state(0, 0, 77))],
+            ..Default::default()
+        },
+    );
+
+    let state = scene
+        .active_blit_for_display(0)
+        .expect("explicit overlay-space blit");
+
+    assert_eq!(state.texture_id, 77);
+}
+
+#[test]
+fn active_blit_for_display_does_not_synthesize_dashboard_camera() {
+    let mut scene = SceneCoordinator::new();
+    let overlay = RenderSpaceId(3);
+    scene.spaces.insert(
+        overlay,
+        RenderSpaceState {
+            id: overlay,
+            is_active: true,
+            is_overlay: true,
+            cameras: vec![dashboard_camera_entry(77, 0.0)],
             ..Default::default()
         },
     );
@@ -229,7 +254,7 @@ fn active_blit_for_display_ignores_overlay_dash_camera() {
 }
 
 #[test]
-fn desktop_blit_for_display_uses_skybox_clear_for_synthesized_dash_blit() {
+fn desktop_blit_for_display_synthesizes_overlay_dashboard_camera_for_display_zero() {
     let mut scene = SceneCoordinator::new();
     let overlay = RenderSpaceId(3);
     scene.spaces.insert(
@@ -238,29 +263,111 @@ fn desktop_blit_for_display_uses_skybox_clear_for_synthesized_dash_blit() {
             id: overlay,
             is_active: true,
             is_overlay: true,
-            cameras: vec![CameraRenderableEntry {
-                renderable_index: 0,
-                transform_id: 0,
-                state: CameraState {
-                    projection: CameraProjection::Orthographic,
-                    render_texture_asset_id: 77,
-                    selective_render_count: 1,
-                    flags: 1,
-                    ..Default::default()
-                },
-                selective_transform_ids: vec![5],
-                exclude_transform_ids: Vec::new(),
-            }],
+            cameras: vec![dashboard_camera_entry(77, 0.0)],
             ..Default::default()
         },
     );
 
     let state = scene
         .desktop_blit_for_display(0)
-        .expect("primary desktop display should synthesize dashboard blit");
+        .expect("dashboard camera should synthesize desktop display source");
 
+    assert!(state.texture_id >= 0);
+    assert_eq!(state.renderable_index, -1);
+    assert_eq!(state.display_index, 0);
     assert_eq!(state.background_color, DEFAULT_SKYBOX_CLEAR_COLOR);
     assert!(scene.desktop_blit_for_display(1).is_none());
+}
+
+#[test]
+fn desktop_blit_for_display_prefers_explicit_blit_over_dashboard_camera() {
+    let mut scene = SceneCoordinator::new();
+    let overlay = RenderSpaceId(3);
+    scene.spaces.insert(
+        overlay,
+        RenderSpaceState {
+            id: overlay,
+            is_active: true,
+            is_overlay: true,
+            blit_to_displays: vec![initialized_blit(blit_state(0, 0, 555))],
+            cameras: vec![dashboard_camera_entry(77, -10.0)],
+            ..Default::default()
+        },
+    );
+
+    let state = scene
+        .desktop_blit_for_display(0)
+        .expect("explicit blit should be present");
+
+    assert_eq!(state.texture_id, 555);
+}
+
+#[test]
+fn desktop_blit_for_display_uses_lowest_depth_dashboard_camera() {
+    let mut scene = SceneCoordinator::new();
+    let overlay = RenderSpaceId(3);
+    scene.spaces.insert(
+        overlay,
+        RenderSpaceState {
+            id: overlay,
+            is_active: true,
+            is_overlay: true,
+            cameras: vec![
+                dashboard_camera_entry(77, 5.0),
+                dashboard_camera_entry(88, -1.0),
+            ],
+            ..Default::default()
+        },
+    );
+
+    let state = scene
+        .desktop_blit_for_display(0)
+        .expect("dashboard camera should synthesize desktop display source");
+    let expected = pack_host_texture_id(88, HostTextureAssetKind::RenderTexture)
+        .expect("packed render texture id");
+
+    assert_eq!(state.texture_id, expected);
+}
+
+#[test]
+fn desktop_blit_for_display_rejects_non_dashboard_cameras() {
+    fn synthetic_for(mut camera: CameraRenderableEntry, is_active: bool, is_overlay: bool) -> bool {
+        let mut scene = SceneCoordinator::new();
+        let space_id = RenderSpaceId(3);
+        camera.selective_transform_ids = vec![5];
+        scene.spaces.insert(
+            space_id,
+            RenderSpaceState {
+                id: space_id,
+                is_active,
+                is_overlay,
+                cameras: vec![camera],
+                ..Default::default()
+            },
+        );
+        scene.desktop_blit_for_display(0).is_some()
+    }
+
+    let valid = dashboard_camera_entry(77, 0.0);
+    assert!(!synthetic_for(valid.clone(), false, true));
+    assert!(!synthetic_for(valid.clone(), true, false));
+
+    let mut disabled = valid.clone();
+    disabled.state.flags = 0;
+    assert!(!synthetic_for(disabled, true, true));
+
+    let mut perspective = valid.clone();
+    perspective.state.projection = CameraProjection::Perspective;
+    assert!(!synthetic_for(perspective, true, true));
+
+    let mut missing_rt = valid.clone();
+    missing_rt.state.render_texture_asset_id = -1;
+    assert!(!synthetic_for(missing_rt, true, true));
+
+    let mut non_selective = valid;
+    non_selective.state.selective_render_count = 0;
+    non_selective.selective_transform_ids.clear();
+    assert!(!synthetic_for(non_selective, true, true));
 }
 
 #[test]

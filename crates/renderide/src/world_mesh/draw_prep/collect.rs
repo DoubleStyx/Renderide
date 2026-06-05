@@ -185,7 +185,8 @@ pub struct DrawCollectionFrameCaches<'a> {
 /// Unity layer visibility behavior applied while collecting draws for one view.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ViewLayerPolicy {
-    /// Main-view and reflection-probe style rendering.
+    /// Regular world rendering. Hidden and overlay roots are excluded unless a selective camera
+    /// transform filter explicitly exposes them.
     #[default]
     MainView,
     /// Host camera rendering with camera culling masks and private-UI opt-in.
@@ -193,6 +194,8 @@ pub enum ViewLayerPolicy {
         /// Whether private render spaces are visible to a non-selective camera.
         render_private_ui: bool,
     },
+    /// Desktop overlay camera rendering. Only overlay roots are included.
+    DesktopOverlay,
 }
 
 impl ViewLayerPolicy {
@@ -205,6 +208,7 @@ impl ViewLayerPolicy {
         match self {
             Self::MainView => true,
             Self::Camera { render_private_ui } => has_selective_roots || render_private_ui,
+            Self::DesktopOverlay => true,
         }
     }
 
@@ -213,18 +217,21 @@ impl ViewLayerPolicy {
         special_layer: Option<LayerType>,
         has_selective_roots: bool,
     ) -> bool {
-        match special_layer {
-            Some(LayerType::Hidden) => has_selective_roots,
-            Some(LayerType::Overlay) => match self {
-                Self::MainView => true,
-                Self::Camera { .. } => has_selective_roots,
+        match self {
+            Self::MainView => match special_layer {
+                Some(LayerType::Hidden | LayerType::Overlay) => has_selective_roots,
+                _ => true,
             },
-            _ => true,
+            Self::Camera { .. } => match special_layer {
+                Some(LayerType::Hidden | LayerType::Overlay) => has_selective_roots,
+                _ => true,
+            },
+            Self::DesktopOverlay => matches!(special_layer, Some(LayerType::Overlay)),
         }
     }
 
     fn effective_overlay(self, is_overlay: bool) -> bool {
-        is_overlay && matches!(self, Self::MainView)
+        is_overlay && !matches!(self, Self::Camera { .. })
     }
 }
 
