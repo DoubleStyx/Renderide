@@ -39,6 +39,8 @@ pub(crate) struct WorldMeshForwardPipelineState {
     pub pass_desc: MaterialPipelineDesc,
     /// Shader permutation used by material pipeline lookup.
     pub shader_perm: ShaderPermutation,
+    /// Whether this view flips front-face winding before draw-local transform parity is applied.
+    pub front_face_flip: bool,
 }
 
 /// Per-view forward-pass preparation shared by split graph nodes.

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use hashbrown::{HashMap, HashSet};
 
 use crate::assets::mesh::{MeshDerivedStreamDemand, MeshDerivedStreamMask};
-use crate::graph_inputs::PreRecordViewResourceLayout;
+use crate::graph_inputs::{OffscreenWriteTarget, PreRecordViewResourceLayout, ViewWinding};
 use crate::materials::{
     EmbeddedTangentFallbackMode, MaterialPipelineDesc, MaterialPipelineVariantSpec,
     RasterPipelineKind, SHADER_PERM_MULTIVIEW_STEREO, ShaderPermutation,
@@ -221,6 +221,21 @@ impl PipelineWarmupTargets {
     }
 }
 
+fn warmup_write_target_for_pipeline(target: PipelineWarmupTarget) -> OffscreenWriteTarget {
+    if target.offscreen {
+        OffscreenWriteTarget::Untracked
+    } else {
+        OffscreenWriteTarget::None
+    }
+}
+
+fn front_face_flip_for_warmup_target(
+    view_winding: ViewWinding,
+    target: PipelineWarmupTarget,
+) -> bool {
+    view_winding.flips_front_face_for(warmup_write_target_for_pipeline(target))
+}
+
 fn material_warmup_targets_for_layout(
     layout: PreRecordViewResourceLayout,
     supports_multiview: bool,
@@ -270,17 +285,12 @@ struct WorldMeshPrepassPipelineWarmupKeys {
 }
 
 impl WorldMeshPrepassPipelineWarmupKeys {
-    fn record_item(
-        &mut self,
-        item: &WorldMeshDrawItem,
-        pipeline: &WorldMeshForwardPipelineState,
-        offscreen: bool,
-    ) {
+    fn record_item(&mut self, item: &WorldMeshDrawItem, pipeline: &WorldMeshForwardPipelineState) {
         if let Some(key) = depth_prepass_pipeline_key_for_draw(item, pipeline) {
             self.depth.insert(key);
         }
         if world_mesh_item_mirrors_to_normal_prepass(item)
-            && let Some(key) = normal_pipeline_key_for_draw(item, pipeline, offscreen)
+            && let Some(key) = normal_pipeline_key_for_draw(item, pipeline)
         {
             self.normal.insert(key);
         }
@@ -349,12 +359,13 @@ impl<'a> BackendGraphAccess<'a> {
                 .gpu_limits
                 .as_ref()
                 .is_some_and(|limits| limits.supports_multiview);
-            let offscreen = matches!(view.target, FrameViewTarget::OffscreenRt(_));
+            let active_offscreen = matches!(view.target, FrameViewTarget::OffscreenRt(_));
             self.pre_warm_material_draw_plan(
                 view.initial_blackboard.get::<WorldMeshDrawPlanSlot>(),
                 layout,
                 supports_multiview,
-                offscreen,
+                active_offscreen,
+                view.view_winding,
                 &mut warmed_pipelines,
                 &mut warmed_embedded_stems,
             );
@@ -372,7 +383,8 @@ impl<'a> BackendGraphAccess<'a> {
                         .get::<WorldMeshOverlayDrawPlanSlot>(),
                     overlay_layout,
                     supports_multiview,
-                    offscreen,
+                    active_offscreen,
+                    view.view_winding,
                     &mut warmed_pipelines,
                     &mut warmed_embedded_stems,
                 );
@@ -390,7 +402,8 @@ impl<'a> BackendGraphAccess<'a> {
         draw_plan: Option<&crate::world_mesh::WorldMeshDrawPlan>,
         layout: PreRecordViewResourceLayout,
         supports_multiview: bool,
-        offscreen: bool,
+        active_offscreen: bool,
+        view_winding: ViewWinding,
         warmed_pipelines: &mut HashSet<MaterialPipelineWarmupKey>,
         warmed_embedded_stems: &mut HashSet<Arc<str>>,
     ) {
@@ -399,12 +412,13 @@ impl<'a> BackendGraphAccess<'a> {
         else {
             return;
         };
-        let targets = material_warmup_targets_for_layout(layout, supports_multiview, offscreen);
+        let targets =
+            material_warmup_targets_for_layout(layout, supports_multiview, active_offscreen);
         let mut item_index = 0usize;
         while let Some(item) = collection.items.get(item_index) {
             for target in targets.iter() {
                 let mut front_face = item.batch_key.front_face;
-                if target.offscreen {
+                if front_face_flip_for_warmup_target(view_winding, target) {
                     front_face = front_face.flipped();
                 }
                 let variant = MaterialPipelineVariantSpec {
@@ -460,16 +474,21 @@ impl<'a> BackendGraphAccess<'a> {
                 .gpu_limits
                 .as_ref()
                 .is_some_and(|limits| limits.supports_multiview);
-            let offscreen = matches!(view.target, FrameViewTarget::OffscreenRt(_));
-            let targets = material_warmup_targets_for_layout(layout, supports_multiview, offscreen);
+            let active_offscreen = matches!(view.target, FrameViewTarget::OffscreenRt(_));
+            let targets =
+                material_warmup_targets_for_layout(layout, supports_multiview, active_offscreen);
             for target in targets.iter() {
                 let pipeline = WorldMeshForwardPipelineState {
                     use_multiview: target.pass_desc.multiview_mask.is_some(),
                     pass_desc: target.pass_desc,
                     shader_perm: target.shader_perm,
+                    front_face_flip: front_face_flip_for_warmup_target(
+                        view.view_winding,
+                        target,
+                    ),
                 };
                 for item in &collection.items {
-                    keys.record_item(item, &pipeline, target.offscreen);
+                    keys.record_item(item, &pipeline);
                 }
             }
         }
@@ -623,6 +642,7 @@ mod tests {
             use_multiview: target.pass_desc.multiview_mask.is_some(),
             pass_desc: target.pass_desc,
             shader_perm: target.shader_perm,
+            front_face_flip: front_face_flip_for_warmup_target(ViewWinding::normal(), target),
         }
     }
 
@@ -636,6 +656,7 @@ mod tests {
                 multiview_mask: None,
             },
             shader_perm: ShaderPermutation(0),
+            front_face_flip: false,
         }
     }
 
@@ -703,8 +724,8 @@ mod tests {
         let item = draw(1);
         let mut keys = WorldMeshPrepassPipelineWarmupKeys::default();
 
-        keys.record_item(&item, &pipeline, false);
-        keys.record_item(&item, &pipeline, false);
+        keys.record_item(&item, &pipeline);
+        keys.record_item(&item, &pipeline);
 
         assert_eq!(keys.depth.len(), 1);
         assert_eq!(keys.normal.len(), 1);
@@ -716,10 +737,13 @@ mod tests {
         let item = draw(1);
         let mut keys = WorldMeshPrepassPipelineWarmupKeys::default();
 
-        keys.record_item(&item, &pipeline, false);
-        keys.record_item(&item, &pipeline, true);
+        let mut flipped_pipeline = pipeline_state();
+        flipped_pipeline.front_face_flip = true;
 
-        assert_eq!(keys.depth.len(), 1);
+        keys.record_item(&item, &pipeline);
+        keys.record_item(&item, &flipped_pipeline);
+
+        assert_eq!(keys.depth.len(), 2);
         assert_eq!(keys.normal.len(), 2);
     }
 
@@ -731,8 +755,8 @@ mod tests {
 
         for target in targets {
             let pipeline = pipeline_state_for_target(target);
-            keys.record_item(&item, &pipeline, target.offscreen);
-            keys.record_item(&item, &pipeline, target.offscreen);
+            keys.record_item(&item, &pipeline);
+            keys.record_item(&item, &pipeline);
         }
 
         assert_eq!(keys.depth.len(), 2);

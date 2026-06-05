@@ -38,6 +38,7 @@ pub(super) fn resolve_pass_config(
     depth_stencil_format: wgpu::TextureFormat,
     gpu_limits: &GpuLimits,
     sample_count: u32,
+    front_face_flip: bool,
 ) -> WorldMeshForwardPipelineState {
     let use_multiview =
         multiview_stereo && hc.active_stereo().is_some() && gpu_limits.supports_multiview;
@@ -65,6 +66,7 @@ pub(super) fn resolve_pass_config(
         use_multiview,
         pass_desc,
         shader_perm,
+        front_face_flip,
     }
 }
 

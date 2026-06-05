@@ -27,6 +27,26 @@ impl SecondaryCameraId {
     }
 }
 
+/// Stable logical identity for one camera portal view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct CameraPortalId {
+    /// Render space containing the camera portal.
+    pub render_space_id: RenderSpaceId,
+    /// Dense host camera-portal renderable index within the render space.
+    pub renderable_index: i32,
+}
+
+impl CameraPortalId {
+    /// Builds a camera-portal id from the host render-space and dense portal row.
+    #[inline]
+    pub const fn new(render_space_id: RenderSpaceId, renderable_index: i32) -> Self {
+        Self {
+            render_space_id,
+            renderable_index,
+        }
+    }
+}
+
 /// Stable logical identity for one host camera readback task view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CameraRenderTaskViewId {
@@ -102,6 +122,8 @@ pub enum ViewId {
     MainOverlay,
     /// Secondary camera, tracked independently from the render target asset it writes.
     SecondaryCamera(SecondaryCameraId),
+    /// Camera portal, tracked independently from the render target asset it writes.
+    CameraPortal(CameraPortalId),
     /// One-shot host camera readback task view.
     CameraRenderTask(CameraRenderTaskViewId),
     /// One-shot Camera360 cubemap bake face view.
@@ -115,6 +137,12 @@ impl ViewId {
     #[inline]
     pub const fn secondary_camera(render_space_id: RenderSpaceId, renderable_index: i32) -> Self {
         Self::SecondaryCamera(SecondaryCameraId::new(render_space_id, renderable_index))
+    }
+
+    /// Builds the stable logical identity for one camera portal view.
+    #[inline]
+    pub const fn camera_portal(render_space_id: RenderSpaceId, renderable_index: i32) -> Self {
+        Self::CameraPortal(CameraPortalId::new(render_space_id, renderable_index))
     }
 
     /// Builds the stable logical identity for one camera readback task view.
@@ -156,6 +184,7 @@ impl ViewId {
         match self {
             Self::Main | Self::MainOverlay => None,
             Self::SecondaryCamera(id) => Some(id.render_space_id),
+            Self::CameraPortal(id) => Some(id.render_space_id),
             Self::CameraRenderTask(id) => Some(id.render_space_id),
             Self::Camera360RenderTaskFace(id) => Some(id.render_space_id),
             Self::ReflectionProbeRenderTask(id) => Some(id.render_space_id),

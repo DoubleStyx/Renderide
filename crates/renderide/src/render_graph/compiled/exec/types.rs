@@ -8,7 +8,7 @@ use crate::diagnostics::PerViewHudOutputs;
 use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
 use crate::graph_inputs::{
     FrameSystemsShared, FrameViewClear, GraphPassFrame, GraphPassFrameView, OffscreenWriteTarget,
-    PerViewFramePlan,
+    PerViewFramePlan, ViewWinding,
 };
 use crate::occlusion::gpu::HiZGpuState;
 use crate::scene::SceneCoordinator;
@@ -122,6 +122,8 @@ pub(super) struct OwnedResolvedView {
     pub(super) multiview_stereo: bool,
     /// Offscreen target currently being written by this view.
     pub(super) offscreen_write_target: OffscreenWriteTarget,
+    /// Per-view winding policy before draw-local transform parity is applied.
+    pub(super) view_winding: ViewWinding,
     /// Stable occlusion slot for the view.
     pub(super) view_id: ViewId,
     /// Effective sample count for the view.
@@ -143,6 +145,7 @@ impl OwnedResolvedView {
             viewport_px: self.viewport_px,
             multiview_stereo: self.multiview_stereo,
             offscreen_write_target: self.offscreen_write_target,
+            view_winding: self.view_winding,
             view_id: self.view_id,
             sample_count: self.sample_count,
             post_processing: self.post_processing,
@@ -236,6 +239,7 @@ impl PreparedPerViewFrameInput {
                 frame_time_seconds: inputs.frame_time_seconds,
                 multiview_stereo: inputs.resolved.multiview_stereo,
                 offscreen_write_target: inputs.resolved.offscreen_write_target,
+                view_winding: inputs.resolved.view_winding,
                 view_id: inputs.resolved.view_id,
                 hi_z_slot: Arc::clone(&self.hi_z_slot),
                 sample_count: inputs.resolved.sample_count,

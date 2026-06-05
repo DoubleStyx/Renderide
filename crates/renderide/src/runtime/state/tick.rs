@@ -37,6 +37,8 @@ pub(in crate::runtime) struct RuntimeTickState {
     lockstep_wait_reason: HostWaitReason,
     /// Reusable per-frame scratch for secondary render-texture view collection.
     pub(in crate::runtime) secondary_view_tasks_scratch: Vec<(RenderSpaceId, f32, usize)>,
+    /// Reusable per-frame scratch for camera-portal view collection.
+    pub(in crate::runtime) camera_portal_view_tasks_scratch: Vec<(RenderSpaceId, usize)>,
     /// Host camera readback tasks waiting for a GPU context before the next begin-frame send.
     pub(in crate::runtime) pending_camera_render_tasks: Vec<CameraRenderTask>,
     /// Host reflection-probe bake tasks waiting for a GPU context before the next begin-frame send.
@@ -73,6 +75,7 @@ impl RuntimeTickState {
             lockstep_one_credit_block: OneCreditBlockReason::None,
             lockstep_wait_reason: HostWaitReason::None,
             secondary_view_tasks_scratch: Vec::new(),
+            camera_portal_view_tasks_scratch: Vec::new(),
             pending_camera_render_tasks: Vec::new(),
             pending_reflection_probe_render_tasks: Vec::new(),
             pending_reflection_probe_render_results: Vec::new(),

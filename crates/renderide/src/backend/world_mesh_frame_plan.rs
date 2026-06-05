@@ -264,6 +264,7 @@ fn desktop_overlay_graph_frame<'a>(frame: &GraphPassFrame<'a>) -> GraphPassFrame
             frame_time_seconds: frame.view.frame_time_seconds,
             multiview_stereo: false,
             offscreen_write_target: frame.view.offscreen_write_target,
+            view_winding: frame.view.view_winding,
             view_id: ViewId::MainOverlay,
             hi_z_slot: frame
                 .shared
