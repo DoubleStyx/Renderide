@@ -13,6 +13,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use logger::LogLevel;
+use winit::event_loop::OwnedDisplayHandle;
 
 use crate::diagnostics::crash_context;
 use crate::frontend::input::{CursorOutputTracking, WindowInputAccumulator};
@@ -64,6 +65,7 @@ pub(crate) struct AppDriver {
     pub(in crate::app::driver) shutdown_watchdog_pause: Option<crate::diagnostics::WatchdogPause>,
     pub(in crate::app::driver) xr_input_cache: XrInputCache,
     pub(in crate::app::driver) xr_haptics: OpenxrHaptics,
+    pub(in crate::app::driver) display_handle: OwnedDisplayHandle,
 }
 
 impl AppDriver {
@@ -74,6 +76,7 @@ impl AppDriver {
         log_level_cli: Option<LogLevel>,
         external_shutdown: Option<ExternalShutdownCoordinator>,
         main_heartbeat: Option<crate::diagnostics::Heartbeat>,
+        display_handle: OwnedDisplayHandle,
         exit: Rc<RefCell<ExitState>>,
     ) -> Self {
         Self {
@@ -93,6 +96,7 @@ impl AppDriver {
             shutdown_watchdog_pause: None,
             xr_input_cache: XrInputCache::default(),
             xr_haptics: OpenxrHaptics::default(),
+            display_handle,
         }
     }
 

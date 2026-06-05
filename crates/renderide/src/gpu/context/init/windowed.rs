@@ -13,8 +13,9 @@ use super::super::super::sync::mapped_buffer_health::GpuMappedBufferHealth;
 use super::super::{GpuContext, GpuError};
 use super::shared::{
     GpuContextParts, GpuRuntimeHandles, WindowAdapterLogFields, WindowAdapterSelection,
-    assemble_context, log_device_capability_summary, log_windowed_gpu_selection_summary,
-    log_windowed_gpu_startup_request, select_window_adapters_with_fallback,
+    WindowDisplayHandle, assemble_context, log_device_capability_summary,
+    log_windowed_gpu_selection_summary, log_windowed_gpu_startup_request,
+    select_window_adapters_with_fallback,
 };
 use crate::config::{GraphicsApiSetting, VsyncMode};
 use crate::diagnostics::gpu_flight_recorder::GpuFlightRecorder;
@@ -53,6 +54,9 @@ impl GpuContext {
     /// adapters (discrete first when [`wgpu::PowerPreference::HighPerformance`], integrated first
     /// when [`wgpu::PowerPreference::LowPower`]).
     ///
+    /// `display_handle` is copied from the winit event-loop display that created the window. wgpu
+    /// requires this for GLES presentation on some platforms, especially Wayland.
+    ///
     /// `vsync` is resolved against the surface's actual present-mode capabilities via
     /// [`VsyncMode::resolve_present_mode`] (so e.g. [`VsyncMode::On`] picks strict `Fifo`
     /// presentation).
@@ -68,6 +72,7 @@ impl GpuContext {
     /// may still be overridden by `WGPU_BACKEND`.
     pub async fn new(
         window: Arc<dyn Window>,
+        display_handle: WindowDisplayHandle,
         vsync: VsyncMode,
         max_frame_latency: u32,
         gpu_validation_layers: bool,
@@ -81,9 +86,11 @@ impl GpuContext {
             gpu_validation_layers,
             power_preference,
             graphics_api,
+            true,
         );
         let selection = select_window_adapters_with_fallback(
             &window,
+            display_handle,
             graphics_api,
             gpu_validation_layers,
             power_preference,
@@ -112,6 +119,7 @@ impl GpuContext {
                 );
                 let retry_selection = select_window_adapters_with_fallback(
                     &window,
+                    display_handle,
                     GraphicsApiSetting::Auto,
                     gpu_validation_layers,
                     power_preference,

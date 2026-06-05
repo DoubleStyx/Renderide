@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use thiserror::Error;
-use winit::event_loop::ActiveEventLoop;
+use winit::event_loop::{ActiveEventLoop, OwnedDisplayHandle};
 use winit::monitor::Fullscreen;
 #[cfg(target_os = "windows")]
 use winit::platform::windows::WindowAttributesWindows;
@@ -13,7 +13,7 @@ use winit::window::{Window, WindowAttributes};
 use crate::diagnostics::crash_context::{self, TargetMode};
 use crate::frontend::input::enable_ime_on_window;
 use crate::frontend::output_device::head_output_device_wants_openxr;
-use crate::gpu::{GpuContext, GpuError};
+use crate::gpu::{GpuContext, GpuError, WindowDisplayHandle};
 use crate::runtime::RendererRuntime;
 use crate::shared::{HeadOutputDevice, RendererInitData};
 use crate::xr::XrSessionBundle;
@@ -81,6 +81,7 @@ impl RenderTarget {
         event_loop: &dyn ActiveEventLoop,
         runtime: &mut RendererRuntime,
         startup_gpu: GpuStartupConfig,
+        display_handle: &OwnedDisplayHandle,
     ) -> Result<Self, TargetInitError> {
         let window = create_main_window(event_loop)?;
         let output_device = effective_output_device_for_gpu(runtime.pending_init());
@@ -97,7 +98,7 @@ impl RenderTarget {
             create_openxr_target(&window, startup_gpu)?
         } else {
             crash_context::set_target_mode(TargetMode::Desktop);
-            create_desktop_target(&window, startup_gpu)?
+            create_desktop_target(&window, startup_gpu, display_handle)?
         };
 
         runtime.attach_gpu(&gpu);
@@ -297,9 +298,13 @@ fn create_main_window(
 fn create_desktop_target(
     window: &Arc<dyn Window>,
     startup_gpu: GpuStartupConfig,
+    display_handle: &OwnedDisplayHandle,
 ) -> Result<(GpuContext, RenderTargetMode), TargetInitError> {
+    let display_handle =
+        WindowDisplayHandle::from_winit(display_handle).map_err(TargetInitError::DesktopGpu)?;
     pollster::block_on(GpuContext::new(
         Arc::clone(window),
+        display_handle,
         startup_gpu.vsync,
         startup_gpu.max_frame_latency,
         startup_gpu.gpu_validation_layers,

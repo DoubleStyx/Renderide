@@ -2,11 +2,13 @@
 
 use std::sync::{Arc, Mutex};
 
+use winit::event_loop::OwnedDisplayHandle;
+use winit::raw_window_handle::{DisplayHandle, HandleError, HasDisplayHandle, RawDisplayHandle};
 use winit::window::Window;
 
 use super::super::super::adapter::msaa_support::MsaaSupport;
 use super::super::super::adapter::selection::{
-    build_wgpu_instance, select_adapter, select_adapters,
+    WgpuDisplayHandle, build_wgpu_instance, select_adapter, select_adapters,
 };
 use super::super::super::limits::GpuLimits;
 use super::super::super::profiling::frame_bracket::FrameBracket;
@@ -140,10 +142,11 @@ pub(super) fn log_windowed_gpu_startup_request(
     gpu_validation_layers: bool,
     power_preference: wgpu::PowerPreference,
     graphics_api: GraphicsApiSetting,
+    display_handle_provided: bool,
 ) {
     let requested_size = window.surface_size();
     logger::info!(
-        "GPU startup request (windowed): graphics_api={} validation={} power_preference={:?} vsync={:?} max_frame_latency={} initial_extent={}x{}",
+        "GPU startup request (windowed): graphics_api={} validation={} power_preference={:?} vsync={:?} max_frame_latency={} initial_extent={}x{} display_handle_provided={}",
         graphics_api.as_persist_str(),
         gpu_validation_layers,
         power_preference,
@@ -151,6 +154,7 @@ pub(super) fn log_windowed_gpu_startup_request(
         max_frame_latency,
         requested_size.width,
         requested_size.height,
+        display_handle_provided,
     );
 }
 
@@ -215,12 +219,14 @@ pub(super) fn assemble_context(parts: GpuContextParts) -> GpuContext {
 
 pub(super) async fn select_window_adapters_with_fallback(
     window: &Arc<dyn Window>,
+    display_handle: WindowDisplayHandle,
     graphics_api: GraphicsApiSetting,
     gpu_validation_layers: bool,
     power_preference: wgpu::PowerPreference,
 ) -> Result<WindowAdapterSelection, GpuError> {
     match select_window_adapters(
         window,
+        display_handle,
         graphics_api,
         gpu_validation_layers,
         power_preference,
@@ -235,6 +241,7 @@ pub(super) async fn select_window_adapters_with_fallback(
             );
             select_window_adapters(
                 window,
+                display_handle,
                 GraphicsApiSetting::Auto,
                 gpu_validation_layers,
                 power_preference,
@@ -247,12 +254,16 @@ pub(super) async fn select_window_adapters_with_fallback(
 
 async fn select_window_adapters(
     window: &Arc<dyn Window>,
+    display_handle: WindowDisplayHandle,
     graphics_api: GraphicsApiSetting,
     gpu_validation_layers: bool,
     power_preference: wgpu::PowerPreference,
 ) -> Result<WindowAdapterSelection, GpuError> {
-    let (instance, instance_flags, active_backends) =
-        build_wgpu_instance(gpu_validation_layers, graphics_api.requested_backends());
+    let (instance, instance_flags, active_backends) = build_wgpu_instance(
+        gpu_validation_layers,
+        graphics_api.requested_backends(),
+        Some(display_handle.into_wgpu_display_handle()),
+    );
 
     // `Arc<dyn Window>` is `Into<SurfaceTarget<'static>>`, so the returned `Surface` is
     // already `'static` -- no `transmute` is required to extend the borrow.
@@ -300,8 +311,11 @@ async fn select_headless_adapter(
     gpu_validation_layers: bool,
     power_preference: wgpu::PowerPreference,
 ) -> Result<HeadlessAdapterSelection, GpuError> {
-    let (instance, instance_flags, active_backends) =
-        build_wgpu_instance(gpu_validation_layers, graphics_api.requested_backends());
+    let (instance, instance_flags, active_backends) = build_wgpu_instance(
+        gpu_validation_layers,
+        graphics_api.requested_backends(),
+        None,
+    );
     let adapter = select_adapter(&instance, None, power_preference, active_backends).await?;
     Ok(HeadlessAdapterSelection {
         graphics_api,
@@ -309,6 +323,47 @@ async fn select_headless_adapter(
         active_backends,
         adapter,
     })
+}
+
+/// Raw platform display handle copied from the winit event loop for wgpu instance creation.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct WindowDisplayHandle {
+    raw: RawDisplayHandle,
+}
+
+impl WindowDisplayHandle {
+    /// Copies the raw display handle from winit's owned event-loop display handle.
+    pub(crate) fn from_winit(display_handle: &OwnedDisplayHandle) -> Result<Self, GpuError> {
+        display_handle
+            .display_handle()
+            .map(|handle| Self {
+                raw: handle.as_raw(),
+            })
+            .map_err(|error| {
+                GpuError::Surface(format!("event-loop display handle failed: {error:?}"))
+            })
+    }
+
+    fn into_wgpu_display_handle(self) -> WgpuDisplayHandle {
+        Box::new(self)
+    }
+}
+
+// SAFETY: The copied raw display handle is immutable and contains only platform identifiers.
+// `AppDriver` keeps winit's `OwnedDisplayHandle` alive until after the windowed GPU context and
+// surface have been dropped, preserving the display connection behind those identifiers.
+unsafe impl Send for WindowDisplayHandle {}
+
+// SAFETY: The wrapper never mutates the display connection and only re-borrows the copied raw
+// display handle. The display owner remains alive for the full windowed GPU lifetime.
+unsafe impl Sync for WindowDisplayHandle {}
+
+impl HasDisplayHandle for WindowDisplayHandle {
+    fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
+        // SAFETY: `self.raw` was copied from winit's live event-loop display handle, and the app
+        // driver keeps that owned display handle alive while wgpu can use this wrapper.
+        Ok(unsafe { DisplayHandle::borrow_raw(self.raw) })
+    }
 }
 
 pub(super) fn log_device_capability_summary(label: &str, device: &wgpu::Device) {

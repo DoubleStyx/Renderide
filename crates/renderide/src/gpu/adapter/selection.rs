@@ -8,6 +8,9 @@
 use super::super::context::GpuError;
 use super::super::instance_setup::instance_flags_for_gpu_init;
 
+/// Owned platform display handle accepted by [`wgpu::InstanceDescriptor`].
+pub(crate) type WgpuDisplayHandle = Box<dyn wgpu::wgt::WgpuHasDisplayHandle>;
+
 /// Lower scores rank earlier. Stable across systems so Vulkan ICD reordering does not flip the
 /// chosen adapter.
 ///
@@ -79,8 +82,13 @@ fn log_adapter_candidates(active_backends: wgpu::Backends, adapters: &[wgpu::Ada
 pub(crate) fn build_wgpu_instance(
     gpu_validation_layers: bool,
     requested_backends: wgpu::Backends,
+    display_handle: Option<WgpuDisplayHandle>,
 ) -> (wgpu::Instance, wgpu::InstanceFlags, wgpu::Backends) {
-    let mut instance_desc = wgpu::InstanceDescriptor::new_without_display_handle();
+    let mut instance_desc = if let Some(display_handle) = display_handle {
+        wgpu::InstanceDescriptor::new_with_display_handle(display_handle)
+    } else {
+        wgpu::InstanceDescriptor::new_without_display_handle()
+    };
     instance_desc.backends = requested_backends;
     instance_desc.flags = instance_flags_for_gpu_init(gpu_validation_layers);
     let instance_desc = instance_desc.with_env();

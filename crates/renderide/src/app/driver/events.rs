@@ -39,7 +39,12 @@ impl AppDriver {
             return;
         }
         profiling::scope!("startup::ensure_render_target");
-        match RenderTarget::create(event_loop, &mut self.runtime, self.startup_gpu) {
+        match RenderTarget::create(
+            event_loop,
+            &mut self.runtime,
+            self.startup_gpu,
+            &self.display_handle,
+        ) {
             Ok(target) => {
                 let window = target.window();
                 self.input.sync_window_resolution_logical(window.as_ref());

@@ -36,7 +36,7 @@ pub(crate) mod present;
 pub(crate) mod profiling;
 
 // --- Cross-layer re-exports (renderide-internal contract; not part of any external API) ---
-pub(crate) use context::{FrameSubmitKind, GpuContext, GpuError};
+pub(crate) use context::{FrameSubmitKind, GpuContext, GpuError, WindowDisplayHandle};
 pub(crate) use depth::{
     MAIN_FORWARD_DEPTH_CLEAR, MAIN_FORWARD_DEPTH_COMPARE, OutputDepthMode,
     main_forward_depth_stencil_format,

@@ -40,6 +40,7 @@ mod submission;
 mod surface;
 
 pub use headless_targets::PrimaryOffscreenTargets;
+pub(crate) use init::WindowDisplayHandle;
 pub use msaa::GpuMsaa;
 pub use submission::FrameSubmitKind;
 
