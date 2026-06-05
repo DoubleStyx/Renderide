@@ -25,14 +25,32 @@ pub(super) mod asset_ids {
     /// states, packed material ids).
     pub(in crate::host::scene_session) const SCENE_STATE_BUFFER: i32 = 1;
     /// Base buffer id for a `MaterialsUpdateBatch` payload. The row stream takes this id;
-    /// the int and float4 side buffers take `+1` and `+2` respectively.
-    pub(in crate::host::scene_session) const MATERIAL_UPDATE_BASE_BUFFER: i32 = 2;
+    /// the int, float, and float4 side buffers take `+1`, `+2`, and `+3` respectively.
+    pub(in crate::host::scene_session) const MATERIAL_UPDATE_BASE_BUFFER: i32 = 8;
     /// Buffer id for the Texture2D pixel data shared-memory region.
     pub(in crate::host::scene_session) const TEXTURE_DATA_BUFFER: i32 = 5;
     /// Shader asset id used by the torus case to attach an unlit embedded WGSL stem.
     pub(in crate::host::scene_session) const TORUS_SHADER: i32 = 6;
     /// Texture asset id for the procedural Perlin noise bound to the torus material's `_Tex`.
     pub(in crate::host::scene_session) const TORUS_TEXTURE: i32 = 7;
+    /// First mesh asset id reserved for richer scene-DSL cases.
+    pub(in crate::host::scene_session) const SCENE_MESH_BASE: i32 = 20;
+    /// First material asset id reserved for richer scene-DSL cases.
+    pub(in crate::host::scene_session) const SCENE_MATERIAL_BASE: i32 = 120;
+    /// First shader asset id reserved for richer scene-DSL cases.
+    pub(in crate::host::scene_session) const SCENE_SHADER_BASE: i32 = 220;
+    /// First texture asset id reserved for richer scene-DSL cases.
+    pub(in crate::host::scene_session) const SCENE_TEXTURE_BASE: i32 = 320;
+    /// First mesh SHM buffer id reserved for richer scene-DSL cases.
+    pub(in crate::host::scene_session) const SCENE_MESH_BUFFER_BASE: i32 = 20;
+    /// First texture SHM buffer id reserved for richer scene-DSL cases.
+    pub(in crate::host::scene_session) const SCENE_TEXTURE_BUFFER_BASE: i32 = 120;
+    /// First material-update SHM buffer id reserved for richer scene-DSL cases.
+    pub(in crate::host::scene_session) const SCENE_MATERIAL_UPDATE_BUFFER_BASE: i32 = 220;
+    /// First material-update batch id reserved for richer scene-DSL cases.
+    pub(in crate::host::scene_session) const SCENE_MATERIAL_UPDATE_BATCH_BASE: i32 = 320;
+    /// First property-id request id reserved for richer scene-DSL cases.
+    pub(in crate::host::scene_session) const SCENE_PROPERTY_ID_REQUEST_BASE: i32 = 420;
     /// Update batch id echoed back in `MaterialsUpdateBatchResult`.
     pub(in crate::host::scene_session) const MATERIAL_UPDATE_BATCH_ID: i32 = 1;
     /// Request id echoed back in `MaterialPropertyIdResult` when looking up unlit material
@@ -71,6 +89,10 @@ pub(super) mod torus_geometry {
 /// Shader variant bitmasks used by cases that upload embedded shaders through the test stem
 /// prefix.
 pub(super) mod shader_variants {
+    /// Unlit shader variant enabling `_ALPHATEST` (`UNLIT_KW_ALPHATEST = 1 << 0` in WGSL).
+    pub(in crate::host::scene_session) const UNLIT_ALPHATEST: u32 = 0x0000_0001;
+    /// Unlit shader variant enabling `_COLOR` (`UNLIT_KW_COLOR = 1 << 1` in WGSL).
+    pub(in crate::host::scene_session) const UNLIT_COLOR: u32 = 0x0000_0002;
     /// Unlit shader variant enabling `_TEXTURE` (`UNLIT_KW_TEXTURE = 1 << 9` in WGSL).
     pub(in crate::host::scene_session) const UNLIT_TEXTURE: u32 = 0x0000_0200;
 }

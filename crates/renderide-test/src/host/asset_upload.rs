@@ -15,7 +15,7 @@ pub(super) use material::{
     BoundMaterial, MaterialBatchRequest, MaterialUpdateOp, PropertyIdLookup, apply_material_batch,
     pack_texture2d_handle, request_property_ids,
 };
-pub(super) use mesh::{MeshUploadRequest, upload_mesh};
+pub(super) use mesh::{MeshUploadRequest, UploadedMesh, upload_mesh};
 pub(super) use shader::upload_shader;
 pub(super) use texture::{Texture2DUploadRequest, upload_texture2d_rgba8};
 

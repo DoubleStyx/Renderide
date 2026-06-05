@@ -216,16 +216,25 @@ fn promote_case_golden(
     case: &IntegrationCase,
     outcome: &CaseRunOutcome,
 ) -> Result<SuiteCaseReport, HarnessError> {
-    crate::golden::generate(&outcome.layout.actual_png, &case.golden_path)?;
-    if let Err(e) = std::fs::copy(&outcome.layout.actual_png, &outcome.layout.golden_png_copy) {
-        logger::warn!("suite update: failed to refresh artifact golden copy: {e}");
-    }
-
     let actual = load_rgba(&outcome.layout.actual_png)?;
     let eval = case
         .tolerance
         .evaluate(&actual, &actual)
         .map_err(|msg| HarnessError::ImageCompare(format!("post-update self-compare: {msg}")))?;
+    if !eval.passed {
+        let report = report_from_evaluation(case, eval);
+        write_report(&outcome.layout, &report)
+            .map_err(|e| HarnessError::QueueOptions(format!("write update report: {e}")))?;
+        return Err(HarnessError::ImageCompare(
+            "post-update self-compare failed coverage gates".to_string(),
+        ));
+    }
+
+    crate::golden::generate(&outcome.layout.actual_png, &case.golden_path)?;
+    if let Err(e) = std::fs::copy(&outcome.layout.actual_png, &outcome.layout.golden_png_copy) {
+        logger::warn!("suite update: failed to refresh artifact golden copy: {e}");
+    }
+
     let report = report_from_evaluation(case, eval);
     write_report(&outcome.layout, &report)
         .map_err(|e| HarnessError::QueueOptions(format!("write update report: {e}")))?;

@@ -78,6 +78,14 @@ pub enum HarnessError {
     /// Generic IO failure (file copy, rename, etc.).
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+    /// Loading or converting a GLB fixture failed.
+    #[error("load GLB fixture {path}: {message}")]
+    GltfFixture {
+        /// Fixture path being loaded.
+        path: PathBuf,
+        /// Human-readable failure reason.
+        message: String,
+    },
     /// `image-compare` failed to compute a similarity score.
     #[error("image-compare: {0}")]
     ImageCompare(String),
@@ -226,6 +234,17 @@ mod tests {
         let s = e.to_string();
         assert!(s.contains("permission denied"));
         assert!(s.contains("spawn renderer process"));
+    }
+
+    #[test]
+    fn display_gltf_fixture_includes_path_and_message() {
+        let e = HarnessError::GltfFixture {
+            path: PathBuf::from("fixtures/model.glb"),
+            message: "missing POSITION".to_string(),
+        };
+        let s = e.to_string();
+        assert!(s.contains("fixtures/model.glb"));
+        assert!(s.contains("missing POSITION"));
     }
 
     #[test]

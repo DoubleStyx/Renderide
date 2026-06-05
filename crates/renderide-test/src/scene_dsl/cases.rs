@@ -12,6 +12,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::scene::gltf_fixture::default_fixture_path;
 use crate::scene::perlin::PerlinTextureSpec;
 
 use super::tolerance::{Combine, Tolerance};
@@ -44,11 +45,21 @@ pub enum CaseTemplate {
     SphereNull,
     /// Procedural torus rendered through the harness; a deterministic CPU-generated Perlin
     /// noise RGBA texture is also written to the per-case output directory as a side artifact
-    /// (`perlin_texture.png`). This proves the suite is modular -- different geometry plus a
-    /// CPU-generated content artifact alongside the renderer's PNG.
+    /// (`perlin_texture.png`).
     TorusUnlitPerlin {
         /// Perlin noise generator parameters used for the side artifact.
         perlin: PerlinTextureSpec,
+    },
+    /// Four unlit procedural primitives using checker, UV-ramp, and solid-color material paths.
+    MultiPrimitiveUnlitGrid,
+    /// Four PBS metallic spheres that vary color, metallic, glossiness, and regular lights.
+    PbsLitMaterialMatrix,
+    /// Overlapping alpha-test quads using a generated binary mask texture and scalar cutoff.
+    AlphaCutoutMaskedQuads,
+    /// Optional textured static mesh imported from a GLB fixture.
+    GltfTexturedStaticMesh {
+        /// Fixture path loaded by the runner.
+        path: PathBuf,
     },
 }
 
@@ -59,14 +70,6 @@ pub fn default_goldens_dir() -> PathBuf {
 
 /// Single UV sphere on the renderer's `Null` fallback pipeline; smallest end-to-end smoke
 /// test of IPC, mesh upload, frame loop, and PNG capture.
-///
-/// Tolerance is intentionally loose: the committed golden was captured on different hardware
-/// and Mesa lavapipe (the typical CI software rasterizer for this suite) shades the
-/// fallback Null/checkerboard pipeline noticeably differently from the developer machine
-/// where the golden was generated. The combined SSIM-or-pixel-diff form keeps this case
-/// useful as a structural smoke test (IPC, mesh upload, frame loop, capture) without
-/// chasing per-driver rendering quirks. Tighten the thresholds and regenerate the golden
-/// once we settle on a canonical software rasterizer.
 pub fn unlit_sphere() -> IntegrationCase {
     IntegrationCase {
         name: "unlit_sphere".to_string(),
@@ -75,29 +78,14 @@ pub fn unlit_sphere() -> IntegrationCase {
                 .to_string(),
         golden_path: default_goldens_dir().join("unlit_sphere.png"),
         resolution: (256, 256),
-        tolerance: Tolerance {
-            ssim_min: Some(0.65),
-            max_abs_diff: Some(64),
-            max_failing_pixel_fraction: Some(0.40),
-            combine: Combine::Or,
-        },
+        tolerance: visual_tolerance(0.65, 64, 0.40, 8, 8, 0.02),
         template: CaseTemplate::SphereNull,
     }
 }
 
 /// Procedural torus rendered with an embedded unlit shader (`Unlit.shader` resolved through
 /// the test-only `RENDERIDE_TEST_STEM:` sentinel with the `_TEXTURE` variant bit) and the
-/// CPU-generated Perlin noise bound to the material's `_Tex` slot via the IPC upload chain
-/// (`SetTexture2D{Format,Properties,Data}`, `MaterialPropertyIdRequest`, then a
-/// `MaterialsUpdateBatch` carrying `SetShader` / `SetTexture` / `SetFloat4` opcodes). The
-/// same Perlin PNG is also written to the per-case output dir as a side artifact so
-/// reviewers can compare the texture against the rendered surface directly.
-///
-/// Distinct from [`unlit_sphere`] in three ways: different geometry (torus instead of
-/// sphere), a real shader is uploaded with a real texture bound to it (so the rendering is
-/// the embedded `unlit_default` WGSL stem sampling the Perlin pattern, not the
-/// Null/checkerboard fallback), and the case emits a side artifact. Tolerance is the
-/// standard SSIM-or-pixel-diff form to absorb adapter variance under software rasterizers.
+/// CPU-generated Perlin noise bound to the material's `_Tex` slot via the IPC upload chain.
 pub fn torus_unlit_perlin() -> IntegrationCase {
     IntegrationCase {
         name: "torus_unlit_perlin".to_string(),
@@ -106,12 +94,7 @@ pub fn torus_unlit_perlin() -> IntegrationCase {
                 .to_string(),
         golden_path: default_goldens_dir().join("torus_unlit_perlin.png"),
         resolution: (256, 256),
-        tolerance: Tolerance {
-            ssim_min: Some(0.85),
-            max_abs_diff: Some(32),
-            max_failing_pixel_fraction: Some(0.10),
-            combine: Combine::Or,
-        },
+        tolerance: visual_tolerance(0.85, 32, 0.10, 16, 16, 0.04),
         template: CaseTemplate::TorusUnlitPerlin {
             perlin: PerlinTextureSpec {
                 width: 256,
@@ -127,14 +110,103 @@ pub fn torus_unlit_perlin() -> IntegrationCase {
     }
 }
 
+/// Multi-object unlit case that exercises cube, sphere, torus, and quad mesh paths plus
+/// texture/color Unlit variants in one compact render.
+pub fn multi_primitive_unlit_grid() -> IntegrationCase {
+    IntegrationCase {
+        name: "multi_primitive_unlit_grid".to_string(),
+        description:
+            "Four procedural unlit primitives with checker, UV-ramp, and color material variants."
+                .to_string(),
+        golden_path: default_goldens_dir().join("multi_primitive_unlit_grid.png"),
+        resolution: (320, 320),
+        tolerance: visual_tolerance(0.82, 42, 0.16, 24, 32, 0.08),
+        template: CaseTemplate::MultiPrimitiveUnlitGrid,
+    }
+}
+
+/// Lit PBS material matrix that covers scalar material updates, color packing, and regular
+/// scene-light submission without requiring texture fixtures.
+pub fn pbs_lit_material_matrix() -> IntegrationCase {
+    IntegrationCase {
+        name: "pbs_lit_material_matrix".to_string(),
+        description:
+            "Four PBS metallic spheres varying color, metallic, and glossiness under directional and point lights."
+                .to_string(),
+        golden_path: default_goldens_dir().join("pbs_lit_material_matrix.png"),
+        resolution: (320, 320),
+        tolerance: visual_tolerance(0.78, 56, 0.22, 18, 24, 0.06),
+        template: CaseTemplate::PbsLitMaterialMatrix,
+    }
+}
+
+/// Alpha-test case that verifies scalar `_Cutoff` material updates, alpha sampling, and
+/// overlapping transparent-ish geometry ordering through a binary mask texture.
+pub fn alpha_cutout_masked_quads() -> IntegrationCase {
+    IntegrationCase {
+        name: "alpha_cutout_masked_quads".to_string(),
+        description:
+            "Overlapping alpha-test quads using a generated mask texture and scalar cutoff."
+                .to_string(),
+        golden_path: default_goldens_dir().join("alpha_cutout_masked_quads.png"),
+        resolution: (256, 256),
+        tolerance: visual_tolerance(0.82, 48, 0.18, 20, 18, 0.05),
+        template: CaseTemplate::AlphaCutoutMaskedQuads,
+    }
+}
+
+/// Optional GLB fixture case. The registry includes it only when the fixture file is present,
+/// so the suite remains useful before a commit-safe model has been added.
+pub fn gltf_textured_static_mesh(path: PathBuf) -> IntegrationCase {
+    IntegrationCase {
+        name: "gltf_textured_static_mesh".to_string(),
+        description: "Static textured mesh imported from a GLB fixture and rendered through Unlit."
+            .to_string(),
+        golden_path: default_goldens_dir().join("gltf_textured_static_mesh.png"),
+        resolution: (320, 320),
+        tolerance: visual_tolerance(0.82, 48, 0.18, 18, 18, 0.05),
+        template: CaseTemplate::GltfTexturedStaticMesh { path },
+    }
+}
+
 /// Returns every case in the suite. The order is stable; CLI listings and reports rely on it.
 pub fn registry() -> Vec<IntegrationCase> {
-    vec![unlit_sphere(), torus_unlit_perlin()]
+    let mut cases = vec![
+        unlit_sphere(),
+        torus_unlit_perlin(),
+        multi_primitive_unlit_grid(),
+        pbs_lit_material_matrix(),
+        alpha_cutout_masked_quads(),
+    ];
+    let gltf_fixture = default_fixture_path();
+    if gltf_fixture.is_file() {
+        cases.push(gltf_textured_static_mesh(gltf_fixture));
+    }
+    cases
 }
 
 /// Looks up a case by [`IntegrationCase::name`].
 pub fn lookup(name: &str) -> Option<IntegrationCase> {
     registry().into_iter().find(|c| c.name == name)
+}
+
+fn visual_tolerance(
+    ssim_min: f64,
+    max_abs_diff: u8,
+    max_failing_pixel_fraction: f64,
+    min_luma_range: u8,
+    min_unique_colors: usize,
+    min_non_background_pixel_fraction: f64,
+) -> Tolerance {
+    Tolerance {
+        ssim_min: Some(ssim_min),
+        max_abs_diff: Some(max_abs_diff),
+        max_failing_pixel_fraction: Some(max_failing_pixel_fraction),
+        min_luma_range: Some(min_luma_range),
+        min_unique_colors: Some(min_unique_colors),
+        min_non_background_pixel_fraction: Some(min_non_background_pixel_fraction),
+        combine: Combine::Or,
+    }
 }
 
 #[cfg(test)]
@@ -149,6 +221,13 @@ mod tests {
     #[test]
     fn unlit_sphere_is_registered() {
         assert!(lookup("unlit_sphere").is_some());
+    }
+
+    #[test]
+    fn new_procedural_cases_are_registered() {
+        assert!(lookup("multi_primitive_unlit_grid").is_some());
+        assert!(lookup("pbs_lit_material_matrix").is_some());
+        assert!(lookup("alpha_cutout_masked_quads").is_some());
     }
 
     #[test]

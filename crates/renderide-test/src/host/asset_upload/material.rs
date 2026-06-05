@@ -44,6 +44,13 @@ pub(in crate::host) enum MaterialUpdateOp {
         /// Packed texture handle written to the int side buffer.
         packed_handle: i32,
     },
+    /// Row carries the property id; one float is appended to the float side buffer.
+    SetFloat {
+        /// Interned material property id.
+        property_id: i32,
+        /// Scalar property value.
+        value: f32,
+    },
     /// Row carries the property id; the four floats are appended to the float4 side buffer.
     SetFloat4 {
         /// Interned material property id.
@@ -61,7 +68,7 @@ pub(in crate::host) struct MaterialBatchRequest<'a> {
     pub shared_memory_prefix: &'a str,
     /// Per-session backing directory passed to `SharedMemoryWriterConfig::dir_override`.
     pub backing_dir: &'a Path,
-    /// Base SHM buffer id for row, int, and float4 streams.
+    /// Base SHM buffer id for row, int, float, and float4 streams.
     pub base_buffer_id: i32,
     /// `update_batch_id` echoed back in the `MaterialsUpdateBatchResult` ack.
     pub update_batch_id: i32,
@@ -107,12 +114,25 @@ pub(in crate::host) fn apply_material_batch(
         writers.push(writer);
     }
 
+    let mut float_buffers: Vec<SharedMemoryBufferDescriptor> = Vec::new();
+    if !encoded.float_bytes.is_empty() {
+        let writer = open_writer(
+            request.shared_memory_prefix,
+            request.backing_dir,
+            request.base_buffer_id + 2,
+            &encoded.float_bytes,
+            "material_updates_float",
+        )?;
+        float_buffers.push(writer.descriptor_for(0, encoded.float_bytes.len() as i32));
+        writers.push(writer);
+    }
+
     let mut float4_buffers: Vec<SharedMemoryBufferDescriptor> = Vec::new();
     if !encoded.float4_bytes.is_empty() {
         let writer = open_writer(
             request.shared_memory_prefix,
             request.backing_dir,
-            request.base_buffer_id + 2,
+            request.base_buffer_id + 3,
             &encoded.float4_bytes,
             "material_updates_float4",
         )?;
@@ -125,7 +145,7 @@ pub(in crate::host) fn apply_material_batch(
         material_updates: vec![row_stream_descriptor],
         material_update_count: request.material_update_count,
         int_buffers,
-        float_buffers: Vec::new(),
+        float_buffers,
         float4_buffers,
         matrix_buffers: Vec::new(),
         instance_changed_buffer: Default::default(),
@@ -166,6 +186,8 @@ struct EncodedMaterialBatch {
     row_stream: Vec<u8>,
     /// Side buffer for integer payloads.
     int_bytes: Vec<u8>,
+    /// Side buffer for scalar float payloads.
+    float_bytes: Vec<u8>,
     /// Side buffer for float4 payloads.
     float4_bytes: Vec<u8>,
 }
@@ -175,6 +197,7 @@ fn encode_material_batch(ops: &[MaterialUpdateOp]) -> EncodedMaterialBatch {
     const ROW_BYTES: usize = MATERIAL_PROPERTY_UPDATE_HOST_ROW_BYTES;
     let mut row_stream = vec![0u8; ops.len() * ROW_BYTES];
     let mut int_bytes: Vec<u8> = Vec::new();
+    let mut float_bytes: Vec<u8> = Vec::new();
     let mut float4_bytes: Vec<u8> = Vec::new();
     for (i, op) in ops.iter().enumerate() {
         let off = i * ROW_BYTES;
@@ -192,6 +215,10 @@ fn encode_material_batch(ops: &[MaterialUpdateOp]) -> EncodedMaterialBatch {
                 int_bytes.extend_from_slice(&packed_handle.to_le_bytes());
                 (property_id, MaterialPropertyUpdateType::SetTexture)
             }
+            MaterialUpdateOp::SetFloat { property_id, value } => {
+                float_bytes.extend_from_slice(&value.to_le_bytes());
+                (property_id, MaterialPropertyUpdateType::SetFloat)
+            }
             MaterialUpdateOp::SetFloat4 { property_id, value } => {
                 for v in value {
                     float4_bytes.extend_from_slice(&v.to_le_bytes());
@@ -206,6 +233,7 @@ fn encode_material_batch(ops: &[MaterialUpdateOp]) -> EncodedMaterialBatch {
     EncodedMaterialBatch {
         row_stream,
         int_bytes,
+        float_bytes,
         float4_bytes,
     }
 }
@@ -326,6 +354,7 @@ mod tests {
             3 * MATERIAL_PROPERTY_UPDATE_HOST_ROW_BYTES
         );
         assert!(encoded.int_bytes.is_empty());
+        assert!(encoded.float_bytes.is_empty());
         assert!(encoded.float4_bytes.is_empty());
     }
 
@@ -389,6 +418,33 @@ mod tests {
         assert_eq!(
             encoded.row_stream[4],
             MaterialPropertyUpdateType::SetTexture as u8
+        );
+    }
+
+    #[test]
+    fn set_float_appends_one_float_to_float_buffer() {
+        let encoded = encode_material_batch(&[MaterialUpdateOp::SetFloat {
+            property_id: 8,
+            value: 0.625,
+        }]);
+        assert_eq!(encoded.float_bytes.len(), 4);
+        let value = f32::from_le_bytes([
+            encoded.float_bytes[0],
+            encoded.float_bytes[1],
+            encoded.float_bytes[2],
+            encoded.float_bytes[3],
+        ]);
+        assert_eq!(value, 0.625);
+        let property_id = i32::from_le_bytes([
+            encoded.row_stream[0],
+            encoded.row_stream[1],
+            encoded.row_stream[2],
+            encoded.row_stream[3],
+        ]);
+        assert_eq!(property_id, 8);
+        assert_eq!(
+            encoded.row_stream[4],
+            MaterialPropertyUpdateType::SetFloat as u8
         );
     }
 

@@ -16,7 +16,9 @@ use std::time::Duration;
 use crate::error::HarnessError;
 use crate::host::{HostHarness, HostHarnessConfig, SessionTemplate};
 use crate::image_io::{load_rgba, save_rgba, write_diff_image};
+use crate::scene::gltf_fixture::load_static_textured_mesh;
 use crate::scene::perlin::generate_perlin_rgba;
+use crate::scene::textures::{alpha_rings_rgba, checker_rgba, uv_ramp_rgba};
 
 use super::cases::{CaseTemplate, IntegrationCase};
 use super::output::{
@@ -180,6 +182,56 @@ fn prepare_template(
             let texture_rgba = img.into_raw();
             Ok(PreparedTemplate {
                 session_template: SessionTemplate::Torus {
+                    texture_rgba,
+                    texture_size,
+                },
+            })
+        }
+        CaseTemplate::MultiPrimitiveUnlitGrid => {
+            let checker = checker_rgba(256, 256, 8, [245, 245, 245, 255], [24, 34, 54, 255]);
+            let uv_ramp = uv_ramp_rgba(256, 256);
+            save_rgba(&checker, &layout.root.join("checker_texture.png"))?;
+            save_rgba(&uv_ramp, &layout.root.join("uv_ramp_texture.png"))?;
+            Ok(PreparedTemplate {
+                session_template: SessionTemplate::MultiPrimitiveUnlitGrid {
+                    checker_rgba: checker.into_raw(),
+                    uv_ramp_rgba: uv_ramp.into_raw(),
+                    texture_size: (256, 256),
+                },
+            })
+        }
+        CaseTemplate::PbsLitMaterialMatrix => Ok(PreparedTemplate {
+            session_template: SessionTemplate::PbsLitMaterialMatrix,
+        }),
+        CaseTemplate::AlphaCutoutMaskedQuads => {
+            let mask = alpha_rings_rgba(256, 256);
+            save_rgba(&mask, &layout.root.join("alpha_mask_texture.png"))?;
+            Ok(PreparedTemplate {
+                session_template: SessionTemplate::AlphaCutoutMaskedQuads {
+                    mask_rgba: mask.into_raw(),
+                    texture_size: (256, 256),
+                },
+            })
+        }
+        CaseTemplate::GltfTexturedStaticMesh { path } => {
+            let imported = load_static_textured_mesh(path)?;
+            let texture_size = imported.texture_size;
+            let texture_rgba = imported.texture_rgba;
+            let texture_preview =
+                image::RgbaImage::from_raw(texture_size.0, texture_size.1, texture_rgba.clone())
+                    .ok_or_else(|| {
+                        HarnessError::QueueOptions(format!(
+                            "GLB texture {}x{} did not match RGBA byte length",
+                            texture_size.0, texture_size.1
+                        ))
+                    })?;
+            save_rgba(
+                &texture_preview,
+                &layout.root.join("gltf_base_color_texture.png"),
+            )?;
+            Ok(PreparedTemplate {
+                session_template: SessionTemplate::GltfTexturedStaticMesh {
+                    mesh: imported.mesh,
                     texture_rgba,
                     texture_size,
                 },
