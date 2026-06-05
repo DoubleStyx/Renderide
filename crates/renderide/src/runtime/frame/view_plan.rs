@@ -320,6 +320,12 @@ impl<'a> FrameViewPlan<'a> {
         OutputDepthMode::from_multiview_stereo(self.is_multiview_stereo_active())
     }
 
+    /// Companion resource view used by the desktop dashboard overlay pass, when this plan records one.
+    pub(in crate::runtime) fn desktop_overlay_resource_view_id(&self) -> Option<ViewId> {
+        (self.view_id == ViewId::Main && self.profile == RenderPathProfile::desktop_main())
+            .then_some(ViewId::MainOverlay)
+    }
+
     /// Post-processing permissions requested by this view's profile.
     pub(in crate::runtime) fn post_processing(&self) -> ViewPostProcessing {
         self.profile.post_processing()

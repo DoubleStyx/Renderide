@@ -27,6 +27,7 @@ pub(super) fn add_main_graph_edges(
     passes: &MainGraphPassIds,
     chain_output: post_process_chain::ChainOutput,
     compose: PassId,
+    desktop_overlay: PassId,
 ) {
     builder.add_edge(passes.deform, passes.clustered);
     builder.add_edge(passes.clustered, passes.depth_prepass);
@@ -57,4 +58,5 @@ pub(super) fn add_main_graph_edges(
     };
     builder.add_edge(forward_tail, passes.hiz);
     connect_post_processing_edges(builder, passes.hiz, chain_output, compose);
+    builder.add_edge(compose, desktop_overlay);
 }

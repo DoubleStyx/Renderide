@@ -91,6 +91,7 @@ pub(super) fn draw_tail_groups(
             prepared,
             groups,
             frame_bind_group,
+            frame.view.view_id,
         );
         #[cfg(feature = "tracy")]
         rpass.pop_debug_group();

@@ -3,7 +3,7 @@
 use glam::{Mat4, Vec3};
 
 use crate::materials::host_data::MaterialPropertyLookupIds;
-use crate::materials::{MaterialDepthCompareOverride, RasterFrontFace, RasterPrimitiveTopology};
+use crate::materials::{RasterFrontFace, RasterPrimitiveTopology};
 use crate::particles::ParticleDrawParams;
 use crate::reflection_probes::specular::ReflectionProbeDrawSelection;
 use crate::scene::{MeshRendererInstanceId, RenderSpaceId};
@@ -111,7 +111,6 @@ pub(super) fn evaluate_draw_candidate(
     {
         return None;
     }
-    let batch_key = apply_overlay_layer_depth_policy(batch_key, candidate.is_overlay);
     let blendshape_deformed = candidate.blendshape_deformed
         || (candidate.tangent_blendshape_deform_active && batch_key.embedded_needs_tangent);
     let camera_distance_sq = if batch_key.uses_transparent_sorting() {
@@ -201,22 +200,6 @@ fn transparent_sort_distance_sq(
 /// Returns finite non-negative distance values unchanged.
 fn finite_nonnegative_distance_sq(value: f32) -> Option<f32> {
     (value.is_finite() && value >= 0.0).then_some(value)
-}
-
-/// Overlay-layer meshes are drawn through a separate camera stack after the world.
-///
-/// Renderide currently folds those meshes into the main forward pass, so they must bypass the
-/// world depth buffer explicitly or ordinary scene geometry still occludes them even after their
-/// transforms are projected into screen space.
-fn apply_overlay_layer_depth_policy(
-    mut batch_key: crate::world_mesh::MaterialDrawBatchKey,
-    is_overlay: bool,
-) -> crate::world_mesh::MaterialDrawBatchKey {
-    if is_overlay {
-        batch_key.render_state.depth_write = Some(false);
-        batch_key.render_state.depth_compare = Some(MaterialDepthCompareOverride::Always);
-    }
-    batch_key
 }
 
 #[cfg(test)]
@@ -322,7 +305,7 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_draw_candidate_forces_overlay_depth_policy() {
+    fn evaluate_draw_candidate_preserves_overlay_depth_policy() {
         let scene = SceneCoordinator::new();
         let mesh_pool = MeshPool::default_pool();
         let store = MaterialPropertyStore::new();
@@ -364,11 +347,8 @@ mod tests {
         )
         .expect("overlay draw item");
 
-        assert_eq!(item.batch_key.render_state.depth_write, Some(false));
-        assert_eq!(
-            item.batch_key.render_state.depth_compare,
-            Some(MaterialDepthCompareOverride::Always)
-        );
+        assert_eq!(item.batch_key.render_state.depth_write, None);
+        assert_eq!(item.batch_key.render_state.depth_compare, None);
     }
 
     #[test]

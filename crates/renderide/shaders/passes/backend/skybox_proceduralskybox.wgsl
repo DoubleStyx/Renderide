@@ -106,12 +106,14 @@ fn clip_pos_from_view_ray(
     orthographic: bool,
 ) -> vec4<f32> {
     if (view_ray.z >= -1e-6) {
+        // Send point behind near plane
         return vec4<f32>(view_ray.xy, 2.0, 1.0);
     }
+    let camera_ray = view_ray.xy / (-view_ray.z);
     if (orthographic) {
-        return vec4<f32>(sign(view_ray.xy * proj_params.xy), 0.0, 1.0);
+        return vec4<f32>(camera_ray * sign(proj_params.xy), 0.0, 1.0);
     }
-    return vec4<f32>(view_ray.xy * proj_params.xy / (-view_ray.z) - proj_params.zw, 0.0, 1.0);
+    return vec4<f32>(camera_ray * proj_params.xy - proj_params.zw, 0.0, 1.0);
 }
 
 fn view_ray_from_world_ray(world_ray: vec3<f32>, view_layer: u32) -> vec3<f32> {

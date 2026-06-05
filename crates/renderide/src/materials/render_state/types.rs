@@ -124,8 +124,6 @@ pub enum MaterialDepthCompareDomain {
 pub enum MaterialDepthCompareOverride {
     /// Raw host/material `_ZTest` byte that must be decoded in the selected pass domain.
     HostValue(u8),
-    /// Renderer-authored always-pass depth override.
-    Always,
 }
 
 /// Runtime Unity stencil/color/depth/cull state resolved from material properties.
@@ -219,7 +217,6 @@ impl MaterialRenderState {
         domain: MaterialDepthCompareDomain,
     ) -> wgpu::CompareFunction {
         match self.depth_compare {
-            Some(MaterialDepthCompareOverride::Always) => wgpu::CompareFunction::Always,
             Some(MaterialDepthCompareOverride::HostValue(value)) => match domain {
                 MaterialDepthCompareDomain::FrooxZTest => {
                     froox_shaderlab_ztest_depth_compare_function(value)
@@ -475,29 +472,6 @@ mod tests {
                 MaterialDepthCompareDomain::UnityCompareFunction,
             ),
             wgpu::CompareFunction::LessEqual
-        );
-    }
-
-    #[test]
-    fn renderer_authored_always_bypasses_host_decode_domain() {
-        let st = MaterialRenderState {
-            depth_compare: Some(MaterialDepthCompareOverride::Always),
-            ..MaterialRenderState::default()
-        };
-
-        assert_eq!(
-            st.depth_compare_for_domain(
-                wgpu::CompareFunction::Never,
-                MaterialDepthCompareDomain::FrooxZTest,
-            ),
-            wgpu::CompareFunction::Always
-        );
-        assert_eq!(
-            st.depth_compare_for_domain(
-                wgpu::CompareFunction::Never,
-                MaterialDepthCompareDomain::UnityCompareFunction,
-            ),
-            wgpu::CompareFunction::Always
         );
     }
 

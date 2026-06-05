@@ -47,6 +47,20 @@ fn main_depth_prepass_resources(
     }
 }
 
+pub(super) fn main_desktop_overlay_resources(
+    h: &MainGraphHandles,
+) -> crate::passes::WorldMeshDesktopOverlayGraphResources {
+    crate::passes::WorldMeshDesktopOverlayGraphResources {
+        frame_color: h.color,
+        depth: h.depth,
+        cluster_light_counts: h.cluster_light_counts,
+        cluster_light_indices: h.cluster_light_indices,
+        lights: h.lights,
+        per_draw_slab: h.per_draw_slab,
+        frame_uniforms: h.frame_uniforms,
+    }
+}
+
 fn add_world_mesh_depth_prepass(builder: &mut GraphBuilder, h: &MainGraphHandles) -> PassId {
     builder.add_raster_pass(Box::new(crate::passes::WorldMeshForwardDepthPrepass::new(
         main_depth_prepass_resources(h),

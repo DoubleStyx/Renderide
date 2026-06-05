@@ -8,7 +8,9 @@ use parking_lot::Mutex;
 use crate::camera::ViewId;
 use crate::diagnostics::PerViewHudOutputs;
 use crate::gpu::GpuLimits;
-use crate::graph_inputs::{GraphPassFrame, PerViewFramePlan};
+use crate::graph_inputs::{
+    FrameSystemsShared, GraphPassFrame, GraphPassFrameView, PerViewFramePlan,
+};
 use crate::passes::{
     PreparedWorldMeshForwardFrame, WorldMeshForwardInstancePlanCache,
     WorldMeshForwardInstancePlanCacheStats, WorldMeshForwardPrepareCaches,
@@ -24,6 +26,11 @@ use crate::world_mesh::{PrefetchedWorldMeshViewDraws, WorldMeshDrawPlan};
 blackboard_slot! {
     /// Blackboard slot carrying the world-mesh draw plan into backend graph preparation.
     pub WorldMeshDrawPlanSlot => WorldMeshDrawPlan,
+}
+
+blackboard_slot! {
+    /// Blackboard slot carrying the desktop overlay draw plan into backend graph preparation.
+    pub WorldMeshOverlayDrawPlanSlot => WorldMeshDrawPlan,
 }
 
 /// Backend-owned world-mesh forward preparation caches.
@@ -147,14 +154,126 @@ pub(crate) fn prepare_world_mesh_view_blackboard(
     frame_plan: &PerViewFramePlan,
     blackboard: &mut Blackboard,
 ) {
+    let mut command_stats = GraphCommandStats::default();
+    let mut command_stats_present = false;
     let draw_plan = take_world_mesh_draw_plan(blackboard);
     let prepared = planner.prepare_view(device, uploads, gpu_limits, frame, frame_plan, draw_plan);
     if let Some(forward) = prepared.prepared {
-        blackboard.insert::<GraphCommandStatsSlot>(command_stats_from_prepared(&forward));
+        command_stats.add(command_stats_from_prepared(&forward));
+        command_stats_present = true;
         blackboard.insert::<crate::passes::WorldMeshForwardPlanSlot>(forward);
     }
     if let Some(hud_outputs) = prepared.hud_outputs {
         blackboard.insert::<crate::diagnostics::PerViewHudOutputsSlot>(hud_outputs);
+    }
+    if let Some(overlay_draw_plan) = blackboard.take::<WorldMeshOverlayDrawPlanSlot>() {
+        prepare_desktop_overlay_blackboard(
+            DesktopOverlayBlackboardPrepareCtx {
+                planner,
+                device,
+                uploads,
+                gpu_limits,
+                frame,
+                frame_plan,
+                blackboard,
+                command_stats: &mut command_stats,
+                command_stats_present: &mut command_stats_present,
+            },
+            overlay_draw_plan,
+        );
+    }
+    if command_stats_present {
+        blackboard.insert::<GraphCommandStatsSlot>(command_stats);
+    }
+}
+
+struct DesktopOverlayBlackboardPrepareCtx<'a, 'uploads, 'frame> {
+    planner: &'a BackendWorldMeshFramePlanner,
+    device: &'a wgpu::Device,
+    uploads: GraphUploadSink<'uploads>,
+    gpu_limits: &'a GpuLimits,
+    frame: &'a GraphPassFrame<'frame>,
+    frame_plan: &'a PerViewFramePlan,
+    blackboard: &'a mut Blackboard,
+    command_stats: &'a mut GraphCommandStats,
+    command_stats_present: &'a mut bool,
+}
+
+fn prepare_desktop_overlay_blackboard(
+    ctx: DesktopOverlayBlackboardPrepareCtx<'_, '_, '_>,
+    draw_plan: WorldMeshDrawPlan,
+) {
+    let Some((frame_bind_group, frame_uniform_buffer)) = ctx
+        .frame
+        .shared
+        .frame_resources
+        .per_view_frame_bind_group_and_buffer(ViewId::MainOverlay)
+    else {
+        logger::warn!(
+            "desktop overlay frame planning skipped: missing MainOverlay frame resources"
+        );
+        return;
+    };
+    let overlay_frame_plan = PerViewFramePlan {
+        frame_bind_group,
+        frame_uniform_buffer,
+        view_idx: ctx.frame_plan.view_idx,
+    };
+    let overlay_frame = desktop_overlay_graph_frame(ctx.frame);
+    let prepared = ctx.planner.prepare_view(
+        ctx.device,
+        ctx.uploads,
+        ctx.gpu_limits,
+        &overlay_frame,
+        &overlay_frame_plan,
+        draw_plan,
+    );
+    if let Some(forward) = prepared.prepared {
+        ctx.command_stats.add(command_stats_from_prepared(&forward));
+        *ctx.command_stats_present = true;
+        ctx.blackboard
+            .insert::<crate::passes::WorldMeshOverlayForwardPlanSlot>(forward);
+    }
+}
+
+fn desktop_overlay_graph_frame<'a>(frame: &GraphPassFrame<'a>) -> GraphPassFrame<'a> {
+    GraphPassFrame {
+        shared: FrameSystemsShared {
+            scene: frame.shared.scene,
+            occlusion: frame.shared.occlusion,
+            frame_resources: frame.shared.frame_resources,
+            materials: frame.shared.materials,
+            asset_resources: frame.shared.asset_resources,
+            mesh_preprocess: frame.shared.mesh_preprocess,
+            mesh_deform_scratch: None,
+            mesh_deform_skin_cache: None,
+            skin_cache: frame.shared.skin_cache,
+            skin_weight_mode: frame.shared.skin_weight_mode,
+            debug_hud: frame.shared.debug_hud,
+        },
+        view: GraphPassFrameView {
+            depth_texture: frame.view.depth_texture,
+            depth_view: frame.view.depth_view,
+            depth_sample_view: frame.view.depth_sample_view.clone(),
+            surface_format: frame.view.surface_format,
+            scene_color_format: frame.view.surface_format,
+            viewport_px: frame.view.viewport_px,
+            host_camera: frame.view.host_camera,
+            render_context: frame.view.render_context,
+            frame_time_seconds: frame.view.frame_time_seconds,
+            multiview_stereo: false,
+            offscreen_write_target: frame.view.offscreen_write_target,
+            view_id: ViewId::MainOverlay,
+            hi_z_slot: frame
+                .shared
+                .occlusion
+                .ensure_hi_z_state(ViewId::MainOverlay),
+            sample_count: 1,
+            gpu_limits: frame.view.gpu_limits.clone(),
+            msaa_depth_resolve: frame.view.msaa_depth_resolve.clone(),
+            clear: frame.view.clear,
+            post_processing: frame.view.post_processing,
+        },
     }
 }
 

@@ -181,7 +181,7 @@ fn fs_main(in: mv::WorldColorVertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    if (!kw_MASK_TEXTURE_CLIP() && kw_ALPHATEST() && clip_a <= mat._Cutoff) {
+    if (!kw_MASK_TEXTURE_CLIP() && kw_ALPHATEST() && clip_a < mat._Cutoff) {
         discard;
     }
 

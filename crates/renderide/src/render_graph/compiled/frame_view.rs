@@ -220,6 +220,12 @@ impl<'a> FrameView<'a> {
     pub fn post_processing(&self) -> ViewPostProcessing {
         self.profile.post_processing()
     }
+
+    /// Companion resource view used by the desktop dashboard overlay pass, when this view records one.
+    pub fn desktop_overlay_resource_view_id(&self) -> Option<ViewId> {
+        (self.view_id == ViewId::Main && self.profile.id() == RenderPathProfileId::DesktopMain)
+            .then_some(ViewId::MainOverlay)
+    }
 }
 
 /// View metadata used by frame-global graph passes.

@@ -45,7 +45,7 @@ fn unpack_mask() -> u32 {
 /// Packs a non-negative texture asset id using the shared host texture-handle layout.
 ///
 /// Returns [`None`] when `asset_id` is negative or too large to fit beside the type tag.
-pub fn pack_host_texture_id(asset_id: i32, kind: HostTextureAssetKind) -> Option<i32> {
+pub(crate) fn pack_host_texture_id(asset_id: i32, kind: HostTextureAssetKind) -> Option<i32> {
     if asset_id < 0 {
         return None;
     }

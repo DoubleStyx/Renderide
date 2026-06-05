@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use super::{MaterialBatchPacket, PreparedWorldMeshForwardFrame};
+use crate::camera::ViewId;
 use crate::gpu::GpuLimits;
 use crate::graph_inputs::{GraphPassFrame, PerViewFramePlanSlot};
 use crate::passes::WorldMeshForwardEncodeRefs;
@@ -124,25 +125,51 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_phase_gra
     prepared: &PreparedWorldMeshForwardFrame,
     phase: WorldMeshPhase,
 ) -> bool {
+    record_world_mesh_forward_phase_graph_raster_for_view(
+        rpass,
+        frame,
+        blackboard,
+        prepared,
+        phase,
+        frame.view.view_id,
+    )
+}
+
+/// Records one named world-mesh phase using the supplied per-view resource identity.
+pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_phase_graph_raster_for_view(
+    rpass: &mut wgpu::RenderPass<'_>,
+    frame: &GraphPassFrame<'_>,
+    blackboard: &Blackboard,
+    prepared: &PreparedWorldMeshForwardFrame,
+    phase: WorldMeshPhase,
+    resource_view_id: ViewId,
+) -> bool {
     let groups = prepared.plan.phase(phase);
     #[cfg(feature = "tracy")]
     let debug_label = format!("world_mesh_forward::{phase:?}");
     #[cfg(feature = "tracy")]
     rpass.push_debug_group(debug_label.as_str());
-    let recorded =
-        record_world_mesh_forward_groups_graph_raster(rpass, frame, blackboard, prepared, groups);
+    let recorded = record_world_mesh_forward_groups_graph_raster_for_view(
+        rpass,
+        frame,
+        blackboard,
+        prepared,
+        groups,
+        resource_view_id,
+    );
     #[cfg(feature = "tracy")]
     rpass.pop_debug_group();
     recorded
 }
 
-/// Records an explicit draw-group slice into a render pass already opened by the caller.
-pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_groups_graph_raster(
+/// Records an explicit draw-group slice using the supplied per-view resource identity.
+pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_groups_graph_raster_for_view(
     rpass: &mut wgpu::RenderPass<'_>,
     frame: &GraphPassFrame<'_>,
     blackboard: &Blackboard,
     prepared: &PreparedWorldMeshForwardFrame,
     groups: &[crate::world_mesh::DrawGroup],
+    resource_view_id: ViewId,
 ) -> bool {
     let Some(frame_bg_arc) = frame_bind_group_for_view(frame, blackboard) else {
         return false;
@@ -153,6 +180,7 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_groups_gr
         prepared,
         groups,
         &frame_bg_arc,
+        resource_view_id,
     )
 }
 
@@ -163,6 +191,7 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_groups_gr
     prepared: &PreparedWorldMeshForwardFrame,
     groups: &[crate::world_mesh::DrawGroup],
     frame_bg_arc: &Arc<wgpu::BindGroup>,
+    resource_view_id: ViewId,
 ) -> bool {
     if groups.is_empty() {
         return true;
@@ -171,7 +200,7 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_groups_gr
     let Some(per_draw_bg) = frame
         .shared
         .frame_resources
-        .per_view_per_draw_bind_group(frame.view.view_id)
+        .per_view_per_draw_bind_group(resource_view_id)
     else {
         return false;
     };

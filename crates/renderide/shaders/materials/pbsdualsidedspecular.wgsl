@@ -110,7 +110,7 @@ fn sample_surface(
     if (kw_VCOLOR_ALBEDO()) {
         albedo = albedo * vertex_color;
     }
-    if (kw_ALPHACLIP() && albedo.a <= mat._AlphaClip) {
+    if (kw_ALPHACLIP() && albedo.a < mat._AlphaClip) {
         discard;
     }
 

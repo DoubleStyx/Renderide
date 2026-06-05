@@ -74,6 +74,7 @@ pub(crate) use prepare::{
 pub(crate) use skybox::SkyboxRenderer as WorldMeshForwardSkyboxRenderer;
 pub(crate) use state::{
     PreparedWorldMeshForwardFrame, WorldMeshForwardPipelineState, WorldMeshForwardPlanSlot,
+    WorldMeshOverlayForwardPlanSlot,
 };
 pub use transparent_sequence::WorldMeshForwardTransparentSequencePass;
 
@@ -97,11 +98,13 @@ use depth_snapshot::{
     EncodeCtx as DepthSnapshotEncodeCtx, encode_world_mesh_forward_depth_snapshot,
 };
 use raster_recording::{
+    record_world_mesh_forward_groups_graph_raster_with_frame_bind_group,
     record_world_mesh_forward_intersection_graph_raster,
     record_world_mesh_forward_opaque_graph_raster, stencil_load_ops,
 };
 use skybox::record_prepared_skybox;
 
+use crate::camera::ViewId;
 use crate::gpu_pools::{
     CubemapPool, MeshPool, RenderTexturePool, Texture3dPool, TexturePool, VideoTexturePool,
 };
@@ -125,6 +128,12 @@ pub struct WorldMeshDepthSnapshotPass {
 #[derive(Debug)]
 pub struct WorldMeshForwardIntersectPass {
     resources: WorldMeshForwardGraphResources,
+}
+
+/// Draws desktop overlay-layer world meshes after scene-color compose.
+#[derive(Debug)]
+pub struct WorldMeshDesktopOverlayPass {
+    resources: WorldMeshDesktopOverlayGraphResources,
 }
 
 /// Resolves the final MSAA forward depth into the single-sample frame depth target.
@@ -176,6 +185,25 @@ impl WorldMeshForwardGraphResources {
     pub fn msaa_enabled(self) -> bool {
         self.msaa.is_some()
     }
+}
+
+/// Graph resources used by the desktop overlay forward pass.
+#[derive(Clone, Copy, Debug)]
+pub struct WorldMeshDesktopOverlayGraphResources {
+    /// Imported frame color target after scene-color compose.
+    pub frame_color: ImportedTextureHandle,
+    /// Imported frame depth target used as overlay-local depth.
+    pub depth: ImportedTextureHandle,
+    /// Imported cluster light-count storage buffer.
+    pub cluster_light_counts: ImportedBufferHandle,
+    /// Imported cluster light-index storage buffer.
+    pub cluster_light_indices: ImportedBufferHandle,
+    /// Imported light storage buffer.
+    pub lights: ImportedBufferHandle,
+    /// Imported per-draw storage slab.
+    pub per_draw_slab: ImportedBufferHandle,
+    /// Imported frame uniform buffer.
+    pub frame_uniforms: ImportedBufferHandle,
 }
 
 /// Disjoint borrows required by world-mesh forward encoding.
@@ -235,6 +263,13 @@ fn forward_intersection_raster_needed(opaque_recorded: bool, plan: &InstancePlan
     opaque_recorded && !plan.phase_is_empty(WorldMeshPhase::Intersection)
 }
 
+/// Returns whether the desktop overlay raster pass has visible draw work to record.
+fn desktop_overlay_raster_needed(prepared: &PreparedWorldMeshForwardFrame) -> bool {
+    WorldMeshPhase::PRIMARY_FORWARD
+        .iter()
+        .any(|phase| !prepared.plan.phase_is_empty(*phase))
+}
+
 impl WorldMeshForwardOpaquePass {
     /// Creates a graph-managed opaque world mesh forward pass instance.
     pub fn new(resources: WorldMeshForwardGraphResources) -> Self {
@@ -252,6 +287,13 @@ impl WorldMeshDepthSnapshotPass {
 impl WorldMeshForwardIntersectPass {
     /// Creates a world mesh intersection raster pass instance.
     pub fn new(resources: WorldMeshForwardGraphResources) -> Self {
+        Self { resources }
+    }
+}
+
+impl WorldMeshDesktopOverlayPass {
+    /// Creates a desktop overlay raster pass instance.
+    pub fn new(resources: WorldMeshDesktopOverlayGraphResources) -> Self {
         Self { resources }
     }
 }
@@ -345,6 +387,47 @@ fn mark_depth_resolved(
 pub(in crate::passes::world_mesh_forward) fn declare_forward_draw_reads(
     b: &mut PassBuilder<'_>,
     resources: WorldMeshForwardGraphResources,
+) {
+    b.import_buffer(
+        resources.cluster_light_counts,
+        BufferAccess::Storage {
+            stages: wgpu::ShaderStages::FRAGMENT,
+            access: StorageAccess::ReadOnly,
+        },
+    );
+    b.import_buffer(
+        resources.cluster_light_indices,
+        BufferAccess::Storage {
+            stages: wgpu::ShaderStages::FRAGMENT,
+            access: StorageAccess::ReadOnly,
+        },
+    );
+    b.import_buffer(
+        resources.lights,
+        BufferAccess::Storage {
+            stages: wgpu::ShaderStages::FRAGMENT,
+            access: StorageAccess::ReadOnly,
+        },
+    );
+    b.import_buffer(
+        resources.per_draw_slab,
+        BufferAccess::Storage {
+            stages: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+            access: StorageAccess::ReadOnly,
+        },
+    );
+    b.import_buffer(
+        resources.frame_uniforms,
+        BufferAccess::Uniform {
+            stages: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+            dynamic_offset: false,
+        },
+    );
+}
+
+fn declare_desktop_overlay_draw_reads(
+    b: &mut PassBuilder<'_>,
+    resources: WorldMeshDesktopOverlayGraphResources,
 ) {
     b.import_buffer(
         resources.cluster_light_counts,
@@ -619,6 +702,105 @@ impl RasterPass for WorldMeshForwardIntersectPass {
             }
         }
         ctx.blackboard.insert::<WorldMeshForwardPlanSlot>(prepared);
+        Ok(())
+    }
+}
+
+impl RasterPass for WorldMeshDesktopOverlayPass {
+    fn name(&self) -> &str {
+        "WorldMeshDesktopOverlay"
+    }
+
+    fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
+        b.never_merge();
+        b.never_parallel();
+        b.read_optional_blackboard::<WorldMeshOverlayForwardPlanSlot>();
+        b.write_blackboard::<WorldMeshOverlayForwardPlanSlot>();
+        {
+            let mut r = b.raster();
+            r.color(
+                self.resources.frame_color,
+                wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+                Option::<ImportedTextureHandle>::None,
+            );
+            r.depth(
+                self.resources.depth,
+                wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(crate::gpu::MAIN_FORWARD_DEPTH_CLEAR),
+                    store: wgpu::StoreOp::Store,
+                },
+                None,
+            );
+        };
+        declare_desktop_overlay_draw_reads(b, self.resources);
+        Ok(())
+    }
+
+    fn should_record(&self, ctx: &RasterPassCtx<'_, '_>) -> Result<bool, RenderPassError> {
+        Ok(ctx
+            .blackboard
+            .get::<WorldMeshOverlayForwardPlanSlot>()
+            .is_some_and(desktop_overlay_raster_needed))
+    }
+
+    fn stencil_ops_override(
+        &self,
+        ctx: &RasterPassCtx<'_, '_>,
+        depth: &DepthAttachmentTemplate,
+    ) -> Option<wgpu::Operations<u32>> {
+        let Some(format) = ctx
+            .blackboard
+            .get::<WorldMeshOverlayForwardPlanSlot>()
+            .and_then(|prepared| prepared.pipeline.pass_desc.depth_stencil_format)
+        else {
+            return depth.stencil;
+        };
+        format.has_stencil_aspect().then_some(wgpu::Operations {
+            load: wgpu::LoadOp::Clear(0),
+            store: wgpu::StoreOp::Store,
+        })
+    }
+
+    fn record(
+        &self,
+        ctx: &mut RasterPassCtx<'_, '_>,
+        rpass: &mut wgpu::RenderPass<'_>,
+    ) -> Result<(), RenderPassError> {
+        profiling::scope!("world_mesh_forward::desktop_overlay_record");
+        let frame = &mut *ctx.pass_frame;
+        let Some(mut prepared) = ctx.blackboard.take::<WorldMeshOverlayForwardPlanSlot>() else {
+            return Ok(());
+        };
+        let Some((frame_bind_group, _)) = frame
+            .shared
+            .frame_resources
+            .per_view_frame_bind_group_and_buffer(ViewId::MainOverlay)
+        else {
+            ctx.blackboard
+                .insert::<WorldMeshOverlayForwardPlanSlot>(prepared);
+            return Ok(());
+        };
+        let mut recorded = true;
+        for phase in WorldMeshPhase::PRIMARY_FORWARD {
+            let groups = prepared.plan.phase(phase);
+            if !record_world_mesh_forward_groups_graph_raster_with_frame_bind_group(
+                rpass,
+                frame,
+                &prepared,
+                groups,
+                &frame_bind_group,
+                ViewId::MainOverlay,
+            ) {
+                recorded = false;
+                break;
+            }
+        }
+        prepared.tail_raster_recorded = recorded;
+        ctx.blackboard
+            .insert::<WorldMeshOverlayForwardPlanSlot>(prepared);
         Ok(())
     }
 }
