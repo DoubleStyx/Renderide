@@ -10,13 +10,11 @@
 //!
 //! - [`pipeline`] owns the process-wide compute pipeline and `ClusterParams` uniform layout.
 //! - [`eye_dispatch`] runs the per-eye dispatch loop (mono / stereo).
-//! - [`record_action`] selects between skip / clear-zero / CPU froxel / GPU scan per tick.
+//! - [`record_action`] selects between skip / clear-zero / GPU scan per tick.
 //! - [`cache`] holds the per-view bind-group cache (lifecycle-coupled to retired views).
-//! - [`froxel_cpu`] implements the CPU light-centric froxel planner used for the first submitted view.
 
 mod cache;
 mod eye_dispatch;
-mod froxel_cpu;
 mod pipeline;
 mod record_action;
 
@@ -31,16 +29,13 @@ use eye_dispatch::{
     clustered_light_eye_params_for_viewport, clusters_per_eye_for_params,
     log_clustered_light_active_once, run_clustered_light_eye_passes,
 };
-use froxel_cpu::AUTO_CPU_FROXEL_LIGHT_THRESHOLD;
 use pipeline::clustered_light_pipelines;
 use record_action::{
     ClusteredLightClearData, ClusteredLightGpuScanData, ClusteredLightRecordAction,
-    CpuFroxelRecordData, try_record_cpu_froxel,
 };
 
 use crate::camera::ViewId;
 use crate::gpu::CLUSTER_PARAMS_UNIFORM_SIZE;
-use crate::graph_inputs::PerViewFramePlanSlot;
 use crate::render_graph::context::ComputePassCtx;
 use crate::render_graph::error::{RenderPassError, SetupError};
 use crate::render_graph::pass::{ComputePass, PassBuilder};
@@ -96,7 +91,8 @@ impl ClusteredLightPass {
     /// Returns the compute bind group for `view_id`, rebuilding it when `cluster_ver` changes.
     ///
     /// `params_buffer` is **per-view** and intentionally separated from `ClusterBufferRefs` to
-    /// prevent a CPU write-order race in the shared graph upload sink during parallel recording.
+    /// keep per-view uniforms independent from the shared cluster scratch buffers during
+    /// parallel recording.
     fn ensure_cluster_compute_bind_group(
         &self,
         device: &wgpu::Device,
@@ -141,11 +137,6 @@ impl ClusteredLightPass {
             })
     }
 
-    /// Returns whether this pass should use CPU froxel assignment for the current view.
-    fn should_use_cpu_froxel(&self, view_id: ViewId, view_idx: usize, light_count: u32) -> bool {
-        should_use_cpu_froxel_for_view(view_id, view_idx, light_count)
-    }
-
     /// Selects and prepares the clustered-light work for the current graph view.
     fn prepare_record_action(
         &self,
@@ -162,10 +153,6 @@ impl ClusteredLightPass {
         let scene = frame.systems.scene;
         let stereo = frame.view.multiview_stereo && hc.active_stereo().is_some();
         let view_id = frame.view.view_id;
-        let view_idx = ctx
-            .blackboard
-            .get::<PerViewFramePlanSlot>()
-            .map_or(usize::MAX, |plan| plan.view_idx);
         let light_count = frame.systems.frame_resources.frame_light_count_u32(view_id);
 
         let Some(refs) = frame.systems.frame_resources.shared_cluster_buffer_refs() else {
@@ -204,21 +191,6 @@ impl ClusteredLightPass {
             );
             return ClusteredLightRecordAction::Skip;
         };
-
-        if self.should_use_cpu_froxel(view_id, view_idx, light_count)
-            && try_record_cpu_froxel(CpuFroxelRecordData {
-                uploads: ctx.uploads,
-                lights: frame.systems.frame_resources.frame_lights(view_id),
-                cluster_light_counts: &cluster_light_counts,
-                cluster_light_indices: &cluster_light_indices,
-                eye_params: &eye_params,
-                clusters_per_eye,
-                view_id,
-                light_count,
-            })
-        {
-            return ClusteredLightRecordAction::Done;
-        }
 
         if light_count == 0 {
             return ClusteredLightRecordAction::ClearZero(ClusteredLightClearData {
@@ -286,17 +258,6 @@ impl ClusteredLightPass {
     }
 }
 
-/// Returns whether a graph view should use CPU froxel assignment for clustered lights.
-///
-/// The CPU path uploads the shared cluster buffers before the per-view command buffers, so it is
-/// only safe for the first submitted main view. Secondary and one-shot views stay on the GPU path
-/// until CPU froxel assignment is proven against their projections and per-view render-space data.
-fn should_use_cpu_froxel_for_view(view_id: ViewId, view_idx: usize, light_count: u32) -> bool {
-    matches!(view_id, ViewId::Main)
-        && view_idx == 0
-        && light_count >= AUTO_CPU_FROXEL_LIGHT_THRESHOLD
-}
-
 impl ComputePass for ClusteredLightPass {
     fn name(&self) -> &str {
         "ClusteredLight"
@@ -305,7 +266,6 @@ impl ComputePass for ClusteredLightPass {
     fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
         b.compute();
         b.async_compute_capable();
-        b.read_blackboard::<PerViewFramePlanSlot>();
         b.import_buffer(
             self.resources.lights,
             BufferAccess::Storage {
@@ -344,7 +304,7 @@ impl ComputePass for ClusteredLightPass {
     fn record(&self, ctx: &mut ComputePassCtx<'_, '_, '_>) -> Result<(), RenderPassError> {
         profiling::scope!("clustered_light::record_dispatch");
         match self.prepare_record_action(ctx) {
-            ClusteredLightRecordAction::Skip | ClusteredLightRecordAction::Done => {}
+            ClusteredLightRecordAction::Skip => {}
             ClusteredLightRecordAction::ClearZero(data) => {
                 clear_zero_light_cluster_counts(
                     ctx.encoder,
@@ -366,58 +326,5 @@ impl ComputePass for ClusteredLightPass {
         }
 
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cpu_froxel_auto_gate_requires_main_view_first_slot_and_light_threshold() {
-        assert!(!should_use_cpu_froxel_for_view(
-            ViewId::Main,
-            0,
-            AUTO_CPU_FROXEL_LIGHT_THRESHOLD - 1
-        ));
-        assert!(should_use_cpu_froxel_for_view(
-            ViewId::Main,
-            0,
-            AUTO_CPU_FROXEL_LIGHT_THRESHOLD
-        ));
-    }
-
-    #[test]
-    fn main_view_after_earlier_views_uses_gpu_scan_path() {
-        let main_view_idx_after_secondary_cameras = 1;
-        assert!(!should_use_cpu_froxel_for_view(
-            ViewId::Main,
-            main_view_idx_after_secondary_cameras,
-            AUTO_CPU_FROXEL_LIGHT_THRESHOLD
-        ));
-    }
-
-    #[test]
-    fn secondary_views_use_gpu_scan_path_even_when_submitted_first() {
-        assert!(!should_use_cpu_froxel_for_view(
-            ViewId::secondary_camera(crate::scene::RenderSpaceId(7), 3),
-            0,
-            AUTO_CPU_FROXEL_LIGHT_THRESHOLD
-        ));
-        assert!(!should_use_cpu_froxel_for_view(
-            ViewId::camera_render_task(crate::scene::RenderSpaceId(7), 0),
-            0,
-            AUTO_CPU_FROXEL_LIGHT_THRESHOLD
-        ));
-        assert!(!should_use_cpu_froxel_for_view(
-            ViewId::camera360_render_task_face(crate::scene::RenderSpaceId(7), 0, 2),
-            0,
-            AUTO_CPU_FROXEL_LIGHT_THRESHOLD
-        ));
-        assert!(!should_use_cpu_froxel_for_view(
-            ViewId::reflection_probe_render_task(crate::scene::RenderSpaceId(7), 11, 4),
-            0,
-            AUTO_CPU_FROXEL_LIGHT_THRESHOLD
-        ));
     }
 }
