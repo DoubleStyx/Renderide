@@ -92,8 +92,7 @@ fn fresnel_normal_mapped_shaders_use_normal_matrix_vertex_path() -> io::Result<(
     for file_name in ["fresnellerp.wgsl", "overlayfresnel.wgsl"] {
         let src = material_source(file_name)?;
         assert!(
-            src.contains("mv::world_vertex_main(instance_index, view_idx, pos, n, t, uv)")
-                && src.contains("mv::world_vertex_main(instance_index, 0u, pos, n, t, uv)"),
+            src.contains("mv::world_vertex_main(instance_index, view_layer, pos, n, t, uv)"),
             "{file_name} must use the standard world vertex helper so normals use the normal matrix"
         );
         assert!(

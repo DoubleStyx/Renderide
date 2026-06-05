@@ -62,8 +62,6 @@ pub struct MaterialDrawBatchKey {
     pub embedded_uses_scene_depth_snapshot: bool,
     /// Whether the shader samples the scene-color snapshot through frame globals.
     pub embedded_uses_scene_color_snapshot: bool,
-    /// Whether the shader needs to generate billboard geometry from vertex indices for particles.
-    pub embedded_uses_billboard_geometry: bool,
     /// How the shader expects scene-color snapshots to be refreshed.
     pub scene_color_snapshot_mode: SceneColorSnapshotMode,
     /// Effective Unity render queue after material override / fallback resolution.

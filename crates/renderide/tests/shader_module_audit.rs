@@ -354,32 +354,34 @@ fn billboard_render_buffer_uses_indexed_corner_separate_from_sample_uv() -> io::
         "Billboard/Unlit must know the indexed vertex id for generated render-buffer quads"
     );
     assert!(
-        src.contains("fn render_buffer_billboard_unit_corner(vertex_index: u32) -> vec2<f32>")
-            && src.contains("let corner = vertex_index % 4u;"),
+        src.contains("let render_billboard_vertex = bv::render_buffer_billboard_vertex(")
+            && src.contains("world_p = render_billboard_vertex.world_pos.xyz"),
         "Billboard/Unlit must derive generated render-buffer quad corners from vertex order"
     );
+
+    let module = module_source("billboard/vertex.wgsl")?;
     assert!(
-        src.contains(
-            "fn billboard_corner_for_vertex(pos: vec3<f32>, uv: vec2<f32>, vertex_index: u32) -> vec2<f32>"
-        ) && src.contains(
+        module.contains(
+            "fn render_buffer_billboard_corner_for_vertex(vertex_index: u32) -> vec2<f32>"
+        ) && module.contains(
             "return render_buffer_billboard_unit_corner(vertex_index) * 2.0 - vec2<f32>(1.0, 1.0);"
-        ) && src.contains("return mb::billboard_corner(pos, uv);"),
+        ) && src.contains("let corner = mb::billboard_corner(pos.xyz, uv);"),
         "Render-buffer billboards must not reuse framed atlas UVs as geometry corners"
     );
     assert!(
-        src.contains("let corner = billboard_corner_for_vertex(pos.xyz, uv, vertex_index);")
-            && src.contains("out.uv = uv;"),
+        module.contains("let corner = render_buffer_billboard_corner_for_vertex(vertex_index);")
+            && module.contains("out.uv = uv;"),
         "Billboard/Unlit must keep atlas sampling UVs separate from generated geometry corners"
     );
     assert!(
         src.contains("@location(4) point_forward_upz: vec4<f32>")
             && src.contains("@location(5) point_up_xy: vec2<f32>")
-            && src.contains("fn render_buffer_billboard_basis("),
+            && module.contains("fn render_buffer_billboard_basis("),
         "Render-buffer billboards must receive particle orientation streams for Unity alignment modes"
     );
     assert!(
-        src.contains("pd::particle_alignment(d)")
-            && src.contains("fn screen_clamped_billboard_size("),
+        module.contains("pd::particle_alignment(draw)")
+            && module.contains("fn screen_clamped_billboard_size("),
         "Render-buffer billboards must apply renderer alignment and screen-size clamp metadata"
     );
 
@@ -405,22 +407,12 @@ fn billboard_render_buffer_variant_bits_keep_native_and_compatibility_layout() -
         ("BILLBOARDUNLIT_KW_VERTEX_LINEAR_COLOR", 13),
         ("BILLBOARDUNLIT_KW_VERTEX_SRGB_COLOR", 14),
         ("BILLBOARDUNLIT_KW_VERTEXCOLORS", 15),
-        ("BILLBOARDUNLIT_KW_RENDER_BUFFER", 16),
     ] {
         assert!(
             src.contains(&format!("const {constant_name}: u32 = 1u << {bit_index}u;")),
             "{constant_name} must keep Billboard/Unlit's native sorted keyword bit order"
         );
     }
-    assert!(
-        src.contains("const BILLBOARDUNLIT_KW_SIMPLE_LIT: u32 = 1u << 17u;"),
-        "Non-Unlit shading support for render-buffer billboards must use compatibility bit after native Billboard/Unlit keywords"
-    );
-    assert!(
-        src.contains("const BILLBOARDUNLIT_KW_UNLIT_MASK_TEXTURE_CLIP: u32 = 1u << 18u;")
-            && src.contains("const BILLBOARDUNLIT_KW_UNLIT_MASK_TEXTURE_MUL: u32 = 1u << 19u;"),
-        "Unlit mask support for render-buffer billboards must use compatibility bits after native Billboard/Unlit keywords"
-    );
 
     Ok(())
 }
@@ -449,40 +441,24 @@ fn billboard_render_buffer_preserves_fragment_alpha_and_fog_behavior() -> io::Re
 
 #[test]
 fn billboard_render_buffer_alignment_matches_unity_modes() -> io::Result<()> {
-    let src = material_source("billboardunlit.wgsl")?;
+    let module = module_source("billboard/vertex.wgsl")?;
 
     assert!(
-        src.contains("return facing_basis(center_world, view_layer, pointdata.z, false);"),
-        "Render-buffer Facing alignment must keep Unity-style roll disabled"
+        module.contains("return facing_basis(center_world, view_layer, pointdata.z);"),
+        "Render-buffer Facing alignment must keep Unity-style roll"
     );
     assert!(
-        src.contains("fn direction_stretch_particle_basis(")
-            && src.contains("let velocity_world = mv::model_vector(d, point_forward_upz.xyz);")
-            && src.contains(
+        module.contains("fn direction_stretch_particle_basis(")
+            && module.contains("let velocity_world = mv::model_vector(draw, point_forward_upz.xyz);")
+            && module.contains(
                 "let velocity_in_plane = velocity_world - to_camera * dot(velocity_world, to_camera);"
             )
-            && src.contains("let view_up_in_plane = view_up - to_camera * dot(view_up, to_camera);")
-            && src.contains("up = rmath::safe_normalize(cross(to_camera, right), up);")
-            && src.contains(
-                "return direction_stretch_particle_basis(d, center_world, point_forward_upz, view_layer);"
+            && module.contains("let view_up_in_plane = view_up - to_camera * dot(view_up, to_camera);")
+            && module.contains("up = rmath::safe_normalize(cross(to_camera, right), up);")
+            && module.contains(
+                "return direction_stretch_particle_basis(draw, center_world, point_forward_upz, view_layer);"
             ),
         "Render-buffer Direction alignment must project velocity into the camera-facing stretch plane"
-    );
-
-    Ok(())
-}
-
-#[test]
-fn billboard_render_buffer_supports_simple_lit_non_unlit_sources() -> io::Result<()> {
-    let src = material_source("billboardunlit.wgsl")?;
-
-    assert!(
-        src.contains("if (kw_SIMPLE_LIT())")
-            && src.contains("out.world_p = world_p;")
-            && src.contains("out.n = rmath::safe_normalize(cross(axes.right, axes.up)")
-            && src.contains("let base = clamp(col.rgb, vec3<f32>(0.0), vec3<f32>(1.0));")
-            && src.contains("dl::shade_clustered_diffuse"),
-        "Billboard/Unlit must offer simple shading capabilities for non-Unlit source materials"
     );
 
     Ok(())

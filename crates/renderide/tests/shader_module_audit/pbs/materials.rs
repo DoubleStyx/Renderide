@@ -361,8 +361,7 @@ fn pbs_metallic_uses_uvsec_for_detail_uvs() -> io::Result<()> {
         "_UVSec: f32",
         "@location(5) uv1: vec2<f32>",
         "pdet::detail_uv(uv0, uv1, mat._UVSec, mat._DetailAlbedoMap_ST)",
-        "mv::world_uv2_vertex_main(instance_index, view_idx, pos, n, t, uv0, uv1)",
-        "mv::world_uv2_vertex_main(instance_index, 0u, pos, n, t, uv0, uv1)",
+        "mv::world_uv2_vertex_main(instance_index, view_layer, pos, n, t, uv0, uv1)",
     ] {
         assert!(
             src.contains(required),
@@ -497,5 +496,35 @@ fn pbs_standard_parallax_uses_tangent_space_view_dir() -> io::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+#[test]
+fn most_pbs_shaders_support_billboard_rendering() -> io::Result<()> {
+    for file_name in [
+        "pbsmetallic.wgsl",
+        "pbsspecular.wgsl",
+        "pbscolormask.wgsl",
+        "pbscolorsplat.wgsl",
+        "pbsdualsided.wgsl",
+        "pbsintersect.wgsl",
+        "pbslerp.wgsl",
+        "pbsmultiuv.wgsl",
+        "pbsrim.wgsl",
+        "pbsslice.wgsl",
+        "pbsstencil.wgsl",
+        "pbstriplanar.wgsl",
+        "pbsvertexcolortransparent.wgsl",
+    ] {
+        let src = material_source(file_name)?;
+        assert!(
+            src.contains("#import renderide::billboard::vertex as bv"),
+            "{file_name} should import the billboard vertex module"
+        );
+        assert!(
+            src.contains("if (bv::kw_RENDER_BUFFER(mat._RenderideVariantBits))"),
+            "{file_name} should use billboard vertex conversions if the variant bit is specified"
+        );
+    }
     Ok(())
 }
