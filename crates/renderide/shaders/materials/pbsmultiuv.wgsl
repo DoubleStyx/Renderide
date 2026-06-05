@@ -20,6 +20,7 @@
 //#mat_default _AlphaClip float 0.5
 //#mat_default _Glossiness float 0.5
 
+#import renderide::billboard::vertex as bv
 #import renderide::material::variant_bits as vb
 #import renderide::mesh::vertex as mv
 #import renderide::pbs::normal as pnorm
@@ -209,6 +210,7 @@ fn sample_surface(
 @vertex
 fn vs_main(
     @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) vertex_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
@@ -221,10 +223,15 @@ fn vs_main(
     @location(7) uv3: vec2<f32>,
 ) -> mv::WorldUv4VertexOutput {
 #ifdef MULTIVIEW
-    return mv::world_uv4_vertex_main(instance_index, view_idx, pos, n, t, uv0, uv1, uv2, uv3);
+    let view_layer = view_idx;
 #else
-    return mv::world_uv4_vertex_main(instance_index, 0u, pos, n, t, uv0, uv1, uv2, uv3);
+    let view_layer = 0u;
 #endif
+    if (bv::kw_RENDER_BUFFER(mat._RenderideVariantBits)) {
+        return bv::world_uv4_vertex_main(instance_index, view_layer, pos, n, t, uv0, uv1, vertex_index);
+    } else {
+        return mv::world_uv4_vertex_main(instance_index, view_layer, pos, n, t, uv0, uv1, uv2, uv3);
+    }
 }
 
 /// Forward-base pass: clustered lighting (ambient + directional + local lights) + emission.

@@ -217,8 +217,8 @@ fn billboard_extra_streams_pack_particle_orientation() {
     }];
 
     let streams = billboard_extra_streams(&points);
-    let raw_tangent = streams.raw_tangent.as_deref().expect("raw tangent");
-    let uv1 = streams.uv1.as_deref().expect("uv1");
+    let raw_tangent = streams.point_forward_upz.as_deref().expect("raw tangent");
+    let uv1 = streams.point_up_xy.as_deref().expect("uv1");
     let tangent: &[f32] = bytemuck::cast_slice(&raw_tangent[..16]);
     let up_xy: &[f32] = bytemuck::cast_slice(&uv1[..8]);
 

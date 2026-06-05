@@ -25,348 +25,408 @@
 #import renderide::fur::classic_selfshadow as fur
 #import renderide::fur::common as furc
 
-fn vertex_at(instance_index: u32, view_idx: u32, pos: vec4<f32>, n: vec4<f32>, uv0: vec2<f32>, fur_multiplier: f32) -> furc::VertexOutput {
-    return fur::vertex_main(instance_index, view_idx, pos, n, vec4<f32>(1.0, 0.0, 0.0, 1.0), uv0, fur_multiplier);
+fn vertex_at(instance_index: u32, view_idx: u32, vertex_index: u32, pos: vec4<f32>, n: vec4<f32>, uv0: vec2<f32>, uv1: vec2<f32>, fur_multiplier: f32) -> furc::VertexOutput {
+    return fur::vertex_main(instance_index, view_idx, vertex_index, pos, n, vec4<f32>(1.0, 0.0, 0.0, 1.0), uv0, uv1, fur_multiplier);
 }
 
 @vertex
 fn vs_l_00(
     @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) vertex_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(5) uv1: vec2<f32>,
 ) -> furc::VertexOutput {
 #ifdef MULTIVIEW
-    return vertex_at(instance_index, view_idx, pos, n, uv0, 0.0);
+    let view_layer = view_idx;
 #else
-    return vertex_at(instance_index, 0u, pos, n, uv0, 0.0);
+    let view_layer = 0u;
 #endif
+    return vertex_at(instance_index, view_layer, vertex_index, pos, n, uv0, uv1, 0.0);
 }
 
 @vertex
 fn vs_l_01(
     @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) vertex_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(5) uv1: vec2<f32>,
 ) -> furc::VertexOutput {
 #ifdef MULTIVIEW
-    return vertex_at(instance_index, view_idx, pos, n, uv0, 0.05);
+    let view_layer = view_idx;
 #else
-    return vertex_at(instance_index, 0u, pos, n, uv0, 0.05);
+    let view_layer = 0u;
 #endif
+    return vertex_at(instance_index, view_layer, vertex_index, pos, n, uv0, uv1, 0.05);
 }
 
 @vertex
 fn vs_l_02(
     @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) vertex_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(5) uv1: vec2<f32>,
 ) -> furc::VertexOutput {
 #ifdef MULTIVIEW
-    return vertex_at(instance_index, view_idx, pos, n, uv0, 0.1);
+    let view_layer = view_idx;
 #else
-    return vertex_at(instance_index, 0u, pos, n, uv0, 0.1);
+    let view_layer = 0u;
 #endif
+    return vertex_at(instance_index, view_layer, vertex_index, pos, n, uv0, uv1, 0.1);
 }
 
 @vertex
 fn vs_l_03(
     @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) vertex_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(5) uv1: vec2<f32>,
 ) -> furc::VertexOutput {
 #ifdef MULTIVIEW
-    return vertex_at(instance_index, view_idx, pos, n, uv0, 0.15);
+    let view_layer = view_idx;
 #else
-    return vertex_at(instance_index, 0u, pos, n, uv0, 0.15);
+    let view_layer = 0u;
 #endif
+    return vertex_at(instance_index, view_layer, vertex_index, pos, n, uv0, uv1, 0.15);
 }
 
 @vertex
 fn vs_l_04(
     @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) vertex_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(5) uv1: vec2<f32>,
 ) -> furc::VertexOutput {
 #ifdef MULTIVIEW
-    return vertex_at(instance_index, view_idx, pos, n, uv0, 0.2);
+    let view_layer = view_idx;
 #else
-    return vertex_at(instance_index, 0u, pos, n, uv0, 0.2);
+    let view_layer = 0u;
 #endif
+    return vertex_at(instance_index, view_layer, vertex_index, pos, n, uv0, uv1, 0.2);
 }
 
 @vertex
 fn vs_l_05(
     @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) vertex_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(5) uv1: vec2<f32>,
 ) -> furc::VertexOutput {
 #ifdef MULTIVIEW
-    return vertex_at(instance_index, view_idx, pos, n, uv0, 0.25);
+    let view_layer = view_idx;
 #else
-    return vertex_at(instance_index, 0u, pos, n, uv0, 0.25);
+    let view_layer = 0u;
 #endif
+    return vertex_at(instance_index, view_layer, vertex_index, pos, n, uv0, uv1, 0.25);
 }
 
 @vertex
 fn vs_l_06(
     @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) vertex_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(5) uv1: vec2<f32>,
 ) -> furc::VertexOutput {
 #ifdef MULTIVIEW
-    return vertex_at(instance_index, view_idx, pos, n, uv0, 0.3);
+    let view_layer = view_idx;
 #else
-    return vertex_at(instance_index, 0u, pos, n, uv0, 0.3);
+    let view_layer = 0u;
 #endif
+    return vertex_at(instance_index, view_layer, vertex_index, pos, n, uv0, uv1, 0.3);
 }
 
 @vertex
 fn vs_l_07(
     @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) vertex_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(5) uv1: vec2<f32>,
 ) -> furc::VertexOutput {
 #ifdef MULTIVIEW
-    return vertex_at(instance_index, view_idx, pos, n, uv0, 0.35);
+    let view_layer = view_idx;
 #else
-    return vertex_at(instance_index, 0u, pos, n, uv0, 0.35);
+    let view_layer = 0u;
 #endif
+    return vertex_at(instance_index, view_layer, vertex_index, pos, n, uv0, uv1, 0.35);
 }
 
 @vertex
 fn vs_l_08(
     @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) vertex_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(5) uv1: vec2<f32>,
 ) -> furc::VertexOutput {
 #ifdef MULTIVIEW
-    return vertex_at(instance_index, view_idx, pos, n, uv0, 0.4);
+    let view_layer = view_idx;
 #else
-    return vertex_at(instance_index, 0u, pos, n, uv0, 0.4);
+    let view_layer = 0u;
 #endif
+    return vertex_at(instance_index, view_layer, vertex_index, pos, n, uv0, uv1, 0.4);
 }
 
 @vertex
 fn vs_l_09(
     @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) vertex_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(5) uv1: vec2<f32>,
 ) -> furc::VertexOutput {
 #ifdef MULTIVIEW
-    return vertex_at(instance_index, view_idx, pos, n, uv0, 0.45);
+    let view_layer = view_idx;
 #else
-    return vertex_at(instance_index, 0u, pos, n, uv0, 0.45);
+    let view_layer = 0u;
 #endif
+    return vertex_at(instance_index, view_layer, vertex_index, pos, n, uv0, uv1, 0.45);
 }
 
 @vertex
 fn vs_l_10(
     @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) vertex_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(5) uv1: vec2<f32>,
 ) -> furc::VertexOutput {
 #ifdef MULTIVIEW
-    return vertex_at(instance_index, view_idx, pos, n, uv0, 0.5);
+    let view_layer = view_idx;
 #else
-    return vertex_at(instance_index, 0u, pos, n, uv0, 0.5);
+    let view_layer = 0u;
 #endif
+    return vertex_at(instance_index, view_layer, vertex_index, pos, n, uv0, uv1, 0.5);
 }
 
 @vertex
 fn vs_l_11(
     @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) vertex_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(5) uv1: vec2<f32>,
 ) -> furc::VertexOutput {
 #ifdef MULTIVIEW
-    return vertex_at(instance_index, view_idx, pos, n, uv0, 0.55);
+    let view_layer = view_idx;
 #else
-    return vertex_at(instance_index, 0u, pos, n, uv0, 0.55);
+    let view_layer = 0u;
 #endif
+    return vertex_at(instance_index, view_layer, vertex_index, pos, n, uv0, uv1, 0.55);
 }
 
 @vertex
 fn vs_l_12(
     @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) vertex_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(5) uv1: vec2<f32>,
 ) -> furc::VertexOutput {
 #ifdef MULTIVIEW
-    return vertex_at(instance_index, view_idx, pos, n, uv0, 0.6);
+    let view_layer = view_idx;
 #else
-    return vertex_at(instance_index, 0u, pos, n, uv0, 0.6);
+    let view_layer = 0u;
 #endif
+    return vertex_at(instance_index, view_layer, vertex_index, pos, n, uv0, uv1, 0.6);
 }
 
 @vertex
 fn vs_l_13(
     @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) vertex_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(5) uv1: vec2<f32>,
 ) -> furc::VertexOutput {
 #ifdef MULTIVIEW
-    return vertex_at(instance_index, view_idx, pos, n, uv0, 0.65);
+    let view_layer = view_idx;
 #else
-    return vertex_at(instance_index, 0u, pos, n, uv0, 0.65);
+    let view_layer = 0u;
 #endif
+    return vertex_at(instance_index, view_layer, vertex_index, pos, n, uv0, uv1, 0.65);
 }
 
 @vertex
 fn vs_l_14(
     @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) vertex_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(5) uv1: vec2<f32>,
 ) -> furc::VertexOutput {
 #ifdef MULTIVIEW
-    return vertex_at(instance_index, view_idx, pos, n, uv0, 0.7);
+    let view_layer = view_idx;
 #else
-    return vertex_at(instance_index, 0u, pos, n, uv0, 0.7);
+    let view_layer = 0u;
 #endif
+    return vertex_at(instance_index, view_layer, vertex_index, pos, n, uv0, uv1, 0.7);
 }
 
 @vertex
 fn vs_l_15(
     @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) vertex_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(5) uv1: vec2<f32>,
 ) -> furc::VertexOutput {
 #ifdef MULTIVIEW
-    return vertex_at(instance_index, view_idx, pos, n, uv0, 0.75);
+    let view_layer = view_idx;
 #else
-    return vertex_at(instance_index, 0u, pos, n, uv0, 0.75);
+    let view_layer = 0u;
 #endif
+    return vertex_at(instance_index, view_layer, vertex_index, pos, n, uv0, uv1, 0.75);
 }
 
 @vertex
 fn vs_l_16(
     @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) vertex_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(5) uv1: vec2<f32>,
 ) -> furc::VertexOutput {
 #ifdef MULTIVIEW
-    return vertex_at(instance_index, view_idx, pos, n, uv0, 0.8);
+    let view_layer = view_idx;
 #else
-    return vertex_at(instance_index, 0u, pos, n, uv0, 0.8);
+    let view_layer = 0u;
 #endif
+    return vertex_at(instance_index, view_layer, vertex_index, pos, n, uv0, uv1, 0.8);
 }
 
 @vertex
 fn vs_l_17(
     @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) vertex_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(5) uv1: vec2<f32>,
 ) -> furc::VertexOutput {
 #ifdef MULTIVIEW
-    return vertex_at(instance_index, view_idx, pos, n, uv0, 0.85);
+    let view_layer = view_idx;
 #else
-    return vertex_at(instance_index, 0u, pos, n, uv0, 0.85);
+    let view_layer = 0u;
 #endif
+    return vertex_at(instance_index, view_layer, vertex_index, pos, n, uv0, uv1, 0.85);
 }
 
 @vertex
 fn vs_l_18(
     @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) vertex_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(5) uv1: vec2<f32>,
 ) -> furc::VertexOutput {
 #ifdef MULTIVIEW
-    return vertex_at(instance_index, view_idx, pos, n, uv0, 0.9);
+    let view_layer = view_idx;
 #else
-    return vertex_at(instance_index, 0u, pos, n, uv0, 0.9);
+    let view_layer = 0u;
 #endif
+    return vertex_at(instance_index, view_layer, vertex_index, pos, n, uv0, uv1, 0.9);
 }
 
 @vertex
 fn vs_l_19(
     @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) vertex_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(5) uv1: vec2<f32>,
 ) -> furc::VertexOutput {
 #ifdef MULTIVIEW
-    return vertex_at(instance_index, view_idx, pos, n, uv0, 0.95);
+    let view_layer = view_idx;
 #else
-    return vertex_at(instance_index, 0u, pos, n, uv0, 0.95);
+    let view_layer = 0u;
 #endif
+    return vertex_at(instance_index, view_layer, vertex_index, pos, n, uv0, uv1, 0.95);
 }
 
 //#pass type=forward vs=vs_l_00

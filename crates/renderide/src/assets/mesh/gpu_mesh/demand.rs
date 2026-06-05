@@ -21,18 +21,18 @@ impl MeshDerivedStreamMask {
     pub(crate) const COLOR: Self = Self(1 << 3);
     /// Sanitized geometric tangent stream.
     pub(crate) const TANGENT: Self = Self(1 << 4);
-    /// Raw tangent payload stream.
-    pub(crate) const RAW_TANGENT: Self = Self(1 << 5);
     /// Compact UV1 stream.
-    pub(crate) const UV1: Self = Self(1 << 6);
+    pub(crate) const UV1: Self = Self(1 << 5);
     /// Compact UV2 stream.
-    pub(crate) const UV2: Self = Self(1 << 7);
+    pub(crate) const UV2: Self = Self(1 << 6);
     /// Compact UV3 stream.
-    pub(crate) const UV3: Self = Self(1 << 8);
+    pub(crate) const UV3: Self = Self(1 << 7);
     /// Packed UV0-UV3 stream for wide low UV inputs.
-    pub(crate) const WIDE_UV_LOW: Self = Self(1 << 9);
+    pub(crate) const WIDE_UV_LOW: Self = Self(1 << 8);
     /// Packed UV4-UV7 stream for high UV inputs.
-    pub(crate) const WIDE_UV_HIGH: Self = Self(1 << 10);
+    pub(crate) const WIDE_UV_HIGH: Self = Self(1 << 9);
+    /// Billboard direction stream replacing tangent and uv1.
+    pub(crate) const BILLBOARD: Self = Self(1 << 10);
     /// Streams affected when interleaved vertex data changes.
     pub(crate) const VERTEX_DERIVED: Self = Self(
         Self::POSITION.0
@@ -40,12 +40,12 @@ impl MeshDerivedStreamMask {
             | Self::UV0.0
             | Self::COLOR.0
             | Self::TANGENT.0
-            | Self::RAW_TANGENT.0
             | Self::UV1.0
             | Self::UV2.0
             | Self::UV3.0
             | Self::WIDE_UV_LOW.0
-            | Self::WIDE_UV_HIGH.0,
+            | Self::WIDE_UV_HIGH.0
+            | Self::BILLBOARD.0,
     );
     /// Streams affected when index order changes.
     pub(crate) const INDEX_DERIVED: Self = Self(Self::TANGENT.0);
@@ -53,7 +53,7 @@ impl MeshDerivedStreamMask {
     pub(crate) const DRAWABLE_PRIMARY: Self = Self(Self::POSITION.0 | Self::NORMAL.0);
     /// Streams produced by generated particle meshes in steady state.
     pub(crate) const GENERATED_PARTICLE: Self =
-        Self(Self::POSITION.0 | Self::NORMAL.0 | Self::UV0.0 | Self::COLOR.0);
+        Self(Self::POSITION.0 | Self::NORMAL.0 | Self::UV0.0 | Self::COLOR.0 | Self::BILLBOARD.0);
 
     /// Returns the raw bit representation.
     #[inline]

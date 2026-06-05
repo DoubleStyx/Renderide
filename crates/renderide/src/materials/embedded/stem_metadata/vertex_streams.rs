@@ -161,20 +161,6 @@ pub fn embedded_stem_needs_extended_vertex_streams(
     EmbeddedStemQuery::for_stem(base_stem, permutation).needs_extended_vertex_streams()
 }
 
-/// `true` when `@location(4)` carries raw shader payload rather than a geometric tangent.
-pub(super) fn stem_uses_raw_tangent_payload(base_stem: &str) -> bool {
-    matches!(
-        canonical_stem_name(base_stem),
-        "billboardunlit" | "ui_circlesegment" | "ui_unlit"
-    )
-}
-
-/// `true` when `@location(4)` carries raw shader payload rather than a geometric tangent.
-#[cfg(test)]
-pub fn embedded_stem_uses_raw_tangent_payload(base_stem: &str) -> bool {
-    stem_uses_raw_tangent_payload(base_stem)
-}
-
 /// `true` when `@location(1)` carries raw shader payload rather than a lighting normal.
 pub(super) fn stem_uses_raw_normal_payload(base_stem: &str) -> bool {
     matches!(
@@ -225,7 +211,7 @@ mod tests {
         embedded_stem_needs_uv0_stream, embedded_stem_needs_uv1_stream,
         embedded_stem_needs_uv2_stream, embedded_stem_needs_uv3_stream,
         embedded_stem_needs_wide_uv_stream, embedded_stem_uses_raw_normal_payload,
-        embedded_stem_uses_raw_tangent_payload, embedded_stem_uses_ui_transparent_fallback,
+        embedded_stem_uses_ui_transparent_fallback,
     };
 
     fn reflected_with_inputs(inputs: Vec<ReflectedVertexInput>) -> ReflectedRasterLayout {
@@ -388,17 +374,6 @@ mod tests {
 
     #[test]
     fn ui_payload_stems_mark_raw_semantics() {
-        for stem in [
-            "billboardunlit_default",
-            "ui_circlesegment_default",
-            "ui_unlit_default",
-        ] {
-            assert!(embedded_stem_uses_raw_tangent_payload(stem), "{stem}");
-        }
-        assert!(!embedded_stem_uses_raw_tangent_payload(
-            "pbsmetallic_default"
-        ));
-
         for stem in [
             "billboardunlit_default",
             "textunlit_default",

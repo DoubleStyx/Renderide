@@ -343,7 +343,6 @@ fn rebuild_mesh_after_in_place_write(
         uv0_buffer: mesh.uv0_buffer.clone(),
         color_buffer: mesh.color_buffer.clone(),
         tangent_buffer: mesh.tangent_buffer.clone(),
-        raw_tangent_buffer: mesh.raw_tangent_buffer.clone(),
         tangent_fallback_mode: mesh.tangent_fallback_mode,
         uv1_buffer: mesh.uv1_buffer.clone(),
         uv2_buffer: mesh.uv2_buffer.clone(),

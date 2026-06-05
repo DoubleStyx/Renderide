@@ -25,6 +25,7 @@ struct ClassicBasicMaterial {
     _SkinAlpha: f32,
     _MainTex_LodBias: f32,
     _NoiseTex_LodBias: f32,
+    _RenderideVariantBits: u32,
 }
 
 @group(1) @binding(0) var<uniform> mat: ClassicBasicMaterial;
@@ -36,19 +37,23 @@ struct ClassicBasicMaterial {
 fn vertex_main(
     instance_index: u32,
     view_idx: u32,
+    vertex_index: u32,
     pos: vec4<f32>,
     n: vec4<f32>,
     t: vec4<f32>,
     uv0: vec2<f32>,
+    uv1: vec2<f32>,
     fur_multiplier: f32,
 ) -> furc::VertexOutput {
     return furc::fur_vertex_main(
         instance_index,
         view_idx,
+        vertex_index,
         pos,
         n,
         t,
         uv0,
+        uv1,
         mat._MainTex_ST,
         mat._NoiseTex_ST,
         fur_multiplier,
@@ -56,6 +61,7 @@ fn vertex_main(
         mat._HairHardness,
         mat._ForceGlobal,
         mat._ForceLocal,
+        mat._RenderideVariantBits,
     );
 }
 

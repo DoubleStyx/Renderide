@@ -35,6 +35,23 @@ fn vertex_main(
     return xsurf::vertex_main(instance_index, view_idx, pos, n, uv_primary, color, tangent, uv_secondary);
 }
 
+/// Forward-pass vertex entry point for billboard rendering.
+/// Thin wrapper around `surface::billboard_vertex_main` so
+/// dispatcher shaders depend only on this aggregator namespace.
+fn billboard_vertex_main(
+    instance_index: u32,
+    view_idx: u32,
+    pos: vec4<f32>,
+    n: vec4<f32>,
+    uv_primary: vec2<f32>,
+    color: vec4<f32>,
+    tangent: vec4<f32>,
+    uv_secondary: vec2<f32>,
+    vertex_index: u32,
+) -> xb::VertexOutput {
+    return xsurf::billboard_vertex_main(instance_index, view_idx, pos, n, uv_primary, color, tangent, uv_secondary, vertex_index);
+}
+
 /// Forward (lit) fragment entry. Samples the surface (with the dual-sided back-face
 /// normal flip enabled), runs the alpha-mode dispatch, and shades through the cluster
 /// light walk.

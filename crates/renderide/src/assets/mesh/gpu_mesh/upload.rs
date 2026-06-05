@@ -13,11 +13,10 @@ pub(super) use bone_skin::upload_bone_and_skin_buffers;
 pub(crate) use derived_streams::{PreparedDerivedStreams, prepare_derived_stream_bytes};
 pub(super) use extended_streams::{
     ExtendedVertexUploadSource, UvVertexUploadSource, upload_color_vertex_stream,
-    upload_default_extended_vertex_streams, upload_default_raw_tangent_vertex_stream,
-    upload_default_tangent_vertex_stream, upload_default_uv_vertex_stream,
-    upload_default_wide_high_uv_vertex_stream, upload_default_wide_low_uv_vertex_stream,
-    upload_extended_vertex_streams, upload_position_normal_vertex_streams,
-    upload_raw_tangent_vertex_stream, upload_tangent_vertex_stream, upload_uv_vertex_stream,
+    upload_default_extended_vertex_streams, upload_default_tangent_vertex_stream,
+    upload_default_uv_vertex_stream, upload_default_wide_high_uv_vertex_stream,
+    upload_default_wide_low_uv_vertex_stream, upload_extended_vertex_streams,
+    upload_position_normal_vertex_streams, upload_tangent_vertex_stream, upload_uv_vertex_stream,
     upload_uv0_vertex_stream, upload_wide_high_uv_vertex_stream, upload_wide_low_uv_vertex_stream,
 };
 #[cfg(test)]
@@ -92,7 +91,6 @@ pub(super) struct DerivedStreams {
     pub uv0_buffer: Option<Arc<wgpu::Buffer>>,
     pub color_buffer: Option<Arc<wgpu::Buffer>>,
     pub tangent_buffer: Option<Arc<wgpu::Buffer>>,
-    pub raw_tangent_buffer: Option<Arc<wgpu::Buffer>>,
     pub uv1_buffer: Option<Arc<wgpu::Buffer>>,
     pub uv2_buffer: Option<Arc<wgpu::Buffer>>,
     pub uv3_buffer: Option<Arc<wgpu::Buffer>>,
@@ -117,9 +115,6 @@ impl DerivedStreams {
         }
         if self.tangent_buffer.is_some() {
             mask |= MeshDerivedStreamMask::TANGENT;
-        }
-        if self.raw_tangent_buffer.is_some() {
-            mask |= MeshDerivedStreamMask::RAW_TANGENT;
         }
         if self.uv1_buffer.is_some() {
             mask |= MeshDerivedStreamMask::UV1;
@@ -413,7 +408,6 @@ enum DerivedBufferProfile {
     Uv0,
     Color,
     Tangent,
-    RawTangent,
     Uv1,
     Uv2,
     Uv3,
@@ -429,7 +423,6 @@ impl DerivedBufferProfile {
             Self::Uv0 => "uv0",
             Self::Color => "color",
             Self::Tangent => "tangent",
-            Self::RawTangent => "raw_tangent",
             Self::Uv1 => "uv1",
             Self::Uv2 => "uv2",
             Self::Uv3 => "uv3",
@@ -454,9 +447,6 @@ impl DerivedBufferProfile {
             }
             Self::Tangent => {
                 crate::profiling::note_resource_churn!(Buffer, "assets::mesh_tangent_stream");
-            }
-            Self::RawTangent => {
-                crate::profiling::note_resource_churn!(Buffer, "assets::mesh_raw_tangent_stream");
             }
             Self::Uv1 => {
                 crate::profiling::note_resource_churn!(Buffer, "assets::mesh_uv1_stream");
@@ -580,14 +570,6 @@ fn upload_prepared_derived_streams(
             asset_id,
             DerivedBufferProfile::Tangent,
             prepared.tangent.as_deref(),
-            usages.tangent,
-        )?
-        .into_buffer(),
-        raw_tangent_buffer: upload_derived_buffer(
-            ctx,
-            asset_id,
-            DerivedBufferProfile::RawTangent,
-            prepared.raw_tangent.as_deref(),
             usages.tangent,
         )?
         .into_buffer(),
@@ -832,7 +814,6 @@ mod tests {
         assert_eq!(prepared.uv0.as_deref(), Some(uv0.as_slice()));
         assert_eq!(prepared.color.as_deref(), Some(color.as_slice()));
         assert!(prepared.tangent.is_none());
-        assert!(prepared.raw_tangent.is_none());
         assert!(prepared.uv1.is_none());
         assert!(prepared.uv2.is_none());
         assert!(prepared.uv3.is_none());

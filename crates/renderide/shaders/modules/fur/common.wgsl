@@ -2,9 +2,11 @@
 
 #define_import_path renderide::fur::common
 
+#import renderide::billboard::vertex as bv
 #import renderide::draw::per_draw as pd
 #import renderide::frame::globals as rg
 #import renderide::mesh::vertex as mv
+#import renderide::core::math as rmath
 #import renderide::core::uv as uvu
 
 struct VertexOutput {
@@ -45,10 +47,12 @@ fn projected_local_force(force_local: vec4<f32>, view_idx: u32) -> vec3<f32> {
 fn fur_vertex_main(
     instance_index: u32,
     view_idx: u32,
+    vertex_index: u32,
     pos: vec4<f32>,
     n: vec4<f32>,
     t: vec4<f32>,
     uv0: vec2<f32>,
+    uv1: vec2<f32>,
     main_st: vec4<f32>,
     noise_st: vec4<f32>,
     fur_multiplier: f32,
@@ -56,17 +60,38 @@ fn fur_vertex_main(
     hair_hardness: f32,
     force_global: vec4<f32>,
     force_local: vec4<f32>,
+    variant_bits: u32,
 ) -> VertexOutput {
     let draw = pd::get_draw(instance_index);
-    let world_n = mv::world_normal(draw, n);
-    let world_t = mv::world_tangent(draw, t);
-    let base_world_pos = mv::world_position(draw, pos).xyz;
+    var base_world_pos: vec3<f32>;
+    var world_n: vec3<f32>;
+    var world_t: vec4<f32>;
+    var billboard_vertex: bv::RenderBufferBillboardVertex;
+    if (bv::kw_RENDER_BUFFER(variant_bits)) {
+        billboard_vertex = bv::render_buffer_billboard_vertex(
+            draw, view_idx, pos, vertex_index, n, t, uv1,
+        );
+        base_world_pos = billboard_vertex.world_pos.xyz;
+        let axes = billboard_vertex.axes;
+        let billboard_t = axes.right;
+        let billboard_n = rmath::safe_normalize(cross(axes.right, axes.up), vec3<f32>(0.0, 0.0, 1.0));
+        world_n = mv::world_normal(draw, vec4<f32>(billboard_n, 0.0));
+        world_t = mv::world_tangent(draw, vec4<f32>(billboard_t, 0.0));
+    } else {
+        base_world_pos = mv::world_position(draw, pos).xyz;
+        world_n = mv::world_normal(draw, n);
+        world_t = mv::world_tangent(draw, t);
+    }
+
     let shell_offset = n.xyz * fur_length * fur_multiplier * hair_hardness;
     let force_scale = fur_multiplier * fur_multiplier * fur_length;
     let local_force_offset = projected_local_force(force_local, view_idx) * force_scale;
     let shell_model_pos = pos.xyz + shell_offset + local_force_offset;
     let shell_pos = vec4<f32>(shell_model_pos, pos.w);
-    let shell_world_pos = mv::world_position(draw, shell_pos).xyz;
+    var shell_world_pos = mv::world_position(draw, shell_pos).xyz;
+    if (bv::kw_RENDER_BUFFER(variant_bits)) {
+        shell_world_pos = bv::billboard_center_world_to_world_pos(shell_world_pos, billboard_vertex);
+    }
     let global_force = clamp(force_global.xyz, vec3<f32>(-1.0), vec3<f32>(1.0));
     let global_force_offset = global_force * force_scale;
     let world_p = shell_world_pos + global_force_offset;

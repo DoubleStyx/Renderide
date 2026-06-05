@@ -261,14 +261,16 @@ impl MeshPool {
         })
     }
 
-    /// Lazily creates the raw tangent payload buffer for UI shaders declaring `@location(4)`.
-    pub fn ensure_raw_tangent_vertex_stream(
+    /// Lazily creates the billboard payload buffers for particle renderers.
+    pub fn ensure_billboard_vertex_streams(
         &mut self,
         device: &wgpu::Device,
         asset_id: i32,
+        tangent_fallback_mode: EmbeddedTangentFallbackMode,
     ) -> bool {
         self.ensure_stream(asset_id, |mesh| {
-            mesh.ensure_raw_tangent_vertex_stream(device)
+            mesh.ensure_tangent_vertex_stream(device, tangent_fallback_mode)
+                && mesh.ensure_uv1_vertex_stream(device)
         })
     }
 

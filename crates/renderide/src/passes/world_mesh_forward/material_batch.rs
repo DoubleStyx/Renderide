@@ -23,7 +23,6 @@ use crate::materials::{
     MaterialBlendMode, MaterialPipelineDesc, MaterialPipelineResolution, MaterialPipelineSet,
     MaterialPipelineVariantSpec, MaterialRegistry, MaterialRenderState,
     MaterialShaderSpecializationKey, RasterFrontFace, RasterPipelineKind, RasterPrimitiveTopology,
-    ensure_render_buffer_billboard_variant_bits, remap_variant_bits_for_billboard,
 };
 use crate::passes::WorldMeshForwardEncodeRefs;
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
@@ -36,6 +35,9 @@ const MATERIAL_BATCH_PARALLEL_MIN_RUNS: usize = MATERIAL_BATCH_PARALLEL_CHUNK_RU
 
 /// Throttles repeated embedded-bind failures so a single bad material cannot flood logs.
 static EMBEDDED_MATERIAL_BIND_FAILURE_LOG: LogThrottle = LogThrottle::new();
+
+/// Generic variant bit used by all shaders compatible with particle system rendering.
+const BILLBOARD_RENDER_BUFFER_BIT: u32 = 1u32 << 24;
 
 /// Inclusive `(first_draw_idx, last_draw_idx)` span over the sorted world-mesh draw list
 /// identifying one contiguous material batch run.
@@ -453,7 +455,7 @@ impl<'a> MaterialDrawResolver<'a> {
             ));
         };
 
-        let shader_variant_bits = self.resolve_embedded_shader_variant_bits(item, stem);
+        let shader_variant_bits = self.resolve_embedded_shader_variant_bits(item);
         let (bind_key, bind_group) = bind.embedded_material_bind_group_with_cache_key(
             EmbeddedMaterialBindShader {
                 stem,
@@ -473,29 +475,15 @@ impl<'a> MaterialDrawResolver<'a> {
     }
 
     /// Resolves source shader variant bits for a possibly rerouted embedded draw.
-    fn resolve_embedded_shader_variant_bits(
-        &self,
-        item: &WorldMeshDrawItem,
-        stem: &str,
-    ) -> Option<u32> {
+    fn resolve_embedded_shader_variant_bits(&self, item: &WorldMeshDrawItem) -> Option<u32> {
         let batch_key = &item.batch_key;
         let source_bits = self
             .registry
             .and_then(|registry| registry.variant_bits_for_shader_asset(batch_key.shader_asset_id));
-        if !stem.starts_with("billboardunlit") {
-            return source_bits;
-        }
-        let mut bits = source_bits.unwrap_or(0);
-        if let Some(source_stem) = self
-            .registry
-            .and_then(|registry| registry.stem_for_shader_asset(batch_key.shader_asset_id))
-        {
-            bits = remap_variant_bits_for_billboard(source_stem, bits);
-        }
         if crate::particles::is_generated_billboard_mesh_asset_id(item.mesh_asset_id) {
-            Some(ensure_render_buffer_billboard_variant_bits(bits))
+            Some(source_bits.unwrap_or(0) | BILLBOARD_RENDER_BUFFER_BIT)
         } else {
-            source_bits.map(|_| bits)
+            source_bits
         }
     }
 

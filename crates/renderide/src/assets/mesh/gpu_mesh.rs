@@ -155,8 +155,6 @@ pub struct GpuMesh {
     pub color_buffer: Option<Arc<wgpu::Buffer>>,
     /// `vec4<f32>` tangent stream for shaders using extended vertex inputs.
     pub tangent_buffer: Option<Arc<wgpu::Buffer>>,
-    /// Raw `vec4<f32>` tangent payload for UI shaders that use the tangent semantic as data.
-    pub raw_tangent_buffer: Option<Arc<wgpu::Buffer>>,
     /// Tangent fallback policy used for the current tangent stream.
     pub tangent_fallback_mode: EmbeddedTangentFallbackMode,
     /// `vec2<f32>` UV1 stream for shaders using extended vertex inputs.
@@ -297,7 +295,6 @@ pub(super) fn extended_vertex_stream_source_from_raw(
 pub(super) fn extended_vertex_stream_bytes(mesh: &GpuMesh) -> u64 {
     [
         mesh.tangent_buffer.as_ref(),
-        mesh.raw_tangent_buffer.as_ref(),
         mesh.uv1_buffer.as_ref(),
         mesh.uv2_buffer.as_ref(),
         mesh.uv3_buffer.as_ref(),
@@ -327,7 +324,6 @@ fn rebuildable_derived_stream_mask(
         }
         if source.has_compact_extended_payload {
             mask |= MeshDerivedStreamMask::TANGENT
-                | MeshDerivedStreamMask::RAW_TANGENT
                 | MeshDerivedStreamMask::UV1
                 | MeshDerivedStreamMask::UV2
                 | MeshDerivedStreamMask::UV3;
@@ -363,9 +359,6 @@ impl GpuMesh {
         }
         if self.tangent_buffer.is_some() {
             mask |= MeshDerivedStreamMask::TANGENT;
-        }
-        if self.raw_tangent_buffer.is_some() {
-            mask |= MeshDerivedStreamMask::RAW_TANGENT;
         }
         if self.uv1_buffer.is_some() {
             mask |= MeshDerivedStreamMask::UV1;
@@ -436,7 +429,6 @@ impl GpuMesh {
             uv0_buffer: None,
             color_buffer: None,
             tangent_buffer: None,
-            raw_tangent_buffer: None,
             tangent_fallback_mode: EmbeddedTangentFallbackMode::default(),
             uv1_buffer: None,
             uv2_buffer: None,
@@ -544,7 +536,6 @@ impl GpuMesh {
             uv0_buffer: derived.uv0_buffer,
             color_buffer: derived.color_buffer,
             tangent_buffer: derived.tangent_buffer,
-            raw_tangent_buffer: derived.raw_tangent_buffer,
             tangent_fallback_mode: EmbeddedTangentFallbackMode::default(),
             uv1_buffer: derived.uv1_buffer,
             uv2_buffer: derived.uv2_buffer,

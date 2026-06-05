@@ -36,7 +36,6 @@ pub(in crate::assets::mesh::gpu_mesh) fn resident_bytes_for_mesh_upload(
         derived.uv0_buffer.as_ref(),
         derived.color_buffer.as_ref(),
         derived.tangent_buffer.as_ref(),
-        derived.raw_tangent_buffer.as_ref(),
         derived.uv1_buffer.as_ref(),
         derived.uv2_buffer.as_ref(),
         derived.uv3_buffer.as_ref(),

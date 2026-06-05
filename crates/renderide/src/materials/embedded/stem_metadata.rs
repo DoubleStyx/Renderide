@@ -35,8 +35,7 @@ use crate::materials::{
 
 use self::tangent_fallback::tangent_fallback_mode_for_stem;
 use self::vertex_streams::{
-    derive_vertex_stream_mask, stem_uses_raw_normal_payload, stem_uses_raw_tangent_payload,
-    stem_uses_ui_transparent_fallback,
+    derive_vertex_stream_mask, stem_uses_raw_normal_payload, stem_uses_ui_transparent_fallback,
 };
 
 /// Host material identity and blend/render state for embedded raster pipeline creation (separate from WGSL build inputs).
@@ -75,8 +74,6 @@ struct EmbeddedStemMetadata {
     tangent_fallback_mode: EmbeddedTangentFallbackMode,
     /// Number of declared material passes submitted for this target.
     pass_count: usize,
-    /// Whether `@location(4)` carries raw shader payload rather than a geometric tangent.
-    uses_raw_tangent_payload: bool,
     /// Whether `@location(1)` carries raw shader payload rather than a lighting normal.
     uses_raw_normal_payload: bool,
     /// Whether this UI stem should fall back to transparent state until host state arrives.
@@ -191,11 +188,6 @@ impl EmbeddedStemQuery {
         self.metadata.tangent_fallback_mode()
     }
 
-    /// `true` when `@location(4)` carries raw shader payload rather than a geometric tangent.
-    pub fn uses_raw_tangent_payload(&self) -> bool {
-        self.metadata.uses_raw_tangent_payload
-    }
-
     /// `true` when `@location(1)` carries raw shader payload rather than a lighting normal.
     pub fn uses_raw_normal_payload(&self) -> bool {
         self.metadata.uses_raw_normal_payload
@@ -297,7 +289,6 @@ fn embedded_stem_metadata(base_stem: &str, permutation: ShaderPermutation) -> Em
         snapshot_requirements,
         tangent_fallback_mode: tangent_fallback_mode_for_stem(base_stem),
         pass_count: passes.len().max(1),
-        uses_raw_tangent_payload: stem_uses_raw_tangent_payload(base_stem),
         uses_raw_normal_payload: stem_uses_raw_normal_payload(base_stem),
         uses_ui_transparent_fallback: stem_uses_ui_transparent_fallback(base_stem),
         uses_alpha_blending: passes.iter().any(|p| p.blend.is_some()),
@@ -492,7 +483,6 @@ mod tests {
                 snapshot_requirements: SnapshotRequirements::default(),
                 tangent_fallback_mode: EmbeddedTangentFallbackMode::default(),
                 pass_count: 1,
-                uses_raw_tangent_payload: false,
                 uses_raw_normal_payload: false,
                 uses_ui_transparent_fallback: false,
                 uses_alpha_blending: false,

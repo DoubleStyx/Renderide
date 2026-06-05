@@ -42,8 +42,6 @@ pub struct MaterialDrawBatchKey {
     pub embedded_needs_tangent: bool,
     /// Tangent fallback policy for lazy tangent upload.
     pub embedded_tangent_fallback_mode: EmbeddedTangentFallbackMode,
-    /// Whether the tangent stream carries raw shader payload instead of a geometric tangent.
-    pub embedded_raw_tangent_payload: bool,
     /// Whether the normal stream carries raw shader payload instead of a lighting normal.
     pub embedded_raw_normal_payload: bool,
     /// Whether the embedded stem needs a UV2 vertex stream at `@location(6)`.
@@ -62,6 +60,8 @@ pub struct MaterialDrawBatchKey {
     pub embedded_uses_scene_depth_snapshot: bool,
     /// Whether the shader samples the scene-color snapshot through frame globals.
     pub embedded_uses_scene_color_snapshot: bool,
+    /// Whether the shader needs to generate billboard geometry from vertex indices for particles.
+    pub embedded_uses_billboard_geometry: bool,
     /// How the shader expects scene-color snapshots to be refreshed.
     pub scene_color_snapshot_mode: SceneColorSnapshotMode,
     /// Effective Unity render queue after material override / fallback resolution.

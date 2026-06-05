@@ -15,9 +15,7 @@ use super::super::super::layout::{
     extract_float3_position_normal_as_vec4_streams, uv0_float2_stream_bytes,
     vertex_float2_stream_bytes, wide_high_uv_stream_bytes, wide_low_uv_stream_bytes,
 };
-use super::super::tangent_generation::{
-    TangentStreamSource, raw_tangent_payload_stream_bytes, tangent_stream_bytes,
-};
+use super::super::tangent_generation::{TangentStreamSource, tangent_stream_bytes};
 
 /// Tangent plus UV1-UV3 optional vertex buffers from extended stream upload.
 pub(in crate::assets::mesh::gpu_mesh) type ExtendedVertexStreams = (
@@ -404,41 +402,6 @@ pub(in crate::assets::mesh::gpu_mesh) fn upload_tangent_vertex_stream(
     }
     let tangent_bytes = tangent_stream_bytes(source.tangent_source(), generate_missing_tangents)
         .unwrap_or_else(|| float4_default_stream_bytes(source.vertex_count, [1.0, 0.0, 0.0, 1.0]));
-    Some(create_tangent_stream_buffer(
-        device,
-        asset_id,
-        &tangent_bytes,
-    ))
-}
-
-/// Uploads the raw tangent payload expected by raw-tangent shaders.
-pub(in crate::assets::mesh::gpu_mesh) fn upload_raw_tangent_vertex_stream(
-    device: &wgpu::Device,
-    asset_id: i32,
-    source: ExtendedVertexUploadSource<'_>,
-) -> Option<Arc<wgpu::Buffer>> {
-    if source.vertex_count == 0 {
-        return None;
-    }
-    let tangent_bytes = raw_tangent_payload_stream_bytes(source.tangent_source())
-        .unwrap_or_else(|| float4_default_stream_bytes(source.vertex_count, [1.0; 4]));
-    Some(create_tangent_stream_buffer(
-        device,
-        asset_id,
-        &tangent_bytes,
-    ))
-}
-
-/// Uploads a raw tangent payload stream filled with default values.
-pub(in crate::assets::mesh::gpu_mesh) fn upload_default_raw_tangent_vertex_stream(
-    device: &wgpu::Device,
-    asset_id: i32,
-    vc_usize: usize,
-) -> Option<Arc<wgpu::Buffer>> {
-    if vc_usize == 0 {
-        return None;
-    }
-    let tangent_bytes = float4_default_stream_bytes(vc_usize, [1.0; 4]);
     Some(create_tangent_stream_buffer(
         device,
         asset_id,

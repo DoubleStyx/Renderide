@@ -20,6 +20,7 @@
 //#mat_default _SpecularColor vec4 1.0 1.0 1.0 0.5
 //#mat_default _RimPower float 3.0
 
+#import renderide::billboard::vertex as bv
 #import renderide::frame::globals as rg
 #import renderide::material::fresnel as mf
 #import renderide::material::variant_bits as vb
@@ -80,6 +81,7 @@ fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32
 @vertex
 fn vs_main(
     @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) vertex_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
@@ -87,12 +89,18 @@ fn vs_main(
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
     @location(4) t: vec4<f32>,
+    @location(5) uv1: vec2<f32>,
 ) -> mv::WorldVertexOutput {
 #ifdef MULTIVIEW
-    return mv::world_vertex_main(instance_index, view_idx, pos, n, t, uv0);
+    let view_layer = view_idx;
 #else
-    return mv::world_vertex_main(instance_index, 0u, pos, n, t, uv0);
+    let view_layer = 0u;
 #endif
+    if (bv::kw_RENDER_BUFFER(mat._RenderideVariantBits)) {
+        return bv::world_vertex_main(instance_index, view_layer, pos, n, t, uv0, vertex_index, uv1);
+    } else {
+        return mv::world_vertex_main(instance_index, view_layer, pos, n, t, uv0);
+    }
 }
 
 //#pass type=depth_prepass blend=off zwrite=on ztest=material_froox(main) color_mask=0 cull=material(back) offset=material(0,0) stencil=material
