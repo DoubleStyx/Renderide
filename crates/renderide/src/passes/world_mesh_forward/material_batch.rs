@@ -37,7 +37,7 @@ const MATERIAL_BATCH_PARALLEL_MIN_RUNS: usize = MATERIAL_BATCH_PARALLEL_CHUNK_RU
 static EMBEDDED_MATERIAL_BIND_FAILURE_LOG: LogThrottle = LogThrottle::new();
 
 /// Generic variant bit used by all shaders compatible with particle system rendering.
-const BILLBOARD_RENDER_BUFFER_BIT: u32 = 1u32 << 24;
+pub(crate) const BILLBOARD_RENDER_BUFFER_BIT: u32 = 1u32 << 24;
 
 /// Inclusive `(first_draw_idx, last_draw_idx)` span over the sorted world-mesh draw list
 /// identifying one contiguous material batch run.

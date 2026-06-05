@@ -15,7 +15,9 @@ use super::super::super::layout::{
     wide_low_uv_stream_bytes,
 };
 use super::super::hints::{blendshape_descriptor_count, derived_streams_compatible_for_in_place};
-use super::super::tangent_generation::{TangentStreamSource, tangent_stream_bytes};
+use super::super::tangent_generation::{
+    TangentStreamSource, raw_tangent_payload_stream_bytes, tangent_stream_bytes,
+};
 use super::super::upload::{
     padded_sparse_bytes, queue_init_buffer_size_matches, write_mesh_upload_buffer,
 };
@@ -175,6 +177,7 @@ enum InPlaceDerivedStreamJob {
     WideLowUv,
     WideHighUv,
     Tangent,
+    RawTangent,
     Uv1,
     Uv2,
     Uv3,
@@ -187,6 +190,7 @@ enum InPlaceDerivedStreamResult {
     WideLowUv(Option<Vec<u8>>),
     WideHighUv(Option<Vec<u8>>),
     Tangent(Option<Vec<u8>>),
+    RawTangent(Option<Vec<u8>>),
     Uv1(Option<Vec<u8>>),
     Uv2(Option<Vec<u8>>),
     Uv3(Option<Vec<u8>>),
@@ -242,6 +246,9 @@ impl InPlaceDerivedStreamJob {
                 in_place_tangent_source(source),
                 source.generate_missing_tangents,
             )),
+            Self::RawTangent => InPlaceDerivedStreamResult::RawTangent(
+                raw_tangent_payload_stream_bytes(in_place_tangent_source(source)),
+            ),
             Self::Uv1 => InPlaceDerivedStreamResult::Uv1(vertex_float2_stream_bytes(
                 source.vertex_slice,
                 source.vertex_count,
@@ -332,7 +339,7 @@ pub(super) fn write_in_place_vertex_and_derived_streams(
 
     if ctx
         .demand_mask
-        .intersects(MeshDerivedStreamMask::TANGENT | MeshDerivedStreamMask::BILLBOARD)
+        .intersects(MeshDerivedStreamMask::TANGENT | MeshDerivedStreamMask::RAW_TANGENT)
     {
         profiling::scope!("asset::mesh_write_in_place::write_tangent_stream");
         let source = TangentStreamSource {
@@ -345,7 +352,8 @@ pub(super) fn write_in_place_vertex_and_derived_streams(
             index_format: ctx.data.index_buffer_format,
             submeshes: &ctx.data.submeshes,
         };
-        if let Some(tb) = ctx.mesh.tangent_buffer.as_ref()
+        if ctx.demand_mask.contains(MeshDerivedStreamMask::TANGENT)
+            && let Some(tb) = ctx.mesh.tangent_buffer.as_ref()
             && let Some(t) = ctx
                 .prepared_derived_streams
                 .and_then(|prepared| prepared.tangent.as_deref())
@@ -357,6 +365,16 @@ pub(super) fn write_in_place_vertex_and_derived_streams(
         {
             write_mesh_upload_buffer(ctx.upload_sink, tb.as_ref(), 0, t.as_ref());
         }
+        if ctx.demand_mask.contains(MeshDerivedStreamMask::RAW_TANGENT)
+            && let Some(tb) = ctx.mesh.raw_tangent_buffer.as_ref()
+            && let Some(t) = ctx
+                .prepared_derived_streams
+                .and_then(|prepared| prepared.raw_tangent.as_deref())
+                .map(std::borrow::Cow::Borrowed)
+                .or_else(|| raw_tangent_payload_stream_bytes(source).map(std::borrow::Cow::Owned))
+        {
+            write_mesh_upload_buffer(ctx.upload_sink, tb.as_ref(), 0, t.as_ref());
+        }
     }
 
     if !write_vertex {
@@ -364,10 +382,7 @@ pub(super) fn write_in_place_vertex_and_derived_streams(
     }
 
     if ctx.demand_mask.intersects(
-        MeshDerivedStreamMask::UV1
-            | MeshDerivedStreamMask::UV2
-            | MeshDerivedStreamMask::UV3
-            | MeshDerivedStreamMask::BILLBOARD,
+        MeshDerivedStreamMask::UV1 | MeshDerivedStreamMask::UV2 | MeshDerivedStreamMask::UV3,
     ) {
         write_in_place_uv1_to_uv3_streams(ctx, vertex_slice);
     }
@@ -411,6 +426,11 @@ fn try_write_in_place_derived_streams_parallel(
     if ctx.demand_mask.contains(MeshDerivedStreamMask::TANGENT) && ctx.mesh.tangent_buffer.is_some()
     {
         jobs.push(InPlaceDerivedStreamJob::Tangent);
+    }
+    if ctx.demand_mask.contains(MeshDerivedStreamMask::RAW_TANGENT)
+        && ctx.mesh.raw_tangent_buffer.is_some()
+    {
+        jobs.push(InPlaceDerivedStreamJob::RawTangent);
     }
     if write_vertex {
         if ctx.demand_mask.contains(MeshDerivedStreamMask::UV1) && ctx.mesh.uv1_buffer.is_some() {
@@ -499,6 +519,12 @@ fn write_in_place_derived_stream_result(
             }
         }
         InPlaceDerivedStreamResult::Tangent(None) => {}
+        InPlaceDerivedStreamResult::RawTangent(Some(bytes)) => {
+            if let Some(buffer) = ctx.mesh.raw_tangent_buffer.as_ref() {
+                write_mesh_upload_buffer(ctx.upload_sink, buffer.as_ref(), 0, &bytes);
+            }
+        }
+        InPlaceDerivedStreamResult::RawTangent(None) => {}
         InPlaceDerivedStreamResult::Uv1(Some(bytes)) => {
             if let Some(buffer) = ctx.mesh.uv1_buffer.as_ref() {
                 write_mesh_upload_buffer(ctx.upload_sink, buffer.as_ref(), 0, &bytes);

@@ -100,7 +100,7 @@ pub(super) fn prepared_generated_derived_streams(
         normals: Some(normals),
         uv0: Some(uv0),
         color: Some(color),
-        tangent: extra.point_forward_upz,
+        raw_tangent: extra.point_forward_upz,
         uv1: extra.point_up_xy,
         ..PreparedDerivedStreams::default()
     }

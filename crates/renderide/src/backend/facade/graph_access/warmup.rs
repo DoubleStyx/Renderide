@@ -26,12 +26,12 @@ use super::BackendGraphAccess;
 struct ViewAssetPrewarmRequests {
     uv1_stream_meshes: HashSet<i32>,
     tangent_stream_meshes: HashSet<i32>,
+    raw_tangent_stream_meshes: HashSet<i32>,
     tangent_fallback_modes: HashMap<i32, EmbeddedTangentFallbackMode>,
     uv2_stream_meshes: HashSet<i32>,
     uv3_stream_meshes: HashSet<i32>,
     wide_low_uv_stream_meshes: HashSet<i32>,
     wide_high_uv_stream_meshes: HashSet<i32>,
-    billboard_stream_meshes: HashSet<i32>,
     derived_stream_demands: HashMap<i32, MeshDerivedStreamDemand>,
 }
 
@@ -54,7 +54,10 @@ impl ViewAssetPrewarmRequests {
         if item.batch_key.embedded_needs_color {
             demand.mask |= MeshDerivedStreamMask::COLOR;
         }
-        if item.batch_key.embedded_needs_tangent {
+        if item.batch_key.embedded_needs_tangent && item.batch_key.embedded_raw_tangent_payload {
+            self.raw_tangent_stream_meshes.insert(item.mesh_asset_id);
+            demand.mask |= MeshDerivedStreamMask::RAW_TANGENT;
+        } else if item.batch_key.embedded_needs_tangent {
             self.tangent_stream_meshes.insert(item.mesh_asset_id);
             demand.mask |= MeshDerivedStreamMask::TANGENT;
             let mode = self
@@ -78,10 +81,6 @@ impl ViewAssetPrewarmRequests {
         if item.batch_key.embedded_needs_wide_high_uvs {
             self.wide_high_uv_stream_meshes.insert(item.mesh_asset_id);
             demand.mask |= MeshDerivedStreamMask::WIDE_UV_HIGH;
-        }
-        if item.batch_key.embedded_uses_billboard_geometry {
-            self.billboard_stream_meshes.insert(item.mesh_asset_id);
-            demand.mask |= MeshDerivedStreamMask::BILLBOARD;
         }
         self.derived_stream_demands
             .entry(item.mesh_asset_id)
@@ -242,16 +241,16 @@ impl<'a> BackendGraphAccess<'a> {
         profiling::scope!("graph::pre_warm_view_assets");
         let requests = collect_view_asset_prewarm_requests(views);
         logger::trace!(
-            "graph pre-warm view assets: views={} uv1_stream_meshes={} tangent_stream_meshes={} generated_tangent_meshes={} uv2_stream_meshes={} uv3_stream_meshes={} wide_low_uv_stream_meshes={} wide_high_uv_stream_meshes={} billboard_stream_meshes={}",
+            "graph pre-warm view assets: views={} uv1_stream_meshes={} tangent_stream_meshes={} raw_tangent_stream_meshes={} generated_tangent_meshes={} uv2_stream_meshes={} uv3_stream_meshes={} wide_low_uv_stream_meshes={} wide_high_uv_stream_meshes={}",
             views.len(),
             requests.uv1_stream_meshes.len(),
             requests.tangent_stream_meshes.len(),
+            requests.raw_tangent_stream_meshes.len(),
             requests.generated_tangent_mesh_count(),
             requests.uv2_stream_meshes.len(),
             requests.uv3_stream_meshes.len(),
             requests.wide_low_uv_stream_meshes.len(),
             requests.wide_high_uv_stream_meshes.len(),
-            requests.billboard_stream_meshes.len(),
         );
         let mesh_ids_needing_all_extended_streams = requests.all_extended_stream_meshes();
         self.ensure_view_asset_prewarm_requests(
@@ -422,7 +421,27 @@ impl<'a> BackendGraphAccess<'a> {
             }
         }
         for (&mesh_asset_id, demand) in &requests.derived_stream_demands {
-            self.ensure_demands_streams_prewarm_requests(device, mesh_asset_id, demand);
+            if demand
+                .mask
+                .intersects(MeshDerivedStreamMask::POSITION | MeshDerivedStreamMask::NORMAL)
+            {
+                let _ = self
+                    .asset_transfers
+                    .mesh_pool_mut()
+                    .ensure_position_normal_vertex_streams(device, mesh_asset_id);
+            }
+            if demand.mask.contains(MeshDerivedStreamMask::UV0) {
+                let _ = self
+                    .asset_transfers
+                    .mesh_pool_mut()
+                    .ensure_uv0_vertex_stream(device, mesh_asset_id);
+            }
+            if demand.mask.contains(MeshDerivedStreamMask::COLOR) {
+                let _ = self
+                    .asset_transfers
+                    .mesh_pool_mut()
+                    .ensure_color_vertex_stream(device, mesh_asset_id);
+            }
         }
         for &mesh_asset_id in mesh_ids_needing_all_extended_streams {
             let _ = self
@@ -456,15 +475,11 @@ impl<'a> BackendGraphAccess<'a> {
                     requests.tangent_fallback_mode(mesh_asset_id),
                 );
         }
-        for &mesh_asset_id in &requests.billboard_stream_meshes {
+        for &mesh_asset_id in &requests.raw_tangent_stream_meshes {
             let _ = self
                 .asset_transfers
                 .mesh_pool_mut()
-                .ensure_billboard_vertex_streams(
-                    device,
-                    mesh_asset_id,
-                    requests.tangent_fallback_mode(mesh_asset_id),
-                );
+                .ensure_raw_tangent_vertex_stream(device, mesh_asset_id);
         }
         for &mesh_asset_id in &requests.uv2_stream_meshes {
             if mesh_ids_needing_all_extended_streams.contains(&mesh_asset_id) {
@@ -495,35 +510,6 @@ impl<'a> BackendGraphAccess<'a> {
                 .asset_transfers
                 .mesh_pool_mut()
                 .ensure_wide_high_uv_vertex_stream(device, mesh_asset_id);
-        }
-    }
-
-    fn ensure_demands_streams_prewarm_requests(
-        &mut self,
-        device: &wgpu::Device,
-        mesh_asset_id: i32,
-        demand: &MeshDerivedStreamDemand,
-    ) {
-        if demand
-            .mask
-            .intersects(MeshDerivedStreamMask::POSITION | MeshDerivedStreamMask::NORMAL)
-        {
-            let _ = self
-                .asset_transfers
-                .mesh_pool_mut()
-                .ensure_position_normal_vertex_streams(device, mesh_asset_id);
-        }
-        if demand.mask.contains(MeshDerivedStreamMask::UV0) {
-            let _ = self
-                .asset_transfers
-                .mesh_pool_mut()
-                .ensure_uv0_vertex_stream(device, mesh_asset_id);
-        }
-        if demand.mask.contains(MeshDerivedStreamMask::COLOR) {
-            let _ = self
-                .asset_transfers
-                .mesh_pool_mut()
-                .ensure_color_vertex_stream(device, mesh_asset_id);
         }
     }
 }

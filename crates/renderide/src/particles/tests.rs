@@ -217,15 +217,15 @@ fn billboard_extra_streams_pack_particle_orientation() {
     }];
 
     let streams = billboard_extra_streams(&points);
-    let raw_tangent = streams.point_forward_upz.as_deref().expect("raw tangent");
-    let uv1 = streams.point_up_xy.as_deref().expect("uv1");
-    let tangent: &[f32] = bytemuck::cast_slice(&raw_tangent[..16]);
-    let up_xy: &[f32] = bytemuck::cast_slice(&uv1[..8]);
+    let point_forward_upz = streams.point_forward_upz.as_deref().expect("raw tangent");
+    let point_up_xy = streams.point_up_xy.as_deref().expect("uv1");
+    let tangent: &[f32] = bytemuck::cast_slice(&point_forward_upz[..16]);
+    let up_xy: &[f32] = bytemuck::cast_slice(&point_up_xy[..8]);
 
     assert_eq!(tangent, &[0.0, 0.0, 1.0, 0.0]);
     assert_eq!(up_xy, &[0.0, 1.0]);
-    assert_eq!(raw_tangent.len(), BILLBOARD_VERTICES_PER_POINT * 16);
-    assert_eq!(uv1.len(), BILLBOARD_VERTICES_PER_POINT * 8);
+    assert_eq!(point_forward_upz.len(), BILLBOARD_VERTICES_PER_POINT * 16);
+    assert_eq!(point_up_xy.len(), BILLBOARD_VERTICES_PER_POINT * 8);
 }
 
 #[test]

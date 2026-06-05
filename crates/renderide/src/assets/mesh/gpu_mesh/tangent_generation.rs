@@ -10,6 +10,7 @@ use crate::shared::{
 };
 
 use super::super::layout::VertexDecodeKind;
+use super::super::layout::raw_float4_stream_bytes;
 use super::attribute_reader::AttributeReader;
 
 const _: () = assert!(
@@ -19,6 +20,7 @@ const _: () = assert!(
 
 const DEFAULT_TANGENT: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 const DEFAULT_TANGENT_VEC: Vec4 = Vec4::new(1.0, 0.0, 0.0, 1.0);
+const DEFAULT_RAW_TANGENT_PAYLOAD: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 const TANGENT_EPSILON_SQUARED: f32 = 1.0e-20;
 /// Vertices assigned to one tangent extraction or encoding worker chunk.
 const VERTEX_STREAM_PARALLEL_CHUNK_VERTICES: usize = 256;
@@ -104,6 +106,18 @@ pub(super) fn tangent_stream_bytes(
         )
         .or_else(|| normal_based_tangent_stream_bytes(vertex_data, vertex_count, stride, attrs))
         .unwrap_or_else(|| default_tangent_stream_bytes(vertex_count)),
+    )
+}
+
+/// Returns a dense `vec4<f32>` tangent payload stream without geometric sanitization.
+pub(super) fn raw_tangent_payload_stream_bytes(source: TangentStreamSource<'_>) -> Option<Vec<u8>> {
+    raw_float4_stream_bytes(
+        source.vertex_data,
+        source.vertex_count,
+        source.stride,
+        source.attrs,
+        VertexAttributeType::Tangent,
+        DEFAULT_RAW_TANGENT_PAYLOAD,
     )
 }
 
@@ -639,6 +653,34 @@ mod tests {
                 .expect("tangent stream");
 
         assert_eq!(read_tangent(&tangents, 0), [0.0, 1.0, 0.0, -1.0]);
+    }
+
+    #[test]
+    fn raw_tangent_payload_stream_preserves_color_data() {
+        let attrs = [
+            attr(VertexAttributeType::Position, 3),
+            attr(VertexAttributeType::Normal, 3),
+            attr(VertexAttributeType::UV0, 2),
+            attr(VertexAttributeType::Tangent, 4),
+        ];
+        let mut vertices = Vec::new();
+        push_vertex_with_tangent(
+            &mut vertices,
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.75],
+        );
+
+        let geometric =
+            tangent_stream_bytes(tangent_source(&vertices, &[], 1, 48, &attrs, &[]), false)
+                .expect("geometric tangent stream");
+        let raw =
+            raw_tangent_payload_stream_bytes(tangent_source(&vertices, &[], 1, 48, &attrs, &[]))
+                .expect("raw tangent stream");
+
+        assert_eq!(read_tangent(&geometric, 0), [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(read_tangent(&raw, 0), [0.0, 0.0, 0.0, 0.75]);
     }
 
     #[test]

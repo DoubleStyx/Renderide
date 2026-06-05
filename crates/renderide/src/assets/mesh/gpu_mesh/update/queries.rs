@@ -40,6 +40,14 @@ impl GpuMesh {
         )
     }
 
+    /// `true` when this mesh has a current raw tangent payload stream for UI payload shaders.
+    pub fn raw_tangent_vertex_stream_ready(&self) -> bool {
+        self.derived_stream_state.streams_ready(
+            self.raw_tangent_buffer.is_some(),
+            MeshDerivedStreamMask::RAW_TANGENT,
+        )
+    }
+
     /// `true` when this mesh has a current standalone UV2 stream for compact shaders.
     pub fn uv2_vertex_stream_ready(&self) -> bool {
         self.derived_stream_state
@@ -65,14 +73,6 @@ impl GpuMesh {
         self.derived_stream_state.streams_ready(
             self.wide_high_uv_buffer.is_some(),
             MeshDerivedStreamMask::WIDE_UV_HIGH,
-        )
-    }
-
-    /// `true` when this mesh has current billboard payload streams for particles.
-    pub fn billboard_vertex_streams_ready(&self) -> bool {
-        self.derived_stream_state.streams_ready(
-            self.tangent_buffer.is_some() && self.uv1_buffer.is_some(),
-            MeshDerivedStreamMask::BILLBOARD,
         )
     }
 

@@ -11,7 +11,9 @@ use super::super::super::layout::{
     vertex_float2_stream_bytes, wide_high_uv_stream_bytes, wide_low_uv_stream_bytes,
 };
 use super::super::demand::{MeshDerivedStreamDemand, MeshDerivedStreamMask};
-use super::super::tangent_generation::{TangentStreamSource, tangent_stream_bytes};
+use super::super::tangent_generation::{
+    TangentStreamSource, raw_tangent_payload_stream_bytes, tangent_stream_bytes,
+};
 
 /// CPU-prepared derived vertex stream bytes for a full mesh upload.
 #[derive(Clone, Debug, Default)]
@@ -26,6 +28,8 @@ pub(crate) struct PreparedDerivedStreams {
     pub(crate) color: Option<Vec<u8>>,
     /// Geometric tangent stream bytes.
     pub(crate) tangent: Option<Vec<u8>>,
+    /// Raw tangent payload bytes.
+    pub(crate) raw_tangent: Option<Vec<u8>>,
     /// UV1 stream bytes.
     pub(crate) uv1: Option<Vec<u8>>,
     /// UV2 stream bytes.
@@ -44,6 +48,7 @@ enum DerivedStreamJob {
     Uv0,
     Color,
     Tangent,
+    RawTangent,
     Uv1,
     Uv2,
     Uv3,
@@ -56,6 +61,7 @@ enum DerivedStreamJobResult {
     Uv0(Option<Vec<u8>>),
     Color(Option<Vec<u8>>),
     Tangent(Option<Vec<u8>>),
+    RawTangent(Option<Vec<u8>>),
     Uv1(Option<Vec<u8>>),
     Uv2(Option<Vec<u8>>),
     Uv3(Option<Vec<u8>>),
@@ -98,6 +104,11 @@ impl DerivedStreamJob {
                 tangent_source(vertex_slice, index_slice, data, vc_usize, vertex_stride_us),
                 demand.tangent_fallback_mode.generate_missing(),
             )),
+            Self::RawTangent => {
+                DerivedStreamJobResult::RawTangent(raw_tangent_payload_stream_bytes(
+                    tangent_source(vertex_slice, index_slice, data, vc_usize, vertex_stride_us),
+                ))
+            }
             Self::Uv1 => DerivedStreamJobResult::Uv1(vertex_float2_stream_bytes(
                 vertex_slice,
                 vc_usize,
@@ -146,6 +157,7 @@ impl PreparedDerivedStreams {
             DerivedStreamJobResult::Uv0(bytes) => self.uv0 = bytes,
             DerivedStreamJobResult::Color(bytes) => self.color = bytes,
             DerivedStreamJobResult::Tangent(bytes) => self.tangent = bytes,
+            DerivedStreamJobResult::RawTangent(bytes) => self.raw_tangent = bytes,
             DerivedStreamJobResult::Uv1(bytes) => self.uv1 = bytes,
             DerivedStreamJobResult::Uv2(bytes) => self.uv2 = bytes,
             DerivedStreamJobResult::Uv3(bytes) => self.uv3 = bytes,
@@ -185,6 +197,9 @@ pub(crate) fn prepare_derived_stream_bytes(
     }
     if demand.mask.contains(MeshDerivedStreamMask::TANGENT) {
         jobs.push(DerivedStreamJob::Tangent);
+    }
+    if demand.mask.contains(MeshDerivedStreamMask::RAW_TANGENT) {
+        jobs.push(DerivedStreamJob::RawTangent);
     }
     if demand.mask.contains(MeshDerivedStreamMask::UV1) {
         jobs.push(DerivedStreamJob::Uv1);
@@ -285,6 +300,9 @@ impl PreparedDerivedStreams {
         }
         if self.tangent.is_some() {
             mask |= MeshDerivedStreamMask::TANGENT;
+        }
+        if self.raw_tangent.is_some() {
+            mask |= MeshDerivedStreamMask::RAW_TANGENT;
         }
         if self.uv1.is_some() {
             mask |= MeshDerivedStreamMask::UV1;

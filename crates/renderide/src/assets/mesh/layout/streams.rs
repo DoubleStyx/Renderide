@@ -36,6 +36,8 @@ pub const WIDE_UV_HIGH_VERTEX_STRIDE_BYTES: usize = WIDE_UV_PAGE_VERTEX_STRIDE_B
 /// Attribute semantic used when expanding host vertex scalars into float streams.
 #[derive(Clone, Copy)]
 pub(in crate::assets::mesh) enum VertexDecodeKind {
+    /// Data payloads that should preserve the host-authored scalar values.
+    Raw,
     /// Object-space position data.
     Position,
     /// Direction vectors such as normals and tangents.
@@ -377,7 +379,6 @@ fn write_wide_uv_page_vertex(
 /// Dense `vec4<f32>` vertex stream for an arbitrary float attribute.
 ///
 /// Missing or unsupported attributes return `default` per vertex.
-#[cfg(test)]
 fn vertex_float4_stream_bytes_with_kind(
     vertex_data: &[u8],
     vertex_count: usize,
@@ -430,7 +431,6 @@ fn write_vertex_float4(
 /// Dense raw `vec4<f32>` payload stream for attributes used as shader data instead of geometry.
 ///
 /// Missing or unsupported attributes return `default` per vertex.
-#[cfg(test)]
 pub fn raw_float4_stream_bytes(
     vertex_data: &[u8],
     vertex_count: usize,
@@ -446,7 +446,7 @@ pub fn raw_float4_stream_bytes(
         attrs,
         target,
         default,
-        VertexDecodeKind::Position,
+        VertexDecodeKind::Raw,
     )
 }
 
@@ -668,7 +668,7 @@ fn apply_unsigned_integer(value: f32, max_value: f32, kind: VertexDecodeKind) ->
     match kind {
         VertexDecodeKind::Color => value / max_value,
         VertexDecodeKind::Direction => (value / max_value).mul_add(2.0, -1.0),
-        VertexDecodeKind::Position | VertexDecodeKind::TexCoord => value,
+        VertexDecodeKind::Raw | VertexDecodeKind::Position | VertexDecodeKind::TexCoord => value,
     }
 }
 

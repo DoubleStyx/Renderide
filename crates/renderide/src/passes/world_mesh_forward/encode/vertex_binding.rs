@@ -19,6 +19,8 @@ pub(super) struct EmbeddedVertexStreamFlags {
     embedded_color: bool,
     /// Tangent at `@location(4)`.
     embedded_tangent: bool,
+    /// Whether `@location(4)` carries raw shader payload instead of a geometric tangent.
+    embedded_raw_tangent_payload: bool,
     /// Whether `@location(1)` carries raw shader payload instead of a lighting normal.
     embedded_raw_normal_payload: bool,
     /// UV1 at `@location(5)`.
@@ -27,8 +29,6 @@ pub(super) struct EmbeddedVertexStreamFlags {
     embedded_uv2: bool,
     /// UV3 at `@location(7)`.
     embedded_uv3: bool,
-    /// Billboard forward and up vecrots at @location(8) and @location(9)
-    embedded_billboard_geometry: bool,
     /// Packed UV0-UV3 stream.
     embedded_wide_low_uvs: bool,
     /// Packed UV4-UV7 stream.
@@ -332,7 +332,20 @@ fn resident_draw_mesh<'a>(
         return None;
     }
     let mesh = gpu.mesh_pool.get(item.mesh_asset_id)?;
-    if streams.embedded_tangent && !mesh.tangent_vertex_stream_ready() {
+    if streams.embedded_tangent
+        && streams.embedded_raw_tangent_payload
+        && !mesh.raw_tangent_vertex_stream_ready()
+    {
+        logger::trace!(
+            "WorldMeshForward: raw tangent payload stream missing for mesh_asset_id {}; draw skipped until pre-warm catches up",
+            item.mesh_asset_id
+        );
+        return None;
+    }
+    if streams.embedded_tangent
+        && !streams.embedded_raw_tangent_payload
+        && !mesh.tangent_vertex_stream_ready()
+    {
         logger::trace!(
             "WorldMeshForward: tangent vertex stream missing for mesh_asset_id {}; draw skipped until pre-warm catches up",
             item.mesh_asset_id
@@ -370,13 +383,6 @@ fn resident_draw_mesh<'a>(
     if streams.embedded_wide_high_uvs && !mesh.wide_high_uv_vertex_stream_ready() {
         logger::trace!(
             "WorldMeshForward: wide high UV vertex stream missing for mesh_asset_id {}; draw skipped until pre-warm catches up",
-            item.mesh_asset_id
-        );
-        return None;
-    }
-    if streams.embedded_billboard_geometry && !mesh.billboard_vertex_streams_ready() {
-        logger::trace!(
-            "WorldMeshForward: billboard vertex streams missing for mesh_asset_id {}; draw skipped until pre-warm catches up",
             item.mesh_asset_id
         );
         return None;
@@ -648,7 +654,7 @@ fn bind_optional_vertex_streams(
         );
     }
     if let Some(slot) = streams.tangent_slot()
-        && !bind_tangent_stream(rpass, item, gpu, mesh, slot, last_mesh)
+        && !bind_tangent_stream(rpass, item, gpu, mesh, streams, slot, last_mesh)
     {
         return false;
     }
@@ -696,9 +702,24 @@ fn bind_tangent_stream(
     item: &WorldMeshDrawItem,
     gpu: WorldMeshDrawGpuRefs<'_>,
     mesh: &GpuMesh,
+    streams: EmbeddedVertexStreamFlags,
     slot: usize,
     last_mesh: &mut LastMeshBindState,
 ) -> bool {
+    if streams.embedded_raw_tangent_payload {
+        let Some(tangent) = mesh.raw_tangent_buffer.as_deref() else {
+            return false;
+        };
+        bind_vertex_if_changed!(
+            rpass,
+            slot,
+            tangent.slice(..),
+            BufferBindId::full(tangent),
+            last_mesh.vertex
+        );
+        return true;
+    }
+
     if draw_uses_deformed_tangent_stream(item, mesh) {
         let Some(cache) = gpu.skin_cache else {
             return false;
@@ -776,11 +797,11 @@ pub(super) fn streams_for_item(item: &WorldMeshDrawItem) -> EmbeddedVertexStream
         embedded_uv: item.batch_key.embedded_needs_uv0,
         embedded_color: item.batch_key.embedded_needs_color,
         embedded_tangent: item.batch_key.embedded_needs_tangent,
+        embedded_raw_tangent_payload: item.batch_key.embedded_raw_tangent_payload,
         embedded_raw_normal_payload: item.batch_key.embedded_raw_normal_payload,
         embedded_uv1: item.batch_key.embedded_needs_uv1,
         embedded_uv2: item.batch_key.embedded_needs_uv2,
         embedded_uv3: item.batch_key.embedded_needs_uv3,
-        embedded_billboard_geometry: item.batch_key.embedded_uses_billboard_geometry,
         embedded_wide_low_uvs: item.batch_key.embedded_needs_wide_low_uvs,
         embedded_wide_high_uvs: item.batch_key.embedded_needs_wide_high_uvs,
     }

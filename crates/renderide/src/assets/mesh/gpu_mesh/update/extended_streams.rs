@@ -5,10 +5,11 @@ use crate::shared::VertexAttributeType;
 
 use super::super::upload::{
     ExtendedVertexUploadSource, UvVertexUploadSource, upload_color_vertex_stream,
-    upload_default_extended_vertex_streams, upload_default_tangent_vertex_stream,
-    upload_default_uv_vertex_stream, upload_default_wide_high_uv_vertex_stream,
-    upload_default_wide_low_uv_vertex_stream, upload_extended_vertex_streams,
-    upload_position_normal_vertex_streams, upload_tangent_vertex_stream, upload_uv_vertex_stream,
+    upload_default_extended_vertex_streams, upload_default_raw_tangent_vertex_stream,
+    upload_default_tangent_vertex_stream, upload_default_uv_vertex_stream,
+    upload_default_wide_high_uv_vertex_stream, upload_default_wide_low_uv_vertex_stream,
+    upload_extended_vertex_streams, upload_position_normal_vertex_streams,
+    upload_raw_tangent_vertex_stream, upload_tangent_vertex_stream, upload_uv_vertex_stream,
     upload_uv0_vertex_stream, upload_wide_high_uv_vertex_stream, upload_wide_low_uv_vertex_stream,
 };
 use super::super::{
@@ -271,6 +272,54 @@ impl GpuMesh {
             .saturating_add(new_bytes);
         self.derived_stream_state
             .mark_clean(MeshDerivedStreamMask::TANGENT);
+        self.drop_extended_vertex_stream_source_if_complete();
+        true
+    }
+
+    /// Creates a raw tangent payload stream for UI shaders that use `TANGENT` as data.
+    pub(crate) fn ensure_raw_tangent_vertex_stream(&mut self, device: &wgpu::Device) -> bool {
+        profiling::scope!("asset::mesh_ensure_raw_tangent_vertex_stream");
+        if self.raw_tangent_vertex_stream_ready() {
+            return true;
+        }
+
+        let vc_usize = self.vertex_count as usize;
+        let raw_tangent_buffer = if let Some(source) = self.extended_vertex_stream_source.as_ref() {
+            upload_raw_tangent_vertex_stream(
+                device,
+                self.asset_id,
+                ExtendedVertexUploadSource {
+                    vertex_slice: source.vertex_bytes.as_ref(),
+                    index_slice: source.index_bytes.as_ref(),
+                    vertex_count: vc_usize,
+                    vertex_stride: self.vertex_stride as usize,
+                    vertex_attributes: source.vertex_attributes.as_ref(),
+                    index_format: source.index_format,
+                    submeshes: source.submeshes.as_ref(),
+                },
+            )
+        } else {
+            upload_default_raw_tangent_vertex_stream(device, self.asset_id, vc_usize)
+        };
+
+        let Some(raw_tangent_buffer) = raw_tangent_buffer else {
+            return false;
+        };
+        let old_bytes = self
+            .raw_tangent_buffer
+            .as_ref()
+            .map_or(0, |buffer| buffer.size());
+        self.raw_tangent_buffer = Some(raw_tangent_buffer);
+        let new_bytes = self
+            .raw_tangent_buffer
+            .as_ref()
+            .map_or(0, |buffer| buffer.size());
+        self.resident_bytes = self
+            .resident_bytes
+            .saturating_sub(old_bytes)
+            .saturating_add(new_bytes);
+        self.derived_stream_state
+            .mark_clean(MeshDerivedStreamMask::RAW_TANGENT);
         self.drop_extended_vertex_stream_source_if_complete();
         true
     }

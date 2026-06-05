@@ -212,6 +212,10 @@ fn generated_particle_mesh_input_is_valid(
         ("positions", prepared.positions.as_deref().unwrap_or(&[])),
         ("normals", prepared.normals.as_deref().unwrap_or(&[])),
         ("tangent", prepared.tangent.as_deref().unwrap_or(&[])),
+        (
+            "raw_tangent",
+            prepared.raw_tangent.as_deref().unwrap_or(&[]),
+        ),
     ] {
         let size = queue_init_buffer_size(bytes.len());
         if size > max_buf || size > max_storage {
@@ -284,6 +288,7 @@ struct GeneratedPrimaryDerivedBuffers {
 
 struct GeneratedExtendedDerivedBuffers {
     tangent_buffer: Option<Arc<wgpu::Buffer>>,
+    raw_tangent_buffer: Option<Arc<wgpu::Buffer>>,
     uv1_buffer: Option<Arc<wgpu::Buffer>>,
     uv2_buffer: Option<Arc<wgpu::Buffer>>,
     uv3_buffer: Option<Arc<wgpu::Buffer>>,
@@ -360,6 +365,16 @@ fn upload_generated_extended_derived_streams(
             limits.storage_size_limit,
         )?
         .into_buffer(),
+        raw_tangent_buffer: upload_generated_derived_buffer(
+            ctx,
+            existing.and_then(|mesh| mesh.raw_tangent_buffer.as_ref()),
+            asset_id,
+            DerivedBufferProfile::RawTangent,
+            prepared.raw_tangent.as_deref(),
+            limits.usages.tangent,
+            limits.storage_size_limit,
+        )?
+        .into_buffer(),
         uv1_buffer: upload_generated_derived_buffer(
             ctx,
             existing.and_then(|mesh| mesh.uv1_buffer.as_ref()),
@@ -430,6 +445,7 @@ fn upload_generated_derived_streams(
         uv0_buffer: primary.uv0_buffer,
         color_buffer: primary.color_buffer,
         tangent_buffer: extended.tangent_buffer,
+        raw_tangent_buffer: extended.raw_tangent_buffer,
         uv1_buffer: extended.uv1_buffer,
         uv2_buffer: extended.uv2_buffer,
         uv3_buffer: extended.uv3_buffer,
@@ -451,6 +467,7 @@ fn generated_mesh_resident_bytes(
             derived.uv0_buffer.as_ref(),
             derived.color_buffer.as_ref(),
             derived.tangent_buffer.as_ref(),
+            derived.raw_tangent_buffer.as_ref(),
             derived.uv1_buffer.as_ref(),
             derived.uv2_buffer.as_ref(),
             derived.uv3_buffer.as_ref(),
@@ -524,6 +541,7 @@ pub(crate) fn try_upload_generated_mesh_from_parts(
         uv0_buffer: derived.uv0_buffer,
         color_buffer: derived.color_buffer,
         tangent_buffer: derived.tangent_buffer,
+        raw_tangent_buffer: derived.raw_tangent_buffer,
         tangent_fallback_mode: EmbeddedTangentFallbackMode::default(),
         uv1_buffer: derived.uv1_buffer,
         uv2_buffer: derived.uv2_buffer,

@@ -452,7 +452,9 @@ fn should_prepare_derived_streams_on_worker(
     }
     raw_len >= MESH_PREPARE_BACKGROUND_MIN_BYTES
         || data.vertex_count >= MESH_PREPARE_BACKGROUND_MIN_VERTICES
-        || demand.mask.contains(MeshDerivedStreamMask::TANGENT)
+        || demand
+            .mask
+            .intersects(MeshDerivedStreamMask::TANGENT | MeshDerivedStreamMask::RAW_TANGENT)
 }
 
 fn spawn_prepare_derived_streams(

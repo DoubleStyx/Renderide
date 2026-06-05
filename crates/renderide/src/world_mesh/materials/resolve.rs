@@ -10,6 +10,7 @@ use crate::materials::{
     material_blend_mode_from_maps, material_render_queue_from_maps,
     material_render_state_from_maps, resolve_raster_pipeline,
 };
+use crate::passes::BILLBOARD_RENDER_BUFFER_BIT;
 
 use super::FrameMaterialBatchCache;
 use super::key::MaterialDrawBatchKey;
@@ -50,6 +51,8 @@ pub(crate) struct ResolvedMaterialBatch {
     pub embedded_needs_tangent: bool,
     /// Tangent fallback policy for lazy tangent upload.
     pub embedded_tangent_fallback_mode: EmbeddedTangentFallbackMode,
+    /// Whether the tangent stream carries raw shader payload instead of a geometric tangent.
+    pub embedded_raw_tangent_payload: bool,
     /// Whether the normal stream carries raw shader payload instead of a lighting normal.
     pub embedded_raw_normal_payload: bool,
     /// Whether the active shader permutation requires a UV2 vertex stream.
@@ -124,6 +127,7 @@ struct EmbeddedMaterialFeatures {
     needs_uv1: bool,
     needs_tangent: bool,
     tangent_fallback_mode: EmbeddedTangentFallbackMode,
+    raw_tangent_payload: bool,
     raw_normal_payload: bool,
     needs_uv2: bool,
     needs_uv3: bool,
@@ -159,6 +163,7 @@ fn embedded_material_features(
         needs_uv1: vertex_streams.uv1,
         needs_tangent: vertex_streams.tangent,
         tangent_fallback_mode: query.tangent_fallback_mode(),
+        raw_tangent_payload: query.uses_raw_tangent_payload(),
         raw_normal_payload: query.uses_raw_normal_payload(),
         needs_uv2: vertex_streams.uv2,
         needs_uv3: vertex_streams.uv3,
@@ -310,6 +315,7 @@ pub(crate) fn resolve_material_batch(
         embedded_needs_uv1: embedded.needs_uv1,
         embedded_needs_tangent: embedded.needs_tangent,
         embedded_tangent_fallback_mode: embedded.tangent_fallback_mode,
+        embedded_raw_tangent_payload: embedded.raw_tangent_payload,
         embedded_raw_normal_payload: embedded.raw_normal_payload,
         embedded_needs_uv2: embedded.needs_uv2,
         embedded_needs_uv3: embedded.needs_uv3,
@@ -342,8 +348,11 @@ pub(crate) fn apply_render_buffer_mesh_pipeline_override(
     if !crate::particles::is_generated_billboard_mesh_asset_id(mesh_asset_id) {
         return;
     }
-    batch_key.shader_specialization = MaterialShaderSpecializationKey::disabled();
+    batch_key.shader_specialization =
+        MaterialShaderSpecializationKey::from_default_variant_bits(BILLBOARD_RENDER_BUFFER_BIT);
     batch_key.embedded_uses_billboard_geometry = true;
+    batch_key.embedded_raw_tangent_payload = true;
+    batch_key.embedded_needs_uv1 = true;
 }
 
 /// Assembles a [`MaterialDrawBatchKey`] from a pre-resolved [`ResolvedMaterialBatch`] entry.
@@ -370,6 +379,7 @@ fn batch_key_from_resolved(
         embedded_needs_uv1: r.embedded_needs_uv1,
         embedded_needs_tangent: r.embedded_needs_tangent,
         embedded_tangent_fallback_mode: r.embedded_tangent_fallback_mode,
+        embedded_raw_tangent_payload: r.embedded_raw_tangent_payload,
         embedded_raw_normal_payload: r.embedded_raw_normal_payload,
         embedded_needs_uv2: r.embedded_needs_uv2,
         embedded_needs_uv3: r.embedded_needs_uv3,
@@ -539,6 +549,7 @@ mod ui_rect_clip_tests {
 
         assert!(resolved.alpha_blended);
         assert_eq!(resolved.render_queue, UNITY_RENDER_QUEUE_TRANSPARENT);
+        assert!(resolved.embedded_raw_tangent_payload);
     }
 
     #[test]
@@ -722,8 +733,49 @@ mod ui_rect_clip_tests {
         assert!(key.embedded_needs_uv0);
         assert!(key.embedded_needs_color);
         assert!(key.embedded_needs_tangent);
+        assert!(key.embedded_raw_tangent_payload);
         assert!(key.embedded_raw_normal_payload);
-        assert!(key.embedded_uses_billboard_geometry);
+    }
+
+    #[test]
+    fn generated_billboard_mesh_uses_original_material() {
+        let registry = PropertyIdRegistry::new();
+        let src = registry.intern("_SrcBlend");
+        let dst = registry.intern("_DstBlend");
+        let render_queue = registry.intern("_RenderQueue");
+        let mut store = MaterialPropertyStore::new();
+        store.set_shader_asset_for_material(7, 99);
+        store.set_material(7, src, MaterialPropertyValue::Float(5.0));
+        store.set_material(7, dst, MaterialPropertyValue::Float(10.0));
+        store.set_material(
+            7,
+            render_queue,
+            MaterialPropertyValue::Float(UNITY_RENDER_QUEUE_TRANSPARENT as f32),
+        );
+        let dict = MaterialDictionary::new(&store);
+        let mut router = MaterialRouter::new(RasterPipelineKind::Null);
+        router.set_shader_pipeline(
+            99,
+            RasterPipelineKind::EmbeddedStem(Arc::from("unlit_default")),
+        );
+        let ids = MaterialPipelinePropertyIds::new(&registry);
+        let resolved =
+            resolve_material_batch(7, None, &dict, &router, &ids, ShaderPermutation::default());
+        let mut key = batch_key_from_resolved(
+            7,
+            None,
+            false,
+            RasterFrontFace::Clockwise,
+            RasterPrimitiveTopology::TriangleList,
+            &resolved,
+        );
+        let mesh_asset_id = crate::particles::billboard_render_buffer_mesh_asset_id(3).unwrap();
+
+        apply_render_buffer_mesh_pipeline_override(&mut key, mesh_asset_id);
+        assert_eq!(key.material_asset_id, 7);
+        assert!(key.alpha_blended);
+        assert_eq!(key.render_queue, UNITY_RENDER_QUEUE_TRANSPARENT);
+        assert!(key.transparent_class.is_transparent());
     }
 
     #[test]

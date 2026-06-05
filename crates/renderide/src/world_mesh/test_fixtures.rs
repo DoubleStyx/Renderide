@@ -75,6 +75,7 @@ pub fn dummy_world_mesh_draw_item(spec: DummyDrawItemSpec) -> WorldMeshDrawItem 
         embedded_needs_uv1: false,
         embedded_needs_tangent: false,
         embedded_tangent_fallback_mode: Default::default(),
+        embedded_raw_tangent_payload: false,
         embedded_raw_normal_payload: false,
         embedded_needs_uv2: false,
         embedded_needs_uv3: false,
