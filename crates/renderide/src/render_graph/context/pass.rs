@@ -3,8 +3,34 @@
 use super::super::blackboard::Blackboard;
 use super::super::frame_upload_batch::GraphUploadSink;
 use super::resolved::GraphResolvedResources;
-use crate::gpu::GpuLimits;
-use crate::graph_inputs::GraphPassFrame;
+use crate::gpu::{GpuLimits, OutputDepthMode};
+use crate::graph_inputs::{FrameSystemsShared, GraphPassFrameView};
+
+/// Pass-facing frame context split into shared frame systems and per-view state.
+///
+/// Render graph passes receive this split context instead of the executor's combined frame object.
+pub struct PassFrameContext<'a, 'frame> {
+    /// Shared scene, backend resources, and frame-global systems borrowed for this pass.
+    pub systems: &'frame mut FrameSystemsShared<'a>,
+    /// Per-view surface, camera, and render-target state borrowed for this pass.
+    pub view: &'frame mut GraphPassFrameView<'a>,
+}
+
+impl<'a, 'frame> PassFrameContext<'a, 'frame> {
+    /// Builds a pass-facing context from pre-split frame systems and per-view state.
+    pub(crate) fn new(
+        systems: &'frame mut FrameSystemsShared<'a>,
+        view: &'frame mut GraphPassFrameView<'a>,
+    ) -> Self {
+        Self { systems, view }
+    }
+
+    /// Output depth layout for Hi-Z and occlusion.
+    #[inline]
+    pub fn output_depth_mode(&self) -> OutputDepthMode {
+        OutputDepthMode::from_multiview_stereo(self.view.multiview_stereo)
+    }
+}
 
 /// Context for [`crate::render_graph::pass::RasterPass::record`].
 ///
@@ -15,7 +41,7 @@ pub struct RasterPassCtx<'a, 'frame> {
     /// WGPU device.
     pub device: &'a wgpu::Device,
     /// Scene, backend system handles, and per-view frame state for this pass.
-    pub pass_frame: &'frame mut GraphPassFrame<'a>,
+    pub frame: PassFrameContext<'a, 'frame>,
     /// Deferred graph upload sink drained before submit.
     pub uploads: GraphUploadSink<'frame>,
     /// Typed graph resources resolved for this execution scope.
@@ -55,7 +81,7 @@ pub struct ComputePassCtx<'a, 'encoder, 'frame> {
     /// read or copy the depth buffer).
     pub depth_view: Option<&'a wgpu::TextureView>,
     /// Scene, backend system handles, and per-view frame state for this pass.
-    pub pass_frame: &'frame mut GraphPassFrame<'a>,
+    pub frame: PassFrameContext<'a, 'frame>,
     /// Deferred graph upload sink drained before submit.
     pub uploads: GraphUploadSink<'frame>,
     /// Typed graph resources resolved for this execution scope.
@@ -90,7 +116,7 @@ pub struct EncoderPassCtx<'a, 'encoder, 'frame> {
     /// Active command encoder for this recording slice.
     pub encoder: &'encoder mut wgpu::CommandEncoder,
     /// Scene, backend system handles, and per-view frame state for this pass.
-    pub pass_frame: &'frame mut GraphPassFrame<'a>,
+    pub frame: PassFrameContext<'a, 'frame>,
     /// Deferred graph upload sink drained before submit.
     pub uploads: GraphUploadSink<'frame>,
     /// Typed graph resources resolved for this execution scope.

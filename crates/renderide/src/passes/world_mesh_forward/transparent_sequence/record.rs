@@ -26,7 +26,7 @@ pub(super) fn record_transparent_sequence(
     let (transparent_phase, grab_phase) = transparent_sequence_phase_pair();
     let transparent_groups = plan.phase(transparent_phase);
     let grab_groups = plan.phase(grab_phase);
-    let sample_count = ctx.pass_frame.view.sample_count.max(1);
+    let sample_count = ctx.frame.view.sample_count.max(1);
     let mut scene_color_resolved_current = false;
     if transparent_groups.is_empty() && grab_groups.is_empty() {
         return resolve_final_scene_color_for_skipped_tail(ctx, resources, sample_count);

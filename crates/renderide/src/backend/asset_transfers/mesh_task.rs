@@ -14,6 +14,7 @@ use crate::shared::{MeshUploadData, MeshUploadResult, RendererCommand};
 use super::AssetTransferQueue;
 use super::integrator::StepResult;
 use super::mesh_upload_batch::{MeshUploadRecorder, MeshUploadStagingBatch};
+use super::reliable_ack::send_background_reliable;
 
 const MESH_PREPARE_BACKGROUND_MIN_BYTES: usize = 32 * 1024;
 const MESH_PREPARE_BACKGROUND_MIN_VERTICES: i32 = 512;
@@ -75,18 +76,13 @@ pub(super) fn send_mesh_upload_result(
     ipc: &mut Option<&mut DualQueueIpc>,
     result: MeshUploadResult,
 ) -> bool {
-    if let Some(ipc) = ipc.as_mut() {
-        let asset_id = result.asset_id;
-        let instance_changed = result.instance_changed;
-        let ack_queued = ipc.send_background_reliable(RendererCommand::MeshUploadResult(result));
-        if !ack_queued {
-            logger::warn!(
-                "mesh {asset_id}: failed to enqueue reliable MeshUploadResult ack (instance_changed={instance_changed})"
-            );
-        }
-        return ack_queued;
-    }
-    false
+    let asset_id = result.asset_id;
+    let instance_changed = result.instance_changed;
+    send_background_reliable(ipc, RendererCommand::MeshUploadResult(result), || {
+        format!(
+            "mesh {asset_id}: failed to enqueue reliable MeshUploadResult ack (instance_changed={instance_changed})"
+        )
+    })
 }
 
 /// Stage for a single mesh upload task.

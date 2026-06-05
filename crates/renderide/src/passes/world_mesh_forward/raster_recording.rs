@@ -5,9 +5,10 @@ use std::sync::Arc;
 use super::{MaterialBatchPacket, PreparedWorldMeshForwardFrame};
 use crate::camera::ViewId;
 use crate::gpu::GpuLimits;
-use crate::graph_inputs::{GraphPassFrame, PerViewFramePlanSlot};
+use crate::graph_inputs::PerViewFramePlanSlot;
 use crate::passes::WorldMeshForwardEncodeRefs;
 use crate::render_graph::blackboard::Blackboard;
+use crate::render_graph::context::PassFrameContext;
 use crate::world_mesh::draw_prep::WorldMeshDrawItem;
 use crate::world_mesh::{MeshPassKind, WorldMeshPhase};
 
@@ -85,7 +86,7 @@ fn record_world_mesh_forward_subpass(
 
 /// Returns the per-view frame bind group captured before command recording.
 pub(in crate::passes::world_mesh_forward) fn frame_bind_group_for_view(
-    frame: &GraphPassFrame<'_>,
+    frame: &PassFrameContext<'_, '_>,
     blackboard: &Blackboard,
 ) -> Option<Arc<wgpu::BindGroup>> {
     blackboard
@@ -93,7 +94,7 @@ pub(in crate::passes::world_mesh_forward) fn frame_bind_group_for_view(
         .map(|plan| plan.frame_bind_group.clone())
         .or_else(|| {
             frame
-                .shared
+                .systems
                 .frame_resources
                 .per_view_frame_bind_group_and_buffer(frame.view.view_id)
                 .map(|(bind_group, _)| bind_group)
@@ -103,7 +104,7 @@ pub(in crate::passes::world_mesh_forward) fn frame_bind_group_for_view(
 /// Records one world-mesh forward subset into a render pass already opened by the graph.
 fn record_world_mesh_forward_graph_raster(
     rpass: &mut wgpu::RenderPass<'_>,
-    frame: &GraphPassFrame<'_>,
+    frame: &PassFrameContext<'_, '_>,
     blackboard: &Blackboard,
     prepared: &PreparedWorldMeshForwardFrame,
     mesh_pass: MeshPassKind,
@@ -120,7 +121,7 @@ fn record_world_mesh_forward_graph_raster(
 /// Records one named world-mesh phase into a render pass already opened by the caller.
 pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_phase_graph_raster(
     rpass: &mut wgpu::RenderPass<'_>,
-    frame: &GraphPassFrame<'_>,
+    frame: &PassFrameContext<'_, '_>,
     blackboard: &Blackboard,
     prepared: &PreparedWorldMeshForwardFrame,
     phase: WorldMeshPhase,
@@ -138,7 +139,7 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_phase_gra
 /// Records one named world-mesh phase using the supplied per-view resource identity.
 pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_phase_graph_raster_for_view(
     rpass: &mut wgpu::RenderPass<'_>,
-    frame: &GraphPassFrame<'_>,
+    frame: &PassFrameContext<'_, '_>,
     blackboard: &Blackboard,
     prepared: &PreparedWorldMeshForwardFrame,
     phase: WorldMeshPhase,
@@ -165,7 +166,7 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_phase_gra
 /// Records an explicit draw-group slice using the supplied per-view resource identity.
 pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_groups_graph_raster_for_view(
     rpass: &mut wgpu::RenderPass<'_>,
-    frame: &GraphPassFrame<'_>,
+    frame: &PassFrameContext<'_, '_>,
     blackboard: &Blackboard,
     prepared: &PreparedWorldMeshForwardFrame,
     groups: &[crate::world_mesh::DrawGroup],
@@ -187,7 +188,7 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_groups_gr
 /// Records an explicit draw-group slice with a caller-selected `@group(0)` bind group.
 pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_groups_graph_raster_with_frame_bind_group(
     rpass: &mut wgpu::RenderPass<'_>,
-    frame: &GraphPassFrame<'_>,
+    frame: &PassFrameContext<'_, '_>,
     prepared: &PreparedWorldMeshForwardFrame,
     groups: &[crate::world_mesh::DrawGroup],
     frame_bg_arc: &Arc<wgpu::BindGroup>,
@@ -198,13 +199,13 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_groups_gr
     }
 
     let Some(per_draw_bg) = frame
-        .shared
+        .systems
         .frame_resources
         .per_view_per_draw_bind_group(resource_view_id)
     else {
         return false;
     };
-    let Some(empty_bg_arc) = frame.shared.frame_resources.empty_material_bind_group() else {
+    let Some(empty_bg_arc) = frame.systems.frame_resources.empty_material_bind_group() else {
         return false;
     };
 
@@ -223,7 +224,7 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_groups_gr
     let Some(gpu_limits) = frame.view.gpu_limits.clone() else {
         return false;
     };
-    let mut encode_refs = WorldMeshForwardEncodeRefs::from_frame(frame);
+    let mut encode_refs = WorldMeshForwardEncodeRefs::from_pass_frame(frame);
     record_world_mesh_forward_subpass(
         rpass,
         ForwardSubpassDrawRecord {
@@ -243,7 +244,7 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_groups_gr
 pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_opaque_graph_raster(
     rpass: &mut wgpu::RenderPass<'_>,
     _device: &wgpu::Device,
-    frame: &GraphPassFrame<'_>,
+    frame: &PassFrameContext<'_, '_>,
     blackboard: &Blackboard,
     prepared: &PreparedWorldMeshForwardFrame,
 ) -> bool {
@@ -261,7 +262,7 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_opaque_gr
 pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_normal_graph_raster(
     rpass: &mut wgpu::RenderPass<'_>,
     device: &wgpu::Device,
-    frame: &GraphPassFrame<'_>,
+    frame: &PassFrameContext<'_, '_>,
     prepared: &PreparedWorldMeshForwardFrame,
     pipelines: &WorldMeshForwardNormalPipelineCache,
 ) -> bool {
@@ -272,7 +273,7 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_normal_gr
     }
 
     let Some(per_draw_bg) = frame
-        .shared
+        .systems
         .frame_resources
         .per_view_per_draw_bind_group(frame.view.view_id)
     else {
@@ -281,7 +282,7 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_normal_gr
     let Some(gpu_limits) = frame.view.gpu_limits.clone() else {
         return false;
     };
-    let mut encode_refs = WorldMeshForwardEncodeRefs::from_frame(frame);
+    let mut encode_refs = WorldMeshForwardEncodeRefs::from_pass_frame(frame);
     #[cfg(feature = "tracy")]
     rpass.push_debug_group("world_mesh_forward::view_normals");
     draw_normals_subset(NormalDrawBatch {
@@ -305,7 +306,7 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_normal_gr
 pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_intersection_graph_raster(
     rpass: &mut wgpu::RenderPass<'_>,
     _device: &wgpu::Device,
-    frame: &GraphPassFrame<'_>,
+    frame: &PassFrameContext<'_, '_>,
     blackboard: &Blackboard,
     prepared: &PreparedWorldMeshForwardFrame,
 ) -> bool {

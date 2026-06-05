@@ -28,7 +28,7 @@ pub(super) fn draw_tail_groups(
         return Ok(true);
     }
 
-    let frame = &*ctx.pass_frame;
+    let frame = &ctx.frame;
     let sample_count = frame.view.sample_count.max(1);
     let Some(targets) = forward_draw_attachment_targets(resources, sample_count) else {
         return Err(RenderPassError::FrameParamsRequired {
@@ -151,12 +151,12 @@ pub(super) fn flush_optional_post_groups(
 pub(super) fn transparent_sequence_frame_bind_groups(
     ctx: &EncoderPassCtx<'_, '_, '_>,
 ) -> Option<(Arc<wgpu::BindGroup>, Arc<wgpu::BindGroup>)> {
-    let default = frame_bind_group_for_view(ctx.pass_frame, ctx.blackboard)?;
+    let default = frame_bind_group_for_view(&ctx.frame, ctx.blackboard)?;
     let named = ctx
-        .pass_frame
-        .shared
+        .frame
+        .systems
         .frame_resources
-        .per_view_named_scene_color_frame_bind_group(ctx.pass_frame.view.view_id)?;
+        .per_view_named_scene_color_frame_bind_group(ctx.frame.view.view_id)?;
     Some((default, named))
 }
 

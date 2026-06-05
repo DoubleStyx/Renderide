@@ -75,7 +75,7 @@ impl ComputePass for AutoExposureComputePass {
     }
 
     fn should_record(&self, ctx: &ComputePassCtx<'_, '_, '_>) -> Result<bool, RenderPassError> {
-        Ok(super::view_post_processing_enabled(&ctx.pass_frame.view))
+        Ok(super::view_post_processing_enabled(ctx.frame.view))
     }
 
     fn release_view_resources(&mut self, retired_views: &[ViewId]) {
@@ -84,7 +84,7 @@ impl ComputePass for AutoExposureComputePass {
 
     fn record(&self, ctx: &mut ComputePassCtx<'_, '_, '_>) -> Result<(), RenderPassError> {
         profiling::scope!("post_processing::auto_exposure::compute");
-        let frame = &*ctx.pass_frame;
+        let frame = &ctx.frame;
         let graph_resources = ctx.graph_resources;
         let Some(tex) = graph_resources.transient_texture(self.input) else {
             return Err(missing_pass_resource(
@@ -190,7 +190,7 @@ impl RasterPass for AutoExposureApplyPass {
     }
 
     fn should_record(&self, ctx: &RasterPassCtx<'_, '_>) -> Result<bool, RenderPassError> {
-        Ok(super::view_post_processing_enabled(&ctx.pass_frame.view))
+        Ok(super::view_post_processing_enabled(ctx.frame.view))
     }
 
     fn record(
@@ -199,7 +199,7 @@ impl RasterPass for AutoExposureApplyPass {
         rpass: &mut wgpu::RenderPass<'_>,
     ) -> Result<(), RenderPassError> {
         profiling::scope!("post_processing::auto_exposure::apply");
-        let frame = &*ctx.pass_frame;
+        let frame = &ctx.frame;
         let graph_resources = ctx.graph_resources;
         let Some(tex) = graph_resources.transient_texture(self.input) else {
             return Err(missing_pass_resource(

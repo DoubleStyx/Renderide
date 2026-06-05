@@ -37,8 +37,8 @@ impl crate::render_graph::pass::EncoderPass for LightCookieAtlasPass {
         ctx: &crate::render_graph::context::EncoderPassCtx<'_, '_, '_>,
     ) -> Result<bool, crate::render_graph::error::RenderPassError> {
         Ok(ctx
-            .pass_frame
-            .shared
+            .frame
+            .systems
             .frame_resources
             .has_light_cookie_requests())
     }
@@ -47,15 +47,12 @@ impl crate::render_graph::pass::EncoderPass for LightCookieAtlasPass {
         &self,
         ctx: &mut crate::render_graph::context::EncoderPassCtx<'_, '_, '_>,
     ) -> Result<(), crate::render_graph::error::RenderPassError> {
-        ctx.pass_frame
-            .shared
-            .frame_resources
-            .encode_light_cookie_atlas(
-                ctx.device,
-                ctx.encoder,
-                ctx.pass_frame.shared.asset_resources,
-                ctx.profiler,
-            );
+        ctx.frame.systems.frame_resources.encode_light_cookie_atlas(
+            ctx.device,
+            ctx.encoder,
+            ctx.frame.systems.asset_resources,
+            ctx.profiler,
+        );
         Ok(())
     }
 

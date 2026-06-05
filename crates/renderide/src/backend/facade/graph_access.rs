@@ -31,6 +31,19 @@ use super::super::{
     FrameResourceManager, HistoryRegistry, WorldMeshDrawPlanSlot, WorldMeshOverlayDrawPlanSlot,
 };
 
+/// Live post-processing parameters seeded into per-view blackboards.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct LivePostProcessingSettings {
+    /// GTAO settings snapshot selected before graph execution borrows backend fields.
+    pub(super) gtao: crate::config::GtaoSettings,
+    /// Bloom settings snapshot selected before graph execution borrows backend fields.
+    pub(super) bloom: crate::config::BloomSettings,
+    /// Motion-blur settings snapshot selected before graph execution borrows backend fields.
+    pub(super) motion_blur: crate::config::MotionBlurSettings,
+    /// Auto-exposure settings snapshot selected before graph execution borrows backend fields.
+    pub(super) auto_exposure: crate::config::AutoExposureSettings,
+}
+
 /// Narrow backend packet used by the render graph executor.
 ///
 /// This is intentionally a bundle of disjoint backend owners instead of `&mut RenderBackend`:
@@ -71,24 +84,15 @@ pub(crate) struct BackendGraphAccess<'a> {
     pub(super) msaa_depth_resolve: Option<Arc<MsaaDepthResolveResources>>,
     /// Host-owned skin influence mode selected for mesh deform compute.
     pub(super) skin_weight_mode: crate::shared::SkinWeightMode,
-    /// GTAO settings snapshot selected before graph execution borrows backend fields.
-    pub(super) live_gtao_settings: crate::config::GtaoSettings,
-    /// Bloom settings snapshot selected before graph execution borrows backend fields.
-    pub(super) live_bloom_settings: crate::config::BloomSettings,
-    /// Motion-blur settings snapshot selected before graph execution borrows backend fields.
-    pub(super) live_motion_blur_settings: crate::config::MotionBlurSettings,
-    /// Auto-exposure settings snapshot selected before graph execution borrows backend fields.
-    pub(super) live_auto_exposure_settings: crate::config::AutoExposureSettings,
+    /// Live post-processing settings seeded into per-view blackboards.
+    pub(super) live_post_processing: LivePostProcessingSettings,
     /// Wall-frame delta snapshot in milliseconds.
     pub(super) wall_frame_time_ms: f64,
 }
 
 struct BackendViewBlackboardPreparer<'a> {
     world_mesh_frame_planner: &'a crate::backend::BackendWorldMeshFramePlanner,
-    live_gtao_settings: crate::config::GtaoSettings,
-    live_bloom_settings: crate::config::BloomSettings,
-    live_motion_blur_settings: crate::config::MotionBlurSettings,
-    live_auto_exposure_settings: crate::config::AutoExposureSettings,
+    live_post_processing: LivePostProcessingSettings,
     wall_frame_delta_seconds: f32,
 }
 
@@ -103,13 +107,13 @@ impl GraphViewBlackboardPreparer for BackendViewBlackboardPreparer<'_> {
         blackboard: &mut Blackboard,
     ) {
         blackboard.insert::<PerViewFramePlanSlot>(frame_plan.clone());
-        blackboard.insert::<GtaoSettingsSlot>(GtaoSettingsValue(self.live_gtao_settings));
-        blackboard.insert::<BloomSettingsSlot>(BloomSettingsValue(self.live_bloom_settings));
+        blackboard.insert::<GtaoSettingsSlot>(GtaoSettingsValue(self.live_post_processing.gtao));
+        blackboard.insert::<BloomSettingsSlot>(BloomSettingsValue(self.live_post_processing.bloom));
         blackboard.insert::<MotionBlurSettingsSlot>(MotionBlurSettingsValue(
-            self.live_motion_blur_settings,
+            self.live_post_processing.motion_blur,
         ));
         blackboard.insert::<AutoExposureSettingsSlot>(AutoExposureSettingsValue::for_view(
-            self.live_auto_exposure_settings,
+            self.live_post_processing.auto_exposure,
             self.wall_frame_delta_seconds,
             frame.view.view_id,
         ));
@@ -353,10 +357,7 @@ impl GraphExecutionBackend for BackendGraphAccess<'_> {
     fn view_blackboard_preparer(&self) -> Box<dyn GraphViewBlackboardPreparer + '_> {
         Box::new(BackendViewBlackboardPreparer {
             world_mesh_frame_planner: self.world_mesh_frame_planner,
-            live_gtao_settings: self.live_gtao_settings,
-            live_bloom_settings: self.live_bloom_settings,
-            live_motion_blur_settings: self.live_motion_blur_settings,
-            live_auto_exposure_settings: self.live_auto_exposure_settings,
+            live_post_processing: self.live_post_processing,
             wall_frame_delta_seconds: self.wall_frame_delta_seconds(),
         })
     }

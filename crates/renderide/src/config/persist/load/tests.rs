@@ -2,7 +2,6 @@
 
 use super::*;
 use crate::config::ConfigSource;
-use crate::config::types::AutoExposureSettings;
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -48,42 +47,12 @@ fn load_settings_from_toml_str(content: &str) -> Result<RendererSettings, Box<fi
     run_pipeline(Some(content.to_string()))
 }
 
-fn migrated_compensation_ev(old_absolute_target_ev: f64) -> f32 {
-    (old_absolute_target_ev - f64::from(AutoExposureSettings::MIDDLE_GRAY_EV)) as f32
-}
-
-fn assert_close(actual: f32, expected: f32) {
-    assert!(
-        (actual - expected).abs() < 1e-5,
-        "expected {expected}, got {actual}"
-    );
-}
-
-fn migrated_document(load: &ToleratedTomlLoad) -> DocumentMut {
-    load.migrated_toml
-        .as_deref()
-        .expect("migrated toml")
-        .parse()
-        .expect("migrated toml should parse")
-}
-
 fn document_config_version(document: &DocumentMut) -> &str {
     document
         .get("config_version")
         .and_then(Item::as_value)
         .and_then(|value| value.as_str())
         .expect("config_version")
-}
-
-fn document_auto_exposure_compensation(document: &DocumentMut) -> f32 {
-    document
-        .get("post_processing")
-        .and_then(Item::as_table)
-        .and_then(|table| table.get("auto_exposure"))
-        .and_then(Item::as_table)
-        .and_then(|table| table.get("compensation_ev"))
-        .and_then(item_to_f64)
-        .expect("auto exposure compensation") as f32
 }
 
 #[test]
@@ -300,82 +269,6 @@ mode = "future"
 }
 
 #[test]
-fn unversioned_auto_exposure_default_target_migrates_to_relative_compensation() {
-    let _guard = crate::config::CONFIG_ENV_TEST_LOCK.lock().expect("lock");
-    let content = r#"
-[post_processing.auto_exposure]
-compensation_ev = -3.0
-"#;
-
-    let load = run_pipeline_tolerating_toml(content).expect("unversioned config migrates");
-    let expected = migrated_compensation_ev(LEGACY_AUTO_EXPOSURE_DEFAULT_TARGET_EV);
-
-    assert_close(
-        load.settings.post_processing.auto_exposure.compensation_ev,
-        expected,
-    );
-    assert_close(
-        load.settings
-            .post_processing
-            .auto_exposure
-            .resolved_target_ev(),
-        LEGACY_AUTO_EXPOSURE_DEFAULT_TARGET_EV as f32,
-    );
-    let document = migrated_document(&load);
-    assert_eq!(
-        document_config_version(&document),
-        RendererSettings::CURRENT_CONFIG_VERSION
-    );
-    assert_close(document_auto_exposure_compensation(&document), expected);
-}
-
-#[test]
-fn unversioned_custom_auto_exposure_target_migrates_to_relative_compensation() {
-    let _guard = crate::config::CONFIG_ENV_TEST_LOCK.lock().expect("lock");
-    let content = r#"
-[post_processing.auto_exposure]
-compensation_ev = -1.25
-"#;
-
-    let load = run_pipeline_tolerating_toml(content).expect("unversioned config migrates");
-    let expected = migrated_compensation_ev(-1.25);
-
-    assert_close(
-        load.settings.post_processing.auto_exposure.compensation_ev,
-        expected,
-    );
-    assert_close(
-        load.settings
-            .post_processing
-            .auto_exposure
-            .resolved_target_ev(),
-        -1.25,
-    );
-}
-
-#[test]
-fn unversioned_missing_auto_exposure_compensation_uses_old_default_target() {
-    let _guard = crate::config::CONFIG_ENV_TEST_LOCK.lock().expect("lock");
-    let content = r#"
-[display]
-focused_fps = 90
-"#;
-
-    let load = run_pipeline_tolerating_toml(content).expect("unversioned config migrates");
-    let expected = migrated_compensation_ev(LEGACY_AUTO_EXPOSURE_DEFAULT_TARGET_EV);
-
-    assert_eq!(load.settings.display.focused_fps_cap, 90);
-    assert_close(
-        load.settings.post_processing.auto_exposure.compensation_ev,
-        expected,
-    );
-    assert_close(
-        document_auto_exposure_compensation(&migrated_document(&load)),
-        expected,
-    );
-}
-
-#[test]
 fn versioned_config_does_not_rerun_auto_exposure_migration() {
     let _guard = crate::config::CONFIG_ENV_TEST_LOCK.lock().expect("lock");
     let content = format!(
@@ -391,7 +284,7 @@ compensation_ev = -3.0
     let load = run_pipeline_tolerating_toml(&content).expect("versioned config loads");
 
     assert!(load.migrated_toml.is_none());
-    assert_close(
+    assert_eq!(
         load.settings.post_processing.auto_exposure.compensation_ev,
         -3.0,
     );
@@ -408,8 +301,8 @@ fn env_compensation_override_wins_without_persisting_to_migrated_file() {
     let toml = write_toml(
         tmp.path(),
         r#"
-[post_processing.auto_exposure]
-compensation_ev = -3.0
+[display]
+focused_fps = 72
 "#,
     );
 
@@ -421,7 +314,7 @@ compensation_ev = -3.0
 
     let result = load_renderer_settings(ConfigFilePolicy::Load);
 
-    assert_close(
+    assert_eq!(
         result
             .settings
             .post_processing
@@ -439,9 +332,9 @@ compensation_ev = -3.0
         document_config_version(&document),
         RendererSettings::CURRENT_CONFIG_VERSION
     );
-    assert_close(
-        document_auto_exposure_compensation(&document),
-        migrated_compensation_ev(LEGACY_AUTO_EXPOSURE_DEFAULT_TARGET_EV),
+    assert!(
+        !text.contains("compensation_ev"),
+        "env override should not be persisted as file content:\n{text}"
     );
 }
 

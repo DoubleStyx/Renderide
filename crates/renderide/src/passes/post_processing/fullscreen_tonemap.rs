@@ -45,7 +45,7 @@ pub(super) fn record_fullscreen_d2_array_blit(
     pipeline_fn: impl FnOnce(&wgpu::Device, wgpu::TextureFormat, bool) -> Arc<wgpu::RenderPipeline>,
     bind_group_fn: impl FnOnce(&wgpu::Device, &wgpu::Texture, bool) -> wgpu::BindGroup,
 ) -> Result<(), RenderPassError> {
-    let frame = &*ctx.pass_frame;
+    let frame = &ctx.frame;
     let graph_resources = ctx.graph_resources;
     let Some(tex) = graph_resources.transient_texture(input) else {
         return Err(missing_pass_resource(

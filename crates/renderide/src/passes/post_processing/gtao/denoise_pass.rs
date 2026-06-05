@@ -82,7 +82,7 @@ impl RasterPass for GtaoDenoisePass {
     fn should_record(&self, ctx: &RasterPassCtx<'_, '_>) -> Result<bool, RenderPassError> {
         Ok(super::gtao_view_recording_needed(
             ctx.blackboard,
-            &ctx.pass_frame.view,
+            ctx.frame.view,
         ))
     }
 
@@ -92,7 +92,7 @@ impl RasterPass for GtaoDenoisePass {
         rpass: &mut wgpu::RenderPass<'_>,
     ) -> Result<(), RenderPassError> {
         profiling::scope!("post_processing::gtao_denoise");
-        let frame = &*ctx.pass_frame;
+        let frame = &ctx.frame;
         let graph_resources = ctx.graph_resources;
         let Some(ao_in_tex) = graph_resources.transient_texture(self.resources.ao_in) else {
             return Err(missing_pass_resource(

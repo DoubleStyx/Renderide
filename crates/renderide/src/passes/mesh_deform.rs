@@ -675,44 +675,44 @@ impl ComputePass for MeshDeformPass {
 
     fn record(&self, ctx: &mut ComputePassCtx<'_, '_, '_>) -> Result<(), RenderPassError> {
         profiling::scope!("mesh_deform::pass_record");
-        let frame = &mut *ctx.pass_frame;
+        let frame = &mut ctx.frame;
 
         if frame
-            .shared
+            .systems
             .frame_resources
             .mesh_deform_dispatched_this_submission()
         {
             return Ok(());
         }
 
-        let mesh_pool = frame.shared.asset_resources.mesh_pool();
+        let mesh_pool = frame.systems.asset_resources.mesh_pool();
         let visible_filter = frame
-            .shared
+            .systems
             .frame_resources
             .visible_mesh_deform_keys_snapshot();
 
         let mut scratch = self.scratch.lock();
         collect_deform_work_into_scratch(
             &mut scratch,
-            frame.shared.scene,
+            frame.systems.scene,
             mesh_pool,
             visible_filter.as_ref(),
         );
 
-        let Some(pre) = frame.shared.mesh_preprocess else {
+        let Some(pre) = frame.systems.mesh_preprocess else {
             scratch.work.clear();
             return Ok(());
         };
-        let Some(deform_scratch) = frame.shared.mesh_deform_scratch.as_mut() else {
+        let Some(deform_scratch) = frame.systems.mesh_deform_scratch.as_mut() else {
             scratch.work.clear();
             return Ok(());
         };
-        let Some(skin_cache) = frame.shared.mesh_deform_skin_cache.as_mut() else {
+        let Some(skin_cache) = frame.systems.mesh_deform_skin_cache.as_mut() else {
             scratch.work.clear();
             return Ok(());
         };
 
-        let render_context = frame.shared.scene.active_main_render_context();
+        let render_context = frame.systems.scene.active_main_render_context();
         let head_output_transform = frame.view.host_camera.head_output_transform;
         let mut ready_work_indices = std::mem::take(&mut scratch.ready_work_indices);
         let mut dispatch_batch = std::mem::take(&mut scratch.dispatch_batch);
@@ -735,10 +735,10 @@ impl ComputePass for MeshDeformPass {
             &mut ready_work_indices,
             &mut dispatch_batch,
             MeshDeformDispatchCtx {
-                scene: frame.shared.scene,
+                scene: frame.systems.scene,
                 render_context,
                 head_output_transform,
-                skin_weight_mode: frame.shared.skin_weight_mode,
+                skin_weight_mode: frame.systems.skin_weight_mode,
             },
         );
         scratch.ready_work_indices = ready_work_indices;
@@ -758,7 +758,7 @@ impl ComputePass for MeshDeformPass {
         skin_cache.sweep_stale(fc.saturating_sub(2));
 
         frame
-            .shared
+            .systems
             .frame_resources
             .set_mesh_deform_dispatched_this_submission();
         Ok(())
