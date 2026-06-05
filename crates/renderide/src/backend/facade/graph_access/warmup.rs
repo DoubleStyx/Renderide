@@ -271,6 +271,24 @@ fn material_warmup_targets_for_layout(
     targets
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ViewPipelineWarmupContext {
+    layout: PreRecordViewResourceLayout,
+    supports_multiview: bool,
+    active_offscreen: bool,
+    view_winding: ViewWinding,
+}
+
+impl ViewPipelineWarmupContext {
+    fn targets(self) -> PipelineWarmupTargets {
+        material_warmup_targets_for_layout(
+            self.layout,
+            self.supports_multiview,
+            self.active_offscreen,
+        )
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct MaterialPipelineWarmupKey {
     kind: RasterPipelineKind,
@@ -360,12 +378,15 @@ impl<'a> BackendGraphAccess<'a> {
                 .as_ref()
                 .is_some_and(|limits| limits.supports_multiview);
             let active_offscreen = matches!(view.target, FrameViewTarget::OffscreenRt(_));
-            self.pre_warm_material_draw_plan(
-                view.initial_blackboard.get::<WorldMeshDrawPlanSlot>(),
+            let context = ViewPipelineWarmupContext {
                 layout,
                 supports_multiview,
                 active_offscreen,
-                view.view_winding,
+                view_winding: view.view_winding,
+            };
+            self.pre_warm_material_draw_plan(
+                view.initial_blackboard.get::<WorldMeshDrawPlanSlot>(),
+                context,
                 &mut warmed_pipelines,
                 &mut warmed_embedded_stems,
             );
@@ -381,10 +402,10 @@ impl<'a> BackendGraphAccess<'a> {
                 self.pre_warm_material_draw_plan(
                     view.initial_blackboard
                         .get::<WorldMeshOverlayDrawPlanSlot>(),
-                    overlay_layout,
-                    supports_multiview,
-                    active_offscreen,
-                    view.view_winding,
+                    ViewPipelineWarmupContext {
+                        layout: overlay_layout,
+                        ..context
+                    },
                     &mut warmed_pipelines,
                     &mut warmed_embedded_stems,
                 );
@@ -400,10 +421,7 @@ impl<'a> BackendGraphAccess<'a> {
     fn pre_warm_material_draw_plan(
         &self,
         draw_plan: Option<&crate::world_mesh::WorldMeshDrawPlan>,
-        layout: PreRecordViewResourceLayout,
-        supports_multiview: bool,
-        active_offscreen: bool,
-        view_winding: ViewWinding,
+        context: ViewPipelineWarmupContext,
         warmed_pipelines: &mut HashSet<MaterialPipelineWarmupKey>,
         warmed_embedded_stems: &mut HashSet<Arc<str>>,
     ) {
@@ -412,13 +430,12 @@ impl<'a> BackendGraphAccess<'a> {
         else {
             return;
         };
-        let targets =
-            material_warmup_targets_for_layout(layout, supports_multiview, active_offscreen);
+        let targets = context.targets();
         let mut item_index = 0usize;
         while let Some(item) = collection.items.get(item_index) {
             for target in targets.iter() {
                 let mut front_face = item.batch_key.front_face;
-                if front_face_flip_for_warmup_target(view_winding, target) {
+                if front_face_flip_for_warmup_target(context.view_winding, target) {
                     front_face = front_face.flipped();
                 }
                 let variant = MaterialPipelineVariantSpec {
