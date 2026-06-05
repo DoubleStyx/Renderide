@@ -6,6 +6,8 @@ use crate::shared::{RendererCommand, SetWindowIcon, SetWindowIconResult};
 
 use super::RendererRuntime;
 
+const MAX_WINDOW_ICON_BYTES: i32 = 4 * 1024 * 1024;
+
 impl RendererRuntime {
     /// Queues a host `SetWindowIcon` request for app-thread application.
     pub(crate) fn queue_window_icon_request(&mut self, request: SetWindowIcon) {
@@ -27,6 +29,15 @@ impl RendererRuntime {
 
     /// Loads a host window-icon BGRA32 payload from shared memory.
     pub(crate) fn load_window_icon_bgra(&mut self, request: &SetWindowIcon) -> Option<Vec<u8>> {
+        if request.icon_data.length > MAX_WINDOW_ICON_BYTES {
+            logger::warn!(
+                "runtime: rejected host window icon request_id={} length={} cap={}",
+                request.request_id,
+                request.icon_data.length,
+                MAX_WINDOW_ICON_BYTES
+            );
+            return None;
+        }
         let Some(shm) = self.frontend.shared_memory_mut() else {
             logger::warn!(
                 "runtime: cannot load host window icon request_id={} because shared memory is unavailable",

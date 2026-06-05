@@ -159,6 +159,14 @@ pub fn try_cubemap_upload_with_device(
     _consume_texture_upload_budget: bool,
 ) {
     if !enqueue_cubemap_upload_task(queue, data.clone()) {
+        if queue.pending.pending_cubemap_uploads.len() >= MAX_PENDING_CUBEMAP_UPLOADS {
+            logger::warn!(
+                "cubemap {}: dropping replayed deferred upload because pending queue reached cap {}",
+                data.asset_id,
+                MAX_PENDING_CUBEMAP_UPLOADS
+            );
+            return;
+        }
         queue.pending.pending_cubemap_uploads.push_back(data);
     }
 }
@@ -200,9 +208,23 @@ fn replay_pending_cubemap_uploads_for_asset(queue: &mut AssetTransferQueue, asse
             if enqueue_cubemap_upload_task(queue, data.clone()) {
                 replayed += 1;
             } else {
+                if queue.pending.pending_cubemap_uploads.len() >= MAX_PENDING_CUBEMAP_UPLOADS {
+                    logger::warn!(
+                        "cubemap {asset_id}: dropping replayed deferred upload because pending queue reached cap {}",
+                        MAX_PENDING_CUBEMAP_UPLOADS
+                    );
+                    continue;
+                }
                 queue.pending.pending_cubemap_uploads.push_back(data);
             }
         } else {
+            if queue.pending.pending_cubemap_uploads.len() >= MAX_PENDING_CUBEMAP_UPLOADS {
+                logger::warn!(
+                    "cubemap {asset_id}: dropping unrelated deferred upload because pending queue reached cap {}",
+                    MAX_PENDING_CUBEMAP_UPLOADS
+                );
+                continue;
+            }
             queue.pending.pending_cubemap_uploads.push_back(data);
         }
     }

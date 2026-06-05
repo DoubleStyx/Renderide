@@ -11,10 +11,15 @@ use crate::shared::{
 use super::super::AssetTransferQueue;
 use super::super::catalogs::GaussianSplatUploadKind;
 use super::super::integrator::{AssetTask, AssetTaskLane};
+use super::super::limits::admit_descriptor_payload_len;
 use super::super::particle_task::{
     PointRenderBufferTask, TrailRenderBufferTask, send_point_render_buffer_consumed,
     send_trail_render_buffer_consumed,
 };
+
+const MAX_POINT_RENDER_BUFFER_POINTS: i32 = 1_000_000;
+const MAX_TRAIL_RENDER_BUFFER_TRAILS: i32 = 262_144;
+const MAX_TRAIL_RENDER_BUFFER_POINTS: i32 = 1_000_000;
 
 fn send_desktop_texture_update(
     ipc: Option<&mut DualQueueIpc>,
@@ -101,6 +106,19 @@ pub fn on_point_render_buffer_upload(
     let asset_id = upload.asset_id;
     let count = upload.count;
     let mut ipc = ipc;
+    if !(0..=MAX_POINT_RENDER_BUFFER_POINTS).contains(&count) {
+        logger::warn!(
+            "point render buffer {asset_id}: rejected count={} cap={}",
+            count,
+            MAX_POINT_RENDER_BUFFER_POINTS
+        );
+        send_point_render_buffer_consumed(&mut ipc, asset_id);
+        return;
+    }
+    if !admit_descriptor_payload_len("point render buffer", asset_id, upload.buffer.length) {
+        send_point_render_buffer_consumed(&mut ipc, asset_id);
+        return;
+    }
     let coalesced = queue.retain_latest_point_render_buffer_upload(upload);
     if coalesced.replaced_pending_upload {
         send_point_render_buffer_consumed(&mut ipc, asset_id);
@@ -151,6 +169,25 @@ pub fn on_trail_render_buffer_upload(
     let trails_count = upload.trails_count;
     let trail_point_count = upload.trail_point_count;
     let mut ipc = ipc;
+    if trails_count < 0
+        || trail_point_count < 0
+        || trails_count > MAX_TRAIL_RENDER_BUFFER_TRAILS
+        || trail_point_count > MAX_TRAIL_RENDER_BUFFER_POINTS
+    {
+        logger::warn!(
+            "trail render buffer {asset_id}: rejected trails={} points={} caps={}/{}",
+            trails_count,
+            trail_point_count,
+            MAX_TRAIL_RENDER_BUFFER_TRAILS,
+            MAX_TRAIL_RENDER_BUFFER_POINTS
+        );
+        send_trail_render_buffer_consumed(&mut ipc, asset_id);
+        return;
+    }
+    if !admit_descriptor_payload_len("trail render buffer", asset_id, upload.buffer.length) {
+        send_trail_render_buffer_consumed(&mut ipc, asset_id);
+        return;
+    }
     let coalesced = queue.retain_latest_trail_render_buffer_upload(upload);
     if coalesced.replaced_pending_upload {
         send_trail_render_buffer_consumed(&mut ipc, asset_id);

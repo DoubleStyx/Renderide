@@ -10,6 +10,7 @@ mod cubemap_task;
 mod cubemap_upload_plan;
 mod gpu_runtime;
 mod integrator;
+mod limits;
 mod mesh_task;
 mod mesh_upload_batch;
 mod particle_task;

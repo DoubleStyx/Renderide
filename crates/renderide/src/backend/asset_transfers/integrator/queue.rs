@@ -4,6 +4,7 @@ use std::collections::VecDeque;
 
 use super::retired::RetiredAssetResource;
 use super::step::AssetTask;
+use crate::backend::asset_transfers::limits::MAX_ASSET_INTEGRATION_QUEUE_TASKS;
 
 /// Combined queued integration task count that emits queue-pressure diagnostics.
 pub const ASSET_INTEGRATION_QUEUE_WARN_THRESHOLD: usize = 2048;
@@ -162,19 +163,27 @@ impl AssetIntegrator {
     }
 
     /// Enqueues an upload task at the back of its priority lane.
-    pub fn enqueue(&mut self, task: AssetTask, high_priority: bool) {
+    pub fn enqueue(&mut self, task: AssetTask, high_priority: bool) -> bool {
+        if !self.admit_task() {
+            return false;
+        }
         if high_priority {
             self.push_back_lane(task, AssetTaskLane::HighPriority);
         } else {
             self.push_back_lane(task, AssetTaskLane::NormalPriority);
         }
         self.record_queue_depth();
+        true
     }
 
     /// Enqueues a task in a specific scheduler lane.
-    pub fn enqueue_lane(&mut self, task: AssetTask, lane: AssetTaskLane) {
+    pub fn enqueue_lane(&mut self, task: AssetTask, lane: AssetTaskLane) -> bool {
+        if !self.admit_task() {
+            return false;
+        }
         self.push_back_lane(task, lane);
         self.record_queue_depth();
+        true
     }
 
     /// Enqueues a removed GPU resource for delayed drop.
@@ -220,6 +229,19 @@ impl AssetIntegrator {
                 ASSET_INTEGRATION_QUEUE_WARN_THRESHOLD
             );
         }
+    }
+
+    fn admit_task(&self) -> bool {
+        let queued = self.total_queued();
+        if queued >= MAX_ASSET_INTEGRATION_QUEUE_TASKS {
+            logger::warn!(
+                "asset integrator backlog full: queued={} cap={}",
+                queued,
+                MAX_ASSET_INTEGRATION_QUEUE_TASKS
+            );
+            return false;
+        }
+        true
     }
 }
 

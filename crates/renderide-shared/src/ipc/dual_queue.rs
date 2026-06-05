@@ -512,8 +512,18 @@ impl DualQueueIpc {
         if written == 0 {
             return false;
         }
-        self.reliable_background_outbox
-            .enqueue(self.send_buffer[..written].to_vec());
+        if !self
+            .reliable_background_outbox
+            .enqueue(self.send_buffer[..written].to_vec())
+        {
+            logger::warn!(
+                "IPC reliable background outbox full: pending_messages={} pending_bytes={}",
+                self.reliable_background_outbox.len(),
+                self.reliable_background_outbox.pending_bytes()
+            );
+            self.had_background_outbound_drop_this_tick = true;
+            return false;
+        }
         let pending_count = self.reliable_background_outbox.len();
         let pending_bytes = self.reliable_background_outbox.pending_bytes();
         if pending_count == 64 || (pending_count > 64 && pending_count.is_multiple_of(64)) {

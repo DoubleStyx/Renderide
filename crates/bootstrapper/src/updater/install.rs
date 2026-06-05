@@ -548,7 +548,11 @@ mod tests {
             "tag": UPDATE_TAG,
             "commit": UPDATE_COMMIT,
             "platform": PLATFORM,
-            "required_files": ["renderide", "renderide-renderer", "xr"]
+            "required_files": ["renderide", "renderide-renderer", "xr"],
+            "sha256": {
+                "renderide": "ec9a6e9fe278eb1a471fbab6f40367d8548078b651d9c71581c57c2a6ca379e0",
+                "renderide-renderer": "6bd52b204f5b4cffb267597f37d0fa62bae229341394dfec0e5d42439d8b722c"
+            }
         })
         .to_string()
     }
@@ -583,6 +587,7 @@ mod tests {
         let asset_name = asset_name_for(PLATFORM, UPDATE_TAG);
         let archive_path = tmp.path().join(&asset_name);
         let manifest = manifest();
+        let signature = bundle::signed_manifest_for_test(&manifest);
         write_test_zip(
             &archive_path,
             &[
@@ -590,6 +595,11 @@ mod tests {
                 TestZipEntry::File {
                     name: "renderide-release.json",
                     contents: manifest.as_bytes(),
+                    unix_mode: Some(ZIP_REGULAR_FILE_MODE),
+                },
+                TestZipEntry::File {
+                    name: "renderide-release.json.sig",
+                    contents: signature.as_bytes(),
                     unix_mode: Some(ZIP_REGULAR_FILE_MODE),
                 },
                 TestZipEntry::File {
@@ -625,6 +635,7 @@ mod tests {
         let archive_path = tmp.path().join(&asset_name);
         let root_name = asset_stem(&asset_name).expect("asset stem");
         let manifest = manifest();
+        let signature = bundle::signed_manifest_for_test(&manifest);
         write_test_zip(
             &archive_path,
             &[
@@ -632,6 +643,11 @@ mod tests {
                 TestZipEntry::File {
                     name: &format!("{root_name}/renderide-release.json"),
                     contents: manifest.as_bytes(),
+                    unix_mode: Some(ZIP_REGULAR_FILE_MODE),
+                },
+                TestZipEntry::File {
+                    name: &format!("{root_name}/renderide-release.json.sig"),
+                    contents: signature.as_bytes(),
                     unix_mode: Some(ZIP_REGULAR_FILE_MODE),
                 },
                 TestZipEntry::File {

@@ -163,6 +163,14 @@ pub fn try_texture3d_upload_with_device(
     _consume_texture_upload_budget: bool,
 ) {
     if !enqueue_texture3d_upload_task(queue, data.clone()) {
+        if queue.pending.pending_texture3d_uploads.len() >= MAX_PENDING_TEXTURE3D_UPLOADS {
+            logger::warn!(
+                "texture3d {}: dropping replayed deferred upload because pending queue reached cap {}",
+                data.asset_id,
+                MAX_PENDING_TEXTURE3D_UPLOADS
+            );
+            return;
+        }
         queue.pending.pending_texture3d_uploads.push_back(data);
     }
 }
@@ -204,9 +212,23 @@ fn replay_pending_texture3d_uploads_for_asset(queue: &mut AssetTransferQueue, as
             if enqueue_texture3d_upload_task(queue, data.clone()) {
                 replayed += 1;
             } else {
+                if queue.pending.pending_texture3d_uploads.len() >= MAX_PENDING_TEXTURE3D_UPLOADS {
+                    logger::warn!(
+                        "texture3d {asset_id}: dropping replayed deferred upload because pending queue reached cap {}",
+                        MAX_PENDING_TEXTURE3D_UPLOADS
+                    );
+                    continue;
+                }
                 queue.pending.pending_texture3d_uploads.push_back(data);
             }
         } else {
+            if queue.pending.pending_texture3d_uploads.len() >= MAX_PENDING_TEXTURE3D_UPLOADS {
+                logger::warn!(
+                    "texture3d {asset_id}: dropping unrelated deferred upload because pending queue reached cap {}",
+                    MAX_PENDING_TEXTURE3D_UPLOADS
+                );
+                continue;
+            }
             queue.pending.pending_texture3d_uploads.push_back(data);
         }
     }

@@ -1,5 +1,6 @@
 use super::super::AssetTransferQueue;
 use super::super::integrator::RetiredAssetResource;
+use super::super::limits::{MAX_ACTIVE_VIDEO_PLAYERS, MAX_PENDING_VIDEO_TEXTURE_LOADS};
 #[cfg(feature = "video-textures")]
 use crate::assets::video::VideoTextureFrameSink;
 use crate::assets::video::player::VideoPlayer;
@@ -42,17 +43,53 @@ pub fn attach_flush_pending_video_textures(queue: &mut AssetTransferQueue) {
 pub fn on_video_texture_load(queue: &mut AssetTransferQueue, v: VideoTextureLoad) {
     let id = v.asset_id;
     let Some(device) = queue.gpu.gpu_device.clone() else {
+        if !queue.pending.pending_video_texture_loads.contains_key(&id)
+            && queue.pending.pending_video_texture_loads.len() >= MAX_PENDING_VIDEO_TEXTURE_LOADS
+        {
+            logger::warn!(
+                "video texture {id}: dropping pending load because queue reached cap {}",
+                MAX_PENDING_VIDEO_TEXTURE_LOADS
+            );
+            return;
+        }
         queue.pending.pending_video_texture_loads.insert(id, v);
         return;
     };
     let Some(gpu_queue) = queue.gpu.gpu_queue.clone() else {
+        if !queue.pending.pending_video_texture_loads.contains_key(&id)
+            && queue.pending.pending_video_texture_loads.len() >= MAX_PENDING_VIDEO_TEXTURE_LOADS
+        {
+            logger::warn!(
+                "video texture {id}: dropping pending load because queue reached cap {}",
+                MAX_PENDING_VIDEO_TEXTURE_LOADS
+            );
+            return;
+        }
         queue.pending.pending_video_texture_loads.insert(id, v);
         return;
     };
     let Some(gpu_queue_access_gate) = queue.gpu.gpu_queue_access_gate.clone() else {
+        if !queue.pending.pending_video_texture_loads.contains_key(&id)
+            && queue.pending.pending_video_texture_loads.len() >= MAX_PENDING_VIDEO_TEXTURE_LOADS
+        {
+            logger::warn!(
+                "video texture {id}: dropping pending load because queue reached cap {}",
+                MAX_PENDING_VIDEO_TEXTURE_LOADS
+            );
+            return;
+        }
         queue.pending.pending_video_texture_loads.insert(id, v);
         return;
     };
+    if !queue.video.video_players.contains_key(&id)
+        && queue.video.video_players.len() >= MAX_ACTIVE_VIDEO_PLAYERS
+    {
+        logger::warn!(
+            "video texture {id}: rejected load because active player cap {} was reached",
+            MAX_ACTIVE_VIDEO_PLAYERS
+        );
+        return;
+    }
 
     let props = queue.catalogs.video_texture_properties_or_default(id);
     if queue.ensure_video_texture_with_props(&props).is_none() {

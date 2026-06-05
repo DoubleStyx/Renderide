@@ -31,6 +31,8 @@ mod queue_resources;
 mod ring;
 mod semaphore;
 mod subscriber;
+#[cfg(windows)]
+mod windows_security;
 
 pub use error::OpenError;
 pub use options::{

@@ -9,6 +9,7 @@ use crate::packing::memory_packable::MemoryPackable;
 
 #[cfg(windows)]
 use super::naming::compose_memory_view_name;
+use super::naming::is_valid_shared_memory_prefix;
 #[cfg(unix)]
 use super::naming::unix_backing_file_path;
 #[cfg(unix)]
@@ -42,6 +43,16 @@ impl SharedMemoryAccessor {
 
     /// Builds an accessor with the session prefix from [`RendererInitData::shared_memory_prefix`](crate::shared::RendererInitData::shared_memory_prefix).
     pub fn new(prefix: String) -> Self {
+        if !prefix.is_empty() && !is_valid_shared_memory_prefix(&prefix) {
+            logger::warn!(
+                "shared_memory: rejecting unsafe shared-memory prefix len={}",
+                prefix.len()
+            );
+            return Self {
+                prefix: String::new(),
+                views: HashMap::new(),
+            };
+        }
         Self {
             prefix,
             views: HashMap::new(),
@@ -55,6 +66,9 @@ impl SharedMemoryAccessor {
 
     /// Diagnostic path (Unix) or mapping name (Windows) for `buffer_id`.
     pub fn shm_path_for_buffer(&self, buffer_id: i32) -> String {
+        if self.prefix.is_empty() {
+            return String::from("<shared-memory-unavailable>");
+        }
         #[cfg(unix)]
         {
             unix_backing_file_path(&self.prefix, buffer_id)
@@ -79,6 +93,9 @@ impl SharedMemoryAccessor {
         f: impl FnOnce(&[u8]) -> Option<R>,
     ) -> Option<R> {
         profiling::scope!("shared_memory::with_read_bytes");
+        if self.prefix.is_empty() {
+            return None;
+        }
         if descriptor.length <= 0 {
             log_shared_memory_read_failure(&describe_descriptor_failure(
                 descriptor,

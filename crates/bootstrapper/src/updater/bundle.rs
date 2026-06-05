@@ -4,7 +4,17 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Component, Path};
 
-use super::{MANIFEST_FILE, RELEASE_CHANNEL, ReleaseBuildMetadata, UpdateCandidate, UpdateError};
+use base64::Engine;
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use sha2::{Digest, Sha256};
+
+use super::{
+    MANIFEST_FILE, MANIFEST_SIGNATURE_FILE, RELEASE_CHANNEL, ReleaseBuildMetadata, UpdateCandidate,
+    UpdateError,
+};
+
+#[cfg(not(test))]
+const RELEASE_PUBLIC_KEY_ENV: &str = "RENDERIDE_RELEASE_PUBLIC_KEY_HEX";
 
 /// Validates every zip entry path before extraction.
 pub(super) fn validate_zip_paths(archive_path: &Path) -> Result<(), UpdateError> {
@@ -66,15 +76,89 @@ pub(super) fn validate_bundle_root(
     candidate: &UpdateCandidate,
 ) -> Result<(), UpdateError> {
     let manifest_path = bundle_root.join(MANIFEST_FILE);
-    let manifest = fs::read_to_string(&manifest_path).map_err(|source| UpdateError::Io {
+    let manifest_bytes = fs::read(&manifest_path).map_err(|source| UpdateError::Io {
         context: format!("read release manifest {}", manifest_path.display()),
         source,
     })?;
+    verify_release_manifest_signature(bundle_root, &manifest_bytes)?;
+    let manifest = String::from_utf8(manifest_bytes)
+        .map_err(|e| UpdateError::InvalidManifest(e.to_string()))?;
     validate_manifest(&manifest, metadata, candidate)?;
     for entry in required_bundle_entries(&metadata.platform) {
         validate_required_bundle_entry(bundle_root, entry)?;
     }
+    validate_required_file_digests(bundle_root, &manifest, &metadata.platform)?;
     Ok(())
+}
+
+fn verify_release_manifest_signature(
+    bundle_root: &Path,
+    manifest: &[u8],
+) -> Result<(), UpdateError> {
+    let signature_path = bundle_root.join(MANIFEST_SIGNATURE_FILE);
+    let signature_text = fs::read_to_string(&signature_path).map_err(|source| UpdateError::Io {
+        context: format!(
+            "read release manifest signature {}",
+            signature_path.display()
+        ),
+        source,
+    })?;
+    verify_manifest_signature_bytes(manifest, signature_text.trim().as_bytes())
+}
+
+fn verify_manifest_signature_bytes(
+    manifest: &[u8],
+    signature_b64: &[u8],
+) -> Result<(), UpdateError> {
+    let signature_bytes = base64::engine::general_purpose::STANDARD
+        .decode(signature_b64)
+        .map_err(|e| UpdateError::InvalidSignature(e.to_string()))?;
+    let signature = Signature::from_slice(&signature_bytes)
+        .map_err(|e| UpdateError::InvalidSignature(e.to_string()))?;
+    let public_key = release_manifest_public_key()?;
+    public_key
+        .verify(manifest, &signature)
+        .map_err(|e| UpdateError::InvalidSignature(e.to_string()))
+}
+
+fn release_manifest_public_key() -> Result<VerifyingKey, UpdateError> {
+    #[cfg(test)]
+    {
+        VerifyingKey::from_bytes(&test_release_public_key_bytes())
+            .map_err(|e| UpdateError::InvalidSignature(e.to_string()))
+    }
+    #[cfg(not(test))]
+    {
+        let Some(hex) = option_env!("RENDERIDE_RELEASE_PUBLIC_KEY_HEX") else {
+            return Err(UpdateError::InvalidSignature(format!(
+                "{RELEASE_PUBLIC_KEY_ENV} was not set at compile time"
+            )));
+        };
+        let bytes = decode_hex_32(hex)?;
+        VerifyingKey::from_bytes(&bytes).map_err(|e| UpdateError::InvalidSignature(e.to_string()))
+    }
+}
+
+#[cfg(test)]
+const TEST_RELEASE_PRIVATE_KEY_BYTES: [u8; 32] = [7; 32];
+
+#[cfg(test)]
+fn test_release_public_key_bytes() -> [u8; 32] {
+    [
+        0xea, 0x4a, 0x6c, 0x63, 0xe2, 0x9c, 0x52, 0x0a, 0xbe, 0xf5, 0x50, 0x7b, 0x13, 0x2e, 0xc5,
+        0xf9, 0x95, 0x47, 0x76, 0xae, 0xbe, 0xbe, 0x7b, 0x92, 0x42, 0x1e, 0xea, 0x69, 0x14, 0x46,
+        0xd2, 0x2c,
+    ]
+}
+
+#[cfg(test)]
+pub(super) fn signed_manifest_for_test(manifest: &str) -> String {
+    use base64::Engine;
+    use ed25519_dalek::{Signer, SigningKey};
+
+    let signing_key = SigningKey::from_bytes(&TEST_RELEASE_PRIVATE_KEY_BYTES);
+    let signature = signing_key.sign(manifest.as_bytes());
+    base64::engine::general_purpose::STANDARD.encode(signature.to_bytes())
 }
 
 /// Verifies that an extracted required entry exists with the expected type.
@@ -160,6 +244,64 @@ fn require_manifest_files(value: &serde_json::Value, platform: &str) -> Result<(
         }
     }
     Ok(())
+}
+
+fn validate_required_file_digests(
+    bundle_root: &Path,
+    text: &str,
+    platform: &str,
+) -> Result<(), UpdateError> {
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| UpdateError::InvalidManifest(e.to_string()))?;
+    let digests = value
+        .get("sha256")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| UpdateError::InvalidManifest("`sha256` missing".to_owned()))?;
+    for entry in required_bundle_entries(platform)
+        .into_iter()
+        .filter(|entry| matches!(entry.kind, EntryKind::File))
+    {
+        let expected = digests
+            .get(entry.relative)
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                UpdateError::InvalidManifest(format!("`sha256` missing `{}`", entry.relative))
+            })?;
+        let expected = decode_hex_32(expected)?;
+        let actual = sha256_file(&bundle_root.join(entry.relative))?;
+        if actual != expected {
+            return Err(UpdateError::InvalidBundle(format!(
+                "{} failed sha256 verification",
+                entry.relative
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn sha256_file(path: &Path) -> Result<[u8; 32], UpdateError> {
+    let bytes = fs::read(path).map_err(|source| UpdateError::Io {
+        context: format!("read bundle file {}", path.display()),
+        source,
+    })?;
+    Ok(Sha256::digest(bytes).into())
+}
+
+fn decode_hex_32(hex: &str) -> Result<[u8; 32], UpdateError> {
+    let hex = hex.trim();
+    if hex.len() != 64 {
+        return Err(UpdateError::InvalidManifest(format!(
+            "expected 64 hex chars, got {}",
+            hex.len()
+        )));
+    }
+    let mut out = [0u8; 32];
+    for (index, byte) in out.iter_mut().enumerate() {
+        let offset = index * 2;
+        *byte = u8::from_str_radix(&hex[offset..offset + 2], 16)
+            .map_err(|e| UpdateError::InvalidManifest(e.to_string()))?;
+    }
+    Ok(out)
 }
 
 /// Returns the required install entries for a release platform token.
@@ -274,11 +416,26 @@ mod tests {
             "tag": candidate.tag,
             "commit": candidate.commit,
             "platform": metadata.platform,
-            "required_files": ["renderide", "renderide-renderer", "xr"]
+            "required_files": ["renderide", "renderide-renderer", "xr"],
+            "sha256": {
+                "renderide": "ec9a6e9fe278eb1a471fbab6f40367d8548078b651d9c71581c57c2a6ca379e0",
+                "renderide-renderer": "6bd52b204f5b4cffb267597f37d0fa62bae229341394dfec0e5d42439d8b722c"
+            }
         })
         .to_string();
 
         assert!(validate_manifest(&text, &metadata, &candidate).is_ok());
+    }
+
+    #[test]
+    fn manifest_signature_validation_rejects_tampering() {
+        let manifest = "{}";
+        let signature = signed_manifest_for_test(manifest);
+
+        assert!(verify_manifest_signature_bytes(manifest.as_bytes(), signature.as_bytes()).is_ok());
+        assert!(
+            verify_manifest_signature_bytes(b"{\"tampered\":true}", signature.as_bytes()).is_err()
+        );
     }
 
     #[test]
