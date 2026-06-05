@@ -10,6 +10,7 @@
 //#mat_default _Exp float 1.0
 //#mat_default _Thickness float 1.0
 
+#import renderide::billboard::vertex as bv
 #import renderide::core::texture_sampling as ts
 #import renderide::core::uv as uvu
 #import renderide::draw::per_draw as pd
@@ -37,14 +38,6 @@ const WIREFRAME_KW_SCREENSPACE: u32 = 1u << 1u;
 @group(1) @binding(1) var _MainTex: texture_2d<f32>;
 @group(1) @binding(2) var _MainTex_sampler: sampler;
 
-struct VertexOutput {
-    @builtin(position) clip_pos: vec4<f32>,
-    @location(0) world_pos: vec3<f32>,
-    @location(1) world_n: vec3<f32>,
-    @location(2) uv: vec2<f32>,
-    @location(3) @interpolate(flat) view_layer: u32,
-}
-
 fn wireframe_kw(mask: u32) -> bool {
     return vb::enabled(mat._RenderideVariantBits, mask);
 }
@@ -60,32 +53,29 @@ fn kw_SCREENSPACE() -> bool {
 @vertex
 fn vs_main(
     @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) vertex_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
-) -> VertexOutput {
-    let draw = pd::get_draw(instance_index);
-    let world_p = mv::world_position(draw, pos);
+    @location(4) t: vec4<f32>,
+    @location(5) uv1: vec2<f32>,
+) -> wf::VertexOutput {
 #ifdef MULTIVIEW
     let layer = view_idx;
 #else
     let layer = 0u;
 #endif
-    let vp = mv::select_view_proj(draw, layer);
-
-    var out: VertexOutput;
-    out.clip_pos = vp * world_p;
-    out.world_pos = world_p.xyz;
-    out.world_n = mv::world_normal(draw, n);
-    out.uv = uvu::apply_st(uv0, mat._MainTex_ST);
-    out.view_layer = (instance_index << 1u) | (layer & 1u);
-    return out;
+    if (bv::kw_RENDER_BUFFER(mat._RenderideVariantBits)) {
+        return wf::billboard_vs_main(instance_index, layer, vertex_index, pos, n, uv0, t, uv1, mat._MainTex_ST);
+    } else {
+        return wf::vs_main(instance_index, layer, pos, n, uv0, mat._MainTex_ST);
+    }
 }
 
-fn wireframe_color(in: VertexOutput, edge: f32) -> vec4<f32> {
+fn wireframe_color(in: wf::VertexOutput, edge: f32) -> vec4<f32> {
     var fill_color = mat._FillColor;
     var line_color = mat._LineColor;
     if (kw_FRESNEL()) {
@@ -100,7 +90,7 @@ fn wireframe_color(in: VertexOutput, edge: f32) -> vec4<f32> {
 //#pass type=forward blend=alpha zwrite=material(off) ztest=main cull=back color_mask=rgba offset=material(0,0)
 @fragment
 fn fs_main(
-    in: VertexOutput,
+    in: wf::VertexOutput,
     @builtin(barycentric) barycentric: vec3<f32>,
 ) -> @location(0) vec4<f32> {
     let edge = wf::unity_edge_lerp(barycentric, in.world_pos, mat._Thickness, kw_SCREENSPACE());

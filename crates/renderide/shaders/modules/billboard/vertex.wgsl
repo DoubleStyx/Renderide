@@ -367,3 +367,29 @@ fn world_object_vertex_main(
     out.view_layer = mv::packed_view_layer(instance_index, view_idx);
     return out;
 }
+
+fn uv_color_vertex_main(
+    instance_index: u32,
+    view_idx: u32,
+    pos: vec4<f32>,
+    uv: vec2<f32>,
+    color: vec4<f32>,
+    n: vec4<f32>,
+    t: vec4<f32>,
+    vertex_index: u32,
+    uv1: vec2<f32>,
+) -> mv::UvColorVertexOutput {
+    let draw = pd::get_draw(instance_index);
+    let vp = mv::select_view_proj(draw, view_idx);
+
+    let render_billboard_vertex = render_buffer_billboard_vertex(
+        draw, view_idx, pos, vertex_index, n, t, uv1,
+    );
+    let world_p = render_billboard_vertex.world_pos;
+
+    var out: mv::UvColorVertexOutput;
+    out.clip_pos = vp * world_p;
+    out.uv = uv;
+    out.color = color * dt::particle_color(draw);
+    return out;
+}

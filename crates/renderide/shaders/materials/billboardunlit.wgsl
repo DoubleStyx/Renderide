@@ -178,12 +178,7 @@ fn vs_main(
     let layer = 0u;
 #endif
 
-#ifdef MULTIVIEW
-    let vp = mv::select_view_proj(d, view_idx);
-#else
-    let vp = mv::select_view_proj(d, 0u);
-#endif
-
+    let vp = mv::select_view_proj(d, layer);
     var out: VertexOutput;
     var world_p: vec3<f32>;
     if (bv::kw_RENDER_BUFFER(mat._RenderideVariantBits)) {

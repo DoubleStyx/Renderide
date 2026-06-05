@@ -12,6 +12,7 @@
 //#mat_default _ClipMax float 1.0
 //#mat_default _Multiply float 1.0
 
+#import renderide::billboard::vertex as bv
 #import renderide::post::filter_vertex as fv
 #import renderide::post::filter_common as fc
 #import renderide::frame::scene_depth_sample as sds
@@ -48,6 +49,7 @@ fn kw_RECTCLIP() -> bool {
 @vertex
 fn vs_main(
     @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) vertex_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
@@ -55,12 +57,18 @@ fn vs_main(
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
     @location(4) t: vec4<f32>,
+    @location(5) uv1: vec2<f32>,
 ) -> fv::RectVertexOutput {
 #ifdef MULTIVIEW
-    return fv::rect_vertex_main(instance_index, view_idx, pos, n, t, uv0);
+    let view_layer = view_idx;
 #else
-    return fv::rect_vertex_main(instance_index, 0u, pos, n, t, uv0);
+    let view_layer = 0u;
 #endif
+    if (bv::kw_RENDER_BUFFER(mat._RenderideVariantBits)) {
+        return fv::billboard_rect_vertex_main(instance_index, view_layer, pos, n, t, uv0, vertex_index, uv1);
+    } else {
+        return fv::rect_vertex_main(instance_index, view_layer, pos, n, t, uv0);
+    }
 }
 
 //#pass type=forward name=forward_filter blend=material_filter zwrite=material(off) ztest=material(main) cull=material(back) color_mask=material(rgba) stencil=material offset=material(0,0)
