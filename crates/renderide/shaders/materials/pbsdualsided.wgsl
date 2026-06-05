@@ -102,7 +102,7 @@ fn sample_surface(
     if (pbs_kw(PBSDUALSIDED_KW_VCOLOR_ALBEDO)) {
         albedo = albedo * vertex_color;
     }
-    if (pbs_kw(PBSDUALSIDED_KW_ALPHACLIP) && albedo.a <= mat._AlphaClip) {
+    if (pbs_kw(PBSDUALSIDED_KW_ALPHACLIP) && albedo.a < mat._AlphaClip) {
         discard;
     }
 

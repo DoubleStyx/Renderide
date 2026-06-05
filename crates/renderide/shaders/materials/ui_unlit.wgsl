@@ -142,7 +142,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    if (ui_unlit_kw(UIUNLIT_KW_ALPHACLIP) && !mask_clip && color.a <= mat._Cutoff) {
+    if (ui_unlit_kw(UIUNLIT_KW_ALPHACLIP) && !mask_clip && color.a < mat._Cutoff) {
         discard;
     }
 

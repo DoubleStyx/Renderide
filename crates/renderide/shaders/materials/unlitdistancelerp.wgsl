@@ -131,7 +131,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let c = mix(near, far, l);
 
     if (kw_ALPHATEST()) {
-        if (c.a <= mat._Cutoff) {
+        if (c.a < mat._Cutoff) {
             discard;
         }
     }

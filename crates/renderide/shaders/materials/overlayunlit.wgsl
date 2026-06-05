@@ -135,7 +135,7 @@ fn apply_vertex_color(color_in: vec4<f32>, vertex_color: vec4<f32>) -> vec4<f32>
 }
 
 fn finalize_layer_color(color_in: vec4<f32>, vertex_color: vec4<f32>) -> vec4<f32> {
-    if (kw_ALPHATEST() && color_in.a <= mat._Cutoff) {
+    if (kw_ALPHATEST() && color_in.a < mat._Cutoff) {
         discard;
     }
 
