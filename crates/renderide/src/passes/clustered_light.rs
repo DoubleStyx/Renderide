@@ -149,35 +149,35 @@ impl ClusteredLightPass {
     /// Selects and prepares the clustered-light work for the current graph view.
     fn prepare_record_action(
         &self,
-        ctx: &mut ComputePassCtx<'_, '_, '_>,
+        ctx: &ComputePassCtx<'_, '_, '_>,
     ) -> ClusteredLightRecordAction {
-        let frame = &mut *ctx.pass_frame;
+        let frame = &ctx.frame;
 
         let (vw, vh) = frame.view.viewport_px;
-        if vw == 0 || vh == 0 || !frame.shared.frame_resources.has_frame_gpu() {
+        if vw == 0 || vh == 0 || !frame.systems.frame_resources.has_frame_gpu() {
             return ClusteredLightRecordAction::Skip;
         }
 
         let hc = frame.view.host_camera;
-        let scene = frame.shared.scene;
+        let scene = frame.systems.scene;
         let stereo = frame.view.multiview_stereo && hc.active_stereo().is_some();
         let view_id = frame.view.view_id;
         let view_idx = ctx
             .blackboard
             .get::<PerViewFramePlanSlot>()
             .map_or(usize::MAX, |plan| plan.view_idx);
-        let light_count = frame.shared.frame_resources.frame_light_count_u32(view_id);
+        let light_count = frame.systems.frame_resources.frame_light_count_u32(view_id);
 
-        let Some(refs) = frame.shared.frame_resources.shared_cluster_buffer_refs() else {
+        let Some(refs) = frame.systems.frame_resources.shared_cluster_buffer_refs() else {
             logger::trace!("ClusteredLight: shared cluster buffers missing for {view_id:?}");
             return ClusteredLightRecordAction::Skip;
         };
         let cluster_light_counts = refs.cluster_light_counts;
         let cluster_light_indices = refs.cluster_light_indices;
-        let cluster_ver = frame.shared.frame_resources.shared_cluster_version();
+        let cluster_ver = frame.systems.frame_resources.shared_cluster_version();
 
         let Some(params_buffer) = frame
-            .shared
+            .systems
             .frame_resources
             .per_view_cluster_params_buffer(view_id)
         else {
@@ -208,7 +208,7 @@ impl ClusteredLightPass {
         if self.should_use_cpu_froxel(view_id, view_idx, light_count)
             && try_record_cpu_froxel(CpuFroxelRecordData {
                 uploads: ctx.uploads,
-                lights: frame.shared.frame_resources.frame_lights(view_id),
+                lights: frame.systems.frame_resources.frame_lights(view_id),
                 cluster_light_counts: &cluster_light_counts,
                 cluster_light_indices: &cluster_light_indices,
                 eye_params: &eye_params,
@@ -228,7 +228,7 @@ impl ClusteredLightPass {
             });
         }
 
-        let Some(lights_buffer) = frame.shared.frame_resources.lights_buffer(view_id) else {
+        let Some(lights_buffer) = frame.systems.frame_resources.lights_buffer(view_id) else {
             return ClusteredLightRecordAction::Skip;
         };
 

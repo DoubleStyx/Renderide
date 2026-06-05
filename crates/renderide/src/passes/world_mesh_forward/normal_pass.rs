@@ -346,7 +346,7 @@ impl RasterPass for WorldMeshForwardNormalPass {
 
     fn should_record(&self, ctx: &RasterPassCtx<'_, '_>) -> Result<bool, RenderPassError> {
         Ok(
-            crate::passes::post_processing::view_post_processing_enabled(&ctx.pass_frame.view)
+            crate::passes::post_processing::view_post_processing_enabled(ctx.frame.view)
                 && ctx
                     .blackboard
                     .get::<WorldMeshForwardPlanSlot>()
@@ -360,7 +360,7 @@ impl RasterPass for WorldMeshForwardNormalPass {
         rpass: &mut wgpu::RenderPass<'_>,
     ) -> Result<(), RenderPassError> {
         profiling::scope!("world_mesh_forward::normal_record");
-        let frame = &mut *ctx.pass_frame;
+        let frame = &ctx.frame;
 
         let Some(prepared) = ctx.blackboard.take::<WorldMeshForwardPlanSlot>() else {
             return Ok(());

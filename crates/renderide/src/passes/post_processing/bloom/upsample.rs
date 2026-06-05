@@ -90,9 +90,7 @@ impl RasterPass for BloomUpsamplePass {
     }
 
     fn should_record(&self, ctx: &RasterPassCtx<'_, '_>) -> Result<bool, RenderPassError> {
-        Ok(super::super::view_post_processing_enabled(
-            &ctx.pass_frame.view,
-        ))
+        Ok(super::super::view_post_processing_enabled(ctx.frame.view))
     }
 
     fn record(
@@ -101,7 +99,7 @@ impl RasterPass for BloomUpsamplePass {
         rpass: &mut wgpu::RenderPass<'_>,
     ) -> Result<(), RenderPassError> {
         profiling::scope!("post_processing::bloom::upsample");
-        let frame = &*ctx.pass_frame;
+        let frame = &ctx.frame;
         let graph_resources = ctx.graph_resources;
         let Some(input_tex) = graph_resources.transient_texture(self.input) else {
             return Err(missing_pass_resource(

@@ -119,7 +119,7 @@ impl RasterPass for SceneColorComposePass {
         rpass: &mut wgpu::RenderPass<'_>,
     ) -> Result<(), RenderPassError> {
         profiling::scope!("scene_color_compose::record");
-        let frame = &*ctx.pass_frame;
+        let frame = &ctx.frame;
         let graph_resources = ctx.graph_resources;
         let input = scene_color_compose_input(self.resources, frame.view.post_processing);
         let Some(tex) = graph_resources.transient_texture(input) else {

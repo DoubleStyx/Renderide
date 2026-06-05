@@ -108,7 +108,8 @@ impl BackendWorldMeshFramePlanner {
                         gpu_limits,
                     },
                     view: WorldMeshForwardPrepareView {
-                        frame,
+                        systems: &frame.shared,
+                        view: &frame.view,
                         frame_plan: &frame_plan,
                     },
                     caches: WorldMeshForwardPrepareCaches {

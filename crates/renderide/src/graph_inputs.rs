@@ -25,8 +25,6 @@ use crate::render_graph::execution_backend::{GraphAssetResources, GraphFrameReso
 use crate::scene::SceneCoordinator;
 use crate::shared::{CameraClearMode, RenderingContext};
 
-use crate::gpu::OutputDepthMode;
-
 /// Offscreen target currently being written by a view.
 ///
 /// The renderer uses this for two separate decisions: any offscreen target needs the offscreen
@@ -341,14 +339,6 @@ pub struct GraphPassFrame<'a> {
     pub shared: FrameSystemsShared<'a>,
     /// Per-view surface and camera state.
     pub view: GraphPassFrameView<'a>,
-}
-
-impl GraphPassFrame<'_> {
-    /// Output depth layout for Hi-Z and occlusion ([`OutputDepthMode::from_multiview_stereo`]).
-    #[inline]
-    pub fn output_depth_mode(&self) -> OutputDepthMode {
-        OutputDepthMode::from_multiview_stereo(self.view.multiview_stereo)
-    }
 }
 
 #[cfg(test)]

@@ -321,13 +321,13 @@ impl RasterPass for WorldMeshForwardDepthPrepass {
         rpass: &mut wgpu::RenderPass<'_>,
     ) -> Result<(), RenderPassError> {
         profiling::scope!("world_mesh_forward::depth_prepass_record");
-        let frame = &mut *ctx.pass_frame;
+        let frame = &ctx.frame;
 
         let Some(prepared) = ctx.blackboard.get::<WorldMeshForwardPlanSlot>() else {
             return Ok(());
         };
         let Some(per_draw_bg) = frame
-            .shared
+            .systems
             .frame_resources
             .per_view_per_draw_bind_group(frame.view.view_id)
         else {
@@ -336,7 +336,7 @@ impl RasterPass for WorldMeshForwardDepthPrepass {
         let Some(gpu_limits) = frame.view.gpu_limits.clone() else {
             return Ok(());
         };
-        let mut encode_refs = super::WorldMeshForwardEncodeRefs::from_frame(frame);
+        let mut encode_refs = super::WorldMeshForwardEncodeRefs::from_pass_frame(frame);
         draw_depth_prepass_subset(DepthPrepassDrawBatch {
             rpass,
             groups: prepared

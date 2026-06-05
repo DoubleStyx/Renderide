@@ -6,6 +6,9 @@ use crate::gpu::{GpuLimits, GpuMappedBufferHealth, GpuQueueAccessGate, GpuQueueA
 
 use super::super::AssetTransferQueue;
 use super::super::MeshUploadStagingBatch;
+use super::super::mesh_task::MeshTaskGpu;
+use super::super::particle_task::ParticleTaskGpu;
+use super::super::texture_task_common::TextureTaskGpu;
 
 /// Owned GPU handles collected from [`crate::backend::AssetTransferQueue::gpu`]; outlives the
 /// borrowed [`AssetUploadGpuContext`] passed into step functions.
@@ -90,4 +93,38 @@ pub(super) struct AssetUploadGpuContext<'a> {
     pub(super) mesh_upload_batch: &'a Arc<MeshUploadStagingBatch>,
     /// Whether mesh uploads should use wgpu validation scopes.
     pub(super) mesh_validation_scopes_enabled: bool,
+}
+
+impl AssetUploadGpuContext<'_> {
+    /// Returns the subset of GPU handles needed by mesh upload tasks.
+    pub(super) fn mesh_task_gpu(&self) -> MeshTaskGpu<'_> {
+        MeshTaskGpu {
+            device: self.device,
+            gpu_limits: self.gpu_limits,
+            mapped_buffer_health: self.mapped_buffer_health,
+            mesh_upload_batch: self.mesh_upload_batch,
+            mesh_validation_scopes_enabled: self.mesh_validation_scopes_enabled,
+        }
+    }
+
+    /// Returns the subset of GPU handles needed by texture-family upload tasks.
+    pub(super) fn texture_task_gpu(&self) -> TextureTaskGpu<'_> {
+        TextureTaskGpu {
+            device: self.device,
+            queue: self.queue.as_ref(),
+            queue_access_gate: self.gpu_queue_access_gate,
+            queue_access_mode: self.queue_access_mode,
+        }
+    }
+
+    /// Returns the subset of GPU handles needed by particle mesh build tasks.
+    pub(super) fn particle_task_gpu(&self) -> ParticleTaskGpu<'_> {
+        ParticleTaskGpu {
+            device: self.device,
+            gpu_limits: self.gpu_limits,
+            mapped_buffer_health: self.mapped_buffer_health,
+            mesh_upload_batch: self.mesh_upload_batch,
+            mesh_validation_scopes_enabled: self.mesh_validation_scopes_enabled,
+        }
+    }
 }
