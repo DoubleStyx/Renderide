@@ -422,12 +422,8 @@ fn billboard_render_buffer_preserves_fragment_alpha_and_fog_behavior() -> io::Re
     let src = material_source("billboardunlit.wgsl")?;
 
     assert!(
-        src.contains("if (kw_ALPHATEST() && !mask_clip && col.a < mat._Cutoff)"),
+        src.contains("if (kw_ALPHATEST() && col.a < mat._Cutoff)"),
         "Billboard/Unlit alpha test must match Unity clip(col.a - _Cutoff) equality semantics"
-    );
-    assert!(
-        src.contains("if (mask_clip && mask_lum <= mat._Cutoff)"),
-        "Unlit mask compatibility for render-buffer billboards must preserve Unlit's mask discard threshold"
     );
     assert!(
         src.contains("#import renderide::frame::fog as rfog")

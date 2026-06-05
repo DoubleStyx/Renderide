@@ -12,7 +12,6 @@
 //#render_queue AlphaTest+200
 //#texture_default _Tex white
 //#texture_default _OffsetTex black
-//#texture_default _MaskTex white
 //#mat_default _Color vec4 1.0 1.0 1.0 1.0
 //#mat_default _OffsetMagnitude vec4 0.1 0.1 0.0 0.0
 //#mat_default _PointSize vec4 0.1 0.1 0.0 0.0
@@ -20,7 +19,6 @@
 //#mat_default _Cutoff float 0.5
 //#mat_default _Tex_LodBias float 0.0
 //#mat_default _OffsetTex_LodBias float 0.0
-//#mat_default _MaskTex_LodBias float 0.0
 
 #import renderide::billboard::vertex as bv
 #import renderide::core::texture_sampling as ts
@@ -41,7 +39,6 @@ struct BillboardUnlitMaterial {
     _Color: vec4<f32>,
     _Tex_ST: vec4<f32>,
     _RightEye_ST: vec4<f32>,
-    _MaskTex_ST: vec4<f32>,
     _OffsetTex_ST: vec4<f32>,
     _OffsetMagnitude: vec4<f32>,
     _PointSize: vec4<f32>,
@@ -50,7 +47,6 @@ struct BillboardUnlitMaterial {
     _RenderideVariantBits: u32,
     _Tex_LodBias: f32,
     _OffsetTex_LodBias: f32,
-    _MaskTex_LodBias: f32,
     _pad0: f32,
 }
 
@@ -70,16 +66,12 @@ const BILLBOARDUNLIT_KW_VERTEX_HDRSRGBALPHA_COLOR: u32 = 1u << 12u;
 const BILLBOARDUNLIT_KW_VERTEX_LINEAR_COLOR: u32 = 1u << 13u;
 const BILLBOARDUNLIT_KW_VERTEX_SRGB_COLOR: u32 = 1u << 14u;
 const BILLBOARDUNLIT_KW_VERTEXCOLORS: u32 = 1u << 15u;
-const BILLBOARDUNLIT_KW_UNLIT_MASK_TEXTURE_CLIP: u32 = 1u << 16u;
-const BILLBOARDUNLIT_KW_UNLIT_MASK_TEXTURE_MUL: u32 = 1u << 17u;
 
 @group(1) @binding(0) var<uniform> mat: BillboardUnlitMaterial;
 @group(1) @binding(1) var _Tex: texture_2d<f32>;
 @group(1) @binding(2) var _Tex_sampler: sampler;
 @group(1) @binding(3) var _OffsetTex: texture_2d<f32>;
 @group(1) @binding(4) var _OffsetTex_sampler: sampler;
-@group(1) @binding(5) var _MaskTex: texture_2d<f32>;
-@group(1) @binding(6) var _MaskTex_sampler: sampler;
 
 fn bb_kw(mask: u32) -> bool {
     return vb::enabled(mat._RenderideVariantBits, mask);
@@ -91,14 +83,6 @@ fn kw_ALPHATEST() -> bool {
 
 fn kw_COLOR() -> bool {
     return bb_kw(BILLBOARDUNLIT_KW_COLOR);
-}
-
-fn kw_UNLIT_MASK_TEXTURE_CLIP() -> bool {
-    return bb_kw(BILLBOARDUNLIT_KW_UNLIT_MASK_TEXTURE_CLIP);
-}
-
-fn kw_UNLIT_MASK_TEXTURE_MUL() -> bool {
-    return bb_kw(BILLBOARDUNLIT_KW_UNLIT_MASK_TEXTURE_MUL);
 }
 
 fn kw_MUL_ALPHA_INTENSITY() -> bool {
@@ -286,22 +270,7 @@ fn fs_main(
         col = vec4<f32>(1.0);
     }
 
-    let mask_clip = kw_UNLIT_MASK_TEXTURE_CLIP();
-    let mask_mul = kw_UNLIT_MASK_TEXTURE_MUL();
-    if (mask_mul || mask_clip) {
-        let uv_mask = uvu::apply_st(in.uv, mat._MaskTex_ST);
-        let mask_sample = ts::sample_tex_2d(_MaskTex, _MaskTex_sampler, uv_mask, mat._MaskTex_LodBias);
-        let mask_lum = ma::mask_luminance(mask_sample);
-
-        if (mask_mul) {
-            col.a = col.a * mask_lum;
-        }
-        if (mask_clip && mask_lum <= mat._Cutoff) {
-            discard;
-        }
-    }
-
-    if (kw_ALPHATEST() && !mask_clip && col.a < mat._Cutoff) {
+    if (kw_ALPHATEST() && col.a < mat._Cutoff) {
         discard;
     }
 
