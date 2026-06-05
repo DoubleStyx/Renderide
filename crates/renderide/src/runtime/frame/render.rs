@@ -123,7 +123,8 @@ impl RendererRuntime {
         self.render_frame(gpu, FrameViewFamilyRequest::desktop())
     }
 
-    /// Desktop entry point for ticks where presentation is supplied by `BlitToDisplay`.
+    /// Desktop entry point for ticks where presentation is supplied by an explicit host
+    /// `BlitToDisplay`.
     ///
     /// Secondary render-texture cameras still update through the normal desktop schedule, but
     /// the main desktop world view is omitted because the display blit pass fills it later.

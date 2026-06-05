@@ -10,6 +10,7 @@ use super::resource::{resource_data_ty, storage_array_element_stride};
 use super::types::ReflectError;
 
 /// Snapshot textures declared by the reflected material through frame-global bindings.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct FrameSnapshotUsage {
     /// Whether the material declares `scene_depth` or `scene_depth_array`.
@@ -19,6 +20,7 @@ pub(super) struct FrameSnapshotUsage {
 }
 
 /// Reflects scene snapshot texture use from the material's live group-0 bindings.
+#[cfg(test)]
 pub(super) fn reflect_frame_snapshot_usage(module: &Module) -> FrameSnapshotUsage {
     let mut usage = FrameSnapshotUsage::default();
     for (_, gv) in module.global_variables.iter() {

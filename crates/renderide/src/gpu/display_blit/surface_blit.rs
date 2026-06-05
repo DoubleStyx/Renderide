@@ -13,6 +13,7 @@ use glam::Vec4;
 
 use crate::gpu::GpuContext;
 use crate::gpu::blit_kit::layout::sampled_2d_filtered_uv_layout;
+use crate::gpu::blit_kit::pipeline::UvUniformBuffer;
 use crate::gpu::blit_kit::sampler::linear_clamp_sampler;
 use crate::present::{
     PresentClearError, SurfaceAcquireTrace, SurfaceFrameOutcome, SurfaceSubmitTrace,
@@ -39,6 +40,8 @@ pub struct DisplayBlitSource<'a> {
     /// `BlitToDisplayState.flipVertically` flag (bit 1 of `_flags`).
     pub flip_vertically: bool,
     /// `BlitToDisplayState.background_color`; clears the swapchain (and letterbox bars).
+    ///
+    /// Ignored when this source is used as a load/blend overlay.
     pub background_color: Vec4,
 }
 
@@ -81,6 +84,31 @@ impl DisplayBlitResources {
         F: FnOnce(&mut wgpu::CommandEncoder, &wgpu::TextureView, &mut GpuContext) -> Result<(), E>,
         E: std::fmt::Display,
     {
+        self.present_blit_to_surface_traced_with_overlay(
+            gpu,
+            source,
+            None,
+            acquire_trace,
+            submit_trace,
+            overlay,
+        )
+    }
+
+    /// Acquires the desktop swapchain, blits `source`, optionally alpha-composites `surface_overlay`,
+    /// and presents under source-specific traces.
+    pub fn present_blit_to_surface_traced_with_overlay<F, E>(
+        &mut self,
+        gpu: &mut GpuContext,
+        source: DisplayBlitSource<'_>,
+        surface_overlay: Option<DisplayBlitSource<'_>>,
+        acquire_trace: SurfaceAcquireTrace,
+        submit_trace: SurfaceSubmitTrace,
+        overlay: F,
+    ) -> Result<(), PresentClearError>
+    where
+        F: FnOnce(&mut wgpu::CommandEncoder, &wgpu::TextureView, &mut GpuContext) -> Result<(), E>,
+        E: std::fmt::Display,
+    {
         profiling::scope!("display_blit::present");
         let frame = match acquire_surface_outcome_traced(gpu, acquire_trace)? {
             SurfaceFrameOutcome::Skip | SurfaceFrameOutcome::Reconfigured => return Ok(()),
@@ -93,10 +121,6 @@ impl DisplayBlitResources {
         let sh = sh.max(1);
         let rect = fit_rect_px(source.width, source.height, sw, sh);
 
-        // 4 floats: vec4<scale_xy, offset_xy>.
-        let uv_params = flip_uv_params(source.flip_horizontally, source.flip_vertically);
-        let uv_bytes = bytemuck::bytes_of(&uv_params);
-
         // Clone the device Arc so `device` doesn't hold a borrow on `gpu`; the GPU profiler below
         // needs `gpu.gpu_profiler_mut()` which is `&mut self`.
         let device_arc = gpu.device().clone();
@@ -107,7 +131,7 @@ impl DisplayBlitResources {
             submit_surface_frame_traced(gpu, Vec::new(), frame, submit_trace);
             return Ok(());
         };
-        self.uniform().write(gpu.queue(), uv_bytes);
+        write_source_uv(gpu, self.uniform(), source);
 
         let surface_view = frame
             .texture
@@ -115,27 +139,22 @@ impl DisplayBlitResources {
         crate::profiling::note_resource_churn!(TextureView, "gpu::display_blit_surface_view");
         let sampler = linear_clamp_sampler(device);
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("display_blit_surface"),
-            layout: sampled_2d_filtered_uv_layout(device),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(source.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: uniform_buf.as_entire_binding(),
-                },
-            ],
-        });
+        let bind_group = create_surface_blit_bind_group(
+            device,
+            "display_blit_surface",
+            source.view,
+            sampler,
+            uniform_buf,
+        );
         crate::profiling::note_resource_churn!(BindGroup, "gpu::display_blit_bind_group");
-
-        let pipeline = self.pipeline_for_format(device, surface_format);
+        let prepared_base = PreparedBaseBlit {
+            bind_group,
+            rect,
+            background_color: source.background_color,
+        };
+        let prepared_overlay = surface_overlay.and_then(|source| {
+            prepare_surface_overlay_source(self, gpu, device, sampler, source, sw, sh)
+        });
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("display_blit_surface"),
@@ -143,25 +162,18 @@ impl DisplayBlitResources {
         let outer_query = gpu
             .gpu_profiler_mut()
             .map(|p| p.begin_query("graph::display_blit.surface", &mut encoder));
-        let blit_query = gpu
-            .gpu_profiler_mut()
-            .map(|p| p.begin_pass_query("graph::display_blit.surface.pass", &mut encoder));
-        let blit_timestamp_writes =
-            crate::profiling::render_pass_timestamp_writes(blit_query.as_ref());
-        encode_display_blit_pass(
+        encode_display_blit_passes(
+            self,
+            gpu,
             &mut encoder,
-            &surface_view,
-            pipeline,
-            &bind_group,
-            rect,
-            source.background_color,
-            blit_timestamp_writes,
+            SurfaceBlitPassCtx {
+                device,
+                surface_format,
+                surface_view: &surface_view,
+            },
+            &prepared_base,
+            prepared_overlay.as_ref(),
         );
-        if let Some(query) = blit_query
-            && let Some(prof) = gpu.gpu_profiler_mut()
-        {
-            prof.end_query(&mut encoder, query);
-        }
 
         if let Err(e) = overlay(&mut encoder, &surface_view, gpu) {
             logger::warn!("debug HUD overlay (display blit): {e}");
@@ -183,6 +195,145 @@ impl DisplayBlitResources {
         submit_surface_frame_traced(gpu, vec![command_buffer], frame, submit_trace);
         Ok(())
     }
+}
+
+struct PreparedBaseBlit {
+    bind_group: wgpu::BindGroup,
+    rect: FittedRectPx,
+    background_color: Vec4,
+}
+
+struct PreparedOverlayBlit {
+    bind_group: wgpu::BindGroup,
+    rect: FittedRectPx,
+}
+
+#[derive(Clone, Copy)]
+struct SurfaceBlitPassCtx<'a> {
+    device: &'a wgpu::Device,
+    surface_format: wgpu::TextureFormat,
+    surface_view: &'a wgpu::TextureView,
+}
+
+fn encode_display_blit_passes(
+    resources: &mut DisplayBlitResources,
+    gpu: &mut GpuContext,
+    encoder: &mut wgpu::CommandEncoder,
+    ctx: SurfaceBlitPassCtx<'_>,
+    base: &PreparedBaseBlit,
+    overlay: Option<&PreparedOverlayBlit>,
+) {
+    let blit_query = gpu
+        .gpu_profiler_mut()
+        .map(|p| p.begin_pass_query("graph::display_blit.surface.pass", encoder));
+    let blit_timestamp_writes = crate::profiling::render_pass_timestamp_writes(blit_query.as_ref());
+    let pipeline = resources.pipeline_for_format(ctx.device, ctx.surface_format);
+    encode_display_blit_pass(
+        encoder,
+        ctx.surface_view,
+        pipeline,
+        &base.bind_group,
+        base.rect,
+        base.background_color,
+        blit_timestamp_writes,
+    );
+    if let Some(query) = blit_query
+        && let Some(prof) = gpu.gpu_profiler_mut()
+    {
+        prof.end_query(encoder, query);
+    }
+    if let Some(prepared) = overlay {
+        encode_display_overlay_blit(resources, gpu, encoder, ctx, prepared);
+    }
+}
+
+fn encode_display_overlay_blit(
+    resources: &mut DisplayBlitResources,
+    gpu: &mut GpuContext,
+    encoder: &mut wgpu::CommandEncoder,
+    ctx: SurfaceBlitPassCtx<'_>,
+    prepared: &PreparedOverlayBlit,
+) {
+    let overlay_query = gpu
+        .gpu_profiler_mut()
+        .map(|p| p.begin_pass_query("graph::display_blit.dashboard_overlay.pass", encoder));
+    let overlay_timestamp_writes =
+        crate::profiling::render_pass_timestamp_writes(overlay_query.as_ref());
+    let pipeline = resources.overlay_pipeline_for_format(ctx.device, ctx.surface_format);
+    encode_display_overlay_blit_pass(
+        encoder,
+        ctx.surface_view,
+        pipeline,
+        &prepared.bind_group,
+        prepared.rect,
+        overlay_timestamp_writes,
+    );
+    if let Some(query) = overlay_query
+        && let Some(prof) = gpu.gpu_profiler_mut()
+    {
+        prof.end_query(encoder, query);
+    }
+}
+
+fn prepare_surface_overlay_source(
+    resources: &mut DisplayBlitResources,
+    gpu: &GpuContext,
+    device: &wgpu::Device,
+    sampler: &wgpu::Sampler,
+    source: DisplayBlitSource<'_>,
+    surface_width: u32,
+    surface_height: u32,
+) -> Option<PreparedOverlayBlit> {
+    resources.ensure_overlay_uniform(device);
+    let Some(uniform_buf) = resources.overlay_uniform().get() else {
+        logger::warn!("display_blit: overlay uniform buffer missing after ensure_overlay_uniform");
+        return None;
+    };
+    write_source_uv(gpu, resources.overlay_uniform(), source);
+    let bind_group = create_surface_blit_bind_group(
+        device,
+        "display_blit_dashboard_overlay",
+        source.view,
+        sampler,
+        uniform_buf,
+    );
+    crate::profiling::note_resource_churn!(BindGroup, "gpu::display_blit_overlay_bind_group");
+    Some(PreparedOverlayBlit {
+        bind_group,
+        rect: fit_rect_px(source.width, source.height, surface_width, surface_height),
+    })
+}
+
+fn write_source_uv(gpu: &GpuContext, uniform: &UvUniformBuffer, source: DisplayBlitSource<'_>) {
+    let uv_params = flip_uv_params(source.flip_horizontally, source.flip_vertically);
+    uniform.write(gpu.queue(), bytemuck::bytes_of(&uv_params));
+}
+
+fn create_surface_blit_bind_group(
+    device: &wgpu::Device,
+    label: &'static str,
+    view: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+    uniform_buf: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some(label),
+        layout: sampled_2d_filtered_uv_layout(device),
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: uniform_buf.as_entire_binding(),
+            },
+        ],
+    })
 }
 
 /// Clears the swapchain to `background_color`, restricts the viewport to the fitted rect, and
@@ -212,6 +363,43 @@ fn encode_display_blit_pass(
             resolve_target: None,
             ops: wgpu::Operations {
                 load: wgpu::LoadOp::Clear(bg),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: None,
+        occlusion_query_set: None,
+        timestamp_writes,
+        multiview_mask: None,
+    });
+    pass.set_pipeline(pipeline);
+    pass.set_bind_group(0, bind_group, &[]);
+    pass.set_viewport(
+        rect.x as f32,
+        rect.y as f32,
+        rect.w.max(1) as f32,
+        rect.h.max(1) as f32,
+        0.0,
+        1.0,
+    );
+    pass.draw(0..3, 0..1);
+}
+
+fn encode_display_overlay_blit_pass(
+    encoder: &mut wgpu::CommandEncoder,
+    surface_view: &wgpu::TextureView,
+    pipeline: &wgpu::RenderPipeline,
+    bind_group: &wgpu::BindGroup,
+    rect: FittedRectPx,
+    timestamp_writes: Option<wgpu::RenderPassTimestampWrites<'_>>,
+) {
+    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("display_blit_dashboard_overlay"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: surface_view,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Load,
                 store: wgpu::StoreOp::Store,
             },
         })],

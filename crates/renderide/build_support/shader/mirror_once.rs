@@ -237,11 +237,33 @@ struct RewriteContext<'a> {
     texture_params: BTreeMap<String, TextureParam>,
 }
 
+/// Build-time transform that injects MirrorOnce emulation into flattened material WGSL.
+pub(super) struct MirrorOnceTransform<'a> {
+    /// Human-readable target label for diagnostics.
+    label: &'a str,
+}
+
+impl<'a> MirrorOnceTransform<'a> {
+    /// Creates a transform for a composed target label.
+    pub(super) const fn new(label: &'a str) -> Self {
+        Self { label }
+    }
+
+    /// Applies the transform to a flattened material WGSL target.
+    pub(super) fn apply(self, wgsl: &str) -> Result<String, BuildError> {
+        rewrite_material_mirror_once_wgsl_inner(wgsl, self.label)
+    }
+}
+
 /// Adds `MirrorOnce` emulation to a flattened material WGSL target.
 pub(super) fn rewrite_material_mirror_once_wgsl(
     wgsl: &str,
     label: &str,
 ) -> Result<String, BuildError> {
+    MirrorOnceTransform::new(label).apply(wgsl)
+}
+
+fn rewrite_material_mirror_once_wgsl_inner(wgsl: &str, label: &str) -> Result<String, BuildError> {
     let Some((uniform_var, uniform_ty)) = group1_material_uniform(wgsl) else {
         return Ok(wgsl.to_string());
     };
@@ -855,6 +877,18 @@ fn fragment_main(uv: vec2<f32>) -> vec4<f32> {{
 
         assert!(rewritten.contains(
             "textureSample(_MainTex, _MainTex_sampler, renderide_mirror_once_2d(uv, material._MainTex_WrapModeBits), vec2<i32>(1, -1))"
+        ));
+    }
+
+    /// Verifies that the explicit transform boundary applies the same rewrite path.
+    #[test]
+    fn transform_boundary_applies_rewrite() {
+        let source = material_shader_source("textureSample(_MainTex, _MainTex_sampler, uv)");
+        let rewritten = MirrorOnceTransform::new("test").apply(&source).unwrap();
+
+        assert!(rewritten.contains("_MainTex_WrapModeBits: u32"));
+        assert!(rewritten.contains(
+            "renderide_mirroronce_sample_2d(_MainTex, _MainTex_sampler, uv, material._MainTex_WrapModeBits)"
         ));
     }
 }

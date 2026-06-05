@@ -227,7 +227,7 @@ pub(super) fn sort_compiled_shader_results(results: &mut [CompiledShader]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shader::model::{CompiledShaderTarget, ShaderSourceClass};
+    use crate::shader::model::{BuildShaderReflection, CompiledShaderTarget, ShaderSourceClass};
 
     /// Sort preserves source discovery order even when workers finish out of order.
     #[test]
@@ -264,6 +264,7 @@ mod tests {
                 target_stem: target_stem.to_string(),
                 wgsl: "wgsl".to_string(),
                 pass_directives: Vec::new(),
+                reflection: BuildShaderReflection::default(),
             }],
         }
     }

@@ -388,6 +388,17 @@ mod tests {
     }
 
     #[test]
+    fn gtao_prefilter_compute_variants_are_embedded() {
+        for stem in [
+            "gtao_prefilter_mip0_default",
+            "gtao_prefilter_mip0_multiview",
+        ] {
+            let wgsl = crate::embedded_shaders::embedded_target_wgsl(stem).expect(stem);
+            assert!(wgsl.contains("fn cs_main"), "{stem}");
+        }
+    }
+
+    #[test]
     fn mono_view_depth_declares_only_layer_zero() {
         let mut builder = GraphBuilder::new();
         let _mips = create_view_depth_textures(&mut builder, false, 1);

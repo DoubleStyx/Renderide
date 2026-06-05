@@ -4,7 +4,7 @@ use bytemuck::Zeroable;
 
 use crate::camera::HostCameraFrame;
 use crate::gpu::frame_globals::FrameGpuUniforms;
-use crate::graph_inputs::{GraphPassFrame, OffscreenWriteTarget, PerViewFramePlan};
+use crate::graph_inputs::{OffscreenWriteTarget, PerViewFramePlan};
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::scene::SceneCoordinator;
 use crate::world_mesh::cluster::{
@@ -13,6 +13,7 @@ use crate::world_mesh::cluster::{
 };
 
 use super::camera::resolve_camera_world_pair;
+use super::prepare::WorldMeshForwardPrepareFrame;
 
 /// Per-view inputs layered on top of scene/camera state when packing frame uniforms.
 struct FrameUniformInputs {
@@ -35,18 +36,18 @@ struct FrameUniformInputs {
 /// Writes per-view `FrameGpuUniforms` via [`GraphUploadSink`].
 pub(super) fn write_per_view_frame_uniforms(
     uploads: GraphUploadSink<'_>,
-    frame: &GraphPassFrame<'_>,
+    frame: &WorldMeshForwardPrepareFrame<'_, '_>,
     frame_plan: &PerViewFramePlan,
     use_multiview: bool,
     hc: &HostCameraFrame,
 ) {
     let uniforms = build_frame_gpu_uniforms(
         hc,
-        frame.shared.scene,
+        frame.systems.scene,
         FrameUniformInputs {
             viewport_px: frame.view.viewport_px,
             light_count: frame
-                .shared
+                .systems
                 .frame_resources
                 .frame_light_count_u32(frame.view.view_id),
             frame_time_seconds: frame.view.frame_time_seconds,
@@ -54,7 +55,7 @@ pub(super) fn write_per_view_frame_uniforms(
             use_multiview,
             offscreen_write_target: frame.view.offscreen_write_target,
             skybox_specular: frame
-                .shared
+                .systems
                 .frame_resources
                 .skybox_specular_uniform_params(),
         },

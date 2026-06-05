@@ -67,9 +67,7 @@ impl RasterPass for BloomCompositePass {
     }
 
     fn should_record(&self, ctx: &RasterPassCtx<'_, '_>) -> Result<bool, RenderPassError> {
-        Ok(super::super::view_post_processing_enabled(
-            &ctx.pass_frame.view,
-        ))
+        Ok(super::super::view_post_processing_enabled(ctx.frame.view))
     }
 
     fn record(
@@ -78,7 +76,7 @@ impl RasterPass for BloomCompositePass {
         rpass: &mut wgpu::RenderPass<'_>,
     ) -> Result<(), RenderPassError> {
         profiling::scope!("post_processing::bloom::composite");
-        let frame = &*ctx.pass_frame;
+        let frame = &ctx.frame;
         let graph_resources = ctx.graph_resources;
         let Some(scene_tex) = graph_resources.transient_texture(self.scene_input) else {
             return Err(missing_pass_resource(self.name(), "missing scene input"));

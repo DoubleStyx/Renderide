@@ -67,7 +67,7 @@ impl ComputePass for HiZBuildPass {
     }
 
     fn should_record(&self, ctx: &ComputePassCtx<'_, '_, '_>) -> Result<bool, RenderPassError> {
-        let frame = &*ctx.pass_frame;
+        let frame = &ctx.frame;
         Ok(!frame.view.host_camera.suppress_occlusion_temporal
             && ctx.depth_view.is_some()
             && frame.view.depth_sample_view.is_some())
@@ -78,7 +78,7 @@ impl ComputePass for HiZBuildPass {
         if ctx.depth_view.is_none() {
             return Ok(());
         }
-        let frame = &mut *ctx.pass_frame;
+        let frame = &ctx.frame;
         let Some(depth_sample_view) = frame.view.depth_sample_view.as_ref() else {
             return Ok(());
         };
@@ -96,7 +96,7 @@ impl ComputePass for HiZBuildPass {
                 resource: "hi_z_current",
             })?;
         let mode = frame.output_depth_mode();
-        frame.shared.occlusion.encode_hi_z_build_pass(
+        frame.systems.occlusion.encode_hi_z_build_pass(
             crate::occlusion::gpu::HiZBuildRecord {
                 device: ctx.device,
                 limits: ctx.gpu_limits,

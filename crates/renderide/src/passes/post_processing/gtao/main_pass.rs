@@ -123,7 +123,7 @@ impl RasterPass for GtaoMainPass {
     fn should_record(&self, ctx: &RasterPassCtx<'_, '_>) -> Result<bool, RenderPassError> {
         Ok(super::gtao_view_recording_needed(
             ctx.blackboard,
-            &ctx.pass_frame.view,
+            ctx.frame.view,
         ))
     }
 
@@ -133,7 +133,7 @@ impl RasterPass for GtaoMainPass {
         rpass: &mut wgpu::RenderPass<'_>,
     ) -> Result<(), RenderPassError> {
         profiling::scope!("post_processing::gtao_main");
-        let frame = &*ctx.pass_frame;
+        let frame = &ctx.frame;
         let graph_resources = ctx.graph_resources;
 
         // Bind the per-view frame-uniforms buffer when the per-view plan is populated. The

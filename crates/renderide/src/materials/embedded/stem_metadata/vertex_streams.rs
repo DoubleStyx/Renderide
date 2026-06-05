@@ -1,16 +1,17 @@
 //! Vertex-stream queries derived from pass vertex-entry reflection on a composed embedded WGSL stem.
 
 #[cfg(test)]
-use crate::materials::ShaderPermutation;
-use crate::materials::{ReflectedRasterLayout, ReflectedVertexInputFormat};
+use crate::materials::{ReflectedRasterLayout, ReflectedVertexInputFormat, ShaderPermutation};
 
 #[cfg(test)]
 use super::EmbeddedStemQuery;
 
 /// Mesh-forward UV channel count exposed to material vertex shaders.
+#[cfg(test)]
 pub const EMBEDDED_UV_STREAM_COUNT: usize = 8;
 
 /// Shader input locations for UV0 through UV7.
+#[cfg(test)]
 pub const EMBEDDED_UV_SHADER_LOCATIONS: [u32; EMBEDDED_UV_STREAM_COUNT] =
     [2, 5, 6, 7, 8, 9, 10, 11];
 
@@ -49,6 +50,7 @@ impl EmbeddedVertexStreamMask {
 }
 
 /// Builds an [`EmbeddedVertexStreamMask`] from a reflected WGSL layout (empty if reflection failed).
+#[cfg(test)]
 pub(super) fn derive_vertex_stream_mask(
     reflected: Option<&ReflectedRasterLayout>,
 ) -> EmbeddedVertexStreamMask {
@@ -73,6 +75,7 @@ pub(super) fn derive_vertex_stream_mask(
     mask
 }
 
+#[cfg(test)]
 fn apply_uv_requirement(
     mask: &mut EmbeddedVertexStreamMask,
     location: u32,
@@ -104,6 +107,7 @@ fn apply_uv_requirement(
     }
 }
 
+#[cfg(test)]
 fn uv_channel_from_location(location: u32) -> Option<usize> {
     EMBEDDED_UV_SHADER_LOCATIONS
         .iter()

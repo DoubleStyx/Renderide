@@ -1,12 +1,16 @@
 //! Per-view command-buffer recording.
 
+mod batch_plan;
+mod frame_params;
+mod offscreen_copy;
+
 use hashbrown::HashMap;
 use std::ops::Range;
 use std::time::Instant;
 
 use crate::camera::HostCameraFrame;
 use crate::diagnostics::PerViewHudOutputsSlot;
-use crate::graph_inputs::{FrameSystemsShared, FrameViewClear};
+use crate::graph_inputs::FrameViewClear;
 use crate::render_graph::blackboard::{Blackboard, GraphCommandStatsSlot};
 use crate::render_graph::context::GraphResolvedResources;
 use crate::render_graph::error::GraphExecuteError;
@@ -20,9 +24,13 @@ use crate::shared::RenderingContext;
 use super::super::super::{CompiledRenderGraph, ResolvedView, ViewPostProcessing};
 use super::super::{
     GraphResolveKey, PerViewEncodeOutput, PerViewRecordShared, PerViewWorkItem,
-    PreparedPerViewFrameInput, PreparedPerViewFrameParams, ResolvedOffscreenColorCopy, elapsed_ms,
+    PreparedPerViewFrameInput, ResolvedOffscreenColorCopy, elapsed_ms,
 };
 use super::{PassExecution, PassGpuInputs, PassRecordTargets, PassViewInputs, PhaseRecordingScope};
+
+use batch_plan::{next_phase_batch_index, serial_batch_run_end};
+use frame_params::build_per_view_frame_params;
+use offscreen_copy::{record_offscreen_color_copy, record_offscreen_color_copy_command};
 
 struct PerViewUnitEncodeOutput {
     command_buffer: wgpu::CommandBuffer,
@@ -73,40 +81,6 @@ impl<'a> PerViewLiveState<'a, '_> {
     }
 }
 
-/// Returns the exclusive batch index and unit index for a contiguous serial run.
-fn serial_batch_run_end(batches: &[RecordingBatch], start_index: usize) -> (usize, usize) {
-    let Some(first) = batches.get(start_index).copied() else {
-        return (start_index, 0);
-    };
-    debug_assert_eq!(first.kind, RecordingBatchKind::Serial);
-    let mut next_batch_index = start_index + 1;
-    let mut end_unit = first.end_unit;
-    while let Some(batch) = batches.get(next_batch_index) {
-        if batch.kind != RecordingBatchKind::Serial
-            || batch.phase != first.phase
-            || batch.start_unit != end_unit
-        {
-            break;
-        }
-        end_unit = batch.end_unit;
-        next_batch_index += 1;
-    }
-    (next_batch_index, end_unit)
-}
-
-/// Returns the next recording batch index for `phase` at or after `start_index`.
-fn next_phase_batch_index(
-    batches: &[RecordingBatch],
-    start_index: usize,
-    phase: PassPhase,
-) -> Option<usize> {
-    batches
-        .iter()
-        .enumerate()
-        .skip(start_index)
-        .find_map(|(index, batch)| (batch.phase == phase).then_some(index))
-}
-
 impl CompiledRenderGraph {
     /// Records the per-view pass phase into one command buffer for `work_item`.
     pub(in crate::render_graph::compiled::exec) fn record_one_view(
@@ -153,7 +127,7 @@ impl CompiledRenderGraph {
         };
 
         let mut frame_params =
-            Self::build_per_view_frame_params(shared, &frame_input, &resolved_view, runtime);
+            build_per_view_frame_params(shared, &frame_input, &resolved_view, runtime);
         let mut view_blackboard =
             self.build_per_view_blackboard(&frame_params, graph_resources, initial_blackboard);
         let state = PerViewLiveState {
@@ -239,7 +213,7 @@ impl CompiledRenderGraph {
                 graph_resources,
             },
         };
-        let mut frame_params = Self::build_per_view_frame_params(
+        let mut frame_params = build_per_view_frame_params(
             shared,
             &frame_input,
             &resolved_view,
@@ -355,11 +329,8 @@ impl CompiledRenderGraph {
                 upload_batch,
             )?;
         }
-        let offscreen_copy_recorded = Self::record_offscreen_color_copy(
-            &mut *targets.encoder,
-            offscreen_color_copy,
-            profiler,
-        );
+        let offscreen_copy_recorded =
+            record_offscreen_color_copy(&mut *targets.encoder, offscreen_color_copy, profiler);
         let recorded_gpu_query = gpu_query.is_some();
         if let Some(query) = gpu_query
             && let Some(prof) = profiler
@@ -447,11 +418,9 @@ impl CompiledRenderGraph {
                 }
             }
         }
-        if let Some(copy_output) = Self::record_offscreen_color_copy_command(
-            scope.shared.device,
-            offscreen_color_copy,
-            profiler,
-        ) {
+        if let Some(copy_output) =
+            record_offscreen_color_copy_command(scope.shared.device, offscreen_color_copy, profiler)
+        {
             let (command_buffer, recorded, copy_encode_ms, copy_finish_ms) = copy_output;
             encode_ms += copy_encode_ms;
             finish_ms += copy_finish_ms;
@@ -545,7 +514,7 @@ impl CompiledRenderGraph {
             .into_par_iter()
             .map(|unit_idx| {
                 let unit = self.schedule.recording_plan.units[unit_idx];
-                let mut frame_params = Self::build_per_view_frame_params(
+                let mut frame_params = build_per_view_frame_params(
                     scope.shared,
                     frame_reuse.frame_input,
                     scope.view.resolved,
@@ -713,163 +682,5 @@ impl CompiledRenderGraph {
             &mut resolved_resources,
         )?;
         Ok(resolved_resources)
-    }
-
-    /// Records the final scratch-to-render-texture copy for a partial offscreen viewport.
-    fn record_offscreen_color_copy(
-        encoder: &mut wgpu::CommandEncoder,
-        copy: Option<&ResolvedOffscreenColorCopy>,
-        profiler: Option<&crate::profiling::GpuProfilerHandle>,
-    ) -> bool {
-        let Some(copy) = copy else {
-            return false;
-        };
-        if copy.extent_px.0 == 0 || copy.extent_px.1 == 0 {
-            return false;
-        }
-        profiling::scope!("graph::per_view::offscreen_color_copy");
-        let copy_query =
-            profiler.map(|p| p.begin_query("graph::per_view::offscreen_color_copy", encoder));
-        encoder.copy_texture_to_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &copy.source_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyTextureInfo {
-                texture: &copy.destination_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d {
-                    x: copy.destination_origin_px.0,
-                    y: copy.destination_origin_px.1,
-                    z: 0,
-                },
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::Extent3d {
-                width: copy.extent_px.0,
-                height: copy.extent_px.1,
-                depth_or_array_layers: 1,
-            },
-        );
-        if let Some(query) = copy_query
-            && let Some(profiler) = profiler
-        {
-            profiler.end_query(encoder, query);
-        }
-        true
-    }
-
-    fn record_offscreen_color_copy_command(
-        device: &wgpu::Device,
-        copy: Option<&ResolvedOffscreenColorCopy>,
-        profiler: Option<&crate::profiling::GpuProfilerHandle>,
-    ) -> Option<(wgpu::CommandBuffer, bool, f64, f64)> {
-        let copy = copy?;
-        if copy.extent_px.0 == 0 || copy.extent_px.1 == 0 {
-            return None;
-        }
-        let encode_start = Instant::now();
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("render-graph-per-view-offscreen-copy"),
-        });
-        let recorded = Self::record_offscreen_color_copy(&mut encoder, Some(copy), profiler);
-        let encode_ms = elapsed_ms(encode_start);
-        let finish_start = Instant::now();
-        let command_buffer = encoder.finish();
-        let finish_ms = elapsed_ms(finish_start);
-        Some((command_buffer, recorded, encode_ms, finish_ms))
-    }
-
-    /// Builds [`crate::graph_inputs::GraphPassFrame`] for one per-view pass batch.
-    fn build_per_view_frame_params<'a>(
-        shared: &'a PerViewRecordShared<'a>,
-        frame_input: &'a PreparedPerViewFrameInput,
-        resolved: &'a ResolvedView<'a>,
-        inputs: PerViewRuntimeInputs<'a>,
-    ) -> crate::graph_inputs::GraphPassFrame<'a> {
-        profiling::scope!("graph::per_view::reuse_frame_params");
-        frame_input.frame_params(
-            FrameSystemsShared {
-                scene: shared.scene,
-                occlusion: shared.occlusion,
-                frame_resources: shared.frame_resources,
-                materials: shared.materials,
-                asset_resources: shared.asset_resources,
-                mesh_preprocess: shared.mesh_preprocess,
-                mesh_deform_scratch: None,
-                mesh_deform_skin_cache: None,
-                skin_cache: shared.skin_cache,
-                skin_weight_mode: shared.skin_weight_mode,
-                debug_hud: shared.debug_hud,
-            },
-            PreparedPerViewFrameParams {
-                resolved,
-                scene_color_format: shared.scene_color_format,
-                host_camera: inputs.host_camera,
-                render_context: inputs.render_context,
-                frame_time_seconds: inputs.frame_time_seconds,
-                clear: inputs.clear,
-                post_processing: inputs.post_processing,
-            },
-        )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Creates a per-view recording batch for unit range assertions.
-    fn batch(
-        start_unit: usize,
-        end_unit: usize,
-        kind: RecordingBatchKind,
-        phase: PassPhase,
-    ) -> RecordingBatch {
-        RecordingBatch {
-            start_unit,
-            end_unit,
-            phase,
-            wave_idx: 0,
-            kind,
-        }
-    }
-
-    /// Contiguous serial batches are coalesced into one encoder run.
-    #[test]
-    fn serial_batch_run_merges_adjacent_serial_batches() {
-        let batches = [
-            batch(0, 1, RecordingBatchKind::Serial, PassPhase::PerView),
-            batch(1, 2, RecordingBatchKind::Serial, PassPhase::PerView),
-            batch(2, 4, RecordingBatchKind::Serial, PassPhase::PerView),
-        ];
-
-        assert_eq!(serial_batch_run_end(&batches, 0), (3, 4));
-    }
-
-    /// Parallel batches stay as hard boundaries so they can still fan out.
-    #[test]
-    fn serial_batch_run_stops_before_parallel_batch() {
-        let batches = [
-            batch(0, 1, RecordingBatchKind::Serial, PassPhase::PerView),
-            batch(1, 3, RecordingBatchKind::Parallel, PassPhase::PerView),
-            batch(3, 4, RecordingBatchKind::Serial, PassPhase::PerView),
-        ];
-
-        assert_eq!(serial_batch_run_end(&batches, 0), (1, 1));
-        assert_eq!(serial_batch_run_end(&batches, 2), (3, 4));
-    }
-
-    /// Serial ranges do not merge across phase boundaries.
-    #[test]
-    fn serial_batch_run_stops_before_other_phase() {
-        let batches = [
-            batch(0, 1, RecordingBatchKind::Serial, PassPhase::PerView),
-            batch(1, 2, RecordingBatchKind::Serial, PassPhase::FrameGlobal),
-        ];
-
-        assert_eq!(serial_batch_run_end(&batches, 0), (1, 1));
     }
 }

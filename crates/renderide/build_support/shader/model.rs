@@ -86,6 +86,25 @@ pub(super) struct ShaderJob {
     pub validation: ComposeValidation,
 }
 
+/// Parsed source text and source-level metadata used by the shader compiler.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct ShaderSourceManifest {
+    /// Source text passed to naga-oil.
+    pub source: String,
+    /// File path label passed to naga-oil and source diagnostics.
+    pub file_path: String,
+    /// Parsed pass metadata embedded alongside material WGSL.
+    pub pass_directives: Vec<BuildPassDirective>,
+    /// Parsed texture fallback metadata embedded alongside material WGSL.
+    pub texture_defaults: Vec<TextureDefaultDirective>,
+    /// Parsed material uniform fallback metadata embedded alongside material WGSL.
+    pub material_defaults: Vec<MaterialDefaultDirective>,
+    /// Required device features embedded alongside each composed target.
+    pub wgpu_features: Vec<WgpuFeatureDirective>,
+    /// Shader default render queue embedded alongside each composed target.
+    pub default_render_queue: i32,
+}
+
 /// Variant of one source under shader-def composition.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ShaderVariant {
@@ -130,6 +149,73 @@ impl ShaderVariant {
     }
 }
 
+/// Reflected shader-visible vertex input format used for build-time metadata.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(super) enum BuildVertexInputFormat {
+    /// `vec2<f32>`.
+    Float32x2,
+    /// `vec3<f32>`.
+    Float32x3,
+    /// `vec4<f32>`.
+    Float32x4,
+    /// Any unsupported or currently unmapped vertex input shape.
+    Unsupported,
+}
+
+/// One reflected vertex input location from the composed material vertex entries.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(super) struct BuildVertexInput {
+    /// Shader input location.
+    pub location: u32,
+    /// Shader-visible attribute format.
+    pub format: BuildVertexInputFormat,
+}
+
+/// Mesh stream mask derived from reflected material vertex entry points.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub(super) struct BuildVertexStreamMask {
+    /// UV0 stream at `@location(2)`.
+    pub uv0: bool,
+    /// Vertex color stream at `@location(3)`.
+    pub color: bool,
+    /// Tangent stream at `@location(4)`.
+    pub tangent: bool,
+    /// UV1 stream at `@location(5)`.
+    pub uv1: bool,
+    /// UV2 stream at `@location(6)`.
+    pub uv2: bool,
+    /// UV3 stream at `@location(7)`.
+    pub uv3: bool,
+    /// Packed UV0-UV3 stream for 3D/4D low UV inputs.
+    pub wide_low_uvs: bool,
+    /// Packed UV4-UV7 stream for high UV inputs.
+    pub wide_high_uvs: bool,
+}
+
+/// Scene-snapshot and auxiliary material requirements reflected at build time.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub(super) struct BuildSnapshotRequirements {
+    /// True when the shader declares a scene-color snapshot binding.
+    pub uses_scene_color: bool,
+    /// True when the shader declares a scene-depth snapshot binding.
+    pub uses_scene_depth: bool,
+    /// True when the material uniform block declares intersection tint.
+    pub requires_intersection_pass: bool,
+}
+
+/// Stable reflected metadata for a compiled target that does not depend on a device.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub(super) struct BuildShaderReflection {
+    /// Mesh streams required by the material vertex entries.
+    pub vertex_stream_mask: BuildVertexStreamMask,
+    /// Scene-snapshot and intersection requirements.
+    pub snapshot_requirements: BuildSnapshotRequirements,
+    /// Whether the target decodes `_RenderideVariantBits`.
+    pub uses_renderide_variant_bits: bool,
+    /// Whether the single forward pass can be mirrored by the generic depth prepass.
+    pub supports_generic_depth_prepass: bool,
+}
+
 /// One flattened WGSL target emitted for a compiled source shader.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct CompiledShaderTarget {
@@ -139,6 +225,8 @@ pub(super) struct CompiledShaderTarget {
     pub wgsl: String,
     /// Pass metadata remapped to the entry point names emitted in [`Self::wgsl`].
     pub pass_directives: Vec<BuildPassDirective>,
+    /// Stable reflected metadata derived from the final WGSL target.
+    pub reflection: BuildShaderReflection,
 }
 
 /// Full build-time output for one source shader prior to serial file emission.

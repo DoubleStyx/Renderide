@@ -50,7 +50,7 @@ fn encode_color_resolve(
             device: ctx.device,
             graph_resources: ctx.graph_resources,
             encoder: ctx.encoder,
-            frame: ctx.pass_frame,
+            frame: &ctx.frame,
             uploads: ctx.uploads,
             resources: resolve_resources,
             profiler: ctx.profiler,
@@ -81,7 +81,7 @@ fn copy_grab_snapshot(
     let copied = encode_world_mesh_forward_color_snapshot(
         ctx.graph_resources,
         ctx.encoder,
-        ctx.pass_frame,
+        &ctx.frame,
         prepared,
         resources,
         ctx.profiler,
@@ -108,7 +108,7 @@ fn copy_named_grab_snapshot(
         );
         return false;
     }
-    if !ctx.pass_frame.shared.frame_resources.has_frame_gpu() {
+    if !ctx.frame.systems.frame_resources.has_frame_gpu() {
         logger::warn!("world mesh named color snapshot copy: frame GPU resources are unavailable");
         return false;
     }
@@ -128,14 +128,14 @@ fn copy_named_grab_snapshot(
         )
     });
     let copied = ctx
-        .pass_frame
-        .shared
+        .frame
+        .systems
         .frame_resources
         .copy_named_scene_color_snapshot_for_view(
-            ctx.pass_frame.view.view_id,
+            ctx.frame.view.view_id,
             ctx.encoder,
             &source_color.texture,
-            ctx.pass_frame.view.viewport_px,
+            ctx.frame.view.viewport_px,
             prepared.pipeline.use_multiview,
         );
     if let (Some(profiler), Some(query)) = (ctx.profiler, copy_query) {

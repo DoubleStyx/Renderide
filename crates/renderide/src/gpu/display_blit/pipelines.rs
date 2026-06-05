@@ -2,7 +2,7 @@
 
 use crate::embedded_shaders::embedded_wgsl;
 use crate::gpu::blit_kit::layout::sampled_2d_filtered_uv_layout;
-use crate::gpu::blit_kit::pipeline::color_blit_pipeline;
+use crate::gpu::blit_kit::pipeline::{color_blit_pipeline, color_blit_pipeline_with_blend};
 
 /// Builds the fragment-output-format-specific pipeline for the display blit pass.
 pub(super) fn surface_pipeline(
@@ -20,5 +20,31 @@ pub(super) fn surface_pipeline(
     });
     let pipeline = color_blit_pipeline(device, &shader, &layout, "display_blit", format);
     crate::profiling::note_resource_churn!(RenderPipeline, "gpu::display_blit_pipeline");
+    pipeline
+}
+
+/// Builds the fragment-output-format-specific pipeline for alpha overlay composition.
+pub(super) fn overlay_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("display_blit_overlay"),
+        source: wgpu::ShaderSource::Wgsl(embedded_wgsl!("display_blit").into()),
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("display_blit_overlay"),
+        bind_group_layouts: &[Some(sampled_2d_filtered_uv_layout(device))],
+        immediate_size: 0,
+    });
+    let pipeline = color_blit_pipeline_with_blend(
+        device,
+        &shader,
+        &layout,
+        "display_blit_overlay",
+        format,
+        wgpu::BlendState::ALPHA_BLENDING,
+    );
+    crate::profiling::note_resource_churn!(RenderPipeline, "gpu::display_blit_overlay_pipeline");
     pipeline
 }

@@ -221,6 +221,16 @@ fn queue_desktop_overlay_draws(
     view_draws: &mut [QueuedViewDraws],
 ) {
     profiling::scope!("render::queue_view_draws::desktop_overlay");
+    if setup
+        .scene
+        .active_desktop_dashboard_overlay_source()
+        .is_some()
+    {
+        logger::trace!(
+            "desktop overlay draw queue suppressed; dashboard render texture will composite at presentation"
+        );
+        return;
+    }
     for (index, prep) in prepared.iter().enumerate() {
         if prep.desktop_overlay_resource_view_id().is_none() {
             continue;

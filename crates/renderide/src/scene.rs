@@ -71,9 +71,9 @@ mod world;
 
 pub use camera::CameraRenderableEntry;
 pub use coordinator::{
-    RenderWorldBoundsDirty, RenderWorldMaterialOverrideDirty, RenderWorldRendererDirty,
-    RenderWorldRendererKind, RenderWorldTransformDirty, SceneApplyReport, SceneCacheFlushReport,
-    SceneCoordinator,
+    DesktopDashboardOverlaySource, RenderWorldBoundsDirty, RenderWorldMaterialOverrideDirty,
+    RenderWorldRendererDirty, RenderWorldRendererKind, RenderWorldTransformDirty, SceneApplyReport,
+    SceneCacheFlushReport, SceneCoordinator,
 };
 pub use ids::RenderSpaceId;
 pub use lights::{ResolvedLight, light_contributes, light_has_negative_contribution};

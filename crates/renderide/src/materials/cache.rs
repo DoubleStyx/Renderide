@@ -81,8 +81,6 @@ pub struct MaterialPipelineCacheKey {
     /// Development hot reload and future dynamic shader compiler paths bump this value so stale
     /// pipelines cannot be reused for a changed WGSL source.
     pub shader_source_generation: u64,
-    /// Stereo multiview / single-view permutation for the pipeline.
-    pub permutation: ShaderPermutation,
     /// Color attachment format (swapchain or offscreen).
     pub surface_format: wgpu::TextureFormat,
     /// Depth/stencil format when depth attachment is used.
@@ -91,19 +89,8 @@ pub struct MaterialPipelineCacheKey {
     pub sample_count: u32,
     /// OpenXR / multiview view mask when compiling multiview pipelines.
     pub multiview_mask: Option<NonZeroU32>,
-    /// Renderer-local shader specialization constants for material keyword branches.
-    pub shader_specialization: MaterialShaderSpecializationKey,
-    /// Material-level blend override for stems without explicit pass directives.
-    pub blend_mode: MaterialBlendMode,
-    /// Material-level stencil and color write state.
-    pub render_state: MaterialRenderState,
-    /// Front-face winding for draw transforms in this pipeline bucket.
-    pub front_face: RasterFrontFace,
-    /// Primitive topology baked into [`wgpu::PrimitiveState::topology`] for this pipeline bucket.
-    ///
-    /// `wgpu::RenderPipeline` immutably bakes its primitive topology, so two draws of the same
-    /// shader/material that differ in topology must build separate pipelines.
-    pub primitive_topology: RasterPrimitiveTopology,
+    /// Material-driven pipeline variant selectors.
+    pub variant: MaterialPipelineVariantSpec,
 }
 
 impl MaterialPipelineVariantSpec {
@@ -507,27 +494,14 @@ impl MaterialPipelineCache {
         variant: MaterialPipelineVariantSpec,
         shader_source_generation: u64,
     ) -> MaterialPipelineCacheKey {
-        let MaterialPipelineVariantSpec {
-            permutation,
-            shader_specialization,
-            blend_mode,
-            render_state,
-            front_face,
-            primitive_topology,
-        } = variant;
         MaterialPipelineCacheKey {
             kind: kind.clone(),
             shader_source_generation,
-            permutation,
             surface_format: desc.surface_format,
             depth_stencil_format: desc.depth_stencil_format,
             sample_count: desc.sample_count,
             multiview_mask: desc.multiview_mask,
-            shader_specialization,
-            blend_mode,
-            render_state,
-            front_face,
-            primitive_topology,
+            variant,
         }
     }
 
@@ -865,7 +839,7 @@ mod tests {
 
         assert_ne!(first, second);
         assert_eq!(
-            second.shader_specialization,
+            second.variant.shader_specialization,
             MaterialShaderSpecializationKey::from_variant_bits(0x44)
         );
     }

@@ -11,16 +11,17 @@ use parking_lot::Mutex;
 use wgpu::util::DeviceExt;
 
 use super::WorldMeshForwardPipelineState;
+use super::prepare::WorldMeshForwardPrepareFrame;
 use super::raster_recording::frame_bind_group_for_view;
 use crate::camera::{CameraProjectionKind, ViewId, world_to_view_pair_for_skybox};
 use crate::embedded_shaders;
 use crate::gpu::frame_bind_group_layout;
-use crate::graph_inputs::GraphPassFrame;
 use crate::materials::host_data::MaterialPropertyLookupIds;
 use crate::materials::{
     EmbeddedMaterialBindShader, EmbeddedTexturePools, MaterialShaderSpecializationKey,
 };
 use crate::render_graph::blackboard::Blackboard;
+use crate::render_graph::context::PassFrameContext;
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::shared::CameraClearMode;
 use crate::skybox::{
@@ -74,7 +75,7 @@ struct SkyboxViewUniforms {
 
 impl SkyboxViewUniforms {
     /// Builds view bases and clear color for the current view.
-    fn from_frame(frame: &GraphPassFrame<'_>) -> Self {
+    fn from_frame(frame: &WorldMeshForwardPrepareFrame<'_, '_>) -> Self {
         let (left, right) = skybox_world_to_view_pair(frame);
         let ndc_y_sign = if frame.view.offscreen_write_target.is_offscreen() {
             -1.0
@@ -137,7 +138,7 @@ impl SkyboxRenderer {
         &self,
         device: &wgpu::Device,
         uploads: GraphUploadSink<'_>,
-        frame: &GraphPassFrame<'_>,
+        frame: &WorldMeshForwardPrepareFrame<'_, '_>,
         pipeline_state: &WorldMeshForwardPipelineState,
     ) -> Option<PreparedSkybox> {
         match frame.view.clear.mode {
@@ -156,11 +157,11 @@ impl SkyboxRenderer {
         &self,
         device: &wgpu::Device,
         uploads: GraphUploadSink<'_>,
-        frame: &GraphPassFrame<'_>,
+        frame: &WorldMeshForwardPrepareFrame<'_, '_>,
         pipeline_state: &WorldMeshForwardPipelineState,
     ) -> Option<PreparedSkybox> {
         let material_asset_id = frame
-            .shared
+            .systems
             .scene
             .active_main_space()?
             .skybox_material_asset_id();
@@ -168,7 +169,7 @@ impl SkyboxRenderer {
             return None;
         }
 
-        let materials = frame.shared.materials;
+        let materials = frame.systems.materials;
         let store = materials.material_property_store();
         let shader_asset_id = store.shader_asset_for_material(material_asset_id)?;
         let registry = materials.material_registry()?;
@@ -176,11 +177,11 @@ impl SkyboxRenderer {
         let family = SkyboxFamily::from_stem(stem.as_str())?;
         let embedded_bind = materials.embedded_material_bind()?;
         let pools = EmbeddedTexturePools {
-            texture: frame.shared.asset_resources.texture_pool(),
-            texture3d: frame.shared.asset_resources.texture3d_pool(),
-            cubemap: frame.shared.asset_resources.cubemap_pool(),
-            render_texture: frame.shared.asset_resources.render_texture_pool(),
-            video_texture: frame.shared.asset_resources.video_texture_pool(),
+            texture: frame.systems.asset_resources.texture_pool(),
+            texture3d: frame.systems.asset_resources.texture3d_pool(),
+            cubemap: frame.systems.asset_resources.cubemap_pool(),
+            render_texture: frame.systems.asset_resources.render_texture_pool(),
+            video_texture: frame.systems.asset_resources.video_texture_pool(),
         };
         let lookup = MaterialPropertyLookupIds {
             material_asset_id,
@@ -229,7 +230,7 @@ impl SkyboxRenderer {
         &self,
         device: &wgpu::Device,
         uploads: GraphUploadSink<'_>,
-        frame: &GraphPassFrame<'_>,
+        frame: &WorldMeshForwardPrepareFrame<'_, '_>,
         pipeline_state: &WorldMeshForwardPipelineState,
     ) -> Option<PreparedSkybox> {
         let view_bind_group = self.view_bind_group(device, uploads, frame);
@@ -265,7 +266,7 @@ impl SkyboxRenderer {
         &self,
         device: &wgpu::Device,
         uploads: GraphUploadSink<'_>,
-        frame: &GraphPassFrame<'_>,
+        frame: &WorldMeshForwardPrepareFrame<'_, '_>,
     ) -> Arc<wgpu::BindGroup> {
         let view_id = frame.view.view_id;
         let uniforms = SkyboxViewUniforms::from_frame(frame);
@@ -439,7 +440,7 @@ impl SkyboxRenderer {
 /// Records a prepared skybox/background draw after opaque world meshes.
 pub(super) fn record_prepared_skybox(
     rpass: &mut wgpu::RenderPass<'_>,
-    frame: &GraphPassFrame<'_>,
+    frame: &PassFrameContext<'_, '_>,
     blackboard: &Blackboard,
     prepared: &PreparedSkybox,
 ) -> bool {
@@ -455,7 +456,7 @@ pub(super) fn record_prepared_skybox(
 /// Records a prepared skybox/background draw after debug grouping has been applied.
 fn record_prepared_skybox_inner(
     rpass: &mut wgpu::RenderPass<'_>,
-    frame: &GraphPassFrame<'_>,
+    frame: &PassFrameContext<'_, '_>,
     blackboard: &Blackboard,
     prepared: &PreparedSkybox,
 ) -> bool {
@@ -503,8 +504,10 @@ fn skybox_stem_for_shader_asset(
 }
 
 /// Finds the world-to-view matrices used for skybox ray reconstruction.
-fn skybox_world_to_view_pair(frame: &GraphPassFrame<'_>) -> (glam::Mat4, glam::Mat4) {
-    world_to_view_pair_for_skybox(frame.shared.scene, &frame.view.host_camera)
+fn skybox_world_to_view_pair(
+    frame: &WorldMeshForwardPrepareFrame<'_, '_>,
+) -> (glam::Mat4, glam::Mat4) {
+    world_to_view_pair_for_skybox(frame.systems.scene, &frame.view.host_camera)
 }
 
 /// Creates the procedural skybox fixed mesh vertex buffer.

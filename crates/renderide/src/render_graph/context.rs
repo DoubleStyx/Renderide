@@ -21,7 +21,9 @@
 mod pass;
 mod resolved;
 
-pub use pass::{ComputePassCtx, EncoderPassCtx, PostSubmitContext, RasterPassCtx};
+pub use pass::{
+    ComputePassCtx, EncoderPassCtx, PassFrameContext, PostSubmitContext, RasterPassCtx,
+};
 pub use resolved::{
     GraphResolvedResources, ResolvedGraphBuffer, ResolvedGraphTexture, ResolvedImportedBuffer,
     ResolvedImportedHistoryTexture, ResolvedImportedTexture,

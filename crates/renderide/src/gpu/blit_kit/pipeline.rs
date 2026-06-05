@@ -15,7 +15,30 @@ pub(crate) fn color_blit_pipeline(
     label: &'static str,
     color_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
-    color_blit_pipeline_with_multiview_mask(device, shader, layout, label, color_format, None)
+    color_blit_pipeline_with_options(device, shader, layout, label, color_format, None, None)
+}
+
+/// Builds a vertex-less triangle-list color-target render pipeline with blend state.
+///
+/// `shader` must expose `vs_main` and `fs_main` entry points and read all bindings through the
+/// pipeline's single bind-group layout.
+pub(crate) fn color_blit_pipeline_with_blend(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+    label: &'static str,
+    color_format: wgpu::TextureFormat,
+    blend: wgpu::BlendState,
+) -> wgpu::RenderPipeline {
+    color_blit_pipeline_with_options(
+        device,
+        shader,
+        layout,
+        label,
+        color_format,
+        Some(blend),
+        None,
+    )
 }
 
 /// Builds a vertex-less triangle-list color-target render pipeline with optional multiview.
@@ -28,6 +51,26 @@ pub(crate) fn color_blit_pipeline_with_multiview_mask(
     layout: &wgpu::PipelineLayout,
     label: &'static str,
     color_format: wgpu::TextureFormat,
+    multiview_mask: Option<std::num::NonZeroU32>,
+) -> wgpu::RenderPipeline {
+    color_blit_pipeline_with_options(
+        device,
+        shader,
+        layout,
+        label,
+        color_format,
+        None,
+        multiview_mask,
+    )
+}
+
+fn color_blit_pipeline_with_options(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+    label: &'static str,
+    color_format: wgpu::TextureFormat,
+    blend: Option<wgpu::BlendState>,
     multiview_mask: Option<std::num::NonZeroU32>,
 ) -> wgpu::RenderPipeline {
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -45,7 +88,7 @@ pub(crate) fn color_blit_pipeline_with_multiview_mask(
             compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format: color_format,
-                blend: None,
+                blend,
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),

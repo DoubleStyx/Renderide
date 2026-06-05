@@ -77,7 +77,7 @@ impl RasterPass for AgxTonemapPass {
     }
 
     fn should_record(&self, ctx: &RasterPassCtx<'_, '_>) -> Result<bool, RenderPassError> {
-        Ok(super::view_post_processing_enabled(&ctx.pass_frame.view))
+        Ok(super::view_post_processing_enabled(ctx.frame.view))
     }
 
     fn record(

@@ -7,14 +7,15 @@
 use crate::gpu::{
     MsaaDepthResolveMonoTargets, MsaaDepthResolveResources, MsaaDepthResolveStereoTargets,
 };
-use crate::graph_inputs::{GraphPassFrame, MsaaViews};
+use crate::graph_inputs::MsaaViews;
 use crate::profiling::GpuProfilerHandle;
+use crate::render_graph::context::PassFrameContext;
 
 /// After a clear-only MSAA pass, resolves multisampled depth to the single-sample depth used by Hi-Z.
 pub(crate) fn encode_msaa_depth_resolve_after_clear_only(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,
-    frame: &GraphPassFrame<'_>,
+    frame: &PassFrameContext<'_, '_>,
     msaa_views: Option<&MsaaViews>,
     msaa_depth_resolve: Option<&MsaaDepthResolveResources>,
     profiler: Option<&GpuProfilerHandle>,
@@ -34,7 +35,7 @@ pub(crate) fn encode_msaa_depth_resolve_after_clear_only(
 pub(super) fn encode_msaa_depth_resolve_for_frame(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,
-    frame: &GraphPassFrame<'_>,
+    frame: &PassFrameContext<'_, '_>,
     msaa: &MsaaViews,
     resolve: &MsaaDepthResolveResources,
     profiler: Option<&GpuProfilerHandle>,

@@ -186,6 +186,76 @@ fn material_pass_desc_for_layout(
     )
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct PipelineWarmupTarget {
+    pass_desc: MaterialPipelineDesc,
+    shader_perm: ShaderPermutation,
+    offscreen: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PipelineWarmupTargets {
+    targets: [Option<PipelineWarmupTarget>; 3],
+}
+
+impl PipelineWarmupTargets {
+    fn new(active: PipelineWarmupTarget) -> Self {
+        let mut targets = Self {
+            targets: [None, None, None],
+        };
+        targets.push(active);
+        targets
+    }
+
+    fn push(&mut self, target: PipelineWarmupTarget) {
+        if self.targets.iter().flatten().any(|&item| item == target) {
+            return;
+        }
+        if let Some(slot) = self.targets.iter_mut().find(|slot| slot.is_none()) {
+            *slot = Some(target);
+        }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = PipelineWarmupTarget> + '_ {
+        self.targets.iter().flatten().copied()
+    }
+}
+
+fn material_warmup_targets_for_layout(
+    layout: PreRecordViewResourceLayout,
+    supports_multiview: bool,
+    active_offscreen: bool,
+) -> PipelineWarmupTargets {
+    let (pass_desc, shader_perm) = material_pass_desc_for_layout(layout, supports_multiview);
+    let mut targets = PipelineWarmupTargets::new(PipelineWarmupTarget {
+        pass_desc,
+        shader_perm,
+        offscreen: active_offscreen,
+    });
+    if pass_desc.sample_count > 1 || pass_desc.multiview_mask.is_some() {
+        targets.push(PipelineWarmupTarget {
+            pass_desc: MaterialPipelineDesc {
+                sample_count: 1,
+                multiview_mask: None,
+                ..pass_desc
+            },
+            shader_perm: ShaderPermutation::default(),
+            offscreen: true,
+        });
+    }
+    if pass_desc.sample_count > 1 && pass_desc.multiview_mask.is_some() {
+        targets.push(PipelineWarmupTarget {
+            pass_desc: MaterialPipelineDesc {
+                multiview_mask: None,
+                ..pass_desc
+            },
+            shader_perm: ShaderPermutation::default(),
+            offscreen: true,
+        });
+    }
+    targets
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct MaterialPipelineWarmupKey {
     kind: RasterPipelineKind,
@@ -329,32 +399,34 @@ impl<'a> BackendGraphAccess<'a> {
         else {
             return;
         };
-        let (pass_desc, shader_perm) = material_pass_desc_for_layout(layout, supports_multiview);
+        let targets = material_warmup_targets_for_layout(layout, supports_multiview, offscreen);
         let mut item_index = 0usize;
         while let Some(item) = collection.items.get(item_index) {
-            let mut front_face = item.batch_key.front_face;
-            if offscreen {
-                front_face = front_face.flipped();
-            }
-            let variant = MaterialPipelineVariantSpec {
-                permutation: shader_perm,
-                shader_specialization: item.batch_key.shader_specialization,
-                blend_mode: item.batch_key.blend_mode,
-                render_state: item.batch_key.render_state,
-                front_face,
-                primitive_topology: item.batch_key.primitive_topology,
-            };
-            let warmup_key = MaterialPipelineWarmupKey {
-                kind: item.batch_key.pipeline.clone(),
-                desc: pass_desc,
-                variant,
-            };
-            if warmed_pipelines.insert(warmup_key.clone()) {
-                self.materials.queue_material_pipeline_warmup(
-                    &warmup_key.kind,
-                    &warmup_key.desc,
-                    warmup_key.variant,
-                );
+            for target in targets.iter() {
+                let mut front_face = item.batch_key.front_face;
+                if target.offscreen {
+                    front_face = front_face.flipped();
+                }
+                let variant = MaterialPipelineVariantSpec {
+                    permutation: target.shader_perm,
+                    shader_specialization: item.batch_key.shader_specialization,
+                    blend_mode: item.batch_key.blend_mode,
+                    render_state: item.batch_key.render_state,
+                    front_face,
+                    primitive_topology: item.batch_key.primitive_topology,
+                };
+                let warmup_key = MaterialPipelineWarmupKey {
+                    kind: item.batch_key.pipeline.clone(),
+                    desc: target.pass_desc,
+                    variant,
+                };
+                if warmed_pipelines.insert(warmup_key.clone()) {
+                    self.materials.queue_material_pipeline_warmup(
+                        &warmup_key.kind,
+                        &warmup_key.desc,
+                        warmup_key.variant,
+                    );
+                }
             }
             if let RasterPipelineKind::EmbeddedStem(stem) = &item.batch_key.pipeline
                 && warmed_embedded_stems.insert(Arc::clone(stem))
@@ -388,16 +460,17 @@ impl<'a> BackendGraphAccess<'a> {
                 .gpu_limits
                 .as_ref()
                 .is_some_and(|limits| limits.supports_multiview);
-            let (pass_desc, shader_perm) =
-                material_pass_desc_for_layout(layout, supports_multiview);
-            let pipeline = WorldMeshForwardPipelineState {
-                use_multiview: pass_desc.multiview_mask.is_some(),
-                pass_desc,
-                shader_perm,
-            };
             let offscreen = matches!(view.target, FrameViewTarget::OffscreenRt(_));
-            for item in &collection.items {
-                keys.record_item(item, &pipeline, offscreen);
+            let targets = material_warmup_targets_for_layout(layout, supports_multiview, offscreen);
+            for target in targets.iter() {
+                let pipeline = WorldMeshForwardPipelineState {
+                    use_multiview: target.pass_desc.multiview_mask.is_some(),
+                    pass_desc: target.pass_desc,
+                    shader_perm: target.shader_perm,
+                };
+                for item in &collection.items {
+                    keys.record_item(item, &pipeline, target.offscreen);
+                }
             }
         }
         let (depth_prepass_requests, normal_prepass_requests) = keys.warm(device);
@@ -517,8 +590,41 @@ impl<'a> BackendGraphAccess<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::camera::ViewId;
     use crate::materials::MaterialPipelineDesc;
     use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
+
+    fn layout(sample_count: u32, stereo: bool) -> PreRecordViewResourceLayout {
+        PreRecordViewResourceLayout {
+            view_id: ViewId::Main,
+            width: 1280,
+            height: 720,
+            stereo,
+            sample_count,
+            depth_format: wgpu::TextureFormat::Depth24PlusStencil8,
+            color_format: wgpu::TextureFormat::Rgba16Float,
+            needs_depth_snapshot: false,
+            needs_color_snapshot: false,
+        }
+    }
+
+    fn targets_for(
+        layout: PreRecordViewResourceLayout,
+        supports_multiview: bool,
+        active_offscreen: bool,
+    ) -> Vec<PipelineWarmupTarget> {
+        material_warmup_targets_for_layout(layout, supports_multiview, active_offscreen)
+            .iter()
+            .collect()
+    }
+
+    fn pipeline_state_for_target(target: PipelineWarmupTarget) -> WorldMeshForwardPipelineState {
+        WorldMeshForwardPipelineState {
+            use_multiview: target.pass_desc.multiview_mask.is_some(),
+            pass_desc: target.pass_desc,
+            shader_perm: target.shader_perm,
+        }
+    }
 
     fn pipeline_state() -> WorldMeshForwardPipelineState {
         WorldMeshForwardPipelineState {
@@ -548,6 +654,50 @@ mod tests {
     }
 
     #[test]
+    fn msaa_layout_adds_mono_offscreen_single_sample_companion() {
+        let targets = targets_for(layout(4, false), false, false);
+
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].pass_desc.sample_count, 4);
+        assert_eq!(targets[0].pass_desc.multiview_mask, None);
+        assert_eq!(targets[0].shader_perm, ShaderPermutation::default());
+        assert!(!targets[0].offscreen);
+        assert_eq!(targets[1].pass_desc.sample_count, 1);
+        assert_eq!(targets[1].pass_desc.multiview_mask, None);
+        assert_eq!(targets[1].shader_perm, ShaderPermutation::default());
+        assert!(targets[1].offscreen);
+    }
+
+    #[test]
+    fn multiview_msaa_layout_adds_camera_companions() {
+        let targets = targets_for(layout(4, true), true, false);
+
+        assert_eq!(targets.len(), 3);
+        assert_eq!(targets[0].pass_desc.sample_count, 4);
+        assert!(targets[0].pass_desc.multiview_mask.is_some());
+        assert_eq!(targets[0].shader_perm, SHADER_PERM_MULTIVIEW_STEREO);
+        assert!(!targets[0].offscreen);
+        assert_eq!(targets[1].pass_desc.sample_count, 1);
+        assert_eq!(targets[1].pass_desc.multiview_mask, None);
+        assert_eq!(targets[1].shader_perm, ShaderPermutation::default());
+        assert!(targets[1].offscreen);
+        assert_eq!(targets[2].pass_desc.sample_count, 4);
+        assert_eq!(targets[2].pass_desc.multiview_mask, None);
+        assert_eq!(targets[2].shader_perm, ShaderPermutation::default());
+        assert!(targets[2].offscreen);
+    }
+
+    #[test]
+    fn single_sample_offscreen_layout_keeps_only_active_target() {
+        let targets = targets_for(layout(1, false), false, true);
+
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].pass_desc.sample_count, 1);
+        assert_eq!(targets[0].pass_desc.multiview_mask, None);
+        assert!(targets[0].offscreen);
+    }
+
+    #[test]
     fn prepass_warmup_keys_dedupe_identical_draws() {
         let pipeline = pipeline_state();
         let item = draw(1);
@@ -570,6 +720,22 @@ mod tests {
         keys.record_item(&item, &pipeline, true);
 
         assert_eq!(keys.depth.len(), 1);
+        assert_eq!(keys.normal.len(), 2);
+    }
+
+    #[test]
+    fn prepass_warmup_keys_dedupe_across_companion_targets() {
+        let item = draw(1);
+        let targets = targets_for(layout(4, false), false, true);
+        let mut keys = WorldMeshPrepassPipelineWarmupKeys::default();
+
+        for target in targets {
+            let pipeline = pipeline_state_for_target(target);
+            keys.record_item(&item, &pipeline, target.offscreen);
+            keys.record_item(&item, &pipeline, target.offscreen);
+        }
+
+        assert_eq!(keys.depth.len(), 2);
         assert_eq!(keys.normal.len(), 2);
     }
 }

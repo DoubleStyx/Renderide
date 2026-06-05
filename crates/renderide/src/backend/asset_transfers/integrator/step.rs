@@ -6,11 +6,10 @@ use crate::shared::{MaterialsUpdateBatch, RendererCommand, ShaderUploadResult};
 
 use super::super::AssetTransferQueue;
 use super::super::cubemap_task::CubemapUploadTask;
-use super::super::mesh_task::MeshTaskGpu;
 use super::super::mesh_task::MeshUploadTask;
-use super::super::particle_task::{ParticleTaskGpu, PointRenderBufferTask, TrailRenderBufferTask};
+use super::super::particle_task::{PointRenderBufferTask, TrailRenderBufferTask};
+use super::super::reliable_ack::send_background_reliable;
 use super::super::texture_task::TextureUploadTask;
-use super::super::texture_task_common::TextureTaskGpu;
 use super::super::texture3d_task::Texture3dUploadTask;
 use super::gpu_context::AssetUploadGpuContext;
 
@@ -130,33 +129,26 @@ fn step_shader_route_task(
         shader_asset_name,
         route.shader_variant_bits,
     );
-    if let Some(ipc) = ipc.as_deref_mut() {
-        let ack_queued =
-            ipc.send_background_reliable(RendererCommand::ShaderUploadResult(ShaderUploadResult {
-                asset_id: route.asset_id,
-                instance_changed: true,
-            }));
-        if !ack_queued {
-            logger::warn!(
-                "shader route asset_id={}: failed to enqueue reliable ShaderUploadResult ack",
-                route.asset_id
-            );
-        }
-    }
+    let asset_id = route.asset_id;
+    let _ = send_background_reliable(
+        ipc,
+        RendererCommand::ShaderUploadResult(ShaderUploadResult {
+            asset_id,
+            instance_changed: true,
+        }),
+        || {
+            format!(
+                "shader route asset_id={asset_id}: failed to enqueue reliable ShaderUploadResult ack"
+            )
+        },
+    );
     StepResult::Done
 }
 
 pub(super) fn particle_task_gpu<'context, 'handles: 'context>(
     gpu: Option<&'context AssetUploadGpuContext<'handles>>,
-) -> Option<ParticleTaskGpu<'context>> {
-    let gpu = gpu?;
-    Some(ParticleTaskGpu {
-        device: gpu.device,
-        gpu_limits: gpu.gpu_limits,
-        mapped_buffer_health: gpu.mapped_buffer_health,
-        mesh_upload_batch: gpu.mesh_upload_batch,
-        mesh_validation_scopes_enabled: gpu.mesh_validation_scopes_enabled,
-    })
+) -> Option<super::super::particle_task::ParticleTaskGpu<'context>> {
+    gpu.map(AssetUploadGpuContext::particle_task_gpu)
 }
 
 fn step_mesh_upload_task(
@@ -169,18 +161,7 @@ fn step_mesh_upload_task(
     let Some(gpu) = gpu else {
         return StepResult::YieldBackground;
     };
-    task.step(
-        asset,
-        MeshTaskGpu {
-            device: gpu.device,
-            gpu_limits: gpu.gpu_limits,
-            mapped_buffer_health: gpu.mapped_buffer_health,
-            mesh_upload_batch: gpu.mesh_upload_batch,
-            mesh_validation_scopes_enabled: gpu.mesh_validation_scopes_enabled,
-        },
-        shm,
-        ipc,
-    )
+    task.step(asset, gpu.mesh_task_gpu(), shm, ipc)
 }
 
 fn step_texture_upload_task(
@@ -193,17 +174,7 @@ fn step_texture_upload_task(
     let Some(gpu) = gpu else {
         return StepResult::YieldBackground;
     };
-    task.step(
-        asset,
-        TextureTaskGpu {
-            device: gpu.device,
-            queue: gpu.queue.as_ref(),
-            queue_access_gate: gpu.gpu_queue_access_gate,
-            queue_access_mode: gpu.queue_access_mode,
-        },
-        shm,
-        ipc,
-    )
+    task.step(asset, gpu.texture_task_gpu(), shm, ipc)
 }
 
 fn step_texture3d_upload_task(
@@ -216,17 +187,7 @@ fn step_texture3d_upload_task(
     let Some(gpu) = gpu else {
         return StepResult::YieldBackground;
     };
-    task.step(
-        asset,
-        TextureTaskGpu {
-            device: gpu.device,
-            queue: gpu.queue.as_ref(),
-            queue_access_gate: gpu.gpu_queue_access_gate,
-            queue_access_mode: gpu.queue_access_mode,
-        },
-        shm,
-        ipc,
-    )
+    task.step(asset, gpu.texture_task_gpu(), shm, ipc)
 }
 
 fn step_cubemap_upload_task(
@@ -239,15 +200,5 @@ fn step_cubemap_upload_task(
     let Some(gpu) = gpu else {
         return StepResult::YieldBackground;
     };
-    task.step(
-        asset,
-        TextureTaskGpu {
-            device: gpu.device,
-            queue: gpu.queue.as_ref(),
-            queue_access_gate: gpu.gpu_queue_access_gate,
-            queue_access_mode: gpu.queue_access_mode,
-        },
-        shm,
-        ipc,
-    )
+    task.step(asset, gpu.texture_task_gpu(), shm, ipc)
 }

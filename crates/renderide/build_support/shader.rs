@@ -22,6 +22,8 @@ mod model;
 mod modules;
 #[path = "shader/parallel.rs"]
 mod parallel;
+#[path = "shader/reflection.rs"]
+mod reflection;
 #[path = "shader/source.rs"]
 mod source;
 #[path = "shader/validation.rs"]
