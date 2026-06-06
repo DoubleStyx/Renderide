@@ -3,20 +3,21 @@
 use super::*;
 
 #[test]
-fn point_shadow_receiver_uses_radial_distance_compare() -> io::Result<()> {
+fn point_and_spot_shadow_receivers_use_radial_distance_compare() -> io::Result<()> {
     let src = source_file(manifest_dir().join("shaders/modules/lighting/shadows.wgsl"))?;
 
     for required in [
-        "fn point_shadow_compare_depth",
+        "fn radial_shadow_kind",
+        "kind == ft::SHADOW_VIEW_KIND_POINT || kind == ft::SHADOW_VIEW_KIND_SPOT",
+        "fn radial_shadow_compare_depth",
         "length(world_pos - light.position.xyz) / range",
-        "shadow_view_kind(shadow_view) == ft::SHADOW_VIEW_KIND_POINT",
-        "!point_shadow && (ndc.z < 0.0 || ndc.z > 1.0)",
-        "compare_depth = point_shadow_compare_depth(light, biased_world_pos);",
+        "!radial_shadow && (ndc.z < 0.0 || ndc.z > 1.0)",
+        "compare_depth = radial_shadow_compare_depth(light, biased_world_pos);",
         "compare_depth = projected_shadow_compare_depth(light, shadow_view, ndc);",
     ] {
         assert!(
             src.contains(required),
-            "point-shadow receiver path must contain `{required}`"
+            "radial shadow receiver path must contain `{required}`"
         );
     }
 
@@ -47,14 +48,16 @@ fn shadow_receiver_applies_atlas_rect_normal_bias_and_soft_filtering() -> io::Re
 }
 
 #[test]
-fn point_shadow_caster_writes_radial_fragment_depth() -> io::Result<()> {
+fn radial_shadow_caster_writes_radial_fragment_depth() -> io::Result<()> {
     let src = source_file(
         manifest_dir()
             .join("shaders/passes/backend")
-            .join("world_mesh_point_shadow_caster.wgsl"),
+            .join("world_mesh_radial_shadow_caster.wgsl"),
     )?;
 
     for required in [
+        "Radial-distance shadow caster for world meshes.",
+        "point and spot shadows compare consistently",
         "-> @builtin(frag_depth) f32",
         "light_position_range: vec4<f32>",
         "let radial_depth = (length(in.world_pos - draw.light_position_range.xyz) + bias) / range;",
@@ -62,7 +65,7 @@ fn point_shadow_caster_writes_radial_fragment_depth() -> io::Result<()> {
     ] {
         assert!(
             src.contains(required),
-            "point-shadow caster must contain `{required}`"
+            "radial shadow caster must contain `{required}`"
         );
     }
 

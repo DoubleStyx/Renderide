@@ -28,7 +28,11 @@ fn shadow_view_kind(shadow_view: ft::GpuShadowView) -> u32 {
     return u32(max(shadow_view.light_params.x, 0.0) + 0.5);
 }
 
-fn point_shadow_compare_depth(light: ft::GpuLight, world_pos: vec3<f32>) -> f32 {
+fn radial_shadow_kind(kind: u32) -> bool {
+    return kind == ft::SHADOW_VIEW_KIND_POINT || kind == ft::SHADOW_VIEW_KIND_SPOT;
+}
+
+fn radial_shadow_compare_depth(light: ft::GpuLight, world_pos: vec3<f32>) -> f32 {
     let range = max(light.range, 0.001);
     return clamp(length(world_pos - light.position.xyz) / range, 0.0, 1.0);
 }
@@ -106,8 +110,8 @@ fn shadow_layer_visibility(light: ft::GpuLight, view_index: u32, world_pos: vec3
         return -1.0;
     }
     let ndc = clip.xyz / clip.w;
-    let point_shadow = shadow_view_kind(shadow_view) == ft::SHADOW_VIEW_KIND_POINT;
-    if (!point_shadow && (ndc.z < 0.0 || ndc.z > 1.0)) {
+    let radial_shadow = radial_shadow_kind(shadow_view_kind(shadow_view));
+    if (!radial_shadow && (ndc.z < 0.0 || ndc.z > 1.0)) {
         return -1.0;
     }
     let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
@@ -116,8 +120,8 @@ fn shadow_layer_visibility(light: ft::GpuLight, view_index: u32, world_pos: vec3
     }
     let layer = i32(shadow_view.params.x + 0.5);
     var compare_depth: f32;
-    if (point_shadow) {
-        compare_depth = point_shadow_compare_depth(light, biased_world_pos);
+    if (radial_shadow) {
+        compare_depth = radial_shadow_compare_depth(light, biased_world_pos);
     } else {
         compare_depth = projected_shadow_compare_depth(light, shadow_view, ndc);
     }

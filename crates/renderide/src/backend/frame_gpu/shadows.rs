@@ -11,7 +11,9 @@ use crate::cpu_parallelism::{
     RENDER_COMMAND_CHUNK_DRAWS, admit_render_command_items, current_reference_worker_count,
     record_parallel_admission,
 };
-use crate::gpu::{GpuLimits, GpuShadowView, MAX_SHADOW_VIEWS, SHADOW_VIEW_KIND_POINT};
+use crate::gpu::{
+    GpuLimits, GpuShadowView, MAX_SHADOW_VIEWS, SHADOW_VIEW_KIND_POINT, SHADOW_VIEW_KIND_SPOT,
+};
 use crate::materials::{MaterialPipelineDesc, ShaderPermutation};
 use crate::mesh_deform::PER_DRAW_UNIFORM_STRIDE;
 use crate::passes::{
@@ -60,7 +62,7 @@ struct PaddedShadowCasterUniforms {
 impl PaddedShadowCasterUniforms {
     #[inline]
     fn new(view: &ShadowRenderView, item: &crate::world_mesh::WorldMeshDrawItem) -> Self {
-        let point_shadow = view.kind == SHADOW_VIEW_KIND_POINT;
+        let radial_shadow = shadow_view_uses_radial_depth(view.kind);
         let model = shadow_caster_model(item);
         let view_proj = view.view_proj.to_cols_array();
         Self {
@@ -68,7 +70,7 @@ impl PaddedShadowCasterUniforms {
             view_proj_right: view_proj,
             model: model.to_cols_array(),
             normal_matrix: SHADOW_NORMAL_MATRIX_IDENTITY,
-            light_position_range: if point_shadow {
+            light_position_range: if radial_shadow {
                 [
                     view.light_position.x,
                     view.light_position.y,
@@ -79,7 +81,7 @@ impl PaddedShadowCasterUniforms {
                 [0.0; 4]
             },
             shadow_params: [
-                if point_shadow { view.shadow_bias } else { 0.0 },
+                if radial_shadow { view.shadow_bias } else { 0.0 },
                 0.0,
                 0.0,
                 0.0,
@@ -87,6 +89,11 @@ impl PaddedShadowCasterUniforms {
             _pad: [[0.0; 4]; 15],
         }
     }
+}
+
+#[inline]
+fn shadow_view_uses_radial_depth(kind: u32) -> bool {
+    matches!(kind, SHADOW_VIEW_KIND_POINT | SHADOW_VIEW_KIND_SPOT)
 }
 
 struct ShadowLayerEncodeContext<'a, 'encoder, 'refs> {
@@ -490,7 +497,7 @@ impl FrameGpuResources {
                     gpu_limits: ctx.gpu_limits,
                     per_draw_bind_group: self.shadow_per_draw_bind_group(),
                     slab_slot_offset: view.slab_slot_offset,
-                    point_shadow: view.kind == SHADOW_VIEW_KIND_POINT,
+                    radial_shadow: shadow_view_uses_radial_depth(view.kind),
                     supports_base_instance: ctx.gpu_limits.supports_base_instance,
                     pipeline: ctx.pipeline,
                     device: ctx.device,
@@ -656,7 +663,7 @@ mod tests {
         shadow_atlas_array_view_descriptor, shadow_atlas_layer_view_descriptor,
     };
     use crate::backend::frame_resource_manager::ShadowRenderView;
-    use crate::gpu::{SHADOW_VIEW_KIND_POINT, SHADOW_VIEW_KIND_SPOT};
+    use crate::gpu::{SHADOW_VIEW_KIND_DIRECTIONAL, SHADOW_VIEW_KIND_POINT, SHADOW_VIEW_KIND_SPOT};
     use crate::mesh_deform::PER_DRAW_UNIFORM_STRIDE;
     use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
 
@@ -748,24 +755,26 @@ mod tests {
     }
 
     #[test]
-    fn point_shadow_caster_uniforms_pack_radial_light_data() {
+    fn radial_shadow_caster_uniforms_pack_light_data() {
         let mut item = dummy_draw_item();
         let model = Mat4::from_translation(Vec3::new(4.0, 5.0, 6.0));
         item.rigid_world_matrix = Some(model);
 
-        let slot = PaddedShadowCasterUniforms::new(&shadow_view(SHADOW_VIEW_KIND_POINT), &item);
+        for kind in [SHADOW_VIEW_KIND_POINT, SHADOW_VIEW_KIND_SPOT] {
+            let slot = PaddedShadowCasterUniforms::new(&shadow_view(kind), &item);
 
-        assert_eq!(
-            slot.view_proj_left,
-            Mat4::from_scale(Vec3::splat(2.0)).to_cols_array()
-        );
-        assert_eq!(
-            slot.view_proj_right,
-            Mat4::from_scale(Vec3::splat(2.0)).to_cols_array()
-        );
-        assert_eq!(slot.model, model.to_cols_array());
-        assert_eq!(slot.light_position_range, [1.0, 2.0, 3.0, 12.0]);
-        assert_eq!(slot.shadow_params[0], 0.25);
+            assert_eq!(
+                slot.view_proj_left,
+                Mat4::from_scale(Vec3::splat(2.0)).to_cols_array()
+            );
+            assert_eq!(
+                slot.view_proj_right,
+                Mat4::from_scale(Vec3::splat(2.0)).to_cols_array()
+            );
+            assert_eq!(slot.model, model.to_cols_array());
+            assert_eq!(slot.light_position_range, [1.0, 2.0, 3.0, 12.0]);
+            assert_eq!(slot.shadow_params[0], 0.25);
+        }
     }
 
     #[test]
@@ -787,7 +796,8 @@ mod tests {
     fn projected_shadow_caster_uniforms_do_not_pack_radial_bias() {
         let item = dummy_draw_item();
 
-        let slot = PaddedShadowCasterUniforms::new(&shadow_view(SHADOW_VIEW_KIND_SPOT), &item);
+        let slot =
+            PaddedShadowCasterUniforms::new(&shadow_view(SHADOW_VIEW_KIND_DIRECTIONAL), &item);
 
         assert_eq!(slot.light_position_range, [0.0; 4]);
         assert_eq!(slot.shadow_params[0], 0.0);

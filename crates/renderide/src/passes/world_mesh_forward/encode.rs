@@ -18,7 +18,7 @@ use crate::world_mesh::{DrawGroup, WorldMeshDrawItem, depth_prepass_group_eligib
 use super::MaterialBatchPacket;
 use super::depth_prepass::{
     WorldMeshForwardDepthPrepassPipelineCache, WorldMeshForwardDepthPrepassPipelineKey,
-    depth_prepass_pipelines, point_shadow_pipelines,
+    depth_prepass_pipelines, radial_shadow_pipelines,
 };
 use super::material_batch::MaterialGroup1Binding;
 use super::normal_pass::{WorldMeshForwardNormalPipelineCache, WorldMeshForwardNormalPipelineKey};
@@ -133,8 +133,8 @@ pub(crate) struct ShadowDepthDrawBatch<'a, 'b, 'c, 'd> {
     pub per_draw_bind_group: &'a wgpu::BindGroup,
     /// First shadow per-draw slab row reserved for this atlas layer.
     pub slab_slot_offset: usize,
-    /// Whether the active shadow layer stores radial point-light depth.
-    pub point_shadow: bool,
+    /// Whether the active shadow layer stores radial light-distance depth.
+    pub radial_shadow: bool,
     /// Whether `draw_indexed` may use non-zero `first_instance`.
     pub supports_base_instance: bool,
     /// Pipeline state resolved for the active shadow-map view.
@@ -512,7 +512,7 @@ pub(crate) fn draw_shadow_depth_subset(batch: ShadowDepthDrawBatch<'_, '_, '_, '
         gpu_limits,
         per_draw_bind_group,
         slab_slot_offset,
-        point_shadow,
+        radial_shadow,
         supports_base_instance,
         pipeline,
         device,
@@ -522,7 +522,7 @@ pub(crate) fn draw_shadow_depth_subset(batch: ShadowDepthDrawBatch<'_, '_, '_, '
     let mut last_per_draw_dyn_offset: Option<u32> = None;
     let mut last_pipeline: Option<*const wgpu::RenderPipeline> = None;
     let depth_pipelines = depth_prepass_pipelines();
-    let point_pipelines = point_shadow_pipelines();
+    let radial_pipelines = radial_shadow_pipelines();
 
     for group in groups {
         let representative = group.representative_draw_idx;
@@ -552,8 +552,8 @@ pub(crate) fn draw_shadow_depth_subset(batch: ShadowDepthDrawBatch<'_, '_, '_, '
             &mut last_per_draw_dyn_offset,
         );
 
-        let pipeline = if point_shadow {
-            point_pipelines.pipeline(device, key)
+        let pipeline = if radial_shadow {
+            radial_pipelines.pipeline(device, key)
         } else {
             depth_pipelines.pipeline(device, key)
         };

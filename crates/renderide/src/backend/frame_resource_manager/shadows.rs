@@ -31,11 +31,11 @@ pub(crate) struct ShadowRenderView {
     pub(crate) resolution: u32,
     /// Light-space projection-view matrix used for shadow caster vertices.
     pub(crate) view_proj: Mat4,
-    /// World-space light position used by radial point-shadow casters.
+    /// World-space light position used by radial shadow casters.
     pub(crate) light_position: Vec3,
-    /// Light range used by radial point-shadow casters.
+    /// Light range used by radial shadow casters.
     pub(crate) light_range: f32,
-    /// Host-authored shadow bias used by radial point-shadow casters.
+    /// Host-authored shadow bias used by radial shadow casters.
     pub(crate) shadow_bias: f32,
     /// First per-draw slab row reserved for this shadow view.
     pub(crate) slab_slot_offset: usize,

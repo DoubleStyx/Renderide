@@ -1,7 +1,7 @@
-//! Point-light shadow caster for world meshes.
+//! Radial-distance shadow caster for world meshes.
 //!
-//! The raster projection selects the cubemap face and atlas UVs. Fragment depth stores normalized
-//! radial distance so point-light shadows compare consistently across all six faces.
+//! The raster projection selects the shadow volume and atlas UVs. Fragment depth stores normalized
+//! radial distance so point and spot shadows compare consistently across their projected views.
 
 struct ShadowCasterUniforms {
     view_proj_left: mat4x4<f32>,
