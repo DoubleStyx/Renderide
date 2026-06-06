@@ -33,6 +33,7 @@ use super::material_batch::{MaterialGroup1Binding, PipelineVariantKey};
 use super::material_resolve::precompute_material_resolve_batches;
 use super::skybox::SkyboxRenderer;
 use super::slab::{SlabPackInputs, pack_and_upload_per_draw_slab};
+use super::vp::overlay_view_projection;
 use super::{
     MaterialBatchBoundary, MaterialBatchPacket, PreparedWorldMeshForwardFrame,
     WorldMeshForwardPipelineState,
@@ -540,7 +541,9 @@ fn pack_forward_draws_for_view(
             },
         )
     };
-    let overlay_view_proj = overlay_proj.unwrap_or(glam::Mat4::IDENTITY);
+    let overlay_view_proj = overlay_proj
+        .map(|proj| overlay_view_projection(Some(proj), world_proj))
+        .unwrap_or(glam::Mat4::IDENTITY);
     slab_uploaded.then_some(PackedForwardDraws {
         draws,
         plan,
