@@ -532,14 +532,10 @@ pub(crate) fn draw_shadow_depth_subset(batch: ShadowDepthDrawBatch<'_, '_, '_, '
         if item.shadow_cast_mode == ShadowCastMode::Off {
             continue;
         }
-        let Some(mut key) =
-            WorldMeshForwardDepthPrepassPipelineKey::for_shadow_draw(item, pipeline)
+        let Some(key) = WorldMeshForwardDepthPrepassPipelineKey::for_shadow_draw(item, pipeline)
         else {
             continue;
         };
-        if item.shadow_cast_mode == ShadowCastMode::DoubleSided {
-            key.cull_mode = None;
-        }
 
         let slab_first_instance = slab_slot_offset + group.instance_range.start as usize;
         let instance_count = group.instance_range.end - group.instance_range.start;

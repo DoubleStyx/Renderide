@@ -23,6 +23,7 @@ use crate::render_graph::pass::{PassBuilder, RasterPass, RenderPassTemplate};
 use crate::render_graph::resources::{
     BufferAccess, ImportedBufferHandle, ImportedTextureHandle, StorageAccess, TextureHandle,
 };
+use crate::shared::ShadowCastMode;
 use crate::world_mesh::{MeshPassKind, WorldMeshDrawItem};
 
 use super::attachments::declare_forward_depth_attachment;
@@ -315,12 +316,17 @@ impl WorldMeshForwardDepthPrepassPipelineKey {
     ) -> Option<Self> {
         let depth_stencil_format = pipeline.pass_desc.depth_stencil_format?;
         let cull_mode = shadow_caster_cull_mode(item)?;
+        let cull_mode = if item.shadow_cast_mode == ShadowCastMode::DoubleSided {
+            None
+        } else {
+            cull_for_topology(cull_mode.0, item.batch_key.primitive_topology)
+        };
         Some(Self {
             depth_stencil_format,
             sample_count: pipeline.pass_desc.sample_count,
             multiview_mask: pipeline.pass_desc.multiview_mask,
             front_face: item.batch_key.front_face,
-            cull_mode: cull_for_topology(cull_mode.0, item.batch_key.primitive_topology),
+            cull_mode,
             primitive_topology: item.batch_key.primitive_topology,
             depth_compare: wgpu::CompareFunction::LessEqual,
         })
@@ -513,6 +519,7 @@ mod tests {
     use crate::materials::{RasterPipelineKind, RasterPrimitiveTopology, ShaderPermutation};
     use crate::mesh_deform::PER_DRAW_UNIFORM_STRIDE;
     use crate::passes::world_mesh_forward::WorldMeshForwardPipelineState;
+    use crate::shared::ShadowCastMode;
     use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
 
     fn pipeline_state() -> WorldMeshForwardPipelineState {
@@ -620,6 +627,30 @@ mod tests {
             wgpu::TextureFormat::Depth24PlusStencil8
         );
         assert_eq!(key.depth_compare, wgpu::CompareFunction::LessEqual);
+    }
+
+    #[test]
+    fn double_sided_shadow_key_disables_culling() {
+        let mut item = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 1,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 1,
+            node_id: 1,
+            slot_index: 0,
+            collect_order: 0,
+            alpha_blended: false,
+        });
+        item.shadow_cast_mode = ShadowCastMode::DoubleSided;
+        item.batch_key.pipeline =
+            RasterPipelineKind::EmbeddedStem(Arc::from("pbsmetallic_default"));
+
+        let key =
+            WorldMeshForwardDepthPrepassPipelineKey::for_shadow_draw(&item, &pipeline_state())
+                .expect("double-sided PBS shadows should still cast");
+
+        assert_eq!(key.cull_mode, None);
     }
 
     #[test]

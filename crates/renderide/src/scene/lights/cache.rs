@@ -291,6 +291,7 @@ fn resolve_cached_light(
         shadow_type: cached.state.shadow_type,
         shadow_strength: cached.state.shadow_strength,
         shadow_near_plane: cached.state.shadow_near_plane,
+        shadow_map_resolution: cached.state.shadow_map_resolution,
         shadow_bias: cached.state.shadow_bias,
         shadow_normal_bias: cached.state.shadow_normal_bias,
         cookie_texture_asset_id: cached.state.cookie_texture_asset_id,

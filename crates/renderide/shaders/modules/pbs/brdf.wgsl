@@ -312,7 +312,7 @@ struct LightSample {
 
 /// Resolves the per-light-type direction and attenuation. Single source of truth for point /
 /// directional / spot dispatch shared by all four direct-radiance functions in this module.
-fn eval_light(light: ft::GpuLight, world_pos: vec3<f32>) -> LightSample {
+fn eval_light(light: ft::GpuLight, world_pos: vec3<f32>, world_normal: vec3<f32>) -> LightSample {
     let light_pos = light.position.xyz;
     let light_dir = light.direction.xyz;
     var out: LightSample;
@@ -335,7 +335,7 @@ fn eval_light(light: ft::GpuLight, world_pos: vec3<f32>) -> LightSample {
         out.attenuation = spot_atten * distance_attenuation(dist, light.range);
         out.attenuation = out.attenuation * cookies::multiplier(light, world_pos);
     }
-    out.attenuation = out.attenuation * shadows::visibility(light, world_pos);
+    out.attenuation = out.attenuation * shadows::visibility(light, world_pos, world_normal);
     return out;
 }
 
@@ -411,7 +411,7 @@ fn direct_radiance_metallic(
     f0: vec3<f32>,
     energy_compensation: vec3<f32>,
 ) -> vec3<f32> {
-    let ls = eval_light(light, world_pos);
+    let ls = eval_light(light, world_pos, n);
     let direct_lobe = eval_direct_specular_lobe(n, ls.l, v, specular_roughness, f0, energy_compensation);
     if direct_lobe.n_dot_l <= 0.0 {
         return vec3<f32>(0.0);
@@ -446,7 +446,7 @@ fn direct_radiance_specular(
     one_minus_reflectivity: f32,
     energy_compensation: vec3<f32>,
 ) -> vec3<f32> {
-    let ls = eval_light(light, world_pos);
+    let ls = eval_light(light, world_pos, n);
     let direct_lobe = eval_direct_specular_lobe(n, ls.l, v, specular_roughness, f0, energy_compensation);
     if direct_lobe.n_dot_l <= 0.0 {
         return vec3<f32>(0.0);
@@ -473,7 +473,7 @@ fn diffuse_only_metallic(
     base_color: vec3<f32>,
     metallic: f32,
 ) -> vec3<f32> {
-    let ls = eval_light(light, world_pos);
+    let ls = eval_light(light, world_pos, n);
     let n_dot_l = max(dot(n, ls.l), 0.0);
     if n_dot_l <= 0.0 {
         return vec3<f32>(0.0);
@@ -495,7 +495,7 @@ fn diffuse_only_specular(
     base_color: vec3<f32>,
     one_minus_reflectivity: f32,
 ) -> vec3<f32> {
-    let ls = eval_light(light, world_pos);
+    let ls = eval_light(light, world_pos, n);
     let n_dot_l = max(dot(n, ls.l), 0.0);
     if n_dot_l <= 0.0 {
         return vec3<f32>(0.0);

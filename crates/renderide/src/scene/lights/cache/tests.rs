@@ -371,6 +371,21 @@ fn gpu_light_from_resolved_point() {
     assert!((gpu.position[0] - 1.0).abs() < 1e-5);
 }
 
+#[test]
+fn resolved_lights_preserve_shadow_map_resolution() {
+    let mut cache = LightCache::new();
+    let space_id = 0;
+    let mut state = make_state(0, 100, LightType::Point);
+    state.shadow_map_resolution = 1536;
+    cache.store_full(100, vec![make_light_data((1.0, 0.0, 0.0), (1.0, 0.0, 0.0))]);
+    cache.apply_update(space_id, &[], &[0], &[state]);
+
+    let resolved = cache.resolve_lights(space_id, |_| Some(Mat4::IDENTITY));
+
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].shadow_map_resolution, 1536);
+}
+
 /// Regression: removing a middle buffer-renderer slot must swap-remove the last entry into
 /// the freed index so the dense list stays aligned with the host's swap-remove reindexing.
 #[test]

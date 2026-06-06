@@ -37,7 +37,7 @@ fn direct_clustered_diffuse(
         }
 
         let light = rg::lights[li];
-        let light_sample = brdf::eval_light(light, world_pos);
+        let light_sample = brdf::eval_light(light, world_pos, world_n);
         let n_dot_l = max(dot(world_n, light_sample.l), 0.0);
         direct = direct + brdf::signed_light_radiance(light, light_sample.attenuation, n_dot_l);
     }

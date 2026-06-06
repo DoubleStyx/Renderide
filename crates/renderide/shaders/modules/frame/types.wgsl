@@ -40,7 +40,7 @@ struct GpuLight {
     shadow_view_start: u32,
     shadow_view_count: u32,
     shadow_flags: u32,
-    shadow_reserved: u32,
+    shadow_map_resolution: u32,
     cookie_kind: u32,
     cookie_layer: u32,
     cookie_reserved: u32,

@@ -257,7 +257,7 @@ fn fs_main(
             }
             attenuation = attenuation * cookies::multiplier(light, world_pos);
         }
-        attenuation = attenuation * shadows::visibility(light, world_pos);
+        attenuation = attenuation * shadows::visibility(light, world_pos, n);
         let radiance = bl::light_radiance(light) * attenuation;
         lo = lo + tbrdf::direct_light(
             diff_color,

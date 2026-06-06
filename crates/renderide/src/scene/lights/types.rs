@@ -42,6 +42,8 @@ pub struct ResolvedLight {
     pub shadow_strength: f32,
     /// Near plane for shadow volumes (host units).
     pub shadow_near_plane: f32,
+    /// Per-light shadow-map resolution override, or `0` to use quality settings.
+    pub shadow_map_resolution: i32,
     /// Depth bias for shadow maps (host value).
     pub shadow_bias: f32,
     /// Normal bias for shadow receivers (host value).
@@ -115,6 +117,7 @@ mod tests {
             shadow_type: ShadowType::None,
             shadow_strength: 0.0,
             shadow_near_plane: 0.0,
+            shadow_map_resolution: 0,
             shadow_bias: 0.0,
             shadow_normal_bias: 0.0,
             cookie_texture_asset_id: -1,
