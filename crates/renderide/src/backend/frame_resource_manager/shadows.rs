@@ -7,8 +7,8 @@ use glam::{Mat4, Vec3};
 use crate::backend::HostShadowQuality;
 use crate::camera::ViewId;
 use crate::gpu::{
-    GpuShadowView, MAX_SHADOW_VIEWS, SHADOW_VIEW_KIND_DIRECTIONAL, SHADOW_VIEW_KIND_POINT,
-    SHADOW_VIEW_KIND_SPOT,
+    GpuLimits, GpuShadowView, MAX_SHADOW_VIEWS, SHADOW_VIEW_KIND_DIRECTIONAL,
+    SHADOW_VIEW_KIND_POINT, SHADOW_VIEW_KIND_SPOT,
 };
 use crate::materials::shadow_caster_policy_for_pipeline;
 use crate::mesh_deform::SkinCacheKey;
@@ -84,8 +84,11 @@ impl FrameResourceManager {
     {
         profiling::scope!("render::prepare_shadow_frame");
         self.clear_shadow_frame();
+        let tile_resolution =
+            shadow_tile_resolution(self.limits.as_deref(), quality.tile_resolution);
+        let max_shadow_views = shadow_view_capacity(self.limits.as_deref());
         let mut plan = ShadowFramePlan {
-            requested_resolution: quality.tile_resolution,
+            requested_resolution: tile_resolution,
             requested_layers: 1,
             ..ShadowFramePlan::default()
         };
@@ -94,8 +97,15 @@ impl FrameResourceManager {
             .map(|(view_id, draw_plan)| ShadowPlanningView { view_id, draw_plan })
             .collect::<Vec<_>>();
         for view in planning_views {
-            append_shadow_views_for_view(self, quality, view, &mut plan);
-            if plan.metadata.len() >= MAX_SHADOW_VIEWS {
+            append_shadow_views_for_view(
+                self,
+                quality,
+                view,
+                &mut plan,
+                tile_resolution,
+                max_shadow_views,
+            );
+            if plan.metadata.len() >= max_shadow_views {
                 break;
             }
         }
@@ -149,6 +159,8 @@ fn append_shadow_views_for_view(
     quality: HostShadowQuality,
     view: ShadowPlanningView<'_>,
     plan: &mut ShadowFramePlan,
+    tile_resolution: u32,
+    max_shadow_views: usize,
 ) {
     let Some(collection) = view.draw_plan.as_prefetched() else {
         return;
@@ -186,7 +198,7 @@ fn append_shadow_views_for_view(
             }
             local_shadowed = local_shadowed.saturating_add(1);
         }
-        let remaining = MAX_SHADOW_VIEWS.saturating_sub(plan.metadata.len());
+        let remaining = max_shadow_views.saturating_sub(plan.metadata.len());
         if remaining == 0 {
             clear_light_shadow_assignment(light);
             continue;
@@ -204,13 +216,13 @@ fn append_shadow_views_for_view(
                 light,
                 view_proj,
                 layer,
-                quality.tile_resolution,
+                tile_resolution,
                 view_offset,
             ));
             plan.render_views.push(ShadowRenderView {
                 layer,
                 kind,
-                resolution: quality.tile_resolution,
+                resolution: tile_resolution,
                 view_proj,
                 light_position,
                 light_range,
@@ -225,6 +237,20 @@ fn append_shadow_views_for_view(
         light.shadow_view_count = view_count;
         light.shadow_flags = 0;
     }
+}
+
+fn shadow_tile_resolution(limits: Option<&GpuLimits>, requested: u32) -> u32 {
+    let requested = requested.max(1);
+    limits.map_or(requested, |limits| {
+        requested.min(limits.max_texture_dimension_2d().max(1))
+    })
+}
+
+fn shadow_view_capacity(limits: Option<&GpuLimits>) -> usize {
+    let max_layers = limits.map_or(MAX_SHADOW_VIEWS, |limits| {
+        limits.max_texture_array_layers().max(1) as usize
+    });
+    MAX_SHADOW_VIEWS.min(max_layers).max(1)
 }
 
 fn clear_light_shadow_assignment(light: &mut crate::gpu::GpuLight) {
@@ -367,10 +393,12 @@ fn light_type_u32(ty: LightType) -> u32 {
 mod tests {
     use std::sync::Arc;
 
+    use hashbrown::HashMap;
+
     use crate::backend::HostShadowQuality;
     use crate::backend::frame_resource_manager::per_view_state::PreparedViewLights;
     use crate::camera::ViewId;
-    use crate::gpu::GpuLight;
+    use crate::gpu::{GpuLight, GpuLimits};
     use crate::materials::RasterPipelineKind;
     use crate::shared::LightType;
     use crate::world_mesh::draw_prep::WorldMeshDrawCollection;
@@ -380,8 +408,20 @@ mod tests {
 
     use super::{
         POINT_FACE_COUNT, light_type_u32, point_face_basis, point_shadow_projection,
-        shadow_view_count_for_light,
+        shadow_view_capacity, shadow_view_count_for_light,
     };
+
+    fn limits(max_texture_dimension_2d: u32, max_texture_array_layers: u32) -> GpuLimits {
+        GpuLimits::synthetic_for_tests(
+            wgpu::Limits {
+                max_texture_dimension_2d,
+                max_texture_array_layers,
+                ..Default::default()
+            },
+            wgpu::Features::empty(),
+            HashMap::new(),
+        )
+    }
 
     #[test]
     fn point_lights_plan_six_shadow_views() {
@@ -525,5 +565,72 @@ mod tests {
                 assert!(end <= other_start || other_end <= start);
             }
         }
+    }
+
+    #[test]
+    fn shadow_planning_clamps_to_gpu_atlas_capacity() {
+        let mut manager = super::FrameResourceManager::new();
+        manager.limits = Some(Arc::new(limits(1024, 2)));
+        manager
+            .per_view_lights
+            .get_or_insert_with(ViewId::Main, PreparedViewLights::default)
+            .lights
+            .push(GpuLight {
+                position: [3.0, 4.0, 5.0],
+                light_type: light_type_u32(LightType::Point),
+                shadow_type: 1,
+                shadow_strength: 1.0,
+                shadow_near_plane: 0.05,
+                shadow_bias: 0.25,
+                range: 8.0,
+                ..GpuLight::default()
+            });
+
+        let mut item = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 1,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 1,
+            node_id: 1,
+            slot_index: 0,
+            collect_order: 0,
+            alpha_blended: false,
+        });
+        item.batch_key.pipeline =
+            RasterPipelineKind::EmbeddedStem(Arc::from("pbsmetallic_default"));
+        let draw_plan = WorldMeshDrawPlan::Prefetched(Box::new(PrefetchedWorldMeshViewDraws::new(
+            WorldMeshDrawCollection {
+                items: vec![item],
+                draws_pre_cull: 1,
+                draws_culled: 0,
+                draws_hi_z_culled: 0,
+                visibility: Default::default(),
+                arrangement: Default::default(),
+            },
+            None,
+        )));
+
+        manager.prepare_shadow_frame_for_views(
+            HostShadowQuality::default(),
+            [(ViewId::Main, &draw_plan)],
+        );
+
+        let plan = manager.shadow_frame_plan();
+        assert_eq!(shadow_view_capacity(manager.limits.as_deref()), 2);
+        assert_eq!(plan.requested_resolution, 1024);
+        assert_eq!(plan.requested_layers, 2);
+        assert_eq!(plan.render_views.len(), 2);
+        assert_eq!(plan.metadata.len(), 2);
+        assert_eq!(plan.requested_draw_slots, 2);
+        for (index, view) in plan.render_views.iter().enumerate() {
+            assert_eq!(view.layer, index as u32);
+            assert_eq!(view.resolution, 1024);
+            assert_eq!(plan.metadata[index].params[0], index as f32);
+            assert_eq!(plan.metadata[index].params[1], 1.0 / 1024.0);
+        }
+        let light = &manager.per_view_lights.get(ViewId::Main).unwrap().lights[0];
+        assert_eq!(light.shadow_view_start, 0);
+        assert_eq!(light.shadow_view_count, 2);
     }
 }

@@ -352,26 +352,44 @@ fn create_shadow_texture(
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     }));
-    let atlas_view = Arc::new(texture.create_view(&wgpu::TextureViewDescriptor {
-        label: Some("shadow_depth_atlas_array"),
-        dimension: Some(wgpu::TextureViewDimension::D2Array),
-        ..Default::default()
-    }));
+    let atlas_view = Arc::new(texture.create_view(&shadow_atlas_array_view_descriptor(layers)));
     crate::profiling::note_resource_churn!(TextureView, "backend::shadow_depth_atlas_array");
     let mut layer_views = Vec::with_capacity(layers as usize);
     for layer in 0..layers {
-        layer_views.push(Arc::new(texture.create_view(
-            &wgpu::TextureViewDescriptor {
-                label: Some("shadow_depth_atlas_layer"),
-                dimension: Some(wgpu::TextureViewDimension::D2),
-                base_array_layer: layer,
-                array_layer_count: Some(1),
-                ..Default::default()
-            },
-        )));
+        layer_views.push(Arc::new(
+            texture.create_view(&shadow_atlas_layer_view_descriptor(layer)),
+        ));
         crate::profiling::note_resource_churn!(TextureView, "backend::shadow_depth_atlas_layer");
     }
     (texture, atlas_view, layer_views)
+}
+
+fn shadow_atlas_array_view_descriptor(layers: u32) -> wgpu::TextureViewDescriptor<'static> {
+    wgpu::TextureViewDescriptor {
+        label: Some("shadow_depth_atlas_array"),
+        format: Some(SHADOW_ATLAS_FORMAT),
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
+        aspect: wgpu::TextureAspect::All,
+        base_mip_level: 0,
+        mip_level_count: Some(1),
+        base_array_layer: 0,
+        array_layer_count: Some(layers),
+    }
+}
+
+fn shadow_atlas_layer_view_descriptor(layer: u32) -> wgpu::TextureViewDescriptor<'static> {
+    wgpu::TextureViewDescriptor {
+        label: Some("shadow_depth_atlas_layer"),
+        format: Some(SHADOW_ATLAS_FORMAT),
+        dimension: Some(wgpu::TextureViewDimension::D2),
+        usage: Some(wgpu::TextureUsages::RENDER_ATTACHMENT),
+        aspect: wgpu::TextureAspect::All,
+        base_mip_level: 0,
+        mip_level_count: Some(1),
+        base_array_layer: layer,
+        array_layer_count: Some(1),
+    }
 }
 
 impl FrameGpuResources {
@@ -633,7 +651,10 @@ mod tests {
     use glam::{Mat4, Vec3};
     use hashbrown::HashMap;
 
-    use super::{PaddedShadowCasterUniforms, clamp_shadow_resolution};
+    use super::{
+        PaddedShadowCasterUniforms, SHADOW_ATLAS_FORMAT, clamp_shadow_resolution,
+        shadow_atlas_array_view_descriptor, shadow_atlas_layer_view_descriptor,
+    };
     use crate::backend::frame_resource_manager::ShadowRenderView;
     use crate::gpu::{SHADOW_VIEW_KIND_POINT, SHADOW_VIEW_KIND_SPOT};
     use crate::mesh_deform::PER_DRAW_UNIFORM_STRIDE;
@@ -688,6 +709,34 @@ mod tests {
         assert_eq!(clamp_shadow_resolution(&limits, 0), 1);
         assert_eq!(clamp_shadow_resolution(&limits, 512), 512);
         assert_eq!(clamp_shadow_resolution(&limits, 2048), 1024);
+    }
+
+    #[test]
+    fn shadow_atlas_array_view_is_sampled_only() {
+        let desc = shadow_atlas_array_view_descriptor(4);
+
+        assert_eq!(desc.format, Some(SHADOW_ATLAS_FORMAT));
+        assert_eq!(desc.dimension, Some(wgpu::TextureViewDimension::D2Array));
+        assert_eq!(desc.usage, Some(wgpu::TextureUsages::TEXTURE_BINDING));
+        assert_eq!(desc.aspect, wgpu::TextureAspect::All);
+        assert_eq!(desc.base_mip_level, 0);
+        assert_eq!(desc.mip_level_count, Some(1));
+        assert_eq!(desc.base_array_layer, 0);
+        assert_eq!(desc.array_layer_count, Some(4));
+    }
+
+    #[test]
+    fn shadow_atlas_layer_view_is_render_attachment_only() {
+        let desc = shadow_atlas_layer_view_descriptor(3);
+
+        assert_eq!(desc.format, Some(SHADOW_ATLAS_FORMAT));
+        assert_eq!(desc.dimension, Some(wgpu::TextureViewDimension::D2));
+        assert_eq!(desc.usage, Some(wgpu::TextureUsages::RENDER_ATTACHMENT));
+        assert_eq!(desc.aspect, wgpu::TextureAspect::All);
+        assert_eq!(desc.base_mip_level, 0);
+        assert_eq!(desc.mip_level_count, Some(1));
+        assert_eq!(desc.base_array_layer, 3);
+        assert_eq!(desc.array_layer_count, Some(1));
     }
 
     #[test]
