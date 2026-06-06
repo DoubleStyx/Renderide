@@ -294,11 +294,15 @@ impl WorldMeshForwardDepthPrepassPipelineKey {
     ) -> Option<Self> {
         let depth_stencil_format = pipeline.pass_desc.depth_stencil_format?;
         let cull_mode = depth_prepass_cull_mode(item, pipeline.shader_perm)?;
+        let mut front_face = item.batch_key.front_face;
+        if pipeline.front_face_flip {
+            front_face = front_face.flipped();
+        }
         Some(Self {
             depth_stencil_format,
             sample_count: pipeline.pass_desc.sample_count,
             multiview_mask: pipeline.pass_desc.multiview_mask,
-            front_face: item.batch_key.front_face,
+            front_face,
             cull_mode: cull_for_topology(cull_mode.0, item.batch_key.primitive_topology),
             primitive_topology: item.batch_key.primitive_topology,
             depth_compare,
@@ -528,6 +532,7 @@ mod tests {
                 multiview_mask: std::num::NonZeroU32::new(3),
             },
             shader_perm: ShaderPermutation(0),
+            front_face_flip: false,
         }
     }
 

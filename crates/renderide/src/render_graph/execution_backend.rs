@@ -10,7 +10,7 @@ use super::{HistoryRegistry, TransientPool};
 use crate::camera::ViewId;
 use crate::diagnostics::{DebugHudEncodeError, PerViewHudConfig, PerViewHudOutputs};
 use crate::gpu::frame_globals::SkyboxSpecularUniformParams;
-use crate::gpu::{GpuLight, GpuLimits, MsaaDepthResolveResources};
+use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
 use crate::gpu_pools::{
     CubemapPool, MeshPool, RenderTexturePool, Texture3dPool, TexturePool, VideoTexturePool,
 };
@@ -56,9 +56,6 @@ pub struct ShadowAtlasEncodeParams<'a, 'encoder, 'upload> {
 pub trait GraphFrameResources: Send + Sync {
     /// Whether frame-global GPU resources were attached.
     fn has_frame_gpu(&self) -> bool;
-
-    /// Packed GPU lights for one render view.
-    fn frame_lights(&self, view_id: ViewId) -> &[GpuLight];
 
     /// Light count used in one view's frame uniforms and shaders.
     fn frame_light_count_u32(&self, view_id: ViewId) -> u32;

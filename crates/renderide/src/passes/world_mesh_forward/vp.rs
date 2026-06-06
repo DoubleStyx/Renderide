@@ -2,10 +2,11 @@
 //!
 //! See module docs on [`super::WorldMeshForwardOpaquePass`] for VR vs overlay rules.
 
-use glam::{Mat4, Vec3};
+use glam::Mat4;
 
-use crate::camera::HostCameraFrame;
-use crate::camera::view_matrix_for_host_world_mesh_space;
+use crate::camera::{
+    HostCameraFrame, overlay_camera_view_matrix, view_matrix_for_host_world_mesh_space,
+};
 use crate::materials::RasterPipelineKind;
 use crate::scene::SceneCoordinator;
 use crate::shared::RenderingContext;
@@ -23,12 +24,6 @@ pub(crate) fn projection_for_world_mesh_draw(
     } else {
         world_proj
     }
-}
-
-/// Fixed view matrix used by desktop overlay-camera draws.
-#[inline]
-pub(crate) fn overlay_camera_view_matrix() -> Mat4 {
-    Mat4::from_translation(Vec3::new(0.0, 0.0, -1.0))
 }
 
 /// Projection-view matrix for desktop overlay-camera draws.
@@ -223,7 +218,10 @@ mod tests {
 
     use glam::{Mat4, Quat, Vec3, Vec4};
 
-    use crate::camera::{CameraClipPlanes, HostCameraFrame, Viewport};
+    use crate::camera::{
+        CameraClipPlanes, HostCameraFrame, OVERLAY_CAMERA_FAR_CLIP, OVERLAY_CAMERA_LOCAL_Z,
+        OVERLAY_CAMERA_NEAR_CLIP, Viewport,
+    };
     use crate::materials::RasterPipelineKind;
     use crate::scene::{RenderSpaceId, SceneCoordinator};
     use crate::shared::{LayerType, RenderTransform, RenderingContext};
@@ -277,14 +275,37 @@ mod tests {
     }
 
     #[test]
-    fn overlay_view_projection_applies_fixed_camera_view_shift() {
-        let world = Mat4::from_scale(Vec3::splat(2.0));
-        let overlay = Mat4::from_translation(Vec3::new(3.0, 0.0, 0.0));
+    fn overlay_camera_view_matrix_matches_unity_overlay_depth_semantics() {
+        let view = overlay_camera_view_matrix();
+        let dash = view * Vec4::new(0.0, 0.0, 0.0, 1.0);
+        let modal = view * Vec4::new(0.0, 0.0, -2.0, 1.0);
+        let cursor = view * Vec4::new(0.0, 0.0, -5.0, 1.0);
 
-        assert_eq!(
-            overlay_view_projection(Some(overlay), world),
-            overlay * overlay_camera_view_matrix()
+        assert_eq!(dash.z, OVERLAY_CAMERA_LOCAL_Z);
+        assert_eq!(modal.z, OVERLAY_CAMERA_LOCAL_Z + 2.0);
+        assert_eq!(cursor.z, OVERLAY_CAMERA_LOCAL_Z + 5.0);
+    }
+
+    #[test]
+    fn overlay_view_projection_makes_negative_overlay_z_closer_than_dash() {
+        let overlay = HostCameraFrame::overlay_projection(
+            Viewport::from_tuple((1920, 1080)),
+            CameraClipPlanes::new(3.0, 4.0),
         );
+        let view_proj = overlay_view_projection(Some(overlay), Mat4::IDENTITY);
+
+        let dash = view_proj * Vec4::new(0.0, 0.0, 0.0, 1.0);
+        let modal = view_proj * Vec4::new(0.0, 0.0, -2.0, 1.0);
+        let cursor = view_proj * Vec4::new(0.0, 0.0, -5.0, 1.0);
+        let dash_depth = dash.z / dash.w;
+        let modal_depth = modal.z / modal.w;
+        let cursor_depth = cursor.z / cursor.w;
+
+        assert!(cursor_depth > modal_depth);
+        assert!(modal_depth > dash_depth);
+        assert!((0.0..=1.0).contains(&dash_depth));
+        assert!((0.0..=1.0).contains(&modal_depth));
+        assert!((0.0..=1.0).contains(&cursor_depth));
     }
 
     #[test]
@@ -347,6 +368,12 @@ mod tests {
         assert!(
             (0.0..=1.0).contains(&origin_ndc_z),
             "expected reverse-Z NDC z inside [0, 1], got {origin_ndc_z}",
+        );
+        let expected_origin_ndc_z = (OVERLAY_CAMERA_FAR_CLIP + OVERLAY_CAMERA_LOCAL_Z)
+            / (OVERLAY_CAMERA_FAR_CLIP - OVERLAY_CAMERA_NEAR_CLIP);
+        assert!(
+            (origin_ndc_z - expected_origin_ndc_z).abs() < 1e-4,
+            "expected dash at desktop overlay camera depth {expected_origin_ndc_z}, got {origin_ndc_z}",
         );
 
         let right_clip = matrices.view_proj_left * matrices.model * Vec4::new(0.5, 0.0, 0.0, 1.0);

@@ -428,6 +428,10 @@ fn resolve_world_mesh_forward_pipeline(
         frame.view.depth_texture.format(),
         gpu_limits,
         frame.view.sample_count,
+        frame
+            .view
+            .view_winding
+            .flips_front_face_for(frame.view.offscreen_write_target),
     )
 }
 
@@ -641,8 +645,7 @@ fn precompute_material_batches(
             encode_refs,
             uploads,
             draws,
-            pipeline.shader_perm,
-            &pipeline.pass_desc,
+            pipeline,
             offscreen_write_target,
             boundaries_scratch,
         );

@@ -61,6 +61,7 @@ impl OcclusionSystem {
             ViewId::Main => self.main.clone(),
             ViewId::MainOverlay
             | ViewId::SecondaryCamera(_)
+            | ViewId::CameraPortal(_)
             | ViewId::CameraRenderTask(_)
             | ViewId::Camera360RenderTaskFace(_)
             | ViewId::ReflectionProbeRenderTask(_) => {
@@ -79,6 +80,7 @@ impl OcclusionSystem {
             ViewId::Main => Some(self.main.clone()),
             ViewId::MainOverlay
             | ViewId::SecondaryCamera(_)
+            | ViewId::CameraPortal(_)
             | ViewId::CameraRenderTask(_)
             | ViewId::Camera360RenderTaskFace(_)
             | ViewId::ReflectionProbeRenderTask(_) => self.offscreen.lock().get(&view).cloned(),
@@ -108,6 +110,7 @@ impl OcclusionSystem {
             },
             ViewId::MainOverlay
             | ViewId::SecondaryCamera(_)
+            | ViewId::CameraPortal(_)
             | ViewId::CameraRenderTask(_)
             | ViewId::Camera360RenderTaskFace(_)
             | ViewId::ReflectionProbeRenderTask(_) => state
@@ -126,6 +129,7 @@ impl OcclusionSystem {
             ViewId::Main => false,
             ViewId::MainOverlay
             | ViewId::SecondaryCamera(_)
+            | ViewId::CameraPortal(_)
             | ViewId::CameraRenderTask(_)
             | ViewId::Camera360RenderTaskFace(_)
             | ViewId::ReflectionProbeRenderTask(_) => self.offscreen.lock().remove(&view).is_some(),

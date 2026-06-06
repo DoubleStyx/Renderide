@@ -79,7 +79,7 @@ mod swapchain_scope;
 pub(crate) mod upload_arena;
 pub mod validation;
 
-pub(crate) use crate::graph_inputs::{FrameViewClear, OffscreenWriteTarget};
+pub(crate) use crate::graph_inputs::{FrameViewClear, OffscreenWriteTarget, ViewWinding};
 pub(crate) use compiled::cache::{GraphCache, GraphCacheEnsureResult, GraphCacheKey};
 pub(crate) use compiled::{
     ExternalFrameTargets, ExternalOffscreenTargets, FrameGlobalView, FrameView,

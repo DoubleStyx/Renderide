@@ -186,6 +186,7 @@ impl CompiledRenderGraph {
             let target_is_swapchain = matches!(view.target, FrameViewTarget::Swapchain);
             let resolved = Self::resolve_owned_view_metadata_from_target(
                 view_id,
+                view.view_winding,
                 view.profile,
                 &view.host_camera,
                 &view.target,

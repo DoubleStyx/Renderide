@@ -448,7 +448,7 @@ fn overlay_layer_model_matrix_strips_ancestors_above_overlay_root() {
     );
 }
 
-/// Mimics the FrooxEngine RadiantDash + OverlayManager hierarchy in desktop mode:
+/// Mimics the host dashboard plus overlay-manager hierarchy in desktop mode:
 ///
 /// ```text
 /// Node 0  Userspace world root
@@ -459,7 +459,8 @@ fn overlay_layer_model_matrix_strips_ancestors_above_overlay_root() {
 /// ```
 ///
 /// Verifies that the curved plane (node 4) renders at NDC near screen center when combined
-/// with overlay ortho + identity view, regardless of how OverlayManager.Slot is placed.
+/// with overlay ortho plus the fixed desktop overlay camera view, regardless of how
+/// OverlayManager.Slot is placed.
 #[test]
 fn overlay_model_matrix_for_dash_like_hierarchy_ignores_overlay_root_local_pose() {
     let mut scene = SceneCoordinator::new();
@@ -629,15 +630,17 @@ fn overlay_model_matrix_strips_non_identity_overlay_root_local() {
     );
 }
 
-/// Full pipeline assertion mimicking the dash hierarchy as it actually exists in FrooxEngine
-/// after `UserspaceRadiantDash.UpdateOverlayState` reparents `VisualsRoot` under `OverlayRoot`
-/// with `SetIdentityTransform()`. Uses the same overlay view-shift the renderer applies in
-/// `compute_per_draw_vp_matrices`, so a curved-plane vertex at OverlayRoot-local origin
-/// projects to screen NDC center -- not clipped by the near plane and not displaced into 3D
-/// by any of OverlayManager.Slot's world pose.
+/// Full pipeline assertion for the host dashboard hierarchy after `VisualsRoot` is reparented
+/// under `OverlayRoot` with an identity transform. Uses the same desktop overlay camera transform
+/// as the forward pass, so a curved-plane vertex at OverlayRoot-local origin projects to screen
+/// NDC center -- not clipped by the near plane and not displaced into 3D by any overlay-manager
+/// parent pose.
 #[test]
 fn full_pipeline_overlay_vertex_projects_to_screen_ndc() {
-    use crate::camera::{CameraClipPlanes, HostCameraFrame, Viewport};
+    use crate::camera::{
+        CameraClipPlanes, HostCameraFrame, OVERLAY_CAMERA_FAR_CLIP, OVERLAY_CAMERA_LOCAL_Z,
+        OVERLAY_CAMERA_NEAR_CLIP, Viewport,
+    };
 
     let mut scene = SceneCoordinator::new();
     let id = RenderSpaceId(103);
@@ -691,8 +694,8 @@ fn full_pipeline_overlay_vertex_projects_to_screen_ndc() {
     let viewport = Viewport::from_tuple((1920, 1080));
     let overlay_proj =
         HostCameraFrame::overlay_projection(viewport, CameraClipPlanes::new(0.1, 100.0));
-    // Mirrors the view-shift `compute_per_draw_vp_matrices` applies for overlay items.
-    let overlay_view = Mat4::from_translation(Vec3::new(0.0, 0.0, -1.0));
+    let overlay_view = Mat4::from_translation(Vec3::new(0.0, 0.0, OVERLAY_CAMERA_LOCAL_Z))
+        * Mat4::from_scale(Vec3::new(1.0, 1.0, -1.0));
     let vp = overlay_proj * overlay_view;
 
     // Vertex at curved plane's local origin -> NDC origin (screen center) in xy.
@@ -710,7 +713,13 @@ fn full_pipeline_overlay_vertex_projects_to_screen_ndc() {
     );
     assert!(
         (0.0..=1.0).contains(&origin_ndc_z),
-        "expected NDC z in [0, 1] for reverse-Z (view-shift pushes vertex into frustum), got {origin_ndc_z}",
+        "expected NDC z in [0, 1] for reverse-Z overlay camera depth, got {origin_ndc_z}",
+    );
+    let expected_origin_ndc_z = (OVERLAY_CAMERA_FAR_CLIP + OVERLAY_CAMERA_LOCAL_Z)
+        / (OVERLAY_CAMERA_FAR_CLIP - OVERLAY_CAMERA_NEAR_CLIP);
+    assert!(
+        (origin_ndc_z - expected_origin_ndc_z).abs() < 1e-4,
+        "expected dash at overlay camera depth {expected_origin_ndc_z}, got {origin_ndc_z}",
     );
 
     // Vertex at curved plane's local (+0.5, 0, 0): with VisualsRoot scale 1.5 -> overlay-local

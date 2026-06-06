@@ -28,6 +28,10 @@ use super::super::camera::{
     ExtractedCameraRenderablesUpdate, extract_camera_renderables_update,
     fixup_cameras_for_transform_removals,
 };
+use super::super::camera_portal::{
+    ExtractedCameraPortalRenderablesUpdate, apply_camera_portal_renderables_update_extracted,
+    extract_camera_portal_renderables_update, fixup_camera_portals_for_transform_removals,
+};
 use super::super::error::SceneError;
 use super::super::ids::RenderSpaceId;
 use super::super::layer::{
@@ -101,6 +105,7 @@ macro_rules! extract_optional_render_space_update {
 #[inline]
 pub(in crate::scene::coordinator) fn is_extracted_empty(e: &ExtractedRenderSpaceUpdate) -> bool {
     e.cameras.is_none()
+        && e.camera_portals.is_none()
         && e.reflection_probes.is_none()
         && e.transforms.is_none()
         && e.meshes.is_none()
@@ -123,6 +128,9 @@ fn extracted_apply_work_units(e: &ExtractedRenderSpaceUpdate) -> usize {
     let mut units = 0usize;
     if let Some(update) = &e.cameras {
         units += camera_update_work_units(update);
+    }
+    if let Some(update) = &e.camera_portals {
+        units += camera_portal_update_work_units(update);
     }
     if let Some(update) = &e.reflection_probes {
         units += reflection_probe_update_work_units(update);
@@ -227,6 +235,12 @@ fn camera_update_work_units(update: &ExtractedCameraRenderablesUpdate) -> usize 
         + update.additions.len()
         + update.states.len()
         + update.transform_ids.as_ref().map_or(0, Vec::len)
+}
+
+/// Counts extracted camera-portal rows.
+#[inline]
+fn camera_portal_update_work_units(update: &ExtractedCameraPortalRenderablesUpdate) -> usize {
+    update.removals.len() + update.additions.len() + update.states.len()
 }
 
 /// Counts extracted reflection-probe rows.
@@ -343,6 +357,8 @@ pub(in crate::scene::coordinator) struct ExtractedRenderSpaceUpdate {
     pub space_id: RenderSpaceId,
     /// Camera-renderable update payload.
     pub cameras: Option<ExtractedCameraRenderablesUpdate>,
+    /// Camera-portal renderable update payload.
+    pub camera_portals: Option<ExtractedCameraPortalRenderablesUpdate>,
     /// Reflection-probe renderable update payload.
     pub reflection_probes: Option<ExtractedReflectionProbeRenderablesUpdate>,
     /// Dense transform-table update payload.
@@ -373,6 +389,8 @@ pub(in crate::scene::coordinator) struct ExtractedRenderSpaceUpdate {
 struct ExtractedGeometryRenderSpaceUpdates {
     /// Camera renderer update payload.
     cameras: Option<ExtractedCameraRenderablesUpdate>,
+    /// Camera-portal renderer update payload.
+    camera_portals: Option<ExtractedCameraPortalRenderablesUpdate>,
     /// Reflection-probe renderer update payload.
     reflection_probes: Option<ExtractedReflectionProbeRenderablesUpdate>,
     /// Transform update payload.
@@ -420,6 +438,7 @@ pub(in crate::scene::coordinator) fn extract_render_space_update(
     Ok(ExtractedRenderSpaceUpdate {
         space_id,
         cameras: geometry.cameras,
+        camera_portals: geometry.camera_portals,
         reflection_probes: geometry.reflection_probes,
         transforms: geometry.transforms,
         meshes: geometry.meshes,
@@ -448,6 +467,13 @@ fn extract_geometry_render_space_updates(
             cameras_update,
             "scene::extract_render_space::cameras",
             extract_camera_renderables_update,
+        ),
+        camera_portals: extract_optional_render_space_update!(
+            shm,
+            update,
+            camera_portals_update,
+            "scene::extract_render_space::camera_portals",
+            extract_camera_portal_renderables_update,
         ),
         reflection_probes: extract_optional_render_space_update!(
             shm,
@@ -642,6 +668,14 @@ fn apply_render_space_geometry_phase(
     if let Some(ref su) = extracted.skinned_meshes {
         profiling::scope!("scene::apply_render_space_chunk::skinned_meshes");
         apply_skinned_mesh_renderables_update_extracted(space, su, transform_removals, scene_id);
+    }
+    if has_transform_removals {
+        profiling::scope!("scene::apply_render_space_chunk::fixup_camera_portals");
+        fixup_camera_portals_for_transform_removals(space, transform_removals);
+    }
+    if let Some(ref cpu) = extracted.camera_portals {
+        profiling::scope!("scene::apply_render_space_chunk::camera_portals");
+        apply_camera_portal_renderables_update_extracted(space, cpu);
     }
     if let Some(ref lgu) = extracted.lod_groups {
         profiling::scope!("scene::apply_render_space_chunk::lod_groups");
@@ -866,11 +900,11 @@ impl SceneCoordinator {
 mod tests {
     use super::*;
 
-    /// Builds an empty extracted render-space payload for work-estimate tests.
     fn empty_extracted(space_id: i32) -> ExtractedRenderSpaceUpdate {
         ExtractedRenderSpaceUpdate {
             space_id: RenderSpaceId(space_id),
             cameras: None,
+            camera_portals: None,
             reflection_probes: None,
             transforms: None,
             meshes: None,
@@ -886,7 +920,6 @@ mod tests {
         }
     }
 
-    /// Verifies that side slabs contribute to the apply work estimate.
     #[test]
     fn apply_work_units_count_extracted_rows() {
         let mut extracted = empty_extracted(7);
@@ -905,7 +938,6 @@ mod tests {
         assert_eq!(extracted_apply_work_units(&extracted), 12);
     }
 
-    /// Verifies that small multi-space updates stay serial until enough row work is present.
     #[test]
     fn apply_parallelism_requires_multiple_slots_and_enough_work() {
         assert!(
@@ -938,7 +970,6 @@ mod tests {
         );
     }
 
-    /// A single dominant slot should use inner row-level splitting instead of outer slot fan-out.
     #[test]
     fn space_split_apply_prefers_dominant_underfilled_slots() {
         assert!(space_split_apply_preferred(

@@ -697,6 +697,7 @@ fn shadow_pipeline_state(format: wgpu::TextureFormat) -> WorldMeshForwardPipelin
             multiview_mask: None,
         },
         shader_perm: ShaderPermutation::default(),
+        front_face_flip: false,
     }
 }
 

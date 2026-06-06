@@ -163,6 +163,7 @@ impl CompiledRenderGraph {
             profiling::scope!("graph::frame_global::resolve_target");
             Self::resolve_view_from_target(
                 first.view_id(),
+                first.view_winding,
                 first.profile,
                 &first.host_camera,
                 &first.target,

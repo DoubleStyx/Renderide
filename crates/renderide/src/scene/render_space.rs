@@ -13,6 +13,7 @@ use crate::shared::{
 use hashbrown::HashMap;
 
 use super::camera::CameraRenderableEntry;
+use super::camera_portal::CameraPortalEntry;
 use super::ids::RenderSpaceId;
 use super::lod_groups::LodGroupEntry;
 use super::meshes::types::{MeshRendererInstanceId, SkinnedMeshRenderer, StaticMeshRenderer};
@@ -131,6 +132,11 @@ impl<'a> RenderSpaceView<'a> {
         &self.state.cameras
     }
 
+    /// Camera portals indexed by camera-portal renderable id.
+    pub fn camera_portals(self) -> &'a [CameraPortalEntry] {
+        &self.state.camera_portals
+    }
+
     /// Reflection probes indexed by reflection-probe renderable id.
     pub fn reflection_probes(self) -> &'a [ReflectionProbeEntry] {
         &self.state.reflection_probes
@@ -200,6 +206,8 @@ pub(in crate::scene) struct RenderSpaceState {
     pub(in crate::scene) lod_groups: Vec<LodGroupEntry>,
     /// Host camera components (secondary cameras, render texture targets).
     pub(in crate::scene) cameras: Vec<CameraRenderableEntry>,
+    /// Host camera portal components.
+    pub(in crate::scene) camera_portals: Vec<CameraPortalEntry>,
     /// Host reflection probe components.
     pub(in crate::scene) reflection_probes: Vec<ReflectionProbeEntry>,
     /// PhotonDust billboard render-buffer renderer components.
@@ -297,6 +305,7 @@ impl Default for RenderSpaceState {
             next_mesh_renderer_instance_id: MeshRendererInstanceId(1),
             lod_groups: Vec::new(),
             cameras: Vec::new(),
+            camera_portals: Vec::new(),
             reflection_probes: Vec::new(),
             billboard_render_buffers: Vec::new(),
             mesh_render_buffers: Vec::new(),

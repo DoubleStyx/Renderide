@@ -15,16 +15,11 @@ use crate::render_graph::execution_backend::{
 };
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
 
-use super::super::light_gpu::GpuLight;
 use super::manager::FrameResourceManager;
 
 impl GraphFrameResources for FrameResourceManager {
     fn has_frame_gpu(&self) -> bool {
         self.frame_gpu().is_some()
-    }
-
-    fn frame_lights(&self, view_id: ViewId) -> &[GpuLight] {
-        self.frame_lights_for_view(view_id)
     }
 
     fn frame_light_count_u32(&self, view_id: ViewId) -> u32 {

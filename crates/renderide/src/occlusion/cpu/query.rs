@@ -15,6 +15,7 @@ use std::sync::LazyLock;
 use glam::{Mat4, Vec3};
 
 use super::snapshot::HiZCpuSnapshot;
+use crate::camera::overlay_camera_view_matrix;
 use crate::world_mesh::culling::WorldMeshCullProjParams;
 use footprint::project_aabb_to_screen;
 use sampling::{HiZUvRect, sample_hiz_rect};
@@ -39,18 +40,13 @@ pub fn hi_z_view_proj_matrices(
     prev_view: Mat4,
     is_overlay: bool,
 ) -> Vec<Mat4> {
+    if is_overlay {
+        return vec![prev.overlay_proj * overlay_camera_view_matrix()];
+    }
     if let Some((sl, sr)) = prev.vr_stereo {
-        if is_overlay {
-            return vec![prev.overlay_proj * prev_view];
-        }
         return vec![sl, sr];
     }
-    let base = if is_overlay {
-        prev.overlay_proj
-    } else {
-        prev.world_proj
-    };
-    vec![base * prev_view]
+    vec![prev.world_proj * prev_view]
 }
 
 /// Returns `true` when the axis-aligned world bounds are **fully occluded** by `snapshot` for `view_proj`.

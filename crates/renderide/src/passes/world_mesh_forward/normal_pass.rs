@@ -230,10 +230,9 @@ impl WorldMeshForwardNormalPipelineKey {
 pub(crate) fn normal_pipeline_key_for_draw(
     item: &crate::world_mesh::WorldMeshDrawItem,
     pipeline: &WorldMeshForwardPipelineState,
-    offscreen: bool,
 ) -> Option<WorldMeshForwardNormalPipelineKey> {
     let mut front_face = item.batch_key.front_face;
-    if offscreen {
+    if pipeline.front_face_flip {
         front_face = front_face.flipped();
     }
     WorldMeshForwardNormalPipelineKey::for_draw(
