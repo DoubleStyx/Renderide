@@ -22,6 +22,7 @@ mod light_gpu;
 mod per_draw_resources;
 mod per_view_resource_map;
 mod secondary_rt_scratch;
+mod shadow_atlas_format;
 mod shadow_quality;
 mod view_resource_registry;
 mod world_mesh_frame_plan;

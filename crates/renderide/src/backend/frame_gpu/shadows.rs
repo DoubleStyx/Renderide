@@ -25,12 +25,14 @@ use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::render_graph::pass::{EncoderPass, PassBuilder, PassPhase};
 use crate::world_mesh::WorldMeshPhase;
 
+use super::super::frame_gpu_error::FrameGpuInitError;
 use super::super::frame_resource_manager::{ShadowFramePlan, ShadowRenderView};
 use super::super::per_draw_resources::PerDrawResources;
+use super::super::shadow_atlas_format::{
+    select_shadow_atlas_binding_format, select_shadow_atlas_format,
+};
 use super::FrameGpuResources;
 
-/// Depth format used for realtime shadow maps.
-pub(crate) const SHADOW_ATLAS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Main-graph frame-global pass name for shadow-atlas rendering.
 pub(crate) const SHADOW_ATLAS_PASS_NAME: &str = "shadow_atlas";
 
@@ -189,6 +191,8 @@ pub(super) struct ShadowAtlasResources {
     texture: Arc<wgpu::Texture>,
     atlas_view: Arc<wgpu::TextureView>,
     layer_views: Vec<Arc<wgpu::TextureView>>,
+    format: wgpu::TextureFormat,
+    renderable: bool,
     sampler: Arc<wgpu::Sampler>,
     metadata_buffer: Arc<wgpu::Buffer>,
     per_draw: PerDrawResources,
@@ -200,7 +204,10 @@ pub(super) struct ShadowAtlasResources {
 
 impl ShadowAtlasResources {
     /// Creates the fallback one-layer shadow atlas and metadata buffer.
-    pub(super) fn new(device: &wgpu::Device, limits: Arc<GpuLimits>) -> Self {
+    pub(super) fn new(
+        device: &wgpu::Device,
+        limits: Arc<GpuLimits>,
+    ) -> Result<Self, FrameGpuInitError> {
         let metadata_buffer = Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("shadow_view_metadata"),
             size: (MAX_SHADOW_VIEWS * size_of::<GpuShadowView>()) as u64,
@@ -225,11 +232,19 @@ impl ShadowAtlasResources {
         let per_draw =
             PerDrawResources::new_with_layout(device, per_draw_layout, Arc::clone(&limits));
         let resolution = initial_shadow_resolution(limits.as_ref());
-        let (texture, atlas_view, layer_views) = create_shadow_texture(device, resolution, 1);
-        Self {
+        let render_format = select_shadow_atlas_format(limits.as_ref());
+        let format = render_format
+            .or_else(|| select_shadow_atlas_binding_format(limits.as_ref()))
+            .ok_or(FrameGpuInitError::ShadowAtlasBindingFormatUnavailable)?;
+        let renderable = render_format.is_some();
+        let (texture, atlas_view, layer_views) =
+            create_shadow_texture(device, resolution, 1, format, renderable);
+        Ok(Self {
             texture,
             atlas_view,
             layer_views,
+            format,
+            renderable,
             sampler,
             metadata_buffer,
             per_draw,
@@ -237,7 +252,7 @@ impl ShadowAtlasResources {
             resolution,
             layers: 1,
             version: 1,
-        }
+        })
     }
 
     /// Grows the atlas to cover the requested full-layer resolution and layer count.
@@ -251,6 +266,9 @@ impl ShadowAtlasResources {
     ) -> bool {
         self.per_draw
             .ensure_draw_slot_capacity(device, requested_draw_slots);
+        if !self.renderable {
+            return false;
+        }
         let resolution = clamp_shadow_resolution(limits, requested_resolution);
         let layers = requested_layers
             .max(1)
@@ -261,7 +279,7 @@ impl ShadowAtlasResources {
         let next_resolution = self.resolution.max(resolution);
         let next_layers = self.layers.max(layers);
         let (texture, atlas_view, layer_views) =
-            create_shadow_texture(device, next_resolution, next_layers);
+            create_shadow_texture(device, next_resolution, next_layers, self.format, true);
         self.texture = texture;
         self.atlas_view = atlas_view;
         self.layer_views = layer_views;
@@ -289,6 +307,16 @@ impl ShadowAtlasResources {
     /// Single-layer render-target view for `layer`.
     pub(super) fn layer_view(&self, layer: u32) -> Option<&wgpu::TextureView> {
         self.layer_views.get(layer as usize).map(Arc::as_ref)
+    }
+
+    /// Depth format used by shadow-map render pipelines.
+    pub(super) const fn format(&self) -> wgpu::TextureFormat {
+        self.format
+    }
+
+    /// Returns whether realtime shadow maps can be rendered on this adapter.
+    pub(super) const fn renderable(&self) -> bool {
+        self.renderable
     }
 
     /// Shadow-caster per-draw bind group.
@@ -340,11 +368,18 @@ fn create_shadow_texture(
     device: &wgpu::Device,
     resolution: u32,
     layers: u32,
+    format: wgpu::TextureFormat,
+    renderable: bool,
 ) -> (
     Arc<wgpu::Texture>,
     Arc<wgpu::TextureView>,
     Vec<Arc<wgpu::TextureView>>,
 ) {
+    let usage = if renderable {
+        wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT
+    } else {
+        wgpu::TextureUsages::TEXTURE_BINDING
+    };
     let texture = Arc::new(device.create_texture(&wgpu::TextureDescriptor {
         label: Some("shadow_depth_atlas"),
         size: wgpu::Extent3d {
@@ -355,29 +390,41 @@ fn create_shadow_texture(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: SHADOW_ATLAS_FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        format,
+        usage,
         view_formats: &[],
     }));
-    let atlas_view = Arc::new(texture.create_view(&shadow_atlas_array_view_descriptor(layers)));
+    let atlas_view =
+        Arc::new(texture.create_view(&shadow_atlas_array_view_descriptor(layers, format)));
     crate::profiling::note_resource_churn!(TextureView, "backend::shadow_depth_atlas_array");
-    let mut layer_views = Vec::with_capacity(layers as usize);
-    for layer in 0..layers {
-        layer_views.push(Arc::new(
-            texture.create_view(&shadow_atlas_layer_view_descriptor(layer)),
-        ));
-        crate::profiling::note_resource_churn!(TextureView, "backend::shadow_depth_atlas_layer");
-    }
+    let layer_views = if renderable {
+        let mut layer_views = Vec::with_capacity(layers as usize);
+        for layer in 0..layers {
+            layer_views.push(Arc::new(
+                texture.create_view(&shadow_atlas_layer_view_descriptor(layer, format)),
+            ));
+            crate::profiling::note_resource_churn!(
+                TextureView,
+                "backend::shadow_depth_atlas_layer"
+            );
+        }
+        layer_views
+    } else {
+        Vec::new()
+    };
     (texture, atlas_view, layer_views)
 }
 
-fn shadow_atlas_array_view_descriptor(layers: u32) -> wgpu::TextureViewDescriptor<'static> {
+fn shadow_atlas_array_view_descriptor(
+    layers: u32,
+    format: wgpu::TextureFormat,
+) -> wgpu::TextureViewDescriptor<'static> {
     wgpu::TextureViewDescriptor {
         label: Some("shadow_depth_atlas_array"),
-        format: Some(SHADOW_ATLAS_FORMAT),
+        format: Some(format),
         dimension: Some(wgpu::TextureViewDimension::D2Array),
         usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
-        aspect: wgpu::TextureAspect::All,
+        aspect: wgpu::TextureAspect::DepthOnly,
         base_mip_level: 0,
         mip_level_count: Some(1),
         base_array_layer: 0,
@@ -385,13 +432,16 @@ fn shadow_atlas_array_view_descriptor(layers: u32) -> wgpu::TextureViewDescripto
     }
 }
 
-fn shadow_atlas_layer_view_descriptor(layer: u32) -> wgpu::TextureViewDescriptor<'static> {
+fn shadow_atlas_layer_view_descriptor(
+    layer: u32,
+    format: wgpu::TextureFormat,
+) -> wgpu::TextureViewDescriptor<'static> {
     wgpu::TextureViewDescriptor {
         label: Some("shadow_depth_atlas_layer"),
-        format: Some(SHADOW_ATLAS_FORMAT),
+        format: Some(format),
         dimension: Some(wgpu::TextureViewDimension::D2),
         usage: Some(wgpu::TextureUsages::RENDER_ATTACHMENT),
-        aspect: wgpu::TextureAspect::All,
+        aspect: wgpu::TextureAspect::DepthOnly,
         base_mip_level: 0,
         mip_level_count: Some(1),
         base_array_layer: layer,
@@ -407,7 +457,7 @@ impl FrameGpuResources {
         params: ShadowAtlasEncodeParams<'_, '_, '_>,
     ) {
         profiling::scope!("shadows::encode_atlas");
-        if plan.render_views.is_empty() {
+        if plan.render_views.is_empty() || !self.shadows.renderable() {
             return;
         }
         let layer_plans = plan
@@ -433,7 +483,7 @@ impl FrameGpuResources {
             video_texture_pool: params.asset_resources.video_texture_pool(),
             skin_cache: params.skin_cache,
         };
-        let pipeline = shadow_pipeline_state();
+        let pipeline = shadow_pipeline_state(self.shadows.format());
         let mut ctx = ShadowLayerEncodeContext {
             device: params.device,
             encoder: params.encoder,
@@ -637,12 +687,12 @@ fn shadow_caster_model(item: &crate::world_mesh::WorldMeshDrawItem) -> Mat4 {
     }
 }
 
-fn shadow_pipeline_state() -> WorldMeshForwardPipelineState {
+fn shadow_pipeline_state(format: wgpu::TextureFormat) -> WorldMeshForwardPipelineState {
     WorldMeshForwardPipelineState {
         use_multiview: false,
         pass_desc: MaterialPipelineDesc {
             surface_format: wgpu::TextureFormat::Rgba8Unorm,
-            depth_stencil_format: Some(SHADOW_ATLAS_FORMAT),
+            depth_stencil_format: Some(format),
             sample_count: 1,
             multiview_mask: None,
         },
@@ -659,8 +709,8 @@ mod tests {
     use hashbrown::HashMap;
 
     use super::{
-        PaddedShadowCasterUniforms, SHADOW_ATLAS_FORMAT, clamp_shadow_resolution,
-        shadow_atlas_array_view_descriptor, shadow_atlas_layer_view_descriptor,
+        PaddedShadowCasterUniforms, clamp_shadow_resolution, shadow_atlas_array_view_descriptor,
+        shadow_atlas_layer_view_descriptor, shadow_pipeline_state,
     };
     use crate::backend::frame_resource_manager::ShadowRenderView;
     use crate::gpu::{SHADOW_VIEW_KIND_DIRECTIONAL, SHADOW_VIEW_KIND_POINT, SHADOW_VIEW_KIND_SPOT};
@@ -720,12 +770,13 @@ mod tests {
 
     #[test]
     fn shadow_atlas_array_view_is_sampled_only() {
-        let desc = shadow_atlas_array_view_descriptor(4);
+        let format = wgpu::TextureFormat::Depth24Plus;
+        let desc = shadow_atlas_array_view_descriptor(4, format);
 
-        assert_eq!(desc.format, Some(SHADOW_ATLAS_FORMAT));
+        assert_eq!(desc.format, Some(format));
         assert_eq!(desc.dimension, Some(wgpu::TextureViewDimension::D2Array));
         assert_eq!(desc.usage, Some(wgpu::TextureUsages::TEXTURE_BINDING));
-        assert_eq!(desc.aspect, wgpu::TextureAspect::All);
+        assert_eq!(desc.aspect, wgpu::TextureAspect::DepthOnly);
         assert_eq!(desc.base_mip_level, 0);
         assert_eq!(desc.mip_level_count, Some(1));
         assert_eq!(desc.base_array_layer, 0);
@@ -734,16 +785,25 @@ mod tests {
 
     #[test]
     fn shadow_atlas_layer_view_is_render_attachment_only() {
-        let desc = shadow_atlas_layer_view_descriptor(3);
+        let format = wgpu::TextureFormat::Depth16Unorm;
+        let desc = shadow_atlas_layer_view_descriptor(3, format);
 
-        assert_eq!(desc.format, Some(SHADOW_ATLAS_FORMAT));
+        assert_eq!(desc.format, Some(format));
         assert_eq!(desc.dimension, Some(wgpu::TextureViewDimension::D2));
         assert_eq!(desc.usage, Some(wgpu::TextureUsages::RENDER_ATTACHMENT));
-        assert_eq!(desc.aspect, wgpu::TextureAspect::All);
+        assert_eq!(desc.aspect, wgpu::TextureAspect::DepthOnly);
         assert_eq!(desc.base_mip_level, 0);
         assert_eq!(desc.mip_level_count, Some(1));
         assert_eq!(desc.base_array_layer, 3);
         assert_eq!(desc.array_layer_count, Some(1));
+    }
+
+    #[test]
+    fn shadow_pipeline_state_uses_selected_depth_format() {
+        let format = wgpu::TextureFormat::Depth24Plus;
+        let pipeline = shadow_pipeline_state(format);
+
+        assert_eq!(pipeline.pass_desc.depth_stencil_format, Some(format));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Realtime shadow planning stored on [`FrameResourceManager`].
 
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 
 use glam::{Mat4, Vec3};
 
@@ -15,10 +15,12 @@ use crate::mesh_deform::SkinCacheKey;
 use crate::shared::{LightType, ShadowCastMode};
 use crate::world_mesh::{WorldMeshDrawItem, WorldMeshDrawPlan};
 
+use super::super::shadow_atlas_format::select_shadow_atlas_format;
 use super::manager::FrameResourceManager;
 
 const POINT_FACE_COUNT: u32 = 6;
 const SHADOW_TYPE_NONE: u32 = 0;
+static SHADOW_ATLAS_UNSUPPORTED_WARNING: Once = Once::new();
 
 /// Draw packet for one shadow atlas layer.
 #[derive(Clone, Debug)]
@@ -84,6 +86,9 @@ impl FrameResourceManager {
     {
         profiling::scope!("render::prepare_shadow_frame");
         self.clear_shadow_frame();
+        if !shadow_atlas_rendering_supported(self.limits.as_deref()) {
+            return;
+        }
         let max_shadow_views = shadow_view_capacity(self.limits.as_deref());
         let mut plan = ShadowFramePlan {
             requested_resolution: 1,
@@ -117,6 +122,9 @@ impl FrameResourceManager {
 
     /// Atlas capacity requested by the current shadow frame.
     pub(crate) fn shadow_resource_request(&self) -> Option<(u32, u32)> {
+        if self.shadow_frame.render_views.is_empty() {
+            return None;
+        }
         Some((
             self.shadow_frame.requested_resolution.max(1),
             self.shadow_frame.requested_layers.max(1),
@@ -144,6 +152,21 @@ impl FrameResourceManager {
         }
         keys
     }
+}
+
+fn shadow_atlas_rendering_supported(limits: Option<&GpuLimits>) -> bool {
+    let Some(limits) = limits else {
+        return true;
+    };
+    if select_shadow_atlas_format(limits).is_some() {
+        return true;
+    }
+    SHADOW_ATLAS_UNSUPPORTED_WARNING.call_once(|| {
+        logger::warn!(
+            "sampled renderable depth shadow formats are unavailable; realtime shadow maps are disabled"
+        );
+    });
+    false
 }
 
 fn append_shadow_views_for_view(
@@ -479,6 +502,30 @@ mod tests {
             },
             wgpu::Features::empty(),
             HashMap::new(),
+        )
+    }
+
+    fn limits_with_shadow_format_usages<const N: usize>(
+        features: [(wgpu::TextureFormat, wgpu::TextureUsages); N],
+    ) -> GpuLimits {
+        let mut format_features = HashMap::new();
+        for (format, allowed_usages) in features {
+            format_features.insert(
+                format,
+                wgpu::TextureFormatFeatures {
+                    allowed_usages,
+                    flags: wgpu::TextureFormatFeatureFlags::empty(),
+                },
+            );
+        }
+        GpuLimits::synthetic_for_tests(
+            wgpu::Limits {
+                max_texture_dimension_2d: 1024,
+                max_texture_array_layers: 8,
+                ..Default::default()
+            },
+            wgpu::Features::empty(),
+            format_features,
         )
     }
 
@@ -827,5 +874,50 @@ mod tests {
         let light = &manager.per_view_lights.get(ViewId::Main).unwrap().lights[0];
         assert_eq!(light.shadow_view_start, 0);
         assert_eq!(light.shadow_view_count, 2);
+    }
+
+    #[test]
+    fn shadow_planning_disables_when_depth_atlas_format_is_not_renderable() {
+        let mut manager = super::FrameResourceManager::new();
+        manager.limits = Some(Arc::new(limits_with_shadow_format_usages([
+            (
+                wgpu::TextureFormat::Depth32Float,
+                wgpu::TextureUsages::TEXTURE_BINDING,
+            ),
+            (
+                wgpu::TextureFormat::Depth24Plus,
+                wgpu::TextureUsages::RENDER_ATTACHMENT,
+            ),
+            (
+                wgpu::TextureFormat::Depth16Unorm,
+                wgpu::TextureUsages::empty(),
+            ),
+        ])));
+        let mut light = shadowed_light(LightType::Spot);
+        light.shadow_view_start = 7;
+        light.shadow_view_count = 3;
+        light.shadow_flags = 5;
+        manager
+            .per_view_lights
+            .get_or_insert_with(ViewId::Main, PreparedViewLights::default)
+            .lights
+            .push(light);
+        let draw_plan = prefetched_plan(vec![pbs_draw(1, ShadowCastMode::On)]);
+
+        manager.prepare_shadow_frame_for_views(
+            HostShadowQuality::default(),
+            [(ViewId::Main, &draw_plan)],
+        );
+
+        let plan = manager.shadow_frame_plan();
+        assert!(plan.render_views.is_empty());
+        assert!(plan.metadata.is_empty());
+        assert_eq!(plan.requested_draw_slots, 0);
+        assert_eq!(manager.shadow_resource_request(), None);
+
+        let light = &manager.per_view_lights.get(ViewId::Main).unwrap().lights[0];
+        assert_eq!(light.shadow_view_start, 0);
+        assert_eq!(light.shadow_view_count, 0);
+        assert_eq!(light.shadow_flags, 0);
     }
 }

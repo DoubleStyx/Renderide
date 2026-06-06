@@ -490,7 +490,7 @@ impl FrameGpuResources {
         ) = create_reflection_probe_specular_fallback(device);
         let (ibl_dfg_lut_texture, ibl_dfg_lut_view) = create_ibl_dfg_lut(device, queue);
         let light_cookies = LightCookieAtlasResources::new(device, queue, Arc::clone(&limits));
-        let shadows = ShadowAtlasResources::new(device, Arc::clone(&limits));
+        let shadows = ShadowAtlasResources::new(device, Arc::clone(&limits))?;
         let bind_group = Self::create_bind_group(
             device,
             FrameBindGroupInputs {
