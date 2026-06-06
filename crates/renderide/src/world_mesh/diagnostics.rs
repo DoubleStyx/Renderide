@@ -154,6 +154,8 @@ pub struct WorldMeshDrawStateRow {
     pub mesh_asset_id: i32,
     /// Renderer material slot index.
     pub slot_index: usize,
+    /// First material-stack slot when this draw participates in stacking.
+    pub material_stack_first_slot_index: Option<usize>,
     /// Host shader asset id from material `set_shader`.
     pub shader_asset_id: i32,
     /// Material asset id.
@@ -424,6 +426,9 @@ pub fn state_rows_from_sorted(draws: &[WorldMeshDrawItem]) -> Vec<WorldMeshDrawS
                 node_id: item.node_id,
                 mesh_asset_id: item.mesh_asset_id,
                 slot_index: item.slot_index,
+                material_stack_first_slot_index: item
+                    .material_stack_order
+                    .map(|order| order.first_stacked_slot_index),
                 shader_asset_id: item.batch_key.shader_asset_id,
                 material_asset_id: item.batch_key.material_asset_id,
                 property_block_slot0: item.batch_key.property_block_slot0,

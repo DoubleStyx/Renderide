@@ -75,6 +75,10 @@ pub fn gpu_light_from_resolved_with_cookie(
         shadow_bias: light.shadow_bias,
         shadow_normal_bias: light.shadow_normal_bias,
         shadow_type: shadow_type_u32(light.shadow_type),
+        shadow_view_start: 0,
+        shadow_view_count: 0,
+        shadow_flags: 0,
+        _shadow_reserved: 0,
         cookie_kind: cookie.kind,
         cookie_layer: cookie.layer,
         _cookie_reserved: cookie.wrap_bits,
@@ -168,7 +172,7 @@ mod layout_tests {
     fn gpu_light_stride_matches_wgsl() {
         assert_eq!(
             size_of::<GpuLight>(),
-            128,
+            144,
             "must match WGSL storage layout for `array<GpuLight>` (naga stride)"
         );
     }

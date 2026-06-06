@@ -32,6 +32,26 @@ pub struct GraphClusterBufferRefs {
     pub cluster_light_indices: wgpu::Buffer,
 }
 
+/// Parameters required to encode the frame-global realtime shadow atlas.
+pub struct ShadowAtlasEncodeParams<'a, 'encoder, 'upload> {
+    /// WGPU device used for lazy pipeline creation.
+    pub device: &'a wgpu::Device,
+    /// Command encoder receiving shadow render passes.
+    pub encoder: &'encoder mut wgpu::CommandEncoder,
+    /// Material registry, embedded binds, and property store.
+    pub materials: &'a MaterialSystem,
+    /// Resident asset/resource pools.
+    pub asset_resources: &'a dyn GraphAssetResources,
+    /// Optional skin cache populated by frame-global mesh deform.
+    pub skin_cache: Option<&'a GpuSkinCache>,
+    /// GPU limits snapshot for base-instance and capacity decisions.
+    pub gpu_limits: &'a GpuLimits,
+    /// Deferred upload sink for the shadow per-draw slab.
+    pub uploads: GraphUploadSink<'upload>,
+    /// Optional GPU profiler handle.
+    pub profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
+}
+
 /// Graph-facing access to renderer frame resources.
 pub trait GraphFrameResources: Send + Sync {
     /// Whether frame-global GPU resources were attached.
@@ -191,6 +211,12 @@ pub trait GraphFrameResources: Send + Sync {
         asset_resources: &dyn GraphAssetResources,
         profiler: Option<&crate::profiling::GpuProfilerHandle>,
     );
+
+    /// Whether realtime shadow atlas rendering has work.
+    fn has_shadow_atlas_requests(&self) -> bool;
+
+    /// Records realtime shadow atlas layers.
+    fn encode_shadow_atlas(&self, params: ShadowAtlasEncodeParams<'_, '_, '_>);
 }
 
 /// Graph-facing access to resident asset/resource pools.

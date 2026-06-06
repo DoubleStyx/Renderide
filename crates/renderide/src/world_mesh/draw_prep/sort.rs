@@ -4,7 +4,7 @@ use std::cmp::Ordering;
 
 use rayon::slice::ParallelSliceMut;
 
-use super::item::WorldMeshDrawItem;
+use super::item::{WorldMeshDrawItem, same_material_stack};
 
 /// Draws assigned to one secondary structural resort worker chunk.
 const INTRA_PREFIX_RUN_PARALLEL_CHUNK_DRAWS: usize = 256;
@@ -93,6 +93,7 @@ pub fn pack_sort_prefix(
 pub(super) fn cmp_transparent_intra_run(a: &WorldMeshDrawItem, b: &WorldMeshDrawItem) -> Ordering {
     a.sorting_order
         .cmp(&b.sorting_order)
+        .then_with(|| cmp_material_stack_order(a, b))
         .then_with(|| cmp_transparent_class_tie(a, b))
         .then(a.collect_order.cmp(&b.collect_order))
 }
@@ -112,9 +113,14 @@ pub(super) fn cmp_order_sensitive_draws(a: &WorldMeshDrawItem, b: &WorldMeshDraw
         .then(a.batch_key.render_queue.cmp(&b.batch_key.render_queue))
         .then(a_transparent.cmp(&b_transparent))
         .then_with(|| match (a_transparent, b_transparent) {
-            (false, false) => a
-                .batch_key_hash
-                .cmp(&b.batch_key_hash)
+            (false, false) => cmp_material_stack_order(a, b)
+                .then_with(|| {
+                    if same_material_stack(a, b) {
+                        Ordering::Equal
+                    } else {
+                        a.batch_key_hash.cmp(&b.batch_key_hash)
+                    }
+                })
                 .then_with(|| a.batch_key.cmp(&b.batch_key))
                 .then(b.sorting_order.cmp(&a.sorting_order))
                 .then(a.mesh_asset_id.cmp(&b.mesh_asset_id))
@@ -143,6 +149,16 @@ fn cmp_transparent_class_tie(a: &WorldMeshDrawItem, b: &WorldMeshDrawItem) -> Or
     b.camera_distance_sq.total_cmp(&a.camera_distance_sq)
 }
 
+/// Orders layers of the same material stack by ascending material slot.
+#[inline]
+fn cmp_material_stack_order(a: &WorldMeshDrawItem, b: &WorldMeshDrawItem) -> Ordering {
+    if same_material_stack(a, b) {
+        a.slot_index.cmp(&b.slot_index)
+    } else {
+        Ordering::Equal
+    }
+}
+
 /// Tiebreaker for opaque draws sharing the same packed prefix.
 ///
 /// Two opaque draws share a packed prefix when their `(overlay, render_queue, depth_bucket,
@@ -154,8 +170,14 @@ fn cmp_transparent_class_tie(a: &WorldMeshDrawItem, b: &WorldMeshDrawItem) -> Or
 #[inline]
 #[cfg(test)]
 fn cmp_opaque_intra_prefix(a: &WorldMeshDrawItem, b: &WorldMeshDrawItem) -> Ordering {
-    a.batch_key_hash
-        .cmp(&b.batch_key_hash)
+    cmp_material_stack_order(a, b)
+        .then_with(|| {
+            if same_material_stack(a, b) {
+                Ordering::Equal
+            } else {
+                a.batch_key_hash.cmp(&b.batch_key_hash)
+            }
+        })
         .then_with(|| a.batch_key.cmp(&b.batch_key))
         .then(b.sorting_order.cmp(&a.sorting_order))
         .then(a.mesh_asset_id.cmp(&b.mesh_asset_id))

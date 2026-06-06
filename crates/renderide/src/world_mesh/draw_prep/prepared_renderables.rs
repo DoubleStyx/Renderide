@@ -26,7 +26,7 @@ use crate::cpu_parallelism::RENDER_COMMAND_CHUNK_DRAWS;
 use crate::gpu_pools::MeshPool;
 use crate::particles::ParticleDrawParams;
 use crate::scene::{MeshRendererInstanceId, RenderSpaceId, SceneCoordinator};
-use crate::shared::RenderingContext;
+use crate::shared::{RenderingContext, ShadowCastMode};
 use crate::world_mesh::culling::{MeshCullGeometry, WorldMeshCullInput};
 
 use expand::{empty_material_key_signature, populate_runs_and_material_keys};
@@ -81,6 +81,8 @@ pub(super) struct FramePreparedDraw {
     pub is_hidden: bool,
     /// Host-side sorting order propagated to [`super::item::WorldMeshDrawItem::sorting_order`].
     pub sorting_order: i32,
+    /// Host shadow-caster mode for this renderer.
+    pub shadow_cast_mode: ShadowCastMode,
     /// `true` when the source came from the skinned renderer list.
     pub skinned: bool,
     /// Cached result of [`crate::assets::mesh::GpuMesh::supports_world_space_skin_deform`] for
@@ -92,6 +94,8 @@ pub(super) struct FramePreparedDraw {
     pub tangent_blendshape_deform_active: bool,
     /// Material-slot index within the renderer's slot / primary fallback list.
     pub slot_index: usize,
+    /// Material-stack ordering marker when this slot reuses the final submesh.
+    pub material_stack_order: Option<super::item::MaterialStackOrder>,
     /// First index in the mesh index buffer for the selected submesh range.
     pub first_index: u32,
     /// Number of indices for this submesh draw (always `> 0`).

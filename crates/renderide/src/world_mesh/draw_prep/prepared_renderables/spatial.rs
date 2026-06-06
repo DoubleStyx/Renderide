@@ -6,6 +6,8 @@ use hashbrown::HashMap;
 #[cfg(test)]
 use crate::particles::ParticleDrawParams;
 use crate::scene::{RenderSpaceId, SceneCoordinator};
+#[cfg(test)]
+use crate::shared::ShadowCastMode;
 use crate::world_mesh::culling::{WorldMeshCullInput, world_aabb_visible_for_cull};
 
 use super::super::bitset::DenseBitSet;
@@ -624,11 +626,13 @@ mod tests {
             is_overlay: false,
             is_hidden: false,
             sorting_order: 0,
+            shadow_cast_mode: ShadowCastMode::On,
             skinned: false,
             world_space_deformed: false,
             blendshape_deformed: false,
             tangent_blendshape_deform_active: false,
             slot_index: 0,
+            material_stack_order: None,
             first_index: 0,
             index_count: 3,
             material_asset_id: 1,

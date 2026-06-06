@@ -29,6 +29,9 @@
 @group(0) @binding(13) var light_cookie_2d_atlas: texture_2d_array<f32>;
 @group(0) @binding(14) var light_cookie_point_atlas: texture_2d_array<f32>;
 @group(0) @binding(15) var light_cookie_sampler: sampler;
+@group(0) @binding(16) var<storage, read> shadow_views: array<ft::GpuShadowView>;
+@group(0) @binding(17) var shadow_atlas: texture_depth_2d_array;
+@group(0) @binding(18) var shadow_sampler: sampler_comparison;
 
 /// View index encoded in a material varying.
 fn view_index_from_layer(view_layer: u32) -> u32 {

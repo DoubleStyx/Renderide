@@ -4,14 +4,14 @@ use std::sync::Arc;
 
 use hashbrown::HashSet;
 
-use crate::backend::frame_gpu::LIGHT_COOKIE_ATLAS_PASS_NAME;
+use crate::backend::frame_gpu::{LIGHT_COOKIE_ATLAS_PASS_NAME, SHADOW_ATLAS_PASS_NAME};
 use crate::camera::ViewId;
 use crate::gpu::frame_globals::SkyboxSpecularUniformParams;
 use crate::graph_inputs::PreRecordViewResourceLayout;
 use crate::mesh_deform::{PaddedPerDrawUniforms, SkinCacheKey};
 use crate::passes::MaterialBatchBoundary;
 use crate::render_graph::execution_backend::{
-    GraphAssetResources, GraphClusterBufferRefs, GraphFrameResources,
+    GraphAssetResources, GraphClusterBufferRefs, GraphFrameResources, ShadowAtlasEncodeParams,
 };
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
 
@@ -188,6 +188,7 @@ impl GraphFrameResources for FrameResourceManager {
         match pass_name {
             "MeshDeform" => self.visible_mesh_deform_filter_is_empty(),
             LIGHT_COOKIE_ATLAS_PASS_NAME => !self.has_light_cookie_requests(),
+            SHADOW_ATLAS_PASS_NAME => !self.has_shadow_atlas_requests(),
             _ => false,
         }
     }
@@ -237,6 +238,16 @@ impl GraphFrameResources for FrameResourceManager {
     ) {
         if let Some(fgpu) = self.frame_gpu() {
             fgpu.encode_light_cookie_atlas(device, encoder, asset_resources, profiler);
+        }
+    }
+
+    fn has_shadow_atlas_requests(&self) -> bool {
+        self.frame_gpu().is_some() && !self.shadow_frame_plan().render_views.is_empty()
+    }
+
+    fn encode_shadow_atlas(&self, params: ShadowAtlasEncodeParams<'_, '_, '_>) {
+        if let Some(fgpu) = self.frame_gpu() {
+            fgpu.encode_shadow_atlas(self.shadow_frame_plan(), params);
         }
     }
 }

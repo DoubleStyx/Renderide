@@ -48,6 +48,7 @@
 #import renderide::core::texture_sampling as ts
 #import renderide::lighting::reflection_probes as rprobe
 #import renderide::lighting::light_cookies as cookies
+#import renderide::lighting::shadows as shadows
 
 struct ToonWaterMaterial {
     _Color: vec4<f32>,
@@ -256,6 +257,7 @@ fn fs_main(
             }
             attenuation = attenuation * cookies::multiplier(light, world_pos);
         }
+        attenuation = attenuation * shadows::visibility(light, world_pos);
         let radiance = bl::light_radiance(light) * attenuation;
         lo = lo + tbrdf::direct_light(
             diff_color,

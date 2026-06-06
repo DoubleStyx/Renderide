@@ -7,6 +7,7 @@ use crate::assets::mesh::GpuMesh;
 use crate::gpu_pools::MeshPool;
 use crate::particles::{ParticleDrawParams, PointRenderBufferAsset};
 use crate::scene::{MeshRendererInstanceId, RenderSpaceId, SceneCoordinator};
+use crate::shared::ShadowCastMode;
 use crate::shared::{LayerType, RenderingContext};
 use crate::world_mesh::culling::{
     MeshCullGeometry, MeshCullTarget, mesh_world_geometry_for_cull_with_head,
@@ -152,11 +153,13 @@ fn try_expand_render_buffer_renderer(
         is_overlay,
         is_hidden,
         sorting_order: 0,
+        shadow_cast_mode: ShadowCastMode::Off,
         skinned: false,
         world_space_deformed: false,
         blendshape_deformed: false,
         tangent_blendshape_deform_active: false,
         slot_index: 0,
+        material_stack_order: None,
         first_index,
         index_count,
         material_asset_id,
