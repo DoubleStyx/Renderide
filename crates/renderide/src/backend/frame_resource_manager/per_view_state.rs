@@ -50,6 +50,8 @@ pub struct PerViewFrameState {
     pub(super) last_cluster_version: u64,
     /// Reflection-probe resource version at which [`Self::frame_bind_group`] was last built.
     pub(super) last_skybox_specular_version: u64,
+    /// Shadow-atlas resource version at which [`Self::frame_bind_group`] was last built.
+    pub(super) last_shadow_resources_version: u64,
     /// Stereo flag at which [`Self::cluster_params_buffer`] was last allocated.
     pub(super) last_stereo: bool,
 }

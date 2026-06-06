@@ -7,6 +7,7 @@ use crate::materials::{
 };
 use crate::particles::ParticleDrawParams;
 use crate::scene::{MeshRendererInstanceId, RenderSpaceId};
+use crate::shared::ShadowCastMode;
 
 use crate::reflection_probes::specular::ReflectionProbeDrawSelection;
 use crate::world_mesh::{
@@ -111,10 +112,12 @@ pub fn dummy_world_mesh_draw_item(spec: DummyDrawItemSpec) -> WorldMeshDrawItem 
         instance_id: MeshRendererInstanceId(node.max(0) as u64 + 1),
         mesh_asset_id: mesh,
         slot_index: slot,
+        material_stack_order: None,
         first_index: 0,
         index_count: 3,
         is_overlay: false,
         sorting_order: sort,
+        shadow_cast_mode: ShadowCastMode::On,
         skinned,
         world_space_deformed: skinned,
         blendshape_deformed: false,

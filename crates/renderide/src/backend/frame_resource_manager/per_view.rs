@@ -153,6 +153,7 @@ impl FrameResourceManager {
         }
         let cluster_ver = fgpu.cluster_cache.version;
         let skybox_specular_version = fgpu.skybox_specular_version();
+        let shadow_resources_version = fgpu.shadow_resources_version();
 
         if !per_view_frame.contains_key(view_id) {
             let state = {
@@ -192,6 +193,7 @@ impl FrameResourceManager {
                     scene_snapshots,
                     last_cluster_version: cluster_ver,
                     last_skybox_specular_version: skybox_specular_version,
+                    last_shadow_resources_version: shadow_resources_version,
                     last_stereo: stereo,
                 }
             };
@@ -214,6 +216,7 @@ impl FrameResourceManager {
         };
         let needs_rebuild = cluster_ver != entry.last_cluster_version
             || skybox_specular_version != entry.last_skybox_specular_version
+            || shadow_resources_version != entry.last_shadow_resources_version
             || snapshots_changed;
 
         if needs_rebuild {
@@ -231,6 +234,7 @@ impl FrameResourceManager {
             entry.named_scene_color_frame_bind_group = new_named_bg;
             entry.last_cluster_version = cluster_ver;
             entry.last_skybox_specular_version = skybox_specular_version;
+            entry.last_shadow_resources_version = shadow_resources_version;
         }
 
         per_view_frame.get_mut(view_id)
@@ -369,7 +373,28 @@ impl FrameResourceManager {
                 );
             }
         }
+        let shadow_max_draw_slots = self.shadow_max_draw_slots();
+        let shadow_resources_changed = if let Some((requested_resolution, requested_layers)) =
+            self.shadow_resource_request()
+            && let Some(fgpu) = self.frame_gpu_mut()
         {
+            profiling::scope!("render::pre_record_sync_for_views::shadow_resources");
+            fgpu.sync_shadow_resources(
+                device,
+                requested_resolution,
+                requested_layers,
+                shadow_max_draw_slots,
+            )
+        } else {
+            false
+        };
+        if shadow_resources_changed {
+            self.rebuild_per_view_frame_bind_groups_for_shadow_sync(device, view_layouts);
+        }
+        {
+            if let Some(fgpu) = self.frame_gpu() {
+                fgpu.write_shadow_views(uploads, self.frame_shadow_views());
+            }
             profiling::scope!("render::pre_record_sync_for_views::write_lights");
             for layout in view_layouts {
                 let Some(state) = self.per_view_frame(layout.view_id) else {
@@ -381,6 +406,36 @@ impl FrameResourceManager {
                     self.frame_lights_for_view(layout.view_id),
                 );
             }
+        }
+    }
+
+    fn rebuild_per_view_frame_bind_groups_for_shadow_sync(
+        &mut self,
+        device: &wgpu::Device,
+        view_layouts: &[PreRecordViewResourceLayout],
+    ) {
+        let Some(fgpu) = self.frame_gpu.as_ref() else {
+            return;
+        };
+        let Some(refs) = fgpu.cluster_cache.current_refs() else {
+            return;
+        };
+        let shadow_resources_version = fgpu.shadow_resources_version();
+        for layout in view_layouts {
+            let Some(entry) = self.per_view_frame.get_mut(layout.view_id) else {
+                continue;
+            };
+            let (new_bg, new_named_bg) = build_per_view_frame_bind_groups(
+                device,
+                fgpu,
+                &entry.frame_uniform_buffer,
+                &entry.lights_buffer,
+                refs,
+                &entry.scene_snapshots,
+            );
+            entry.frame_bind_group = new_bg;
+            entry.named_scene_color_frame_bind_group = new_named_bg;
+            entry.last_shadow_resources_version = shadow_resources_version;
         }
     }
 

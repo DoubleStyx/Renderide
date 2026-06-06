@@ -12,6 +12,7 @@ use crate::reflection_probes::specular::ReflectionProbeDrawSelection;
 #[cfg(test)]
 use crate::scene::MeshMaterialSlot;
 use crate::scene::{MeshRendererInstanceId, RenderSpaceId, StaticMeshRenderer};
+use crate::shared::ShadowCastMode;
 use crate::world_mesh::materials::MaterialDrawBatchKey;
 
 /// CPU arrangement counters captured while preparing one view's draw list.
@@ -77,6 +78,30 @@ impl WorldMeshDrawCollection {
     }
 }
 
+/// Per-slot ordering marker for Unity-style material stacking.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct MaterialStackOrder {
+    /// First material slot that participates in the stack for this renderer.
+    pub first_stacked_slot_index: usize,
+}
+
+impl MaterialStackOrder {
+    /// Returns stack metadata for one material slot when the renderer has more material slots than submeshes.
+    pub(crate) fn from_slot_counts(
+        material_slot_index: usize,
+        material_slot_count: usize,
+        submesh_count: usize,
+    ) -> Option<Self> {
+        if submesh_count == 0 || material_slot_count <= submesh_count {
+            return None;
+        }
+        let first_stacked_slot_index = submesh_count - 1;
+        (material_slot_index >= first_stacked_slot_index).then_some(Self {
+            first_stacked_slot_index,
+        })
+    }
+}
+
 /// One indexed draw after pairing a material slot with a mesh submesh range.
 #[derive(Clone, Debug)]
 pub struct WorldMeshDrawItem {
@@ -92,6 +117,8 @@ pub struct WorldMeshDrawItem {
     pub mesh_asset_id: i32,
     /// Renderer material slot index. Stacked materials can reuse a later submesh range.
     pub slot_index: usize,
+    /// Material-stack ordering marker when extra material slots reuse the final submesh.
+    pub material_stack_order: Option<MaterialStackOrder>,
     /// First index in the mesh index buffer for this submesh draw.
     pub first_index: u32,
     /// Number of indices for this submesh draw.
@@ -100,6 +127,8 @@ pub struct WorldMeshDrawItem {
     pub is_overlay: bool,
     /// Host sorting order for transparent draw ordering.
     pub sorting_order: i32,
+    /// Host shadow-caster mode for this renderer.
+    pub shadow_cast_mode: ShadowCastMode,
     /// Whether the mesh uses skinning / deform paths.
     pub skinned: bool,
     /// Whether the position/normal stream selected by the forward pass is already in world space.
@@ -155,6 +184,21 @@ pub struct WorldMeshDrawItem {
     pub ui_rect_clip_local: Option<glam::Vec4>,
     /// Particle renderer metadata consumed by draw shaders and diagnostics.
     pub particle_draw: ParticleDrawParams,
+}
+
+/// Returns whether two draw items are layers of the same material stack.
+pub(crate) fn same_material_stack(a: &WorldMeshDrawItem, b: &WorldMeshDrawItem) -> bool {
+    let (Some(a_stack), Some(b_stack)) = (a.material_stack_order, b.material_stack_order) else {
+        return false;
+    };
+    a_stack == b_stack
+        && a.space_id == b.space_id
+        && a.skinned == b.skinned
+        && a.renderable_index == b.renderable_index
+        && a.instance_id == b.instance_id
+        && a.mesh_asset_id == b.mesh_asset_id
+        && a.first_index == b.first_index
+        && a.index_count == b.index_count
 }
 
 /// Returns the submesh index range that should be drawn for one renderer material slot.
@@ -227,8 +271,8 @@ pub fn resolved_material_slots<'a>(
 #[cfg(test)]
 mod tests {
     use super::{
-        RasterPrimitiveTopology, resolved_material_slot_count, stacked_material_submesh_range,
-        stacked_material_submesh_topology,
+        MaterialStackOrder, RasterPrimitiveTopology, resolved_material_slot_count,
+        stacked_material_submesh_range, stacked_material_submesh_topology,
     };
     use crate::scene::{MeshMaterialSlot, StaticMeshRenderer};
     use crate::shared::ShadowCastMode;
@@ -258,6 +302,45 @@ mod tests {
     #[test]
     fn stacked_material_submesh_range_returns_none_for_empty_submeshes() {
         assert_eq!(stacked_material_submesh_range(0, &[]), None);
+    }
+
+    #[test]
+    fn material_stack_order_none_when_slots_do_not_exceed_submeshes() {
+        assert_eq!(MaterialStackOrder::from_slot_counts(0, 2, 2), None);
+        assert_eq!(MaterialStackOrder::from_slot_counts(0, 1, 2), None);
+    }
+
+    #[test]
+    fn material_stack_order_starts_at_last_submesh_slot() {
+        assert_eq!(MaterialStackOrder::from_slot_counts(0, 3, 2), None);
+        assert_eq!(
+            MaterialStackOrder::from_slot_counts(1, 3, 2),
+            Some(MaterialStackOrder {
+                first_stacked_slot_index: 1,
+            }),
+        );
+        assert_eq!(
+            MaterialStackOrder::from_slot_counts(2, 3, 2),
+            Some(MaterialStackOrder {
+                first_stacked_slot_index: 1,
+            }),
+        );
+    }
+
+    #[test]
+    fn material_stack_order_handles_single_submesh_stacks() {
+        assert_eq!(
+            MaterialStackOrder::from_slot_counts(0, 2, 1),
+            Some(MaterialStackOrder {
+                first_stacked_slot_index: 0,
+            }),
+        );
+        assert_eq!(
+            MaterialStackOrder::from_slot_counts(1, 2, 1),
+            Some(MaterialStackOrder {
+                first_stacked_slot_index: 0,
+            }),
+        );
     }
 
     #[test]

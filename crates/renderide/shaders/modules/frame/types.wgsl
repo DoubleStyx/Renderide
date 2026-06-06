@@ -16,6 +16,10 @@ const LIGHT_COOKIE_WRAP_MODE_REPEAT: u32 = 0u;
 const LIGHT_COOKIE_WRAP_MODE_CLAMP: u32 = 1u;
 const LIGHT_COOKIE_WRAP_MODE_MIRROR: u32 = 2u;
 const LIGHT_COOKIE_WRAP_MODE_MIRROR_ONCE: u32 = 3u;
+const SHADOW_VIEW_KIND_NONE: u32 = 0u;
+const SHADOW_VIEW_KIND_DIRECTIONAL: u32 = 1u;
+const SHADOW_VIEW_KIND_SPOT: u32 = 2u;
+const SHADOW_VIEW_KIND_POINT: u32 = 3u;
 
 struct GpuLight {
     position: vec3<f32>,
@@ -33,11 +37,22 @@ struct GpuLight {
     shadow_bias: f32,
     shadow_normal_bias: f32,
     shadow_type: u32,
+    shadow_view_start: u32,
+    shadow_view_count: u32,
+    shadow_flags: u32,
+    shadow_reserved: u32,
     cookie_kind: u32,
     cookie_layer: u32,
     cookie_reserved: u32,
     cookie_right_tan_half_angle: vec4<f32>,
     cookie_up: vec4<f32>,
+}
+
+struct GpuShadowView {
+    world_to_shadow: mat4x4<f32>,
+    atlas_rect: vec4<f32>,
+    params: vec4<f32>,
+    light_params: vec4<f32>,
 }
 
 struct GpuReflectionProbe {

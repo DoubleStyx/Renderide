@@ -34,6 +34,7 @@ use crate::render_graph::TransientPool;
 use crate::shared::SkinWeightMode;
 
 use super::FrameResourceManager;
+use super::HostShadowQuality;
 use super::secondary_rt_scratch::{SecondaryRtScratchCache, SecondaryRtScratchTargets};
 use crate::materials::MaterialSystem;
 use crate::occlusion::OcclusionSystem;
@@ -110,6 +111,8 @@ pub struct RenderBackend {
     renderer_settings: Option<RendererSettingsHandle>,
     /// Host-owned skin influence mode used by mesh deform compute.
     skin_weight_mode: SkinWeightMode,
+    /// Host-owned realtime shadow quality used for shadow planning.
+    shadow_quality: HostShadowQuality,
     /// Whether this backend is attached to a headless offscreen target.
     headless: bool,
 }
@@ -137,6 +140,7 @@ impl RenderBackend {
             surface_format: None,
             renderer_settings: None,
             skin_weight_mode: SkinWeightMode::Unlimited,
+            shadow_quality: HostShadowQuality::default(),
             headless: false,
         }
     }
@@ -151,6 +155,18 @@ impl RenderBackend {
     #[inline]
     pub(crate) const fn skin_weight_mode(&self) -> SkinWeightMode {
         self.skin_weight_mode
+    }
+
+    /// Updates host-owned realtime shadow quality used for shadow planning.
+    #[inline]
+    pub(crate) fn set_shadow_quality(&mut self, quality: HostShadowQuality) {
+        self.shadow_quality = quality;
+    }
+
+    /// Host-owned realtime shadow quality used for shadow planning.
+    #[inline]
+    pub(crate) const fn shadow_quality(&self) -> HostShadowQuality {
+        self.shadow_quality
     }
 
     /// Requested HDR scene-color [`wgpu::TextureFormat`] from [`crate::config::RenderingSettings`].
@@ -267,6 +283,12 @@ impl RenderBackend {
     #[inline]
     pub(crate) fn frame_resources_mut(&mut self) -> &mut FrameResourceManager {
         &mut self.frame_services.frame_resources
+    }
+
+    /// Shared frame resources for runtime draw-preparation handoffs.
+    #[inline]
+    pub(crate) fn frame_resources(&self) -> &FrameResourceManager {
+        &self.frame_services.frame_resources
     }
 
     /// Drains latest video clock-error samples produced by asset integration.

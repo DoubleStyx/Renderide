@@ -568,6 +568,8 @@ mod light_cookies;
 mod material_defaults;
 #[path = "shader_module_audit/pbs.rs"]
 mod pbs;
+#[path = "shader_module_audit/shadows.rs"]
+mod shadows;
 #[path = "shader_module_audit/skybox_implicit_defaults.rs"]
 mod skybox_implicit_defaults;
 #[path = "shader_module_audit/tangent_basis.rs"]

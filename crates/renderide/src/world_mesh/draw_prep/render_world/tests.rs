@@ -5,7 +5,7 @@ use super::state::{RenderWorldRendererRef, RenderWorldRendererTemplate};
 use super::*;
 use crate::cpu_parallelism::{FrameParallelPolicy, ParallelAdmission};
 use crate::scene::{SceneCacheFlushReport, StaticMeshRenderer};
-use crate::shared::RenderTransform;
+use crate::shared::{RenderTransform, ShadowCastMode};
 use crate::world_mesh::culling::MeshCullGeometry;
 use crate::world_mesh::draw_prep::prepared_renderables::FramePreparedDraw;
 use glam::{Mat4, Quat, Vec3};
@@ -48,11 +48,13 @@ fn prepared_draw(space_id: RenderSpaceId, renderable_index: usize) -> FramePrepa
         is_overlay: false,
         is_hidden: false,
         sorting_order: 0,
+        shadow_cast_mode: ShadowCastMode::On,
         skinned: false,
         world_space_deformed: false,
         blendshape_deformed: false,
         tangent_blendshape_deform_active: false,
         slot_index: 0,
+        material_stack_order: None,
         first_index: 0,
         index_count: 3,
         material_asset_id: 1,

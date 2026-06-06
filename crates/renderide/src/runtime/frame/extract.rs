@@ -254,7 +254,15 @@ impl SubmitFrame<'_> {
                 std::iter::once(desc).chain(overlay)
             }),
         );
-        let visible_deform_keys = visible_mesh_deform_keys_from_draw_plans(&self.view_draws);
+        backend.prepare_shadow_frame_for_views(
+            self.prepared_views
+                .plans()
+                .iter()
+                .zip(self.view_draws.iter())
+                .map(|(view, draws)| (view.view_id, &draws.world)),
+        );
+        let mut visible_deform_keys = visible_mesh_deform_keys_from_draw_plans(&self.view_draws);
+        visible_deform_keys.extend(backend.frame_resources().shadow_mesh_deform_keys());
         backend
             .frame_resources_mut()
             .begin_mesh_deform_submission(visible_deform_keys);

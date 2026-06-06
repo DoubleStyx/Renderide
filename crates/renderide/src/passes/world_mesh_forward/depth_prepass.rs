@@ -11,8 +11,9 @@ use crate::embedded_shaders::embedded_wgsl;
 use crate::gpu_resource::{OnceGpu, RenderPipelineMap};
 use crate::graph_inputs::PerViewFramePlanSlot;
 use crate::materials::{
-    RasterFrontFace, RasterPipelineKind, RasterPrimitiveTopology, embedded_stem_depth_prepass_pass,
-    materialized_pass_for_blend_mode,
+    RasterFrontFace, RasterPipelineKind, RasterPrimitiveTopology, ShadowCasterPolicy,
+    embedded_stem_depth_prepass_pass, materialized_pass_for_blend_mode,
+    shadow_caster_policy_for_pipeline,
 };
 use crate::mesh_deform::PER_DRAW_UNIFORM_STRIDE;
 use crate::render_graph::context::RasterPassCtx;
@@ -77,11 +78,20 @@ pub(crate) struct WorldMeshForwardDepthPrepassPipelineKey {
     pub cull_mode: Option<wgpu::Face>,
     /// Primitive topology baked into the render pipeline.
     pub primitive_topology: RasterPrimitiveTopology,
+    /// Depth compare function baked into the render pipeline.
+    pub depth_compare: wgpu::CompareFunction,
 }
 
 /// Cached render pipelines and bind layout for the generic depth prepass.
 #[derive(Debug, Default)]
 pub(super) struct WorldMeshForwardDepthPrepassPipelineCache {
+    per_draw_layout: OnceGpu<wgpu::BindGroupLayout>,
+    pipelines: RenderPipelineMap<WorldMeshForwardDepthPrepassPipelineKey>,
+}
+
+/// Cached render pipelines and bind layout for radial point-light shadow casters.
+#[derive(Debug, Default)]
+pub(super) struct WorldMeshForwardPointShadowPipelineCache {
     per_draw_layout: OnceGpu<wgpu::BindGroupLayout>,
     pipelines: RenderPipelineMap<WorldMeshForwardDepthPrepassPipelineKey>,
 }
@@ -150,7 +160,7 @@ impl WorldMeshForwardDepthPrepassPipelineCache {
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: key.depth_stencil_format,
                 depth_write_enabled: Some(true),
-                depth_compare: Some(crate::gpu::MAIN_FORWARD_DEPTH_COMPARE),
+                depth_compare: Some(key.depth_compare),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
@@ -179,11 +189,107 @@ impl WorldMeshForwardDepthPrepassPipelineCache {
     }
 }
 
+impl WorldMeshForwardPointShadowPipelineCache {
+    /// Returns the matching point-shadow caster pipeline.
+    pub(super) fn pipeline(
+        &self,
+        device: &wgpu::Device,
+        key: WorldMeshForwardDepthPrepassPipelineKey,
+    ) -> Arc<wgpu::RenderPipeline> {
+        self.pipelines
+            .get_or_create(key, |key| self.create_pipeline(device, *key))
+    }
+
+    fn create_pipeline(
+        &self,
+        device: &wgpu::Device,
+        key: WorldMeshForwardDepthPrepassPipelineKey,
+    ) -> wgpu::RenderPipeline {
+        profiling::scope!("world_mesh_forward::point_shadow_pipeline");
+        let label = "world_mesh_point_shadow_caster";
+        logger::debug!(
+            "world mesh point shadow caster: building pipeline sample_count={} topology={:?}",
+            key.sample_count,
+            key.primitive_topology
+        );
+        let shader = create_wgsl_shader_module(
+            device,
+            label,
+            embedded_wgsl!("world_mesh_point_shadow_caster"),
+        );
+        let per_draw_layout = self.per_draw_layout(device);
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some(label),
+            bind_group_layouts: &[Some(per_draw_layout)],
+            immediate_size: 0,
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(label),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &depth_prepass_vertex_buffer_layouts(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: key.primitive_topology.to_wgpu(),
+                front_face: key.front_face.to_wgpu(),
+                cull_mode: key.cull_mode,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: key.depth_stencil_format,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(key.depth_compare),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState {
+                count: key.sample_count.max(1),
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview_mask: key.multiview_mask,
+            cache: None,
+        });
+        crate::profiling::note_resource_churn!(
+            RenderPipeline,
+            "passes::world_mesh_point_shadow_caster_pipeline"
+        );
+        pipeline
+    }
+
+    fn per_draw_layout(&self, device: &wgpu::Device) -> &wgpu::BindGroupLayout {
+        self.per_draw_layout.get_or_create(|| {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("world_mesh_point_shadow_caster_per_draw"),
+                entries: &depth_prepass_per_draw_layout_entries(),
+            })
+        })
+    }
+}
+
 impl WorldMeshForwardDepthPrepassPipelineKey {
     /// Builds a depth-prepass pipeline key for one draw group.
     pub(crate) fn for_draw(
         item: &WorldMeshDrawItem,
         pipeline: &WorldMeshForwardPipelineState,
+    ) -> Option<Self> {
+        Self::for_draw_with_compare(item, pipeline, crate::gpu::MAIN_FORWARD_DEPTH_COMPARE)
+    }
+
+    /// Builds a depth-prepass pipeline key for one draw group with an explicit depth compare.
+    pub(crate) fn for_draw_with_compare(
+        item: &WorldMeshDrawItem,
+        pipeline: &WorldMeshForwardPipelineState,
+        depth_compare: wgpu::CompareFunction,
     ) -> Option<Self> {
         let depth_stencil_format = pipeline.pass_desc.depth_stencil_format?;
         let cull_mode = depth_prepass_cull_mode(item, pipeline.shader_perm)?;
@@ -194,6 +300,25 @@ impl WorldMeshForwardDepthPrepassPipelineKey {
             front_face: item.batch_key.front_face,
             cull_mode: cull_for_topology(cull_mode.0, item.batch_key.primitive_topology),
             primitive_topology: item.batch_key.primitive_topology,
+            depth_compare,
+        })
+    }
+
+    /// Builds a depth-only shadow-caster pipeline key for one draw group.
+    pub(crate) fn for_shadow_draw(
+        item: &WorldMeshDrawItem,
+        pipeline: &WorldMeshForwardPipelineState,
+    ) -> Option<Self> {
+        let depth_stencil_format = pipeline.pass_desc.depth_stencil_format?;
+        let cull_mode = shadow_caster_cull_mode(item)?;
+        Some(Self {
+            depth_stencil_format,
+            sample_count: pipeline.pass_desc.sample_count,
+            multiview_mask: pipeline.pass_desc.multiview_mask,
+            front_face: item.batch_key.front_face,
+            cull_mode: cull_for_topology(cull_mode.0, item.batch_key.primitive_topology),
+            primitive_topology: item.batch_key.primitive_topology,
+            depth_compare: wgpu::CompareFunction::LessEqual,
         })
     }
 }
@@ -233,6 +358,17 @@ fn depth_prepass_cull_mode(
     }
 }
 
+fn shadow_caster_cull_mode(item: &WorldMeshDrawItem) -> Option<DepthPrepassCullMode> {
+    match shadow_caster_policy_for_pipeline(&item.batch_key.pipeline) {
+        ShadowCasterPolicy::None => None,
+        ShadowCasterPolicy::DepthOnly => Some(DepthPrepassCullMode(
+            item.batch_key
+                .render_state
+                .resolved_cull_mode(Some(wgpu::Face::Back)),
+        )),
+    }
+}
+
 fn cull_for_topology(
     cull_mode: Option<wgpu::Face>,
     primitive_topology: RasterPrimitiveTopology,
@@ -243,9 +379,15 @@ fn cull_for_topology(
     }
 }
 
-fn depth_prepass_pipelines() -> &'static WorldMeshForwardDepthPrepassPipelineCache {
+pub(super) fn depth_prepass_pipelines() -> &'static WorldMeshForwardDepthPrepassPipelineCache {
     static CACHE: LazyLock<WorldMeshForwardDepthPrepassPipelineCache> =
         LazyLock::new(WorldMeshForwardDepthPrepassPipelineCache::default);
+    &CACHE
+}
+
+pub(super) fn point_shadow_pipelines() -> &'static WorldMeshForwardPointShadowPipelineCache {
+    static CACHE: LazyLock<WorldMeshForwardPointShadowPipelineCache> =
+        LazyLock::new(WorldMeshForwardPointShadowPipelineCache::default);
     &CACHE
 }
 
@@ -358,11 +500,13 @@ impl RasterPass for WorldMeshForwardDepthPrepass {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::{
         WorldMeshForwardDepthPrepassPipelineKey, cull_for_topology,
         depth_prepass_per_draw_layout_entries,
     };
-    use crate::materials::{RasterPrimitiveTopology, ShaderPermutation};
+    use crate::materials::{RasterPipelineKind, RasterPrimitiveTopology, ShaderPermutation};
     use crate::mesh_deform::PER_DRAW_UNIFORM_STRIDE;
     use crate::passes::world_mesh_forward::WorldMeshForwardPipelineState;
     use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
@@ -443,6 +587,54 @@ mod tests {
                 has_dynamic_offset: true,
                 min_binding_size: wgpu::BufferSize::new(PER_DRAW_UNIFORM_STRIDE as u64),
             }
+        );
+    }
+
+    #[test]
+    fn shadow_key_accepts_pbsmetallic_without_depth_prepass_metadata() {
+        let mut item = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 1,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 1,
+            node_id: 1,
+            slot_index: 0,
+            collect_order: 0,
+            alpha_blended: false,
+        });
+        item.batch_key.pipeline =
+            RasterPipelineKind::EmbeddedStem(Arc::from("pbsmetallic_default"));
+
+        let key =
+            WorldMeshForwardDepthPrepassPipelineKey::for_shadow_draw(&item, &pipeline_state())
+                .expect("pbsmetallic casts shadows even when generic depth prepass is unavailable");
+
+        assert_eq!(
+            key.depth_stencil_format,
+            wgpu::TextureFormat::Depth24PlusStencil8
+        );
+        assert_eq!(key.depth_compare, wgpu::CompareFunction::LessEqual);
+    }
+
+    #[test]
+    fn shadow_key_rejects_common_unlit_without_unity_caster() {
+        let mut item = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 1,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 1,
+            node_id: 1,
+            slot_index: 0,
+            collect_order: 0,
+            alpha_blended: false,
+        });
+        item.batch_key.pipeline = RasterPipelineKind::EmbeddedStem(Arc::from("unlit_default"));
+
+        assert!(
+            WorldMeshForwardDepthPrepassPipelineKey::for_shadow_draw(&item, &pipeline_state())
+                .is_none()
         );
     }
 }

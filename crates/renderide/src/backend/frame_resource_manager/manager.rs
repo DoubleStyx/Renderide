@@ -15,6 +15,7 @@ use super::super::light_gpu::GpuLight;
 use super::super::per_draw_resources::PerDrawResources;
 use super::super::per_view_resource_map::PerViewResourceMap;
 use super::per_view_state::{PerViewFrameState, PerViewPerDrawScratch, PreparedViewLights};
+use super::shadows::ShadowFramePlan;
 
 /// Per-frame GPU state: shared frame/light/cluster resources, per-view bind groups,
 /// per-view per-draw storage slabs, and the CPU-side packed light buffer.
@@ -41,6 +42,8 @@ pub struct FrameResourceManager {
     pub(super) light_scratch: Vec<GpuLight>,
     /// Per-view packed light sets keyed by render view identity.
     pub(super) per_view_lights: PerViewResourceMap<PreparedViewLights>,
+    /// Shadow metadata and atlas render views planned for the current graph submission.
+    pub(super) shadow_frame: ShadowFramePlan,
     /// Whether any packed light set subtracts in at least one signed-radiance channel.
     pub(super) signed_scene_color_required: bool,
     /// When true, [`crate::passes::MeshDeformPass`] already dispatched for the current graph
@@ -79,6 +82,7 @@ impl FrameResourceManager {
             limits: None,
             light_scratch: Vec::new(),
             per_view_lights: PerViewResourceMap::new(),
+            shadow_frame: ShadowFramePlan::default(),
             signed_scene_color_required: false,
             mesh_deform_dispatched_this_submission: AtomicBool::new(false),
             visible_mesh_deform_keys: Mutex::new(None),

@@ -39,6 +39,8 @@ struct NonTransparentBinKey {
     phase: WorldMeshPhase,
     /// Effective Unity render queue.
     render_queue: i32,
+    /// Material-stack ordering key for slots that reuse the final submesh.
+    stack: Option<NonTransparentStackBinKey>,
     /// Compact per-arrangement material and pipeline batch identifier.
     batch_id: u32,
     /// Resident mesh asset id.
@@ -60,11 +62,53 @@ impl NonTransparentBinKey {
             is_overlay: item.is_overlay,
             phase,
             render_queue: item.batch_key.render_queue,
+            stack: NonTransparentStackBinKey::from_draw(item),
             batch_id: batch_ids.id_for_draw(item),
             mesh_asset_id: item.mesh_asset_id,
             first_index: item.first_index,
             index_count: item.index_count,
         }
+    }
+}
+
+/// Ordering key for a nontransparent material-stack bin.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct NonTransparentStackBinKey {
+    /// Host render space id.
+    space_id: crate::scene::RenderSpaceId,
+    /// Whether this key points at a skinned renderer table.
+    skinned: bool,
+    /// Dense renderer index inside the selected renderer table.
+    renderable_index: usize,
+    /// Renderer-local stable identity.
+    instance_id: u64,
+    /// Resident mesh asset id.
+    mesh_asset_id: i32,
+    /// First index in the stacked submesh range.
+    first_index: u32,
+    /// Number of indices in the stacked submesh range.
+    index_count: u32,
+    /// First material slot participating in this stack.
+    first_stacked_slot_index: usize,
+    /// Material slot represented by this bin.
+    slot_index: usize,
+}
+
+impl NonTransparentStackBinKey {
+    /// Builds a stack bin key for one draw item when it participates in material stacking.
+    fn from_draw(item: &WorldMeshDrawItem) -> Option<Self> {
+        let stack = item.material_stack_order?;
+        Some(Self {
+            space_id: item.space_id,
+            skinned: item.skinned,
+            renderable_index: item.renderable_index,
+            instance_id: item.instance_id.0,
+            mesh_asset_id: item.mesh_asset_id,
+            first_index: item.first_index,
+            index_count: item.index_count,
+            first_stacked_slot_index: stack.first_stacked_slot_index,
+            slot_index: item.slot_index,
+        })
     }
 }
 
@@ -439,10 +483,32 @@ fn cmp_nontransparent_bin_keys(a: &NonTransparentBinKey, b: &NonTransparentBinKe
         .cmp(&b.is_overlay)
         .then_with(|| phase_flatten_rank(a.phase).cmp(&phase_flatten_rank(b.phase)))
         .then(a.render_queue.cmp(&b.render_queue))
+        .then(a.stack.is_some().cmp(&b.stack.is_some()))
+        .then_with(|| cmp_nontransparent_stack_keys(a.stack.as_ref(), b.stack.as_ref()))
         .then(a.batch_id.cmp(&b.batch_id))
         .then(a.mesh_asset_id.cmp(&b.mesh_asset_id))
         .then(a.first_index.cmp(&b.first_index))
         .then(a.index_count.cmp(&b.index_count))
+}
+
+/// Orders material-stack bins by source renderer, reused submesh, and ascending material slot.
+fn cmp_nontransparent_stack_keys(
+    a: Option<&NonTransparentStackBinKey>,
+    b: Option<&NonTransparentStackBinKey>,
+) -> Ordering {
+    let (Some(a), Some(b)) = (a, b) else {
+        return Ordering::Equal;
+    };
+    a.space_id
+        .cmp(&b.space_id)
+        .then(a.skinned.cmp(&b.skinned))
+        .then(a.renderable_index.cmp(&b.renderable_index))
+        .then(a.instance_id.cmp(&b.instance_id))
+        .then(a.mesh_asset_id.cmp(&b.mesh_asset_id))
+        .then(a.first_index.cmp(&b.first_index))
+        .then(a.index_count.cmp(&b.index_count))
+        .then(a.first_stacked_slot_index.cmp(&b.first_stacked_slot_index))
+        .then(a.slot_index.cmp(&b.slot_index))
 }
 
 /// Stable rank where post-skybox work starts.
@@ -508,6 +574,8 @@ mod tests {
         UNITY_RENDER_QUEUE_ALPHA_TEST, UNITY_RENDER_QUEUE_TRANSPARENT,
         UNITY_TRANSPARENT_RENDER_QUEUE_MIN,
     };
+    use crate::scene::MeshRendererInstanceId;
+    use crate::world_mesh::draw_prep::item::MaterialStackOrder;
     use crate::world_mesh::draw_prep::pack_sort_prefix;
     use crate::world_mesh::materials::compute_batch_key_hash;
     use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
@@ -554,6 +622,17 @@ mod tests {
     /// Sets the sort distance used by transparent strict ordering.
     fn set_camera_distance(item: &mut WorldMeshDrawItem, distance_sq: f32) {
         item.camera_distance_sq = distance_sq;
+    }
+
+    /// Marks a draw as one layer of the same two-submesh, three-material stack.
+    fn mark_stacked_layer(item: &mut WorldMeshDrawItem, slot_index: usize) {
+        item.node_id = 50;
+        item.renderable_index = 7;
+        item.instance_id = MeshRendererInstanceId(7);
+        item.slot_index = slot_index;
+        item.material_stack_order = MaterialStackOrder::from_slot_counts(slot_index, 3, 2);
+        item.first_index = 3;
+        item.index_count = 6;
     }
 
     /// Captures the fields that define arranged draw order for these tests.
@@ -603,6 +682,23 @@ mod tests {
             .map(|draw| draw.mesh_asset_id)
             .collect();
         assert_eq!(material_one, vec![10, 10, 11]);
+    }
+
+    #[test]
+    fn nontransparent_stacked_layers_preserve_slot_order_across_material_bins() {
+        let mut first_layer = opaque(10, 100, 0);
+        mark_stacked_layer(&mut first_layer, 1);
+        let mut second_layer = opaque(10, 200, 1);
+        mark_stacked_layer(&mut second_layer, 2);
+
+        let mut draws = vec![second_layer, first_layer];
+        let stats = arrange_draws_by_phase_bins(&mut draws, false);
+
+        assert_eq!(stats.nontransparent_binned_draws, 2);
+        assert_eq!(
+            draws.iter().map(|item| item.slot_index).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
     }
 
     #[test]

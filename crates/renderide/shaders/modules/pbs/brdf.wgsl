@@ -20,6 +20,7 @@
 #import renderide::frame::types as ft
 #import renderide::lighting::birp as bl
 #import renderide::lighting::light_cookies as cookies
+#import renderide::lighting::shadows as shadows
 
 #define_import_path renderide::pbs::brdf
 
@@ -334,6 +335,7 @@ fn eval_light(light: ft::GpuLight, world_pos: vec3<f32>) -> LightSample {
         out.attenuation = spot_atten * distance_attenuation(dist, light.range);
         out.attenuation = out.attenuation * cookies::multiplier(light, world_pos);
     }
+    out.attenuation = out.attenuation * shadows::visibility(light, world_pos);
     return out;
 }
 

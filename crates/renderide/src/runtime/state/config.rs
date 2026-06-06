@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use crate::backend::HostShadowQuality;
 use crate::config::{RendererSettingsHandle, save_renderer_settings};
 use crate::shared::{DesktopConfig, QualityConfig, SkinWeightMode};
 
@@ -66,6 +67,8 @@ pub(in crate::runtime) struct RuntimeConfigState {
     host_desktop_caps: HostDesktopFramePacingCaps,
     /// Effective host skinning quality mode from the latest [`QualityConfig`].
     host_skin_weight_mode: SkinWeightMode,
+    /// Effective host realtime shadow quality from the latest [`QualityConfig`].
+    host_shadow_quality: HostShadowQuality,
 }
 
 impl RuntimeConfigState {
@@ -80,6 +83,7 @@ impl RuntimeConfigState {
             suppress_renderer_config_disk_writes: false,
             host_desktop_caps: HostDesktopFramePacingCaps::default(),
             host_skin_weight_mode: SkinWeightMode::Unlimited,
+            host_shadow_quality: HostShadowQuality::default(),
         }
     }
 
@@ -91,6 +95,7 @@ impl RuntimeConfigState {
     /// Applies host rendering quality state without mutating persisted renderer settings.
     pub(in crate::runtime) fn apply_host_quality_config(&mut self, cfg: &QualityConfig) {
         self.host_skin_weight_mode = cfg.skin_weight_mode;
+        self.host_shadow_quality = HostShadowQuality::from_quality_config(cfg);
     }
 
     /// Returns desktop frame-pacing caps after applying host overrides over renderer settings.
@@ -112,6 +117,11 @@ impl RuntimeConfigState {
     /// Effective host-owned skin weight mode used for mesh skinning.
     pub(in crate::runtime) fn skin_weight_mode(&self) -> SkinWeightMode {
         self.host_skin_weight_mode
+    }
+
+    /// Effective host-owned shadow quality used for realtime shadow planning.
+    pub(in crate::runtime) fn shadow_quality(&self) -> HostShadowQuality {
+        self.host_shadow_quality
     }
 
     /// Cloned config save path for backend HUD attach.

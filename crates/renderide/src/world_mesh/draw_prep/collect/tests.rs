@@ -12,7 +12,7 @@ use crate::materials::{
     MaterialPipelinePropertyIds, MaterialRouter, RasterFrontFace, RasterPipelineKind,
 };
 use crate::scene::{MeshRendererInstanceId, RenderSpaceId, SceneCoordinator};
-use crate::shared::{LayerType, RenderTransform, RenderingContext};
+use crate::shared::{LayerType, RenderTransform, RenderingContext, ShadowCastMode};
 use crate::world_mesh::CameraTransformDrawFilter;
 
 /// Builds a unit-scale transform for draw-prep tests.
@@ -174,11 +174,13 @@ fn prepared_draw(space_id: RenderSpaceId) -> FramePreparedDraw {
         is_overlay: false,
         is_hidden: false,
         sorting_order: 0,
+        shadow_cast_mode: ShadowCastMode::On,
         skinned: false,
         world_space_deformed: false,
         blendshape_deformed: false,
         tangent_blendshape_deform_active: false,
         slot_index: 0,
+        material_stack_order: None,
         first_index: 0,
         index_count: 3,
         material_asset_id: 9,

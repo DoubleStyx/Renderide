@@ -86,6 +86,11 @@ impl StaticMeshRenderer {
     pub(crate) fn emits_visible_color_draws(&self) -> bool {
         self.shadow_cast_mode != ShadowCastMode::ShadowOnly
     }
+
+    /// Returns true when this renderer can contribute to shadow maps.
+    pub(crate) fn casts_shadows(&self) -> bool {
+        self.shadow_cast_mode != ShadowCastMode::Off
+    }
 }
 
 /// Skinned mesh instance: [`StaticMeshRenderer`]-style header plus bone palette and root bone.

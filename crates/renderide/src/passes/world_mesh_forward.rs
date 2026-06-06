@@ -60,6 +60,7 @@ pub(crate) use depth_prepass::{
     WorldMeshForwardDepthPrepassPipelineKey, depth_prepass_pipeline_key_for_draw,
     pre_warm_depth_prepass_pipeline,
 };
+pub(crate) use encode::{ShadowDepthDrawBatch, draw_shadow_depth_subset};
 pub(crate) use material_batch::{
     BILLBOARD_RENDER_BUFFER_BIT, MaterialBatchBoundary, MaterialBatchPacket, MaterialDrawResolver,
 };

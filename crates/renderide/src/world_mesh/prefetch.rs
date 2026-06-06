@@ -1,5 +1,6 @@
 //! CPU-side world-mesh forward prefetch state: collected draws and helper requirements.
 
+use crate::shared::ShadowCastMode;
 use crate::world_mesh::culling::WorldMeshCullProjParams;
 use crate::world_mesh::draw_prep::WorldMeshDrawCollection;
 
@@ -17,6 +18,9 @@ impl WorldMeshHelperNeeds {
     pub fn from_collection(collection: &WorldMeshDrawCollection) -> Self {
         let mut needs = Self::default();
         for item in &collection.items {
+            if item.shadow_cast_mode == ShadowCastMode::ShadowOnly {
+                continue;
+            }
             needs.depth_snapshot |= item.batch_key.embedded_uses_scene_depth_snapshot;
             needs.color_snapshot |= item.batch_key.embedded_uses_scene_color_snapshot;
             if needs.depth_snapshot && needs.color_snapshot {

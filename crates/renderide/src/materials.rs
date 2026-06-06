@@ -88,6 +88,7 @@ mod render_state;
 mod router;
 pub(crate) mod shader_permutation;
 mod shader_specialization;
+mod shadow_caster;
 mod system;
 #[cfg(test)]
 mod wgsl;
@@ -162,5 +163,6 @@ pub(crate) use router::{MaterialRouter, resolve_raster_pipeline};
 /// Static shader feature flags (multiview, etc.) keyed into the pipeline cache.
 pub(crate) use shader_permutation::{SHADER_PERM_MULTIVIEW_STEREO, ShaderPermutation};
 pub(crate) use shader_specialization::MaterialShaderSpecializationKey;
+pub(crate) use shadow_caster::{ShadowCasterPolicy, shadow_caster_policy_for_pipeline};
 
 pub(crate) use system::{MaterialSystem, MaterialSystemDiagnosticSnapshot};

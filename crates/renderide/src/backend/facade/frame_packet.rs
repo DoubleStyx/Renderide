@@ -12,7 +12,7 @@ use crate::scene::{RenderSpaceId, SceneApplyReport, SceneCacheFlushReport, Scene
 use crate::shared::RenderingContext;
 use crate::world_mesh::{
     FrameMaterialBatchCache, FramePreparedRenderables, RenderWorld, WorldMeshCommandCache,
-    WorldMeshDrawCollectParallelism,
+    WorldMeshDrawCollectParallelism, WorldMeshDrawPlan,
 };
 
 use super::draw_preparation::{DrawPreparationExtractDesc, render_context_cache_key};
@@ -138,6 +138,16 @@ impl RenderBackend {
         self.frame_services
             .frame_resources
             .prepare_lights_for_views(scene, views, Some(&self.asset_transfers));
+    }
+
+    /// Prepares realtime shadow assignments and atlas render views for the sorted view draw plans.
+    pub(crate) fn prepare_shadow_frame_for_views<'a, I>(&mut self, views: I)
+    where
+        I: IntoIterator<Item = (crate::camera::ViewId, &'a WorldMeshDrawPlan)>,
+    {
+        self.frame_services
+            .frame_resources
+            .prepare_shadow_frame_for_views(self.shadow_quality(), views);
     }
 
     /// Drains completed Hi-Z readbacks into CPU snapshots at the top of the tick.
