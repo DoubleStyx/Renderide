@@ -221,16 +221,6 @@ fn queue_desktop_overlay_draws(
     view_draws: &mut [QueuedViewDraws],
 ) {
     profiling::scope!("render::queue_view_draws::desktop_overlay");
-    if setup
-        .scene
-        .active_desktop_dashboard_overlay_source()
-        .is_some()
-    {
-        logger::trace!(
-            "desktop overlay draw queue suppressed; dashboard render texture will composite at presentation"
-        );
-        return;
-    }
     for (index, prep) in prepared.iter().enumerate() {
         if prep.desktop_overlay_resource_view_id().is_none() {
             continue;
@@ -432,4 +422,105 @@ pub(super) fn should_parallelize_view_collection_with_policy(
             VIEW_COLLECTION_PARALLEL_CHUNK_VIEWS,
         )
         .is_parallel()
+}
+
+#[cfg(test)]
+mod tests {
+    use hashbrown::HashMap;
+
+    use crate::backend::ExtractedFrameShared;
+    use crate::camera::{HostCameraFrame, ViewId};
+    use crate::gpu_pools::MeshPool;
+    use crate::materials::{MaterialRouter, MaterialSystem, RasterPipelineKind, ShaderPermutation};
+    use crate::occlusion::OcclusionSystem;
+    use crate::reflection_probes::specular::ReflectionProbeFrameSelection;
+    use crate::render_graph::{FrameViewClear, RenderPathProfile};
+    use crate::scene::{CameraRenderableEntry, RenderSpaceId, SceneCoordinator};
+    use crate::shared::{CameraProjection, CameraState, RenderTransform, RenderingContext};
+    use crate::world_mesh::{
+        FrameMaterialBatchCache, RenderWorld, WorldMeshCommandCache,
+        WorldMeshDrawCollectParallelism,
+    };
+
+    use super::super::super::view_plan::{FrameViewPlan, FrameViewPlanParams, FrameViewPlanTarget};
+    use super::{QueuedViewDraws, queue_view_draws};
+
+    fn dashboard_camera_entry(render_texture_asset_id: i32) -> CameraRenderableEntry {
+        CameraRenderableEntry {
+            renderable_index: 0,
+            transform_id: 0,
+            state: CameraState {
+                projection: CameraProjection::Orthographic,
+                render_texture_asset_id,
+                selective_render_count: 1,
+                flags: 1,
+                ..Default::default()
+            },
+            selective_transform_ids: vec![0],
+            exclude_transform_ids: Vec::new(),
+        }
+    }
+
+    fn main_desktop_plan() -> FrameViewPlan<'static> {
+        FrameViewPlan::new(
+            &HostCameraFrame::default(),
+            FrameViewPlanParams {
+                render_context: RenderingContext::UserView,
+                frame_time_seconds: 0.0,
+                view_id: ViewId::Main,
+                viewport_px: (1280, 720),
+                clear: FrameViewClear::default(),
+                profile: RenderPathProfile::desktop_main(),
+                target: FrameViewPlanTarget::Swapchain,
+            },
+        )
+    }
+
+    #[test]
+    fn desktop_overlay_queue_survives_dashboard_render_texture_camera() {
+        let mut scene = SceneCoordinator::new();
+        let overlay_space = RenderSpaceId(3);
+        scene.test_seed_space_identity_worlds(
+            overlay_space,
+            vec![RenderTransform::default()],
+            vec![-1],
+        );
+        scene.test_set_space_overlay(overlay_space, true);
+        scene.test_push_cameras(overlay_space, [dashboard_camera_entry(77)]);
+
+        let mesh_pool = MeshPool::default_pool();
+        let materials = MaterialSystem::new();
+        let router = MaterialRouter::new(RasterPipelineKind::Null);
+        let render_worlds = HashMap::<u8, RenderWorld>::new();
+        let material_caches = HashMap::<(u8, ShaderPermutation), FrameMaterialBatchCache>::new();
+        let command_cache = WorldMeshCommandCache::default();
+        let occlusion = OcclusionSystem::new();
+        let reflection_probes = ReflectionProbeFrameSelection::default();
+        let pipeline_property_ids = materials.pipeline_property_resolver().resolve();
+        let shared = ExtractedFrameShared {
+            scene: &scene,
+            mesh_pool: &mesh_pool,
+            property_store: materials.material_property_store(),
+            router: &router,
+            pipeline_property_ids,
+            render_worlds: &render_worlds,
+            material_caches: &material_caches,
+            command_cache: &command_cache,
+            occlusion: &occlusion,
+            reflection_probes: &reflection_probes,
+            inner_parallelism: WorldMeshDrawCollectParallelism::Full,
+        };
+        let prepared = [main_desktop_plan()];
+
+        let draws = queue_view_draws(&shared, &prepared, vec![None], 1.0);
+
+        assert_eq!(draws.len(), 1);
+        assert!(overlay_plan_present(&draws));
+    }
+
+    fn overlay_plan_present(draws: &[QueuedViewDraws]) -> bool {
+        draws
+            .first()
+            .is_some_and(|draws| draws.desktop_overlay.is_some())
+    }
 }

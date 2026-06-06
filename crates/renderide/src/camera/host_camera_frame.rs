@@ -14,6 +14,8 @@ use super::geometry::{
 };
 use super::stereo::StereoViewMatrices;
 
+const OVERLAY_ORTHOGRAPHIC_HALF_HEIGHT: f32 = 0.5;
+
 /// Projection family used by shader helpers that need to distinguish perspective from orthographic math.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum CameraProjectionKind {
@@ -118,7 +120,8 @@ impl HostCameraFrame {
     /// Returns the dedicated screen-overlay orthographic projection.
     #[inline]
     pub fn overlay_projection(viewport: Viewport, fallback_clip: CameraClipPlanes) -> Mat4 {
-        OrthographicProjectionSpec::new(1.0, fallback_clip).projection(viewport)
+        OrthographicProjectionSpec::new(OVERLAY_ORTHOGRAPHIC_HALF_HEIGHT, fallback_clip)
+            .projection(viewport)
     }
 
     /// Resolves the world-space origin used for view-distance sorting.
@@ -216,10 +219,27 @@ pub(super) fn build_single_camera_frame(
 mod tests {
     use glam::{Mat4, Vec3};
 
-    use super::{CameraProjectionKind, EyeView, HostCameraFrame, StereoViewMatrices};
+    use super::{
+        CameraClipPlanes, CameraProjectionKind, EyeView, HostCameraFrame, StereoViewMatrices,
+        Viewport,
+    };
 
     fn eye_at(position: Vec3) -> EyeView {
         EyeView::new(Mat4::IDENTITY, Mat4::IDENTITY, Mat4::IDENTITY, position)
+    }
+
+    #[test]
+    fn overlay_projection_matches_unity_overlay_camera_size() {
+        let viewport = Viewport::from_tuple((1920, 1080));
+        let projection =
+            HostCameraFrame::overlay_projection(viewport, CameraClipPlanes::new(0.1, 100.0));
+        let aspect = viewport.aspect();
+
+        let top = projection * glam::Vec4::new(0.0, 0.5, -1.0, 1.0);
+        let right = projection * glam::Vec4::new(0.5 * aspect, 0.0, -1.0, 1.0);
+
+        assert!((top.y / top.w - 1.0).abs() < 1e-6);
+        assert!((right.x / right.w - 1.0).abs() < 1e-6);
     }
 
     #[test]

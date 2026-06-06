@@ -17,7 +17,6 @@ pub use layout::{
     estimate_gpu_cubemap_bytes, estimate_gpu_texture_bytes, estimate_gpu_texture3d_bytes,
     host_texture_mip_count, legal_texture2d_mip_level_count, legal_texture3d_mip_level_count,
 };
-pub(crate) use unpack::pack_host_texture_id;
 pub use unpack::{
     HostTextureAssetKind, texture2d_asset_id_from_packed, unpack_host_texture_packed,
 };

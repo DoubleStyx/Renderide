@@ -9,7 +9,7 @@
 
 use crate::scene::overrides::RenderTransformOverrideEntry;
 use crate::scene::render_space::{LayerAssignmentEntry, RenderSpaceState};
-use crate::scene::{SkinnedMeshRenderer, StaticMeshRenderer};
+use crate::scene::{CameraRenderableEntry, SkinnedMeshRenderer, StaticMeshRenderer};
 use crate::shared::{LayerType, RenderTransform, RenderingContext};
 
 use super::super::ids::RenderSpaceId;
@@ -128,6 +128,16 @@ impl SceneCoordinator {
                 ..Default::default()
             },
         );
+    }
+
+    /// Appends camera renderables to a seeded render space (unit tests only).
+    pub(crate) fn test_push_cameras(
+        &mut self,
+        id: RenderSpaceId,
+        cameras: impl IntoIterator<Item = CameraRenderableEntry>,
+    ) {
+        let space = self.spaces.get_mut(&id).expect("seeded space");
+        space.cameras.extend(cameras);
     }
 
     /// Inserts a render space with skinned mesh renderers (unit tests only).
