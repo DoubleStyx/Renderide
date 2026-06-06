@@ -714,11 +714,11 @@ fn full_pipeline_overlay_vertex_projects_to_screen_ndc() {
     );
 
     // Vertex at curved plane's local (+0.5, 0, 0): with VisualsRoot scale 1.5 -> overlay-local
-    // x = 0.75. Overlay ortho has half_height = 1.0, so half_width = aspect.
-    // NDC_x = 0.75 / (1920/1080).
+    // x = 0.75. Overlay ortho has half_height = 0.5, so half_width = aspect * 0.5.
+    // NDC_x = 0.75 / ((1920/1080) * 0.5).
     let right_clip = vp * model * glam::Vec4::new(0.5, 0.0, 0.0, 1.0);
     let right_ndc_x = right_clip.x / right_clip.w;
-    let expected_x = 0.75 * 1080.0 / 1920.0;
+    let expected_x = 0.75 * 1080.0 / (1920.0 * 0.5);
     assert!(
         (right_ndc_x - expected_x).abs() < 1e-3,
         "expected NDC x≈{expected_x}, got {right_ndc_x}",

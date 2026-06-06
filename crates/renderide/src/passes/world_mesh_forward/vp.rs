@@ -351,7 +351,7 @@ mod tests {
 
         let right_clip = matrices.view_proj_left * matrices.model * Vec4::new(0.5, 0.0, 0.0, 1.0);
         let right_ndc_x = right_clip.x / right_clip.w;
-        let expected_x = 0.75 * 1080.0 / 1920.0;
+        let expected_x = 0.75 * 1080.0 / (1920.0 * 0.5);
         assert!(
             (right_ndc_x - expected_x).abs() < 1e-3,
             "expected NDC x {expected_x}, got {right_ndc_x}",
