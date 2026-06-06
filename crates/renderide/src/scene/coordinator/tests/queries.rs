@@ -4,7 +4,6 @@
 
 use glam::{Mat4, Quat, Vec3};
 
-use crate::assets::texture::{HostTextureAssetKind, pack_host_texture_id};
 use crate::camera::{view_matrix_for_world_mesh_render_space, view_matrix_from_render_transform};
 use crate::scene::CameraRenderableEntry;
 use crate::scene::blit_to_display::BlitToDisplayEntry;
@@ -236,83 +235,6 @@ fn active_blit_for_display_ignores_dashboard_camera_when_explicit_blit_is_presen
         .expect("explicit blit should be present");
 
     assert_eq!(state.texture_id, 555);
-}
-
-#[test]
-fn active_desktop_dashboard_overlay_source_selects_lowest_depth_overlay_camera() {
-    let mut scene = SceneCoordinator::new();
-    let overlay = RenderSpaceId(3);
-    scene.spaces.insert(
-        overlay,
-        RenderSpaceState {
-            id: overlay,
-            is_active: true,
-            is_overlay: true,
-            cameras: vec![
-                dashboard_camera_entry(77, 10.0),
-                dashboard_camera_entry(88, -5.0),
-            ],
-            ..Default::default()
-        },
-    );
-
-    let source = scene
-        .active_desktop_dashboard_overlay_source()
-        .expect("dashboard source");
-
-    assert_eq!(source.render_texture_asset_id, 88);
-    assert_eq!(
-        source.texture_id,
-        pack_host_texture_id(88, HostTextureAssetKind::RenderTexture).expect("packed id")
-    );
-}
-
-#[test]
-fn active_desktop_dashboard_overlay_source_rejects_non_dashboard_cameras() {
-    let mut scene = SceneCoordinator::new();
-    let inactive = RenderSpaceId(1);
-    let non_overlay = RenderSpaceId(2);
-    let overlay = RenderSpaceId(3);
-    let mut disabled = dashboard_camera_entry(10, 0.0);
-    disabled.state.flags = 0;
-    let mut perspective = dashboard_camera_entry(11, 0.0);
-    perspective.state.projection = CameraProjection::Perspective;
-    let invalid_rt = dashboard_camera_entry(-1, 0.0);
-    let mut non_selective = dashboard_camera_entry(12, 0.0);
-    non_selective.state.selective_render_count = 0;
-
-    scene.spaces.insert(
-        inactive,
-        RenderSpaceState {
-            id: inactive,
-            is_active: false,
-            is_overlay: true,
-            cameras: vec![dashboard_camera_entry(70, 0.0)],
-            ..Default::default()
-        },
-    );
-    scene.spaces.insert(
-        non_overlay,
-        RenderSpaceState {
-            id: non_overlay,
-            is_active: true,
-            is_overlay: false,
-            cameras: vec![dashboard_camera_entry(71, 0.0)],
-            ..Default::default()
-        },
-    );
-    scene.spaces.insert(
-        overlay,
-        RenderSpaceState {
-            id: overlay,
-            is_active: true,
-            is_overlay: true,
-            cameras: vec![disabled, perspective, invalid_rt, non_selective],
-            ..Default::default()
-        },
-    );
-
-    assert!(scene.active_desktop_dashboard_overlay_source().is_none());
 }
 
 #[test]

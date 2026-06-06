@@ -10,16 +10,12 @@ use std::collections::HashSet;
 
 use glam::Mat4;
 
-use crate::assets::texture::{HostTextureAssetKind, pack_host_texture_id};
-use crate::camera::camera_state_enabled;
 use crate::cpu_parallelism::{
     ParallelAdmission, admit_renderable_update_items, current_reference_worker_count,
     record_parallel_admission,
 };
 use crate::ipc::SharedMemoryAccessor;
-use crate::shared::{
-    BlitToDisplayState, CameraProjection, FrameSubmitData, RenderSH2, RenderingContext,
-};
+use crate::shared::{BlitToDisplayState, FrameSubmitData, RenderSH2, RenderingContext};
 
 use super::DrainedReflectionProbeRenderChanges;
 use super::error::SceneError;
@@ -119,15 +115,6 @@ pub struct SceneCoordinator {
     /// allocation persists across frames; previously this was a fresh
     /// `Vec::with_capacity(extracted_per_space.len())` per frame.
     apply_work_scratch: Vec<ApplyWorkSlot>,
-}
-
-/// Desktop dashboard render texture selected for final desktop overlay compositing.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DesktopDashboardOverlaySource {
-    /// Packed host texture id for the dashboard render texture color source.
-    pub texture_id: i32,
-    /// Unpacked host render texture asset id.
-    pub render_texture_asset_id: i32,
 }
 
 /// One per-space work slot held in [`SceneCoordinator::apply_work_scratch`].
@@ -310,53 +297,6 @@ impl SceneCoordinator {
             }
         }
         latest
-    }
-
-    /// Active desktop dashboard render texture for final overlay compositing.
-    ///
-    /// This intentionally does not synthesize a [`BlitToDisplayState`]. The normal desktop scene
-    /// remains the display owner, and presentation may sample this render texture as an alpha
-    /// overlay after the final scene blit. Dashboard candidates must be active overlay-space,
-    /// enabled orthographic cameras that render a selective set into a render texture.
-    pub fn active_desktop_dashboard_overlay_source(&self) -> Option<DesktopDashboardOverlaySource> {
-        let mut best: Option<(f32, DesktopDashboardOverlaySource)> = None;
-        for id in self.render_space_ids() {
-            let Some(space) = self.spaces.get(&id) else {
-                continue;
-            };
-            if !space.is_active || !space.is_overlay {
-                continue;
-            }
-            for camera in &space.cameras {
-                let state = &camera.state;
-                if !camera_state_enabled(state.flags) {
-                    continue;
-                }
-                if state.projection != CameraProjection::Orthographic {
-                    continue;
-                }
-                if state.render_texture_asset_id < 0 || state.selective_render_count <= 0 {
-                    continue;
-                }
-                let Some(texture_id) = pack_host_texture_id(
-                    state.render_texture_asset_id,
-                    HostTextureAssetKind::RenderTexture,
-                ) else {
-                    continue;
-                };
-                let source = DesktopDashboardOverlaySource {
-                    texture_id,
-                    render_texture_asset_id: state.render_texture_asset_id,
-                };
-                let replace = best
-                    .as_ref()
-                    .is_none_or(|(depth, _)| state.depth.total_cmp(depth).is_lt());
-                if replace {
-                    best = Some((state.depth, source));
-                }
-            }
-        }
-        best.map(|(_, source)| source)
     }
 
     /// Current head-output render context for the main view.

@@ -9,7 +9,6 @@ use crate::present::{
 };
 use crate::runtime::RendererRuntime;
 use crate::runtime::display::DisplayBlitSource;
-use crate::scene::DesktopDashboardOverlaySource;
 use crate::shared::BlitToDisplayState;
 use crate::xr::OpenxrFrameTick;
 use glam::Vec4;
@@ -42,14 +41,13 @@ pub(super) enum PresentationAction {
 pub(super) struct PresentationPlan {
     action: PresentationAction,
     explicit_desktop_blit: Option<BlitToDisplayState>,
-    dashboard_overlay: Option<DesktopDashboardOverlaySource>,
 }
 
 impl PresentationPlan {
     /// Builds a presentation plan from current VR state and HMD submission result.
     pub(super) const fn from_frame(vr_active: bool, hmd_projection_ended: bool) -> Self {
         if !vr_active {
-            Self::desktop_final_blit(None)
+            Self::desktop_final_blit()
         } else if hmd_projection_ended {
             Self::vr_mirror_blit()
         } else {
@@ -57,11 +55,10 @@ impl PresentationPlan {
         }
     }
 
-    const fn desktop_final_blit(dashboard_overlay: Option<DesktopDashboardOverlaySource>) -> Self {
+    const fn desktop_final_blit() -> Self {
         Self {
             action: PresentationAction::DesktopFinalBlit,
             explicit_desktop_blit: None,
-            dashboard_overlay,
         }
     }
 
@@ -69,7 +66,6 @@ impl PresentationPlan {
         Self {
             action: PresentationAction::DesktopBlitToDisplay,
             explicit_desktop_blit: Some(state),
-            dashboard_overlay: None,
         }
     }
 
@@ -77,7 +73,6 @@ impl PresentationPlan {
         Self {
             action: PresentationAction::VrMirrorBlit,
             explicit_desktop_blit: None,
-            dashboard_overlay: None,
         }
     }
 
@@ -85,7 +80,6 @@ impl PresentationPlan {
         Self {
             action: PresentationAction::VrClear,
             explicit_desktop_blit: None,
-            dashboard_overlay: None,
         }
     }
 
@@ -96,23 +90,18 @@ impl PresentationPlan {
     fn explicit_desktop_blit(self) -> Option<BlitToDisplayState> {
         self.explicit_desktop_blit
     }
-
-    fn dashboard_overlay(self) -> Option<DesktopDashboardOverlaySource> {
-        self.dashboard_overlay
-    }
 }
 
 fn presentation_plan_from_frame_and_desktop_blit(
     vr_active: bool,
     hmd_projection_ended: bool,
     explicit_desktop_blit: Option<BlitToDisplayState>,
-    dashboard_overlay: Option<DesktopDashboardOverlaySource>,
 ) -> PresentationPlan {
     if !vr_active && let Some(state) = explicit_desktop_blit {
         return PresentationPlan::desktop_blit_to_display(state);
     }
     if !vr_active {
-        return PresentationPlan::desktop_final_blit(dashboard_overlay);
+        return PresentationPlan::desktop_final_blit();
     }
     PresentationPlan::from_frame(vr_active, hmd_projection_ended)
 }
@@ -141,14 +130,13 @@ impl AppDriver {
             vr_active,
             hmd_projection_ended,
             scene.active_blit_for_display(super::DESKTOP_DISPLAY_INDEX),
-            scene.active_desktop_dashboard_overlay_source(),
         )
     }
 
     fn present_plan(&mut self, plan: PresentationPlan) {
         match plan.action() {
             PresentationAction::DesktopFinalBlit => {
-                self.present_desktop_final_blit(plan.dashboard_overlay());
+                self.present_desktop_final_blit();
             }
             PresentationAction::VrMirrorBlit => self.present_vr_mirror_blit(),
             PresentationAction::VrClear => self.present_vr_clear(),
@@ -212,10 +200,7 @@ impl AppDriver {
 
     /// Acquires the desktop swapchain and presents the offscreen final target rendered by the
     /// normal desktop world path.
-    fn present_desktop_final_blit(
-        &mut self,
-        dashboard_overlay: Option<DesktopDashboardOverlaySource>,
-    ) {
+    fn present_desktop_final_blit(&mut self) {
         let Some(target) = self.target.as_mut() else {
             return;
         };
@@ -232,15 +217,6 @@ impl AppDriver {
             }
             return;
         };
-        let resolved_dashboard_overlay = dashboard_overlay.and_then(|source| {
-            self.runtime
-                .resolve_blit_to_display_texture(source.texture_id)
-        });
-        if dashboard_overlay.is_some() && resolved_dashboard_overlay.is_none() {
-            logger::trace!(
-                "desktop dashboard overlay source texture not resident; skipping overlay composite"
-            );
-        }
         let (blit, backend) = self.runtime.display_blit_and_backend_mut();
         let source = DisplayBlitSource {
             view: &final_view,
@@ -250,21 +226,9 @@ impl AppDriver {
             flip_vertically: false,
             background_color: Vec4::new(0.0, 0.0, 0.0, 1.0),
         };
-        let overlay_source =
-            resolved_dashboard_overlay
-                .as_ref()
-                .map(|(view_arc, width, height)| DisplayBlitSource {
-                    view: view_arc.as_ref(),
-                    width: *width,
-                    height: *height,
-                    flip_horizontally: false,
-                    flip_vertically: false,
-                    background_color: Vec4::ZERO,
-                });
-        if let Err(error) = blit.present_blit_to_surface_traced_with_overlay(
+        if let Err(error) = blit.present_blit_to_surface_traced(
             gpu,
             source,
-            overlay_source,
             SurfaceAcquireTrace::DesktopFinalBlit,
             SurfaceSubmitTrace::DesktopFinalBlit,
             |encoder, view, gpu| encode_debug_hud_overlay_via_backend(backend, gpu, encoder, view),
@@ -355,7 +319,6 @@ mod tests {
     use super::{
         PresentationAction, PresentationPlan, presentation_plan_from_frame_and_desktop_blit,
     };
-    use crate::scene::DesktopDashboardOverlaySource;
     use crate::shared::BlitToDisplayState;
     use glam::Vec4;
 
@@ -370,22 +333,13 @@ mod tests {
         }
     }
 
-    fn dashboard_source(texture_id: i32) -> DesktopDashboardOverlaySource {
-        DesktopDashboardOverlaySource {
-            texture_id,
-            render_texture_asset_id: texture_id,
-        }
-    }
-
     #[test]
     fn desktop_uses_final_blit_presentation() {
         let normal = PresentationPlan::from_frame(false, false);
         assert_eq!(normal.action(), PresentationAction::DesktopFinalBlit);
-        assert!(normal.dashboard_overlay().is_none());
 
         let ended = PresentationPlan::from_frame(false, true);
         assert_eq!(ended.action(), PresentationAction::DesktopFinalBlit);
-        assert!(ended.dashboard_overlay().is_none());
     }
 
     #[test]
@@ -406,12 +360,8 @@ mod tests {
 
     #[test]
     fn desktop_explicit_blit_owns_presentation() {
-        let plan = presentation_plan_from_frame_and_desktop_blit(
-            false,
-            false,
-            Some(test_blit_state(42)),
-            Some(dashboard_source(90)),
-        );
+        let plan =
+            presentation_plan_from_frame_and_desktop_blit(false, false, Some(test_blit_state(42)));
 
         assert_eq!(plan.action(), PresentationAction::DesktopBlitToDisplay);
         assert_eq!(
@@ -420,43 +370,19 @@ mod tests {
                 .texture_id,
             42
         );
-        assert!(plan.dashboard_overlay().is_none());
     }
 
     #[test]
     fn desktop_without_explicit_blit_uses_final_target() {
-        let plan = presentation_plan_from_frame_and_desktop_blit(false, false, None, None);
+        let plan = presentation_plan_from_frame_and_desktop_blit(false, false, None);
 
         assert_eq!(plan.action(), PresentationAction::DesktopFinalBlit);
-        assert!(plan.dashboard_overlay().is_none());
-    }
-
-    #[test]
-    fn desktop_dashboard_overlay_composes_over_final_target() {
-        let plan = presentation_plan_from_frame_and_desktop_blit(
-            false,
-            false,
-            None,
-            Some(dashboard_source(90)),
-        );
-
-        assert_eq!(plan.action(), PresentationAction::DesktopFinalBlit);
-        assert_eq!(
-            plan.dashboard_overlay()
-                .expect("dashboard overlay")
-                .texture_id,
-            90
-        );
     }
 
     #[test]
     fn vr_ignores_desktop_blit_for_presentation() {
-        let plan = presentation_plan_from_frame_and_desktop_blit(
-            true,
-            false,
-            Some(test_blit_state(42)),
-            Some(dashboard_source(90)),
-        );
+        let plan =
+            presentation_plan_from_frame_and_desktop_blit(true, false, Some(test_blit_state(42)));
 
         assert_eq!(plan.action(), PresentationAction::VrClear);
     }
