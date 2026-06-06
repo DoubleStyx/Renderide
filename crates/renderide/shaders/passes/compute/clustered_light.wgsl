@@ -24,6 +24,8 @@ struct ClusterParams {
     /// `pos_view = view * light.position` is in scaled view space, so `light.range` must be
     /// multiplied by this factor to compare against the (also-scaled) cluster AABB.
     world_to_view_scale: f32,
+    /// Bit flags selecting the froxel corner reconstruction path.
+    froxel_reconstruction_flags: u32,
 }
 
 @group(0) @binding(0) var<uniform> params: ClusterParams;
@@ -41,6 +43,8 @@ struct TileAabb {
 const SPOT_CULL_MIN_COS_HALF: f32 = 0.9999619;
 const SPOT_CULL_WIDE_COS_HALF: f32 = 0.5;
 const SPOT_CULL_DISTANCE_EPSILON: f32 = 0.00001;
+const FROXEL_RECONSTRUCTION_GENERAL: u32 = 1u;
+const FROXEL_SOLVE_DETERMINANT_EPSILON: f32 = 0.00000001;
 
 fn ndc_to_view(ndc: vec3f) -> vec3f {
     let clip = params.inv_proj * vec4f(ndc.x, ndc.y, ndc.z, 1.0);
@@ -55,8 +59,45 @@ fn ndc_z_from_view_z(view_z: f32) -> f32 {
     return clip.z / clip.w;
 }
 
-fn view_point_at_ndc_xy_and_z(ndc_xy: vec2f, view_z: f32) -> vec3f {
+fn view_point_at_ndc_xy_and_z_fast(ndc_xy: vec2f, view_z: f32) -> vec3f {
     return ndc_to_view(vec3f(ndc_xy.x, ndc_xy.y, ndc_z_from_view_z(view_z)));
+}
+
+fn projection_row_0() -> vec4f {
+    return vec4f(params.proj[0].x, params.proj[1].x, params.proj[2].x, params.proj[3].x);
+}
+
+fn projection_row_1() -> vec4f {
+    return vec4f(params.proj[0].y, params.proj[1].y, params.proj[2].y, params.proj[3].y);
+}
+
+fn projection_row_3() -> vec4f {
+    return vec4f(params.proj[0].w, params.proj[1].w, params.proj[2].w, params.proj[3].w);
+}
+
+fn view_point_at_ndc_xy_and_z_general(ndc_xy: vec2f, view_z: f32) -> vec3f {
+    let row_x = projection_row_0();
+    let row_y = projection_row_1();
+    let row_w = projection_row_3();
+    let eq_x = row_x - ndc_xy.x * row_w;
+    let eq_y = row_y - ndc_xy.y * row_w;
+    let rhs_x = -(eq_x.z * view_z + eq_x.w);
+    let rhs_y = -(eq_y.z * view_z + eq_y.w);
+    let det = eq_x.x * eq_y.y - eq_x.y * eq_y.x;
+    if abs(det) <= FROXEL_SOLVE_DETERMINANT_EPSILON {
+        return view_point_at_ndc_xy_and_z_fast(ndc_xy, view_z);
+    }
+    let inv_det = 1.0 / det;
+    let view_x = (rhs_x * eq_y.y - eq_x.y * rhs_y) * inv_det;
+    let view_y = (eq_x.x * rhs_y - rhs_x * eq_y.x) * inv_det;
+    return vec3f(view_x, view_y, view_z);
+}
+
+fn view_point_at_ndc_xy_and_z(ndc_xy: vec2f, view_z: f32) -> vec3f {
+    if (params.froxel_reconstruction_flags & FROXEL_RECONSTRUCTION_GENERAL) != 0u {
+        return view_point_at_ndc_xy_and_z_general(ndc_xy, view_z);
+    }
+    return view_point_at_ndc_xy_and_z_fast(ndc_xy, view_z);
 }
 
 fn get_cluster_aabb(cluster_x: u32, cluster_y: u32, cluster_z: u32) -> TileAabb {
