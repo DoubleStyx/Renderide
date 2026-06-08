@@ -85,9 +85,10 @@ impl LightCache {
         self.mark_changed();
     }
 
-    /// Rolls each regular-light entry's `transform_id` forward through `removals`. Drops entries
-    /// whose own transform was removed (fixup returns `-1`) and returns `true` if anything
-    /// changed so the caller can rebuild and mark dirty exactly once across both light paths.
+    /// Rolls each regular-light entry's `transform_id` forward through `removals`.
+    ///
+    /// Entries whose own transform was removed are marked dead but kept in the dense list so the
+    /// following host light-removal batch can still address the same `RenderableIndex`.
     pub(super) fn fixup_regular_lights_for_transform_removals(
         &mut self,
         space_id: i32,
@@ -115,20 +116,6 @@ impl LightCache {
                     dirty = true;
                 }
             }
-        }
-        let before = v.len();
-        v.retain(|l| {
-            if l.transform_id == DEAD_TRANSFORM_ID {
-                logger::warn!(
-                    "light_cache: regular light dropped during transform-removal fixup (space_id={space_id})"
-                );
-                false
-            } else {
-                true
-            }
-        });
-        if v.len() != before {
-            dirty = true;
         }
         dirty
     }
