@@ -14,6 +14,22 @@ use super::geometry::{
 };
 use super::stereo::StereoViewMatrices;
 
+pub(crate) const OVERLAY_CAMERA_LOCAL_Z: f32 = -10.0;
+pub(crate) const OVERLAY_CAMERA_NEAR_CLIP: f32 = 0.1;
+pub(crate) const OVERLAY_CAMERA_FAR_CLIP: f32 = 20.0;
+pub(crate) const OVERLAY_ORTHOGRAPHIC_HALF_HEIGHT: f32 = 0.5;
+
+/// Returns the fixed desktop overlay camera view matrix.
+///
+/// Overlay-layer model matrices are expressed in OverlayRoot-local coordinates. This maps
+/// z=0 content to view z=-10 and moves negative local z toward the near plane, matching the
+/// overlay layer depth convention used by dashboard popups and pointer visuals.
+#[inline]
+pub(crate) fn overlay_camera_view_matrix() -> Mat4 {
+    Mat4::from_translation(Vec3::new(0.0, 0.0, OVERLAY_CAMERA_LOCAL_Z))
+        * Mat4::from_scale(Vec3::new(1.0, 1.0, -1.0))
+}
+
 /// Projection family used by shader helpers that need to distinguish perspective from orthographic math.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum CameraProjectionKind {
@@ -117,8 +133,12 @@ impl HostCameraFrame {
 
     /// Returns the dedicated screen-overlay orthographic projection.
     #[inline]
-    pub fn overlay_projection(viewport: Viewport, fallback_clip: CameraClipPlanes) -> Mat4 {
-        OrthographicProjectionSpec::new(1.0, fallback_clip).projection(viewport)
+    pub fn overlay_projection(viewport: Viewport, _fallback_clip: CameraClipPlanes) -> Mat4 {
+        OrthographicProjectionSpec::new(
+            OVERLAY_ORTHOGRAPHIC_HALF_HEIGHT,
+            CameraClipPlanes::new(OVERLAY_CAMERA_NEAR_CLIP, OVERLAY_CAMERA_FAR_CLIP),
+        )
+        .projection(viewport)
     }
 
     /// Resolves the world-space origin used for view-distance sorting.
@@ -216,10 +236,32 @@ pub(super) fn build_single_camera_frame(
 mod tests {
     use glam::{Mat4, Vec3};
 
-    use super::{CameraProjectionKind, EyeView, HostCameraFrame, StereoViewMatrices};
+    use super::{
+        CameraClipPlanes, CameraProjectionKind, EyeView, HostCameraFrame, OVERLAY_CAMERA_FAR_CLIP,
+        OVERLAY_CAMERA_NEAR_CLIP, OVERLAY_ORTHOGRAPHIC_HALF_HEIGHT, StereoViewMatrices, Viewport,
+    };
 
     fn eye_at(position: Vec3) -> EyeView {
         EyeView::new(Mat4::IDENTITY, Mat4::IDENTITY, Mat4::IDENTITY, position)
+    }
+
+    #[test]
+    fn overlay_projection_matches_unity_overlay_camera_size() {
+        let viewport = Viewport::from_tuple((1920, 1080));
+        let projection =
+            HostCameraFrame::overlay_projection(viewport, CameraClipPlanes::new(3.0, 4.0));
+        let aspect = viewport.aspect();
+
+        let top = projection * glam::Vec4::new(0.0, OVERLAY_ORTHOGRAPHIC_HALF_HEIGHT, -1.0, 1.0);
+        let right =
+            projection * glam::Vec4::new(OVERLAY_ORTHOGRAPHIC_HALF_HEIGHT * aspect, 0.0, -1.0, 1.0);
+        let near = projection * glam::Vec4::new(0.0, 0.0, -OVERLAY_CAMERA_NEAR_CLIP, 1.0);
+        let far = projection * glam::Vec4::new(0.0, 0.0, -OVERLAY_CAMERA_FAR_CLIP, 1.0);
+
+        assert!((top.y / top.w - 1.0).abs() < 1e-6);
+        assert!((right.x / right.w - 1.0).abs() < 1e-6);
+        assert!((near.z / near.w - 1.0).abs() < 1e-6);
+        assert!((far.z / far.w).abs() < 1e-6);
     }
 
     #[test]

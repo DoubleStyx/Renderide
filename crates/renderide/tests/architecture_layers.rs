@@ -107,8 +107,13 @@ const REFACTORED_MODULE_FILES: &[&str] = &[
     "assets/mesh/gpu_mesh/upload/generated.rs",
     "backend/facade/graph_access.rs",
     "backend/facade/graph_access/warmup.rs",
+    "backend/asset_transfers/reliable_ack.rs",
+    "config/persist/load/previous_layout.rs",
     "passes/world_mesh_forward/prepare.rs",
     "passes/world_mesh_forward/prepare/cache.rs",
+    "render_graph/compiled/exec/recording/per_view/batch_plan.rs",
+    "render_graph/compiled/exec/recording/per_view/frame_params.rs",
+    "render_graph/compiled/exec/recording/per_view/offscreen_copy.rs",
     "render_graph/compiled/exec.rs",
     "render_graph/compiled/exec/command_recording.rs",
     "render_graph/compiled/exec/prepare.rs",
@@ -204,6 +209,19 @@ fn main_graph_assembly_lives_in_backend() {
     assert!(
         src.join("backend/graph/main_graph.rs").exists(),
         "backend-owned main graph assembly module is missing"
+    );
+}
+
+#[test]
+fn pass_context_does_not_import_or_expose_graph_pass_frame() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let pass_context = src.join("render_graph/context/pass.rs");
+    let source = fs::read_to_string(&pass_context).expect("read pass context");
+    let stripped = strip_comments(&source);
+
+    assert!(
+        !contains_identifier(&stripped, "GraphPassFrame"),
+        "render graph pass contexts must not import or expose GraphPassFrame"
     );
 }
 
@@ -305,6 +323,12 @@ fn strip_comments(source: &str) -> String {
         }
     }
     stripped
+}
+
+fn contains_identifier(source: &str, ident: &str) -> bool {
+    source
+        .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+        .any(|token| token == ident)
 }
 
 fn relative_path(src: &Path, file: &Path) -> String {

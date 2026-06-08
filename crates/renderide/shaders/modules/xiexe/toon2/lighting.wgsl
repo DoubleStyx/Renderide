@@ -32,6 +32,7 @@
 #import renderide::lighting::birp as bl
 #import renderide::lighting::light_cookies as cookies
 #import renderide::lighting::reflection_probes as rprobe
+#import renderide::lighting::shadows as shadows
 
 /// SH-probe sample used for xiexe's uncoloured indirect-diffuse term.
 fn indirect_diffuse(s: xb::SurfaceData, world_pos: vec3<f32>, view_layer: u32) -> vec3<f32> {
@@ -71,14 +72,15 @@ const SPECCUBE_LOD_STEPS: f32 = 6.0;
 
 /// Resolves a single frame light into a `LightSample` (direction toward the light,
 /// linear radiance, boosted energy attenuation, unboosted style visibility, directional flag).
-fn sample_light(light: ft::GpuLight, world_pos: vec3<f32>) -> xb::LightSample {
+fn sample_light(light: ft::GpuLight, world_pos: vec3<f32>, world_normal: vec3<f32>) -> xb::LightSample {
     if (light.light_type == 1u) {
         let dir_len_sq = dot(light.direction.xyz, light.direction.xyz);
+        let shadow_visibility = shadows::visibility(light, world_pos, world_normal);
         return xb::LightSample(
             select(vec3<f32>(0.0, 0.0, 1.0), normalize(-light.direction.xyz), dir_len_sq > 1e-16),
-            bl::light_radiance(light),
+            bl::light_radiance(light) * shadow_visibility,
             bl::direct_light_scale() * cookies::multiplier(light, world_pos),
-            1.0,
+            shadow_visibility,
             true,
         );
     }
@@ -91,6 +93,7 @@ fn sample_light(light: ft::GpuLight, world_pos: vec3<f32>) -> xb::LightSample {
         visibility = visibility * bl::spot_angle_attenuation(light, l);
     }
     visibility = visibility * cookies::multiplier(light, world_pos);
+    visibility = visibility * shadows::visibility(light, world_pos, world_normal);
     let attenuation = visibility * bl::direct_light_scale();
     return xb::LightSample(l, bl::light_radiance(light), attenuation, visibility, false);
 }
@@ -467,7 +470,7 @@ fn clustered_toon_lighting_for_layout(
             continue;
         }
 
-        let light = sample_light(rg::lights[li], world_pos);
+        let light = sample_light(rg::lights[li], world_pos, s.normal);
         if ((light.is_directional && !include_directional) || (!light.is_directional && !include_local)) {
             continue;
         }
@@ -588,7 +591,7 @@ fn clustered_outline_lighting(
             continue;
         }
 
-        let light = sample_light(rg::lights[li], world_pos);
+        let light = sample_light(rg::lights[li], world_pos, s.normal);
         let ndl = xb::saturate(dot(s.normal, light.direction));
         let direct = xb::saturate(light.attenuation * ndl) * light.color;
         let weight = xb::grayscale(direct);

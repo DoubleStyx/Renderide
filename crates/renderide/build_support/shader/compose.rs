@@ -4,14 +4,16 @@ use naga::ShaderStage;
 use naga::valid::Capabilities;
 use naga_oil::compose::{Composer, NagaModuleDescriptor, ShaderType};
 
-use super::directives::{BuildPassDirective, parse_pass_directives};
+use super::directives::BuildPassDirective;
 use super::error::BuildError;
 use super::mirror_once::rewrite_material_mirror_once_wgsl;
 use super::model::{
-    CompiledShader, CompiledShaderTarget, ShaderJob, ShaderSourceClass, ShaderVariant,
+    CompiledShader, CompiledShaderTarget, ShaderJob, ShaderSourceClass, ShaderSourceManifest,
+    ShaderVariant,
 };
 use super::modules::{ShaderModuleSources, register_composable_modules};
-use super::source::shader_source_for_compile;
+use super::reflection::reflect_embedded_target;
+use super::source::shader_source_manifest;
 use super::validation::{
     module_to_wgsl, validate_entry_points, validate_no_pipeline_state_uniform_fields,
     validate_pass_interfaces,
@@ -114,41 +116,24 @@ fn flattened_wgsl_for_job(
     }
 }
 
-/// Runs source-level validation on both composed shader variants.
-fn validate_composed_variants(
+/// Runs source-level validation on one composed shader variant.
+fn validate_composed_variant(
     stem: &str,
     pass_directives: &[BuildPassDirective],
-    default_module: &naga::Module,
-    multiview_module: &naga::Module,
+    module: &naga::Module,
+    variant: ShaderVariant,
 ) -> Result<(), BuildError> {
     validate_entry_points(
-        default_module,
-        &format!("{stem} ({})", ShaderVariant::Default.label()),
+        module,
+        &format!("{stem} ({})", variant.label()),
         pass_directives,
     )?;
     validate_pass_interfaces(
-        default_module,
-        &format!("{stem} ({})", ShaderVariant::Default.label()),
+        module,
+        &format!("{stem} ({})", variant.label()),
         pass_directives,
     )?;
-    validate_entry_points(
-        multiview_module,
-        &format!("{stem} ({})", ShaderVariant::Multiview.label()),
-        pass_directives,
-    )?;
-    validate_pass_interfaces(
-        multiview_module,
-        &format!("{stem} ({})", ShaderVariant::Multiview.label()),
-        pass_directives,
-    )?;
-    validate_no_pipeline_state_uniform_fields(
-        default_module,
-        &format!("{stem} ({})", ShaderVariant::Default.label()),
-    )?;
-    validate_no_pipeline_state_uniform_fields(
-        multiview_module,
-        &format!("{stem} ({})", ShaderVariant::Multiview.label()),
-    )
+    validate_no_pipeline_state_uniform_fields(module, &format!("{stem} ({})", variant.label()))
 }
 
 fn entry_point_name_pairs(
@@ -199,15 +184,17 @@ pub(super) fn compile_shader_job(
     modules: &ShaderModuleSources,
     job: &ShaderJob,
 ) -> Result<CompiledShader, BuildError> {
-    let source_path = &job.source_path;
-    let stem = source_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| BuildError::Message(format!("invalid stem: {}", source_path.display())))?;
-    let compile_source = shader_source_for_compile(source_path)?;
-    let source = compile_source.source;
-    let file_path = compile_source.file_path;
-    let pass_directives = parse_pass_directives(&source, &file_path)?;
+    let stem = shader_source_stem(job)?;
+    let manifest = shader_source_manifest(&job.source_path)?;
+    let ShaderSourceManifest {
+        source,
+        file_path,
+        pass_directives,
+        texture_defaults,
+        material_defaults,
+        wgpu_features,
+        default_render_queue,
+    } = manifest;
     if job.validation.require_pass_directive && pass_directives.is_empty() {
         return Err(BuildError::Message(format!(
             "{file_path}: material WGSL must declare at least one //#pass directive (e.g. //#pass forward)"
@@ -216,12 +203,62 @@ pub(super) fn compile_shader_job(
 
     let default_module =
         compose_source_variant(modules, &source, &file_path, ShaderVariant::Default)?;
-    let multiview_module =
-        compose_source_variant(modules, &source, &file_path, ShaderVariant::Multiview)?;
-    validate_composed_variants(stem, &pass_directives, &default_module, &multiview_module)?;
-
-    let default_wgsl = flattened_wgsl_for_job(
+    validate_composed_variant(
+        stem,
+        &pass_directives,
         &default_module,
+        ShaderVariant::Default,
+    )?;
+
+    let targets = compile_variant_targets(
+        modules,
+        &source,
+        &file_path,
+        stem,
+        job,
+        &pass_directives,
+        &default_module,
+    )?;
+
+    Ok(CompiledShader {
+        compile_order: job.compile_order,
+        source_class: job.source_class,
+        pass_directives,
+        texture_defaults,
+        material_defaults,
+        wgpu_features,
+        default_render_queue,
+        targets,
+    })
+}
+
+fn shader_source_stem(job: &ShaderJob) -> Result<&str, BuildError> {
+    let source_path = &job.source_path;
+    source_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| BuildError::Message(format!("invalid stem: {}", source_path.display())))
+}
+
+fn compile_variant_targets(
+    modules: &ShaderModuleSources,
+    source: &str,
+    file_path: &str,
+    stem: &str,
+    job: &ShaderJob,
+    pass_directives: &[BuildPassDirective],
+    default_module: &naga::Module,
+) -> Result<Vec<CompiledShaderTarget>, BuildError> {
+    let multiview_module =
+        compose_source_variant(modules, source, file_path, ShaderVariant::Multiview)?;
+    validate_composed_variant(
+        stem,
+        pass_directives,
+        &multiview_module,
+        ShaderVariant::Multiview,
+    )?;
+    let default_wgsl = flattened_wgsl_for_job(
+        default_module,
         stem,
         ShaderVariant::Default,
         job.source_class,
@@ -233,52 +270,101 @@ pub(super) fn compile_shader_job(
         job.source_class,
     )?;
 
-    let targets = if default_wgsl == multiview_wgsl {
+    if default_wgsl == multiview_wgsl {
         let pass_directives = remapped_pass_directives_for_output(
-            &default_module,
+            default_module,
             &default_wgsl,
-            &pass_directives,
+            pass_directives,
             &format!("{stem} ({})", ShaderVariant::Default.label()),
         )?;
-        vec![CompiledShaderTarget {
+        let reflection =
+            reflect_embedded_target(stem, &default_wgsl, &pass_directives, job.source_class)?;
+        return Ok(vec![CompiledShaderTarget {
             target_stem: stem.to_string(),
             wgsl: default_wgsl,
             pass_directives,
-        }]
-    } else {
-        let variants = [
-            (ShaderVariant::Default, &default_module, default_wgsl),
-            (ShaderVariant::Multiview, &multiview_module, multiview_wgsl),
-        ];
-        let mut targets = Vec::with_capacity(variants.len());
-        for (variant, module, wgsl) in variants {
-            let target_stem = variant.target_stem(stem);
-            if job.validation.validate_view_index {
-                validate_view_index_contract(&target_stem, &wgsl, variant)?;
-            }
-            let pass_directives = remapped_pass_directives_for_output(
-                module,
-                &wgsl,
-                &pass_directives,
-                &format!("{stem} ({})", variant.label()),
-            )?;
-            targets.push(CompiledShaderTarget {
-                target_stem,
-                wgsl,
-                pass_directives,
-            });
-        }
-        targets
-    };
+            reflection,
+        }]);
+    }
 
-    Ok(CompiledShader {
-        compile_order: job.compile_order,
-        source_class: job.source_class,
-        pass_directives,
-        texture_defaults: compile_source.texture_defaults,
-        material_defaults: compile_source.material_defaults,
-        wgpu_features: compile_source.wgpu_features,
-        default_render_queue: compile_source.default_render_queue,
-        targets,
-    })
+    let variants = [
+        (ShaderVariant::Default, default_module, default_wgsl),
+        (ShaderVariant::Multiview, &multiview_module, multiview_wgsl),
+    ];
+    let mut targets = Vec::with_capacity(variants.len());
+    for (variant, module, wgsl) in variants {
+        let target_stem = variant.target_stem(stem);
+        if job.validation.validate_view_index {
+            validate_view_index_contract(&target_stem, &wgsl, variant)?;
+        }
+        let pass_directives = remapped_pass_directives_for_output(
+            module,
+            &wgsl,
+            pass_directives,
+            &format!("{stem} ({})", variant.label()),
+        )?;
+        let reflection =
+            reflect_embedded_target(&target_stem, &wgsl, &pass_directives, job.source_class)?;
+        targets.push(CompiledShaderTarget {
+            target_stem,
+            wgsl,
+            pass_directives,
+            reflection,
+        });
+    }
+    Ok(targets)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::*;
+
+    fn shader_job(source_path: std::path::PathBuf, source_class: ShaderSourceClass) -> ShaderJob {
+        ShaderJob {
+            compile_order: 0,
+            source_class,
+            source_path,
+            validation: source_class.validation(),
+        }
+    }
+
+    #[test]
+    fn compute_shader_with_multiview_defs_emits_suffixed_targets() -> Result<(), BuildError> {
+        let root = tempfile::tempdir()?;
+        let source_path = root.path().join("variant_compute.wgsl");
+        fs::write(
+            &source_path,
+            r#"
+@group(0) @binding(0)
+var<storage, read_write> output: array<u32>;
+
+@compute @workgroup_size(1, 1, 1)
+fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+#ifdef MULTIVIEW
+    output[gid.x] = 2u;
+#else
+    output[gid.x] = 1u;
+#endif
+}
+"#,
+        )?;
+
+        let compiled = compile_shader_job(
+            &Vec::new(),
+            &shader_job(source_path, ShaderSourceClass::Compute),
+        )?;
+        let stems = compiled
+            .targets
+            .iter()
+            .map(|target| target.target_stem.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            stems,
+            ["variant_compute_default", "variant_compute_multiview"]
+        );
+        Ok(())
+    }
 }

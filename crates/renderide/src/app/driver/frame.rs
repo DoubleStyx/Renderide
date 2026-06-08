@@ -95,6 +95,13 @@ pub(super) enum FrameRenderMode {
     Desktop,
 }
 
+fn desktop_frame_owned_by_explicit_blit(
+    mode: FrameRenderMode,
+    explicit_desktop_blit_active: bool,
+) -> bool {
+    matches!(mode, FrameRenderMode::Desktop) && explicit_desktop_blit_active
+}
+
 /// Result of rendering this tick's planned views.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct RenderViewsOutcome {
@@ -576,12 +583,13 @@ impl AppDriver {
     fn render_non_hmd_views(&mut self, mode: FrameRenderMode) -> Option<()> {
         let target = self.target.as_mut()?;
         use crate::xr::XrFrameRenderer;
-        let desktop_owned_by_blit = matches!(mode, FrameRenderMode::Desktop)
-            && self
-                .runtime
+        let desktop_owned_by_blit = desktop_frame_owned_by_explicit_blit(
+            mode,
+            self.runtime
                 .scene()
-                .desktop_blit_for_display(super::DESKTOP_DISPLAY_INDEX)
-                .is_some();
+                .active_blit_for_display(super::DESKTOP_DISPLAY_INDEX)
+                .is_some(),
+        );
         let result = match mode {
             FrameRenderMode::HmdMultiview => Ok(()),
             FrameRenderMode::VrRenderedWithoutProjection => Ok(()),
@@ -589,8 +597,8 @@ impl AppDriver {
                 self.runtime.submit_vr_secondaries_only(target.gpu_mut())
             }
             FrameRenderMode::Desktop if desktop_owned_by_blit => {
-                // A display blit owns the desktop window this tick; skip the world-camera
-                // swapchain output and only run secondary RTs.
+                // An explicit display blit owns the desktop window this tick; skip the
+                // world-camera swapchain output and only run secondary RTs.
                 self.runtime
                     .render_desktop_secondaries_frame(target.gpu_mut())
             }
@@ -731,8 +739,9 @@ fn frame_render_mode_code_label(code: u8) -> &'static str {
 mod tests {
     use super::{
         FrameRenderMode, FrameTickOutcome, PreXrLockstepAction, PreXrLockstepInput,
-        RenderViewsOutcome, frame_render_mode_code, frame_render_mode_code_label,
-        frame_render_mode_label, pre_xr_lockstep_action, runtime_exit_reason,
+        RenderViewsOutcome, desktop_frame_owned_by_explicit_blit, frame_render_mode_code,
+        frame_render_mode_code_label, frame_render_mode_label, pre_xr_lockstep_action,
+        runtime_exit_reason,
     };
     use crate::app::exit::ExitReason;
     use crate::xr::HmdSubmitOutcome;
@@ -777,6 +786,22 @@ mod tests {
             "vr-secondaries-only"
         );
         assert_eq!(frame_render_mode_code_label(3), "desktop");
+    }
+
+    #[test]
+    fn desktop_explicit_blit_uses_secondaries_only_schedule() {
+        assert!(desktop_frame_owned_by_explicit_blit(
+            FrameRenderMode::Desktop,
+            true
+        ));
+        assert!(!desktop_frame_owned_by_explicit_blit(
+            FrameRenderMode::Desktop,
+            false
+        ));
+        assert!(!desktop_frame_owned_by_explicit_blit(
+            FrameRenderMode::VrSecondaryOnly,
+            true
+        ));
     }
 
     #[test]

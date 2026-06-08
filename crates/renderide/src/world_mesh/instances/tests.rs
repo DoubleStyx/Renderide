@@ -5,6 +5,7 @@ use crate::materials::{
     UNITY_TRANSPARENT_RENDER_QUEUE_MIN,
 };
 use crate::world_mesh::TransparentMaterialClass;
+use crate::world_mesh::draw_prep::item::MaterialStackOrder;
 use crate::world_mesh::draw_prep::{pack_sort_prefix, sort_draws};
 use crate::world_mesh::materials::compute_batch_key_hash;
 use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
@@ -238,14 +239,19 @@ fn mirrored_opaque_draws_split_instance_groups() {
 }
 
 #[test]
-fn stacked_duplicate_submesh_draws_keep_two_gpu_instances() {
+fn stacked_duplicate_submesh_draws_emit_separate_groups() {
     let mut first = opaque(7, 1, 0, 0);
     first.slot_index = 1;
+    first.material_stack_order = MaterialStackOrder::from_slot_counts(1, 3, 2);
     first.first_index = 3;
     first.index_count = 6;
 
     let mut stacked = opaque(7, 1, 0, 1);
+    stacked.node_id = first.node_id;
+    stacked.renderable_index = first.renderable_index;
+    stacked.instance_id = first.instance_id;
     stacked.slot_index = 2;
+    stacked.material_stack_order = MaterialStackOrder::from_slot_counts(2, 3, 2);
     stacked.first_index = 3;
     stacked.index_count = 6;
 
@@ -253,14 +259,18 @@ fn stacked_duplicate_submesh_draws_keep_two_gpu_instances() {
     sort_draws(&mut draws);
 
     let plan = build_plan(&draws, true);
-    assert_eq!(groups(&plan, WorldMeshPhase::ForwardOpaque).len(), 1);
+    assert_eq!(groups(&plan, WorldMeshPhase::ForwardOpaque).len(), 2);
     assert_eq!(
         groups(&plan, WorldMeshPhase::ForwardOpaque)[0].instance_range,
-        0..2
+        0..1
+    );
+    assert_eq!(
+        groups(&plan, WorldMeshPhase::ForwardOpaque)[1].instance_range,
+        1..2
     );
     assert_eq!(plan.slab_layout.len(), 2);
-    assert_eq!(groups(&plan, WorldMeshPhase::ViewNormals).len(), 1);
-    assert_eq!(groups(&plan, WorldMeshPhase::DepthOnly).len(), 1);
+    assert_eq!(groups(&plan, WorldMeshPhase::ViewNormals).len(), 2);
+    assert_eq!(groups(&plan, WorldMeshPhase::DepthOnly).len(), 2);
     assert_phases_empty(&plan, &non_primary_forward_phases()[..4]);
 }
 

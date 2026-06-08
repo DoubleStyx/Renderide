@@ -4,8 +4,9 @@
 
 use glam::Mat4;
 
-use crate::camera::HostCameraFrame;
-use crate::camera::view_matrix_for_host_world_mesh_space;
+use crate::camera::{
+    HostCameraFrame, overlay_camera_view_matrix, view_matrix_for_host_world_mesh_space,
+};
 use crate::materials::RasterPipelineKind;
 use crate::scene::SceneCoordinator;
 use crate::shared::RenderingContext;
@@ -23,6 +24,12 @@ pub(crate) fn projection_for_world_mesh_draw(
     } else {
         world_proj
     }
+}
+
+/// Projection-view matrix for desktop overlay-camera draws.
+#[inline]
+pub(crate) fn overlay_view_projection(overlay_proj: Option<Mat4>, world_proj: Mat4) -> Mat4 {
+    projection_for_world_mesh_draw(true, overlay_proj, world_proj) * overlay_camera_view_matrix()
 }
 
 /// Per-draw matrices and stream metadata consumed by the forward mesh vertex shader.
@@ -113,7 +120,7 @@ fn select_model_for_vertex_stream(
 ///
 /// Overlay-layer items (`is_overlay == true`) bypass the overlay-space head-output re-rooting and
 /// use the transform chain relative to the nearest overlay-layer ancestor. Combined with an
-/// identity view matrix in [`compute_per_draw_vp_matrices`], this puts overlay objects at their
+/// overlay-camera view matrix in [`compute_per_draw_vp_matrices`], this puts overlay objects at their
 /// authored local position in normalized screen space (CSS-overlay style) regardless of where the
 /// camera is in the world, matching the host `RadiantDash` desktop layout (`UpdateProjection`
 /// scales `VisualsRoot` against `WindowResolution` so the dash fits a unit-height ortho frustum
@@ -171,7 +178,7 @@ fn resolve_model_selection(
 /// Computes per-draw view-projection, model, and position-stream metadata for one sorted draw.
 ///
 /// **Overlay-layer rendering**: items with `is_overlay == true` (host `LayerType.Overlay`) render
-/// in normalized screen space using an identity view matrix. The model matrix is the local
+/// in normalized screen space using the fixed desktop overlay-camera view matrix. The model matrix is the local
 /// hierarchy matrix (no overlay-space head-output re-rooting; see [`resolved_model_matrix`]) so
 /// overlay objects sit at their authored local position regardless of camera placement. The
 /// projection comes from the dedicated overlay ortho built in
@@ -188,10 +195,9 @@ pub(crate) fn compute_per_draw_vp_matrices(
         return PerDrawVpMatrices::identity();
     };
     if item.is_overlay {
-        // Identity view: overlay model is in normalized screen space directly.
-        let op = projection_for_world_mesh_draw(true, overlay_proj, world_proj);
+        let overlay_vp = overlay_view_projection(overlay_proj, world_proj);
         let model = resolve_model_selection(scene, item, hc, render_context);
-        return PerDrawVpMatrices::new(op, op, model);
+        return PerDrawVpMatrices::new(overlay_vp, overlay_vp, model);
     }
     let model = || resolve_model_selection(scene, item, hc, render_context);
     let view = view_matrix_for_host_world_mesh_space(scene, space, hc);
@@ -210,12 +216,29 @@ pub(crate) fn compute_per_draw_vp_matrices(
 mod tests {
     use std::sync::Arc;
 
-    use glam::{Mat4, Vec3};
+    use glam::{Mat4, Quat, Vec3, Vec4};
 
+    use crate::camera::{
+        CameraClipPlanes, HostCameraFrame, OVERLAY_CAMERA_FAR_CLIP, OVERLAY_CAMERA_LOCAL_Z,
+        OVERLAY_CAMERA_NEAR_CLIP, Viewport,
+    };
     use crate::materials::RasterPipelineKind;
+    use crate::scene::{RenderSpaceId, SceneCoordinator};
+    use crate::shared::{LayerType, RenderTransform, RenderingContext};
     use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
 
-    use super::{projection_for_world_mesh_draw, select_model_for_vertex_stream};
+    use super::{
+        compute_per_draw_vp_matrices, overlay_camera_view_matrix, overlay_view_projection,
+        projection_for_world_mesh_draw, select_model_for_vertex_stream,
+    };
+
+    fn identity_transform() -> RenderTransform {
+        RenderTransform {
+            position: Vec3::ZERO,
+            scale: Vec3::ONE,
+            rotation: Quat::IDENTITY,
+        }
+    }
 
     fn draw_item(skinned: bool) -> crate::world_mesh::WorldMeshDrawItem {
         dummy_world_mesh_draw_item(DummyDrawItemSpec {
@@ -248,6 +271,117 @@ mod tests {
         assert_eq!(
             projection_for_world_mesh_draw(false, Some(overlay), world),
             world
+        );
+    }
+
+    #[test]
+    fn overlay_camera_view_matrix_matches_unity_overlay_depth_semantics() {
+        let view = overlay_camera_view_matrix();
+        let dash = view * Vec4::new(0.0, 0.0, 0.0, 1.0);
+        let modal = view * Vec4::new(0.0, 0.0, -2.0, 1.0);
+        let cursor = view * Vec4::new(0.0, 0.0, -5.0, 1.0);
+
+        assert_eq!(dash.z, OVERLAY_CAMERA_LOCAL_Z);
+        assert_eq!(modal.z, OVERLAY_CAMERA_LOCAL_Z + 2.0);
+        assert_eq!(cursor.z, OVERLAY_CAMERA_LOCAL_Z + 5.0);
+    }
+
+    #[test]
+    fn overlay_view_projection_makes_negative_overlay_z_closer_than_dash() {
+        let overlay = HostCameraFrame::overlay_projection(
+            Viewport::from_tuple((1920, 1080)),
+            CameraClipPlanes::new(3.0, 4.0),
+        );
+        let view_proj = overlay_view_projection(Some(overlay), Mat4::IDENTITY);
+
+        let dash = view_proj * Vec4::new(0.0, 0.0, 0.0, 1.0);
+        let modal = view_proj * Vec4::new(0.0, 0.0, -2.0, 1.0);
+        let cursor = view_proj * Vec4::new(0.0, 0.0, -5.0, 1.0);
+        let dash_depth = dash.z / dash.w;
+        let modal_depth = modal.z / modal.w;
+        let cursor_depth = cursor.z / cursor.w;
+
+        assert!(cursor_depth > modal_depth);
+        assert!(modal_depth > dash_depth);
+        assert!((0.0..=1.0).contains(&dash_depth));
+        assert!((0.0..=1.0).contains(&modal_depth));
+        assert!((0.0..=1.0).contains(&cursor_depth));
+    }
+
+    #[test]
+    fn overlay_draw_projection_places_dash_geometry_inside_camera_volume() {
+        let mut scene = SceneCoordinator::new();
+        let space_id = RenderSpaceId(103);
+        scene.test_seed_space_identity_worlds(
+            space_id,
+            vec![
+                identity_transform(),
+                RenderTransform {
+                    position: Vec3::new(12.0, -5.0, 8.0),
+                    scale: Vec3::splat(3.0),
+                    rotation: Quat::from_axis_angle(Vec3::Y, 1.2),
+                },
+                identity_transform(),
+                RenderTransform {
+                    position: Vec3::ZERO,
+                    scale: Vec3::splat(1.5),
+                    rotation: Quat::IDENTITY,
+                },
+                identity_transform(),
+            ],
+            vec![-1, 0, 1, 2, 3],
+        );
+        scene.test_set_space_overlay(space_id, true);
+        scene.test_push_layer_assignment(space_id, 2, LayerType::Overlay);
+
+        let mut item = draw_item(false);
+        item.space_id = space_id;
+        item.node_id = 4;
+        item.renderable_index = 4;
+        item.is_overlay = true;
+
+        let viewport = Viewport::from_tuple((1920, 1080));
+        let overlay_proj =
+            HostCameraFrame::overlay_projection(viewport, CameraClipPlanes::new(0.1, 100.0));
+        let matrices = compute_per_draw_vp_matrices(
+            &scene,
+            &item,
+            &HostCameraFrame::default(),
+            RenderingContext::UserView,
+            Mat4::IDENTITY,
+            Some(overlay_proj),
+        );
+
+        let origin_clip = matrices.view_proj_left * matrices.model * Vec4::new(0.0, 0.0, 0.0, 1.0);
+        let origin_ndc = origin_clip.truncate() / origin_clip.w;
+        let origin_ndc_x = origin_ndc.x;
+        let origin_ndc_y = origin_ndc.y;
+        let origin_ndc_z = origin_ndc.z;
+        assert!(
+            origin_ndc_x.abs() < 1e-4,
+            "expected NDC x at screen center, got {origin_ndc_x}",
+        );
+        assert!(
+            origin_ndc_y.abs() < 1e-4,
+            "expected NDC y at screen center, got {origin_ndc_y}",
+        );
+        assert!(
+            (0.0..=1.0).contains(&origin_ndc_z),
+            "expected reverse-Z NDC z inside [0, 1], got {origin_ndc_z}",
+        );
+        let expected_origin_ndc_z = (OVERLAY_CAMERA_FAR_CLIP + OVERLAY_CAMERA_LOCAL_Z)
+            / (OVERLAY_CAMERA_FAR_CLIP - OVERLAY_CAMERA_NEAR_CLIP);
+        assert!(
+            (origin_ndc_z - expected_origin_ndc_z).abs() < 1e-4,
+            "expected dash at desktop overlay camera depth {expected_origin_ndc_z}, got {origin_ndc_z}",
+        );
+
+        let right_clip = matrices.view_proj_left * matrices.model * Vec4::new(0.5, 0.0, 0.0, 1.0);
+        let right_ndc_x = right_clip.x / right_clip.w;
+        let expected_x = 0.75 * 1080.0 / (1920.0 * 0.5);
+        assert!(
+            (right_ndc_x - expected_x).abs() < 1e-3,
+            "expected NDC x {expected_x}, got {right_ndc_x}",
         );
     }
 

@@ -138,7 +138,7 @@ impl EncoderPass for WorldMeshForwardTransparentSequencePass {
                     prepared.opaque_recorded,
                     &prepared.plan,
                     self.resources.msaa_enabled(),
-                    ctx.pass_frame.view.sample_count.max(1),
+                    ctx.frame.view.sample_count.max(1),
                 )
             }))
     }
@@ -154,7 +154,7 @@ impl EncoderPass for WorldMeshForwardTransparentSequencePass {
         };
         if recorded {
             prepared.tail_raster_recorded = true;
-            if ctx.pass_frame.view.sample_count > 1 {
+            if ctx.frame.view.sample_count > 1 {
                 prepared.depth_freshness.mark_dirty();
             }
         }

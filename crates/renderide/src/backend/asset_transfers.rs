@@ -16,6 +16,7 @@ mod mesh_upload_batch;
 mod particle_task;
 mod pending;
 mod pools;
+mod reliable_ack;
 mod shared_memory_payload;
 mod texture3d_task;
 mod texture3d_upload_plan;

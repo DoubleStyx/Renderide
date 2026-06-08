@@ -5,8 +5,9 @@
 //! depth-snapshot materials.
 
 use crate::gpu::MsaaDepthResolveResources;
-use crate::graph_inputs::{GraphPassFrame, MsaaViews};
+use crate::graph_inputs::MsaaViews;
 use crate::profiling::GpuProfilerHandle;
+use crate::render_graph::context::PassFrameContext;
 use crate::world_mesh::WorldMeshHelperNeeds;
 
 use super::PreparedWorldMeshForwardFrame;
@@ -22,13 +23,13 @@ pub(super) struct EncodeResult {
 }
 
 /// Inputs required to resolve and copy the scene-depth snapshot.
-pub(super) struct EncodeCtx<'a, 'encoder, 'frame> {
+pub(super) struct EncodeCtx<'a, 'encoder, 'frame, 'pass> {
     /// WGPU device used by the MSAA depth resolve path.
     pub(super) device: &'a wgpu::Device,
     /// Command encoder receiving resolve and copy work.
     pub(super) encoder: &'encoder mut wgpu::CommandEncoder,
     /// Per-view frame data and shared renderer services.
-    pub(super) frame: &'frame GraphPassFrame<'a>,
+    pub(super) frame: &'frame PassFrameContext<'a, 'pass>,
     /// Prepared forward state for this view.
     pub(super) prepared: &'frame PreparedWorldMeshForwardFrame,
     /// Resolved MSAA transient texture views, when this graph variant uses MSAA.
@@ -43,7 +44,9 @@ pub(super) struct EncodeCtx<'a, 'encoder, 'frame> {
 
 /// Resolves MSAA depth when needed, then copies the single-sample frame depth into the sampled
 /// scene-depth snapshot used by depth-snapshot materials.
-pub(super) fn encode_world_mesh_forward_depth_snapshot(ctx: EncodeCtx<'_, '_, '_>) -> EncodeResult {
+pub(super) fn encode_world_mesh_forward_depth_snapshot(
+    ctx: EncodeCtx<'_, '_, '_, '_>,
+) -> EncodeResult {
     let EncodeCtx {
         device,
         encoder,
@@ -69,7 +72,7 @@ pub(super) fn encode_world_mesh_forward_depth_snapshot(ctx: EncodeCtx<'_, '_, '_
         false
     };
 
-    if !frame.shared.frame_resources.has_frame_gpu() {
+    if !frame.systems.frame_resources.has_frame_gpu() {
         return EncodeResult {
             resolved_depth,
             copied: false,
@@ -78,7 +81,7 @@ pub(super) fn encode_world_mesh_forward_depth_snapshot(ctx: EncodeCtx<'_, '_, '_
     let copy_query =
         profiler.map(|p| p.begin_query("world_mesh_forward::scene_depth_snapshot_copy", encoder));
     let copied = frame
-        .shared
+        .systems
         .frame_resources
         .copy_scene_depth_snapshot_for_view(
             frame.view.view_id,

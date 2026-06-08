@@ -265,6 +265,7 @@ fn hash_world_mesh_draw_item<H: Hasher>(item: &WorldMeshDrawItem, hasher: &mut H
     item.instance_id.hash(hasher);
     item.mesh_asset_id.hash(hasher);
     item.slot_index.hash(hasher);
+    item.material_stack_order.hash(hasher);
     item.first_index.hash(hasher);
     item.index_count.hash(hasher);
     item.is_overlay.hash(hasher);
@@ -317,6 +318,7 @@ fn hash_vec4_option<H: Hasher>(value: Option<glam::Vec4>, hasher: &mut H) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::world_mesh::draw_prep::item::MaterialStackOrder;
     use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
 
     fn draw(node_id: i32) -> WorldMeshDrawItem {
@@ -365,6 +367,18 @@ mod tests {
         assert_eq!(cache.stats().hits, 0);
         assert_eq!(cache.stats().misses, 2);
         assert_eq!(cache.stats().entries, 2);
+    }
+
+    #[test]
+    fn command_cache_fingerprint_includes_material_stack_order() {
+        let plain = draw(1);
+        let mut stacked = plain.clone();
+        stacked.material_stack_order = MaterialStackOrder::from_slot_counts(0, 2, 1);
+
+        assert_ne!(
+            fingerprint_world_mesh_draws(&[plain]),
+            fingerprint_world_mesh_draws(&[stacked])
+        );
     }
 
     #[test]

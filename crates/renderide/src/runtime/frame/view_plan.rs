@@ -13,7 +13,7 @@ use crate::render_graph::blackboard::Blackboard;
 use crate::render_graph::{
     ExternalFrameTargets, ExternalOffscreenTargets, FrameGlobalView, FrameView, FrameViewClear,
     FrameViewResourceHints, FrameViewTarget, OffscreenColorCopyTarget, OffscreenWriteTarget,
-    RenderPathProfile, ViewFamilyGraphRequirements, ViewPostProcessing,
+    RenderPathProfile, ViewFamilyGraphRequirements, ViewPostProcessing, ViewWinding,
 };
 use crate::scene::RenderSpaceId;
 use crate::shared::RenderingContext;
@@ -153,6 +153,8 @@ pub(in crate::runtime) struct FrameViewPlan<'a> {
     pub(in crate::runtime) render_shadows: bool,
     /// Stable logical identity for view-scoped resources and temporal state.
     pub(in crate::runtime) view_id: ViewId,
+    /// Per-view winding policy before draw-local transform parity is applied.
+    pub(in crate::runtime) view_winding: ViewWinding,
     /// Attachment extent in pixels for this view.
     pub(in crate::runtime) viewport_px: (u32, u32),
     /// Background clear/skybox behavior for this view.
@@ -205,6 +207,7 @@ impl<'a> FrameViewPlan<'a> {
             layer_policy: ViewLayerPolicy::MainView,
             render_shadows: true,
             view_id,
+            view_winding: ViewWinding::normal(),
             viewport_px,
             clear,
             profile,
@@ -269,6 +272,7 @@ impl<'a> FrameViewPlan<'a> {
             render_context: self.render_context,
             frame_time_seconds: self.frame_time_seconds,
             target: self.target(),
+            view_winding: self.view_winding,
             profile: self.profile,
             clear: self.clear,
             resource_hints,

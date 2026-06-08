@@ -233,6 +233,8 @@ pub(crate) struct MaterialDrawResolver<'a> {
     shader_perm: ShaderPermutation,
     /// Offscreen target being written by this view, if any.
     offscreen_write_target: OffscreenWriteTarget,
+    /// Whether this view flips front-face winding before draw-local transform parity is applied.
+    front_face_flip: bool,
 }
 
 impl<'a> MaterialDrawResolver<'a> {
@@ -243,6 +245,7 @@ impl<'a> MaterialDrawResolver<'a> {
         pass_desc: MaterialPipelineDesc,
         shader_perm: ShaderPermutation,
         offscreen_write_target: OffscreenWriteTarget,
+        front_face_flip: bool,
     ) -> Self {
         Self {
             registry: encode.materials.material_registry(),
@@ -253,6 +256,7 @@ impl<'a> MaterialDrawResolver<'a> {
             pass_desc,
             shader_perm,
             offscreen_write_target,
+            front_face_flip,
         }
     }
 
@@ -310,11 +314,7 @@ impl<'a> MaterialDrawResolver<'a> {
         let item = &draws[first];
         let mut pipeline_key =
             PipelineVariantKey::for_draw_item(item, self.pass_desc, self.shader_perm);
-        if self.offscreen_write_target.is_offscreen() {
-            // View-projection matrices for offscreen-RT views are pre-multiplied by a clip-space
-            // Y flip so the resulting render-texture lands in Unity (V=0 bottom) orientation.
-            // That mirrors triangle winding, so the pipeline needs the inverted `front_face` to
-            // keep back-face culling correct.
+        if self.front_face_flip {
             pipeline_key.front_face = pipeline_key.front_face.flipped();
         }
 

@@ -63,6 +63,10 @@ impl RendererRuntime {
         self.config.skin_weight_mode()
     }
 
+    pub(crate) fn shadow_quality(&self) -> crate::backend::HostShadowQuality {
+        self.config.shadow_quality()
+    }
+
     /// Toggles the master ImGui overlay visibility setting and clears stale HUD input capture.
     pub fn toggle_imgui_visibility(&mut self) {
         if self.config.toggle_imgui_visibility().is_some() {
@@ -149,6 +153,7 @@ impl RendererRuntime {
         let suppress_renderer_config_disk_writes =
             self.config.suppress_renderer_config_disk_writes();
         self.backend.set_skin_weight_mode(self.skin_weight_mode());
+        self.backend.set_shadow_quality(self.shadow_quality());
         let (shm, ipc) = self.frontend.transport_pair_mut();
         if let Err(e) = self.backend.attach(
             crate::backend::RenderBackendAttachDesc {

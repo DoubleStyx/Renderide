@@ -6,7 +6,7 @@ use super::super::blackboard::Blackboard;
 use super::super::error::GraphExecuteError;
 use crate::camera::{HostCameraFrame, ViewId};
 use crate::gpu::{GpuContext, OutputDepthMode};
-use crate::graph_inputs::{FrameViewClear, OffscreenWriteTarget};
+use crate::graph_inputs::{FrameViewClear, OffscreenWriteTarget, ViewWinding};
 use crate::shared::RenderingContext;
 
 #[cfg(test)]
@@ -187,6 +187,8 @@ pub struct FrameView<'a> {
     pub frame_time_seconds: f32,
     /// Color/depth destination.
     pub target: FrameViewTarget<'a>,
+    /// Per-view winding policy before draw-local transform parity is applied.
+    pub view_winding: ViewWinding,
     /// Render-path profile that owns MSAA, post-processing, snapshot, and fallback policy.
     pub profile: RenderPathProfile,
     /// Background clear/skybox behavior for this view.
@@ -305,6 +307,7 @@ mod tests {
             render_context: RenderingContext::UserView,
             frame_time_seconds: 0.25,
             target: FrameViewTarget::Swapchain,
+            view_winding: ViewWinding::normal(),
             profile: RenderPathProfile::desktop_main(),
             clear: FrameViewClear::color(glam::Vec4::new(0.1, 0.2, 0.3, 1.0)),
             resource_hints: FrameViewResourceHints::default(),

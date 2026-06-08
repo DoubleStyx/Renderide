@@ -3,7 +3,7 @@
 use glam::{Mat4, Vec3};
 use hashbrown::HashMap;
 
-use crate::camera::view_matrix_for_world_mesh_render_space;
+use crate::camera::{overlay_camera_view_matrix, view_matrix_for_world_mesh_render_space};
 use crate::scene::{
     LodEntry, LodRendererKind, LodRendererRef, MeshRendererInstanceId, RenderSpaceId,
     RenderSpaceView, SceneCoordinator, SkinnedMeshRenderer, StaticMeshRenderer,
@@ -565,21 +565,19 @@ fn relative_screen_height_for_group(
     wmin: Vec3,
     wmax: Vec3,
 ) -> Option<f32> {
+    if is_overlay {
+        let view_proj = culling.proj.overlay_proj * overlay_camera_view_matrix();
+        return Some(projected_aabb_relative_height(view_proj, wmin, wmax));
+    }
     let space = ctx.scene_assets.scene.space(space_id)?;
     let view = culling
         .host_camera
         .explicit_world_to_view()
         .unwrap_or_else(|| view_matrix_for_world_mesh_render_space(ctx.scene_assets.scene, space));
     let first = if let Some((left, right)) = culling.proj.vr_stereo {
-        if is_overlay {
-            culling.proj.overlay_proj * view
-        } else {
-            let left_height = projected_aabb_relative_height(left, wmin, wmax);
-            let right_height = projected_aabb_relative_height(right, wmin, wmax);
-            return Some(left_height.max(right_height));
-        }
-    } else if is_overlay {
-        culling.proj.overlay_proj * view
+        let left_height = projected_aabb_relative_height(left, wmin, wmax);
+        let right_height = projected_aabb_relative_height(right, wmin, wmax);
+        return Some(left_height.max(right_height));
     } else {
         culling.proj.world_proj * view
     };

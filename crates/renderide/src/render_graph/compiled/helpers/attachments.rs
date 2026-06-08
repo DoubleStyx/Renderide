@@ -46,7 +46,7 @@ pub(in crate::render_graph::compiled) fn pass_info_raster_template(
 pub(in crate::render_graph::compiled) fn frame_sample_count_from_raster_ctx(
     ctx: &RasterPassCtx<'_, '_>,
 ) -> u32 {
-    ctx.pass_frame.view.sample_count.max(1)
+    ctx.frame.view.sample_count.max(1)
 }
 
 pub(in crate::render_graph::compiled) fn resolve_attachment_target(

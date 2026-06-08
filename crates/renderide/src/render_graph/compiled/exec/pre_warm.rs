@@ -191,6 +191,7 @@ impl CompiledRenderGraph {
         for view in views {
             let resolved = Self::resolve_owned_view_metadata_from_target(
                 view.view_id(),
+                view.view_winding,
                 view.profile,
                 &view.host_camera,
                 &view.target,

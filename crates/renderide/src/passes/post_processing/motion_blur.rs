@@ -28,7 +28,7 @@ use crate::passes::post_processing::settings_slots::{
     MotionBlurSettingsSlot, MotionBlurSettingsValue,
 };
 use crate::render_graph::builder::GraphBuilder;
-use crate::render_graph::context::RasterPassCtx;
+use crate::render_graph::context::{PassFrameContext, RasterPassCtx};
 use crate::render_graph::error::{RenderPassError, SetupError};
 use crate::render_graph::gpu_cache::{create_d2_array_view, raster_stereo_mask_override};
 use crate::render_graph::pass::{PassBuilder, RasterPass, RenderPassTemplate};
@@ -168,12 +168,9 @@ impl RasterPass for MotionVectorsPass {
     }
 
     fn should_record(&self, ctx: &RasterPassCtx<'_, '_>) -> Result<bool, RenderPassError> {
-        let frame = &*ctx.pass_frame;
+        let frame = &ctx.frame;
         let settings = motion_blur_settings(ctx.blackboard);
-        Ok(
-            view_motion_blur_active(&frame.view, settings)
-                && frame.view.depth_sample_view.is_some(),
-        )
+        Ok(view_motion_blur_active(frame.view, settings) && frame.view.depth_sample_view.is_some())
     }
 
     fn release_view_resources(&mut self, retired_views: &[ViewId]) {
@@ -186,7 +183,7 @@ impl RasterPass for MotionVectorsPass {
         rpass: &mut wgpu::RenderPass<'_>,
     ) -> Result<(), RenderPassError> {
         profiling::scope!("post_processing::motion_vectors");
-        let frame = &*ctx.pass_frame;
+        let frame = &ctx.frame;
         let Some(depth_view) = frame.view.depth_sample_view.as_ref() else {
             return Ok(());
         };
@@ -275,7 +272,7 @@ impl RasterPass for MotionBlurResolvePass {
     }
 
     fn should_record(&self, ctx: &RasterPassCtx<'_, '_>) -> Result<bool, RenderPassError> {
-        Ok(super::view_post_processing_enabled(&ctx.pass_frame.view))
+        Ok(super::view_post_processing_enabled(ctx.frame.view))
     }
 
     fn release_view_resources(&mut self, retired_views: &[ViewId]) {
@@ -288,7 +285,7 @@ impl RasterPass for MotionBlurResolvePass {
         rpass: &mut wgpu::RenderPass<'_>,
     ) -> Result<(), RenderPassError> {
         profiling::scope!("post_processing::motion_blur");
-        let frame = &*ctx.pass_frame;
+        let frame = &ctx.frame;
         let Some(input) = ctx.graph_resources.transient_texture(self.input) else {
             return Err(missing_pass_resource(
                 self.name(),
@@ -302,7 +299,7 @@ impl RasterPass for MotionBlurResolvePass {
             ));
         };
         let settings = motion_blur_settings(ctx.blackboard);
-        let active = view_motion_blur_active(&frame.view, settings);
+        let active = view_motion_blur_active(frame.view, settings);
         let params = MotionBlurParamsGpu::from_settings(settings, frame.view.viewport_px, active);
         let state = self.state_cache.ensure(ctx.device, frame.view.view_id);
         ctx.write_buffer(&state.blur_params_buffer, 0, bytemuck::bytes_of(&params));
@@ -380,7 +377,7 @@ impl MotionBlurStateCache {
     fn compute_motion_vector_params(
         &self,
         device: &wgpu::Device,
-        frame: &crate::graph_inputs::GraphPassFrame<'_>,
+        frame: &PassFrameContext<'_, '_>,
     ) -> MotionVectorParamsGpu {
         let state = self.ensure(device, frame.view.view_id);
         let current = MotionBlurCameraHistory::from_frame(frame);
@@ -421,11 +418,11 @@ struct MotionBlurCameraHistory {
 }
 
 impl MotionBlurCameraHistory {
-    /// Captures the camera matrices and view shape for a graph pass frame.
-    fn from_frame(frame: &crate::graph_inputs::GraphPassFrame<'_>) -> Self {
-        let view = &frame.view;
+    /// Captures the camera matrices and view shape for a pass frame.
+    fn from_frame(frame: &PassFrameContext<'_, '_>) -> Self {
+        let view = &*frame.view;
         let (view_proj_left, view_proj_right) =
-            view_proj_pair(frame.shared.scene, &view.host_camera, view.viewport_px);
+            view_proj_pair(frame.systems.scene, &view.host_camera, view.viewport_px);
         Self {
             view_proj_left,
             view_proj_right,

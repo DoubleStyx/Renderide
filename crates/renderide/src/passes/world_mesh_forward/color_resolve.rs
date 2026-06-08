@@ -24,8 +24,7 @@ use std::sync::LazyLock;
 
 use pipeline::{MsaaResolveHdrPipelineCache, ResolveParamsUbo};
 
-use crate::graph_inputs::GraphPassFrame;
-use crate::render_graph::context::GraphResolvedResources;
+use crate::render_graph::context::{GraphResolvedResources, PassFrameContext};
 use crate::render_graph::error::RenderPassError;
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::render_graph::gpu_cache::stereo_mask_or_template;
@@ -41,7 +40,7 @@ pub struct WorldMeshForwardColorResolveGraphResources {
 }
 
 /// Inputs required to encode one HDR-aware color resolve draw.
-pub(super) struct WorldMeshForwardColorResolveEncodeContext<'a, 'encoder, 'frame> {
+pub(super) struct WorldMeshForwardColorResolveEncodeContext<'a, 'encoder, 'frame, 'pass> {
     /// WGPU device used for pipeline and bind-group cache lookup.
     pub(super) device: &'a wgpu::Device,
     /// Resolved graph resources for this recording scope.
@@ -49,7 +48,7 @@ pub(super) struct WorldMeshForwardColorResolveEncodeContext<'a, 'encoder, 'frame
     /// Command encoder receiving the resolve pass.
     pub(super) encoder: &'encoder mut wgpu::CommandEncoder,
     /// Per-view frame data.
-    pub(super) frame: &'frame GraphPassFrame<'a>,
+    pub(super) frame: &'frame PassFrameContext<'a, 'pass>,
     /// Deferred graph upload sink for resolve uniforms.
     pub(super) uploads: GraphUploadSink<'frame>,
     /// Graph handles for resolve source and destination.
@@ -68,7 +67,7 @@ fn pipeline_cache() -> &'static MsaaResolveHdrPipelineCache {
 
 /// Encodes an HDR-aware MSAA color resolve into `scene_color_hdr` using a caller-owned encoder.
 pub(in crate::passes::world_mesh_forward) fn encode_world_mesh_forward_msaa_color_resolve(
-    ctx: WorldMeshForwardColorResolveEncodeContext<'_, '_, '_>,
+    ctx: WorldMeshForwardColorResolveEncodeContext<'_, '_, '_, '_>,
 ) -> Result<bool, RenderPassError> {
     let WorldMeshForwardColorResolveEncodeContext {
         device,

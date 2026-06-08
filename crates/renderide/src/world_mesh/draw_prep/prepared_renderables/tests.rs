@@ -26,11 +26,13 @@ fn prepared_draw(
         is_overlay: false,
         is_hidden: false,
         sorting_order: 0,
+        shadow_cast_mode: ShadowCastMode::On,
         skinned: false,
         world_space_deformed: false,
         blendshape_deformed: false,
         tangent_blendshape_deform_active: false,
         slot_index: 0,
+        material_stack_order: None,
         first_index: 0,
         index_count: 3,
         material_asset_id,
@@ -490,7 +492,7 @@ fn spatial_query_dedups_duplicate_space_queries_in_prepared_order() {
 }
 
 #[test]
-fn estimated_draw_count_excludes_static_shadow_only_renderers() {
+fn estimated_draw_count_includes_static_shadow_only_renderers() {
     let mut scene = empty_scene();
     let id = RenderSpaceId(1);
     scene.test_insert_static_mesh_renderers(
@@ -507,11 +509,11 @@ fn estimated_draw_count_excludes_static_shadow_only_renderers() {
         ],
     );
 
-    assert_eq!(estimated_draw_count(&scene, id), 2);
+    assert_eq!(estimated_draw_count(&scene, id), 4);
 }
 
 #[test]
-fn estimated_draw_count_excludes_skinned_shadow_only_renderers() {
+fn estimated_draw_count_includes_skinned_shadow_only_renderers() {
     let mut scene = empty_scene();
     let id = RenderSpaceId(1);
     let mut visible = SkinnedMeshRenderer::default();
@@ -520,5 +522,5 @@ fn estimated_draw_count_excludes_skinned_shadow_only_renderers() {
     shadow_only.base.shadow_cast_mode = ShadowCastMode::ShadowOnly;
     scene.test_insert_skinned_mesh_renderers(id, vec![visible, shadow_only]);
 
-    assert_eq!(estimated_draw_count(&scene, id), 2);
+    assert_eq!(estimated_draw_count(&scene, id), 4);
 }

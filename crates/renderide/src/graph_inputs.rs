@@ -25,8 +25,6 @@ use crate::render_graph::execution_backend::{GraphAssetResources, GraphFrameReso
 use crate::scene::SceneCoordinator;
 use crate::shared::{CameraClearMode, RenderingContext};
 
-use crate::gpu::OutputDepthMode;
-
 /// Offscreen target currently being written by a view.
 ///
 /// The renderer uses this for two separate decisions: any offscreen target needs the offscreen
@@ -120,6 +118,37 @@ impl OffscreenWriteTarget {
     pub fn suppresses_render_texture_sampling(self, sampled_asset_id: i32) -> bool {
         self.host_render_texture_asset_id() == Some(sampled_asset_id)
             && self.render_texture_self_sampling() == Some(RenderTextureSelfSampling::Suppress)
+    }
+}
+
+/// Per-view winding policy before draw-local transform parity is applied.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ViewWinding {
+    /// Whether the camera view matrix mirrors handedness, as planar reflections do.
+    mirror_reflection: bool,
+}
+
+impl ViewWinding {
+    /// View policy for ordinary non-reflection cameras.
+    #[inline]
+    pub const fn normal() -> Self {
+        Self {
+            mirror_reflection: false,
+        }
+    }
+
+    /// View policy for planar mirror reflection cameras.
+    #[inline]
+    pub const fn mirror_reflection() -> Self {
+        Self {
+            mirror_reflection: true,
+        }
+    }
+
+    /// Returns whether final raster front-face winding must be flipped for this view.
+    #[inline]
+    pub const fn flips_front_face_for(self, write_target: OffscreenWriteTarget) -> bool {
+        write_target.is_offscreen() ^ self.mirror_reflection
     }
 }
 
@@ -317,6 +346,8 @@ pub struct GraphPassFrameView<'a> {
     pub multiview_stereo: bool,
     /// Offscreen target currently being written by this view.
     pub offscreen_write_target: OffscreenWriteTarget,
+    /// Per-view winding policy used by raster pipeline key resolution.
+    pub view_winding: ViewWinding,
     /// Which logical view this frame state belongs to.
     pub view_id: ViewId,
     /// Mutex-wrapped Hi-Z state resolved for this view before per-view recording starts.
@@ -343,17 +374,9 @@ pub struct GraphPassFrame<'a> {
     pub view: GraphPassFrameView<'a>,
 }
 
-impl GraphPassFrame<'_> {
-    /// Output depth layout for Hi-Z and occlusion ([`OutputDepthMode::from_multiview_stereo`]).
-    #[inline]
-    pub fn output_depth_mode(&self) -> OutputDepthMode {
-        OutputDepthMode::from_multiview_stereo(self.view.multiview_stereo)
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{FrameViewClear, OffscreenWriteTarget, RenderTextureSelfSampling};
+    use super::{FrameViewClear, OffscreenWriteTarget, RenderTextureSelfSampling, ViewWinding};
     use crate::shared::{CameraClearMode, CameraState};
 
     #[test]
@@ -417,6 +440,20 @@ mod tests {
         assert_eq!(
             OffscreenWriteTarget::None.render_projection(projection),
             projection
+        );
+    }
+
+    #[test]
+    fn view_winding_combines_offscreen_and_reflection_parity() {
+        assert!(!ViewWinding::normal().flips_front_face_for(OffscreenWriteTarget::None));
+        assert!(
+            ViewWinding::normal()
+                .flips_front_face_for(OffscreenWriteTarget::host_render_texture(77))
+        );
+        assert!(ViewWinding::mirror_reflection().flips_front_face_for(OffscreenWriteTarget::None));
+        assert!(
+            !ViewWinding::mirror_reflection()
+                .flips_front_face_for(OffscreenWriteTarget::host_render_texture(77))
         );
     }
 

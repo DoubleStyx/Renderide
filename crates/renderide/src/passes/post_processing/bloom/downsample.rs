@@ -81,9 +81,7 @@ impl RasterPass for BloomDownsampleFirstPass {
     }
 
     fn should_record(&self, ctx: &RasterPassCtx<'_, '_>) -> Result<bool, RenderPassError> {
-        Ok(super::super::view_post_processing_enabled(
-            &ctx.pass_frame.view,
-        ))
+        Ok(super::super::view_post_processing_enabled(ctx.frame.view))
     }
 
     fn record(
@@ -92,7 +90,7 @@ impl RasterPass for BloomDownsampleFirstPass {
         rpass: &mut wgpu::RenderPass<'_>,
     ) -> Result<(), RenderPassError> {
         profiling::scope!("post_processing::bloom::downsample_first");
-        let frame = &*ctx.pass_frame;
+        let frame = &ctx.frame;
         let graph_resources = ctx.graph_resources;
         let Some(input_tex) = graph_resources.transient_texture(self.input) else {
             return Err(missing_pass_resource(
@@ -189,9 +187,7 @@ impl RasterPass for BloomDownsamplePass {
     }
 
     fn should_record(&self, ctx: &RasterPassCtx<'_, '_>) -> Result<bool, RenderPassError> {
-        Ok(super::super::view_post_processing_enabled(
-            &ctx.pass_frame.view,
-        ))
+        Ok(super::super::view_post_processing_enabled(ctx.frame.view))
     }
 
     fn record(
@@ -200,7 +196,7 @@ impl RasterPass for BloomDownsamplePass {
         rpass: &mut wgpu::RenderPass<'_>,
     ) -> Result<(), RenderPassError> {
         profiling::scope!("post_processing::bloom::downsample");
-        let frame = &*ctx.pass_frame;
+        let frame = &ctx.frame;
         let graph_resources = ctx.graph_resources;
         let Some(input_tex) = graph_resources.transient_texture(self.input) else {
             return Err(missing_pass_resource(

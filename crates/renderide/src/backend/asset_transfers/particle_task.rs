@@ -18,6 +18,7 @@ use crate::shared::{
 use super::AssetTransferQueue;
 use super::integrator::{AssetTask, AssetTaskLane, StepResult};
 use super::mesh_upload_batch::{MeshUploadRecorder, MeshUploadStagingBatch};
+use super::reliable_ack::enqueue_background_reliable;
 
 /// GPU handles needed to publish particle-generated meshes on the renderer thread.
 #[derive(Clone, Copy)]
@@ -570,16 +571,11 @@ pub(super) fn send_point_render_buffer_consumed(
     ipc: &mut Option<&mut DualQueueIpc>,
     asset_id: i32,
 ) {
-    if let Some(ipc) = ipc.as_deref_mut() {
-        let ack_queued = ipc.enqueue_background_reliable(
-            RendererCommand::PointRenderBufferConsumed(PointRenderBufferConsumed { asset_id }),
-        );
-        if !ack_queued {
-            logger::warn!(
-                "point render buffer {asset_id}: failed to enqueue reliable consumed ack"
-            );
-        }
-    }
+    let _ = enqueue_background_reliable(
+        ipc,
+        RendererCommand::PointRenderBufferConsumed(PointRenderBufferConsumed { asset_id }),
+        || format!("point render buffer {asset_id}: failed to enqueue reliable consumed ack"),
+    );
 }
 
 /// Sends a trail render-buffer consumed acknowledgement.
@@ -587,16 +583,11 @@ pub(super) fn send_trail_render_buffer_consumed(
     ipc: &mut Option<&mut DualQueueIpc>,
     asset_id: i32,
 ) {
-    if let Some(ipc) = ipc.as_deref_mut() {
-        let ack_queued = ipc.enqueue_background_reliable(
-            RendererCommand::TrailRenderBufferConsumed(TrailRenderBufferConsumed { asset_id }),
-        );
-        if !ack_queued {
-            logger::warn!(
-                "trail render buffer {asset_id}: failed to enqueue reliable consumed ack"
-            );
-        }
-    }
+    let _ = enqueue_background_reliable(
+        ipc,
+        RendererCommand::TrailRenderBufferConsumed(TrailRenderBufferConsumed { asset_id }),
+        || format!("trail render buffer {asset_id}: failed to enqueue reliable consumed ack"),
+    );
 }
 
 /// Removes a resident point render-buffer and generated meshes.

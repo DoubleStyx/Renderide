@@ -1,6 +1,6 @@
 //! Raster pass materialization and phase-step recording helpers.
 
-use super::super::super::super::context::RasterPassCtx;
+use super::super::super::super::context::{PassFrameContext, RasterPassCtx};
 use super::super::super::super::error::GraphExecuteError;
 use super::super::super::super::frame_upload_batch::{FrameUploadBatch, GraphUploadSink};
 use super::super::super::super::pass::{PassKind, PassNode};
@@ -125,7 +125,7 @@ impl CompiledRenderGraph {
             GraphUploadSink::new(upload_batch, first_step.frame_upload_scope(scope.view_idx));
         let mut ctx = RasterPassCtx {
             device: gpu.device,
-            pass_frame: frame_params,
+            frame: PassFrameContext::new(&mut frame_params.shared, &mut frame_params.view),
             uploads,
             graph_resources: view.graph_resources,
             blackboard,

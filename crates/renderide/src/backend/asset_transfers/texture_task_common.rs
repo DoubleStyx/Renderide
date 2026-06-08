@@ -7,6 +7,7 @@ use crate::ipc::DualQueueIpc;
 use crate::shared::RendererCommand;
 
 use super::integrator::StepResult;
+use super::reliable_ack::send_background_reliable;
 
 /// GPU handles and queue-access policy shared by one texture-family upload step.
 #[derive(Clone, Copy)]
@@ -54,11 +55,9 @@ pub(super) fn send_background_result(
     ipc: &mut Option<&mut DualQueueIpc>,
     command: RendererCommand,
 ) {
-    if let Some(ipc) = ipc.as_mut()
-        && !ipc.send_background_reliable(command)
-    {
-        logger::warn!("asset upload: failed to enqueue reliable background result");
-    }
+    let _ = send_background_reliable(ipc, command, || {
+        "asset upload: failed to enqueue reliable background result".to_string()
+    });
 }
 
 /// Returns whether an upload may write without mixing native storage orientations.

@@ -379,6 +379,16 @@ pub(in super::super) struct BuildPassDirective {
     pub(in super::super) render_state_policy: BuildRenderStatePolicy,
 }
 
+impl BuildPassDirective {
+    /// Returns whether pass state is eligible for the renderer's generic depth prepass.
+    pub(in super::super) const fn is_generic_depth_prepass_candidate(&self) -> bool {
+        matches!(self.pass_type, BuildPassType::Forward)
+            && matches!(self.blend, BuildBlend::Off)
+            && self.depth_write
+            && !self.alpha_to_coverage
+    }
+}
+
 /// Parses `fn <name>(...)` out of a line.
 fn parse_fn_name(line: &str) -> Option<String> {
     let rest = line.strip_prefix("fn ")?.trim_start();

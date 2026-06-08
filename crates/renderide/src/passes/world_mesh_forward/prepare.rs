@@ -7,7 +7,9 @@ use hashbrown::HashMap;
 use crate::camera::HostCameraFrame;
 use crate::diagnostics::{PerViewHudConfig, PerViewHudOutputs};
 use crate::gpu::GpuLimits;
-use crate::graph_inputs::{GraphPassFrame, OffscreenWriteTarget, PerViewFramePlan};
+use crate::graph_inputs::{
+    FrameSystemsShared, GraphPassFrameView, OffscreenWriteTarget, PerViewFramePlan,
+};
 use crate::materials::MaterialSystem;
 use crate::materials::ShaderPermutation;
 use crate::materials::embedded::MaterialBindCacheKey;
@@ -31,6 +33,7 @@ use super::material_batch::{MaterialGroup1Binding, PipelineVariantKey};
 use super::material_resolve::precompute_material_resolve_batches;
 use super::skybox::SkyboxRenderer;
 use super::slab::{SlabPackInputs, pack_and_upload_per_draw_slab};
+use super::vp::overlay_view_projection;
 use super::{
     MaterialBatchBoundary, MaterialBatchPacket, PreparedWorldMeshForwardFrame,
     WorldMeshForwardPipelineState,
@@ -60,10 +63,20 @@ pub(crate) struct WorldMeshForwardPrepareGpu<'a> {
 
 /// Per-view frame inputs used while preparing world-mesh forward state.
 pub(crate) struct WorldMeshForwardPrepareView<'a, 'frame> {
-    /// Per-view graph frame state.
-    pub(crate) frame: &'a GraphPassFrame<'frame>,
+    /// Renderer systems shared across all views in the current frame.
+    pub(crate) systems: &'a FrameSystemsShared<'frame>,
+    /// Surface, camera, and render-target state for the view being prepared.
+    pub(crate) view: &'a GraphPassFrameView<'frame>,
     /// Per-view frame bind resources.
     pub(crate) frame_plan: &'a PerViewFramePlan,
+}
+
+/// Narrow frame context used by world-mesh forward preparation.
+pub(crate) struct WorldMeshForwardPrepareFrame<'a, 'frame> {
+    /// Renderer systems shared across all views in the current frame.
+    pub(crate) systems: &'a FrameSystemsShared<'frame>,
+    /// Surface, camera, and render-target state for the view being prepared.
+    pub(crate) view: &'a GraphPassFrameView<'frame>,
 }
 
 /// Backend-owned retained caches used by world-mesh forward preparation.
@@ -106,7 +119,7 @@ struct ForwardDrawPackGpu<'a> {
 }
 
 struct ForwardDrawPackView<'a, 'frame> {
-    frame: &'a GraphPassFrame<'frame>,
+    frame: &'a WorldMeshForwardPrepareFrame<'a, 'frame>,
     encode_refs: &'a WorldMeshForwardEncodeRefs<'frame>,
 }
 
@@ -191,7 +204,7 @@ struct MaterialPacketSubmissionKey {
 
 /// Copies Hi-Z temporal state for the next frame when culling is active.
 pub(super) fn capture_hi_z_temporal_after_collect(
-    frame: &GraphPassFrame<'_>,
+    frame: &WorldMeshForwardPrepareFrame<'_, '_>,
     cull_proj: Option<&WorldMeshCullProjParams>,
     hc: &HostCameraFrame,
 ) {
@@ -201,13 +214,16 @@ pub(super) fn capture_hi_z_temporal_after_collect(
     let Some(cull_proj) = cull_proj else {
         return;
     };
-    frame.shared.occlusion.capture_hi_z_temporal_for_next_frame(
-        frame.shared.scene,
-        cull_proj,
-        frame.view.viewport_px,
-        frame.view.hi_z_slot.as_ref(),
-        hc.explicit_world_to_view(),
-    );
+    frame
+        .systems
+        .occlusion
+        .capture_hi_z_temporal_for_next_frame(
+            frame.systems.scene,
+            cull_proj,
+            frame.view.viewport_px,
+            frame.view.hi_z_slot.as_ref(),
+            hc.explicit_world_to_view(),
+        );
 }
 
 /// Updates debug HUD mesh-draw stats when the HUD is enabled.
@@ -261,14 +277,19 @@ pub(crate) fn prepare_world_mesh_forward_frame(
         uploads,
         gpu_limits,
     } = gpu;
-    let WorldMeshForwardPrepareView { frame, frame_plan } = view;
+    let WorldMeshForwardPrepareView {
+        systems,
+        view,
+        frame_plan,
+    } = view;
+    let frame = WorldMeshForwardPrepareFrame { systems, view };
     let WorldMeshForwardPrepareCaches {
         skybox_renderer,
         instance_plan_cache,
     } = caches;
     let supports_base_instance = gpu_limits.supports_base_instance;
     let hc = &frame.view.host_camera;
-    let pipeline = resolve_world_mesh_forward_pipeline(frame, gpu_limits, hc);
+    let pipeline = resolve_world_mesh_forward_pipeline(&frame, gpu_limits, hc);
     let use_multiview = pipeline.use_multiview;
     let shader_perm = pipeline.shader_perm;
 
@@ -282,17 +303,17 @@ pub(crate) fn prepare_world_mesh_forward_frame(
     let visibility = prefetched.collection.visibility;
     let encode_refs = {
         profiling::scope!("world_mesh::prepare_frame::build_encode_refs");
-        WorldMeshForwardEncodeRefs::from_frame(frame)
+        WorldMeshForwardEncodeRefs::from_systems(frame.systems)
     };
     {
         profiling::scope!("world_mesh::prepare_frame::capture_hi_z_temporal");
-        capture_hi_z_temporal_after_collect(frame, prefetched.cull_proj.as_ref(), hc);
+        capture_hi_z_temporal_after_collect(&frame, prefetched.cull_proj.as_ref(), hc);
     }
 
     let mut hud_outputs = {
         profiling::scope!("world_mesh::prepare_frame::publish_hud_outputs");
         world_mesh_hud_outputs(
-            frame,
+            &frame,
             &prefetched.collection,
             supports_base_instance,
             shader_perm,
@@ -303,7 +324,7 @@ pub(crate) fn prepare_world_mesh_forward_frame(
         ForwardDrawPackInputs {
             gpu: ForwardDrawPackGpu { device, uploads },
             view: ForwardDrawPackView {
-                frame,
+                frame: &frame,
                 encode_refs: &encode_refs,
             },
             pipeline: ForwardDrawPackPipeline {
@@ -335,11 +356,11 @@ pub(crate) fn prepare_world_mesh_forward_frame(
 
     {
         profiling::scope!("world_mesh::prepare_frame::write_frame_uniforms");
-        write_per_view_frame_uniforms(uploads, frame, frame_plan, use_multiview, hc);
+        write_per_view_frame_uniforms(uploads, &frame, frame_plan, use_multiview, hc);
     }
     let skybox = {
         profiling::scope!("world_mesh::prepare_frame::prepare_skybox");
-        skybox_renderer.prepare(device, uploads, frame, &pipeline)
+        skybox_renderer.prepare(device, uploads, &frame, &pipeline)
     };
 
     prepared_forward_view_from_pack(
@@ -395,7 +416,7 @@ fn prepared_forward_view_from_pack(
 
 /// Resolves per-view world-mesh forward pipeline state from camera and attachment settings.
 fn resolve_world_mesh_forward_pipeline(
-    frame: &GraphPassFrame<'_>,
+    frame: &WorldMeshForwardPrepareFrame<'_, '_>,
     gpu_limits: &GpuLimits,
     hc: &HostCameraFrame,
 ) -> WorldMeshForwardPipelineState {
@@ -407,6 +428,10 @@ fn resolve_world_mesh_forward_pipeline(
         frame.view.depth_texture.format(),
         gpu_limits,
         frame.view.sample_count,
+        frame
+            .view
+            .view_winding
+            .flips_front_face_for(frame.view.offscreen_write_target),
     )
 }
 
@@ -459,7 +484,7 @@ fn pack_forward_draws_for_view(
     let (render_context, world_proj, overlay_proj) = {
         profiling::scope!("world_mesh::prepare_frame::compute_view_projections");
         compute_view_projections(
-            frame.shared.scene,
+            frame.systems.scene,
             hc,
             frame.view.render_context,
             frame.view.viewport_px,
@@ -520,7 +545,9 @@ fn pack_forward_draws_for_view(
             },
         )
     };
-    let overlay_view_proj = overlay_proj.unwrap_or(glam::Mat4::IDENTITY);
+    let overlay_view_proj = overlay_proj
+        .map(|proj| overlay_view_projection(Some(proj), world_proj))
+        .unwrap_or(glam::Mat4::IDENTITY);
     slab_uploaded.then_some(PackedForwardDraws {
         draws,
         plan,
@@ -602,7 +629,7 @@ fn build_forward_instance_plan(inputs: ForwardInstancePlanBuildInputs<'_>) -> In
 }
 
 fn precompute_material_batches(
-    frame: &GraphPassFrame<'_>,
+    frame: &WorldMeshForwardPrepareFrame<'_, '_>,
     encode_refs: &WorldMeshForwardEncodeRefs<'_>,
     uploads: GraphUploadSink<'_>,
     draws: &[WorldMeshDrawItem],
@@ -618,14 +645,13 @@ fn precompute_material_batches(
             encode_refs,
             uploads,
             draws,
-            pipeline.shader_perm,
-            &pipeline.pass_desc,
+            pipeline,
             offscreen_write_target,
             boundaries_scratch,
         );
     };
     if !frame
-        .shared
+        .systems
         .frame_resources
         .with_per_view_material_batch_scratch(frame.view.view_id, &mut resolve)
     {
@@ -737,14 +763,14 @@ fn assign_group_packet_indices(groups: &mut [DrawGroup], packets: &[MaterialBatc
 
 /// Computes [`PerViewHudOutputs`] from the collected draws when any HUD field is non-empty.
 fn world_mesh_hud_outputs(
-    frame: &GraphPassFrame<'_>,
+    frame: &WorldMeshForwardPrepareFrame<'_, '_>,
     collection: &WorldMeshDrawCollection,
     supports_base_instance: bool,
     shader_perm: ShaderPermutation,
 ) -> Option<PerViewHudOutputs> {
     let hud_outputs = maybe_set_world_mesh_draw_stats(
-        frame.shared.debug_hud,
-        frame.shared.materials,
+        frame.systems.debug_hud,
+        frame.systems.materials,
         collection,
         &collection.items,
         supports_base_instance,

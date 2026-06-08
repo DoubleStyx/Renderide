@@ -60,6 +60,7 @@ pub(crate) use depth_prepass::{
     WorldMeshForwardDepthPrepassPipelineKey, depth_prepass_pipeline_key_for_draw,
     pre_warm_depth_prepass_pipeline,
 };
+pub(crate) use encode::{ShadowDepthDrawBatch, draw_shadow_depth_subset};
 pub(crate) use material_batch::{MaterialBatchBoundary, MaterialBatchPacket, MaterialDrawResolver};
 pub(crate) use normal_pass::{
     GTAO_VIEW_NORMAL_FORMAT, WorldMeshForwardNormalPipelineKey, normal_pipeline_key_for_draw,
@@ -227,18 +228,25 @@ pub(crate) struct WorldMeshForwardEncodeRefs<'a> {
 }
 
 impl<'a> WorldMeshForwardEncodeRefs<'a> {
-    /// Builds encode refs from a graph pass frame's disjoint system slices.
-    pub(crate) fn from_frame(frame: &crate::graph_inputs::GraphPassFrame<'a>) -> Self {
+    /// Builds encode refs from shared graph-facing renderer systems.
+    pub(crate) fn from_systems(systems: &crate::graph_inputs::FrameSystemsShared<'a>) -> Self {
         Self {
-            materials: frame.shared.materials,
-            mesh_pool: frame.shared.asset_resources.mesh_pool(),
-            texture_pool: frame.shared.asset_resources.texture_pool(),
-            texture3d_pool: frame.shared.asset_resources.texture3d_pool(),
-            cubemap_pool: frame.shared.asset_resources.cubemap_pool(),
-            render_texture_pool: frame.shared.asset_resources.render_texture_pool(),
-            video_texture_pool: frame.shared.asset_resources.video_texture_pool(),
-            skin_cache: frame.shared.skin_cache,
+            materials: systems.materials,
+            mesh_pool: systems.asset_resources.mesh_pool(),
+            texture_pool: systems.asset_resources.texture_pool(),
+            texture3d_pool: systems.asset_resources.texture3d_pool(),
+            cubemap_pool: systems.asset_resources.cubemap_pool(),
+            render_texture_pool: systems.asset_resources.render_texture_pool(),
+            video_texture_pool: systems.asset_resources.video_texture_pool(),
+            skin_cache: systems.skin_cache,
         }
+    }
+
+    /// Builds encode refs from a pass-facing frame context.
+    pub(crate) fn from_pass_frame(
+        frame: &crate::render_graph::context::PassFrameContext<'a, '_>,
+    ) -> Self {
+        Self::from_systems(frame.systems)
     }
 
     /// Mesh pool for draw recording after any required stream uploads were pre-warmed.
@@ -354,7 +362,7 @@ fn declare_msaa_depth_resolve_accesses(
 
 /// Encodes the shared MSAA depth resolve and records command stats for the current view.
 fn record_msaa_depth_resolve(ctx: &mut EncoderPassCtx<'_, '_, '_>) -> bool {
-    let frame = &mut *ctx.pass_frame;
+    let frame = &ctx.frame;
     let msaa_views = ctx.blackboard.get::<MsaaViewsSlot>();
     let msaa_depth_resolve = frame.view.msaa_depth_resolve.clone();
     let resolved = encode_msaa_depth_resolve_after_clear_only(
@@ -529,7 +537,7 @@ impl RasterPass for WorldMeshForwardOpaquePass {
         rpass: &mut wgpu::RenderPass<'_>,
     ) -> Result<(), RenderPassError> {
         profiling::scope!("world_mesh_forward::opaque_record");
-        let frame = &mut *ctx.pass_frame;
+        let frame = &ctx.frame;
 
         let Some(mut prepared) = ctx.blackboard.take::<WorldMeshForwardPlanSlot>() else {
             return Ok(());
@@ -574,7 +582,7 @@ impl EncoderPass for WorldMeshDepthSnapshotPass {
 
     fn record(&self, ctx: &mut EncoderPassCtx<'_, '_, '_>) -> Result<(), RenderPassError> {
         profiling::scope!("world_mesh_forward::depth_snapshot_record");
-        let frame = &mut *ctx.pass_frame;
+        let frame = &ctx.frame;
         let Some(mut prepared) = ctx.blackboard.take::<WorldMeshForwardPlanSlot>() else {
             return Ok(());
         };
@@ -679,7 +687,7 @@ impl RasterPass for WorldMeshForwardIntersectPass {
         rpass: &mut wgpu::RenderPass<'_>,
     ) -> Result<(), RenderPassError> {
         profiling::scope!("world_mesh_forward::intersect_record");
-        let frame = &mut *ctx.pass_frame;
+        let frame = &ctx.frame;
 
         let Some(mut prepared) = ctx.blackboard.take::<WorldMeshForwardPlanSlot>() else {
             return Ok(());
@@ -770,12 +778,12 @@ impl RasterPass for WorldMeshDesktopOverlayPass {
         rpass: &mut wgpu::RenderPass<'_>,
     ) -> Result<(), RenderPassError> {
         profiling::scope!("world_mesh_forward::desktop_overlay_record");
-        let frame = &mut *ctx.pass_frame;
+        let frame = &ctx.frame;
         let Some(mut prepared) = ctx.blackboard.take::<WorldMeshOverlayForwardPlanSlot>() else {
             return Ok(());
         };
         let Some((frame_bind_group, _)) = frame
-            .shared
+            .systems
             .frame_resources
             .per_view_frame_bind_group_and_buffer(ViewId::MainOverlay)
         else {
@@ -819,7 +827,7 @@ impl EncoderPass for WorldMeshForwardGtaoDepthResolvePass {
     }
 
     fn should_record(&self, ctx: &EncoderPassCtx<'_, '_, '_>) -> Result<bool, RenderPassError> {
-        Ok(ctx.pass_frame.view.sample_count > 1
+        Ok(ctx.frame.view.sample_count > 1
             && ctx
                 .blackboard
                 .get::<WorldMeshForwardPlanSlot>()
@@ -850,7 +858,7 @@ impl EncoderPass for WorldMeshForwardDepthResolvePass {
     }
 
     fn should_record(&self, ctx: &EncoderPassCtx<'_, '_, '_>) -> Result<bool, RenderPassError> {
-        Ok(ctx.pass_frame.view.sample_count > 1
+        Ok(ctx.frame.view.sample_count > 1
             && ctx
                 .blackboard
                 .get::<WorldMeshForwardPlanSlot>()

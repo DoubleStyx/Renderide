@@ -18,6 +18,7 @@ fn empty_extracted_render_space_update() -> ExtractedRenderSpaceUpdate {
     ExtractedRenderSpaceUpdate {
         space_id: RenderSpaceId(1),
         cameras: None,
+        camera_portals: None,
         reflection_probes: None,
         transforms: None,
         meshes: None,
@@ -322,6 +323,7 @@ fn parallel_apply_extracted_commits_pose_writes_and_marks_dirty() {
         }),
         meshes: None,
         skinned_meshes: None,
+        camera_portals: None,
         reflection_probes: None,
         layers: None,
         lod_groups: None,

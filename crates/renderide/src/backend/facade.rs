@@ -34,6 +34,7 @@ use crate::render_graph::TransientPool;
 use crate::shared::SkinWeightMode;
 
 use super::FrameResourceManager;
+use super::HostShadowQuality;
 use super::secondary_rt_scratch::{SecondaryRtScratchCache, SecondaryRtScratchTargets};
 use crate::materials::MaterialSystem;
 use crate::occlusion::OcclusionSystem;
@@ -41,6 +42,7 @@ use diagnostics::BackendDiagnostics;
 use draw_preparation::BackendDrawPreparation;
 use frame_services::BackendFrameServices;
 pub(crate) use graph_access::BackendGraphAccess;
+use graph_access::LivePostProcessingSettings;
 use graph_state::RenderGraphState;
 use reflection_services::ReflectionProbeServices;
 
@@ -109,6 +111,8 @@ pub struct RenderBackend {
     renderer_settings: Option<RendererSettingsHandle>,
     /// Host-owned skin influence mode used by mesh deform compute.
     skin_weight_mode: SkinWeightMode,
+    /// Host-owned realtime shadow quality used for shadow planning.
+    shadow_quality: HostShadowQuality,
     /// Whether this backend is attached to a headless offscreen target.
     headless: bool,
 }
@@ -136,6 +140,7 @@ impl RenderBackend {
             surface_format: None,
             renderer_settings: None,
             skin_weight_mode: SkinWeightMode::Unlimited,
+            shadow_quality: HostShadowQuality::default(),
             headless: false,
         }
     }
@@ -150,6 +155,18 @@ impl RenderBackend {
     #[inline]
     pub(crate) const fn skin_weight_mode(&self) -> SkinWeightMode {
         self.skin_weight_mode
+    }
+
+    /// Updates host-owned realtime shadow quality used for shadow planning.
+    #[inline]
+    pub(crate) fn set_shadow_quality(&mut self, quality: HostShadowQuality) {
+        self.shadow_quality = quality;
+    }
+
+    /// Host-owned realtime shadow quality used for shadow planning.
+    #[inline]
+    pub(crate) const fn shadow_quality(&self) -> HostShadowQuality {
+        self.shadow_quality
     }
 
     /// Requested HDR scene-color [`wgpu::TextureFormat`] from [`crate::config::RenderingSettings`].
@@ -190,58 +207,20 @@ impl RenderBackend {
             && scene_color_format_supports_signed_rgb(self.scene_color_format_wgpu())
     }
 
-    /// Snapshot of the live GTAO settings for the current frame.
+    /// Snapshot of live post-processing settings for the current frame.
     ///
-    /// Seeded into each view's blackboard as [`crate::passes::post_processing::settings_slots::GtaoSettingsSlot`]
-    /// so the shader UBO reflects slider changes without rebuilding the compiled render graph
-    /// (the chain signature only tracks enable booleans, so parameter edits wouldn't otherwise
-    /// reach the pass).
-    pub(crate) fn live_gtao_settings(&self) -> crate::config::GtaoSettings {
+    /// Seeded into each view's blackboard so parameter edits can update shader UBOs without
+    /// rebuilding the compiled graph when the chain topology is unchanged.
+    fn live_post_processing_settings(&self) -> LivePostProcessingSettings {
         self.renderer_settings
             .as_ref()
             .and_then(|h| h.read().ok())
-            .map(|s| s.post_processing.gtao)
-            .unwrap_or_default()
-    }
-
-    /// Snapshot of the live bloom settings for the current frame.
-    ///
-    /// Seeded into each view's blackboard as [`crate::passes::post_processing::settings_slots::BloomSettingsSlot`]
-    /// so the first downsample's params UBO and the upsample blend constants reflect slider
-    /// changes without rebuilding the compiled render graph. The effective `max_mip_dimension`
-    /// is the one exception -- it drives mip-chain texture sizes, so it lives on the chain
-    /// signature and triggers a rebuild instead.
-    pub(crate) fn live_bloom_settings(&self) -> crate::config::BloomSettings {
-        self.renderer_settings
-            .as_ref()
-            .and_then(|h| h.read().ok())
-            .map(|s| s.post_processing.bloom)
-            .unwrap_or_default()
-    }
-
-    /// Snapshot of the live motion-blur settings for the current frame.
-    ///
-    /// Seeded into each view's blackboard as
-    /// [`crate::passes::post_processing::settings_slots::MotionBlurSettingsSlot`] so blur samples,
-    /// shutter scale, and clamp edits take effect without rebuilding the compiled graph.
-    pub(crate) fn live_motion_blur_settings(&self) -> crate::config::MotionBlurSettings {
-        self.renderer_settings
-            .as_ref()
-            .and_then(|h| h.read().ok())
-            .map(|s| s.post_processing.motion_blur)
-            .unwrap_or_default()
-    }
-
-    /// Snapshot of the live auto-exposure settings for the current frame.
-    ///
-    /// Seeded into each view's blackboard as
-    /// [`crate::passes::post_processing::settings_slots::AutoExposureSettingsSlot`] so histogram
-    /// settings and adaptation speed edits take effect without rebuilding the compiled graph.
-    pub(crate) fn live_auto_exposure_settings(&self) -> crate::config::AutoExposureSettings {
-        self.renderer_settings
-            .as_ref()
-            .and_then(|h| h.read().ok())
-            .map(|s| s.post_processing.auto_exposure)
+            .map(|s| LivePostProcessingSettings {
+                gtao: s.post_processing.gtao,
+                bloom: s.post_processing.bloom,
+                motion_blur: s.post_processing.motion_blur,
+                auto_exposure: s.post_processing.auto_exposure,
+            })
             .unwrap_or_default()
     }
 
@@ -304,6 +283,12 @@ impl RenderBackend {
     #[inline]
     pub(crate) fn frame_resources_mut(&mut self) -> &mut FrameResourceManager {
         &mut self.frame_services.frame_resources
+    }
+
+    /// Shared frame resources for runtime draw-preparation handoffs.
+    #[inline]
+    pub(crate) fn frame_resources(&self) -> &FrameResourceManager {
+        &self.frame_services.frame_resources
     }
 
     /// Drains latest video clock-error samples produced by asset integration.
@@ -549,10 +534,7 @@ impl RenderBackend {
         let scene_color_format = self.scene_color_format_wgpu();
         let gpu_limits = self.gpu_limits().cloned();
         let msaa_depth_resolve = self.frame_services.msaa_depth_resolve();
-        let live_gtao_settings = self.live_gtao_settings();
-        let live_bloom_settings = self.live_bloom_settings();
-        let live_motion_blur_settings = self.live_motion_blur_settings();
-        let live_auto_exposure_settings = self.live_auto_exposure_settings();
+        let live_post_processing = self.live_post_processing_settings();
         let wall_frame_time_ms = self.debug_frame_time_ms();
         let skin_weight_mode = self.skin_weight_mode();
         let (transient_pool, history_registry, upload_arena, latest_upload_stats) =
@@ -577,10 +559,7 @@ impl RenderBackend {
             gpu_limits,
             msaa_depth_resolve,
             skin_weight_mode,
-            live_gtao_settings,
-            live_bloom_settings,
-            live_motion_blur_settings,
-            live_auto_exposure_settings,
+            live_post_processing,
             wall_frame_time_ms,
         }
     }

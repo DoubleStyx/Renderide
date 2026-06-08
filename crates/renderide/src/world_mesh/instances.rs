@@ -96,6 +96,8 @@ struct SubmissionGroupKey {
     submission_class: u32,
     /// Mesh/submesh identity submitted by the indexed draw call.
     mesh: MeshSubmeshKey,
+    /// Host shadow mode, used to keep `ShadowOnly` out of visible instance groups.
+    shadow_cast_mode: u8,
 }
 
 /// Pending group built from resolved submission compatibility rather than raw material ids.
@@ -587,6 +589,7 @@ fn collect_submission_groups_for_range(
             order_segment: row.order_segment,
             submission_class,
             mesh: mesh_submesh_key(item),
+            shadow_cast_mode: item.shadow_cast_mode as u8,
         };
         if let Some(&group_idx) = group_index.get(&key) {
             pending_groups[group_idx].members.push(draw_idx);

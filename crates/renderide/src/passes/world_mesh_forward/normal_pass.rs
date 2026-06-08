@@ -230,10 +230,9 @@ impl WorldMeshForwardNormalPipelineKey {
 pub(crate) fn normal_pipeline_key_for_draw(
     item: &crate::world_mesh::WorldMeshDrawItem,
     pipeline: &WorldMeshForwardPipelineState,
-    offscreen: bool,
 ) -> Option<WorldMeshForwardNormalPipelineKey> {
     let mut front_face = item.batch_key.front_face;
-    if offscreen {
+    if pipeline.front_face_flip {
         front_face = front_face.flipped();
     }
     WorldMeshForwardNormalPipelineKey::for_draw(
@@ -346,7 +345,7 @@ impl RasterPass for WorldMeshForwardNormalPass {
 
     fn should_record(&self, ctx: &RasterPassCtx<'_, '_>) -> Result<bool, RenderPassError> {
         Ok(
-            crate::passes::post_processing::view_post_processing_enabled(&ctx.pass_frame.view)
+            crate::passes::post_processing::view_post_processing_enabled(ctx.frame.view)
                 && ctx
                     .blackboard
                     .get::<WorldMeshForwardPlanSlot>()
@@ -360,7 +359,7 @@ impl RasterPass for WorldMeshForwardNormalPass {
         rpass: &mut wgpu::RenderPass<'_>,
     ) -> Result<(), RenderPassError> {
         profiling::scope!("world_mesh_forward::normal_record");
-        let frame = &mut *ctx.pass_frame;
+        let frame = &ctx.frame;
 
         let Some(prepared) = ctx.blackboard.take::<WorldMeshForwardPlanSlot>() else {
             return Ok(());

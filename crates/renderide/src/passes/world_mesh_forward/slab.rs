@@ -9,13 +9,13 @@ use crate::cpu_parallelism::{
     RENDER_COMMAND_CHUNK_DRAWS, admit_render_command_items, current_reference_worker_count,
     record_parallel_admission,
 };
-use crate::graph_inputs::GraphPassFrame;
 use crate::mesh_deform::PaddedPerDrawUniforms;
 use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::scene::SceneCoordinator;
 use crate::shared::RenderingContext;
 use crate::world_mesh::draw_prep::WorldMeshDrawItem;
 
+use super::prepare::WorldMeshForwardPrepareFrame;
 use super::vp::compute_per_draw_vp_matrices;
 
 /// Draws assigned to one per-draw VP / model uniform packing worker chunk.
@@ -50,13 +50,13 @@ pub(super) struct SlabPackInputs<'a> {
 /// [`super::crate::world_mesh::DrawGroup::instance_range`]. The slab itself
 /// stays one contiguous storage buffer per view.
 ///
-/// Uses the per-view per-draw resources identified by [`GraphPassFrame::view_id`], growing them as
+/// Uses the per-view per-draw resources identified by the active view id, growing them as
 /// needed. Writes at byte offset 0 of the view's own buffer. Returns `false` if per-draw resources
 /// cannot be created (not yet attached).
 pub(super) fn pack_and_upload_per_draw_slab(
     device: &wgpu::Device,
     uploads: GraphUploadSink<'_>,
-    frame: &GraphPassFrame<'_>,
+    frame: &WorldMeshForwardPrepareFrame<'_, '_>,
     inputs: SlabPackInputs<'_>,
 ) -> bool {
     profiling::scope!("world_mesh::pack_and_upload_slab");
@@ -70,11 +70,11 @@ pub(super) fn pack_and_upload_per_draw_slab(
     );
 
     let view_id = frame.view.view_id;
-    let scene = frame.shared.scene;
+    let scene = frame.systems.scene;
     let hc = &frame.view.host_camera;
 
     let Some(per_draw_storage) = frame
-        .shared
+        .systems
         .frame_resources
         .ensure_per_view_per_draw_capacity(device, view_id, inputs.draws.len())
     else {
@@ -96,7 +96,7 @@ pub(super) fn pack_and_upload_per_draw_slab(
         }
     };
     frame
-        .shared
+        .systems
         .frame_resources
         .with_per_view_per_draw_scratch(view_id, &mut pack_and_upload)
         && uploaded

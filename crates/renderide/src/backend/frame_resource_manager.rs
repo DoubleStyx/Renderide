@@ -23,6 +23,7 @@ mod lights;
 mod manager;
 mod per_view;
 mod per_view_state;
+mod shadows;
 mod view_desc;
 
 #[cfg(test)]
@@ -30,6 +31,7 @@ mod tests;
 
 pub use manager::FrameResourceManager;
 
+pub(crate) use shadows::{ShadowFramePlan, ShadowRenderView};
 pub(crate) use view_desc::FrameLightViewDesc;
 
 // Re-exports kept for intra-doc links in sibling modules

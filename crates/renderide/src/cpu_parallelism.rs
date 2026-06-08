@@ -164,21 +164,6 @@ pub(crate) const fn has_visibility_parallel_work(item_count: usize, worker_count
         && has_two_chunks(item_count, VISIBILITY_CULL_CHUNK_ITEMS)
 }
 
-/// Admits light work using the reference light packet size and light-count floor.
-#[inline]
-pub(crate) const fn admit_light_work_items(
-    item_count: usize,
-    worker_count: usize,
-) -> ParallelAdmission {
-    if reference_worker_count(worker_count) > 1 && item_count >= LIGHT_WORK_PARALLEL_MIN_LIGHTS {
-        ParallelAdmission::Parallel {
-            chunk_size: LIGHT_WORK_CHUNK_LIGHTS,
-        }
-    } else {
-        ParallelAdmission::Serial
-    }
-}
-
 /// Admits coarse render-space fan-outs when at least two space packets are available.
 #[inline]
 pub(crate) const fn admit_coarse_space_items(
@@ -467,15 +452,14 @@ mod tests {
     use super::{
         BIND_POSE_CHUNK_MATRICES, BLENDSHAPE_CHANNEL_CHUNK_TASKS, BLENDSHAPE_CHANNEL_MIN_SAMPLES,
         BLENDSHAPE_PACK_CHUNK_SHAPES, BLENDSHAPE_PACK_MIN_SPARSE_ENTRIES, COARSE_SPACE_CHUNK_ITEMS,
-        FrameCpuWorkload, FrameParallelPolicy, LIGHT_WORK_CHUNK_LIGHTS, ParallelAdmission,
-        REFERENCE_WORKER_CAP, RELEVANCE_PACKET_MAX_ITEMS, RELEVANCE_PACKET_MIN_ITEMS,
-        RENDER_COMMAND_CHUNK_DRAWS, RENDERABLE_UPDATE_CHUNK_ITEMS, TEXTURE3D_SLICE_CHUNK_SLICES,
-        TEXTURE3D_SLICE_MIN_TEXELS, VISIBILITY_CULL_CHUNK_ITEMS, admit_bind_pose_matrices,
-        admit_blendshape_channel_tasks, admit_blendshape_pack_shapes, admit_coarse_space_items,
-        admit_light_work_items, admit_mesh_stream_jobs, admit_relevance_items,
-        admit_render_command_items, admit_renderable_update_items, admit_texture3d_slices,
-        has_two_chunks, has_visibility_parallel_work, reference_worker_count,
-        relevance_packet_size,
+        FrameCpuWorkload, FrameParallelPolicy, ParallelAdmission, REFERENCE_WORKER_CAP,
+        RELEVANCE_PACKET_MAX_ITEMS, RELEVANCE_PACKET_MIN_ITEMS, RENDER_COMMAND_CHUNK_DRAWS,
+        RENDERABLE_UPDATE_CHUNK_ITEMS, TEXTURE3D_SLICE_CHUNK_SLICES, TEXTURE3D_SLICE_MIN_TEXELS,
+        VISIBILITY_CULL_CHUNK_ITEMS, admit_bind_pose_matrices, admit_blendshape_channel_tasks,
+        admit_blendshape_pack_shapes, admit_coarse_space_items, admit_mesh_stream_jobs,
+        admit_relevance_items, admit_render_command_items, admit_renderable_update_items,
+        admit_texture3d_slices, has_two_chunks, has_visibility_parallel_work,
+        reference_worker_count, relevance_packet_size,
     };
 
     #[test]
@@ -567,16 +551,6 @@ mod tests {
             VISIBILITY_CULL_CHUNK_ITEMS * 2,
             8
         ));
-        assert_eq!(
-            admit_light_work_items(LIGHT_WORK_CHUNK_LIGHTS * 2 - 1, 8),
-            ParallelAdmission::Serial
-        );
-        assert_eq!(
-            admit_light_work_items(LIGHT_WORK_CHUNK_LIGHTS * 2, 8),
-            ParallelAdmission::Parallel {
-                chunk_size: LIGHT_WORK_CHUNK_LIGHTS
-            }
-        );
     }
 
     #[test]

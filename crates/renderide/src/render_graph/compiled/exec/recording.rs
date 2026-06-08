@@ -9,7 +9,7 @@ use super::super::super::blackboard::{
     Blackboard, BlackboardRuntimeAccessViolation, GraphCommandStats, GraphCommandStatsSlot,
 };
 use super::super::super::context::{
-    ComputePassCtx, EncoderPassCtx, GraphResolvedResources, RasterPassCtx,
+    ComputePassCtx, EncoderPassCtx, GraphResolvedResources, PassFrameContext, RasterPassCtx,
 };
 use super::super::super::error::GraphExecuteError;
 use super::super::super::frame_upload_batch::{
@@ -128,7 +128,10 @@ impl CompiledRenderGraph {
                         helpers::pass_info_raster_template(&self.pass_info, execution.pass_idx)?;
                     let mut ctx = RasterPassCtx {
                         device: gpu.device,
-                        pass_frame: &mut *frame_params,
+                        frame: PassFrameContext::new(
+                            &mut frame_params.shared,
+                            &mut frame_params.view,
+                        ),
                         uploads,
                         graph_resources: view.graph_resources,
                         blackboard: &mut *blackboard,
@@ -151,7 +154,10 @@ impl CompiledRenderGraph {
                             gpu_limits: gpu.gpu_limits,
                             encoder,
                             depth_view: Some(view.resolved.depth_view),
-                            pass_frame: &mut *frame_params,
+                            frame: PassFrameContext::new(
+                                &mut frame_params.shared,
+                                &mut frame_params.view,
+                            ),
                             uploads,
                             graph_resources: view.graph_resources,
                             blackboard: &mut *blackboard,
@@ -167,7 +173,10 @@ impl CompiledRenderGraph {
                         EncoderPassCtx {
                             device: gpu.device,
                             encoder,
-                            pass_frame: &mut *frame_params,
+                            frame: PassFrameContext::new(
+                                &mut frame_params.shared,
+                                &mut frame_params.view,
+                            ),
                             uploads,
                             graph_resources: view.graph_resources,
                             blackboard: &mut *blackboard,

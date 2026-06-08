@@ -176,7 +176,7 @@ impl ComputePass for GtaoDepthPrefilterPass {
     fn should_record(&self, ctx: &ComputePassCtx<'_, '_, '_>) -> Result<bool, RenderPassError> {
         Ok(super::gtao_view_recording_needed(
             ctx.blackboard,
-            &ctx.pass_frame.view,
+            ctx.frame.view,
         ))
     }
 
@@ -193,20 +193,20 @@ impl ComputePass for GtaoDepthPrefilterPass {
 
         let frame_uniform_buffer = self.resolve_frame_uniform_buffer(ctx)?;
         let bind_group_multiview_stereo = self.bind_group_multiview_stereo();
-        let view_multiview_stereo = ctx.pass_frame.view.multiview_stereo;
+        let view_multiview_stereo = ctx.frame.view.multiview_stereo;
         let layer_count = self.dispatch_layer_count(view_multiview_stereo);
-        let source_view =
-            ctx.pass_frame
-                .view
-                .depth_texture
-                .create_view(&wgpu::TextureViewDescriptor {
-                    label: Some(raw_depth_view_label(bind_group_multiview_stereo)),
-                    aspect: wgpu::TextureAspect::DepthOnly,
-                    dimension: Some(prefilter_view_dimension(bind_group_multiview_stereo)),
-                    base_array_layer: 0,
-                    array_layer_count: Some(layer_count),
-                    ..Default::default()
-                });
+        let source_view = ctx
+            .frame
+            .view
+            .depth_texture
+            .create_view(&wgpu::TextureViewDescriptor {
+                label: Some(raw_depth_view_label(bind_group_multiview_stereo)),
+                aspect: wgpu::TextureAspect::DepthOnly,
+                dimension: Some(prefilter_view_dimension(bind_group_multiview_stereo)),
+                base_array_layer: 0,
+                array_layer_count: Some(layer_count),
+                ..Default::default()
+            });
         crate::profiling::note_resource_churn!(
             TextureView,
             "passes::gtao_prefilter_raw_depth_view"

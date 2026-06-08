@@ -1,7 +1,6 @@
 //! Scene-color snapshot helper for the world-mesh transparent sequence.
 
-use crate::graph_inputs::GraphPassFrame;
-use crate::render_graph::context::GraphResolvedResources;
+use crate::render_graph::context::{GraphResolvedResources, PassFrameContext};
 use crate::world_mesh::WorldMeshHelperNeeds;
 
 use super::PreparedWorldMeshForwardFrame;
@@ -14,7 +13,7 @@ use super::WorldMeshForwardGraphResources;
 pub(crate) fn encode_world_mesh_forward_color_snapshot(
     graph_resources: &GraphResolvedResources,
     encoder: &mut wgpu::CommandEncoder,
-    frame: &GraphPassFrame<'_>,
+    frame: &PassFrameContext<'_, '_>,
     prepared: &PreparedWorldMeshForwardFrame,
     resources: WorldMeshForwardGraphResources,
     profiler: Option<&GpuProfilerHandle>,
@@ -26,7 +25,7 @@ pub(crate) fn encode_world_mesh_forward_color_snapshot(
         );
         return false;
     }
-    if !frame.shared.frame_resources.has_frame_gpu() {
+    if !frame.systems.frame_resources.has_frame_gpu() {
         logger::warn!("world mesh color snapshot copy: frame GPU resources are unavailable");
         return false;
     }
@@ -37,7 +36,7 @@ pub(crate) fn encode_world_mesh_forward_color_snapshot(
     let copy_query =
         profiler.map(|p| p.begin_query("world_mesh_forward::scene_color_snapshot_copy", encoder));
     let copied = frame
-        .shared
+        .systems
         .frame_resources
         .copy_scene_color_snapshot_for_view(
             frame.view.view_id,

@@ -9,7 +9,7 @@ use hashbrown::HashMap;
 use crate::scene::{RenderSpaceId, SkinnedMeshRenderer, StaticMeshRenderer};
 use crate::world_mesh::materials::FrameMaterialBatchCache;
 
-use super::super::item::{WorldMeshDrawItem, resolved_material_slot_count};
+use super::super::item::{MaterialStackOrder, WorldMeshDrawItem, resolved_material_slot_count};
 use super::DrawCollectionInputs;
 use super::lod::LodVisibility;
 
@@ -25,6 +25,8 @@ pub(super) const WORLD_MESH_COLLECT_CHUNK_SIZE: usize = 32;
 struct SubmeshSlotIndices {
     /// Slot index in [`StaticMeshRenderer`] material slots.
     pub slot_index: usize,
+    /// Material-stack ordering marker when this slot reuses the final submesh.
+    pub material_stack_order: Option<MaterialStackOrder>,
     /// First index in the mesh index buffer for this submesh.
     pub first_index: u32,
     /// Index count for this submesh draw.

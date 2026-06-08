@@ -3,7 +3,7 @@
 use crate::scene::MeshMaterialSlot;
 use crate::world_mesh::materials::FrameMaterialBatchCache;
 
-use super::super::super::item::stacked_material_submesh_range;
+use super::super::super::item::{MaterialStackOrder, stacked_material_submesh_range};
 use super::super::{
     DrawCollectionInputs, effective_overlay_in_view, special_layer_visible_in_view,
 };
@@ -97,6 +97,9 @@ pub(super) fn push_draws_for_renderer(
             slot,
             SubmeshSlotIndices {
                 slot_index,
+                material_stack_order: MaterialStackOrder::from_slot_counts(
+                    slot_index, n_slot, n_sub,
+                ),
                 first_index,
                 index_count,
             },

@@ -12,11 +12,13 @@ mod vertex_binding;
 use crate::gpu::GpuLimits;
 use crate::materials::MaterialPipelineSet;
 use crate::passes::WorldMeshForwardEncodeRefs;
+use crate::shared::ShadowCastMode;
 use crate::world_mesh::{DrawGroup, WorldMeshDrawItem, depth_prepass_group_eligible};
 
 use super::MaterialBatchPacket;
 use super::depth_prepass::{
     WorldMeshForwardDepthPrepassPipelineCache, WorldMeshForwardDepthPrepassPipelineKey,
+    depth_prepass_pipelines, radial_shadow_pipelines,
 };
 use super::material_batch::MaterialGroup1Binding;
 use super::normal_pass::{WorldMeshForwardNormalPipelineCache, WorldMeshForwardNormalPipelineKey};
@@ -113,6 +115,32 @@ pub(crate) struct DepthPrepassDrawBatch<'a, 'b, 'c, 'd> {
     pub device: &'a wgpu::Device,
     /// Shared depth-prepass pipeline cache.
     pub depth_pipelines: &'a WorldMeshForwardDepthPrepassPipelineCache,
+}
+
+/// Pre-grouped shadow-caster draws and pipeline state for one shadow atlas layer.
+pub(crate) struct ShadowDepthDrawBatch<'a, 'b, 'c, 'd> {
+    /// Active shadow-map render pass.
+    pub rpass: &'a mut wgpu::RenderPass<'b>,
+    /// Pre-built shadow-caster draw groups in ascending representative order.
+    pub groups: &'c [DrawGroup],
+    /// Full sorted shadow-caster draw list for the layer.
+    pub draws: &'c [WorldMeshDrawItem],
+    /// Mesh pool and skin cache for vertex/index binding.
+    pub encode: &'a mut WorldMeshForwardEncodeRefs<'d>,
+    /// Device limits snapshot for dynamic storage-buffer offsets.
+    pub gpu_limits: &'a GpuLimits,
+    /// Per-draw storage slab bound at `@group(0)` for the shadow pass.
+    pub per_draw_bind_group: &'a wgpu::BindGroup,
+    /// First shadow per-draw slab row reserved for this atlas layer.
+    pub slab_slot_offset: usize,
+    /// Whether the active shadow layer stores radial light-distance depth.
+    pub radial_shadow: bool,
+    /// Whether `draw_indexed` may use non-zero `first_instance`.
+    pub supports_base_instance: bool,
+    /// Pipeline state resolved for the active shadow-map view.
+    pub pipeline: &'a super::WorldMeshForwardPipelineState,
+    /// GPU device used for lazy depth pipeline creation.
+    pub device: &'a wgpu::Device,
 }
 
 pub(super) struct ForwardDrawState {
@@ -231,6 +259,12 @@ fn issue_forward_group(
     group: &DrawGroup,
 ) {
     let representative = group.representative_draw_idx;
+    let Some(representative_item) = resources.draws.get(representative) else {
+        return;
+    };
+    if representative_item.shadow_cast_mode == ShadowCastMode::ShadowOnly {
+        return;
+    }
     let batch_cursor = group.material_packet_idx;
     let Some(pc) = resources.precomputed.get(batch_cursor) else {
         return;
@@ -243,7 +277,7 @@ fn issue_forward_group(
         representative,
     );
     debug_assert_eq!(
-        pc.pipeline_key.shader_asset_id, resources.draws[representative].batch_key.shader_asset_id,
+        pc.pipeline_key.shader_asset_id, representative_item.batch_key.shader_asset_id,
         "material packet pipeline key must match the representative draw"
     );
 
@@ -264,7 +298,7 @@ fn issue_forward_group(
     issue_material_pipeline_passes(
         rpass,
         encode,
-        &resources.draws[representative],
+        representative_item,
         ActivePipelineSelection { pipelines },
         &inst_range,
         &mut state.last_mesh,
@@ -364,6 +398,9 @@ pub(crate) fn draw_normals_subset(batch: NormalDrawBatch<'_, '_, '_, '_>) {
         let Some(item) = draws.get(representative) else {
             continue;
         };
+        if item.shadow_cast_mode == ShadowCastMode::ShadowOnly {
+            continue;
+        }
         let Some(key) = WorldMeshForwardNormalPipelineKey::for_draw(
             pipeline,
             item.batch_key.front_face,
@@ -426,6 +463,9 @@ pub(crate) fn draw_depth_prepass_subset(batch: DepthPrepassDrawBatch<'_, '_, '_,
         let Some(item) = draws.get(representative) else {
             continue;
         };
+        if item.shadow_cast_mode == ShadowCastMode::ShadowOnly {
+            continue;
+        }
         if !depth_prepass_group_eligible(draws, slab_layout, group, pipeline.shader_perm) {
             continue;
         }
@@ -456,6 +496,75 @@ pub(crate) fn draw_depth_prepass_subset(batch: DepthPrepassDrawBatch<'_, '_, '_,
         }
 
         let inst_range = instance_range_for_draw_group(group, supports_base_instance);
+        let gpu_refs = gpu_refs_for_encode(encode);
+        draw_mesh_submesh_depth_instanced(rpass, item, gpu_refs, inst_range, &mut last_mesh);
+    }
+}
+
+/// Records one shadow-map depth layer by walking pre-built caster groups.
+pub(crate) fn draw_shadow_depth_subset(batch: ShadowDepthDrawBatch<'_, '_, '_, '_>) {
+    profiling::scope!("world_mesh::draw_shadow_depth_subset");
+    let ShadowDepthDrawBatch {
+        rpass,
+        groups,
+        draws,
+        encode,
+        gpu_limits,
+        per_draw_bind_group,
+        slab_slot_offset,
+        radial_shadow,
+        supports_base_instance,
+        pipeline,
+        device,
+    } = batch;
+
+    let mut last_mesh = LastMeshBindState::new();
+    let mut last_per_draw_dyn_offset: Option<u32> = None;
+    let mut last_pipeline: Option<*const wgpu::RenderPipeline> = None;
+    let depth_pipelines = depth_prepass_pipelines();
+    let radial_pipelines = radial_shadow_pipelines();
+
+    for group in groups {
+        let representative = group.representative_draw_idx;
+        let Some(item) = draws.get(representative) else {
+            continue;
+        };
+        if item.shadow_cast_mode == ShadowCastMode::Off {
+            continue;
+        }
+        let Some(key) = WorldMeshForwardDepthPrepassPipelineKey::for_shadow_draw(item, pipeline)
+        else {
+            continue;
+        };
+
+        let slab_first_instance = slab_slot_offset + group.instance_range.start as usize;
+        let instance_count = group.instance_range.end - group.instance_range.start;
+        bind_per_draw_slab_if_changed(
+            rpass,
+            PerDrawSlabBind {
+                bind_group_index: 0,
+                bind_group: per_draw_bind_group,
+                gpu_limits,
+                slab_first_instance,
+                instance_count,
+                supports_base_instance,
+            },
+            &mut last_per_draw_dyn_offset,
+        );
+
+        let pipeline = if radial_shadow {
+            radial_pipelines.pipeline(device, key)
+        } else {
+            depth_pipelines.pipeline(device, key)
+        };
+        let pipeline_id: *const wgpu::RenderPipeline = pipeline.as_ref();
+        if last_pipeline != Some(pipeline_id) {
+            rpass.set_pipeline(pipeline.as_ref());
+            last_pipeline = Some(pipeline_id);
+        }
+
+        let inst_range =
+            shadow_instance_range_for_draw_group(group, slab_slot_offset, supports_base_instance);
         let gpu_refs = gpu_refs_for_encode(encode);
         draw_mesh_submesh_depth_instanced(rpass, item, gpu_refs, inst_range, &mut last_mesh);
     }
@@ -522,9 +631,28 @@ fn instance_range_for_draw_group(
     }
 }
 
+fn shadow_instance_range_for_draw_group(
+    group: &DrawGroup,
+    slab_slot_offset: usize,
+    supports_base_instance: bool,
+) -> std::ops::Range<u32> {
+    if supports_base_instance {
+        let base = slab_slot_offset.min(u32::MAX as usize) as u32;
+        base.saturating_add(group.instance_range.start)
+            ..base.saturating_add(group.instance_range.end)
+    } else {
+        debug_assert_eq!(
+            group.instance_range.end - group.instance_range.start,
+            1,
+            "downlevel groups must be singletons"
+        );
+        0..1
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::instance_range_for_draw_group;
+    use super::{instance_range_for_draw_group, shadow_instance_range_for_draw_group};
     use crate::world_mesh::DrawGroup;
 
     #[test]
@@ -545,5 +673,31 @@ mod tests {
             material_packet_idx: 0,
         };
         assert_eq!(instance_range_for_draw_group(&group, true), 17..20);
+    }
+
+    #[test]
+    fn shadow_base_instance_offsets_layer_slab_range() {
+        let group = DrawGroup {
+            representative_draw_idx: 3,
+            instance_range: 3..6,
+            material_packet_idx: 0,
+        };
+        assert_eq!(
+            shadow_instance_range_for_draw_group(&group, 40, true),
+            43..46
+        );
+    }
+
+    #[test]
+    fn shadow_downlevel_uses_dynamic_offset_row() {
+        let group = DrawGroup {
+            representative_draw_idx: 3,
+            instance_range: 3..4,
+            material_packet_idx: 0,
+        };
+        assert_eq!(
+            shadow_instance_range_for_draw_group(&group, 40, false),
+            0..1
+        );
     }
 }

@@ -5,27 +5,11 @@ use std::path::{Path, PathBuf};
 
 use super::directives::{
     MaterialDefaultDirective, RenderQueueDirective, TextureDefaultDirective, WgpuFeatureDirective,
-    parse_material_default_directives, parse_render_queue_directive, parse_source_alias,
-    parse_texture_default_directives, parse_wgpu_feature_directives,
+    parse_material_default_directives, parse_pass_directives, parse_render_queue_directive,
+    parse_source_alias, parse_texture_default_directives, parse_wgpu_feature_directives,
 };
 use super::error::BuildError;
-use super::model::{ShaderJob, ShaderSourceClass};
-
-/// WGSL source selected for composition plus source-level metadata from wrapper/alias directives.
-pub(super) struct ShaderCompileSource {
-    /// Source text passed to naga-oil.
-    pub source: String,
-    /// File path label passed to naga-oil and source diagnostics.
-    pub file_path: String,
-    /// Texture defaults parsed from the source or merged from alias + wrapper directives.
-    pub texture_defaults: Vec<TextureDefaultDirective>,
-    /// Material uniform defaults parsed from the source or merged from alias + wrapper directives.
-    pub material_defaults: Vec<MaterialDefaultDirective>,
-    /// Required wgpu features parsed from the source or merged from alias + wrapper directives.
-    pub wgpu_features: Vec<WgpuFeatureDirective>,
-    /// Shader default render queue parsed from the source or inherited from an alias.
-    pub default_render_queue: i32,
-}
+use super::model::{ShaderJob, ShaderSourceClass, ShaderSourceManifest};
 
 const DEFAULT_SHADER_RENDER_QUEUE: i32 = 2000;
 
@@ -122,10 +106,10 @@ fn merge_render_queue(
         .map_or(DEFAULT_SHADER_RENDER_QUEUE, |directive| directive.queue)
 }
 
-/// Loads the WGSL source used for composition, following `//#source_alias` when present.
-pub(super) fn shader_source_for_compile(
+/// Loads the source manifest used for composition, following `//#source_alias` when present.
+pub(super) fn shader_source_manifest(
     source_path: &Path,
-) -> Result<ShaderCompileSource, BuildError> {
+) -> Result<ShaderSourceManifest, BuildError> {
     let wrapper_source = fs::read_to_string(source_path)
         .map_err(|e| BuildError::Message(format!("read {}: {e}", source_path.display())))?;
     let wrapper_file_path = source_path.to_str().ok_or_else(|| {
@@ -140,9 +124,11 @@ pub(super) fn shader_source_for_compile(
     let wrapper_wgpu_features = parse_wgpu_feature_directives(&wrapper_source, wrapper_file_path)?;
     let wrapper_render_queue = parse_render_queue_directive(&wrapper_source, wrapper_file_path)?;
     let Some(alias) = parse_source_alias(&wrapper_source, wrapper_file_path)? else {
-        return Ok(ShaderCompileSource {
+        let pass_directives = parse_pass_directives(&wrapper_source, wrapper_file_path)?;
+        return Ok(ShaderSourceManifest {
             source: wrapper_source,
             file_path: wrapper_file_path.to_string(),
+            pass_directives,
             texture_defaults: wrapper_defaults,
             material_defaults: wrapper_material_defaults,
             wgpu_features: wrapper_wgpu_features,
@@ -168,9 +154,11 @@ pub(super) fn shader_source_for_compile(
         parse_material_default_directives(&alias_source, alias_file_path)?;
     let alias_wgpu_features = parse_wgpu_feature_directives(&alias_source, alias_file_path)?;
     let alias_render_queue = parse_render_queue_directive(&alias_source, alias_file_path)?;
-    Ok(ShaderCompileSource {
+    let pass_directives = parse_pass_directives(&alias_source, alias_file_path)?;
+    Ok(ShaderSourceManifest {
         source: alias_source,
         file_path: alias_file_path.to_string(),
+        pass_directives,
         texture_defaults: merge_texture_defaults(alias_defaults, wrapper_defaults),
         material_defaults: merge_material_defaults(
             alias_material_defaults,
@@ -241,7 +229,7 @@ mod tests {
 "#,
         )?;
 
-        let source = shader_source_for_compile(&wrapper_path)?;
+        let source = shader_source_manifest(&wrapper_path)?;
 
         assert_eq!(source.file_path, alias_path.to_string_lossy().as_ref());
         assert_eq!(
@@ -289,7 +277,7 @@ mod tests {
 "#,
         )?;
 
-        let source = shader_source_for_compile(&wrapper_path)?;
+        let source = shader_source_manifest(&wrapper_path)?;
 
         assert_eq!(source.file_path, alias_path.to_string_lossy().as_ref());
         assert_eq!(
@@ -335,7 +323,7 @@ mod tests {
 "#,
         )?;
 
-        let source = shader_source_for_compile(&wrapper_path)?;
+        let source = shader_source_manifest(&wrapper_path)?;
 
         assert_eq!(source.wgpu_features.len(), 1);
         assert_eq!(
@@ -351,7 +339,7 @@ mod tests {
         let source_path = root.path().join("material.wgsl");
         fs::write(&source_path, "")?;
 
-        let source = shader_source_for_compile(&source_path)?;
+        let source = shader_source_manifest(&source_path)?;
 
         assert_eq!(source.default_render_queue, 2000);
         Ok(())
@@ -373,8 +361,8 @@ mod tests {
 "#,
         )?;
 
-        let inherited = shader_source_for_compile(&inherited_path)?;
-        let overridden = shader_source_for_compile(&override_path)?;
+        let inherited = shader_source_manifest(&inherited_path)?;
+        let overridden = shader_source_manifest(&override_path)?;
 
         assert_eq!(inherited.default_render_queue, 3500);
         assert_eq!(overridden.default_render_queue, 2650);

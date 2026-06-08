@@ -4,9 +4,7 @@
 
 use glam::{Mat4, Quat, Vec3};
 
-use crate::assets::texture::{HostTextureAssetKind, pack_host_texture_id};
 use crate::camera::{view_matrix_for_world_mesh_render_space, view_matrix_from_render_transform};
-use crate::color_space::DEFAULT_SKYBOX_CLEAR_COLOR;
 use crate::scene::CameraRenderableEntry;
 use crate::scene::blit_to_display::BlitToDisplayEntry;
 use crate::scene::overrides::RenderTransformOverrideEntry;
@@ -217,33 +215,7 @@ fn active_blit_for_display_does_not_synthesize_dashboard_camera() {
 }
 
 #[test]
-fn desktop_blit_for_display_synthesizes_overlay_dashboard_camera_for_display_zero() {
-    let mut scene = SceneCoordinator::new();
-    let overlay = RenderSpaceId(3);
-    scene.spaces.insert(
-        overlay,
-        RenderSpaceState {
-            id: overlay,
-            is_active: true,
-            is_overlay: true,
-            cameras: vec![dashboard_camera_entry(77, 0.0)],
-            ..Default::default()
-        },
-    );
-
-    let state = scene
-        .desktop_blit_for_display(0)
-        .expect("dashboard camera should synthesize desktop display source");
-
-    assert!(state.texture_id >= 0);
-    assert_eq!(state.renderable_index, -1);
-    assert_eq!(state.display_index, 0);
-    assert_eq!(state.background_color, DEFAULT_SKYBOX_CLEAR_COLOR);
-    assert!(scene.desktop_blit_for_display(1).is_none());
-}
-
-#[test]
-fn desktop_blit_for_display_prefers_explicit_blit_over_dashboard_camera() {
+fn active_blit_for_display_ignores_dashboard_camera_when_explicit_blit_is_present() {
     let mut scene = SceneCoordinator::new();
     let overlay = RenderSpaceId(3);
     scene.spaces.insert(
@@ -259,78 +231,10 @@ fn desktop_blit_for_display_prefers_explicit_blit_over_dashboard_camera() {
     );
 
     let state = scene
-        .desktop_blit_for_display(0)
+        .active_blit_for_display(0)
         .expect("explicit blit should be present");
 
     assert_eq!(state.texture_id, 555);
-}
-
-#[test]
-fn desktop_blit_for_display_uses_lowest_depth_dashboard_camera() {
-    let mut scene = SceneCoordinator::new();
-    let overlay = RenderSpaceId(3);
-    scene.spaces.insert(
-        overlay,
-        RenderSpaceState {
-            id: overlay,
-            is_active: true,
-            is_overlay: true,
-            cameras: vec![
-                dashboard_camera_entry(77, 5.0),
-                dashboard_camera_entry(88, -1.0),
-            ],
-            ..Default::default()
-        },
-    );
-
-    let state = scene
-        .desktop_blit_for_display(0)
-        .expect("dashboard camera should synthesize desktop display source");
-    let expected = pack_host_texture_id(88, HostTextureAssetKind::RenderTexture)
-        .expect("packed render texture id");
-
-    assert_eq!(state.texture_id, expected);
-}
-
-#[test]
-fn desktop_blit_for_display_rejects_non_dashboard_cameras() {
-    fn synthetic_for(mut camera: CameraRenderableEntry, is_active: bool, is_overlay: bool) -> bool {
-        let mut scene = SceneCoordinator::new();
-        let space_id = RenderSpaceId(3);
-        camera.selective_transform_ids = vec![5];
-        scene.spaces.insert(
-            space_id,
-            RenderSpaceState {
-                id: space_id,
-                is_active,
-                is_overlay,
-                cameras: vec![camera],
-                ..Default::default()
-            },
-        );
-        scene.desktop_blit_for_display(0).is_some()
-    }
-
-    let valid = dashboard_camera_entry(77, 0.0);
-    assert!(!synthetic_for(valid.clone(), false, true));
-    assert!(!synthetic_for(valid.clone(), true, false));
-
-    let mut disabled = valid.clone();
-    disabled.state.flags = 0;
-    assert!(!synthetic_for(disabled, true, true));
-
-    let mut perspective = valid.clone();
-    perspective.state.projection = CameraProjection::Perspective;
-    assert!(!synthetic_for(perspective, true, true));
-
-    let mut missing_rt = valid.clone();
-    missing_rt.state.render_texture_asset_id = -1;
-    assert!(!synthetic_for(missing_rt, true, true));
-
-    let mut non_selective = valid;
-    non_selective.state.selective_render_count = 0;
-    non_selective.selective_transform_ids.clear();
-    assert!(!synthetic_for(non_selective, true, true));
 }
 
 #[test]
@@ -544,7 +448,7 @@ fn overlay_layer_model_matrix_strips_ancestors_above_overlay_root() {
     );
 }
 
-/// Mimics the FrooxEngine RadiantDash + OverlayManager hierarchy in desktop mode:
+/// Mimics the host dashboard plus overlay-manager hierarchy in desktop mode:
 ///
 /// ```text
 /// Node 0  Userspace world root
@@ -555,7 +459,8 @@ fn overlay_layer_model_matrix_strips_ancestors_above_overlay_root() {
 /// ```
 ///
 /// Verifies that the curved plane (node 4) renders at NDC near screen center when combined
-/// with overlay ortho + identity view, regardless of how OverlayManager.Slot is placed.
+/// with overlay ortho plus the fixed desktop overlay camera view, regardless of how
+/// OverlayManager.Slot is placed.
 #[test]
 fn overlay_model_matrix_for_dash_like_hierarchy_ignores_overlay_root_local_pose() {
     let mut scene = SceneCoordinator::new();
@@ -725,15 +630,17 @@ fn overlay_model_matrix_strips_non_identity_overlay_root_local() {
     );
 }
 
-/// Full pipeline assertion mimicking the dash hierarchy as it actually exists in FrooxEngine
-/// after `UserspaceRadiantDash.UpdateOverlayState` reparents `VisualsRoot` under `OverlayRoot`
-/// with `SetIdentityTransform()`. Uses the same overlay view-shift the renderer applies in
-/// `compute_per_draw_vp_matrices`, so a curved-plane vertex at OverlayRoot-local origin
-/// projects to screen NDC center -- not clipped by the near plane and not displaced into 3D
-/// by any of OverlayManager.Slot's world pose.
+/// Full pipeline assertion for the host dashboard hierarchy after `VisualsRoot` is reparented
+/// under `OverlayRoot` with an identity transform. Uses the same desktop overlay camera transform
+/// as the forward pass, so a curved-plane vertex at OverlayRoot-local origin projects to screen
+/// NDC center -- not clipped by the near plane and not displaced into 3D by any overlay-manager
+/// parent pose.
 #[test]
 fn full_pipeline_overlay_vertex_projects_to_screen_ndc() {
-    use crate::camera::{CameraClipPlanes, HostCameraFrame, Viewport};
+    use crate::camera::{
+        CameraClipPlanes, HostCameraFrame, OVERLAY_CAMERA_FAR_CLIP, OVERLAY_CAMERA_LOCAL_Z,
+        OVERLAY_CAMERA_NEAR_CLIP, Viewport,
+    };
 
     let mut scene = SceneCoordinator::new();
     let id = RenderSpaceId(103);
@@ -787,8 +694,8 @@ fn full_pipeline_overlay_vertex_projects_to_screen_ndc() {
     let viewport = Viewport::from_tuple((1920, 1080));
     let overlay_proj =
         HostCameraFrame::overlay_projection(viewport, CameraClipPlanes::new(0.1, 100.0));
-    // Mirrors the view-shift `compute_per_draw_vp_matrices` applies for overlay items.
-    let overlay_view = Mat4::from_translation(Vec3::new(0.0, 0.0, -1.0));
+    let overlay_view = Mat4::from_translation(Vec3::new(0.0, 0.0, OVERLAY_CAMERA_LOCAL_Z))
+        * Mat4::from_scale(Vec3::new(1.0, 1.0, -1.0));
     let vp = overlay_proj * overlay_view;
 
     // Vertex at curved plane's local origin -> NDC origin (screen center) in xy.
@@ -806,15 +713,21 @@ fn full_pipeline_overlay_vertex_projects_to_screen_ndc() {
     );
     assert!(
         (0.0..=1.0).contains(&origin_ndc_z),
-        "expected NDC z in [0, 1] for reverse-Z (view-shift pushes vertex into frustum), got {origin_ndc_z}",
+        "expected NDC z in [0, 1] for reverse-Z overlay camera depth, got {origin_ndc_z}",
+    );
+    let expected_origin_ndc_z = (OVERLAY_CAMERA_FAR_CLIP + OVERLAY_CAMERA_LOCAL_Z)
+        / (OVERLAY_CAMERA_FAR_CLIP - OVERLAY_CAMERA_NEAR_CLIP);
+    assert!(
+        (origin_ndc_z - expected_origin_ndc_z).abs() < 1e-4,
+        "expected dash at overlay camera depth {expected_origin_ndc_z}, got {origin_ndc_z}",
     );
 
     // Vertex at curved plane's local (+0.5, 0, 0): with VisualsRoot scale 1.5 -> overlay-local
-    // x = 0.75. Overlay ortho has half_height = 1.0, so half_width = aspect.
-    // NDC_x = 0.75 / (1920/1080).
+    // x = 0.75. Overlay ortho has half_height = 0.5, so half_width = aspect * 0.5.
+    // NDC_x = 0.75 / ((1920/1080) * 0.5).
     let right_clip = vp * model * glam::Vec4::new(0.5, 0.0, 0.0, 1.0);
     let right_ndc_x = right_clip.x / right_clip.w;
-    let expected_x = 0.75 * 1080.0 / 1920.0;
+    let expected_x = 0.75 * 1080.0 / (1920.0 * 0.5);
     assert!(
         (right_ndc_x - expected_x).abs() < 1e-3,
         "expected NDC x≈{expected_x}, got {right_ndc_x}",

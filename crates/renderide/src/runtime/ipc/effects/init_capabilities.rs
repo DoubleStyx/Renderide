@@ -82,11 +82,17 @@ impl RendererRuntime {
 
     pub(in crate::runtime) fn apply_quality_config(&mut self, cfg: QualityConfig) {
         logger::info!(
-            "runtime: quality_config skin_weight_mode={:?}",
-            cfg.skin_weight_mode
+            "runtime: quality_config skin_weight_mode={:?} per_pixel_lights={} shadow_cascades={:?} shadow_resolution={:?} shadow_distance={}",
+            cfg.skin_weight_mode,
+            cfg.per_pixel_lights,
+            cfg.shadow_cascades,
+            cfg.shadow_resolution,
+            cfg.shadow_distance
         );
         self.config.apply_host_quality_config(&cfg);
         self.backend.set_skin_weight_mode(cfg.skin_weight_mode);
+        self.backend
+            .set_shadow_quality(self.config.shadow_quality());
     }
 }
 

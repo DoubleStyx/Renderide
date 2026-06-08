@@ -4,16 +4,17 @@ use std::mem::size_of;
 use std::num::NonZeroU64;
 
 use super::super::frame_globals::FrameGpuUniforms;
-use super::lights::GpuLight;
+use super::lights::{GpuLight, GpuShadowView};
 use super::reflection_probes::GpuReflectionProbeMetadata;
 
 /// Returns the `@group(0)` layout entries shared by every material pipeline.
 pub fn frame_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
-    let mut entries = Vec::with_capacity(16);
+    let mut entries = Vec::with_capacity(19);
     append_frame_buffer_layout_entries(&mut entries);
     append_scene_snapshot_layout_entries(&mut entries);
     append_ibl_layout_entries(&mut entries);
     append_light_cookie_layout_entries(&mut entries);
+    append_shadow_layout_entries(&mut entries);
     entries
 }
 
@@ -197,6 +198,37 @@ fn append_light_cookie_layout_entries(entries: &mut Vec<wgpu::BindGroupLayoutEnt
             binding: 15,
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        },
+    ]);
+}
+
+fn append_shadow_layout_entries(entries: &mut Vec<wgpu::BindGroupLayoutEntry>) {
+    entries.extend([
+        wgpu::BindGroupLayoutEntry {
+            binding: 16,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: NonZeroU64::new(size_of::<GpuShadowView>() as u64),
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 17,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Depth,
+                view_dimension: wgpu::TextureViewDimension::D2Array,
+                multisampled: false,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 18,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
             count: None,
         },
     ]);

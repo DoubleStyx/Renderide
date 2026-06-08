@@ -31,11 +31,14 @@ use crate::mesh_deform::PER_DRAW_UNIFORM_STRIDE;
 use self::bind_layout::global_to_layout_entry;
 #[cfg(test)]
 use self::fingerprint::fingerprint_layout;
-use self::frame_group0::{reflect_frame_snapshot_usage, validate_frame_group0};
+#[cfg(test)]
+use self::frame_group0::reflect_frame_snapshot_usage;
+use self::frame_group0::validate_frame_group0;
+#[cfg(test)]
+use self::uniform_vertex::material_uniform_requires_intersection_subpass;
 use self::uniform_vertex::{
-    material_uniform_requires_intersection_subpass, reflect_first_group1_uniform_struct,
-    reflect_group1_global_binding_names, reflect_vertex_entry_inputs,
-    reflect_vs_main_vertex_inputs,
+    reflect_first_group1_uniform_struct, reflect_group1_global_binding_names,
+    reflect_vertex_entry_inputs, reflect_vs_main_vertex_inputs,
 };
 
 /// Parses and validates WGSL, checks frame globals, and builds layout entries for groups 1 and 2.
@@ -106,6 +109,7 @@ fn reflect_raster_material_wgsl_inner(
     } else {
         reflect_vs_main_vertex_inputs(&module)
     };
+    #[cfg(test)]
     let snapshot_usage = reflect_frame_snapshot_usage(&module);
 
     #[cfg(test)]
@@ -119,6 +123,7 @@ fn reflect_raster_material_wgsl_inner(
         &material_group1_names,
     );
 
+    #[cfg(test)]
     let requires_intersection_pass =
         material_uniform_requires_intersection_subpass(material_uniform.as_ref());
 
@@ -132,8 +137,11 @@ fn reflect_raster_material_wgsl_inner(
         vs_vertex_inputs,
         #[cfg(test)]
         vs_max_vertex_location,
+        #[cfg(test)]
         uses_scene_depth_snapshot: snapshot_usage.depth,
+        #[cfg(test)]
         uses_scene_color_snapshot: snapshot_usage.color,
+        #[cfg(test)]
         requires_intersection_pass,
     })
 }
@@ -325,6 +333,7 @@ pub fn validate_per_draw_group2(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::materials::SnapshotRequirements;
     use hashbrown::HashMap;
 
     fn synthetic_limits(max_samplers: u32, max_textures: u32) -> crate::gpu::GpuLimits {
@@ -392,6 +401,7 @@ mod tests {
         let wgsl = crate::embedded_shaders::embedded_target_wgsl("null_default").expect("stem");
         let r = reflect_raster_material_wgsl(wgsl).expect("reflect");
         assert!(r.material_entries.is_empty());
+        assert_eq!(r.snapshot_requirements(), SnapshotRequirements::default());
         validate_per_draw_group2(&r.per_draw_entries).expect("per_draw");
         assert_ne!(r.layout_fingerprint, 0);
         assert_eq!(
@@ -428,19 +438,19 @@ mod tests {
     fn full_pipeline_sampler_count_includes_frame_group0() {
         let frame_entries = crate::gpu::frame_bind_group_layout_entries();
         let limits = synthetic_limits(16, 64);
-        let layout = reflected_layout_with_material_entries(fragment_sampler_entries(13));
+        let layout = reflected_layout_with_material_entries(fragment_sampler_entries(12));
 
-        validate_layout_against_limits(&layout, &frame_entries, &limits).expect("13 + 3 samplers");
+        validate_layout_against_limits(&layout, &frame_entries, &limits).expect("12 + 4 samplers");
     }
 
     #[test]
     fn full_pipeline_sampler_count_rejects_frame_group0_overflow() {
         let frame_entries = crate::gpu::frame_bind_group_layout_entries();
         let limits = synthetic_limits(16, 64);
-        let layout = reflected_layout_with_material_entries(fragment_sampler_entries(14));
+        let layout = reflected_layout_with_material_entries(fragment_sampler_entries(13));
 
         let err = validate_layout_against_limits(&layout, &frame_entries, &limits)
-            .expect_err("14 + 3 samplers should exceed a 16-sampler stage limit");
+            .expect_err("13 + 4 samplers should exceed a 16-sampler stage limit");
         assert!(matches!(
             err,
             ReflectError::ExceedsSamplersPerStage {
@@ -454,27 +464,27 @@ mod tests {
     #[test]
     fn full_pipeline_sampled_texture_count_includes_frame_group0() {
         let frame_entries = crate::gpu::frame_bind_group_layout_entries();
-        let limits = synthetic_limits(64, 8);
+        let limits = synthetic_limits(64, 9);
         let layout = reflected_layout_with_material_entries(fragment_texture_entries(0));
 
         validate_layout_against_limits(&layout, &frame_entries, &limits)
-            .expect("0 + 8 sampled textures");
+            .expect("0 + 9 sampled textures");
     }
 
     #[test]
     fn full_pipeline_sampled_texture_count_rejects_frame_group0_overflow() {
         let frame_entries = crate::gpu::frame_bind_group_layout_entries();
-        let limits = synthetic_limits(64, 8);
+        let limits = synthetic_limits(64, 9);
         let layout = reflected_layout_with_material_entries(fragment_texture_entries(1));
 
         let err = validate_layout_against_limits(&layout, &frame_entries, &limits)
-            .expect_err("1 + 8 sampled textures should exceed an 8-texture stage limit");
+            .expect_err("1 + 9 sampled textures should exceed a 9-texture stage limit");
         assert!(matches!(
             err,
             ReflectError::ExceedsSampledTexturesPerStage {
                 stage: "fragment",
-                count: 9,
-                max: 8
+                count: 10,
+                max: 9
             }
         ));
     }
