@@ -14,6 +14,7 @@ use super::{
 };
 
 const PROBE_READBACK_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_REFLECTION_PROBE_RESULT_DESCRIPTOR_BYTES: i32 = 256 * 1024 * 1024;
 
 impl From<AwaitBufferMapError> for ReflectionProbeBakeError {
     fn from(err: AwaitBufferMapError) -> Self {
@@ -243,9 +244,14 @@ pub(in crate::runtime) fn write_probe_task_result(
 ) -> Result<(), ReflectionProbeBakeError> {
     profiling::scope!("reflection_probe_task::shared_memory_write");
     let required = probe_result_required_byte_count(layout)?;
+    if task.result_data.length > MAX_REFLECTION_PROBE_RESULT_DESCRIPTOR_BYTES {
+        return Err(ReflectionProbeBakeError::ResultDescriptorTooSmall {
+            required,
+            actual: 0,
+        });
+    }
     let mut result = Err(ReflectionProbeBakeError::SharedMemoryMapFailed);
     let mapped_shm = shm.access_mut_bytes(&task.result_data, |bytes| {
-        bytes.fill(0);
         if bytes.len() < required {
             result = Err(ReflectionProbeBakeError::ResultDescriptorTooSmall {
                 required,
@@ -253,6 +259,7 @@ pub(in crate::runtime) fn write_probe_task_result(
             });
             return;
         }
+        bytes[..required].fill(0);
         result = pack_probe_readback_to_host(mapped, layout, &mut bytes[..required]);
     });
     if mapped_shm {
@@ -412,6 +419,16 @@ pub(in crate::runtime) fn zero_probe_task_result(
     task: &ReflectionProbeRenderTask,
 ) -> bool {
     profiling::scope!("reflection_probe_task::zero_result");
+    if task.result_data.length > MAX_REFLECTION_PROBE_RESULT_DESCRIPTOR_BYTES {
+        logger::warn!(
+            "ReflectionProbeRenderTask zero-fill rejected oversized result buffer_id={} offset={} length={} cap={}",
+            task.result_data.buffer_id,
+            task.result_data.offset,
+            task.result_data.length,
+            MAX_REFLECTION_PROBE_RESULT_DESCRIPTOR_BYTES
+        );
+        return false;
+    }
     let ok = shm.access_mut_bytes(&task.result_data, |bytes| bytes.fill(0));
     if !ok {
         logger::warn!(

@@ -14,6 +14,12 @@ use super::MAX_PENDING_CUBEMAP_UPLOADS;
 use super::allocations::flush_pending_cubemap_allocations;
 use super::texture_common::{TextureUploadAdmission, admit_texture_upload_data};
 
+enum CubemapUploadEnqueueResult {
+    Enqueued,
+    Defer(SetCubemapData),
+    QueueFull { asset_id: i32 },
+}
+
 fn send_cubemap_result(
     ipc: Option<&mut DualQueueIpc>,
     asset_id: i32,
@@ -23,11 +29,13 @@ fn send_cubemap_result(
     let Some(ipc) = ipc else {
         return;
     };
-    let _ = ipc.send_background_reliable(RendererCommand::SetCubemapResult(SetCubemapResult {
+    if !ipc.send_background_reliable(RendererCommand::SetCubemapResult(SetCubemapResult {
         asset_id,
         r#type: TextureUpdateResultType(update),
         instance_changed,
-    }));
+    })) {
+        logger::warn!("cubemap {asset_id}: failed to enqueue reliable SetCubemapResult");
+    }
 }
 
 /// Handle [`SetCubemapFormat`](crate::shared::SetCubemapFormat).
@@ -37,11 +45,12 @@ pub fn on_set_cubemap_format(
     ipc: Option<&mut DualQueueIpc>,
 ) {
     let id = f.asset_id;
+    let mut ipc = ipc;
     queue.catalogs.cubemap_formats.insert(id, f.clone());
     let props = queue.catalogs.cubemap_properties.get(&id).cloned();
     let Some(device) = queue.gpu.gpu_device.clone() else {
         send_cubemap_result(
-            ipc,
+            ipc.as_deref_mut(),
             id,
             TextureUpdateResultType::FORMAT_SET,
             queue.pools.cubemap_pool.get(id).is_none(),
@@ -51,7 +60,7 @@ pub fn on_set_cubemap_format(
     let Some(limits) = queue.gpu.gpu_limits.as_ref() else {
         logger::warn!("cubemap {id}: gpu_limits missing; format deferred until attach");
         send_cubemap_result(
-            ipc,
+            ipc.as_deref_mut(),
             id,
             TextureUpdateResultType::FORMAT_SET,
             queue.pools.cubemap_pool.get(id).is_none(),
@@ -62,8 +71,13 @@ pub fn on_set_cubemap_format(
         && cubemap.allocation_matches_format(device.as_ref(), limits.as_ref(), &f)
     {
         cubemap.apply_format_metadata(&f, props.as_ref());
-        replay_pending_cubemap_uploads_for_asset(queue, id);
-        send_cubemap_result(ipc, id, TextureUpdateResultType::FORMAT_SET, false);
+        replay_pending_cubemap_uploads_for_asset(queue, id, ipc.as_deref_mut());
+        send_cubemap_result(
+            ipc.as_deref_mut(),
+            id,
+            TextureUpdateResultType::FORMAT_SET,
+            false,
+        );
         logger::trace!(
             "cubemap {} format {:?} size={} mips={} reused resident allocation",
             id,
@@ -77,11 +91,16 @@ pub fn on_set_cubemap_format(
         GpuCubemap::new_from_format(device.as_ref(), limits.as_ref(), &f, props.as_ref())
     else {
         logger::warn!("cubemap {id}: SetCubemapFormat rejected (bad size or device)");
-        send_cubemap_result(ipc, id, TextureUpdateResultType::FORMAT_SET, false);
+        send_cubemap_result(
+            ipc.as_deref_mut(),
+            id,
+            TextureUpdateResultType::FORMAT_SET,
+            false,
+        );
         return;
     };
     let existed_before = queue.pools.cubemap_pool.insert(tex);
-    replay_pending_cubemap_uploads_for_asset(queue, id);
+    replay_pending_cubemap_uploads_for_asset(queue, id, ipc.as_deref_mut());
     send_cubemap_result(
         ipc,
         id,
@@ -121,7 +140,7 @@ pub fn on_set_cubemap_data(
     queue: &mut AssetTransferQueue,
     d: SetCubemapData,
     _shm: Option<&mut SharedMemoryAccessor>,
-    _ipc: Option<&mut DualQueueIpc>,
+    ipc: Option<&mut DualQueueIpc>,
 ) {
     let Some(d) = admit_texture_upload_data(TextureUploadAdmission {
         asset_id: d.asset_id,
@@ -147,7 +166,8 @@ pub fn on_set_cubemap_data(
         d.high_priority,
     );
 
-    enqueue_cubemap_upload_task(queue, d);
+    let enqueue_result = enqueue_cubemap_upload_task(queue, d);
+    handle_live_cubemap_upload_enqueue_result(queue, enqueue_result, ipc);
 }
 
 /// Replay pending cubemap data after GPU attach.
@@ -155,12 +175,11 @@ pub fn try_cubemap_upload_with_device(
     queue: &mut AssetTransferQueue,
     data: SetCubemapData,
     _shm: &mut SharedMemoryAccessor,
-    _ipc: Option<&mut DualQueueIpc>,
+    ipc: Option<&mut DualQueueIpc>,
     _consume_texture_upload_budget: bool,
 ) {
-    if !enqueue_cubemap_upload_task(queue, data.clone()) {
-        queue.pending.pending_cubemap_uploads.push_back(data);
-    }
+    let enqueue_result = enqueue_cubemap_upload_task(queue, data);
+    handle_replayed_cubemap_upload_enqueue_result(queue, enqueue_result, ipc);
 }
 
 /// Remove a cubemap asset from CPU tables and the pool.
@@ -176,34 +195,105 @@ pub fn on_unload_cubemap(queue: &mut AssetTransferQueue, u: UnloadCubemap) {
     }
 }
 
-fn enqueue_cubemap_upload_task(queue: &mut AssetTransferQueue, d: SetCubemapData) -> bool {
+fn enqueue_cubemap_upload_task(
+    queue: &mut AssetTransferQueue,
+    d: SetCubemapData,
+) -> CubemapUploadEnqueueResult {
     let id = d.asset_id;
     let Some(fmt) = queue.catalogs.cubemap_formats.get(&id).cloned() else {
         logger::warn!("cubemap {id}: missing format");
-        return false;
+        return CubemapUploadEnqueueResult::Defer(d);
     };
     let Some(wgpu_fmt) = queue.pools.cubemap_pool.get(id).map(|t| t.wgpu_format) else {
         logger::warn!("cubemap {id}: missing GPU texture");
-        return false;
+        return CubemapUploadEnqueueResult::Defer(d);
     };
     let high = d.high_priority;
     let task = AssetTask::Cubemap(CubemapUploadTask::new(d, fmt, wgpu_fmt));
-    queue.integrator_mut().enqueue(task, high);
+    if queue.integrator_mut().enqueue(task, high) {
+        CubemapUploadEnqueueResult::Enqueued
+    } else {
+        CubemapUploadEnqueueResult::QueueFull { asset_id: id }
+    }
+}
+
+fn handle_live_cubemap_upload_enqueue_result(
+    queue: &mut AssetTransferQueue,
+    result: CubemapUploadEnqueueResult,
+    ipc: Option<&mut DualQueueIpc>,
+) {
+    match result {
+        CubemapUploadEnqueueResult::Enqueued => {}
+        CubemapUploadEnqueueResult::Defer(data) => {
+            retain_deferred_cubemap_upload(queue, data, "live enqueue prerequisites changed");
+        }
+        CubemapUploadEnqueueResult::QueueFull { asset_id } => {
+            logger::warn!(
+                "cubemap {asset_id}: rejected data upload because asset integrator is full"
+            );
+            send_cubemap_result(ipc, asset_id, TextureUpdateResultType::DATA_UPLOAD, false);
+        }
+    }
+}
+
+fn handle_replayed_cubemap_upload_enqueue_result(
+    queue: &mut AssetTransferQueue,
+    result: CubemapUploadEnqueueResult,
+    ipc: Option<&mut DualQueueIpc>,
+) -> bool {
+    match result {
+        CubemapUploadEnqueueResult::Enqueued => true,
+        CubemapUploadEnqueueResult::Defer(data) => {
+            retain_deferred_cubemap_upload(queue, data, "replay prerequisites changed");
+            false
+        }
+        CubemapUploadEnqueueResult::QueueFull { asset_id } => {
+            logger::warn!(
+                "cubemap {asset_id}: dropping replayed upload because asset integrator is full"
+            );
+            send_cubemap_result(ipc, asset_id, TextureUpdateResultType::DATA_UPLOAD, false);
+            false
+        }
+    }
+}
+
+fn retain_deferred_cubemap_upload(
+    queue: &mut AssetTransferQueue,
+    data: SetCubemapData,
+    reason: &'static str,
+) -> bool {
+    if queue.pending.pending_cubemap_uploads.len() >= MAX_PENDING_CUBEMAP_UPLOADS {
+        logger::warn!(
+            "cubemap {}: dropping deferred upload because pending queue reached cap {} ({reason})",
+            data.asset_id,
+            MAX_PENDING_CUBEMAP_UPLOADS
+        );
+        return false;
+    }
+    queue.pending.pending_cubemap_uploads.push_back(data);
     true
 }
 
-fn replay_pending_cubemap_uploads_for_asset(queue: &mut AssetTransferQueue, asset_id: i32) {
+fn replay_pending_cubemap_uploads_for_asset(
+    queue: &mut AssetTransferQueue,
+    asset_id: i32,
+    ipc: Option<&mut DualQueueIpc>,
+) {
     let pending = std::mem::take(&mut queue.pending.pending_cubemap_uploads);
     let mut replayed = 0usize;
+    let mut ipc = ipc;
     for data in pending {
         if data.asset_id == asset_id {
-            if enqueue_cubemap_upload_task(queue, data.clone()) {
+            let enqueue_result = enqueue_cubemap_upload_task(queue, data);
+            if handle_replayed_cubemap_upload_enqueue_result(
+                queue,
+                enqueue_result,
+                ipc.as_deref_mut(),
+            ) {
                 replayed += 1;
-            } else {
-                queue.pending.pending_cubemap_uploads.push_back(data);
             }
         } else {
-            queue.pending.pending_cubemap_uploads.push_back(data);
+            retain_deferred_cubemap_upload(queue, data, "unrelated replay");
         }
     }
     if replayed > 0 {

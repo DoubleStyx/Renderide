@@ -11,10 +11,15 @@ use crate::shared::{
 use super::super::AssetTransferQueue;
 use super::super::catalogs::GaussianSplatUploadKind;
 use super::super::integrator::{AssetTask, AssetTaskLane};
+use super::super::limits::admit_descriptor_payload_len;
 use super::super::particle_task::{
     PointRenderBufferTask, TrailRenderBufferTask, send_point_render_buffer_consumed,
     send_trail_render_buffer_consumed,
 };
+
+const MAX_POINT_RENDER_BUFFER_POINTS: i32 = 1_000_000;
+const MAX_TRAIL_RENDER_BUFFER_TRAILS: i32 = 262_144;
+const MAX_TRAIL_RENDER_BUFFER_POINTS: i32 = 1_000_000;
 
 fn send_desktop_texture_update(
     ipc: Option<&mut DualQueueIpc>,
@@ -23,7 +28,12 @@ fn send_desktop_texture_update(
     let Some(ipc) = ipc else {
         return;
     };
-    let _ = ipc.send_background_reliable(RendererCommand::DesktopTexturePropertiesUpdate(update));
+    let asset_id = update.asset_id;
+    if !ipc.send_background_reliable(RendererCommand::DesktopTexturePropertiesUpdate(update)) {
+        logger::warn!(
+            "desktop texture {asset_id}: failed to enqueue reliable DesktopTexturePropertiesUpdate"
+        );
+    }
 }
 
 fn send_gaussian_splat_result(
@@ -34,11 +44,12 @@ fn send_gaussian_splat_result(
     let Some(ipc) = ipc else {
         return;
     };
-    let _ =
-        ipc.send_background_reliable(RendererCommand::GaussianSplatResult(GaussianSplatResult {
-            asset_id,
-            instance_changed,
-        }));
+    if !ipc.send_background_reliable(RendererCommand::GaussianSplatResult(GaussianSplatResult {
+        asset_id,
+        instance_changed,
+    })) {
+        logger::warn!("gaussian splat {asset_id}: failed to enqueue reliable GaussianSplatResult");
+    }
 }
 
 /// Stores desktop texture properties and reports the currently known placeholder size.
@@ -101,6 +112,19 @@ pub fn on_point_render_buffer_upload(
     let asset_id = upload.asset_id;
     let count = upload.count;
     let mut ipc = ipc;
+    if !(0..=MAX_POINT_RENDER_BUFFER_POINTS).contains(&count) {
+        logger::warn!(
+            "point render buffer {asset_id}: rejected count={} cap={}",
+            count,
+            MAX_POINT_RENDER_BUFFER_POINTS
+        );
+        send_point_render_buffer_consumed(&mut ipc, asset_id);
+        return;
+    }
+    if !admit_descriptor_payload_len("point render buffer", asset_id, upload.buffer.length) {
+        send_point_render_buffer_consumed(&mut ipc, asset_id);
+        return;
+    }
     let coalesced = queue.retain_latest_point_render_buffer_upload(upload);
     if coalesced.replaced_pending_upload {
         send_point_render_buffer_consumed(&mut ipc, asset_id);
@@ -111,10 +135,19 @@ pub fn on_point_render_buffer_upload(
             coalesced.generation
         );
     } else if !queue.point_render_buffer_build_is_active(asset_id) {
-        queue.integrator_mut().enqueue_lane(
+        let enqueued = queue.integrator_mut().enqueue_lane(
             AssetTask::PointRenderBuffer(PointRenderBufferTask::new(asset_id)),
             AssetTaskLane::Particle,
         );
+        if !enqueued {
+            logger::warn!(
+                "point render buffer {asset_id}: rejected upload because asset integrator is full"
+            );
+            if queue.cancel_point_render_buffer_generation(asset_id) {
+                send_point_render_buffer_consumed(&mut ipc, asset_id);
+            }
+            return;
+        }
     }
     logger::trace!(
         "point render buffer {asset_id}: retained upload count={count} generation={}",
@@ -151,6 +184,25 @@ pub fn on_trail_render_buffer_upload(
     let trails_count = upload.trails_count;
     let trail_point_count = upload.trail_point_count;
     let mut ipc = ipc;
+    if trails_count < 0
+        || trail_point_count < 0
+        || trails_count > MAX_TRAIL_RENDER_BUFFER_TRAILS
+        || trail_point_count > MAX_TRAIL_RENDER_BUFFER_POINTS
+    {
+        logger::warn!(
+            "trail render buffer {asset_id}: rejected trails={} points={} caps={}/{}",
+            trails_count,
+            trail_point_count,
+            MAX_TRAIL_RENDER_BUFFER_TRAILS,
+            MAX_TRAIL_RENDER_BUFFER_POINTS
+        );
+        send_trail_render_buffer_consumed(&mut ipc, asset_id);
+        return;
+    }
+    if !admit_descriptor_payload_len("trail render buffer", asset_id, upload.buffer.length) {
+        send_trail_render_buffer_consumed(&mut ipc, asset_id);
+        return;
+    }
     let coalesced = queue.retain_latest_trail_render_buffer_upload(upload);
     if coalesced.replaced_pending_upload {
         send_trail_render_buffer_consumed(&mut ipc, asset_id);
@@ -161,10 +213,19 @@ pub fn on_trail_render_buffer_upload(
             coalesced.generation
         );
     } else if !queue.trail_render_buffer_build_is_active(asset_id) {
-        queue.integrator_mut().enqueue_lane(
+        let enqueued = queue.integrator_mut().enqueue_lane(
             AssetTask::TrailRenderBuffer(TrailRenderBufferTask::new(asset_id)),
             AssetTaskLane::Particle,
         );
+        if !enqueued {
+            logger::warn!(
+                "trail render buffer {asset_id}: rejected upload because asset integrator is full"
+            );
+            if queue.cancel_trail_render_buffer_generation(asset_id) {
+                send_trail_render_buffer_consumed(&mut ipc, asset_id);
+            }
+            return;
+        }
     }
     logger::trace!(
         "trail render buffer {asset_id}: retained upload trails={trails_count} points={trail_point_count} generation={}",

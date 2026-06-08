@@ -129,9 +129,8 @@ pub fn queue_loop(
             continue;
         };
 
-        logger::info!("Received message: {}", arguments);
-
         let cmd = crate::protocol::parse_host_command(&arguments);
+        logger::info!("Received message: {}", cmd.log_summary());
         stats.record_command(&cmd);
         if matches!(
             protocol_handlers::dispatch_command(

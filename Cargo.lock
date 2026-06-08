@@ -399,8 +399,10 @@ name = "bootstrapper"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "base64 0.22.1",
  "ctrlc",
  "directories",
+ "ed25519-dalek",
  "embed-manifest",
  "getrandom 0.4.2",
  "http",
@@ -412,6 +414,7 @@ dependencies = [
  "rfd",
  "self_update",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
  "toml_edit 0.25.12+spec-1.1.0",
@@ -3510,6 +3513,7 @@ dependencies = [
  "tracy-client",
  "unity-asset",
  "unity-asset-binary",
+ "url",
  "wgpu",
  "wgpu-profiler",
  "wide",

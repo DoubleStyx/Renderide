@@ -327,8 +327,8 @@ impl RenderBackend {
     /// Drain pending material batches using the given shared memory and IPC.
     pub fn flush_pending_material_batches(
         &mut self,
-        _shm: &mut SharedMemoryAccessor,
-        _ipc: &mut DualQueueIpc,
+        shm: &mut SharedMemoryAccessor,
+        ipc: &mut DualQueueIpc,
     ) {
         profiling::scope!("material::enqueue_flushed_batches");
         let batches = self.materials.take_pending_material_batches();
@@ -339,7 +339,7 @@ impl RenderBackend {
             );
         }
         for batch in batches {
-            self.enqueue_materials_update_batch(batch);
+            self.apply_materials_update_batch(batch, shm, ipc);
         }
     }
 
@@ -352,18 +352,26 @@ impl RenderBackend {
     pub fn apply_materials_update_batch(
         &mut self,
         batch: MaterialsUpdateBatch,
-        _shm: &mut SharedMemoryAccessor,
-        _ipc: &mut DualQueueIpc,
+        shm: &mut SharedMemoryAccessor,
+        ipc: &mut DualQueueIpc,
     ) {
-        self.enqueue_materials_update_batch(batch);
+        if let Some(batch) = self.enqueue_materials_update_batch(batch) {
+            logger::warn!(
+                "materials update batch {}: applying immediately because asset integrator is full",
+                batch.update_batch_id
+            );
+            self.materials.apply_materials_update_batch(batch, shm, ipc);
+        }
     }
 
     /// Queue one host materials batch for cooperative high-priority integration.
-    pub fn enqueue_materials_update_batch(&mut self, batch: MaterialsUpdateBatch) {
-        self.asset_transfers.integrator_mut().enqueue_lane(
-            asset_uploads::AssetTask::MaterialUpdate(batch),
-            asset_uploads::AssetTaskLane::Main,
-        );
+    pub fn enqueue_materials_update_batch(
+        &mut self,
+        batch: MaterialsUpdateBatch,
+    ) -> Option<MaterialsUpdateBatch> {
+        self.asset_transfers
+            .integrator_mut()
+            .enqueue_material_update(batch)
     }
 
     /// Remove material / property-block entries from the host store.
@@ -383,16 +391,30 @@ impl RenderBackend {
         pipeline: RasterPipelineKind,
         shader_asset_name: Option<String>,
         shader_variant_bits: Option<u32>,
-    ) {
-        self.asset_transfers.integrator_mut().enqueue_lane(
-            asset_uploads::AssetTask::ShaderRoute(asset_uploads::ShaderRouteTask {
+    ) -> bool {
+        match self.asset_transfers.integrator_mut().enqueue_shader_route(
+            asset_uploads::ShaderRouteTask {
                 asset_id,
                 pipeline,
                 shader_asset_name,
                 shader_variant_bits,
-            }),
-            asset_uploads::AssetTaskLane::Main,
-        );
+            },
+        ) {
+            None => true,
+            Some(route) => {
+                logger::warn!(
+                    "shader route asset_id={}: applying immediately because asset integrator is full",
+                    route.asset_id
+                );
+                self.materials.register_shader_route(
+                    route.asset_id,
+                    route.pipeline,
+                    route.shader_asset_name,
+                    route.shader_variant_bits,
+                );
+                false
+            }
+        }
     }
 
     /// Removes shader routing for `asset_id`.

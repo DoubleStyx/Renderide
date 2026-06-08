@@ -17,11 +17,12 @@ fn send_render_texture_result(
     let Some(ipc) = ipc else {
         return;
     };
-    let _ =
-        ipc.send_background_reliable(RendererCommand::RenderTextureResult(RenderTextureResult {
-            asset_id,
-            instance_changed,
-        }));
+    if !ipc.send_background_reliable(RendererCommand::RenderTextureResult(RenderTextureResult {
+        asset_id,
+        instance_changed,
+    })) {
+        logger::warn!("render texture {asset_id}: failed to enqueue reliable RenderTextureResult");
+    }
 }
 
 /// Handle [`SetRenderTextureFormat`](crate::shared::SetRenderTextureFormat).

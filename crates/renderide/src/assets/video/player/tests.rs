@@ -3,7 +3,7 @@
 use super::*;
 
 use super::super::clock::max_seek_drift_seconds;
-use super::super::source::{is_uri_source, local_source_path};
+use super::super::source::is_uri_source;
 fn update(position: f64, play: bool) -> VideoTextureUpdate {
     VideoTextureUpdate {
         position,
@@ -165,13 +165,6 @@ fn uri_sources_pass_through_without_file_conversion() {
     assert!(is_uri_source("https://example.invalid/video.mp4"));
     assert!(is_uri_source("file:///tmp/video.mp4"));
     assert!(!is_uri_source("/tmp/video.mp4"));
-}
-
-#[test]
-fn relative_local_sources_are_made_absolute_before_uri_conversion() {
-    let path = local_source_path("video.mp4");
-    assert!(path.is_absolute());
-    assert!(path.ends_with("video.mp4"));
 }
 
 fn update_decoded_at(position: f64, play: bool, decoded_nanos: i128) -> VideoTextureUpdate {

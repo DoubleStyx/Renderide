@@ -10,6 +10,7 @@ mod cubemap_task;
 mod cubemap_upload_plan;
 mod gpu_runtime;
 mod integrator;
+mod limits;
 mod mesh_task;
 mod mesh_upload_batch;
 mod particle_task;
@@ -45,8 +46,8 @@ use gpu_runtime::AssetGpuRuntime;
 pub(crate) use gpu_runtime::AssetGpuRuntimeAttach;
 pub(crate) use integrator::AssetIntegratorDiagnosticSnapshot;
 pub use integrator::{
-    AssetIntegrationDrainSummary, AssetIntegrator, AssetTask, AssetTaskLane, ShaderRouteTask,
-    drain_asset_tasks, drain_asset_tasks_unbounded,
+    AssetIntegrationDrainSummary, AssetIntegrator, ShaderRouteTask, drain_asset_tasks,
+    drain_asset_tasks_unbounded,
 };
 pub(crate) use mesh_upload_batch::{MeshUploadBatchStats, MeshUploadStagingBatch};
 use particle_task::{PointBuildResult, TrailBuildResult};

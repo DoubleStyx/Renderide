@@ -3,7 +3,9 @@
 use std::collections::VecDeque;
 
 use super::retired::RetiredAssetResource;
-use super::step::AssetTask;
+use super::step::{AssetTask, ShaderRouteTask};
+use crate::backend::asset_transfers::limits::MAX_ASSET_INTEGRATION_QUEUE_TASKS;
+use crate::shared::MaterialsUpdateBatch;
 
 /// Combined queued integration task count that emits queue-pressure diagnostics.
 pub const ASSET_INTEGRATION_QUEUE_WARN_THRESHOLD: usize = 2048;
@@ -162,19 +164,52 @@ impl AssetIntegrator {
     }
 
     /// Enqueues an upload task at the back of its priority lane.
-    pub fn enqueue(&mut self, task: AssetTask, high_priority: bool) {
+    #[must_use]
+    pub fn enqueue(&mut self, task: AssetTask, high_priority: bool) -> bool {
+        if !self.admit_task() {
+            return false;
+        }
         if high_priority {
             self.push_back_lane(task, AssetTaskLane::HighPriority);
         } else {
             self.push_back_lane(task, AssetTaskLane::NormalPriority);
         }
         self.record_queue_depth();
+        true
     }
 
     /// Enqueues a task in a specific scheduler lane.
-    pub fn enqueue_lane(&mut self, task: AssetTask, lane: AssetTaskLane) {
+    #[must_use]
+    pub fn enqueue_lane(&mut self, task: AssetTask, lane: AssetTaskLane) -> bool {
+        if !self.admit_task() {
+            return false;
+        }
         self.push_back_lane(task, lane);
         self.record_queue_depth();
+        true
+    }
+
+    /// Enqueues a material batch or returns it when the queue is full.
+    pub fn enqueue_material_update(
+        &mut self,
+        batch: MaterialsUpdateBatch,
+    ) -> Option<MaterialsUpdateBatch> {
+        if !self.admit_task() {
+            return Some(batch);
+        }
+        self.push_back_lane(AssetTask::MaterialUpdate(batch), AssetTaskLane::Main);
+        self.record_queue_depth();
+        None
+    }
+
+    /// Enqueues a shader route task or returns it when the queue is full.
+    pub fn enqueue_shader_route(&mut self, route: ShaderRouteTask) -> Option<ShaderRouteTask> {
+        if !self.admit_task() {
+            return Some(route);
+        }
+        self.push_back_lane(AssetTask::ShaderRoute(route), AssetTaskLane::Main);
+        self.record_queue_depth();
+        None
     }
 
     /// Enqueues a removed GPU resource for delayed drop.
@@ -220,6 +255,19 @@ impl AssetIntegrator {
                 ASSET_INTEGRATION_QUEUE_WARN_THRESHOLD
             );
         }
+    }
+
+    fn admit_task(&self) -> bool {
+        let queued = self.total_queued();
+        if queued >= MAX_ASSET_INTEGRATION_QUEUE_TASKS {
+            logger::warn!(
+                "asset integrator backlog full: queued={} cap={}",
+                queued,
+                MAX_ASSET_INTEGRATION_QUEUE_TASKS
+            );
+            return false;
+        }
+        true
     }
 }
 

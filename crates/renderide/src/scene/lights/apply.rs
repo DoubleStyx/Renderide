@@ -13,6 +13,8 @@ use crate::scene::error::SceneError;
 
 use super::LightCache;
 
+const MAX_LIGHT_ROW_COPY_BYTES: usize = 64 * 1024 * 1024;
+
 /// Applies [`LightRenderablesUpdate`] for one render space (`space_id` = host render space id).
 pub fn apply_light_renderables_update(
     light_cache: &mut LightCache,
@@ -104,13 +106,6 @@ pub fn apply_lights_buffer_renderers_update(
 }
 
 /// Per-descriptor byte ceiling for row-packed light state copies.
-///
-/// Mirrors the transform pose update sizing: take the host-declared
-/// `buffer_capacity` minus `offset` as the upper bound and never let the
-/// returned ceiling fall below [`SharedMemoryAccessor::MAX_ACCESS_COPY_BYTES`],
-/// so corrupt descriptors still get the default guard while legitimately large
-/// payloads (single-frame light counts spanning multiple million rows) are
-/// accepted instead of crashing the renderer.
 fn packable_row_copy_max_bytes(descriptor: &SharedMemoryBufferDescriptor) -> i32 {
     let descriptor_sized_bytes = usize::try_from(descriptor.buffer_capacity)
         .ok()
@@ -120,6 +115,8 @@ fn packable_row_copy_max_bytes(descriptor: &SharedMemoryBufferDescriptor) -> i32
         })
         .unwrap_or(0);
     descriptor_sized_bytes
+        .min(MAX_LIGHT_ROW_COPY_BYTES)
         .max(SharedMemoryAccessor::MAX_ACCESS_COPY_BYTES as usize)
+        .min(MAX_LIGHT_ROW_COPY_BYTES)
         .min(i32::MAX as usize) as i32
 }

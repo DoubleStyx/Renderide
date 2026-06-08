@@ -18,7 +18,7 @@ impl RendererFrontend {
 
     /// Unrecoverable IPC/init ordering error; stops begin-frame until reset.
     pub fn fatal_error(&self) -> bool {
-        self.session.fatal_error()
+        self.session.fatal_error() || self.transport.reliable_background_failed()
     }
 
     /// Marks a fatal IPC/init error.

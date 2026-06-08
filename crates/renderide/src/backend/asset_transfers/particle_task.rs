@@ -514,10 +514,15 @@ fn enqueue_point_task_if_ready(queue: &mut AssetTransferQueue, asset_id: i32) {
     if queue.has_pending_point_render_buffer_upload(asset_id)
         && !queue.point_render_buffer_build_is_active(asset_id)
     {
-        queue.integrator_mut().enqueue_lane(
+        let enqueued = queue.integrator_mut().enqueue_lane(
             AssetTask::PointRenderBuffer(PointRenderBufferTask::new(asset_id)),
             AssetTaskLane::Particle,
         );
+        if !enqueued {
+            logger::warn!(
+                "point render buffer {asset_id}: leaving pending upload queued because asset integrator is full"
+            );
+        }
     }
 }
 
@@ -525,10 +530,15 @@ fn enqueue_trail_task_if_ready(queue: &mut AssetTransferQueue, asset_id: i32) {
     if queue.has_pending_trail_render_buffer_upload(asset_id)
         && !queue.trail_render_buffer_build_is_active(asset_id)
     {
-        queue.integrator_mut().enqueue_lane(
+        let enqueued = queue.integrator_mut().enqueue_lane(
             AssetTask::TrailRenderBuffer(TrailRenderBufferTask::new(asset_id)),
             AssetTaskLane::Particle,
         );
+        if !enqueued {
+            logger::warn!(
+                "trail render buffer {asset_id}: leaving pending upload queued because asset integrator is full"
+            );
+        }
     }
 }
 

@@ -11,12 +11,19 @@ path = "src/lib.rs"
 name = "renderide"
 path = "src/main.rs"
 
+[[bin]]
+name = "renderide-sign-release-manifest"
+path = "src/bin/renderide-sign-release-manifest.rs"
+
 [dependencies]
 interprocess = { path = "../interprocess" }
 logger = { path = "../logger" }
 thiserror = "2.0"
 arboard = "3.6"
+base64 = "0.22"
+ed25519-dalek = "2.2"
 serde_json = "1.0"
+sha2 = "0.10"
 getrandom = "0.4"
 libc = "0.2"
 rfd = { version = "0.17", features = ["common-controls-v6"] }

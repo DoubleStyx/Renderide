@@ -20,10 +20,15 @@ use crate::materials::{
 };
 use crate::materials::{MaterialShaderGraphDiagnosticSnapshot, MaterialShaderHotReloadReport};
 use crate::shared::bit_span::BitSpanMut;
+use crate::shared::buffer::SharedMemoryBufferDescriptor;
 use crate::shared::{MaterialsUpdateBatch, MaterialsUpdateBatchResult, RendererCommand};
 
 /// Deferred [`MaterialsUpdateBatch`] count that emits queue-pressure diagnostics.
 pub const PENDING_MATERIAL_BATCH_WARN_THRESHOLD: usize = 256;
+/// Maximum deferred material batches retained while shared memory is unavailable.
+pub const MAX_PENDING_MATERIAL_BATCHES: usize = 256;
+/// Maximum host result bit slab admitted for `instance_changed` writeback.
+const MAX_INSTANCE_CHANGED_BUFFER_BYTES: i32 = 4 * 1024 * 1024;
 
 /// Parsed update row count that emits a single debug summary for unusually large batches.
 const LARGE_MATERIAL_BATCH_UPDATE_THRESHOLD: usize = 2048;
@@ -36,6 +41,31 @@ static MATERIAL_BATCH_PARSE_ANOMALY_LOG: LogThrottle = LogThrottle::new();
 
 /// Throttle for unusually large material batch summaries.
 static LARGE_MATERIAL_BATCH_LOG: LogThrottle = LogThrottle::new();
+
+fn admit_instance_changed_buffer(
+    update_batch_id: i32,
+    descriptor: SharedMemoryBufferDescriptor,
+    ipc: Option<&mut DualQueueIpc>,
+) -> bool {
+    if descriptor.length <= MAX_INSTANCE_CHANGED_BUFFER_BYTES {
+        return true;
+    }
+    logger::warn!(
+        "materials update batch {update_batch_id}: instance_changed_buffer length {} exceeds cap {}",
+        descriptor.length,
+        MAX_INSTANCE_CHANGED_BUFFER_BYTES
+    );
+    if let Some(ipc) = ipc {
+        let _ = send_materials_update_batch_result(ipc, update_batch_id);
+    }
+    false
+}
+
+fn send_materials_update_batch_result(ipc: &mut DualQueueIpc, update_batch_id: i32) -> bool {
+    ipc.send_background_reliable(RendererCommand::MaterialsUpdateBatchResult(
+        MaterialsUpdateBatchResult { update_batch_id },
+    ))
+}
 
 /// Snapshot of deferred material work and GPU material-system attachment state.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -197,6 +227,14 @@ impl MaterialSystem {
 
     /// Queue a materials batch when shared memory is not yet available.
     pub fn enqueue_materials_batch_no_shm(&mut self, batch: MaterialsUpdateBatch) {
+        if self.pending_material_batches.len() >= MAX_PENDING_MATERIAL_BATCHES {
+            logger::warn!(
+                "materials update batch {} dropped: pending_no_shm_queue reached cap {}",
+                batch.update_batch_id,
+                MAX_PENDING_MATERIAL_BATCHES
+            );
+            return;
+        }
         logger::trace!(
             "materials update batch {} deferred: pending_no_shm_queue={}",
             batch.update_batch_id,
@@ -330,7 +368,7 @@ impl MaterialSystem {
         &mut self,
         batch: MaterialsUpdateBatch,
         shm: &mut SharedMemoryAccessor,
-        ipc: Option<&mut DualQueueIpc>,
+        mut ipc: Option<&mut DualQueueIpc>,
     ) {
         profiling::scope!("material::apply_update_batch");
         let update_batch_id = batch.update_batch_id;
@@ -341,6 +379,13 @@ impl MaterialSystem {
             ..ParseMaterialBatchOptions::default()
         };
 
+        if !admit_instance_changed_buffer(
+            update_batch_id,
+            batch.instance_changed_buffer,
+            ipc.as_deref_mut(),
+        ) {
+            return;
+        }
         // Capacity in bits derived from the host-allocated u32 slab; padding bits past the actual
         // material+PB count are harmless (they sit in the trailing element of the bitspan and
         // never get read by `MaterialUpdateData.RunCompleted`).
@@ -426,10 +471,7 @@ impl MaterialSystem {
         }
 
         if let Some(ipc) = ipc {
-            let ack_queued =
-                ipc.send_background_reliable(RendererCommand::MaterialsUpdateBatchResult(
-                    MaterialsUpdateBatchResult { update_batch_id },
-                ));
+            let ack_queued = send_materials_update_batch_result(ipc, update_batch_id);
             if !ack_queued {
                 logger::warn!(
                     "materials update batch {update_batch_id}: failed to enqueue reliable background ack"

@@ -111,10 +111,10 @@ pub enum ResoniteAudioSinkError {
 
 /// Converts host audio queue capacity to the signed queue API type.
 pub fn positive_queue_capacity(queue_capacity: i32) -> Result<i64, ResoniteAudioSinkError> {
-    if queue_capacity > 0 {
-        Ok(i64::from(queue_capacity))
-    } else {
+    if queue_capacity <= 0 || i64::from(queue_capacity) > QueueOptions::MAX_CAPACITY {
         Err(ResoniteAudioSinkError::InvalidQueueCapacity(queue_capacity))
+    } else {
+        Ok(i64::from(queue_capacity))
     }
 }
 
@@ -130,10 +130,7 @@ mod tests {
     }
 
     #[test]
-    fn positive_audio_queue_capacity_accepts_i32_max() {
-        assert!(matches!(
-            positive_queue_capacity(i32::MAX),
-            Ok(value) if value == i64::from(i32::MAX)
-        ));
+    fn oversized_audio_queue_capacity_is_rejected() {
+        assert!(positive_queue_capacity((QueueOptions::MAX_CAPACITY + 8) as i32).is_err());
     }
 }

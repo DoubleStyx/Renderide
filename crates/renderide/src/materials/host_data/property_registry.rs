@@ -25,6 +25,9 @@ struct PropertyIdRegistryInner {
     semantic_hooks: Vec<MaterialPropertySemanticHook>,
 }
 
+const MAX_PROPERTY_NAMES: usize = 16_384;
+const MAX_PROPERTY_NAME_BYTES: usize = 256;
+
 impl PropertyIdRegistry {
     /// Builds a registry starting at property id `1` (id `0` means "no property" / empty name).
     pub fn new() -> Self {
@@ -52,12 +55,27 @@ impl PropertyIdRegistry {
         if name.is_empty() {
             return 0;
         }
+        if name.len() > MAX_PROPERTY_NAME_BYTES {
+            logger::warn!(
+                "materials: rejecting overlong material property name len={} cap={}",
+                name.len(),
+                MAX_PROPERTY_NAME_BYTES
+            );
+            return 0;
+        }
         let mut g = match self.inner.lock() {
             Ok(g) => g,
             Err(poisoned) => poisoned.into_inner(),
         };
         if let Some(&id) = g.names.get(name) {
             return id;
+        }
+        if g.names.len() >= MAX_PROPERTY_NAMES {
+            logger::warn!(
+                "materials: rejecting material property name because registry reached cap {}",
+                MAX_PROPERTY_NAMES
+            );
+            return 0;
         }
         let id = g.next_id;
         g.next_id = g.next_id.saturating_add(1).max(1);
@@ -123,6 +141,12 @@ mod tests {
         let b = reg.intern("_B");
         let c = reg.intern("_C");
         assert_eq!((a, b, c), (1, 2, 3));
+    }
+
+    #[test]
+    fn overlong_name_returns_zero() {
+        let reg = PropertyIdRegistry::new();
+        assert_eq!(reg.intern(&"a".repeat(MAX_PROPERTY_NAME_BYTES + 1)), 0);
     }
 
     #[test]

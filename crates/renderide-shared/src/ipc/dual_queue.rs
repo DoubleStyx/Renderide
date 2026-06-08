@@ -166,6 +166,7 @@ pub struct DualQueueIpc {
     primary_drops_since_log: u32,
     background_drops_since_log: u32,
     reliable_background_outbox: ReliableBackgroundOutbox,
+    reliable_background_failed: bool,
     /// Set when a primary outbound send failed this winit tick (cleared in [`Self::reset_outbound_drop_tick_flags`]).
     had_primary_outbound_drop_this_tick: bool,
     had_background_outbound_drop_this_tick: bool,
@@ -222,6 +223,7 @@ impl DualQueueIpc {
             primary_drops_since_log: 0,
             background_drops_since_log: 0,
             reliable_background_outbox: ReliableBackgroundOutbox::default(),
+            reliable_background_failed: false,
             had_primary_outbound_drop_this_tick: false,
             had_background_outbound_drop_this_tick: false,
         })
@@ -261,6 +263,11 @@ impl DualQueueIpc {
     /// Encoded byte count of reliable background messages waiting for queue capacity.
     pub fn reliable_background_pending_bytes(&self) -> usize {
         self.reliable_background_outbox.pending_bytes()
+    }
+
+    /// Whether a reliable background payload failed before it could be retained for delivery.
+    pub const fn reliable_background_failed(&self) -> bool {
+        self.reliable_background_failed
     }
 
     /// Drains both subscribers into `out` (Primary first, then Background; each channel fully drained in order).
@@ -510,10 +517,23 @@ impl DualQueueIpc {
     pub fn enqueue_background_reliable(&mut self, mut cmd: RendererCommand) -> bool {
         let written = encode_command(&mut cmd, &mut self.send_buffer, ENCODE_OVERFLOW_LOG_PREFIX);
         if written == 0 {
+            self.reliable_background_failed = true;
+            self.had_background_outbound_drop_this_tick = true;
             return false;
         }
-        self.reliable_background_outbox
-            .enqueue(self.send_buffer[..written].to_vec());
+        if !self
+            .reliable_background_outbox
+            .enqueue(self.send_buffer[..written].to_vec())
+        {
+            logger::warn!(
+                "IPC reliable background outbox full: pending_messages={} pending_bytes={}",
+                self.reliable_background_outbox.len(),
+                self.reliable_background_outbox.pending_bytes()
+            );
+            self.reliable_background_failed = true;
+            self.had_background_outbound_drop_this_tick = true;
+            return false;
+        }
         let pending_count = self.reliable_background_outbox.len();
         let pending_bytes = self.reliable_background_outbox.pending_bytes();
         if pending_count == 64 || (pending_count > 64 && pending_count.is_multiple_of(64)) {

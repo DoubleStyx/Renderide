@@ -37,6 +37,10 @@ use super::world::{
 };
 
 const TRANSFORM_POSE_UPDATE_TERMINATOR_ROWS: usize = 1;
+const MAX_TRANSFORM_ROWS: usize = 1_000_000;
+const MAX_TRANSFORM_COPY_BYTES: usize = (MAX_TRANSFORM_ROWS
+    + TRANSFORM_POSE_UPDATE_TERMINATOR_ROWS)
+    * TRANSFORM_POSE_UPDATE_HOST_ROW_BYTES;
 
 /// Per-node dirty mask for one [`apply_transforms_update_extracted`] call.
 ///
@@ -219,8 +223,8 @@ fn transform_pose_update_copy_max_bytes(update: &TransformsUpdate) -> i32 {
         })
         .unwrap_or(0);
     target_sized_bytes
-        .max(descriptor_sized_bytes)
-        .max(SharedMemoryAccessor::MAX_ACCESS_COPY_BYTES as usize)
+        .max(descriptor_sized_bytes.min(MAX_TRANSFORM_COPY_BYTES))
+        .min(MAX_TRANSFORM_COPY_BYTES)
         .min(i32::MAX as usize) as i32
 }
 
@@ -231,6 +235,14 @@ pub fn extract_transforms_update(
     frame_index: i32,
     sid: i32,
 ) -> Result<ExtractedTransformsUpdate, SceneError> {
+    if update.target_transform_count < 0
+        || update.target_transform_count as usize > MAX_TRANSFORM_ROWS
+    {
+        return Err(SceneError::SharedMemoryAccess(format!(
+            "transforms scene_id={sid}: target_transform_count {} exceeds cap {}",
+            update.target_transform_count, MAX_TRANSFORM_ROWS
+        )));
+    }
     let mut out = ExtractedTransformsUpdate {
         target_transform_count: update.target_transform_count,
         frame_index,
@@ -458,39 +470,40 @@ mod tests {
     }
 
     #[test]
-    fn pose_update_copy_max_allows_target_sized_large_pose_slabs() {
-        let rows_over_default = (SharedMemoryAccessor::MAX_ACCESS_COPY_BYTES as usize
-            / TRANSFORM_POSE_UPDATE_HOST_ROW_BYTES)
-            + 1;
+    fn pose_update_copy_max_caps_target_sized_oversized_pose_slabs() {
+        let rows_over_cap = MAX_TRANSFORM_ROWS + 1;
         let update = TransformsUpdate {
-            target_transform_count: rows_over_default as i32,
+            target_transform_count: rows_over_cap as i32,
             ..Default::default()
         };
-        let max_bytes = transform_pose_update_copy_max_bytes(&update);
-        let required_bytes = (rows_over_default + TRANSFORM_POSE_UPDATE_TERMINATOR_ROWS)
+        let uncapped_bytes = (rows_over_cap + TRANSFORM_POSE_UPDATE_TERMINATOR_ROWS)
             * TRANSFORM_POSE_UPDATE_HOST_ROW_BYTES;
 
-        assert!(required_bytes > SharedMemoryAccessor::MAX_ACCESS_COPY_BYTES as usize);
-        assert!(max_bytes as usize >= required_bytes);
-    }
-
-    #[test]
-    fn pose_update_copy_max_keeps_default_guard_for_small_targets() {
-        let update = TransformsUpdate {
-            target_transform_count: 4,
-            ..Default::default()
-        };
-
+        assert!(uncapped_bytes > MAX_TRANSFORM_COPY_BYTES);
         assert_eq!(
             transform_pose_update_copy_max_bytes(&update),
-            SharedMemoryAccessor::MAX_ACCESS_COPY_BYTES
+            MAX_TRANSFORM_COPY_BYTES as i32
         );
     }
 
     #[test]
-    fn pose_update_copy_max_allows_descriptor_sized_large_pose_slabs() {
-        let length = SharedMemoryAccessor::MAX_ACCESS_COPY_BYTES
-            + TRANSFORM_POSE_UPDATE_HOST_ROW_BYTES as i32;
+    fn pose_update_copy_max_uses_target_sized_guard_for_small_targets() {
+        let update = TransformsUpdate {
+            target_transform_count: 4,
+            ..Default::default()
+        };
+        let expected =
+            (4 + TRANSFORM_POSE_UPDATE_TERMINATOR_ROWS) * TRANSFORM_POSE_UPDATE_HOST_ROW_BYTES;
+
+        assert_eq!(
+            transform_pose_update_copy_max_bytes(&update),
+            expected as i32
+        );
+    }
+
+    #[test]
+    fn pose_update_copy_max_caps_descriptor_sized_oversized_pose_slabs() {
+        let length = MAX_TRANSFORM_COPY_BYTES as i32 + TRANSFORM_POSE_UPDATE_HOST_ROW_BYTES as i32;
         let update = TransformsUpdate {
             target_transform_count: 4,
             pose_updates: crate::shared::buffer::SharedMemoryBufferDescriptor {
@@ -502,27 +515,31 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(transform_pose_update_copy_max_bytes(&update) >= length);
+        assert_eq!(
+            transform_pose_update_copy_max_bytes(&update),
+            MAX_TRANSFORM_COPY_BYTES as i32
+        );
     }
 
     #[test]
-    fn pose_update_copy_max_does_not_trust_length_without_capacity() {
-        let length = SharedMemoryAccessor::MAX_ACCESS_COPY_BYTES
-            + TRANSFORM_POSE_UPDATE_HOST_ROW_BYTES as i32;
+    fn pose_update_copy_max_does_not_trust_length_without_admitted_capacity() {
+        let length = MAX_TRANSFORM_COPY_BYTES as i32 + TRANSFORM_POSE_UPDATE_HOST_ROW_BYTES as i32;
         let update = TransformsUpdate {
             target_transform_count: 4,
             pose_updates: crate::shared::buffer::SharedMemoryBufferDescriptor {
                 buffer_id: 9,
-                buffer_capacity: SharedMemoryAccessor::MAX_ACCESS_COPY_BYTES,
+                buffer_capacity: 0,
                 offset: 0,
                 length,
             },
             ..Default::default()
         };
+        let expected =
+            (4 + TRANSFORM_POSE_UPDATE_TERMINATOR_ROWS) * TRANSFORM_POSE_UPDATE_HOST_ROW_BYTES;
 
         assert_eq!(
             transform_pose_update_copy_max_bytes(&update),
-            SharedMemoryAccessor::MAX_ACCESS_COPY_BYTES
+            expected as i32
         );
     }
 

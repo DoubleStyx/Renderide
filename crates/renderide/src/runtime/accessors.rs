@@ -248,4 +248,11 @@ impl RendererRuntime {
         self.frontend
             .set_shared_memory(SharedMemoryAccessor::new(prefix.into()));
     }
+
+    /// Returns whether the installed test shared-memory accessor can open host buffers.
+    pub(crate) fn test_shared_memory_available(&self) -> bool {
+        self.frontend
+            .shared_memory()
+            .is_some_and(crate::ipc::SharedMemoryAccessor::is_available)
+    }
 }
