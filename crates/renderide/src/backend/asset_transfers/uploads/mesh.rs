@@ -4,11 +4,11 @@ use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::shared::{MeshUnload, MeshUploadData, MeshUploadResult};
 
 use super::super::AssetTransferQueue;
-use super::super::integrator::{AssetTask, RetiredAssetResource};
+use super::super::integrator::AssetTask;
 use super::super::mesh_task::{
     MeshUploadTask, complete_empty_mesh_upload, complete_failed_mesh_upload,
 };
-use super::MAX_PENDING_MESH_UPLOADS;
+use super::PENDING_MESH_UPLOAD_WARN_THRESHOLD;
 
 /// Remove a mesh from the pool.
 pub fn on_mesh_unload(queue: &mut AssetTransferQueue, u: MeshUnload) {
@@ -21,11 +21,7 @@ pub fn on_mesh_unload(queue: &mut AssetTransferQueue, u: MeshUnload) {
             pending_removed
         );
     }
-    if let Some(mesh) = queue.pools.mesh_pool.take(u.asset_id) {
-        queue
-            .integrator_mut()
-            .enqueue_delayed_removal(RetiredAssetResource::Mesh(Box::new(mesh)));
-    }
+    queue.retire_mesh_asset(u.asset_id);
 }
 
 /// Enqueue mesh bytes from shared memory for time-sliced GPU integration ([`super::super::integrator::drain_asset_tasks`]).
@@ -99,13 +95,14 @@ fn log_mesh_upload_received(data: &MeshUploadData) {
 
 fn log_pending_mesh_upload_pressure(queue: &AssetTransferQueue, asset_id: i32) {
     let pending = queue.pending.pending_mesh_uploads.len();
-    if pending == MAX_PENDING_MESH_UPLOADS
-        || (pending > MAX_PENDING_MESH_UPLOADS && pending.is_multiple_of(MAX_PENDING_MESH_UPLOADS))
+    if pending == PENDING_MESH_UPLOAD_WARN_THRESHOLD
+        || (pending > PENDING_MESH_UPLOAD_WARN_THRESHOLD
+            && pending.is_multiple_of(PENDING_MESH_UPLOAD_WARN_THRESHOLD))
     {
         logger::warn!(
             "mesh {asset_id}: deferred upload backlog high: pending={} threshold={} reason=gpu not attached",
             pending,
-            MAX_PENDING_MESH_UPLOADS
+            PENDING_MESH_UPLOAD_WARN_THRESHOLD
         );
     }
 }
@@ -132,13 +129,13 @@ mod tests {
         let mut queue = AssetTransferQueue::new();
         let mut shm = SharedMemoryAccessor::new(String::new());
 
-        for i in 0..=MAX_PENDING_MESH_UPLOADS {
+        for i in 0..=PENDING_MESH_UPLOAD_WARN_THRESHOLD {
             try_process_mesh_upload(&mut queue, upload(i as i32), Some(&mut shm), None);
         }
 
         assert_eq!(
             queue.pending.pending_mesh_uploads.len(),
-            MAX_PENDING_MESH_UPLOADS + 1
+            PENDING_MESH_UPLOAD_WARN_THRESHOLD + 1
         );
     }
 

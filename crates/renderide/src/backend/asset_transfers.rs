@@ -136,6 +136,33 @@ pub(crate) struct AssetTransferDiagnosticSnapshot {
     pub(crate) pending_video_texture_loads: usize,
 }
 
+/// Categorized snapshot of queued and deferred asset-transfer work.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct AssetTransferWorkSnapshot {
+    /// Cooperative integration tasks ready for the asset integrator.
+    pub(crate) queued_integration_tasks: usize,
+    /// Mesh, texture, cubemap, or particle uploads that may become drainable.
+    pub(crate) deferred_upload_work: usize,
+    /// Video loads waiting for GPU attach or allocation.
+    pub(crate) deferred_video_loads: usize,
+    /// Worker-completed particle meshes waiting for publication.
+    pub(crate) ready_particle_builds: usize,
+    /// Retained particle uploads that can start a worker.
+    pub(crate) startable_particle_uploads: usize,
+}
+
+impl AssetTransferWorkSnapshot {
+    /// Returns whether work is ready or can become ready without receiving a new host command.
+    #[inline]
+    pub(crate) fn has_pending_work(self) -> bool {
+        self.queued_integration_tasks > 0
+            || self.deferred_upload_work > 0
+            || self.deferred_video_loads > 0
+            || self.ready_particle_builds > 0
+            || self.startable_particle_uploads > 0
+    }
+}
+
 /// Pending mesh/texture payloads, CPU texture tables, GPU device/queue, resident pools, and [`AssetIntegrator`].
 pub struct AssetTransferQueue {
     /// GPU-resident pools.
@@ -152,6 +179,12 @@ pub struct AssetTransferQueue {
     pub(crate) integrator: AssetIntegrator,
     /// Latest accepted host mesh upload generation per asset.
     mesh_upload_generations: HashMap<i32, u64>,
+    /// Latest accepted Texture2D format generation per asset.
+    texture_upload_generations: HashMap<i32, u64>,
+    /// Latest accepted Texture3D format generation per asset.
+    texture3d_upload_generations: HashMap<i32, u64>,
+    /// Latest accepted cubemap format generation per asset.
+    cubemap_upload_generations: HashMap<i32, u64>,
     /// Latest accepted point render-buffer generation per asset.
     point_render_buffer_generations: HashMap<i32, u64>,
     /// Latest accepted trail render-buffer generation per asset.
@@ -183,6 +216,16 @@ impl AssetTransferQueue {
         &mut self.integrator
     }
 
+    /// Retires a resident mesh through the delayed GPU-resource removal path.
+    pub(crate) fn retire_mesh_asset(&mut self, asset_id: i32) -> bool {
+        let Some(mesh) = self.pools.mesh_pool.take(asset_id) else {
+            return false;
+        };
+        self.integrator
+            .enqueue_delayed_removal(integrator::RetiredAssetResource::Mesh(Box::new(mesh)));
+        true
+    }
+
     /// Starts a host mesh upload generation and returns its monotonic token.
     #[inline]
     pub(crate) fn begin_mesh_upload_generation(&mut self, asset_id: i32) -> u64 {
@@ -205,6 +248,90 @@ impl AssetTransferQueue {
     #[inline]
     pub(crate) fn current_mesh_upload_generation(&self, asset_id: i32) -> Option<u64> {
         self.mesh_upload_generations.get(&asset_id).copied()
+    }
+
+    /// Starts a Texture2D format generation and returns its monotonic token.
+    #[inline]
+    pub(crate) fn begin_texture_upload_generation(&mut self, asset_id: i32) -> u64 {
+        next_asset_generation(&mut self.texture_upload_generations, asset_id)
+    }
+
+    /// Invalidates in-flight Texture2D upload work for `asset_id`.
+    #[inline]
+    pub(crate) fn invalidate_texture_upload_generation(&mut self, asset_id: i32) -> u64 {
+        self.begin_texture_upload_generation(asset_id)
+    }
+
+    /// Returns whether `generation` is still the latest Texture2D upload work for `asset_id`.
+    #[inline]
+    pub(crate) fn texture_upload_generation_is_current(
+        &self,
+        asset_id: i32,
+        generation: u64,
+    ) -> bool {
+        self.texture_upload_generations.get(&asset_id).copied() == Some(generation)
+    }
+
+    /// Returns the latest accepted Texture2D format generation for `asset_id`.
+    #[inline]
+    pub(crate) fn current_texture_upload_generation(&self, asset_id: i32) -> Option<u64> {
+        self.texture_upload_generations.get(&asset_id).copied()
+    }
+
+    /// Starts a Texture3D format generation and returns its monotonic token.
+    #[inline]
+    pub(crate) fn begin_texture3d_upload_generation(&mut self, asset_id: i32) -> u64 {
+        next_asset_generation(&mut self.texture3d_upload_generations, asset_id)
+    }
+
+    /// Invalidates in-flight Texture3D upload work for `asset_id`.
+    #[inline]
+    pub(crate) fn invalidate_texture3d_upload_generation(&mut self, asset_id: i32) -> u64 {
+        self.begin_texture3d_upload_generation(asset_id)
+    }
+
+    /// Returns whether `generation` is still the latest Texture3D upload work for `asset_id`.
+    #[inline]
+    pub(crate) fn texture3d_upload_generation_is_current(
+        &self,
+        asset_id: i32,
+        generation: u64,
+    ) -> bool {
+        self.texture3d_upload_generations.get(&asset_id).copied() == Some(generation)
+    }
+
+    /// Returns the latest accepted Texture3D format generation for `asset_id`.
+    #[inline]
+    pub(crate) fn current_texture3d_upload_generation(&self, asset_id: i32) -> Option<u64> {
+        self.texture3d_upload_generations.get(&asset_id).copied()
+    }
+
+    /// Starts a cubemap format generation and returns its monotonic token.
+    #[inline]
+    pub(crate) fn begin_cubemap_upload_generation(&mut self, asset_id: i32) -> u64 {
+        next_asset_generation(&mut self.cubemap_upload_generations, asset_id)
+    }
+
+    /// Invalidates in-flight cubemap upload work for `asset_id`.
+    #[inline]
+    pub(crate) fn invalidate_cubemap_upload_generation(&mut self, asset_id: i32) -> u64 {
+        self.begin_cubemap_upload_generation(asset_id)
+    }
+
+    /// Returns whether `generation` is still the latest cubemap upload work for `asset_id`.
+    #[inline]
+    pub(crate) fn cubemap_upload_generation_is_current(
+        &self,
+        asset_id: i32,
+        generation: u64,
+    ) -> bool {
+        self.cubemap_upload_generations.get(&asset_id).copied() == Some(generation)
+    }
+
+    /// Returns the latest accepted cubemap format generation for `asset_id`.
+    #[inline]
+    pub(crate) fn current_cubemap_upload_generation(&self, asset_id: i32) -> Option<u64> {
+        self.cubemap_upload_generations.get(&asset_id).copied()
     }
 
     /// Starts a point render-buffer generation and returns its monotonic token.
@@ -428,12 +555,6 @@ impl AssetTransferQueue {
             || !self.trail_render_buffer_build_rx.is_empty()
     }
 
-    /// Returns whether any retained particle upload can start without waiting for active work.
-    #[inline]
-    pub(in crate::backend::asset_transfers) fn has_startable_particle_upload(&self) -> bool {
-        self.startable_particle_upload_count() > 0
-    }
-
     /// Returns a compact snapshot of particle scheduler state for profiling.
     #[cfg(feature = "tracy")]
     pub(in crate::backend::asset_transfers) fn particle_scheduler_snapshot(
@@ -484,13 +605,22 @@ impl AssetTransferQueue {
 
     /// Whether any upload work is queued or deferred on missing prerequisites.
     pub(crate) fn has_pending_asset_work(&self) -> bool {
-        self.integrator.total_queued() > 0
-            || !self.pending.pending_mesh_uploads.is_empty()
-            || !self.pending.pending_texture_uploads.is_empty()
-            || !self.pending.pending_texture3d_uploads.is_empty()
-            || !self.pending.pending_cubemap_uploads.is_empty()
-            || self.has_ready_particle_build_results()
-            || self.has_startable_particle_upload()
+        self.work_snapshot().has_pending_work()
+    }
+
+    /// Returns a categorized snapshot of queued and deferred work.
+    pub(crate) fn work_snapshot(&self) -> AssetTransferWorkSnapshot {
+        AssetTransferWorkSnapshot {
+            queued_integration_tasks: self.integrator.total_queued(),
+            deferred_upload_work: self.pending.pending_mesh_uploads.len()
+                + self.pending.pending_texture_uploads.len()
+                + self.pending.pending_texture3d_uploads.len()
+                + self.pending.pending_cubemap_uploads.len(),
+            deferred_video_loads: self.pending.pending_video_texture_loads.len(),
+            ready_particle_builds: self.point_render_buffer_build_rx.len()
+                + self.trail_render_buffer_build_rx.len(),
+            startable_particle_uploads: self.startable_particle_upload_count(),
+        }
     }
 
     /// Returns a compact queue-depth snapshot for lifecycle diagnostics.
@@ -658,6 +788,9 @@ impl AssetTransferQueue {
             video: VideoAssetRuntime::default(),
             integrator: AssetIntegrator::default(),
             mesh_upload_generations: HashMap::new(),
+            texture_upload_generations: HashMap::new(),
+            texture3d_upload_generations: HashMap::new(),
+            cubemap_upload_generations: HashMap::new(),
             point_render_buffer_generations: HashMap::new(),
             trail_render_buffer_generations: HashMap::new(),
             pending_point_render_buffer_uploads: HashMap::new(),
@@ -682,220 +815,4 @@ fn next_asset_generation(generations: &mut HashMap<i32, u64>, asset_id: i32) -> 
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::shared::{
-        PointRenderBufferUpload, TextureFilterMode, TextureWrapMode, TrailRenderBufferUpload,
-        VideoTextureProperties,
-    };
-
-    #[test]
-    fn video_texture_properties_default_preserves_asset_id() {
-        let queue = AssetTransferQueue::new();
-
-        let props = queue.catalogs.video_texture_properties_or_default(42);
-
-        assert_eq!(props.asset_id, 42);
-        assert_eq!(props.filter_mode, TextureFilterMode::Point);
-        assert_eq!(props.wrap_u, TextureWrapMode::Repeat);
-        assert_eq!(props.wrap_v, TextureWrapMode::Repeat);
-    }
-
-    #[test]
-    fn video_texture_properties_default_uses_cached_properties() {
-        let mut queue = AssetTransferQueue::new();
-        queue.catalogs.video_texture_properties.insert(
-            7,
-            VideoTextureProperties {
-                asset_id: 7,
-                filter_mode: TextureFilterMode::Trilinear,
-                aniso_level: 8,
-                wrap_u: TextureWrapMode::Mirror,
-                wrap_v: TextureWrapMode::Clamp,
-            },
-        );
-
-        let props = queue.catalogs.video_texture_properties_or_default(7);
-
-        assert_eq!(props.asset_id, 7);
-        assert_eq!(props.filter_mode, TextureFilterMode::Trilinear);
-        assert_eq!(props.aniso_level, 8);
-        assert_eq!(props.wrap_u, TextureWrapMode::Mirror);
-        assert_eq!(props.wrap_v, TextureWrapMode::Clamp);
-    }
-
-    #[test]
-    fn point_render_buffer_uploads_keep_newest_pending_generation() {
-        let mut queue = AssetTransferQueue::new();
-
-        let first = queue.retain_latest_point_render_buffer_upload(PointRenderBufferUpload {
-            asset_id: 5,
-            count: 1,
-            ..Default::default()
-        });
-        let second = queue.retain_latest_point_render_buffer_upload(PointRenderBufferUpload {
-            asset_id: 5,
-            count: 2,
-            ..Default::default()
-        });
-
-        assert!(!first.replaced_pending_upload);
-        assert!(second.replaced_pending_upload);
-        assert!(!queue.point_render_buffer_generation_is_current(5, first.generation));
-        assert!(queue.point_render_buffer_generation_is_current(5, second.generation));
-        let pending = queue
-            .take_pending_point_render_buffer_upload(5)
-            .expect("pending point upload");
-        assert_eq!(pending.upload.count, 2);
-        assert_eq!(pending.generation, second.generation);
-        assert!(queue.take_pending_point_render_buffer_upload(5).is_none());
-    }
-
-    #[test]
-    fn point_render_buffer_pending_upload_waits_behind_active_build() {
-        let mut queue = AssetTransferQueue::new();
-        let first = queue.retain_latest_point_render_buffer_upload(PointRenderBufferUpload {
-            asset_id: 5,
-            count: 1,
-            ..Default::default()
-        });
-
-        assert!(queue.mark_point_render_buffer_build_active(5));
-        let claimed = queue
-            .take_pending_point_render_buffer_upload(5)
-            .expect("claimed point upload");
-        let second = queue.retain_latest_point_render_buffer_upload(PointRenderBufferUpload {
-            asset_id: 5,
-            count: 2,
-            ..Default::default()
-        });
-
-        assert_eq!(claimed.generation, first.generation);
-        assert!(!second.replaced_pending_upload);
-        assert!(!queue.has_pending_asset_work());
-
-        queue.clear_point_render_buffer_build_active(5);
-
-        assert!(queue.has_pending_asset_work());
-        assert!(queue.has_startable_particle_upload());
-    }
-
-    #[test]
-    fn ready_particle_completion_counts_as_pending_work() {
-        let mut queue = AssetTransferQueue::new();
-        let generation = queue.begin_point_render_buffer_generation(11);
-        let tx = queue.point_render_buffer_build_sender();
-
-        tx.send(PointBuildResult {
-            asset_id: 11,
-            generation,
-            result: Err(
-                crate::particles::ParticleRenderBufferError::WorkerPanicked {
-                    kind: "point",
-                    asset_id: 11,
-                },
-            ),
-        })
-        .expect("ready point build result");
-
-        assert!(queue.has_ready_particle_build_results());
-        assert!(queue.has_pending_asset_work());
-    }
-
-    #[test]
-    fn mesh_upload_generation_marks_superseded_work_stale() {
-        let mut queue = AssetTransferQueue::new();
-
-        let first = queue.begin_mesh_upload_generation(5);
-        let second = queue.begin_mesh_upload_generation(5);
-
-        assert_ne!(first, second);
-        assert!(!queue.mesh_upload_generation_is_current(5, first));
-        assert!(queue.mesh_upload_generation_is_current(5, second));
-        assert_eq!(queue.current_mesh_upload_generation(5), Some(second));
-    }
-
-    #[test]
-    fn mesh_upload_generation_invalidation_marks_existing_work_stale() {
-        let mut queue = AssetTransferQueue::new();
-
-        let generation = queue.begin_mesh_upload_generation(7);
-        let invalidating_generation = queue.invalidate_mesh_upload_generation(7);
-
-        assert_ne!(generation, invalidating_generation);
-        assert!(!queue.mesh_upload_generation_is_current(7, generation));
-        assert!(queue.mesh_upload_generation_is_current(7, invalidating_generation));
-    }
-
-    #[test]
-    fn trail_render_buffer_upload_after_worker_claim_enqueues_new_pending_upload() {
-        let mut queue = AssetTransferQueue::new();
-        let first = queue.retain_latest_trail_render_buffer_upload(TrailRenderBufferUpload {
-            asset_id: 9,
-            trails_count: 1,
-            ..Default::default()
-        });
-        let claimed = queue
-            .take_pending_trail_render_buffer_upload(9)
-            .expect("claimed trail upload");
-        let second = queue.retain_latest_trail_render_buffer_upload(TrailRenderBufferUpload {
-            asset_id: 9,
-            trails_count: 2,
-            ..Default::default()
-        });
-
-        assert_eq!(claimed.generation, first.generation);
-        assert!(!second.replaced_pending_upload);
-        let pending = queue
-            .take_pending_trail_render_buffer_upload(9)
-            .expect("new pending trail upload");
-        assert_eq!(pending.upload.trails_count, 2);
-        assert_eq!(pending.generation, second.generation);
-    }
-
-    #[test]
-    fn trail_render_buffer_pending_replacement_stays_newest_during_active_build() {
-        let mut queue = AssetTransferQueue::new();
-
-        queue.retain_latest_trail_render_buffer_upload(TrailRenderBufferUpload {
-            asset_id: 9,
-            trails_count: 1,
-            ..Default::default()
-        });
-        assert!(queue.mark_trail_render_buffer_build_active(9));
-        queue.take_pending_trail_render_buffer_upload(9);
-        let first_pending =
-            queue.retain_latest_trail_render_buffer_upload(TrailRenderBufferUpload {
-                asset_id: 9,
-                trails_count: 2,
-                ..Default::default()
-            });
-        let newest = queue.retain_latest_trail_render_buffer_upload(TrailRenderBufferUpload {
-            asset_id: 9,
-            trails_count: 3,
-            ..Default::default()
-        });
-
-        assert!(!first_pending.replaced_pending_upload);
-        assert!(newest.replaced_pending_upload);
-        let pending = queue
-            .take_pending_trail_render_buffer_upload(9)
-            .expect("newest trail upload");
-        assert_eq!(pending.upload.trails_count, 3);
-    }
-
-    #[test]
-    fn cancel_point_render_buffer_generation_reports_dropped_pending_upload() {
-        let mut queue = AssetTransferQueue::new();
-        let retained = queue.retain_latest_point_render_buffer_upload(PointRenderBufferUpload {
-            asset_id: 17,
-            count: 1,
-            ..Default::default()
-        });
-
-        assert!(queue.cancel_point_render_buffer_generation(17));
-        assert!(!queue.point_render_buffer_generation_is_current(17, retained.generation));
-        assert!(queue.take_pending_point_render_buffer_upload(17).is_none());
-        assert!(!queue.cancel_point_render_buffer_generation(17));
-    }
-}
+mod tests;

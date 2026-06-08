@@ -3,6 +3,7 @@
 use glam::{IVec2, Vec3};
 
 use super::super::cube_capture::{CubeCaptureBasisMode, CubeCaptureFace};
+use super::super::readback::LinearTextureReadbackPlan;
 use super::result_write::{output_byte_count, pack_rgba8_to_host_buffer};
 use super::*;
 
@@ -90,41 +91,46 @@ fn camera360_uses_copied_cubemap_basis_for_face_captures() {
 
 #[test]
 fn readback_layout_removes_row_padding_contract() {
-    let layout = compute_readback_layout(
+    let layout = LinearTextureReadbackPlan::new(
         wgpu::Extent3d {
             width: 17,
             height: 3,
             depth_or_array_layers: 1,
         },
+        RGBA8_BYTES_PER_PIXEL as u32,
         4096,
     )
     .expect("layout");
 
-    assert_eq!(layout.bytes_per_row_tight, 68);
     assert_eq!(
-        layout.bytes_per_row_padded,
-        wgpu::COPY_BYTES_PER_ROW_ALIGNMENT
+        layout.copy_buffer_layout().bytes_per_row,
+        Some(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
     );
     assert_eq!(
-        layout.buffer_size,
+        layout.buffer_size(),
         u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * 3
     );
 }
 
 #[test]
 fn copy_padded_rows_to_tight_strips_padding() {
-    let layout = ReadbackLayout {
-        width: 2,
-        height: 2,
-        bytes_per_row_tight: 8,
-        bytes_per_row_padded: 12,
-        buffer_size: 24,
-    };
-    let padded = [
-        1, 2, 3, 4, 5, 6, 7, 8, 99, 99, 99, 99, 10, 11, 12, 13, 14, 15, 16, 17, 88, 88, 88, 88,
-    ];
+    let layout = LinearTextureReadbackPlan::new(
+        wgpu::Extent3d {
+            width: 2,
+            height: 2,
+            depth_or_array_layers: 1,
+        },
+        RGBA8_BYTES_PER_PIXEL as u32,
+        1024,
+    )
+    .expect("layout");
+    let mut padded = vec![0u8; layout.buffer_size() as usize];
+    padded[0..8].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+    padded[256..264].copy_from_slice(&[10, 11, 12, 13, 14, 15, 16, 17]);
 
-    let tight = copy_padded_rows_to_tight(&padded, &layout).expect("copy rows");
+    let tight = layout
+        .copy_mapped_rows_to_tight(&padded)
+        .expect("copy rows");
 
     assert_eq!(
         tight,
@@ -134,20 +140,27 @@ fn copy_padded_rows_to_tight_strips_padding() {
 
 #[test]
 fn copy_padded_rows_to_tight_rejects_short_mapping() {
-    let layout = ReadbackLayout {
-        width: 2,
-        height: 2,
-        bytes_per_row_tight: 8,
-        bytes_per_row_padded: 12,
-        buffer_size: 24,
-    };
-    let err = copy_padded_rows_to_tight(&[0u8; 23], &layout).expect_err("short mapping");
+    let layout = LinearTextureReadbackPlan::new(
+        wgpu::Extent3d {
+            width: 2,
+            height: 2,
+            depth_or_array_layers: 1,
+        },
+        RGBA8_BYTES_PER_PIXEL as u32,
+        1024,
+    )
+    .expect("layout");
+    let err = CameraReadbackError::from(
+        layout
+            .copy_mapped_rows_to_tight(&[0u8; 511])
+            .expect_err("short mapping"),
+    );
 
     assert!(matches!(
         err,
         CameraReadbackError::MappedReadbackTooSmall {
-            required: 24,
-            actual: 23
+            required: 512,
+            actual: 511
         }
     ));
 }
@@ -298,15 +311,18 @@ fn task_extent_rejects_zero_dimensions() {
 
 #[test]
 fn compute_readback_layout_rejects_zero_extent() {
-    let err = compute_readback_layout(
-        wgpu::Extent3d {
-            width: 0,
-            height: 1,
-            depth_or_array_layers: 1,
-        },
-        4096,
-    )
-    .expect_err("zero width");
+    let err = CameraReadbackError::from(
+        LinearTextureReadbackPlan::new(
+            wgpu::Extent3d {
+                width: 0,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            RGBA8_BYTES_PER_PIXEL as u32,
+            4096,
+        )
+        .expect_err("zero width"),
+    );
 
     assert!(matches!(
         err,
@@ -319,15 +335,18 @@ fn compute_readback_layout_rejects_zero_extent() {
 
 #[test]
 fn compute_readback_layout_rejects_buffers_above_limit() {
-    let err = compute_readback_layout(
-        wgpu::Extent3d {
-            width: 64,
-            height: 2,
-            depth_or_array_layers: 1,
-        },
-        255,
-    )
-    .expect_err("buffer over limit");
+    let err = CameraReadbackError::from(
+        LinearTextureReadbackPlan::new(
+            wgpu::Extent3d {
+                width: 64,
+                height: 2,
+                depth_or_array_layers: 1,
+            },
+            RGBA8_BYTES_PER_PIXEL as u32,
+            255,
+        )
+        .expect_err("buffer over limit"),
+    );
 
     assert!(matches!(
         err,

@@ -14,6 +14,7 @@ fn texture_task(high_priority: bool) -> AssetTask {
         },
         SetTexture2DFormat::default(),
         wgpu::TextureFormat::Rgba8Unorm,
+        1,
     ))
 }
 

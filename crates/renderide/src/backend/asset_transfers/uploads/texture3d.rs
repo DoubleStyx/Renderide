@@ -9,8 +9,9 @@ use crate::shared::{
 
 use super::super::AssetTransferQueue;
 use super::super::integrator::{AssetTask, RetiredAssetResource};
+use super::super::pending::PendingTextureUpload;
 use super::super::texture3d_task::Texture3dUploadTask;
-use super::MAX_PENDING_TEXTURE3D_UPLOADS;
+use super::PENDING_TEXTURE3D_UPLOAD_WARN_THRESHOLD;
 use super::allocations::flush_pending_texture3d_allocations;
 use super::texture_common::{TextureUploadAdmission, admit_texture_upload_data};
 
@@ -37,6 +38,14 @@ pub fn on_set_texture_3d_format(
     ipc: Option<&mut DualQueueIpc>,
 ) {
     let id = f.asset_id;
+    let format_generation_changed = queue
+        .catalogs
+        .texture3d_formats
+        .get(&id)
+        .is_none_or(|old| !texture_3d_format_shape_matches(old, &f));
+    if format_generation_changed {
+        queue.begin_texture3d_upload_generation(id);
+    }
     queue.catalogs.texture3d_formats.insert(id, f.clone());
     let props = queue.catalogs.texture3d_properties.get(&id).cloned();
     let Some(device) = queue.gpu.gpu_device.clone() else {
@@ -133,11 +142,11 @@ pub fn on_set_texture_3d_data(
         data: d,
         kind: "texture3d",
         format_command: "SetTexture3DData",
-        pending_warn_threshold: MAX_PENDING_TEXTURE3D_UPLOADS,
+        pending_warn_threshold: PENDING_TEXTURE3D_UPLOAD_WARN_THRESHOLD,
         queue,
         has_format: |queue, id| queue.catalogs.texture3d_formats.contains_key(&id),
         pending_len: |queue| queue.pending.pending_texture3d_uploads.len(),
-        push_pending: |queue, data| queue.pending.pending_texture3d_uploads.push_back(data),
+        push_pending: push_pending_texture3d_upload,
         has_resident: |queue, id| queue.pools.texture3d_pool.get(id).is_some(),
         flush_allocations: flush_pending_texture3d_allocations,
     }) else {
@@ -157,13 +166,21 @@ pub fn on_set_texture_3d_data(
 /// Replay pending Texture3D data after GPU attach.
 pub fn try_texture3d_upload_with_device(
     queue: &mut AssetTransferQueue,
-    data: SetTexture3DData,
+    pending: PendingTextureUpload<SetTexture3DData>,
     _shm: &mut SharedMemoryAccessor,
     _ipc: Option<&mut DualQueueIpc>,
     _consume_texture_upload_budget: bool,
 ) {
-    if !enqueue_texture3d_upload_task(queue, data.clone()) {
-        queue.pending.pending_texture3d_uploads.push_back(data);
+    if pending_texture3d_upload_is_stale(queue, &pending) {
+        logger::trace!(
+            "texture3d {}: dropped stale deferred upload generation {:?}",
+            pending.data.asset_id,
+            pending.generation
+        );
+        return;
+    }
+    if !enqueue_texture3d_upload_task(queue, pending.data.clone()) {
+        queue.pending.pending_texture3d_uploads.push_back(pending);
     }
 }
 
@@ -172,6 +189,7 @@ pub fn on_unload_texture_3d(queue: &mut AssetTransferQueue, u: UnloadTexture3D) 
     let id = u.asset_id;
     queue.catalogs.texture3d_formats.remove(&id);
     queue.catalogs.texture3d_properties.remove(&id);
+    queue.invalidate_texture3d_upload_generation(id);
     remove_pending_texture3d_uploads_for_asset(queue, id);
     if let Some(texture) = queue.pools.texture3d_pool.take(id) {
         queue
@@ -190,8 +208,12 @@ fn enqueue_texture3d_upload_task(queue: &mut AssetTransferQueue, d: SetTexture3D
         logger::warn!("texture3d {id}: missing GPU texture");
         return false;
     };
+    let Some(generation) = queue.current_texture3d_upload_generation(id) else {
+        logger::warn!("texture3d {id}: missing upload generation");
+        return false;
+    };
     let high = d.high_priority;
-    let task = AssetTask::Texture3d(Texture3dUploadTask::new(d, fmt, wgpu_fmt));
+    let task = AssetTask::Texture3d(Texture3dUploadTask::new(d, fmt, wgpu_fmt, generation));
     queue.integrator_mut().enqueue(task, high);
     true
 }
@@ -199,19 +221,31 @@ fn enqueue_texture3d_upload_task(queue: &mut AssetTransferQueue, d: SetTexture3D
 fn replay_pending_texture3d_uploads_for_asset(queue: &mut AssetTransferQueue, asset_id: i32) {
     let pending = std::mem::take(&mut queue.pending.pending_texture3d_uploads);
     let mut replayed = 0usize;
-    for data in pending {
-        if data.asset_id == asset_id {
-            if enqueue_texture3d_upload_task(queue, data.clone()) {
+    let mut dropped_stale = 0usize;
+    for pending_upload in pending {
+        if pending_upload.data.asset_id == asset_id {
+            if pending_texture3d_upload_is_stale(queue, &pending_upload) {
+                dropped_stale += 1;
+            } else if enqueue_texture3d_upload_task(queue, pending_upload.data.clone()) {
                 replayed += 1;
             } else {
-                queue.pending.pending_texture3d_uploads.push_back(data);
+                queue
+                    .pending
+                    .pending_texture3d_uploads
+                    .push_back(pending_upload);
             }
         } else {
-            queue.pending.pending_texture3d_uploads.push_back(data);
+            queue
+                .pending
+                .pending_texture3d_uploads
+                .push_back(pending_upload);
         }
     }
     if replayed > 0 {
         logger::debug!("texture3d {asset_id}: replayed {replayed} deferred data upload(s)");
+    }
+    if dropped_stale > 0 {
+        logger::debug!("texture3d {asset_id}: dropped {dropped_stale} stale deferred upload(s)");
     }
 }
 
@@ -220,11 +254,36 @@ fn remove_pending_texture3d_uploads_for_asset(queue: &mut AssetTransferQueue, as
     queue
         .pending
         .pending_texture3d_uploads
-        .retain(|upload| upload.asset_id != asset_id);
+        .retain(|upload| upload.data.asset_id != asset_id);
     let removed = pending_before.saturating_sub(queue.pending.pending_texture3d_uploads.len());
     if removed > 0 {
         logger::debug!("texture3d {asset_id}: removed {removed} deferred upload(s) on unload");
     }
+}
+
+fn push_pending_texture3d_upload(queue: &mut AssetTransferQueue, data: SetTexture3DData) {
+    let generation = queue.current_texture3d_upload_generation(data.asset_id);
+    queue
+        .pending
+        .pending_texture3d_uploads
+        .push_back(PendingTextureUpload::new(data, generation));
+}
+
+fn pending_texture3d_upload_is_stale(
+    queue: &AssetTransferQueue,
+    pending: &PendingTextureUpload<SetTexture3DData>,
+) -> bool {
+    pending.generation.is_some_and(|generation| {
+        !queue.texture3d_upload_generation_is_current(pending.data.asset_id, generation)
+    })
+}
+
+fn texture_3d_format_shape_matches(a: &SetTexture3DFormat, b: &SetTexture3DFormat) -> bool {
+    a.width == b.width
+        && a.height == b.height
+        && a.depth == b.depth
+        && a.mipmap_count == b.mipmap_count
+        && a.format == b.format
 }
 
 #[cfg(test)]
@@ -305,7 +364,7 @@ mod tests {
         on_set_texture_3d_data(&mut queue, data(9), None, None);
 
         assert_eq!(queue.pending.pending_texture3d_uploads.len(), 1);
-        assert_eq!(queue.pending.pending_texture3d_uploads[0].asset_id, 9);
+        assert_eq!(queue.pending.pending_texture3d_uploads[0].data.asset_id, 9);
     }
 
     #[test]
@@ -316,6 +375,30 @@ mod tests {
         on_set_texture_3d_data(&mut queue, data(9), None, None);
 
         assert_eq!(queue.pending.pending_texture3d_uploads.len(), 1);
-        assert_eq!(queue.pending.pending_texture3d_uploads[0].asset_id, 9);
+        assert_eq!(queue.pending.pending_texture3d_uploads[0].data.asset_id, 9);
+    }
+
+    #[test]
+    fn pending_upload_with_replaced_format_generation_is_dropped() {
+        let mut queue = AssetTransferQueue::new();
+        on_set_texture_3d_format(&mut queue, format(9), None);
+        on_set_texture_3d_data(&mut queue, data(9), None, None);
+        let first_generation = queue.current_texture3d_upload_generation(9);
+
+        on_set_texture_3d_format(
+            &mut queue,
+            SetTexture3DFormat {
+                width: 32,
+                ..format(9)
+            },
+            None,
+        );
+        replay_pending_texture3d_uploads_for_asset(&mut queue, 9);
+
+        assert_ne!(
+            queue.current_texture3d_upload_generation(9),
+            first_generation
+        );
+        assert!(queue.pending.pending_texture3d_uploads.is_empty());
     }
 }

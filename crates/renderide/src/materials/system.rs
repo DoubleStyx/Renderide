@@ -225,6 +225,11 @@ impl MaterialSystem {
         !self.pending_material_batches.is_empty()
     }
 
+    /// Whether material batches or shader route registrations are deferred.
+    pub fn has_deferred_material_work(&self) -> bool {
+        self.has_pending_material_batches() || !self.pending_shader_routes.is_empty()
+    }
+
     /// Returns a compact snapshot for lifecycle diagnostics.
     pub(crate) fn diagnostic_snapshot(&self) -> MaterialSystemDiagnosticSnapshot {
         MaterialSystemDiagnosticSnapshot {
@@ -472,7 +477,7 @@ fn material_batch_is_large(updates_read: usize, select_targets: usize) -> bool {
 mod tests {
     use super::{
         LARGE_MATERIAL_BATCH_TARGET_THRESHOLD, LARGE_MATERIAL_BATCH_UPDATE_THRESHOLD,
-        material_batch_is_large,
+        MaterialSystem, RasterPipelineKind, material_batch_is_large,
     };
 
     #[test]
@@ -489,5 +494,16 @@ mod tests {
             0,
             LARGE_MATERIAL_BATCH_TARGET_THRESHOLD,
         ));
+    }
+
+    #[test]
+    fn pending_shader_routes_count_as_deferred_material_work() {
+        let mut system = MaterialSystem::new();
+
+        system.register_shader_route(7, RasterPipelineKind::Null, None, Some(3));
+
+        assert!(!system.has_pending_material_batches());
+        assert!(system.has_deferred_material_work());
+        assert_eq!(system.diagnostic_snapshot().pending_shader_routes, 1);
     }
 }

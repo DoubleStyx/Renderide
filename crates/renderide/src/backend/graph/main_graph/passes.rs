@@ -8,6 +8,7 @@ use super::handles::MainGraphHandles;
 
 /// Pass ids registered by [`register_main_graph_passes`]; consumed by edge wiring.
 pub(super) struct MainGraphPassIds {
+    pub(super) light_cookies: PassId,
     pub(super) deform: PassId,
     pub(super) shadows: PassId,
     pub(super) clustered: PassId,
@@ -82,7 +83,7 @@ pub(super) fn register_main_graph_passes(
     multiview_stereo: bool,
 ) -> MainGraphPassIds {
     let msaa_enabled = msaa_sample_count > 1;
-    let _light_cookies = builder.add_encoder_pass(Box::new(
+    let light_cookies = builder.add_encoder_pass(Box::new(
         crate::backend::frame_gpu::LightCookieAtlasPass::new(),
     ));
     let deform = builder.add_compute_pass(Box::new(crate::passes::MeshDeformPass::new()));
@@ -131,6 +132,7 @@ pub(super) fn register_main_graph_passes(
         },
     )));
     MainGraphPassIds {
+        light_cookies,
         deform,
         shadows,
         clustered,

@@ -140,13 +140,19 @@ pub struct WorldMeshDesktopOverlayPass {
 /// Resolves the final MSAA forward depth into the single-sample frame depth target.
 #[derive(Debug)]
 pub struct WorldMeshForwardDepthResolvePass {
-    resources: WorldMeshForwardGraphResources,
+    inner: WorldMeshForwardMsaaDepthResolvePass,
 }
 
 /// Resolves MSAA forward depth before GTAO samples the single-sample frame depth target.
 #[derive(Debug)]
 pub struct WorldMeshForwardGtaoDepthResolvePass {
+    inner: WorldMeshForwardMsaaDepthResolvePass,
+}
+
+#[derive(Debug)]
+struct WorldMeshForwardMsaaDepthResolvePass {
     resources: WorldMeshForwardGraphResources,
+    name: &'static str,
 }
 
 /// MSAA-only transient graph resources shared by world-mesh forward passes.
@@ -309,14 +315,30 @@ impl WorldMeshDesktopOverlayPass {
 impl WorldMeshForwardDepthResolvePass {
     /// Creates a world mesh final depth-resolve pass instance.
     pub fn new(resources: WorldMeshForwardGraphResources) -> Self {
-        Self { resources }
+        Self {
+            inner: WorldMeshForwardMsaaDepthResolvePass::new(
+                resources,
+                "WorldMeshForwardDepthResolve",
+            ),
+        }
     }
 }
 
 impl WorldMeshForwardGtaoDepthResolvePass {
     /// Creates a pre-GTAO depth-resolve pass instance.
     pub fn new(resources: WorldMeshForwardGraphResources) -> Self {
-        Self { resources }
+        Self {
+            inner: WorldMeshForwardMsaaDepthResolvePass::new(
+                resources,
+                "WorldMeshForwardGtaoDepthResolve",
+            ),
+        }
+    }
+}
+
+impl WorldMeshForwardMsaaDepthResolvePass {
+    fn new(resources: WorldMeshForwardGraphResources, name: &'static str) -> Self {
+        Self { resources, name }
     }
 }
 
@@ -813,9 +835,9 @@ impl RasterPass for WorldMeshDesktopOverlayPass {
     }
 }
 
-impl EncoderPass for WorldMeshForwardGtaoDepthResolvePass {
+impl EncoderPass for WorldMeshForwardMsaaDepthResolvePass {
     fn name(&self) -> &str {
-        "WorldMeshForwardGtaoDepthResolve"
+        self.name
     }
 
     fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
@@ -837,41 +859,46 @@ impl EncoderPass for WorldMeshForwardGtaoDepthResolvePass {
     }
 
     fn record(&self, ctx: &mut EncoderPassCtx<'_, '_, '_>) -> Result<(), RenderPassError> {
-        profiling::scope!("world_mesh_forward::gtao_depth_resolve_record");
+        profiling::scope!("world_mesh_forward::msaa_depth_resolve_record");
         let resolved = record_msaa_depth_resolve(ctx);
         mark_depth_resolved(ctx.blackboard, resolved);
         Ok(())
     }
 }
 
-impl EncoderPass for WorldMeshForwardDepthResolvePass {
+impl EncoderPass for WorldMeshForwardGtaoDepthResolvePass {
     fn name(&self) -> &str {
-        "WorldMeshForwardDepthResolve"
+        self.inner.name()
     }
 
     fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
-        b.encoder();
-        b.read_optional_blackboard::<WorldMeshForwardPlanSlot>();
-        b.write_blackboard::<WorldMeshForwardPlanSlot>();
-        declare_msaa_depth_resolve_accesses(b, self.resources);
-        Ok(())
+        self.inner.setup(b)
     }
 
     fn should_record(&self, ctx: &EncoderPassCtx<'_, '_, '_>) -> Result<bool, RenderPassError> {
-        Ok(ctx.frame.view.sample_count > 1
-            && ctx
-                .blackboard
-                .get::<WorldMeshForwardPlanSlot>()
-                .is_some_and(|prepared| {
-                    prepared.opaque_recorded && !prepared.depth_freshness.is_current()
-                }))
+        self.inner.should_record(ctx)
     }
 
     fn record(&self, ctx: &mut EncoderPassCtx<'_, '_, '_>) -> Result<(), RenderPassError> {
-        profiling::scope!("world_mesh_forward::depth_resolve_record");
-        let resolved = record_msaa_depth_resolve(ctx);
-        mark_depth_resolved(ctx.blackboard, resolved);
-        Ok(())
+        self.inner.record(ctx)
+    }
+}
+
+impl EncoderPass for WorldMeshForwardDepthResolvePass {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
+        self.inner.setup(b)
+    }
+
+    fn should_record(&self, ctx: &EncoderPassCtx<'_, '_, '_>) -> Result<bool, RenderPassError> {
+        self.inner.should_record(ctx)
+    }
+
+    fn record(&self, ctx: &mut EncoderPassCtx<'_, '_, '_>) -> Result<(), RenderPassError> {
+        self.inner.record(ctx)
     }
 }
 

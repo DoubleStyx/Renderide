@@ -22,6 +22,7 @@ pub struct TextureUploadTask {
     /// Cached from [`AssetTransferQueue::texture_formats`] at enqueue time.
     format: SetTexture2DFormat,
     wgpu_format: wgpu::TextureFormat,
+    generation: u64,
     stepper: TextureUploadStepper,
 }
 
@@ -31,11 +32,13 @@ impl TextureUploadTask {
         data: SetTexture2DData,
         format: SetTexture2DFormat,
         wgpu_format: wgpu::TextureFormat,
+        generation: u64,
     ) -> Self {
         Self {
             data,
             format,
             wgpu_format,
+            generation,
             stepper: TextureUploadStepper::default(),
         }
     }
@@ -55,6 +58,14 @@ impl TextureUploadTask {
         ipc: &mut Option<&mut DualQueueIpc>,
     ) -> StepResult {
         let id = self.data.asset_id;
+        if !queue.texture_upload_generation_is_current(id, self.generation) {
+            logger::trace!(
+                "texture {id}: dropped stale data upload generation {}",
+                self.generation
+            );
+            self.finalize_failure(ipc);
+            return StepResult::Done;
+        }
         let storage_v_inverted = self.upload_uses_storage_v_inversion();
         if !self.storage_orientation_allows_upload(queue, storage_v_inverted) {
             self.finalize_failure(ipc);
@@ -188,6 +199,10 @@ impl TextureUploadTask {
         storage_v_inverted: bool,
     ) {
         let id = self.data.asset_id;
+        if !queue.texture_upload_generation_is_current(id, self.generation) {
+            self.finalize_failure(ipc);
+            return;
+        }
         if self.mark_uploaded_mips(queue, uploaded_mips, storage_v_inverted)
             && let Some(t) = queue.pools.texture_pool.get_mut(id)
         {
@@ -234,6 +249,7 @@ mod tests {
                 ..Default::default()
             },
             wgpu::TextureFormat::Bc7RgbaUnorm,
+            1,
         )
     }
 

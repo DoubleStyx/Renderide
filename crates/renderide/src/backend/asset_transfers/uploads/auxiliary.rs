@@ -136,7 +136,7 @@ pub fn on_point_render_buffer_unload(
     }
     queue.catalogs.point_render_buffers.remove(&asset_id);
     for mesh_id in crate::particles::point_render_buffer_generated_mesh_ids(asset_id) {
-        queue.pools.mesh_pool.remove(mesh_id);
+        queue.retire_mesh_asset(mesh_id);
     }
     logger::debug!("point render buffer {asset_id}: unloaded resident upload");
 }
@@ -186,7 +186,7 @@ pub fn on_trail_render_buffer_unload(
     }
     queue.catalogs.trail_render_buffers.remove(&asset_id);
     for mesh_id in crate::particles::trail_render_buffer_generated_mesh_ids(asset_id) {
-        queue.pools.mesh_pool.remove(mesh_id);
+        queue.retire_mesh_asset(mesh_id);
     }
     logger::debug!("trail render buffer {asset_id}: unloaded resident upload");
 }

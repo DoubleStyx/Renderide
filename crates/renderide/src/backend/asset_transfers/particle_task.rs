@@ -584,7 +584,7 @@ pub(super) fn send_trail_render_buffer_consumed(
 fn remove_point_render_buffer(queue: &mut AssetTransferQueue, asset_id: i32) {
     queue.catalogs.point_render_buffers.remove(&asset_id);
     for mesh_id in crate::particles::point_render_buffer_generated_mesh_ids(asset_id) {
-        queue.pools.mesh_pool.remove(mesh_id);
+        queue.retire_mesh_asset(mesh_id);
     }
 }
 
@@ -592,7 +592,7 @@ fn remove_point_render_buffer(queue: &mut AssetTransferQueue, asset_id: i32) {
 fn remove_trail_render_buffer(queue: &mut AssetTransferQueue, asset_id: i32) {
     queue.catalogs.trail_render_buffers.remove(&asset_id);
     for mesh_id in crate::particles::trail_render_buffer_generated_mesh_ids(asset_id) {
-        queue.pools.mesh_pool.remove(mesh_id);
+        queue.retire_mesh_asset(mesh_id);
     }
 }
 

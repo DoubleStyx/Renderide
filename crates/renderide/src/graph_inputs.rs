@@ -229,16 +229,33 @@ blackboard_slot! {
 /// directly bindable as `texture_multisampled_2d<f32>` in the MSAA depth-resolve compute shader.
 #[derive(Clone)]
 pub struct MsaaViews {
-    /// Graph-owned multisampled depth attachment view when MSAA is active.
-    pub msaa_depth_view: wgpu::TextureView,
-    /// R32Float intermediate view used by the MSAA depth resolve path.
-    pub msaa_depth_resolve_r32_view: wgpu::TextureView,
-    /// `true` when MSAA depth/R32 views are two-layer array views for stereo multiview.
-    pub msaa_depth_is_array: bool,
+    /// Depth-resolve views matching the active mono or stereo MSAA target shape.
+    pub depth_resolve: MsaaDepthResolveViews,
+}
+
+/// Valid depth-resolve view bundle for mono or stereo MSAA.
+#[derive(Clone)]
+pub enum MsaaDepthResolveViews {
+    /// Mono view uses one multisampled depth texture and one R32Float intermediate.
+    Mono {
+        /// Multisampled depth attachment view.
+        msaa_depth_view: wgpu::TextureView,
+        /// R32Float intermediate view used by the MSAA depth resolve path.
+        r32_view: wgpu::TextureView,
+    },
+    /// Stereo multiview uses per-eye single-layer depth/R32 views and an array R32 output.
+    Stereo(Box<MsaaStereoDepthResolveViews>),
+}
+
+/// Stereo depth-resolve views for a multiview MSAA forward target.
+#[derive(Clone)]
+pub struct MsaaStereoDepthResolveViews {
     /// Per-eye single-layer views of stereo MSAA depth.
-    pub msaa_stereo_depth_layer_views: Option<[wgpu::TextureView; 2]>,
+    pub msaa_depth_layer_views: [wgpu::TextureView; 2],
     /// Per-eye single-layer views of stereo R32Float resolve targets.
-    pub msaa_stereo_r32_layer_views: Option<[wgpu::TextureView; 2]>,
+    pub r32_layer_views: [wgpu::TextureView; 2],
+    /// Two-layer R32Float array view used by the stereo resolve path.
+    pub r32_array_view: wgpu::TextureView,
 }
 
 blackboard_slot! {

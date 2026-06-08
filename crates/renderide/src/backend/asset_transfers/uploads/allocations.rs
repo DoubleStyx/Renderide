@@ -19,6 +19,9 @@ pub fn flush_pending_texture_allocations(
         let Some(fmt) = queue.catalogs.texture_formats.get(&id).cloned() else {
             continue;
         };
+        if queue.current_texture_upload_generation(id).is_none() {
+            queue.begin_texture_upload_generation(id);
+        }
         let props = queue.catalogs.texture_properties.get(&id);
         let Some(limits) = queue.gpu.gpu_limits.as_ref() else {
             logger::warn!("texture {id}: gpu_limits missing; cannot allocate on attach");
@@ -78,6 +81,9 @@ pub fn flush_pending_texture3d_allocations(
         let Some(fmt) = queue.catalogs.texture3d_formats.get(&id).cloned() else {
             continue;
         };
+        if queue.current_texture3d_upload_generation(id).is_none() {
+            queue.begin_texture3d_upload_generation(id);
+        }
         let props = queue.catalogs.texture3d_properties.get(&id);
         let Some(limits) = queue.gpu.gpu_limits.as_ref() else {
             logger::warn!("texture3d {id}: gpu_limits missing; cannot allocate on attach");
@@ -106,6 +112,9 @@ pub fn flush_pending_cubemap_allocations(
         let Some(fmt) = queue.catalogs.cubemap_formats.get(&id).cloned() else {
             continue;
         };
+        if queue.current_cubemap_upload_generation(id).is_none() {
+            queue.begin_cubemap_upload_generation(id);
+        }
         let props = queue.catalogs.cubemap_properties.get(&id);
         let Some(limits) = queue.gpu.gpu_limits.as_ref() else {
             logger::warn!("cubemap {id}: gpu_limits missing; cannot allocate on attach");

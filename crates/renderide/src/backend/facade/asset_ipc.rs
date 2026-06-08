@@ -42,8 +42,7 @@ impl RenderBackend {
 
     /// Whether upload or material work is queued or deferred on missing prerequisites.
     pub fn has_pending_asset_work(&self) -> bool {
-        self.asset_transfers.has_pending_asset_work()
-            || self.materials.has_pending_material_batches()
+        self.asset_transfers.has_pending_asset_work() || self.materials.has_deferred_material_work()
     }
 
     /// Snapshot of queued and deferred asset-transfer work for lifecycle diagnostics.
