@@ -374,22 +374,25 @@ impl FrameResourceManager {
             }
         }
         let shadow_max_draw_slots = self.shadow_max_draw_slots();
-        let shadow_resources_changed = if let Some((requested_resolution, requested_layers)) =
+        let shadow_sync = if let Some((requested_resolution, requested_layers)) =
             self.shadow_resource_request()
             && let Some(fgpu) = self.frame_gpu_mut()
         {
             profiling::scope!("render::pre_record_sync_for_views::shadow_resources");
-            fgpu.sync_shadow_resources(
+            Some(fgpu.sync_shadow_resources(
                 device,
                 requested_resolution,
                 requested_layers,
                 shadow_max_draw_slots,
-            )
+            ))
         } else {
-            false
+            None
         };
-        if shadow_resources_changed {
-            self.rebuild_per_view_frame_bind_groups_for_shadow_sync(device, view_layouts);
+        if let Some(sync) = shadow_sync {
+            self.apply_shadow_atlas_resolution(sync.resolution);
+            if sync.changed {
+                self.rebuild_per_view_frame_bind_groups_for_shadow_sync(device, view_layouts);
+            }
         }
         {
             if let Some(fgpu) = self.frame_gpu() {
