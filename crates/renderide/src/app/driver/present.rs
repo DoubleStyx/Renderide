@@ -26,10 +26,11 @@ pub(super) enum PresentationAction {
     VrClear,
     /// Run the desktop display blit pass for an explicit host `BlitToDisplay`.
     ///
-    /// Implies that the world-camera path skipped the main desktop view this tick (`render_views`
-    /// routed only secondary RTs to the GPU); this stage acquires the swapchain, clears it to
-    /// `state.background_color`, and blits the `state.texture_id` source into the centered
-    /// fitted rect.
+    /// In desktop mode, the world-camera path skipped the main desktop view this tick
+    /// (`render_views` routed only secondary RTs to the GPU). In VR mode, HMD rendering still
+    /// owns OpenXR submission while this action overrides only the desktop mirror surface. This
+    /// stage acquires the swapchain, clears it to `state.background_color`, and blits the
+    /// `state.texture_id` source into the centered fitted rect.
     DesktopBlitToDisplay,
 }
 
@@ -97,7 +98,7 @@ fn presentation_plan_from_frame_and_desktop_blit(
     hmd_projection_ended: bool,
     explicit_desktop_blit: Option<BlitToDisplayState>,
 ) -> PresentationPlan {
-    if !vr_active && let Some(state) = explicit_desktop_blit {
+    if let Some(state) = explicit_desktop_blit {
         return PresentationPlan::desktop_blit_to_display(state);
     }
     if !vr_active {
@@ -122,7 +123,8 @@ impl AppDriver {
     }
 
     /// Builds this tick's [`PresentationPlan`] from VR state, HMD submission, and any explicit
-    /// desktop display blit source.
+    /// desktop display blit source. An explicit host blit owns the desktop surface even in VR;
+    /// OpenXR submission is finalized separately by the frame loop.
     fn compute_presentation_plan(&self, hmd_projection_ended: bool) -> PresentationPlan {
         let vr_active = self.runtime.vr_active();
         let scene = self.runtime.scene();
@@ -380,10 +382,30 @@ mod tests {
     }
 
     #[test]
-    fn vr_ignores_desktop_blit_for_presentation() {
+    fn vr_explicit_blit_owns_desktop_presentation() {
         let plan =
             presentation_plan_from_frame_and_desktop_blit(true, false, Some(test_blit_state(42)));
 
-        assert_eq!(plan.action(), PresentationAction::VrClear);
+        assert_eq!(plan.action(), PresentationAction::DesktopBlitToDisplay);
+        assert_eq!(
+            plan.explicit_desktop_blit()
+                .expect("explicit blit")
+                .texture_id,
+            42
+        );
+    }
+
+    #[test]
+    fn vr_explicit_blit_overrides_mirror_presentation() {
+        let plan =
+            presentation_plan_from_frame_and_desktop_blit(true, true, Some(test_blit_state(42)));
+
+        assert_eq!(plan.action(), PresentationAction::DesktopBlitToDisplay);
+        assert_eq!(
+            plan.explicit_desktop_blit()
+                .expect("explicit blit")
+                .texture_id,
+            42
+        );
     }
 }
