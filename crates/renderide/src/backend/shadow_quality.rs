@@ -1,6 +1,6 @@
 //! Host-owned realtime shadow quality state.
 
-use crate::shared::{QualityConfig, ShadowCascadeMode, ShadowResolutionMode};
+use crate::shared::{LightType, QualityConfig, ShadowCascadeMode, ShadowResolutionMode};
 
 /// Default Froox/Renderite local-light shadow cap.
 const DEFAULT_PER_PIXEL_LIGHTS: u32 = 12;
@@ -10,6 +10,12 @@ const DEFAULT_SHADOW_DISTANCE: f32 = 175.0;
 const MAX_LOCAL_SHADOWED_LIGHTS: u32 = 32;
 /// Minimum sane finite shadow distance.
 const MIN_SHADOW_DISTANCE: f32 = 0.001;
+/// Maximum quality-derived directional shadow resolution.
+const MAX_DIRECTIONAL_SHADOW_RESOLUTION: u32 = 4096;
+/// Maximum quality-derived spot shadow resolution.
+const MAX_SPOT_SHADOW_RESOLUTION: u32 = 2048;
+/// Maximum quality-derived point face shadow resolution.
+const MAX_POINT_SHADOW_RESOLUTION: u32 = 1024;
 
 /// Renderer-side shadow quality derived from the host `QualityConfig`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -32,6 +38,15 @@ impl HostShadowQuality {
             cascade_count: cascade_count(cfg.shadow_cascades),
             tile_resolution: tile_resolution(cfg.shadow_resolution),
             shadow_distance: sanitize_shadow_distance(cfg.shadow_distance),
+        }
+    }
+
+    /// Returns the quality-derived shadow tile edge for `light_type`.
+    pub(crate) fn tile_resolution_for_light_type(self, light_type: LightType) -> u32 {
+        match light_type {
+            LightType::Directional => self.tile_resolution.min(MAX_DIRECTIONAL_SHADOW_RESOLUTION),
+            LightType::Spot => self.tile_resolution.min(MAX_SPOT_SHADOW_RESOLUTION),
+            LightType::Point => self.tile_resolution.min(MAX_POINT_SHADOW_RESOLUTION),
         }
     }
 }
@@ -81,7 +96,7 @@ fn sanitize_shadow_distance(raw: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use crate::shared::{QualityConfig, ShadowCascadeMode, ShadowResolutionMode};
+    use crate::shared::{LightType, QualityConfig, ShadowCascadeMode, ShadowResolutionMode};
 
     use super::HostShadowQuality;
 
@@ -116,6 +131,27 @@ mod tests {
         assert_eq!(
             quality.shadow_distance,
             HostShadowQuality::default().shadow_distance
+        );
+    }
+
+    #[test]
+    fn ultra_quality_uses_light_type_shadow_resolution_caps() {
+        let quality = HostShadowQuality::from_quality_config(&QualityConfig {
+            shadow_resolution: ShadowResolutionMode::Ultra,
+            ..Default::default()
+        });
+
+        assert_eq!(
+            quality.tile_resolution_for_light_type(LightType::Directional),
+            4096
+        );
+        assert_eq!(
+            quality.tile_resolution_for_light_type(LightType::Spot),
+            2048
+        );
+        assert_eq!(
+            quality.tile_resolution_for_light_type(LightType::Point),
+            1024
         );
     }
 }

@@ -131,6 +131,28 @@ impl FrameResourceManager {
         ))
     }
 
+    /// Updates shadow metadata so it matches the atlas texture selected by frame-GPU sync.
+    pub(crate) fn apply_shadow_atlas_resolution(&mut self, atlas_resolution: u32) {
+        let plan = &mut self.shadow_frame;
+        if plan.render_views.is_empty() {
+            return;
+        }
+        let atlas_resolution = atlas_resolution.max(1);
+        plan.requested_resolution = atlas_resolution;
+        for (metadata, view) in plan.metadata.iter_mut().zip(plan.render_views.iter_mut()) {
+            let old_resolution = view.resolution.max(1);
+            let new_resolution = old_resolution.min(atlas_resolution).max(1);
+            if new_resolution != old_resolution {
+                view.resolution = new_resolution;
+                if metadata.light_params[2].is_finite() {
+                    metadata.light_params[2] *= old_resolution as f32 / new_resolution as f32;
+                }
+            }
+            metadata.params[1] = 1.0 / new_resolution as f32;
+        }
+        refresh_shadow_metadata_atlas_rects(plan);
+    }
+
     /// Per-draw slab slots required by all shadow map views.
     pub(crate) fn shadow_max_draw_slots(&self) -> usize {
         self.shadow_frame.requested_draw_slots
@@ -272,9 +294,24 @@ fn shadow_resolution_for_light(
     let requested = if light.shadow_map_resolution > 0 {
         light.shadow_map_resolution
     } else {
-        quality.tile_resolution
+        quality_shadow_resolution_for_light(light.light_type, quality)
     };
     shadow_tile_resolution(limits, requested)
+}
+
+fn quality_shadow_resolution_for_light(light_type: u32, quality: HostShadowQuality) -> u32 {
+    match light_type {
+        x if x == light_type_u32(LightType::Directional) => {
+            quality.tile_resolution_for_light_type(LightType::Directional)
+        }
+        x if x == light_type_u32(LightType::Spot) => {
+            quality.tile_resolution_for_light_type(LightType::Spot)
+        }
+        x if x == light_type_u32(LightType::Point) => {
+            quality.tile_resolution_for_light_type(LightType::Point)
+        }
+        _ => 1,
+    }
 }
 
 fn shadow_view_capacity(limits: Option<&GpuLimits>) -> usize {
@@ -470,6 +507,9 @@ fn light_type_u32(ty: LightType) -> u32 {
         LightType::Spot => 2,
     }
 }
+
+#[cfg(test)]
+mod ultra_tests;
 
 #[cfg(test)]
 mod tests {
