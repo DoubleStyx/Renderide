@@ -449,6 +449,60 @@ mod tests {
     }
 
     #[test]
+    fn mirror_frame_preserves_shared_vertical_motion_between_source_and_surface() {
+        let clip = CameraClipPlanes::new(0.05, 500.0);
+        let state = CameraPortalState {
+            plane_normal: Vec3::Z,
+            ..CameraPortalState::default()
+        };
+        let source_before = CameraPortalSourceView::symmetric_perspective(
+            source_eye(Vec3::new(0.0, 1.7, 5.0), clip),
+            clip,
+            Viewport::new(1280, 720),
+            60.0,
+        );
+        let source_after = CameraPortalSourceView::symmetric_perspective(
+            source_eye(Vec3::new(0.0, 4.7, 5.0), clip),
+            clip,
+            Viewport::new(1280, 720),
+            60.0,
+        );
+
+        let before = host_camera_frame_for_camera_portal(
+            &HostCameraFrame::default(),
+            &state,
+            source_before,
+            CameraPortalSurface::new(Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0))),
+            CameraPortalMode::Mirror,
+            false,
+        )
+        .expect("mirror frame before jump");
+        let after = host_camera_frame_for_camera_portal(
+            &HostCameraFrame::default(),
+            &state,
+            source_after,
+            CameraPortalSurface::new(Mat4::from_translation(Vec3::new(0.0, 4.0, 0.0))),
+            CameraPortalMode::Mirror,
+            false,
+        )
+        .expect("mirror frame after jump");
+
+        let before_position = before
+            .explicit_view
+            .expect("before explicit view")
+            .world_position;
+        let after_position = after
+            .explicit_view
+            .expect("after explicit view")
+            .world_position;
+        let delta = after_position - before_position;
+        assert!(
+            delta.abs_diff_eq(Vec3::new(0.0, 3.0, 0.0), 1e-4),
+            "mirror source and grabbed surface should move together without adding head-relative bob: {delta:?}"
+        );
+    }
+
+    #[test]
     fn mirror_frame_rejects_zero_normal() {
         let clip = CameraClipPlanes::new(0.05, 500.0);
         let eye = source_eye(Vec3::new(0.0, 0.0, 5.0), clip);

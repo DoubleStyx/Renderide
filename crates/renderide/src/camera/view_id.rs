@@ -34,15 +34,28 @@ pub struct CameraPortalId {
     pub render_space_id: RenderSpaceId,
     /// Dense host camera-portal renderable index within the render space.
     pub renderable_index: i32,
+    /// Eye index for split stereo portal renders; mono portal renders use zero.
+    pub eye_index: u8,
 }
 
 impl CameraPortalId {
     /// Builds a camera-portal id from the host render-space and dense portal row.
     #[inline]
     pub const fn new(render_space_id: RenderSpaceId, renderable_index: i32) -> Self {
+        Self::new_eye(render_space_id, renderable_index, 0)
+    }
+
+    /// Builds a camera-portal id for one mono or split-stereo eye view.
+    #[inline]
+    pub const fn new_eye(
+        render_space_id: RenderSpaceId,
+        renderable_index: i32,
+        eye_index: u8,
+    ) -> Self {
         Self {
             render_space_id,
             renderable_index,
+            eye_index,
         }
     }
 }
@@ -143,6 +156,20 @@ impl ViewId {
     #[inline]
     pub const fn camera_portal(render_space_id: RenderSpaceId, renderable_index: i32) -> Self {
         Self::CameraPortal(CameraPortalId::new(render_space_id, renderable_index))
+    }
+
+    /// Builds the stable logical identity for one mono or split-stereo camera portal view.
+    #[inline]
+    pub const fn camera_portal_eye(
+        render_space_id: RenderSpaceId,
+        renderable_index: i32,
+        eye_index: u8,
+    ) -> Self {
+        Self::CameraPortal(CameraPortalId::new_eye(
+            render_space_id,
+            renderable_index,
+            eye_index,
+        ))
     }
 
     /// Builds the stable logical identity for one camera readback task view.

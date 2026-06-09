@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::*;
+use crate::camera::StereoViewMatrices;
 use crate::config::{RendererSettings, RendererSettingsHandle};
 use crate::connection::ConnectionParams;
 use crate::gpu::OutputDepthMode;
@@ -20,6 +21,12 @@ fn build_runtime() -> RendererRuntime {
 }
 
 const TEST_EXTENT: (u32, u32) = (1920, 1080);
+
+fn test_eye(position: glam::Vec3) -> EyeView {
+    let view = glam::Mat4::from_translation(-position);
+    let proj = glam::Mat4::IDENTITY;
+    EyeView::new(view, proj, proj * view, position)
+}
 
 fn collect_default_desktop_views(runtime: &RendererRuntime) -> ViewFamilyPlan<'_> {
     runtime.collect_prepared_views_without_secondaries(
@@ -225,6 +232,82 @@ fn secondary_camera_view_ids_do_not_alias_shared_render_targets() {
         fallback,
         ViewId::SecondaryCamera(crate::camera::SecondaryCameraId::new(RenderSpaceId(9), 2))
     );
+}
+
+#[test]
+fn camera_portal_stereo_render_rects_split_target_halves() {
+    let (left, right) = camera_portal_stereo_render_rects((1024, 512)).expect("even split rects");
+    assert_eq!(left.origin_px, (0, 0));
+    assert_eq!(left.extent_px, (512, 512));
+    assert_eq!(right.origin_px, (512, 0));
+    assert_eq!(right.extent_px, (512, 512));
+
+    let (left, right) = camera_portal_stereo_render_rects((5, 3)).expect("odd split rects");
+    assert_eq!(left.origin_px, (0, 0));
+    assert_eq!(left.extent_px, (2, 3));
+    assert_eq!(right.origin_px, (2, 0));
+    assert_eq!(right.extent_px, (3, 3));
+
+    assert!(camera_portal_stereo_render_rects((1, 512)).is_none());
+    assert!(camera_portal_stereo_render_rects((1024, 0)).is_none());
+}
+
+#[test]
+fn camera_portal_source_view_plans_use_stereo_eye_sources_and_half_rects() {
+    let mut runtime = build_runtime();
+    let left_position = glam::Vec3::new(-0.03, 1.7, 0.25);
+    let right_position = glam::Vec3::new(0.03, 1.7, 0.25);
+    runtime.host_camera.vr_active = true;
+    runtime.host_camera.stereo = Some(StereoViewMatrices::new(
+        test_eye(left_position),
+        test_eye(right_position),
+    ));
+
+    let plans = runtime
+        .camera_portal_source_view_plans(TEST_EXTENT, (1024, 512))
+        .expect("stereo plans");
+    let collected: Vec<_> = plans.iter().collect();
+
+    assert_eq!(collected.len(), 2);
+    assert_eq!(collected[0].eye_index, 0);
+    assert_eq!(collected[0].source.world_position, left_position);
+    assert_eq!(collected[0].render_rect.origin_px, (0, 0));
+    assert_eq!(collected[0].render_rect.extent_px, (512, 512));
+    assert_eq!(collected[1].eye_index, 1);
+    assert_eq!(collected[1].source.world_position, right_position);
+    assert_eq!(collected[1].render_rect.origin_px, (512, 0));
+    assert_eq!(collected[1].render_rect.extent_px, (512, 512));
+}
+
+#[test]
+fn camera_portal_source_view_plans_fall_back_to_mono_without_active_stereo() {
+    let runtime = build_runtime();
+
+    let plans = runtime
+        .camera_portal_source_view_plans(TEST_EXTENT, (512, 512))
+        .expect("mono plan");
+    let collected: Vec<_> = plans.iter().collect();
+
+    assert_eq!(collected.len(), 1);
+    assert_eq!(collected[0].eye_index, 0);
+    assert_eq!(collected[0].render_rect.origin_px, (0, 0));
+    assert_eq!(collected[0].render_rect.extent_px, (512, 512));
+}
+
+#[test]
+fn camera_portal_view_ids_do_not_alias_stereo_halves() {
+    let left = camera_portal_eye_view_id(RenderSpaceId(1), 4, 0, 0);
+    let right = camera_portal_eye_view_id(RenderSpaceId(1), 4, 0, 1);
+
+    assert_ne!(left, right);
+    let ViewId::CameraPortal(left_id) = left else {
+        panic!("left portal id");
+    };
+    let ViewId::CameraPortal(right_id) = right else {
+        panic!("right portal id");
+    };
+    assert_eq!(left_id.eye_index, 0);
+    assert_eq!(right_id.eye_index, 1);
 }
 
 #[test]

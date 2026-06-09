@@ -6,6 +6,8 @@
 //! sits between the render entry point in [`super::render`] and the per-view extraction
 //! pipeline in [`super::extract`].
 
+mod portal_plan;
+
 use std::sync::{Arc, LazyLock};
 
 use crate::camera::{
@@ -37,6 +39,9 @@ use super::view_plan::{
     FrameViewPlan, FrameViewPlanParams, FrameViewPlanTarget, OffscreenColorCopy,
     OffscreenTargetHandles, ViewFamilyPlan,
 };
+#[cfg(test)]
+use portal_plan::camera_portal_stereo_render_rects;
+use portal_plan::{CameraPortalSourceViewPlan, CameraPortalSourceViewPlans, CameraPortalViewTask};
 
 /// Once-only diagnostic gate for secondary render textures without a depth texture.
 static SECONDARY_RT_MISSING_DEPTH_LOG: LazyLock<KeyedLogOnce<i32>> =
@@ -82,12 +87,29 @@ pub(in crate::runtime) fn camera_portal_view_id(
 ) -> ViewId {
     ViewId::camera_portal(
         render_space_id,
-        if renderable_index >= 0 {
-            renderable_index
-        } else {
-            portal_index as i32
-        },
+        camera_portal_identity_index(renderable_index, portal_index),
     )
+}
+
+fn camera_portal_eye_view_id(
+    render_space_id: RenderSpaceId,
+    renderable_index: i32,
+    portal_index: usize,
+    eye_index: u8,
+) -> ViewId {
+    ViewId::camera_portal_eye(
+        render_space_id,
+        camera_portal_identity_index(renderable_index, portal_index),
+        eye_index,
+    )
+}
+
+fn camera_portal_identity_index(renderable_index: i32, portal_index: usize) -> i32 {
+    if renderable_index >= 0 {
+        renderable_index
+    } else {
+        portal_index as i32
+    }
 }
 
 fn sort_secondary_view_tasks(tasks: &mut [(RenderSpaceId, f32, usize)]) {
@@ -192,6 +214,7 @@ fn log_camera_portal_disable_per_pixel_lights(rt_id: i32) {
 }
 
 /// Resident host render texture handles needed to plan one secondary camera view.
+#[derive(Clone)]
 struct ResidentSecondaryRenderTexture {
     /// Host render texture color storage.
     color_texture: Arc<wgpu::Texture>,
@@ -471,8 +494,8 @@ impl RendererRuntime {
 
     /// Inner helper that consumes the supplied camera-portal scratch buffer.
     fn collect_camera_portal_views_using<'a>(
-        &self,
-        _gpu: &GpuContext,
+        &mut self,
+        gpu: &GpuContext,
         main_extent_px: (u32, u32),
         tasks: &mut Vec<(RenderSpaceId, usize)>,
     ) -> Vec<FrameViewPlan<'a>> {
@@ -491,95 +514,197 @@ impl RendererRuntime {
         }
         sort_camera_portal_view_tasks(tasks);
 
-        let source = self.camera_portal_source_view(main_extent_px);
-        let mut views: Vec<FrameViewPlan<'a>> = Vec::with_capacity(tasks.len());
+        let mut views: Vec<FrameViewPlan<'a>> = Vec::with_capacity(tasks.len().saturating_mul(2));
         for (sid, portal_idx) in tasks.drain(..) {
-            let Some(space) = self.scene.space(sid) else {
-                continue;
-            };
-            let Some(entry) = space.camera_portals().get(portal_idx) else {
-                continue;
-            };
-            let state = entry.state;
-            let rt_id = state.render_texture_id;
-            let Some(rt) = self.resident_camera_portal_render_texture(rt_id, sid, portal_idx)
-            else {
-                continue;
-            };
-            let mode = if camera_portal_portal_mode(state.flags) {
-                CameraPortalMode::Portal
-            } else {
-                CameraPortalMode::Mirror
-            };
-            let render_context = camera_portal_render_context(mode);
-            let Some(surface_world_matrix) = self.camera_portal_surface_world_matrix(
+            self.append_camera_portal_views_for_task(
+                gpu,
+                main_extent_px,
                 sid,
-                state.mesh_renderer_index,
-                render_context,
-            ) else {
-                logger::trace!(
-                    "camera portal: invalid mesh renderer index {}; space={sid:?} portal_index={portal_idx}",
-                    state.mesh_renderer_index
-                );
-                continue;
-            };
-            if camera_portal_disable_per_pixel_lights(state.flags) {
-                log_camera_portal_disable_per_pixel_lights(rt_id);
-            }
-            let Some(hc) = host_camera_frame_for_camera_portal(
-                &self.host_camera,
-                &state,
-                source,
-                CameraPortalSurface::new(surface_world_matrix),
-                mode,
-                camera_portal_has_far_clip_value(state.flags),
-            ) else {
-                logger::trace!(
-                    "camera portal: invalid camera matrices; render texture {rt_id} space={sid:?} portal_index={portal_idx}"
-                );
-                continue;
-            };
-            let target_handles = OffscreenTargetHandles {
-                write_target: camera_portal_write_target(rt_id),
-                color_texture: rt.color_texture.as_ref().clone(),
-                color_view: rt.color_view.as_ref().clone(),
-                depth_texture: rt.depth_texture.as_ref().clone(),
-                depth_view: rt.depth_view.as_ref().clone(),
-                extent_px: rt.extent_px,
-                color_format: rt.color_format,
-                copy_to_color: None,
-            };
-            let mut plan = FrameViewPlan::new(
-                &hc,
-                FrameViewPlanParams {
-                    render_context,
-                    frame_time_seconds: self.tick_state.frame_time_seconds(),
-                    view_id: camera_portal_view_id(sid, entry.renderable_index, portal_idx),
-                    viewport_px: rt.extent_px,
-                    clear: camera_portal_clear(state.flags, state.override_clear_flag_value),
-                    profile: RenderPathProfile::secondary_camera(ViewPostProcessing::disabled()),
-                    target: FrameViewPlanTarget::offscreen(target_handles),
-                },
+                portal_idx,
+                &mut views,
             );
-            if mode == CameraPortalMode::Mirror {
-                plan.view_winding = ViewWinding::mirror_reflection();
-            }
-            plan.render_space_filter = Some(sid);
-            plan.layer_policy = ViewLayerPolicy::camera(false);
-            plan.render_shadows = !camera_portal_disable_shadows(state.flags);
-            views.push(plan);
         }
         views
     }
 
-    fn camera_portal_source_view(&self, main_extent_px: (u32, u32)) -> CameraPortalSourceView {
+    fn append_camera_portal_views_for_task<'a>(
+        &mut self,
+        gpu: &GpuContext,
+        main_extent_px: (u32, u32),
+        sid: RenderSpaceId,
+        portal_idx: usize,
+        views: &mut Vec<FrameViewPlan<'a>>,
+    ) {
+        let Some(task) = self.camera_portal_view_task(sid, portal_idx) else {
+            return;
+        };
+        let Some(rt) = self.resident_camera_portal_render_texture(
+            task.render_texture_id,
+            task.render_space_id,
+            task.portal_index,
+        ) else {
+            return;
+        };
+        let Some(source_plans) = self.camera_portal_source_view_plans(main_extent_px, rt.extent_px)
+        else {
+            logger::trace!(
+                "camera portal: render texture {} has zero extent; space={:?} portal_index={}",
+                task.render_texture_id,
+                task.render_space_id,
+                task.portal_index
+            );
+            return;
+        };
+        if camera_portal_disable_per_pixel_lights(task.state.flags) {
+            log_camera_portal_disable_per_pixel_lights(task.render_texture_id);
+        }
+        for source_plan in source_plans.iter() {
+            if let Some(plan) =
+                self.camera_portal_frame_view_plan(gpu, task, rt.clone(), source_plan)
+            {
+                views.push(plan);
+            }
+        }
+    }
+
+    fn camera_portal_view_task(
+        &self,
+        sid: RenderSpaceId,
+        portal_idx: usize,
+    ) -> Option<CameraPortalViewTask> {
+        let space = self.scene.space(sid)?;
+        let entry = space.camera_portals().get(portal_idx)?;
+        let state = entry.state;
+        let mode = if camera_portal_portal_mode(state.flags) {
+            CameraPortalMode::Portal
+        } else {
+            CameraPortalMode::Mirror
+        };
+        let render_context = camera_portal_render_context(mode);
+        let Some(surface_world_matrix) =
+            self.camera_portal_surface_world_matrix(sid, state.mesh_renderer_index, render_context)
+        else {
+            logger::trace!(
+                "camera portal: invalid mesh renderer index {}; space={sid:?} portal_index={portal_idx}",
+                state.mesh_renderer_index
+            );
+            return None;
+        };
+        Some(CameraPortalViewTask {
+            render_space_id: sid,
+            portal_index: portal_idx,
+            state,
+            renderable_index: entry.renderable_index,
+            render_texture_id: state.render_texture_id,
+            mode,
+            render_context,
+            surface_world_matrix,
+        })
+    }
+
+    fn camera_portal_frame_view_plan<'a>(
+        &mut self,
+        gpu: &GpuContext,
+        task: CameraPortalViewTask,
+        rt: ResidentSecondaryRenderTexture,
+        source_plan: CameraPortalSourceViewPlan,
+    ) -> Option<FrameViewPlan<'a>> {
+        let Some(hc) = host_camera_frame_for_camera_portal(
+            &self.host_camera,
+            &task.state,
+            source_plan.source,
+            CameraPortalSurface::new(task.surface_world_matrix),
+            task.mode,
+            camera_portal_has_far_clip_value(task.state.flags),
+        ) else {
+            logger::trace!(
+                "camera portal: invalid camera matrices; render texture {} space={:?} portal_index={} eye_index={}",
+                task.render_texture_id,
+                task.render_space_id,
+                task.portal_index,
+                source_plan.eye_index
+            );
+            return None;
+        };
+        let Some(target_handles) = secondary_rt_handles_for_rect(
+            &mut self.backend,
+            gpu,
+            camera_portal_write_target(task.render_texture_id),
+            rt,
+            source_plan.render_rect,
+        ) else {
+            logger::trace!(
+                "camera portal: render texture {} could not allocate split target; space={:?} portal_index={} eye_index={}",
+                task.render_texture_id,
+                task.render_space_id,
+                task.portal_index,
+                source_plan.eye_index
+            );
+            return None;
+        };
+        let view_id = if source_plan.eye_index == 0 {
+            camera_portal_view_id(
+                task.render_space_id,
+                task.renderable_index,
+                task.portal_index,
+            )
+        } else {
+            camera_portal_eye_view_id(
+                task.render_space_id,
+                task.renderable_index,
+                task.portal_index,
+                source_plan.eye_index,
+            )
+        };
+        let mut plan = FrameViewPlan::new(
+            &hc,
+            FrameViewPlanParams {
+                render_context: task.render_context,
+                frame_time_seconds: self.tick_state.frame_time_seconds(),
+                view_id,
+                viewport_px: source_plan.render_rect.extent_px,
+                clear: camera_portal_clear(task.state.flags, task.state.override_clear_flag_value),
+                profile: RenderPathProfile::secondary_camera(ViewPostProcessing::disabled()),
+                target: FrameViewPlanTarget::offscreen(target_handles),
+            },
+        );
+        if task.mode == CameraPortalMode::Mirror {
+            plan.view_winding = ViewWinding::mirror_reflection();
+        }
+        plan.render_space_filter = Some(task.render_space_id);
+        plan.layer_policy = ViewLayerPolicy::camera(false);
+        plan.render_shadows = !camera_portal_disable_shadows(task.state.flags);
+        Some(plan)
+    }
+
+    fn camera_portal_source_view_plans(
+        &self,
+        main_extent_px: (u32, u32),
+        target_extent_px: (u32, u32),
+    ) -> Option<CameraPortalSourceViewPlans> {
         if let Some(stereo) = self.host_camera.active_stereo() {
-            return CameraPortalSourceView::new(
+            let left = CameraPortalSourceView::new(
                 stereo.left,
                 self.host_camera.clip,
                 self.host_camera.projection_kind,
             );
+            let right = CameraPortalSourceView::new(
+                stereo.right,
+                self.host_camera.clip,
+                self.host_camera.projection_kind,
+            );
+            if let Some(plans) = CameraPortalSourceViewPlans::stereo(left, right, target_extent_px)
+            {
+                return Some(plans);
+            }
         }
+        CameraPortalSourceViewPlans::mono(
+            self.camera_portal_mono_source_view(main_extent_px),
+            target_extent_px,
+        )
+    }
+
+    fn camera_portal_mono_source_view(&self, main_extent_px: (u32, u32)) -> CameraPortalSourceView {
         let projections =
             WorldProjectionSet::from_scene_host(&self.scene, main_extent_px, &self.host_camera);
         if let Some(explicit) = self.host_camera.explicit_view {
