@@ -18,7 +18,9 @@ use crate::world_mesh::{WorldMeshDrawItem, WorldMeshDrawPlan};
 use super::super::shadow_atlas_format::select_shadow_atlas_format;
 use super::manager::FrameResourceManager;
 
-const POINT_FACE_COUNT: u32 = 6;
+mod point_faces;
+
+const POINT_FACE_COUNT: u32 = point_faces::POINT_FACE_COUNT;
 const SHADOW_TYPE_NONE: u32 = 0;
 static SHADOW_ATLAS_UNSUPPORTED_WARNING: Once = Once::new();
 
@@ -467,21 +469,10 @@ fn spot_shadow_projection(light: &crate::gpu::GpuLight, position: Vec3, directio
 fn point_shadow_projection(light: &crate::gpu::GpuLight, position: Vec3, face: u32) -> Mat4 {
     let near = light.shadow_near_plane.max(0.001);
     let far = light.range.max(near + 0.001);
-    let (direction, up) = point_face_basis(face);
+    let (direction, up) = point_faces::basis(face);
     let view = Mat4::look_at_rh(position, position + direction, up);
     let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, near, far);
     proj * view
-}
-
-fn point_face_basis(face: u32) -> (Vec3, Vec3) {
-    match face % POINT_FACE_COUNT {
-        0 => (Vec3::X, Vec3::Y),
-        1 => (Vec3::NEG_X, Vec3::Y),
-        2 => (Vec3::Y, Vec3::NEG_Z),
-        3 => (Vec3::NEG_Y, Vec3::Z),
-        4 => (Vec3::Z, Vec3::Y),
-        _ => (Vec3::NEG_Z, Vec3::Y),
-    }
 }
 
 fn light_up(direction: Vec3) -> Vec3 {
@@ -529,8 +520,8 @@ mod tests {
     use glam::Vec3;
 
     use super::{
-        POINT_FACE_COUNT, light_type_u32, point_face_basis, point_shadow_projection,
-        shadow_view_capacity, shadow_view_count_for_light,
+        POINT_FACE_COUNT, light_type_u32, point_shadow_projection, shadow_view_capacity,
+        shadow_view_count_for_light,
     };
 
     fn limits(max_texture_dimension_2d: u32, max_texture_array_layers: u32) -> GpuLimits {
@@ -650,21 +641,6 @@ mod tests {
         assert_eq!(light.shadow_view_start, 0);
         assert_eq!(light.shadow_view_count, 0);
         assert_eq!(light.shadow_flags, 0);
-    }
-
-    #[test]
-    fn point_face_order_matches_shader_face_indices() {
-        let expected = [
-            (Vec3::X, Vec3::Y),
-            (Vec3::NEG_X, Vec3::Y),
-            (Vec3::Y, Vec3::NEG_Z),
-            (Vec3::NEG_Y, Vec3::Z),
-            (Vec3::Z, Vec3::Y),
-            (Vec3::NEG_Z, Vec3::Y),
-        ];
-        for (face, expected_basis) in expected.into_iter().enumerate() {
-            assert_eq!(point_face_basis(face as u32), expected_basis);
-        }
     }
 
     #[test]
