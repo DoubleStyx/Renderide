@@ -528,9 +528,12 @@ mod tests {
 
     #[test]
     fn parse_attach_renderer_packet_rejects_nonce_mismatch() {
+        let mut wrong_nonce = TEST_NONCE.to_vec();
+        wrong_nonce[0] ^= 0xff;
+
         let error = parse_attach_renderer_packet(
             &attach_packet("RenderideQueue", 8_388_608),
-            Some(b"fedcba9876543210"),
+            Some(&wrong_nonce),
         )
         .expect_err("wrong nonce should be rejected");
         assert!(matches!(error, AttachConnectionError::NonceMismatch));
