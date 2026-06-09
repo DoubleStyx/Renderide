@@ -23,6 +23,9 @@ const RGBA8_BYTES_PER_PIXEL_U32: u32 = 4;
 /// Bytes per RGBA8 pixel as a `u64`.
 const RGBA8_BYTES_PER_PIXEL_U64: u64 = 4;
 
+/// Maximum decoded CPU frame retained before GPU upload.
+const MAX_CPU_VIDEO_FRAME_BYTES: usize = 128 * 1024 * 1024;
+
 /// CPU-owned decoded frame waiting for the next renderer-side upload.
 struct PendingVideoFrame {
     /// Decoded frame width in pixels.
@@ -308,6 +311,16 @@ fn copy_tight_rgba_plane(
         logger::warn!("CpuCopyVideoSink {asset_id}: frame dimensions overflow byte count");
         return None;
     };
+    if tight_frame_bytes > MAX_CPU_VIDEO_FRAME_BYTES {
+        logger::warn!(
+            "CpuCopyVideoSink {asset_id}: rejected decoded frame {}x{} requiring {} bytes above cap {}",
+            width,
+            height,
+            tight_frame_bytes,
+            MAX_CPU_VIDEO_FRAME_BYTES
+        );
+        return None;
+    }
     let Ok(source_row_stride) = usize::try_from(source_row_stride) else {
         logger::warn!("CpuCopyVideoSink {asset_id}: negative row stride in decoded frame");
         return None;

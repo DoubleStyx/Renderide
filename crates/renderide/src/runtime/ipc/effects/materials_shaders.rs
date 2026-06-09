@@ -51,12 +51,18 @@ impl RendererRuntime {
                 .collect()
         };
         if let Some(ipc) = self.frontend.ipc_mut() {
-            let _ = ipc.send_background_reliable(RendererCommand::MaterialPropertyIdResult(
-                MaterialPropertyIdResult {
+            let ack_queued = ipc.send_background_reliable(
+                RendererCommand::MaterialPropertyIdResult(MaterialPropertyIdResult {
                     request_id: req.request_id,
                     property_ids,
-                },
-            ));
+                }),
+            );
+            if !ack_queued {
+                logger::warn!(
+                    "material property id request {}: failed to enqueue reliable result",
+                    req.request_id
+                );
+            }
         }
     }
 }

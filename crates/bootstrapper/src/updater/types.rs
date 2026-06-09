@@ -110,6 +110,9 @@ pub enum UpdateError {
     /// Extracted release manifest was missing or invalid.
     #[error("invalid release manifest: {0}")]
     InvalidManifest(String),
+    /// Release manifest signature could not be verified.
+    #[error("invalid release manifest signature: {0}")]
+    InvalidSignature(String),
     /// Installed or extracted bundle did not match the expected release shape.
     #[error("invalid update bundle: {0}")]
     InvalidBundle(String),

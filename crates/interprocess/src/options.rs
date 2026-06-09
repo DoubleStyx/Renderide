@@ -50,6 +50,8 @@ pub struct QueueOptions {
 impl QueueOptions {
     /// Minimum ring capacity (exclusive); must be strictly greater and 8-byte aligned.
     pub const MIN_CAPACITY: i64 = 17;
+    /// Maximum ring capacity accepted from host-controlled IPC setup.
+    pub const MAX_CAPACITY: i64 = 64 * 1024 * 1024;
 
     /// Ensures `capacity` is above [`Self::MIN_CAPACITY`] and 8-byte aligned (layout requirement).
     fn validate_capacity(capacity: i64) -> Result<(), String> {
@@ -57,6 +59,12 @@ impl QueueOptions {
             return Err(format!(
                 "capacity must be greater than {} (got {capacity})",
                 Self::MIN_CAPACITY
+            ));
+        }
+        if capacity > Self::MAX_CAPACITY {
+            return Err(format!(
+                "capacity must be at most {} bytes (got {capacity})",
+                Self::MAX_CAPACITY
             ));
         }
         if capacity % 8 != 0 {
@@ -332,6 +340,16 @@ mod tests {
     }
 
     #[test]
+    fn queue_options_rejects_capacity_above_maximum() {
+        let err = QueueOptions::new("q", QueueOptions::MAX_CAPACITY + 8)
+            .expect_err("capacity above maximum must be rejected");
+        assert!(
+            err.contains("at most"),
+            "expected maximum-capacity error, got {err:?}"
+        );
+    }
+
+    #[test]
     fn queue_options_actual_storage_size_includes_header() {
         let o = QueueOptions::new("q", 4096).expect("valid");
         assert_eq!(
@@ -373,17 +391,10 @@ mod tests {
 
     #[test]
     fn queue_options_storage_size_overflow_is_rejected() {
-        let header = crate::layout::BUFFER_BYTE_OFFSET as i64;
-        let max_aligned = (i64::MAX / 8) * 8;
-        let near_overflow = if header == 0 {
-            return;
-        } else {
-            max_aligned
-        };
-        let err = QueueOptions::new("q", near_overflow).expect_err("storage size must overflow");
+        let err = QueueOptions::new("q", i64::MAX - 7).expect_err("oversized capacity must fail");
         assert!(
-            err.contains("overflow"),
-            "expected overflow error message, got {err:?}"
+            err.contains("at most") || err.contains("overflow"),
+            "expected capacity or overflow error message, got {err:?}"
         );
     }
 }

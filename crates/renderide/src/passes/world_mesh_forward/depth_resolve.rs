@@ -7,7 +7,7 @@
 use crate::gpu::{
     MsaaDepthResolveMonoTargets, MsaaDepthResolveResources, MsaaDepthResolveStereoTargets,
 };
-use crate::graph_inputs::MsaaViews;
+use crate::graph_inputs::{MsaaDepthResolveViews, MsaaViews};
 use crate::profiling::GpuProfilerHandle;
 use crate::render_graph::context::PassFrameContext;
 
@@ -30,8 +30,7 @@ pub(crate) fn encode_msaa_depth_resolve_after_clear_only(
     encode_msaa_depth_resolve_for_frame(device, encoder, frame, msaa_views, res, profiler)
 }
 
-/// Dispatches the desktop (`D2`) or stereo (`D2Array` multiview) depth-resolve path based on
-/// [`MsaaViews::msaa_depth_is_array`].
+/// Dispatches the desktop (`D2`) or stereo (`D2Array` multiview) depth-resolve path.
 pub(super) fn encode_msaa_depth_resolve_for_frame(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,
@@ -46,42 +45,45 @@ pub(super) fn encode_msaa_depth_resolve_for_frame(
         return false;
     };
     let limits = limits.as_ref();
-    if msaa.msaa_depth_is_array {
-        let (Some(msaa_layers), Some(r32_layers)) = (
-            msaa.msaa_stereo_depth_layer_views.as_ref(),
-            msaa.msaa_stereo_r32_layer_views.as_ref(),
-        ) else {
-            return false;
-        };
-        resolve.encode_resolve_stereo(
-            device,
-            encoder,
-            frame.view.viewport_px,
-            MsaaDepthResolveStereoTargets {
-                msaa_depth_layer_views: [&msaa_layers[0], &msaa_layers[1]],
-                r32_layer_views: [&r32_layers[0], &r32_layers[1]],
-                r32_array_view: &msaa.msaa_depth_resolve_r32_view,
-                dst_depth_view: frame.view.depth_view,
-                dst_depth_format: frame.view.depth_texture.format(),
-            },
-            limits,
-            profiler,
-        );
-        true
-    } else {
-        resolve.encode_resolve(
-            device,
-            encoder,
-            frame.view.viewport_px,
-            MsaaDepthResolveMonoTargets {
-                msaa_depth_view: &msaa.msaa_depth_view,
-                r32_view: &msaa.msaa_depth_resolve_r32_view,
-                dst_depth_view: frame.view.depth_view,
-                dst_depth_format: frame.view.depth_texture.format(),
-            },
-            limits,
-            profiler,
-        );
-        true
+    match &msaa.depth_resolve {
+        MsaaDepthResolveViews::Stereo(stereo) => {
+            resolve.encode_resolve_stereo(
+                device,
+                encoder,
+                frame.view.viewport_px,
+                MsaaDepthResolveStereoTargets {
+                    msaa_depth_layer_views: [
+                        &stereo.msaa_depth_layer_views[0],
+                        &stereo.msaa_depth_layer_views[1],
+                    ],
+                    r32_layer_views: [&stereo.r32_layer_views[0], &stereo.r32_layer_views[1]],
+                    r32_array_view: &stereo.r32_array_view,
+                    dst_depth_view: frame.view.depth_view,
+                    dst_depth_format: frame.view.depth_texture.format(),
+                },
+                limits,
+                profiler,
+            );
+            true
+        }
+        MsaaDepthResolveViews::Mono {
+            msaa_depth_view,
+            r32_view,
+        } => {
+            resolve.encode_resolve(
+                device,
+                encoder,
+                frame.view.viewport_px,
+                MsaaDepthResolveMonoTargets {
+                    msaa_depth_view,
+                    r32_view,
+                    dst_depth_view: frame.view.depth_view,
+                    dst_depth_format: frame.view.depth_texture.format(),
+                },
+                limits,
+                profiler,
+            );
+            true
+        }
     }
 }

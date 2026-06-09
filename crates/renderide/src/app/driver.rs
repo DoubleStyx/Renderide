@@ -27,9 +27,6 @@ use super::bootstrap::{ExternalShutdownCoordinator, GpuStartupConfig};
 use super::exit::ExitState;
 use super::frame_clock::FrameClock;
 
-/// Default desktop display index used for `BlitToDisplay` source selection on the local window.
-pub(super) const DESKTOP_DISPLAY_INDEX: i16 = 0;
-
 /// Prefix for per-phase trace lines in the app frame tick.
 const TICK_TRACE_PREFIX: &str = "renderide::tick";
 

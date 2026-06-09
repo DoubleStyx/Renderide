@@ -20,6 +20,7 @@ use super::super::super::frame_upload_batch::{FrameUploadBatch, FrameUploadBatch
 use super::super::super::history::HistoryRegistry;
 use super::super::super::{GraphAssetResources, GraphFrameResources};
 use super::super::{FrameGlobalView, FrameView, ResolvedView, ViewPostProcessing};
+use super::recording_path::GraphCommandRecordingStrategy;
 
 /// Key for reusing transient pool allocations across [`FrameView`]s with identical surface layout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -331,6 +332,8 @@ pub(super) struct PerViewRecordInputs<'a> {
     pub(super) upload_batch: &'a FrameUploadBatch,
     /// Shared frame systems and view-independent GPU state.
     pub(super) per_view_shared: &'a PerViewRecordShared<'a>,
+    /// Frame-level strategy that decides which recording parallelism layer may use Rayon.
+    pub(super) strategy: GraphCommandRecordingStrategy,
     /// Optional GPU profiler handle that must be shared across workers by reference.
     pub(super) profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
 }

@@ -81,6 +81,7 @@ impl CompiledRenderGraph {
             transient_by_key,
             upload_batch,
             per_view_shared,
+            strategy,
             profiler,
         } = inputs;
         let indexed_outputs: Vec<(usize, PerViewRecordOutput)> = {
@@ -96,6 +97,7 @@ impl CompiledRenderGraph {
                         transient_by_key,
                         upload_batch,
                         per_view_shared,
+                        strategy,
                         profiler,
                     )
                 })
@@ -117,6 +119,7 @@ impl CompiledRenderGraph {
             transient_by_key,
             upload_batch,
             per_view_shared,
+            strategy,
             profiler,
         } = inputs;
         let mut items = per_view_work_items.into_iter();
@@ -132,6 +135,7 @@ impl CompiledRenderGraph {
                     transient_by_key,
                     upload_batch,
                     per_view_shared,
+                    strategy,
                     profiler,
                 )
             },
@@ -142,6 +146,7 @@ impl CompiledRenderGraph {
                     transient_by_key,
                     upload_batch,
                     per_view_shared,
+                    strategy,
                     profiler,
                 )
             },
@@ -167,6 +172,7 @@ impl CompiledRenderGraph {
             transient_by_key,
             upload_batch,
             per_view_shared,
+            strategy,
             profiler,
         } = inputs;
         let mut outputs = Vec::with_capacity(n_views);
@@ -176,6 +182,7 @@ impl CompiledRenderGraph {
                 transient_by_key,
                 upload_batch,
                 per_view_shared,
+                strategy,
                 profiler,
             )?;
             outputs.push(output);

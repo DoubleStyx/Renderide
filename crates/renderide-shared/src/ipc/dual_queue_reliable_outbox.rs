@@ -7,6 +7,9 @@
 
 use std::collections::VecDeque;
 
+/// Maximum retained reliable background messages under peer backpressure.
+pub(super) const RELIABLE_BACKGROUND_OUTBOX_MAX_MESSAGES: usize = 4096;
+
 /// FIFO of encoded reliable-background payloads waiting on publisher capacity.
 #[derive(Default)]
 pub(super) struct ReliableBackgroundOutbox {
@@ -16,9 +19,13 @@ pub(super) struct ReliableBackgroundOutbox {
 
 impl ReliableBackgroundOutbox {
     /// Appends `payload` to the tail of the queue and grows [`Self::pending_bytes`].
-    pub(super) fn enqueue(&mut self, payload: Vec<u8>) {
+    pub(super) fn enqueue(&mut self, payload: Vec<u8>) -> bool {
+        if self.payloads.len() >= RELIABLE_BACKGROUND_OUTBOX_MAX_MESSAGES {
+            return false;
+        }
         self.pending_bytes = self.pending_bytes.saturating_add(payload.len());
         self.payloads.push_back(payload);
+        true
     }
 
     /// Returns the head payload (if any) without consuming it.
@@ -57,8 +64,8 @@ mod tests {
     fn preserves_fifo_and_byte_count() {
         let mut outbox = ReliableBackgroundOutbox::default();
 
-        outbox.enqueue(vec![1, 2, 3]);
-        outbox.enqueue(vec![4, 5]);
+        assert!(outbox.enqueue(vec![1, 2, 3]));
+        assert!(outbox.enqueue(vec![4, 5]));
 
         assert_eq!(outbox.len(), 2);
         assert_eq!(outbox.pending_bytes(), 5);
@@ -92,8 +99,8 @@ mod tests {
     fn counts_zero_length_payloads_as_messages() {
         let mut outbox = ReliableBackgroundOutbox::default();
 
-        outbox.enqueue(Vec::new());
-        outbox.enqueue(vec![1]);
+        assert!(outbox.enqueue(Vec::new()));
+        assert!(outbox.enqueue(vec![1]));
 
         assert_eq!(outbox.len(), 2);
         assert_eq!(outbox.pending_bytes(), 1);
@@ -101,5 +108,20 @@ mod tests {
         outbox.mark_front_sent();
         assert_eq!(outbox.front(), Some(&[1][..]));
         assert_eq!(outbox.pending_bytes(), 1);
+    }
+
+    #[test]
+    fn rejects_payloads_after_message_cap() {
+        let mut outbox = ReliableBackgroundOutbox::default();
+        for _ in 0..RELIABLE_BACKGROUND_OUTBOX_MAX_MESSAGES {
+            assert!(outbox.enqueue(vec![1]));
+        }
+
+        assert!(!outbox.enqueue(vec![2]));
+        assert_eq!(outbox.len(), RELIABLE_BACKGROUND_OUTBOX_MAX_MESSAGES);
+        assert_eq!(
+            outbox.pending_bytes(),
+            RELIABLE_BACKGROUND_OUTBOX_MAX_MESSAGES
+        );
     }
 }

@@ -67,8 +67,10 @@ impl LightCache {
         self.mark_changed();
     }
 
-    /// Rolls each buffer-renderer entry's `transform_id` forward through `removals`. Drops
-    /// entries whose own transform was removed and returns `true` if anything changed.
+    /// Rolls each buffer-renderer entry's `transform_id` forward through `removals`.
+    ///
+    /// Entries whose own transform was removed are marked dead but kept in the dense list so the
+    /// following host light-renderer-removal batch can still address the same `RenderableIndex`.
     pub(super) fn fixup_buffer_renderers_for_transform_removals(
         &mut self,
         space_id: i32,
@@ -96,20 +98,6 @@ impl LightCache {
                     dirty = true;
                 }
             }
-        }
-        let before = v.len();
-        v.retain(|br| {
-            if br.transform_id == DEAD_TRANSFORM_ID {
-                logger::warn!(
-                    "light_cache: buffer renderer dropped during transform-removal fixup (space_id={space_id})"
-                );
-                false
-            } else {
-                true
-            }
-        });
-        if v.len() != before {
-            dirty = true;
         }
         dirty
     }

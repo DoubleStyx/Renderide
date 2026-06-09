@@ -59,10 +59,15 @@ fn apply_lights_buffer_submission(
     let payload: Vec<LightData> = vec.into_iter().take(take).collect();
     scene.light_cache_mut().store_full(buffer_id, payload);
     if let Some(ipc) = ipc {
-        let _ = ipc.send_background_reliable(RendererCommand::LightsBufferRendererConsumed(
-            LightsBufferRendererConsumed {
+        let ack_queued = ipc.send_background_reliable(
+            RendererCommand::LightsBufferRendererConsumed(LightsBufferRendererConsumed {
                 global_unique_id: buffer_id,
-            },
-        ));
+            }),
+        );
+        if !ack_queued {
+            logger::warn!(
+                "lights_buffer_renderer_submission id={buffer_id}: failed to enqueue reliable consumed ack"
+            );
+        }
     }
 }

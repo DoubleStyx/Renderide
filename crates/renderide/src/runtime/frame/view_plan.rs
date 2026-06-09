@@ -50,19 +50,49 @@ pub(in crate::runtime) struct OffscreenTargetHandles {
 }
 
 impl OffscreenTargetHandles {
+    /// Builds offscreen attachment handles with no post-render color copy.
+    pub(in crate::runtime) fn new(
+        write_target: OffscreenWriteTarget,
+        color_texture: wgpu::Texture,
+        color_view: wgpu::TextureView,
+        depth_texture: wgpu::Texture,
+        depth_view: wgpu::TextureView,
+        extent_px: (u32, u32),
+        color_format: wgpu::TextureFormat,
+    ) -> Self {
+        Self {
+            write_target,
+            color_texture,
+            color_view,
+            depth_texture,
+            depth_view,
+            extent_px,
+            color_format,
+            copy_to_color: None,
+        }
+    }
+
+    /// Adds a post-render color copy destination.
+    pub(in crate::runtime) fn with_copy_to_color(
+        mut self,
+        copy_to_color: OffscreenColorCopy,
+    ) -> Self {
+        self.copy_to_color = Some(copy_to_color);
+        self
+    }
+
     /// Lazily allocates and clones the primary final target handles.
     pub(in crate::runtime) fn from_primary_offscreen(gpu: &mut GpuContext) -> Self {
         let targets = gpu.primary_offscreen_targets();
-        Self {
-            write_target: OffscreenWriteTarget::Untracked,
-            color_texture: targets.color_texture.clone(),
-            color_view: targets.color_view.clone(),
-            depth_texture: targets.depth_texture.clone(),
-            depth_view: targets.depth_view.clone(),
-            extent_px: targets.extent_px,
-            color_format: targets.color_format,
-            copy_to_color: None,
-        }
+        Self::new(
+            OffscreenWriteTarget::Untracked,
+            targets.color_texture.clone(),
+            targets.color_view.clone(),
+            targets.depth_texture.clone(),
+            targets.depth_view.clone(),
+            targets.extent_px,
+            targets.color_format,
+        )
     }
 }
 

@@ -22,6 +22,7 @@ pub struct Texture3dUploadTask {
     /// Cached from [`AssetTransferQueue::texture3d_formats`] at enqueue time.
     format: SetTexture3DFormat,
     wgpu_format: wgpu::TextureFormat,
+    generation: u64,
     stepper: Texture3dUploadStepper,
 }
 
@@ -31,11 +32,13 @@ impl Texture3dUploadTask {
         data: SetTexture3DData,
         format: SetTexture3DFormat,
         wgpu_format: wgpu::TextureFormat,
+        generation: u64,
     ) -> Self {
         Self {
             data,
             format,
             wgpu_format,
+            generation,
             stepper: Texture3dUploadStepper::default(),
         }
     }
@@ -55,6 +58,14 @@ impl Texture3dUploadTask {
         ipc: &mut Option<&mut DualQueueIpc>,
     ) -> StepResult {
         let id = self.data.asset_id;
+        if !queue.texture3d_upload_generation_is_current(id, self.generation) {
+            logger::trace!(
+                "texture3d {id}: dropped stale data upload generation {}",
+                self.generation
+            );
+            self.finalize_failure(ipc);
+            return StepResult::Done;
+        }
         let Some(tex_arc) = resident_texture_arc(
             "texture3d",
             id,
@@ -112,6 +123,10 @@ impl Texture3dUploadTask {
         uploaded_mips: u32,
     ) {
         let id = self.data.asset_id;
+        if !queue.texture3d_upload_generation_is_current(id, self.generation) {
+            self.finalize_failure(ipc);
+            return;
+        }
         if uploaded_mips > 0
             && let Some(t) = queue.pools.texture3d_pool.get_mut(id)
         {
@@ -156,6 +171,7 @@ mod tests {
             },
             SetTexture3DFormat::default(),
             wgpu::TextureFormat::Rgba8Unorm,
+            1,
         )
     }
 

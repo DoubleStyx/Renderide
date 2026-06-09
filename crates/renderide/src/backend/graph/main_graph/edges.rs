@@ -29,6 +29,7 @@ pub(super) fn add_main_graph_edges(
     compose: PassId,
     desktop_overlay: PassId,
 ) {
+    builder.add_edge(passes.light_cookies, passes.shadows);
     builder.add_edge(passes.deform, passes.shadows);
     builder.add_edge(passes.shadows, passes.clustered);
     builder.add_edge(passes.clustered, passes.depth_prepass);

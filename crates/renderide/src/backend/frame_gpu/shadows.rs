@@ -28,10 +28,11 @@ use crate::world_mesh::WorldMeshPhase;
 use super::super::frame_gpu_error::FrameGpuInitError;
 use super::super::frame_resource_manager::{ShadowFramePlan, ShadowRenderView};
 use super::super::per_draw_resources::PerDrawResources;
+use super::super::shadow_atlas_budget::clamp_shadow_atlas_resolution;
 use super::super::shadow_atlas_format::{
     select_shadow_atlas_binding_format, select_shadow_atlas_format,
 };
-use super::FrameGpuResources;
+use super::{FrameGpuResources, ShadowResourceSyncResult};
 
 /// Main-graph frame-global pass name for shadow-atlas rendering.
 pub(crate) const SHADOW_ATLAS_PASS_NAME: &str = "shadow_atlas";
@@ -263,21 +264,29 @@ impl ShadowAtlasResources {
         requested_resolution: u32,
         requested_layers: u32,
         requested_draw_slots: usize,
-    ) -> bool {
+    ) -> ShadowResourceSyncResult {
         self.per_draw
             .ensure_draw_slot_capacity(device, requested_draw_slots);
         if !self.renderable {
-            return false;
+            return self.sync_result(false);
         }
-        let resolution = clamp_shadow_resolution(limits, requested_resolution);
         let layers = requested_layers
             .max(1)
             .min(limits.wgpu.max_texture_array_layers.max(1));
-        if resolution <= self.resolution && layers <= self.layers {
-            return false;
+        let requested_resolution =
+            clamp_shadow_texture_resolution(limits, requested_resolution, layers, self.format);
+        let grown_layers = self.layers.max(layers);
+        let grown_resolution = self.resolution.max(requested_resolution);
+        let budgeted_grown_resolution =
+            clamp_shadow_texture_resolution(limits, grown_resolution, grown_layers, self.format);
+        let (next_resolution, next_layers) = if budgeted_grown_resolution == grown_resolution {
+            (grown_resolution, grown_layers)
+        } else {
+            (requested_resolution, layers)
+        };
+        if next_resolution == self.resolution && next_layers == self.layers {
+            return self.sync_result(false);
         }
-        let next_resolution = self.resolution.max(resolution);
-        let next_layers = self.layers.max(layers);
         let (texture, atlas_view, layer_views) =
             create_shadow_texture(device, next_resolution, next_layers, self.format, true);
         self.texture = texture;
@@ -286,7 +295,7 @@ impl ShadowAtlasResources {
         self.resolution = next_resolution;
         self.layers = next_layers;
         self.version = self.version.saturating_add(1);
-        true
+        self.sync_result(true)
     }
 
     /// Shadow metadata storage buffer.
@@ -338,6 +347,14 @@ impl ShadowAtlasResources {
     pub(super) const fn version(&self) -> u64 {
         self.version
     }
+
+    fn sync_result(&self, changed: bool) -> ShadowResourceSyncResult {
+        ShadowResourceSyncResult {
+            changed,
+            resolution: self.resolution,
+            layers: self.layers,
+        }
+    }
 }
 
 fn shadow_per_draw_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
@@ -362,6 +379,15 @@ fn initial_shadow_resolution(limits: &GpuLimits) -> u32 {
 
 fn clamp_shadow_resolution(limits: &GpuLimits, requested: u32) -> u32 {
     requested.clamp(1, limits.wgpu.max_texture_dimension_2d.max(1))
+}
+
+fn clamp_shadow_texture_resolution(
+    limits: &GpuLimits,
+    requested: u32,
+    layers: u32,
+    format: wgpu::TextureFormat,
+) -> u32 {
+    clamp_shadow_atlas_resolution(limits, requested, layers, format)
 }
 
 fn create_shadow_texture(
@@ -710,8 +736,9 @@ mod tests {
     use hashbrown::HashMap;
 
     use super::{
-        PaddedShadowCasterUniforms, clamp_shadow_resolution, shadow_atlas_array_view_descriptor,
-        shadow_atlas_layer_view_descriptor, shadow_pipeline_state,
+        PaddedShadowCasterUniforms, clamp_shadow_resolution, clamp_shadow_texture_resolution,
+        shadow_atlas_array_view_descriptor, shadow_atlas_layer_view_descriptor,
+        shadow_pipeline_state,
     };
     use crate::backend::frame_resource_manager::ShadowRenderView;
     use crate::gpu::{SHADOW_VIEW_KIND_DIRECTIONAL, SHADOW_VIEW_KIND_POINT, SHADOW_VIEW_KIND_SPOT};
@@ -767,6 +794,16 @@ mod tests {
         assert_eq!(clamp_shadow_resolution(&limits, 0), 1);
         assert_eq!(clamp_shadow_resolution(&limits, 512), 512);
         assert_eq!(clamp_shadow_resolution(&limits, 2048), 1024);
+    }
+
+    #[test]
+    fn shadow_texture_resolution_clamps_to_atlas_budget() {
+        let limits = limits(8192, 64);
+
+        assert_eq!(
+            clamp_shadow_texture_resolution(&limits, 4096, 16, wgpu::TextureFormat::Depth32Float),
+            2896
+        );
     }
 
     #[test]

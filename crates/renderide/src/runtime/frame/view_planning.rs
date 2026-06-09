@@ -241,16 +241,15 @@ fn secondary_rt_handles_for_rect(
     render_rect: CameraRenderRect,
 ) -> Option<OffscreenTargetHandles> {
     if render_rect.is_full_target(rt.extent_px) {
-        return Some(OffscreenTargetHandles {
+        return Some(OffscreenTargetHandles::new(
             write_target,
-            color_texture: rt.color_texture.as_ref().clone(),
-            color_view: rt.color_view.as_ref().clone(),
-            depth_texture: rt.depth_texture.as_ref().clone(),
-            depth_view: rt.depth_view.as_ref().clone(),
-            extent_px: rt.extent_px,
-            color_format: rt.color_format,
-            copy_to_color: None,
-        });
+            rt.color_texture.as_ref().clone(),
+            rt.color_view.as_ref().clone(),
+            rt.depth_texture.as_ref().clone(),
+            rt.depth_view.as_ref().clone(),
+            rt.extent_px,
+            rt.color_format,
+        ));
     }
 
     let scratch = backend.secondary_render_rect_scratch(
@@ -259,20 +258,22 @@ fn secondary_rt_handles_for_rect(
         rt.color_format,
         rt.depth_format,
     )?;
-    Some(OffscreenTargetHandles {
-        write_target,
-        color_texture: scratch.color_texture.as_ref().clone(),
-        color_view: scratch.color_view.as_ref().clone(),
-        depth_texture: scratch.depth_texture.as_ref().clone(),
-        depth_view: scratch.depth_view.as_ref().clone(),
-        extent_px: render_rect.extent_px,
-        color_format: rt.color_format,
-        copy_to_color: Some(OffscreenColorCopy {
+    Some(
+        OffscreenTargetHandles::new(
+            write_target,
+            scratch.color_texture.as_ref().clone(),
+            scratch.color_view.as_ref().clone(),
+            scratch.depth_texture.as_ref().clone(),
+            scratch.depth_view.as_ref().clone(),
+            render_rect.extent_px,
+            rt.color_format,
+        )
+        .with_copy_to_color(OffscreenColorCopy {
             destination_texture: rt.color_texture.as_ref().clone(),
             destination_origin_px: render_rect.origin_px,
             extent_px: render_rect.extent_px,
         }),
-    })
+    )
 }
 
 impl RendererRuntime {

@@ -18,7 +18,9 @@ use crate::world_mesh::{WorldMeshDrawItem, WorldMeshDrawPlan};
 use super::super::shadow_atlas_format::select_shadow_atlas_format;
 use super::manager::FrameResourceManager;
 
-const POINT_FACE_COUNT: u32 = 6;
+mod point_faces;
+
+const POINT_FACE_COUNT: u32 = point_faces::POINT_FACE_COUNT;
 const SHADOW_TYPE_NONE: u32 = 0;
 static SHADOW_ATLAS_UNSUPPORTED_WARNING: Once = Once::new();
 
@@ -129,6 +131,28 @@ impl FrameResourceManager {
             self.shadow_frame.requested_resolution.max(1),
             self.shadow_frame.requested_layers.max(1),
         ))
+    }
+
+    /// Updates shadow metadata so it matches the atlas texture selected by frame-GPU sync.
+    pub(crate) fn apply_shadow_atlas_resolution(&mut self, atlas_resolution: u32) {
+        let plan = &mut self.shadow_frame;
+        if plan.render_views.is_empty() {
+            return;
+        }
+        let atlas_resolution = atlas_resolution.max(1);
+        plan.requested_resolution = atlas_resolution;
+        for (metadata, view) in plan.metadata.iter_mut().zip(plan.render_views.iter_mut()) {
+            let old_resolution = view.resolution.max(1);
+            let new_resolution = old_resolution.min(atlas_resolution).max(1);
+            if new_resolution != old_resolution {
+                view.resolution = new_resolution;
+                if metadata.light_params[2].is_finite() {
+                    metadata.light_params[2] *= old_resolution as f32 / new_resolution as f32;
+                }
+            }
+            metadata.params[1] = 1.0 / new_resolution as f32;
+        }
+        refresh_shadow_metadata_atlas_rects(plan);
     }
 
     /// Per-draw slab slots required by all shadow map views.
@@ -272,9 +296,24 @@ fn shadow_resolution_for_light(
     let requested = if light.shadow_map_resolution > 0 {
         light.shadow_map_resolution
     } else {
-        quality.tile_resolution
+        quality_shadow_resolution_for_light(light.light_type, quality)
     };
     shadow_tile_resolution(limits, requested)
+}
+
+fn quality_shadow_resolution_for_light(light_type: u32, quality: HostShadowQuality) -> u32 {
+    match light_type {
+        x if x == light_type_u32(LightType::Directional) => {
+            quality.tile_resolution_for_light_type(LightType::Directional)
+        }
+        x if x == light_type_u32(LightType::Spot) => {
+            quality.tile_resolution_for_light_type(LightType::Spot)
+        }
+        x if x == light_type_u32(LightType::Point) => {
+            quality.tile_resolution_for_light_type(LightType::Point)
+        }
+        _ => 1,
+    }
 }
 
 fn shadow_view_capacity(limits: Option<&GpuLimits>) -> usize {
@@ -430,21 +469,10 @@ fn spot_shadow_projection(light: &crate::gpu::GpuLight, position: Vec3, directio
 fn point_shadow_projection(light: &crate::gpu::GpuLight, position: Vec3, face: u32) -> Mat4 {
     let near = light.shadow_near_plane.max(0.001);
     let far = light.range.max(near + 0.001);
-    let (direction, up) = point_face_basis(face);
+    let (direction, up) = point_faces::basis(face);
     let view = Mat4::look_at_rh(position, position + direction, up);
     let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, near, far);
     proj * view
-}
-
-fn point_face_basis(face: u32) -> (Vec3, Vec3) {
-    match face % POINT_FACE_COUNT {
-        0 => (Vec3::X, Vec3::Y),
-        1 => (Vec3::NEG_X, Vec3::Y),
-        2 => (Vec3::Y, Vec3::NEG_Z),
-        3 => (Vec3::NEG_Y, Vec3::Z),
-        4 => (Vec3::Z, Vec3::Y),
-        _ => (Vec3::NEG_Z, Vec3::Y),
-    }
 }
 
 fn light_up(direction: Vec3) -> Vec3 {
@@ -472,6 +500,9 @@ fn light_type_u32(ty: LightType) -> u32 {
 }
 
 #[cfg(test)]
+mod ultra_tests;
+
+#[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
@@ -489,8 +520,8 @@ mod tests {
     use glam::Vec3;
 
     use super::{
-        POINT_FACE_COUNT, light_type_u32, point_face_basis, point_shadow_projection,
-        shadow_view_capacity, shadow_view_count_for_light,
+        POINT_FACE_COUNT, light_type_u32, point_shadow_projection, shadow_view_capacity,
+        shadow_view_count_for_light,
     };
 
     fn limits(max_texture_dimension_2d: u32, max_texture_array_layers: u32) -> GpuLimits {
@@ -610,21 +641,6 @@ mod tests {
         assert_eq!(light.shadow_view_start, 0);
         assert_eq!(light.shadow_view_count, 0);
         assert_eq!(light.shadow_flags, 0);
-    }
-
-    #[test]
-    fn point_face_order_matches_shader_face_indices() {
-        let expected = [
-            (Vec3::X, Vec3::Y),
-            (Vec3::NEG_X, Vec3::Y),
-            (Vec3::Y, Vec3::NEG_Z),
-            (Vec3::NEG_Y, Vec3::Z),
-            (Vec3::Z, Vec3::Y),
-            (Vec3::NEG_Z, Vec3::Y),
-        ];
-        for (face, expected_basis) in expected.into_iter().enumerate() {
-            assert_eq!(point_face_basis(face as u32), expected_basis);
-        }
     }
 
     #[test]

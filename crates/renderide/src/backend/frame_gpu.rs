@@ -42,6 +42,17 @@ use scene_snapshot::{
 use shadows::ShadowAtlasResources;
 pub(crate) use shadows::{SHADOW_ATLAS_PASS_NAME, ShadowAtlasPass};
 
+/// Result of synchronizing the realtime shadow atlas before graph recording.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ShadowResourceSyncResult {
+    /// Whether the atlas texture or views were recreated.
+    pub(crate) changed: bool,
+    /// Actual atlas edge resolution backing the current shadow frame.
+    pub(crate) resolution: u32,
+    /// Actual array layer count backing the current shadow frame.
+    pub(crate) layers: u32,
+}
+
 /// GPU buffers and bind groups for `@group(0)` frame globals (camera, lights, cluster lists,
 /// fallback sampled scene snapshots, and reflection-probe specular IBL).
 ///
@@ -634,18 +645,18 @@ impl FrameGpuResources {
         requested_resolution: u32,
         requested_layers: u32,
         requested_draw_slots: usize,
-    ) -> bool {
-        let changed = self.shadows.sync(
+    ) -> ShadowResourceSyncResult {
+        let result = self.shadows.sync(
             device,
             self.limits.as_ref(),
             requested_resolution,
             requested_layers,
             requested_draw_slots,
         );
-        if changed {
+        if result.changed {
             self.rebuild_bind_group(device);
         }
-        changed
+        result
     }
 
     /// Writes shadow-view metadata into the frame-global storage buffer.

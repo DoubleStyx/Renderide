@@ -125,11 +125,10 @@ impl AppDriver {
     /// desktop display blit source.
     fn compute_presentation_plan(&self, hmd_projection_ended: bool) -> PresentationPlan {
         let vr_active = self.runtime.vr_active();
-        let scene = self.runtime.scene();
         presentation_plan_from_frame_and_desktop_blit(
             vr_active,
             hmd_projection_ended,
-            scene.active_blit_for_display(super::DESKTOP_DISPLAY_INDEX),
+            self.runtime.active_desktop_blit(),
         )
     }
 

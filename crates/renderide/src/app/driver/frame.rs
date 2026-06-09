@@ -585,10 +585,7 @@ impl AppDriver {
         use crate::xr::XrFrameRenderer;
         let desktop_owned_by_blit = desktop_frame_owned_by_explicit_blit(
             mode,
-            self.runtime
-                .scene()
-                .active_blit_for_display(super::DESKTOP_DISPLAY_INDEX)
-                .is_some(),
+            self.runtime.active_desktop_blit().is_some(),
         );
         let result = match mode {
             FrameRenderMode::HmdMultiview => Ok(()),

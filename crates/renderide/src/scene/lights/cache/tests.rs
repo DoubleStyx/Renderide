@@ -667,24 +667,20 @@ fn buffer_renderer_transform_id_follows_swap_remove() {
     assert_eq!(lights[1].transform_id, 10);
 }
 
-/// Regression: when a light's OWN transform is removed (its slot lost all renderables),
-/// the fixup drops it defensively. In a real host stream the light would also be in the
-/// same frame's removals array; this guards against that invariant regressing.
+/// Regression: when a light's own transform is removed, the fixup must hide that dead slot
+/// without shrinking the dense light list before the host light-removal batch runs. Otherwise
+/// the removal index can delete the light that was swap-moved into the old last transform slot.
 #[test]
-fn regular_light_whose_own_transform_was_removed_is_dropped() {
+fn regular_light_removed_transform_slot_survives_host_light_removal() {
     use crate::scene::transforms::TransformRemovalEvent;
 
     let mut cache = LightCache::new();
     let space_id = 0;
-    cache.apply_regular_lights_update(
-        space_id,
-        &[],
-        &[5, 42],
-        &[
-            make_regular_state(0, 1.0, 10.0),
-            make_regular_state(1, 2.0, 20.0),
-        ],
-    );
+    let mut directional = make_regular_state(0, 1.0, 10.0);
+    directional.r#type = LightType::Directional;
+    let point = make_regular_state(1, 2.0, 20.0);
+
+    cache.apply_regular_lights_update(space_id, &[], &[5, 42], &[directional, point]);
 
     // Remove transform 5 (which is the first light's transform). last_index_before_swap = 42
     // -> the second light's transform moves into slot 5.
@@ -701,7 +697,65 @@ fn regular_light_whose_own_transform_was_removed_is_dropped() {
         .expect("test setup: space should have lights");
     assert_eq!(lights.len(), 1);
     assert_eq!(lights[0].transform_id, 5);
+    assert_eq!(lights[0].state.light_type, LightType::Point);
     assert!((lights[0].data.intensity - 2.0).abs() < 1e-5);
+
+    cache.apply_regular_lights_update(space_id, &[0], &[], &[]);
+
+    let lights = cache
+        .get_lights_for_space(space_id)
+        .expect("test setup: surviving point light should remain visible");
+    assert_eq!(lights.len(), 1);
+    assert_eq!(lights[0].transform_id, 5);
+    assert_eq!(lights[0].state.light_type, LightType::Point);
+    assert!((lights[0].data.intensity - 2.0).abs() < 1e-5);
+}
+
+/// Regression: the same dead-slot preservation is required for lights-buffer renderers, whose
+/// dense host renderable indices drive local light orbs and particle-light submissions.
+#[test]
+fn buffer_renderer_removed_transform_slot_survives_host_light_removal() {
+    use crate::scene::transforms::TransformRemovalEvent;
+
+    let mut cache = LightCache::new();
+    let space_id = 0;
+    cache.store_full(100, vec![make_light_data((1.0, 0.0, 0.0), (1.0, 1.0, 1.0))]);
+    cache.store_full(101, vec![make_light_data((0.0, 2.0, 0.0), (0.5, 1.0, 0.5))]);
+    cache.apply_update(
+        space_id,
+        &[],
+        &[5, 42],
+        &[
+            make_state(0, 100, LightType::Directional),
+            make_state(1, 101, LightType::Point),
+        ],
+    );
+
+    cache.fixup_for_transform_removals(
+        space_id,
+        &[TransformRemovalEvent {
+            removed_index: 5,
+            last_index_before_swap: 42,
+        }],
+    );
+
+    let lights = cache
+        .get_lights_for_space(space_id)
+        .expect("test setup: space should have lights");
+    assert_eq!(lights.len(), 1);
+    assert_eq!(lights[0].transform_id, 5);
+    assert_eq!(lights[0].state.global_unique_id, 101);
+    assert_eq!(lights[0].state.light_type, LightType::Point);
+
+    cache.apply_update(space_id, &[0], &[], &[]);
+
+    let lights = cache
+        .get_lights_for_space(space_id)
+        .expect("test setup: surviving buffer-renderer light should remain visible");
+    assert_eq!(lights.len(), 1);
+    assert_eq!(lights[0].transform_id, 5);
+    assert_eq!(lights[0].state.global_unique_id, 101);
+    assert_eq!(lights[0].state.light_type, LightType::Point);
 }
 
 /// Regression: an unrelated transform removal (not touching any light) must leave every

@@ -4,11 +4,12 @@ use hashbrown::HashMap;
 use std::time::Instant;
 
 use crate::camera::{HostCameraFrame, ViewId};
-use crate::cpu_parallelism::{ParallelAdmission, record_parallel_admission};
+use crate::cpu_parallelism::record_parallel_admission;
 use crate::diagnostics::PerViewHudOutputs;
 use crate::render_graph::blackboard::GraphCommandStats;
 
 use super::recording_path::GraphCommandRecordingPlan;
+use super::recording_path::GraphCommandRecordingStrategy;
 use super::{
     CommandEncodingDiagnostics, CompiledRenderGraph, FrameGlobalPassRecordInputs, FrameGlobalView,
     FrameUploadBatch, GraphCommandRecordingPath, GraphExecuteError, GraphResolveKey,
@@ -62,6 +63,7 @@ impl CompiledRenderGraph {
         transient_by_key: &HashMap<GraphResolveKey, GraphResolvedResources>,
         upload_batch: &FrameUploadBatch,
         per_view_shared: &PerViewRecordShared<'_>,
+        strategy: GraphCommandRecordingStrategy,
         profiler: Option<&crate::profiling::GpuProfilerHandle>,
     ) -> Result<(usize, PerViewRecordOutput), GraphExecuteError> {
         let view_idx = work_item.view_idx;
@@ -72,6 +74,7 @@ impl CompiledRenderGraph {
             work_item,
             transient_by_key,
             upload_batch,
+            strategy,
             profiler,
         )?;
         Ok((
@@ -120,8 +123,7 @@ impl CompiledRenderGraph {
                         per_view_work_items,
                         transient_by_key,
                         upload_batch,
-                        plan.estimated_per_view_record_work,
-                        plan.per_view_record_admission,
+                        plan,
                     )?;
                     command_diagnostics.apply_per_view(&batch);
                     batch
@@ -184,8 +186,7 @@ impl CompiledRenderGraph {
         per_view_work_items: Vec<PerViewWorkItem>,
         transient_by_key: &HashMap<GraphResolveKey, GraphResolvedResources>,
         upload_batch: &FrameUploadBatch,
-        estimated_record_work: usize,
-        admission: ParallelAdmission,
+        plan: GraphCommandRecordingPlan,
     ) -> Result<RecordedPerViewBatch, GraphExecuteError> {
         let n_views = per_view_work_items.len();
         let device = mv_ctx.device;
@@ -212,11 +213,12 @@ impl CompiledRenderGraph {
                     transient_by_key,
                     upload_batch,
                     per_view_shared: &per_view_shared,
+                    strategy: plan.strategy,
                     profiler: per_view_profiler.as_ref(),
                 },
                 n_views,
-                estimated_record_work,
-                admission,
+                plan.estimated_per_view_record_work,
+                plan.per_view_record_admission,
             )?;
             let mut per_view_cmds: Vec<wgpu::CommandBuffer> = Vec::with_capacity(n_views);
             let mut per_view_occlusion_info: Vec<(ViewId, HostCameraFrame)> =

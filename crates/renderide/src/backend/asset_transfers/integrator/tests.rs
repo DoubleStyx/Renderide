@@ -1,9 +1,12 @@
 use std::time::{Duration, Instant};
 
+use super::super::limits::MAX_ASSET_INTEGRATION_QUEUE_TASKS;
 use super::super::texture_task::TextureUploadTask;
 use super::drain::{MIN_HIGH_PRIORITY_EMERGENCY_BUDGET, high_priority_emergency_deadline};
 use super::queue::ASSET_INTEGRATION_QUEUE_WARN_THRESHOLD;
 use super::*;
+use crate::materials::RasterPipelineKind;
+use crate::shared::MaterialsUpdateBatch;
 use crate::shared::{SetTexture2DData, SetTexture2DFormat};
 
 fn texture_task(high_priority: bool) -> AssetTask {
@@ -14,6 +17,7 @@ fn texture_task(high_priority: bool) -> AssetTask {
         },
         SetTexture2DFormat::default(),
         wgpu::TextureFormat::Rgba8Unorm,
+        1,
     ))
 }
 
@@ -84,8 +88,8 @@ fn high_priority_emergency_deadline_has_minimum_budget_when_normal_deadline_elap
 #[test]
 fn pop_next_prefers_high_priority_queue() {
     let mut integrator = AssetIntegrator::default();
-    integrator.enqueue(texture_task(false), false);
-    integrator.enqueue(texture_task(true), true);
+    assert!(integrator.enqueue(texture_task(false), false));
+    assert!(integrator.enqueue(texture_task(true), true));
 
     let first = integrator.pop_next().unwrap();
     let second = integrator.pop_next().unwrap();
@@ -112,7 +116,7 @@ fn push_front_preserves_priority_lane() {
 fn enqueue_accepts_beyond_warning_threshold() {
     let mut integrator = AssetIntegrator::default();
     for _ in 0..=ASSET_INTEGRATION_QUEUE_WARN_THRESHOLD {
-        integrator.enqueue(texture_task(false), false);
+        assert!(integrator.enqueue(texture_task(false), false));
     }
 
     assert_eq!(
@@ -123,4 +127,49 @@ fn enqueue_accepts_beyond_warning_threshold() {
         integrator.peak_queued(),
         ASSET_INTEGRATION_QUEUE_WARN_THRESHOLD + 1
     );
+}
+
+#[test]
+fn enqueue_material_update_returns_batch_when_queue_is_full() {
+    let mut integrator = AssetIntegrator::default();
+    fill_integrator_to_capacity(&mut integrator);
+
+    let batch = MaterialsUpdateBatch {
+        update_batch_id: 42,
+        ..Default::default()
+    };
+    let returned = integrator
+        .enqueue_material_update(batch)
+        .expect("full queue should return material batch");
+
+    assert_eq!(returned.update_batch_id, 42);
+    assert_eq!(integrator.total_queued(), MAX_ASSET_INTEGRATION_QUEUE_TASKS);
+}
+
+#[test]
+fn enqueue_shader_route_returns_route_when_queue_is_full() {
+    let mut integrator = AssetIntegrator::default();
+    fill_integrator_to_capacity(&mut integrator);
+
+    let route = ShaderRouteTask {
+        asset_id: 77,
+        pipeline: RasterPipelineKind::Null,
+        shader_asset_name: Some(String::from("ExampleShader")),
+        shader_variant_bits: Some(5),
+    };
+    let returned = integrator
+        .enqueue_shader_route(route)
+        .expect("full queue should return shader route");
+
+    assert_eq!(returned.asset_id, 77);
+    assert_eq!(returned.shader_asset_name.as_deref(), Some("ExampleShader"));
+    assert_eq!(returned.shader_variant_bits, Some(5));
+    assert_eq!(integrator.total_queued(), MAX_ASSET_INTEGRATION_QUEUE_TASKS);
+}
+
+fn fill_integrator_to_capacity(integrator: &mut AssetIntegrator) {
+    for _ in 0..MAX_ASSET_INTEGRATION_QUEUE_TASKS {
+        assert!(integrator.enqueue(texture_task(false), false));
+    }
+    assert_eq!(integrator.total_queued(), MAX_ASSET_INTEGRATION_QUEUE_TASKS);
 }

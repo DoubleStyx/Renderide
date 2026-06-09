@@ -22,6 +22,7 @@ use crate::gpu_pools::texture_allocation::{
 };
 
 static NEXT_TEXTURE3D_VIEW_GENERATION: AtomicU64 = AtomicU64::new(1);
+const MAX_GPU_TEXTURE_ALLOCATION_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Texture3dAllocationDesc {
@@ -74,6 +75,22 @@ impl GpuTexture3d {
             height: desc.height,
             depth_or_array_layers: desc.depth_or_array_layers,
         };
+        let resident_bytes = estimate_gpu_texture3d_bytes(
+            desc.wgpu_format,
+            desc.width,
+            desc.height,
+            desc.depth_or_array_layers,
+            desc.mip_levels_total,
+        );
+        if resident_bytes > MAX_GPU_TEXTURE_ALLOCATION_BYTES {
+            logger::warn!(
+                "Texture3D {} rejected: estimated resident bytes {} exceed cap {}",
+                fmt.asset_id,
+                resident_bytes,
+                MAX_GPU_TEXTURE_ALLOCATION_BYTES
+            );
+            return None;
+        }
         let texture_label = format!("Texture3D {}", fmt.asset_id);
         let view_label = format!("Texture3D {} view", fmt.asset_id);
         let (texture, view) = create_sampled_copy_dst_texture(
@@ -89,13 +106,6 @@ impl GpuTexture3d {
                     dimension: Some(wgpu::TextureViewDimension::D3),
                 },
             },
-        );
-        let resident_bytes = estimate_gpu_texture3d_bytes(
-            desc.wgpu_format,
-            desc.width,
-            desc.height,
-            desc.depth_or_array_layers,
-            desc.mip_levels_total,
         );
         let sampler = SamplerState::from_texture3d_props(props);
         let residency = props

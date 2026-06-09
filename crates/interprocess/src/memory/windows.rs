@@ -3,12 +3,12 @@
 use std::ffi::OsStr;
 use std::io;
 use std::os::windows::ffi::OsStrExt;
-use std::ptr::null;
 
 use crate::error::OpenError;
 use crate::naming;
 use crate::options::QueueOptions;
 use crate::semaphore::Semaphore;
+use crate::windows_security::CurrentOwnerSecurityAttributes;
 use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::Memory::{
     CreateFileMappingW, FILE_MAP_ALL_ACCESS, MapViewOfFile, OpenFileMappingW, PAGE_READWRITE,
@@ -148,6 +148,7 @@ fn create_or_open_file_mapping(
 ) -> Result<windows_sys::Win32::Foundation::HANDLE, OpenError> {
     let mut wait_retries: usize = MAP_RETRY_ATTEMPTS;
     let mut wait_sleep_ms: u64 = 0;
+    let security = CurrentOwnerSecurityAttributes::new().map_err(OpenError)?;
 
     loop {
         // SAFETY: `name` is a NUL-terminated wide string; `INVALID_HANDLE_VALUE` plus a non-zero
@@ -155,7 +156,7 @@ fn create_or_open_file_mapping(
         let handle = unsafe {
             CreateFileMappingW(
                 INVALID_HANDLE_VALUE,
-                null(),
+                security.as_ptr(),
                 PAGE_READWRITE,
                 (size >> 32) as u32,
                 (size & 0xFFFF_FFFF) as u32,

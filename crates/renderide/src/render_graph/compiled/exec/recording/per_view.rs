@@ -22,6 +22,7 @@ use crate::render_graph::schedule::{
 use crate::shared::RenderingContext;
 
 use super::super::super::{CompiledRenderGraph, ResolvedView, ViewPostProcessing};
+use super::super::recording_path::GraphCommandRecordingStrategy;
 use super::super::{
     GraphResolveKey, PerViewEncodeOutput, PerViewRecordShared, PerViewWorkItem,
     PreparedPerViewFrameInput, ResolvedOffscreenColorCopy, elapsed_ms,
@@ -72,6 +73,12 @@ struct PerViewLiveState<'a, 'frame> {
     blackboard: &'frame mut Blackboard,
 }
 
+struct PerViewSchedulerInputs<'a> {
+    upload_batch: &'a FrameUploadBatch,
+    allow_parallel_batches: bool,
+    profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
+}
+
 impl<'a> PerViewLiveState<'a, '_> {
     fn reborrow(&mut self) -> PerViewLiveState<'a, '_> {
         PerViewLiveState {
@@ -89,6 +96,7 @@ impl CompiledRenderGraph {
         work_item: PerViewWorkItem,
         transient_by_key: &HashMap<GraphResolveKey, GraphResolvedResources>,
         upload_batch: &FrameUploadBatch,
+        strategy: GraphCommandRecordingStrategy,
         profiler: Option<&crate::profiling::GpuProfilerHandle>,
     ) -> Result<PerViewEncodeOutput, GraphExecuteError> {
         profiling::scope!("graph::per_view");
@@ -135,31 +143,36 @@ impl CompiledRenderGraph {
             blackboard: &mut view_blackboard,
         };
 
-        let (command_buffers, command_stats, encode_ms, finish_ms) = if self
+        let has_scheduler_parallel_batches = self
             .schedule
             .recording_plan
-            .phase_has_parallel_batches(PassPhase::PerView)
-        {
-            self.record_one_view_scheduler(
-                scope,
-                PerViewFrameReuse {
-                    frame_input: &frame_input,
-                    runtime,
-                },
-                state,
-                resolved.offscreen_color_copy.as_ref(),
-                upload_batch,
-                profiler,
-            )?
-        } else {
-            self.record_one_view_flat(
-                scope,
-                state,
-                resolved.offscreen_color_copy.as_ref(),
-                upload_batch,
-                profiler,
-            )?
-        };
+            .phase_has_parallel_batches(PassPhase::PerView);
+        let (command_buffers, command_stats, encode_ms, finish_ms) =
+            if has_scheduler_parallel_batches {
+                self.record_one_view_scheduler(
+                    scope,
+                    PerViewFrameReuse {
+                        frame_input: &frame_input,
+                        runtime,
+                    },
+                    state,
+                    resolved.offscreen_color_copy.as_ref(),
+                    PerViewSchedulerInputs {
+                        upload_batch,
+                        allow_parallel_batches: strategy
+                            == GraphCommandRecordingStrategy::InViewParallel,
+                        profiler,
+                    },
+                )?
+            } else {
+                self.record_one_view_flat(
+                    scope,
+                    state,
+                    resolved.offscreen_color_copy.as_ref(),
+                    upload_batch,
+                    profiler,
+                )?
+            };
         let hud_outputs = view_blackboard.take::<PerViewHudOutputsSlot>();
         let encode_ms = encode_ms.max(elapsed_ms(encode_start));
         Ok(PerViewEncodeOutput {
@@ -358,8 +371,7 @@ impl CompiledRenderGraph {
         frame_reuse: PerViewFrameReuse<'a>,
         mut state: PerViewLiveState<'a, '_>,
         offscreen_color_copy: Option<&ResolvedOffscreenColorCopy>,
-        upload_batch: &FrameUploadBatch,
-        profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
+        scheduler: PerViewSchedulerInputs<'a>,
     ) -> Result<
         (
             Vec<wgpu::CommandBuffer>,
@@ -386,8 +398,8 @@ impl CompiledRenderGraph {
                         scope,
                         state.reborrow(),
                         batch.start_unit..end_unit,
-                        upload_batch,
-                        profiler,
+                        scheduler.upload_batch,
+                        scheduler.profiler,
                     )?;
                     encode_ms += output.encode_ms;
                     finish_ms += output.finish_ms;
@@ -396,14 +408,24 @@ impl CompiledRenderGraph {
                         next_phase_batch_index(batches, next_batch_index, PassPhase::PerView);
                 }
                 RecordingBatchKind::Parallel => {
-                    let outputs = self.record_parallel_batch(
-                        scope,
-                        frame_reuse,
-                        &*state.blackboard,
-                        batch,
-                        upload_batch,
-                        profiler,
-                    )?;
+                    let outputs = if scheduler.allow_parallel_batches {
+                        self.record_parallel_batch(
+                            scope,
+                            frame_reuse,
+                            &*state.blackboard,
+                            batch,
+                            scheduler.upload_batch,
+                            scheduler.profiler,
+                        )?
+                    } else {
+                        vec![self.record_serial_unit_range(
+                            scope,
+                            state.reborrow(),
+                            batch.start_unit..batch.end_unit,
+                            scheduler.upload_batch,
+                            scheduler.profiler,
+                        )?]
+                    };
                     for output in outputs {
                         encode_ms += output.encode_ms;
                         finish_ms += output.finish_ms;
@@ -418,9 +440,11 @@ impl CompiledRenderGraph {
                 }
             }
         }
-        if let Some(copy_output) =
-            record_offscreen_color_copy_command(scope.shared.device, offscreen_color_copy, profiler)
-        {
+        if let Some(copy_output) = record_offscreen_color_copy_command(
+            scope.shared.device,
+            offscreen_color_copy,
+            scheduler.profiler,
+        ) {
             let (command_buffer, recorded, copy_encode_ms, copy_finish_ms) = copy_output;
             encode_ms += copy_encode_ms;
             finish_ms += copy_finish_ms;
