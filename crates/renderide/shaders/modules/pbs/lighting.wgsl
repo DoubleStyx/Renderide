@@ -219,7 +219,7 @@ fn shade_metallic_clustered(
     let view_dir = rg::view_dir_for_world_pos(world_pos, view_layer);
     let specular_color = brdf::metallic_f0(s.base_color, s.metallic);
     let n_dot_v = clamp(dot(s.normal, view_dir), 0.0, 1.0);
-    let filtered_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal);
+    let filtered_roughness = brdf::filter_perceptual_roughness(s.roughness, s.geometric_normal);
     let energy_compensation = direct_energy_compensation(
         s.roughness,
         n_dot_v,
@@ -297,7 +297,7 @@ fn shade_metallic_transparent_clustered(
     let view_dir = rg::view_dir_for_world_pos(world_pos, view_layer);
     let specular_color = brdf::metallic_f0(s.base_color, s.metallic);
     let n_dot_v = clamp(dot(s.normal, view_dir), 0.0, 1.0);
-    let filtered_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal);
+    let filtered_roughness = brdf::filter_perceptual_roughness(s.roughness, s.geometric_normal);
     let energy_compensation = direct_energy_compensation(
         s.roughness,
         n_dot_v,
@@ -363,7 +363,7 @@ fn shade_specular_clustered(
 ) -> vec3<f32> {
     let view_dir = rg::view_dir_for_world_pos(world_pos, view_layer);
     let n_dot_v = clamp(dot(s.normal, view_dir), 0.0, 1.0);
-    let filtered_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal);
+    let filtered_roughness = brdf::filter_perceptual_roughness(s.roughness, s.geometric_normal);
     let energy_compensation = direct_energy_compensation(
         s.roughness,
         n_dot_v,
@@ -440,7 +440,7 @@ fn shade_specular_transparent_clustered(
     let premultiplied = premultiplied_specular_surface(s);
     let view_dir = rg::view_dir_for_world_pos(world_pos, view_layer);
     let n_dot_v = clamp(dot(s.normal, view_dir), 0.0, 1.0);
-    let filtered_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal);
+    let filtered_roughness = brdf::filter_perceptual_roughness(s.roughness, s.geometric_normal);
     let energy_compensation = direct_energy_compensation(
         s.roughness,
         n_dot_v,

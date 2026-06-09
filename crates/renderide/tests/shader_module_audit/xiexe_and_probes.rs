@@ -204,7 +204,7 @@ fn xiexe_primary_direct_specular_uses_ggx_pbr_core() -> io::Result<()> {
     for required in [
         "let specular_reflectance = brdf::metallic_f0(s.diffuse_color, s.metallic);",
         "let roughness = clamp(1.0 - remap_specular_area(xb::mat._SpecularArea), 0.0, 1.0);",
-        "let aa_roughness = brdf::filter_perceptual_roughness(roughness, s.normal);",
+        "let aa_roughness = brdf::filter_perceptual_roughness(roughness, s.raw_normal);",
         "fn primary_direct_specular_terms(s: xb::SurfaceData, view_dir: vec3<f32>) -> DirectSpecularTerms {",
         "let direct_roughness = brdf::direct_perceptual_roughness(roughness);",
         "let dfg = brdf::sample_ibl_dfg_lut(direct_roughness, n_dot_v);",
@@ -304,7 +304,7 @@ fn xiexe_pbr_reflections_use_pbs_probe_energy_terms() -> io::Result<()> {
     for required in [
         "return rprobe::indirect_diffuse(world_pos, s.normal, view_layer, true);",
         "let indirect_enabled = rprobe::has_indirect_specular(view_layer, xvb::reflection_uses_pbr_for_layout(keyword_layout));",
-        "let roughness = brdf::filter_perceptual_roughness(clamp(perceptual_roughness, 0.0, 1.0), normal);",
+        "let roughness = brdf::filter_perceptual_roughness(clamp(perceptual_roughness, 0.0, 1.0), s.raw_normal);",
         "let dfg = brdf::sample_ibl_dfg_lut(roughness, n_dot_v);",
         "let specular_energy = brdf::indirect_specular_energy_from_dfg(dfg, specular_reflectance, indirect_enabled);",
         "let specular_visibility =\n        brdf::indirect_specular_visibility(n_dot_v, occlusion_scalar(s), roughness, specular_reflectance);",
@@ -404,9 +404,17 @@ fn reflection_probe_specular_applies_horizon_occlusion() -> io::Result<()> {
         "Xiexe indirect specular must pass the raw surface normal into reflection-probe horizon occlusion"
     );
     assert!(
-        xiexe_lighting.contains("let indirect_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal);")
+        xiexe_lighting.contains("let indirect_roughness = brdf::filter_perceptual_roughness(s.roughness, s.raw_normal);")
             && xiexe_lighting.contains("rprobe::raw_indirect_specular_with_horizon(world_pos, s.normal, s.raw_normal, view_dir, indirect_roughness, true, view_layer)"),
         "Xiexe environment tint must use filtered roughness and horizon-occluded raw probe radiance"
+    );
+    assert!(
+        !xiexe_lighting.contains("filter_perceptual_roughness(s.roughness, s.normal)")
+            && !xiexe_lighting.contains("filter_perceptual_roughness(roughness, s.normal)")
+            && !xiexe_lighting.contains(
+                "filter_perceptual_roughness(clamp(perceptual_roughness, 0.0, 1.0), normal)"
+            ),
+        "Xiexe specular AA must derive roughness from raw geometric normals, not normal-map-perturbed shading normals"
     );
 
     Ok(())

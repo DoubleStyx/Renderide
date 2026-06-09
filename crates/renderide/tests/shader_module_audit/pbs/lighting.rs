@@ -307,7 +307,7 @@ fn pbs_roughness_keeps_indirect_mirror_path_unclamped() -> io::Result<()> {
         "fn direct_energy_compensation(",
         "let direct_roughness = brdf::direct_perceptual_roughness(perceptual_roughness);",
         "let direct_dfg = brdf::sample_ibl_dfg_lut(direct_roughness, n_dot_v);",
-        "let filtered_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal);",
+        "let filtered_roughness = brdf::filter_perceptual_roughness(s.roughness, s.geometric_normal);",
         "fn indirect_specular_energy(",
         "let indirect_dfg = brdf::sample_ibl_dfg_lut(perceptual_roughness, n_dot_v);",
     ] {
@@ -316,6 +316,10 @@ fn pbs_roughness_keeps_indirect_mirror_path_unclamped() -> io::Result<()> {
             "pbs/lighting.wgsl must contain `{required}`"
         );
     }
+    assert!(
+        !lighting_src.contains("filter_perceptual_roughness(s.roughness, s.normal)"),
+        "PBS specular AA must derive roughness from geometric normals, not normal-map-perturbed shading normals"
+    );
 
     for path in wgsl_files_recursive("shaders/materials")? {
         let src = source_file(&path)?;

@@ -45,12 +45,16 @@ const SPECULAR_AA_THRESHOLD: f32 = 0.18;
 
 /// Tokuyoshi & Kaplanyan 2019 "Improved Geometric Specular Antialiasing".
 ///
-/// Widens the GGX lobe by the screen-space variance of the surface normal so that sub-pixel
-/// normal jitter does not alias into the specular highlight. MSAA can only multisample geometric
-/// coverage; the fragment shader still runs once per pixel, so a narrow specular lobe evaluated
-/// at the pixel centre will sparkle on curved metals regardless of MSAA tier. This filter widens
-/// `alpha` per pixel based on `dpdx`/`dpdy` of the world normal, producing a softer pre-filtered lobe
-/// where the normal is changing fast.
+/// Widens the GGX lobe by the screen-space variance of the geometric surface normal so that
+/// sub-pixel curvature does not alias into the specular highlight. MSAA can only multisample
+/// geometric coverage; the fragment shader still runs once per pixel, so a narrow specular lobe
+/// evaluated at the pixel centre will sparkle on curved metals regardless of MSAA tier. This filter
+/// widens `alpha` per pixel based on `dpdx`/`dpdy` of the filter normal, producing a softer
+/// pre-filtered lobe where the geometric normal is changing fast.
+///
+/// Feed this the pre-perturbation world normal. Normal-map frequency should be filtered through
+/// texture mips or roughness prefiltering; differentiating the final shading normal turns texel
+/// noise into quad-sized roughness blocks.
 ///
 /// `perceptual_roughness` is `1 - smoothness` (this module's standard input), and the returned
 /// value is also perceptual -- call sites can drop-in replace their existing `roughness` and the
@@ -58,9 +62,9 @@ const SPECULAR_AA_THRESHOLD: f32 = 0.18;
 ///
 /// Fragment-only (uses derivatives). Call once before the cluster light loop so the derivatives
 /// evaluate at uniform control flow and the widened roughness is shared across all light samples.
-fn filter_perceptual_roughness(perceptual_roughness: f32, world_n: vec3<f32>) -> f32 {
-    let du = dpdx(world_n);
-    let dv = dpdy(world_n);
+fn filter_perceptual_roughness(perceptual_roughness: f32, filter_normal: vec3<f32>) -> f32 {
+    let du = dpdx(filter_normal);
+    let dv = dpdy(filter_normal);
     let variance = SPECULAR_AA_VARIANCE * (dot(du, du) + dot(dv, dv));
     let clamped = clamp(perceptual_roughness, 0.0, 1.0);
     let alpha = clamped * clamped;
