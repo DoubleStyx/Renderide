@@ -32,17 +32,45 @@ struct SnapshotRebuildInputs<'a> {
 pub(super) struct SnapshotRebuildStats {
     /// Snapshot copy tasks built for dirty retained renderer templates.
     pub(super) task_count: usize,
+    /// Retained draw templates considered by this snapshot rebuild.
+    pub(super) retained_draw_count: usize,
     /// Active render spaces copied from the previous prepared snapshot.
     pub(super) reused_space_count: usize,
 }
 
 /// Renderer table selected by a prepared-snapshot rebuild task.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SnapshotRendererTable {
     /// Static renderer templates.
     Static,
     /// Skinned renderer templates.
     Skinned,
+}
+
+/// Source region copied by one prepared-snapshot rebuild task.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum SnapshotRebuildSource {
+    /// A contiguous renderer row range.
+    RendererRange {
+        /// Renderer table copied by this task.
+        table: SnapshotRendererTable,
+        /// Renderer index range copied by this task.
+        range: Range<usize>,
+    },
+    /// A contiguous draw-template range inside one oversized renderer row.
+    RendererDrawRange {
+        /// Renderer table copied by this task.
+        table: SnapshotRendererTable,
+        /// Renderer row copied by this task.
+        renderer_index: usize,
+        /// Draw-template range copied by this task.
+        range: Range<usize>,
+    },
+    /// Generated particle render-buffer draws for one render space.
+    ParticleRenderBuffers {
+        /// Render space whose generated particle draws are expanded by this task.
+        space_id: RenderSpaceId,
+    },
 }
 
 /// One deterministic chunk of retained renderer templates copied into the prepared snapshot.
@@ -52,34 +80,78 @@ pub(super) struct SnapshotRebuildTask<'a> {
     pub(super) space_index: usize,
     /// Retained render space borrowed by this task.
     space: &'a RenderWorldSpace,
-    /// Renderer table copied by this task.
-    table: SnapshotRendererTable,
-    /// Renderer index range copied by this task.
-    pub(super) range: Range<usize>,
+    /// Source region copied by this task.
+    pub(super) source: SnapshotRebuildSource,
 }
 
 impl SnapshotRebuildTask<'_> {
     /// Returns the number of retained draw templates this task will emit.
     pub(super) fn retained_template_count(&self) -> usize {
-        match self.table {
-            SnapshotRendererTable::Static => self
+        match &self.source {
+            SnapshotRebuildSource::RendererRange {
+                table: SnapshotRendererTable::Static,
+                range,
+            } => self
                 .space
-                .retained_static_template_count_for_range(self.range.clone()),
-            SnapshotRendererTable::Skinned => self
+                .retained_static_template_count_for_range(range.clone()),
+            SnapshotRebuildSource::RendererRange {
+                table: SnapshotRendererTable::Skinned,
+                range,
+            } => self
                 .space
-                .retained_skinned_template_count_for_range(self.range.clone()),
+                .retained_skinned_template_count_for_range(range.clone()),
+            SnapshotRebuildSource::RendererDrawRange { range, .. } => range.len(),
+            SnapshotRebuildSource::ParticleRenderBuffers { .. } => 0,
         }
     }
 
     /// Copies this task's retained draw templates into `draws`.
-    fn append_draws_to(&self, draws: &mut Vec<FramePreparedDraw>) {
-        match self.table {
-            SnapshotRendererTable::Static => self
+    fn append_draws_to(
+        &self,
+        draws: &mut Vec<FramePreparedDraw>,
+        inputs: &SnapshotRebuildInputs<'_>,
+    ) {
+        match &self.source {
+            SnapshotRebuildSource::RendererRange {
+                table: SnapshotRendererTable::Static,
+                range,
+            } => self
                 .space
-                .append_static_draws_range_to(self.range.clone(), draws),
-            SnapshotRendererTable::Skinned => self
+                .append_static_draws_range_to(range.clone(), draws),
+            SnapshotRebuildSource::RendererRange {
+                table: SnapshotRendererTable::Skinned,
+                range,
+            } => self
                 .space
-                .append_skinned_draws_range_to(self.range.clone(), draws),
+                .append_skinned_draws_range_to(range.clone(), draws),
+            SnapshotRebuildSource::RendererDrawRange {
+                table: SnapshotRendererTable::Static,
+                renderer_index,
+                range,
+            } => self.space.append_static_renderer_draws_range_to(
+                *renderer_index,
+                range.clone(),
+                draws,
+            ),
+            SnapshotRebuildSource::RendererDrawRange {
+                table: SnapshotRendererTable::Skinned,
+                renderer_index,
+                range,
+            } => self.space.append_skinned_renderer_draws_range_to(
+                *renderer_index,
+                range.clone(),
+                draws,
+            ),
+            SnapshotRebuildSource::ParticleRenderBuffers { space_id } => {
+                expand_render_buffer_renderers_into(
+                    draws,
+                    inputs.scene,
+                    inputs.mesh_pool,
+                    inputs.point_render_buffers,
+                    inputs.render_context,
+                    *space_id,
+                );
+            }
         }
     }
 }
@@ -130,9 +202,11 @@ pub(super) fn rebuild_prepared_snapshot(
         .map(|(_, _, space)| *space)
         .map(RenderWorldSpace::retained_template_count)
         .sum::<usize>();
-    let tasks = build_snapshot_rebuild_tasks(&active_spaces);
+    let mut tasks = build_snapshot_rebuild_tasks(&active_spaces);
+    extend_snapshot_particle_tasks(&mut tasks, &active_spaces, scene);
     let stats = SnapshotRebuildStats {
         task_count: tasks.len(),
+        retained_draw_count,
         reused_space_count: reused_space_ids.len(),
     };
     let policy = FrameParallelPolicy::for_current_thread_pool();
@@ -146,7 +220,7 @@ pub(super) fn rebuild_prepared_snapshot(
                 .map(|task| {
                     profiling::scope!("mesh::render_world::rebuild_prepared_snapshot::worker");
                     let mut draws = Vec::with_capacity(task.retained_template_count());
-                    task.append_draws_to(&mut draws);
+                    task.append_draws_to(&mut draws, &inputs);
                     (task.space_index, draws)
                 })
                 .collect::<Vec<_>>()
@@ -154,13 +228,7 @@ pub(super) fn rebuild_prepared_snapshot(
     drop(tasks);
     drop(active_spaces);
     if let Some(outputs) = parallel_outputs {
-        rebuild_snapshot_parallel(
-            render_world,
-            &inputs,
-            &active_space_ids,
-            &reused_space_ids,
-            outputs,
-        );
+        rebuild_snapshot_parallel(render_world, &active_space_ids, &reused_space_ids, outputs);
     } else {
         rebuild_snapshot_serial(render_world, &inputs, active_space_ids, &reused_space_ids);
     }
@@ -192,6 +260,35 @@ pub(super) fn build_snapshot_rebuild_tasks<'a>(
     tasks
 }
 
+/// Appends generated particle render-buffer tasks for active spaces that need them.
+fn extend_snapshot_particle_tasks<'a>(
+    tasks: &mut Vec<SnapshotRebuildTask<'a>>,
+    active_spaces: &[(usize, RenderSpaceId, &'a RenderWorldSpace)],
+    scene: &SceneCoordinator,
+) {
+    for (space_index, space_id, space) in active_spaces {
+        if !space_has_render_buffer_renderers(scene, *space_id) {
+            continue;
+        }
+        tasks.push(SnapshotRebuildTask {
+            space_index: *space_index,
+            space,
+            source: SnapshotRebuildSource::ParticleRenderBuffers {
+                space_id: *space_id,
+            },
+        });
+    }
+}
+
+/// Returns whether a render space has generated particle render-buffer rows.
+fn space_has_render_buffer_renderers(scene: &SceneCoordinator, space_id: RenderSpaceId) -> bool {
+    scene.space(space_id).is_some_and(|space| {
+        !space.billboard_render_buffers().is_empty()
+            || !space.trail_render_buffers().is_empty()
+            || !space.mesh_render_buffers().is_empty()
+    })
+}
+
 /// Appends chunked snapshot-copy tasks for one renderer table.
 fn extend_snapshot_table_tasks<'a>(
     tasks: &mut Vec<SnapshotRebuildTask<'a>>,
@@ -207,26 +304,88 @@ fn extend_snapshot_table_tasks<'a>(
         if template_count == 0 && range_start.is_none() {
             continue;
         }
-        let start = *range_start.get_or_insert(renderer_index);
-        range_template_count = range_template_count.saturating_add(template_count);
-        if range_template_count >= SNAPSHOT_REBUILD_PARALLEL_TARGET_CHUNK_TEMPLATES {
-            tasks.push(SnapshotRebuildTask {
+        if template_count > SNAPSHOT_REBUILD_PARALLEL_TARGET_CHUNK_TEMPLATES {
+            if let Some(start) = range_start.take() {
+                push_snapshot_renderer_range_task(
+                    tasks,
+                    space_index,
+                    space,
+                    table,
+                    start..renderer_index,
+                );
+                range_template_count = 0;
+            }
+            extend_snapshot_renderer_draw_tasks(
+                tasks,
                 space_index,
                 space,
                 table,
-                range: start..renderer_index + 1,
-            });
+                renderer_index,
+                template_count,
+            );
+            continue;
+        }
+        let start = *range_start.get_or_insert(renderer_index);
+        range_template_count = range_template_count.saturating_add(template_count);
+        if range_template_count >= SNAPSHOT_REBUILD_PARALLEL_TARGET_CHUNK_TEMPLATES {
+            push_snapshot_renderer_range_task(
+                tasks,
+                space_index,
+                space,
+                table,
+                start..renderer_index + 1,
+            );
             range_start = None;
             range_template_count = 0;
         }
     }
     if let Some(start) = range_start {
+        push_snapshot_renderer_range_task(tasks, space_index, space, table, start..renderer_count);
+    }
+}
+
+/// Appends one renderer-range snapshot-copy task.
+fn push_snapshot_renderer_range_task<'a>(
+    tasks: &mut Vec<SnapshotRebuildTask<'a>>,
+    space_index: usize,
+    space: &'a RenderWorldSpace,
+    table: SnapshotRendererTable,
+    range: Range<usize>,
+) {
+    if range.is_empty() {
+        return;
+    }
+    tasks.push(SnapshotRebuildTask {
+        space_index,
+        space,
+        source: SnapshotRebuildSource::RendererRange { table, range },
+    });
+}
+
+/// Appends draw-range snapshot-copy tasks for one oversized renderer row.
+fn extend_snapshot_renderer_draw_tasks<'a>(
+    tasks: &mut Vec<SnapshotRebuildTask<'a>>,
+    space_index: usize,
+    space: &'a RenderWorldSpace,
+    table: SnapshotRendererTable,
+    renderer_index: usize,
+    template_count: usize,
+) {
+    let mut start = 0usize;
+    while start < template_count {
+        let end = start
+            .saturating_add(SNAPSHOT_REBUILD_PARALLEL_TARGET_CHUNK_TEMPLATES)
+            .min(template_count);
         tasks.push(SnapshotRebuildTask {
             space_index,
             space,
-            table,
-            range: start..renderer_count,
+            source: SnapshotRebuildSource::RendererDrawRange {
+                table,
+                renderer_index,
+                range: start..end,
+            },
         });
+        start = end;
     }
 }
 
@@ -250,7 +409,6 @@ fn retained_renderer_template_count(
 
 fn rebuild_snapshot_parallel(
     render_world: &mut RenderWorld,
-    inputs: &SnapshotRebuildInputs<'_>,
     active_space_ids: &[RenderSpaceId],
     reused_space_ids: &HashSet<RenderSpaceId>,
     outputs: Vec<(usize, Vec<FramePreparedDraw>)>,
@@ -278,7 +436,6 @@ fn rebuild_snapshot_parallel(
                     .extend_cached_draws(&outputs[output_index].1);
                 output_index += 1;
             }
-            append_particle_draws(render_world, inputs, id);
         }
     }
 }
