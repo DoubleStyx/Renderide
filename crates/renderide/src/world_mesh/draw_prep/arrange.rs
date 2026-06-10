@@ -39,7 +39,7 @@ struct NonTransparentBinKey {
     phase: WorldMeshPhase,
     /// Effective Unity render queue.
     render_queue: i32,
-    /// Material-stack ordering key for slots that reuse the final submesh.
+    /// Surface-stack ordering key for draws whose equal-depth order is visible.
     stack: Option<NonTransparentStackBinKey>,
     /// Compact per-arrangement material and pipeline batch identifier.
     batch_id: u32,
@@ -57,12 +57,13 @@ impl NonTransparentBinKey {
         item: &WorldMeshDrawItem,
         phase: WorldMeshPhase,
         batch_ids: &BatchIdTable,
+        surface_stacks: &NonTransparentSurfaceStackTable,
     ) -> Self {
         Self {
             is_overlay: item.is_overlay,
             phase,
             render_queue: item.batch_key.render_queue,
-            stack: NonTransparentStackBinKey::from_draw(item),
+            stack: NonTransparentStackBinKey::from_draw(item, phase, surface_stacks),
             batch_id: batch_ids.id_for_draw(item),
             mesh_asset_id: item.mesh_asset_id,
             first_index: item.first_index,
@@ -71,42 +72,135 @@ impl NonTransparentBinKey {
     }
 }
 
-/// Ordering key for a nontransparent material-stack bin.
+/// Draw-surface identity used to find equal-depth nontransparent renderer stacks.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct NonTransparentStackBinKey {
+struct NonTransparentSurfaceStackKey {
+    /// Main-layer draws sort before overlay draws.
+    is_overlay: bool,
+    /// Primary render phase for the surface.
+    phase: WorldMeshPhase,
+    /// Effective Unity render queue.
+    render_queue: i32,
+    /// Host sorting order carried by the mesh renderer.
+    sorting_order: i32,
     /// Host render space id.
     space_id: crate::scene::RenderSpaceId,
     /// Whether this key points at a skinned renderer table.
     skinned: bool,
-    /// Dense renderer index inside the selected renderer table.
-    renderable_index: usize,
-    /// Renderer-local stable identity.
-    instance_id: u64,
+    /// Scene transform node id.
+    node_id: i32,
     /// Resident mesh asset id.
     mesh_asset_id: i32,
-    /// First index in the stacked submesh range.
+    /// First index in the submesh range.
     first_index: u32,
-    /// Number of indices in the stacked submesh range.
+    /// Number of indices in the submesh range.
     index_count: u32,
-    /// First material slot participating in this stack.
+}
+
+impl NonTransparentSurfaceStackKey {
+    /// Builds a same-surface key for one nontransparent draw item.
+    fn from_draw(item: &WorldMeshDrawItem, phase: WorldMeshPhase) -> Self {
+        Self {
+            is_overlay: item.is_overlay,
+            phase,
+            render_queue: item.batch_key.render_queue,
+            sorting_order: item.sorting_order,
+            space_id: item.space_id,
+            skinned: item.skinned,
+            node_id: item.node_id,
+            mesh_asset_id: item.mesh_asset_id,
+            first_index: item.first_index,
+            index_count: item.index_count,
+        }
+    }
+}
+
+/// Per-arrangement duplicate-surface lookup for nontransparent renderer stacks.
+#[derive(Debug, Default)]
+struct NonTransparentSurfaceStackTable {
+    /// Number of nontransparent draws that share each surface key.
+    counts: HashMap<NonTransparentSurfaceStackKey, usize>,
+}
+
+impl NonTransparentSurfaceStackTable {
+    /// Builds duplicate-surface counts from deterministic draw chunks.
+    fn build_from_chunks(
+        chunks: &[Vec<WorldMeshDrawItem>],
+        allow_parallel: bool,
+        draw_count: usize,
+    ) -> Self {
+        profiling::scope!("mesh::arrange_draws_by_phase_bins::surface_stacks");
+        let admission = arrange_chunk_admission(
+            draw_count,
+            chunks.len(),
+            current_reference_worker_count(),
+            allow_parallel,
+        );
+        record_parallel_admission(
+            "world_mesh_arrange_surface_stacks",
+            draw_count,
+            chunks.len(),
+            admission,
+        );
+        let counts = if admission.is_parallel() {
+            profiling::scope!("mesh::arrange_draws_by_phase_bins::surface_stacks_parallel");
+            chunks
+                .par_iter()
+                .with_min_len(ARRANGE_PARALLEL_CHUNK_TASKS)
+                .map(|chunk| collect_surface_stack_counts(chunk))
+                .reduce(HashMap::new, |mut target, source| {
+                    merge_surface_stack_counts(&mut target, source);
+                    target
+                })
+        } else {
+            profiling::scope!("mesh::arrange_draws_by_phase_bins::surface_stacks_serial");
+            let mut counts = HashMap::with_capacity(draw_count.min(1_024));
+            for chunk in chunks {
+                collect_surface_stack_counts_into(chunk, &mut counts);
+            }
+            counts
+        };
+        Self { counts }
+    }
+
+    /// Returns whether this draw surface has multiple nontransparent layers.
+    #[inline]
+    fn is_stacked_surface(&self, key: &NonTransparentSurfaceStackKey) -> bool {
+        self.counts.get(key).copied().unwrap_or(0) > 1
+    }
+}
+
+/// Ordering key for a nontransparent same-surface bin.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct NonTransparentStackBinKey {
+    /// Surface whose equal-depth layers must keep Unity-style renderer order.
+    surface: NonTransparentSurfaceStackKey,
+    /// First material slot participating in a single-renderer material stack.
     first_stacked_slot_index: usize,
+    /// Renderer-local stable identity, assigned when the renderer entry was created.
+    instance_id: u64,
     /// Material slot represented by this bin.
     slot_index: usize,
 }
 
 impl NonTransparentStackBinKey {
-    /// Builds a stack bin key for one draw item when it participates in material stacking.
-    fn from_draw(item: &WorldMeshDrawItem) -> Option<Self> {
-        let stack = item.material_stack_order?;
+    /// Builds a stack bin key for one draw item when its equal-depth order is visible.
+    fn from_draw(
+        item: &WorldMeshDrawItem,
+        phase: WorldMeshPhase,
+        surface_stacks: &NonTransparentSurfaceStackTable,
+    ) -> Option<Self> {
+        let surface = NonTransparentSurfaceStackKey::from_draw(item, phase);
+        let material_stack_slot = item
+            .material_stack_order
+            .map(|stack| stack.first_stacked_slot_index);
+        if material_stack_slot.is_none() && !surface_stacks.is_stacked_surface(&surface) {
+            return None;
+        }
         Some(Self {
-            space_id: item.space_id,
-            skinned: item.skinned,
-            renderable_index: item.renderable_index,
+            surface,
+            first_stacked_slot_index: material_stack_slot.unwrap_or(item.slot_index),
             instance_id: item.instance_id.0,
-            mesh_asset_id: item.mesh_asset_id,
-            first_index: item.first_index,
-            index_count: item.index_count,
-            first_stacked_slot_index: stack.first_stacked_slot_index,
             slot_index: item.slot_index,
         })
     }
@@ -269,8 +363,18 @@ fn arrange_draw_chunks_by_phase_bins_impl(
 
     let batch_ids =
         BatchIdTable::build_from_chunks(&chunks, allow_parallel_sort, assign_collect_order);
-    let (bins, mut strict_ordered) =
-        partition_draw_chunks(chunks, &batch_ids, allow_parallel_sort, draw_count);
+    let surface_stacks = NonTransparentSurfaceStackTable::build_from_chunks(
+        &chunks,
+        allow_parallel_sort,
+        draw_count,
+    );
+    let (bins, mut strict_ordered) = partition_draw_chunks(
+        chunks,
+        &batch_ids,
+        &surface_stacks,
+        allow_parallel_sort,
+        draw_count,
+    );
 
     let mut binned: Vec<_> = bins.into_iter().collect();
     let stats = WorldMeshDrawArrangementStats {
@@ -350,6 +454,48 @@ fn collect_unique_batch_ids(chunk: &[WorldMeshDrawItem]) -> HashMap<MaterialDraw
     unique
 }
 
+/// Collects nontransparent surface-stack counts from one draw chunk.
+fn collect_surface_stack_counts(
+    chunk: &[WorldMeshDrawItem],
+) -> HashMap<NonTransparentSurfaceStackKey, usize> {
+    let mut counts = HashMap::with_capacity(chunk.len().min(1_024));
+    collect_surface_stack_counts_into(chunk, &mut counts);
+    counts
+}
+
+/// Adds one draw chunk's nontransparent surface-stack counts into `counts`.
+fn collect_surface_stack_counts_into(
+    chunk: &[WorldMeshDrawItem],
+    counts: &mut HashMap<NonTransparentSurfaceStackKey, usize>,
+) {
+    for item in chunk {
+        let classification = classify_world_mesh_batch(&item.batch_key);
+        if classification.strict_order {
+            continue;
+        }
+        let key = NonTransparentSurfaceStackKey::from_draw(item, classification.phase);
+        counts
+            .entry(key)
+            .and_modify(|count| *count = count.saturating_add(1))
+            .or_insert(1);
+    }
+}
+
+/// Merges surface-stack counts from a worker-local map into a target map.
+fn merge_surface_stack_counts(
+    target: &mut HashMap<NonTransparentSurfaceStackKey, usize>,
+    source: HashMap<NonTransparentSurfaceStackKey, usize>,
+) {
+    for (key, count) in source {
+        target
+            .entry(key)
+            .and_modify(|target_count| {
+                *target_count = target_count.saturating_add(count);
+            })
+            .or_insert(count);
+    }
+}
+
 /// Merges a source batch-ID map into a target map.
 fn merge_unique_batch_ids(
     target: &mut HashMap<MaterialDrawBatchKey, u64>,
@@ -364,6 +510,7 @@ fn merge_unique_batch_ids(
 fn partition_draw_chunks(
     chunks: Vec<Vec<WorldMeshDrawItem>>,
     batch_ids: &BatchIdTable,
+    surface_stacks: &NonTransparentSurfaceStackTable,
     allow_parallel: bool,
     draw_count: usize,
 ) -> (
@@ -387,13 +534,13 @@ fn partition_draw_chunks(
         chunks
             .into_par_iter()
             .with_min_len(ARRANGE_PARALLEL_CHUNK_TASKS)
-            .map(|chunk| partition_draw_chunk(chunk, batch_ids))
+            .map(|chunk| partition_draw_chunk(chunk, batch_ids, surface_stacks))
             .collect::<Vec<_>>()
     } else {
         profiling::scope!("mesh::arrange_draws_by_phase_bins::serial_partition");
         chunks
             .into_iter()
-            .map(|chunk| partition_draw_chunk(chunk, batch_ids))
+            .map(|chunk| partition_draw_chunk(chunk, batch_ids, surface_stacks))
             .collect::<Vec<_>>()
     };
     merge_partitioned_chunks(partitioned)
@@ -403,12 +550,19 @@ fn partition_draw_chunks(
 fn partition_draw_chunk(
     input: Vec<WorldMeshDrawItem>,
     batch_ids: &BatchIdTable,
+    surface_stacks: &NonTransparentSurfaceStackTable,
 ) -> PartitionedDrawChunk {
     let mut bins: HashMap<NonTransparentBinKey, Vec<WorldMeshDrawItem>> =
         HashMap::with_capacity(input.len().min(1_024));
     let mut strict_ordered = Vec::new();
     for item in input {
-        partition_draw_item(item, batch_ids, &mut bins, &mut strict_ordered);
+        partition_draw_item(
+            item,
+            batch_ids,
+            surface_stacks,
+            &mut bins,
+            &mut strict_ordered,
+        );
     }
     PartitionedDrawChunk {
         bins,
@@ -436,6 +590,7 @@ fn merge_partitioned_chunks(
 fn partition_draw_item(
     item: WorldMeshDrawItem,
     batch_ids: &BatchIdTable,
+    surface_stacks: &NonTransparentSurfaceStackTable,
     bins: &mut HashMap<NonTransparentBinKey, Vec<WorldMeshDrawItem>>,
     strict_ordered: &mut Vec<WorldMeshDrawItem>,
 ) {
@@ -447,6 +602,7 @@ fn partition_draw_item(
             &item,
             classification.phase,
             batch_ids,
+            surface_stacks,
         ))
         .or_default()
         .push(item);
@@ -499,16 +655,28 @@ fn cmp_nontransparent_stack_keys(
     let (Some(a), Some(b)) = (a, b) else {
         return Ordering::Equal;
     };
-    a.space_id
-        .cmp(&b.space_id)
-        .then(a.skinned.cmp(&b.skinned))
-        .then(a.renderable_index.cmp(&b.renderable_index))
+    cmp_nontransparent_surface_stack_keys(&a.surface, &b.surface)
         .then(a.instance_id.cmp(&b.instance_id))
+        .then(a.first_stacked_slot_index.cmp(&b.first_stacked_slot_index))
+        .then(a.slot_index.cmp(&b.slot_index))
+}
+
+/// Orders equal-depth surface-stack identities in the same hierarchy as nontransparent bins.
+fn cmp_nontransparent_surface_stack_keys(
+    a: &NonTransparentSurfaceStackKey,
+    b: &NonTransparentSurfaceStackKey,
+) -> Ordering {
+    a.is_overlay
+        .cmp(&b.is_overlay)
+        .then_with(|| phase_flatten_rank(a.phase).cmp(&phase_flatten_rank(b.phase)))
+        .then(a.render_queue.cmp(&b.render_queue))
+        .then(a.sorting_order.cmp(&b.sorting_order))
+        .then(a.space_id.cmp(&b.space_id))
+        .then(a.skinned.cmp(&b.skinned))
+        .then(a.node_id.cmp(&b.node_id))
         .then(a.mesh_asset_id.cmp(&b.mesh_asset_id))
         .then(a.first_index.cmp(&b.first_index))
         .then(a.index_count.cmp(&b.index_count))
-        .then(a.first_stacked_slot_index.cmp(&b.first_stacked_slot_index))
-        .then(a.slot_index.cmp(&b.slot_index))
 }
 
 /// Stable rank where post-skybox work starts.
@@ -569,384 +737,4 @@ fn cmp_nontransparent_bin_to_strict_draw(
 }
 
 #[cfg(test)]
-mod tests {
-    use crate::materials::{
-        UNITY_RENDER_QUEUE_ALPHA_TEST, UNITY_RENDER_QUEUE_TRANSPARENT,
-        UNITY_TRANSPARENT_RENDER_QUEUE_MIN,
-    };
-    use crate::scene::MeshRendererInstanceId;
-    use crate::world_mesh::draw_prep::item::MaterialStackOrder;
-    use crate::world_mesh::draw_prep::pack_sort_prefix;
-    use crate::world_mesh::materials::compute_batch_key_hash;
-    use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
-
-    use crate::world_mesh::WorldMeshDrawItem;
-
-    use super::{
-        ARRANGE_PARALLEL_MIN_DRAWS, arrange_draw_chunks_by_phase_bins, arrange_draws_by_phase_bins,
-    };
-
-    /// Builds an opaque dummy draw item.
-    fn opaque(mesh: i32, material: i32, collect_order: usize) -> WorldMeshDrawItem {
-        dummy_world_mesh_draw_item(DummyDrawItemSpec {
-            material_asset_id: material,
-            property_block: None,
-            skinned: false,
-            sorting_order: 0,
-            mesh_asset_id: mesh,
-            node_id: collect_order as i32,
-            slot_index: 0,
-            collect_order,
-            alpha_blended: false,
-        })
-    }
-
-    /// Refreshes precomputed batch and sort keys after mutating material state.
-    fn refresh_keys(item: &mut WorldMeshDrawItem) {
-        item.batch_key_hash = compute_batch_key_hash(&item.batch_key);
-        item.sort_prefix = pack_sort_prefix(
-            item.is_overlay,
-            item.batch_key.render_queue,
-            item.batch_key.uses_transparent_sorting(),
-            item._opaque_depth_bucket,
-            item.batch_key_hash,
-        );
-    }
-
-    /// Sets a draw's render queue and refreshes precomputed keys.
-    fn set_render_queue(item: &mut WorldMeshDrawItem, render_queue: i32) {
-        item.batch_key.render_queue = render_queue;
-        refresh_keys(item);
-    }
-
-    /// Sets the sort distance used by transparent strict ordering.
-    fn set_camera_distance(item: &mut WorldMeshDrawItem, distance_sq: f32) {
-        item.camera_distance_sq = distance_sq;
-    }
-
-    /// Marks a draw as one layer of the same two-submesh, three-material stack.
-    fn mark_stacked_layer(item: &mut WorldMeshDrawItem, slot_index: usize) {
-        item.node_id = 50;
-        item.renderable_index = 7;
-        item.instance_id = MeshRendererInstanceId(7);
-        item.slot_index = slot_index;
-        item.material_stack_order = MaterialStackOrder::from_slot_counts(slot_index, 3, 2);
-        item.first_index = 3;
-        item.index_count = 6;
-    }
-
-    /// Captures the fields that define arranged draw order for these tests.
-    fn arranged_signature(items: &[WorldMeshDrawItem]) -> Vec<(usize, i32, i32, bool, bool)> {
-        items
-            .iter()
-            .map(|item| {
-                (
-                    item.collect_order,
-                    item.mesh_asset_id,
-                    item.batch_key.material_asset_id,
-                    item.batch_key.uses_transparent_sorting(),
-                    item.batch_key.embedded_requires_intersection_pass,
-                )
-            })
-            .collect()
-    }
-
-    #[test]
-    fn opaque_bins_keep_same_material_contiguous_without_full_item_sort() {
-        let mut repeated_mesh = opaque(10, 1, 0);
-        repeated_mesh.node_id = 100;
-        let mut draws = vec![
-            repeated_mesh,
-            opaque(20, 2, 1),
-            opaque(11, 1, 2),
-            opaque(10, 1, 3),
-        ];
-
-        let stats = arrange_draws_by_phase_bins(&mut draws, false);
-
-        assert_eq!(stats.nontransparent_binned_draws, 4);
-        assert_eq!(stats.strict_sorted_draws, 0);
-        let material_runs: Vec<_> = draws
-            .iter()
-            .map(|draw| draw.batch_key.material_asset_id)
-            .fold(Vec::<i32>::new(), |mut runs, material| {
-                if runs.last().copied() != Some(material) {
-                    runs.push(material);
-                }
-                runs
-            });
-        assert_eq!(material_runs.len(), 2);
-        let material_one: Vec<_> = draws
-            .iter()
-            .filter(|draw| draw.batch_key.material_asset_id == 1)
-            .map(|draw| draw.mesh_asset_id)
-            .collect();
-        assert_eq!(material_one, vec![10, 10, 11]);
-    }
-
-    #[test]
-    fn nontransparent_stacked_layers_preserve_slot_order_across_material_bins() {
-        let mut first_layer = opaque(10, 100, 0);
-        mark_stacked_layer(&mut first_layer, 1);
-        let mut second_layer = opaque(10, 200, 1);
-        mark_stacked_layer(&mut second_layer, 2);
-
-        let mut draws = vec![second_layer, first_layer];
-        let stats = arrange_draws_by_phase_bins(&mut draws, false);
-
-        assert_eq!(stats.nontransparent_binned_draws, 2);
-        assert_eq!(
-            draws.iter().map(|item| item.slot_index).collect::<Vec<_>>(),
-            vec![1, 2]
-        );
-    }
-
-    #[test]
-    fn alpha_test_and_intersection_bins_flatten_before_transparent_tail() {
-        let mut alpha_test = opaque(1, 1, 0);
-        set_render_queue(&mut alpha_test, UNITY_RENDER_QUEUE_ALPHA_TEST);
-        let mut intersect = opaque(1, 2, 1);
-        intersect.batch_key.embedded_requires_intersection_pass = true;
-        refresh_keys(&mut intersect);
-        let mut transparent = opaque(1, 3, 2);
-        set_render_queue(&mut transparent, UNITY_RENDER_QUEUE_TRANSPARENT);
-
-        let mut draws = vec![transparent, intersect, alpha_test];
-        let stats = arrange_draws_by_phase_bins(&mut draws, false);
-
-        assert_eq!(stats.nontransparent_binned_draws, 2);
-        assert_eq!(stats.strict_sorted_draws, 1);
-        assert_eq!(
-            draws[0].batch_key.render_queue,
-            UNITY_RENDER_QUEUE_ALPHA_TEST
-        );
-        assert!(draws[1].batch_key.embedded_requires_intersection_pass);
-        assert!(draws[2].batch_key.uses_transparent_sorting());
-    }
-
-    #[test]
-    fn geometry_last_queue_bins_before_transparent_tail_without_transparent_sorting() {
-        let mut alpha = dummy_world_mesh_draw_item(DummyDrawItemSpec {
-            material_asset_id: 1,
-            property_block: None,
-            skinned: false,
-            sorting_order: 0,
-            mesh_asset_id: 1,
-            node_id: 1,
-            slot_index: 0,
-            collect_order: 0,
-            alpha_blended: true,
-        });
-        set_render_queue(&mut alpha, UNITY_TRANSPARENT_RENDER_QUEUE_MIN);
-        set_camera_distance(&mut alpha, 16.0);
-
-        let mut geometry_last = opaque(1, 2, 1);
-        geometry_last.batch_key.blend_mode = crate::materials::MaterialBlendMode::Opaque;
-        set_render_queue(&mut geometry_last, UNITY_TRANSPARENT_RENDER_QUEUE_MIN - 1);
-
-        let mut transparent = dummy_world_mesh_draw_item(DummyDrawItemSpec {
-            material_asset_id: 3,
-            property_block: None,
-            skinned: false,
-            sorting_order: 0,
-            mesh_asset_id: 1,
-            node_id: 3,
-            slot_index: 0,
-            collect_order: 2,
-            alpha_blended: true,
-        });
-        set_render_queue(&mut transparent, UNITY_RENDER_QUEUE_TRANSPARENT);
-        set_camera_distance(&mut transparent, 4.0);
-
-        let mut draws = vec![transparent, geometry_last, alpha];
-        let stats = arrange_draws_by_phase_bins(&mut draws, false);
-
-        assert_eq!(stats.nontransparent_binned_draws, 1);
-        assert_eq!(stats.strict_sorted_draws, 2);
-        assert_eq!(
-            draws
-                .iter()
-                .map(|item| item.batch_key.render_queue)
-                .collect::<Vec<_>>(),
-            vec![
-                UNITY_TRANSPARENT_RENDER_QUEUE_MIN - 1,
-                UNITY_TRANSPARENT_RENDER_QUEUE_MIN,
-                UNITY_RENDER_QUEUE_TRANSPARENT,
-            ]
-        );
-        assert!(!draws[0].batch_key.uses_transparent_sorting());
-    }
-
-    #[test]
-    fn transparent_tail_keeps_back_to_front_order() {
-        let mut near = dummy_world_mesh_draw_item(DummyDrawItemSpec {
-            material_asset_id: 1,
-            property_block: None,
-            skinned: false,
-            sorting_order: 0,
-            mesh_asset_id: 1,
-            node_id: 1,
-            slot_index: 0,
-            collect_order: 0,
-            alpha_blended: true,
-        });
-        set_camera_distance(&mut near, 1.0);
-        let mut far = near.clone();
-        far.node_id = 2;
-        far.collect_order = 1;
-        set_camera_distance(&mut far, 64.0);
-
-        let mut draws = vec![near, far];
-        arrange_draws_by_phase_bins(&mut draws, false);
-
-        assert_eq!(draws[0].node_id, 2);
-        assert_eq!(draws[1].node_id, 1);
-    }
-
-    #[test]
-    fn transparent_intersection_draws_share_transparent_tail_order() {
-        let mut intersect_near = dummy_world_mesh_draw_item(DummyDrawItemSpec {
-            material_asset_id: 1,
-            property_block: None,
-            skinned: false,
-            sorting_order: 0,
-            mesh_asset_id: 1,
-            node_id: 1,
-            slot_index: 0,
-            collect_order: 0,
-            alpha_blended: true,
-        });
-        intersect_near.batch_key.embedded_requires_intersection_pass = true;
-        intersect_near.batch_key.embedded_uses_scene_depth_snapshot = true;
-        refresh_keys(&mut intersect_near);
-        set_camera_distance(&mut intersect_near, 4.0);
-
-        let mut transparent_far = dummy_world_mesh_draw_item(DummyDrawItemSpec {
-            material_asset_id: 2,
-            property_block: None,
-            skinned: false,
-            sorting_order: 0,
-            mesh_asset_id: 1,
-            node_id: 2,
-            slot_index: 0,
-            collect_order: 1,
-            alpha_blended: true,
-        });
-        set_camera_distance(&mut transparent_far, 64.0);
-
-        let mut draws = vec![intersect_near, transparent_far];
-        let stats = arrange_draws_by_phase_bins(&mut draws, false);
-
-        assert_eq!(stats.nontransparent_binned_draws, 0);
-        assert_eq!(stats.strict_sorted_draws, 2);
-        assert!(!draws[0].batch_key.embedded_requires_intersection_pass);
-        assert!(draws[1].batch_key.embedded_requires_intersection_pass);
-    }
-
-    #[test]
-    fn grab_and_regular_transparent_share_one_strict_tail_order() {
-        let mut grab = dummy_world_mesh_draw_item(DummyDrawItemSpec {
-            material_asset_id: 1,
-            property_block: None,
-            skinned: false,
-            sorting_order: 0,
-            mesh_asset_id: 1,
-            node_id: 1,
-            slot_index: 0,
-            collect_order: 0,
-            alpha_blended: true,
-        });
-        grab.batch_key.embedded_uses_scene_color_snapshot = true;
-        refresh_keys(&mut grab);
-        set_camera_distance(&mut grab, 100.0);
-        let mut regular = grab.clone();
-        regular.node_id = 2;
-        regular.collect_order = 1;
-        regular.batch_key.embedded_uses_scene_color_snapshot = false;
-        refresh_keys(&mut regular);
-        set_camera_distance(&mut regular, 4.0);
-
-        let mut draws = vec![regular, grab];
-        arrange_draws_by_phase_bins(&mut draws, false);
-
-        assert!(draws[0].batch_key.embedded_uses_scene_color_snapshot);
-        assert!(!draws[1].batch_key.embedded_uses_scene_color_snapshot);
-    }
-
-    #[test]
-    fn parallel_partition_matches_serial_arrangement() {
-        let mut serial = (0..ARRANGE_PARALLEL_MIN_DRAWS + 64)
-            .map(|idx| {
-                let mut item = opaque((idx % 23) as i32, (idx % 31) as i32, idx);
-                if idx % 11 == 0 {
-                    set_render_queue(&mut item, UNITY_RENDER_QUEUE_TRANSPARENT);
-                    set_camera_distance(&mut item, (idx % 97) as f32 + 1.0);
-                } else if idx % 7 == 0 {
-                    set_render_queue(&mut item, UNITY_RENDER_QUEUE_ALPHA_TEST);
-                }
-                if idx % 17 == 0 {
-                    item.batch_key.embedded_requires_intersection_pass = true;
-                    refresh_keys(&mut item);
-                }
-                item
-            })
-            .collect::<Vec<_>>();
-        let mut parallel = serial.clone();
-
-        let serial_stats = arrange_draws_by_phase_bins(&mut serial, false);
-        let parallel_stats = arrange_draws_by_phase_bins(&mut parallel, true);
-
-        assert_eq!(parallel_stats, serial_stats);
-        assert_eq!(arranged_signature(&parallel), arranged_signature(&serial));
-    }
-
-    #[test]
-    fn chunked_arrangement_assigns_collect_order_across_chunks() {
-        let chunks = vec![
-            vec![opaque(10, 1, 99), opaque(10, 1, 98)],
-            vec![opaque(10, 1, 97), opaque(10, 1, 96)],
-        ];
-
-        let (draws, stats) = arrange_draw_chunks_by_phase_bins(chunks, false);
-
-        assert_eq!(stats.nontransparent_bins, 1);
-        assert_eq!(stats.nontransparent_binned_draws, 4);
-        assert_eq!(
-            draws
-                .iter()
-                .map(|item| item.collect_order)
-                .collect::<Vec<_>>(),
-            vec![0, 1, 2, 3]
-        );
-    }
-
-    #[test]
-    fn chunked_parallel_arrangement_matches_chunked_serial_arrangement() {
-        let source = (0..ARRANGE_PARALLEL_MIN_DRAWS + 96)
-            .map(|idx| {
-                let mut item = opaque((idx % 19) as i32, (idx % 29) as i32, idx);
-                if idx % 13 == 0 {
-                    set_render_queue(&mut item, UNITY_RENDER_QUEUE_TRANSPARENT);
-                    set_camera_distance(&mut item, (idx % 89) as f32 + 1.0);
-                } else if idx % 5 == 0 {
-                    set_render_queue(&mut item, UNITY_RENDER_QUEUE_ALPHA_TEST);
-                }
-                if idx % 23 == 0 {
-                    item.batch_key.embedded_uses_scene_color_snapshot = true;
-                    refresh_keys(&mut item);
-                }
-                item
-            })
-            .collect::<Vec<_>>();
-        let chunks = source
-            .chunks(37)
-            .map(|chunk| chunk.to_vec())
-            .collect::<Vec<_>>();
-
-        let (serial, serial_stats) = arrange_draw_chunks_by_phase_bins(chunks.clone(), false);
-        let (parallel, parallel_stats) = arrange_draw_chunks_by_phase_bins(chunks, true);
-
-        assert_eq!(parallel_stats, serial_stats);
-        assert_eq!(arranged_signature(&parallel), arranged_signature(&serial));
-    }
-}
+mod tests;
