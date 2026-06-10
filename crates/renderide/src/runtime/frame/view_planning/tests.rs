@@ -125,6 +125,7 @@ fn empty_scene_vr_secondaries_only_yields_empty_vec() {
         views.is_empty(),
         "no HMD, no secondaries, and main view excluded -- nothing to render"
     );
+    assert_eq!(views.frame_global().view_id, ViewId::Main);
     assert!(views.frame_global().post_processing.is_enabled());
 }
 
@@ -139,6 +140,7 @@ fn empty_scene_desktop_secondaries_only_uses_desktop_frame_global_fallback() {
     );
 
     assert!(views.is_empty());
+    assert_eq!(views.frame_global().view_id, ViewId::Main);
     assert!(!views.frame_global().post_processing.is_enabled());
     assert_eq!(
         views.frame_global().render_context,
@@ -157,6 +159,7 @@ fn desktop_main_view_overrides_frame_global_fallback() {
     );
 
     assert_eq!(views.plans().len(), 1);
+    assert_eq!(views.frame_global().view_id, ViewId::Main);
     assert!(!views.frame_global().post_processing.is_enabled());
 }
 

@@ -149,7 +149,9 @@ pub fn on_unload_video_texture(queue: &mut AssetTransferQueue, u: UnloadVideoTex
     let id = u.asset_id;
     queue.pending.pending_video_texture_loads.remove(&id);
     queue.catalogs.video_texture_properties.remove(&id);
-    queue.video.video_players.remove(&id);
+    if let Some(player) = queue.video.video_players.remove(&id) {
+        queue.video.retire_player(player);
+    }
     if let Some(texture) = queue.pools.video_texture_pool.take(id) {
         queue
             .integrator_mut()

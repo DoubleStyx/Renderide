@@ -8,8 +8,7 @@ use crate::gpu::GpuContext;
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::render_graph::{GraphExecuteError, RenderPathProfile};
 use crate::scene::{
-    ReflectionProbeOnChangesRenderRequest, RenderSpaceId, SceneCoordinator,
-    reflection_probe_skybox_only,
+    ReflectionProbeOnChangesRenderRequest, SceneCoordinator, reflection_probe_skybox_only,
 };
 use crate::shared::{
     FrameSubmitData, ReflectionProbeRenderResult, ReflectionProbeRenderTask, ReflectionProbeState,
@@ -45,7 +44,7 @@ use face::{
 use super::super::RendererRuntime;
 use super::super::frame::schedule::RenderScheduleKind;
 use super::super::frame::view_plan::{FrameViewPlan, FrameViewPlanParams, FrameViewPlanTarget};
-use super::super::state::tick::QueuedReflectionProbeRenderTask;
+use super::submit_completion::QueuedReflectionProbeRenderTask;
 
 const RGBA16F_BYTES_PER_PIXEL: usize = 8;
 const RGBA8_BYTES_PER_PIXEL: usize = 4;
@@ -261,32 +260,17 @@ impl RendererRuntime {
         data: &FrameSubmitData,
     ) {
         profiling::scope!("reflection_probe_task::queue");
-        let initial = self.tick_state.pending_reflection_probe_render_tasks.len();
-        for space in &data.render_spaces {
-            let render_space_id = RenderSpaceId(space.id);
-            self.tick_state
-                .pending_reflection_probe_render_tasks
-                .extend(
-                    space
-                        .reflection_probe_render_tasks
-                        .iter()
-                        .cloned()
-                        .map(|task| QueuedReflectionProbeRenderTask {
-                            render_space_id,
-                            task,
-                        }),
-                );
-        }
         let added = self
             .tick_state
-            .pending_reflection_probe_render_tasks
-            .len()
-            .saturating_sub(initial);
+            .submit_completion_work
+            .queue_reflection_probe_tasks_from_submit(data);
         if added > 0 {
             logger::debug!(
                 "queued {} ReflectionProbeRenderTask bake(s); pending={}",
                 added,
-                self.tick_state.pending_reflection_probe_render_tasks.len()
+                self.tick_state
+                    .submit_completion_work
+                    .reflection_probe_count()
             );
         }
     }
@@ -324,7 +308,10 @@ impl RendererRuntime {
     /// Drains queued reflection-probe bake tasks before the next host begin-frame is sent.
     pub fn drain_reflection_probe_render_tasks(&mut self, gpu: &mut GpuContext) {
         profiling::scope!("reflection_probe_task::drain");
-        let tasks = std::mem::take(&mut self.tick_state.pending_reflection_probe_render_tasks);
+        let tasks = self
+            .tick_state
+            .submit_completion_work
+            .take_reflection_probe_tasks();
         self.flush_reflection_probe_render_results();
         if !tasks.is_empty() {
             let RendererRuntime {

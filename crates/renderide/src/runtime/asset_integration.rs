@@ -72,9 +72,9 @@ impl RendererRuntime {
         let budget_ms = self.asset_integration_budget_ms();
         trace_asset_integration_summary(budget_ms, summary);
         self.record_asset_integration_summary(summary, 0);
-        let made_non_gpu_progress =
-            summary.processed_main_tasks > 0 || summary.processed_particle_tasks > 0;
-        self.backend.has_pending_asset_work() && (summary.gpu_ready || made_non_gpu_progress)
+        self.backend.has_pending_asset_work()
+            && summary.made_progress
+            && (!summary.blocked_on_background || summary.budget_exhausted())
     }
 
     /// Drains completed asynchronous shader uploads before an asset-integration slice.
@@ -195,7 +195,7 @@ fn trace_asset_integration_summary(
         return;
     }
     logger::trace!(
-        "asset integration: budget_ms={} gpu_ready={} elapsed_ms={:.3} particle_elapsed_ms={:.3} main {}->{} high {}->{} render {}->{} normal {}->{} particle {}->{} processed={} exhausted_high={} exhausted_render={} exhausted_normal={} exhausted_particle={} peak_queued={}",
+        "asset integration: budget_ms={} gpu_ready={} elapsed_ms={:.3} particle_elapsed_ms={:.3} main {}->{} high {}->{} render {}->{} normal {}->{} particle {}->{} processed={} made_progress={} blocked_on_background={} exhausted_high={} exhausted_render={} exhausted_normal={} exhausted_particle={} peak_queued={}",
         budget_ms,
         summary.gpu_ready,
         summary.elapsed.as_secs_f64() * 1000.0,
@@ -211,6 +211,8 @@ fn trace_asset_integration_summary(
         summary.particle_before,
         summary.particle_after,
         summary.processed_tasks,
+        summary.made_progress,
+        summary.blocked_on_background,
         summary.high_priority_budget_exhausted,
         summary.render_budget_exhausted,
         summary.normal_priority_budget_exhausted,

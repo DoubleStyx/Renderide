@@ -22,13 +22,11 @@ pub struct ShaderRouteEntry {
 #[derive(Debug)]
 pub struct MaterialRouter {
     routes: HashMap<i32, ShaderRouteEntry>,
-    /// Optional composed WGSL stem (`shaders/target/<stem>.wgsl`) when an embedded `{key}_default` target exists.
-    shader_stem: HashMap<i32, String>,
     /// Default when `routes` has no entry.
     fallback: RasterPipelineKind,
     /// Monotonic counter bumped on every mutation; read by
     /// [`crate::world_mesh::FrameMaterialBatchCache`]
-    /// to invalidate resolved entries when any route, stem, or fallback changes.
+    /// to invalidate resolved entries when any route or fallback changes.
     generation: u64,
 }
 
@@ -37,7 +35,6 @@ impl MaterialRouter {
     pub fn new(fallback: RasterPipelineKind) -> Self {
         Self {
             routes: HashMap::new(),
-            shader_stem: HashMap::new(),
             fallback,
             generation: 0,
         }
@@ -52,7 +49,7 @@ impl MaterialRouter {
         self.bump();
     }
 
-    /// Monotonic generation counter bumped on any route / stem / fallback mutation.
+    /// Monotonic generation counter bumped on any route or fallback mutation.
     ///
     /// Persistent resolved-material caches compare a snapshot of this value against the current
     /// value to detect when a re-resolve is required.
@@ -68,6 +65,7 @@ impl MaterialRouter {
     }
 
     /// Inserts or replaces a host shader route (pipeline kind and optional shader asset name).
+    #[cfg(test)]
     pub fn set_shader_route(
         &mut self,
         shader_asset_id: i32,
@@ -75,7 +73,7 @@ impl MaterialRouter {
         shader_asset_name: Option<String>,
         shader_variant_bits: Option<u32>,
     ) {
-        self.routes.insert(
+        self.set_shader_route_entry(
             shader_asset_id,
             ShaderRouteEntry {
                 pipeline,
@@ -83,6 +81,11 @@ impl MaterialRouter {
                 shader_variant_bits,
             },
         );
+    }
+
+    /// Inserts or replaces a host shader route entry.
+    pub(crate) fn set_shader_route_entry(&mut self, shader_asset_id: i32, route: ShaderRouteEntry) {
+        self.routes.insert(shader_asset_id, route);
         self.bump();
     }
 
@@ -99,22 +102,14 @@ impl MaterialRouter {
             .map_or_else(|| self.fallback.clone(), |e| e.pipeline.clone())
     }
 
-    /// Records a target WGSL stem for `shader_asset_id` (from embedded Unity name resolution).
-    pub fn set_shader_stem(&mut self, shader_asset_id: i32, stem: String) {
-        self.shader_stem.insert(shader_asset_id, stem);
-        self.bump();
-    }
-
-    /// Clears [`Self::stem_for_shader_asset`] for `shader_asset_id`.
-    pub fn remove_shader_stem(&mut self, shader_asset_id: i32) {
-        if self.shader_stem.remove(&shader_asset_id).is_some() {
-            self.bump();
-        }
-    }
-
     /// Composed material stem when the host shader name matched an embedded target.
     pub fn stem_for_shader_asset(&self, shader_asset_id: i32) -> Option<&str> {
-        self.shader_stem.get(&shader_asset_id).map(String::as_str)
+        self.routes
+            .get(&shader_asset_id)
+            .and_then(|entry| match &entry.pipeline {
+                RasterPipelineKind::EmbeddedStem(stem) => Some(stem.as_ref()),
+                RasterPipelineKind::Null => None,
+            })
     }
 
     /// Froox shader variant bitmask for a host shader id, when one was parsed.
@@ -126,9 +121,7 @@ impl MaterialRouter {
 
     /// Drops a host shader id mapping after [`crate::shared::ShaderUnload`].
     pub fn remove_shader_route(&mut self, shader_asset_id: i32) {
-        let had_route = self.routes.remove(&shader_asset_id).is_some();
-        let had_stem = self.shader_stem.remove(&shader_asset_id).is_some();
-        if had_route || had_stem {
+        if self.routes.remove(&shader_asset_id).is_some() {
             self.bump();
         }
     }
@@ -213,10 +206,25 @@ mod tests {
     fn remove_shader_route_clears_stem() {
         let mut r = MaterialRouter::new(RasterPipelineKind::Null);
         r.set_shader_route(1, test_route_pipeline(), Some("x".to_string()), None);
-        r.set_shader_stem(1, "null_default".to_string());
-        assert_eq!(r.stem_for_shader_asset(1), Some("null_default"));
+        assert_eq!(r.stem_for_shader_asset(1), Some("test_route_default"));
         r.remove_shader_route(1);
         assert_eq!(r.stem_for_shader_asset(1), None);
+    }
+
+    #[test]
+    fn route_replacement_updates_pipeline_stem_and_variant_bits() {
+        let mut r = MaterialRouter::new(RasterPipelineKind::Null);
+        r.set_shader_route(1, test_route_pipeline(), Some("x".to_string()), Some(0x10));
+        r.set_shader_route(
+            1,
+            RasterPipelineKind::Null,
+            Some("x".to_string()),
+            Some(0x20),
+        );
+
+        assert_eq!(r.pipeline_for_shader_asset(1), RasterPipelineKind::Null);
+        assert_eq!(r.stem_for_shader_asset(1), None);
+        assert_eq!(r.variant_bits_for_shader_asset(1), Some(0x20));
     }
 
     #[test]
@@ -265,14 +273,11 @@ mod tests {
         // Reads don't bump.
         let _ = r.pipeline_for_shader_asset(1);
         assert_eq!(r.generation(), g1);
-        r.set_shader_stem(1, "foo_default".to_string());
+        r.remove_shader_route(1);
         let g2 = r.generation();
         assert_ne!(g1, g2);
-        r.remove_shader_route(1);
-        let g3 = r.generation();
-        assert_ne!(g2, g3);
         r.set_fallback(RasterPipelineKind::Null);
-        assert_ne!(r.generation(), g3);
+        assert_ne!(r.generation(), g2);
     }
 
     #[test]
@@ -280,7 +285,6 @@ mod tests {
         let mut r = MaterialRouter::new(RasterPipelineKind::Null);
         r.set_shader_pipeline(1, test_route_pipeline());
         let g = r.generation();
-        r.remove_shader_stem(999);
         r.remove_shader_route(999);
         assert_eq!(r.generation(), g);
     }

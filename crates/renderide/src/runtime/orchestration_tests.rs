@@ -21,7 +21,6 @@ use crate::shared::{
 };
 
 use super::RendererRuntime;
-use super::state::tick::QueuedReflectionProbeRenderTask;
 
 static IPC_TEST_QUEUE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -140,9 +139,7 @@ fn submit_completion_work_drained_waits_for_camera_tasks() {
     let mut rt = test_runtime_standalone();
     assert!(rt.submit_completion_work_drained());
 
-    rt.tick_state
-        .pending_camera_render_tasks
-        .push(CameraRenderTask::default());
+    rt.queue_camera_render_tasks(&[CameraRenderTask::default()]);
 
     assert!(!rt.submit_completion_work_drained());
 }
@@ -171,7 +168,13 @@ fn regular_begin_frame_waits_for_late_camera_task_after_render_attempt() {
     assert!(!rt.submit_completion_work_drained());
     assert!(!rt.should_send_begin_frame());
 
-    rt.tick_state.pending_camera_render_tasks.clear();
+    assert_eq!(
+        rt.tick_state
+            .submit_completion_work
+            .take_camera_tasks()
+            .len(),
+        1
+    );
 
     assert!(rt.submit_completion_work_drained());
     assert!(rt.should_send_begin_frame());
@@ -186,17 +189,25 @@ fn regular_begin_frame_waits_for_reflection_probe_task_after_render_attempt() {
     });
     rt.note_frame_render_attempted();
 
-    rt.tick_state
-        .pending_reflection_probe_render_tasks
-        .push(QueuedReflectionProbeRenderTask {
-            render_space_id: crate::scene::RenderSpaceId(1),
-            task: ReflectionProbeRenderTask::default(),
-        });
+    rt.queue_reflection_probe_render_tasks(&FrameSubmitData {
+        render_spaces: vec![RenderSpaceUpdate {
+            id: 1,
+            reflection_probe_render_tasks: vec![ReflectionProbeRenderTask::default()],
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
 
     assert!(!rt.submit_completion_work_drained());
     assert!(!rt.should_send_begin_frame());
 
-    rt.tick_state.pending_reflection_probe_render_tasks.clear();
+    assert_eq!(
+        rt.tick_state
+            .submit_completion_work
+            .take_reflection_probe_tasks()
+            .len(),
+        1
+    );
 
     assert!(rt.submit_completion_work_drained());
     assert!(rt.should_send_begin_frame());
@@ -253,12 +264,14 @@ fn submit_completion_work_drained_waits_for_reflection_probe_tasks() {
     let mut rt = test_runtime_standalone();
     assert!(rt.submit_completion_work_drained());
 
-    rt.tick_state
-        .pending_reflection_probe_render_tasks
-        .push(QueuedReflectionProbeRenderTask {
-            render_space_id: crate::scene::RenderSpaceId(1),
-            task: ReflectionProbeRenderTask::default(),
-        });
+    rt.queue_reflection_probe_render_tasks(&FrameSubmitData {
+        render_spaces: vec![RenderSpaceUpdate {
+            id: 1,
+            reflection_probe_render_tasks: vec![ReflectionProbeRenderTask::default()],
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
 
     assert!(!rt.submit_completion_work_drained());
 }

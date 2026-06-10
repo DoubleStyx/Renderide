@@ -425,6 +425,28 @@ impl AssetTransferQueue {
             .contains_key(&asset_id)
     }
 
+    /// Point render-buffer asset ids with retained uploads and no active background build.
+    pub(in crate::backend::asset_transfers) fn startable_point_render_buffer_upload_ids(
+        &self,
+    ) -> Vec<i32> {
+        self.pending_point_render_buffer_uploads
+            .keys()
+            .copied()
+            .filter(|asset_id| !self.active_point_render_buffer_builds.contains(asset_id))
+            .collect()
+    }
+
+    /// Trail render-buffer asset ids with retained uploads and no active background build.
+    pub(in crate::backend::asset_transfers) fn startable_trail_render_buffer_upload_ids(
+        &self,
+    ) -> Vec<i32> {
+        self.pending_trail_render_buffer_uploads
+            .keys()
+            .copied()
+            .filter(|asset_id| !self.active_trail_render_buffer_builds.contains(asset_id))
+            .collect()
+    }
+
     /// Invalidates in-flight point render-buffer work for `asset_id`.
     #[inline]
     pub(crate) fn cancel_point_render_buffer_generation(&mut self, asset_id: i32) -> bool {

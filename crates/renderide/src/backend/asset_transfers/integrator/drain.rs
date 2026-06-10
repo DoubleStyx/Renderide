@@ -8,7 +8,9 @@ use crate::materials::MaterialSystem;
 use crate::profiling::{AssetIntegrationProfileSample, plot_asset_integration};
 
 use super::super::AssetTransferQueue;
-use super::super::particle_task::drain_ready_particle_builds;
+use super::super::particle_task::{
+    drain_ready_particle_builds, enqueue_startable_particle_uploads,
+};
 use super::gpu_context::{AssetUploadGpuContext, GpuHandles, collect_gpu_handles};
 use super::queue::AssetTaskLane;
 use super::step::{StepResult, step_asset_task};
@@ -34,6 +36,10 @@ const DEADLINE_POLL_STRIDE: u32 = 4;
 struct LaneDrainOutcome {
     /// Whether the lane still had queued work when the drain ended.
     pending: bool,
+    /// Whether the lane ended with queued work that cannot make progress until background state changes.
+    blocked_on_background: bool,
+    /// Whether at least one task step completed useful work.
+    made_progress: bool,
     /// Queue steps processed by this drain.
     processed: u32,
 }
@@ -384,6 +390,16 @@ fn finalize_drain(
         render: outcomes.integration.render.processed,
         particle: outcomes.particle.processed,
     };
+    let made_progress = outcomes.integration.main.made_progress
+        || outcomes.integration.high_priority.made_progress
+        || outcomes.integration.normal_priority.made_progress
+        || outcomes.integration.render.made_progress
+        || outcomes.particle.made_progress;
+    let blocked_on_background = outcomes.integration.main.blocked_on_background
+        || outcomes.integration.high_priority.blocked_on_background
+        || outcomes.integration.normal_priority.blocked_on_background
+        || outcomes.integration.render.blocked_on_background
+        || outcomes.particle.blocked_on_background;
     summary.finish(
         asset,
         DrainFinishState {
@@ -395,6 +411,8 @@ fn finalize_drain(
                 particle: outcomes.particle.pending,
             },
             processed,
+            made_progress,
+            blocked_on_background,
             particle_elapsed: outcomes.particle_elapsed,
             elapsed: outcomes.integration_elapsed,
         },
@@ -495,6 +513,7 @@ fn drain_particle_asset_tasks(
 ) -> LaneDrainOutcome {
     profiling::scope!("asset::particle_drain");
     let particle_gpu = super::step::particle_task_gpu(gpu);
+    let startable_before = enqueue_startable_particle_uploads(asset);
     let ready_before = drain_ready_particle_builds(asset, particle_gpu.as_ref(), particle_deadline);
     let queued = drain_lane(
         asset,
@@ -506,15 +525,28 @@ fn drain_particle_asset_tasks(
         AssetTaskLane::Particle,
     );
     let ready_after = drain_ready_particle_builds(asset, particle_gpu.as_ref(), particle_deadline);
+    let startable_after = enqueue_startable_particle_uploads(asset);
     LaneDrainOutcome {
         pending: ready_before.pending
             || queued.pending
             || ready_after.pending
             || asset.has_ready_particle_build_results(),
+        blocked_on_background: queued.blocked_on_background
+            || (ready_before.pending && particle_gpu.is_none())
+            || (ready_after.pending && particle_gpu.is_none())
+            || startable_before.pending
+            || startable_after.pending,
+        made_progress: queued.made_progress
+            || ready_before.processed > 0
+            || ready_after.processed > 0
+            || startable_before.enqueued > 0
+            || startable_after.enqueued > 0,
         processed: ready_before
             .processed
+            .saturating_add(startable_before.enqueued)
             .saturating_add(queued.processed)
-            .saturating_add(ready_after.processed),
+            .saturating_add(ready_after.processed)
+            .saturating_add(startable_after.enqueued),
     }
 }
 
@@ -535,6 +567,7 @@ fn drain_lane(
     let mut yielded: usize = 0;
     let mut iter_count: u32 = 0;
     let mut processed: u32 = 0;
+    let mut made_progress = false;
     loop {
         // Coarse deadline check: every `DEADLINE_POLL_STRIDE` iterations rather than every
         // iteration, so cheap task steps (e.g. texture mip progression) do not pay the
@@ -542,6 +575,8 @@ fn drain_lane(
         if iter_count.is_multiple_of(DEADLINE_POLL_STRIDE) && Instant::now() >= deadline {
             return LaneDrainOutcome {
                 pending: !asset.integrator.lane_is_empty(lane),
+                blocked_on_background: false,
+                made_progress,
                 processed,
             };
         }
@@ -550,6 +585,8 @@ fn drain_lane(
         let Some(mut task) = task_opt else {
             return LaneDrainOutcome {
                 pending: false,
+                blocked_on_background: false,
+                made_progress,
                 processed,
             };
         };
@@ -559,6 +596,7 @@ fn drain_lane(
             StepResult::Continue => {
                 asset.integrator.push_front_lane(task, lane);
                 yielded = 0;
+                made_progress = true;
             }
             StepResult::YieldBackground => {
                 asset.integrator.push_back_lane(task, lane);
@@ -567,12 +605,15 @@ fn drain_lane(
                 if yielded >= lane_len {
                     return LaneDrainOutcome {
                         pending: false,
+                        blocked_on_background: lane_len > 0,
+                        made_progress,
                         processed,
                     };
                 }
             }
             StepResult::Done => {
                 yielded = 0;
+                made_progress = true;
             }
         }
     }

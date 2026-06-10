@@ -53,7 +53,9 @@ impl RendererRuntime {
             self.scene.render_space_count(),
             self.scene.total_mesh_renderable_count(),
             self.diagnostics.pending_camera_readbacks,
-            self.tick_state.pending_reflection_probe_render_tasks.len(),
+            self.tick_state
+                .submit_completion_work
+                .reflection_probe_count(),
             self.diagnostics.completed_camera_readbacks,
             self.diagnostics.failed_camera_readbacks,
             self.diagnostics.frame_submit_apply_failures,

@@ -277,15 +277,15 @@ impl RendererRuntime {
             return;
         }
         self.tick_state
-            .pending_camera_render_tasks
-            .extend(tasks.iter().cloned());
-        self.set_pending_camera_readbacks(self.tick_state.pending_camera_render_tasks.len());
+            .submit_completion_work
+            .queue_camera_tasks(tasks);
+        self.set_pending_camera_readbacks(self.tick_state.submit_completion_work.camera_count());
     }
 
     /// Drains queued camera readback tasks before the next host begin-frame is sent.
     pub fn drain_camera_render_tasks(&mut self, gpu: &mut GpuContext) {
         profiling::scope!("camera_task::drain");
-        let tasks = std::mem::take(&mut self.tick_state.pending_camera_render_tasks);
+        let tasks = self.tick_state.submit_completion_work.take_camera_tasks();
         if tasks.is_empty() {
             self.set_pending_camera_readbacks(0);
             return;

@@ -23,6 +23,8 @@ const VIEW_COLLECTION_PARALLEL_CHUNK_VIEWS: usize = 1;
 pub(super) struct QueuedViewDraws {
     /// Regular camera-world draw candidates before final phase sorting.
     world: QueuedWorldMeshDraws,
+    /// Shadow-caster draw candidates before final phase sorting.
+    shadow_casters: QueuedWorldMeshDraws,
     /// Desktop overlay draw candidates before final phase sorting.
     desktop_overlay: Option<QueuedWorldMeshDraws>,
     /// Projection parameters matching the view's camera/viewport.
@@ -33,6 +35,7 @@ impl QueuedViewDraws {
     /// Number of queued draw candidates before final sorting and arrangement.
     pub(super) fn queued_draw_count(&self) -> usize {
         self.world.len()
+            + self.shadow_casters.len()
             + self
                 .desktop_overlay
                 .as_ref()
@@ -54,8 +57,15 @@ impl QueuedViewDraws {
         let desktop_overlay = self.desktop_overlay.map(|queued| {
             sort_and_package_one_view_draw_plan(queued, None, parallelism, command_cache)
         });
+        let shadow_casters = sort_and_package_one_view_draw_plan(
+            self.shadow_casters,
+            None,
+            parallelism,
+            command_cache,
+        );
         ViewWorldMeshDrawPlans {
             world,
+            shadow_casters,
             desktop_overlay,
         }
     }
@@ -101,68 +111,24 @@ pub(super) fn queue_view_draws(
     let parallelize_views =
         should_parallelize_view_collection(prepared.len(), max_prepared_draw_count);
     let (cull_inputs, cull_projs) = build_view_cull_inputs(prepared, cull_snapshots);
-    let contexts = {
-        profiling::scope!("render::queue_view_draws::build_contexts");
-        prepared
-            .iter()
-            .zip(cull_inputs.iter())
-            .map(|(prep, culling)| {
-                let shader_perm = prep.shader_permutation();
-                let render_context = prep.render_context();
-                let material_cache = {
-                    profiling::scope!("render::queue_view_draws::material_cache_lookup");
-                    setup.material_cache_for(render_context, shader_perm)
-                };
-                DrawCollectionInputs {
-                    scene_assets: DrawCollectionSceneAssets {
-                        scene: setup.scene,
-                        mesh_pool: setup.mesh_pool,
-                    },
-                    materials: DrawCollectionMaterialInputs {
-                        dict: &dict,
-                        router: setup.router,
-                        pipeline_property_ids: &setup.pipeline_property_ids,
-                        shader_perm,
-                    },
-                    view: DrawCollectionViewInputs {
-                        render_context,
-                        head_output_transform: prep.host_camera.head_output_transform,
-                        view_origin_world: prep.view_origin_world(),
-                        culling: culling.as_ref(),
-                        mesh_lod_bias,
-                        transform_filter: prep.draw_filter.as_ref(),
-                        render_space_filter: prep.render_space_filter,
-                        layer_policy: prep.layer_policy,
-                        reflection_probes: Some(setup.reflection_probes),
-                    },
-                    caches: DrawCollectionFrameCaches {
-                        material_cache,
-                        prepared: setup.prepared_renderables_for(render_context),
-                    },
-                }
-            })
-            .collect::<Vec<_>>()
-    };
-    let mut view_draws = if let Some(queued) =
-        queue_prepared_draws_for_views_with_parallelism(&contexts, inner_parallelism)
-    {
-        queued
-            .into_iter()
-            .zip(cull_projs)
-            .map(|(world, cull_proj)| QueuedViewDraws {
-                world,
-                desktop_overlay: None,
-                cull_proj,
-            })
-            .collect()
-    } else {
-        collect_view_draws_with_strategy(
-            &contexts,
-            &cull_projs,
-            parallelize_views,
-            inner_parallelism,
-        )
-    };
+    let contexts =
+        build_view_draw_collection_contexts(setup, prepared, &dict, &cull_inputs, mesh_lod_bias);
+    let shadow_contexts =
+        build_shadow_caster_draw_collection_contexts(setup, prepared, &dict, mesh_lod_bias);
+    let world_draws = queue_or_collect_view_draws(&contexts, parallelize_views, inner_parallelism);
+    let shadow_caster_draws =
+        queue_or_collect_view_draws(&shadow_contexts, parallelize_views, inner_parallelism);
+    let mut view_draws: Vec<QueuedViewDraws> = world_draws
+        .into_iter()
+        .zip(shadow_caster_draws)
+        .zip(cull_projs)
+        .map(|((world, shadow_casters), cull_proj)| QueuedViewDraws {
+            world,
+            shadow_casters,
+            desktop_overlay: None,
+            cull_proj,
+        })
+        .collect();
     queue_desktop_overlay_draws(
         setup,
         prepared,
@@ -172,6 +138,98 @@ pub(super) fn queue_view_draws(
         &mut view_draws,
     );
     view_draws
+}
+
+fn build_view_draw_collection_contexts<'a>(
+    setup: &'a ExtractedFrameShared<'a>,
+    prepared: &'a [FrameViewPlan<'_>],
+    dict: &'a crate::materials::host_data::MaterialDictionary<'a>,
+    cull_inputs: &'a [Option<WorldMeshCullInput<'a>>],
+    mesh_lod_bias: f32,
+) -> Vec<DrawCollectionInputs<'a>> {
+    profiling::scope!("render::queue_view_draws::build_contexts");
+    prepared
+        .iter()
+        .zip(cull_inputs.iter())
+        .map(|(prep, culling)| {
+            build_draw_collection_context(
+                setup,
+                dict,
+                prep,
+                visible_view_inputs(setup, prep, culling.as_ref(), mesh_lod_bias),
+            )
+        })
+        .collect()
+}
+
+fn build_shadow_caster_draw_collection_contexts<'a>(
+    setup: &'a ExtractedFrameShared<'a>,
+    prepared: &'a [FrameViewPlan<'_>],
+    dict: &'a crate::materials::host_data::MaterialDictionary<'a>,
+    mesh_lod_bias: f32,
+) -> Vec<DrawCollectionInputs<'a>> {
+    profiling::scope!("render::queue_view_draws::build_shadow_contexts");
+    prepared
+        .iter()
+        .map(|prep| {
+            build_draw_collection_context(
+                setup,
+                dict,
+                prep,
+                shadow_caster_view_inputs(prep, mesh_lod_bias),
+            )
+        })
+        .collect()
+}
+
+fn build_draw_collection_context<'a>(
+    setup: &'a ExtractedFrameShared<'a>,
+    dict: &'a crate::materials::host_data::MaterialDictionary<'a>,
+    prep: &'a FrameViewPlan<'_>,
+    view: DrawCollectionViewInputs<'a>,
+) -> DrawCollectionInputs<'a> {
+    let shader_perm = prep.shader_permutation();
+    let render_context = prep.render_context();
+    let material_cache = {
+        profiling::scope!("render::queue_view_draws::material_cache_lookup");
+        setup.material_cache_for(render_context, shader_perm)
+    };
+    DrawCollectionInputs {
+        scene_assets: DrawCollectionSceneAssets {
+            scene: setup.scene,
+            mesh_pool: setup.mesh_pool,
+        },
+        materials: DrawCollectionMaterialInputs {
+            dict,
+            router: setup.router,
+            pipeline_property_ids: &setup.pipeline_property_ids,
+            shader_perm,
+        },
+        view,
+        caches: DrawCollectionFrameCaches {
+            material_cache,
+            prepared: setup.prepared_renderables_for(render_context),
+        },
+    }
+}
+
+fn visible_view_inputs<'a>(
+    setup: &'a ExtractedFrameShared<'a>,
+    prep: &'a FrameViewPlan<'_>,
+    culling: Option<&'a WorldMeshCullInput<'a>>,
+    mesh_lod_bias: f32,
+) -> DrawCollectionViewInputs<'a> {
+    DrawCollectionViewInputs {
+        render_context: prep.render_context(),
+        head_output_transform: prep.host_camera.head_output_transform,
+        view_origin_world: prep.view_origin_world(),
+        culling,
+        mesh_lod_bias,
+        transform_filter: prep.draw_filter.as_ref(),
+        render_space_filter: prep.render_space_filter,
+        layer_policy: prep.layer_policy,
+        reflection_probes: Some(setup.reflection_probes),
+    }
 }
 
 fn max_prepared_draw_count_for_views(
@@ -272,63 +330,72 @@ pub(super) fn desktop_overlay_view_inputs<'a>(
     }
 }
 
-/// Queues one view through the general draw-collection path.
-fn collect_one_view_draws(
-    ctx: &DrawCollectionInputs<'_>,
-    cull_proj: Option<&WorldMeshCullProjParams>,
-    parallelism: WorldMeshDrawCollectParallelism,
-) -> QueuedViewDraws {
-    profiling::scope!("render::queue_view_draws::queue_one");
-    let queued = queue_draws_with_parallelism(ctx, parallelism);
-    QueuedViewDraws {
-        world: queued,
-        desktop_overlay: None,
-        cull_proj: cull_proj.copied(),
+/// Builds shadow-caster draw-collection inputs for a view without camera visibility culling.
+pub(super) fn shadow_caster_view_inputs<'a>(
+    prep: &'a FrameViewPlan<'_>,
+    mesh_lod_bias: f32,
+) -> DrawCollectionViewInputs<'a> {
+    DrawCollectionViewInputs {
+        render_context: prep.render_context(),
+        head_output_transform: prep.host_camera.head_output_transform,
+        view_origin_world: prep.view_origin_world(),
+        culling: None,
+        mesh_lod_bias,
+        transform_filter: prep.draw_filter.as_ref(),
+        render_space_filter: prep.render_space_filter,
+        layer_policy: prep.layer_policy,
+        reflection_probes: None,
     }
 }
 
-/// Returns a cull projection reference for `index` when present.
-fn cull_proj_or_none(
-    cull_projs: &[Option<WorldMeshCullProjParams>],
-    index: usize,
-) -> Option<&WorldMeshCullProjParams> {
-    cull_projs.get(index).and_then(Option::as_ref)
+fn queue_or_collect_view_draws(
+    contexts: &[DrawCollectionInputs<'_>],
+    parallelize_views: bool,
+    parallelism: WorldMeshDrawCollectParallelism,
+) -> Vec<QueuedWorldMeshDraws> {
+    if let Some(queued) = queue_prepared_draws_for_views_with_parallelism(contexts, parallelism) {
+        queued
+    } else {
+        collect_view_draws_with_strategy(contexts, parallelize_views, parallelism)
+    }
+}
+
+/// Queues one view through the general draw-collection path.
+fn collect_one_view_draws(
+    ctx: &DrawCollectionInputs<'_>,
+    parallelism: WorldMeshDrawCollectParallelism,
+) -> QueuedWorldMeshDraws {
+    profiling::scope!("render::queue_view_draws::queue_one");
+    queue_draws_with_parallelism(ctx, parallelism)
 }
 
 /// Dispatches queued draw collection using the selected view-level parallelism strategy.
 fn collect_view_draws_with_strategy(
     contexts: &[DrawCollectionInputs<'_>],
-    cull_projs: &[Option<WorldMeshCullProjParams>],
     parallelize_views: bool,
     parallelism: WorldMeshDrawCollectParallelism,
-) -> Vec<QueuedViewDraws> {
+) -> Vec<QueuedWorldMeshDraws> {
     match contexts.len() {
         0 => Vec::new(),
         1 => {
             profiling::scope!("render::queue_view_draws::single_view");
-            vec![collect_one_view_draws(
-                &contexts[0],
-                cull_proj_or_none(cull_projs, 0),
-                parallelism,
-            )]
+            vec![collect_one_view_draws(&contexts[0], parallelism)]
         }
         2 if parallelize_views => {
             profiling::scope!("render::queue_view_draws::parallel_views");
             profiling::scope!("render::queue_view_draws::parallel_views::two_view_join");
-            let first_proj = cull_proj_or_none(cull_projs, 0);
-            let second_proj = cull_proj_or_none(cull_projs, 1);
             let (first, second) = rayon::join(
                 || {
                     profiling::scope!(
                         "render::queue_view_draws::parallel_views::two_view_join::left"
                     );
-                    collect_one_view_draws(&contexts[0], first_proj, parallelism)
+                    collect_one_view_draws(&contexts[0], parallelism)
                 },
                 || {
                     profiling::scope!(
                         "render::queue_view_draws::parallel_views::two_view_join::right"
                     );
-                    collect_one_view_draws(&contexts[1], second_proj, parallelism)
+                    collect_one_view_draws(&contexts[1], parallelism)
                 },
             );
             vec![first, second]
@@ -339,20 +406,14 @@ fn collect_view_draws_with_strategy(
             contexts
                 .par_iter()
                 .with_min_len(VIEW_COLLECTION_PARALLEL_CHUNK_VIEWS)
-                .enumerate()
-                .map(|(index, ctx)| {
-                    collect_one_view_draws(ctx, cull_proj_or_none(cull_projs, index), parallelism)
-                })
+                .map(|ctx| collect_one_view_draws(ctx, parallelism))
                 .collect()
         }
         _ => {
             profiling::scope!("render::queue_view_draws::serial_small_views");
             contexts
                 .iter()
-                .enumerate()
-                .map(|(index, ctx)| {
-                    collect_one_view_draws(ctx, cull_proj_or_none(cull_projs, index), parallelism)
-                })
+                .map(|ctx| collect_one_view_draws(ctx, parallelism))
                 .collect()
         }
     }

@@ -10,6 +10,8 @@ use crate::shared::VideoTextureClockErrorState;
 pub(crate) struct VideoAssetRuntime {
     /// Active GStreamer-backed video players keyed by asset id.
     pub(crate) video_players: HashMap<i32, VideoPlayer>,
+    /// Unloaded players waiting for their update workers to finish pipeline shutdown.
+    retiring_video_players: Vec<VideoPlayer>,
     /// Latest sampled video clock error per active video asset.
     pub(crate) pending_video_clock_errors: Vec<VideoTextureClockErrorState>,
 }
@@ -25,9 +27,29 @@ impl VideoAssetRuntime {
         std::mem::take(&mut self.pending_video_clock_errors)
     }
 
+    /// Starts shutdown for an unloaded player and keeps it alive until the worker joins.
+    pub(crate) fn retire_player(&mut self, mut player: VideoPlayer) {
+        player.begin_shutdown();
+        self.retiring_video_players.push(player);
+    }
+
+    /// Polls unloaded players and drops only those whose worker has fully shut down.
+    pub(crate) fn poll_retiring_players(&mut self) {
+        self.retiring_video_players
+            .retain_mut(|player| !player.poll_shutdown_complete());
+    }
+
+    /// Number of unloaded players still waiting on cooperative shutdown.
+    pub(crate) fn retiring_player_count(&self) -> usize {
+        self.retiring_video_players.len()
+    }
+
     /// Starts cooperative shutdown for all active video players.
     pub(crate) fn begin_shutdown(&mut self) {
         for player in self.video_players.values_mut() {
+            player.begin_shutdown();
+        }
+        for player in &mut self.retiring_video_players {
             player.begin_shutdown();
         }
     }
@@ -38,6 +60,8 @@ impl VideoAssetRuntime {
         for player in self.video_players.values_mut() {
             complete &= player.poll_shutdown_complete();
         }
+        self.poll_retiring_players();
+        complete &= self.retiring_video_players.is_empty();
         complete
     }
 }
@@ -111,5 +135,6 @@ mod tests {
         runtime.begin_shutdown();
 
         assert!(runtime.shutdown_complete());
+        assert_eq!(runtime.retiring_player_count(), 0);
     }
 }

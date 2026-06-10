@@ -4,20 +4,12 @@ use std::time::{Duration, Instant};
 
 use crate::frontend::{HostWaitReason, LockstepPipelineAction, OneCreditBlockReason};
 use crate::scene::{ReflectionProbeOnChangesRenderRequest, RenderSpaceId};
-use crate::shared::{CameraRenderTask, ReflectionProbeRenderResult, ReflectionProbeRenderTask};
+use crate::shared::ReflectionProbeRenderResult;
 
 use crate::runtime::offscreen_tasks::reflection_probe::{
     ActiveOnChangesReflectionProbeCapture, ActiveRealtimeReflectionProbeCapture,
 };
-
-/// Reflection-probe bake task plus the render space that carried it.
-#[derive(Clone, Debug)]
-pub(in crate::runtime) struct QueuedReflectionProbeRenderTask {
-    /// Host render space containing the reflection probe.
-    pub(in crate::runtime) render_space_id: RenderSpaceId,
-    /// Host bake task payload.
-    pub(in crate::runtime) task: ReflectionProbeRenderTask,
-}
+use crate::runtime::offscreen_tasks::submit_completion::SubmitCompletionWorkQueue;
 
 /// Per-tick gates and reusable view-planning scratch.
 pub(in crate::runtime) struct RuntimeTickState {
@@ -39,11 +31,8 @@ pub(in crate::runtime) struct RuntimeTickState {
     pub(in crate::runtime) secondary_view_tasks_scratch: Vec<(RenderSpaceId, f32, usize)>,
     /// Reusable per-frame scratch for camera-portal view collection.
     pub(in crate::runtime) camera_portal_view_tasks_scratch: Vec<(RenderSpaceId, usize)>,
-    /// Host camera readback tasks waiting for a GPU context before the next begin-frame send.
-    pub(in crate::runtime) pending_camera_render_tasks: Vec<CameraRenderTask>,
-    /// Host reflection-probe bake tasks waiting for a GPU context before the next begin-frame send.
-    pub(in crate::runtime) pending_reflection_probe_render_tasks:
-        Vec<QueuedReflectionProbeRenderTask>,
+    /// Host-submit completion work waiting for a GPU context before the next begin-frame send.
+    pub(in crate::runtime) submit_completion_work: SubmitCompletionWorkQueue,
     /// Reflection-probe bake results waiting for the background IPC queue to accept them.
     pub(in crate::runtime) pending_reflection_probe_render_results:
         Vec<ReflectionProbeRenderResult>,
@@ -76,8 +65,7 @@ impl RuntimeTickState {
             lockstep_wait_reason: HostWaitReason::None,
             secondary_view_tasks_scratch: Vec::new(),
             camera_portal_view_tasks_scratch: Vec::new(),
-            pending_camera_render_tasks: Vec::new(),
-            pending_reflection_probe_render_tasks: Vec::new(),
+            submit_completion_work: SubmitCompletionWorkQueue::new(),
             pending_reflection_probe_render_results: Vec::new(),
             pending_onchanges_reflection_probe_requests: Vec::new(),
             active_onchanges_reflection_probe_captures: Vec::new(),

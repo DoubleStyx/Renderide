@@ -158,15 +158,19 @@ impl CompiledRenderGraph {
             backbuffer_view_holder,
         } = mv_ctx;
 
-        let first = views.first().ok_or(GraphExecuteError::NoViewsInBatch)?;
+        let anchor = views
+            .iter()
+            .find(|view| view.view_id() == frame_global.view_id)
+            .or_else(|| views.first())
+            .ok_or(GraphExecuteError::NoViewsInBatch)?;
         let resolved = {
             profiling::scope!("graph::frame_global::resolve_target");
             Self::resolve_view_from_target(
-                first.view_id(),
-                first.view_winding,
-                first.profile,
-                &first.host_camera,
-                &first.target,
+                anchor.view_id(),
+                anchor.view_winding,
+                anchor.profile,
+                &anchor.host_camera,
+                &anchor.target,
                 gpu,
                 backbuffer_view_holder.as_ref(),
             )

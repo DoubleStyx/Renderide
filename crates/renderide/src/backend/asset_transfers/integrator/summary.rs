@@ -49,6 +49,10 @@ pub struct AssetIntegrationDrainSummary {
     pub render_budget_exhausted: bool,
     /// Whether particle-lane work exceeded its separate post-main budget.
     pub particle_budget_exhausted: bool,
+    /// Whether at least one task made useful forward progress during the drain.
+    pub made_progress: bool,
+    /// Whether queued work remains but every runnable task is waiting on background/GPU state.
+    pub blocked_on_background: bool,
     /// Wall-clock time spent in non-particle integration lanes.
     pub elapsed: Duration,
     /// Wall-clock time spent in the particle lane.
@@ -88,6 +92,8 @@ impl AssetIntegrationDrainSummary {
         self.processed_normal_priority_tasks = finish.processed.normal_priority;
         self.processed_render_tasks = finish.processed.render;
         self.processed_particle_tasks = finish.processed.particle;
+        self.made_progress = finish.made_progress;
+        self.blocked_on_background = finish.blocked_on_background;
         self.elapsed = finish.elapsed;
         self.particle_elapsed = finish.particle_elapsed;
         self.peak_queued = asset.integrator.peak_queued();
@@ -136,6 +142,8 @@ pub(super) struct DrainFinishState {
     pub(super) gpu_ready: bool,
     pub(super) budgets: BudgetExhaustion,
     pub(super) processed: ProcessedLaneCounts,
+    pub(super) made_progress: bool,
+    pub(super) blocked_on_background: bool,
     pub(super) particle_elapsed: Duration,
     pub(super) elapsed: Duration,
 }

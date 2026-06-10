@@ -259,7 +259,7 @@ impl SubmitFrame<'_> {
                 .plans()
                 .iter()
                 .zip(self.view_draws.iter())
-                .map(|(view, draws)| (view.view_id, &draws.world)),
+                .map(|(view, draws)| (view.view_id, &draws.shadow_casters)),
         );
         let mut visible_deform_keys = visible_mesh_deform_keys_from_draw_plans(&self.view_draws);
         visible_deform_keys.extend(backend.frame_resources().shadow_mesh_deform_keys());
@@ -286,6 +286,8 @@ impl SubmitFrame<'_> {
 pub(in crate::runtime) struct ViewWorldMeshDrawPlans {
     /// Regular camera-world draw plan consumed by the main world-mesh pass stack.
     pub(super) world: WorldMeshDrawPlan,
+    /// Shadow-caster draw plan consumed by shadow-map preparation.
+    pub(super) shadow_casters: WorldMeshDrawPlan,
     /// Desktop overlay draw plan consumed by the post-compose overlay pass.
     pub(super) desktop_overlay: Option<WorldMeshDrawPlan>,
 }
@@ -294,6 +296,7 @@ impl ViewWorldMeshDrawPlans {
     /// Total draw count represented by all draw plans for this view.
     pub(super) fn draw_count(&self) -> usize {
         self.world.draw_count()
+            + self.shadow_casters.draw_count()
             + self
                 .desktop_overlay
                 .as_ref()
@@ -325,7 +328,7 @@ mod tests {
     use super::cull::{build_cull_snapshot_for_view, cull_projection_for_write_target};
     use super::queue::{
         desktop_overlay_view_inputs, select_inner_parallelism_for_prepared_work_with_policy,
-        should_parallelize_view_collection_with_policy,
+        shadow_caster_view_inputs, should_parallelize_view_collection_with_policy,
     };
     use super::sort::{
         OverlayTraceStats, overlay_trace_stats, select_arrange_parallelism_for_draws_with_policy,
@@ -475,6 +478,32 @@ mod tests {
         assert!(inputs.reflection_probes.is_none());
         assert_eq!(inputs.mesh_lod_bias, 1.25);
         assert_eq!(inputs.layer_policy, ViewLayerPolicy::DesktopOverlay);
+    }
+
+    #[test]
+    fn shadow_caster_view_inputs_preserve_view_scope_without_camera_culling() {
+        let mut plan = main_swapchain_plan();
+        plan.draw_filter = Some(CameraTransformDrawFilter {
+            only: Some(HashSet::from_iter([42])),
+            exclude: HashSet::from_iter([7]),
+        });
+        plan.render_space_filter = Some(RenderSpaceId(99));
+        plan.layer_policy = ViewLayerPolicy::MainView;
+
+        let inputs = shadow_caster_view_inputs(&plan, 1.25);
+
+        assert_eq!(inputs.render_context, RenderingContext::UserView);
+        assert_eq!(
+            inputs.head_output_transform,
+            plan.host_camera.head_output_transform
+        );
+        assert_eq!(inputs.view_origin_world, plan.view_origin_world());
+        assert!(inputs.culling.is_none());
+        assert!(inputs.transform_filter.is_some());
+        assert_eq!(inputs.render_space_filter, Some(RenderSpaceId(99)));
+        assert!(inputs.reflection_probes.is_none());
+        assert_eq!(inputs.mesh_lod_bias, 1.25);
+        assert_eq!(inputs.layer_policy, ViewLayerPolicy::MainView);
     }
 
     #[test]
@@ -675,6 +704,7 @@ mod tests {
                 },
                 None,
             ))),
+            shadow_casters: WorldMeshDrawPlan::Empty,
             desktop_overlay: Some(WorldMeshDrawPlan::Prefetched(Box::new(
                 PrefetchedWorldMeshViewDraws::new(
                     WorldMeshDrawCollection {

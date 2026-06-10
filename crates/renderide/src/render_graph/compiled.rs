@@ -79,7 +79,8 @@ impl CompiledRenderGraph {
 /// [`super::pass::PassPhase::FrameGlobal`] passes run once per tick in
 /// [`CompiledRenderGraph::execute_multi_view`]. Host camera, render context, clear state, and
 /// post-processing policy come from the explicit [`FrameGlobalView`]. Target resource resolution
-/// still uses the first [`FrameView`] because frame-global passes need one concrete attachment
+/// uses the [`FrameGlobalView`] view anchor when that view is present, falling back to the first
+/// submitted [`FrameView`] for secondary-only batches that still need one concrete attachment
 /// layout to resolve imports and transient resources.
 ///
 /// ## Submit model

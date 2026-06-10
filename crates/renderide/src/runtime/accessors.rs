@@ -36,13 +36,15 @@ impl RendererRuntime {
     /// Number of host camera readback tasks waiting for GPU processing.
     #[cfg(test)]
     pub(crate) fn pending_camera_render_task_count(&self) -> usize {
-        self.tick_state.pending_camera_render_tasks.len()
+        self.tick_state.submit_completion_work.camera_count()
     }
 
     /// Number of host reflection-probe bake tasks waiting for GPU processing.
     #[cfg(test)]
     pub(crate) fn pending_reflection_probe_render_task_count(&self) -> usize {
-        self.tick_state.pending_reflection_probe_render_tasks.len()
+        self.tick_state
+            .submit_completion_work
+            .reflection_probe_count()
     }
 
     /// Disables writing `config.toml` from the HUD when load-time Figment extraction failed.

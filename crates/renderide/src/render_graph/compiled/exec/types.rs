@@ -386,7 +386,7 @@ pub(super) struct DrainedUploadCommand {
 
 /// Inputs for recording frame-global passes into an existing encoder.
 pub(super) struct FrameGlobalPassRecordInputs<'a, 'view> {
-    /// Per-view targets in the input order; the first view anchors resource resolution.
+    /// Per-view targets used to locate the frame-global anchor view and secondary fallback layout.
     pub(super) views: &'a [FrameView<'view>],
     /// Primary-view metadata used for frame-global pass parameters.
     pub(super) frame_global: &'a FrameGlobalView,

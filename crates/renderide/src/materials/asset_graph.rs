@@ -10,7 +10,7 @@ use parking_lot::Mutex;
 use crate::materials::embedded::stem_metadata::embedded_composed_stem_for_permutation;
 use crate::materials::{RasterPipelineKind, ShaderPermutation};
 
-use super::router::MaterialRouter;
+use super::router::{MaterialRouter, ShaderRouteEntry};
 
 /// Generation assigned to a shader source before any development reload has occurred.
 const INITIAL_SHADER_SOURCE_GENERATION: u64 = 1;
@@ -77,30 +77,16 @@ impl EmbeddedShaderSourceNode {
 /// Host shader asset route tracked by the material asset graph.
 #[derive(Clone, Debug)]
 struct ShaderAssetNode {
-    /// Resolved raster pipeline kind for this host shader asset.
-    pipeline: RasterPipelineKind,
-    /// Shader asset filename extracted from the uploaded shader asset, when available.
-    shader_asset_name: Option<String>,
-    /// Shader-specific variant bits parsed from the uploaded shader asset, when available.
-    shader_variant_bits: Option<u32>,
+    /// Resolved shader route for this host shader asset.
+    route: ShaderRouteEntry,
     /// Monotonic route generation for this shader asset node.
     generation: u64,
 }
 
 impl ShaderAssetNode {
     /// Builds a shader asset graph node from resolved route data.
-    fn new(
-        pipeline: RasterPipelineKind,
-        shader_asset_name: Option<String>,
-        shader_variant_bits: Option<u32>,
-        generation: u64,
-    ) -> Self {
-        Self {
-            pipeline,
-            shader_asset_name,
-            shader_variant_bits,
-            generation,
-        }
+    fn new(route: ShaderRouteEntry, generation: u64) -> Self {
+        Self { route, generation }
     }
 }
 
@@ -329,27 +315,22 @@ impl MaterialAssetGraph {
         shader_asset_name: Option<String>,
         shader_variant_bits: Option<u32>,
     ) {
-        self.router.set_shader_route(
-            shader_asset_id,
-            pipeline.clone(),
-            shader_asset_name.clone(),
+        let route = ShaderRouteEntry {
+            pipeline,
+            shader_asset_name,
             shader_variant_bits,
-        );
-        match &pipeline {
+        };
+        self.router
+            .set_shader_route_entry(shader_asset_id, route.clone());
+        match &route.pipeline {
             RasterPipelineKind::EmbeddedStem(stem) => {
-                self.router
-                    .set_shader_stem(shader_asset_id, stem.to_string());
                 self.ensure_source_node(stem.as_ref(), ShaderPermutation::default());
             }
-            RasterPipelineKind::Null => {
-                self.router.remove_shader_stem(shader_asset_id);
-            }
+            RasterPipelineKind::Null => {}
         }
         let generation = self.bump_generation();
-        self.shader_nodes.insert(
-            shader_asset_id,
-            ShaderAssetNode::new(pipeline, shader_asset_name, shader_variant_bits, generation),
-        );
+        self.shader_nodes
+            .insert(shader_asset_id, ShaderAssetNode::new(route, generation));
         self.note_invalidation();
     }
 
@@ -437,14 +418,14 @@ impl MaterialAssetGraph {
         let mut shader_asset_name_bytes = 0usize;
         let mut shader_route_generation_sum = 0u64;
         for node in self.shader_nodes.values() {
-            if matches!(node.pipeline, RasterPipelineKind::EmbeddedStem(_)) {
+            if matches!(node.route.pipeline, RasterPipelineKind::EmbeddedStem(_)) {
                 embedded_shader_routes = embedded_shader_routes.saturating_add(1);
             }
-            if node.shader_variant_bits.is_some() {
+            if node.route.shader_variant_bits.is_some() {
                 shader_variant_routes = shader_variant_routes.saturating_add(1);
             }
             shader_asset_name_bytes = shader_asset_name_bytes
-                .saturating_add(node.shader_asset_name.as_ref().map_or(0, String::len));
+                .saturating_add(node.route.shader_asset_name.as_ref().map_or(0, String::len));
             shader_route_generation_sum = shader_route_generation_sum.wrapping_add(node.generation);
         }
         let mut global_uniform_name_bytes = 0usize;
@@ -537,6 +518,7 @@ mod tests {
         graph.register_shader_route(7, route.clone(), Some("unlit".to_string()), Some(0x20));
 
         assert_eq!(graph.router().pipeline_for_shader_asset(7), route);
+        assert_eq!(graph.stem_for_shader_asset(7), Some("unlit_default"));
         assert_eq!(graph.variant_bits_for_shader_asset(7), Some(0x20));
         assert_eq!(graph.diagnostic_snapshot().shader_nodes, 1);
         assert_eq!(graph.diagnostic_snapshot().embedded_source_nodes, 1);

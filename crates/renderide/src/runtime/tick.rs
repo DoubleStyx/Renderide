@@ -78,11 +78,15 @@ impl RendererRuntime {
 
     /// Whether submit-attached host-critical completion work is drained before host frame finalization.
     pub(crate) fn submit_completion_work_drained(&self) -> bool {
-        self.tick_state.pending_camera_render_tasks.is_empty()
-            && self
-                .tick_state
-                .pending_reflection_probe_render_tasks
-                .is_empty()
+        self.tick_state.submit_completion_work.is_empty()
+    }
+
+    /// Drains GPU-backed host-submit completion work in the canonical pre-begin-frame order.
+    pub(crate) fn drain_submit_completion_work(&mut self, gpu: &mut GpuContext) {
+        profiling::scope!("tick::drain_submit_completion_work");
+        self.maintain_nonblocking_gpu_jobs(gpu);
+        self.drain_reflection_probe_render_tasks(gpu);
+        self.drain_camera_render_tasks(gpu);
     }
 
     /// Computes the current one-credit lock-step pipeline decision.
@@ -343,9 +347,7 @@ impl RendererRuntime {
             };
         }
         self.update_decoupling_activation(Instant::now());
-        self.maintain_nonblocking_gpu_jobs(gpu);
-        self.drain_reflection_probe_render_tasks(gpu);
-        self.drain_camera_render_tasks(gpu);
+        self.drain_submit_completion_work(gpu);
         crash_context::set_tick_phase(TickPhase::Lockstep);
         if self.record_lockstep_pipeline_decision() == LockstepPipelineAction::SendEarlyNextFrame {
             self.pre_frame_one_credit(inputs.clone());
@@ -403,9 +405,7 @@ impl RendererRuntime {
         }
         self.update_decoupling_activation(Instant::now());
         if let Some(gpu) = gpu {
-            self.maintain_nonblocking_gpu_jobs(gpu);
-            self.drain_reflection_probe_render_tasks(gpu);
-            self.drain_camera_render_tasks(gpu);
+            self.drain_submit_completion_work(gpu);
         }
         crash_context::set_tick_phase(TickPhase::Lockstep);
         if self.should_send_begin_frame_before_wait_work() {

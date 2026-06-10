@@ -367,7 +367,8 @@ impl<'a> FrameViewPlan<'a> {
 
     /// Converts this planned view to frame-global metadata.
     pub(in crate::runtime) fn frame_global_view(&self) -> FrameGlobalView {
-        FrameGlobalView::new(
+        FrameGlobalView::new_for_view(
+            self.view_id,
             &self.host_camera,
             self.render_context,
             self.frame_time_seconds,
@@ -446,12 +447,35 @@ mod tests {
 
         assert!(!family.is_empty());
         assert_eq!(family.plans().len(), 1);
+        assert_eq!(family.frame_global().view_id, ViewId::Main);
         assert_eq!(
             family.frame_global().render_context,
             RenderingContext::UserView
         );
         assert!(family.requirements().any_post_processing);
         assert!(!family.requirements().multiview_stereo);
+    }
+
+    #[test]
+    fn frame_global_anchor_remains_explicit_when_main_view_is_not_first() {
+        let secondary = FrameViewPlan::new(
+            &HostCameraFrame::default(),
+            FrameViewPlanParams {
+                render_context: RenderingContext::UserView,
+                frame_time_seconds: 0.0,
+                view_id: ViewId::MainOverlay,
+                viewport_px: (640, 480),
+                clear: FrameViewClear::default(),
+                profile: RenderPathProfile::headless_main(),
+                target: FrameViewPlanTarget::Swapchain,
+            },
+        );
+        let main = main_swapchain_plan();
+        let frame_global = main.frame_global_view();
+        let family = ViewFamilyPlan::new(&frame_global, vec![secondary, main]);
+
+        assert_eq!(family.plans()[0].view_id, ViewId::MainOverlay);
+        assert_eq!(family.frame_global().view_id, ViewId::Main);
     }
 
     #[test]

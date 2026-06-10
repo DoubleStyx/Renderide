@@ -234,6 +234,8 @@ impl<'a> FrameView<'a> {
 /// View metadata used by frame-global graph passes.
 #[derive(Clone, Copy, Debug)]
 pub struct FrameGlobalView {
+    /// Logical view whose target layout anchors frame-global resource resolution.
+    pub view_id: ViewId,
     /// Host camera snapshot selected for frame-global passes.
     pub host_camera: HostCameraFrame,
     /// Render-context override scope selected for frame-global passes.
@@ -251,6 +253,7 @@ impl FrameGlobalView {
     #[cfg(test)]
     pub fn from_frame_view(view: &FrameView<'_>) -> Self {
         Self {
+            view_id: view.view_id(),
             host_camera: view.host_camera,
             render_context: view.render_context,
             frame_time_seconds: view.frame_time_seconds,
@@ -267,7 +270,27 @@ impl FrameGlobalView {
         clear: FrameViewClear,
         post_processing: ViewPostProcessing,
     ) -> Self {
+        Self::new_for_view(
+            ViewId::Main,
+            host_camera,
+            render_context,
+            frame_time_seconds,
+            clear,
+            post_processing,
+        )
+    }
+
+    /// Builds frame-global metadata from explicit view-anchor inputs.
+    pub fn new_for_view(
+        view_id: ViewId,
+        host_camera: &HostCameraFrame,
+        render_context: RenderingContext,
+        frame_time_seconds: f32,
+        clear: FrameViewClear,
+        post_processing: ViewPostProcessing,
+    ) -> Self {
         Self {
+            view_id,
             host_camera: *host_camera,
             render_context,
             frame_time_seconds,
@@ -535,6 +558,7 @@ mod tests {
         let view = swapchain_frame_view();
         let frame_global = FrameGlobalView::from_frame_view(&view);
 
+        assert_eq!(frame_global.view_id, ViewId::Main);
         assert_eq!(frame_global.host_camera.frame_index, -1);
         assert_eq!(frame_global.render_context, RenderingContext::UserView);
         assert_eq!(frame_global.frame_time_seconds, 0.25);
