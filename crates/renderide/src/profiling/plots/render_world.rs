@@ -22,12 +22,36 @@ pub fn plot_render_world_maintenance(stats: RenderWorldMaintenanceStats) {
         stats.transform_only_dirty_count as f64
     );
     tracy_plot!(
+        "render_world::transform_root_dirty",
+        stats.transform_root_dirty_count as f64
+    );
+    tracy_plot!(
+        "render_world::transform_root_scanned_nodes",
+        stats.transform_root_scanned_node_count as f64
+    );
+    tracy_plot!(
+        "render_world::transform_root_expanded_renderers",
+        stats.transform_root_expanded_renderer_count as f64
+    );
+    tracy_plot!(
+        "render_world::transform_root_full_space",
+        stats.transform_root_full_space_count as f64
+    );
+    tracy_plot!(
         "render_world::mesh_asset_dirty",
         stats.mesh_asset_dirty_renderer_count as f64
     );
     tracy_plot!(
         "render_world::dirty_renderers",
         stats.dirty_renderer_count as f64
+    );
+    tracy_plot!(
+        "render_world::bounds_dirty_renderers",
+        stats.bounds_dirty_renderer_count as f64
+    );
+    tracy_plot!(
+        "render_world::bounds_refreshed_renderers",
+        stats.bounds_refreshed_renderer_count as f64
     );
     tracy_plot!(
         "render_world::refreshed_renderers",
@@ -52,6 +76,10 @@ pub fn plot_render_world_maintenance(stats: RenderWorldMaintenanceStats) {
     tracy_plot!(
         "render_world::snapshot_tasks",
         stats.snapshot_rebuild_task_count as f64
+    );
+    tracy_plot!(
+        "render_world::snapshot_retained_draws",
+        stats.snapshot_retained_draw_count as f64
     );
     tracy_plot!(
         "render_world::snapshot_reused_spaces",
