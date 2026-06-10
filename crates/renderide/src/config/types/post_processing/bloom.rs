@@ -80,7 +80,7 @@ impl Default for BloomSettings {
             prefilter_threshold: 1.0,
             prefilter_threshold_softness: 0.5,
             composite_mode: BloomCompositeMode::EnergyConserving,
-            max_mip_dimension: 512,
+            max_mip_dimension: 1024,
         }
     }
 }
