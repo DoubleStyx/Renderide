@@ -1,4 +1,4 @@
-//! Retained CPU command-list cache for arranged world-mesh draw collections.
+//! Retained CPU arrangement-order cache for world-mesh draw collections.
 
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
@@ -9,7 +9,11 @@ use parking_lot::Mutex;
 
 use crate::cpu_parallelism::RENDER_COMMAND_CHUNK_DRAWS;
 
-use super::arrange::arrange_draw_chunks_by_phase_bins;
+use super::arrange::{
+    apply_validated_arranged_draw_order, arrange_draw_chunks_by_phase_bins,
+    arrange_draw_items_order, flatten_draw_chunks, materialize_arranged_draw_order,
+    validate_arranged_draw_order,
+};
 use super::item::{WorldMeshDrawArrangementStats, WorldMeshDrawItem};
 
 const WORLD_MESH_COMMAND_CACHE_CAPACITY: usize = 256;
@@ -23,9 +27,9 @@ const WORLD_MESH_COMMAND_CACHE_THRASH_BYPASS_LOOKUPS: u32 = 16;
 pub struct WorldMeshCommandCacheStats {
     /// Retained arranged command lists currently resident in the cache.
     pub entries: usize,
-    /// Cache lookups that reused an arranged draw list.
+    /// Cache lookups that reused an arranged draw order.
     pub hits: u64,
-    /// Cache lookups that had to rebuild the arranged draw list.
+    /// Cache lookups that had to rebuild the arranged draw order.
     pub misses: u64,
     /// Eligible cache attempts skipped because the draw count was too small to justify hashing.
     pub skipped_small: u64,
@@ -33,13 +37,13 @@ pub struct WorldMeshCommandCacheStats {
     pub skipped_thrash: u64,
     /// Hit rate for cache probes, in hits per 1000 lookups.
     pub hit_rate_per_mille: u16,
-    /// New arranged draw lists inserted into the cache.
+    /// New arranged draw orders inserted into the cache.
     pub insertions: u64,
     /// Entries evicted to keep the cache bounded.
     pub evictions: u64,
 }
 
-/// Bounded renderer-level cache for pre-arranged world-mesh draw command lists.
+/// Bounded renderer-level cache for pre-arranged world-mesh draw orders.
 #[derive(Debug, Default)]
 pub(crate) struct WorldMeshCommandCache {
     inner: Mutex<WorldMeshCommandCacheInner>,
@@ -69,12 +73,12 @@ struct WorldMeshCommandCacheKey {
 
 #[derive(Clone, Debug)]
 struct WorldMeshCommandCacheEntry {
-    items: Arc<[WorldMeshDrawItem]>,
+    order: Arc<[usize]>,
     arrangement: WorldMeshDrawArrangementStats,
 }
 
 impl WorldMeshCommandCache {
-    /// Returns a cached arrangement for `chunks` or builds and retains one when absent.
+    /// Returns a cached arrangement order for `chunks` or builds and retains one when absent.
     pub(crate) fn arrange_draw_chunks(
         &self,
         chunks: Vec<Vec<WorldMeshDrawItem>>,
@@ -89,20 +93,27 @@ impl WorldMeshCommandCache {
         if !self.should_probe_cache() {
             return arrange_draw_chunks_by_phase_bins(chunks, allow_parallel_sort);
         }
+        let chunk_count = chunks.len();
+        let items = flatten_draw_chunks(chunks, true);
         let key = {
             profiling::scope!("mesh::arrange_command_cache::fingerprint");
-            WorldMeshCommandCacheKey::from_chunks(&chunks, draw_count)
+            WorldMeshCommandCacheKey::from_items(&items, draw_count, chunk_count)
         };
         if let Some(entry) = self.entry(&key) {
-            profiling::scope!("mesh::arrange_command_cache::clone_hit");
-            return (entry.items.as_ref().to_vec(), entry.arrangement);
+            profiling::scope!("mesh::arrange_command_cache::order_hit");
+            if validate_arranged_draw_order(entry.order.as_ref(), items.len()) {
+                let arranged = apply_validated_arranged_draw_order(items, entry.order.as_ref());
+                return (arranged, entry.arrangement);
+            }
         }
 
-        let (items, arrangement) = {
+        let order = {
             profiling::scope!("mesh::arrange_command_cache::miss_arrange");
-            arrange_draw_chunks_by_phase_bins(chunks, allow_parallel_sort)
+            arrange_draw_items_order(&items, allow_parallel_sort)
         };
-        self.insert(key, &items, arrangement);
+        let cached_order = order.indices.clone();
+        let (items, arrangement) = materialize_arranged_draw_order(items, &order);
+        self.insert(key, &cached_order, arrangement);
         (items, arrangement)
     }
 
@@ -156,12 +167,12 @@ impl WorldMeshCommandCache {
     fn insert(
         &self,
         key: WorldMeshCommandCacheKey,
-        items: &[WorldMeshDrawItem],
+        order: &[usize],
         arrangement: WorldMeshDrawArrangementStats,
     ) {
         let mut inner = self.inner.lock();
         if let Some(entry) = inner.entries.get_mut(&key) {
-            entry.items = Arc::from(items.to_vec());
+            entry.order = Arc::from(order.to_vec());
             entry.arrangement = arrangement;
             inner.recency.push_back(key);
             drop(inner);
@@ -170,7 +181,7 @@ impl WorldMeshCommandCache {
         inner.entries.insert(
             key,
             WorldMeshCommandCacheEntry {
-                items: Arc::from(items.to_vec()),
+                order: Arc::from(order.to_vec()),
                 arrangement,
             },
         );
@@ -189,11 +200,11 @@ impl WorldMeshCommandCache {
 }
 
 impl WorldMeshCommandCacheKey {
-    fn from_chunks(chunks: &[Vec<WorldMeshDrawItem>], draw_count: usize) -> Self {
+    fn from_items(items: &[WorldMeshDrawItem], draw_count: usize, chunk_count: usize) -> Self {
         Self {
-            fingerprint: fingerprint_world_mesh_draw_chunks(chunks),
+            fingerprint: fingerprint_world_mesh_draw_order(items),
             draw_count,
-            chunk_count: chunks.len(),
+            chunk_count,
         }
     }
 }
@@ -234,16 +245,6 @@ fn cache_hit_rate_per_mille(hits: u64, misses: u64) -> u16 {
     ((hits.saturating_mul(1000)) / lookups).min(1000) as u16
 }
 
-fn fingerprint_world_mesh_draw_chunks(chunks: &[Vec<WorldMeshDrawItem>]) -> u64 {
-    let mut hasher = ahash::AHasher::default();
-    chunks.len().hash(&mut hasher);
-    for chunk in chunks {
-        chunk.len().hash(&mut hasher);
-        hash_world_mesh_draw_items(chunk, &mut hasher);
-    }
-    hasher.finish()
-}
-
 /// Computes a deterministic structural fingerprint for an already ordered draw slice.
 pub(crate) fn fingerprint_world_mesh_draws(draws: &[WorldMeshDrawItem]) -> u64 {
     let mut hasher = ahash::AHasher::default();
@@ -252,9 +253,22 @@ pub(crate) fn fingerprint_world_mesh_draws(draws: &[WorldMeshDrawItem]) -> u64 {
     hasher.finish()
 }
 
+fn fingerprint_world_mesh_draw_order(draws: &[WorldMeshDrawItem]) -> u64 {
+    let mut hasher = ahash::AHasher::default();
+    draws.len().hash(&mut hasher);
+    hash_world_mesh_draw_order_items(draws, &mut hasher);
+    hasher.finish()
+}
+
 fn hash_world_mesh_draw_items<H: Hasher>(draws: &[WorldMeshDrawItem], hasher: &mut H) {
     for item in draws {
         hash_world_mesh_draw_item(item, hasher);
+    }
+}
+
+fn hash_world_mesh_draw_order_items<H: Hasher>(draws: &[WorldMeshDrawItem], hasher: &mut H) {
+    for item in draws {
+        hash_world_mesh_draw_order_item(item, hasher);
     }
 }
 
@@ -270,6 +284,7 @@ fn hash_world_mesh_draw_item<H: Hasher>(item: &WorldMeshDrawItem, hasher: &mut H
     item.index_count.hash(hasher);
     item.is_overlay.hash(hasher);
     item.sorting_order.hash(hasher);
+    hash_shadow_cast_mode(item.shadow_cast_mode, hasher);
     item.skinned.hash(hasher);
     item.world_space_deformed.hash(hasher);
     item.blendshape_deformed.hash(hasher);
@@ -286,10 +301,36 @@ fn hash_world_mesh_draw_item<H: Hasher>(item: &WorldMeshDrawItem, hasher: &mut H
     hash_vec4_option(item.ui_rect_clip_local, hasher);
 }
 
+fn hash_world_mesh_draw_order_item<H: Hasher>(item: &WorldMeshDrawItem, hasher: &mut H) {
+    item.space_id.hash(hasher);
+    item.node_id.hash(hasher);
+    item.renderable_index.hash(hasher);
+    item.instance_id.hash(hasher);
+    item.mesh_asset_id.hash(hasher);
+    item.slot_index.hash(hasher);
+    item.material_stack_order.hash(hasher);
+    item.first_index.hash(hasher);
+    item.index_count.hash(hasher);
+    item.is_overlay.hash(hasher);
+    item.sorting_order.hash(hasher);
+    hash_shadow_cast_mode(item.shadow_cast_mode, hasher);
+    item.skinned.hash(hasher);
+    item.collect_order.hash(hasher);
+    hash_camera_distance_if_ordered(item, hasher);
+    item.batch_key.hash(hasher);
+    item.batch_key_hash.hash(hasher);
+    item._opaque_depth_bucket.hash(hasher);
+    item.sort_prefix.hash(hasher);
+}
+
 fn hash_camera_distance_if_ordered<H: Hasher>(item: &WorldMeshDrawItem, hasher: &mut H) {
     if item.batch_key.requires_strict_order() {
         item.camera_distance_sq.to_bits().hash(hasher);
     }
+}
+
+fn hash_shadow_cast_mode<H: Hasher>(mode: crate::shared::ShadowCastMode, hasher: &mut H) {
+    (mode as u8).hash(hasher);
 }
 
 fn hash_mat4_option<H: Hasher>(value: Option<glam::Mat4>, hasher: &mut H) {
@@ -318,6 +359,7 @@ fn hash_vec4_option<H: Hasher>(value: Option<glam::Vec4>, hasher: &mut H) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::ShadowCastMode;
     use crate::world_mesh::draw_prep::item::MaterialStackOrder;
     use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
 
@@ -358,6 +400,33 @@ mod tests {
     }
 
     #[test]
+    fn command_cache_hit_materializes_current_frame_payload() {
+        let cache = WorldMeshCommandCache::default();
+        let mut first = large_chunk(1);
+        first[0][0].rigid_world_matrix = Some(glam::Mat4::IDENTITY);
+
+        let _ = cache.arrange_draw_chunks(first, false);
+
+        let updated_matrix = glam::Mat4::from_translation(glam::Vec3::new(3.0, 5.0, 7.0));
+        let mut second = large_chunk(1);
+        second[0][0].rigid_world_matrix = Some(updated_matrix);
+        let (arranged, _) = cache.arrange_draw_chunks(second, false);
+
+        let current = arranged
+            .iter()
+            .find(|item| item.node_id == 1)
+            .expect("draw should survive cached arrangement");
+        assert_eq!(
+            current
+                .rigid_world_matrix
+                .map(|matrix| matrix.to_cols_array()),
+            Some(updated_matrix.to_cols_array())
+        );
+        assert_eq!(cache.stats().hits, 1);
+        assert_eq!(cache.stats().misses, 1);
+    }
+
+    #[test]
     fn command_cache_invalidates_on_structural_change() {
         let cache = WorldMeshCommandCache::default();
 
@@ -378,6 +447,18 @@ mod tests {
         assert_ne!(
             fingerprint_world_mesh_draws(&[plain]),
             fingerprint_world_mesh_draws(&[stacked])
+        );
+    }
+
+    #[test]
+    fn command_cache_fingerprint_includes_shadow_mode() {
+        let plain = draw(1);
+        let mut shadow_only = plain.clone();
+        shadow_only.shadow_cast_mode = ShadowCastMode::ShadowOnly;
+
+        assert_ne!(
+            fingerprint_world_mesh_draws(&[plain]),
+            fingerprint_world_mesh_draws(&[shadow_only])
         );
     }
 

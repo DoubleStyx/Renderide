@@ -2,41 +2,29 @@
 
 use std::cmp::Ordering;
 
-use hashbrown::HashMap;
 use rayon::prelude::*;
 
-use crate::cpu_parallelism::{
-    ParallelAdmission, current_reference_worker_count, record_parallel_admission,
-};
-use crate::world_mesh::MaterialDrawBatchKey;
 use crate::world_mesh::WorldMeshPhase;
 use crate::world_mesh::phase_classification::classify_world_mesh_batch;
 
 use super::item::{WorldMeshDrawArrangementStats, WorldMeshDrawItem};
-use super::sort::sort_order_sensitive_draws;
+use super::sort::cmp_order_sensitive_draws;
 
-/// Draws assigned to one phase-partition worker chunk.
-const ARRANGE_PARALLEL_CHUNK_DRAWS: usize = 128;
-
-/// Draw count at which phase partitioning uses Rayon workers.
-///
-/// Partitioning builds worker-local maps and then merges them, so this remains more conservative
-/// than simple per-renderer fan-out while still covering medium draw lists.
-const ARRANGE_PARALLEL_MIN_DRAWS: usize = ARRANGE_PARALLEL_CHUNK_DRAWS * 2;
-
-/// Draw chunks assigned to one arrangement worker.
-const ARRANGE_PARALLEL_CHUNK_TASKS: usize = 1;
+/// Draw count at which compact arrangement row sorting uses Rayon workers.
+const ARRANGE_PARALLEL_MIN_DRAWS: usize = 512;
 
 /// Bin count at which bin-key sorting uses Rayon workers.
 const ARRANGE_PARALLEL_MIN_BINS: usize = 512;
 
 /// Key for one nontransparent bin.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NonTransparentBinKey {
     /// Main-layer draws sort before overlay draws.
     is_overlay: bool,
     /// Primary render phase for the bin.
     phase: WorldMeshPhase,
+    /// Stable pass-order rank for [`Self::phase`].
+    phase_rank: u8,
     /// Effective Unity render queue.
     render_queue: i32,
     /// Material-stack ordering key for slots that reuse the final submesh.
@@ -53,17 +41,14 @@ struct NonTransparentBinKey {
 
 impl NonTransparentBinKey {
     /// Builds the bin key for one draw and its pre-classified render phase.
-    fn from_draw(
-        item: &WorldMeshDrawItem,
-        phase: WorldMeshPhase,
-        batch_ids: &BatchIdTable,
-    ) -> Self {
+    fn from_draw(item: &WorldMeshDrawItem, phase: WorldMeshPhase, batch_id: u32) -> Self {
         Self {
             is_overlay: item.is_overlay,
             phase,
+            phase_rank: phase_flatten_rank(phase),
             render_queue: item.batch_key.render_queue,
             stack: NonTransparentStackBinKey::from_draw(item),
-            batch_id: batch_ids.id_for_draw(item),
+            batch_id,
             mesh_asset_id: item.mesh_asset_id,
             first_index: item.first_index,
             index_count: item.index_count,
@@ -72,7 +57,7 @@ impl NonTransparentBinKey {
 }
 
 /// Ordering key for a nontransparent material-stack bin.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NonTransparentStackBinKey {
     /// Host render space id.
     space_id: crate::scene::RenderSpaceId,
@@ -113,115 +98,315 @@ impl NonTransparentStackBinKey {
 }
 
 /// Per-arrangement compact IDs for material and pipeline batch keys.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct BatchIdTable {
-    /// Stable ID lookup by resolved material batch key.
-    ids: HashMap<MaterialDrawBatchKey, u32>,
-    /// Dense per-draw batch ids indexed by [`WorldMeshDrawItem::collect_order`].
-    draw_ids: Option<Vec<u32>>,
+    /// Dense per-draw batch ids indexed by flattened draw index.
+    draw_ids: Vec<u32>,
 }
 
 impl BatchIdTable {
-    /// Builds compact batch IDs from draw chunks.
-    fn build_from_chunks(
-        chunks: &[Vec<WorldMeshDrawItem>],
-        allow_parallel: bool,
-        build_dense_draw_ids: bool,
-    ) -> Self {
+    /// Builds compact batch IDs from the flattened draw list.
+    fn build_from_items(items: &[WorldMeshDrawItem], allow_parallel: bool) -> Self {
         profiling::scope!("mesh::arrange_draws_by_phase_bins::batch_ids");
-        let draw_count = chunks.iter().map(Vec::len).sum::<usize>();
-        let admission = arrange_chunk_admission(
-            draw_count,
-            chunks.len(),
-            current_reference_worker_count(),
-            allow_parallel,
-        );
-        record_parallel_admission(
-            "world_mesh_arrange_batch_ids",
-            draw_count,
-            chunks.len(),
-            admission,
-        );
-        let unique = if admission.is_parallel() {
-            profiling::scope!("mesh::arrange_draws_by_phase_bins::batch_ids_parallel");
-            chunks
-                .par_iter()
-                .with_min_len(ARRANGE_PARALLEL_CHUNK_TASKS)
-                .map(|chunk| collect_unique_batch_ids(chunk))
-                .reduce(HashMap::new, |mut target, source| {
-                    merge_unique_batch_ids(&mut target, source);
-                    target
-                })
-        } else {
-            profiling::scope!("mesh::arrange_draws_by_phase_bins::batch_ids_serial");
-            let mut unique = HashMap::with_capacity(draw_count.min(1_024));
-            for chunk in chunks {
-                for item in chunk {
-                    unique
-                        .entry(item.batch_key.clone())
-                        .or_insert(item.batch_key_hash);
-                }
+        let mut sorted_indices = (0..items.len()).collect::<Vec<_>>();
+        sort_batch_indices(&mut sorted_indices, items, allow_parallel);
+
+        let mut draw_ids = vec![u32::MAX; items.len()];
+        let mut previous = None::<usize>;
+        let mut batch_id = 0u32;
+        for &index in &sorted_indices {
+            if let Some(previous_index) = previous
+                && !same_batch_identity(&items[previous_index], &items[index])
+            {
+                batch_id = batch_id.saturating_add(1);
             }
-            unique
-        };
-        let mut table = Self::from_unique(unique);
-        if build_dense_draw_ids {
-            table.populate_dense_draw_ids(chunks, draw_count);
-        }
-        table
-    }
-
-    /// Builds compact batch IDs from an already-deduplicated key map.
-    fn from_unique(unique: HashMap<MaterialDrawBatchKey, u64>) -> Self {
-        let mut ordered = unique.into_iter().collect::<Vec<_>>();
-        ordered.sort_unstable_by(|(a_key, a_hash), (b_key, b_hash)| {
-            a_hash.cmp(b_hash).then_with(|| a_key.cmp(b_key))
-        });
-        let mut ids = HashMap::with_capacity(ordered.len());
-        for (index, (key, _)) in ordered.into_iter().enumerate() {
-            ids.insert(key, index.min(u32::MAX as usize) as u32);
-        }
-        Self {
-            ids,
-            draw_ids: None,
-        }
-    }
-
-    /// Precomputes draw-local batch ids after collection order has been assigned densely.
-    fn populate_dense_draw_ids(&mut self, chunks: &[Vec<WorldMeshDrawItem>], draw_count: usize) {
-        profiling::scope!("mesh::arrange_draws_by_phase_bins::dense_batch_ids");
-        let mut draw_ids = vec![u32::MAX; draw_count];
-        for chunk in chunks {
-            for item in chunk {
-                let Some(slot) = draw_ids.get_mut(item.collect_order) else {
-                    self.draw_ids = None;
-                    return;
-                };
-                *slot = self.ids.get(&item.batch_key).copied().unwrap_or(u32::MAX);
+            if let Some(slot) = draw_ids.get_mut(index) {
+                *slot = batch_id;
             }
+            previous = Some(index);
         }
-        self.draw_ids = Some(draw_ids);
+
+        Self { draw_ids }
     }
 
-    /// Returns the compact batch ID for a draw item.
+    /// Returns the compact batch ID for a flattened draw index.
     #[inline]
-    fn id_for_draw(&self, item: &WorldMeshDrawItem) -> u32 {
-        if let Some(draw_ids) = &self.draw_ids
-            && let Some(&id) = draw_ids.get(item.collect_order)
-        {
-            return id;
-        }
-        self.ids.get(&item.batch_key).copied().unwrap_or(u32::MAX)
+    fn id_for_index(&self, index: usize) -> u32 {
+        self.draw_ids.get(index).copied().unwrap_or(u32::MAX)
     }
 }
 
-/// Worker-local partition result for one draw chunk.
-#[derive(Debug, Default)]
-struct PartitionedDrawChunk {
-    /// Nontransparent bins produced by this chunk.
-    bins: HashMap<NonTransparentBinKey, Vec<WorldMeshDrawItem>>,
-    /// Strict order-sensitive draws produced by this chunk.
-    strict_ordered: Vec<WorldMeshDrawItem>,
+/// Compact nontransparent draw row sorted instead of the full draw item.
+#[derive(Clone, Copy, Debug)]
+struct NonTransparentDrawRow {
+    /// Bin key for this row.
+    key: NonTransparentBinKey,
+    /// Flattened source draw index.
+    source_index: usize,
+}
+
+/// Strict order-sensitive draw row sorted by the existing transparent comparator.
+#[derive(Clone, Copy, Debug)]
+struct StrictDrawRow {
+    /// Flattened source draw index.
+    source_index: usize,
+    /// Compact batch id for comparing against post-skybox nontransparent bins.
+    batch_id: u32,
+}
+
+/// Contiguous same-key range in the sorted nontransparent row list.
+#[derive(Clone, Copy, Debug)]
+struct TailBinRow {
+    /// Shared key for the row range.
+    key: NonTransparentBinKey,
+    /// Start row index, inclusive.
+    start: usize,
+    /// End row index, exclusive.
+    end: usize,
+}
+
+/// Compact arrangement order plus diagnostics counters.
+#[derive(Clone, Debug)]
+pub(super) struct WorldMeshDrawArrangementOrder {
+    /// Flattened draw indices in final submission order.
+    pub(super) indices: Vec<usize>,
+    /// Arrangement counters for diagnostics.
+    pub(super) stats: WorldMeshDrawArrangementStats,
+}
+
+impl WorldMeshDrawArrangementOrder {
+    /// Builds an empty order.
+    fn empty() -> Self {
+        Self {
+            indices: Vec::new(),
+            stats: WorldMeshDrawArrangementStats::default(),
+        }
+    }
+}
+
+/// Sorts flattened draw indices by material batch identity.
+fn sort_batch_indices(indices: &mut [usize], items: &[WorldMeshDrawItem], allow_parallel: bool) {
+    if allow_parallel && indices.len() >= ARRANGE_PARALLEL_MIN_DRAWS {
+        profiling::scope!("mesh::arrange_draws_by_phase_bins::batch_ids_sort_parallel");
+        indices.par_sort_unstable_by(|&a, &b| cmp_batch_identity(&items[a], &items[b]));
+    } else {
+        profiling::scope!("mesh::arrange_draws_by_phase_bins::batch_ids_sort_serial");
+        indices.sort_unstable_by(|&a, &b| cmp_batch_identity(&items[a], &items[b]));
+    }
+}
+
+/// Compares the full material batch identity, using the precomputed hash as the common fast path.
+fn cmp_batch_identity(a: &WorldMeshDrawItem, b: &WorldMeshDrawItem) -> Ordering {
+    a.batch_key_hash
+        .cmp(&b.batch_key_hash)
+        .then_with(|| a.batch_key.cmp(&b.batch_key))
+}
+
+/// Returns whether two draws share the same material batch identity.
+fn same_batch_identity(a: &WorldMeshDrawItem, b: &WorldMeshDrawItem) -> bool {
+    a.batch_key_hash == b.batch_key_hash && a.batch_key == b.batch_key
+}
+
+/// Flattens deterministic draw chunks and optionally assigns dense collection order.
+pub(super) fn flatten_draw_chunks(
+    chunks: Vec<Vec<WorldMeshDrawItem>>,
+    assign_collect_order: bool,
+) -> Vec<WorldMeshDrawItem> {
+    profiling::scope!("mesh::arrange_draws_by_phase_bins::flatten_input");
+    let draw_count = chunks.iter().map(Vec::len).sum::<usize>();
+    let mut items = Vec::with_capacity(draw_count);
+    let mut collect_order = 0usize;
+    for mut chunk in chunks {
+        if assign_collect_order {
+            for item in &mut chunk {
+                item.collect_order = collect_order;
+                collect_order = collect_order.saturating_add(1);
+            }
+        }
+        items.append(&mut chunk);
+    }
+    items
+}
+
+/// Builds the compact final draw order for a flattened draw list.
+pub(super) fn arrange_draw_items_order(
+    items: &[WorldMeshDrawItem],
+    allow_parallel_sort: bool,
+) -> WorldMeshDrawArrangementOrder {
+    profiling::scope!("mesh::arrange_draws_by_phase_bins::order");
+    if items.is_empty() {
+        return WorldMeshDrawArrangementOrder::empty();
+    }
+
+    let batch_ids = BatchIdTable::build_from_items(items, allow_parallel_sort);
+    let (mut nontransparent_rows, mut strict_rows) = build_arrangement_rows(items, &batch_ids);
+
+    sort_nontransparent_rows(&mut nontransparent_rows, allow_parallel_sort);
+    sort_strict_rows(&mut strict_rows, items, allow_parallel_sort);
+
+    let mut indices = Vec::with_capacity(items.len());
+    let (nontransparent_bins, tail_bins) =
+        append_pre_skybox_bins_and_collect_tail(&nontransparent_rows, &mut indices);
+    append_post_skybox_tail_indices(
+        &mut indices,
+        &tail_bins,
+        &nontransparent_rows,
+        &strict_rows,
+        items,
+    );
+
+    WorldMeshDrawArrangementOrder {
+        indices,
+        stats: WorldMeshDrawArrangementStats {
+            nontransparent_bins,
+            nontransparent_binned_draws: nontransparent_rows.len(),
+            strict_sorted_draws: strict_rows.len(),
+        },
+    }
+}
+
+/// Moves flattened draw items into the supplied final order.
+pub(super) fn materialize_arranged_draw_order(
+    items: Vec<WorldMeshDrawItem>,
+    order: &WorldMeshDrawArrangementOrder,
+) -> (Vec<WorldMeshDrawItem>, WorldMeshDrawArrangementStats) {
+    let stats = order.stats;
+    if !validate_arranged_draw_order(&order.indices, items.len()) {
+        debug_assert!(
+            order.indices.is_empty(),
+            "arrangement order must cover every draw exactly once"
+        );
+        return (items, stats);
+    }
+    (
+        apply_validated_arranged_draw_order(items, &order.indices),
+        stats,
+    )
+}
+
+/// Returns whether `order` can be safely applied to `draw_count` flattened draws.
+pub(super) fn validate_arranged_draw_order(order: &[usize], draw_count: usize) -> bool {
+    if order.len() != draw_count {
+        return false;
+    }
+    let mut seen = vec![false; draw_count];
+    for &index in order {
+        let Some(slot) = seen.get_mut(index) else {
+            return false;
+        };
+        if *slot {
+            return false;
+        }
+        *slot = true;
+    }
+    true
+}
+
+/// Applies a prevalidated draw order by moving each item exactly once.
+pub(super) fn apply_validated_arranged_draw_order(
+    items: Vec<WorldMeshDrawItem>,
+    order: &[usize],
+) -> Vec<WorldMeshDrawItem> {
+    profiling::scope!("mesh::arrange_draws_by_phase_bins::materialize");
+    let mut slots = items.into_iter().map(Some).collect::<Vec<_>>();
+    let mut arranged = Vec::with_capacity(order.len());
+    for &index in order {
+        if let Some(item) = slots.get_mut(index).and_then(Option::take) {
+            arranged.push(item);
+        }
+    }
+    arranged
+}
+
+/// Builds compact row vectors from the flattened draw list.
+fn build_arrangement_rows(
+    items: &[WorldMeshDrawItem],
+    batch_ids: &BatchIdTable,
+) -> (Vec<NonTransparentDrawRow>, Vec<StrictDrawRow>) {
+    profiling::scope!("mesh::arrange_draws_by_phase_bins::build_rows");
+    let mut nontransparent_rows = Vec::with_capacity(items.len());
+    let mut strict_rows = Vec::new();
+    for (source_index, item) in items.iter().enumerate() {
+        let classification = classify_world_mesh_batch(&item.batch_key);
+        let batch_id = batch_ids.id_for_index(source_index);
+        if classification.strict_order {
+            strict_rows.push(StrictDrawRow {
+                source_index,
+                batch_id,
+            });
+        } else {
+            nontransparent_rows.push(NonTransparentDrawRow {
+                key: NonTransparentBinKey::from_draw(item, classification.phase, batch_id),
+                source_index,
+            });
+        }
+    }
+    (nontransparent_rows, strict_rows)
+}
+
+/// Sorts nontransparent rows by compact bin key while preserving in-bin collection order.
+fn sort_nontransparent_rows(rows: &mut [NonTransparentDrawRow], allow_parallel: bool) {
+    profiling::scope!("mesh::arrange_draws_by_phase_bins::sort_nontransparent_rows");
+    if allow_parallel && rows.len() >= ARRANGE_PARALLEL_MIN_BINS {
+        rows.par_sort_unstable_by(cmp_nontransparent_rows);
+    } else {
+        rows.sort_unstable_by(cmp_nontransparent_rows);
+    }
+}
+
+/// Compares compact nontransparent rows.
+fn cmp_nontransparent_rows(a: &NonTransparentDrawRow, b: &NonTransparentDrawRow) -> Ordering {
+    cmp_nontransparent_bin_keys(&a.key, &b.key).then(a.source_index.cmp(&b.source_index))
+}
+
+/// Sorts strict order-sensitive rows through the existing draw comparator.
+fn sort_strict_rows(rows: &mut [StrictDrawRow], items: &[WorldMeshDrawItem], allow_parallel: bool) {
+    profiling::scope!("mesh::arrange_draws_by_phase_bins::sort_strict_rows");
+    if allow_parallel && rows.len() >= ARRANGE_PARALLEL_MIN_DRAWS {
+        rows.par_sort_unstable_by(|a, b| {
+            cmp_order_sensitive_draws(&items[a.source_index], &items[b.source_index])
+        });
+    } else {
+        rows.sort_unstable_by(|a, b| {
+            cmp_order_sensitive_draws(&items[a.source_index], &items[b.source_index])
+        });
+    }
+}
+
+/// Appends pre-skybox nontransparent bins and returns post-skybox bins for ordered merging.
+fn append_pre_skybox_bins_and_collect_tail(
+    rows: &[NonTransparentDrawRow],
+    indices: &mut Vec<usize>,
+) -> (usize, Vec<TailBinRow>) {
+    profiling::scope!("mesh::arrange_draws_by_phase_bins::flatten_nontransparent_bins");
+    let mut tail_bins = Vec::new();
+    let mut bin_count = 0usize;
+    let mut start = 0usize;
+    while start < rows.len() {
+        let key = rows[start].key;
+        let mut end = start + 1;
+        while end < rows.len() && rows[end].key == key {
+            end += 1;
+        }
+        bin_count = bin_count.saturating_add(1);
+        if key.phase_rank < post_skybox_rank() {
+            append_nontransparent_row_range(indices, rows, start, end);
+        } else {
+            tail_bins.push(TailBinRow { key, start, end });
+        }
+        start = end;
+    }
+    (bin_count, tail_bins)
+}
+
+/// Appends a contiguous row range into final draw order.
+fn append_nontransparent_row_range(
+    indices: &mut Vec<usize>,
+    rows: &[NonTransparentDrawRow],
+    start: usize,
+    end: usize,
+) {
+    indices.extend(rows[start..end].iter().map(|row| row.source_index));
 }
 
 /// Arranges collected draws with bins for nontransparent phases and strict sorting for the
@@ -254,213 +439,17 @@ pub(super) fn arrange_draw_chunks_by_phase_bins(
 
 /// Shared chunked draw arrangement implementation.
 fn arrange_draw_chunks_by_phase_bins_impl(
-    mut chunks: Vec<Vec<WorldMeshDrawItem>>,
+    chunks: Vec<Vec<WorldMeshDrawItem>>,
     allow_parallel_sort: bool,
     assign_collect_order: bool,
 ) -> (Vec<WorldMeshDrawItem>, WorldMeshDrawArrangementStats) {
     profiling::scope!("mesh::arrange_draws_by_phase_bins");
-    let draw_count = chunks.iter().map(Vec::len).sum::<usize>();
-    if draw_count == 0 {
+    let items = flatten_draw_chunks(chunks, assign_collect_order);
+    if items.is_empty() {
         return (Vec::new(), WorldMeshDrawArrangementStats::default());
     }
-    if assign_collect_order {
-        assign_chunk_collect_order(&mut chunks);
-    }
-
-    let batch_ids =
-        BatchIdTable::build_from_chunks(&chunks, allow_parallel_sort, assign_collect_order);
-    let (bins, mut strict_ordered) =
-        partition_draw_chunks(chunks, &batch_ids, allow_parallel_sort, draw_count);
-
-    let mut binned: Vec<_> = bins.into_iter().collect();
-    let stats = WorldMeshDrawArrangementStats {
-        nontransparent_bins: binned.len(),
-        nontransparent_binned_draws: binned.iter().map(|(_, draws)| draws.len()).sum(),
-        strict_sorted_draws: strict_ordered.len(),
-    };
-
-    {
-        profiling::scope!("mesh::arrange_draws_by_phase_bins::sort_bins");
-        if allow_parallel_sort && binned.len() >= ARRANGE_PARALLEL_MIN_BINS {
-            binned.par_sort_unstable_by(|(a, _), (b, _)| cmp_nontransparent_bin_keys(a, b));
-        } else {
-            binned.sort_unstable_by(|(a, _), (b, _)| cmp_nontransparent_bin_keys(a, b));
-        }
-    }
-    {
-        profiling::scope!("mesh::arrange_draws_by_phase_bins::sort_strict_ordered");
-        sort_order_sensitive_draws(&mut strict_ordered, allow_parallel_sort);
-    }
-    let mut arranged =
-        Vec::with_capacity(stats.nontransparent_binned_draws + stats.strict_sorted_draws);
-    {
-        profiling::scope!("mesh::arrange_draws_by_phase_bins::flatten");
-        let tail_start =
-            binned.partition_point(|(key, _)| phase_flatten_rank(key.phase) < post_skybox_rank());
-        let tail_bins = binned.split_off(tail_start);
-        for (_, mut bin_items) in binned {
-            arranged.append(&mut bin_items);
-        }
-        append_post_skybox_tail(&mut arranged, tail_bins, strict_ordered, &batch_ids);
-    }
-
-    (arranged, stats)
-}
-
-/// Assigns global collection order across deterministic draw chunks.
-fn assign_chunk_collect_order(chunks: &mut [Vec<WorldMeshDrawItem>]) {
-    profiling::scope!("mesh::arrange_draws_by_phase_bins::assign_collect_order");
-    let mut collect_order = 0usize;
-    for chunk in chunks {
-        for item in chunk {
-            item.collect_order = collect_order;
-            collect_order += 1;
-        }
-    }
-}
-
-/// Returns the admission decision for chunked draw arrangement work.
-fn arrange_chunk_admission(
-    draw_count: usize,
-    chunk_count: usize,
-    worker_count: usize,
-    allow_parallel: bool,
-) -> ParallelAdmission {
-    if allow_parallel
-        && worker_count > 1
-        && draw_count >= ARRANGE_PARALLEL_MIN_DRAWS
-        && chunk_count >= ARRANGE_PARALLEL_CHUNK_TASKS * 2
-    {
-        ParallelAdmission::Parallel {
-            chunk_size: ARRANGE_PARALLEL_CHUNK_TASKS,
-        }
-    } else {
-        ParallelAdmission::Serial
-    }
-}
-
-/// Collects unique material batch IDs from one draw chunk.
-fn collect_unique_batch_ids(chunk: &[WorldMeshDrawItem]) -> HashMap<MaterialDrawBatchKey, u64> {
-    let mut unique = HashMap::with_capacity(chunk.len().min(1_024));
-    for item in chunk {
-        unique
-            .entry(item.batch_key.clone())
-            .or_insert(item.batch_key_hash);
-    }
-    unique
-}
-
-/// Merges a source batch-ID map into a target map.
-fn merge_unique_batch_ids(
-    target: &mut HashMap<MaterialDrawBatchKey, u64>,
-    source: HashMap<MaterialDrawBatchKey, u64>,
-) {
-    for (key, hash) in source {
-        target.entry(key).or_insert(hash);
-    }
-}
-
-/// Partitions draw chunks into phase bins.
-fn partition_draw_chunks(
-    chunks: Vec<Vec<WorldMeshDrawItem>>,
-    batch_ids: &BatchIdTable,
-    allow_parallel: bool,
-    draw_count: usize,
-) -> (
-    HashMap<NonTransparentBinKey, Vec<WorldMeshDrawItem>>,
-    Vec<WorldMeshDrawItem>,
-) {
-    let admission = arrange_chunk_admission(
-        draw_count,
-        chunks.len(),
-        current_reference_worker_count(),
-        allow_parallel,
-    );
-    record_parallel_admission(
-        "world_mesh_arrange_partition",
-        draw_count,
-        chunks.len(),
-        admission,
-    );
-    let partitioned = if admission.is_parallel() {
-        profiling::scope!("mesh::arrange_draws_by_phase_bins::parallel_partition");
-        chunks
-            .into_par_iter()
-            .with_min_len(ARRANGE_PARALLEL_CHUNK_TASKS)
-            .map(|chunk| partition_draw_chunk(chunk, batch_ids))
-            .collect::<Vec<_>>()
-    } else {
-        profiling::scope!("mesh::arrange_draws_by_phase_bins::serial_partition");
-        chunks
-            .into_iter()
-            .map(|chunk| partition_draw_chunk(chunk, batch_ids))
-            .collect::<Vec<_>>()
-    };
-    merge_partitioned_chunks(partitioned)
-}
-
-/// Partitions one draw chunk into phase bins on the caller thread.
-fn partition_draw_chunk(
-    input: Vec<WorldMeshDrawItem>,
-    batch_ids: &BatchIdTable,
-) -> PartitionedDrawChunk {
-    let mut bins: HashMap<NonTransparentBinKey, Vec<WorldMeshDrawItem>> =
-        HashMap::with_capacity(input.len().min(1_024));
-    let mut strict_ordered = Vec::new();
-    for item in input {
-        partition_draw_item(item, batch_ids, &mut bins, &mut strict_ordered);
-    }
-    PartitionedDrawChunk {
-        bins,
-        strict_ordered,
-    }
-}
-
-/// Merges worker-local partition results in deterministic chunk order.
-fn merge_partitioned_chunks(
-    chunks: Vec<PartitionedDrawChunk>,
-) -> (
-    HashMap<NonTransparentBinKey, Vec<WorldMeshDrawItem>>,
-    Vec<WorldMeshDrawItem>,
-) {
-    let mut bins = HashMap::new();
-    let mut strict_ordered = Vec::new();
-    for mut chunk in chunks {
-        merge_bins(&mut bins, chunk.bins);
-        strict_ordered.append(&mut chunk.strict_ordered);
-    }
-    (bins, strict_ordered)
-}
-
-/// Routes one draw into either a phase bin or the strict-order tail.
-fn partition_draw_item(
-    item: WorldMeshDrawItem,
-    batch_ids: &BatchIdTable,
-    bins: &mut HashMap<NonTransparentBinKey, Vec<WorldMeshDrawItem>>,
-    strict_ordered: &mut Vec<WorldMeshDrawItem>,
-) {
-    let classification = classify_world_mesh_batch(&item.batch_key);
-    if classification.strict_order {
-        strict_ordered.push(item);
-    } else {
-        bins.entry(NonTransparentBinKey::from_draw(
-            &item,
-            classification.phase,
-            batch_ids,
-        ))
-        .or_default()
-        .push(item);
-    }
-}
-
-/// Merges worker-local nontransparent bins into the caller-owned destination.
-fn merge_bins(
-    target: &mut HashMap<NonTransparentBinKey, Vec<WorldMeshDrawItem>>,
-    source: HashMap<NonTransparentBinKey, Vec<WorldMeshDrawItem>>,
-) {
-    for (key, mut items) in source {
-        target.entry(key).or_default().append(&mut items);
-    }
+    let order = arrange_draw_items_order(&items, allow_parallel_sort);
+    materialize_arranged_draw_order(items, &order)
 }
 
 /// Stable rank used to flatten nontransparent phases in pass order.
@@ -481,7 +470,7 @@ fn phase_flatten_rank(phase: WorldMeshPhase) -> u8 {
 fn cmp_nontransparent_bin_keys(a: &NonTransparentBinKey, b: &NonTransparentBinKey) -> Ordering {
     a.is_overlay
         .cmp(&b.is_overlay)
-        .then_with(|| phase_flatten_rank(a.phase).cmp(&phase_flatten_rank(b.phase)))
+        .then(a.phase_rank.cmp(&b.phase_rank))
         .then(a.render_queue.cmp(&b.render_queue))
         .then(a.stack.is_some().cmp(&b.stack.is_some()))
         .then_with(|| cmp_nontransparent_stack_keys(a.stack.as_ref(), b.stack.as_ref()))
@@ -517,19 +506,21 @@ fn post_skybox_rank() -> u8 {
     phase_flatten_rank(WorldMeshPhase::Transparent)
 }
 
-/// Appends post-skybox bins and strict-order draws in their shared queue order.
-fn append_post_skybox_tail(
-    items: &mut Vec<WorldMeshDrawItem>,
-    tail_bins: Vec<(NonTransparentBinKey, Vec<WorldMeshDrawItem>)>,
-    strict_ordered: Vec<WorldMeshDrawItem>,
-    batch_ids: &BatchIdTable,
+/// Appends post-skybox bins and strict-order rows in their shared queue order.
+fn append_post_skybox_tail_indices(
+    indices: &mut Vec<usize>,
+    tail_bins: &[TailBinRow],
+    nontransparent_rows: &[NonTransparentDrawRow],
+    strict_rows: &[StrictDrawRow],
+    items: &[WorldMeshDrawItem],
 ) {
-    let mut bins = tail_bins.into_iter().peekable();
-    let mut strict = strict_ordered.into_iter().peekable();
+    profiling::scope!("mesh::arrange_draws_by_phase_bins::flatten_tail");
+    let mut bin_index = 0usize;
+    let mut strict_index = 0usize;
     loop {
-        let append_bin = match (bins.peek(), strict.peek()) {
-            (Some((bin_key, _)), Some(strict_item)) => {
-                cmp_nontransparent_bin_to_strict_draw(bin_key, strict_item, batch_ids)
+        let append_bin = match (tail_bins.get(bin_index), strict_rows.get(strict_index)) {
+            (Some(bin), Some(strict_row)) => {
+                cmp_nontransparent_bin_to_strict_draw(&bin.key, strict_row, items)
                     != Ordering::Greater
             }
             (Some(_), None) => true,
@@ -538,15 +529,17 @@ fn append_post_skybox_tail(
         };
 
         if append_bin {
-            let Some((_, mut bin_items)) = bins.next() else {
+            let Some(bin) = tail_bins.get(bin_index) else {
                 break;
             };
-            items.append(&mut bin_items);
+            append_nontransparent_row_range(indices, nontransparent_rows, bin.start, bin.end);
+            bin_index += 1;
         } else {
-            let Some(item) = strict.next() else {
+            let Some(row) = strict_rows.get(strict_index) else {
                 break;
             };
-            items.push(item);
+            indices.push(row.source_index);
+            strict_index += 1;
         }
     }
 }
@@ -554,14 +547,15 @@ fn append_post_skybox_tail(
 /// Compares one nontransparent post-skybox bin against an order-sensitive draw.
 fn cmp_nontransparent_bin_to_strict_draw(
     bin: &NonTransparentBinKey,
-    item: &WorldMeshDrawItem,
-    batch_ids: &BatchIdTable,
+    row: &StrictDrawRow,
+    items: &[WorldMeshDrawItem],
 ) -> Ordering {
+    let item = &items[row.source_index];
     bin.is_overlay
         .cmp(&item.is_overlay)
         .then(bin.render_queue.cmp(&item.batch_key.render_queue))
         .then(false.cmp(&item.batch_key.uses_transparent_sorting()))
-        .then(bin.batch_id.cmp(&batch_ids.id_for_draw(item)))
+        .then(bin.batch_id.cmp(&row.batch_id))
         .then(bin.mesh_asset_id.cmp(&item.mesh_asset_id))
         .then(bin.first_index.cmp(&item.first_index))
         .then(bin.index_count.cmp(&item.index_count))
