@@ -2,6 +2,8 @@
 
 #define_import_path renderide::pbs::families::triplanar
 
+#import renderide::billboard::vertex as bv
+#import renderide::core::math as rmath
 #import renderide::core::normal_decode as nd
 #import renderide::core::texture_sampling as ts
 #import renderide::draw::per_draw as pd
@@ -35,6 +37,40 @@ fn vertex_main(
     let wn = mv::world_normal(d, n);
     let object_n = normalize(n.xyz);
     let vp = mv::select_view_proj(d, view_idx);
+
+    var out: VertexOutput;
+    out.clip_pos = vp * world_p;
+    out.world_pos = world_p.xyz;
+    out.world_n = wn;
+    out.proj_pos = select(world_p.xyz, pos.xyz, object_space_enabled);
+    out.projection_n = select(wn, object_n, object_space_enabled);
+    out.view_layer = mv::packed_view_layer(instance_index, view_idx);
+    return out;
+}
+
+fn billboard_vertex_main(
+    instance_index: u32,
+    view_idx: u32,
+    pos: vec4<f32>,
+    n: vec4<f32>,
+    vertex_index: u32,
+    uv0: vec2<f32>,
+    t: vec4<f32>,
+    uv1: vec2<f32>,
+    object_space_enabled: bool,
+) -> VertexOutput {
+    let d = pd::get_draw(instance_index);
+    let vp = mv::select_view_proj(d, view_idx);
+
+    let render_billboard_vertex = bv::render_buffer_billboard_vertex(
+        d, view_idx, pos, vertex_index, n, t, uv1,
+    );
+    let world_p = render_billboard_vertex.world_pos;
+    let axes = render_billboard_vertex.axes;
+    let billboard_t = axes.right;
+    let billboard_n = rmath::safe_normalize(cross(axes.right, axes.up), vec3<f32>(0.0, 0.0, 1.0));
+    let wn = mv::world_normal_for_view(d, vec4<f32>(billboard_n, 0.0), view_idx);
+    let object_n = normalize(billboard_n.xyz);
 
     var out: VertexOutput;
     out.clip_pos = vp * world_p;

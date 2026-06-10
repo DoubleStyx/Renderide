@@ -1,7 +1,5 @@
 //! Material batch-key resolution for world-mesh draw prep.
 
-use std::sync::Arc;
-
 use crate::materials::ShaderPermutation;
 use crate::materials::host_data::{MaterialDictionary, MaterialPropertyLookupIds};
 use crate::materials::{
@@ -12,6 +10,7 @@ use crate::materials::{
     material_blend_mode_from_maps, material_render_queue_from_maps,
     material_render_state_from_maps, resolve_raster_pipeline,
 };
+use crate::passes::BILLBOARD_RENDER_BUFFER_BIT;
 
 use super::FrameMaterialBatchCache;
 use super::key::MaterialDrawBatchKey;
@@ -334,12 +333,6 @@ pub(crate) fn resolve_material_batch(
     }
 }
 
-/// WGSL stem used for generated PhotonDust billboard mesh draws.
-const RENDER_BUFFER_BILLBOARD_STEM: &str = "billboardunlit_default";
-
-const RENDER_BUFFER_ORDERED_ALPHA_FALLBACK_BLEND: MaterialBlendMode =
-    MaterialBlendMode::UnityBlend { src: 5, dst: 10 };
-
 /// Routes generated PhotonDust billboard meshes through Billboard/Unlit.
 ///
 /// Point render-buffer uploads expand each particle into four co-located quad vertices. Ordinary
@@ -348,66 +341,15 @@ const RENDER_BUFFER_ORDERED_ALPHA_FALLBACK_BLEND: MaterialBlendMode =
 pub(crate) fn apply_render_buffer_mesh_pipeline_override(
     batch_key: &mut MaterialDrawBatchKey,
     mesh_asset_id: i32,
-    shader_perm: ShaderPermutation,
 ) {
     if !crate::particles::is_generated_billboard_mesh_asset_id(mesh_asset_id) {
         return;
     }
-    if let RasterPipelineKind::EmbeddedStem(stem) = &batch_key.pipeline
-        && stem.as_ref().starts_with("billboardunlit")
-    {
-        batch_key.shader_specialization = MaterialShaderSpecializationKey::disabled();
-        return;
-    }
-    let pipeline = RasterPipelineKind::EmbeddedStem(Arc::from(RENDER_BUFFER_BILLBOARD_STEM));
-    let features = embedded_material_features(&pipeline, shader_perm);
-    batch_key.pipeline = pipeline;
-    batch_key.shader_specialization = MaterialShaderSpecializationKey::disabled();
-    batch_key.embedded_needs_uv0 = features.needs_uv0;
-    batch_key.embedded_needs_color = features.needs_color;
-    batch_key.embedded_needs_uv1 = features.needs_uv1;
-    batch_key.embedded_needs_tangent = features.needs_tangent;
-    batch_key.embedded_tangent_fallback_mode = features.tangent_fallback_mode;
-    batch_key.embedded_raw_tangent_payload = features.raw_tangent_payload;
-    batch_key.embedded_raw_normal_payload = features.raw_normal_payload;
-    batch_key.embedded_needs_uv2 = features.needs_uv2;
-    batch_key.embedded_needs_uv3 = features.needs_uv3;
-    batch_key.embedded_needs_wide_low_uvs = features.needs_wide_low_uvs;
-    batch_key.embedded_needs_wide_high_uvs = features.needs_wide_high_uvs;
-    batch_key.embedded_needs_extended_vertex_streams = features.needs_extended_vertex_streams;
-    batch_key.embedded_requires_intersection_pass = features.requires_intersection_pass;
-    batch_key.embedded_uses_scene_depth_snapshot = features.uses_scene_depth_snapshot;
-    batch_key.embedded_uses_scene_color_snapshot = features.uses_scene_color_snapshot;
-    batch_key.scene_color_snapshot_mode = features.scene_color_snapshot_mode;
-    batch_key.alpha_blended = batch_key.alpha_blended
-        || features.uses_alpha_blending
-        || features.uses_scene_color_snapshot;
-    batch_key.transparent_class = transparent_class_for_material(TransparentMaterialClassInput {
-        render_queue: batch_key.render_queue,
-        render_state: batch_key.render_state,
-        blend_mode: batch_key.blend_mode,
-        alpha_blended: batch_key.alpha_blended,
-        uses_scene_color_snapshot: features.uses_scene_color_snapshot,
-        uses_blended_depth_write: features.uses_blended_depth_write,
-        uses_two_sided_transparency: features.uses_two_sided_transparency,
-    });
-    batch_key.blend_mode = render_buffer_billboard_blend_mode_for_source(
-        batch_key.blend_mode,
-        batch_key.transparent_class,
-    );
-}
-
-fn render_buffer_billboard_blend_mode_for_source(
-    blend_mode: MaterialBlendMode,
-    transparent_class: TransparentMaterialClass,
-) -> MaterialBlendMode {
-    if blend_mode == MaterialBlendMode::StemDefault
-        && transparent_class == TransparentMaterialClass::OrderedAlpha
-    {
-        RENDER_BUFFER_ORDERED_ALPHA_FALLBACK_BLEND
-    } else {
-        blend_mode
-    }
+    batch_key.shader_specialization =
+        MaterialShaderSpecializationKey::from_default_variant_bits(BILLBOARD_RENDER_BUFFER_BIT);
+    batch_key.embedded_raw_tangent_payload = true;
+    batch_key.embedded_raw_normal_payload = true;
+    batch_key.embedded_needs_uv1 = true;
 }
 
 /// Assembles a [`MaterialDrawBatchKey`] from a pre-resolved [`ResolvedMaterialBatch`] entry.
@@ -467,6 +409,7 @@ mod ui_rect_clip_tests {
         UNITY_RENDER_QUEUE_GEOMETRY, UNITY_RENDER_QUEUE_OVERLAY, UNITY_RENDER_QUEUE_TRANSPARENT,
     };
     use crate::shared::TrailTextureMode;
+    use std::sync::Arc;
 
     struct Fixture {
         registry: PropertyIdRegistry,
@@ -755,7 +698,7 @@ mod ui_rect_clip_tests {
     }
 
     #[test]
-    fn generated_billboard_mesh_overrides_to_billboard_pipeline() {
+    fn generated_billboard_mesh_keeps_using_main_pipeline() {
         let mut store = MaterialPropertyStore::new();
         store.set_shader_asset_for_material(7, 99);
         let dict = MaterialDictionary::new(&store);
@@ -777,140 +720,18 @@ mod ui_rect_clip_tests {
         );
         let mesh_asset_id = crate::particles::billboard_render_buffer_mesh_asset_id(3).unwrap();
 
-        apply_render_buffer_mesh_pipeline_override(
-            &mut key,
-            mesh_asset_id,
-            ShaderPermutation::default(),
-        );
+        apply_render_buffer_mesh_pipeline_override(&mut key, mesh_asset_id);
 
         let RasterPipelineKind::EmbeddedStem(stem) = &key.pipeline else {
             panic!("expected embedded billboard pipeline");
         };
-        assert_eq!(stem.as_ref(), "billboardunlit_default");
+        assert_eq!(stem.as_ref(), "unlit_default");
         assert!(key.embedded_needs_uv0);
+        assert!(key.embedded_needs_uv1);
         assert!(key.embedded_needs_color);
         assert!(key.embedded_needs_tangent);
         assert!(key.embedded_raw_tangent_payload);
         assert!(key.embedded_raw_normal_payload);
-    }
-
-    #[test]
-    fn generated_billboard_mesh_preserves_transparent_material_class() {
-        let registry = PropertyIdRegistry::new();
-        let src = registry.intern("_SrcBlend");
-        let dst = registry.intern("_DstBlend");
-        let render_queue = registry.intern("_RenderQueue");
-        let mut store = MaterialPropertyStore::new();
-        store.set_shader_asset_for_material(7, 99);
-        store.set_material(7, src, MaterialPropertyValue::Float(5.0));
-        store.set_material(7, dst, MaterialPropertyValue::Float(10.0));
-        store.set_material(
-            7,
-            render_queue,
-            MaterialPropertyValue::Float(UNITY_RENDER_QUEUE_TRANSPARENT as f32),
-        );
-        let dict = MaterialDictionary::new(&store);
-        let mut router = MaterialRouter::new(RasterPipelineKind::Null);
-        router.set_shader_pipeline(
-            99,
-            RasterPipelineKind::EmbeddedStem(Arc::from("unlit_default")),
-        );
-        let ids = MaterialPipelinePropertyIds::new(&registry);
-        let resolved =
-            resolve_material_batch(7, None, &dict, &router, &ids, ShaderPermutation::default());
-        let mut key = batch_key_from_resolved(
-            7,
-            None,
-            false,
-            RasterFrontFace::Clockwise,
-            RasterPrimitiveTopology::TriangleList,
-            &resolved,
-        );
-        let mesh_asset_id = crate::particles::billboard_render_buffer_mesh_asset_id(3).unwrap();
-
-        apply_render_buffer_mesh_pipeline_override(
-            &mut key,
-            mesh_asset_id,
-            ShaderPermutation::default(),
-        );
-
-        assert!(key.alpha_blended);
-        assert_eq!(key.render_queue, UNITY_RENDER_QUEUE_TRANSPARENT);
-        assert!(key.transparent_class.is_transparent());
-    }
-
-    #[test]
-    fn generated_billboard_mesh_uses_alpha_blend_for_stem_default_ordered_transparency() {
-        let registry = PropertyIdRegistry::new();
-        let render_queue = registry.intern("_RenderQueue");
-        let mut store = MaterialPropertyStore::new();
-        store.set_shader_asset_for_material(7, 99);
-        store.set_material(
-            7,
-            render_queue,
-            MaterialPropertyValue::Float(UNITY_RENDER_QUEUE_TRANSPARENT as f32),
-        );
-        let dict = MaterialDictionary::new(&store);
-        let mut router = MaterialRouter::new(RasterPipelineKind::Null);
-        router.set_shader_pipeline(
-            99,
-            RasterPipelineKind::EmbeddedStem(Arc::from("pbsvertexcolortransparent_default")),
-        );
-        let ids = MaterialPipelinePropertyIds::new(&registry);
-        let resolved =
-            resolve_material_batch(7, None, &dict, &router, &ids, ShaderPermutation::default());
-        let mut key = batch_key_from_resolved(
-            7,
-            None,
-            false,
-            RasterFrontFace::Clockwise,
-            RasterPrimitiveTopology::TriangleList,
-            &resolved,
-        );
-        let mesh_asset_id = crate::particles::billboard_render_buffer_mesh_asset_id(3).unwrap();
-
-        assert_eq!(key.blend_mode, MaterialBlendMode::StemDefault);
-        assert_eq!(
-            key.transparent_class,
-            TransparentMaterialClass::OrderedAlpha
-        );
-
-        apply_render_buffer_mesh_pipeline_override(
-            &mut key,
-            mesh_asset_id,
-            ShaderPermutation::default(),
-        );
-
-        assert_eq!(key.blend_mode, RENDER_BUFFER_ORDERED_ALPHA_FALLBACK_BLEND);
-        assert_eq!(
-            key.transparent_class,
-            TransparentMaterialClass::OrderedAlpha
-        );
-    }
-
-    #[test]
-    fn render_buffer_billboard_blend_fallback_keeps_explicit_and_non_ordered_modes() {
-        assert_eq!(
-            render_buffer_billboard_blend_mode_for_source(
-                MaterialBlendMode::UnityBlend { src: 1, dst: 1 },
-                TransparentMaterialClass::OrderedAlpha,
-            ),
-            MaterialBlendMode::UnityBlend { src: 1, dst: 1 }
-        );
-        assert_eq!(
-            render_buffer_billboard_blend_mode_for_source(
-                MaterialBlendMode::Opaque,
-                TransparentMaterialClass::OrderedAlpha,
-            ),
-            MaterialBlendMode::Opaque
-        );
-        assert_eq!(
-            render_buffer_billboard_blend_mode_for_source(
-                MaterialBlendMode::StemDefault,
-                TransparentMaterialClass::DepthWritingTransparent,
-            ),
-            MaterialBlendMode::StemDefault
-        );
     }
 
     #[test]
@@ -939,11 +760,7 @@ mod ui_rect_clip_tests {
             crate::particles::trail_render_buffer_mesh_asset_id(3, TrailTextureMode::Stretch)
                 .unwrap();
 
-        apply_render_buffer_mesh_pipeline_override(
-            &mut key,
-            mesh_asset_id,
-            ShaderPermutation::default(),
-        );
+        apply_render_buffer_mesh_pipeline_override(&mut key, mesh_asset_id);
 
         assert_eq!(key.pipeline, original);
     }

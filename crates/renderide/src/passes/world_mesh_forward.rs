@@ -61,7 +61,9 @@ pub(crate) use depth_prepass::{
     pre_warm_depth_prepass_pipeline,
 };
 pub(crate) use encode::{ShadowDepthDrawBatch, draw_shadow_depth_subset};
-pub(crate) use material_batch::{MaterialBatchBoundary, MaterialBatchPacket, MaterialDrawResolver};
+pub(crate) use material_batch::{
+    BILLBOARD_RENDER_BUFFER_BIT, MaterialBatchBoundary, MaterialBatchPacket, MaterialDrawResolver,
+};
 pub(crate) use normal_pass::{
     GTAO_VIEW_NORMAL_FORMAT, WorldMeshForwardNormalPipelineKey, normal_pipeline_key_for_draw,
     pre_warm_normal_pipeline,

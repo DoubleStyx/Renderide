@@ -14,6 +14,7 @@
 //#mat_default _WireTransitionExp float 1.0
 //#mat_default _WirePlaneOffset float 0.0
 
+#import renderide::billboard::vertex as bv
 #import renderide::core::math as rmath
 #import renderide::core::texture_sampling as ts
 #import renderide::core::uv as uvu
@@ -34,6 +35,7 @@ struct WireframeUnlitTransitionMaterial {
     _WireTransitionRange: f32,
     _WireTransitionExp: f32,
     _WirePlaneOffset: f32,
+    _RenderideVariantBits: u32,
     _MainTex_LodBias: f32,
 }
 
@@ -66,20 +68,32 @@ fn transition_lerp(distance: f32, offset: f32, range: f32, exponent: f32, invert
 @vertex
 fn vs_main(
     @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) vertex_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
     @location(0) pos: vec4<f32>,
+    @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
+    @location(4) t: vec4<f32>,
+    @location(5) uv1: vec2<f32>,
 ) -> VertexOutput {
-    let draw = pd::get_draw(instance_index);
-    let world_p = mv::world_position(draw, pos);
 #ifdef MULTIVIEW
     let layer = view_idx;
 #else
     let layer = 0u;
 #endif
+    let draw = pd::get_draw(instance_index);
     let vp = mv::select_view_proj(draw, layer);
+    var world_p: vec4<f32>;
+    if (bv::kw_RENDER_BUFFER(mat._RenderideVariantBits)) {
+        let render_billboard_vertex = bv::render_buffer_billboard_vertex(
+            draw, layer, pos, vertex_index, n, t, uv1,
+        );
+        world_p = render_billboard_vertex.world_pos;
+    } else {
+        world_p = mv::world_position(draw, pos);
+    }
 
     var out: VertexOutput;
     out.clip_pos = vp * world_p;

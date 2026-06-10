@@ -23,11 +23,12 @@ pub(crate) use post_processing::{
 pub(crate) use scene_color_compose::{SceneColorComposeGraphResources, SceneColorComposePass};
 pub(crate) use world_mesh_forward::ForwardMsaaResources;
 pub(crate) use world_mesh_forward::{
-    GTAO_VIEW_NORMAL_FORMAT, MaterialBatchBoundary, PreparedWorldMeshForwardFrame,
-    ShadowDepthDrawBatch, WorldMeshDepthSnapshotPass, WorldMeshDesktopOverlayGraphResources,
-    WorldMeshDesktopOverlayPass, WorldMeshForwardDepthPrepass,
-    WorldMeshForwardDepthPrepassGraphResources, WorldMeshForwardDepthPrepassPipelineKey,
-    WorldMeshForwardDepthResolvePass, WorldMeshForwardEncodeRefs, WorldMeshForwardGraphResources,
+    BILLBOARD_RENDER_BUFFER_BIT, GTAO_VIEW_NORMAL_FORMAT, MaterialBatchBoundary,
+    PreparedWorldMeshForwardFrame, ShadowDepthDrawBatch, WorldMeshDepthSnapshotPass,
+    WorldMeshDesktopOverlayGraphResources, WorldMeshDesktopOverlayPass,
+    WorldMeshForwardDepthPrepass, WorldMeshForwardDepthPrepassGraphResources,
+    WorldMeshForwardDepthPrepassPipelineKey, WorldMeshForwardDepthResolvePass,
+    WorldMeshForwardEncodeRefs, WorldMeshForwardGraphResources,
     WorldMeshForwardGtaoDepthResolvePass, WorldMeshForwardInstancePlanCache,
     WorldMeshForwardInstancePlanCacheStats, WorldMeshForwardIntersectPass,
     WorldMeshForwardNormalGraphResources, WorldMeshForwardNormalPass,

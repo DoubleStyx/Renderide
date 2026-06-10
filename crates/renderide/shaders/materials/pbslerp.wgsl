@@ -26,6 +26,7 @@
 //#mat_default _Glossiness float 0.5
 //#mat_default _Glossiness1 float 0.5
 
+#import renderide::billboard::vertex as bv
 #import renderide::material::variant_bits as vb
 #import renderide::mesh::vertex as mv
 #import renderide::pbs::lighting as plight
@@ -138,6 +139,7 @@ fn compute_lerp_factor(uv_lerp: vec2<f32>) -> f32 {
 @vertex
 fn vs_main(
     @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) vertex_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
@@ -145,12 +147,18 @@ fn vs_main(
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
     @location(4) t: vec4<f32>,
+    @location(5) uv1: vec2<f32>,
 ) -> mv::WorldVertexOutput {
 #ifdef MULTIVIEW
-    return mv::world_vertex_main(instance_index, view_idx, pos, n, t, uv0);
+    let view_layer = view_idx;
 #else
-    return mv::world_vertex_main(instance_index, 0u, pos, n, t, uv0);
+    let view_layer = 0u;
 #endif
+    if (bv::kw_RENDER_BUFFER(mat._RenderideVariantBits)) {
+        return bv::world_vertex_main(instance_index, view_layer, pos, n, t, uv0, vertex_index, uv1);
+    } else {
+        return mv::world_vertex_main(instance_index, view_layer, pos, n, t, uv0);
+    }
 }
 
 //#pass type=forward ztest=main a2c=cutout

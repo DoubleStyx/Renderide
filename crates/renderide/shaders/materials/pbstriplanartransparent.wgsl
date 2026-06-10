@@ -15,6 +15,7 @@
 //#mat_default _TriBlendPower float 4.0
 //#mat_default _Glossiness float 0.5
 
+#import renderide::billboard::vertex as bv
 #import renderide::material::variant_bits as vb
 #import renderide::pbs::families::triplanar as ptri
 #import renderide::pbs::lighting as plight
@@ -149,17 +150,26 @@ fn sample_surface(
 @vertex
 fn vs_main(
     @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) vertex_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
     @location(0) pos: vec4<f32>,
     @location(1) n: vec4<f32>,
+    @location(2) uv0: vec2<f32>,
+    @location(4) t: vec4<f32>,
+    @location(5) uv1: vec2<f32>,
 ) -> ptri::VertexOutput {
 #ifdef MULTIVIEW
-    return ptri::vertex_main(instance_index, view_idx, pos, n, kw_OBJECTSPACE());
+    let view_layer = view_idx;
 #else
-    return ptri::vertex_main(instance_index, 0u, pos, n, kw_OBJECTSPACE());
+    let view_layer = 0u;
 #endif
+    if (bv::kw_RENDER_BUFFER(mat._RenderideVariantBits)) {
+        return ptri::billboard_vertex_main(instance_index, view_layer, pos, n, vertex_index, uv0, t, uv1, kw_OBJECTSPACE());
+    } else {
+        return ptri::vertex_main(instance_index, view_layer, pos, n, kw_OBJECTSPACE());
+    }
 }
 
 //#pass type=forward name=forward_transparent blend=transparent_material zwrite=material(off) cull=material(off) color_mask=material(rgba)

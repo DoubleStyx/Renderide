@@ -16,9 +16,13 @@ use super::types::ParticleRenderBufferError;
 #[derive(Debug, Default)]
 pub(super) struct GeneratedExtraStreams {
     /// Raw tangent payload stream at shader location 4.
-    pub(super) raw_tangent: Option<Vec<u8>>,
+    /// Overloaded by particle system to hold the forward direction of the particle
+    /// and the Z component of its up direction.
+    pub(super) point_forward_upz: Option<Vec<u8>>,
     /// UV1 stream at shader location 5.
-    pub(super) uv1: Option<Vec<u8>>,
+    /// Overloaded by particle system to hold the XY components
+    /// of the up direction of the particle.
+    pub(super) point_up_xy: Option<Vec<u8>>,
 }
 
 pub(super) fn generated_vertex_stride() -> usize {
@@ -96,8 +100,8 @@ pub(super) fn prepared_generated_derived_streams(
         normals: Some(normals),
         uv0: Some(uv0),
         color: Some(color),
-        raw_tangent: extra.raw_tangent,
-        uv1: extra.uv1,
+        raw_tangent: extra.point_forward_upz,
+        uv1: extra.point_up_xy,
         ..PreparedDerivedStreams::default()
     }
 }

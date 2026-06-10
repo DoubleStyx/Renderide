@@ -4,6 +4,7 @@
 //#texture_default _MainTex white
 //#texture_default _NormalMap bump
 
+#import renderide::billboard::vertex as bv
 #import renderide::frame::globals as rg
 #import renderide::draw::per_draw as pd
 #import renderide::core::math as rmath
@@ -51,6 +52,7 @@ struct VertexOutput {
 @vertex
 fn vs_main(
     @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) vertex_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
@@ -58,13 +60,18 @@ fn vs_main(
     @location(1) n: vec4<f32>,
     @location(2) uv0: vec2<f32>,
     @location(4) tangent: vec4<f32>,
+    @location(5) uv1: vec2<f32>,
 ) -> VertexOutput {
+    #ifdef MULTIVIEW
+        let view_layer = view_idx;
+    #else
+        let view_layer = 0u;
+    #endif
+    if (bv::kw_RENDER_BUFFER(mat._RenderideVariantBits)) {
+        return billboard_vertex_main(instance_index, view_layer, pos, n, uv0, tangent, uv1, vertex_index);
+    }
+
     let d = pd::get_draw(instance_index);
-#ifdef MULTIVIEW
-    let view_layer = view_idx;
-#else
-    let view_layer = 0u;
-#endif
     let world_p = mv::world_position(d, pos);
     let world_n = rmath::safe_normalize(d.normal_matrix * n.xyz, vec3<f32>(0.0, 1.0, 0.0));
     let tbn = pnorm::orthonormal_tbn(world_n, mv::world_tangent(d, tangent));
@@ -77,6 +84,39 @@ fn vs_main(
     out.world_n = world_n;
     out.world_t = tbn[0];
     out.world_b = tbn[1];
+    out.view_x = basis.x;
+    out.view_y = basis.y;
+    return out;
+}
+
+fn billboard_vertex_main(
+    instance_index: u32,
+    view_idx: u32,
+    pos: vec4<f32>,
+    n: vec4<f32>,
+    uv0: vec2<f32>,
+    tangent: vec4<f32>,
+    uv1: vec2<f32>,
+    vertex_index: u32,
+) -> VertexOutput {
+    let d = pd::get_draw(instance_index);
+
+    let render_billboard_vertex = bv::render_buffer_billboard_vertex(
+        d, view_idx, pos, vertex_index, n, tangent, uv1,
+    );
+    let world_p = render_billboard_vertex.world_pos;
+    let axes = render_billboard_vertex.axes;
+    let billboard_t = axes.right;
+    let billboard_n = rmath::safe_normalize(cross(axes.right, axes.up), vec3<f32>(0.0, 0.0, 1.0));
+    let vp = mv::select_view_proj(d, view_idx);
+    let basis = vb::from_view_projection(vp);
+
+    var out: VertexOutput;
+    out.clip_pos = vp * world_p;
+    out.uv_normal = uvu::apply_st(uv0, mat._NormalMap_ST);
+    out.world_n = mv::world_normal_for_view(d, vec4<f32>(billboard_n, 0.0), view_idx).xyz;
+    out.world_t = mv::world_tangent_for_view(d, vec4<f32>(billboard_t, 0.0), view_idx).xyz;
+    out.world_b = rmath::safe_normalize(cross(out.world_n, out.world_t), vec3<f32>(0.0, 0.0, 1.0));
     out.view_x = basis.x;
     out.view_y = basis.y;
     return out;

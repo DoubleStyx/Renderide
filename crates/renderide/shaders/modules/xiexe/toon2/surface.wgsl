@@ -15,6 +15,8 @@
 #import renderide::pbs::normal as pnorm
 #import renderide::core::normal_decode as nd
 #import renderide::core::uv as uvu
+#import renderide::billboard::vertex as bv
+#import renderide::core::math as rmath
 
 /// Forward-pass vertex transform. Builds the world-space TBN, applies the per-eye VP,
 /// and forwards UVs / vertex color unchanged. Outline extrusion lives in
@@ -50,6 +52,46 @@ fn vertex_main(
     out.view_layer = mv::packed_view_layer(instance_index, view_idx);
     return out;
 }
+
+/// Forward-pass vertex transform for billboard particle rendering.
+/// Same structure as `vertex_main`, but using billboard point data
+/// to generate quad vertices on the fly.
+fn billboard_vertex_main(
+    instance_index: u32,
+    view_idx: u32,
+    pos: vec4<f32>,
+    n: vec4<f32>,
+    uv_primary: vec2<f32>,
+    color: vec4<f32>,
+    tangent: vec4<f32>,
+    uv_secondary: vec2<f32>,
+    vertex_index: u32,
+) -> xb::VertexOutput {
+    let d = pd::get_draw(instance_index);
+
+    let render_billboard_vertex = bv::render_buffer_billboard_vertex(
+        d, view_idx, pos, vertex_index, n, tangent, uv_secondary,
+    );
+    let world_p = render_billboard_vertex.world_pos;
+    let axes = render_billboard_vertex.axes;
+    let billboard_t = axes.right;
+    let billboard_n = rmath::safe_normalize(cross(axes.right, axes.up), vec3<f32>(0.0, 0.0, 1.0));
+    let vp = xb::view_projection_for_draw(d, view_idx);
+
+    var out: xb::VertexOutput;
+    out.clip_pos = vp * world_p;
+    out.world_pos = world_p.xyz;
+    out.world_n = mv::world_normal_for_view(d, vec4<f32>(billboard_n, 0.0), view_idx).xyz;
+    out.world_t = mv::world_tangent_for_view(d, vec4<f32>(billboard_t, 0.0), view_idx).xyz;
+    out.world_b = rmath::safe_normalize(cross(out.world_n, out.world_t), vec3<f32>(0.0, 0.0, 1.0));
+    out.uv_primary = uv_primary;
+    out.uv_secondary = uv_primary;
+    out.color = color;
+    out.obj_pos = xb::safe_normalize(pos.xyz, vec3<f32>(0.0, 0.0, 1.0));
+    out.view_layer = mv::packed_view_layer(instance_index, view_idx);
+    return out;
+}
+
 
 /// Builds a perturbed TBN from the interpolated geometry frame for a selected keyword layout.
 fn decode_normal_world_for_layout(

@@ -53,6 +53,30 @@ fn vertex_main(
     return out;
 }
 
+fn billboard_vertex_main(
+    instance_index: u32,
+    view_idx: u32,
+    pos: vec4<f32>,
+    n: vec4<f32>,
+    t: vec4<f32>,
+    uv0: vec2<f32>,
+    vertex_index: u32,
+    uv1: vec2<f32>
+) -> VertexOutput {
+    let inner = fv::billboard_vertex_main(instance_index, view_idx, pos, n, t, uv0, vertex_index, uv1);
+    var out: VertexOutput;
+    out.clip_pos = inner.clip_pos;
+    out.primary_uv = inner.primary_uv;
+    out.world_pos = inner.world_pos;
+    out.world_n = inner.world_n;
+    out.view_layer = inner.view_layer;
+    out.view_n = inner.view_n;
+    out.obj_xy = pos.xy;
+    out.view_t = view_tangent_for_draw(instance_index, view_idx, inner.world_t);
+    out.clip_w = inner.clip_pos.w;
+    return out;
+}
+
 fn normal_offset(
     refraction_enabled: bool,
     normal_map_enabled: bool,

@@ -190,8 +190,8 @@ fn build_billboard_mesh_input(
 /// Builds raw orientation streams consumed by Billboard/Unlit render-buffer alignment.
 pub(super) fn billboard_extra_streams(points: &[PointParticle]) -> GeneratedExtraStreams {
     let vertex_count = points.len() * BILLBOARD_VERTICES_PER_POINT;
-    let mut raw_tangent = vec![0u8; vertex_count * 16];
-    let mut uv1 = vec![0u8; vertex_count * 8];
+    let mut point_forward_upz = vec![0u8; vertex_count * 16];
+    let mut point_up_xy = vec![0u8; vertex_count * 8];
     for (point_index, point) in points.iter().enumerate() {
         let forward = point.rotation * Vec3::Z;
         let up = point.rotation * Vec3::Y;
@@ -200,15 +200,15 @@ pub(super) fn billboard_extra_streams(points: &[PointParticle]) -> GeneratedExtr
         for corner_index in 0..BILLBOARD_VERTICES_PER_POINT {
             let vertex_index = point_index * BILLBOARD_VERTICES_PER_POINT + corner_index;
             let tangent_start = vertex_index * 16;
-            raw_tangent[tangent_start..tangent_start + 16]
+            point_forward_upz[tangent_start..tangent_start + 16]
                 .copy_from_slice(bytemuck::cast_slice(&tangent));
             let uv1_start = vertex_index * 8;
-            uv1[uv1_start..uv1_start + 8].copy_from_slice(bytemuck::cast_slice(&up_xy));
+            point_up_xy[uv1_start..uv1_start + 8].copy_from_slice(bytemuck::cast_slice(&up_xy));
         }
     }
     GeneratedExtraStreams {
-        raw_tangent: Some(raw_tangent),
-        uv1: Some(uv1),
+        point_forward_upz: Some(point_forward_upz),
+        point_up_xy: Some(point_up_xy),
     }
 }
 

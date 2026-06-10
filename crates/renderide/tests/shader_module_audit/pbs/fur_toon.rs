@@ -286,7 +286,7 @@ fn classic_furfx_modules_keep_source_parity_details() -> io::Result<()> {
     let common = module_source("fur/common.wgsl")?;
     for required in [
         "@location(9) base_world_pos: vec3<f32>,",
-        "let base_world_pos = mv::world_position(draw, pos).xyz;",
+        "base_world_pos = mv::world_position(draw, pos).xyz;",
         "out.shell_noise_uv = uv0 + shell_noise_offset;",
         "out.base_world_pos = base_world_pos;",
         "var color = tex_rgb;\n    color = color - shadow_rgb * hair_coloring;\n    color = color - vec3<f32>(pow(1.0 - fur_multiplier, 4.0) * hair_shading);\n    color = color * tint_rgb;",
@@ -326,6 +326,22 @@ fn classic_furfx_modules_keep_source_parity_details() -> io::Result<()> {
         );
     }
 
+    Ok(())
+}
+
+#[test]
+fn furfx_supports_billboard_rendering() -> io::Result<()> {
+    let common = module_source("fur/common.wgsl")?;
+    for required in [
+        "if (bv::kw_RENDER_BUFFER(variant_bits))",
+        "billboard_vertex = bv::render_buffer_billboard_vertex(",
+        "base_world_pos = billboard_vertex.world_pos.xyz;",
+    ] {
+        assert!(
+            common.contains(required),
+            "fur/common.wgsl must be compatible with billboard rendering `{required}`"
+        );
+    }
     Ok(())
 }
 

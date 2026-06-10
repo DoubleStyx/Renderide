@@ -7,6 +7,7 @@ pub(crate) const STATIC_VARIANT_BITS_OVERRIDE: &str = "renderide_static_variant_
 
 const STATIC_VARIANT_BITS_DISABLED: u32 = 0;
 const STATIC_VARIANT_BITS_ENABLED: u32 = 1;
+const DEFAULT_VARIANT_BITS_ENABLED: u32 = 2;
 
 /// Pipeline-cache selector for material shader specialization constants.
 ///
@@ -31,6 +32,14 @@ impl MaterialShaderSpecializationKey {
     pub(crate) const fn from_variant_bits(bits: u32) -> Self {
         Self {
             static_variant_bits_mode: STATIC_VARIANT_BITS_ENABLED,
+            static_variant_bits: bits,
+        }
+    }
+
+    /// Returns a key that exposes the given variant bitmask as a default pipeline mask.
+    pub(crate) const fn from_default_variant_bits(bits: u32) -> Self {
+        Self {
+            static_variant_bits_mode: DEFAULT_VARIANT_BITS_ENABLED,
             static_variant_bits: bits,
         }
     }

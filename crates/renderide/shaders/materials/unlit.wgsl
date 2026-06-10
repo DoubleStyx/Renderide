@@ -21,6 +21,7 @@
 //#mat_default _PolarPow float 1.0
 //#mat_default _Cutoff float 0.5
 
+#import renderide::billboard::vertex as bv
 #import renderide::core::texture_sampling as ts
 #import renderide::frame::globals as rg
 #import renderide::material::alpha as ma
@@ -79,22 +80,34 @@ struct VertexOutput {
 @vertex
 fn vs_main(
     @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) vertex_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
     @location(0) pos: vec4<f32>,
-    @location(1) _n: vec4<f32>,
+    @location(1) n: vec4<f32>,
     @location(2) uv: vec2<f32>,
     @location(3) color: vec4<f32>,
+    @location(4) t: vec4<f32>,
+    @location(5) uv1: vec2<f32>,
 ) -> VertexOutput {
     let d = pd::get_draw(instance_index);
-    let world_p = mv::world_position(d, pos);
 #ifdef MULTIVIEW
     let view_layer = view_idx;
 #else
     let view_layer = 0u;
 #endif
     let vp = mv::select_view_proj(d, view_layer);
+
+    var world_p: vec4<f32>;
+    if (bv::kw_RENDER_BUFFER(mat._RenderideVariantBits)) {
+        let render_billboard_vertex = bv::render_buffer_billboard_vertex(
+            d, view_layer, pos, vertex_index, n, t, uv1,
+        );
+        world_p = render_billboard_vertex.world_pos;
+    } else {
+        world_p = mv::world_position(d, pos);
+    }
 
     var out: VertexOutput;
     out.clip_pos = vp * world_p;

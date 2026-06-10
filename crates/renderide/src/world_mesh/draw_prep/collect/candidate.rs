@@ -93,11 +93,7 @@ pub(super) fn evaluate_draw_candidate(
             shader_perm: ctx.materials.shader_perm,
         },
     );
-    apply_render_buffer_mesh_pipeline_override(
-        &mut batch_key,
-        candidate.mesh_asset_id,
-        ctx.materials.shader_perm,
-    );
+    apply_render_buffer_mesh_pipeline_override(&mut batch_key, candidate.mesh_asset_id);
     // Per-slot UI rect-mask CPU cull: the per-renderer cull above runs once per renderer (and
     // bypasses overlay anyway), so the actual rect-vs-viewport check has to live here, where
     // `_Rect` / `_RectClip` are finally known per material slot. Without this, every off-screen

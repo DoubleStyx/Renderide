@@ -12,7 +12,6 @@
 //#render_queue AlphaTest+200
 //#texture_default _Tex white
 //#texture_default _OffsetTex black
-//#texture_default _MaskTex white
 //#mat_default _Color vec4 1.0 1.0 1.0 1.0
 //#mat_default _OffsetMagnitude vec4 0.1 0.1 0.0 0.0
 //#mat_default _PointSize vec4 0.1 0.1 0.0 0.0
@@ -20,8 +19,8 @@
 //#mat_default _Cutoff float 0.5
 //#mat_default _Tex_LodBias float 0.0
 //#mat_default _OffsetTex_LodBias float 0.0
-//#mat_default _MaskTex_LodBias float 0.0
 
+#import renderide::billboard::vertex as bv
 #import renderide::core::texture_sampling as ts
 #import renderide::core::uv as uvu
 #import renderide::core::math as rmath
@@ -40,7 +39,6 @@ struct BillboardUnlitMaterial {
     _Color: vec4<f32>,
     _Tex_ST: vec4<f32>,
     _RightEye_ST: vec4<f32>,
-    _MaskTex_ST: vec4<f32>,
     _OffsetTex_ST: vec4<f32>,
     _OffsetMagnitude: vec4<f32>,
     _PointSize: vec4<f32>,
@@ -49,7 +47,6 @@ struct BillboardUnlitMaterial {
     _RenderideVariantBits: u32,
     _Tex_LodBias: f32,
     _OffsetTex_LodBias: f32,
-    _MaskTex_LodBias: f32,
     _pad0: f32,
 }
 
@@ -69,18 +66,12 @@ const BILLBOARDUNLIT_KW_VERTEX_HDRSRGBALPHA_COLOR: u32 = 1u << 12u;
 const BILLBOARDUNLIT_KW_VERTEX_LINEAR_COLOR: u32 = 1u << 13u;
 const BILLBOARDUNLIT_KW_VERTEX_SRGB_COLOR: u32 = 1u << 14u;
 const BILLBOARDUNLIT_KW_VERTEXCOLORS: u32 = 1u << 15u;
-const BILLBOARDUNLIT_KW_RENDER_BUFFER: u32 = 1u << 16u;
-const BILLBOARDUNLIT_KW_SIMPLE_LIT: u32 = 1u << 17u;
-const BILLBOARDUNLIT_KW_UNLIT_MASK_TEXTURE_CLIP: u32 = 1u << 18u;
-const BILLBOARDUNLIT_KW_UNLIT_MASK_TEXTURE_MUL: u32 = 1u << 19u;
 
 @group(1) @binding(0) var<uniform> mat: BillboardUnlitMaterial;
 @group(1) @binding(1) var _Tex: texture_2d<f32>;
 @group(1) @binding(2) var _Tex_sampler: sampler;
 @group(1) @binding(3) var _OffsetTex: texture_2d<f32>;
 @group(1) @binding(4) var _OffsetTex_sampler: sampler;
-@group(1) @binding(5) var _MaskTex: texture_2d<f32>;
-@group(1) @binding(6) var _MaskTex_sampler: sampler;
 
 fn bb_kw(mask: u32) -> bool {
     return vb::enabled(mat._RenderideVariantBits, mask);
@@ -92,14 +83,6 @@ fn kw_ALPHATEST() -> bool {
 
 fn kw_COLOR() -> bool {
     return bb_kw(BILLBOARDUNLIT_KW_COLOR);
-}
-
-fn kw_UNLIT_MASK_TEXTURE_CLIP() -> bool {
-    return bb_kw(BILLBOARDUNLIT_KW_UNLIT_MASK_TEXTURE_CLIP);
-}
-
-fn kw_UNLIT_MASK_TEXTURE_MUL() -> bool {
-    return bb_kw(BILLBOARDUNLIT_KW_UNLIT_MASK_TEXTURE_MUL);
 }
 
 fn kw_MUL_ALPHA_INTENSITY() -> bool {
@@ -120,10 +103,6 @@ fn kw_POINT_ROTATION() -> bool {
 
 fn kw_POINT_SIZE() -> bool {
     return bb_kw(BILLBOARDUNLIT_KW_POINT_SIZE);
-}
-
-fn kw_RENDER_BUFFER() -> bool {
-    return bb_kw(BILLBOARDUNLIT_KW_RENDER_BUFFER);
 }
 
 fn kw_POLARUV() -> bool {
@@ -154,174 +133,12 @@ fn kw_VERTEXCOLORS() -> bool {
     return bb_kw(BILLBOARDUNLIT_KW_VERTEXCOLORS);
 }
 
-fn kw_SIMPLE_LIT() -> bool {
-    return bb_kw(BILLBOARDUNLIT_KW_SIMPLE_LIT);
-}
-
 struct VertexOutput {
     @builtin(position) clip_pos: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
     @location(2) @interpolate(flat) view_layer: u32,
     @location(3) fog_coord: f32,
-    @location(4) world_p: vec3<f32>,
-    @location(5) n: vec3<f32>,
-}
-
-struct RenderBufferBillboardBasis {
-    right: vec3<f32>,
-    up: vec3<f32>,
-}
-
-fn billboard_size(pointdata: vec3<f32>, model: mat4x4<f32>) -> vec2<f32> {
-    if (kw_RENDER_BUFFER()) {
-        return max(abs(pointdata.xy), vec2<f32>(1e-6, 1e-6)) * mb::model_uniform_scale(model);
-    }
-    return mb::billboard_size(pointdata, mat._PointSize.xy, model, kw_POINT_SIZE());
-}
-
-fn rotate_render_buffer_axes(angle: f32, right: vec3<f32>, up: vec3<f32>) -> RenderBufferBillboardBasis {
-    let c = cos(angle);
-    let s = sin(angle);
-    return RenderBufferBillboardBasis(right * c - up * s, right * s + up * c);
-}
-
-fn view_plane_basis(view_layer: u32, roll: f32, allow_roll: bool) -> RenderBufferBillboardBasis {
-    let view_up = rmath::safe_normalize(rg::view_to_world_y_coeffs_for_view(view_layer).xyz, vec3<f32>(0.0, 1.0, 0.0));
-    let to_camera = rg::orthographic_view_dir_for_view(view_layer);
-    var right = rmath::safe_normalize(cross(view_up, to_camera), vec3<f32>(1.0, 0.0, 0.0));
-    var up = rmath::safe_normalize(cross(to_camera, right), view_up);
-    if (allow_roll && abs(roll) > 1e-4) {
-        let rotated = rotate_render_buffer_axes(roll, right, up);
-        right = rotated.right;
-        up = rotated.up;
-    }
-    return RenderBufferBillboardBasis(right, up);
-}
-
-fn facing_basis(center_world: vec3<f32>, view_layer: u32, roll: f32, allow_roll: bool) -> RenderBufferBillboardBasis {
-    let view_up = rmath::safe_normalize(rg::view_to_world_y_coeffs_for_view(view_layer).xyz, vec3<f32>(0.0, 1.0, 0.0));
-    let to_camera = rg::view_dir_for_world_pos(center_world, view_layer);
-    var right = rmath::safe_normalize(cross(view_up, to_camera), vec3<f32>(1.0, 0.0, 0.0));
-    var up = rmath::safe_normalize(cross(to_camera, right), view_up);
-    if (allow_roll && abs(roll) > 1e-4) {
-        let rotated = rotate_render_buffer_axes(roll, right, up);
-        right = rotated.right;
-        up = rotated.up;
-    }
-    return RenderBufferBillboardBasis(right, up);
-}
-
-fn direction_stretch_particle_basis(
-    d: dt::PerDrawUniforms,
-    center_world: vec3<f32>,
-    point_forward_upz: vec4<f32>,
-    view_layer: u32,
-) -> RenderBufferBillboardBasis {
-    let to_camera = rg::view_dir_for_world_pos(center_world, view_layer);
-    let velocity_world = mv::model_vector(d, point_forward_upz.xyz);
-    let velocity_in_plane = velocity_world - to_camera * dot(velocity_world, to_camera);
-    let view_up = rg::view_to_world_y_coeffs_for_view(view_layer).xyz;
-    let view_up_in_plane = view_up - to_camera * dot(view_up, to_camera);
-    var up = rmath::safe_normalize(
-        velocity_in_plane,
-        rmath::safe_normalize(view_up_in_plane, vec3<f32>(0.0, 1.0, 0.0)),
-    );
-    let right = rmath::safe_normalize(cross(up, to_camera), vec3<f32>(1.0, 0.0, 0.0));
-    up = rmath::safe_normalize(cross(to_camera, right), up);
-    return RenderBufferBillboardBasis(right, up);
-}
-
-fn local_particle_basis(
-    d: dt::PerDrawUniforms,
-    pointdata: vec3<f32>,
-    point_forward_upz: vec4<f32>,
-    point_up_xy: vec2<f32>,
-) -> RenderBufferBillboardBasis {
-    let raw_forward = rmath::safe_normalize(point_forward_upz.xyz, vec3<f32>(0.0, 0.0, 1.0));
-    let raw_up = rmath::safe_normalize(vec3<f32>(point_up_xy, point_forward_upz.w), vec3<f32>(0.0, 1.0, 0.0));
-    let world_forward = rmath::safe_normalize(mv::model_vector(d, raw_forward), vec3<f32>(0.0, 0.0, 1.0));
-    let world_up = rmath::safe_normalize(mv::model_vector(d, raw_up), vec3<f32>(0.0, 1.0, 0.0));
-    var right = rmath::safe_normalize(cross(world_forward, world_up), vec3<f32>(1.0, 0.0, 0.0));
-    var up = rmath::safe_normalize(cross(right, world_forward), world_up);
-    if (abs(pointdata.z) > 1e-4) {
-        let rotated = rotate_render_buffer_axes(pointdata.z, right, up);
-        right = rotated.right;
-        up = rotated.up;
-    }
-    return RenderBufferBillboardBasis(right, up);
-}
-
-fn render_buffer_billboard_basis(
-    d: dt::PerDrawUniforms,
-    center_world: vec3<f32>,
-    pointdata: vec3<f32>,
-    point_forward_upz: vec4<f32>,
-    point_up_xy: vec2<f32>,
-    view_layer: u32,
-) -> RenderBufferBillboardBasis {
-    let alignment = pd::particle_alignment(d);
-    if (alignment == 1u) {
-        return facing_basis(center_world, view_layer, pointdata.z, false);
-    }
-    if (alignment == 2u || alignment == 3u) {
-        return local_particle_basis(d, pointdata, point_forward_upz, point_up_xy);
-    }
-    if (alignment == 4u) {
-        return direction_stretch_particle_basis(d, center_world, point_forward_upz, view_layer);
-    }
-    return view_plane_basis(view_layer, pointdata.z, true);
-}
-
-fn ndc_xy(clip: vec4<f32>) -> vec2<f32> {
-    return clip.xy / max(abs(clip.w), 1e-6);
-}
-
-fn screen_clamped_billboard_size(
-    d: dt::PerDrawUniforms,
-    center_world: vec3<f32>,
-    axes: RenderBufferBillboardBasis,
-    size: vec2<f32>,
-    vp: mat4x4<f32>,
-) -> vec2<f32> {
-    let min_size = pd::particle_min_screen_size(d);
-    let max_size = pd::particle_max_screen_size(d);
-    if (min_size <= 0.0 && max_size <= 0.0) {
-        return size;
-    }
-    let viewport = max(rg::viewport_size(), vec2<f32>(1.0, 1.0));
-    let center_ndc = ndc_xy(vp * vec4<f32>(center_world, 1.0));
-    let right_ndc = ndc_xy(vp * vec4<f32>(center_world + axes.right * size.x, 1.0));
-    let up_ndc = ndc_xy(vp * vec4<f32>(center_world + axes.up * size.y, 1.0));
-    let right_pixels = length((right_ndc - center_ndc) * viewport * 0.5);
-    let up_pixels = length((up_ndc - center_ndc) * viewport * 0.5);
-    let screen_fraction = max(right_pixels, up_pixels) / max(min(viewport.x, viewport.y), 1.0);
-    if (screen_fraction <= 1e-6) {
-        return size;
-    }
-    var scale = 1.0;
-    if (min_size > 0.0 && screen_fraction < min_size) {
-        scale = max(scale, min_size / screen_fraction);
-    }
-    if (max_size > 0.0 && screen_fraction * scale > max_size) {
-        scale = max_size / screen_fraction;
-    }
-    return max(size * scale, vec2<f32>(1e-6, 1e-6));
-}
-
-fn render_buffer_billboard_unit_corner(vertex_index: u32) -> vec2<f32> {
-    let corner = vertex_index % 4u;
-    return vec2<f32>(
-        select(0.0, 1.0, (corner & 1u) != 0u),
-        select(0.0, 1.0, (corner & 2u) != 0u),
-    );
-}
-
-fn billboard_corner_for_vertex(pos: vec3<f32>, uv: vec2<f32>, vertex_index: u32) -> vec2<f32> {
-    if (kw_RENDER_BUFFER()) {
-        return render_buffer_billboard_unit_corner(vertex_index) * 2.0 - vec2<f32>(1.0, 1.0);
-    }
-    return mb::billboard_corner(pos, uv);
 }
 
 @vertex
@@ -332,48 +149,41 @@ fn vs_main(
     @builtin(view_index) view_idx: u32,
 #endif
     @location(0) pos: vec4<f32>,
-    @location(1) pointdata_in: vec4<f32>,
+    @location(1) pointdata: vec4<f32>,
     @location(2) uv: vec2<f32>,
     @location(3) color: vec4<f32>,
     @location(4) point_forward_upz: vec4<f32>,
     @location(5) point_up_xy: vec2<f32>,
 ) -> VertexOutput {
     let d = pd::get_draw(instance_index);
-    let pointdata = pointdata_in.xyz;
 #ifdef MULTIVIEW
     let layer = view_idx;
 #else
     let layer = 0u;
 #endif
 
-#ifdef MULTIVIEW
-    let vp = mv::select_view_proj(d, view_idx);
-#else
-    let vp = mv::select_view_proj(d, 0u);
-#endif
-    let center_world = mv::world_position(d, pos).xyz;
-    let use_rotation = kw_POINT_ROTATION() && abs(pointdata.z) > 1e-4;
-    let fallback_axes = mb::billboard_axes(center_world, pointdata, layer, use_rotation);
-    var axes = RenderBufferBillboardBasis(fallback_axes.right, fallback_axes.up);
-    if (kw_RENDER_BUFFER()) {
-        axes = render_buffer_billboard_basis(d, center_world, pointdata, point_forward_upz, point_up_xy, layer);
-    }
-    let corner = billboard_corner_for_vertex(pos.xyz, uv, vertex_index);
-    let unclamped_size = billboard_size(pointdata, d.model);
-    var size = unclamped_size;
-    if (kw_RENDER_BUFFER()) {
-        size = screen_clamped_billboard_size(d, center_world, axes, unclamped_size, vp);
-    }
-    let world_p = center_world + axes.right * (corner.x * size.x) + axes.up * (corner.y * size.y);
-
+    let vp = mv::select_view_proj(d, layer);
     var out: VertexOutput;
+    var world_p: vec3<f32>;
+    if (bv::kw_RENDER_BUFFER(mat._RenderideVariantBits)) {
+        let render_billboard_vertex = bv::render_buffer_billboard_vertex(
+            d, layer, pos, vertex_index, pointdata, point_forward_upz, point_up_xy,
+        );
+        world_p = render_billboard_vertex.world_pos.xyz;
+    } else {
+        let center_world = mv::world_position(d, pos).xyz;
+        let use_rotation = kw_POINT_ROTATION() && abs(pointdata.z) > 1e-4;
+        let fallback_axes = mb::billboard_axes(center_world, pointdata.xyz, layer, use_rotation);
+        let axes = bv::RenderBufferBillboardBasis(fallback_axes.right, fallback_axes.up);
+        let corner = mb::billboard_corner(pos.xyz, uv);
+        let size = mb::billboard_size(pointdata.xyz, mat._PointSize.xy, d.model, kw_POINT_SIZE());
+        world_p = center_world + axes.right * (corner.x * size.x) + axes.up * (corner.y * size.y);
+    }
     out.clip_pos = vp * vec4<f32>(world_p, 1.0);
     out.uv = uv;
     out.color = color;
     out.view_layer = layer;
     out.fog_coord = rfog::coord_from_world_pos(world_p, layer);
-    out.world_p = world_p;
-    out.n = rmath::safe_normalize(cross(axes.right, axes.up), vec3<f32>(0.0, 0.0, 1.0));
     return out;
 }
 
@@ -460,22 +270,7 @@ fn fs_main(
         col = vec4<f32>(1.0);
     }
 
-    let mask_clip = kw_UNLIT_MASK_TEXTURE_CLIP();
-    let mask_mul = kw_UNLIT_MASK_TEXTURE_MUL();
-    if (mask_mul || mask_clip) {
-        let uv_mask = uvu::apply_st(in.uv, mat._MaskTex_ST);
-        let mask_sample = ts::sample_tex_2d(_MaskTex, _MaskTex_sampler, uv_mask, mat._MaskTex_LodBias);
-        let mask_lum = ma::mask_luminance(mask_sample);
-
-        if (mask_mul) {
-            col.a = col.a * mask_lum;
-        }
-        if (mask_clip && mask_lum <= mat._Cutoff) {
-            discard;
-        }
-    }
-
-    if (kw_ALPHATEST() && !mask_clip && col.a < mat._Cutoff) {
+    if (kw_ALPHATEST() && col.a < mat._Cutoff) {
         discard;
     }
 
@@ -489,13 +284,6 @@ fn fs_main(
 
     if (kw_MUL_ALPHA_INTENSITY()) {
         col = vec4<f32>(col.rgb, ma::alpha_intensity(col.a, col.rgb));
-    }
-
-    if (kw_SIMPLE_LIT()) {
-        let n = two_sided_geometric_normal(in.n, front_facing);
-        let base = clamp(col.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
-        let lit = dl::shade_clustered_diffuse(in.clip_pos.xy, in.world_p, n, base, in.view_layer);
-        col = vec4<f32>(lit, col.a);
     }
 
     return rg::retain_globals_additive(rfog::apply_rgba(col, in.fog_coord));

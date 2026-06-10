@@ -16,6 +16,7 @@
 //#mat_default _PolarPow float 1.0
 //#mat_default _Cutoff float 0.5
 
+#import renderide::billboard::vertex as bv
 #import renderide::frame::globals as rg
 #import renderide::pbs::normal as pnorm
 #import renderide::material::alpha as ma
@@ -122,6 +123,7 @@ fn vertex_color_to_linear(color: vec4<f32>) -> vec4<f32> {
 @vertex
 fn vs_main(
     @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) vertex_index: u32,
 #ifdef MULTIVIEW
     @builtin(view_index) view_idx: u32,
 #endif
@@ -130,12 +132,18 @@ fn vs_main(
     @location(2) uv: vec2<f32>,
     @location(3) color: vec4<f32>,
     @location(4) t: vec4<f32>,
+    @location(5) uv1: vec2<f32>,
 ) -> mv::WorldColorVertexOutput {
 #ifdef MULTIVIEW
-    return mv::world_color_vertex_main(instance_index, view_idx, pos, n, t, uv, color);
+    let view_layer = view_idx;
 #else
-    return mv::world_color_vertex_main(instance_index, 0u, pos, n, t, uv, color);
+    let view_layer = 0u;
 #endif
+    if (bv::kw_RENDER_BUFFER(mat._RenderideVariantBits)) {
+        return bv::world_color_vertex_main(instance_index, view_layer, pos, n, t, uv, color, vertex_index, uv1);
+    } else {
+        return mv::world_color_vertex_main(instance_index, view_layer, pos, n, t, uv, color);
+    }
 }
 
 //#pass type=forward a2c=cutout
