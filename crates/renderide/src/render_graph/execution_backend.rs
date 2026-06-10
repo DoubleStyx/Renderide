@@ -329,6 +329,8 @@ pub trait GraphExecutionBackend {
     fn estimate_view_blackboard_prepare_draw_count(&self, blackboard: &Blackboard) -> usize;
     /// Debug HUD flags consumed by per-view recording.
     fn per_view_hud_config(&self) -> PerViewHudConfig;
+    /// Render-graph command-recording mode selected for this frame.
+    fn command_recording_mode(&self) -> crate::config::CommandRecordingMode;
     /// Whether the HUD will draw visible content.
     fn debug_hud_has_visible_content(&self) -> bool;
     /// Encodes the debug HUD overlay.

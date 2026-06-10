@@ -4,10 +4,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::super::super::frame_upload_batch::FrameUploadBatchStats;
 use super::super::super::pool::TransientPoolMetrics;
+use super::recording_path::GraphCommandRecordingStrategy;
 use super::{
     CompiledRenderGraph, GraphCommandRecordingPath, RecordedPerViewBatch, SubmitFrameBatchStats,
     TimedCommandBuffer,
 };
+use crate::config::CommandRecordingMode;
 use crate::diagnostics::gpu_flight_recorder::GpuFlightEventKind;
 use crate::gpu::GpuContext;
 use crate::render_graph::blackboard::GraphCommandStats;
@@ -22,6 +24,12 @@ pub(super) struct CommandEncodingDiagnostics {
     pub(super) target_is_swapchain: bool,
     pub(super) command_buffers: usize,
     pub(super) recording_path: GraphCommandRecordingPath,
+    pub(super) recording_strategy: GraphCommandRecordingStrategy,
+    pub(super) requested_recording_mode: CommandRecordingMode,
+    pub(super) estimated_per_view_draw_count: usize,
+    pub(super) estimated_per_view_record_work: usize,
+    pub(super) auto_per_view_record_admitted: bool,
+    pub(super) per_view_record_admitted: bool,
     pub(super) frame_global_passes: usize,
     pub(super) per_view_passes: usize,
     pub(super) scheduler_passes: usize,
@@ -75,6 +83,12 @@ impl CommandEncodingDiagnostics {
             target_is_swapchain: false,
             command_buffers: 0,
             recording_path: GraphCommandRecordingPath::StandardCommandBuffers,
+            recording_strategy: GraphCommandRecordingStrategy::Serial,
+            requested_recording_mode: CommandRecordingMode::default(),
+            estimated_per_view_draw_count: 0,
+            estimated_per_view_record_work: 0,
+            auto_per_view_record_admitted: false,
+            per_view_record_admitted: false,
             frame_global_passes: graph.schedule_hud.frame_global_count,
             per_view_passes: graph.schedule_hud.per_view_count,
             scheduler_passes: graph.schedule_hud.pass_count,
@@ -177,6 +191,12 @@ impl CommandEncodingDiagnostics {
             view_count: self.view_count,
             command_buffers: self.command_buffers,
             recording_path: self.recording_path.as_plot_value(),
+            recording_strategy: self.recording_strategy.as_plot_value(),
+            requested_recording_mode: self.requested_recording_mode.as_plot_value(),
+            estimated_per_view_draw_count: self.estimated_per_view_draw_count,
+            estimated_per_view_record_work: self.estimated_per_view_record_work,
+            auto_per_view_record_admitted: plot_bool(self.auto_per_view_record_admitted),
+            per_view_record_admitted: plot_bool(self.per_view_record_admitted),
             frame_global_passes: self.frame_global_passes,
             per_view_passes: self.per_view_passes,
             transient_textures: self.transient_texture_count,
@@ -269,7 +289,7 @@ impl CommandEncodingDiagnostics {
             return;
         }
         logger::warn!(
-            "slow command encoder finish: max_finish_ms={:.3} frame_global_finish_ms={:.3} per_view_max_finish_ms={:.3} upload_finish_ms={:.3} single_swapchain_finish_ms={:.3} views={} command_buffers={} recording_path={:?} passes(frame_global/per_view)={}/{} scheduler(passes/registered/culled/compile_skipped/waves/largest_wave/submit_steps/upload_phases/resource_events/import_finals/dependency_edges/merge_groups/materialized_groups/async_compute_capable/parallel_units/parallel_batches/attachment_resolves/transient_store/transient_discard/bandwidth_bytes)={}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{} transients(textures/slots/texture_lanes/buffer_lanes)={}/{}/{}/{} validation(diagnostics/parameter_schemas)={}/{} transient_misses(tex/buf)={}/{} uploads(writes/bytes/staged/fallback)={}/{}/{}/{} upload_arena(persistent_bytes/temp_bytes/reuses/grows/temp_fallbacks/oversized_queue/capacity/free/inflight/remapping)={}/{}/{}/{}/{}/{}/{}/{}/{}/{} timings_ms(pre_resolve/prepare/frame_global_encode/per_view_encode/upload_drain/single_swapchain_encode/assemble/submit)={:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3} commands(draws/instance_batches/pipeline_pass_submits/skipped/raster/compute/encoder/render_passes/copies/skipped_copies/resolves/skipped_resolves/bandwidth_bytes)={}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
+            "slow command encoder finish: max_finish_ms={:.3} frame_global_finish_ms={:.3} per_view_max_finish_ms={:.3} upload_finish_ms={:.3} single_swapchain_finish_ms={:.3} views={} command_buffers={} recording(path/strategy/requested/auto_admitted/effective_admitted/estimated_draws/estimated_work)={:?}/{:?}/{:?}/{}/{}/{}/{} passes(frame_global/per_view)={}/{} scheduler(passes/registered/culled/compile_skipped/waves/largest_wave/submit_steps/upload_phases/resource_events/import_finals/dependency_edges/merge_groups/materialized_groups/async_compute_capable/parallel_units/parallel_batches/attachment_resolves/transient_store/transient_discard/bandwidth_bytes)={}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{} transients(textures/slots/texture_lanes/buffer_lanes)={}/{}/{}/{} validation(diagnostics/parameter_schemas)={}/{} transient_misses(tex/buf)={}/{} uploads(writes/bytes/staged/fallback)={}/{}/{}/{} upload_arena(persistent_bytes/temp_bytes/reuses/grows/temp_fallbacks/oversized_queue/capacity/free/inflight/remapping)={}/{}/{}/{}/{}/{}/{}/{}/{}/{} timings_ms(pre_resolve/prepare/frame_global_encode/per_view_encode/upload_drain/single_swapchain_encode/assemble/submit)={:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3} commands(draws/instance_batches/pipeline_pass_submits/skipped/raster/compute/encoder/render_passes/copies/skipped_copies/resolves/skipped_resolves/bandwidth_bytes)={}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
             max_finish_ms,
             self.frame_global_finish_ms,
             self.per_view_max_finish_ms,
@@ -278,6 +298,12 @@ impl CommandEncodingDiagnostics {
             self.view_count,
             self.command_buffers,
             self.recording_path,
+            self.recording_strategy,
+            self.requested_recording_mode,
+            self.auto_per_view_record_admitted,
+            self.per_view_record_admitted,
+            self.estimated_per_view_draw_count,
+            self.estimated_per_view_record_work,
             self.frame_global_passes,
             self.per_view_passes,
             self.scheduler_passes,
@@ -346,6 +372,10 @@ impl CommandEncodingDiagnostics {
                 .saturating_add(self.command_stats.estimated_bandwidth_bytes),
         );
     }
+}
+
+fn plot_bool(value: bool) -> u64 {
+    u64::from(value)
 }
 
 /// Transient-pool hit/miss deltas for one frame.

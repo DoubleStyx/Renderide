@@ -131,6 +131,8 @@ pub struct CompiledBufferResource {
 pub struct CompiledPassInfo {
     /// Pass name.
     pub name: String,
+    /// Human-readable pass profiler label.
+    pub profiling_label: String,
     /// Command kind.
     #[cfg(test)]
     pub kind: PassKind,

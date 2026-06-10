@@ -1,12 +1,13 @@
 //! Per-view parallel command encoding for multi-view graph batches.
 //!
-//! The executor now prepares immutable per-view work items on the main thread, then fans them out
-//! with `rayon::scope` so each worker records one view's command encoder independently. The
-//! resulting command buffers are reassembled in input order before the existing single
+//! The executor prepares immutable per-view work items on the main thread. Automatic command
+//! recording only fans those items out when multi-view draw work crosses the command-recording
+//! threshold; explicit diagnostics overrides can still force across-view recording or scheduler
+//! in-view recording. Finished command buffers are reassembled in input order before the single
 //! [`wgpu::Queue::submit`] call, preserving deterministic submit order for swapchain, VR, HUD, and
 //! secondary render-texture workloads.
 //!
-//! The landed implementation relies on the following concurrency-safe pieces:
+//! The implementation relies on the following concurrency-safe pieces:
 //!
 //! - `record(&self, ...)` on every pass trait, plus `Send + Sync` pass trait bounds.
 //! - [`crate::render_graph::FrameUploadBatch`] plus scoped upload sinks for deferred buffer

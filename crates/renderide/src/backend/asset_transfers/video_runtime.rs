@@ -28,7 +28,15 @@ impl VideoAssetRuntime {
     }
 
     /// Starts shutdown for an unloaded player and keeps it alive until the worker joins.
+    #[cfg(feature = "video-textures")]
     pub(crate) fn retire_player(&mut self, mut player: VideoPlayer) {
+        player.begin_shutdown();
+        self.retiring_video_players.push(player);
+    }
+
+    /// Starts shutdown for an unloaded player and keeps it alive until the worker joins.
+    #[cfg(not(feature = "video-textures"))]
+    pub(crate) fn retire_player(&mut self, player: VideoPlayer) {
         player.begin_shutdown();
         self.retiring_video_players.push(player);
     }

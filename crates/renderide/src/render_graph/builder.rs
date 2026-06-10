@@ -467,6 +467,7 @@ impl GraphBuilder {
         for (idx, entry) in self.passes.iter_mut().enumerate() {
             let id = PassId(idx);
             let name = entry.pass.name().to_string();
+            let profiling_label = entry.pass.profiling_label().into_owned();
             let mut builder = PassBuilder::new(&name);
             entry
                 .pass
@@ -497,6 +498,7 @@ impl GraphBuilder {
             setups.push(SetupEntry {
                 group: entry.group,
                 name,
+                profiling_label,
                 setup,
             });
         }

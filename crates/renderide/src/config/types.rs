@@ -14,7 +14,7 @@ mod watchdog;
 
 pub use crate::render_graph::RenderGraphValidationMode;
 pub use debug::{
-    DebugHudMainTab, DebugHudMainTabVisibility, DebugHudRendererConfigTab,
+    CommandRecordingMode, DebugHudMainTab, DebugHudMainTabVisibility, DebugHudRendererConfigTab,
     DebugHudRendererConfigTabVisibility, DebugHudSettings, DebugSettings, PowerPreferenceSetting,
 };
 pub use display::DisplaySettings;

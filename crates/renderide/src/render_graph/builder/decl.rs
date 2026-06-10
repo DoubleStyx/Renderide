@@ -29,6 +29,8 @@ pub(super) struct SetupEntry {
     pub(super) group: GroupId,
     /// Pass name (owned for error messages).
     pub(super) name: String,
+    /// Pass profiler label.
+    pub(super) profiling_label: String,
     /// Compiled setup data from the pass's `setup()` call.
     pub(super) setup: PassSetup,
 }

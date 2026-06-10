@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{DebugHudSettings, PowerPreferenceSetting};
+use super::{CommandRecordingMode, DebugHudSettings, PowerPreferenceSetting};
 use crate::render_graph::RenderGraphValidationMode;
 
 /// Debug and diagnostics flags. Persisted as `[debug]`.
@@ -51,6 +51,9 @@ pub struct DebugSettings {
     /// Render-graph declaration and runtime validation policy.
     #[serde(default)]
     pub render_graph_validation: RenderGraphValidationMode,
+    /// Render-graph command-recording strategy override for profiling and diagnostics.
+    #[serde(default)]
+    pub command_recording: CommandRecordingMode,
 }
 
 impl Default for DebugSettings {
@@ -66,6 +69,7 @@ impl Default for DebugSettings {
             debug_hud_links: true,
             hud: DebugHudSettings::default(),
             render_graph_validation: RenderGraphValidationMode::default(),
+            command_recording: CommandRecordingMode::default(),
         }
     }
 }

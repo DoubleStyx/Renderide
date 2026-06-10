@@ -86,6 +86,8 @@ pub(crate) struct BackendGraphAccess<'a> {
     pub(super) skin_weight_mode: crate::shared::SkinWeightMode,
     /// Live post-processing settings seeded into per-view blackboards.
     pub(super) live_post_processing: LivePostProcessingSettings,
+    /// Live command-recording mode selected before graph execution borrows backend fields.
+    pub(super) command_recording_mode: crate::config::CommandRecordingMode,
     /// Wall-frame delta snapshot in milliseconds.
     pub(super) wall_frame_time_ms: f64,
 }
@@ -216,6 +218,11 @@ impl<'a> BackendGraphAccess<'a> {
     /// Whether the HUD will draw visible content this frame.
     pub(crate) fn debug_hud_has_visible_content(&self) -> bool {
         self.debug_hud.has_visible_content()
+    }
+
+    /// Render-graph command-recording mode selected for this frame.
+    pub(crate) fn command_recording_mode(&self) -> crate::config::CommandRecordingMode {
+        self.command_recording_mode
     }
 
     /// Encodes the debug HUD overlay.
@@ -374,6 +381,10 @@ impl GraphExecutionBackend for BackendGraphAccess<'_> {
 
     fn per_view_hud_config(&self) -> PerViewHudConfig {
         BackendGraphAccess::per_view_hud_config(self)
+    }
+
+    fn command_recording_mode(&self) -> crate::config::CommandRecordingMode {
+        BackendGraphAccess::command_recording_mode(self)
     }
 
     fn debug_hud_has_visible_content(&self) -> bool {

@@ -224,6 +224,15 @@ impl RenderBackend {
             .unwrap_or_default()
     }
 
+    /// Snapshot of the live command-recording mode for the current frame.
+    fn command_recording_mode(&self) -> crate::config::CommandRecordingMode {
+        self.renderer_settings
+            .as_ref()
+            .and_then(|h| h.read().ok())
+            .map(|s| s.debug.command_recording)
+            .unwrap_or_default()
+    }
+
     /// Snapshot of the live experimental renderer settings.
     pub(crate) fn experimental_settings(&self) -> crate::config::ExperimentalSettings {
         self.renderer_settings
@@ -535,6 +544,7 @@ impl RenderBackend {
         let gpu_limits = self.gpu_limits().cloned();
         let msaa_depth_resolve = self.frame_services.msaa_depth_resolve();
         let live_post_processing = self.live_post_processing_settings();
+        let command_recording_mode = self.command_recording_mode();
         let wall_frame_time_ms = self.debug_frame_time_ms();
         let skin_weight_mode = self.skin_weight_mode();
         let (transient_pool, history_registry, upload_arena, latest_upload_stats) =
@@ -560,6 +570,7 @@ impl RenderBackend {
             msaa_depth_resolve,
             skin_weight_mode,
             live_post_processing,
+            command_recording_mode,
             wall_frame_time_ms,
         }
     }
