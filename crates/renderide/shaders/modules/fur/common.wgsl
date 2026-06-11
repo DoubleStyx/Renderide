@@ -108,6 +108,19 @@ fn alpha_clip(alpha: f32, cutoff: f32) {
     }
 }
 
+fn classic_fur_color_raw(
+    tex_rgb: vec3<f32>,
+    shadow_rgb: vec3<f32>,
+    hair_coloring: f32,
+    hair_shading: f32,
+    fur_multiplier: f32,
+) -> vec3<f32> {
+    var color = tex_rgb;
+    color = color - shadow_rgb * hair_coloring;
+    color = color - vec3<f32>(pow(1.0 - fur_multiplier, 4.0) * hair_shading);
+    return color;
+}
+
 fn classic_fur_color(
     tex_rgb: vec3<f32>,
     shadow_rgb: vec3<f32>,
