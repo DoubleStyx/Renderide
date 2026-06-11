@@ -100,7 +100,9 @@ pub(super) struct FramePreparedDraw {
     pub first_index: u32,
     /// Number of indices for this submesh draw (always `> 0`).
     pub index_count: u32,
-    /// Material id after [`SceneCoordinator::overridden_material_asset_id`] resolution (always `>= 0`).
+    /// Material id after [`SceneCoordinator::overridden_material_asset_id`] resolution.
+    ///
+    /// `-1` is retained as the host missing-material sentinel and routes to the Null fallback.
     pub material_asset_id: i32,
     /// Per-slot property block id when present (distinct from `Some` for batching).
     pub property_block_id: Option<i32>,
