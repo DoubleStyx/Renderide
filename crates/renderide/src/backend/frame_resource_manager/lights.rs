@@ -12,6 +12,9 @@ use crate::scene::{
     RenderSpaceId, ResolvedLight, SceneCoordinator, light_contributes,
     light_has_negative_contribution,
 };
+#[cfg(test)]
+use crate::world_mesh::ViewLayerPolicy;
+use crate::world_mesh::ViewRenderSpaceScope;
 
 use super::super::light_gpu::{
     GpuLight, MAX_LIGHTS, gpu_light_from_resolved_with_cookie,
@@ -31,7 +34,7 @@ const LIGHT_VIEW_PREP_PARALLEL_MIN_LIGHTS: usize = 32;
 struct PreparedViewLightPacket {
     view_id: ViewId,
     render_context: crate::shared::RenderingContext,
-    render_space_filter: Option<RenderSpaceId>,
+    render_space_scope: ViewRenderSpaceScope,
     render_shadows: bool,
     resolved_len: usize,
     signed_scene_color_required: bool,
@@ -76,7 +79,9 @@ impl FrameResourceManager {
             [FrameLightViewDesc {
                 view_id: ViewId::Main,
                 render_context: scene.active_main_render_context(),
-                render_space_filter: None,
+                render_space_scope: ViewRenderSpaceScope::AllActive,
+                layer_policy: ViewLayerPolicy::MainView,
+                has_selective_roots: false,
                 head_output_transform: glam::Mat4::IDENTITY,
                 render_shadows: true,
             }],
@@ -87,7 +92,7 @@ impl FrameResourceManager {
     /// Fills per-view light scratch buffers from [`SceneCoordinator`].
     ///
     /// Inactive spaces are skipped so lights from a previously focused world do not persist into
-    /// the next frame's shading. Views with a render-space filter only receive lights from that
+    /// the next frame's shading. Views with a single-space scope only receive lights from that
     /// space. Non-contributing lights are filtered via [`light_contributes`] before clustered
     /// ordering, and each view's transforms are resolved with the same render context and
     /// head-output transform used by draw collection.
@@ -177,11 +182,11 @@ impl FrameResourceManager {
         entry.lights.extend_from_slice(packed_lights.as_slice());
         entry.signed_scene_color_required = signed_scene_color_required;
         logger::trace!(
-            "prepared lights for view {:?}: lights={} render_context={:?} render_space_filter={:?} render_shadows={}",
+            "prepared lights for view {:?}: lights={} render_context={:?} render_space_scope={:?} render_shadows={}",
             packet.view_id,
             light_count,
             packet.render_context,
-            packet.render_space_filter,
+            packet.render_space_scope,
             packet.render_shadows
         );
     }
@@ -202,9 +207,7 @@ fn should_parallelize_light_view_prep(
     views.len() >= LIGHT_VIEW_PREP_PARALLEL_MIN_VIEWS
         && views
             .iter()
-            .map(|view| {
-                scene.candidate_light_count_for_render_space_filter(view.render_space_filter)
-            })
+            .map(|&view| candidate_light_count_for_view(scene, view))
             .sum::<usize>()
             >= LIGHT_VIEW_PREP_PARALLEL_MIN_LIGHTS
 }
@@ -215,7 +218,7 @@ fn prepare_lights_for_view_packet(
 ) -> PreparedViewLightPacket {
     profiling::scope!("render::prepare_lights_for_view");
     let mut light_space_ids = Vec::new();
-    collect_light_space_ids(scene, desc.render_space_filter, &mut light_space_ids);
+    collect_light_space_ids(scene, desc, &mut light_space_ids);
     let mut resolved = Vec::new();
     resolve_lights_for_space_ids(scene, desc, &light_space_ids, &mut resolved);
     {
@@ -233,7 +236,7 @@ fn prepare_lights_for_view_packet(
     PreparedViewLightPacket {
         view_id: desc.view_id,
         render_context: desc.render_context,
-        render_space_filter: desc.render_space_filter,
+        render_space_scope: desc.render_space_scope,
         render_shadows: desc.render_shadows,
         resolved_len,
         signed_scene_color_required,
@@ -243,13 +246,13 @@ fn prepare_lights_for_view_packet(
 
 fn collect_light_space_ids(
     scene: &SceneCoordinator,
-    render_space_filter: Option<RenderSpaceId>,
+    desc: FrameLightViewDesc,
     out: &mut Vec<RenderSpaceId>,
 ) {
     profiling::scope!("render::prepare_lights::collect_active_spaces");
     out.clear();
-    if let Some(id) = render_space_filter {
-        if scene.space(id).is_some_and(|space| space.is_active()) {
+    if let Some(id) = desc.render_space_scope.single_space() {
+        if render_space_visible_for_light(scene, desc, id) {
             out.push(id);
         }
         return;
@@ -257,8 +260,45 @@ fn collect_light_space_ids(
     out.extend(
         scene
             .render_space_ids()
-            .filter(|id| scene.space(*id).is_some_and(|space| space.is_active())),
+            .filter(|id| render_space_visible_for_light(scene, desc, *id)),
     );
+}
+
+fn candidate_light_count_for_view(scene: &SceneCoordinator, desc: FrameLightViewDesc) -> usize {
+    match desc.render_space_scope {
+        ViewRenderSpaceScope::Single(id) => {
+            if render_space_visible_for_light(scene, desc, id) {
+                scene.candidate_light_count_for_render_space_filter(Some(id))
+            } else {
+                0
+            }
+        }
+        ViewRenderSpaceScope::AllActive => scene
+            .render_space_ids()
+            .filter(|id| render_space_visible_for_light(scene, desc, *id))
+            .map(|id| scene.candidate_light_count_for_render_space_filter(Some(id)))
+            .sum(),
+    }
+}
+
+fn render_space_visible_for_light(
+    scene: &SceneCoordinator,
+    desc: FrameLightViewDesc,
+    space_id: RenderSpaceId,
+) -> bool {
+    if !desc.render_space_scope.includes(space_id) {
+        return false;
+    }
+    let Some(space) = scene.space(space_id) else {
+        return false;
+    };
+    if !space.is_active() {
+        return false;
+    }
+    !space.is_private()
+        || desc
+            .layer_policy
+            .shows_private_render_space(desc.has_selective_roots)
 }
 
 fn resolve_lights_for_space_ids(

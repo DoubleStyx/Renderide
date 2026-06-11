@@ -15,7 +15,8 @@ use crate::render_graph::{
 use crate::scene::{RenderSpaceId, SceneCoordinator};
 use crate::shared::{CameraRenderParameters, CameraRenderTask, RenderingContext, TextureFormat};
 use crate::world_mesh::{
-    CameraTransformDrawFilter, ViewLayerPolicy, WorldMeshDrawCollectParallelism,
+    CameraTransformDrawFilter, ViewLayerPolicy, ViewRenderSpaceScope,
+    WorldMeshDrawCollectParallelism,
 };
 
 use super::super::RendererRuntime;
@@ -452,7 +453,8 @@ fn plan_camera_task(
         },
     );
     plan.draw_filter = Some(filter);
-    plan.render_space_filter = Some(render_space_id);
+    plan.transform_filter_space = Some(render_space_id);
+    plan.render_space_scope = camera_render_task_scope(task, render_space_id);
     plan.layer_policy = camera_render_task_layer_policy(parameters);
     Ok(PlannedCameraTask {
         plan,
@@ -467,6 +469,17 @@ fn camera_render_task_post_processing(parameters: &CameraRenderParameters) -> Vi
 
 fn camera_render_task_layer_policy(parameters: &CameraRenderParameters) -> ViewLayerPolicy {
     ViewLayerPolicy::camera(parameters.render_private_ui)
+}
+
+fn camera_render_task_scope(
+    task: &CameraRenderTask,
+    render_space_id: RenderSpaceId,
+) -> ViewRenderSpaceScope {
+    if task.only_render_list.is_empty() {
+        ViewRenderSpaceScope::AllActive
+    } else {
+        ViewRenderSpaceScope::single(render_space_id)
+    }
 }
 
 fn draw_filter_from_camera_render_task(task: &CameraRenderTask) -> CameraTransformDrawFilter {

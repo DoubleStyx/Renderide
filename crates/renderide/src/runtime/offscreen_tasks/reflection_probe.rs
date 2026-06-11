@@ -497,7 +497,9 @@ fn plan_reflection_probe_task(
                 },
             );
             plan.draw_filter = Some(filter.clone());
-            plan.render_space_filter = Some(queued.render_space_id);
+            plan.transform_filter_space = Some(queued.render_space_id);
+            plan.render_space_scope =
+                crate::world_mesh::ViewRenderSpaceScope::single(queued.render_space_id);
             plan
         })
         .collect();

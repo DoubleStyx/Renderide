@@ -28,7 +28,8 @@ pub(crate) use collect::queue_prepared_draws_for_views_with_parallelism;
 pub use collect::{
     DrawCollectionFrameCaches, DrawCollectionInputs, DrawCollectionMaterialInputs,
     DrawCollectionSceneAssets, DrawCollectionViewInputs, QueuedWorldMeshDraws, ViewLayerPolicy,
-    WorldMeshDrawArrangeParallelism, WorldMeshDrawCollectParallelism, queue_draws_with_parallelism,
+    ViewRenderSpaceScope, WorldMeshDrawArrangeParallelism, WorldMeshDrawCollectParallelism,
+    queue_draws_with_parallelism,
 };
 pub use command_cache::WorldMeshCommandCacheStats;
 pub(crate) use command_cache::{WorldMeshCommandCache, fingerprint_world_mesh_draws};

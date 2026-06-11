@@ -101,6 +101,20 @@ fn secondary_camera_flags_drive_layer_and_shadow_policy() {
 }
 
 #[test]
+fn secondary_camera_render_space_scope_tracks_selective_roots() {
+    let space = RenderSpaceId(42);
+
+    assert_eq!(
+        camera_render_space_scope(false, space),
+        ViewRenderSpaceScope::AllActive
+    );
+    assert_eq!(
+        camera_render_space_scope(true, space),
+        ViewRenderSpaceScope::single(space)
+    );
+}
+
+#[test]
 fn empty_scene_desktop_mode_yields_only_main_view() {
     let runtime = build_runtime();
     let views = collect_default_desktop_views(&runtime);

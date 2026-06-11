@@ -751,7 +751,8 @@ fn plan_runtime_reflection_probe_faces(
                     target: FrameViewPlanTarget::offscreen(targets.to_offscreen_handles(face)),
                 },
             );
-            plan.render_space_filter = Some(space_id);
+            plan.transform_filter_space = Some(space_id);
+            plan.render_space_scope = crate::world_mesh::ViewRenderSpaceScope::single(space_id);
             plan.draw_filter = Some(filter.clone());
             plan
         })

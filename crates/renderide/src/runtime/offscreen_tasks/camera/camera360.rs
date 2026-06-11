@@ -34,8 +34,9 @@ use super::super::cube_capture::{
 use super::{
     CAMERA_TASK_COLOR_FORMAT, CameraReadbackError, CameraTaskExtent, CameraTaskOutputFormat,
     CameraTaskRenderCtx, CameraTaskTargets, alpha_coverage, camera_render_task_layer_policy,
-    camera_render_task_post_processing, draw_filter_from_camera_render_task, output_byte_count,
-    readback_camera_task_texture, write_camera_task_result,
+    camera_render_task_post_processing, camera_render_task_scope,
+    draw_filter_from_camera_render_task, output_byte_count, readback_camera_task_texture,
+    write_camera_task_result,
 };
 
 /// Cubemap orientation mode used by Camera360 before equirectangular projection.
@@ -198,7 +199,8 @@ fn plan_camera360_task(
                 },
             );
             plan.draw_filter = Some(filter.clone());
-            plan.render_space_filter = Some(render_space_id);
+            plan.transform_filter_space = Some(render_space_id);
+            plan.render_space_scope = camera_render_task_scope(ctx.task, render_space_id);
             plan.layer_policy = camera_render_task_layer_policy(parameters);
             plan
         })

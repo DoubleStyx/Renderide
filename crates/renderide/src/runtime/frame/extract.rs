@@ -319,9 +319,9 @@ mod tests {
     use crate::world_mesh::CameraTransformDrawFilter;
     use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
     use crate::world_mesh::{
-        PrefetchedWorldMeshViewDraws, ViewLayerPolicy, WorldMeshCullProjParams,
-        WorldMeshDrawArrangeParallelism, WorldMeshDrawCollectParallelism, WorldMeshDrawCollection,
-        WorldMeshDrawPlan,
+        PrefetchedWorldMeshViewDraws, ViewLayerPolicy, ViewRenderSpaceScope,
+        WorldMeshCullProjParams, WorldMeshDrawArrangeParallelism, WorldMeshDrawCollectParallelism,
+        WorldMeshDrawCollection, WorldMeshDrawPlan,
     };
 
     use super::super::view_plan::{FrameViewPlan, FrameViewPlanParams, FrameViewPlanTarget};
@@ -462,7 +462,8 @@ mod tests {
             only: Some(HashSet::from_iter([42])),
             exclude: HashSet::from_iter([7]),
         });
-        plan.render_space_filter = Some(RenderSpaceId(99));
+        plan.transform_filter_space = Some(RenderSpaceId(99));
+        plan.render_space_scope = ViewRenderSpaceScope::single(RenderSpaceId(99));
 
         let inputs = desktop_overlay_view_inputs(&plan, 1.25);
 
@@ -474,7 +475,8 @@ mod tests {
         assert_eq!(inputs.view_origin_world, plan.view_origin_world());
         assert!(inputs.culling.is_none());
         assert!(inputs.transform_filter.is_none());
-        assert!(inputs.render_space_filter.is_none());
+        assert!(inputs.transform_filter_space.is_none());
+        assert_eq!(inputs.render_space_scope, ViewRenderSpaceScope::AllActive);
         assert!(inputs.reflection_probes.is_none());
         assert_eq!(inputs.mesh_lod_bias, 1.25);
         assert_eq!(inputs.layer_policy, ViewLayerPolicy::DesktopOverlay);
@@ -487,7 +489,8 @@ mod tests {
             only: Some(HashSet::from_iter([42])),
             exclude: HashSet::from_iter([7]),
         });
-        plan.render_space_filter = Some(RenderSpaceId(99));
+        plan.transform_filter_space = Some(RenderSpaceId(99));
+        plan.render_space_scope = ViewRenderSpaceScope::single(RenderSpaceId(99));
         plan.layer_policy = ViewLayerPolicy::MainView;
 
         let inputs = shadow_caster_view_inputs(&plan, 1.25);
@@ -500,7 +503,11 @@ mod tests {
         assert_eq!(inputs.view_origin_world, plan.view_origin_world());
         assert!(inputs.culling.is_none());
         assert!(inputs.transform_filter.is_some());
-        assert_eq!(inputs.render_space_filter, Some(RenderSpaceId(99)));
+        assert_eq!(inputs.transform_filter_space, Some(RenderSpaceId(99)));
+        assert_eq!(
+            inputs.render_space_scope,
+            ViewRenderSpaceScope::single(RenderSpaceId(99))
+        );
         assert!(inputs.reflection_probes.is_none());
         assert_eq!(inputs.mesh_lod_bias, 1.25);
         assert_eq!(inputs.layer_policy, ViewLayerPolicy::MainView);
