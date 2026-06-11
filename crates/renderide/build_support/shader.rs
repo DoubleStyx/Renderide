@@ -14,6 +14,8 @@ mod directives;
 mod emit;
 #[path = "shader/error.rs"]
 mod error;
+#[path = "shader/manifest.rs"]
+mod manifest;
 #[path = "shader/mirror_once.rs"]
 mod mirror_once;
 #[path = "shader/model.rs"]
@@ -22,8 +24,8 @@ mod model;
 mod modules;
 #[path = "shader/parallel.rs"]
 mod parallel;
-#[path = "shader/reflection.rs"]
-mod reflection;
+#[path = "../src/shader_package/schema.rs"]
+mod shader_package_schema;
 #[path = "shader/source.rs"]
 mod source;
 #[path = "shader/validation.rs"]
@@ -35,6 +37,7 @@ use std::path::Path;
 pub use error::BuildError;
 
 use emit::{ComposedShaders, clean_target_dir, emit_compiled_shader, render_embedded_shaders_rs};
+use manifest::write_shader_package_manifest;
 use modules::discover_shader_modules;
 use parallel::compile_shader_jobs;
 use source::discover_shader_jobs;
@@ -58,6 +61,7 @@ fn compose_all_shaders(
     for compiled_shader in &compiled {
         emit_compiled_shader(compiled_shader, target_dir, &mut out)?;
     }
+    write_shader_package_manifest(&compiled, target_dir)?;
     Ok(out)
 }
 
@@ -65,6 +69,10 @@ fn compose_all_shaders(
 pub fn compile(manifest_dir: &Path, out_dir: &Path) -> Result<(), BuildError> {
     let shader_root = manifest_dir.join("shaders");
     let target_dir = shader_root.join("target");
+    println!(
+        "cargo:rustc-env=RENDERIDE_SHADER_PACKAGE_DIR_DEFAULT={}",
+        target_dir.display()
+    );
 
     println!("cargo:rerun-if-changed=shaders/modules");
     println!("cargo:rerun-if-changed=shaders/materials");

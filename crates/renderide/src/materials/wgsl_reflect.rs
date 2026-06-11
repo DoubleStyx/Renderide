@@ -31,14 +31,12 @@ use crate::mesh_deform::PER_DRAW_UNIFORM_STRIDE;
 use self::bind_layout::global_to_layout_entry;
 #[cfg(test)]
 use self::fingerprint::fingerprint_layout;
-#[cfg(test)]
 use self::frame_group0::reflect_frame_snapshot_usage;
 use self::frame_group0::validate_frame_group0;
-#[cfg(test)]
-use self::uniform_vertex::material_uniform_requires_intersection_subpass;
 use self::uniform_vertex::{
-    reflect_first_group1_uniform_struct, reflect_group1_global_binding_names,
-    reflect_vertex_entry_inputs, reflect_vs_main_vertex_inputs,
+    material_uniform_requires_intersection_subpass, reflect_first_group1_uniform_struct,
+    reflect_group1_global_binding_names, reflect_vertex_entry_inputs,
+    reflect_vs_main_vertex_inputs,
 };
 
 /// Parses and validates WGSL, checks frame globals, and builds layout entries for groups 1 and 2.
@@ -47,7 +45,7 @@ pub fn reflect_raster_material_wgsl(source: &str) -> Result<ReflectedRasterLayou
 }
 
 /// Parses and validates WGSL using the material pass vertex entries for vertex stream reflection.
-pub(in crate::materials) fn reflect_raster_material_wgsl_with_vertex_entries(
+pub(crate) fn reflect_raster_material_wgsl_with_vertex_entries(
     source: &str,
     vertex_entries: &[&str],
 ) -> Result<ReflectedRasterLayout, ReflectError> {
@@ -109,7 +107,6 @@ fn reflect_raster_material_wgsl_inner(
     } else {
         reflect_vs_main_vertex_inputs(&module)
     };
-    #[cfg(test)]
     let snapshot_usage = reflect_frame_snapshot_usage(&module);
 
     #[cfg(test)]
@@ -123,7 +120,6 @@ fn reflect_raster_material_wgsl_inner(
         &material_group1_names,
     );
 
-    #[cfg(test)]
     let requires_intersection_pass =
         material_uniform_requires_intersection_subpass(material_uniform.as_ref());
 
@@ -137,11 +133,8 @@ fn reflect_raster_material_wgsl_inner(
         vs_vertex_inputs,
         #[cfg(test)]
         vs_max_vertex_location,
-        #[cfg(test)]
         uses_scene_depth_snapshot: snapshot_usage.depth,
-        #[cfg(test)]
         uses_scene_color_snapshot: snapshot_usage.color,
-        #[cfg(test)]
         requires_intersection_pass,
     })
 }

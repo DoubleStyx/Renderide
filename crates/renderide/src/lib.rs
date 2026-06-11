@@ -52,6 +52,7 @@ mod render_graph;
 mod render_phase;
 mod runtime;
 mod scene;
+mod shader_package;
 mod shared;
 mod world_mesh;
 mod xr;

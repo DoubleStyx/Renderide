@@ -81,19 +81,15 @@ pub struct ReflectedRasterLayout {
     #[cfg(test)]
     pub vs_max_vertex_location: Option<u32>,
     /// `true` when the shader declares a scene-depth snapshot binding at `@group(0)`.
-    #[cfg(test)]
     pub uses_scene_depth_snapshot: bool,
     /// `true` when the shader declares a scene-color snapshot binding at `@group(0)`.
-    #[cfg(test)]
     pub uses_scene_color_snapshot: bool,
     /// `true` when the material uniform block declares intersection tint (e.g. `_IntersectColor`).
     ///
     /// Derived from reflection only (no shader stem string checks in the render graph).
-    #[cfg(test)]
     pub requires_intersection_pass: bool,
 }
 
-#[cfg(test)]
 impl ReflectedRasterLayout {
     /// Returns the unified scene-snapshot requirement flags for this layout.
     pub fn snapshot_requirements(&self) -> super::super::SnapshotRequirements {

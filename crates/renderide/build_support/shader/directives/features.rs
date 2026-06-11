@@ -30,6 +30,7 @@ pub(in super::super) struct WgpuFeatureDirective {
 
 impl WgpuFeatureDirective {
     /// Returns whether this directive requires fragment shader barycentric coordinates.
+    #[cfg(test)]
     pub(in super::super) const fn requires_shader_barycentrics(self) -> bool {
         matches!(self.feature, BuildWgpuFeature::ShaderBarycentrics)
     }
