@@ -135,6 +135,14 @@ fn camera_portal_render_context(mode: CameraPortalMode) -> RenderingContext {
     }
 }
 
+fn camera_portal_render_space_scope() -> ViewRenderSpaceScope {
+    ViewRenderSpaceScope::AllActive
+}
+
+fn camera_portal_layer_policy() -> ViewLayerPolicy {
+    ViewLayerPolicy::camera(false)
+}
+
 fn secondary_camera_write_target(rt_id: i32, flags: u16) -> OffscreenWriteTarget {
     if camera_state_double_buffered(flags) && !camera_state_post_processing(flags) {
         OffscreenWriteTarget::host_render_texture_with_self_sampling(
@@ -684,8 +692,8 @@ impl RendererRuntime {
         if task.mode == CameraPortalMode::Mirror {
             plan.view_winding = ViewWinding::mirror_reflection();
         }
-        plan.render_space_scope = ViewRenderSpaceScope::AllActive;
-        plan.layer_policy = ViewLayerPolicy::camera(false);
+        plan.render_space_scope = camera_portal_render_space_scope();
+        plan.layer_policy = camera_portal_layer_policy();
         plan.render_shadows = !camera_portal_disable_shadows(task.state.flags);
         Some(plan)
     }
