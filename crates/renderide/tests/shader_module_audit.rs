@@ -248,6 +248,50 @@ fn unlit_uses_reserved_variant_bits_instead_of_keyword_uniform_fields() -> io::R
 }
 
 #[test]
+fn reflection_shader_samples_vr_mirror_side_by_side_layout() -> io::Result<()> {
+    let src = material_source("reflection.wgsl")?;
+
+    assert!(
+        src.contains("@location(2) @interpolate(flat) view_layer: u32"),
+        "Reflection must carry the active eye index without interpolation"
+    );
+    assert!(
+        src.contains(
+            "#ifdef MULTIVIEW\n    let view_layer = view_idx;\n    let screen_y = (clip.y + clip.w) * 0.5;\n#else\n    let view_layer = 0u;\n    let screen_y = (clip.w - clip.y) * 0.5;\n#endif"
+        ),
+        "Reflection must use the HMD screen-space Y convention only in multiview"
+    );
+    assert!(
+        src.contains(
+            "out.screen_uv = vec3<f32>(\n        (clip.x + clip.w) * 0.5,\n        screen_y,\n        clip.w,\n    );"
+        ) && src.contains("out.view_layer = view_layer;"),
+        "Reflection must pack projected UVs and the resolved eye layer from the vertex path"
+    );
+    assert!(
+        src.contains("fn projected_reflection_uv(screen_uv: vec3<f32>) -> vec2<f32>")
+            && src.contains(
+                "fn reflection_texture_uv(screen: vec2<f32>, view_layer: u32) -> vec2<f32>"
+            )
+            && src.contains(
+                "#ifdef MULTIVIEW\n    uv.x = uv.x * 0.5 + f32(view_layer) * 0.5;\n#endif"
+            ),
+        "Reflection must remap only multiview mirror sampling into side-by-side texture halves"
+    );
+    assert!(
+        src.contains(
+            "screen = screen + bump.xy * mat._Distort;\n    }\n    screen = reflection_texture_uv(screen, view_layer);"
+        ),
+        "Reflection must apply normal-map distortion before selecting the eye half"
+    );
+    assert!(
+        !src.contains("Multi-view eye separation is handled by the renderer's per-eye render pass"),
+        "Reflection must not document the old mono sampling assumption"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn wireframe_helpers_keep_unity_distance_conventions() -> io::Result<()> {
     let src = module_source("mesh/wireframe.wgsl")?;
     assert!(
