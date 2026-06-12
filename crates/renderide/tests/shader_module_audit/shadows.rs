@@ -89,8 +89,9 @@ fn radial_shadow_caster_writes_radial_fragment_depth() -> io::Result<()> {
         "Radial-distance shadow caster for world meshes.",
         "point and spot shadows compare consistently",
         "-> @builtin(frag_depth) f32",
+        "var<uniform> shadow_layer: ShadowLayerUniforms;",
         "light_position_range: vec4<f32>",
-        "let radial_depth = (length(in.world_pos - draw.light_position_range.xyz) + bias) / range;",
+        "let radial_depth = (length(in.world_pos - shadow_layer.light_position_range.xyz) + bias) / range;",
         "return clamp(radial_depth, 0.0, 1.0);",
     ] {
         assert!(

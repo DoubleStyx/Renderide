@@ -1,7 +1,7 @@
-//! Radial-distance shadow caster for world meshes.
+//! Projected shadow caster for world meshes.
 //!
-//! The raster projection selects the shadow volume and atlas UVs. Fragment depth stores normalized
-//! radial distance so point and spot shadows compare consistently across their projected views.
+//! Per-draw rows carry only model data. The active shadow-view projection is bound once per atlas
+//! layer so cascades and cubemap faces can reuse the same caster slab.
 
 struct ShadowCasterDraw {
     model: mat4x4<f32>,
@@ -21,8 +21,6 @@ struct ShadowLayerUniforms {
 
 struct VertexOutput {
     @builtin(position) clip_pos: vec4<f32>,
-    @location(0) world_pos: vec3<f32>,
-    @location(1) @interpolate(flat) instance_index: u32,
 }
 
 @vertex
@@ -35,15 +33,9 @@ fn vs_main(
 
     var out: VertexOutput;
     out.clip_pos = shadow_layer.view_proj * world_p;
-    out.world_pos = world_p.xyz;
-    out.instance_index = instance_index;
     return out;
 }
 
 @fragment
-fn fs_main(in: VertexOutput) -> @builtin(frag_depth) f32 {
-    let range = max(shadow_layer.light_position_range.w, 0.001);
-    let bias = max(shadow_layer.shadow_params.x, 0.0);
-    let radial_depth = (length(in.world_pos - shadow_layer.light_position_range.xyz) + bias) / range;
-    return clamp(radial_depth, 0.0, 1.0);
+fn fs_main() {
 }

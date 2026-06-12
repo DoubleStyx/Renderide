@@ -3,7 +3,7 @@
 #[cfg(test)]
 use std::borrow::Cow;
 
-use glam::Mat4;
+use glam::{Mat4, Vec3};
 
 use crate::materials::RasterPrimitiveTopology;
 use crate::materials::host_data::MaterialPropertyLookupIds;
@@ -147,6 +147,11 @@ pub struct WorldMeshDrawItem {
     /// Transparent draws prefer world bounds when available and fall back to transform-origin
     /// distance when the host has not provided usable mesh bounds for the draw.
     pub camera_distance_sq: f32,
+    /// Conservative world-space bounds for visibility tests that run after draw collection.
+    ///
+    /// `None` keeps the draw visible. Overlay-space draws and sources with unusable host bounds
+    /// remain conservative because their bounds are view-dependent or unavailable.
+    pub world_aabb: Option<(Vec3, Vec3)>,
     /// Merge key for host material + property block lookups (e.g. [`crate::materials::host_data::MaterialDictionary::get_merged`]).
     pub lookup_ids: MaterialPropertyLookupIds,
     /// Cached batch key for the forward pass.

@@ -31,7 +31,7 @@ mod tests;
 
 pub use manager::FrameResourceManager;
 
-pub(crate) use shadows::{ShadowFramePlan, ShadowRenderView};
+pub(crate) use shadows::{ShadowCasterSet, ShadowFramePlan, ShadowRenderView};
 pub(crate) use view_desc::FrameLightViewDesc;
 
 // Re-exports kept for intra-doc links in sibling modules

@@ -90,10 +90,19 @@ pub(super) struct WorldMeshForwardDepthPrepassPipelineCache {
     pipelines: RenderPipelineMap<WorldMeshForwardDepthPrepassPipelineKey>,
 }
 
+/// Cached render pipelines and bind layouts for projected shadow casters.
+#[derive(Debug, Default)]
+pub(super) struct WorldMeshForwardShadowPipelineCache {
+    per_draw_layout: OnceGpu<wgpu::BindGroupLayout>,
+    layer_layout: OnceGpu<wgpu::BindGroupLayout>,
+    pipelines: RenderPipelineMap<WorldMeshForwardDepthPrepassPipelineKey>,
+}
+
 /// Cached render pipelines and bind layout for radial point and spot shadow casters.
 #[derive(Debug, Default)]
 pub(super) struct WorldMeshForwardRadialShadowPipelineCache {
     per_draw_layout: OnceGpu<wgpu::BindGroupLayout>,
+    layer_layout: OnceGpu<wgpu::BindGroupLayout>,
     pipelines: RenderPipelineMap<WorldMeshForwardDepthPrepassPipelineKey>,
 }
 
@@ -190,6 +199,95 @@ impl WorldMeshForwardDepthPrepassPipelineCache {
     }
 }
 
+impl WorldMeshForwardShadowPipelineCache {
+    /// Returns the matching projected-shadow caster pipeline.
+    pub(super) fn pipeline(
+        &self,
+        device: &wgpu::Device,
+        key: WorldMeshForwardDepthPrepassPipelineKey,
+    ) -> Arc<wgpu::RenderPipeline> {
+        self.pipelines
+            .get_or_create(key, |key| self.create_pipeline(device, *key))
+    }
+
+    fn create_pipeline(
+        &self,
+        device: &wgpu::Device,
+        key: WorldMeshForwardDepthPrepassPipelineKey,
+    ) -> wgpu::RenderPipeline {
+        profiling::scope!("world_mesh_forward::shadow_pipeline");
+        let label = "world_mesh_shadow_caster";
+        logger::debug!(
+            "world mesh shadow caster: building pipeline sample_count={} topology={:?}",
+            key.sample_count,
+            key.primitive_topology
+        );
+        let shader =
+            create_wgsl_shader_module(device, label, embedded_wgsl!("world_mesh_shadow_caster"));
+        let per_draw_layout = self.per_draw_layout(device);
+        let layer_layout = self.layer_layout(device);
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some(label),
+            bind_group_layouts: &[Some(per_draw_layout), Some(layer_layout)],
+            immediate_size: 0,
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(label),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &depth_prepass_vertex_buffer_layouts(),
+            },
+            fragment: None,
+            primitive: wgpu::PrimitiveState {
+                topology: key.primitive_topology.to_wgpu(),
+                front_face: key.front_face.to_wgpu(),
+                cull_mode: key.cull_mode,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: key.depth_stencil_format,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(key.depth_compare),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState {
+                count: key.sample_count.max(1),
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview_mask: key.multiview_mask,
+            cache: None,
+        });
+        crate::profiling::note_resource_churn!(
+            RenderPipeline,
+            "passes::world_mesh_shadow_caster_pipeline"
+        );
+        pipeline
+    }
+
+    fn per_draw_layout(&self, device: &wgpu::Device) -> &wgpu::BindGroupLayout {
+        self.per_draw_layout.get_or_create(|| {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("world_mesh_shadow_caster_per_draw"),
+                entries: &depth_prepass_per_draw_layout_entries(),
+            })
+        })
+    }
+
+    fn layer_layout(&self, device: &wgpu::Device) -> &wgpu::BindGroupLayout {
+        self.layer_layout.get_or_create(|| {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("world_mesh_shadow_caster_layer"),
+                entries: &shadow_layer_layout_entries(),
+            })
+        })
+    }
+}
+
 impl WorldMeshForwardRadialShadowPipelineCache {
     /// Returns the matching radial-shadow caster pipeline.
     pub(super) fn pipeline(
@@ -219,9 +317,10 @@ impl WorldMeshForwardRadialShadowPipelineCache {
             embedded_wgsl!("world_mesh_radial_shadow_caster"),
         );
         let per_draw_layout = self.per_draw_layout(device);
+        let layer_layout = self.layer_layout(device);
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some(label),
-            bind_group_layouts: &[Some(per_draw_layout)],
+            bind_group_layouts: &[Some(per_draw_layout), Some(layer_layout)],
             immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -272,6 +371,15 @@ impl WorldMeshForwardRadialShadowPipelineCache {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("world_mesh_radial_shadow_caster_per_draw"),
                 entries: &depth_prepass_per_draw_layout_entries(),
+            })
+        })
+    }
+
+    fn layer_layout(&self, device: &wgpu::Device) -> &wgpu::BindGroupLayout {
+        self.layer_layout.get_or_create(|| {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("world_mesh_radial_shadow_caster_layer"),
+                entries: &shadow_layer_layout_entries(),
             })
         })
     }
@@ -401,6 +509,12 @@ pub(super) fn radial_shadow_pipelines() -> &'static WorldMeshForwardRadialShadow
     &CACHE
 }
 
+pub(super) fn shadow_pipelines() -> &'static WorldMeshForwardShadowPipelineCache {
+    static CACHE: LazyLock<WorldMeshForwardShadowPipelineCache> =
+        LazyLock::new(WorldMeshForwardShadowPipelineCache::default);
+    &CACHE
+}
+
 fn depth_prepass_vertex_buffer_layouts() -> [wgpu::VertexBufferLayout<'static>; 1] {
     [wgpu::VertexBufferLayout {
         array_stride: 16,
@@ -417,6 +531,19 @@ fn depth_prepass_per_draw_layout_entries() -> [wgpu::BindGroupLayoutEntry; 1] {
         visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
         ty: wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: true,
+            min_binding_size: wgpu::BufferSize::new(PER_DRAW_UNIFORM_STRIDE as u64),
+        },
+        count: None,
+    }]
+}
+
+fn shadow_layer_layout_entries() -> [wgpu::BindGroupLayoutEntry; 1] {
+    [wgpu::BindGroupLayoutEntry {
+        binding: 0,
+        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
             has_dynamic_offset: true,
             min_binding_size: wgpu::BufferSize::new(PER_DRAW_UNIFORM_STRIDE as u64),
         },

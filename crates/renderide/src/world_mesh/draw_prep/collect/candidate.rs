@@ -167,6 +167,7 @@ pub(super) fn evaluate_draw_candidate(
         blendshape_deformed,
         collect_order: 0,
         camera_distance_sq,
+        world_aabb: candidate.world_aabb,
         lookup_ids,
         batch_key,
         batch_key_hash,
