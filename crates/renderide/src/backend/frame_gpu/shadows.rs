@@ -498,7 +498,7 @@ fn create_shadow_layer_uniforms(
             resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                 buffer: buffer.as_ref(),
                 offset: 0,
-                size: None,
+                size: wgpu::BufferSize::new(PER_DRAW_UNIFORM_STRIDE as u64),
             }),
         }],
     }));
