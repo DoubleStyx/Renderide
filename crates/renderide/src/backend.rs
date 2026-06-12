@@ -7,6 +7,11 @@
 //! packs scene [`ResolvedLight`](crate::scene::ResolvedLight) values for future storage-buffer upload. It does **not**
 //! own IPC queues, [`SharedMemoryAccessor`](crate::ipc::SharedMemoryAccessor), or scene graph state;
 //! callers pass those in where a command requires both transport and GPU work.
+//!
+//! As the concrete-graph assembly layer, the backend may name specific pass types and own the
+//! lifecycle of their retained prep state (see [`world_mesh_frame_plan`] for the contract);
+//! generic scheduling primitives stay in [`crate::render_graph`], which remains scene- and
+//! pass-agnostic.
 
 pub(crate) mod asset_transfers;
 mod cluster_gpu;

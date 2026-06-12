@@ -4,6 +4,7 @@ use std::fmt::Write as _;
 
 use crate::diagnostics::crash_context;
 use crate::gpu::GpuContext;
+use crate::graph_inputs::GraphSceneView;
 use crate::render_graph::{
     FrameGlobalView, FrameView, FrameViewTarget, GraphExecuteError, ViewFamilyGraphRequirements,
 };
@@ -77,7 +78,7 @@ impl RenderBackend {
             let mut backend_access = self.graph_access();
             graph.execute_multi_view(
                 gpu,
-                scene,
+                GraphSceneView::new(scene),
                 &mut backend_access,
                 frame_global,
                 views.as_mut_slice(),

@@ -13,6 +13,15 @@
 //! this project ever targets a lower-level API than wgpu's automatic barriers, the same access
 //! metadata is the natural input for barrier and layout transition planning.
 //!
+//! ## Scene opacity
+//!
+//! This module is scene-opaque by construction: the executor threads the host world through the
+//! opaque [`crate::graph_inputs::GraphSceneView`] token and never names the scene coordinator
+//! directly. Passes regain typed scene access through
+//! [`crate::graph_inputs::FrameSystemsShared::scene`], which is built at the `graph_inputs`
+//! boundary. Keep new executor code on the token; scene-aware logic belongs in passes or the
+//! backend's concrete graph assembly.
+//!
 //! ## Responsibilities
 //!
 //! - **[`GraphBuilder`]** declares transient resources/imports, groups, and [`RenderPass`] nodes,
