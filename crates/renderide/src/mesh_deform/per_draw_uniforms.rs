@@ -28,7 +28,7 @@ const PER_DRAW_REFLECTION_PROBE_INDICES_PAD_SLOT: usize = 1;
 
 /// GPU layout: left/right view-projection, `model`, inverse-transpose normal matrix, and metadata.
 ///
-/// Matches composed `shaders/target/null_*.wgsl` (`PerDrawUniforms` at `@group(2)`).
+/// Matches composed `null_*` shader package targets (`PerDrawUniforms` at `@group(2)`).
 ///
 /// **Contract:** [`Self::view_proj_left`] and [`Self::view_proj_right`] normally store
 /// **projection x view** (PV) only. Vertex shaders compute `clip = view_proj * (model * local_pos)`;

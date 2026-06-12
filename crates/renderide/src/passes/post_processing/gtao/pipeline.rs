@@ -19,7 +19,7 @@
 //! values (see the per-stage `record` paths in `main_pass.rs`, `denoise_pass.rs`,
 //! `apply_pass.rs`).
 //!
-//! WGSL is sourced from the build-time embedded shader registry; the build script auto-
+//! WGSL is sourced from the runtime shader package; the build script auto-
 //! discovers `shaders/passes/post/*.wgsl` and emits one `<name>_default` / `<name>_multiview`
 //! pair per source.
 

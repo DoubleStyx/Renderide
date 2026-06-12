@@ -23,7 +23,8 @@ impl BuildPassType {
         }
     }
 
-    /// Rust `PassType` variant name used in generated embedded metadata.
+    /// Rust `PassType` variant name used in generated embedded metadata tests.
+    #[cfg(test)]
     const fn rust_variant(self) -> &'static str {
         match self {
             Self::Forward => "Forward",
@@ -67,7 +68,8 @@ impl BuildDepthCompare {
         }
     }
 
-    /// Rust expression used in generated embedded metadata.
+    /// Rust expression used in generated embedded metadata tests.
+    #[cfg(test)]
     const fn rust_literal(self) -> &'static str {
         match self {
             Self::Main => "crate::gpu::MAIN_FORWARD_DEPTH_COMPARE",
@@ -102,7 +104,8 @@ impl BuildCullMode {
         }
     }
 
-    /// Rust expression used in generated embedded metadata.
+    /// Rust expression used in generated embedded metadata tests.
+    #[cfg(test)]
     const fn rust_literal(self) -> &'static str {
         match self {
             Self::Back => "Some(wgpu::Face::Back)",
@@ -136,7 +139,8 @@ impl BuildColorWrites {
         }
     }
 
-    /// Rust expression used in generated embedded metadata.
+    /// Rust expression used in generated embedded metadata tests.
+    #[cfg(test)]
     const fn rust_literal(self) -> &'static str {
         match self {
             Self::Rgba => "wgpu::ColorWrites::ALL",
@@ -162,7 +166,8 @@ pub(in super::super) enum BuildBlend {
 }
 
 impl BuildBlend {
-    /// Rust expression used in generated embedded metadata.
+    /// Rust expression used in generated embedded metadata tests.
+    #[cfg(test)]
     const fn rust_literal(self) -> &'static str {
         match self {
             Self::Off => "None",
@@ -190,7 +195,8 @@ pub(in super::super) enum BuildMaterialPassState {
 }
 
 impl BuildMaterialPassState {
-    /// Rust expression used in generated embedded metadata.
+    /// Rust expression used in generated embedded metadata tests.
+    #[cfg(test)]
     const fn rust_literal(self) -> &'static str {
         match self {
             Self::Static => "crate::materials::MaterialPassState::Static",
@@ -230,7 +236,8 @@ impl BuildRenderStatePolicy {
         depth_offset: true,
     };
 
-    /// Rust expression used in generated embedded metadata.
+    /// Rust expression used in generated embedded metadata tests.
+    #[cfg(test)]
     fn rust_literal(self) -> String {
         format!(
             "crate::materials::MaterialRenderStatePolicy {{ color_mask: {color_mask}, depth_write: {depth_write}, depth_compare: {depth_compare}, cull: {cull}, stencil: {stencil}, depth_offset: {depth_offset} }}",
@@ -335,7 +342,8 @@ pub(in super::super) enum BuildAlphaToCoverageMode {
 }
 
 impl BuildAlphaToCoverageMode {
-    /// Rust expression used in generated embedded metadata.
+    /// Rust expression used in generated embedded metadata tests.
+    #[cfg(test)]
     const fn rust_literal(self) -> &'static str {
         match self {
             Self::Off => "crate::materials::MaterialAlphaToCoverageMode::Off",
@@ -356,7 +364,8 @@ pub(in super::super) enum BuildDepthCompareDomain {
 }
 
 impl BuildDepthCompareDomain {
-    /// Rust expression used in generated embedded metadata.
+    /// Rust expression used in generated embedded metadata tests.
+    #[cfg(test)]
     const fn rust_literal(self) -> &'static str {
         match self {
             Self::FrooxZTest => "crate::materials::MaterialDepthCompareDomain::FrooxZTest",
@@ -400,16 +409,6 @@ pub(in super::super) struct BuildPassDirective {
     pub(in super::super) material_state: BuildMaterialPassState,
     /// Per-field material render-state override policy.
     pub(in super::super) render_state_policy: BuildRenderStatePolicy,
-}
-
-impl BuildPassDirective {
-    /// Returns whether pass state is eligible for the renderer's generic depth prepass.
-    pub(in super::super) const fn is_generic_depth_prepass_candidate(&self) -> bool {
-        matches!(self.pass_type, BuildPassType::Forward)
-            && matches!(self.blend, BuildBlend::Off)
-            && self.depth_write
-            && matches!(self.alpha_to_coverage, BuildAlphaToCoverageMode::Off)
-    }
 }
 
 /// Parses `fn <name>(...)` out of a line.
@@ -829,6 +828,7 @@ fn reverse_z_offset_factor(v: f32) -> f32 {
 }
 
 /// Renders a generated Rust expression for one pass directive.
+#[cfg(test)]
 pub(in super::super) fn pass_literal(pass: &BuildPassDirective) -> String {
     let slope = f32::from_bits(pass.depth_bias_slope_scale_bits);
     format!(

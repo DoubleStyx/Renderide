@@ -3,25 +3,14 @@
 use std::fs;
 use std::path::Path;
 
-use super::directives::{
-    BuildPassDirective, MaterialDefaultDirective, TextureDefaultDirective, WgpuFeatureDirective,
-    material_default_literal, pass_literal, texture_default_literal,
-};
 use super::error::BuildError;
-use super::model::{
-    BuildShaderReflection, BuildSnapshotRequirements, BuildVertexStreamMask, CompiledShader,
-    ShaderSourceClass,
-};
+use super::model::{CompiledShader, ShaderSourceClass};
+use super::shader_package_schema::SHADER_PACKAGE_MANIFEST_FILE;
 
 #[cfg(test)]
 const DEFAULT_SHADER_RENDER_QUEUE: i32 = 2000;
 
-/// Escapes `s` as a Rust `str` literal token.
-fn rust_string_literal_token(s: &str) -> String {
-    format!("{s:?}")
-}
-
-/// Per-source-class composed shader output and generated Rust accumulators.
+/// Per-source-class composed shader output for generated Rust compatibility lists.
 #[derive(Debug)]
 pub(super) struct ComposedShaders {
     material_stems: Vec<String>,
@@ -29,19 +18,6 @@ pub(super) struct ComposedShaders {
     backend_stems: Vec<String>,
     compute_stems: Vec<String>,
     present_stems: Vec<String>,
-    embedded_macro_arms: String,
-    embedded_descriptor_entries: String,
-}
-
-struct EmbeddedTargetEmit<'a> {
-    target_stem: &'a str,
-    wgsl: &'a str,
-    pass_directives: &'a [BuildPassDirective],
-    default_render_queue: i32,
-    wgpu_features: &'a [WgpuFeatureDirective],
-    texture_defaults: &'a [TextureDefaultDirective],
-    material_defaults: &'a [MaterialDefaultDirective],
-    reflection: BuildShaderReflection,
 }
 
 impl ComposedShaders {
@@ -53,26 +29,23 @@ impl ComposedShaders {
             backend_stems: Vec::new(),
             compute_stems: Vec::new(),
             present_stems: Vec::new(),
-            embedded_macro_arms: String::new(),
-            embedded_descriptor_entries: String::new(),
         }
     }
 
-    /// Records one compiled shader source into embedded shader registries.
+    /// Records one compiled shader source into shader package registries.
     pub(super) fn record_compiled_shader(&mut self, compiled: &CompiledShader) {
         for target in &compiled.targets {
-            self.emit_embedded_target(EmbeddedTargetEmit {
-                target_stem: &target.target_stem,
-                wgsl: &target.wgsl,
-                pass_directives: &target.pass_directives,
-                default_render_queue: compiled.default_render_queue,
-                wgpu_features: &compiled.wgpu_features,
-                texture_defaults: &compiled.texture_defaults,
-                material_defaults: &compiled.material_defaults,
-                reflection: target.reflection,
-            });
             self.push_stem(compiled.source_class, target.target_stem.clone());
         }
+    }
+
+    /// Records one target stem loaded from an existing shader package manifest.
+    pub(super) fn record_target_stem(
+        &mut self,
+        source_class: ShaderSourceClass,
+        target_stem: String,
+    ) {
+        self.push_stem(source_class, target_stem);
     }
 
     /// Appends one compiled target stem to its source-class list.
@@ -85,104 +58,29 @@ impl ComposedShaders {
             ShaderSourceClass::Present => self.present_stems.push(stem),
         }
     }
-
-    /// Emits generated Rust registry fragments for one compiled target.
-    fn emit_embedded_target(&mut self, target: EmbeddedTargetEmit<'_>) {
-        use std::fmt::Write as _;
-
-        let EmbeddedTargetEmit {
-            target_stem,
-            wgsl,
-            pass_directives,
-            default_render_queue,
-            wgpu_features,
-            texture_defaults,
-            material_defaults,
-            reflection,
-        } = target;
-        let lit = rust_string_literal_token(wgsl);
-        let _ = writeln!(
-            self.embedded_macro_arms,
-            "            \"{target_stem}\" => {lit},"
-        );
-        let pass_slice = slice_literal(pass_directives, pass_literal);
-        let texture_defaults = slice_literal(texture_defaults, texture_default_literal);
-        let material_defaults = slice_literal(material_defaults, material_default_literal);
-        let features = feature_set_literal(wgpu_features);
-        let reflection = reflection_literal(reflection);
-        let _ = writeln!(
-            self.embedded_descriptor_entries,
-            "    EmbeddedShaderTargetDesc {{ stem: {target_stem:?}, wgsl: {lit}, passes: {pass_slice}, default_render_queue: {default_render_queue}, required_features: {features}, texture_defaults: {texture_defaults}, material_defaults: {material_defaults}, reflection: {reflection} }},"
-        );
-    }
 }
 
-fn slice_literal<T>(items: &[T], item_literal: impl Fn(&T) -> String) -> String {
-    if items.is_empty() {
-        return "&[]".to_string();
-    }
-    let item_literals = items
-        .iter()
-        .map(item_literal)
-        .collect::<Vec<_>>()
-        .join(",\n        ");
-    format!("const {{ &[\n        {item_literals},\n    ] }}")
-}
-
-fn feature_set_literal(features: &[WgpuFeatureDirective]) -> String {
-    let shader_barycentrics = features
-        .iter()
-        .any(|feature| feature.requires_shader_barycentrics());
-    format!("EmbeddedWgpuFeatures {{ shader_barycentrics: {shader_barycentrics} }}")
-}
-
-fn reflection_literal(reflection: BuildShaderReflection) -> String {
-    format!(
-        "EmbeddedShaderReflection {{ vertex_stream_mask: {vertex_stream_mask}, snapshot_requirements: {snapshot_requirements}, uses_renderide_variant_bits: {uses_renderide_variant_bits}, supports_generic_depth_prepass: {supports_generic_depth_prepass} }}",
-        vertex_stream_mask = vertex_stream_mask_literal(reflection.vertex_stream_mask),
-        snapshot_requirements = snapshot_requirements_literal(reflection.snapshot_requirements),
-        uses_renderide_variant_bits = reflection.uses_renderide_variant_bits,
-        supports_generic_depth_prepass = reflection.supports_generic_depth_prepass,
-    )
-}
-
-fn vertex_stream_mask_literal(mask: BuildVertexStreamMask) -> String {
-    format!(
-        "EmbeddedVertexStreamMask {{ uv0: {uv0}, color: {color}, tangent: {tangent}, uv1: {uv1}, uv2: {uv2}, uv3: {uv3}, wide_low_uvs: {wide_low_uvs}, wide_high_uvs: {wide_high_uvs} }}",
-        uv0 = mask.uv0,
-        color = mask.color,
-        tangent = mask.tangent,
-        uv1 = mask.uv1,
-        uv2 = mask.uv2,
-        uv3 = mask.uv3,
-        wide_low_uvs = mask.wide_low_uvs,
-        wide_high_uvs = mask.wide_high_uvs,
-    )
-}
-
-fn snapshot_requirements_literal(requirements: BuildSnapshotRequirements) -> String {
-    format!(
-        "EmbeddedSnapshotRequirements {{ uses_scene_color: {uses_scene_color}, uses_scene_depth: {uses_scene_depth}, requires_intersection_pass: {requires_intersection_pass} }}",
-        uses_scene_color = requirements.uses_scene_color,
-        uses_scene_depth = requirements.uses_scene_depth,
-        requires_intersection_pass = requirements.requires_intersection_pass,
-    )
-}
-
-/// Removes generated `.wgsl` inspection outputs so deleted/renamed shader sources do not linger.
+/// Removes generated runtime shader package outputs so deleted/renamed shader sources do not linger.
 pub(super) fn clean_target_dir(target_dir: &Path) -> Result<(), BuildError> {
     fs::create_dir_all(target_dir)?;
     for entry in fs::read_dir(target_dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().is_some_and(|ext| ext == "wgsl") {
+        if path.extension().is_some_and(|ext| ext == "wgsl")
+            || path
+                .file_name()
+                .is_some_and(|name| name == SHADER_PACKAGE_MANIFEST_FILE)
+            || path
+                .file_name()
+                .is_some_and(|name| name == ".shader-inputs-fnv")
+        {
             fs::remove_file(path)?;
         }
     }
     Ok(())
 }
 
-/// Writes flattened WGSL inspection files for one compiled shader source.
+/// Writes flattened WGSL package files for one compiled shader source.
 pub(super) fn write_compiled_shader_targets(
     compiled: &CompiledShader,
     target_dir: &Path,
@@ -254,27 +152,9 @@ pub struct EmbeddedMaterialDefault {
 "#
 }
 
-/// Generated Rust definitions for embedded shader descriptors.
+/// Generated Rust definitions for shader package descriptors.
 fn embedded_shader_descriptor_type_defs() -> &'static str {
-    r#"/// Required device features parsed from `//#wgpu_feature` directives.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct EmbeddedWgpuFeatures {
-    /// Fragment shader barycentric coordinates are required.
-    pub shader_barycentrics: bool,
-}
-
-impl EmbeddedWgpuFeatures {
-    /// Converts generated feature flags into `wgpu::Features`.
-    pub fn to_wgpu_features(self) -> wgpu::Features {
-        let mut features = wgpu::Features::empty();
-        if self.shader_barycentrics {
-            features |= wgpu::Features::SHADER_BARYCENTRICS;
-        }
-        features
-    }
-}
-
-/// Mesh streams required by the reflected material vertex entries.
+    r#"/// Mesh streams required by the reflected material vertex entries.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct EmbeddedVertexStreamMask {
     /// UV0 stream at `@location(2)`.
@@ -318,76 +198,44 @@ pub struct EmbeddedShaderReflection {
     /// Whether the single forward pass can be mirrored by the generic depth prepass.
     pub supports_generic_depth_prepass: bool,
 }
-
-/// Complete embedded metadata package for one composed shader target.
-#[derive(Clone, Copy, Debug)]
-pub struct EmbeddedShaderTargetDesc {
-    /// Target stem used by routing and `shaders/target/{stem}.wgsl`.
-    pub stem: &'static str,
-    /// Flattened WGSL source.
-    pub wgsl: &'static str,
-    /// Declared render passes parsed from `//#pass` directives.
-    pub passes: &'static [crate::materials::MaterialPassDesc],
-    /// Shader default render queue parsed from `//#render_queue`.
-    pub default_render_queue: i32,
-    /// Required device features parsed from `//#wgpu_feature`.
-    pub required_features: EmbeddedWgpuFeatures,
-    /// Declared texture fallbacks parsed from `//#texture_default`.
-    pub texture_defaults: &'static [EmbeddedTextureDefault],
-    /// Declared material uniform fallbacks parsed from `//#mat_default`.
-    pub material_defaults: &'static [EmbeddedMaterialDefault],
-    /// Stable device-independent reflection metadata.
-    pub reflection: EmbeddedShaderReflection,
-}
 "#
 }
 
-/// Generated Rust lookup wrappers over the embedded shader descriptor table.
+/// Generated Rust lookup wrappers over the runtime shader package.
 fn embedded_shader_lookup_fn_defs() -> &'static str {
-    r#"/// Returns the complete embedded descriptor for `stem`.
-pub fn embedded_target_desc(stem: &str) -> Option<&'static EmbeddedShaderTargetDesc> {
-    EMBEDDED_SHADER_TARGETS
-        .iter()
-        .find(|target| target.stem == stem)
-}
-
-/// Flattened WGSL for `stem` (also written under `shaders/target/{stem}.wgsl` at build time).
+    r#"/// Flattened WGSL for `stem` from the runtime shader package.
 pub fn embedded_target_wgsl(stem: &str) -> Option<&'static str> {
-    embedded_target_desc(stem).map(|target| target.wgsl)
+    crate::shader_package::target_wgsl(stem)
 }
 
-/// Declared render passes for `stem`, parsed from `//#pass` directives in the source WGSL.
+/// Declared render passes for `stem`, parsed from package TOML metadata.
 pub fn embedded_target_passes(stem: &str) -> &'static [crate::materials::MaterialPassDesc] {
-    embedded_target_desc(stem).map_or(&[], |target| target.passes)
+    crate::shader_package::material_passes(stem)
 }
 
-/// Shader default render queue for `stem`, parsed from `//#render_queue` directives.
+/// Shader default render queue for `stem`, parsed from package TOML metadata.
 pub fn embedded_target_default_render_queue(stem: &str) -> i32 {
-    embedded_target_desc(stem).map_or(2000, |target| target.default_render_queue)
+    crate::shader_package::material_default_render_queue(stem)
 }
 
-/// Required device features for `stem`, parsed from `//#wgpu_feature` directives in the source WGSL.
+/// Required device features for `stem`, parsed from package TOML metadata.
 pub fn embedded_target_required_features(stem: &str) -> wgpu::Features {
-    embedded_target_desc(stem).map_or(wgpu::Features::empty(), |target| {
-        target.required_features.to_wgpu_features()
-    })
+    crate::shader_package::target_required_features(stem)
 }
 
-/// Declared texture fallbacks for `stem`, parsed from `//#texture_default` directives in the source WGSL.
+/// Declared texture fallbacks for `stem`, parsed from package TOML metadata.
 pub fn embedded_target_texture_defaults(stem: &str) -> &'static [EmbeddedTextureDefault] {
-    embedded_target_desc(stem).map_or(&[], |target| target.texture_defaults)
+    crate::shader_package::material_texture_defaults(stem)
 }
 
-/// Declared material uniform fallbacks for `stem`, parsed from `//#mat_default` directives in the source WGSL.
+/// Declared material uniform fallbacks for `stem`, parsed from package TOML metadata.
 pub fn embedded_target_material_defaults(stem: &str) -> &'static [EmbeddedMaterialDefault] {
-    embedded_target_desc(stem).map_or(&[], |target| target.material_defaults)
+    crate::shader_package::material_uniform_defaults(stem)
 }
 
-/// Stable reflection metadata for `stem`.
+/// Stable reflection metadata for `stem`, reflected from WGSL with Naga at runtime.
 pub fn embedded_target_reflection(stem: &str) -> EmbeddedShaderReflection {
-    embedded_target_desc(stem).map_or_else(EmbeddedShaderReflection::default, |target| {
-        target.reflection
-    })
+    crate::shader_package::material_reflection(stem)
 }
 "#
 }
@@ -404,11 +252,15 @@ pub(super) fn render_embedded_shaders_rs(c: &ComposedShaders) -> String {
     format!(
         r#"// Generated by `build.rs` - do not edit.
 
-/// Returns embedded WGSL for a compile-time known shader target stem.
+/// Returns packaged WGSL for a compile-time known shader target stem.
 macro_rules! embedded_wgsl {{
     ($stem:literal) => {{
-        match $stem {{
-{embedded_macro_arms}            _ => "",
+        match $crate::embedded_shaders::embedded_target_wgsl($stem) {{
+            Some(source) => source,
+            None => {{
+                logger::error!("shader package target missing: {{}}", $stem);
+                ""
+            }}
         }}
     }};
 }}
@@ -454,9 +306,6 @@ pub struct EmbeddedTextureDefault {{
 
 {descriptor_type_defs}
 
-const EMBEDDED_SHADER_TARGETS: &[EmbeddedShaderTargetDesc] = &[
-{embedded_descriptor_entries}];
-
 {lookup_fn_defs}
 
 /// Material target stems (composed from `shaders/materials/*.wgsl`).
@@ -465,8 +314,6 @@ pub const COMPILED_MATERIAL_STEMS: &[&str] = &[
 {material_stems}
 ];
 "#,
-        embedded_macro_arms = c.embedded_macro_arms,
-        embedded_descriptor_entries = c.embedded_descriptor_entries,
         material_default_type_defs = embedded_material_default_type_defs(),
         descriptor_type_defs = embedded_shader_descriptor_type_defs(),
         lookup_fn_defs = embedded_shader_lookup_fn_defs(),
@@ -482,9 +329,7 @@ mod tests {
         BuildRenderStatePolicy, MaterialDefaultDirective, MaterialDefaultValue,
         TextureDefaultDirective, TextureDefaultKind, WgpuFeatureDirective,
     };
-    use crate::shader::model::{
-        BuildShaderReflection, CompiledShader, CompiledShaderTarget, ShaderSourceClass,
-    };
+    use crate::shader::model::{CompiledShader, CompiledShaderTarget, ShaderSourceClass};
 
     use super::*;
 
@@ -520,9 +365,9 @@ mod tests {
         Ok(())
     }
 
-    /// Embedded pass metadata stays attached to emitted shader targets.
+    /// Generated Rust stays small and delegates shader lookups to the runtime package.
     #[test]
-    fn compiled_shader_preserves_pass_metadata() -> Result<(), BuildError> {
+    fn compiled_shader_emits_package_facade() -> Result<(), BuildError> {
         let target_dir = tempfile::tempdir()?;
         let mut composed = ComposedShaders::new();
         let compiled = fake_compiled_shader(
@@ -555,34 +400,18 @@ mod tests {
         emit_compiled_shader(&compiled, target_dir.path(), &mut composed)?;
         let embedded = render_embedded_shaders_rs(&composed);
 
-        assert!(embedded.contains("pass_type: crate::materials::PassType::Forward"));
-        assert!(
-            embedded.contains(
-                "alpha_to_coverage: crate::materials::MaterialAlphaToCoverageMode::Always"
-            )
-        );
-        assert!(embedded.contains(
-            "name: \"outline\", pass_type: crate::materials::PassType::Forward, vertex_entry: \"vs_outline\", fragment_entry: \"fs_outline\""
-        ));
         assert!(embedded.contains("COMPILED_MATERIAL_STEMS"));
         assert!(embedded.contains("EmbeddedTextureDefaultKind"));
-        assert!(embedded.contains(
-            "EmbeddedTextureDefault { property: \"_MainTex\", kind: EmbeddedTextureDefaultKind::White }"
-        ));
-        assert!(embedded.contains(
-            "EmbeddedMaterialDefault { property: \"_GlossMapScale\", value: EmbeddedMaterialDefaultValue::float(f32::from_bits(0x3f80_0000)) }"
-        ));
         assert!(embedded.contains("embedded_target_texture_defaults"));
         assert!(embedded.contains("embedded_target_material_defaults"));
         assert!(embedded.contains("embedded_target_default_render_queue"));
         assert!(embedded.contains("embedded_target_required_features"));
-        assert!(embedded.contains("pub struct EmbeddedShaderTargetDesc"));
-        assert!(embedded.contains("pub fn embedded_target_desc"));
-        assert!(embedded.contains("default_render_queue: 3500"));
-        assert!(embedded.contains("shader_barycentrics: true"));
+        assert!(!embedded.contains("pub struct EmbeddedShaderTargetDesc"));
+        assert!(!embedded.contains("pub fn embedded_target_desc"));
         assert!(embedded.contains("pub fn embedded_target_reflection"));
         assert!(embedded.contains("macro_rules! embedded_wgsl"));
-        assert!(embedded.contains("\"outline_default\" => \"wgsl body\","));
+        assert!(embedded.contains("crate::shader_package::target_wgsl"));
+        assert!(!embedded.contains("wgsl body"));
         assert!(!embedded.contains("pub const OUTLINE_DEFAULT_WGSL"));
         Ok(())
     }
@@ -633,16 +462,28 @@ mod tests {
         ]
     }
 
-    /// Stale WGSL inspection outputs are removed before current targets are emitted.
+    /// Stale WGSL package outputs are removed before current targets are emitted.
     #[test]
     fn clean_target_dir_removes_stale_wgsl_only() -> Result<(), BuildError> {
         let target_dir = tempfile::tempdir()?;
         fs::write(target_dir.path().join("old.wgsl"), "old")?;
+        fs::write(
+            target_dir.path().join(SHADER_PACKAGE_MANIFEST_FILE),
+            "stale",
+        )?;
+        fs::write(target_dir.path().join(".shader-inputs-fnv"), "stale")?;
         fs::write(target_dir.path().join("keep.txt"), "keep")?;
 
         clean_target_dir(target_dir.path())?;
 
         assert!(!target_dir.path().join("old.wgsl").exists());
+        assert!(
+            !target_dir
+                .path()
+                .join(SHADER_PACKAGE_MANIFEST_FILE)
+                .exists()
+        );
+        assert!(!target_dir.path().join(".shader-inputs-fnv").exists());
         assert!(target_dir.path().join("keep.txt").is_file());
         Ok(())
     }
@@ -683,6 +524,12 @@ mod tests {
         let target_pass_directives = pass_directives.clone();
         CompiledShader {
             compile_order,
+            source_stem: targets
+                .first()
+                .map_or("shader", |(target_stem, _)| *target_stem)
+                .trim_end_matches("_default")
+                .trim_end_matches("_multiview")
+                .to_string(),
             source_class,
             pass_directives,
             texture_defaults,
@@ -695,7 +542,6 @@ mod tests {
                     target_stem: (*target_stem).to_string(),
                     wgsl: (*wgsl).to_string(),
                     pass_directives: target_pass_directives.clone(),
-                    reflection: BuildShaderReflection::default(),
                 })
                 .collect(),
         }

@@ -90,7 +90,7 @@ Renderide runs the Resonite Host from the Windows depot and renders natively thr
    ./renderide --resonite-dir "$HOME/Games/ResoniteWindows"
    ```
 
-The macOS release zip contains `renderide`, `renderide-renderer`, `xr`, and the bundled OpenXR loader. If macOS quarantine blocks a downloaded zip, remove the quarantine attribute from the extracted Renderide folder:
+The macOS release zip contains `renderide`, `renderide-renderer`, `shaders`, `xr`, and the bundled OpenXR loader. If macOS quarantine blocks a downloaded zip, remove the quarantine attribute from the extracted Renderide folder:
 
 ```bash
 xattr -dr com.apple.quarantine /path/to/renderide-folder

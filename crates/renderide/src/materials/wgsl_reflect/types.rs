@@ -81,19 +81,15 @@ pub struct ReflectedRasterLayout {
     #[cfg(test)]
     pub vs_max_vertex_location: Option<u32>,
     /// `true` when the shader declares a scene-depth snapshot binding at `@group(0)`.
-    #[cfg(test)]
     pub uses_scene_depth_snapshot: bool,
     /// `true` when the shader declares a scene-color snapshot binding at `@group(0)`.
-    #[cfg(test)]
     pub uses_scene_color_snapshot: bool,
     /// `true` when the material uniform block declares intersection tint (e.g. `_IntersectColor`).
     ///
     /// Derived from reflection only (no shader stem string checks in the render graph).
-    #[cfg(test)]
     pub requires_intersection_pass: bool,
 }
 
-#[cfg(test)]
 impl ReflectedRasterLayout {
     /// Returns the unified scene-snapshot requirement flags for this layout.
     pub fn snapshot_requirements(&self) -> super::super::SnapshotRequirements {
@@ -176,7 +172,7 @@ pub enum ReflectError {
     /// Bind group index outside `0..=2`.
     #[error("invalid bind group index {0} (only 0, 1, 2 are allowed for raster materials)")]
     InvalidBindGroup(u32),
-    /// Composed embedded shader stem has no WGSL payload (build/embed mismatch).
+    /// Composed shader package stem has no WGSL payload.
     #[error("embedded composed WGSL missing for material stem `{0}`")]
     #[cfg(test)]
     EmbeddedTargetMissing(&'static str),
