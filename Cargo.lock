@@ -414,7 +414,7 @@ dependencies = [
  "rfd",
  "self_update",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.18",
  "toml_edit 0.25.12+spec-1.1.0",
