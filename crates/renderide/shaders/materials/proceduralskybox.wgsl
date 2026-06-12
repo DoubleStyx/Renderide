@@ -61,7 +61,7 @@ fn vs_main(
     return out;
 }
 
-//#pass type=forward
+//#pass type=forward zwrite=off cull=off color_mask=rgba
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let terms = ps::ProceduralSkyVisibleTerms(
