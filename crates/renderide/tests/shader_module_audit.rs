@@ -594,6 +594,8 @@ mod hygiene;
 mod light_cookies;
 #[path = "shader_module_audit/material_defaults.rs"]
 mod material_defaults;
+#[path = "shader_module_audit/null_material.rs"]
+mod null_material;
 #[path = "shader_module_audit/pbs.rs"]
 mod pbs;
 #[path = "shader_module_audit/shadows.rs"]
