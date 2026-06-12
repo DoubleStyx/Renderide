@@ -47,7 +47,7 @@ fn vs_main(
 #endif
 }
 
-//#pass type=forward
+//#pass type=forward blend=material_filter
 @fragment
 fn fs_main(in: mv::UvVertexOutput) -> @location(0) vec4<f32> {
     if (uvrect_kw(UVRECT_KW_RECTCLIP) && rmath::outside_rect(in.uv, mat._ClipRect)) {

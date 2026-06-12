@@ -142,7 +142,7 @@ fn sample_normal(uv: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>, l: f32) 
     return n;
 }
 
-//#pass type=forward
+//#pass type=forward blend=material_filter
 @fragment
 fn fs_main(in: mv::WorldVertexOutput) -> @location(0) vec4<f32> {
     let l = compute_lerp(in.primary_uv);

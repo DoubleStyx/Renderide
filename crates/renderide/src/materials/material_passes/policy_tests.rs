@@ -308,6 +308,66 @@ fn unlit_text_stems_use_filter_pass_material_state() {
     }
 }
 
+/// Verifies additional `BlendOp Add, Max` roots preserve filter-style alpha blending.
+#[test]
+fn max_alpha_blend_roots_use_filter_pass_material_state() {
+    for stem in [
+        "depthprojection_default",
+        "fresnellerp_default",
+        "matcap_default",
+        "projection360_default",
+        "reflection_default",
+        "unlitdistancelerp_default",
+        "uvrect_default",
+    ] {
+        let passes = crate::embedded_shaders::embedded_target_passes(stem);
+        assert_eq!(passes.len(), 1, "{stem}");
+        assert_eq!(
+            passes[0].material_state,
+            MaterialPassState::Filter,
+            "{stem}"
+        );
+
+        let materialized = materialized_embedded_pass_for_blend_mode(
+            stem,
+            &passes[0],
+            MaterialBlendMode::UnityBlend { src: 1, dst: 0 },
+        );
+        let blend = materialized.blend.expect(stem);
+        assert_eq!(blend.color.src_factor, wgpu::BlendFactor::One, "{stem}");
+        assert_eq!(blend.color.dst_factor, wgpu::BlendFactor::Zero, "{stem}");
+        assert_eq!(blend.alpha.src_factor, wgpu::BlendFactor::One, "{stem}");
+        assert_eq!(blend.alpha.dst_factor, wgpu::BlendFactor::One, "{stem}");
+        assert_eq!(blend.alpha.operation, wgpu::BlendOperation::Max, "{stem}");
+    }
+}
+
+/// Verifies skybox material roots keep Unity's fixed no-depth-write, no-cull pass state.
+#[test]
+fn skybox_material_roots_use_fixed_background_pass_state() {
+    let override_state = MaterialRenderState {
+        color_mask: Some(0),
+        depth_write: Some(true),
+        cull_override: MaterialCullOverride::Back,
+        ..MaterialRenderState::default()
+    };
+
+    for stem in ["gradientskybox_default", "proceduralskybox_default"] {
+        let passes = crate::embedded_shaders::embedded_target_passes(stem);
+        assert_eq!(passes.len(), 1, "{stem}");
+        assert!(!passes[0].depth_write, "{stem}");
+        assert_eq!(passes[0].cull_mode, None, "{stem}");
+        assert_eq!(passes[0].write_mask, wgpu::ColorWrites::ALL, "{stem}");
+        assert_eq!(
+            passes[0].resolved_color_writes(override_state),
+            wgpu::ColorWrites::ALL,
+            "{stem}"
+        );
+        assert!(!passes[0].resolved_depth_write(override_state), "{stem}");
+        assert_eq!(passes[0].resolved_cull_mode(override_state), None, "{stem}");
+    }
+}
+
 /// Verifies opaque PBS DualSided stems use their source-authored material cull fallback.
 #[test]
 fn pbs_dualsided_opaque_stems_apply_material_cull_overrides() {
