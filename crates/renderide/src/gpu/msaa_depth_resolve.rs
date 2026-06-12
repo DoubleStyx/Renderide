@@ -1,7 +1,7 @@
 //! Compute + fullscreen depth blit used to resolve multisampled depth to the single-sample forward depth target
 //! (no storage writes on depth in core WebGPU).
 //!
-//! WGSL is sourced from the build-time embedded shader registry. The blit shader lives in a
+//! WGSL is sourced from the runtime shader package. The blit shader lives in a
 //! single source with `#ifdef MULTIVIEW` and is composed into `depth_blit_r32_to_depth_default`
 //! (2D source) and `depth_blit_r32_to_depth_multiview` (2D array source + `@builtin(view_index)`);
 //! the compute shader is single-variant.

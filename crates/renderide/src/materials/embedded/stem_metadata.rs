@@ -1,7 +1,5 @@
-//! Reflection-derived metadata for composed embedded WGSL stems and the pipeline construction
-//! that builds raster pipelines from them.
-//!
-//! The composed targets live under `shaders/target/` (built into the binary by `build.rs`).
+//! Reflection-derived metadata for composed runtime shader package stems and the pipeline
+//! construction that builds raster pipelines from them.
 //! [`EmbeddedStemQuery`] is the central cached query type; the cluster submodules expose
 //! topic-specific free function shims (vertex streams, tangent fallback, pass counts,
 //! blending / snapshot flags) on top of it.

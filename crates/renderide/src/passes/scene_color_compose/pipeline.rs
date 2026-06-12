@@ -3,7 +3,7 @@
 //! Delegates to the shared
 //! [`FullscreenD2ArraySampledPipelineCache`](crate::passes::helpers::FullscreenD2ArraySampledPipelineCache):
 //! one filterable D2-array texture + linear-clamp sampler, mono/multiview pipelines keyed by
-//! output format. WGSL is sourced from the build-time embedded shader registry.
+//! output format. WGSL is sourced from the runtime shader package.
 
 use crate::passes::helpers::define_fullscreen_d2_array_pipeline_cache;
 

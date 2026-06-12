@@ -1,6 +1,6 @@
 //! Central shader/material asset graph state for routing, source generations, and future compiler hooks.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -9,6 +9,7 @@ use parking_lot::Mutex;
 
 use crate::materials::embedded::stem_metadata::embedded_composed_stem_for_permutation;
 use crate::materials::{RasterPipelineKind, ShaderPermutation};
+use crate::shader_package;
 
 use super::router::{MaterialRouter, ShaderRouteEntry};
 
@@ -48,7 +49,7 @@ struct EmbeddedShaderSourceNode {
     generation: u64,
     /// Last modification time observed for development hot reload.
     last_modified: Option<SystemTime>,
-    /// Runtime WGSL override loaded from `shaders/target` when development reload is enabled.
+    /// Runtime WGSL override loaded from the active shader package when development reload is enabled.
     source_override: Option<Arc<str>>,
 }
 
@@ -190,7 +191,7 @@ pub(crate) struct MaterialShaderGraphDiagnosticSnapshot {
 struct ShaderSourceGraphState {
     /// Embedded source nodes keyed by base stem plus permutation.
     embedded_sources: HashMap<EmbeddedShaderSourceKey, EmbeddedShaderSourceNode>,
-    /// Development reload target directory, usually `crates/renderide/shaders/target`.
+    /// Development reload target directory, usually the active runtime shader package.
     dev_hot_reload_target_dir: PathBuf,
     /// Whether development reload polling is active.
     dev_hot_reload_enabled: bool,
@@ -495,9 +496,9 @@ fn global_uniform_type_bit(value_type: GlobalUniformValueType) -> u32 {
     }
 }
 
-/// Returns the default shader target directory for development hot reload.
+/// Returns the default shader package directory for development hot reload.
 fn default_shader_target_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders/target")
+    shader_package::default_package_dir().unwrap_or_else(|| PathBuf::from("shaders"))
 }
 
 #[cfg(test)]

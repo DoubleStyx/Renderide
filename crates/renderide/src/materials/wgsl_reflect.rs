@@ -482,7 +482,7 @@ mod tests {
         ));
     }
 
-    /// Every composed `shaders/target/*.wgsl` must declare the full frame globals `@group(0)`
+    /// Every composed runtime shader package target must declare the full frame globals `@group(0)`
     /// contract; naga-oil strips unused imports, so a material that omits cluster buffer references
     /// can fail at runtime during pipeline creation unless this test catches it.
     #[test]

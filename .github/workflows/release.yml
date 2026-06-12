@@ -233,6 +233,7 @@ jobs:
           cp "${src}/renderide"          "${dist}/"
           cp "${src}/renderide-renderer" "${dist}/"
           cp -R "${src}/xr"              "${dist}/xr"
+          cp -R "${src}/shaders"         "${dist}/shaders"
           case "${PLATFORM}" in
             macos-*)
               latest_macos_loader_dir=""
@@ -255,7 +256,7 @@ jobs:
           import os
           from pathlib import Path
 
-          files = ["renderide", "renderide-renderer", "xr"]
+          files = ["renderide", "renderide-renderer", "xr", "shaders"]
           if os.environ["PLATFORM"].startswith("macos-"):
               files.append("libopenxr_loader.dylib")
           manifest = {
@@ -305,11 +306,12 @@ jobs:
           Copy-Item "$src/renderide.exe"          -Destination $dist
           Copy-Item "$src/renderide-renderer.exe" -Destination $dist
           Copy-Item "$src/xr"                     -Destination $dist -Recurse
+          Copy-Item "$src/shaders"                -Destination $dist -Recurse
           if (-not (Test-Path "$src/openxr_loader.dll")) {
             throw "openxr_loader.dll missing from $src - vendored loader did not copy during build."
           }
           Copy-Item "$src/openxr_loader.dll" -Destination $dist
-          $requiredFiles = @("renderide.exe", "renderide-renderer.exe", "xr", "openxr_loader.dll")
+          $requiredFiles = @("renderide.exe", "renderide-renderer.exe", "xr", "shaders", "openxr_loader.dll")
           $sha256 = [ordered]@{}
           $distRoot = (Resolve-Path $dist).Path
           function Add-FileHash([string]$path) {
@@ -416,7 +418,7 @@ jobs:
             echo ""
             echo "Nightly build of [${SHA}](https://github.com/${GITHUB_REPOSITORY}/commit/${SHA})."
             echo ""
-            echo "Each zip contains the launcher (\`renderide\`), the renderer (\`renderide-renderer\`), and the XR action manifests. Windows and macOS zips also bundle the Khronos OpenXR loader; Linux uses the system OpenXR loader."
+            echo "Each zip contains the launcher (\`renderide\`), the renderer (\`renderide-renderer\`), the runtime shader package, and the XR action manifests. Windows and macOS zips also bundle the Khronos OpenXR loader; Linux uses the system OpenXR loader."
             echo ""
             echo "## Changelog"
             echo ""

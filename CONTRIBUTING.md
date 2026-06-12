@@ -189,7 +189,7 @@ Inside the renderer crate at `crates/renderide/`, three top-level companions liv
 
 - `assets/` holds runtime assets that ship with the renderer: the OpenXR controller binding profiles under `xr/bindings/` for every supported headset and controller family. The build script copies the XR action and binding files into the artifact directory so the binary can find them at run time.
 - `shaders/` holds every WGSL source file the renderer compiles. It is divided into `materials/` (one shader per host material program), `modules/` (shared logic composed via naga-oil), and `passes/` with subdirectories for `backend/`, `compute/`, `post/`, and `present/` shaders.
-- `build.rs` and `build_support/` together compose the WGSL source tree at build time, generate an embedded shader registry that the renderer links in, copy XR assets into the artifact directory, and copy the vendored OpenXR loader on Windows and macOS. The `build_support/shader/` subdirectory is where the shader composition logic lives, broken into `source`, `modules`, `compose`, `directives`, `validation`, `parallel`, `mirror_once`, `emit`, `model`, and `error`.
+- `build.rs` and `build_support/` together compose the WGSL source tree at build time, generate the runtime shader package under the Cargo artifact directory, copy XR assets into the artifact directory, and copy the vendored OpenXR loader on Windows and macOS. The `build_support/shader/` subdirectory is where the shader composition logic lives, broken into `source`, `modules`, `compose`, `directives`, `validation`, `parallel`, `mirror_once`, `emit`, `model`, and `error`.
 
 ### 2.4 Build profiles and feature flags
 
@@ -528,7 +528,7 @@ The host writes material properties as a flat key-value store. Each property lan
 
 The split is enforced. Pipeline-state property names must never appear in a shader's group 1 material uniform. They are dead weight there: shaders never read them, and the host writes them. The build script rejects any material WGSL that violates this contract. Two materials sharing a shader but differing in pipeline state correctly resolve to distinct cached pipelines because the cache key includes the resolved blend mode and render state.
 
-The relevant code lives in `crates/renderide/src/materials/`. It is large enough to be worth a quick map: `system` is the materials-system entry point the backend talks to; `registry` is the central table; `host_data/` holds the property store; `cache` holds the pipeline cache; `router` maps host shader asset IDs to pipeline families or embedded WGSL stems; `wgsl_reflect/` does naga-based reflection; `wgsl` carries the smaller WGSL helpers reflection needs; `raster_pipeline/` builds raster pipelines, with `null_pipeline.rs`, `pipeline_kind.rs`, `pipeline_build_error.rs`, and `pipeline_property_resolver.rs` as its companions; `material_passes/` carries the per-shader pass declarations parsed at build time and the tables that map them to pipeline kinds; `shader_permutation.rs` handles keyword permutations; `embedded/` holds the static table of built-in shaders compiled into the binary; `render_state/` holds blend, depth, stencil, cull, and color mask state; `render_queue.rs` carries the queue ordering for opaque, alpha test, transparent, and overlay draws.
+The relevant code lives in `crates/renderide/src/materials/`. It is large enough to be worth a quick map: `system` is the materials-system entry point the backend talks to; `registry` is the central table; `host_data/` holds the property store; `cache` holds the pipeline cache; `router` maps host shader asset IDs to pipeline families or runtime shader package stems; `wgsl_reflect/` does naga-based reflection; `wgsl` carries the smaller WGSL helpers reflection needs; `raster_pipeline/` builds raster pipelines, with `null_pipeline.rs`, `pipeline_kind.rs`, `pipeline_build_error.rs`, and `pipeline_property_resolver.rs` as its companions; `material_passes/` carries the per-shader pass declarations parsed at build time and the tables that map them to pipeline kinds; `shader_permutation.rs` handles keyword permutations; `embedded/` holds compatibility shims for built-in shader package lookups; `render_state/` holds blend, depth, stencil, cull, and color mask state; `render_queue.rs` carries the queue ordering for opaque, alpha test, transparent, and overlay draws.
 
 ### 3.9 The render graph
 
@@ -862,9 +862,7 @@ The shader tree under `crates/renderide/shaders/` is organized into six source r
 - `passes/post/` contains the post-processing shaders: GTAO, bloom, motion blur, ACES and AgX tone mapping, MSAA HDR resolve, auto-exposure apply, scene color compose, and the camera-task alpha coverage shader for secondary-camera output.
 - `passes/present/` contains the VR mirror shaders and the display blit.
 
-There is also a `target/` directory under `shaders/` that holds generated inspection outputs and development-reload material targets; it is not source.
-
-The build script under `build.rs` and `build_support/shader/` discovers every WGSL file at build time, composes them, validates them, writes generated inspection outputs, and emits the `OUT_DIR` embedded shader registry the renderer links in. Material shaders are validated against the pipeline-state-versus-uniform contract (see [4.22](#422-pipeline-state-vs-shader-uniforms)). Shader composition runs in parallel across CPUs.
+The build script under `build.rs` and `build_support/shader/` discovers every WGSL file at build time, composes them, validates them, and writes the runtime shader package under `target/<profile>/shaders/`. Material shaders are validated against the pipeline-state-versus-uniform contract (see [4.22](#422-pipeline-state-vs-shader-uniforms)). Shader composition runs in parallel across CPUs.
 
 ### 4.20 Naga-oil composition
 
@@ -883,7 +881,7 @@ The Rust side of composition lives in `crates/renderide/build_support/shader/`. 
 - `validation` enforces the cross-cutting contracts (notably the pipeline-state-versus-uniform separation).
 - `parallel` runs composition jobs across cores.
 - `mirror_once` rewrites recognized texture sampling patterns so MirrorOnce wrap modes can be emulated consistently.
-- `emit` writes the embedded shader registry that the renderer links in.
+- `emit` writes the runtime shader package and the small compatibility facade the renderer links in.
 - `model` and `error` carry the data model and the error type.
 
 ### 4.21 Bind group conventions

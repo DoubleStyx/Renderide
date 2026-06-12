@@ -397,14 +397,12 @@ fn package_candidate_dirs() -> Vec<PathBuf> {
         && let Some(parent) = exe.parent()
     {
         dirs.push(parent.join("shaders"));
-        dirs.push(parent.join("shaders/target"));
     }
     if let Some(path) = option_env!("RENDERIDE_SHADER_PACKAGE_DIR_DEFAULT")
         && !path.trim().is_empty()
     {
         dirs.push(PathBuf::from(path));
     }
-    dirs.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders/target"));
     dedup_dirs(dirs)
 }
 
@@ -504,6 +502,16 @@ pub(crate) fn material_reflection(stem: &str) -> EmbeddedShaderReflection {
 pub(crate) fn default_material_stem_for_asset_key(asset: &str) -> Option<Arc<str>> {
     let package = global_package()?;
     package.routes.get(asset).cloned()
+}
+
+/// Returns the first configured shader package directory for runtime development reload.
+pub(crate) fn default_package_dir() -> Option<PathBuf> {
+    let candidates = package_candidate_dirs();
+    candidates
+        .iter()
+        .find(|dir| dir.join(SHADER_PACKAGE_MANIFEST_FILE).is_file())
+        .cloned()
+        .or_else(|| candidates.into_iter().next())
 }
 
 fn reflect_material_target(stem: &str, target: &ShaderTarget) -> EmbeddedShaderReflection {
@@ -620,6 +628,8 @@ fn supports_generic_depth_prepass(
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::schema::{
         ShaderPackageManifest, ShaderRequiredFeatures, ShaderTargetClass, ShaderTargetManifest,
         stable_source_hash,
@@ -657,5 +667,16 @@ mod tests {
         let err = ShaderPackage::load_from_dir(dir.path()).expect_err("hash mismatch");
 
         assert!(matches!(err, ShaderPackageError::HashMismatch { .. }));
+    }
+
+    #[test]
+    fn package_candidates_do_not_include_source_tree_target_dir() {
+        let source_tree_target = Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders/target");
+
+        assert!(
+            !package_candidate_dirs()
+                .into_iter()
+                .any(|dir| dir == source_tree_target)
+        );
     }
 }

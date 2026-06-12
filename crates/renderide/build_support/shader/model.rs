@@ -93,15 +93,15 @@ pub(super) struct ShaderSourceManifest {
     pub source: String,
     /// File path label passed to naga-oil and source diagnostics.
     pub file_path: String,
-    /// Parsed pass metadata embedded alongside material WGSL.
+    /// Parsed pass metadata packaged alongside material WGSL.
     pub pass_directives: Vec<BuildPassDirective>,
-    /// Parsed texture fallback metadata embedded alongside material WGSL.
+    /// Parsed texture fallback metadata packaged alongside material WGSL.
     pub texture_defaults: Vec<TextureDefaultDirective>,
-    /// Parsed material uniform fallback metadata embedded alongside material WGSL.
+    /// Parsed material uniform fallback metadata packaged alongside material WGSL.
     pub material_defaults: Vec<MaterialDefaultDirective>,
-    /// Required device features embedded alongside each composed target.
+    /// Required device features packaged alongside each composed target.
     pub wgpu_features: Vec<WgpuFeatureDirective>,
-    /// Shader default render queue embedded alongside each composed target.
+    /// Shader default render queue packaged alongside each composed target.
     pub default_render_queue: i32,
 }
 
@@ -152,7 +152,7 @@ impl ShaderVariant {
 /// One flattened WGSL target emitted for a compiled source shader.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct CompiledShaderTarget {
-    /// Target stem used for both `shaders/target/{stem}.wgsl` and the embedded registry.
+    /// Target stem used for both `target/<profile>/shaders/{stem}.wgsl` and package lookups.
     pub target_stem: String,
     /// Fully flattened WGSL source text.
     pub wgsl: String,
@@ -169,15 +169,15 @@ pub(super) struct CompiledShader {
     pub source_stem: String,
     /// Logical source class.
     pub source_class: ShaderSourceClass,
-    /// Parsed pass metadata embedded alongside material WGSL.
+    /// Parsed pass metadata packaged alongside material WGSL.
     pub pass_directives: Vec<BuildPassDirective>,
-    /// Parsed texture fallback metadata embedded alongside material WGSL.
+    /// Parsed texture fallback metadata packaged alongside material WGSL.
     pub texture_defaults: Vec<TextureDefaultDirective>,
-    /// Parsed material uniform fallback metadata embedded alongside material WGSL.
+    /// Parsed material uniform fallback metadata packaged alongside material WGSL.
     pub material_defaults: Vec<MaterialDefaultDirective>,
-    /// Required device features embedded alongside each composed target.
+    /// Required device features packaged alongside each composed target.
     pub wgpu_features: Vec<WgpuFeatureDirective>,
-    /// Shader default render queue embedded alongside each composed target.
+    /// Shader default render queue packaged alongside each composed target.
     pub default_render_queue: i32,
     /// One or two output targets depending on whether multiview changes the WGSL.
     pub targets: Vec<CompiledShaderTarget>,
