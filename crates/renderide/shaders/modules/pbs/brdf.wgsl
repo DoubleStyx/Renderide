@@ -39,22 +39,27 @@ const PI: f32 = 3.14159265359;
 /// Variance scale for [`filter_perceptual_roughness`].
 const SPECULAR_AA_VARIANCE: f32 = 0.25;
 
-/// Maximum kernel-roughness widening for [`filter_perceptual_roughness`]. Caps the filter so very
-/// high curvature doesn't drive the entire surface to a fully-rough lobe.
-const SPECULAR_AA_THRESHOLD: f32 = 0.18;
+/// Maximum geometric kernel-roughness widening for [`filter_perceptual_roughness`].
+const GEOMETRIC_SPECULAR_AA_THRESHOLD: f32 = 0.18;
+
+/// Maximum normal-map roughness widening for [`filter_perceptual_roughness`].
+const NORMAL_MAP_SPECULAR_AA_THRESHOLD: f32 = 0.2;
+
+/// Minimum BRDF-facing `NdotV` after shading-normal correction.
+const MIN_VIEW_FACING_N_DOT_V: f32 = 1e-4;
 
 /// Tokuyoshi & Kaplanyan 2019 "Improved Geometric Specular Antialiasing".
 ///
-/// Widens the GGX lobe by the screen-space variance of the geometric surface normal so that
-/// sub-pixel curvature does not alias into the specular highlight. MSAA can only multisample
-/// geometric coverage; the fragment shader still runs once per pixel, so a narrow specular lobe
-/// evaluated at the pixel centre will sparkle on curved metals regardless of MSAA tier. This filter
-/// widens `alpha` per pixel based on `dpdx`/`dpdy` of the filter normal, producing a softer
-/// pre-filtered lobe where the geometric normal is changing fast.
+/// Widens the GGX lobe by the screen-space variance of the geometric surface normal and the excess
+/// variance contributed by the normal map. MSAA can only multisample geometric coverage; the
+/// fragment shader still runs once per pixel, so a narrow specular lobe evaluated at the pixel
+/// centre will sparkle on curved metals or high-frequency normal maps regardless of MSAA tier. This
+/// filter widens roughness per pixel based on `dpdx`/`dpdy` while bounding the normal-map portion so
+/// detailed normals do not collapse into quad-sized roughness blocks.
 ///
-/// Feed this the pre-perturbation world normal. Normal-map frequency should be filtered through
-/// texture mips or roughness prefiltering; differentiating the final shading normal turns texel
-/// noise into quad-sized roughness blocks.
+/// Feed this the final shading normal and the pre-perturbation geometric normal. The helper
+/// subtracts geometric variance from shading variance before applying the normal-map term, then
+/// applies the existing geometric roughness widening.
 ///
 /// `perceptual_roughness` is `1 - smoothness` (this module's standard input), and the returned
 /// value is also perceptual -- call sites can drop-in replace their existing `roughness` and the
@@ -62,13 +67,57 @@ const SPECULAR_AA_THRESHOLD: f32 = 0.18;
 ///
 /// Fragment-only (uses derivatives). Call once before the cluster light loop so the derivatives
 /// evaluate at uniform control flow and the widened roughness is shared across all light samples.
-fn filter_perceptual_roughness(perceptual_roughness: f32, filter_normal: vec3<f32>) -> f32 {
-    let du = dpdx(filter_normal);
-    let dv = dpdy(filter_normal);
-    let variance = SPECULAR_AA_VARIANCE * (dot(du, du) + dot(dv, dv));
+fn filter_perceptual_roughness(
+    perceptual_roughness: f32,
+    shading_normal: vec3<f32>,
+    geometric_normal: vec3<f32>,
+) -> f32 {
+    let shading_variance = normal_derivative_variance(shading_normal);
+    let geometric_variance = normal_derivative_variance(geometric_normal);
+    let normal_map_variance = max(shading_variance - geometric_variance, 0.0);
+    let normal_filtered = filter_normal_map_perceptual_roughness(perceptual_roughness, normal_map_variance);
+    return filter_geometric_perceptual_roughness(normal_filtered, geometric_variance);
+}
+
+/// Normalizes a vector with a deterministic fallback for degenerate inputs.
+fn safe_normalize(n: vec3<f32>, fallback: vec3<f32>) -> vec3<f32> {
+    if (dot(n, n) <= 1e-12) {
+        return fallback;
+    }
+    return normalize(n);
+}
+
+/// Shifts a shading normal onto the visible hemisphere for BRDF evaluation.
+fn view_facing_normal(n: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
+    let unit_n = safe_normalize(n, vec3<f32>(0.0, 0.0, 1.0));
+    let unit_v = safe_normalize(v, vec3<f32>(0.0, 0.0, 1.0));
+    let n_dot_v = dot(unit_n, unit_v);
+    if (n_dot_v < MIN_VIEW_FACING_N_DOT_V) {
+        return safe_normalize(unit_n + unit_v * (MIN_VIEW_FACING_N_DOT_V - n_dot_v), unit_v);
+    }
+    return unit_n;
+}
+
+/// Screen-space normal derivative variance used by the roughness filters.
+fn normal_derivative_variance(n: vec3<f32>) -> f32 {
+    let unit_n = safe_normalize(n, vec3<f32>(0.0, 0.0, 1.0));
+    let du = dpdx(unit_n);
+    let dv = dpdy(unit_n);
+    return SPECULAR_AA_VARIANCE * (dot(du, du) + dot(dv, dv));
+}
+
+/// Bounded roughness widening for variance introduced by normal maps.
+fn filter_normal_map_perceptual_roughness(perceptual_roughness: f32, variance: f32) -> f32 {
+    let clamped = clamp(perceptual_roughness, 0.0, 1.0);
+    let kernel = min(2.0 * variance, NORMAL_MAP_SPECULAR_AA_THRESHOLD * NORMAL_MAP_SPECULAR_AA_THRESHOLD);
+    return sqrt(clamp(clamped * clamped + kernel, 0.0, 1.0));
+}
+
+/// Existing geometric-normal specular AA applied after normal-map roughness widening.
+fn filter_geometric_perceptual_roughness(perceptual_roughness: f32, variance: f32) -> f32 {
     let clamped = clamp(perceptual_roughness, 0.0, 1.0);
     let alpha = clamped * clamped;
-    let kernel = min(2.0 * variance, SPECULAR_AA_THRESHOLD);
+    let kernel = min(2.0 * variance, GEOMETRIC_SPECULAR_AA_THRESHOLD);
     let alpha2 = clamp(alpha * alpha + kernel, 0.0, 1.0);
     return sqrt(sqrt(alpha2));
 }
@@ -374,21 +423,24 @@ fn eval_direct_specular_lobe(
     f0: vec3<f32>,
     energy_compensation: vec3<f32>,
 ) -> DirectSpecularEval {
-    let n_dot_l = max(dot(n, l), 0.0);
-    let n_dot_v = max(dot(n, v), 1e-4);
+    let view = safe_normalize(v, vec3<f32>(0.0, 0.0, 1.0));
+    let brdf_n = view_facing_normal(n, view);
+    let light_dir = safe_normalize(l, brdf_n);
+    let n_dot_l = max(dot(brdf_n, light_dir), 0.0);
+    let n_dot_v = max(dot(brdf_n, view), MIN_VIEW_FACING_N_DOT_V);
     if n_dot_l <= 0.0 {
         return DirectSpecularEval(vec3<f32>(0.0), vec3<f32>(0.0), n_dot_l, n_dot_v, 0.0);
     }
 
-    let h_unorm = v + l;
-    var h = n;
+    let h_unorm = view + light_dir;
+    var h = brdf_n;
     if dot(h_unorm, h_unorm) > 1e-12 {
         h = normalize(h_unorm);
     }
 
-    let n_dot_h = clamp(dot(n, h), 0.0, 1.0);
-    let v_dot_h = clamp(dot(v, h), 0.0, 1.0);
-    let l_dot_h = clamp(dot(l, h), 0.0, 1.0);
+    let n_dot_h = clamp(dot(brdf_n, h), 0.0, 1.0);
+    let v_dot_h = clamp(dot(view, h), 0.0, 1.0);
+    let l_dot_h = clamp(dot(light_dir, h), 0.0, 1.0);
     let alpha = direct_alpha_from_perceptual_roughness(perceptual_roughness);
     let f = f_schlick(f0, f90_from_f0(f0), v_dot_h);
     let d = d_ggx(n_dot_h, alpha);
@@ -478,12 +530,14 @@ fn diffuse_only_metallic(
     metallic: f32,
 ) -> vec3<f32> {
     let ls = eval_light(light, world_pos, n);
-    let n_dot_l = max(dot(n, ls.l), 0.0);
+    let view = safe_normalize(v, vec3<f32>(0.0, 0.0, 1.0));
+    let brdf_n = view_facing_normal(n, view);
+    let n_dot_l = max(dot(brdf_n, ls.l), 0.0);
     if n_dot_l <= 0.0 {
         return vec3<f32>(0.0);
     }
-    let h = normalize(v + ls.l);
-    let n_dot_v = max(dot(n, v), 1e-4);
+    let h = safe_normalize(view + ls.l, brdf_n);
+    let n_dot_v = max(dot(brdf_n, view), MIN_VIEW_FACING_N_DOT_V);
     let l_dot_h = clamp(dot(ls.l, h), 0.0, 1.0);
     let diffuse_color = base_color * (1.0 - metallic);
     return diffuse_color * fd_burley(n_dot_v, n_dot_l, l_dot_h, roughness) * signed_light_radiance(light, ls.attenuation, n_dot_l);
@@ -500,12 +554,14 @@ fn diffuse_only_specular(
     one_minus_reflectivity: f32,
 ) -> vec3<f32> {
     let ls = eval_light(light, world_pos, n);
-    let n_dot_l = max(dot(n, ls.l), 0.0);
+    let view = safe_normalize(v, vec3<f32>(0.0, 0.0, 1.0));
+    let brdf_n = view_facing_normal(n, view);
+    let n_dot_l = max(dot(brdf_n, ls.l), 0.0);
     if n_dot_l <= 0.0 {
         return vec3<f32>(0.0);
     }
-    let h = normalize(v + ls.l);
-    let n_dot_v = max(dot(n, v), 1e-4);
+    let h = safe_normalize(view + ls.l, brdf_n);
+    let n_dot_v = max(dot(brdf_n, view), MIN_VIEW_FACING_N_DOT_V);
     let l_dot_h = clamp(dot(ls.l, h), 0.0, 1.0);
     return base_color * one_minus_reflectivity * fd_burley(n_dot_v, n_dot_l, l_dot_h, roughness) * signed_light_radiance(light, ls.attenuation, n_dot_l);
 }

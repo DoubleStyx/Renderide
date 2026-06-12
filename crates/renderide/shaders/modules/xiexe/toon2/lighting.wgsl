@@ -63,8 +63,9 @@ fn environment_tint(s: xb::SurfaceData, view_dir: vec3<f32>, world_pos: vec3<f32
     if (!rprobe::has_indirect_specular(view_layer, true)) {
         return vec3<f32>(1.0);
     }
-    let indirect_roughness = brdf::filter_perceptual_roughness(s.roughness, s.raw_normal);
-    return rprobe::raw_indirect_specular_with_horizon(world_pos, s.normal, s.raw_normal, view_dir, indirect_roughness, true, view_layer);
+    let specular_normal = brdf::view_facing_normal(s.normal, view_dir);
+    let indirect_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal, s.raw_normal);
+    return rprobe::raw_indirect_specular_with_horizon(world_pos, specular_normal, s.raw_normal, view_dir, indirect_roughness, true, view_layer);
 }
 
 /// `UNITY_SPECCUBE_LOD_STEPS` on PC/console.
@@ -129,7 +130,7 @@ struct DirectSpecularTerms {
     /// Primary lobe perceptual roughness, derived from `_SpecularArea` via
     /// `roughness = 1 - remap_specular_area(_SpecularArea)`.
     roughness: f32,
-    /// Primary lobe roughness widened by geometric specular antialiasing.
+    /// Primary lobe roughness widened by specular antialiasing.
     aa_roughness: f32,
     /// Multiple-scattering energy compensation sampled from the frame DFG LUT.
     energy_compensation: vec3<f32>,
@@ -146,8 +147,9 @@ struct DirectSpecularTerms {
 fn primary_direct_specular_terms(s: xb::SurfaceData, view_dir: vec3<f32>) -> DirectSpecularTerms {
     let specular_reflectance = brdf::metallic_f0(s.diffuse_color, s.metallic);
     let roughness = clamp(1.0 - remap_specular_area(xb::mat._SpecularArea), 0.0, 1.0);
-    let aa_roughness = brdf::filter_perceptual_roughness(roughness, s.raw_normal);
-    let n_dot_v = clamp(dot(s.normal, view_dir), 0.0, 1.0);
+    let aa_roughness = brdf::filter_perceptual_roughness(roughness, s.normal, s.raw_normal);
+    let specular_normal = brdf::view_facing_normal(s.normal, view_dir);
+    let n_dot_v = clamp(dot(specular_normal, view_dir), 0.0, 1.0);
     let direct_roughness = brdf::direct_perceptual_roughness(roughness);
     let dfg = brdf::sample_ibl_dfg_lut(direct_roughness, n_dot_v);
     let energy_compensation = brdf::energy_compensation_from_dfg(dfg, specular_reflectance);
@@ -237,10 +239,11 @@ fn direct_diffuse_brdf(
     view_dir: vec3<f32>,
     perceptual_roughness: f32,
 ) -> f32 {
-    let h = xb::safe_normalize(light_direction + view_dir, normal);
+    let brdf_n = brdf::view_facing_normal(normal, view_dir);
+    let h = xb::safe_normalize(light_direction + view_dir, brdf_n);
     return brdf::fd_burley(
-        xb::saturate(dot(normal, view_dir)),
-        xb::saturate(dot(normal, light_direction)),
+        xb::saturate(dot(brdf_n, view_dir)),
+        xb::saturate(dot(brdf_n, light_direction)),
         xb::saturate(dot(light_direction, h)),
         perceptual_roughness,
     );
@@ -343,8 +346,9 @@ fn indirect_reflection_branch_for_layout(
         return spec;
     }
 
-    let roughness = brdf::filter_perceptual_roughness(clamp(perceptual_roughness, 0.0, 1.0), s.raw_normal);
-    let n_dot_v = clamp(dot(normal, view_dir), 0.0, 1.0);
+    let specular_normal = brdf::view_facing_normal(normal, view_dir);
+    let roughness = brdf::filter_perceptual_roughness(clamp(perceptual_roughness, 0.0, 1.0), normal, s.raw_normal);
+    let n_dot_v = clamp(dot(specular_normal, view_dir), 0.0, 1.0);
     let indirect_enabled = rprobe::has_indirect_specular(view_layer, xvb::reflection_uses_pbr_for_layout(keyword_layout));
     let dfg = brdf::sample_ibl_dfg_lut(roughness, n_dot_v);
     let specular_energy = brdf::indirect_specular_energy_from_dfg(dfg, specular_reflectance, indirect_enabled);
@@ -352,7 +356,7 @@ fn indirect_reflection_branch_for_layout(
         brdf::indirect_specular_visibility(n_dot_v, occlusion_scalar(s), roughness, specular_reflectance);
     let spec = rprobe::indirect_specular_with_energy(
         world_pos,
-        normal,
+        specular_normal,
         s.raw_normal,
         view_dir,
         roughness,
@@ -425,10 +429,11 @@ fn clustered_toon_lighting_for_layout(
     // Indirect diffuse / specular share a single energy budget: whatever the spec
     // probe lobe takes, the diffuse term must give up.
     let indirect_specular_reflectance = brdf::metallic_f0(s.diffuse_color, s.metallic);
-    let n_dot_v = clamp(dot(s.normal, view_dir), 0.0, 1.0);
+    let specular_normal = brdf::view_facing_normal(s.normal, view_dir);
+    let n_dot_v = clamp(dot(specular_normal, view_dir), 0.0, 1.0);
     let indirect_specular_enabled =
         rprobe::has_indirect_specular(view_layer, xvb::reflection_uses_pbr_for_layout(keyword_layout));
-    let indirect_roughness = brdf::filter_perceptual_roughness(s.roughness, s.raw_normal);
+    let indirect_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal, s.raw_normal);
     let indirect_dfg = brdf::sample_ibl_dfg_lut(indirect_roughness, n_dot_v);
     let indirect_specular_energy = brdf::indirect_specular_energy_from_dfg(
         indirect_dfg,
