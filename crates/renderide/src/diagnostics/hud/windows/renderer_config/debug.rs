@@ -37,12 +37,12 @@ fn debug_hud_section(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bool)
     }
     ui.text_disabled("FPS and CPU/GPU frame intervals; snapshot is cheap.");
     if ui.checkbox(
-        "Debug HUD (Stats / Shader routes / Draw state / GPU memory)",
+        "Debug HUD (Stats / Shader routes / Draw state / GPU memory / GPU passes)",
         &mut g.debug.debug_hud_enabled,
     ) {
         *dirty = true;
     }
-    ui.text_disabled("Main debug panels and per-frame diagnostics capture when enabled.");
+    ui.text_disabled("Main debug panels collect metrics only for the selected open tab.");
     if ui.checkbox("Scene transforms HUD", &mut g.debug.debug_hud_transforms) {
         *dirty = true;
     }

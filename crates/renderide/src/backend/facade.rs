@@ -437,39 +437,55 @@ impl RenderBackend {
     /// Returns a [`crate::diagnostics::BackendDiagSnapshot`] capturing the fields
     /// `FrameDiagnosticsSnapshot::capture` and `RendererInfoSnapshot::capture` need, so the
     /// diagnostics layer never borrows `&RenderBackend` directly.
-    pub fn snapshot_for_diagnostics(&self) -> crate::diagnostics::BackendDiagSnapshot {
+    pub fn snapshot_for_diagnostics(
+        &self,
+        interest: crate::diagnostics::DebugHudMetricInterest,
+    ) -> crate::diagnostics::BackendDiagSnapshot {
+        let mut snapshot = crate::diagnostics::BackendDiagSnapshot::default();
+
+        if interest.wants_shader_routes() {
+            snapshot.shader_routes = self
+                .material_registry()
+                .map(|reg| {
+                    reg.shader_routes_for_hud()
+                        .into_iter()
+                        .map(|(id, pipeline, name, shader_variant_bits)| {
+                            crate::diagnostics::ShaderRouteSnapshot {
+                                shader_asset_id: id,
+                                pipeline,
+                                shader_asset_name: name,
+                                shader_variant_bits,
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+        }
+
+        if interest.wants_draw_state() {
+            snapshot.last_world_mesh_draw_state_rows = self.last_world_mesh_draw_state_rows();
+        }
+
+        if !interest.wants_stats() {
+            return snapshot;
+        }
+
         let store = self.material_property_store();
-        let shader_routes = self
-            .material_registry()
-            .map(|reg| {
-                reg.shader_routes_for_hud()
-                    .into_iter()
-                    .map(|(id, pipeline, name, shader_variant_bits)| {
-                        crate::diagnostics::ShaderRouteSnapshot {
-                            shader_asset_id: id,
-                            pipeline,
-                            shader_asset_name: name,
-                            shader_variant_bits,
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
         let material_diagnostics = self.materials.diagnostic_snapshot();
         let graph_stats = self
             .graph_state
             .frame_graph_cache
             .compile_stats()
             .unwrap_or_default();
-        crate::diagnostics::BackendDiagSnapshot {
+        snapshot = crate::diagnostics::BackendDiagSnapshot {
             texture_format_registration_count: self.texture_format_registration_count(),
             texture_mip0_ready_count: self.texture_mip0_ready_count(),
             texture_pool_resident_count: self.texture_pool().len(),
             render_texture_pool_len: self.render_texture_pool().len(),
             mesh_pool_entry_count: self.mesh_pool().len(),
-            shader_routes,
+            shader_routes: snapshot.shader_routes,
             last_world_mesh_draw_stats: self.last_world_mesh_draw_stats(),
-            last_world_mesh_draw_state_rows: self.last_world_mesh_draw_state_rows(),
+            last_world_mesh_draw_state_rows: snapshot.last_world_mesh_draw_state_rows,
             render_world_maintenance: self.draw_preparation.render_world_maintenance_stats(),
             world_mesh_command_cache: self.draw_preparation.command_cache_stats(),
             world_mesh_instance_plan_cache: self
@@ -493,7 +509,8 @@ impl RenderBackend {
             gpu_light_count: self.frame_services.frame_resources.frame_lights().len(),
             signed_scene_color_active: self.signed_scene_color_active(),
             upload_arena: self.graph_state.latest_upload_stats().into(),
-        }
+        };
+        snapshot
     }
 
     /// Mutable render-graph transient resource pool.

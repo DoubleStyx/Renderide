@@ -117,6 +117,32 @@ impl DebugHudMainTabVisibility {
         }
     }
 
+    /// Returns `true` when at least one main debug tab is open.
+    pub fn any_open(self) -> bool {
+        DebugHudMainTab::ALL
+            .iter()
+            .copied()
+            .any(|tab| self.is_open(tab))
+    }
+
+    /// Returns the first open main debug tab in stable display order.
+    pub fn first_open(self) -> Option<DebugHudMainTab> {
+        DebugHudMainTab::ALL
+            .iter()
+            .copied()
+            .find(|&tab| self.is_open(tab))
+    }
+
+    /// Returns the selected tab when it is open, otherwise the first open tab.
+    pub fn effective_tab(self, selected: DebugHudMainTab) -> Option<DebugHudMainTab> {
+        if !self.any_open() {
+            return None;
+        }
+        self.is_open(selected)
+            .then_some(selected)
+            .or_else(|| self.first_open())
+    }
+
     /// Updates whether `tab` is currently open.
     pub fn set_open(&mut self, tab: DebugHudMainTab, value: bool) {
         match tab {
@@ -340,6 +366,18 @@ mod tests {
         main.set_open(DebugHudMainTab::DrawState, false);
         assert!(!main.is_open(DebugHudMainTab::DrawState));
         assert!(!main.all_open());
+        assert!(main.any_open());
+        assert_eq!(main.first_open(), Some(DebugHudMainTab::Stats));
+        assert_eq!(
+            main.effective_tab(DebugHudMainTab::DrawState),
+            Some(DebugHudMainTab::Stats)
+        );
+        for &tab in DebugHudMainTab::ALL {
+            main.set_open(tab, false);
+        }
+        assert!(!main.any_open());
+        assert_eq!(main.first_open(), None);
+        assert_eq!(main.effective_tab(DebugHudMainTab::Stats), None);
 
         let mut config = DebugHudRendererConfigTabVisibility::default();
         assert!(config.all_open());

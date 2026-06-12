@@ -4,20 +4,15 @@
 //! of `facade.rs` so the core facade only carries struct definition, attach, and render-graph
 //! orchestration.
 
-use crate::diagnostics::{DebugHudInput, SceneTransformsSnapshot};
+use crate::diagnostics::{DebugHudInput, PerViewHudConfig, SceneTransformsSnapshot};
 use crate::world_mesh::{WorldMeshDrawStateRow, WorldMeshDrawStats};
 
 use super::super::RenderBackend;
 
 impl RenderBackend {
-    /// Updates whether main HUD diagnostics run (mirrors [`crate::config::DebugSettings::debug_hud_enabled`]).
-    pub fn set_debug_hud_main_enabled(&mut self, enabled: bool) {
-        self.diagnostics.set_main_enabled(enabled);
-    }
-
-    /// Updates whether texture HUD diagnostics run.
-    pub(crate) fn set_debug_hud_textures_enabled(&mut self, enabled: bool) {
-        self.diagnostics.set_textures_enabled(enabled);
+    /// Updates per-view HUD diagnostics capture interests for the next render graph.
+    pub(crate) fn set_debug_hud_per_view_config(&mut self, config: PerViewHudConfig) {
+        self.diagnostics.set_per_view_config(config);
     }
 
     /// Clears the current-view Texture2D set before collecting this frame's submitted draws.
@@ -89,12 +84,22 @@ impl RenderBackend {
         self.diagnostics.set_frame_timing(snapshot);
     }
 
+    /// Clears the **Frame timing** HUD payload.
+    pub(crate) fn clear_debug_hud_frame_timing(&mut self) {
+        self.diagnostics.clear_frame_timing();
+    }
+
     /// Pushes the latest GPU profiler snapshot into the debug HUD's **GPU passes** tab.
     pub(crate) fn set_debug_hud_gpu_profiler_snapshot(
         &mut self,
         snapshot: crate::profiling::GpuProfilerSnapshot,
     ) {
         self.diagnostics.set_gpu_profiler_snapshot(snapshot);
+    }
+
+    /// Clears the **GPU passes** HUD payload.
+    pub(crate) fn clear_debug_hud_gpu_profiler_snapshot(&mut self) {
+        self.diagnostics.clear_gpu_profiler_snapshot();
     }
 
     /// Clears Stats / Shader routes payloads only (not frame timing or scene transforms).
