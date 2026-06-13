@@ -82,6 +82,8 @@ struct NonTransparentStackBinKey {
     renderable_index: usize,
     /// Renderer-local stable identity.
     instance_id: u64,
+    /// Render-context override scope for cache-backed deform identity.
+    render_context: u8,
     /// Resident mesh asset id.
     mesh_asset_id: i32,
     /// First index in the stacked submesh range.
@@ -103,6 +105,7 @@ impl NonTransparentStackBinKey {
             skinned: item.skinned,
             renderable_index: item.renderable_index,
             instance_id: item.instance_id.0,
+            render_context: item.render_context as u8,
             mesh_asset_id: item.mesh_asset_id,
             first_index: item.first_index,
             index_count: item.index_count,

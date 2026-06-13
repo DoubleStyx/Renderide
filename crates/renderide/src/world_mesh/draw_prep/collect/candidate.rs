@@ -154,6 +154,7 @@ pub(super) fn evaluate_draw_candidate(
         node_id: candidate.node_id,
         renderable_index: candidate.renderable_index,
         instance_id: candidate.instance_id,
+        render_context: ctx.view.render_context,
         mesh_asset_id: candidate.mesh_asset_id,
         slot_index: candidate.slot_index,
         material_stack_order: candidate.material_stack_order,

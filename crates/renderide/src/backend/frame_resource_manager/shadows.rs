@@ -215,6 +215,7 @@ impl FrameResourceManager {
                 if item.world_space_deformed || item.blendshape_deformed {
                     keys.insert(SkinCacheKey::from_draw_parts(
                         item.space_id,
+                        item.render_context,
                         item.skinned,
                         item.instance_id,
                     ));

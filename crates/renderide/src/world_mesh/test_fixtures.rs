@@ -7,7 +7,7 @@ use crate::materials::{
 };
 use crate::particles::ParticleDrawParams;
 use crate::scene::{MeshRendererInstanceId, RenderSpaceId};
-use crate::shared::ShadowCastMode;
+use crate::shared::{RenderingContext, ShadowCastMode};
 
 use crate::reflection_probes::specular::ReflectionProbeDrawSelection;
 use crate::world_mesh::{
@@ -110,6 +110,7 @@ pub fn dummy_world_mesh_draw_item(spec: DummyDrawItemSpec) -> WorldMeshDrawItem 
         node_id: node,
         renderable_index: node.max(0) as usize,
         instance_id: MeshRendererInstanceId(node.max(0) as u64 + 1),
+        render_context: RenderingContext::UserView,
         mesh_asset_id: mesh,
         slot_index: slot,
         material_stack_order: None,

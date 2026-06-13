@@ -5,6 +5,8 @@
 
 mod encode;
 mod snapshot;
+#[cfg(test)]
+mod tests;
 
 use std::{fmt, ops::Range};
 
@@ -24,7 +26,7 @@ use crate::render_graph::context::ComputePassCtx;
 use crate::render_graph::error::{RenderPassError, SetupError};
 use crate::render_graph::pass::{ComputePass, PassBuilder, PassPhase};
 use crate::scene::{RenderSpaceId, SceneCoordinator};
-use crate::shared::SkinWeightMode;
+use crate::shared::{RenderingContext, SkinWeightMode};
 
 use self::encode::{
     MeshDeformDispatchBatch, MeshDeformEncodeGpu, MeshDeformRecordInputs, MeshDeformRecordStats,
@@ -57,6 +59,8 @@ struct MeshDeformScratch {
     work: Vec<DeformWorkItem>,
     /// Work indices whose cache entries were allocated before batched encode begins.
     ready_work_indices: Vec<usize>,
+    /// Render contexts that need visible deform work in this submission.
+    render_contexts: Vec<RenderingContext>,
     /// Reused compute dispatch batch for the encode phase.
     dispatch_batch: MeshDeformDispatchBatch,
 }
@@ -68,6 +72,7 @@ impl MeshDeformScratch {
             chunks: Vec::new(),
             work: Vec::new(),
             ready_work_indices: Vec::new(),
+            render_contexts: Vec::new(),
             dispatch_batch: MeshDeformDispatchBatch::new(),
         }
     }
@@ -91,6 +96,8 @@ struct DeformWorkItem {
     space_id: RenderSpaceId,
     /// Stable renderer identity for GPU skin cache ownership.
     skin_cache_key: SkinCacheKey,
+    /// Render-context override scope for matrix and palette resolution.
+    render_context: RenderingContext,
     mesh: MeshDeformSnapshot,
     /// Mesh pool generation observed when this snapshot was collected.
     mesh_pool_generation: u64,
@@ -120,7 +127,6 @@ struct MeshDeformDispatchResult {
 #[derive(Clone, Copy)]
 struct MeshDeformDispatchCtx<'a> {
     scene: &'a SceneCoordinator,
-    render_context: crate::shared::RenderingContext,
     head_output_transform: glam::Mat4,
     skin_weight_mode: SkinWeightMode,
 }
@@ -175,6 +181,7 @@ fn collect_deform_work_for_space(
     scene: &SceneCoordinator,
     mesh_pool: &MeshPool,
     visible_filter: Option<&HashSet<SkinCacheKey>>,
+    render_contexts: &[RenderingContext],
     space_id: RenderSpaceId,
     work: &mut Vec<DeformWorkItem>,
 ) {
@@ -186,10 +193,26 @@ fn collect_deform_work_for_space(
         return;
     }
     for r in space.static_mesh_renderers() {
-        push_static_deform_work(scene, mesh_pool, visible_filter, space_id, r, work);
+        push_static_deform_work(
+            scene,
+            mesh_pool,
+            visible_filter,
+            render_contexts,
+            space_id,
+            r,
+            work,
+        );
     }
     for skinned in space.skinned_mesh_renderers() {
-        push_skinned_deform_work(scene, mesh_pool, visible_filter, space_id, skinned, work);
+        push_skinned_deform_work(
+            scene,
+            mesh_pool,
+            visible_filter,
+            render_contexts,
+            space_id,
+            skinned,
+            work,
+        );
     }
 }
 
@@ -197,15 +220,12 @@ fn push_static_deform_work(
     _scene: &SceneCoordinator,
     mesh_pool: &MeshPool,
     visible_filter: Option<&HashSet<SkinCacheKey>>,
+    render_contexts: &[RenderingContext],
     space_id: RenderSpaceId,
     r: &crate::scene::StaticMeshRenderer,
     work: &mut Vec<DeformWorkItem>,
 ) {
     if r.mesh_asset_id < 0 {
-        return;
-    }
-    let skin_cache_key = SkinCacheKey::new(space_id, SkinCacheRendererKind::Static, r.instance_id);
-    if visible_filter.is_some_and(|keys| !keys.contains(&skin_cache_key)) {
         return;
     }
     let Some(m) = mesh_pool.get(r.mesh_asset_id) else {
@@ -214,31 +234,40 @@ fn push_static_deform_work(
     if !gpu_mesh_needs_deform_dispatch(m, None, &r.blend_shape_weights) {
         return;
     }
-    work.push(DeformWorkItem {
-        space_id,
-        skin_cache_key,
-        mesh: MeshDeformSnapshot::from_mesh(m, false),
-        mesh_pool_generation: mesh_pool.mutation_generation(),
-        skinned: None,
-        smr_node_id: -1,
-        blend_weights: r.blend_shape_weights.clone(),
-    });
+    for &render_context in render_contexts {
+        let skin_cache_key = SkinCacheKey::new(
+            space_id,
+            render_context,
+            SkinCacheRendererKind::Static,
+            r.instance_id,
+        );
+        if visible_filter.is_some_and(|keys| !keys.contains(&skin_cache_key)) {
+            continue;
+        }
+        work.push(DeformWorkItem {
+            space_id,
+            skin_cache_key,
+            render_context,
+            mesh: MeshDeformSnapshot::from_mesh(m, false),
+            mesh_pool_generation: mesh_pool.mutation_generation(),
+            skinned: None,
+            smr_node_id: -1,
+            blend_weights: r.blend_shape_weights.clone(),
+        });
+    }
 }
 
 fn push_skinned_deform_work(
     _scene: &SceneCoordinator,
     mesh_pool: &MeshPool,
     visible_filter: Option<&HashSet<SkinCacheKey>>,
+    render_contexts: &[RenderingContext],
     space_id: RenderSpaceId,
     skinned: &crate::scene::SkinnedMeshRenderer,
     work: &mut Vec<DeformWorkItem>,
 ) {
     let r = &skinned.base;
     if r.mesh_asset_id < 0 {
-        return;
-    }
-    let skin_cache_key = SkinCacheKey::new(space_id, SkinCacheRendererKind::Skinned, r.instance_id);
-    if visible_filter.is_some_and(|keys| !keys.contains(&skin_cache_key)) {
         return;
     }
     let Some(m) = mesh_pool.get(r.mesh_asset_id) else {
@@ -249,15 +278,27 @@ fn push_skinned_deform_work(
         return;
     }
     let clone_bind = deform_needs_skin_mesh(m, Some(bone_ix));
-    work.push(DeformWorkItem {
-        space_id,
-        skin_cache_key,
-        mesh: MeshDeformSnapshot::from_mesh(m, clone_bind),
-        mesh_pool_generation: mesh_pool.mutation_generation(),
-        skinned: Some(skinned.bone_transform_indices.clone()),
-        smr_node_id: r.node_id,
-        blend_weights: r.blend_shape_weights.clone(),
-    });
+    for &render_context in render_contexts {
+        let skin_cache_key = SkinCacheKey::new(
+            space_id,
+            render_context,
+            SkinCacheRendererKind::Skinned,
+            r.instance_id,
+        );
+        if visible_filter.is_some_and(|keys| !keys.contains(&skin_cache_key)) {
+            continue;
+        }
+        work.push(DeformWorkItem {
+            space_id,
+            skin_cache_key,
+            render_context,
+            mesh: MeshDeformSnapshot::from_mesh(m, clone_bind),
+            mesh_pool_generation: mesh_pool.mutation_generation(),
+            skinned: Some(skinned.bone_transform_indices.clone()),
+            smr_node_id: r.node_id,
+            blend_weights: r.blend_shape_weights.clone(),
+        });
+    }
 }
 
 /// Upper bound on deform work items (static + skinned) across active spaces for scratch reservation.
@@ -309,6 +350,7 @@ fn collect_deform_work_for_chunk(
     scene: &SceneCoordinator,
     mesh_pool: &MeshPool,
     visible_filter: Option<&HashSet<SkinCacheKey>>,
+    render_contexts: &[RenderingContext],
     space_id: RenderSpaceId,
     spec: &DeformCollectChunkSpec,
     work: &mut Vec<DeformWorkItem>,
@@ -324,13 +366,29 @@ fn collect_deform_work_for_chunk(
         DeformCollectChunkKind::Static => {
             for renderable_index in spec.range.clone() {
                 let r = &space.static_mesh_renderers()[renderable_index];
-                push_static_deform_work(scene, mesh_pool, visible_filter, space_id, r, work);
+                push_static_deform_work(
+                    scene,
+                    mesh_pool,
+                    visible_filter,
+                    render_contexts,
+                    space_id,
+                    r,
+                    work,
+                );
             }
         }
         DeformCollectChunkKind::Skinned => {
             for renderable_index in spec.range.clone() {
                 let skinned = &space.skinned_mesh_renderers()[renderable_index];
-                push_skinned_deform_work(scene, mesh_pool, visible_filter, space_id, skinned, work);
+                push_skinned_deform_work(
+                    scene,
+                    mesh_pool,
+                    visible_filter,
+                    render_contexts,
+                    space_id,
+                    skinned,
+                    work,
+                );
             }
         }
     }
@@ -340,13 +398,21 @@ fn collect_deform_work_for_space_aggressive(
     scene: &SceneCoordinator,
     mesh_pool: &MeshPool,
     visible_filter: Option<&HashSet<SkinCacheKey>>,
+    render_contexts: &[RenderingContext],
     space_id: RenderSpaceId,
     chunks: &mut Vec<Vec<DeformWorkItem>>,
     work: &mut Vec<DeformWorkItem>,
 ) {
     work.clear();
     if renderer_count_for_deform_space(scene, space_id) < DEFORM_COLLECT_PARALLEL_MIN_RENDERERS {
-        collect_deform_work_for_space(scene, mesh_pool, visible_filter, space_id, work);
+        collect_deform_work_for_space(
+            scene,
+            mesh_pool,
+            visible_filter,
+            render_contexts,
+            space_id,
+            work,
+        );
         return;
     }
     let Some(space) = scene.space(space_id) else {
@@ -368,7 +434,14 @@ fn collect_deform_work_for_space_aggressive(
         space.skinned_mesh_renderers().len(),
     );
     if specs.len() < DEFORM_COLLECT_PARALLEL_MIN_CHUNKS {
-        collect_deform_work_for_space(scene, mesh_pool, visible_filter, space_id, work);
+        collect_deform_work_for_space(
+            scene,
+            mesh_pool,
+            visible_filter,
+            render_contexts,
+            space_id,
+            work,
+        );
         return;
     }
     if chunks.len() < specs.len() {
@@ -385,7 +458,15 @@ fn collect_deform_work_for_space_aggressive(
         )
         .for_each(|(chunk, spec)| {
             profiling::scope!("mesh_deform::collect_work::renderer_chunk_worker");
-            collect_deform_work_for_chunk(scene, mesh_pool, visible_filter, space_id, spec, chunk);
+            collect_deform_work_for_chunk(
+                scene,
+                mesh_pool,
+                visible_filter,
+                render_contexts,
+                space_id,
+                spec,
+                chunk,
+            );
         });
     let est = chunks.iter().take(specs.len()).map(Vec::len).sum::<usize>();
     work.reserve(est);
@@ -400,8 +481,14 @@ fn collect_deform_work_into_scratch(
     scene: &SceneCoordinator,
     mesh_pool: &MeshPool,
     visible_filter: Option<&HashSet<SkinCacheKey>>,
+    default_render_context: RenderingContext,
 ) {
     profiling::scope!("mesh_deform::collect_work");
+    collect_render_contexts_for_deform(
+        visible_filter,
+        default_render_context,
+        &mut scratch.render_contexts,
+    );
     if visible_filter.is_some_and(|keys| keys.is_empty()) {
         scratch.space_ids.clear();
         scratch.work.clear();
@@ -410,7 +497,16 @@ fn collect_deform_work_into_scratch(
         }
         return;
     }
-    let est = deform_work_upper_bound(scene);
+    if scratch.render_contexts.is_empty() {
+        scratch.space_ids.clear();
+        scratch.work.clear();
+        for chunk in &mut scratch.chunks {
+            chunk.clear();
+        }
+        return;
+    }
+    let render_contexts = scratch.render_contexts.as_slice();
+    let est = deform_work_upper_bound(scene).saturating_mul(render_contexts.len());
     scratch.space_ids.clear();
     scratch.space_ids.extend(scene.render_space_ids());
     let space_count = scratch.space_ids.len();
@@ -431,6 +527,7 @@ fn collect_deform_work_into_scratch(
                 scene,
                 mesh_pool,
                 visible_filter,
+                render_contexts,
                 space_id,
                 &mut scratch.chunks,
                 &mut scratch.work,
@@ -455,6 +552,7 @@ fn collect_deform_work_into_scratch(
                         scene,
                         mesh_pool,
                         visible_filter,
+                        render_contexts,
                         space_id,
                         chunk,
                     );
@@ -462,7 +560,14 @@ fn collect_deform_work_into_scratch(
         }
         _ => {
             for (space_id, chunk) in scratch.space_ids.iter().copied().zip(&mut scratch.chunks) {
-                collect_deform_work_for_space(scene, mesh_pool, visible_filter, space_id, chunk);
+                collect_deform_work_for_space(
+                    scene,
+                    mesh_pool,
+                    visible_filter,
+                    render_contexts,
+                    space_id,
+                    chunk,
+                );
             }
         }
     }
@@ -472,6 +577,25 @@ fn collect_deform_work_into_scratch(
     for chunk in &mut scratch.chunks {
         scratch.work.append(chunk);
     }
+}
+
+fn collect_render_contexts_for_deform(
+    visible_filter: Option<&HashSet<SkinCacheKey>>,
+    default_render_context: RenderingContext,
+    out: &mut Vec<RenderingContext>,
+) {
+    out.clear();
+    match visible_filter {
+        Some(keys) => {
+            for key in keys {
+                if !out.contains(&key.render_context) {
+                    out.push(key.render_context);
+                }
+            }
+        }
+        None => out.push(default_render_context),
+    }
+    out.sort_by_key(|context| *context as u8);
 }
 
 /// Emits mesh-deform Tracy plots and user-visible warnings for cache allocation pressure.
@@ -552,7 +676,7 @@ fn preplan_skinning_palette_for_item(
             has_skeleton: item.mesh.has_skeleton,
             bone_transform_indices: item.skinned.as_deref()?,
             smr_node_id: item.smr_node_id,
-            render_context: dispatch_ctx.render_context,
+            render_context: item.render_context,
             head_output_transform: dispatch_ctx.head_output_transform,
         },
         &mut bytes,
@@ -621,7 +745,7 @@ fn dispatch_mesh_deform_work(
                     mesh_pool_generation: item.mesh_pool_generation,
                     bone_transform_indices: item.skinned.as_deref(),
                     smr_node_id: item.smr_node_id,
-                    render_context: dispatch_ctx.render_context,
+                    render_context: item.render_context,
                     head_output_transform: dispatch_ctx.head_output_transform,
                     prepared_skinning_palette_bytes,
                     blend_weights: &item.blend_weights,
@@ -690,6 +814,7 @@ impl ComputePass for MeshDeformPass {
             .systems
             .frame_resources
             .visible_mesh_deform_keys_snapshot();
+        let default_render_context = frame.systems.scene.active_main_render_context();
 
         let mut scratch = self.scratch.lock();
         collect_deform_work_into_scratch(
@@ -697,6 +822,7 @@ impl ComputePass for MeshDeformPass {
             frame.systems.scene,
             mesh_pool,
             visible_filter.as_ref(),
+            default_render_context,
         );
 
         let Some(pre) = frame.systems.mesh_preprocess else {
@@ -712,7 +838,6 @@ impl ComputePass for MeshDeformPass {
             return Ok(());
         };
 
-        let render_context = frame.systems.scene.active_main_render_context();
         let head_output_transform = frame.view.host_camera.head_output_transform;
         let mut ready_work_indices = std::mem::take(&mut scratch.ready_work_indices);
         let mut dispatch_batch = std::mem::take(&mut scratch.dispatch_batch);
@@ -736,7 +861,6 @@ impl ComputePass for MeshDeformPass {
             &mut dispatch_batch,
             MeshDeformDispatchCtx {
                 scene: frame.systems.scene,
-                render_context,
                 head_output_transform,
                 skin_weight_mode: frame.systems.skin_weight_mode,
             },
@@ -762,92 +886,5 @@ impl ComputePass for MeshDeformPass {
             .frame_resources
             .set_mesh_deform_dispatched_this_submission();
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod palette_tests {
-    use super::*;
-    use crate::scene::{MeshRendererInstanceId, SceneCoordinator, StaticMeshRenderer};
-    use glam::{Mat3, Mat4, Vec3};
-
-    #[test]
-    fn palette_is_world_times_bind() {
-        let world = Mat4::from_translation(Vec3::new(3.0, 0.0, 0.0));
-        let bind = Mat4::from_scale(Vec3::splat(2.0));
-        let pal = world * bind;
-        let expected = world * bind;
-        assert!(pal.abs_diff_eq(expected, 1e-5));
-    }
-
-    /// Matches WGSL `transpose(inverse(mat3_linear(M)))` for rigid rotations: equals the linear part.
-    #[test]
-    fn normal_matrix_inverse_transpose_is_rotation_for_orthogonal() {
-        let m3 = Mat3::from_axis_angle(Vec3::Z, 1.15);
-        let inv_t = m3.inverse().transpose();
-        assert!(inv_t.abs_diff_eq(m3, 1e-5));
-    }
-
-    fn assert_deform_chunk(
-        spec: &DeformCollectChunkSpec,
-        kind: DeformCollectChunkKind,
-        range: Range<usize>,
-    ) {
-        match (spec.kind, kind) {
-            (DeformCollectChunkKind::Static, DeformCollectChunkKind::Static)
-            | (DeformCollectChunkKind::Skinned, DeformCollectChunkKind::Skinned) => {}
-            _ => panic!("unexpected deform collection chunk kind"),
-        }
-        assert_eq!(spec.range, range);
-    }
-
-    #[test]
-    fn deform_collect_chunks_preserve_static_then_skinned_order() {
-        let mut specs = Vec::new();
-        push_deform_collect_chunks(&mut specs, DeformCollectChunkKind::Static, 130);
-        push_deform_collect_chunks(&mut specs, DeformCollectChunkKind::Skinned, 70);
-
-        assert_eq!(specs.len(), 8);
-        assert_deform_chunk(&specs[0], DeformCollectChunkKind::Static, 0..32);
-        assert_deform_chunk(&specs[1], DeformCollectChunkKind::Static, 32..64);
-        assert_deform_chunk(&specs[2], DeformCollectChunkKind::Static, 64..96);
-        assert_deform_chunk(&specs[3], DeformCollectChunkKind::Static, 96..128);
-        assert_deform_chunk(&specs[4], DeformCollectChunkKind::Static, 128..130);
-        assert_deform_chunk(&specs[5], DeformCollectChunkKind::Skinned, 0..32);
-        assert_deform_chunk(&specs[6], DeformCollectChunkKind::Skinned, 32..64);
-        assert_deform_chunk(&specs[7], DeformCollectChunkKind::Skinned, 64..70);
-    }
-
-    #[test]
-    fn aggressive_deform_collect_matches_serial_for_missing_meshes() {
-        let mut scene = SceneCoordinator::new();
-        let space_id = RenderSpaceId(1);
-        let renderers = (0..DEFORM_COLLECT_PARALLEL_MIN_RENDERERS + 9)
-            .map(|idx| StaticMeshRenderer {
-                instance_id: MeshRendererInstanceId(idx as u64 + 1),
-                mesh_asset_id: 7,
-                ..Default::default()
-            })
-            .collect::<Vec<_>>();
-        scene.test_insert_static_mesh_renderers(space_id, renderers);
-        scene.test_set_space_active(space_id, true);
-        let mesh_pool = MeshPool::default_pool();
-        let mut serial = Vec::new();
-        let mut aggressive = Vec::new();
-        let mut chunks = Vec::new();
-
-        collect_deform_work_for_space(&scene, &mesh_pool, None, space_id, &mut serial);
-        collect_deform_work_for_space_aggressive(
-            &scene,
-            &mesh_pool,
-            None,
-            space_id,
-            &mut chunks,
-            &mut aggressive,
-        );
-
-        assert!(serial.is_empty());
-        assert_eq!(aggressive.len(), serial.len());
-        assert!(chunks.len() >= 2);
     }
 }

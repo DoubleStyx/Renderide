@@ -459,7 +459,12 @@ fn bind_position_vertex_stream(
         let Some(cache) = gpu.skin_cache else {
             return false;
         };
-        let key = SkinCacheKey::from_draw_parts(item.space_id, item.skinned, item.instance_id);
+        let key = SkinCacheKey::from_draw_parts(
+            item.space_id,
+            item.render_context,
+            item.skinned,
+            item.instance_id,
+        );
         let Some(entry) = cache.lookup_current(&key) else {
             logger::trace!(
                 "world mesh depth prepass: current skin cache miss for space {:?} renderable {} instance {:?} node {}",
@@ -507,7 +512,12 @@ fn bind_deformed_primary_streams(
     let Some(cache) = gpu.skin_cache else {
         return false;
     };
-    let key = SkinCacheKey::from_draw_parts(item.space_id, item.skinned, item.instance_id);
+    let key = SkinCacheKey::from_draw_parts(
+        item.space_id,
+        item.render_context,
+        item.skinned,
+        item.instance_id,
+    );
     let Some(entry) = cache.lookup_current(&key) else {
         logger::trace!(
             "world mesh forward: current skin cache miss for space {:?} renderable {} instance {:?} node {}",
@@ -565,7 +575,12 @@ fn bind_deformed_position_static_normal(
     let Some(cache) = gpu.skin_cache else {
         return false;
     };
-    let key = SkinCacheKey::from_draw_parts(item.space_id, item.skinned, item.instance_id);
+    let key = SkinCacheKey::from_draw_parts(
+        item.space_id,
+        item.render_context,
+        item.skinned,
+        item.instance_id,
+    );
     let Some(entry) = cache.lookup_current(&key) else {
         logger::trace!(
             "world mesh forward: current skin cache miss for raw-normal payload draw in space {:?} renderable {} instance {:?} node {}",
@@ -724,7 +739,12 @@ fn bind_tangent_stream(
         let Some(cache) = gpu.skin_cache else {
             return false;
         };
-        let key = SkinCacheKey::from_draw_parts(item.space_id, item.skinned, item.instance_id);
+        let key = SkinCacheKey::from_draw_parts(
+            item.space_id,
+            item.render_context,
+            item.skinned,
+            item.instance_id,
+        );
         let Some(entry) = cache.lookup_current(&key) else {
             logger::trace!(
                 "WorldMeshForward: deformed tangent cache miss for mesh_asset_id {}; draw skipped",

@@ -66,11 +66,13 @@ fn new_manager_has_no_per_view_frame() {
 fn mesh_deform_submission_replaces_visible_filter_and_clears_dispatch_flag() {
     let first = SkinCacheKey::new(
         RenderSpaceId(1),
+        RenderingContext::UserView,
         SkinCacheRendererKind::Skinned,
         MeshRendererInstanceId(10),
     );
     let second = SkinCacheKey::new(
         RenderSpaceId(2),
+        RenderingContext::UserView,
         SkinCacheRendererKind::Skinned,
         MeshRendererInstanceId(20),
     );

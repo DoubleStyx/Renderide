@@ -263,6 +263,7 @@ fn hash_world_mesh_draw_item<H: Hasher>(item: &WorldMeshDrawItem, hasher: &mut H
     item.node_id.hash(hasher);
     item.renderable_index.hash(hasher);
     item.instance_id.hash(hasher);
+    (item.render_context as u8).hash(hasher);
     item.mesh_asset_id.hash(hasher);
     item.slot_index.hash(hasher);
     item.material_stack_order.hash(hasher);

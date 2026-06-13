@@ -686,6 +686,9 @@ mod tests {
         });
         skinned.world_space_deformed = true;
 
+        let mut camera_skinned = skinned.clone();
+        camera_skinned.render_context = RenderingContext::Camera;
+
         let mut overlay = rigid.clone();
         overlay.node_id = 9;
         overlay.renderable_index = 9;
@@ -695,8 +698,13 @@ mod tests {
         let plans = [ViewWorldMeshDrawPlans {
             world: WorldMeshDrawPlan::Prefetched(Box::new(PrefetchedWorldMeshViewDraws::new(
                 WorldMeshDrawCollection {
-                    items: vec![rigid, blend.clone(), skinned.clone()],
-                    draws_pre_cull: 3,
+                    items: vec![
+                        rigid,
+                        blend.clone(),
+                        skinned.clone(),
+                        camera_skinned.clone(),
+                    ],
+                    draws_pre_cull: 4,
                     draws_culled: 0,
                     draws_hi_z_culled: 0,
                     visibility: Default::default(),
@@ -722,19 +730,28 @@ mod tests {
 
         let keys = visible_mesh_deform_keys_from_draw_plans(&plans);
 
-        assert_eq!(keys.len(), 3);
+        assert_eq!(keys.len(), 4);
         assert!(keys.contains(&SkinCacheKey::new(
             blend.space_id,
+            RenderingContext::UserView,
             SkinCacheRendererKind::Static,
             blend.instance_id,
         )));
         assert!(keys.contains(&SkinCacheKey::new(
             skinned.space_id,
+            RenderingContext::UserView,
             SkinCacheRendererKind::Skinned,
             skinned.instance_id,
         )));
         assert!(keys.contains(&SkinCacheKey::new(
+            camera_skinned.space_id,
+            RenderingContext::Camera,
+            SkinCacheRendererKind::Skinned,
+            camera_skinned.instance_id,
+        )));
+        assert!(keys.contains(&SkinCacheKey::new(
             overlay.space_id,
+            RenderingContext::UserView,
             SkinCacheRendererKind::Static,
             overlay.instance_id,
         )));

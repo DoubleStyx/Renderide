@@ -115,6 +115,7 @@ mod tests {
     use super::super::key::SkinCacheRendererKind;
     use super::*;
     use crate::scene::{MeshRendererInstanceId, RenderSpaceId};
+    use crate::shared::RenderingContext;
 
     fn test_entry(last_touched_frame: u64) -> SkinCacheEntry {
         SkinCacheEntry {
@@ -137,6 +138,7 @@ mod tests {
     fn lookup_current_rejects_prior_frame_entries() {
         let key = SkinCacheKey::new(
             RenderSpaceId(7),
+            RenderingContext::UserView,
             SkinCacheRendererKind::Skinned,
             MeshRendererInstanceId(1),
         );
@@ -151,11 +153,13 @@ mod tests {
     fn lru_evictable_key_ignores_current_frame_entries() {
         let old = SkinCacheKey::new(
             RenderSpaceId(7),
+            RenderingContext::UserView,
             SkinCacheRendererKind::Skinned,
             MeshRendererInstanceId(1),
         );
         let current = SkinCacheKey::new(
             RenderSpaceId(7),
+            RenderingContext::UserView,
             SkinCacheRendererKind::Skinned,
             MeshRendererInstanceId(2),
         );

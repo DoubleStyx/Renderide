@@ -1,6 +1,9 @@
 //! Cache key types and per-instance need flags for the GPU skin cache.
 
+use std::hash::{Hash, Hasher};
+
 use crate::scene::{MeshRendererInstanceId, RenderSpaceId};
+use crate::shared::RenderingContext;
 
 /// Source renderer list for a deformable mesh instance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -12,25 +15,40 @@ pub enum SkinCacheRendererKind {
 }
 
 /// Stable key for a deformable mesh instance.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SkinCacheKey {
     /// Render space that owns the renderer.
     pub space_id: RenderSpaceId,
+    /// Render-context override scope that produced the deformed stream.
+    pub render_context: RenderingContext,
     /// Renderer table selected by this key.
     pub renderer_kind: SkinCacheRendererKind,
     /// Renderer-local identity that survives dense table reindexing.
     pub instance_id: MeshRendererInstanceId,
 }
 
+impl Eq for SkinCacheKey {}
+
+impl Hash for SkinCacheKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.space_id.hash(state);
+        (self.render_context as u8).hash(state);
+        self.renderer_kind.hash(state);
+        self.instance_id.hash(state);
+    }
+}
+
 impl SkinCacheKey {
     /// Builds a skin-cache key from draw/deform identity fields.
     pub fn new(
         space_id: RenderSpaceId,
+        render_context: RenderingContext,
         renderer_kind: SkinCacheRendererKind,
         instance_id: MeshRendererInstanceId,
     ) -> Self {
         Self {
             space_id,
+            render_context,
             renderer_kind,
             instance_id,
         }
@@ -39,6 +57,7 @@ impl SkinCacheKey {
     /// Builds a skin-cache key from a draw's `skinned` flag.
     pub fn from_draw_parts(
         space_id: RenderSpaceId,
+        render_context: RenderingContext,
         skinned: bool,
         instance_id: MeshRendererInstanceId,
     ) -> Self {
@@ -47,7 +66,7 @@ impl SkinCacheKey {
         } else {
             SkinCacheRendererKind::Static
         };
-        Self::new(space_id, renderer_kind, instance_id)
+        Self::new(space_id, render_context, renderer_kind, instance_id)
     }
 }
 
@@ -101,10 +120,15 @@ mod tests {
     #[test]
     fn key_distinguishes_static_and_skinned_renderer_tables() {
         let instance_id = MeshRendererInstanceId(12);
-        let static_key =
-            SkinCacheKey::new(RenderSpaceId(7), SkinCacheRendererKind::Static, instance_id);
+        let static_key = SkinCacheKey::new(
+            RenderSpaceId(7),
+            RenderingContext::UserView,
+            SkinCacheRendererKind::Static,
+            instance_id,
+        );
         let skinned_key = SkinCacheKey::new(
             RenderSpaceId(7),
+            RenderingContext::UserView,
             SkinCacheRendererKind::Skinned,
             instance_id,
         );
@@ -116,15 +140,35 @@ mod tests {
     fn key_distinguishes_two_renderers_on_the_same_transform_by_instance_id() {
         let first = SkinCacheKey::new(
             RenderSpaceId(7),
+            RenderingContext::UserView,
             SkinCacheRendererKind::Skinned,
             MeshRendererInstanceId(1),
         );
         let second = SkinCacheKey::new(
             RenderSpaceId(7),
+            RenderingContext::UserView,
             SkinCacheRendererKind::Skinned,
             MeshRendererInstanceId(2),
         );
 
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn key_distinguishes_render_contexts() {
+        let user = SkinCacheKey::new(
+            RenderSpaceId(7),
+            RenderingContext::UserView,
+            SkinCacheRendererKind::Skinned,
+            MeshRendererInstanceId(1),
+        );
+        let camera = SkinCacheKey::new(
+            RenderSpaceId(7),
+            RenderingContext::Camera,
+            SkinCacheRendererKind::Skinned,
+            MeshRendererInstanceId(1),
+        );
+
+        assert_ne!(user, camera);
     }
 }
