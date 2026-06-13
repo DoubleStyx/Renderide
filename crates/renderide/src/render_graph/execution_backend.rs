@@ -200,6 +200,10 @@ pub trait GraphFrameResources: Send + Sync {
         view_layouts: &[PreRecordViewResourceLayout],
     );
 
+    /// Drains callbacks that retain replaced frame resources until driver-thread submission.
+    fn drain_retired_frame_resource_callbacks(&mut self)
+    -> Vec<Box<dyn FnOnce() + Send + 'static>>;
+
     /// Whether any light-cookie atlas layers need frame-global synchronization.
     fn has_light_cookie_requests(&self) -> bool;
 

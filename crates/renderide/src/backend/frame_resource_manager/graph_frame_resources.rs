@@ -80,7 +80,7 @@ impl GraphFrameResources for FrameResourceManager {
     ) -> Option<wgpu::Buffer> {
         let per_draw_slot = self.per_view_per_draw(view_id)?;
         let mut per_draw = per_draw_slot.lock();
-        per_draw.ensure_draw_slot_capacity(device, draw_count);
+        let _ = per_draw.ensure_draw_slot_capacity(device, draw_count);
         Some(per_draw.per_draw_storage.clone())
     }
 
@@ -222,6 +222,12 @@ impl GraphFrameResources for FrameResourceManager {
         view_layouts: &[PreRecordViewResourceLayout],
     ) {
         self.pre_record_sync_for_views(device, uploads, view_layouts);
+    }
+
+    fn drain_retired_frame_resource_callbacks(
+        &mut self,
+    ) -> Vec<Box<dyn FnOnce() + Send + 'static>> {
+        FrameResourceManager::drain_retired_frame_resource_callbacks(self)
     }
 
     fn has_light_cookie_requests(&self) -> bool {

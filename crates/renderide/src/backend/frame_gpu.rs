@@ -11,6 +11,7 @@ mod empty_material;
 mod ibl_dfg;
 mod light_cookies;
 mod reflection_probe_specular;
+mod retired;
 mod scene_snapshot;
 mod shadows;
 
@@ -35,6 +36,7 @@ pub(crate) use reflection_probe_specular::ReflectionProbeSpecularResources;
 use reflection_probe_specular::{
     ReflectionProbeSpecularBindGroupResources, create_reflection_probe_specular_fallback,
 };
+pub(in crate::backend) use retired::RetiredFrameGpuResources;
 pub(crate) use scene_snapshot::FrameSceneSnapshotTextureViews;
 use scene_snapshot::{
     DEFAULT_SCENE_COLOR_FORMAT, SceneSnapshotKind, SceneSnapshotLayout, SceneSnapshotSet,
@@ -43,14 +45,13 @@ use shadows::ShadowAtlasResources;
 pub(crate) use shadows::{SHADOW_ATLAS_PASS_NAME, ShadowAtlasPass};
 
 /// Result of synchronizing the realtime shadow atlas before graph recording.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ShadowResourceSyncResult {
     /// Whether the atlas texture or views were recreated.
     pub(crate) changed: bool,
     /// Actual atlas edge resolution backing the current shadow frame.
     pub(crate) resolution: u32,
-    /// Actual array layer count backing the current shadow frame.
-    pub(crate) layers: u32,
+    /// Previous shadow resources and bind groups that older queued submits may still reference.
+    pub(in crate::backend) retired_resources: RetiredFrameGpuResources,
 }
 
 /// GPU buffers and bind groups for `@group(0)` frame globals (camera, lights, cluster lists,
@@ -646,7 +647,7 @@ impl FrameGpuResources {
         requested_layers: u32,
         requested_draw_slots: usize,
     ) -> ShadowResourceSyncResult {
-        let result = self.shadows.sync(
+        let mut result = self.shadows.sync(
             device,
             self.limits.as_ref(),
             requested_resolution,
@@ -654,7 +655,9 @@ impl FrameGpuResources {
             requested_draw_slots,
         );
         if result.changed {
+            let old_bind_group = Arc::clone(&self.bind_group);
             self.rebuild_bind_group(device);
+            result.retired_resources.push_bind_group(old_bind_group);
         }
         result
     }

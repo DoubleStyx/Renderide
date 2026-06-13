@@ -6,8 +6,11 @@ use super::cluster_layout::{
 };
 use super::*;
 
+use std::sync::Arc;
+
 use glam::{Mat4, Quat, Vec3};
 
+use crate::backend::frame_gpu::RetiredFrameGpuResources;
 use crate::camera::ViewId;
 use crate::graph_inputs::PreRecordViewResourceLayout;
 use crate::mesh_deform::{SkinCacheKey, SkinCacheRendererKind};
@@ -60,6 +63,31 @@ fn new_manager_has_no_per_view_frame() {
     let secondary = ViewId::secondary_camera(RenderSpaceId(42), 0);
     assert!(mgr.per_view_frame(ViewId::Main).is_none());
     assert!(mgr.per_view_frame(secondary).is_none());
+}
+
+#[test]
+fn retired_frame_resources_drain_into_submit_callbacks() {
+    let marker = Arc::new(());
+    let mut mgr = FrameResourceManager::new();
+
+    mgr.retain_frame_resources_after_submit(RetiredFrameGpuResources::marker_for_tests(
+        Arc::clone(&marker),
+    ));
+
+    assert_eq!(mgr.pending_retired_frame_resource_batches_for_tests(), 1);
+    assert_eq!(Arc::strong_count(&marker), 2);
+
+    let callbacks = mgr.drain_retired_frame_resource_callbacks();
+
+    assert_eq!(mgr.pending_retired_frame_resource_batches_for_tests(), 0);
+    assert_eq!(callbacks.len(), 1);
+    assert_eq!(Arc::strong_count(&marker), 2);
+
+    for callback in callbacks {
+        callback();
+    }
+
+    assert_eq!(Arc::strong_count(&marker), 1);
 }
 
 #[test]

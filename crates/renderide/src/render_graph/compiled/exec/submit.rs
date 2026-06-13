@@ -158,7 +158,7 @@ fn drain_upload_for_submit(
 }
 
 fn collect_submit_callbacks(
-    mv_ctx: &MultiViewExecutionContext<'_>,
+    mv_ctx: &mut MultiViewExecutionContext<'_>,
     per_view_occlusion_info: &[(ViewId, HostCameraFrame)],
     upload_callback: Option<Box<dyn FnOnce() + Send + 'static>>,
 ) -> Vec<Box<dyn FnOnce() + Send + 'static>> {
@@ -167,6 +167,12 @@ fn collect_submit_callbacks(
         collect_hi_z_submit_callbacks(mv_ctx, per_view_occlusion_info)
     };
     callbacks.extend(upload_callback);
+    callbacks.extend(
+        mv_ctx
+            .backend
+            .frame_resources_mut()
+            .drain_retired_frame_resource_callbacks(),
+    );
     callbacks
 }
 

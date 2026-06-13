@@ -9,7 +9,9 @@ use parking_lot::Mutex;
 use crate::gpu::GpuLimits;
 use crate::mesh_deform::SkinCacheKey;
 
-use super::super::frame_gpu::{EmptyMaterialBindGroup, FrameGpuResources};
+use super::super::frame_gpu::{
+    EmptyMaterialBindGroup, FrameGpuResources, RetiredFrameGpuResources,
+};
 use super::super::frame_gpu_bindings::{FrameGpuBindings, FrameGpuBindingsError};
 use super::super::light_gpu::GpuLight;
 use super::super::per_draw_resources::PerDrawResources;
@@ -44,6 +46,8 @@ pub struct FrameResourceManager {
     pub(super) per_view_lights: PerViewResourceMap<PreparedViewLights>,
     /// Shadow metadata and atlas render views planned for the current graph submission.
     pub(super) shadow_frame: ShadowFramePlan,
+    /// Replaced frame resources retained until the driver thread submits older command buffers.
+    pub(super) pending_retired_frame_resources: Vec<RetiredFrameGpuResources>,
     /// Whether any packed light set subtracts in at least one signed-radiance channel.
     pub(super) signed_scene_color_required: bool,
     /// When true, [`crate::passes::MeshDeformPass`] already dispatched for the current graph
@@ -83,6 +87,7 @@ impl FrameResourceManager {
             light_scratch: Vec::new(),
             per_view_lights: PerViewResourceMap::new(),
             shadow_frame: ShadowFramePlan::default(),
+            pending_retired_frame_resources: Vec::new(),
             signed_scene_color_required: false,
             mesh_deform_dispatched_this_submission: AtomicBool::new(false),
             visible_mesh_deform_keys: Mutex::new(None),
@@ -111,5 +116,31 @@ impl FrameResourceManager {
         self.per_draw_bind_group_layout = Some(binds.per_draw_bind_group_layout);
         self.limits = Some(limits);
         Ok(())
+    }
+
+    /// Retains replaced frame resources until the current graph submit has reached the GPU queue.
+    pub(super) fn retain_frame_resources_after_submit(
+        &mut self,
+        resources: RetiredFrameGpuResources,
+    ) {
+        if !resources.is_empty() {
+            self.pending_retired_frame_resources.push(resources);
+        }
+    }
+
+    /// Drains retained frame resources into callbacks run after driver-thread submission.
+    pub(super) fn drain_retired_frame_resource_callbacks(
+        &mut self,
+    ) -> Vec<Box<dyn FnOnce() + Send + 'static>> {
+        self.pending_retired_frame_resources
+            .drain(..)
+            .filter_map(RetiredFrameGpuResources::into_submit_callback)
+            .collect()
+    }
+
+    /// Number of pending retired-resource batches.
+    #[cfg(test)]
+    pub(crate) fn pending_retired_frame_resource_batches_for_tests(&self) -> usize {
+        self.pending_retired_frame_resources.len()
     }
 }

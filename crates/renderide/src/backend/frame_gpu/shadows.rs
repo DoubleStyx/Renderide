@@ -32,7 +32,7 @@ use super::super::shadow_atlas_budget::clamp_shadow_atlas_resolution;
 use super::super::shadow_atlas_format::{
     select_shadow_atlas_binding_format, select_shadow_atlas_format,
 };
-use super::{FrameGpuResources, ShadowResourceSyncResult};
+use super::{FrameGpuResources, RetiredFrameGpuResources, ShadowResourceSyncResult};
 
 /// Main-graph frame-global pass name for shadow-atlas rendering.
 pub(crate) const SHADOW_ATLAS_PASS_NAME: &str = "shadow_atlas";
@@ -327,14 +327,20 @@ impl ShadowAtlasResources {
         requested_layers: u32,
         requested_draw_slots: usize,
     ) -> ShadowResourceSyncResult {
-        self.per_draw
-            .ensure_draw_slot_capacity(device, requested_draw_slots);
+        let mut retired_resources = RetiredFrameGpuResources::default();
+        if let Some((buffer, bind_group)) = self
+            .per_draw
+            .ensure_draw_slot_capacity(device, requested_draw_slots)
+        {
+            retired_resources.push_buffer(buffer);
+            retired_resources.push_bind_group(bind_group);
+        }
         let layers = requested_layers
             .max(1)
             .min(limits.wgpu.max_texture_array_layers.max(1));
-        self.ensure_layer_uniform_capacity(device, layers as usize);
+        retired_resources.append(self.ensure_layer_uniform_capacity(device, layers as usize));
         if !self.renderable {
-            return self.sync_result(false);
+            return self.sync_result(false, retired_resources);
         }
         let requested_resolution =
             clamp_shadow_texture_resolution(limits, requested_resolution, layers, self.format);
@@ -348,17 +354,18 @@ impl ShadowAtlasResources {
             (requested_resolution, layers)
         };
         if next_resolution == self.resolution && next_layers == self.layers {
-            return self.sync_result(false);
+            return self.sync_result(false, retired_resources);
         }
         let (texture, atlas_view, layer_views) =
             create_shadow_texture(device, next_resolution, next_layers, self.format, true);
-        self.texture = texture;
-        self.atlas_view = atlas_view;
-        self.layer_views = layer_views;
+        retired_resources.push_texture(std::mem::replace(&mut self.texture, texture));
+        retired_resources.push_texture_view(std::mem::replace(&mut self.atlas_view, atlas_view));
+        retired_resources
+            .extend_texture_views(std::mem::replace(&mut self.layer_views, layer_views));
         self.resolution = next_resolution;
         self.layers = next_layers;
         self.version = self.version.saturating_add(1);
-        self.sync_result(true)
+        self.sync_result(true, retired_resources)
     }
 
     /// Shadow metadata storage buffer.
@@ -421,17 +428,25 @@ impl ShadowAtlasResources {
         self.version
     }
 
-    fn sync_result(&self, changed: bool) -> ShadowResourceSyncResult {
+    fn sync_result(
+        &self,
+        changed: bool,
+        retired_resources: RetiredFrameGpuResources,
+    ) -> ShadowResourceSyncResult {
         ShadowResourceSyncResult {
             changed,
             resolution: self.resolution,
-            layers: self.layers,
+            retired_resources,
         }
     }
 
-    fn ensure_layer_uniform_capacity(&mut self, device: &wgpu::Device, need_layers: usize) {
+    fn ensure_layer_uniform_capacity(
+        &mut self,
+        device: &wgpu::Device,
+        need_layers: usize,
+    ) -> RetiredFrameGpuResources {
         if need_layers <= self.layer_uniform_capacity {
-            return;
+            return RetiredFrameGpuResources::default();
         }
         let next = (4 * need_layers)
             .div_ceil(3)
@@ -439,9 +454,15 @@ impl ShadowAtlasResources {
             .min(usize::try_from(u32::MAX).unwrap_or(usize::MAX));
         let (buffer, bind_group) =
             create_shadow_layer_uniforms(device, self.layer_uniform_layout.as_ref(), next);
-        self.layer_uniform_buffer = buffer;
-        self.layer_uniform_bind_group = bind_group;
+        let mut retired_resources = RetiredFrameGpuResources::default();
+        retired_resources
+            .push_shared_buffer(std::mem::replace(&mut self.layer_uniform_buffer, buffer));
+        retired_resources.push_bind_group(std::mem::replace(
+            &mut self.layer_uniform_bind_group,
+            bind_group,
+        ));
         self.layer_uniform_capacity = next;
+        retired_resources
     }
 }
 
