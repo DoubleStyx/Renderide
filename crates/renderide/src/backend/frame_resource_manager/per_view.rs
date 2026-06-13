@@ -391,7 +391,6 @@ impl FrameResourceManager {
         if let Some(sync) = shadow_sync {
             let resolution = sync.resolution;
             let changed = sync.changed;
-            self.retain_frame_resources_after_submit(sync.retired_resources);
             self.apply_shadow_atlas_resolution(resolution);
             if changed {
                 self.rebuild_per_view_frame_bind_groups_for_shadow_sync(device, view_layouts);
@@ -427,7 +426,6 @@ impl FrameResourceManager {
             return;
         };
         let shadow_resources_version = fgpu.shadow_resources_version();
-        let mut retired_resources = crate::backend::frame_gpu::RetiredFrameGpuResources::default();
         for layout in view_layouts {
             let Some(entry) = self.per_view_frame.get_mut(layout.view_id) else {
                 continue;
@@ -440,15 +438,10 @@ impl FrameResourceManager {
                 refs,
                 &entry.scene_snapshots,
             );
-            retired_resources
-                .push_bind_group(std::mem::replace(&mut entry.frame_bind_group, new_bg));
-            retired_resources.push_bind_group(std::mem::replace(
-                &mut entry.named_scene_color_frame_bind_group,
-                new_named_bg,
-            ));
+            entry.frame_bind_group = new_bg;
+            entry.named_scene_color_frame_bind_group = new_named_bg;
             entry.last_shadow_resources_version = shadow_resources_version;
         }
-        self.retain_frame_resources_after_submit(retired_resources);
     }
 
     /// Copies the main depth attachment into this view's scene-depth snapshot.

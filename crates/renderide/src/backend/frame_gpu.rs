@@ -11,7 +11,6 @@ mod empty_material;
 mod ibl_dfg;
 mod light_cookies;
 mod reflection_probe_specular;
-mod retired;
 mod scene_snapshot;
 mod shadows;
 
@@ -36,7 +35,6 @@ pub(crate) use reflection_probe_specular::ReflectionProbeSpecularResources;
 use reflection_probe_specular::{
     ReflectionProbeSpecularBindGroupResources, create_reflection_probe_specular_fallback,
 };
-pub(in crate::backend) use retired::RetiredFrameGpuResources;
 pub(crate) use scene_snapshot::FrameSceneSnapshotTextureViews;
 use scene_snapshot::{
     DEFAULT_SCENE_COLOR_FORMAT, SceneSnapshotKind, SceneSnapshotLayout, SceneSnapshotSet,
@@ -50,8 +48,6 @@ pub(crate) struct ShadowResourceSyncResult {
     pub(crate) changed: bool,
     /// Actual atlas edge resolution backing the current shadow frame.
     pub(crate) resolution: u32,
-    /// Previous shadow resources and bind groups that older queued submits may still reference.
-    pub(in crate::backend) retired_resources: RetiredFrameGpuResources,
 }
 
 /// GPU buffers and bind groups for `@group(0)` frame globals (camera, lights, cluster lists,
@@ -81,7 +77,7 @@ pub struct FrameGpuResources {
     /// [`crate::backend::frame_resource_manager::PerViewFrameState`].
     scene_snapshots: SceneSnapshotSet,
     /// Black atlas array kept alive for frames without resident reflection probes.
-    _reflection_probe_fallback_texture: Arc<wgpu::Texture>,
+    reflection_probe_fallback_texture: Arc<wgpu::Texture>,
     /// Current 2D-array atlas view bound for reflection-probe specular IBL.
     reflection_probe_array_view: Arc<wgpu::TextureView>,
     /// Current sampler paired with [`Self::reflection_probe_array_view`].
@@ -91,7 +87,7 @@ pub struct FrameGpuResources {
     /// Monotonic version incremented whenever reflection-probe bind resources change.
     reflection_probe_version: u64,
     /// Texture backing the static DFG LUT used by split-sum IBL.
-    _ibl_dfg_lut_texture: Arc<wgpu::Texture>,
+    ibl_dfg_lut_texture: Arc<wgpu::Texture>,
     /// Frame-global DFG LUT view bound at `@group(0) @binding(11)`.
     ibl_dfg_lut_view: Arc<wgpu::TextureView>,
     /// Frame-global light-cookie atlas textures and sampler.
@@ -391,6 +387,14 @@ impl PerViewSceneSnapshots {
             viewport,
         )
     }
+
+    /// Retains this view's snapshot resources until driver submit.
+    pub(in crate::backend) fn retain_submit_resources(
+        &self,
+        resources: &mut crate::gpu::GpuRetainedResources,
+    ) {
+        self.set.retain_submit_resources(resources);
+    }
 }
 
 impl FrameGpuResources {
@@ -525,12 +529,12 @@ impl FrameGpuResources {
             lights_buffer,
             cluster_cache,
             scene_snapshots,
-            _reflection_probe_fallback_texture: reflection_probe_fallback_texture,
+            reflection_probe_fallback_texture,
             reflection_probe_array_view,
             reflection_probe_sampler,
             reflection_probe_metadata_buffer,
             reflection_probe_version: 0,
-            _ibl_dfg_lut_texture: ibl_dfg_lut_texture,
+            ibl_dfg_lut_texture,
             ibl_dfg_lut_view,
             light_cookies,
             shadows,
@@ -647,7 +651,7 @@ impl FrameGpuResources {
         requested_layers: u32,
         requested_draw_slots: usize,
     ) -> ShadowResourceSyncResult {
-        let mut result = self.shadows.sync(
+        let result = self.shadows.sync(
             device,
             self.limits.as_ref(),
             requested_resolution,
@@ -655,9 +659,7 @@ impl FrameGpuResources {
             requested_draw_slots,
         );
         if result.changed {
-            let old_bind_group = Arc::clone(&self.bind_group);
             self.rebuild_bind_group(device);
-            result.retired_resources.push_bind_group(old_bind_group);
         }
         result
     }
@@ -704,6 +706,29 @@ impl FrameGpuResources {
     /// Uniform parameters for the removed direct skybox specular path.
     pub fn skybox_specular_uniform_params(&self) -> SkyboxSpecularUniformParams {
         SkyboxSpecularUniformParams::disabled()
+    }
+
+    /// Retains shared frame-global resources that may be referenced by submitted commands.
+    pub(in crate::backend) fn retain_submit_resources(
+        &self,
+        resources: &mut crate::gpu::GpuRetainedResources,
+    ) {
+        resources.retain_buffer(self.frame_uniform.clone());
+        resources.retain_buffer(self.lights_buffer.clone());
+        if let Some(cluster_refs) = self.cluster_cache.current_refs() {
+            resources.retain_buffer(cluster_refs.cluster_light_counts.clone());
+            resources.retain_buffer(cluster_refs.cluster_light_indices.clone());
+        }
+        self.scene_snapshots.retain_submit_resources(resources);
+        resources.retain_texture(self.reflection_probe_fallback_texture.as_ref().clone());
+        resources.retain_texture_view(self.reflection_probe_array_view.as_ref().clone());
+        resources.retain_sampler(self.reflection_probe_sampler.as_ref().clone());
+        resources.retain_buffer(self.reflection_probe_metadata_buffer.as_ref().clone());
+        resources.retain_texture(self.ibl_dfg_lut_texture.as_ref().clone());
+        resources.retain_texture_view(self.ibl_dfg_lut_view.as_ref().clone());
+        self.light_cookies.retain_submit_resources(resources);
+        self.shadows.retain_submit_resources(resources);
+        resources.retain_bind_group(self.bind_group.as_ref().clone());
     }
 
     /// Synchronizes frame-global reflection-probe resources and rebuilds bind groups when needed.

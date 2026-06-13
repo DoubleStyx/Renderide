@@ -121,6 +121,12 @@ impl PerDrawResources {
         self.slot_count = next;
         Some((old_storage, old_bind_group))
     }
+
+    /// Retains GPU handles that may be referenced by submitted draw commands.
+    pub(crate) fn retain_submit_resources(&self, resources: &mut crate::gpu::GpuRetainedResources) {
+        resources.retain_buffer(self.per_draw_storage.clone());
+        resources.retain_bind_group(self.bind_group.as_ref().clone());
+    }
 }
 
 #[cfg(test)]

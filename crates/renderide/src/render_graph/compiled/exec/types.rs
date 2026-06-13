@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::camera::{HostCameraFrame, ViewId};
 use crate::diagnostics::PerViewHudOutputs;
-use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
+use crate::gpu::{GpuLimits, GpuRetainedResources, MsaaDepthResolveResources};
 use crate::graph_inputs::{
     FrameSystemsShared, FrameViewClear, GraphPassFrame, GraphPassFrameView, GraphSceneView,
     OffscreenWriteTarget, PerViewFramePlan, ViewWinding,
@@ -43,6 +43,8 @@ pub(super) struct PerViewEncodeOutput {
     pub(super) finish_ms: f64,
     /// Command counts captured from the final per-view blackboard.
     pub(super) command_stats: GraphCommandStats,
+    /// GPU handles resolved while recording this view and retained until driver submit.
+    pub(super) retained_resources: GpuRetainedResources,
 }
 
 /// Completed per-view recording result, including ordering metadata for single-submit assembly.
@@ -61,6 +63,8 @@ pub(super) struct PerViewRecordOutput {
     pub(super) finish_ms: f64,
     /// Command counts captured from this view.
     pub(super) command_stats: GraphCommandStats,
+    /// GPU handles resolved while recording this view and retained until driver submit.
+    pub(super) retained_resources: GpuRetainedResources,
 }
 
 /// Copy metadata for a partial offscreen camera viewport.
@@ -355,6 +359,8 @@ pub(super) struct RecordedPerViewBatch {
     pub(super) max_finish_ms: f64,
     /// Aggregate command counts across views.
     pub(super) command_stats: GraphCommandStats,
+    /// GPU handles resolved while recording per-view work and retained until driver submit.
+    pub(super) retained_resources: GpuRetainedResources,
 }
 
 /// Submit-batch timings and upload counters captured after recording.
@@ -408,12 +414,16 @@ pub(super) struct FrameGlobalPassRecordInputs<'a, 'view> {
 pub(super) struct SubmitFrameInputs<'a, 'view> {
     /// Per-view targets in the input order (used for swapchain detection).
     pub(super) views: &'a [FrameView<'view>],
+    /// Resolved graph resources keyed by compatible view layout.
+    pub(super) transient_by_key: HashMap<GraphResolveKey, GraphResolvedResources>,
     /// Optional command buffer produced by frame-global passes.
     pub(super) frame_global_cmd: Option<wgpu::CommandBuffer>,
     /// One command buffer per view in input order.
     pub(super) per_view_cmds: Vec<wgpu::CommandBuffer>,
     /// Optional command buffer that resolves per-view GPU profiler queries.
     pub(super) per_view_profiler_cmd: Option<wgpu::CommandBuffer>,
+    /// GPU resources used while recording per-view work.
+    pub(super) per_view_retained_resources: GpuRetainedResources,
     /// HUD payloads to apply after submit, parallel to `per_view_cmds`.
     pub(super) per_view_hud_outputs: Vec<Option<PerViewHudOutputs>>,
     /// Per-view occlusion slot + host camera pairs used for Hi-Z callbacks.

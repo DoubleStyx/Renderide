@@ -224,10 +224,24 @@ impl GraphFrameResources for FrameResourceManager {
         self.pre_record_sync_for_views(device, uploads, view_layouts);
     }
 
-    fn drain_retired_frame_resource_callbacks(
-        &mut self,
-    ) -> Vec<Box<dyn FnOnce() + Send + 'static>> {
-        FrameResourceManager::drain_retired_frame_resource_callbacks(self)
+    fn retain_submit_resources(&self, resources: &mut crate::gpu::GpuRetainedResources) {
+        if let Some(fgpu) = self.frame_gpu() {
+            fgpu.retain_submit_resources(resources);
+        }
+        if let Some(empty) = self.empty_material() {
+            resources.retain_bind_group(empty.bind_group.as_ref().clone());
+        }
+        for state in self.per_view_frame.values() {
+            resources.retain_buffer(state.frame_uniform_buffer.clone());
+            resources.retain_buffer(state.lights_buffer.clone());
+            resources.retain_bind_group(state.frame_bind_group.as_ref().clone());
+            resources.retain_bind_group(state.named_scene_color_frame_bind_group.as_ref().clone());
+            resources.retain_buffer(state.cluster_params_buffer.clone());
+            state.scene_snapshots.retain_submit_resources(resources);
+        }
+        for per_draw in self.per_view_draw.values() {
+            per_draw.lock().retain_submit_resources(resources);
+        }
     }
 
     fn has_light_cookie_requests(&self) -> bool {

@@ -103,6 +103,16 @@ impl LightCookieAtlasResources {
         self.sampler.as_ref()
     }
 
+    /// Retains atlas handles and sampler until driver submit.
+    pub(in crate::backend::frame_gpu) fn retain_submit_resources(
+        &self,
+        resources: &mut crate::gpu::GpuRetainedResources,
+    ) {
+        self.two_d.retain_submit_resources(resources);
+        self.point.retain_submit_resources(resources);
+        resources.retain_sampler(self.sampler.as_ref().clone());
+    }
+
     /// Starts a new light-cookie assignment frame.
     pub(in crate::backend::frame_gpu) fn begin_frame(&self) {
         self.state.lock().begin_frame();

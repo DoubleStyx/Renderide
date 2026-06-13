@@ -6,11 +6,13 @@ use hashbrown::HashSet;
 
 use super::blackboard::Blackboard;
 use super::compiled::FrameView;
+use super::context::GraphResolvedResources;
 use super::{HistoryRegistry, TransientPool};
 use crate::camera::ViewId;
 use crate::diagnostics::{DebugHudEncodeError, PerViewHudConfig, PerViewHudOutputs};
+use crate::gpu::driver_thread::SubmitToken;
 use crate::gpu::frame_globals::SkyboxSpecularUniformParams;
-use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
+use crate::gpu::{GpuLimits, GpuRetainedResources, MsaaDepthResolveResources};
 use crate::gpu_pools::{
     CubemapPool, MeshPool, RenderTexturePool, Texture3dPool, TexturePool, VideoTexturePool,
 };
@@ -200,9 +202,8 @@ pub trait GraphFrameResources: Send + Sync {
         view_layouts: &[PreRecordViewResourceLayout],
     );
 
-    /// Drains callbacks that retain replaced frame resources until driver-thread submission.
-    fn drain_retired_frame_resource_callbacks(&mut self)
-    -> Vec<Box<dyn FnOnce() + Send + 'static>>;
+    /// Retains frame-owned GPU handles that may be referenced by recorded command buffers.
+    fn retain_submit_resources(&self, resources: &mut GpuRetainedResources);
 
     /// Whether any light-cookie atlas layers need frame-global synchronization.
     fn has_light_cookie_requests(&self) -> bool;
@@ -285,6 +286,12 @@ pub trait GraphViewBlackboardPreparer: Sync {
 pub trait GraphExecutionBackend {
     /// Render-graph transient pool.
     fn transient_pool_mut(&mut self) -> &mut TransientPool;
+    /// Schedules resolved transient resources for pool release after a driver submit completes.
+    fn schedule_transient_release_after_submit(
+        &mut self,
+        token: SubmitToken,
+        resources: Vec<GraphResolvedResources>,
+    );
     /// Persistent graph history registry.
     fn history_registry(&self) -> &HistoryRegistry;
     /// Mutable persistent graph history registry.
