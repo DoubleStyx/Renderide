@@ -21,6 +21,7 @@ use crate::passes::post_processing::settings_slots::{
 use crate::render_graph::TransientPool;
 use crate::render_graph::blackboard::Blackboard;
 use crate::render_graph::compiled::FrameView;
+use crate::render_graph::context::GraphResolvedResources;
 use crate::render_graph::execution_backend::{
     GraphExecutionBackend, GraphFrameParamsSplit, GraphViewBlackboardPreparer,
 };
@@ -30,6 +31,7 @@ use super::super::debug_hud_bundle::DebugHudBundle;
 use super::super::{
     FrameResourceManager, HistoryRegistry, WorldMeshDrawPlanSlot, WorldMeshOverlayDrawPlanSlot,
 };
+use super::graph_state::PendingTransientRelease;
 
 /// Live post-processing parameters seeded into per-view blackboards.
 #[derive(Clone, Copy, Debug, Default)]
@@ -74,6 +76,8 @@ pub(crate) struct BackendGraphAccess<'a> {
     pub(crate) upload_arena: &'a mut PersistentUploadArena,
     /// Latest frame-upload stats published for diagnostics.
     pub(crate) latest_upload_stats: &'a mut FrameUploadBatchStats,
+    /// Resolved transient resource sets waiting on driver submit before pool release.
+    pub(super) pending_transient_releases: &'a mut Vec<PendingTransientRelease>,
     /// Debug HUD state and encoder.
     pub(crate) debug_hud: &'a mut DebugHudBundle,
     /// Scene-color format snapshot selected before graph execution borrows backend fields.
@@ -135,6 +139,18 @@ impl<'a> BackendGraphAccess<'a> {
     /// Mutable transient pool for graph resource resolution.
     pub(crate) fn transient_pool_mut(&mut self) -> &mut TransientPool {
         self.transient_pool
+    }
+
+    /// Schedules resolved transient resources for pool release once `token` has submitted.
+    pub(crate) fn schedule_transient_release_after_submit(
+        &mut self,
+        token: crate::gpu::driver_thread::SubmitToken,
+        resources: Vec<GraphResolvedResources>,
+    ) {
+        if !resources.is_empty() {
+            self.pending_transient_releases
+                .push(PendingTransientRelease { token, resources });
+        }
     }
 
     /// Shared history registry for import resolution.
@@ -269,6 +285,14 @@ impl<'a> BackendGraphAccess<'a> {
 impl GraphExecutionBackend for BackendGraphAccess<'_> {
     fn transient_pool_mut(&mut self) -> &mut TransientPool {
         BackendGraphAccess::transient_pool_mut(self)
+    }
+
+    fn schedule_transient_release_after_submit(
+        &mut self,
+        token: crate::gpu::driver_thread::SubmitToken,
+        resources: Vec<GraphResolvedResources>,
+    ) {
+        BackendGraphAccess::schedule_transient_release_after_submit(self, token, resources);
     }
 
     fn history_registry(&self) -> &HistoryRegistry {

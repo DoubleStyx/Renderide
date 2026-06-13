@@ -21,7 +21,7 @@ pub(crate) use crate::frame_contract::{
 };
 use crate::frame_upload_batch::GraphUploadSink;
 use crate::gpu::frame_globals::SkyboxSpecularUniformParams;
-use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
+use crate::gpu::{GpuLimits, GpuRetainedResources, MsaaDepthResolveResources};
 use crate::gpu_pools::{
     CubemapPool, MeshPool, RenderTexturePool, Texture3dPool, TexturePool, VideoTexturePool,
 };
@@ -205,6 +205,9 @@ pub trait GraphFrameResources: Send + Sync {
         uploads: GraphUploadSink<'_>,
         view_layouts: &[PreRecordViewResourceLayout],
     );
+
+    /// Retains frame-owned GPU handles that may be referenced by recorded command buffers.
+    fn retain_submit_resources(&self, resources: &mut GpuRetainedResources);
 
     /// Whether any light-cookie atlas layers need frame-global synchronization.
     fn has_light_cookie_requests(&self) -> bool;

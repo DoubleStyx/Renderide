@@ -10,7 +10,7 @@ use super::tracy_plot::tracy_plot;
 
 /// Records the FPS cap currently applied by the app driver's `about_to_wait` handler after
 /// resolving foreground/background renderer settings and host desktop overrides while swapchain
-/// vsync is off. Zero means uncapped, vsync-paced, or VR-paced.
+/// vsync is off. Zero means uncapped, vsync-paced, or HMD-compositor-paced.
 ///
 /// Call once per winit iteration so the Tracy plot sits adjacent to the frame-mark timeline and
 /// the value-per-frame is an exact reading rather than an interpolation. Expands to nothing when

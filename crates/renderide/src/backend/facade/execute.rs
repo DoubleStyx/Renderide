@@ -62,6 +62,7 @@ impl RenderBackend {
                 }
             }
         }
+        self.graph_state.release_completed_transient_submits(gpu);
         self.graph_state.history_registry_mut().advance_frame();
         debug_assert_eq!(
             requirements,

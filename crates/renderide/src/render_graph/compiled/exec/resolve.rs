@@ -195,6 +195,7 @@ impl CompiledRenderGraph {
                 )?;
                 Ok(ResolvedGraphBuffer {
                     pool_id: lease.pool_id,
+                    buffer: lease.buffer,
                 })
             },
             |idx, resolved| {

@@ -11,6 +11,7 @@ use std::time::Instant;
 use crate::camera::HostCameraFrame;
 use crate::frame_contract::FrameViewClear;
 use crate::frame_upload_batch::FrameUploadBatch;
+use crate::gpu::GpuRetainedResources;
 use crate::graph_inputs::PerViewHudOutputsSlot;
 use crate::render_graph::blackboard::{Blackboard, GraphCommandStatsSlot};
 use crate::render_graph::context::GraphResolvedResources;
@@ -181,12 +182,15 @@ impl CompiledRenderGraph {
             };
         let hud_outputs = view_blackboard.take::<PerViewHudOutputsSlot>();
         let encode_ms = encode_ms.max(elapsed_ms(encode_start));
+        let mut retained_resources = GpuRetainedResources::new();
+        resolved_resources.retain_submit_resources(&mut retained_resources);
         Ok(PerViewEncodeOutput {
             command_buffers,
             hud_outputs,
             encode_ms,
             finish_ms,
             command_stats,
+            retained_resources,
         })
     }
 
@@ -252,12 +256,15 @@ impl CompiledRenderGraph {
             profiler,
         )?;
         let hud_outputs = view_blackboard.take::<PerViewHudOutputsSlot>();
+        let mut retained_resources = GpuRetainedResources::new();
+        resolved_resources.retain_submit_resources(&mut retained_resources);
         Ok(PerViewEncodeOutput {
             command_buffers: Vec::new(),
             hud_outputs,
             encode_ms: output.encode_ms,
             finish_ms: 0.0,
             command_stats: output.command_stats,
+            retained_resources,
         })
     }
 

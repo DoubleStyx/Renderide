@@ -247,6 +247,7 @@ impl DriverThread {
         let batch = SubmitBatch {
             submit_kind: DriverSubmitKind::Flush,
             command_buffers: Vec::new(),
+            retained_resources: crate::gpu::GpuRetainedResources::new(),
             surface_texture: None,
             on_submitted_work_done: Vec::new(),
             frame_timing: None,

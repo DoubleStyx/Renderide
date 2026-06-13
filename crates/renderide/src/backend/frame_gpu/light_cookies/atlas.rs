@@ -8,7 +8,7 @@ pub(super) const LIGHT_COOKIE_ATLAS_EDGE: u32 = 256;
 /// Layered atlas texture and one-layer render-target views.
 pub(super) struct LightCookieLayeredAtlas {
     /// Backing texture.
-    _texture: Arc<wgpu::Texture>,
+    texture: Arc<wgpu::Texture>,
     /// Full array view bound by frame globals.
     pub(super) view: Arc<wgpu::TextureView>,
     /// Single-layer views used as render-pass targets.
@@ -73,7 +73,7 @@ impl LightCookieLayeredAtlas {
             .collect::<Vec<_>>();
         crate::profiling::note_resource_churn!(TextureView, "backend::light_cookie_layer_views");
         Self {
-            _texture: texture,
+            texture,
             view,
             layer_views,
             layers,
@@ -83,6 +83,13 @@ impl LightCookieLayeredAtlas {
     /// Returns a single-layer render target view.
     pub(super) fn layer_view(&self, layer: u32) -> Option<&wgpu::TextureView> {
         self.layer_views.get(layer as usize).map(Arc::as_ref)
+    }
+
+    /// Retains atlas handles until driver submit.
+    pub(super) fn retain_submit_resources(&self, resources: &mut crate::gpu::GpuRetainedResources) {
+        resources.retain_texture(self.texture.as_ref().clone());
+        resources.retain_texture_view(self.view.as_ref().clone());
+        resources.retain_texture_views(self.layer_views.iter().map(|view| view.as_ref().clone()));
     }
 }
 

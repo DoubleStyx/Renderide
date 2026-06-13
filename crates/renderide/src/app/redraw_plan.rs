@@ -33,8 +33,8 @@ pub(crate) struct RedrawInputs {
     pub(crate) has_window: bool,
     /// Whether the app has already requested event-loop exit.
     pub(crate) exit_requested: bool,
-    /// Whether VR pacing owns frame cadence.
-    pub(crate) vr_active: bool,
+    /// Whether HMD compositor pacing owns frame cadence for the next redraw.
+    pub(crate) hmd_compositor_paced: bool,
     /// Swapchain VSync mode. `On` lets FIFO presentation own desktop cadence.
     pub(crate) vsync: VsyncMode,
     /// Whether winit reports that the renderer window currently has keyboard focus.
@@ -80,7 +80,7 @@ pub(crate) fn plan_redraw(inputs: RedrawInputs) -> RedrawPlan {
         };
     }
 
-    if inputs.vr_active || inputs.vsync == VsyncMode::On {
+    if inputs.hmd_compositor_paced || inputs.vsync == VsyncMode::On {
         return RedrawPlan {
             decision: RedrawDecision::RedrawNow,
             fps_cap: 0,
@@ -159,7 +159,7 @@ mod tests {
         let plan = plan_redraw(RedrawInputs {
             has_window: true,
             exit_requested: false,
-            vr_active: false,
+            hmd_compositor_paced: false,
             vsync: VsyncMode::Off,
             window_has_keyboard_focus: true,
             foreground_fps_cap: 60,
@@ -179,7 +179,7 @@ mod tests {
         let plan = plan_redraw(RedrawInputs {
             has_window: true,
             exit_requested: false,
-            vr_active: false,
+            hmd_compositor_paced: false,
             vsync: VsyncMode::Off,
             window_has_keyboard_focus: false,
             foreground_fps_cap: 60,
@@ -203,7 +203,7 @@ mod tests {
             let plan = plan_redraw(RedrawInputs {
                 has_window: true,
                 exit_requested: false,
-                vr_active: false,
+                hmd_compositor_paced: false,
                 vsync: VsyncMode::Off,
                 window_has_keyboard_focus: true,
                 foreground_fps_cap: 30,
@@ -218,13 +218,13 @@ mod tests {
     }
 
     #[test]
-    fn redraw_plan_redraws_immediately_when_uncapped_or_vr() {
+    fn redraw_plan_redraws_immediately_when_uncapped_or_hmd_paced() {
         let now = Instant::now();
         assert_eq!(
             plan_redraw(RedrawInputs {
                 has_window: true,
                 exit_requested: false,
-                vr_active: false,
+                hmd_compositor_paced: false,
                 vsync: VsyncMode::Off,
                 window_has_keyboard_focus: true,
                 foreground_fps_cap: 0,
@@ -235,21 +235,41 @@ mod tests {
             .decision,
             RedrawDecision::RedrawNow
         );
-        assert_eq!(
-            plan_redraw(RedrawInputs {
-                has_window: true,
-                exit_requested: false,
-                vr_active: true,
-                vsync: VsyncMode::Off,
-                window_has_keyboard_focus: true,
-                foreground_fps_cap: 60,
-                background_fps_cap: 15,
-                last_frame_start: Some(now),
-                now,
-            })
-            .decision,
-            RedrawDecision::RedrawNow
-        );
+        let hmd_paced = plan_redraw(RedrawInputs {
+            has_window: true,
+            exit_requested: false,
+            hmd_compositor_paced: true,
+            vsync: VsyncMode::Off,
+            window_has_keyboard_focus: true,
+            foreground_fps_cap: 60,
+            background_fps_cap: 15,
+            last_frame_start: Some(now),
+            now,
+        });
+        assert_eq!(hmd_paced.decision, RedrawDecision::RedrawNow);
+        assert_eq!(hmd_paced.fps_cap, 0);
+        assert_eq!(hmd_paced.wait_ms, 0.0);
+    }
+
+    #[test]
+    fn redraw_plan_caps_non_hmd_frames_even_after_xr_session_exists() {
+        let t0 = Instant::now();
+        let now = t0 + Duration::from_millis(1);
+        let plan = plan_redraw(RedrawInputs {
+            has_window: true,
+            exit_requested: false,
+            hmd_compositor_paced: false,
+            vsync: VsyncMode::Off,
+            window_has_keyboard_focus: true,
+            foreground_fps_cap: 60,
+            background_fps_cap: 15,
+            last_frame_start: Some(t0),
+            now,
+        });
+
+        assert_eq!(plan.fps_cap, 60);
+        assert!(matches!(plan.decision, RedrawDecision::WaitUntil(_)));
+        assert!(plan.wait_ms > 0.0);
     }
 
     #[test]
@@ -260,7 +280,7 @@ mod tests {
             let plan = plan_redraw(RedrawInputs {
                 has_window: true,
                 exit_requested: false,
-                vr_active: false,
+                hmd_compositor_paced: false,
                 vsync: VsyncMode::On,
                 window_has_keyboard_focus,
                 foreground_fps_cap: 60,
@@ -281,7 +301,7 @@ mod tests {
             plan_redraw(RedrawInputs {
                 has_window: false,
                 exit_requested: false,
-                vr_active: false,
+                hmd_compositor_paced: false,
                 vsync: VsyncMode::Off,
                 window_has_keyboard_focus: true,
                 foreground_fps_cap: 60,
@@ -296,7 +316,7 @@ mod tests {
             plan_redraw(RedrawInputs {
                 has_window: true,
                 exit_requested: true,
-                vr_active: true,
+                hmd_compositor_paced: true,
                 vsync: VsyncMode::Off,
                 window_has_keyboard_focus: true,
                 foreground_fps_cap: 60,

@@ -244,6 +244,7 @@ impl CompiledRenderGraph {
                 per_view_occlusion_info,
                 per_view_hud_outputs,
                 per_view_profiler_cmd,
+                retained_resources: per_view_retained_resources,
                 ..
             },
         ) = self.record_graph_commands(
@@ -265,9 +266,11 @@ impl CompiledRenderGraph {
                 mv_ctx,
                 SubmitFrameInputs {
                     views,
+                    transient_by_key,
                     frame_global_cmd,
                     per_view_cmds,
                     per_view_profiler_cmd,
+                    per_view_retained_resources,
                     per_view_hud_outputs,
                     per_view_occlusion_info: &per_view_occlusion_info,
                     swapchain_scope,
@@ -288,11 +291,6 @@ impl CompiledRenderGraph {
         {
             profiling::scope!("graph::run_post_submit_passes");
             self.run_post_submit_passes(mv_ctx, views, device, &per_view_occlusion_info)?;
-        }
-
-        {
-            profiling::scope!("graph::release_transients_and_gc");
-            release_transients_and_gc(mv_ctx, transient_by_key);
         }
 
         Ok(())

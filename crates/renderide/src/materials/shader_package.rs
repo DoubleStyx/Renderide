@@ -33,6 +33,7 @@ use self::schema::{
 
 const DEFAULT_RENDER_QUEUE: i32 = 2000;
 const SHADER_PACKAGE_DIR_ENV: &str = "RENDERIDE_SHADER_PACKAGE_DIR";
+#[cfg(target_family = "unix")]
 const UNIX_SYSTEM_SHADER_PACKAGE_DIR: &str = "/usr/share/renderide/shaders";
 
 /// Runtime shader package load failure.

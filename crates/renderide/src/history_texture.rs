@@ -19,4 +19,9 @@ impl HistoryTextureMipViews {
     pub fn layer_mip_views(&self, layer: u32) -> Option<&[wgpu::TextureView]> {
         self.layers.get(layer as usize).map(AsRef::as_ref)
     }
+
+    /// Iterates every cached mip view.
+    pub(crate) fn iter_views(&self) -> impl Iterator<Item = &wgpu::TextureView> {
+        self.layers.iter().flat_map(|layer| layer.as_ref().iter())
+    }
 }

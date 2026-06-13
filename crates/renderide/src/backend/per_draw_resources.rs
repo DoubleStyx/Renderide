@@ -81,12 +81,16 @@ impl PerDrawResources {
     }
 
     /// Ensures at least `need_slots` rows are available, growing the slab and recreating the bind
-    /// group when needed.
+    /// group when needed. Returns the replaced buffer and bind group when a grow occurred.
     ///
     /// Growth uses `max(16, (4*n + 2) / 3)`, which provides ~33% headroom
     /// per grow event. The result is capped by [`GpuLimits::max_per_draw_slab_slots`]; draws
     /// beyond the cap log a warning but are silently clamped.
-    pub fn ensure_draw_slot_capacity(&mut self, device: &wgpu::Device, need_slots: usize) {
+    pub fn ensure_draw_slot_capacity(
+        &mut self,
+        device: &wgpu::Device,
+        need_slots: usize,
+    ) -> Option<(wgpu::Buffer, Arc<wgpu::BindGroup>)> {
         let cap = self.limits.max_per_draw_slab_slots;
         if need_slots > cap {
             logger::warn!(
@@ -95,7 +99,7 @@ impl PerDrawResources {
         }
         let need_slots = need_slots.min(cap);
         if need_slots == 0 || need_slots <= self.slot_count {
-            return;
+            return None;
         }
         // ~33% slack, minimum 16.
         let next = (4 * need_slots).div_ceil(3).max(16).min(cap);
@@ -112,9 +116,16 @@ impl PerDrawResources {
             self.bind_group_layout.as_ref(),
             &per_draw_storage,
         ));
-        self.per_draw_storage = per_draw_storage;
-        self.bind_group = bind_group;
+        let old_storage = std::mem::replace(&mut self.per_draw_storage, per_draw_storage);
+        let old_bind_group = std::mem::replace(&mut self.bind_group, bind_group);
         self.slot_count = next;
+        Some((old_storage, old_bind_group))
+    }
+
+    /// Retains GPU handles that may be referenced by submitted draw commands.
+    pub(crate) fn retain_submit_resources(&self, resources: &mut crate::gpu::GpuRetainedResources) {
+        resources.retain_buffer(self.per_draw_storage.clone());
+        resources.retain_bind_group(self.bind_group.as_ref().clone());
     }
 }
 

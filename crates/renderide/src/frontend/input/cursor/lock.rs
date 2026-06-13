@@ -245,7 +245,7 @@ pub fn apply_per_frame_cursor_lock_when_locked(
     acc: &mut WindowInputAccumulator,
     lock_cursor_position: Option<IVec2>,
     _track: &CursorOutputTracking,
-) -> Result<(), winit::error::RequestError> {
+) -> Result<(), RequestError> {
     let target = lock_cursor_position_or_center(lock_cursor_position, window);
     acc.sync_window_resolution_logical(window);
     acc.set_window_position_from_logical(target, window.scale_factor());

@@ -4,8 +4,10 @@ use std::sync::Arc;
 
 use super::blackboard::Blackboard;
 use super::compiled::FrameView;
+use super::context::GraphResolvedResources;
 use super::{HistoryRegistry, TransientPool};
 use crate::frame_upload_batch::{FrameUploadBatchStats, GraphUploadSink};
+use crate::gpu::driver_thread::SubmitToken;
 use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
 use crate::graph_inputs::{
     GraphAssetResources, GraphFrameResources, GraphPassFrame, PerViewFramePlan,
@@ -63,6 +65,12 @@ pub trait GraphViewBlackboardPreparer: Sync {
 pub trait GraphExecutionBackend {
     /// Render-graph transient pool.
     fn transient_pool_mut(&mut self) -> &mut TransientPool;
+    /// Schedules resolved transient resources for pool release after a driver submit completes.
+    fn schedule_transient_release_after_submit(
+        &mut self,
+        token: SubmitToken,
+        resources: Vec<GraphResolvedResources>,
+    );
     /// Persistent graph history registry.
     fn history_registry(&self) -> &HistoryRegistry;
     /// Mutable persistent graph history registry.

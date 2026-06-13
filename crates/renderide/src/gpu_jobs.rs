@@ -4,8 +4,6 @@
 //! notification or a CPU readback outside the render graph. Frame-shape render work stays in
 //! the graph so transient resources, barriers, and pass ordering remain explicit there.
 
-use std::sync::Arc;
-
 mod readback;
 mod submit;
 
@@ -13,60 +11,4 @@ pub(crate) use readback::{GpuReadbackJobs, GpuReadbackOutcomes, SubmittedReadbac
 pub(crate) use submit::{GpuSubmitJobTracker, SubmittedGpuJob};
 
 /// GPU resources retained until an asynchronous backend job is known to be complete.
-///
-/// Fields intentionally keep ownership only; many jobs do not need to read them after
-/// submission, but the handles must remain alive until the driver has consumed the commands.
-#[derive(Default)]
-pub(crate) struct GpuJobResources {
-    /// Buffers retained until the job completes.
-    _buffers: Vec<wgpu::Buffer>,
-    /// Textures retained until the job completes.
-    _textures: Vec<wgpu::Texture>,
-    /// Shared textures retained until the job completes.
-    _shared_textures: Vec<Arc<wgpu::Texture>>,
-    /// Texture views retained until the job completes.
-    _texture_views: Vec<wgpu::TextureView>,
-    /// Shared texture views retained until the job completes.
-    _shared_texture_views: Vec<Arc<wgpu::TextureView>>,
-    /// Samplers retained until the job completes.
-    _samplers: Vec<wgpu::Sampler>,
-    /// Bind groups retained until the job completes.
-    _bind_groups: Vec<wgpu::BindGroup>,
-}
-
-impl GpuJobResources {
-    /// Creates an empty retained-resource set.
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
-    /// Retains one buffer.
-    pub(crate) fn with_buffer(mut self, buffer: wgpu::Buffer) -> Self {
-        self._buffers.push(buffer);
-        self
-    }
-
-    /// Retains multiple buffers.
-    pub(crate) fn with_buffers(mut self, buffers: Vec<wgpu::Buffer>) -> Self {
-        self._buffers.extend(buffers);
-        self
-    }
-
-    /// Retains one bind group.
-    pub(crate) fn with_bind_group(mut self, bind_group: wgpu::BindGroup) -> Self {
-        self._bind_groups.push(bind_group);
-        self
-    }
-
-    /// Retains one shared texture.
-    pub(crate) fn with_shared_texture(mut self, texture: Arc<wgpu::Texture>) -> Self {
-        self._shared_textures.push(texture);
-        self
-    }
-
-    /// Retains one shared texture view.
-    pub(crate) fn with_shared_texture_view(mut self, view: Arc<wgpu::TextureView>) -> Self {
-        self._shared_texture_views.push(view);
-        self
-    }
-}
+pub(crate) type GpuJobResources = crate::gpu::GpuRetainedResources;

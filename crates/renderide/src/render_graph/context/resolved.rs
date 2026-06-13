@@ -9,6 +9,7 @@ use super::super::resources::{
     BufferHandle, ImportedBufferHandle, ImportedTextureHandle, SubresourceHandle, TextureHandle,
     TextureResourceHandle,
 };
+use crate::gpu::GpuRetainedResources;
 use crate::gpu_resource::TextureViewCache;
 
 /// Resolved transient texture for one graph execution scope.
@@ -43,6 +44,8 @@ pub struct ResolvedGraphTexture {
 pub struct ResolvedGraphBuffer {
     /// Transient pool entry id.
     pub pool_id: usize,
+    /// Buffer handle.
+    pub buffer: wgpu::Buffer,
 }
 
 /// Imported texture resolved from the current frame target or backend history.
@@ -206,6 +209,29 @@ impl GraphResolvedResources {
                 pool.release_buffer(buffer.pool_id);
             }
         }
+    }
+
+    /// Appends all GPU handles resolved for this graph scope to `out`.
+    pub(crate) fn retain_submit_resources(&self, out: &mut GpuRetainedResources) {
+        for texture in self.transient_textures.iter().flatten() {
+            out.retain_texture(texture.texture.clone());
+            out.retain_texture_view(texture.view.clone());
+            out.retain_texture_views(texture.layer_views.iter().cloned());
+        }
+        for buffer in self.transient_buffers.iter().flatten() {
+            out.retain_buffer(buffer.buffer.clone());
+        }
+        for texture in self.imported_textures.iter().flatten() {
+            out.retain_texture_view(texture.view.clone());
+            if let Some(history) = &texture.history {
+                out.retain_texture(history.texture.clone());
+                out.retain_texture_views(history.mip_views.iter_views().cloned());
+            }
+        }
+        for buffer in self.imported_buffers.iter().flatten() {
+            out.retain_buffer(buffer.buffer.clone());
+        }
+        out.retain_texture_views(self.subresource_views.iter().flatten().cloned());
     }
 }
 

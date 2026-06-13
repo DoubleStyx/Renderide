@@ -120,6 +120,7 @@ fn process_batch(ctx: DriverLoopContext<'_>, ring_depth: usize, batch: SubmitBat
     let SubmitBatch {
         submit_kind: _submit_kind,
         command_buffers,
+        retained_resources: _retained_resources,
         surface_texture,
         on_submitted_work_done,
         frame_timing,

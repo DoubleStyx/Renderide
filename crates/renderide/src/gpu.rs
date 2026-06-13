@@ -20,6 +20,7 @@ mod adapter;
 mod blit_kit;
 mod context;
 mod instance_setup;
+mod resource_retention;
 mod submission_state;
 mod sync;
 mod vr_mirror;
@@ -59,6 +60,7 @@ pub(crate) use limits::{CUBEMAP_ARRAY_LAYERS, GpuLimits};
 pub(crate) use msaa_depth_resolve::{
     MsaaDepthResolveMonoTargets, MsaaDepthResolveResources, MsaaDepthResolveStereoTargets,
 };
+pub(crate) use resource_retention::GpuRetainedResources;
 pub(crate) use vr_mirror::{VR_MIRROR_EYE_LAYER, VrMirrorBlitResources};
 
 // --- Legacy submodule-path re-exports (preserve external `crate::gpu::<x>::*` paths) ---
