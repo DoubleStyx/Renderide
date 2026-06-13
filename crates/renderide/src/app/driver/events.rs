@@ -173,7 +173,7 @@ impl ApplicationHandler for AppDriver {
         let plan = plan_redraw(RedrawInputs {
             has_window: self.target.is_some(),
             exit_requested: self.exit_is_requested(),
-            vr_active: self.runtime.vr_active(),
+            hmd_compositor_paced: self.hmd_compositor_paced_last_frame,
             vsync,
             window_has_keyboard_focus: self.input.window_focused,
             foreground_fps_cap: frame_pacing_caps.foreground_fps_cap,
