@@ -331,6 +331,7 @@ impl<'a> FrameViewPlan<'a> {
             render_space_filter: self.render_space_filter,
             head_output_transform: self.host_camera.head_output_transform,
             render_shadows: self.render_shadows,
+            cull: None,
         }
     }
 

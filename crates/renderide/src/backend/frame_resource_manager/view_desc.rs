@@ -2,8 +2,18 @@
 
 use glam::Mat4;
 
-use crate::camera::ViewId;
+use crate::camera::{HostCameraFrame, ViewId};
 use crate::shared::RenderingContext;
+use crate::world_mesh::WorldMeshCullProjParams;
+
+/// Per-view culling inputs used to reject punctual light influence volumes before clustering.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FrameLightCullDesc {
+    /// Camera frame that supplies the view transform and stereo state for culling.
+    pub host_camera: HostCameraFrame,
+    /// Projection bundle matching the target convention used by this view.
+    pub proj: WorldMeshCullProjParams,
+}
 
 /// View-specific inputs for resolving the light pack used by one render view.
 #[derive(Clone, Copy, Debug)]
@@ -18,4 +28,6 @@ pub(crate) struct FrameLightViewDesc {
     pub head_output_transform: Mat4,
     /// Whether this view should pack shadow metadata for contributing lights.
     pub render_shadows: bool,
+    /// Optional frustum inputs for light influence-volume culling.
+    pub cull: Option<FrameLightCullDesc>,
 }

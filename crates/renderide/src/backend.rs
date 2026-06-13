@@ -43,8 +43,8 @@ pub(crate) use facade::ExtractedFrameShared;
 pub use facade::RenderBackendAttachError;
 pub use facade::{RenderBackend, RenderBackendAttachDesc};
 pub use frame_gpu_bindings::FrameGpuBindingsError;
-pub(crate) use frame_resource_manager::FrameLightViewDesc;
 pub use frame_resource_manager::FrameResourceManager;
+pub(crate) use frame_resource_manager::{FrameLightCullDesc, FrameLightViewDesc};
 pub(crate) use gpu_jobs::{
     GpuJobResources, GpuReadbackJobs, GpuReadbackOutcomes, SubmittedReadbackJob,
 };

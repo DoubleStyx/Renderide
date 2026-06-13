@@ -8,13 +8,14 @@ use super::*;
 
 use glam::{Mat4, Quat, Vec3};
 
-use crate::camera::ViewId;
+use crate::camera::{HostCameraFrame, ViewId};
 use crate::graph_inputs::PreRecordViewResourceLayout;
 use crate::mesh_deform::{SkinCacheKey, SkinCacheRendererKind};
 use crate::scene::{MeshRendererInstanceId, RenderSpaceId, SceneCoordinator};
 use crate::shared::{
     LightData, LightType, LightsBufferRendererState, RenderTransform, RenderingContext, ShadowType,
 };
+use crate::world_mesh::WorldMeshCullProjParams;
 
 /// Returns an identity host transform for scene fixtures.
 fn identity_transform() -> RenderTransform {
@@ -162,18 +163,31 @@ fn retire_nonexistent_is_noop() {
 }
 
 fn make_light_data_with_intensity(color_x: f32, intensity: f32) -> LightData {
+    make_light_data_at_with_intensity(Vec3::ZERO, 10.0, color_x, intensity)
+}
+
+fn make_light_data_at_with_intensity(
+    point: Vec3,
+    range: f32,
+    color_x: f32,
+    intensity: f32,
+) -> LightData {
     LightData {
-        point: Vec3::ZERO,
+        point,
         orientation: Quat::IDENTITY,
         color: Vec3::new(color_x, 0.0, 0.0),
         intensity,
-        range: 10.0,
+        range,
         angle: 45.0,
     }
 }
 
 fn make_light_data(color_x: f32) -> LightData {
     make_light_data_with_intensity(color_x, 1.0)
+}
+
+fn make_light_data_at(point: Vec3, range: f32, color_x: f32) -> LightData {
+    make_light_data_at_with_intensity(point, range, color_x, 1.0)
 }
 
 fn make_state(global_unique_id: i32) -> LightsBufferRendererState {
@@ -189,6 +203,18 @@ fn make_state(global_unique_id: i32) -> LightsBufferRendererState {
         light_type: LightType::Point,
         shadow_type: ShadowType::None,
         _padding: [0; 2],
+    }
+}
+
+fn make_indexed_state(
+    renderable_index: i32,
+    global_unique_id: i32,
+    light_type: LightType,
+) -> LightsBufferRendererState {
+    LightsBufferRendererState {
+        renderable_index,
+        light_type,
+        ..make_state(global_unique_id)
     }
 }
 
@@ -213,6 +239,17 @@ fn seed_space_with_light(
     let cache = scene.light_cache_mut();
     cache.store_full(global_unique_id, vec![make_light_data(color_x)]);
     cache.apply_update(space_id.0, &[], &[0], &[make_state(global_unique_id)]);
+}
+
+fn identity_light_cull_desc() -> FrameLightCullDesc {
+    FrameLightCullDesc {
+        host_camera: HostCameraFrame::default(),
+        proj: WorldMeshCullProjParams {
+            world_proj: Mat4::IDENTITY,
+            overlay_proj: Mat4::IDENTITY,
+            vr_stereo: None,
+        },
+    }
 }
 
 fn seed_space_with_signed_light(
@@ -283,6 +320,72 @@ fn prepare_lights_from_scene_skips_inactive_spaces() {
 }
 
 #[test]
+fn prepare_lights_for_views_culls_light_volumes_before_packing() {
+    let mut scene = SceneCoordinator::new();
+    let space = RenderSpaceId(6);
+    scene.test_seed_space_identity_worlds(
+        space,
+        vec![
+            identity_transform(),
+            identity_transform(),
+            identity_transform(),
+        ],
+        vec![-1, -1, -1],
+    );
+    let cache = scene.light_cache_mut();
+    cache.store_full(100, vec![make_light_data_at(Vec3::ZERO, 0.25, 1.0)]);
+    cache.store_full(
+        200,
+        vec![make_light_data_at(Vec3::new(4.0, 0.0, 0.0), 0.25, 0.5)],
+    );
+    cache.store_full(
+        300,
+        vec![make_light_data_at(Vec3::new(100.0, 0.0, 0.0), 10.0, 0.25)],
+    );
+    cache.apply_update(
+        space.0,
+        &[],
+        &[0, 1, 2],
+        &[
+            make_indexed_state(0, 100, LightType::Point),
+            make_indexed_state(1, 200, LightType::Point),
+            make_indexed_state(2, 300, LightType::Directional),
+        ],
+    );
+
+    let main = ViewId::Main;
+    let overlay = ViewId::MainOverlay;
+    let desc = FrameLightViewDesc {
+        view_id: main,
+        render_context: RenderingContext::UserView,
+        render_space_filter: Some(space),
+        head_output_transform: Mat4::IDENTITY,
+        render_shadows: true,
+        cull: Some(identity_light_cull_desc()),
+    };
+    let mut overlay_desc = desc;
+    overlay_desc.view_id = overlay;
+    let mut mgr = FrameResourceManager::new();
+    mgr.prepare_lights_for_views(&scene, [desc, overlay_desc], None);
+
+    for view_id in [main, overlay] {
+        let packed = mgr.frame_lights_for_view(view_id);
+        assert_eq!(packed.len(), 2);
+        assert!(packed.iter().any(|light| light.light_type == 1));
+        assert!(
+            packed
+                .iter()
+                .any(|light| light.light_type == 0 && (light.color[0] - 1.0).abs() < 1e-5)
+        );
+        assert!(
+            packed
+                .iter()
+                .all(|light| (light.color[0] - 0.5).abs() >= 1e-5)
+        );
+    }
+}
+
+#[test]
 fn prepare_lights_for_views_keeps_secondary_light_positions_view_local() {
     let mut scene = SceneCoordinator::new();
     let space = RenderSpaceId(7);
@@ -317,6 +420,7 @@ fn prepare_lights_for_views_keeps_secondary_light_positions_view_local() {
                 render_space_filter: Some(space),
                 head_output_transform: Mat4::from_translation(Vec3::new(10.0, 0.0, 0.0)),
                 render_shadows: true,
+                cull: None,
             },
             FrameLightViewDesc {
                 view_id: second,
@@ -324,6 +428,7 @@ fn prepare_lights_for_views_keeps_secondary_light_positions_view_local() {
                 render_space_filter: Some(space),
                 head_output_transform: Mat4::from_translation(Vec3::new(30.0, 0.0, 0.0)),
                 render_shadows: true,
+                cull: None,
             },
         ],
         None,
@@ -358,6 +463,7 @@ fn prepare_lights_for_views_can_disable_shadow_metadata_per_view() {
                 render_space_filter: Some(space),
                 head_output_transform: Mat4::IDENTITY,
                 render_shadows: true,
+                cull: None,
             },
             FrameLightViewDesc {
                 view_id: shadows_off,
@@ -365,6 +471,7 @@ fn prepare_lights_for_views_can_disable_shadow_metadata_per_view() {
                 render_space_filter: Some(space),
                 head_output_transform: Mat4::IDENTITY,
                 render_shadows: false,
+                cull: None,
             },
         ],
         None,

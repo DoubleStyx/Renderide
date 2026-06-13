@@ -1,5 +1,7 @@
 //! Light preparation and per-view light access for [`FrameResourceManager`].
 
+mod visibility;
+
 use rayon::prelude::*;
 
 use crate::camera::ViewId;
@@ -9,8 +11,7 @@ use crate::cpu_parallelism::{
 };
 use crate::render_graph::GraphAssetResources;
 use crate::scene::{
-    RenderSpaceId, ResolvedLight, SceneCoordinator, light_contributes,
-    light_has_negative_contribution,
+    RenderSpaceId, ResolvedLight, SceneCoordinator, light_has_negative_contribution,
 };
 
 use super::super::light_gpu::{
@@ -79,6 +80,7 @@ impl FrameResourceManager {
                 render_space_filter: None,
                 head_output_transform: glam::Mat4::IDENTITY,
                 render_shadows: true,
+                cull: None,
             }],
             None,
         );
@@ -108,13 +110,13 @@ impl FrameResourceManager {
             views
                 .par_iter()
                 .with_min_len(LIGHT_VIEW_PREP_PARALLEL_CHUNK_VIEWS)
-                .map(|&desc| prepare_lights_for_view_packet(scene, desc))
+                .map(|desc| prepare_lights_for_view_packet(scene, desc))
                 .collect::<Vec<_>>()
         } else {
             profiling::scope!("render::prepare_lights_for_views::serial");
             views
                 .iter()
-                .map(|&desc| prepare_lights_for_view_packet(scene, desc))
+                .map(|desc| prepare_lights_for_view_packet(scene, desc))
                 .collect::<Vec<_>>()
         };
 
@@ -211,17 +213,13 @@ fn should_parallelize_light_view_prep(
 
 fn prepare_lights_for_view_packet(
     scene: &SceneCoordinator,
-    desc: FrameLightViewDesc,
+    desc: &FrameLightViewDesc,
 ) -> PreparedViewLightPacket {
     profiling::scope!("render::prepare_lights_for_view");
     let mut light_space_ids = Vec::new();
     collect_light_space_ids(scene, desc.render_space_filter, &mut light_space_ids);
     let mut resolved = Vec::new();
     resolve_lights_for_space_ids(scene, desc, &light_space_ids, &mut resolved);
-    {
-        profiling::scope!("render::prepare_lights::filter_contributors");
-        resolved.retain(light_contributes);
-    }
     order_lights_for_clustered_shading_in_place(&mut resolved);
     let resolved_len = resolved.len();
     let kept = resolved_len.min(MAX_LIGHTS);
@@ -263,7 +261,7 @@ fn collect_light_space_ids(
 
 fn resolve_lights_for_space_ids(
     scene: &SceneCoordinator,
-    desc: FrameLightViewDesc,
+    desc: &FrameLightViewDesc,
     light_space_ids: &[RenderSpaceId],
     out: &mut Vec<ResolvedLight>,
 ) {
@@ -298,6 +296,12 @@ fn resolve_lights_for_space_ids(
                     desc.head_output_transform,
                     &mut resolved,
                 );
+                visibility::filter_resolved_lights_for_view(
+                    scene,
+                    id,
+                    desc.cull.as_ref(),
+                    &mut resolved,
+                );
                 resolved
             })
             .collect::<Vec<_>>();
@@ -305,13 +309,22 @@ fn resolve_lights_for_space_ids(
             out.append(&mut packet);
         }
     } else {
+        let mut resolved = Vec::new();
         for &id in light_space_ids {
+            resolved.clear();
             scene.resolve_lights_for_render_context_into(
                 id,
                 desc.render_context,
                 desc.head_output_transform,
-                out,
+                &mut resolved,
             );
+            visibility::filter_resolved_lights_for_view(
+                scene,
+                id,
+                desc.cull.as_ref(),
+                &mut resolved,
+            );
+            out.append(&mut resolved);
         }
     }
 }

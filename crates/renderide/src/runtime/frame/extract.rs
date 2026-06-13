@@ -15,7 +15,8 @@ pub(in crate::runtime) use queue::select_inner_parallelism;
 use rayon::prelude::*;
 
 use crate::backend::{
-    ExtractedFrameShared, RenderBackend, WorldMeshDrawPlanSlot, WorldMeshOverlayDrawPlanSlot,
+    ExtractedFrameShared, FrameLightCullDesc, FrameLightViewDesc, RenderBackend,
+    WorldMeshDrawPlanSlot, WorldMeshOverlayDrawPlanSlot,
 };
 use crate::cpu_parallelism::{FrameCpuWorkload, FrameParallelPolicy};
 use crate::gpu::GpuContext;
@@ -26,9 +27,10 @@ use crate::render_graph::{
 };
 use crate::world_mesh::{
     WorldMeshCommandCache, WorldMeshDrawArrangeParallelism, WorldMeshDrawPlan,
+    build_world_mesh_cull_proj_params,
 };
 
-use cull::{ViewCullSnapshot, cull_snapshot_for_view};
+use cull::{ViewCullSnapshot, cull_projection_for_write_target, cull_snapshot_for_view};
 use queue::{QueuedViewDraws, queue_view_draws};
 use sort::{select_arrange_parallelism, sort_view_draws, trace_view_draw_plans};
 use visible_deform::visible_mesh_deform_keys_from_draw_plans;
@@ -245,7 +247,7 @@ impl SubmitFrame<'_> {
         backend.prepare_lights_for_views(
             scene,
             self.prepared_views.plans().iter().flat_map(|view| {
-                let desc = view.light_view_desc();
+                let desc = light_view_desc_with_cull(scene, view);
                 let overlay = view.desktop_overlay_resource_view_id().map(|view_id| {
                     let mut desc = desc;
                     desc.view_id = view_id;
@@ -280,6 +282,19 @@ impl SubmitFrame<'_> {
         let mut views = self.prepared_views.build_execution_views(self.view_draws);
         backend.execute_multi_view_frame(gpu, scene, &frame_global, &mut views, requirements, true)
     }
+}
+
+fn light_view_desc_with_cull(
+    scene: &crate::scene::SceneCoordinator,
+    view: &FrameViewPlan<'_>,
+) -> FrameLightViewDesc {
+    let mut desc = view.light_view_desc();
+    let raw_proj = build_world_mesh_cull_proj_params(scene, view.viewport_px, &view.host_camera);
+    desc.cull = Some(FrameLightCullDesc {
+        host_camera: view.host_camera,
+        proj: cull_projection_for_write_target(&raw_proj, view.write_target()),
+    });
+    desc
 }
 
 /// Sorted draw plans for one executable view.
