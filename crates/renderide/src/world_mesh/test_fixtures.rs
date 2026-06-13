@@ -123,6 +123,7 @@ pub fn dummy_world_mesh_draw_item(spec: DummyDrawItemSpec) -> WorldMeshDrawItem 
         blendshape_deformed: false,
         collect_order,
         camera_distance_sq: 0.0,
+        world_aabb: None,
         lookup_ids: MaterialPropertyLookupIds {
             material_asset_id: mid,
             mesh_property_block_slot0: pb,

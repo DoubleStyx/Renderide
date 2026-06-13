@@ -113,7 +113,7 @@ The repository is a workspace that mixes a Rust workspace, a .NET solution, a se
 - The .NET solution under `generators/` produces a Rust source file that both the renderer and any host-side tooling depend on. `Generators.sln` ties together the generator and its tests.
 - `RenderideMod/` is a separate C# project that injects renderer-aware behavior into the live host. It is not part of `Generators.sln`.
 - The shader source tree under `crates/renderide/shaders/` holds all WGSL. It is large enough and important enough to deserve its own region.
-- The runtime asset tree under `crates/renderide/assets/` holds files the renderer ships with at run time, including OpenXR controller binding profiles.
+- The runtime asset tree under `crates/renderide/assets/` holds files the renderer ships with at run time, including OpenXR controller binding profiles and the skybox model.
 - `third_party/` holds vendored native libraries, currently the OpenXR loader.
 
 Everything above the workspace root that is not one of these regions is contributor-facing project metadata: `Cargo.toml`, `.taplo.toml`, `clippy.toml`, `.pre-commit-config.yaml`, `.gitignore`, `.gitattributes`, `LICENSE`, `README.md`, `SECURITY.md`, the GitHub issue templates, Dependabot configuration, GitHub Actions workflows, and the static-site files.
@@ -167,7 +167,7 @@ The .NET solution is built and tested by the shared CI workflow (see [2.9](#29-c
 
 | Path | What it is |
 | --- | --- |
-| `Cargo.toml` | Rust workspace manifest. Lists the member crates, customizes the `dev`, `dev-fast`, and `release` profiles, and centralizes the project's clippy and rustc lint configuration. |
+| `Cargo.toml` | Rust workspace manifest. Lists the member crates, customizes the `dev` and `release` profiles, and centralizes the project's clippy and rustc lint configuration. |
 | `Cargo.lock` | Resolved dependency lockfile. Checked in so all builds (and CI runners) agree. |
 | `Generators.sln` | .NET solution file for `generators/SharedTypeGenerator` and `generators/SharedTypeGenerator.Tests`. |
 | `clippy.toml` | Per-crate clippy tuning. Allows `unwrap`, `expect`, `panic`, `dbg`, `print`, and indexing in tests. |
@@ -187,17 +187,16 @@ The .NET solution is built and tested by the shared CI workflow (see [2.9](#29-c
 
 Inside the renderer crate at `crates/renderide/`, three top-level companions live next to `src/`:
 
-- `assets/` holds runtime assets that ship with the renderer: the OpenXR controller binding profiles under `xr/bindings/` for every supported headset and controller family. The build script copies the XR action and binding files into the artifact directory so the binary can find them at run time.
+- `assets/` holds runtime assets that ship with the renderer: the OpenXR action and binding files under `xr/` plus `models/skybox.glb`. The build script copies the XR action and binding files into the artifact directory so the binary can find them at run time.
 - `shaders/` holds every WGSL source file the renderer compiles. It is divided into `materials/` (one shader per host material program), `modules/` (shared logic composed via naga-oil), and `passes/` with subdirectories for `backend/`, `compute/`, `post/`, and `present/` shaders.
-- `build.rs` and `build_support/` together compose the WGSL source tree at build time, generate an embedded shader registry that the renderer links in, copy XR assets into the artifact directory, and copy the vendored OpenXR loader on Windows and macOS. The `build_support/shader/` subdirectory is where the shader composition logic lives, broken into `source`, `modules`, `compose`, `directives`, `validation`, `parallel`, `mirror_once`, `emit`, `model`, and `error`.
+- `build.rs` and `build_support/` together compose the WGSL source tree at build time, generate the runtime shader package under the Cargo artifact directory, copy XR assets into the artifact directory, and copy the vendored OpenXR loader on Windows and macOS. The `build_support/shader/` subdirectory is where the shader composition logic lives, broken into `source`, `modules`, `compose`, `directives`, `validation`, `parallel`, `mirror_once`, `emit`, `model`, and `error`.
 
 ### 2.4 Build profiles and feature flags
 
-The workspace customizes three profiles in `Cargo.toml`:
+The workspace customizes two profiles in `Cargo.toml`:
 
-- `dev` raises the default development optimization level to 1 so routine debug builds run faster while keeping debug symbols and assertions.
-- `dev-fast` inherits `dev` (so debug symbols, unwind, and assertions are on) but raises the optimization level to 2. Use this for everyday dev cycles when stock `cargo build` is still too slow but you still want assertions.
-- `release` raises optimization to 3, disables debug assertions, enables debug info for the build, and asks Cargo to strip debuginfo from the final binaries. It does not enable LTO or switch to aborting panics.
+- `dev` raises the default development optimization level to 1, keeps incremental compilation on, uses many codegen units, and emits line-table debug info so routine debug builds run faster while retaining assertions.
+- `release` raises optimization to 3, disables incremental compilation and debug assertions, uses one codegen unit, enables thin LTO, emits line-table debug info, strips debuginfo from the final binaries, and keeps unwind panics.
 
 The `renderide` crate declares two opt-in Cargo features. Both are off by default to keep stock builds and CI lean.
 
@@ -214,15 +213,15 @@ Tests live in three places.
 - Per-crate integration tests live in `crates/<crate>/tests/`. Each file in a `tests/` directory is its own integration test binary linked against the crate's library API.
 - Cross-process integration tests live in `crates/renderide-test/`, which builds a full host emulator and drives the real IPC contract end to end.
 
-The renderer crate carries a curated set of integration tests under `crates/renderide/tests/` that cover non-GPU concerns. The current set asserts architecture-layer boundaries, OpenXR loader artifact handling, the parallel shader build, clustered-light shader layout, reflection-probe source resolution, terminal error mirroring on Unix, material UV-orientation rules, native stdio forwarding, and shader-module composition correctness. None of these require a GPU adapter.
+The renderer crate carries a curated set of integration tests under `crates/renderide/tests/` that cover non-GPU concerns. The current set asserts architecture-layer boundaries, OpenXR loader artifact handling, the parallel shader build, clustered-light shader layout, GPU instrumentation coverage, reflection-probe source resolution, terminal error mirroring on Unix, material UV-orientation rules, native stdio forwarding, and shader-module composition correctness. None of these require a GPU adapter.
 
 The supporting crates each have their own integration tests:
 
-- `crates/bootstrapper/tests/` covers the public CLI surface (`cli_public_surface.rs`) and the IPC queue tempdir lifecycle (`ipc_queues_tempdir.rs`).
+- `crates/bootstrapper/tests/` covers stale artifact cleanup, the public CLI surface (`cli_public_surface.rs`), and the IPC queue tempdir lifecycle (`ipc_queues_tempdir.rs`).
 - `crates/interprocess/tests/` exercises a publisher-subscriber queue end to end (`end_to_end.rs`).
-- `crates/logger/tests/` is a fourteen-file suite covering per-component init layouts, append-versus-truncate semantics, malicious-timestamp sanitization, mirror writers, the log facade, the macros routed through `init_for_*`, second-init no-op behavior, the uninitialized state, and concurrency under torn-line conditions.
+- `crates/logger/tests/` covers per-component init layouts, append-versus-truncate semantics, malicious-timestamp sanitization, mirror writers, the log facade, the macros routed through `init_for_*`, second-init no-op behavior, the uninitialized state, and concurrency under torn-line conditions.
 - `crates/renderide-shared/tests/` covers wire packing for polymorphic types (`packing_polymorphic_roundtrip.rs`) and primitives (`packing_wire_primitives.rs`), plus the singleton claim that prevents two renderers from racing on the same IPC name (`renderer_singleton_claim.rs`).
-- `crates/renderide-test/tests/` covers the harness itself: CLI resolution parsing, golden-image diff writing, golden round-trips, log folder routing, the PNG stability state machine, the spawn argument table, an end-to-end sphere pipeline, and the current scene integrations (`unlit_sphere` and `torus_unlit_perlin`).
+- `crates/renderide-test/tests/` covers the harness itself: golden-image diff writing, golden round-trips, log folder routing, the PNG stability state machine, the spawn argument table, an end-to-end sphere pipeline, and the current scene integration test binaries (`unlit_sphere` and `torus_unlit_perlin`). The tracked golden cases also include `alpha_cutout_masked_quads`, `multi_primitive_unlit_grid`, and `pbs_lit_material_matrix`.
 
 Ordinary renderer integration tests should stay non-GPU unless they belong in the dedicated harness. GPU-backed validation lives in `renderide-test`, which CI runs as a headless golden-image suite:
 
@@ -386,14 +385,14 @@ A small `test_hooks` module exposes injection points the integration suites use 
 
 ### 3.4 The renderer's internal layers
 
-The `renderide` crate splits into five clearly named layers. The split is the contract that lets the renderer run with or without a host, with or without a window, and under the test harness.
+The `renderide` crate is organized around architectural layers plus renderer subsystems that hang off the backend and graph boundary. The split is the contract that lets the renderer run with or without a host, with or without a window, and under the test harness.
 
 ```mermaid
 flowchart TB
     App["App<br/>process boundary, drivers,<br/>frame clock, headless, exit"]
     Frontend["Frontend<br/>IPC, lock-step, decoupling,<br/>input, output policy"]
     Scene["Scene<br/>host world mirror,<br/>transforms, meshes, lights"]
-    Backend["Backend<br/>wgpu device, pools,<br/>materials, render graph"]
+    Backend["Backend + GPU<br/>wgpu device, pools,<br/>materials, render graph"]
     Runtime["Runtime<br/>per-tick orchestration facade"]
 
     App --> Runtime
@@ -405,15 +404,18 @@ flowchart TB
     Frontend -. shm references .-> Backend
 ```
 
-Each layer corresponds to a top-level module in `crates/renderide/src/`:
+The main top-level modules in `crates/renderide/src/` are:
 
-- The `app` module owns the process boundary. It contains the `bootstrap` for IPC wiring, the `driver` abstraction for winit, a `headless` driver for the test harness, the `frame_clock`, host-provided window-icon handling, the run-exit code (`exit.rs`) that decides what the process returns to its parent, and a `redraw_plan` that decides when to ask the driver for the next paint.
-- The `frontend` module owns transport. It contains the `transport` itself, `init_state` (which carries the handshake), `lockstep_state`, the `decoupling` state machine that lets rendering stay responsive while the host catches up, the `dispatch` of incoming `RendererCommand`s, `begin_frame`, the `input` conversion from winit and OpenXR events into shared `InputState` structures, an `output_policy` that picks where the next frame should land, an `output_device` adapter for host head-output devices, a `session` summary that the diagnostics overlay reads from, a `frame_start_performance` band, and a `renderer_frontend` wrapper that the runtime calls into.
-- The `scene` module owns the host world mirror. It contains `coordinator`, `world`, `render_space`, `dense_update`, the `transforms` arena, the `meshes` registry (mesh and skinned renderables, with their material/transform/per-instance overrides), `lights`, `lod_groups`, `overrides` (render and material property blocks), `reflection_probe`, `pose`, `math`, `camera`, `layer`, `ids`, `blit_to_display`, and an `error` enum. There is no wgpu in here.
-- The `backend` module owns GPU state. It contains the `facade` that the runtime calls into, the `frame_gpu` that builds frame-global GPU state along with its `frame_gpu_bindings` and `frame_gpu_error` companions, the `frame_resource_manager`, the `gpu_jobs` for nonblocking GPU work such as SH2 projection, the `light_gpu` packer, `cluster_gpu`, `per_draw_resources`, the `view_resource_registry`, the `per_view_resource_map`, `secondary_rt_scratch`, the `asset_transfers` workers that move host shared-memory payloads into GPU pools, a `graph` glue layer that registers the renderer's pass nodes against the render graph, a `world_mesh_frame_plan` that captures the per-frame world-mesh draw plan, and a `debug_hud_bundle` that snapshots the data the overlay reads. Beneath the backend module live the closely related top-level modules `gpu` (device-facing primitives), `gpu_pools` (resident asset pools), `gpu_resource` (resource-handle plumbing shared across pools), `materials` (material registry and pipelines), `assets` (asset integration queues), `mesh_deform` (skinning and blendshape compute), `world_mesh` (visibility planning), `occlusion`, `skybox`, `reflection_probes`, `camera`, `passes`, and `render_graph`, plus workspace-wide concerns such as `color_space`, `concurrency`, `config`, `diagnostics`, `graph_inputs`, `profiling`, `process_io`, `render_phase`, `run_error`, and `shared`.
-- The `runtime` module is a thin facade that wires the other layers together one tick at a time. It does not own IPC queues, scene tables, or GPU resources. Each per-tick concern lives in its own submodule: `tick`, the `ipc` entry and its effect handlers, `asset_integration`, `gpu_services`, `lockstep`, `xr_glue`, `debug_hud_frame`, plus a `frame` subtree that holds `view_planning`, `view_plan`, `extract`, `schedule`, `render`, and `submit`. A `state` subtree carries the long-lived runtime state, `display` and `accessors` give the rest of the renderer typed handles to it, `shutdown` collects the teardown sequence, and `offscreen_tasks` carries the bookkeeping for camera captures, 360 captures, cube captures, readbacks, and reflection probes. An `orchestration_tests` module covers the wiring with in-process tests.
+- `app` owns the process boundary: startup bootstrap, logging and crash hooks, service installation, winit and headless drivers, frame clock, window icon handling, redraw planning, and process exit codes.
+- `frontend` owns host transport and frame cadence: IPC transport, init and lock-step state, decoupling, command dispatch, begin-frame data, input conversion, output-device policy, session summaries, and frame-start performance tracking.
+- `scene` owns the host world mirror. It tracks worlds and render spaces, dense transforms, static and skinned mesh renderables, lights, LOD groups, overrides, cameras, camera portals, render buffers, reflection-probe requests, poses, layers, and blit-to-display state. There is no wgpu in here.
+- `assets` owns CPU-side asset decoding and integration queues for mesh, texture, shader, and video payloads. `backend/asset_transfers` owns the GPU-facing upload plans and reliable acknowledgements that move those payloads into resident pools.
+- `backend` owns the GPU-facing facade called by the runtime: frame-global GPU state, frame resources, asset transfers, async GPU jobs, light and cluster buffers, per-draw resources, shadow atlas settings, graph registration, world-mesh frame plans, and diagnostics snapshots.
+- `gpu`, `gpu_pools`, and `gpu_resource` contain device and queue setup, adapter limits, driver-thread submission, presentation blits, VR mirror helpers, persistent resident pools, transient resource wrappers, and resource-cache plumbing.
+- `materials`, `passes`, `render_graph`, `graph_inputs`, `render_phase`, `world_mesh`, `mesh_deform`, `occlusion`, `skybox`, `reflection_probes`, `camera`, and `particles` are the renderer subsystems that turn mirrored scene state into graph resources, draw packets, compute work, and presentation-ready output.
+- `runtime` wires the other layers together one tick at a time. Its `frame` subtree handles view planning, extraction, scheduling, rendering, and submit; its `ipc`, `asset_integration`, `gpu_services`, `lockstep`, `xr_glue`, `offscreen_tasks`, and `debug_hud_frame` modules carry the per-tick side effects.
 
-The arrows in the diagram are the allowed dependency directions. The architecture-layer test enforces the concrete forbidden edges: frontend cannot reach assets, graph inputs, GPU, or XR; scene cannot reach backend; assets, materials, passes, render graph, graph inputs, and world mesh cannot reach back into backend or pass scheduling in ways that would invert the layer boundary. If you find yourself wanting an upward dependency (scene reaching into IPC, backend mutating frontend state), it is almost always a sign the data should move differently, usually as a snapshot taken at a layer boundary.
+The arrows in the diagram are the allowed dependency directions. The architecture-layer test enforces concrete forbidden edges: frontend cannot reach assets, graph inputs, GPU, or XR; scene cannot reach backend; assets, materials, passes, render graph, graph inputs, and world mesh cannot reach back into backend or pass scheduling in ways that would invert the layer boundary. If you find yourself wanting an upward dependency (scene reaching into IPC, backend mutating frontend state), it is almost always a sign the data should move differently, usually as a snapshot taken at a layer boundary.
 
 ### 3.5 The frame lifecycle
 
@@ -528,7 +530,7 @@ The host writes material properties as a flat key-value store. Each property lan
 
 The split is enforced. Pipeline-state property names must never appear in a shader's group 1 material uniform. They are dead weight there: shaders never read them, and the host writes them. The build script rejects any material WGSL that violates this contract. Two materials sharing a shader but differing in pipeline state correctly resolve to distinct cached pipelines because the cache key includes the resolved blend mode and render state.
 
-The relevant code lives in `crates/renderide/src/materials/`. It is large enough to be worth a quick map: `system` is the materials-system entry point the backend talks to; `registry` is the central table; `host_data/` holds the property store; `cache` holds the pipeline cache; `router` maps host shader asset IDs to pipeline families or embedded WGSL stems; `wgsl_reflect/` does naga-based reflection; `wgsl` carries the smaller WGSL helpers reflection needs; `raster_pipeline/` builds raster pipelines, with `null_pipeline.rs`, `pipeline_kind.rs`, `pipeline_build_error.rs`, and `pipeline_property_resolver.rs` as its companions; `material_passes/` carries the per-shader pass declarations parsed at build time and the tables that map them to pipeline kinds; `shader_permutation.rs` handles keyword permutations; `embedded/` holds the static table of built-in shaders compiled into the binary; `render_state/` holds blend, depth, stencil, cull, and color mask state; `render_queue.rs` carries the queue ordering for opaque, alpha test, transparent, and overlay draws.
+The relevant code lives in `crates/renderide/src/materials/`. It is large enough to be worth a quick map: `system` is the materials-system entry point the backend talks to; `registry` is the central table; `host_data/` holds the property store; `cache` holds the pipeline cache; `router` maps host shader asset IDs to pipeline families or runtime shader package stems; `wgsl_reflect/` does naga-based reflection; `wgsl` carries the smaller WGSL helpers reflection needs; `raster_pipeline/` builds raster pipelines, with `null_pipeline.rs`, `pipeline_kind.rs`, `pipeline_build_error.rs`, and `pipeline_property_resolver.rs` as its companions; `material_passes/` carries the per-shader pass declarations parsed at build time and the tables that map them to pipeline kinds; `shader_permutation.rs` handles keyword permutations; `embedded/` holds compatibility shims for built-in shader package lookups; `render_state/` holds blend, depth, stencil, cull, and color mask state; `render_queue.rs` carries the queue ordering for opaque, alpha test, transparent, and overlay draws.
 
 ### 3.9 The render graph
 
@@ -569,7 +571,7 @@ The relevant code lives in `crates/renderide/src/render_graph/`. The pieces:
 
 Two structural ideas matter most:
 
-- Pass phase. The graph distinguishes `FrameGlobal` passes from `PerView` passes. Frame-global work runs once per tick (currently mesh deformation). Per-view work runs once per planned view (clustered lighting, world rendering, Hi-Z build for the current view's submitted depth, view-dependent post-processing, scene-color compose).
+- Pass phase. The graph distinguishes `FrameGlobal` passes from `PerView` passes. Frame-global work runs once per tick (mesh deformation plus frame-global atlas work such as light cookies and shadows). Per-view work runs once per planned view (clustered lighting, world rendering, Hi-Z build for the current view's submitted depth, view-dependent post-processing, scene-color compose, and desktop overlay composition).
 - Encoder topology. The executor records frame-global passes in a dedicated encoder, then one encoder per planned view for per-view passes. Deferred buffer writes are drained before the single submit. The per-view loop pre-warms transients, per-view per-draw resources, and the pipeline cache once across all views before recording, so the recording loop never pays lazy allocation costs (a structural prerequisite for the parallel record path).
 
 When you find yourself tempted to record a pass on a borrowed encoder outside the graph, register a graph node instead. The graph is what keeps frame resource lifetimes correct.
@@ -581,6 +583,8 @@ Concrete passes live in `crates/renderide/src/passes/`. Each implements one of t
 ```mermaid
 flowchart TB
     md[mesh_deform<br/>skinning + blendshapes]
+    lc[light_cookies<br/>atlas updates]
+    sh[shadows<br/>shadow atlas]
     cl[clustered_light<br/>per-view cluster light list]
     dp[world_mesh_depth_prepass<br/>MSAA depth only]
     opaque[world_mesh_forward_opaque<br/>HDR color + depth]
@@ -592,8 +596,11 @@ flowchart TB
     hiz[hi_z_build<br/>stage current depth for next frame]
     pp[post_processing<br/>GTAO, auto-exposure,<br/>bloom, motion blur, tonemap]
     sc[scene_color_compose]
+    overlay[desktop_overlay<br/>optional overlay composition]
 
-    md --> cl
+    lc --> sh
+    md --> sh
+    sh --> cl
     cl --> dp
     dp --> opaque
     opaque --> normals
@@ -606,21 +613,25 @@ flowchart TB
     resolve --> hiz
     hiz --> pp
     pp --> sc
+    sc --> overlay
 
     classDef global fill:#fff0e8,stroke:#333
     classDef perview fill:#e8f0ff,stroke:#333
-    class md global
-    class cl,dp,opaque,normals,snapshot,intersect,transparent,resolve,hiz,pp,sc perview
+    class md,lc,sh global
+    class cl,dp,opaque,normals,snapshot,intersect,transparent,resolve,hiz,pp,sc,overlay perview
 ```
 
 The currently implemented passes:
 
+- `LightCookieAtlasPass` updates the frame-global light-cookie atlas used by lighting.
 - `mesh_deform` runs mesh skinning and blendshape compute (see [4.4](#44-mesh-skinning-and-blendshape-compute)).
+- `ShadowAtlasPass` updates the frame-global shadow atlas before per-view lighting and world rendering.
 - `clustered_light` runs the per-view compute pass that bins lights into clusters for this view's camera and eye layout (see [4.6](#46-clustered-forward-lighting)).
 - `world_mesh_forward` is the workhorse forward family. It splits into a prepare step, an optional MSAA depth prepass, an opaque pass, optional GTAO view normals, a depth snapshot, an intersection-aware pass, the transparent sequence, optional depth resolve, and the color/depth snapshots that feed downstream effects. A `helpers/` module collects the shared utilities the forward pass and its siblings draw on; it is not itself a pass.
 - `hi_z_build` builds and stages the hierarchical Z pyramid from the current resolved depth after forward rendering. Draw collection reads the previous frame's staged pyramid for temporal occlusion testing (see [4.5](#45-visibility-and-hi-z-occlusion)).
 - `post_processing` is a family of effects, each of which is its own graph node: GTAO, auto-exposure, bloom, motion blur, and either ACES or AgX tone mapping. See sections [4.11](#411-aces-tone-mapping) through [4.16](#416-motion-blur).
 - `scene_color_compose` copies the HDR scene color into the swapchain, the XR target, or an offscreen output, depending on the planned view. The final display blit (see [4.18](#418-display-blit-and-final-composition)) handles any color-space and resolution conversion past that point.
+- `WorldMeshDesktopOverlayPass` composites desktop overlay output after the main scene-color compose step.
 
 Swapchain clears no longer have a dedicated pass; clears happen through the render graph's load ops on the targets that own them, which keeps the cost in the same encoder as the work that follows.
 
@@ -678,7 +689,7 @@ If OpenXR initialization or a per-frame acquire fails, the renderer should degra
 - `golden` for golden-image comparison and PNG diff writing.
 - `logging` for the harness's own log routing.
 
-The harness is what stands between "the renderer compiles" and "the renderer behaves." It exercises the same queues, the same shared-memory protocol, and the same renderer entry points a real launch would, then captures the rendered frames for comparison against golden references under `crates/renderide-test/goldens/`. The default renderer binary is resolved next to the harness binary, or to `target/<profile>/renderide-renderer` when `--dev-fast` or `--release` is supplied; `--renderer` can override it. New end-to-end integration tests for the renderer as a whole belong in this harness, not in `crates/renderide/tests/`.
+The harness is what stands between "the renderer compiles" and "the renderer behaves." It exercises the same queues, the same shared-memory protocol, and the same renderer entry points a real launch would, then captures the rendered frames for comparison against golden references under `crates/renderide-test/goldens/`. The default renderer binary is resolved next to the harness binary; `--release` selects `target/release/renderide-renderer`, and `--renderer` can override the path entirely. New end-to-end integration tests for the renderer as a whole belong in this harness, not in `crates/renderide/tests/`.
 
 ---
 
@@ -857,14 +868,12 @@ The shader tree under `crates/renderide/shaders/` is organized into six source r
 
 - `materials/` contains one shader per host material program. The filenames mirror the original Unity shader names, lowercased. There are roughly 150 material roots at present; the major families are PBS (physically based, with many variants for shadow, displacement, intersect, alpha, and so on), unlit (basic, overlay, billboard), Xiexe Toon (a stylized BRDF), FurFX, CAD (line work), and a long list of effect shaders (blur, fresnel, gradient, lut, gamma, hsv, invert, grayscale, channel matrix, paint, matcap, fresnel-lerp, displacement variants).
 - `modules/` contains shared logic composed into materials and passes via naga-oil (see [4.20](#420-naga-oil-composition)). Its subdirectories carry the modules by domain: `core/` for math and small primitives, `draw/` for per-draw helpers, `frame/` for per-frame data helpers, `fur/` for FurFX helpers, `ibl/` for the GGX prefilter and IBL reconstruction, `lighting/` for direct-light, clustered-light, and SH2 helpers, `material/` for color, alpha, sample, and fresnel utilities, `mesh/` for vertex transforms and billboard math, `pbs/` for the PBS BRDF and its normal/displacement/cluster pieces, `post/` for post-processing math (including the GTAO filter), `skybox/` for the skybox evaluator, `ui/` for UI helpers (overlay tint, rect clipping, text SDF), and `xiexe/` for the Xiexe Toon helpers.
-- `passes/backend/` contains shaders the renderer uses for backend tasks that are not material-driven: the skybox families, the depth blits, the MSAA depth prepass, and the GTAO view-normals reconstruction.
-- `passes/compute/` contains all compute shaders: skinning, blendshape, Hi-Z mip 0 and downsample, clustered light binning, MSAA depth resolve, SH2 projection, IBL convolution and downsample, GTAO prefilter, and auto-exposure histogram.
-- `passes/post/` contains the post-processing shaders: GTAO, bloom, motion blur, ACES and AgX tone mapping, MSAA HDR resolve, auto-exposure apply, scene color compose, and the camera-task alpha coverage shader for secondary-camera output.
+- `passes/backend/` contains shaders the renderer uses for backend tasks that are not material-driven: skybox families, depth blits, light-cookie blits, shadow-caster helpers, XR depth transfer, the world-mesh depth prepass, and GTAO view-normals reconstruction.
+- `passes/compute/` contains all compute shaders: skinning, blendshape, Hi-Z mip 0 and downsample, clustered light binning, MSAA depth resolve, SH2 projection, skybox bake/IBL convolution/downsample/stitch, GTAO prefilter, and auto-exposure histogram.
+- `passes/post/` contains the post-processing and post-render output shaders: GTAO, bloom, motion blur, ACES and AgX tone mapping, MSAA HDR resolve, auto-exposure apply, scene color compose, camera360 equirect output, and the camera-task alpha coverage shader for secondary-camera output.
 - `passes/present/` contains the VR mirror shaders and the display blit.
 
-There is also a `target/` directory under `shaders/` that holds generated inspection outputs and development-reload material targets; it is not source.
-
-The build script under `build.rs` and `build_support/shader/` discovers every WGSL file at build time, composes them, validates them, writes generated inspection outputs, and emits the `OUT_DIR` embedded shader registry the renderer links in. Material shaders are validated against the pipeline-state-versus-uniform contract (see [4.22](#422-pipeline-state-vs-shader-uniforms)). Shader composition runs in parallel across CPUs.
+The build script under `build.rs` and `build_support/shader/` discovers every WGSL file at build time, composes them, validates them, and writes the runtime shader package under `target/<profile>/shaders/`. Material shaders are validated against the pipeline-state-versus-uniform contract (see [4.22](#422-pipeline-state-vs-shader-uniforms)). Shader composition runs in parallel across CPUs.
 
 ### 4.20 Naga-oil composition
 
@@ -883,7 +892,7 @@ The Rust side of composition lives in `crates/renderide/build_support/shader/`. 
 - `validation` enforces the cross-cutting contracts (notably the pipeline-state-versus-uniform separation).
 - `parallel` runs composition jobs across cores.
 - `mirror_once` rewrites recognized texture sampling patterns so MirrorOnce wrap modes can be emulated consistently.
-- `emit` writes the embedded shader registry that the renderer links in.
+- `emit` writes the runtime shader package and the small compatibility facade the renderer links in.
 - `model` and `error` carry the data model and the error type.
 
 ### 4.21 Bind group conventions

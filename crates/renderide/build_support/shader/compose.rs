@@ -12,7 +12,6 @@ use super::model::{
     ShaderVariant,
 };
 use super::modules::{ShaderModuleSources, register_composable_modules};
-use super::reflection::reflect_embedded_target;
 use super::source::shader_source_manifest;
 use super::validation::{
     module_to_wgsl, validate_entry_points, validate_no_pipeline_state_uniform_fields,
@@ -222,6 +221,7 @@ pub(super) fn compile_shader_job(
 
     Ok(CompiledShader {
         compile_order: job.compile_order,
+        source_stem: stem.to_string(),
         source_class: job.source_class,
         pass_directives,
         texture_defaults,
@@ -277,13 +277,10 @@ fn compile_variant_targets(
             pass_directives,
             &format!("{stem} ({})", ShaderVariant::Default.label()),
         )?;
-        let reflection =
-            reflect_embedded_target(stem, &default_wgsl, &pass_directives, job.source_class)?;
         return Ok(vec![CompiledShaderTarget {
             target_stem: stem.to_string(),
             wgsl: default_wgsl,
             pass_directives,
-            reflection,
         }]);
     }
 
@@ -303,13 +300,10 @@ fn compile_variant_targets(
             pass_directives,
             &format!("{stem} ({})", variant.label()),
         )?;
-        let reflection =
-            reflect_embedded_target(&target_stem, &wgsl, &pass_directives, job.source_class)?;
         targets.push(CompiledShaderTarget {
             target_stem,
             wgsl,
             pass_directives,
-            reflection,
         });
     }
     Ok(targets)

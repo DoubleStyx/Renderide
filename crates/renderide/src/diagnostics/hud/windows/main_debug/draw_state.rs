@@ -18,6 +18,7 @@ use super::super::labels::{
     blend_mode_label, color_mask_label, draw_state_has_override, draw_state_is_uiish, offset_label,
     pipeline_label, stencil_label, transparent_class_label, ztest_label,
 };
+use super::super::sections::collapsible_section;
 use super::super::table_helpers::scrolling_table_flags;
 
 /// Bright green: row is in the overlay layer (screen-anchored draw).
@@ -45,16 +46,18 @@ impl TabView for DrawStateTab {
             ui.text("Waiting for frame diagnostics");
             return;
         };
-        draw_filters(ui, state);
-        let rows = filtered_rows(d, state);
-        let overlay_count = rows.iter().filter(|r| r.is_overlay).count();
-        let row_count = rows.len();
-        let submitted_count = d.mesh_draw.draw_state_rows.len();
-        ui.text_disabled(format!(
-            "{row_count} rows shown  ({submitted_count} submitted, {overlay_count} overlay)"
-        ));
+        collapsible_section(ui, "Filters", true, |ui| draw_filters(ui, state));
+        collapsible_section(ui, "Draw rows", true, |ui| {
+            let rows = filtered_rows(d, state);
+            let overlay_count = rows.iter().filter(|r| r.is_overlay).count();
+            let row_count = rows.len();
+            let submitted_count = d.mesh_draw.draw_state_rows.len();
+            ui.text_disabled(format!(
+                "{row_count} rows shown  ({submitted_count} submitted, {overlay_count} overlay)"
+            ));
 
-        draw_state_table(ui, &rows);
+            draw_state_table(ui, &rows);
+        });
     }
 }
 

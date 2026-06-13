@@ -74,7 +74,8 @@ fn sample_world_normal(
             ts::sample_tex_2d(detail_normal_tex, detail_normal_sampler, uv_detail, detail_normal_lod_bias),
             detail_normal_scale,
         );
-        ts_n = normalize(vec3<f32>(ts_n.xy + ts_detail.xy * detail_mask, ts_n.z));
+        let detail_blend = normalize(vec3<f32>(ts_n.xy + ts_detail.xy, ts_n.z * ts_detail.z));
+        ts_n = mix(ts_n, detail_blend, clamp(detail_mask, 0.0, 1.0));
     }
 
     return normalize(tbn * ts_n);

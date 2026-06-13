@@ -226,7 +226,7 @@ pub(super) fn capture_hi_z_temporal_after_collect(
         );
 }
 
-/// Updates debug HUD mesh-draw stats when the HUD is enabled.
+/// Updates debug HUD mesh-draw payloads when an active HUD tab needs them.
 pub(super) fn maybe_set_world_mesh_draw_stats(
     debug_hud: PerViewHudConfig,
     materials: &MaterialSystem,
@@ -237,7 +237,7 @@ pub(super) fn maybe_set_world_mesh_draw_stats(
     offscreen_write_target: OffscreenWriteTarget,
 ) -> PerViewHudOutputs {
     let mut outputs = PerViewHudOutputs::default();
-    if debug_hud.main_enabled {
+    if debug_hud.capture_world_mesh_draw_stats {
         let stats = stats_from_sorted(
             draws,
             Some((
@@ -251,10 +251,14 @@ pub(super) fn maybe_set_world_mesh_draw_stats(
             shader_perm,
         );
         outputs.world_mesh_draw_stats = Some(stats);
+    }
+
+    if debug_hud.capture_world_mesh_draw_state_rows {
         outputs.world_mesh_draw_state_rows = Some(state_rows_from_sorted(draws));
     }
 
-    if debug_hud.textures_enabled && !offscreen_write_target.is_offscreen() {
+    if debug_hud.capture_current_view_texture_2d_asset_ids && !offscreen_write_target.is_offscreen()
+    {
         super::current_view_textures::current_view_texture2d_asset_ids_from_draws(
             materials,
             draws,
@@ -787,7 +791,9 @@ fn world_mesh_hud_outputs(
 mod tests {
     use super::super::material_batch::{MaterialGroup1Binding, PipelineVariantKey};
     use super::*;
-    use crate::materials::{MaterialPipelineDesc, RasterPrimitiveTopology, ShaderPermutation};
+    use crate::materials::{
+        MaterialPipelineDesc, MaterialSystem, RasterPrimitiveTopology, ShaderPermutation,
+    };
     use crate::world_mesh::DrawGroup;
     use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
 
@@ -845,6 +851,47 @@ mod tests {
             instance_range: representative_draw_idx as u32..representative_draw_idx as u32 + 1,
             material_packet_idx: usize::MAX,
         }
+    }
+
+    #[test]
+    fn hud_outputs_capture_draw_stats_and_rows_independently() {
+        let materials = MaterialSystem::new();
+        let collection = WorldMeshDrawCollection::empty();
+
+        let stats_only = maybe_set_world_mesh_draw_stats(
+            PerViewHudConfig {
+                capture_world_mesh_draw_stats: true,
+                ..Default::default()
+            },
+            &materials,
+            &collection,
+            &collection.items,
+            true,
+            ShaderPermutation(0),
+            OffscreenWriteTarget::None,
+        );
+        assert!(stats_only.world_mesh_draw_stats.is_some());
+        assert!(stats_only.world_mesh_draw_state_rows.is_none());
+        assert!(stats_only.current_view_texture_2d_asset_ids.is_empty());
+
+        let rows_only = maybe_set_world_mesh_draw_stats(
+            PerViewHudConfig {
+                capture_world_mesh_draw_state_rows: true,
+                ..Default::default()
+            },
+            &materials,
+            &collection,
+            &collection.items,
+            true,
+            ShaderPermutation(0),
+            OffscreenWriteTarget::None,
+        );
+        assert!(rows_only.world_mesh_draw_stats.is_none());
+        assert_eq!(
+            rows_only.world_mesh_draw_state_rows.as_ref().map(Vec::len),
+            Some(0)
+        );
+        assert!(rows_only.current_view_texture_2d_asset_ids.is_empty());
     }
 
     #[test]

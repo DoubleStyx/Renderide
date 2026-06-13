@@ -204,7 +204,7 @@ impl CompiledRenderGraph {
         let mut frame_params = {
             profiling::scope!("graph::frame_global::build_frame_params");
             helpers::frame_render_params_from_resolved(
-                scene,
+                *scene,
                 &mut **backend,
                 helpers::ResolvedFrameRenderParamsInputs {
                     resolved: &resolved,

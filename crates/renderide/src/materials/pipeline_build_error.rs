@@ -1,20 +1,20 @@
-//! Errors when building reflective raster mesh pipelines from composed embedded WGSL.
+//! Errors when building reflective raster mesh pipelines from runtime shader package WGSL.
 
 use thiserror::Error;
 
 use super::wgsl_reflect::ReflectError;
 
-/// Failure to load embedded WGSL, reflect bind layouts, or validate the per-draw contract.
+/// Failure to load packaged WGSL, reflect bind layouts, or validate the per-draw contract.
 #[derive(Debug, Error)]
 pub enum PipelineBuildError {
     /// Naga parse/validate or bind layout rules failed for the shader source.
     #[error(transparent)]
     Reflect(#[from] ReflectError),
-    /// No embedded `shaders/target/{stem}.wgsl` string in the build output for `stem`.
-    #[error("embedded WGSL missing for composed stem `{0}` (run build with shaders/)")]
+    /// No runtime shader package WGSL payload for `stem`.
+    #[error("shader package WGSL missing for composed stem `{0}` (run build with shaders/)")]
     MissingEmbeddedShader(String),
-    /// The active device does not expose all features required by the embedded WGSL target.
-    #[error("embedded WGSL `{stem}` requires unavailable device features {missing:?}")]
+    /// The active device does not expose all features required by the shader package target.
+    #[error("shader package WGSL `{stem}` requires unavailable device features {missing:?}")]
     MissingDeviceFeatures {
         /// Composed material target stem that declared the feature requirement.
         stem: String,

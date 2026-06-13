@@ -45,6 +45,8 @@
 //! settings.
 
 mod handle;
+#[cfg(test)]
+mod hud_parity_tests;
 pub mod labeled_enum;
 pub(crate) mod persist;
 mod types;

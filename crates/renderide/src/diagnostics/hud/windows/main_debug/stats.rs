@@ -7,7 +7,7 @@
 //! * Color tags surface the bits worth caring about at a glance: overlay batch / draw counts,
 //!   error counters, percentages near critical thresholds, "active/inactive" booleans.
 
-use imgui::{TableFlags, TreeNodeFlags};
+use imgui::TableFlags;
 
 use crate::diagnostics::{FrameDiagnosticsSnapshot, RendererInfoSnapshot};
 use crate::world_mesh::{RenderWorldMaintenanceStats, WorldMeshDrawStats};
@@ -16,6 +16,7 @@ use super::super::super::fmt as hud_fmt;
 use super::super::super::state::HudUiState;
 use super::super::super::view::TabView;
 use super::super::labels::device_type_label;
+use super::super::sections::collapsible_section;
 
 /// Bright cyan: stable headline values (frame index, viewport).
 const TAG_HEADLINE: [f32; 4] = [0.55, 0.85, 1.00, 1.00];
@@ -88,17 +89,9 @@ impl TabView for StatsTab {
         }
         let ctx = StatsContext { renderer, frame };
         for section in SECTIONS {
-            let flags = if section.default_open() {
-                TreeNodeFlags::DEFAULT_OPEN
-            } else {
-                TreeNodeFlags::empty()
-            };
-            if ui.collapsing_header(section.label(), flags) {
-                ui.indent_by(8.0);
+            collapsible_section(ui, section.label(), section.default_open(), |ui| {
                 section.body(ui, &ctx);
-                ui.unindent_by(8.0);
-                ui.spacing();
-            }
+            });
         }
     }
 }

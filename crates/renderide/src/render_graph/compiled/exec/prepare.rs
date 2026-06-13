@@ -3,14 +3,13 @@
 use crate::cpu_parallelism::{FrameCpuWorkload, FrameParallelPolicy, ParallelAdmission};
 use crate::diagnostics::PerViewHudConfig;
 use crate::gpu::GpuLimits;
-use crate::graph_inputs::{FrameSystemsShared, PerViewFramePlan};
+use crate::graph_inputs::{FrameSystemsShared, GraphSceneView, PerViewFramePlan};
 use crate::materials::MaterialSystem;
 use crate::mesh_deform::{GpuSkinCache, MeshPreprocessPipelines};
 use crate::occlusion::OcclusionGraphHook;
 use crate::render_graph::execution_backend::{
     GraphAssetResources, GraphFrameResources, GraphViewBlackboardPreparer,
 };
-use crate::scene::SceneCoordinator;
 
 use super::super::super::error::GraphExecuteError;
 use super::super::super::frame_upload_batch::{FrameUploadBatch, GraphUploadSink};
@@ -22,7 +21,7 @@ use super::types::{PerViewWorkItem, PreparedPerViewFrameInput, PreparedPerViewFr
 const PRE_RECORD_VIEW_PREP_PARALLEL_CHUNK_VIEWS: usize = 1;
 
 struct ViewBlackboardPrepareShared<'a> {
-    scene: &'a SceneCoordinator,
+    scene: GraphSceneView<'a>,
     device: &'a wgpu::Device,
     gpu_limits: &'a GpuLimits,
     upload_batch: &'a FrameUploadBatch,
@@ -137,7 +136,7 @@ impl CompiledRenderGraph {
         let resolved = work_item.resolved.as_resolved();
         let frame_params = work_item.frame_input.frame_params(
             FrameSystemsShared {
-                scene: shared.scene,
+                scene: shared.scene.coordinator(),
                 occlusion: shared.occlusion,
                 frame_resources: shared.frame_resources,
                 materials: shared.materials,

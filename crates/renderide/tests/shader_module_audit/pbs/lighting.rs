@@ -294,6 +294,10 @@ fn pbs_roughness_keeps_indirect_mirror_path_unclamped() -> io::Result<()> {
         "fn direct_alpha_from_perceptual_roughness(",
         "return max(clamped * clamped, MIN_ALPHA);",
         "fn direct_perceptual_roughness(",
+        "fn filter_perceptual_roughness(\n    perceptual_roughness: f32,\n    shading_normal: vec3<f32>,\n    geometric_normal: vec3<f32>,",
+        "let normal_map_variance = max(shading_variance - geometric_variance, 0.0);",
+        "let normal_filtered = filter_normal_map_perceptual_roughness(perceptual_roughness, normal_map_variance);",
+        "return filter_geometric_perceptual_roughness(normal_filtered, geometric_variance);",
         "fn eval_direct_specular_lobe(",
     ] {
         assert!(
@@ -307,7 +311,7 @@ fn pbs_roughness_keeps_indirect_mirror_path_unclamped() -> io::Result<()> {
         "fn direct_energy_compensation(",
         "let direct_roughness = brdf::direct_perceptual_roughness(perceptual_roughness);",
         "let direct_dfg = brdf::sample_ibl_dfg_lut(direct_roughness, n_dot_v);",
-        "let filtered_roughness = brdf::filter_perceptual_roughness(s.roughness, s.geometric_normal);",
+        "let filtered_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal, s.geometric_normal);",
         "fn indirect_specular_energy(",
         "let indirect_dfg = brdf::sample_ibl_dfg_lut(perceptual_roughness, n_dot_v);",
     ] {
@@ -317,8 +321,8 @@ fn pbs_roughness_keeps_indirect_mirror_path_unclamped() -> io::Result<()> {
         );
     }
     assert!(
-        !lighting_src.contains("filter_perceptual_roughness(s.roughness, s.normal)"),
-        "PBS specular AA must derive roughness from geometric normals, not normal-map-perturbed shading normals"
+        !lighting_src.contains("filter_perceptual_roughness(s.roughness, s.geometric_normal)"),
+        "PBS specular AA must pass both shading and geometric normals"
     );
 
     for path in wgsl_files_recursive("shaders/materials")? {
@@ -335,6 +339,79 @@ fn pbs_roughness_keeps_indirect_mirror_path_unclamped() -> io::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+#[test]
+fn pbs_shifts_view_normals_for_specular_brdf_and_ibl() -> io::Result<()> {
+    let brdf_src = module_source("pbs/brdf.wgsl")?;
+    for required in [
+        "const MIN_VIEW_FACING_N_DOT_V: f32 = 1e-4;",
+        "fn view_facing_normal(n: vec3<f32>, v: vec3<f32>) -> vec3<f32>",
+        "return safe_normalize(unit_n + unit_v * (MIN_VIEW_FACING_N_DOT_V - n_dot_v), unit_v);",
+        "let brdf_n = view_facing_normal(n, view);",
+        "let n_dot_v = max(dot(brdf_n, view), MIN_VIEW_FACING_N_DOT_V);",
+        "let n_dot_h = clamp(dot(brdf_n, h), 0.0, 1.0);",
+    ] {
+        assert!(
+            brdf_src.contains(required),
+            "pbs/brdf.wgsl must contain view-facing normal term `{required}`"
+        );
+    }
+    assert!(
+        !brdf_src.contains("let n_dot_v = max(dot(n, v), 1e-4);"),
+        "direct PBS BRDF evaluation must not clamp a back-facing shading normal to epsilon"
+    );
+
+    let lighting_src = module_source("pbs/lighting.wgsl")?;
+    assert_eq!(
+        lighting_src
+            .matches("let specular_normal = brdf::view_facing_normal(s.normal, view_dir);")
+            .count(),
+        4,
+        "PBS opaque and transparent metallic/specular paths must shift the specular normal"
+    );
+    assert_eq!(
+        lighting_src
+            .matches("let n_dot_v = clamp(dot(specular_normal, view_dir), 0.0, 1.0);")
+            .count(),
+        4,
+        "PBS DFG and specular AO lookup must use the shifted specular normal"
+    );
+    assert_eq!(
+        lighting_src
+            .matches("world_pos,\n        specular_normal,\n        s.geometric_normal,")
+            .count(),
+        4,
+        "PBS reflection-probe specular direction must use the shifted specular normal"
+    );
+    assert_eq!(
+        lighting_src
+            .matches("rprobe::indirect_diffuse(world_pos, s.normal, view_layer, options.include_directional)")
+            .count(),
+        4,
+        "PBS diffuse ambient should remain on the original shading normal"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn standard_pbs_detail_normals_use_tangent_space_blend() -> io::Result<()> {
+    let standard = module_source("pbs/standard.wgsl")?;
+    for required in [
+        "let detail_blend = normalize(vec3<f32>(ts_n.xy + ts_detail.xy, ts_n.z * ts_detail.z));",
+        "ts_n = mix(ts_n, detail_blend, clamp(detail_mask, 0.0, 1.0));",
+    ] {
+        assert!(
+            standard.contains(required),
+            "pbs/standard.wgsl must blend detail normals with `{required}`"
+        );
+    }
+    assert!(
+        !standard.contains("ts_n.xy + ts_detail.xy * detail_mask, ts_n.z"),
+        "Standard PBS detail normals must not mask only the XY channels"
+    );
     Ok(())
 }
 

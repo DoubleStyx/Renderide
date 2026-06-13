@@ -1,9 +1,11 @@
 use std::sync::Arc;
 
+use hashbrown::HashMap;
+
 use crate::backend::HostShadowQuality;
 use crate::backend::frame_resource_manager::per_view_state::PreparedViewLights;
 use crate::camera::ViewId;
-use crate::gpu::GpuLight;
+use crate::gpu::{GpuLight, GpuLimits};
 use crate::materials::RasterPipelineKind;
 use crate::shared::{
     LightType, QualityConfig, ShadowCascadeMode, ShadowCastMode, ShadowResolutionMode,
@@ -12,7 +14,19 @@ use crate::world_mesh::draw_prep::WorldMeshDrawCollection;
 use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
 use crate::world_mesh::{PrefetchedWorldMeshViewDraws, WorldMeshDrawItem, WorldMeshDrawPlan};
 
-use super::{POINT_FACE_COUNT, light_type_u32};
+use super::{POINT_FACE_COUNT, light_type_u32, shadow_view_capacity};
+
+fn limits(max_texture_dimension_2d: u32, max_texture_array_layers: u32) -> GpuLimits {
+    GpuLimits::synthetic_for_tests(
+        wgpu::Limits {
+            max_texture_dimension_2d,
+            max_texture_array_layers,
+            ..Default::default()
+        },
+        wgpu::Features::empty(),
+        HashMap::new(),
+    )
+}
 
 fn shadowed_light(light_type: LightType) -> GpuLight {
     GpuLight {
@@ -57,6 +71,50 @@ fn prefetched_plan(items: Vec<WorldMeshDrawItem>) -> WorldMeshDrawPlan {
         },
         None,
     )))
+}
+
+#[test]
+fn shadow_planning_clamps_to_gpu_atlas_capacity() {
+    let mut manager = super::FrameResourceManager::new();
+    manager.limits = Some(Arc::new(limits(1024, 2)));
+    manager
+        .per_view_lights
+        .get_or_insert_with(ViewId::Main, PreparedViewLights::default)
+        .lights
+        .push(GpuLight {
+            position: [3.0, 4.0, 5.0],
+            light_type: light_type_u32(LightType::Point),
+            shadow_type: 1,
+            shadow_strength: 1.0,
+            shadow_near_plane: 0.05,
+            shadow_bias: 0.25,
+            range: 8.0,
+            ..GpuLight::default()
+        });
+    let draw_plan = prefetched_plan(vec![pbs_draw(1, ShadowCastMode::On)]);
+
+    manager
+        .prepare_shadow_frame_for_views(HostShadowQuality::default(), [(ViewId::Main, &draw_plan)]);
+
+    let plan = manager.shadow_frame_plan();
+    assert_eq!(shadow_view_capacity(manager.limits.as_deref()), 2);
+    assert_eq!(plan.requested_resolution, 1024);
+    assert_eq!(plan.requested_layers, 2);
+    assert_eq!(plan.render_views.len(), 2);
+    assert_eq!(plan.metadata.len(), 2);
+    assert_eq!(plan.caster_sets.len(), 1);
+    assert_eq!(plan.caster_sets[0].draws.len(), 1);
+    assert_eq!(plan.requested_draw_slots, 1);
+    for (index, view) in plan.render_views.iter().enumerate() {
+        assert_eq!(view.layer, index as u32);
+        assert_eq!(view.resolution, 1024);
+        assert_eq!(view.caster_set_index, 0);
+        assert_eq!(plan.metadata[index].params[0], index as f32);
+        assert_eq!(plan.metadata[index].params[1], 1.0 / 1024.0);
+    }
+    let light = &manager.per_view_lights.get(ViewId::Main).unwrap().lights[0];
+    assert_eq!(light.shadow_view_start, 0);
+    assert_eq!(light.shadow_view_count, 2);
 }
 
 #[test]

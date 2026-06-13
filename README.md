@@ -62,7 +62,7 @@ The launcher will start the Resonite host and connect Renderide automatically.
 
 ### macOS
 
-Renderide runs the Resonite Host from the Windows depot and renders natively through Metal. The launcher accepts an explicit Resonite install path, so local builds and release zips should not need hand-written symlinks or `dev-fast` path edits.
+Renderide runs the Resonite Host from the Windows depot and renders natively through Metal. The launcher accepts an explicit Resonite install path, so local builds and release zips should not need hand-written symlinks or source edits.
 
 1. Install the Windows Resonite depot with SteamCMD:
 
@@ -90,7 +90,7 @@ Renderide runs the Resonite Host from the Windows depot and renders natively thr
    ./renderide --resonite-dir "$HOME/Games/ResoniteWindows"
    ```
 
-The macOS release zip contains `renderide`, `renderide-renderer`, `xr`, and the bundled OpenXR loader. If macOS quarantine blocks a downloaded zip, remove the quarantine attribute from the extracted Renderide folder:
+The macOS release zip contains `renderide`, `renderide-renderer`, `shaders`, `xr`, and the bundled OpenXR loader. If macOS quarantine blocks a downloaded zip, remove the quarantine attribute from the extracted Renderide folder:
 
 ```bash
 xattr -dr com.apple.quarantine /path/to/renderide-folder
@@ -120,13 +120,14 @@ Bootstrapper  --shm queues-->  Host (.NET / Resonite)
                               Renderer (renderide-renderer)
 ```
 
-Inside the renderer, work is organized by layer:
+Inside the renderer, work is organized by layer and supporting renderer subsystems:
 
 1. **App** - owns process bootstrap, logging, config loading, shutdown handling, the winit event loop, frame clock, window target, and OpenXR target selection.
 2. **Frontend** - owns Host transport: IPC queues, shared memory, init handshake, input conversion, output-device policy, and lock-step state.
 3. **Scene** - owns the host world mirror: transforms, render spaces, mesh and skinned renderables, lights, cameras, and overrides. Pure data; does not touch wgpu.
-4. **Backend** - owns GPU-facing renderer state: asset pools, material and shader systems, frame resources, draw preparation, render graph assembly, and command recording.
-5. **Runtime** - coordinates frontend, scene, and backend in the fixed per-tick order used by the app driver.
+4. **Assets and materials** - translate host payloads and material properties into resident GPU resources, shader routes, reflected bind groups, and pipeline state.
+5. **Backend, render graph, and GPU** - own device-facing state, frame resources, world-mesh draw preparation, pass registration, transient/history resources, command recording, and presentation helpers.
+6. **Runtime** - coordinates frontend, scene, assets, backend, XR, offscreen tasks, and diagnostics in the fixed per-tick order used by the app driver.
 
 Each tick: poll IPC, integrate a budgeted slice of pending assets, drain offscreen camera/reflection-probe tasks, run the optional OpenXR begin step, complete the lock-step exchange with the host, schedule and render views, present or submit the HMD frame, then update HUD and diagnostics state.
 
@@ -137,13 +138,13 @@ The workspace lives under `crates/`:
 | Crate | Purpose |
 | --- | --- |
 | [`bootstrapper`](crates/bootstrapper) | Builds the `renderide` launcher. Launches the Resonite host and renderer, owns bootstrap IPC (heartbeats, clipboard, renderer argv), and ties child process lifetimes together. |
-| [`renderide`](crates/renderide) | Builds the `renderide-renderer` process and `roundtrip` helper. Owns winit, wgpu, OpenXR, scene mirroring, render graph, materials, assets, diagnostics, and presentation. |
+| [`renderide`](crates/renderide) | Builds the `renderide-renderer` process and `roundtrip` helper. Owns winit, wgpu, OpenXR, scene mirroring, asset integration, materials, particles, render graph, diagnostics, and presentation. |
 | [`renderide-shared`](crates/renderide-shared) | Generated IPC types, binary packing helpers, shared-memory accessors/writers, and dual-queue wrappers. |
 | [`interprocess`](crates/interprocess) | Cloudtoid-compatible shared-memory ring queues used by every IPC channel. |
 | [`logger`](crates/logger) | File-first logging used by the bootstrapper, host capture, and renderer. |
 | [`renderide-test`](crates/renderide-test) | Integration test harness that drives the renderer end-to-end. |
 
-A C# generator under [`generators/SharedTypeGenerator`](generators/SharedTypeGenerator) emits `crates/renderide-shared/src/shared.rs`. Its test project lives under [`generators/SharedTypeGenerator.Tests`](generators/SharedTypeGenerator.Tests) and uses the `roundtrip` binary to compare C# and Rust packing. [`RenderideMod`](RenderideMod) contains the host-side Resonite mod, and [`third_party/openxr_loader`](third_party/openxr_loader) contains vendored OpenXR loader binaries used by release artifacts on Windows and macOS.
+A C# generator under [`generators/SharedTypeGenerator`](generators/SharedTypeGenerator) emits `crates/renderide-shared/src/shared.rs`. Its test project lives under [`generators/SharedTypeGenerator.Tests`](generators/SharedTypeGenerator.Tests) and uses the `roundtrip` binary to compare C# and Rust packing. [`RenderideMod`](RenderideMod) contains the host-side Resonite mod, [`crates/renderide/assets`](crates/renderide/assets) contains runtime XR bindings and the shipped skybox model, and [`third_party/openxr_loader`](third_party/openxr_loader) contains vendored OpenXR loader binaries used by release artifacts on Windows and macOS.
 
 ## Feature flags
 
@@ -152,7 +153,7 @@ The `renderide` crate exposes opt-in Cargo features for capabilities that depend
 Multiple features can be combined as a single space-separated argument:
 
 ```bash
-cargo build --features "tracy video-textures"
+cargo build --release --features "tracy video-textures"
 ```
 
 ### `tracy`
@@ -160,7 +161,7 @@ cargo build --features "tracy video-textures"
 CPU and GPU profiling integration. Activates `profiling::scope!` zones, frame marks, and `wgpu-profiler` GPU timestamp queries that stream into the [Tracy](https://github.com/wolfpld/tracy) profiler GUI on port 8086. The Tracy client links statically, so this feature has no system-library prerequisites.
 
 ```bash
-cargo build --features tracy
+cargo build --release --features tracy
 ```
 
 See [Profiling](#profiling) for adapter requirements and connection details.
@@ -176,7 +177,7 @@ System dependencies:
 - **Windows**: the official GStreamer MSVC SDK plus a working `pkg-config` (`pkgconf` rather than `pkgconfiglite`).
 
 ```bash
-cargo build --features video-textures
+cargo build --release --features video-textures
 ```
 
 ## Configuration
@@ -197,7 +198,7 @@ If timestamp queries are unavailable, a warning is logged and Tracy still receiv
 ### Building with profiling enabled
 
 ```bash
-cargo build --profile dev-fast --features tracy
+cargo build --release --features tracy
 ```
 
 ### Connecting Tracy
@@ -218,7 +219,7 @@ Linux, macOS, and Windows are all tier-1 targets and exercised in CI ([`.github/
 
 ## Contributing
 
-Contributions are welcome. The workspace builds with the standard Cargo commands listed above; lints (`cargo clippy --all-targets --all-features`) and formatting (`cargo fmt`, plus `taplo fmt` when editing `Cargo.toml`) are expected to be clean before opening a pull request, and CI runs the same checks across all three platforms.
+Contributions are welcome. The workspace builds with the standard Cargo commands listed above; lints (`cargo clippy --all-targets`, with feature coverage matching CI) and formatting (`cargo fmt`, plus `taplo fmt` when editing `Cargo.toml`) are expected to be clean before opening a pull request, and CI runs the same checks across all three platforms.
 
 Read [`CONTRIBUTING.md`](CONTRIBUTING.md) to learn how to get started.
 

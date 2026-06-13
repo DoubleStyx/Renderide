@@ -16,11 +16,10 @@ use crate::world_mesh::materials::FrameMaterialBatchCache;
 
 use super::super::item::{WorldMeshDrawItem, stacked_material_submesh_topology};
 use super::super::prepared_renderables::{FramePreparedDraw, FramePreparedRun};
-use super::DrawCollectionInputs;
 use super::candidate::{DrawCandidate, evaluate_draw_candidate};
-use super::lod::LodVisibility;
 use super::scene_walk::transform_chain_has_degenerate_scale;
 use super::world_matrix::{front_face_for_draw_matrices, world_matrix_for_local_vertex_stream};
+use super::{CollectState, DrawCollectionInputs};
 use super::{effective_overlay_in_view, special_layer_visible_in_view};
 
 /// Returns true when two prepared slot entries came from the same source renderer.
@@ -261,9 +260,7 @@ fn append_prepared_run_draws(
 fn collect_prepared_renderer_run(
     run: &[FramePreparedDraw],
     ctx: &DrawCollectionInputs<'_>,
-    cache: &FrameMaterialBatchCache,
-    filter_masks: &HashMap<RenderSpaceId, Vec<bool>>,
-    lod_visibility: &LodVisibility,
+    state: CollectState<'_>,
     out: &mut Vec<WorldMeshDrawItem>,
 ) -> (usize, usize, usize) {
     let Some(first) = run.first() else {
@@ -276,7 +273,7 @@ fn collect_prepared_renderer_run(
     {
         return (0, 0, 0);
     }
-    if !prepared_run_passes_filter(first, ctx, filter_masks) {
+    if !prepared_run_passes_filter(first, ctx, state.filter_masks) {
         return (0, 0, 0);
     }
     let source_is_overlay = first.is_overlay;
@@ -290,7 +287,10 @@ fn collect_prepared_renderer_run(
     if !special_layer_visible_in_view(ctx, source_special_layer) {
         return (0, 0, 0);
     }
-    if !lod_visibility.renderer_visible(first.space_id, first.renderer_ordinal) {
+    if !state
+        .lod_visibility
+        .renderer_visible(first.space_id, first.renderer_ordinal)
+    {
         return (0, 0, 0);
     }
     if transform_chain_has_degenerate_scale(ctx, first.space_id, first.node_id) {
@@ -304,9 +304,10 @@ fn collect_prepared_renderer_run(
     if matches!(skinning, PreparedRunSkinning::Stale) {
         return (0, 0, 0);
     }
-    let (state, cull_stats) = prepared_run_view_state(run, first, is_overlay, mesh, &skinning, ctx);
-    if let Some(state) = state {
-        append_prepared_run_draws(run, ctx, cache, mesh, is_overlay, state, out);
+    let (view_state, cull_stats) =
+        prepared_run_view_state(run, first, is_overlay, mesh, &skinning, ctx);
+    if let Some(view_state) = view_state {
+        append_prepared_run_draws(run, ctx, state.cache, mesh, is_overlay, view_state, out);
     }
     cull_stats
 }
@@ -322,9 +323,7 @@ pub(super) fn collect_prepared_chunk(
     draws: &[FramePreparedDraw],
     runs: &[FramePreparedRun],
     ctx: &DrawCollectionInputs<'_>,
-    cache: &FrameMaterialBatchCache,
-    filter_masks: &HashMap<RenderSpaceId, Vec<bool>>,
-    lod_visibility: &LodVisibility,
+    state: CollectState<'_>,
 ) -> (Vec<WorldMeshDrawItem>, (usize, usize, usize)) {
     profiling::scope!("mesh::collect_prepared::chunk");
     let chunk_draws = {
@@ -342,14 +341,7 @@ pub(super) fn collect_prepared_chunk(
             let start = prepared_run.start as usize;
             let end = prepared_run.end as usize;
             let run = &draws[start..end];
-            let run_stats = collect_prepared_renderer_run(
-                run,
-                ctx,
-                cache,
-                filter_masks,
-                lod_visibility,
-                &mut out,
-            );
+            let run_stats = collect_prepared_renderer_run(run, ctx, state, &mut out);
             cull_stats.0 += run_stats.0;
             cull_stats.1 += run_stats.1;
             cull_stats.2 += run_stats.2;

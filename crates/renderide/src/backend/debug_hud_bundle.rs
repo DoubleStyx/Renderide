@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use crate::config::RendererSettingsHandle;
 use crate::diagnostics::{
     DebugHud, DebugHudEncodeError, DebugHudInput, DebugHudOverlayContext, FrameDiagnosticsSnapshot,
-    FrameTimingHudSnapshot, PerViewHudOutputs, RendererInfoSnapshot, SceneTransformsSnapshot,
-    TextureDebugSnapshot,
+    FrameTimingHudSnapshot, PerViewHudConfig, PerViewHudOutputs, RendererInfoSnapshot,
+    SceneTransformsSnapshot, TextureDebugSnapshot,
 };
 use crate::world_mesh::{WorldMeshDrawStateRow, WorldMeshDrawStats};
 
@@ -20,8 +20,7 @@ pub struct DebugHudBundle {
     want_capture_keyboard: bool,
     last_world_mesh_draw_stats: WorldMeshDrawStats,
     last_world_mesh_draw_state_rows: Vec<WorldMeshDrawStateRow>,
-    main_enabled: bool,
-    textures_enabled: bool,
+    per_view_config: PerViewHudConfig,
     current_view_texture_2d_asset_ids: BTreeSet<i32>,
 }
 
@@ -42,8 +41,7 @@ impl DebugHudBundle {
             want_capture_keyboard: false,
             last_world_mesh_draw_stats: WorldMeshDrawStats::default(),
             last_world_mesh_draw_state_rows: Vec::new(),
-            main_enabled: false,
-            textures_enabled: false,
+            per_view_config: PerViewHudConfig::default(),
             current_view_texture_2d_asset_ids: BTreeSet::new(),
         }
     }
@@ -68,24 +66,23 @@ impl DebugHudBundle {
         ));
     }
 
-    /// Updates whether main HUD diagnostics run (mirrors [`crate::config::DebugSettings::debug_hud_enabled`]).
-    pub fn set_main_enabled(&mut self, enabled: bool) {
-        self.main_enabled = enabled;
+    /// Updates per-view HUD diagnostics capture interests for the next graph recording.
+    pub fn set_per_view_config(&mut self, config: PerViewHudConfig) {
+        if !config.capture_world_mesh_draw_stats {
+            self.last_world_mesh_draw_stats = WorldMeshDrawStats::default();
+        }
+        if !config.capture_world_mesh_draw_state_rows {
+            self.last_world_mesh_draw_state_rows.clear();
+        }
+        if !config.capture_current_view_texture_2d_asset_ids {
+            self.current_view_texture_2d_asset_ids.clear();
+        }
+        self.per_view_config = config;
     }
 
-    /// Whether main debug HUD is on (mesh-draw stats for [`crate::passes::WorldMeshForwardOpaquePass`]).
-    pub(crate) fn main_enabled(&self) -> bool {
-        self.main_enabled
-    }
-
-    /// Updates whether texture HUD diagnostics run.
-    pub fn set_textures_enabled(&mut self, enabled: bool) {
-        self.textures_enabled = enabled;
-    }
-
-    /// Whether texture debug HUD capture is on.
-    pub(crate) fn textures_enabled(&self) -> bool {
-        self.textures_enabled
+    /// Per-view HUD diagnostics capture interests for the next graph recording.
+    pub(crate) fn per_view_config(&self) -> PerViewHudConfig {
+        self.per_view_config
     }
 
     /// Clears the current-view Texture2D id set before collecting this frame's submitted draws.
@@ -169,6 +166,13 @@ impl DebugHudBundle {
         }
     }
 
+    /// Clears the **Frame timing** HUD payload.
+    pub(crate) fn clear_frame_timing(&mut self) {
+        if let Some(hud) = self.hud.as_mut() {
+            hud.clear_frame_timing();
+        }
+    }
+
     /// Forwards the latest GPU profiler snapshot to the wrapped HUD.
     pub(crate) fn set_gpu_profiler_snapshot(
         &mut self,
@@ -176,6 +180,13 @@ impl DebugHudBundle {
     ) {
         if let Some(hud) = self.hud.as_mut() {
             hud.set_gpu_profiler_snapshot(snapshot);
+        }
+    }
+
+    /// Clears the **GPU passes** HUD payload.
+    pub(crate) fn clear_gpu_profiler_snapshot(&mut self) {
+        if let Some(hud) = self.hud.as_mut() {
+            hud.clear_gpu_profiler_snapshot();
         }
     }
 

@@ -243,6 +243,8 @@ fn assert_material_filter_pass(stem: &str) {
         MaterialDepthCompareDomain::FrooxZTest,
         "{stem}"
     );
+    assert_eq!(passes[0].depth_bias_constant, 0, "{stem}");
+    assert_eq!(passes[0].depth_bias_slope_scale, 0.0, "{stem}");
 
     let materialized = materialized_embedded_pass_for_blend_mode(
         stem,
@@ -250,6 +252,7 @@ fn assert_material_filter_pass(stem: &str) {
         MaterialBlendMode::UnityBlend { src: 1, dst: 0 },
     );
     let blend = materialized.blend.expect(stem);
+    assert_eq!(materialized.write_mask, wgpu::ColorWrites::ALL, "{stem}");
     assert_eq!(blend.color.src_factor, wgpu::BlendFactor::One, "{stem}");
     assert_eq!(blend.color.dst_factor, wgpu::BlendFactor::Zero, "{stem}");
     assert_eq!(blend.alpha.src_factor, wgpu::BlendFactor::One, "{stem}");
@@ -283,24 +286,85 @@ fn assert_material_filter_pass(stem: &str) {
     );
 
     let depth_offset = MaterialRenderState {
-        depth_offset: MaterialDepthOffsetState::new(1.0, 100),
+        depth_offset: MaterialDepthOffsetState::new(0.0, 100),
         ..MaterialRenderState::default()
     };
     let bias = materialized.resolved_depth_bias(depth_offset);
     assert_eq!(bias.constant, -100, "{stem}");
-    assert_eq!(bias.slope_scale, -1.0, "{stem}");
+    assert_eq!(bias.slope_scale, 0.0, "{stem}");
 }
 
 /// Verifies unlit/text stems keep Unity-style filter render state.
 #[test]
 fn unlit_text_stems_use_filter_pass_material_state() {
     for stem in [
+        "unlit_default",
         "textunlit_default",
         "ui_unlit_default",
         "ui_textunlit_default",
         "ui_circlesegment_default",
     ] {
         assert_material_filter_pass(stem);
+    }
+}
+
+/// Verifies additional `BlendOp Add, Max` roots preserve filter-style alpha blending.
+#[test]
+fn max_alpha_blend_roots_use_filter_pass_material_state() {
+    for stem in [
+        "depthprojection_default",
+        "fresnellerp_default",
+        "matcap_default",
+        "projection360_default",
+        "reflection_default",
+        "unlitdistancelerp_default",
+        "uvrect_default",
+    ] {
+        let passes = crate::embedded_shaders::embedded_target_passes(stem);
+        assert_eq!(passes.len(), 1, "{stem}");
+        assert_eq!(
+            passes[0].material_state,
+            MaterialPassState::Filter,
+            "{stem}"
+        );
+
+        let materialized = materialized_embedded_pass_for_blend_mode(
+            stem,
+            &passes[0],
+            MaterialBlendMode::UnityBlend { src: 1, dst: 0 },
+        );
+        let blend = materialized.blend.expect(stem);
+        assert_eq!(blend.color.src_factor, wgpu::BlendFactor::One, "{stem}");
+        assert_eq!(blend.color.dst_factor, wgpu::BlendFactor::Zero, "{stem}");
+        assert_eq!(blend.alpha.src_factor, wgpu::BlendFactor::One, "{stem}");
+        assert_eq!(blend.alpha.dst_factor, wgpu::BlendFactor::One, "{stem}");
+        assert_eq!(blend.alpha.operation, wgpu::BlendOperation::Max, "{stem}");
+    }
+}
+
+/// Verifies skybox material roots keep Unity's fixed no-depth-write, no-cull pass state.
+#[test]
+fn skybox_material_roots_use_fixed_background_pass_state() {
+    let override_state = MaterialRenderState {
+        color_mask: Some(0),
+        depth_write: Some(true),
+        cull_override: MaterialCullOverride::Back,
+        ..MaterialRenderState::default()
+    };
+
+    for stem in ["gradientskybox_default", "proceduralskybox_default"] {
+        let passes = crate::embedded_shaders::embedded_target_passes(stem);
+        assert_eq!(passes.len(), 1, "{stem}");
+        assert!(!passes[0].depth_write, "{stem}");
+        assert_eq!(passes[0].cull_mode, None, "{stem}");
+        assert_eq!(passes[0].write_mask, wgpu::ColorWrites::ALL, "{stem}");
+        assert_eq!(
+            passes[0].resolved_color_writes(override_state),
+            wgpu::ColorWrites::ALL,
+            "{stem}"
+        );
+        assert!(!passes[0].resolved_depth_write(override_state), "{stem}");
+        assert_eq!(passes[0].resolved_cull_mode(override_state), None, "{stem}");
     }
 }
 

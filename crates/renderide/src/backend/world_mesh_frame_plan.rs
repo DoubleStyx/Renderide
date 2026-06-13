@@ -1,4 +1,13 @@
 //! Backend-owned world-mesh forward frame planning.
+//!
+//! Boundary contract: the backend owns the **lifecycle** of retained prep state for the passes it
+//! assembles -- the skybox renderer, instance-plan cache, and per-view prepare scratch held here
+//! -- while the pass **topology** and the cache types themselves live in [`crate::passes`]. This
+//! is deliberate layering: the backend is the concrete-graph assembly layer and is allowed to
+//! name pass types. Adding a new pass with retained per-view state means adding one field here
+//! plus retirement wiring through [`BackendWorldMeshFramePlanner::release_view_resources`], which
+//! `facade::sync_active_views` / `facade::retire_one_shot_views` invoke; forgetting that wiring
+//! leaks per-view state for retired render-texture and camera views.
 
 use std::sync::Arc;
 

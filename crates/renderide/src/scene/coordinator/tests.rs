@@ -9,7 +9,9 @@
 
 use crate::scene::overrides::RenderTransformOverrideEntry;
 use crate::scene::render_space::{LayerAssignmentEntry, RenderSpaceState};
-use crate::scene::{CameraRenderableEntry, SkinnedMeshRenderer, StaticMeshRenderer};
+use crate::scene::{
+    CameraRenderableEntry, ReflectionProbeEntry, SkinnedMeshRenderer, StaticMeshRenderer,
+};
 use crate::shared::{LayerType, RenderTransform, RenderingContext};
 
 use super::super::ids::RenderSpaceId;
@@ -138,6 +140,16 @@ impl SceneCoordinator {
     ) {
         let space = self.spaces.get_mut(&id).expect("seeded space");
         space.cameras.extend(cameras);
+    }
+
+    /// Appends reflection-probe renderables to a seeded render space (unit tests only).
+    pub(crate) fn test_push_reflection_probes(
+        &mut self,
+        id: RenderSpaceId,
+        probes: impl IntoIterator<Item = ReflectionProbeEntry>,
+    ) {
+        let space = self.spaces.get_mut(&id).expect("seeded space");
+        space.reflection_probes.extend(probes);
     }
 
     /// Inserts a render space with skinned mesh renderers (unit tests only).

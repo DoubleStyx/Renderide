@@ -1,4 +1,4 @@
-//! Null fallback raster material: object-space black/grey checkerboard (`shaders/target/null_*.wgsl`).
+//! Null fallback raster material: object-space black/grey checkerboard (`null_*` package targets).
 //!
 //! Used when the host shader has no embedded target or when pipeline build fails for the requested kind.
 //! Object-space projection is robust against missing or malformed mesh UVs, mirroring the role of

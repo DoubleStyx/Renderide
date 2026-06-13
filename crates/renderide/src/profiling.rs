@@ -81,7 +81,7 @@ pub use plots::{
     plot_driver_submit_backlog, plot_event_loop_idle_ms, plot_event_loop_wait_ms,
     plot_fps_cap_active, plot_frame_upload_arena, plot_frame_upload_batch, plot_ipc_poll,
     plot_lockstep_pipeline, plot_mesh_deform, plot_rayon_admission, plot_render_world_maintenance,
-    plot_surface_acquire_outcome, plot_surface_get_current_texture_ms,
+    plot_shadow_atlas, plot_surface_acquire_outcome, plot_surface_get_current_texture_ms,
     plot_surface_in_flight_count, plot_surface_previous_present_wait_ms, plot_window_focused,
     plot_world_mesh_prepare, plot_world_mesh_subpass,
 };

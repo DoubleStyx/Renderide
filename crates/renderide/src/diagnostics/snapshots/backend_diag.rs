@@ -84,7 +84,7 @@ impl From<FrameUploadBatchStats> for FrameUploadArenaSnapshot {
 /// This breaks the diagnostics-to-backend borrow: `diagnostics/` consumes this snapshot rather
 /// than borrowing `&RenderBackend` directly, which keeps backend internals private and lets the
 /// HUD layer evolve independently of backend visibility.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct BackendDiagSnapshot {
     /// CPU-side host texture format registrations.
     pub texture_format_registration_count: usize,

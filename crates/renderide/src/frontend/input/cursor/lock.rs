@@ -142,6 +142,19 @@ fn apply_cursor_grab(
     Ok(preference.fallback)
 }
 
+fn finish_cursor_activation_after_warp(
+    window: &(impl CursorWindowOps + ?Sized),
+    mode: CursorGrabMode,
+) -> Result<CursorGrabActivation, RequestError> {
+    if mode == CursorGrabMode::Locked {
+        window.set_cursor_grab_mode(CursorGrabMode::Locked)?;
+    }
+    Ok(CursorGrabActivation {
+        mode,
+        can_warp: true,
+    })
+}
+
 fn apply_cursor_grab_with_anchor(
     window: &(impl CursorWindowOps + ?Sized),
     preference: CursorGrabPreference,
@@ -149,10 +162,7 @@ fn apply_cursor_grab_with_anchor(
 ) -> Result<CursorGrabActivation, RequestError> {
     let primary = apply_cursor_grab(window, preference)?;
     if window.warp_cursor_logical(target).is_ok() {
-        return Ok(CursorGrabActivation {
-            mode: primary,
-            can_warp: true,
-        });
+        return finish_cursor_activation_after_warp(window, primary);
     }
 
     if primary == CursorGrabMode::Confined
@@ -160,9 +170,12 @@ fn apply_cursor_grab_with_anchor(
         && preference.fallback == CursorGrabMode::Locked
         && window.set_cursor_grab_mode(CursorGrabMode::Locked).is_ok()
     {
+        if window.warp_cursor_logical(target).is_ok() {
+            return finish_cursor_activation_after_warp(window, CursorGrabMode::Locked);
+        }
         return Ok(CursorGrabActivation {
             mode: CursorGrabMode::Locked,
-            can_warp: window.warp_cursor_logical(target).is_ok(),
+            can_warp: false,
         });
     }
 
@@ -561,6 +574,32 @@ mod tests {
                 FakeCursorEvent::warp(CursorGrabMode::Confined, target),
                 FakeCursorEvent::grab(CursorGrabMode::Locked),
                 FakeCursorEvent::warp(CursorGrabMode::Locked, target),
+                FakeCursorEvent::grab(CursorGrabMode::Locked),
+            ]
+        );
+    }
+
+    #[test]
+    fn locked_activation_reapplies_locked_grab_after_transition_warp() {
+        let window = FakeCursorWindow::new(FakeWarpRule::Always);
+        let target = Vec2::new(400.0, 300.0);
+
+        let activation = apply_cursor_grab_with_anchor(&window, grab_preference(None), target)
+            .expect("locked grab activates");
+
+        assert_eq!(
+            activation,
+            CursorGrabActivation {
+                mode: CursorGrabMode::Locked,
+                can_warp: true,
+            }
+        );
+        assert_eq!(
+            window.events(),
+            vec![
+                FakeCursorEvent::grab(CursorGrabMode::Locked),
+                FakeCursorEvent::warp(CursorGrabMode::Locked, target),
+                FakeCursorEvent::grab(CursorGrabMode::Locked),
             ]
         );
     }

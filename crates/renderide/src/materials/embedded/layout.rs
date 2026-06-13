@@ -198,14 +198,14 @@ fn validate_material_default_kind(
     }
 }
 
-/// Reflects embedded WGSL for `stem`, builds the `@group(1)` layout, and interns property ids.
+/// Reflects packaged WGSL for `stem`, builds the `@group(1)` layout, and interns property ids.
 pub(crate) fn build_stem_material_layout(
     device: &wgpu::Device,
     stem: &str,
     property_registry: &PropertyIdRegistry,
 ) -> Result<Arc<StemMaterialLayout>, String> {
     let wgsl = embedded_shaders::embedded_target_wgsl(stem)
-        .ok_or_else(|| format!("embedded WGSL missing for stem {stem}"))?;
+        .ok_or_else(|| format!("shader package WGSL missing for stem {stem}"))?;
     let reflected =
         reflect_raster_material_wgsl(wgsl).map_err(|e| format!("reflect {stem}: {e}"))?;
 

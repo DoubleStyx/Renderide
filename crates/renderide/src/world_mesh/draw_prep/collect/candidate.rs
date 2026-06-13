@@ -11,7 +11,7 @@ use crate::shared::ShadowCastMode;
 use crate::world_mesh::culling::overlay_rect_clip_visible;
 use crate::world_mesh::materials::{
     FrameMaterialBatchCache, MaterialResolveCtx, apply_render_buffer_mesh_pipeline_override,
-    batch_key_for_slot_cached, compute_batch_key_hash,
+    batch_key_for_slot_cached, compute_batch_key_hash, normalized_material_slot,
 };
 
 use super::super::item::{MaterialStackOrder, WorldMeshDrawItem};
@@ -71,17 +71,19 @@ pub(super) fn evaluate_draw_candidate(
     rigid_world_matrix: Option<Mat4>,
     alpha_distance_sq: f32,
 ) -> Option<WorldMeshDrawItem> {
-    if candidate.index_count == 0 || candidate.material_asset_id < 0 {
+    if candidate.index_count == 0 {
         return None;
     }
+    let (material_asset_id, property_block_id) =
+        normalized_material_slot(candidate.material_asset_id, candidate.property_block_id)?;
     let lookup_ids = MaterialPropertyLookupIds {
-        material_asset_id: candidate.material_asset_id,
-        mesh_property_block_slot0: candidate.property_block_id,
+        material_asset_id,
+        mesh_property_block_slot0: property_block_id,
         mesh_renderer_property_block_id: None,
     };
     let (mut batch_key, ui_rect_clip_local) = batch_key_for_slot_cached(
-        candidate.material_asset_id,
-        candidate.property_block_id,
+        material_asset_id,
+        property_block_id,
         candidate.skinned,
         front_face,
         primitive_topology,
@@ -165,6 +167,7 @@ pub(super) fn evaluate_draw_candidate(
         blendshape_deformed,
         collect_order: 0,
         camera_distance_sq,
+        world_aabb: candidate.world_aabb,
         lookup_ids,
         batch_key,
         batch_key_hash,
@@ -311,6 +314,107 @@ mod tests {
         assert_eq!(item.node_id, 9);
         assert_eq!(item.renderable_index, 42);
         assert_eq!(item.instance_id, MeshRendererInstanceId(99));
+    }
+
+    #[test]
+    fn evaluate_draw_candidate_routes_missing_material_to_null_fallback() {
+        let scene = SceneCoordinator::new();
+        let mesh_pool = MeshPool::default_pool();
+        let store = MaterialPropertyStore::new();
+        let material_dict = MaterialDictionary::new(&store);
+        let router = MaterialRouter::new(RasterPipelineKind::Null);
+        let registry = PropertyIdRegistry::new();
+        let property_ids = MaterialPipelinePropertyIds::new(&registry);
+        let cache = FrameMaterialBatchCache::new();
+        let ctx = test_draw_context(&scene, &mesh_pool, &material_dict, &router, &property_ids);
+        let candidate = DrawCandidate {
+            space_id: RenderSpaceId(3),
+            node_id: 9,
+            renderable_index: 42,
+            instance_id: MeshRendererInstanceId(99),
+            mesh_asset_id: 7,
+            slot_index: 0,
+            material_stack_order: None,
+            first_index: 0,
+            index_count: 3,
+            is_overlay: false,
+            sorting_order: 0,
+            shadow_cast_mode: ShadowCastMode::On,
+            skinned: false,
+            world_space_deformed: false,
+            blendshape_deformed: false,
+            tangent_blendshape_deform_active: false,
+            material_asset_id: -1,
+            property_block_id: Some(100),
+            world_aabb: None,
+            particle_draw: ParticleDrawParams::default(),
+        };
+
+        let item = evaluate_draw_candidate(
+            &ctx,
+            &cache,
+            candidate,
+            RasterFrontFace::Clockwise,
+            RasterPrimitiveTopology::TriangleList,
+            None,
+            0.0,
+        )
+        .expect("missing material draw item");
+
+        assert_eq!(item.lookup_ids.material_asset_id, -1);
+        assert_eq!(item.lookup_ids.mesh_property_block_slot0, None);
+        assert_eq!(item.batch_key.material_asset_id, -1);
+        assert_eq!(item.batch_key.property_block_slot0, None);
+        assert_eq!(item.batch_key.shader_asset_id, -1);
+        assert_eq!(item.batch_key.pipeline, RasterPipelineKind::Null);
+    }
+
+    #[test]
+    fn evaluate_draw_candidate_rejects_malformed_negative_material_id() {
+        let scene = SceneCoordinator::new();
+        let mesh_pool = MeshPool::default_pool();
+        let store = MaterialPropertyStore::new();
+        let material_dict = MaterialDictionary::new(&store);
+        let router = MaterialRouter::new(RasterPipelineKind::Null);
+        let registry = PropertyIdRegistry::new();
+        let property_ids = MaterialPipelinePropertyIds::new(&registry);
+        let cache = FrameMaterialBatchCache::new();
+        let ctx = test_draw_context(&scene, &mesh_pool, &material_dict, &router, &property_ids);
+        let candidate = DrawCandidate {
+            space_id: RenderSpaceId(3),
+            node_id: 9,
+            renderable_index: 42,
+            instance_id: MeshRendererInstanceId(99),
+            mesh_asset_id: 7,
+            slot_index: 0,
+            material_stack_order: None,
+            first_index: 0,
+            index_count: 3,
+            is_overlay: false,
+            sorting_order: 0,
+            shadow_cast_mode: ShadowCastMode::On,
+            skinned: false,
+            world_space_deformed: false,
+            blendshape_deformed: false,
+            tangent_blendshape_deform_active: false,
+            material_asset_id: -2,
+            property_block_id: None,
+            world_aabb: None,
+            particle_draw: ParticleDrawParams::default(),
+        };
+
+        assert!(
+            evaluate_draw_candidate(
+                &ctx,
+                &cache,
+                candidate,
+                RasterFrontFace::Clockwise,
+                RasterPrimitiveTopology::TriangleList,
+                None,
+                0.0,
+            )
+            .is_none()
+        );
     }
 
     #[test]

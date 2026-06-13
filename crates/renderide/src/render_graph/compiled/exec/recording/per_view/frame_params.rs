@@ -18,7 +18,7 @@ pub(super) fn build_per_view_frame_params<'a>(
     profiling::scope!("graph::per_view::reuse_frame_params");
     frame_input.frame_params(
         FrameSystemsShared {
-            scene: shared.scene,
+            scene: shared.scene.coordinator(),
             occlusion: shared.occlusion,
             frame_resources: shared.frame_resources,
             materials: shared.materials,

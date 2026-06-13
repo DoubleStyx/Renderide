@@ -229,11 +229,8 @@ pub(crate) fn drain_reflection_probe_render_changes(
                     unique_id: task.unique_id,
                 });
         } else if entry.state.r#type == ReflectionProbeType::Realtime {
-            logger::debug!(
-                "reflection probe changed render not completed: render_space={} renderable_index={} is realtime",
-                space.id.0,
-                task.renderable_index
-            );
+            out.completed
+                .push(changed_probe_completion(space.id.0, task.unique_id, false));
         }
     }
     out
@@ -430,6 +427,38 @@ mod tests {
         assert_eq!(results.completed[0].render_probe_unique_id, 99);
         assert_eq!(results.completed[0].require_reset, 0);
         assert!(results.scene_captures.is_empty());
+    }
+
+    #[test]
+    fn changed_realtime_probe_returns_immediate_completion() {
+        let mut space = RenderSpaceState {
+            id: crate::scene::RenderSpaceId(12),
+            ..RenderSpaceState::default()
+        };
+        space.reflection_probes.push(ReflectionProbeEntry {
+            renderable_index: 0,
+            transform_id: 1,
+            state: ReflectionProbeState {
+                renderable_index: 0,
+                r#type: ReflectionProbeType::Realtime,
+                ..ReflectionProbeState::default()
+            },
+        });
+        space
+            .pending_reflection_probe_render_changes
+            .push(ReflectionProbeChangeRenderTask {
+                renderable_index: 0,
+                unique_id: 101,
+            });
+
+        let results = drain_reflection_probe_render_changes(&mut space);
+
+        assert_eq!(results.completed.len(), 1);
+        assert_eq!(results.completed[0].render_space_id, 12);
+        assert_eq!(results.completed[0].render_probe_unique_id, 101);
+        assert_eq!(results.completed[0].require_reset, 0);
+        assert!(results.scene_captures.is_empty());
+        assert!(space.pending_reflection_probe_render_changes.is_empty());
     }
 
     #[test]

@@ -86,7 +86,10 @@ pub(super) fn resolve_task_source(
         ));
     }
 
-    if state.r#type == ReflectionProbeType::OnChanges {
+    if matches!(
+        state.r#type,
+        ReflectionProbeType::OnChanges | ReflectionProbeType::Realtime
+    ) {
         return resolve_runtime_capture_source(render_space_id, probe, captures);
     }
     None
@@ -145,6 +148,7 @@ fn cubemap_residency_from_pool(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::AssetTransferQueue;
     use crate::shared::{ReflectionProbeClear, ReflectionProbeState};
 
     #[test]
@@ -208,5 +212,51 @@ mod tests {
         assert_eq!(color_key, skybox_key);
         assert!(matches!(skybox_source, Sh2ResolvedSource::Postpone));
         assert!(matches!(color_source, Sh2ResolvedSource::Postpone));
+    }
+
+    #[test]
+    fn realtime_task_without_capture_postpones_runtime_cubemap_source() {
+        let mut scene = SceneCoordinator::new();
+        let space_id = RenderSpaceId(7);
+        scene.test_seed_space_identity_worlds(space_id, Vec::new(), Vec::new());
+        scene.test_push_reflection_probes(
+            space_id,
+            [ReflectionProbeEntry {
+                renderable_index: 0,
+                transform_id: 12,
+                state: ReflectionProbeState {
+                    renderable_index: 0,
+                    clear_flags: ReflectionProbeClear::Skybox,
+                    r#type: ReflectionProbeType::Realtime,
+                    ..Default::default()
+                },
+            }],
+        );
+        let assets = AssetTransferQueue::new();
+        let captures = RuntimeReflectionProbeCaptureStore::default();
+
+        let (key, source) = resolve_task_source(
+            &scene,
+            &assets,
+            &captures,
+            space_id.0,
+            TaskHeader {
+                renderable_index: 42,
+                reflection_probe_renderable_index: 0,
+            },
+        )
+        .expect("realtime probes should resolve to a postponed runtime cubemap source");
+
+        assert_eq!(
+            key,
+            Sh2SourceKey::RuntimeCubemap {
+                render_space_id: space_id.0,
+                renderable_index: 0,
+                generation: 0,
+                size: 0,
+                sample_size: DEFAULT_SAMPLE_SIZE,
+            }
+        );
+        assert!(matches!(source, Sh2ResolvedSource::Postpone));
     }
 }

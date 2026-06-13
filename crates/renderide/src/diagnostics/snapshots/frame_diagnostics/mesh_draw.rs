@@ -42,7 +42,7 @@ pub struct MeshDrawFragment {
 }
 
 impl MeshDrawFragment {
-    /// Builds the fragment from the backend snapshot plus camera task diagnostics.
+    /// Builds the **Stats** fragment from the backend snapshot plus camera task diagnostics.
     pub fn capture(
         backend: &BackendDiagSnapshot,
         last_submit_render_task_count: usize,
@@ -52,7 +52,7 @@ impl MeshDrawFragment {
     ) -> Self {
         Self {
             stats: backend.last_world_mesh_draw_stats,
-            draw_state_rows: backend.last_world_mesh_draw_state_rows.clone(),
+            draw_state_rows: Vec::new(),
             last_submit_render_task_count,
             pending_camera_readbacks,
             completed_camera_readbacks,
@@ -65,6 +65,14 @@ impl MeshDrawFragment {
             render_world_maintenance: backend.render_world_maintenance,
             command_cache: backend.world_mesh_command_cache,
             instance_plan_cache: backend.world_mesh_instance_plan_cache,
+        }
+    }
+
+    /// Builds the **Draw state** fragment from the backend's retained draw rows.
+    pub fn capture_draw_state_rows(backend: &BackendDiagSnapshot) -> Self {
+        Self {
+            draw_state_rows: backend.last_world_mesh_draw_state_rows.clone(),
+            ..Self::default()
         }
     }
 }

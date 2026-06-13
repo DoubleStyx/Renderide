@@ -1,6 +1,6 @@
 //! Dear ImGui diagnostics: **Frame timing** ([`crate::config::DebugSettings::debug_hud_frame_timing`]),
 //! **Feedback / Bug Report** ([`crate::config::DebugSettings::debug_hud_links`]),
-//! **Renderide debug** ([`crate::config::DebugSettings::debug_hud_enabled`]: Stats / Shader routes / Draw state / GPU memory),
+//! **Renderide debug** ([`crate::config::DebugSettings::debug_hud_enabled`]: Stats / Shader routes / Draw state / GPU memory / GPU passes),
 //! **Scene transforms** ([`crate::config::DebugSettings::debug_hud_transforms`]),
 //! and **Textures** ([`crate::config::DebugSettings::debug_hud_textures`]).
 //!
@@ -16,7 +16,10 @@ mod snapshots;
 mod watchdog;
 
 pub(crate) use hud::DebugHudOverlayContext;
-pub use hud::{DebugHud, DebugHudEncodeError, DebugHudInput, sanitize_input_state_for_imgui_host};
+pub use hud::{
+    DebugHud, DebugHudEncodeError, DebugHudInput, DebugHudMetricInterest,
+    sanitize_input_state_for_imgui_host,
+};
 pub use per_view::{PerViewHudConfig, PerViewHudOutputs, PerViewHudOutputsSlot};
 pub use snapshots::{
     BackendDiagSnapshot, FrameDiagnosticsIpcQueues, FrameDiagnosticsSnapshot,

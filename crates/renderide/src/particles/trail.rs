@@ -332,7 +332,7 @@ fn build_trail_mesh_input(
 ) -> Result<GeneratedMeshUploadInput, ParticleRenderBufferError> {
     let vertex_count = trails
         .iter()
-        .map(|trail| trail.points.len().saturating_mul(2))
+        .map(ribbon_vertex_count)
         .try_fold(0usize, |acc, count| acc.checked_add(count))
         .ok_or(ParticleRenderBufferError::MeshTooLarge {
             kind: "trail",
@@ -476,13 +476,26 @@ pub(super) fn build_trail_mesh_chunk(
     TrailMeshChunk { vertices, indices }
 }
 
+/// Number of generated ribbon vertices for one trail.
+///
+/// Trails with fewer than two points produce no segments, so [`build_trail_mesh_chunk`] emits no
+/// vertices for them; counting them here would desynchronize the declared mesh vertex count and
+/// the per-trail base-vertex offsets from the bytes actually generated.
+fn ribbon_vertex_count(trail: &TrailPolyline) -> usize {
+    if trail.points.len() < 2 {
+        0
+    } else {
+        trail.points.len().saturating_mul(2)
+    }
+}
+
 /// Prefix-sums generated trail vertex counts per source trail.
 pub(super) fn trail_vertex_offsets(trails: &[TrailPolyline]) -> Vec<usize> {
     let mut offsets = Vec::with_capacity(trails.len() + 1);
     let mut total = 0usize;
     offsets.push(0);
     for trail in trails {
-        total = total.saturating_add(trail.points.len().saturating_mul(2));
+        total = total.saturating_add(ribbon_vertex_count(trail));
         offsets.push(total);
     }
     offsets

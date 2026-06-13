@@ -135,7 +135,7 @@ fn vs_main(
     return out;
 }
 
-//#pass type=forward name=forward_two_sided cull=off
+//#pass type=forward name=forward_two_sided blend=material_filter cull=off
 @fragment
 fn fs_main(vout: VertexOutput) -> @location(0) vec4<f32> {
     if (vout.diff > mat._DiscardThreshold || vout.norm_depth < mat._NearClip || vout.norm_depth > mat._FarClip) {

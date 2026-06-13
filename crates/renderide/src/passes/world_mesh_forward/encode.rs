@@ -18,7 +18,7 @@ use crate::world_mesh::{DrawGroup, WorldMeshDrawItem, depth_prepass_group_eligib
 use super::MaterialBatchPacket;
 use super::depth_prepass::{
     WorldMeshForwardDepthPrepassPipelineCache, WorldMeshForwardDepthPrepassPipelineKey,
-    depth_prepass_pipelines, radial_shadow_pipelines,
+    radial_shadow_pipelines, shadow_pipelines,
 };
 use super::material_batch::MaterialGroup1Binding;
 use super::normal_pass::{WorldMeshForwardNormalPipelineCache, WorldMeshForwardNormalPipelineKey};
@@ -521,7 +521,7 @@ pub(crate) fn draw_shadow_depth_subset(batch: ShadowDepthDrawBatch<'_, '_, '_, '
     let mut last_mesh = LastMeshBindState::new();
     let mut last_per_draw_dyn_offset: Option<u32> = None;
     let mut last_pipeline: Option<*const wgpu::RenderPipeline> = None;
-    let depth_pipelines = depth_prepass_pipelines();
+    let shadow_pipelines = shadow_pipelines();
     let radial_pipelines = radial_shadow_pipelines();
 
     for group in groups {
@@ -555,7 +555,7 @@ pub(crate) fn draw_shadow_depth_subset(batch: ShadowDepthDrawBatch<'_, '_, '_, '
         let pipeline = if radial_shadow {
             radial_pipelines.pipeline(device, key)
         } else {
-            depth_pipelines.pipeline(device, key)
+            shadow_pipelines.pipeline(device, key)
         };
         let pipeline_id: *const wgpu::RenderPipeline = pipeline.as_ref();
         if last_pipeline != Some(pipeline_id) {

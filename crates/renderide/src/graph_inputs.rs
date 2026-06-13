@@ -307,6 +307,31 @@ pub struct PreRecordViewResourceLayout {
     pub needs_color_snapshot: bool,
 }
 
+/// Opaque read-only scene borrow threaded through the render graph executor.
+///
+/// The `render_graph` layer never inspects the scene; it only carries this token from the
+/// backend entry point to the [`FrameSystemsShared`] construction sites, where passes regain
+/// typed access via [`FrameSystemsShared::scene`]. Keeping the executor scene-opaque makes the
+/// "generic graph primitives" layering mechanically true: `render_graph` code cannot name
+/// [`SceneCoordinator`] without going through this wrapper.
+#[derive(Clone, Copy)]
+pub struct GraphSceneView<'a> {
+    /// Flushed scene coordinator for the frame being recorded.
+    coordinator: &'a SceneCoordinator,
+}
+
+impl<'a> GraphSceneView<'a> {
+    /// Wraps the flushed scene for one frame's graph execution.
+    pub(crate) fn new(coordinator: &'a SceneCoordinator) -> Self {
+        Self { coordinator }
+    }
+
+    /// Unwraps the typed scene borrow for pass-facing frame contracts.
+    pub(crate) fn coordinator(self) -> &'a SceneCoordinator {
+        self.coordinator
+    }
+}
+
 /// System handles shared across all views within a frame.
 ///
 /// Shared systems borrowed by render graph passes while recording one frame.

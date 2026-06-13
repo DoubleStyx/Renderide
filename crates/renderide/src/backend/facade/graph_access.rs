@@ -209,10 +209,7 @@ impl<'a> BackendGraphAccess<'a> {
 
     /// Debug HUD flags consumed by per-view recording.
     pub(crate) fn per_view_hud_config(&self) -> PerViewHudConfig {
-        PerViewHudConfig {
-            main_enabled: self.debug_hud.main_enabled(),
-            textures_enabled: self.debug_hud.textures_enabled(),
-        }
+        self.debug_hud.per_view_config()
     }
 
     /// Whether the HUD will draw visible content this frame.
@@ -264,10 +261,7 @@ impl<'a> BackendGraphAccess<'a> {
             gpu_limits: self.gpu_limits.clone(),
             msaa_depth_resolve: self.msaa_depth_resolve.clone(),
             skin_weight_mode: self.skin_weight_mode,
-            debug_hud: PerViewHudConfig {
-                main_enabled: self.debug_hud.main_enabled(),
-                textures_enabled: self.debug_hud.textures_enabled(),
-            },
+            debug_hud: self.debug_hud.per_view_config(),
         }
     }
 }
