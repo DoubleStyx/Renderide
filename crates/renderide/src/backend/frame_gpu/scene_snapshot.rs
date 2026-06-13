@@ -132,6 +132,12 @@ impl SceneSnapshotTexture {
     fn matches(&self, extent_px: (u32, u32), format: wgpu::TextureFormat) -> bool {
         self.extent_px == clamp_snapshot_extent(extent_px) && self.format == format
     }
+
+    /// Retains this snapshot's GPU handles until driver submit.
+    fn retain_submit_resources(&self, resources: &mut crate::gpu::GpuRetainedResources) {
+        resources.retain_texture(self.texture.clone());
+        resources.retain_texture_view(self.view.clone());
+    }
 }
 
 impl SceneSnapshotKind {
@@ -221,6 +227,13 @@ impl SceneSnapshotLayoutTargets {
             SceneSnapshotKind::Color => &mut self.color,
             SceneSnapshotKind::NamedColor => &mut self.named_color,
         }
+    }
+
+    /// Retains every snapshot target in this layout until driver submit.
+    fn retain_submit_resources(&self, resources: &mut crate::gpu::GpuRetainedResources) {
+        self.depth.retain_submit_resources(resources);
+        self.color.retain_submit_resources(resources);
+        self.named_color.retain_submit_resources(resources);
     }
 }
 
@@ -365,6 +378,13 @@ impl SceneSnapshotSet {
             },
         );
         true
+    }
+
+    /// Retains every snapshot texture, view, and sampler until driver submit.
+    pub(super) fn retain_submit_resources(&self, resources: &mut crate::gpu::GpuRetainedResources) {
+        self.mono.retain_submit_resources(resources);
+        self.stereo.retain_submit_resources(resources);
+        resources.retain_sampler(self.color_sampler.clone());
     }
 
     /// Returns immutable targets for `layout`.

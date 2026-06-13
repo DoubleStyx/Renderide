@@ -5,11 +5,13 @@ use std::time::Instant;
 use hashbrown::HashMap;
 
 use crate::camera::{HostCameraFrame, ViewId};
-use crate::gpu::FrameSubmitKind;
+use crate::diagnostics::PerViewHudOutputs;
+use crate::gpu::{FrameSubmitKind, GpuRetainedResources};
 
 use super::super::super::context::GraphResolvedResources;
 use super::super::super::frame_upload_batch::{FrameUploadBatch, FrameUploadBatchStats};
 use super::super::super::schedule::{ScheduleSubmitStep, ScheduleSubmitStepKind};
+use super::super::super::swapchain_scope::SwapchainScope;
 use super::super::super::upload_arena::PersistentUploadArena;
 use super::{
     CompiledRenderGraph, DrainedUploadCommand, FrameView, FrameViewTarget, GraphExecuteError,
@@ -31,6 +33,21 @@ pub(super) fn release_transients_and_gc(
     }
     profiling::scope!("render::transient_gc");
     pool.gc_tick(120);
+}
+
+fn collect_graph_retained_resources(
+    transient_by_key: &HashMap<GraphResolveKey, GraphResolvedResources>,
+    mut per_view_retained_resources: GpuRetainedResources,
+    mv_ctx: &MultiViewExecutionContext<'_>,
+) -> GpuRetainedResources {
+    for resources in transient_by_key.values() {
+        resources.retain_submit_resources(&mut per_view_retained_resources);
+    }
+    mv_ctx
+        .backend
+        .frame_resources()
+        .retain_submit_resources(&mut per_view_retained_resources);
+    per_view_retained_resources
 }
 
 fn drain_upload_command_buffer(
@@ -176,18 +193,68 @@ fn enqueue_primary_submit_batch(
     all_cmds: Vec<wgpu::CommandBuffer>,
     surface_tex: Option<wgpu::SurfaceTexture>,
     submit_callbacks: Vec<Box<dyn FnOnce() + Send + 'static>>,
-) -> f64 {
+    retained_resources: GpuRetainedResources,
+) -> (f64, Option<crate::gpu::driver_thread::SubmitToken>) {
     profiling::scope!("graph::single_submit::driver_enqueue");
     profiling::scope!("gpu::queue_submit");
     let submit_enqueue_start = Instant::now();
-    mv_ctx.gpu.submit_frame_batch_with_callbacks(
+    let token = mv_ctx.gpu.submit_frame_batch_with_retained_resources(
         FrameSubmitKind::PrimaryRender,
         all_cmds,
         surface_tex,
         None,
         submit_callbacks,
+        retained_resources,
     );
-    elapsed_ms(submit_enqueue_start)
+    (elapsed_ms(submit_enqueue_start), token)
+}
+
+fn enqueue_submit_and_schedule_transient_release(
+    mv_ctx: &mut MultiViewExecutionContext<'_>,
+    all_cmds: Vec<wgpu::CommandBuffer>,
+    surface_tex: Option<wgpu::SurfaceTexture>,
+    submit_callbacks: Vec<Box<dyn FnOnce() + Send + 'static>>,
+    retained_resources: GpuRetainedResources,
+    transient_by_key: HashMap<GraphResolveKey, GraphResolvedResources>,
+) -> f64 {
+    let (submit_enqueue_ms, submit_token) = enqueue_primary_submit_batch(
+        mv_ctx,
+        all_cmds,
+        surface_tex,
+        submit_callbacks,
+        retained_resources,
+    );
+    if let Some(token) = submit_token {
+        mv_ctx.backend.schedule_transient_release_after_submit(
+            token,
+            transient_by_key.into_values().collect(),
+        );
+    } else {
+        release_transients_and_gc(mv_ctx, transient_by_key);
+    }
+    submit_enqueue_ms
+}
+
+fn apply_per_view_hud_outputs(
+    mv_ctx: &mut MultiViewExecutionContext<'_>,
+    per_view_hud_outputs: &[Option<PerViewHudOutputs>],
+) {
+    profiling::scope!("graph::single_submit::apply_hud_outputs");
+    for outputs in per_view_hud_outputs.iter().flatten() {
+        mv_ctx.backend.apply_per_view_hud_outputs(outputs);
+    }
+}
+
+fn take_surface_texture_for_submit(
+    target_is_swapchain: bool,
+    swapchain_scope: &mut SwapchainScope,
+) -> Option<wgpu::SurfaceTexture> {
+    profiling::scope!("graph::single_submit::surface_texture_handoff");
+    if target_is_swapchain {
+        swapchain_scope.take_surface_texture()
+    } else {
+        None
+    }
 }
 
 impl CompiledRenderGraph {
@@ -201,9 +268,11 @@ impl CompiledRenderGraph {
         profiling::scope!("graph::single_submit");
         let SubmitFrameInputs {
             views,
+            transient_by_key,
             frame_global_cmd,
             per_view_cmds,
             per_view_profiler_cmd,
+            per_view_retained_resources,
             per_view_hud_outputs,
             per_view_occlusion_info,
             swapchain_scope,
@@ -243,25 +312,21 @@ impl CompiledRenderGraph {
         );
         let command_buffer_count = all_cmds.len();
 
-        // Hand the swapchain texture (if any) to the driver thread so `queue.submit` and
-        // `SurfaceTexture::present` run off the main thread. The scope still drops cleanly -- with
-        // the texture taken, its `Drop` is a no-op.
-        let surface_tex = {
-            profiling::scope!("graph::single_submit::surface_texture_handoff");
-            if target_is_swapchain {
-                swapchain_scope.take_surface_texture()
-            } else {
-                None
-            }
-        };
+        let surface_tex = take_surface_texture_for_submit(target_is_swapchain, swapchain_scope);
 
         let submit_callbacks = collect_submit_callbacks(
             mv_ctx,
             per_view_occlusion_info,
             upload.on_submitted_work_done,
         );
+        let retained_resources = collect_graph_retained_resources(
+            &transient_by_key,
+            per_view_retained_resources,
+            mv_ctx,
+        );
+        let retained_resources_empty = retained_resources.is_empty();
         logger::trace!(
-            "graph submit batch: views={} swapchain={} command_buffers={} upload={} frame_global={} per_view={} profiler={} hud={} submit_callbacks={}",
+            "graph submit batch: views={} swapchain={} command_buffers={} upload={} frame_global={} per_view={} profiler={} hud={} submit_callbacks={} retained_resources={}",
             views.len(),
             target_is_swapchain,
             command_buffer_count,
@@ -271,10 +336,17 @@ impl CompiledRenderGraph {
             has_per_view_profiler_cmd,
             has_hud_cmd,
             submit_callbacks.len(),
+            !retained_resources_empty,
         );
 
-        let submit_enqueue_ms =
-            enqueue_primary_submit_batch(mv_ctx, all_cmds, surface_tex, submit_callbacks);
+        let submit_enqueue_ms = enqueue_submit_and_schedule_transient_release(
+            mv_ctx,
+            all_cmds,
+            surface_tex,
+            submit_callbacks,
+            retained_resources,
+            transient_by_key,
+        );
         logger::trace!(
             "graph submit enqueue timing: upload_drain_ms={:.3} upload_finish_ms={:.3} command_batch_assembly_ms={:.3} submit_enqueue_ms={:.3}",
             upload.drain_ms,
@@ -291,12 +363,7 @@ impl CompiledRenderGraph {
             target_is_swapchain,
             upload_stats: upload.stats,
         };
-        {
-            profiling::scope!("graph::single_submit::apply_hud_outputs");
-            for outputs in per_view_hud_outputs.iter().flatten() {
-                mv_ctx.backend.apply_per_view_hud_outputs(outputs);
-            }
-        }
+        apply_per_view_hud_outputs(mv_ctx, &per_view_hud_outputs);
         Ok(submit_stats)
     }
 }

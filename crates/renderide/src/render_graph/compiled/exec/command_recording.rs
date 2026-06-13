@@ -6,6 +6,7 @@ use std::time::Instant;
 use crate::camera::{HostCameraFrame, ViewId};
 use crate::cpu_parallelism::record_parallel_admission;
 use crate::diagnostics::PerViewHudOutputs;
+use crate::gpu::GpuRetainedResources;
 use crate::render_graph::blackboard::GraphCommandStats;
 
 use super::recording_path::GraphCommandRecordingPlan;
@@ -87,6 +88,7 @@ impl CompiledRenderGraph {
                 encode_ms: encoded.encode_ms,
                 finish_ms: encoded.finish_ms,
                 command_stats: encoded.command_stats,
+                retained_resources: encoded.retained_resources,
             },
         ))
     }
@@ -229,11 +231,13 @@ impl CompiledRenderGraph {
             let mut finish_ms = 0.0;
             let mut max_finish_ms = 0.0;
             let mut command_stats = GraphCommandStats::default();
+            let mut retained_resources = GpuRetainedResources::new();
             for output in per_view_outputs {
                 encode_ms += output.encode_ms;
                 finish_ms += output.finish_ms;
                 max_finish_ms = f64::max(max_finish_ms, output.finish_ms);
                 command_stats.add(output.command_stats);
+                retained_resources.append(output.retained_resources);
                 per_view_cmds.extend(output.command_buffers);
                 per_view_occlusion_info.push((output.view_id, output.host_camera));
                 per_view_hud_outputs.push(output.hud_outputs);
@@ -260,6 +264,7 @@ impl CompiledRenderGraph {
                 finish_ms,
                 max_finish_ms,
                 command_stats,
+                retained_resources,
             })
         })();
         mv_ctx.gpu.restore_gpu_profiler(per_view_profiler);
@@ -363,6 +368,7 @@ impl CompiledRenderGraph {
                     finish_ms: 0.0,
                     max_finish_ms: 0.0,
                     command_stats,
+                    retained_resources: per_view_output.retained_resources,
                 },
                 encode_ms,
                 finish_ms,

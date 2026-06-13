@@ -564,8 +564,13 @@ impl RenderBackend {
         let command_recording_mode = self.command_recording_mode();
         let wall_frame_time_ms = self.debug_frame_time_ms();
         let skin_weight_mode = self.skin_weight_mode();
-        let (transient_pool, history_registry, upload_arena, latest_upload_stats) =
-            self.graph_state.execution_resources_mut();
+        let (
+            transient_pool,
+            history_registry,
+            upload_arena,
+            latest_upload_stats,
+            pending_transient_releases,
+        ) = self.graph_state.execution_resources_mut();
         let (frame_resources, mesh_preprocess, mesh_deform_scratch, skin_cache) =
             self.frame_services.graph_access_slices();
         BackendGraphAccess {
@@ -581,6 +586,7 @@ impl RenderBackend {
             history_registry,
             upload_arena,
             latest_upload_stats,
+            pending_transient_releases,
             debug_hud: self.diagnostics.bundle_mut(),
             scene_color_format,
             gpu_limits,

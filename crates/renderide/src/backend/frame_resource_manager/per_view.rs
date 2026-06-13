@@ -389,8 +389,10 @@ impl FrameResourceManager {
             None
         };
         if let Some(sync) = shadow_sync {
-            self.apply_shadow_atlas_resolution(sync.resolution);
-            if sync.changed {
+            let resolution = sync.resolution;
+            let changed = sync.changed;
+            self.apply_shadow_atlas_resolution(resolution);
+            if changed {
                 self.rebuild_per_view_frame_bind_groups_for_shadow_sync(device, view_layouts);
             }
         }

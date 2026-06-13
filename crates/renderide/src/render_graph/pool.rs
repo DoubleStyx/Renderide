@@ -116,9 +116,7 @@ pub struct PooledBufferLease {
     /// Pool entry id to release after the frame.
     pub pool_id: usize,
     /// Buffer handle.
-    pub _buffer: wgpu::Buffer,
-    /// Buffer size in bytes.
-    pub _size: u64,
+    pub buffer: wgpu::Buffer,
 }
 
 /// One pool slot: the alias key, the cached value, and the generation when it was last used.

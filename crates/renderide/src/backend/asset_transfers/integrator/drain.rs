@@ -193,6 +193,7 @@ fn submit_mesh_upload_flush(
         .submit(crate::gpu::driver_thread::SubmitBatch {
             submit_kind: crate::gpu::driver_thread::DriverSubmitKind::BackgroundGpuWork,
             command_buffers: vec![command_buffer],
+            retained_resources: crate::gpu::GpuRetainedResources::new(),
             surface_texture: None,
             on_submitted_work_done,
             frame_timing: None,

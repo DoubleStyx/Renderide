@@ -11,6 +11,7 @@
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
 use super::xr_finalize::XrFinalizeWork;
+use crate::gpu::GpuRetainedResources;
 use crate::gpu::frame_bracket::FrameBracketReadback;
 use crate::gpu::frame_cpu_gpu_timing::FrameTimingTrack;
 
@@ -55,6 +56,8 @@ pub struct SubmitBatch {
     pub submit_kind: DriverSubmitKind,
     /// Ordered list of command buffers. Submitted in one `Queue::submit` call.
     pub command_buffers: Vec<wgpu::CommandBuffer>,
+    /// GPU handles referenced by `command_buffers` that must stay alive until driver submit.
+    pub retained_resources: GpuRetainedResources,
     /// Swapchain texture to present after submit. `None` when the frame targets an
     /// offscreen render target (e.g. headless rendering to a persistent offscreen image).
     pub surface_texture: Option<wgpu::SurfaceTexture>,
