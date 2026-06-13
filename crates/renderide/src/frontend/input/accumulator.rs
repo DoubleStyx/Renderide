@@ -52,6 +52,8 @@ pub struct WindowInputAccumulator {
     ime_commit_buffer: String,
     /// Single-character text from key events (supplements IME for simple typing).
     text_typing_buffer: String,
+    /// Text committed since the last HUD input snapshot.
+    hud_text_buffer: String,
     /// Paths from [`WindowEvent::DragDropped`](winit::event::WindowEvent::DragDropped) coalesced until take.
     pending_drop_paths: Vec<String>,
     /// Last cursor position in physical pixels (for drop-point reporting).
@@ -78,6 +80,7 @@ impl Default for WindowInputAccumulator {
             held_keys: Vec::new(),
             ime_commit_buffer: String::new(),
             text_typing_buffer: String::new(),
+            hud_text_buffer: String::new(),
             pending_drop_paths: Vec::new(),
             last_cursor_pixel: IVec2::ZERO,
             keyboard_modifiers: ModifiersState::empty(),
@@ -90,11 +93,13 @@ impl WindowInputAccumulator {
     /// Records IME-composed text committed by the platform.
     pub fn push_ime_commit(&mut self, text: &str) {
         self.ime_commit_buffer.push_str(text);
+        self.hud_text_buffer.push_str(text);
     }
 
     /// Records printable text associated with a key press (not repeats).
     pub fn push_key_text(&mut self, text: &str) {
         self.text_typing_buffer.push_str(text);
+        self.hud_text_buffer.push_str(text);
     }
 
     /// Records a file dropped onto the window; paths are batched into the next [`InputState`].
@@ -185,6 +190,11 @@ impl WindowInputAccumulator {
     /// scroll payload before the render/HUD phase without losing scroll events for ImGui.
     pub fn take_hud_scroll_delta(&mut self) -> Vec2 {
         std::mem::take(&mut self.hud_scroll_delta)
+    }
+
+    /// Returns text committed since the HUD last read it.
+    pub fn take_hud_text(&mut self) -> String {
+        std::mem::take(&mut self.hud_text_buffer)
     }
 }
 
@@ -297,6 +307,18 @@ mod tests {
         );
         let s2 = w.take_input_state(false);
         assert!(s2.keyboard.expect("kb").type_delta.is_none());
+    }
+
+    #[test]
+    fn hud_text_survives_host_snapshot_drain() {
+        let mut w = WindowInputAccumulator::default();
+        w.push_ime_commit("12");
+        w.push_key_text(".");
+
+        let s = w.take_input_state(false);
+        assert_eq!(s.keyboard.expect("kb").type_delta.as_deref(), Some("12."));
+        assert_eq!(w.take_hud_text(), "12.");
+        assert!(w.take_hud_text().is_empty());
     }
 
     /// Normalized UV at logical center when resolution and position share logical space.
