@@ -1,10 +1,9 @@
 //! Per-tick view collection on [`super::RendererRuntime`].
 //!
 //! Builds the ordered list of [`FrameViewPlan`]s that drive draw collection and graph
-//! execution: HMD stereo multiview (when present), then enabled secondary render-texture
-//! cameras sorted by camera depth, then the main desktop view (when included). Logic
-//! sits between the render entry point in [`super::render`] and the per-view extraction
-//! pipeline in [`super::extract`].
+//! execution: camera portals and secondary render-texture cameras first, then the primary HMD or
+//! desktop view when included. Logic sits between the render entry point in [`super::render`] and
+//! the per-view extraction pipeline in [`super::extract`].
 
 mod portal_plan;
 
@@ -339,11 +338,8 @@ impl RendererRuntime {
 
     /// Collects every active view for this tick into a single ordered list.
     ///
-    /// Ordering -- preserved so the mesh-deform skip flag on
-    /// [`crate::backend::FrameResourceManager`] still runs deform exactly once per tick:
-    /// 1. HMD stereo multiview (when requested as the primary view).
-    /// 2. Secondary render-texture cameras, sorted by camera depth.
-    /// 3. Main desktop swapchain (when requested as the primary view).
+    /// Offscreen producer views are submitted before the primary HMD or desktop consumer so
+    /// in-world materials sample current-frame render textures.
     pub(in crate::runtime) fn collect_prepared_views<'a>(
         &mut self,
         gpu: &GpuContext,
@@ -383,7 +379,7 @@ impl RendererRuntime {
         )
     }
 
-    /// Appends HMD, pre-collected offscreen, and main desktop views in submission order.
+    /// Appends pre-collected offscreen views before the primary HMD or desktop view.
     fn assemble_prepared_views<'a>(
         &self,
         primary: PrimaryViewRequest<'a>,
@@ -391,7 +387,7 @@ impl RendererRuntime {
         main_profile: RenderPathProfile,
         fallback_frame_global_profile: RenderPathProfile,
         main_offscreen_target: Option<OffscreenTargetHandles>,
-        mut secondary_views: Vec<FrameViewPlan<'a>>,
+        secondary_views: Vec<FrameViewPlan<'a>>,
     ) -> ViewFamilyPlan<'a> {
         let (includes_main, hmd_target) = match primary {
             PrimaryViewRequest::DesktopMain => (true, None),
@@ -399,16 +395,13 @@ impl RendererRuntime {
             PrimaryViewRequest::None => (false, None),
         };
 
-        let est_capacity =
-            usize::from(hmd_target.is_some()) + secondary_views.len() + usize::from(includes_main);
-        let mut views: Vec<FrameViewPlan<'a>> = Vec::with_capacity(est_capacity);
         let main_render_context = self.scene.active_main_render_context();
-        let mut frame_global =
+        let fallback_frame_global =
             self.frame_global_from_runtime(main_render_context, fallback_frame_global_profile);
 
-        if let Some(ext) = hmd_target {
+        let hmd_view = hmd_target.map(|ext| {
             let extent_px = ext.extent_px;
-            let hmd_view = FrameViewPlan::new(
+            FrameViewPlan::new(
                 &self.host_camera,
                 FrameViewPlanParams {
                     render_context: main_render_context,
@@ -419,24 +412,13 @@ impl RendererRuntime {
                     profile: RenderPathProfile::xr_hmd(),
                     target: FrameViewPlanTarget::ExternalMultiview(ext),
                 },
-            );
-            frame_global = hmd_view.frame_global_view();
-            views.push(hmd_view);
-        }
+            )
+        });
+        let main_view = includes_main.then(|| {
+            self.build_main_view_with_profile(main_extent_px, main_profile, main_offscreen_target)
+        });
 
-        views.append(&mut secondary_views);
-
-        if includes_main {
-            let main_view = self.build_main_view_with_profile(
-                main_extent_px,
-                main_profile,
-                main_offscreen_target,
-            );
-            frame_global = main_view.frame_global_view();
-            views.push(main_view);
-        }
-
-        ViewFamilyPlan::new(&frame_global, views)
+        assemble_view_family_plan(&fallback_frame_global, secondary_views, hmd_view, main_view)
     }
 
     /// Builds fallback primary-view metadata for frame-global passes when no HMD or main view is
@@ -917,6 +899,35 @@ impl RendererRuntime {
             },
         )
     }
+}
+
+fn assemble_view_family_plan<'a>(
+    fallback_frame_global: &FrameGlobalView,
+    secondary_views: Vec<FrameViewPlan<'a>>,
+    hmd_view: Option<FrameViewPlan<'a>>,
+    main_view: Option<FrameViewPlan<'a>>,
+) -> ViewFamilyPlan<'a> {
+    let frame_global = main_view
+        .as_ref()
+        .or(hmd_view.as_ref())
+        .map_or(*fallback_frame_global, |view| view.frame_global_view());
+
+    let views = assemble_ordered_view_plans(secondary_views, hmd_view, main_view);
+    ViewFamilyPlan::new(&frame_global, views)
+}
+
+fn assemble_ordered_view_plans<'a>(
+    mut secondary_views: Vec<FrameViewPlan<'a>>,
+    hmd_view: Option<FrameViewPlan<'a>>,
+    main_view: Option<FrameViewPlan<'a>>,
+) -> Vec<FrameViewPlan<'a>> {
+    let mut views = Vec::with_capacity(
+        secondary_views.len() + usize::from(hmd_view.is_some()) + usize::from(main_view.is_some()),
+    );
+    views.append(&mut secondary_views);
+    views.extend(hmd_view);
+    views.extend(main_view);
+    views
 }
 
 #[cfg(test)]
