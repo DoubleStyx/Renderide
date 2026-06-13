@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use crate::config::RendererSettingsHandle;
 use crate::diagnostics::{
     DebugHudEncodeError, DebugHudInput, FrameDiagnosticsSnapshot, FrameTimingHudSnapshot,
-    RendererInfoSnapshot, SceneTransformsSnapshot, TextureDebugSnapshot,
+    PerViewHudConfig, RendererInfoSnapshot, SceneTransformsSnapshot, TextureDebugSnapshot,
 };
 use crate::world_mesh::{WorldMeshDrawStateRow, WorldMeshDrawStats};
 
@@ -50,14 +50,9 @@ impl BackendDiagnostics {
         &mut self.debug_hud
     }
 
-    /// Updates whether main HUD diagnostics run.
-    pub(super) fn set_main_enabled(&mut self, enabled: bool) {
-        self.debug_hud.set_main_enabled(enabled);
-    }
-
-    /// Updates whether texture HUD diagnostics run.
-    pub(super) fn set_textures_enabled(&mut self, enabled: bool) {
-        self.debug_hud.set_textures_enabled(enabled);
+    /// Updates per-view HUD diagnostics capture interests.
+    pub(super) fn set_per_view_config(&mut self, config: PerViewHudConfig) {
+        self.debug_hud.set_per_view_config(config);
     }
 
     /// Clears the current-view Texture2D set.
@@ -120,12 +115,22 @@ impl BackendDiagnostics {
         self.debug_hud.set_frame_timing(snapshot);
     }
 
+    /// Clears frame timing diagnostics.
+    pub(super) fn clear_frame_timing(&mut self) {
+        self.debug_hud.clear_frame_timing();
+    }
+
     /// Stores GPU pass timing rows and query stats for the next HUD frame.
     pub(super) fn set_gpu_profiler_snapshot(
         &mut self,
         snapshot: crate::profiling::GpuProfilerSnapshot,
     ) {
         self.debug_hud.set_gpu_profiler_snapshot(snapshot);
+    }
+
+    /// Clears GPU pass timing rows.
+    pub(super) fn clear_gpu_profiler_snapshot(&mut self) {
+        self.debug_hud.clear_gpu_profiler_snapshot();
     }
 
     /// Clears stats and shader-route payloads.

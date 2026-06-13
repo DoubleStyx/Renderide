@@ -101,6 +101,54 @@ fn material_variant_bits_helper_supports_pipeline_constants() -> io::Result<()> 
 }
 
 #[test]
+fn stereo_texture_eye_selection_uses_view_layer_helper() -> io::Result<()> {
+    let frame_src = module_source("frame/globals.wgsl")?;
+    for required in [
+        "fn view_index_from_layer(view_layer: u32) -> u32 {\n    return view_layer & 1u;\n}",
+        "fn view_layer_is_right_eye(view_layer: u32) -> bool",
+        "return view_index_from_layer(view_layer) != 0u;",
+        "return false;",
+    ] {
+        assert!(
+            frame_src.contains(required),
+            "frame/globals.wgsl must keep stereo eye selection based on the encoded view-layer low bit"
+        );
+    }
+
+    for (path_label, src, helper_call, banned_raw_check) in [
+        (
+            "materials/unlit.wgsl",
+            material_source("unlit.wgsl")?,
+            "kw_RIGHT_EYE_ST() && rg::view_layer_is_right_eye(view_layer)",
+            "kw_RIGHT_EYE_ST() && view_layer != 0u",
+        ),
+        (
+            "materials/billboardunlit.wgsl",
+            material_source("billboardunlit.wgsl")?,
+            "kw_RIGHT_EYE_ST() && rg::view_layer_is_right_eye(view_layer)",
+            "kw_RIGHT_EYE_ST() && view_layer != 0u",
+        ),
+        (
+            "modules/skybox/projection360_material.wgsl",
+            module_source("skybox/projection360_material.wgsl")?,
+            "kw_RIGHT_EYE_ST(params.variant_bits) && rg::view_layer_is_right_eye(view_layer)",
+            "kw_RIGHT_EYE_ST(params.variant_bits) && view_layer != 0u",
+        ),
+    ] {
+        assert!(
+            src.contains(helper_call),
+            "{path_label} must select _RightEye_ST through frame::view_layer_is_right_eye"
+        );
+        assert!(
+            !src.contains(banned_raw_check),
+            "{path_label} must not treat packed left-eye layers such as 2u as right-eye layers"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn material_variant_pipeline_constants_apply_to_vertex_and_fragment() -> io::Result<()> {
     for path in [
         "src/materials/raster_pipeline.rs",
@@ -244,6 +292,50 @@ fn unlit_uses_reserved_variant_bits_instead_of_keyword_uniform_fields() -> io::R
 
     assert!(src.contains("tex_color = tex_color * mat._Color;"));
     assert!(src.contains("color = mat._Color;"));
+    Ok(())
+}
+
+#[test]
+fn reflection_shader_samples_vr_mirror_side_by_side_layout() -> io::Result<()> {
+    let src = material_source("reflection.wgsl")?;
+
+    assert!(
+        src.contains("@location(2) @interpolate(flat) view_layer: u32"),
+        "Reflection must carry the active eye index without interpolation"
+    );
+    assert!(
+        src.contains(
+            "#ifdef MULTIVIEW\n    let view_layer = view_idx;\n    let screen_y = (clip.y + clip.w) * 0.5;\n#else\n    let view_layer = 0u;\n    let screen_y = (clip.w - clip.y) * 0.5;\n#endif"
+        ),
+        "Reflection must use the HMD screen-space Y convention only in multiview"
+    );
+    assert!(
+        src.contains(
+            "out.screen_uv = vec3<f32>(\n        (clip.x + clip.w) * 0.5,\n        screen_y,\n        clip.w,\n    );"
+        ) && src.contains("out.view_layer = view_layer;"),
+        "Reflection must pack projected UVs and the resolved eye layer from the vertex path"
+    );
+    assert!(
+        src.contains("fn projected_reflection_uv(screen_uv: vec3<f32>) -> vec2<f32>")
+            && src.contains(
+                "fn reflection_texture_uv(screen: vec2<f32>, view_layer: u32) -> vec2<f32>"
+            )
+            && src.contains(
+                "#ifdef MULTIVIEW\n    uv.x = uv.x * 0.5 + f32(view_layer) * 0.5;\n#endif"
+            ),
+        "Reflection must remap only multiview mirror sampling into side-by-side texture halves"
+    );
+    assert!(
+        src.contains(
+            "screen = screen + bump.xy * mat._Distort;\n    }\n    screen = reflection_texture_uv(screen, view_layer);"
+        ),
+        "Reflection must apply normal-map distortion before selecting the eye half"
+    );
+    assert!(
+        !src.contains("Multi-view eye separation is handled by the renderer's per-eye render pass"),
+        "Reflection must not document the old mono sampling assumption"
+    );
+
     Ok(())
 }
 
@@ -594,6 +686,8 @@ mod hygiene;
 mod light_cookies;
 #[path = "shader_module_audit/material_defaults.rs"]
 mod material_defaults;
+#[path = "shader_module_audit/null_material.rs"]
+mod null_material;
 #[path = "shader_module_audit/pbs.rs"]
 mod pbs;
 #[path = "shader_module_audit/shadows.rs"]

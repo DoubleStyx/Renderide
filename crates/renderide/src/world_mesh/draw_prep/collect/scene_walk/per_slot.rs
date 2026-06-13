@@ -5,7 +5,7 @@ use glam::Mat4;
 use crate::particles::ParticleDrawParams;
 use crate::scene::MeshMaterialSlot;
 use crate::world_mesh::culling::CpuCullFailure;
-use crate::world_mesh::materials::FrameMaterialBatchCache;
+use crate::world_mesh::materials::{FrameMaterialBatchCache, normalized_material_slot};
 
 use super::super::super::item::stacked_material_submesh_topology;
 use super::super::DrawCollectionInputs;
@@ -55,7 +55,9 @@ pub(super) fn push_one_slot_draw(
         cached_cull,
     } = flags;
 
-    let Some(material_asset_id) = resolve_material_asset_id(ctx, draw, slot, slot_index) else {
+    let Some((material_asset_id, property_block_id)) =
+        resolve_material_slot(ctx, draw, slot, slot_index)
+    else {
         return;
     };
     if index_count == 0 {
@@ -111,7 +113,7 @@ pub(super) fn push_one_slot_draw(
         blendshape_deformed,
         tangent_blendshape_deform_active,
         material_asset_id,
-        property_block_id: slot.property_block_id,
+        property_block_id,
         world_aabb,
         particle_draw: ParticleDrawParams::default(),
     };
@@ -128,13 +130,13 @@ pub(super) fn push_one_slot_draw(
     }
 }
 
-/// Resolves the effective material id for this slot, honoring scene-level overrides.
-fn resolve_material_asset_id(
+/// Resolves the effective material and property-block pair for this slot, honoring scene-level overrides.
+fn resolve_material_slot(
     ctx: &DrawCollectionInputs<'_>,
     draw: &StaticMeshDrawSource<'_>,
     slot: &MeshMaterialSlot,
     slot_index: usize,
-) -> Option<i32> {
+) -> Option<(i32, Option<i32>)> {
     let material_asset_id = ctx
         .scene_assets
         .scene
@@ -146,7 +148,7 @@ fn resolve_material_asset_id(
             slot_index,
         )
         .unwrap_or(slot.material_asset_id);
-    (material_asset_id >= 0).then_some(material_asset_id)
+    normalized_material_slot(material_asset_id, slot.property_block_id)
 }
 
 /// Reads the cached per-renderer cull outcome (or runs an inline cull for single-slot renderers)

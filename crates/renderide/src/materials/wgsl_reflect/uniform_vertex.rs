@@ -13,7 +13,6 @@ use super::types::{
 };
 
 /// `true` when `@group(1)` uniform struct includes `_IntersectColor` (PBS intersect materials).
-#[cfg(test)]
 pub(super) fn material_uniform_requires_intersection_subpass(
     material_uniform: Option<&ReflectedMaterialUniformBlock>,
 ) -> bool {

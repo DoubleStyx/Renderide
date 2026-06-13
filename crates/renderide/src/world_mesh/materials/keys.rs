@@ -2,6 +2,8 @@
 
 use crate::scene::{MeshMaterialSlot, RenderSpaceId, SceneCoordinator, StaticMeshRenderer};
 
+use super::slot::normalized_material_slot;
+
 /// Walks one render space's renderer lists and collects every referenced
 /// `(material_asset_id, property_block_id)` key. Pure, so callers can run it in parallel across
 /// spaces before serial cache updates.
@@ -50,10 +52,10 @@ fn append_renderer_material_keys(r: &StaticMeshRenderer, out: &mut Vec<(i32, Opt
         return;
     };
     for slot in slots {
-        if slot.material_asset_id < 0 {
-            continue;
+        if let Some(key) = normalized_material_slot(slot.material_asset_id, slot.property_block_id)
+        {
+            out.push(key);
         }
-        out.push((slot.material_asset_id, slot.property_block_id));
     }
 }
 
@@ -112,7 +114,7 @@ mod tests {
     }
 
     #[test]
-    fn material_slots_collect_every_non_negative_slot() {
+    fn material_slots_collect_drawable_slots_and_skip_malformed_negative_ids() {
         let mut scene = SceneCoordinator::new();
         let id = RenderSpaceId(1);
         let mut renderer = renderer_with_mesh_asset(0);
@@ -123,7 +125,11 @@ mod tests {
             },
             MeshMaterialSlot {
                 material_asset_id: -1,
-                property_block_id: None,
+                property_block_id: Some(99),
+            },
+            MeshMaterialSlot {
+                material_asset_id: -2,
+                property_block_id: Some(12),
             },
             MeshMaterialSlot {
                 material_asset_id: 9,
@@ -134,7 +140,7 @@ mod tests {
 
         let mut out = Vec::new();
         collect_material_keys_into(&scene, id, &mut out);
-        assert_eq!(out, vec![(5, Some(11)), (9, None)]);
+        assert_eq!(out, vec![(5, Some(11)), (-1, None), (9, None)]);
     }
 
     #[test]
@@ -153,6 +159,24 @@ mod tests {
         let mut out = Vec::new();
         collect_material_keys_into(&scene, id, &mut out);
         assert_eq!(out, vec![(42, Some(7))]);
+    }
+
+    #[test]
+    fn missing_primary_material_falls_back_to_null_without_property_block() {
+        let mut scene = SceneCoordinator::new();
+        let id = RenderSpaceId(1);
+        let renderer = StaticMeshRenderer {
+            mesh_asset_id: 0,
+            material_slots: Vec::new(),
+            primary_material_asset_id: Some(-1),
+            primary_property_block_id: Some(7),
+            ..Default::default()
+        };
+        scene.test_insert_static_mesh_renderers(id, vec![renderer]);
+
+        let mut out = Vec::new();
+        collect_material_keys_into(&scene, id, &mut out);
+        assert_eq!(out, vec![(-1, None)]);
     }
 
     #[test]

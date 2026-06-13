@@ -23,9 +23,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::gpu::{GpuContext, GpuLimits};
+use crate::graph_inputs::GraphSceneView;
 use crate::render_graph::GraphExecutionBackend;
 use crate::render_graph::swapchain_scope::SwapchainScope;
-use crate::scene::SceneCoordinator;
 
 use super::super::context::{GraphResolvedResources, PostSubmitContext};
 use super::super::error::GraphExecuteError;
@@ -102,7 +102,7 @@ impl CompiledRenderGraph {
     pub(crate) fn execute_multi_view(
         &mut self,
         gpu: &mut GpuContext,
-        scene: &SceneCoordinator,
+        scene: GraphSceneView<'_>,
         backend: &mut dyn GraphExecutionBackend,
         frame_global: &FrameGlobalView,
         views: &mut [FrameView<'_>],
@@ -329,7 +329,7 @@ impl CompiledRenderGraph {
     /// Releases pre-acquired transient leases when late swapchain acquire skips or fails.
     fn release_transients_after_early_exit(
         gpu: &mut GpuContext,
-        scene: &SceneCoordinator,
+        scene: GraphSceneView<'_>,
         backend: &mut dyn GraphExecutionBackend,
         device: &wgpu::Device,
         gpu_limits: &GpuLimits,

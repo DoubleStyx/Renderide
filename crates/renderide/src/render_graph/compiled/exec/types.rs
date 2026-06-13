@@ -7,11 +7,10 @@ use crate::camera::{HostCameraFrame, ViewId};
 use crate::diagnostics::PerViewHudOutputs;
 use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
 use crate::graph_inputs::{
-    FrameSystemsShared, FrameViewClear, GraphPassFrame, GraphPassFrameView, OffscreenWriteTarget,
-    PerViewFramePlan, ViewWinding,
+    FrameSystemsShared, FrameViewClear, GraphPassFrame, GraphPassFrameView, GraphSceneView,
+    OffscreenWriteTarget, PerViewFramePlan, ViewWinding,
 };
 use crate::occlusion::gpu::HiZGpuState;
-use crate::scene::SceneCoordinator;
 use crate::shared::RenderingContext;
 
 use super::super::super::blackboard::{Blackboard, GraphCommandStats};
@@ -284,7 +283,7 @@ pub(super) struct PerViewWorkItem {
 /// Immutable shared inputs required to record one view's graph work.
 pub(super) struct PerViewRecordShared<'a> {
     /// Scene after cache flush for the frame.
-    pub(super) scene: &'a SceneCoordinator,
+    pub(super) scene: GraphSceneView<'a>,
     /// Device used to build encoders and any lazily created views.
     pub(super) device: &'a wgpu::Device,
     /// Effective device limits for this frame.

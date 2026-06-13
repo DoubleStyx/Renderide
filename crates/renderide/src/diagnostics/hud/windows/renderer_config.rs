@@ -138,7 +138,12 @@ fn renderer_config_panel_body(
                 state.renderer_config_tab = tab;
                 state.renderer_config_tab_restore_pending = false;
                 match tab {
-                    DebugHudRendererConfigTab::Display => display_section(ui, g, &mut dirty),
+                    DebugHudRendererConfigTab::Display => {
+                        if display_section(ui, g, &mut dirty) {
+                            reset_renderer_config_to_defaults(g, state);
+                            dirty = true;
+                        }
+                    }
                     DebugHudRendererConfigTab::Rendering => rendering_section(ui, g, &mut dirty),
                     DebugHudRendererConfigTab::Debug => debug_section(ui, g, &mut dirty),
                     DebugHudRendererConfigTab::PostProcessing => {
@@ -182,4 +187,36 @@ fn renderer_config_panel_body(
         }
     }
     ui.text_disabled(format!("Persist: {}", save_path.display()));
+}
+
+fn reset_renderer_config_to_defaults(g: &mut RendererSettings, state: &mut HudUiState) {
+    *g = RendererSettings::from_defaults();
+    *state = HudUiState::from_settings(&g.debug.hud);
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config::DebugHudRendererConfigTab;
+
+    use super::*;
+
+    #[test]
+    fn reset_renderer_config_to_defaults_refreshes_settings_and_hud_state() {
+        let mut settings = RendererSettings::from_defaults();
+        settings.display.focused_fps_cap = 30;
+        settings.debug.hud.draw_state_ui_only = true;
+        settings.debug.hud.renderer_config_tab = DebugHudRendererConfigTab::PostProcessing;
+        settings
+            .debug
+            .hud
+            .renderer_config_tabs
+            .set_open(DebugHudRendererConfigTab::Display, false);
+        let mut state = HudUiState::from_settings(&settings.debug.hud);
+
+        reset_renderer_config_to_defaults(&mut settings, &mut state);
+
+        let defaults = RendererSettings::from_defaults();
+        assert_eq!(settings, defaults);
+        assert_eq!(state, HudUiState::from_settings(&defaults.debug.hud));
+    }
 }

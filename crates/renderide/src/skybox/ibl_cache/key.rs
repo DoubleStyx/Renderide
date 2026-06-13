@@ -148,7 +148,64 @@ pub(super) fn convolve_sample_count(mip_index: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use hashbrown::HashMap;
+
     use super::*;
+    use crate::skybox::specular::{SkyboxIblSource, SolidColorIblSource};
+
+    /// Face sizes clamp to the device 2D texture limit with a floor of one texel.
+    #[test]
+    fn clamp_face_size_respects_device_limit_and_floor() {
+        let limits = GpuLimits::synthetic_for_tests(
+            wgpu::Limits {
+                max_texture_dimension_2d: 2048,
+                ..wgpu::Limits::default()
+            },
+            wgpu::Features::empty(),
+            HashMap::new(),
+        );
+
+        assert_eq!(clamp_face_size(256, &limits), 256);
+        assert_eq!(clamp_face_size(4096, &limits), 2048);
+        assert_eq!(clamp_face_size(0, &limits), 1);
+    }
+
+    /// Mip edges halve per level and clamp to one texel for deep tail mips.
+    #[test]
+    fn mip_extent_halves_and_clamps_to_one() {
+        assert_eq!(mip_extent(256, 0), 256);
+        assert_eq!(mip_extent(256, 3), 32);
+        assert_eq!(mip_extent(4, 10), 1);
+        assert_eq!(mip_extent(0, 0), 1);
+    }
+
+    /// Dispatch groups cover the full extent for the 8-wide workgroup, including zero sizes.
+    #[test]
+    fn dispatch_groups_cover_workgroup_edges() {
+        assert_eq!(dispatch_groups(0), 1);
+        assert_eq!(dispatch_groups(1), 1);
+        assert_eq!(dispatch_groups(8), 1);
+        assert_eq!(dispatch_groups(9), 2);
+        assert_eq!(dispatch_groups(64), 8);
+    }
+
+    /// Solid-color keys are identity-plus-color-bits: equal inputs match, any bit change
+    /// (including `0.0` vs `-0.0`) re-bakes.
+    #[test]
+    fn solid_color_key_hashes_color_bits() {
+        let key = |identity: u64, color: [f32; 4]| {
+            build_key(
+                &SkyboxIblSource::SolidColor(SolidColorIblSource { identity, color }),
+                64,
+            )
+        };
+
+        assert_eq!(key(1, [0.5, 0.25, 0.0, 1.0]), key(1, [0.5, 0.25, 0.0, 1.0]));
+        assert_ne!(key(1, [0.5, 0.25, 0.0, 1.0]), key(2, [0.5, 0.25, 0.0, 1.0]));
+        assert_ne!(key(1, [0.5, 0.25, 0.0, 1.0]), key(1, [0.5, 0.3, 0.0, 1.0]));
+        assert_ne!(key(1, [0.0, 0.0, 0.0, 1.0]), key(1, [-0.0, 0.0, 0.0, 1.0]));
+        assert_eq!(key(1, [0.5, 0.25, 0.0, 1.0]).face_size(), 64);
+    }
 
     /// Round-trip: applying the runtime parabolic LOD then the inverse returns the input.
     #[test]

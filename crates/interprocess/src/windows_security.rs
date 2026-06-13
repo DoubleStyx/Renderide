@@ -34,11 +34,14 @@ impl CurrentOwnerSecurityAttributes {
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect();
+        // SAFETY: `sddl` is a valid NUL-terminated UTF-16 string that outlives the call, and
+        // `descriptor` is a valid out-pointer the API fills with a LocalAlloc'd descriptor that
+        // `Drop` releases via `LocalFree`.
         let ok = unsafe {
             ConvertStringSecurityDescriptorToSecurityDescriptorW(
                 sddl.as_ptr(),
                 SDDL_REVISION_1,
-                &mut descriptor,
+                &raw mut descriptor,
                 null_mut(),
             )
         };
@@ -57,7 +60,7 @@ impl CurrentOwnerSecurityAttributes {
 
     /// Pointer passed to Win32 object creation calls.
     pub(crate) const fn as_ptr(&self) -> *const SECURITY_ATTRIBUTES {
-        &self.attrs
+        &raw const self.attrs
     }
 }
 
@@ -65,6 +68,9 @@ impl CurrentOwnerSecurityAttributes {
 impl Drop for CurrentOwnerSecurityAttributes {
     fn drop(&mut self) {
         if !self.descriptor.is_null() {
+            // SAFETY: `descriptor` was allocated by
+            // `ConvertStringSecurityDescriptorToSecurityDescriptorW`, which documents LocalFree
+            // as the matching release, and it is freed exactly once here.
             unsafe {
                 LocalFree(self.descriptor.cast());
             }

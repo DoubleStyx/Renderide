@@ -9,5 +9,6 @@ pub mod labels;
 pub mod main_debug;
 pub mod renderer_config;
 pub mod scene_transforms;
+pub mod sections;
 pub mod table_helpers;
 pub mod texture_debug;

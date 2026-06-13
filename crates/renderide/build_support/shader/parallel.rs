@@ -10,28 +10,17 @@ use super::error::BuildError;
 use super::model::{CompiledShader, ShaderJob};
 use super::modules::ShaderModuleSources;
 
-/// Conservative non-jobserver worker cap used when no stronger Cargo parallelism signal exists.
-const FALLBACK_LOCAL_SHADER_WORKERS: usize = 4;
-
 /// Returns the total worker count, including the main thread, for shader composition.
 fn configured_shader_worker_limit(job_count: usize) -> usize {
     if job_count == 0 {
         return 0;
     }
 
-    let requested = std::env::var("NUM_JOBS")
+    std::thread::available_parallelism()
         .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .or_else(|| {
-            std::thread::available_parallelism()
-                .ok()
-                .map(NonZeroUsize::get)
-        })
-        .unwrap_or(FALLBACK_LOCAL_SHADER_WORKERS);
-
-    requested
-        .clamp(1, FALLBACK_LOCAL_SHADER_WORKERS)
+        .map(NonZeroUsize::get)
+        .filter(|workers| *workers > 0)
+        .unwrap_or(job_count)
         .min(job_count)
 }
 
@@ -227,7 +216,7 @@ pub(super) fn sort_compiled_shader_results(results: &mut [CompiledShader]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shader::model::{BuildShaderReflection, CompiledShaderTarget, ShaderSourceClass};
+    use crate::shader::model::{CompiledShaderTarget, ShaderSourceClass};
 
     /// Sort preserves source discovery order even when workers finish out of order.
     #[test]
@@ -254,6 +243,7 @@ mod tests {
     ) -> CompiledShader {
         CompiledShader {
             compile_order,
+            source_stem: target_stem.to_string(),
             source_class,
             pass_directives: Vec::new(),
             texture_defaults: Vec::new(),
@@ -264,8 +254,19 @@ mod tests {
                 target_stem: target_stem.to_string(),
                 wgsl: "wgsl".to_string(),
                 pass_directives: Vec::new(),
-                reflection: BuildShaderReflection::default(),
             }],
         }
+    }
+
+    #[test]
+    fn worker_limit_uses_all_available_jobs_without_local_cap() {
+        let available = std::thread::available_parallelism()
+            .ok()
+            .map(NonZeroUsize::get)
+            .unwrap_or(usize::MAX);
+        let many_jobs = available.saturating_add(4);
+
+        assert_eq!(configured_shader_worker_limit(1), 1);
+        assert_eq!(configured_shader_worker_limit(many_jobs), available);
     }
 }

@@ -4,9 +4,10 @@ use std::sync::Arc;
 
 use crate::camera::HostCameraFrame;
 use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
-use crate::graph_inputs::{FrameSystemsShared, FrameViewClear, GraphPassFrame, GraphPassFrameView};
+use crate::graph_inputs::{
+    FrameSystemsShared, FrameViewClear, GraphPassFrame, GraphPassFrameView, GraphSceneView,
+};
 use crate::render_graph::GraphExecutionBackend;
-use crate::scene::SceneCoordinator;
 use crate::shared::RenderingContext;
 
 use super::super::{ResolvedView, ViewPostProcessing};
@@ -110,7 +111,7 @@ pub(in crate::render_graph::compiled) fn frame_render_params_from_shared<'a>(
 
 /// Builds [`GraphPassFrame`] from a resolved target and per-view host/IPC fields.
 pub(in crate::render_graph::compiled) fn frame_render_params_from_resolved<'a>(
-    scene: &'a SceneCoordinator,
+    scene: GraphSceneView<'a>,
     backend: &'a mut dyn GraphExecutionBackend,
     inputs: ResolvedFrameRenderParamsInputs<'a, '_>,
 ) -> GraphPassFrame<'a> {
@@ -127,7 +128,7 @@ pub(in crate::render_graph::compiled) fn frame_render_params_from_resolved<'a>(
     let hi_z_slot = split.occlusion.ensure_hi_z_state(resolved.view_id);
     frame_render_params_from_shared(
         FrameSystemsShared {
-            scene,
+            scene: scene.coordinator(),
             occlusion: split.occlusion,
             frame_resources: split.frame_resources,
             materials: split.materials,

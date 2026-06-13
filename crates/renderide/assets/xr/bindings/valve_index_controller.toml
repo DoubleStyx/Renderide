@@ -36,10 +36,10 @@ path = "/user/hand/right/input/trigger/click"
 
 [[binding]]
 action = "left_squeeze"
-path = "/user/hand/left/input/squeeze/value"
+path = "/user/hand/left/input/squeeze/force"
 [[binding]]
 action = "right_squeeze"
-path = "/user/hand/right/input/squeeze/value"
+path = "/user/hand/right/input/squeeze/force"
 
 [[binding]]
 action = "left_thumbstick"

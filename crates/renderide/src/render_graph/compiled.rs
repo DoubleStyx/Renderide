@@ -2,7 +2,6 @@
 
 use crate::gpu::{GpuContext, GpuLimits};
 use crate::render_graph::GraphExecutionBackend;
-use crate::scene::SceneCoordinator;
 
 use super::pass::PassNode;
 use super::resources::{
@@ -11,7 +10,7 @@ use super::resources::{
 use super::schedule::{FrameSchedule, ScheduleHudSnapshot};
 use super::validation::{GraphValidationReport, RenderGraphValidationMode};
 use crate::camera::ViewId;
-use crate::graph_inputs::{OffscreenWriteTarget, ViewWinding};
+use crate::graph_inputs::{GraphSceneView, OffscreenWriteTarget, ViewWinding};
 
 pub(super) mod cache;
 mod exec;
@@ -39,7 +38,7 @@ pub(super) struct MultiViewExecutionContext<'a> {
     /// GPU context (surface, swapchain, submits).
     pub(super) gpu: &'a mut GpuContext,
     /// Scene after cache flush.
-    pub(super) scene: &'a SceneCoordinator,
+    pub(super) scene: GraphSceneView<'a>,
     /// Narrow graph-facing backend access packet.
     pub(super) backend: &'a mut dyn GraphExecutionBackend,
     /// Device for encoders and pipeline state.

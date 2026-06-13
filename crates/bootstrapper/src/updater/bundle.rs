@@ -447,23 +447,26 @@ fn decode_hex_32(hex: &str) -> Result<[u8; 32], UpdateError> {
 
 /// Returns the required install entries for a release platform token.
 pub(super) fn required_bundle_entries(platform: &str) -> Vec<BundleEntry> {
-    let mut entries = Vec::with_capacity(5);
+    let mut entries = Vec::with_capacity(6);
     match platform {
         "windows-x86_64" | "windows-aarch64" => {
             entries.push(BundleEntry::file("renderide.exe", true));
             entries.push(BundleEntry::file("renderide-renderer.exe", false));
             entries.push(BundleEntry::directory("xr"));
+            entries.push(BundleEntry::directory("shaders"));
             entries.push(BundleEntry::file("openxr_loader.dll", false));
         }
         "linux-x86_64" | "linux-aarch64" => {
             entries.push(BundleEntry::file("renderide", true));
             entries.push(BundleEntry::file("renderide-renderer", false));
             entries.push(BundleEntry::directory("xr"));
+            entries.push(BundleEntry::directory("shaders"));
         }
         "macos-x86_64" | "macos-aarch64" => {
             entries.push(BundleEntry::file("renderide", true));
             entries.push(BundleEntry::file("renderide-renderer", false));
             entries.push(BundleEntry::directory("xr"));
+            entries.push(BundleEntry::directory("shaders"));
             entries.push(BundleEntry::file("libopenxr_loader.dylib", false));
         }
         _ => {}
@@ -567,7 +570,7 @@ mod tests {
             "tag": candidate.tag,
             "commit": candidate.commit,
             "platform": metadata.platform,
-            "required_files": ["renderide", "renderide-renderer", "xr"],
+            "required_files": ["renderide", "renderide-renderer", "xr", "shaders"],
             "sha256": {
                 "renderide": LAUNCHER_SHA256,
                 "renderide-renderer": RENDERER_SHA256
@@ -611,6 +614,10 @@ mod tests {
                         || entry.relative == "renderide-renderer.exe"),
                 "{platform} should include renderer binary"
             );
+            assert!(
+                entries.iter().any(|entry| entry.relative == "shaders"),
+                "{platform} should include runtime shader package"
+            );
         }
     }
 
@@ -619,6 +626,8 @@ mod tests {
         fs::write(root.join("renderide-renderer"), b"renderer").expect("write renderer");
         fs::create_dir_all(root.join("xr")).expect("create xr");
         fs::write(root.join("xr/actions.toml"), xr_actions).expect("write xr actions");
+        fs::create_dir_all(root.join("shaders")).expect("create shaders");
+        fs::write(root.join("shaders/shader_manifest.toml"), b"{}").expect("write shader manifest");
     }
 
     fn linux_manifest_with_sha256(sha256: serde_json::Value) -> String {
@@ -628,7 +637,7 @@ mod tests {
             "tag": "nightly-2026-05-27-2222222",
             "commit": "2222222222222222222222222222222222222222",
             "platform": "linux-x86_64",
-            "required_files": ["renderide", "renderide-renderer", "xr"],
+            "required_files": ["renderide", "renderide-renderer", "xr", "shaders"],
             "sha256": sha256
         })
         .to_string()
@@ -638,7 +647,8 @@ mod tests {
         serde_json::json!({
             "renderide": LAUNCHER_SHA256,
             "renderide-renderer": RENDERER_SHA256,
-            "xr/actions.toml": EMPTY_JSON_SHA256
+            "xr/actions.toml": EMPTY_JSON_SHA256,
+            "shaders/shader_manifest.toml": EMPTY_JSON_SHA256
         })
     }
 
@@ -681,6 +691,7 @@ mod tests {
             "renderide": LAUNCHER_SHA256,
             "renderide-renderer": RENDERER_SHA256,
             "xr/actions.toml": EMPTY_JSON_SHA256,
+            "shaders/shader_manifest.toml": EMPTY_JSON_SHA256,
             "renderide-release.json": EMPTY_JSON_SHA256
         }));
 
@@ -695,6 +706,7 @@ mod tests {
             "renderide": LAUNCHER_SHA256,
             "renderide-renderer": RENDERER_SHA256,
             "xr/actions.toml": EMPTY_JSON_SHA256,
+            "shaders/shader_manifest.toml": EMPTY_JSON_SHA256,
             "xr/../escape": EMPTY_JSON_SHA256
         }));
 

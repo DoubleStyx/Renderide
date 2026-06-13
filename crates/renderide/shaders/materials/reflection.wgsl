@@ -1,8 +1,8 @@
 //! Unity `Shader "Reflection"`: samples a host-provided 2D reflection texture in screen space,
 //! optionally distorted by a tangent-space normal map. **Not a grab pass** -- `_ReflectionTex` is a
 //! regular `sampler2D`, populated by the host with whatever reflection RT (planar, cubemap-projected,
-//! etc.) is available. Multi-view eye separation is handled by the renderer's per-eye render pass,
-//! not the side-by-side `eyeIndex` texture-coordinate offset Unity needs for single-pass stereo.
+//! etc.) is available. VR camera portals render left/right mirror eyes into side-by-side halves of
+//! the same host render texture, matching Unity's non-single-pass fallback.
 //!
 //! Froox variant bits populate `_RenderideVariantBits`; this shader decodes Reflection's
 //! shader-specific keyword bits locally. `_OFFSET_TEXTURE` is reserved in the bit table so the
@@ -60,6 +60,7 @@ struct VertexOutput {
     @builtin(position) clip_pos: vec4<f32>,
     @location(0) screen_uv: vec3<f32>,
     @location(1) uv: vec2<f32>,
+    @location(2) @interpolate(flat) view_layer: u32,
 }
 
 @vertex
@@ -80,26 +81,46 @@ fn vs_main(
     let vp = mv::select_view_proj(d, 0u);
 #endif
     let clip = vp * world_p;
+#ifdef MULTIVIEW
+    let view_layer = view_idx;
+    let screen_y = (clip.y + clip.w) * 0.5;
+#else
+    let view_layer = 0u;
+    let screen_y = (clip.w - clip.y) * 0.5;
+#endif
     var out: VertexOutput;
     out.clip_pos = clip;
-    // Equivalent of Unity's ComputeNonStereoScreenPos: ((clip.xy * vec2(1, -1) + clip.w) * 0.5, w)
-    // packed into xy/z so the fragment can do uv/w to get [0..1] screen UV.
+    // Unity ComputeNonStereoScreenPos with the projection sign matching the active target path.
     out.screen_uv = vec3<f32>(
         (clip.x + clip.w) * 0.5,
-        (clip.w - clip.y) * 0.5,
+        screen_y,
         clip.w,
     );
     out.uv = uvu::apply_st(uv, mat._NormalMap_ST);
+    out.view_layer = view_layer;
     return out;
 }
 
-//#pass type=forward a2c=cutout
+fn projected_reflection_uv(screen_uv: vec3<f32>) -> vec2<f32> {
+    return screen_uv.xy / max(screen_uv.z, 1e-4);
+}
+
+fn reflection_texture_uv(screen: vec2<f32>, view_layer: u32) -> vec2<f32> {
+    var uv = screen;
+#ifdef MULTIVIEW
+    uv.x = uv.x * 0.5 + f32(view_layer) * 0.5;
+#endif
+    return uv;
+}
+
+//#pass type=forward blend=material_filter a2c=cutout
 @fragment
 fn fs_main(
     @location(0) screen_uv: vec3<f32>,
     @location(1) uv: vec2<f32>,
+    @location(2) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
-    var screen = screen_uv.xy / max(screen_uv.z, 1e-4);
+    var screen = projected_reflection_uv(screen_uv);
     if (kw_NORMALMAP()) {
         let bump = nd::decode_ts_normal_with_placeholder_sample(
             ts::sample_tex_2d(_NormalMap, _NormalMap_sampler, uv, mat._NormalMap_LodBias),
@@ -107,6 +128,7 @@ fn fs_main(
         );
         screen = screen + bump.xy * mat._Distort;
     }
+    screen = reflection_texture_uv(screen, view_layer);
     var col = textureSample(_ReflectionTex, _ReflectionTex_sampler, screen);
     if (kw_COLOR()) {
         col = col * mat._Color;

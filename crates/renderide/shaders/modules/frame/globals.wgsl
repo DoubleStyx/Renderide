@@ -43,10 +43,19 @@ fn draw_index_from_layer(view_layer: u32) -> u32 {
     return view_layer >> 1u;
 }
 
+/// Returns true when the encoded material view layer targets the right eye.
+fn view_layer_is_right_eye(view_layer: u32) -> bool {
+#ifdef MULTIVIEW
+    return view_index_from_layer(view_layer) != 0u;
+#else
+    return false;
+#endif
+}
+
 /// World-space camera position for the current view layer.
 fn camera_world_pos_for_view(view_layer: u32) -> vec3<f32> {
 #ifdef MULTIVIEW
-    if (view_index_from_layer(view_layer) != 0u) {
+    if (view_layer_is_right_eye(view_layer)) {
         return frame.camera_world_pos_right.xyz;
     }
 #endif
@@ -65,7 +74,7 @@ fn stereo_center_camera_world_pos() -> vec3<f32> {
 /// World -> view-space Z coefficients for the current view layer.
 fn view_space_z_coeffs_for_view(view_layer: u32) -> vec4<f32> {
 #ifdef MULTIVIEW
-    if (view_index_from_layer(view_layer) != 0u) {
+    if (view_layer_is_right_eye(view_layer)) {
         return frame.view_space_z_coeffs_right;
     }
 #endif
@@ -75,7 +84,7 @@ fn view_space_z_coeffs_for_view(view_layer: u32) -> vec4<f32> {
 /// View -> world-space Y coefficients for the current view layer.
 fn view_to_world_y_coeffs_for_view(view_layer: u32) -> vec4<f32> {
 #ifdef MULTIVIEW
-    if (view_index_from_layer(view_layer) != 0u) {
+    if (view_layer_is_right_eye(view_layer)) {
         return frame.view_to_world_y_coeffs_right;
     }
 #endif
@@ -85,7 +94,7 @@ fn view_to_world_y_coeffs_for_view(view_layer: u32) -> vec4<f32> {
 /// Projection coefficients for the current view layer.
 fn proj_params_for_view(view_layer: u32) -> vec4<f32> {
 #ifdef MULTIVIEW
-    if (view_index_from_layer(view_layer) != 0u) {
+    if (view_layer_is_right_eye(view_layer)) {
         return frame.proj_params_right;
     }
 #endif
@@ -95,7 +104,7 @@ fn proj_params_for_view(view_layer: u32) -> vec4<f32> {
 /// Projection matrix for the current view layer.
 fn projection_for_view(view_layer: u32) -> mat4x4<f32> {
 #ifdef MULTIVIEW
-    if (view_index_from_layer(view_layer) != 0u) {
+    if (view_layer_is_right_eye(view_layer)) {
         return frame.proj_right;
     }
 #endif
@@ -105,7 +114,7 @@ fn projection_for_view(view_layer: u32) -> mat4x4<f32> {
 /// Projection flags for the current view layer.
 fn projection_flags_for_view(view_layer: u32) -> u32 {
 #ifdef MULTIVIEW
-    if (view_index_from_layer(view_layer) != 0u) {
+    if (view_layer_is_right_eye(view_layer)) {
         return frame.frame_tail.z;
     }
 #endif

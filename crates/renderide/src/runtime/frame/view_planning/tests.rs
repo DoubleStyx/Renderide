@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::*;
-use crate::camera::StereoViewMatrices;
+use crate::camera::{HostCameraFrame, StereoViewMatrices};
 use crate::config::{RendererSettings, RendererSettingsHandle};
 use crate::connection::ConnectionParams;
 use crate::gpu::OutputDepthMode;
@@ -34,6 +34,30 @@ fn collect_default_desktop_views(runtime: &RendererRuntime) -> ViewFamilyPlan<'_
         TEST_EXTENT,
         RenderPathProfile::desktop_main(),
         RenderPathProfile::desktop_main(),
+    )
+}
+
+fn ordering_test_view(
+    view_id: ViewId,
+    frame_index: i32,
+    render_context: RenderingContext,
+    profile: RenderPathProfile,
+) -> FrameViewPlan<'static> {
+    let host_camera = HostCameraFrame {
+        frame_index,
+        ..HostCameraFrame::default()
+    };
+    FrameViewPlan::new(
+        &host_camera,
+        FrameViewPlanParams {
+            render_context,
+            frame_time_seconds: frame_index as f32,
+            view_id,
+            viewport_px: TEST_EXTENT,
+            clear: FrameViewClear::skybox(),
+            profile,
+            target: FrameViewPlanTarget::Swapchain,
+        },
     )
 }
 
@@ -172,6 +196,130 @@ fn main_view_carries_runtime_host_camera() {
     let main = &views.plans()[0];
     assert_eq!(main.host_camera.frame_index, 42);
     assert_eq!(main.host_camera.desktop_fov_degrees, 75.0);
+}
+
+#[test]
+fn hmd_view_family_orders_offscreen_views_before_hmd() {
+    let portal_id = ViewId::camera_portal(RenderSpaceId(3), 7);
+    let secondary_id = ViewId::secondary_camera(RenderSpaceId(5), 11);
+    let portal = ordering_test_view(
+        portal_id,
+        10,
+        RenderingContext::Mirror,
+        RenderPathProfile::secondary_camera(ViewPostProcessing::disabled()),
+    );
+    let secondary = ordering_test_view(
+        secondary_id,
+        20,
+        RenderingContext::Camera,
+        RenderPathProfile::secondary_camera(ViewPostProcessing::disabled()),
+    );
+    let hmd = ordering_test_view(
+        ViewId::Main,
+        30,
+        RenderingContext::UserView,
+        RenderPathProfile::xr_hmd(),
+    );
+    let fallback_frame_global = FrameGlobalView::new(
+        &HostCameraFrame::default(),
+        RenderingContext::UserView,
+        0.0,
+        FrameViewClear::skybox(),
+        RenderPathProfile::xr_hmd().post_processing(),
+    );
+
+    let views = assemble_view_family_plan(
+        &fallback_frame_global,
+        vec![portal, secondary],
+        Some(hmd),
+        None,
+    );
+
+    assert_eq!(
+        views
+            .plans()
+            .iter()
+            .map(|view| view.view_id)
+            .collect::<Vec<_>>(),
+        vec![portal_id, secondary_id, ViewId::Main],
+        "portal and secondary render textures must refresh before the HMD samples them"
+    );
+}
+
+#[test]
+fn hmd_view_family_keeps_hmd_frame_global_when_offscreen_views_run_first() {
+    let portal_id = ViewId::camera_portal(RenderSpaceId(3), 7);
+    let portal = ordering_test_view(
+        portal_id,
+        10,
+        RenderingContext::Mirror,
+        RenderPathProfile::secondary_camera(ViewPostProcessing::disabled()),
+    );
+    let hmd = ordering_test_view(
+        ViewId::Main,
+        42,
+        RenderingContext::UserView,
+        RenderPathProfile::xr_hmd(),
+    );
+    let fallback_frame_global = FrameGlobalView::new(
+        &HostCameraFrame::default(),
+        RenderingContext::ExternalView,
+        0.0,
+        FrameViewClear::skybox(),
+        ViewPostProcessing::disabled(),
+    );
+
+    let views = assemble_view_family_plan(&fallback_frame_global, vec![portal], Some(hmd), None);
+
+    assert_eq!(views.plans()[0].view_id, portal_id);
+    assert_eq!(views.frame_global().view_id, ViewId::Main);
+    assert_eq!(views.frame_global().host_camera.frame_index, 42);
+    assert_eq!(
+        views.frame_global().render_context,
+        RenderingContext::UserView
+    );
+    assert!(views.frame_global().post_processing.is_enabled());
+}
+
+#[test]
+fn desktop_view_family_preserves_offscreen_before_main_ordering() {
+    let secondary_id = ViewId::secondary_camera(RenderSpaceId(8), 3);
+    let secondary = ordering_test_view(
+        secondary_id,
+        12,
+        RenderingContext::Camera,
+        RenderPathProfile::secondary_camera(ViewPostProcessing::disabled()),
+    );
+    let main = ordering_test_view(
+        ViewId::Main,
+        24,
+        RenderingContext::UserView,
+        RenderPathProfile::desktop_main(),
+    );
+    let fallback_frame_global = FrameGlobalView::new(
+        &HostCameraFrame::default(),
+        RenderingContext::ExternalView,
+        0.0,
+        FrameViewClear::skybox(),
+        ViewPostProcessing::disabled(),
+    );
+
+    let views =
+        assemble_view_family_plan(&fallback_frame_global, vec![secondary], None, Some(main));
+
+    assert_eq!(
+        views
+            .plans()
+            .iter()
+            .map(|view| view.view_id)
+            .collect::<Vec<_>>(),
+        vec![secondary_id, ViewId::Main]
+    );
+    assert_eq!(views.frame_global().host_camera.frame_index, 24);
+    assert_eq!(
+        views.frame_global().render_context,
+        RenderingContext::UserView
+    );
 }
 
 /// Pins the contract from the April 2026 cull regression: the main desktop `FrameViewPlan`

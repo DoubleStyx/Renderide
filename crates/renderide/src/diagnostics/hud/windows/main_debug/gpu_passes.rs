@@ -8,6 +8,7 @@ use crate::profiling::{GpuPassEntry, GpuProfilerFrameStats, GpuProfilerSnapshot}
 
 use super::super::super::state::HudUiState;
 use super::super::super::view::TabView;
+use super::super::sections::collapsible_section;
 use super::super::table_helpers::scrolling_table_flags;
 
 /// **GPU passes** tab dispatched from [`super::MainDebugWindow`].
@@ -38,29 +39,30 @@ impl TabView for GpuPassesTab {
             "{} timestamp queries opened, {} skipped, soft budget {}",
             stats.opened_queries, stats.skipped_queries, stats.soft_query_budget
         ));
-        ui.text_disabled(
-            "Depth indent shows nesting from parent phase queries; self-time is the measured pass range.",
-        );
-        ui.separator();
+        collapsible_section(ui, "Pass timings", true, |ui| {
+            ui.text_disabled(
+                "Depth indent shows nesting from parent phase queries; self-time is the measured pass range.",
+            );
 
-        if let Some(_table) = ui.begin_table_with_sizing(
-            "gpu_pass_rows",
-            2,
-            scrolling_table_flags(),
-            [0.0, 360.0],
-            0.0,
-        ) {
-            ui.table_setup_column("Pass");
-            ui.table_setup_column("Time (ms)");
-            ui.table_headers_row();
-            for entry in timings {
-                ui.table_next_row();
-                ui.table_next_column();
-                let indent = "  ".repeat(entry.depth as usize);
-                ui.text(format!("{indent}{}", entry.name));
-                ui.table_next_column();
-                ui.text(format!("{:.3}", entry.ms));
+            if let Some(_table) = ui.begin_table_with_sizing(
+                "gpu_pass_rows",
+                2,
+                scrolling_table_flags(),
+                [0.0, 360.0],
+                0.0,
+            ) {
+                ui.table_setup_column("Pass");
+                ui.table_setup_column("Time (ms)");
+                ui.table_headers_row();
+                for entry in timings {
+                    ui.table_next_row();
+                    ui.table_next_column();
+                    let indent = "  ".repeat(entry.depth as usize);
+                    ui.text(format!("{indent}{}", entry.name));
+                    ui.table_next_column();
+                    ui.text(format!("{:.3}", entry.ms));
+                }
             }
-        }
+        });
     }
 }

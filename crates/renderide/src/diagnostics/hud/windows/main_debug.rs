@@ -134,13 +134,18 @@ impl DebugTab {
 
     /// Render this tab. Projects the right [`MainDebugWindowData`] sub-fields per variant.
     pub fn render(self, ui: &imgui::Ui, data: &MainDebugWindowData<'_>, state: &mut HudUiState) {
+        let tab_id = self.persisted_tab();
+        let frame_diagnostics = data
+            .frame_diagnostics
+            .filter(|snapshot| snapshot.main_tab == tab_id);
         match self {
             Self::Stats => {
-                StatsTab.render(ui, (data.renderer_info, data.frame_diagnostics), state);
+                let renderer_info = frame_diagnostics.and(data.renderer_info);
+                StatsTab.render(ui, (renderer_info, frame_diagnostics), state);
             }
-            Self::ShaderRoutes => ShaderRoutesTab.render(ui, data.frame_diagnostics, state),
-            Self::DrawState => DrawStateTab.render(ui, data.frame_diagnostics, state),
-            Self::GpuMemory => GpuMemoryTab.render(ui, data.frame_diagnostics, state),
+            Self::ShaderRoutes => ShaderRoutesTab.render(ui, frame_diagnostics, state),
+            Self::DrawState => DrawStateTab.render(ui, frame_diagnostics, state),
+            Self::GpuMemory => GpuMemoryTab.render(ui, frame_diagnostics, state),
             Self::GpuPasses => GpuPassesTab.render(ui, data.gpu_profiler_snapshot, state),
         }
     }
