@@ -3,6 +3,7 @@
 #define_import_path renderide::skybox::projection360_material
 
 #import renderide::core::uv as uvu
+#import renderide::frame::globals as rg
 #import renderide::material::variant_bits as vb
 #import renderide::skybox::cubemap_storage as cubemap_storage
 #import renderide::skybox::projection360 as p360
@@ -141,7 +142,7 @@ fn sample_equirect(
     uv = clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0));
 
     var st = params.main_tex_st;
-    if (kw_RIGHT_EYE_ST(params.variant_bits) && view_layer != 0u) {
+    if (kw_RIGHT_EYE_ST(params.variant_bits) && rg::view_layer_is_right_eye(view_layer)) {
         st = params.right_eye_st;
     }
     let sample_uv = uvu::apply_st(uv, st);

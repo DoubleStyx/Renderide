@@ -101,6 +101,54 @@ fn material_variant_bits_helper_supports_pipeline_constants() -> io::Result<()> 
 }
 
 #[test]
+fn stereo_texture_eye_selection_uses_view_layer_helper() -> io::Result<()> {
+    let frame_src = module_source("frame/globals.wgsl")?;
+    for required in [
+        "fn view_index_from_layer(view_layer: u32) -> u32 {\n    return view_layer & 1u;\n}",
+        "fn view_layer_is_right_eye(view_layer: u32) -> bool",
+        "return view_index_from_layer(view_layer) != 0u;",
+        "return false;",
+    ] {
+        assert!(
+            frame_src.contains(required),
+            "frame/globals.wgsl must keep stereo eye selection based on the encoded view-layer low bit"
+        );
+    }
+
+    for (path_label, src, helper_call, banned_raw_check) in [
+        (
+            "materials/unlit.wgsl",
+            material_source("unlit.wgsl")?,
+            "kw_RIGHT_EYE_ST() && rg::view_layer_is_right_eye(view_layer)",
+            "kw_RIGHT_EYE_ST() && view_layer != 0u",
+        ),
+        (
+            "materials/billboardunlit.wgsl",
+            material_source("billboardunlit.wgsl")?,
+            "kw_RIGHT_EYE_ST() && rg::view_layer_is_right_eye(view_layer)",
+            "kw_RIGHT_EYE_ST() && view_layer != 0u",
+        ),
+        (
+            "modules/skybox/projection360_material.wgsl",
+            module_source("skybox/projection360_material.wgsl")?,
+            "kw_RIGHT_EYE_ST(params.variant_bits) && rg::view_layer_is_right_eye(view_layer)",
+            "kw_RIGHT_EYE_ST(params.variant_bits) && view_layer != 0u",
+        ),
+    ] {
+        assert!(
+            src.contains(helper_call),
+            "{path_label} must select _RightEye_ST through frame::view_layer_is_right_eye"
+        );
+        assert!(
+            !src.contains(banned_raw_check),
+            "{path_label} must not treat packed left-eye layers such as 2u as right-eye layers"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn material_variant_pipeline_constants_apply_to_vertex_and_fragment() -> io::Result<()> {
     for path in [
         "src/materials/raster_pipeline.rs",
