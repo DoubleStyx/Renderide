@@ -21,6 +21,8 @@ mono_crash.*
 
 # Build results
 [Dd]ebug/
+!crates/renderide/src/config/types/debug/
+!crates/renderide/src/config/types/debug/*.rs
 [Dd]ebugPublic/
 [Rr]elease/
 [Rr]eleases/
