@@ -10,7 +10,8 @@ use crate::world_mesh::materials::compute_batch_key_hash;
 use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
 
 use super::{
-    cmp_transparent_intra_run, opaque_depth_bucket, pack_sort_prefix, sort_draws, sort_draws_serial,
+    cmp_order_sensitive_draws, cmp_transparent_intra_run, opaque_depth_bucket, pack_sort_prefix,
+    sort_draws, sort_draws_serial,
 };
 
 /// Full structural comparator equivalent to the pre-packing `cmp_world_mesh_draw_items`.
@@ -201,8 +202,8 @@ fn transparent_sort_remains_back_to_front() {
 }
 
 #[test]
-fn commutative_transparent_sort_groups_batch_keys_within_sorting_order() {
-    let mut items: Vec<_> = [(1, 4.0), (2, 16.0), (1, 1.0), (2, 9.0)]
+fn commutative_transparent_sort_groups_batch_keys_at_same_depth() {
+    let mut items: Vec<_> = [(1, 4.0), (2, 4.0), (1, 4.0), (2, 4.0)]
         .into_iter()
         .enumerate()
         .map(|(index, (material, distance))| {
@@ -233,7 +234,70 @@ fn commutative_transparent_sort_groups_batch_keys_within_sorting_order() {
         .collect();
     assert!(
         materials == vec![1, 1, 2, 2] || materials == vec![2, 2, 1, 1],
-        "commutative transparent batches should stay adjacent, got {materials:?}"
+        "commutative transparent batches at equal depth should stay adjacent, got {materials:?}"
+    );
+}
+
+#[test]
+fn mixed_transparent_class_comparator_is_total_order() {
+    let mut items = Vec::new();
+    for (index, (material, distance, class)) in [
+        (1, 1.0, TransparentMaterialClass::OrderedAlpha),
+        (2, 4.0, TransparentMaterialClass::CommutativeBlend),
+        (3, 9.0, TransparentMaterialClass::CommutativeBlend),
+        (4, 16.0, TransparentMaterialClass::OrderedAlpha),
+        (5, 25.0, TransparentMaterialClass::CompatibilityFallback),
+        (6, 36.0, TransparentMaterialClass::CommutativeBlend),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut item = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: material,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 1,
+            node_id: index as i32,
+            slot_index: 0,
+            collect_order: index,
+            alpha_blended: true,
+        });
+        if class == TransparentMaterialClass::CommutativeBlend {
+            item.batch_key.blend_mode =
+                crate::materials::MaterialBlendMode::UnityBlend { src: 1, dst: 1 };
+        }
+        set_camera_distance(&mut item, distance);
+        set_transparent_class(&mut item, class);
+        items.push(item);
+    }
+
+    for a in &items {
+        for b in &items {
+            assert_eq!(
+                cmp_order_sensitive_draws(a, b),
+                cmp_order_sensitive_draws(b, a).reverse()
+            );
+        }
+    }
+    for a in &items {
+        for b in &items {
+            for c in &items {
+                if cmp_order_sensitive_draws(a, b) != Ordering::Greater
+                    && cmp_order_sensitive_draws(b, c) != Ordering::Greater
+                {
+                    assert_ne!(cmp_order_sensitive_draws(a, c), Ordering::Greater);
+                }
+            }
+        }
+    }
+
+    let mut sorted = items;
+    sorted.sort_unstable_by(cmp_order_sensitive_draws);
+    assert!(
+        sorted
+            .windows(2)
+            .all(|pair| { cmp_order_sensitive_draws(&pair[0], &pair[1]) != Ordering::Greater })
     );
 }
 

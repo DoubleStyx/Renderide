@@ -2,17 +2,20 @@
 
 use std::cmp::Ordering;
 
+#[cfg(test)]
 use rayon::slice::ParallelSliceMut;
 
 use super::item::{WorldMeshDrawItem, same_material_stack};
 
 /// Draws assigned to one secondary structural resort worker chunk.
+#[cfg(test)]
 const INTRA_PREFIX_RUN_PARALLEL_CHUNK_DRAWS: usize = 256;
 
 /// Equal-prefix run length above which the secondary structural resort uses Rayon.
 ///
 /// The primary prefix sort already used the worker pool. This gate is for large transparent
 /// buckets and opaque hash-prefix buckets where the tie-breaker comparator can still dominate.
+#[cfg(test)]
 const INTRA_PREFIX_RUN_PARALLEL_MIN: usize = INTRA_PREFIX_RUN_PARALLEL_CHUNK_DRAWS * 2;
 
 /// Draws assigned to one test-only primary sort worker chunk.
@@ -136,17 +139,19 @@ pub(super) fn cmp_order_sensitive_draws(a: &WorldMeshDrawItem, b: &WorldMeshDraw
 /// Orders transparent draws after `sorting_order` has already matched.
 #[inline]
 fn cmp_transparent_class_tie(a: &WorldMeshDrawItem, b: &WorldMeshDrawItem) -> Ordering {
-    if a.batch_key.transparent_class.allows_relaxed_batching()
-        && b.batch_key.transparent_class.allows_relaxed_batching()
-    {
-        return a
-            .batch_key_hash
-            .cmp(&b.batch_key_hash)
-            .then_with(|| a.batch_key.cmp(&b.batch_key))
-            .then_with(|| b.camera_distance_sq.total_cmp(&a.camera_distance_sq));
-    }
-
-    b.camera_distance_sq.total_cmp(&a.camera_distance_sq)
+    b.camera_distance_sq
+        .total_cmp(&a.camera_distance_sq)
+        .then_with(|| {
+            if a.batch_key.transparent_class.allows_relaxed_batching()
+                && b.batch_key.transparent_class.allows_relaxed_batching()
+            {
+                a.batch_key_hash
+                    .cmp(&b.batch_key_hash)
+                    .then_with(|| a.batch_key.cmp(&b.batch_key))
+            } else {
+                Ordering::Equal
+            }
+        })
 }
 
 /// Orders layers of the same material stack by ascending material slot.
@@ -228,6 +233,7 @@ fn resort_intra_prefix_runs(items: &mut [WorldMeshDrawItem], allow_parallel: boo
     }
 }
 
+#[cfg(test)]
 fn sort_intra_prefix_run(
     run: &mut [WorldMeshDrawItem],
     cmp: fn(&WorldMeshDrawItem, &WorldMeshDrawItem) -> Ordering,
@@ -239,13 +245,6 @@ fn sort_intra_prefix_run(
     } else {
         run.sort_unstable_by(cmp);
     }
-}
-
-/// Sorts order-sensitive transparent/grab draws while leaving nontransparent bins out of the
-/// full item sort.
-pub(super) fn sort_order_sensitive_draws(items: &mut [WorldMeshDrawItem], allow_parallel: bool) {
-    profiling::scope!("mesh::sort_order_sensitive_draws");
-    sort_intra_prefix_run(items, cmp_order_sensitive_draws, allow_parallel);
 }
 
 /// Sorts opaque draws for batching and transparent draws by compatibility class.
