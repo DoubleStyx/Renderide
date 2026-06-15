@@ -1,4 +1,4 @@
-//! Build-time git metadata for embedding into the renderer identifier.
+//! Build-time commit metadata for embedding into the renderer identifier.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -6,6 +6,53 @@ use std::process::Command;
 /// Number of leading hex characters of the commit hash embedded into the
 /// renderer identifier sent to the host.
 pub(crate) const COMMIT_HASH_LEN: usize = 8;
+const FULL_COMMIT_HASH_LEN: usize = 40;
+
+/// Source of the commit hash embedded into the renderer binary.
+pub(crate) enum CommitSource {
+    /// Commit supplied by the release workflow.
+    ReleaseEnv,
+    /// Commit resolved from the source checkout.
+    Git,
+}
+
+impl CommitSource {
+    /// Stable label written into renderer startup logs.
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Self::ReleaseEnv => "release-env",
+            Self::Git => "git",
+        }
+    }
+}
+
+/// Commit metadata selected for the current build.
+pub(crate) struct BuildCommit {
+    /// First [`COMMIT_HASH_LEN`] hexadecimal characters of the full SHA.
+    pub(crate) short: String,
+    /// Metadata source used to resolve [`Self::short`].
+    pub(crate) source: CommitSource,
+}
+
+/// Returns release-provided commit metadata first, falling back to git.
+pub(crate) fn build_commit(manifest_dir: &Path) -> Option<BuildCommit> {
+    if let Some(short) = release_commit_short() {
+        return Some(BuildCommit {
+            short,
+            source: CommitSource::ReleaseEnv,
+        });
+    }
+
+    current_commit_short(manifest_dir).map(|short| BuildCommit {
+        short,
+        source: CommitSource::Git,
+    })
+}
+
+fn release_commit_short() -> Option<String> {
+    let value = std::env::var("RENDERIDE_RELEASE_COMMIT").ok()?;
+    full_commit_to_short(value.trim())
+}
 
 /// Returns the first [`COMMIT_HASH_LEN`] characters of `HEAD`'s commit
 /// hash, or [`None`] if git is unavailable or any step fails.
@@ -23,11 +70,15 @@ pub(crate) fn current_commit_short(manifest_dir: &Path) -> Option<String> {
         return None;
     }
     let hash = String::from_utf8(output.stdout).ok()?;
-    let hash = hash.trim();
-    if hash.len() != 40 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+    full_commit_to_short(hash.trim())
+}
+
+/// Returns the renderer-visible short SHA for a valid full Git commit hash.
+pub(crate) fn full_commit_to_short(hash: &str) -> Option<String> {
+    if hash.len() != FULL_COMMIT_HASH_LEN || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
         return None;
     }
-    Some(hash[..COMMIT_HASH_LEN].to_string())
+    Some(hash[..COMMIT_HASH_LEN].to_ascii_lowercase())
 }
 
 /// Emits `cargo:rerun-if-changed=...` directives for the resolved git

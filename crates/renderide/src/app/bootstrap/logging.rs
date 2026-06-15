@@ -4,7 +4,11 @@ use std::env;
 use std::path::Path;
 
 use logger::{LogComponent, LogLevel};
+use sysinfo::{
+    CpuRefreshKind, MemoryRefreshKind, ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System,
+};
 
+use crate::build_info::{renderer_commit_sha8_label, renderer_commit_source, renderer_identifier};
 use crate::crash_context::{self, TickPhase};
 use crate::run_error::RunError;
 
@@ -41,8 +45,11 @@ pub(crate) fn init_logging() -> Result<LoggingBootstrap, RunError> {
 
 fn log_renderer_startup_context(log_path: &Path, initial_log_level: LogLevel) {
     logger::info!(
-        "Renderer process: version={} pid={} target={} {} arch={} exe={} cwd={} cli_mode={} log_path={} log_level={:?}",
+        "Renderer process: identifier={} version={} commit_sha8={} commit_source={} pid={} target={} {} arch={} exe={} cwd={} cli_mode={} log_path={} log_level={:?}",
+        renderer_identifier(),
         env!("CARGO_PKG_VERSION"),
+        renderer_commit_sha8_label(),
+        renderer_commit_source(),
         std::process::id(),
         env::consts::OS,
         env::consts::FAMILY,
@@ -57,6 +64,7 @@ fn log_renderer_startup_context(log_path: &Path, initial_log_level: LogLevel) {
         log_path.display(),
         initial_log_level,
     );
+    logger::info!("{}", StartupSystemDiagnostics::capture().log_line());
     for key in [
         "RENDERIDE_CONFIG",
         "RENDERIDE_LOGS_ROOT",
@@ -70,6 +78,106 @@ fn log_renderer_startup_context(log_path: &Path, initial_log_level: LogLevel) {
             logger::info!("Renderer env override: {key}={value}");
         }
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct StartupSystemDiagnostics {
+    os: String,
+    kernel: String,
+    cpu_model: String,
+    logical_cpus: usize,
+    physical_cpus: Option<usize>,
+    total_ram_bytes: u64,
+    process_ram_bytes: Option<u64>,
+}
+
+impl StartupSystemDiagnostics {
+    fn capture() -> Self {
+        if !sysinfo::IS_SUPPORTED_SYSTEM {
+            return Self {
+                os: "unsupported platform".to_string(),
+                kernel: unavailable().to_string(),
+                cpu_model: unavailable().to_string(),
+                logical_cpus: 0,
+                physical_cpus: None,
+                total_ram_bytes: 0,
+                process_ram_bytes: None,
+            };
+        }
+
+        let mut system = System::new_with_specifics(
+            RefreshKind::nothing()
+                .with_cpu(CpuRefreshKind::everything())
+                .with_memory(MemoryRefreshKind::everything()),
+        );
+        system.refresh_memory();
+        let process_ram_bytes = sysinfo::get_current_pid().ok().and_then(|pid| {
+            system.refresh_processes_specifics(
+                ProcessesToUpdate::Some(&[pid]),
+                true,
+                ProcessRefreshKind::nothing().with_memory(),
+            );
+            system.process(pid).map(sysinfo::Process::memory)
+        });
+
+        Self {
+            os: System::long_os_version()
+                .or_else(System::name)
+                .unwrap_or_else(|| unavailable().to_string()),
+            kernel: System::kernel_long_version(),
+            cpu_model: system
+                .cpus()
+                .first()
+                .map(|cpu| cpu.brand().trim().to_string())
+                .filter(|brand| !brand.is_empty())
+                .unwrap_or_else(|| unavailable().to_string()),
+            logical_cpus: system.cpus().len(),
+            physical_cpus: System::physical_core_count(),
+            total_ram_bytes: system.total_memory(),
+            process_ram_bytes,
+        }
+    }
+
+    fn log_line(&self) -> String {
+        format!(
+            "Renderer host system: os={} kernel={} cpu={} logical_cpus={} physical_cpus={} ram_total={} process_ram={}",
+            self.os,
+            self.kernel,
+            self.cpu_model,
+            self.logical_cpus,
+            optional_usize(self.physical_cpus),
+            format_bytes(self.total_ram_bytes),
+            self.process_ram_bytes
+                .map(format_bytes)
+                .unwrap_or_else(|| unavailable().to_string()),
+        )
+    }
+}
+
+fn optional_usize(value: Option<usize>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| unavailable().to_string())
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = KIB * 1024.0;
+    const GIB: f64 = MIB * 1024.0;
+    let bytes_f64 = bytes as f64;
+    if bytes_f64 >= GIB {
+        format!("{bytes} bytes ({:.2} GiB)", bytes_f64 / GIB)
+    } else if bytes_f64 >= MIB {
+        format!("{bytes} bytes ({:.2} MiB)", bytes_f64 / MIB)
+    } else if bytes_f64 >= KIB {
+        format!("{bytes} bytes ({:.2} KiB)", bytes_f64 / KIB)
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
+fn unavailable() -> &'static str {
+    "<unavailable>"
 }
 
 fn sanitized_cli_mode() -> String {
@@ -135,6 +243,8 @@ fn arg_has_ascii_suffix(arg: &str, suffix: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::StartupSystemDiagnostics;
+
     #[test]
     fn sanitized_cli_mode_empty_defaults_to_standalone_shape() {
         let mode = super::sanitized_cli_mode();
@@ -169,6 +279,34 @@ mod tests {
                 "debug",
             ]),
             "ipc-queue+queue-capacity+attach-renderer+headless+ignore-config+log-level"
+        );
+    }
+
+    #[test]
+    fn system_diagnostics_log_line_formats_missing_values() {
+        let diagnostics = StartupSystemDiagnostics {
+            os: "TestOS 1.0".to_string(),
+            kernel: "TestKernel 9.9".to_string(),
+            cpu_model: "<unavailable>".to_string(),
+            logical_cpus: 8,
+            physical_cpus: None,
+            total_ram_bytes: 16 * 1024 * 1024 * 1024,
+            process_ram_bytes: None,
+        };
+
+        assert_eq!(
+            diagnostics.log_line(),
+            "Renderer host system: os=TestOS 1.0 kernel=TestKernel 9.9 cpu=<unavailable> logical_cpus=8 physical_cpus=<unavailable> ram_total=17179869184 bytes (16.00 GiB) process_ram=<unavailable>"
+        );
+    }
+
+    #[test]
+    fn format_bytes_uses_binary_units() {
+        assert_eq!(super::format_bytes(512), "512 bytes");
+        assert_eq!(super::format_bytes(1536), "1536 bytes (1.50 KiB)");
+        assert_eq!(
+            super::format_bytes(2 * 1024 * 1024),
+            "2097152 bytes (2.00 MiB)"
         );
     }
 }

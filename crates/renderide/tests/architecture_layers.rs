@@ -14,6 +14,7 @@ const ROOT_MODULES: &[&str] = &[
     "app",
     "assets",
     "backend",
+    "build_info",
     "blackboard_contract",
     "bounds",
     "camera",

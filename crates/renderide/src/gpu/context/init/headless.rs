@@ -10,8 +10,8 @@ use super::super::super::sync::device_health::GpuDeviceHealth;
 use super::super::super::sync::mapped_buffer_health::GpuMappedBufferHealth;
 use super::super::{GpuContext, GpuError};
 use super::shared::{
-    GpuContextParts, GpuRuntimeHandles, assemble_context, log_device_capability_summary,
-    select_headless_adapter_with_fallback,
+    GpuContextParts, GpuRuntimeHandles, adapter_info_field_or_unreported, assemble_context,
+    log_device_capability_summary, select_headless_adapter_with_fallback,
 };
 use crate::config::GraphicsApiSetting;
 use crate::gpu::flight_recorder::GpuFlightRecorder;
@@ -58,6 +58,9 @@ impl GpuContext {
             power_preference,
         )
         .await?;
+        let selected_graphics_api = selection.graphics_api;
+        let active_backends = selection.active_backends;
+        let instance_flags = selection.instance_flags;
         let adapter = selection.adapter;
 
         let mapped_buffer_health = Arc::new(GpuMappedBufferHealth::new());
@@ -86,22 +89,13 @@ impl GpuContext {
             required_features,
             "GPU (headless)",
         );
-        logger::info!(
-            "GPU (headless): adapter={} backend={:?} graphics_api={} active_backends={:?} extent={}x{} format={:?} instance_flags={:?} \
-             msaa_supported_sample_counts={:?} msaa_max_sample_count={} \
-             msaa_supported_sample_counts_stereo={:?} msaa_max_sample_count_stereo={}",
-            adapter_info.name,
-            adapter_info.backend,
-            selection.graphics_api.as_persist_str(),
-            selection.active_backends,
-            config.width,
-            config.height,
-            config.format,
-            selection.instance_flags,
-            &msaa.desktop,
-            msaa.desktop_max(),
-            &msaa.stereo,
-            msaa.stereo_max(),
+        log_headless_gpu_selection_summary(
+            &adapter_info,
+            selected_graphics_api,
+            active_backends,
+            instance_flags,
+            &config,
+            &msaa,
         );
         log_device_capability_summary("GPU (headless)", device.as_ref());
         let gpu_profiler = try_gpu_profiler(
@@ -142,6 +136,39 @@ impl GpuContext {
             window: None,
         }))
     }
+}
+
+fn log_headless_gpu_selection_summary(
+    adapter_info: &wgpu::AdapterInfo,
+    graphics_api: GraphicsApiSetting,
+    active_backends: wgpu::Backends,
+    instance_flags: wgpu::InstanceFlags,
+    config: &wgpu::SurfaceConfiguration,
+    msaa: &MsaaSupport,
+) {
+    logger::info!(
+        "GPU (headless): adapter={} type={:?} backend={:?} vendor={:#010x} device={:#010x} pci_bus_id={} driver={} driver_info={} graphics_api={} active_backends={:?} extent={}x{} format={:?} instance_flags={:?} \
+         msaa_supported_sample_counts={:?} msaa_max_sample_count={} \
+         msaa_supported_sample_counts_stereo={:?} msaa_max_sample_count_stereo={}",
+        adapter_info.name,
+        adapter_info.device_type,
+        adapter_info.backend,
+        adapter_info.vendor,
+        adapter_info.device,
+        adapter_info_field_or_unreported(&adapter_info.device_pci_bus_id),
+        adapter_info_field_or_unreported(&adapter_info.driver),
+        adapter_info_field_or_unreported(&adapter_info.driver_info),
+        graphics_api.as_persist_str(),
+        active_backends,
+        config.width,
+        config.height,
+        config.format,
+        instance_flags,
+        &msaa.desktop,
+        msaa.desktop_max(),
+        &msaa.stereo,
+        msaa.stereo_max(),
+    );
 }
 
 /// Builds the synthetic surface config used by the headless offscreen path.

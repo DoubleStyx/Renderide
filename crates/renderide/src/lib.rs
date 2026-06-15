@@ -20,6 +20,7 @@ mod assets;
 mod backend;
 mod blackboard_contract;
 mod bounds;
+mod build_info;
 mod color_space;
 mod concurrency;
 mod config;
