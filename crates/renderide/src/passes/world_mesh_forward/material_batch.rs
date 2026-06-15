@@ -500,7 +500,7 @@ impl<'a> MaterialDrawResolver<'a> {
         {
             bits = remap_variant_bits_for_billboard(source_stem, bits);
         }
-        if crate::particles::is_generated_billboard_mesh_asset_id(item.mesh_asset_id) {
+        if batch_key.uses_render_buffer_billboard {
             Some(ensure_render_buffer_billboard_variant_bits(bits))
         } else {
             source_bits.map(|_| bits)
@@ -690,6 +690,35 @@ mod tests {
             MaterialGroup1BindingKind::Empty,
             &kind
         ));
+    }
+
+    #[test]
+    fn render_buffer_billboard_draws_split_material_batch_boundaries() {
+        let mut ordinary = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 42,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 7,
+            node_id: 1,
+            slot_index: 0,
+            collect_order: 0,
+            alpha_blended: false,
+        });
+        ordinary.batch_key.pipeline = embedded_pipeline("billboardunlit_default");
+        ordinary.batch_key.shader_asset_id = 42;
+
+        let mut render_buffer = ordinary.clone();
+        render_buffer.mesh_asset_id = crate::particles::billboard_render_buffer_mesh_asset_id(3)
+            .expect("valid render-buffer billboard id");
+        render_buffer.batch_key.uses_render_buffer_billboard = true;
+
+        let draws = vec![ordinary, render_buffer];
+        let mut boundaries = Vec::new();
+
+        collect_material_batch_boundaries_into(&draws, &mut boundaries);
+
+        assert_eq!(boundaries, vec![(0, 0), (1, 1)]);
     }
 
     /// A draw batch snapshot that stayed Null still requires empty group 1 even if routing changes.

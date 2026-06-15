@@ -353,6 +353,7 @@ pub(crate) fn apply_render_buffer_mesh_pipeline_override(
     if !crate::particles::is_generated_billboard_mesh_asset_id(mesh_asset_id) {
         return;
     }
+    batch_key.uses_render_buffer_billboard = true;
     if let RasterPipelineKind::EmbeddedStem(stem) = &batch_key.pipeline
         && stem.as_ref().starts_with("billboardunlit")
     {
@@ -424,6 +425,7 @@ fn batch_key_from_resolved(
         pipeline: r.pipeline.clone(),
         shader_asset_id: r.shader_asset_id,
         shader_specialization: r.shader_specialization,
+        uses_render_buffer_billboard: false,
         material_asset_id,
         property_block_slot0: property_block_id,
         skinned,
@@ -787,11 +789,50 @@ mod ui_rect_clip_tests {
             panic!("expected embedded billboard pipeline");
         };
         assert_eq!(stem.as_ref(), "billboardunlit_default");
+        assert!(key.uses_render_buffer_billboard);
         assert!(key.embedded_needs_uv0);
         assert!(key.embedded_needs_color);
         assert!(key.embedded_needs_tangent);
         assert!(key.embedded_raw_tangent_payload);
         assert!(key.embedded_raw_normal_payload);
+    }
+
+    #[test]
+    fn generated_billboard_mesh_marks_existing_billboard_pipeline_as_render_buffer() {
+        let mut store = MaterialPropertyStore::new();
+        store.set_shader_asset_for_material(7, 99);
+        let dict = MaterialDictionary::new(&store);
+        let mut router = MaterialRouter::new(RasterPipelineKind::Null);
+        router.set_shader_pipeline(
+            99,
+            RasterPipelineKind::EmbeddedStem(Arc::from("billboardunlit_default")),
+        );
+        let ids = MaterialPipelinePropertyIds::new(&PropertyIdRegistry::new());
+        let resolved =
+            resolve_material_batch(7, None, &dict, &router, &ids, ShaderPermutation::default());
+        let mut key = batch_key_from_resolved(
+            7,
+            None,
+            false,
+            RasterFrontFace::Clockwise,
+            RasterPrimitiveTopology::TriangleList,
+            &resolved,
+        );
+        let mesh_asset_id = crate::particles::billboard_render_buffer_mesh_asset_id(3).unwrap();
+
+        assert!(!key.uses_render_buffer_billboard);
+
+        apply_render_buffer_mesh_pipeline_override(
+            &mut key,
+            mesh_asset_id,
+            ShaderPermutation::default(),
+        );
+
+        assert!(key.uses_render_buffer_billboard);
+        assert_eq!(
+            key.shader_specialization,
+            MaterialShaderSpecializationKey::disabled()
+        );
     }
 
     #[test]
@@ -946,5 +987,6 @@ mod ui_rect_clip_tests {
         );
 
         assert_eq!(key.pipeline, original);
+        assert!(!key.uses_render_buffer_billboard);
     }
 }

@@ -66,6 +66,7 @@ pub fn dummy_world_mesh_draw_item(spec: DummyDrawItemSpec) -> WorldMeshDrawItem 
         pipeline: RasterPipelineKind::Null,
         shader_asset_id: -1,
         shader_specialization: MaterialShaderSpecializationKey::disabled(),
+        uses_render_buffer_billboard: false,
         material_asset_id: mid,
         property_block_slot0: pb,
         skinned,

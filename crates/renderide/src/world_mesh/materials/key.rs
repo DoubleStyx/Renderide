@@ -19,6 +19,8 @@ pub struct MaterialDrawBatchKey {
     pub shader_asset_id: i32,
     /// Renderer-local shader specialization constants for material keyword branches.
     pub shader_specialization: MaterialShaderSpecializationKey,
+    /// Whether Billboard/Unlit embedded binds must force generated render-buffer variant bits.
+    pub uses_render_buffer_billboard: bool,
     /// Material asset id for this renderer material slot (or `-1` when missing).
     pub material_asset_id: i32,
     /// Per-slot property block id when present; `None` is distinct from `Some` for batching.
@@ -207,5 +209,18 @@ mod tests {
 
         key.render_queue = UNITY_TRANSPARENT_RENDER_QUEUE_MIN;
         assert!(!key.pass_routing().alpha_test);
+    }
+
+    #[test]
+    fn render_buffer_billboard_splits_batch_identity() {
+        let mut ordinary = key(false);
+        let mut render_buffer = ordinary.clone();
+        render_buffer.uses_render_buffer_billboard = true;
+
+        assert_ne!(ordinary, render_buffer);
+        assert!(ordinary < render_buffer || render_buffer < ordinary);
+
+        ordinary.uses_render_buffer_billboard = true;
+        assert_eq!(ordinary, render_buffer);
     }
 }
