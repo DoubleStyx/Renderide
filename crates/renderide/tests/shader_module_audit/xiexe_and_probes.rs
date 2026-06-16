@@ -110,33 +110,20 @@ fn xiexe_transparent_keeps_premultiplied_transparent_pass_directive() -> io::Res
 }
 
 #[test]
-fn xiexe_matcap_uses_stereo_center_view_dir() -> io::Result<()> {
-    let globals_src = source_file(manifest_dir().join("shaders/modules/frame/globals.wgsl"))?;
-    assert!(
-        globals_src.contains("fn stereo_center_view_dir_for_world_pos("),
-        "globals.wgsl must expose a stereo-center view direction helper for eye-stable effects"
-    );
-    assert!(
-        globals_src
-            .contains("(frame.camera_world_pos.xyz + frame.camera_world_pos_right.xyz) * 0.5"),
-        "stereo-center view direction must average the left and right camera positions in multiview"
-    );
-
+fn xiexe_matcap_uses_active_eye_view_dir() -> io::Result<()> {
     let lighting_src =
         source_file(manifest_dir().join("shaders/modules/xiexe/toon2/lighting.wgsl"))?;
     assert!(
-        lighting_src.contains(
-            "let stereo_view_dir = rg::stereo_center_view_dir_for_world_pos(world_pos, view_layer);"
-        ),
-        "Xiexe matcap sampling must derive its view direction from the stereo-center camera"
+        lighting_src.contains("let view_dir = rg::view_dir_for_world_pos(world_pos, view_layer);"),
+        "Xiexe lighting must derive the active-eye view direction from the fragment view layer"
     );
     assert!(
-        lighting_src.contains("let uv = matcap_uv(stereo_view_dir, normal);"),
-        "Xiexe matcap sampling must use the stereo-center view direction for matcap UVs"
+        lighting_src.contains("let uv = matcap_uv(view_dir, normal);"),
+        "Xiexe matcap sampling must use the active-eye view direction for matcap UVs"
     );
     assert!(
-        !lighting_src.contains("let uv = matcap_uv(view_dir, normal);"),
-        "Xiexe matcap UVs must not use the per-eye lighting view direction"
+        !lighting_src.contains("stereo_center_view_dir_for_world_pos"),
+        "Xiexe matcap UVs must not use a stereo-center view direction"
     );
     assert!(
         lighting_src.contains("spec = spec * (ambient + dominant_light_col_atten * 0.5);"),

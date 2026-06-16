@@ -64,15 +64,6 @@ fn camera_world_pos_for_view(view_layer: u32) -> vec3<f32> {
     return frame.camera_world_pos.xyz;
 }
 
-/// World-space stereo-center camera position for effects that must stay identical between eyes.
-fn stereo_center_camera_world_pos() -> vec3<f32> {
-#ifdef MULTIVIEW
-    return (frame.camera_world_pos.xyz + frame.camera_world_pos_right.xyz) * 0.5;
-#else
-    return frame.camera_world_pos.xyz;
-#endif
-}
-
 /// World -> view-space Z coefficients for the current view layer.
 fn view_space_z_coeffs_for_view(view_layer: u32) -> vec4<f32> {
 #ifdef MULTIVIEW
@@ -162,15 +153,6 @@ fn view_dir_for_world_pos(world_pos: vec3<f32>, view_layer: u32) -> vec3<f32> {
         return fallback;
     }
     return safe_normalize_or(camera_world_pos_for_view(view_layer) - world_pos, fallback);
-}
-
-/// Unit vector from `world_pos` toward the stereo-center camera.
-fn stereo_center_view_dir_for_world_pos(world_pos: vec3<f32>, view_layer: u32) -> vec3<f32> {
-    let fallback = orthographic_view_dir_for_view(view_layer);
-    if (view_is_orthographic(view_layer)) {
-        return fallback;
-    }
-    return safe_normalize_or(stereo_center_camera_world_pos() - world_pos, fallback);
 }
 
 /// Adds infinitesimal terms tied to lights/cluster storage so every frame binding stays referenced
