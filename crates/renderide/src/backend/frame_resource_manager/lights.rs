@@ -242,11 +242,12 @@ fn prepare_lights_for_view_packet(
     let mut light_space_ids = Vec::new();
     collect_light_space_ids(scene, desc.render_space_filter, &mut light_space_ids);
     let mut resolved = Vec::new();
-    let visibility_stats =
+    let mut visibility_stats =
         resolve_lights_for_space_ids(scene, desc, &light_space_ids, &mut resolved);
     order_lights_for_clustered_shading_in_place(&mut resolved);
     let resolved_len = resolved.len();
     let kept = resolved_len.min(MAX_LIGHTS);
+    visibility_stats.note_view_pack(resolved_len, kept);
     let signed_scene_color_required = resolved
         .iter()
         .take(kept)

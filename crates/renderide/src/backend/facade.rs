@@ -601,11 +601,21 @@ impl RenderBackend {
                 .frame_resources
                 .max_per_view_light_count(),
             signed_scene_color_active: self.signed_scene_color_active(),
+            visibility_space_count: light_visibility.space_count,
+            visibility_cull_disabled_spaces: light_visibility.cull_disabled_spaces,
+            visibility_lights_before_cull: light_visibility.lights_before_cull,
+            visibility_non_contributing_lights: light_visibility.non_contributing_lights,
             visibility_indexed_lights: light_visibility.indexed_lights,
             visibility_fallback_lights: light_visibility.fallback_lights,
             visibility_rejected_lights: light_visibility.rejected_lights,
+            visibility_lights_after_cull: light_visibility.lights_after_cull,
+            visibility_packed_lights: light_visibility.packed_lights,
+            visibility_max_lights_culled: light_visibility.max_lights_culled,
             visibility_bvh_queries: light_visibility.bvh_queries,
             visibility_linear_queries: light_visibility.linear_queries,
+            visibility_light_aabb_tests: light_visibility.light_aabb_tests,
+            visibility_bvh_node_tests: light_visibility.bvh_node_tests,
+            visibility_bvh_nodes_culled: light_visibility.bvh_nodes_culled,
         }
     }
 

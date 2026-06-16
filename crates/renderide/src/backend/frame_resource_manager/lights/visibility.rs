@@ -31,10 +31,18 @@ fn filter_resolved_lights_for_view_with_stats(
     lights: &mut Vec<ResolvedLight>,
 ) -> LightVisibilityStats {
     profiling::scope!("render::prepare_lights::filter_visibility");
+    let mut stats = LightVisibilityStats {
+        space_count: 1,
+        lights_before_cull: lights.len(),
+        ..LightVisibilityStats::default()
+    };
     let Some(cull) = cull else {
         profiling::scope!("render::prepare_lights::filter_contributors");
+        stats.cull_disabled_spaces = 1;
         lights.retain(light_contributes);
-        return LightVisibilityStats::default();
+        stats.non_contributing_lights = stats.lights_before_cull.saturating_sub(lights.len());
+        stats.lights_after_cull = lights.len();
+        return stats;
     };
 
     let culling = WorldMeshCullInput {
@@ -43,12 +51,12 @@ fn filter_resolved_lights_for_view_with_stats(
         hi_z: None,
         hi_z_temporal: None,
     };
-    let mut stats = LightVisibilityStats::default();
     let mut keep = vec![false; lights.len()];
     let mut indexed = Vec::new();
 
     for (source_index, light) in lights.iter().enumerate() {
         if !light_contributes(light) {
+            stats.non_contributing_lights = stats.non_contributing_lights.saturating_add(1);
             continue;
         }
         let Some(bounds) = light_influence_bounds(light) else {
@@ -65,16 +73,19 @@ fn filter_resolved_lights_for_view_with_stats(
     }
 
     stats.indexed_lights = indexed.len();
-    if indexed.len() <= LIGHT_SPATIAL_LINEAR_LIMIT {
-        stats.linear_queries = stats.linear_queries.saturating_add(1);
-        mark_visible_lights_linear(scene, space_id, &culling, &indexed, &mut keep, &mut stats);
-    } else {
-        stats.bvh_queries = stats.bvh_queries.saturating_add(1);
-        let bvh = LightBvh::build(&indexed);
-        bvh.mark_visible(scene, space_id, &culling, &mut keep, &mut stats);
+    if !indexed.is_empty() {
+        if indexed.len() <= LIGHT_SPATIAL_LINEAR_LIMIT {
+            stats.linear_queries = stats.linear_queries.saturating_add(1);
+            mark_visible_lights_linear(scene, space_id, &culling, &indexed, &mut keep, &mut stats);
+        } else {
+            stats.bvh_queries = stats.bvh_queries.saturating_add(1);
+            let bvh = LightBvh::build(&indexed);
+            bvh.mark_visible(scene, space_id, &culling, &mut keep, &mut stats);
+        }
     }
 
     filter_lights_by_keep(lights, &keep);
+    stats.lights_after_cull = lights.len();
     stats
 }
 
@@ -88,6 +99,7 @@ fn mark_visible_lights_linear(
 ) {
     profiling::scope!("render::prepare_lights::filter_visibility_linear");
     for entry in entries {
+        stats.light_aabb_tests = stats.light_aabb_tests.saturating_add(1);
         if light_aabb_visible(scene, space_id, culling, entry.aabb_min, entry.aabb_max) {
             keep[entry.source_index] = true;
         } else {
@@ -187,26 +199,74 @@ fn vec3a_is_finite(v: Vec3A) -> bool {
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LightVisibilityStats {
+    /// Render spaces visited while resolving view light packs.
+    pub(crate) space_count: usize,
+    /// Render spaces prepared without a culling descriptor.
+    pub(crate) cull_disabled_spaces: usize,
+    /// Resolved lights before contribution and culling filters.
+    pub(crate) lights_before_cull: usize,
+    /// Resolved lights discarded because they cannot contribute visible direct lighting.
+    pub(crate) non_contributing_lights: usize,
     /// Light influence volumes with finite bounds tested against the view.
     pub(crate) indexed_lights: usize,
     /// Lights kept conservatively because they could not be spatially indexed.
     pub(crate) fallback_lights: usize,
     /// Bounded light influence volumes rejected before clustered-light packing.
     pub(crate) rejected_lights: usize,
+    /// Lights kept after contribution and frustum filters, before `MAX_LIGHTS` truncation.
+    pub(crate) lights_after_cull: usize,
+    /// Lights retained in packed GPU light arrays after `MAX_LIGHTS` truncation.
+    pub(crate) packed_lights: usize,
+    /// Lights kept by culling but dropped because the GPU light buffer reached `MAX_LIGHTS`.
+    pub(crate) max_lights_culled: usize,
     /// Number of space-level light BVH traversals used this frame.
     pub(crate) bvh_queries: usize,
     /// Number of space-level linear light scans used this frame.
     pub(crate) linear_queries: usize,
+    /// Per-light AABB frustum tests executed by linear runs or BVH leaves.
+    pub(crate) light_aabb_tests: usize,
+    /// BVH node AABB frustum tests executed before leaf light tests.
+    pub(crate) bvh_node_tests: usize,
+    /// BVH nodes rejected as a group before testing their contained lights.
+    pub(crate) bvh_nodes_culled: usize,
 }
 
 impl LightVisibilityStats {
+    /// Records the final GPU packing count for one prepared view light pack.
+    pub(super) fn note_view_pack(&mut self, resolved_len: usize, packed_len: usize) {
+        self.packed_lights = self.packed_lights.saturating_add(packed_len);
+        self.max_lights_culled = self
+            .max_lights_culled
+            .saturating_add(resolved_len.saturating_sub(packed_len));
+    }
+
     /// Adds another visibility sample into this one, saturating each field.
     pub(super) fn add(&mut self, other: Self) {
+        self.space_count = self.space_count.saturating_add(other.space_count);
+        self.cull_disabled_spaces = self
+            .cull_disabled_spaces
+            .saturating_add(other.cull_disabled_spaces);
+        self.lights_before_cull = self
+            .lights_before_cull
+            .saturating_add(other.lights_before_cull);
+        self.non_contributing_lights = self
+            .non_contributing_lights
+            .saturating_add(other.non_contributing_lights);
         self.indexed_lights = self.indexed_lights.saturating_add(other.indexed_lights);
         self.fallback_lights = self.fallback_lights.saturating_add(other.fallback_lights);
         self.rejected_lights = self.rejected_lights.saturating_add(other.rejected_lights);
+        self.lights_after_cull = self
+            .lights_after_cull
+            .saturating_add(other.lights_after_cull);
+        self.packed_lights = self.packed_lights.saturating_add(other.packed_lights);
+        self.max_lights_culled = self
+            .max_lights_culled
+            .saturating_add(other.max_lights_culled);
         self.bvh_queries = self.bvh_queries.saturating_add(other.bvh_queries);
         self.linear_queries = self.linear_queries.saturating_add(other.linear_queries);
+        self.light_aabb_tests = self.light_aabb_tests.saturating_add(other.light_aabb_tests);
+        self.bvh_node_tests = self.bvh_node_tests.saturating_add(other.bvh_node_tests);
+        self.bvh_nodes_culled = self.bvh_nodes_culled.saturating_add(other.bvh_nodes_culled);
     }
 }
 
@@ -313,13 +373,16 @@ impl LightBvh {
         stats: &mut LightVisibilityStats,
     ) {
         let node = self.nodes[node_index];
+        stats.bvh_node_tests = stats.bvh_node_tests.saturating_add(1);
         if !light_aabb_visible(scene, space_id, culling, node.aabb_min, node.aabb_max) {
+            stats.bvh_nodes_culled = stats.bvh_nodes_culled.saturating_add(1);
             stats.rejected_lights = stats.rejected_lights.saturating_add(node_light_count(node));
             return;
         }
         if node.count > 0 {
             for &entry_index in &self.order[node.start..node.start + node.count] {
                 let entry = self.entries[entry_index];
+                stats.light_aabb_tests = stats.light_aabb_tests.saturating_add(1);
                 if light_aabb_visible(scene, space_id, culling, entry.aabb_min, entry.aabb_max) {
                     keep[entry.source_index] = true;
                 } else {
@@ -493,14 +556,41 @@ mod tests {
         let stats =
             filter_resolved_lights_for_view_with_stats(&scene, space_id, Some(&cull), &mut lights);
 
+        assert_eq!(stats.space_count, 1);
+        assert_eq!(stats.lights_before_cull, 3);
         assert_eq!(stats.bvh_queries, 0);
         assert_eq!(stats.linear_queries, 1);
         assert_eq!(stats.indexed_lights, 2);
         assert_eq!(stats.fallback_lights, 1);
         assert_eq!(stats.rejected_lights, 1);
+        assert_eq!(stats.lights_after_cull, 2);
+        assert_eq!(stats.light_aabb_tests, 2);
         assert_eq!(lights.len(), 2);
         assert_eq!(lights[0].light_type, LightType::Point);
         assert_eq!(lights[1].light_type, LightType::Directional);
+    }
+
+    #[test]
+    fn disabled_culling_reports_contributor_filter_counts() {
+        let space_id = RenderSpaceId(5);
+        let (scene, _host_camera, _cull) = test_scene_and_cull(space_id);
+        let mut lights = vec![
+            resolved_light(LightType::Point, Vec3::ZERO, 0.25),
+            resolved_light(LightType::Point, Vec3::new(4.0, 0.0, 0.0), 0.25),
+        ];
+        lights[1].intensity = 0.0;
+
+        let stats = filter_resolved_lights_for_view(&scene, space_id, None, &mut lights);
+
+        assert_eq!(stats.space_count, 1);
+        assert_eq!(stats.cull_disabled_spaces, 1);
+        assert_eq!(stats.lights_before_cull, 2);
+        assert_eq!(stats.non_contributing_lights, 1);
+        assert_eq!(stats.rejected_lights, 0);
+        assert_eq!(stats.lights_after_cull, 1);
+        assert_eq!(stats.indexed_lights, 0);
+        assert_eq!(stats.light_aabb_tests, 0);
+        assert_eq!(lights.len(), 1);
     }
 
     #[test]
@@ -527,6 +617,9 @@ mod tests {
         assert_eq!(stats.bvh_queries, 1);
         assert_eq!(stats.linear_queries, 0);
         assert_eq!(stats.indexed_lights, 80);
+        assert_eq!(stats.rejected_lights, 40);
+        assert!(stats.bvh_node_tests > 0);
+        assert!(stats.light_aabb_tests <= 80);
         assert_eq!(lights.len(), 40);
         let kept_indices = lights
             .iter()
@@ -550,6 +643,8 @@ mod tests {
             filter_resolved_lights_for_view_with_stats(&scene, space_id, Some(&cull), &mut lights);
 
         assert_eq!(stats.bvh_queries, 0);
+        assert_eq!(stats.linear_queries, 1);
+        assert_eq!(stats.light_aabb_tests, LIGHT_SPATIAL_LINEAR_LIMIT);
         assert_eq!(lights.len(), LIGHT_SPATIAL_LINEAR_LIMIT);
     }
 
@@ -575,6 +670,7 @@ mod tests {
             filter_resolved_lights_for_view_with_stats(&scene, space_id, Some(&cull), &mut lights);
 
         assert_eq!(stats.rejected_lights, 0);
+        assert_eq!(stats.lights_after_cull, 1);
         assert_eq!(lights.len(), 1);
     }
 }

@@ -90,10 +90,11 @@ impl FrameResourceManager {
     ///
     /// The flag store uses [`Ordering::Release`] so a worker that observes the cleared state on
     /// the next tick is guaranteed to see the prior tick's GPU writes that produced the work.
-    pub fn reset_light_prep_for_tick(&self) {
+    pub fn reset_light_prep_for_tick(&mut self) {
         self.mesh_deform_dispatched_this_submission
             .store(false, Ordering::Release);
         *self.visible_mesh_deform_keys.lock() = None;
+        self.light_visibility_stats = Default::default();
     }
 
     /// Starts a graph submission with the visible deformed renderers gathered during draw prep.
