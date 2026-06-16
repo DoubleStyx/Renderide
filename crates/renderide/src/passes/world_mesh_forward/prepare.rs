@@ -10,7 +10,7 @@ use crate::gpu::GpuLimits;
 use crate::graph_inputs::{
     FrameSystemsShared, GraphPassFrameView, OffscreenWriteTarget, PerViewFramePlan,
 };
-use crate::hud_contract::{PerViewHudConfig, PerViewHudOutputs};
+use crate::hud_contract::{PerViewHudConfig, PerViewHudOutputs, WorldMeshViewHudStats};
 use crate::materials::MaterialSystem;
 use crate::materials::ShaderPermutation;
 use crate::materials::embedded::MaterialBindCacheKey;
@@ -781,7 +781,21 @@ fn world_mesh_hud_outputs(
         shader_perm,
         frame.view.offscreen_write_target,
     );
+    let mut hud_outputs = hud_outputs;
+    if frame.systems.debug_hud.capture_world_mesh_view_stats
+        && let Some(stats) = hud_outputs.world_mesh_draw_stats
+    {
+        hud_outputs.world_mesh_view_stats = Some(WorldMeshViewHudStats {
+            view_id: frame.view.view_id,
+            viewport_px: frame.view.viewport_px,
+            render_context: frame.view.render_context,
+            multiview_stereo: frame.view.multiview_stereo,
+            offscreen_write_target: frame.view.offscreen_write_target,
+            stats,
+        });
+    }
     let has_outputs = hud_outputs.world_mesh_draw_stats.is_some()
+        || hud_outputs.world_mesh_view_stats.is_some()
         || hud_outputs.world_mesh_draw_state_rows.is_some()
         || !hud_outputs.current_view_texture_2d_asset_ids.is_empty();
     has_outputs.then_some(hud_outputs)

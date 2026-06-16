@@ -91,9 +91,9 @@ pub(crate) use crate::frame_contract::{FrameViewClear, OffscreenWriteTarget, Vie
 pub(crate) use crate::graph_inputs::{GraphAssetResources, GraphFrameResources};
 pub(crate) use compiled::cache::{GraphCache, GraphCacheEnsureResult, GraphCacheKey};
 pub(crate) use compiled::{
-    ExternalFrameTargets, ExternalOffscreenTargets, FrameGlobalView, FrameView,
-    FrameViewResourceHints, FrameViewTarget, OffscreenColorCopyTarget, RenderPathProfile,
-    ViewFamilyGraphRequirements, ViewPostProcessing,
+    CommandEncodingHudSnapshot, ExternalFrameTargets, ExternalOffscreenTargets, FrameGlobalView,
+    FrameView, FrameViewResourceHints, FrameViewTarget, OffscreenColorCopyTarget,
+    RenderPathProfile, ViewFamilyGraphRequirements, ViewPostProcessing,
 };
 pub(crate) use error::{GraphExecuteError, graph_error_kind};
 pub(crate) use execution_backend::GraphExecutionBackend;

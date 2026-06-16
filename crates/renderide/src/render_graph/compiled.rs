@@ -23,6 +23,7 @@ mod resource;
 #[cfg(test)]
 mod dot;
 
+pub(crate) use exec::CommandEncodingHudSnapshot;
 pub(crate) use frame_view::{
     ExternalFrameTargets, ExternalOffscreenTargets, FrameGlobalView, FrameView, FrameViewLayout,
     FrameViewResourceHints, FrameViewTarget, OffscreenColorCopyTarget, RenderPathProfile,

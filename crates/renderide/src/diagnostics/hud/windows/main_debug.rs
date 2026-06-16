@@ -1,4 +1,4 @@
-//! **Renderide debug** main panel -- anchored top-right window with one [`TabView`] per concern.
+//! **Renderide debug** main panel -- anchored top-right window with one [`TabView`] per top-level concern.
 //!
 //! The window envelope is the [`HudWindow`] impl on [`MainDebugWindow`]; the body iterates each
 //! tab (`Stats / Shader routes / Draw state / GPU memory / GPU passes`) by static dispatch.
@@ -6,8 +6,11 @@
 pub mod draw_state;
 pub mod gpu_memory;
 pub mod gpu_passes;
+mod graph;
 pub mod shader_routes;
 pub mod stats;
+mod streaming;
+mod visibility;
 
 use imgui::{TabItem, TabItemFlags, WindowFlags};
 

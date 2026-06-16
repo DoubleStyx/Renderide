@@ -62,6 +62,7 @@ mod swapchain;
 mod types;
 
 use command_recording::GraphCommandRecordingInputs;
+pub(crate) use diagnostics::CommandEncodingHudSnapshot;
 use diagnostics::{CommandEncodingDiagnostics, TransientPoolMetricsDelta};
 use recording_path::GraphCommandRecordingPlan;
 use submit::release_transients_and_gc;
@@ -286,6 +287,11 @@ impl CompiledRenderGraph {
             command_diagnostics.record_flight_event(mv_ctx.gpu);
             command_diagnostics.plot();
             command_diagnostics.log_if_slow();
+            if mv_ctx.backend.capture_graph_command_diagnostics() {
+                mv_ctx
+                    .backend
+                    .record_command_encoding_diagnostics(command_diagnostics.hud_snapshot());
+            }
         }
 
         {

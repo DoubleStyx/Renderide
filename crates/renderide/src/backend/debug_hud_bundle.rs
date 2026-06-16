@@ -8,6 +8,7 @@ use crate::diagnostics::{
     DebugHud, DebugHudInput, DebugHudOverlayContext, FrameDiagnosticsSnapshot,
     FrameTimingHudSnapshot, RendererInfoSnapshot, SceneTransformsSnapshot, TextureDebugSnapshot,
 };
+use crate::hud_contract::WorldMeshViewHudStats;
 use crate::hud_contract::{DebugHudEncodeError, PerViewHudConfig, PerViewHudOutputs};
 use crate::world_mesh::{WorldMeshDrawStateRow, WorldMeshDrawStats};
 
@@ -19,8 +20,10 @@ pub struct DebugHudBundle {
     want_capture_mouse: bool,
     want_capture_keyboard: bool,
     last_world_mesh_draw_stats: WorldMeshDrawStats,
+    last_world_mesh_view_stats: Vec<WorldMeshViewHudStats>,
     last_world_mesh_draw_state_rows: Vec<WorldMeshDrawStateRow>,
     per_view_config: PerViewHudConfig,
+    capture_graph_command_diagnostics: bool,
     current_view_texture_2d_asset_ids: BTreeSet<i32>,
 }
 
@@ -40,8 +43,10 @@ impl DebugHudBundle {
             want_capture_mouse: false,
             want_capture_keyboard: false,
             last_world_mesh_draw_stats: WorldMeshDrawStats::default(),
+            last_world_mesh_view_stats: Vec::new(),
             last_world_mesh_draw_state_rows: Vec::new(),
             per_view_config: PerViewHudConfig::default(),
+            capture_graph_command_diagnostics: false,
             current_view_texture_2d_asset_ids: BTreeSet::new(),
         }
     }
@@ -71,6 +76,9 @@ impl DebugHudBundle {
         if !config.capture_world_mesh_draw_stats {
             self.last_world_mesh_draw_stats = WorldMeshDrawStats::default();
         }
+        if !config.capture_world_mesh_view_stats {
+            self.last_world_mesh_view_stats.clear();
+        }
         if !config.capture_world_mesh_draw_state_rows {
             self.last_world_mesh_draw_state_rows.clear();
         }
@@ -83,6 +91,16 @@ impl DebugHudBundle {
     /// Per-view HUD diagnostics capture interests for the next graph recording.
     pub(crate) fn per_view_config(&self) -> PerViewHudConfig {
         self.per_view_config
+    }
+
+    /// Updates whether graph execution should publish HUD-formatted command diagnostics.
+    pub(crate) fn set_capture_graph_command_diagnostics(&mut self, capture: bool) {
+        self.capture_graph_command_diagnostics = capture;
+    }
+
+    /// Returns whether graph execution should publish HUD-formatted command diagnostics.
+    pub(crate) fn capture_graph_command_diagnostics(&self) -> bool {
+        self.capture_graph_command_diagnostics
     }
 
     /// Clears the current-view Texture2D id set before collecting this frame's submitted draws.
@@ -103,6 +121,9 @@ impl DebugHudBundle {
     pub(crate) fn apply_per_view_outputs(&mut self, outputs: &PerViewHudOutputs) {
         if let Some(stats) = outputs.world_mesh_draw_stats.as_ref() {
             self.set_last_world_mesh_draw_stats(stats);
+        }
+        if let Some(view_stats) = outputs.world_mesh_view_stats.as_ref() {
+            self.set_last_world_mesh_view_stats(view_stats.clone());
         }
         if let Some(rows) = outputs.world_mesh_draw_state_rows.clone() {
             self.set_last_world_mesh_draw_state_rows(rows);
@@ -203,6 +224,22 @@ impl DebugHudBundle {
 
     pub(crate) fn last_world_mesh_draw_stats(&self) -> WorldMeshDrawStats {
         self.last_world_mesh_draw_stats
+    }
+
+    pub(crate) fn set_last_world_mesh_view_stats(&mut self, stats: WorldMeshViewHudStats) {
+        if let Some(existing) = self
+            .last_world_mesh_view_stats
+            .iter_mut()
+            .find(|existing| existing.view_id == stats.view_id)
+        {
+            *existing = stats;
+        } else {
+            self.last_world_mesh_view_stats.push(stats);
+        }
+    }
+
+    pub(crate) fn last_world_mesh_view_stats(&self) -> Vec<WorldMeshViewHudStats> {
+        self.last_world_mesh_view_stats.clone()
     }
 
     pub(crate) fn set_last_world_mesh_draw_state_rows(&mut self, rows: Vec<WorldMeshDrawStateRow>) {

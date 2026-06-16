@@ -5,6 +5,7 @@
 //! HUD layer runs, so `diagnostics/` never borrows `&RenderBackend` directly.
 
 use crate::frame_upload_batch::FrameUploadBatchStats;
+use crate::hud_contract::WorldMeshViewHudStats;
 use crate::materials::{
     EmbeddedMaterialBindCacheDiagnosticSnapshot, MaterialPipelineCacheDiagnosticSnapshot,
     MaterialShaderGraphDiagnosticSnapshot, RasterPipelineKind,
@@ -14,6 +15,80 @@ use crate::world_mesh::{
     RenderWorldMaintenanceStats, WorldMeshCommandCacheStats, WorldMeshDrawStateRow,
     WorldMeshDrawStats,
 };
+
+/// Asset streaming, worker, and deferred-work diagnostics for the HUD.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AssetDiagnosticsSnapshot {
+    /// Renderer-main-thread integration tasks waiting to run.
+    pub main_queued: usize,
+    /// Urgent upload integration tasks waiting to run.
+    pub high_priority_queued: usize,
+    /// Render-lane integration tasks waiting to run.
+    pub render_queued: usize,
+    /// Standard-priority upload integration tasks waiting to run.
+    pub normal_priority_queued: usize,
+    /// Dynamic-buffer and particle integration tasks waiting to run.
+    pub particle_queued: usize,
+    /// Total queued integration tasks.
+    pub total_queued: usize,
+    /// Highest total queued integration depth observed since startup.
+    pub peak_queued: usize,
+    /// Mesh uploads deferred on prerequisites.
+    pub pending_mesh_uploads: usize,
+    /// Texture2D uploads deferred on prerequisites.
+    pub pending_texture_uploads: usize,
+    /// Texture3D uploads deferred on prerequisites.
+    pub pending_texture3d_uploads: usize,
+    /// Cubemap uploads deferred on prerequisites.
+    pub pending_cubemap_uploads: usize,
+    /// Video texture loads deferred on prerequisites.
+    pub pending_video_texture_loads: usize,
+    /// Asset-worker jobs waiting in the bounded queue.
+    pub worker_queued: usize,
+    /// Asset-worker jobs currently executing.
+    pub worker_running: usize,
+    /// Highest observed asset-worker queue depth.
+    pub worker_max_queued: usize,
+    /// Asset-worker jobs accepted by the dispatch path.
+    pub worker_spawned: u64,
+    /// Asset-worker jobs completed on worker threads.
+    pub worker_completed: u64,
+    /// Asset-worker jobs executed inline.
+    pub worker_inline_executed: u64,
+    /// Asset-worker queue saturation events.
+    pub worker_saturated: u64,
+    /// Material update batches deferred on shared-memory availability.
+    pub pending_material_batches: usize,
+    /// Shader routes captured before GPU registry attachment.
+    pub pending_shader_routes: usize,
+    /// Whether the GPU material registry is attached.
+    pub material_registry_attached: bool,
+    /// Whether embedded material bind resources are attached.
+    pub embedded_bind_attached: bool,
+}
+
+/// Light packing and influence-volume culling diagnostics for the HUD.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LightDiagnosticsSnapshot {
+    /// Packed lights in the default frame-light buffer.
+    pub packed_default_lights: usize,
+    /// Retained per-view light-pack count.
+    pub per_view_light_packs: usize,
+    /// Largest retained per-view light-pack length.
+    pub max_per_view_lights: usize,
+    /// Whether signed scene color is active for negative direct lights.
+    pub signed_scene_color_active: bool,
+    /// Light influence volumes with finite bounds tested against active views.
+    pub visibility_indexed_lights: usize,
+    /// Lights kept conservatively because influence bounds were unavailable.
+    pub visibility_fallback_lights: usize,
+    /// Bounded light influence volumes rejected before clustered-light packing.
+    pub visibility_rejected_lights: usize,
+    /// Space-level light BVH traversals used during the latest light prep.
+    pub visibility_bvh_queries: usize,
+    /// Space-level linear light scans used during the latest light prep.
+    pub visibility_linear_queries: usize,
+}
 
 /// One host-shader -> renderer-pipeline routing row captured for the **Shader routes** HUD tab.
 #[derive(Clone, Debug)]
@@ -100,6 +175,8 @@ pub struct BackendDiagSnapshot {
     pub shader_routes: Vec<ShaderRouteSnapshot>,
     /// Latest world-mesh draw stats published by the previous frame.
     pub last_world_mesh_draw_stats: WorldMeshDrawStats,
+    /// Latest per-view world-mesh draw stats published by the previous frame.
+    pub last_world_mesh_view_stats: Vec<WorldMeshViewHudStats>,
     /// Latest world-mesh draw-state rows published by the previous frame.
     pub last_world_mesh_draw_state_rows: Vec<WorldMeshDrawStateRow>,
     /// Retained render-world maintenance counters from the latest backend extraction.
@@ -144,6 +221,12 @@ pub struct BackendDiagSnapshot {
     pub signed_scene_color_active: bool,
     /// Latest persistent upload arena pressure and fallback counters.
     pub upload_arena: FrameUploadArenaSnapshot,
+    /// Latest graph command-recording diagnostics.
+    pub command_encoding: crate::render_graph::CommandEncodingHudSnapshot,
+    /// Latest asset streaming and worker diagnostics.
+    pub assets: AssetDiagnosticsSnapshot,
+    /// Latest light packing and light influence-volume culling diagnostics.
+    pub lights: LightDiagnosticsSnapshot,
 }
 
 #[cfg(test)]

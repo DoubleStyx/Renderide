@@ -14,6 +14,7 @@ use super::super::frame_gpu_bindings::{FrameGpuBindings, FrameGpuBindingsError};
 use super::super::light_gpu::GpuLight;
 use super::super::per_draw_resources::PerDrawResources;
 use super::super::per_view_resource_map::PerViewResourceMap;
+use super::lights::LightVisibilityStats;
 use super::per_view_state::{PerViewFrameState, PerViewPerDrawScratch, PreparedViewLights};
 use super::shadows::ShadowFramePlan;
 
@@ -42,6 +43,8 @@ pub struct FrameResourceManager {
     pub(super) light_scratch: Vec<GpuLight>,
     /// Per-view packed light sets keyed by render view identity.
     pub(super) per_view_lights: PerViewResourceMap<PreparedViewLights>,
+    /// Latest aggregate light influence-volume culling stats.
+    pub(super) light_visibility_stats: LightVisibilityStats,
     /// Shadow metadata and atlas render views planned for the current graph submission.
     pub(super) shadow_frame: ShadowFramePlan,
     /// Whether any packed light set subtracts in at least one signed-radiance channel.
@@ -82,6 +85,7 @@ impl FrameResourceManager {
             limits: None,
             light_scratch: Vec::new(),
             per_view_lights: PerViewResourceMap::new(),
+            light_visibility_stats: LightVisibilityStats::default(),
             shadow_frame: ShadowFramePlan::default(),
             signed_scene_color_required: false,
             mesh_deform_dispatched_this_submission: AtomicBool::new(false),

@@ -29,6 +29,7 @@ const HUD_STATE_EXEMPT_PREFIXES: &[&str] = &[
     "debug.hud.shader_routes_only_fallback",
     "debug.hud.main_tab",
     "debug.hud.main_tabs",
+    "debug.hud.stats_sections",
     "debug.hud.renderer_config_tab",
     "debug.hud.renderer_config_tabs",
     "debug.hud.scene_transforms_space_id",

@@ -12,6 +12,12 @@ pub struct DebugHudMetricInterest {
     pub frame_timing: bool,
     /// Effective active top-level tab in **Renderide debug**, if that window should collect data.
     pub main_tab: Option<DebugHudMainTab>,
+    /// Whether the **Stats / Visibility & culling** section should collect metrics.
+    pub stats_visibility: bool,
+    /// Whether the **Stats / Render graph** section should collect metrics.
+    pub stats_graph: bool,
+    /// Whether the **Stats / Assets & streaming** section should collect metrics.
+    pub stats_assets: bool,
     /// Whether the **Scene transforms** window needs transform rows.
     pub scene_transforms: bool,
     /// Whether the **Textures** window needs texture rows and current-view usage.
@@ -31,10 +37,14 @@ impl DebugHudMetricInterest {
             .debug_hud_enabled
             .then(|| hud.main_tabs.effective_tab(hud.main_tab))
             .flatten();
+        let stats_active = main_tab == Some(DebugHudMainTab::Stats);
 
         Self {
             frame_timing: settings.debug.debug_hud_frame_timing,
             main_tab,
+            stats_visibility: stats_active && hud.stats_sections.visibility,
+            stats_graph: stats_active && hud.stats_sections.graph,
+            stats_assets: stats_active && hud.stats_sections.assets,
             scene_transforms: settings.debug.debug_hud_transforms,
             textures: settings.debug.debug_hud_textures,
         }
@@ -60,6 +70,21 @@ impl DebugHudMetricInterest {
         self.main_tab == Some(DebugHudMainTab::DrawState)
     }
 
+    /// Returns `true` when the **Stats / Visibility & culling** section should collect metrics.
+    pub fn wants_visibility(self) -> bool {
+        self.stats_visibility
+    }
+
+    /// Returns `true` when the **Stats / Render graph** section should collect metrics.
+    pub fn wants_graph(self) -> bool {
+        self.stats_graph
+    }
+
+    /// Returns `true` when the **Stats / Assets & streaming** section should collect metrics.
+    pub fn wants_assets(self) -> bool {
+        self.stats_assets
+    }
+
     /// Returns `true` when the **GPU memory** tab should collect metrics.
     pub fn wants_gpu_memory(self) -> bool {
         self.main_tab == Some(DebugHudMainTab::GpuMemory)
@@ -74,11 +99,32 @@ impl DebugHudMetricInterest {
     pub fn wants_allocator_totals(self) -> bool {
         self.frame_timing || self.wants_stats() || self.wants_gpu_memory()
     }
+
+    /// Signature for throttled main-HUD snapshots, including Stats subsection capture gates.
+    pub(crate) fn main_hud_snapshot_signature(self) -> u32 {
+        let Some(tab) = self.main_tab else {
+            return 0;
+        };
+        let tab_bits = match tab {
+            DebugHudMainTab::Stats => 1,
+            DebugHudMainTab::ShaderRoutes => 2,
+            DebugHudMainTab::DrawState => 3,
+            DebugHudMainTab::GpuMemory => 4,
+            DebugHudMainTab::GpuPasses => 5,
+        };
+        tab_bits
+            | (u32::from(self.stats_visibility) << 8)
+            | (u32::from(self.stats_graph) << 9)
+            | (u32::from(self.stats_assets) << 10)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::config::{DebugHudMainTab, DebugHudMainTabVisibility, RendererSettings};
+    use crate::config::{
+        DebugHudMainTab, DebugHudMainTabVisibility, DebugHudStatsSectionVisibility,
+        RendererSettings,
+    };
 
     use super::DebugHudMetricInterest;
 
@@ -129,6 +175,7 @@ mod tests {
         let interest = DebugHudMetricInterest::from_settings(&settings);
 
         assert_eq!(interest.main_tab, Some(DebugHudMainTab::ShaderRoutes));
+        assert!(!interest.wants_visibility());
         assert!(interest.wants_shader_routes());
         assert!(!interest.wants_draw_state());
     }
@@ -160,6 +207,43 @@ mod tests {
         assert!(!interest.wants_stats());
         assert!(!interest.wants_shader_routes());
         assert!(!interest.wants_draw_state());
+        assert!(!interest.wants_visibility());
+        assert!(!interest.wants_graph());
+        assert!(!interest.wants_assets());
         assert!(!interest.wants_gpu_passes());
+    }
+
+    #[test]
+    fn stats_sections_gate_expensive_metric_interests() {
+        let mut settings = RendererSettings::default();
+        settings.debug.debug_hud_enabled = true;
+        settings.debug.hud.main_tab = DebugHudMainTab::Stats;
+        settings.debug.hud.stats_sections = DebugHudStatsSectionVisibility {
+            visibility: true,
+            graph: false,
+            assets: true,
+        };
+
+        let interest = DebugHudMetricInterest::from_settings(&settings);
+
+        assert_eq!(interest.main_tab, Some(DebugHudMainTab::Stats));
+        assert!(interest.wants_stats());
+        assert!(interest.wants_visibility());
+        assert!(!interest.wants_graph());
+        assert!(interest.wants_assets());
+    }
+
+    #[test]
+    fn stats_sections_do_not_collect_when_stats_tab_is_inactive() {
+        let mut settings = RendererSettings::default();
+        settings.debug.debug_hud_enabled = true;
+        settings.debug.hud.main_tab = DebugHudMainTab::DrawState;
+
+        let interest = DebugHudMetricInterest::from_settings(&settings);
+
+        assert_eq!(interest.main_tab, Some(DebugHudMainTab::DrawState));
+        assert!(!interest.wants_visibility());
+        assert!(!interest.wants_graph());
+        assert!(!interest.wants_assets());
     }
 }

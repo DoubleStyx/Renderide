@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use super::blackboard::Blackboard;
-use super::compiled::FrameView;
+use super::compiled::{CommandEncodingHudSnapshot, FrameView};
 use super::context::GraphResolvedResources;
 use super::{HistoryRegistry, TransientPool};
 use crate::frame_upload_batch::{FrameUploadBatchStats, GraphUploadSink};
@@ -79,6 +79,11 @@ pub trait GraphExecutionBackend {
     fn upload_arena_mut(&mut self) -> &mut PersistentUploadArena;
     /// Publishes upload drain stats for diagnostics.
     fn record_frame_upload_stats(&mut self, stats: FrameUploadBatchStats);
+    /// Publishes graph command recording stats for diagnostics.
+    fn record_command_encoding_diagnostics(&mut self, snapshot: CommandEncodingHudSnapshot);
+
+    /// Returns whether graph execution should publish HUD-formatted command diagnostics.
+    fn capture_graph_command_diagnostics(&self) -> bool;
     /// Scene-color format selected for this graph frame.
     fn scene_color_format_wgpu(&self) -> wgpu::TextureFormat;
     /// GPU limits snapshot after attach.

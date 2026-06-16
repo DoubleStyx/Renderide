@@ -8,6 +8,7 @@ use crate::diagnostics::{
     DebugHudInput, FrameDiagnosticsSnapshot, FrameTimingHudSnapshot, RendererInfoSnapshot,
     SceneTransformsSnapshot, TextureDebugSnapshot,
 };
+use crate::hud_contract::WorldMeshViewHudStats;
 use crate::hud_contract::{DebugHudEncodeError, PerViewHudConfig};
 use crate::world_mesh::{WorldMeshDrawStateRow, WorldMeshDrawStats};
 
@@ -54,6 +55,12 @@ impl BackendDiagnostics {
     /// Updates per-view HUD diagnostics capture interests.
     pub(super) fn set_per_view_config(&mut self, config: PerViewHudConfig) {
         self.debug_hud.set_per_view_config(config);
+    }
+
+    /// Updates whether graph execution should publish HUD-formatted command diagnostics.
+    pub(super) fn set_capture_graph_command_diagnostics(&mut self, capture: bool) {
+        self.debug_hud
+            .set_capture_graph_command_diagnostics(capture);
     }
 
     /// Clears the current-view Texture2D set.
@@ -142,6 +149,11 @@ impl BackendDiagnostics {
     /// Last world-mesh draw stats captured by the HUD.
     pub(super) fn last_world_mesh_draw_stats(&self) -> WorldMeshDrawStats {
         self.debug_hud.last_world_mesh_draw_stats()
+    }
+
+    /// Last per-view world-mesh draw stats captured by the HUD.
+    pub(super) fn last_world_mesh_view_stats(&self) -> Vec<WorldMeshViewHudStats> {
+        self.debug_hud.last_world_mesh_view_stats()
     }
 
     /// Last world-mesh draw state rows captured by the HUD.

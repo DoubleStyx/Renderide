@@ -14,6 +14,16 @@ labeled_enum! {
         Stats => {
             persist: "stats",
             label: "Stats",
+            aliases: [
+                "visibility",
+                "culling",
+                "cull",
+                "graph",
+                "render_graph",
+                "assets",
+                "streaming",
+                "resources",
+            ],
         },
         /// Host shader -> renderer pipeline route table.
         ShaderRoutes => {
@@ -163,6 +173,28 @@ impl DebugHudMainTabVisibility {
     }
 }
 
+/// Visibility of expensive diagnostics sections inside the **Stats** tab.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DebugHudStatsSectionVisibility {
+    /// Whether the visibility and culling diagnostics section is expanded.
+    pub visibility: bool,
+    /// Whether the render graph diagnostics section is expanded.
+    pub graph: bool,
+    /// Whether the asset streaming diagnostics section is expanded.
+    pub assets: bool,
+}
+
+impl Default for DebugHudStatsSectionVisibility {
+    fn default() -> Self {
+        Self {
+            visibility: true,
+            graph: true,
+            assets: true,
+        }
+    }
+}
+
 /// Visibility of closable tabs in the **Renderer config** HUD window.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -255,6 +287,8 @@ pub struct DebugHudSettings {
     pub main_tab: DebugHudMainTab,
     /// Open/closed state for tabs in **Renderide debug**.
     pub main_tabs: DebugHudMainTabVisibility,
+    /// Expanded/collapsed state for expensive sections inside the **Stats** tab.
+    pub stats_sections: DebugHudStatsSectionVisibility,
     /// Last selected tab in **Renderer config**.
     pub renderer_config_tab: DebugHudRendererConfigTab,
     /// Open/closed state for tabs in **Renderer config**.
@@ -278,6 +312,7 @@ impl Default for DebugHudSettings {
             shader_routes_only_fallback: false,
             main_tab: DebugHudMainTab::default(),
             main_tabs: DebugHudMainTabVisibility::default(),
+            stats_sections: DebugHudStatsSectionVisibility::default(),
             renderer_config_tab: DebugHudRendererConfigTab::default(),
             renderer_config_tabs: DebugHudRendererConfigTabVisibility::default(),
             scene_transforms_space_id: None,
@@ -307,7 +342,7 @@ impl DebugHudSettings {
 mod tests {
     use super::{
         DebugHudMainTab, DebugHudMainTabVisibility, DebugHudRendererConfigTab,
-        DebugHudRendererConfigTabVisibility, DebugHudSettings,
+        DebugHudRendererConfigTabVisibility, DebugHudSettings, DebugHudStatsSectionVisibility,
     };
     use crate::config::RendererSettings;
 
@@ -330,9 +365,38 @@ mod tests {
     }
 
     #[test]
+    fn retired_hud_tab_tokens_alias_to_stats() {
+        for token in [
+            "visibility",
+            "culling",
+            "cull",
+            "graph",
+            "render_graph",
+            "assets",
+            "streaming",
+            "resources",
+        ] {
+            let text = format!("[debug.hud]\nmain_tab = \"{token}\"\n");
+            let decoded: RendererSettings = toml::from_str(&text).expect(token);
+            assert_eq!(
+                decoded.debug.hud.main_tab,
+                DebugHudMainTab::Stats,
+                "{token}"
+            );
+        }
+    }
+
+    #[test]
     fn hud_imgui_visibility_defaults_on_and_roundtrips() {
         let defaults = DebugHudSettings::default();
         assert!(defaults.imgui_visible);
+        assert_eq!(
+            defaults.stats_sections,
+            DebugHudStatsSectionVisibility::default()
+        );
+        assert!(defaults.stats_sections.visibility);
+        assert!(defaults.stats_sections.graph);
+        assert!(defaults.stats_sections.assets);
 
         let mut s = RendererSettings::default();
         s.debug.hud.imgui_visible = false;

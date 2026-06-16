@@ -76,6 +76,8 @@ pub(crate) struct BackendGraphAccess<'a> {
     pub(crate) upload_arena: &'a mut PersistentUploadArena,
     /// Latest frame-upload stats published for diagnostics.
     pub(crate) latest_upload_stats: &'a mut FrameUploadBatchStats,
+    /// Latest graph command-recording stats published for diagnostics.
+    pub(crate) latest_command_encoding: &'a mut crate::render_graph::CommandEncodingHudSnapshot,
     /// Resolved transient resource sets waiting on driver submit before pool release.
     pub(super) pending_transient_releases: &'a mut Vec<PendingTransientRelease>,
     /// Debug HUD state and encoder.
@@ -173,6 +175,14 @@ impl<'a> BackendGraphAccess<'a> {
         *self.latest_upload_stats = stats;
     }
 
+    /// Publishes graph command recording stats for diagnostics.
+    pub(crate) fn record_command_encoding_diagnostics(
+        &mut self,
+        snapshot: crate::render_graph::CommandEncodingHudSnapshot,
+    ) {
+        *self.latest_command_encoding = snapshot;
+    }
+
     /// Scene-color format snapshot selected for this graph frame.
     pub(crate) fn scene_color_format_wgpu(&self) -> wgpu::TextureFormat {
         self.scene_color_format
@@ -226,6 +236,11 @@ impl<'a> BackendGraphAccess<'a> {
     /// Debug HUD flags consumed by per-view recording.
     pub(crate) fn per_view_hud_config(&self) -> PerViewHudConfig {
         self.debug_hud.per_view_config()
+    }
+
+    /// Whether graph execution should publish HUD-formatted command diagnostics.
+    pub(crate) fn capture_graph_command_diagnostics(&self) -> bool {
+        self.debug_hud.capture_graph_command_diagnostics()
     }
 
     /// Whether the HUD will draw visible content this frame.
@@ -309,6 +324,17 @@ impl GraphExecutionBackend for BackendGraphAccess<'_> {
 
     fn record_frame_upload_stats(&mut self, stats: FrameUploadBatchStats) {
         BackendGraphAccess::record_frame_upload_stats(self, stats);
+    }
+
+    fn record_command_encoding_diagnostics(
+        &mut self,
+        snapshot: crate::render_graph::CommandEncodingHudSnapshot,
+    ) {
+        BackendGraphAccess::record_command_encoding_diagnostics(self, snapshot);
+    }
+
+    fn capture_graph_command_diagnostics(&self) -> bool {
+        BackendGraphAccess::capture_graph_command_diagnostics(self)
     }
 
     fn scene_color_format_wgpu(&self) -> wgpu::TextureFormat {

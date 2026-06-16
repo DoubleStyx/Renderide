@@ -1,6 +1,7 @@
 //! Mesh draw stats and resident-pool counts fragment of [`super::FrameDiagnosticsSnapshot`].
 
 use crate::diagnostics::BackendDiagSnapshot;
+use crate::hud_contract::WorldMeshViewHudStats;
 use crate::passes::WorldMeshForwardInstancePlanCacheStats;
 use crate::world_mesh::{
     RenderWorldMaintenanceStats, WorldMeshCommandCacheStats, WorldMeshDrawStateRow,
@@ -13,6 +14,8 @@ use crate::world_mesh::{
 pub struct MeshDrawFragment {
     /// World mesh forward pass draw batching stats for the frame.
     pub stats: WorldMeshDrawStats,
+    /// World mesh draw stats tagged by render view.
+    pub per_view_stats: Vec<WorldMeshViewHudStats>,
     /// Sorted draw rows with resolved material pipeline state for the **Draw state** tab.
     pub draw_state_rows: Vec<WorldMeshDrawStateRow>,
     /// Host [`crate::shared::FrameSubmitData::render_tasks`] count from the last applied submit.
@@ -52,6 +55,7 @@ impl MeshDrawFragment {
     ) -> Self {
         Self {
             stats: backend.last_world_mesh_draw_stats,
+            per_view_stats: backend.last_world_mesh_view_stats.clone(),
             draw_state_rows: Vec::new(),
             last_submit_render_task_count,
             pending_camera_readbacks,
@@ -102,6 +106,7 @@ mod tests {
                 draws_total: 12,
                 ..Default::default()
             },
+            last_world_mesh_view_stats: Vec::new(),
             last_world_mesh_draw_state_rows: Vec::new(),
             render_world_maintenance: RenderWorldMaintenanceStats {
                 retained_template_count: 17,
@@ -141,6 +146,9 @@ mod tests {
             gpu_light_count: 12,
             signed_scene_color_active: true,
             upload_arena: Default::default(),
+            command_encoding: Default::default(),
+            assets: Default::default(),
+            lights: Default::default(),
         };
 
         let fragment = MeshDrawFragment::capture(&backend, 13, 14, 15, 16);

@@ -22,7 +22,7 @@ pub use shader_routes::ShaderRoutesFragment;
 pub use xr_health::XrRecoverableFailureCounts;
 
 use crate::config::DebugHudMainTab;
-use crate::diagnostics::BackendDiagSnapshot;
+use crate::diagnostics::{AssetDiagnosticsSnapshot, BackendDiagSnapshot, LightDiagnosticsSnapshot};
 /// Inputs for [`FrameDiagnosticsSnapshot::capture`], grouped like
 /// [`crate::diagnostics::RendererInfoSnapshotCapture`].
 pub struct FrameDiagnosticsSnapshotCapture<'a> {
@@ -66,6 +66,12 @@ pub struct FrameDiagnosticsSnapshot {
     pub gpu_allocator: GpuAllocatorFragment,
     /// World mesh draw stats, draw-state rows, and resident pool counts.
     pub mesh_draw: MeshDrawFragment,
+    /// Render-graph command recording and scheduling diagnostics.
+    pub graph: crate::render_graph::CommandEncodingHudSnapshot,
+    /// Asset streaming, deferred-work, and worker diagnostics.
+    pub assets: AssetDiagnosticsSnapshot,
+    /// Light packing and influence-volume culling diagnostics.
+    pub lights: LightDiagnosticsSnapshot,
     /// Sorted host-shader -> pipeline routing rows.
     pub shader_routes: ShaderRoutesFragment,
     /// IPC outbound queue health plus host-command failure counters.
@@ -116,6 +122,9 @@ impl FrameDiagnosticsSnapshot {
                     unhandled_ipc_command_event_total,
                 );
                 snapshot.xr_health = xr;
+                snapshot.lights = backend.lights;
+                snapshot.graph = backend.command_encoding.clone();
+                snapshot.assets = backend.assets.clone();
             }
             DebugHudMainTab::ShaderRoutes => {
                 snapshot.shader_routes = ShaderRoutesFragment::capture(backend);

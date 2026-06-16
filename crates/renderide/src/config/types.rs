@@ -14,8 +14,8 @@ mod watchdog;
 
 pub use debug::{
     CommandRecordingMode, DebugHudMainTab, DebugHudMainTabVisibility, DebugHudRendererConfigTab,
-    DebugHudRendererConfigTabVisibility, DebugHudSettings, DebugSettings, PowerPreferenceSetting,
-    RenderGraphValidationMode,
+    DebugHudRendererConfigTabVisibility, DebugHudSettings, DebugHudStatsSectionVisibility,
+    DebugSettings, PowerPreferenceSetting, RenderGraphValidationMode,
 };
 pub use display::DisplaySettings;
 pub use experimental::ExperimentalSettings;

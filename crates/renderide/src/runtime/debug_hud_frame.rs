@@ -112,6 +112,8 @@ impl RendererRuntime {
         self.backend
             .set_debug_hud_per_view_config(flags.per_view_hud_config());
         self.backend
+            .set_debug_hud_capture_graph_command_diagnostics(flags.wants_graph());
+        self.backend
             .clear_debug_hud_current_view_texture_2d_asset_ids();
     }
 
@@ -168,7 +170,11 @@ impl RendererRuntime {
         } else if flags.wants_main_debug() {
             self.backend.clear_debug_hud_gpu_profiler_snapshot();
             if let Some(tab) = flags.main_tab
-                && self.diagnostics.should_refresh_main_hud_snapshot(now, tab)
+                && self.diagnostics.should_refresh_main_hud_snapshot(
+                    now,
+                    tab,
+                    flags.main_hud_snapshot_signature(),
+                )
             {
                 self.capture_main_debug_hud_tab(gpu, now, flags, tab);
             }

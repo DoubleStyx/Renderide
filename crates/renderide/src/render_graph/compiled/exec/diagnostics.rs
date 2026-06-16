@@ -17,6 +17,127 @@ use crate::render_graph::blackboard::GraphCommandStats;
 const SLOW_ENCODER_FINISH_WARN_MS: f64 = 2.0;
 static COMMAND_ENCODING_SLOW_LOG_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Plain-data command recording diagnostics retained for the debug HUD.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CommandEncodingHudSnapshot {
+    /// Number of graph views recorded in the frame.
+    pub view_count: usize,
+    /// Whether the graph targeted the swapchain.
+    pub target_is_swapchain: bool,
+    /// Command buffers submitted for the frame.
+    pub command_buffers: usize,
+    /// Selected high-level command recording path.
+    pub recording_path: String,
+    /// Effective command recording strategy.
+    pub recording_strategy: String,
+    /// User-requested command recording mode.
+    pub requested_recording_mode: String,
+    /// Estimated per-view draw count used for command-recording admission.
+    pub estimated_per_view_draw_count: usize,
+    /// Estimated per-view recording work used for command-recording admission.
+    pub estimated_per_view_record_work: usize,
+    /// Whether automatic per-view recording would admit parallel work.
+    pub auto_per_view_record_admitted: bool,
+    /// Whether the effective per-view recording path admitted parallel work.
+    pub per_view_record_admitted: bool,
+    /// Scheduled frame-global pass count.
+    pub frame_global_passes: usize,
+    /// Frame-global command buffers recorded.
+    pub frame_global_command_buffers: usize,
+    /// Scheduled per-view pass count.
+    pub per_view_passes: usize,
+    /// Retained scheduler pass count.
+    pub scheduler_passes: usize,
+    /// Registered pass count before compile-time culling.
+    pub scheduler_registered_passes: usize,
+    /// Compile-time culled graph pass count.
+    pub scheduler_culled_passes: usize,
+    /// Passes intentionally skipped before graph construction.
+    pub scheduler_compile_skipped_passes: usize,
+    /// Scheduler topological wave count.
+    pub scheduler_waves: usize,
+    /// Largest scheduler wave size.
+    pub scheduler_largest_wave: usize,
+    /// Fixed submit steps retained by the scheduler.
+    pub scheduler_submit_steps: usize,
+    /// Upload phases retained by the scheduler.
+    pub scheduler_upload_phases: usize,
+    /// Transient resource lifetime events retained by the scheduler.
+    pub scheduler_resource_events: usize,
+    /// Imported final-access transitions retained by the scheduler.
+    pub scheduler_import_final_accesses: usize,
+    /// Retained scheduler dependency edges.
+    pub scheduler_dependency_edges: usize,
+    /// Conservative render-pass merge groups.
+    pub scheduler_merge_groups: usize,
+    /// Materialized render-pass groups.
+    pub scheduler_materialized_groups: usize,
+    /// Async-compute-capable pass count.
+    pub scheduler_async_compute_capable: usize,
+    /// Scheduler units that can record in parallel.
+    pub scheduler_parallel_recording_units: usize,
+    /// Scheduler batches that record more than one unit in parallel.
+    pub scheduler_parallel_recording_batches: usize,
+    /// Attachment resolves retained by the scheduler.
+    pub scheduler_attachment_resolves: usize,
+    /// Transient attachment stores retained by the scheduler.
+    pub scheduler_transient_stores: usize,
+    /// Transient attachment discards retained by the scheduler.
+    pub scheduler_transient_discards: usize,
+    /// Compile-time attachment bandwidth estimate in bytes.
+    pub scheduler_estimated_bandwidth_bytes: u64,
+    /// Transient texture declarations retained by the graph.
+    pub transient_texture_count: usize,
+    /// Transient texture slots allocated by lifetime aliasing.
+    pub transient_texture_slots: usize,
+    /// Transient texture lifetime lanes.
+    pub transient_texture_lanes: usize,
+    /// Transient buffer lifetime lanes.
+    pub transient_buffer_lanes: usize,
+    /// Validation diagnostics retained by the graph build.
+    pub validation_diagnostics: usize,
+    /// Pass parameter schemas retained by the graph build.
+    pub pass_parameter_schemas: usize,
+    /// Milliseconds spent pre-resolving transient resources.
+    pub pre_resolve_ms: f64,
+    /// Milliseconds spent preparing resources and per-view work packets.
+    pub prepare_resources_ms: f64,
+    /// Milliseconds spent encoding frame-global passes.
+    pub frame_global_encode_ms: f64,
+    /// Milliseconds spent finishing frame-global command encoders.
+    pub frame_global_finish_ms: f64,
+    /// Milliseconds spent encoding per-view passes.
+    pub per_view_encode_ms: f64,
+    /// Milliseconds spent finishing per-view command encoders.
+    pub per_view_finish_ms: f64,
+    /// Slowest per-view command-encoder finish in milliseconds.
+    pub per_view_max_finish_ms: f64,
+    /// Milliseconds spent draining deferred graph uploads.
+    pub upload_drain_ms: f64,
+    /// Milliseconds spent finishing upload command encoders.
+    pub upload_finish_ms: f64,
+    /// Milliseconds spent encoding the single-swapchain path.
+    pub single_swapchain_encode_ms: f64,
+    /// Milliseconds spent finishing the single-swapchain encoder.
+    pub single_swapchain_finish_ms: f64,
+    /// Milliseconds spent assembling the submit batch.
+    pub command_batch_assembly_ms: f64,
+    /// Milliseconds spent enqueueing the submit batch.
+    pub submit_enqueue_ms: f64,
+    /// Transient texture allocation misses this frame.
+    pub transient_texture_misses: usize,
+    /// Transient texture-view cache hits this frame.
+    pub transient_texture_view_hits: usize,
+    /// Transient texture-view cache misses this frame.
+    pub transient_texture_view_misses: usize,
+    /// Transient buffer allocation misses this frame.
+    pub transient_buffer_misses: usize,
+    /// Upload batch stats for this graph submit.
+    pub upload_stats: FrameUploadBatchStats,
+    /// Runtime command counts recorded by graph passes.
+    pub command_stats: GraphCommandStats,
+}
+
 /// Per-frame graph command-encoding diagnostics.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct CommandEncodingDiagnostics {
@@ -281,6 +402,69 @@ impl CommandEncodingDiagnostics {
             transient_texture_misses: self.transient_delta.texture_misses,
             transient_buffer_misses: self.transient_delta.buffer_misses,
         });
+    }
+
+    pub(super) fn hud_snapshot(&self) -> CommandEncodingHudSnapshot {
+        CommandEncodingHudSnapshot {
+            view_count: self.view_count,
+            target_is_swapchain: self.target_is_swapchain,
+            command_buffers: self.command_buffers,
+            recording_path: format!("{:?}", self.recording_path),
+            recording_strategy: format!("{:?}", self.recording_strategy),
+            requested_recording_mode: format!("{:?}", self.requested_recording_mode),
+            estimated_per_view_draw_count: self.estimated_per_view_draw_count,
+            estimated_per_view_record_work: self.estimated_per_view_record_work,
+            auto_per_view_record_admitted: self.auto_per_view_record_admitted,
+            per_view_record_admitted: self.per_view_record_admitted,
+            frame_global_passes: self.frame_global_passes,
+            frame_global_command_buffers: self.frame_global_command_buffers,
+            per_view_passes: self.per_view_passes,
+            scheduler_passes: self.scheduler_passes,
+            scheduler_registered_passes: self.scheduler_registered_passes,
+            scheduler_culled_passes: self.scheduler_culled_passes,
+            scheduler_compile_skipped_passes: self.scheduler_compile_skipped_passes,
+            scheduler_waves: self.scheduler_waves,
+            scheduler_largest_wave: self.scheduler_largest_wave,
+            scheduler_submit_steps: self.scheduler_submit_steps,
+            scheduler_upload_phases: self.scheduler_upload_phases,
+            scheduler_resource_events: self.scheduler_resource_events,
+            scheduler_import_final_accesses: self.scheduler_import_final_accesses,
+            scheduler_dependency_edges: self.scheduler_dependency_edges,
+            scheduler_merge_groups: self.scheduler_merge_groups,
+            scheduler_materialized_groups: self.scheduler_materialized_groups,
+            scheduler_async_compute_capable: self.scheduler_async_compute_capable,
+            scheduler_parallel_recording_units: self.scheduler_parallel_recording_units,
+            scheduler_parallel_recording_batches: self.scheduler_parallel_recording_batches,
+            scheduler_attachment_resolves: self.scheduler_attachment_resolves,
+            scheduler_transient_stores: self.scheduler_transient_stores,
+            scheduler_transient_discards: self.scheduler_transient_discards,
+            scheduler_estimated_bandwidth_bytes: self.scheduler_estimated_bandwidth_bytes,
+            transient_texture_count: self.transient_texture_count,
+            transient_texture_slots: self.transient_texture_slots,
+            transient_texture_lanes: self.transient_texture_lanes,
+            transient_buffer_lanes: self.transient_buffer_lanes,
+            validation_diagnostics: self.validation_diagnostics,
+            pass_parameter_schemas: self.pass_parameter_schemas,
+            pre_resolve_ms: self.pre_resolve_ms,
+            prepare_resources_ms: self.prepare_resources_ms,
+            frame_global_encode_ms: self.frame_global_encode_ms,
+            frame_global_finish_ms: self.frame_global_finish_ms,
+            per_view_encode_ms: self.per_view_encode_ms,
+            per_view_finish_ms: self.per_view_finish_ms,
+            per_view_max_finish_ms: self.per_view_max_finish_ms,
+            upload_drain_ms: self.upload_drain_ms,
+            upload_finish_ms: self.upload_finish_ms,
+            single_swapchain_encode_ms: self.single_swapchain_encode_ms,
+            single_swapchain_finish_ms: self.single_swapchain_finish_ms,
+            command_batch_assembly_ms: self.command_batch_assembly_ms,
+            submit_enqueue_ms: self.submit_enqueue_ms,
+            transient_texture_misses: self.transient_delta.texture_misses,
+            transient_texture_view_hits: self.transient_delta.texture_view_hits,
+            transient_texture_view_misses: self.transient_delta.texture_view_misses,
+            transient_buffer_misses: self.transient_delta.buffer_misses,
+            upload_stats: self.upload_stats,
+            command_stats: self.command_stats,
+        }
     }
 
     pub(super) fn log_if_slow(&self) {

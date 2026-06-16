@@ -5,7 +5,7 @@
 //! orchestration.
 
 use crate::diagnostics::{DebugHudInput, SceneTransformsSnapshot};
-use crate::hud_contract::PerViewHudConfig;
+use crate::hud_contract::{PerViewHudConfig, WorldMeshViewHudStats};
 use crate::world_mesh::{WorldMeshDrawStateRow, WorldMeshDrawStats};
 
 use super::super::RenderBackend;
@@ -14,6 +14,12 @@ impl RenderBackend {
     /// Updates per-view HUD diagnostics capture interests for the next render graph.
     pub(crate) fn set_debug_hud_per_view_config(&mut self, config: PerViewHudConfig) {
         self.diagnostics.set_per_view_config(config);
+    }
+
+    /// Updates whether graph execution should publish HUD-formatted command diagnostics.
+    pub(crate) fn set_debug_hud_capture_graph_command_diagnostics(&mut self, capture: bool) {
+        self.diagnostics
+            .set_capture_graph_command_diagnostics(capture);
     }
 
     /// Clears the current-view Texture2D set before collecting this frame's submitted draws.
@@ -110,6 +116,10 @@ impl RenderBackend {
 
     pub(crate) fn last_world_mesh_draw_stats(&self) -> WorldMeshDrawStats {
         self.diagnostics.last_world_mesh_draw_stats()
+    }
+
+    pub(crate) fn last_world_mesh_view_stats(&self) -> Vec<WorldMeshViewHudStats> {
+        self.diagnostics.last_world_mesh_view_stats()
     }
 
     pub(crate) fn last_world_mesh_draw_state_rows(&self) -> Vec<WorldMeshDrawStateRow> {

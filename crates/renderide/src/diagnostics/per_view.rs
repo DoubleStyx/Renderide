@@ -8,6 +8,7 @@ impl DebugHudMetricInterest {
     pub(crate) fn per_view_hud_config(self) -> PerViewHudConfig {
         PerViewHudConfig {
             capture_world_mesh_draw_stats: self.wants_stats(),
+            capture_world_mesh_view_stats: self.wants_visibility(),
             capture_world_mesh_draw_state_rows: self.wants_draw_state(),
             capture_current_view_texture_2d_asset_ids: self.textures,
         }
@@ -29,6 +30,22 @@ mod tests {
         .per_view_hud_config();
 
         assert!(config.capture_world_mesh_draw_stats);
+        assert!(!config.capture_world_mesh_view_stats);
+        assert!(!config.capture_world_mesh_draw_state_rows);
+        assert!(!config.capture_current_view_texture_2d_asset_ids);
+    }
+
+    #[test]
+    fn visibility_stats_section_requests_per_view_stats() {
+        let config = DebugHudMetricInterest {
+            main_tab: Some(DebugHudMainTab::Stats),
+            stats_visibility: true,
+            ..Default::default()
+        }
+        .per_view_hud_config();
+
+        assert!(config.capture_world_mesh_draw_stats);
+        assert!(config.capture_world_mesh_view_stats);
         assert!(!config.capture_world_mesh_draw_state_rows);
         assert!(!config.capture_current_view_texture_2d_asset_ids);
     }
@@ -42,6 +59,7 @@ mod tests {
         .per_view_hud_config();
 
         assert!(!config.capture_world_mesh_draw_stats);
+        assert!(!config.capture_world_mesh_view_stats);
         assert!(config.capture_world_mesh_draw_state_rows);
         assert!(!config.capture_current_view_texture_2d_asset_ids);
     }
@@ -55,6 +73,7 @@ mod tests {
         .per_view_hud_config();
 
         assert!(!config.capture_world_mesh_draw_stats);
+        assert!(!config.capture_world_mesh_view_stats);
         assert!(!config.capture_world_mesh_draw_state_rows);
         assert!(config.capture_current_view_texture_2d_asset_ids);
     }
@@ -73,6 +92,7 @@ mod tests {
             .per_view_hud_config();
 
             assert!(!config.capture_world_mesh_draw_stats);
+            assert!(!config.capture_world_mesh_view_stats);
             assert!(!config.capture_world_mesh_draw_state_rows);
             assert!(!config.capture_current_view_texture_2d_asset_ids);
         }
