@@ -78,16 +78,36 @@ pub struct LightDiagnosticsSnapshot {
     pub max_per_view_lights: usize,
     /// Whether signed scene color is active for negative direct lights.
     pub signed_scene_color_active: bool,
+    /// Render spaces visited while resolving view light packs.
+    pub visibility_space_count: usize,
+    /// Render spaces prepared without a culling descriptor.
+    pub visibility_cull_disabled_spaces: usize,
+    /// Resolved lights before contribution and culling filters.
+    pub visibility_lights_before_cull: usize,
+    /// Resolved lights discarded because they cannot contribute visible direct lighting.
+    pub visibility_non_contributing_lights: usize,
     /// Light influence volumes with finite bounds tested against active views.
     pub visibility_indexed_lights: usize,
     /// Lights kept conservatively because influence bounds were unavailable.
     pub visibility_fallback_lights: usize,
     /// Bounded light influence volumes rejected before clustered-light packing.
     pub visibility_rejected_lights: usize,
+    /// Lights kept after contribution and frustum filters, before `MAX_LIGHTS` truncation.
+    pub visibility_lights_after_cull: usize,
+    /// Lights retained in packed GPU light arrays after `MAX_LIGHTS` truncation.
+    pub visibility_packed_lights: usize,
+    /// Lights kept by culling but dropped because the GPU light buffer reached `MAX_LIGHTS`.
+    pub visibility_max_lights_culled: usize,
     /// Space-level light BVH traversals used during the latest light prep.
     pub visibility_bvh_queries: usize,
     /// Space-level linear light scans used during the latest light prep.
     pub visibility_linear_queries: usize,
+    /// Per-light AABB frustum tests executed by linear runs or BVH leaves.
+    pub visibility_light_aabb_tests: usize,
+    /// BVH node AABB frustum tests executed before leaf light tests.
+    pub visibility_bvh_node_tests: usize,
+    /// BVH nodes rejected as a group before testing their contained lights.
+    pub visibility_bvh_nodes_culled: usize,
 }
 
 /// One host-shader -> renderer-pipeline routing row captured for the **Shader routes** HUD tab.

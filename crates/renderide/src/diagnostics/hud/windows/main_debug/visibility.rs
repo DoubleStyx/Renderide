@@ -136,18 +136,59 @@ fn render_light_visibility(ui: &imgui::Ui, snapshot: &FrameDiagnosticsSnapshot) 
                 ui,
                 "Influence volumes",
                 &format!(
-                    "{} indexed / {} fallback / {} rejected",
+                    "{} indexed / {} fallback / {} rejected / {} kept",
                     lights.visibility_indexed_lights,
                     lights.visibility_fallback_lights,
-                    lights.visibility_rejected_lights
+                    lights.visibility_rejected_lights,
+                    lights.visibility_lights_after_cull
+                ),
+            );
+            kv(
+                ui,
+                "Light cull scope",
+                &format!(
+                    "{} spaces / {} cull disabled",
+                    lights.visibility_space_count, lights.visibility_cull_disabled_spaces
+                ),
+            );
+            kv_colored(
+                ui,
+                "Light cull rejection",
+                ratio_color(
+                    lights.visibility_rejected_lights,
+                    lights.visibility_indexed_lights,
+                ),
+                format!(
+                    "{} rejected / {} indexed ({})",
+                    lights.visibility_rejected_lights,
+                    lights.visibility_indexed_lights,
+                    percent_text(
+                        lights.visibility_rejected_lights,
+                        lights.visibility_indexed_lights
+                    )
+                ),
+            );
+            kv(
+                ui,
+                "Light resolve filter",
+                &format!(
+                    "{} resolved / {} non-contrib / {} packed / {} cap-drop",
+                    lights.visibility_lights_before_cull,
+                    lights.visibility_non_contributing_lights,
+                    lights.visibility_packed_lights,
+                    lights.visibility_max_lights_culled
                 ),
             );
             kv(
                 ui,
                 "Light cull traversal",
                 &format!(
-                    "{} BVH / {} linear",
-                    lights.visibility_bvh_queries, lights.visibility_linear_queries
+                    "{} BVH / {} linear / {} light tests / {} node tests / {} node-cull",
+                    lights.visibility_bvh_queries,
+                    lights.visibility_linear_queries,
+                    lights.visibility_light_aabb_tests,
+                    lights.visibility_bvh_node_tests,
+                    lights.visibility_bvh_nodes_culled
                 ),
             );
         });

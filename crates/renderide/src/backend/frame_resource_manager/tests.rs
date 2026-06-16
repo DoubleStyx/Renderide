@@ -368,6 +368,20 @@ fn prepare_lights_for_views_culls_light_volumes_before_packing() {
     let mut mgr = FrameResourceManager::new();
     mgr.prepare_lights_for_views(&scene, [desc, overlay_desc], None);
 
+    let stats = mgr.light_visibility_stats();
+    assert_eq!(stats.space_count, 2);
+    assert_eq!(stats.lights_before_cull, 6);
+    assert_eq!(stats.indexed_lights, 4);
+    assert_eq!(stats.fallback_lights, 2);
+    assert_eq!(stats.rejected_lights, 2);
+    assert_eq!(stats.lights_after_cull, 4);
+    assert_eq!(stats.packed_lights, 4);
+    assert_eq!(stats.linear_queries, 2);
+    assert_eq!(stats.bvh_queries, 0);
+    assert_eq!(stats.light_aabb_tests, 4);
+    mgr.reset_light_prep_for_tick();
+    assert_eq!(mgr.light_visibility_stats(), Default::default());
+
     for view_id in [main, overlay] {
         let packed = mgr.frame_lights_for_view(view_id);
         assert_eq!(packed.len(), 2);
@@ -436,6 +450,14 @@ fn prepare_lights_for_views_keeps_secondary_light_positions_view_local() {
 
     let first_lights = mgr.frame_lights_for_view(first);
     let second_lights = mgr.frame_lights_for_view(second);
+    let stats = mgr.light_visibility_stats();
+    assert_eq!(stats.space_count, 2);
+    assert_eq!(stats.cull_disabled_spaces, 2);
+    assert_eq!(stats.lights_before_cull, 2);
+    assert_eq!(stats.lights_after_cull, 2);
+    assert_eq!(stats.packed_lights, 2);
+    assert_eq!(stats.indexed_lights, 0);
+    assert_eq!(stats.rejected_lights, 0);
     assert_eq!(first_lights.len(), 1);
     assert_eq!(second_lights.len(), 1);
     assert!((first_lights[0].position[0] - 9.0).abs() < 1e-4);
