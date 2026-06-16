@@ -22,7 +22,7 @@ pub(super) fn render_asset_diagnostics(
     render_integration_queues(ui, snapshot);
     render_deferred_uploads(ui, snapshot);
     render_asset_workers(ui, snapshot);
-    render_materials_and_pools(ui, snapshot);
+    render_material_upload_pressure(ui, snapshot);
 }
 
 fn render_integration_queues(ui: &imgui::Ui, snapshot: &FrameDiagnosticsSnapshot) {
@@ -118,9 +118,9 @@ fn render_asset_workers(ui: &imgui::Ui, snapshot: &FrameDiagnosticsSnapshot) {
     });
 }
 
-fn render_materials_and_pools(ui: &imgui::Ui, snapshot: &FrameDiagnosticsSnapshot) {
+fn render_material_upload_pressure(ui: &imgui::Ui, snapshot: &FrameDiagnosticsSnapshot) {
     let assets = &snapshot.assets;
-    collapsible_section(ui, "Materials & resident pools", true, |ui| {
+    collapsible_section(ui, "Material upload pressure", true, |ui| {
         kv_table(ui, "assets_materials_pools", |ui| {
             kv_colored(
                 ui,

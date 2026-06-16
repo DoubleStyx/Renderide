@@ -57,20 +57,7 @@ struct DrawStatsSection;
 struct HealthSection;
 struct ResourcesSection;
 struct MaterialsSection;
-struct FrameGraphSection;
-
-const SECTIONS: &[&dyn StatsSection] = &[
-    &FrameLineSection,
-    &GpuAdapterSection,
-    &ProcessMemorySection,
-    &HostCpuRamSection,
-    &IpcSceneSection,
-    &DrawStatsSection,
-    &HealthSection,
-    &ResourcesSection,
-    &MaterialsSection,
-    &FrameGraphSection,
-];
+struct GraphSummarySection;
 
 /// **Stats** tab dispatched from [`super::MainDebugWindow`].
 pub struct StatsTab;
@@ -89,16 +76,29 @@ impl TabView for StatsTab {
             return;
         }
         let ctx = StatsContext { renderer, frame };
-        for section in SECTIONS {
-            collapsible_section(ui, section.label(), section.default_open(), |ui| {
-                section.body(ui, &ctx);
-            });
-        }
-        render_expensive_diagnostics(ui, frame, state);
+        render_stats_section(ui, &FrameLineSection, &ctx);
+        render_stats_section(ui, &HealthSection, &ctx);
+        render_stats_section(ui, &GpuAdapterSection, &ctx);
+        render_stats_section(ui, &ProcessMemorySection, &ctx);
+        render_stats_section(ui, &HostCpuRamSection, &ctx);
+        render_stats_section(ui, &IpcSceneSection, &ctx);
+        render_stats_section(ui, &DrawStatsSection, &ctx);
+        render_visibility_section(ui, frame, state);
+        render_stats_section(ui, &ResourcesSection, &ctx);
+        render_assets_section(ui, frame, state);
+        render_stats_section(ui, &MaterialsSection, &ctx);
+        render_stats_section(ui, &GraphSummarySection, &ctx);
+        render_graph_section(ui, frame, state);
     }
 }
 
-fn render_expensive_diagnostics(
+fn render_stats_section(ui: &imgui::Ui, section: &dyn StatsSection, ctx: &StatsContext<'_>) {
+    collapsible_section(ui, section.label(), section.default_open(), |ui| {
+        section.body(ui, ctx);
+    });
+}
+
+fn render_visibility_section(
     ui: &imgui::Ui,
     frame: Option<&FrameDiagnosticsSnapshot>,
     state: &mut HudUiState,
@@ -109,15 +109,29 @@ fn render_expensive_diagnostics(
         &mut state.stats_sections.visibility,
         |ui| visibility::render_visibility_diagnostics(ui, frame),
     );
-    collapsible_section_with_state(ui, "Render graph", &mut state.stats_sections.graph, |ui| {
-        graph::render_graph_diagnostics(ui, frame);
-    });
+}
+
+fn render_assets_section(
+    ui: &imgui::Ui,
+    frame: Option<&FrameDiagnosticsSnapshot>,
+    state: &mut HudUiState,
+) {
     collapsible_section_with_state(
         ui,
         "Assets & streaming",
         &mut state.stats_sections.assets,
         |ui| streaming::render_asset_diagnostics(ui, frame),
     );
+}
+
+fn render_graph_section(
+    ui: &imgui::Ui,
+    frame: Option<&FrameDiagnosticsSnapshot>,
+    state: &mut HudUiState,
+) {
+    collapsible_section_with_state(ui, "Render graph", &mut state.stats_sections.graph, |ui| {
+        graph::render_graph_diagnostics(ui, frame);
+    });
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -789,9 +803,9 @@ impl StatsSection for MaterialsSection {
     }
 }
 
-impl StatsSection for FrameGraphSection {
+impl StatsSection for GraphSummarySection {
     fn label(&self) -> &str {
-        "Frame graph"
+        "Graph summary"
     }
     fn default_open(&self) -> bool {
         false
