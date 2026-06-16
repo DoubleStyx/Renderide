@@ -9,6 +9,7 @@ use parking_lot::Mutex;
 
 use crate::assets::mesh::MeshBufferUploadSink;
 use crate::upload_arena::{PersistentUploadArena, UploadArenaAcquireStats, UploadArenaPressure};
+use crate::upload_stats::{UploadArenaStats, UploadTrafficStats};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WritePlan {
@@ -79,42 +80,14 @@ impl RecordedMeshUploads {
 /// Counters describing one mesh upload batch drain.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct MeshUploadBatchStats {
-    /// Number of queued buffer writes drained.
-    pub(crate) writes: usize,
-    /// Total payload bytes drained.
-    pub(crate) bytes: usize,
-    /// Writes served by staging-buffer copy commands.
-    pub(crate) staged_writes: usize,
-    /// Writes replayed through queue writes.
-    pub(crate) fallback_writes: usize,
-    /// Required staging bytes for aligned writes.
-    pub(crate) staging_bytes: u64,
-    /// Number of copy commands recorded.
-    pub(crate) copy_ops: usize,
-    /// Bytes staged through persistent arena slots.
-    pub(crate) persistent_staging_bytes: u64,
-    /// Persistent arena slot reuse count.
-    pub(crate) persistent_slot_reuses: usize,
-    /// Persistent arena allocation or growth count.
-    pub(crate) persistent_slot_grows: usize,
-    /// Bytes staged through temporary buffers.
-    pub(crate) temporary_staging_bytes: u64,
-    /// Temporary staging fallback count.
-    pub(crate) temporary_staging_fallbacks: usize,
-    /// Writes replayed because the staging payload exceeded device limits.
-    pub(crate) oversized_queue_fallback_writes: usize,
+    /// Queue-write and staging-copy traffic.
+    pub(crate) traffic: UploadTrafficStats,
+    /// Persistent upload arena acquire and pressure counters.
+    pub(crate) arena: UploadArenaStats,
     /// Writes replayed because the queue gate was busy.
     pub(crate) queue_gate_fallbacks: usize,
     /// Adjacent writes merged before staging or queue fallback replay.
     pub(crate) coalesced_writes: usize,
-    /// Total persistent arena capacity.
-    pub(crate) arena_capacity_bytes: u64,
-    /// Persistent arena slots currently free.
-    pub(crate) arena_free_slots: usize,
-    /// Persistent arena slots referenced by submitted GPU work.
-    pub(crate) arena_in_flight_slots: usize,
-    /// Persistent arena slots waiting on remap completion.
-    pub(crate) arena_remapping_slots: usize,
     /// CPU time spent finishing the upload command encoder.
     pub(crate) finish_ms: f64,
 }
@@ -123,31 +96,18 @@ impl MeshUploadBatchStats {
     /// Builds the profiling sample emitted for this upload batch.
     pub(crate) fn profile_sample(self) -> crate::profiling::MeshUploadBatchProfileSample {
         crate::profiling::MeshUploadBatchProfileSample {
-            writes: self.writes,
-            bytes: self.bytes,
-            staged_writes: self.staged_writes,
-            fallback_writes: self.fallback_writes,
-            staging_bytes: self.staging_bytes,
-            copy_ops: self.copy_ops,
+            traffic: self.traffic,
             queue_gate_fallbacks: self.queue_gate_fallbacks,
             coalesced_writes: self.coalesced_writes,
         }
     }
 
     fn apply_arena_acquire(&mut self, stats: UploadArenaAcquireStats) {
-        self.persistent_staging_bytes = stats.persistent_staging_bytes;
-        self.persistent_slot_reuses = stats.persistent_slot_reuses;
-        self.persistent_slot_grows = stats.persistent_slot_grows;
-        self.temporary_staging_bytes = stats.temporary_staging_bytes;
-        self.temporary_staging_fallbacks = stats.temporary_staging_fallbacks;
-        self.oversized_queue_fallback_writes = stats.oversized_queue_fallback_writes;
+        self.arena.apply_acquire(stats);
     }
 
     fn apply_arena_pressure(&mut self, pressure: UploadArenaPressure) {
-        self.arena_capacity_bytes = pressure.capacity_bytes;
-        self.arena_free_slots = pressure.free_slots;
-        self.arena_in_flight_slots = pressure.in_flight_slots;
-        self.arena_remapping_slots = pressure.remapping_slots;
+        self.arena.apply_pressure(pressure);
     }
 }
 
@@ -197,7 +157,7 @@ impl MeshUploadStagingBatch {
         if force_queue_fallback {
             force_queue_fallback_stats(&mut stats);
             replay_all_writes_through_queue(queue, &writes, &payload_bytes);
-            stats.queue_gate_fallbacks = stats.writes;
+            stats.queue_gate_fallbacks = stats.traffic.writes;
             stats.apply_arena_pressure(upload_arena.pressure());
             self.restore_recorded_upload_capacity(writes, payload_bytes);
             crate::profiling::plot_mesh_upload_batch(&stats.profile_sample());
@@ -216,14 +176,14 @@ impl MeshUploadStagingBatch {
             device,
             max_buffer_size,
             staging_size,
-            stats.staged_writes,
+            stats.traffic.staged_writes,
         );
         stats.apply_arena_acquire(staging.acquire_stats());
         if let Some(staging_buffer) = staging.buffer() {
             fill_staging_buffer(staging_buffer, &writes, &plans, &payload_bytes);
         }
         if staging.requires_queue_fallback() {
-            stats.copy_ops = 0;
+            stats.traffic.copy_ops = 0;
         }
         let staging = staging.finish(upload_arena);
         let (command_buffer, finish_ms) = record_upload_command_buffer(
@@ -253,8 +213,11 @@ impl MeshUploadStagingBatch {
                 return None;
             }
             let stats = MeshUploadBatchStats {
-                writes: recorded.writes.len(),
-                bytes: recorded.bytes.len(),
+                traffic: UploadTrafficStats {
+                    writes: recorded.writes.len(),
+                    bytes: recorded.bytes.len(),
+                    ..UploadTrafficStats::default()
+                },
                 ..MeshUploadBatchStats::default()
             };
             if !recorded.writes.is_sorted_by_key(|write| write.order) {
@@ -411,21 +374,13 @@ fn coalesce_sorted_recorded_uploads(
             coalesced.push(write);
         }
     }
-    stats.writes = coalesced.len();
+    stats.traffic.writes = coalesced.len();
     (coalesced, payload_bytes, stats)
 }
 
 fn force_queue_fallback_stats(stats: &mut MeshUploadBatchStats) {
-    stats.fallback_writes = stats.writes;
-    stats.staged_writes = 0;
-    stats.staging_bytes = 0;
-    stats.copy_ops = 0;
-    stats.persistent_staging_bytes = 0;
-    stats.persistent_slot_reuses = 0;
-    stats.persistent_slot_grows = 0;
-    stats.temporary_staging_bytes = 0;
-    stats.temporary_staging_fallbacks = 0;
-    stats.oversized_queue_fallback_writes = 0;
+    stats.traffic.force_queue_fallback();
+    stats.arena.clear_acquire();
 }
 
 fn replay_all_writes_through_queue(
@@ -461,14 +416,14 @@ where
                 len,
             });
             staging_size = aligned_offset + len;
-            stats.staged_writes = stats.staged_writes.saturating_add(1);
+            stats.traffic.staged_writes = stats.traffic.staged_writes.saturating_add(1);
         } else {
             plans.push(WritePlan::Fallback);
-            stats.fallback_writes = stats.fallback_writes.saturating_add(1);
+            stats.traffic.fallback_writes = stats.traffic.fallback_writes.saturating_add(1);
         }
     }
-    stats.staging_bytes = staging_size;
-    stats.copy_ops = stats.staged_writes;
+    stats.traffic.staging_bytes = staging_size;
+    stats.traffic.copy_ops = stats.traffic.staged_writes;
     (plans, staging_size)
 }
 
@@ -606,8 +561,8 @@ mod tests {
             ]
         );
         assert_eq!(staging_size, 4);
-        assert_eq!(stats.staged_writes, 1);
-        assert_eq!(stats.fallback_writes, 2);
+        assert_eq!(stats.traffic.staged_writes, 1);
+        assert_eq!(stats.traffic.fallback_writes, 2);
     }
 
     #[test]
@@ -629,7 +584,7 @@ mod tests {
             ]
         );
         assert_eq!(staging_size, 12);
-        assert_eq!(stats.copy_ops, 2);
+        assert_eq!(stats.traffic.copy_ops, 2);
     }
 
     #[test]
@@ -639,26 +594,35 @@ mod tests {
 
         assert_eq!(plans, vec![WritePlan::Fallback]);
         assert_eq!(staging_size, 0);
-        assert_eq!(stats.fallback_writes, 1);
+        assert_eq!(stats.traffic.fallback_writes, 1);
     }
 
     #[test]
     fn forced_queue_fallback_clears_copy_stats() {
         let mut stats = MeshUploadBatchStats {
-            writes: 3,
-            staged_writes: 3,
-            staging_bytes: 16,
-            copy_ops: 3,
-            persistent_staging_bytes: 16,
-            persistent_slot_reuses: 1,
+            traffic: UploadTrafficStats {
+                writes: 3,
+                staged_writes: 3,
+                staging_bytes: 16,
+                copy_ops: 3,
+                ..UploadTrafficStats::default()
+            },
+            arena: UploadArenaStats {
+                acquire: UploadArenaAcquireStats {
+                    persistent_staging_bytes: 16,
+                    persistent_slot_reuses: 1,
+                    ..UploadArenaAcquireStats::default()
+                },
+                ..UploadArenaStats::default()
+            },
             ..MeshUploadBatchStats::default()
         };
 
         force_queue_fallback_stats(&mut stats);
 
-        assert_eq!(stats.fallback_writes, 3);
-        assert_eq!(stats.staged_writes, 0);
-        assert_eq!(stats.copy_ops, 0);
-        assert_eq!(stats.persistent_slot_reuses, 0);
+        assert_eq!(stats.traffic.fallback_writes, 3);
+        assert_eq!(stats.traffic.staged_writes, 0);
+        assert_eq!(stats.traffic.copy_ops, 0);
+        assert_eq!(stats.arena.acquire.persistent_slot_reuses, 0);
     }
 }

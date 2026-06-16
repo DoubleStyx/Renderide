@@ -94,8 +94,46 @@ pub struct FrameGlobalSplitPassEncodeParams<'a, 'encoder> {
     pub profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
 }
 
-/// Graph-facing access to renderer frame resources.
-pub trait GraphFrameResources: Send + Sync {
+/// Renderer-owned frame-global passes with backend resource routing.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum FrameGlobalResourcePass {
+    /// Frame-global mesh deformation compute.
+    MeshDeform,
+    /// Frame-global light-cookie atlas synchronization.
+    LightCookieAtlas,
+    /// Frame-global realtime shadow atlas rendering.
+    ShadowAtlas,
+}
+
+/// Aggregate graph-facing access to renderer frame resources.
+pub trait GraphFrameResources:
+    GraphFrameBindings
+    + GraphPerDrawSlabResources
+    + GraphSceneSnapshotResources
+    + GraphMeshDeformResources
+    + GraphFrameGlobalResources
+    + GraphPreRecordFrameResources
+    + GraphSubmitResourceRetention
+    + Send
+    + Sync
+{
+}
+
+impl<T> GraphFrameResources for T where
+    T: GraphFrameBindings
+        + GraphPerDrawSlabResources
+        + GraphSceneSnapshotResources
+        + GraphMeshDeformResources
+        + GraphFrameGlobalResources
+        + GraphPreRecordFrameResources
+        + GraphSubmitResourceRetention
+        + Send
+        + Sync
+{
+}
+
+/// Graph-facing access to per-frame bind groups, buffers, and shared frame constants.
+pub trait GraphFrameBindings {
     /// Whether frame-global GPU resources were attached.
     fn has_frame_gpu(&self) -> bool;
 
@@ -129,6 +167,15 @@ pub trait GraphFrameResources: Send + Sync {
         view_id: ViewId,
     ) -> Option<Arc<wgpu::BindGroup>>;
 
+    /// Empty material bind group used by shaders without per-material resources.
+    fn empty_material_bind_group(&self) -> Option<Arc<wgpu::BindGroup>>;
+
+    /// Uniform parameters for the active skybox/reflection-probe specular source.
+    fn skybox_specular_uniform_params(&self) -> SkyboxSpecularUniformParams;
+}
+
+/// Graph-facing access to per-view per-draw slab storage and packing scratch.
+pub trait GraphPerDrawSlabResources {
     /// Ensures this view's per-draw slab can hold `draw_count` rows and returns its storage buffer.
     fn ensure_per_view_per_draw_capacity(
         &self,
@@ -161,10 +208,10 @@ pub trait GraphFrameResources: Send + Sync {
 
     /// Per-view per-draw bind group.
     fn per_view_per_draw_bind_group(&self, view_id: ViewId) -> Option<Arc<wgpu::BindGroup>>;
+}
 
-    /// Empty material bind group used by shaders without per-material resources.
-    fn empty_material_bind_group(&self) -> Option<Arc<wgpu::BindGroup>>;
-
+/// Graph-facing access to scene-depth and scene-color snapshot copies.
+pub trait GraphSceneSnapshotResources {
     /// Copies the current depth attachment into this view's sampled scene-depth snapshot.
     fn copy_scene_depth_snapshot_for_view(
         &self,
@@ -194,10 +241,10 @@ pub trait GraphFrameResources: Send + Sync {
         viewport: (u32, u32),
         multiview: bool,
     ) -> bool;
+}
 
-    /// Uniform parameters for the active skybox/reflection-probe specular source.
-    fn skybox_specular_uniform_params(&self) -> SkyboxSpecularUniformParams;
-
+/// Graph-facing access to mesh-deform submission state and visibility filters.
+pub trait GraphMeshDeformResources {
     /// Whether mesh deform has already recorded work for this graph submission.
     fn mesh_deform_dispatched_this_submission(&self) -> bool;
 
@@ -206,10 +253,10 @@ pub trait GraphFrameResources: Send + Sync {
 
     /// Cloned visible mesh-deform filter for this submission's frame-global deform collection.
     fn visible_mesh_deform_keys_snapshot(&self) -> Option<HashSet<SkinCacheKey>>;
+}
 
-    /// Whether a named frame-global pass has no work for the current graph submission.
-    fn frame_global_pass_is_inactive(&self, pass_name: &str) -> bool;
-
+/// Graph-facing pre-record allocation hooks for per-view frame resources.
+pub trait GraphPreRecordFrameResources {
     /// Ensures per-view frame bind resources are resident.
     fn ensure_per_view_frame_resources(
         &mut self,
@@ -227,9 +274,18 @@ pub trait GraphFrameResources: Send + Sync {
 
     /// Ensures per-view per-draw CPU scratch is resident.
     fn ensure_per_view_per_draw_scratch(&mut self, view_id: ViewId);
+}
 
+/// Graph-facing resource retention for command buffers submitted after recording.
+pub trait GraphSubmitResourceRetention {
     /// Retains frame-owned GPU handles that may be referenced by recorded command buffers.
     fn retain_submit_resources(&self, resources: &mut GpuRetainedResources);
+}
+
+/// Graph-facing hooks for backend-owned frame-global atlas and split-recording resources.
+pub trait GraphFrameGlobalResources {
+    /// Whether a typed frame-global pass has no work for the current graph submission.
+    fn frame_global_pass_is_inactive(&self, pass: FrameGlobalResourcePass) -> bool;
 
     /// Whether any light-cookie atlas layers need frame-global synchronization.
     fn has_light_cookie_requests(&self) -> bool;
@@ -252,7 +308,7 @@ pub trait GraphFrameResources: Send + Sync {
     /// Returns split-recording workload for a frame-global pass, when supported this frame.
     fn frame_global_pass_split_workload(
         &self,
-        _pass_name: &str,
+        _pass: FrameGlobalResourcePass,
     ) -> Option<FrameGlobalPassSplitWorkload> {
         None
     }
@@ -260,7 +316,7 @@ pub trait GraphFrameResources: Send + Sync {
     /// Performs serial upload prep for a split-recorded frame-global pass.
     fn prepare_frame_global_split_pass(
         &self,
-        _pass_name: &str,
+        _pass: FrameGlobalResourcePass,
         _gpu_limits: &GpuLimits,
         _uploads: GraphUploadSink<'_>,
     ) -> bool {
@@ -270,7 +326,7 @@ pub trait GraphFrameResources: Send + Sync {
     /// Records one ordered unit range for a split-recorded frame-global pass.
     fn encode_frame_global_split_pass(
         &self,
-        _pass_name: &str,
+        _pass: FrameGlobalResourcePass,
         _unit_range: Range<usize>,
         _params: FrameGlobalSplitPassEncodeParams<'_, '_>,
     ) -> bool {

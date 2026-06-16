@@ -4,13 +4,14 @@ use std::sync::Arc;
 
 use hashbrown::HashSet;
 
-use crate::backend::frame_gpu::{LIGHT_COOKIE_ATLAS_PASS_NAME, SHADOW_ATLAS_PASS_NAME};
 use crate::camera::ViewId;
 use crate::frame_upload_batch::GraphUploadSink;
 use crate::gpu::frame_globals::SkyboxSpecularUniformParams;
 use crate::graph_inputs::{
-    FrameGlobalPassSplitWorkload, FrameGlobalSplitPassEncodeParams, GraphAssetResources,
-    GraphClusterBufferRefs, GraphFrameResources, PreRecordViewResourceLayout,
+    FrameGlobalPassSplitWorkload, FrameGlobalResourcePass, FrameGlobalSplitPassEncodeParams,
+    GraphAssetResources, GraphClusterBufferRefs, GraphFrameBindings, GraphFrameGlobalResources,
+    GraphMeshDeformResources, GraphPerDrawSlabResources, GraphPreRecordFrameResources,
+    GraphSceneSnapshotResources, GraphSubmitResourceRetention, PreRecordViewResourceLayout,
     ShadowAtlasEncodeParams,
 };
 use crate::mesh_deform::{PaddedPerDrawUniforms, SkinCacheKey};
@@ -18,7 +19,7 @@ use crate::passes::MaterialBatchBoundary;
 
 use super::manager::FrameResourceManager;
 
-impl GraphFrameResources for FrameResourceManager {
+impl GraphFrameBindings for FrameResourceManager {
     fn has_frame_gpu(&self) -> bool {
         self.frame_gpu().is_some()
     }
@@ -73,6 +74,17 @@ impl GraphFrameResources for FrameResourceManager {
             .map(|state| Arc::clone(&state.named_scene_color_frame_bind_group))
     }
 
+    fn empty_material_bind_group(&self) -> Option<Arc<wgpu::BindGroup>> {
+        self.empty_material()
+            .map(|empty| Arc::clone(&empty.bind_group))
+    }
+
+    fn skybox_specular_uniform_params(&self) -> SkyboxSpecularUniformParams {
+        self.skybox_specular_uniform_params()
+    }
+}
+
+impl GraphPerDrawSlabResources for FrameResourceManager {
     fn ensure_per_view_per_draw_capacity(
         &self,
         device: &wgpu::Device,
@@ -124,12 +136,9 @@ impl GraphFrameResources for FrameResourceManager {
         self.per_view_per_draw(view_id)
             .map(|per_draw| Arc::clone(&per_draw.lock().bind_group))
     }
+}
 
-    fn empty_material_bind_group(&self) -> Option<Arc<wgpu::BindGroup>> {
-        self.empty_material()
-            .map(|empty| Arc::clone(&empty.bind_group))
-    }
-
+impl GraphSceneSnapshotResources for FrameResourceManager {
     fn copy_scene_depth_snapshot_for_view(
         &self,
         view_id: ViewId,
@@ -168,11 +177,9 @@ impl GraphFrameResources for FrameResourceManager {
             multiview,
         )
     }
+}
 
-    fn skybox_specular_uniform_params(&self) -> SkyboxSpecularUniformParams {
-        self.skybox_specular_uniform_params()
-    }
-
+impl GraphMeshDeformResources for FrameResourceManager {
     fn mesh_deform_dispatched_this_submission(&self) -> bool {
         self.mesh_deform_dispatched_this_submission()
     }
@@ -184,16 +191,9 @@ impl GraphFrameResources for FrameResourceManager {
     fn visible_mesh_deform_keys_snapshot(&self) -> Option<HashSet<SkinCacheKey>> {
         self.visible_mesh_deform_keys_snapshot()
     }
+}
 
-    fn frame_global_pass_is_inactive(&self, pass_name: &str) -> bool {
-        match pass_name {
-            "MeshDeform" => self.visible_mesh_deform_filter_is_empty(),
-            LIGHT_COOKIE_ATLAS_PASS_NAME => !self.has_light_cookie_requests(),
-            SHADOW_ATLAS_PASS_NAME => !self.has_shadow_atlas_requests(),
-            _ => false,
-        }
-    }
-
+impl GraphPreRecordFrameResources for FrameResourceManager {
     fn ensure_per_view_frame_resources(
         &mut self,
         view_id: ViewId,
@@ -215,7 +215,9 @@ impl GraphFrameResources for FrameResourceManager {
     fn ensure_per_view_per_draw_scratch(&mut self, view_id: ViewId) {
         let _ = self.per_view_per_draw_scratch_or_create(view_id);
     }
+}
 
+impl GraphSubmitResourceRetention for FrameResourceManager {
     fn retain_submit_resources(&self, resources: &mut crate::gpu::GpuRetainedResources) {
         if let Some(fgpu) = self.frame_gpu() {
             fgpu.retain_submit_resources(resources);
@@ -233,6 +235,16 @@ impl GraphFrameResources for FrameResourceManager {
         }
         for per_draw in self.per_view_draw.values() {
             per_draw.lock().retain_submit_resources(resources);
+        }
+    }
+}
+
+impl GraphFrameGlobalResources for FrameResourceManager {
+    fn frame_global_pass_is_inactive(&self, pass: FrameGlobalResourcePass) -> bool {
+        match pass {
+            FrameGlobalResourcePass::MeshDeform => self.visible_mesh_deform_filter_is_empty(),
+            FrameGlobalResourcePass::LightCookieAtlas => !self.has_light_cookie_requests(),
+            FrameGlobalResourcePass::ShadowAtlas => !self.has_shadow_atlas_requests(),
         }
     }
 
@@ -265,9 +277,9 @@ impl GraphFrameResources for FrameResourceManager {
 
     fn frame_global_pass_split_workload(
         &self,
-        pass_name: &str,
+        pass: FrameGlobalResourcePass,
     ) -> Option<FrameGlobalPassSplitWorkload> {
-        if pass_name != SHADOW_ATLAS_PASS_NAME {
+        if pass != FrameGlobalResourcePass::ShadowAtlas {
             return None;
         }
         self.frame_gpu()
@@ -276,11 +288,11 @@ impl GraphFrameResources for FrameResourceManager {
 
     fn prepare_frame_global_split_pass(
         &self,
-        pass_name: &str,
+        pass: FrameGlobalResourcePass,
         gpu_limits: &crate::gpu::GpuLimits,
         uploads: GraphUploadSink<'_>,
     ) -> bool {
-        if pass_name != SHADOW_ATLAS_PASS_NAME {
+        if pass != FrameGlobalResourcePass::ShadowAtlas {
             return false;
         }
         let Some(fgpu) = self.frame_gpu() else {
@@ -292,11 +304,11 @@ impl GraphFrameResources for FrameResourceManager {
 
     fn encode_frame_global_split_pass(
         &self,
-        pass_name: &str,
+        pass: FrameGlobalResourcePass,
         unit_range: std::ops::Range<usize>,
         params: FrameGlobalSplitPassEncodeParams<'_, '_>,
     ) -> bool {
-        if pass_name != SHADOW_ATLAS_PASS_NAME {
+        if pass != FrameGlobalResourcePass::ShadowAtlas {
             return false;
         }
         let Some(fgpu) = self.frame_gpu() else {

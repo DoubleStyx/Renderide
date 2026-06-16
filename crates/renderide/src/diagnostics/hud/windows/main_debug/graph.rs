@@ -237,10 +237,10 @@ fn render_transients_and_uploads(ui: &imgui::Ui, graph: &CommandEncodingHudSnaps
                 "Upload batch",
                 &format!(
                     "{} writes / {} / {} staged / {} fallback",
-                    graph.upload_stats.writes,
-                    hud_fmt::bytes_compact(graph.upload_stats.bytes as u64),
-                    graph.upload_stats.staged_writes,
-                    graph.upload_stats.fallback_writes
+                    graph.upload_stats.traffic.writes,
+                    hud_fmt::bytes_compact(graph.upload_stats.traffic.bytes as u64),
+                    graph.upload_stats.traffic.staged_writes,
+                    graph.upload_stats.traffic.fallback_writes
                 ),
             );
             kv(
@@ -248,10 +248,14 @@ fn render_transients_and_uploads(ui: &imgui::Ui, graph: &CommandEncodingHudSnaps
                 "Upload arena",
                 &format!(
                     "{} persistent / {} temporary / {} reuse / {} grow",
-                    hud_fmt::bytes_compact(graph.upload_stats.persistent_staging_bytes),
-                    hud_fmt::bytes_compact(graph.upload_stats.temporary_staging_bytes),
-                    graph.upload_stats.persistent_slot_reuses,
-                    graph.upload_stats.persistent_slot_grows
+                    hud_fmt::bytes_compact(
+                        graph.upload_stats.arena.acquire.persistent_staging_bytes
+                    ),
+                    hud_fmt::bytes_compact(
+                        graph.upload_stats.arena.acquire.temporary_staging_bytes
+                    ),
+                    graph.upload_stats.arena.acquire.persistent_slot_reuses,
+                    graph.upload_stats.arena.acquire.persistent_slot_grows
                 ),
             );
         });

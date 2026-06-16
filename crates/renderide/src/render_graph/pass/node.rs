@@ -7,6 +7,7 @@
 use std::borrow::Cow;
 
 use super::{ComputePass, EncoderPass, RasterPass};
+use crate::graph_inputs::FrameGlobalResourcePass;
 use crate::render_graph::context::{
     ComputePassCtx, EncoderPassCtx, PostSubmitContext, RasterPassCtx,
 };
@@ -186,6 +187,15 @@ impl PassNode {
             Self::Raster(p) => p.phase(),
             Self::Compute(p) => p.phase(),
             Self::Encoder(p) => p.phase(),
+        }
+    }
+
+    /// Typed backend resource hook for renderer-owned frame-global pass resources.
+    pub fn frame_global_resource_pass(&self) -> Option<FrameGlobalResourcePass> {
+        match self {
+            Self::Raster(_) => None,
+            Self::Compute(p) => p.frame_global_resource_pass(),
+            Self::Encoder(p) => p.frame_global_resource_pass(),
         }
     }
 

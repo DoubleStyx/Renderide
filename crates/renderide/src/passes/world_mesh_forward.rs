@@ -39,6 +39,7 @@ mod camera;
 mod color_resolve;
 mod color_snapshot;
 mod current_view_textures;
+mod depth_like_pipeline;
 mod depth_prepass;
 mod depth_resolve;
 mod depth_snapshot;

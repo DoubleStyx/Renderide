@@ -15,7 +15,7 @@ use crate::materials::{RasterFrontFace, RasterPrimitiveTopology};
 use crate::mesh_deform::PER_DRAW_UNIFORM_STRIDE;
 use crate::render_graph::context::RasterPassCtx;
 use crate::render_graph::error::{RenderPassError, SetupError};
-use crate::render_graph::gpu_cache::{create_wgsl_shader_module, stereo_mask_or_template};
+use crate::render_graph::gpu_cache::stereo_mask_or_template;
 use crate::render_graph::pass::{DepthAttachmentTemplate, RenderPassTemplate};
 use crate::render_graph::pass::{PassBuilder, RasterPass};
 use crate::render_graph::resources::{
@@ -23,6 +23,7 @@ use crate::render_graph::resources::{
 };
 
 use super::attachments::declare_normal_color_depth_attachments;
+use super::depth_like_pipeline::{DepthLikePipelineSpec, create_depth_like_pipeline};
 use super::raster_recording::{record_world_mesh_forward_normal_graph_raster, stencil_load_ops};
 use super::{WorldMeshForwardPipelineState, WorldMeshForwardPlanSlot};
 
@@ -129,53 +130,33 @@ impl WorldMeshForwardNormalPipelineCache {
             multiview,
             key.primitive_topology
         );
-        let shader = create_wgsl_shader_module(device, label, source);
         let per_draw_layout = self.per_draw_layout(device);
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some(label),
-            bind_group_layouts: &[Some(per_draw_layout)],
-            immediate_size: 0,
-        });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some(label),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &normal_vertex_buffer_layouts(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: GTAO_VIEW_NORMAL_FORMAT,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: key.primitive_topology.to_wgpu(),
-                front_face: key.front_face.to_wgpu(),
+        let bind_group_layouts = [per_draw_layout];
+        let vertex_buffers = normal_vertex_buffer_layouts();
+        let color_targets = [Some(wgpu::ColorTargetState {
+            format: GTAO_VIEW_NORMAL_FORMAT,
+            blend: None,
+            write_mask: wgpu::ColorWrites::ALL,
+        })];
+        let pipeline = create_depth_like_pipeline(
+            device,
+            DepthLikePipelineSpec {
+                label,
+                shader_source: source,
+                bind_group_layouts: &bind_group_layouts,
+                vertex_buffers: &vertex_buffers,
+                fragment_entry_point: Some("fs_main"),
+                color_targets: &color_targets,
+                primitive_topology: key.primitive_topology,
+                front_face: key.front_face,
                 cull_mode: None,
-                ..Default::default()
+                depth_stencil_format: key.depth_stencil_format,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Equal,
+                sample_count: key.sample_count,
+                multiview_mask: key.multiview_mask,
             },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: key.depth_stencil_format,
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::Equal),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState {
-                count: key.sample_count.max(1),
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview_mask: key.multiview_mask,
-            cache: None,
-        });
+        );
         crate::profiling::note_resource_churn!(
             RenderPipeline,
             "passes::world_mesh_normal_pipeline"
