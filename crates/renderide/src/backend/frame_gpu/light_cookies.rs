@@ -8,6 +8,8 @@ mod atlas;
 mod blit;
 /// Texture format and sampler compatibility helpers.
 mod format;
+/// CPU-side packed atlas layout.
+mod packing;
 /// Render-graph pass wrapper for atlas updates.
 mod pass;
 /// Persistent GPU resources for light-cookie atlases.

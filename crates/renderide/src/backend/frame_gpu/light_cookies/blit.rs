@@ -1,6 +1,7 @@
 use super::format::{
     LightCookieAtlasFormat, LightCookieSource, LightCookieSourceChannel, LightCookieSourceSampling,
 };
+use super::packing::LightCookieAtlasRect;
 
 /// Embedded WGSL target for copying 2D source cookies into atlas layers.
 pub(super) const LIGHT_COOKIE_BLIT_2D_STEM: &str = "light_cookie_blit_2d";
@@ -268,8 +269,8 @@ fn create_blit_pipeline(
     pipeline
 }
 
-/// Clears a cookie layer to white.
-pub(super) fn clear_cookie_layer(
+/// Clears a cookie atlas to white.
+pub(super) fn clear_cookie_atlas(
     encoder: &mut wgpu::CommandEncoder,
     target: &wgpu::TextureView,
     label: &'static str,
@@ -300,10 +301,11 @@ pub(super) fn clear_cookie_layer(
     }
 }
 
-/// Draws one fullscreen blit into a cookie layer.
-pub(super) fn blit_cookie_layer(
+/// Draws one source blit into an atlas rectangle.
+pub(super) fn blit_cookie_rect(
     encoder: &mut wgpu::CommandEncoder,
     target: &wgpu::TextureView,
+    rect: LightCookieAtlasRect,
     label: &'static str,
     pipeline: &wgpu::RenderPipeline,
     bind_group: &wgpu::BindGroup,
@@ -319,7 +321,7 @@ pub(super) fn blit_cookie_layer(
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                    load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -328,6 +330,15 @@ pub(super) fn blit_cookie_layer(
             occlusion_query_set: None,
             multiview_mask: None,
         });
+        pass.set_viewport(
+            rect.x as f32,
+            rect.y as f32,
+            rect.width as f32,
+            rect.height as f32,
+            0.0,
+            1.0,
+        );
+        pass.set_scissor_rect(rect.x, rect.y, rect.width, rect.height);
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, bind_group, &[]);
         pass.draw(0..3, 0..1);

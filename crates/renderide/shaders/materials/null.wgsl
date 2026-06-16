@@ -6,6 +6,7 @@
 
 #import renderide::frame::globals as rg
 #import renderide::draw::per_draw as pd
+#import renderide::draw::types as dt
 #import renderide::mesh::vertex as mv
 
 struct VertexOutput {
@@ -14,6 +15,30 @@ struct VertexOutput {
 }
 
 const TRANSITION: f32 = 50.0;
+
+fn checker_model_position(draw: dt::PerDrawUniforms, pos: vec4<f32>) -> vec3<f32> {
+    if (!dt::position_stream_is_world_space(draw)) {
+        return pos.xyz;
+    }
+
+    let model_x = draw.model[0].xyz;
+    let model_y = draw.model[1].xyz;
+    let model_z = draw.model[2].xyz;
+    let inv_x = cross(model_y, model_z);
+    let inv_y = cross(model_z, model_x);
+    let inv_z = cross(model_x, model_y);
+    let det = dot(model_x, inv_x);
+    if (!(abs(det) > 1e-20) || abs(det) > 3.402823e38) {
+        return pos.xyz;
+    }
+
+    let world_relative = pos.xyz - draw.model[3].xyz;
+    return vec3<f32>(
+        dot(world_relative, inv_x),
+        dot(world_relative, inv_y),
+        dot(world_relative, inv_z),
+    ) / det;
+}
 
 @vertex
 fn vs_main(
@@ -34,7 +59,7 @@ fn vs_main(
 
     var out: VertexOutput;
     out.clip_pos = vp * world_p;
-    out.checker = pos.xyz * 5.0;
+    out.checker = checker_model_position(d, pos) * 5.0;
     return out;
 }
 

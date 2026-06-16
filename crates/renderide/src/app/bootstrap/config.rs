@@ -34,14 +34,53 @@ pub(crate) struct AppConfig {
     pub(crate) gpu: GpuStartupConfig,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RendererLogLevelResolution {
+    level: LogLevel,
+    source: RendererLogLevelSource,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RendererLogLevelSource {
+    Cli,
+    LogVerbose,
+    Default,
+}
+
+impl RendererLogLevelSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Cli => "cli",
+            Self::LogVerbose => "log_verbose",
+            Self::Default => "default",
+        }
+    }
+}
+
 /// Chooses the process max log level after file logging is initialized.
 pub(crate) fn effective_renderer_log_level(cli: Option<LogLevel>, log_verbose: bool) -> LogLevel {
+    resolve_renderer_log_level(cli, log_verbose).level
+}
+
+fn resolve_renderer_log_level(
+    cli: Option<LogLevel>,
+    log_verbose: bool,
+) -> RendererLogLevelResolution {
     if let Some(level) = cli {
-        level
+        RendererLogLevelResolution {
+            level,
+            source: RendererLogLevelSource::Cli,
+        }
     } else if log_verbose {
-        LogLevel::Trace
+        RendererLogLevelResolution {
+            level: LogLevel::Trace,
+            source: RendererLogLevelSource::LogVerbose,
+        }
     } else {
-        LogLevel::Debug
+        RendererLogLevelResolution {
+            level: LogLevel::Debug,
+            source: RendererLogLevelSource::Default,
+        }
     }
 }
 
@@ -53,10 +92,9 @@ pub(crate) fn load_app_config(log_level_cli: Option<LogLevel>) -> AppConfig {
         ConfigFilePolicy::Load
     };
     let load = load_renderer_settings(config_file_policy);
-    logger::set_max_level(effective_renderer_log_level(
-        log_level_cli,
-        load.settings.debug.log_verbose,
-    ));
+    let resolved_log_level =
+        resolve_renderer_log_level(log_level_cli, load.settings.debug.log_verbose);
+    logger::set_max_level(resolved_log_level.level);
     log_config_resolve_trace(&load.resolve);
 
     let gpu = GpuStartupConfig {
@@ -66,7 +104,7 @@ pub(crate) fn load_app_config(log_level_cli: Option<LogLevel>) -> AppConfig {
         power_preference: load.settings.debug.power_preference.to_wgpu(),
         graphics_api: load.settings.rendering.graphics_api,
     };
-    log_startup_config_summary(&load, gpu, log_level_cli);
+    log_startup_config_summary(&load, gpu, resolved_log_level);
 
     AppConfig { load, gpu }
 }
@@ -74,11 +112,11 @@ pub(crate) fn load_app_config(log_level_cli: Option<LogLevel>) -> AppConfig {
 fn log_startup_config_summary(
     load: &ConfigLoadResult,
     gpu: GpuStartupConfig,
-    log_level_cli: Option<LogLevel>,
+    log_level: RendererLogLevelResolution,
 ) {
     let settings = &load.settings;
     logger::info!(
-        "Renderer config summary: source={:?} loaded_path={} save_path={} suppress_disk_writes={} log_verbose={} cli_log_level_present={} vsync={:?} graphics_api={} gpu_validation={} power_preference={} msaa={} scene_color={:?} post_processing_enabled={} gtao={} bloom={} motion_blur={} auto_exposure={} tonemap={} watchdog_enabled={}",
+        "Renderer config summary: source={:?} loaded_path={} save_path={} suppress_disk_writes={} log_verbose={} log_level={:?} log_level_source={} vsync={:?} graphics_api={} gpu_validation={} power_preference={} msaa={} scene_color={:?} post_processing_enabled={} gtao={} bloom={} motion_blur={} auto_exposure={} tonemap={} watchdog_enabled={}",
         load.resolve.source,
         load.resolve
             .loaded_path
@@ -88,7 +126,8 @@ fn log_startup_config_summary(
         load.save_path.display(),
         load.suppress_config_disk_writes,
         settings.debug.log_verbose,
-        log_level_cli.is_some(),
+        log_level.level,
+        log_level.source.as_str(),
         gpu.vsync,
         gpu.graphics_api.as_persist_str(),
         gpu.gpu_validation_layers,
@@ -108,8 +147,8 @@ fn log_startup_config_summary(
 #[cfg(test)]
 mod tests {
     use super::{
-        GpuStartupConfig, MAX_FRAME_LATENCY, effective_renderer_log_level,
-        log_startup_config_summary,
+        GpuStartupConfig, MAX_FRAME_LATENCY, RendererLogLevelSource, effective_renderer_log_level,
+        log_startup_config_summary, resolve_renderer_log_level,
     };
     use crate::config::{ConfigLoadResult, ConfigResolveOutcome, ConfigSource, RendererSettings};
     use logger::LogLevel;
@@ -121,16 +160,28 @@ mod tests {
             effective_renderer_log_level(Some(LogLevel::Warn), true),
             LogLevel::Warn
         );
+        let resolution = resolve_renderer_log_level(Some(LogLevel::Warn), true);
+        assert_eq!(resolution.level, LogLevel::Warn);
+        assert_eq!(resolution.source, RendererLogLevelSource::Cli);
+        assert_eq!(resolution.source.as_str(), "cli");
     }
 
     #[test]
     fn no_cli_uses_trace_when_log_verbose() {
         assert_eq!(effective_renderer_log_level(None, true), LogLevel::Trace);
+        let resolution = resolve_renderer_log_level(None, true);
+        assert_eq!(resolution.level, LogLevel::Trace);
+        assert_eq!(resolution.source, RendererLogLevelSource::LogVerbose);
+        assert_eq!(resolution.source.as_str(), "log_verbose");
     }
 
     #[test]
     fn no_cli_uses_debug_when_not_log_verbose() {
         assert_eq!(effective_renderer_log_level(None, false), LogLevel::Debug);
+        let resolution = resolve_renderer_log_level(None, false);
+        assert_eq!(resolution.level, LogLevel::Debug);
+        assert_eq!(resolution.source, RendererLogLevelSource::Default);
+        assert_eq!(resolution.source.as_str(), "default");
     }
 
     #[test]
@@ -152,6 +203,6 @@ mod tests {
             power_preference: load.settings.debug.power_preference.to_wgpu(),
             graphics_api: load.settings.rendering.graphics_api,
         };
-        log_startup_config_summary(&load, gpu, None);
+        log_startup_config_summary(&load, gpu, resolve_renderer_log_level(None, false));
     }
 }

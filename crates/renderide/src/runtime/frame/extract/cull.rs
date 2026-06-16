@@ -1,7 +1,7 @@
 //! Per-view frustum and Hi-Z cull snapshot capture for frame extraction.
 
 use crate::backend::ExtractedFrameShared;
-use crate::occlusion::HiZCullData;
+use crate::hi_z_cpu::HiZCullData;
 use crate::render_graph::OffscreenWriteTarget;
 use crate::world_mesh::{
     HiZTemporalState, WorldMeshCullProjParams, build_world_mesh_cull_proj_params,

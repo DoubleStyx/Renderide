@@ -41,17 +41,40 @@ mod tests {
     }
 
     #[test]
-    fn uri_source_is_preserved_directly() {
+    fn uri_sources_are_preserved_directly() {
+        for source in [
+            "https://93.184.216.34/movie.mp4",
+            "rtsp://192.168.1.20/stream",
+            "rtmp://example.com/live/stream",
+            "file:///tmp/video.mp4",
+        ] {
+            assert_eq!(source_uri(Some(source)).unwrap(), Some(source.to_owned()));
+        }
+    }
+
+    #[test]
+    fn absolute_local_path_converts_to_file_uri() {
+        let path = std::env::current_dir().unwrap().join("renderide-video.mp4");
+        let expected = gstreamer::glib::filename_to_uri(&path, None)
+            .unwrap()
+            .to_string();
+
         assert_eq!(
-            source_uri(Some("https://example.invalid/movie.mp4")).unwrap(),
-            Some(String::from("https://example.invalid/movie.mp4"))
+            source_uri(Some(path.to_str().unwrap())).unwrap(),
+            Some(expected)
         );
     }
 
     #[test]
-    fn absolute_local_path_is_not_rebased() {
-        let path = local_source_path("/tmp/renderide-video.mp4");
+    fn relative_local_path_converts_to_absolute_file_uri() {
+        let source = "relative/video.mp4";
+        let path = local_source_path(source);
+        let expected = gstreamer::glib::filename_to_uri(&path, None)
+            .unwrap()
+            .to_string();
 
-        assert_eq!(path, PathBuf::from("/tmp/renderide-video.mp4"));
+        assert!(path.is_absolute());
+        assert!(path.ends_with(source));
+        assert_eq!(source_uri(Some(source)).unwrap(), Some(expected));
     }
 }

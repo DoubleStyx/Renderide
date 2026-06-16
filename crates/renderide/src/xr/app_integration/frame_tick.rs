@@ -6,11 +6,11 @@ use std::time::Instant;
 use openxr as xr;
 
 use crate::camera::{StereoViewMatrices, effective_head_output_clip_planes};
-use crate::diagnostics::gpu_flight_recorder::{
+use crate::gpu::GpuQueueAccessGate;
+use crate::gpu::flight_recorder::{
     GpuFlightCallResult, GpuFlightEventKind, GpuFlightOpenXrCall, GpuFlightRecorder,
 };
-use crate::diagnostics::log_throttle::LogThrottle;
-use crate::gpu::GpuQueueAccessGate;
+use crate::log_throttle::LogThrottle;
 use crate::xr::{XrHostCameraSync, XrWgpuHandles};
 
 use super::types::{OpenxrClipPlanes, OpenxrFrameTick};

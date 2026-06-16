@@ -40,8 +40,36 @@ fn fs_main() -> @location(0) vec4<f32> {
         "test.wgsl",
     )?;
 
-    assert!(passes[0].alpha_to_coverage);
+    assert_eq!(
+        passes[0].alpha_to_coverage,
+        BuildAlphaToCoverageMode::Always
+    );
     assert_eq!(passes[0].name, "forward");
+    Ok(())
+}
+
+/// Pass directives can defer alpha-to-coverage to alpha-test material routing.
+#[test]
+fn pass_directive_extracts_cutout_alpha_to_coverage() -> Result<(), BuildError> {
+    let passes = parse_pass_directives(
+        r#"
+//#pass type=forward a2c=cutout
+@fragment
+fn fs_main() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0);
+}
+"#,
+        "test.wgsl",
+    )?;
+
+    assert_eq!(
+        passes[0].alpha_to_coverage,
+        BuildAlphaToCoverageMode::Cutout
+    );
+    assert!(
+        pass_literal(&passes[0])
+            .contains("alpha_to_coverage: crate::materials::MaterialAlphaToCoverageMode::Cutout")
+    );
     Ok(())
 }
 

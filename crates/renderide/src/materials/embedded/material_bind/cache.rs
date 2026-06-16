@@ -9,8 +9,8 @@ use super::super::texture_resolve::{
     ResolvedTextureBinding, primary_texture_2d_asset_id, resolved_texture_binding_for_host,
     texture_property_ids_for_binding,
 };
+use crate::frame_contract::OffscreenWriteTarget;
 use crate::gpu_pools::SamplerState;
-use crate::graph_inputs::OffscreenWriteTarget;
 use crate::materials::host_data::{MaterialPropertyLookupIds, MaterialPropertyStore};
 
 /// Number of shards across which the embedded `@group(1)` bind, uniform, and sampler caches are

@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::mesh_deform::{
+use crate::render_contract::{
     BLENDSHAPE_SPARSE_MIN_BUFFER_BYTES, blendshape_sparse_buffers_fit_device,
 };
 use crate::shared::MeshUploadData;

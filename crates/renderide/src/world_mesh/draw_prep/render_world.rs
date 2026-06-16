@@ -4,12 +4,12 @@
 //! side of world-mesh draw prep and stores renderer-facing draw templates that are expensive to
 //! rediscover every frame.
 
+mod maintenance;
 mod refresh;
 mod snapshot;
 mod state;
 
 use hashbrown::{HashMap, HashSet};
-use rayon::prelude::*;
 
 use crate::cpu_parallelism::{FrameCpuWorkload, FrameParallelPolicy, ParallelAdmission};
 use crate::gpu_pools::MeshPool;
@@ -21,15 +21,15 @@ use crate::scene::{
 use crate::shared::RenderingContext;
 
 use super::prepared_renderables::FramePreparedRenderables;
-use refresh::{
-    DirtyRendererSet, RefreshOutcome, refresh_render_world_space, refresh_renderer_bounds_set,
-    refresh_renderer_set,
-};
 use snapshot::SnapshotRebuildStats;
 use state::RenderWorldSpace;
 
 /// Transform-root dirty records assigned to one expansion worker.
 const DIRTY_ROOT_EXPANSION_PARALLEL_CHUNK_ITEMS: usize = 1;
+/// Retained node-index entries required before one root expansion scans in parallel.
+const DIRTY_ROOT_NODE_SCAN_PARALLEL_MIN_NODES: usize = 128;
+/// Retained node-index entries assigned to one root-expansion scan task.
+const DIRTY_ROOT_NODE_SCAN_PARALLEL_CHUNK_NODES: usize = 64;
 /// Render spaces assigned to one mesh-asset dirty expansion worker.
 const MESH_ASSET_DIRTY_EXPANSION_PARALLEL_CHUNK_SPACES: usize = 1;
 /// Dirty render spaces assigned to one retained-cache refresh worker.
@@ -52,6 +52,20 @@ fn transform_root_expansion_admission(
     policy.admit_independent_items(
         FrameCpuWorkload::independent_items(root_count),
         DIRTY_ROOT_EXPANSION_PARALLEL_CHUNK_ITEMS,
+    )
+}
+
+/// Returns the admission decision for a large retained node-index scan.
+fn transform_root_node_scan_admission(
+    policy: FrameParallelPolicy,
+    node_count: usize,
+) -> ParallelAdmission {
+    if node_count < DIRTY_ROOT_NODE_SCAN_PARALLEL_MIN_NODES {
+        return ParallelAdmission::Serial;
+    }
+    policy.admit_independent_items(
+        FrameCpuWorkload::independent_items(node_count),
+        DIRTY_ROOT_NODE_SCAN_PARALLEL_CHUNK_NODES,
     )
 }
 
@@ -105,10 +119,22 @@ pub struct RenderWorldMaintenanceStats {
     pub material_dirty_count: usize,
     /// Renderer records dirtied only by transform or bounds changes this frame.
     pub transform_only_dirty_count: usize,
+    /// Unique transform-root node ids consumed while expanding deferred scene changes.
+    pub transform_root_dirty_count: usize,
+    /// Retained node-index entries scanned while expanding transform-root dirties.
+    pub transform_root_scanned_node_count: usize,
+    /// Renderer records found by transform-root dirty expansion.
+    pub transform_root_expanded_renderer_count: usize,
+    /// Transform-root dirties that covered an entire retained render space.
+    pub transform_root_full_space_count: usize,
     /// Renderer records dirtied by mesh-asset mutations this frame.
     pub mesh_asset_dirty_renderer_count: usize,
     /// Renderer records whose retained templates were requested dirty this frame.
     pub dirty_renderer_count: usize,
+    /// Renderer records whose retained bounds were requested dirty this frame.
+    pub bounds_dirty_renderer_count: usize,
+    /// Renderer records whose retained bounds were refreshed this frame.
+    pub bounds_refreshed_renderer_count: usize,
     /// Renderer records actually refreshed this frame.
     pub refreshed_renderer_count: usize,
     /// Draw templates regenerated while refreshing dirty renderer records.
@@ -123,6 +149,8 @@ pub struct RenderWorldMaintenanceStats {
     pub particle_snapshot_rebuild_count: usize,
     /// Prepared-snapshot copy tasks built while rebuilding retained templates.
     pub snapshot_rebuild_task_count: usize,
+    /// Retained draw templates considered while rebuilding prepared snapshots.
+    pub snapshot_retained_draw_count: usize,
     /// Render spaces reused from the previous prepared snapshot during a partial rebuild.
     pub snapshot_reused_space_count: usize,
     /// Prepared spatial indexes rebuilt because run membership changed.
@@ -138,13 +166,49 @@ pub struct RenderWorldMaintenanceStats {
 }
 
 impl RenderWorldMaintenanceStats {
+    /// Builds the profiling sample emitted for retained render-world maintenance.
+    pub fn profile_sample(self) -> crate::profiling::RenderWorldMaintenanceProfileSample {
+        crate::profiling::RenderWorldMaintenanceProfileSample {
+            topology_dirty_count: self.topology_dirty_count,
+            material_dirty_count: self.material_dirty_count,
+            transform_only_dirty_count: self.transform_only_dirty_count,
+            transform_root_dirty_count: self.transform_root_dirty_count,
+            transform_root_scanned_node_count: self.transform_root_scanned_node_count,
+            transform_root_expanded_renderer_count: self.transform_root_expanded_renderer_count,
+            transform_root_full_space_count: self.transform_root_full_space_count,
+            mesh_asset_dirty_renderer_count: self.mesh_asset_dirty_renderer_count,
+            dirty_renderer_count: self.dirty_renderer_count,
+            bounds_dirty_renderer_count: self.bounds_dirty_renderer_count,
+            bounds_refreshed_renderer_count: self.bounds_refreshed_renderer_count,
+            refreshed_renderer_count: self.refreshed_renderer_count,
+            refreshed_template_count: self.refreshed_template_count,
+            mesh_asset_invalidation_count: self.mesh_asset_invalidation_count,
+            full_world_rebuild_count: self.full_world_rebuild_count,
+            particle_snapshot_rebuild_count: self.particle_snapshot_rebuild_count,
+            snapshot_rebuild_task_count: self.snapshot_rebuild_task_count,
+            snapshot_retained_draw_count: self.snapshot_retained_draw_count,
+            snapshot_reused_space_count: self.snapshot_reused_space_count,
+            spatial_rebuild_count: self.spatial_rebuild_count,
+            spatial_refit_count: self.spatial_refit_count,
+            retained_template_count: self.retained_template_count,
+            context_invariant_count: self.context_invariant_count,
+            steady_state_skip_count: self.steady_state_skip_count,
+        }
+    }
+
     /// Adds another render world's counters into this aggregate.
     pub fn accumulate(&mut self, other: Self) {
         self.topology_dirty_count += other.topology_dirty_count;
         self.material_dirty_count += other.material_dirty_count;
         self.transform_only_dirty_count += other.transform_only_dirty_count;
+        self.transform_root_dirty_count += other.transform_root_dirty_count;
+        self.transform_root_scanned_node_count += other.transform_root_scanned_node_count;
+        self.transform_root_expanded_renderer_count += other.transform_root_expanded_renderer_count;
+        self.transform_root_full_space_count += other.transform_root_full_space_count;
         self.mesh_asset_dirty_renderer_count += other.mesh_asset_dirty_renderer_count;
         self.dirty_renderer_count += other.dirty_renderer_count;
+        self.bounds_dirty_renderer_count += other.bounds_dirty_renderer_count;
+        self.bounds_refreshed_renderer_count += other.bounds_refreshed_renderer_count;
         self.refreshed_renderer_count += other.refreshed_renderer_count;
         self.refreshed_template_count += other.refreshed_template_count;
         self.mesh_asset_invalidation_count += other.mesh_asset_invalidation_count;
@@ -152,6 +216,7 @@ impl RenderWorldMaintenanceStats {
         self.full_world_rebuild_count += other.full_world_rebuild_count;
         self.particle_snapshot_rebuild_count += other.particle_snapshot_rebuild_count;
         self.snapshot_rebuild_task_count += other.snapshot_rebuild_task_count;
+        self.snapshot_retained_draw_count += other.snapshot_retained_draw_count;
         self.snapshot_reused_space_count += other.snapshot_reused_space_count;
         self.spatial_rebuild_count += other.spatial_rebuild_count;
         self.spatial_refit_count += other.spatial_refit_count;
@@ -225,42 +290,21 @@ fn node_is_under_any_root(parents: &[i32], node_id: i32, roots: &[i32]) -> bool 
         .any(|&root| node_is_descendant_or_self(parents, node_id, root))
 }
 
-/// Result of expanding one transform-root dirty input.
-enum TransformDirtyExpansion {
-    /// The render space was removed from the scene.
-    Removed(RenderSpaceId),
-    /// The render space has no retained cache and needs a full rebuild.
-    FullSpace(RenderSpaceId),
-    /// The dirty roots expanded to renderer records.
-    Renderers(Vec<RenderWorldRendererDirty>),
-    /// No retained renderer records were affected.
-    Empty,
-}
-
-/// Worker-owned full-space refresh payload.
-struct DirtySpaceRefreshWork {
-    /// Render space being refreshed.
-    id: RenderSpaceId,
-    /// Estimated renderer/template work used for parallel admission.
-    estimated_work_units: usize,
-    /// Retained cache removed from [`RenderWorld::spaces`] for worker-owned mutation.
-    cached: RenderWorldSpace,
-    /// Refresh counters produced by the worker.
-    outcome: RefreshOutcome,
-}
-
-/// Worker-owned partial-renderer refresh payload.
-struct DirtyRendererRefreshWork {
-    /// Render space containing the dirty renderer records.
-    id: RenderSpaceId,
-    /// Dirty renderer records grouped for this space.
-    dirty_set: DirtyRendererSet,
-    /// Estimated renderer/template work used for parallel admission.
-    estimated_work_units: usize,
-    /// Retained cache removed from [`RenderWorld::spaces`] for worker-owned mutation.
-    cached: RenderWorldSpace,
-    /// Refresh counters produced by the worker.
-    outcome: RefreshOutcome,
+/// Returns whether a transform root covers every tree in the supplied parent table.
+fn transform_roots_cover_space(parents: &[i32], roots: &[i32]) -> bool {
+    let mut root_node = None;
+    for (node_id, &parent) in parents.iter().enumerate() {
+        if parent >= 0 {
+            continue;
+        }
+        if root_node.replace(node_id as i32).is_some() {
+            return false;
+        }
+    }
+    let Some(root_node) = root_node else {
+        return false;
+    };
+    roots.contains(&root_node)
 }
 
 impl RenderWorld {
@@ -365,12 +409,13 @@ impl RenderWorld {
             self.mark_all_scene_spaces_dirty(scene);
         }
 
-        self.expand_deferred_dirty_inputs(scene);
+        self.expand_deferred_dirty_inputs(scene, &mut stats);
         stats.topology_dirty_count = self.pending_topology_dirty_count;
         stats.material_dirty_count = self.pending_material_dirty_count;
         stats.transform_only_dirty_count = self.pending_transform_only_dirty_count;
         stats.mesh_asset_dirty_renderer_count = self.pending_mesh_asset_dirty_renderer_count;
         stats.dirty_renderer_count = self.dirty_renderers.len();
+        stats.bounds_dirty_renderer_count = self.dirty_bounds_renderers.len();
         let mut snapshot_dirty_spaces = HashSet::new();
         snapshot_dirty_spaces.extend(self.dirty_spaces.iter().copied());
         snapshot_dirty_spaces.extend(self.dirty_renderers.iter().map(|dirty| dirty.space_id));
@@ -393,6 +438,7 @@ impl RenderWorld {
         }
         if !self.dirty_bounds_renderers.is_empty() {
             let outcome = self.refresh_dirty_bounds(scene, mesh_pool, render_context);
+            stats.bounds_refreshed_renderer_count += outcome.renderer_count;
             stats.spatial_refit_count += outcome.spatial_refit_count;
         }
         if self.particle_snapshot_dirty {
@@ -411,6 +457,7 @@ impl RenderWorld {
                 dirty_spaces,
             );
             stats.snapshot_rebuild_task_count = snapshot_stats.task_count;
+            stats.snapshot_retained_draw_count = snapshot_stats.retained_draw_count;
             stats.snapshot_reused_space_count = snapshot_stats.reused_space_count;
             self.particle_snapshot_dirty = false;
             stats.spatial_rebuild_count = 1;
@@ -424,7 +471,7 @@ impl RenderWorld {
         self.pending_material_dirty_count = 0;
         self.pending_transform_only_dirty_count = 0;
         self.pending_mesh_asset_dirty_renderer_count = 0;
-        crate::profiling::plot_render_world_maintenance(stats);
+        crate::profiling::plot_render_world_maintenance(stats.profile_sample());
         &self.prepared
     }
 
@@ -544,360 +591,6 @@ impl RenderWorld {
         self.dirty_mesh_assets.clear();
     }
 
-    /// Expands deferred transform-root and mesh-asset dirties into renderer-record dirties.
-    fn expand_deferred_dirty_inputs(&mut self, scene: &SceneCoordinator) {
-        self.expand_dirty_transform_roots(scene);
-        self.expand_dirty_mesh_assets();
-    }
-
-    /// Expands transform-root dirties to descendant renderer records.
-    fn expand_dirty_transform_roots(&mut self, scene: &SceneCoordinator) {
-        if self.dirty_transform_roots.is_empty() {
-            return;
-        }
-        profiling::scope!("mesh::render_world::expand_transform_roots");
-        let roots = std::mem::take(&mut self.dirty_transform_roots);
-        let policy = FrameParallelPolicy::for_current_thread_pool();
-        let expansions = match transform_root_expansion_admission(policy, roots.len()).chunk_size()
-        {
-            Some(chunk_size) => roots
-                .par_iter()
-                .with_min_len(chunk_size)
-                .map(|dirty| self.expand_transform_dirty(scene, dirty))
-                .collect::<Vec<_>>(),
-            None => roots
-                .iter()
-                .map(|dirty| self.expand_transform_dirty(scene, dirty))
-                .collect(),
-        };
-        self.apply_transform_dirty_expansions(expansions);
-    }
-
-    /// Expands one transform-root dirty input using retained node reverse indexes.
-    fn expand_transform_dirty(
-        &self,
-        scene: &SceneCoordinator,
-        dirty: &RenderWorldTransformDirty,
-    ) -> TransformDirtyExpansion {
-        if self.dirty_spaces.contains(&dirty.space_id) {
-            return TransformDirtyExpansion::Empty;
-        }
-        let Some(space_view) = scene.space(dirty.space_id) else {
-            return TransformDirtyExpansion::Removed(dirty.space_id);
-        };
-        let Some(cached) = self.spaces.get(&dirty.space_id) else {
-            return TransformDirtyExpansion::FullSpace(dirty.space_id);
-        };
-        let parents = space_view.node_parents();
-        let mut renderers = Vec::new();
-        for (&node_id, refs) in &cached.node_index {
-            if !node_is_under_any_root(parents, node_id, &dirty.root_node_ids) {
-                continue;
-            }
-            renderers.extend(refs.iter().map(|renderer| RenderWorldRendererDirty {
-                space_id: dirty.space_id,
-                kind: renderer.kind,
-                renderable_index: renderer.index,
-            }));
-        }
-        if renderers.is_empty() {
-            TransformDirtyExpansion::Empty
-        } else {
-            TransformDirtyExpansion::Renderers(renderers)
-        }
-    }
-
-    /// Applies transform dirty expansion results to the retained cache's dirty sets.
-    fn apply_transform_dirty_expansions(&mut self, expansions: Vec<TransformDirtyExpansion>) {
-        for expansion in expansions {
-            match expansion {
-                TransformDirtyExpansion::Removed(space_id) => self.remove_space(space_id),
-                TransformDirtyExpansion::FullSpace(space_id) => {
-                    self.dirty_spaces.insert(space_id);
-                }
-                TransformDirtyExpansion::Renderers(renderers) => {
-                    for dirty in renderers {
-                        self.note_bounds_dirty(RenderWorldBoundsDirty {
-                            space_id: dirty.space_id,
-                            kind: dirty.kind,
-                            renderable_index: dirty.renderable_index,
-                        });
-                        self.pending_transform_only_dirty_count =
-                            self.pending_transform_only_dirty_count.saturating_add(1);
-                    }
-                }
-                TransformDirtyExpansion::Empty => {}
-            }
-        }
-    }
-
-    /// Expands dirty mesh asset ids to renderer records through retained reverse indexes.
-    fn expand_dirty_mesh_assets(&mut self) {
-        if self.dirty_mesh_assets.is_empty() {
-            return;
-        }
-        profiling::scope!("mesh::render_world::expand_mesh_asset_dirties");
-        let dirty_mesh_assets = std::mem::take(&mut self.dirty_mesh_assets);
-        let spaces = self.spaces.iter().collect::<Vec<_>>();
-        let collect_for_space = |(space_id, space): &(&RenderSpaceId, &RenderWorldSpace)| {
-            let mut renderer_dirties = Vec::new();
-            if self.dirty_spaces.contains(*space_id) {
-                return renderer_dirties;
-            }
-            for asset_id in &dirty_mesh_assets {
-                if let Some(renderers) = space.mesh_asset_index.get(asset_id) {
-                    renderer_dirties.extend(renderers.iter().map(|renderer| {
-                        RenderWorldRendererDirty {
-                            space_id: **space_id,
-                            kind: renderer.kind,
-                            renderable_index: renderer.index,
-                        }
-                    }));
-                }
-            }
-            renderer_dirties
-        };
-        let policy = FrameParallelPolicy::for_current_thread_pool();
-        let renderer_dirties =
-            match mesh_asset_expansion_admission(policy, spaces.len()).chunk_size() {
-                Some(chunk_size) => spaces
-                    .par_iter()
-                    .with_min_len(chunk_size)
-                    .flat_map(collect_for_space)
-                    .collect::<Vec<_>>(),
-                None => spaces.iter().flat_map(collect_for_space).collect(),
-            };
-        for dirty in renderer_dirties {
-            self.note_renderer_dirty(dirty);
-            self.pending_mesh_asset_dirty_renderer_count = self
-                .pending_mesh_asset_dirty_renderer_count
-                .saturating_add(1);
-        }
-    }
-
-    /// Refreshes all spaces marked for full retained-template rebuild.
-    fn refresh_dirty_spaces(
-        &mut self,
-        scene: &SceneCoordinator,
-        mesh_pool: &MeshPool,
-        render_context: RenderingContext,
-    ) -> RefreshOutcome {
-        profiling::scope!("mesh::render_world::refresh_dirty_spaces");
-        let dirty_spaces = std::mem::take(&mut self.dirty_spaces);
-        let mut work = Vec::with_capacity(dirty_spaces.len());
-        for id in dirty_spaces {
-            self.dirty_renderers.retain(|dirty| dirty.space_id != id);
-            self.dirty_bounds_renderers
-                .retain(|dirty| dirty.space_id != id);
-            let cached = self.spaces.remove(&id).unwrap_or_default();
-            let estimated_work_units = estimate_full_space_refresh_work(&cached, scene, id);
-            work.push(DirtySpaceRefreshWork {
-                id,
-                estimated_work_units,
-                cached,
-                outcome: RefreshOutcome::default(),
-            });
-        }
-        let estimated_work_units = work.iter().map(|work| work.estimated_work_units).sum();
-        let policy = FrameParallelPolicy::for_current_thread_pool();
-        match dirty_refresh_admission(policy, work.len(), estimated_work_units).chunk_size() {
-            Some(chunk_size) => {
-                work.par_iter_mut()
-                    .with_min_len(chunk_size)
-                    .for_each(|work| {
-                        profiling::scope!("mesh::render_world::refresh_dirty_spaces::worker");
-                        work.outcome = refresh_render_world_space(
-                            &mut work.cached,
-                            scene,
-                            mesh_pool,
-                            render_context,
-                            work.id,
-                        );
-                    });
-            }
-            None => {
-                for work in &mut work {
-                    work.outcome = refresh_render_world_space(
-                        &mut work.cached,
-                        scene,
-                        mesh_pool,
-                        render_context,
-                        work.id,
-                    );
-                }
-            }
-        }
-        let mut outcome = RefreshOutcome::default();
-        for work in work {
-            outcome.renderer_count += work.outcome.renderer_count;
-            outcome.template_count += work.outcome.template_count;
-            outcome.full_space_count += work.outcome.full_space_count;
-            if scene.space(work.id).is_some() {
-                self.spaces.insert(work.id, work.cached);
-            }
-        }
-        outcome
-    }
-
-    /// Refreshes individual renderer records marked dirty by scene or mesh-pool events.
-    fn refresh_dirty_renderers(
-        &mut self,
-        scene: &SceneCoordinator,
-        mesh_pool: &MeshPool,
-        render_context: RenderingContext,
-    ) -> RefreshOutcome {
-        profiling::scope!("mesh::render_world::refresh_dirty_renderers");
-        let dirty_renderers = std::mem::take(&mut self.dirty_renderers);
-        self.dirty_bounds_renderers.retain(|dirty| {
-            !dirty_renderers.contains(&RenderWorldRendererDirty {
-                space_id: dirty.space_id,
-                kind: dirty.kind,
-                renderable_index: dirty.renderable_index,
-            })
-        });
-        let mut by_space: HashMap<RenderSpaceId, DirtyRendererSet> = HashMap::new();
-        for dirty in dirty_renderers {
-            by_space
-                .entry(dirty.space_id)
-                .or_default()
-                .insert(dirty.kind, dirty.renderable_index);
-        }
-
-        let mut outcome = RefreshOutcome::default();
-        let mut work = Vec::with_capacity(by_space.len());
-        for (space_id, dirty_set) in by_space {
-            if dirty_set.is_empty() {
-                continue;
-            }
-            if scene.space(space_id).is_none() {
-                self.remove_space(space_id);
-                continue;
-            }
-            let estimated_work_units = dirty_set.len();
-            work.push(DirtyRendererRefreshWork {
-                id: space_id,
-                dirty_set,
-                estimated_work_units,
-                cached: self.spaces.remove(&space_id).unwrap_or_default(),
-                outcome: RefreshOutcome::default(),
-            });
-        }
-        let estimated_work_units = work.iter().map(|work| work.estimated_work_units).sum();
-        let policy = FrameParallelPolicy::for_current_thread_pool();
-        match dirty_refresh_admission(policy, work.len(), estimated_work_units).chunk_size() {
-            Some(chunk_size) => {
-                work.par_iter_mut()
-                    .with_min_len(chunk_size)
-                    .for_each(|work| {
-                        profiling::scope!("mesh::render_world::refresh_dirty_renderers::worker");
-                        work.outcome =
-                            refresh_dirty_renderer_work(work, scene, mesh_pool, render_context);
-                    });
-            }
-            None => {
-                for work in &mut work {
-                    work.outcome =
-                        refresh_dirty_renderer_work(work, scene, mesh_pool, render_context);
-                }
-            }
-        }
-        for work in work {
-            outcome.renderer_count += work.outcome.renderer_count;
-            outcome.template_count += work.outcome.template_count;
-            if scene.space(work.id).is_some() {
-                self.spaces.insert(work.id, work.cached);
-            }
-        }
-        outcome
-    }
-
-    /// Refreshes dynamic bounds for renderer records marked by transform-only scene changes.
-    fn refresh_dirty_bounds(
-        &mut self,
-        scene: &SceneCoordinator,
-        mesh_pool: &MeshPool,
-        render_context: RenderingContext,
-    ) -> RefreshOutcome {
-        profiling::scope!("mesh::render_world::refresh_dirty_bounds");
-        let dirty_bounds = std::mem::take(&mut self.dirty_bounds_renderers);
-        let mut by_space: HashMap<RenderSpaceId, DirtyRendererSet> = HashMap::new();
-        for dirty in dirty_bounds {
-            by_space
-                .entry(dirty.space_id)
-                .or_default()
-                .insert(dirty.kind, dirty.renderable_index);
-        }
-
-        let mut outcome = RefreshOutcome::default();
-        let mut refit_spaces = Vec::new();
-        for (space_id, dirty_set) in by_space {
-            if dirty_set.is_empty() {
-                continue;
-            }
-            let Some(space_view) = scene.space(space_id) else {
-                self.remove_space(space_id);
-                continue;
-            };
-            let Some(mut cached) = self.spaces.remove(&space_id) else {
-                self.dirty_spaces.insert(space_id);
-                continue;
-            };
-            cached.active = space_view.is_active();
-            if cached.active {
-                let refresh = refresh_renderer_bounds_set(
-                    &mut cached,
-                    &dirty_set,
-                    space_view,
-                    scene,
-                    mesh_pool,
-                    render_context,
-                    space_id,
-                );
-                outcome.renderer_count += refresh.renderer_count;
-                self.update_prepared_bounds_for_set(space_id, &cached, &dirty_set);
-                refit_spaces.push(space_id);
-            }
-            self.spaces.insert(space_id, cached);
-        }
-        if !refit_spaces.is_empty() {
-            outcome.spatial_refit_count = self
-                .prepared
-                .refit_cached_spatial_for_spaces(refit_spaces.iter().copied());
-        }
-        outcome
-    }
-
-    /// Copies refreshed per-renderer cull geometry into the existing prepared snapshot.
-    fn update_prepared_bounds_for_set(
-        &mut self,
-        space_id: RenderSpaceId,
-        cached: &RenderWorldSpace,
-        dirty_set: &DirtyRendererSet,
-    ) {
-        for &index in &dirty_set.static_indices {
-            if let Some(record) = cached.static_renderers.get(index) {
-                self.prepared.update_cached_renderer_cull_geometry(
-                    space_id,
-                    false,
-                    index,
-                    record.instance_id,
-                    record.cull_geometry,
-                );
-            }
-        }
-        for &index in &dirty_set.skinned_indices {
-            if let Some(record) = cached.skinned_renderers.get(index) {
-                self.prepared.update_cached_renderer_cull_geometry(
-                    space_id,
-                    true,
-                    index,
-                    record.instance_id,
-                    record.cull_geometry,
-                );
-            }
-        }
-    }
-
     /// Rebuilds the per-view-consumable prepared snapshot from retained renderer templates.
     fn rebuild_prepared_snapshot(
         &mut self,
@@ -924,57 +617,6 @@ impl RenderWorld {
             .map(RenderWorldSpace::retained_template_count)
             .sum()
     }
-}
-
-/// Estimates full-space retained-refresh work from cached and current scene renderer counts.
-fn estimate_full_space_refresh_work(
-    cached: &RenderWorldSpace,
-    scene: &SceneCoordinator,
-    id: RenderSpaceId,
-) -> usize {
-    let cached_renderer_count = cached
-        .static_renderers
-        .len()
-        .saturating_add(cached.skinned_renderers.len());
-    let scene_renderer_count = scene.space(id).map_or(0, |space| {
-        space
-            .static_mesh_renderers()
-            .len()
-            .saturating_add(space.skinned_mesh_renderers().len())
-    });
-    cached_renderer_count.max(scene_renderer_count)
-}
-
-/// Refreshes one worker-owned retained render-space for a partial renderer dirty set.
-fn refresh_dirty_renderer_work(
-    work: &mut DirtyRendererRefreshWork,
-    scene: &SceneCoordinator,
-    mesh_pool: &MeshPool,
-    render_context: RenderingContext,
-) -> RefreshOutcome {
-    let Some(space_view) = scene.space(work.id) else {
-        work.cached.active = false;
-        return RefreshOutcome::default();
-    };
-    work.cached.active = space_view.is_active();
-    if !work.cached.active {
-        return RefreshOutcome::default();
-    }
-    work.cached
-        .static_renderers
-        .resize_with(space_view.static_mesh_renderers().len(), Default::default);
-    work.cached
-        .skinned_renderers
-        .resize_with(space_view.skinned_mesh_renderers().len(), Default::default);
-    refresh_renderer_set(
-        &mut work.cached,
-        &work.dirty_set,
-        space_view,
-        scene,
-        mesh_pool,
-        render_context,
-        work.id,
-    )
 }
 
 impl Default for RenderWorld {

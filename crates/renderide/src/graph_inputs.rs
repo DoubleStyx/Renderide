@@ -8,178 +8,295 @@
 //! record path focused on view-local data while shared systems are borrowed through explicit
 //! fields.
 
+use std::ops::Range;
 use std::sync::Arc;
 
+use hashbrown::HashSet;
 use parking_lot::Mutex;
 
+use crate::blackboard_contract::blackboard_slot;
 use crate::camera::{HostCameraFrame, ViewId};
-use crate::color_space::DEFAULT_SKYBOX_CLEAR_COLOR;
-use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
+pub(crate) use crate::frame_contract::{
+    FrameViewClear, OffscreenWriteTarget, RenderTextureSelfSampling, ViewPostProcessing,
+    ViewWinding,
+};
+use crate::frame_upload_batch::GraphUploadSink;
+use crate::gpu::frame_globals::SkyboxSpecularUniformParams;
+use crate::gpu::{GpuLimits, GpuRetainedResources, MsaaDepthResolveResources};
+use crate::gpu_pools::{
+    CubemapPool, MeshPool, RenderTexturePool, Texture3dPool, TexturePool, VideoTexturePool,
+};
+use crate::hud_contract::{PerViewHudConfig, PerViewHudOutputs};
 use crate::materials::MaterialSystem;
-use crate::mesh_deform::{GpuSkinCache, MeshDeformScratch, MeshPreprocessPipelines};
+use crate::mesh_deform::{
+    GpuSkinCache, MeshDeformScratch, MeshPreprocessPipelines, PaddedPerDrawUniforms, SkinCacheKey,
+};
 use crate::occlusion::OcclusionGraphHook;
 use crate::occlusion::gpu::HiZGpuState;
-use crate::render_graph::blackboard::blackboard_slot;
-use crate::render_graph::compiled::ViewPostProcessing;
-use crate::render_graph::execution_backend::{GraphAssetResources, GraphFrameResources};
 use crate::scene::SceneCoordinator;
-use crate::shared::{CameraClearMode, RenderingContext};
+use crate::shared::RenderingContext;
 
-/// Offscreen target currently being written by a view.
-///
-/// The renderer uses this for two separate decisions: any offscreen target needs the offscreen
-/// projection convention, while only host render textures need material self-sampling suppression.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum OffscreenWriteTarget {
-    /// The view writes directly to the desktop swapchain or an external multiview target.
-    #[default]
-    None,
-    /// The view writes to an offscreen target that is not a host render-texture asset.
-    Untracked,
-    /// The view writes to a host render texture with the supplied asset id and sampling policy.
-    HostRenderTexture {
-        /// Host render-texture asset id.
-        asset_id: i32,
-        /// Material sampling policy for this render texture while it is being written.
-        self_sampling: RenderTextureSelfSampling,
-    },
+/// Cloned references to the shared clustered-light storage buffers.
+#[derive(Clone)]
+pub struct GraphClusterBufferRefs {
+    /// Two `u32` words per cluster: compact-index offset and count.
+    pub cluster_light_counts: wgpu::Buffer,
+    /// Compact light-index storage addressed by each cluster range row.
+    pub cluster_light_indices: wgpu::Buffer,
 }
 
-/// Material sampling policy for a render texture while a camera writes that same texture.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum RenderTextureSelfSampling {
-    /// Hide the render texture from materials while the view writes it.
-    #[default]
-    Suppress,
-    /// Allow materials to sample the render texture contents completed before this view.
-    AllowPreviousContents,
+/// Parameters required to encode the frame-global realtime shadow atlas.
+pub struct ShadowAtlasEncodeParams<'a, 'encoder, 'upload> {
+    /// WGPU device used for lazy pipeline creation.
+    pub device: &'a wgpu::Device,
+    /// Command encoder receiving shadow render passes.
+    pub encoder: &'encoder mut wgpu::CommandEncoder,
+    /// Material registry, embedded binds, and property store.
+    pub materials: &'a MaterialSystem,
+    /// Resident asset/resource pools.
+    pub asset_resources: &'a dyn GraphAssetResources,
+    /// Optional skin cache populated by frame-global mesh deform.
+    pub skin_cache: Option<&'a GpuSkinCache>,
+    /// GPU limits snapshot for base-instance and capacity decisions.
+    pub gpu_limits: &'a GpuLimits,
+    /// Deferred upload sink for the shadow per-draw slab.
+    pub uploads: GraphUploadSink<'upload>,
+    /// Optional GPU profiler handle.
+    pub profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
 }
 
-impl OffscreenWriteTarget {
-    /// Builds a host render-texture target using the default same-target sampling suppression.
-    #[inline]
-    pub const fn host_render_texture(asset_id: i32) -> Self {
-        Self::host_render_texture_with_self_sampling(asset_id, RenderTextureSelfSampling::Suppress)
+/// Estimated independent work for a frame-global pass that can record into split command buffers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FrameGlobalPassSplitWorkload {
+    /// Number of ordered recording units available to split, such as shadow atlas layers.
+    pub unit_count: usize,
+    /// Estimated draw-equivalent work represented by all units.
+    pub estimated_work: usize,
+    /// Minimum contiguous unit count assigned to one worker encoder.
+    pub chunk_size: usize,
+}
+
+/// Parameters required to record one split frame-global pass range.
+pub struct FrameGlobalSplitPassEncodeParams<'a, 'encoder> {
+    /// WGPU device used for lazy pipeline creation.
+    pub device: &'a wgpu::Device,
+    /// Worker-owned command encoder receiving this unit range.
+    pub encoder: &'encoder mut wgpu::CommandEncoder,
+    /// Material registry, embedded binds, and property store.
+    pub materials: &'a MaterialSystem,
+    /// Resident asset/resource pools.
+    pub asset_resources: &'a dyn GraphAssetResources,
+    /// Optional skin cache populated by earlier frame-global mesh deform work.
+    pub skin_cache: Option<&'a GpuSkinCache>,
+    /// GPU limits snapshot for base-instance and capacity decisions.
+    pub gpu_limits: &'a GpuLimits,
+    /// Optional GPU profiler handle.
+    pub profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
+}
+
+/// Graph-facing access to renderer frame resources.
+pub trait GraphFrameResources: Send + Sync {
+    /// Whether frame-global GPU resources were attached.
+    fn has_frame_gpu(&self) -> bool;
+
+    /// Light count used in one view's frame uniforms and shaders.
+    fn frame_light_count_u32(&self, view_id: ViewId) -> u32;
+
+    /// View-local lights storage buffer.
+    fn lights_buffer(&self, view_id: ViewId) -> Option<wgpu::Buffer>;
+
+    /// Shared frame-uniform buffer.
+    fn frame_uniform_buffer(&self) -> Option<wgpu::Buffer>;
+
+    /// Shared clustered-light buffers.
+    fn shared_cluster_buffer_refs(&self) -> Option<GraphClusterBufferRefs>;
+
+    /// Current shared cluster-buffer version.
+    fn shared_cluster_version(&self) -> u64;
+
+    /// Per-view cluster-params uniform buffer.
+    fn per_view_cluster_params_buffer(&self, view_id: ViewId) -> Option<wgpu::Buffer>;
+
+    /// Per-view frame bind group and frame-uniform buffer.
+    fn per_view_frame_bind_group_and_buffer(
+        &self,
+        view_id: ViewId,
+    ) -> Option<(Arc<wgpu::BindGroup>, wgpu::Buffer)>;
+
+    /// Per-view frame bind group that binds named scene-color snapshots at the grab slots.
+    fn per_view_named_scene_color_frame_bind_group(
+        &self,
+        view_id: ViewId,
+    ) -> Option<Arc<wgpu::BindGroup>>;
+
+    /// Ensures this view's per-draw slab can hold `draw_count` rows and returns its storage buffer.
+    fn ensure_per_view_per_draw_capacity(
+        &self,
+        device: &wgpu::Device,
+        view_id: ViewId,
+        draw_count: usize,
+    ) -> Option<wgpu::Buffer>;
+
+    /// Gives callers mutable access to the per-view CPU slab-packing scratch.
+    fn with_per_view_per_draw_scratch(
+        &self,
+        view_id: ViewId,
+        f: &mut dyn FnMut(&mut Vec<PaddedPerDrawUniforms>),
+    ) -> bool;
+
+    /// Gives callers mutable access to the per-view material-batch boundary scratch so it can be
+    /// cleared and refilled without reallocating.
+    #[expect(
+        clippy::type_complexity,
+        reason = "callback Vec element type cannot be hoisted through the graph_inputs boundary"
+    )]
+    fn with_per_view_material_batch_scratch(
+        &self,
+        view_id: ViewId,
+        f: &mut dyn FnMut(&mut Vec<(usize, usize)>),
+    ) -> bool;
+
+    /// Per-view per-draw storage buffer.
+    fn per_view_per_draw_storage(&self, view_id: ViewId) -> Option<wgpu::Buffer>;
+
+    /// Per-view per-draw bind group.
+    fn per_view_per_draw_bind_group(&self, view_id: ViewId) -> Option<Arc<wgpu::BindGroup>>;
+
+    /// Empty material bind group used by shaders without per-material resources.
+    fn empty_material_bind_group(&self) -> Option<Arc<wgpu::BindGroup>>;
+
+    /// Copies the current depth attachment into this view's sampled scene-depth snapshot.
+    fn copy_scene_depth_snapshot_for_view(
+        &self,
+        view_id: ViewId,
+        encoder: &mut wgpu::CommandEncoder,
+        source_depth: &wgpu::Texture,
+        viewport: (u32, u32),
+        multiview: bool,
+    ) -> bool;
+
+    /// Copies the current HDR scene color into this view's sampled scene-color snapshot.
+    fn copy_scene_color_snapshot_for_view(
+        &self,
+        view_id: ViewId,
+        encoder: &mut wgpu::CommandEncoder,
+        source_color: &wgpu::Texture,
+        viewport: (u32, u32),
+        multiview: bool,
+    ) -> bool;
+
+    /// Copies the current HDR scene color into this view's named scene-color snapshot.
+    fn copy_named_scene_color_snapshot_for_view(
+        &self,
+        view_id: ViewId,
+        encoder: &mut wgpu::CommandEncoder,
+        source_color: &wgpu::Texture,
+        viewport: (u32, u32),
+        multiview: bool,
+    ) -> bool;
+
+    /// Uniform parameters for the active skybox/reflection-probe specular source.
+    fn skybox_specular_uniform_params(&self) -> SkyboxSpecularUniformParams;
+
+    /// Whether mesh deform has already recorded work for this graph submission.
+    fn mesh_deform_dispatched_this_submission(&self) -> bool;
+
+    /// Marks mesh deform work as recorded for this graph submission.
+    fn set_mesh_deform_dispatched_this_submission(&self);
+
+    /// Cloned visible mesh-deform filter for this submission's frame-global deform collection.
+    fn visible_mesh_deform_keys_snapshot(&self) -> Option<HashSet<SkinCacheKey>>;
+
+    /// Whether a named frame-global pass has no work for the current graph submission.
+    fn frame_global_pass_is_inactive(&self, pass_name: &str) -> bool;
+
+    /// Ensures per-view frame bind resources are resident.
+    fn ensure_per_view_frame_resources(
+        &mut self,
+        view_id: ViewId,
+        device: &wgpu::Device,
+        layout: PreRecordViewResourceLayout,
+    ) -> bool;
+
+    /// Ensures per-view per-draw resources are resident.
+    fn ensure_per_view_per_draw_resources(
+        &mut self,
+        view_id: ViewId,
+        device: &wgpu::Device,
+    ) -> bool;
+
+    /// Ensures per-view per-draw CPU scratch is resident.
+    fn ensure_per_view_per_draw_scratch(&mut self, view_id: ViewId);
+
+    /// Retains frame-owned GPU handles that may be referenced by recorded command buffers.
+    fn retain_submit_resources(&self, resources: &mut GpuRetainedResources);
+
+    /// Whether any light-cookie atlas layers need frame-global synchronization.
+    fn has_light_cookie_requests(&self) -> bool;
+
+    /// Records light-cookie atlas clears and source blits.
+    fn encode_light_cookie_atlas(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        asset_resources: &dyn GraphAssetResources,
+        profiler: Option<&crate::profiling::GpuProfilerHandle>,
+    );
+
+    /// Whether realtime shadow atlas rendering has work.
+    fn has_shadow_atlas_requests(&self) -> bool;
+
+    /// Records realtime shadow atlas layers.
+    fn encode_shadow_atlas(&self, params: ShadowAtlasEncodeParams<'_, '_, '_>);
+
+    /// Returns split-recording workload for a frame-global pass, when supported this frame.
+    fn frame_global_pass_split_workload(
+        &self,
+        _pass_name: &str,
+    ) -> Option<FrameGlobalPassSplitWorkload> {
+        None
     }
 
-    /// Builds a host render-texture target with an explicit same-target sampling policy.
-    #[inline]
-    pub const fn host_render_texture_with_self_sampling(
-        asset_id: i32,
-        self_sampling: RenderTextureSelfSampling,
-    ) -> Self {
-        Self::HostRenderTexture {
-            asset_id,
-            self_sampling,
-        }
+    /// Performs serial upload prep for a split-recorded frame-global pass.
+    fn prepare_frame_global_split_pass(
+        &self,
+        _pass_name: &str,
+        _gpu_limits: &GpuLimits,
+        _uploads: GraphUploadSink<'_>,
+    ) -> bool {
+        false
     }
 
-    /// Returns `true` when the view writes to any offscreen target.
-    #[inline]
-    pub const fn is_offscreen(self) -> bool {
-        !matches!(self, Self::None)
-    }
-
-    /// Applies the render-target projection convention for this write target.
-    ///
-    /// Offscreen color attachments are written in the host texture orientation, so their
-    /// clip-space projection gets a Y flip. Screen-space consumers built from the view projection,
-    /// including clustered-light froxels and frame unprojection constants, must use the same
-    /// adjusted projection as the forward draw path.
-    #[inline]
-    pub(crate) fn render_projection(self, projection: glam::Mat4) -> glam::Mat4 {
-        if self.is_offscreen() {
-            offscreen_projection_y_flip() * projection
-        } else {
-            projection
-        }
-    }
-
-    /// Returns the host render-texture asset id for this write target.
-    #[inline]
-    pub const fn host_render_texture_asset_id(self) -> Option<i32> {
-        match self {
-            Self::HostRenderTexture { asset_id, .. } => Some(asset_id),
-            Self::None | Self::Untracked => None,
-        }
-    }
-
-    /// Returns the same-target material sampling policy for this write target.
-    #[inline]
-    pub const fn render_texture_self_sampling(self) -> Option<RenderTextureSelfSampling> {
-        match self {
-            Self::HostRenderTexture { self_sampling, .. } => Some(self_sampling),
-            Self::None | Self::Untracked => None,
-        }
-    }
-
-    /// Returns `true` when material bindings should mask this render texture while rendering.
-    #[inline]
-    pub fn suppresses_render_texture_sampling(self, sampled_asset_id: i32) -> bool {
-        self.host_render_texture_asset_id() == Some(sampled_asset_id)
-            && self.render_texture_self_sampling() == Some(RenderTextureSelfSampling::Suppress)
+    /// Records one ordered unit range for a split-recorded frame-global pass.
+    fn encode_frame_global_split_pass(
+        &self,
+        _pass_name: &str,
+        _unit_range: Range<usize>,
+        _params: FrameGlobalSplitPassEncodeParams<'_, '_>,
+    ) -> bool {
+        false
     }
 }
 
-#[inline]
-fn offscreen_projection_y_flip() -> glam::Mat4 {
-    glam::Mat4::from_diagonal(glam::Vec4::new(1.0, -1.0, 1.0, 1.0))
+/// Graph-facing access to resident asset/resource pools.
+pub trait GraphAssetResources: Send + Sync {
+    /// Resident mesh pool.
+    fn mesh_pool(&self) -> &MeshPool;
+    /// Resident 2D texture pool.
+    fn texture_pool(&self) -> &TexturePool;
+    /// Resident 3D texture pool.
+    fn texture3d_pool(&self) -> &Texture3dPool;
+    /// Resident cubemap pool.
+    fn cubemap_pool(&self) -> &CubemapPool;
+    /// Host render-texture pool.
+    fn render_texture_pool(&self) -> &RenderTexturePool;
+    /// Resident video texture pool.
+    fn video_texture_pool(&self) -> &VideoTexturePool;
 }
 
-/// Per-view background clear contract propagated from host camera state.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct FrameViewClear {
-    /// Host camera clear mode for this view.
-    pub mode: CameraClearMode,
-    /// Host background color used when [`CameraClearMode::Color`] is selected.
-    pub color: glam::Vec4,
-}
-
-impl FrameViewClear {
-    /// Main-view clear mode: render the active render-space skybox.
-    #[inline]
-    pub fn skybox() -> Self {
-        Self {
-            mode: CameraClearMode::Skybox,
-            color: DEFAULT_SKYBOX_CLEAR_COLOR,
-        }
-    }
-
-    /// Color clear mode with the supplied linear RGBA background.
-    #[inline]
-    pub fn color(color: glam::Vec4) -> Self {
-        Self {
-            mode: CameraClearMode::Color,
-            color,
-        }
-    }
-
-    /// Converts host camera state into a frame-view clear descriptor.
-    #[inline]
-    pub fn from_camera_state(state: &crate::shared::CameraState) -> Self {
-        Self {
-            mode: state.clear_mode,
-            color: state.background_color,
-        }
-    }
-
-    /// Converts host camera readback parameters into a frame-view clear descriptor.
-    #[inline]
-    pub fn from_camera_render_parameters(
-        parameters: &crate::shared::CameraRenderParameters,
-    ) -> Self {
-        Self {
-            mode: parameters.clear_mode,
-            color: parameters.clear_color,
-        }
-    }
-}
-
-impl Default for FrameViewClear {
-    #[inline]
-    fn default() -> Self {
-        Self::skybox()
-    }
+blackboard_slot! {
+    /// Blackboard slot for per-view HUD data collected during recording and merged on the main thread.
+    pub PerViewHudOutputsSlot => PerViewHudOutputs,
 }
 
 blackboard_slot! {
@@ -198,16 +315,33 @@ blackboard_slot! {
 /// directly bindable as `texture_multisampled_2d<f32>` in the MSAA depth-resolve compute shader.
 #[derive(Clone)]
 pub struct MsaaViews {
-    /// Graph-owned multisampled depth attachment view when MSAA is active.
-    pub msaa_depth_view: wgpu::TextureView,
-    /// R32Float intermediate view used by the MSAA depth resolve path.
-    pub msaa_depth_resolve_r32_view: wgpu::TextureView,
-    /// `true` when MSAA depth/R32 views are two-layer array views for stereo multiview.
-    pub msaa_depth_is_array: bool,
+    /// Depth-resolve views matching the active mono or stereo MSAA target shape.
+    pub depth_resolve: MsaaDepthResolveViews,
+}
+
+/// Valid depth-resolve view bundle for mono or stereo MSAA.
+#[derive(Clone)]
+pub enum MsaaDepthResolveViews {
+    /// Mono view uses one multisampled depth texture and one R32Float intermediate.
+    Mono {
+        /// Multisampled depth attachment view.
+        msaa_depth_view: wgpu::TextureView,
+        /// R32Float intermediate view used by the MSAA depth resolve path.
+        r32_view: wgpu::TextureView,
+    },
+    /// Stereo multiview uses per-eye single-layer depth/R32 views and an array R32 output.
+    Stereo(Box<MsaaStereoDepthResolveViews>),
+}
+
+/// Stereo depth-resolve views for a multiview MSAA forward target.
+#[derive(Clone)]
+pub struct MsaaStereoDepthResolveViews {
     /// Per-eye single-layer views of stereo MSAA depth.
-    pub msaa_stereo_depth_layer_views: Option<[wgpu::TextureView; 2]>,
+    pub msaa_depth_layer_views: [wgpu::TextureView; 2],
     /// Per-eye single-layer views of stereo R32Float resolve targets.
-    pub msaa_stereo_r32_layer_views: Option<[wgpu::TextureView; 2]>,
+    pub r32_layer_views: [wgpu::TextureView; 2],
+    /// Two-layer R32Float array view used by the stereo resolve path.
+    pub r32_array_view: wgpu::TextureView,
 }
 
 blackboard_slot! {
@@ -259,6 +393,31 @@ pub struct PreRecordViewResourceLayout {
     pub needs_color_snapshot: bool,
 }
 
+/// Opaque read-only scene borrow threaded through the render graph executor.
+///
+/// The `render_graph` layer never inspects the scene; it only carries this token from the
+/// backend entry point to the [`FrameSystemsShared`] construction sites, where passes regain
+/// typed access via [`FrameSystemsShared::scene`]. Keeping the executor scene-opaque makes the
+/// "generic graph primitives" layering mechanically true: `render_graph` code cannot name
+/// [`SceneCoordinator`] without going through this wrapper.
+#[derive(Clone, Copy)]
+pub struct GraphSceneView<'a> {
+    /// Flushed scene coordinator for the frame being recorded.
+    coordinator: &'a SceneCoordinator,
+}
+
+impl<'a> GraphSceneView<'a> {
+    /// Wraps the flushed scene for one frame's graph execution.
+    pub(crate) fn new(coordinator: &'a SceneCoordinator) -> Self {
+        Self { coordinator }
+    }
+
+    /// Unwraps the typed scene borrow for pass-facing frame contracts.
+    pub(crate) fn coordinator(self) -> &'a SceneCoordinator {
+        self.coordinator
+    }
+}
+
 /// System handles shared across all views within a frame.
 ///
 /// Shared systems borrowed by render graph passes while recording one frame.
@@ -284,7 +443,7 @@ pub struct FrameSystemsShared<'a> {
     /// Host-owned skin influence mode for mesh deform compute.
     pub skin_weight_mode: crate::shared::SkinWeightMode,
     /// Read-only HUD capture switches for deferred per-view diagnostics.
-    pub debug_hud: crate::diagnostics::PerViewHudConfig,
+    pub debug_hud: PerViewHudConfig,
 }
 
 /// Per-view surface and camera state for one render target within a multi-view frame.
@@ -315,6 +474,8 @@ pub struct GraphPassFrameView<'a> {
     pub multiview_stereo: bool,
     /// Offscreen target currently being written by this view.
     pub offscreen_write_target: OffscreenWriteTarget,
+    /// Per-view winding policy used by raster pipeline key resolution.
+    pub view_winding: ViewWinding,
     /// Which logical view this frame state belongs to.
     pub view_id: ViewId,
     /// Mutex-wrapped Hi-Z state resolved for this view before per-view recording starts.
@@ -343,7 +504,7 @@ pub struct GraphPassFrame<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{FrameViewClear, OffscreenWriteTarget, RenderTextureSelfSampling};
+    use super::{FrameViewClear, OffscreenWriteTarget, RenderTextureSelfSampling, ViewWinding};
     use crate::shared::{CameraClearMode, CameraState};
 
     #[test]
@@ -392,7 +553,7 @@ mod tests {
         let projection = glam::Mat4::from_cols_array(&[
             1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
         ]);
-        let expected = super::offscreen_projection_y_flip() * projection;
+        let expected = glam::Mat4::from_diagonal(glam::Vec4::new(1.0, -1.0, 1.0, 1.0)) * projection;
 
         assert_eq!(
             OffscreenWriteTarget::host_render_texture(77).render_projection(projection),
@@ -411,10 +572,24 @@ mod tests {
     }
 
     #[test]
+    fn view_winding_combines_offscreen_and_reflection_parity() {
+        assert!(!ViewWinding::normal().flips_front_face_for(OffscreenWriteTarget::None));
+        assert!(
+            ViewWinding::normal()
+                .flips_front_face_for(OffscreenWriteTarget::host_render_texture(77))
+        );
+        assert!(ViewWinding::mirror_reflection().flips_front_face_for(OffscreenWriteTarget::None));
+        assert!(
+            !ViewWinding::mirror_reflection()
+                .flips_front_face_for(OffscreenWriteTarget::host_render_texture(77))
+        );
+    }
+
+    #[test]
     fn main_view_clear_defaults_to_skybox() {
         let clear = FrameViewClear::default();
         assert_eq!(clear.mode, CameraClearMode::Skybox);
-        assert_eq!(clear.color, glam::Vec4::new(0.1, 0.1, 0.1, 1.0));
+        assert_eq!(clear.color, crate::color_space::DEFAULT_SKYBOX_CLEAR_COLOR);
     }
 
     #[test]

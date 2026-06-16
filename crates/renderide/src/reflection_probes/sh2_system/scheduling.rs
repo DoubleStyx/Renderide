@@ -9,9 +9,9 @@ use super::super::readback_jobs::SubmittedGpuSh2Job;
 use super::ReflectionProbeSh2System;
 use super::gpu_source::GpuSh2Source;
 use super::source_keys::{Sh2ProjectParams, Sh2SourceKey, SkyParamMode};
-use crate::backend::AssetTransferQueue;
 use crate::gpu::GpuContext;
 use crate::profiling;
+use crate::reflection_probes::ReflectionProbeCubemapAssets;
 use crate::skybox::params::storage_v_inverted_flag;
 
 /// Maximum pending GPU jobs kept alive at once.
@@ -30,7 +30,7 @@ impl ReflectionProbeSh2System {
     pub(super) fn schedule_queued_sources(
         &mut self,
         gpu: &mut GpuContext,
-        assets: &AssetTransferQueue,
+        assets: &dyn ReflectionProbeCubemapAssets,
     ) {
         profiling::scope!("reflection_probe_sh2::schedule_queued_sources");
         let attempts = self.queue_order.len();
@@ -70,7 +70,7 @@ impl ReflectionProbeSh2System {
     fn schedule_source(
         &mut self,
         gpu: &mut GpuContext,
-        assets: &AssetTransferQueue,
+        assets: &dyn ReflectionProbeCubemapAssets,
         key: Sh2SourceKey,
         source: GpuSh2Source,
     ) -> Result<ScheduleSourceOutcome, String> {
@@ -104,7 +104,7 @@ impl ReflectionProbeSh2System {
     fn schedule_cubemap_source(
         &self,
         gpu: &mut GpuContext,
-        assets: &AssetTransferQueue,
+        assets: &dyn ReflectionProbeCubemapAssets,
         key: Sh2SourceKey,
         asset_id: i32,
         storage_v_inverted: bool,
@@ -112,12 +112,10 @@ impl ReflectionProbeSh2System {
     ) -> Result<SubmittedGpuSh2Job, String> {
         profiling::scope!("reflection_probe_sh2::schedule_cubemap");
         let tex = assets
-            .cubemap_pool()
-            .get(asset_id)
+            .reflection_probe_cubemap(asset_id)
             .filter(|t| t.mip_levels_resident > 0)
             .ok_or_else(|| format!("cubemap {asset_id} not resident"))?;
         let sampler = sh2_cubemap_sampler(gpu.device(), "SH2 cubemap sampler");
-        let view = tex.view.clone();
         let submit_done_tx = self.readback_jobs.submit_done_sender();
         let params = cubemap_projection_params(storage_v_inverted);
         encode_projection_job(
@@ -125,7 +123,7 @@ impl ReflectionProbeSh2System {
             key,
             pipeline,
             &[
-                ProjectionBinding::TextureView(view.as_ref()),
+                ProjectionBinding::TextureView(tex.view.as_ref()),
                 ProjectionBinding::Sampler(&sampler),
             ],
             &params,

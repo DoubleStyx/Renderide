@@ -9,8 +9,8 @@ use crate::cpu_parallelism::{
     RENDER_COMMAND_CHUNK_DRAWS, admit_render_command_items, current_reference_worker_count,
     record_parallel_admission,
 };
+use crate::frame_upload_batch::GraphUploadSink;
 use crate::mesh_deform::PaddedPerDrawUniforms;
-use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::scene::SceneCoordinator;
 use crate::shared::RenderingContext;
 use crate::world_mesh::draw_prep::WorldMeshDrawItem;

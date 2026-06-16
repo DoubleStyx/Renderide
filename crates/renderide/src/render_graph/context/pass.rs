@@ -1,8 +1,8 @@
 //! Per-pass record-time contexts (`RasterPassCtx`, `ComputePassCtx`, `PostSubmitContext`).
 
 use super::super::blackboard::Blackboard;
-use super::super::frame_upload_batch::GraphUploadSink;
 use super::resolved::GraphResolvedResources;
+use crate::frame_upload_batch::GraphUploadSink;
 use crate::gpu::{GpuLimits, OutputDepthMode};
 use crate::graph_inputs::{FrameSystemsShared, GraphPassFrameView};
 

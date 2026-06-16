@@ -9,8 +9,8 @@ use std::hash::{Hash, Hasher};
 
 use ahash::AHasher;
 
+use crate::frame_contract::OffscreenWriteTarget;
 use crate::gpu_pools::SamplerState;
-use crate::graph_inputs::OffscreenWriteTarget;
 use crate::materials::ReflectedRasterLayout;
 use crate::materials::host_data::{MaterialPropertyLookupIds, MaterialPropertyStore};
 

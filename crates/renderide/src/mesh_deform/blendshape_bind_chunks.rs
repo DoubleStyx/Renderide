@@ -1,29 +1,4 @@
-//! Sparse blendshape buffer size checks and scatter dispatch chunking for [`wgpu::Limits`].
-
-use crate::assets::mesh::{BLENDSHAPE_POSITION_SPARSE_ENTRY_SIZE, BlendshapeGpuPack};
-
-/// Minimum storage buffer size used when a mesh has blendshapes but zero sparse bytes (padding).
-pub const BLENDSHAPE_SPARSE_MIN_BUFFER_BYTES: u64 = 16;
-
-/// Returns `false` when sparse payloads cannot exist on the device or be bound as one storage read.
-pub fn blendshape_sparse_buffers_fit_device(
-    pack: &BlendshapeGpuPack,
-    max_buffer_size: u64,
-    max_storage_buffer_binding_size: u64,
-) -> bool {
-    let sparse_len = pack
-        .sparse_deltas
-        .len()
-        .max(BLENDSHAPE_POSITION_SPARSE_ENTRY_SIZE);
-    let sparse_u64 = sparse_len as u64;
-    if sparse_u64 > max_buffer_size {
-        return false;
-    }
-    if sparse_u64 > max_storage_buffer_binding_size {
-        return false;
-    }
-    true
-}
+//! Sparse blendshape scatter dispatch chunking for [`wgpu::Limits`].
 
 /// Plans `(sparse_base, sparse_count)` sub-ranges (global entry indices) so each dispatch stays
 /// within `max_workgroups_per_dim x 64` threads (one thread per sparse entry).
@@ -53,8 +28,9 @@ pub fn plan_blendshape_scatter_chunks(
 mod tests {
     use super::*;
 
-    use crate::assets::mesh::{
+    use crate::render_contract::{
         BLENDSHAPE_POSITION_SPARSE_ENTRY_SIZE, BlendshapeFrameRange, BlendshapeFrameSpan,
+        BlendshapeGpuPack, blendshape_sparse_buffers_fit_device,
     };
 
     #[test]

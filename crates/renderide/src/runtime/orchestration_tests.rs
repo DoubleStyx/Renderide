@@ -21,7 +21,6 @@ use crate::shared::{
 };
 
 use super::RendererRuntime;
-use super::state::tick::QueuedReflectionProbeRenderTask;
 
 static IPC_TEST_QUEUE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -81,6 +80,14 @@ fn test_renderer_init_data() -> RendererInitData {
     }
 }
 
+fn renderite_crypto_token_shared_memory_prefix() -> String {
+    let token = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi+jklmnop=";
+    assert_eq!(token.len(), 44);
+    let prefix = format!("abcdefghijklmnop_{token}");
+    assert_eq!(prefix.len(), 61);
+    prefix
+}
+
 fn apply_running_command(rt: &mut RendererRuntime, cmd: RendererCommand) {
     let effect = crate::frontend::dispatch::commands::handle_running_command(cmd);
     rt.apply_running_command_effect(effect);
@@ -132,9 +139,7 @@ fn submit_completion_work_drained_waits_for_camera_tasks() {
     let mut rt = test_runtime_standalone();
     assert!(rt.submit_completion_work_drained());
 
-    rt.tick_state
-        .pending_camera_render_tasks
-        .push(CameraRenderTask::default());
+    rt.queue_camera_render_tasks(&[CameraRenderTask::default()]);
 
     assert!(!rt.submit_completion_work_drained());
 }
@@ -163,7 +168,13 @@ fn regular_begin_frame_waits_for_late_camera_task_after_render_attempt() {
     assert!(!rt.submit_completion_work_drained());
     assert!(!rt.should_send_begin_frame());
 
-    rt.tick_state.pending_camera_render_tasks.clear();
+    assert_eq!(
+        rt.tick_state
+            .submit_completion_work
+            .take_camera_tasks()
+            .len(),
+        1
+    );
 
     assert!(rt.submit_completion_work_drained());
     assert!(rt.should_send_begin_frame());
@@ -178,17 +189,25 @@ fn regular_begin_frame_waits_for_reflection_probe_task_after_render_attempt() {
     });
     rt.note_frame_render_attempted();
 
-    rt.tick_state
-        .pending_reflection_probe_render_tasks
-        .push(QueuedReflectionProbeRenderTask {
-            render_space_id: crate::scene::RenderSpaceId(1),
-            task: ReflectionProbeRenderTask::default(),
-        });
+    rt.queue_reflection_probe_render_tasks(&FrameSubmitData {
+        render_spaces: vec![RenderSpaceUpdate {
+            id: 1,
+            reflection_probe_render_tasks: vec![ReflectionProbeRenderTask::default()],
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
 
     assert!(!rt.submit_completion_work_drained());
     assert!(!rt.should_send_begin_frame());
 
-    rt.tick_state.pending_reflection_probe_render_tasks.clear();
+    assert_eq!(
+        rt.tick_state
+            .submit_completion_work
+            .take_reflection_probe_tasks()
+            .len(),
+        1
+    );
 
     assert!(rt.submit_completion_work_drained());
     assert!(rt.should_send_begin_frame());
@@ -245,12 +264,14 @@ fn submit_completion_work_drained_waits_for_reflection_probe_tasks() {
     let mut rt = test_runtime_standalone();
     assert!(rt.submit_completion_work_drained());
 
-    rt.tick_state
-        .pending_reflection_probe_render_tasks
-        .push(QueuedReflectionProbeRenderTask {
-            render_space_id: crate::scene::RenderSpaceId(1),
-            task: ReflectionProbeRenderTask::default(),
-        });
+    rt.queue_reflection_probe_render_tasks(&FrameSubmitData {
+        render_spaces: vec![RenderSpaceUpdate {
+            id: 1,
+            reflection_probe_render_tasks: vec![ReflectionProbeRenderTask::default()],
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
 
     assert!(!rt.submit_completion_work_drained());
 }
@@ -461,6 +482,46 @@ fn ipc_init_renderer_init_data_moves_to_init_received() {
     rt.handle_ipc_command(RendererCommand::RendererInitData(test_renderer_init_data()));
     assert_eq!(rt.init_state(), crate::frontend::InitState::InitReceived);
     assert!(!rt.fatal_error());
+}
+
+#[test]
+fn ipc_init_empty_shared_memory_prefix_installs_available_accessor() {
+    let mut rt = test_runtime_ipc_shape();
+    let mut init = test_renderer_init_data();
+    init.shared_memory_prefix = Some(String::new());
+
+    rt.handle_ipc_command(RendererCommand::RendererInitData(init));
+
+    assert_eq!(rt.init_state(), crate::frontend::InitState::InitReceived);
+    assert!(rt.test_shared_memory_available());
+    assert!(!rt.fatal_error());
+}
+
+#[test]
+fn ipc_init_renderite_crypto_token_prefix_installs_available_accessor() {
+    let mut rt = test_runtime_ipc_shape();
+    let mut init = test_renderer_init_data();
+    init.shared_memory_prefix = Some(renderite_crypto_token_shared_memory_prefix());
+
+    rt.handle_ipc_command(RendererCommand::RendererInitData(init));
+
+    assert_eq!(rt.init_state(), crate::frontend::InitState::InitReceived);
+    assert!(rt.test_shared_memory_available());
+    assert!(!rt.fatal_error());
+}
+
+#[test]
+fn ipc_init_invalid_shared_memory_prefix_is_fatal_before_init_received() {
+    let mut rt = test_runtime_ipc_shape();
+    let mut init = test_renderer_init_data();
+    init.shared_memory_prefix = Some("../session".into());
+
+    rt.handle_ipc_command(RendererCommand::RendererInitData(init));
+
+    assert_eq!(rt.init_state(), crate::frontend::InitState::Uninitialized);
+    assert!(!rt.test_shared_memory_available());
+    assert!(rt.pending_init().is_none());
+    assert!(rt.fatal_error());
 }
 
 #[test]

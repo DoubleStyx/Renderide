@@ -12,21 +12,20 @@ use crate::cpu_parallelism::{
     RELEVANCE_PACKET_MIN_ITEMS, admit_relevance_items, current_reference_worker_count,
     record_parallel_admission,
 };
-use crate::diagnostics::log_throttle::LogThrottle;
+use crate::frame_upload_batch::GraphUploadSink;
 use crate::graph_inputs::OffscreenWriteTarget;
+use crate::log_throttle::LogThrottle;
 use crate::materials::ShaderPermutation;
 use crate::materials::embedded::{EmbeddedMaterialBindError, MaterialBindCacheKey};
 use crate::materials::{
     EmbeddedMaterialBindResources, EmbeddedMaterialBindShader, EmbeddedTexturePools,
-};
-use crate::materials::{
-    MaterialBlendMode, MaterialPipelineDesc, MaterialPipelineResolution, MaterialPipelineSet,
-    MaterialPipelineVariantSpec, MaterialRegistry, MaterialRenderState,
+    MaterialBlendMode, MaterialPassRouting, MaterialPipelineDesc, MaterialPipelineResolution,
+    MaterialPipelineSet, MaterialPipelineVariantSpec, MaterialRegistry, MaterialRenderState,
     MaterialShaderSpecializationKey, RasterFrontFace, RasterPipelineKind, RasterPrimitiveTopology,
 };
 use crate::passes::WorldMeshForwardEncodeRefs;
-use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::world_mesh::draw_prep::WorldMeshDrawItem;
+use crate::world_mesh::materials::BILLBOARD_RENDER_BUFFER_BIT;
 
 /// Material boundary runs assigned to one packet-resolution worker.
 const MATERIAL_BATCH_PARALLEL_CHUNK_RUNS: usize = RELEVANCE_PACKET_MIN_ITEMS;
@@ -35,9 +34,6 @@ const MATERIAL_BATCH_PARALLEL_MIN_RUNS: usize = MATERIAL_BATCH_PARALLEL_CHUNK_RU
 
 /// Throttles repeated embedded-bind failures so a single bad material cannot flood logs.
 static EMBEDDED_MATERIAL_BIND_FAILURE_LOG: LogThrottle = LogThrottle::new();
-
-/// Generic variant bit used by all shaders compatible with particle system rendering.
-pub(crate) const BILLBOARD_RENDER_BUFFER_BIT: u32 = 1u32 << 24;
 
 /// Inclusive `(first_draw_idx, last_draw_idx)` span over the sorted world-mesh draw list
 /// identifying one contiguous material batch run.
@@ -114,6 +110,8 @@ pub(crate) struct PipelineVariantKeyInput {
     pub blend_mode: MaterialBlendMode,
     /// Resolved material render state.
     pub render_state: MaterialRenderState,
+    /// Runtime material routing decisions for per-pass pipeline state.
+    pub pass_routing: MaterialPassRouting,
     /// Front-face winding selected from the draw transform.
     pub front_face: RasterFrontFace,
     /// Primitive topology selected from the mesh's per-submesh topology.
@@ -141,6 +139,8 @@ pub(crate) struct PipelineVariantKey {
     pub blend_mode: MaterialBlendMode,
     /// Resolved material render state.
     pub render_state: MaterialRenderState,
+    /// Runtime material routing decisions for per-pass pipeline state.
+    pub pass_routing: MaterialPassRouting,
     /// Front-face winding selected from the draw transform.
     pub front_face: RasterFrontFace,
     /// Primitive topology selected from the mesh's per-submesh topology.
@@ -157,6 +157,7 @@ impl PipelineVariantKey {
             shader_asset_id,
             blend_mode,
             render_state,
+            pass_routing,
             front_face,
             primitive_topology,
         } = input;
@@ -170,6 +171,7 @@ impl PipelineVariantKey {
             shader_specialization,
             blend_mode,
             render_state,
+            pass_routing,
             front_face,
             primitive_topology,
         }
@@ -192,6 +194,7 @@ impl PipelineVariantKey {
             shader_specialization: self.shader_specialization,
             blend_mode: self.blend_mode,
             render_state: self.render_state,
+            pass_routing: self.pass_routing,
             front_face: self.front_face,
             primitive_topology: self.primitive_topology,
         }
@@ -211,6 +214,7 @@ impl PipelineVariantKey {
             shader_asset_id: batch_key.shader_asset_id,
             blend_mode: batch_key.blend_mode,
             render_state: batch_key.render_state,
+            pass_routing: batch_key.pass_routing(),
             front_face: batch_key.front_face,
             primitive_topology: batch_key.primitive_topology,
         })
@@ -235,6 +239,8 @@ pub(crate) struct MaterialDrawResolver<'a> {
     shader_perm: ShaderPermutation,
     /// Offscreen target being written by this view, if any.
     offscreen_write_target: OffscreenWriteTarget,
+    /// Whether this view flips front-face winding before draw-local transform parity is applied.
+    front_face_flip: bool,
 }
 
 impl<'a> MaterialDrawResolver<'a> {
@@ -245,6 +251,7 @@ impl<'a> MaterialDrawResolver<'a> {
         pass_desc: MaterialPipelineDesc,
         shader_perm: ShaderPermutation,
         offscreen_write_target: OffscreenWriteTarget,
+        front_face_flip: bool,
     ) -> Self {
         Self {
             registry: encode.materials.material_registry(),
@@ -255,6 +262,7 @@ impl<'a> MaterialDrawResolver<'a> {
             pass_desc,
             shader_perm,
             offscreen_write_target,
+            front_face_flip,
         }
     }
 
@@ -312,11 +320,7 @@ impl<'a> MaterialDrawResolver<'a> {
         let item = &draws[first];
         let mut pipeline_key =
             PipelineVariantKey::for_draw_item(item, self.pass_desc, self.shader_perm);
-        if self.offscreen_write_target.is_offscreen() {
-            // View-projection matrices for offscreen-RT views are pre-multiplied by a clip-space
-            // Y flip so the resulting render-texture lands in Unity (V=0 bottom) orientation.
-            // That mirrors triangle winding, so the pipeline needs the inverted `front_face` to
-            // keep back-face culling correct.
+        if self.front_face_flip {
             pipeline_key.front_face = pipeline_key.front_face.flipped();
         }
 
@@ -480,7 +484,7 @@ impl<'a> MaterialDrawResolver<'a> {
         let source_bits = self
             .registry
             .and_then(|registry| registry.variant_bits_for_shader_asset(batch_key.shader_asset_id));
-        if crate::particles::is_generated_billboard_mesh_asset_id(item.mesh_asset_id) {
+        if batch_key.uses_render_buffer_billboard {
             Some(source_bits.unwrap_or(0) | BILLBOARD_RENDER_BUFFER_BIT)
         } else {
             source_bits
@@ -579,6 +583,7 @@ mod tests {
             shader_asset_id: 42,
             blend_mode: MaterialBlendMode::Opaque,
             render_state: MaterialRenderState::default(),
+            pass_routing: MaterialPassRouting::default(),
             front_face: RasterFrontFace::CounterClockwise,
             primitive_topology: RasterPrimitiveTopology::TriangleList,
         })
@@ -669,6 +674,35 @@ mod tests {
             MaterialGroup1BindingKind::Empty,
             &kind
         ));
+    }
+
+    #[test]
+    fn render_buffer_billboard_draws_split_material_batch_boundaries() {
+        let mut ordinary = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 42,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 7,
+            node_id: 1,
+            slot_index: 0,
+            collect_order: 0,
+            alpha_blended: false,
+        });
+        ordinary.batch_key.pipeline = embedded_pipeline("billboardunlit_default");
+        ordinary.batch_key.shader_asset_id = 42;
+
+        let mut render_buffer = ordinary.clone();
+        render_buffer.mesh_asset_id = crate::particles::billboard_render_buffer_mesh_asset_id(3)
+            .expect("valid render-buffer billboard id");
+        render_buffer.batch_key.uses_render_buffer_billboard = true;
+
+        let draws = vec![ordinary, render_buffer];
+        let mut boundaries = Vec::new();
+
+        collect_material_batch_boundaries_into(&draws, &mut boundaries);
+
+        assert_eq!(boundaries, vec![(0, 0), (1, 1)]);
     }
 
     /// A draw batch snapshot that stayed Null still requires empty group 1 even if routing changes.

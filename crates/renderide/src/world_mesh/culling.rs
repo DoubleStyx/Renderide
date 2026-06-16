@@ -10,80 +10,18 @@ mod eval;
 pub(crate) mod frustum;
 mod geometry;
 
-use std::sync::Arc;
-
-use hashbrown::HashMap;
-
-use glam::Mat4;
-
-use crate::scene::{RenderSpaceId, SceneCoordinator};
-
-use crate::camera::{HostCameraFrame, WorldProjectionSet, view_matrix_from_render_transform};
-use crate::occlusion::HiZCullData;
-use crate::occlusion::hi_z_pyramid_dimensions;
+use crate::camera::{HostCameraFrame, WorldProjectionSet};
+pub use crate::cull_contract::{HiZTemporalState, WorldMeshCullProjParams};
+use crate::hi_z_cpu::HiZCullData;
+use crate::scene::SceneCoordinator;
 
 pub(crate) use eval::{
     CpuCullFailure, mesh_cpu_cull_with_geometry, mesh_draw_passes_cpu_cull,
     overlay_rect_clip_visible, world_aabb_visible_for_cull,
 };
-pub use frustum::world_aabb_from_local_bounds;
 pub(crate) use geometry::{
     MeshCullGeometry, MeshCullTarget, mesh_world_geometry_for_cull_with_head,
 };
-
-/// View and projection snapshot from the **frame that produced** the Hi-Z depth buffer (used for
-/// CPU occlusion tests against the previous frame's pyramid).
-///
-/// The per-space view table is stored as [`Arc<HashMap<...>>`] so per-view clones are refcount
-/// bumps rather than full hash table copies (important when secondary render-texture cameras fan
-/// out across rayon workers).
-#[derive(Clone, Debug)]
-pub struct HiZTemporalState {
-    /// [`WorldMeshCullProjParams`] from the depth author frame (matches forward-pass cull bundle).
-    pub prev_cull: WorldMeshCullProjParams,
-    /// World-to-camera view matrix per render space at that frame (shared; cloning is cheap).
-    ///
-    /// For views with an explicit camera pose (e.g. secondary render-texture cameras), every space
-    /// stores the same explicit world-to-view snapshot, matching the single view used to render
-    /// that pass's depth pyramid.
-    pub prev_view_by_space: Arc<HashMap<RenderSpaceId, Mat4>>,
-    /// Hi-Z mip0 size in texels (downscaled from full depth; see [`crate::occlusion::hi_z_pyramid_dimensions`]).
-    pub depth_viewport_px: (u32, u32),
-}
-
-/// Records per-space views and pyramid viewport for the next frame's Hi-Z occlusion tests.
-///
-/// When `explicit_world_to_view` is [`Some`], that matrix is stored for every active render
-/// space so Hi-Z tests use the same view as the offscreen depth author pass (see
-/// [`HostCameraFrame::explicit_world_to_view`]).
-pub fn capture_hi_z_temporal(
-    scene: &SceneCoordinator,
-    prev_cull: &WorldMeshCullProjParams,
-    full_viewport_px: (u32, u32),
-    explicit_world_to_view: Option<Mat4>,
-) -> HiZTemporalState {
-    let mut prev_view_by_space = HashMap::new();
-    if let Some(override_view) = explicit_world_to_view {
-        for id in scene.render_space_ids() {
-            if scene.space(id).is_some() {
-                prev_view_by_space.insert(id, override_view);
-            }
-        }
-    } else {
-        for id in scene.render_space_ids() {
-            if let Some(space) = scene.space(id) {
-                let v = view_matrix_from_render_transform(space.view_transform());
-                prev_view_by_space.insert(id, v);
-            }
-        }
-    }
-    let depth_viewport_px = hi_z_pyramid_dimensions(full_viewport_px.0, full_viewport_px.1);
-    HiZTemporalState {
-        prev_cull: *prev_cull,
-        prev_view_by_space: Arc::new(prev_view_by_space),
-        depth_viewport_px,
-    }
-}
 
 /// Host camera + projection bundle for [`super::draw_prep::queue_draws_with_parallelism`].
 pub struct WorldMeshCullInput<'a> {
@@ -95,33 +33,6 @@ pub struct WorldMeshCullInput<'a> {
     pub hi_z: Option<HiZCullData>,
     /// View/projection from the frame that authored [`Self::hi_z`]; required for stable temporal tests.
     pub hi_z_temporal: Option<HiZTemporalState>,
-}
-
-/// Projection matrices shared by all render spaces for a frame (before multiplying per-space `view`).
-#[derive(Clone, Copy, Debug)]
-pub struct WorldMeshCullProjParams {
-    /// Reverse-Z perspective for the main desktop / non-stereo path.
-    pub world_proj: Mat4,
-    /// Orthographic overlay projection (same choice as forward pass when overlay draws exist).
-    pub overlay_proj: Mat4,
-    /// OpenXR per-eye view-projection when VR is active; `None` when not using stereo culling.
-    pub vr_stereo: Option<(Mat4, Mat4)>,
-}
-
-impl WorldMeshCullProjParams {
-    /// Applies a projection-space transform to every projection matrix in this culling bundle.
-    pub(crate) fn map_projection_matrices(
-        &self,
-        mut map_projection: impl FnMut(Mat4) -> Mat4,
-    ) -> Self {
-        Self {
-            world_proj: map_projection(self.world_proj),
-            overlay_proj: map_projection(self.overlay_proj),
-            vr_stereo: self
-                .vr_stereo
-                .map(|(left, right)| (map_projection(left), map_projection(right))),
-        }
-    }
 }
 
 /// Builds [`WorldMeshCullProjParams`] from viewport size and [`HostCameraFrame`].
@@ -141,68 +52,14 @@ pub fn build_world_mesh_cull_proj_params(
 
 #[cfg(test)]
 mod tests {
-    //! Unit tests for [`capture_hi_z_temporal`] and [`build_world_mesh_cull_proj_params`].
+    //! Unit tests for [`build_world_mesh_cull_proj_params`].
 
     use glam::Mat4;
 
-    use crate::scene::{RenderSpaceId, SceneCoordinator};
-    use crate::shared::RenderTransform;
+    use crate::scene::SceneCoordinator;
 
-    use super::{
-        WorldMeshCullProjParams, build_world_mesh_cull_proj_params, capture_hi_z_temporal,
-    };
+    use super::{WorldMeshCullProjParams, build_world_mesh_cull_proj_params};
     use crate::camera::HostCameraFrame;
-    use crate::camera::view_matrix_from_render_transform;
-    use crate::occlusion::hi_z_pyramid_dimensions;
-
-    #[test]
-    fn capture_hi_z_temporal_secondary_override_fills_all_spaces() {
-        let mut scene = SceneCoordinator::new();
-        scene.test_seed_space_identity_worlds(
-            RenderSpaceId(1),
-            vec![RenderTransform::default()],
-            vec![-1],
-        );
-        scene.test_seed_space_identity_worlds(
-            RenderSpaceId(2),
-            vec![RenderTransform::default()],
-            vec![-1],
-        );
-        let prev = WorldMeshCullProjParams {
-            world_proj: Mat4::IDENTITY,
-            overlay_proj: Mat4::IDENTITY,
-            vr_stereo: None,
-        };
-        let m = Mat4::from_translation(glam::Vec3::new(3.0, 0.0, 0.0));
-        let t = capture_hi_z_temporal(&scene, &prev, (1920, 1080), Some(m));
-        assert_eq!(t.prev_view_by_space.len(), 2);
-        for id in scene.render_space_ids() {
-            assert_eq!(t.prev_view_by_space.get(&id).copied(), Some(m));
-        }
-        assert_eq!(t.depth_viewport_px, hi_z_pyramid_dimensions(1920, 1080));
-    }
-
-    #[test]
-    fn capture_hi_z_temporal_without_override_uses_view_per_space() {
-        let mut scene = SceneCoordinator::new();
-        scene.test_seed_space_identity_worlds(
-            RenderSpaceId(5),
-            vec![RenderTransform::default()],
-            vec![-1],
-        );
-        let space = scene.space(RenderSpaceId(5)).expect("space");
-        let expected = view_matrix_from_render_transform(space.view_transform());
-        let prev = WorldMeshCullProjParams {
-            world_proj: Mat4::IDENTITY,
-            overlay_proj: Mat4::IDENTITY,
-            vr_stereo: None,
-        };
-        let t = capture_hi_z_temporal(&scene, &prev, (800, 600), None);
-        assert_eq!(
-            t.prev_view_by_space.get(&RenderSpaceId(5)).copied(),
-            Some(expected)
-        );
-    }
 
     #[test]
     fn build_world_mesh_cull_proj_params_sets_vr_stereo_only_when_active_and_pair_present() {

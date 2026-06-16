@@ -6,13 +6,12 @@ use naga::{
 };
 
 use crate::gpu::frame_globals::FrameGpuUniforms;
-use crate::gpu::{GpuLight, GpuReflectionProbeMetadata, GpuShadowView};
+use crate::gpu::{GpuLight, GpuLightCookieRect, GpuReflectionProbeMetadata, GpuShadowView};
 
 use super::resource::{resource_data_ty, storage_array_element_stride};
 use super::types::ReflectError;
 
 /// Snapshot textures declared by the reflected material through frame-global bindings.
-#[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct FrameSnapshotUsage {
     /// Whether the material declares `scene_depth` or `scene_depth_array`.
@@ -22,7 +21,6 @@ pub(super) struct FrameSnapshotUsage {
 }
 
 /// Reflects scene snapshot texture use from the material's live group-0 bindings.
-#[cfg(test)]
 pub(super) fn reflect_frame_snapshot_usage(module: &Module) -> FrameSnapshotUsage {
     let mut usage = FrameSnapshotUsage::default();
     for (_, gv) in module.global_variables.iter() {
@@ -66,12 +64,14 @@ pub(super) fn validate_frame_group0(
     let shadow_stride_matches = seen
         .b16_stride
         .is_none_or(|stride| stride == expected.shadow_view);
+    let cookie_rect_stride_matches = seen.b19_stride == Some(expected.cookie_rect);
     if seen.b0_size == Some(expected.frame)
         && seen.b1_stride == Some(expected.light)
         && seen.b2_stride == Some(expected.cluster_range)
         && seen.b3_stride == Some(expected.cluster_index)
         && probe_stride_matches
         && shadow_stride_matches
+        && cookie_rect_stride_matches
     {
         Ok(())
     } else {
@@ -81,11 +81,13 @@ pub(super) fn validate_frame_group0(
             expected_cluster_range: expected.cluster_range,
             expected_cluster_index: expected.cluster_index,
             expected_probe: expected.probe,
+            expected_cookie_rect: expected.cookie_rect,
             got0: seen.b0_size,
             got1: seen.b1_stride,
             got2: seen.b2_stride,
             got3: seen.b3_stride,
             got12: seen.b12_stride,
+            got19: seen.b19_stride,
         })
     }
 }
@@ -97,6 +99,7 @@ struct FrameGroup0Expected {
     cluster_index: u32,
     probe: u32,
     shadow_view: u32,
+    cookie_rect: u32,
 }
 
 impl FrameGroup0Expected {
@@ -108,6 +111,7 @@ impl FrameGroup0Expected {
             cluster_index: size_of::<u32>() as u32,
             probe: size_of::<GpuReflectionProbeMetadata>() as u32,
             shadow_view: size_of::<GpuShadowView>() as u32,
+            cookie_rect: size_of::<GpuLightCookieRect>() as u32,
         }
     }
 }
@@ -120,6 +124,7 @@ struct FrameGroup0Seen {
     b3_stride: Option<u32>,
     b12_stride: Option<u32>,
     b16_stride: Option<u32>,
+    b19_stride: Option<u32>,
 }
 
 fn record_frame_group0_binding(
@@ -130,11 +135,11 @@ fn record_frame_group0_binding(
     data_ty: naga::Handle<naga::Type>,
     seen: &mut FrameGroup0Seen,
 ) -> Result<(), ReflectError> {
-    if rb.binding > 18 {
+    if rb.binding > 19 {
         return Err(ReflectError::UnsupportedBinding {
             group: 0,
             binding: rb.binding,
-            reason: "only bindings 0..=18 are supported for raster frame globals".into(),
+            reason: "only bindings 0..=19 are supported for raster frame globals".into(),
         });
     }
     match (rb.binding, space) {
@@ -147,8 +152,11 @@ fn record_frame_group0_binding(
         (6 | 11, AddressSpace::Handle) => {
             validate_frame_color_texture_binding(module, data_ty, false, rb.binding)?;
         }
-        (7 | 13 | 14, AddressSpace::Handle) => {
+        (7, AddressSpace::Handle) => {
             validate_frame_color_texture_binding(module, data_ty, true, rb.binding)?;
+        }
+        (13 | 14, AddressSpace::Handle) => {
+            validate_frame_color_texture_binding(module, data_ty, false, rb.binding)?;
         }
         (8 | 10 | 15, AddressSpace::Handle) => {
             validate_frame_color_sampler_binding(module, data_ty, rb.binding)?;
@@ -182,6 +190,7 @@ fn record_frame_group0_storage_stride(
         3 => seen.b3_stride = Some(stride),
         12 => seen.b12_stride = Some(stride),
         16 => seen.b16_stride = Some(stride),
+        19 => seen.b19_stride = Some(stride),
         _ => {}
     }
     Ok(())

@@ -27,6 +27,10 @@ pub struct GpuVideoTexture {
     _dummy_texture: Option<Arc<wgpu::Texture>>,
     /// Current view, initially from `dummy_texture` and then replaced by [`Self::set_view`].
     pub view: Arc<wgpu::TextureView>,
+    /// Current video width in texels.
+    pub width: u32,
+    /// Current video height in texels.
+    pub height: u32,
     /// Monotonic identifier for the current bindable view.
     pub view_generation: u64,
     /// Estimated VRAM for the current view.
@@ -62,6 +66,8 @@ impl GpuVideoTexture {
             asset_id,
             _dummy_texture: Some(dummy),
             view,
+            width: 1,
+            height: 1,
             view_generation: NEXT_VIDEO_TEXTURE_VIEW_GENERATION.fetch_add(1, Ordering::Relaxed),
             resident_bytes: RGBA8_BYTES_PER_PIXEL,
             sampler: SamplerState::from_video_props(props),
@@ -73,8 +79,8 @@ impl GpuVideoTexture {
     pub fn set_view(
         &mut self,
         view: Arc<wgpu::TextureView>,
-        _width: u32,
-        _height: u32,
+        width: u32,
+        height: u32,
         resident_bytes: u64,
     ) {
         if !Arc::ptr_eq(&self.view, &view) {
@@ -83,6 +89,8 @@ impl GpuVideoTexture {
         }
         self._dummy_texture = None;
         self.view = view;
+        self.width = width.max(1);
+        self.height = height.max(1);
         self.resident_bytes = resident_bytes;
     }
 

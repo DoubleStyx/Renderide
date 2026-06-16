@@ -12,10 +12,8 @@ use std::time::Duration;
 use openxr as xr;
 
 use super::XrSessionState;
-use crate::diagnostics::gpu_flight_recorder::{
-    GpuFlightCallResult, GpuFlightOpenXrCall, GpuFlightRecorder,
-};
 use crate::gpu::driver_thread::wait_for_finalize;
+use crate::gpu::flight_recorder::{GpuFlightCallResult, GpuFlightOpenXrCall, GpuFlightRecorder};
 
 impl XrSessionState {
     /// Blocks until the next frame, begins the frame stream. Returns `None` if not ready or idle.

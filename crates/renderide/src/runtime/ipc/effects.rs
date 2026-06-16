@@ -6,7 +6,7 @@
 
 use std::time::Instant;
 
-use crate::diagnostics::crash_context::{self, InitState as CrashInitState};
+use crate::crash_context::{self, InitState as CrashInitState};
 use crate::frontend::InitState;
 use crate::frontend::dispatch::command_dispatch::RunningCommandEffect;
 use crate::frontend::dispatch::ipc_init::{self, IpcDispatchEffect};

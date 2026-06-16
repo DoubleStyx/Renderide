@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::config::DebugHudMainTab;
 use crate::diagnostics::{GpuAllocatorHud, GpuAllocatorReportHud, HostHudGatherer};
 use crate::gpu::GpuContext;
 
@@ -35,6 +36,10 @@ pub(in crate::runtime) struct RuntimeDiagnosticsState {
     pub(in crate::runtime) allocator_report_last_refresh: Option<Instant>,
     /// Wall clock when the main debug HUD table snapshots were last refreshed.
     main_hud_snapshot_last_refresh: Option<Instant>,
+    /// Main debug tab whose snapshot timer is currently active.
+    main_hud_snapshot_tab: Option<DebugHudMainTab>,
+    /// Capture signature for the active main debug HUD snapshot timer.
+    main_hud_snapshot_signature: Option<u32>,
     /// Wall clock when the scene-transform HUD snapshot was last refreshed.
     scene_transforms_snapshot_last_refresh: Option<Instant>,
     /// Wall clock when the texture-debug HUD snapshot was last refreshed.
@@ -64,6 +69,8 @@ impl RuntimeDiagnosticsState {
             allocator_report_totals: GpuAllocatorHud::default(),
             allocator_report_last_refresh: None,
             main_hud_snapshot_last_refresh: None,
+            main_hud_snapshot_tab: None,
+            main_hud_snapshot_signature: None,
             scene_transforms_snapshot_last_refresh: None,
             texture_debug_snapshot_last_refresh: None,
             frame_submit_apply_failures: 0,
@@ -73,7 +80,19 @@ impl RuntimeDiagnosticsState {
         }
     }
 
-    pub(in crate::runtime) fn should_refresh_main_hud_snapshot(&mut self, now: Instant) -> bool {
+    pub(in crate::runtime) fn should_refresh_main_hud_snapshot(
+        &mut self,
+        now: Instant,
+        tab: DebugHudMainTab,
+        signature: u32,
+    ) -> bool {
+        if self.main_hud_snapshot_tab != Some(tab)
+            || self.main_hud_snapshot_signature != Some(signature)
+        {
+            self.main_hud_snapshot_tab = Some(tab);
+            self.main_hud_snapshot_signature = Some(signature);
+            self.main_hud_snapshot_last_refresh = None;
+        }
         should_refresh_snapshot(&mut self.main_hud_snapshot_last_refresh, now)
     }
 
@@ -93,6 +112,8 @@ impl RuntimeDiagnosticsState {
 
     pub(in crate::runtime) fn clear_main_hud_snapshot_timer(&mut self) {
         self.main_hud_snapshot_last_refresh = None;
+        self.main_hud_snapshot_tab = None;
+        self.main_hud_snapshot_signature = None;
     }
 
     pub(in crate::runtime) fn clear_scene_transforms_snapshot_timer(&mut self) {

@@ -1,8 +1,9 @@
 //! Render-graph validation and blackboard declaration tests.
 
 use super::common::*;
+use crate::render_graph::RenderGraphValidationMode;
 use crate::render_graph::blackboard::BlackboardSlot;
-use crate::render_graph::validation::{GraphValidationDiagnostic, RenderGraphValidationMode};
+use crate::render_graph::validation::GraphValidationDiagnostic;
 
 /// Test blackboard slot used by validation-mode coverage.
 struct ValidationSlot;

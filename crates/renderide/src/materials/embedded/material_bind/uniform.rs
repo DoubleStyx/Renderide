@@ -12,8 +12,8 @@ use super::super::uniform_pack::{
     MaterialUniformPackMetadata, UniformPackTextureContext,
     build_embedded_uniform_bytes_with_material_defaults,
 };
+use crate::frame_upload_batch::GraphUploadSink;
 use crate::materials::host_data::{MaterialPropertyLookupIds, MaterialPropertyStore};
-use crate::render_graph::frame_upload_batch::GraphUploadSink;
 
 const INITIAL_MATERIAL_UNIFORM_ARENA_BYTES: u64 = 64 * 1024;
 

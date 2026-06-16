@@ -5,15 +5,15 @@ mod profile;
 use super::super::blackboard::Blackboard;
 use super::super::error::GraphExecuteError;
 use crate::camera::{HostCameraFrame, ViewId};
+use crate::frame_contract::{FrameViewClear, OffscreenWriteTarget, ViewWinding};
 use crate::gpu::{GpuContext, OutputDepthMode};
-use crate::graph_inputs::{FrameViewClear, OffscreenWriteTarget};
 use crate::shared::RenderingContext;
 
+pub use crate::frame_contract::ViewPostProcessing;
 #[cfg(test)]
 pub(crate) use profile::RenderPathSampleCountPolicy;
 pub use profile::{
     FrameViewResourceHints, RenderPathProfile, RenderPathProfileId, ViewFamilyGraphRequirements,
-    ViewPostProcessing,
 };
 
 /// Single-view color + depth for rendering into an externally owned offscreen target.
@@ -187,6 +187,8 @@ pub struct FrameView<'a> {
     pub frame_time_seconds: f32,
     /// Color/depth destination.
     pub target: FrameViewTarget<'a>,
+    /// Per-view winding policy before draw-local transform parity is applied.
+    pub view_winding: ViewWinding,
     /// Render-path profile that owns MSAA, post-processing, snapshot, and fallback policy.
     pub profile: RenderPathProfile,
     /// Background clear/skybox behavior for this view.
@@ -232,6 +234,8 @@ impl<'a> FrameView<'a> {
 /// View metadata used by frame-global graph passes.
 #[derive(Clone, Copy, Debug)]
 pub struct FrameGlobalView {
+    /// Logical view whose target layout anchors frame-global resource resolution.
+    pub view_id: ViewId,
     /// Host camera snapshot selected for frame-global passes.
     pub host_camera: HostCameraFrame,
     /// Render-context override scope selected for frame-global passes.
@@ -249,6 +253,7 @@ impl FrameGlobalView {
     #[cfg(test)]
     pub fn from_frame_view(view: &FrameView<'_>) -> Self {
         Self {
+            view_id: view.view_id(),
             host_camera: view.host_camera,
             render_context: view.render_context,
             frame_time_seconds: view.frame_time_seconds,
@@ -265,7 +270,27 @@ impl FrameGlobalView {
         clear: FrameViewClear,
         post_processing: ViewPostProcessing,
     ) -> Self {
+        Self::new_for_view(
+            ViewId::Main,
+            host_camera,
+            render_context,
+            frame_time_seconds,
+            clear,
+            post_processing,
+        )
+    }
+
+    /// Builds frame-global metadata from explicit view-anchor inputs.
+    pub fn new_for_view(
+        view_id: ViewId,
+        host_camera: &HostCameraFrame,
+        render_context: RenderingContext,
+        frame_time_seconds: f32,
+        clear: FrameViewClear,
+        post_processing: ViewPostProcessing,
+    ) -> Self {
         Self {
+            view_id,
             host_camera: *host_camera,
             render_context,
             frame_time_seconds,
@@ -305,6 +330,7 @@ mod tests {
             render_context: RenderingContext::UserView,
             frame_time_seconds: 0.25,
             target: FrameViewTarget::Swapchain,
+            view_winding: ViewWinding::normal(),
             profile: RenderPathProfile::desktop_main(),
             clear: FrameViewClear::color(glam::Vec4::new(0.1, 0.2, 0.3, 1.0)),
             resource_hints: FrameViewResourceHints::default(),
@@ -532,6 +558,7 @@ mod tests {
         let view = swapchain_frame_view();
         let frame_global = FrameGlobalView::from_frame_view(&view);
 
+        assert_eq!(frame_global.view_id, ViewId::Main);
         assert_eq!(frame_global.host_camera.frame_index, -1);
         assert_eq!(frame_global.render_context, RenderingContext::UserView);
         assert_eq!(frame_global.frame_time_seconds, 0.25);

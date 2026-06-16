@@ -9,6 +9,7 @@ use crate::ipc::TimedRendererCommand;
 use crate::shared::{RendererCommand, SetWindowIcon};
 
 const DEFERRED_PRE_FINALIZE_WARN_THRESHOLD: usize = 1024;
+const MAX_PENDING_WINDOW_ICON_REQUESTS: usize = 8;
 
 /// IPC scratch state that is not part of transport ownership.
 pub(in crate::runtime) struct RuntimeIpcState {
@@ -88,6 +89,14 @@ impl RuntimeIpcState {
 
     /// Queues a host window-icon request for app-thread application.
     pub(in crate::runtime) fn queue_window_icon_request(&mut self, request: SetWindowIcon) {
+        if self.pending_window_icon_requests.len() >= MAX_PENDING_WINDOW_ICON_REQUESTS {
+            logger::warn!(
+                "IPC: dropping SetWindowIcon request_id={} because pending queue reached cap {}",
+                request.request_id,
+                MAX_PENDING_WINDOW_ICON_REQUESTS
+            );
+            return;
+        }
         self.pending_window_icon_requests.push_back(request);
     }
 

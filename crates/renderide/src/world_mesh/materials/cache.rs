@@ -28,6 +28,7 @@ use crate::world_mesh::FramePreparedRenderables;
 
 use super::keys::{collect_material_keys_for_space, collect_material_keys_into};
 use super::resolve::{MaterialResolveCtx, ResolvedMaterialBatch, resolve_material_batch};
+use super::slot::normalized_material_slot;
 
 /// Active render spaces assigned to one material-key collection worker.
 const MATERIAL_KEY_PARALLEL_CHUNK_SPACES: usize = 1;
@@ -103,12 +104,19 @@ fn estimate_material_key_collection_work(
 /// Estimates visible material-key rows referenced by one mesh renderer.
 fn estimate_renderer_material_keys(renderer: &crate::scene::StaticMeshRenderer) -> usize {
     if renderer.material_slots.is_empty() {
-        usize::from(renderer.primary_material_asset_id.is_some_and(|id| id >= 0))
+        usize::from(
+            renderer
+                .primary_material_asset_id
+                .and_then(|id| normalized_material_slot(id, renderer.primary_property_block_id))
+                .is_some(),
+        )
     } else {
         renderer
             .material_slots
             .iter()
-            .filter(|slot| slot.material_asset_id >= 0)
+            .filter(|slot| {
+                normalized_material_slot(slot.material_asset_id, slot.property_block_id).is_some()
+            })
             .count()
     }
 }

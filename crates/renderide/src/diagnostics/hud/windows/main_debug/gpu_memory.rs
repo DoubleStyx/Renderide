@@ -7,6 +7,7 @@ use crate::diagnostics::FrameDiagnosticsSnapshot;
 use super::super::super::fmt as hud_fmt;
 use super::super::super::state::HudUiState;
 use super::super::super::view::TabView;
+use super::super::sections::collapsible_section;
 
 /// **GPU memory** tab dispatched from [`super::MainDebugWindow`].
 ///
@@ -39,56 +40,57 @@ impl TabView for GpuMemoryTab {
 
         let r = hud.report.as_ref();
 
-        ui.separator();
-        ui.text("Summary (wgpu device allocator)");
-        ui.text(format!(
-            "{} / {}  allocated / reserved  |  {} blocks  |  {} sub-allocations",
-            hud_fmt::bytes_compact(r.total_allocated_bytes),
-            hud_fmt::bytes_compact(r.total_reserved_bytes),
-            r.blocks.len(),
-            r.allocations.len(),
-        ));
-        ui.text_disabled(
-            "Sizes are device-local sub-allocations; Vulkan memory-type names are not exposed here.",
-        );
+        collapsible_section(ui, "Summary", true, |ui| {
+            ui.text("wgpu device allocator");
+            ui.text(format!(
+                "{} / {}  allocated / reserved  |  {} blocks  |  {} sub-allocations",
+                hud_fmt::bytes_compact(r.total_allocated_bytes),
+                hud_fmt::bytes_compact(r.total_reserved_bytes),
+                r.blocks.len(),
+                r.allocations.len(),
+            ));
+            ui.text_disabled(
+                "Sizes are device-local sub-allocations; Vulkan memory-type names are not exposed here.",
+            );
+        });
 
-        ui.separator();
-        ui.text("Sub-allocations (by size, largest first)");
-        let n = hud.allocation_indices_by_size.len();
-        let table_flags = TableFlags::BORDERS
-            | TableFlags::ROW_BG
-            | TableFlags::SCROLL_Y
-            | TableFlags::RESIZABLE
-            | TableFlags::SIZING_STRETCH_PROP;
-        if let Some(_table) =
-            ui.begin_table_with_sizing("gpu_alloc_rows", 3, table_flags, [0.0, 360.0], 0.0)
-        {
-            ui.table_setup_column("Size");
-            ui.table_setup_column("Offset");
-            ui.table_setup_column("Label");
-            ui.table_headers_row();
-            let clip = ListClipper::new(n as i32);
-            let tok = clip.begin(ui);
-            for row_i in tok.iter() {
-                let idx = hud.allocation_indices_by_size[row_i as usize];
-                let a = &r.allocations[idx];
-                ui.table_next_row();
-                ui.table_next_column();
-                ui.text(hud_fmt::bytes_compact(a.size));
-                ui.table_next_column();
-                ui.text(format!("{}", a.offset));
-                let name = if a.name.is_empty() {
-                    "(no label)"
-                } else {
-                    a.name.as_str()
-                };
-                ui.table_next_column();
-                ui.text_wrapped(name);
+        collapsible_section(ui, "Sub-allocations", true, |ui| {
+            ui.text("By size, largest first");
+            let n = hud.allocation_indices_by_size.len();
+            let table_flags = TableFlags::BORDERS
+                | TableFlags::ROW_BG
+                | TableFlags::SCROLL_Y
+                | TableFlags::RESIZABLE
+                | TableFlags::SIZING_STRETCH_PROP;
+            if let Some(_table) =
+                ui.begin_table_with_sizing("gpu_alloc_rows", 3, table_flags, [0.0, 360.0], 0.0)
+            {
+                ui.table_setup_column("Size");
+                ui.table_setup_column("Offset");
+                ui.table_setup_column("Label");
+                ui.table_headers_row();
+                let clip = ListClipper::new(n as i32);
+                let tok = clip.begin(ui);
+                for row_i in tok.iter() {
+                    let idx = hud.allocation_indices_by_size[row_i as usize];
+                    let a = &r.allocations[idx];
+                    ui.table_next_row();
+                    ui.table_next_column();
+                    ui.text(hud_fmt::bytes_compact(a.size));
+                    ui.table_next_column();
+                    ui.text(format!("{}", a.offset));
+                    let name = if a.name.is_empty() {
+                        "(no label)"
+                    } else {
+                        a.name.as_str()
+                    };
+                    ui.table_next_column();
+                    ui.text_wrapped(name);
+                }
             }
-        }
+        });
 
-        ui.separator();
-        if let Some(_node) = ui.tree_node("Memory blocks") {
+        collapsible_section(ui, "Memory blocks", false, |ui| {
             let nb = r.blocks.len();
             if let Some(_table) = ui.begin_table_with_sizing(
                 "gpu_mem_blocks",
@@ -113,6 +115,6 @@ impl TabView for GpuMemoryTab {
                     ui.text(format!("{sub}"));
                 }
             }
-        }
+        });
     }
 }

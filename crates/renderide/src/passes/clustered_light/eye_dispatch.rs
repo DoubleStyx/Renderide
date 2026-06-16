@@ -7,16 +7,19 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::camera::HostCameraFrame;
+use crate::frame_upload_batch::GraphUploadSink;
 use crate::gpu::{CLUSTER_LIGHT_RANGE_WORDS, CLUSTER_PARAMS_UNIFORM_SIZE, GpuLimits};
 use crate::graph_inputs::OffscreenWriteTarget;
 use crate::profiling::GpuEncoderScope;
-use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::scene::SceneCoordinator;
 use crate::world_mesh::cluster::{
     CLUSTER_COUNT_Z, ClusterFrameParams, cluster_frame_params, cluster_frame_params_stereo,
 };
 
-use super::pipeline::{ClusterParamsDesc, build_params, write_cluster_params_padded};
+use super::pipeline::{
+    ClusterParamsDesc, build_params, froxel_reconstruction_flags_for_projection,
+    write_cluster_params_padded,
+};
 
 /// GPU and uniform state for per-eye clustered light compute dispatches.
 pub(super) struct ClusteredLightEyePassEnv<'a> {
@@ -91,6 +94,7 @@ pub(super) fn run_clustered_light_eye_passes(env: ClusteredLightEyePassEnv<'_>) 
             far,
             cluster_offset,
             world_to_view_scale: cfp.world_to_view_scale_max(),
+            froxel_reconstruction_flags: froxel_reconstruction_flags_for_projection(cfp.proj),
         });
         write_cluster_params_padded(env.uploads, env.params_buffer, &params, buf_offset);
 
@@ -248,7 +252,9 @@ mod tests {
     use crate::scene::SceneCoordinator;
     use crate::world_mesh::cluster::{CLUSTER_NEAR_CLIP_MIN, sanitize_cluster_clip_planes};
 
-    use super::super::pipeline::{ClusterParamsDesc, build_params};
+    use super::super::pipeline::{
+        ClusterParamsDesc, build_params, froxel_reconstruction_flags_for_projection,
+    };
     use super::{
         cluster_count_clear_range, clustered_light_eye_params_for_viewport,
         clusters_per_eye_for_params,
@@ -281,6 +287,7 @@ mod tests {
             far: 10.0,
             cluster_offset: 0,
             world_to_view_scale: 1.0,
+            froxel_reconstruction_flags: froxel_reconstruction_flags_for_projection(Mat4::IDENTITY),
         });
         let (near, far) = sanitize_cluster_clip_planes(0.00001, 10.0);
 

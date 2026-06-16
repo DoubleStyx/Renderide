@@ -142,6 +142,10 @@ fn default_main_needs_surface_and_skips_single_sample_depth_resolve() {
         .iter()
         .position(|name| *name == "shadow_atlas")
         .expect("shadow atlas pass");
+    let light_cookie_pos = pass_names
+        .iter()
+        .position(|name| *name == "light_cookie_atlas")
+        .expect("light cookie atlas pass");
     let clustered_pos = pass_names
         .iter()
         .position(|name| *name == "ClusteredLight")
@@ -155,6 +159,7 @@ fn default_main_needs_surface_and_skips_single_sample_depth_resolve() {
         .position(|name| *name == "WorldMeshDesktopOverlay")
         .expect("desktop overlay pass");
     assert!(depth_prepass_pos < opaque_pos);
+    assert!(light_cookie_pos < shadow_pos);
     assert!(deform_pos < shadow_pos);
     assert!(shadow_pos < clustered_pos);
     assert!(compose_pos < overlay_pos);

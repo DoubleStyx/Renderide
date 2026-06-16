@@ -1,7 +1,7 @@
 //! Lazy OpenXR stereo swapchain and renderer-owned HMD target allocation.
 
-use crate::diagnostics::log_throttle::LogThrottle;
 use crate::gpu::GpuContext;
+use crate::log_throttle::LogThrottle;
 use crate::xr::{
     XR_COLOR_FORMAT, XR_VIEW_COUNT, XrStereoDepthSwapchain, XrStereoSwapchain,
     create_stereo_depth_texture,

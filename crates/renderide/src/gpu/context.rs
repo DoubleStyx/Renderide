@@ -25,7 +25,7 @@ use super::limits::{GpuLimits, GpuLimitsError};
 use super::submission_state::GpuSubmissionState;
 use super::sync::device_health::GpuDeviceHealth;
 use super::sync::mapped_buffer_health::GpuMappedBufferHealth;
-use crate::diagnostics::gpu_flight_recorder::{GpuFlightEventKind, GpuFlightRecorder};
+use crate::gpu::flight_recorder::{GpuFlightEventKind, GpuFlightRecorder};
 use mapped_buffer_recovery::MappedBufferRecoveryFrame;
 use thiserror::Error;
 use winit::window::Window;

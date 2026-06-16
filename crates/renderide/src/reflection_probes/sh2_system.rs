@@ -25,10 +25,10 @@ use hashbrown::{HashMap, HashSet};
 
 use super::sh2_math::constant_color_sh2;
 use super::source_resolution::Sh2ResolvedSource;
-use crate::backend::AssetTransferQueue;
 use crate::gpu::GpuContext;
 use crate::ipc::SharedMemoryAccessor;
 use crate::profiling;
+use crate::reflection_probes::ReflectionProbeCubemapAssets;
 use crate::reflection_probes::specular::RuntimeReflectionProbeCaptureStore;
 use crate::scene::SceneCoordinator;
 use crate::shared::{FrameSubmitData, RenderSH2};
@@ -119,7 +119,7 @@ impl ReflectionProbeSh2System {
         &mut self,
         shm: &mut SharedMemoryAccessor,
         scene: &SceneCoordinator,
-        assets: &AssetTransferQueue,
+        assets: &dyn ReflectionProbeCubemapAssets,
         captures: &RuntimeReflectionProbeCaptureStore,
         data: &FrameSubmitData,
     ) {
@@ -144,7 +144,11 @@ impl ReflectionProbeSh2System {
     }
 
     /// Advances GPU callbacks, maps completed buffers, and schedules queued work.
-    pub fn maintain_gpu_jobs(&mut self, gpu: &mut GpuContext, assets: &AssetTransferQueue) {
+    pub fn maintain_gpu_jobs(
+        &mut self,
+        gpu: &mut GpuContext,
+        assets: &dyn ReflectionProbeCubemapAssets,
+    ) {
         profiling::scope!("reflection_probe_sh2::maintain_gpu_jobs");
         let _ = gpu.device().poll(wgpu::PollType::Poll);
         let outcomes = self.readback_jobs.maintain();

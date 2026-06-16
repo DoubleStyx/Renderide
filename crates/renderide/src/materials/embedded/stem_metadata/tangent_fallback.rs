@@ -2,26 +2,10 @@
 
 #[cfg(test)]
 use crate::materials::ShaderPermutation;
+pub use crate::render_contract::EmbeddedTangentFallbackMode;
 
 #[cfg(test)]
 use super::EmbeddedStemQuery;
-
-/// Lazy tangent upload behavior required by an embedded material.
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum EmbeddedTangentFallbackMode {
-    /// Preserve host-authored tangent data and use a stable default when the mesh has no tangent attribute.
-    #[default]
-    PreserveHostOrDefault,
-    /// Generate MikkTSpace tangents when the mesh has no tangent attribute but has enough geometry data.
-    GenerateMissing,
-}
-
-impl EmbeddedTangentFallbackMode {
-    /// `true` when lazy mesh upload should generate tangents for tangentless triangle meshes.
-    pub fn generate_missing(self) -> bool {
-        matches!(self, Self::GenerateMissing)
-    }
-}
 
 /// Tangent fallback policy for `base_stem` (independent of permutation).
 pub(super) fn tangent_fallback_mode_for_stem(base_stem: &str) -> EmbeddedTangentFallbackMode {

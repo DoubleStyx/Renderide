@@ -235,7 +235,7 @@ impl RendererRuntime {
 }
 
 fn trace_prepared_views(prepared: &[FrameViewPlan<'_>]) {
-    crate::diagnostics::crash_context::set_prepared_view_count(prepared.len());
+    crate::crash_context::set_prepared_view_count(prepared.len());
     if !logger::enabled(logger::LogLevel::Trace) {
         return;
     }

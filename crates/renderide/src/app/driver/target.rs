@@ -10,7 +10,7 @@ use winit::monitor::Fullscreen;
 use winit::platform::windows::WindowAttributesWindows;
 use winit::window::{Window, WindowAttributes};
 
-use crate::diagnostics::crash_context::{self, TargetMode};
+use crate::crash_context::{self, TargetMode};
 use crate::frontend::input::enable_ime_on_window;
 use crate::frontend::output_device::head_output_device_wants_openxr;
 use crate::gpu::{GpuContext, GpuError, WindowDisplayHandle};

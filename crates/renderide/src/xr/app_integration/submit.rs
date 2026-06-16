@@ -4,10 +4,10 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::diagnostics::gpu_flight_recorder::{GpuFlightCallResult, GpuFlightOpenXrCall};
-use crate::diagnostics::log_throttle::LogThrottle;
 use crate::gpu::GpuContext;
 use crate::gpu::driver_thread::BlockingCallWatchdog as EndFrameWatchdog;
+use crate::gpu::flight_recorder::{GpuFlightCallResult, GpuFlightOpenXrCall};
+use crate::log_throttle::LogThrottle;
 use crate::render_graph::ExternalFrameTargets;
 use crate::xr::session::XrProjectionFinalizeInput;
 use crate::xr::{XR_COLOR_FORMAT, XrFrameRenderer};

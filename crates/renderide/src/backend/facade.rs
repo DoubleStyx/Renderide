@@ -224,6 +224,15 @@ impl RenderBackend {
             .unwrap_or_default()
     }
 
+    /// Snapshot of the live command-recording mode for the current frame.
+    fn command_recording_mode(&self) -> crate::config::CommandRecordingMode {
+        self.renderer_settings
+            .as_ref()
+            .and_then(|h| h.read().ok())
+            .map(|s| s.debug.command_recording)
+            .unwrap_or_default()
+    }
+
     /// Snapshot of the live experimental renderer settings.
     pub(crate) fn experimental_settings(&self) -> crate::config::ExperimentalSettings {
         self.renderer_settings
@@ -428,31 +437,119 @@ impl RenderBackend {
     /// Returns a [`crate::diagnostics::BackendDiagSnapshot`] capturing the fields
     /// `FrameDiagnosticsSnapshot::capture` and `RendererInfoSnapshot::capture` need, so the
     /// diagnostics layer never borrows `&RenderBackend` directly.
-    pub fn snapshot_for_diagnostics(&self) -> crate::diagnostics::BackendDiagSnapshot {
+    pub fn snapshot_for_diagnostics(
+        &self,
+        interest: crate::diagnostics::DebugHudMetricInterest,
+    ) -> crate::diagnostics::BackendDiagSnapshot {
+        let mut snapshot = crate::diagnostics::BackendDiagSnapshot::default();
+
+        if interest.wants_shader_routes() {
+            snapshot.shader_routes = self
+                .material_registry()
+                .map(|reg| {
+                    reg.shader_routes_for_hud()
+                        .into_iter()
+                        .map(|(id, pipeline, name, shader_variant_bits)| {
+                            crate::diagnostics::ShaderRouteSnapshot {
+                                shader_asset_id: id,
+                                pipeline,
+                                shader_asset_name: name,
+                                shader_variant_bits,
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+        }
+
+        if interest.wants_draw_state() {
+            snapshot.last_world_mesh_draw_state_rows = self.last_world_mesh_draw_state_rows();
+        }
+
+        if interest.wants_stats() {
+            self.populate_stats_diagnostics_snapshot(&mut snapshot);
+        }
+
+        if interest.wants_graph() {
+            snapshot.command_encoding = self.graph_state.latest_command_encoding();
+        }
+
+        if interest.wants_assets() {
+            self.populate_asset_diagnostics_snapshot(&mut snapshot);
+        }
+
+        if interest.wants_visibility() {
+            self.populate_visibility_diagnostics_snapshot(&mut snapshot);
+        }
+
+        snapshot
+    }
+
+    fn populate_asset_diagnostics_snapshot(
+        &self,
+        snapshot: &mut crate::diagnostics::BackendDiagSnapshot,
+    ) {
+        let asset_diagnostics = self.asset_transfers.diagnostic_snapshot();
+        let worker_diagnostics = crate::assets::worker::diagnostic_snapshot();
+        let material_diagnostics = self.materials.diagnostic_snapshot();
+
+        snapshot.texture_format_registration_count = self.texture_format_registration_count();
+        snapshot.texture_mip0_ready_count = self.texture_mip0_ready_count();
+        snapshot.texture_pool_resident_count = self.texture_pool().len();
+        snapshot.render_texture_pool_len = self.render_texture_pool().len();
+        snapshot.mesh_pool_entry_count = self.mesh_pool().len();
+        snapshot.assets = crate::diagnostics::AssetDiagnosticsSnapshot {
+            main_queued: asset_diagnostics.integrator.main_queued,
+            high_priority_queued: asset_diagnostics.integrator.high_priority_queued,
+            render_queued: asset_diagnostics.integrator.render_queued,
+            normal_priority_queued: asset_diagnostics.integrator.normal_priority_queued,
+            particle_queued: asset_diagnostics.integrator.particle_queued,
+            total_queued: asset_diagnostics.integrator.total_queued,
+            peak_queued: asset_diagnostics.integrator.peak_queued,
+            pending_mesh_uploads: asset_diagnostics.pending_mesh_uploads,
+            pending_texture_uploads: asset_diagnostics.pending_texture_uploads,
+            pending_texture3d_uploads: asset_diagnostics.pending_texture3d_uploads,
+            pending_cubemap_uploads: asset_diagnostics.pending_cubemap_uploads,
+            pending_video_texture_loads: asset_diagnostics.pending_video_texture_loads,
+            worker_queued: worker_diagnostics.queued,
+            worker_running: worker_diagnostics.running,
+            worker_max_queued: worker_diagnostics.max_queued,
+            worker_spawned: worker_diagnostics.spawned,
+            worker_completed: worker_diagnostics.completed,
+            worker_inline_executed: worker_diagnostics.inline_executed,
+            worker_saturated: worker_diagnostics.saturated,
+            pending_material_batches: material_diagnostics.pending_material_batches,
+            pending_shader_routes: material_diagnostics.pending_shader_routes,
+            material_registry_attached: material_diagnostics.material_registry_attached,
+            embedded_bind_attached: material_diagnostics.embedded_bind_attached,
+        };
+    }
+
+    fn populate_visibility_diagnostics_snapshot(
+        &self,
+        snapshot: &mut crate::diagnostics::BackendDiagSnapshot,
+    ) {
+        snapshot.last_world_mesh_draw_stats = self.last_world_mesh_draw_stats();
+        snapshot.last_world_mesh_view_stats = self.last_world_mesh_view_stats();
+        snapshot.gpu_light_count = self.frame_services.frame_resources.frame_lights().len();
+        snapshot.signed_scene_color_active = self.signed_scene_color_active();
+        snapshot.lights = self.light_diagnostics_snapshot();
+    }
+
+    fn populate_stats_diagnostics_snapshot(
+        &self,
+        snapshot: &mut crate::diagnostics::BackendDiagSnapshot,
+    ) {
         let store = self.material_property_store();
-        let shader_routes = self
-            .material_registry()
-            .map(|reg| {
-                reg.shader_routes_for_hud()
-                    .into_iter()
-                    .map(|(id, pipeline, name, shader_variant_bits)| {
-                        crate::diagnostics::ShaderRouteSnapshot {
-                            shader_asset_id: id,
-                            pipeline,
-                            shader_asset_name: name,
-                            shader_variant_bits,
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
         let material_diagnostics = self.materials.diagnostic_snapshot();
         let graph_stats = self
             .graph_state
             .frame_graph_cache
             .compile_stats()
             .unwrap_or_default();
-        crate::diagnostics::BackendDiagSnapshot {
+        let shader_routes = std::mem::take(&mut snapshot.shader_routes);
+        let draw_state_rows = std::mem::take(&mut snapshot.last_world_mesh_draw_state_rows);
+        *snapshot = crate::diagnostics::BackendDiagSnapshot {
             texture_format_registration_count: self.texture_format_registration_count(),
             texture_mip0_ready_count: self.texture_mip0_ready_count(),
             texture_pool_resident_count: self.texture_pool().len(),
@@ -460,7 +557,8 @@ impl RenderBackend {
             mesh_pool_entry_count: self.mesh_pool().len(),
             shader_routes,
             last_world_mesh_draw_stats: self.last_world_mesh_draw_stats(),
-            last_world_mesh_draw_state_rows: self.last_world_mesh_draw_state_rows(),
+            last_world_mesh_view_stats: Vec::new(),
+            last_world_mesh_draw_state_rows: draw_state_rows,
             render_world_maintenance: self.draw_preparation.render_world_maintenance_stats(),
             world_mesh_command_cache: self.draw_preparation.command_cache_stats(),
             world_mesh_instance_plan_cache: self
@@ -484,6 +582,40 @@ impl RenderBackend {
             gpu_light_count: self.frame_services.frame_resources.frame_lights().len(),
             signed_scene_color_active: self.signed_scene_color_active(),
             upload_arena: self.graph_state.latest_upload_stats().into(),
+            command_encoding: Default::default(),
+            assets: Default::default(),
+            lights: Default::default(),
+        };
+    }
+
+    fn light_diagnostics_snapshot(&self) -> crate::diagnostics::LightDiagnosticsSnapshot {
+        let light_visibility = self.frame_services.frame_resources.light_visibility_stats();
+        crate::diagnostics::LightDiagnosticsSnapshot {
+            packed_default_lights: self.frame_services.frame_resources.frame_lights().len(),
+            per_view_light_packs: self
+                .frame_services
+                .frame_resources
+                .per_view_light_pack_count(),
+            max_per_view_lights: self
+                .frame_services
+                .frame_resources
+                .max_per_view_light_count(),
+            signed_scene_color_active: self.signed_scene_color_active(),
+            visibility_space_count: light_visibility.space_count,
+            visibility_cull_disabled_spaces: light_visibility.cull_disabled_spaces,
+            visibility_lights_before_cull: light_visibility.lights_before_cull,
+            visibility_non_contributing_lights: light_visibility.non_contributing_lights,
+            visibility_indexed_lights: light_visibility.indexed_lights,
+            visibility_fallback_lights: light_visibility.fallback_lights,
+            visibility_rejected_lights: light_visibility.rejected_lights,
+            visibility_lights_after_cull: light_visibility.lights_after_cull,
+            visibility_packed_lights: light_visibility.packed_lights,
+            visibility_max_lights_culled: light_visibility.max_lights_culled,
+            visibility_bvh_queries: light_visibility.bvh_queries,
+            visibility_linear_queries: light_visibility.linear_queries,
+            visibility_light_aabb_tests: light_visibility.light_aabb_tests,
+            visibility_bvh_node_tests: light_visibility.bvh_node_tests,
+            visibility_bvh_nodes_culled: light_visibility.bvh_nodes_culled,
         }
     }
 
@@ -535,10 +667,17 @@ impl RenderBackend {
         let gpu_limits = self.gpu_limits().cloned();
         let msaa_depth_resolve = self.frame_services.msaa_depth_resolve();
         let live_post_processing = self.live_post_processing_settings();
+        let command_recording_mode = self.command_recording_mode();
         let wall_frame_time_ms = self.debug_frame_time_ms();
         let skin_weight_mode = self.skin_weight_mode();
-        let (transient_pool, history_registry, upload_arena, latest_upload_stats) =
-            self.graph_state.execution_resources_mut();
+        let (
+            transient_pool,
+            history_registry,
+            upload_arena,
+            latest_upload_stats,
+            latest_command_encoding,
+            pending_transient_releases,
+        ) = self.graph_state.execution_resources_mut();
         let (frame_resources, mesh_preprocess, mesh_deform_scratch, skin_cache) =
             self.frame_services.graph_access_slices();
         BackendGraphAccess {
@@ -554,12 +693,15 @@ impl RenderBackend {
             history_registry,
             upload_arena,
             latest_upload_stats,
+            latest_command_encoding,
+            pending_transient_releases,
             debug_hud: self.diagnostics.bundle_mut(),
             scene_color_format,
             gpu_limits,
             msaa_depth_resolve,
             skin_weight_mode,
             live_post_processing,
+            command_recording_mode,
             wall_frame_time_ms,
         }
     }

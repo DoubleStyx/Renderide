@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use hashbrown::HashMap;
 
-use crate::backend::gpu_jobs::{GpuJobResources, GpuSubmitJobTracker, SubmittedGpuJob};
 use crate::gpu::{FrameSubmitKind, GpuContext};
+use crate::gpu_jobs::{GpuJobResources, GpuSubmitJobTracker, SubmittedGpuJob};
 use crate::profiling::GpuProfilerHandle;
 use crate::skybox::specular::{SkyboxIblSource, solid_color_params};
 

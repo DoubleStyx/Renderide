@@ -15,5 +15,6 @@ mod buffer;
 mod registry;
 mod texture;
 
+pub use crate::history_texture::HistoryTextureMipViews;
 pub use registry::{HistoryRegistry, HistoryRegistryError, HistoryResourceScope};
-pub use texture::{HistoryTextureMipViews, TextureHistorySpec};
+pub use texture::TextureHistorySpec;

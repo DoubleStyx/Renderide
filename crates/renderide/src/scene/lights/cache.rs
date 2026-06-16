@@ -29,8 +29,10 @@ use super::types::{CachedLight, ResolvedLight};
 /// Local axis for light propagation before world transform (host forward = **+Z**).
 const LOCAL_LIGHT_PROPAGATION: Vec3 = Vec3::new(0.0, 0.0, 1.0);
 
-/// Sentinel marking an entry whose transform was removed outright -- dropped during the retain
-/// pass at the end of [`LightCache::fixup_for_transform_removals`].
+/// Sentinel marking an entry whose transform was removed outright.
+///
+/// The entry stays in the dense host-indexed list until the matching light-removal batch arrives;
+/// [`LightCache::rebuild_space_vec`] skips it so stale light state cannot render in the interim.
 const DEAD_TRANSFORM_ID: usize = usize::MAX;
 /// Cached lights assigned to one world-space resolution worker chunk.
 ///
@@ -126,11 +128,19 @@ impl LightCache {
         out.clear();
 
         if let Some(regulars) = self.regular_lights.get(&space_id) {
-            out.extend(regulars.iter().cloned());
+            out.extend(
+                regulars
+                    .iter()
+                    .filter(|light| light.transform_id != DEAD_TRANSFORM_ID)
+                    .cloned(),
+            );
         }
 
         if let Some(renderers) = self.buffer_renderers.get(&space_id) {
             for br in renderers {
+                if br.transform_id == DEAD_TRANSFORM_ID {
+                    continue;
+                }
                 let Some(buffer_data) = self.buffers.get(&br.state.global_unique_id) else {
                     continue;
                 };
@@ -152,10 +162,9 @@ impl LightCache {
     /// into a freed slot. Must run *before* the frame's light add/remove/state apply so any new
     /// state rows land on the correct entry.
     ///
-    /// Drops entries whose own transform was the one being removed (fixup returns `-1`) with a
-    /// warning; a well-formed host stream won't produce that case because the light's own
-    /// removal is sent in the same frame as its slot's transform removal, but this keeps the
-    /// cache self-consistent if that invariant ever regresses.
+    /// Marks entries whose own transform was removed so they are skipped during output rebuilds.
+    /// The dense slot is kept until the matching light-removal batch runs, preserving host
+    /// `RenderableIndex` alignment when a different light was swap-moved into the last slot.
     pub fn fixup_for_transform_removals(
         &mut self,
         space_id: i32,
@@ -291,6 +300,7 @@ fn resolve_cached_light(
         shadow_type: cached.state.shadow_type,
         shadow_strength: cached.state.shadow_strength,
         shadow_near_plane: cached.state.shadow_near_plane,
+        shadow_map_resolution: cached.state.shadow_map_resolution,
         shadow_bias: cached.state.shadow_bias,
         shadow_normal_bias: cached.state.shadow_normal_bias,
         cookie_texture_asset_id: cached.state.cookie_texture_asset_id,

@@ -22,6 +22,7 @@ pub struct CubemapUploadTask {
     data: SetCubemapData,
     format: SetCubemapFormat,
     wgpu_format: wgpu::TextureFormat,
+    generation: u64,
     stepper: CubemapUploadStepper,
 }
 
@@ -31,11 +32,13 @@ impl CubemapUploadTask {
         data: SetCubemapData,
         format: SetCubemapFormat,
         wgpu_format: wgpu::TextureFormat,
+        generation: u64,
     ) -> Self {
         Self {
             data,
             format,
             wgpu_format,
+            generation,
             stepper: CubemapUploadStepper::default(),
         }
     }
@@ -55,6 +58,14 @@ impl CubemapUploadTask {
         ipc: &mut Option<&mut DualQueueIpc>,
     ) -> StepResult {
         let id = self.data.asset_id;
+        if !queue.cubemap_upload_generation_is_current(id, self.generation) {
+            logger::trace!(
+                "cubemap {id}: dropped stale data upload generation {}",
+                self.generation
+            );
+            self.finalize_failure(ipc);
+            return StepResult::Done;
+        }
         let storage_v_inverted = host_cubemap_upload_uses_storage_v_inversion(
             self.format.format,
             self.wgpu_format,
@@ -163,6 +174,10 @@ impl CubemapUploadTask {
         storage_v_inverted: bool,
     ) {
         let id = self.data.asset_id;
+        if !queue.cubemap_upload_generation_is_current(id, self.generation) {
+            self.finalize_failure(ipc);
+            return;
+        }
         if uploaded_face_mips > 0
             && let Some(t) = queue.pools.cubemap_pool.get_mut(id)
         {
@@ -230,6 +245,7 @@ mod tests {
                 ..Default::default()
             },
             wgpu::TextureFormat::Bc7RgbaUnorm,
+            1,
         )
     }
 

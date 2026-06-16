@@ -15,6 +15,7 @@ use super::prepare::WorldMeshForwardPrepareFrame;
 use super::raster_recording::frame_bind_group_for_view;
 use crate::camera::{CameraProjectionKind, ViewId, world_to_view_pair_for_skybox};
 use crate::embedded_shaders;
+use crate::frame_upload_batch::GraphUploadSink;
 use crate::gpu::frame_bind_group_layout;
 use crate::materials::host_data::MaterialPropertyLookupIds;
 use crate::materials::{
@@ -22,7 +23,6 @@ use crate::materials::{
 };
 use crate::render_graph::blackboard::Blackboard;
 use crate::render_graph::context::PassFrameContext;
-use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::shared::CameraClearMode;
 use crate::skybox::{
     PreparedClearColorSkybox, PreparedMaterialSkybox, PreparedMaterialSkyboxGeometry,

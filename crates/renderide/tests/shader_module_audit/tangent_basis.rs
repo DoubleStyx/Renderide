@@ -158,6 +158,38 @@ fn custom_mesh_tbn_shaders_route_through_shared_parity() -> io::Result<()> {
 }
 
 #[test]
+fn matcap_shader_uses_active_view_projection_basis() -> io::Result<()> {
+    let matcap = material_source("matcap.wgsl")?;
+
+    for required in [
+        "let view_layer = view_idx;",
+        "let vp = mv::select_view_proj(d, view_layer);",
+        "let basis = vb::from_view_projection(vp);",
+        "out.view_x = basis.x;",
+        "out.view_y = basis.y;",
+    ] {
+        assert!(
+            matcap.contains(required),
+            "Matcap must derive its lookup basis from the active view projection via `{required}`"
+        );
+    }
+
+    for forbidden in [
+        "stereo_center",
+        "frag_screen_uv",
+        "screen_uv",
+        "frag_pos.xy",
+    ] {
+        assert!(
+            !matcap.contains(forbidden),
+            "Matcap must not derive matcap UVs from stereo-center or screen-space fragment `{forbidden}`"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn mesh_tangent_handedness_is_not_recomputed_in_material_roots() -> io::Result<()> {
     let allowed = [
         "shaders/modules/mesh/vertex.wgsl",

@@ -171,7 +171,7 @@ fn vs_main(
     }
 }
 
-//#pass type=forward name=forward_two_sided cull=material(off) offset=material(0,0)
+//#pass type=forward name=forward_two_sided cull=material(off) offset=material(0,0) a2c=cutout
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,

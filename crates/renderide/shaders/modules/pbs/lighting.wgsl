@@ -217,9 +217,10 @@ fn shade_metallic_clustered(
     options: ClusterLightingOptions,
 ) -> vec3<f32> {
     let view_dir = rg::view_dir_for_world_pos(world_pos, view_layer);
+    let specular_normal = brdf::view_facing_normal(s.normal, view_dir);
     let specular_color = brdf::metallic_f0(s.base_color, s.metallic);
-    let n_dot_v = clamp(dot(s.normal, view_dir), 0.0, 1.0);
-    let filtered_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal);
+    let n_dot_v = clamp(dot(specular_normal, view_dir), 0.0, 1.0);
+    let filtered_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal, s.geometric_normal);
     let energy_compensation = direct_energy_compensation(
         s.roughness,
         n_dot_v,
@@ -259,7 +260,7 @@ fn shade_metallic_clustered(
     );
     let indirect_specular = indirect_specular_contribution(
         world_pos,
-        s.normal,
+        specular_normal,
         s.geometric_normal,
         view_dir,
         filtered_roughness,
@@ -295,9 +296,10 @@ fn shade_metallic_transparent_clustered(
 ) -> vec4<f32> {
     let premultiplied = premultiplied_metallic_surface(s);
     let view_dir = rg::view_dir_for_world_pos(world_pos, view_layer);
+    let specular_normal = brdf::view_facing_normal(s.normal, view_dir);
     let specular_color = brdf::metallic_f0(s.base_color, s.metallic);
-    let n_dot_v = clamp(dot(s.normal, view_dir), 0.0, 1.0);
-    let filtered_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal);
+    let n_dot_v = clamp(dot(specular_normal, view_dir), 0.0, 1.0);
+    let filtered_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal, s.geometric_normal);
     let energy_compensation = direct_energy_compensation(
         s.roughness,
         n_dot_v,
@@ -337,7 +339,7 @@ fn shade_metallic_transparent_clustered(
     );
     let indirect_specular = indirect_specular_contribution(
         world_pos,
-        s.normal,
+        specular_normal,
         s.geometric_normal,
         view_dir,
         filtered_roughness,
@@ -362,8 +364,9 @@ fn shade_specular_clustered(
     options: ClusterLightingOptions,
 ) -> vec3<f32> {
     let view_dir = rg::view_dir_for_world_pos(world_pos, view_layer);
-    let n_dot_v = clamp(dot(s.normal, view_dir), 0.0, 1.0);
-    let filtered_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal);
+    let specular_normal = brdf::view_facing_normal(s.normal, view_dir);
+    let n_dot_v = clamp(dot(specular_normal, view_dir), 0.0, 1.0);
+    let filtered_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal, s.geometric_normal);
     let energy_compensation = direct_energy_compensation(
         s.roughness,
         n_dot_v,
@@ -402,7 +405,7 @@ fn shade_specular_clustered(
     );
     let indirect_specular = indirect_specular_contribution(
         world_pos,
-        s.normal,
+        specular_normal,
         s.geometric_normal,
         view_dir,
         filtered_roughness,
@@ -439,8 +442,9 @@ fn shade_specular_transparent_clustered(
 ) -> vec4<f32> {
     let premultiplied = premultiplied_specular_surface(s);
     let view_dir = rg::view_dir_for_world_pos(world_pos, view_layer);
-    let n_dot_v = clamp(dot(s.normal, view_dir), 0.0, 1.0);
-    let filtered_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal);
+    let specular_normal = brdf::view_facing_normal(s.normal, view_dir);
+    let n_dot_v = clamp(dot(specular_normal, view_dir), 0.0, 1.0);
+    let filtered_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal, s.geometric_normal);
     let energy_compensation = direct_energy_compensation(
         s.roughness,
         n_dot_v,
@@ -479,7 +483,7 @@ fn shade_specular_transparent_clustered(
     );
     let indirect_specular = indirect_specular_contribution(
         world_pos,
-        s.normal,
+        specular_normal,
         s.geometric_normal,
         view_dir,
         filtered_roughness,

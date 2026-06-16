@@ -32,7 +32,7 @@ impl RenderSpaceState {
     ) -> bool {
         self.render_material_overrides
             .iter()
-            .any(|entry| entry.context == context)
+            .any(|entry| entry.context == context && entry.node_id >= 0)
     }
 
     /// Returns whether draw preparation must be specialized for `context`.
@@ -80,11 +80,9 @@ impl RenderSpaceState {
         slot_index: usize,
     ) -> Option<i32> {
         let mut replacement = None;
-        for entry in self
-            .render_material_overrides
-            .iter()
-            .filter(|entry| entry.context == context && entry.target == target)
-        {
+        for entry in self.render_material_overrides.iter().filter(|entry| {
+            entry.context == context && entry.target == target && entry.node_id >= 0
+        }) {
             for material in &entry.material_overrides {
                 if material.material_slot_index == slot_index as i32 {
                     replacement = Some(material.material_asset_id);

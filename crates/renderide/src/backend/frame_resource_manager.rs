@@ -31,8 +31,8 @@ mod tests;
 
 pub use manager::FrameResourceManager;
 
-pub(crate) use shadows::{ShadowFramePlan, ShadowRenderView};
-pub(crate) use view_desc::FrameLightViewDesc;
+pub(crate) use shadows::{ShadowCasterSet, ShadowFramePlan, ShadowRenderView};
+pub(crate) use view_desc::{FrameLightCullDesc, FrameLightViewDesc};
 
 // Re-exports kept for intra-doc links in sibling modules
 // (e.g. `frame_gpu.rs`, `cluster_gpu.rs` reference these types by path).

@@ -8,9 +8,7 @@ use std::time::Instant;
 use parking_lot::Mutex;
 
 use crate::assets::mesh::MeshBufferUploadSink;
-use crate::render_graph::upload_arena::{
-    PersistentUploadArena, UploadArenaAcquireStats, UploadArenaPressure,
-};
+use crate::upload_arena::{PersistentUploadArena, UploadArenaAcquireStats, UploadArenaPressure};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WritePlan {
@@ -122,6 +120,20 @@ pub(crate) struct MeshUploadBatchStats {
 }
 
 impl MeshUploadBatchStats {
+    /// Builds the profiling sample emitted for this upload batch.
+    pub(crate) fn profile_sample(self) -> crate::profiling::MeshUploadBatchProfileSample {
+        crate::profiling::MeshUploadBatchProfileSample {
+            writes: self.writes,
+            bytes: self.bytes,
+            staged_writes: self.staged_writes,
+            fallback_writes: self.fallback_writes,
+            staging_bytes: self.staging_bytes,
+            copy_ops: self.copy_ops,
+            queue_gate_fallbacks: self.queue_gate_fallbacks,
+            coalesced_writes: self.coalesced_writes,
+        }
+    }
+
     fn apply_arena_acquire(&mut self, stats: UploadArenaAcquireStats) {
         self.persistent_staging_bytes = stats.persistent_staging_bytes;
         self.persistent_slot_reuses = stats.persistent_slot_reuses;
@@ -188,7 +200,7 @@ impl MeshUploadStagingBatch {
             stats.queue_gate_fallbacks = stats.writes;
             stats.apply_arena_pressure(upload_arena.pressure());
             self.restore_recorded_upload_capacity(writes, payload_bytes);
-            crate::profiling::plot_mesh_upload_batch(&stats);
+            crate::profiling::plot_mesh_upload_batch(&stats.profile_sample());
             return Some(MeshUploadFlush {
                 command_buffer: None,
                 on_submitted_work_done: None,
@@ -225,7 +237,7 @@ impl MeshUploadStagingBatch {
         stats.finish_ms = finish_ms;
         stats.apply_arena_pressure(upload_arena.pressure());
         self.restore_recorded_upload_capacity(writes, payload_bytes);
-        crate::profiling::plot_mesh_upload_batch(&stats);
+        crate::profiling::plot_mesh_upload_batch(&stats.profile_sample());
         Some(MeshUploadFlush {
             command_buffer,
             on_submitted_work_done: staging.on_submitted_work_done,

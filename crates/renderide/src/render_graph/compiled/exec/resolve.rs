@@ -3,9 +3,9 @@
 
 use hashbrown::HashMap;
 
+use crate::frame_contract::{OffscreenWriteTarget, ViewWinding};
 use crate::gpu::GpuContext;
 use crate::gpu_resource::TextureViewDescriptorKey;
-use crate::graph_inputs::OffscreenWriteTarget;
 
 use super::super::super::context::{
     GraphResolvedResources, ResolvedGraphBuffer, ResolvedGraphTexture, ResolvedImportedBuffer,
@@ -195,6 +195,7 @@ impl CompiledRenderGraph {
                 )?;
                 Ok(ResolvedGraphBuffer {
                     pool_id: lease.pool_id,
+                    buffer: lease.buffer,
                 })
             },
             |idx, resolved| {
@@ -387,6 +388,7 @@ impl CompiledRenderGraph {
     /// Resolves a [`FrameViewTarget`] into a [`ResolvedView`] with color/depth attachments.
     pub(super) fn resolve_view_from_target<'a>(
         view_id: ViewId,
+        view_winding: ViewWinding,
         profile: RenderPathProfile,
         host_camera: &HostCameraFrame,
         target: &'a FrameViewTarget<'a>,
@@ -411,6 +413,7 @@ impl CompiledRenderGraph {
                     viewport_px: layout.viewport_px,
                     multiview_stereo: layout.multiview_stereo,
                     offscreen_write_target: OffscreenWriteTarget::None,
+                    view_winding,
                     view_id,
                     sample_count: layout.sample_count,
                     post_processing: layout.post_processing,
@@ -424,6 +427,7 @@ impl CompiledRenderGraph {
                 viewport_px: layout.viewport_px,
                 multiview_stereo: layout.multiview_stereo,
                 offscreen_write_target: OffscreenWriteTarget::None,
+                view_winding,
                 view_id,
                 sample_count: layout.sample_count,
                 post_processing: layout.post_processing,
@@ -436,6 +440,7 @@ impl CompiledRenderGraph {
                 viewport_px: layout.viewport_px,
                 multiview_stereo: layout.multiview_stereo,
                 offscreen_write_target: ext.write_target,
+                view_winding,
                 view_id,
                 sample_count: layout.sample_count,
                 post_processing: layout.post_processing,
@@ -447,6 +452,7 @@ impl CompiledRenderGraph {
     /// swapchain image to be acquired.
     pub(super) fn resolve_owned_view_metadata_from_target(
         view_id: ViewId,
+        view_winding: ViewWinding,
         profile: RenderPathProfile,
         host_camera: &HostCameraFrame,
         target: &FrameViewTarget<'_>,
@@ -466,6 +472,7 @@ impl CompiledRenderGraph {
                     viewport_px: layout.viewport_px,
                     multiview_stereo: layout.multiview_stereo,
                     offscreen_write_target: OffscreenWriteTarget::None,
+                    view_winding,
                     view_id,
                     sample_count: layout.sample_count,
                     post_processing: layout.post_processing,
@@ -480,6 +487,7 @@ impl CompiledRenderGraph {
                 viewport_px: layout.viewport_px,
                 multiview_stereo: layout.multiview_stereo,
                 offscreen_write_target: OffscreenWriteTarget::None,
+                view_winding,
                 view_id,
                 sample_count: layout.sample_count,
                 post_processing: layout.post_processing,
@@ -493,6 +501,7 @@ impl CompiledRenderGraph {
                 viewport_px: layout.viewport_px,
                 multiview_stereo: layout.multiview_stereo,
                 offscreen_write_target: ext.write_target,
+                view_winding,
                 view_id,
                 sample_count: layout.sample_count,
                 post_processing: layout.post_processing,

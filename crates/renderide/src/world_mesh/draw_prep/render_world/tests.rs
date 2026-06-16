@@ -1,6 +1,7 @@
 //! Unit tests for retained render-world dirty tracking and snapshot maintenance.
 
-use super::snapshot::build_snapshot_rebuild_tasks;
+use super::refresh::refresh_render_world_space;
+use super::snapshot::{SnapshotRebuildSource, SnapshotRendererTable, build_snapshot_rebuild_tasks};
 use super::state::{RenderWorldRendererRef, RenderWorldRendererTemplate};
 use super::*;
 use crate::cpu_parallelism::{FrameParallelPolicy, ParallelAdmission};
@@ -257,6 +258,12 @@ fn transform_roots_expand_to_descendant_renderer_records() {
                 renderable_index: 0,
             })
     );
+}
+
+#[test]
+fn transform_root_space_cover_requires_single_scene_root() {
+    assert!(transform_roots_cover_space(&[-1, 0, 1], &[0]));
+    assert!(!transform_roots_cover_space(&[-1, -1], &[0]));
 }
 
 #[test]
@@ -536,9 +543,47 @@ fn snapshot_rebuild_tasks_chunk_by_retained_template_count() {
 
     let tasks = build_snapshot_rebuild_tasks(&[(0, space_id, &space)]);
 
-    assert_eq!(tasks.len(), 2);
-    assert_eq!(tasks[0].range, 0..1);
-    assert_eq!(tasks[0].retained_template_count(), 800);
-    assert_eq!(tasks[1].range, 1..3);
-    assert_eq!(tasks[1].retained_template_count(), 225);
+    assert_eq!(tasks.len(), 5);
+    assert_eq!(
+        &tasks[0].source,
+        &SnapshotRebuildSource::RendererDrawRange {
+            table: SnapshotRendererTable::Static,
+            renderer_index: 0,
+            range: 0..256,
+        }
+    );
+    assert_eq!(
+        &tasks[1].source,
+        &SnapshotRebuildSource::RendererDrawRange {
+            table: SnapshotRendererTable::Static,
+            renderer_index: 0,
+            range: 256..512,
+        }
+    );
+    assert_eq!(
+        &tasks[2].source,
+        &SnapshotRebuildSource::RendererDrawRange {
+            table: SnapshotRendererTable::Static,
+            renderer_index: 0,
+            range: 512..768,
+        }
+    );
+    assert_eq!(
+        &tasks[3].source,
+        &SnapshotRebuildSource::RendererDrawRange {
+            table: SnapshotRendererTable::Static,
+            renderer_index: 0,
+            range: 768..800,
+        }
+    );
+    assert_eq!(
+        &tasks[4].source,
+        &SnapshotRebuildSource::RendererRange {
+            table: SnapshotRendererTable::Static,
+            range: 1..3,
+        }
+    );
+    assert_eq!(tasks[0].retained_template_count(), 256);
+    assert_eq!(tasks[3].retained_template_count(), 32);
+    assert_eq!(tasks[4].retained_template_count(), 225);
 }

@@ -43,6 +43,7 @@ pub(in crate::scene::coordinator) fn note_render_world_dirty_for_extracted_updat
     space_id: RenderSpaceId,
     header_dirty: bool,
     current_node_count: usize,
+    current_space: Option<&RenderSpaceState>,
     update: &ExtractedRenderSpaceUpdate,
 ) {
     if header_dirty {
@@ -80,7 +81,12 @@ pub(in crate::scene::coordinator) fn note_render_world_dirty_for_extracted_updat
         report.render_world_dirty.note_full_space(space_id);
     }
     if let Some(ref material_overrides) = update.material_overrides {
-        note_material_override_update_render_world_dirty(report, space_id, material_overrides);
+        note_material_override_update_render_world_dirty(
+            report,
+            space_id,
+            current_space,
+            material_overrides,
+        );
     }
 }
 
@@ -200,6 +206,7 @@ fn note_transform_update_render_world_dirty(
 fn note_material_override_update_render_world_dirty(
     report: &mut SceneApplyReport,
     space_id: RenderSpaceId,
+    current_space: Option<&RenderSpaceState>,
     material_overrides: &super::super::overrides::ExtractedRenderMaterialOverridesUpdate,
 ) {
     if has_active_dense_indices(&material_overrides.removals)
@@ -212,17 +219,48 @@ fn note_material_override_update_render_world_dirty(
         if state.renderable_index < 0 {
             break;
         }
+        let previous_target_requires_full_space = match current_space
+            .and_then(|space| {
+                space
+                    .render_material_overrides
+                    .get(state.renderable_index as usize)
+            })
+            .filter(|entry| entry.node_id >= 0)
+        {
+            Some(previous) => note_material_override_target_dirty(
+                report,
+                space_id,
+                previous.context,
+                previous.target,
+            ),
+            None => false,
+        };
+        if previous_target_requires_full_space {
+            return;
+        }
         let target = decode_packed_mesh_renderer_target(state.packed_mesh_renderer_index);
-        match target {
-            MeshRendererOverrideTarget::Static(_) | MeshRendererOverrideTarget::Skinned(_) => {
-                report
-                    .render_world_dirty
-                    .note_material_override(space_id, state.context, target);
-            }
-            MeshRendererOverrideTarget::Unknown => {
-                report.render_world_dirty.note_full_space(space_id);
-                return;
-            }
+        if note_material_override_target_dirty(report, space_id, state.context, target) {
+            return;
+        }
+    }
+}
+
+fn note_material_override_target_dirty(
+    report: &mut SceneApplyReport,
+    space_id: RenderSpaceId,
+    context: crate::shared::RenderingContext,
+    target: MeshRendererOverrideTarget,
+) -> bool {
+    match target {
+        MeshRendererOverrideTarget::Static(_) | MeshRendererOverrideTarget::Skinned(_) => {
+            report
+                .render_world_dirty
+                .note_material_override(space_id, context, target);
+            false
+        }
+        MeshRendererOverrideTarget::Unknown => {
+            report.render_world_dirty.note_full_space(space_id);
+            true
         }
     }
 }

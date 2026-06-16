@@ -12,10 +12,10 @@ mod post_processing;
 mod rendering;
 mod watchdog;
 
-pub use crate::render_graph::RenderGraphValidationMode;
 pub use debug::{
-    DebugHudMainTab, DebugHudMainTabVisibility, DebugHudRendererConfigTab,
-    DebugHudRendererConfigTabVisibility, DebugHudSettings, DebugSettings, PowerPreferenceSetting,
+    CommandRecordingMode, DebugHudMainTab, DebugHudMainTabVisibility, DebugHudRendererConfigTab,
+    DebugHudRendererConfigTabVisibility, DebugHudSettings, DebugHudStatsSectionVisibility,
+    DebugSettings, PowerPreferenceSetting, RenderGraphValidationMode,
 };
 pub use display::DisplaySettings;
 pub use experimental::ExperimentalSettings;
@@ -107,7 +107,7 @@ mod tests {
         assert_eq!(settings.display.focused_fps_cap, 75);
         assert_eq!(
             settings.experimental.max_local_reflection_probes,
-            crate::reflection_probes::specular::MAX_LOCAL_PROBES
+            crate::render_contract::MAX_LOCAL_REFLECTION_PROBES
         );
         assert!(!settings.experimental.reflection_probe_sh2_enabled);
     }
@@ -123,7 +123,7 @@ mod tests {
         assert!(text.contains("[experimental]"), "got:\n{text}");
         assert_eq!(
             decoded.experimental.max_local_reflection_probes,
-            crate::reflection_probes::specular::MAX_LOCAL_PROBES
+            crate::render_contract::MAX_LOCAL_REFLECTION_PROBES
         );
         assert!(!decoded.experimental.reflection_probe_sh2_enabled);
     }

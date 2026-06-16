@@ -5,19 +5,21 @@
 //! orchestration.
 
 use crate::diagnostics::{DebugHudInput, SceneTransformsSnapshot};
+use crate::hud_contract::{PerViewHudConfig, WorldMeshViewHudStats};
 use crate::world_mesh::{WorldMeshDrawStateRow, WorldMeshDrawStats};
 
 use super::super::RenderBackend;
 
 impl RenderBackend {
-    /// Updates whether main HUD diagnostics run (mirrors [`crate::config::DebugSettings::debug_hud_enabled`]).
-    pub fn set_debug_hud_main_enabled(&mut self, enabled: bool) {
-        self.diagnostics.set_main_enabled(enabled);
+    /// Updates per-view HUD diagnostics capture interests for the next render graph.
+    pub(crate) fn set_debug_hud_per_view_config(&mut self, config: PerViewHudConfig) {
+        self.diagnostics.set_per_view_config(config);
     }
 
-    /// Updates whether texture HUD diagnostics run.
-    pub(crate) fn set_debug_hud_textures_enabled(&mut self, enabled: bool) {
-        self.diagnostics.set_textures_enabled(enabled);
+    /// Updates whether graph execution should publish HUD-formatted command diagnostics.
+    pub(crate) fn set_debug_hud_capture_graph_command_diagnostics(&mut self, capture: bool) {
+        self.diagnostics
+            .set_capture_graph_command_diagnostics(capture);
     }
 
     /// Clears the current-view Texture2D set before collecting this frame's submitted draws.
@@ -89,12 +91,22 @@ impl RenderBackend {
         self.diagnostics.set_frame_timing(snapshot);
     }
 
+    /// Clears the **Frame timing** HUD payload.
+    pub(crate) fn clear_debug_hud_frame_timing(&mut self) {
+        self.diagnostics.clear_frame_timing();
+    }
+
     /// Pushes the latest GPU profiler snapshot into the debug HUD's **GPU passes** tab.
     pub(crate) fn set_debug_hud_gpu_profiler_snapshot(
         &mut self,
         snapshot: crate::profiling::GpuProfilerSnapshot,
     ) {
         self.diagnostics.set_gpu_profiler_snapshot(snapshot);
+    }
+
+    /// Clears the **GPU passes** HUD payload.
+    pub(crate) fn clear_debug_hud_gpu_profiler_snapshot(&mut self) {
+        self.diagnostics.clear_gpu_profiler_snapshot();
     }
 
     /// Clears Stats / Shader routes payloads only (not frame timing or scene transforms).
@@ -104,6 +116,10 @@ impl RenderBackend {
 
     pub(crate) fn last_world_mesh_draw_stats(&self) -> WorldMeshDrawStats {
         self.diagnostics.last_world_mesh_draw_stats()
+    }
+
+    pub(crate) fn last_world_mesh_view_stats(&self) -> Vec<WorldMeshViewHudStats> {
+        self.diagnostics.last_world_mesh_view_stats()
     }
 
     pub(crate) fn last_world_mesh_draw_state_rows(&self) -> Vec<WorldMeshDrawStateRow> {
@@ -145,7 +161,7 @@ impl RenderBackend {
         backbuffer: &wgpu::TextureView,
         extent: (u32, u32),
         profiler: Option<&crate::profiling::GpuProfilerHandle>,
-    ) -> Result<(), crate::diagnostics::DebugHudEncodeError> {
+    ) -> Result<(), crate::hud_contract::DebugHudEncodeError> {
         self.diagnostics
             .encode_overlay(device, queue, encoder, backbuffer, extent, profiler)
     }

@@ -112,6 +112,13 @@ impl FrontendTransport {
         })
     }
 
+    /// Whether a reliable background IPC payload failed before it could be retained.
+    pub(crate) fn reliable_background_failed(&self) -> bool {
+        self.ipc
+            .as_ref()
+            .is_some_and(DualQueueIpc::reliable_background_failed)
+    }
+
     /// Polls host queues into the reusable batch and prioritizes init data.
     pub(crate) fn poll_commands(&mut self) -> Vec<TimedRendererCommand> {
         profiling::scope!("frontend::poll_commands");

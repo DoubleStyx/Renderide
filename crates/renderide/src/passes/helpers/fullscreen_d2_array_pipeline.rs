@@ -28,7 +28,7 @@ pub(in crate::passes) struct FullscreenD2ArrayPipelineLabels {
 
 /// Mono / multiview WGSL pair for a fullscreen-D2Array effect.
 ///
-/// All four strings are `'static` because the embedded shader registry exposes shader sources as
+/// All four strings are `'static` because the runtime shader package exposes shader sources as
 /// `&'static str` and the cache that owns this struct is itself a process-wide `LazyLock`.
 #[derive(Clone, Copy)]
 pub(in crate::passes) struct FullscreenD2ArrayShaders {

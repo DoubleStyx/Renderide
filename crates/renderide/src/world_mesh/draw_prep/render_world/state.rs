@@ -159,6 +159,32 @@ impl RenderWorldSpace {
         }
     }
 
+    /// Appends retained static-renderer draw templates for one renderer draw `range`.
+    pub(super) fn append_static_renderer_draws_range_to(
+        &self,
+        renderer_index: usize,
+        range: Range<usize>,
+        draws: &mut Vec<FramePreparedDraw>,
+    ) {
+        let Some(renderer) = self.static_renderers.get(renderer_index) else {
+            return;
+        };
+        append_renderer_draw_range(draws, renderer, range);
+    }
+
+    /// Appends retained skinned-renderer draw templates for one renderer draw `range`.
+    pub(super) fn append_skinned_renderer_draws_range_to(
+        &self,
+        renderer_index: usize,
+        range: Range<usize>,
+        draws: &mut Vec<FramePreparedDraw>,
+    ) {
+        let Some(renderer) = self.skinned_renderers.get(renderer_index) else {
+            return;
+        };
+        append_renderer_draw_range(draws, renderer, range);
+    }
+
     /// Counts retained static-renderer draw templates for `range`.
     pub(super) fn retained_static_template_count_for_range(&self, range: Range<usize>) -> usize {
         self.static_renderers[range]
@@ -194,6 +220,16 @@ fn append_draws_with_cull_geometry(
         draw.cull_geometry = cull_geometry;
         draw
     }));
+}
+
+fn append_renderer_draw_range(
+    out: &mut Vec<FramePreparedDraw>,
+    renderer: &RenderWorldRendererTemplate,
+    range: Range<usize>,
+) {
+    if let Some(draws) = renderer.draws.get(range) {
+        append_draws_with_cull_geometry(out, draws, renderer.cull_geometry);
+    }
 }
 
 impl RenderWorldRendererTemplate {

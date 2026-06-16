@@ -4,19 +4,6 @@ use std::sync::Arc;
 
 use crate::gpu::{GpuReflectionProbeMetadata, REFLECTION_PROBE_ATLAS_FORMAT};
 
-/// Resources bound to frame-global reflection-probe slots.
-#[derive(Clone)]
-pub struct ReflectionProbeSpecularResources {
-    /// 2D-array atlas view sampled by PBS materials.
-    pub array_view: Arc<wgpu::TextureView>,
-    /// Sampler paired with [`Self::array_view`].
-    pub sampler: Arc<wgpu::Sampler>,
-    /// Storage buffer of [`GpuReflectionProbeMetadata`] rows.
-    pub metadata_buffer: Arc<wgpu::Buffer>,
-    /// Monotonic resource version; incremented when bindings need recreation.
-    pub version: u64,
-}
-
 /// Borrowed view used while creating frame-global bind groups.
 #[derive(Clone, Copy)]
 pub(super) struct ReflectionProbeSpecularBindGroupResources<'a> {

@@ -2,41 +2,48 @@
 
 use std::time::Instant;
 
-use crate::diagnostics::DebugHudEncodeError;
+use crate::config::{DebugHudMainTab, RendererSettings};
+use crate::diagnostics::DebugHudMetricInterest;
 use crate::gpu::GpuContext;
+use crate::hud_contract::DebugHudEncodeError;
 
 use super::RendererRuntime;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct DebugHudCaptureFlags {
-    frame_timing: bool,
-    main: bool,
-    scene_transforms: bool,
-    textures: bool,
-}
-
-fn debug_hud_capture_flags(settings: &crate::config::RendererSettings) -> DebugHudCaptureFlags {
-    let hud = &settings.debug.hud;
-    let imgui_visible = hud.imgui_visible;
-    DebugHudCaptureFlags {
-        frame_timing: imgui_visible && settings.debug.debug_hud_frame_timing,
-        main: imgui_visible && settings.debug.debug_hud_enabled,
-        scene_transforms: imgui_visible && settings.debug.debug_hud_transforms,
-        textures: imgui_visible && settings.debug.debug_hud_textures,
-    }
+fn debug_hud_metric_interest(settings: &RendererSettings) -> DebugHudMetricInterest {
+    DebugHudMetricInterest::from_settings(settings)
 }
 
 impl RendererRuntime {
-    /// Fills renderer info, frame diagnostics, and related main-tab HUD snapshots when the main HUD is on.
-    fn capture_main_debug_hud_panels(&mut self, gpu: &GpuContext, now: Instant) {
-        let host = self.diagnostics.host_hud.snapshot();
-        self.diagnostics
-            .refresh_gpu_allocator_report_hud(gpu, now, true);
+    /// Fills the active main-tab HUD snapshot when the main HUD has an active tab.
+    fn capture_main_debug_hud_tab(
+        &mut self,
+        gpu: &GpuContext,
+        now: Instant,
+        interest: DebugHudMetricInterest,
+        tab: DebugHudMainTab,
+    ) {
+        let backend_diag = match tab {
+            DebugHudMainTab::Stats | DebugHudMainTab::ShaderRoutes | DebugHudMainTab::DrawState => {
+                self.backend.snapshot_for_diagnostics(interest)
+            }
+            DebugHudMainTab::GpuMemory | DebugHudMainTab::GpuPasses => {
+                crate::diagnostics::BackendDiagSnapshot::default()
+            }
+        };
+        let host = if tab == DebugHudMainTab::Stats {
+            self.diagnostics.host_hud.snapshot()
+        } else {
+            Default::default()
+        };
         let next_refresh_in_secs = self.diagnostics.allocator_report_next_refresh_in_secs(now);
-        let (ipc_pri_str, ipc_bg_str) = self.frontend.ipc_consecutive_outbound_drop_streaks();
-        let backend_diag = self.backend.snapshot_for_diagnostics();
+        let (ipc_pri_str, ipc_bg_str) = if tab == DebugHudMainTab::Stats {
+            self.frontend.ipc_consecutive_outbound_drop_streaks()
+        } else {
+            (0, 0)
+        };
         let frame_diag = crate::diagnostics::FrameDiagnosticsSnapshot::capture(
             crate::diagnostics::FrameDiagnosticsSnapshotCapture {
+                main_tab: tab,
                 host,
                 last_submit_render_task_count: self.diagnostics.last_submit_render_task_count,
                 pending_camera_readbacks: self.diagnostics.pending_camera_readbacks,
@@ -66,29 +73,31 @@ impl RendererRuntime {
                 unhandled_ipc_command_event_total: self.unhandled_ipc_command_event_total(),
             },
         );
-        let msaa_requested = self
-            .config
-            .settings
-            .read()
-            .map(|s| s.rendering.msaa.as_count())
-            .unwrap_or(1);
-        let snapshot = crate::diagnostics::RendererInfoSnapshot::capture(
-            crate::diagnostics::RendererInfoSnapshotCapture {
-                ipc_connected: self.is_ipc_connected(),
-                init_state: self.init_state(),
-                last_frame_index: self.last_frame_index(),
-                adapter_info: gpu.adapter_info(),
-                gpu_limits: gpu.limits().as_ref(),
-                surface_format: gpu.config_format(),
-                viewport_px: gpu.surface_extent_px(),
-                present_mode: gpu.present_mode(),
-                scene: &self.scene,
-                backend: &backend_diag,
-                gpu,
-                msaa_requested_samples: msaa_requested,
-            },
-        );
-        self.backend.set_debug_hud_snapshot(snapshot);
+        if tab == DebugHudMainTab::Stats {
+            let msaa_requested = self
+                .config
+                .settings
+                .read()
+                .map(|s| s.rendering.msaa.as_count())
+                .unwrap_or(1);
+            let snapshot = crate::diagnostics::RendererInfoSnapshot::capture(
+                crate::diagnostics::RendererInfoSnapshotCapture {
+                    ipc_connected: self.is_ipc_connected(),
+                    init_state: self.init_state(),
+                    last_frame_index: self.last_frame_index(),
+                    adapter_info: gpu.adapter_info(),
+                    gpu_limits: gpu.limits().as_ref(),
+                    surface_format: gpu.config_format(),
+                    viewport_px: gpu.surface_extent_px(),
+                    present_mode: gpu.present_mode(),
+                    scene: &self.scene,
+                    backend: &backend_diag,
+                    gpu,
+                    msaa_requested_samples: msaa_requested,
+                },
+            );
+            self.backend.set_debug_hud_snapshot(snapshot);
+        }
         self.backend.set_debug_hud_frame_diagnostics(frame_diag);
     }
 
@@ -98,10 +107,12 @@ impl RendererRuntime {
             .config
             .settings
             .read()
-            .map(|s| debug_hud_capture_flags(&s))
+            .map(|s| debug_hud_metric_interest(&s))
             .unwrap_or_default();
-        self.backend.set_debug_hud_main_enabled(flags.main);
-        self.backend.set_debug_hud_textures_enabled(flags.textures);
+        self.backend
+            .set_debug_hud_per_view_config(flags.per_view_hud_config());
+        self.backend
+            .set_debug_hud_capture_graph_command_diagnostics(flags.wants_graph());
         self.backend
             .clear_debug_hud_current_view_texture_2d_asset_ids();
     }
@@ -114,42 +125,60 @@ impl RendererRuntime {
             .config
             .settings
             .read()
-            .map(|s| debug_hud_capture_flags(&s))
+            .map(|s| debug_hud_metric_interest(&s))
             .unwrap_or_default();
         let now = Instant::now();
-        if flags.frame_timing || flags.main {
+        if flags.wants_allocator_totals() {
             self.diagnostics
-                .refresh_gpu_allocator_report_hud(gpu, now, flags.main);
+                .refresh_gpu_allocator_report_hud(gpu, now, flags.wants_gpu_memory());
+            if !flags.wants_gpu_memory() {
+                self.diagnostics.clear_allocator_report_detail();
+            }
         } else {
             self.diagnostics.clear_allocator_report();
         }
-        // Host CPU / RAM / process RAM are sampled every tick so the Frame timing overlay can show
-        // them without requiring the full debug HUD (heavier panels are still gated below).
-        let host = self.diagnostics.host_hud.snapshot();
-        let frame_timing = crate::diagnostics::FrameTimingHudSnapshot::capture(
-            crate::diagnostics::FrameTimingHudCapture {
-                gpu,
-                wall_frame_time_ms: wall_ms,
-                host_frame_begin_to_submit: self.last_frame_begin_to_submit(),
-                host_hud: &host,
-                gpu_allocator: self.diagnostics.allocator_report_totals,
-                history: &mut self.diagnostics.frame_time_history,
-                ema: &mut self.diagnostics.frame_timing_ema,
-                now,
-            },
-        );
-        self.backend.set_debug_hud_frame_timing(frame_timing);
-        let gpu_profiler_snapshot = gpu
-            .latest_gpu_profiler_snapshot_handle()
-            .lock()
-            .map(|guard| guard.clone())
-            .unwrap_or_default();
-        self.backend
-            .set_debug_hud_gpu_profiler_snapshot(gpu_profiler_snapshot);
 
-        if flags.main && self.diagnostics.should_refresh_main_hud_snapshot(now) {
-            self.capture_main_debug_hud_panels(gpu, now);
-        } else if !flags.main {
+        if flags.frame_timing {
+            let host = self.diagnostics.host_hud.snapshot();
+            let frame_timing = crate::diagnostics::FrameTimingHudSnapshot::capture(
+                crate::diagnostics::FrameTimingHudCapture {
+                    gpu,
+                    wall_frame_time_ms: wall_ms,
+                    host_frame_begin_to_submit: self.last_frame_begin_to_submit(),
+                    host_hud: &host,
+                    gpu_allocator: self.diagnostics.allocator_report_totals,
+                    history: &mut self.diagnostics.frame_time_history,
+                    ema: &mut self.diagnostics.frame_timing_ema,
+                    now,
+                },
+            );
+            self.backend.set_debug_hud_frame_timing(frame_timing);
+        } else {
+            self.backend.clear_debug_hud_frame_timing();
+        }
+
+        if flags.wants_gpu_passes() {
+            self.backend.clear_debug_hud_stats_snapshots();
+            self.diagnostics.clear_main_hud_snapshot_timer();
+            let gpu_profiler_snapshot = gpu
+                .latest_gpu_profiler_snapshot_handle()
+                .lock()
+                .map(|guard| guard.clone())
+                .unwrap_or_default();
+            self.backend
+                .set_debug_hud_gpu_profiler_snapshot(gpu_profiler_snapshot);
+        } else if flags.wants_main_debug() {
+            self.backend.clear_debug_hud_gpu_profiler_snapshot();
+            if let Some(tab) = flags.main_tab
+                && self.diagnostics.should_refresh_main_hud_snapshot(
+                    now,
+                    tab,
+                    flags.main_hud_snapshot_signature(),
+                )
+            {
+                self.capture_main_debug_hud_tab(gpu, now, flags, tab);
+            }
+        } else {
             self.backend.clear_debug_hud_stats_snapshots();
             self.diagnostics.clear_main_hud_snapshot_timer();
             if flags.frame_timing {
@@ -217,11 +246,12 @@ impl RendererRuntime {
 
 #[cfg(test)]
 mod tests {
-    use super::{DebugHudCaptureFlags, debug_hud_capture_flags};
-    use crate::config::RendererSettings;
+    use super::debug_hud_metric_interest;
+    use crate::config::{DebugHudMainTab, RendererSettings};
+    use crate::diagnostics::DebugHudMetricInterest;
 
     #[test]
-    fn capture_flags_require_visible_imgui() {
+    fn metric_interest_requires_visible_imgui() {
         let mut settings = RendererSettings::default();
         settings.debug.debug_hud_enabled = true;
         settings.debug.debug_hud_transforms = true;
@@ -229,8 +259,8 @@ mod tests {
         settings.debug.hud.imgui_visible = false;
 
         assert_eq!(
-            debug_hud_capture_flags(&settings),
-            DebugHudCaptureFlags::default()
+            debug_hud_metric_interest(&settings),
+            DebugHudMetricInterest::default()
         );
     }
 
@@ -240,7 +270,7 @@ mod tests {
         settings.debug.debug_hud_transforms = true;
         settings.debug.hud.scene_transforms_open = false;
 
-        assert!(debug_hud_capture_flags(&settings).scene_transforms);
+        assert!(debug_hud_metric_interest(&settings).scene_transforms);
     }
 
     #[test]
@@ -249,6 +279,19 @@ mod tests {
         settings.debug.debug_hud_textures = true;
         settings.debug.hud.texture_debug_open = false;
 
-        assert!(debug_hud_capture_flags(&settings).textures);
+        assert!(debug_hud_metric_interest(&settings).textures);
+    }
+
+    #[test]
+    fn main_tab_interest_follows_selected_open_tab_only() {
+        let mut settings = RendererSettings::default();
+        settings.debug.debug_hud_enabled = true;
+        settings.debug.hud.main_tab = DebugHudMainTab::GpuPasses;
+
+        let interest = debug_hud_metric_interest(&settings);
+
+        assert_eq!(interest.main_tab, Some(DebugHudMainTab::GpuPasses));
+        assert!(interest.wants_gpu_passes());
+        assert!(!interest.wants_gpu_memory());
     }
 }

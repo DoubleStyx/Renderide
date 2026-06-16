@@ -110,33 +110,20 @@ fn xiexe_transparent_keeps_premultiplied_transparent_pass_directive() -> io::Res
 }
 
 #[test]
-fn xiexe_matcap_uses_stereo_center_view_dir() -> io::Result<()> {
-    let globals_src = source_file(manifest_dir().join("shaders/modules/frame/globals.wgsl"))?;
-    assert!(
-        globals_src.contains("fn stereo_center_view_dir_for_world_pos("),
-        "globals.wgsl must expose a stereo-center view direction helper for eye-stable effects"
-    );
-    assert!(
-        globals_src
-            .contains("(frame.camera_world_pos.xyz + frame.camera_world_pos_right.xyz) * 0.5"),
-        "stereo-center view direction must average the left and right camera positions in multiview"
-    );
-
+fn xiexe_matcap_uses_active_eye_view_dir() -> io::Result<()> {
     let lighting_src =
         source_file(manifest_dir().join("shaders/modules/xiexe/toon2/lighting.wgsl"))?;
     assert!(
-        lighting_src.contains(
-            "let stereo_view_dir = rg::stereo_center_view_dir_for_world_pos(world_pos, view_layer);"
-        ),
-        "Xiexe matcap sampling must derive its view direction from the stereo-center camera"
+        lighting_src.contains("let view_dir = rg::view_dir_for_world_pos(world_pos, view_layer);"),
+        "Xiexe lighting must derive the active-eye view direction from the fragment view layer"
     );
     assert!(
-        lighting_src.contains("let uv = matcap_uv(stereo_view_dir, normal);"),
-        "Xiexe matcap sampling must use the stereo-center view direction for matcap UVs"
+        lighting_src.contains("let uv = matcap_uv(view_dir, normal);"),
+        "Xiexe matcap sampling must use the active-eye view direction for matcap UVs"
     );
     assert!(
-        !lighting_src.contains("let uv = matcap_uv(view_dir, normal);"),
-        "Xiexe matcap UVs must not use the per-eye lighting view direction"
+        !lighting_src.contains("stereo_center_view_dir_for_world_pos"),
+        "Xiexe matcap UVs must not use a stereo-center view direction"
     );
     assert!(
         lighting_src.contains("spec = spec * (ambient + dominant_light_col_atten * 0.5);"),
@@ -204,8 +191,9 @@ fn xiexe_primary_direct_specular_uses_ggx_pbr_core() -> io::Result<()> {
     for required in [
         "let specular_reflectance = brdf::metallic_f0(s.diffuse_color, s.metallic);",
         "let roughness = clamp(1.0 - remap_specular_area(xb::mat._SpecularArea), 0.0, 1.0);",
-        "let aa_roughness = brdf::filter_perceptual_roughness(roughness, s.normal);",
+        "let aa_roughness = brdf::filter_perceptual_roughness(roughness, s.normal, s.raw_normal);",
         "fn primary_direct_specular_terms(s: xb::SurfaceData, view_dir: vec3<f32>) -> DirectSpecularTerms {",
+        "let specular_normal = brdf::view_facing_normal(s.normal, view_dir);",
         "let direct_roughness = brdf::direct_perceptual_roughness(roughness);",
         "let dfg = brdf::sample_ibl_dfg_lut(direct_roughness, n_dot_v);",
         "let energy_compensation = brdf::energy_compensation_from_dfg(dfg, specular_reflectance);",
@@ -304,7 +292,8 @@ fn xiexe_pbr_reflections_use_pbs_probe_energy_terms() -> io::Result<()> {
     for required in [
         "return rprobe::indirect_diffuse(world_pos, s.normal, view_layer, true);",
         "let indirect_enabled = rprobe::has_indirect_specular(view_layer, xvb::reflection_uses_pbr_for_layout(keyword_layout));",
-        "let roughness = brdf::filter_perceptual_roughness(clamp(perceptual_roughness, 0.0, 1.0), normal);",
+        "let roughness = brdf::filter_perceptual_roughness(clamp(perceptual_roughness, 0.0, 1.0), normal, s.raw_normal);",
+        "let n_dot_v = clamp(dot(specular_normal, view_dir), 0.0, 1.0);",
         "let dfg = brdf::sample_ibl_dfg_lut(roughness, n_dot_v);",
         "let specular_energy = brdf::indirect_specular_energy_from_dfg(dfg, specular_reflectance, indirect_enabled);",
         "let specular_visibility =\n        brdf::indirect_specular_visibility(n_dot_v, occlusion_scalar(s), roughness, specular_reflectance);",
@@ -394,19 +383,27 @@ fn reflection_probe_specular_applies_horizon_occlusion() -> io::Result<()> {
 
     let pbs_lighting = module_source("pbs/lighting.wgsl")?;
     assert!(
-        pbs_lighting.contains("s.normal,\n        s.geometric_normal,\n        view_dir,"),
-        "PBS indirect specular must pass the base normal into reflection-probe horizon occlusion"
+        pbs_lighting.contains("specular_normal,\n        s.geometric_normal,\n        view_dir,"),
+        "PBS indirect specular must pass the shifted specular normal and geometric horizon normal"
     );
 
     let xiexe_lighting = module_source("xiexe/toon2/lighting.wgsl")?;
     assert!(
-        xiexe_lighting.contains("normal,\n        s.raw_normal,\n        view_dir,"),
-        "Xiexe indirect specular must pass the raw surface normal into reflection-probe horizon occlusion"
+        xiexe_lighting.contains("specular_normal,\n        s.raw_normal,\n        view_dir,"),
+        "Xiexe indirect specular must pass the shifted specular normal and raw horizon normal"
     );
     assert!(
-        xiexe_lighting.contains("let indirect_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal);")
-            && xiexe_lighting.contains("rprobe::raw_indirect_specular_with_horizon(world_pos, s.normal, s.raw_normal, view_dir, indirect_roughness, true, view_layer)"),
-        "Xiexe environment tint must use filtered roughness and horizon-occluded raw probe radiance"
+        xiexe_lighting.contains("let indirect_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal, s.raw_normal);")
+            && xiexe_lighting.contains("rprobe::raw_indirect_specular_with_horizon(world_pos, specular_normal, s.raw_normal, view_dir, indirect_roughness, true, view_layer)"),
+        "Xiexe environment tint must use combined filtered roughness and shifted horizon-occluded probe radiance"
+    );
+    assert!(
+        !xiexe_lighting.contains("filter_perceptual_roughness(s.roughness, s.raw_normal)")
+            && !xiexe_lighting.contains("filter_perceptual_roughness(roughness, s.raw_normal)")
+            && !xiexe_lighting.contains(
+                "filter_perceptual_roughness(clamp(perceptual_roughness, 0.0, 1.0), s.raw_normal)"
+            ),
+        "Xiexe specular AA must pass both shading and raw geometric normals"
     );
 
     Ok(())

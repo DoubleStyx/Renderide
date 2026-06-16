@@ -26,7 +26,7 @@ fn stubs_are_accessible_without_tracy_feature() {
     plot_surface_get_current_texture_ms(std::time::Duration::from_millis(3));
     plot_event_loop_wait_ms(11.0);
     plot_event_loop_idle_ms(11.0);
-    plot_render_world_maintenance(crate::world_mesh::RenderWorldMaintenanceStats::default());
+    plot_render_world_maintenance(RenderWorldMaintenanceProfileSample::default());
     plot_world_mesh_prepare(10, 4, 3);
     plot_ipc_poll(&IpcPollProfileSample {
         waited: std::time::Duration::from_millis(1),

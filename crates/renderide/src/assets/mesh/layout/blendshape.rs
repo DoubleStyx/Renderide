@@ -8,80 +8,23 @@ use crate::cpu_parallelism::{
     admit_blendshape_channel_tasks, admit_blendshape_pack_shapes, current_reference_worker_count,
     record_parallel_admission,
 };
+#[cfg(test)]
+pub use crate::render_contract::{
+    BLENDSHAPE_PACKED_VECTOR_SPARSE_ENTRY_SIZE, BLENDSHAPE_POSITION_SPARSE_ENTRY_SIZE,
+};
+pub use crate::render_contract::{
+    BLENDSHAPE_PACKED_VECTOR_SPARSE_ENTRY_WORDS, BLENDSHAPE_POSITION_SPARSE_ENTRY_WORDS,
+    BlendshapeFrameRange, BlendshapeFrameSpan, BlendshapeGpuPack,
+};
 use crate::shared::BlendshapeBufferDescriptor;
 
 use super::buffer_layout::MeshBufferLayout;
-
-/// Bytes per sparse position entry on the GPU: `vertex_index: u32` + `delta.xyz: f32`.
-pub const BLENDSHAPE_POSITION_SPARSE_ENTRY_SIZE: usize = 16;
-
-/// Bytes per sparse packed normal or tangent entry: `vertex_index: u32` + three snorm16 channels.
-#[cfg(test)]
-pub const BLENDSHAPE_PACKED_VECTOR_SPARSE_ENTRY_SIZE: usize = 12;
-
-/// Number of `u32` words per sparse position entry in the GPU buffer.
-pub const BLENDSHAPE_POSITION_SPARSE_ENTRY_WORDS: u32 = 4;
-
-/// Number of `u32` words per sparse packed normal or tangent entry in the GPU buffer.
-pub const BLENDSHAPE_PACKED_VECTOR_SPARSE_ENTRY_WORDS: u32 = 3;
 
 /// Packed normal and tangent deltas are clamped to this absolute component range.
 pub const BLENDSHAPE_PACKED_VECTOR_DELTA_RANGE: f32 = 2.0;
 
 /// Deltas smaller than this magnitude (length squared) are dropped as non-influencing.
 pub const BLENDSHAPE_DELTA_EPSILON_SQ: f32 = 1e-14;
-
-/// GPU-ready channel-sparse blendshape deltas and CPU scatter ranges.
-pub struct BlendshapeGpuPack {
-    /// Tightly packed `u32` words containing position, normal, and tangent sparse sections.
-    pub sparse_deltas: Vec<u8>,
-    /// Per-frame sparse ranges sorted by shape and frame weight.
-    pub frame_ranges: Vec<BlendshapeFrameRange>,
-    /// Per-shape spans into [`Self::frame_ranges`].
-    pub shape_frame_spans: Vec<BlendshapeFrameSpan>,
-    /// Logical blendshape slot count (`max(blendshape_index) + 1`).
-    pub num_blendshapes: i32,
-    /// Whether any sparse row carries a nonzero position delta.
-    pub has_position_deltas: bool,
-    /// Whether any sparse row carries a nonzero normal delta.
-    pub has_normal_deltas: bool,
-    /// Whether any sparse row carries a nonzero tangent delta.
-    pub has_tangent_deltas: bool,
-    /// Whether any packed normal or tangent component was clamped to the supported delta range.
-    pub clamped_packed_deltas: bool,
-}
-
-/// Sparse range and metadata for one Unity blendshape frame.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct BlendshapeFrameRange {
-    /// Logical blendshape index from [`BlendshapeBufferDescriptor::blendshape_index`].
-    pub shape_index: u32,
-    /// Host frame index from [`BlendshapeBufferDescriptor::frame_index`].
-    pub frame_index: i32,
-    /// Unity frame weight from [`BlendshapeBufferDescriptor::frame_weight`].
-    pub frame_weight: f32,
-    /// First `u32` word of this frame's position entries in [`BlendshapeGpuPack::sparse_deltas`].
-    pub position_first_word: u32,
-    /// Number of sparse position entries in this frame.
-    pub position_count: u32,
-    /// First `u32` word of this frame's packed normal entries in [`BlendshapeGpuPack::sparse_deltas`].
-    pub normal_first_word: u32,
-    /// Number of sparse packed normal entries in this frame.
-    pub normal_count: u32,
-    /// First `u32` word of this frame's packed tangent entries in [`BlendshapeGpuPack::sparse_deltas`].
-    pub tangent_first_word: u32,
-    /// Number of sparse packed tangent entries in this frame.
-    pub tangent_count: u32,
-}
-
-/// Span of frame rows belonging to one logical blendshape.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct BlendshapeFrameSpan {
-    /// First row in [`BlendshapeGpuPack::frame_ranges`].
-    pub first_frame: u32,
-    /// Number of rows for this logical shape.
-    pub frame_count: u32,
-}
 
 /// Weighted contribution for one frame range.
 #[derive(Clone, Copy, Debug, PartialEq)]

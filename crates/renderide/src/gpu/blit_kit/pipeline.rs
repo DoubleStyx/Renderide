@@ -18,29 +18,6 @@ pub(crate) fn color_blit_pipeline(
     color_blit_pipeline_with_options(device, shader, layout, label, color_format, None, None)
 }
 
-/// Builds a vertex-less triangle-list color-target render pipeline with blend state.
-///
-/// `shader` must expose `vs_main` and `fs_main` entry points and read all bindings through the
-/// pipeline's single bind-group layout.
-pub(crate) fn color_blit_pipeline_with_blend(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    layout: &wgpu::PipelineLayout,
-    label: &'static str,
-    color_format: wgpu::TextureFormat,
-    blend: wgpu::BlendState,
-) -> wgpu::RenderPipeline {
-    color_blit_pipeline_with_options(
-        device,
-        shader,
-        layout,
-        label,
-        color_format,
-        Some(blend),
-        None,
-    )
-}
-
 /// Builds a vertex-less triangle-list color-target render pipeline with optional multiview.
 ///
 /// `shader` must expose `vs_main` and `fs_main` entry points and read all bindings through the

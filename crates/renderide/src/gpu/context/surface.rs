@@ -4,7 +4,7 @@
 use std::time::{Duration, Instant};
 
 use crate::config::VsyncMode;
-use crate::diagnostics::gpu_flight_recorder::{
+use crate::gpu::flight_recorder::{
     GpuFlightEventKind, GpuFlightSurfaceReconfigureOutcome, GpuFlightSurfaceReconfigureSite,
 };
 

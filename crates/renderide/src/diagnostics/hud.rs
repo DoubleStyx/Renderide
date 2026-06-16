@@ -4,7 +4,7 @@
 //! **Feedback / Bug Report** shows quick links for reporting issues and joining discussion.
 //! **[`crate::config::DebugSettings::debug_hud_frame_timing`]** toggles the **Frame timing** window (default on).
 //! **[`crate::config::DebugSettings::debug_hud_links`]** toggles the **Feedback / Bug Report** links panel.
-//! **[`crate::config::DebugSettings::debug_hud_enabled`]** toggles **Renderide debug** (Stats / Shader routes / Draw state / GPU memory).
+//! **[`crate::config::DebugSettings::debug_hud_enabled`]** toggles **Renderide debug** (Stats / Shader routes / Draw state / GPU memory / GPU passes).
 //! **[`crate::config::DebugSettings::debug_hud_transforms`]** toggles the **Scene transforms** window.
 //! **[`crate::config::DebugSettings::debug_hud_textures`]** toggles the **Textures** window.
 //!
@@ -18,21 +18,21 @@
 //! - [`registry`]: static-dispatch [`registry::DebugWindow`] enum + [`registry::OverlayFeatureFlags`].
 //! - [`fmt`]: right-aligned numeric formatters and byte-compaction helpers.
 //! - [`input`]: HUD input transport plus per-frame ImGui IO bridge.
-//! - [`encode_error`]: error type for the ImGui/wgpu HUD encode pass.
 //! - [`windows`]: concrete window/tab impls.
 
-pub mod encode_error;
 pub mod fmt;
 pub mod input;
 pub mod layout;
+pub mod metrics;
 pub(crate) mod persistence;
 pub mod registry;
 pub mod state;
 pub mod view;
 pub mod windows;
 
-pub use encode_error::DebugHudEncodeError;
+pub use crate::hud_contract::DebugHudEncodeError;
 pub use input::{DebugHudInput, sanitize_input_state_for_imgui_host};
+pub use metrics::DebugHudMetricInterest;
 pub use state::HudUiState;
 
 /// GPU target and encoder state for one debug-HUD overlay encode.
@@ -178,9 +178,19 @@ impl DebugHud {
         self.gpu_profiler_snapshot = snapshot;
     }
 
+    /// Clears the **GPU passes** tab payload.
+    pub fn clear_gpu_profiler_snapshot(&mut self) {
+        self.gpu_profiler_snapshot = crate::profiling::GpuProfilerSnapshot::default();
+    }
+
     /// Stores [`FrameTimingHudSnapshot`] for the **Frame timing** window.
     pub fn set_frame_timing(&mut self, sample: FrameTimingHudSnapshot) {
         self.frame_timing = Some(sample);
+    }
+
+    /// Clears the **Frame timing** window payload.
+    pub fn clear_frame_timing(&mut self) {
+        self.frame_timing = None;
     }
 
     /// Stores [`RendererInfoSnapshot`] for the **Stats** tab (IPC, adapter, scene, materials, graph).
@@ -208,10 +218,11 @@ impl DebugHud {
         self.texture_debug = sample;
     }
 
-    /// Clears Stats / Shader routes payloads only (not [`Self::frame_timing`] or scene transforms).
+    /// Clears main debug tab payloads only (not [`Self::frame_timing`] or scene transforms).
     pub fn clear_stats_hud_payloads(&mut self) {
         self.latest = None;
         self.frame_diagnostics = None;
+        self.clear_gpu_profiler_snapshot();
     }
 
     /// Clears the **Textures** HUD payload.

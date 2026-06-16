@@ -13,16 +13,28 @@ use super::super::super::RendererRuntime;
 
 impl RendererRuntime {
     pub(in crate::runtime) fn apply_renderer_init_data(&mut self, d: RendererInitData) {
+        let shared_memory_prefix_len = d.shared_memory_prefix.as_ref().map(String::len);
         logger::info!(
-            "IPC init data received: output_device={:?} shared_memory_prefix_present={}",
+            "IPC init data received: output_device={:?} shared_memory_prefix_present={} shared_memory_prefix_len={:?}",
             d.output_device,
             d.shared_memory_prefix.is_some(),
+            shared_memory_prefix_len,
         );
         self.host_camera.output_device = d.output_device;
         if let Some(ref prefix) = d.shared_memory_prefix {
-            self.frontend
-                .set_shared_memory(SharedMemoryAccessor::new(prefix.clone()));
-            logger::info!("Shared memory prefix: {}", prefix);
+            let accessor = match SharedMemoryAccessor::try_new(prefix.clone()) {
+                Ok(accessor) => accessor,
+                Err(err) => {
+                    logger::error!("IPC init data rejected: {}", err);
+                    self.frontend.set_fatal_error(true);
+                    return;
+                }
+            };
+            self.frontend.set_shared_memory(accessor);
+            logger::info!(
+                "Shared memory prefix accepted: len={} available=true",
+                prefix.len()
+            );
             let (shm, ipc) = self.frontend.transport_pair_mut();
             if let (Some(shm), Some(ipc)) = (shm, ipc) {
                 self.backend.flush_pending_material_batches(shm, ipc);

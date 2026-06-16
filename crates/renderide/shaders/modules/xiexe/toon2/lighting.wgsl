@@ -63,8 +63,9 @@ fn environment_tint(s: xb::SurfaceData, view_dir: vec3<f32>, world_pos: vec3<f32
     if (!rprobe::has_indirect_specular(view_layer, true)) {
         return vec3<f32>(1.0);
     }
-    let indirect_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal);
-    return rprobe::raw_indirect_specular_with_horizon(world_pos, s.normal, s.raw_normal, view_dir, indirect_roughness, true, view_layer);
+    let specular_normal = brdf::view_facing_normal(s.normal, view_dir);
+    let indirect_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal, s.raw_normal);
+    return rprobe::raw_indirect_specular_with_horizon(world_pos, specular_normal, s.raw_normal, view_dir, indirect_roughness, true, view_layer);
 }
 
 /// `UNITY_SPECCUBE_LOD_STEPS` on PC/console.
@@ -72,10 +73,10 @@ const SPECCUBE_LOD_STEPS: f32 = 6.0;
 
 /// Resolves a single frame light into a `LightSample` (direction toward the light,
 /// linear radiance, boosted energy attenuation, unboosted style visibility, directional flag).
-fn sample_light(light: ft::GpuLight, world_pos: vec3<f32>) -> xb::LightSample {
+fn sample_light(light: ft::GpuLight, world_pos: vec3<f32>, world_normal: vec3<f32>) -> xb::LightSample {
     if (light.light_type == 1u) {
         let dir_len_sq = dot(light.direction.xyz, light.direction.xyz);
-        let shadow_visibility = shadows::visibility(light, world_pos);
+        let shadow_visibility = shadows::visibility(light, world_pos, world_normal);
         return xb::LightSample(
             select(vec3<f32>(0.0, 0.0, 1.0), normalize(-light.direction.xyz), dir_len_sq > 1e-16),
             bl::light_radiance(light) * shadow_visibility,
@@ -93,7 +94,7 @@ fn sample_light(light: ft::GpuLight, world_pos: vec3<f32>) -> xb::LightSample {
         visibility = visibility * bl::spot_angle_attenuation(light, l);
     }
     visibility = visibility * cookies::multiplier(light, world_pos);
-    visibility = visibility * shadows::visibility(light, world_pos);
+    visibility = visibility * shadows::visibility(light, world_pos, world_normal);
     let attenuation = visibility * bl::direct_light_scale();
     return xb::LightSample(l, bl::light_radiance(light), attenuation, visibility, false);
 }
@@ -129,7 +130,7 @@ struct DirectSpecularTerms {
     /// Primary lobe perceptual roughness, derived from `_SpecularArea` via
     /// `roughness = 1 - remap_specular_area(_SpecularArea)`.
     roughness: f32,
-    /// Primary lobe roughness widened by geometric specular antialiasing.
+    /// Primary lobe roughness widened by specular antialiasing.
     aa_roughness: f32,
     /// Multiple-scattering energy compensation sampled from the frame DFG LUT.
     energy_compensation: vec3<f32>,
@@ -146,8 +147,9 @@ struct DirectSpecularTerms {
 fn primary_direct_specular_terms(s: xb::SurfaceData, view_dir: vec3<f32>) -> DirectSpecularTerms {
     let specular_reflectance = brdf::metallic_f0(s.diffuse_color, s.metallic);
     let roughness = clamp(1.0 - remap_specular_area(xb::mat._SpecularArea), 0.0, 1.0);
-    let aa_roughness = brdf::filter_perceptual_roughness(roughness, s.normal);
-    let n_dot_v = clamp(dot(s.normal, view_dir), 0.0, 1.0);
+    let aa_roughness = brdf::filter_perceptual_roughness(roughness, s.normal, s.raw_normal);
+    let specular_normal = brdf::view_facing_normal(s.normal, view_dir);
+    let n_dot_v = clamp(dot(specular_normal, view_dir), 0.0, 1.0);
     let direct_roughness = brdf::direct_perceptual_roughness(roughness);
     let dfg = brdf::sample_ibl_dfg_lut(direct_roughness, n_dot_v);
     let energy_compensation = brdf::energy_compensation_from_dfg(dfg, specular_reflectance);
@@ -237,10 +239,11 @@ fn direct_diffuse_brdf(
     view_dir: vec3<f32>,
     perceptual_roughness: f32,
 ) -> f32 {
-    let h = xb::safe_normalize(light_direction + view_dir, normal);
+    let brdf_n = brdf::view_facing_normal(normal, view_dir);
+    let h = xb::safe_normalize(light_direction + view_dir, brdf_n);
     return brdf::fd_burley(
-        xb::saturate(dot(normal, view_dir)),
-        xb::saturate(dot(normal, light_direction)),
+        xb::saturate(dot(brdf_n, view_dir)),
+        xb::saturate(dot(brdf_n, light_direction)),
         xb::saturate(dot(light_direction, h)),
         perceptual_roughness,
     );
@@ -335,16 +338,16 @@ fn indirect_reflection_branch_for_layout(
     keyword_layout: u32,
 ) -> vec3<f32> {
     if (xvb::matcap_enabled_for_layout(keyword_layout)) {
-        let stereo_view_dir = rg::stereo_center_view_dir_for_world_pos(world_pos, view_layer);
-        let uv = matcap_uv(stereo_view_dir, normal);
+        let uv = matcap_uv(view_dir, normal);
         let lod = clamp((1.0 - clamp(perceptual_roughness, 0.0, 1.0)) * SPECCUBE_LOD_STEPS, 0.0, SPECCUBE_LOD_STEPS);
         var spec = textureSampleLevel(xb::_Matcap, xb::_Matcap_sampler, uv, lod).rgb * xb::mat._MatcapTint.rgb;
         spec = spec * (ambient + dominant_light_col_atten * 0.5);
         return spec;
     }
 
-    let roughness = brdf::filter_perceptual_roughness(clamp(perceptual_roughness, 0.0, 1.0), normal);
-    let n_dot_v = clamp(dot(normal, view_dir), 0.0, 1.0);
+    let specular_normal = brdf::view_facing_normal(normal, view_dir);
+    let roughness = brdf::filter_perceptual_roughness(clamp(perceptual_roughness, 0.0, 1.0), normal, s.raw_normal);
+    let n_dot_v = clamp(dot(specular_normal, view_dir), 0.0, 1.0);
     let indirect_enabled = rprobe::has_indirect_specular(view_layer, xvb::reflection_uses_pbr_for_layout(keyword_layout));
     let dfg = brdf::sample_ibl_dfg_lut(roughness, n_dot_v);
     let specular_energy = brdf::indirect_specular_energy_from_dfg(dfg, specular_reflectance, indirect_enabled);
@@ -352,7 +355,7 @@ fn indirect_reflection_branch_for_layout(
         brdf::indirect_specular_visibility(n_dot_v, occlusion_scalar(s), roughness, specular_reflectance);
     let spec = rprobe::indirect_specular_with_energy(
         world_pos,
-        normal,
+        specular_normal,
         s.raw_normal,
         view_dir,
         roughness,
@@ -425,10 +428,11 @@ fn clustered_toon_lighting_for_layout(
     // Indirect diffuse / specular share a single energy budget: whatever the spec
     // probe lobe takes, the diffuse term must give up.
     let indirect_specular_reflectance = brdf::metallic_f0(s.diffuse_color, s.metallic);
-    let n_dot_v = clamp(dot(s.normal, view_dir), 0.0, 1.0);
+    let specular_normal = brdf::view_facing_normal(s.normal, view_dir);
+    let n_dot_v = clamp(dot(specular_normal, view_dir), 0.0, 1.0);
     let indirect_specular_enabled =
         rprobe::has_indirect_specular(view_layer, xvb::reflection_uses_pbr_for_layout(keyword_layout));
-    let indirect_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal);
+    let indirect_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal, s.raw_normal);
     let indirect_dfg = brdf::sample_ibl_dfg_lut(indirect_roughness, n_dot_v);
     let indirect_specular_energy = brdf::indirect_specular_energy_from_dfg(
         indirect_dfg,
@@ -470,7 +474,7 @@ fn clustered_toon_lighting_for_layout(
             continue;
         }
 
-        let light = sample_light(rg::lights[li], world_pos);
+        let light = sample_light(rg::lights[li], world_pos, s.normal);
         if ((light.is_directional && !include_directional) || (!light.is_directional && !include_local)) {
             continue;
         }
@@ -591,7 +595,7 @@ fn clustered_outline_lighting(
             continue;
         }
 
-        let light = sample_light(rg::lights[li], world_pos);
+        let light = sample_light(rg::lights[li], world_pos, s.normal);
         let ndl = xb::saturate(dot(s.normal, light.direction));
         let direct = xb::saturate(light.attenuation * ndl) * light.color;
         let weight = xb::grayscale(direct);

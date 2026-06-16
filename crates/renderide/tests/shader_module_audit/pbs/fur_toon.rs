@@ -282,6 +282,52 @@ fn xiexe_pbs_and_fur_stay_on_shared_modern_brdf() -> io::Result<()> {
 }
 
 #[test]
+fn fur_and_xiexe_use_combined_specular_aa_and_shifted_specular_normals() -> io::Result<()> {
+    let fur = module_source("fur/lighting.wgsl")?;
+    for required in [
+        "brdf::filter_perceptual_roughness(s.roughness, s.normal, s.geometric_normal)",
+        "let specular_normal = brdf::view_facing_normal(s.normal, view_dir);",
+        "let n_dot_v = clamp(dot(specular_normal, view_dir), 0.0, 1.0);",
+        "world_pos,\n        specular_normal,\n        s.geometric_normal,",
+    ] {
+        assert!(
+            fur.contains(required),
+            "fur/lighting.wgsl must contain `{required}`"
+        );
+    }
+    assert!(
+        !fur.contains("filter_perceptual_roughness(s.roughness, s.geometric_normal)"),
+        "Fur PBS lighting must pass both shading and geometric normals to specular AA"
+    );
+
+    let xiexe = module_source("xiexe/toon2/lighting.wgsl")?;
+    for required in [
+        "brdf::filter_perceptual_roughness(s.roughness, s.normal, s.raw_normal)",
+        "brdf::filter_perceptual_roughness(roughness, s.normal, s.raw_normal)",
+        "brdf::filter_perceptual_roughness(clamp(perceptual_roughness, 0.0, 1.0), normal, s.raw_normal)",
+        "let specular_normal = brdf::view_facing_normal(s.normal, view_dir);",
+        "let specular_normal = brdf::view_facing_normal(normal, view_dir);",
+        "let n_dot_v = clamp(dot(specular_normal, view_dir), 0.0, 1.0);",
+        "world_pos,\n        specular_normal,\n        s.raw_normal,",
+    ] {
+        assert!(
+            xiexe.contains(required),
+            "xiexe/toon2/lighting.wgsl must contain `{required}`"
+        );
+    }
+    assert!(
+        !xiexe.contains("filter_perceptual_roughness(s.roughness, s.raw_normal)")
+            && !xiexe.contains("filter_perceptual_roughness(roughness, s.raw_normal)")
+            && !xiexe.contains(
+                "filter_perceptual_roughness(clamp(perceptual_roughness, 0.0, 1.0), s.raw_normal)"
+            ),
+        "Xiexe PBS lighting must pass both shading and raw geometric normals to specular AA"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn classic_furfx_modules_keep_source_parity_details() -> io::Result<()> {
     let common = module_source("fur/common.wgsl")?;
     for required in [
@@ -401,14 +447,14 @@ fn furfx_roots_do_not_use_shader_variant_bits() -> io::Result<()> {
 fn fur_lighting_uses_full_pbs_brdf_stack() -> io::Result<()> {
     let fur_lighting = module_source("fur/lighting.wgsl")?;
     for required in [
-        "let aa_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal);",
+        "let aa_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal, s.geometric_normal);",
         "direct = direct + brdf::direct_radiance_specular(",
         "aa_roughness,\n                s.roughness,",
         "let direct_roughness = brdf::direct_perceptual_roughness(s.roughness);",
         "let direct_dfg = brdf::sample_ibl_dfg_lut(direct_roughness, n_dot_v);",
         "let energy_compensation = brdf::energy_compensation_from_dfg(direct_dfg, f0);",
         "rprobe::has_indirect_specular(view_layer, options.glossy_reflections_enabled)",
-        "let indirect_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal);",
+        "let indirect_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal, s.geometric_normal);",
         "brdf::indirect_specular_energy_from_dfg(indirect_dfg, f0, indirect_specular_enabled)",
         "brdf::indirect_specular_visibility(n_dot_v, s.occlusion, indirect_roughness, f0)",
         "let ambient = brdf::indirect_diffuse_specular(",
@@ -423,6 +469,10 @@ fn fur_lighting_uses_full_pbs_brdf_stack() -> io::Result<()> {
     assert!(
         !fur_lighting.contains("let specular_occlusion = brdf::specular_ao_lagarde"),
         "Fur lighting must route specular AO through PBS multi-bounce visibility"
+    );
+    assert!(
+        !fur_lighting.contains("filter_perceptual_roughness(s.roughness, s.geometric_normal)"),
+        "Fur specular AA must pass both shading and geometric normals"
     );
 
     let fur_common = module_source("fur/common.wgsl")?;

@@ -13,11 +13,11 @@ use super::submit_batch::{DriverMessage, SubmitBatch};
 use super::submit_counters::SubmitCounters;
 use super::surface_counters::SurfaceCounters;
 use super::xr_finalize::run_xr_finalize;
-use crate::diagnostics::crash_context;
-use crate::diagnostics::gpu_flight_recorder::{
+use crate::crash_context;
+use crate::gpu::GpuQueueAccessGate;
+use crate::gpu::flight_recorder::{
     GpuFlightCallResult, GpuFlightDriverStage, GpuFlightEventKind, GpuFlightRecorder,
 };
-use crate::gpu::GpuQueueAccessGate;
 use crate::gpu::frame_cpu_gpu_timing::{
     FrameTimingTrack, make_gpu_done_callback, record_frame_bracket_gpu_ms, record_real_submit,
 };
@@ -120,6 +120,7 @@ fn process_batch(ctx: DriverLoopContext<'_>, ring_depth: usize, batch: SubmitBat
     let SubmitBatch {
         submit_kind: _submit_kind,
         command_buffers,
+        retained_resources: _retained_resources,
         surface_texture,
         on_submitted_work_done,
         frame_timing,

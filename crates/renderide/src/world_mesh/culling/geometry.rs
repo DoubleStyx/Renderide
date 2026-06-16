@@ -3,11 +3,12 @@
 use glam::{Mat4, Vec3};
 
 use crate::assets::mesh::GpuMesh;
+use crate::bounds::world_aabb_from_local_bounds;
 use crate::scene::{RenderSpaceId, SceneCoordinator, SkinnedMeshRenderer};
 use crate::shared::RenderingContext;
 
 use super::WorldMeshCullInput;
-use super::frustum::{mesh_bounds_degenerate_for_cull, world_aabb_from_local_bounds};
+use super::frustum::mesh_bounds_degenerate_for_cull;
 
 /// Identity of a mesh renderable being evaluated for CPU frustum / Hi-Z culling.
 pub(crate) struct MeshCullTarget<'a> {

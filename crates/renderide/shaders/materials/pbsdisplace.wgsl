@@ -208,7 +208,7 @@ fn shade(
     );
 }
 
-//#pass type=forward cull=material(off)
+//#pass type=forward cull=material(off) a2c=cutout
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,

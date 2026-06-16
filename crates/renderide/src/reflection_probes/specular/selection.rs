@@ -5,13 +5,14 @@ use rayon::prelude::*;
 use crate::cpu_parallelism::{
     admit_coarse_space_items, current_reference_worker_count, record_parallel_admission,
 };
+use crate::render_contract::MAX_LOCAL_REFLECTION_PROBES;
 use crate::scene::RenderSpaceId;
 
 /// Maximum number of probes in one BVH leaf.
 const BVH_LEAF_SIZE: usize = 8;
 const MIN_BLEND_DISTANCE: f32 = 1e-6;
 /// Maximum number of local reflection probes packed into one draw.
-pub const MAX_LOCAL_PROBES: usize = 4;
+pub const MAX_LOCAL_PROBES: usize = MAX_LOCAL_REFLECTION_PROBES;
 const CONTAINMENT_EPSILON: f32 = 1e-5;
 
 /// Clamps user configuration to the fixed per-draw packing capacity.

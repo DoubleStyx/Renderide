@@ -2,16 +2,17 @@
 
 use crate::gpu::{GpuContext, GpuLimits};
 use crate::render_graph::GraphExecutionBackend;
-use crate::scene::SceneCoordinator;
 
 use super::pass::PassNode;
 use super::resources::{
     ImportedBufferDecl, ImportedTextureDecl, TextureHandle, TransientSubresourceDesc,
 };
 use super::schedule::{FrameSchedule, ScheduleHudSnapshot};
-use super::validation::{GraphValidationReport, RenderGraphValidationMode};
+use super::validation::GraphValidationReport;
 use crate::camera::ViewId;
-use crate::graph_inputs::OffscreenWriteTarget;
+use crate::frame_contract::{OffscreenWriteTarget, ViewWinding};
+use crate::graph_inputs::GraphSceneView;
+use crate::render_graph::RenderGraphValidationMode;
 
 pub(super) mod cache;
 mod exec;
@@ -22,6 +23,7 @@ mod resource;
 #[cfg(test)]
 mod dot;
 
+pub(crate) use exec::CommandEncodingHudSnapshot;
 pub(crate) use frame_view::{
     ExternalFrameTargets, ExternalOffscreenTargets, FrameGlobalView, FrameView, FrameViewLayout,
     FrameViewResourceHints, FrameViewTarget, OffscreenColorCopyTarget, RenderPathProfile,
@@ -39,7 +41,7 @@ pub(super) struct MultiViewExecutionContext<'a> {
     /// GPU context (surface, swapchain, submits).
     pub(super) gpu: &'a mut GpuContext,
     /// Scene after cache flush.
-    pub(super) scene: &'a SceneCoordinator,
+    pub(super) scene: GraphSceneView<'a>,
     /// Narrow graph-facing backend access packet.
     pub(super) backend: &'a mut dyn GraphExecutionBackend,
     /// Device for encoders and pipeline state.
@@ -79,7 +81,8 @@ impl CompiledRenderGraph {
 /// [`super::pass::PassPhase::FrameGlobal`] passes run once per tick in
 /// [`CompiledRenderGraph::execute_multi_view`]. Host camera, render context, clear state, and
 /// post-processing policy come from the explicit [`FrameGlobalView`]. Target resource resolution
-/// still uses the first [`FrameView`] because frame-global passes need one concrete attachment
+/// uses the [`FrameGlobalView`] view anchor when that view is present, falling back to the first
+/// submitted [`FrameView`] for secondary-only batches that still need one concrete attachment
 /// layout to resolve imports and transient resources.
 ///
 /// ## Submit model
@@ -133,6 +136,7 @@ pub(super) struct ResolvedView<'a> {
     pub(super) viewport_px: (u32, u32),
     pub(super) multiview_stereo: bool,
     pub(super) offscreen_write_target: OffscreenWriteTarget,
+    pub(super) view_winding: ViewWinding,
     pub(super) view_id: ViewId,
     pub(super) sample_count: u32,
     pub(super) post_processing: ViewPostProcessing,

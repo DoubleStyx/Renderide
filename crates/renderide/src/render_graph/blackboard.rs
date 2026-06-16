@@ -21,46 +21,12 @@ use std::sync::Arc;
 use hashbrown::HashMap;
 use parking_lot::Mutex;
 
+pub use crate::blackboard_contract::BlackboardSlot;
+pub(crate) use crate::blackboard_contract::blackboard_slot;
+
 use super::pass::BlackboardAccessDecl;
 #[cfg(test)]
 use super::resources::ImportedTextureHandle;
-
-/// Marker trait for blackboard slot keys.
-///
-/// Implement this on a ZST to define a typed slot. The associated `Value` type is what is
-/// stored and retrieved. All values must be `Send + 'static` to be safe across threads and
-/// frames.
-///
-/// # Example
-///
-/// ```ignore
-/// struct MyDataSlot;
-/// impl BlackboardSlot for MyDataSlot {
-///     type Value = MyData;
-/// }
-/// ```
-pub trait BlackboardSlot: 'static {
-    /// Type stored under this slot.
-    type Value: Send + Sync + 'static;
-}
-
-/// Defines a zero-sized blackboard slot marker and its [`BlackboardSlot`] value type.
-macro_rules! blackboard_slot {
-    (
-        $(#[$attr:meta])*
-        $vis:vis $name:ident => $value:ty $(,)?
-    ) => {
-        $(#[$attr])*
-        $vis struct $name;
-
-        $(#[$attr])*
-        impl $crate::render_graph::blackboard::BlackboardSlot for $name {
-            type Value = $value;
-        }
-    };
-}
-
-pub(crate) use blackboard_slot;
 
 /// Typed key-value store for one frame scope.
 ///

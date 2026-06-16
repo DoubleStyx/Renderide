@@ -1,9 +1,7 @@
-//! Per-frame diagnostics for the **Frame** debug HUD tab (allocator, draws)
-//! and the **GPU memory** tab (throttled full [`wgpu::AllocatorReport`]).
+//! Per-frame diagnostics for the active **Renderide debug** top-level tab.
 //!
-//! [`FrameDiagnosticsSnapshot`] composes independent fragments -- one per concern -- so each
-//! HUD section can borrow exactly the data it consumes without threading the whole snapshot
-//! through the call tree.
+//! [`FrameDiagnosticsSnapshot`] composes independent fragments -- one per concern -- and only
+//! populates the fragments needed by the selected tab.
 
 pub mod gpu_allocator;
 pub mod host;
@@ -23,10 +21,13 @@ pub use mesh_draw::MeshDrawFragment;
 pub use shader_routes::ShaderRoutesFragment;
 pub use xr_health::XrRecoverableFailureCounts;
 
-use crate::diagnostics::BackendDiagSnapshot;
+use crate::config::DebugHudMainTab;
+use crate::diagnostics::{AssetDiagnosticsSnapshot, BackendDiagSnapshot, LightDiagnosticsSnapshot};
 /// Inputs for [`FrameDiagnosticsSnapshot::capture`], grouped like
 /// [`crate::diagnostics::RendererInfoSnapshotCapture`].
 pub struct FrameDiagnosticsSnapshotCapture<'a> {
+    /// Active main debug tab this snapshot was captured for.
+    pub main_tab: DebugHudMainTab,
     /// Host CPU and memory HUD snapshot.
     pub host: HostCpuMemoryHud,
     /// Host [`crate::shared::FrameSubmitData::render_tasks`] count from the last applied submit.
@@ -57,12 +58,20 @@ pub struct FrameDiagnosticsSnapshotCapture<'a> {
 /// layer borrows fragments individually so per-tab code never sees data it does not consume.
 #[derive(Clone, Debug, Default)]
 pub struct FrameDiagnosticsSnapshot {
+    /// Active main debug tab this snapshot was captured for.
+    pub main_tab: DebugHudMainTab,
     /// Host CPU model and memory usage.
     pub host: HostCpuMemoryHud,
     /// GPU allocator totals plus throttled full report.
     pub gpu_allocator: GpuAllocatorFragment,
     /// World mesh draw stats, draw-state rows, and resident pool counts.
     pub mesh_draw: MeshDrawFragment,
+    /// Render-graph command recording and scheduling diagnostics.
+    pub graph: crate::render_graph::CommandEncodingHudSnapshot,
+    /// Asset streaming, deferred-work, and worker diagnostics.
+    pub assets: AssetDiagnosticsSnapshot,
+    /// Light packing and influence-volume culling diagnostics.
+    pub lights: LightDiagnosticsSnapshot,
     /// Sorted host-shader -> pipeline routing rows.
     pub shader_routes: ShaderRoutesFragment,
     /// IPC outbound queue health plus host-command failure counters.
@@ -77,6 +86,7 @@ impl FrameDiagnosticsSnapshot {
     pub fn capture(capture: FrameDiagnosticsSnapshotCapture<'_>) -> Self {
         profiling::scope!("hud::build_diagnostics_snapshot");
         let FrameDiagnosticsSnapshotCapture {
+            main_tab,
             host,
             last_submit_render_task_count,
             pending_camera_readbacks,
@@ -89,23 +99,45 @@ impl FrameDiagnosticsSnapshot {
             frame_submit_apply_failures,
             unhandled_ipc_command_event_total,
         } = capture;
-        Self {
-            host,
-            gpu_allocator: GpuAllocatorFragment::capture(allocator),
-            mesh_draw: MeshDrawFragment::capture(
-                backend,
-                last_submit_render_task_count,
-                pending_camera_readbacks,
-                completed_camera_readbacks,
-                failed_camera_readbacks,
-            ),
-            shader_routes: ShaderRoutesFragment::capture(backend),
-            ipc_health: IpcHealthFragment::capture(
-                ipc,
-                frame_submit_apply_failures,
-                unhandled_ipc_command_event_total,
-            ),
-            xr_health: xr,
+
+        let mut snapshot = Self {
+            main_tab,
+            ..Self::default()
+        };
+
+        match main_tab {
+            DebugHudMainTab::Stats => {
+                snapshot.host = host;
+                snapshot.gpu_allocator = GpuAllocatorFragment::capture(allocator);
+                snapshot.mesh_draw = MeshDrawFragment::capture(
+                    backend,
+                    last_submit_render_task_count,
+                    pending_camera_readbacks,
+                    completed_camera_readbacks,
+                    failed_camera_readbacks,
+                );
+                snapshot.ipc_health = IpcHealthFragment::capture(
+                    ipc,
+                    frame_submit_apply_failures,
+                    unhandled_ipc_command_event_total,
+                );
+                snapshot.xr_health = xr;
+                snapshot.lights = backend.lights;
+                snapshot.graph = backend.command_encoding.clone();
+                snapshot.assets = backend.assets.clone();
+            }
+            DebugHudMainTab::ShaderRoutes => {
+                snapshot.shader_routes = ShaderRoutesFragment::capture(backend);
+            }
+            DebugHudMainTab::DrawState => {
+                snapshot.mesh_draw = MeshDrawFragment::capture_draw_state_rows(backend);
+            }
+            DebugHudMainTab::GpuMemory => {
+                snapshot.gpu_allocator = GpuAllocatorFragment::capture(allocator);
+            }
+            DebugHudMainTab::GpuPasses => {}
         }
+
+        snapshot
     }
 }

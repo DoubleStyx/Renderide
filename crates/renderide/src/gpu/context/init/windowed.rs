@@ -18,7 +18,7 @@ use super::shared::{
     select_window_adapters_with_fallback,
 };
 use crate::config::{GraphicsApiSetting, VsyncMode};
-use crate::diagnostics::gpu_flight_recorder::GpuFlightRecorder;
+use crate::gpu::flight_recorder::GpuFlightRecorder;
 use crate::gpu::submission_state::GpuSubmissionState;
 
 /// Windowed GPU resources for an adapter that successfully configured the winit surface.

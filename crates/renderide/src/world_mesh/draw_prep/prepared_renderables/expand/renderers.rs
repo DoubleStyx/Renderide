@@ -13,6 +13,7 @@ use crate::shared::{LayerType, RenderingContext};
 use crate::world_mesh::culling::{
     MeshCullGeometry, MeshCullTarget, mesh_world_geometry_for_cull_with_head,
 };
+use crate::world_mesh::materials::normalized_material_slot;
 
 use super::super::super::item::{MaterialStackOrder, stacked_material_submesh_range};
 use super::super::FramePreparedDraw;
@@ -357,9 +358,11 @@ fn expand_renderer_slots(
                 slot_index,
             )
             .unwrap_or(slot.material_asset_id);
-        if material_asset_id < 0 {
+        let Some((material_asset_id, property_block_id)) =
+            normalized_material_slot(material_asset_id, slot.property_block_id)
+        else {
             continue;
-        }
+        };
         out.push(FramePreparedDraw {
             space_id,
             renderable_index,
@@ -384,7 +387,7 @@ fn expand_renderer_slots(
             first_index,
             index_count,
             material_asset_id,
-            property_block_id: slot.property_block_id,
+            property_block_id,
             cull_geometry,
             rigid_world_matrix_override: None,
             particle_draw: ParticleDrawParams::default(),

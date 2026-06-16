@@ -1,8 +1,8 @@
 //! Debug, diagnostics, and watchdog renderer-config HUD controls.
 
 use crate::config::{
-    DebugHudSettings, PowerPreferenceSetting, RenderGraphValidationMode, RendererSettings,
-    WatchdogAction,
+    CommandRecordingMode, DebugHudSettings, PowerPreferenceSetting, RenderGraphValidationMode,
+    RendererSettings, WatchdogAction,
 };
 
 use super::controls::{drag_f32_slider_setting, drag_u32_slider_setting};
@@ -37,12 +37,12 @@ fn debug_hud_section(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bool)
     }
     ui.text_disabled("FPS and CPU/GPU frame intervals; snapshot is cheap.");
     if ui.checkbox(
-        "Debug HUD (Stats / Shader routes / Draw state / GPU memory)",
+        "Debug HUD (Stats / Shader routes / Draw state / GPU memory / GPU passes)",
         &mut g.debug.debug_hud_enabled,
     ) {
         *dirty = true;
     }
-    ui.text_disabled("Main debug panels and per-frame diagnostics capture when enabled.");
+    ui.text_disabled("Main debug panels collect metrics only for the selected open tab.");
     if ui.checkbox("Scene transforms HUD", &mut g.debug.debug_hud_transforms) {
         *dirty = true;
     }
@@ -109,6 +109,21 @@ fn debug_diagnostics_section(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &m
         }
     }
     ui.text_disabled("Warn logs declaration/runtime issues; Strict turns them into graph errors.");
+    ui.text_disabled("Command recording");
+    for (i, &mode) in CommandRecordingMode::ALL.iter().enumerate() {
+        let _id = ui.push_id_int(700 + i as i32);
+        if ui
+            .selectable_config(mode.label())
+            .selected(g.debug.command_recording == mode)
+            .build()
+        {
+            g.debug.command_recording = mode;
+            *dirty = true;
+        }
+    }
+    ui.text_disabled(
+        "Auto is conservative; other modes are profiling overrides applied next frame.",
+    );
     ui.text_disabled("Power preference (applies at next renderer launch)");
     for (i, &pref) in PowerPreferenceSetting::ALL.iter().enumerate() {
         let _id = ui.push_id_int(i as i32);

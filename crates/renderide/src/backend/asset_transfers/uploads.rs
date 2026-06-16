@@ -40,13 +40,13 @@ pub use video_texture::{
 };
 
 /// Deferred [`MeshUploadData`](crate::shared::MeshUploadData) count that emits queue-pressure diagnostics.
-pub const MAX_PENDING_MESH_UPLOADS: usize = 256;
+pub const PENDING_MESH_UPLOAD_WARN_THRESHOLD: usize = 256;
 
 /// Deferred texture data command count that emits queue-pressure diagnostics.
-pub const MAX_PENDING_TEXTURE_UPLOADS: usize = 256;
+pub const PENDING_TEXTURE_UPLOAD_WARN_THRESHOLD: usize = 256;
 
 /// Deferred Texture3D data command count that emits queue-pressure diagnostics.
-pub const MAX_PENDING_TEXTURE3D_UPLOADS: usize = 256;
+pub const PENDING_TEXTURE3D_UPLOAD_WARN_THRESHOLD: usize = 256;
 
 /// Deferred cubemap data command count that emits queue-pressure diagnostics.
-pub const MAX_PENDING_CUBEMAP_UPLOADS: usize = 256;
+pub const PENDING_CUBEMAP_UPLOAD_WARN_THRESHOLD: usize = 256;

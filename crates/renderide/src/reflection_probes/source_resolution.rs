@@ -8,6 +8,7 @@ use super::{
 use crate::reflection_probes::specular::{
     RuntimeReflectionProbeCaptureKey, RuntimeReflectionProbeCaptureStore,
 };
+use crate::reflection_probes::{ReflectionProbeCubemapAsset, ReflectionProbeCubemapAssets};
 use crate::scene::{
     ReflectionProbeEntry, RenderSpaceId, SceneCoordinator, reflection_probe_solid_color,
 };
@@ -26,7 +27,7 @@ pub(super) enum Sh2ResolvedSource {
 /// Resolves a host task into a cache key and source payload.
 pub(super) fn resolve_task_source(
     scene: &SceneCoordinator,
-    assets: &crate::backend::AssetTransferQueue,
+    assets: &dyn ReflectionProbeCubemapAssets,
     captures: &RuntimeReflectionProbeCaptureStore,
     render_space_id: i32,
     task: TaskHeader,
@@ -57,7 +58,7 @@ pub(super) fn resolve_task_source(
         }
         let asset_id = state.cubemap_asset_id;
         let identity = CubemapSourceMaterialIdentity::DIRECT_PROBE;
-        let Some(cubemap) = assets.cubemap_pool().get(asset_id) else {
+        let Some(cubemap) = assets.reflection_probe_cubemap(asset_id) else {
             return Some((
                 Sh2SourceKey::cubemap(
                     render_space_id,
@@ -72,7 +73,7 @@ pub(super) fn resolve_task_source(
             render_space_id,
             identity,
             asset_id,
-            cubemap_residency_from_pool(cubemap),
+            cubemap_residency_from_pool(&cubemap),
         );
         if cubemap.mip_levels_resident == 0 {
             return Some((key, Sh2ResolvedSource::Postpone));
@@ -86,7 +87,10 @@ pub(super) fn resolve_task_source(
         ));
     }
 
-    if state.r#type == ReflectionProbeType::OnChanges {
+    if matches!(
+        state.r#type,
+        ReflectionProbeType::OnChanges | ReflectionProbeType::Realtime
+    ) {
         return resolve_runtime_capture_source(render_space_id, probe, captures);
     }
     None
@@ -130,9 +134,7 @@ fn resolve_runtime_capture_source(
     ))
 }
 
-fn cubemap_residency_from_pool(
-    cubemap: &crate::gpu_pools::pools::cubemap::GpuCubemap,
-) -> CubemapResidency {
+fn cubemap_residency_from_pool(cubemap: &ReflectionProbeCubemapAsset) -> CubemapResidency {
     CubemapResidency {
         allocation_generation: cubemap.allocation_generation,
         size: cubemap.size,
@@ -146,6 +148,14 @@ fn cubemap_residency_from_pool(
 mod tests {
     use super::*;
     use crate::shared::{ReflectionProbeClear, ReflectionProbeState};
+
+    struct EmptyCubemapAssets;
+
+    impl ReflectionProbeCubemapAssets for EmptyCubemapAssets {
+        fn reflection_probe_cubemap(&self, _asset_id: i32) -> Option<ReflectionProbeCubemapAsset> {
+            None
+        }
+    }
 
     #[test]
     fn missing_runtime_capture_postpones_onchanges_probe() {
@@ -208,5 +218,51 @@ mod tests {
         assert_eq!(color_key, skybox_key);
         assert!(matches!(skybox_source, Sh2ResolvedSource::Postpone));
         assert!(matches!(color_source, Sh2ResolvedSource::Postpone));
+    }
+
+    #[test]
+    fn realtime_task_without_capture_postpones_runtime_cubemap_source() {
+        let mut scene = SceneCoordinator::new();
+        let space_id = RenderSpaceId(7);
+        scene.test_seed_space_identity_worlds(space_id, Vec::new(), Vec::new());
+        scene.test_push_reflection_probes(
+            space_id,
+            [ReflectionProbeEntry {
+                renderable_index: 0,
+                transform_id: 12,
+                state: ReflectionProbeState {
+                    renderable_index: 0,
+                    clear_flags: ReflectionProbeClear::Skybox,
+                    r#type: ReflectionProbeType::Realtime,
+                    ..Default::default()
+                },
+            }],
+        );
+        let assets = EmptyCubemapAssets;
+        let captures = RuntimeReflectionProbeCaptureStore::default();
+
+        let (key, source) = resolve_task_source(
+            &scene,
+            &assets,
+            &captures,
+            space_id.0,
+            TaskHeader {
+                renderable_index: 42,
+                reflection_probe_renderable_index: 0,
+            },
+        )
+        .expect("realtime probes should resolve to a postponed runtime cubemap source");
+
+        assert_eq!(
+            key,
+            Sh2SourceKey::RuntimeCubemap {
+                render_space_id: space_id.0,
+                renderable_index: 0,
+                generation: 0,
+                size: 0,
+                sample_size: DEFAULT_SAMPLE_SIZE,
+            }
+        );
+        assert!(matches!(source, Sh2ResolvedSource::Postpone));
     }
 }

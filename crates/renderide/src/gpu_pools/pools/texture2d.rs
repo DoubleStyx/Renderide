@@ -22,6 +22,7 @@ use crate::gpu_pools::texture_allocation::{
 };
 
 static NEXT_TEXTURE2D_VIEW_GENERATION: AtomicU64 = AtomicU64::new(1);
+const MAX_GPU_TEXTURE_ALLOCATION_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Texture2dAllocationDesc {
@@ -92,6 +93,21 @@ impl GpuTexture2d {
             height: desc.height,
             depth_or_array_layers: 1,
         };
+        let resident_bytes = estimate_gpu_texture_bytes(
+            desc.wgpu_format,
+            desc.width,
+            desc.height,
+            desc.mip_levels_total,
+        );
+        if resident_bytes > MAX_GPU_TEXTURE_ALLOCATION_BYTES {
+            logger::warn!(
+                "Texture2D {} rejected: estimated resident bytes {} exceed cap {}",
+                fmt.asset_id,
+                resident_bytes,
+                MAX_GPU_TEXTURE_ALLOCATION_BYTES
+            );
+            return None;
+        }
         let label = format!("Texture2D {}", fmt.asset_id);
         let (texture, view) = create_sampled_copy_dst_texture(
             device,
@@ -106,12 +122,6 @@ impl GpuTexture2d {
                     dimension: None,
                 },
             },
-        );
-        let resident_bytes = estimate_gpu_texture_bytes(
-            desc.wgpu_format,
-            desc.width,
-            desc.height,
-            desc.mip_levels_total,
         );
         let sampler = SamplerState::from_texture2d_props(props);
         let residency = props

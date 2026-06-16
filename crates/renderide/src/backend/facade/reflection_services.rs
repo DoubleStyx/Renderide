@@ -1,13 +1,12 @@
 //! Reflection-probe services owned behind the backend facade.
 
 use crate::backend::AssetTransferQueue;
-use crate::backend::frame_gpu::ReflectionProbeSpecularResources;
 use crate::gpu::GpuContext;
 use crate::ipc::SharedMemoryAccessor;
 use crate::reflection_probes::ReflectionProbeSh2System;
 use crate::reflection_probes::specular::{
     ReflectionProbeFrameSelection, ReflectionProbeSpecularMaintainParams,
-    ReflectionProbeSpecularSystem, RuntimeReflectionProbeCapture,
+    ReflectionProbeSpecularResources, ReflectionProbeSpecularSystem, RuntimeReflectionProbeCapture,
 };
 use crate::scene::{RenderSpaceId, SceneCoordinator};
 use crate::shared::{FrameSubmitData, RenderingContext};

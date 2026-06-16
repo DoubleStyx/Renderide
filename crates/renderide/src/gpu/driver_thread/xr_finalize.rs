@@ -23,12 +23,10 @@ use openxr as xr;
 use openxr::{CompositionLayerProjection, CompositionLayerProjectionView, SwapchainSubImage};
 use parking_lot::Mutex;
 
-use crate::diagnostics::crash_context;
-use crate::diagnostics::gpu_flight_recorder::{
-    GpuFlightCallResult, GpuFlightOpenXrCall, GpuFlightRecorder,
-};
+use crate::crash_context;
 use crate::gpu::GpuQueueAccessGate;
 use crate::gpu::driver_thread::BlockingCallWatchdog;
+use crate::gpu::flight_recorder::{GpuFlightCallResult, GpuFlightOpenXrCall, GpuFlightRecorder};
 
 /// Deadline for a single deferred `xrEndFrame` call before the watchdog logs a stall.
 ///

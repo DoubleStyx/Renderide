@@ -6,9 +6,9 @@ use super::super::task_rows::{
     write_task_answer,
 };
 use super::ReflectionProbeSh2System;
-use crate::backend::AssetTransferQueue;
 use crate::ipc::SharedMemoryAccessor;
 use crate::profiling;
+use crate::reflection_probes::ReflectionProbeCubemapAssets;
 use crate::reflection_probes::specular::RuntimeReflectionProbeCaptureStore;
 use crate::scene::SceneCoordinator;
 use crate::shared::{ComputeResult, ReflectionProbeSH2Tasks};
@@ -16,7 +16,7 @@ use crate::shared::{ComputeResult, ReflectionProbeSH2Tasks};
 /// Borrow bundle for resolving SH2 task rows against host scene/material/asset state.
 pub(super) struct Sh2TaskSourceContext<'a> {
     pub(super) scene: &'a SceneCoordinator,
-    pub(super) assets: &'a AssetTransferQueue,
+    pub(super) assets: &'a dyn ReflectionProbeCubemapAssets,
     pub(super) captures: &'a RuntimeReflectionProbeCaptureStore,
     pub(super) render_space_id: i32,
 }

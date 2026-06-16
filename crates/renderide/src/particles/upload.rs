@@ -193,7 +193,8 @@ pub(crate) fn upload_generated_mesh(
     })
 }
 
-fn generated_mesh_upload_data(
+/// Builds the synthetic mesh-upload metadata describing one generated particle mesh.
+pub(super) fn generated_mesh_upload_data(
     mesh_asset_id: i32,
     vertex_count: usize,
     index_count: usize,

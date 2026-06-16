@@ -1,6 +1,6 @@
 //! Derived vertex-stream demand and dirty-state policy for mesh uploads.
 
-use crate::materials::EmbeddedTangentFallbackMode;
+use crate::render_contract::EmbeddedTangentFallbackMode;
 use crate::shared::MeshUploadData;
 
 /// Bit mask identifying derived mesh streams that may be uploaded separately from the host's

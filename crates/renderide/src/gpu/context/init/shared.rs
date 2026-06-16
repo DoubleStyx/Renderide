@@ -19,7 +19,7 @@ use super::super::super::sync::device_health::GpuDeviceHealth;
 use super::super::super::sync::mapped_buffer_health::GpuMappedBufferHealth;
 use super::super::{GpuContext, GpuError, PrimaryOffscreenTargets};
 use crate::config::{GraphicsApiSetting, VsyncMode};
-use crate::diagnostics::gpu_flight_recorder::GpuFlightRecorder;
+use crate::gpu::flight_recorder::GpuFlightRecorder;
 use crate::gpu::submission_state::GpuSubmissionState;
 
 /// Runtime handles derived from a queue and shared by all GPU construction paths.
@@ -167,12 +167,18 @@ pub(super) fn log_windowed_gpu_selection_summary(
     msaa: &MsaaSupport,
 ) {
     logger::info!(
-        "GPU: adapter={} backend={:?} graphics_api={} active_backends={:?} extent={}x{} format={:?} vsync={:?} present_mode={:?} \
+        "GPU: adapter={} type={:?} backend={:?} vendor={:#010x} device={:#010x} pci_bus_id={} driver={} driver_info={} graphics_api={} active_backends={:?} extent={}x{} format={:?} vsync={:?} present_mode={:?} \
          supported_present_modes={:?} desired_maximum_frame_latency={} instance_flags={:?} \
          msaa_supported_sample_counts={:?} msaa_max_sample_count={} \
          msaa_supported_sample_counts_stereo={:?} msaa_max_sample_count_stereo={}",
         adapter_info.name,
+        adapter_info.device_type,
         adapter_info.backend,
+        adapter_info.vendor,
+        adapter_info.device,
+        adapter_info_field_or_unreported(&adapter_info.device_pci_bus_id),
+        adapter_info_field_or_unreported(&adapter_info.driver),
+        adapter_info_field_or_unreported(&adapter_info.driver_info),
         selection.graphics_api.as_persist_str(),
         selection.active_backends,
         config.width,
@@ -188,6 +194,15 @@ pub(super) fn log_windowed_gpu_selection_summary(
         &msaa.stereo,
         msaa.stereo_max()
     );
+}
+
+/// Returns a stable placeholder when wgpu reports an empty adapter identity field.
+pub(super) fn adapter_info_field_or_unreported(value: &str) -> &str {
+    if value.trim().is_empty() {
+        "<unreported>"
+    } else {
+        value
+    }
 }
 
 /// Builds the common [`GpuContext`] field set once all path-specific resources are ready.

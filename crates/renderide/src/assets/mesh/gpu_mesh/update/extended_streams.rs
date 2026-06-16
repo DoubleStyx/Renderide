@@ -1,6 +1,6 @@
 //! Lazy creation of tangent / UV1-UV3 vertex streams for meshes that hit extended embedded shaders.
 
-use crate::materials::EmbeddedTangentFallbackMode;
+use crate::render_contract::EmbeddedTangentFallbackMode;
 use crate::shared::VertexAttributeType;
 
 use super::super::upload::{

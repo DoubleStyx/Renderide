@@ -10,7 +10,7 @@ use crate::frontend::InitState;
 use crate::frontend::dispatch::renderer_command_kind::renderer_command_variant_tag;
 use crate::ipc::TimedRendererCommand;
 
-use crate::diagnostics::log_throttle::LogThrottle;
+use crate::log_throttle::LogThrottle;
 
 use super::super::RendererRuntime;
 use super::shader_material;

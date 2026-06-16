@@ -16,6 +16,7 @@ pub(super) fn compile_pass_info(setups: &[SetupEntry], ordered: &[usize]) -> Vec
             let raster_template = compile_raster_template(&setup.setup);
             CompiledPassInfo {
                 name: setup.name.clone(),
+                profiling_label: setup.profiling_label.clone(),
                 #[cfg(test)]
                 kind: setup.setup.kind,
                 workload_flags: setup.setup.workload_flags,

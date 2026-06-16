@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use crate::diagnostics::crash_context;
+use crate::crash_context;
 
 /// Installs a panic hook that appends a fully formatted crash snapshot to the open log file and
 /// echoes the report to the preserved native stderr handle.

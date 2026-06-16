@@ -39,12 +39,16 @@ fn wrap_cookie_uv(uv: vec2<f32>, bits: u32) -> vec2<f32> {
     );
 }
 
+fn atlas_cookie_uv(rect_index: u32, uv: vec2<f32>) -> vec2<f32> {
+    let rect = rg::light_cookie_rects[rect_index].origin_scale;
+    return rect.xy + uv * rect.zw;
+}
+
 fn sample_2d_cookie(light: ft::GpuLight, uv: vec2<f32>) -> f32 {
     return textureSample(
         rg::light_cookie_2d_atlas,
         rg::light_cookie_sampler,
-        wrap_cookie_uv(uv, light.cookie_reserved),
-        i32(light.cookie_layer),
+        atlas_cookie_uv(light.cookie_layer, wrap_cookie_uv(uv, light.cookie_reserved)),
     ).r;
 }
 
@@ -114,8 +118,12 @@ fn point_cookie_multiplier(light: ft::GpuLight, world_pos: vec3<f32>) -> f32 {
         dot(from_light, light.direction),
     ) * inverseSqrt(len_sq);
     let face_uv = cube_face_uv(local);
-    let layer = light.cookie_layer + u32(face_uv.z);
-    return textureSample(rg::light_cookie_point_atlas, rg::light_cookie_sampler, face_uv.xy, i32(layer)).r;
+    let rect_index = light.cookie_layer + u32(face_uv.z);
+    return textureSample(
+        rg::light_cookie_point_atlas,
+        rg::light_cookie_sampler,
+        atlas_cookie_uv(rect_index, face_uv.xy),
+    ).r;
 }
 
 fn multiplier(light: ft::GpuLight, world_pos: vec3<f32>) -> f32 {

@@ -17,7 +17,7 @@ use super::super::texture_resolve::{
 use super::cache::EmbeddedSamplerCacheKey;
 use super::uniform::MaterialUniformCacheKey;
 use crate::embedded_shaders::EmbeddedTextureDefaultKind;
-use crate::graph_inputs::OffscreenWriteTarget;
+use crate::frame_contract::OffscreenWriteTarget;
 use crate::materials::host_data::{MaterialPropertyLookupIds, MaterialPropertyStore};
 
 /// Texture views, samplers, and the matching bind signature captured from one pool read.

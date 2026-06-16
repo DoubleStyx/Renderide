@@ -115,3 +115,29 @@ fn overridden_material_asset_id_matches_context_target_and_slot() {
         None
     );
 }
+
+#[test]
+fn inactive_material_override_entries_do_not_affect_queries() {
+    let mut space = RenderSpaceState::default();
+    space
+        .render_material_overrides
+        .push(RenderMaterialOverrideEntry {
+            node_id: -1,
+            context: RenderingContext::Mirror,
+            target: MeshRendererOverrideTarget::Static(4),
+            material_overrides: vec![MaterialOverrideBinding {
+                material_slot_index: 1,
+                material_asset_id: 99,
+            }],
+        });
+
+    assert!(!space.has_material_overrides_in_context(RenderingContext::Mirror));
+    assert_eq!(
+        space.overridden_material_asset_id(
+            RenderingContext::Mirror,
+            MeshRendererOverrideTarget::Static(4),
+            1,
+        ),
+        None
+    );
+}

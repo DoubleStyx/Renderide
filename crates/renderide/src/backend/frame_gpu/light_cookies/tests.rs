@@ -1,11 +1,12 @@
-use super::assignment::{LightCookieAssignment, LightCookieAtlasState};
-use super::atlas::{LIGHT_COOKIE_ATLAS_EDGE, white_layer_bytes};
+use super::assignment::{LightCookieAssignment, LightCookieAtlasState, POINT_COOKIE_RECT_BASE};
+use super::atlas::white_texture_bytes;
 use super::blit::LIGHT_COOKIE_BLIT_2D_STEM;
 use super::format::{
     LightCookieAtlasFormat, LightCookieSourceChannel, LightCookieSourceSampling,
     light_cookie_atlas_format_supported, light_cookie_wrap_bits, select_light_cookie_atlas_format,
     source_channel_for_host_format, source_sampling_for_limits,
 };
+use super::packing::{LightCookieAtlasRect, LightCookiePackItem, pack_light_cookie_rects};
 use crate::assets::texture::HostTextureAssetKind;
 use crate::gpu::{
     GpuLimits, LIGHT_COOKIE_KIND_DIRECTIONAL_2D, LIGHT_COOKIE_WRAP_MODE_CLAMP,
@@ -180,18 +181,90 @@ fn source_sampling_accepts_filtering_and_non_filtering_textures() {
 
 #[test]
 fn white_layer_bytes_match_atlas_formats() {
-    let texels = (LIGHT_COOKIE_ATLAS_EDGE * LIGHT_COOKIE_ATLAS_EDGE) as usize;
-    let r8 = white_layer_bytes(LightCookieAtlasFormat::R8Unorm);
+    let texels = 8usize * 4usize;
+    let r8 = white_texture_bytes(LightCookieAtlasFormat::R8Unorm, 8, 4);
     assert_eq!(r8.len(), texels);
     assert!(r8.iter().all(|&b| b == 255));
 
-    let r16 = white_layer_bytes(LightCookieAtlasFormat::R16Float);
+    let r16 = white_texture_bytes(LightCookieAtlasFormat::R16Float, 8, 4);
     assert_eq!(r16.len(), texels * 2);
     assert!(r16.chunks_exact(2).all(|bytes| bytes == [0x00, 0x3c]));
 
-    let rgba16 = white_layer_bytes(LightCookieAtlasFormat::Rgba16Float);
+    let rgba16 = white_texture_bytes(LightCookieAtlasFormat::Rgba16Float, 8, 4);
     assert_eq!(rgba16.len(), texels * 8);
     assert!(rgba16.chunks_exact(2).all(|bytes| bytes == [0x00, 0x3c]));
+}
+
+#[test]
+fn packs_cookie_rects_without_downscaling_sources() {
+    let plan = pack_light_cookie_rects(
+        &[
+            LightCookiePackItem {
+                rect_index: 1,
+                width: 512,
+                height: 256,
+            },
+            LightCookiePackItem {
+                rect_index: 2,
+                width: 128,
+                height: 128,
+            },
+        ],
+        1024,
+    );
+
+    assert_eq!(plan.overflow_count, 0);
+    assert_eq!(plan.extent.width, 640);
+    assert_eq!(plan.extent.height, 256);
+    assert_eq!(
+        plan.rects[0].rect,
+        LightCookieAtlasRect {
+            x: 0,
+            y: 0,
+            width: 512,
+            height: 256,
+        }
+    );
+    assert_eq!(plan.rects[0].rect_index, 1);
+}
+
+#[test]
+fn packs_cookie_rects_into_new_rows_when_needed() {
+    let plan = pack_light_cookie_rects(
+        &[
+            LightCookiePackItem {
+                rect_index: 1,
+                width: 700,
+                height: 128,
+            },
+            LightCookiePackItem {
+                rect_index: 2,
+                width: 500,
+                height: 64,
+            },
+        ],
+        1024,
+    );
+
+    assert_eq!(plan.overflow_count, 0);
+    assert_eq!(plan.extent.width, 700);
+    assert_eq!(plan.extent.height, 192);
+    assert_eq!(plan.rects[1].rect.y, 128);
+}
+
+#[test]
+fn packing_skips_sources_larger_than_device_extent() {
+    let plan = pack_light_cookie_rects(
+        &[LightCookiePackItem {
+            rect_index: 1,
+            width: 2048,
+            height: 64,
+        }],
+        1024,
+    );
+
+    assert_eq!(plan.overflow_count, 1);
+    assert!(plan.rects.is_empty());
 }
 
 #[test]
@@ -213,17 +286,13 @@ fn light_cookie_wrap_bits_pack_u_and_v_modes() {
 #[test]
 fn assigns_directional_cookies_to_2d_atlas() {
     let mut state = LightCookieAtlasState::new();
-    let binding = state.assign(
-        LightCookieAssignment {
-            light_type: LightType::Directional,
-            packed_id: 42,
-            asset_id: 7,
-            kind: HostTextureAssetKind::Texture2D,
-            wrap_bits: 0x0d,
-        },
-        8,
-        8,
-    );
+    let binding = state.assign(LightCookieAssignment {
+        light_type: LightType::Directional,
+        packed_id: 42,
+        asset_id: 7,
+        kind: HostTextureAssetKind::Texture2D,
+        wrap_bits: 0x0d,
+    });
 
     assert_eq!(binding.kind, LIGHT_COOKIE_KIND_DIRECTIONAL_2D);
     assert_eq!(binding.layer, 1);
@@ -232,6 +301,24 @@ fn assigns_directional_cookies_to_2d_atlas() {
     assert_eq!(two_d.len(), 1);
     assert_eq!(two_d[0].asset_id, 7);
     assert!(point.is_empty());
+}
+
+#[test]
+fn assigns_point_cookies_to_disjoint_rect_range() {
+    let mut state = LightCookieAtlasState::new();
+    let binding = state.assign(LightCookieAssignment {
+        light_type: LightType::Point,
+        packed_id: 84,
+        asset_id: 9,
+        kind: HostTextureAssetKind::Cubemap,
+        wrap_bits: 0,
+    });
+
+    assert_eq!(binding.layer, POINT_COOKIE_RECT_BASE);
+    let (two_d, point) = state.requests();
+    assert!(two_d.is_empty());
+    assert_eq!(point.len(), 1);
+    assert_eq!(point[0].layer, POINT_COOKIE_RECT_BASE);
 }
 
 fn limits_with_format(

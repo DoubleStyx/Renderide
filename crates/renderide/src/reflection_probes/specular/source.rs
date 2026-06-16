@@ -1,10 +1,11 @@
 use glam::{Vec3, Vec3A, Vec4};
 
-use crate::backend::AssetTransferQueue;
-use crate::backend::frame_gpu::{
+use crate::bounds::world_aabb_from_local_bounds;
+use crate::gpu::{
     GpuReflectionProbeMetadata, REFLECTION_PROBE_METADATA_BOX_PROJECTION,
     REFLECTION_PROBE_METADATA_SH2_SOURCE_LOCAL,
 };
+use crate::reflection_probes::ReflectionProbeCubemapAssets;
 use crate::scene::{
     ReflectionProbeEntry, RenderSpaceId, SceneCoordinator, reflection_probe_skybox_only,
     reflection_probe_solid_color, reflection_probe_use_box_projection,
@@ -13,7 +14,6 @@ use crate::shared::{ReflectionProbeState, ReflectionProbeType, RenderSH2};
 use crate::skybox::specular::{
     CubemapIblSource, RuntimeCubemapIblSource, SkyboxIblSource, solid_color_ibl_source,
 };
-use crate::world_mesh::culling::world_aabb_from_local_bounds;
 
 use super::captures::{RuntimeReflectionProbeCaptureKey, RuntimeReflectionProbeCaptureStore};
 use super::selection::{
@@ -23,7 +23,7 @@ use super::selection::{
 pub(super) fn resolve_probe_source(
     space_id: RenderSpaceId,
     probe: &ReflectionProbeEntry,
-    assets: &AssetTransferQueue,
+    assets: &dyn ReflectionProbeCubemapAssets,
     captures: &RuntimeReflectionProbeCaptureStore,
 ) -> Option<SkyboxIblSource> {
     let state = probe.state;
@@ -72,12 +72,12 @@ fn resolve_runtime_capture_source(
 
 pub(super) fn resolve_baked_probe_source(
     state: ReflectionProbeState,
-    assets: &AssetTransferQueue,
+    assets: &dyn ReflectionProbeCubemapAssets,
 ) -> Option<SkyboxIblSource> {
     if state.cubemap_asset_id < 0 {
         return None;
     }
-    let cubemap = assets.cubemap_pool().get(state.cubemap_asset_id)?;
+    let cubemap = assets.reflection_probe_cubemap(state.cubemap_asset_id)?;
     if cubemap.mip_levels_resident == 0 {
         return None;
     }
@@ -91,8 +91,8 @@ pub(super) fn resolve_baked_probe_source(
         mip_levels_resident: cubemap.mip_levels_resident,
         content_generation: cubemap.content_generation,
         storage_v_inverted: cubemap.storage_v_inverted,
-        view: cubemap.view.clone(),
-        array_view: cubemap.array_view.clone(),
+        view: cubemap.view,
+        array_view: cubemap.array_view,
     }))
 }
 
@@ -202,7 +202,16 @@ fn pack_render_sh2_raw(sh: &RenderSH2) -> [[f32; 4]; 9] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reflection_probes::ReflectionProbeCubemapAsset;
     use crate::shared::ReflectionProbeClear;
+
+    struct EmptyCubemapAssets;
+
+    impl ReflectionProbeCubemapAssets for EmptyCubemapAssets {
+        fn reflection_probe_cubemap(&self, _asset_id: i32) -> Option<ReflectionProbeCubemapAsset> {
+            None
+        }
+    }
 
     fn probe(index: i32, atlas: u16, importance: i32, min: Vec3, max: Vec3) -> SpatialProbe {
         let (influence_aabb_min, influence_aabb_max) = expanded_aabb(min, max, 0.0);
@@ -222,7 +231,7 @@ mod tests {
 
     #[test]
     fn missing_baked_cubemap_is_not_a_probe_source() {
-        let assets = AssetTransferQueue::new();
+        let assets = EmptyCubemapAssets;
         let state = ReflectionProbeState {
             intensity: 1.0,
             cubemap_asset_id: 42,
@@ -235,7 +244,7 @@ mod tests {
 
     #[test]
     fn missing_onchanges_capture_is_not_a_specular_source() {
-        let assets = AssetTransferQueue::new();
+        let assets = EmptyCubemapAssets;
         let captures = RuntimeReflectionProbeCaptureStore::default();
         let probe = ReflectionProbeEntry {
             renderable_index: 5,
@@ -255,7 +264,7 @@ mod tests {
 
     #[test]
     fn missing_realtime_capture_is_not_a_specular_source() {
-        let assets = AssetTransferQueue::new();
+        let assets = EmptyCubemapAssets;
         let captures = RuntimeReflectionProbeCaptureStore::default();
         let probe = ReflectionProbeEntry {
             renderable_index: 8,

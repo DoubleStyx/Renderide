@@ -24,9 +24,9 @@ use std::sync::LazyLock;
 
 use pipeline::{MsaaResolveHdrPipelineCache, ResolveParamsUbo};
 
+use crate::frame_upload_batch::GraphUploadSink;
 use crate::render_graph::context::{GraphResolvedResources, PassFrameContext};
 use crate::render_graph::error::RenderPassError;
-use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::render_graph::gpu_cache::stereo_mask_or_template;
 use crate::render_graph::resources::TextureHandle;
 

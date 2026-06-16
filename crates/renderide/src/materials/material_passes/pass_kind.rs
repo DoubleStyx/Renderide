@@ -77,6 +77,43 @@ pub enum PassType {
     DepthPrepass,
 }
 
+/// Alpha-to-coverage policy declared by a material pass.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum MaterialAlphaToCoverageMode {
+    /// Hardware alpha-to-coverage is disabled.
+    #[default]
+    Off,
+    /// Hardware alpha-to-coverage is enabled whenever the target is multisampled.
+    Always,
+    /// Hardware alpha-to-coverage is enabled only for host alpha-test render queues.
+    Cutout,
+}
+
+impl MaterialAlphaToCoverageMode {
+    /// Returns the mode after applying runtime material routing.
+    #[inline]
+    pub(crate) const fn materialized(self, routing: MaterialPassRouting) -> Self {
+        match self {
+            Self::Cutout if routing.alpha_test => Self::Always,
+            Self::Cutout | Self::Off => Self::Off,
+            Self::Always => Self::Always,
+        }
+    }
+
+    /// Returns whether this materialized mode enables hardware alpha-to-coverage.
+    #[inline]
+    pub(crate) const fn enabled(self) -> bool {
+        matches!(self, Self::Always)
+    }
+}
+
+/// Runtime material routing decisions that affect per-pass pipeline state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct MaterialPassRouting {
+    /// Whether the effective material render queue is in Unity's alpha-test range.
+    pub alpha_test: bool,
+}
+
 /// How a declared shader pass applies material-driven Unity blend state.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum MaterialPassState {
@@ -149,8 +186,8 @@ pub struct MaterialPassDesc {
     pub depth_bias_slope_scale: f32,
     /// Constant depth bias.
     pub depth_bias_constant: i32,
-    /// Whether this pass enables hardware alpha-to-coverage for MSAA targets.
-    pub alpha_to_coverage: bool,
+    /// Hardware alpha-to-coverage policy for MSAA targets.
+    pub alpha_to_coverage: MaterialAlphaToCoverageMode,
     /// Optional material-driven Unity pass-state override.
     pub material_state: MaterialPassState,
     /// Per-field policy for host-authored Unity render-state overrides.
@@ -266,7 +303,7 @@ pub const fn default_pass(params: DefaultPassParams) -> MaterialPassDesc {
         write_mask,
         depth_bias_slope_scale: 0.0,
         depth_bias_constant: 0,
-        alpha_to_coverage: false,
+        alpha_to_coverage: MaterialAlphaToCoverageMode::Off,
         material_state: MaterialPassState::Static,
         render_state_policy: MaterialRenderStatePolicy::ALL_MATERIAL,
     }
@@ -277,11 +314,27 @@ pub fn materialized_pass_for_blend_mode(
     pass: &MaterialPassDesc,
     blend_mode: MaterialBlendMode,
 ) -> MaterialPassDesc {
+    materialized_pass_for_blend_mode_with_routing(pass, blend_mode, MaterialPassRouting::default())
+}
+
+/// Applies runtime material blend state and routing to a declared pass descriptor.
+pub(crate) fn materialized_pass_for_blend_mode_with_routing(
+    pass: &MaterialPassDesc,
+    blend_mode: MaterialBlendMode,
+    routing: MaterialPassRouting,
+) -> MaterialPassDesc {
+    let alpha_to_coverage = pass.alpha_to_coverage.materialized(routing);
     match pass.material_state {
-        MaterialPassState::Static => *pass,
+        MaterialPassState::Static => MaterialPassDesc {
+            alpha_to_coverage,
+            ..*pass
+        },
         MaterialPassState::Forward => {
             let Some((src, dst)) = blend_mode.unity_blend_factors() else {
-                return *pass;
+                return MaterialPassDesc {
+                    alpha_to_coverage,
+                    ..*pass
+                };
             };
             let blend = unity_blend_state(src, dst);
             MaterialPassDesc {
@@ -292,33 +345,51 @@ pub fn materialized_pass_for_blend_mode(
                     wgpu::ColorWrites::COLOR
                 },
                 depth_write: src == 1 && dst == 0,
+                alpha_to_coverage,
                 ..*pass
             }
         }
         MaterialPassState::TransparentForward => match blend_mode {
-            MaterialBlendMode::StemDefault | MaterialBlendMode::Opaque => *pass,
+            MaterialBlendMode::StemDefault | MaterialBlendMode::Opaque => MaterialPassDesc {
+                alpha_to_coverage,
+                ..*pass
+            },
             MaterialBlendMode::UnityBlend { src, dst } => {
                 let Some(blend) = unity_blend_state(src, dst) else {
-                    return *pass;
+                    return MaterialPassDesc {
+                        alpha_to_coverage,
+                        ..*pass
+                    };
                 };
                 MaterialPassDesc {
                     blend: Some(blend),
                     write_mask: wgpu::ColorWrites::ALL,
                     depth_write: false,
+                    alpha_to_coverage,
                     ..*pass
                 }
             }
         },
         MaterialPassState::Overlay => {
             let Some((src, dst)) = blend_mode.unity_blend_factors() else {
-                return *pass;
+                return MaterialPassDesc {
+                    alpha_to_coverage,
+                    ..*pass
+                };
             };
             let blend = unity_overlay_blend_state(src, dst);
-            MaterialPassDesc { blend, ..*pass }
+            MaterialPassDesc {
+                blend,
+                alpha_to_coverage,
+                ..*pass
+            }
         }
         MaterialPassState::Filter => {
             let Some((src, dst)) = blend_mode.unity_blend_factors() else {
-                return *pass;
+                return MaterialPassDesc {
+                    alpha_to_coverage,
+                    ..*pass
+                };
             };
             let blend = unity_filter_blend_state(src, dst);
             MaterialPassDesc {
@@ -329,6 +400,7 @@ pub fn materialized_pass_for_blend_mode(
                     wgpu::ColorWrites::COLOR
                 },
                 depth_write: src == 1 && dst == 0,
+                alpha_to_coverage,
                 ..*pass
             }
         }
@@ -336,12 +408,28 @@ pub fn materialized_pass_for_blend_mode(
 }
 
 /// Applies runtime blend plus embedded-stem-specific pass-state parity.
+#[cfg(test)]
 pub(crate) fn materialized_embedded_pass_for_blend_mode(
     stem: &str,
     pass: &MaterialPassDesc,
     blend_mode: MaterialBlendMode,
 ) -> MaterialPassDesc {
-    let mut materialized = materialized_pass_for_blend_mode(pass, blend_mode);
+    materialized_embedded_pass_for_blend_mode_with_routing(
+        stem,
+        pass,
+        blend_mode,
+        MaterialPassRouting::default(),
+    )
+}
+
+/// Applies runtime blend, routing, and embedded-stem-specific pass-state parity.
+pub(crate) fn materialized_embedded_pass_for_blend_mode_with_routing(
+    stem: &str,
+    pass: &MaterialPassDesc,
+    blend_mode: MaterialBlendMode,
+    routing: MaterialPassRouting,
+) -> MaterialPassDesc {
+    let mut materialized = materialized_pass_for_blend_mode_with_routing(pass, blend_mode, routing);
     if matches!(stem, "refract" | "refract_default" | "refract_multiview") {
         materialized.render_state_policy.depth_compare = false;
     }

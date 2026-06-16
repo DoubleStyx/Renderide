@@ -7,8 +7,9 @@ fn light_cookie_atlas_sampling_uses_scalar_red_channel() -> io::Result<()> {
     let lighting = source_file(manifest_dir().join("shaders/modules/lighting/light_cookies.wgsl"))?;
     for required in [
         "textureSample(\n        rg::light_cookie_2d_atlas,",
+        "atlas_cookie_uv(light.cookie_layer, wrap_cookie_uv(uv, light.cookie_reserved))",
         "wrap_cookie_uv(uv, light.cookie_reserved)",
-        "textureSample(rg::light_cookie_point_atlas, rg::light_cookie_sampler, face_uv.xy, i32(layer)).r",
+        "atlas_cookie_uv(rect_index, face_uv.xy)",
     ] {
         assert!(
             lighting.contains(required),
@@ -18,6 +19,7 @@ fn light_cookie_atlas_sampling_uses_scalar_red_channel() -> io::Result<()> {
     for forbidden in [
         "light_cookie_spot_atlas",
         "textureSample(rg::light_cookie_point_atlas, rg::light_cookie_sampler, face_uv.xy, i32(layer)).a",
+        "texture_2d_array<f32>",
     ] {
         assert!(
             !lighting.contains(forbidden),
@@ -27,13 +29,14 @@ fn light_cookie_atlas_sampling_uses_scalar_red_channel() -> io::Result<()> {
 
     let globals = source_file(manifest_dir().join("shaders/modules/frame/globals.wgsl"))?;
     assert!(
-        globals.contains("textureSampleLevel(light_cookie_2d_atlas, light_cookie_sampler, vec2<f32>(0.5), 0, 0.0).r")
-            && globals.contains("textureSampleLevel(light_cookie_point_atlas, light_cookie_sampler, vec2<f32>(0.5), 0, 0.0).r"),
+        globals.contains("textureSampleLevel(light_cookie_2d_atlas, light_cookie_sampler, vec2<f32>(0.5), 0.0).r")
+            && globals.contains("textureSampleLevel(light_cookie_point_atlas, light_cookie_sampler, vec2<f32>(0.5), 0.0).r")
+            && globals.contains("light_cookie_rects[0u].origin_scale.x"),
         "frame globals retain path must read scalar red from light-cookie atlases"
     );
     assert!(
-        !globals.contains("textureSampleLevel(light_cookie_2d_atlas, light_cookie_sampler, vec2<f32>(0.5), 0, 0.0).a")
-            && !globals.contains("textureSampleLevel(light_cookie_point_atlas, light_cookie_sampler, vec2<f32>(0.5), 0, 0.0).a"),
+        !globals.contains("textureSampleLevel(light_cookie_2d_atlas, light_cookie_sampler, vec2<f32>(0.5), 0.0).a")
+            && !globals.contains("textureSampleLevel(light_cookie_point_atlas, light_cookie_sampler, vec2<f32>(0.5), 0.0).a"),
         "frame globals retain path must not read alpha from scalar light-cookie atlases"
     );
 

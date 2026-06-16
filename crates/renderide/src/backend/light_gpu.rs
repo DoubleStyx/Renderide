@@ -19,7 +19,7 @@ const DIRECTIONAL_COOKIE_SIZE: f32 = 10.0;
 pub struct LightCookieBinding {
     /// Cookie kind matching the shader constants.
     pub kind: u32,
-    /// Atlas layer, or first face layer for point cookies.
+    /// Atlas rect metadata row, or first face row for point cookies.
     pub layer: u32,
     /// Packed 2D cookie wrap modes.
     pub wrap_bits: u32,
@@ -78,7 +78,7 @@ pub fn gpu_light_from_resolved_with_cookie(
         shadow_view_start: 0,
         shadow_view_count: 0,
         shadow_flags: 0,
-        _shadow_reserved: 0,
+        shadow_map_resolution: light.shadow_map_resolution.max(0) as u32,
         cookie_kind: cookie.kind,
         cookie_layer: cookie.layer,
         _cookie_reserved: cookie.wrap_bits,
@@ -191,6 +191,7 @@ mod layout_tests {
             shadow_type: ShadowType::None,
             shadow_strength: 0.0,
             shadow_near_plane: 0.0,
+            shadow_map_resolution: 0,
             shadow_bias: 0.0,
             shadow_normal_bias: 0.0,
             cookie_texture_asset_id: -1,
@@ -221,6 +222,21 @@ mod layout_tests {
 
         assert_eq!(gpu.color, [0.5, 0.04045, 1.25]);
         assert_eq!(gpu.intensity, 2.0);
+    }
+
+    #[test]
+    fn gpu_light_packs_shadow_map_resolution_override() {
+        let mut light = resolved_light(LightType::Point);
+        light.shadow_map_resolution = 1536;
+
+        let gpu = gpu_light_from_resolved(&light);
+
+        assert_eq!(gpu.shadow_map_resolution, 1536);
+
+        light.shadow_map_resolution = -1;
+        let gpu = gpu_light_from_resolved(&light);
+
+        assert_eq!(gpu.shadow_map_resolution, 0);
     }
 
     #[test]

@@ -5,16 +5,16 @@ use std::hash::{Hash, Hasher};
 use hashbrown::HashMap;
 
 use crate::camera::HostCameraFrame;
-use crate::diagnostics::{PerViewHudConfig, PerViewHudOutputs};
+use crate::frame_upload_batch::GraphUploadSink;
 use crate::gpu::GpuLimits;
 use crate::graph_inputs::{
     FrameSystemsShared, GraphPassFrameView, OffscreenWriteTarget, PerViewFramePlan,
 };
+use crate::hud_contract::{PerViewHudConfig, PerViewHudOutputs, WorldMeshViewHudStats};
 use crate::materials::MaterialSystem;
 use crate::materials::ShaderPermutation;
 use crate::materials::embedded::MaterialBindCacheKey;
 use crate::passes::WorldMeshForwardEncodeRefs;
-use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::skybox::PreparedSkybox;
 use crate::world_mesh::draw_prep::{
     WorldMeshDrawArrangementStats, WorldMeshDrawCollection, WorldMeshDrawItem,
@@ -33,6 +33,7 @@ use super::material_batch::{MaterialGroup1Binding, PipelineVariantKey};
 use super::material_resolve::precompute_material_resolve_batches;
 use super::skybox::SkyboxRenderer;
 use super::slab::{SlabPackInputs, pack_and_upload_per_draw_slab};
+use super::vp::overlay_view_projection;
 use super::{
     MaterialBatchBoundary, MaterialBatchPacket, PreparedWorldMeshForwardFrame,
     WorldMeshForwardPipelineState,
@@ -225,7 +226,7 @@ pub(super) fn capture_hi_z_temporal_after_collect(
         );
 }
 
-/// Updates debug HUD mesh-draw stats when the HUD is enabled.
+/// Updates debug HUD mesh-draw payloads when an active HUD tab needs them.
 pub(super) fn maybe_set_world_mesh_draw_stats(
     debug_hud: PerViewHudConfig,
     materials: &MaterialSystem,
@@ -236,7 +237,7 @@ pub(super) fn maybe_set_world_mesh_draw_stats(
     offscreen_write_target: OffscreenWriteTarget,
 ) -> PerViewHudOutputs {
     let mut outputs = PerViewHudOutputs::default();
-    if debug_hud.main_enabled {
+    if debug_hud.capture_world_mesh_draw_stats {
         let stats = stats_from_sorted(
             draws,
             Some((
@@ -250,10 +251,14 @@ pub(super) fn maybe_set_world_mesh_draw_stats(
             shader_perm,
         );
         outputs.world_mesh_draw_stats = Some(stats);
+    }
+
+    if debug_hud.capture_world_mesh_draw_state_rows {
         outputs.world_mesh_draw_state_rows = Some(state_rows_from_sorted(draws));
     }
 
-    if debug_hud.textures_enabled && !offscreen_write_target.is_offscreen() {
+    if debug_hud.capture_current_view_texture_2d_asset_ids && !offscreen_write_target.is_offscreen()
+    {
         super::current_view_textures::current_view_texture2d_asset_ids_from_draws(
             materials,
             draws,
@@ -427,6 +432,10 @@ fn resolve_world_mesh_forward_pipeline(
         frame.view.depth_texture.format(),
         gpu_limits,
         frame.view.sample_count,
+        frame
+            .view
+            .view_winding
+            .flips_front_face_for(frame.view.offscreen_write_target),
     )
 }
 
@@ -540,7 +549,9 @@ fn pack_forward_draws_for_view(
             },
         )
     };
-    let overlay_view_proj = overlay_proj.unwrap_or(glam::Mat4::IDENTITY);
+    let overlay_view_proj = overlay_proj
+        .map(|proj| overlay_view_projection(Some(proj), world_proj))
+        .unwrap_or(glam::Mat4::IDENTITY);
     slab_uploaded.then_some(PackedForwardDraws {
         draws,
         plan,
@@ -638,8 +649,7 @@ fn precompute_material_batches(
             encode_refs,
             uploads,
             draws,
-            pipeline.shader_perm,
-            &pipeline.pass_desc,
+            pipeline,
             offscreen_write_target,
             boundaries_scratch,
         );
@@ -771,7 +781,21 @@ fn world_mesh_hud_outputs(
         shader_perm,
         frame.view.offscreen_write_target,
     );
+    let mut hud_outputs = hud_outputs;
+    if frame.systems.debug_hud.capture_world_mesh_view_stats
+        && let Some(stats) = hud_outputs.world_mesh_draw_stats
+    {
+        hud_outputs.world_mesh_view_stats = Some(WorldMeshViewHudStats {
+            view_id: frame.view.view_id,
+            viewport_px: frame.view.viewport_px,
+            render_context: frame.view.render_context,
+            multiview_stereo: frame.view.multiview_stereo,
+            offscreen_write_target: frame.view.offscreen_write_target,
+            stats,
+        });
+    }
     let has_outputs = hud_outputs.world_mesh_draw_stats.is_some()
+        || hud_outputs.world_mesh_view_stats.is_some()
         || hud_outputs.world_mesh_draw_state_rows.is_some()
         || !hud_outputs.current_view_texture_2d_asset_ids.is_empty();
     has_outputs.then_some(hud_outputs)
@@ -781,7 +805,9 @@ fn world_mesh_hud_outputs(
 mod tests {
     use super::super::material_batch::{MaterialGroup1Binding, PipelineVariantKey};
     use super::*;
-    use crate::materials::{MaterialPipelineDesc, RasterPrimitiveTopology, ShaderPermutation};
+    use crate::materials::{
+        MaterialPipelineDesc, MaterialSystem, RasterPrimitiveTopology, ShaderPermutation,
+    };
     use crate::world_mesh::DrawGroup;
     use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
 
@@ -839,6 +865,47 @@ mod tests {
             instance_range: representative_draw_idx as u32..representative_draw_idx as u32 + 1,
             material_packet_idx: usize::MAX,
         }
+    }
+
+    #[test]
+    fn hud_outputs_capture_draw_stats_and_rows_independently() {
+        let materials = MaterialSystem::new();
+        let collection = WorldMeshDrawCollection::empty();
+
+        let stats_only = maybe_set_world_mesh_draw_stats(
+            PerViewHudConfig {
+                capture_world_mesh_draw_stats: true,
+                ..Default::default()
+            },
+            &materials,
+            &collection,
+            &collection.items,
+            true,
+            ShaderPermutation(0),
+            OffscreenWriteTarget::None,
+        );
+        assert!(stats_only.world_mesh_draw_stats.is_some());
+        assert!(stats_only.world_mesh_draw_state_rows.is_none());
+        assert!(stats_only.current_view_texture_2d_asset_ids.is_empty());
+
+        let rows_only = maybe_set_world_mesh_draw_stats(
+            PerViewHudConfig {
+                capture_world_mesh_draw_state_rows: true,
+                ..Default::default()
+            },
+            &materials,
+            &collection,
+            &collection.items,
+            true,
+            ShaderPermutation(0),
+            OffscreenWriteTarget::None,
+        );
+        assert!(rows_only.world_mesh_draw_stats.is_none());
+        assert_eq!(
+            rows_only.world_mesh_draw_state_rows.as_ref().map(Vec::len),
+            Some(0)
+        );
+        assert!(rows_only.current_view_texture_2d_asset_ids.is_empty());
     }
 
     #[test]

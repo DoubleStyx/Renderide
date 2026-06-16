@@ -367,16 +367,15 @@ impl CubeCaptureTargets {
         &self,
         face: CubeCaptureFace,
     ) -> OffscreenTargetHandles {
-        OffscreenTargetHandles {
-            write_target: OffscreenWriteTarget::Untracked,
-            color_texture: self.cube_texture.as_ref().clone(),
-            color_view: self.face_color_views[face.index()].as_ref().clone(),
-            depth_texture: self.face_depth_textures[face.index()].as_ref().clone(),
-            depth_view: self.face_depth_views[face.index()].as_ref().clone(),
-            extent_px: self.extent.viewport(),
-            color_format: self.color_format,
-            copy_to_color: None,
-        }
+        OffscreenTargetHandles::new(
+            OffscreenWriteTarget::Untracked,
+            self.cube_texture.as_ref().clone(),
+            self.face_color_views[face.index()].as_ref().clone(),
+            self.face_depth_textures[face.index()].as_ref().clone(),
+            self.face_depth_views[face.index()].as_ref().clone(),
+            self.extent.viewport(),
+            self.color_format,
+        )
     }
 
     /// Creates a full cubemap sample view over mip 0.

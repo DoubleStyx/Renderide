@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::gpu::GpuLimits;
-use crate::materials::EmbeddedTangentFallbackMode;
+use crate::render_contract::EmbeddedTangentFallbackMode;
 use crate::shared::MeshUploadData;
 
 use super::super::super::layout::{MeshBufferLayout, compute_index_count, compute_vertex_stride};

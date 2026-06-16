@@ -18,8 +18,8 @@
 //!
 //! # Khronos arch mapping
 //!
-//! Khronos arch mapping matches `build.rs` and `openxr_windows_arch.rs`; it is compiled only under
-//! `#[cfg(test)]` so non-test library builds stay free of `dead_code` warnings.
+//! Khronos arch mapping matches `build.rs` and `build_support/openxr_windows_arch.rs`; it is
+//! compiled only under `#[cfg(test)]` so non-test library builds stay free of `dead_code` warnings.
 
 use std::path::PathBuf;
 
@@ -98,7 +98,7 @@ pub fn openxr_loader_candidate_paths() -> Vec<PathBuf> {
 mod khronos_mapping_tests {
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/openxr_windows_arch.rs"
+        "/build_support/openxr_windows_arch.rs"
     ));
 
     #[test]

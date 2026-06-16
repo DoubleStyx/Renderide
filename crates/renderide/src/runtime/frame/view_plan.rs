@@ -13,7 +13,7 @@ use crate::render_graph::blackboard::Blackboard;
 use crate::render_graph::{
     ExternalFrameTargets, ExternalOffscreenTargets, FrameGlobalView, FrameView, FrameViewClear,
     FrameViewResourceHints, FrameViewTarget, OffscreenColorCopyTarget, OffscreenWriteTarget,
-    RenderPathProfile, ViewFamilyGraphRequirements, ViewPostProcessing,
+    RenderPathProfile, ViewFamilyGraphRequirements, ViewPostProcessing, ViewWinding,
 };
 use crate::scene::RenderSpaceId;
 use crate::shared::RenderingContext;
@@ -50,19 +50,49 @@ pub(in crate::runtime) struct OffscreenTargetHandles {
 }
 
 impl OffscreenTargetHandles {
+    /// Builds offscreen attachment handles with no post-render color copy.
+    pub(in crate::runtime) fn new(
+        write_target: OffscreenWriteTarget,
+        color_texture: wgpu::Texture,
+        color_view: wgpu::TextureView,
+        depth_texture: wgpu::Texture,
+        depth_view: wgpu::TextureView,
+        extent_px: (u32, u32),
+        color_format: wgpu::TextureFormat,
+    ) -> Self {
+        Self {
+            write_target,
+            color_texture,
+            color_view,
+            depth_texture,
+            depth_view,
+            extent_px,
+            color_format,
+            copy_to_color: None,
+        }
+    }
+
+    /// Adds a post-render color copy destination.
+    pub(in crate::runtime) fn with_copy_to_color(
+        mut self,
+        copy_to_color: OffscreenColorCopy,
+    ) -> Self {
+        self.copy_to_color = Some(copy_to_color);
+        self
+    }
+
     /// Lazily allocates and clones the primary final target handles.
     pub(in crate::runtime) fn from_primary_offscreen(gpu: &mut GpuContext) -> Self {
         let targets = gpu.primary_offscreen_targets();
-        Self {
-            write_target: OffscreenWriteTarget::Untracked,
-            color_texture: targets.color_texture.clone(),
-            color_view: targets.color_view.clone(),
-            depth_texture: targets.depth_texture.clone(),
-            depth_view: targets.depth_view.clone(),
-            extent_px: targets.extent_px,
-            color_format: targets.color_format,
-            copy_to_color: None,
-        }
+        Self::new(
+            OffscreenWriteTarget::Untracked,
+            targets.color_texture.clone(),
+            targets.color_view.clone(),
+            targets.depth_texture.clone(),
+            targets.depth_view.clone(),
+            targets.extent_px,
+            targets.color_format,
+        )
     }
 }
 
@@ -153,6 +183,8 @@ pub(in crate::runtime) struct FrameViewPlan<'a> {
     pub(in crate::runtime) render_shadows: bool,
     /// Stable logical identity for view-scoped resources and temporal state.
     pub(in crate::runtime) view_id: ViewId,
+    /// Per-view winding policy before draw-local transform parity is applied.
+    pub(in crate::runtime) view_winding: ViewWinding,
     /// Attachment extent in pixels for this view.
     pub(in crate::runtime) viewport_px: (u32, u32),
     /// Background clear/skybox behavior for this view.
@@ -205,6 +237,7 @@ impl<'a> FrameViewPlan<'a> {
             layer_policy: ViewLayerPolicy::MainView,
             render_shadows: true,
             view_id,
+            view_winding: ViewWinding::normal(),
             viewport_px,
             clear,
             profile,
@@ -269,6 +302,7 @@ impl<'a> FrameViewPlan<'a> {
             render_context: self.render_context,
             frame_time_seconds: self.frame_time_seconds,
             target: self.target(),
+            view_winding: self.view_winding,
             profile: self.profile,
             clear: self.clear,
             resource_hints,
@@ -297,6 +331,7 @@ impl<'a> FrameViewPlan<'a> {
             render_space_filter: self.render_space_filter,
             head_output_transform: self.host_camera.head_output_transform,
             render_shadows: self.render_shadows,
+            cull: None,
         }
     }
 
@@ -333,7 +368,8 @@ impl<'a> FrameViewPlan<'a> {
 
     /// Converts this planned view to frame-global metadata.
     pub(in crate::runtime) fn frame_global_view(&self) -> FrameGlobalView {
-        FrameGlobalView::new(
+        FrameGlobalView::new_for_view(
+            self.view_id,
             &self.host_camera,
             self.render_context,
             self.frame_time_seconds,
@@ -412,12 +448,35 @@ mod tests {
 
         assert!(!family.is_empty());
         assert_eq!(family.plans().len(), 1);
+        assert_eq!(family.frame_global().view_id, ViewId::Main);
         assert_eq!(
             family.frame_global().render_context,
             RenderingContext::UserView
         );
         assert!(family.requirements().any_post_processing);
         assert!(!family.requirements().multiview_stereo);
+    }
+
+    #[test]
+    fn frame_global_anchor_remains_explicit_when_main_view_is_not_first() {
+        let secondary = FrameViewPlan::new(
+            &HostCameraFrame::default(),
+            FrameViewPlanParams {
+                render_context: RenderingContext::UserView,
+                frame_time_seconds: 0.0,
+                view_id: ViewId::MainOverlay,
+                viewport_px: (640, 480),
+                clear: FrameViewClear::default(),
+                profile: RenderPathProfile::headless_main(),
+                target: FrameViewPlanTarget::Swapchain,
+            },
+        );
+        let main = main_swapchain_plan();
+        let frame_global = main.frame_global_view();
+        let family = ViewFamilyPlan::new(&frame_global, vec![secondary, main]);
+
+        assert_eq!(family.plans()[0].view_id, ViewId::MainOverlay);
+        assert_eq!(family.frame_global().view_id, ViewId::Main);
     }
 
     #[test]

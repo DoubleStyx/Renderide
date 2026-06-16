@@ -17,4 +17,7 @@ pub enum FrameGpuInitError {
     /// [`crate::backend::cluster_gpu::ClusterBufferCache::get_buffers`] failed after ensure.
     #[error("cluster buffers: get_buffers failed for 1x1 viewport")]
     ClusterGetBuffersFailed,
+    /// No depth format can be bound as the frame-global fallback shadow atlas.
+    #[error("no supported sampled depth texture format for shadow atlas fallback")]
+    ShadowAtlasBindingFormatUnavailable,
 }

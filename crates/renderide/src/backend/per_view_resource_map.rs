@@ -44,6 +44,12 @@ impl<T> PerViewResourceMap<T> {
         self.entries.values_mut()
     }
 
+    /// Returns shared values for bulk per-submission scans.
+    #[inline]
+    pub(crate) fn values(&self) -> impl Iterator<Item = &T> {
+        self.entries.values()
+    }
+
     /// Returns true when a resource exists for `view_id`.
     #[inline]
     pub(crate) fn contains_key(&self, view_id: ViewId) -> bool {

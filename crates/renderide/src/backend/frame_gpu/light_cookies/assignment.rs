@@ -9,7 +9,20 @@ use crate::shared::LightType;
 
 use super::POINT_COOKIE_FACE_COUNT;
 
-/// One requested light-cookie source assigned to an atlas layer.
+/// Fallback metadata row for white cookie sampling.
+pub(super) const LIGHT_COOKIE_FALLBACK_RECT_INDEX: u32 = 0;
+/// Maximum resident 2D cookies.
+pub(super) const COOKIE_2D_RECT_CAP: u32 = 64;
+/// Maximum resident point-light cookie cubemaps.
+pub(super) const POINT_COOKIE_CUBEMAP_CAP: u32 = 16;
+/// First metadata row reserved for point-light cubemap face cookies.
+pub(super) const POINT_COOKIE_RECT_BASE: u32 =
+    LIGHT_COOKIE_FALLBACK_RECT_INDEX + 1 + COOKIE_2D_RECT_CAP;
+/// Total light-cookie metadata rows bound for all atlas kinds.
+pub(super) const LIGHT_COOKIE_RECT_CAPACITY: usize =
+    (POINT_COOKIE_RECT_BASE + POINT_COOKIE_CUBEMAP_CAP * POINT_COOKIE_FACE_COUNT) as usize;
+
+/// One requested light-cookie source assigned to atlas metadata rows.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct LightCookieRequest {
     /// Packed host texture handle.
@@ -18,7 +31,7 @@ pub(super) struct LightCookieRequest {
     pub(super) asset_id: i32,
     /// Unpacked host texture kind.
     pub(super) kind: HostTextureAssetKind,
-    /// 2D atlas layer or first point face layer.
+    /// 2D atlas rect index or first point face rect index.
     pub(super) layer: u32,
 }
 
@@ -37,10 +50,10 @@ pub(super) struct LightCookieAssignment {
     pub(super) wrap_bits: u32,
 }
 
-/// Atlas slot state for a packed host texture handle.
+/// Atlas metadata slot state for a packed host texture handle.
 #[derive(Clone, Copy, Debug)]
 struct LightCookieSlot {
-    /// Atlas layer assigned to this packed handle.
+    /// Atlas metadata row assigned to this packed handle.
     layer: u32,
     /// Whether this slot is referenced by the current frame's packed lights.
     requested_this_frame: bool,
@@ -89,12 +102,7 @@ impl LightCookieAtlasState {
     }
 
     /// Assigns a cookie atlas binding for one resolved light.
-    pub(super) fn assign(
-        &mut self,
-        assignment: LightCookieAssignment,
-        two_d_layers: u32,
-        point_layers: u32,
-    ) -> LightCookieBinding {
+    pub(super) fn assign(&mut self, assignment: LightCookieAssignment) -> LightCookieBinding {
         match (assignment.light_type, assignment.kind) {
             (
                 LightType::Spot,
@@ -105,7 +113,6 @@ impl LightCookieAtlasState {
                 assignment.packed_id,
                 assignment.asset_id,
                 assignment.kind,
-                two_d_layers,
                 LIGHT_COOKIE_KIND_SPOT_2D,
                 assignment.wrap_bits,
             ),
@@ -118,35 +125,30 @@ impl LightCookieAtlasState {
                 assignment.packed_id,
                 assignment.asset_id,
                 assignment.kind,
-                two_d_layers,
                 LIGHT_COOKIE_KIND_DIRECTIONAL_2D,
                 assignment.wrap_bits,
             ),
-            (LightType::Point, HostTextureAssetKind::Cubemap) => self.assign_point(
-                assignment.packed_id,
-                assignment.asset_id,
-                assignment.kind,
-                point_layers,
-            ),
+            (LightType::Point, HostTextureAssetKind::Cubemap) => {
+                self.assign_point(assignment.packed_id, assignment.asset_id, assignment.kind)
+            }
             _ => LightCookieBinding::NONE,
         }
     }
 
-    /// Assigns a 2D cookie layer.
+    /// Assigns a 2D cookie metadata row.
     fn assign_2d(
         &mut self,
         packed_id: i32,
         asset_id: i32,
         kind: HostTextureAssetKind,
-        layers: u32,
         cookie_kind: u32,
         wrap_bits: u32,
     ) -> LightCookieBinding {
         let Some(layer) = assign_cookie_layer(
             &mut self.two_d_slots,
             packed_id,
-            1,
-            layers,
+            LIGHT_COOKIE_FALLBACK_RECT_INDEX + 1,
+            POINT_COOKIE_RECT_BASE,
             1,
             &mut self.two_d_overflow_logged,
             "2D",
@@ -171,19 +173,18 @@ impl LightCookieAtlasState {
         }
     }
 
-    /// Assigns six 2D-array layers for a point-light cubemap cookie.
+    /// Assigns six metadata rows for a point-light cubemap cookie.
     fn assign_point(
         &mut self,
         packed_id: i32,
         asset_id: i32,
         kind: HostTextureAssetKind,
-        layers: u32,
     ) -> LightCookieBinding {
         let Some(layer) = assign_cookie_layer(
             &mut self.point_slots,
             packed_id,
-            1,
-            layers,
+            POINT_COOKIE_RECT_BASE,
+            LIGHT_COOKIE_RECT_CAPACITY as u32,
             POINT_COOKIE_FACE_COUNT,
             &mut self.point_overflow_logged,
             "point",
@@ -219,7 +220,7 @@ impl LightCookieAtlasState {
     }
 }
 
-/// Assigns or reuses one atlas layer block.
+/// Assigns or reuses one atlas metadata row block.
 fn assign_cookie_layer(
     slots: &mut HashMap<i32, LightCookieSlot>,
     packed_id: i32,

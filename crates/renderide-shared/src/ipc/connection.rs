@@ -86,6 +86,14 @@ enum AttachConnectionError {
         /// Decoded queue capacity in bytes.
         queue_capacity: i64,
     },
+    /// The queue capacity exceeded the renderer policy cap.
+    #[error("attach renderer queue capacity {queue_capacity} exceeds maximum {max_capacity}")]
+    QueueCapacityTooLarge {
+        /// Decoded queue capacity in bytes.
+        queue_capacity: i64,
+        /// Maximum accepted queue capacity in bytes.
+        max_capacity: i64,
+    },
 }
 
 /// Default queue capacity (8 MiB), matching `MessagingManager.DEFAULT_CAPACITY`.
@@ -201,6 +209,12 @@ fn parse_attach_renderer_packet(packet: &[u8]) -> Result<ConnectionParams, Attac
     if queue_capacity <= 0 {
         return Err(AttachConnectionError::InvalidQueueCapacity { queue_capacity });
     }
+    if queue_capacity > interprocess::QueueOptions::MAX_CAPACITY {
+        return Err(AttachConnectionError::QueueCapacityTooLarge {
+            queue_capacity,
+            max_capacity: interprocess::QueueOptions::MAX_CAPACITY,
+        });
+    }
 
     Ok(ConnectionParams {
         queue_name,
@@ -239,7 +253,7 @@ fn read_7bit_encoded_usize(packet: &[u8]) -> Result<(usize, usize), AttachConnec
 
 /// Scans `args` for the first complete `-QueueName` / `-QueueCapacity` pair (case-insensitive
 /// flag suffix).
-/// Requires QueueCapacity to be a positive integer.
+/// Requires QueueCapacity to be a positive integer within [`interprocess::QueueOptions::MAX_CAPACITY`].
 /// Returns [`None`] if either flag is missing, malformed, or duplicated before
 /// the pair completes.
 fn parse_connection_args(args: &[impl AsRef<str>]) -> Option<ConnectionParams> {
@@ -268,7 +282,11 @@ fn parse_connection_args(args: &[impl AsRef<str>]) -> Option<ConnectionParams> {
             if queue_capacity.is_some_and(|c| c > 0) {
                 return None;
             }
-            queue_capacity = args[next_i].as_ref().parse().ok().filter(|&c| c > 0);
+            queue_capacity = args[next_i]
+                .as_ref()
+                .parse()
+                .ok()
+                .filter(|&c| c > 0 && c <= interprocess::QueueOptions::MAX_CAPACITY);
             i = next_i;
         }
 
@@ -277,6 +295,7 @@ fn parse_connection_args(args: &[impl AsRef<str>]) -> Option<ConnectionParams> {
         if let Some(name) = queue_name.as_ref()
             && let Some(cap) = queue_capacity
             && cap > 0
+            && cap <= interprocess::QueueOptions::MAX_CAPACITY
         {
             return Some(ConnectionParams {
                 queue_name: name.clone(),
@@ -287,7 +306,7 @@ fn parse_connection_args(args: &[impl AsRef<str>]) -> Option<ConnectionParams> {
 
     queue_name.and_then(|name| {
         queue_capacity
-            .filter(|&c| c > 0)
+            .filter(|&c| c > 0 && c <= interprocess::QueueOptions::MAX_CAPACITY)
             .map(|cap| ConnectionParams {
                 queue_name: name,
                 queue_capacity: cap,
@@ -438,6 +457,19 @@ mod tests {
     }
 
     #[test]
+    fn parse_attach_renderer_packet_rejects_oversized_queue_capacity() {
+        let error = parse_attach_renderer_packet(&attach_packet(
+            "queue",
+            interprocess::QueueOptions::MAX_CAPACITY + 8,
+        ))
+        .expect_err("oversized capacity should be invalid");
+        assert!(matches!(
+            error,
+            AttachConnectionError::QueueCapacityTooLarge { .. }
+        ));
+    }
+
+    #[test]
     fn parses_queue_name_and_capacity_case_insensitive() {
         let cmd = [
             "renderide",
@@ -567,6 +599,16 @@ mod tests {
         );
         assert_eq!(
             parse_connection_args(&["r", "-QueueName", "n", "-QueueCapacity", "-100"]),
+            None
+        );
+        assert_eq!(
+            parse_connection_args(&[
+                "r",
+                "-QueueName",
+                "n",
+                "-QueueCapacity",
+                &(interprocess::QueueOptions::MAX_CAPACITY + 8).to_string()
+            ]),
             None
         );
     }

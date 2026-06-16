@@ -2,9 +2,9 @@
 
 use glam::{Quat, Vec3};
 
-use crate::diagnostics::gpu_flight_recorder::GpuFlightRecorder;
 use crate::frontend::input::vr_inputs_for_session;
 use crate::gpu::GpuQueueAccessGate;
+use crate::gpu::flight_recorder::GpuFlightRecorder;
 use crate::shared::{
     HandState, HeadOutputDevice, OutputState, TrackerState, VRControllerState, VRInputsState,
 };

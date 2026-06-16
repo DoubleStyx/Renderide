@@ -20,6 +20,7 @@ mod adapter;
 mod blit_kit;
 mod context;
 mod instance_setup;
+mod resource_retention;
 mod submission_state;
 mod sync;
 mod vr_mirror;
@@ -28,6 +29,7 @@ pub(crate) mod bind_layout;
 pub(crate) mod depth;
 pub(crate) mod display_blit;
 pub(crate) mod driver_thread;
+pub(crate) mod flight_recorder;
 pub(crate) mod frame_bindings;
 pub(crate) mod frame_globals;
 pub(crate) mod limits;
@@ -43,12 +45,12 @@ pub(crate) use depth::{
 };
 pub(crate) use display_blit::DisplayBlitResources;
 pub(crate) use frame_bindings::{
-    CLUSTER_LIGHT_RANGE_WORDS, CLUSTER_PARAMS_UNIFORM_SIZE, GpuLight, GpuReflectionProbeMetadata,
-    GpuShadowView, LIGHT_COOKIE_KIND_DIRECTIONAL_2D, LIGHT_COOKIE_KIND_NONE,
-    LIGHT_COOKIE_KIND_POINT_CUBE, LIGHT_COOKIE_KIND_SPOT_2D, LIGHT_COOKIE_WRAP_MODE_CLAMP,
-    LIGHT_COOKIE_WRAP_MODE_MASK, LIGHT_COOKIE_WRAP_MODE_MIRROR, LIGHT_COOKIE_WRAP_MODE_MIRROR_ONCE,
-    LIGHT_COOKIE_WRAP_MODE_REPEAT, LIGHT_COOKIE_WRAP_U_SHIFT, LIGHT_COOKIE_WRAP_V_SHIFT,
-    MAX_LIGHTS, MAX_SHADOW_VIEWS, REFLECTION_PROBE_ATLAS_FORMAT,
+    CLUSTER_LIGHT_RANGE_WORDS, CLUSTER_PARAMS_UNIFORM_SIZE, GpuLight, GpuLightCookieRect,
+    GpuReflectionProbeMetadata, GpuShadowView, LIGHT_COOKIE_KIND_DIRECTIONAL_2D,
+    LIGHT_COOKIE_KIND_NONE, LIGHT_COOKIE_KIND_POINT_CUBE, LIGHT_COOKIE_KIND_SPOT_2D,
+    LIGHT_COOKIE_WRAP_MODE_CLAMP, LIGHT_COOKIE_WRAP_MODE_MASK, LIGHT_COOKIE_WRAP_MODE_MIRROR,
+    LIGHT_COOKIE_WRAP_MODE_MIRROR_ONCE, LIGHT_COOKIE_WRAP_MODE_REPEAT, LIGHT_COOKIE_WRAP_U_SHIFT,
+    LIGHT_COOKIE_WRAP_V_SHIFT, MAX_LIGHTS, MAX_SHADOW_VIEWS, REFLECTION_PROBE_ATLAS_FORMAT,
     REFLECTION_PROBE_METADATA_BOX_PROJECTION, REFLECTION_PROBE_METADATA_SH2_SOURCE_LOCAL,
     SHADOW_VIEW_KIND_DIRECTIONAL, SHADOW_VIEW_KIND_POINT, SHADOW_VIEW_KIND_SPOT,
     empty_material_bind_group_layout, frame_bind_group_layout, frame_bind_group_layout_entries,
@@ -58,6 +60,7 @@ pub(crate) use limits::{CUBEMAP_ARRAY_LAYERS, GpuLimits};
 pub(crate) use msaa_depth_resolve::{
     MsaaDepthResolveMonoTargets, MsaaDepthResolveResources, MsaaDepthResolveStereoTargets,
 };
+pub(crate) use resource_retention::GpuRetainedResources;
 pub(crate) use vr_mirror::{VR_MIRROR_EYE_LAYER, VrMirrorBlitResources};
 
 // --- Legacy submodule-path re-exports (preserve external `crate::gpu::<x>::*` paths) ---

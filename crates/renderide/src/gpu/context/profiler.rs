@@ -8,9 +8,9 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-#[cfg(feature = "tracy")]
-use crate::diagnostics::log_throttle::LogThrottle;
 use crate::gpu::driver_thread::SubmitToken;
+#[cfg(feature = "tracy")]
+use crate::log_throttle::LogThrottle;
 
 use super::GpuContext;
 

@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use crate::config::{ConfigLoadResult, settings_handle_from};
 use crate::connection::get_connection_parameters;
-use crate::diagnostics::crash_context::{self, InitState as CrashInitState, RenderMode, TickPhase};
+use crate::crash_context::{self, InitState as CrashInitState, RenderMode, TickPhase};
 use crate::frontend::InitState;
 use crate::run_error::RunError;
 use crate::runtime::RendererRuntime;

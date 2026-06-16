@@ -6,6 +6,8 @@ use crate::shared::CameraRenderTask;
 use super::super::readback::par_fill_zeros;
 use super::{CameraReadbackError, CameraTaskExtent, CameraTaskOutputFormat, RGBA8_BYTES_PER_PIXEL};
 
+const MAX_CAMERA_RESULT_DESCRIPTOR_BYTES: i32 = 256 * 1024 * 1024;
+
 pub(super) fn write_camera_task_result(
     shm: &mut SharedMemoryAccessor,
     task: &CameraRenderTask,
@@ -15,9 +17,14 @@ pub(super) fn write_camera_task_result(
 ) -> Result<(), CameraReadbackError> {
     profiling::scope!("camera_task::shared_memory_write");
     let required = output_byte_count(extent, output_format)?;
+    if task.result_data.length > MAX_CAMERA_RESULT_DESCRIPTOR_BYTES {
+        return Err(CameraReadbackError::ResultDescriptorTooSmall {
+            required,
+            actual: 0,
+        });
+    }
     let mut result = Err(CameraReadbackError::SharedMemoryMapFailed);
     let mapped = shm.access_mut_bytes(&task.result_data, |bytes| {
-        par_fill_zeros(bytes);
         if bytes.len() < required {
             result = Err(CameraReadbackError::ResultDescriptorTooSmall {
                 required,
@@ -25,6 +32,7 @@ pub(super) fn write_camera_task_result(
             });
             return;
         }
+        par_fill_zeros(&mut bytes[..required]);
         result = pack_rgba8_to_host_buffer(rgba, extent, output_format, &mut bytes[..required]);
     });
     if mapped {
@@ -123,6 +131,16 @@ pub(in crate::runtime) fn zero_camera_render_task_results(
 
 pub(super) fn zero_task_result(shm: &mut SharedMemoryAccessor, task: &CameraRenderTask) -> bool {
     profiling::scope!("camera_task::zero_result");
+    if task.result_data.length > MAX_CAMERA_RESULT_DESCRIPTOR_BYTES {
+        logger::warn!(
+            "CameraRenderTask zero-fill rejected oversized result buffer_id={} offset={} length={} cap={}",
+            task.result_data.buffer_id,
+            task.result_data.offset,
+            task.result_data.length,
+            MAX_CAMERA_RESULT_DESCRIPTOR_BYTES
+        );
+        return false;
+    }
     let ok = shm.access_mut_bytes(&task.result_data, par_fill_zeros);
     if !ok {
         logger::warn!(

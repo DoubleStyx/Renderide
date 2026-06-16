@@ -14,12 +14,12 @@ mod hud;
 mod tests;
 
 use super::compiled::CompiledPassInfo;
-use super::frame_upload_batch::FrameUploadScope;
 use super::pass::{PassPhase, PassWorkloadFlags};
 use super::resources::{
     BufferAccess, BufferHandle, ImportedBufferHandle, ImportedTextureHandle, TextureAccess,
     TextureHandle,
 };
+use crate::frame_upload_batch::FrameUploadScope;
 
 pub use hud::ScheduleHudSnapshot;
 
@@ -266,6 +266,8 @@ pub enum RecordingBatchKind {
 pub struct RecordingSchedulePlan {
     /// Recording units in retained schedule order.
     pub units: Vec<RecordingUnit>,
+    /// Cached profiler labels for [`Self::units`].
+    pub unit_labels: Vec<String>,
     /// Deterministic batches over [`Self::units`].
     pub batches: Vec<RecordingBatch>,
 }
@@ -288,6 +290,11 @@ impl RecordingSchedulePlan {
                 },
             })
             .collect();
+        let unit_labels = units
+            .iter()
+            .copied()
+            .map(|unit| recording_unit_label_from_steps(steps, unit, None))
+            .collect();
         let batches = units
             .iter()
             .enumerate()
@@ -299,7 +306,19 @@ impl RecordingSchedulePlan {
                 kind: RecordingBatchKind::Serial,
             })
             .collect();
-        Self { units, batches }
+        Self {
+            units,
+            unit_labels,
+            batches,
+        }
+    }
+
+    /// Returns the cached profiler label for `unit_idx`.
+    pub fn unit_label(&self, unit_idx: usize) -> &str {
+        self.unit_labels
+            .get(unit_idx)
+            .map(String::as_str)
+            .unwrap_or("graph::per_view::unit")
     }
 
     /// Returns batches for one pass phase.
@@ -337,8 +356,41 @@ pub(crate) fn build_recording_schedule_plan(
     materialization_plan: &RenderPassMaterializationPlan,
 ) -> RecordingSchedulePlan {
     let units = build_recording_units(steps, pass_info, materialization_plan);
+    let unit_labels = units
+        .iter()
+        .copied()
+        .map(|unit| recording_unit_label_from_steps(steps, unit, Some(pass_info)))
+        .collect();
     let batches = build_recording_batches(&units, steps, pass_info);
-    RecordingSchedulePlan { units, batches }
+    RecordingSchedulePlan {
+        units,
+        unit_labels,
+        batches,
+    }
+}
+
+fn recording_unit_label_from_steps(
+    steps: &[ScheduleStep],
+    unit: RecordingUnit,
+    pass_info: Option<&[CompiledPassInfo]>,
+) -> String {
+    let mut label = String::from("graph::per_view::unit(");
+    for (idx, step) in steps[unit.start_step..unit.end_step].iter().enumerate() {
+        if idx != 0 {
+            label.push_str(" + ");
+        }
+        if let Some(name) = pass_info
+            .and_then(|info| info.get(step.pass_idx))
+            .map(|info| info.profiling_label.as_str())
+        {
+            label.push_str(name);
+        } else {
+            label.push_str("pass#");
+            label.push_str(&step.pass_idx.to_string());
+        }
+    }
+    label.push(')');
+    label
 }
 
 fn build_recording_units(

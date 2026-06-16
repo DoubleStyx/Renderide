@@ -81,19 +81,15 @@ pub struct ReflectedRasterLayout {
     #[cfg(test)]
     pub vs_max_vertex_location: Option<u32>,
     /// `true` when the shader declares a scene-depth snapshot binding at `@group(0)`.
-    #[cfg(test)]
     pub uses_scene_depth_snapshot: bool,
     /// `true` when the shader declares a scene-color snapshot binding at `@group(0)`.
-    #[cfg(test)]
     pub uses_scene_color_snapshot: bool,
     /// `true` when the material uniform block declares intersection tint (e.g. `_IntersectColor`).
     ///
     /// Derived from reflection only (no shader stem string checks in the render graph).
-    #[cfg(test)]
     pub requires_intersection_pass: bool,
 }
 
-#[cfg(test)]
 impl ReflectedRasterLayout {
     /// Returns the unified scene-snapshot requirement flags for this layout.
     pub fn snapshot_requirements(&self) -> super::super::SnapshotRequirements {
@@ -137,9 +133,9 @@ pub enum ReflectError {
         /// Conflicting reflected shader-visible format.
         second: ReflectedVertexInputFormat,
     },
-    /// `@group(0)` sizes did not match frame globals, light/cluster buffers, or declared reflection-probe metadata.
+    /// `@group(0)` sizes did not match frame globals, light/cluster buffers, or declared metadata.
     #[error(
-        "group(0) must have uniform binding 0 size {expected_frame}, storage binding 1 stride {expected_light}, binding 2 range stride {expected_cluster_range}, binding 3 index stride {expected_cluster_index}, optional binding 12 stride {expected_probe}; got b0={got0:?} b1={got1:?} b2={got2:?} b3={got3:?} b12={got12:?}"
+        "group(0) must have uniform binding 0 size {expected_frame}, storage binding 1 stride {expected_light}, binding 2 range stride {expected_cluster_range}, binding 3 index stride {expected_cluster_index}, optional binding 12 stride {expected_probe}, and binding 19 cookie rect stride {expected_cookie_rect}; got b0={got0:?} b1={got1:?} b2={got2:?} b3={got3:?} b12={got12:?} b19={got19:?}"
     )]
     FrameGroupMismatch {
         /// Expected `FrameGpuUniforms` uniform size in bytes.
@@ -152,6 +148,8 @@ pub enum ReflectError {
         expected_cluster_index: u32,
         /// Expected reflection-probe metadata stride.
         expected_probe: u32,
+        /// Expected light-cookie rect metadata stride.
+        expected_cookie_rect: u32,
         /// Observed binding 0 size, if any.
         got0: Option<u32>,
         /// Observed binding 1 stride, if any.
@@ -162,6 +160,8 @@ pub enum ReflectError {
         got3: Option<u32>,
         /// Observed binding 12 stride, if any.
         got12: Option<u32>,
+        /// Observed binding 19 stride, if any.
+        got19: Option<u32>,
     },
     /// A global resource at the given group/binding is not supported for raster materials.
     #[error("unsupported global resource at group {group} binding {binding}: {reason}")]
@@ -176,7 +176,7 @@ pub enum ReflectError {
     /// Bind group index outside `0..=2`.
     #[error("invalid bind group index {0} (only 0, 1, 2 are allowed for raster materials)")]
     InvalidBindGroup(u32),
-    /// Composed embedded shader stem has no WGSL payload (build/embed mismatch).
+    /// Composed shader package stem has no WGSL payload.
     #[error("embedded composed WGSL missing for material stem `{0}`")]
     #[cfg(test)]
     EmbeddedTargetMissing(&'static str),

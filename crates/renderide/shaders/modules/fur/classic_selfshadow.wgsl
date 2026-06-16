@@ -75,12 +75,6 @@ fn vertex_main(
     );
 }
 
-fn shell_direct_visibility(fur_multiplier: f32, noise: f32) -> f32 {
-    let shadow_strength = clamp(mat._ShadowStrength, 0.0, 1.0);
-    let strand_shadow = fur_multiplier * (1.0 - clamp(noise, 0.0, 1.0));
-    return clamp(1.0 - shadow_strength * strand_shadow, 1.0 - shadow_strength, 1.0);
-}
-
 fn shell_emission(input: furc::VertexOutput, alpha: f32, direct_visibility: f32) -> vec3<f32> {
     let view_dir = rg::view_dir_for_world_pos(input.base_world_pos, input.view_layer);
     let rim = furc::rim_emission(mat._RimColor, mat._RimPower, view_dir, input.world_n) * 2.0;
@@ -147,18 +141,18 @@ fn fragment_shell(input: furc::VertexOutput) -> vec4<f32> {
     let alpha = furc::self_shadow_shell_alpha(noise, mask_alpha, mat._EdgeFade, input.fur_multiplier);
     furc::alpha_clip(alpha, mat._Cutoff);
 
-    let direct_visibility = shell_direct_visibility(input.fur_multiplier, noise);
-    let base_color = furc::classic_fur_color(
+    let raw_color = furc::classic_fur_color_raw(
         tex.rgb,
         shadow,
-        mat._Color.rgb,
         mat._HairColoring,
         mat._HairShading,
         input.fur_multiplier,
     );
+    let base_color = furc::saturate3(raw_color) * mat._Color.rgb;
+    let direct_visibility = 1.0;
     return shaded_color(
         input,
-        furc::saturate3(base_color),
+        base_color,
         alpha,
         shell_emission(input, alpha, direct_visibility),
         direct_visibility,

@@ -3,9 +3,9 @@
 use bytemuck::Zeroable;
 
 use crate::camera::HostCameraFrame;
+use crate::frame_upload_batch::GraphUploadSink;
 use crate::gpu::frame_globals::FrameGpuUniforms;
 use crate::graph_inputs::{OffscreenWriteTarget, PerViewFramePlan};
-use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::scene::SceneCoordinator;
 use crate::world_mesh::cluster::{
     ClusterFrameParams, FrameGpuUniformBuildParams, cluster_frame_params,

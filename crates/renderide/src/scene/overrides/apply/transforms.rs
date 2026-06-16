@@ -109,7 +109,10 @@ pub(crate) fn apply_render_transform_overrides_update_extracted(
             ((state.override_flags & 0b010) != 0).then_some(state.rotation_override);
         entry.scale_override =
             ((state.override_flags & 0b100) != 0).then_some(state.scale_override);
-        let count = state.skinned_mesh_renderer_count.max(0) as usize;
+        if state.skinned_mesh_renderer_count < 0 {
+            continue;
+        }
+        let count = state.skinned_mesh_renderer_count as usize;
         entry.skinned_mesh_renderer_indices.clear();
         if count > 0 {
             let end = skinned_cursor

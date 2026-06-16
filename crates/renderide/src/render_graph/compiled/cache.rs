@@ -7,10 +7,10 @@ use wgpu::TextureFormat;
 
 use super::super::error::GraphBuildError;
 use super::super::post_process_chain::PostProcessChainSignature;
-use super::super::validation::RenderGraphValidationMode;
 use super::CompileStats;
 use super::CompiledRenderGraph;
 use crate::camera::ViewId;
+use crate::render_graph::RenderGraphValidationMode;
 
 /// Maximum number of compiled graph variants retained by the main graph cache.
 const GRAPH_CACHE_CAPACITY: usize = 4;

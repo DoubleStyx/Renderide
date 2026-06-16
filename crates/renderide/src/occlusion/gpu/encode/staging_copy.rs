@@ -3,7 +3,7 @@
 //! Copies one history-texture array layer's full mip chain into the active write-slot staging
 //! ring entry for asynchronous CPU readback.
 
-use crate::occlusion::cpu::pyramid::mip_dimensions;
+use crate::hi_z_cpu::pyramid::mip_dimensions;
 
 use super::EncodeSession;
 

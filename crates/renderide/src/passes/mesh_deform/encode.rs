@@ -13,9 +13,9 @@ use std::hash::{Hash, Hasher};
 
 use glam::Mat4;
 
+use crate::frame_upload_batch::GraphUploadSink;
 use crate::gpu::GpuLimits;
 use crate::mesh_deform::{DeformSignature, EntryNeed, SkinCacheEntry};
-use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::scene::RenderSpaceId;
 use crate::shared::SkinWeightMode;
 

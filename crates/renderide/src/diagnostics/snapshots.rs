@@ -10,7 +10,10 @@ pub mod renderer_info;
 pub mod scene_transforms;
 pub mod texture_debug;
 
-pub use backend_diag::{BackendDiagSnapshot, FrameUploadArenaSnapshot, ShaderRouteSnapshot};
+pub use backend_diag::{
+    AssetDiagnosticsSnapshot, BackendDiagSnapshot, FrameUploadArenaSnapshot,
+    LightDiagnosticsSnapshot, ShaderRouteSnapshot,
+};
 pub use frame_diagnostics::{
     FrameDiagnosticsIpcQueues, FrameDiagnosticsSnapshot, FrameDiagnosticsSnapshotCapture,
     GpuAllocatorHud, GpuAllocatorHudRefresh, GpuAllocatorReportHud, HostHudGatherer,

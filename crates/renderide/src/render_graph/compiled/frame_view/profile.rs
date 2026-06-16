@@ -1,10 +1,7 @@
-//! Render-path profiles, post-processing permissions, and view-family graph requirements.
+//! Render-path profiles and view-family graph requirements.
 
-use crate::camera::{
-    camera_state_motion_blur, camera_state_post_processing, camera_state_screen_space_reflections,
-};
+use crate::frame_contract::ViewPostProcessing;
 use crate::gpu::GpuContext;
-use crate::shared::{CameraRenderParameters, CameraState};
 
 use super::{FrameView, FrameViewTarget};
 
@@ -32,69 +29,6 @@ impl RenderPathSampleCountPolicy {
             Self::MasterMsaa => master_msaa_sample_count.max(1),
             Self::StereoMasterMsaa => stereo_msaa_sample_count.max(1),
         }
-    }
-}
-
-/// Post-processing permissions requested by a single view.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ViewPostProcessing {
-    /// `true` when this view should run the post-processing stack.
-    pub enabled: bool,
-    /// `true` when this view allows screen-space reflections to record.
-    pub screen_space_reflections: bool,
-    /// `true` when this view allows motion blur to record.
-    pub motion_blur: bool,
-}
-
-impl ViewPostProcessing {
-    /// Builds a view post-processing policy from decoded host camera settings.
-    pub const fn new(enabled: bool, screen_space_reflections: bool, motion_blur: bool) -> Self {
-        Self {
-            enabled,
-            screen_space_reflections: enabled && screen_space_reflections,
-            motion_blur: enabled && motion_blur,
-        }
-    }
-
-    /// Primary/HMD view policy: allow the renderer-global post-processing stack to run.
-    pub const fn primary_view() -> Self {
-        Self::new(true, true, true)
-    }
-
-    /// Reflection-probe and other raw-capture policy: bypass all post-processing effects.
-    pub const fn disabled() -> Self {
-        Self::new(false, false, false)
-    }
-
-    /// Converts host camera readback parameters into a view post-processing policy.
-    ///
-    /// Camera render tasks explicitly disable motion blur to match the host camera-capture path.
-    pub fn from_camera_render_parameters(parameters: &CameraRenderParameters) -> Self {
-        Self::new(
-            parameters.post_processing,
-            parameters.screen_space_reflections,
-            false,
-        )
-    }
-
-    /// Converts secondary render-texture camera state flags into a view post-processing policy.
-    pub fn from_camera_state(state: &CameraState) -> Self {
-        Self::new(
-            camera_state_post_processing(state.flags),
-            camera_state_screen_space_reflections(state.flags),
-            camera_state_motion_blur(state.flags),
-        )
-    }
-
-    /// Returns `true` when this view should run the post-processing stack.
-    pub const fn is_enabled(self) -> bool {
-        self.enabled
-    }
-}
-
-impl Default for ViewPostProcessing {
-    fn default() -> Self {
-        Self::primary_view()
     }
 }
 

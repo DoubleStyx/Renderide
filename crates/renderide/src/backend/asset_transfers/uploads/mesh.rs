@@ -4,11 +4,12 @@ use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::shared::{MeshUnload, MeshUploadData, MeshUploadResult};
 
 use super::super::AssetTransferQueue;
-use super::super::integrator::{AssetTask, RetiredAssetResource};
+use super::super::integrator::AssetTask;
+use super::super::limits::admit_descriptor_payload_len;
 use super::super::mesh_task::{
     MeshUploadTask, complete_empty_mesh_upload, complete_failed_mesh_upload,
 };
-use super::MAX_PENDING_MESH_UPLOADS;
+use super::PENDING_MESH_UPLOAD_WARN_THRESHOLD;
 
 /// Remove a mesh from the pool.
 pub fn on_mesh_unload(queue: &mut AssetTransferQueue, u: MeshUnload) {
@@ -21,11 +22,7 @@ pub fn on_mesh_unload(queue: &mut AssetTransferQueue, u: MeshUnload) {
             pending_removed
         );
     }
-    if let Some(mesh) = queue.pools.mesh_pool.take(u.asset_id) {
-        queue
-            .integrator_mut()
-            .enqueue_delayed_removal(RetiredAssetResource::Mesh(Box::new(mesh)));
-    }
+    queue.retire_mesh_asset(u.asset_id);
 }
 
 /// Enqueue mesh bytes from shared memory for time-sliced GPU integration ([`super::super::integrator::drain_asset_tasks`]).
@@ -63,7 +60,21 @@ pub fn try_process_mesh_upload(
             &mut ipc,
         ));
     }
+    if !admit_descriptor_payload_len("mesh", asset_id, data.buffer.length) {
+        return Some(complete_failed_mesh_upload(
+            data.asset_id,
+            "mesh upload payload exceeds renderer admission cap",
+            &mut ipc,
+        ));
+    }
     if queue.gpu.gpu_device.is_none() {
+        if queue.pending.pending_mesh_uploads.len() >= PENDING_MESH_UPLOAD_WARN_THRESHOLD {
+            return Some(complete_failed_mesh_upload(
+                data.asset_id,
+                "too many deferred mesh uploads",
+                &mut ipc,
+            ));
+        }
         queue.pending.pending_mesh_uploads.push_back(data);
         logger::debug!(
             "mesh {asset_id}: deferred upload until GPU attach (pending={})",
@@ -74,8 +85,15 @@ pub fn try_process_mesh_upload(
     }
 
     let high = data.high_priority;
+    let asset_id = data.asset_id;
     let task = AssetTask::Mesh(MeshUploadTask::new(data, generation));
-    queue.integrator_mut().enqueue(task, high);
+    if !queue.integrator_mut().enqueue(task, high) {
+        return Some(complete_failed_mesh_upload(
+            asset_id,
+            "asset integration backlog full",
+            &mut ipc,
+        ));
+    }
     None
 }
 
@@ -99,13 +117,14 @@ fn log_mesh_upload_received(data: &MeshUploadData) {
 
 fn log_pending_mesh_upload_pressure(queue: &AssetTransferQueue, asset_id: i32) {
     let pending = queue.pending.pending_mesh_uploads.len();
-    if pending == MAX_PENDING_MESH_UPLOADS
-        || (pending > MAX_PENDING_MESH_UPLOADS && pending.is_multiple_of(MAX_PENDING_MESH_UPLOADS))
+    if pending == PENDING_MESH_UPLOAD_WARN_THRESHOLD
+        || (pending > PENDING_MESH_UPLOAD_WARN_THRESHOLD
+            && pending.is_multiple_of(PENDING_MESH_UPLOAD_WARN_THRESHOLD))
     {
         logger::warn!(
             "mesh {asset_id}: deferred upload backlog high: pending={} threshold={} reason=gpu not attached",
             pending,
-            MAX_PENDING_MESH_UPLOADS
+            PENDING_MESH_UPLOAD_WARN_THRESHOLD
         );
     }
 }
@@ -128,18 +147,32 @@ mod tests {
     }
 
     #[test]
-    fn mesh_without_gpu_is_deferred_beyond_warning_threshold() {
+    fn mesh_without_gpu_is_capped_at_pending_threshold() {
         let mut queue = AssetTransferQueue::new();
         let mut shm = SharedMemoryAccessor::new(String::new());
 
-        for i in 0..=MAX_PENDING_MESH_UPLOADS {
+        for i in 0..=PENDING_MESH_UPLOAD_WARN_THRESHOLD {
             try_process_mesh_upload(&mut queue, upload(i as i32), Some(&mut shm), None);
         }
 
         assert_eq!(
             queue.pending.pending_mesh_uploads.len(),
-            MAX_PENDING_MESH_UPLOADS + 1
+            PENDING_MESH_UPLOAD_WARN_THRESHOLD
         );
+    }
+
+    #[test]
+    fn mesh_rejects_descriptor_payload_above_cap() {
+        let mut queue = AssetTransferQueue::new();
+        let mut shm = SharedMemoryAccessor::new(String::new());
+        let mut upload = upload(1);
+        upload.buffer.length = super::super::super::limits::MAX_UPLOAD_PAYLOAD_BYTES + 1;
+
+        let result = try_process_mesh_upload(&mut queue, upload, Some(&mut shm), None)
+            .expect("oversized upload should complete as failed");
+
+        assert_eq!(result.asset_id, 1);
+        assert!(queue.pending.pending_mesh_uploads.is_empty());
     }
 
     #[test]

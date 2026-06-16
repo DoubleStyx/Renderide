@@ -106,7 +106,7 @@ fn vs_main(
     return out;
 }
 
-//#pass type=forward name=forward_filter blend=material_filter
+//#pass type=forward name=forward_filter blend=material_filter zwrite=material(on) ztest=material_froox(main) cull=material(back) color_mask=material(rgba) stencil=material offset=material(0,0)
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if (uirc::should_clip_rect_kw(in.obj_xy, mat._Rect, ui_unlit_kw(UIUNLIT_KW_RECTCLIP))) {

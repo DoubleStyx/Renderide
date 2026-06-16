@@ -402,6 +402,51 @@ fn forward_pass_uses_unity_separate_alpha_blend() {
 }
 
 #[test]
+fn cutout_alpha_to_coverage_materializes_from_alpha_test_routing() {
+    let pass = MaterialPassDesc {
+        alpha_to_coverage: MaterialAlphaToCoverageMode::Cutout,
+        ..default_pass(DefaultPassParams {
+            use_alpha_blending: false,
+            depth_write: true,
+        })
+    };
+
+    let default_routing = materialized_pass_for_blend_mode_with_routing(
+        &pass,
+        MaterialBlendMode::Opaque,
+        MaterialPassRouting::default(),
+    );
+    assert_eq!(
+        default_routing.alpha_to_coverage,
+        MaterialAlphaToCoverageMode::Off
+    );
+
+    let alpha_test_routing = materialized_pass_for_blend_mode_with_routing(
+        &pass,
+        MaterialBlendMode::Opaque,
+        MaterialPassRouting { alpha_test: true },
+    );
+    assert_eq!(
+        alpha_test_routing.alpha_to_coverage,
+        MaterialAlphaToCoverageMode::Always
+    );
+
+    let explicit_a2c = MaterialPassDesc {
+        alpha_to_coverage: MaterialAlphaToCoverageMode::Always,
+        ..pass
+    };
+    let explicit_a2c = materialized_pass_for_blend_mode_with_routing(
+        &explicit_a2c,
+        MaterialBlendMode::Opaque,
+        MaterialPassRouting::default(),
+    );
+    assert_eq!(
+        explicit_a2c.alpha_to_coverage,
+        MaterialAlphaToCoverageMode::Always
+    );
+}
+
+#[test]
 fn overlay_pass_uses_unity_rgb_blend_and_keeps_alpha_max() {
     let pass = overlay_front_pass("fs_overlay");
     let materialized =

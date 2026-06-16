@@ -7,6 +7,7 @@ mod from_maps;
 mod types;
 mod unity_mapping;
 
+pub use crate::render_contract::RasterPrimitiveTopology;
 #[cfg(test)]
 pub use from_maps::material_render_state_for_lookup;
 pub use from_maps::material_render_state_from_maps;
@@ -14,5 +15,4 @@ pub use from_maps::material_render_state_from_maps;
 pub(crate) use types::{MaterialCullOverride, MaterialDepthOffsetState, MaterialStencilState};
 pub use types::{
     MaterialDepthCompareDomain, MaterialDepthCompareOverride, MaterialRenderState, RasterFrontFace,
-    RasterPrimitiveTopology,
 };

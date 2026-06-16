@@ -6,25 +6,21 @@ use hashbrown::HashSet;
 
 use crate::backend::frame_gpu::{LIGHT_COOKIE_ATLAS_PASS_NAME, SHADOW_ATLAS_PASS_NAME};
 use crate::camera::ViewId;
+use crate::frame_upload_batch::GraphUploadSink;
 use crate::gpu::frame_globals::SkyboxSpecularUniformParams;
-use crate::graph_inputs::PreRecordViewResourceLayout;
+use crate::graph_inputs::{
+    FrameGlobalPassSplitWorkload, FrameGlobalSplitPassEncodeParams, GraphAssetResources,
+    GraphClusterBufferRefs, GraphFrameResources, PreRecordViewResourceLayout,
+    ShadowAtlasEncodeParams,
+};
 use crate::mesh_deform::{PaddedPerDrawUniforms, SkinCacheKey};
 use crate::passes::MaterialBatchBoundary;
-use crate::render_graph::execution_backend::{
-    GraphAssetResources, GraphClusterBufferRefs, GraphFrameResources, ShadowAtlasEncodeParams,
-};
-use crate::render_graph::frame_upload_batch::GraphUploadSink;
 
-use super::super::light_gpu::GpuLight;
 use super::manager::FrameResourceManager;
 
 impl GraphFrameResources for FrameResourceManager {
     fn has_frame_gpu(&self) -> bool {
         self.frame_gpu().is_some()
-    }
-
-    fn frame_lights(&self, view_id: ViewId) -> &[GpuLight] {
-        self.frame_lights_for_view(view_id)
     }
 
     fn frame_light_count_u32(&self, view_id: ViewId) -> u32 {
@@ -85,7 +81,7 @@ impl GraphFrameResources for FrameResourceManager {
     ) -> Option<wgpu::Buffer> {
         let per_draw_slot = self.per_view_per_draw(view_id)?;
         let mut per_draw = per_draw_slot.lock();
-        per_draw.ensure_draw_slot_capacity(device, draw_count);
+        let _ = per_draw.ensure_draw_slot_capacity(device, draw_count);
         Some(per_draw.per_draw_storage.clone())
     }
 
@@ -220,13 +216,24 @@ impl GraphFrameResources for FrameResourceManager {
         let _ = self.per_view_per_draw_scratch_or_create(view_id);
     }
 
-    fn pre_record_sync_for_views(
-        &mut self,
-        device: &wgpu::Device,
-        uploads: GraphUploadSink<'_>,
-        view_layouts: &[PreRecordViewResourceLayout],
-    ) {
-        self.pre_record_sync_for_views(device, uploads, view_layouts);
+    fn retain_submit_resources(&self, resources: &mut crate::gpu::GpuRetainedResources) {
+        if let Some(fgpu) = self.frame_gpu() {
+            fgpu.retain_submit_resources(resources);
+        }
+        if let Some(empty) = self.empty_material() {
+            resources.retain_bind_group(empty.bind_group.as_ref().clone());
+        }
+        for state in self.per_view_frame.values() {
+            resources.retain_buffer(state.frame_uniform_buffer.clone());
+            resources.retain_buffer(state.lights_buffer.clone());
+            resources.retain_bind_group(state.frame_bind_group.as_ref().clone());
+            resources.retain_bind_group(state.named_scene_color_frame_bind_group.as_ref().clone());
+            resources.retain_buffer(state.cluster_params_buffer.clone());
+            state.scene_snapshots.retain_submit_resources(resources);
+        }
+        for per_draw in self.per_view_draw.values() {
+            per_draw.lock().retain_submit_resources(resources);
+        }
     }
 
     fn has_light_cookie_requests(&self) -> bool {
@@ -254,5 +261,48 @@ impl GraphFrameResources for FrameResourceManager {
         if let Some(fgpu) = self.frame_gpu() {
             fgpu.encode_shadow_atlas(self.shadow_frame_plan(), params);
         }
+    }
+
+    fn frame_global_pass_split_workload(
+        &self,
+        pass_name: &str,
+    ) -> Option<FrameGlobalPassSplitWorkload> {
+        if pass_name != SHADOW_ATLAS_PASS_NAME {
+            return None;
+        }
+        self.frame_gpu()
+            .and_then(|fgpu| fgpu.shadow_atlas_split_workload(self.shadow_frame_plan()))
+    }
+
+    fn prepare_frame_global_split_pass(
+        &self,
+        pass_name: &str,
+        gpu_limits: &crate::gpu::GpuLimits,
+        uploads: GraphUploadSink<'_>,
+    ) -> bool {
+        if pass_name != SHADOW_ATLAS_PASS_NAME {
+            return false;
+        }
+        let Some(fgpu) = self.frame_gpu() else {
+            return false;
+        };
+        fgpu.prepare_shadow_atlas_uploads(self.shadow_frame_plan(), gpu_limits, uploads);
+        true
+    }
+
+    fn encode_frame_global_split_pass(
+        &self,
+        pass_name: &str,
+        unit_range: std::ops::Range<usize>,
+        params: FrameGlobalSplitPassEncodeParams<'_, '_>,
+    ) -> bool {
+        if pass_name != SHADOW_ATLAS_PASS_NAME {
+            return false;
+        }
+        let Some(fgpu) = self.frame_gpu() else {
+            return false;
+        };
+        fgpu.record_shadow_atlas_layers(self.shadow_frame_plan(), unit_range, params);
+        true
     }
 }

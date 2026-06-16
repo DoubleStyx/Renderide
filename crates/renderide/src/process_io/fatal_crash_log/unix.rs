@@ -83,8 +83,7 @@ pub(super) fn install_impl(log_path: &Path) -> Result<(), String> {
             if let Some(fds) = UNIX_CRASH_FDS.get() {
                 fds.write_all(data);
                 let mut context_buf = [0u8; 512];
-                let context_n =
-                    crate::diagnostics::crash_context::write_minimal_snapshot(&mut context_buf);
+                let context_n = crate::crash_context::write_minimal_snapshot(&mut context_buf);
                 fds.write_all(&context_buf[..context_n]);
                 #[cfg(any(target_os = "linux", target_os = "android"))]
                 {

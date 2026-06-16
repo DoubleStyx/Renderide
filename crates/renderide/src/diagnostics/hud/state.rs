@@ -5,7 +5,7 @@
 
 use crate::config::{
     DebugHudMainTab, DebugHudMainTabVisibility, DebugHudRendererConfigTab,
-    DebugHudRendererConfigTabVisibility, DebugHudSettings,
+    DebugHudRendererConfigTabVisibility, DebugHudSettings, DebugHudStatsSectionVisibility,
 };
 
 /// Per-tab state and filter toggles owned by [`crate::diagnostics::DebugHud`].
@@ -23,6 +23,8 @@ pub struct HudUiState {
     pub main_tab: DebugHudMainTab,
     /// Open/closed state for tabs in **Renderide debug**.
     pub main_tabs: DebugHudMainTabVisibility,
+    /// Expanded/collapsed state for expensive sections inside the **Stats** tab.
+    pub stats_sections: DebugHudStatsSectionVisibility,
     /// Last selected tab in **Renderer config**.
     pub renderer_config_tab: DebugHudRendererConfigTab,
     /// Open/closed state for tabs in **Renderer config**.
@@ -53,6 +55,7 @@ impl HudUiState {
             shader_routes_only_fallback: settings.shader_routes_only_fallback,
             main_tab: settings.main_tab,
             main_tabs: settings.main_tabs,
+            stats_sections: settings.stats_sections,
             renderer_config_tab: settings.renderer_config_tab,
             renderer_config_tabs: settings.renderer_config_tabs,
             scene_transforms_space_id: settings.scene_transforms_space_id,
@@ -73,6 +76,7 @@ impl HudUiState {
         settings.shader_routes_only_fallback = self.shader_routes_only_fallback;
         settings.main_tab = self.main_tab;
         settings.main_tabs = self.main_tabs;
+        settings.stats_sections = self.stats_sections;
         settings.renderer_config_tab = self.renderer_config_tab;
         settings.renderer_config_tabs = self.renderer_config_tabs;
         settings.scene_transforms_space_id = self.scene_transforms_space_id;
@@ -84,7 +88,7 @@ impl HudUiState {
 mod tests {
     use crate::config::{
         DebugHudMainTab, DebugHudMainTabVisibility, DebugHudRendererConfigTab,
-        DebugHudRendererConfigTabVisibility, DebugHudSettings,
+        DebugHudRendererConfigTabVisibility, DebugHudSettings, DebugHudStatsSectionVisibility,
     };
 
     use super::HudUiState;
@@ -98,6 +102,7 @@ mod tests {
         assert!(!s.shader_routes_only_fallback);
         assert_eq!(s.main_tab, DebugHudMainTab::Stats);
         assert_eq!(s.main_tabs, DebugHudMainTabVisibility::default());
+        assert_eq!(s.stats_sections, DebugHudStatsSectionVisibility::default());
         assert_eq!(s.renderer_config_tab, DebugHudRendererConfigTab::Display);
         assert_eq!(
             s.renderer_config_tabs,
@@ -124,6 +129,10 @@ mod tests {
                 gpu_memory: false,
                 ..Default::default()
             },
+            stats_sections: DebugHudStatsSectionVisibility {
+                graph: false,
+                ..Default::default()
+            },
             renderer_config_tab: DebugHudRendererConfigTab::PostProcessing,
             renderer_config_tabs: DebugHudRendererConfigTabVisibility {
                 post_processing: false,
@@ -141,6 +150,7 @@ mod tests {
         assert!(state.shader_routes_only_fallback);
         assert_eq!(state.main_tab, DebugHudMainTab::GpuMemory);
         assert!(!state.main_tabs.is_open(DebugHudMainTab::GpuMemory));
+        assert!(!state.stats_sections.graph);
         assert_eq!(
             state.renderer_config_tab,
             DebugHudRendererConfigTab::PostProcessing
@@ -171,6 +181,11 @@ mod tests {
         state.main_tabs.set_open(DebugHudMainTab::Stats, false);
         assert!(state.write_to_settings(&mut settings));
         assert!(!settings.main_tabs.stats);
+
+        assert!(!state.write_to_settings(&mut settings));
+        state.stats_sections.assets = false;
+        assert!(state.write_to_settings(&mut settings));
+        assert!(!settings.stats_sections.assets);
     }
 
     #[test]

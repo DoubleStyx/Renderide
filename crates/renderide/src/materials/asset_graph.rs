@@ -1,6 +1,6 @@
 //! Central shader/material asset graph state for routing, source generations, and future compiler hooks.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -8,9 +8,10 @@ use hashbrown::HashMap;
 use parking_lot::Mutex;
 
 use crate::materials::embedded::stem_metadata::embedded_composed_stem_for_permutation;
+use crate::materials::shader_package;
 use crate::materials::{RasterPipelineKind, ShaderPermutation};
 
-use super::router::MaterialRouter;
+use super::router::{MaterialRouter, ShaderRouteEntry};
 
 /// Generation assigned to a shader source before any development reload has occurred.
 const INITIAL_SHADER_SOURCE_GENERATION: u64 = 1;
@@ -48,7 +49,7 @@ struct EmbeddedShaderSourceNode {
     generation: u64,
     /// Last modification time observed for development hot reload.
     last_modified: Option<SystemTime>,
-    /// Runtime WGSL override loaded from `shaders/target` when development reload is enabled.
+    /// Runtime WGSL override loaded from the active shader package when development reload is enabled.
     source_override: Option<Arc<str>>,
 }
 
@@ -77,30 +78,16 @@ impl EmbeddedShaderSourceNode {
 /// Host shader asset route tracked by the material asset graph.
 #[derive(Clone, Debug)]
 struct ShaderAssetNode {
-    /// Resolved raster pipeline kind for this host shader asset.
-    pipeline: RasterPipelineKind,
-    /// Shader asset filename extracted from the uploaded shader asset, when available.
-    shader_asset_name: Option<String>,
-    /// Shader-specific variant bits parsed from the uploaded shader asset, when available.
-    shader_variant_bits: Option<u32>,
+    /// Resolved shader route for this host shader asset.
+    route: ShaderRouteEntry,
     /// Monotonic route generation for this shader asset node.
     generation: u64,
 }
 
 impl ShaderAssetNode {
     /// Builds a shader asset graph node from resolved route data.
-    fn new(
-        pipeline: RasterPipelineKind,
-        shader_asset_name: Option<String>,
-        shader_variant_bits: Option<u32>,
-        generation: u64,
-    ) -> Self {
-        Self {
-            pipeline,
-            shader_asset_name,
-            shader_variant_bits,
-            generation,
-        }
+    fn new(route: ShaderRouteEntry, generation: u64) -> Self {
+        Self { route, generation }
     }
 }
 
@@ -204,7 +191,7 @@ pub(crate) struct MaterialShaderGraphDiagnosticSnapshot {
 struct ShaderSourceGraphState {
     /// Embedded source nodes keyed by base stem plus permutation.
     embedded_sources: HashMap<EmbeddedShaderSourceKey, EmbeddedShaderSourceNode>,
-    /// Development reload target directory, usually `crates/renderide/shaders/target`.
+    /// Development reload target directory, usually the active runtime shader package.
     dev_hot_reload_target_dir: PathBuf,
     /// Whether development reload polling is active.
     dev_hot_reload_enabled: bool,
@@ -329,27 +316,22 @@ impl MaterialAssetGraph {
         shader_asset_name: Option<String>,
         shader_variant_bits: Option<u32>,
     ) {
-        self.router.set_shader_route(
-            shader_asset_id,
-            pipeline.clone(),
-            shader_asset_name.clone(),
+        let route = ShaderRouteEntry {
+            pipeline,
+            shader_asset_name,
             shader_variant_bits,
-        );
-        match &pipeline {
+        };
+        self.router
+            .set_shader_route_entry(shader_asset_id, route.clone());
+        match &route.pipeline {
             RasterPipelineKind::EmbeddedStem(stem) => {
-                self.router
-                    .set_shader_stem(shader_asset_id, stem.to_string());
                 self.ensure_source_node(stem.as_ref(), ShaderPermutation::default());
             }
-            RasterPipelineKind::Null => {
-                self.router.remove_shader_stem(shader_asset_id);
-            }
+            RasterPipelineKind::Null => {}
         }
         let generation = self.bump_generation();
-        self.shader_nodes.insert(
-            shader_asset_id,
-            ShaderAssetNode::new(pipeline, shader_asset_name, shader_variant_bits, generation),
-        );
+        self.shader_nodes
+            .insert(shader_asset_id, ShaderAssetNode::new(route, generation));
         self.note_invalidation();
     }
 
@@ -437,14 +419,14 @@ impl MaterialAssetGraph {
         let mut shader_asset_name_bytes = 0usize;
         let mut shader_route_generation_sum = 0u64;
         for node in self.shader_nodes.values() {
-            if matches!(node.pipeline, RasterPipelineKind::EmbeddedStem(_)) {
+            if matches!(node.route.pipeline, RasterPipelineKind::EmbeddedStem(_)) {
                 embedded_shader_routes = embedded_shader_routes.saturating_add(1);
             }
-            if node.shader_variant_bits.is_some() {
+            if node.route.shader_variant_bits.is_some() {
                 shader_variant_routes = shader_variant_routes.saturating_add(1);
             }
             shader_asset_name_bytes = shader_asset_name_bytes
-                .saturating_add(node.shader_asset_name.as_ref().map_or(0, String::len));
+                .saturating_add(node.route.shader_asset_name.as_ref().map_or(0, String::len));
             shader_route_generation_sum = shader_route_generation_sum.wrapping_add(node.generation);
         }
         let mut global_uniform_name_bytes = 0usize;
@@ -514,9 +496,9 @@ fn global_uniform_type_bit(value_type: GlobalUniformValueType) -> u32 {
     }
 }
 
-/// Returns the default shader target directory for development hot reload.
+/// Returns the default shader package directory for development hot reload.
 fn default_shader_target_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders/target")
+    shader_package::default_package_dir().unwrap_or_else(|| PathBuf::from("shaders"))
 }
 
 #[cfg(test)]
@@ -537,6 +519,7 @@ mod tests {
         graph.register_shader_route(7, route.clone(), Some("unlit".to_string()), Some(0x20));
 
         assert_eq!(graph.router().pipeline_for_shader_asset(7), route);
+        assert_eq!(graph.stem_for_shader_asset(7), Some("unlit_default"));
         assert_eq!(graph.variant_bits_for_shader_asset(7), Some(0x20));
         assert_eq!(graph.diagnostic_snapshot().shader_nodes, 1);
         assert_eq!(graph.diagnostic_snapshot().embedded_source_nodes, 1);

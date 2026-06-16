@@ -42,7 +42,6 @@ pub(super) fn buffer_lease_from_entry(
         .ok_or(TransientPoolError::MissingBuffer { pool_id: id })?;
     Ok(PooledBufferLease {
         pool_id: id,
-        _buffer: buffer,
-        _size: slot.size,
+        buffer,
     })
 }

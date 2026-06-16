@@ -1,5 +1,6 @@
 //! Nonblocking GPU SH2 projection for reflection-probe host tasks.
 
+mod cubemap_assets;
 mod projection_pipeline;
 mod readback_jobs;
 mod sh2_math;
@@ -16,4 +17,5 @@ use sh2_system::{
     MAX_PENDING_JOB_AGE_FRAMES, SH2_OUTPUT_BYTES, Sh2ProjectParams, Sh2SourceKey,
 };
 
+pub(crate) use cubemap_assets::{ReflectionProbeCubemapAsset, ReflectionProbeCubemapAssets};
 pub(crate) use sh2_system::ReflectionProbeSh2System;

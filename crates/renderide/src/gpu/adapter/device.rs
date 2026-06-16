@@ -12,7 +12,7 @@ use super::super::sync::device_health::GpuDeviceHealth;
 use super::super::sync::mapped_buffer_health::{
     GpuMappedBufferHealth, validation_mentions_mapped_buffer_invalidation,
 };
-use crate::diagnostics::gpu_flight_recorder::{GpuFlightEventKind, GpuFlightRecorder};
+use crate::gpu::flight_recorder::{GpuFlightEventKind, GpuFlightRecorder};
 
 /// Asynchronously requests a device from `adapter` for `required_features`.
 ///

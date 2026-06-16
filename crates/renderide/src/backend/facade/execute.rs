@@ -2,8 +2,9 @@
 
 use std::fmt::Write as _;
 
-use crate::diagnostics::crash_context;
+use crate::crash_context;
 use crate::gpu::GpuContext;
+use crate::graph_inputs::GraphSceneView;
 use crate::render_graph::{
     FrameGlobalView, FrameView, FrameViewTarget, GraphExecuteError, ViewFamilyGraphRequirements,
 };
@@ -61,6 +62,7 @@ impl RenderBackend {
                 }
             }
         }
+        self.graph_state.release_completed_transient_submits(gpu);
         self.graph_state.history_registry_mut().advance_frame();
         debug_assert_eq!(
             requirements,
@@ -77,7 +79,7 @@ impl RenderBackend {
             let mut backend_access = self.graph_access();
             graph.execute_multi_view(
                 gpu,
-                scene,
+                GraphSceneView::new(scene),
                 &mut backend_access,
                 frame_global,
                 views.as_mut_slice(),
@@ -85,7 +87,7 @@ impl RenderBackend {
         };
         self.graph_state.frame_graph_cache.restore_graph(graph);
         if let Err(error) = &res {
-            let kind = crash_context::graph_error_kind(error);
+            let kind = crate::render_graph::graph_error_kind(error);
             crash_context::set_last_graph_error(kind);
             let metrics = self.graph_state.transient_pool().metrics();
             let (surface_w, surface_h) = gpu.surface_extent_px();

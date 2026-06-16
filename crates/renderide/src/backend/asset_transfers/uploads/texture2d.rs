@@ -8,10 +8,17 @@ use crate::shared::{
 
 use super::super::AssetTransferQueue;
 use super::super::integrator::{AssetTask, RetiredAssetResource};
+use super::super::pending::PendingTextureUpload;
 use super::super::texture_task::TextureUploadTask;
-use super::MAX_PENDING_TEXTURE_UPLOADS;
+use super::PENDING_TEXTURE_UPLOAD_WARN_THRESHOLD;
 use super::allocations::flush_pending_texture_allocations;
 use super::texture_common::{TextureUploadAdmission, admit_texture_upload_data};
+
+enum TextureUploadEnqueueResult {
+    Enqueued,
+    Defer(SetTexture2DData),
+    QueueFull { asset_id: i32 },
+}
 
 fn send_texture_2d_result(
     ipc: Option<&mut DualQueueIpc>,
@@ -22,11 +29,13 @@ fn send_texture_2d_result(
     let Some(ipc) = ipc else {
         return;
     };
-    let _ = ipc.send_background_reliable(RendererCommand::SetTexture2DResult(SetTexture2DResult {
+    if !ipc.send_background_reliable(RendererCommand::SetTexture2DResult(SetTexture2DResult {
         asset_id,
         r#type: TextureUpdateResultType(update),
         instance_changed,
-    }));
+    })) {
+        logger::warn!("texture {asset_id}: failed to enqueue reliable SetTexture2DResult");
+    }
 }
 
 /// Handle [`SetTexture2DFormat`](crate::shared::SetTexture2DFormat).
@@ -36,11 +45,20 @@ pub fn on_set_texture_2d_format(
     ipc: Option<&mut DualQueueIpc>,
 ) {
     let id = f.asset_id;
+    let mut ipc = ipc;
+    let format_generation_changed = queue
+        .catalogs
+        .texture_formats
+        .get(&id)
+        .is_none_or(|old| !texture_2d_format_shape_matches(old, &f));
+    if format_generation_changed {
+        queue.begin_texture_upload_generation(id);
+    }
     queue.catalogs.texture_formats.insert(id, f.clone());
     let props = queue.catalogs.texture_properties.get(&id).cloned();
     let Some(device) = queue.gpu.gpu_device.clone() else {
         send_texture_2d_result(
-            ipc,
+            ipc.as_deref_mut(),
             id,
             TextureUpdateResultType::FORMAT_SET,
             queue.pools.texture_pool.get(id).is_none(),
@@ -50,7 +68,7 @@ pub fn on_set_texture_2d_format(
     let Some(limits) = queue.gpu.gpu_limits.as_ref() else {
         logger::warn!("texture {id}: gpu_limits missing; format deferred until attach");
         send_texture_2d_result(
-            ipc,
+            ipc.as_deref_mut(),
             id,
             TextureUpdateResultType::FORMAT_SET,
             queue.pools.texture_pool.get(id).is_none(),
@@ -61,8 +79,13 @@ pub fn on_set_texture_2d_format(
         && texture.allocation_matches_format(device.as_ref(), limits.as_ref(), &f)
     {
         texture.apply_format_metadata(&f, props.as_ref());
-        replay_pending_texture_uploads_for_asset(queue, id);
-        send_texture_2d_result(ipc, id, TextureUpdateResultType::FORMAT_SET, false);
+        replay_pending_texture_uploads_for_asset(queue, id, ipc.as_deref_mut());
+        send_texture_2d_result(
+            ipc.as_deref_mut(),
+            id,
+            TextureUpdateResultType::FORMAT_SET,
+            false,
+        );
         logger::trace!(
             "texture {} format {:?} {}x{} mips={} reused resident allocation",
             id,
@@ -80,11 +103,16 @@ pub fn on_set_texture_2d_format(
         props.as_ref(),
     ) else {
         logger::warn!("texture {id}: SetTexture2DFormat rejected (bad size or device)");
-        send_texture_2d_result(ipc, id, TextureUpdateResultType::FORMAT_SET, false);
+        send_texture_2d_result(
+            ipc.as_deref_mut(),
+            id,
+            TextureUpdateResultType::FORMAT_SET,
+            false,
+        );
         return;
     };
     let existed_before = queue.pools.texture_pool.insert(tex);
-    replay_pending_texture_uploads_for_asset(queue, id);
+    replay_pending_texture_uploads_for_asset(queue, id, ipc.as_deref_mut());
     send_texture_2d_result(
         ipc,
         id,
@@ -125,7 +153,7 @@ pub fn on_set_texture_2d_data(
     queue: &mut AssetTransferQueue,
     d: SetTexture2DData,
     _shm: Option<&mut SharedMemoryAccessor>,
-    _ipc: Option<&mut DualQueueIpc>,
+    ipc: Option<&mut DualQueueIpc>,
 ) {
     let Some(d) = admit_texture_upload_data(TextureUploadAdmission {
         asset_id: d.asset_id,
@@ -133,11 +161,11 @@ pub fn on_set_texture_2d_data(
         data: d,
         kind: "texture",
         format_command: "SetTexture2DData",
-        pending_warn_threshold: MAX_PENDING_TEXTURE_UPLOADS,
+        pending_warn_threshold: PENDING_TEXTURE_UPLOAD_WARN_THRESHOLD,
         queue,
         has_format: |queue, id| queue.catalogs.texture_formats.contains_key(&id),
         pending_len: |queue| queue.pending.pending_texture_uploads.len(),
-        push_pending: |queue, data| queue.pending.pending_texture_uploads.push_back(data),
+        push_pending: push_pending_texture_upload,
         has_resident: |queue, id| queue.pools.texture_pool.get(id).is_some(),
         flush_allocations: flush_pending_texture_allocations,
     }) else {
@@ -154,20 +182,28 @@ pub fn on_set_texture_2d_data(
         d.start_mip_level,
     );
 
-    enqueue_texture_upload_task(queue, d);
+    let enqueue_result = enqueue_texture_upload_task(queue, d);
+    handle_live_texture_upload_enqueue_result(queue, enqueue_result, ipc);
 }
 
 /// Replay pending texture data after GPU attach (enqueue only; caller runs [`super::super::integrator::drain_asset_tasks_unbounded`]).
 pub fn try_texture_upload_with_device(
     queue: &mut AssetTransferQueue,
-    data: SetTexture2DData,
+    pending: PendingTextureUpload<SetTexture2DData>,
     _shm: &mut SharedMemoryAccessor,
-    _ipc: Option<&mut DualQueueIpc>,
+    ipc: Option<&mut DualQueueIpc>,
     _consume_texture_upload_budget: bool,
 ) {
-    if !enqueue_texture_upload_task(queue, data.clone()) {
-        queue.pending.pending_texture_uploads.push_back(data);
+    if pending_texture_upload_is_stale(queue, &pending) {
+        logger::trace!(
+            "texture {}: dropped stale deferred upload generation {:?}",
+            pending.data.asset_id,
+            pending.generation
+        );
+        return;
     }
+    let enqueue_result = enqueue_texture_upload_task(queue, pending.data.clone());
+    handle_replayed_texture_upload_enqueue_result(queue, pending, enqueue_result, ipc);
 }
 
 /// Remove a texture asset from CPU tables and the pool.
@@ -175,6 +211,7 @@ pub fn on_unload_texture_2d(queue: &mut AssetTransferQueue, u: UnloadTexture2D) 
     let id = u.asset_id;
     queue.catalogs.texture_formats.remove(&id);
     queue.catalogs.texture_properties.remove(&id);
+    queue.invalidate_texture_upload_generation(id);
     remove_pending_texture_uploads_for_asset(queue, id);
     if let Some(texture) = queue.pools.texture_pool.take(id) {
         queue
@@ -183,38 +220,137 @@ pub fn on_unload_texture_2d(queue: &mut AssetTransferQueue, u: UnloadTexture2D) 
     }
 }
 
-fn enqueue_texture_upload_task(queue: &mut AssetTransferQueue, d: SetTexture2DData) -> bool {
+fn enqueue_texture_upload_task(
+    queue: &mut AssetTransferQueue,
+    d: SetTexture2DData,
+) -> TextureUploadEnqueueResult {
     let id = d.asset_id;
     let Some(fmt) = queue.catalogs.texture_formats.get(&id).cloned() else {
         logger::warn!("texture {id}: missing format");
-        return false;
+        return TextureUploadEnqueueResult::Defer(d);
     };
     let Some(wgpu_fmt) = queue.pools.texture_pool.get(id).map(|t| t.wgpu_format) else {
         logger::warn!("texture {id}: missing GPU texture");
-        return false;
+        return TextureUploadEnqueueResult::Defer(d);
+    };
+    let Some(generation) = queue.current_texture_upload_generation(id) else {
+        logger::warn!("texture {id}: missing upload generation");
+        return TextureUploadEnqueueResult::Defer(d);
     };
     let high = d.high_priority;
-    let task = AssetTask::Texture(TextureUploadTask::new(d, fmt, wgpu_fmt));
-    queue.integrator_mut().enqueue(task, high);
+    let task = AssetTask::Texture(TextureUploadTask::new(d, fmt, wgpu_fmt, generation));
+    if queue.integrator_mut().enqueue(task, high) {
+        TextureUploadEnqueueResult::Enqueued
+    } else {
+        TextureUploadEnqueueResult::QueueFull { asset_id: id }
+    }
+}
+
+fn handle_live_texture_upload_enqueue_result(
+    queue: &mut AssetTransferQueue,
+    result: TextureUploadEnqueueResult,
+    ipc: Option<&mut DualQueueIpc>,
+) {
+    match result {
+        TextureUploadEnqueueResult::Enqueued => {}
+        TextureUploadEnqueueResult::Defer(data) => {
+            retain_deferred_texture_upload(queue, data, "live enqueue prerequisites changed");
+        }
+        TextureUploadEnqueueResult::QueueFull { asset_id } => {
+            logger::warn!(
+                "texture {asset_id}: rejected data upload because asset integrator is full"
+            );
+            send_texture_2d_result(ipc, asset_id, TextureUpdateResultType::DATA_UPLOAD, false);
+        }
+    }
+}
+
+fn handle_replayed_texture_upload_enqueue_result(
+    queue: &mut AssetTransferQueue,
+    pending: PendingTextureUpload<SetTexture2DData>,
+    result: TextureUploadEnqueueResult,
+    ipc: Option<&mut DualQueueIpc>,
+) -> bool {
+    match result {
+        TextureUploadEnqueueResult::Enqueued => true,
+        TextureUploadEnqueueResult::Defer(_data) => {
+            retain_deferred_texture_upload_record(queue, pending, "replay prerequisites changed");
+            false
+        }
+        TextureUploadEnqueueResult::QueueFull { asset_id } => {
+            logger::warn!(
+                "texture {asset_id}: dropping replayed upload because asset integrator is full"
+            );
+            send_texture_2d_result(ipc, asset_id, TextureUpdateResultType::DATA_UPLOAD, false);
+            false
+        }
+    }
+}
+
+fn retain_deferred_texture_upload(
+    queue: &mut AssetTransferQueue,
+    data: SetTexture2DData,
+    reason: &'static str,
+) -> bool {
+    let generation = queue.current_texture_upload_generation(data.asset_id);
+    retain_deferred_texture_upload_record(
+        queue,
+        PendingTextureUpload::new(data, generation),
+        reason,
+    )
+}
+
+fn retain_deferred_texture_upload_record(
+    queue: &mut AssetTransferQueue,
+    pending: PendingTextureUpload<SetTexture2DData>,
+    reason: &'static str,
+) -> bool {
+    if queue.pending.pending_texture_uploads.len() >= PENDING_TEXTURE_UPLOAD_WARN_THRESHOLD {
+        logger::warn!(
+            "texture {}: dropping deferred upload because pending queue reached cap {} ({reason})",
+            pending.data.asset_id,
+            PENDING_TEXTURE_UPLOAD_WARN_THRESHOLD
+        );
+        return false;
+    }
+    queue.pending.pending_texture_uploads.push_back(pending);
     true
 }
 
-fn replay_pending_texture_uploads_for_asset(queue: &mut AssetTransferQueue, asset_id: i32) {
+fn replay_pending_texture_uploads_for_asset(
+    queue: &mut AssetTransferQueue,
+    asset_id: i32,
+    ipc: Option<&mut DualQueueIpc>,
+) {
     let pending = std::mem::take(&mut queue.pending.pending_texture_uploads);
     let mut replayed = 0usize;
-    for data in pending {
-        if data.asset_id == asset_id {
-            if enqueue_texture_upload_task(queue, data.clone()) {
-                replayed += 1;
+    let mut dropped_stale = 0usize;
+    let mut ipc = ipc;
+    for pending_upload in pending {
+        if pending_upload.data.asset_id == asset_id {
+            if pending_texture_upload_is_stale(queue, &pending_upload) {
+                dropped_stale += 1;
             } else {
-                queue.pending.pending_texture_uploads.push_back(data);
+                let enqueue_result =
+                    enqueue_texture_upload_task(queue, pending_upload.data.clone());
+                if handle_replayed_texture_upload_enqueue_result(
+                    queue,
+                    pending_upload,
+                    enqueue_result,
+                    ipc.as_deref_mut(),
+                ) {
+                    replayed += 1;
+                }
             }
         } else {
-            queue.pending.pending_texture_uploads.push_back(data);
+            retain_deferred_texture_upload_record(queue, pending_upload, "unrelated replay");
         }
     }
     if replayed > 0 {
         logger::debug!("texture {asset_id}: replayed {replayed} deferred data upload(s)");
+    }
+    if dropped_stale > 0 {
+        logger::debug!("texture {asset_id}: dropped {dropped_stale} stale deferred upload(s)");
     }
 }
 
@@ -223,11 +359,35 @@ fn remove_pending_texture_uploads_for_asset(queue: &mut AssetTransferQueue, asse
     queue
         .pending
         .pending_texture_uploads
-        .retain(|upload| upload.asset_id != asset_id);
+        .retain(|upload| upload.data.asset_id != asset_id);
     let removed = pending_before.saturating_sub(queue.pending.pending_texture_uploads.len());
     if removed > 0 {
         logger::debug!("texture {asset_id}: removed {removed} deferred upload(s) on unload");
     }
+}
+
+fn push_pending_texture_upload(queue: &mut AssetTransferQueue, data: SetTexture2DData) {
+    let generation = queue.current_texture_upload_generation(data.asset_id);
+    queue
+        .pending
+        .pending_texture_uploads
+        .push_back(PendingTextureUpload::new(data, generation));
+}
+
+fn pending_texture_upload_is_stale(
+    queue: &AssetTransferQueue,
+    pending: &PendingTextureUpload<SetTexture2DData>,
+) -> bool {
+    pending.generation.is_some_and(|generation| {
+        !queue.texture_upload_generation_is_current(pending.data.asset_id, generation)
+    })
+}
+
+fn texture_2d_format_shape_matches(a: &SetTexture2DFormat, b: &SetTexture2DFormat) -> bool {
+    a.width == b.width
+        && a.height == b.height
+        && a.mipmap_count == b.mipmap_count
+        && a.format == b.format
 }
 
 #[cfg(test)]
@@ -305,7 +465,7 @@ mod tests {
         on_set_texture_2d_data(&mut queue, data(7), None, None);
 
         assert_eq!(queue.pending.pending_texture_uploads.len(), 1);
-        assert_eq!(queue.pending.pending_texture_uploads[0].asset_id, 7);
+        assert_eq!(queue.pending.pending_texture_uploads[0].data.asset_id, 7);
     }
 
     #[test]
@@ -316,21 +476,21 @@ mod tests {
         on_set_texture_2d_data(&mut queue, data(7), None, None);
 
         assert_eq!(queue.pending.pending_texture_uploads.len(), 1);
-        assert_eq!(queue.pending.pending_texture_uploads[0].asset_id, 7);
+        assert_eq!(queue.pending.pending_texture_uploads[0].data.asset_id, 7);
     }
 
     #[test]
-    fn data_with_format_but_no_gpu_is_deferred_beyond_warning_threshold() {
+    fn data_with_format_but_no_gpu_is_capped_at_pending_threshold() {
         let mut queue = AssetTransferQueue::new();
         on_set_texture_2d_format(&mut queue, format(7), None);
 
-        for _ in 0..=MAX_PENDING_TEXTURE_UPLOADS {
+        for _ in 0..=PENDING_TEXTURE_UPLOAD_WARN_THRESHOLD {
             on_set_texture_2d_data(&mut queue, data(7), None, None);
         }
 
         assert_eq!(
             queue.pending.pending_texture_uploads.len(),
-            MAX_PENDING_TEXTURE_UPLOADS + 1
+            PENDING_TEXTURE_UPLOAD_WARN_THRESHOLD
         );
     }
 
@@ -343,6 +503,27 @@ mod tests {
         on_unload_texture_2d(&mut queue, UnloadTexture2D { asset_id: 7 });
 
         assert_eq!(queue.pending.pending_texture_uploads.len(), 1);
-        assert_eq!(queue.pending.pending_texture_uploads[0].asset_id, 8);
+        assert_eq!(queue.pending.pending_texture_uploads[0].data.asset_id, 8);
+    }
+
+    #[test]
+    fn pending_upload_with_replaced_format_generation_is_dropped() {
+        let mut queue = AssetTransferQueue::new();
+        on_set_texture_2d_format(&mut queue, format(7), None);
+        on_set_texture_2d_data(&mut queue, data(7), None, None);
+        let first_generation = queue.current_texture_upload_generation(7);
+
+        on_set_texture_2d_format(
+            &mut queue,
+            SetTexture2DFormat {
+                width: 128,
+                ..format(7)
+            },
+            None,
+        );
+        replay_pending_texture_uploads_for_asset(&mut queue, 7, None);
+
+        assert_ne!(queue.current_texture_upload_generation(7), first_generation);
+        assert!(queue.pending.pending_texture_uploads.is_empty());
     }
 }

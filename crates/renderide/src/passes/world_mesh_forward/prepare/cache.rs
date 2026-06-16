@@ -75,6 +75,7 @@ struct WorldMeshForwardInstancePlanCacheKey {
     supports_base_instance: bool,
     shader_perm: ShaderPermutation,
     pass_desc: MaterialPipelineDesc,
+    front_face_flip: bool,
     offscreen_write_target: OffscreenWriteTarget,
 }
 
@@ -203,6 +204,7 @@ impl WorldMeshForwardInstancePlanCacheKey {
             supports_base_instance,
             shader_perm: pipeline.shader_perm,
             pass_desc: pipeline.pass_desc,
+            front_face_flip: pipeline.front_face_flip,
             offscreen_write_target,
         }
     }
@@ -304,6 +306,7 @@ mod tests {
                 multiview_mask: None,
             },
             shader_perm: ShaderPermutation(0),
+            front_face_flip: false,
         }
     }
 

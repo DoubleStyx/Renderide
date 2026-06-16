@@ -122,7 +122,7 @@ fn billboard_vertex_main(
     return out;
 }
 
-//#pass type=forward
+//#pass type=forward blend=material_filter
 @fragment
 fn fs_main(
     @location(0) uv_normal: vec2<f32>,

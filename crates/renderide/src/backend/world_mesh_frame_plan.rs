@@ -1,4 +1,13 @@
 //! Backend-owned world-mesh forward frame planning.
+//!
+//! Boundary contract: the backend owns the **lifecycle** of retained prep state for the passes it
+//! assembles -- the skybox renderer, instance-plan cache, and per-view prepare scratch held here
+//! -- while the pass **topology** and the cache types themselves live in [`crate::passes`]. This
+//! is deliberate layering: the backend is the concrete-graph assembly layer and is allowed to
+//! name pass types. Adding a new pass with retained per-view state means adding one field here
+//! plus retirement wiring through [`BackendWorldMeshFramePlanner::release_view_resources`], which
+//! `facade::sync_active_views` / `facade::retire_one_shot_views` invoke; forgetting that wiring
+//! leaks per-view state for retired render-texture and camera views.
 
 use std::sync::Arc;
 
@@ -6,11 +15,12 @@ use hashbrown::HashMap;
 use parking_lot::Mutex;
 
 use crate::camera::ViewId;
-use crate::diagnostics::PerViewHudOutputs;
+use crate::frame_upload_batch::GraphUploadSink;
 use crate::gpu::GpuLimits;
 use crate::graph_inputs::{
     FrameSystemsShared, GraphPassFrame, GraphPassFrameView, PerViewFramePlan,
 };
+use crate::hud_contract::PerViewHudOutputs;
 use crate::passes::{
     PreparedWorldMeshForwardFrame, WorldMeshForwardInstancePlanCache,
     WorldMeshForwardInstancePlanCacheStats, WorldMeshForwardPrepareCaches,
@@ -20,7 +30,6 @@ use crate::passes::{
 use crate::render_graph::blackboard::{
     Blackboard, GraphCommandStats, GraphCommandStatsSlot, blackboard_slot,
 };
-use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::world_mesh::{PrefetchedWorldMeshViewDraws, WorldMeshDrawPlan};
 
 blackboard_slot! {
@@ -165,7 +174,7 @@ pub(crate) fn prepare_world_mesh_view_blackboard(
         blackboard.insert::<crate::passes::WorldMeshForwardPlanSlot>(forward);
     }
     if let Some(hud_outputs) = prepared.hud_outputs {
-        blackboard.insert::<crate::diagnostics::PerViewHudOutputsSlot>(hud_outputs);
+        blackboard.insert::<crate::graph_inputs::PerViewHudOutputsSlot>(hud_outputs);
     }
     if let Some(overlay_draw_plan) = blackboard.take::<WorldMeshOverlayDrawPlanSlot>() {
         prepare_desktop_overlay_blackboard(
@@ -264,6 +273,7 @@ fn desktop_overlay_graph_frame<'a>(frame: &GraphPassFrame<'a>) -> GraphPassFrame
             frame_time_seconds: frame.view.frame_time_seconds,
             multiview_stereo: false,
             offscreen_write_target: frame.view.offscreen_write_target,
+            view_winding: frame.view.view_winding,
             view_id: ViewId::MainOverlay,
             hi_z_slot: frame
                 .shared

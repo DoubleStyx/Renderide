@@ -7,9 +7,118 @@
 //! from the [`InputState`] sent to the host while ImGui reports it captured the previous frame.
 
 use glam::Vec2;
-use imgui::{Io, MouseButton as ImGuiMouseButton};
+use imgui::{Io, Key as ImGuiKey, MouseButton as ImGuiMouseButton};
+use winit::keyboard::ModifiersState;
 
-use crate::shared::InputState;
+use crate::shared::{InputState, Key};
+
+const SUPPORTED_KEY_EVENTS: &[(Key, ImGuiKey)] = &[
+    (Key::Tab, ImGuiKey::Tab),
+    (Key::LeftArrow, ImGuiKey::LeftArrow),
+    (Key::RightArrow, ImGuiKey::RightArrow),
+    (Key::UpArrow, ImGuiKey::UpArrow),
+    (Key::DownArrow, ImGuiKey::DownArrow),
+    (Key::PageUp, ImGuiKey::PageUp),
+    (Key::PageDown, ImGuiKey::PageDown),
+    (Key::Home, ImGuiKey::Home),
+    (Key::End, ImGuiKey::End),
+    (Key::Insert, ImGuiKey::Insert),
+    (Key::Delete, ImGuiKey::Delete),
+    (Key::Backspace, ImGuiKey::Backspace),
+    (Key::Space, ImGuiKey::Space),
+    (Key::Return, ImGuiKey::Enter),
+    (Key::Escape, ImGuiKey::Escape),
+    (Key::LeftControl, ImGuiKey::LeftCtrl),
+    (Key::LeftShift, ImGuiKey::LeftShift),
+    (Key::LeftAlt, ImGuiKey::LeftAlt),
+    (Key::LeftWindows, ImGuiKey::LeftSuper),
+    (Key::RightControl, ImGuiKey::RightCtrl),
+    (Key::RightShift, ImGuiKey::RightShift),
+    (Key::RightAlt, ImGuiKey::RightAlt),
+    (Key::RightWindows, ImGuiKey::RightSuper),
+    (Key::Menu, ImGuiKey::Menu),
+    (Key::Alpha0, ImGuiKey::Alpha0),
+    (Key::Alpha1, ImGuiKey::Alpha1),
+    (Key::Alpha2, ImGuiKey::Alpha2),
+    (Key::Alpha3, ImGuiKey::Alpha3),
+    (Key::Alpha4, ImGuiKey::Alpha4),
+    (Key::Alpha5, ImGuiKey::Alpha5),
+    (Key::Alpha6, ImGuiKey::Alpha6),
+    (Key::Alpha7, ImGuiKey::Alpha7),
+    (Key::Alpha8, ImGuiKey::Alpha8),
+    (Key::Alpha9, ImGuiKey::Alpha9),
+    (Key::A, ImGuiKey::A),
+    (Key::B, ImGuiKey::B),
+    (Key::C, ImGuiKey::C),
+    (Key::D, ImGuiKey::D),
+    (Key::E, ImGuiKey::E),
+    (Key::F, ImGuiKey::F),
+    (Key::G, ImGuiKey::G),
+    (Key::H, ImGuiKey::H),
+    (Key::I, ImGuiKey::I),
+    (Key::J, ImGuiKey::J),
+    (Key::K, ImGuiKey::K),
+    (Key::L, ImGuiKey::L),
+    (Key::M, ImGuiKey::M),
+    (Key::N, ImGuiKey::N),
+    (Key::O, ImGuiKey::O),
+    (Key::P, ImGuiKey::P),
+    (Key::Q, ImGuiKey::Q),
+    (Key::R, ImGuiKey::R),
+    (Key::S, ImGuiKey::S),
+    (Key::T, ImGuiKey::T),
+    (Key::U, ImGuiKey::U),
+    (Key::V, ImGuiKey::V),
+    (Key::W, ImGuiKey::W),
+    (Key::X, ImGuiKey::X),
+    (Key::Y, ImGuiKey::Y),
+    (Key::Z, ImGuiKey::Z),
+    (Key::F1, ImGuiKey::F1),
+    (Key::F2, ImGuiKey::F2),
+    (Key::F3, ImGuiKey::F3),
+    (Key::F4, ImGuiKey::F4),
+    (Key::F5, ImGuiKey::F5),
+    (Key::F6, ImGuiKey::F6),
+    (Key::F7, ImGuiKey::F7),
+    (Key::F8, ImGuiKey::F8),
+    (Key::F9, ImGuiKey::F9),
+    (Key::F10, ImGuiKey::F10),
+    (Key::F11, ImGuiKey::F11),
+    (Key::F12, ImGuiKey::F12),
+    (Key::Quote, ImGuiKey::Apostrophe),
+    (Key::Comma, ImGuiKey::Comma),
+    (Key::Minus, ImGuiKey::Minus),
+    (Key::Period, ImGuiKey::Period),
+    (Key::Slash, ImGuiKey::Slash),
+    (Key::Semicolon, ImGuiKey::Semicolon),
+    (Key::Equals, ImGuiKey::Equal),
+    (Key::LeftBracket, ImGuiKey::LeftBracket),
+    (Key::Backslash, ImGuiKey::Backslash),
+    (Key::RightBracket, ImGuiKey::RightBracket),
+    (Key::BackQuote, ImGuiKey::GraveAccent),
+    (Key::CapsLock, ImGuiKey::CapsLock),
+    (Key::ScrollLock, ImGuiKey::ScrollLock),
+    (Key::Numlock, ImGuiKey::NumLock),
+    (Key::Print, ImGuiKey::PrintScreen),
+    (Key::Pause, ImGuiKey::Pause),
+    (Key::Keypad0, ImGuiKey::Keypad0),
+    (Key::Keypad1, ImGuiKey::Keypad1),
+    (Key::Keypad2, ImGuiKey::Keypad2),
+    (Key::Keypad3, ImGuiKey::Keypad3),
+    (Key::Keypad4, ImGuiKey::Keypad4),
+    (Key::Keypad5, ImGuiKey::Keypad5),
+    (Key::Keypad6, ImGuiKey::Keypad6),
+    (Key::Keypad7, ImGuiKey::Keypad7),
+    (Key::Keypad8, ImGuiKey::Keypad8),
+    (Key::Keypad9, ImGuiKey::Keypad9),
+    (Key::KeypadPeriod, ImGuiKey::KeypadDecimal),
+    (Key::KeypadDivide, ImGuiKey::KeypadDivide),
+    (Key::KeypadMultiply, ImGuiKey::KeypadMultiply),
+    (Key::KeypadMinus, ImGuiKey::KeypadSubtract),
+    (Key::KeypadPlus, ImGuiKey::KeypadAdd),
+    (Key::KeypadEnter, ImGuiKey::KeypadEnter),
+    (Key::KeypadEquals, ImGuiKey::KeypadEqual),
+];
 
 /// Strips pointer, scroll, drag/drop, and keyboard data from `input` when ImGui reported capture on the previous frame.
 ///
@@ -42,7 +151,7 @@ pub fn sanitize_input_state_for_imgui_host(
 }
 
 /// Pointer and window hints for ImGui, in **physical** pixels where noted.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct DebugHudInput {
     /// Cursor position in physical pixels (or `[-inf, -inf]` when unavailable).
     pub cursor_px: [f32; 2],
@@ -62,6 +171,12 @@ pub struct DebugHudInput {
     pub extra1: bool,
     /// Fifth mouse button held (e.g. side forward).
     pub extra2: bool,
+    /// Current keyboard modifiers from winit.
+    pub keyboard_modifiers: ModifiersState,
+    /// Keys currently held, in host [`Key`] form.
+    pub held_keys: Vec<Key>,
+    /// Text committed since the previous HUD input snapshot.
+    pub text: String,
 }
 
 impl DebugHudInput {
@@ -89,6 +204,9 @@ impl DebugHudInput {
             middle: acc.middle_held,
             extra1: acc.button4_held,
             extra2: acc.button5_held,
+            keyboard_modifiers: acc.keyboard_modifiers(),
+            held_keys: acc.held_keys.clone(),
+            text: acc.take_hud_text(),
         }
     }
 }
@@ -109,6 +227,93 @@ pub(crate) fn apply_input(io: &mut Io, input: &DebugHudInput) {
     io.add_mouse_button_event(ImGuiMouseButton::Extra1, input.extra1);
     io.add_mouse_button_event(ImGuiMouseButton::Extra2, input.extra2);
     io.add_mouse_wheel_event([input.mouse_wheel_delta.x, input.mouse_wheel_delta.y]);
+    apply_keyboard_input(io, input);
+}
+
+fn apply_keyboard_input(io: &mut Io, input: &DebugHudInput) {
+    for (key, down) in modifier_key_states(input.keyboard_modifiers) {
+        io.add_key_event(key, down);
+    }
+    for &(host_key, imgui_key) in SUPPORTED_KEY_EVENTS {
+        io.add_key_event(imgui_key, input.held_keys.contains(&host_key));
+    }
+    for character in input.text.chars() {
+        io.add_input_character(character);
+    }
+}
+
+fn modifier_key_states(modifiers: ModifiersState) -> [(ImGuiKey, bool); 4] {
+    [
+        (ImGuiKey::ModCtrl, modifiers.control_key()),
+        (ImGuiKey::ModShift, modifiers.shift_key()),
+        (ImGuiKey::ModAlt, modifiers.alt_key()),
+        (ImGuiKey::ModSuper, modifiers.meta_key()),
+    ]
+}
+
+#[cfg(test)]
+fn host_key_to_imgui_key(key: Key) -> Option<ImGuiKey> {
+    SUPPORTED_KEY_EVENTS
+        .iter()
+        .find_map(|&(host_key, imgui_key)| (host_key == key).then_some(imgui_key))
+}
+
+#[cfg(test)]
+mod input_bridge_tests {
+    use imgui::Context;
+    use winit::keyboard::ModifiersState;
+
+    use super::{
+        DebugHudInput, ImGuiKey, Key, apply_input, host_key_to_imgui_key, modifier_key_states,
+    };
+
+    #[test]
+    fn host_keys_map_to_imgui_keys_needed_by_text_entry() {
+        for (host_key, imgui_key) in [
+            (Key::Alpha1, ImGuiKey::Alpha1),
+            (Key::Backspace, ImGuiKey::Backspace),
+            (Key::Return, ImGuiKey::Enter),
+            (Key::LeftArrow, ImGuiKey::LeftArrow),
+            (Key::KeypadPeriod, ImGuiKey::KeypadDecimal),
+        ] {
+            assert_eq!(host_key_to_imgui_key(host_key), Some(imgui_key));
+        }
+        assert_eq!(host_key_to_imgui_key(Key::F13), None);
+    }
+
+    #[test]
+    fn modifier_states_include_ctrl_for_drag_input_activation() {
+        let states = modifier_key_states(ModifiersState::CONTROL | ModifiersState::SHIFT);
+
+        assert!(states.contains(&(ImGuiKey::ModCtrl, true)));
+        assert!(states.contains(&(ImGuiKey::ModShift, true)));
+        assert!(states.contains(&(ImGuiKey::ModAlt, false)));
+        assert!(states.contains(&(ImGuiKey::ModSuper, false)));
+    }
+
+    #[test]
+    fn apply_input_feeds_modifiers_and_held_keys_to_imgui() {
+        let mut context = Context::create();
+        context.fonts().build_rgba32_texture();
+        let input = DebugHudInput {
+            window_focused: true,
+            keyboard_modifiers: ModifiersState::CONTROL,
+            held_keys: vec![Key::Backspace, Key::Alpha1],
+            text: "12.5".into(),
+            ..Default::default()
+        };
+
+        {
+            let io = context.io_mut();
+            io.display_size = [100.0, 100.0];
+            apply_input(io, &input);
+        }
+
+        let ui = context.frame();
+        assert!(ui.io().key_ctrl);
+        assert!(ui.is_key_down(ImGuiKey::Backspace));
+        assert!(ui.is_key_down(ImGuiKey::Alpha1));
+    }
 }
 
 #[cfg(test)]

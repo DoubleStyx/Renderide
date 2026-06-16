@@ -56,8 +56,7 @@ pub(super) fn install_impl(log_path: &Path) -> Result<(), String> {
             if let Some(fds) = WINDOWS_CRASH_FDS.get() {
                 fds.write_all(data);
                 let mut context_buf = [0u8; 512];
-                let context_n =
-                    crate::diagnostics::crash_context::write_minimal_snapshot(&mut context_buf);
+                let context_n = crate::crash_context::write_minimal_snapshot(&mut context_buf);
                 fds.write_all(&context_buf[..context_n]);
                 const NO_POSIX_SIGNAL: i32 = 0;
                 write_stack_trace(NO_POSIX_SIGNAL, |chunk| fds.write_all(chunk));

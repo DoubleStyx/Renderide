@@ -6,7 +6,7 @@
 
 use crate::backend::RenderBackend;
 use crate::camera::ViewId;
-use crate::diagnostics::crash_context;
+use crate::crash_context;
 use crate::gpu::GpuContext;
 use crate::render_graph::GraphExecuteError;
 use crate::scene::SceneCoordinator;

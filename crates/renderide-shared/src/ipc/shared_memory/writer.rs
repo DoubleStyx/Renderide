@@ -23,6 +23,7 @@
 use std::io;
 use std::path::PathBuf;
 
+use super::naming::is_valid_shared_memory_prefix;
 use crate::buffer::SharedMemoryBufferDescriptor;
 
 #[cfg(unix)]
@@ -103,6 +104,9 @@ pub enum SharedMemoryWriterError {
     /// Platform mapping failed (file open / `CreateFileMappingW`).
     #[error("platform mapping: {0}")]
     Map(String),
+    /// Shared-memory prefix is not safe as a backing-name component.
+    #[error("invalid shared-memory prefix")]
+    InvalidPrefix,
 }
 
 impl From<io::Error> for SharedMemoryWriterError {
@@ -137,6 +141,9 @@ impl SharedMemoryWriter {
     ) -> Result<Self, SharedMemoryWriterError> {
         if capacity_bytes == 0 {
             return Err(SharedMemoryWriterError::CapacityZero);
+        }
+        if !is_valid_shared_memory_prefix(&cfg.prefix) {
+            return Err(SharedMemoryWriterError::InvalidPrefix);
         }
         #[expect(
             clippy::map_err_ignore,
@@ -232,6 +239,17 @@ mod tests {
         };
         let err = SharedMemoryWriter::open(cfg, 0, 0).expect_err("capacity zero");
         assert!(matches!(err, SharedMemoryWriterError::CapacityZero));
+    }
+
+    #[test]
+    fn invalid_prefix_rejected() {
+        let cfg = SharedMemoryWriterConfig {
+            prefix: "../bad".into(),
+            destroy_on_drop: true,
+            ..SharedMemoryWriterConfig::default()
+        };
+        let err = SharedMemoryWriter::open(cfg, 0, 1024).expect_err("invalid prefix");
+        assert!(matches!(err, SharedMemoryWriterError::InvalidPrefix));
     }
 
     #[test]

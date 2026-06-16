@@ -12,8 +12,7 @@ pub(crate) use gpu_mesh::{
     prepare_derived_stream_bytes, try_upload_generated_mesh_from_parts, try_upload_mesh_from_raw,
 };
 pub use layout::{
-    BLENDSHAPE_PACKED_VECTOR_SPARSE_ENTRY_WORDS, BLENDSHAPE_POSITION_SPARSE_ENTRY_SIZE,
-    BLENDSHAPE_POSITION_SPARSE_ENTRY_WORDS, BlendshapeFrameRange, BlendshapeFrameSpan,
-    BlendshapeGpuPack, MeshBufferLayout, blendshape_deform_is_active,
+    BLENDSHAPE_PACKED_VECTOR_SPARSE_ENTRY_WORDS, BLENDSHAPE_POSITION_SPARSE_ENTRY_WORDS,
+    BlendshapeFrameRange, BlendshapeFrameSpan, MeshBufferLayout, blendshape_deform_is_active,
     select_blendshape_frame_coefficients,
 };

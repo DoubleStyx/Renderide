@@ -15,6 +15,7 @@ use windows_sys::Win32::System::Threading::{
 
 use super::WIN_WAIT_INFINITE_THRESHOLD;
 use crate::naming;
+use crate::windows_security::CurrentOwnerSecurityAttributes;
 
 /// Win32 semaphore handle from `CreateSemaphoreW` (`Global\CT.IP.{name}`).
 pub(super) struct WinSemaphore {
@@ -32,8 +33,10 @@ impl WinSemaphore {
             .encode_wide()
             .chain(std::iter::once(0))
             .collect();
-        // SAFETY: `name_wide` is NUL-terminated wide string; security attrs arg is null (default ACL).
-        let handle = unsafe { CreateSemaphoreW(null_mut(), 0, i32::MAX, name_wide.as_ptr()) };
+        let security = CurrentOwnerSecurityAttributes::new()?;
+        // SAFETY: `name_wide` is NUL-terminated and `security` lives until the call returns.
+        let handle =
+            unsafe { CreateSemaphoreW(security.as_ptr(), 0, i32::MAX, name_wide.as_ptr()) };
         if handle.is_null() || handle == INVALID_HANDLE_VALUE {
             return Err(io::Error::last_os_error());
         }

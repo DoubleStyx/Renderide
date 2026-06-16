@@ -8,14 +8,15 @@ mod skinning;
 mod streams;
 
 #[cfg(test)]
+pub use blendshape::BLENDSHAPE_POSITION_SPARSE_ENTRY_SIZE;
+#[cfg(test)]
 pub(crate) use blendshape::{
     BLENDSHAPE_PACKED_VECTOR_DELTA_RANGE, BLENDSHAPE_PACKED_VECTOR_SPARSE_ENTRY_SIZE,
 };
 pub use blendshape::{
-    BLENDSHAPE_PACKED_VECTOR_SPARSE_ENTRY_WORDS, BLENDSHAPE_POSITION_SPARSE_ENTRY_SIZE,
-    BLENDSHAPE_POSITION_SPARSE_ENTRY_WORDS, BlendshapeFrameRange, BlendshapeFrameSpan,
-    BlendshapeGpuPack, blendshape_deform_is_active, extract_blendshape_offsets,
-    select_blendshape_frame_coefficients,
+    BLENDSHAPE_PACKED_VECTOR_SPARSE_ENTRY_WORDS, BLENDSHAPE_POSITION_SPARSE_ENTRY_WORDS,
+    BlendshapeFrameRange, BlendshapeFrameSpan, blendshape_deform_is_active,
+    extract_blendshape_offsets, select_blendshape_frame_coefficients,
 };
 pub use buffer_layout::{
     MeshBufferLayout, compute_index_count, compute_mesh_buffer_layout, compute_vertex_stride,

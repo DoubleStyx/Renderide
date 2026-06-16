@@ -42,7 +42,8 @@ use super::resources::{
     TransientBufferDesc, TransientSubresourceDesc, TransientTextureDesc,
 };
 use super::schedule::{FrameSchedule, ScheduleHudSnapshot};
-use super::validation::{GraphValidationReport, RenderGraphValidationMode};
+use super::validation::GraphValidationReport;
+use crate::render_graph::RenderGraphValidationMode;
 
 /// Builder for a typed render graph.
 pub struct GraphBuilder {
@@ -467,6 +468,7 @@ impl GraphBuilder {
         for (idx, entry) in self.passes.iter_mut().enumerate() {
             let id = PassId(idx);
             let name = entry.pass.name().to_string();
+            let profiling_label = entry.pass.profiling_label().into_owned();
             let mut builder = PassBuilder::new(&name);
             entry
                 .pass
@@ -497,6 +499,7 @@ impl GraphBuilder {
             setups.push(SetupEntry {
                 group: entry.group,
                 name,
+                profiling_label,
                 setup,
             });
         }

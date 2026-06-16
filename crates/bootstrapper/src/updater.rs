@@ -33,6 +33,8 @@ const REPO_NAME: &str = "Renderide";
 const NIGHTLY_PREFIX: &str = "nightly-";
 /// Manifest filename included in every release zip root.
 const MANIFEST_FILE: &str = "renderide-release.json";
+/// Detached Ed25519 signature filename for [`MANIFEST_FILE`].
+const MANIFEST_SIGNATURE_FILE: &str = "renderide-release.json.sig";
 /// Install-local directory that stores updater staging and backups.
 const UPDATE_DIR: &str = ".renderide-update";
 /// Child directory under [`UPDATE_DIR`] containing rollback backups.

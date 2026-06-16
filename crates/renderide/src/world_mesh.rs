@@ -16,7 +16,7 @@ pub(crate) mod test_fixtures;
 
 pub use culling::{
     HiZTemporalState, WorldMeshCullInput, WorldMeshCullProjParams,
-    build_world_mesh_cull_proj_params, capture_hi_z_temporal,
+    build_world_mesh_cull_proj_params,
 };
 pub use diagnostics::{
     WorldMeshDrawStateRow, WorldMeshDrawStats, state_rows_from_sorted, stats_from_sorted,

@@ -243,6 +243,8 @@ fn assert_material_filter_pass(stem: &str) {
         MaterialDepthCompareDomain::FrooxZTest,
         "{stem}"
     );
+    assert_eq!(passes[0].depth_bias_constant, 0, "{stem}");
+    assert_eq!(passes[0].depth_bias_slope_scale, 0.0, "{stem}");
 
     let materialized = materialized_embedded_pass_for_blend_mode(
         stem,
@@ -250,6 +252,7 @@ fn assert_material_filter_pass(stem: &str) {
         MaterialBlendMode::UnityBlend { src: 1, dst: 0 },
     );
     let blend = materialized.blend.expect(stem);
+    assert_eq!(materialized.write_mask, wgpu::ColorWrites::ALL, "{stem}");
     assert_eq!(blend.color.src_factor, wgpu::BlendFactor::One, "{stem}");
     assert_eq!(blend.color.dst_factor, wgpu::BlendFactor::Zero, "{stem}");
     assert_eq!(blend.alpha.src_factor, wgpu::BlendFactor::One, "{stem}");
@@ -283,24 +286,85 @@ fn assert_material_filter_pass(stem: &str) {
     );
 
     let depth_offset = MaterialRenderState {
-        depth_offset: MaterialDepthOffsetState::new(1.0, 100),
+        depth_offset: MaterialDepthOffsetState::new(0.0, 100),
         ..MaterialRenderState::default()
     };
     let bias = materialized.resolved_depth_bias(depth_offset);
     assert_eq!(bias.constant, -100, "{stem}");
-    assert_eq!(bias.slope_scale, -1.0, "{stem}");
+    assert_eq!(bias.slope_scale, 0.0, "{stem}");
 }
 
 /// Verifies unlit/text stems keep Unity-style filter render state.
 #[test]
 fn unlit_text_stems_use_filter_pass_material_state() {
     for stem in [
+        "unlit_default",
         "textunlit_default",
         "ui_unlit_default",
         "ui_textunlit_default",
         "ui_circlesegment_default",
     ] {
         assert_material_filter_pass(stem);
+    }
+}
+
+/// Verifies additional `BlendOp Add, Max` roots preserve filter-style alpha blending.
+#[test]
+fn max_alpha_blend_roots_use_filter_pass_material_state() {
+    for stem in [
+        "depthprojection_default",
+        "fresnellerp_default",
+        "matcap_default",
+        "projection360_default",
+        "reflection_default",
+        "unlitdistancelerp_default",
+        "uvrect_default",
+    ] {
+        let passes = crate::embedded_shaders::embedded_target_passes(stem);
+        assert_eq!(passes.len(), 1, "{stem}");
+        assert_eq!(
+            passes[0].material_state,
+            MaterialPassState::Filter,
+            "{stem}"
+        );
+
+        let materialized = materialized_embedded_pass_for_blend_mode(
+            stem,
+            &passes[0],
+            MaterialBlendMode::UnityBlend { src: 1, dst: 0 },
+        );
+        let blend = materialized.blend.expect(stem);
+        assert_eq!(blend.color.src_factor, wgpu::BlendFactor::One, "{stem}");
+        assert_eq!(blend.color.dst_factor, wgpu::BlendFactor::Zero, "{stem}");
+        assert_eq!(blend.alpha.src_factor, wgpu::BlendFactor::One, "{stem}");
+        assert_eq!(blend.alpha.dst_factor, wgpu::BlendFactor::One, "{stem}");
+        assert_eq!(blend.alpha.operation, wgpu::BlendOperation::Max, "{stem}");
+    }
+}
+
+/// Verifies skybox material roots keep Unity's fixed no-depth-write, no-cull pass state.
+#[test]
+fn skybox_material_roots_use_fixed_background_pass_state() {
+    let override_state = MaterialRenderState {
+        color_mask: Some(0),
+        depth_write: Some(true),
+        cull_override: MaterialCullOverride::Back,
+        ..MaterialRenderState::default()
+    };
+
+    for stem in ["gradientskybox_default", "proceduralskybox_default"] {
+        let passes = crate::embedded_shaders::embedded_target_passes(stem);
+        assert_eq!(passes.len(), 1, "{stem}");
+        assert!(!passes[0].depth_write, "{stem}");
+        assert_eq!(passes[0].cull_mode, None, "{stem}");
+        assert_eq!(passes[0].write_mask, wgpu::ColorWrites::ALL, "{stem}");
+        assert_eq!(
+            passes[0].resolved_color_writes(override_state),
+            wgpu::ColorWrites::ALL,
+            "{stem}"
+        );
+        assert!(!passes[0].resolved_depth_write(override_state), "{stem}");
+        assert_eq!(passes[0].resolved_cull_mode(override_state), None, "{stem}");
     }
 }
 
@@ -474,12 +538,21 @@ fn common_wireframe_stems_use_barycentric_material_passes() {
 /// Verifies XSToon wireframe override stems preserve source material culling.
 #[test]
 fn xstoon_wireframe_override_stems_use_material_culled_passes() {
-    assert_xstoon_wireframe_override_pass("xstoon2.0_wireframeoverride_default", false);
-    assert_xstoon_wireframe_override_pass("xstoon2.0_wireframeoverride_a2c_default", true);
+    assert_xstoon_wireframe_override_pass(
+        "xstoon2.0_wireframeoverride_default",
+        MaterialAlphaToCoverageMode::Off,
+    );
+    assert_xstoon_wireframe_override_pass(
+        "xstoon2.0_wireframeoverride_a2c_default",
+        MaterialAlphaToCoverageMode::Always,
+    );
 }
 
 /// Asserts that an XSToon wireframe override pass applies `_Culling` over a back-cull fallback.
-fn assert_xstoon_wireframe_override_pass(stem: &str, alpha_to_coverage: bool) {
+fn assert_xstoon_wireframe_override_pass(
+    stem: &str,
+    alpha_to_coverage: MaterialAlphaToCoverageMode,
+) {
     let passes = crate::embedded_shaders::embedded_target_passes(stem);
     assert_eq!(passes.len(), 1, "{stem}");
     assert_eq!(passes[0].cull_mode, Some(wgpu::Face::Back), "{stem}");
@@ -765,6 +838,31 @@ fn xstoon_stenciler_uses_source_stencil_pass_state() {
 /// Verifies XSToon alpha-to-coverage variants request the matching pipeline state.
 #[test]
 fn xstoon_a2c_stems_enable_alpha_to_coverage() {
+    for stem in ["xstoon2.0_default", "xstoon2.0-cutout_default"] {
+        let passes = crate::embedded_shaders::embedded_target_passes(stem);
+        assert_eq!(
+            passes.len(),
+            1,
+            "{stem} should declare a single forward pass"
+        );
+        assert_eq!(
+            passes[0].alpha_to_coverage,
+            MaterialAlphaToCoverageMode::Cutout,
+            "{stem}"
+        );
+    }
+
+    for stem in ["xstoon2.0_outlined_default", "xstoon2.0-outlined_default"] {
+        let passes = crate::embedded_shaders::embedded_target_passes(stem);
+        assert_eq!(passes.len(), 2, "{stem} should declare outline + forward");
+        assert!(
+            passes
+                .iter()
+                .all(|pass| pass.alpha_to_coverage == MaterialAlphaToCoverageMode::Cutout),
+            "{stem}"
+        );
+    }
+
     for stem in [
         "xstoon2.0-cutouta2c_default",
         "xstoon2.0-cutouta2cmasked_default",
@@ -775,23 +873,66 @@ fn xstoon_a2c_stems_enable_alpha_to_coverage() {
             1,
             "{stem} should declare a single forward pass"
         );
-        assert!(passes[0].alpha_to_coverage, "{stem}");
+        assert_eq!(
+            passes[0].alpha_to_coverage,
+            MaterialAlphaToCoverageMode::Always,
+            "{stem}"
+        );
     }
 
     let outlined =
         crate::embedded_shaders::embedded_target_passes("xstoon2.0-cutouta2c-outlined_default");
     assert_eq!(outlined.len(), 2, "xstoon2.0-cutouta2c-outlined_default");
     assert!(
-        outlined.iter().all(|pass| pass.alpha_to_coverage),
+        outlined
+            .iter()
+            .all(|pass| pass.alpha_to_coverage == MaterialAlphaToCoverageMode::Always),
         "xstoon2.0-cutouta2c-outlined_default"
     );
 
     for stem in [
-        "xstoon2.0-cutout_default",
         "xstoon2.0-dithered_default",
         "xstoon2.0-dithered-outlined_default",
     ] {
         let passes = crate::embedded_shaders::embedded_target_passes(stem);
-        assert!(passes.iter().all(|pass| !pass.alpha_to_coverage), "{stem}");
+        assert!(
+            passes
+                .iter()
+                .all(|pass| pass.alpha_to_coverage == MaterialAlphaToCoverageMode::Off),
+            "{stem}"
+        );
+    }
+}
+
+/// Verifies opaque alpha-test-capable material stems declare queue-gated A2C.
+#[test]
+fn alpha_test_capable_opaque_stems_declare_cutout_alpha_to_coverage() {
+    for stem in [
+        "unlit_default",
+        "unlitdistancelerp_default",
+        "fresnel_default",
+        "reflection_default",
+        "pbsmetallic_default",
+        "pbsspecular_default",
+        "pbsdisplace_default",
+        "pbsdisplacespecular_default",
+        "pbsdualsided_default",
+        "pbsdualsidedspecular_default",
+        "pbslerp_default",
+        "pbslerpspecular_default",
+        "pbsmultiuv_default",
+        "pbsmultiuvspecular_default",
+        "furfx-2.0-10layer_default",
+        "furfx-3.0-shell-10layer_default",
+        "furfx-selfshadow-noblend-10layer_default",
+    ] {
+        let passes = crate::embedded_shaders::embedded_target_passes(stem);
+        assert!(!passes.is_empty(), "{stem}");
+        assert!(
+            passes
+                .iter()
+                .all(|pass| pass.alpha_to_coverage == MaterialAlphaToCoverageMode::Cutout),
+            "{stem}"
+        );
     }
 }

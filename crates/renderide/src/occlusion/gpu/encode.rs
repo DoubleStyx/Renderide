@@ -10,8 +10,8 @@ mod mip0;
 mod staging_copy;
 
 use crate::gpu::OutputDepthMode;
-use crate::occlusion::cpu::pyramid::{hi_z_pyramid_dimensions, mip_levels_for_extent};
-use crate::render_graph::HistoryTextureMipViews;
+use crate::hi_z_cpu::pyramid::{hi_z_pyramid_dimensions, mip_levels_for_extent};
+use crate::history_texture::HistoryTextureMipViews;
 
 use self::mip0::DepthBinding;
 use super::pipelines::HiZPipelines;

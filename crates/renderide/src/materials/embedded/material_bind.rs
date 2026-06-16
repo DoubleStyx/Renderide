@@ -27,12 +27,12 @@ use super::embedded_material_bind_error::EmbeddedMaterialBindError;
 use super::layout::StemMaterialLayout;
 use super::texture_pools::EmbeddedTexturePools;
 use super::texture_resolve::default_embedded_sampler;
+use crate::frame_contract::OffscreenWriteTarget;
+use crate::frame_upload_batch::GraphUploadSink;
 use crate::gpu_resource::{AtomicCacheCounters, CacheStats, ShardedLru};
-use crate::graph_inputs::OffscreenWriteTarget;
 use crate::materials::host_data::{
     MaterialPropertyLookupIds, MaterialPropertyStore, PropertyIdRegistry,
 };
-use crate::render_graph::frame_upload_batch::GraphUploadSink;
 
 use assemble::build_embedded_bind_group_entries;
 use cache::{
@@ -670,7 +670,7 @@ mod tests {
             42,
             OffscreenWriteTarget::host_render_texture_with_self_sampling(
                 5,
-                crate::graph_inputs::RenderTextureSelfSampling::AllowPreviousContents,
+                crate::frame_contract::RenderTextureSelfSampling::AllowPreviousContents,
             ),
             Some(7),
         );

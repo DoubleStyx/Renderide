@@ -10,10 +10,7 @@ mod skin_cache;
 mod skinning_palette;
 mod wgsl_mat3x3;
 
-pub use blendshape_bind_chunks::{
-    BLENDSHAPE_SPARSE_MIN_BUFFER_BYTES, blendshape_sparse_buffers_fit_device,
-    plan_blendshape_scatter_chunks,
-};
+pub use blendshape_bind_chunks::plan_blendshape_scatter_chunks;
 pub use mesh_preprocess::MeshPreprocessPipelines;
 pub use per_draw_uniforms::{
     INITIAL_PER_DRAW_UNIFORM_SLOTS, PER_DRAW_UNIFORM_STRIDE, PaddedPerDrawUniforms,

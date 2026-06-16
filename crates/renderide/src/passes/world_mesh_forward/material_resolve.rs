@@ -1,13 +1,13 @@
 //! Material draw-packet resolution entry point for backend world-mesh frame planning.
 
+use crate::frame_upload_batch::GraphUploadSink;
 use crate::graph_inputs::OffscreenWriteTarget;
-use crate::materials::MaterialPipelineDesc;
-use crate::materials::ShaderPermutation;
 use crate::passes::WorldMeshForwardEncodeRefs;
-use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::world_mesh::draw_prep::WorldMeshDrawItem;
 
-use super::{MaterialBatchBoundary, MaterialBatchPacket, MaterialDrawResolver};
+use super::{
+    MaterialBatchBoundary, MaterialBatchPacket, MaterialDrawResolver, WorldMeshForwardPipelineState,
+};
 
 /// Resolves per-batch pipeline sets and `@group(1)` bind groups for the sorted draw list.
 ///
@@ -18,17 +18,17 @@ pub(super) fn precompute_material_resolve_batches(
     encode: &WorldMeshForwardEncodeRefs<'_>,
     uploads: GraphUploadSink<'_>,
     draws: &[WorldMeshDrawItem],
-    shader_perm: ShaderPermutation,
-    pass_desc: &MaterialPipelineDesc,
+    pipeline: &WorldMeshForwardPipelineState,
     offscreen_write_target: OffscreenWriteTarget,
     boundaries_scratch: &mut Vec<MaterialBatchBoundary>,
 ) -> Vec<MaterialBatchPacket> {
     MaterialDrawResolver::new(
         encode,
         uploads,
-        *pass_desc,
-        shader_perm,
+        pipeline.pass_desc,
+        pipeline.shader_perm,
         offscreen_write_target,
+        pipeline.front_face_flip,
     )
     .resolve_batches(draws, boundaries_scratch)
 }

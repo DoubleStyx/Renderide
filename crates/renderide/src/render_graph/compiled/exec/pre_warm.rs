@@ -6,15 +6,15 @@ use hashbrown::hash_map::Entry;
 
 use super::super::super::context::GraphResolvedResources;
 use super::super::super::error::GraphExecuteError;
-use super::super::super::frame_upload_batch::{FrameUploadBatch, GraphUploadSink};
 use super::super::super::history::{HistoryResourceScope, TextureHistorySpec};
 use super::super::helpers;
 use super::super::{CompiledRenderGraph, FrameView, MultiViewExecutionContext};
 use super::{GraphResolveKey, TransientTextureResolveSurfaceParams};
+use crate::frame_upload_batch::{FrameUploadBatch, GraphUploadSink};
 use crate::gpu::OutputDepthMode;
 use crate::graph_inputs::PreRecordViewResourceLayout;
+use crate::hi_z_cpu::{hi_z_pyramid_dimensions, mip_levels_for_extent};
 use crate::occlusion::gpu::HIZ_MAX_MIPS;
-use crate::occlusion::{hi_z_pyramid_dimensions, mip_levels_for_extent};
 use crate::render_graph::HistorySlotId;
 
 impl CompiledRenderGraph {
@@ -164,14 +164,11 @@ impl CompiledRenderGraph {
         upload_batch: &FrameUploadBatch,
     ) {
         profiling::scope!("graph::pre_sync_frame_gpu");
-        mv_ctx
-            .backend
-            .frame_resources_mut()
-            .pre_record_sync_for_views(
-                mv_ctx.device,
-                GraphUploadSink::pre_record(upload_batch),
-                layouts,
-            );
+        mv_ctx.backend.pre_record_sync_for_views(
+            mv_ctx.device,
+            GraphUploadSink::pre_record(upload_batch),
+            layouts,
+        );
     }
 
     /// Pre-resolves transient textures and buffers for every view's [`GraphResolveKey`].
@@ -191,6 +188,7 @@ impl CompiledRenderGraph {
         for view in views {
             let resolved = Self::resolve_owned_view_metadata_from_target(
                 view.view_id(),
+                view.view_winding,
                 view.profile,
                 &view.host_camera,
                 &view.target,

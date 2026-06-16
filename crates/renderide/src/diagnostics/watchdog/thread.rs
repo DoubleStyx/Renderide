@@ -14,7 +14,7 @@ use std::time::Duration;
 use parking_lot::RwLock;
 
 use crate::config::{WatchdogAction, WatchdogSettings};
-use crate::diagnostics::crash_context;
+use crate::crash_context;
 
 use super::registry::{
     Heartbeat, HeartbeatRegistry, HeartbeatSlot, SlotEvaluation, evaluate_slot,

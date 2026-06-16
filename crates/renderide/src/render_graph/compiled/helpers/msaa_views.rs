@@ -1,7 +1,9 @@
 //! Resolves MSAA / multiview attachment views from compiled transient textures.
 
 use crate::gpu_resource::TextureViewDescriptorKey;
-use crate::graph_inputs::{GraphPassFrame, MsaaViews};
+use crate::graph_inputs::{
+    GraphPassFrame, MsaaDepthResolveViews, MsaaStereoDepthResolveViews, MsaaViews,
+};
 use crate::render_graph::context::{GraphResolvedResources, ResolvedGraphTexture};
 use crate::render_graph::resources::TextureHandle;
 
@@ -70,25 +72,23 @@ pub(in crate::render_graph::compiled) fn resolve_forward_msaa_views_from_graph_r
     }
     let depth = graph_resources.transient_texture(depth_h)?;
     let r32 = graph_resources.transient_texture(r32_h)?;
-    let depth_view = depth_sample_view(depth, None);
 
     if frame.view.multiview_stereo {
         let depth_layers = first_two_depth_sample_layer_views(depth)?;
         let r32_layers = first_two_layer_views(r32)?;
         Some(MsaaViews {
-            msaa_depth_view: depth_view,
-            msaa_depth_resolve_r32_view: r32.view.clone(),
-            msaa_depth_is_array: true,
-            msaa_stereo_depth_layer_views: Some(depth_layers),
-            msaa_stereo_r32_layer_views: Some(r32_layers),
+            depth_resolve: MsaaDepthResolveViews::Stereo(Box::new(MsaaStereoDepthResolveViews {
+                msaa_depth_layer_views: depth_layers,
+                r32_layer_views: r32_layers,
+                r32_array_view: r32.view.clone(),
+            })),
         })
     } else {
         Some(MsaaViews {
-            msaa_depth_view: depth_view,
-            msaa_depth_resolve_r32_view: r32.view.clone(),
-            msaa_depth_is_array: false,
-            msaa_stereo_depth_layer_views: None,
-            msaa_stereo_r32_layer_views: None,
+            depth_resolve: MsaaDepthResolveViews::Mono {
+                msaa_depth_view: depth_sample_view(depth, None),
+                r32_view: r32.view.clone(),
+            },
         })
     }
 }

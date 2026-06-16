@@ -1,6 +1,6 @@
 //! Reusable per-pyramid GPU scratch (staging rings, uniforms) and bind-group cache.
 
-use crate::occlusion::cpu::pyramid::{mip_dimensions, mip_levels_for_extent};
+use crate::hi_z_cpu::pyramid::{mip_dimensions, mip_levels_for_extent};
 
 use super::readback_ring::HIZ_STAGING_RING;
 use bytemuck::{Pod, Zeroable};

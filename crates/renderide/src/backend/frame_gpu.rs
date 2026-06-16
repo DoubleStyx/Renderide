@@ -18,20 +18,16 @@ use std::sync::Arc;
 
 use crate::backend::cluster_gpu::{CLUSTER_COUNT_Z, ClusterBufferCache, ClusterBufferRefs};
 use crate::backend::light_gpu::GpuLight;
+use crate::frame_upload_batch::GraphUploadSink;
 use crate::gpu::frame_globals::{FrameGpuUniforms, SkyboxSpecularUniformParams};
 use crate::gpu::{GpuLimits, GpuShadowView, MAX_LIGHTS, MAX_SHADOW_VIEWS, frame_bind_group_layout};
-use crate::render_graph::frame_upload_batch::GraphUploadSink;
+use crate::reflection_probes::specular::ReflectionProbeSpecularResources;
 
 use super::frame_gpu_error::FrameGpuInitError;
-pub(crate) use crate::gpu::{
-    GpuReflectionProbeMetadata, REFLECTION_PROBE_ATLAS_FORMAT,
-    REFLECTION_PROBE_METADATA_BOX_PROJECTION, REFLECTION_PROBE_METADATA_SH2_SOURCE_LOCAL,
-};
 pub(crate) use empty_material::EmptyMaterialBindGroup;
 use ibl_dfg::create_ibl_dfg_lut;
 use light_cookies::LightCookieAtlasResources;
 pub(crate) use light_cookies::{LIGHT_COOKIE_ATLAS_PASS_NAME, LightCookieAtlasPass};
-pub(crate) use reflection_probe_specular::ReflectionProbeSpecularResources;
 use reflection_probe_specular::{
     ReflectionProbeSpecularBindGroupResources, create_reflection_probe_specular_fallback,
 };
@@ -41,6 +37,14 @@ use scene_snapshot::{
 };
 use shadows::ShadowAtlasResources;
 pub(crate) use shadows::{SHADOW_ATLAS_PASS_NAME, ShadowAtlasPass};
+
+/// Result of synchronizing the realtime shadow atlas before graph recording.
+pub(crate) struct ShadowResourceSyncResult {
+    /// Whether the atlas texture or views were recreated.
+    pub(crate) changed: bool,
+    /// Actual atlas edge resolution backing the current shadow frame.
+    pub(crate) resolution: u32,
+}
 
 /// GPU buffers and bind groups for `@group(0)` frame globals (camera, lights, cluster lists,
 /// fallback sampled scene snapshots, and reflection-probe specular IBL).
@@ -69,7 +73,7 @@ pub struct FrameGpuResources {
     /// [`crate::backend::frame_resource_manager::PerViewFrameState`].
     scene_snapshots: SceneSnapshotSet,
     /// Black atlas array kept alive for frames without resident reflection probes.
-    _reflection_probe_fallback_texture: Arc<wgpu::Texture>,
+    reflection_probe_fallback_texture: Arc<wgpu::Texture>,
     /// Current 2D-array atlas view bound for reflection-probe specular IBL.
     reflection_probe_array_view: Arc<wgpu::TextureView>,
     /// Current sampler paired with [`Self::reflection_probe_array_view`].
@@ -79,7 +83,7 @@ pub struct FrameGpuResources {
     /// Monotonic version incremented whenever reflection-probe bind resources change.
     reflection_probe_version: u64,
     /// Texture backing the static DFG LUT used by split-sum IBL.
-    _ibl_dfg_lut_texture: Arc<wgpu::Texture>,
+    ibl_dfg_lut_texture: Arc<wgpu::Texture>,
     /// Frame-global DFG LUT view bound at `@group(0) @binding(11)`.
     ibl_dfg_lut_view: Arc<wgpu::TextureView>,
     /// Frame-global light-cookie atlas textures and sampler.
@@ -115,7 +119,7 @@ struct FrameBindGroupInputs<'a> {
     reflection_probes: ReflectionProbeSpecularBindGroupResources<'a>,
     /// Integrated BRDF lookup texture view for binding 11.
     ibl_dfg_lut_view: &'a wgpu::TextureView,
-    /// Light-cookie atlas textures and sampler for bindings 13 through 15.
+    /// Light-cookie atlas textures, sampler, and rect metadata for bindings 13 through 15 and 19.
     light_cookies: &'a LightCookieAtlasResources,
     /// Shadow-map metadata, atlas texture, and comparison sampler for bindings 16 through 18.
     shadows: &'a ShadowAtlasResources,
@@ -124,7 +128,7 @@ struct FrameBindGroupInputs<'a> {
 fn frame_bind_group_entries<'a>(
     inputs: &FrameBindGroupInputs<'a>,
 ) -> Vec<wgpu::BindGroupEntry<'a>> {
-    let mut entries = Vec::with_capacity(19);
+    let mut entries = Vec::with_capacity(20);
     append_frame_and_cluster_entries(&mut entries, inputs);
     append_scene_snapshot_entries(&mut entries, inputs);
     append_reflection_probe_entries(&mut entries, inputs);
@@ -228,6 +232,10 @@ fn append_light_cookie_entries<'a>(
         wgpu::BindGroupEntry {
             binding: 15,
             resource: wgpu::BindingResource::Sampler(inputs.light_cookies.sampler()),
+        },
+        wgpu::BindGroupEntry {
+            binding: 19,
+            resource: inputs.light_cookies.metadata_buffer().as_entire_binding(),
         },
     ]);
 }
@@ -379,6 +387,14 @@ impl PerViewSceneSnapshots {
             viewport,
         )
     }
+
+    /// Retains this view's snapshot resources until driver submit.
+    pub(in crate::backend) fn retain_submit_resources(
+        &self,
+        resources: &mut crate::gpu::GpuRetainedResources,
+    ) {
+        self.set.retain_submit_resources(resources);
+    }
 }
 
 impl FrameGpuResources {
@@ -490,7 +506,7 @@ impl FrameGpuResources {
         ) = create_reflection_probe_specular_fallback(device);
         let (ibl_dfg_lut_texture, ibl_dfg_lut_view) = create_ibl_dfg_lut(device, queue);
         let light_cookies = LightCookieAtlasResources::new(device, queue, Arc::clone(&limits));
-        let shadows = ShadowAtlasResources::new(device, Arc::clone(&limits));
+        let shadows = ShadowAtlasResources::new(device, Arc::clone(&limits))?;
         let bind_group = Self::create_bind_group(
             device,
             FrameBindGroupInputs {
@@ -513,12 +529,12 @@ impl FrameGpuResources {
             lights_buffer,
             cluster_cache,
             scene_snapshots,
-            _reflection_probe_fallback_texture: reflection_probe_fallback_texture,
+            reflection_probe_fallback_texture,
             reflection_probe_array_view,
             reflection_probe_sampler,
             reflection_probe_metadata_buffer,
             reflection_probe_version: 0,
-            _ibl_dfg_lut_texture: ibl_dfg_lut_texture,
+            ibl_dfg_lut_texture,
             ibl_dfg_lut_view,
             light_cookies,
             shadows,
@@ -611,6 +627,25 @@ impl FrameGpuResources {
         self.light_cookies.has_requests()
     }
 
+    /// Current light-cookie atlas bind-resource version for per-view bind-group invalidation.
+    pub fn light_cookie_resources_version(&self) -> u64 {
+        self.light_cookies.version()
+    }
+
+    /// Synchronizes light-cookie atlas capacity and rect metadata before graph recording.
+    pub fn sync_light_cookie_resources(
+        &mut self,
+        device: &wgpu::Device,
+        uploads: GraphUploadSink<'_>,
+        assets: &dyn crate::render_graph::GraphAssetResources,
+    ) -> bool {
+        let changed = self.light_cookies.sync(device, uploads, assets);
+        if changed {
+            self.rebuild_bind_group(device);
+        }
+        changed
+    }
+
     /// Records light-cookie atlas updates.
     pub(in crate::backend) fn encode_light_cookie_atlas(
         &self,
@@ -634,18 +669,18 @@ impl FrameGpuResources {
         requested_resolution: u32,
         requested_layers: u32,
         requested_draw_slots: usize,
-    ) -> bool {
-        let changed = self.shadows.sync(
+    ) -> ShadowResourceSyncResult {
+        let result = self.shadows.sync(
             device,
             self.limits.as_ref(),
             requested_resolution,
             requested_layers,
             requested_draw_slots,
         );
-        if changed {
+        if result.changed {
             self.rebuild_bind_group(device);
         }
-        changed
+        result
     }
 
     /// Writes shadow-view metadata into the frame-global storage buffer.
@@ -690,6 +725,29 @@ impl FrameGpuResources {
     /// Uniform parameters for the removed direct skybox specular path.
     pub fn skybox_specular_uniform_params(&self) -> SkyboxSpecularUniformParams {
         SkyboxSpecularUniformParams::disabled()
+    }
+
+    /// Retains shared frame-global resources that may be referenced by submitted commands.
+    pub(in crate::backend) fn retain_submit_resources(
+        &self,
+        resources: &mut crate::gpu::GpuRetainedResources,
+    ) {
+        resources.retain_buffer(self.frame_uniform.clone());
+        resources.retain_buffer(self.lights_buffer.clone());
+        if let Some(cluster_refs) = self.cluster_cache.current_refs() {
+            resources.retain_buffer(cluster_refs.cluster_light_counts.clone());
+            resources.retain_buffer(cluster_refs.cluster_light_indices.clone());
+        }
+        self.scene_snapshots.retain_submit_resources(resources);
+        resources.retain_texture(self.reflection_probe_fallback_texture.as_ref().clone());
+        resources.retain_texture_view(self.reflection_probe_array_view.as_ref().clone());
+        resources.retain_sampler(self.reflection_probe_sampler.as_ref().clone());
+        resources.retain_buffer(self.reflection_probe_metadata_buffer.as_ref().clone());
+        resources.retain_texture(self.ibl_dfg_lut_texture.as_ref().clone());
+        resources.retain_texture_view(self.ibl_dfg_lut_view.as_ref().clone());
+        self.light_cookies.retain_submit_resources(resources);
+        self.shadows.retain_submit_resources(resources);
+        resources.retain_bind_group(self.bind_group.as_ref().clone());
     }
 
     /// Synchronizes frame-global reflection-probe resources and rebuilds bind groups when needed.

@@ -7,7 +7,7 @@
 //! * Color tags surface the bits worth caring about at a glance: overlay batch / draw counts,
 //!   error counters, percentages near critical thresholds, "active/inactive" booleans.
 
-use imgui::{TableFlags, TreeNodeFlags};
+use imgui::TableFlags;
 
 use crate::diagnostics::{FrameDiagnosticsSnapshot, RendererInfoSnapshot};
 use crate::world_mesh::{RenderWorldMaintenanceStats, WorldMeshDrawStats};
@@ -16,6 +16,8 @@ use super::super::super::fmt as hud_fmt;
 use super::super::super::state::HudUiState;
 use super::super::super::view::TabView;
 use super::super::labels::device_type_label;
+use super::super::sections::{collapsible_section, collapsible_section_with_state};
+use super::{graph, streaming, visibility};
 
 /// Bright cyan: stable headline values (frame index, viewport).
 const TAG_HEADLINE: [f32; 4] = [0.55, 0.85, 1.00, 1.00];
@@ -55,20 +57,7 @@ struct DrawStatsSection;
 struct HealthSection;
 struct ResourcesSection;
 struct MaterialsSection;
-struct FrameGraphSection;
-
-const SECTIONS: &[&dyn StatsSection] = &[
-    &FrameLineSection,
-    &GpuAdapterSection,
-    &ProcessMemorySection,
-    &HostCpuRamSection,
-    &IpcSceneSection,
-    &DrawStatsSection,
-    &HealthSection,
-    &ResourcesSection,
-    &MaterialsSection,
-    &FrameGraphSection,
-];
+struct GraphSummarySection;
 
 /// **Stats** tab dispatched from [`super::MainDebugWindow`].
 pub struct StatsTab;
@@ -80,27 +69,69 @@ impl TabView for StatsTab {
     );
     type State = HudUiState;
 
-    fn render(&self, ui: &imgui::Ui, data: Self::Data<'_>, _state: &mut Self::State) {
+    fn render(&self, ui: &imgui::Ui, data: Self::Data<'_>, state: &mut Self::State) {
         let (renderer, frame) = data;
         if renderer.is_none() && frame.is_none() {
             ui.text_disabled("Waiting for snapshot...");
             return;
         }
         let ctx = StatsContext { renderer, frame };
-        for section in SECTIONS {
-            let flags = if section.default_open() {
-                TreeNodeFlags::DEFAULT_OPEN
-            } else {
-                TreeNodeFlags::empty()
-            };
-            if ui.collapsing_header(section.label(), flags) {
-                ui.indent_by(8.0);
-                section.body(ui, &ctx);
-                ui.unindent_by(8.0);
-                ui.spacing();
-            }
-        }
+        render_stats_section(ui, &FrameLineSection, &ctx);
+        render_stats_section(ui, &HealthSection, &ctx);
+        render_stats_section(ui, &GpuAdapterSection, &ctx);
+        render_stats_section(ui, &ProcessMemorySection, &ctx);
+        render_stats_section(ui, &HostCpuRamSection, &ctx);
+        render_stats_section(ui, &IpcSceneSection, &ctx);
+        render_stats_section(ui, &DrawStatsSection, &ctx);
+        render_visibility_section(ui, frame, state);
+        render_stats_section(ui, &ResourcesSection, &ctx);
+        render_assets_section(ui, frame, state);
+        render_stats_section(ui, &MaterialsSection, &ctx);
+        render_stats_section(ui, &GraphSummarySection, &ctx);
+        render_graph_section(ui, frame, state);
     }
+}
+
+fn render_stats_section(ui: &imgui::Ui, section: &dyn StatsSection, ctx: &StatsContext<'_>) {
+    collapsible_section(ui, section.label(), section.default_open(), |ui| {
+        section.body(ui, ctx);
+    });
+}
+
+fn render_visibility_section(
+    ui: &imgui::Ui,
+    frame: Option<&FrameDiagnosticsSnapshot>,
+    state: &mut HudUiState,
+) {
+    collapsible_section_with_state(
+        ui,
+        "Visibility & culling",
+        &mut state.stats_sections.visibility,
+        |ui| visibility::render_visibility_diagnostics(ui, frame),
+    );
+}
+
+fn render_assets_section(
+    ui: &imgui::Ui,
+    frame: Option<&FrameDiagnosticsSnapshot>,
+    state: &mut HudUiState,
+) {
+    collapsible_section_with_state(
+        ui,
+        "Assets & streaming",
+        &mut state.stats_sections.assets,
+        |ui| streaming::render_asset_diagnostics(ui, frame),
+    );
+}
+
+fn render_graph_section(
+    ui: &imgui::Ui,
+    frame: Option<&FrameDiagnosticsSnapshot>,
+    state: &mut HudUiState,
+) {
+    collapsible_section_with_state(ui, "Render graph", &mut state.stats_sections.graph, |ui| {
+        graph::render_graph_diagnostics(ui, frame);
+    });
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -405,7 +436,7 @@ fn draw_submission_rows(ui: &imgui::Ui, stats: &WorldMeshDrawStats) {
             stats.depth_prepass_batches, stats.depth_prepass_instances
         ),
     );
-    let compression = if stats.instance_batch_total > 0 {
+    let avg_instances_per_batch = if stats.instance_batch_total > 0 {
         stats.gpu_instances_emitted as f32 / stats.instance_batch_total as f32
     } else {
         0.0
@@ -415,7 +446,7 @@ fn draw_submission_rows(ui: &imgui::Ui, stats: &WorldMeshDrawStats) {
         "GPU instances emitted",
         &format!(
             "{}  (avg {:.2} / batch)",
-            stats.gpu_instances_emitted, compression
+            stats.gpu_instances_emitted, avg_instances_per_batch
         ),
     );
     kv(
@@ -429,24 +460,32 @@ fn draw_submission_rows(ui: &imgui::Ui, stats: &WorldMeshDrawStats) {
 fn draw_culling_rows(ui: &imgui::Ui, stats: &WorldMeshDrawStats) {
     kv(
         ui,
-        "Frustum cull",
+        "Cull summary",
         &format!(
-            "{} considered  /  {} culled  /  Hi-Z {} culled  /  {} submitted",
+            "{} tested / {} frustum / {} Hi-Z / {} submitted",
             stats.draws_pre_cull, stats.draws_culled, stats.draws_hi_z_culled, stats.draws_total
         ),
     );
     kv(
         ui,
-        "Visibility index",
+        "Visibility broadphase",
         &format!(
-            "indexed={}  fallback={}  candidates={} raw / {} unique / {} dup  culled={} runs / {} draws  linear={}",
+            "indexed={}  fallback={}  candidates={}  culled={} runs / {} draws",
             stats.visibility_stats.indexed_runs,
             stats.visibility_stats.fallback_runs,
+            stats.visibility_stats.candidate_runs,
+            stats.visibility_stats.broadphase_culled_runs,
+            stats.visibility_stats.broadphase_culled_draws
+        ),
+    );
+    kv(
+        ui,
+        "Visibility marks",
+        &format!(
+            "{} raw / {} unique / {} duplicate / {} linear fallback",
             stats.visibility_stats.raw_candidate_marks,
             stats.visibility_stats.candidate_runs,
             stats.visibility_stats.duplicate_candidate_marks,
-            stats.visibility_stats.broadphase_culled_runs,
-            stats.visibility_stats.broadphase_culled_draws,
             stats.visibility_stats.linear_fallback_runs
         ),
     );
@@ -466,15 +505,22 @@ fn render_world_maintenance_row(ui: &imgui::Ui, stats: RenderWorldMaintenanceSta
         ui,
         "Render world",
         &format!(
-            "retained={}  dirty={}  topo={}  mat={}  xform={}  mesh={}  refreshed={}  templates={}  full-space={}  full-world={}  spatial={}/{}  particle-snapshot={}  skips={}",
+            "retained={}  dirty={}  bounds={}/{}  topo={}  mat={}  xform={} roots={} scan={} expanded={} mesh={}  refreshed={}  templates={}  snapshot={}/{}  full-space={}  full-world={}  spatial={}/{}  particle-snapshot={}  skips={}",
             stats.retained_template_count,
             stats.dirty_renderer_count,
+            stats.bounds_dirty_renderer_count,
+            stats.bounds_refreshed_renderer_count,
             stats.topology_dirty_count,
             stats.material_dirty_count,
             stats.transform_only_dirty_count,
+            stats.transform_root_dirty_count,
+            stats.transform_root_scanned_node_count,
+            stats.transform_root_expanded_renderer_count,
             stats.mesh_asset_invalidation_count,
             stats.refreshed_renderer_count,
             stats.refreshed_template_count,
+            stats.snapshot_rebuild_task_count,
+            stats.snapshot_retained_draw_count,
             stats.full_space_rebuild_count,
             stats.full_world_rebuild_count,
             stats.spatial_rebuild_count,
@@ -757,9 +803,9 @@ impl StatsSection for MaterialsSection {
     }
 }
 
-impl StatsSection for FrameGraphSection {
+impl StatsSection for GraphSummarySection {
     fn label(&self) -> &str {
-        "Frame graph"
+        "Graph summary"
     }
     fn default_open(&self) -> bool {
         false

@@ -49,7 +49,7 @@ mod tests {
         assert_eq!(depth_projection[0].name, "forward_two_sided");
         assert_eq!(
             depth_projection[0].material_state,
-            MaterialPassState::Forward
+            MaterialPassState::Filter
         );
         assert_eq!(depth_projection[0].cull_mode, None);
     }

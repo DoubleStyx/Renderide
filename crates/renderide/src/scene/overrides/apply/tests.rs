@@ -270,6 +270,75 @@ fn transform_override_skinned_index_slab_clamps_to_available_rows() {
 }
 
 #[test]
+fn transform_override_negative_skinned_count_preserves_registered_renderers() {
+    let mut space = RenderSpaceState::default();
+    space
+        .render_transform_overrides
+        .push(RenderTransformOverrideEntry {
+            node_id: 10,
+            skinned_mesh_renderer_indices: vec![4, 5],
+            ..Default::default()
+        });
+
+    let extracted = ExtractedRenderTransformOverridesUpdate {
+        states: vec![RenderTransformOverrideState {
+            renderable_index: 0,
+            skinned_mesh_renderer_count: -1,
+            context: RenderingContext::Mirror,
+            ..Default::default()
+        }],
+        skinned_mesh_renderers_indexes: vec![7, 8],
+        ..Default::default()
+    };
+
+    apply_render_transform_overrides_update_extracted(&mut space, &extracted, &[]);
+
+    assert_eq!(
+        space.render_transform_overrides[0].skinned_mesh_renderer_indices,
+        vec![4, 5]
+    );
+    assert_eq!(
+        space.render_transform_overrides[0].context,
+        RenderingContext::Mirror
+    );
+}
+
+#[test]
+fn transform_override_zero_skinned_count_clears_registered_renderers() {
+    let mut space = RenderSpaceState::default();
+    space
+        .render_transform_overrides
+        .push(RenderTransformOverrideEntry {
+            node_id: 10,
+            skinned_mesh_renderer_indices: vec![4, 5],
+            ..Default::default()
+        });
+
+    let extracted = ExtractedRenderTransformOverridesUpdate {
+        states: vec![RenderTransformOverrideState {
+            renderable_index: 0,
+            skinned_mesh_renderer_count: 0,
+            context: RenderingContext::Portal,
+            ..Default::default()
+        }],
+        skinned_mesh_renderers_indexes: vec![7, 8],
+        ..Default::default()
+    };
+
+    apply_render_transform_overrides_update_extracted(&mut space, &extracted, &[]);
+
+    assert!(
+        space.render_transform_overrides[0]
+            .skinned_mesh_renderer_indices
+            .is_empty()
+    );
+    assert_eq!(
+        space.render_transform_overrides[0].context,
+        RenderingContext::Portal
+    );
+}
+
+#[test]
 fn transform_override_fixup_tracks_swap_removed_nodes() {
     let mut space = RenderSpaceState::default();
     space

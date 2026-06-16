@@ -4,12 +4,12 @@ use std::mem::size_of;
 use std::num::NonZeroU64;
 
 use super::super::frame_globals::FrameGpuUniforms;
-use super::lights::{GpuLight, GpuShadowView};
+use super::lights::{GpuLight, GpuLightCookieRect, GpuShadowView};
 use super::reflection_probes::GpuReflectionProbeMetadata;
 
 /// Returns the `@group(0)` layout entries shared by every material pipeline.
 pub fn frame_bind_group_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
-    let mut entries = Vec::with_capacity(19);
+    let mut entries = Vec::with_capacity(20);
     append_frame_buffer_layout_entries(&mut entries);
     append_scene_snapshot_layout_entries(&mut entries);
     append_ibl_layout_entries(&mut entries);
@@ -179,7 +179,7 @@ fn append_light_cookie_layout_entries(entries: &mut Vec<wgpu::BindGroupLayoutEnt
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Texture {
                 sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                view_dimension: wgpu::TextureViewDimension::D2Array,
+                view_dimension: wgpu::TextureViewDimension::D2,
                 multisampled: false,
             },
             count: None,
@@ -189,7 +189,7 @@ fn append_light_cookie_layout_entries(entries: &mut Vec<wgpu::BindGroupLayoutEnt
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Texture {
                 sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                view_dimension: wgpu::TextureViewDimension::D2Array,
+                view_dimension: wgpu::TextureViewDimension::D2,
                 multisampled: false,
             },
             count: None,
@@ -198,6 +198,16 @@ fn append_light_cookie_layout_entries(entries: &mut Vec<wgpu::BindGroupLayoutEnt
             binding: 15,
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 19,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: NonZeroU64::new(size_of::<GpuLightCookieRect>() as u64),
+            },
             count: None,
         },
     ]);

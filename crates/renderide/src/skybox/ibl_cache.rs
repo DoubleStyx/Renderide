@@ -9,7 +9,7 @@
 //! 3. Stitches scratch mip 0 into the source cube and copies it into filtered output mip 0.
 //! 4. Records downsample passes that build and stitch the source radiance mip pyramid.
 //! 5. Records one GGX/cosine convolve pass per filtered mip in `1..N`, then stitches each mip.
-//! 6. Submits the encoder through [`crate::backend::gpu_jobs::GpuSubmitJobTracker`] and parks the
+//! 6. Submits the encoder through [`crate::gpu_jobs::GpuSubmitJobTracker`] and parks the
 //!    cube in `pending` until the submit-completion callback promotes it to `completed`.
 //!
 //! The completed prefiltered cube is reused by reflection probes so every source type reaches

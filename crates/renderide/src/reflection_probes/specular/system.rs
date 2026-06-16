@@ -2,11 +2,9 @@ use std::sync::Arc;
 
 use hashbrown::{HashMap, HashSet};
 
-use crate::backend::AssetTransferQueue;
-use crate::backend::frame_gpu::{
-    GpuReflectionProbeMetadata, REFLECTION_PROBE_ATLAS_FORMAT, ReflectionProbeSpecularResources,
-};
 use crate::gpu::{FrameSubmitKind, GpuContext};
+use crate::gpu::{GpuReflectionProbeMetadata, REFLECTION_PROBE_ATLAS_FORMAT};
+use crate::reflection_probes::ReflectionProbeCubemapAssets;
 use crate::scene::{RenderSpaceId, SceneCoordinator, reflection_probe_solid_color};
 use crate::shared::{ReflectionProbeType, RenderSH2};
 use crate::skybox::ibl_cache::{
@@ -19,6 +17,7 @@ use super::captures::{
     RuntimeReflectionProbeCapture, RuntimeReflectionProbeCaptureKey,
     RuntimeReflectionProbeCaptureStore,
 };
+use super::resources::ReflectionProbeSpecularResources;
 use super::selection::{ReflectionProbeFrameSelection, SpatialProbe};
 use super::source::{metadata_for_spatial, resolve_probe_source, spatial_probe_for_state};
 
@@ -34,7 +33,7 @@ pub(crate) struct ReflectionProbeSpecularMaintainParams<'a> {
     /// Scene snapshot containing render spaces and reflection-probe entries.
     pub(crate) scene: &'a SceneCoordinator,
     /// Asset queues and pools used to resolve uploaded cubemaps.
-    pub(crate) assets: &'a AssetTransferQueue,
+    pub(crate) assets: &'a dyn ReflectionProbeCubemapAssets,
     /// Render context used for reflection-probe world transform lookup.
     pub(crate) render_context: crate::shared::RenderingContext,
     /// SH2 projection service used when reflection-probe diffuse SH is enabled.

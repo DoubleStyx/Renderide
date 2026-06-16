@@ -11,10 +11,11 @@ use super::super::super::sync::device_health::GpuDeviceHealth;
 use super::super::super::sync::mapped_buffer_health::GpuMappedBufferHealth;
 use super::super::{GpuContext, GpuError};
 use super::shared::{
-    GpuContextParts, GpuRuntimeHandles, assemble_context, log_device_capability_summary,
+    GpuContextParts, GpuRuntimeHandles, adapter_info_field_or_unreported, assemble_context,
+    log_device_capability_summary,
 };
 use crate::config::VsyncMode;
-use crate::diagnostics::gpu_flight_recorder::GpuFlightRecorder;
+use crate::gpu::flight_recorder::GpuFlightRecorder;
 use crate::gpu::submission_state::GpuSubmissionState;
 
 impl GpuContext {
@@ -75,24 +76,12 @@ impl GpuContext {
             device.features(),
             "GPU (OpenXR path)",
         );
-        logger::info!(
-            "GPU (OpenXR path): adapter={} backend={:?} extent={}x{} format={:?} vsync={:?} present_mode={:?} \
-             supported_present_modes={:?} desired_maximum_frame_latency={} \
-             msaa_supported_sample_counts={:?} msaa_max_sample_count={} \
-             msaa_supported_sample_counts_stereo={:?} msaa_max_sample_count_stereo={}",
-            adapter_info.name,
-            adapter_info.backend,
-            config.width,
-            config.height,
-            config.format,
+        log_openxr_gpu_selection_summary(
+            &adapter_info,
+            &config,
             vsync,
-            config.present_mode,
-            supported_present_modes,
-            config.desired_maximum_frame_latency,
-            &msaa.desktop,
-            msaa.desktop_max(),
-            &msaa.stereo,
-            msaa.stereo_max()
+            &supported_present_modes,
+            &msaa,
         );
         log_device_capability_summary("GPU (OpenXR path)", device.as_ref());
         let gpu_profiler = try_gpu_profiler(
@@ -133,4 +122,38 @@ impl GpuContext {
             window: Some(window),
         }))
     }
+}
+
+fn log_openxr_gpu_selection_summary(
+    adapter_info: &wgpu::AdapterInfo,
+    config: &wgpu::SurfaceConfiguration,
+    vsync: VsyncMode,
+    supported_present_modes: &[wgpu::PresentMode],
+    msaa: &MsaaSupport,
+) {
+    logger::info!(
+        "GPU (OpenXR path): adapter={} type={:?} backend={:?} vendor={:#010x} device={:#010x} pci_bus_id={} driver={} driver_info={} extent={}x{} format={:?} vsync={:?} present_mode={:?} \
+         supported_present_modes={:?} desired_maximum_frame_latency={} \
+         msaa_supported_sample_counts={:?} msaa_max_sample_count={} \
+         msaa_supported_sample_counts_stereo={:?} msaa_max_sample_count_stereo={}",
+        adapter_info.name,
+        adapter_info.device_type,
+        adapter_info.backend,
+        adapter_info.vendor,
+        adapter_info.device,
+        adapter_info_field_or_unreported(&adapter_info.device_pci_bus_id),
+        adapter_info_field_or_unreported(&adapter_info.driver),
+        adapter_info_field_or_unreported(&adapter_info.driver_info),
+        config.width,
+        config.height,
+        config.format,
+        vsync,
+        config.present_mode,
+        supported_present_modes,
+        config.desired_maximum_frame_latency,
+        &msaa.desktop,
+        msaa.desktop_max(),
+        &msaa.stereo,
+        msaa.stereo_max()
+    );
 }

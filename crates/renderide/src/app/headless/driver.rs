@@ -3,7 +3,7 @@
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use crate::diagnostics::crash_context::{self, RenderMode, TargetMode, TickPhase};
+use crate::crash_context::{self, RenderMode, TargetMode, TickPhase};
 use crate::gpu::GpuContext;
 use crate::ipc::HeadlessParams;
 use crate::run_error::RunError;
@@ -143,7 +143,7 @@ impl<'a> HeadlessDriver<'a> {
             return Some(RunExit::Code(4));
         }
         if let Some(err) = outcome.graph_error {
-            let kind = crash_context::graph_error_kind(&err);
+            let kind = crate::render_graph::graph_error_kind(&err);
             crash_context::set_last_graph_error(kind);
             logger::warn!("Headless: render graph error this tick: {err:?}");
         }

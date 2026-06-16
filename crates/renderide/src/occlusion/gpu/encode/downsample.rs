@@ -4,7 +4,7 @@
 //! within the active pyramid layer, sharing the cached pipeline and per-mip uniform buffers in
 //! [`super::EncodeSession`].
 
-use crate::occlusion::cpu::pyramid::mip_dimensions;
+use crate::hi_z_cpu::pyramid::mip_dimensions;
 
 use super::{EncodeSession, PyramidSide};
 

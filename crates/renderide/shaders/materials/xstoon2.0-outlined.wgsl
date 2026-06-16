@@ -104,7 +104,7 @@ fn vs_outline(
     }
 }
 
-//#pass type=forward name=outline cull=front vs=vs_outline
+//#pass type=forward name=outline cull=front vs=vs_outline a2c=cutout
 @fragment
 fn fs_outline(
     @builtin(position) frag_pos: vec4<f32>,
@@ -123,7 +123,7 @@ fn fs_outline(
     );
 }
 
-//#pass type=forward
+//#pass type=forward a2c=cutout
 @fragment
 fn fs_forward_base(
     @builtin(position) frag_pos: vec4<f32>,

@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+use crate::history_texture::HistoryTextureMipViews;
+
 /// Texture history slot declaration.
 #[derive(Clone, Debug)]
 pub struct TextureHistorySpec {
@@ -19,20 +21,6 @@ pub struct TextureHistorySpec {
     pub sample_count: u32,
     /// Texture dimension.
     pub dimension: wgpu::TextureDimension,
-}
-
-/// Per-layer/per-mip views created for one texture-history allocation.
-#[derive(Clone, Debug)]
-pub struct HistoryTextureMipViews {
-    /// Views grouped as `layers[layer][mip]`.
-    layers: Arc<[Arc<[wgpu::TextureView]>]>,
-}
-
-impl HistoryTextureMipViews {
-    /// Returns all mip views for one array layer.
-    pub fn layer_mip_views(&self, layer: u32) -> Option<&[wgpu::TextureView]> {
-        self.layers.get(layer as usize).map(AsRef::as_ref)
-    }
 }
 
 /// Pure shape data for texture-history view tables.
@@ -167,9 +155,7 @@ fn create_texture_history_mip_views(
         }
         layers.push(Arc::<[wgpu::TextureView]>::from(mips));
     }
-    HistoryTextureMipViews {
-        layers: Arc::<[Arc<[wgpu::TextureView]>]>::from(layers),
-    }
+    HistoryTextureMipViews::from_layers(Arc::<[Arc<[wgpu::TextureView]>]>::from(layers))
 }
 
 #[cfg(test)]

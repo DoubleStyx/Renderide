@@ -5,7 +5,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use crate::gpu::{GpuLimits, GpuMappedBufferHealth};
-use crate::render_graph::upload_arena::PersistentUploadArena;
+use crate::upload_arena::PersistentUploadArena;
 
 use super::mesh_upload_batch::MeshUploadStagingBatch;
 

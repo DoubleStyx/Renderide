@@ -3,7 +3,7 @@
 //! Serves as the minimal integration test for surface acquire, encoder submission, and present.
 //! The render graph reuses [`acquire_surface_outcome_traced`] and [`record_swapchain_clear_pass`].
 
-use crate::diagnostics::gpu_flight_recorder::{
+use crate::gpu::flight_recorder::{
     GpuFlightEventKind, GpuFlightSurfaceAcquireOutcome, GpuFlightSurfaceSite,
     GpuFlightSurfaceStatus, GpuFlightSurfaceSubmitSite,
 };
@@ -11,9 +11,9 @@ use crate::gpu::{FrameSubmitKind, GpuContext};
 
 /// Clear color used for the skeleton swapchain clear.
 pub const SWAPCHAIN_CLEAR_COLOR: wgpu::Color = wgpu::Color {
-    r: 0.1,
-    g: 0.1,
-    b: 0.1,
+    r: 0.0,
+    g: 0.0,
+    b: 0.0,
     a: 1.0,
 };
 

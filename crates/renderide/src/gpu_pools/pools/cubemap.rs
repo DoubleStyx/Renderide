@@ -22,6 +22,7 @@ use crate::gpu_pools::texture_allocation::{
 };
 
 static NEXT_CUBEMAP_ALLOCATION_GENERATION: AtomicU64 = AtomicU64::new(1);
+const MAX_GPU_TEXTURE_ALLOCATION_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 /// One full-mip 2D texture view for each cubemap face.
 type CubemapFaceViews = [Arc<wgpu::TextureView>; crate::gpu::CUBEMAP_ARRAY_LAYERS as usize];
@@ -87,6 +88,17 @@ impl GpuCubemap {
             height: desc.size,
             depth_or_array_layers: 6,
         };
+        let resident_bytes =
+            estimate_gpu_cubemap_bytes(desc.wgpu_format, desc.size, desc.mip_levels_total);
+        if resident_bytes > MAX_GPU_TEXTURE_ALLOCATION_BYTES {
+            logger::warn!(
+                "Cubemap {} rejected: estimated resident bytes {} exceed cap {}",
+                fmt.asset_id,
+                resident_bytes,
+                MAX_GPU_TEXTURE_ALLOCATION_BYTES
+            );
+            return None;
+        }
         let texture_label = format!("Cubemap {}", fmt.asset_id);
         let view_label = format!("Cubemap {} cube view", fmt.asset_id);
         let (texture, view) = create_sampled_copy_dst_texture(
@@ -115,8 +127,6 @@ impl GpuCubemap {
             desc.wgpu_format,
             desc.mip_levels_total,
         );
-        let resident_bytes =
-            estimate_gpu_cubemap_bytes(desc.wgpu_format, desc.size, desc.mip_levels_total);
         let sampler = SamplerState::from_cubemap_props(props);
         let residency = props
             .map(TextureResidencyMeta::from_host_props)

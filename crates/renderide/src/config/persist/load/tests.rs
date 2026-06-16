@@ -118,7 +118,7 @@ fn max_local_reflection_probe_env_override_clamps_effective_value() {
         settings
             .experimental
             .effective_max_local_reflection_probes(),
-        crate::reflection_probes::specular::MAX_LOCAL_PROBES
+        crate::render_contract::MAX_LOCAL_REFLECTION_PROBES
     );
 }
 

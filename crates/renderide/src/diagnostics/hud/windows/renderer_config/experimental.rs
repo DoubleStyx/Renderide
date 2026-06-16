@@ -1,7 +1,7 @@
 //! Experimental renderer-config HUD controls.
 
 use crate::config::RendererSettings;
-use crate::reflection_probes::specular::MAX_LOCAL_PROBES;
+use crate::render_contract::MAX_LOCAL_REFLECTION_PROBES;
 
 use super::controls::drag_u32_slider_setting;
 
@@ -15,7 +15,7 @@ pub(super) fn experimental_section(ui: &imgui::Ui, g: &mut RendererSettings, dir
         "Maximum number of local reflection probes per mesh",
         &mut mrp,
         0,
-        MAX_LOCAL_PROBES as u32,
+        MAX_LOCAL_REFLECTION_PROBES as u32,
     ) {
         g.experimental.max_local_reflection_probes = mrp as usize;
         *dirty = true;

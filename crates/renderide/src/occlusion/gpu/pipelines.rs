@@ -1,6 +1,6 @@
 //! Cached compute pipelines and bind group layouts for Hi-Z pyramid construction.
 //!
-//! WGSL is sourced from the build-time embedded shader registry. The mip0 shader lives in a
+//! WGSL is sourced from the runtime shader package. The mip0 shader lives in a
 //! single source with `#ifdef MULTIVIEW` and is composed into `hi_z_mip0_default` (2D source)
 //! and `hi_z_mip0_multiview` (2D array source + per-dispatch layer uniform).
 

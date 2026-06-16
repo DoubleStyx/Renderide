@@ -6,7 +6,7 @@ use super::super::offscreen_tasks::camera::zero_camera_render_task_results;
 use super::super::offscreen_tasks::reflection_probe::reflection_probe_render_task_count;
 use super::super::{RendererRuntime, lockstep};
 use super::skinned_bounds::answer_skinned_realtime_bounds;
-use crate::diagnostics::crash_context::{self, TickPhase};
+use crate::crash_context::{self, TickPhase};
 use crate::gpu_pools::MeshPool;
 use crate::ipc::SharedMemoryAccessor;
 use crate::scene::SceneCoordinator;
@@ -50,7 +50,7 @@ impl RendererRuntime {
         let frame_index = data.frame_index;
         let submitted_render_spaces = data.render_spaces.len();
         let submitted_render_tasks = data.render_tasks.len();
-        let shared_memory_available = self.frontend.shared_memory().is_some();
+        let shared_memory_available = shared_memory_is_available(self.frontend.shared_memory());
         self.begin_frame_submit_application(&data, received_at);
 
         let start = Instant::now();
@@ -264,6 +264,10 @@ fn answer_bounds(shm: &mut SharedMemoryAccessor, submit: BoundsWritebackSubmit<'
     let (scene, mesh_pool, data, frame_index) = submit;
     let report = answer_skinned_realtime_bounds(shm, scene, mesh_pool, data);
     report.log(frame_index);
+}
+
+fn shared_memory_is_available(shm: Option<&SharedMemoryAccessor>) -> bool {
+    shm.is_some_and(SharedMemoryAccessor::is_available)
 }
 
 #[cfg(test)]

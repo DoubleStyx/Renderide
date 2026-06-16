@@ -188,7 +188,7 @@ fn vs_main(
 }
 
 fn main_st(view_layer: u32) -> vec4<f32> {
-    if (kw_RIGHT_EYE_ST() && view_layer != 0u) {
+    if (kw_RIGHT_EYE_ST() && rg::view_layer_is_right_eye(view_layer)) {
         return mat._RightEye_ST;
     }
     return mat._Tex_ST;

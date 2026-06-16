@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::materials::MaterialSystem;
-use crate::shared::{MeshUploadData, SetCubemapData, SetTexture2DData, SetTexture3DData};
+use crate::shared::MeshUploadData;
 
 use super::super::{AssetTransferQueue, drain_asset_tasks_unbounded};
 use super::allocations::{
@@ -33,12 +33,9 @@ pub fn attach_flush_pending_asset_uploads(
     flush_pending_cubemap_allocations(queue, device);
     flush_pending_render_texture_allocations(queue, device);
     attach_flush_pending_video_textures(queue);
-    let pending_tex: Vec<SetTexture2DData> =
-        queue.pending.pending_texture_uploads.drain(..).collect();
-    let pending_tex3d: Vec<SetTexture3DData> =
-        queue.pending.pending_texture3d_uploads.drain(..).collect();
-    let pending_cube: Vec<SetCubemapData> =
-        queue.pending.pending_cubemap_uploads.drain(..).collect();
+    let pending_tex: Vec<_> = queue.pending.pending_texture_uploads.drain(..).collect();
+    let pending_tex3d: Vec<_> = queue.pending.pending_texture3d_uploads.drain(..).collect();
+    let pending_cube: Vec<_> = queue.pending.pending_cubemap_uploads.drain(..).collect();
     let pending_mesh: Vec<MeshUploadData> = queue.pending.pending_mesh_uploads.drain(..).collect();
     let mut ipc = ipc;
     if let Some(shm) = shm {

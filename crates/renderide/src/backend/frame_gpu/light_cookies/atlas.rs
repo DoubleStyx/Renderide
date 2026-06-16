@@ -2,126 +2,180 @@ use std::sync::Arc;
 
 use super::format::LightCookieAtlasFormat;
 
-/// Edge length of each light-cookie atlas layer.
-pub(super) const LIGHT_COOKIE_ATLAS_EDGE: u32 = 256;
-
-/// Layered atlas texture and one-layer render-target views.
-pub(super) struct LightCookieLayeredAtlas {
-    /// Backing texture.
-    _texture: Arc<wgpu::Texture>,
-    /// Full array view bound by frame globals.
-    pub(super) view: Arc<wgpu::TextureView>,
-    /// Single-layer views used as render-pass targets.
-    layer_views: Vec<Arc<wgpu::TextureView>>,
-    /// Array layer count.
-    pub(super) layers: u32,
+/// Pixel extent for one packed light-cookie atlas texture.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct LightCookieAtlasExtent {
+    /// Atlas width in texels.
+    pub(super) width: u32,
+    /// Atlas height in texels.
+    pub(super) height: u32,
 }
 
-impl LightCookieLayeredAtlas {
-    /// Creates a light-cookie atlas with one-layer render-target views.
+impl LightCookieAtlasExtent {
+    /// Smallest valid sampled texture extent.
+    pub(super) const FALLBACK: Self = Self {
+        width: 1,
+        height: 1,
+    };
+
+    /// Returns an extent with both axes valid for texture allocation.
+    pub(super) fn sanitized(self) -> Self {
+        Self {
+            width: self.width.max(1),
+            height: self.height.max(1),
+        }
+    }
+}
+
+/// Packed light-cookie atlas texture.
+pub(super) struct LightCookiePackedAtlas {
+    /// Backing texture.
+    texture: Arc<wgpu::Texture>,
+    /// Full 2D sampled/render-target view.
+    view: Arc<wgpu::TextureView>,
+    /// Current allocated atlas extent.
+    extent: LightCookieAtlasExtent,
+    /// Atlas texture format.
+    format: LightCookieAtlasFormat,
+    /// Static label used for recreated atlas textures.
+    label: &'static str,
+}
+
+impl LightCookiePackedAtlas {
+    /// Creates a 1x1 white light-cookie atlas.
     pub(super) fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         label: &'static str,
-        layers: u32,
         format: LightCookieAtlasFormat,
     ) -> Self {
-        let wgpu_format = format.wgpu();
-        let texture = Arc::new(device.create_texture(&wgpu::TextureDescriptor {
-            label: Some(label),
-            size: wgpu::Extent3d {
-                width: LIGHT_COOKIE_ATLAS_EDGE,
-                height: LIGHT_COOKIE_ATLAS_EDGE,
-                depth_or_array_layers: layers,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu_format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        }));
-        write_white_layer(queue, texture.as_ref(), 0, format);
-        let view = Arc::new(texture.create_view(&wgpu::TextureViewDescriptor {
-            label: Some(&format!("{label}_view")),
-            format: Some(wgpu_format),
-            dimension: Some(wgpu::TextureViewDimension::D2Array),
-            usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
-            aspect: wgpu::TextureAspect::All,
-            base_mip_level: 0,
-            mip_level_count: Some(1),
-            base_array_layer: 0,
-            array_layer_count: Some(layers),
-        }));
-        crate::profiling::note_resource_churn!(TextureView, "backend::light_cookie_atlas_view");
-        let layer_views = (0..layers)
-            .map(|layer| {
-                Arc::new(texture.create_view(&wgpu::TextureViewDescriptor {
-                    label: Some(&format!("{label}_layer_{layer}")),
-                    format: Some(wgpu_format),
-                    dimension: Some(wgpu::TextureViewDimension::D2),
-                    usage: Some(wgpu::TextureUsages::RENDER_ATTACHMENT),
-                    aspect: wgpu::TextureAspect::All,
-                    base_mip_level: 0,
-                    mip_level_count: Some(1),
-                    base_array_layer: layer,
-                    array_layer_count: Some(1),
-                }))
-            })
-            .collect::<Vec<_>>();
-        crate::profiling::note_resource_churn!(TextureView, "backend::light_cookie_layer_views");
+        let (texture, view) =
+            create_atlas_texture(device, label, LightCookieAtlasExtent::FALLBACK, format);
+        write_white_texture(
+            queue,
+            texture.as_ref(),
+            format,
+            LightCookieAtlasExtent::FALLBACK,
+        );
         Self {
-            _texture: texture,
+            texture,
             view,
-            layer_views,
-            layers,
+            extent: LightCookieAtlasExtent::FALLBACK,
+            format,
+            label,
         }
     }
 
-    /// Returns a single-layer render target view.
-    pub(super) fn layer_view(&self, layer: u32) -> Option<&wgpu::TextureView> {
-        self.layer_views.get(layer as usize).map(Arc::as_ref)
+    /// Grows the atlas so `required` fits. Returns `true` when the sampled view changed.
+    pub(super) fn sync(&mut self, device: &wgpu::Device, required: LightCookieAtlasExtent) -> bool {
+        let required = required.sanitized();
+        if self.extent.width >= required.width && self.extent.height >= required.height {
+            return false;
+        }
+        let next = LightCookieAtlasExtent {
+            width: self.extent.width.max(required.width),
+            height: self.extent.height.max(required.height),
+        };
+        let (texture, view) = create_atlas_texture(device, self.label, next, self.format);
+        self.texture = texture;
+        self.view = view;
+        self.extent = next;
+        true
+    }
+
+    /// Full atlas view for group-0 binding and atlas render passes.
+    pub(super) fn view(&self) -> &wgpu::TextureView {
+        self.view.as_ref()
+    }
+
+    /// Current atlas extent in texels.
+    pub(super) fn extent(&self) -> LightCookieAtlasExtent {
+        self.extent
+    }
+
+    /// Retains atlas handles until driver submit.
+    pub(super) fn retain_submit_resources(&self, resources: &mut crate::gpu::GpuRetainedResources) {
+        resources.retain_texture(self.texture.as_ref().clone());
+        resources.retain_texture_view(self.view.as_ref().clone());
     }
 }
 
-/// Writes a white fallback layer.
-fn write_white_layer(
+fn create_atlas_texture(
+    device: &wgpu::Device,
+    label: &'static str,
+    extent: LightCookieAtlasExtent,
+    format: LightCookieAtlasFormat,
+) -> (Arc<wgpu::Texture>, Arc<wgpu::TextureView>) {
+    let extent = extent.sanitized();
+    let wgpu_format = format.wgpu();
+    let texture = Arc::new(device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width: extent.width,
+            height: extent.height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu_format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    }));
+    let view = Arc::new(texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some(&format!("{label}_view")),
+        format: Some(wgpu_format),
+        dimension: Some(wgpu::TextureViewDimension::D2),
+        usage: Some(wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT),
+        aspect: wgpu::TextureAspect::All,
+        base_mip_level: 0,
+        mip_level_count: Some(1),
+        base_array_layer: 0,
+        array_layer_count: Some(1),
+    }));
+    crate::profiling::note_resource_churn!(TextureView, "backend::light_cookie_atlas_view");
+    (texture, view)
+}
+
+/// Writes a white fallback texture.
+fn write_white_texture(
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,
-    layer: u32,
     format: LightCookieAtlasFormat,
+    extent: LightCookieAtlasExtent,
 ) {
-    let bytes = white_layer_bytes(format);
+    let extent = extent.sanitized();
+    let bytes = white_texture_bytes(format, extent.width, extent.height);
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
             texture,
             mip_level: 0,
-            origin: wgpu::Origin3d {
-                x: 0,
-                y: 0,
-                z: layer,
-            },
+            origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
         &bytes,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
-            bytes_per_row: Some(LIGHT_COOKIE_ATLAS_EDGE * format.bytes_per_texel()),
-            rows_per_image: Some(LIGHT_COOKIE_ATLAS_EDGE),
+            bytes_per_row: Some(extent.width * format.bytes_per_texel()),
+            rows_per_image: Some(extent.height),
         },
         wgpu::Extent3d {
-            width: LIGHT_COOKIE_ATLAS_EDGE,
-            height: LIGHT_COOKIE_ATLAS_EDGE,
+            width: extent.width,
+            height: extent.height,
             depth_or_array_layers: 1,
         },
     );
 }
 
-/// Builds a CPU-side full-white fallback layer for `format`.
-pub(super) fn white_layer_bytes(format: LightCookieAtlasFormat) -> Vec<u8> {
-    let texels = (LIGHT_COOKIE_ATLAS_EDGE * LIGHT_COOKIE_ATLAS_EDGE) as usize;
+/// Builds CPU-side full-white texels for `format` and `extent`.
+pub(super) fn white_texture_bytes(
+    format: LightCookieAtlasFormat,
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
+    let texels = (width.max(1) * height.max(1)) as usize;
     match format {
         LightCookieAtlasFormat::R16Float => {
             let mut bytes = Vec::with_capacity(texels * 2);

@@ -56,44 +56,6 @@ impl RasterFrontFace {
     }
 }
 
-/// Primitive topology selected per submesh for [`MaterialPipelineCacheKey`] and
-/// [`crate::world_mesh::MaterialDrawBatchKey`].
-///
-/// `wgpu::PrimitiveTopology` does not derive `Ord`/`PartialOrd`, so we cannot embed it directly in
-/// the batch key (which is sorted as a tiebreaker). This enum mirrors the wgpu variants and adds
-/// the missing trait derives, plus a mapping from the host's `SubmeshTopology` enum.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(u8)]
-pub enum RasterPrimitiveTopology {
-    /// Each vertex is a point sprite; no shared topology.
-    PointList,
-    /// Each triple of vertices forms an independent triangle.
-    #[default]
-    TriangleList,
-}
-
-impl RasterPrimitiveTopology {
-    /// Lowers the renderer's topology tag into the wgpu primitive setting used at pipeline build.
-    #[must_use]
-    #[inline]
-    pub fn to_wgpu(self) -> wgpu::PrimitiveTopology {
-        match self {
-            Self::PointList => wgpu::PrimitiveTopology::PointList,
-            Self::TriangleList => wgpu::PrimitiveTopology::TriangleList,
-        }
-    }
-}
-
-impl From<crate::shared::SubmeshTopology> for RasterPrimitiveTopology {
-    #[inline]
-    fn from(t: crate::shared::SubmeshTopology) -> Self {
-        match t {
-            crate::shared::SubmeshTopology::Points => Self::PointList,
-            crate::shared::SubmeshTopology::Triangles => Self::TriangleList,
-        }
-    }
-}
-
 /// Unity `Cull` / `CullMode` material override for raster pipeline keys and
 /// [`MaterialRenderState::resolved_cull_mode`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]

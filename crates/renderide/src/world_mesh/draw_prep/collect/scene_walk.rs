@@ -4,14 +4,10 @@ mod cull_cache;
 mod per_renderer;
 mod per_slot;
 
-use hashbrown::HashMap;
-
 use crate::scene::{RenderSpaceId, SkinnedMeshRenderer, StaticMeshRenderer};
-use crate::world_mesh::materials::FrameMaterialBatchCache;
 
 use super::super::item::{MaterialStackOrder, WorldMeshDrawItem, resolved_material_slot_count};
-use super::DrawCollectionInputs;
-use super::lod::LodVisibility;
+use super::{CollectState, DrawCollectionInputs};
 
 use cull_cache::CachedCull;
 use per_renderer::push_draws_for_renderer;
@@ -161,9 +157,7 @@ pub(super) fn build_chunk_specs(
 pub(super) fn collect_chunk(
     spec: &WorldMeshChunkSpec,
     ctx: &DrawCollectionInputs<'_>,
-    cache: &FrameMaterialBatchCache,
-    filter_masks: &HashMap<RenderSpaceId, Vec<bool>>,
-    lod_visibility: &LodVisibility,
+    state: CollectState<'_>,
 ) -> (Vec<WorldMeshDrawItem>, (usize, usize, usize)) {
     let mut out = Vec::new();
     let mut cull_stats = (0usize, 0usize, 0usize);
@@ -175,7 +169,7 @@ pub(super) fn collect_chunk(
         return (out, cull_stats);
     }
 
-    let filter_pass_mask = filter_masks.get(&spec.space_id).map(Vec::as_slice);
+    let filter_pass_mask = state.filter_masks.get(&spec.space_id).map(Vec::as_slice);
     let mut acc = DrawCollectionAccumulator {
         out: &mut out,
         cull_stats: &mut cull_stats,
@@ -190,11 +184,13 @@ pub(super) fn collect_chunk(
                 else {
                     continue;
                 };
-                if !lod_visibility.renderer_visible_by_instance(source.space_id, source.instance_id)
+                if !state
+                    .lod_visibility
+                    .renderer_visible_by_instance(source.space_id, source.instance_id)
                 {
                     continue;
                 }
-                push_draws_for_renderer(ctx, &mut acc, source, cache);
+                push_draws_for_renderer(ctx, &mut acc, source, state.cache);
             }
         }
         ChunkKind::Skinned => {
@@ -205,11 +201,13 @@ pub(super) fn collect_chunk(
                 else {
                     continue;
                 };
-                if !lod_visibility.renderer_visible_by_instance(source.space_id, source.instance_id)
+                if !state
+                    .lod_visibility
+                    .renderer_visible_by_instance(source.space_id, source.instance_id)
                 {
                     continue;
                 }
-                push_draws_for_renderer(ctx, &mut acc, source, cache);
+                push_draws_for_renderer(ctx, &mut acc, source, state.cache);
             }
         }
     }

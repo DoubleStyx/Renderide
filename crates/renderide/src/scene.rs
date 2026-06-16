@@ -52,6 +52,7 @@
 
 mod blit_to_display;
 mod camera;
+mod camera_portal;
 mod coordinator;
 mod dense_update;
 mod error;
@@ -70,10 +71,15 @@ mod transforms;
 mod world;
 
 pub use camera::CameraRenderableEntry;
+pub use camera_portal::{
+    camera_portal_disable_per_pixel_lights, camera_portal_disable_shadows,
+    camera_portal_has_camera_clear_mode, camera_portal_has_far_clip_value,
+    camera_portal_portal_mode,
+};
 pub use coordinator::{
-    DesktopDashboardOverlaySource, RenderWorldBoundsDirty, RenderWorldMaterialOverrideDirty,
-    RenderWorldRendererDirty, RenderWorldRendererKind, RenderWorldTransformDirty, SceneApplyReport,
-    SceneCacheFlushReport, SceneCoordinator,
+    RenderWorldBoundsDirty, RenderWorldMaterialOverrideDirty, RenderWorldRendererDirty,
+    RenderWorldRendererKind, RenderWorldTransformDirty, SceneApplyReport, SceneCacheFlushReport,
+    SceneCoordinator,
 };
 pub use ids::RenderSpaceId;
 pub use lights::{ResolvedLight, light_contributes, light_has_negative_contribution};

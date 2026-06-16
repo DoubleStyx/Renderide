@@ -10,6 +10,17 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use super::GpuContext;
+use crate::gpu::GpuRetainedResources;
+
+struct SubmitFrameBatchRequest {
+    kind: FrameSubmitKind,
+    command_buffers: Vec<wgpu::CommandBuffer>,
+    surface_texture: Option<wgpu::SurfaceTexture>,
+    wait: Option<crate::gpu::driver_thread::SubmitWait>,
+    on_submitted_work_done: Vec<Box<dyn FnOnce() + Send + 'static>>,
+    xr_finalize: Option<crate::gpu::driver_thread::XrFinalizeWork>,
+    retained_resources: GpuRetainedResources,
+}
 
 /// Purpose of a driver-thread submit for frame timing diagnostics.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -72,7 +83,7 @@ impl GpuContext {
         surface_texture: Option<wgpu::SurfaceTexture>,
         wait: Option<crate::gpu::driver_thread::SubmitWait>,
     ) {
-        self.submit_frame_batch_inner(kind, cmds, surface_texture, wait, Vec::new());
+        let _ = self.submit_frame_batch_inner(kind, cmds, surface_texture, wait, Vec::new());
     }
 
     /// Hands presentation-only work to the driver thread without updating compact frame timing.
@@ -90,7 +101,7 @@ impl GpuContext {
             !kind.tracks_primary_frame_timing(),
             "primary submits must go through submit_frame_batch"
         );
-        self.submit_frame_batch_inner(kind, cmds, surface_texture, wait, Vec::new());
+        let _ = self.submit_frame_batch_inner(kind, cmds, surface_texture, wait, Vec::new());
     }
 
     /// Same as [`Self::submit_frame_batch`] but attaches extra `on_submitted_work_done`
@@ -106,13 +117,35 @@ impl GpuContext {
         wait: Option<crate::gpu::driver_thread::SubmitWait>,
         extra_on_submitted_work_done: Vec<Box<dyn FnOnce() + Send + 'static>>,
     ) {
-        self.submit_frame_batch_inner(
+        let _ = self.submit_frame_batch_inner(
             kind,
             cmds,
             surface_texture,
             wait,
             extra_on_submitted_work_done,
         );
+    }
+
+    /// Same as [`Self::submit_frame_batch_with_callbacks`] but moves explicit GPU-resource
+    /// ownership into the driver-thread batch.
+    pub(crate) fn submit_frame_batch_with_retained_resources(
+        &self,
+        kind: FrameSubmitKind,
+        cmds: Vec<wgpu::CommandBuffer>,
+        surface_texture: Option<wgpu::SurfaceTexture>,
+        wait: Option<crate::gpu::driver_thread::SubmitWait>,
+        extra_on_submitted_work_done: Vec<Box<dyn FnOnce() + Send + 'static>>,
+        retained_resources: GpuRetainedResources,
+    ) -> Option<crate::gpu::driver_thread::SubmitToken> {
+        self.submit_frame_batch_inner_full(SubmitFrameBatchRequest {
+            kind,
+            command_buffers: cmds,
+            surface_texture,
+            wait,
+            on_submitted_work_done: extra_on_submitted_work_done,
+            xr_finalize: None,
+            retained_resources,
+        })
     }
 
     /// Submits final OpenXR copy work plus an OpenXR finalize payload.
@@ -125,14 +158,15 @@ impl GpuContext {
         cmds: Vec<wgpu::CommandBuffer>,
         xr_finalize: crate::gpu::driver_thread::XrFinalizeWork,
     ) {
-        self.submit_frame_batch_inner_full(
-            FrameSubmitKind::XrFinalize,
-            cmds,
-            None,
-            None,
-            Vec::new(),
-            Some(xr_finalize),
-        );
+        let _ = self.submit_frame_batch_inner_full(SubmitFrameBatchRequest {
+            kind: FrameSubmitKind::XrFinalize,
+            command_buffers: cmds,
+            surface_texture: None,
+            wait: None,
+            on_submitted_work_done: Vec::new(),
+            xr_finalize: Some(xr_finalize),
+            retained_resources: GpuRetainedResources::new(),
+        });
     }
 
     /// Pushes a zero-work driver batch carrying only an OpenXR finalize payload.
@@ -148,6 +182,7 @@ impl GpuContext {
         let batch = crate::gpu::driver_thread::SubmitBatch {
             submit_kind: crate::gpu::driver_thread::DriverSubmitKind::XrFinalize,
             command_buffers: Vec::new(),
+            retained_resources: GpuRetainedResources::new(),
             surface_texture: None,
             on_submitted_work_done: Vec::new(),
             frame_timing: None,
@@ -156,7 +191,7 @@ impl GpuContext {
             xr_finalize: Some(xr_finalize),
             frame_seq: 0,
         };
-        self.submission.driver_thread.submit(batch);
+        let _ = self.submission.driver_thread.submit(batch);
     }
 
     /// Internal helper that builds the [`crate::gpu::driver_thread::SubmitBatch`] and pushes it
@@ -169,15 +204,16 @@ impl GpuContext {
         surface_texture: Option<wgpu::SurfaceTexture>,
         wait: Option<crate::gpu::driver_thread::SubmitWait>,
         extra_on_submitted_work_done: Vec<Box<dyn FnOnce() + Send + 'static>>,
-    ) {
-        self.submit_frame_batch_inner_full(
+    ) -> Option<crate::gpu::driver_thread::SubmitToken> {
+        self.submit_frame_batch_inner_full(SubmitFrameBatchRequest {
             kind,
             command_buffers,
             surface_texture,
             wait,
-            extra_on_submitted_work_done,
-            None,
-        );
+            on_submitted_work_done: extra_on_submitted_work_done,
+            xr_finalize: None,
+            retained_resources: GpuRetainedResources::new(),
+        })
     }
 
     /// Variant of [`Self::submit_frame_batch_inner`] that also accepts an OpenXR finalize
@@ -186,13 +222,17 @@ impl GpuContext {
     /// [`Self::submit_frame_batch_with_xr_finalize`], or [`Self::submit_finalize_only`].
     fn submit_frame_batch_inner_full(
         &self,
-        kind: FrameSubmitKind,
-        mut command_buffers: Vec<wgpu::CommandBuffer>,
-        surface_texture: Option<wgpu::SurfaceTexture>,
-        wait: Option<crate::gpu::driver_thread::SubmitWait>,
-        extra_on_submitted_work_done: Vec<Box<dyn FnOnce() + Send + 'static>>,
-        mut xr_finalize: Option<crate::gpu::driver_thread::XrFinalizeWork>,
-    ) {
+        request: SubmitFrameBatchRequest,
+    ) -> Option<crate::gpu::driver_thread::SubmitToken> {
+        let SubmitFrameBatchRequest {
+            kind,
+            mut command_buffers,
+            surface_texture,
+            wait,
+            on_submitted_work_done,
+            mut xr_finalize,
+            retained_resources,
+        } = request;
         let has_gpu_work = !command_buffers.is_empty();
         if has_gpu_work && kind.emits_render_submit_frame_mark() {
             crate::profiling::emit_render_submit_frame_mark();
@@ -238,19 +278,22 @@ impl GpuContext {
         let batch = crate::gpu::driver_thread::SubmitBatch {
             submit_kind: kind.into(),
             command_buffers,
+            retained_resources,
             surface_texture,
-            on_submitted_work_done: extra_on_submitted_work_done,
+            on_submitted_work_done,
             frame_timing,
             frame_bracket_readback,
             wait,
             xr_finalize,
             frame_seq,
         };
-        if let Some(token) = self.submission.driver_thread.submit(batch) {
+        let token = self.submission.driver_thread.submit(batch);
+        if let Some(token) = token {
             self.submission
                 .last_frame_submit_token
                 .store(token.raw(), Ordering::Release);
         }
+        token
     }
 
     /// Drains any driver-thread error captured since the last check, leaving the slot empty.
@@ -267,6 +310,11 @@ impl GpuContext {
     pub fn driver_submit_backlog(&self) -> u64 {
         let (pushed, done) = self.submission.driver_thread.submit_counter_snapshot();
         pushed.saturating_sub(done)
+    }
+
+    /// Returns true once the driver thread has returned from `Queue::submit` for `token`.
+    pub(crate) fn is_submit_done(&self, token: crate::gpu::driver_thread::SubmitToken) -> bool {
+        self.submission.driver_thread.is_submit_done(token)
     }
 
     /// Blocks until the driver thread has processed every previously-submitted batch.

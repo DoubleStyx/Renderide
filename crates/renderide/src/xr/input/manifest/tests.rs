@@ -291,6 +291,28 @@ fn shipped_manifest_loads() {
 }
 
 #[test]
+fn shipped_valve_index_squeeze_uses_force_sensor() {
+    let manifest = shipped_manifest();
+    let index_profile = manifest
+        .profiles
+        .iter()
+        .find(|profile| profile.profile == "/interaction_profiles/valve/index_controller")
+        .expect("valve index profile");
+
+    for (action, expected_path) in [
+        ("left_squeeze", "/user/hand/left/input/squeeze/force"),
+        ("right_squeeze", "/user/hand/right/input/squeeze/force"),
+    ] {
+        let binding = index_profile
+            .bindings
+            .iter()
+            .find(|binding| binding.action == action)
+            .expect("index squeeze binding");
+        assert_eq!(binding.path, expected_path);
+    }
+}
+
+#[test]
 fn shipped_vive_tracker_profile_is_body_pose_only() {
     let manifest = shipped_manifest();
     let tracker_profile = manifest

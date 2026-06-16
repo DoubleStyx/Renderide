@@ -9,6 +9,8 @@ use crate::shared::RendererInitData;
 
 use super::RendererRuntime;
 
+const DESKTOP_DISPLAY_INDEX: i16 = 0;
+
 impl RendererRuntime {
     /// Updates the latest [`crate::shared::FrameSubmitData::render_tasks`] count for the HUD.
     pub(crate) fn set_last_submit_render_task_count(&mut self, n: usize) {
@@ -34,13 +36,15 @@ impl RendererRuntime {
     /// Number of host camera readback tasks waiting for GPU processing.
     #[cfg(test)]
     pub(crate) fn pending_camera_render_task_count(&self) -> usize {
-        self.tick_state.pending_camera_render_tasks.len()
+        self.tick_state.submit_completion_work.camera_count()
     }
 
     /// Number of host reflection-probe bake tasks waiting for GPU processing.
     #[cfg(test)]
     pub(crate) fn pending_reflection_probe_render_task_count(&self) -> usize {
-        self.tick_state.pending_reflection_probe_render_tasks.len()
+        self.tick_state
+            .submit_completion_work
+            .reflection_probe_count()
     }
 
     /// Disables writing `config.toml` from the HUD when load-time Figment extraction failed.
@@ -198,9 +202,9 @@ impl RendererRuntime {
         self.backend.debug_hud_last_want_capture_keyboard()
     }
 
-    /// Read-only scene state used by present-time queries (e.g. active `BlitToDisplay` lookup).
-    pub fn scene(&self) -> &crate::scene::SceneCoordinator {
-        &self.scene
+    /// Active desktop [`crate::shared::BlitToDisplayState`] for this frame, when one owns output.
+    pub fn active_desktop_blit(&self) -> Option<crate::shared::BlitToDisplayState> {
+        self.scene.active_blit_for_display(DESKTOP_DISPLAY_INDEX)
     }
 
     /// Resolves a `BlitToDisplay.texture_id` into a sampleable 2D color view + texel size.
@@ -247,5 +251,12 @@ impl RendererRuntime {
         use crate::ipc::SharedMemoryAccessor;
         self.frontend
             .set_shared_memory(SharedMemoryAccessor::new(prefix.into()));
+    }
+
+    /// Returns whether the installed test shared-memory accessor can open host buffers.
+    pub(crate) fn test_shared_memory_available(&self) -> bool {
+        self.frontend
+            .shared_memory()
+            .is_some_and(crate::ipc::SharedMemoryAccessor::is_available)
     }
 }

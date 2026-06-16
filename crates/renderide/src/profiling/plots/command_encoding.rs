@@ -14,8 +14,22 @@ pub struct CommandEncodingProfileSample {
     pub command_buffers: usize,
     /// Command recording path selected by the graph executor.
     pub recording_path: u64,
+    /// Command recording strategy selected by the graph executor.
+    pub recording_strategy: u64,
+    /// Requested command recording mode from renderer config.
+    pub requested_recording_mode: u64,
+    /// Estimated draw count visible to per-view command recording.
+    pub estimated_per_view_draw_count: usize,
+    /// Estimated draw-equivalent work visible to per-view command recording diagnostics.
+    pub estimated_per_view_record_work: usize,
+    /// Whether automatic per-view recording would have used Rayon.
+    pub auto_per_view_record_admitted: u64,
+    /// Whether the effective per-view recording plan uses Rayon.
+    pub per_view_record_admitted: u64,
     /// Frame-global pass count in the compiled schedule.
     pub frame_global_passes: usize,
+    /// Command buffers emitted for frame-global work.
+    pub frame_global_command_buffers: usize,
     /// Per-view pass count in the compiled schedule.
     pub per_view_passes: usize,
     /// Declared transient texture handles in the compiled graph.
@@ -128,8 +142,36 @@ fn plot_pass_counts(sample: &CommandEncodingProfileSample) {
         sample.recording_path as f64
     );
     tracy_plot!(
+        "command_encoding::recording_strategy",
+        sample.recording_strategy as f64
+    );
+    tracy_plot!(
+        "command_encoding::requested_recording_mode",
+        sample.requested_recording_mode as f64
+    );
+    tracy_plot!(
+        "command_encoding::estimated_per_view_draw_count",
+        sample.estimated_per_view_draw_count as f64
+    );
+    tracy_plot!(
+        "command_encoding::estimated_per_view_record_work",
+        sample.estimated_per_view_record_work as f64
+    );
+    tracy_plot!(
+        "command_encoding::auto_per_view_record_admitted",
+        sample.auto_per_view_record_admitted as f64
+    );
+    tracy_plot!(
+        "command_encoding::per_view_record_admitted",
+        sample.per_view_record_admitted as f64
+    );
+    tracy_plot!(
         "command_encoding::frame_global_passes",
         sample.frame_global_passes as f64
+    );
+    tracy_plot!(
+        "command_encoding::frame_global_command_buffers",
+        sample.frame_global_command_buffers as f64
     );
     tracy_plot!(
         "command_encoding::per_view_passes",

@@ -39,7 +39,7 @@ use upload::{
 
 use hints::{validated_submesh_ranges, validated_submesh_topologies};
 
-use crate::materials::{EmbeddedTangentFallbackMode, RasterPrimitiveTopology};
+use crate::render_contract::{EmbeddedTangentFallbackMode, RasterPrimitiveTopology};
 
 const EMPTY_MESH_PLACEHOLDER_BYTES: u64 = 4;
 

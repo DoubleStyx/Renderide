@@ -3,6 +3,7 @@
 use glam::{Mat4, Vec3};
 use rayon::prelude::*;
 
+use crate::bounds::world_aabb_from_local_bounds;
 use crate::cpu_parallelism::{
     admit_renderable_update_items, current_reference_worker_count, record_parallel_admission,
 };
@@ -11,7 +12,6 @@ use crate::ipc::SharedMemoryAccessor;
 use crate::scene::{RenderSpaceId, SceneCoordinator};
 use crate::shared::packing_extras::SKINNED_MESH_REALTIME_BOUNDS_UPDATE_HOST_ROW_BYTES;
 use crate::shared::{FrameSubmitData, RenderBoundingBox, SkinnedMeshRealtimeBoundsUpdate};
-use crate::world_mesh::culling::world_aabb_from_local_bounds;
 
 /// Small finite half-extent used when the host needs an availability answer but the renderer lacks
 /// enough state to compute a mesh-derived bound for this frame.

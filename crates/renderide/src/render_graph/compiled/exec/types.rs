@@ -4,22 +4,22 @@ use hashbrown::HashMap;
 use std::sync::Arc;
 
 use crate::camera::{HostCameraFrame, ViewId};
-use crate::diagnostics::PerViewHudOutputs;
-use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
+use crate::frame_contract::{FrameViewClear, OffscreenWriteTarget, ViewWinding};
+use crate::gpu::{GpuLimits, GpuRetainedResources, MsaaDepthResolveResources};
 use crate::graph_inputs::{
-    FrameSystemsShared, FrameViewClear, GraphPassFrame, GraphPassFrameView, OffscreenWriteTarget,
-    PerViewFramePlan,
+    FrameSystemsShared, GraphPassFrame, GraphPassFrameView, GraphSceneView, PerViewFramePlan,
 };
+use crate::hud_contract::PerViewHudOutputs;
 use crate::occlusion::gpu::HiZGpuState;
-use crate::scene::SceneCoordinator;
 use crate::shared::RenderingContext;
 
 use super::super::super::blackboard::{Blackboard, GraphCommandStats};
 use super::super::super::context::GraphResolvedResources;
-use super::super::super::frame_upload_batch::{FrameUploadBatch, FrameUploadBatchStats};
 use super::super::super::history::HistoryRegistry;
 use super::super::super::{GraphAssetResources, GraphFrameResources};
 use super::super::{FrameGlobalView, FrameView, ResolvedView, ViewPostProcessing};
+use super::recording_path::GraphCommandRecordingStrategy;
+use crate::frame_upload_batch::{FrameUploadBatch, FrameUploadBatchStats};
 
 /// Key for reusing transient pool allocations across [`FrameView`]s with identical surface layout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -43,6 +43,8 @@ pub(super) struct PerViewEncodeOutput {
     pub(super) finish_ms: f64,
     /// Command counts captured from the final per-view blackboard.
     pub(super) command_stats: GraphCommandStats,
+    /// GPU handles resolved while recording this view and retained until driver submit.
+    pub(super) retained_resources: GpuRetainedResources,
 }
 
 /// Completed per-view recording result, including ordering metadata for single-submit assembly.
@@ -61,6 +63,8 @@ pub(super) struct PerViewRecordOutput {
     pub(super) finish_ms: f64,
     /// Command counts captured from this view.
     pub(super) command_stats: GraphCommandStats,
+    /// GPU handles resolved while recording this view and retained until driver submit.
+    pub(super) retained_resources: GpuRetainedResources,
 }
 
 /// Copy metadata for a partial offscreen camera viewport.
@@ -122,6 +126,8 @@ pub(super) struct OwnedResolvedView {
     pub(super) multiview_stereo: bool,
     /// Offscreen target currently being written by this view.
     pub(super) offscreen_write_target: OffscreenWriteTarget,
+    /// Per-view winding policy before draw-local transform parity is applied.
+    pub(super) view_winding: ViewWinding,
     /// Stable occlusion slot for the view.
     pub(super) view_id: ViewId,
     /// Effective sample count for the view.
@@ -143,6 +149,7 @@ impl OwnedResolvedView {
             viewport_px: self.viewport_px,
             multiview_stereo: self.multiview_stereo,
             offscreen_write_target: self.offscreen_write_target,
+            view_winding: self.view_winding,
             view_id: self.view_id,
             sample_count: self.sample_count,
             post_processing: self.post_processing,
@@ -236,6 +243,7 @@ impl PreparedPerViewFrameInput {
                 frame_time_seconds: inputs.frame_time_seconds,
                 multiview_stereo: inputs.resolved.multiview_stereo,
                 offscreen_write_target: inputs.resolved.offscreen_write_target,
+                view_winding: inputs.resolved.view_winding,
                 view_id: inputs.resolved.view_id,
                 hi_z_slot: Arc::clone(&self.hi_z_slot),
                 sample_count: inputs.resolved.sample_count,
@@ -279,7 +287,7 @@ pub(super) struct PerViewWorkItem {
 /// Immutable shared inputs required to record one view's graph work.
 pub(super) struct PerViewRecordShared<'a> {
     /// Scene after cache flush for the frame.
-    pub(super) scene: &'a SceneCoordinator,
+    pub(super) scene: GraphSceneView<'a>,
     /// Device used to build encoders and any lazily created views.
     pub(super) device: &'a wgpu::Device,
     /// Effective device limits for this frame.
@@ -301,7 +309,7 @@ pub(super) struct PerViewRecordShared<'a> {
     /// Host-owned skin influence mode for mesh deform compute.
     pub(super) skin_weight_mode: crate::shared::SkinWeightMode,
     /// Read-only HUD capture switches for deferred per-view diagnostics.
-    pub(super) debug_hud: crate::diagnostics::PerViewHudConfig,
+    pub(super) debug_hud: crate::hud_contract::PerViewHudConfig,
     /// Scene-color format selected for the frame.
     pub(super) scene_color_format: wgpu::TextureFormat,
 }
@@ -327,6 +335,8 @@ pub(super) struct PerViewRecordInputs<'a> {
     pub(super) upload_batch: &'a FrameUploadBatch,
     /// Shared frame systems and view-independent GPU state.
     pub(super) per_view_shared: &'a PerViewRecordShared<'a>,
+    /// Frame-level strategy that decides which recording parallelism layer may use Rayon.
+    pub(super) strategy: GraphCommandRecordingStrategy,
     /// Optional GPU profiler handle that must be shared across workers by reference.
     pub(super) profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
 }
@@ -349,6 +359,8 @@ pub(super) struct RecordedPerViewBatch {
     pub(super) max_finish_ms: f64,
     /// Aggregate command counts across views.
     pub(super) command_stats: GraphCommandStats,
+    /// GPU handles resolved while recording per-view work and retained until driver submit.
+    pub(super) retained_resources: GpuRetainedResources,
 }
 
 /// Submit-batch timings and upload counters captured after recording.
@@ -379,7 +391,7 @@ pub(super) struct DrainedUploadCommand {
 
 /// Inputs for recording frame-global passes into an existing encoder.
 pub(super) struct FrameGlobalPassRecordInputs<'a, 'view> {
-    /// Per-view targets in the input order; the first view anchors resource resolution.
+    /// Per-view targets used to locate the frame-global anchor view and secondary fallback layout.
     pub(super) views: &'a [FrameView<'view>],
     /// Primary-view metadata used for frame-global pass parameters.
     pub(super) frame_global: &'a FrameGlobalView,
@@ -402,12 +414,16 @@ pub(super) struct FrameGlobalPassRecordInputs<'a, 'view> {
 pub(super) struct SubmitFrameInputs<'a, 'view> {
     /// Per-view targets in the input order (used for swapchain detection).
     pub(super) views: &'a [FrameView<'view>],
-    /// Optional command buffer produced by frame-global passes.
-    pub(super) frame_global_cmd: Option<wgpu::CommandBuffer>,
+    /// Resolved graph resources keyed by compatible view layout.
+    pub(super) transient_by_key: HashMap<GraphResolveKey, GraphResolvedResources>,
+    /// Command buffers produced by frame-global passes, in deterministic submit order.
+    pub(super) frame_global_cmds: Vec<wgpu::CommandBuffer>,
     /// One command buffer per view in input order.
     pub(super) per_view_cmds: Vec<wgpu::CommandBuffer>,
     /// Optional command buffer that resolves per-view GPU profiler queries.
     pub(super) per_view_profiler_cmd: Option<wgpu::CommandBuffer>,
+    /// GPU resources used while recording per-view work.
+    pub(super) per_view_retained_resources: GpuRetainedResources,
     /// HUD payloads to apply after submit, parallel to `per_view_cmds`.
     pub(super) per_view_hud_outputs: Vec<Option<PerViewHudOutputs>>,
     /// Per-view occlusion slot + host camera pairs used for Hi-Z callbacks.

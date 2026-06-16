@@ -12,12 +12,10 @@ use super::super::super::context::{
     ComputePassCtx, EncoderPassCtx, GraphResolvedResources, PassFrameContext, RasterPassCtx,
 };
 use super::super::super::error::GraphExecuteError;
-use super::super::super::frame_upload_batch::{
-    FrameUploadBatch, FrameUploadScope, GraphUploadSink,
-};
 use super::super::super::pass::{PassKind, PassNode};
 use super::super::helpers;
 use super::super::{CompiledRenderGraph, ResolvedView};
+use crate::frame_upload_batch::{FrameUploadBatch, FrameUploadScope, GraphUploadSink};
 
 /// Pass phase and optional per-view index used to derive schedule and upload scopes.
 #[derive(Clone, Copy)]

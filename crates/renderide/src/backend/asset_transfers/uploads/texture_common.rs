@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use super::super::AssetTransferQueue;
+use super::super::limits::admit_descriptor_payload_len;
 
 /// Immutable facts used to classify one texture-family data upload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -148,6 +149,9 @@ where
         has_resident,
         flush_allocations,
     } = admission;
+    if !admit_descriptor_payload_len(kind, asset_id, payload_len) {
+        return None;
+    }
 
     match plan_texture_upload_admission(TextureUploadAdmissionFacts {
         payload_len,
@@ -158,6 +162,13 @@ where
         TextureUploadAdmissionDecision::IgnoreEmptyPayload => None,
         TextureUploadAdmissionDecision::DeferMissingFormat => {
             logger::warn!("{kind} {asset_id}: {format_command} before format; deferring upload");
+            if pending_len(queue) >= pending_warn_threshold {
+                logger::warn!(
+                    "{kind} {asset_id}: rejected deferred upload because pending queue reached cap {}",
+                    pending_warn_threshold
+                );
+                return None;
+            }
             push_pending(queue, data);
             log_pending_texture_upload_pressure(
                 kind,
@@ -169,6 +180,13 @@ where
             None
         }
         TextureUploadAdmissionDecision::DeferUntilGpuAttached => {
+            if pending_len(queue) >= pending_warn_threshold {
+                logger::warn!(
+                    "{kind} {asset_id}: rejected deferred upload because pending queue reached cap {}",
+                    pending_warn_threshold
+                );
+                return None;
+            }
             push_pending(queue, data);
             log_pending_texture_upload_pressure(
                 kind,
@@ -186,6 +204,13 @@ where
             match plan_texture_post_allocation(has_resident(queue, asset_id)) {
                 TextureUploadPostAllocationDecision::Ready => Some(data),
                 TextureUploadPostAllocationDecision::DeferMissingResident => {
+                    if pending_len(queue) >= pending_warn_threshold {
+                        logger::warn!(
+                            "{kind} {asset_id}: rejected deferred upload because pending queue reached cap {}",
+                            pending_warn_threshold
+                        );
+                        return None;
+                    }
                     push_pending(queue, data);
                     log_pending_texture_upload_pressure(
                         kind,

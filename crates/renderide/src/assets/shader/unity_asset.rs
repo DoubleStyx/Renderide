@@ -9,7 +9,7 @@
 //! Serialized shader objects are also read for the top-level ShaderLab name so Froox variant
 //! suffixes (`{shader_name}_{variant_bits:08X}`) can be stripped and carried as metadata.
 
-use std::path::Path;
+use std::path::{Component, Path};
 
 use unity_asset::AssetBundle;
 use unity_asset::SerializedFile;
@@ -87,9 +87,13 @@ impl InternalShaderNameSource {
 pub(crate) fn try_resolve_shader_asset_name_from_path(
     path: &Path,
 ) -> Option<ResolvedUnityShaderAsset> {
+    if !shader_probe_path_is_admissible(path) {
+        logger::warn!("shader_unity_asset: rejected unsafe shader probe path");
+        return None;
+    }
     let meta = std::fs::metadata(path).ok()?;
     let resolved = if meta.is_file() {
-        try_from_file(path)
+        try_from_file_with_metadata(path, &meta)
     } else if meta.is_dir() {
         try_from_directory(path)
     } else {
@@ -106,8 +110,27 @@ pub(crate) fn try_resolve_shader_asset_name_from_path(
     resolved
 }
 
-fn try_from_file(path: &Path) -> Option<ResolvedUnityShaderAsset> {
+fn try_from_file_with_metadata(
+    path: &Path,
+    meta: &std::fs::Metadata,
+) -> Option<ResolvedUnityShaderAsset> {
+    if !meta.is_file() || meta.len() > MAX_READ_BYTES as u64 {
+        return None;
+    }
     try_from_file_inner(path, true).0
+}
+
+fn shader_probe_path_is_admissible(path: &Path) -> bool {
+    !path.as_os_str().is_empty()
+        && path.components().all(|component| {
+            matches!(
+                component,
+                Component::Prefix(_)
+                    | Component::RootDir
+                    | Component::Normal(_)
+                    | Component::CurDir
+            )
+        })
 }
 
 /// When `log_failure` is `false` (directory scan), probe data is returned without per-file [`logger::warn!`].
@@ -115,6 +138,29 @@ fn try_from_file_inner(
     path: &Path,
     log_failure: bool,
 ) -> (Option<ResolvedUnityShaderAsset>, Option<FileBinaryProbe>) {
+    let meta = match std::fs::metadata(path) {
+        Ok(meta) if meta.is_file() => meta,
+        Ok(_) => return (None, None),
+        Err(e) => {
+            if log_failure {
+                logger::warn!(
+                    "shader_unity_asset: cannot inspect {:?} for binary probe: {}",
+                    path.display(),
+                    e
+                );
+            }
+            return (None, None);
+        }
+    };
+    if meta.len() > MAX_READ_BYTES as u64 {
+        if log_failure {
+            logger::warn!(
+                "shader_unity_asset: refusing to read oversized binary probe path {:?}",
+                path.display()
+            );
+        }
+        return (None, None);
+    }
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) => {

@@ -320,6 +320,41 @@ impl GraphExecuteError {
     }
 }
 
+/// Maps a render-graph execution error into the compact crash-context category.
+pub(crate) fn graph_error_kind(error: &GraphExecuteError) -> crate::crash_context::GraphErrorKind {
+    use crate::crash_context::GraphErrorKind;
+
+    match error {
+        GraphExecuteError::NoFrameGraph => GraphErrorKind::NoFrameGraph,
+        GraphExecuteError::Present(_) => GraphErrorKind::Present,
+        GraphExecuteError::DepthTarget(_) => GraphErrorKind::DepthTarget,
+        GraphExecuteError::MissingSwapchainView => GraphErrorKind::MissingSwapchainView,
+        GraphExecuteError::SwapchainRequiresWindow => GraphErrorKind::SwapchainRequiresWindow,
+        GraphExecuteError::MissingGraphAttachment { .. } => GraphErrorKind::MissingGraphAttachment,
+        GraphExecuteError::MissingRasterTemplate { .. } => GraphErrorKind::MissingRasterTemplate,
+        GraphExecuteError::MissingBlackboardSlot { .. } => GraphErrorKind::MissingBlackboardSlot,
+        GraphExecuteError::UndeclaredBlackboardAccess { .. } => {
+            GraphErrorKind::UndeclaredBlackboardAccess
+        }
+        GraphExecuteError::Pass(_) => GraphErrorKind::Pass,
+        GraphExecuteError::NoViewsInBatch => GraphErrorKind::NoViewsInBatch,
+        GraphExecuteError::TransientPool(_) => GraphErrorKind::TransientPool,
+        GraphExecuteError::HistoryRegistry(_) => GraphErrorKind::HistoryRegistry,
+        GraphExecuteError::MissingTransientResources => GraphErrorKind::MissingTransientResources,
+        GraphExecuteError::MissingPerViewResources { .. } => {
+            GraphErrorKind::MissingPerViewResources
+        }
+        GraphExecuteError::MissingHistoryTexture { .. } => GraphErrorKind::MissingHistoryTexture,
+        GraphExecuteError::MissingHistoryBuffer { .. } => GraphErrorKind::MissingHistoryBuffer,
+        GraphExecuteError::UnallocatedHistoryTexture { .. } => {
+            GraphErrorKind::UnallocatedHistoryTexture
+        }
+        GraphExecuteError::UnallocatedHistoryBuffer { .. } => {
+            GraphErrorKind::UnallocatedHistoryBuffer
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

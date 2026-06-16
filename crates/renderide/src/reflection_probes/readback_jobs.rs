@@ -5,7 +5,9 @@ use std::sync::Arc;
 use glam::Vec3;
 
 use super::{MAX_PENDING_JOB_AGE_FRAMES, Sh2SourceKey};
-use crate::backend::{GpuJobResources, GpuReadbackJobs, GpuReadbackOutcomes, SubmittedReadbackJob};
+use crate::gpu_jobs::{
+    GpuJobResources, GpuReadbackJobs, GpuReadbackOutcomes, SubmittedReadbackJob,
+};
 use crate::shared::RenderSH2;
 
 /// GPU resources that must stay alive until an SH2 projection readback completes.
@@ -22,25 +24,6 @@ pub(super) struct SubmittedGpuSh2Job {
     pub(super) textures: Vec<Arc<wgpu::Texture>>,
     /// Shared source texture views kept alive until the queued command has completed.
     pub(super) source_views: Vec<Arc<wgpu::TextureView>>,
-}
-
-impl From<SubmittedGpuSh2Job> for SubmittedReadbackJob {
-    fn from(job: SubmittedGpuSh2Job) -> Self {
-        let mut resources = GpuJobResources::new()
-            .with_buffer(job.output)
-            .with_buffers(job.buffers)
-            .with_bind_group(job.bind_group);
-        for texture in job.textures {
-            resources = resources.with_shared_texture(texture);
-        }
-        for view in job.source_views {
-            resources = resources.with_shared_texture_view(view);
-        }
-        Self {
-            staging: job.staging,
-            resources,
-        }
-    }
 }
 
 /// Completed and failed SH2 readbacks drained during one maintenance tick.
@@ -83,7 +66,7 @@ impl Sh2ReadbackJobs {
 
     /// Inserts a newly submitted GPU readback job.
     pub(super) fn insert(&mut self, key: Sh2SourceKey, job: SubmittedGpuSh2Job) {
-        self.inner.insert(key, job.into());
+        self.inner.insert(key, submitted_readback_job_from_sh2(job));
     }
 
     /// Retains only pending readbacks whose keys satisfy `predicate`.
@@ -94,6 +77,23 @@ impl Sh2ReadbackJobs {
     /// Advances submit notifications, mapping, completion, and age/failure handling.
     pub(super) fn maintain(&mut self) -> Sh2ReadbackOutcomes {
         self.inner.maintain()
+    }
+}
+
+fn submitted_readback_job_from_sh2(job: SubmittedGpuSh2Job) -> SubmittedReadbackJob {
+    let mut resources = GpuJobResources::new()
+        .with_buffer(job.output)
+        .with_buffers(job.buffers)
+        .with_bind_group(job.bind_group);
+    for texture in job.textures {
+        resources = resources.with_shared_texture(texture);
+    }
+    for view in job.source_views {
+        resources = resources.with_shared_texture_view(view);
+    }
+    SubmittedReadbackJob {
+        staging: job.staging,
+        resources,
     }
 }
 

@@ -5,9 +5,9 @@
 //! [`super::encode`]) and readback drain (in [`super::readback`]) operate on `&mut HiZGpuState`
 //! through narrow entry points so the lock-held footprint stays small.
 
+use crate::cull_contract::HiZTemporalState;
 use crate::gpu::OutputDepthMode;
-use crate::occlusion::cpu::snapshot::{HiZCpuSnapshot, HiZStereoCpuSnapshot};
-use crate::world_mesh::HiZTemporalState;
+use crate::hi_z_cpu::snapshot::{HiZCpuSnapshot, HiZStereoCpuSnapshot};
 
 use super::readback::StereoStash;
 use super::readback_ring::{GpuReadbackRing, ReadbackTicket};

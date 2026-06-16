@@ -15,7 +15,7 @@ use std::rc::Rc;
 use logger::LogLevel;
 use winit::event_loop::OwnedDisplayHandle;
 
-use crate::diagnostics::crash_context;
+use crate::crash_context;
 use crate::frontend::input::{CursorOutputTracking, WindowInputAccumulator};
 use crate::runtime::RendererRuntime;
 use crate::xr::OpenxrHaptics;
@@ -26,9 +26,6 @@ use self::xr::XrInputCache;
 use super::bootstrap::{ExternalShutdownCoordinator, GpuStartupConfig};
 use super::exit::ExitState;
 use super::frame_clock::FrameClock;
-
-/// Default desktop display index used for `BlitToDisplay` source selection on the local window.
-pub(super) const DESKTOP_DISPLAY_INDEX: i16 = 0;
 
 /// Prefix for per-phase trace lines in the app frame tick.
 const TICK_TRACE_PREFIX: &str = "renderide::tick";
@@ -53,6 +50,8 @@ pub(crate) struct AppDriver {
     pub(in crate::app::driver) frame_clock: FrameClock,
     /// Open Tracy span that attributes the winit wait gap to `app::about_to_wait`.
     pub(in crate::app::driver) about_to_wait_span: crate::profiling::DeferredCpuSpan,
+    /// Whether the last completed tick queued an HMD projection layer for compositor pacing.
+    pub(in crate::app::driver) hmd_compositor_paced_last_frame: bool,
     pub(in crate::app::driver) external_shutdown: Option<ExternalShutdownCoordinator>,
     pub(in crate::app::driver) main_heartbeat: Option<crate::diagnostics::Heartbeat>,
     /// RAII guard suppressing main-thread watchdog hang reports for the duration of the
@@ -91,6 +90,7 @@ impl AppDriver {
             cursor_output_tracking: CursorOutputTracking::default(),
             frame_clock: FrameClock::default(),
             about_to_wait_span: crate::profiling::DeferredCpuSpan::default(),
+            hmd_compositor_paced_last_frame: false,
             external_shutdown,
             main_heartbeat,
             shutdown_watchdog_pause: None,

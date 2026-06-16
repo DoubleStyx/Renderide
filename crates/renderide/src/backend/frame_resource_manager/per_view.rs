@@ -9,15 +9,13 @@ use parking_lot::Mutex;
 
 use crate::backend::cluster_gpu::ClusterBufferRefs;
 use crate::camera::ViewId;
+use crate::frame_upload_batch::GraphUploadSink;
 use crate::gpu::frame_globals::{FrameGpuUniforms, SkyboxSpecularUniformParams};
-use crate::graph_inputs::PreRecordViewResourceLayout;
+use crate::graph_inputs::{GraphAssetResources, PreRecordViewResourceLayout};
 use crate::mesh_deform::SkinCacheKey;
-use crate::render_graph::frame_upload_batch::GraphUploadSink;
+use crate::reflection_probes::specular::ReflectionProbeSpecularResources;
 
-use super::super::frame_gpu::{
-    EmptyMaterialBindGroup, FrameGpuResources, PerViewSceneSnapshots,
-    ReflectionProbeSpecularResources,
-};
+use super::super::frame_gpu::{EmptyMaterialBindGroup, FrameGpuResources, PerViewSceneSnapshots};
 use super::super::per_draw_resources::PerDrawResources;
 use super::cluster_layout::{
     cluster_index_capacity_for_layout, make_cluster_params_buffer, per_view_snapshot_sync_params,
@@ -52,16 +50,51 @@ fn build_per_view_frame_bind_groups(
     (frame_bind_group, named_scene_color_frame_bind_group)
 }
 
+#[derive(Clone, Copy)]
+struct FrameGlobalResourceVersions {
+    cluster: u64,
+    skybox_specular: u64,
+    light_cookie: u64,
+    shadow: u64,
+}
+
+impl FrameGlobalResourceVersions {
+    fn from_frame_gpu(fgpu: &FrameGpuResources) -> Self {
+        Self {
+            cluster: fgpu.cluster_cache.version,
+            skybox_specular: fgpu.skybox_specular_version(),
+            light_cookie: fgpu.light_cookie_resources_version(),
+            shadow: fgpu.shadow_resources_version(),
+        }
+    }
+
+    fn needs_rebuild(self, entry: &PerViewFrameState, snapshots_changed: bool) -> bool {
+        self.cluster != entry.last_cluster_version
+            || self.skybox_specular != entry.last_skybox_specular_version
+            || self.light_cookie != entry.last_light_cookie_resources_version
+            || self.shadow != entry.last_shadow_resources_version
+            || snapshots_changed
+    }
+
+    fn apply_to(self, entry: &mut PerViewFrameState) {
+        entry.last_cluster_version = self.cluster;
+        entry.last_skybox_specular_version = self.skybox_specular;
+        entry.last_light_cookie_resources_version = self.light_cookie;
+        entry.last_shadow_resources_version = self.shadow;
+    }
+}
+
 impl FrameResourceManager {
     /// Clears per-tick frame-resource flags. Call once per winit frame from
     /// [`crate::runtime::RendererRuntime::tick_frame_wall_clock_begin`].
     ///
     /// The flag store uses [`Ordering::Release`] so a worker that observes the cleared state on
     /// the next tick is guaranteed to see the prior tick's GPU writes that produced the work.
-    pub fn reset_light_prep_for_tick(&self) {
+    pub fn reset_light_prep_for_tick(&mut self) {
         self.mesh_deform_dispatched_this_submission
             .store(false, Ordering::Release);
         *self.visible_mesh_deform_keys.lock() = None;
+        self.light_visibility_stats = Default::default();
     }
 
     /// Starts a graph submission with the visible deformed renderers gathered during draw prep.
@@ -151,9 +184,7 @@ impl FrameResourceManager {
             profiling::scope!("render::ensure_per_view_frame::cluster_sync");
             fgpu.sync_cluster_viewport(device, viewport, stereo, index_capacity_words)?;
         }
-        let cluster_ver = fgpu.cluster_cache.version;
-        let skybox_specular_version = fgpu.skybox_specular_version();
-        let shadow_resources_version = fgpu.shadow_resources_version();
+        let versions = FrameGlobalResourceVersions::from_frame_gpu(fgpu);
 
         if !per_view_frame.contains_key(view_id) {
             let state = {
@@ -191,9 +222,10 @@ impl FrameResourceManager {
                     named_scene_color_frame_bind_group,
                     cluster_params_buffer,
                     scene_snapshots,
-                    last_cluster_version: cluster_ver,
-                    last_skybox_specular_version: skybox_specular_version,
-                    last_shadow_resources_version: shadow_resources_version,
+                    last_cluster_version: versions.cluster,
+                    last_skybox_specular_version: versions.skybox_specular,
+                    last_light_cookie_resources_version: versions.light_cookie,
+                    last_shadow_resources_version: versions.shadow,
                     last_stereo: stereo,
                 }
             };
@@ -214,12 +246,7 @@ impl FrameResourceManager {
                 .scene_snapshots
                 .sync(device, limits.as_ref(), snapshot_sync)
         };
-        let needs_rebuild = cluster_ver != entry.last_cluster_version
-            || skybox_specular_version != entry.last_skybox_specular_version
-            || shadow_resources_version != entry.last_shadow_resources_version
-            || snapshots_changed;
-
-        if needs_rebuild {
+        if versions.needs_rebuild(entry, snapshots_changed) {
             profiling::scope!("render::ensure_per_view_frame::rebuild_bind_group");
             let refs = fgpu.cluster_cache.current_refs()?;
             let (new_bg, new_named_bg) = build_per_view_frame_bind_groups(
@@ -232,9 +259,7 @@ impl FrameResourceManager {
             );
             entry.frame_bind_group = new_bg;
             entry.named_scene_color_frame_bind_group = new_named_bg;
-            entry.last_cluster_version = cluster_ver;
-            entry.last_skybox_specular_version = skybox_specular_version;
-            entry.last_shadow_resources_version = shadow_resources_version;
+            versions.apply_to(entry);
         }
 
         per_view_frame.get_mut(view_id)
@@ -344,6 +369,7 @@ impl FrameResourceManager {
         &mut self,
         device: &wgpu::Device,
         uploads: GraphUploadSink<'_>,
+        assets: &dyn GraphAssetResources,
         view_layouts: &[PreRecordViewResourceLayout],
     ) {
         profiling::scope!("render::pre_record_sync_for_views");
@@ -373,23 +399,37 @@ impl FrameResourceManager {
                 );
             }
         }
+        let light_cookie_changed = if let Some(fgpu) = self.frame_gpu_mut() {
+            profiling::scope!("render::pre_record_sync_for_views::light_cookie_resources");
+            fgpu.sync_light_cookie_resources(device, uploads, assets)
+        } else {
+            false
+        };
+        if light_cookie_changed {
+            self.rebuild_per_view_frame_bind_groups_for_global_sync(device, view_layouts);
+        }
         let shadow_max_draw_slots = self.shadow_max_draw_slots();
-        let shadow_resources_changed = if let Some((requested_resolution, requested_layers)) =
+        let shadow_sync = if let Some((requested_resolution, requested_layers)) =
             self.shadow_resource_request()
             && let Some(fgpu) = self.frame_gpu_mut()
         {
             profiling::scope!("render::pre_record_sync_for_views::shadow_resources");
-            fgpu.sync_shadow_resources(
+            Some(fgpu.sync_shadow_resources(
                 device,
                 requested_resolution,
                 requested_layers,
                 shadow_max_draw_slots,
-            )
+            ))
         } else {
-            false
+            None
         };
-        if shadow_resources_changed {
-            self.rebuild_per_view_frame_bind_groups_for_shadow_sync(device, view_layouts);
+        if let Some(sync) = shadow_sync {
+            let resolution = sync.resolution;
+            let changed = sync.changed;
+            self.apply_shadow_atlas_resolution(resolution);
+            if changed {
+                self.rebuild_per_view_frame_bind_groups_for_global_sync(device, view_layouts);
+            }
         }
         {
             if let Some(fgpu) = self.frame_gpu() {
@@ -409,7 +449,7 @@ impl FrameResourceManager {
         }
     }
 
-    fn rebuild_per_view_frame_bind_groups_for_shadow_sync(
+    fn rebuild_per_view_frame_bind_groups_for_global_sync(
         &mut self,
         device: &wgpu::Device,
         view_layouts: &[PreRecordViewResourceLayout],
@@ -420,6 +460,7 @@ impl FrameResourceManager {
         let Some(refs) = fgpu.cluster_cache.current_refs() else {
             return;
         };
+        let light_cookie_resources_version = fgpu.light_cookie_resources_version();
         let shadow_resources_version = fgpu.shadow_resources_version();
         for layout in view_layouts {
             let Some(entry) = self.per_view_frame.get_mut(layout.view_id) else {
@@ -435,6 +476,7 @@ impl FrameResourceManager {
             );
             entry.frame_bind_group = new_bg;
             entry.named_scene_color_frame_bind_group = new_named_bg;
+            entry.last_light_cookie_resources_version = light_cookie_resources_version;
             entry.last_shadow_resources_version = shadow_resources_version;
         }
     }

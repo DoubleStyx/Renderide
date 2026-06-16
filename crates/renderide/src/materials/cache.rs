@@ -27,8 +27,8 @@ use crate::materials::embedded::stem_metadata::{
 use crate::materials::null_pipeline::{build_null_wgsl, create_null_render_pipeline};
 use crate::materials::raster_pipeline::ShaderModuleBuildRefs;
 use crate::materials::{
-    MaterialBlendMode, MaterialRenderState, MaterialShaderSpecializationKey, RasterFrontFace,
-    RasterPipelineKind, RasterPrimitiveTopology,
+    MaterialBlendMode, MaterialPassRouting, MaterialRenderState, MaterialShaderSpecializationKey,
+    RasterFrontFace, RasterPipelineKind, RasterPrimitiveTopology,
 };
 
 use super::pipeline_build_error::PipelineBuildError;
@@ -65,6 +65,8 @@ pub struct MaterialPipelineVariantSpec {
     pub blend_mode: MaterialBlendMode,
     /// Material-level stencil and color write state.
     pub render_state: MaterialRenderState,
+    /// Runtime material routing decisions for per-pass pipeline state.
+    pub pass_routing: MaterialPassRouting,
     /// Front-face winding for draw transforms in this pipeline bucket.
     pub front_face: RasterFrontFace,
     /// Primitive topology baked into [`wgpu::PrimitiveState::topology`] for this pipeline bucket.
@@ -582,6 +584,7 @@ impl MaterialPipelineCache {
             shader_specialization,
             blend_mode,
             render_state,
+            pass_routing,
             front_face,
             primitive_topology,
         } = variant;
@@ -619,6 +622,7 @@ impl MaterialPipelineCache {
                     permutation,
                     blend_mode,
                     render_state,
+                    pass_routing,
                     front_face,
                     primitive_topology,
                 },
@@ -786,7 +790,7 @@ mod tests {
         material_pipeline_compile_worker_count, per_shard_cap,
     };
     use crate::materials::{
-        MaterialBlendMode, MaterialPipelineDesc, MaterialRenderState,
+        MaterialBlendMode, MaterialPassRouting, MaterialPipelineDesc, MaterialRenderState,
         MaterialShaderSpecializationKey, RasterFrontFace, RasterPipelineKind,
         RasterPrimitiveTopology, ShaderPermutation,
     };
@@ -806,6 +810,7 @@ mod tests {
             shader_specialization: MaterialShaderSpecializationKey::disabled(),
             blend_mode: MaterialBlendMode::Opaque,
             render_state: MaterialRenderState::default(),
+            pass_routing: MaterialPassRouting::default(),
             front_face: RasterFrontFace::default(),
             primitive_topology: RasterPrimitiveTopology::default(),
         }

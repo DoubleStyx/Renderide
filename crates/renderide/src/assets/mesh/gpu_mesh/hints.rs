@@ -3,7 +3,7 @@
 use crate::assets::mesh::layout::{
     WIDE_UV_HIGH_VERTEX_STRIDE_BYTES, WIDE_UV_LOW_VERTEX_STRIDE_BYTES,
 };
-use crate::materials::RasterPrimitiveTopology;
+use crate::render_contract::RasterPrimitiveTopology;
 use crate::shared::{
     BlendshapeBufferDescriptor, IndexBufferFormat, MeshUploadData, MeshUploadHintFlag,
     SubmeshBufferDescriptor, VertexAttributeDescriptor, VertexAttributeFormat, VertexAttributeType,

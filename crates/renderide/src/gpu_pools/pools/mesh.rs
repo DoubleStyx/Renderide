@@ -3,7 +3,7 @@
 use hashbrown::HashMap;
 
 use crate::assets::mesh::{GpuMesh, MeshBufferLayout, MeshDerivedStreamDemand};
-use crate::materials::EmbeddedTangentFallbackMode;
+use crate::render_contract::EmbeddedTangentFallbackMode;
 
 use crate::gpu_pools::resource_pool::{GpuResourcePool, StreamingAccess};
 use crate::gpu_pools::{GpuResource, impl_gpu_resource};

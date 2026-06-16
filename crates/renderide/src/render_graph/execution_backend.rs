@@ -2,241 +2,22 @@
 
 use std::sync::Arc;
 
-use hashbrown::HashSet;
-
 use super::blackboard::Blackboard;
-use super::compiled::FrameView;
+use super::compiled::{CommandEncodingHudSnapshot, FrameView};
+use super::context::GraphResolvedResources;
 use super::{HistoryRegistry, TransientPool};
-use crate::camera::ViewId;
-use crate::diagnostics::{DebugHudEncodeError, PerViewHudConfig, PerViewHudOutputs};
-use crate::gpu::frame_globals::SkyboxSpecularUniformParams;
-use crate::gpu::{GpuLight, GpuLimits, MsaaDepthResolveResources};
-use crate::gpu_pools::{
-    CubemapPool, MeshPool, RenderTexturePool, Texture3dPool, TexturePool, VideoTexturePool,
+use crate::frame_upload_batch::{FrameUploadBatchStats, GraphUploadSink};
+use crate::gpu::driver_thread::SubmitToken;
+use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
+use crate::graph_inputs::{
+    GraphAssetResources, GraphFrameResources, GraphPassFrame, PerViewFramePlan,
+    PreRecordViewResourceLayout,
 };
-use crate::graph_inputs::{GraphPassFrame, PerViewFramePlan, PreRecordViewResourceLayout};
+use crate::hud_contract::{DebugHudEncodeError, PerViewHudConfig, PerViewHudOutputs};
 use crate::materials::MaterialSystem;
-use crate::mesh_deform::{
-    GpuSkinCache, MeshDeformScratch, MeshPreprocessPipelines, PaddedPerDrawUniforms, SkinCacheKey,
-};
+use crate::mesh_deform::{GpuSkinCache, MeshDeformScratch, MeshPreprocessPipelines};
 use crate::occlusion::OcclusionGraphHook;
-use crate::render_graph::frame_upload_batch::{FrameUploadBatchStats, GraphUploadSink};
-use crate::render_graph::upload_arena::PersistentUploadArena;
-
-/// Cloned references to the shared clustered-light storage buffers.
-#[derive(Clone)]
-pub struct GraphClusterBufferRefs {
-    /// Two `u32` words per cluster: compact-index offset and count.
-    pub cluster_light_counts: wgpu::Buffer,
-    /// Compact light-index storage addressed by each cluster range row.
-    pub cluster_light_indices: wgpu::Buffer,
-}
-
-/// Parameters required to encode the frame-global realtime shadow atlas.
-pub struct ShadowAtlasEncodeParams<'a, 'encoder, 'upload> {
-    /// WGPU device used for lazy pipeline creation.
-    pub device: &'a wgpu::Device,
-    /// Command encoder receiving shadow render passes.
-    pub encoder: &'encoder mut wgpu::CommandEncoder,
-    /// Material registry, embedded binds, and property store.
-    pub materials: &'a MaterialSystem,
-    /// Resident asset/resource pools.
-    pub asset_resources: &'a dyn GraphAssetResources,
-    /// Optional skin cache populated by frame-global mesh deform.
-    pub skin_cache: Option<&'a GpuSkinCache>,
-    /// GPU limits snapshot for base-instance and capacity decisions.
-    pub gpu_limits: &'a GpuLimits,
-    /// Deferred upload sink for the shadow per-draw slab.
-    pub uploads: GraphUploadSink<'upload>,
-    /// Optional GPU profiler handle.
-    pub profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
-}
-
-/// Graph-facing access to renderer frame resources.
-pub trait GraphFrameResources: Send + Sync {
-    /// Whether frame-global GPU resources were attached.
-    fn has_frame_gpu(&self) -> bool;
-
-    /// Packed GPU lights for one render view.
-    fn frame_lights(&self, view_id: ViewId) -> &[GpuLight];
-
-    /// Light count used in one view's frame uniforms and shaders.
-    fn frame_light_count_u32(&self, view_id: ViewId) -> u32;
-
-    /// View-local lights storage buffer.
-    fn lights_buffer(&self, view_id: ViewId) -> Option<wgpu::Buffer>;
-
-    /// Shared frame-uniform buffer.
-    fn frame_uniform_buffer(&self) -> Option<wgpu::Buffer>;
-
-    /// Shared clustered-light buffers.
-    fn shared_cluster_buffer_refs(&self) -> Option<GraphClusterBufferRefs>;
-
-    /// Current shared cluster-buffer version.
-    fn shared_cluster_version(&self) -> u64;
-
-    /// Per-view cluster-params uniform buffer.
-    fn per_view_cluster_params_buffer(&self, view_id: ViewId) -> Option<wgpu::Buffer>;
-
-    /// Per-view frame bind group and frame-uniform buffer.
-    fn per_view_frame_bind_group_and_buffer(
-        &self,
-        view_id: ViewId,
-    ) -> Option<(Arc<wgpu::BindGroup>, wgpu::Buffer)>;
-
-    /// Per-view frame bind group that binds named scene-color snapshots at the grab slots.
-    fn per_view_named_scene_color_frame_bind_group(
-        &self,
-        view_id: ViewId,
-    ) -> Option<Arc<wgpu::BindGroup>>;
-
-    /// Ensures this view's per-draw slab can hold `draw_count` rows and returns its storage buffer.
-    fn ensure_per_view_per_draw_capacity(
-        &self,
-        device: &wgpu::Device,
-        view_id: ViewId,
-        draw_count: usize,
-    ) -> Option<wgpu::Buffer>;
-
-    /// Gives callers mutable access to the per-view CPU slab-packing scratch.
-    fn with_per_view_per_draw_scratch(
-        &self,
-        view_id: ViewId,
-        f: &mut dyn FnMut(&mut Vec<PaddedPerDrawUniforms>),
-    ) -> bool;
-
-    /// Gives callers mutable access to the per-view material-batch boundary scratch so it can be
-    /// cleared and refilled without reallocating. Each tuple is an inclusive
-    /// `(first_draw_idx, last_draw_idx)` span over the sorted world-mesh draw list. Returns
-    /// `false` if the scratch slot has not yet been provisioned for this view.
-    ///
-    /// The boundary span type is duplicated as a tuple here rather than imported from
-    /// `passes::world_mesh_forward` because `render_graph -> passes` is a forbidden layer edge
-    /// (see `tests/architecture_layers.rs`).
-    #[expect(
-        clippy::type_complexity,
-        reason = "callback Vec element type cannot be hoisted through the render_graph -> passes layer boundary"
-    )]
-    fn with_per_view_material_batch_scratch(
-        &self,
-        view_id: ViewId,
-        f: &mut dyn FnMut(&mut Vec<(usize, usize)>),
-    ) -> bool;
-
-    /// Per-view per-draw storage buffer.
-    fn per_view_per_draw_storage(&self, view_id: ViewId) -> Option<wgpu::Buffer>;
-
-    /// Per-view per-draw bind group.
-    fn per_view_per_draw_bind_group(&self, view_id: ViewId) -> Option<Arc<wgpu::BindGroup>>;
-
-    /// Empty material bind group used by shaders without per-material resources.
-    fn empty_material_bind_group(&self) -> Option<Arc<wgpu::BindGroup>>;
-
-    /// Copies the current depth attachment into this view's sampled scene-depth snapshot.
-    fn copy_scene_depth_snapshot_for_view(
-        &self,
-        view_id: ViewId,
-        encoder: &mut wgpu::CommandEncoder,
-        source_depth: &wgpu::Texture,
-        viewport: (u32, u32),
-        multiview: bool,
-    ) -> bool;
-
-    /// Copies the current HDR scene color into this view's sampled scene-color snapshot.
-    fn copy_scene_color_snapshot_for_view(
-        &self,
-        view_id: ViewId,
-        encoder: &mut wgpu::CommandEncoder,
-        source_color: &wgpu::Texture,
-        viewport: (u32, u32),
-        multiview: bool,
-    ) -> bool;
-
-    /// Copies the current HDR scene color into this view's named scene-color snapshot.
-    fn copy_named_scene_color_snapshot_for_view(
-        &self,
-        view_id: ViewId,
-        encoder: &mut wgpu::CommandEncoder,
-        source_color: &wgpu::Texture,
-        viewport: (u32, u32),
-        multiview: bool,
-    ) -> bool;
-
-    /// Uniform parameters for the active skybox/reflection-probe specular source.
-    fn skybox_specular_uniform_params(&self) -> SkyboxSpecularUniformParams;
-
-    /// Whether mesh deform has already recorded work for this graph submission.
-    fn mesh_deform_dispatched_this_submission(&self) -> bool;
-
-    /// Marks mesh deform work as recorded for this graph submission.
-    fn set_mesh_deform_dispatched_this_submission(&self);
-
-    /// Cloned visible mesh-deform filter for this submission's frame-global deform collection.
-    fn visible_mesh_deform_keys_snapshot(&self) -> Option<HashSet<SkinCacheKey>>;
-
-    /// Whether a named frame-global pass has no work for the current graph submission.
-    fn frame_global_pass_is_inactive(&self, pass_name: &str) -> bool;
-
-    /// Ensures per-view frame bind resources are resident.
-    fn ensure_per_view_frame_resources(
-        &mut self,
-        view_id: ViewId,
-        device: &wgpu::Device,
-        layout: PreRecordViewResourceLayout,
-    ) -> bool;
-
-    /// Ensures per-view per-draw resources are resident.
-    fn ensure_per_view_per_draw_resources(
-        &mut self,
-        view_id: ViewId,
-        device: &wgpu::Device,
-    ) -> bool;
-
-    /// Ensures per-view per-draw CPU scratch is resident.
-    fn ensure_per_view_per_draw_scratch(&mut self, view_id: ViewId);
-
-    /// Synchronizes shared frame resources before graph recording.
-    fn pre_record_sync_for_views(
-        &mut self,
-        device: &wgpu::Device,
-        uploads: GraphUploadSink<'_>,
-        view_layouts: &[PreRecordViewResourceLayout],
-    );
-
-    /// Whether any light-cookie atlas layers need frame-global synchronization.
-    fn has_light_cookie_requests(&self) -> bool;
-
-    /// Records light-cookie atlas clears and source blits.
-    fn encode_light_cookie_atlas(
-        &self,
-        device: &wgpu::Device,
-        encoder: &mut wgpu::CommandEncoder,
-        asset_resources: &dyn GraphAssetResources,
-        profiler: Option<&crate::profiling::GpuProfilerHandle>,
-    );
-
-    /// Whether realtime shadow atlas rendering has work.
-    fn has_shadow_atlas_requests(&self) -> bool;
-
-    /// Records realtime shadow atlas layers.
-    fn encode_shadow_atlas(&self, params: ShadowAtlasEncodeParams<'_, '_, '_>);
-}
-
-/// Graph-facing access to resident asset/resource pools.
-pub trait GraphAssetResources: Send + Sync {
-    /// Resident mesh pool.
-    fn mesh_pool(&self) -> &MeshPool;
-    /// Resident 2D texture pool.
-    fn texture_pool(&self) -> &TexturePool;
-    /// Resident 3D texture pool.
-    fn texture3d_pool(&self) -> &Texture3dPool;
-    /// Resident cubemap pool.
-    fn cubemap_pool(&self) -> &CubemapPool;
-    /// Host render-texture pool.
-    fn render_texture_pool(&self) -> &RenderTexturePool;
-    /// Resident video texture pool.
-    fn video_texture_pool(&self) -> &VideoTexturePool;
-}
+use crate::upload_arena::PersistentUploadArena;
 
 /// Disjoint graph-frame parameter slices borrowed from the backend.
 pub struct GraphFrameParamsSplit<'a> {
@@ -284,6 +65,12 @@ pub trait GraphViewBlackboardPreparer: Sync {
 pub trait GraphExecutionBackend {
     /// Render-graph transient pool.
     fn transient_pool_mut(&mut self) -> &mut TransientPool;
+    /// Schedules resolved transient resources for pool release after a driver submit completes.
+    fn schedule_transient_release_after_submit(
+        &mut self,
+        token: SubmitToken,
+        resources: Vec<GraphResolvedResources>,
+    );
     /// Persistent graph history registry.
     fn history_registry(&self) -> &HistoryRegistry;
     /// Mutable persistent graph history registry.
@@ -292,6 +79,11 @@ pub trait GraphExecutionBackend {
     fn upload_arena_mut(&mut self) -> &mut PersistentUploadArena;
     /// Publishes upload drain stats for diagnostics.
     fn record_frame_upload_stats(&mut self, stats: FrameUploadBatchStats);
+    /// Publishes graph command recording stats for diagnostics.
+    fn record_command_encoding_diagnostics(&mut self, snapshot: CommandEncodingHudSnapshot);
+
+    /// Returns whether graph execution should publish HUD-formatted command diagnostics.
+    fn capture_graph_command_diagnostics(&self) -> bool;
     /// Scene-color format selected for this graph frame.
     fn scene_color_format_wgpu(&self) -> wgpu::TextureFormat;
     /// GPU limits snapshot after attach.
@@ -326,12 +118,21 @@ pub trait GraphExecutionBackend {
         view_layouts: &[Option<PreRecordViewResourceLayout>],
         resource_layouts: &[PreRecordViewResourceLayout],
     );
+    /// Synchronizes shared frame resources using resident asset state before graph recording.
+    fn pre_record_sync_for_views(
+        &mut self,
+        device: &wgpu::Device,
+        uploads: GraphUploadSink<'_>,
+        view_layouts: &[PreRecordViewResourceLayout],
+    );
     /// Creates a thread-shareable per-view blackboard preparer for this graph execution.
     fn view_blackboard_preparer(&self) -> Box<dyn GraphViewBlackboardPreparer + '_>;
     /// Estimates the blackboard work size used to gate parallel pre-record preparation.
     fn estimate_view_blackboard_prepare_draw_count(&self, blackboard: &Blackboard) -> usize;
     /// Debug HUD flags consumed by per-view recording.
     fn per_view_hud_config(&self) -> PerViewHudConfig;
+    /// Render-graph command-recording mode selected for this frame.
+    fn command_recording_mode(&self) -> crate::config::CommandRecordingMode;
     /// Whether the HUD will draw visible content.
     fn debug_hud_has_visible_content(&self) -> bool;
     /// Encodes the debug HUD overlay.

@@ -34,7 +34,7 @@ mod windows;
 mod accessor;
 pub mod writer;
 
-pub use accessor::SharedMemoryAccessor;
+pub use accessor::{InvalidSharedMemoryPrefix, SharedMemoryAccessor};
 pub use writer::{SharedMemoryWriter, SharedMemoryWriterConfig, SharedMemoryWriterError};
 
 // Public surface for `crate::ipc::shared_memory::*`; also re-exported at [`crate::ipc`].

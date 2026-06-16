@@ -11,10 +11,13 @@ use std::num::NonZeroU64;
 use bytemuck::{Pod, Zeroable};
 
 use crate::embedded_shaders::embedded_wgsl;
+use crate::frame_upload_batch::GraphUploadSink;
 use crate::gpu::{CLUSTER_PARAMS_UNIFORM_SIZE, GpuLight};
 use crate::gpu_resource::OnceGpu;
-use crate::render_graph::frame_upload_batch::GraphUploadSink;
 use crate::world_mesh::cluster::{CLUSTER_COUNT_Z, TILE_SIZE, sanitize_cluster_clip_planes};
+
+pub(super) const FROXEL_RECONSTRUCTION_GENERAL: u32 = 1 << 0;
+const PROJECTION_XY_DEPTH_DEPENDENCE_EPSILON: f32 = 1e-6;
 
 /// CPU layout for the compute shader `ClusterParams` uniform (WGSL `struct` + tail pad).
 ///
@@ -38,7 +41,7 @@ pub(super) struct ClusterParams {
     pub(super) far_clip: f32,
     cluster_offset: u32,
     world_to_view_scale: f32,
-    _pad: [u8; 4],
+    pub(super) froxel_reconstruction_flags: u32,
 }
 
 /// Descriptor for building the `ClusterParams` uniform from scene matrices and cluster grid metadata.
@@ -55,6 +58,8 @@ pub(super) struct ClusterParamsDesc {
     /// Max row length of the world-to-view linear part; multiplies `light.range` (world units)
     /// to view-space units inside the compute shader's culling test.
     pub world_to_view_scale: f32,
+    /// Compute-side reconstruction flags derived from the final projection matrix.
+    pub froxel_reconstruction_flags: u32,
 }
 
 /// Builds a [`ClusterParams`] from `desc`, applying the shared clip-plane sanitisation.
@@ -76,8 +81,23 @@ pub(super) fn build_params(desc: ClusterParamsDesc) -> ClusterParams {
         far_clip,
         cluster_offset: desc.cluster_offset,
         world_to_view_scale: desc.world_to_view_scale,
-        _pad: [0u8; 4],
+        froxel_reconstruction_flags: desc.froxel_reconstruction_flags,
     }
+}
+
+/// Returns clustered-light froxel reconstruction flags for `proj`.
+pub(super) fn froxel_reconstruction_flags_for_projection(proj: glam::Mat4) -> u32 {
+    if projection_depth_depends_on_view_xy(proj) {
+        FROXEL_RECONSTRUCTION_GENERAL
+    } else {
+        0
+    }
+}
+
+fn projection_depth_depends_on_view_xy(proj: glam::Mat4) -> bool {
+    [proj.x_axis.z, proj.y_axis.z, proj.x_axis.w, proj.y_axis.w]
+        .into_iter()
+        .any(|value| value.abs() > PROJECTION_XY_DEPTH_DEPENDENCE_EPSILON)
 }
 
 /// Writes one `ClusterParams` slot into the per-eye uniform buffer with std140 padding.
@@ -200,7 +220,14 @@ pub(super) fn clustered_light_pipelines() -> &'static ClusteredLightPipelineCach
 
 #[cfg(test)]
 mod tests {
-    use super::{CLUSTER_PARAMS_UNIFORM_SIZE, ClusterParams};
+    use glam::Mat4;
+
+    use super::{
+        CLUSTER_PARAMS_UNIFORM_SIZE, ClusterParams, ClusterParamsDesc,
+        FROXEL_RECONSTRUCTION_GENERAL, build_params, froxel_reconstruction_flags_for_projection,
+    };
+    use crate::camera::{Viewport, reverse_z_perspective};
+    use crate::graph_inputs::OffscreenWriteTarget;
 
     /// `ClusterParams` must fit within the dynamic-offset slot reserved by
     /// `CLUSTER_PARAMS_UNIFORM_SIZE`; `write_cluster_params_padded` zero-pads the rest.
@@ -217,5 +244,86 @@ mod tests {
             0,
             "ClusterParams must be 16-byte aligned for WGSL std140 uniform layout"
         );
+    }
+
+    #[test]
+    fn normal_perspective_uses_fast_froxel_reconstruction() {
+        let proj = reverse_z_perspective(
+            Viewport::new(1280, 720).aspect(),
+            60f32.to_radians(),
+            0.05,
+            500.0,
+        );
+
+        assert_eq!(froxel_reconstruction_flags_for_projection(proj), 0);
+    }
+
+    #[test]
+    fn offscreen_y_flipped_projection_uses_fast_froxel_reconstruction() {
+        let proj = reverse_z_perspective(
+            Viewport::new(1280, 720).aspect(),
+            60f32.to_radians(),
+            0.05,
+            500.0,
+        );
+        let offscreen_proj = OffscreenWriteTarget::Untracked.render_projection(proj);
+
+        assert_eq!(
+            froxel_reconstruction_flags_for_projection(offscreen_proj),
+            0
+        );
+    }
+
+    #[test]
+    fn asymmetric_projection_uses_fast_froxel_reconstruction() {
+        let mut proj = reverse_z_perspective(
+            Viewport::new(1280, 720).aspect(),
+            60f32.to_radians(),
+            0.05,
+            500.0,
+        );
+        proj.z_axis.x = 0.25;
+        proj.z_axis.y = -0.125;
+
+        assert_eq!(froxel_reconstruction_flags_for_projection(proj), 0);
+    }
+
+    #[test]
+    fn oblique_projection_uses_general_froxel_reconstruction() {
+        let mut proj = reverse_z_perspective(
+            Viewport::new(1280, 720).aspect(),
+            60f32.to_radians(),
+            0.05,
+            500.0,
+        );
+        proj.x_axis.z = 0.25;
+
+        assert_eq!(
+            froxel_reconstruction_flags_for_projection(proj),
+            FROXEL_RECONSTRUCTION_GENERAL
+        );
+    }
+
+    #[test]
+    fn cluster_params_pack_froxel_reconstruction_flags() {
+        let mut proj = Mat4::IDENTITY;
+        proj.y_axis.z = -0.25;
+        let flags = froxel_reconstruction_flags_for_projection(proj);
+
+        let params = build_params(ClusterParamsDesc {
+            scene_view: Mat4::IDENTITY,
+            proj,
+            viewport: (1, 1),
+            cluster_count_x: 1,
+            cluster_count_y: 1,
+            light_count: 0,
+            near: 0.05,
+            far: 10.0,
+            cluster_offset: 0,
+            world_to_view_scale: 1.0,
+            froxel_reconstruction_flags: flags,
+        });
+
+        assert_eq!(params.froxel_reconstruction_flags, flags);
     }
 }

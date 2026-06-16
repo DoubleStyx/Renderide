@@ -124,7 +124,7 @@ fn effective_texture_format_features(
     format_features
 }
 
-fn tracked_texture_formats() -> [wgpu::TextureFormat; 13] {
+fn tracked_texture_formats() -> [wgpu::TextureFormat; 14] {
     [
         wgpu::TextureFormat::R8Unorm,
         wgpu::TextureFormat::R16Float,
@@ -135,6 +135,7 @@ fn tracked_texture_formats() -> [wgpu::TextureFormat; 13] {
         wgpu::TextureFormat::Bgra8UnormSrgb,
         wgpu::TextureFormat::Rgba16Float,
         wgpu::TextureFormat::Rg11b10Ufloat,
+        wgpu::TextureFormat::Depth16Unorm,
         wgpu::TextureFormat::Depth24Plus,
         wgpu::TextureFormat::Depth24PlusStencil8,
         wgpu::TextureFormat::Depth32Float,

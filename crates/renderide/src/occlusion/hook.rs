@@ -11,10 +11,10 @@ use glam::Mat4;
 use parking_lot::Mutex;
 
 use crate::camera::ViewId;
+use crate::cull_contract::WorldMeshCullProjParams;
 use crate::occlusion::gpu::{HiZBuildRecord, HiZGpuState};
 use crate::occlusion::system::HiZBuildInput;
 use crate::scene::SceneCoordinator;
-use crate::world_mesh::WorldMeshCullProjParams;
 
 /// Contract for the occlusion system as seen by render-graph code and graph-driven passes.
 ///

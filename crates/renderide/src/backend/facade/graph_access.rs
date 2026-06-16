@@ -5,11 +5,12 @@ use std::sync::Arc;
 mod warmup;
 
 use crate::backend::AssetTransferQueue;
-use crate::diagnostics::{DebugHudEncodeError, PerViewHudConfig, PerViewHudOutputs};
+use crate::frame_upload_batch::{FrameUploadBatchStats, GraphUploadSink};
 use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
 use crate::graph_inputs::{
     GraphPassFrame, PerViewFramePlan, PerViewFramePlanSlot, PreRecordViewResourceLayout,
 };
+use crate::hud_contract::{DebugHudEncodeError, PerViewHudConfig, PerViewHudOutputs};
 use crate::materials::MaterialSystem;
 use crate::mesh_deform::{GpuSkinCache, MeshDeformScratch, MeshPreprocessPipelines};
 use crate::occlusion::OcclusionSystem;
@@ -20,16 +21,17 @@ use crate::passes::post_processing::settings_slots::{
 use crate::render_graph::TransientPool;
 use crate::render_graph::blackboard::Blackboard;
 use crate::render_graph::compiled::FrameView;
+use crate::render_graph::context::GraphResolvedResources;
 use crate::render_graph::execution_backend::{
     GraphExecutionBackend, GraphFrameParamsSplit, GraphViewBlackboardPreparer,
 };
-use crate::render_graph::frame_upload_batch::{FrameUploadBatchStats, GraphUploadSink};
-use crate::render_graph::upload_arena::PersistentUploadArena;
+use crate::upload_arena::PersistentUploadArena;
 
 use super::super::debug_hud_bundle::DebugHudBundle;
 use super::super::{
     FrameResourceManager, HistoryRegistry, WorldMeshDrawPlanSlot, WorldMeshOverlayDrawPlanSlot,
 };
+use super::graph_state::PendingTransientRelease;
 
 /// Live post-processing parameters seeded into per-view blackboards.
 #[derive(Clone, Copy, Debug, Default)]
@@ -74,6 +76,10 @@ pub(crate) struct BackendGraphAccess<'a> {
     pub(crate) upload_arena: &'a mut PersistentUploadArena,
     /// Latest frame-upload stats published for diagnostics.
     pub(crate) latest_upload_stats: &'a mut FrameUploadBatchStats,
+    /// Latest graph command-recording stats published for diagnostics.
+    pub(crate) latest_command_encoding: &'a mut crate::render_graph::CommandEncodingHudSnapshot,
+    /// Resolved transient resource sets waiting on driver submit before pool release.
+    pub(super) pending_transient_releases: &'a mut Vec<PendingTransientRelease>,
     /// Debug HUD state and encoder.
     pub(crate) debug_hud: &'a mut DebugHudBundle,
     /// Scene-color format snapshot selected before graph execution borrows backend fields.
@@ -86,6 +92,8 @@ pub(crate) struct BackendGraphAccess<'a> {
     pub(super) skin_weight_mode: crate::shared::SkinWeightMode,
     /// Live post-processing settings seeded into per-view blackboards.
     pub(super) live_post_processing: LivePostProcessingSettings,
+    /// Live command-recording mode selected before graph execution borrows backend fields.
+    pub(super) command_recording_mode: crate::config::CommandRecordingMode,
     /// Wall-frame delta snapshot in milliseconds.
     pub(super) wall_frame_time_ms: f64,
 }
@@ -135,6 +143,18 @@ impl<'a> BackendGraphAccess<'a> {
         self.transient_pool
     }
 
+    /// Schedules resolved transient resources for pool release once `token` has submitted.
+    pub(crate) fn schedule_transient_release_after_submit(
+        &mut self,
+        token: crate::gpu::driver_thread::SubmitToken,
+        resources: Vec<GraphResolvedResources>,
+    ) {
+        if !resources.is_empty() {
+            self.pending_transient_releases
+                .push(PendingTransientRelease { token, resources });
+        }
+    }
+
     /// Shared history registry for import resolution.
     pub(crate) fn history_registry(&self) -> &HistoryRegistry {
         self.history_registry
@@ -153,6 +173,14 @@ impl<'a> BackendGraphAccess<'a> {
     /// Publishes upload drain stats for the diagnostics HUD.
     pub(crate) fn record_frame_upload_stats(&mut self, stats: FrameUploadBatchStats) {
         *self.latest_upload_stats = stats;
+    }
+
+    /// Publishes graph command recording stats for diagnostics.
+    pub(crate) fn record_command_encoding_diagnostics(
+        &mut self,
+        snapshot: crate::render_graph::CommandEncodingHudSnapshot,
+    ) {
+        *self.latest_command_encoding = snapshot;
     }
 
     /// Scene-color format snapshot selected for this graph frame.
@@ -207,15 +235,22 @@ impl<'a> BackendGraphAccess<'a> {
 
     /// Debug HUD flags consumed by per-view recording.
     pub(crate) fn per_view_hud_config(&self) -> PerViewHudConfig {
-        PerViewHudConfig {
-            main_enabled: self.debug_hud.main_enabled(),
-            textures_enabled: self.debug_hud.textures_enabled(),
-        }
+        self.debug_hud.per_view_config()
+    }
+
+    /// Whether graph execution should publish HUD-formatted command diagnostics.
+    pub(crate) fn capture_graph_command_diagnostics(&self) -> bool {
+        self.debug_hud.capture_graph_command_diagnostics()
     }
 
     /// Whether the HUD will draw visible content this frame.
     pub(crate) fn debug_hud_has_visible_content(&self) -> bool {
         self.debug_hud.has_visible_content()
+    }
+
+    /// Render-graph command-recording mode selected for this frame.
+    pub(crate) fn command_recording_mode(&self) -> crate::config::CommandRecordingMode {
+        self.command_recording_mode
     }
 
     /// Encodes the debug HUD overlay.
@@ -257,10 +292,7 @@ impl<'a> BackendGraphAccess<'a> {
             gpu_limits: self.gpu_limits.clone(),
             msaa_depth_resolve: self.msaa_depth_resolve.clone(),
             skin_weight_mode: self.skin_weight_mode,
-            debug_hud: PerViewHudConfig {
-                main_enabled: self.debug_hud.main_enabled(),
-                textures_enabled: self.debug_hud.textures_enabled(),
-            },
+            debug_hud: self.debug_hud.per_view_config(),
         }
     }
 }
@@ -268,6 +300,14 @@ impl<'a> BackendGraphAccess<'a> {
 impl GraphExecutionBackend for BackendGraphAccess<'_> {
     fn transient_pool_mut(&mut self) -> &mut TransientPool {
         BackendGraphAccess::transient_pool_mut(self)
+    }
+
+    fn schedule_transient_release_after_submit(
+        &mut self,
+        token: crate::gpu::driver_thread::SubmitToken,
+        resources: Vec<GraphResolvedResources>,
+    ) {
+        BackendGraphAccess::schedule_transient_release_after_submit(self, token, resources);
     }
 
     fn history_registry(&self) -> &HistoryRegistry {
@@ -284,6 +324,17 @@ impl GraphExecutionBackend for BackendGraphAccess<'_> {
 
     fn record_frame_upload_stats(&mut self, stats: FrameUploadBatchStats) {
         BackendGraphAccess::record_frame_upload_stats(self, stats);
+    }
+
+    fn record_command_encoding_diagnostics(
+        &mut self,
+        snapshot: crate::render_graph::CommandEncodingHudSnapshot,
+    ) {
+        BackendGraphAccess::record_command_encoding_diagnostics(self, snapshot);
+    }
+
+    fn capture_graph_command_diagnostics(&self) -> bool {
+        BackendGraphAccess::capture_graph_command_diagnostics(self)
     }
 
     fn scene_color_format_wgpu(&self) -> wgpu::TextureFormat {
@@ -354,6 +405,20 @@ impl GraphExecutionBackend for BackendGraphAccess<'_> {
         );
     }
 
+    fn pre_record_sync_for_views(
+        &mut self,
+        device: &wgpu::Device,
+        uploads: GraphUploadSink<'_>,
+        view_layouts: &[PreRecordViewResourceLayout],
+    ) {
+        self.frame_resources.pre_record_sync_for_views(
+            device,
+            uploads,
+            self.asset_transfers,
+            view_layouts,
+        );
+    }
+
     fn view_blackboard_preparer(&self) -> Box<dyn GraphViewBlackboardPreparer + '_> {
         Box::new(BackendViewBlackboardPreparer {
             world_mesh_frame_planner: self.world_mesh_frame_planner,
@@ -374,6 +439,10 @@ impl GraphExecutionBackend for BackendGraphAccess<'_> {
 
     fn per_view_hud_config(&self) -> PerViewHudConfig {
         BackendGraphAccess::per_view_hud_config(self)
+    }
+
+    fn command_recording_mode(&self) -> crate::config::CommandRecordingMode {
+        BackendGraphAccess::command_recording_mode(self)
     }
 
     fn debug_hud_has_visible_content(&self) -> bool {

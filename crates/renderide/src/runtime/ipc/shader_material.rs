@@ -6,8 +6,10 @@ use crate::assets::shader::shader_variant_bits_log;
 use crate::assets::{ResolvedShaderUpload, resolve_shader_upload};
 use crate::backend::RenderBackend;
 use crate::frontend::RendererFrontend;
-use crate::materials::RasterPipelineKind;
-use crate::shared::{MaterialsUpdateBatch, ShaderUnload, ShaderUpload};
+use crate::materials::{RasterPipelineKind, embedded_default_stem_for_shader_asset_name};
+use crate::shared::{
+    MaterialsUpdateBatch, RendererCommand, ShaderUnload, ShaderUpload, ShaderUploadResult,
+};
 
 /// In-flight `resolve_shader_upload` work dispatched to the rayon pool by
 /// [`on_shader_upload`].
@@ -40,7 +42,7 @@ pub(in crate::runtime) fn on_shader_upload(
     );
     let (tx, rx) = bounded::<ResolvedShaderUpload>(1);
     rayon::spawn(move || {
-        let resolved = resolve_shader_upload(&upload);
+        let resolved = resolve_shader_upload(&upload, embedded_default_stem_for_shader_asset_name);
         let _ = tx.send(resolved);
     });
     pending.push(PendingShaderResolution { asset_id, rx });
@@ -55,7 +57,7 @@ pub(in crate::runtime) fn on_shader_upload(
 pub(in crate::runtime) fn drain_pending_shader_resolutions(
     pending: &mut Vec<PendingShaderResolution>,
     backend: &mut RenderBackend,
-    _frontend: &mut RendererFrontend,
+    frontend: &mut RendererFrontend,
 ) {
     profiling::scope!("ipc::drain_pending_shader_resolutions");
     let mut completed: Vec<(i32, ResolvedShaderUpload)> = Vec::new();
@@ -92,12 +94,25 @@ pub(in crate::runtime) fn drain_pending_shader_resolutions(
             resolved.pipeline,
         );
         let shader_asset_name = resolved.shader_asset_name.clone();
-        backend.register_shader_route(
+        let queued = backend.register_shader_route(
             asset_id,
             resolved.pipeline,
             shader_asset_name,
             resolved.shader_variant_bits,
         );
+        if !queued
+            && let Some(ipc) = frontend.ipc_mut()
+            && !ipc.send_background_reliable(RendererCommand::ShaderUploadResult(
+                ShaderUploadResult {
+                    asset_id,
+                    instance_changed: true,
+                },
+            ))
+        {
+            logger::warn!(
+                "shader_upload: asset_id={asset_id} failed to enqueue reliable immediate ShaderUploadResult ack"
+            );
+        }
     }
 }
 

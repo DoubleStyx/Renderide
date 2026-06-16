@@ -1,21 +1,16 @@
-//! Unity shader asset names mapped to composed WGSL stems under `shaders/target/` (embedded at build time).
+//! Unity shader asset names mapped to composed WGSL stems through the runtime shader package.
 //!
 //! Resolution uses [`crate::assets::util::normalize_unity_shader_lookup_key`] and probes
-//! `{normalized_key}_default`, matching material source stems under `shaders/materials/*.wgsl`
-//! (see crate `build.rs`).
+//! the package route manifest generated from material source stems.
 
 use crate::assets::util::normalize_unity_shader_lookup_key;
-use crate::embedded_shaders;
 
 #[cfg(test)]
 mod tests;
 
-/// Returns `{normalized_key}_default` when that composed target exists in the embedded table.
+/// Returns the default package material stem for a Unity shader asset name.
 pub fn embedded_default_stem_for_shader_asset_name(name: &str) -> Option<String> {
     let key = normalize_unity_shader_lookup_key(name);
-    let stem = format!("{key}_default");
-    if embedded_shaders::embedded_target_wgsl(&stem).is_some() {
-        return Some(stem);
-    }
-    None
+    crate::materials::shader_package::default_material_stem_for_asset_key(&key)
+        .map(|stem| stem.to_string())
 }

@@ -17,10 +17,10 @@ mod passes;
 mod tests;
 
 use crate::render_graph::GraphCacheKey;
+use crate::render_graph::RenderGraphValidationMode;
 use crate::render_graph::builder::GraphBuilder;
 use crate::render_graph::compiled::CompiledRenderGraph;
 use crate::render_graph::error::GraphBuildError;
-use crate::render_graph::validation::RenderGraphValidationMode;
 
 pub(crate) use handles::MainGraphPostProcessingResources;
 

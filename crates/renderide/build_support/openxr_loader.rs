@@ -18,7 +18,7 @@ use super::artifacts::artifact_dir_from_out_dir;
 mod openxr_win {
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/openxr_windows_arch.rs"
+        "/build_support/openxr_windows_arch.rs"
     ));
 }
 

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use glam::Mat4;
 
-use crate::materials::RasterPrimitiveTopology;
+use crate::render_contract::RasterPrimitiveTopology;
 use crate::shared::{MeshUploadData, MeshUploadHintFlag};
 
 use super::super::super::layout::{

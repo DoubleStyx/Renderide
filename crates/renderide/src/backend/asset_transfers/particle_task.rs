@@ -106,11 +106,27 @@ pub(in crate::backend::asset_transfers) struct ReadyParticleBuildDrainOutcome {
     pub(in crate::backend::asset_transfers) pending: bool,
 }
 
+/// Summary of latent particle uploads converted into queued integration tasks.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(in crate::backend::asset_transfers) struct StartableParticleUploadEnqueueOutcome {
+    /// Number of point/trail upload tasks accepted by the integrator.
+    pub(in crate::backend::asset_transfers) enqueued: u32,
+    /// Whether startable uploads remain because the integrator queue was full.
+    pub(in crate::backend::asset_transfers) pending: bool,
+}
+
 impl PointRenderBufferTask {
     /// Creates a task for `upload`.
     pub(in crate::backend::asset_transfers) fn new(asset_id: i32) -> Self {
         Self {
             stage: PointRenderBufferTaskStage::Pending { asset_id },
+        }
+    }
+
+    /// Host asset id this task is trying to claim.
+    pub(in crate::backend::asset_transfers) fn asset_id(&self) -> i32 {
+        match self.stage {
+            PointRenderBufferTaskStage::Pending { asset_id } => asset_id,
         }
     }
 
@@ -139,6 +155,13 @@ impl TrailRenderBufferTask {
     pub(in crate::backend::asset_transfers) fn new(asset_id: i32) -> Self {
         Self {
             stage: TrailRenderBufferTaskStage::Pending { asset_id },
+        }
+    }
+
+    /// Host asset id this task is trying to claim.
+    pub(in crate::backend::asset_transfers) fn asset_id(&self) -> i32 {
+        match self.stage {
+            TrailRenderBufferTaskStage::Pending { asset_id } => asset_id,
         }
     }
 
@@ -332,6 +355,44 @@ pub(in crate::backend::asset_transfers) fn drain_ready_particle_builds(
     }
 }
 
+/// Converts retained point/trail uploads into particle-lane tasks when earlier enqueue attempts
+/// were blocked by integrator backpressure.
+pub(in crate::backend::asset_transfers) fn enqueue_startable_particle_uploads(
+    queue: &mut AssetTransferQueue,
+) -> StartableParticleUploadEnqueueOutcome {
+    profiling::scope!("particle::enqueue_startable_uploads");
+    let mut enqueued = 0u32;
+    let mut pending = false;
+
+    for asset_id in queue.startable_point_render_buffer_upload_ids() {
+        if particle_lane_has_point_task(queue, asset_id) {
+            continue;
+        }
+        if enqueue_point_task(queue, asset_id) {
+            enqueued = enqueued.saturating_add(1);
+        } else {
+            pending = true;
+            break;
+        }
+    }
+
+    if !pending {
+        for asset_id in queue.startable_trail_render_buffer_upload_ids() {
+            if particle_lane_has_trail_task(queue, asset_id) {
+                continue;
+            }
+            if enqueue_trail_task(queue, asset_id) {
+                enqueued = enqueued.saturating_add(1);
+            } else {
+                pending = true;
+                break;
+            }
+        }
+    }
+
+    StartableParticleUploadEnqueueOutcome { enqueued, pending }
+}
+
 /// Captures the current GPU upload context for generated particle mesh publication.
 fn particle_mesh_gpu_context<'a>(
     gpu: &'a ParticleTaskGpu<'_>,
@@ -513,23 +574,55 @@ fn spawn_trail_build(
 fn enqueue_point_task_if_ready(queue: &mut AssetTransferQueue, asset_id: i32) {
     if queue.has_pending_point_render_buffer_upload(asset_id)
         && !queue.point_render_buffer_build_is_active(asset_id)
+        && !particle_lane_has_point_task(queue, asset_id)
     {
-        queue.integrator_mut().enqueue_lane(
-            AssetTask::PointRenderBuffer(PointRenderBufferTask::new(asset_id)),
-            AssetTaskLane::Particle,
-        );
+        let enqueued = enqueue_point_task(queue, asset_id);
+        if !enqueued {
+            logger::warn!(
+                "point render buffer {asset_id}: leaving pending upload queued because asset integrator is full"
+            );
+        }
     }
 }
 
 fn enqueue_trail_task_if_ready(queue: &mut AssetTransferQueue, asset_id: i32) {
     if queue.has_pending_trail_render_buffer_upload(asset_id)
         && !queue.trail_render_buffer_build_is_active(asset_id)
+        && !particle_lane_has_trail_task(queue, asset_id)
     {
-        queue.integrator_mut().enqueue_lane(
-            AssetTask::TrailRenderBuffer(TrailRenderBufferTask::new(asset_id)),
-            AssetTaskLane::Particle,
-        );
+        let enqueued = enqueue_trail_task(queue, asset_id);
+        if !enqueued {
+            logger::warn!(
+                "trail render buffer {asset_id}: leaving pending upload queued because asset integrator is full"
+            );
+        }
     }
+}
+
+fn enqueue_point_task(queue: &mut AssetTransferQueue, asset_id: i32) -> bool {
+    queue.integrator_mut().enqueue_lane(
+        AssetTask::PointRenderBuffer(PointRenderBufferTask::new(asset_id)),
+        AssetTaskLane::Particle,
+    )
+}
+
+fn enqueue_trail_task(queue: &mut AssetTransferQueue, asset_id: i32) -> bool {
+    queue.integrator_mut().enqueue_lane(
+        AssetTask::TrailRenderBuffer(TrailRenderBufferTask::new(asset_id)),
+        AssetTaskLane::Particle,
+    )
+}
+
+fn particle_lane_has_point_task(queue: &AssetTransferQueue, asset_id: i32) -> bool {
+    queue.integrator.particle.iter().any(
+        |task| matches!(task, AssetTask::PointRenderBuffer(task) if task.asset_id() == asset_id),
+    )
+}
+
+fn particle_lane_has_trail_task(queue: &AssetTransferQueue, asset_id: i32) -> bool {
+    queue.integrator.particle.iter().any(
+        |task| matches!(task, AssetTask::TrailRenderBuffer(task) if task.asset_id() == asset_id),
+    )
 }
 
 /// Copies a render-buffer shared-memory payload into an owned slice.
@@ -584,7 +677,7 @@ pub(super) fn send_trail_render_buffer_consumed(
 fn remove_point_render_buffer(queue: &mut AssetTransferQueue, asset_id: i32) {
     queue.catalogs.point_render_buffers.remove(&asset_id);
     for mesh_id in crate::particles::point_render_buffer_generated_mesh_ids(asset_id) {
-        queue.pools.mesh_pool.remove(mesh_id);
+        queue.retire_mesh_asset(mesh_id);
     }
 }
 
@@ -592,12 +685,13 @@ fn remove_point_render_buffer(queue: &mut AssetTransferQueue, asset_id: i32) {
 fn remove_trail_render_buffer(queue: &mut AssetTransferQueue, asset_id: i32) {
     queue.catalogs.trail_render_buffers.remove(&asset_id);
     for mesh_id in crate::particles::trail_render_buffer_generated_mesh_ids(asset_id) {
-        queue.pools.mesh_pool.remove(mesh_id);
+        queue.retire_mesh_asset(mesh_id);
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::limits::MAX_ASSET_INTEGRATION_QUEUE_TASKS;
     use super::*;
 
     #[test]
@@ -632,6 +726,35 @@ mod tests {
         queue.release_particle_build_worker();
 
         assert!(queue.try_acquire_particle_build_worker());
+    }
+
+    #[test]
+    fn startable_particle_upload_retries_after_full_integrator() {
+        let mut queue = AssetTransferQueue::new();
+        queue.retain_latest_point_render_buffer_upload(PointRenderBufferUpload {
+            asset_id: 7,
+            ..Default::default()
+        });
+        for asset_id in 0..MAX_ASSET_INTEGRATION_QUEUE_TASKS {
+            assert!(queue.integrator_mut().enqueue_lane(
+                AssetTask::TrailRenderBuffer(TrailRenderBufferTask::new(asset_id as i32 + 100)),
+                AssetTaskLane::Particle,
+            ));
+        }
+
+        let full = enqueue_startable_particle_uploads(&mut queue);
+
+        assert_eq!(full.enqueued, 0);
+        assert!(full.pending);
+
+        let _ = queue.integrator.pop_front_lane(AssetTaskLane::Particle);
+        let retried = enqueue_startable_particle_uploads(&mut queue);
+        let duplicate = enqueue_startable_particle_uploads(&mut queue);
+
+        assert_eq!(retried.enqueued, 1);
+        assert!(!retried.pending);
+        assert_eq!(duplicate.enqueued, 0);
+        assert!(particle_lane_has_point_task(&queue, 7));
     }
 
     #[test]

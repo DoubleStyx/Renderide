@@ -35,7 +35,8 @@ impl TextureDefaultKind {
         }
     }
 
-    /// Rust variant name used in generated embedded metadata.
+    /// Rust variant name used in generated embedded metadata tests.
+    #[cfg(test)]
     const fn rust_variant(self) -> &'static str {
         match self {
             Self::White => "White",
@@ -92,7 +93,8 @@ impl MaterialDefaultValue {
         }
     }
 
-    /// Rust expression used in generated embedded metadata.
+    /// Rust expression used in generated embedded metadata tests.
+    #[cfg(test)]
     fn rust_literal(self) -> String {
         match self.kind {
             MaterialDefaultKind::Float => {
@@ -115,6 +117,7 @@ impl MaterialDefaultValue {
 }
 
 /// Renders raw `f32` bits as a readable Rust expression.
+#[cfg(test)]
 fn rust_f32_from_bits(bits: u32) -> String {
     format!(
         "f32::from_bits(0x{upper:04x}_{lower:04x})",
@@ -297,6 +300,7 @@ fn parse_mat_default_f32_value(value: &str, file: &str, line: usize) -> Result<f
 }
 
 /// Renders a generated Rust expression for one texture default directive.
+#[cfg(test)]
 pub(in super::super) fn texture_default_literal(default: &TextureDefaultDirective) -> String {
     format!(
         "EmbeddedTextureDefault {{ property: {property:?}, kind: EmbeddedTextureDefaultKind::{kind} }}",
@@ -306,6 +310,7 @@ pub(in super::super) fn texture_default_literal(default: &TextureDefaultDirectiv
 }
 
 /// Renders a generated Rust expression for one material default directive.
+#[cfg(test)]
 pub(in super::super) fn material_default_literal(default: &MaterialDefaultDirective) -> String {
     format!(
         "EmbeddedMaterialDefault {{ property: {property:?}, value: {value} }}",

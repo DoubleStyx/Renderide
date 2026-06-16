@@ -6,10 +6,8 @@
 
 use crossbeam_channel as mpsc;
 
-use crate::occlusion::cpu::readback::{
-    hi_z_snapshot_from_linear_linear, unpack_linear_rows_to_mips,
-};
-use crate::occlusion::cpu::snapshot::{HiZCpuSnapshot, HiZStereoCpuSnapshot};
+use crate::hi_z_cpu::readback::{hi_z_snapshot_from_linear_linear, unpack_linear_rows_to_mips};
+use crate::hi_z_cpu::snapshot::{HiZCpuSnapshot, HiZStereoCpuSnapshot};
 
 use super::readback_ring::{HIZ_STAGING_RING, pending_none_array};
 use super::state::HiZGpuState;

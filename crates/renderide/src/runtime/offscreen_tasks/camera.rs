@@ -25,7 +25,10 @@ use super::super::frame::schedule::{
 use super::super::frame::view_plan::{
     FrameViewPlan, FrameViewPlanParams, FrameViewPlanTarget, OffscreenTargetHandles,
 };
-use super::readback::{AwaitBufferMapError, await_buffer_map};
+use super::readback::{
+    AwaitBufferMapError, LinearTextureReadbackPlan, LinearTextureReadbackPlanError,
+    await_buffer_map,
+};
 
 mod alpha_coverage;
 mod camera360;
@@ -108,15 +111,6 @@ impl CameraTaskExtent {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ReadbackLayout {
-    width: u32,
-    height: u32,
-    bytes_per_row_tight: u32,
-    bytes_per_row_padded: u32,
-    buffer_size: u64,
-}
-
 #[derive(Debug, thiserror::Error)]
 pub(super) enum CameraReadbackError {
     #[error("CameraRenderTask missing parameters")]
@@ -163,6 +157,29 @@ impl From<AwaitBufferMapError> for CameraReadbackError {
             AwaitBufferMapError::DeviceLost(s) => Self::DeviceLost(s),
             AwaitBufferMapError::Timeout => Self::ReadbackTimeout,
             AwaitBufferMapError::Map(s) => Self::Map(s),
+        }
+    }
+}
+
+impl From<LinearTextureReadbackPlanError> for CameraReadbackError {
+    fn from(err: LinearTextureReadbackPlanError) -> Self {
+        match err {
+            LinearTextureReadbackPlanError::InvalidExtent { width, height } => {
+                Self::InvalidExtent {
+                    width: i32::try_from(width).unwrap_or(i32::MAX),
+                    height: i32::try_from(height).unwrap_or(i32::MAX),
+                }
+            }
+            LinearTextureReadbackPlanError::InvalidBytesPerPixel
+            | LinearTextureReadbackPlanError::OutputByteCountOverflow => {
+                Self::OutputByteCountOverflow
+            }
+            LinearTextureReadbackPlanError::ReadbackBufferTooLarge { size, max } => {
+                Self::ReadbackBufferTooLarge { size, max }
+            }
+            LinearTextureReadbackPlanError::MappedReadbackTooSmall { required, actual } => {
+                Self::MappedReadbackTooSmall { required, actual }
+            }
         }
     }
 }
@@ -240,16 +257,15 @@ impl CameraTaskTargets {
     }
 
     fn to_offscreen_handles(&self) -> OffscreenTargetHandles {
-        OffscreenTargetHandles {
-            write_target: OffscreenWriteTarget::Untracked,
-            color_texture: self.color_texture.as_ref().clone(),
-            color_view: self.color_view.as_ref().clone(),
-            depth_texture: self.depth_texture.as_ref().clone(),
-            depth_view: self.depth_view.as_ref().clone(),
-            extent_px: self.extent.tuple(),
-            color_format: self.color_format,
-            copy_to_color: None,
-        }
+        OffscreenTargetHandles::new(
+            OffscreenWriteTarget::Untracked,
+            self.color_texture.as_ref().clone(),
+            self.color_view.as_ref().clone(),
+            self.depth_texture.as_ref().clone(),
+            self.depth_view.as_ref().clone(),
+            self.extent.tuple(),
+            self.color_format,
+        )
     }
 }
 
@@ -261,15 +277,15 @@ impl RendererRuntime {
             return;
         }
         self.tick_state
-            .pending_camera_render_tasks
-            .extend(tasks.iter().cloned());
-        self.set_pending_camera_readbacks(self.tick_state.pending_camera_render_tasks.len());
+            .submit_completion_work
+            .queue_camera_tasks(tasks);
+        self.set_pending_camera_readbacks(self.tick_state.submit_completion_work.camera_count());
     }
 
     /// Drains queued camera readback tasks before the next host begin-frame is sent.
     pub fn drain_camera_render_tasks(&mut self, gpu: &mut GpuContext) {
         profiling::scope!("camera_task::drain");
-        let tasks = std::mem::take(&mut self.tick_state.pending_camera_render_tasks);
+        let tasks = self.tick_state.submit_completion_work.take_camera_tasks();
         if tasks.is_empty() {
             self.set_pending_camera_readbacks(0);
             return;
@@ -495,9 +511,13 @@ fn readback_camera_task_texture(
     color_texture: &wgpu::Texture,
 ) -> Result<Vec<u8>, CameraReadbackError> {
     profiling::scope!("camera_task::gpu_copy_and_map");
-    let layout = compute_readback_layout(color_texture.size(), gpu.limits().max_buffer_size())?;
-    let readback = create_readback_buffer(gpu, &layout);
-    submit_texture_to_buffer_copy(gpu, color_texture, &layout, &readback);
+    let plan = LinearTextureReadbackPlan::new(
+        color_texture.size(),
+        RGBA8_BYTES_PER_PIXEL as u32,
+        gpu.limits().max_buffer_size(),
+    )?;
+    let readback = create_readback_buffer(gpu, plan);
+    submit_texture_to_buffer_copy(gpu, color_texture, plan, &readback);
     let slice = readback.slice(..);
     {
         profiling::scope!("camera_task::map_readback");
@@ -506,52 +526,16 @@ fn readback_camera_task_texture(
     let tight = {
         profiling::scope!("camera_task::copy_padded_rows");
         let view = slice.get_mapped_range();
-        copy_padded_rows_to_tight(&view, &layout)?
+        plan.copy_mapped_rows_to_tight(&view)?
     };
     readback.unmap();
     Ok(tight)
 }
 
-fn compute_readback_layout(
-    extent: wgpu::Extent3d,
-    max_buffer_size: u64,
-) -> Result<ReadbackLayout, CameraReadbackError> {
-    let width = extent.width;
-    let height = extent.height;
-    if width == 0 || height == 0 {
-        return Err(CameraReadbackError::InvalidExtent {
-            width: i32::try_from(width).unwrap_or(i32::MAX),
-            height: i32::try_from(height).unwrap_or(i32::MAX),
-        });
-    }
-    let bytes_per_row_tight = width
-        .checked_mul(RGBA8_BYTES_PER_PIXEL as u32)
-        .ok_or(CameraReadbackError::OutputByteCountOverflow)?;
-    let alignment = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-    let bytes_per_row_padded = bytes_per_row_tight
-        .div_ceil(alignment)
-        .checked_mul(alignment)
-        .ok_or(CameraReadbackError::OutputByteCountOverflow)?;
-    let buffer_size = u64::from(bytes_per_row_padded) * u64::from(height);
-    if buffer_size > max_buffer_size {
-        return Err(CameraReadbackError::ReadbackBufferTooLarge {
-            size: buffer_size,
-            max: max_buffer_size,
-        });
-    }
-    Ok(ReadbackLayout {
-        width,
-        height,
-        bytes_per_row_tight,
-        bytes_per_row_padded,
-        buffer_size,
-    })
-}
-
-fn create_readback_buffer(gpu: &GpuContext, layout: &ReadbackLayout) -> wgpu::Buffer {
+fn create_readback_buffer(gpu: &GpuContext, plan: LinearTextureReadbackPlan) -> wgpu::Buffer {
     let buffer = gpu.device().create_buffer(&wgpu::BufferDescriptor {
         label: Some("renderide-camera-task-readback"),
-        size: layout.buffer_size,
+        size: plan.buffer_size(),
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
@@ -562,7 +546,7 @@ fn create_readback_buffer(gpu: &GpuContext, layout: &ReadbackLayout) -> wgpu::Bu
 fn submit_texture_to_buffer_copy(
     gpu: &mut GpuContext,
     color_texture: &wgpu::Texture,
-    layout: &ReadbackLayout,
+    plan: LinearTextureReadbackPlan,
     readback: &wgpu::Buffer,
 ) {
     profiling::scope!("camera_task::gpu_copy");
@@ -584,17 +568,9 @@ fn submit_texture_to_buffer_copy(
         },
         wgpu::TexelCopyBufferInfo {
             buffer: readback,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(layout.bytes_per_row_padded),
-                rows_per_image: Some(layout.height),
-            },
+            layout: plan.copy_buffer_layout(),
         },
-        wgpu::Extent3d {
-            width: layout.width,
-            height: layout.height,
-            depth_or_array_layers: 1,
-        },
+        plan.copy_extent(),
     );
     if let Some(query) = copy_query
         && let Some(prof) = gpu.gpu_profiler_mut()
@@ -607,30 +583,4 @@ fn submit_texture_to_buffer_copy(
         encoder.finish()
     };
     gpu.queue().submit(std::iter::once(command_buffer));
-}
-
-fn copy_padded_rows_to_tight(
-    bytes: &[u8],
-    layout: &ReadbackLayout,
-) -> Result<Vec<u8>, CameraReadbackError> {
-    let required = usize::try_from(layout.buffer_size)
-        .map_err(|_err| CameraReadbackError::OutputByteCountOverflow)?;
-    if bytes.len() < required {
-        return Err(CameraReadbackError::MappedReadbackTooSmall {
-            required,
-            actual: bytes.len(),
-        });
-    }
-    let tight_len =
-        usize::try_from(u64::from(layout.bytes_per_row_tight) * u64::from(layout.height))
-            .map_err(|_err| CameraReadbackError::OutputByteCountOverflow)?;
-    let mut tight = vec![0u8; tight_len];
-    for row in 0..(layout.height as usize) {
-        let src_start = row * layout.bytes_per_row_padded as usize;
-        let src_end = src_start + layout.bytes_per_row_tight as usize;
-        let dst_start = row * layout.bytes_per_row_tight as usize;
-        let dst_end = dst_start + layout.bytes_per_row_tight as usize;
-        tight[dst_start..dst_end].copy_from_slice(&bytes[src_start..src_end]);
-    }
-    Ok(tight)
 }
