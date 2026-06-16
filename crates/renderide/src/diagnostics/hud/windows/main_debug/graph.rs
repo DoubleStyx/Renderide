@@ -36,13 +36,16 @@ fn render_command_recording(ui: &imgui::Ui, graph: &CommandEncodingHudSnapshot) 
                 ui,
                 "Path",
                 &format!(
-                    "{} / {} (requested {})",
-                    graph.recording_path, graph.recording_strategy, graph.requested_recording_mode
+                    "{} / {} (requested {}, single {})",
+                    graph.recording_path,
+                    graph.recording_strategy,
+                    graph.requested_recording_mode,
+                    graph.single_swapchain_encoder_status
                 ),
             );
             kv_colored(
                 ui,
-                "Parallel admission",
+                "Across-view admission",
                 if graph.per_view_record_admitted {
                     TAG_OK
                 } else {
@@ -56,12 +59,28 @@ fn render_command_recording(ui: &imgui::Ui, graph: &CommandEncodingHudSnapshot) 
                     graph.estimated_per_view_draw_count
                 ),
             );
+            kv_colored(
+                ui,
+                "In-view admission",
+                if graph.in_view_record_admitted {
+                    TAG_OK
+                } else {
+                    TAG_DIM
+                },
+                format!(
+                    "auto={} effective={}",
+                    graph.auto_in_view_record_admitted, graph.in_view_record_admitted
+                ),
+            );
             kv(
                 ui,
                 "Views / commands",
                 &format!(
-                    "{} views / {} command buffers / swapchain={}",
-                    graph.view_count, graph.command_buffers, graph.target_is_swapchain
+                    "{} views / {} command buffers ({} per-view) / swapchain={}",
+                    graph.view_count,
+                    graph.command_buffers,
+                    graph.per_view_command_buffers,
+                    graph.target_is_swapchain
                 ),
             );
         });

@@ -26,10 +26,18 @@ pub struct CommandEncodingProfileSample {
     pub auto_per_view_record_admitted: u64,
     /// Whether the effective per-view recording plan uses Rayon.
     pub per_view_record_admitted: u64,
+    /// Whether automatic command recording would split work inside one view.
+    pub auto_in_view_record_admitted: u64,
+    /// Whether the effective command recording plan splits work inside one view.
+    pub in_view_record_admitted: u64,
+    /// Single-swapchain encoder status or disable reason.
+    pub single_swapchain_encoder_status: u64,
     /// Frame-global pass count in the compiled schedule.
     pub frame_global_passes: usize,
     /// Command buffers emitted for frame-global work.
     pub frame_global_command_buffers: usize,
+    /// Command buffers emitted for per-view work.
+    pub per_view_command_buffers: usize,
     /// Per-view pass count in the compiled schedule.
     pub per_view_passes: usize,
     /// Declared transient texture handles in the compiled graph.
@@ -166,12 +174,28 @@ fn plot_pass_counts(sample: &CommandEncodingProfileSample) {
         sample.per_view_record_admitted as f64
     );
     tracy_plot!(
+        "command_encoding::auto_in_view_record_admitted",
+        sample.auto_in_view_record_admitted as f64
+    );
+    tracy_plot!(
+        "command_encoding::in_view_record_admitted",
+        sample.in_view_record_admitted as f64
+    );
+    tracy_plot!(
+        "command_encoding::single_swapchain_encoder_status",
+        sample.single_swapchain_encoder_status as f64
+    );
+    tracy_plot!(
         "command_encoding::frame_global_passes",
         sample.frame_global_passes as f64
     );
     tracy_plot!(
         "command_encoding::frame_global_command_buffers",
         sample.frame_global_command_buffers as f64
+    );
+    tracy_plot!(
+        "command_encoding::per_view_command_buffers",
+        sample.per_view_command_buffers as f64
     );
     tracy_plot!(
         "command_encoding::per_view_passes",

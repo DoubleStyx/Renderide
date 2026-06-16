@@ -41,6 +41,8 @@ pub(super) struct PerViewEncodeOutput {
     pub(super) encode_ms: f64,
     /// CPU time spent inside this view's encoder finish.
     pub(super) finish_ms: f64,
+    /// Slowest command-encoder finish emitted for this view.
+    pub(super) max_finish_ms: f64,
     /// Command counts captured from the final per-view blackboard.
     pub(super) command_stats: GraphCommandStats,
     /// GPU handles resolved while recording this view and retained until driver submit.
@@ -61,6 +63,8 @@ pub(super) struct PerViewRecordOutput {
     pub(super) encode_ms: f64,
     /// CPU time spent inside this view's encoder finish.
     pub(super) finish_ms: f64,
+    /// Slowest command-encoder finish emitted for this view.
+    pub(super) max_finish_ms: f64,
     /// Command counts captured from this view.
     pub(super) command_stats: GraphCommandStats,
     /// GPU handles resolved while recording this view and retained until driver submit.

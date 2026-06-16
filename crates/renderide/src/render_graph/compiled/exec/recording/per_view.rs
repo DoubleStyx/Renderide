@@ -41,6 +41,14 @@ struct PerViewUnitEncodeOutput {
     command_stats: crate::render_graph::blackboard::GraphCommandStats,
 }
 
+struct PerViewCommandEncodeBatch {
+    command_buffers: Vec<wgpu::CommandBuffer>,
+    command_stats: crate::render_graph::blackboard::GraphCommandStats,
+    encode_ms: f64,
+    finish_ms: f64,
+    max_finish_ms: f64,
+}
+
 struct PerViewInlineEncodeOutput {
     encode_ms: f64,
     command_stats: crate::render_graph::blackboard::GraphCommandStats,
@@ -77,6 +85,7 @@ struct PerViewLiveState<'a, 'frame> {
 struct PerViewSchedulerInputs<'a> {
     upload_batch: &'a FrameUploadBatch,
     allow_parallel_batches: bool,
+    split_serial_batches: bool,
     profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
 }
 
@@ -149,47 +158,49 @@ impl CompiledRenderGraph {
             blackboard: &mut view_blackboard,
         };
 
-        let use_scheduler_parallel_batches = strategy
-            == GraphCommandRecordingStrategy::InViewParallel
+        let use_scheduler = strategy.uses_in_view_scheduler()
             && self
                 .schedule
                 .recording_plan
-                .phase_has_parallel_batches(PassPhase::PerView);
-        let (command_buffers, command_stats, encode_ms, finish_ms) =
-            if use_scheduler_parallel_batches {
-                self.record_one_view_scheduler(
-                    scope,
-                    PerViewFrameReuse {
-                        frame_input: &frame_input,
-                        runtime,
-                    },
-                    state,
-                    resolved.offscreen_color_copy.as_ref(),
-                    PerViewSchedulerInputs {
-                        upload_batch,
-                        allow_parallel_batches: true,
-                        profiler,
-                    },
-                )?
-            } else {
-                self.record_one_view_flat(
-                    scope,
-                    state,
-                    resolved.offscreen_color_copy.as_ref(),
+                .phase_batches(PassPhase::PerView)
+                .next()
+                .is_some();
+        let encoded = if use_scheduler {
+            self.record_one_view_scheduler(
+                scope,
+                PerViewFrameReuse {
+                    frame_input: &frame_input,
+                    runtime,
+                },
+                state,
+                resolved.offscreen_color_copy.as_ref(),
+                PerViewSchedulerInputs {
                     upload_batch,
+                    allow_parallel_batches: strategy.allows_in_view_parallel_batches(),
+                    split_serial_batches: true,
                     profiler,
-                )?
-            };
+                },
+            )?
+        } else {
+            self.record_one_view_flat(
+                scope,
+                state,
+                resolved.offscreen_color_copy.as_ref(),
+                upload_batch,
+                profiler,
+            )?
+        };
         let hud_outputs = view_blackboard.take::<PerViewHudOutputsSlot>();
-        let encode_ms = encode_ms.max(elapsed_ms(encode_start));
+        let encode_ms = encoded.encode_ms.max(elapsed_ms(encode_start));
         let mut retained_resources = GpuRetainedResources::new();
         resolved_resources.retain_submit_resources(&mut retained_resources);
         Ok(PerViewEncodeOutput {
-            command_buffers,
+            command_buffers: encoded.command_buffers,
             hud_outputs,
             encode_ms,
-            finish_ms,
-            command_stats,
+            finish_ms: encoded.finish_ms,
+            max_finish_ms: encoded.max_finish_ms,
+            command_stats: encoded.command_stats,
             retained_resources,
         })
     }
@@ -263,6 +274,7 @@ impl CompiledRenderGraph {
             hud_outputs,
             encode_ms: output.encode_ms,
             finish_ms: 0.0,
+            max_finish_ms: 0.0,
             command_stats: output.command_stats,
             retained_resources,
         })
@@ -275,15 +287,7 @@ impl CompiledRenderGraph {
         offscreen_color_copy: Option<&ResolvedOffscreenColorCopy>,
         upload_batch: &FrameUploadBatch,
         profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
-    ) -> Result<
-        (
-            Vec<wgpu::CommandBuffer>,
-            crate::render_graph::blackboard::GraphCommandStats,
-            f64,
-            f64,
-        ),
-        GraphExecuteError,
-    > {
+    ) -> Result<PerViewCommandEncodeBatch, GraphExecuteError> {
         let device = scope.shared.device;
         let encode_start = Instant::now();
         let mut encoder = {
@@ -305,7 +309,13 @@ impl CompiledRenderGraph {
         )?;
         let encode_ms = output.encode_ms.max(elapsed_ms(encode_start));
         if !output.command_stats.has_recorded_work() && !output.recorded_gpu_query {
-            return Ok((Vec::new(), output.command_stats, encode_ms, 0.0));
+            return Ok(PerViewCommandEncodeBatch {
+                command_buffers: Vec::new(),
+                command_stats: output.command_stats,
+                encode_ms,
+                finish_ms: 0.0,
+                max_finish_ms: 0.0,
+            });
         }
         let (command_buffer, finish_ms) = {
             profiling::scope!("CommandEncoder::finish::graph_per_view");
@@ -314,12 +324,13 @@ impl CompiledRenderGraph {
             let finish_ms = elapsed_ms(finish_start);
             (command_buffer, finish_ms)
         };
-        Ok((
-            vec![command_buffer],
-            output.command_stats,
+        Ok(PerViewCommandEncodeBatch {
+            command_buffers: vec![command_buffer],
+            command_stats: output.command_stats,
             encode_ms,
             finish_ms,
-        ))
+            max_finish_ms: finish_ms,
+        })
     }
 
     fn record_one_view_flat_into_encoder<'a>(
@@ -379,28 +390,24 @@ impl CompiledRenderGraph {
         mut state: PerViewLiveState<'a, '_>,
         offscreen_color_copy: Option<&ResolvedOffscreenColorCopy>,
         scheduler: PerViewSchedulerInputs<'a>,
-    ) -> Result<
-        (
-            Vec<wgpu::CommandBuffer>,
-            crate::render_graph::blackboard::GraphCommandStats,
-            f64,
-            f64,
-        ),
-        GraphExecuteError,
-    > {
+    ) -> Result<PerViewCommandEncodeBatch, GraphExecuteError> {
         profiling::scope!("graph::per_view::scheduler");
         let mut command_buffers = Vec::new();
         let mut parallel_stats = crate::render_graph::blackboard::GraphCommandStats::default();
         let mut encode_ms = 0.0;
         let mut finish_ms = 0.0;
+        let mut max_finish_ms = 0.0;
         let batches = self.schedule.recording_plan.batches.as_slice();
         let mut batch_index = next_phase_batch_index(batches, 0, PassPhase::PerView);
         while let Some(current_batch_index) = batch_index {
             let batch = batches[current_batch_index];
             match batch.kind {
                 RecordingBatchKind::Serial => {
-                    let (next_batch_index, end_unit) =
-                        serial_batch_run_end(batches, current_batch_index);
+                    let (next_batch_index, end_unit) = if scheduler.split_serial_batches {
+                        (current_batch_index + 1, batch.end_unit)
+                    } else {
+                        serial_batch_run_end(batches, current_batch_index)
+                    };
                     let output = self.record_serial_unit_range(
                         scope,
                         state.reborrow(),
@@ -410,6 +417,7 @@ impl CompiledRenderGraph {
                     )?;
                     encode_ms += output.encode_ms;
                     finish_ms += output.finish_ms;
+                    max_finish_ms = f64::max(max_finish_ms, output.finish_ms);
                     command_buffers.push(output.command_buffer);
                     batch_index =
                         next_phase_batch_index(batches, next_batch_index, PassPhase::PerView);
@@ -436,6 +444,7 @@ impl CompiledRenderGraph {
                     for output in outputs {
                         encode_ms += output.encode_ms;
                         finish_ms += output.finish_ms;
+                        max_finish_ms = f64::max(max_finish_ms, output.finish_ms);
                         parallel_stats.add(output.command_stats);
                         command_buffers.push(output.command_buffer);
                     }
@@ -455,6 +464,7 @@ impl CompiledRenderGraph {
             let (command_buffer, recorded, copy_encode_ms, copy_finish_ms) = copy_output;
             encode_ms += copy_encode_ms;
             finish_ms += copy_finish_ms;
+            max_finish_ms = f64::max(max_finish_ms, copy_finish_ms);
             let mut stats = crate::render_graph::blackboard::GraphCommandStats::default();
             stats.record_copy_result(recorded);
             parallel_stats.add(stats);
@@ -470,7 +480,13 @@ impl CompiledRenderGraph {
             .copied()
             .unwrap_or_default();
         command_stats.add(parallel_stats);
-        Ok((command_buffers, command_stats, encode_ms, finish_ms))
+        Ok(PerViewCommandEncodeBatch {
+            command_buffers,
+            command_stats,
+            encode_ms,
+            finish_ms,
+            max_finish_ms,
+        })
     }
 
     fn record_serial_unit_range<'a>(

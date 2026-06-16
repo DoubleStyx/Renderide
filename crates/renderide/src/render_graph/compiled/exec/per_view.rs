@@ -31,7 +31,7 @@ impl CompiledRenderGraph {
         let admission = per_view_record_admission(
             FrameParallelPolicy::for_current_thread_pool(),
             n_views,
-            total_draw_count,
+            estimated_record_work,
             PER_VIEW_RECORD_PARALLEL_CHUNK_VIEWS,
         );
         (total_draw_count, estimated_record_work, admission)
@@ -55,7 +55,7 @@ impl CompiledRenderGraph {
             n_views,
             admission,
         );
-        if admission.is_parallel() {
+        if inputs.strategy.uses_across_view_parallelism() && admission.is_parallel() {
             self.record_per_view_outputs_parallel(
                 per_view_work_items,
                 inputs,
@@ -196,14 +196,14 @@ impl CompiledRenderGraph {
 fn per_view_record_admission(
     policy: FrameParallelPolicy,
     view_count: usize,
-    total_draw_count: usize,
+    estimated_record_work: usize,
     chunk_views: usize,
 ) -> ParallelAdmission {
-    if total_draw_count < per_view_record_parallel_min_draws(policy) {
+    if estimated_record_work < per_view_record_parallel_min_draws(policy) {
         return ParallelAdmission::Serial;
     }
     policy.admit_draw_heavy_views(
-        FrameCpuWorkload::view_draws(view_count, total_draw_count),
+        FrameCpuWorkload::view_draws(view_count, estimated_record_work),
         chunk_views,
     )
 }
@@ -274,12 +274,22 @@ mod tests {
     }
 
     #[test]
-    fn per_view_record_admission_counts_pass_recording_work_for_diagnostics_only() {
+    fn per_view_record_admission_counts_pass_recording_work_below_threshold() {
         let estimated_record_work = per_view_record_draw_equivalent(2, 0, 4);
         let admission = per_view_record_admission(FrameParallelPolicy::new(4), 2, 0, 1);
 
         assert_eq!(estimated_record_work, 128);
         assert_eq!(admission, ParallelAdmission::Serial);
+    }
+
+    #[test]
+    fn per_view_record_admission_uses_pass_recording_work() {
+        let estimated_record_work = per_view_record_draw_equivalent(2, 0, 16);
+        let admission =
+            per_view_record_admission(FrameParallelPolicy::new(4), 2, estimated_record_work, 1);
+
+        assert_eq!(estimated_record_work, 512);
+        assert_eq!(admission, ParallelAdmission::Parallel { chunk_size: 1 });
     }
 
     #[test]

@@ -9,8 +9,9 @@ use crate::gpu::GpuRetainedResources;
 use crate::hud_contract::PerViewHudOutputs;
 use crate::render_graph::blackboard::GraphCommandStats;
 
-use super::recording_path::GraphCommandRecordingPlan;
-use super::recording_path::GraphCommandRecordingStrategy;
+use super::recording_path::{
+    GraphCommandRecordingPlan, GraphCommandRecordingStrategy, SingleSwapchainEncoderStatus,
+};
 use super::{
     CommandEncodingDiagnostics, CompiledRenderGraph, FrameGlobalPassRecordInputs, FrameGlobalView,
     FrameUploadBatch, GraphCommandRecordingPath, GraphExecuteError, GraphResolveKey,
@@ -87,6 +88,7 @@ impl CompiledRenderGraph {
                 hud_outputs: encoded.hud_outputs,
                 encode_ms: encoded.encode_ms,
                 finish_ms: encoded.finish_ms,
+                max_finish_ms: encoded.max_finish_ms,
                 command_stats: encoded.command_stats,
                 retained_resources: encoded.retained_resources,
             },
@@ -112,6 +114,8 @@ impl CompiledRenderGraph {
             && self.frame_global_has_split_workload(&*mv_ctx.backend)
         {
             command_diagnostics.recording_path = GraphCommandRecordingPath::StandardCommandBuffers;
+            command_diagnostics.single_swapchain_encoder_status =
+                SingleSwapchainEncoderStatus::FrameGlobalSplitWorkload;
             GraphCommandRecordingPath::StandardCommandBuffers
         } else {
             plan.path
@@ -247,7 +251,7 @@ impl CompiledRenderGraph {
             for output in per_view_outputs {
                 encode_ms += output.encode_ms;
                 finish_ms += output.finish_ms;
-                max_finish_ms = f64::max(max_finish_ms, output.finish_ms);
+                max_finish_ms = f64::max(max_finish_ms, output.max_finish_ms);
                 command_stats.add(output.command_stats);
                 retained_resources.append(output.retained_resources);
                 per_view_cmds.extend(output.command_buffers);

@@ -3,7 +3,9 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::super::super::pool::TransientPoolMetrics;
-use super::recording_path::GraphCommandRecordingStrategy;
+use super::recording_path::{
+    GraphCommandRecordingPlan, GraphCommandRecordingStrategy, SingleSwapchainEncoderStatus,
+};
 use super::{
     CompiledRenderGraph, GraphCommandRecordingPath, RecordedPerViewBatch, SubmitFrameBatchStats,
     TimedCommandBuffer,
@@ -40,10 +42,18 @@ pub struct CommandEncodingHudSnapshot {
     pub auto_per_view_record_admitted: bool,
     /// Whether the effective per-view recording path admitted parallel work.
     pub per_view_record_admitted: bool,
+    /// Whether automatic recording would split work inside one view.
+    pub auto_in_view_record_admitted: bool,
+    /// Whether the effective recording path splits work inside one view.
+    pub in_view_record_admitted: bool,
+    /// Whether the single-swapchain encoder path was selected or why it was unavailable.
+    pub single_swapchain_encoder_status: String,
     /// Scheduled frame-global pass count.
     pub frame_global_passes: usize,
     /// Frame-global command buffers recorded.
     pub frame_global_command_buffers: usize,
+    /// Per-view command buffers recorded before profiler resolve work.
+    pub per_view_command_buffers: usize,
     /// Scheduled per-view pass count.
     pub per_view_passes: usize,
     /// Retained scheduler pass count.
@@ -151,8 +161,12 @@ pub(super) struct CommandEncodingDiagnostics {
     pub(super) estimated_per_view_record_work: usize,
     pub(super) auto_per_view_record_admitted: bool,
     pub(super) per_view_record_admitted: bool,
+    pub(super) auto_in_view_record_admitted: bool,
+    pub(super) in_view_record_admitted: bool,
+    pub(super) single_swapchain_encoder_status: SingleSwapchainEncoderStatus,
     pub(super) frame_global_passes: usize,
     pub(super) frame_global_command_buffers: usize,
+    pub(super) per_view_command_buffers: usize,
     pub(super) per_view_passes: usize,
     pub(super) scheduler_passes: usize,
     pub(super) scheduler_registered_passes: usize,
@@ -211,8 +225,12 @@ impl CommandEncodingDiagnostics {
             estimated_per_view_record_work: 0,
             auto_per_view_record_admitted: false,
             per_view_record_admitted: false,
+            auto_in_view_record_admitted: false,
+            in_view_record_admitted: false,
+            single_swapchain_encoder_status: SingleSwapchainEncoderStatus::MultipleViews,
             frame_global_passes: graph.schedule_hud.frame_global_count,
             frame_global_command_buffers: 0,
+            per_view_command_buffers: 0,
             per_view_passes: graph.schedule_hud.per_view_count,
             scheduler_passes: graph.schedule_hud.pass_count,
             scheduler_registered_passes: graph.compile_stats.registered_pass_count,
@@ -281,7 +299,21 @@ impl CommandEncodingDiagnostics {
         self.frame_global_finish_ms = commands.iter().map(|command| command.finish_ms).sum();
     }
 
+    pub(super) fn apply_recording_plan(&mut self, plan: GraphCommandRecordingPlan) {
+        self.recording_path = plan.path;
+        self.recording_strategy = plan.strategy;
+        self.requested_recording_mode = plan.requested_mode;
+        self.estimated_per_view_draw_count = plan.estimated_per_view_draw_count;
+        self.estimated_per_view_record_work = plan.estimated_per_view_record_work;
+        self.auto_per_view_record_admitted = plan.auto_per_view_record_admission.is_parallel();
+        self.per_view_record_admitted = plan.per_view_record_admission.is_parallel();
+        self.auto_in_view_record_admitted = plan.auto_in_view_record_admitted;
+        self.in_view_record_admitted = plan.in_view_record_admitted;
+        self.single_swapchain_encoder_status = plan.single_swapchain_encoder_status;
+    }
+
     pub(super) fn apply_per_view(&mut self, batch: &RecordedPerViewBatch) {
+        self.per_view_command_buffers = batch.per_view_cmds.len();
         self.per_view_encode_ms = batch.encode_ms;
         self.per_view_finish_ms = batch.finish_ms;
         self.per_view_max_finish_ms = batch.max_finish_ms;
@@ -321,8 +353,12 @@ impl CommandEncodingDiagnostics {
             estimated_per_view_record_work: self.estimated_per_view_record_work,
             auto_per_view_record_admitted: plot_bool(self.auto_per_view_record_admitted),
             per_view_record_admitted: plot_bool(self.per_view_record_admitted),
+            auto_in_view_record_admitted: plot_bool(self.auto_in_view_record_admitted),
+            in_view_record_admitted: plot_bool(self.in_view_record_admitted),
+            single_swapchain_encoder_status: self.single_swapchain_encoder_status.as_plot_value(),
             frame_global_passes: self.frame_global_passes,
             frame_global_command_buffers: self.frame_global_command_buffers,
+            per_view_command_buffers: self.per_view_command_buffers,
             per_view_passes: self.per_view_passes,
             transient_textures: self.transient_texture_count,
             transient_texture_slots: self.transient_texture_slots,
@@ -416,8 +452,12 @@ impl CommandEncodingDiagnostics {
             estimated_per_view_record_work: self.estimated_per_view_record_work,
             auto_per_view_record_admitted: self.auto_per_view_record_admitted,
             per_view_record_admitted: self.per_view_record_admitted,
+            auto_in_view_record_admitted: self.auto_in_view_record_admitted,
+            in_view_record_admitted: self.in_view_record_admitted,
+            single_swapchain_encoder_status: format!("{:?}", self.single_swapchain_encoder_status),
             frame_global_passes: self.frame_global_passes,
             frame_global_command_buffers: self.frame_global_command_buffers,
+            per_view_command_buffers: self.per_view_command_buffers,
             per_view_passes: self.per_view_passes,
             scheduler_passes: self.scheduler_passes,
             scheduler_registered_passes: self.scheduler_registered_passes,
@@ -477,7 +517,7 @@ impl CommandEncodingDiagnostics {
             return;
         }
         logger::warn!(
-            "slow command encoder finish: max_finish_ms={:.3} frame_global_finish_ms={:.3} per_view_max_finish_ms={:.3} upload_finish_ms={:.3} single_swapchain_finish_ms={:.3} views={} command_buffers={} recording(path/strategy/requested/auto_admitted/effective_admitted/estimated_draws/estimated_work)={:?}/{:?}/{:?}/{}/{}/{}/{} passes(frame_global/per_view)={}/{} scheduler(passes/registered/culled/compile_skipped/waves/largest_wave/submit_steps/upload_phases/resource_events/import_finals/dependency_edges/merge_groups/materialized_groups/async_compute_capable/parallel_units/parallel_batches/attachment_resolves/transient_store/transient_discard/bandwidth_bytes)={}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{} transients(textures/slots/texture_lanes/buffer_lanes)={}/{}/{}/{} validation(diagnostics/parameter_schemas)={}/{} transient_misses(tex/buf)={}/{} uploads(writes/bytes/staged/fallback)={}/{}/{}/{} upload_arena(persistent_bytes/temp_bytes/reuses/grows/temp_fallbacks/oversized_queue/capacity/free/inflight/remapping)={}/{}/{}/{}/{}/{}/{}/{}/{}/{} timings_ms(pre_resolve/prepare/frame_global_encode/per_view_encode/upload_drain/single_swapchain_encode/assemble/submit)={:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3} commands(draws/instance_batches/pipeline_pass_submits/skipped/raster/compute/encoder/render_passes/copies/skipped_copies/resolves/skipped_resolves/bandwidth_bytes)={}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
+            "slow command encoder finish: max_finish_ms={:.3} frame_global_finish_ms={:.3} per_view_max_finish_ms={:.3} upload_finish_ms={:.3} single_swapchain_finish_ms={:.3} views={} command_buffers={} recording(path/strategy/requested/auto_across/effective_across/auto_in_view/effective_in_view/single_swapchain/estimated_draws/estimated_work)={:?}/{:?}/{:?}/{}/{}/{}/{}/{:?}/{}/{} passes(frame_global/per_view)={}/{} scheduler(passes/registered/culled/compile_skipped/waves/largest_wave/submit_steps/upload_phases/resource_events/import_finals/dependency_edges/merge_groups/materialized_groups/async_compute_capable/parallel_units/parallel_batches/attachment_resolves/transient_store/transient_discard/bandwidth_bytes)={}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{} transients(textures/slots/texture_lanes/buffer_lanes)={}/{}/{}/{} validation(diagnostics/parameter_schemas)={}/{} transient_misses(tex/buf)={}/{} uploads(writes/bytes/staged/fallback)={}/{}/{}/{} upload_arena(persistent_bytes/temp_bytes/reuses/grows/temp_fallbacks/oversized_queue/capacity/free/inflight/remapping)={}/{}/{}/{}/{}/{}/{}/{}/{}/{} timings_ms(pre_resolve/prepare/frame_global_encode/per_view_encode/upload_drain/single_swapchain_encode/assemble/submit)={:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3}/{:.3} commands(draws/instance_batches/pipeline_pass_submits/skipped/raster/compute/encoder/render_passes/copies/skipped_copies/resolves/skipped_resolves/bandwidth_bytes)={}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
             max_finish_ms,
             self.frame_global_finish_ms,
             self.per_view_max_finish_ms,
@@ -490,6 +530,9 @@ impl CommandEncodingDiagnostics {
             self.requested_recording_mode,
             self.auto_per_view_record_admitted,
             self.per_view_record_admitted,
+            self.auto_in_view_record_admitted,
+            self.in_view_record_admitted,
+            self.single_swapchain_encoder_status,
             self.estimated_per_view_draw_count,
             self.estimated_per_view_record_work,
             self.frame_global_passes,
