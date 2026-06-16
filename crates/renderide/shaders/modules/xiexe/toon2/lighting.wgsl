@@ -338,8 +338,7 @@ fn indirect_reflection_branch_for_layout(
     keyword_layout: u32,
 ) -> vec3<f32> {
     if (xvb::matcap_enabled_for_layout(keyword_layout)) {
-        let stereo_view_dir = rg::stereo_center_view_dir_for_world_pos(world_pos, view_layer);
-        let uv = matcap_uv(stereo_view_dir, normal);
+        let uv = matcap_uv(view_dir, normal);
         let lod = clamp((1.0 - clamp(perceptual_roughness, 0.0, 1.0)) * SPECCUBE_LOD_STEPS, 0.0, SPECCUBE_LOD_STEPS);
         var spec = textureSampleLevel(xb::_Matcap, xb::_Matcap_sampler, uv, lod).rgb * xb::mat._MatcapTint.rgb;
         spec = spec * (ambient + dominant_light_col_atten * 0.5);
