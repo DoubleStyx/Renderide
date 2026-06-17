@@ -18,9 +18,7 @@
 
 #import renderide::frame::globals as rg
 #import renderide::frame::types as ft
-#import renderide::lighting::birp as bl
-#import renderide::lighting::light_cookies as cookies
-#import renderide::lighting::shadows as shadows
+#import renderide::pbs::light_eval as le
 
 #define_import_path renderide::pbs::brdf
 
@@ -348,53 +346,16 @@ fn fd_burley(n_dot_v: f32, n_dot_l: f32, l_dot_h: f32, perceptual_roughness: f32
     return light_scatter * view_scatter * (1.0 / PI);
 }
 
-/// Unity BiRP-style distance attenuation for punctual lights.
-///
-/// Preserved as the `renderide::pbs::brdf` entry point for material shaders that already call it.
 fn distance_attenuation(dist: f32, range: f32) -> f32 {
-    return bl::distance_attenuation(dist, range);
+    return le::distance_attenuation(dist, range);
 }
 
-/// Result of evaluating one punctual light at a surface point.
-struct LightSample {
-    /// Direction from the surface toward the light source (unit length when `attenuation > 0`).
-    l: vec3<f32>,
-    /// Combined direct-light boost, distance, and spot attenuation.
-    attenuation: f32,
+fn eval_light(light: ft::GpuLight, world_pos: vec3<f32>, world_normal: vec3<f32>) -> le::LightSample {
+    return le::eval_light(light, world_pos, world_normal);
 }
 
-/// Resolves the per-light-type direction and attenuation. Single source of truth for point /
-/// directional / spot dispatch shared by all four direct-radiance functions in this module.
-fn eval_light(light: ft::GpuLight, world_pos: vec3<f32>, world_normal: vec3<f32>) -> LightSample {
-    let light_pos = light.position.xyz;
-    let light_dir = light.direction.xyz;
-    var out: LightSample;
-    if light.light_type == 0u {
-        let to_light = light_pos - world_pos;
-        let dist = length(to_light);
-        out.l = normalize(to_light);
-        out.attenuation = distance_attenuation(dist, light.range);
-        out.attenuation = out.attenuation * cookies::multiplier(light, world_pos);
-    } else if light.light_type == 1u {
-        let dir_len_sq = dot(light_dir, light_dir);
-        out.l = select(vec3<f32>(0.0, 0.0, 1.0), normalize(-light_dir), dir_len_sq > 1e-16);
-        out.attenuation = bl::direct_light_scale();
-        out.attenuation = out.attenuation * cookies::multiplier(light, world_pos);
-    } else {
-        let to_light = light_pos - world_pos;
-        let dist = length(to_light);
-        out.l = normalize(to_light);
-        let spot_atten = bl::spot_angle_attenuation(light, out.l);
-        out.attenuation = spot_atten * distance_attenuation(dist, light.range);
-        out.attenuation = out.attenuation * cookies::multiplier(light, world_pos);
-    }
-    out.attenuation = out.attenuation * shadows::visibility(light, world_pos, world_normal);
-    return out;
-}
-
-/// Signed direct radiance carried by one light sample before BRDF multiplication.
 fn signed_light_radiance(light: ft::GpuLight, attenuation: f32, n_dot_l: f32) -> vec3<f32> {
-    return bl::light_radiance(light) * attenuation * n_dot_l;
+    return le::signed_light_radiance(light, attenuation, n_dot_l);
 }
 
 /// Evaluated direct GGX lobe terms shared by PBS and stylized materials.

@@ -7,13 +7,9 @@
 #import renderide::core::fullscreen as fs
 #import renderide::post::gtao_filter as gf
 #import renderide::frame::types as ft
+#import renderide::post::gtao_math as gm
 #import renderide::post::gtao_params as gparams
 
-const PI: f32 = 3.14159265359;
-const PI_HALF: f32 = 1.57079632679;
-const HILBERT_WIDTH: u32 = 64u;
-const HILBERT_INDEX_FRAME_OFFSET: u32 = 288u;
-const MIN_VISIBILITY: f32 = 0.03;
 #ifdef MULTIVIEW
 @group(0) @binding(0) var view_depth: texture_2d_array<f32>;
 @group(0) @binding(1) var view_depth_mip1: texture_2d_array<f32>;
@@ -65,23 +61,6 @@ fn projection_flags_for_view(view_layer: u32) -> u32 {
 
 fn view_is_orthographic(view_layer: u32) -> bool {
     return (projection_flags_for_view(view_layer) & ft::FRAME_PROJECTION_FLAG_ORTHOGRAPHIC) != 0u;
-}
-
-fn view_pos_from_uv(
-    uv: vec2<f32>,
-    view_z: f32,
-    proj_params: vec4<f32>,
-    view_layer: u32,
-) -> vec3<f32> {
-    let ndc_xy = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
-    if (view_is_orthographic(view_layer)) {
-        let view_x = (ndc_xy.x + proj_params.z) / max(abs(proj_params.x), 1e-6);
-        let view_y = (ndc_xy.y + proj_params.w) / max(abs(proj_params.y), 1e-6);
-        return vec3<f32>(view_x, view_y, view_z);
-    }
-    let view_x = (ndc_xy.x + proj_params.z) * view_z / proj_params.x;
-    let view_y = (ndc_xy.y + proj_params.w) * view_z / proj_params.y;
-    return vec3<f32>(view_x, view_y, view_z);
 }
 
 fn mip_dimensions(mip: u32) -> vec2<u32> {
@@ -172,40 +151,6 @@ fn load_prepass_view_normal(uv: vec2<f32>, view_layer: u32) -> vec4<f32> {
 #endif
 }
 
-fn calculate_view_normal(
-    edges_lrtb: vec4<f32>,
-    center: vec3<f32>,
-    left: vec3<f32>,
-    right: vec3<f32>,
-    top: vec3<f32>,
-    bottom: vec3<f32>,
-) -> vec3<f32> {
-    let accepted = clamp(
-        vec4<f32>(
-            edges_lrtb.x * edges_lrtb.z,
-            edges_lrtb.z * edges_lrtb.y,
-            edges_lrtb.y * edges_lrtb.w,
-            edges_lrtb.w * edges_lrtb.x,
-        ) + vec4<f32>(0.01),
-        vec4<f32>(0.0),
-        vec4<f32>(1.0),
-    );
-
-    let l = normalize(left - center);
-    let r = normalize(right - center);
-    let t = normalize(top - center);
-    let b = normalize(bottom - center);
-    let n = accepted.x * cross(l, t)
-        + accepted.y * cross(t, r)
-        + accepted.z * cross(r, b)
-        + accepted.w * cross(b, l);
-    let n_len = length(n);
-    if (n_len < 1e-5) {
-        return vec3<f32>(0.0, 0.0, -1.0);
-    }
-    return n / n_len;
-}
-
 fn reconstruct_view_normal(
     uv: vec2<f32>,
     proj_params: vec4<f32>,
@@ -219,12 +164,13 @@ fn reconstruct_view_normal(
 ) -> vec3<f32> {
     let depth_dim = mip_dimensions(0u);
     let inv_viewport = 1.0 / vec2<f32>(f32(depth_dim.x), f32(depth_dim.y));
-    let center = view_pos_from_uv(uv, z_center, proj_params, view_layer);
-    let left = view_pos_from_uv(uv + vec2<f32>(-inv_viewport.x, 0.0), z_left, proj_params, view_layer);
-    let right = view_pos_from_uv(uv + vec2<f32>(inv_viewport.x, 0.0), z_right, proj_params, view_layer);
-    let top = view_pos_from_uv(uv + vec2<f32>(0.0, -inv_viewport.y), z_top, proj_params, view_layer);
-    let bottom = view_pos_from_uv(uv + vec2<f32>(0.0, inv_viewport.y), z_bottom, proj_params, view_layer);
-    return calculate_view_normal(edges_lrtb, center, left, right, top, bottom);
+    let orthographic = view_is_orthographic(view_layer);
+    let center = gm::view_pos_from_uv(uv, z_center, proj_params, orthographic);
+    let left = gm::view_pos_from_uv(uv + vec2<f32>(-inv_viewport.x, 0.0), z_left, proj_params, orthographic);
+    let right = gm::view_pos_from_uv(uv + vec2<f32>(inv_viewport.x, 0.0), z_right, proj_params, orthographic);
+    let top = gm::view_pos_from_uv(uv + vec2<f32>(0.0, -inv_viewport.y), z_top, proj_params, orthographic);
+    let bottom = gm::view_pos_from_uv(uv + vec2<f32>(0.0, inv_viewport.y), z_bottom, proj_params, orthographic);
+    return gm::calculate_view_normal(edges_lrtb, center, left, right, top, bottom);
 }
 
 fn select_view_normal(
@@ -256,58 +202,6 @@ fn select_view_normal(
     );
 }
 
-fn hilbert_index(pos_x_in: u32, pos_y_in: u32) -> u32 {
-    var pos_x = pos_x_in & (HILBERT_WIDTH - 1u);
-    var pos_y = pos_y_in & (HILBERT_WIDTH - 1u);
-    var index = 0u;
-    var cur_level = HILBERT_WIDTH / 2u;
-    loop {
-        if (cur_level == 0u) {
-            break;
-        }
-        let region_x = select(0u, 1u, (pos_x & cur_level) > 0u);
-        let region_y = select(0u, 1u, (pos_y & cur_level) > 0u);
-        index = index + cur_level * cur_level * ((3u * region_x) ^ region_y);
-        if (region_y == 0u) {
-            if (region_x == 1u) {
-                pos_x = (HILBERT_WIDTH - 1u) - pos_x;
-                pos_y = (HILBERT_WIDTH - 1u) - pos_y;
-            }
-            let temp = pos_x;
-            pos_x = pos_y;
-            pos_y = temp;
-        }
-        cur_level = cur_level / 2u;
-    }
-    return index;
-}
-
-fn spatio_temporal_noise(pix: vec2<i32>, frame_index: u32) -> vec2<f32> {
-    var index = hilbert_index(u32(pix.x), u32(pix.y));
-    index = index + HILBERT_INDEX_FRAME_OFFSET * (frame_index % 64u);
-    return fract(
-        vec2<f32>(0.5)
-            + f32(index) * vec2<f32>(0.75487766624669276005, 0.56984029099805326591),
-    );
-}
-
-fn multi_bounce_fit(ao: f32, albedo: f32) -> f32 {
-    let a = 2.0404 * albedo - 0.3324;
-    let b = 4.7951 * albedo - 0.6417;
-    let c = 2.7552 * albedo + 0.6903;
-    return max(ao, ((a * ao - b) * ao + c) * ao);
-}
-
-fn sample_mip_for_offset(sample_offset_length: f32) -> u32 {
-    let max_mip = f32(max(gtao.view_depth_mip_count, 1u) - 1u);
-    let mip = clamp(
-        floor(log2(max(sample_offset_length, 1.0)) - gtao.depth_mip_sampling_offset),
-        0.0,
-        max_mip,
-    );
-    return u32(mip);
-}
-
 fn add_horizon_sample(
     sample_uv: vec2<f32>,
     view_layer: u32,
@@ -324,7 +218,7 @@ fn add_horizon_sample(
         return low_horizon_cos;
     }
 
-    let sample_pos = view_pos_from_uv(sample_uv, sample_z, proj_params, view_layer);
+    let sample_pos = gm::view_pos_from_uv(sample_uv, sample_z, proj_params, view_is_orthographic(view_layer));
     let delta = sample_pos - view_pos;
     let dist = length(delta);
     if (dist <= 1e-4) {
@@ -371,8 +265,8 @@ fn compute_gtao(pix: vec2<i32>, uv: vec2<f32>, view_layer: u32) -> GtaoSampleOut
     );
 
     let biased_z = z_center * 0.99999;
-    let view_pos = view_pos_from_uv(uv, biased_z, proj_params, view_layer);
     let orthographic = view_is_orthographic(view_layer);
+    let view_pos = gm::view_pos_from_uv(uv, biased_z, proj_params, orthographic);
     let view_dir = select(normalize(-view_pos), vec3<f32>(0.0, 0.0, -1.0), orthographic);
     let effect_radius = max(gtao.radius_world * gtao.radius_multiplier, 1e-4);
     let perspective_pixel_view_size = biased_z * 2.0 / max(abs(proj_params.x) * viewport.x, 1e-4);
@@ -398,11 +292,11 @@ fn compute_gtao(pix: vec2<i32>, uv: vec2<f32>, view_layer: u32) -> GtaoSampleOut
 
     let slice_count = max(gtao.slice_count, 1u);
     let steps_per_slice = max(gtao.steps_per_slice, 1u);
-    let noise = spatio_temporal_noise(pix, frame.frame_tail.x);
+    let noise = gm::spatio_temporal_noise(pix, frame.frame_tail.x);
 
     for (var slice: u32 = 0u; slice < slice_count; slice = slice + 1u) {
         let slice_k = (f32(slice) + noise.x) / f32(slice_count);
-        let phi = slice_k * PI;
+        let phi = slice_k * gm::PI;
         let cos_phi = cos(phi);
         let sin_phi = sin(phi);
         let direction_vec = vec3<f32>(cos_phi, sin_phi, 0.0);
@@ -423,8 +317,8 @@ fn compute_gtao(pix: vec2<i32>, uv: vec2<f32>, view_layer: u32) -> GtaoSampleOut
         let cos_norm = clamp(dot(projected_normal_vec, view_dir) / projected_normal_vec_length, 0.0, 1.0);
         let n = sign_norm * acos(cos_norm);
         let sin_n = sin(n);
-        let low_horizon_cos0 = cos(n + PI_HALF);
-        let low_horizon_cos1 = cos(n - PI_HALF);
+        let low_horizon_cos0 = cos(n + gm::PI_HALF);
+        let low_horizon_cos1 = cos(n - gm::PI_HALF);
         var horizon_cos0 = low_horizon_cos0;
         var horizon_cos1 = low_horizon_cos1;
 
@@ -438,7 +332,11 @@ fn compute_gtao(pix: vec2<i32>, uv: vec2<f32>, view_layer: u32) -> GtaoSampleOut
 
             let sample_offset_pixels = s * omega;
             let sample_offset_length = length(sample_offset_pixels);
-            let mip = sample_mip_for_offset(sample_offset_length);
+            let mip = gm::sample_mip_for_offset(
+                sample_offset_length,
+                gtao.view_depth_mip_count,
+                gtao.depth_mip_sampling_offset,
+            );
             let sample_offset_uv = round(sample_offset_pixels) * inv_viewport;
 
             let shc0 = add_horizon_sample(
@@ -478,9 +376,9 @@ fn compute_gtao(pix: vec2<i32>, uv: vec2<f32>, view_layer: u32) -> GtaoSampleOut
     visibility = visibility / f32(slice_count);
     visibility = pow(clamp(visibility, 0.0, 1.0), gtao.final_value_power);
     visibility = pow(clamp(visibility, 0.0, 1.0), gtao.intensity);
-    visibility = max(MIN_VISIBILITY, visibility);
+    visibility = max(gm::MIN_VISIBILITY, visibility);
     return GtaoSampleOutput(
-        multi_bounce_fit(visibility, gtao.albedo_multibounce),
+        gm::multi_bounce_fit(visibility, gtao.albedo_multibounce),
         edges_lrtb,
     );
 }
