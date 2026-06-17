@@ -160,23 +160,28 @@ fn custom_mesh_tbn_shaders_route_through_shared_parity() -> io::Result<()> {
 }
 
 #[test]
-fn matcap_shader_uses_active_view_projection_basis() -> io::Result<()> {
+fn matcap_shader_uses_active_view_normal_basis() -> io::Result<()> {
     let matcap = material_source("matcap.wgsl")?;
 
     for required in [
         "let view_layer = view_idx;",
         "let vp = mv::select_view_proj(d, view_layer);",
-        "let basis = vb::from_view_projection(vp);",
-        "out.view_x = basis.x;",
-        "out.view_y = basis.y;",
+        "@location(4) @interpolate(flat) view_layer: u32,",
+        "out.view_layer = view_layer;",
+        "let n_view = rg::world_to_view_normal_for_view(n_world, view_layer);",
+        "let uv = n_view.xy * 0.5 + vec2<f32>(0.5);",
     ] {
         assert!(
             matcap.contains(required),
-            "Matcap must derive its lookup basis from the active view projection via `{required}`"
+            "Matcap must derive its lookup basis from the active view normal via `{required}`"
         );
     }
 
     for forbidden in [
+        "renderide::frame::view_basis",
+        "vb::from_view_projection",
+        "out.view_x",
+        "out.view_y",
         "stereo_center",
         "frag_screen_uv",
         "screen_uv",
@@ -184,7 +189,7 @@ fn matcap_shader_uses_active_view_projection_basis() -> io::Result<()> {
     ] {
         assert!(
             !matcap.contains(forbidden),
-            "Matcap must not derive matcap UVs from stereo-center or screen-space fragment `{forbidden}`"
+            "Matcap must not derive matcap UVs from projection, stereo-center, or screen-space fragment `{forbidden}`"
         );
     }
 

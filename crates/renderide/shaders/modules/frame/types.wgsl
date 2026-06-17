@@ -133,4 +133,12 @@ struct FrameGlobals {
     fog_color_mode: vec4<f32>,
     /// Unity-style fog parameters consumed by `renderide::frame::fog`.
     fog_params: vec4<f32>,
+    /// Left-eye (or mono) world -> view-space X coefficients.
+    view_space_x_coeffs: vec4<f32>,
+    /// Right-eye world -> view-space X coefficients (equals left in mono mode).
+    view_space_x_coeffs_right: vec4<f32>,
+    /// Left-eye (or mono) world -> view-space Y coefficients.
+    view_space_y_coeffs: vec4<f32>,
+    /// Right-eye world -> view-space Y coefficients (equals left in mono mode).
+    view_space_y_coeffs_right: vec4<f32>,
 }

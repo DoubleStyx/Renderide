@@ -64,6 +64,26 @@ fn camera_world_pos_for_view(view_layer: u32) -> vec3<f32> {
     return frame.camera_world_pos.xyz;
 }
 
+/// World -> view-space X coefficients for the current view layer.
+fn view_space_x_coeffs_for_view(view_layer: u32) -> vec4<f32> {
+#ifdef MULTIVIEW
+    if (view_layer_is_right_eye(view_layer)) {
+        return frame.view_space_x_coeffs_right;
+    }
+#endif
+    return frame.view_space_x_coeffs;
+}
+
+/// World -> view-space Y coefficients for the current view layer.
+fn view_space_y_coeffs_for_view(view_layer: u32) -> vec4<f32> {
+#ifdef MULTIVIEW
+    if (view_layer_is_right_eye(view_layer)) {
+        return frame.view_space_y_coeffs_right;
+    }
+#endif
+    return frame.view_space_y_coeffs;
+}
+
 /// World -> view-space Z coefficients for the current view layer.
 fn view_space_z_coeffs_for_view(view_layer: u32) -> vec4<f32> {
 #ifdef MULTIVIEW
@@ -138,6 +158,18 @@ fn safe_normalize_or(v: vec3<f32>, fallback: vec3<f32>) -> vec3<f32> {
         return fallback;
     }
     return v / len;
+}
+
+/// Transforms a world-space normal into the active view layer's view space.
+fn world_to_view_normal_for_view(world_n: vec3<f32>, view_layer: u32) -> vec3<f32> {
+    let x_coeffs = view_space_x_coeffs_for_view(view_layer);
+    let y_coeffs = view_space_y_coeffs_for_view(view_layer);
+    let z_coeffs = view_space_z_coeffs_for_view(view_layer);
+    return safe_normalize_or(vec3<f32>(
+        dot(x_coeffs.xyz, world_n),
+        dot(y_coeffs.xyz, world_n),
+        dot(z_coeffs.xyz, world_n),
+    ), vec3<f32>(0.0, 0.0, 1.0));
 }
 
 /// Unit vector from a world position toward the orthographic camera plane.
