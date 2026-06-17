@@ -272,7 +272,7 @@ fn billboard_fill_writes_front_facing_point_indices() {
     assert_eq!(index_words, &[0, 1, 2, 2, 1, 3, 4, 5, 6, 6, 5, 7]);
     let first_vertex: &[f32] = bytemuck::cast_slice(&vertices[..generated_vertex_stride()]);
     assert_eq!(&first_vertex[..3], &[1.0, 2.0, 3.0]);
-    assert_eq!(&first_vertex[3..5], &[0.5, 0.5]);
+    assert_eq!(&first_vertex[3..5], &[-0.5, -0.5]);
     assert_eq!(&first_vertex[6..8], &[0.0, 0.0]);
     let second_first_vertex_start = BILLBOARD_VERTICES_PER_POINT * generated_vertex_stride();
     let second_first_vertex: &[f32] = bytemuck::cast_slice(
@@ -352,7 +352,7 @@ fn generated_particle_derived_streams_match_vertex_payloads() {
     let first_color: &[f32] = bytemuck::cast_slice(&color[..16]);
 
     assert_eq!(first_position, &[1.0, 2.0, 3.0, 1.0]);
-    assert_eq!(first_normal, &[1.0, 1.0, 0.0, 0.0]);
+    assert_eq!(first_normal, &[-1.0, -1.0, 0.0, 0.0]);
     assert_eq!(first_uv, &[0.0, 0.0]);
     assert_eq!(first_color, &[0.25, 0.5, 0.75, 1.0]);
 }
@@ -369,13 +369,17 @@ fn billboard_extra_streams_pack_particle_orientation() {
 
     let streams = billboard_extra_streams(&points);
     let raw_tangent = streams.raw_tangent.as_deref().expect("raw tangent");
+    let geometric_tangent = streams.tangent.as_deref().expect("tangent");
     let uv1 = streams.uv1.as_deref().expect("uv1");
     let tangent: &[f32] = bytemuck::cast_slice(&raw_tangent[..16]);
+    let geometric: &[f32] = bytemuck::cast_slice(&geometric_tangent[..16]);
     let up_xy: &[f32] = bytemuck::cast_slice(&uv1[..8]);
 
     assert_eq!(tangent, &[0.0, 0.0, 1.0, 0.0]);
+    assert_eq!(geometric, tangent);
     assert_eq!(up_xy, &[0.0, 1.0]);
     assert_eq!(raw_tangent.len(), BILLBOARD_VERTICES_PER_POINT * 16);
+    assert_eq!(geometric_tangent.len(), BILLBOARD_VERTICES_PER_POINT * 16);
     assert_eq!(uv1.len(), BILLBOARD_VERTICES_PER_POINT * 8);
 }
 
@@ -397,12 +401,14 @@ fn particle_draw_params_pack_uniform_rows() {
         MeshAlignment::Facing,
         Vec4::new(0.25, 0.5, 0.75, 0.5),
         Some(13),
+        glam::IVec2::new(4, 2),
     );
     let mesh_rows = mesh.to_uniform_rows();
     assert_eq!(mesh_rows[0][0], ParticleDrawKind::Mesh as u32 as f32);
     assert_eq!(mesh_rows[0][1], MeshAlignment::Facing as u32 as f32);
     assert_eq!(mesh_rows[1], [0.25, 0.5, 0.75, 0.5]);
     assert_eq!(mesh_rows[2][1], 13.0);
+    assert_eq!(mesh_rows[3], [4.0, 2.0, 0.0, 0.0]);
 
     let trail = ParticleDrawParams::trail(TrailTextureMode::Tile, MotionVectorMode::Camera, true);
     let trail_rows = trail.to_uniform_rows();
@@ -511,15 +517,18 @@ fn trail_mesh_chunks_merge_to_full_mesh_bytes() {
     let mut chunked = TrailMeshChunk {
         vertices: Vec::new(),
         indices: Vec::new(),
+        tangents: Vec::new(),
     };
     for range in [0..1, 1..3] {
         let mut chunk = build_trail_mesh_chunk(&trails, &offsets, TrailTextureMode::Stretch, range);
         chunked.vertices.append(&mut chunk.vertices);
         chunked.indices.append(&mut chunk.indices);
+        chunked.tangents.append(&mut chunk.tangents);
     }
 
     assert_eq!(chunked.vertices, full.vertices);
     assert_eq!(chunked.indices, full.indices);
+    assert_eq!(chunked.tangents, full.tangents);
 }
 
 #[test]
@@ -617,7 +626,7 @@ fn billboard_roll_encodes_z_rotation_in_point_data() {
     fill_billboard_buffers(&points, glam::IVec2::ONE, &mut vertices, &mut indices);
 
     let vertex: &[f32] = bytemuck::cast_slice(&vertices[..generated_vertex_stride()]);
-    assert_eq!(&vertex[3..5], &[1.0, 2.0]);
+    assert_eq!(&vertex[3..5], &[-1.0, -2.0]);
     assert!((vertex[5] - 0.5).abs() < 1e-6);
 }
 
@@ -736,7 +745,9 @@ fn trail_sides_stay_finite_for_z_aligned_and_degenerate_tangents() {
     let chunk = build_trail_mesh_chunk(&z_trail, &offsets, TrailTextureMode::Stretch, 0..1);
     let floats: &[f32] = bytemuck::cast_slice(&chunk.vertices);
     assert!(floats.iter().all(|value| value.is_finite()));
-    let first: &[f32] = bytemuck::cast_slice(&chunk.vertices[..generated_vertex_stride()]);
+    let first_real = 2 * generated_vertex_stride();
+    let first: &[f32] =
+        bytemuck::cast_slice(&chunk.vertices[first_real..first_real + generated_vertex_stride()]);
     assert!((first[0].abs() - 0.5).abs() < 1e-6);
 
     // Coincident points give a zero-length tangent; vertices must still be finite.
@@ -769,15 +780,22 @@ fn single_point_trails_emit_no_vertices_and_keep_base_vertices_aligned() {
         test_trail(&[Vec3::new(0.0, 1.0, 0.0), Vec3::new(0.0, 2.0, 0.0)]),
     ];
     let offsets = trail_vertex_offsets(&trails);
-    assert_eq!(offsets, vec![0, 0, 4]);
+    assert_eq!(offsets, vec![0, 0, 8]);
 
     let chunk = build_trail_mesh_chunk(&trails, &offsets, TrailTextureMode::Stretch, 0..2);
     assert_eq!(
         chunk.vertices.len(),
         offsets.last().copied().unwrap_or(0) * generated_vertex_stride()
     );
+    assert_eq!(
+        chunk.tangents.len(),
+        offsets.last().copied().unwrap_or(0) * 16
+    );
     let index_words: &[u32] = bytemuck::cast_slice(&chunk.indices);
-    assert_eq!(index_words, &[0, 1, 2, 2, 1, 3]);
+    assert_eq!(
+        index_words,
+        &[0, 1, 2, 2, 1, 3, 2, 3, 4, 4, 3, 5, 4, 5, 6, 6, 5, 7]
+    );
 }
 
 #[test]
@@ -811,14 +829,17 @@ fn single_point_trail_build_declares_matching_vertex_count() {
     let build = build_trail_render_buffer_cpu(raw.into(), &upload).unwrap();
 
     for mesh in &build.meshes {
-        assert_eq!(mesh.vertex_count, 4);
+        assert_eq!(mesh.vertex_count, 8);
         assert_eq!(
             mesh.vertices.len(),
             mesh.vertex_count * generated_vertex_stride()
         );
-        assert_eq!(mesh.index_count, 6);
+        assert_eq!(mesh.index_count, 18);
         let index_words: &[u32] = bytemuck::cast_slice(&mesh.indices);
-        assert_eq!(index_words, &[0, 1, 2, 2, 1, 3]);
+        assert_eq!(
+            index_words,
+            &[0, 1, 2, 2, 1, 3, 2, 3, 4, 4, 3, 5, 4, 5, 6, 6, 5, 7]
+        );
     }
 }
 

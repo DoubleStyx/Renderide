@@ -190,24 +190,25 @@ fn build_billboard_mesh_input(
 /// Builds raw orientation streams consumed by Billboard/Unlit render-buffer alignment.
 pub(super) fn billboard_extra_streams(points: &[PointParticle]) -> GeneratedExtraStreams {
     let vertex_count = points.len() * BILLBOARD_VERTICES_PER_POINT;
-    let mut raw_tangent = vec![0u8; vertex_count * 16];
+    let mut tangent = vec![0u8; vertex_count * 16];
     let mut uv1 = vec![0u8; vertex_count * 8];
     for (point_index, point) in points.iter().enumerate() {
         let forward = point.rotation * Vec3::Z;
         let up = point.rotation * Vec3::Y;
-        let tangent = [forward.x, forward.y, forward.z, up.z];
+        let tangent_row = [forward.x, forward.y, forward.z, up.z];
         let up_xy = [up.x, up.y];
         for corner_index in 0..BILLBOARD_VERTICES_PER_POINT {
             let vertex_index = point_index * BILLBOARD_VERTICES_PER_POINT + corner_index;
             let tangent_start = vertex_index * 16;
-            raw_tangent[tangent_start..tangent_start + 16]
-                .copy_from_slice(bytemuck::cast_slice(&tangent));
+            tangent[tangent_start..tangent_start + 16]
+                .copy_from_slice(bytemuck::cast_slice(&tangent_row));
             let uv1_start = vertex_index * 8;
             uv1[uv1_start..uv1_start + 8].copy_from_slice(bytemuck::cast_slice(&up_xy));
         }
     }
     GeneratedExtraStreams {
-        raw_tangent: Some(raw_tangent),
+        raw_tangent: Some(tangent.clone()),
+        tangent: Some(tangent),
         uv1: Some(uv1),
     }
 }
@@ -283,7 +284,6 @@ fn fill_billboard_particle(
     indices: &mut [u8],
 ) {
     let (_, _, roll) = point.rotation.to_euler(glam::EulerRot::XYZ);
-    let point_data = Vec3::new(point.size.x * 0.5, point.size.y * 0.5, roll);
     for (corner_index, corner) in [
         Vec2::new(0.0, 0.0),
         Vec2::new(1.0, 0.0),
@@ -295,6 +295,12 @@ fn fill_billboard_particle(
     {
         let vertex_stride = generated_vertex_stride();
         let vertex_start = corner_index * vertex_stride;
+        let corner_sign = corner * 2.0 - Vec2::ONE;
+        let point_data = Vec3::new(
+            point.size.x * 0.5 * corner_sign.x,
+            point.size.y * 0.5 * corner_sign.y,
+            roll,
+        );
         let uv = particle_frame_uv(corner, point.frame_index, frame_grid_size);
         write_generated_vertex(
             &mut vertices[vertex_start..vertex_start + vertex_stride],

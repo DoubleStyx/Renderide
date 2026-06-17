@@ -340,7 +340,7 @@ fn build_trail_mesh_input(
         })?;
     let segment_count = trails
         .iter()
-        .map(|trail| trail.points.len().saturating_sub(1))
+        .map(ribbon_segment_count)
         .try_fold(0usize, |acc, count| acc.checked_add(count))
         .ok_or(ParticleRenderBufferError::MeshTooLarge {
             kind: "trail",
@@ -362,6 +362,7 @@ fn build_trail_mesh_input(
 
     let mut vertices = Vec::with_capacity(vertex_count * generated_vertex_stride());
     let mut indices = Vec::with_capacity(index_count * 4);
+    let mut tangents = Vec::with_capacity(vertex_count * 16);
     let trail_vertex_offsets = trail_vertex_offsets(trails);
     let trail_point_count = trail_vertex_offsets.last().copied().unwrap_or(0) / 2;
     let chunks = trail_chunks_by_point_budget_from_trails(trails, TRAIL_MESH_PARALLEL_CHUNK_POINTS);
@@ -377,6 +378,7 @@ fn build_trail_mesh_input(
         for mut chunk in per_chunk {
             vertices.append(&mut chunk.vertices);
             indices.append(&mut chunk.indices);
+            tangents.append(&mut chunk.tangents);
         }
     } else {
         profiling::scope!("particles::build_trail_mesh_inner_serial");
@@ -384,6 +386,7 @@ fn build_trail_mesh_input(
             build_trail_mesh_chunk(trails, &trail_vertex_offsets, texture_mode, 0..trails.len());
         vertices.append(&mut chunk.vertices);
         indices.append(&mut chunk.indices);
+        tangents.append(&mut chunk.tangents);
     }
 
     Ok(GeneratedMeshUploadInput {
@@ -393,7 +396,10 @@ fn build_trail_mesh_input(
         prepared_derived_streams: prepared_generated_derived_streams(
             &vertices,
             vertex_count,
-            GeneratedExtraStreams::default(),
+            GeneratedExtraStreams {
+                tangent: Some(tangents),
+                ..Default::default()
+            },
         ),
         vertices,
         indices,
@@ -409,6 +415,8 @@ pub(super) struct TrailMeshChunk {
     pub(super) vertices: Vec<u8>,
     /// Generated index bytes for the chunk.
     pub(super) indices: Vec<u8>,
+    /// Generated tangent stream bytes for the chunk.
+    pub(super) tangents: Vec<u8>,
 }
 
 /// Returns whether one generated trail mesh has enough point work for at least two worker chunks.
@@ -433,17 +441,20 @@ pub(super) fn build_trail_mesh_chunk(
         .sum::<usize>();
     let mut vertices = Vec::with_capacity(vertex_count * generated_vertex_stride());
     let mut indices = Vec::with_capacity(segment_count * 6 * size_of::<u32>());
-    let normal = Vec3::Z;
+    let mut tangents = Vec::with_capacity(vertex_count * 16);
     for trail_index in range {
         let trail = &trails[trail_index];
         if trail.points.len() < 2 {
             continue;
         }
-        for point_index in 0..trail.points.len() {
+        let ribbon_points = trail.points.len() + 2;
+        for ribbon_index in 0..ribbon_points {
+            let (point_index, pad_width) = ribbon_source_point(trail.points.len(), ribbon_index);
             let point = trail.points[point_index];
             let tangent = trail_tangent(&trail.points, point_index);
             let side = trail_side(tangent);
-            let half_width = point.width * 0.5;
+            let normal = trail_normal(tangent, side);
+            let half_width = if pad_width { 0.0 } else { point.width * 0.5 };
             let v = trail_v_coordinate(
                 texture_mode,
                 &trail.distances,
@@ -457,6 +468,7 @@ pub(super) fn build_trail_mesh_chunk(
                 Vec2::new(0.0, v),
                 point.color,
             );
+            push_tangent_pair(&mut tangents, tangent);
             push_generated_vertex(
                 &mut vertices,
                 point.position + side * half_width,
@@ -464,16 +476,21 @@ pub(super) fn build_trail_mesh_chunk(
                 Vec2::new(1.0, v),
                 point.color,
             );
+            push_tangent_pair(&mut tangents, tangent);
         }
         let base_vertex = trail_vertex_offsets[trail_index] as u32;
-        for segment_index in 0..trail.points.len() - 1 {
+        for segment_index in 0..ribbon_points - 1 {
             let a = base_vertex + (segment_index as u32) * 2;
             for index in [a, a + 1, a + 2, a + 2, a + 1, a + 3] {
                 indices.extend_from_slice(bytemuck::bytes_of(&index));
             }
         }
     }
-    TrailMeshChunk { vertices, indices }
+    TrailMeshChunk {
+        vertices,
+        indices,
+        tangents,
+    }
 }
 
 /// Number of generated ribbon vertices for one trail.
@@ -482,11 +499,19 @@ pub(super) fn build_trail_mesh_chunk(
 /// vertices for them; counting them here would desynchronize the declared mesh vertex count and
 /// the per-trail base-vertex offsets from the bytes actually generated.
 fn ribbon_vertex_count(trail: &TrailPolyline) -> usize {
+    ribbon_point_count(trail).saturating_mul(2)
+}
+
+fn ribbon_point_count(trail: &TrailPolyline) -> usize {
     if trail.points.len() < 2 {
         0
     } else {
-        trail.points.len().saturating_mul(2)
+        trail.points.len().saturating_add(2)
     }
+}
+
+fn ribbon_segment_count(trail: &TrailPolyline) -> usize {
+    ribbon_point_count(trail).saturating_sub(1)
 }
 
 /// Prefix-sums generated trail vertex counts per source trail.
@@ -597,6 +622,25 @@ fn trail_side(tangent: Vec3) -> Vec3 {
         return side.normalize();
     }
     safe_normalize(tangent.cross(Vec3::Y), Vec3::Y)
+}
+
+fn trail_normal(tangent: Vec3, side: Vec3) -> Vec3 {
+    safe_normalize(side.cross(tangent), Vec3::Z)
+}
+
+fn ribbon_source_point(point_count: usize, ribbon_index: usize) -> (usize, bool) {
+    if ribbon_index == 0 {
+        return (0, true);
+    }
+    if ribbon_index + 1 >= point_count + 2 {
+        return (point_count.saturating_sub(1), true);
+    }
+    (ribbon_index - 1, false)
+}
+
+fn push_tangent_pair(out: &mut Vec<u8>, tangent: Vec3) {
+    let row = [tangent.x, tangent.y, tangent.z, 1.0];
+    out.extend_from_slice(bytemuck::cast_slice(&row));
 }
 
 fn safe_normalize(value: Vec3, fallback: Vec3) -> Vec3 {

@@ -44,9 +44,10 @@ fn mesh_normals_do_not_use_model_vector_helper_path() -> io::Result<()> {
     }
 
     for required in [
-        "fn world_normal_for_view(draw: dt::PerDrawUniforms, n: vec4<f32>, view_idx: u32) -> vec3<f32>",
+        "fn world_normal_for_view(draw: dt::PerDrawUniforms, pos: vec4<f32>, n: vec4<f32>, t: vec4<f32>, view_idx: u32) -> vec3<f32>",
         "return world_normal(draw, n);",
-        "out.world_n = world_normal_for_view(draw, n, view_idx);",
+        "return render_buffer_billboard_normal_for_view(draw, pos, n, t, view_idx);",
+        "out.world_n = world_normal_for_view(draw, pos, n, t, view_idx);",
     ] {
         assert!(
             src.contains(required),

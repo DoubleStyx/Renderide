@@ -340,11 +340,12 @@ const RENDER_BUFFER_BILLBOARD_STEM: &str = "billboardunlit_default";
 const RENDER_BUFFER_ORDERED_ALPHA_FALLBACK_BLEND: MaterialBlendMode =
     MaterialBlendMode::UnityBlend { src: 5, dst: 10 };
 
-/// Routes generated PhotonDust billboard meshes through Billboard/Unlit.
+/// Routes generated PhotonDust billboard meshes through a compatible billboard expansion path.
 ///
-/// Point render-buffer uploads expand each particle into four co-located quad vertices. Ordinary
-/// mesh shaders see those vertices as degenerate geometry, while Billboard/Unlit expands them in
-/// the vertex stage using the normal stream as point data.
+/// Point render-buffer uploads expand each particle into four co-located quad vertices. Material
+/// roots that use the shared world-space vertex helpers can expand those vertices from the point
+/// payload while preserving their source fragment shader. Vertex signatures without tangent data
+/// still route through Billboard/Unlit because they cannot reconstruct the billboard basis.
 pub(crate) fn apply_render_buffer_mesh_pipeline_override(
     batch_key: &mut MaterialDrawBatchKey,
     mesh_asset_id: i32,
@@ -358,6 +359,9 @@ pub(crate) fn apply_render_buffer_mesh_pipeline_override(
         && stem.as_ref().starts_with("billboardunlit")
     {
         batch_key.shader_specialization = MaterialShaderSpecializationKey::disabled();
+        return;
+    }
+    if render_buffer_source_pipeline_can_expand_billboard(batch_key) {
         return;
     }
     let pipeline = RasterPipelineKind::EmbeddedStem(Arc::from(RENDER_BUFFER_BILLBOARD_STEM));
@@ -396,6 +400,14 @@ pub(crate) fn apply_render_buffer_mesh_pipeline_override(
         batch_key.blend_mode,
         batch_key.transparent_class,
     );
+}
+
+fn render_buffer_source_pipeline_can_expand_billboard(batch_key: &MaterialDrawBatchKey) -> bool {
+    matches!(batch_key.pipeline, RasterPipelineKind::EmbeddedStem(_))
+        && batch_key.embedded_needs_uv0
+        && batch_key.embedded_needs_tangent
+        && !batch_key.embedded_raw_tangent_payload
+        && !batch_key.embedded_raw_normal_payload
 }
 
 fn render_buffer_billboard_blend_mode_for_source(
@@ -454,6 +466,9 @@ fn batch_key_from_resolved(
         transparent_class: r.transparent_class,
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 #[cfg(test)]
 mod ui_rect_clip_tests {
@@ -878,55 +893,6 @@ mod ui_rect_clip_tests {
         assert!(key.alpha_blended);
         assert_eq!(key.render_queue, UNITY_RENDER_QUEUE_TRANSPARENT);
         assert!(key.transparent_class.is_transparent());
-    }
-
-    #[test]
-    fn generated_billboard_mesh_uses_alpha_blend_for_stem_default_ordered_transparency() {
-        let registry = PropertyIdRegistry::new();
-        let render_queue = registry.intern("_RenderQueue");
-        let mut store = MaterialPropertyStore::new();
-        store.set_shader_asset_for_material(7, 99);
-        store.set_material(
-            7,
-            render_queue,
-            MaterialPropertyValue::Float(UNITY_RENDER_QUEUE_TRANSPARENT as f32),
-        );
-        let dict = MaterialDictionary::new(&store);
-        let mut router = MaterialRouter::new(RasterPipelineKind::Null);
-        router.set_shader_pipeline(
-            99,
-            RasterPipelineKind::EmbeddedStem(Arc::from("pbsvertexcolortransparent_default")),
-        );
-        let ids = MaterialPipelinePropertyIds::new(&registry);
-        let resolved =
-            resolve_material_batch(7, None, &dict, &router, &ids, ShaderPermutation::default());
-        let mut key = batch_key_from_resolved(
-            7,
-            None,
-            false,
-            RasterFrontFace::Clockwise,
-            RasterPrimitiveTopology::TriangleList,
-            &resolved,
-        );
-        let mesh_asset_id = crate::particles::billboard_render_buffer_mesh_asset_id(3).unwrap();
-
-        assert_eq!(key.blend_mode, MaterialBlendMode::StemDefault);
-        assert_eq!(
-            key.transparent_class,
-            TransparentMaterialClass::OrderedAlpha
-        );
-
-        apply_render_buffer_mesh_pipeline_override(
-            &mut key,
-            mesh_asset_id,
-            ShaderPermutation::default(),
-        );
-
-        assert_eq!(key.blend_mode, RENDER_BUFFER_ORDERED_ALPHA_FALLBACK_BLEND);
-        assert_eq!(
-            key.transparent_class,
-            TransparentMaterialClass::OrderedAlpha
-        );
     }
 
     #[test]

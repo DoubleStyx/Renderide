@@ -16,8 +16,10 @@ struct PerDrawUniforms {
     particle_tint: vec4<f32>,
     /// Particle draw metadata: motion mode, frame index, trail texture mode, trail lighting flag.
     particle_extra: vec4<f32>,
+    /// Particle draw metadata: texture-sheet frame grid width/height.
+    particle_frame_grid: vec4<f32>,
     /// Padding so each dynamic storage row remains aligned to 512 bytes.
-    particle_padding: array<vec4<f32>, 13>,
+    particle_padding: array<vec4<f32>, 12>,
 }
 
 /// `_pad.x` marker for world-space position streams.
@@ -100,6 +102,13 @@ fn particle_frame_index(draw: PerDrawUniforms) -> u32 {
         return 0xffffffffu;
     }
     return u32(max(draw.particle_extra.y, 0.0) + 0.5);
+}
+
+fn particle_frame_grid_size(draw: PerDrawUniforms) -> vec2<u32> {
+    return vec2<u32>(
+        u32(max(draw.particle_frame_grid.x, 0.0) + 0.5),
+        u32(max(draw.particle_frame_grid.y, 0.0) + 0.5),
+    );
 }
 
 fn particle_trail_generates_lighting_data(draw: PerDrawUniforms) -> bool {

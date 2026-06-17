@@ -17,6 +17,8 @@ use super::types::ParticleRenderBufferError;
 pub(super) struct GeneratedExtraStreams {
     /// Raw tangent payload stream at shader location 4.
     pub(super) raw_tangent: Option<Vec<u8>>,
+    /// Geometric tangent stream at shader location 4.
+    pub(super) tangent: Option<Vec<u8>>,
     /// UV1 stream at shader location 5.
     pub(super) uv1: Option<Vec<u8>>,
 }
@@ -96,6 +98,7 @@ pub(super) fn prepared_generated_derived_streams(
         normals: Some(normals),
         uv0: Some(uv0),
         color: Some(color),
+        tangent: extra.tangent,
         raw_tangent: extra.raw_tangent,
         uv1: extra.uv1,
         ..PreparedDerivedStreams::default()

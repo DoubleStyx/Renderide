@@ -50,3 +50,7 @@ fn particle_max_screen_size(draw: dt::PerDrawUniforms) -> f32 {
 fn particle_color(draw: dt::PerDrawUniforms) -> vec4<f32> {
     return dt::particle_color(draw);
 }
+
+fn particle_frame_grid_size(draw: dt::PerDrawUniforms) -> vec2<u32> {
+    return dt::particle_frame_grid_size(draw);
+}
