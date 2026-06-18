@@ -20,6 +20,8 @@ use super::selection::{
     SpatialProbe, aabb_valid, aabb_volume, expanded_aabb, sanitized_blend_distance,
 };
 
+const RUNTIME_CAPTURE_STORAGE_V_INVERTED: bool = false;
+
 pub(super) fn resolve_probe_source(
     space_id: RenderSpaceId,
     probe: &ReflectionProbeEntry,
@@ -63,7 +65,7 @@ fn resolve_runtime_capture_source(
         generation: capture.generation,
         face_size: capture.face_size,
         mip_levels: capture.mip_levels,
-        storage_v_inverted: true,
+        storage_v_inverted: RUNTIME_CAPTURE_STORAGE_V_INVERTED,
         texture: capture.texture.clone(),
         view: capture.view.clone(),
         array_view: capture.array_view.clone(),
