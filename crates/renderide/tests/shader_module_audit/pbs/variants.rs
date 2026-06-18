@@ -112,8 +112,8 @@ fn pbs_lerp_preserves_variant_channels_and_raw_lerp() -> io::Result<()> {
     let metallic = material_source("pbslerp.wgsl")?;
     for required in [
         "return l;",
-        "occlusion0 = textureSample(_Occlusion, _Occlusion_sampler, uv_main0).r;",
-        "occlusion1 = textureSample(_Occlusion1, _Occlusion1_sampler, uv_main1).r;",
+        "occlusion0 = ts::sample_tex_2d(_Occlusion, _Occlusion_sampler, uv_main0, mat._Occlusion_LodBias).r;",
+        "occlusion1 = ts::sample_tex_2d(_Occlusion1, _Occlusion1_sampler, uv_main1, mat._Occlusion1_LodBias).r;",
         "metallic0 = m0.r;",
         "metallic1 = m1.r;",
         "smoothness0 = m0.a;",
@@ -132,10 +132,10 @@ fn pbs_lerp_preserves_variant_channels_and_raw_lerp() -> io::Result<()> {
     let specular = material_source("pbslerpspecular.wgsl")?;
     for required in [
         "return l;",
-        "occlusion0 = textureSample(_Occlusion, _Occlusion_sampler, uv_main0).r;",
-        "occlusion1 = textureSample(_Occlusion1, _Occlusion1_sampler, uv_main1).r;",
-        "spec0 = textureSample(_SpecularMap, _SpecularMap_sampler, uv_main0);",
-        "spec1 = textureSample(_SpecularMap1, _SpecularMap1_sampler, uv_main1);",
+        "occlusion0 = ts::sample_tex_2d(_Occlusion, _Occlusion_sampler, uv_main0, mat._Occlusion_LodBias).r;",
+        "occlusion1 = ts::sample_tex_2d(_Occlusion1, _Occlusion1_sampler, uv_main1, mat._Occlusion1_LodBias).r;",
+        "spec0 = ts::sample_tex_2d(_SpecularMap, _SpecularMap_sampler, uv_main0, mat._SpecularMap_LodBias);",
+        "spec1 = ts::sample_tex_2d(_SpecularMap1, _SpecularMap1_sampler, uv_main1, mat._SpecularMap1_LodBias);",
     ] {
         assert!(
             specular.contains(required),

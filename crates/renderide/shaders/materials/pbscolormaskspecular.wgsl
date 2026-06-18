@@ -30,6 +30,7 @@
 #import renderide::pbs::surface as psurf
 #import renderide::core::uv as uvu
 #import renderide::core::normal_decode as nd
+#import renderide::core::texture_sampling as ts
 
 /// Material uniforms for `PBSColorMaskSpecular`.
 struct PbsColorMaskSpecularMaterial {
@@ -59,6 +60,12 @@ struct PbsColorMaskSpecularMaterial {
     _NormalScale: f32,
     /// Renderer-reserved Froox variant bits (sorted UniqueKeywords).
     _RenderideVariantBits: u32,
+    _ColorMask_LodBias: f32,
+    _EmissionMap_LodBias: f32,
+    _MainTex_LodBias: f32,
+    _NormalMap_LodBias: f32,
+    _OcclusionMap_LodBias: f32,
+    _SpecularMap_LodBias: f32,
 }
 
 const PBSCOLORMASKSPECULAR_KW_ALBEDOTEX: u32 = 1u << 0u;
@@ -128,7 +135,7 @@ fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32
     var ts_n = vec3<f32>(0.0, 0.0, 1.0);
     if (kw_NORMALMAP()) {
         ts_n = nd::decode_ts_normal_with_placeholder_sample(
-            textureSample(_NormalMap, _NormalMap_sampler, uv_main),
+            ts::sample_tex_2d(_NormalMap, _NormalMap_sampler, uv_main, mat._NormalMap_LodBias),
             mat._NormalScale,
         );
     }
@@ -141,17 +148,17 @@ fn sample_surface(uv0: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>) -> Sur
     let uv_mask =
         uvu::apply_st(uv0, mat._ColorMask_ST);
 
-    let mask = textureSample(_ColorMask, _ColorMask_sampler, uv_mask);
+    let mask = ts::sample_tex_2d(_ColorMask, _ColorMask_sampler, uv_mask, mat._ColorMask_LodBias);
     let weights = splat::color_mask_weights(mask);
 
     var c = mcolor::blend4_vec4(mat._Color, mat._Color1, mat._Color2, mat._Color3, weights);
     if (kw_ALBEDOTEX()) {
-        c = c * textureSample(_MainTex, _MainTex_sampler, uv_main);
+        c = c * ts::sample_tex_2d(_MainTex, _MainTex_sampler, uv_main, mat._MainTex_LodBias);
     }
 
     var spec = mat._SpecularColor;
     if (kw_SPECULARMAP()) {
-        spec = textureSample(_SpecularMap, _SpecularMap_sampler, uv_main);
+        spec = ts::sample_tex_2d(_SpecularMap, _SpecularMap_sampler, uv_main, mat._SpecularMap_LodBias);
         if (kw_MULTI_VALUES()) {
             spec = spec * mat._SpecularColor;
         }
@@ -163,7 +170,7 @@ fn sample_surface(uv0: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>) -> Sur
 
     var occlusion = 1.0;
     if (kw_OCCLUSION()) {
-        occlusion = textureSample(_OcclusionMap, _OcclusionMap_sampler, uv_main).r;
+        occlusion = ts::sample_tex_2d(_OcclusionMap, _OcclusionMap_sampler, uv_main, mat._OcclusionMap_LodBias).r;
     }
 
     var emission = mcolor::blend4_vec4(
@@ -174,7 +181,7 @@ fn sample_surface(uv0: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>) -> Sur
         weights,
     );
     if (kw_EMISSIONTEX()) {
-        emission = emission * textureSample(_EmissionMap, _EmissionMap_sampler, uv_main);
+        emission = emission * ts::sample_tex_2d(_EmissionMap, _EmissionMap_sampler, uv_main, mat._EmissionMap_LodBias);
     }
 
     return SurfaceData(
