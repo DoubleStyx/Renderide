@@ -4,18 +4,19 @@ use super::*;
 
 #[test]
 fn mesh_world_tangent_applies_model_transform_parity() -> io::Result<()> {
-    let src = source_file(manifest_dir().join("shaders/modules/mesh/vertex.wgsl"))?;
+    let src = source_file(manifest_dir().join("shaders/modules/mesh/transform.wgsl"))?;
 
     for required in [
         "fn model_handedness(draw: dt::PerDrawUniforms) -> f32",
         "dt::position_stream_is_world_space(draw)",
         "dot(draw.model[0].xyz, cross(draw.model[1].xyz, draw.model[2].xyz))",
-        "let tangent_sign = select(1.0, -1.0, t.w < 0.0);",
-        "tangent_sign * model_handedness(draw)",
+        "fn tangent_w_sign(tangent_w: f32) -> f32",
+        "return select(1.0, -1.0, tangent_w < 0.0);",
+        "tangent_w_sign(t.w) * model_handedness(draw)",
     ] {
         assert!(
             src.contains(required),
-            "mesh/vertex.wgsl must contain `{required}`"
+            "mesh/transform.wgsl must contain `{required}`"
         );
     }
 
@@ -29,7 +30,10 @@ fn mesh_world_tangent_applies_model_transform_parity() -> io::Result<()> {
 
 #[test]
 fn mesh_normals_do_not_use_model_vector_helper_path() -> io::Result<()> {
-    let src = source_file(manifest_dir().join("shaders/modules/mesh/vertex.wgsl"))?;
+    let vertex = source_file(manifest_dir().join("shaders/modules/mesh/vertex.wgsl"))?;
+    let particle = source_file(manifest_dir().join("shaders/modules/mesh/particle.wgsl"))?;
+    let transform = source_file(manifest_dir().join("shaders/modules/mesh/transform.wgsl"))?;
+    let combined = format!("{vertex}\n{particle}\n{transform}");
 
     for forbidden in [
         "fn model_world_normal(",
@@ -38,19 +42,19 @@ fn mesh_normals_do_not_use_model_vector_helper_path() -> io::Result<()> {
         "out.world_n = model_world_normal(draw, n);",
     ] {
         assert!(
-            !src.contains(forbidden),
-            "mesh/vertex.wgsl must not contain model-matrix normal path `{forbidden}`"
+            !combined.contains(forbidden),
+            "mesh transform helpers must not contain model-matrix normal path `{forbidden}`"
         );
     }
 
     for required in [
         "fn world_normal_for_view(draw: dt::PerDrawUniforms, pos: vec4<f32>, n: vec4<f32>, t: vec4<f32>, view_idx: u32) -> vec3<f32>",
-        "return world_normal(draw, n);",
-        "return render_buffer_billboard_normal_for_view(draw, pos, n, t, view_idx);",
+        "return mt::world_normal(draw, n);",
+        "return source_material_render_buffer_normal_for_view(draw, pos, n, t, view_idx);",
         "out.world_n = world_normal_for_view(draw, pos, n, t, view_idx);",
     ] {
         assert!(
-            src.contains(required),
+            combined.contains(required),
             "mesh/vertex.wgsl must route world vertex normals through the inverse-transpose helper `{required}`"
         );
     }
@@ -199,7 +203,7 @@ fn matcap_shader_uses_active_view_normal_basis() -> io::Result<()> {
 #[test]
 fn mesh_tangent_handedness_is_not_recomputed_in_material_roots() -> io::Result<()> {
     let allowed = [
-        "shaders/modules/mesh/vertex.wgsl",
+        "shaders/modules/mesh/transform.wgsl",
         "shaders/modules/pbs/normal.wgsl",
         "shaders/passes/compute/mesh_skinning.wgsl",
     ];
@@ -264,7 +268,7 @@ fn procedural_tangent_frames_are_explicitly_exempt_from_mesh_parity() -> io::Res
         "GGX prefilter builds a procedural sampling basis and must not import mesh tangent parity"
     );
 
-    let gtao = source_file(manifest_dir().join("shaders/passes/post/gtao_main.wgsl"))?;
+    let gtao = source_file(manifest_dir().join("shaders/modules/post/gtao_math.wgsl"))?;
     assert!(
         gtao.contains("accepted.x * cross(l, t)")
             && gtao.contains("accepted.y * cross(t, r)")

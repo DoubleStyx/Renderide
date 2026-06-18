@@ -440,22 +440,22 @@ fn unlit_polar_variants_use_unity_derivative_selection() -> io::Result<()> {
 #[test]
 fn billboard_render_buffer_uses_indexed_corner_separate_from_sample_uv() -> io::Result<()> {
     let src = material_source("billboardunlit.wgsl")?;
+    let particle = module_source("mesh/particle.wgsl")?;
 
     assert!(
         src.contains("@builtin(vertex_index) vertex_index: u32"),
         "Billboard/Unlit must know the indexed vertex id for generated render-buffer quads"
     );
     assert!(
-        src.contains("fn render_buffer_billboard_unit_corner(vertex_index: u32) -> vec2<f32>")
-            && src.contains("let corner = vertex_index % 4u;"),
+        particle.contains("fn render_buffer_billboard_unit_corner(vertex_index: u32) -> vec2<f32>")
+            && particle.contains("let corner = vertex_index % 4u;"),
         "Billboard/Unlit must derive generated render-buffer quad corners from vertex order"
     );
     assert!(
         src.contains(
             "fn billboard_corner_for_vertex(pos: vec3<f32>, uv: vec2<f32>, vertex_index: u32) -> vec2<f32>"
-        ) && src.contains(
-            "return render_buffer_billboard_unit_corner(vertex_index) * 2.0 - vec2<f32>(1.0, 1.0);"
-        ) && src.contains("return mb::billboard_corner(pos, uv);"),
+        ) && src.contains("return mp::render_buffer_billboard_corner(vertex_index);")
+            && src.contains("return mb::billboard_corner(pos, uv);"),
         "Render-buffer billboards must not reuse framed atlas UVs as geometry corners"
     );
     assert!(
@@ -466,12 +466,12 @@ fn billboard_render_buffer_uses_indexed_corner_separate_from_sample_uv() -> io::
     assert!(
         src.contains("@location(4) point_forward_upz: vec4<f32>")
             && src.contains("@location(5) point_up_xy: vec2<f32>")
-            && src.contains("fn render_buffer_billboard_basis("),
+            && src.contains("mp::render_buffer_billboard_basis_from_forward_up("),
         "Render-buffer billboards must receive particle orientation streams for Unity alignment modes"
     );
     assert!(
-        src.contains("pd::particle_alignment(d)")
-            && src.contains("fn screen_clamped_billboard_size("),
+        particle.contains("dt::particle_alignment(draw)")
+            && src.contains("mp::screen_clamped_billboard_size("),
         "Render-buffer billboards must apply renderer alignment and screen-size clamp metadata"
     );
 
@@ -541,22 +541,22 @@ fn billboard_render_buffer_preserves_fragment_alpha_and_fog_behavior() -> io::Re
 
 #[test]
 fn billboard_render_buffer_alignment_matches_unity_modes() -> io::Result<()> {
-    let src = material_source("billboardunlit.wgsl")?;
+    let src = module_source("mesh/particle.wgsl")?;
 
     assert!(
-        src.contains("return facing_basis(center_world, view_layer, pointdata.z, false);"),
+        src.contains("return facing_basis(center_world, view_idx, pointdata.z, false);"),
         "Render-buffer Facing alignment must keep Unity-style roll disabled"
     );
     assert!(
-        src.contains("fn direction_stretch_particle_basis(")
-            && src.contains("let velocity_world = mv::model_vector(d, point_forward_upz.xyz);")
+        src.contains("fn direction_basis(")
+            && src.contains("let velocity_world = mt::model_vector(draw, direction);")
             && src.contains(
                 "let velocity_in_plane = velocity_world - to_camera * dot(velocity_world, to_camera);"
             )
             && src.contains("let view_up_in_plane = view_up - to_camera * dot(view_up, to_camera);")
             && src.contains("up = rmath::safe_normalize(cross(to_camera, right), up);")
             && src.contains(
-                "return direction_stretch_particle_basis(d, center_world, point_forward_upz, view_layer);"
+                "return direction_basis(draw, center_world, point_forward_upz.xyz, view_idx);"
             ),
         "Render-buffer Direction alignment must project velocity into the camera-facing stretch plane"
     );
@@ -567,11 +567,13 @@ fn billboard_render_buffer_alignment_matches_unity_modes() -> io::Result<()> {
 #[test]
 fn billboard_render_buffer_supports_simple_lit_non_unlit_sources() -> io::Result<()> {
     let src = material_source("billboardunlit.wgsl")?;
+    let particle = module_source("mesh/particle.wgsl")?;
 
     assert!(
         src.contains("if (kw_SIMPLE_LIT())")
             && src.contains("out.world_p = world_p;")
-            && src.contains("out.n = rmath::safe_normalize(cross(axes.right, axes.up)")
+            && src.contains("out.n = mp::render_buffer_billboard_normal(axes);")
+            && particle.contains("return rmath::safe_normalize(cross(axes.right, axes.up)")
             && src.contains("let base = clamp(col.rgb, vec3<f32>(0.0), vec3<f32>(1.0));")
             && src.contains("dl::shade_clustered_diffuse"),
         "Billboard/Unlit must offer simple shading capabilities for non-Unlit source materials"
@@ -583,17 +585,18 @@ fn billboard_render_buffer_supports_simple_lit_non_unlit_sources() -> io::Result
 #[test]
 fn mesh_particle_vertex_module_applies_alignment_and_color_metadata() -> io::Result<()> {
     let src = module_source("mesh/vertex.wgsl")?;
+    let particle = module_source("mesh/particle.wgsl")?;
 
     assert!(
-        src.contains("fn mesh_particle_view_basis(")
-            && src.contains("dt::particle_kind(draw) == 2u")
-            && src.contains("dt::particle_alignment(draw)"),
+        particle.contains("fn mesh_particle_view_basis(")
+            && particle.contains("dt::particle_kind(draw) == dt::PARTICLE_KIND_MESH")
+            && particle.contains("dt::particle_alignment(draw)"),
         "mesh particle vertices must derive Unity view/facing alignment from per-draw metadata"
     );
     assert!(
-        src.contains("fn world_position_for_view(")
-            && src.contains("fn world_normal_for_view(")
-            && src.contains("fn world_tangent_for_view("),
+        particle.contains("fn world_position_for_view(")
+            && particle.contains("fn world_normal_for_view(")
+            && particle.contains("fn world_tangent_for_view("),
         "mesh particle view/facing alignment must affect positions, normals, and tangents together"
     );
     assert!(

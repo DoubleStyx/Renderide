@@ -80,7 +80,7 @@ fn directional_lights_apply_cookie_multiplier() -> io::Result<()> {
         "light-cookie helpers must include a directional 2D cookie projection path"
     );
 
-    let pbs = source_file(manifest_dir().join("shaders/modules/pbs/brdf.wgsl"))?;
+    let pbs = source_file(manifest_dir().join("shaders/modules/pbs/light_eval.wgsl"))?;
     assert!(
         pbs.contains("out.attenuation = bl::direct_light_scale();")
             && pbs.contains(
@@ -89,7 +89,7 @@ fn directional_lights_apply_cookie_multiplier() -> io::Result<()> {
         "PBS directional lighting must apply cookie attenuation"
     );
 
-    let toon = source_file(manifest_dir().join("shaders/modules/xiexe/toon2/lighting.wgsl"))?;
+    let toon = source_file(manifest_dir().join("shaders/modules/xiexe/toon2/light_eval.wgsl"))?;
     assert!(
         toon.contains("bl::direct_light_scale() * cookies::multiplier(light, world_pos)"),
         "Xiexe toon directional lighting must apply cookie attenuation"
