@@ -1,21 +1,29 @@
 //! Phase-orchestration tests: render-world header / extracted update dirtiness plus the
 //! per-space apply commit that the parallel apply path drives.
 
-use glam::{Quat, Vec3};
+use std::sync::atomic::{AtomicU32, Ordering};
 
+use glam::{Quat, Vec3};
+use renderide_shared::wire_writer::{TransformPoseRow, encode_transform_pose_updates};
+use renderide_shared::{SharedMemoryWriter, SharedMemoryWriterConfig};
+
+use crate::ipc::SharedMemoryAccessor;
 use crate::scene::camera_portal::CameraPortalEntry;
 use crate::scene::meshes::types::StaticMeshRenderer;
 use crate::scene::overrides::{MeshRendererOverrideTarget, RenderMaterialOverrideEntry};
 use crate::scene::render_space::RenderSpaceState;
-use crate::shared::{CameraPortalState, RenderSpaceUpdate, RenderTransform, RenderingContext};
+use crate::shared::{
+    CameraPortalState, FrameSubmitData, RenderSpaceUpdate, RenderTransform, RenderingContext,
+    TransformsUpdate,
+};
 
 use super::super::super::ids::RenderSpaceId;
 use super::super::super::world::{WorldTransformCache, compute_world_matrices_for_space};
 use super::super::apply::ExtractedRenderSpaceUpdate;
 use super::super::{
-    RenderWorldRendererKind, SceneApplyReport, extracted_update_affects_reflection_probes,
-    extracted_update_affects_render_world, note_render_world_dirty_for_extracted_update,
-    render_world_header_changed,
+    RenderWorldRendererKind, SceneApplyReport, SceneCoordinator,
+    extracted_update_affects_reflection_probes, extracted_update_affects_render_world,
+    note_render_world_dirty_for_extracted_update, render_world_header_changed,
 };
 
 fn empty_extracted_render_space_update() -> ExtractedRenderSpaceUpdate {
@@ -35,6 +43,25 @@ fn empty_extracted_render_space_update() -> ExtractedRenderSpaceUpdate {
         billboard_render_buffers: None,
         mesh_render_buffers: None,
         trail_render_buffers: None,
+    }
+}
+
+static SHARED_MEMORY_PREFIX_SEQ: AtomicU32 = AtomicU32::new(0);
+
+fn unique_shared_memory_prefix(label: &str) -> String {
+    let seq = SHARED_MEMORY_PREFIX_SEQ.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "renderide_scene_coordinator_{label}_{}_{}",
+        std::process::id(),
+        seq
+    )
+}
+
+fn identity_transform() -> RenderTransform {
+    RenderTransform {
+        position: Vec3::ZERO,
+        scale: Vec3::ONE,
+        rotation: Quat::IDENTITY,
     }
 }
 
@@ -102,6 +129,67 @@ fn render_world_header_dirty_tracks_draw_prep_header_changes() {
             ..RenderSpaceUpdate::default()
         },
     ));
+}
+
+#[test]
+fn apply_frame_submit_applies_inactive_render_space_payloads() {
+    let mut scene = SceneCoordinator::new();
+    let space_id = RenderSpaceId(7);
+    scene.test_seed_space_identity_worlds(space_id, vec![identity_transform()], vec![-1]);
+
+    let updated_pose = RenderTransform {
+        position: Vec3::new(4.0, 5.0, 6.0),
+        scale: Vec3::ONE,
+        rotation: Quat::IDENTITY,
+    };
+    let rows = [
+        TransformPoseRow {
+            transform_id: 0,
+            pose: updated_pose,
+        },
+        TransformPoseRow {
+            transform_id: -1,
+            pose: RenderTransform::default(),
+        },
+    ];
+    let bytes = encode_transform_pose_updates(&rows);
+    let prefix = unique_shared_memory_prefix("inactive_space_payload");
+    let cfg = SharedMemoryWriterConfig {
+        prefix: prefix.clone(),
+        destroy_on_drop: true,
+        ..SharedMemoryWriterConfig::default()
+    };
+    let mut writer = SharedMemoryWriter::open(cfg, 1, bytes.len()).expect("open writer");
+    writer.write_at(0, &bytes).expect("write transform rows");
+    writer.flush();
+    let pose_descriptor = writer.descriptor_for(0, bytes.len() as i32);
+    let mut shm = SharedMemoryAccessor::new(prefix);
+
+    let report = scene
+        .apply_frame_submit(
+            &mut shm,
+            &FrameSubmitData {
+                frame_index: 42,
+                render_spaces: vec![RenderSpaceUpdate {
+                    id: space_id.0,
+                    is_active: false,
+                    transforms_update: Some(TransformsUpdate {
+                        target_transform_count: 1,
+                        pose_updates: pose_descriptor,
+                        ..TransformsUpdate::default()
+                    }),
+                    ..RenderSpaceUpdate::default()
+                }],
+                ..FrameSubmitData::default()
+            },
+        )
+        .expect("apply inactive submitted payload");
+
+    let space = scene.space(space_id).expect("space remains tracked");
+    assert!(!space.is_active());
+    assert_eq!(space.local_transforms()[0].position, updated_pose.position);
+    assert_eq!(report.changed_spaces, vec![space_id]);
+    assert_eq!(report.removed_spaces, Vec::new());
 }
 
 #[test]

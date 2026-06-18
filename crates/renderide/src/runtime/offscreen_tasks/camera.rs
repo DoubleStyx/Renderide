@@ -12,7 +12,7 @@ use crate::ipc::SharedMemoryAccessor;
 use crate::render_graph::{
     FrameViewClear, GraphExecuteError, OffscreenWriteTarget, RenderPathProfile, ViewPostProcessing,
 };
-use crate::scene::{RenderSpaceId, SceneCoordinator};
+use crate::scene::{RenderSpaceId, RenderSpaceView, SceneCoordinator};
 use crate::shared::{CameraRenderParameters, CameraRenderTask, RenderingContext, TextureFormat};
 use crate::world_mesh::{
     CameraTransformDrawFilter, ViewLayerPolicy, ViewRenderSpaceScope,
@@ -395,6 +395,20 @@ struct PlannedCameraTask {
     output_format: CameraTaskOutputFormat,
 }
 
+fn active_camera_task_space(
+    scene: &SceneCoordinator,
+    render_space_id: i32,
+) -> Result<RenderSpaceView<'_>, CameraReadbackError> {
+    let id = RenderSpaceId(render_space_id);
+    let Some(space) = scene.space(id) else {
+        return Err(CameraReadbackError::MissingRenderSpace(render_space_id));
+    };
+    if !space.is_active() {
+        return Err(CameraReadbackError::InactiveRenderSpace(render_space_id));
+    }
+    Ok(space)
+}
+
 fn plan_camera_task(
     gpu: &GpuContext,
     scene: &SceneCoordinator,
@@ -419,16 +433,7 @@ fn plan_camera_task(
         return Err(CameraReadbackError::ResultDescriptorTooSmall { required, actual });
     }
     let render_space_id = RenderSpaceId(task.render_space_id);
-    let Some(space) = scene.space(render_space_id) else {
-        return Err(CameraReadbackError::MissingRenderSpace(
-            task.render_space_id,
-        ));
-    };
-    if !space.is_active() {
-        return Err(CameraReadbackError::InactiveRenderSpace(
-            task.render_space_id,
-        ));
-    }
+    active_camera_task_space(scene, task.render_space_id)?;
     let targets = CameraTaskTargets::create(gpu, extent)?;
     let camera_world_matrix = camera_render_task_world_matrix(task.position, task.rotation);
     let host_camera = host_camera_frame_for_render_task(

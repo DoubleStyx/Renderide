@@ -12,7 +12,7 @@ use crate::scene::render_space::{LayerAssignmentEntry, RenderSpaceState};
 use crate::scene::{
     CameraRenderableEntry, ReflectionProbeEntry, SkinnedMeshRenderer, StaticMeshRenderer,
 };
-use crate::shared::{LayerType, RenderTransform, RenderingContext};
+use crate::shared::{CameraPortalState, LayerType, RenderTransform, RenderingContext};
 
 use super::super::ids::RenderSpaceId;
 use super::super::world::{WorldTransformCache, compute_world_matrices_for_space};
@@ -140,6 +140,24 @@ impl SceneCoordinator {
     ) {
         let space = self.spaces.get_mut(&id).expect("seeded space");
         space.cameras.extend(cameras);
+    }
+
+    /// Appends one camera-portal renderable to a seeded render space (unit tests only).
+    pub(crate) fn test_push_camera_portal(
+        &mut self,
+        id: RenderSpaceId,
+        renderable_index: i32,
+        transform_id: i32,
+        state: CameraPortalState,
+    ) {
+        let space = self.spaces.get_mut(&id).expect("seeded space");
+        space
+            .camera_portals
+            .push(super::super::camera_portal::CameraPortalEntry {
+                renderable_index,
+                transform_id,
+                state,
+            });
     }
 
     /// Appends reflection-probe renderables to a seeded render space (unit tests only).

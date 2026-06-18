@@ -5,6 +5,7 @@ use hashbrown::HashSet;
 
 use crate::camera::HostCameraFrame;
 use crate::render_graph::FrameViewClear;
+use crate::scene::{RenderSpaceId, SceneCoordinator};
 use crate::shared::{
     ReflectionProbeClear, ReflectionProbeRenderTask, ReflectionProbeState,
     ReflectionProbeTimeSlicingMode, ReflectionProbeType,
@@ -279,4 +280,21 @@ fn state_only_draw_filter_passes_or_suppresses_everything() {
     });
     assert!(skybox_only.only.as_ref().is_some_and(HashSet::is_empty));
     assert!(skybox_only.exclude.is_empty());
+}
+
+#[test]
+fn reflection_probe_task_space_rejects_inactive_spaces() {
+    let mut scene = SceneCoordinator::new();
+    let space = RenderSpaceId(12);
+    scene.test_seed_space_identity_worlds(space, Vec::new(), Vec::new());
+    scene.test_set_space_active(space, false);
+
+    let Err(error) = active_reflection_probe_task_space(&scene, space) else {
+        panic!("inactive render space must reject reflection probe render task");
+    };
+
+    assert!(matches!(
+        error,
+        ReflectionProbeBakeError::InactiveRenderSpace(12)
+    ));
 }
