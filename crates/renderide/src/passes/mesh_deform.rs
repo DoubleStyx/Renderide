@@ -26,7 +26,9 @@ use crate::mesh_deform::{
 use crate::render_graph::context::ComputePassCtx;
 use crate::render_graph::error::{RenderPassError, SetupError};
 use crate::render_graph::pass::{ComputePass, PassBuilder, PassPhase};
-use crate::scene::{RenderSpaceId, SceneCoordinator, SceneSpaceRead};
+use crate::scene::{
+    MeshDeformSceneRead, RenderSpaceId, RenderSpaceRead, SceneSpaceRead, SceneTransformRead,
+};
 use crate::shared::{RenderingContext, SkinWeightMode};
 
 use self::encode::{
@@ -52,7 +54,7 @@ pub struct MeshDeformPass {
 
 /// Reusable per-frame scratch buffers for mesh deform work collection.
 struct MeshDeformScratch {
-    /// Reused ordering of [`SceneCoordinator::render_space_ids`] for parallel per-space collection.
+    /// Reused ordering of [`SceneSpaceRead::render_space_ids`] for parallel per-space collection.
     space_ids: Vec<RenderSpaceId>,
     /// One bucket per render space; inner [`Vec`] capacities are reused across frames.
     chunks: Vec<Vec<DeformWorkItem>>,
@@ -125,9 +127,8 @@ struct MeshDeformDispatchResult {
     skipped_allocations: u64,
 }
 
-#[derive(Clone, Copy)]
-struct MeshDeformDispatchCtx<'a> {
-    scene: &'a SceneCoordinator,
+struct MeshDeformDispatchCtx<'a, S: SceneTransformRead + Sync + ?Sized> {
+    scene: &'a S,
     head_output_transform: glam::Mat4,
     skin_weight_mode: SkinWeightMode,
 }
@@ -179,7 +180,7 @@ struct DeformCollectChunkSpec {
 
 /// Collects deform work items for one render space (read-only scene + mesh pool).
 fn collect_deform_work_for_space(
-    scene: &SceneCoordinator,
+    scene: &(impl MeshDeformSceneRead + Sync + ?Sized),
     mesh_pool: &MeshPool,
     visible_filter: Option<&HashSet<SkinCacheKey>>,
     render_contexts: &[RenderingContext],
@@ -193,9 +194,14 @@ fn collect_deform_work_for_space(
     if !space.is_active() {
         return;
     }
-    for r in space.static_mesh_renderers() {
+    let Some(static_renderers) = scene.static_mesh_renderers(space_id) else {
+        return;
+    };
+    let Some(skinned_renderers) = scene.skinned_mesh_renderers(space_id) else {
+        return;
+    };
+    for r in static_renderers {
         push_static_deform_work(
-            scene,
             mesh_pool,
             visible_filter,
             render_contexts,
@@ -204,9 +210,8 @@ fn collect_deform_work_for_space(
             work,
         );
     }
-    for skinned in space.skinned_mesh_renderers() {
+    for skinned in skinned_renderers {
         push_skinned_deform_work(
-            scene,
             mesh_pool,
             visible_filter,
             render_contexts,
@@ -218,7 +223,6 @@ fn collect_deform_work_for_space(
 }
 
 fn push_static_deform_work(
-    _scene: &SceneCoordinator,
     mesh_pool: &MeshPool,
     visible_filter: Option<&HashSet<SkinCacheKey>>,
     render_contexts: &[RenderingContext],
@@ -259,7 +263,6 @@ fn push_static_deform_work(
 }
 
 fn push_skinned_deform_work(
-    _scene: &SceneCoordinator,
     mesh_pool: &MeshPool,
     visible_filter: Option<&HashSet<SkinCacheKey>>,
     render_contexts: &[RenderingContext],
@@ -303,7 +306,7 @@ fn push_skinned_deform_work(
 }
 
 /// Upper bound on deform work items (static + skinned) across active spaces for scratch reservation.
-fn deform_work_upper_bound(scene: &SceneCoordinator) -> usize {
+fn deform_work_upper_bound(scene: &(impl MeshDeformSceneRead + ?Sized)) -> usize {
     let mut est = 0usize;
     for space_id in scene.render_space_ids() {
         let Some(space) = scene.space(space_id) else {
@@ -311,20 +314,31 @@ fn deform_work_upper_bound(scene: &SceneCoordinator) -> usize {
         };
         if space.is_active() {
             est = est
-                .saturating_add(space.static_mesh_renderers().len())
-                .saturating_add(space.skinned_mesh_renderers().len());
+                .saturating_add(scene.static_mesh_renderers(space_id).map_or(0, |r| r.len()))
+                .saturating_add(
+                    scene
+                        .skinned_mesh_renderers(space_id)
+                        .map_or(0, |r| r.len()),
+                );
         }
     }
     est
 }
 
-fn renderer_count_for_deform_space(scene: &SceneCoordinator, space_id: RenderSpaceId) -> usize {
+fn renderer_count_for_deform_space(
+    scene: &(impl MeshDeformSceneRead + ?Sized),
+    space_id: RenderSpaceId,
+) -> usize {
     scene.space(space_id).map_or(0, |space| {
         if space.is_active() {
-            space
-                .static_mesh_renderers()
-                .len()
-                .saturating_add(space.skinned_mesh_renderers().len())
+            scene
+                .static_mesh_renderers(space_id)
+                .map_or(0, |r| r.len())
+                .saturating_add(
+                    scene
+                        .skinned_mesh_renderers(space_id)
+                        .map_or(0, |r| r.len()),
+                )
         } else {
             0
         }
@@ -348,7 +362,7 @@ fn push_deform_collect_chunks(
 }
 
 fn collect_deform_work_for_chunk(
-    scene: &SceneCoordinator,
+    scene: &(impl MeshDeformSceneRead + Sync + ?Sized),
     mesh_pool: &MeshPool,
     visible_filter: Option<&HashSet<SkinCacheKey>>,
     render_contexts: &[RenderingContext],
@@ -365,10 +379,14 @@ fn collect_deform_work_for_chunk(
     }
     match spec.kind {
         DeformCollectChunkKind::Static => {
+            let Some(static_renderers) = scene.static_mesh_renderers(space_id) else {
+                return;
+            };
             for renderable_index in spec.range.clone() {
-                let r = &space.static_mesh_renderers()[renderable_index];
+                let Some(r) = static_renderers.get(renderable_index) else {
+                    continue;
+                };
                 push_static_deform_work(
-                    scene,
                     mesh_pool,
                     visible_filter,
                     render_contexts,
@@ -379,10 +397,14 @@ fn collect_deform_work_for_chunk(
             }
         }
         DeformCollectChunkKind::Skinned => {
+            let Some(skinned_renderers) = scene.skinned_mesh_renderers(space_id) else {
+                return;
+            };
             for renderable_index in spec.range.clone() {
-                let skinned = &space.skinned_mesh_renderers()[renderable_index];
+                let Some(skinned) = skinned_renderers.get(renderable_index) else {
+                    continue;
+                };
                 push_skinned_deform_work(
-                    scene,
                     mesh_pool,
                     visible_filter,
                     render_contexts,
@@ -396,7 +418,7 @@ fn collect_deform_work_for_chunk(
 }
 
 fn collect_deform_work_for_space_aggressive(
-    scene: &SceneCoordinator,
+    scene: &(impl MeshDeformSceneRead + Sync + ?Sized),
     mesh_pool: &MeshPool,
     visible_filter: Option<&HashSet<SkinCacheKey>>,
     render_contexts: &[RenderingContext],
@@ -427,12 +449,14 @@ fn collect_deform_work_for_space_aggressive(
     push_deform_collect_chunks(
         &mut specs,
         DeformCollectChunkKind::Static,
-        space.static_mesh_renderers().len(),
+        scene.static_mesh_renderers(space_id).map_or(0, |r| r.len()),
     );
     push_deform_collect_chunks(
         &mut specs,
         DeformCollectChunkKind::Skinned,
-        space.skinned_mesh_renderers().len(),
+        scene
+            .skinned_mesh_renderers(space_id)
+            .map_or(0, |r| r.len()),
     );
     if specs.len() < DEFORM_COLLECT_PARALLEL_MIN_CHUNKS {
         collect_deform_work_for_space(
@@ -479,7 +503,7 @@ fn collect_deform_work_for_space_aggressive(
 /// Fills `scratch` with deform work collected in parallel across all render spaces.
 fn collect_deform_work_into_scratch(
     scratch: &mut MeshDeformScratch,
-    scene: &SceneCoordinator,
+    scene: &(impl MeshDeformSceneRead + Sync + ?Sized),
     mesh_pool: &MeshPool,
     visible_filter: Option<&HashSet<SkinCacheKey>>,
     default_render_context: RenderingContext,
@@ -634,11 +658,14 @@ fn report_mesh_deform_stats(
 }
 
 /// Prepares CPU skinning palette bytes before the serial encode loop when enough skinned work exists.
-fn preplan_skinning_palettes(
+fn preplan_skinning_palettes<S>(
     work: &[DeformWorkItem],
     ready_work_indices: &[usize],
-    dispatch_ctx: MeshDeformDispatchCtx<'_>,
-) -> Vec<Option<Vec<u8>>> {
+    dispatch_ctx: &MeshDeformDispatchCtx<'_, S>,
+) -> Vec<Option<Vec<u8>>>
+where
+    S: SceneTransformRead + Sync + ?Sized,
+{
     let skinned_count = ready_work_indices
         .iter()
         .filter(|&&work_index| {
@@ -661,10 +688,13 @@ fn preplan_skinning_palettes(
 }
 
 /// Builds one work item's skinning palette using worker-owned scratch.
-fn preplan_skinning_palette_for_item(
+fn preplan_skinning_palette_for_item<S>(
     item: &DeformWorkItem,
-    dispatch_ctx: MeshDeformDispatchCtx<'_>,
-) -> Option<Vec<u8>> {
+    dispatch_ctx: &MeshDeformDispatchCtx<'_, S>,
+) -> Option<Vec<u8>>
+where
+    S: SceneTransformRead + Sync + ?Sized,
+{
     if !deform_needs_skin_snapshot(&item.mesh, item.skinned.as_deref()) {
         return None;
     }
@@ -685,14 +715,17 @@ fn preplan_skinning_palette_for_item(
     Some(bytes)
 }
 
-fn dispatch_mesh_deform_work(
+fn dispatch_mesh_deform_work<S>(
     mut gpu: MeshDeformEncodeGpu<'_>,
     skin_cache: &mut crate::mesh_deform::GpuSkinCache,
     work: &[DeformWorkItem],
     ready_work_indices: &mut Vec<usize>,
     batch: &mut MeshDeformDispatchBatch,
-    dispatch_ctx: MeshDeformDispatchCtx<'_>,
-) -> MeshDeformDispatchResult {
+    dispatch_ctx: MeshDeformDispatchCtx<'_, S>,
+) -> MeshDeformDispatchResult
+where
+    S: SceneTransformRead + Sync + ?Sized,
+{
     profiling::scope!("mesh_deform::dispatch");
     let mut cursors = MeshDeformRecordCursors::default();
     let mut result = MeshDeformDispatchResult {
@@ -719,7 +752,7 @@ fn dispatch_mesh_deform_work(
             result.skipped_allocations = result.skipped_allocations.saturating_add(1);
         }
     }
-    let preplanned_palettes = preplan_skinning_palettes(work, ready_work_indices, dispatch_ctx);
+    let preplanned_palettes = preplan_skinning_palettes(work, ready_work_indices, &dispatch_ctx);
 
     batch.clear();
     for (ready_index, &work_index) in ready_work_indices.iter().enumerate() {

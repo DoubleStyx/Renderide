@@ -26,7 +26,10 @@ use super::lights::{
 #[cfg(test)]
 use super::math::multiply_root;
 use super::overrides::MeshRendererOverrideTarget;
-use super::read::{SceneLightRead, SceneSpaceRead, SceneTransformRead};
+use super::read::{
+    SceneLightRead, SceneMeshRendererRead, SceneReflectionProbeRead, SceneSpaceRead,
+    SceneTransformRead,
+};
 use super::render_space::{RenderSpaceState, RenderSpaceView};
 use super::transforms::TransformRemovalEvent;
 use super::world::{WorldTransformCache, compute_world_matrices_for_space, ensure_cache_shapes};
@@ -583,6 +586,28 @@ impl SceneCoordinator {
             self.world_dirty.remove(&id);
             self.apply_scratch.transform_removals_by_space.remove(&id);
         }
+    }
+}
+
+impl SceneMeshRendererRead for SceneCoordinator {
+    fn static_mesh_renderers(&self, id: RenderSpaceId) -> Option<&[super::StaticMeshRenderer]> {
+        self.spaces
+            .get(&id)
+            .map(|space| space.static_mesh_renderers.as_slice())
+    }
+
+    fn skinned_mesh_renderers(&self, id: RenderSpaceId) -> Option<&[super::SkinnedMeshRenderer]> {
+        self.spaces
+            .get(&id)
+            .map(|space| space.skinned_mesh_renderers.as_slice())
+    }
+}
+
+impl SceneReflectionProbeRead for SceneCoordinator {
+    fn reflection_probes(&self, id: RenderSpaceId) -> Option<&[super::ReflectionProbeEntry]> {
+        self.spaces
+            .get(&id)
+            .map(|space| space.reflection_probes.as_slice())
     }
 }
 

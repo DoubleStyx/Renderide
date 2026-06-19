@@ -2,7 +2,10 @@
 
 use glam::Mat4;
 
-use super::{RenderSpaceId, RenderSpaceView, ResolvedLight};
+use super::{
+    ReflectionProbeEntry, RenderSpaceId, RenderSpaceView, ResolvedLight, SkinnedMeshRenderer,
+    StaticMeshRenderer,
+};
 use crate::shared::{LayerType, RenderSH2, RenderTransform, RenderingContext};
 
 /// Read-only access to one host render-space snapshot.
@@ -96,6 +99,30 @@ pub(crate) trait SceneTransformRead: SceneSpaceRead {
         renderable_index: usize,
         slot_index: usize,
     ) -> Option<i32>;
+}
+
+/// Read-only mesh renderer tables used by render-preparation systems.
+pub(crate) trait SceneMeshRendererRead: SceneSpaceRead {
+    /// Static mesh renderers indexed by static renderable id.
+    fn static_mesh_renderers(&self, id: RenderSpaceId) -> Option<&[StaticMeshRenderer]>;
+    /// Skinned mesh renderers indexed by skinned renderable id.
+    fn skinned_mesh_renderers(&self, id: RenderSpaceId) -> Option<&[SkinnedMeshRenderer]>;
+}
+
+/// Scene reads required by mesh-deform work collection and palette construction.
+pub(crate) trait MeshDeformSceneRead: SceneMeshRendererRead + SceneTransformRead {}
+
+impl<T> MeshDeformSceneRead for T where T: SceneMeshRendererRead + SceneTransformRead {}
+
+/// Scene reads required by world-mesh draw/material preparation.
+pub(crate) trait WorldMeshSceneRead: SceneMeshRendererRead + SceneTransformRead {}
+
+impl<T> WorldMeshSceneRead for T where T: SceneMeshRendererRead + SceneTransformRead {}
+
+/// Read-only reflection-probe rows used by offscreen probe planning.
+pub(crate) trait SceneReflectionProbeRead: SceneTransformRead {
+    /// Reflection probes indexed by dense reflection-probe renderable id.
+    fn reflection_probes(&self, id: RenderSpaceId) -> Option<&[ReflectionProbeEntry]>;
 }
 
 /// Read-only light queries used by frame resource preparation.

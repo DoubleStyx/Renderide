@@ -90,7 +90,10 @@ pub use meshes::types::{
     MeshMaterialSlot, MeshRendererInstanceId, SkinnedMeshRenderer, StaticMeshRenderer,
 };
 pub use overrides::MeshRendererOverrideTarget;
-pub(crate) use read::{RenderSpaceRead, SceneLightRead, SceneSpaceRead, SceneTransformRead};
+pub(crate) use read::{
+    MeshDeformSceneRead, RenderSpaceRead, SceneLightRead, SceneMeshRendererRead,
+    SceneReflectionProbeRead, SceneSpaceRead, SceneTransformRead, WorldMeshSceneRead,
+};
 pub(crate) use reflection_probe::changed_probe_completion;
 pub use reflection_probe::{
     DrainedReflectionProbeRenderChanges, ReflectionProbeEntry,

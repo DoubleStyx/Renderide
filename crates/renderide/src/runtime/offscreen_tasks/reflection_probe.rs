@@ -8,7 +8,8 @@ use crate::gpu::GpuContext;
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::render_graph::{GraphExecuteError, RenderPathProfile};
 use crate::scene::{
-    ReflectionProbeOnChangesRenderRequest, SceneCoordinator, reflection_probe_skybox_only,
+    ReflectionProbeOnChangesRenderRequest, RenderSpaceRead, SceneCoordinator,
+    SceneReflectionProbeRead, reflection_probe_skybox_only,
 };
 use crate::shared::{
     FrameSubmitData, ReflectionProbeRenderResult, ReflectionProbeRenderTask, ReflectionProbeState,
@@ -425,13 +426,16 @@ fn render_reflection_probe_task(
     write_probe_task_result(ctx.shm, &ctx.queued.task, &planned.readback_layout, &mapped)
 }
 
-fn plan_reflection_probe_task(
+fn plan_reflection_probe_task<S>(
     gpu: &GpuContext,
-    scene: &SceneCoordinator,
+    scene: &S,
     base_camera: &HostCameraFrame,
     queued: &QueuedReflectionProbeRenderTask,
     frame_time_seconds: f32,
-) -> Result<PlannedReflectionProbeTask, ReflectionProbeBakeError> {
+) -> Result<PlannedReflectionProbeTask, ReflectionProbeBakeError>
+where
+    S: SceneReflectionProbeRead + ?Sized,
+{
     profiling::scope!("reflection_probe_task::plan");
     let task = &queued.task;
     let extent = ProbeTaskExtent::from_task(task)?;
@@ -451,9 +455,12 @@ fn plan_reflection_probe_task(
     }
     let probe_index = usize::try_from(task.renderable_index)
         .map_err(|_err| ReflectionProbeBakeError::InvalidRenderableIndex(task.renderable_index))?;
-    let probe = space.reflection_probes().get(probe_index).ok_or(
-        ReflectionProbeBakeError::MissingProbe(task.renderable_index),
-    )?;
+    let probe = scene
+        .reflection_probes(queued.render_space_id)
+        .and_then(|probes| probes.get(probe_index))
+        .ok_or(ReflectionProbeBakeError::MissingProbe(
+            task.renderable_index,
+        ))?;
     let transform_index = usize::try_from(probe.transform_id)
         .map_err(|_err| ReflectionProbeBakeError::InvalidProbeTransform(probe.transform_id))?;
     let probe_world = scene

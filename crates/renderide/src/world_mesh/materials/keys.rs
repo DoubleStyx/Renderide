@@ -1,6 +1,6 @@
 //! Scene walks that collect live material/property-block keys for the world-mesh cache.
 
-use crate::scene::{MeshMaterialSlot, RenderSpaceId, SceneCoordinator, StaticMeshRenderer};
+use crate::scene::{MeshMaterialSlot, RenderSpaceId, StaticMeshRenderer, WorldMeshSceneRead};
 
 use super::slot::normalized_material_slot;
 
@@ -8,19 +8,22 @@ use super::slot::normalized_material_slot;
 /// `(material_asset_id, property_block_id)` key. Pure, so callers can run it in parallel across
 /// spaces before serial cache updates.
 pub(super) fn collect_material_keys_into(
-    scene: &SceneCoordinator,
+    scene: &(impl WorldMeshSceneRead + ?Sized),
     space_id: RenderSpaceId,
     out: &mut Vec<(i32, Option<i32>)>,
 ) {
-    let Some(space) = scene.space(space_id) else {
+    let Some(static_renderers) = scene.static_mesh_renderers(space_id) else {
         return;
     };
-    for r in space.static_mesh_renderers() {
+    let Some(skinned_renderers) = scene.skinned_mesh_renderers(space_id) else {
+        return;
+    };
+    for r in static_renderers {
         if r.mesh_asset_id >= 0 && r.emits_visible_color_draws() {
             append_renderer_material_keys(r, out);
         }
     }
-    for sk in space.skinned_mesh_renderers() {
+    for sk in skinned_renderers {
         if sk.base.mesh_asset_id >= 0 && sk.base.emits_visible_color_draws() {
             append_renderer_material_keys(&sk.base, out);
         }
@@ -29,7 +32,7 @@ pub(super) fn collect_material_keys_into(
 
 /// Owning variant of [`collect_material_keys_into`] used by the single-space steady-state path.
 pub(super) fn collect_material_keys_for_space(
-    scene: &SceneCoordinator,
+    scene: &(impl WorldMeshSceneRead + ?Sized),
     space_id: RenderSpaceId,
 ) -> Vec<(i32, Option<i32>)> {
     let mut out = Vec::new();
@@ -63,7 +66,7 @@ fn append_renderer_material_keys(r: &StaticMeshRenderer, out: &mut Vec<(i32, Opt
 mod tests {
     use super::*;
 
-    use crate::scene::SkinnedMeshRenderer;
+    use crate::scene::{SceneCoordinator, SkinnedMeshRenderer};
 
     fn renderer_with_mesh_asset(mesh_asset_id: i32) -> StaticMeshRenderer {
         StaticMeshRenderer {

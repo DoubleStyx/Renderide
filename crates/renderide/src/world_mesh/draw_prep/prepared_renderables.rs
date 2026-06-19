@@ -25,7 +25,9 @@ use crate::cpu_parallelism::RENDER_COMMAND_CHUNK_DRAWS;
 #[cfg(test)]
 use crate::gpu_pools::MeshPool;
 use crate::particles::ParticleDrawParams;
-use crate::scene::{MeshRendererInstanceId, RenderSpaceId, SceneCoordinator};
+use crate::scene::{
+    MeshRendererInstanceId, RenderSpaceId, SceneCoordinator, SceneMeshRendererRead,
+};
 use crate::shared::{RenderingContext, ShadowCastMode};
 use crate::world_mesh::culling::{MeshCullGeometry, WorldMeshCullInput};
 
@@ -669,12 +671,12 @@ impl FramePreparedRenderables {
 /// Assigns stable scene-table renderer ordinals to every prepared draw row.
 fn populate_renderer_ordinals_from_scene(
     draws: &mut [FramePreparedDraw],
-    scene: &SceneCoordinator,
+    scene: &(impl SceneMeshRendererRead + ?Sized),
 ) {
     for draw in draws {
         let static_count = scene
-            .space(draw.space_id)
-            .map_or(0, |space| space.static_mesh_renderers().len());
+            .static_mesh_renderers(draw.space_id)
+            .map_or(0, |renderers| renderers.len());
         draw.renderer_ordinal = if draw.skinned {
             static_count.saturating_add(draw.renderable_index)
         } else {

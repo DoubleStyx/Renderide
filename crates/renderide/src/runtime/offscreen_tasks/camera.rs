@@ -12,7 +12,7 @@ use crate::ipc::SharedMemoryAccessor;
 use crate::render_graph::{
     FrameViewClear, GraphExecuteError, OffscreenWriteTarget, RenderPathProfile, ViewPostProcessing,
 };
-use crate::scene::{RenderSpaceId, SceneCoordinator};
+use crate::scene::{RenderSpaceId, RenderSpaceRead, SceneCoordinator, SceneSpaceRead};
 use crate::shared::{CameraRenderParameters, CameraRenderTask, RenderingContext, TextureFormat};
 use crate::world_mesh::{
     CameraTransformDrawFilter, ViewLayerPolicy, ViewRenderSpaceScope,
@@ -395,14 +395,17 @@ struct PlannedCameraTask {
     output_format: CameraTaskOutputFormat,
 }
 
-fn plan_camera_task(
+fn plan_camera_task<S>(
     gpu: &GpuContext,
-    scene: &SceneCoordinator,
+    scene: &S,
     base_camera: &crate::camera::HostCameraFrame,
     task_index: i32,
     task: &CameraRenderTask,
     frame_time_seconds: f32,
-) -> Result<PlannedCameraTask, CameraReadbackError> {
+) -> Result<PlannedCameraTask, CameraReadbackError>
+where
+    S: SceneSpaceRead + ?Sized,
+{
     profiling::scope!("camera_task::plan");
     let parameters = task
         .parameters
