@@ -8,9 +8,8 @@ use super::slot::{
     create_temporary_staging_buffer, log_oversized_upload, next_slot_capacity,
     select_writable_slot,
 };
-use super::staging::{
-    PreparedUploadStaging, UploadArenaAcquireStats, UploadArenaPressure, UploadStagingSource,
-};
+use super::staging::{PreparedUploadStaging, UploadStagingSource};
+use crate::upload_stats::{UploadArenaAcquireStats, UploadArenaPressure};
 
 /// One completed upload slot event delivered from a wgpu callback to the main thread.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

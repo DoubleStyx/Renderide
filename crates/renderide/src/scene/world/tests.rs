@@ -118,7 +118,7 @@ fn ensure_cache_shapes_resizes_and_clears_computed_on_grow() {
     assert_eq!(cache.degenerate_scales.len(), 3);
     assert_eq!(cache.computed, vec![false, false, false]);
     assert!(
-        cache.children_dirty,
+        cache.hierarchy.children_dirty,
         "growth must mark children adjacency dirty"
     );
 
@@ -274,9 +274,9 @@ fn parallel_bulk_rebuild_matches_serial_on_large_chain() {
     // by directly invoking the incremental method via a fresh cache.
     let mut serial = WorldTransformCache::default();
     ensure_cache_shapes(&mut serial, n, false);
-    if serial.children_dirty {
-        rebuild_children(&parents, n, &mut serial.children);
-        serial.children_dirty = false;
+    if serial.hierarchy.children_dirty {
+        rebuild_children(&parents, n, &mut serial.hierarchy.children);
+        serial.hierarchy.children_dirty = false;
     }
     serial
         .compute_world_matrices_incremental(0, &nodes, &parents)
@@ -316,9 +316,9 @@ fn parallel_bulk_rebuild_handles_wide_tree() {
 
     let mut serial = WorldTransformCache::default();
     ensure_cache_shapes(&mut serial, n, false);
-    if serial.children_dirty {
-        rebuild_children(&parents, n, &mut serial.children);
-        serial.children_dirty = false;
+    if serial.hierarchy.children_dirty {
+        rebuild_children(&parents, n, &mut serial.hierarchy.children);
+        serial.hierarchy.children_dirty = false;
     }
     serial
         .compute_world_matrices_incremental(0, &nodes, &parents)

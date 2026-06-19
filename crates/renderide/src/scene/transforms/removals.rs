@@ -57,8 +57,8 @@ pub fn apply_transform_removals_ordered(
             if idx < cache.degenerate_scales.len() {
                 cache.degenerate_scales.swap_remove(idx);
             }
-            if idx < cache.visit_epoch.len() {
-                cache.visit_epoch.swap_remove(idx);
+            if idx < cache.hierarchy.visit_epoch.len() {
+                cache.hierarchy.visit_epoch.swap_remove(idx);
             }
         }
         out.push(TransformRemovalEvent {
@@ -94,7 +94,7 @@ pub(super) fn apply_transform_parent_updates_extracted(
         }
     }
     if had_parent {
-        cache.children_dirty = true;
+        cache.hierarchy.children_dirty = true;
         *invalidate_world = true;
         space.hierarchy_dirty = true;
     }

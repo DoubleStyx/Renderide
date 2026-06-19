@@ -68,6 +68,7 @@ mod runtime;
 mod scene;
 mod shared;
 mod upload_arena;
+mod upload_stats;
 mod world_mesh;
 mod xr;
 

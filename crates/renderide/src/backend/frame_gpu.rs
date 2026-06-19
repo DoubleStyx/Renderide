@@ -26,8 +26,8 @@ use crate::reflection_probes::specular::ReflectionProbeSpecularResources;
 use super::frame_gpu_error::FrameGpuInitError;
 pub(crate) use empty_material::EmptyMaterialBindGroup;
 use ibl_dfg::create_ibl_dfg_lut;
+pub(crate) use light_cookies::LightCookieAtlasPass;
 use light_cookies::LightCookieAtlasResources;
-pub(crate) use light_cookies::{LIGHT_COOKIE_ATLAS_PASS_NAME, LightCookieAtlasPass};
 use reflection_probe_specular::{
     ReflectionProbeSpecularBindGroupResources, create_reflection_probe_specular_fallback,
 };
@@ -35,8 +35,8 @@ pub(crate) use scene_snapshot::FrameSceneSnapshotTextureViews;
 use scene_snapshot::{
     DEFAULT_SCENE_COLOR_FORMAT, SceneSnapshotKind, SceneSnapshotLayout, SceneSnapshotSet,
 };
+pub(crate) use shadows::ShadowAtlasPass;
 use shadows::ShadowAtlasResources;
-pub(crate) use shadows::{SHADOW_ATLAS_PASS_NAME, ShadowAtlasPass};
 
 /// Result of synchronizing the realtime shadow atlas before graph recording.
 pub(crate) struct ShadowResourceSyncResult {

@@ -14,6 +14,7 @@ use super::scope::{
 };
 use super::stats::{FrameUploadBatchStats, FrameUploadFlush, force_queue_fallback_stats};
 use crate::upload_arena::PersistentUploadArena;
+use crate::upload_stats::UploadTrafficStats;
 
 /// Whether a recorded [`QueueWrite::Buffer`] entry can be served from the persistent staging
 /// buffer (4-aligned offset and length per [`wgpu::COPY_BUFFER_ALIGNMENT`]) or has to fall back
@@ -211,14 +212,14 @@ impl FrameUploadBatch {
             device,
             max_buffer_size,
             staging_size,
-            stats.staged_writes,
+            stats.traffic.staged_writes,
         );
         stats.apply_arena_acquire(staging.acquire_stats());
         if let Some(staging_buffer) = staging.buffer() {
             fill_staging_buffer(staging_buffer, &writes, &plans, &payload_bytes);
         }
         if staging.requires_queue_fallback() {
-            stats.copy_ops = 0;
+            stats.traffic.copy_ops = 0;
         }
         let staging = staging.finish(upload_arena);
         let (command_buffer, finish_ms) = record_upload_command_buffer(
@@ -249,8 +250,11 @@ impl FrameUploadBatch {
             return None;
         }
         let stats = FrameUploadBatchStats {
-            writes: recorded.writes.len(),
-            bytes: recorded.bytes.len(),
+            traffic: UploadTrafficStats {
+                writes: recorded.writes.len(),
+                bytes: recorded.bytes.len(),
+                ..UploadTrafficStats::default()
+            },
             ..FrameUploadBatchStats::default()
         };
         if !recorded.writes.is_sorted_by_key(queue_write_order) {
@@ -335,14 +339,14 @@ fn plan_staging_writes(
                 len,
             });
             staging_size = aligned_off + len;
-            stats.staged_writes = stats.staged_writes.saturating_add(1);
+            stats.traffic.staged_writes = stats.traffic.staged_writes.saturating_add(1);
         } else {
             plans.push(WritePlan::Fallback);
-            stats.fallback_writes = stats.fallback_writes.saturating_add(1);
+            stats.traffic.fallback_writes = stats.traffic.fallback_writes.saturating_add(1);
         }
     }
-    stats.staging_bytes = staging_size;
-    stats.copy_ops = stats.staged_writes;
+    stats.traffic.staging_bytes = staging_size;
+    stats.traffic.copy_ops = stats.traffic.staged_writes;
     (plans, staging_size)
 }
 

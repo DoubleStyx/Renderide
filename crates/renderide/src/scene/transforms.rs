@@ -74,8 +74,8 @@ impl NodeDirtyMask {
     /// Takes the reusable scratch vectors from `cache` and resets the marks from the previous
     /// transform update.
     fn take_from_cache(cache: &mut WorldTransformCache, node_count: usize) -> Self {
-        let mut flags = std::mem::take(&mut cache.transform_dirty_flags);
-        let mut indices = std::mem::take(&mut cache.transform_dirty_indices);
+        let mut flags = std::mem::take(&mut cache.transform_apply.dirty_flags);
+        let mut indices = std::mem::take(&mut cache.transform_apply.dirty_indices);
         for &index in &indices {
             if let Some(flag) = flags.get_mut(index) {
                 *flag = false;
@@ -85,7 +85,7 @@ impl NodeDirtyMask {
         if flags.len() < node_count {
             flags.resize(node_count, false);
         }
-        let mut pose_plan_indices = std::mem::take(&mut cache.transform_pose_plan_indices);
+        let mut pose_plan_indices = std::mem::take(&mut cache.transform_apply.pose_plan_indices);
         if pose_plan_indices.len() < node_count {
             pose_plan_indices.resize(node_count, usize::MAX);
         }
@@ -100,9 +100,9 @@ impl NodeDirtyMask {
 
     /// Restores the scratch vectors to `cache` for reuse by the next transform update.
     fn restore_into(self, cache: &mut WorldTransformCache) {
-        cache.transform_dirty_flags = self.flags;
-        cache.transform_dirty_indices = self.indices;
-        cache.transform_pose_plan_indices = self.pose_plan_indices;
+        cache.transform_apply.dirty_flags = self.flags;
+        cache.transform_apply.dirty_indices = self.indices;
+        cache.transform_apply.pose_plan_indices = self.pose_plan_indices;
     }
 
     /// Sets the dirty flag for `index`, growing the mask if a host row referenced an index past
@@ -179,7 +179,7 @@ fn ensure_world_cache_matches_node_count(
         .resize(space.nodes.len(), glam::Mat4::IDENTITY);
     cache.local_dirty.resize(space.nodes.len(), true);
     cache.degenerate_scales.resize(space.nodes.len(), false);
-    cache.visit_epoch.resize(space.nodes.len(), 0);
+    cache.hierarchy.visit_epoch.resize(space.nodes.len(), 0);
     *invalidate_world = true;
 }
 
@@ -199,7 +199,7 @@ fn grow_transform_buffers_to_target(
         cache.local_matrices.push(glam::Mat4::IDENTITY);
         cache.local_dirty.push(true);
         cache.degenerate_scales.push(false);
-        cache.visit_epoch.push(0);
+        cache.hierarchy.visit_epoch.push(0);
     }
     if space.nodes.len() != nodes_before {
         *invalidate_world = true;
@@ -317,7 +317,7 @@ pub fn apply_transforms_update_extracted(
             removal_events_out,
         );
         if had_removal {
-            cache.children_dirty = true;
+            cache.hierarchy.children_dirty = true;
             invalidate_world = true;
             full_invalidate_world = true;
             space.hierarchy_dirty = true;
@@ -373,18 +373,22 @@ pub fn apply_transforms_update_extracted(
         poses::propagate_transform_change_dirty_flags(cache, &changed);
     }
 
-    if cache.children_dirty {
+    if cache.hierarchy.children_dirty {
         profiling::scope!("scene::apply_transforms::rebuild_children");
-        rebuild_children(&space.node_parents, space.nodes.len(), &mut cache.children);
-        cache.children_dirty = false;
+        rebuild_children(
+            &space.node_parents,
+            space.nodes.len(),
+            &mut cache.hierarchy.children,
+        );
+        cache.hierarchy.children_dirty = false;
     }
     if full_invalidate_world {
         profiling::scope!("scene::apply_transforms::invalidate_all_descendants");
-        mark_descendants_uncomputed(&cache.children, &mut cache.computed);
+        mark_descendants_uncomputed(&cache.hierarchy.children, &mut cache.computed);
     } else if invalidate_world {
         profiling::scope!("scene::apply_transforms::invalidate_changed_descendants");
         mark_descendants_uncomputed_from_roots(
-            &cache.children,
+            &cache.hierarchy.children,
             &mut cache.computed,
             changed.indices(),
         );
@@ -412,15 +416,16 @@ mod tests {
     }
 
     fn empty_cache(nodes_len: usize) -> WorldTransformCache {
-        WorldTransformCache {
+        let mut cache = WorldTransformCache {
             world_matrices: vec![glam::Mat4::IDENTITY; nodes_len],
             computed: vec![false; nodes_len],
             local_matrices: vec![glam::Mat4::IDENTITY; nodes_len],
             local_dirty: vec![true; nodes_len],
             degenerate_scales: vec![false; nodes_len],
-            visit_epoch: vec![0; nodes_len],
             ..Default::default()
-        }
+        };
+        cache.hierarchy.visit_epoch = vec![0; nodes_len];
+        cache
     }
 
     #[test]

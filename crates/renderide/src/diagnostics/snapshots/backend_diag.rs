@@ -11,6 +11,7 @@ use crate::materials::{
     MaterialShaderGraphDiagnosticSnapshot, RasterPipelineKind,
 };
 use crate::passes::WorldMeshForwardInstancePlanCacheStats;
+use crate::upload_stats::{UploadArenaStats, UploadTrafficStats};
 use crate::world_mesh::{
     RenderWorldMaintenanceStats, WorldMeshCommandCacheStats, WorldMeshDrawStateRow,
     WorldMeshDrawStats,
@@ -126,50 +127,17 @@ pub struct ShaderRouteSnapshot {
 /// Persistent upload arena pressure and fallback counters from the most recent graph submit.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FrameUploadArenaSnapshot {
-    /// Deferred buffer writes drained by the latest frame upload batch.
-    pub writes: usize,
-    /// Deferred upload payload bytes drained by the latest frame upload batch.
-    pub bytes: usize,
-    /// Writes replayed through [`wgpu::Queue::write_buffer`] because staging was not usable.
-    pub fallback_writes: usize,
-    /// Bytes staged through persistent upload arena slots.
-    pub persistent_staging_bytes: u64,
-    /// Persistent upload arena slot reuse count.
-    pub persistent_slot_reuses: usize,
-    /// Persistent upload arena allocation or growth count.
-    pub persistent_slot_grows: usize,
-    /// Bytes staged through one-frame temporary fallback buffers.
-    pub temporary_staging_bytes: u64,
-    /// Temporary fallback buffer count caused by unavailable persistent slots.
-    pub temporary_staging_fallbacks: usize,
-    /// Staged writes replayed through queue writes because no staging buffer fit.
-    pub oversized_queue_fallback_writes: usize,
-    /// Total bytes allocated across persistent upload arena slots.
-    pub arena_capacity_bytes: u64,
-    /// Persistent upload arena slots currently mapped and free.
-    pub arena_free_slots: usize,
-    /// Persistent upload arena slots referenced by submitted GPU work.
-    pub arena_in_flight_slots: usize,
-    /// Persistent upload arena slots waiting for `map_async` completion.
-    pub arena_remapping_slots: usize,
+    /// Queue-write and staging-copy traffic.
+    pub traffic: UploadTrafficStats,
+    /// Persistent upload arena acquire and pressure counters.
+    pub arena: UploadArenaStats,
 }
 
 impl From<FrameUploadBatchStats> for FrameUploadArenaSnapshot {
     fn from(stats: FrameUploadBatchStats) -> Self {
         Self {
-            writes: stats.writes,
-            bytes: stats.bytes,
-            fallback_writes: stats.fallback_writes,
-            persistent_staging_bytes: stats.persistent_staging_bytes,
-            persistent_slot_reuses: stats.persistent_slot_reuses,
-            persistent_slot_grows: stats.persistent_slot_grows,
-            temporary_staging_bytes: stats.temporary_staging_bytes,
-            temporary_staging_fallbacks: stats.temporary_staging_fallbacks,
-            oversized_queue_fallback_writes: stats.oversized_queue_fallback_writes,
-            arena_capacity_bytes: stats.arena_capacity_bytes,
-            arena_free_slots: stats.arena_free_slots,
-            arena_in_flight_slots: stats.arena_in_flight_slots,
-            arena_remapping_slots: stats.arena_remapping_slots,
+            traffic: stats.traffic,
+            arena: stats.arena,
         }
     }
 }
@@ -252,38 +220,48 @@ pub struct BackendDiagSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::upload_arena::{UploadArenaAcquireStats, UploadArenaPressure};
 
     #[test]
     fn upload_arena_snapshot_copies_pressure_and_fallback_counters() {
         let snapshot = FrameUploadArenaSnapshot::from(FrameUploadBatchStats {
-            writes: 7,
-            bytes: 1024,
-            fallback_writes: 2,
-            persistent_staging_bytes: 512,
-            persistent_slot_reuses: 3,
-            persistent_slot_grows: 4,
-            temporary_staging_bytes: 256,
-            temporary_staging_fallbacks: 5,
-            oversized_queue_fallback_writes: 6,
-            arena_capacity_bytes: 4096,
-            arena_free_slots: 1,
-            arena_in_flight_slots: 2,
-            arena_remapping_slots: 3,
+            traffic: UploadTrafficStats {
+                writes: 7,
+                bytes: 1024,
+                fallback_writes: 2,
+                ..UploadTrafficStats::default()
+            },
+            arena: UploadArenaStats {
+                acquire: UploadArenaAcquireStats {
+                    persistent_staging_bytes: 512,
+                    persistent_slot_reuses: 3,
+                    persistent_slot_grows: 4,
+                    temporary_staging_bytes: 256,
+                    temporary_staging_fallbacks: 5,
+                    oversized_queue_fallback_writes: 6,
+                },
+                pressure: UploadArenaPressure {
+                    capacity_bytes: 4096,
+                    free_slots: 1,
+                    in_flight_slots: 2,
+                    remapping_slots: 3,
+                },
+            },
             ..FrameUploadBatchStats::default()
         });
 
-        assert_eq!(snapshot.writes, 7);
-        assert_eq!(snapshot.bytes, 1024);
-        assert_eq!(snapshot.fallback_writes, 2);
-        assert_eq!(snapshot.persistent_staging_bytes, 512);
-        assert_eq!(snapshot.persistent_slot_reuses, 3);
-        assert_eq!(snapshot.persistent_slot_grows, 4);
-        assert_eq!(snapshot.temporary_staging_bytes, 256);
-        assert_eq!(snapshot.temporary_staging_fallbacks, 5);
-        assert_eq!(snapshot.oversized_queue_fallback_writes, 6);
-        assert_eq!(snapshot.arena_capacity_bytes, 4096);
-        assert_eq!(snapshot.arena_free_slots, 1);
-        assert_eq!(snapshot.arena_in_flight_slots, 2);
-        assert_eq!(snapshot.arena_remapping_slots, 3);
+        assert_eq!(snapshot.traffic.writes, 7);
+        assert_eq!(snapshot.traffic.bytes, 1024);
+        assert_eq!(snapshot.traffic.fallback_writes, 2);
+        assert_eq!(snapshot.arena.acquire.persistent_staging_bytes, 512);
+        assert_eq!(snapshot.arena.acquire.persistent_slot_reuses, 3);
+        assert_eq!(snapshot.arena.acquire.persistent_slot_grows, 4);
+        assert_eq!(snapshot.arena.acquire.temporary_staging_bytes, 256);
+        assert_eq!(snapshot.arena.acquire.temporary_staging_fallbacks, 5);
+        assert_eq!(snapshot.arena.acquire.oversized_queue_fallback_writes, 6);
+        assert_eq!(snapshot.arena.pressure.capacity_bytes, 4096);
+        assert_eq!(snapshot.arena.pressure.free_slots, 1);
+        assert_eq!(snapshot.arena.pressure.in_flight_slots, 2);
+        assert_eq!(snapshot.arena.pressure.remapping_slots, 3);
     }
 }

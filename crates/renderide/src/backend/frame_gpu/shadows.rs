@@ -16,7 +16,8 @@ use crate::gpu::{
     GpuLimits, GpuShadowView, MAX_SHADOW_VIEWS, SHADOW_VIEW_KIND_POINT, SHADOW_VIEW_KIND_SPOT,
 };
 use crate::graph_inputs::{
-    FrameGlobalPassSplitWorkload, FrameGlobalSplitPassEncodeParams, ShadowAtlasEncodeParams,
+    FrameGlobalPassSplitWorkload, FrameGlobalResourcePass, FrameGlobalSplitPassEncodeParams,
+    ShadowAtlasEncodeParams,
 };
 use crate::materials::{MaterialPipelineDesc, ShaderPermutation};
 use crate::mesh_deform::PER_DRAW_UNIFORM_STRIDE;
@@ -241,6 +242,10 @@ impl EncoderPass for ShadowAtlasPass {
 
     fn phase(&self) -> PassPhase {
         PassPhase::FrameGlobal
+    }
+
+    fn frame_global_resource_pass(&self) -> Option<FrameGlobalResourcePass> {
+        Some(FrameGlobalResourcePass::ShadowAtlas)
     }
 }
 

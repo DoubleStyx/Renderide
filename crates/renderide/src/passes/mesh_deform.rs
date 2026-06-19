@@ -19,6 +19,7 @@ use crate::cpu_parallelism::{
     current_reference_worker_count, record_parallel_admission,
 };
 use crate::gpu_pools::MeshPool;
+use crate::graph_inputs::FrameGlobalResourcePass;
 use crate::mesh_deform::{
     SkinCacheKey, SkinCacheRendererKind, SkinningPaletteParams, write_skinning_palette_bytes_serial,
 };
@@ -795,6 +796,10 @@ impl ComputePass for MeshDeformPass {
 
     fn phase(&self) -> PassPhase {
         PassPhase::FrameGlobal
+    }
+
+    fn frame_global_resource_pass(&self) -> Option<FrameGlobalResourcePass> {
+        Some(FrameGlobalResourcePass::MeshDeform)
     }
 
     fn record(&self, ctx: &mut ComputePassCtx<'_, '_, '_>) -> Result<(), RenderPassError> {
