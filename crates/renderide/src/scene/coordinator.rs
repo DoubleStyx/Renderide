@@ -28,7 +28,7 @@ use super::math::multiply_root;
 use super::overrides::MeshRendererOverrideTarget;
 use super::read::{
     SceneLightRead, SceneMeshRendererRead, SceneReflectionProbeRead, SceneSpaceRead,
-    SceneTransformRead,
+    SceneTransformRead, WorldMeshSceneRead,
 };
 use super::render_space::{RenderSpaceState, RenderSpaceView};
 use super::transforms::TransformRemovalEvent;
@@ -600,6 +600,35 @@ impl SceneMeshRendererRead for SceneCoordinator {
         self.spaces
             .get(&id)
             .map(|space| space.skinned_mesh_renderers.as_slice())
+    }
+}
+
+impl WorldMeshSceneRead for SceneCoordinator {
+    fn lod_groups(&self, id: RenderSpaceId) -> Option<&[super::LodGroupEntry]> {
+        self.spaces
+            .get(&id)
+            .map(|space| space.lod_groups.as_slice())
+    }
+
+    fn billboard_render_buffers(
+        &self,
+        id: RenderSpaceId,
+    ) -> Option<&[super::BillboardRenderBufferEntry]> {
+        self.spaces
+            .get(&id)
+            .map(|space| space.billboard_render_buffers.as_slice())
+    }
+
+    fn mesh_render_buffers(&self, id: RenderSpaceId) -> Option<&[super::MeshRenderBufferEntry]> {
+        self.spaces
+            .get(&id)
+            .map(|space| space.mesh_render_buffers.as_slice())
+    }
+
+    fn trail_render_buffers(&self, id: RenderSpaceId) -> Option<&[super::TrailRenderBufferEntry]> {
+        self.spaces
+            .get(&id)
+            .map(|space| space.trail_render_buffers.as_slice())
     }
 }
 

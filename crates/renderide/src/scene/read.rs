@@ -3,8 +3,9 @@
 use glam::Mat4;
 
 use super::{
-    ReflectionProbeEntry, RenderSpaceId, RenderSpaceView, ResolvedLight, SkinnedMeshRenderer,
-    StaticMeshRenderer,
+    BillboardRenderBufferEntry, LodGroupEntry, MeshRenderBufferEntry, ReflectionProbeEntry,
+    RenderSpaceId, RenderSpaceView, ResolvedLight, SkinnedMeshRenderer, StaticMeshRenderer,
+    TrailRenderBufferEntry,
 };
 use crate::shared::{LayerType, RenderSH2, RenderTransform, RenderingContext};
 
@@ -115,9 +116,16 @@ pub(crate) trait MeshDeformSceneRead: SceneMeshRendererRead + SceneTransformRead
 impl<T> MeshDeformSceneRead for T where T: SceneMeshRendererRead + SceneTransformRead {}
 
 /// Scene reads required by world-mesh draw/material preparation.
-pub(crate) trait WorldMeshSceneRead: SceneMeshRendererRead + SceneTransformRead {}
-
-impl<T> WorldMeshSceneRead for T where T: SceneMeshRendererRead + SceneTransformRead {}
+pub(crate) trait WorldMeshSceneRead: SceneMeshRendererRead + SceneTransformRead {
+    /// LOD groups indexed by dense LOD-group renderable id.
+    fn lod_groups(&self, id: RenderSpaceId) -> Option<&[LodGroupEntry]>;
+    /// PhotonDust billboard renderers indexed by billboard renderable id.
+    fn billboard_render_buffers(&self, id: RenderSpaceId) -> Option<&[BillboardRenderBufferEntry]>;
+    /// PhotonDust mesh-particle renderers indexed by mesh render-buffer renderable id.
+    fn mesh_render_buffers(&self, id: RenderSpaceId) -> Option<&[MeshRenderBufferEntry]>;
+    /// PhotonDust trail renderers indexed by trail renderable id.
+    fn trail_render_buffers(&self, id: RenderSpaceId) -> Option<&[TrailRenderBufferEntry]>;
+}
 
 /// Read-only reflection-probe rows used by offscreen probe planning.
 pub(crate) trait SceneReflectionProbeRead: SceneTransformRead {

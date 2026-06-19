@@ -7,7 +7,7 @@ use crate::gpu::{
 };
 use crate::reflection_probes::ReflectionProbeCubemapAssets;
 use crate::scene::{
-    ReflectionProbeEntry, RenderSpaceId, SceneCoordinator, reflection_probe_skybox_only,
+    ReflectionProbeEntry, RenderSpaceId, SceneTransformRead, reflection_probe_skybox_only,
     reflection_probe_solid_color, reflection_probe_use_box_projection,
 };
 use crate::shared::{ReflectionProbeState, ReflectionProbeType, RenderSH2};
@@ -112,7 +112,7 @@ fn color_probe_identity(renderable_index: i32, color: Vec4) -> u64 {
 }
 
 pub(super) fn spatial_probe_for_state(
-    scene: &SceneCoordinator,
+    scene: &(impl SceneTransformRead + ?Sized),
     space_id: RenderSpaceId,
     probe: &ReflectionProbeEntry,
     render_context: crate::shared::RenderingContext,

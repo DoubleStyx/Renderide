@@ -84,7 +84,7 @@ pub use coordinator::{
 };
 pub use ids::RenderSpaceId;
 pub use lights::{ResolvedLight, light_contributes, light_has_negative_contribution};
-pub(crate) use lod_groups::{LodEntry, LodRendererKind, LodRendererRef};
+pub(crate) use lod_groups::{LodEntry, LodGroupEntry, LodRendererKind, LodRendererRef};
 pub use math::render_transform_to_matrix;
 pub use meshes::types::{
     MeshMaterialSlot, MeshRendererInstanceId, SkinnedMeshRenderer, StaticMeshRenderer,
@@ -100,5 +100,7 @@ pub use reflection_probe::{
     ReflectionProbeOnChangesRenderRequest, reflection_probe_skybox_only,
     reflection_probe_solid_color, reflection_probe_use_box_projection,
 };
-pub(crate) use render_buffers::MeshRenderBufferEntry;
+pub(crate) use render_buffers::{
+    BillboardRenderBufferEntry, MeshRenderBufferEntry, TrailRenderBufferEntry,
+};
 pub use render_space::RenderSpaceView;

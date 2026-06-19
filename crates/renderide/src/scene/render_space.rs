@@ -142,21 +142,6 @@ impl<'a> RenderSpaceView<'a> {
         &self.state.reflection_probes
     }
 
-    /// PhotonDust billboard renderers indexed by billboard renderable id.
-    pub fn billboard_render_buffers(self) -> &'a [BillboardRenderBufferEntry] {
-        &self.state.billboard_render_buffers
-    }
-
-    /// PhotonDust mesh-particle renderers indexed by mesh render-buffer renderable id.
-    pub(crate) fn mesh_render_buffers(self) -> &'a [MeshRenderBufferEntry] {
-        &self.state.mesh_render_buffers
-    }
-
-    /// PhotonDust trail renderers indexed by trail renderable id.
-    pub fn trail_render_buffers(self) -> &'a [TrailRenderBufferEntry] {
-        &self.state.trail_render_buffers
-    }
-
     /// Total dense mesh-renderer count across static and skinned renderers.
     #[cfg(test)]
     pub fn mesh_renderable_count(self) -> usize {

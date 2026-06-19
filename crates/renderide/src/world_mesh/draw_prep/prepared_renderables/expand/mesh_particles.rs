@@ -7,7 +7,7 @@ use rayon::prelude::*;
 use crate::gpu_pools::MeshPool;
 use crate::particles::{ParticleDrawParams, PointParticle, PointRenderBufferAsset};
 use crate::scene::{
-    MeshRenderBufferEntry, MeshRendererInstanceId, RenderSpaceId, SceneCoordinator,
+    MeshRenderBufferEntry, MeshRendererInstanceId, RenderSpaceId, WorldMeshSceneRead,
 };
 use crate::shared::{LayerType, RenderingContext, ShadowCastMode};
 
@@ -22,12 +22,14 @@ const MESH_PARTICLE_EXPAND_PARALLEL_MIN_DRAWS: usize =
     MESH_PARTICLE_EXPAND_PARALLEL_CHUNK_DRAWS * 2;
 
 /// Expands one mesh-particle renderer into one source-mesh draw per particle and submesh.
-pub(super) fn try_expand_mesh_render_buffer_renderer(
-    ctx: &mut ExpandCtx<'_>,
+pub(super) fn try_expand_mesh_render_buffer_renderer<S>(
+    ctx: &mut ExpandCtx<'_, S>,
     point_render_buffers: &HashMap<i32, PointRenderBufferAsset>,
     renderable_index: usize,
     renderer: &MeshRenderBufferEntry,
-) {
+) where
+    S: WorldMeshSceneRead + ?Sized,
+{
     let Some(source) = mesh_particle_expand_source(
         ctx.scene,
         ctx.mesh_pool,
@@ -79,7 +81,7 @@ struct MeshParticleExpandSource<'a> {
 
 /// Resolves and validates resident data needed to expand one mesh-particle renderer.
 fn mesh_particle_expand_source<'a>(
-    scene: &SceneCoordinator,
+    scene: &(impl WorldMeshSceneRead + ?Sized),
     mesh_pool: &'a MeshPool,
     space_id: RenderSpaceId,
     render_context: RenderingContext,

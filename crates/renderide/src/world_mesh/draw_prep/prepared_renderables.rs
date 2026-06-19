@@ -27,6 +27,7 @@ use crate::gpu_pools::MeshPool;
 use crate::particles::ParticleDrawParams;
 use crate::scene::{
     MeshRendererInstanceId, RenderSpaceId, SceneCoordinator, SceneMeshRendererRead,
+    WorldMeshSceneRead,
 };
 use crate::shared::{RenderingContext, ShadowCastMode};
 use crate::world_mesh::culling::{MeshCullGeometry, WorldMeshCullInput};
@@ -409,7 +410,10 @@ impl FramePreparedRenderables {
     }
 
     /// Refreshes renderer runs, run chunks, material keys, and prepared LOD groups from the current draw list.
-    fn refresh_runs_material_keys_and_chunks(&mut self, scene: Option<&SceneCoordinator>) {
+    fn refresh_runs_material_keys_and_chunks<S>(&mut self, scene: Option<&S>)
+    where
+        S: WorldMeshSceneRead + ?Sized,
+    {
         self.refresh_cached_space_draw_ranges();
         self.material_property_key_signature = populate_runs_and_material_keys(
             &self.draws,
@@ -649,7 +653,10 @@ impl FramePreparedRenderables {
     }
 
     /// Finalizes a retained snapshot rebuild by refreshing runs, chunks, and material keys.
-    pub(super) fn finish_cached_rebuild(&mut self, scene: &SceneCoordinator) {
+    pub(super) fn finish_cached_rebuild<S>(&mut self, scene: &S)
+    where
+        S: WorldMeshSceneRead + ?Sized,
+    {
         self.refresh_runs_material_keys_and_chunks(Some(scene));
     }
 
@@ -664,7 +671,7 @@ impl FramePreparedRenderables {
             self.push_cached_space(space_id);
             self.extend_cached_draws(draws);
         }
-        self.refresh_runs_material_keys_and_chunks(None);
+        self.refresh_runs_material_keys_and_chunks::<SceneCoordinator>(None);
     }
 }
 

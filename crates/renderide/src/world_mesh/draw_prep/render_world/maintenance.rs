@@ -6,7 +6,7 @@ use rayon::prelude::*;
 use crate::gpu_pools::MeshPool;
 use crate::scene::{
     RenderSpaceId, RenderWorldBoundsDirty, RenderWorldRendererDirty, RenderWorldRendererKind,
-    RenderWorldTransformDirty, SceneCoordinator,
+    RenderWorldTransformDirty, SceneCoordinator, SceneMeshRendererRead, WorldMeshSceneRead,
 };
 use crate::shared::RenderingContext;
 
@@ -655,19 +655,21 @@ impl RenderWorld {
 /// Estimates full-space retained-refresh work from cached and current scene renderer counts.
 fn estimate_full_space_refresh_work(
     cached: &RenderWorldSpace,
-    scene: &SceneCoordinator,
+    scene: &(impl WorldMeshSceneRead + ?Sized),
     id: RenderSpaceId,
 ) -> usize {
     let cached_renderer_count = cached
         .static_renderers
         .len()
         .saturating_add(cached.skinned_renderers.len());
-    let scene_renderer_count = scene.space(id).map_or(0, |space| {
-        space
-            .static_mesh_renderers()
-            .len()
-            .saturating_add(space.skinned_mesh_renderers().len())
-    });
+    let scene_renderer_count = scene
+        .static_mesh_renderers(id)
+        .map_or(0, |renderers| renderers.len())
+        .saturating_add(
+            scene
+                .skinned_mesh_renderers(id)
+                .map_or(0, |renderers| renderers.len()),
+        );
     cached_renderer_count.max(scene_renderer_count)
 }
 
@@ -686,16 +688,21 @@ fn refresh_dirty_renderer_work(
     if !work.cached.active {
         return RefreshOutcome::default();
     }
-    work.cached
-        .static_renderers
-        .resize_with(space_view.static_mesh_renderers().len(), Default::default);
-    work.cached
-        .skinned_renderers
-        .resize_with(space_view.skinned_mesh_renderers().len(), Default::default);
+    work.cached.static_renderers.resize_with(
+        scene
+            .static_mesh_renderers(work.id)
+            .map_or(0, |renderers| renderers.len()),
+        Default::default,
+    );
+    work.cached.skinned_renderers.resize_with(
+        scene
+            .skinned_mesh_renderers(work.id)
+            .map_or(0, |renderers| renderers.len()),
+        Default::default,
+    );
     refresh_renderer_set(
         &mut work.cached,
         &work.dirty_set,
-        space_view,
         scene,
         mesh_pool,
         render_context,
@@ -721,7 +728,6 @@ fn refresh_dirty_bounds_work(
     refresh_renderer_bounds_set(
         &mut work.cached,
         &work.dirty_set,
-        space_view,
         scene,
         mesh_pool,
         render_context,

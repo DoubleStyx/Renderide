@@ -5,7 +5,7 @@ use std::ops::Range;
 use rayon::prelude::*;
 
 use crate::gpu_pools::MeshPool;
-use crate::scene::{RenderSpaceId, SceneCoordinator};
+use crate::scene::{RenderSpaceId, RenderSpaceRead, WorldMeshSceneRead};
 use crate::shared::RenderingContext;
 
 use super::super::FramePreparedDraw;
@@ -40,14 +40,16 @@ struct ExpansionChunkSpec {
 }
 
 /// Expands every valid renderer in `space_id`, using chunked Rayon fan-out for large spaces.
-pub(in crate::world_mesh::draw_prep) fn expand_space_into_aggressive(
+pub(in crate::world_mesh::draw_prep) fn expand_space_into_aggressive<S>(
     out: &mut Vec<FramePreparedDraw>,
     chunk_scratch: &mut Vec<Vec<FramePreparedDraw>>,
-    scene: &SceneCoordinator,
+    scene: &S,
     mesh_pool: &MeshPool,
     render_context: RenderingContext,
     space_id: RenderSpaceId,
-) {
+) where
+    S: WorldMeshSceneRead + Sync + ?Sized,
+{
     profiling::scope!("mesh::prepared_renderables::expand_space_aggressive");
     if renderer_count_for_space(scene, space_id) < PREPARED_EXPAND_PARALLEL_MIN_RENDERERS {
         expand_space_into(out, scene, mesh_pool, render_context, space_id);
@@ -64,14 +66,16 @@ pub(in crate::world_mesh::draw_prep) fn expand_space_into_aggressive(
 }
 
 /// Expands one render space by splitting static and skinned renderer tables into worker chunks.
-fn expand_space_into_parallel_chunks(
+fn expand_space_into_parallel_chunks<S>(
     out: &mut Vec<FramePreparedDraw>,
     chunk_scratch: &mut Vec<Vec<FramePreparedDraw>>,
-    scene: &SceneCoordinator,
+    scene: &S,
     mesh_pool: &MeshPool,
     render_context: RenderingContext,
     space_id: RenderSpaceId,
-) {
+) where
+    S: WorldMeshSceneRead + Sync + ?Sized,
+{
     profiling::scope!("mesh::prepared_renderables::expand_parallel_chunks");
     let Some(space) = scene.space(space_id) else {
         return;
@@ -85,12 +89,16 @@ fn expand_space_into_parallel_chunks(
         push_expansion_chunks(
             &mut specs,
             ExpansionChunkKind::Static,
-            space.static_mesh_renderers().len(),
+            scene
+                .static_mesh_renderers(space_id)
+                .map_or(0, |renderers| renderers.len()),
         );
         push_expansion_chunks(
             &mut specs,
             ExpansionChunkKind::Skinned,
-            space.skinned_mesh_renderers().len(),
+            scene
+                .skinned_mesh_renderers(space_id)
+                .map_or(0, |renderers| renderers.len()),
         );
     }
     if specs.len() < PREPARED_EXPAND_PARALLEL_MIN_CHUNKS {
@@ -152,14 +160,16 @@ fn push_expansion_chunks(
 }
 
 /// Expands one renderer chunk into `out`.
-fn expand_space_chunk_into(
+fn expand_space_chunk_into<S>(
     out: &mut Vec<FramePreparedDraw>,
-    scene: &SceneCoordinator,
+    scene: &S,
     mesh_pool: &MeshPool,
     render_context: RenderingContext,
     space_id: RenderSpaceId,
     spec: &ExpansionChunkSpec,
-) {
+) where
+    S: WorldMeshSceneRead + ?Sized,
+{
     profiling::scope!("mesh::prepared_renderables::expand_renderer_chunk");
     let Some(space) = scene.space(space_id) else {
         return;
@@ -177,8 +187,13 @@ fn expand_space_chunk_into(
     };
     match spec.kind {
         ExpansionChunkKind::Static => {
+            let Some(static_renderers) = scene.static_mesh_renderers(space_id) else {
+                return;
+            };
             for renderable_index in spec.range.clone() {
-                let r = &space.static_mesh_renderers()[renderable_index];
+                let Some(r) = static_renderers.get(renderable_index) else {
+                    continue;
+                };
                 try_expand_one_renderer(
                     &mut ctx,
                     renderable_index,
@@ -189,8 +204,13 @@ fn expand_space_chunk_into(
             }
         }
         ExpansionChunkKind::Skinned => {
+            let Some(skinned_renderers) = scene.skinned_mesh_renderers(space_id) else {
+                return;
+            };
             for renderable_index in spec.range.clone() {
-                let sk = &space.skinned_mesh_renderers()[renderable_index];
+                let Some(sk) = skinned_renderers.get(renderable_index) else {
+                    continue;
+                };
                 try_expand_one_renderer(
                     &mut ctx,
                     renderable_index,
