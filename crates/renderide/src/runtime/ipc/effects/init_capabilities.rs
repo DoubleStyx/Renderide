@@ -72,7 +72,7 @@ impl RendererRuntime {
 
     pub(in crate::runtime) fn apply_desktop_config(&mut self, cfg: DesktopConfig) {
         logger::info!(
-            "runtime: desktop_config foreground_fps={:?} background_fps={:?} v_sync={} (positive FPS caps override renderer config for this session; vsync remains renderer-owned)",
+            "runtime: desktop_config foreground_fps={:?} background_fps={:?} v_sync={} (positive FPS caps override renderer config for this session; presentation_mode remains renderer-owned)",
             cfg.maximum_foreground_framerate,
             cfg.maximum_background_framerate,
             cfg.v_sync

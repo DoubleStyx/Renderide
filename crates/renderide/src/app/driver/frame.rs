@@ -310,7 +310,7 @@ impl AppDriver {
             let gpu = target.gpu_mut();
             gpu.begin_frame_timing(frame_start);
             if let Ok(settings) = self.runtime.settings().read() {
-                gpu.set_present_mode(settings.rendering.vsync);
+                gpu.set_present_mode(settings.rendering.presentation_mode);
             }
         }
     }

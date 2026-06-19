@@ -289,7 +289,7 @@ fn host_ram_text(t: &FrameTimingHudSnapshot) -> String {
 }
 
 const FPS_TOOLTIP: &str = "Smoothed wall-frame FPS. Low/High is a raw rolling one-second percentile window; spikes remain until they age out.";
-const FRAME_TOOLTIP: &str = "Wall-clock between consecutive winit ticks. Includes vsync, FPS caps, host lockstep, presentation waits, and event-loop pacing.";
+const FRAME_TOOLTIP: &str = "Wall-clock between consecutive winit ticks. Includes presentation mode, FPS caps, host lockstep, presentation waits, and event-loop pacing.";
 const CPU_TOOLTIP: &str = "Main-thread active renderer work from frame start to submit dispatch, minus explicit pacing waits.";
 const GPU_TOOLTIP: &str = "Real primary GPU busy time measured by hardware timestamp brackets around primary render submits.";
 const HOST_TOOLTIP: &str = "Renderer-observed host update turnaround: outgoing FrameStartData send to matching inbound FrameSubmitData queue receipt.";

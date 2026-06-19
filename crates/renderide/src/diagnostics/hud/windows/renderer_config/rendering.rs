@@ -1,14 +1,15 @@
 //! Rendering-related renderer-config HUD controls.
 
 use crate::config::{
-    GraphicsApiSetting, MsaaSampleCount, RendererSettings, SceneColorFormat, VsyncMode,
+    GraphicsApiSetting, MsaaSampleCount, PresentationModeSetting, RendererSettings,
+    SceneColorFormat,
 };
 
 use super::controls::drag_u32_slider_setting;
 
 const MAX_ASSET_INTEGRATION_BUDGET_MS: u32 = 100;
 
-/// VSync, graphics API, MSAA, scene color format, and asset integration budget.
+/// Presentation mode, graphics API, MSAA, scene color format, and asset integration budget.
 pub(super) fn rendering_section(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bool) {
     ui.text("Rendering");
     ui.indent();
@@ -24,15 +25,17 @@ pub(super) fn rendering_section(ui: &imgui::Ui, g: &mut RendererSettings, dirty:
 fn rendering_presentation_section(ui: &imgui::Ui, g: &mut RendererSettings, dirty: &mut bool) {
     ui.text("Presentation");
     ui.indent();
-    ui.text_disabled("VSync (On = strict FIFO; applies immediately, no restart).");
-    for (i, &mode) in VsyncMode::ALL.iter().enumerate() {
+    ui.text_disabled(
+        "Presentation mode (FIFO is traditional VSync; Immediate is traditional no VSync).",
+    );
+    for (i, &mode) in PresentationModeSetting::ALL.iter().enumerate() {
         let _id = ui.push_id_int(200 + i as i32);
         if ui
             .selectable_config(mode.label())
-            .selected(g.rendering.vsync == mode)
+            .selected(g.rendering.presentation_mode == mode)
             .build()
         {
-            g.rendering.vsync = mode;
+            g.rendering.presentation_mode = mode;
             *dirty = true;
         }
     }

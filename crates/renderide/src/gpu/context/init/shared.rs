@@ -18,7 +18,7 @@ use super::super::super::profiling::frame_cpu_gpu_timing::{
 use super::super::super::sync::device_health::GpuDeviceHealth;
 use super::super::super::sync::mapped_buffer_health::GpuMappedBufferHealth;
 use super::super::{GpuContext, GpuError, PrimaryOffscreenTargets};
-use crate::config::{GraphicsApiSetting, VsyncMode};
+use crate::config::{GraphicsApiSetting, PresentationModeSetting};
 use crate::gpu::flight_recorder::GpuFlightRecorder;
 use crate::gpu::submission_state::GpuSubmissionState;
 
@@ -137,7 +137,7 @@ pub(super) struct HeadlessAdapterSelection {
 
 pub(super) fn log_windowed_gpu_startup_request(
     window: &dyn Window,
-    vsync: VsyncMode,
+    presentation_mode: PresentationModeSetting,
     max_frame_latency: u32,
     gpu_validation_layers: bool,
     power_preference: wgpu::PowerPreference,
@@ -146,11 +146,11 @@ pub(super) fn log_windowed_gpu_startup_request(
 ) {
     let requested_size = window.surface_size();
     logger::info!(
-        "GPU startup request (windowed): graphics_api={} validation={} power_preference={:?} vsync={:?} max_frame_latency={} initial_extent={}x{} display_handle_provided={}",
+        "GPU startup request (windowed): graphics_api={} validation={} power_preference={:?} presentation_mode={:?} max_frame_latency={} initial_extent={}x{} display_handle_provided={}",
         graphics_api.as_persist_str(),
         gpu_validation_layers,
         power_preference,
-        vsync,
+        presentation_mode,
         max_frame_latency,
         requested_size.width,
         requested_size.height,
@@ -162,12 +162,12 @@ pub(super) fn log_windowed_gpu_selection_summary(
     adapter_info: &wgpu::AdapterInfo,
     selection: WindowAdapterLogFields,
     config: &wgpu::SurfaceConfiguration,
-    vsync: VsyncMode,
+    presentation_mode: PresentationModeSetting,
     supported_present_modes: &[wgpu::PresentMode],
     msaa: &MsaaSupport,
 ) {
     logger::info!(
-        "GPU: adapter={} type={:?} backend={:?} vendor={:#010x} device={:#010x} pci_bus_id={} driver={} driver_info={} graphics_api={} active_backends={:?} extent={}x{} format={:?} vsync={:?} present_mode={:?} \
+        "GPU: adapter={} type={:?} backend={:?} vendor={:#010x} device={:#010x} pci_bus_id={} driver={} driver_info={} graphics_api={} active_backends={:?} extent={}x{} format={:?} presentation_mode={:?} present_mode={:?} \
          supported_present_modes={:?} desired_maximum_frame_latency={} instance_flags={:?} \
          msaa_supported_sample_counts={:?} msaa_max_sample_count={} \
          msaa_supported_sample_counts_stereo={:?} msaa_max_sample_count_stereo={}",
@@ -184,7 +184,7 @@ pub(super) fn log_windowed_gpu_selection_summary(
         config.width,
         config.height,
         config.format,
-        vsync,
+        presentation_mode,
         config.present_mode,
         supported_present_modes,
         config.desired_maximum_frame_latency,

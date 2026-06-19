@@ -170,7 +170,7 @@ mod tests {
 
     #[test]
     fn missing_graphics_api_loads_as_auto() {
-        let toml = "[rendering]\nvsync = \"on\"\n";
+        let toml = "[rendering]\npresentation_mode = \"fifo\"\n";
         let parsed: RendererSettings = toml::from_str(toml).expect("config without field");
         assert_eq!(parsed.rendering.graphics_api, GraphicsApiSetting::Auto);
     }

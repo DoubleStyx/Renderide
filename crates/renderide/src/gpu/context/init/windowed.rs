@@ -17,7 +17,7 @@ use super::shared::{
     log_windowed_gpu_selection_summary, log_windowed_gpu_startup_request,
     select_window_adapters_with_fallback,
 };
-use crate::config::{GraphicsApiSetting, VsyncMode};
+use crate::config::{GraphicsApiSetting, PresentationModeSetting};
 use crate::gpu::flight_recorder::GpuFlightRecorder;
 use crate::gpu::submission_state::GpuSubmissionState;
 
@@ -57,9 +57,8 @@ impl GpuContext {
     /// `display_handle` is copied from the winit event-loop display that created the window. wgpu
     /// requires this for GLES presentation on some platforms, especially Wayland.
     ///
-    /// `vsync` is resolved against the surface's actual present-mode capabilities via
-    /// [`VsyncMode::resolve_present_mode`] (so e.g. [`VsyncMode::On`] picks strict `Fifo`
-    /// presentation).
+    /// `presentation_mode` is resolved against the surface's actual present-mode capabilities via
+    /// [`PresentationModeSetting::resolve_present_mode`].
     ///
     /// `max_frame_latency` is the initial fixed value for
     /// [`wgpu::SurfaceConfiguration::desired_maximum_frame_latency`]. The renderer uses `2`,
@@ -73,7 +72,7 @@ impl GpuContext {
     pub async fn new(
         window: Arc<dyn Window>,
         display_handle: WindowDisplayHandle,
-        vsync: VsyncMode,
+        presentation_mode: PresentationModeSetting,
         max_frame_latency: u32,
         gpu_validation_layers: bool,
         power_preference: wgpu::PowerPreference,
@@ -81,7 +80,7 @@ impl GpuContext {
     ) -> Result<Self, GpuError> {
         log_windowed_gpu_startup_request(
             window.as_ref(),
-            vsync,
+            presentation_mode,
             max_frame_latency,
             gpu_validation_layers,
             power_preference,
@@ -100,7 +99,7 @@ impl GpuContext {
         match try_window_context_for_selection(
             &window,
             selection,
-            vsync,
+            presentation_mode,
             max_frame_latency,
             power_preference,
         )
@@ -128,7 +127,7 @@ impl GpuContext {
                 try_window_context_for_selection(
                     &window,
                     retry_selection,
-                    vsync,
+                    presentation_mode,
                     max_frame_latency,
                     power_preference,
                 )
@@ -143,7 +142,7 @@ impl GpuContext {
 async fn try_window_context_for_selection(
     window: &Arc<dyn Window>,
     selection: WindowAdapterSelection,
-    vsync: VsyncMode,
+    presentation_mode: PresentationModeSetting,
     max_frame_latency: u32,
     power_preference: wgpu::PowerPreference,
 ) -> Result<GpuContext, GpuError> {
@@ -167,7 +166,7 @@ async fn try_window_context_for_selection(
             &adapter,
             &surface_safe,
             window,
-            vsync,
+            presentation_mode,
             max_frame_latency,
         )
         .await
@@ -186,7 +185,7 @@ async fn try_window_context_for_selection(
                     Arc::clone(window),
                     selection_log,
                     configured,
-                    vsync,
+                    presentation_mode,
                 );
             }
             Err(error) => {
@@ -208,7 +207,7 @@ async fn configure_window_gpu_for_adapter(
     adapter: &wgpu::Adapter,
     surface: &wgpu::Surface<'_>,
     window: &Arc<dyn Window>,
-    vsync: VsyncMode,
+    presentation_mode: PresentationModeSetting,
     max_frame_latency: u32,
 ) -> Result<ConfiguredWindowGpu, GpuError> {
     let mapped_buffer_health = Arc::new(GpuMappedBufferHealth::new());
@@ -230,7 +229,7 @@ async fn configure_window_gpu_for_adapter(
     let mut config = surface
         .get_default_config(adapter, size.width.max(1), size.height.max(1))
         .ok_or(GpuError::SurfaceUnsupported)?;
-    config.present_mode = vsync.resolve_present_mode(&supported_present_modes);
+    config.present_mode = presentation_mode.resolve_present_mode(&supported_present_modes);
     config.desired_maximum_frame_latency = max_frame_latency;
     GpuContext::configure_surface_checked(surface, device.as_ref(), &config)
         .map_err(GpuError::SurfaceConfigure)?;
@@ -265,13 +264,13 @@ fn assemble_window_context(
     window: Arc<dyn Window>,
     selection_log: WindowAdapterLogFields,
     prepared: ConfiguredWindowGpu,
-    vsync: VsyncMode,
+    presentation_mode: PresentationModeSetting,
 ) -> Result<GpuContext, GpuError> {
     log_windowed_gpu_selection_summary(
         &prepared.adapter_info,
         selection_log,
         &prepared.config,
-        vsync,
+        presentation_mode,
         &prepared.supported_present_modes,
         &prepared.msaa,
     );

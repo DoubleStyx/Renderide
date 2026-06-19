@@ -225,10 +225,13 @@ action = "log_and_continue"
 "#;
     let s = run_pipeline(Some(content.to_string())).expect("figment must accept original tokens");
     use crate::config::types::{
-        MsaaSampleCount, PowerPreferenceSetting, SceneColorFormat, TonemapMode, VsyncMode,
-        WatchdogAction,
+        MsaaSampleCount, PowerPreferenceSetting, PresentationModeSetting, SceneColorFormat,
+        TonemapMode, WatchdogAction,
     };
-    assert_eq!(s.rendering.vsync, VsyncMode::Off);
+    assert_eq!(
+        s.rendering.presentation_mode,
+        PresentationModeSetting::Immediate
+    );
     assert_eq!(s.rendering.msaa, MsaaSampleCount::X8);
     assert_eq!(
         s.rendering.scene_color_format,
@@ -418,26 +421,26 @@ fn load_renderer_settings_from_toml_and_env() {
     const CONFIG_VAR: &str = "RENDERIDE_CONFIG";
     const GPU_VALIDATION_VAR: &str = "RENDERIDE_GPU_VALIDATION";
     const GRAPHICS_API_ENV_VAR: &str = "RENDERIDE_RENDERING__GRAPHICS_API";
-    const VSYNC_ENV_VAR: &str = "RENDERIDE_RENDERING__VSYNC";
+    const PRESENTATION_MODE_ENV_VAR: &str = "RENDERIDE_RENDERING__PRESENTATION_MODE";
 
     let _lock = crate::config::CONFIG_ENV_TEST_LOCK.lock().expect("lock");
     let _guard = EnvGuard::capture(&[
         CONFIG_VAR,
         GPU_VALIDATION_VAR,
         GRAPHICS_API_ENV_VAR,
-        VSYNC_ENV_VAR,
+        PRESENTATION_MODE_ENV_VAR,
     ]);
     // SAFETY: env mutation in test; serialized by CONFIG_ENV_TEST_LOCK.
     unsafe {
         std::env::remove_var(GPU_VALIDATION_VAR);
         std::env::remove_var(GRAPHICS_API_ENV_VAR);
-        std::env::remove_var(VSYNC_ENV_VAR);
+        std::env::remove_var(PRESENTATION_MODE_ENV_VAR);
     }
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let toml = write_toml(
         tmp.path(),
-        "[rendering]\nvsync = true\ngraphics_api = \"vulkan\"\n[display]\nfocused_fps = 30\n",
+        "[rendering]\npresentation_mode = \"fifo\"\ngraphics_api = \"vulkan\"\n[display]\nfocused_fps = 30\n",
     );
 
     // SAFETY: env mutation in test; serialized by CONFIG_ENV_TEST_LOCK.
@@ -448,8 +451,8 @@ fn load_renderer_settings_from_toml_and_env() {
     assert_eq!(result.resolve.source, ConfigSource::Env);
     assert_eq!(result.resolve.loaded_path.as_deref(), Some(toml.as_path()));
     assert_eq!(
-        result.settings.rendering.vsync,
-        crate::config::VsyncMode::On
+        result.settings.rendering.presentation_mode,
+        crate::config::PresentationModeSetting::Fifo
     );
     assert_eq!(
         result.settings.rendering.graphics_api,
@@ -459,16 +462,16 @@ fn load_renderer_settings_from_toml_and_env() {
 
     // SAFETY: env mutation in test; serialized by CONFIG_ENV_TEST_LOCK.
     unsafe {
-        std::env::set_var(VSYNC_ENV_VAR, "false");
+        std::env::set_var(PRESENTATION_MODE_ENV_VAR, "auto_no_vsync");
     }
     let result = load_renderer_settings(ConfigFilePolicy::Load);
     assert_eq!(
-        result.settings.rendering.vsync,
-        crate::config::VsyncMode::Off
+        result.settings.rendering.presentation_mode,
+        crate::config::PresentationModeSetting::AutoNoVsync
     );
     // SAFETY: env mutation in test; serialized by CONFIG_ENV_TEST_LOCK.
     unsafe {
-        std::env::remove_var(VSYNC_ENV_VAR);
+        std::env::remove_var(PRESENTATION_MODE_ENV_VAR);
         std::env::set_var(GRAPHICS_API_ENV_VAR, "dx12");
     }
     let result = load_renderer_settings(ConfigFilePolicy::Load);
