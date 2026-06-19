@@ -4,7 +4,7 @@
 use glam::Mat4;
 
 use crate::materials::RasterFrontFace;
-use crate::scene::{RenderSpaceId, SkinnedMeshRenderer};
+use crate::scene::{RenderSpaceId, SceneTransformRead, SkinnedMeshRenderer};
 
 use super::DrawCollectionInputs;
 
@@ -20,23 +20,23 @@ pub(super) fn world_matrix_for_local_vertex_stream(
         return None;
     }
     if is_overlay {
-        return ctx
-            .scene_assets
-            .scene
-            .overlay_layer_model_matrix_for_context(
+        return SceneTransformRead::overlay_layer_model_matrix_for_context(
+            ctx.scene_assets.scene,
+            space_id,
+            node_id as usize,
+            ctx.view.render_context,
+        )
+        .or_else(|| {
+            SceneTransformRead::world_matrix_for_context(
+                ctx.scene_assets.scene,
                 space_id,
                 node_id as usize,
                 ctx.view.render_context,
             )
-            .or_else(|| {
-                ctx.scene_assets.scene.world_matrix_for_context(
-                    space_id,
-                    node_id as usize,
-                    ctx.view.render_context,
-                )
-            });
+        });
     }
-    ctx.scene_assets.scene.world_matrix_for_render_context(
+    SceneTransformRead::world_matrix_for_render_context(
+        ctx.scene_assets.scene,
         space_id,
         node_id as usize,
         ctx.view.render_context,
@@ -67,7 +67,8 @@ pub(super) fn skinned_front_face_world_matrix(
     if root_node < 0 {
         return None;
     }
-    ctx.scene_assets.scene.world_matrix_for_render_context(
+    SceneTransformRead::world_matrix_for_render_context(
+        ctx.scene_assets.scene,
         space_id,
         root_node as usize,
         ctx.view.render_context,

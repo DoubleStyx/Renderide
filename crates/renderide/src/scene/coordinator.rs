@@ -15,7 +15,7 @@ use crate::cpu_parallelism::{
     record_parallel_admission,
 };
 use crate::ipc::SharedMemoryAccessor;
-use crate::shared::{BlitToDisplayState, FrameSubmitData, RenderSH2, RenderingContext};
+use crate::shared::{BlitToDisplayState, FrameSubmitData, LayerType, RenderSH2, RenderingContext};
 
 use super::DrainedReflectionProbeRenderChanges;
 use super::error::SceneError;
@@ -26,6 +26,7 @@ use super::lights::{
 #[cfg(test)]
 use super::math::multiply_root;
 use super::overrides::MeshRendererOverrideTarget;
+use super::read::{SceneLightRead, SceneSpaceRead, SceneTransformRead};
 use super::render_space::{RenderSpaceState, RenderSpaceView};
 use super::transforms::TransformRemovalEvent;
 use super::world::{WorldTransformCache, compute_world_matrices_for_space, ensure_cache_shapes};
@@ -252,13 +253,6 @@ impl SceneCoordinator {
             .filter(|s| s.is_active && !s.is_overlay)
             .min_by_key(|s| s.id.0)
             .map(RenderSpaceView::new)
-    }
-
-    /// Ambient SH2 from the active non-overlay render space.
-    pub fn active_main_ambient_light(&self) -> RenderSH2 {
-        self.active_main_space()
-            .map(|s| s.ambient_light())
-            .unwrap_or_default()
     }
 
     /// Drains host changed-probe render requests after the latest scene apply.
@@ -589,5 +583,158 @@ impl SceneCoordinator {
             self.world_dirty.remove(&id);
             self.apply_scratch.transform_removals_by_space.remove(&id);
         }
+    }
+}
+
+impl SceneSpaceRead for SceneCoordinator {
+    type Space<'a>
+        = RenderSpaceView<'a>
+    where
+        Self: 'a;
+    type RenderSpaceIds<'a>
+        = std::vec::IntoIter<RenderSpaceId>
+    where
+        Self: 'a;
+
+    fn render_space_ids(&self) -> Self::RenderSpaceIds<'_> {
+        let mut ids: Vec<RenderSpaceId> = self.spaces.keys().copied().collect();
+        ids.sort_unstable_by_key(|id| id.0);
+        ids.into_iter()
+    }
+
+    fn space(&self, id: RenderSpaceId) -> Option<Self::Space<'_>> {
+        self.spaces.get(&id).map(RenderSpaceView::new)
+    }
+
+    fn active_main_space(&self) -> Option<Self::Space<'_>> {
+        self.spaces
+            .values()
+            .filter(|s| s.is_active && !s.is_overlay)
+            .min_by_key(|s| s.id.0)
+            .map(RenderSpaceView::new)
+    }
+
+    fn active_main_ambient_light(&self) -> RenderSH2 {
+        self.active_main_space()
+            .map(|s| s.ambient_light())
+            .unwrap_or_default()
+    }
+
+    fn active_main_render_context(&self) -> RenderingContext {
+        self.active_main_space()
+            .map_or(RenderingContext::UserView, |space| {
+                space.main_render_context()
+            })
+    }
+
+    fn render_context_affects_draw_prep(&self, context: RenderingContext) -> bool {
+        self.spaces
+            .values()
+            .any(|space| space.has_draw_prep_overrides_in_context(context))
+    }
+}
+
+impl SceneTransformRead for SceneCoordinator {
+    fn world_matrix_for_context(
+        &self,
+        id: RenderSpaceId,
+        transform_index: usize,
+        context: RenderingContext,
+    ) -> Option<Mat4> {
+        SceneCoordinator::world_matrix_for_context(self, id, transform_index, context)
+    }
+
+    fn world_matrix_for_render_context(
+        &self,
+        id: RenderSpaceId,
+        transform_index: usize,
+        context: RenderingContext,
+        head_output_transform: Mat4,
+    ) -> Option<Mat4> {
+        SceneCoordinator::world_matrix_for_render_context(
+            self,
+            id,
+            transform_index,
+            context,
+            head_output_transform,
+        )
+    }
+
+    fn overlay_layer_model_matrix_for_context(
+        &self,
+        id: RenderSpaceId,
+        transform_index: usize,
+        context: RenderingContext,
+    ) -> Option<Mat4> {
+        SceneCoordinator::overlay_layer_model_matrix_for_context(self, id, transform_index, context)
+    }
+
+    fn transform_special_layer(
+        &self,
+        id: RenderSpaceId,
+        transform_index: usize,
+    ) -> Option<LayerType> {
+        SceneCoordinator::transform_special_layer(self, id, transform_index)
+    }
+
+    fn transform_is_in_overlay_layer(&self, id: RenderSpaceId, transform_index: usize) -> bool {
+        SceneCoordinator::transform_is_in_overlay_layer(self, id, transform_index)
+    }
+
+    fn transform_has_degenerate_scale_for_context(
+        &self,
+        id: RenderSpaceId,
+        transform_index: usize,
+        context: RenderingContext,
+    ) -> bool {
+        SceneCoordinator::transform_has_degenerate_scale_for_context(
+            self,
+            id,
+            transform_index,
+            context,
+        )
+    }
+
+    fn overridden_material_asset_id(
+        &self,
+        space_id: RenderSpaceId,
+        context: RenderingContext,
+        skinned: bool,
+        renderable_index: usize,
+        slot_index: usize,
+    ) -> Option<i32> {
+        SceneCoordinator::overridden_material_asset_id(
+            self,
+            space_id,
+            context,
+            skinned,
+            renderable_index,
+            slot_index,
+        )
+    }
+}
+
+impl SceneLightRead for SceneCoordinator {
+    fn resolve_lights_for_render_context_into(
+        &self,
+        id: RenderSpaceId,
+        context: RenderingContext,
+        head_output_transform: Mat4,
+        out: &mut Vec<ResolvedLight>,
+    ) {
+        SceneCoordinator::resolve_lights_for_render_context_into(
+            self,
+            id,
+            context,
+            head_output_transform,
+            out,
+        );
+    }
+
+    fn candidate_light_count_for_render_space_filter(
+        &self,
+        render_space_filter: Option<RenderSpaceId>,
+    ) -> usize {
+        SceneCoordinator::candidate_light_count_for_render_space_filter(self, render_space_filter)
     }
 }

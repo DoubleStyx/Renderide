@@ -7,7 +7,7 @@
 
 use glam::{Mat4, Vec3, Vec4};
 
-use crate::scene::RenderSpaceId;
+use crate::scene::{RenderSpaceId, SceneSpaceRead};
 use crate::shared::RenderingContext;
 
 use super::frustum::world_aabb_visible_in_homogeneous_clip;
@@ -18,7 +18,6 @@ use crate::hi_z_cpu::HiZCullData;
 use crate::hi_z_cpu::hi_z_view_proj_matrices;
 use crate::hi_z_cpu::mesh_fully_occluded_in_hiz;
 use crate::hi_z_cpu::stereo_hiz_keeps_draw;
-use crate::scene::SceneCoordinator;
 
 /// Frustum acceptance for one world AABB using the same stereo / overlay rules as the forward pass.
 fn cpu_cull_frustum_visible(
@@ -46,14 +45,17 @@ fn cpu_cull_frustum_visible(
 /// This is the frustum-only portion of [`mesh_cpu_cull_with_geometry`], exposed so CPU spatial
 /// indices can reject whole renderer candidate groups before per-renderer material slots are
 /// expanded.
-pub(crate) fn world_aabb_visible_for_cull(
-    scene: &SceneCoordinator,
+pub(crate) fn world_aabb_visible_for_cull<S>(
+    scene: &S,
     space_id: RenderSpaceId,
     is_overlay: bool,
     culling: &WorldMeshCullInput<'_>,
     wmin: Vec3,
     wmax: Vec3,
-) -> bool {
+) -> bool
+where
+    S: SceneSpaceRead + ?Sized,
+{
     if is_overlay {
         return cpu_cull_frustum_visible(&culling.proj, true, Mat4::IDENTITY, wmin, wmax);
     }
@@ -129,13 +131,16 @@ pub(crate) enum CpuCullFailure {
 /// that opt in to `_RectClip`. When `Some`, the overlay path projects the rect's four corners
 /// through the same desktop overlay camera view-projection used by the draw pass and rejects the
 /// draw when the projected screen-space AABB doesn't intersect the viewport.
-pub(crate) fn mesh_draw_passes_cpu_cull(
-    target: &MeshCullTarget<'_>,
+pub(crate) fn mesh_draw_passes_cpu_cull<S>(
+    target: &MeshCullTarget<'_, S>,
     is_overlay: bool,
     culling: &WorldMeshCullInput<'_>,
     render_context: RenderingContext,
     ui_rect_clip_local: Option<Vec4>,
-) -> Result<Option<Mat4>, CpuCullFailure> {
+) -> Result<Option<Mat4>, CpuCullFailure>
+where
+    S: crate::scene::SceneTransformRead + ?Sized,
+{
     let geom = mesh_world_geometry_for_cull(target, culling, render_context);
     mesh_cpu_cull_with_geometry(
         geom,
@@ -154,14 +159,17 @@ pub(crate) fn mesh_draw_passes_cpu_cull(
 /// Frustum + Hi-Z tests stay per-view; only the matrix and AABB derivation is amortized. Returns
 /// the same `Result<Option<Mat4>, CpuCullFailure>` as [`mesh_draw_passes_cpu_cull`]. The new
 /// `ui_rect_clip_local` arg behaves the same as in [`mesh_draw_passes_cpu_cull`].
-pub(crate) fn mesh_cpu_cull_with_geometry(
+pub(crate) fn mesh_cpu_cull_with_geometry<S>(
     geom: MeshCullGeometry,
-    scene: &SceneCoordinator,
+    scene: &S,
     space_id: RenderSpaceId,
     is_overlay: bool,
     culling: &WorldMeshCullInput<'_>,
     ui_rect_clip_local: Option<Vec4>,
-) -> Result<Option<Mat4>, CpuCullFailure> {
+) -> Result<Option<Mat4>, CpuCullFailure>
+where
+    S: SceneSpaceRead + ?Sized,
+{
     if is_overlay {
         return cull_overlay_draw(scene, space_id, culling, ui_rect_clip_local, &geom);
     }
@@ -183,13 +191,16 @@ pub(crate) fn mesh_cpu_cull_with_geometry(
 /// Overlay draws bypass the world-space frustum and Hi-Z stages by design -- their model matrix
 /// already encodes screen-space position via
 /// [`crate::scene::SceneCoordinator::overlay_layer_model_matrix_for_context`].
-fn cull_overlay_draw(
-    scene: &SceneCoordinator,
+fn cull_overlay_draw<S>(
+    scene: &S,
     space_id: RenderSpaceId,
     culling: &WorldMeshCullInput<'_>,
     ui_rect_clip_local: Option<Vec4>,
     geom: &MeshCullGeometry,
-) -> Result<Option<Mat4>, CpuCullFailure> {
+) -> Result<Option<Mat4>, CpuCullFailure>
+where
+    S: SceneSpaceRead + ?Sized,
+{
     if let (Some(rect), Some(model)) = (ui_rect_clip_local, geom.rigid_world_matrix)
         && !overlay_rect_clip_visible(scene, space_id, culling, rect, model)
     {
@@ -207,7 +218,7 @@ fn cull_overlay_draw(
 /// fixed desktop overlay camera view matrix rather than the world camera view.
 ///
 pub(crate) fn overlay_rect_clip_visible(
-    _scene: &SceneCoordinator,
+    _scene: &(impl SceneSpaceRead + ?Sized),
     _space_id: RenderSpaceId,
     culling: &WorldMeshCullInput<'_>,
     rect: Vec4,

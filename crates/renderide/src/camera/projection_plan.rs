@@ -2,7 +2,7 @@
 
 use glam::Mat4;
 
-use crate::scene::SceneCoordinator;
+use crate::scene::{RenderSpaceRead, SceneSpaceRead};
 
 use super::{
     CameraClipPlanes, HostCameraFrame, Viewport, clamp_desktop_fov_degrees,
@@ -27,7 +27,7 @@ pub struct WorldProjectionSet {
 impl WorldProjectionSet {
     /// Builds world/overlay projection data from scene head-output scale, viewport, and host camera.
     pub fn from_scene_host(
-        scene: &SceneCoordinator,
+        scene: &(impl SceneSpaceRead + ?Sized),
         viewport_px: (u32, u32),
         host_camera: &HostCameraFrame,
     ) -> Self {

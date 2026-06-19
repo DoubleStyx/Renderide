@@ -2,7 +2,7 @@
 
 use glam::{Mat4, Vec3};
 
-use crate::scene::SceneCoordinator;
+use crate::scene::{RenderSpaceRead, SceneSpaceRead};
 use crate::shared::{CameraProjection, FrameSubmitData};
 
 use super::{CameraClipPlanes, CameraProjectionKind, HostCameraFrame, OrthographicProjectionSpec};
@@ -31,7 +31,7 @@ pub(crate) fn apply_frame_submit_fields(host_camera: &mut HostCameraFrame, data:
 
 /// Head-output matrix derived from the active main render space root.
 #[inline]
-pub(crate) fn head_output_from_active_main_space(scene: &SceneCoordinator) -> Mat4 {
+pub(crate) fn head_output_from_active_main_space(scene: &(impl SceneSpaceRead + ?Sized)) -> Mat4 {
     scene.active_main_space().map_or(Mat4::IDENTITY, |space| {
         crate::scene::render_transform_to_matrix(space.root_transform())
     })
@@ -39,7 +39,9 @@ pub(crate) fn head_output_from_active_main_space(scene: &SceneCoordinator) -> Ma
 
 /// Eye/camera world position derived from the active main render space's resolved view transform.
 #[inline]
-pub(crate) fn eye_world_position_from_active_main_space(scene: &SceneCoordinator) -> Option<Vec3> {
+pub(crate) fn eye_world_position_from_active_main_space(
+    scene: &(impl SceneSpaceRead + ?Sized),
+) -> Option<Vec3> {
     scene
         .active_main_space()
         .map(|space| space.view_transform().position)

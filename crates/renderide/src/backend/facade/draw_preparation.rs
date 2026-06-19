@@ -4,10 +4,11 @@ use hashbrown::{HashMap, HashSet};
 use rayon::prelude::*;
 
 use crate::cpu_parallelism::{FrameCpuWorkload, FrameParallelPolicy, record_parallel_admission};
+use crate::gpu_pools::MeshPool;
 use crate::materials::host_data::{MaterialDictionary, MaterialPropertyStore};
 use crate::materials::{MaterialPipelinePropertyIds, MaterialRouter, RasterPipelineKind};
 use crate::reflection_probes::specular::ReflectionProbeFrameSelection;
-use crate::scene::{SceneApplyReport, SceneCacheFlushReport, SceneCoordinator};
+use crate::scene::{SceneApplyReport, SceneCacheFlushReport, SceneCoordinator, SceneSpaceRead};
 use crate::shared::RenderingContext;
 use crate::world_mesh::{
     FrameMaterialBatchCache, RenderWorld, RenderWorldMaintenanceStats, WorldMeshCommandCache,
@@ -19,6 +20,24 @@ use crate::materials::{MaterialSystem, ShaderPermutation};
 use crate::occlusion::OcclusionSystem;
 
 use super::frame_packet::ExtractedFrameShared;
+
+/// Asset tables needed by CPU draw-preparation.
+pub(super) trait DrawPrepAssetRead {
+    /// Resident mesh pool used for bounds, submeshes, and deform metadata.
+    fn mesh_pool(&self) -> &MeshPool;
+    /// CPU point render-buffer assets expanded into prepared particle draws.
+    fn point_render_buffers(&self) -> &HashMap<i32, crate::particles::PointRenderBufferAsset>;
+}
+
+impl DrawPrepAssetRead for AssetTransferQueue {
+    fn mesh_pool(&self) -> &MeshPool {
+        AssetTransferQueue::mesh_pool(self)
+    }
+
+    fn point_render_buffers(&self) -> &HashMap<i32, crate::particles::PointRenderBufferAsset> {
+        AssetTransferQueue::point_render_buffers(self)
+    }
+}
 
 /// Unique render contexts assigned to one render-world preparation worker.
 const RENDER_WORLD_PREP_PARALLEL_CHUNK_CONTEXTS: usize = 1;
@@ -33,8 +52,8 @@ pub(super) struct DrawPreparationExtractDesc<'a, 'v> {
     pub(super) scene: &'a SceneCoordinator,
     /// Material registry, routes, and property data.
     pub(super) materials: &'a MaterialSystem,
-    /// Asset upload queues and resident GPU pools.
-    pub(super) asset_transfers: &'a AssetTransferQueue,
+    /// Asset tables and resident GPU pools needed for draw preparation.
+    pub(super) assets: &'a dyn DrawPrepAssetRead,
     /// Shared occlusion state used for Hi-Z snapshots and temporal cull data.
     pub(super) occlusion: &'a OcclusionSystem,
     /// CPU-side specular reflection-probe selector for per-object probe assignment.
@@ -90,7 +109,7 @@ impl BackendDrawPreparation {
         let DrawPreparationExtractDesc {
             scene,
             materials,
-            asset_transfers,
+            assets,
             occlusion,
             reflection_probes,
             inner_parallelism,
@@ -116,8 +135,8 @@ impl BackendDrawPreparation {
             prepare_render_worlds_for_views(
                 render_worlds,
                 scene,
-                asset_transfers.mesh_pool(),
-                asset_transfers.point_render_buffers(),
+                assets.mesh_pool(),
+                assets.point_render_buffers(),
                 view_draw_preparations,
             );
         }
@@ -134,7 +153,7 @@ impl BackendDrawPreparation {
 
         ExtractedFrameShared {
             scene,
-            mesh_pool: asset_transfers.mesh_pool(),
+            mesh_pool: assets.mesh_pool(),
             property_store,
             router,
             pipeline_property_ids,
@@ -164,7 +183,7 @@ impl BackendDrawPreparation {
 
 /// Converts a render context into a compact cache-map key.
 pub(super) fn render_context_cache_key(
-    scene: &SceneCoordinator,
+    scene: &(impl SceneSpaceRead + ?Sized),
     render_context: RenderingContext,
 ) -> u8 {
     if scene.render_context_affects_draw_prep(render_context) {
@@ -178,7 +197,7 @@ pub(super) fn render_context_cache_key(
 fn prepare_render_worlds_for_views(
     render_worlds: &mut HashMap<u8, RenderWorld>,
     scene: &SceneCoordinator,
-    mesh_pool: &crate::gpu_pools::MeshPool,
+    mesh_pool: &MeshPool,
     point_render_buffers: &HashMap<i32, crate::particles::PointRenderBufferAsset>,
     view_draw_preparations: &[(RenderingContext, ShaderPermutation)],
 ) {

@@ -13,7 +13,7 @@ mod geometry;
 use crate::camera::{HostCameraFrame, WorldProjectionSet};
 pub use crate::cull_contract::{HiZTemporalState, WorldMeshCullProjParams};
 use crate::hi_z_cpu::HiZCullData;
-use crate::scene::SceneCoordinator;
+use crate::scene::SceneSpaceRead;
 
 pub(crate) use eval::{
     CpuCullFailure, mesh_cpu_cull_with_geometry, mesh_draw_passes_cpu_cull,
@@ -37,7 +37,7 @@ pub struct WorldMeshCullInput<'a> {
 
 /// Builds [`WorldMeshCullProjParams`] from viewport size and [`HostCameraFrame`].
 pub fn build_world_mesh_cull_proj_params(
-    scene: &SceneCoordinator,
+    scene: &(impl SceneSpaceRead + ?Sized),
     viewport_px: (u32, u32),
     hc: &HostCameraFrame,
 ) -> WorldMeshCullProjParams {

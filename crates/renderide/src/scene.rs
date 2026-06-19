@@ -64,6 +64,7 @@ mod math;
 mod meshes;
 mod overrides;
 mod pose;
+mod read;
 mod reflection_probe;
 mod render_buffers;
 mod render_space;
@@ -89,6 +90,7 @@ pub use meshes::types::{
     MeshMaterialSlot, MeshRendererInstanceId, SkinnedMeshRenderer, StaticMeshRenderer,
 };
 pub use overrides::MeshRendererOverrideTarget;
+pub(crate) use read::{RenderSpaceRead, SceneLightRead, SceneSpaceRead, SceneTransformRead};
 pub(crate) use reflection_probe::changed_probe_completion;
 pub use reflection_probe::{
     DrainedReflectionProbeRenderChanges, ReflectionProbeEntry,

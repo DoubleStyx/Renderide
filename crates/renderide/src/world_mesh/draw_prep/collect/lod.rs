@@ -6,7 +6,7 @@ use hashbrown::HashMap;
 use crate::camera::{overlay_camera_view_matrix, view_matrix_for_world_mesh_render_space};
 use crate::scene::{
     LodEntry, LodRendererKind, LodRendererRef, MeshRendererInstanceId, RenderSpaceId,
-    RenderSpaceView, SceneCoordinator, SkinnedMeshRenderer, StaticMeshRenderer,
+    RenderSpaceView, SceneCoordinator, SceneTransformRead, SkinnedMeshRenderer, StaticMeshRenderer,
 };
 use crate::world_mesh::culling::{
     MeshCullTarget, WorldMeshCullInput, mesh_world_geometry_for_cull_with_head,
@@ -519,7 +519,8 @@ fn skinned_renderer_for_lod_ref<'a>(
 
 /// Returns whether a renderer node is on the overlay layer.
 fn renderer_is_overlay(scene: &SceneCoordinator, space_id: RenderSpaceId, node_id: i32) -> bool {
-    node_id >= 0 && scene.transform_is_in_overlay_layer(space_id, node_id as usize)
+    node_id >= 0
+        && SceneTransformRead::transform_is_in_overlay_layer(scene, space_id, node_id as usize)
 }
 
 /// Computes a renderer's world-space AABB for LOD group bounds.

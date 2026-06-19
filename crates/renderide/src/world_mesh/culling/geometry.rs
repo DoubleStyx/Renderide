@@ -4,16 +4,16 @@ use glam::{Mat4, Vec3};
 
 use crate::assets::mesh::GpuMesh;
 use crate::bounds::world_aabb_from_local_bounds;
-use crate::scene::{RenderSpaceId, SceneCoordinator, SkinnedMeshRenderer};
+use crate::scene::{RenderSpaceId, SceneCoordinator, SceneTransformRead, SkinnedMeshRenderer};
 use crate::shared::RenderingContext;
 
 use super::WorldMeshCullInput;
 use super::frustum::mesh_bounds_degenerate_for_cull;
 
 /// Identity of a mesh renderable being evaluated for CPU frustum / Hi-Z culling.
-pub(crate) struct MeshCullTarget<'a> {
+pub(crate) struct MeshCullTarget<'a, S: SceneTransformRead + ?Sized = SceneCoordinator> {
     /// Scene graph and spaces.
-    pub scene: &'a SceneCoordinator,
+    pub scene: &'a S,
     /// Render space containing the mesh.
     pub space_id: RenderSpaceId,
     /// Resident GPU mesh (bounds, skinning buffers).
@@ -46,11 +46,14 @@ pub(crate) struct MeshCullGeometry {
 }
 
 /// World-space AABB (and rigid matrix when applicable) for culling, evaluated once per draw slot.
-pub(crate) fn mesh_world_geometry_for_cull(
-    target: &MeshCullTarget<'_>,
+pub(crate) fn mesh_world_geometry_for_cull<S>(
+    target: &MeshCullTarget<'_, S>,
     culling: &WorldMeshCullInput<'_>,
     render_context: RenderingContext,
-) -> MeshCullGeometry {
+) -> MeshCullGeometry
+where
+    S: SceneTransformRead + ?Sized,
+{
     mesh_world_geometry_for_cull_with_head(
         target,
         culling.host_camera.head_output_transform,
@@ -63,11 +66,14 @@ pub(crate) fn mesh_world_geometry_for_cull(
 ///
 /// Caller is responsible for ensuring overlay spaces use the live per-view transform; the result
 /// is only view-invariant when `target.scene.space(target.space_id).is_overlay() == false`.
-pub(crate) fn mesh_world_geometry_for_cull_with_head(
-    target: &MeshCullTarget<'_>,
+pub(crate) fn mesh_world_geometry_for_cull_with_head<S>(
+    target: &MeshCullTarget<'_, S>,
     head_output_transform: Mat4,
     render_context: RenderingContext,
-) -> MeshCullGeometry {
+) -> MeshCullGeometry
+where
+    S: SceneTransformRead + ?Sized,
+{
     if mesh_bounds_degenerate_for_cull(&target.mesh.bounds) {
         return MeshCullGeometry {
             world_aabb: None,

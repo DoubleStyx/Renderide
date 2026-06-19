@@ -17,7 +17,7 @@ use crate::camera::{
     view_matrix_from_render_transform,
 };
 use crate::gpu::frame_globals::{FRAME_PROJECTION_FLAG_ORTHOGRAPHIC, FrameGpuUniforms};
-use crate::scene::SceneCoordinator;
+use crate::scene::{RenderSpaceRead, SceneSpaceRead};
 
 pub use clip::{CLUSTER_COUNT_Z, TILE_SIZE, sanitize_cluster_clip_planes};
 pub use frame_uniforms::FrameGpuUniformBuildParams;
@@ -104,7 +104,7 @@ impl ClusterFrameParams {
 /// and the scene main-space view matrix are used.
 pub fn cluster_frame_params(
     host_camera: &HostCameraFrame,
-    scene: &SceneCoordinator,
+    scene: &(impl SceneSpaceRead + ?Sized),
     viewport_px: (u32, u32),
 ) -> Option<ClusterFrameParams> {
     if let Some((view, proj)) = host_camera.explicit_view_projection() {
@@ -157,7 +157,7 @@ pub fn cluster_frame_params(
 /// to [`cluster_frame_params`] for mono clustering.
 pub fn cluster_frame_params_stereo(
     host_camera: &HostCameraFrame,
-    scene: &SceneCoordinator,
+    scene: &(impl SceneSpaceRead + ?Sized),
     viewport_px: (u32, u32),
 ) -> Option<(ClusterFrameParams, ClusterFrameParams)> {
     let common = CommonClusterInputs::compute(host_camera, scene, viewport_px)?;
@@ -223,7 +223,7 @@ struct CommonClusterInputs {
 impl CommonClusterInputs {
     fn compute(
         host_camera: &HostCameraFrame,
-        scene: &SceneCoordinator,
+        scene: &(impl SceneSpaceRead + ?Sized),
         viewport_px: (u32, u32),
     ) -> Option<Self> {
         let viewport = Viewport::from_tuple(viewport_px);
@@ -286,7 +286,7 @@ fn projection_flags_for_host_camera(host_camera: &HostCameraFrame) -> u32 {
 mod tests {
     use super::*;
     use crate::camera::EyeView;
-    use crate::scene::RenderSpaceId;
+    use crate::scene::{RenderSpaceId, SceneCoordinator};
     use glam::Vec3;
 
     /// Builds a minimal `ClusterFrameParams` with the supplied world-to-view; other fields are

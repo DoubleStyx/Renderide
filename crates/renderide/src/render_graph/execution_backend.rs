@@ -61,8 +61,8 @@ pub trait GraphViewBlackboardPreparer: Sync {
     );
 }
 
-/// Backend services required by compiled render-graph execution.
-pub trait GraphExecutionBackend {
+/// Backend services for graph transient, history, and upload resource lifecycles.
+pub trait GraphResourceLifecycleBackend {
     /// Render-graph transient pool.
     fn transient_pool_mut(&mut self) -> &mut TransientPool;
     /// Schedules resolved transient resources for pool release after a driver submit completes.
@@ -77,13 +77,10 @@ pub trait GraphExecutionBackend {
     fn history_registry_mut(&mut self) -> &mut HistoryRegistry;
     /// Persistent upload staging arena.
     fn upload_arena_mut(&mut self) -> &mut PersistentUploadArena;
-    /// Publishes upload drain stats for diagnostics.
-    fn record_frame_upload_stats(&mut self, stats: FrameUploadBatchStats);
-    /// Publishes graph command recording stats for diagnostics.
-    fn record_command_encoding_diagnostics(&mut self, snapshot: CommandEncodingHudSnapshot);
+}
 
-    /// Returns whether graph execution should publish HUD-formatted command diagnostics.
-    fn capture_graph_command_diagnostics(&self) -> bool;
+/// Backend systems and immutable frame snapshots used while recording graph passes.
+pub trait GraphFrameSystemsBackend {
     /// Scene-color format selected for this graph frame.
     fn scene_color_format_wgpu(&self) -> wgpu::TextureFormat;
     /// GPU limits snapshot after attach.
@@ -108,8 +105,14 @@ pub trait GraphExecutionBackend {
     fn skin_cache(&self) -> Option<&GpuSkinCache>;
     /// Host-owned skin influence mode selected for mesh deform compute.
     fn skin_weight_mode(&self) -> crate::shared::SkinWeightMode;
-    /// Split frame params for frame-global recording.
-    fn split_for_graph_frame_params(&mut self) -> GraphFrameParamsSplit<'_>;
+    /// Debug HUD flags consumed by per-view recording.
+    fn per_view_hud_config(&self) -> PerViewHudConfig;
+    /// Render-graph command-recording mode selected for this frame.
+    fn command_recording_mode(&self) -> crate::config::CommandRecordingMode;
+}
+
+/// Backend work performed before per-view graph pass recording.
+pub trait GraphViewPreparationBackend {
     /// Warms assets required by caller-seeded per-view blackboards.
     fn pre_warm_view_assets_from_blackboards(
         &mut self,
@@ -129,10 +132,22 @@ pub trait GraphExecutionBackend {
     fn view_blackboard_preparer(&self) -> Box<dyn GraphViewBlackboardPreparer + '_>;
     /// Estimates the blackboard work size used to gate parallel pre-record preparation.
     fn estimate_view_blackboard_prepare_draw_count(&self, blackboard: &Blackboard) -> usize;
-    /// Debug HUD flags consumed by per-view recording.
-    fn per_view_hud_config(&self) -> PerViewHudConfig;
-    /// Render-graph command-recording mode selected for this frame.
-    fn command_recording_mode(&self) -> crate::config::CommandRecordingMode;
+}
+
+/// Backend split borrowed by frame-global graph passes.
+pub trait GraphFrameGlobalBackend {
+    /// Split frame params for frame-global recording.
+    fn split_for_graph_frame_params(&mut self) -> GraphFrameParamsSplit<'_>;
+}
+
+/// Backend diagnostics and debug HUD operations performed around graph submission.
+pub trait GraphDiagnosticsBackend {
+    /// Publishes upload drain stats for diagnostics.
+    fn record_frame_upload_stats(&mut self, stats: FrameUploadBatchStats);
+    /// Publishes graph command recording stats for diagnostics.
+    fn record_command_encoding_diagnostics(&mut self, snapshot: CommandEncodingHudSnapshot);
+    /// Returns whether graph execution should publish HUD-formatted command diagnostics.
+    fn capture_graph_command_diagnostics(&self) -> bool;
     /// Whether the HUD will draw visible content.
     fn debug_hud_has_visible_content(&self) -> bool;
     /// Encodes the debug HUD overlay.
@@ -149,4 +164,23 @@ pub trait GraphExecutionBackend {
     fn clear_debug_hud_input_capture(&mut self);
     /// Applies per-view HUD outputs after recording.
     fn apply_per_view_hud_outputs(&mut self, outputs: &PerViewHudOutputs);
+}
+
+/// Backend services required by compiled render-graph execution.
+pub trait GraphExecutionBackend:
+    GraphResourceLifecycleBackend
+    + GraphFrameSystemsBackend
+    + GraphViewPreparationBackend
+    + GraphFrameGlobalBackend
+    + GraphDiagnosticsBackend
+{
+}
+
+impl<T> GraphExecutionBackend for T where
+    T: GraphResourceLifecycleBackend
+        + GraphFrameSystemsBackend
+        + GraphViewPreparationBackend
+        + GraphFrameGlobalBackend
+        + GraphDiagnosticsBackend
+{
 }

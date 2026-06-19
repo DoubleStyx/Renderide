@@ -23,7 +23,7 @@ use crate::materials::ShaderPermutation;
 use crate::materials::host_data::MaterialDictionary;
 use crate::materials::{MaterialPipelinePropertyIds, MaterialRouter};
 use crate::reflection_probes::specular::ReflectionProbeFrameSelection;
-use crate::scene::{RenderSpaceId, SceneCoordinator};
+use crate::scene::{RenderSpaceId, RenderSpaceRead, SceneCoordinator};
 use crate::shared::{LayerType, RenderingContext};
 use crate::world_mesh::culling::WorldMeshCullInput;
 use crate::world_mesh::materials::FrameMaterialBatchCache;
@@ -353,7 +353,7 @@ fn render_space_visible_in_view(ctx: &DrawCollectionInputs<'_>, space_id: Render
     if !space.is_active() {
         return false;
     }
-    !space.is_private()
+    !RenderSpaceRead::is_private(space)
         || ctx
             .view
             .layer_policy

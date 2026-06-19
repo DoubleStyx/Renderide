@@ -26,7 +26,7 @@ use crate::mesh_deform::{
 use crate::render_graph::context::ComputePassCtx;
 use crate::render_graph::error::{RenderPassError, SetupError};
 use crate::render_graph::pass::{ComputePass, PassBuilder, PassPhase};
-use crate::scene::{RenderSpaceId, SceneCoordinator};
+use crate::scene::{RenderSpaceId, SceneCoordinator, SceneSpaceRead};
 use crate::shared::{RenderingContext, SkinWeightMode};
 
 use self::encode::{
@@ -819,7 +819,8 @@ impl ComputePass for MeshDeformPass {
             .systems
             .frame_resources
             .visible_mesh_deform_keys_snapshot();
-        let default_render_context = frame.systems.scene.active_main_render_context();
+        let default_render_context =
+            SceneSpaceRead::active_main_render_context(frame.systems.scene);
 
         let mut scratch = self.scratch.lock();
         collect_deform_work_into_scratch(

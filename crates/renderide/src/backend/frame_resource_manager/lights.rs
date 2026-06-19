@@ -10,8 +10,10 @@ use crate::cpu_parallelism::{
     record_parallel_admission,
 };
 use crate::render_graph::GraphAssetResources;
+#[cfg(test)]
+use crate::scene::SceneCoordinator;
 use crate::scene::{
-    RenderSpaceId, ResolvedLight, SceneCoordinator, light_has_negative_contribution,
+    RenderSpaceId, RenderSpaceRead, ResolvedLight, SceneLightRead, light_has_negative_contribution,
 };
 
 use super::super::light_gpu::{
@@ -114,12 +116,13 @@ impl FrameResourceManager {
     /// space. Non-contributing lights are filtered via [`light_contributes`] before clustered
     /// ordering, and each view's transforms are resolved with the same render context and
     /// head-output transform used by draw collection.
-    pub(crate) fn prepare_lights_for_views<I>(
+    pub(crate) fn prepare_lights_for_views<S, I>(
         &mut self,
-        scene: &SceneCoordinator,
+        scene: &S,
         views: I,
         asset_resources: Option<&dyn GraphAssetResources>,
     ) where
+        S: SceneLightRead + ?Sized,
         I: IntoIterator<Item = FrameLightViewDesc>,
     {
         profiling::scope!("render::prepare_lights_for_views");
@@ -220,10 +223,10 @@ fn disable_gpu_light_shadows(light: &mut GpuLight) {
     light.shadow_normal_bias = 0.0;
 }
 
-fn should_parallelize_light_view_prep(
-    scene: &SceneCoordinator,
-    views: &[FrameLightViewDesc],
-) -> bool {
+fn should_parallelize_light_view_prep<S>(scene: &S, views: &[FrameLightViewDesc]) -> bool
+where
+    S: SceneLightRead + ?Sized,
+{
     views.len() >= LIGHT_VIEW_PREP_PARALLEL_MIN_VIEWS
         && views
             .iter()
@@ -234,10 +237,13 @@ fn should_parallelize_light_view_prep(
             >= LIGHT_VIEW_PREP_PARALLEL_MIN_LIGHTS
 }
 
-fn prepare_lights_for_view_packet(
-    scene: &SceneCoordinator,
+fn prepare_lights_for_view_packet<S>(
+    scene: &S,
     desc: &FrameLightViewDesc,
-) -> PreparedViewLightPacket {
+) -> PreparedViewLightPacket
+where
+    S: SceneLightRead + ?Sized,
+{
     profiling::scope!("render::prepare_lights_for_view");
     let mut light_space_ids = Vec::new();
     collect_light_space_ids(scene, desc.render_space_filter, &mut light_space_ids);
@@ -265,11 +271,13 @@ fn prepare_lights_for_view_packet(
     }
 }
 
-fn collect_light_space_ids(
-    scene: &SceneCoordinator,
+fn collect_light_space_ids<S>(
+    scene: &S,
     render_space_filter: Option<RenderSpaceId>,
     out: &mut Vec<RenderSpaceId>,
-) {
+) where
+    S: SceneLightRead + ?Sized,
+{
     profiling::scope!("render::prepare_lights::collect_active_spaces");
     out.clear();
     if let Some(id) = render_space_filter {
@@ -285,12 +293,15 @@ fn collect_light_space_ids(
     );
 }
 
-fn resolve_lights_for_space_ids(
-    scene: &SceneCoordinator,
+fn resolve_lights_for_space_ids<S>(
+    scene: &S,
     desc: &FrameLightViewDesc,
     light_space_ids: &[RenderSpaceId],
     out: &mut Vec<ResolvedLight>,
-) -> LightVisibilityStats {
+) -> LightVisibilityStats
+where
+    S: SceneLightRead + ?Sized,
+{
     if light_space_ids.is_empty() {
         return LightVisibilityStats::default();
     }

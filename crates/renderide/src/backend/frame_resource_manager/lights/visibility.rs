@@ -2,7 +2,7 @@
 
 use glam::{Vec3, Vec3A};
 
-use crate::scene::{RenderSpaceId, ResolvedLight, SceneCoordinator, light_contributes};
+use crate::scene::{RenderSpaceId, ResolvedLight, SceneLightRead, light_contributes};
 use crate::shared::LightType;
 use crate::world_mesh::culling::{WorldMeshCullInput, world_aabb_visible_for_cull};
 
@@ -15,21 +15,27 @@ const SPOT_BOUNDS_WIDE_COS_HALF: f32 = 0.5;
 const LIGHT_AABB_EXTENT_EPSILON: f32 = 1e-7;
 
 /// Filters resolved lights for one render space and optional view frustum.
-pub(super) fn filter_resolved_lights_for_view(
-    scene: &SceneCoordinator,
+pub(super) fn filter_resolved_lights_for_view<S>(
+    scene: &S,
     space_id: RenderSpaceId,
     cull: Option<&FrameLightCullDesc>,
     lights: &mut Vec<ResolvedLight>,
-) -> LightVisibilityStats {
+) -> LightVisibilityStats
+where
+    S: SceneLightRead + ?Sized,
+{
     filter_resolved_lights_for_view_with_stats(scene, space_id, cull, lights)
 }
 
-fn filter_resolved_lights_for_view_with_stats(
-    scene: &SceneCoordinator,
+fn filter_resolved_lights_for_view_with_stats<S>(
+    scene: &S,
     space_id: RenderSpaceId,
     cull: Option<&FrameLightCullDesc>,
     lights: &mut Vec<ResolvedLight>,
-) -> LightVisibilityStats {
+) -> LightVisibilityStats
+where
+    S: SceneLightRead + ?Sized,
+{
     profiling::scope!("render::prepare_lights::filter_visibility");
     let mut stats = LightVisibilityStats {
         space_count: 1,
@@ -89,14 +95,16 @@ fn filter_resolved_lights_for_view_with_stats(
     stats
 }
 
-fn mark_visible_lights_linear(
-    scene: &SceneCoordinator,
+fn mark_visible_lights_linear<S>(
+    scene: &S,
     space_id: RenderSpaceId,
     culling: &WorldMeshCullInput<'_>,
     entries: &[IndexedLight],
     keep: &mut [bool],
     stats: &mut LightVisibilityStats,
-) {
+) where
+    S: SceneLightRead + ?Sized,
+{
     profiling::scope!("render::prepare_lights::filter_visibility_linear");
     for entry in entries {
         stats.light_aabb_tests = stats.light_aabb_tests.saturating_add(1);
@@ -349,29 +357,33 @@ impl LightBvh {
         node_index
     }
 
-    fn mark_visible(
+    fn mark_visible<S>(
         &self,
-        scene: &SceneCoordinator,
+        scene: &S,
         space_id: RenderSpaceId,
         culling: &WorldMeshCullInput<'_>,
         keep: &mut [bool],
         stats: &mut LightVisibilityStats,
-    ) {
+    ) where
+        S: SceneLightRead + ?Sized,
+    {
         profiling::scope!("render::prepare_lights::filter_visibility_bvh");
         if let Some(root) = self.root {
             self.mark_visible_node(root, scene, space_id, culling, keep, stats);
         }
     }
 
-    fn mark_visible_node(
+    fn mark_visible_node<S>(
         &self,
         node_index: usize,
-        scene: &SceneCoordinator,
+        scene: &S,
         space_id: RenderSpaceId,
         culling: &WorldMeshCullInput<'_>,
         keep: &mut [bool],
         stats: &mut LightVisibilityStats,
-    ) {
+    ) where
+        S: SceneLightRead + ?Sized,
+    {
         let node = self.nodes[node_index];
         stats.bvh_node_tests = stats.bvh_node_tests.saturating_add(1);
         if !light_aabb_visible(scene, space_id, culling, node.aabb_min, node.aabb_max) {
@@ -400,13 +412,16 @@ fn node_light_count(node: LightBvhNode) -> usize {
     node.light_count
 }
 
-fn light_aabb_visible(
-    scene: &SceneCoordinator,
+fn light_aabb_visible<S>(
+    scene: &S,
     space_id: RenderSpaceId,
     culling: &WorldMeshCullInput<'_>,
     aabb_min: Vec3A,
     aabb_max: Vec3A,
-) -> bool {
+) -> bool
+where
+    S: SceneLightRead + ?Sized,
+{
     world_aabb_visible_for_cull(
         scene,
         space_id,
@@ -451,6 +466,7 @@ mod tests {
     use glam::Mat4;
 
     use crate::camera::HostCameraFrame;
+    use crate::scene::SceneCoordinator;
     use crate::shared::{RenderTransform, ShadowType};
     use crate::world_mesh::WorldMeshCullProjParams;
 
