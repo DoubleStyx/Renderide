@@ -44,7 +44,7 @@ struct TestDrawContextResources<'a> {
 fn test_draw_context<'a>(
     resources: TestDrawContextResources<'a>,
     transform_filter: Option<&'a CameraTransformDrawFilter>,
-    render_space_filter: Option<RenderSpaceId>,
+    render_space_scope: ViewRenderSpaceScope,
     layer_policy: ViewLayerPolicy,
 ) -> DrawCollectionInputs<'a> {
     DrawCollectionInputs {
@@ -65,7 +65,8 @@ fn test_draw_context<'a>(
             culling: None,
             mesh_lod_bias: 2.0,
             transform_filter,
-            render_space_filter,
+            transform_filter_space: render_space_scope.single_space(),
+            render_space_scope,
             layer_policy,
             reflection_probes: None,
         },
@@ -97,7 +98,7 @@ fn transform_scale_filter_result(scale: Vec3) -> bool {
             property_ids: &property_ids,
         },
         None,
-        None,
+        ViewRenderSpaceScope::AllActive,
         ViewLayerPolicy::MainView,
     );
 
@@ -126,7 +127,7 @@ fn special_layer_visibility_for_filter(
             property_ids: &property_ids,
         },
         filter,
-        None,
+        ViewRenderSpaceScope::AllActive,
         layer_policy,
     );
     special_layer_visible_in_view(&ctx, special_layer)
@@ -156,7 +157,34 @@ fn private_space_visibility_for_filter(
             property_ids: &property_ids,
         },
         filter,
-        Some(space_id),
+        ViewRenderSpaceScope::single(space_id),
+        layer_policy,
+    );
+    render_space_visible_in_view(&ctx, space_id)
+}
+
+/// Evaluates private-space visibility for an all-active camera view.
+fn private_space_visibility_for_all_active(layer_policy: ViewLayerPolicy) -> bool {
+    let mut scene = SceneCoordinator::new();
+    let space_id = RenderSpaceId(30);
+    scene.test_seed_space_identity_worlds(space_id, vec![identity_transform()], vec![-1]);
+    scene.test_set_space_private(space_id, true);
+    let mesh_pool = MeshPool::default_pool();
+    let store = MaterialPropertyStore::new();
+    let material_dict = MaterialDictionary::new(&store);
+    let router = MaterialRouter::new(RasterPipelineKind::Null);
+    let registry = PropertyIdRegistry::new();
+    let property_ids = MaterialPipelinePropertyIds::new(&registry);
+    let ctx = test_draw_context(
+        TestDrawContextResources {
+            scene: &scene,
+            mesh_pool: &mesh_pool,
+            material_dict: &material_dict,
+            router: &router,
+            property_ids: &property_ids,
+        },
+        None,
+        ViewRenderSpaceScope::AllActive,
         layer_policy,
     );
     render_space_visible_in_view(&ctx, space_id)
@@ -394,7 +422,7 @@ fn selected_camera_overlay_renders_as_non_overlay() {
             property_ids: &property_ids,
         },
         Some(&filter),
-        None,
+        ViewRenderSpaceScope::AllActive,
         ViewLayerPolicy::camera(false),
     );
 
@@ -420,6 +448,63 @@ fn camera_layer_policy_filters_private_spaces_without_private_ui() {
         Some(&selective),
         ViewLayerPolicy::camera(false)
     ));
+}
+
+#[test]
+fn all_active_camera_scope_respects_render_private_ui_for_private_spaces() {
+    assert!(!private_space_visibility_for_all_active(
+        ViewLayerPolicy::camera(false)
+    ));
+    assert!(private_space_visibility_for_all_active(
+        ViewLayerPolicy::camera(true)
+    ));
+}
+
+#[test]
+fn transform_filter_masks_are_source_space_bound() {
+    let mut scene = SceneCoordinator::new();
+    let source = RenderSpaceId(31);
+    let other = RenderSpaceId(32);
+    scene.test_seed_space_identity_worlds(
+        source,
+        vec![identity_transform(), identity_transform()],
+        vec![-1, 0],
+    );
+    scene.test_seed_space_identity_worlds(
+        other,
+        vec![identity_transform(), identity_transform()],
+        vec![-1, 0],
+    );
+    let mesh_pool = MeshPool::default_pool();
+    let store = MaterialPropertyStore::new();
+    let material_dict = MaterialDictionary::new(&store);
+    let router = MaterialRouter::new(RasterPipelineKind::Null);
+    let registry = PropertyIdRegistry::new();
+    let property_ids = MaterialPipelinePropertyIds::new(&registry);
+    let exclude_only = CameraTransformDrawFilter {
+        only: None,
+        exclude: HashSet::from_iter([1]),
+    };
+    let mut ctx = test_draw_context(
+        TestDrawContextResources {
+            scene: &scene,
+            mesh_pool: &mesh_pool,
+            material_dict: &material_dict,
+            router: &router,
+            property_ids: &property_ids,
+        },
+        Some(&exclude_only),
+        ViewRenderSpaceScope::AllActive,
+        ViewLayerPolicy::camera(false),
+    );
+    ctx.view.transform_filter_space = Some(source);
+
+    let masks = build_per_space_filter_masks(&[source, other], &ctx);
+
+    assert!(masks.contains_key(&source));
+    assert!(!masks.contains_key(&other));
+    assert!(transform_filter_for_space(&ctx, source).is_some());
+    assert!(transform_filter_for_space(&ctx, other).is_none());
 }
 
 #[test]

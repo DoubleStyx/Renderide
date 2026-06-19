@@ -2,7 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::config::VsyncMode;
+use crate::config::PresentationModeSetting;
 
 /// Redraw action for the next `about_to_wait` event.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -35,8 +35,8 @@ pub(crate) struct RedrawInputs {
     pub(crate) exit_requested: bool,
     /// Whether HMD compositor pacing owns frame cadence for the next redraw.
     pub(crate) hmd_compositor_paced: bool,
-    /// Swapchain VSync mode. `On` lets FIFO presentation own desktop cadence.
-    pub(crate) vsync: VsyncMode,
+    /// Swapchain presentation mode.
+    pub(crate) presentation_mode: PresentationModeSetting,
     /// Whether winit reports that the renderer window currently has keyboard focus.
     pub(crate) window_has_keyboard_focus: bool,
     /// FPS cap used while the renderer window is the foreground input window; `0` means uncapped.
@@ -80,7 +80,7 @@ pub(crate) fn plan_redraw(inputs: RedrawInputs) -> RedrawPlan {
         };
     }
 
-    if inputs.hmd_compositor_paced || inputs.vsync == VsyncMode::On {
+    if inputs.hmd_compositor_paced || inputs.presentation_mode.is_presentation_paced() {
         return RedrawPlan {
             decision: RedrawDecision::RedrawNow,
             fps_cap: 0,
@@ -113,8 +113,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        RedrawDecision, RedrawInputs, VsyncMode, min_interval_for_fps_cap, next_redraw_wait_until,
-        plan_redraw,
+        PresentationModeSetting, RedrawDecision, RedrawInputs, min_interval_for_fps_cap,
+        next_redraw_wait_until, plan_redraw,
     };
 
     #[test]
@@ -160,7 +160,7 @@ mod tests {
             has_window: true,
             exit_requested: false,
             hmd_compositor_paced: false,
-            vsync: VsyncMode::Off,
+            presentation_mode: PresentationModeSetting::Immediate,
             window_has_keyboard_focus: true,
             foreground_fps_cap: 60,
             background_fps_cap: 15,
@@ -180,7 +180,7 @@ mod tests {
             has_window: true,
             exit_requested: false,
             hmd_compositor_paced: false,
-            vsync: VsyncMode::Off,
+            presentation_mode: PresentationModeSetting::Immediate,
             window_has_keyboard_focus: false,
             foreground_fps_cap: 60,
             background_fps_cap: 15,
@@ -204,7 +204,7 @@ mod tests {
                 has_window: true,
                 exit_requested: false,
                 hmd_compositor_paced: false,
-                vsync: VsyncMode::Off,
+                presentation_mode: PresentationModeSetting::Immediate,
                 window_has_keyboard_focus: true,
                 foreground_fps_cap: 30,
                 background_fps_cap: 15,
@@ -225,7 +225,7 @@ mod tests {
                 has_window: true,
                 exit_requested: false,
                 hmd_compositor_paced: false,
-                vsync: VsyncMode::Off,
+                presentation_mode: PresentationModeSetting::Immediate,
                 window_has_keyboard_focus: true,
                 foreground_fps_cap: 0,
                 background_fps_cap: 15,
@@ -239,7 +239,7 @@ mod tests {
             has_window: true,
             exit_requested: false,
             hmd_compositor_paced: true,
-            vsync: VsyncMode::Off,
+            presentation_mode: PresentationModeSetting::Immediate,
             window_has_keyboard_focus: true,
             foreground_fps_cap: 60,
             background_fps_cap: 15,
@@ -259,7 +259,7 @@ mod tests {
             has_window: true,
             exit_requested: false,
             hmd_compositor_paced: false,
-            vsync: VsyncMode::Off,
+            presentation_mode: PresentationModeSetting::Immediate,
             window_has_keyboard_focus: true,
             foreground_fps_cap: 60,
             background_fps_cap: 15,
@@ -273,24 +273,56 @@ mod tests {
     }
 
     #[test]
-    fn redraw_plan_redraws_immediately_when_vsync_is_on() {
+    fn redraw_plan_redraws_immediately_when_presentation_mode_is_paced() {
         let t0 = Instant::now();
         let now = t0 + Duration::from_millis(1);
-        for window_has_keyboard_focus in [true, false] {
+        for presentation_mode in [
+            PresentationModeSetting::AutoVsync,
+            PresentationModeSetting::Fifo,
+            PresentationModeSetting::FifoRelaxed,
+            PresentationModeSetting::Mailbox,
+        ] {
+            for window_has_keyboard_focus in [true, false] {
+                let plan = plan_redraw(RedrawInputs {
+                    has_window: true,
+                    exit_requested: false,
+                    hmd_compositor_paced: false,
+                    presentation_mode,
+                    window_has_keyboard_focus,
+                    foreground_fps_cap: 60,
+                    background_fps_cap: 15,
+                    last_frame_start: Some(t0),
+                    now,
+                });
+                assert_eq!(plan.fps_cap, 0);
+                assert_eq!(plan.decision, RedrawDecision::RedrawNow);
+                assert_eq!(plan.wait_ms, 0.0);
+            }
+        }
+    }
+
+    #[test]
+    fn redraw_plan_caps_low_latency_presentation_modes() {
+        let t0 = Instant::now();
+        let now = t0 + Duration::from_millis(1);
+        for presentation_mode in [
+            PresentationModeSetting::AutoNoVsync,
+            PresentationModeSetting::Immediate,
+        ] {
             let plan = plan_redraw(RedrawInputs {
                 has_window: true,
                 exit_requested: false,
                 hmd_compositor_paced: false,
-                vsync: VsyncMode::On,
-                window_has_keyboard_focus,
+                presentation_mode,
+                window_has_keyboard_focus: true,
                 foreground_fps_cap: 60,
                 background_fps_cap: 15,
                 last_frame_start: Some(t0),
                 now,
             });
-            assert_eq!(plan.fps_cap, 0);
-            assert_eq!(plan.decision, RedrawDecision::RedrawNow);
-            assert_eq!(plan.wait_ms, 0.0);
+            assert_eq!(plan.fps_cap, 60);
+            assert!(matches!(plan.decision, RedrawDecision::WaitUntil(_)));
+            assert!(plan.wait_ms > 0.0);
         }
     }
 
@@ -302,7 +334,7 @@ mod tests {
                 has_window: false,
                 exit_requested: false,
                 hmd_compositor_paced: false,
-                vsync: VsyncMode::Off,
+                presentation_mode: PresentationModeSetting::Immediate,
                 window_has_keyboard_focus: true,
                 foreground_fps_cap: 60,
                 background_fps_cap: 15,
@@ -317,7 +349,7 @@ mod tests {
                 has_window: true,
                 exit_requested: true,
                 hmd_compositor_paced: true,
-                vsync: VsyncMode::Off,
+                presentation_mode: PresentationModeSetting::Immediate,
                 window_has_keyboard_focus: true,
                 foreground_fps_cap: 60,
                 background_fps_cap: 15,

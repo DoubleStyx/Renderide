@@ -400,6 +400,25 @@ fn draw_filter_uses_excludes_when_only_list_is_empty() {
 }
 
 #[test]
+fn camera_render_task_scope_tracks_only_render_list() {
+    let space = RenderSpaceId(9);
+    let all_active_task = CameraRenderTask::default();
+    let selective_task = CameraRenderTask {
+        only_render_list: vec![1],
+        ..Default::default()
+    };
+
+    assert_eq!(
+        camera_render_task_scope(&all_active_task, space),
+        ViewRenderSpaceScope::AllActive
+    );
+    assert_eq!(
+        camera_render_task_scope(&selective_task, space),
+        ViewRenderSpaceScope::single(space)
+    );
+}
+
+#[test]
 fn camera_task_layer_policy_uses_render_private_ui_parameter() {
     let public = CameraRenderParameters {
         render_private_ui: false,

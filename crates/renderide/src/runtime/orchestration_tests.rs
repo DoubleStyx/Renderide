@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use glam::IVec2;
 use renderide_shared::ipc::HostDualQueueIpc;
 
-use crate::config::{RendererSettings, RendererSettingsHandle, VsyncMode};
+use crate::config::{PresentationModeSetting, RendererSettings, RendererSettingsHandle};
 use crate::connection::ConnectionParams;
 use crate::ipc::SharedMemoryAccessor;
 use crate::shared::buffer::SharedMemoryBufferDescriptor;
@@ -408,7 +408,7 @@ fn dispatch_desktop_config_overrides_effective_caps_without_mutating_renderer_se
     let before = rt.unhandled_ipc_command_event_total();
     {
         let mut settings = rt.settings().write().expect("settings writable");
-        settings.rendering.vsync = VsyncMode::On;
+        settings.rendering.presentation_mode = PresentationModeSetting::Fifo;
         settings.display.focused_fps_cap = 144;
         settings.display.unfocused_fps_cap = 30;
     };
@@ -427,7 +427,10 @@ fn dispatch_desktop_config_overrides_effective_caps_without_mutating_renderer_se
     assert_eq!(caps.background_fps_cap, 30);
     {
         let settings = rt.settings().read().expect("settings readable");
-        assert_eq!(settings.rendering.vsync, VsyncMode::On);
+        assert_eq!(
+            settings.rendering.presentation_mode,
+            PresentationModeSetting::Fifo
+        );
         assert_eq!(settings.display.focused_fps_cap, 144);
         assert_eq!(settings.display.unfocused_fps_cap, 30);
         drop(settings);
@@ -440,7 +443,7 @@ fn dispatch_desktop_config_ignores_negative_and_zero_host_caps_for_effective_cap
     let mut rt = test_runtime_standalone();
     {
         let mut settings = rt.settings().write().expect("settings writable");
-        settings.rendering.vsync = VsyncMode::On;
+        settings.rendering.presentation_mode = PresentationModeSetting::Fifo;
         settings.display.focused_fps_cap = 240;
         settings.display.unfocused_fps_cap = 60;
     };
@@ -459,7 +462,10 @@ fn dispatch_desktop_config_ignores_negative_and_zero_host_caps_for_effective_cap
     assert_eq!(caps.background_fps_cap, 60);
     {
         let settings = rt.settings().read().expect("settings readable");
-        assert_eq!(settings.rendering.vsync, VsyncMode::On);
+        assert_eq!(
+            settings.rendering.presentation_mode,
+            PresentationModeSetting::Fifo
+        );
         assert_eq!(settings.display.focused_fps_cap, 240);
         assert_eq!(settings.display.unfocused_fps_cap, 60);
         drop(settings);

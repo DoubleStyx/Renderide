@@ -52,6 +52,16 @@ pub struct ClusterFrameParams {
 }
 
 impl ClusterFrameParams {
+    /// Coefficients for `dot(coeffs.xyz, world) + coeffs.w` -> view-space X (first row of world-to-view).
+    pub fn view_space_x_coeffs(&self) -> [f32; 4] {
+        FrameGpuUniforms::view_space_x_coeffs_from_world_to_view(self.world_to_view)
+    }
+
+    /// Coefficients for `dot(coeffs.xyz, world) + coeffs.w` -> view-space Y (second row of world-to-view).
+    pub fn view_space_y_coeffs(&self) -> [f32; 4] {
+        FrameGpuUniforms::view_space_y_coeffs_from_world_to_view(self.world_to_view)
+    }
+
     /// Coefficients for `dot(coeffs.xyz, world) + coeffs.w` -> view-space Z (third row of world-to-view).
     pub fn view_space_z_coeffs(&self) -> [f32; 4] {
         FrameGpuUniforms::view_space_z_coeffs_from_world_to_view(self.world_to_view)

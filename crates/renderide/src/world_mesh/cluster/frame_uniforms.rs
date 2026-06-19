@@ -25,6 +25,10 @@ pub struct FrameGpuUniformBuildParams {
     pub right_z_coeffs: [f32; 4],
     /// Right-eye view -> world-space Y coefficients, or the mono coefficients for non-stereo frames.
     pub right_view_to_world_y_coeffs: [f32; 4],
+    /// Right-eye view-space X coefficients, or the mono coefficients for non-stereo frames.
+    pub right_x_coeffs: [f32; 4],
+    /// Right-eye view-space Y coefficients, or the mono coefficients for non-stereo frames.
+    pub right_y_coeffs: [f32; 4],
     /// Right-eye projection parameters, or the mono parameters for non-stereo frames.
     pub right_proj_params: [f32; 4],
     /// Right-eye projection matrix, or the mono projection matrix for non-stereo frames.
@@ -63,6 +67,10 @@ pub(super) fn build_frame_gpu_uniforms(
             cfp.world_to_view,
         ),
         view_to_world_y_coeffs_right: params.right_view_to_world_y_coeffs,
+        view_space_x_coeffs: cfp.view_space_x_coeffs(),
+        view_space_x_coeffs_right: params.right_x_coeffs,
+        view_space_y_coeffs: cfp.view_space_y_coeffs(),
+        view_space_y_coeffs_right: params.right_y_coeffs,
         cluster_count_x: cfp.cluster_count_x,
         cluster_count_y: cfp.cluster_count_y,
         cluster_count_z: CLUSTER_COUNT_Z,

@@ -12,8 +12,8 @@ mod offset_and_packing_tests {
     use glam::Mat4;
 
     #[test]
-    fn frame_globals_size_512() {
-        assert_eq!(size_of::<FrameGpuUniforms>(), 512);
+    fn frame_globals_size_576() {
+        assert_eq!(size_of::<FrameGpuUniforms>(), 576);
         assert_eq!(size_of::<FrameGpuUniforms>() % 16, 0);
     }
 
@@ -57,6 +57,37 @@ mod offset_and_packing_tests {
         assert_eq!(std::mem::offset_of!(FrameGpuUniforms, ambient_sh), 336);
         assert_eq!(std::mem::offset_of!(FrameGpuUniforms, fog_color_mode), 480);
         assert_eq!(std::mem::offset_of!(FrameGpuUniforms, fog_params), 496);
+        assert_eq!(
+            std::mem::offset_of!(FrameGpuUniforms, view_space_x_coeffs),
+            512
+        );
+        assert_eq!(
+            std::mem::offset_of!(FrameGpuUniforms, view_space_x_coeffs_right),
+            528
+        );
+        assert_eq!(
+            std::mem::offset_of!(FrameGpuUniforms, view_space_y_coeffs),
+            544
+        );
+        assert_eq!(
+            std::mem::offset_of!(FrameGpuUniforms, view_space_y_coeffs_right),
+            560
+        );
+    }
+
+    #[test]
+    fn view_space_xy_coeffs_extract_first_two_rows() {
+        let m =
+            Mat4::from_translation(glam::Vec3::new(2.0, -3.0, 5.0)) * Mat4::from_rotation_z(0.35);
+        let x_coeffs = FrameGpuUniforms::view_space_x_coeffs_from_world_to_view(m);
+        let y_coeffs = FrameGpuUniforms::view_space_y_coeffs_from_world_to_view(m);
+        let p = glam::Vec3::new(1.0, -2.0, 3.0);
+        let view_p = m * p.extend(1.0);
+        let x = x_coeffs[2].mul_add(p.z, x_coeffs[0].mul_add(p.x, x_coeffs[1] * p.y)) + x_coeffs[3];
+        let y = y_coeffs[2].mul_add(p.z, y_coeffs[0].mul_add(p.x, y_coeffs[1] * p.y)) + y_coeffs[3];
+
+        assert!((view_p.x - x).abs() < 1e-5);
+        assert!((view_p.y - y).abs() < 1e-5);
     }
 
     #[test]
@@ -110,15 +141,18 @@ mod offset_and_packing_tests {
         assert!(coeffs[3].abs() < 1e-5);
     }
 
-    #[test]
-    fn new_clustered_populates_fields_including_zero_w_for_camera_pos() {
-        let params = ClusteredFrameGlobalsParams {
+    fn populated_cluster_params() -> ClusteredFrameGlobalsParams {
+        ClusteredFrameGlobalsParams {
             camera_world_pos: glam::Vec3::new(1.0, 2.0, 3.0),
             camera_world_pos_right: glam::Vec3::new(4.0, 5.0, 6.0),
             view_space_z_coeffs: [0.1, 0.2, 0.3, 0.4],
             view_space_z_coeffs_right: [0.5, 0.6, 0.7, 0.8],
             view_to_world_y_coeffs: [1.1, 1.2, 1.3, 1.4],
             view_to_world_y_coeffs_right: [1.5, 1.6, 1.7, 1.8],
+            view_space_x_coeffs: [2.1, 2.2, 2.3, 2.4],
+            view_space_x_coeffs_right: [2.5, 2.6, 2.7, 2.8],
+            view_space_y_coeffs: [3.1, 3.2, 3.3, 3.4],
+            view_space_y_coeffs_right: [3.5, 3.6, 3.7, 3.8],
             cluster_count_x: 16,
             cluster_count_y: 9,
             cluster_count_z: 24,
@@ -139,7 +173,12 @@ mod offset_and_packing_tests {
             skybox_specular: SkyboxSpecularUniformParams::from_cubemap_resident_mips(6),
             frame_time_seconds: 12.25,
             ambient_sh: [[0.0; 4]; 9],
-        };
+        }
+    }
+
+    #[test]
+    fn new_clustered_populates_camera_view_and_cluster_fields() {
+        let params = populated_cluster_params();
         let u = FrameGpuUniforms::new_clustered(&params);
         assert_eq!(u.camera_world_pos, [1.0, 2.0, 3.0, 0.0]);
         assert_eq!(u.camera_world_pos_right, [4.0, 5.0, 6.0, 0.0]);
@@ -147,6 +186,10 @@ mod offset_and_packing_tests {
         assert_eq!(u.view_space_z_coeffs_right, [0.5, 0.6, 0.7, 0.8]);
         assert_eq!(u.view_to_world_y_coeffs, [1.1, 1.2, 1.3, 1.4]);
         assert_eq!(u.view_to_world_y_coeffs_right, [1.5, 1.6, 1.7, 1.8]);
+        assert_eq!(u.view_space_x_coeffs, [2.1, 2.2, 2.3, 2.4]);
+        assert_eq!(u.view_space_x_coeffs_right, [2.5, 2.6, 2.7, 2.8]);
+        assert_eq!(u.view_space_y_coeffs, [3.1, 3.2, 3.3, 3.4]);
+        assert_eq!(u.view_space_y_coeffs_right, [3.5, 3.6, 3.7, 3.8]);
         assert_eq!(u.cluster_count_x, 16);
         assert_eq!(u.cluster_count_y, 9);
         assert_eq!(u.cluster_count_z, 24);
@@ -155,6 +198,12 @@ mod offset_and_packing_tests {
         assert_eq!(u.light_count, 42);
         assert_eq!(u.viewport_width, 1920);
         assert_eq!(u.viewport_height, 1080);
+    }
+
+    #[test]
+    fn new_clustered_populates_projection_tail_and_lighting_fields() {
+        let params = populated_cluster_params();
+        let u = FrameGpuUniforms::new_clustered(&params);
         assert_eq!(u.proj_params_left, [1.5, 2.5, 0.0, 0.0]);
         assert_eq!(u.proj_params_right, [1.5, 2.5, 0.1, -0.2]);
         assert_eq!(u.proj_left, Mat4::IDENTITY.to_cols_array());
@@ -186,6 +235,10 @@ mod offset_and_packing_tests {
             view_space_z_coeffs_right: [0.0, 0.0, 1.0, 0.0],
             view_to_world_y_coeffs: [0.0, 1.0, 0.0, 0.0],
             view_to_world_y_coeffs_right: [0.0, 1.0, 0.0, 0.0],
+            view_space_x_coeffs: [1.0, 0.0, 0.0, 0.0],
+            view_space_x_coeffs_right: [1.0, 0.0, 0.0, 0.0],
+            view_space_y_coeffs: [0.0, 1.0, 0.0, 0.0],
+            view_space_y_coeffs_right: [0.0, 1.0, 0.0, 0.0],
             cluster_count_x: 1,
             cluster_count_y: 1,
             cluster_count_z: 1,

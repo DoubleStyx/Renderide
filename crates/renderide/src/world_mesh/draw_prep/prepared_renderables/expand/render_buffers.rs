@@ -94,7 +94,7 @@ pub(in crate::world_mesh::draw_prep) fn expand_render_buffer_renderers_into(
 }
 
 /// Render-buffer family used to derive stable prepared renderer identities.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(super) enum ParticleRenderBufferPreparedKind {
     /// Billboard point-buffer renderer.
     Billboard,
@@ -126,6 +126,12 @@ fn try_expand_render_buffer_renderer(
     particle_draw: ParticleDrawParams,
 ) {
     if node_id < 0 || material_asset_id < 0 {
+        logger::trace!(
+            "particle render buffer {:?}: skipped renderer node={} material={}",
+            kind,
+            node_id,
+            material_asset_id
+        );
         return;
     }
     let special_layer = ctx
@@ -134,12 +140,27 @@ fn try_expand_render_buffer_renderer(
     let is_overlay = matches!(special_layer, Some(LayerType::Overlay));
     let is_hidden = matches!(special_layer, Some(LayerType::Hidden));
     let Some(mesh) = ctx.mesh_pool.get(mesh_asset_id) else {
+        logger::trace!(
+            "particle render buffer {:?}: generated mesh {} is not resident",
+            kind,
+            mesh_asset_id
+        );
         return;
     };
     let Some((first_index, index_count)) = mesh.submeshes.first().copied() else {
+        logger::trace!(
+            "particle render buffer {:?}: generated mesh {} has no submesh",
+            kind,
+            mesh_asset_id
+        );
         return;
     };
     if index_count == 0 {
+        logger::trace!(
+            "particle render buffer {:?}: generated mesh {} has zero indices",
+            kind,
+            mesh_asset_id
+        );
         return;
     }
     let cull_geometry = precompute_particle_cull_geometry(ctx, mesh, node_id);

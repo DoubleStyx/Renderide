@@ -1,17 +1,17 @@
-//! Rendering toggles, MSAA, vsync, and scene-color format. Persisted as
+//! Rendering toggles, MSAA, presentation mode, and scene-color format. Persisted as
 //! `[rendering]`. Each enum lives in its own submodule and is generated through the shared
 //! [`crate::labeled_enum`] macro so adding a new mode is a single declaration with the
 //! canonical persist string, label, and any aliases.
 
 mod graphics_api;
 mod msaa;
+mod presentation_mode;
 mod scene_color;
-mod vsync;
 
 pub use graphics_api::GraphicsApiSetting;
 pub use msaa::MsaaSampleCount;
+pub use presentation_mode::PresentationModeSetting;
 pub use scene_color::SceneColorFormat;
-pub use vsync::VsyncMode;
 
 use serde::{Deserialize, Serialize};
 
@@ -19,11 +19,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RenderingSettings {
-    /// Swapchain vsync mode ([`VsyncMode::Off`] / [`VsyncMode::On`]); applied live without restart
-    /// through [`crate::gpu::GpuContext::set_present_mode`]. Old `vsync = true / false`,
-    /// `vsync = "auto"`, and `vsync = "adaptive"` configs still load via aliases in the
-    /// `labeled_enum!` deserializer.
-    pub vsync: VsyncMode,
+    /// Swapchain presentation mode applied live without restart through
+    /// [`crate::gpu::GpuContext::set_present_mode`].
+    pub presentation_mode: PresentationModeSetting,
     /// Startup graphics API preference. `Auto` preserves wgpu's default backend discovery; an
     /// explicit API constrains the first adapter-selection attempt and falls back to automatic
     /// selection if that API has no compatible adapter. Applied only when the GPU stack is created,
@@ -53,7 +51,7 @@ pub struct RenderingSettings {
 impl Default for RenderingSettings {
     fn default() -> Self {
         Self {
-            vsync: VsyncMode::default(),
+            presentation_mode: PresentationModeSetting::default(),
             graphics_api: GraphicsApiSetting::default(),
             asset_integration_budget_ms: 2,
             asset_particle_integration_budget_ms: 4,

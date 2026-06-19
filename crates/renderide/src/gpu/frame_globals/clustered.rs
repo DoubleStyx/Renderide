@@ -23,6 +23,14 @@ pub struct ClusteredFrameGlobalsParams {
     pub view_to_world_y_coeffs: [f32; 4],
     /// Right-eye view -> world-space Y coefficients; equals left in mono.
     pub view_to_world_y_coeffs_right: [f32; 4],
+    /// Left-eye (or mono) world -> view-space X coefficients.
+    pub view_space_x_coeffs: [f32; 4],
+    /// Right-eye world -> view-space X coefficients; equals left in mono.
+    pub view_space_x_coeffs_right: [f32; 4],
+    /// Left-eye (or mono) world -> view-space Y coefficients.
+    pub view_space_y_coeffs: [f32; 4],
+    /// Right-eye world -> view-space Y coefficients; equals left in mono.
+    pub view_space_y_coeffs_right: [f32; 4],
     /// Cluster grid width in tiles.
     pub cluster_count_x: u32,
     /// Cluster grid height in tiles.
@@ -111,6 +119,10 @@ impl FrameGpuUniforms {
             ambient_sh: params.ambient_sh,
             fog_color_mode: [0.0; 4],
             fog_params: [0.0; 4],
+            view_space_x_coeffs: params.view_space_x_coeffs,
+            view_space_x_coeffs_right: params.view_space_x_coeffs_right,
+            view_space_y_coeffs: params.view_space_y_coeffs,
+            view_space_y_coeffs_right: params.view_space_y_coeffs_right,
         }
     }
 }

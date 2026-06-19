@@ -20,7 +20,7 @@ use super::candidate::{DrawCandidate, evaluate_draw_candidate};
 use super::scene_walk::transform_chain_has_degenerate_scale;
 use super::world_matrix::{front_face_for_draw_matrices, world_matrix_for_local_vertex_stream};
 use super::{CollectState, DrawCollectionInputs};
-use super::{effective_overlay_in_view, special_layer_visible_in_view};
+use super::{effective_overlay_in_view, special_layer_visible_in_view, transform_filter_for_space};
 
 /// Returns true when two prepared slot entries came from the same source renderer.
 #[inline]
@@ -83,7 +83,7 @@ fn prepared_run_passes_filter(
     ctx: &DrawCollectionInputs<'_>,
     filter_masks: &HashMap<RenderSpaceId, Vec<bool>>,
 ) -> bool {
-    let Some(filter) = ctx.view.transform_filter else {
+    let Some(filter) = transform_filter_for_space(ctx, first.space_id) else {
         return true;
     };
     match filter_masks.get(&first.space_id) {
@@ -266,11 +266,7 @@ fn collect_prepared_renderer_run(
     let Some(first) = run.first() else {
         return (0, 0, 0);
     };
-    if ctx
-        .view
-        .render_space_filter
-        .is_some_and(|space_id| first.space_id != space_id)
-    {
+    if !ctx.view.render_space_scope.includes(first.space_id) {
         return (0, 0, 0);
     }
     if !prepared_run_passes_filter(first, ctx, state.filter_masks) {

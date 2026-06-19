@@ -2,6 +2,10 @@
 //! [`XR_KHR_vulkan_enable2`](https://registry.khronos.org/OpenXR/specs/1.0/html/xrspec.html#XR_KHR_vulkan_enable2),
 //! and wrap the result as wgpu plus an OpenXR session.
 
+use openxr as xr;
+
+use crate::frontend::input::HeadsetMetadata;
+
 use super::super::debug_utils::OpenxrDebugUtilsMessenger;
 use super::instance::{
     OpenxrInstanceBundle, create_openxr_instance, load_xr_entry,
@@ -47,6 +51,7 @@ pub fn init_wgpu_openxr(
 
     let (xr_system_id, environment_blend_mode, reqs) =
         probe_head_set_and_vulkan_requirements(&xr_instance)?;
+    let headset_metadata = query_headset_metadata(&xr_instance, xr_system_id);
     logger::info!(
         "OpenXR system: id={:?} environment_blend_mode={:?} vulkan_min={} vulkan_max={}",
         xr_system_id,
@@ -112,7 +117,60 @@ pub fn init_wgpu_openxr(
         queue_family_index,
         xr_session,
         xr_system_id,
+        headset_metadata,
         openxr_input,
         composition_layer_depth_enabled,
     })
+}
+
+fn query_headset_metadata(
+    xr_instance: &xr::Instance,
+    xr_system_id: xr::SystemId,
+) -> HeadsetMetadata {
+    let instance_properties = match xr_instance.properties() {
+        Ok(properties) => Some(properties),
+        Err(error) => {
+            logger::warn!("OpenXR instance properties query failed: {error:?}");
+            None
+        }
+    };
+    let system_properties = match xr_instance.system_properties(xr_system_id) {
+        Ok(properties) => Some(properties),
+        Err(error) => {
+            logger::warn!("OpenXR system properties query failed: {error:?}");
+            None
+        }
+    };
+
+    let metadata = HeadsetMetadata::from_openxr(
+        instance_properties
+            .as_ref()
+            .map(|p| p.runtime_name.as_str()),
+        system_properties.as_ref().map(|p| p.system_name.as_str()),
+    );
+    let runtime_name = instance_properties
+        .as_ref()
+        .map_or("<unknown>", |p| p.runtime_name.as_str());
+    let runtime_version = instance_properties.as_ref().map_or_else(
+        || "<unknown>".to_string(),
+        |p| format!("{:?}", p.runtime_version),
+    );
+    let system_name = system_properties
+        .as_ref()
+        .map_or("<unknown>", |p| p.system_name.as_str());
+    let vendor_id = system_properties.as_ref().map_or_else(
+        || "<unknown>".to_string(),
+        |p| format!("0x{:04x}", p.vendor_id),
+    );
+
+    logger::info!(
+        "OpenXR headset metadata: runtime='{}' runtime_version={} system='{}' vendor={} connection={:?}",
+        runtime_name,
+        runtime_version,
+        system_name,
+        vendor_id,
+        metadata.connection_type,
+    );
+
+    metadata
 }

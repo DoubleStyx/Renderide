@@ -240,7 +240,7 @@ impl AppDriver {
             let gpu = target.gpu_mut();
             gpu.begin_frame_timing(frame_start);
             if let Ok(settings) = self.runtime.settings().read() {
-                gpu.set_present_mode(settings.rendering.vsync);
+                gpu.set_present_mode(settings.rendering.presentation_mode);
             }
         }
     }
@@ -365,7 +365,15 @@ impl AppDriver {
             .map_or(crate::shared::HeadOutputDevice::Screen, |target| {
                 target.output_device()
             });
-        if let Some(vr) = self.xr_input_cache.build_vr_input(output_device) {
+        let headset_metadata = self
+            .target
+            .as_ref()
+            .and_then(|target| target.xr_session())
+            .map(|session| &session.handles.headset_metadata);
+        if let Some(vr) = self
+            .xr_input_cache
+            .build_vr_input(output_device, headset_metadata)
+        {
             inputs.vr = Some(vr);
         }
         inputs

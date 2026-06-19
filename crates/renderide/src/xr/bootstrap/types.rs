@@ -6,6 +6,7 @@ use ash::vk;
 use openxr as xr;
 use thiserror::Error;
 
+use crate::frontend::input::HeadsetMetadata;
 use crate::xr::input::OpenxrInput;
 use crate::xr::session::XrSessionState;
 
@@ -23,6 +24,8 @@ pub struct XrWgpuHandles {
     pub xr_session: XrSessionState,
     /// Active system (HMD) id.
     pub xr_system_id: xr::SystemId,
+    /// Host-facing OpenXR headset metadata forwarded through lock-step VR input.
+    pub(crate) headset_metadata: HeadsetMetadata,
     /// Controller actions and spaces; `None` if action creation or Touch bindings failed.
     pub openxr_input: Option<OpenxrInput>,
     /// Whether `XR_KHR_composition_layer_depth` was enabled for this instance.

@@ -480,6 +480,9 @@ fn xiexe_direct_diffuse_uses_burley_with_ramp_tint() -> io::Result<()> {
 fn xiexe_shadow_sharpness_stays_on_directional_shadow_visibility() -> io::Result<()> {
     let lighting_src =
         source_file(manifest_dir().join("shaders/modules/xiexe/toon2/lighting.wgsl"))?;
+    let light_eval_src =
+        source_file(manifest_dir().join("shaders/modules/xiexe/toon2/light_eval.wgsl"))?;
+    let combined_src = format!("{lighting_src}\n{light_eval_src}");
     for required in [
         "var visibility = bl::distance_visibility(dist, light.range);",
         "visibility = visibility * bl::spot_angle_attenuation(light, l);",
@@ -496,7 +499,7 @@ fn xiexe_shadow_sharpness_stays_on_directional_shadow_visibility() -> io::Result
         "return max(vec3<f32>(0.0), light.color * scatter * s.albedo.rgb);",
     ] {
         assert!(
-            lighting_src.contains(required),
+            combined_src.contains(required),
             "Xiexe visibility split must contain `{required}`"
         );
     }
@@ -507,7 +510,7 @@ fn xiexe_shadow_sharpness_stays_on_directional_shadow_visibility() -> io::Result
         "return max(vec3<f32>(0.0), light.color * scatter * s.albedo.rgb) * ndl * light.attenuation",
     ] {
         assert!(
-            !lighting_src.contains(forbidden),
+            !combined_src.contains(forbidden),
             "Xiexe ShadowSharpness and style visibility must not retain `{forbidden}`"
         );
     }

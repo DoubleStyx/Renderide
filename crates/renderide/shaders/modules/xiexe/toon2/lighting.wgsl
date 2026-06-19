@@ -24,15 +24,12 @@
 #define_import_path renderide::xiexe::toon2::lighting
 
 #import renderide::xiexe::toon2::base as xb
+#import renderide::xiexe::toon2::light_eval as xle
 #import renderide::xiexe::toon2::variant_bits as xvb
 #import renderide::frame::globals as rg
-#import renderide::frame::types as ft
 #import renderide::pbs::cluster as pcls
 #import renderide::pbs::brdf as brdf
-#import renderide::lighting::birp as bl
-#import renderide::lighting::light_cookies as cookies
 #import renderide::lighting::reflection_probes as rprobe
-#import renderide::lighting::shadows as shadows
 
 /// SH-probe sample used for xiexe's uncoloured indirect-diffuse term.
 fn indirect_diffuse(s: xb::SurfaceData, world_pos: vec3<f32>, view_layer: u32) -> vec3<f32> {
@@ -70,34 +67,6 @@ fn environment_tint(s: xb::SurfaceData, view_dir: vec3<f32>, world_pos: vec3<f32
 
 /// `UNITY_SPECCUBE_LOD_STEPS` on PC/console.
 const SPECCUBE_LOD_STEPS: f32 = 6.0;
-
-/// Resolves a single frame light into a `LightSample` (direction toward the light,
-/// linear radiance, boosted energy attenuation, unboosted style visibility, directional flag).
-fn sample_light(light: ft::GpuLight, world_pos: vec3<f32>, world_normal: vec3<f32>) -> xb::LightSample {
-    if (light.light_type == 1u) {
-        let dir_len_sq = dot(light.direction.xyz, light.direction.xyz);
-        let shadow_visibility = shadows::visibility(light, world_pos, world_normal);
-        return xb::LightSample(
-            select(vec3<f32>(0.0, 0.0, 1.0), normalize(-light.direction.xyz), dir_len_sq > 1e-16),
-            bl::light_radiance(light) * shadow_visibility,
-            bl::direct_light_scale() * cookies::multiplier(light, world_pos),
-            shadow_visibility,
-            true,
-        );
-    }
-
-    let to_light = light.position.xyz - world_pos;
-    let dist = length(to_light);
-    let l = xb::safe_normalize(to_light, vec3<f32>(0.0, 1.0, 0.0));
-    var visibility = bl::distance_visibility(dist, light.range);
-    if (light.light_type == 2u) {
-        visibility = visibility * bl::spot_angle_attenuation(light, l);
-    }
-    visibility = visibility * cookies::multiplier(light, world_pos);
-    visibility = visibility * shadows::visibility(light, world_pos, world_normal);
-    let attenuation = visibility * bl::direct_light_scale();
-    return xb::LightSample(l, bl::light_radiance(light), attenuation, visibility, false);
-}
 
 /// Received-shadow visibility used to place the toon ramp on the half-Lambert axis.
 fn ramp_visibility(light: xb::LightSample) -> f32 {
@@ -474,7 +443,7 @@ fn clustered_toon_lighting_for_layout(
             continue;
         }
 
-        let light = sample_light(rg::lights[li], world_pos, s.normal);
+        let light = xle::sample_light(rg::lights[li], world_pos, s.normal);
         if ((light.is_directional && !include_directional) || (!light.is_directional && !include_local)) {
             continue;
         }
@@ -595,7 +564,7 @@ fn clustered_outline_lighting(
             continue;
         }
 
-        let light = sample_light(rg::lights[li], world_pos, s.normal);
+        let light = xle::sample_light(rg::lights[li], world_pos, s.normal);
         let ndl = xb::saturate(dot(s.normal, light.direction));
         let direct = xb::saturate(light.attenuation * ndl) * light.color;
         let weight = xb::grayscale(direct);

@@ -5,8 +5,9 @@ use serde::{Deserialize, Serialize};
 /// Desktop display frame-pacing caps. Persisted as `[display]`.
 ///
 /// Non-zero values cap desktop redraw scheduling via winit (`ControlFlow::WaitUntil`) while
-/// swapchain vsync is off. HMD compositor-paced frames ignore these caps so headset frame pacing
-/// is unchanged, but desktop presentation still uses them when an OpenXR session exists.
+/// presentation mode is not presentation-paced. HMD compositor-paced frames ignore these caps so
+/// headset frame pacing is unchanged, but desktop presentation still uses them when an OpenXR
+/// session exists.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DisplaySettings {

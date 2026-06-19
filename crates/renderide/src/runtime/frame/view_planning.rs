@@ -30,7 +30,7 @@ use crate::scene::{
     camera_portal_portal_mode,
 };
 use crate::shared::{CameraClearMode, RenderingContext};
-use crate::world_mesh::{ViewLayerPolicy, draw_filter_from_camera_entry};
+use crate::world_mesh::{ViewLayerPolicy, ViewRenderSpaceScope, draw_filter_from_camera_entry};
 
 use super::super::RendererRuntime;
 use super::render::PrimaryViewRequest;
@@ -134,6 +134,14 @@ fn camera_portal_render_context(mode: CameraPortalMode) -> RenderingContext {
     }
 }
 
+fn camera_portal_render_space_scope() -> ViewRenderSpaceScope {
+    ViewRenderSpaceScope::AllActive
+}
+
+fn camera_portal_layer_policy() -> ViewLayerPolicy {
+    ViewLayerPolicy::camera(false)
+}
+
 fn secondary_camera_write_target(rt_id: i32, flags: u16) -> OffscreenWriteTarget {
     if camera_state_double_buffered(flags) && !camera_state_post_processing(flags) {
         OffscreenWriteTarget::host_render_texture_with_self_sampling(
@@ -147,6 +155,18 @@ fn secondary_camera_write_target(rt_id: i32, flags: u16) -> OffscreenWriteTarget
 
 fn secondary_camera_layer_policy(flags: u16) -> ViewLayerPolicy {
     ViewLayerPolicy::camera(camera_state_render_private_ui(flags))
+}
+
+/// Returns the render-space scope used by a camera-like view with optional selective roots.
+pub(in crate::runtime) fn camera_render_space_scope(
+    has_selective_roots: bool,
+    render_space_id: RenderSpaceId,
+) -> ViewRenderSpaceScope {
+    if has_selective_roots {
+        ViewRenderSpaceScope::single(render_space_id)
+    } else {
+        ViewRenderSpaceScope::AllActive
+    }
 }
 
 fn secondary_camera_shadows_enabled(flags: u16) -> bool {
@@ -654,8 +674,8 @@ impl RendererRuntime {
         if task.mode == CameraPortalMode::Mirror {
             plan.view_winding = ViewWinding::mirror_reflection();
         }
-        plan.render_space_filter = Some(task.render_space_id);
-        plan.layer_policy = ViewLayerPolicy::camera(false);
+        plan.render_space_scope = camera_portal_render_space_scope();
+        plan.layer_policy = camera_portal_layer_policy();
         plan.render_shadows = !camera_portal_disable_shadows(task.state.flags);
         Some(plan)
     }
@@ -828,14 +848,14 @@ impl RendererRuntime {
                 world_m,
             );
             let filter = draw_filter_from_camera_entry(entry);
+            let has_selective_roots = filter.has_selective_roots();
             // Selective secondary cameras (dashboards, in-world UI panels, mirrors on specific
             // subtrees) render tens of draws, not thousands. Hi-Z snapshots + occlusion temporal
             // cost a per-camera readback path with negligible payoff at that scale -- skip them.
-            if !entry.selective_transform_ids.is_empty() {
+            if has_selective_roots {
                 hc.suppress_occlusion_temporal = true;
             }
-            let post_processing = if space.is_overlay() && !entry.selective_transform_ids.is_empty()
-            {
+            let post_processing = if space.is_overlay() && has_selective_roots {
                 ViewPostProcessing::disabled()
             } else {
                 ViewPostProcessing::from_camera_state(&entry.state)
@@ -853,7 +873,8 @@ impl RendererRuntime {
                 },
             );
             plan.draw_filter = Some(filter);
-            plan.render_space_filter = Some(sid);
+            plan.transform_filter_space = Some(sid);
+            plan.render_space_scope = camera_render_space_scope(has_selective_roots, sid);
             plan.layer_policy = secondary_camera_layer_policy(entry.state.flags);
             plan.render_shadows = secondary_camera_shadows_enabled(entry.state.flags);
             views.push(plan);

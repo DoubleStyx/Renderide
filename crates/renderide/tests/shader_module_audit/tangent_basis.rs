@@ -4,18 +4,19 @@ use super::*;
 
 #[test]
 fn mesh_world_tangent_applies_model_transform_parity() -> io::Result<()> {
-    let src = source_file(manifest_dir().join("shaders/modules/mesh/vertex.wgsl"))?;
+    let src = source_file(manifest_dir().join("shaders/modules/mesh/transform.wgsl"))?;
 
     for required in [
         "fn model_handedness(draw: dt::PerDrawUniforms) -> f32",
         "dt::position_stream_is_world_space(draw)",
         "dot(draw.model[0].xyz, cross(draw.model[1].xyz, draw.model[2].xyz))",
-        "let tangent_sign = select(1.0, -1.0, t.w < 0.0);",
-        "tangent_sign * model_handedness(draw)",
+        "fn tangent_w_sign(tangent_w: f32) -> f32",
+        "return select(1.0, -1.0, tangent_w < 0.0);",
+        "tangent_w_sign(t.w) * model_handedness(draw)",
     ] {
         assert!(
             src.contains(required),
-            "mesh/vertex.wgsl must contain `{required}`"
+            "mesh/transform.wgsl must contain `{required}`"
         );
     }
 
@@ -29,7 +30,10 @@ fn mesh_world_tangent_applies_model_transform_parity() -> io::Result<()> {
 
 #[test]
 fn mesh_normals_do_not_use_model_vector_helper_path() -> io::Result<()> {
-    let src = source_file(manifest_dir().join("shaders/modules/mesh/vertex.wgsl"))?;
+    let vertex = source_file(manifest_dir().join("shaders/modules/mesh/vertex.wgsl"))?;
+    let particle = source_file(manifest_dir().join("shaders/modules/mesh/particle.wgsl"))?;
+    let transform = source_file(manifest_dir().join("shaders/modules/mesh/transform.wgsl"))?;
+    let combined = format!("{vertex}\n{particle}\n{transform}");
 
     for forbidden in [
         "fn model_world_normal(",
@@ -38,18 +42,19 @@ fn mesh_normals_do_not_use_model_vector_helper_path() -> io::Result<()> {
         "out.world_n = model_world_normal(draw, n);",
     ] {
         assert!(
-            !src.contains(forbidden),
-            "mesh/vertex.wgsl must not contain model-matrix normal path `{forbidden}`"
+            !combined.contains(forbidden),
+            "mesh transform helpers must not contain model-matrix normal path `{forbidden}`"
         );
     }
 
     for required in [
-        "fn world_normal_for_view(draw: dt::PerDrawUniforms, n: vec4<f32>, view_idx: u32) -> vec3<f32>",
-        "return world_normal(draw, n);",
-        "out.world_n = world_normal_for_view(draw, n, view_idx);",
+        "fn world_normal_for_view(draw: dt::PerDrawUniforms, pos: vec4<f32>, n: vec4<f32>, t: vec4<f32>, view_idx: u32) -> vec3<f32>",
+        "return mt::world_normal(draw, n);",
+        "return source_material_render_buffer_normal_for_view(draw, pos, n, t, view_idx);",
+        "out.world_n = world_normal_for_view(draw, pos, n, t, view_idx);",
     ] {
         assert!(
-            src.contains(required),
+            combined.contains(required),
             "mesh/vertex.wgsl must route world vertex normals through the inverse-transpose helper `{required}`"
         );
     }
@@ -159,23 +164,28 @@ fn custom_mesh_tbn_shaders_route_through_shared_parity() -> io::Result<()> {
 }
 
 #[test]
-fn matcap_shader_uses_active_view_projection_basis() -> io::Result<()> {
+fn matcap_shader_uses_active_view_normal_basis() -> io::Result<()> {
     let matcap = material_source("matcap.wgsl")?;
 
     for required in [
         "let view_layer = view_idx;",
         "let vp = mv::select_view_proj(d, view_layer);",
-        "let basis = vb::from_view_projection(vp);",
-        "out.view_x = basis.x;",
-        "out.view_y = basis.y;",
+        "@location(4) @interpolate(flat) view_layer: u32,",
+        "out.view_layer = view_layer;",
+        "let n_view = rg::world_to_view_normal_for_view(n_world, view_layer);",
+        "let uv = n_view.xy * 0.5 + vec2<f32>(0.5);",
     ] {
         assert!(
             matcap.contains(required),
-            "Matcap must derive its lookup basis from the active view projection via `{required}`"
+            "Matcap must derive its lookup basis from the active view normal via `{required}`"
         );
     }
 
     for forbidden in [
+        "renderide::frame::view_basis",
+        "vb::from_view_projection",
+        "out.view_x",
+        "out.view_y",
         "stereo_center",
         "frag_screen_uv",
         "screen_uv",
@@ -183,7 +193,7 @@ fn matcap_shader_uses_active_view_projection_basis() -> io::Result<()> {
     ] {
         assert!(
             !matcap.contains(forbidden),
-            "Matcap must not derive matcap UVs from stereo-center or screen-space fragment `{forbidden}`"
+            "Matcap must not derive matcap UVs from projection, stereo-center, or screen-space fragment `{forbidden}`"
         );
     }
 
@@ -193,7 +203,7 @@ fn matcap_shader_uses_active_view_projection_basis() -> io::Result<()> {
 #[test]
 fn mesh_tangent_handedness_is_not_recomputed_in_material_roots() -> io::Result<()> {
     let allowed = [
-        "shaders/modules/mesh/vertex.wgsl",
+        "shaders/modules/mesh/transform.wgsl",
         "shaders/modules/pbs/normal.wgsl",
         "shaders/passes/compute/mesh_skinning.wgsl",
     ];
@@ -258,7 +268,7 @@ fn procedural_tangent_frames_are_explicitly_exempt_from_mesh_parity() -> io::Res
         "GGX prefilter builds a procedural sampling basis and must not import mesh tangent parity"
     );
 
-    let gtao = source_file(manifest_dir().join("shaders/passes/post/gtao_main.wgsl"))?;
+    let gtao = source_file(manifest_dir().join("shaders/modules/post/gtao_math.wgsl"))?;
     assert!(
         gtao.contains("accepted.x * cross(l, t)")
             && gtao.contains("accepted.y * cross(t, r)")

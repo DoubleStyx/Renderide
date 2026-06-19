@@ -7,9 +7,9 @@ use crate::cpu_parallelism::{FrameCpuWorkload, FrameParallelPolicy};
 use crate::world_mesh::{
     DrawCollectionFrameCaches, DrawCollectionInputs, DrawCollectionMaterialInputs,
     DrawCollectionSceneAssets, DrawCollectionViewInputs, PrefetchedWorldMeshViewDraws,
-    QueuedWorldMeshDraws, ViewLayerPolicy, WorldMeshCullInput, WorldMeshCullProjParams,
-    WorldMeshDrawCollectParallelism, WorldMeshDrawPlan, queue_draws_with_parallelism,
-    queue_prepared_draws_for_views_with_parallelism,
+    QueuedWorldMeshDraws, ViewLayerPolicy, ViewRenderSpaceScope, WorldMeshCullInput,
+    WorldMeshCullProjParams, WorldMeshDrawCollectParallelism, WorldMeshDrawPlan,
+    queue_draws_with_parallelism, queue_prepared_draws_for_views_with_parallelism,
 };
 
 use super::super::view_plan::FrameViewPlan;
@@ -226,7 +226,8 @@ fn visible_view_inputs<'a>(
         culling,
         mesh_lod_bias,
         transform_filter: prep.draw_filter.as_ref(),
-        render_space_filter: prep.render_space_filter,
+        transform_filter_space: prep.transform_filter_space,
+        render_space_scope: prep.render_space_scope,
         layer_policy: prep.layer_policy,
         reflection_probes: Some(setup.reflection_probes),
     }
@@ -324,7 +325,8 @@ pub(super) fn desktop_overlay_view_inputs<'a>(
         culling: None,
         mesh_lod_bias,
         transform_filter: None,
-        render_space_filter: None,
+        transform_filter_space: None,
+        render_space_scope: ViewRenderSpaceScope::AllActive,
         layer_policy: ViewLayerPolicy::DesktopOverlay,
         reflection_probes: None,
     }
@@ -342,7 +344,8 @@ pub(super) fn shadow_caster_view_inputs<'a>(
         culling: None,
         mesh_lod_bias,
         transform_filter: prep.draw_filter.as_ref(),
-        render_space_filter: prep.render_space_filter,
+        transform_filter_space: prep.transform_filter_space,
+        render_space_scope: prep.render_space_scope,
         layer_policy: prep.layer_policy,
         reflection_probes: None,
     }

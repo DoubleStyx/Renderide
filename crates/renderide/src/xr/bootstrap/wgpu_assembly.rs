@@ -8,6 +8,8 @@ use wgpu::hal;
 use wgpu::hal::api::Vulkan as HalVulkan;
 use wgpu::wgt;
 
+use crate::frontend::input::HeadsetMetadata;
+
 use super::super::input::OpenxrInput;
 use super::super::session::XrSessionState;
 use super::types::{XrBootstrapError, XrWgpuHandles};
@@ -116,6 +118,7 @@ pub(super) struct WgpuHalOpenXrAssembly {
     pub(super) queue_family_index: u32,
     pub(super) xr_session: XrSessionState,
     pub(super) xr_system_id: xr::SystemId,
+    pub(super) headset_metadata: HeadsetMetadata,
     pub(super) openxr_input: Option<OpenxrInput>,
     pub(super) composition_layer_depth_enabled: bool,
 }
@@ -160,6 +163,7 @@ pub(super) fn wgpu_from_hal_openxr_chain(
         queue: Arc::new(wgpu_queue),
         xr_session: assembly.xr_session,
         xr_system_id: assembly.xr_system_id,
+        headset_metadata: assembly.headset_metadata,
         openxr_input: assembly.openxr_input,
         composition_layer_depth_enabled: assembly.composition_layer_depth_enabled,
     })

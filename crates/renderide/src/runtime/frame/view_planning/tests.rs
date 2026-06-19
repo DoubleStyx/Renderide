@@ -88,6 +88,15 @@ fn camera_portals_use_mode_specific_render_contexts() {
 }
 
 #[test]
+fn camera_portals_use_all_active_public_render_space_visibility() {
+    assert_eq!(
+        camera_portal_render_space_scope(),
+        ViewRenderSpaceScope::AllActive
+    );
+    assert_eq!(camera_portal_layer_policy(), ViewLayerPolicy::camera(false));
+}
+
+#[test]
 fn secondary_camera_write_target_uses_double_buffer_policy() {
     let double_buffered = 1u16 << 2;
     let post_processing = 1u16 << 6;
@@ -122,6 +131,20 @@ fn secondary_camera_flags_drive_layer_and_shadow_policy() {
     );
     assert!(!secondary_camera_shadows_enabled(0));
     assert!(secondary_camera_shadows_enabled(render_shadows));
+}
+
+#[test]
+fn secondary_camera_render_space_scope_tracks_selective_roots() {
+    let space = RenderSpaceId(42);
+
+    assert_eq!(
+        camera_render_space_scope(false, space),
+        ViewRenderSpaceScope::AllActive
+    );
+    assert_eq!(
+        camera_render_space_scope(true, space),
+        ViewRenderSpaceScope::single(space)
+    );
 }
 
 #[test]

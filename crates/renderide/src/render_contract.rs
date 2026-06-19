@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use glam::Vec4;
+use glam::{UVec2, Vec4};
 
 use crate::shared::{BillboardAlignment, MeshAlignment, MotionVectorMode, TrailTextureMode};
 
@@ -191,6 +191,8 @@ pub(crate) struct ParticleDrawParams {
     pub(crate) color: Vec4,
     /// Texture-sheet frame index when the source point buffer supplied one.
     pub(crate) frame_index: u32,
+    /// Texture-sheet frame grid for point-buffer sourced particles.
+    pub(crate) frame_grid_size: UVec2,
     /// Trail texture-coordinate generation mode.
     pub(crate) trail_texture_mode: u32,
     /// Whether the host requested trail lighting data.
@@ -208,6 +210,7 @@ impl Default for ParticleDrawParams {
             motion_vector_mode: MotionVectorMode::default() as u32,
             color: Vec4::ONE,
             frame_index: u32::MAX,
+            frame_grid_size: UVec2::ZERO,
             trail_texture_mode: TrailTextureMode::default() as u32,
             trail_generate_lighting_data: false,
         }
@@ -235,12 +238,21 @@ impl ParticleDrawParams {
 
     /// Builds draw metadata for one MeshRenderBufferRenderer particle instance.
     #[inline]
-    pub(crate) fn mesh(alignment: MeshAlignment, color: Vec4, frame_index: Option<u16>) -> Self {
+    pub(crate) fn mesh(
+        alignment: MeshAlignment,
+        color: Vec4,
+        frame_index: Option<u16>,
+        frame_grid_size: glam::IVec2,
+    ) -> Self {
         Self {
             kind: ParticleDrawKind::Mesh,
             alignment: alignment as u32,
             color,
             frame_index: frame_index.map(u32::from).unwrap_or(u32::MAX),
+            frame_grid_size: UVec2::new(
+                frame_grid_size.x.max(0) as u32,
+                frame_grid_size.y.max(0) as u32,
+            ),
             ..Self::default()
         }
     }
@@ -263,7 +275,7 @@ impl ParticleDrawParams {
 
     /// Encodes the metadata into WGSL `vec4<f32>` rows.
     #[inline]
-    pub(crate) fn to_uniform_rows(self) -> [[f32; 4]; 3] {
+    pub(crate) fn to_uniform_rows(self) -> [[f32; 4]; 4] {
         [
             [
                 self.kind as u32 as f32,
@@ -281,6 +293,12 @@ impl ParticleDrawParams {
                 } else {
                     0.0
                 },
+            ],
+            [
+                self.frame_grid_size.x as f32,
+                self.frame_grid_size.y as f32,
+                0.0,
+                0.0,
             ],
         ]
     }

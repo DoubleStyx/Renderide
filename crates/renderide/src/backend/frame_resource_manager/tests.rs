@@ -15,7 +15,7 @@ use crate::scene::{MeshRendererInstanceId, RenderSpaceId, SceneCoordinator};
 use crate::shared::{
     LightData, LightType, LightsBufferRendererState, RenderTransform, RenderingContext, ShadowType,
 };
-use crate::world_mesh::WorldMeshCullProjParams;
+use crate::world_mesh::{ViewLayerPolicy, ViewRenderSpaceScope, WorldMeshCullProjParams};
 
 /// Returns an identity host transform for scene fixtures.
 fn identity_transform() -> RenderTransform {
@@ -322,6 +322,63 @@ fn prepare_lights_from_scene_skips_inactive_spaces() {
 }
 
 #[test]
+fn prepare_lights_for_camera_views_follows_render_space_visibility_policy() {
+    let mut scene = SceneCoordinator::new();
+    let public_space = RenderSpaceId(3);
+    let private_space = RenderSpaceId(4);
+    seed_space_with_light(&mut scene, public_space, 100, 1.0);
+    seed_space_with_light(&mut scene, private_space, 200, 0.5);
+    scene.test_set_space_private(private_space, true);
+
+    let public_view = ViewId::secondary_camera(public_space, 0);
+    let private_view = ViewId::secondary_camera(public_space, 1);
+    let mut mgr = FrameResourceManager::new();
+    mgr.prepare_lights_for_views(
+        &scene,
+        [
+            FrameLightViewDesc {
+                view_id: public_view,
+                render_context: RenderingContext::Camera,
+                render_space_scope: ViewRenderSpaceScope::AllActive,
+                layer_policy: ViewLayerPolicy::camera(false),
+                head_output_transform: Mat4::IDENTITY,
+                render_shadows: true,
+                has_selective_roots: false,
+                cull: None,
+            },
+            FrameLightViewDesc {
+                view_id: private_view,
+                render_context: RenderingContext::Camera,
+                render_space_scope: ViewRenderSpaceScope::AllActive,
+                layer_policy: ViewLayerPolicy::camera(true),
+                head_output_transform: Mat4::IDENTITY,
+                render_shadows: true,
+                has_selective_roots: false,
+                cull: None,
+            },
+        ],
+        None,
+    );
+
+    let public_lights = mgr.frame_lights_for_view(public_view);
+    assert_eq!(public_lights.len(), 1);
+    assert!((public_lights[0].color[0] - 1.0).abs() < 1e-5);
+
+    let private_lights = mgr.frame_lights_for_view(private_view);
+    assert_eq!(private_lights.len(), 2);
+    assert!(
+        private_lights
+            .iter()
+            .any(|light| (light.color[0] - 1.0).abs() < 1e-5)
+    );
+    assert!(
+        private_lights
+            .iter()
+            .any(|light| (light.color[0] - 0.5).abs() < 1e-5)
+    );
+}
+
+#[test]
 fn prepare_lights_for_views_culls_light_volumes_before_packing() {
     let mut scene = SceneCoordinator::new();
     let space = RenderSpaceId(6);
@@ -360,7 +417,9 @@ fn prepare_lights_for_views_culls_light_volumes_before_packing() {
     let desc = FrameLightViewDesc {
         view_id: main,
         render_context: RenderingContext::UserView,
-        render_space_filter: Some(space),
+        render_space_scope: ViewRenderSpaceScope::single(space),
+        layer_policy: ViewLayerPolicy::MainView,
+        has_selective_roots: false,
         head_output_transform: Mat4::IDENTITY,
         render_shadows: true,
         cull: Some(identity_light_cull_desc()),
@@ -433,17 +492,21 @@ fn prepare_lights_for_views_keeps_secondary_light_positions_view_local() {
             FrameLightViewDesc {
                 view_id: first,
                 render_context: RenderingContext::UserView,
-                render_space_filter: Some(space),
+                render_space_scope: ViewRenderSpaceScope::single(space),
+                layer_policy: ViewLayerPolicy::MainView,
                 head_output_transform: Mat4::from_translation(Vec3::new(10.0, 0.0, 0.0)),
                 render_shadows: true,
+                has_selective_roots: false,
                 cull: None,
             },
             FrameLightViewDesc {
                 view_id: second,
                 render_context: RenderingContext::UserView,
-                render_space_filter: Some(space),
+                render_space_scope: ViewRenderSpaceScope::single(space),
+                layer_policy: ViewLayerPolicy::MainView,
                 head_output_transform: Mat4::from_translation(Vec3::new(30.0, 0.0, 0.0)),
                 render_shadows: true,
+                has_selective_roots: false,
                 cull: None,
             },
         ],
@@ -484,17 +547,21 @@ fn prepare_lights_for_views_can_disable_shadow_metadata_per_view() {
             FrameLightViewDesc {
                 view_id: shadows_on,
                 render_context: RenderingContext::UserView,
-                render_space_filter: Some(space),
+                render_space_scope: ViewRenderSpaceScope::single(space),
+                layer_policy: ViewLayerPolicy::MainView,
                 head_output_transform: Mat4::IDENTITY,
                 render_shadows: true,
+                has_selective_roots: false,
                 cull: None,
             },
             FrameLightViewDesc {
                 view_id: shadows_off,
                 render_context: RenderingContext::UserView,
-                render_space_filter: Some(space),
+                render_space_scope: ViewRenderSpaceScope::single(space),
+                layer_policy: ViewLayerPolicy::MainView,
                 head_output_transform: Mat4::IDENTITY,
                 render_shadows: false,
+                has_selective_roots: false,
                 cull: None,
             },
         ],

@@ -16,6 +16,7 @@
 //! scattered independently.
 
 #import renderide::core::fullscreen as fs
+#import renderide::post::bloom_math as bm
 
 /// Per-frame bloom parameters shared across all four entry points.
 struct BloomUniforms {
@@ -43,40 +44,6 @@ fn vs_main(@builtin(vertex_index) vid: u32) -> fs::FullscreenVertexOutput {
     return fs::vertex_main(vid);
 }
 
-// Rec. 709 luminance (linear space).
-fn rec709_luminance(v: vec3<f32>) -> f32 {
-    return dot(v, vec3<f32>(0.2126, 0.7152, 0.0722));
-}
-
-// Karis firefly reduction weight (1 / (1 + luma/4)), applied per-group on the first downsample.
-fn karis_average(color: vec3<f32>) -> f32 {
-    let luma = rec709_luminance(color) / 4.0;
-    return 1.0 / (1.0 + luma);
-}
-
-// Unity-style quadratic soft-knee threshold.
-fn soft_threshold(color: vec3<f32>) -> vec3<f32> {
-    let brightness = max(color.r, max(color.g, color.b));
-    var softness = brightness - uniforms.threshold_precomputations.y;
-    softness = clamp(softness, 0.0, uniforms.threshold_precomputations.z);
-    softness = softness * softness * uniforms.threshold_precomputations.w;
-    var contribution = max(brightness - uniforms.threshold_precomputations.x, softness);
-    contribution /= max(brightness, 1e-5);
-    return color * contribution;
-}
-
-fn positive_bloom_source(color: vec3<f32>) -> vec3<f32> {
-    return max(color, vec3<f32>(0.0));
-}
-
-fn bloom_source(color: vec3<f32>) -> vec3<f32> {
-    var source = positive_bloom_source(color);
-    if (uniforms.threshold_precomputations.x > 0.0) {
-        source = soft_threshold(source);
-    }
-    return source;
-}
-
 /// Holds the 5 weighted sample groups the 13-tap kernel produces. `fs_downsample_first` applies
 /// Karis per-group before summing; `fs_downsample` sums directly.
 struct Tap13Groups {
@@ -88,19 +55,19 @@ struct Tap13Groups {
 }
 
 fn sample_13_groups(uv: vec2<f32>, view: u32) -> Tap13Groups {
-    let a = positive_bloom_source(textureSample(src_texture, src_sampler, uv, view, vec2<i32>(-2,  2)).rgb);
-    let b = positive_bloom_source(textureSample(src_texture, src_sampler, uv, view, vec2<i32>( 0,  2)).rgb);
-    let c = positive_bloom_source(textureSample(src_texture, src_sampler, uv, view, vec2<i32>( 2,  2)).rgb);
-    let d = positive_bloom_source(textureSample(src_texture, src_sampler, uv, view, vec2<i32>(-2,  0)).rgb);
-    let e = positive_bloom_source(textureSample(src_texture, src_sampler, uv, view).rgb);
-    let f = positive_bloom_source(textureSample(src_texture, src_sampler, uv, view, vec2<i32>( 2,  0)).rgb);
-    let g = positive_bloom_source(textureSample(src_texture, src_sampler, uv, view, vec2<i32>(-2, -2)).rgb);
-    let h = positive_bloom_source(textureSample(src_texture, src_sampler, uv, view, vec2<i32>( 0, -2)).rgb);
-    let i = positive_bloom_source(textureSample(src_texture, src_sampler, uv, view, vec2<i32>( 2, -2)).rgb);
-    let j = positive_bloom_source(textureSample(src_texture, src_sampler, uv, view, vec2<i32>(-1,  1)).rgb);
-    let k = positive_bloom_source(textureSample(src_texture, src_sampler, uv, view, vec2<i32>( 1,  1)).rgb);
-    let l = positive_bloom_source(textureSample(src_texture, src_sampler, uv, view, vec2<i32>(-1, -1)).rgb);
-    let m = positive_bloom_source(textureSample(src_texture, src_sampler, uv, view, vec2<i32>( 1, -1)).rgb);
+    let a = bm::positive_bloom_source(textureSample(src_texture, src_sampler, uv, view, vec2<i32>(-2,  2)).rgb);
+    let b = bm::positive_bloom_source(textureSample(src_texture, src_sampler, uv, view, vec2<i32>( 0,  2)).rgb);
+    let c = bm::positive_bloom_source(textureSample(src_texture, src_sampler, uv, view, vec2<i32>( 2,  2)).rgb);
+    let d = bm::positive_bloom_source(textureSample(src_texture, src_sampler, uv, view, vec2<i32>(-2,  0)).rgb);
+    let e = bm::positive_bloom_source(textureSample(src_texture, src_sampler, uv, view).rgb);
+    let f = bm::positive_bloom_source(textureSample(src_texture, src_sampler, uv, view, vec2<i32>( 2,  0)).rgb);
+    let g = bm::positive_bloom_source(textureSample(src_texture, src_sampler, uv, view, vec2<i32>(-2, -2)).rgb);
+    let h = bm::positive_bloom_source(textureSample(src_texture, src_sampler, uv, view, vec2<i32>( 0, -2)).rgb);
+    let i = bm::positive_bloom_source(textureSample(src_texture, src_sampler, uv, view, vec2<i32>( 2, -2)).rgb);
+    let j = bm::positive_bloom_source(textureSample(src_texture, src_sampler, uv, view, vec2<i32>(-1,  1)).rgb);
+    let k = bm::positive_bloom_source(textureSample(src_texture, src_sampler, uv, view, vec2<i32>( 1,  1)).rgb);
+    let l = bm::positive_bloom_source(textureSample(src_texture, src_sampler, uv, view, vec2<i32>(-1, -1)).rgb);
+    let m = bm::positive_bloom_source(textureSample(src_texture, src_sampler, uv, view, vec2<i32>( 1, -1)).rgb);
     var out: Tap13Groups;
     out.g0 = (a + b + d + e) * (0.125 / 4.0);
     out.g1 = (b + c + e + f) * (0.125 / 4.0);
@@ -155,16 +122,16 @@ fn fs_downsample_first(in: fs::FullscreenVertexOutput, @builtin(view_index) view
 fn fs_downsample_first(in: fs::FullscreenVertexOutput) -> @location(0) vec4<f32> {
     var groups = sample_13_groups(in.uv, 0u);
 #endif
-    groups.g0 *= karis_average(groups.g0);
-    groups.g1 *= karis_average(groups.g1);
-    groups.g2 *= karis_average(groups.g2);
-    groups.g3 *= karis_average(groups.g3);
-    groups.g4 *= karis_average(groups.g4);
+    groups.g0 *= bm::karis_average(groups.g0);
+    groups.g1 *= bm::karis_average(groups.g1);
+    groups.g2 *= bm::karis_average(groups.g2);
+    groups.g3 *= bm::karis_average(groups.g3);
+    groups.g4 *= bm::karis_average(groups.g4);
     var sample = groups.g0 + groups.g1 + groups.g2 + groups.g3 + groups.g4;
     // Clamp below f32::MAX to prevent NaN propagation through the downscale/upscale chain.
     sample = clamp(sample, vec3<f32>(0.0), vec3<f32>(3.40282347e+37));
     if (uniforms.threshold_precomputations.x > 0.0) {
-        sample = soft_threshold(sample);
+        sample = bm::soft_threshold(sample, uniforms.threshold_precomputations);
     }
     return vec4<f32>(sample, 1.0);
 }
@@ -204,11 +171,12 @@ fn fs_composite(in: fs::FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let scene = textureSample(src_texture, src_sampler, in.uv, 0u);
     let bloom = textureSample(bloom_texture, src_sampler, in.uv, 0u).rgb;
 #endif
-    let t = clamp(uniforms.intensity, 0.0, 1.0);
-    // Energy-conserving: redistribute only the source term that entered the bloom chain.
-    let energy = scene.rgb + t * (bloom - bloom_source(scene.rgb));
-    // Additive: out = scene + t * bloom.
-    let additive = scene.rgb + uniforms.intensity * bloom;
-    let rgb = mix(additive, energy, uniforms.energy_conserving);
+    let rgb = bm::composite(
+        scene.rgb,
+        bloom,
+        uniforms.threshold_precomputations,
+        uniforms.intensity,
+        uniforms.energy_conserving,
+    );
     return vec4<f32>(rgb, scene.a);
 }

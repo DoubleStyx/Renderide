@@ -11,9 +11,10 @@ use glam::{Quat, Vec3};
 
 use crate::frontend::output_device::head_output_device_is_vr;
 use crate::shared::{
-    HandState, HeadOutputDevice, HeadsetConnection, HeadsetState, TrackerState, VRControllerState,
-    VRInputsState,
+    HandState, HeadOutputDevice, HeadsetState, TrackerState, VRControllerState, VRInputsState,
 };
+
+use super::HeadsetMetadata;
 
 /// Builds VR input for the host when the session targets a VR [`HeadOutputDevice`].
 ///
@@ -31,9 +32,10 @@ use crate::shared::{
 /// `hands` carries per-finger [`HandState`] snapshots (synthesised from controller input by
 /// [`crate::xr::input::synthesize_hand_states`]) so the host avoids the idle-reset fallback in
 /// `HandPoser` and drives avatar fingers from tracked data.
-pub fn vr_inputs_for_session(
+pub(crate) fn vr_inputs_for_session(
     session_output_device: HeadOutputDevice,
     head_pose: Option<(Vec3, Quat)>,
+    headset_metadata: Option<&HeadsetMetadata>,
     openxr_controllers: &[VRControllerState],
     openxr_trackers: &[TrackerState],
     hands: Vec<HandState>,
@@ -43,6 +45,9 @@ pub fn vr_inputs_for_session(
     }
     let is_tracking = head_pose.is_some();
     let (position, rotation) = head_pose.unwrap_or((Vec3::ZERO, Quat::IDENTITY));
+    let headset_metadata = headset_metadata
+        .cloned()
+        .unwrap_or_else(HeadsetMetadata::fallback);
     Some(VRInputsState {
         user_present_in_headset: true,
         dashboard_open: false,
@@ -52,9 +57,9 @@ pub fn vr_inputs_for_session(
             rotation,
             battery_level: 1.0,
             battery_charging: false,
-            connection_type: HeadsetConnection::Wired,
-            headset_manufacturer: Some("Renderide".to_string()),
-            headset_model: Some("SteamVR".to_string()),
+            connection_type: headset_metadata.connection_type,
+            headset_manufacturer: headset_metadata.headset_manufacturer,
+            headset_model: headset_metadata.headset_model,
         }),
         controllers: openxr_controllers.to_vec(),
         trackers: openxr_trackers.to_vec(),
@@ -67,29 +72,54 @@ pub fn vr_inputs_for_session(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shared::HeadOutputDevice;
+    use crate::shared::{HeadOutputDevice, HeadsetConnection};
 
     #[test]
     fn non_vr_session_returns_none() {
         assert!(
-            vr_inputs_for_session(HeadOutputDevice::Screen, None, &[], &[], Vec::new()).is_none()
+            vr_inputs_for_session(HeadOutputDevice::Screen, None, None, &[], &[], Vec::new())
+                .is_none()
         );
         assert!(
-            vr_inputs_for_session(HeadOutputDevice::UNKNOWN, None, &[], &[], Vec::new()).is_none()
+            vr_inputs_for_session(HeadOutputDevice::UNKNOWN, None, None, &[], &[], Vec::new())
+                .is_none()
         );
     }
 
     #[test]
     fn steam_vr_includes_headset_and_wired_connection() {
-        let vr = vr_inputs_for_session(HeadOutputDevice::SteamVR, None, &[], &[], Vec::new())
+        let vr = vr_inputs_for_session(HeadOutputDevice::SteamVR, None, None, &[], &[], Vec::new())
             .expect("vr session");
         assert!(vr.user_present_in_headset);
         let hs = vr.headset_state.expect("headset");
         assert!(!hs.is_tracking);
         assert_eq!(hs.connection_type, HeadsetConnection::Wired);
+        assert_eq!(hs.headset_manufacturer.as_deref(), Some("Renderide"));
         assert_eq!(hs.headset_model.as_deref(), Some("SteamVR"));
         assert_eq!(hs.position, Vec3::ZERO);
         assert_eq!(hs.rotation, Quat::IDENTITY);
+    }
+
+    #[test]
+    fn steam_vr_forwards_headset_metadata() {
+        let metadata = HeadsetMetadata {
+            connection_type: HeadsetConnection::WirelessSteamLink,
+            headset_manufacturer: Some("WiVRn".to_string()),
+            headset_model: Some("Meta Quest Pro".to_string()),
+        };
+        let vr = vr_inputs_for_session(
+            HeadOutputDevice::SteamVR,
+            None,
+            Some(&metadata),
+            &[],
+            &[],
+            Vec::new(),
+        )
+        .expect("vr session");
+        let hs = vr.headset_state.expect("headset");
+        assert_eq!(hs.connection_type, HeadsetConnection::WirelessSteamLink);
+        assert_eq!(hs.headset_manufacturer.as_deref(), Some("WiVRn"));
+        assert_eq!(hs.headset_model.as_deref(), Some("Meta Quest Pro"));
     }
 
     #[test]
@@ -99,6 +129,7 @@ mod tests {
         let vr = vr_inputs_for_session(
             HeadOutputDevice::SteamVR,
             Some((pos, rot)),
+            None,
             &[],
             &[],
             Vec::new(),
@@ -120,8 +151,15 @@ mod tests {
             battery_level: -1.0,
             battery_charging: false,
         }];
-        let vr = vr_inputs_for_session(HeadOutputDevice::SteamVR, None, &[], &trackers, Vec::new())
-            .expect("vr");
+        let vr = vr_inputs_for_session(
+            HeadOutputDevice::SteamVR,
+            None,
+            None,
+            &[],
+            &trackers,
+            Vec::new(),
+        )
+        .expect("vr");
         assert_eq!(vr.trackers.len(), 1);
         assert_eq!(vr.trackers[0].unique_id.as_deref(), Some("tracker-1"));
     }

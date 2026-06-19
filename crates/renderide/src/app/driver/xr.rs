@@ -2,7 +2,7 @@
 
 use glam::{Quat, Vec3};
 
-use crate::frontend::input::vr_inputs_for_session;
+use crate::frontend::input::{HeadsetMetadata, vr_inputs_for_session};
 use crate::gpu::GpuQueueAccessGate;
 use crate::gpu::flight_recorder::GpuFlightRecorder;
 use crate::shared::{
@@ -24,10 +24,15 @@ pub(super) struct XrInputCache {
 
 impl XrInputCache {
     /// Builds host-facing VR input for the current session output device.
-    pub(super) fn build_vr_input(&self, output_device: HeadOutputDevice) -> Option<VRInputsState> {
+    pub(super) fn build_vr_input(
+        &self,
+        output_device: HeadOutputDevice,
+        headset_metadata: Option<&HeadsetMetadata>,
+    ) -> Option<VRInputsState> {
         vr_inputs_for_session(
             output_device,
             self.head_pose,
+            headset_metadata,
             &self.controllers,
             &self.trackers,
             self.hand_states.clone(),

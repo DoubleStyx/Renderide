@@ -9,7 +9,7 @@ use crate::cpu_parallelism::{
 };
 use crate::scene::RenderSpaceId;
 
-use super::DrawCollectionInputs;
+use super::{DrawCollectionInputs, transform_filter_for_space};
 
 /// Render spaces assigned to one filter-mask construction worker.
 const FILTER_MASK_PARALLEL_CHUNK_SPACES: usize = 1;
@@ -39,6 +39,7 @@ fn filter_mask_admission(
 fn filter_mask_work_units(space_ids: &[RenderSpaceId], ctx: &DrawCollectionInputs<'_>) -> usize {
     space_ids
         .iter()
+        .filter(|&&sid| transform_filter_for_space(ctx, sid).is_some())
         .filter_map(|sid| {
             ctx.scene_assets
                 .scene
@@ -55,9 +56,9 @@ pub(super) fn build_per_space_filter_masks(
     space_ids: &[RenderSpaceId],
     ctx: &DrawCollectionInputs<'_>,
 ) -> HashMap<RenderSpaceId, Vec<bool>> {
-    let Some(transform_filter) = ctx.view.transform_filter else {
+    if ctx.view.transform_filter.is_none() {
         return HashMap::new();
-    };
+    }
 
     let work_units = filter_mask_work_units(space_ids, ctx);
     let admission = filter_mask_admission(
@@ -73,6 +74,7 @@ pub(super) fn build_per_space_filter_masks(
             .with_min_len(FILTER_MASK_PARALLEL_CHUNK_SPACES)
             .copied()
             .filter_map(|sid| {
+                let transform_filter = transform_filter_for_space(ctx, sid)?;
                 let mask = transform_filter.build_pass_mask(ctx.scene_assets.scene, sid)?;
                 Some((sid, mask))
             })
@@ -82,6 +84,7 @@ pub(super) fn build_per_space_filter_masks(
             .iter()
             .copied()
             .filter_map(|sid| {
+                let transform_filter = transform_filter_for_space(ctx, sid)?;
                 let mask = transform_filter.build_pass_mask(ctx.scene_assets.scene, sid)?;
                 Some((sid, mask))
             })
@@ -138,7 +141,8 @@ mod tests {
                 culling: None,
                 mesh_lod_bias: 2.0,
                 transform_filter,
-                render_space_filter: None,
+                transform_filter_space: None,
+                render_space_scope: crate::world_mesh::ViewRenderSpaceScope::AllActive,
                 layer_policy: crate::world_mesh::ViewLayerPolicy::MainView,
                 reflection_probes: None,
             },

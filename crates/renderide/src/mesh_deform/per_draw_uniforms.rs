@@ -67,9 +67,9 @@ pub struct PaddedPerDrawUniforms {
     /// and reuse Slot 3 for other purposes.
     pub _pad: [f32; 4],
     /// Particle draw metadata rows consumed by generated render-buffer shaders.
-    pub particle: [[f32; 4]; 3],
+    pub particle: [[f32; 4]; 4],
     /// Padding to keep every dynamic storage offset aligned across supported adapters.
-    pub _pad2: [[f32; 4]; 13],
+    pub _pad2: [[f32; 4]; 12],
 }
 
 impl PaddedPerDrawUniforms {
@@ -87,7 +87,7 @@ impl PaddedPerDrawUniforms {
             normal_matrix: WgslMat3x3::from_model_upper_3x3(model),
             _pad: [0.0; 4],
             particle: ParticleDrawParams::default().to_uniform_rows(),
-            _pad2: [[0.0; 4]; 13],
+            _pad2: [[0.0; 4]; 12],
         }
     }
 
@@ -104,7 +104,7 @@ impl PaddedPerDrawUniforms {
             normal_matrix: WgslMat3x3::from_model_upper_3x3(model),
             _pad: [0.0; 4],
             particle: ParticleDrawParams::default().to_uniform_rows(),
-            _pad2: [[0.0; 4]; 13],
+            _pad2: [[0.0; 4]; 12],
         }
     }
 

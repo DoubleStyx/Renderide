@@ -90,6 +90,8 @@ fn build_frame_gpu_uniforms(
             right_z_coeffs: right.view_space_z_coeffs(),
             right_view_to_world_y_coeffs:
                 FrameGpuUniforms::view_to_world_y_coeffs_from_world_to_view(right.world_to_view),
+            right_x_coeffs: right.view_space_x_coeffs(),
+            right_y_coeffs: right.view_space_y_coeffs(),
             right_proj_params: right.proj_params(),
             right_proj: right.proj.to_cols_array(),
             right_projection_flags: right.projection_flags,
@@ -105,6 +107,8 @@ fn build_frame_gpu_uniforms(
     if let Some(mono) = cluster_frame_params(hc, scene, (vw, vh)) {
         let mono = apply_render_target_projection(mono, inputs.offscreen_write_target);
         let z = mono.view_space_z_coeffs();
+        let x = mono.view_space_x_coeffs();
+        let y = mono.view_space_y_coeffs();
         let p = mono.proj_params();
         return mono.frame_gpu_uniforms(&FrameGpuUniformBuildParams {
             camera_world_pos: camera_world,
@@ -113,6 +117,8 @@ fn build_frame_gpu_uniforms(
             right_z_coeffs: z,
             right_view_to_world_y_coeffs:
                 FrameGpuUniforms::view_to_world_y_coeffs_from_world_to_view(mono.world_to_view),
+            right_x_coeffs: x,
+            right_y_coeffs: y,
             right_proj_params: p,
             right_proj: mono.proj.to_cols_array(),
             right_projection_flags: mono.projection_flags,

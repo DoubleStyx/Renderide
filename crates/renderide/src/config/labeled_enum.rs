@@ -5,9 +5,9 @@
 //!
 //! ## Why
 //!
-//! Every renderer config enum (vsync mode, MSAA sample count, scene-color format, power preference,
-//! tonemap mode, bloom composite mode, watchdog action) used to repeat the same quadruplet of
-//! helpers by hand:
+//! Every renderer config enum (presentation mode, MSAA sample count, scene-color format, power
+//! preference, tonemap mode, bloom composite mode, watchdog action) used to repeat the same
+//! quadruplet of helpers by hand:
 //!
 //! - `const ALL: [Self; N]` for ImGui pickers and round-trip tests,
 //! - `fn label(self) -> &'static str` for the renderer config window,
@@ -20,9 +20,9 @@
 //!
 //! ## Bool-shape configs
 //!
-//! Some legacy `config.toml` files use boolean shorthand for an enum (for example the original
-//! `vsync = true / false` syntax). The bool-aware [`labeled_enum!`] arm routes each boolean to a
-//! variant during deserialization, preserving those configs without manual migration.
+//! Some legacy `config.toml` files use boolean shorthand for an enum. The bool-aware
+//! [`labeled_enum!`] arm routes each boolean to a variant during deserialization, preserving those
+//! configs without manual migration.
 
 /// Persistence metadata used by the serde glue generated for finite enum config types.
 pub trait LabeledEnum: Sized + Copy + 'static {
@@ -58,12 +58,12 @@ pub trait LabeledEnum: Sized + Copy + 'static {
 /// }
 /// ```
 ///
-/// ## Bool-shape (legacy `vsync = true / false`)
+/// ## Bool-shape
 ///
 /// ```ignore
 /// labeled_enum! {
-///     /// Master vsync mode persisted as `[rendering] vsync`.
-///     pub enum VsyncMode: "vsync mode (`off` / `on`)" {
+///     /// Example boolean-shaped mode persisted as `[example] mode`.
+///     pub enum ExampleMode: "example mode (`off` / `on`)" {
 ///         default    => Off;
 ///         bool_true  => On;
 ///         bool_false => Off;
@@ -71,7 +71,7 @@ pub trait LabeledEnum: Sized + Copy + 'static {
 ///         On   => {
 ///             persist: "on",
 ///             label: "On",
-///             aliases: ["true", "1", "yes", "vsync", "fifo", "auto", "adaptive", "fifo_relaxed"],
+///             aliases: ["true", "1", "yes"],
 ///         },
 ///     }
 /// }

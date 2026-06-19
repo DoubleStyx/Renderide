@@ -36,12 +36,14 @@ use super::prepared_renderables::FramePreparedRenderables;
 
 mod candidate;
 mod filter_masks;
+mod layer_policy;
 mod lod;
 pub(super) mod prepared;
 mod scene_walk;
 mod world_matrix;
 
 use filter_masks::build_per_space_filter_masks;
+pub use layer_policy::{ViewLayerPolicy, ViewRenderSpaceScope};
 use lod::{LodVisibility, build_lod_visibility};
 use prepared::collect_prepared_chunk;
 use scene_walk::{build_chunk_specs, collect_chunk, estimate_active_renderable_count};
@@ -153,8 +155,12 @@ pub struct DrawCollectionViewInputs<'a> {
     pub mesh_lod_bias: f32,
     /// Optional per-camera node filter.
     pub transform_filter: Option<&'a CameraTransformDrawFilter>,
-    /// Optional render-space scope for offscreen cameras/tasks.
-    pub render_space_filter: Option<RenderSpaceId>,
+    /// Render space whose local transform indices are named by [`Self::transform_filter`].
+    ///
+    /// When `None`, the transform filter applies to every collected render space.
+    pub transform_filter_space: Option<RenderSpaceId>,
+    /// Render-space scope for this view.
+    pub render_space_scope: ViewRenderSpaceScope,
     /// Per-view Unity layer visibility policy for camera-specific culling behavior.
     pub layer_policy: ViewLayerPolicy,
     /// Optional frame reflection-probe selector used to choose the set of specular IBL probes to use per draw.
@@ -180,59 +186,6 @@ pub struct DrawCollectionFrameCaches<'a> {
     /// resolution may disagree. Single-view callers can leave this `None` and fall back to the
     /// scene-walk path.
     pub prepared: Option<&'a FramePreparedRenderables>,
-}
-
-/// Unity layer visibility behavior applied while collecting draws for one view.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum ViewLayerPolicy {
-    /// Regular world rendering. Hidden and overlay roots are excluded unless a selective camera
-    /// transform filter explicitly exposes them.
-    #[default]
-    MainView,
-    /// Host camera rendering with camera culling masks and private-UI opt-in.
-    Camera {
-        /// Whether private render spaces are visible to a non-selective camera.
-        render_private_ui: bool,
-    },
-    /// Desktop overlay camera rendering. Only overlay roots are included.
-    DesktopOverlay,
-}
-
-impl ViewLayerPolicy {
-    /// Builds a camera layer policy from the host camera's `renderPrivateUI` flag.
-    pub const fn camera(render_private_ui: bool) -> Self {
-        Self::Camera { render_private_ui }
-    }
-
-    fn shows_private_render_space(self, has_selective_roots: bool) -> bool {
-        match self {
-            Self::MainView => true,
-            Self::Camera { render_private_ui } => has_selective_roots || render_private_ui,
-            Self::DesktopOverlay => true,
-        }
-    }
-
-    fn shows_special_layer(
-        self,
-        special_layer: Option<LayerType>,
-        has_selective_roots: bool,
-    ) -> bool {
-        match self {
-            Self::MainView => match special_layer {
-                Some(LayerType::Hidden | LayerType::Overlay) => has_selective_roots,
-                _ => true,
-            },
-            Self::Camera { .. } => match special_layer {
-                Some(LayerType::Hidden | LayerType::Overlay) => has_selective_roots,
-                _ => true,
-            },
-            Self::DesktopOverlay => matches!(special_layer, Some(LayerType::Overlay)),
-        }
-    }
-
-    fn effective_overlay(self, is_overlay: bool) -> bool {
-        is_overlay && !matches!(self, Self::Camera { .. })
-    }
 }
 
 /// Read-only scene, material, and cull state shared across all spaces during draw collection.
@@ -345,8 +298,26 @@ fn transform_filter_has_selective_roots(ctx: &DrawCollectionInputs<'_>) -> bool 
         .is_some_and(CameraTransformDrawFilter::has_selective_roots)
 }
 
+/// Returns the transform filter for `space_id` if the view-local filter applies to that render space.
+pub(super) fn transform_filter_for_space<'a>(
+    ctx: &'a DrawCollectionInputs<'_>,
+    space_id: RenderSpaceId,
+) -> Option<&'a CameraTransformDrawFilter> {
+    if ctx
+        .view
+        .transform_filter_space
+        .is_some_and(|filter_space| filter_space != space_id)
+    {
+        return None;
+    }
+    ctx.view.transform_filter
+}
+
 /// Returns whether `space_id` is visible under this view's render-space and private-UI policy.
 fn render_space_visible_in_view(ctx: &DrawCollectionInputs<'_>, space_id: RenderSpaceId) -> bool {
+    if !ctx.view.render_space_scope.includes(space_id) {
+        return false;
+    }
     let Some(space) = ctx.scene_assets.scene.space(space_id) else {
         return false;
     };
@@ -417,7 +388,7 @@ pub fn queue_draws_with_parallelism(
     let space_ids: &[RenderSpaceId] = {
         profiling::scope!("mesh::queue_draws::resolve_space_ids");
         if let Some(prepared) = ctx.caches.prepared {
-            if let Some(space_id) = ctx.view.render_space_filter {
+            if let Some(space_id) = ctx.view.render_space_scope.single_space() {
                 owned_space_ids = prepared
                     .active_space_ids()
                     .iter()
@@ -438,14 +409,14 @@ pub fn queue_draws_with_parallelism(
                 &owned_space_ids
             }
         } else {
-            owned_space_ids = match ctx.view.render_space_filter {
-                Some(space_id) => ctx
+            owned_space_ids = match ctx.view.render_space_scope {
+                ViewRenderSpaceScope::Single(space_id) => ctx
                     .scene_assets
                     .scene
                     .space(space_id)
                     .filter(|_| render_space_visible_in_view(ctx, space_id))
                     .map_or_else(Vec::new, |_| vec![space_id]),
-                None => ctx
+                ViewRenderSpaceScope::AllActive => ctx
                     .scene_assets
                     .scene
                     .render_space_ids()
@@ -505,7 +476,7 @@ pub fn queue_draws_with_parallelism(
 fn queued_capacity_hint(ctx: &DrawCollectionInputs<'_>, space_ids: &[RenderSpaceId]) -> usize {
     profiling::scope!("mesh::queue_draws::estimate_capacity");
     if let Some(prepared) = ctx.caches.prepared {
-        if ctx.view.render_space_filter.is_none()
+        if matches!(ctx.view.render_space_scope, ViewRenderSpaceScope::AllActive)
             && matches!(ctx.view.layer_policy, ViewLayerPolicy::MainView)
         {
             prepared.len()
@@ -631,18 +602,20 @@ fn prepared_space_ids_for_context(
     ctx: &DrawCollectionInputs<'_>,
     prepared: &FramePreparedRenderables,
 ) -> Vec<RenderSpaceId> {
-    match ctx.view.render_space_filter {
-        Some(space_id) => prepared
+    match ctx.view.render_space_scope {
+        ViewRenderSpaceScope::Single(space_id) => prepared
             .active_space_ids()
             .iter()
             .copied()
             .filter(|id| *id == space_id)
             .filter(|id| render_space_visible_in_view(ctx, *id))
             .collect(),
-        None if matches!(ctx.view.layer_policy, ViewLayerPolicy::MainView) => {
+        ViewRenderSpaceScope::AllActive
+            if matches!(ctx.view.layer_policy, ViewLayerPolicy::MainView) =>
+        {
             prepared.active_space_ids().to_vec()
         }
-        None => prepared
+        ViewRenderSpaceScope::AllActive => prepared
             .active_space_ids()
             .iter()
             .copied()
@@ -656,7 +629,7 @@ fn prepared_capacity_hint_for_context(
     ctx: &DrawCollectionInputs<'_>,
     prepared: &FramePreparedRenderables,
 ) -> usize {
-    if ctx.view.render_space_filter.is_none()
+    if matches!(ctx.view.render_space_scope, ViewRenderSpaceScope::AllActive)
         && matches!(ctx.view.layer_policy, ViewLayerPolicy::MainView)
     {
         return prepared.len();
@@ -665,11 +638,6 @@ fn prepared_capacity_hint_for_context(
         .draws()
         .iter()
         .filter(|draw| render_space_visible_in_view(ctx, draw.space_id))
-        .filter(|draw| {
-            ctx.view
-                .render_space_filter
-                .is_none_or(|space_id| draw.space_id == space_id)
-        })
         .count()
 }
 

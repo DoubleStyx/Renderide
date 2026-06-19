@@ -1,5 +1,5 @@
 //! [`FrameGpuUniforms`] WGSL-matched uniform block + pure helpers for projection /
-//! view-space-Z / ambient-SH packing.
+//! view-space basis / ambient-SH packing.
 
 use bytemuck::{Pod, Zeroable};
 use glam::Mat4;
@@ -18,12 +18,13 @@ pub const FRAME_TAIL_SAMPLE_COUNT_MASK: u32 = 0xF << FRAME_TAIL_SAMPLE_COUNT_SHI
 /// Frame projection flag indicating that the corresponding view uses orthographic projection.
 pub const FRAME_PROJECTION_FLAG_ORTHOGRAPHIC: u32 = 1;
 
-/// Uniform block matching WGSL `FrameGlobals` (512-byte size, 16-byte aligned).
+/// Uniform block matching WGSL `FrameGlobals` (576-byte size, 16-byte aligned).
 ///
-/// per-eye coefficients for reconstructing world Y from view position, clustered grid dimensions,
-/// clip planes, light count, viewport size, per-eye projection coefficients for screen-space-to-view
-/// unprojection, a monotonic frame index for temporal / jittered effects, a reserved direct skybox
-/// specular slot, elapsed frame time, ambient SH2, and disabled fog slots.
+/// Per-eye view-space Z coefficients, per-eye coefficients for reconstructing world Y from view
+/// position, clustered grid dimensions, clip planes, light count, viewport size, per-eye
+/// projection coefficients for screen-space-to-view unprojection, a monotonic frame index for
+/// temporal / jittered effects, a reserved direct skybox specular slot, elapsed frame time,
+/// ambient SH2, disabled fog slots, and per-eye view-space X/Y rows.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct FrameGpuUniforms {
@@ -87,9 +88,33 @@ pub struct FrameGpuUniforms {
     pub fog_color_mode: [f32; 4],
     /// Unity-style fog parameters used by WGSL helpers when fog mode is nonzero.
     pub fog_params: [f32; 4],
+    /// Left-eye (or mono) world -> view-space X: `dot(xyz, world) + w`.
+    pub view_space_x_coeffs: [f32; 4],
+    /// Right-eye world -> view-space X. Set equal to `view_space_x_coeffs` in mono mode.
+    pub view_space_x_coeffs_right: [f32; 4],
+    /// Left-eye (or mono) world -> view-space Y: `dot(xyz, world) + w`.
+    pub view_space_y_coeffs: [f32; 4],
+    /// Right-eye world -> view-space Y. Set equal to `view_space_y_coeffs` in mono mode.
+    pub view_space_y_coeffs_right: [f32; 4],
 }
 
 impl FrameGpuUniforms {
+    /// Coefficients so `dot(coeffs.xyz, world) + coeffs.w` yields view-space X for a world point.
+    ///
+    /// Uses the first row of the column-major world-to-view matrix (`glam` column vectors).
+    pub fn view_space_x_coeffs_from_world_to_view(world_to_view: Mat4) -> [f32; 4] {
+        let m = world_to_view;
+        [m.x_axis.x, m.y_axis.x, m.z_axis.x, m.w_axis.x]
+    }
+
+    /// Coefficients so `dot(coeffs.xyz, world) + coeffs.w` yields view-space Y for a world point.
+    ///
+    /// Uses the second row of the column-major world-to-view matrix (`glam` column vectors).
+    pub fn view_space_y_coeffs_from_world_to_view(world_to_view: Mat4) -> [f32; 4] {
+        let m = world_to_view;
+        [m.x_axis.y, m.y_axis.y, m.z_axis.y, m.w_axis.y]
+    }
+
     /// Coefficients so `dot(coeffs.xyz, world) + coeffs.w` yields view-space Z for a world point.
     ///
     /// Uses the third row of the column-major world-to-view matrix (`glam` column vectors).
