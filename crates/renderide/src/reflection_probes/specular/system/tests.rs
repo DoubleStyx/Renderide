@@ -11,7 +11,7 @@ fn closed_space_filter_matches_runtime_cubemap_space() {
             renderable_index: 0,
             generation: 1,
             mip_levels: 1,
-            storage_v_inverted: false,
+            storage_v_inverted: true,
             face_size: 128,
         },
         &spaces,
@@ -182,7 +182,7 @@ fn runtime_key(space_id: RenderSpaceId, renderable_index: i32) -> SkyboxIblKey {
         renderable_index,
         generation: 1,
         mip_levels: 1,
-        storage_v_inverted: false,
+        storage_v_inverted: true,
         face_size: 128,
     }
 }

@@ -20,7 +20,8 @@ use super::selection::{
     SpatialProbe, aabb_valid, aabb_volume, expanded_aabb, sanitized_blend_distance,
 };
 
-const RUNTIME_CAPTURE_STORAGE_V_INVERTED: bool = false;
+// Runtime probe captures need source-space compensation when resampled into canonical IBL output.
+const RUNTIME_CAPTURE_STORAGE_V_INVERTED: bool = true;
 
 pub(super) fn resolve_probe_source(
     space_id: RenderSpaceId,
