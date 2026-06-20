@@ -3,7 +3,7 @@
 use glam::{Vec2, Vec3};
 
 /// Cubemap face in the renderer's canonical layer order.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum CubeFace {
     /// Positive X face.
     PosX,
@@ -20,6 +20,16 @@ enum CubeFace {
 }
 
 impl CubeFace {
+    /// Every face in canonical cubemap layer order.
+    const ALL: [Self; 6] = [
+        Self::PosX,
+        Self::NegX,
+        Self::PosY,
+        Self::NegY,
+        Self::PosZ,
+        Self::NegZ,
+    ];
+
     /// Returns the numeric cubemap array layer offset for this face.
     const fn index(self) -> u32 {
         match self {
@@ -45,6 +55,92 @@ impl CubeFace {
     }
 }
 
+/// Cubemap face edge.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CubeEdge {
+    /// Minimum face-local X edge.
+    Left,
+    /// Maximum face-local X edge.
+    Right,
+    /// Minimum face-local Y edge.
+    Top,
+    /// Maximum face-local Y edge.
+    Bottom,
+}
+
+impl CubeEdge {
+    /// Every face edge.
+    const ALL: [Self; 4] = [Self::Left, Self::Right, Self::Top, Self::Bottom];
+
+    /// Returns the texel distance from this edge.
+    const fn distance(self, x: u32, y: u32, face_size: u32) -> u32 {
+        match self {
+            Self::Left => x,
+            Self::Right => face_size - 1 - x,
+            Self::Top => y,
+            Self::Bottom => face_size - 1 - y,
+        }
+    }
+
+    /// Returns the texel paired across this edge for seam-band fix-up.
+    fn paired_texel(
+        self,
+        face: CubeFace,
+        x: u32,
+        y: u32,
+        face_size: u32,
+        distance: u32,
+    ) -> CubeTexel {
+        let last = face_size - 1;
+        match self {
+            Self::Left => {
+                let i = y;
+                match face {
+                    CubeFace::PosX => CubeTexel::new(CubeFace::PosZ, last - distance, i),
+                    CubeFace::NegX => CubeTexel::new(CubeFace::NegZ, last - distance, i),
+                    CubeFace::PosY => CubeTexel::new(CubeFace::NegX, i, distance),
+                    CubeFace::NegY => CubeTexel::new(CubeFace::NegX, last - i, last - distance),
+                    CubeFace::PosZ => CubeTexel::new(CubeFace::NegX, last - distance, i),
+                    CubeFace::NegZ => CubeTexel::new(CubeFace::PosX, last - distance, i),
+                }
+            }
+            Self::Right => {
+                let i = y;
+                match face {
+                    CubeFace::PosX => CubeTexel::new(CubeFace::NegZ, distance, i),
+                    CubeFace::NegX => CubeTexel::new(CubeFace::PosZ, distance, i),
+                    CubeFace::PosY => CubeTexel::new(CubeFace::PosX, last - i, distance),
+                    CubeFace::NegY => CubeTexel::new(CubeFace::PosX, i, last - distance),
+                    CubeFace::PosZ => CubeTexel::new(CubeFace::PosX, distance, i),
+                    CubeFace::NegZ => CubeTexel::new(CubeFace::NegX, distance, i),
+                }
+            }
+            Self::Top => {
+                let i = x;
+                match face {
+                    CubeFace::PosX => CubeTexel::new(CubeFace::PosY, last - distance, last - i),
+                    CubeFace::NegX => CubeTexel::new(CubeFace::PosY, distance, i),
+                    CubeFace::PosY => CubeTexel::new(CubeFace::NegZ, last - i, distance),
+                    CubeFace::NegY => CubeTexel::new(CubeFace::PosZ, i, last - distance),
+                    CubeFace::PosZ => CubeTexel::new(CubeFace::PosY, i, last - distance),
+                    CubeFace::NegZ => CubeTexel::new(CubeFace::PosY, last - i, distance),
+                }
+            }
+            Self::Bottom => {
+                let i = x;
+                match face {
+                    CubeFace::PosX => CubeTexel::new(CubeFace::NegY, last - distance, i),
+                    CubeFace::NegX => CubeTexel::new(CubeFace::NegY, distance, last - i),
+                    CubeFace::PosY => CubeTexel::new(CubeFace::PosZ, i, distance),
+                    CubeFace::NegY => CubeTexel::new(CubeFace::NegZ, last - i, last - distance),
+                    CubeFace::PosZ => CubeTexel::new(CubeFace::NegY, i, distance),
+                    CubeFace::NegZ => CubeTexel::new(CubeFace::NegY, last - i, last - distance),
+                }
+            }
+        }
+    }
+}
+
 /// Canonical cubemap address.
 #[derive(Clone, Copy, Debug)]
 struct CubeAddress {
@@ -52,6 +148,24 @@ struct CubeAddress {
     face: CubeFace,
     /// Normalized face UV in `[0, 1]`.
     uv: Vec2,
+}
+
+/// Canonical cubemap texel.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct CubeTexel {
+    /// Canonical cubemap face.
+    face: CubeFace,
+    /// Texel X coordinate.
+    x: u32,
+    /// Texel Y coordinate.
+    y: u32,
+}
+
+impl CubeTexel {
+    /// Builds a canonical cubemap texel address.
+    const fn new(face: CubeFace, x: u32, y: u32) -> Self {
+        Self { face, x, y }
+    }
 }
 
 /// Converts a face and normalized UV to a canonical world direction.
@@ -115,9 +229,85 @@ fn dir_to_face_uv(dir: Vec3) -> CubeAddress {
     }
 }
 
+/// Converts a direction to a canonical cubemap texel address.
+fn canonical_texel_from_dir(dir: Vec3, face_size: u32) -> CubeTexel {
+    let size = face_size.max(1);
+    let addr = dir_to_face_uv(dir);
+    let xy = (addr.uv * size as f32).floor();
+    let max_coord = (size - 1) as f32;
+    CubeTexel::new(
+        addr.face,
+        xy.x.clamp(0.0, max_coord) as u32,
+        xy.y.clamp(0.0, max_coord) as u32,
+    )
+}
+
+/// Converts a face-local virtual texel coordinate to a canonical cubemap texel.
+fn canonical_texel_from_face_coord(face: CubeFace, coord: Vec2, face_size: u32) -> CubeTexel {
+    canonical_texel_from_dir(face_coord_to_dir(face, coord, face_size), face_size)
+}
+
 /// Returns the canonical face reached by a virtual texel-space coordinate.
 fn virtual_neighbor_face(face: CubeFace, coord: Vec2, face_size: u32) -> CubeFace {
     dir_to_face_uv(face_coord_to_dir(face, coord, face_size)).face
+}
+
+/// Returns the stitch fix-up band width matching `skybox_ibl_stitch.wgsl`.
+fn seam_fixup_width(face_size: u32) -> u32 {
+    const EDGE_FIXUP_DIVISOR: u32 = 64;
+    const MAX_EDGE_FIXUP_WIDTH: u32 = 4;
+
+    if face_size <= 1 {
+        return 0;
+    }
+    let scaled = (face_size / EDGE_FIXUP_DIVISOR).max(1);
+    let half_size = (face_size / 2).max(1);
+    MAX_EDGE_FIXUP_WIDTH.min(scaled.min(half_size))
+}
+
+/// Returns the exact corner stitch group for one face corner.
+fn corner_stitch_group(face: CubeFace, x: u32, y: u32, face_size: u32) -> Vec<CubeTexel> {
+    let mut group = Vec::with_capacity(3);
+    group.push(CubeTexel::new(face, x, y));
+    if x == 0 {
+        group.push(canonical_texel_from_face_coord(
+            face,
+            Vec2::new(-1.0, y as f32),
+            face_size,
+        ));
+    }
+    if x + 1 >= face_size {
+        group.push(canonical_texel_from_face_coord(
+            face,
+            Vec2::new(face_size as f32, y as f32),
+            face_size,
+        ));
+    }
+    if y == 0 {
+        group.push(canonical_texel_from_face_coord(
+            face,
+            Vec2::new(x as f32, -1.0),
+            face_size,
+        ));
+    }
+    if y + 1 >= face_size {
+        group.push(canonical_texel_from_face_coord(
+            face,
+            Vec2::new(x as f32, face_size as f32),
+            face_size,
+        ));
+    }
+    group
+}
+
+/// Returns the stable sort key for a cubemap texel.
+fn texel_key(texel: CubeTexel) -> (u32, u32, u32) {
+    (texel.face.index(), texel.x, texel.y)
+}
+
+/// Returns whether a texel lies on an exact face corner.
+const fn is_corner(x: u32, y: u32, face_size: u32) -> bool {
+    (x == 0 || x + 1 >= face_size) && (y == 0 || y + 1 >= face_size)
 }
 
 /// Exact area-element primitive for cubemap texel solid angles.
@@ -153,6 +343,8 @@ fn cube_solid_angle_sum(face_size: u32) -> f32 {
 mod tests {
     use std::f32::consts::PI;
 
+    use hashbrown::HashMap;
+
     use super::*;
 
     /// Face center directions match the canonical layer order.
@@ -177,8 +369,7 @@ mod tests {
     /// Direction addressing round-trips representative interior UVs on every face.
     #[test]
     fn direction_address_round_trips_face_uv() {
-        for face_index in 0..6 {
-            let face = CubeFace::from_index(face_index);
+        for face in CubeFace::ALL {
             for uv in [
                 Vec2::new(0.25, 0.25),
                 Vec2::new(0.5, 0.75),
@@ -234,6 +425,74 @@ mod tests {
             virtual_neighbor_face(CubeFace::NegY, Vec2::new(n as f32, mid.y), n),
             CubeFace::PosX
         );
+    }
+
+    /// Edge fix-up pairs are reciprocal through the whole pull-linear seam band.
+    #[test]
+    fn seam_fixup_band_pairs_are_reciprocal() {
+        for face_size in [4, 8, 128, 256] {
+            let width = seam_fixup_width(face_size);
+            let mut pairs = HashMap::new();
+
+            for face in CubeFace::ALL {
+                for y in 0..face_size {
+                    for x in 0..face_size {
+                        if is_corner(x, y, face_size) {
+                            continue;
+                        }
+                        let texel = CubeTexel::new(face, x, y);
+                        for edge in CubeEdge::ALL {
+                            let distance = edge.distance(x, y, face_size);
+                            if distance >= width {
+                                continue;
+                            }
+                            let neighbor = edge.paired_texel(face, x, y, face_size, distance);
+                            let mut key = [texel, neighbor];
+                            key.sort_by_key(|texel| texel_key(*texel));
+                            *pairs.entry(key).or_insert(0u32) += 1;
+                        }
+                    }
+                }
+            }
+
+            for (pair, count) in pairs {
+                assert_eq!(
+                    count, 2,
+                    "face_size={face_size} reciprocal pair mismatch: {pair:?}"
+                );
+            }
+        }
+    }
+
+    /// Exact face corners collapse to the same three cubemap texels from all adjacent faces.
+    #[test]
+    fn seam_corner_groups_share_three_texels() {
+        let face_size = 8;
+        let mut groups: HashMap<Vec<CubeTexel>, Vec<CubeTexel>> = HashMap::new();
+
+        for face in CubeFace::ALL {
+            for (x, y) in [
+                (0, 0),
+                (face_size - 1, 0),
+                (0, face_size - 1),
+                (face_size - 1, face_size - 1),
+            ] {
+                let mut group = corner_stitch_group(face, x, y, face_size);
+                group.sort_by_key(|texel| texel_key(*texel));
+                groups
+                    .entry(group)
+                    .or_default()
+                    .push(CubeTexel::new(face, x, y));
+            }
+        }
+
+        assert_eq!(groups.len(), 8);
+        for (group, mut corners) in groups {
+            corners.sort_by_key(|texel| texel_key(*texel));
+            assert_eq!(group.len(), 3, "group={group:?}");
+            assert_eq!(corners.len(), 3, "corners={corners:?}");
+            assert_eq!(group, corners);
+        }
     }
 
     /// Cubemap solid-angle weights integrate to the unit sphere area.

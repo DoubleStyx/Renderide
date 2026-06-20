@@ -450,21 +450,23 @@ pub(in crate::runtime) fn cube_face_world_matrix_for_basis(
     )
 }
 
-/// Builds a host camera frame for rendering one cubemap face.
-pub(in crate::runtime) fn host_camera_frame_for_cube_face(
+/// Builds a host camera frame for rendering one canonical cubemap face with a custom FOV.
+pub(in crate::runtime) fn host_camera_frame_for_cube_face_with_fov(
     base: &HostCameraFrame,
     clip: CameraClipPlanes,
     viewport_px: (u32, u32),
     position: Vec3,
     face: CubeCaptureFace,
+    fov_degrees: f32,
 ) -> HostCameraFrame {
-    host_camera_frame_for_cube_face_with_basis(
+    host_camera_frame_for_cube_face_with_basis_and_fov(
         base,
         clip,
         viewport_px,
         position,
         face,
         CubeCaptureBasisMode::Canonical,
+        fov_degrees,
     )
 }
 
@@ -477,13 +479,33 @@ pub(in crate::runtime) fn host_camera_frame_for_cube_face_with_basis(
     face: CubeCaptureFace,
     mode: CubeCaptureBasisMode,
 ) -> HostCameraFrame {
+    host_camera_frame_for_cube_face_with_basis_and_fov(
+        base,
+        clip,
+        viewport_px,
+        position,
+        face,
+        mode,
+        90.0,
+    )
+}
+
+fn host_camera_frame_for_cube_face_with_basis_and_fov(
+    base: &HostCameraFrame,
+    clip: CameraClipPlanes,
+    viewport_px: (u32, u32),
+    position: Vec3,
+    face: CubeCaptureFace,
+    mode: CubeCaptureBasisMode,
+    fov_degrees: f32,
+) -> HostCameraFrame {
     let world_matrix = cube_face_world_matrix_for_basis(position, face, mode);
     let pose = CameraPose::from_world_matrix(world_matrix);
     let viewport = Viewport::from_tuple(viewport_px);
     HostCameraFrame {
         frame_index: base.frame_index,
         clip,
-        desktop_fov_degrees: 90.0,
+        desktop_fov_degrees: fov_degrees,
         vr_active: false,
         output_device: base.output_device,
         projection_kind: CameraProjectionKind::Perspective,
@@ -495,7 +517,7 @@ pub(in crate::runtime) fn host_camera_frame_for_cube_face_with_basis(
             if viewport.is_empty() {
                 Mat4::IDENTITY
             } else {
-                EyeView::perspective_from_pose(pose, viewport, 90.0, clip).proj
+                EyeView::perspective_from_pose(pose, viewport, fov_degrees, clip).proj
             },
         )),
         eye_world_position: Some(position),
