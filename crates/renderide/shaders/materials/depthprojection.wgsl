@@ -23,6 +23,7 @@
 #import renderide::mesh::vertex as mv
 #import renderide::core::uv as uvu
 #import renderide::material::variant_bits as vb
+#import renderide::core::texture_sampling as ts
 
 struct DepthProjectionMaterial {
     _MainTex_ST: vec4<f32>,
@@ -35,6 +36,7 @@ struct DepthProjectionMaterial {
     _DiscardThreshold: f32,
     _DiscardOffset: f32,
     _RenderideVariantBits: u32,
+    _MainTex_LodBias: f32,
     _pad0: f32,
 }
 
@@ -142,6 +144,6 @@ fn fs_main(vout: VertexOutput) -> @location(0) vec4<f32> {
         discard;
     }
     let main_uv = uvu::apply_st(vout.uv, mat._MainTex_ST);
-    let col = textureSample(_MainTex, _MainTex_sampler, main_uv);
+    let col = ts::sample_tex_2d(_MainTex, _MainTex_sampler, main_uv, mat._MainTex_LodBias);
     return rg::retain_globals_additive(col);
 }

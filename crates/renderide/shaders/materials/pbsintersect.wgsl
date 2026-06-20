@@ -29,6 +29,7 @@
 #import renderide::pbs::sampling as psamp
 #import renderide::pbs::surface as psurf
 #import renderide::core::uv as uvu
+#import renderide::core::texture_sampling as ts
 
 struct PbsIntersectMaterial {
     _Color: vec4<f32>,
@@ -44,6 +45,11 @@ struct PbsIntersectMaterial {
     _Glossiness: f32,
     _Metallic: f32,
     _RenderideVariantBits: u32,
+    _NormalMap_LodBias: f32,
+    _EmissionMap_LodBias: f32,
+    _MainTex_LodBias: f32,
+    _MetallicMap_LodBias: f32,
+    _OcclusionMap_LodBias: f32,
 }
 
 const PBSINTERSECT_KW_ALBEDOTEX: u32 = 1u << 0u;
@@ -110,7 +116,7 @@ fn fs_main(
 
     var c0 = mix(mat._Color, mat._IntersectColor, intersect_lerp);
     if (pbs_kw(PBSINTERSECT_KW_ALBEDOTEX)) {
-        c0 = c0 * textureSample(_MainTex, _MainTex_sampler, uv_main);
+        c0 = c0 * ts::sample_tex_2d(_MainTex, _MainTex_sampler, uv_main, mat._MainTex_LodBias);
     }
     let base_color = c0.rgb;
     let alpha = c0.a;
@@ -120,7 +126,7 @@ fn fs_main(
         _NormalMap,
         _NormalMap_sampler,
         uv_main,
-        0.0,
+        mat._NormalMap_LodBias,
         mat._NormalScale,
         world_n,
         world_t,
@@ -129,13 +135,13 @@ fn fs_main(
 
     var occlusion = 1.0;
     if (pbs_kw(PBSINTERSECT_KW_OCCLUSION)) {
-        occlusion = textureSample(_OcclusionMap, _OcclusionMap_sampler, uv_main).r;
+        occlusion = ts::sample_tex_2d(_OcclusionMap, _OcclusionMap_sampler, uv_main, mat._OcclusionMap_LodBias).r;
     }
 
     var metallic = mat._Metallic;
     var smoothness = mat._Glossiness;
     if (pbs_kw(PBSINTERSECT_KW_METALLICMAP)) {
-        let m = textureSample(_MetallicMap, _MetallicMap_sampler, uv_main);
+        let m = ts::sample_tex_2d(_MetallicMap, _MetallicMap_sampler, uv_main, mat._MetallicMap_LodBias);
         metallic = m.r;
         smoothness = m.a;
     }
@@ -145,7 +151,7 @@ fn fs_main(
 
     var emission = mat._EmissionColor.rgb;
     if (pbs_kw(PBSINTERSECT_KW_EMISSIONTEX)) {
-        emission = emission * textureSample(_EmissionMap, _EmissionMap_sampler, uv_main).rgb;
+        emission = emission * ts::sample_tex_2d(_EmissionMap, _EmissionMap_sampler, uv_main, mat._EmissionMap_LodBias).rgb;
     }
     emission = emission + mat._IntersectEmissionColor.rgb * intersect_lerp;
 

@@ -28,6 +28,7 @@
 #import renderide::pbs::sampling as psamp
 #import renderide::pbs::surface as psurf
 #import renderide::core::uv as uvu
+#import renderide::core::texture_sampling as ts
 
 struct PbsRimTransparentMaterial {
     _Color: vec4<f32>,
@@ -39,6 +40,11 @@ struct PbsRimTransparentMaterial {
     _NormalScale: f32,
     _RimPower: f32,
     _RenderideVariantBits: u32,
+    _NormalMap_LodBias: f32,
+    _EmissionMap_LodBias: f32,
+    _MainTex_LodBias: f32,
+    _MetallicMap_LodBias: f32,
+    _OcclusionMap_LodBias: f32,
 }
 
 const PBSRIMTRANSPARENT_KW_ALBEDOTEX: u32 = 1u << 0u;
@@ -70,7 +76,7 @@ fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32
         _NormalMap,
         _NormalMap_sampler,
         uv_main,
-        0.0,
+        mat._NormalMap_LodBias,
         mat._NormalScale,
         world_n,
         world_t,
@@ -81,7 +87,7 @@ fn metallic_roughness(uv: vec2<f32>) -> vec2<f32> {
     var metallic = mat._Metallic;
     var smoothness = mat._Glossiness;
     if (pbs_kw(PBSRIMTRANSPARENT_KW_METALLICMAP)) {
-        let mg = textureSample(_MetallicMap, _MetallicMap_sampler, uv);
+        let mg = ts::sample_tex_2d(_MetallicMap, _MetallicMap_sampler, uv, mat._MetallicMap_LodBias);
         metallic = mg.r;
         smoothness = mg.a;
     }
@@ -124,7 +130,7 @@ fn fs_main(
 
     var c0 = mat._Color;
     if (pbs_kw(PBSRIMTRANSPARENT_KW_ALBEDOTEX)) {
-        c0 = c0 * textureSample(_MainTex, _MainTex_sampler, uv_main);
+        c0 = c0 * ts::sample_tex_2d(_MainTex, _MainTex_sampler, uv_main, mat._MainTex_LodBias);
     }
     let base_color = c0.rgb;
     let alpha = c0.a;
@@ -135,7 +141,7 @@ fn fs_main(
 
     var occlusion = 1.0;
     if (pbs_kw(PBSRIMTRANSPARENT_KW_OCCLUSION)) {
-        occlusion = textureSample(_OcclusionMap, _OcclusionMap_sampler, uv_main).r;
+        occlusion = ts::sample_tex_2d(_OcclusionMap, _OcclusionMap_sampler, uv_main, mat._OcclusionMap_LodBias).r;
     }
 
     var n = sample_normal_world(uv_main, world_n, world_t);
@@ -145,7 +151,7 @@ fn fs_main(
 
     var emission = mat._EmissionColor.rgb;
     if (pbs_kw(PBSRIMTRANSPARENT_KW_EMISSIONTEX)) {
-        emission = emission * textureSample(_EmissionMap, _EmissionMap_sampler, uv_main).rgb;
+        emission = emission * ts::sample_tex_2d(_EmissionMap, _EmissionMap_sampler, uv_main, mat._EmissionMap_LodBias).rgb;
     }
 
     let view_dir = rg::view_dir_for_world_pos(world_pos, view_layer);

@@ -693,6 +693,8 @@ mod material_defaults;
 mod null_material;
 #[path = "shader_module_audit/pbs.rs"]
 mod pbs;
+#[path = "shader_module_audit/sampling.rs"]
+mod sampling;
 #[path = "shader_module_audit/shadows.rs"]
 mod shadows;
 #[path = "shader_module_audit/skybox_implicit_defaults.rs"]

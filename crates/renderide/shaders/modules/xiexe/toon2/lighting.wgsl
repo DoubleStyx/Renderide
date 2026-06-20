@@ -30,6 +30,7 @@
 #import renderide::pbs::cluster as pcls
 #import renderide::pbs::brdf as brdf
 #import renderide::lighting::reflection_probes as rprobe
+#import renderide::core::texture_sampling as ts
 
 /// SH-probe sample used for xiexe's uncoloured indirect-diffuse term.
 fn indirect_diffuse(s: xb::SurfaceData, world_pos: vec3<f32>, view_layer: u32) -> vec3<f32> {
@@ -82,7 +83,7 @@ fn ramp_visibility(light: xb::LightSample) -> f32 {
 /// shadow visibility; local distance and spot falloff affect light energy, not ramp placement.
 fn ramp_for_ndl(ndl: f32, light: xb::LightSample, ramp_mask: f32) -> vec3<f32> {
     let x = clamp((ndl * 0.5 + 0.5) * ramp_visibility(light), 0.0, 1.0);
-    return textureSample(xb::_Ramp, xb::_Ramp_sampler, vec2<f32>(x, clamp(ramp_mask, 0.0, 1.0))).rgb;
+    return ts::sample_tex_2d(xb::_Ramp, xb::_Ramp_sampler, vec2<f32>(x, clamp(ramp_mask, 0.0, 1.0)), xb::mat._Ramp_LodBias).rgb;
 }
 
 /// XSToon-style remap used by `_SpecularArea` before it is passed to the PBS GGX path as

@@ -3,6 +3,7 @@
 #define_import_path renderide::skybox::projection360_material
 
 #import renderide::core::uv as uvu
+#import renderide::core::texture_sampling as ts
 #import renderide::frame::globals as rg
 #import renderide::material::variant_bits as vb
 #import renderide::skybox::cubemap_storage as cubemap_storage
@@ -23,6 +24,8 @@ struct Projection360Params {
     offset_tex_st: vec4<f32>,
     texture_lerp: f32,
     cube_lod: f32,
+    main_cube_lod_bias: f32,
+    second_cube_lod_bias: f32,
     main_cube_storage_v_inverted: f32,
     second_cube_storage_v_inverted: f32,
     exposure: f32,
@@ -184,7 +187,7 @@ fn sample_cubemap(
     if (kw_CUBEMAP_LOD(params.variant_bits)) {
         c = textureSampleLevel(main_cube, main_cube_sampler, main_dir, params.cube_lod);
     } else {
-        c = textureSample(main_cube, main_cube_sampler, main_dir);
+        c = ts::sample_cube(main_cube, main_cube_sampler, main_dir, params.main_cube_lod_bias);
     }
     if (kw_SECOND_TEXTURE(params.variant_bits)) {
         let second_dir = cubemap_storage::sample_dir(dir, params.second_cube_storage_v_inverted);
@@ -192,7 +195,7 @@ fn sample_cubemap(
         if (kw_CUBEMAP_LOD(params.variant_bits)) {
             sc = textureSampleLevel(second_cube, second_cube_sampler, second_dir, params.cube_lod);
         } else {
-            sc = textureSample(second_cube, second_cube_sampler, second_dir);
+            sc = ts::sample_cube(second_cube, second_cube_sampler, second_dir, params.second_cube_lod_bias);
         }
         c = mix(c, sc, params.texture_lerp);
     }

@@ -28,6 +28,7 @@
 #import renderide::pbs::surface as psurf
 #import renderide::core::uv as uvu
 #import renderide::core::normal_decode as nd
+#import renderide::core::texture_sampling as ts
 
 /// Material uniforms for `PBSMultiUV`. Every texture has both a UV-channel selector (`_*UV`)
 /// and a tile/offset (`_*_ST`), matching the Unity property block.
@@ -78,6 +79,12 @@ struct PbsMultiUVMaterial {
     _MetallicUV: f32,
     /// Renderer-reserved Froox shader-specific variant bitmask.
     _RenderideVariantBits: u32,
+    _EmissionMap_LodBias: f32,
+    _MainTex_LodBias: f32,
+    _MetallicMap_LodBias: f32,
+    _OcclusionMap_LodBias: f32,
+    _SecondaryAlbedo_LodBias: f32,
+    _SecondaryEmissionMap_LodBias: f32,
 }
 
 const PBSMULTIUV_KW_ALPHACLIP: u32 = 1u << 0u;
@@ -134,7 +141,7 @@ fn sample_normal_world(
     if (pbs_kw(PBSMULTIUV_KW_NORMALMAP)) {
         let uv_n = uvu::apply_st_uv4(uv0, uv1, uv2, uv3, mat._NormalUV, mat._NormalMap_ST);
         ts_n = nd::decode_ts_normal_with_placeholder_sample(
-            textureSample(_NormalMap, _NormalMap_sampler, uv_n),
+            ts::sample_tex_2d(_NormalMap, _NormalMap_sampler, uv_n, mat._NormalMap_LodBias),
             mat._NormalScale,
         );
     }
@@ -156,10 +163,10 @@ fn sample_surface(
 ) -> SurfaceData {
     let uv_albedo = uvu::apply_st_uv4(uv0, uv1, uv2, uv3, mat._AlbedoUV, mat._MainTex_ST);
 
-    var c = mat._Color * textureSample(_MainTex, _MainTex_sampler, uv_albedo);
+    var c = mat._Color * ts::sample_tex_2d(_MainTex, _MainTex_sampler, uv_albedo, mat._MainTex_LodBias);
     if (pbs_kw(PBSMULTIUV_KW_DUAL_ALBEDO)) {
         let uv_albedo2 = uvu::apply_st_uv4(uv0, uv1, uv2, uv3, mat._SecondaryAlbedoUV, mat._SecondaryAlbedo_ST);
-        c = c * textureSample(_SecondaryAlbedo, _SecondaryAlbedo_sampler, uv_albedo2);
+        c = c * ts::sample_tex_2d(_SecondaryAlbedo, _SecondaryAlbedo_sampler, uv_albedo2, mat._SecondaryAlbedo_LodBias);
     }
     if (pbs_kw(PBSMULTIUV_KW_ALPHACLIP) && c.a < mat._AlphaClip) {
         discard;
@@ -169,7 +176,7 @@ fn sample_surface(
     var smoothness = mat._Glossiness;
     if (pbs_kw(PBSMULTIUV_KW_METALLICMAP)) {
         let uv_metal = uvu::apply_st_uv4(uv0, uv1, uv2, uv3, mat._MetallicUV, mat._MetallicMap_ST);
-        let m = textureSample(_MetallicMap, _MetallicMap_sampler, uv_metal);
+        let m = ts::sample_tex_2d(_MetallicMap, _MetallicMap_sampler, uv_metal, mat._MetallicMap_LodBias);
         metallic = m.r;
         smoothness = m.a;
     }
@@ -179,18 +186,18 @@ fn sample_surface(
     var occlusion = 1.0;
     if (pbs_kw(PBSMULTIUV_KW_OCCLUSION)) {
         let uv_occ = uvu::apply_st_uv4(uv0, uv1, uv2, uv3, mat._OcclusionUV, mat._OcclusionMap_ST);
-        occlusion = textureSample(_OcclusionMap, _OcclusionMap_sampler, uv_occ).r;
+        occlusion = ts::sample_tex_2d(_OcclusionMap, _OcclusionMap_sampler, uv_occ, mat._OcclusionMap_LodBias).r;
     }
 
     var emission = mat._EmissionColor.rgb;
     if (pbs_kw(PBSMULTIUV_KW_EMISSIONTEX) || pbs_kw(PBSMULTIUV_KW_DUAL_EMISSIONTEX)) {
         let uv_em = uvu::apply_st_uv4(uv0, uv1, uv2, uv3, mat._EmissionUV, mat._EmissionMap_ST);
-        emission = emission * textureSample(_EmissionMap, _EmissionMap_sampler, uv_em).rgb;
+        emission = emission * ts::sample_tex_2d(_EmissionMap, _EmissionMap_sampler, uv_em, mat._EmissionMap_LodBias).rgb;
     }
     if (pbs_kw(PBSMULTIUV_KW_DUAL_EMISSIONTEX)) {
         let uv_em2 = uvu::apply_st_uv4(uv0, uv1, uv2, uv3, mat._SecondaryEmissionUV, mat._SecondaryEmissionMap_ST);
         let secondary =
-            textureSample(_SecondaryEmissionMap, _SecondaryEmissionMap_sampler, uv_em2).rgb;
+            ts::sample_tex_2d(_SecondaryEmissionMap, _SecondaryEmissionMap_sampler, uv_em2, mat._SecondaryEmissionMap_LodBias).rgb;
         emission = emission + secondary * mat._SecondaryEmissionColor.rgb;
     }
 

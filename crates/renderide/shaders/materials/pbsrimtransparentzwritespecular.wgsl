@@ -21,6 +21,7 @@
 //#mat_default _RimPower float 3.0
 
 #import renderide::frame::globals as rg
+#import renderide::material::layout_retention as lret
 #import renderide::material::fresnel as mf
 #import renderide::material::variant_bits as vb
 #import renderide::mesh::vertex as mv
@@ -105,14 +106,14 @@ fn fs_depth_only(
     @location(4) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
     let uv_main = uvu::apply_st(uv0, mat._MainTex_ST);
-    let normal_s = ts::sample_tex_2d(_NormalMap, _NormalMap_sampler, uv_main, mat._NormalMap_LodBias);
-    let emit_s = ts::sample_tex_2d(_EmissionMap, _EmissionMap_sampler, uv_main, mat._EmissionMap_LodBias);
-    let occ_s = ts::sample_tex_2d(_OcclusionMap, _OcclusionMap_sampler, uv_main, mat._OcclusionMap_LodBias);
-    let spec_s = ts::sample_tex_2d(_SpecularMap, _SpecularMap_sampler, uv_main, mat._SpecularMap_LodBias);
+    let texture_touch = lret::sample_2d_zero(_NormalMap, _NormalMap_sampler, uv_main, mat._NormalMap_LodBias)
+        + lret::sample_2d_zero(_EmissionMap, _EmissionMap_sampler, uv_main, mat._EmissionMap_LodBias)
+        + lret::sample_2d_zero(_OcclusionMap, _OcclusionMap_sampler, uv_main, mat._OcclusionMap_LodBias)
+        + lret::sample_2d_zero(_SpecularMap, _SpecularMap_sampler, uv_main, mat._SpecularMap_LodBias);
     let touch = (mat._Color.x + mat._SpecularColor.x + mat._EmissionColor.x + mat._RimColor.x
         + mat._NormalScale + mat._RimPower
         + f32(mat._RenderideVariantBits)
-        + normal_s.x + emit_s.x + occ_s.x + spec_s.x
+        + texture_touch
         + world_pos.x + world_n.x + world_t.x + f32(view_layer)) * 0.0;
     return rg::retain_globals_additive(vec4<f32>(touch, touch, touch, 0.0));
 }

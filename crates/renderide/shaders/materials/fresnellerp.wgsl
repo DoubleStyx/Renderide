@@ -26,6 +26,7 @@
 #import renderide::mesh::vertex as mv
 #import renderide::core::uv as uvu
 #import renderide::core::normal_decode as nd
+#import renderide::core::texture_sampling as ts
 
 struct FresnelLerpMaterial {
     _FarColor0: vec4<f32>,
@@ -45,6 +46,13 @@ struct FresnelLerpMaterial {
     _GammaCurve: f32,
     _LerpPolarPow: f32,
     _RenderideVariantBits: u32,
+    _FarTex0_LodBias: f32,
+    _FarTex1_LodBias: f32,
+    _LerpTex_LodBias: f32,
+    _NearTex0_LodBias: f32,
+    _NearTex1_LodBias: f32,
+    _NormalMap0_LodBias: f32,
+    _NormalMap1_LodBias: f32,
     _pad0: vec2<u32>,
 }
 
@@ -115,7 +123,7 @@ fn vs_main(
 fn compute_lerp(uv: vec2<f32>) -> f32 {
     var l = mat._Lerp;
     if (kw_LERPTEX()) {
-        l = textureSample(_LerpTex, _LerpTex_sampler, uvu::apply_st(uv, mat._LerpTex_ST)).r;
+        l = ts::sample_tex_2d(_LerpTex, _LerpTex_sampler, uvu::apply_st(uv, mat._LerpTex_ST), mat._LerpTex_LodBias).r;
         if (kw_MULTI_VALUES()) {
             l = l * mat._Lerp;
         }
@@ -133,8 +141,8 @@ fn sample_normal(uv: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>, l: f32) 
     var n = normalize(world_n);
     let t = normalize(world_t);
     if (kw_NORMALMAP()) {
-        let n0 = textureSample(_NormalMap0, _NormalMap0_sampler, uvu::apply_st(uv, mat._NormalMap0_ST));
-        let n1 = textureSample(_NormalMap1, _NormalMap1_sampler, uvu::apply_st(uv, mat._NormalMap1_ST));
+        let n0 = ts::sample_tex_2d(_NormalMap0, _NormalMap0_sampler, uvu::apply_st(uv, mat._NormalMap0_ST), mat._NormalMap0_LodBias);
+        let n1 = ts::sample_tex_2d(_NormalMap1, _NormalMap1_sampler, uvu::apply_st(uv, mat._NormalMap1_ST), mat._NormalMap1_LodBias);
         let ts_n = nd::decode_ts_normal_with_placeholder_sample(mix(n0, n1, vec4<f32>(l)), 1.0);
         let tbn = pnorm::orthonormal_tbn(n, t);
         n = normalize(tbn * ts_n);
@@ -155,10 +163,10 @@ fn fs_main(in: mv::WorldVertexOutput) -> @location(0) vec4<f32> {
     var far_color = mix(mat._FarColor0, mat._FarColor1, l);
     var near_color = mix(mat._NearColor0, mat._NearColor1, l);
     if (kw_TEXTURE()) {
-        let far_tex0 = textureSample(_FarTex0, _FarTex0_sampler, uvu::apply_st(in.primary_uv, mat._FarTex0_ST));
-        let far_tex1 = textureSample(_FarTex1, _FarTex1_sampler, uvu::apply_st(in.primary_uv, mat._FarTex1_ST));
-        let near_tex0 = textureSample(_NearTex0, _NearTex0_sampler, uvu::apply_st(in.primary_uv, mat._NearTex0_ST));
-        let near_tex1 = textureSample(_NearTex1, _NearTex1_sampler, uvu::apply_st(in.primary_uv, mat._NearTex1_ST));
+        let far_tex0 = ts::sample_tex_2d(_FarTex0, _FarTex0_sampler, uvu::apply_st(in.primary_uv, mat._FarTex0_ST), mat._FarTex0_LodBias);
+        let far_tex1 = ts::sample_tex_2d(_FarTex1, _FarTex1_sampler, uvu::apply_st(in.primary_uv, mat._FarTex1_ST), mat._FarTex1_LodBias);
+        let near_tex0 = ts::sample_tex_2d(_NearTex0, _NearTex0_sampler, uvu::apply_st(in.primary_uv, mat._NearTex0_ST), mat._NearTex0_LodBias);
+        let near_tex1 = ts::sample_tex_2d(_NearTex1, _NearTex1_sampler, uvu::apply_st(in.primary_uv, mat._NearTex1_ST), mat._NearTex1_LodBias);
         far_color = far_color * mix(far_tex0, far_tex1, l);
         near_color = near_color * mix(near_tex0, near_tex1, l);
     }

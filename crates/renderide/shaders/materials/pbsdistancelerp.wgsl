@@ -38,6 +38,7 @@
 #import renderide::pbs::sampling as psamp
 #import renderide::pbs::surface as psurf
 #import renderide::material::variant_bits as vb
+#import renderide::core::texture_sampling as ts
 
 struct PbsDistanceLerpMaterial {
     _Color: vec4<f32>,
@@ -58,6 +59,11 @@ struct PbsDistanceLerpMaterial {
     _EmissionDistanceTo: f32,
     _PointCount: f32,
     _RenderideVariantBits: u32,
+    _NormalMap_LodBias: f32,
+    _EmissionMap_LodBias: f32,
+    _MainTex_LodBias: f32,
+    _MetallicMap_LodBias: f32,
+    _OcclusionMap_LodBias: f32,
     _Points: array<vec4<f32>, 16>,
     _TintColors: array<vec4<f32>, 16>,
 }
@@ -165,16 +171,16 @@ fn shade(
     include_local: bool,
 ) -> vec4<f32> {
     let uv_main = vec2<f32>(0.0);
-    let albedo_s = textureSample(_MainTex, _MainTex_sampler, uv_main);
+    let albedo_s = ts::sample_tex_2d(_MainTex, _MainTex_sampler, uv_main, mat._MainTex_LodBias);
     let base_color = (mat._Color * albedo_s).rgb;
     let alpha = mat._Color.a * albedo_s.a;
 
-    let occlusion = textureSample(_OcclusionMap, _OcclusionMap_sampler, uv_main).r;
+    let occlusion = ts::sample_tex_2d(_OcclusionMap, _OcclusionMap_sampler, uv_main, mat._OcclusionMap_LodBias).r;
 
     var metallic = mat._Metallic;
     var smoothness = mat._Glossiness;
     if (kw_METALLICMAP()) {
-        let m = textureSample(_MetallicMap, _MetallicMap_sampler, uv_main);
+        let m = ts::sample_tex_2d(_MetallicMap, _MetallicMap_sampler, uv_main, mat._MetallicMap_LodBias);
         metallic = m.r;
         smoothness = m.a;
     }
@@ -186,14 +192,14 @@ fn shade(
         _NormalMap,
         _NormalMap_sampler,
         uv_main,
-        0.0,
+        mat._NormalMap_LodBias,
         mat._NormalScale,
         world_n,
         world_t,
         front_facing,
     );
 
-    let emission_tex = textureSample(_EmissionMap, _EmissionMap_sampler, uv_main).rgb;
+    let emission_tex = ts::sample_tex_2d(_EmissionMap, _EmissionMap_sampler, uv_main, mat._EmissionMap_LodBias).rgb;
     let emission = mat._EmissionColor.rgb * emission_tex + point_emission;
     let surface = psurf::metallic_with_geometric_normal(
         base_color,

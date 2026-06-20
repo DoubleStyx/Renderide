@@ -21,6 +21,7 @@
 //#mat_default _RimPower float 3.0
 
 #import renderide::frame::globals as rg
+#import renderide::material::layout_retention as lret
 #import renderide::material::fresnel as mf
 #import renderide::material::variant_bits as vb
 #import renderide::mesh::vertex as mv
@@ -28,6 +29,7 @@
 #import renderide::pbs::sampling as psamp
 #import renderide::pbs::surface as psurf
 #import renderide::core::uv as uvu
+#import renderide::core::texture_sampling as ts
 
 struct PbsRimTransparentZWriteMaterial {
     _Color: vec4<f32>,
@@ -39,6 +41,11 @@ struct PbsRimTransparentZWriteMaterial {
     _NormalScale: f32,
     _RimPower: f32,
     _RenderideVariantBits: u32,
+    _EmissionMap_LodBias: f32,
+    _MainTex_LodBias: f32,
+    _MetallicMap_LodBias: f32,
+    _NormalMap_LodBias: f32,
+    _OcclusionMap_LodBias: f32,
 }
 
 const PBSRIMTRANSPARENTZWRITE_KW_ALBEDOTEX: u32 = 1u << 0u;
@@ -70,7 +77,7 @@ fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32
         _NormalMap,
         _NormalMap_sampler,
         uv_main,
-        0.0,
+        mat._NormalMap_LodBias,
         mat._NormalScale,
         world_n,
         world_t,
@@ -108,15 +115,15 @@ fn fs_depth_only(
     @location(4) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
     let uv_main = uvu::apply_st(uv0, mat._MainTex_ST);
-    let albedo_s = textureSample(_MainTex, _MainTex_sampler, uv_main);
-    let normal_s = textureSample(_NormalMap, _NormalMap_sampler, uv_main);
-    let emit_s = textureSample(_EmissionMap, _EmissionMap_sampler, uv_main);
-    let occ_s = textureSample(_OcclusionMap, _OcclusionMap_sampler, uv_main);
-    let metal_s = textureSample(_MetallicMap, _MetallicMap_sampler, uv_main);
+    let texture_touch = lret::sample_2d_zero(_MainTex, _MainTex_sampler, uv_main, mat._MainTex_LodBias)
+        + lret::sample_2d_zero(_NormalMap, _NormalMap_sampler, uv_main, mat._NormalMap_LodBias)
+        + lret::sample_2d_zero(_EmissionMap, _EmissionMap_sampler, uv_main, mat._EmissionMap_LodBias)
+        + lret::sample_2d_zero(_OcclusionMap, _OcclusionMap_sampler, uv_main, mat._OcclusionMap_LodBias)
+        + lret::sample_2d_zero(_MetallicMap, _MetallicMap_sampler, uv_main, mat._MetallicMap_LodBias);
     let touch = (mat._Color.x + mat._EmissionColor.x + mat._RimColor.x
         + mat._Glossiness + mat._Metallic + mat._NormalScale + mat._RimPower
         + f32(mat._RenderideVariantBits)
-        + albedo_s.x + normal_s.x + emit_s.x + occ_s.x + metal_s.x
+        + texture_touch
         + world_pos.x + world_n.x + world_t.x + f32(view_layer)) * 0.0;
     return rg::retain_globals_additive(vec4<f32>(touch, touch, touch, 0.0));
 }
@@ -136,7 +143,7 @@ fn fs_main(
 
     var c0 = mat._Color;
     if (pbs_kw(PBSRIMTRANSPARENTZWRITE_KW_ALBEDOTEX)) {
-        c0 = c0 * textureSample(_MainTex, _MainTex_sampler, uv_main);
+        c0 = c0 * ts::sample_tex_2d(_MainTex, _MainTex_sampler, uv_main, mat._MainTex_LodBias);
     }
     let base_color = c0.rgb;
     let alpha = c0.a;
@@ -148,13 +155,13 @@ fn fs_main(
 
     var occlusion = 1.0;
     if (pbs_kw(PBSRIMTRANSPARENTZWRITE_KW_OCCLUSION)) {
-        occlusion = textureSample(_OcclusionMap, _OcclusionMap_sampler, uv_main).r;
+        occlusion = ts::sample_tex_2d(_OcclusionMap, _OcclusionMap_sampler, uv_main, mat._OcclusionMap_LodBias).r;
     }
 
     var metallic = mat._Metallic;
     var smoothness = mat._Glossiness;
     if (pbs_kw(PBSRIMTRANSPARENTZWRITE_KW_METALLICMAP)) {
-        let m = textureSample(_MetallicMap, _MetallicMap_sampler, uv_main);
+        let m = ts::sample_tex_2d(_MetallicMap, _MetallicMap_sampler, uv_main, mat._MetallicMap_LodBias);
         metallic = m.r;
         smoothness = m.a;
     }
@@ -164,7 +171,7 @@ fn fs_main(
 
     var emission = mat._EmissionColor.rgb;
     if (pbs_kw(PBSRIMTRANSPARENTZWRITE_KW_EMISSIONTEX)) {
-        emission = emission * textureSample(_EmissionMap, _EmissionMap_sampler, uv_main).rgb;
+        emission = emission * ts::sample_tex_2d(_EmissionMap, _EmissionMap_sampler, uv_main, mat._EmissionMap_LodBias).rgb;
     }
 
     let view_dir = rg::view_dir_for_world_pos(world_pos, view_layer);

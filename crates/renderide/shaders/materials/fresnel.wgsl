@@ -26,6 +26,7 @@
 #import renderide::mesh::vertex as mv
 #import renderide::core::uv as uvu
 #import renderide::core::normal_decode as nd
+#import renderide::core::texture_sampling as ts
 
 struct FresnelMaterial {
     _FarColor: vec4<f32>,
@@ -40,6 +41,10 @@ struct FresnelMaterial {
     _Cutoff: f32,
     _PolarPow: f32,
     _RenderideVariantBits: u32,
+    _MaskTex_LodBias: f32,
+    _NormalMap_LodBias: f32,
+    _FarTex_LodBias: f32,
+    _NearTex_LodBias: f32,
     _pad0: vec2<u32>,
 }
 
@@ -146,7 +151,7 @@ fn fs_main(in: mv::WorldColorVertexOutput) -> @location(0) vec4<f32> {
         let uv_n = uvu::apply_st(in.primary_uv, mat._NormalMap_ST);
         let tbn = pnorm::orthonormal_tbn(n, in.world_t);
         let ts_n = nd::decode_ts_normal_with_placeholder_sample(
-            textureSample(_NormalMap, _NormalMap_sampler, uv_n),
+            ts::sample_tex_2d(_NormalMap, _NormalMap_sampler, uv_n, mat._NormalMap_LodBias),
             mat._NormalScale,
         );
         n = normalize(tbn * ts_n);
@@ -159,9 +164,10 @@ fn fs_main(in: mv::WorldColorVertexOutput) -> @location(0) vec4<f32> {
     var far_color = mat._FarColor;
     var near_color = mat._NearColor;
     if (kw_TEXTURE()) {
-        far_color = far_color * ms::sample_rgba(_FarTex, _FarTex_sampler, in.primary_uv, mat._FarTex_ST, 0.0, mat._PolarPow, use_polar);
+        far_color =
+            far_color * ms::sample_rgba(_FarTex, _FarTex_sampler, in.primary_uv, mat._FarTex_ST, mat._FarTex_LodBias, mat._PolarPow, use_polar);
         near_color =
-            near_color * ms::sample_rgba(_NearTex, _NearTex_sampler, in.primary_uv, mat._NearTex_ST, 0.0, mat._PolarPow, use_polar);
+            near_color * ms::sample_rgba(_NearTex, _NearTex_sampler, in.primary_uv, mat._NearTex_ST, mat._NearTex_LodBias, mat._PolarPow, use_polar);
     }
 
     var color = mf::near_far_color(near_color, far_color, fres);
@@ -169,7 +175,7 @@ fn fs_main(in: mv::WorldColorVertexOutput) -> @location(0) vec4<f32> {
 
     if (kw_MASK_TEXTURE_MUL() || kw_MASK_TEXTURE_CLIP()) {
         let uv_mask = uvu::apply_st(in.primary_uv, mat._MaskTex_ST);
-        let mask = textureSample(_MaskTex, _MaskTex_sampler, uv_mask);
+        let mask = ts::sample_tex_2d(_MaskTex, _MaskTex_sampler, uv_mask, mat._MaskTex_LodBias);
         let mul = ma::mask_luminance(mask);
 
         if (kw_MASK_TEXTURE_MUL()) {

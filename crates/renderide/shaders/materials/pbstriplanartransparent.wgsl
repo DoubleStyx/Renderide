@@ -30,6 +30,11 @@ struct PbsTriplanarTransparentMaterial {
     _Metallic: f32,
     _TriBlendPower: f32,
     _RenderideVariantBits: u32,
+    _MainTex_LodBias: f32,
+    _NormalMap_LodBias: f32,
+    _MetallicMap_LodBias: f32,
+    _EmissionMap_LodBias: f32,
+    _OcclusionMap_LodBias: f32,
 }
 
 const PBSTRIPLANART_KW_ALBEDOTEX: u32 = 1u << 0u;
@@ -104,13 +109,13 @@ fn sample_surface(
 
     var c = mat._Color;
     if (kw_ALBEDOTEX()) {
-        c = c * ptri::sample_rgba(_MainTex, _MainTex_sampler, uvs, weights);
+        c = c * ptri::sample_rgba_biased(_MainTex, _MainTex_sampler, uvs, weights, mat._MainTex_LodBias);
     }
 
     var metallic = mat._Metallic;
     var smoothness = mat._Glossiness;
     if (kw_METALLICMAP()) {
-        let m = ptri::sample_rgba(_MetallicMap, _MetallicMap_sampler, uvs, weights);
+        let m = ptri::sample_rgba_biased(_MetallicMap, _MetallicMap_sampler, uvs, weights, mat._MetallicMap_LodBias);
         metallic = m.r;
         smoothness = m.a;
     }
@@ -119,13 +124,13 @@ fn sample_surface(
 
     var occlusion = 1.0;
     if (kw_OCCLUSION()) {
-        let occ = ptri::sample_rgba(_OcclusionMap, _OcclusionMap_sampler, uvs, weights);
+        let occ = ptri::sample_rgba_biased(_OcclusionMap, _OcclusionMap_sampler, uvs, weights, mat._OcclusionMap_LodBias);
         occlusion = occ.g;
     }
 
     var emission = mat._EmissionColor;
     if (kw_EMISSIONTEX()) {
-        emission = emission * ptri::sample_rgba(_EmissionMap, _EmissionMap_sampler, uvs, weights);
+        emission = emission * ptri::sample_rgba_biased(_EmissionMap, _EmissionMap_sampler, uvs, weights, mat._EmissionMap_LodBias);
     }
 
     let n = ptri::resolve_world_normal(
@@ -139,7 +144,7 @@ fn sample_surface(
         uvs,
         weights,
         mat._NormalScale,
-        0.0,
+        mat._NormalMap_LodBias,
         front_facing,
     );
 
