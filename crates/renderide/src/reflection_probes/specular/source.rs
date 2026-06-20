@@ -7,7 +7,7 @@ use crate::gpu::{
 };
 use crate::reflection_probes::ReflectionProbeCubemapAssets;
 use crate::scene::{
-    ReflectionProbeEntry, RenderSpaceId, SceneCoordinator, reflection_probe_skybox_only,
+    ReflectionProbeEntry, RenderSpaceId, SceneTransformRead, reflection_probe_skybox_only,
     reflection_probe_solid_color, reflection_probe_use_box_projection,
 };
 use crate::shared::{ReflectionProbeState, ReflectionProbeType, RenderSH2};
@@ -19,6 +19,9 @@ use super::captures::{RuntimeReflectionProbeCaptureKey, RuntimeReflectionProbeCa
 use super::selection::{
     SpatialProbe, aabb_valid, aabb_volume, expanded_aabb, sanitized_blend_distance,
 };
+
+// Runtime probe captures need source-space compensation when resampled into canonical IBL output.
+const RUNTIME_CAPTURE_STORAGE_V_INVERTED: bool = true;
 
 pub(super) fn resolve_probe_source(
     space_id: RenderSpaceId,
@@ -63,7 +66,7 @@ fn resolve_runtime_capture_source(
         generation: capture.generation,
         face_size: capture.face_size,
         mip_levels: capture.mip_levels,
-        storage_v_inverted: true,
+        storage_v_inverted: RUNTIME_CAPTURE_STORAGE_V_INVERTED,
         texture: capture.texture.clone(),
         view: capture.view.clone(),
         array_view: capture.array_view.clone(),
@@ -112,7 +115,7 @@ fn color_probe_identity(renderable_index: i32, color: Vec4) -> u64 {
 }
 
 pub(super) fn spatial_probe_for_state(
-    scene: &SceneCoordinator,
+    scene: &(impl SceneTransformRead + ?Sized),
     space_id: RenderSpaceId,
     probe: &ReflectionProbeEntry,
     render_context: crate::shared::RenderingContext,

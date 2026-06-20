@@ -1,6 +1,6 @@
 //! Per-renderer fan-out for the scene-walk collection path.
 
-use crate::scene::MeshMaterialSlot;
+use crate::scene::{MeshMaterialSlot, SceneTransformRead};
 use crate::world_mesh::materials::FrameMaterialBatchCache;
 
 use super::super::super::item::{MaterialStackOrder, stacked_material_submesh_range};
@@ -29,9 +29,11 @@ pub(super) fn push_draws_for_renderer(
         return;
     }
     let special_layer = if draw.renderer.node_id >= 0 {
-        ctx.scene_assets
-            .scene
-            .transform_special_layer(draw.space_id, draw.renderer.node_id as usize)
+        SceneTransformRead::transform_special_layer(
+            ctx.scene_assets.scene,
+            draw.space_id,
+            draw.renderer.node_id as usize,
+        )
     } else {
         None
     };

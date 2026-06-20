@@ -2,7 +2,7 @@
 
 use hashbrown::HashMap;
 
-use crate::scene::{MeshRendererInstanceId, RenderSpaceId, SceneCoordinator};
+use crate::scene::{MeshRendererInstanceId, RenderSpaceId, WorldMeshSceneRead};
 
 use super::{FramePreparedDraw, FramePreparedRenderables, FramePreparedRun};
 
@@ -39,7 +39,10 @@ pub(in crate::world_mesh::draw_prep) struct FramePreparedLodGroup {
 
 impl FramePreparedRenderables {
     /// Rebuilds pre-resolved LOD groups from the active scene spaces and current prepared draws.
-    pub(super) fn rebuild_lod_groups(&mut self, scene: Option<&SceneCoordinator>) {
+    pub(super) fn rebuild_lod_groups<S>(&mut self, scene: Option<&S>)
+    where
+        S: WorldMeshSceneRead + ?Sized,
+    {
         self.lod_groups.clear();
         let Some(scene) = scene else {
             return;
@@ -47,10 +50,10 @@ impl FramePreparedRenderables {
         profiling::scope!("mesh::prepared_renderables::rebuild_lod_groups");
         let renderer_lookup = build_lod_renderer_lookup(&self.draws, &self.runs);
         for &space_id in &self.active_space_ids {
-            let Some(space) = scene.space(space_id) else {
+            let Some(lod_groups) = scene.lod_groups(space_id) else {
                 continue;
             };
-            for (scene_group_index, group) in space.lod_groups().iter().enumerate() {
+            for (scene_group_index, group) in lod_groups.iter().enumerate() {
                 let mut view_dependent_bounds = false;
                 let mut prepared_group = FramePreparedLodGroup {
                     space_id,

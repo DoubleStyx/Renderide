@@ -29,6 +29,11 @@ struct PbsTriplanarTransparentSpecularMaterial {
     _NormalScale: f32,
     _TriBlendPower: f32,
     _RenderideVariantBits: u32,
+    _MainTex_LodBias: f32,
+    _NormalMap_LodBias: f32,
+    _SpecularMap_LodBias: f32,
+    _EmissionMap_LodBias: f32,
+    _OcclusionMap_LodBias: f32,
 }
 
 const PBSTRIPLANARTSPEC_KW_ALBEDOTEX: u32 = 1u << 0u;
@@ -103,12 +108,12 @@ fn sample_surface(
 
     var c = mat._Color;
     if (kw_ALBEDOTEX()) {
-        c = c * ptri::sample_rgba(_MainTex, _MainTex_sampler, uvs, weights);
+        c = c * ptri::sample_rgba_biased(_MainTex, _MainTex_sampler, uvs, weights, mat._MainTex_LodBias);
     }
 
     var spec = mat._SpecularColor;
     if (kw_SPECULARMAP()) {
-        spec = ptri::sample_rgba(_SpecularMap, _SpecularMap_sampler, uvs, weights);
+        spec = ptri::sample_rgba_biased(_SpecularMap, _SpecularMap_sampler, uvs, weights, mat._SpecularMap_LodBias);
     }
     let f0 = clamp(spec.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
     let smoothness = clamp(spec.a, 0.0, 1.0);
@@ -116,13 +121,13 @@ fn sample_surface(
 
     var occlusion = 1.0;
     if (kw_OCCLUSION()) {
-        let occ = ptri::sample_rgba(_OcclusionMap, _OcclusionMap_sampler, uvs, weights);
+        let occ = ptri::sample_rgba_biased(_OcclusionMap, _OcclusionMap_sampler, uvs, weights, mat._OcclusionMap_LodBias);
         occlusion = occ.g;
     }
 
     var emission = mat._EmissionColor;
     if (kw_EMISSIONTEX()) {
-        emission = emission * ptri::sample_rgba(_EmissionMap, _EmissionMap_sampler, uvs, weights);
+        emission = emission * ptri::sample_rgba_biased(_EmissionMap, _EmissionMap_sampler, uvs, weights, mat._EmissionMap_LodBias);
     }
 
     let n = ptri::resolve_world_normal(
@@ -136,7 +141,7 @@ fn sample_surface(
         uvs,
         weights,
         mat._NormalScale,
-        0.0,
+        mat._NormalMap_LodBias,
         front_facing,
     );
 

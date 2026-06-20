@@ -10,5 +10,5 @@ mod arena;
 mod slot;
 mod staging;
 
+pub(crate) use crate::upload_stats::{UploadArenaAcquireStats, UploadArenaPressure};
 pub(crate) use arena::PersistentUploadArena;
-pub(crate) use staging::{UploadArenaAcquireStats, UploadArenaPressure};

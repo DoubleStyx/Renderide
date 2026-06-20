@@ -7,6 +7,7 @@
 use std::borrow::Cow;
 
 use crate::camera::ViewId;
+use crate::graph_inputs::FrameGlobalResourcePass;
 use crate::render_graph::context::{ComputePassCtx, PostSubmitContext};
 use crate::render_graph::error::{RenderPassError, SetupError};
 
@@ -52,6 +53,14 @@ pub trait ComputePass: Send + Sync {
     /// Scheduling phase. Defaults to [`PassPhase::PerView`].
     fn phase(&self) -> PassPhase {
         PassPhase::PerView
+    }
+
+    /// Typed backend resource hook used by frame-global passes with renderer-owned resources.
+    ///
+    /// Defaults to [`None`] for ordinary graph passes. Resource-backed frame-global passes return
+    /// a stable enum so the backend does not route by diagnostic pass name strings.
+    fn frame_global_resource_pass(&self) -> Option<FrameGlobalResourcePass> {
+        None
     }
 
     /// Releases any cached state owned by views that are no longer active.

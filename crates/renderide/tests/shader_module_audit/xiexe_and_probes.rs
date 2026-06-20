@@ -364,6 +364,35 @@ fn reflection_probe_specular_samples_manual_cubemap_array_atlas() -> io::Result<
 }
 
 #[test]
+fn skybox_ibl_stitch_uses_edge_band_and_corner_fixup() -> io::Result<()> {
+    let stitch_src = source_file(
+        manifest_dir()
+            .join("shaders/passes/compute")
+            .join("skybox_ibl_stitch.wgsl"),
+    )?;
+
+    for required in [
+        "fn seam_fixup_width(",
+        "fn seam_pull_weight(",
+        "fn edge_pair_color(",
+        "fn corner_color(",
+        "struct TexelAddress",
+        "paired_left_texel",
+        "paired_right_texel",
+        "paired_top_texel",
+        "paired_bottom_texel",
+        "let at_corner = (at_left || at_right) && (at_top || at_bottom);",
+    ] {
+        assert!(
+            stitch_src.contains(required),
+            "skybox_ibl_stitch.wgsl must keep seam fixup helper `{required}`"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn reflection_probe_specular_applies_horizon_occlusion() -> io::Result<()> {
     let probe_src = module_source("lighting/reflection_probes.wgsl")?;
     for required in [
@@ -705,7 +734,7 @@ fn xiexe_a2c_has_single_sample_dither_fallback() -> io::Result<()> {
         "rg::frame_sample_count() <= 1u",
         "if (coverage < d)",
         "if (coverage < xb::bayer_threshold(frag_xy))",
-        "textureSample(xb::_CutoutMask, xb::_CutoutMask_sampler, uv_primary).r",
+        "ts::sample_tex_2d(xb::_CutoutMask, xb::_CutoutMask_sampler, uv_primary, xb::mat._CutoutMask_LodBias).r",
     ] {
         assert!(
             alpha_src.contains(required),

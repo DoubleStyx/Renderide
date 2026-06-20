@@ -23,7 +23,9 @@ use crate::render_graph::blackboard::Blackboard;
 use crate::render_graph::compiled::FrameView;
 use crate::render_graph::context::GraphResolvedResources;
 use crate::render_graph::execution_backend::{
-    GraphExecutionBackend, GraphFrameParamsSplit, GraphViewBlackboardPreparer,
+    GraphDiagnosticsBackend, GraphFrameGlobalBackend, GraphFrameParamsSplit,
+    GraphFrameSystemsBackend, GraphResourceLifecycleBackend, GraphViewBlackboardPreparer,
+    GraphViewPreparationBackend,
 };
 use crate::upload_arena::PersistentUploadArena;
 
@@ -297,7 +299,7 @@ impl<'a> BackendGraphAccess<'a> {
     }
 }
 
-impl GraphExecutionBackend for BackendGraphAccess<'_> {
+impl GraphResourceLifecycleBackend for BackendGraphAccess<'_> {
     fn transient_pool_mut(&mut self) -> &mut TransientPool {
         BackendGraphAccess::transient_pool_mut(self)
     }
@@ -321,22 +323,9 @@ impl GraphExecutionBackend for BackendGraphAccess<'_> {
     fn upload_arena_mut(&mut self) -> &mut PersistentUploadArena {
         BackendGraphAccess::upload_arena_mut(self)
     }
+}
 
-    fn record_frame_upload_stats(&mut self, stats: FrameUploadBatchStats) {
-        BackendGraphAccess::record_frame_upload_stats(self, stats);
-    }
-
-    fn record_command_encoding_diagnostics(
-        &mut self,
-        snapshot: crate::render_graph::CommandEncodingHudSnapshot,
-    ) {
-        BackendGraphAccess::record_command_encoding_diagnostics(self, snapshot);
-    }
-
-    fn capture_graph_command_diagnostics(&self) -> bool {
-        BackendGraphAccess::capture_graph_command_diagnostics(self)
-    }
-
+impl GraphFrameSystemsBackend for BackendGraphAccess<'_> {
     fn scene_color_format_wgpu(&self) -> wgpu::TextureFormat {
         BackendGraphAccess::scene_color_format_wgpu(self)
     }
@@ -385,10 +374,22 @@ impl GraphExecutionBackend for BackendGraphAccess<'_> {
         BackendGraphAccess::skin_weight_mode(self)
     }
 
+    fn per_view_hud_config(&self) -> PerViewHudConfig {
+        BackendGraphAccess::per_view_hud_config(self)
+    }
+
+    fn command_recording_mode(&self) -> crate::config::CommandRecordingMode {
+        BackendGraphAccess::command_recording_mode(self)
+    }
+}
+
+impl GraphFrameGlobalBackend for BackendGraphAccess<'_> {
     fn split_for_graph_frame_params(&mut self) -> GraphFrameParamsSplit<'_> {
         BackendGraphAccess::split_for_graph_frame_params(self)
     }
+}
 
+impl GraphViewPreparationBackend for BackendGraphAccess<'_> {
     fn pre_warm_view_assets_from_blackboards(
         &mut self,
         device: &wgpu::Device,
@@ -436,13 +437,22 @@ impl GraphExecutionBackend for BackendGraphAccess<'_> {
             .map_or(0, crate::world_mesh::WorldMeshDrawPlan::draw_count);
         world.saturating_add(overlay)
     }
+}
 
-    fn per_view_hud_config(&self) -> PerViewHudConfig {
-        BackendGraphAccess::per_view_hud_config(self)
+impl GraphDiagnosticsBackend for BackendGraphAccess<'_> {
+    fn record_frame_upload_stats(&mut self, stats: FrameUploadBatchStats) {
+        BackendGraphAccess::record_frame_upload_stats(self, stats);
     }
 
-    fn command_recording_mode(&self) -> crate::config::CommandRecordingMode {
-        BackendGraphAccess::command_recording_mode(self)
+    fn record_command_encoding_diagnostics(
+        &mut self,
+        snapshot: crate::render_graph::CommandEncodingHudSnapshot,
+    ) {
+        BackendGraphAccess::record_command_encoding_diagnostics(self, snapshot);
+    }
+
+    fn capture_graph_command_diagnostics(&self) -> bool {
+        BackendGraphAccess::capture_graph_command_diagnostics(self)
     }
 
     fn debug_hud_has_visible_content(&self) -> bool {

@@ -5,10 +5,12 @@
 use glam::{Mat4, Quat, Vec3};
 
 use crate::camera::{view_matrix_for_world_mesh_render_space, view_matrix_from_render_transform};
-use crate::scene::CameraRenderableEntry;
 use crate::scene::blit_to_display::BlitToDisplayEntry;
 use crate::scene::overrides::RenderTransformOverrideEntry;
 use crate::scene::render_space::RenderSpaceState;
+use crate::scene::{
+    CameraRenderableEntry, RenderSpaceRead, SceneLightRead, SceneSpaceRead, SceneTransformRead,
+};
 use crate::shared::{
     BlitToDisplayState, CameraProjection, CameraState, LightData, LightType,
     LightsBufferRendererState, RenderTransform, RenderingContext, ShadowType,
@@ -98,6 +100,108 @@ fn seed_test_light(scene: &mut SceneCoordinator, space_id: RenderSpaceId, global
         &[0],
         &[test_light_state(global_unique_id)],
     );
+}
+
+#[test]
+fn scene_space_read_trait_matches_coordinator_space_queries() {
+    let mut scene = SceneCoordinator::new();
+    let low = RenderSpaceId(1);
+    let high = RenderSpaceId(20);
+    scene.test_seed_space_identity_worlds(high, vec![identity_transform()], vec![-1]);
+    scene.test_seed_space_identity_worlds(low, vec![identity_transform()], vec![-1]);
+    scene.test_set_space_overlay(low, true);
+    scene.test_set_space_private(high, true);
+
+    let ids = SceneSpaceRead::render_space_ids(&scene).collect::<Vec<_>>();
+    assert_eq!(ids, vec![low, high]);
+
+    let main = SceneSpaceRead::active_main_space(&scene).expect("active main space");
+    assert!(RenderSpaceRead::is_active(main));
+    assert!(!RenderSpaceRead::is_overlay(main));
+    assert!(RenderSpaceRead::is_private(main));
+    assert_eq!(RenderSpaceRead::local_transforms(main).len(), 1);
+    assert_eq!(RenderSpaceRead::node_parents(main), &[-1]);
+    assert_eq!(
+        SceneSpaceRead::active_main_render_context(&scene),
+        RenderingContext::UserView
+    );
+    assert!(!SceneSpaceRead::render_context_affects_draw_prep(
+        &scene,
+        RenderingContext::UserView
+    ));
+}
+
+#[test]
+fn scene_transform_read_trait_matches_coordinator_transform_queries() {
+    let mut scene = SceneCoordinator::new();
+    let id = RenderSpaceId(1);
+    let parent = RenderTransform {
+        position: Vec3::new(1.0, 2.0, 3.0),
+        ..identity_transform()
+    };
+    let child = RenderTransform {
+        position: Vec3::new(4.0, 5.0, 6.0),
+        ..identity_transform()
+    };
+    scene.test_seed_space_identity_worlds(id, vec![parent, child], vec![-1, 0]);
+    scene.test_push_layer_assignment(id, 0, crate::shared::LayerType::Overlay);
+
+    let world = SceneTransformRead::world_matrix_for_render_context(
+        &scene,
+        id,
+        1,
+        RenderingContext::UserView,
+        Mat4::IDENTITY,
+    )
+    .expect("child world matrix");
+    assert_eq!(world.col(3).truncate(), Vec3::new(5.0, 7.0, 9.0));
+
+    assert_eq!(
+        SceneTransformRead::transform_special_layer(&scene, id, 1),
+        Some(crate::shared::LayerType::Overlay)
+    );
+    assert!(SceneTransformRead::transform_is_in_overlay_layer(
+        &scene, id, 1
+    ));
+    assert!(
+        !SceneTransformRead::transform_has_degenerate_scale_for_context(
+            &scene,
+            id,
+            1,
+            RenderingContext::UserView
+        )
+    );
+}
+
+#[test]
+fn scene_light_read_trait_matches_coordinator_light_queries() {
+    let mut scene = SceneCoordinator::new();
+    let id = RenderSpaceId(1);
+    scene.test_seed_space_identity_worlds(id, vec![identity_transform()], vec![-1]);
+    seed_test_light(&mut scene, id, 7);
+
+    assert_eq!(
+        SceneLightRead::candidate_light_count_for_render_space_filter(&scene, Some(id)),
+        1
+    );
+    assert_eq!(
+        SceneLightRead::candidate_light_count_for_render_space_filter(
+            &scene,
+            Some(RenderSpaceId(404))
+        ),
+        0
+    );
+
+    let mut resolved = Vec::new();
+    SceneLightRead::resolve_lights_for_render_context_into(
+        &scene,
+        id,
+        RenderingContext::UserView,
+        Mat4::IDENTITY,
+        &mut resolved,
+    );
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].world_position, Vec3::ZERO);
 }
 
 #[test]

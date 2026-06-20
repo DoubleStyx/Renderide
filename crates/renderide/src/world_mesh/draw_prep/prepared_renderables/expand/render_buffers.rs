@@ -6,7 +6,7 @@ use hashbrown::HashMap;
 use crate::assets::mesh::GpuMesh;
 use crate::gpu_pools::MeshPool;
 use crate::particles::{ParticleDrawParams, PointRenderBufferAsset};
-use crate::scene::{MeshRendererInstanceId, RenderSpaceId, SceneCoordinator};
+use crate::scene::{MeshRendererInstanceId, RenderSpaceId, RenderSpaceRead, WorldMeshSceneRead};
 use crate::shared::ShadowCastMode;
 use crate::shared::{LayerType, RenderingContext};
 use crate::world_mesh::culling::{
@@ -18,14 +18,16 @@ use super::context::ExpandCtx;
 use super::mesh_particles::try_expand_mesh_render_buffer_renderer;
 
 /// Expands PhotonDust billboard and trail render-buffer renderers into prepared draw entries.
-pub(in crate::world_mesh::draw_prep) fn expand_render_buffer_renderers_into(
+pub(in crate::world_mesh::draw_prep) fn expand_render_buffer_renderers_into<S>(
     out: &mut Vec<FramePreparedDraw>,
-    scene: &SceneCoordinator,
+    scene: &S,
     mesh_pool: &MeshPool,
     point_render_buffers: &HashMap<i32, PointRenderBufferAsset>,
     render_context: RenderingContext,
     space_id: RenderSpaceId,
-) {
+) where
+    S: WorldMeshSceneRead + ?Sized,
+{
     profiling::scope!("mesh::prepared_renderables::expand_render_buffers");
     let Some(space) = scene.space(space_id) else {
         return;
@@ -41,7 +43,12 @@ pub(in crate::world_mesh::draw_prep) fn expand_render_buffer_renderers_into(
         space_id,
         space_is_overlay: space.is_overlay(),
     };
-    for (renderable_index, renderer) in space.billboard_render_buffers().iter().enumerate() {
+    for (renderable_index, renderer) in scene
+        .billboard_render_buffers(space_id)
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+    {
         let Some(mesh_asset_id) = crate::particles::billboard_render_buffer_mesh_asset_id(
             renderer.point_render_buffer_asset_id,
         ) else {
@@ -62,7 +69,12 @@ pub(in crate::world_mesh::draw_prep) fn expand_render_buffer_renderers_into(
             ),
         );
     }
-    for (renderable_index, renderer) in space.trail_render_buffers().iter().enumerate() {
+    for (renderable_index, renderer) in scene
+        .trail_render_buffers(space_id)
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+    {
         let Some(mesh_asset_id) = crate::particles::trail_render_buffer_mesh_asset_id(
             renderer.trails_render_buffer_asset_id,
             renderer.texture_mode,
@@ -83,7 +95,12 @@ pub(in crate::world_mesh::draw_prep) fn expand_render_buffer_renderers_into(
             ),
         );
     }
-    for (renderable_index, renderer) in space.mesh_render_buffers().iter().enumerate() {
+    for (renderable_index, renderer) in scene
+        .mesh_render_buffers(space_id)
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+    {
         try_expand_mesh_render_buffer_renderer(
             &mut ctx,
             point_render_buffers,
@@ -116,15 +133,17 @@ impl ParticleRenderBufferPreparedKind {
 }
 
 /// Expands one PhotonDust render-buffer renderer row into a single material draw.
-fn try_expand_render_buffer_renderer(
-    ctx: &mut ExpandCtx<'_>,
+fn try_expand_render_buffer_renderer<S>(
+    ctx: &mut ExpandCtx<'_, S>,
     renderable_index: usize,
     node_id: i32,
     mesh_asset_id: i32,
     material_asset_id: i32,
     kind: ParticleRenderBufferPreparedKind,
     particle_draw: ParticleDrawParams,
-) {
+) where
+    S: WorldMeshSceneRead + ?Sized,
+{
     if node_id < 0 || material_asset_id < 0 {
         logger::trace!(
             "particle render buffer {:?}: skipped renderer node={} material={}",
@@ -192,11 +211,14 @@ fn try_expand_render_buffer_renderer(
 }
 
 /// Computes frame-invariant cull geometry for non-overlay render-buffer meshes.
-fn precompute_particle_cull_geometry(
-    ctx: &ExpandCtx<'_>,
+fn precompute_particle_cull_geometry<S>(
+    ctx: &ExpandCtx<'_, S>,
     mesh: &GpuMesh,
     node_id: i32,
-) -> Option<MeshCullGeometry> {
+) -> Option<MeshCullGeometry>
+where
+    S: WorldMeshSceneRead + ?Sized,
+{
     if ctx.space_is_overlay {
         return None;
     }

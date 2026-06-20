@@ -28,7 +28,8 @@ pub use post_processing::{
     TonemapMode,
 };
 pub use rendering::{
-    GraphicsApiSetting, MsaaSampleCount, RenderingSettings, SceneColorFormat, VsyncMode,
+    GraphicsApiSetting, MsaaSampleCount, PresentationModeSetting, RenderingSettings,
+    SceneColorFormat,
 };
 pub use watchdog::{WatchdogAction, WatchdogSettings};
 
@@ -41,7 +42,7 @@ pub struct RendererSettings {
     pub config_version: String,
     /// Display caps and related options.
     pub display: DisplaySettings,
-    /// Rendering options (e.g. vsync).
+    /// Rendering options such as presentation mode and MSAA.
     pub rendering: RenderingSettings,
     /// Debug-only flags.
     pub debug: DebugSettings,

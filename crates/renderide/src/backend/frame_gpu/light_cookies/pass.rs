@@ -1,5 +1,7 @@
 use std::borrow::Cow;
 
+use crate::graph_inputs::FrameGlobalResourcePass;
+
 /// Encoder pass label for diagnostics.
 pub(crate) const LIGHT_COOKIE_ATLAS_PASS_NAME: &str = "light_cookie_atlas";
 
@@ -58,5 +60,9 @@ impl crate::render_graph::pass::EncoderPass for LightCookieAtlasPass {
 
     fn phase(&self) -> crate::render_graph::pass::PassPhase {
         crate::render_graph::pass::PassPhase::FrameGlobal
+    }
+
+    fn frame_global_resource_pass(&self) -> Option<FrameGlobalResourcePass> {
+        Some(FrameGlobalResourcePass::LightCookieAtlas)
     }
 }

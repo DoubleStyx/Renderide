@@ -1,5 +1,7 @@
 //! Per-redraw frame phase orchestration for the app driver.
 
+mod phases;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Instant;
@@ -70,6 +72,17 @@ struct DesktopOneCreditInput {
     vr_active: bool,
     has_render_target: bool,
     lockstep_action: LockstepPipelineAction,
+}
+
+struct FrameStartupState {
+    one_credit_begin_sent: bool,
+    vr_active: bool,
+}
+
+struct XrFrameBeginState {
+    one_credit_begin_sent: bool,
+    vr_active: bool,
+    xr_tick: Option<OpenxrFrameTick>,
 }
 
 fn pre_xr_lockstep_action(input: PreXrLockstepInput) -> PreXrLockstepAction {
@@ -154,109 +167,26 @@ impl AppDriver {
         event_loop: &dyn ActiveEventLoop,
         frame_start: Instant,
     ) -> FrameTickOutcome {
-        self.hmd_compositor_paced_last_frame = false;
-        self.frame_tick_prologue(frame_start);
-        self.poll_ipc_and_window();
-        if self.check_external_shutdown(event_loop) {
-            return FrameTickOutcome::ExitRequested;
-        }
-        if self.handle_runtime_exit_requests(event_loop) {
-            return FrameTickOutcome::ExitRequested;
-        }
-        if self.handle_gpu_device_loss_request(event_loop) {
-            return FrameTickOutcome::ExitRequested;
-        }
-        let mut one_credit_begin_sent = self.drain_completion_and_try_desktop_one_credit();
-        if self.runtime.should_send_begin_frame_before_wait_work() {
-            self.lock_step_exchange();
-        }
-        self.run_asset_integration_phase();
-        let mut vr_active = self.runtime.vr_active();
-        let pre_xr_action = pre_xr_lockstep_action(PreXrLockstepInput {
-            vr_active,
-            awaiting_frame_submit: self.runtime.awaiting_frame_submit(),
-            should_render_frame: self.runtime.should_render_frame(),
-            should_send_begin_frame: self.runtime.should_send_begin_frame(),
-        });
-        match pre_xr_action {
-            PreXrLockstepAction::Continue => {}
-            PreXrLockstepAction::WaitForSubmit => {
-                if let Some(outcome) = self.wait_for_host_submit_before_xr(event_loop) {
-                    return outcome;
-                }
-            }
-            PreXrLockstepAction::SendBeginThenWait => {
-                self.lock_step_exchange();
-                if let Some(outcome) = self.wait_for_host_submit_before_xr(event_loop) {
-                    return outcome;
-                }
-            }
-            PreXrLockstepAction::SkipUntilHostReady => return FrameTickOutcome::RenderSkipped,
-        }
-        vr_active = self.runtime.vr_active();
-
-        let xr_pause = self
-            .main_heartbeat
-            .as_ref()
-            .map(|heartbeat| heartbeat.pause());
-        let xr_tick = self.xr_begin_tick();
-        drop(xr_pause);
-
-        if !vr_active {
-            self.lock_step_exchange();
-        }
-        if self.handle_openxr_exit_request(event_loop) {
-            self.queue_empty_openxr_frame_if_needed(xr_tick);
-            self.poll_graceful_shutdown(event_loop);
-            return FrameTickOutcome::ExitRequested;
-        }
-        if vr_active && xr_tick.is_some() && self.runtime.should_send_one_credit_begin_frame() {
-            one_credit_begin_sent = self.one_credit_lock_step_exchange() || one_credit_begin_sent;
-        }
-        if !self.runtime.should_render_frame() {
-            if !vr_active {
-                self.runtime
-                    .wait_for_coupled_submit_or_decoupling(HostWaitReason::DesktopAwaitingSubmit);
-                if self.handle_runtime_exit_requests(event_loop) {
-                    self.queue_empty_openxr_frame_if_needed(xr_tick);
-                    return FrameTickOutcome::ExitRequested;
-                }
-            }
-            if !self.runtime.should_render_frame() {
-                self.consume_unrendered_one_credit_submit(one_credit_begin_sent);
-                self.queue_empty_openxr_frame_if_needed(xr_tick);
-                return FrameTickOutcome::RenderSkipped;
-            }
-        }
-
-        let Some(window) = self
-            .target
-            .as_ref()
-            .map(|target| Arc::clone(target.window()))
-        else {
-            self.consume_unrendered_one_credit_submit(one_credit_begin_sent);
-            return FrameTickOutcome::MissingTarget;
+        let startup = match self.run_frame_startup_phase(event_loop, frame_start) {
+            Ok(startup) => startup,
+            Err(outcome) => return outcome,
         };
-        let Some(render_outcome) = self.render_views(&window, xr_tick.as_ref()) else {
-            self.consume_unrendered_one_credit_submit(one_credit_begin_sent);
-            return FrameTickOutcome::MissingTarget;
+        if let Err(outcome) = self.run_pre_xr_lockstep_phase(event_loop, startup.vr_active) {
+            return outcome;
+        }
+        let startup = FrameStartupState {
+            vr_active: self.runtime.vr_active(),
+            ..startup
         };
-        self.runtime.note_frame_render_attempted();
-        let hmd_projection_ended = render_outcome.hmd_projection_ended;
-        self.hmd_compositor_paced_last_frame = hmd_projection_ended;
-        if self.handle_gpu_device_loss_request(event_loop) {
-            if !hmd_projection_ended {
-                self.queue_empty_openxr_frame_if_needed(xr_tick);
-            }
-            self.poll_graceful_shutdown(event_loop);
-            return FrameTickOutcome::ExitRequested;
-        }
-        self.present_and_diagnostics(xr_tick, hmd_projection_ended);
-        self.drain_submit_completion_work();
-        if vr_active || !one_credit_begin_sent {
-            self.lock_step_exchange();
-        }
-        FrameTickOutcome::Presented
+        let xr_state = match self.begin_xr_frame_phase(event_loop, startup) {
+            Ok(xr_state) => xr_state,
+            Err(outcome) => return outcome,
+        };
+        let xr_state = match self.ensure_frame_renderable_after_xr(event_loop, xr_state) {
+            Ok(xr_state) => xr_state,
+            Err(outcome) => return outcome,
+        };
+        self.render_and_present_frame(event_loop, xr_state)
     }
 
     fn drain_completion_and_try_desktop_one_credit(&mut self) -> bool {
@@ -310,7 +240,7 @@ impl AppDriver {
             let gpu = target.gpu_mut();
             gpu.begin_frame_timing(frame_start);
             if let Ok(settings) = self.runtime.settings().read() {
-                gpu.set_present_mode(settings.rendering.vsync);
+                gpu.set_present_mode(settings.rendering.presentation_mode);
             }
         }
     }

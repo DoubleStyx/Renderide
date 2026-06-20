@@ -16,12 +16,14 @@
 #import renderide::frame::grab_pass as gp
 #import renderide::material::variant_bits as vb
 #import renderide::core::uv as uvu
+#import renderide::core::texture_sampling as ts
 
 struct FiltersPixelateMaterial {
     _Resolution: vec4<f32>,
     _ResolutionTex_ST: vec4<f32>,
     _Rect: vec4<f32>,
     _RenderideVariantBits: u32,
+    _ResolutionTex_LodBias: f32,
     _pad0: f32,
     _pad1: vec2<f32>,
 }
@@ -70,7 +72,7 @@ fn fs_main(vout: fv::RectVertexOutput) -> @location(0) vec4<f32> {
 
     var resolution = max(mat._Resolution.xy, vec2<f32>(1.0));
     if (kw_RESOLUTION_TEX()) {
-        let texel_scale = textureSample(_ResolutionTex, _ResolutionTex_sampler, uvu::apply_st(vout.primary_uv, mat._ResolutionTex_ST)).rg;
+        let texel_scale = ts::sample_tex_2d(_ResolutionTex, _ResolutionTex_sampler, uvu::apply_st(vout.primary_uv, mat._ResolutionTex_ST), mat._ResolutionTex_LodBias).rg;
         resolution = max(mat._Resolution.xy * texel_scale, vec2<f32>(1.0));
     }
     let uv = fm::safe_div_vec2(round(fc::screen_uv(vout.clip_pos) * resolution), resolution);

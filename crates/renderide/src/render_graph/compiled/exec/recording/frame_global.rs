@@ -8,7 +8,8 @@ use std::time::Instant;
 use crate::cpu_parallelism::{ParallelAdmission, record_parallel_admission};
 use crate::frame_upload_batch::{FrameUploadBatch, GraphUploadSink};
 use crate::graph_inputs::{
-    FrameGlobalPassSplitWorkload, FrameGlobalSplitPassEncodeParams, GraphFrameResources,
+    FrameGlobalPassSplitWorkload, FrameGlobalResourcePass, FrameGlobalSplitPassEncodeParams,
+    GraphFrameResources,
 };
 use crate::render_graph::blackboard::Blackboard;
 use crate::render_graph::context::GraphResolvedResources;
@@ -53,7 +54,7 @@ struct FrameGlobalPassLoop<'record, 'frame> {
 #[derive(Clone, Copy)]
 pub(in crate::render_graph::compiled::exec) struct FrameGlobalSplitCandidate {
     step_idx: usize,
-    pass_idx: usize,
+    resource_pass: FrameGlobalResourcePass,
     workload: FrameGlobalPassSplitWorkload,
 }
 
@@ -181,7 +182,7 @@ impl CompiledRenderGraph {
     ) -> bool {
         let frame_resources = backend.frame_resources();
         for pass_idx in self.schedule.frame_global_pass_indices().iter().copied() {
-            if !frame_resources.frame_global_pass_is_inactive(self.passes[pass_idx].name()) {
+            if !self.frame_global_pass_is_inactive(frame_resources, pass_idx) {
                 return false;
             }
         }
@@ -208,19 +209,30 @@ impl CompiledRenderGraph {
             .filter(|(_, step)| step.phase == PassPhase::FrameGlobal)
             .find_map(|(step_idx, step)| {
                 let pass = &self.passes[step.pass_idx];
-                if frame_resources.frame_global_pass_is_inactive(pass.name()) {
+                let resource_pass = pass.frame_global_resource_pass()?;
+                if frame_resources.frame_global_pass_is_inactive(resource_pass) {
                     return None;
                 }
-                let workload = frame_resources.frame_global_pass_split_workload(pass.name())?;
+                let workload = frame_resources.frame_global_pass_split_workload(resource_pass)?;
                 if workload.unit_count < 2 || workload.chunk_size == 0 {
                     return None;
                 }
                 Some(FrameGlobalSplitCandidate {
                     step_idx,
-                    pass_idx: step.pass_idx,
+                    resource_pass,
                     workload,
                 })
             })
+    }
+
+    fn frame_global_pass_is_inactive(
+        &self,
+        frame_resources: &dyn GraphFrameResources,
+        pass_idx: usize,
+    ) -> bool {
+        self.passes[pass_idx]
+            .frame_global_resource_pass()
+            .is_some_and(|pass| frame_resources.frame_global_pass_is_inactive(pass))
     }
 
     fn frame_global_range_has_active_passes(
@@ -235,7 +247,7 @@ impl CompiledRenderGraph {
             if step.phase != PassPhase::FrameGlobal {
                 continue;
             }
-            if !frame_resources.frame_global_pass_is_inactive(self.passes[step.pass_idx].name()) {
+            if !self.frame_global_pass_is_inactive(frame_resources, step.pass_idx) {
                 return true;
             }
         }
@@ -457,7 +469,6 @@ impl CompiledRenderGraph {
             );
         }
 
-        let split_pass_name = self.passes[candidate.pass_idx].name();
         let split_step = self.schedule.steps[candidate.step_idx];
         let split_uploads =
             GraphUploadSink::new(state.upload_batch, split_step.frame_upload_scope(None));
@@ -465,10 +476,14 @@ impl CompiledRenderGraph {
             .frame_params
             .shared
             .frame_resources
-            .prepare_frame_global_split_pass(split_pass_name, state.gpu_limits, split_uploads);
+            .prepare_frame_global_split_pass(
+                candidate.resource_pass,
+                state.gpu_limits,
+                split_uploads,
+            );
         if prepared {
             let mut split_commands = self.record_frame_global_split_pass_commands(
-                split_pass_name,
+                candidate.resource_pass,
                 candidate.workload,
                 state.frame_params,
                 state.device,
@@ -558,7 +573,7 @@ impl CompiledRenderGraph {
 
     fn record_frame_global_split_pass_commands(
         &self,
-        pass_name: &str,
+        resource_pass: FrameGlobalResourcePass,
         workload: FrameGlobalPassSplitWorkload,
         frame_params: &crate::graph_inputs::GraphPassFrame<'_>,
         device: &wgpu::Device,
@@ -602,7 +617,7 @@ impl CompiledRenderGraph {
                     label: Some(label.as_str()),
                 });
                 let encoded = frame_resources.encode_frame_global_split_pass(
-                    pass_name,
+                    resource_pass,
                     unit_range,
                     FrameGlobalSplitPassEncodeParams {
                         device,

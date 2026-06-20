@@ -3,7 +3,7 @@
 use glam::Mat4;
 use rayon::prelude::*;
 
-use crate::scene::{RenderSpaceId, SceneCoordinator};
+use crate::scene::{RenderSpaceId, SceneTransformRead};
 use crate::shared::RenderingContext;
 
 /// Bone count assigned to one palette construction worker chunk.
@@ -18,9 +18,9 @@ const SKINNING_PALETTE_PARALLEL_MIN: usize = SKINNING_PALETTE_PARALLEL_CHUNK_BON
 const PALETTE_BONE_BYTES: usize = 64;
 
 /// Inputs for [`build_skinning_palette`].
-pub struct SkinningPaletteParams<'a> {
+pub struct SkinningPaletteParams<'a, S: SceneTransformRead + ?Sized> {
     /// Scene graph and transforms for bone and SMR nodes.
-    pub scene: &'a SceneCoordinator,
+    pub scene: &'a S,
     /// Render space containing the skinned mesh.
     pub space_id: RenderSpaceId,
     /// Bind-pose inverse bind matrices from the mesh asset.
@@ -39,8 +39,8 @@ pub struct SkinningPaletteParams<'a> {
 
 /// Captures the inputs needed to resolve each bone's world matrix once and reuse the resolver
 /// across rayon workers.
-struct PaletteResolver<'a> {
-    scene: &'a SceneCoordinator,
+struct PaletteResolver<'a, S: SceneTransformRead + ?Sized> {
+    scene: &'a S,
     space_id: RenderSpaceId,
     render_context: RenderingContext,
     head_output_transform: Mat4,
@@ -48,8 +48,11 @@ struct PaletteResolver<'a> {
     bone_transform_indices: &'a [i32],
 }
 
-impl<'a> PaletteResolver<'a> {
-    fn new(params: &'a SkinningPaletteParams<'a>) -> Self {
+impl<'a, S> PaletteResolver<'a, S>
+where
+    S: SceneTransformRead + ?Sized,
+{
+    fn new(params: &'a SkinningPaletteParams<'a, S>) -> Self {
         let smr_world = (params.smr_node_id >= 0)
             .then(|| {
                 params.scene.world_matrix_for_render_context(
@@ -96,7 +99,10 @@ impl<'a> PaletteResolver<'a> {
 
 /// Builds the same `world_bone * skinning_bind_matrices[i]` palette as the skinning compute pass.
 #[cfg(test)]
-pub fn build_skinning_palette(params: SkinningPaletteParams<'_>) -> Option<Vec<Mat4>> {
+pub fn build_skinning_palette<S>(params: SkinningPaletteParams<'_, S>) -> Option<Vec<Mat4>>
+where
+    S: SceneTransformRead + Sync + ?Sized,
+{
     let bone_count = params.skinning_bind_matrices.len();
     if bone_count == 0 || !params.has_skeleton {
         return None;
@@ -126,10 +132,13 @@ pub fn build_skinning_palette(params: SkinningPaletteParams<'_>) -> Option<Vec<M
 ///
 /// `out` is cleared before writing and retains its capacity between calls, which avoids the
 /// per-dispatch matrix and byte-vector allocations in the mesh-deform hot path.
-pub fn write_skinning_palette_bytes(
-    params: SkinningPaletteParams<'_>,
+pub fn write_skinning_palette_bytes<S>(
+    params: SkinningPaletteParams<'_, S>,
     out: &mut Vec<u8>,
-) -> Option<usize> {
+) -> Option<usize>
+where
+    S: SceneTransformRead + Sync + ?Sized,
+{
     write_skinning_palette_bytes_impl(params, out, true)
 }
 
@@ -137,19 +146,25 @@ pub fn write_skinning_palette_bytes(
 ///
 /// Item-level mesh-deform preplanning calls this from Rayon workers so a large batch of skinned
 /// renderers does not recursively split every medium palette.
-pub fn write_skinning_palette_bytes_serial(
-    params: SkinningPaletteParams<'_>,
+pub fn write_skinning_palette_bytes_serial<S>(
+    params: SkinningPaletteParams<'_, S>,
     out: &mut Vec<u8>,
-) -> Option<usize> {
+) -> Option<usize>
+where
+    S: SceneTransformRead + Sync + ?Sized,
+{
     write_skinning_palette_bytes_impl(params, out, false)
 }
 
 /// Shared palette writer with optional per-palette fan-out.
-fn write_skinning_palette_bytes_impl(
-    params: SkinningPaletteParams<'_>,
+fn write_skinning_palette_bytes_impl<S>(
+    params: SkinningPaletteParams<'_, S>,
     out: &mut Vec<u8>,
     allow_parallel: bool,
-) -> Option<usize> {
+) -> Option<usize>
+where
+    S: SceneTransformRead + Sync + ?Sized,
+{
     let bone_count = params.skinning_bind_matrices.len();
     if bone_count == 0 || !params.has_skeleton {
         return None;
@@ -193,7 +208,7 @@ fn write_skinning_palette_bytes_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scene::RenderSpaceId;
+    use crate::scene::{RenderSpaceId, SceneCoordinator};
     use crate::shared::RenderTransform;
     use glam::{Quat, Vec3};
 

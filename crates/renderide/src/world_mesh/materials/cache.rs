@@ -1,17 +1,9 @@
-//! Persistent cache of material-derived batch key fields, keyed by
-//! `(material_asset_id, property_block_id)`.
+//! Persistent cache of material-derived batch key fields.
 //!
-//! All values in [`ResolvedMaterialBatch`] are pure functions of
-//! `(material_asset_id, property_block_id, shader_perm)` plus the current router state and
-//! material/property-block property-store state. Caching them amortises repeated dictionary and
-//! router lookups across all draws that share the same material: in a typical scene, hundreds of
-//! draws share a few dozen materials.
-//!
-//! Unlike the previous per-frame rebuild, this cache lives across frames on [`RenderBackend`] and
-//! invalidates individual entries via monotonic generation counters maintained by
-//! [`crate::materials::host_data::MaterialPropertyStore`] and [`crate::materials::MaterialRouter`].
-//! A frame where nothing has changed touches each live entry with one HashMap probe and four
-//! `u64` comparisons -- no dictionary or router lookups required.
+//! Keys are `(material_asset_id, property_block_id)`. Values are pure functions of that key,
+//! shader permutation, material store state, and router state. The cache lives across frames and
+//! invalidates entries through material/router generation counters, so steady-state refreshes only
+//! stamp live entries instead of repeating dictionary and router lookups.
 
 use hashbrown::{HashMap, HashSet};
 use rayon::prelude::*;
@@ -23,7 +15,7 @@ use crate::cpu_parallelism::{
 use crate::materials::ShaderPermutation;
 use crate::materials::host_data::MaterialDictionary;
 use crate::materials::{MaterialPipelinePropertyIds, MaterialRouter};
-use crate::scene::{RenderSpaceId, SceneCoordinator};
+use crate::scene::{RenderSpaceId, RenderSpaceRead, WorldMeshSceneRead};
 use crate::world_mesh::FramePreparedRenderables;
 
 use super::keys::{collect_material_keys_for_space, collect_material_keys_into};
@@ -43,9 +35,9 @@ const MATERIAL_CLASSIFY_PARALLEL_MIN_KEYS: usize = MATERIAL_CLASSIFY_PARALLEL_CH
 
 /// Shared immutable inputs for scene-driven material cache refresh.
 #[derive(Clone, Copy)]
-struct SceneMaterialRefreshInputs<'a, 'b> {
+struct SceneMaterialRefreshInputs<'a, 'b, S: WorldMeshSceneRead + ?Sized> {
     /// Scene containing active render spaces to walk.
-    scene: &'a SceneCoordinator,
+    scene: &'a S,
     /// Material resolution context used for stale or missing keys.
     ctx: MaterialResolveCtx<'b>,
     /// Material router generation captured at the start of refresh.
@@ -73,29 +65,41 @@ fn material_key_collection_admission(
 
 /// Estimates material-slot rows scanned during frame material-key collection.
 fn estimate_material_key_collection_work(
-    scene: &SceneCoordinator,
+    scene: &(impl WorldMeshSceneRead + ?Sized),
     space_ids: &[RenderSpaceId],
 ) -> usize {
     space_ids
         .iter()
-        .filter_map(|space_id| scene.space(*space_id))
-        .map(|space| {
-            let static_keys = space
-                .static_mesh_renderers()
-                .iter()
-                .filter(|renderer| {
-                    renderer.mesh_asset_id >= 0 && renderer.emits_visible_color_draws()
-                })
-                .map(estimate_renderer_material_keys)
-                .sum::<usize>();
-            let skinned_keys = space
-                .skinned_mesh_renderers()
-                .iter()
-                .filter(|renderer| {
-                    renderer.base.mesh_asset_id >= 0 && renderer.base.emits_visible_color_draws()
-                })
-                .map(|renderer| estimate_renderer_material_keys(&renderer.base))
-                .sum::<usize>();
+        .copied()
+        .filter(|space_id| {
+            scene
+                .space(*space_id)
+                .is_some_and(|space| space.is_active())
+        })
+        .map(|space_id| {
+            let static_keys = scene
+                .static_mesh_renderers(space_id)
+                .map_or(0, |renderers| {
+                    renderers
+                        .iter()
+                        .filter(|renderer| {
+                            renderer.mesh_asset_id >= 0 && renderer.emits_visible_color_draws()
+                        })
+                        .map(estimate_renderer_material_keys)
+                        .sum::<usize>()
+                });
+            let skinned_keys = scene
+                .skinned_mesh_renderers(space_id)
+                .map_or(0, |renderers| {
+                    renderers
+                        .iter()
+                        .filter(|renderer| {
+                            renderer.base.mesh_asset_id >= 0
+                                && renderer.base.emits_visible_color_draws()
+                        })
+                        .map(|renderer| estimate_renderer_material_keys(&renderer.base))
+                        .sum::<usize>()
+                });
             static_keys.saturating_add(skinned_keys)
         })
         .sum()
@@ -423,10 +427,13 @@ impl FrameMaterialBatchCache {
     }
 
     /// Walks active scene renderers and refreshes every referenced material key.
-    fn refresh_scene_material_keys(
+    fn refresh_scene_material_keys<S>(
         &mut self,
-        inputs: SceneMaterialRefreshInputs<'_, '_>,
-    ) -> MaterialBatchCacheTouchStats {
+        inputs: SceneMaterialRefreshInputs<'_, '_, S>,
+    ) -> MaterialBatchCacheTouchStats
+    where
+        S: WorldMeshSceneRead + Sync + ?Sized,
+    {
         let mut active_space_ids = inputs
             .scene
             .render_space_ids()
@@ -457,13 +464,15 @@ impl FrameMaterialBatchCache {
     }
 
     /// Refreshes cache entries referenced by one active render space.
-    fn refresh_single_space_material_keys(
+    fn refresh_single_space_material_keys<S>(
         &mut self,
-        inputs: SceneMaterialRefreshInputs<'_, '_>,
+        inputs: SceneMaterialRefreshInputs<'_, '_, S>,
         space_id: RenderSpaceId,
         seen: &mut HashSet<(i32, Option<i32>)>,
         touch_stats: &mut MaterialBatchCacheTouchStats,
-    ) {
+    ) where
+        S: WorldMeshSceneRead + ?Sized,
+    {
         for key in collect_material_keys_for_space(inputs.scene, space_id) {
             if seen.insert(key) {
                 touch_stats.note(self.touch_or_refresh(
@@ -478,13 +487,15 @@ impl FrameMaterialBatchCache {
     }
 
     /// Refreshes cache entries referenced by multiple active render spaces.
-    fn refresh_multi_space_material_keys(
+    fn refresh_multi_space_material_keys<S>(
         &mut self,
-        inputs: SceneMaterialRefreshInputs<'_, '_>,
+        inputs: SceneMaterialRefreshInputs<'_, '_, S>,
         active_space_ids: impl Iterator<Item = RenderSpaceId>,
         seen: &mut HashSet<(i32, Option<i32>)>,
         touch_stats: &mut MaterialBatchCacheTouchStats,
-    ) {
+    ) where
+        S: WorldMeshSceneRead + Sync + ?Sized,
+    {
         let mut active = std::mem::take(&mut self.active_scratch);
         active.clear();
         active.extend(active_space_ids);
@@ -553,14 +564,16 @@ impl FrameMaterialBatchCache {
     /// After the walk, entries not touched this frame are evicted so the cache size tracks the
     /// live working set. Call once per frame before any per-view draw collection that reads the
     /// cache.
-    pub fn refresh_for_frame(
+    pub fn refresh_for_frame<S>(
         &mut self,
-        scene: &SceneCoordinator,
+        scene: &S,
         dict: &MaterialDictionary<'_>,
         router: &MaterialRouter,
         pipeline_property_ids: &MaterialPipelinePropertyIds,
         shader_perm: ShaderPermutation,
-    ) {
+    ) where
+        S: WorldMeshSceneRead + Sync + ?Sized,
+    {
         profiling::scope!("mesh::material_batch_cache_refresh_for_frame");
         self.frame_counter = self.frame_counter.wrapping_add(1);
         let current_frame = self.frame_counter;

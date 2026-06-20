@@ -1,22 +1,13 @@
 //! Tracy plots for mesh upload staging and derived stream work.
 
 use super::tracy_plot::tracy_plot;
+use crate::upload_stats::UploadTrafficStats;
 
 /// Mesh upload staging counters emitted as Tracy plots.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct MeshUploadBatchProfileSample {
-    /// Number of queued buffer writes drained.
-    pub(crate) writes: usize,
-    /// Total payload bytes drained.
-    pub(crate) bytes: usize,
-    /// Writes served by staging-buffer copy commands.
-    pub(crate) staged_writes: usize,
-    /// Writes replayed through queue writes.
-    pub(crate) fallback_writes: usize,
-    /// Required staging bytes for aligned writes.
-    pub(crate) staging_bytes: u64,
-    /// Number of copy commands recorded.
-    pub(crate) copy_ops: usize,
+    /// Queue-write and staging-copy traffic.
+    pub(crate) traffic: UploadTrafficStats,
     /// Writes replayed because the queue gate was busy.
     pub(crate) queue_gate_fallbacks: usize,
     /// Adjacent writes merged before staging or queue fallback replay.
@@ -25,15 +16,21 @@ pub(crate) struct MeshUploadBatchProfileSample {
 
 /// Records one mesh upload batch flush.
 pub(crate) fn plot_mesh_upload_batch(sample: &MeshUploadBatchProfileSample) {
-    tracy_plot!("mesh_upload::writes", sample.writes as f64);
-    tracy_plot!("mesh_upload::bytes", sample.bytes as f64);
-    tracy_plot!("mesh_upload::staged_writes", sample.staged_writes as f64);
+    tracy_plot!("mesh_upload::writes", sample.traffic.writes as f64);
+    tracy_plot!("mesh_upload::bytes", sample.traffic.bytes as f64);
+    tracy_plot!(
+        "mesh_upload::staged_writes",
+        sample.traffic.staged_writes as f64
+    );
     tracy_plot!(
         "mesh_upload::fallback_writes",
-        sample.fallback_writes as f64
+        sample.traffic.fallback_writes as f64
     );
-    tracy_plot!("mesh_upload::staging_bytes", sample.staging_bytes as f64);
-    tracy_plot!("mesh_upload::copy_ops", sample.copy_ops as f64);
+    tracy_plot!(
+        "mesh_upload::staging_bytes",
+        sample.traffic.staging_bytes as f64
+    );
+    tracy_plot!("mesh_upload::copy_ops", sample.traffic.copy_ops as f64);
     tracy_plot!(
         "mesh_upload::queue_gate_fallbacks",
         sample.queue_gate_fallbacks as f64

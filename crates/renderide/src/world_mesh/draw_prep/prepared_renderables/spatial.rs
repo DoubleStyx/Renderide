@@ -5,7 +5,7 @@ use hashbrown::HashMap;
 
 #[cfg(test)]
 use crate::particles::ParticleDrawParams;
-use crate::scene::{RenderSpaceId, SceneCoordinator};
+use crate::scene::{RenderSpaceId, SceneSpaceRead};
 #[cfg(test)]
 use crate::shared::ShadowCastMode;
 use crate::world_mesh::culling::{WorldMeshCullInput, world_aabb_visible_for_cull};
@@ -72,7 +72,7 @@ impl PreparedSpatialIndex {
         &self,
         runs: &[FramePreparedRun],
         space_ids: &[RenderSpaceId],
-        scene: &SceneCoordinator,
+        scene: &(impl SceneSpaceRead + ?Sized),
         culling: Option<&WorldMeshCullInput<'_>>,
     ) -> PreparedSpatialRunCandidates {
         profiling::scope!("mesh::prepared_renderables::spatial_query");
@@ -238,7 +238,7 @@ impl PreparedSpatialSpace {
     fn query(
         &self,
         space_id: RenderSpaceId,
-        scene: &SceneCoordinator,
+        scene: &(impl SceneSpaceRead + ?Sized),
         culling: Option<&WorldMeshCullInput<'_>>,
         out: &mut PreparedSpatialQueryOutput<'_>,
     ) {
@@ -268,12 +268,14 @@ impl PreparedSpatialSpace {
         }
     }
 
-    fn query_node(
+    fn query_node<S>(
         &self,
         node_index: usize,
-        cull_context: &PreparedSpatialCullContext<'_, '_, '_>,
+        cull_context: &PreparedSpatialCullContext<'_, '_, '_, S>,
         out: &mut PreparedSpatialQueryOutput<'_>,
-    ) {
+    ) where
+        S: SceneSpaceRead + ?Sized,
+    {
         let node = self.nodes[node_index];
         if let Some(culling) = cull_context.culling
             && !spatial_aabb_visible(
@@ -376,11 +378,14 @@ fn conservative_visible_bounds() -> (Vec3A, Vec3A) {
 }
 
 /// Shared cull state for one prepared-space spatial query.
-struct PreparedSpatialCullContext<'scene, 'cull_ref, 'cull_data> {
+struct PreparedSpatialCullContext<'scene, 'cull_ref, 'cull_data, S>
+where
+    S: SceneSpaceRead + ?Sized,
+{
     /// Render space currently being queried.
     space_id: RenderSpaceId,
     /// Scene graph used to resolve world bounds.
-    scene: &'scene SceneCoordinator,
+    scene: &'scene S,
     /// Optional CPU frustum and Hi-Z culling input.
     culling: Option<&'cull_ref WorldMeshCullInput<'cull_data>>,
 }
@@ -487,7 +492,7 @@ struct PreparedBvhNode {
 
 fn query_linear_run(
     space_id: RenderSpaceId,
-    scene: &SceneCoordinator,
+    scene: &(impl SceneSpaceRead + ?Sized),
     culling: Option<&WorldMeshCullInput<'_>>,
     entry: &LinearPreparedRun,
     out: &mut PreparedSpatialQueryOutput<'_>,
@@ -503,7 +508,7 @@ fn query_linear_run(
 
 fn query_indexed_run(
     space_id: RenderSpaceId,
-    scene: &SceneCoordinator,
+    scene: &(impl SceneSpaceRead + ?Sized),
     culling: Option<&WorldMeshCullInput<'_>>,
     entry: IndexedPreparedRun,
     out: &mut PreparedSpatialQueryOutput<'_>,
@@ -532,7 +537,7 @@ fn record_spatial_frustum_reject(
 }
 
 fn spatial_aabb_visible(
-    scene: &SceneCoordinator,
+    scene: &(impl SceneSpaceRead + ?Sized),
     space_id: RenderSpaceId,
     culling: &WorldMeshCullInput<'_>,
     aabb_min: Vec3A,

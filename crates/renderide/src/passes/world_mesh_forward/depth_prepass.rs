@@ -18,7 +18,7 @@ use crate::materials::{
 use crate::mesh_deform::PER_DRAW_UNIFORM_STRIDE;
 use crate::render_graph::context::RasterPassCtx;
 use crate::render_graph::error::{RenderPassError, SetupError};
-use crate::render_graph::gpu_cache::{create_wgsl_shader_module, stereo_mask_or_template};
+use crate::render_graph::gpu_cache::stereo_mask_or_template;
 use crate::render_graph::pass::{PassBuilder, RasterPass, RenderPassTemplate};
 use crate::render_graph::resources::{
     BufferAccess, ImportedBufferHandle, ImportedTextureHandle, StorageAccess, TextureHandle,
@@ -27,6 +27,7 @@ use crate::shared::ShadowCastMode;
 use crate::world_mesh::{MeshPassKind, WorldMeshDrawItem};
 
 use super::attachments::declare_forward_depth_attachment;
+use super::depth_like_pipeline::{DepthLikePipelineSpec, create_depth_like_pipeline};
 use super::encode::{DepthPrepassDrawBatch, draw_depth_prepass_subset};
 use super::{WorldMeshForwardPipelineState, WorldMeshForwardPlanSlot};
 
@@ -144,44 +145,28 @@ impl WorldMeshForwardDepthPrepassPipelineCache {
             multiview,
             key.primitive_topology
         );
-        let shader = create_wgsl_shader_module(device, label, source);
         let per_draw_layout = self.per_draw_layout(device);
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some(label),
-            bind_group_layouts: &[Some(per_draw_layout)],
-            immediate_size: 0,
-        });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some(label),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &depth_prepass_vertex_buffer_layouts(),
-            },
-            fragment: None,
-            primitive: wgpu::PrimitiveState {
-                topology: key.primitive_topology.to_wgpu(),
-                front_face: key.front_face.to_wgpu(),
+        let bind_group_layouts = [per_draw_layout];
+        let vertex_buffers = depth_prepass_vertex_buffer_layouts();
+        let pipeline = create_depth_like_pipeline(
+            device,
+            DepthLikePipelineSpec {
+                label,
+                shader_source: source,
+                bind_group_layouts: &bind_group_layouts,
+                vertex_buffers: &vertex_buffers,
+                fragment_entry_point: None,
+                color_targets: &[],
+                primitive_topology: key.primitive_topology,
+                front_face: key.front_face,
                 cull_mode: key.cull_mode,
-                ..Default::default()
+                depth_stencil_format: key.depth_stencil_format,
+                depth_write_enabled: true,
+                depth_compare: key.depth_compare,
+                sample_count: key.sample_count,
+                multiview_mask: key.multiview_mask,
             },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: key.depth_stencil_format,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(key.depth_compare),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState {
-                count: key.sample_count.max(1),
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview_mask: key.multiview_mask,
-            cache: None,
-        });
+        );
         crate::profiling::note_resource_churn!(
             RenderPipeline,
             "passes::world_mesh_depth_prepass_pipeline"
@@ -222,46 +207,29 @@ impl WorldMeshForwardShadowPipelineCache {
             key.sample_count,
             key.primitive_topology
         );
-        let shader =
-            create_wgsl_shader_module(device, label, embedded_wgsl!("world_mesh_shadow_caster"));
         let per_draw_layout = self.per_draw_layout(device);
         let layer_layout = self.layer_layout(device);
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some(label),
-            bind_group_layouts: &[Some(per_draw_layout), Some(layer_layout)],
-            immediate_size: 0,
-        });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some(label),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &depth_prepass_vertex_buffer_layouts(),
-            },
-            fragment: None,
-            primitive: wgpu::PrimitiveState {
-                topology: key.primitive_topology.to_wgpu(),
-                front_face: key.front_face.to_wgpu(),
+        let bind_group_layouts = [per_draw_layout, layer_layout];
+        let vertex_buffers = depth_prepass_vertex_buffer_layouts();
+        let pipeline = create_depth_like_pipeline(
+            device,
+            DepthLikePipelineSpec {
+                label,
+                shader_source: embedded_wgsl!("world_mesh_shadow_caster"),
+                bind_group_layouts: &bind_group_layouts,
+                vertex_buffers: &vertex_buffers,
+                fragment_entry_point: None,
+                color_targets: &[],
+                primitive_topology: key.primitive_topology,
+                front_face: key.front_face,
                 cull_mode: key.cull_mode,
-                ..Default::default()
+                depth_stencil_format: key.depth_stencil_format,
+                depth_write_enabled: true,
+                depth_compare: key.depth_compare,
+                sample_count: key.sample_count,
+                multiview_mask: key.multiview_mask,
             },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: key.depth_stencil_format,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(key.depth_compare),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState {
-                count: key.sample_count.max(1),
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview_mask: key.multiview_mask,
-            cache: None,
-        });
+        );
         crate::profiling::note_resource_churn!(
             RenderPipeline,
             "passes::world_mesh_shadow_caster_pipeline"
@@ -311,54 +279,29 @@ impl WorldMeshForwardRadialShadowPipelineCache {
             key.sample_count,
             key.primitive_topology
         );
-        let shader = create_wgsl_shader_module(
-            device,
-            label,
-            embedded_wgsl!("world_mesh_radial_shadow_caster"),
-        );
         let per_draw_layout = self.per_draw_layout(device);
         let layer_layout = self.layer_layout(device);
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some(label),
-            bind_group_layouts: &[Some(per_draw_layout), Some(layer_layout)],
-            immediate_size: 0,
-        });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some(label),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &depth_prepass_vertex_buffer_layouts(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: key.primitive_topology.to_wgpu(),
-                front_face: key.front_face.to_wgpu(),
+        let bind_group_layouts = [per_draw_layout, layer_layout];
+        let vertex_buffers = depth_prepass_vertex_buffer_layouts();
+        let pipeline = create_depth_like_pipeline(
+            device,
+            DepthLikePipelineSpec {
+                label,
+                shader_source: embedded_wgsl!("world_mesh_radial_shadow_caster"),
+                bind_group_layouts: &bind_group_layouts,
+                vertex_buffers: &vertex_buffers,
+                fragment_entry_point: Some("fs_main"),
+                color_targets: &[],
+                primitive_topology: key.primitive_topology,
+                front_face: key.front_face,
                 cull_mode: key.cull_mode,
-                ..Default::default()
+                depth_stencil_format: key.depth_stencil_format,
+                depth_write_enabled: true,
+                depth_compare: key.depth_compare,
+                sample_count: key.sample_count,
+                multiview_mask: key.multiview_mask,
             },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: key.depth_stencil_format,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(key.depth_compare),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState {
-                count: key.sample_count.max(1),
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview_mask: key.multiview_mask,
-            cache: None,
-        });
+        );
         crate::profiling::note_resource_churn!(
             RenderPipeline,
             "passes::world_mesh_radial_shadow_caster_pipeline"

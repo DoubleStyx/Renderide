@@ -4,7 +4,7 @@ mod cull_cache;
 mod per_renderer;
 mod per_slot;
 
-use crate::scene::{RenderSpaceId, SkinnedMeshRenderer, StaticMeshRenderer};
+use crate::scene::{RenderSpaceId, SceneTransformRead, SkinnedMeshRenderer, StaticMeshRenderer};
 
 use super::super::item::{MaterialStackOrder, WorldMeshDrawItem, resolved_material_slot_count};
 use super::{CollectState, DrawCollectionInputs};
@@ -103,14 +103,12 @@ pub(super) fn transform_chain_has_degenerate_scale(
     node_id: i32,
 ) -> bool {
     node_id >= 0
-        && ctx
-            .scene_assets
-            .scene
-            .transform_has_degenerate_scale_for_context(
-                space_id,
-                node_id as usize,
-                ctx.view.render_context,
-            )
+        && SceneTransformRead::transform_has_degenerate_scale_for_context(
+            ctx.scene_assets.scene,
+            space_id,
+            node_id as usize,
+            ctx.view.render_context,
+        )
 }
 
 /// Builds the chunk list: one entry per 128-renderer slice of static or skinned renderers per space.

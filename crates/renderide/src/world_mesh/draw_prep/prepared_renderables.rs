@@ -25,7 +25,10 @@ use crate::cpu_parallelism::RENDER_COMMAND_CHUNK_DRAWS;
 #[cfg(test)]
 use crate::gpu_pools::MeshPool;
 use crate::particles::ParticleDrawParams;
-use crate::scene::{MeshRendererInstanceId, RenderSpaceId, SceneCoordinator};
+use crate::scene::{
+    MeshRendererInstanceId, RenderSpaceId, SceneCoordinator, SceneMeshRendererRead,
+    WorldMeshSceneRead,
+};
 use crate::shared::{RenderingContext, ShadowCastMode};
 use crate::world_mesh::culling::{MeshCullGeometry, WorldMeshCullInput};
 
@@ -407,7 +410,10 @@ impl FramePreparedRenderables {
     }
 
     /// Refreshes renderer runs, run chunks, material keys, and prepared LOD groups from the current draw list.
-    fn refresh_runs_material_keys_and_chunks(&mut self, scene: Option<&SceneCoordinator>) {
+    fn refresh_runs_material_keys_and_chunks<S>(&mut self, scene: Option<&S>)
+    where
+        S: WorldMeshSceneRead + ?Sized,
+    {
         self.refresh_cached_space_draw_ranges();
         self.material_property_key_signature = populate_runs_and_material_keys(
             &self.draws,
@@ -647,7 +653,10 @@ impl FramePreparedRenderables {
     }
 
     /// Finalizes a retained snapshot rebuild by refreshing runs, chunks, and material keys.
-    pub(super) fn finish_cached_rebuild(&mut self, scene: &SceneCoordinator) {
+    pub(super) fn finish_cached_rebuild<S>(&mut self, scene: &S)
+    where
+        S: WorldMeshSceneRead + ?Sized,
+    {
         self.refresh_runs_material_keys_and_chunks(Some(scene));
     }
 
@@ -662,19 +671,19 @@ impl FramePreparedRenderables {
             self.push_cached_space(space_id);
             self.extend_cached_draws(draws);
         }
-        self.refresh_runs_material_keys_and_chunks(None);
+        self.refresh_runs_material_keys_and_chunks::<SceneCoordinator>(None);
     }
 }
 
 /// Assigns stable scene-table renderer ordinals to every prepared draw row.
 fn populate_renderer_ordinals_from_scene(
     draws: &mut [FramePreparedDraw],
-    scene: &SceneCoordinator,
+    scene: &(impl SceneMeshRendererRead + ?Sized),
 ) {
     for draw in draws {
         let static_count = scene
-            .space(draw.space_id)
-            .map_or(0, |space| space.static_mesh_renderers().len());
+            .static_mesh_renderers(draw.space_id)
+            .map_or(0, |renderers| renderers.len());
         draw.renderer_ordinal = if draw.skinned {
             static_count.saturating_add(draw.renderable_index)
         } else {

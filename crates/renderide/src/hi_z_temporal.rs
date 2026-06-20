@@ -8,14 +8,14 @@ use hashbrown::HashMap;
 use crate::camera::view_matrix_from_render_transform;
 use crate::cull_contract::{HiZTemporalState, WorldMeshCullProjParams};
 use crate::hi_z_cpu::hi_z_pyramid_dimensions;
-use crate::scene::SceneCoordinator;
+use crate::scene::{RenderSpaceRead, SceneSpaceRead};
 
 /// Records per-space views and pyramid viewport for the next frame's Hi-Z occlusion tests.
 ///
 /// When `explicit_world_to_view` is [`Some`], that matrix is stored for every active render
 /// space so Hi-Z tests use the same view as the offscreen depth author pass.
 pub fn capture_hi_z_temporal(
-    scene: &SceneCoordinator,
+    scene: &(impl SceneSpaceRead + ?Sized),
     prev_cull: &WorldMeshCullProjParams,
     full_viewport_px: (u32, u32),
     explicit_world_to_view: Option<Mat4>,

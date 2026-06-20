@@ -11,7 +11,10 @@ use crate::shared::{
     ReflectionProbeTimeSlicingMode, ReflectionProbeType,
 };
 
-use super::face::{finite_positive_or, host_camera_frame_for_probe_face, reflection_probe_clip};
+use super::face::{
+    finite_positive_or, host_camera_frame_for_probe_face, reflection_probe_clip,
+    reflection_probe_seamless_fov_degrees,
+};
 use super::*;
 
 #[test]
@@ -162,7 +165,20 @@ fn realtime_capture_scheduler_ignores_non_realtime_and_solid_color_states() {
 }
 
 #[test]
-fn probe_face_projection_is_square_ninety_degrees() {
+fn reflection_probe_seamless_fov_expands_regular_faces() {
+    assert_eq!(reflection_probe_seamless_fov_degrees(0), 90.0);
+    assert_eq!(reflection_probe_seamless_fov_degrees(1), 90.0);
+
+    let fov_degrees = reflection_probe_seamless_fov_degrees(256);
+    let edge_scale = 1.0 / (fov_degrees.to_radians() * 0.5).tan();
+
+    assert!(fov_degrees > 90.0);
+    assert!(fov_degrees < 91.0);
+    assert!((edge_scale - 255.0 / 256.0).abs() < 1e-6);
+}
+
+#[test]
+fn probe_face_projection_uses_seamless_cubemap_fov() {
     let frame = host_camera_frame_for_probe_face(
         &HostCameraFrame::default(),
         ReflectionProbeState {
@@ -177,9 +193,12 @@ fn probe_face_projection_is_square_ninety_degrees() {
     let view = frame
         .explicit_view
         .expect("probe face should use explicit camera view");
+    let expected_fov = reflection_probe_seamless_fov_degrees(256);
+    let expected_scale = 255.0 / 256.0;
 
-    assert!((view.proj.x_axis.x - 1.0).abs() < 1e-6);
-    assert!((view.proj.y_axis.y - 1.0).abs() < 1e-6);
+    assert!((frame.desktop_fov_degrees - expected_fov).abs() < 1e-6);
+    assert!((view.proj.x_axis.x - expected_scale).abs() < 1e-6);
+    assert!((view.proj.y_axis.y - expected_scale).abs() < 1e-6);
 }
 
 #[test]

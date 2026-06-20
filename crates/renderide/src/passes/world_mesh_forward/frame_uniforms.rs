@@ -6,7 +6,7 @@ use crate::camera::HostCameraFrame;
 use crate::frame_upload_batch::GraphUploadSink;
 use crate::gpu::frame_globals::FrameGpuUniforms;
 use crate::graph_inputs::{OffscreenWriteTarget, PerViewFramePlan};
-use crate::scene::SceneCoordinator;
+use crate::scene::SceneSpaceRead;
 use crate::world_mesh::cluster::{
     ClusterFrameParams, FrameGpuUniformBuildParams, cluster_frame_params,
     cluster_frame_params_stereo,
@@ -43,7 +43,7 @@ pub(super) fn write_per_view_frame_uniforms(
 ) {
     let uniforms = build_frame_gpu_uniforms(
         hc,
-        frame.systems.scene,
+        &frame.systems.scene,
         FrameUniformInputs {
             viewport_px: frame.view.viewport_px,
             light_count: frame
@@ -70,7 +70,7 @@ pub(super) fn write_per_view_frame_uniforms(
 /// Resolves cluster + camera-world scratch into [`FrameGpuUniforms`] for one view.
 fn build_frame_gpu_uniforms(
     hc: &HostCameraFrame,
-    scene: &SceneCoordinator,
+    scene: &(impl SceneSpaceRead + ?Sized),
     inputs: FrameUniformInputs,
 ) -> FrameGpuUniforms {
     let (vw, vh) = inputs.viewport_px;
@@ -148,6 +148,7 @@ mod tests {
     use super::*;
     use crate::camera::EyeView;
     use crate::gpu::frame_globals::SkyboxSpecularUniformParams;
+    use crate::scene::SceneCoordinator;
 
     fn projection_with_non_unit_y() -> Mat4 {
         Mat4::from_cols_array(&[

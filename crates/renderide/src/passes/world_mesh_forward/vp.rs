@@ -8,7 +8,7 @@ use crate::camera::{
     HostCameraFrame, overlay_camera_view_matrix, view_matrix_for_host_world_mesh_space,
 };
 use crate::materials::RasterPipelineKind;
-use crate::scene::SceneCoordinator;
+use crate::scene::SceneTransformRead;
 use crate::shared::RenderingContext;
 use crate::world_mesh::WorldMeshDrawItem;
 
@@ -126,7 +126,7 @@ fn select_model_for_vertex_stream(
 /// scales `VisualsRoot` against `WindowResolution` so the dash fits a unit-height ortho frustum
 /// centered on the view).
 fn resolved_model_matrix(
-    scene: &SceneCoordinator,
+    scene: &(impl SceneTransformRead + ?Sized),
     item: &WorldMeshDrawItem,
     hc: &HostCameraFrame,
     render_context: RenderingContext,
@@ -160,7 +160,7 @@ fn resolved_model_matrix(
 
 /// Resolves the model selection for `item`, avoiding scene matrix work when the shader needs identity.
 fn resolve_model_selection(
-    scene: &SceneCoordinator,
+    scene: &(impl SceneTransformRead + ?Sized),
     item: &WorldMeshDrawItem,
     hc: &HostCameraFrame,
     render_context: RenderingContext,
@@ -184,7 +184,7 @@ fn resolve_model_selection(
 /// projection comes from the dedicated overlay ortho built in
 /// [`crate::camera::WorldProjectionSet::from_scene_host`], not the world-camera projection.
 pub(crate) fn compute_per_draw_vp_matrices(
-    scene: &SceneCoordinator,
+    scene: &(impl SceneTransformRead + ?Sized),
     item: &WorldMeshDrawItem,
     hc: &HostCameraFrame,
     render_context: RenderingContext,

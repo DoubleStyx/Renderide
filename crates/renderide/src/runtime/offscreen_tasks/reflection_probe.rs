@@ -8,8 +8,8 @@ use crate::gpu::GpuContext;
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::render_graph::{GraphExecuteError, RenderPathProfile};
 use crate::scene::{
-    ReflectionProbeOnChangesRenderRequest, RenderSpaceId, RenderSpaceView, SceneCoordinator,
-    reflection_probe_skybox_only,
+    ReflectionProbeOnChangesRenderRequest, RenderSpaceId, RenderSpaceRead, SceneCoordinator,
+    SceneReflectionProbeRead, reflection_probe_skybox_only,
 };
 use crate::shared::{
     FrameSubmitData, ReflectionProbeRenderResult, ReflectionProbeRenderTask, ReflectionProbeState,
@@ -220,22 +220,25 @@ struct PlannedReflectionProbeTask {
     readback_layout: ProbeReadbackLayout,
 }
 
-fn active_reflection_probe_task_space(
-    scene: &SceneCoordinator,
+fn active_reflection_probe_task_space<S>(
+    scene: &S,
     render_space_id: RenderSpaceId,
-) -> Result<RenderSpaceView<'_>, ReflectionProbeBakeError> {
+) -> Result<(), ReflectionProbeBakeError>
+where
+    S: SceneReflectionProbeRead + ?Sized,
+{
     let space =
         scene
             .space(render_space_id)
             .ok_or(ReflectionProbeBakeError::MissingRenderSpace(
                 render_space_id.0,
             ))?;
-    if !space.is_active() {
+    if !RenderSpaceRead::is_active(space) {
         return Err(ReflectionProbeBakeError::InactiveRenderSpace(
             render_space_id.0,
         ));
     }
-    Ok(space)
+    Ok(())
 }
 
 impl RendererRuntime {
@@ -444,25 +447,31 @@ fn render_reflection_probe_task(
     write_probe_task_result(ctx.shm, &ctx.queued.task, &planned.readback_layout, &mapped)
 }
 
-fn plan_reflection_probe_task(
+fn plan_reflection_probe_task<S>(
     gpu: &GpuContext,
-    scene: &SceneCoordinator,
+    scene: &S,
     base_camera: &HostCameraFrame,
     queued: &QueuedReflectionProbeRenderTask,
     frame_time_seconds: f32,
-) -> Result<PlannedReflectionProbeTask, ReflectionProbeBakeError> {
+) -> Result<PlannedReflectionProbeTask, ReflectionProbeBakeError>
+where
+    S: SceneReflectionProbeRead + ?Sized,
+{
     profiling::scope!("reflection_probe_task::plan");
     let task = &queued.task;
     let extent = ProbeTaskExtent::from_task(task)?;
     let output_format = ProbeOutputFormat::from_hdr(task.hdr);
     let readback_layout =
         compute_probe_readback_layout(task, extent, output_format, gpu.limits().max_buffer_size())?;
-    let space = active_reflection_probe_task_space(scene, queued.render_space_id)?;
+    active_reflection_probe_task_space(scene, queued.render_space_id)?;
     let probe_index = usize::try_from(task.renderable_index)
         .map_err(|_err| ReflectionProbeBakeError::InvalidRenderableIndex(task.renderable_index))?;
-    let probe = space.reflection_probes().get(probe_index).ok_or(
-        ReflectionProbeBakeError::MissingProbe(task.renderable_index),
-    )?;
+    let probe = scene
+        .reflection_probes(queued.render_space_id)
+        .and_then(|probes| probes.get(probe_index))
+        .ok_or(ReflectionProbeBakeError::MissingProbe(
+            task.renderable_index,
+        ))?;
     let transform_index = usize::try_from(probe.transform_id)
         .map_err(|_err| ReflectionProbeBakeError::InvalidProbeTransform(probe.transform_id))?;
     let probe_world = scene

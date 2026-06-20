@@ -64,6 +64,7 @@ mod math;
 mod meshes;
 mod overrides;
 mod pose;
+mod read;
 mod reflection_probe;
 mod render_buffers;
 mod render_space;
@@ -83,17 +84,23 @@ pub use coordinator::{
 };
 pub use ids::RenderSpaceId;
 pub use lights::{ResolvedLight, light_contributes, light_has_negative_contribution};
-pub(crate) use lod_groups::{LodEntry, LodRendererKind, LodRendererRef};
+pub(crate) use lod_groups::{LodEntry, LodGroupEntry, LodRendererKind, LodRendererRef};
 pub use math::render_transform_to_matrix;
 pub use meshes::types::{
     MeshMaterialSlot, MeshRendererInstanceId, SkinnedMeshRenderer, StaticMeshRenderer,
 };
 pub use overrides::MeshRendererOverrideTarget;
+pub(crate) use read::{
+    MeshDeformSceneRead, RenderSpaceRead, SceneLightRead, SceneMeshRendererRead,
+    SceneReflectionProbeRead, SceneSpaceRead, SceneTransformRead, WorldMeshSceneRead,
+};
 pub(crate) use reflection_probe::changed_probe_completion;
 pub use reflection_probe::{
     DrainedReflectionProbeRenderChanges, ReflectionProbeEntry,
     ReflectionProbeOnChangesRenderRequest, reflection_probe_skybox_only,
     reflection_probe_solid_color, reflection_probe_use_box_projection,
 };
-pub(crate) use render_buffers::MeshRenderBufferEntry;
+pub(crate) use render_buffers::{
+    BillboardRenderBufferEntry, MeshRenderBufferEntry, TrailRenderBufferEntry,
+};
 pub use render_space::RenderSpaceView;

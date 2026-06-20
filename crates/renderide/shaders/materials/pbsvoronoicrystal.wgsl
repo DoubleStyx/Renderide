@@ -31,6 +31,7 @@
 #import renderide::core::uv as uvu
 #import renderide::core::normal_decode as nd
 #import renderide::material::voronoi as vor
+#import renderide::core::texture_sampling as ts
 
 struct PbsVoronoiCrystalMaterial {
     _ColorTint: vec4<f32>,
@@ -48,6 +49,10 @@ struct PbsVoronoiCrystalMaterial {
     _AnimationOffset: f32,
     _Glossiness: f32,
     _Metallic: f32,
+    _ColorGradient_LodBias: f32,
+    _EmissionGradient_LodBias: f32,
+    _GlossGradient_LodBias: f32,
+    _NormalMap_LodBias: f32,
 }
 
 @group(1) @binding(0)  var<uniform> mat: PbsVoronoiCrystalMaterial;
@@ -125,20 +130,20 @@ fn shade(
     let edge_dir = normalize(vec2<f32>(dpdx(border_dist), dpdy(border_dist))) * mat._EdgeNormalStrength;
     let edge_normal_ts = normalize(vec3<f32>(edge_dir, 1.0));
     let cell_normal_ts = nd::decode_ts_normal_with_placeholder_sample(
-        textureSample(_NormalMap, _NormalMap_sampler, uv_normal + v_result.min_point),
+        ts::sample_tex_2d(_NormalMap, _NormalMap_sampler, uv_normal + v_result.min_point, mat._NormalMap_LodBias),
         mat._NormalStrength,
     );
     let n_blend_ts = mix(edge_normal_ts, cell_normal_ts, border_lerp);
     let tbn = pnorm::orthonormal_tbn(world_n, world_t);
     let n = normalize(tbn * n_blend_ts);
 
-    let cell_color = textureSample(_ColorGradient, _ColorGradient_sampler, cell_offset).rgb * mat._ColorTint.rgb;
+    let cell_color = ts::sample_tex_2d(_ColorGradient, _ColorGradient_sampler, cell_offset, mat._ColorGradient_LodBias).rgb * mat._ColorTint.rgb;
     let base_color = mix(mat._EdgeColor.rgb, cell_color, border_lerp);
     let metallic = clamp(mix(mat._EdgeMetallic, mat._Metallic, border_lerp), 0.0, 1.0);
-    let gloss_sample = textureSample(_GlossGradient, _GlossGradient_sampler, v_result.min_point).x;
+    let gloss_sample = ts::sample_tex_2d(_GlossGradient, _GlossGradient_sampler, v_result.min_point, mat._GlossGradient_LodBias).x;
     let smoothness = clamp(mix(mat._EdgeGloss, mat._Glossiness * gloss_sample, border_lerp), 0.0, 1.0);
     let roughness = psamp::roughness_from_smoothness(smoothness);
-    let cell_emission = textureSample(_EmissionGradient, _EmissionGradient_sampler, cell_offset).rgb * mat._EmissionColor.rgb;
+    let cell_emission = ts::sample_tex_2d(_EmissionGradient, _EmissionGradient_sampler, cell_offset, mat._EmissionGradient_LodBias).rgb * mat._EmissionColor.rgb;
     let emission = mix(mat._EdgeEmission.rgb, cell_emission, border_lerp);
 
     let surface = psurf::metallic_with_geometric_normal(

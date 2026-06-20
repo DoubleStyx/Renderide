@@ -11,6 +11,7 @@
 use std::ops::Range;
 use std::sync::Arc;
 
+use glam::Mat4;
 use hashbrown::HashSet;
 use parking_lot::Mutex;
 
@@ -33,8 +34,13 @@ use crate::mesh_deform::{
 };
 use crate::occlusion::OcclusionGraphHook;
 use crate::occlusion::gpu::HiZGpuState;
-use crate::scene::SceneCoordinator;
-use crate::shared::RenderingContext;
+use crate::scene::{
+    BillboardRenderBufferEntry, LodGroupEntry, MeshRenderBufferEntry, ReflectionProbeEntry,
+    RenderSpaceId, RenderSpaceView, ResolvedLight, SceneCoordinator, SceneLightRead,
+    SceneMeshRendererRead, SceneReflectionProbeRead, SceneSpaceRead, SceneTransformRead,
+    SkinnedMeshRenderer, StaticMeshRenderer, TrailRenderBufferEntry, WorldMeshSceneRead,
+};
+use crate::shared::{LayerType, RenderSH2, RenderingContext};
 
 /// Cloned references to the shared clustered-light storage buffers.
 #[derive(Clone)]
@@ -94,8 +100,46 @@ pub struct FrameGlobalSplitPassEncodeParams<'a, 'encoder> {
     pub profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
 }
 
-/// Graph-facing access to renderer frame resources.
-pub trait GraphFrameResources: Send + Sync {
+/// Renderer-owned frame-global passes with backend resource routing.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum FrameGlobalResourcePass {
+    /// Frame-global mesh deformation compute.
+    MeshDeform,
+    /// Frame-global light-cookie atlas synchronization.
+    LightCookieAtlas,
+    /// Frame-global realtime shadow atlas rendering.
+    ShadowAtlas,
+}
+
+/// Aggregate graph-facing access to renderer frame resources.
+pub trait GraphFrameResources:
+    GraphFrameBindings
+    + GraphPerDrawSlabResources
+    + GraphSceneSnapshotResources
+    + GraphMeshDeformResources
+    + GraphFrameGlobalResources
+    + GraphPreRecordFrameResources
+    + GraphSubmitResourceRetention
+    + Send
+    + Sync
+{
+}
+
+impl<T> GraphFrameResources for T where
+    T: GraphFrameBindings
+        + GraphPerDrawSlabResources
+        + GraphSceneSnapshotResources
+        + GraphMeshDeformResources
+        + GraphFrameGlobalResources
+        + GraphPreRecordFrameResources
+        + GraphSubmitResourceRetention
+        + Send
+        + Sync
+{
+}
+
+/// Graph-facing access to per-frame bind groups, buffers, and shared frame constants.
+pub trait GraphFrameBindings {
     /// Whether frame-global GPU resources were attached.
     fn has_frame_gpu(&self) -> bool;
 
@@ -129,6 +173,15 @@ pub trait GraphFrameResources: Send + Sync {
         view_id: ViewId,
     ) -> Option<Arc<wgpu::BindGroup>>;
 
+    /// Empty material bind group used by shaders without per-material resources.
+    fn empty_material_bind_group(&self) -> Option<Arc<wgpu::BindGroup>>;
+
+    /// Uniform parameters for the active skybox/reflection-probe specular source.
+    fn skybox_specular_uniform_params(&self) -> SkyboxSpecularUniformParams;
+}
+
+/// Graph-facing access to per-view per-draw slab storage and packing scratch.
+pub trait GraphPerDrawSlabResources {
     /// Ensures this view's per-draw slab can hold `draw_count` rows and returns its storage buffer.
     fn ensure_per_view_per_draw_capacity(
         &self,
@@ -161,10 +214,10 @@ pub trait GraphFrameResources: Send + Sync {
 
     /// Per-view per-draw bind group.
     fn per_view_per_draw_bind_group(&self, view_id: ViewId) -> Option<Arc<wgpu::BindGroup>>;
+}
 
-    /// Empty material bind group used by shaders without per-material resources.
-    fn empty_material_bind_group(&self) -> Option<Arc<wgpu::BindGroup>>;
-
+/// Graph-facing access to scene-depth and scene-color snapshot copies.
+pub trait GraphSceneSnapshotResources {
     /// Copies the current depth attachment into this view's sampled scene-depth snapshot.
     fn copy_scene_depth_snapshot_for_view(
         &self,
@@ -194,10 +247,10 @@ pub trait GraphFrameResources: Send + Sync {
         viewport: (u32, u32),
         multiview: bool,
     ) -> bool;
+}
 
-    /// Uniform parameters for the active skybox/reflection-probe specular source.
-    fn skybox_specular_uniform_params(&self) -> SkyboxSpecularUniformParams;
-
+/// Graph-facing access to mesh-deform submission state and visibility filters.
+pub trait GraphMeshDeformResources {
     /// Whether mesh deform has already recorded work for this graph submission.
     fn mesh_deform_dispatched_this_submission(&self) -> bool;
 
@@ -206,10 +259,10 @@ pub trait GraphFrameResources: Send + Sync {
 
     /// Cloned visible mesh-deform filter for this submission's frame-global deform collection.
     fn visible_mesh_deform_keys_snapshot(&self) -> Option<HashSet<SkinCacheKey>>;
+}
 
-    /// Whether a named frame-global pass has no work for the current graph submission.
-    fn frame_global_pass_is_inactive(&self, pass_name: &str) -> bool;
-
+/// Graph-facing pre-record allocation hooks for per-view frame resources.
+pub trait GraphPreRecordFrameResources {
     /// Ensures per-view frame bind resources are resident.
     fn ensure_per_view_frame_resources(
         &mut self,
@@ -227,9 +280,18 @@ pub trait GraphFrameResources: Send + Sync {
 
     /// Ensures per-view per-draw CPU scratch is resident.
     fn ensure_per_view_per_draw_scratch(&mut self, view_id: ViewId);
+}
 
+/// Graph-facing resource retention for command buffers submitted after recording.
+pub trait GraphSubmitResourceRetention {
     /// Retains frame-owned GPU handles that may be referenced by recorded command buffers.
     fn retain_submit_resources(&self, resources: &mut GpuRetainedResources);
+}
+
+/// Graph-facing hooks for backend-owned frame-global atlas and split-recording resources.
+pub trait GraphFrameGlobalResources {
+    /// Whether a typed frame-global pass has no work for the current graph submission.
+    fn frame_global_pass_is_inactive(&self, pass: FrameGlobalResourcePass) -> bool;
 
     /// Whether any light-cookie atlas layers need frame-global synchronization.
     fn has_light_cookie_requests(&self) -> bool;
@@ -252,7 +314,7 @@ pub trait GraphFrameResources: Send + Sync {
     /// Returns split-recording workload for a frame-global pass, when supported this frame.
     fn frame_global_pass_split_workload(
         &self,
-        _pass_name: &str,
+        _pass: FrameGlobalResourcePass,
     ) -> Option<FrameGlobalPassSplitWorkload> {
         None
     }
@@ -260,7 +322,7 @@ pub trait GraphFrameResources: Send + Sync {
     /// Performs serial upload prep for a split-recorded frame-global pass.
     fn prepare_frame_global_split_pass(
         &self,
-        _pass_name: &str,
+        _pass: FrameGlobalResourcePass,
         _gpu_limits: &GpuLimits,
         _uploads: GraphUploadSink<'_>,
     ) -> bool {
@@ -270,7 +332,7 @@ pub trait GraphFrameResources: Send + Sync {
     /// Records one ordered unit range for a split-recorded frame-global pass.
     fn encode_frame_global_split_pass(
         &self,
-        _pass_name: &str,
+        _pass: FrameGlobalResourcePass,
         _unit_range: Range<usize>,
         _params: FrameGlobalSplitPassEncodeParams<'_, '_>,
     ) -> bool {
@@ -412,9 +474,208 @@ impl<'a> GraphSceneView<'a> {
         Self { coordinator }
     }
 
-    /// Unwraps the typed scene borrow for pass-facing frame contracts.
-    pub(crate) fn coordinator(self) -> &'a SceneCoordinator {
-        self.coordinator
+    /// Returns the pass-facing read contract for this frame's scene.
+    pub(crate) fn frame_read(self) -> FrameSceneRead<'a> {
+        FrameSceneRead::new(self.coordinator)
+    }
+}
+
+/// Pass-facing read-only scene borrow for one frame.
+///
+/// This wraps the concrete coordinator at the graph boundary and exposes only the existing
+/// render-facing read traits to passes and per-view frame contracts.
+#[derive(Clone, Copy)]
+pub struct FrameSceneRead<'a> {
+    /// Flushed scene coordinator for the frame being recorded.
+    coordinator: &'a SceneCoordinator,
+}
+
+impl<'a> FrameSceneRead<'a> {
+    /// Wraps the flushed scene for pass-facing frame contracts.
+    pub(crate) fn new(coordinator: &'a SceneCoordinator) -> Self {
+        Self { coordinator }
+    }
+}
+
+impl SceneSpaceRead for FrameSceneRead<'_> {
+    type Space<'a>
+        = RenderSpaceView<'a>
+    where
+        Self: 'a;
+    type RenderSpaceIds<'a>
+        = std::vec::IntoIter<RenderSpaceId>
+    where
+        Self: 'a;
+
+    fn render_space_ids(&self) -> Self::RenderSpaceIds<'_> {
+        SceneSpaceRead::render_space_ids(self.coordinator)
+    }
+
+    fn space(&self, id: RenderSpaceId) -> Option<Self::Space<'_>> {
+        SceneSpaceRead::space(self.coordinator, id)
+    }
+
+    fn active_main_space(&self) -> Option<Self::Space<'_>> {
+        SceneSpaceRead::active_main_space(self.coordinator)
+    }
+
+    fn active_main_ambient_light(&self) -> RenderSH2 {
+        SceneSpaceRead::active_main_ambient_light(self.coordinator)
+    }
+
+    fn active_main_render_context(&self) -> RenderingContext {
+        SceneSpaceRead::active_main_render_context(self.coordinator)
+    }
+
+    fn render_context_affects_draw_prep(&self, context: RenderingContext) -> bool {
+        SceneSpaceRead::render_context_affects_draw_prep(self.coordinator, context)
+    }
+}
+
+impl SceneTransformRead for FrameSceneRead<'_> {
+    fn world_matrix_for_context(
+        &self,
+        id: RenderSpaceId,
+        transform_index: usize,
+        context: RenderingContext,
+    ) -> Option<Mat4> {
+        SceneTransformRead::world_matrix_for_context(self.coordinator, id, transform_index, context)
+    }
+
+    fn world_matrix_for_render_context(
+        &self,
+        id: RenderSpaceId,
+        transform_index: usize,
+        context: RenderingContext,
+        head_output_transform: Mat4,
+    ) -> Option<Mat4> {
+        SceneTransformRead::world_matrix_for_render_context(
+            self.coordinator,
+            id,
+            transform_index,
+            context,
+            head_output_transform,
+        )
+    }
+
+    fn overlay_layer_model_matrix_for_context(
+        &self,
+        id: RenderSpaceId,
+        transform_index: usize,
+        context: RenderingContext,
+    ) -> Option<Mat4> {
+        SceneTransformRead::overlay_layer_model_matrix_for_context(
+            self.coordinator,
+            id,
+            transform_index,
+            context,
+        )
+    }
+
+    fn transform_special_layer(
+        &self,
+        id: RenderSpaceId,
+        transform_index: usize,
+    ) -> Option<LayerType> {
+        SceneTransformRead::transform_special_layer(self.coordinator, id, transform_index)
+    }
+
+    fn transform_is_in_overlay_layer(&self, id: RenderSpaceId, transform_index: usize) -> bool {
+        SceneTransformRead::transform_is_in_overlay_layer(self.coordinator, id, transform_index)
+    }
+
+    fn transform_has_degenerate_scale_for_context(
+        &self,
+        id: RenderSpaceId,
+        transform_index: usize,
+        context: RenderingContext,
+    ) -> bool {
+        SceneTransformRead::transform_has_degenerate_scale_for_context(
+            self.coordinator,
+            id,
+            transform_index,
+            context,
+        )
+    }
+
+    fn overridden_material_asset_id(
+        &self,
+        space_id: RenderSpaceId,
+        context: RenderingContext,
+        skinned: bool,
+        renderable_index: usize,
+        slot_index: usize,
+    ) -> Option<i32> {
+        SceneTransformRead::overridden_material_asset_id(
+            self.coordinator,
+            space_id,
+            context,
+            skinned,
+            renderable_index,
+            slot_index,
+        )
+    }
+}
+
+impl SceneMeshRendererRead for FrameSceneRead<'_> {
+    fn static_mesh_renderers(&self, id: RenderSpaceId) -> Option<&[StaticMeshRenderer]> {
+        SceneMeshRendererRead::static_mesh_renderers(self.coordinator, id)
+    }
+
+    fn skinned_mesh_renderers(&self, id: RenderSpaceId) -> Option<&[SkinnedMeshRenderer]> {
+        SceneMeshRendererRead::skinned_mesh_renderers(self.coordinator, id)
+    }
+}
+
+impl WorldMeshSceneRead for FrameSceneRead<'_> {
+    fn lod_groups(&self, id: RenderSpaceId) -> Option<&[LodGroupEntry]> {
+        WorldMeshSceneRead::lod_groups(self.coordinator, id)
+    }
+
+    fn billboard_render_buffers(&self, id: RenderSpaceId) -> Option<&[BillboardRenderBufferEntry]> {
+        WorldMeshSceneRead::billboard_render_buffers(self.coordinator, id)
+    }
+
+    fn mesh_render_buffers(&self, id: RenderSpaceId) -> Option<&[MeshRenderBufferEntry]> {
+        WorldMeshSceneRead::mesh_render_buffers(self.coordinator, id)
+    }
+
+    fn trail_render_buffers(&self, id: RenderSpaceId) -> Option<&[TrailRenderBufferEntry]> {
+        WorldMeshSceneRead::trail_render_buffers(self.coordinator, id)
+    }
+}
+
+impl SceneReflectionProbeRead for FrameSceneRead<'_> {
+    fn reflection_probes(&self, id: RenderSpaceId) -> Option<&[ReflectionProbeEntry]> {
+        SceneReflectionProbeRead::reflection_probes(self.coordinator, id)
+    }
+}
+
+impl SceneLightRead for FrameSceneRead<'_> {
+    fn resolve_lights_for_render_context_into(
+        &self,
+        id: RenderSpaceId,
+        context: RenderingContext,
+        head_output_transform: Mat4,
+        out: &mut Vec<ResolvedLight>,
+    ) {
+        SceneLightRead::resolve_lights_for_render_context_into(
+            self.coordinator,
+            id,
+            context,
+            head_output_transform,
+            out,
+        );
+    }
+
+    fn candidate_light_count_for_render_space_filter(
+        &self,
+        render_space_filter: Option<RenderSpaceId>,
+    ) -> usize {
+        SceneLightRead::candidate_light_count_for_render_space_filter(
+            self.coordinator,
+            render_space_filter,
+        )
     }
 }
 
@@ -422,8 +683,8 @@ impl<'a> GraphSceneView<'a> {
 ///
 /// Shared systems borrowed by render graph passes while recording one frame.
 pub struct FrameSystemsShared<'a> {
-    /// World caches and mesh renderables after [`SceneCoordinator::flush_world_caches`].
-    pub scene: &'a SceneCoordinator,
+    /// World caches and mesh renderables exposed through pass-facing read contracts.
+    pub scene: FrameSceneRead<'a>,
     /// Hi-Z pyramid GPU/CPU state and temporal culling for this frame.
     pub occlusion: &'a dyn OcclusionGraphHook,
     /// Per-frame `@group(0/1/2)` binds, lights, per-draw slab, and CPU light scratch.

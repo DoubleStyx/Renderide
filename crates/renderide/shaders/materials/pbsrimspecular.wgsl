@@ -27,6 +27,7 @@
 #import renderide::pbs::sampling as psamp
 #import renderide::pbs::surface as psurf
 #import renderide::core::uv as uvu
+#import renderide::core::texture_sampling as ts
 
 struct PbsRimSpecularMaterial {
     _Color: vec4<f32>,
@@ -37,6 +38,11 @@ struct PbsRimSpecularMaterial {
     _NormalScale: f32,
     _RimPower: f32,
     _RenderideVariantBits: u32,
+    _NormalMap_LodBias: f32,
+    _EmissionMap_LodBias: f32,
+    _MainTex_LodBias: f32,
+    _OcclusionMap_LodBias: f32,
+    _SpecularMap_LodBias: f32,
 }
 
 const PBSRIMSPECULAR_KW_ALBEDOTEX: u32 = 1u << 0u;
@@ -67,7 +73,7 @@ fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32
         _NormalMap,
         _NormalMap_sampler,
         uv_main,
-        0.0,
+        mat._NormalMap_LodBias,
         mat._NormalScale,
         world_n,
         world_t,
@@ -106,14 +112,14 @@ fn fs_main(
 
     var albedo = mat._Color;
     if (pbs_kw(PBSRIMSPECULAR_KW_ALBEDOTEX)) {
-        albedo = albedo * textureSample(_MainTex, _MainTex_sampler, uv_main);
+        albedo = albedo * ts::sample_tex_2d(_MainTex, _MainTex_sampler, uv_main, mat._MainTex_LodBias);
     }
     let base_color = albedo.xyz;
     let alpha = albedo.a;
 
     var spec = mat._SpecularColor;
     if (pbs_kw(PBSRIMSPECULAR_KW_SPECULARMAP)) {
-        spec = textureSample(_SpecularMap, _SpecularMap_sampler, uv_main);
+        spec = ts::sample_tex_2d(_SpecularMap, _SpecularMap_sampler, uv_main, mat._SpecularMap_LodBias);
     }
     let f0 = clamp(spec.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
     let smoothness = clamp(spec.a, 0.0, 1.0);
@@ -121,14 +127,14 @@ fn fs_main(
 
     var occlusion = 1.0;
     if (pbs_kw(PBSRIMSPECULAR_KW_OCCLUSION)) {
-        occlusion = textureSample(_OcclusionMap, _OcclusionMap_sampler, uv_main).x;
+        occlusion = ts::sample_tex_2d(_OcclusionMap, _OcclusionMap_sampler, uv_main, mat._OcclusionMap_LodBias).x;
     }
 
     let n = sample_normal_world(uv_main, world_n, world_t);
 
     var emission = mat._EmissionColor.xyz;
     if (pbs_kw(PBSRIMSPECULAR_KW_EMISSIONTEX)) {
-        emission = emission * textureSample(_EmissionMap, _EmissionMap_sampler, uv_main).xyz;
+        emission = emission * ts::sample_tex_2d(_EmissionMap, _EmissionMap_sampler, uv_main, mat._EmissionMap_LodBias).xyz;
     }
 
     let view_dir = rg::view_dir_for_world_pos(world_pos, view_layer);

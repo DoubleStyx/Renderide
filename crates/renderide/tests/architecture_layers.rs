@@ -57,6 +57,7 @@ const ROOT_MODULES: &[&str] = &[
     "shared",
     "skybox",
     "upload_arena",
+    "upload_stats",
     "world_mesh",
     "xr",
 ];

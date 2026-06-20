@@ -3,8 +3,8 @@
 use logger::LogLevel;
 
 use crate::config::{
-    ConfigFilePolicy, ConfigLoadResult, GraphicsApiSetting, VsyncMode, load_renderer_settings,
-    log_config_resolve_trace,
+    ConfigFilePolicy, ConfigLoadResult, GraphicsApiSetting, PresentationModeSetting,
+    load_renderer_settings, log_config_resolve_trace,
 };
 use crate::ipc::get_ignore_config;
 
@@ -14,8 +14,8 @@ pub(crate) const MAX_FRAME_LATENCY: u32 = 2;
 /// Initial GPU/swapchain knobs read once during process bootstrap.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct GpuStartupConfig {
-    /// Initial vsync preference resolved against surface capabilities by `GpuContext`.
-    pub(crate) vsync: VsyncMode,
+    /// Initial presentation mode resolved against surface capabilities by `GpuContext`.
+    pub(crate) presentation_mode: PresentationModeSetting,
     /// Initial maximum swapchain frame latency.
     pub(crate) max_frame_latency: u32,
     /// Whether to enable wgpu/Vulkan validation layers at startup.
@@ -98,7 +98,7 @@ pub(crate) fn load_app_config(log_level_cli: Option<LogLevel>) -> AppConfig {
     log_config_resolve_trace(&load.resolve);
 
     let gpu = GpuStartupConfig {
-        vsync: load.settings.rendering.vsync,
+        presentation_mode: load.settings.rendering.presentation_mode,
         max_frame_latency: MAX_FRAME_LATENCY,
         gpu_validation_layers: load.settings.debug.gpu_validation_layers,
         power_preference: load.settings.debug.power_preference.to_wgpu(),
@@ -116,7 +116,7 @@ fn log_startup_config_summary(
 ) {
     let settings = &load.settings;
     logger::info!(
-        "Renderer config summary: source={:?} loaded_path={} save_path={} suppress_disk_writes={} log_verbose={} log_level={:?} log_level_source={} vsync={:?} graphics_api={} gpu_validation={} power_preference={} msaa={} scene_color={:?} post_processing_enabled={} gtao={} bloom={} motion_blur={} auto_exposure={} tonemap={} watchdog_enabled={}",
+        "Renderer config summary: source={:?} loaded_path={} save_path={} suppress_disk_writes={} log_verbose={} log_level={:?} log_level_source={} presentation_mode={} graphics_api={} gpu_validation={} power_preference={} msaa={} scene_color={:?} post_processing_enabled={} gtao={} bloom={} motion_blur={} auto_exposure={} tonemap={} watchdog_enabled={}",
         load.resolve.source,
         load.resolve
             .loaded_path
@@ -128,7 +128,7 @@ fn log_startup_config_summary(
         settings.debug.log_verbose,
         log_level.level,
         log_level.source.as_str(),
-        gpu.vsync,
+        gpu.presentation_mode.persist_str(),
         gpu.graphics_api.as_persist_str(),
         gpu.gpu_validation_layers,
         settings.debug.power_preference.persist_str(),
@@ -197,7 +197,7 @@ mod tests {
             suppress_config_disk_writes: false,
         };
         let gpu = GpuStartupConfig {
-            vsync: load.settings.rendering.vsync,
+            presentation_mode: load.settings.rendering.presentation_mode,
             max_frame_latency: MAX_FRAME_LATENCY,
             gpu_validation_layers: load.settings.debug.gpu_validation_layers,
             power_preference: load.settings.debug.power_preference.to_wgpu(),

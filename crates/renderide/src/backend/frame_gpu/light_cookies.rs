@@ -21,5 +21,5 @@ mod tests;
 /// Cubemap face count.
 pub(super) const POINT_COOKIE_FACE_COUNT: u32 = 6;
 
-pub(crate) use pass::{LIGHT_COOKIE_ATLAS_PASS_NAME, LightCookieAtlasPass};
+pub(crate) use pass::LightCookieAtlasPass;
 pub(super) use resources::LightCookieAtlasResources;

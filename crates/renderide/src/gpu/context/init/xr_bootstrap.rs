@@ -14,14 +14,14 @@ use super::shared::{
     GpuContextParts, GpuRuntimeHandles, adapter_info_field_or_unreported, assemble_context,
     log_device_capability_summary,
 };
-use crate::config::VsyncMode;
+use crate::config::PresentationModeSetting;
 use crate::gpu::flight_recorder::GpuFlightRecorder;
 use crate::gpu::submission_state::GpuSubmissionState;
 
 impl GpuContext {
     /// Builds GPU state using an existing wgpu instance/device from OpenXR bootstrap (mirror window).
     ///
-    /// The mirror surface uses the same capability-aware [`VsyncMode`] mapping and fixed
+    /// The mirror surface uses the same capability-aware [`PresentationModeSetting`] mapping and fixed
     /// `max_frame_latency` semantics as the desktop constructor so windowed presentation behaves
     /// consistently across desktop and VR startup paths.
     pub fn new_from_openxr_bootstrap(
@@ -30,13 +30,13 @@ impl GpuContext {
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
         window: Arc<dyn Window>,
-        vsync: VsyncMode,
+        presentation_mode: PresentationModeSetting,
         max_frame_latency: u32,
     ) -> Result<Self, GpuError> {
         let requested_size = window.surface_size();
         logger::info!(
-            "GPU startup request (OpenXR mirror): vsync={:?} max_frame_latency={} initial_extent={}x{}",
-            vsync,
+            "GPU startup request (OpenXR mirror): presentation_mode={:?} max_frame_latency={} initial_extent={}x{}",
+            presentation_mode,
             max_frame_latency,
             requested_size.width,
             requested_size.height,
@@ -63,7 +63,7 @@ impl GpuContext {
         let mut config = surface_safe
             .get_default_config(adapter, size.width.max(1), size.height.max(1))
             .ok_or(GpuError::SurfaceUnsupported)?;
-        config.present_mode = vsync.resolve_present_mode(&supported_present_modes);
+        config.present_mode = presentation_mode.resolve_present_mode(&supported_present_modes);
         config.desired_maximum_frame_latency = max_frame_latency;
         GpuContext::configure_surface_checked(&surface_safe, device.as_ref(), &config)
             .map_err(GpuError::SurfaceConfigure)?;
@@ -79,7 +79,7 @@ impl GpuContext {
         log_openxr_gpu_selection_summary(
             &adapter_info,
             &config,
-            vsync,
+            presentation_mode,
             &supported_present_modes,
             &msaa,
         );
@@ -127,12 +127,12 @@ impl GpuContext {
 fn log_openxr_gpu_selection_summary(
     adapter_info: &wgpu::AdapterInfo,
     config: &wgpu::SurfaceConfiguration,
-    vsync: VsyncMode,
+    presentation_mode: PresentationModeSetting,
     supported_present_modes: &[wgpu::PresentMode],
     msaa: &MsaaSupport,
 ) {
     logger::info!(
-        "GPU (OpenXR path): adapter={} type={:?} backend={:?} vendor={:#010x} device={:#010x} pci_bus_id={} driver={} driver_info={} extent={}x{} format={:?} vsync={:?} present_mode={:?} \
+        "GPU (OpenXR path): adapter={} type={:?} backend={:?} vendor={:#010x} device={:#010x} pci_bus_id={} driver={} driver_info={} extent={}x{} format={:?} presentation_mode={:?} present_mode={:?} \
          supported_present_modes={:?} desired_maximum_frame_latency={} \
          msaa_supported_sample_counts={:?} msaa_max_sample_count={} \
          msaa_supported_sample_counts_stereo={:?} msaa_max_sample_count_stereo={}",
@@ -147,7 +147,7 @@ fn log_openxr_gpu_selection_summary(
         config.width,
         config.height,
         config.format,
-        vsync,
+        presentation_mode,
         config.present_mode,
         supported_present_modes,
         config.desired_maximum_frame_latency,

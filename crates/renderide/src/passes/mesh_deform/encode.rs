@@ -16,7 +16,7 @@ use glam::Mat4;
 use crate::frame_upload_batch::GraphUploadSink;
 use crate::gpu::GpuLimits;
 use crate::mesh_deform::{DeformSignature, EntryNeed, SkinCacheEntry};
-use crate::scene::RenderSpaceId;
+use crate::scene::{RenderSpaceId, SceneTransformRead};
 use crate::shared::SkinWeightMode;
 
 use super::snapshot::{
@@ -50,9 +50,9 @@ pub(super) struct MeshDeformEncodeGpu<'a> {
 }
 
 /// Scene, mesh snapshot, slab cursors, and GPU skin cache subranges for one deform work item.
-pub(super) struct MeshDeformRecordInputs<'a, 'b> {
+pub(super) struct MeshDeformRecordInputs<'a, 'b, S: SceneTransformRead + Sync + ?Sized> {
     /// Scene graph for bone palette resolution.
-    pub scene: &'a crate::scene::SceneCoordinator,
+    pub scene: &'a S,
     /// Active render space for the mesh.
     pub space_id: RenderSpaceId,
     /// GPU snapshot of mesh buffers and skinning metadata.
@@ -154,11 +154,14 @@ pub(super) struct MeshDeformRecordResult {
 }
 
 /// Records blendshape and / or skinning compute for one deform work item.
-pub(super) fn record_mesh_deform(
+pub(super) fn record_mesh_deform<S>(
     gpu: &mut MeshDeformEncodeGpu<'_>,
-    inputs: MeshDeformRecordInputs<'_, '_>,
+    inputs: MeshDeformRecordInputs<'_, '_, S>,
     batch: &mut MeshDeformDispatchBatch,
-) -> MeshDeformRecordResult {
+) -> MeshDeformRecordResult
+where
+    S: SceneTransformRead + Sync + ?Sized,
+{
     profiling::scope!("mesh_deform::record");
     let Some(deform_guard) = validate_deform_preconditions(
         inputs.mesh,
@@ -260,10 +263,13 @@ pub(super) fn record_mesh_deform(
 }
 
 /// Returns the byte length of the prepared skinning palette for one record item.
-fn prepared_skinning_palette_len(
+fn prepared_skinning_palette_len<S>(
     gpu: &mut MeshDeformEncodeGpu<'_>,
-    inputs: &MeshDeformRecordInputs<'_, '_>,
-) -> Option<u64> {
+    inputs: &MeshDeformRecordInputs<'_, '_, S>,
+) -> Option<u64>
+where
+    S: SceneTransformRead + Sync + ?Sized,
+{
     if let Some(bytes) = inputs.prepared_skinning_palette_bytes
         && !bytes.is_empty()
     {

@@ -305,7 +305,7 @@ fn create_desktop_target(
     pollster::block_on(GpuContext::new(
         Arc::clone(window),
         display_handle,
-        startup_gpu.vsync,
+        startup_gpu.presentation_mode,
         startup_gpu.max_frame_latency,
         startup_gpu.gpu_validation_layers,
         startup_gpu.power_preference,
@@ -339,7 +339,7 @@ fn create_openxr_target(
         Arc::clone(&handles.device),
         Arc::clone(&handles.queue),
         Arc::clone(window),
-        startup_gpu.vsync,
+        startup_gpu.presentation_mode,
         startup_gpu.max_frame_latency,
     )
     .map_err(TargetInitError::OpenxrMirrorSurface)?;

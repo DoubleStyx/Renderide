@@ -3,7 +3,7 @@
 use glam::{Mat4, Vec3};
 
 use crate::scene::render_transform_to_matrix;
-use crate::scene::{RenderSpaceView, SceneCoordinator};
+use crate::scene::{RenderSpaceRead, SceneSpaceRead};
 use crate::shared::RenderTransform;
 
 use super::host_camera_frame::HostCameraFrame;
@@ -43,10 +43,10 @@ pub fn view_matrix_from_render_transform(tr: &RenderTransform) -> Mat4 {
 /// [`SceneCoordinator::world_matrix_for_render_context`]; the camera view must therefore match the
 /// active main (non-overlay) space, not the overlay space's own view transform (Unity-style
 /// head output + overlay positioning parity).
-pub fn view_matrix_for_world_mesh_render_space(
-    scene: &SceneCoordinator,
-    space: RenderSpaceView<'_>,
-) -> Mat4 {
+pub fn view_matrix_for_world_mesh_render_space<S>(scene: &S, space: S::Space<'_>) -> Mat4
+where
+    S: SceneSpaceRead + ?Sized,
+{
     if space.is_overlay() {
         scene.active_main_space().map_or_else(
             || view_matrix_from_render_transform(space.view_transform()),
@@ -58,11 +58,14 @@ pub fn view_matrix_for_world_mesh_render_space(
 }
 
 /// World-to-view for mesh rendering, honoring an explicit camera override when present.
-pub fn view_matrix_for_host_world_mesh_space(
-    scene: &SceneCoordinator,
-    space: RenderSpaceView<'_>,
+pub fn view_matrix_for_host_world_mesh_space<S>(
+    scene: &S,
+    space: S::Space<'_>,
     host_camera: &HostCameraFrame,
-) -> Mat4 {
+) -> Mat4
+where
+    S: SceneSpaceRead + ?Sized,
+{
     host_camera
         .explicit_world_to_view()
         .unwrap_or_else(|| view_matrix_for_world_mesh_render_space(scene, space))
@@ -70,7 +73,7 @@ pub fn view_matrix_for_host_world_mesh_space(
 
 /// Left/right world-to-view matrices used by skybox ray reconstruction.
 pub fn world_to_view_pair_for_skybox(
-    scene: &SceneCoordinator,
+    scene: &(impl SceneSpaceRead + ?Sized),
     host_camera: &HostCameraFrame,
 ) -> (Mat4, Mat4) {
     if let Some(stereo) = host_camera.active_stereo() {

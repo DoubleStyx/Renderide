@@ -11,7 +11,7 @@ use crate::scene::reflection_probe_skybox_only;
 use crate::shared::{ReflectionProbeClear, ReflectionProbeState};
 use crate::world_mesh::CameraTransformDrawFilter;
 
-use super::super::cube_capture::host_camera_frame_for_cube_face;
+use super::super::cube_capture::host_camera_frame_for_cube_face_with_fov;
 pub(super) use super::super::cube_capture::{CUBE_FACE_COUNT, CubeCaptureFace as ProbeCubeFace};
 
 pub(super) fn host_camera_frame_for_probe_face(
@@ -21,13 +21,25 @@ pub(super) fn host_camera_frame_for_probe_face(
     position: Vec3,
     face: ProbeCubeFace,
 ) -> HostCameraFrame {
-    host_camera_frame_for_cube_face(
+    let face_size = viewport_px.0.min(viewport_px.1);
+    host_camera_frame_for_cube_face_with_fov(
         base,
         reflection_probe_clip(state),
         viewport_px,
         position,
         face,
+        reflection_probe_seamless_fov_degrees(face_size),
     )
+}
+
+/// Returns the capture FOV that maps outer texel centers onto cubemap face boundaries.
+pub(super) fn reflection_probe_seamless_fov_degrees(face_size: u32) -> f32 {
+    if face_size <= 1 {
+        return 90.0;
+    }
+
+    let face_size = face_size as f32;
+    (2.0 * (face_size / (face_size - 1.0)).atan()).to_degrees()
 }
 
 pub(super) fn reflection_probe_clip(state: ReflectionProbeState) -> CameraClipPlanes {

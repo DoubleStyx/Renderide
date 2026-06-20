@@ -2,7 +2,7 @@
 
 use hashbrown::HashSet;
 
-use crate::scene::{RenderSpaceId, SceneCoordinator};
+use crate::scene::{RenderSpaceId, RenderSpaceRead, SceneSpaceRead};
 
 /// Selective / exclude transform lists for secondary cameras.
 #[derive(Clone, Debug, Default)]
@@ -36,7 +36,7 @@ impl CameraTransformDrawFilter {
     /// a parent transform, so child renderers must inherit that decision.
     pub fn passes_scene_node(
         &self,
-        scene: &SceneCoordinator,
+        scene: &(impl SceneSpaceRead + ?Sized),
         space_id: RenderSpaceId,
         node_id: i32,
     ) -> bool {
@@ -62,7 +62,7 @@ impl CameraTransformDrawFilter {
     /// `space.local_transforms().len()` where `mask[node_id as usize] == true` iff the draw should render.
     pub fn build_pass_mask(
         &self,
-        scene: &SceneCoordinator,
+        scene: &(impl SceneSpaceRead + ?Sized),
         space_id: RenderSpaceId,
     ) -> Option<Vec<bool>> {
         let space = scene.space(space_id)?;
@@ -89,7 +89,7 @@ impl CameraTransformDrawFilter {
 }
 
 fn node_or_ancestor_in_set(
-    scene: &SceneCoordinator,
+    scene: &(impl SceneSpaceRead + ?Sized),
     space_id: RenderSpaceId,
     node_id: i32,
     set: &HashSet<i32>,
@@ -121,7 +121,7 @@ fn node_or_ancestor_in_set(
 /// Memoized ancestor-membership scan: for every node in `space_id`, returns whether it or any
 /// ancestor appears in `set`. Amortized O(nodes), one pass with a path-painting cache.
 fn ancestor_membership_mask(
-    scene: &SceneCoordinator,
+    scene: &(impl SceneSpaceRead + ?Sized),
     space_id: RenderSpaceId,
     set: &HashSet<i32>,
 ) -> Vec<bool> {

@@ -69,7 +69,7 @@ impl SceneCoordinator {
         // Hoist the per-frame work buffer out of `self` so we can fill it while still mutating
         // `self.spaces` / `self.world_caches`. `mem::take` preserves the underlying allocation
         // so steady-state apply does not allocate.
-        let mut work = std::mem::take(&mut self.apply_work_scratch);
+        let mut work = std::mem::take(&mut self.apply_scratch.work);
         debug_assert!(work.is_empty());
         {
             profiling::scope!("scene::apply::lift");
@@ -87,6 +87,7 @@ impl SceneCoordinator {
                 };
                 let cache = self.world_caches.remove(&id).unwrap_or_default();
                 let removal_events = self
+                    .apply_scratch
                     .transform_removals_by_space
                     .remove(&id)
                     .unwrap_or_default();
@@ -125,7 +126,7 @@ impl SceneCoordinator {
                 }
             }
             self.reinsert_applied_work_slots(&mut work);
-            self.apply_work_scratch = work;
+            self.apply_scratch.work = work;
             return Ok(());
         }
         if !admission.is_parallel() {
@@ -135,7 +136,7 @@ impl SceneCoordinator {
                 apply_work_slot_mutation(slot);
             }
             self.reinsert_applied_work_slots(&mut work);
-            self.apply_work_scratch = work;
+            self.apply_scratch.work = work;
             return Ok(());
         }
 
@@ -150,7 +151,7 @@ impl SceneCoordinator {
                 });
         };
         self.reinsert_applied_work_slots(&mut work);
-        self.apply_work_scratch = work;
+        self.apply_scratch.work = work;
         Ok(())
     }
 
@@ -166,13 +167,15 @@ impl SceneCoordinator {
         }
     }
 
-    /// Moves a per-space transform-removal buffer back into
-    /// [`SceneCoordinator::transform_removals_by_space`] so Phase C can read it.
+    /// Moves a per-space transform-removal buffer back into the apply scratch so Phase C can read
+    /// it.
     fn stash_transform_removals(
         &mut self,
         id: RenderSpaceId,
         removals: Vec<TransformRemovalEvent>,
     ) {
-        self.transform_removals_by_space.insert(id, removals);
+        self.apply_scratch
+            .transform_removals_by_space
+            .insert(id, removals);
     }
 }

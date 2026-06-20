@@ -3,7 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::config::VsyncMode;
+use crate::config::PresentationModeSetting;
 use crate::gpu::flight_recorder::{
     GpuFlightEventKind, GpuFlightSurfaceReconfigureOutcome, GpuFlightSurfaceReconfigureSite,
 };
@@ -58,12 +58,12 @@ impl GpuContext {
 
     /// Updates the swapchain present mode and reconfigures the surface (hot-reload from settings).
     ///
-    /// Resolves [`VsyncMode`] against the surface's actual capabilities via
-    /// [`VsyncMode::resolve_present_mode`] so the result is guaranteed to be one of the variants
-    /// the swapchain advertises (no risk of `surface.configure` rejecting an unsupported mode).
+    /// Resolves [`PresentationModeSetting`] against the surface's actual capabilities via
+    /// [`PresentationModeSetting::resolve_present_mode`] so explicit unsupported modes fall back
+    /// before `surface.configure`.
     /// Early-returns when the resolved mode matches the active configuration, so per-frame calls
     /// from the runtime are cheap.
-    pub fn set_present_mode(&mut self, mode: VsyncMode) {
+    pub fn set_present_mode(&mut self, mode: PresentationModeSetting) {
         if self.device_lost() {
             self.record_surface_reconfigure(
                 GpuFlightSurfaceReconfigureSite::PresentMode,
@@ -90,7 +90,7 @@ impl GpuContext {
                 self.surface_extent_px(),
             );
             logger::warn!(
-                "Present mode reconfigure failed: {:?} -> {:?} (vsync={:?} extent={}x{} format={:?}): {error}",
+                "Present mode reconfigure failed: {:?} -> {:?} (presentation_mode={:?} extent={}x{} format={:?}): {error}",
                 previous,
                 self.config.present_mode,
                 mode,
@@ -107,7 +107,7 @@ impl GpuContext {
             self.surface_extent_px(),
         );
         logger::info!(
-            "Present mode set: {:?} -> {:?} (vsync={:?} extent={}x{} format={:?})",
+            "Present mode set: {:?} -> {:?} (presentation_mode={:?} extent={}x{} format={:?})",
             previous,
             self.config.present_mode,
             mode,
@@ -218,7 +218,7 @@ impl GpuContext {
         self.config.format
     }
 
-    /// Swapchain present mode (vsync policy).
+    /// Swapchain present mode.
     pub fn present_mode(&self) -> wgpu::PresentMode {
         self.config.present_mode
     }

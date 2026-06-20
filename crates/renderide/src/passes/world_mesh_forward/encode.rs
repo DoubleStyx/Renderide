@@ -177,6 +177,31 @@ pub(super) struct ForwardDrawResources<'draw, 'bind> {
     pub(super) full_viewport: (u32, u32, u32, u32),
 }
 
+struct DepthLikeDrawState {
+    last_mesh: LastMeshBindState,
+    last_per_draw_dyn_offset: Option<u32>,
+    last_pipeline: Option<*const wgpu::RenderPipeline>,
+}
+
+impl DepthLikeDrawState {
+    fn new() -> Self {
+        Self {
+            last_mesh: LastMeshBindState::new(),
+            last_per_draw_dyn_offset: None,
+            last_pipeline: None,
+        }
+    }
+}
+
+struct DepthLikePerDrawBind<'a> {
+    bind_group_index: u32,
+    bind_group: &'a wgpu::BindGroup,
+    gpu_limits: &'a GpuLimits,
+    slab_first_instance: usize,
+    instance_count: u32,
+    supports_base_instance: bool,
+}
+
 /// Records one raster subpass by walking pre-built [`DrawGroup`]s.
 ///
 /// Each group is one `draw_indexed` covering a contiguous slab range of identical instances.
@@ -373,6 +398,37 @@ fn set_stencil_reference_if_changed(
     }
 }
 
+fn bind_depth_like_per_draw_slab(
+    rpass: &mut wgpu::RenderPass<'_>,
+    bind: DepthLikePerDrawBind<'_>,
+    state: &mut DepthLikeDrawState,
+) {
+    bind_per_draw_slab_if_changed(
+        rpass,
+        PerDrawSlabBind {
+            bind_group_index: bind.bind_group_index,
+            bind_group: bind.bind_group,
+            gpu_limits: bind.gpu_limits,
+            slab_first_instance: bind.slab_first_instance,
+            instance_count: bind.instance_count,
+            supports_base_instance: bind.supports_base_instance,
+        },
+        &mut state.last_per_draw_dyn_offset,
+    );
+}
+
+fn set_depth_like_pipeline_if_changed(
+    rpass: &mut wgpu::RenderPass<'_>,
+    pipeline: &wgpu::RenderPipeline,
+    state: &mut DepthLikeDrawState,
+) {
+    let pipeline_id: *const wgpu::RenderPipeline = pipeline;
+    if state.last_pipeline != Some(pipeline_id) {
+        rpass.set_pipeline(pipeline);
+        state.last_pipeline = Some(pipeline_id);
+    }
+}
+
 /// Records the GTAO normal prepass draw subset.
 pub(crate) fn draw_normals_subset(batch: NormalDrawBatch<'_, '_, '_, '_>) {
     profiling::scope!("world_mesh::draw_normals_subset");
@@ -389,9 +445,7 @@ pub(crate) fn draw_normals_subset(batch: NormalDrawBatch<'_, '_, '_, '_>) {
         normal_pipelines,
     } = batch;
 
-    let mut last_mesh = LastMeshBindState::new();
-    let mut last_per_draw_dyn_offset: Option<u32> = None;
-    let mut last_pipeline: Option<*const wgpu::RenderPipeline> = None;
+    let mut state = DepthLikeDrawState::new();
 
     for group in groups {
         let representative = group.representative_draw_idx;
@@ -411,9 +465,9 @@ pub(crate) fn draw_normals_subset(batch: NormalDrawBatch<'_, '_, '_, '_>) {
 
         let slab_first_instance = group.instance_range.start as usize;
         let instance_count = group.instance_range.end - group.instance_range.start;
-        bind_per_draw_slab_if_changed(
+        bind_depth_like_per_draw_slab(
             rpass,
-            PerDrawSlabBind {
+            DepthLikePerDrawBind {
                 bind_group_index: 0,
                 bind_group: per_draw_bind_group,
                 gpu_limits,
@@ -421,19 +475,21 @@ pub(crate) fn draw_normals_subset(batch: NormalDrawBatch<'_, '_, '_, '_>) {
                 instance_count,
                 supports_base_instance,
             },
-            &mut last_per_draw_dyn_offset,
+            &mut state,
         );
 
         let pipeline = normal_pipelines.pipeline(device, key);
-        let pipeline_id: *const wgpu::RenderPipeline = pipeline.as_ref();
-        if last_pipeline != Some(pipeline_id) {
-            rpass.set_pipeline(pipeline.as_ref());
-            last_pipeline = Some(pipeline_id);
-        }
+        set_depth_like_pipeline_if_changed(rpass, pipeline.as_ref(), &mut state);
 
         let inst_range = instance_range_for_draw_group(group, supports_base_instance);
         let gpu_refs = gpu_refs_for_encode(encode);
-        draw_mesh_submesh_normals_instanced(rpass, item, gpu_refs, inst_range, &mut last_mesh);
+        draw_mesh_submesh_normals_instanced(
+            rpass,
+            item,
+            gpu_refs,
+            inst_range,
+            &mut state.last_mesh,
+        );
     }
 }
 
@@ -454,9 +510,7 @@ pub(crate) fn draw_depth_prepass_subset(batch: DepthPrepassDrawBatch<'_, '_, '_,
         depth_pipelines,
     } = batch;
 
-    let mut last_mesh = LastMeshBindState::new();
-    let mut last_per_draw_dyn_offset: Option<u32> = None;
-    let mut last_pipeline: Option<*const wgpu::RenderPipeline> = None;
+    let mut state = DepthLikeDrawState::new();
 
     for group in groups {
         let representative = group.representative_draw_idx;
@@ -475,9 +529,9 @@ pub(crate) fn draw_depth_prepass_subset(batch: DepthPrepassDrawBatch<'_, '_, '_,
 
         let slab_first_instance = group.instance_range.start as usize;
         let instance_count = group.instance_range.end - group.instance_range.start;
-        bind_per_draw_slab_if_changed(
+        bind_depth_like_per_draw_slab(
             rpass,
-            PerDrawSlabBind {
+            DepthLikePerDrawBind {
                 bind_group_index: 0,
                 bind_group: per_draw_bind_group,
                 gpu_limits,
@@ -485,19 +539,15 @@ pub(crate) fn draw_depth_prepass_subset(batch: DepthPrepassDrawBatch<'_, '_, '_,
                 instance_count,
                 supports_base_instance,
             },
-            &mut last_per_draw_dyn_offset,
+            &mut state,
         );
 
         let pipeline = depth_pipelines.pipeline(device, key);
-        let pipeline_id: *const wgpu::RenderPipeline = pipeline.as_ref();
-        if last_pipeline != Some(pipeline_id) {
-            rpass.set_pipeline(pipeline.as_ref());
-            last_pipeline = Some(pipeline_id);
-        }
+        set_depth_like_pipeline_if_changed(rpass, pipeline.as_ref(), &mut state);
 
         let inst_range = instance_range_for_draw_group(group, supports_base_instance);
         let gpu_refs = gpu_refs_for_encode(encode);
-        draw_mesh_submesh_depth_instanced(rpass, item, gpu_refs, inst_range, &mut last_mesh);
+        draw_mesh_submesh_depth_instanced(rpass, item, gpu_refs, inst_range, &mut state.last_mesh);
     }
 }
 
@@ -518,9 +568,7 @@ pub(crate) fn draw_shadow_depth_subset(batch: ShadowDepthDrawBatch<'_, '_, '_, '
         device,
     } = batch;
 
-    let mut last_mesh = LastMeshBindState::new();
-    let mut last_per_draw_dyn_offset: Option<u32> = None;
-    let mut last_pipeline: Option<*const wgpu::RenderPipeline> = None;
+    let mut state = DepthLikeDrawState::new();
     let shadow_pipelines = shadow_pipelines();
     let radial_pipelines = radial_shadow_pipelines();
 
@@ -539,9 +587,9 @@ pub(crate) fn draw_shadow_depth_subset(batch: ShadowDepthDrawBatch<'_, '_, '_, '
 
         let slab_first_instance = slab_slot_offset + group.instance_range.start as usize;
         let instance_count = group.instance_range.end - group.instance_range.start;
-        bind_per_draw_slab_if_changed(
+        bind_depth_like_per_draw_slab(
             rpass,
-            PerDrawSlabBind {
+            DepthLikePerDrawBind {
                 bind_group_index: 0,
                 bind_group: per_draw_bind_group,
                 gpu_limits,
@@ -549,7 +597,7 @@ pub(crate) fn draw_shadow_depth_subset(batch: ShadowDepthDrawBatch<'_, '_, '_, '
                 instance_count,
                 supports_base_instance,
             },
-            &mut last_per_draw_dyn_offset,
+            &mut state,
         );
 
         let pipeline = if radial_shadow {
@@ -557,16 +605,12 @@ pub(crate) fn draw_shadow_depth_subset(batch: ShadowDepthDrawBatch<'_, '_, '_, '
         } else {
             shadow_pipelines.pipeline(device, key)
         };
-        let pipeline_id: *const wgpu::RenderPipeline = pipeline.as_ref();
-        if last_pipeline != Some(pipeline_id) {
-            rpass.set_pipeline(pipeline.as_ref());
-            last_pipeline = Some(pipeline_id);
-        }
+        set_depth_like_pipeline_if_changed(rpass, pipeline.as_ref(), &mut state);
 
         let inst_range =
             shadow_instance_range_for_draw_group(group, slab_slot_offset, supports_base_instance);
         let gpu_refs = gpu_refs_for_encode(encode);
-        draw_mesh_submesh_depth_instanced(rpass, item, gpu_refs, inst_range, &mut last_mesh);
+        draw_mesh_submesh_depth_instanced(rpass, item, gpu_refs, inst_range, &mut state.last_mesh);
     }
 }
 

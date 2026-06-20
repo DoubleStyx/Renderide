@@ -4,6 +4,7 @@
 //! rename them.
 
 use super::tracy_plot::tracy_plot;
+use crate::upload_stats::{UploadArenaStats, UploadTrafficStats};
 
 /// CPU timings and counts for one render-graph command-encoding slice.
 #[derive(Clone, Copy, Debug, Default)]
@@ -52,30 +53,10 @@ pub struct CommandEncodingProfileSample {
     pub transient_texture_view_misses: usize,
     /// Transient buffer allocation misses during this frame.
     pub transient_buffer_misses: usize,
-    /// Deferred upload writes drained before submit.
-    pub upload_writes: usize,
-    /// Deferred upload payload bytes drained before submit.
-    pub upload_bytes: usize,
-    /// Upload bytes staged through persistent arena slots.
-    pub upload_persistent_staging_bytes: u64,
-    /// Persistent arena slot reuse count.
-    pub upload_persistent_slot_reuses: usize,
-    /// Persistent arena slot allocation or growth count.
-    pub upload_persistent_slot_grows: usize,
-    /// Upload bytes staged through temporary fallback buffers.
-    pub upload_temporary_staging_bytes: u64,
-    /// Temporary staging fallback count caused by all persistent slots being unavailable.
-    pub upload_temporary_staging_fallbacks: usize,
-    /// Staged writes replayed through queue writes because no staging buffer fit.
-    pub upload_oversized_queue_fallback_writes: usize,
-    /// Bytes allocated across persistent upload arena slots.
-    pub upload_arena_capacity_bytes: u64,
-    /// Persistent upload arena slots mapped and available for writes.
-    pub upload_arena_free_slots: usize,
-    /// Persistent upload arena slots currently in flight.
-    pub upload_arena_in_flight_slots: usize,
-    /// Persistent upload arena slots waiting for remap completion.
-    pub upload_arena_remapping_slots: usize,
+    /// Deferred upload traffic drained before submit.
+    pub upload_traffic: UploadTrafficStats,
+    /// Persistent upload arena acquire and pressure counters.
+    pub upload_arena: UploadArenaStats,
     /// CPU time spent resolving transient resources for all views.
     pub pre_resolve_ms: f64,
     /// CPU time spent preparing shared/per-view resources before recording.
@@ -230,48 +211,51 @@ fn plot_pass_counts(sample: &CommandEncodingProfileSample) {
 fn plot_upload_traffic(sample: &CommandEncodingProfileSample) {
     tracy_plot!(
         "command_encoding::upload_writes",
-        sample.upload_writes as f64
+        sample.upload_traffic.writes as f64
     );
-    tracy_plot!("command_encoding::upload_bytes", sample.upload_bytes as f64);
+    tracy_plot!(
+        "command_encoding::upload_bytes",
+        sample.upload_traffic.bytes as f64
+    );
     tracy_plot!(
         "command_encoding::upload_persistent_staging_bytes",
-        sample.upload_persistent_staging_bytes as f64
+        sample.upload_arena.acquire.persistent_staging_bytes as f64
     );
     tracy_plot!(
         "command_encoding::upload_persistent_slot_reuses",
-        sample.upload_persistent_slot_reuses as f64
+        sample.upload_arena.acquire.persistent_slot_reuses as f64
     );
     tracy_plot!(
         "command_encoding::upload_persistent_slot_grows",
-        sample.upload_persistent_slot_grows as f64
+        sample.upload_arena.acquire.persistent_slot_grows as f64
     );
     tracy_plot!(
         "command_encoding::upload_temporary_staging_bytes",
-        sample.upload_temporary_staging_bytes as f64
+        sample.upload_arena.acquire.temporary_staging_bytes as f64
     );
     tracy_plot!(
         "command_encoding::upload_temporary_staging_fallbacks",
-        sample.upload_temporary_staging_fallbacks as f64
+        sample.upload_arena.acquire.temporary_staging_fallbacks as f64
     );
     tracy_plot!(
         "command_encoding::upload_oversized_queue_fallback_writes",
-        sample.upload_oversized_queue_fallback_writes as f64
+        sample.upload_arena.acquire.oversized_queue_fallback_writes as f64
     );
     tracy_plot!(
         "command_encoding::upload_arena_capacity_bytes",
-        sample.upload_arena_capacity_bytes as f64
+        sample.upload_arena.pressure.capacity_bytes as f64
     );
     tracy_plot!(
         "command_encoding::upload_arena_free_slots",
-        sample.upload_arena_free_slots as f64
+        sample.upload_arena.pressure.free_slots as f64
     );
     tracy_plot!(
         "command_encoding::upload_arena_in_flight_slots",
-        sample.upload_arena_in_flight_slots as f64
+        sample.upload_arena.pressure.in_flight_slots as f64
     );
     tracy_plot!(
         "command_encoding::upload_arena_remapping_slots",
-        sample.upload_arena_remapping_slots as f64
+        sample.upload_arena.pressure.remapping_slots as f64
     );
 }
 

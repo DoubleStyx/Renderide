@@ -6,8 +6,8 @@ use crate::assets::mesh::GpuMesh;
 use crate::gpu_pools::MeshPool;
 use crate::particles::ParticleDrawParams;
 use crate::scene::{
-    MeshMaterialSlot, MeshRendererInstanceId, RenderSpaceId, SceneCoordinator, SkinnedMeshRenderer,
-    StaticMeshRenderer,
+    MeshMaterialSlot, MeshRendererInstanceId, RenderSpaceId, RenderSpaceRead, SkinnedMeshRenderer,
+    StaticMeshRenderer, WorldMeshSceneRead,
 };
 use crate::shared::{LayerType, RenderingContext};
 use crate::world_mesh::culling::{
@@ -52,49 +52,65 @@ struct RenderableExpansion<'a> {
 /// triggers the doubling growth path.
 #[cfg(test)]
 pub(in crate::world_mesh::draw_prep) fn estimated_draw_count(
-    scene: &SceneCoordinator,
+    scene: &(impl WorldMeshSceneRead + ?Sized),
     space_id: RenderSpaceId,
 ) -> usize {
-    scene.space(space_id).map_or(0, |s| {
-        s.static_mesh_renderers()
-            .iter()
-            .filter(|renderer| renderer.emits_visible_color_draws() || renderer.casts_shadows())
-            .count()
-            .saturating_add(
-                s.skinned_mesh_renderers()
-                    .iter()
-                    .filter(|skinned| {
-                        skinned.base.emits_visible_color_draws() || skinned.base.casts_shadows()
-                    })
-                    .count(),
-            )
-            .saturating_mul(2)
-    })
+    scene
+        .static_mesh_renderers(space_id)
+        .map_or(0, |renderers| {
+            renderers
+                .iter()
+                .filter(|renderer| renderer.emits_visible_color_draws() || renderer.casts_shadows())
+                .count()
+        })
+        .saturating_add(
+            scene
+                .skinned_mesh_renderers(space_id)
+                .map_or(0, |renderers| {
+                    renderers
+                        .iter()
+                        .filter(|skinned| {
+                            skinned.base.emits_visible_color_draws() || skinned.base.casts_shadows()
+                        })
+                        .count()
+                }),
+        )
+        .saturating_mul(2)
 }
 
 /// Total static + skinned renderer rows in one active render space.
 #[cfg(test)]
-pub(super) fn renderer_count_for_space(scene: &SceneCoordinator, space_id: RenderSpaceId) -> usize {
-    scene.space(space_id).map_or(0, |s| {
-        if s.is_active() {
-            s.static_mesh_renderers()
-                .len()
-                .saturating_add(s.skinned_mesh_renderers().len())
-        } else {
-            0
-        }
-    })
+pub(super) fn renderer_count_for_space(
+    scene: &(impl WorldMeshSceneRead + ?Sized),
+    space_id: RenderSpaceId,
+) -> usize {
+    let Some(space) = scene.space(space_id) else {
+        return 0;
+    };
+    if !space.is_active() {
+        return 0;
+    }
+    scene
+        .static_mesh_renderers(space_id)
+        .map_or(0, <[StaticMeshRenderer]>::len)
+        .saturating_add(
+            scene
+                .skinned_mesh_renderers(space_id)
+                .map_or(0, <[SkinnedMeshRenderer]>::len),
+        )
 }
 
 /// Expands every valid renderer (static and skinned) in `space_id` into `out`.
 #[cfg(test)]
-pub(in crate::world_mesh::draw_prep) fn expand_space_into(
+pub(in crate::world_mesh::draw_prep) fn expand_space_into<S>(
     out: &mut Vec<FramePreparedDraw>,
-    scene: &SceneCoordinator,
+    scene: &S,
     mesh_pool: &MeshPool,
     render_context: RenderingContext,
     space_id: RenderSpaceId,
-) {
+) where
+    S: WorldMeshSceneRead + ?Sized,
+{
     profiling::scope!("mesh::prepared_renderables::expand_space");
     let Some(space) = scene.space(space_id) else {
         return;
@@ -112,19 +128,27 @@ pub(in crate::world_mesh::draw_prep) fn expand_space_into(
         space_id,
         space_is_overlay,
     };
-    expand_static_list(ctx.reborrow(), space.static_mesh_renderers());
-    expand_skinned_list(ctx, space.skinned_mesh_renderers());
+    expand_static_list(
+        ctx.reborrow(),
+        scene.static_mesh_renderers(space_id).unwrap_or_default(),
+    );
+    expand_skinned_list(
+        ctx,
+        scene.skinned_mesh_renderers(space_id).unwrap_or_default(),
+    );
 }
 
 /// Expands one static renderer row into retained draw-template entries.
-pub(in crate::world_mesh::draw_prep) fn expand_static_renderer_into(
+pub(in crate::world_mesh::draw_prep) fn expand_static_renderer_into<S>(
     out: &mut Vec<FramePreparedDraw>,
-    scene: &SceneCoordinator,
+    scene: &S,
     mesh_pool: &MeshPool,
     render_context: RenderingContext,
     space_id: RenderSpaceId,
     renderable_index: usize,
-) {
+) where
+    S: WorldMeshSceneRead + ?Sized,
+{
     profiling::scope!("mesh::prepared_renderables::expand_static_renderer");
     let Some(space) = scene.space(space_id) else {
         return;
@@ -132,7 +156,10 @@ pub(in crate::world_mesh::draw_prep) fn expand_static_renderer_into(
     if !space.is_active() {
         return;
     }
-    let Some(renderer) = space.static_mesh_renderers().get(renderable_index) else {
+    let Some(renderer) = scene
+        .static_mesh_renderers(space_id)
+        .and_then(|renderers| renderers.get(renderable_index))
+    else {
         return;
     };
     let mut ctx = ExpandCtx {
@@ -147,14 +174,16 @@ pub(in crate::world_mesh::draw_prep) fn expand_static_renderer_into(
 }
 
 /// Expands one skinned renderer row into retained draw-template entries.
-pub(in crate::world_mesh::draw_prep) fn expand_skinned_renderer_into(
+pub(in crate::world_mesh::draw_prep) fn expand_skinned_renderer_into<S>(
     out: &mut Vec<FramePreparedDraw>,
-    scene: &SceneCoordinator,
+    scene: &S,
     mesh_pool: &MeshPool,
     render_context: RenderingContext,
     space_id: RenderSpaceId,
     renderable_index: usize,
-) {
+) where
+    S: WorldMeshSceneRead + ?Sized,
+{
     profiling::scope!("mesh::prepared_renderables::expand_skinned_renderer");
     let Some(space) = scene.space(space_id) else {
         return;
@@ -162,7 +191,10 @@ pub(in crate::world_mesh::draw_prep) fn expand_skinned_renderer_into(
     if !space.is_active() {
         return;
     }
-    let Some(renderer) = space.skinned_mesh_renderers().get(renderable_index) else {
+    let Some(renderer) = scene
+        .skinned_mesh_renderers(space_id)
+        .and_then(|renderers| renderers.get(renderable_index))
+    else {
         return;
     };
     let mut ctx = ExpandCtx {
@@ -184,7 +216,10 @@ pub(in crate::world_mesh::draw_prep) fn expand_skinned_renderer_into(
 
 /// Expands all static renderers in one render-space slice.
 #[cfg(test)]
-fn expand_static_list(mut ctx: ExpandCtx<'_>, renderers: &[StaticMeshRenderer]) {
+fn expand_static_list<S>(mut ctx: ExpandCtx<'_, S>, renderers: &[StaticMeshRenderer])
+where
+    S: WorldMeshSceneRead + ?Sized,
+{
     profiling::scope!("mesh::prepared_renderables::expand_static_list");
     for (renderable_index, r) in renderers.iter().enumerate() {
         try_expand_one_renderer(&mut ctx, renderable_index, r, /*skinned=*/ false, None);
@@ -193,7 +228,10 @@ fn expand_static_list(mut ctx: ExpandCtx<'_>, renderers: &[StaticMeshRenderer]) 
 
 /// Expands all skinned renderers in one render-space slice.
 #[cfg(test)]
-fn expand_skinned_list(mut ctx: ExpandCtx<'_>, renderers: &[SkinnedMeshRenderer]) {
+fn expand_skinned_list<S>(mut ctx: ExpandCtx<'_, S>, renderers: &[SkinnedMeshRenderer])
+where
+    S: WorldMeshSceneRead + ?Sized,
+{
     profiling::scope!("mesh::prepared_renderables::expand_skinned_list");
     for (renderable_index, sk) in renderers.iter().enumerate() {
         try_expand_one_renderer(
@@ -207,13 +245,15 @@ fn expand_skinned_list(mut ctx: ExpandCtx<'_>, renderers: &[SkinnedMeshRenderer]
 }
 
 /// Runs the shared per-renderer filters and emits draws for every valid material slot.
-pub(super) fn try_expand_one_renderer(
-    ctx: &mut ExpandCtx<'_>,
+pub(super) fn try_expand_one_renderer<S>(
+    ctx: &mut ExpandCtx<'_, S>,
     renderable_index: usize,
     base: &StaticMeshRenderer,
     skinned: bool,
     skinned_renderer: Option<&SkinnedMeshRenderer>,
-) {
+) where
+    S: WorldMeshSceneRead + ?Sized,
+{
     if (!base.emits_visible_color_draws() && !base.casts_shadows())
         || base.mesh_asset_id < 0
         || base.node_id < 0
@@ -262,15 +302,18 @@ pub(super) fn try_expand_one_renderer(
 /// per-view `head_output_transform`, so the geometry is genuinely view-dependent and must stay
 /// per-view). For non-overlay spaces, [`mesh_world_geometry_for_cull_with_head`] is invoked with
 /// `Mat4::IDENTITY` because the matrix path it follows
-/// ([`SceneCoordinator::world_matrix_for_render_context`]) only multiplies by
+/// ([`WorldMeshSceneRead::world_matrix_for_render_context`]) only multiplies by
 /// `head_output_transform` for overlay spaces.
-fn precompute_cull_geometry(
-    ctx: &ExpandCtx<'_>,
+fn precompute_cull_geometry<S>(
+    ctx: &ExpandCtx<'_, S>,
     mesh: &GpuMesh,
     skinned: bool,
     skinned_renderer: Option<&SkinnedMeshRenderer>,
     node_id: i32,
-) -> Option<MeshCullGeometry> {
+) -> Option<MeshCullGeometry>
+where
+    S: WorldMeshSceneRead + ?Sized,
+{
     if ctx.space_is_overlay {
         return None;
     }
@@ -293,12 +336,14 @@ fn precompute_cull_geometry(
 ///
 /// Mirrors the scene-walk path's slot resolution and override / validity guards so the per-view
 /// collection path can iterate prepared draws unconditionally.
-fn expand_renderer_slots(
+fn expand_renderer_slots<S>(
     out: &mut Vec<FramePreparedDraw>,
-    scene: &SceneCoordinator,
+    scene: &S,
     render_context: RenderingContext,
     renderable: RenderableExpansion<'_>,
-) {
+) where
+    S: WorldMeshSceneRead + ?Sized,
+{
     let RenderableExpansion {
         space_id,
         renderable_index,

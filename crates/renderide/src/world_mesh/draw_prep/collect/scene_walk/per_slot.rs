@@ -3,7 +3,7 @@
 use glam::Mat4;
 
 use crate::particles::ParticleDrawParams;
-use crate::scene::MeshMaterialSlot;
+use crate::scene::{MeshMaterialSlot, SceneTransformRead};
 use crate::world_mesh::culling::CpuCullFailure;
 use crate::world_mesh::materials::{FrameMaterialBatchCache, normalized_material_slot};
 
@@ -137,17 +137,15 @@ fn resolve_material_slot(
     slot: &MeshMaterialSlot,
     slot_index: usize,
 ) -> Option<(i32, Option<i32>)> {
-    let material_asset_id = ctx
-        .scene_assets
-        .scene
-        .overridden_material_asset_id(
-            draw.space_id,
-            ctx.view.render_context,
-            draw.skinned,
-            draw.renderable_index,
-            slot_index,
-        )
-        .unwrap_or(slot.material_asset_id);
+    let material_asset_id = SceneTransformRead::overridden_material_asset_id(
+        ctx.scene_assets.scene,
+        draw.space_id,
+        ctx.view.render_context,
+        draw.skinned,
+        draw.renderable_index,
+        slot_index,
+    )
+    .unwrap_or(slot.material_asset_id);
     normalized_material_slot(material_asset_id, slot.property_block_id)
 }
 

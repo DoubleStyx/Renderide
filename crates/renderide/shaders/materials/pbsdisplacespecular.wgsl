@@ -30,6 +30,7 @@
 #import renderide::pbs::surface as psurf
 #import renderide::material::variant_bits as vb
 #import renderide::core::uv as uvu
+#import renderide::core::texture_sampling as ts
 
 struct PbsDisplaceSpecularMaterial {
     _Color: vec4<f32>,
@@ -47,6 +48,12 @@ struct PbsDisplaceSpecularMaterial {
     _UVOffsetMagnitude: f32,
     _UVOffsetBias: f32,
     _RenderideVariantBits: u32,
+    _UVOffsetMap_LodBias: f32,
+    _NormalMap_LodBias: f32,
+    _EmissionMap_LodBias: f32,
+    _MainTex_LodBias: f32,
+    _OcclusionMap_LodBias: f32,
+    _SpecularMap_LodBias: f32,
 }
 
 const PBSDISPSPEC_KW_ALBEDOTEX: u32 = 1u << 0u;
@@ -150,13 +157,14 @@ fn shade(
         mat._UVOffsetMap_ST,
         mat._UVOffsetMagnitude,
         mat._UVOffsetBias,
+        mat._UVOffsetMap_LodBias,
         _UVOffsetMap,
         _UVOffsetMap_sampler,
     );
 
     var c = mat._Color;
     if (kw_ALBEDOTEX()) {
-        c = c * textureSample(_MainTex, _MainTex_sampler, uv_main);
+        c = c * ts::sample_tex_2d(_MainTex, _MainTex_sampler, uv_main, mat._MainTex_LodBias);
     }
     if (kw_ALPHACLIP() && c.a < mat._AlphaClip) {
         discard;
@@ -164,7 +172,7 @@ fn shade(
 
     var spec = mat._SpecularColor;
     if (kw_SPECULARMAP()) {
-        spec = textureSample(_SpecularMap, _SpecularMap_sampler, uv_main);
+        spec = ts::sample_tex_2d(_SpecularMap, _SpecularMap_sampler, uv_main, mat._SpecularMap_LodBias);
     }
     let f0 = clamp(spec.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
     let smoothness = clamp(spec.a, 0.0, 1.0);
@@ -172,12 +180,12 @@ fn shade(
 
     var occlusion = 1.0;
     if (kw_OCCLUSION()) {
-        occlusion = textureSample(_OcclusionMap, _OcclusionMap_sampler, uv_main).r;
+        occlusion = ts::sample_tex_2d(_OcclusionMap, _OcclusionMap_sampler, uv_main, mat._OcclusionMap_LodBias).r;
     }
 
     var emission = mat._EmissionColor.rgb;
     if (kw_EMISSIONTEX()) {
-        emission = emission * textureSample(_EmissionMap, _EmissionMap_sampler, uv_main).rgb;
+        emission = emission * ts::sample_tex_2d(_EmissionMap, _EmissionMap_sampler, uv_main, mat._EmissionMap_LodBias).rgb;
     }
 
     let n = psamp::sample_optional_world_normal(
@@ -185,7 +193,7 @@ fn shade(
         _NormalMap,
         _NormalMap_sampler,
         uv_main,
-        0.0,
+        mat._NormalMap_LodBias,
         mat._NormalScale,
         world_n,
         world_t,

@@ -23,6 +23,7 @@ use crate::materials::{
 };
 use crate::render_graph::blackboard::Blackboard;
 use crate::render_graph::context::PassFrameContext;
+use crate::scene::SceneSpaceRead;
 use crate::shared::CameraClearMode;
 use crate::skybox::{
     PreparedClearColorSkybox, PreparedMaterialSkybox, PreparedMaterialSkyboxGeometry,
@@ -507,7 +508,7 @@ fn skybox_stem_for_shader_asset(
 fn skybox_world_to_view_pair(
     frame: &WorldMeshForwardPrepareFrame<'_, '_>,
 ) -> (glam::Mat4, glam::Mat4) {
-    world_to_view_pair_for_skybox(frame.systems.scene, &frame.view.host_camera)
+    world_to_view_pair_for_skybox(&frame.systems.scene, &frame.view.host_camera)
 }
 
 /// Creates the procedural skybox fixed mesh vertex buffer.

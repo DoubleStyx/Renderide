@@ -1,17 +1,17 @@
 //! Shared render-space expansion context.
 
 use crate::gpu_pools::MeshPool;
-use crate::scene::{RenderSpaceId, SceneCoordinator};
+use crate::scene::{RenderSpaceId, WorldMeshSceneRead};
 use crate::shared::RenderingContext;
 
 use super::super::FramePreparedDraw;
 
 /// Frame-time inputs that stay constant across all renderers in one render space.
-pub(super) struct ExpandCtx<'a> {
+pub(super) struct ExpandCtx<'a, S: WorldMeshSceneRead + ?Sized> {
     /// Destination prepared draw buffer.
     pub(super) out: &'a mut Vec<FramePreparedDraw>,
     /// Scene snapshot being expanded.
-    pub(super) scene: &'a SceneCoordinator,
+    pub(super) scene: &'a S,
     /// Resident GPU mesh lookup table.
     pub(super) mesh_pool: &'a MeshPool,
     /// Render context used for transform and material override resolution.
@@ -22,10 +22,13 @@ pub(super) struct ExpandCtx<'a> {
     pub(super) space_is_overlay: bool,
 }
 
-impl<'a> ExpandCtx<'a> {
+impl<'a, S> ExpandCtx<'a, S>
+where
+    S: WorldMeshSceneRead + ?Sized,
+{
     /// Reborrows the destination buffer while retaining the immutable frame inputs.
     #[cfg(test)]
-    pub(super) fn reborrow(&mut self) -> ExpandCtx<'_> {
+    pub(super) fn reborrow(&mut self) -> ExpandCtx<'_, S> {
         ExpandCtx {
             out: self.out,
             scene: self.scene,

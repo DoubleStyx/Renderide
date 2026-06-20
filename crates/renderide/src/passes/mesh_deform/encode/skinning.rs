@@ -11,7 +11,7 @@ use glam::Mat4;
 use crate::mesh_deform::{Range, SkinCacheEntry, SkinningBindGroupKey};
 use crate::mesh_deform::{SkinningPaletteParams, write_skinning_palette_bytes};
 use crate::mesh_deform::{advance_slab_cursor, buffer_identity};
-use crate::scene::RenderSpaceId;
+use crate::scene::{RenderSpaceId, SceneTransformRead};
 use crate::shared::SkinWeightMode;
 
 use super::super::snapshot::MeshDeformSnapshot;
@@ -20,8 +20,8 @@ use super::{MeshDeformEncodeGpu, MeshDeformRecordStats};
 const SKIN_DISPATCH_PARAM_BYTES: u64 = 48;
 
 /// Scene inputs needed to build one skinning palette.
-pub(super) struct SkinningPaletteBuildContext<'a> {
-    pub scene: &'a crate::scene::SceneCoordinator,
+pub(super) struct SkinningPaletteBuildContext<'a, S: SceneTransformRead + ?Sized> {
+    pub scene: &'a S,
     pub space_id: RenderSpaceId,
     pub mesh: &'a MeshDeformSnapshot,
     pub bone_transform_indices: Option<&'a [i32]>,
@@ -57,10 +57,13 @@ pub(super) struct SkinningDispatchJob {
 }
 
 /// Builds one palette into scratch CPU bytes so the caller can hash it before deciding to skip.
-pub(super) fn prepare_skinning_palette_bytes(
+pub(super) fn prepare_skinning_palette_bytes<S>(
     gpu: &mut MeshDeformEncodeGpu<'_>,
-    ctx: SkinningPaletteBuildContext<'_>,
-) -> Option<u64> {
+    ctx: SkinningPaletteBuildContext<'_, S>,
+) -> Option<u64>
+where
+    S: SceneTransformRead + Sync + ?Sized,
+{
     profiling::scope!("mesh_deform::skinning_palette");
     let bone_transform_indices = ctx.bone_transform_indices?;
     let bone_count_u = ctx.mesh.skinning_bind_matrices.len() as u32;

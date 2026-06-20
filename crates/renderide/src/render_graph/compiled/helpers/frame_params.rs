@@ -127,7 +127,7 @@ pub(in crate::render_graph::compiled) fn frame_render_params_from_resolved<'a>(
     let hi_z_slot = split.occlusion.ensure_hi_z_state(resolved.view_id);
     frame_render_params_from_shared(
         FrameSystemsShared {
-            scene: scene.coordinator(),
+            scene: scene.frame_read(),
             occlusion: split.occlusion,
             frame_resources: split.frame_resources,
             materials: split.materials,

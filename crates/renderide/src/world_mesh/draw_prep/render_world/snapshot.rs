@@ -6,7 +6,7 @@ use std::ops::Range;
 
 use crate::cpu_parallelism::FrameParallelPolicy;
 use crate::gpu_pools::MeshPool;
-use crate::scene::{RenderSpaceId, SceneCoordinator};
+use crate::scene::{RenderSpaceId, WorldMeshSceneRead};
 use crate::shared::RenderingContext;
 
 use super::super::prepared_renderables::{FramePreparedDraw, expand_render_buffer_renderers_into};
@@ -16,9 +16,9 @@ use super::{
 };
 
 /// Shared inputs used while rebuilding a prepared snapshot.
-struct SnapshotRebuildInputs<'a> {
+struct SnapshotRebuildInputs<'a, S: WorldMeshSceneRead + ?Sized> {
     /// Scene mirror queried for active spaces and particle render buffers.
-    scene: &'a SceneCoordinator,
+    scene: &'a S,
     /// Mesh pool used when expanding generated particle render-buffer draws.
     mesh_pool: &'a MeshPool,
     /// Point render-buffer assets available for generated particle draws.
@@ -106,11 +106,13 @@ impl SnapshotRebuildTask<'_> {
     }
 
     /// Copies this task's retained draw templates into `draws`.
-    fn append_draws_to(
+    fn append_draws_to<S>(
         &self,
         draws: &mut Vec<FramePreparedDraw>,
-        inputs: &SnapshotRebuildInputs<'_>,
-    ) {
+        inputs: &SnapshotRebuildInputs<'_, S>,
+    ) where
+        S: WorldMeshSceneRead + ?Sized,
+    {
         match &self.source {
             SnapshotRebuildSource::RendererRange {
                 table: SnapshotRendererTable::Static,
@@ -157,14 +159,17 @@ impl SnapshotRebuildTask<'_> {
 }
 
 /// Rebuilds the per-view-consumable prepared snapshot from retained renderer templates.
-pub(super) fn rebuild_prepared_snapshot(
+pub(super) fn rebuild_prepared_snapshot<S>(
     render_world: &mut RenderWorld,
-    scene: &SceneCoordinator,
+    scene: &S,
     mesh_pool: &MeshPool,
     point_render_buffers: &HashMap<i32, crate::particles::PointRenderBufferAsset>,
     render_context: RenderingContext,
     dirty_spaces: Option<&HashSet<RenderSpaceId>>,
-) -> SnapshotRebuildStats {
+) -> SnapshotRebuildStats
+where
+    S: WorldMeshSceneRead + Sync + ?Sized,
+{
     profiling::scope!("mesh::render_world::rebuild_prepared_snapshot");
     let inputs = SnapshotRebuildInputs {
         scene,
@@ -261,11 +266,13 @@ pub(super) fn build_snapshot_rebuild_tasks<'a>(
 }
 
 /// Appends generated particle render-buffer tasks for active spaces that need them.
-fn extend_snapshot_particle_tasks<'a>(
+fn extend_snapshot_particle_tasks<'a, S>(
     tasks: &mut Vec<SnapshotRebuildTask<'a>>,
     active_spaces: &[(usize, RenderSpaceId, &'a RenderWorldSpace)],
-    scene: &SceneCoordinator,
-) {
+    scene: &S,
+) where
+    S: WorldMeshSceneRead + ?Sized,
+{
     for (space_index, space_id, space) in active_spaces {
         if !space_has_render_buffer_renderers(scene, *space_id) {
             continue;
@@ -281,12 +288,19 @@ fn extend_snapshot_particle_tasks<'a>(
 }
 
 /// Returns whether a render space has generated particle render-buffer rows.
-fn space_has_render_buffer_renderers(scene: &SceneCoordinator, space_id: RenderSpaceId) -> bool {
-    scene.space(space_id).is_some_and(|space| {
-        !space.billboard_render_buffers().is_empty()
-            || !space.trail_render_buffers().is_empty()
-            || !space.mesh_render_buffers().is_empty()
-    })
+fn space_has_render_buffer_renderers<S>(scene: &S, space_id: RenderSpaceId) -> bool
+where
+    S: WorldMeshSceneRead + ?Sized,
+{
+    scene
+        .billboard_render_buffers(space_id)
+        .is_some_and(|renderers| !renderers.is_empty())
+        || scene
+            .trail_render_buffers(space_id)
+            .is_some_and(|renderers| !renderers.is_empty())
+        || scene
+            .mesh_render_buffers(space_id)
+            .is_some_and(|renderers| !renderers.is_empty())
 }
 
 /// Appends chunked snapshot-copy tasks for one renderer table.
@@ -440,12 +454,14 @@ fn rebuild_snapshot_parallel(
     }
 }
 
-fn rebuild_snapshot_serial(
+fn rebuild_snapshot_serial<S>(
     render_world: &mut RenderWorld,
-    inputs: &SnapshotRebuildInputs<'_>,
+    inputs: &SnapshotRebuildInputs<'_, S>,
     active_space_ids: Vec<RenderSpaceId>,
     reused_space_ids: &HashSet<RenderSpaceId>,
-) {
+) where
+    S: WorldMeshSceneRead + ?Sized,
+{
     profiling::scope!("mesh::render_world::rebuild_prepared_snapshot::serial");
     for id in active_space_ids {
         render_world.prepared.push_cached_space(id);
@@ -480,11 +496,13 @@ fn reusable_prepared_space_ids(
     reused
 }
 
-fn append_particle_draws(
+fn append_particle_draws<S>(
     render_world: &mut RenderWorld,
-    inputs: &SnapshotRebuildInputs<'_>,
+    inputs: &SnapshotRebuildInputs<'_, S>,
     id: RenderSpaceId,
-) {
+) where
+    S: WorldMeshSceneRead + ?Sized,
+{
     expand_render_buffer_renderers_into(
         render_world.prepared.draws_mut_for_cached_rebuild(),
         inputs.scene,

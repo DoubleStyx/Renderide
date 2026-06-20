@@ -174,7 +174,7 @@ impl RenderBackend {
             .extract_frame_shared(DrawPreparationExtractDesc {
                 scene,
                 materials: &self.materials,
-                asset_transfers: &self.asset_transfers,
+                assets: &self.asset_transfers,
                 occlusion: &self.occlusion,
                 reflection_probes: self.reflection_probes.selection(),
                 inner_parallelism,

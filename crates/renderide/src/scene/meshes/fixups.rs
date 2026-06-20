@@ -149,9 +149,9 @@ mod tests {
             local_matrices: vec![glam::Mat4::IDENTITY; 2],
             local_dirty: vec![true; 2],
             degenerate_scales: vec![false; 2],
-            visit_epoch: vec![0; 2],
             ..Default::default()
         };
+        cache.hierarchy.visit_epoch = vec![0; 2];
 
         let extracted = ExtractedTransformsUpdate {
             removals: vec![0, -1],

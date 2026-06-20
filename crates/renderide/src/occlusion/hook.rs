@@ -7,14 +7,12 @@
 
 use std::sync::Arc;
 
-use glam::Mat4;
 use parking_lot::Mutex;
 
 use crate::camera::ViewId;
-use crate::cull_contract::WorldMeshCullProjParams;
+use crate::cull_contract::HiZTemporalState;
 use crate::occlusion::gpu::{HiZBuildRecord, HiZGpuState};
 use crate::occlusion::system::HiZBuildInput;
-use crate::scene::SceneCoordinator;
 
 /// Contract for the occlusion system as seen by render-graph code and graph-driven passes.
 ///
@@ -37,13 +35,10 @@ pub trait OcclusionGraphHook: Send + Sync {
         profiler: Option<&crate::profiling::GpuProfilerHandle>,
     );
 
-    /// Captures the current view/projection snapshot for next-frame Hi-Z occlusion tests.
-    fn capture_hi_z_temporal_for_next_frame(
+    /// Stores the current view/projection snapshot for next-frame Hi-Z occlusion tests.
+    fn store_hi_z_temporal_for_next_frame(
         &self,
-        scene: &SceneCoordinator,
-        prev_cull: &WorldMeshCullProjParams,
-        viewport_px: (u32, u32),
+        temporal: HiZTemporalState,
         state_slot: &Mutex<HiZGpuState>,
-        explicit_world_to_view: Option<Mat4>,
     );
 }

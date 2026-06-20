@@ -15,7 +15,7 @@ use crate::cpu_parallelism::{
     record_parallel_admission,
 };
 use crate::ipc::SharedMemoryAccessor;
-use crate::shared::{BlitToDisplayState, FrameSubmitData, RenderSH2, RenderingContext};
+use crate::shared::{BlitToDisplayState, FrameSubmitData, LayerType, RenderSH2, RenderingContext};
 
 use super::DrainedReflectionProbeRenderChanges;
 use super::error::SceneError;
@@ -26,6 +26,10 @@ use super::lights::{
 #[cfg(test)]
 use super::math::multiply_root;
 use super::overrides::MeshRendererOverrideTarget;
+use super::read::{
+    SceneLightRead, SceneMeshRendererRead, SceneReflectionProbeRead, SceneSpaceRead,
+    SceneTransformRead, WorldMeshSceneRead,
+};
 use super::render_space::{RenderSpaceState, RenderSpaceView};
 use super::transforms::TransformRemovalEvent;
 use super::world::{WorldTransformCache, compute_world_matrices_for_space, ensure_cache_shapes};
@@ -89,35 +93,45 @@ pub struct SceneCoordinator {
     world_caches: HashMap<RenderSpaceId, WorldTransformCache>,
     world_dirty: HashSet<RenderSpaceId>,
     light_cache: LightCache,
-    /// Reused in [`Self::flush_world_caches`] to avoid per-flush `Vec` allocation.
-    world_dirty_flush_scratch: Vec<RenderSpaceId>,
-    /// Reused in [`Self::remove_render_spaces_not_in_submit`].
-    remove_spaces_scratch: Vec<RenderSpaceId>,
+    world_flush_scratch: WorldCacheFlushScratch,
+    apply_scratch: SceneApplyScratch,
+}
+
+#[derive(Default)]
+struct WorldCacheFlushScratch {
+    /// Reused in [`SceneCoordinator::flush_world_caches`] to avoid per-flush `Vec` allocation.
+    dirty_spaces: Vec<RenderSpaceId>,
+}
+
+#[derive(Default)]
+struct SceneApplyScratch {
+    /// Reused in [`SceneCoordinator::remove_render_spaces_not_in_submit`].
+    remove_spaces: Vec<RenderSpaceId>,
     /// Per-space transform swap-remove events emitted during Phase B of the current frame's
     /// apply. Consumed by Phase C so [`LightCache::fixup_for_transform_removals`] can roll
     /// cached `transform_id`s forward before the light update applies. Cleared at the top of
-    /// every [`Self::apply_frame_submit`] so stale events never leak into later frames; the
-    /// per-space [`Vec`] allocations are retained across frames to keep the steady-state path
-    /// allocation-free.
+    /// every [`SceneCoordinator::apply_frame_submit`] so stale events never leak into later
+    /// frames; the per-space [`Vec`] allocations are retained across frames to keep the
+    /// steady-state path allocation-free.
     transform_removals_by_space: HashMap<RenderSpaceId, Vec<TransformRemovalEvent>>,
     /// Reused [`HashSet`] of render space ids seen in the current
     /// [`FrameSubmitData::render_spaces`]; cleared at the top of every
-    /// [`Self::apply_frame_submit`] and consumed by
-    /// [`Self::remove_render_spaces_not_in_submit`].
-    apply_seen_scratch: HashSet<RenderSpaceId>,
+    /// [`SceneCoordinator::apply_frame_submit`] and consumed by
+    /// [`SceneCoordinator::remove_render_spaces_not_in_submit`].
+    seen: HashSet<RenderSpaceId>,
     /// Reused per-space [`ExtractedRenderSpaceUpdate`] buffer for Phase A of every
-    /// [`Self::apply_frame_submit`]; drained into Phase B, then refilled next frame.
-    apply_extracted_scratch: Vec<ExtractedRenderSpaceUpdate>,
-    /// Reused per-space work buffer for [`Self::apply_extracted_per_space`]'s Phase B drain.
+    /// [`SceneCoordinator::apply_frame_submit`]; drained into Phase B, then refilled next frame.
+    extracted: Vec<ExtractedRenderSpaceUpdate>,
+    /// Reused per-space work buffer for [`SceneCoordinator::apply_extracted_per_space`]'s Phase B
+    /// drain.
     ///
-    /// Holds one tuple per space whose state was lifted out of [`Self::spaces`] /
-    /// [`Self::world_caches`] for the parallel apply. Drained in place after the loop so the
-    /// allocation persists across frames; previously this was a fresh
-    /// `Vec::with_capacity(extracted_per_space.len())` per frame.
-    apply_work_scratch: Vec<ApplyWorkSlot>,
+    /// Holds one tuple per space whose state was lifted out of the coordinator spaces and world
+    /// caches for the parallel apply. Drained in place after the loop so the allocation persists
+    /// across frames.
+    work: Vec<ApplyWorkSlot>,
 }
 
-/// One per-space work slot held in [`SceneCoordinator::apply_work_scratch`].
+/// One per-space work slot held in [`SceneApplyScratch::work`].
 struct ApplyWorkSlot {
     /// Render space identity for reinsert and dirty-cache tracking.
     id: RenderSpaceId,
@@ -149,12 +163,8 @@ impl SceneCoordinator {
             world_caches: HashMap::new(),
             world_dirty: HashSet::new(),
             light_cache: LightCache::new(),
-            world_dirty_flush_scratch: Vec::new(),
-            remove_spaces_scratch: Vec::new(),
-            transform_removals_by_space: HashMap::new(),
-            apply_seen_scratch: HashSet::new(),
-            apply_extracted_scratch: Vec::new(),
-            apply_work_scratch: Vec::new(),
+            world_flush_scratch: WorldCacheFlushScratch::default(),
+            apply_scratch: SceneApplyScratch::default(),
         }
     }
 
@@ -246,13 +256,6 @@ impl SceneCoordinator {
             .filter(|s| s.is_active && !s.is_overlay)
             .min_by_key(|s| s.id.0)
             .map(RenderSpaceView::new)
-    }
-
-    /// Ambient SH2 from the active non-overlay render space.
-    pub fn active_main_ambient_light(&self) -> RenderSH2 {
-        self.active_main_space()
-            .map(|s| s.ambient_light())
-            .unwrap_or_default()
     }
 
     /// Drains host changed-probe render requests after the latest scene apply.
@@ -365,15 +368,16 @@ impl SceneCoordinator {
         use rayon::prelude::*;
 
         let mut report = SceneCacheFlushReport::default();
-        self.world_dirty_flush_scratch.clear();
-        self.world_dirty_flush_scratch
+        self.world_flush_scratch.dirty_spaces.clear();
+        self.world_flush_scratch
+            .dirty_spaces
             .extend(self.world_dirty.iter().copied());
 
         // Drop caches for dirty spaces that no longer exist and drain caches for surviving
         // spaces into a work vec. This runs on the main thread because it mutates `self`.
         let mut work: Vec<(RenderSpaceId, WorldTransformCache)> =
-            Vec::with_capacity(self.world_dirty_flush_scratch.len());
-        for id in self.world_dirty_flush_scratch.iter().copied() {
+            Vec::with_capacity(self.world_flush_scratch.dirty_spaces.len());
+        for id in self.world_flush_scratch.dirty_spaces.iter().copied() {
             if !self.spaces.contains_key(&id) {
                 self.world_caches.remove(&id);
                 self.world_dirty.remove(&id);
@@ -472,15 +476,15 @@ impl SceneCoordinator {
 
         // Clear last frame's per-space removal events; Phase B refills them, Phase C consumes.
         // Retain the per-space `Vec` allocations to keep the steady-state path allocation-free.
-        for v in self.transform_removals_by_space.values_mut() {
+        for v in self.apply_scratch.transform_removals_by_space.values_mut() {
             v.clear();
         }
 
         // Reuse the cross-frame scratch HashSet and Vec; both are cleared on entry and put back
         // before this method returns so steady-state apply does not allocate either container.
-        let mut seen = std::mem::take(&mut self.apply_seen_scratch);
+        let mut seen = std::mem::take(&mut self.apply_scratch.seen);
         seen.clear();
-        let mut extracted_per_space = std::mem::take(&mut self.apply_extracted_scratch);
+        let mut extracted_per_space = std::mem::take(&mut self.apply_scratch.extracted);
         extracted_per_space.clear();
         extracted_per_space.reserve(data.render_spaces.len());
 
@@ -533,6 +537,7 @@ impl SceneCoordinator {
             for update in &data.render_spaces {
                 let view = light_updates_view(update);
                 if let Some(removals) = self
+                    .apply_scratch
                     .transform_removals_by_space
                     .get(&RenderSpaceId(view.space_id))
                 {
@@ -557,9 +562,9 @@ impl SceneCoordinator {
 
         // Restore the scratch containers (capacities retained for next frame).
         seen.clear();
-        self.apply_seen_scratch = seen;
+        self.apply_scratch.seen = seen;
         debug_assert!(extracted_per_space.is_empty());
-        self.apply_extracted_scratch = extracted_per_space;
+        self.apply_scratch.extracted = extracted_per_space;
         Ok(report)
     }
 
@@ -569,16 +574,221 @@ impl SceneCoordinator {
         seen: &HashSet<RenderSpaceId>,
         removed: &mut Vec<RenderSpaceId>,
     ) {
-        self.remove_spaces_scratch.clear();
-        self.remove_spaces_scratch
+        self.apply_scratch.remove_spaces.clear();
+        self.apply_scratch
+            .remove_spaces
             .extend(self.spaces.keys().copied().filter(|id| !seen.contains(id)));
-        for id in self.remove_spaces_scratch.iter().copied() {
+        for id in self.apply_scratch.remove_spaces.iter().copied() {
             removed.push(id);
             self.light_cache.remove_space(id.0);
             self.spaces.remove(&id);
             self.world_caches.remove(&id);
             self.world_dirty.remove(&id);
-            self.transform_removals_by_space.remove(&id);
+            self.apply_scratch.transform_removals_by_space.remove(&id);
         }
+    }
+}
+
+impl SceneMeshRendererRead for SceneCoordinator {
+    fn static_mesh_renderers(&self, id: RenderSpaceId) -> Option<&[super::StaticMeshRenderer]> {
+        self.spaces
+            .get(&id)
+            .map(|space| space.static_mesh_renderers.as_slice())
+    }
+
+    fn skinned_mesh_renderers(&self, id: RenderSpaceId) -> Option<&[super::SkinnedMeshRenderer]> {
+        self.spaces
+            .get(&id)
+            .map(|space| space.skinned_mesh_renderers.as_slice())
+    }
+}
+
+impl WorldMeshSceneRead for SceneCoordinator {
+    fn lod_groups(&self, id: RenderSpaceId) -> Option<&[super::LodGroupEntry]> {
+        self.spaces
+            .get(&id)
+            .map(|space| space.lod_groups.as_slice())
+    }
+
+    fn billboard_render_buffers(
+        &self,
+        id: RenderSpaceId,
+    ) -> Option<&[super::BillboardRenderBufferEntry]> {
+        self.spaces
+            .get(&id)
+            .map(|space| space.billboard_render_buffers.as_slice())
+    }
+
+    fn mesh_render_buffers(&self, id: RenderSpaceId) -> Option<&[super::MeshRenderBufferEntry]> {
+        self.spaces
+            .get(&id)
+            .map(|space| space.mesh_render_buffers.as_slice())
+    }
+
+    fn trail_render_buffers(&self, id: RenderSpaceId) -> Option<&[super::TrailRenderBufferEntry]> {
+        self.spaces
+            .get(&id)
+            .map(|space| space.trail_render_buffers.as_slice())
+    }
+}
+
+impl SceneReflectionProbeRead for SceneCoordinator {
+    fn reflection_probes(&self, id: RenderSpaceId) -> Option<&[super::ReflectionProbeEntry]> {
+        self.spaces
+            .get(&id)
+            .map(|space| space.reflection_probes.as_slice())
+    }
+}
+
+impl SceneSpaceRead for SceneCoordinator {
+    type Space<'a>
+        = RenderSpaceView<'a>
+    where
+        Self: 'a;
+    type RenderSpaceIds<'a>
+        = std::vec::IntoIter<RenderSpaceId>
+    where
+        Self: 'a;
+
+    fn render_space_ids(&self) -> Self::RenderSpaceIds<'_> {
+        let mut ids: Vec<RenderSpaceId> = self.spaces.keys().copied().collect();
+        ids.sort_unstable_by_key(|id| id.0);
+        ids.into_iter()
+    }
+
+    fn space(&self, id: RenderSpaceId) -> Option<Self::Space<'_>> {
+        self.spaces.get(&id).map(RenderSpaceView::new)
+    }
+
+    fn active_main_space(&self) -> Option<Self::Space<'_>> {
+        self.spaces
+            .values()
+            .filter(|s| s.is_active && !s.is_overlay)
+            .min_by_key(|s| s.id.0)
+            .map(RenderSpaceView::new)
+    }
+
+    fn active_main_ambient_light(&self) -> RenderSH2 {
+        self.active_main_space()
+            .map(|s| s.ambient_light())
+            .unwrap_or_default()
+    }
+
+    fn active_main_render_context(&self) -> RenderingContext {
+        self.active_main_space()
+            .map_or(RenderingContext::UserView, |space| {
+                space.main_render_context()
+            })
+    }
+
+    fn render_context_affects_draw_prep(&self, context: RenderingContext) -> bool {
+        self.spaces
+            .values()
+            .any(|space| space.has_draw_prep_overrides_in_context(context))
+    }
+}
+
+impl SceneTransformRead for SceneCoordinator {
+    fn world_matrix_for_context(
+        &self,
+        id: RenderSpaceId,
+        transform_index: usize,
+        context: RenderingContext,
+    ) -> Option<Mat4> {
+        SceneCoordinator::world_matrix_for_context(self, id, transform_index, context)
+    }
+
+    fn world_matrix_for_render_context(
+        &self,
+        id: RenderSpaceId,
+        transform_index: usize,
+        context: RenderingContext,
+        head_output_transform: Mat4,
+    ) -> Option<Mat4> {
+        SceneCoordinator::world_matrix_for_render_context(
+            self,
+            id,
+            transform_index,
+            context,
+            head_output_transform,
+        )
+    }
+
+    fn overlay_layer_model_matrix_for_context(
+        &self,
+        id: RenderSpaceId,
+        transform_index: usize,
+        context: RenderingContext,
+    ) -> Option<Mat4> {
+        SceneCoordinator::overlay_layer_model_matrix_for_context(self, id, transform_index, context)
+    }
+
+    fn transform_special_layer(
+        &self,
+        id: RenderSpaceId,
+        transform_index: usize,
+    ) -> Option<LayerType> {
+        SceneCoordinator::transform_special_layer(self, id, transform_index)
+    }
+
+    fn transform_is_in_overlay_layer(&self, id: RenderSpaceId, transform_index: usize) -> bool {
+        SceneCoordinator::transform_is_in_overlay_layer(self, id, transform_index)
+    }
+
+    fn transform_has_degenerate_scale_for_context(
+        &self,
+        id: RenderSpaceId,
+        transform_index: usize,
+        context: RenderingContext,
+    ) -> bool {
+        SceneCoordinator::transform_has_degenerate_scale_for_context(
+            self,
+            id,
+            transform_index,
+            context,
+        )
+    }
+
+    fn overridden_material_asset_id(
+        &self,
+        space_id: RenderSpaceId,
+        context: RenderingContext,
+        skinned: bool,
+        renderable_index: usize,
+        slot_index: usize,
+    ) -> Option<i32> {
+        SceneCoordinator::overridden_material_asset_id(
+            self,
+            space_id,
+            context,
+            skinned,
+            renderable_index,
+            slot_index,
+        )
+    }
+}
+
+impl SceneLightRead for SceneCoordinator {
+    fn resolve_lights_for_render_context_into(
+        &self,
+        id: RenderSpaceId,
+        context: RenderingContext,
+        head_output_transform: Mat4,
+        out: &mut Vec<ResolvedLight>,
+    ) {
+        SceneCoordinator::resolve_lights_for_render_context_into(
+            self,
+            id,
+            context,
+            head_output_transform,
+            out,
+        );
+    }
+
+    fn candidate_light_count_for_render_space_filter(
+        &self,
+        render_space_filter: Option<RenderSpaceId>,
+    ) -> usize {
+        SceneCoordinator::candidate_light_count_for_render_space_filter(self, render_space_filter)
     }
 }
