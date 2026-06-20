@@ -56,13 +56,21 @@ pub(crate) struct ActiveRealtimeReflectionProbeCapture {
     progress: RuntimeProbeCaptureProgress,
 }
 
+/// OnChanges completion waiting for final specular IBL readiness.
+pub(in crate::runtime) struct PendingOnChangesReflectionProbeCompletion {
+    /// Host request whose completion should be sent after final IBL readiness.
+    pub(in crate::runtime) request: ReflectionProbeOnChangesRenderRequest,
+    /// Renderer-side capture generation being filtered.
+    pub(in crate::runtime) generation: u64,
+    /// Latest host unique id queued while this completion was waiting.
+    pub(in crate::runtime) queued_unique_id: Option<i32>,
+}
+
 /// Progress state for a runtime cubemap capture.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct RuntimeProbeCaptureProgress {
     /// Bit mask of cubemap faces rendered into the capture target.
     rendered_faces: u8,
-    /// Remaining post-render ticks before the capture can be published.
-    filter_ticks_remaining: Option<u8>,
 }
 
 /// Inputs used to build render plans for a runtime cubemap capture step.
@@ -97,7 +105,7 @@ enum RuntimeProbeCaptureStep {
 impl RuntimeProbeCaptureProgress {
     /// Cubemap faces that should render this tick.
     fn faces_for_step(self, mode: ReflectionProbeTimeSlicingMode) -> Vec<ProbeCubeFace> {
-        if self.filter_ticks_remaining.is_some() || self.rendered_faces == ProbeCubeFace::ALL_MASK {
+        if self.rendered_faces == ProbeCubeFace::ALL_MASK {
             return Vec::new();
         }
         capture_faces_for_step(mode, self.rendered_faces)
@@ -110,35 +118,12 @@ impl RuntimeProbeCaptureProgress {
         }
     }
 
-    /// Advances post-render filtering delay and reports whether the capture is ready.
-    fn advance_after_step(
-        &mut self,
-        mode: ReflectionProbeTimeSlicingMode,
-    ) -> RuntimeProbeCaptureStep {
+    /// Reports whether all cubemap faces have rendered.
+    fn advance_after_step(self, _mode: ReflectionProbeTimeSlicingMode) -> RuntimeProbeCaptureStep {
         if self.rendered_faces != ProbeCubeFace::ALL_MASK {
             return RuntimeProbeCaptureStep::Pending;
         }
-        match self.filter_ticks_remaining {
-            None => {
-                let delay = filter_delay_ticks(mode);
-                if delay == 0 {
-                    RuntimeProbeCaptureStep::Complete
-                } else {
-                    self.filter_ticks_remaining = Some(delay);
-                    RuntimeProbeCaptureStep::Pending
-                }
-            }
-            Some(0) => RuntimeProbeCaptureStep::Complete,
-            Some(ticks) => {
-                let remaining = ticks.saturating_sub(1);
-                self.filter_ticks_remaining = Some(remaining);
-                if remaining == 0 {
-                    RuntimeProbeCaptureStep::Complete
-                } else {
-                    RuntimeProbeCaptureStep::Pending
-                }
-            }
-        }
+        RuntimeProbeCaptureStep::Complete
     }
 }
 
@@ -157,15 +142,6 @@ fn capture_faces_for_step(
     }
 }
 
-/// Post-render delay after the last face is rendered.
-fn filter_delay_ticks(mode: ReflectionProbeTimeSlicingMode) -> u8 {
-    match mode {
-        ReflectionProbeTimeSlicingMode::NoTimeSlicing => 0,
-        ReflectionProbeTimeSlicingMode::AllFacesAtOnce
-        | ReflectionProbeTimeSlicingMode::IndividualFaces => 8,
-    }
-}
-
 impl RendererRuntime {
     /// Advances host-requested OnChanges reflection-probe captures.
     pub(in crate::runtime) fn drain_onchanges_reflection_probe_captures(
@@ -173,6 +149,7 @@ impl RendererRuntime {
         gpu: &mut GpuContext,
     ) {
         profiling::scope!("reflection_probe_onchanges::drain");
+        self.drain_pending_onchanges_reflection_probe_completions();
         self.start_pending_onchanges_reflection_probe_captures(gpu);
         if self
             .tick_state
@@ -200,24 +177,17 @@ impl RendererRuntime {
                 Ok(RuntimeProbeCaptureStep::Pending) => still_active.push(capture),
                 Ok(RuntimeProbeCaptureStep::Complete) => {
                     let completed_request = capture.request;
-                    let follow_up = capture.queued_unique_id.take().map(|unique_id| {
-                        ReflectionProbeOnChangesRenderRequest {
-                            unique_id,
-                            ..completed_request
-                        }
-                    });
+                    let generation = capture.generation;
+                    let queued_unique_id = capture.queued_unique_id.take();
                     self.backend
                         .register_runtime_reflection_probe_capture(capture.into_runtime_capture());
-                    completed_results.push(changed_probe_completion(
-                        completed_request.render_space_id,
-                        completed_request.unique_id,
-                        false,
-                    ));
-                    if let Some(request) = follow_up {
-                        self.tick_state
-                            .pending_onchanges_reflection_probe_requests
-                            .push(request);
-                    }
+                    self.tick_state
+                        .pending_onchanges_reflection_probe_completions
+                        .push(PendingOnChangesReflectionProbeCompletion {
+                            request: completed_request,
+                            generation,
+                            queued_unique_id,
+                        });
                 }
                 Err(error) => {
                     logger::warn!(
@@ -235,6 +205,59 @@ impl RendererRuntime {
             }
         }
         self.tick_state.active_onchanges_reflection_probe_captures = still_active;
+        self.frontend
+            .enqueue_rendered_reflection_probes(completed_results);
+    }
+
+    /// Emits OnChanges completions whose final specular IBL bake has finished.
+    fn drain_pending_onchanges_reflection_probe_completions(&mut self) {
+        profiling::scope!("reflection_probe_onchanges::drain_pending_completions");
+        let pending = std::mem::take(
+            &mut self
+                .tick_state
+                .pending_onchanges_reflection_probe_completions,
+        );
+        if pending.is_empty() {
+            return;
+        }
+        let mut still_pending = Vec::with_capacity(pending.len());
+        let mut completed_results = Vec::new();
+        for completion in pending {
+            let final_ready = self
+                .backend
+                .reflection_probe_final_ready_generation(
+                    completion.request.render_space_id,
+                    completion.request.renderable_index,
+                )
+                .is_some_and(|generation| generation >= completion.generation);
+            if final_ready {
+                completed_results.push(changed_probe_completion(
+                    completion.request.render_space_id,
+                    completion.request.unique_id,
+                    false,
+                ));
+                if let Some(unique_id) = completion.queued_unique_id {
+                    self.tick_state
+                        .pending_onchanges_reflection_probe_requests
+                        .push(ReflectionProbeOnChangesRenderRequest {
+                            unique_id,
+                            ..completion.request
+                        });
+                }
+                continue;
+            }
+            if onchanges_capture_state(&self.scene, completion.request).is_err() {
+                completed_results.push(changed_probe_completion(
+                    completion.request.render_space_id,
+                    completion.request.unique_id,
+                    true,
+                ));
+                continue;
+            }
+            still_pending.push(completion);
+        }
+        self.tick_state
+            .pending_onchanges_reflection_probe_completions = still_pending;
         self.frontend
             .enqueue_rendered_reflection_probes(completed_results);
     }
@@ -318,9 +341,15 @@ impl RendererRuntime {
                 capture: &mut capture,
             }) {
                 Ok(RuntimeProbeCaptureStep::Pending) => still_active.push(capture),
-                Ok(RuntimeProbeCaptureStep::Complete) => self
-                    .backend
-                    .register_runtime_reflection_probe_capture(capture.into_runtime_capture()),
+                Ok(RuntimeProbeCaptureStep::Complete) => {
+                    let key = capture.key;
+                    let generation = capture.generation;
+                    self.backend
+                        .register_runtime_reflection_probe_capture(capture.into_runtime_capture());
+                    self.tick_state
+                        .realtime_reflection_probe_pending_generations
+                        .insert(key, generation);
+                }
                 Err(error) => {
                     logger::debug!(
                         "Realtime reflection probe capture failed for render_space_id={} renderable_index={} generation={}: {error}",
@@ -338,6 +367,18 @@ impl RendererRuntime {
     fn start_missing_realtime_reflection_probe_captures(&mut self, gpu: &GpuContext) {
         profiling::scope!("reflection_probe_realtime::start_missing");
         let active_keys = active_realtime_probe_keys(&self.scene);
+        let backend = &self.backend;
+        self.tick_state
+            .realtime_reflection_probe_pending_generations
+            .retain(|key, generation| {
+                active_keys.contains(key)
+                    && backend
+                        .reflection_probe_final_ready_generation(
+                            key.space_id.0,
+                            key.renderable_index,
+                        )
+                        .is_none_or(|ready_generation| ready_generation < *generation)
+            });
         self.tick_state
             .active_realtime_reflection_probe_captures
             .retain(|capture| {
@@ -351,6 +392,13 @@ impl RendererRuntime {
                 .iter()
                 .any(|capture| capture.key == key);
             if already_active {
+                continue;
+            }
+            if self
+                .tick_state
+                .realtime_reflection_probe_pending_generations
+                .contains_key(&key)
+            {
                 continue;
             }
             let generation = self.tick_state.next_realtime_reflection_probe_generation;

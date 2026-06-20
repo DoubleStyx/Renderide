@@ -55,6 +55,39 @@ fn mark_dirty_spaces_invalidates_sync_signature() {
 }
 
 #[test]
+fn final_ready_generation_reports_runtime_probe_generation() {
+    let mut system = ReflectionProbeSpecularSystem::new();
+    system.runtime_final_ready_generation.insert(
+        ProbeIdentity {
+            space_id: RenderSpaceId(7),
+            renderable_index: 3,
+        },
+        42,
+    );
+
+    assert_eq!(system.final_ready_generation(7, 3), Some(42));
+    assert_eq!(system.final_ready_generation(7, 4), None);
+}
+
+#[test]
+fn purge_spaces_removes_final_ready_generations() {
+    let mut system = ReflectionProbeSpecularSystem::new();
+    system.runtime_final_ready_generation.insert(
+        ProbeIdentity {
+            space_id: RenderSpaceId(7),
+            renderable_index: 3,
+        },
+        42,
+    );
+    let mut spaces = HashSet::new();
+    spaces.insert(RenderSpaceId(7));
+
+    system.purge_render_space_resources(&spaces);
+
+    assert_eq!(system.final_ready_generation(7, 3), None);
+}
+
+#[test]
 fn space_summary_normalize_orders_ready_rows() {
     let mut summary = CachedSpaceSummary {
         ready: vec![

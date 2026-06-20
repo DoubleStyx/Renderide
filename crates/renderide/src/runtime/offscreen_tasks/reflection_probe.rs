@@ -27,6 +27,7 @@ mod tests;
 use onchanges::same_onchanges_probe;
 pub(in crate::runtime) use onchanges::{
     ActiveOnChangesReflectionProbeCapture, ActiveRealtimeReflectionProbeCapture,
+    PendingOnChangesReflectionProbeCompletion,
 };
 use readback::{
     compute_probe_readback_layout, readback_reflection_probe_cube, write_probe_task_result,
@@ -256,6 +257,18 @@ impl RendererRuntime {
                 .find(|active| same_onchanges_probe(active.request, request))
             {
                 active.queued_unique_id = Some(request.unique_id);
+                continue;
+            }
+            if let Some(pending_completion) = self
+                .tick_state
+                .pending_onchanges_reflection_probe_completions
+                .iter_mut()
+                .find(|completion| {
+                    completion.request.render_space_id == request.render_space_id
+                        && completion.request.renderable_index == request.renderable_index
+                })
+            {
+                pending_completion.queued_unique_id = Some(request.unique_id);
                 continue;
             }
             if let Some(pending) = self

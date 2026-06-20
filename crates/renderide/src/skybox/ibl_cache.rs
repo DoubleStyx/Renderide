@@ -29,6 +29,6 @@ mod sampler;
 #[cfg(test)]
 mod topology;
 
-pub(crate) use cache::SkyboxIblCache;
+pub(crate) use cache::{IblBakePolicy, SkyboxIblCache};
 pub(crate) use convolver::SkyboxIblConvolver;
 pub(crate) use key::{SkyboxIblKey, build_key, clamp_face_size, mip_extent, mip_levels_for_edge};

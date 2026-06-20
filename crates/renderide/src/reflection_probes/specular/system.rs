@@ -6,10 +6,14 @@ use crate::gpu::{FrameSubmitKind, GpuContext};
 use crate::gpu::{GpuReflectionProbeMetadata, REFLECTION_PROBE_ATLAS_FORMAT};
 use crate::reflection_probes::ReflectionProbeCubemapAssets;
 use crate::scene::{RenderSpaceId, SceneCoordinator, reflection_probe_solid_color};
-use crate::shared::{ReflectionProbeType, RenderSH2, RenderingContext};
-use crate::skybox::ibl_cache::{
-    SkyboxIblCache, SkyboxIblKey, build_key, clamp_face_size, mip_extent, mip_levels_for_edge,
+use crate::shared::{
+    ReflectionProbeTimeSlicingMode, ReflectionProbeType, RenderSH2, RenderingContext,
 };
+use crate::skybox::ibl_cache::{
+    IblBakePolicy, SkyboxIblCache, SkyboxIblKey, build_key, clamp_face_size, mip_extent,
+    mip_levels_for_edge,
+};
+use crate::skybox::specular::SkyboxIblSource;
 use crate::{profiling, reflection_probes::ReflectionProbeSh2System};
 
 use super::atlas::{AtlasCopyJob, ReflectionProbeAtlas, max_atlas_slots};
@@ -58,6 +62,8 @@ pub struct ReflectionProbeSpecularSystem {
     last_stats: MaintainStats,
     /// Last source that finished IBL and optional SH2 work for each probe.
     last_ready: HashMap<ProbeIdentity, LastReadyProbe>,
+    /// Highest runtime capture generation with a completed final specular IBL cube.
+    runtime_final_ready_generation: HashMap<ProbeIdentity, u64>,
     version: u64,
 }
 
@@ -83,8 +89,23 @@ impl ReflectionProbeSpecularSystem {
             sync_signature: None,
             last_stats: MaintainStats::default(),
             last_ready: HashMap::new(),
+            runtime_final_ready_generation: HashMap::new(),
             version: 1,
         }
+    }
+
+    /// Highest runtime capture generation whose final specular IBL cube is ready.
+    pub(crate) fn final_ready_generation(
+        &self,
+        space_id: i32,
+        renderable_index: i32,
+    ) -> Option<u64> {
+        self.runtime_final_ready_generation
+            .get(&ProbeIdentity {
+                space_id: RenderSpaceId(space_id),
+                renderable_index,
+            })
+            .copied()
     }
 
     /// Registers a completed runtime cubemap capture for a dynamic reflection probe.
@@ -128,6 +149,8 @@ impl ReflectionProbeSpecularSystem {
         self.last_ready
             .retain(|identity, _probe| !spaces.contains(&identity.space_id));
         let last_ready = last_ready_before.saturating_sub(self.last_ready.len());
+        self.runtime_final_ready_generation
+            .retain(|identity, _generation| !spaces.contains(&identity.space_id));
         let cache_before = self.space_cache.len();
         self.space_cache
             .retain(|space_id, _cache| !spaces.contains(space_id));
@@ -152,7 +175,7 @@ impl ReflectionProbeSpecularSystem {
     pub(crate) fn maintain(&mut self, mut params: ReflectionProbeSpecularMaintainParams<'_>) {
         profiling::scope!("reflection_probes::specular::maintain");
         let mut stats = MaintainStats::default();
-        self.ibl_cache.maintain_completed_jobs(params.gpu.device());
+        self.ibl_cache.maintain_gpu_jobs(params.gpu);
         let face_size = clamp_face_size(DEFAULT_REFLECTION_PROBE_FACE_SIZE, params.gpu.limits());
         self.refresh_collect_config(ProbeCollectConfig {
             face_size,
@@ -167,6 +190,8 @@ impl ReflectionProbeSpecularSystem {
         self.captures.retain_active(&collected.active_capture_keys);
         self.last_ready
             .retain(|identity, _probe| collected.active_identities.contains(identity));
+        self.runtime_final_ready_generation
+            .retain(|identity, _generation| collected.active_identities.contains(identity));
         self.ibl_cache
             .prune_completed_except(&collected.active_keys);
         collected.ready.sort_unstable_by_key(|probe| {
@@ -174,6 +199,7 @@ impl ReflectionProbeSpecularSystem {
         });
         stats.ready_probes = collected.ready.len();
         stats.ibl_pending = self.ibl_cache.pending_len();
+        stats.ibl_active_sliced = self.ibl_cache.active_sliced_len();
         stats.ibl_completed = self.ibl_cache.completed_len();
         self.sync_atlas_and_selection(
             params.gpu,
@@ -286,15 +312,17 @@ impl ReflectionProbeSpecularSystem {
             return;
         };
         summary.active_identities.insert(identity);
+        let runtime_generation = runtime_source_generation(&source);
         let key = build_key(&source, face_size);
         summary.active_keys.insert(key.clone());
         let sh2 = params
             .reflection_probe_sh2_enabled
             .then(|| params.sh2_system.ensure_ibl_source(space_id.0, &source))
             .flatten();
+        let policy = ibl_policy_for_probe_source(probe.state.time_slicing_mode, &source);
         if self
             .ibl_cache
-            .ensure_source(params.gpu, key.clone(), source)
+            .ensure_source_with_policy(params.gpu, key.clone(), source, policy)
         {
             stats.scheduled_ibl_bakes = stats.scheduled_ibl_bakes.saturating_add(1);
         }
@@ -304,6 +332,10 @@ impl ReflectionProbeSpecularSystem {
             .filter(|_cube| !params.reflection_probe_sh2_enabled || sh2.is_some())
             .map(|cube| (key.clone(), cube.mip_levels, sh2.is_some()));
         if let Some((key, mip_levels, has_sh2)) = current_ready {
+            if let Some(generation) = runtime_generation {
+                self.runtime_final_ready_generation
+                    .insert(identity, generation);
+            }
             summary.ready.push(ReadyProbeSummary {
                 identity,
                 key,
@@ -374,15 +406,17 @@ impl ReflectionProbeSpecularSystem {
             return;
         };
         cache.summary.active_identities.insert(identity);
+        let runtime_generation = runtime_source_generation(&source);
         let key = build_key(&source, face_size);
         cache.summary.active_keys.insert(key.clone());
         let sh2 = params
             .reflection_probe_sh2_enabled
             .then(|| params.sh2_system.ensure_ibl_source(space_id.0, &source))
             .flatten();
+        let policy = ibl_policy_for_probe_source(probe.state.time_slicing_mode, &source);
         if self
             .ibl_cache
-            .ensure_source(params.gpu, key.clone(), source)
+            .ensure_source_with_policy(params.gpu, key.clone(), source, policy)
         {
             stats.scheduled_ibl_bakes = stats.scheduled_ibl_bakes.saturating_add(1);
         }
@@ -397,6 +431,10 @@ impl ReflectionProbeSpecularSystem {
             .filter(|_cube| !params.reflection_probe_sh2_enabled || sh2.is_some())
             .map(|cube| (cube.texture.clone(), cube.mip_levels));
         if let Some((texture, mip_levels)) = current_ready {
+            if let Some(generation) = runtime_generation {
+                self.runtime_final_ready_generation
+                    .insert(identity, generation);
+            }
             let mut metadata = metadata_for_spatial(&spatial, probe.state, sh2.as_ref());
             metadata.params[1] = mip_levels.saturating_sub(1) as f32;
             self.last_ready.insert(
@@ -721,6 +759,27 @@ fn specular_ibl_key_matches_closed_spaces(
     }
 }
 
+fn runtime_source_generation(source: &SkyboxIblSource) -> Option<u64> {
+    match source {
+        SkyboxIblSource::RuntimeCubemap(src) => Some(src.generation),
+        SkyboxIblSource::Cubemap(_) | SkyboxIblSource::SolidColor(_) => None,
+    }
+}
+
+fn ibl_policy_for_probe_source(
+    time_slicing_mode: ReflectionProbeTimeSlicingMode,
+    source: &SkyboxIblSource,
+) -> IblBakePolicy {
+    if !matches!(source, SkyboxIblSource::RuntimeCubemap(_)) {
+        return IblBakePolicy::Immediate;
+    }
+    match time_slicing_mode {
+        ReflectionProbeTimeSlicingMode::NoTimeSlicing => IblBakePolicy::Immediate,
+        ReflectionProbeTimeSlicingMode::AllFacesAtOnce
+        | ReflectionProbeTimeSlicingMode::IndividualFaces => IblBakePolicy::UnityTimeSliced,
+    }
+}
+
 #[cfg(test)]
 mod tests;
 
@@ -756,6 +815,7 @@ struct MaintainStats {
     atlas_copy_jobs: usize,
     atlas_capacity: usize,
     ibl_pending: usize,
+    ibl_active_sliced: usize,
     ibl_completed: usize,
 }
 
@@ -800,6 +860,10 @@ fn plot_maintain_stats(stats: &MaintainStats) {
     tracy_client::plot!(
         "reflection_probes::specular::ibl_pending",
         stats.ibl_pending as f64
+    );
+    tracy_client::plot!(
+        "reflection_probes::specular::ibl_active_sliced",
+        stats.ibl_active_sliced as f64
     );
     tracy_client::plot!(
         "reflection_probes::specular::ibl_completed",

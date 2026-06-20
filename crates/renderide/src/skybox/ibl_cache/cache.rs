@@ -1,5 +1,6 @@
 //! Owns IBL bakes for prefiltered specular reflection cubemaps.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use hashbrown::HashMap;
@@ -10,9 +11,11 @@ use crate::profiling::GpuProfilerHandle;
 use crate::skybox::specular::{SkyboxIblSource, solid_color_params};
 
 use super::encode::{
-    AnalyticEncodeContext, ConvolveEncodeContext, CubeEncodeContext, DownsampleEncodeContext,
-    RuntimeCubeEncodeContext, StitchEncodeContext, encode_analytic_mip0, encode_convolve_mips,
-    encode_cube_mip0, encode_downsample_mips, encode_runtime_cube_mip0, encode_stitch_mip,
+    AnalyticEncodeContext, ConvolveEncodeContext, ConvolveMipEncodeContext, CubeEncodeContext,
+    DownsampleEncodeContext, DownsampleMipEncodeContext, RuntimeCubeEncodeContext,
+    StitchEncodeContext, encode_analytic_mip0, encode_convolve_mip, encode_convolve_mips,
+    encode_cube_mip0, encode_downsample_mip, encode_downsample_mips, encode_runtime_cube_mip0,
+    encode_stitch_mip,
 };
 use super::errors::SkyboxIblBakeError;
 use super::key::{SkyboxIblKey, mip_levels_for_edge, source_max_lod};
@@ -24,8 +27,19 @@ use super::resources::{
 
 /// Maximum concurrent in-flight bakes; matches the analytic-only ceiling we used previously.
 const MAX_IN_FLIGHT_IBL_BAKES: usize = 2;
+/// Unity spends eight frames filtering after runtime reflection-probe face capture.
+const UNITY_RUNTIME_FILTER_SLICES: u32 = 8;
 /// Tick budget after which a missing submit-completion callback is treated as lost.
 const MAX_PENDING_IBL_BAKE_AGE_FRAMES: u32 = 120;
+
+/// Scheduling policy for one IBL bake.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum IblBakePolicy {
+    /// Encode and submit every mip in one GPU batch.
+    Immediate,
+    /// Spread runtime reflection-probe filtering across Unity's post-face update window.
+    UnityTimeSliced,
+}
 
 /// Resources required to encode a mip-0 producer for any source variant.
 struct SourceMip0EncodeContext<'a> {
@@ -95,12 +109,177 @@ impl BakeTextures {
     }
 }
 
+/// Runtime IBL bake retained while its filter work is spread over multiple ticks.
+struct ActiveIblBake {
+    /// Source consumed during the first slice.
+    source: Option<SkyboxIblSource>,
+    /// Textures retained across every slice.
+    textures: BakeTextures,
+    /// GPU resources retained until the final submit callback promotes the bake.
+    resources: PendingBakeResources,
+    /// Linear clamp sampler used by source and convolve passes.
+    sampler: Arc<wgpu::Sampler>,
+    /// Destination face size in texels.
+    face_size: u32,
+    /// Destination mip count.
+    mip_levels: u32,
+    /// Number of filter slices in the logical update window.
+    filter_slices: u32,
+    /// Next filter slice to encode.
+    next_slice: u32,
+}
+
+impl ActiveIblBake {
+    /// Allocates resources for one sliced runtime IBL bake.
+    fn new(
+        device: &wgpu::Device,
+        source: SkyboxIblSource,
+        sampler: Arc<wgpu::Sampler>,
+        face_size: u32,
+        filter_slices: u32,
+    ) -> Self {
+        let mip_levels = mip_levels_for_edge(face_size);
+        let textures = BakeTextures::create(device, face_size, mip_levels);
+        let mut resources = PendingBakeResources::default();
+        textures.retain_transient(&mut resources);
+        Self {
+            source: Some(source),
+            textures,
+            resources,
+            sampler,
+            face_size,
+            mip_levels,
+            filter_slices: filter_slices.max(1),
+            next_slice: 0,
+        }
+    }
+
+    /// Encodes the next slice and returns true when this was the final slice.
+    fn encode_next_slice(
+        &mut self,
+        gpu: &GpuContext,
+        pipelines: &PipelineStore,
+        profiler: Option<&mut GpuProfilerHandle>,
+    ) -> Result<(wgpu::CommandEncoder, bool), SkyboxIblBakeError> {
+        profiling::scope!("skybox_ibl::encode_sliced_bake_step");
+        let mut profiler = profiler;
+        let mut encoder = gpu
+            .device()
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("skybox_ibl sliced bake encoder"),
+            });
+        let downsample_pipeline = pipelines.get(PipelineSlot::Downsample)?;
+        let stitch_pipeline = pipelines.get(PipelineSlot::Stitch)?;
+        let convolve_pipeline = pipelines.get(PipelineSlot::Convolve)?;
+        if self.next_slice == 0 {
+            let source = self
+                .source
+                .take()
+                .ok_or(SkyboxIblBakeError::InvalidSlicedBakeState(
+                    "missing first-slice source",
+                ))?;
+            encode_source_mip0(
+                pipelines,
+                SourceMip0EncodeContext {
+                    gpu,
+                    encoder: &mut encoder,
+                    texture: self.textures.source_scratch_cube.texture.as_ref(),
+                    face_size: self.face_size,
+                    sampler: self.sampler.as_ref(),
+                    profiler: profiler.as_deref(),
+                },
+                source,
+                &mut self.resources,
+            )?;
+            encode_stitch_mip(
+                StitchEncodeContext {
+                    device: gpu.device(),
+                    encoder: &mut encoder,
+                    pipeline: stitch_pipeline,
+                    src_texture: self.textures.source_scratch_cube.texture.as_ref(),
+                    dst_texture: self.textures.source_cube.texture.as_ref(),
+                    mip: 0,
+                    dst_size: self.face_size,
+                    profiler: profiler.as_deref(),
+                    label: "skybox_ibl stitch source mip0",
+                    profiler_label: "skybox_ibl::stitch_source_mip0".to_string(),
+                },
+                &mut self.resources,
+            );
+            copy_cube_mip0(
+                &mut encoder,
+                self.textures.source_cube.texture.as_ref(),
+                self.textures.filtered_cube.texture.as_ref(),
+                self.face_size,
+                profiler.as_deref(),
+            );
+            for mip in 1..self.mip_levels {
+                encode_downsample_mip(
+                    DownsampleMipEncodeContext {
+                        device: gpu.device(),
+                        encoder: &mut encoder,
+                        pipeline: downsample_pipeline,
+                        stitch_pipeline,
+                        texture: self.textures.source_cube.texture.as_ref(),
+                        scratch_texture: self.textures.source_scratch_cube.texture.as_ref(),
+                        face_size: self.face_size,
+                        mip,
+                        profiler: profiler.as_deref(),
+                    },
+                    &mut self.resources,
+                );
+            }
+        }
+        for mip in convolve_mips_for_slice(self.mip_levels, self.filter_slices, self.next_slice) {
+            encode_convolve_mip(
+                ConvolveMipEncodeContext {
+                    device: gpu.device(),
+                    encoder: &mut encoder,
+                    pipeline: convolve_pipeline,
+                    stitch_pipeline,
+                    texture: self.textures.filtered_cube.texture.as_ref(),
+                    scratch_texture: self.textures.filtered_scratch_cube.texture.as_ref(),
+                    src_view: self.textures.source_sample_view.as_ref(),
+                    sampler: self.sampler.as_ref(),
+                    face_size: self.face_size,
+                    mip_levels: self.mip_levels,
+                    src_max_lod: source_max_lod(self.mip_levels),
+                    mip,
+                    profiler: profiler.as_deref(),
+                },
+                &mut self.resources,
+            );
+        }
+        if let Some(profiler) = profiler.as_mut() {
+            profiling::scope!("skybox_ibl::resolve_sliced_profiler_queries");
+            profiler.resolve_queries(&mut encoder);
+        }
+        self.next_slice = self.next_slice.saturating_add(1);
+        Ok((encoder, self.next_slice >= self.filter_slices))
+    }
+
+    /// Converts a finished sliced bake into a pending submit-completion record.
+    fn into_pending(self) -> PendingBake {
+        PendingBake {
+            cube: PrefilteredCube {
+                texture: self.textures.filtered_cube.texture.clone(),
+                mip_levels: self.mip_levels,
+            },
+            _resources: self.resources,
+        }
+    }
+}
+
 /// Owns IBL bakes for prefiltered specular reflection cubemaps.
 pub(crate) struct SkyboxIblCache {
     /// Submit-completion tracker for in-flight bakes.
     jobs: GpuSubmitJobTracker<SkyboxIblKey>,
     /// In-flight prefiltered cubes retained until their submit callback fires.
     pending: HashMap<SkyboxIblKey, PendingBake>,
+    /// Runtime IBL bakes whose filtering is spread across several maintenance ticks.
+    active_sliced: HashMap<SkyboxIblKey, ActiveIblBake>,
+    /// Round-robin queue for active sliced IBL bake keys.
+    sliced_queue: VecDeque<SkyboxIblKey>,
     /// Completed prefiltered cubes for the active skybox key.
     completed: HashMap<SkyboxIblKey, PrefilteredCube>,
     /// Lazily-built compute pipelines and cached input sampler.
@@ -119,18 +298,21 @@ impl SkyboxIblCache {
         Self {
             jobs: GpuSubmitJobTracker::new(MAX_PENDING_IBL_BAKE_AGE_FRAMES),
             pending: HashMap::new(),
+            active_sliced: HashMap::new(),
+            sliced_queue: VecDeque::new(),
             completed: HashMap::new(),
             pipelines: PipelineStore::default(),
         }
     }
 
-    /// Drains submit-completed bakes.
-    pub(crate) fn maintain_completed_jobs(&mut self, device: &wgpu::Device) {
+    /// Drains submit-completed bakes and advances one sliced runtime bake step.
+    pub(crate) fn maintain_gpu_jobs(&mut self, gpu: &mut GpuContext) {
         {
             profiling::scope!("skybox_ibl::poll_completed_jobs");
-            let _ = device.poll(wgpu::PollType::Poll);
+            let _ = gpu.device().poll(wgpu::PollType::Poll);
         }
         self.drain_completed_jobs();
+        self.advance_sliced_bakes(gpu);
     }
 
     /// Removes completed cubes whose keys are not retained by the caller.
@@ -144,29 +326,49 @@ impl SkyboxIblCache {
         mut predicate: impl FnMut(&SkyboxIblKey) -> bool,
     ) -> usize {
         let pending_before = self.pending.len();
+        let active_before = self.active_sliced.len();
         let completed_before = self.completed.len();
         self.pending.retain(|key, _| !predicate(key));
+        self.active_sliced.retain(|key, _| !predicate(key));
+        self.sliced_queue
+            .retain(|key| self.active_sliced.contains_key(key));
         self.completed.retain(|key, _| !predicate(key));
         self.jobs.retain(|key| !predicate(key));
         pending_before.saturating_sub(self.pending.len())
+            + active_before.saturating_sub(self.active_sliced.len())
             + completed_before.saturating_sub(self.completed.len())
     }
 
-    /// Ensures one arbitrary IBL source is scheduled for baking.
-    pub(crate) fn ensure_source(
+    /// Ensures one arbitrary IBL source is scheduled with the requested policy.
+    pub(crate) fn ensure_source_with_policy(
         &mut self,
         gpu: &mut GpuContext,
         key: SkyboxIblKey,
         source: SkyboxIblSource,
+        policy: IblBakePolicy,
     ) -> bool {
         if self.completed.contains_key(&key)
             || self.pending.contains_key(&key)
             || self.jobs.contains_key(&key)
-            || self.jobs.len() >= MAX_IN_FLIGHT_IBL_BAKES
+            || self.active_sliced.contains_key(&key)
+            || self.in_flight_len() >= MAX_IN_FLIGHT_IBL_BAKES
         {
             return false;
         }
-        if let Err(e) = self.schedule_bake(gpu, key, source) {
+        let result = match policy {
+            IblBakePolicy::Immediate => self.schedule_bake(gpu, key, source),
+            IblBakePolicy::UnityTimeSliced => {
+                if matches!(
+                    source,
+                    SkyboxIblSource::Cubemap(_) | SkyboxIblSource::SolidColor(_)
+                ) {
+                    self.schedule_bake(gpu, key, source)
+                } else {
+                    self.schedule_sliced_bake(gpu, key, source, UNITY_RUNTIME_FILTER_SLICES)
+                }
+            }
+        };
+        if let Err(e) = result {
             logger::warn!("skybox_ibl: bake failed: {e}");
             return false;
         }
@@ -175,12 +377,17 @@ impl SkyboxIblCache {
 
     /// Returns the number of IBL bakes waiting for submit-completion callbacks.
     pub(crate) fn pending_len(&self) -> usize {
-        self.pending.len()
+        self.pending.len() + self.active_sliced.len()
     }
 
     /// Returns the number of completed filtered cubes currently retained.
     pub(crate) fn completed_len(&self) -> usize {
         self.completed.len()
+    }
+
+    /// Returns the number of runtime bakes currently being filtered across multiple ticks.
+    pub(crate) fn active_sliced_len(&self) -> usize {
+        self.active_sliced.len()
     }
 
     /// Returns a completed prefiltered cube by key.
@@ -199,6 +406,81 @@ impl SkyboxIblCache {
         for key in outcomes.failed {
             self.pending.remove(&key);
             logger::warn!("skybox_ibl: bake expired before submit completion (key {key:?})");
+        }
+    }
+
+    /// Returns total in-flight IBL jobs, including sliced bakes not yet on the submit tracker.
+    fn in_flight_len(&self) -> usize {
+        self.jobs.len() + self.active_sliced.len()
+    }
+
+    /// Starts a sliced runtime IBL bake without submitting work immediately.
+    fn schedule_sliced_bake(
+        &mut self,
+        gpu: &GpuContext,
+        key: SkyboxIblKey,
+        source: SkyboxIblSource,
+        filter_slices: u32,
+    ) -> Result<(), SkyboxIblBakeError> {
+        profiling::scope!("skybox_ibl::schedule_sliced_bake");
+        self.pipelines.ensure_all(gpu.device())?;
+        let sampler = self.pipelines.ensure_sampler(gpu.device());
+        let face_size = key.face_size();
+        let bake = ActiveIblBake::new(gpu.device(), source, sampler, face_size, filter_slices);
+        self.active_sliced.insert(key.clone(), bake);
+        self.sliced_queue.push_back(key);
+        Ok(())
+    }
+
+    /// Advances every active sliced runtime IBL bake by one Unity filter slice.
+    fn advance_sliced_bakes(&mut self, gpu: &mut GpuContext) {
+        if self.active_sliced.is_empty() {
+            return;
+        }
+        profiling::scope!("skybox_ibl::advance_sliced_bakes");
+        let mut bakes_to_advance = self.active_sliced.len();
+        while bakes_to_advance > 0 {
+            let Some(key) = self.sliced_queue.pop_front() else {
+                return;
+            };
+            let Some(mut bake) = self.active_sliced.remove(&key) else {
+                continue;
+            };
+            bakes_to_advance -= 1;
+            let mut profiler = gpu.take_gpu_profiler();
+            let result = bake.encode_next_slice(gpu, &self.pipelines, profiler.as_mut());
+            gpu.restore_gpu_profiler(profiler);
+            match result {
+                Ok((encoder, true)) => {
+                    let pending = bake.into_pending();
+                    self.submit_pending_bake(gpu, key, encoder, pending);
+                }
+                Ok((encoder, false)) => {
+                    self.submit_sliced_bake_step(gpu, encoder);
+                    self.active_sliced.insert(key.clone(), bake);
+                    self.sliced_queue.push_back(key);
+                }
+                Err(error) => {
+                    logger::warn!("skybox_ibl: sliced bake failed for key {key:?}: {error}");
+                }
+            }
+        }
+    }
+
+    /// Submits a non-final sliced bake step without installing a completion callback.
+    fn submit_sliced_bake_step(&self, gpu: &GpuContext, encoder: wgpu::CommandEncoder) {
+        let command_buffer = {
+            profiling::scope!("CommandEncoder::finish::skybox_ibl_sliced");
+            encoder.finish()
+        };
+        {
+            profiling::scope!("skybox_ibl::submit_sliced_step_enqueue");
+            gpu.submit_frame_batch(
+                FrameSubmitKind::BackgroundGpuWork,
+                vec![command_buffer],
+                None,
+                None,
+            );
         }
     }
 
@@ -235,7 +517,8 @@ impl SkyboxIblCache {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("skybox_ibl bake encoder"),
             });
-        self.encode_source_mip0(
+        encode_source_mip0(
+            &self.pipelines,
             SourceMip0EncodeContext {
                 gpu,
                 encoder: &mut encoder,
@@ -318,66 +601,6 @@ impl SkyboxIblCache {
         Ok(())
     }
 
-    /// Dispatches the variant-specific mip-0 producer for one source.
-    fn encode_source_mip0(
-        &self,
-        ctx: SourceMip0EncodeContext<'_>,
-        source: SkyboxIblSource,
-        resources: &mut PendingBakeResources,
-    ) -> Result<(), SkyboxIblBakeError> {
-        match source {
-            SkyboxIblSource::Cubemap(src) => {
-                let pipeline = self.pipelines.get(PipelineSlot::Cube)?;
-                encode_cube_mip0(
-                    CubeEncodeContext {
-                        device: ctx.gpu.device(),
-                        encoder: ctx.encoder,
-                        pipeline,
-                        texture: ctx.texture,
-                        face_size: ctx.face_size,
-                        src,
-                        sampler: ctx.sampler,
-                        profiler: ctx.profiler,
-                    },
-                    resources,
-                );
-            }
-            SkyboxIblSource::SolidColor(src) => {
-                let params = solid_color_params(src.color);
-                let pipeline = self.pipelines.get(PipelineSlot::Analytic)?;
-                encode_analytic_mip0(
-                    AnalyticEncodeContext {
-                        device: ctx.gpu.device(),
-                        encoder: ctx.encoder,
-                        pipeline,
-                        texture: ctx.texture,
-                        face_size: ctx.face_size,
-                        params: &params,
-                        profiler: ctx.profiler,
-                    },
-                    resources,
-                );
-            }
-            SkyboxIblSource::RuntimeCubemap(src) => {
-                let pipeline = self.pipelines.get(PipelineSlot::Cube)?;
-                encode_runtime_cube_mip0(
-                    RuntimeCubeEncodeContext {
-                        device: ctx.gpu.device(),
-                        encoder: ctx.encoder,
-                        pipeline,
-                        texture: ctx.texture,
-                        face_size: ctx.face_size,
-                        src,
-                        sampler: ctx.sampler,
-                        profiler: ctx.profiler,
-                    },
-                    resources,
-                );
-            }
-        }
-        Ok(())
-    }
-
     /// Tracks and submits an encoded bake, retaining transient resources until completion.
     fn submit_pending_bake(
         &mut self,
@@ -412,5 +635,148 @@ impl SkyboxIblCache {
                 })],
             );
         }
+    }
+}
+
+/// Dispatches the variant-specific mip-0 producer for one source.
+fn encode_source_mip0(
+    pipelines: &PipelineStore,
+    ctx: SourceMip0EncodeContext<'_>,
+    source: SkyboxIblSource,
+    resources: &mut PendingBakeResources,
+) -> Result<(), SkyboxIblBakeError> {
+    match source {
+        SkyboxIblSource::Cubemap(src) => {
+            let pipeline = pipelines.get(PipelineSlot::Cube)?;
+            encode_cube_mip0(
+                CubeEncodeContext {
+                    device: ctx.gpu.device(),
+                    encoder: ctx.encoder,
+                    pipeline,
+                    texture: ctx.texture,
+                    face_size: ctx.face_size,
+                    src,
+                    sampler: ctx.sampler,
+                    profiler: ctx.profiler,
+                },
+                resources,
+            );
+        }
+        SkyboxIblSource::SolidColor(src) => {
+            let params = solid_color_params(src.color);
+            let pipeline = pipelines.get(PipelineSlot::Analytic)?;
+            encode_analytic_mip0(
+                AnalyticEncodeContext {
+                    device: ctx.gpu.device(),
+                    encoder: ctx.encoder,
+                    pipeline,
+                    texture: ctx.texture,
+                    face_size: ctx.face_size,
+                    params: &params,
+                    profiler: ctx.profiler,
+                },
+                resources,
+            );
+        }
+        SkyboxIblSource::RuntimeCubemap(src) => {
+            let pipeline = pipelines.get(PipelineSlot::Cube)?;
+            encode_runtime_cube_mip0(
+                RuntimeCubeEncodeContext {
+                    device: ctx.gpu.device(),
+                    encoder: ctx.encoder,
+                    pipeline,
+                    texture: ctx.texture,
+                    face_size: ctx.face_size,
+                    src,
+                    sampler: ctx.sampler,
+                    profiler: ctx.profiler,
+                },
+                resources,
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Returns the filtered mip range assigned to one Unity filter slice.
+fn convolve_mips_for_slice(
+    mip_levels: u32,
+    filter_slices: u32,
+    slice: u32,
+) -> std::ops::Range<u32> {
+    let total_mips = mip_levels.saturating_sub(1);
+    let slices = filter_slices.max(1);
+    if total_mips == 0 || slice >= slices {
+        return 1..1;
+    }
+    let base = total_mips / slices;
+    let extra = total_mips % slices;
+    let count = base + u32::from(slice < extra);
+    let start_offset = slice * base + slice.min(extra);
+    let start = 1 + start_offset;
+    start..start + count
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unity_sliced_default_256_assigns_one_filtered_mip_per_slice() {
+        let ranges = (0..UNITY_RUNTIME_FILTER_SLICES)
+            .map(|slice| {
+                convolve_mips_for_slice(
+                    mip_levels_for_edge(256),
+                    UNITY_RUNTIME_FILTER_SLICES,
+                    slice,
+                )
+                .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            ranges,
+            vec![
+                vec![1],
+                vec![2],
+                vec![3],
+                vec![4],
+                vec![5],
+                vec![6],
+                vec![7],
+                vec![8],
+            ]
+        );
+    }
+
+    #[test]
+    fn unity_sliced_smaller_probe_keeps_eight_slice_cadence() {
+        let assigned = (0..UNITY_RUNTIME_FILTER_SLICES)
+            .flat_map(|slice| {
+                convolve_mips_for_slice(
+                    mip_levels_for_edge(128),
+                    UNITY_RUNTIME_FILTER_SLICES,
+                    slice,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(assigned, vec![1, 2, 3, 4, 5, 6, 7]);
+        assert!(convolve_mips_for_slice(1, UNITY_RUNTIME_FILTER_SLICES, 7).is_empty());
+    }
+
+    #[test]
+    fn unity_sliced_larger_probe_groups_extra_mips_without_duplicates() {
+        let assigned = (0..UNITY_RUNTIME_FILTER_SLICES)
+            .flat_map(|slice| {
+                convolve_mips_for_slice(
+                    mip_levels_for_edge(512),
+                    UNITY_RUNTIME_FILTER_SLICES,
+                    slice,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(assigned, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
     }
 }

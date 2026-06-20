@@ -360,6 +360,16 @@ impl RenderBackend {
         self.reflection_probes.register_runtime_capture(capture);
     }
 
+    /// Highest runtime reflection-probe generation whose final specular IBL is ready.
+    pub(crate) fn reflection_probe_final_ready_generation(
+        &self,
+        space_id: i32,
+        renderable_index: i32,
+    ) -> Option<u64> {
+        self.reflection_probes
+            .final_ready_generation(space_id, renderable_index)
+    }
+
     /// Advances nonblocking SH2 GPU jobs and schedules queued projection work.
     pub(crate) fn maintain_reflection_probe_sh2_jobs(&mut self, gpu: &mut crate::gpu::GpuContext) {
         self.reflection_probes

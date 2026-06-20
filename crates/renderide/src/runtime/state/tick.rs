@@ -2,12 +2,16 @@
 
 use std::time::{Duration, Instant};
 
+use hashbrown::HashMap;
+
 use crate::frontend::{HostWaitReason, LockstepPipelineAction, OneCreditBlockReason};
+use crate::reflection_probes::specular::RuntimeReflectionProbeCaptureKey;
 use crate::scene::{ReflectionProbeOnChangesRenderRequest, RenderSpaceId};
 use crate::shared::ReflectionProbeRenderResult;
 
 use crate::runtime::offscreen_tasks::reflection_probe::{
     ActiveOnChangesReflectionProbeCapture, ActiveRealtimeReflectionProbeCapture,
+    PendingOnChangesReflectionProbeCompletion,
 };
 use crate::runtime::offscreen_tasks::submit_completion::SubmitCompletionWorkQueue;
 
@@ -42,11 +46,17 @@ pub(in crate::runtime) struct RuntimeTickState {
     /// OnChanges reflection-probe captures that may span multiple ticks.
     pub(in crate::runtime) active_onchanges_reflection_probe_captures:
         Vec<ActiveOnChangesReflectionProbeCapture>,
+    /// OnChanges completions waiting for final specular IBL readiness.
+    pub(in crate::runtime) pending_onchanges_reflection_probe_completions:
+        Vec<PendingOnChangesReflectionProbeCompletion>,
     /// Next renderer-side OnChanges cubemap capture generation.
     pub(in crate::runtime) next_onchanges_reflection_probe_generation: u64,
     /// Realtime reflection-probe captures that may span multiple ticks.
     pub(in crate::runtime) active_realtime_reflection_probe_captures:
         Vec<ActiveRealtimeReflectionProbeCapture>,
+    /// Realtime capture generations waiting for final specular IBL readiness before recapture.
+    pub(in crate::runtime) realtime_reflection_probe_pending_generations:
+        HashMap<RuntimeReflectionProbeCaptureKey, u64>,
     /// Next renderer-side realtime cubemap capture generation.
     pub(in crate::runtime) next_realtime_reflection_probe_generation: u64,
 }
@@ -69,8 +79,10 @@ impl RuntimeTickState {
             pending_reflection_probe_render_results: Vec::new(),
             pending_onchanges_reflection_probe_requests: Vec::new(),
             active_onchanges_reflection_probe_captures: Vec::new(),
+            pending_onchanges_reflection_probe_completions: Vec::new(),
             next_onchanges_reflection_probe_generation: 1,
             active_realtime_reflection_probe_captures: Vec::new(),
+            realtime_reflection_probe_pending_generations: HashMap::new(),
             next_realtime_reflection_probe_generation: 1,
         }
     }

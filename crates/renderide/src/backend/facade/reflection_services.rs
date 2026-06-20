@@ -82,6 +82,16 @@ impl ReflectionProbeServices {
         self.specular.resources()
     }
 
+    /// Highest runtime reflection-probe generation whose final specular IBL is ready.
+    pub(super) fn final_ready_generation(
+        &self,
+        space_id: i32,
+        renderable_index: i32,
+    ) -> Option<u64> {
+        self.specular
+            .final_ready_generation(space_id, renderable_index)
+    }
+
     /// Applies scene mutation reports to reflection-probe caches.
     pub(super) fn note_scene_apply_report(&mut self, report: &SceneApplyReport) {
         self.specular
