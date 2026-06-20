@@ -23,11 +23,10 @@ use crate::render_graph::{
     FrameGlobalView, FrameViewClear, OffscreenWriteTarget, RenderPathProfile, ViewPostProcessing,
     ViewWinding,
 };
-use crate::scene::RenderSpaceId;
 use crate::scene::{
-    camera_portal_disable_per_pixel_lights, camera_portal_disable_shadows,
-    camera_portal_has_camera_clear_mode, camera_portal_has_far_clip_value,
-    camera_portal_portal_mode,
+    RenderSpaceId, SceneCoordinator, camera_portal_disable_per_pixel_lights,
+    camera_portal_disable_shadows, camera_portal_has_camera_clear_mode,
+    camera_portal_has_far_clip_value, camera_portal_portal_mode,
 };
 use crate::shared::{CameraClearMode, RenderingContext};
 use crate::world_mesh::{ViewLayerPolicy, ViewRenderSpaceScope, draw_filter_from_camera_entry};
@@ -121,6 +120,50 @@ fn sort_secondary_view_tasks(tasks: &mut [(RenderSpaceId, f32, usize)]) {
 
 fn sort_camera_portal_view_tasks(tasks: &mut [(RenderSpaceId, usize)]) {
     tasks.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+}
+
+fn collect_camera_portal_view_tasks(
+    scene: &SceneCoordinator,
+    tasks: &mut Vec<(RenderSpaceId, usize)>,
+) {
+    for sid in scene.render_space_ids() {
+        let Some(space) = scene.space(sid) else {
+            continue;
+        };
+        if !space.is_active() {
+            continue;
+        }
+        for (idx, portal) in space.camera_portals().iter().enumerate() {
+            if portal.state.render_texture_id >= 0 {
+                tasks.push((sid, idx));
+            }
+        }
+    }
+    sort_camera_portal_view_tasks(tasks);
+}
+
+fn collect_secondary_rt_view_tasks(
+    scene: &SceneCoordinator,
+    tasks: &mut Vec<(RenderSpaceId, f32, usize)>,
+) {
+    for sid in scene.render_space_ids() {
+        let Some(space) = scene.space(sid) else {
+            continue;
+        };
+        if !space.is_active() {
+            continue;
+        }
+        for (idx, cam) in space.cameras().iter().enumerate() {
+            if !camera_state_enabled(cam.state.flags) {
+                continue;
+            }
+            if cam.state.render_texture_asset_id < 0 {
+                continue;
+            }
+            tasks.push((sid, cam.state.depth, idx));
+        }
+    }
+    sort_secondary_view_tasks(tasks);
 }
 
 fn secondary_camera_render_context() -> RenderingContext {
@@ -502,20 +545,7 @@ impl RendererRuntime {
         main_extent_px: (u32, u32),
         tasks: &mut Vec<(RenderSpaceId, usize)>,
     ) -> Vec<FrameViewPlan<'a>> {
-        for sid in self.scene.render_space_ids() {
-            let Some(space) = self.scene.space(sid) else {
-                continue;
-            };
-            if !space.is_active() {
-                continue;
-            }
-            for (idx, portal) in space.camera_portals().iter().enumerate() {
-                if portal.state.render_texture_id >= 0 {
-                    tasks.push((sid, idx));
-                }
-            }
-        }
-        sort_camera_portal_view_tasks(tasks);
+        collect_camera_portal_view_tasks(&self.scene, tasks);
 
         let mut views: Vec<FrameViewPlan<'a>> = Vec::with_capacity(tasks.len().saturating_mul(2));
         for (sid, portal_idx) in tasks.drain(..) {
@@ -769,24 +799,7 @@ impl RendererRuntime {
         gpu: &GpuContext,
         tasks: &mut Vec<(RenderSpaceId, f32, usize)>,
     ) -> Vec<FrameViewPlan<'a>> {
-        for sid in self.scene.render_space_ids() {
-            let Some(space) = self.scene.space(sid) else {
-                continue;
-            };
-            if !space.is_active() {
-                continue;
-            }
-            for (idx, cam) in space.cameras().iter().enumerate() {
-                if !camera_state_enabled(cam.state.flags) {
-                    continue;
-                }
-                if cam.state.render_texture_asset_id < 0 {
-                    continue;
-                }
-                tasks.push((sid, cam.state.depth, idx));
-            }
-        }
-        sort_secondary_view_tasks(tasks);
+        collect_secondary_rt_view_tasks(&self.scene, tasks);
 
         let mut views: Vec<FrameViewPlan<'a>> = Vec::with_capacity(tasks.len());
         for (sid, _, cam_idx) in tasks.drain(..) {

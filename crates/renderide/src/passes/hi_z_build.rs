@@ -1,4 +1,4 @@
-//! Builds a CPU-readable hierarchical depth pyramid from the main depth attachment after the forward pass.
+//! Builds a CPU-readable hierarchical depth pyramid from pre-transparent forward depth.
 
 use crate::occlusion::HiZBuildInput;
 use crate::render_graph::context::{ComputePassCtx, PostSubmitContext};

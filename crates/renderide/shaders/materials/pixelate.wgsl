@@ -15,8 +15,8 @@
 #import renderide::post::filter_common as fc
 #import renderide::frame::grab_pass as gp
 #import renderide::material::variant_bits as vb
-#import renderide::core::texture_sampling as ts
 #import renderide::core::uv as uvu
+#import renderide::core::texture_sampling as ts
 
 struct FiltersPixelateMaterial {
     _Resolution: vec4<f32>,
@@ -24,6 +24,7 @@ struct FiltersPixelateMaterial {
     _Rect: vec4<f32>,
     _RenderideVariantBits: u32,
     _ResolutionTex_LodBias: f32,
+    _pad0: f32,
     _pad1: vec2<f32>,
 }
 

@@ -5,6 +5,7 @@
 //! aligned when displacement semantics change.
 
 #import renderide::core::uv as uvu
+#import renderide::core::texture_sampling as ts
 #import renderide::draw::types as dt
 #import renderide::mesh::vertex as mv
 
@@ -102,6 +103,7 @@ fn apply_fragment_uv_offset(
     uv_offset_st: vec4<f32>,
     uv_offset_magnitude: f32,
     uv_offset_bias: f32,
+    uv_offset_lod_bias: f32,
     uv_offset_map: texture_2d<f32>,
     uv_offset_sampler: sampler,
 ) -> vec2<f32> {
@@ -110,6 +112,6 @@ fn apply_fragment_uv_offset(
     }
 
     let offset_uv = uvu::apply_st(raw_uv0, uv_offset_st);
-    let offset_sample = textureSample(uv_offset_map, uv_offset_sampler, offset_uv).rg;
+    let offset_sample = ts::sample_tex_2d(uv_offset_map, uv_offset_sampler, offset_uv, uv_offset_lod_bias).rg;
     return base_main_uv + (offset_sample * uv_offset_magnitude + vec2<f32>(uv_offset_bias));
 }

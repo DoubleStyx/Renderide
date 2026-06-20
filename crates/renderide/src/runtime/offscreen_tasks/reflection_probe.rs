@@ -8,7 +8,7 @@ use crate::gpu::GpuContext;
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::render_graph::{GraphExecuteError, RenderPathProfile};
 use crate::scene::{
-    ReflectionProbeOnChangesRenderRequest, RenderSpaceRead, SceneCoordinator,
+    ReflectionProbeOnChangesRenderRequest, RenderSpaceId, RenderSpaceRead, SceneCoordinator,
     SceneReflectionProbeRead, reflection_probe_skybox_only,
 };
 use crate::shared::{
@@ -218,6 +218,27 @@ struct PlannedReflectionProbeTask {
     targets: ProbeTaskTargets,
     extent: ProbeTaskExtent,
     readback_layout: ProbeReadbackLayout,
+}
+
+fn active_reflection_probe_task_space<S>(
+    scene: &S,
+    render_space_id: RenderSpaceId,
+) -> Result<(), ReflectionProbeBakeError>
+where
+    S: SceneReflectionProbeRead + ?Sized,
+{
+    let space =
+        scene
+            .space(render_space_id)
+            .ok_or(ReflectionProbeBakeError::MissingRenderSpace(
+                render_space_id.0,
+            ))?;
+    if !RenderSpaceRead::is_active(space) {
+        return Err(ReflectionProbeBakeError::InactiveRenderSpace(
+            render_space_id.0,
+        ));
+    }
+    Ok(())
 }
 
 impl RendererRuntime {
@@ -442,17 +463,7 @@ where
     let output_format = ProbeOutputFormat::from_hdr(task.hdr);
     let readback_layout =
         compute_probe_readback_layout(task, extent, output_format, gpu.limits().max_buffer_size())?;
-    let space =
-        scene
-            .space(queued.render_space_id)
-            .ok_or(ReflectionProbeBakeError::MissingRenderSpace(
-                queued.render_space_id.0,
-            ))?;
-    if !space.is_active() {
-        return Err(ReflectionProbeBakeError::InactiveRenderSpace(
-            queued.render_space_id.0,
-        ));
-    }
+    active_reflection_probe_task_space(scene, queued.render_space_id)?;
     let probe_index = usize::try_from(task.renderable_index)
         .map_err(|_err| ReflectionProbeBakeError::InvalidRenderableIndex(task.renderable_index))?;
     let probe = scene

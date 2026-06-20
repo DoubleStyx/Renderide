@@ -3,9 +3,9 @@
 //!
 //! This module is the *application* of the render-graph framework: it wires the renderer's
 //! built-in passes together to produce the frame the host expects (mesh deform -> clustered lights
-//! -> forward -> Hi-Z -> post-processing -> HDR scene-color compose). The framework primitives it
-//! consumes (builder, compiled graph, resources, post-processing chain) live in their respective
-//! sibling modules.
+//! -> pre-transparent forward depth -> Hi-Z -> transparent forward -> post-processing -> HDR
+//! scene-color compose). The framework primitives it consumes (builder, compiled graph, resources,
+//! post-processing chain) live in their respective sibling modules.
 
 mod default_chain;
 mod edges;
@@ -101,8 +101,8 @@ fn add_main_graph_passes_and_edges(
     builder.build()
 }
 
-/// Builds the main frame graph: mesh deform compute, clustered lights, world forward, Hi-Z readback,
-/// then HDR scene-color compose into the display target.
+/// Builds the main frame graph: mesh deform compute, clustered lights, world forward,
+/// pre-transparent Hi-Z readback, then HDR scene-color compose into the display target.
 ///
 /// Forward MSAA transients use [`crate::render_graph::resources::TransientExtent::Backbuffer`] and
 /// [`crate::render_graph::resources::TransientSampleCount::Frame`] so sizes match the current view

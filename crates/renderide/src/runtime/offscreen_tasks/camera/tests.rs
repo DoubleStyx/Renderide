@@ -2,6 +2,8 @@
 
 use glam::{IVec2, Vec3};
 
+use crate::scene::{RenderSpaceId, SceneCoordinator};
+
 use super::super::cube_capture::{CubeCaptureBasisMode, CubeCaptureFace};
 use super::super::readback::LinearTextureReadbackPlan;
 use super::result_write::{output_byte_count, pack_rgba8_to_host_buffer};
@@ -416,6 +418,23 @@ fn camera_render_task_scope_tracks_only_render_list() {
         camera_render_task_scope(&selective_task, space),
         ViewRenderSpaceScope::single(space)
     );
+}
+
+#[test]
+fn camera_render_task_space_rejects_inactive_spaces() {
+    let mut scene = SceneCoordinator::new();
+    let space = RenderSpaceId(11);
+    scene.test_seed_space_identity_worlds(space, Vec::new(), Vec::new());
+    scene.test_set_space_active(space, false);
+
+    let Err(error) = active_camera_task_space(&scene, space.0) else {
+        panic!("inactive render space must reject camera render task");
+    };
+
+    assert!(matches!(
+        error,
+        CameraReadbackError::InactiveRenderSpace(11)
+    ));
 }
 
 #[test]

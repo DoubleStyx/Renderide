@@ -5,12 +5,16 @@ use hashbrown::HashSet;
 
 use crate::camera::HostCameraFrame;
 use crate::render_graph::FrameViewClear;
+use crate::scene::{RenderSpaceId, SceneCoordinator};
 use crate::shared::{
     ReflectionProbeClear, ReflectionProbeRenderTask, ReflectionProbeState,
     ReflectionProbeTimeSlicingMode, ReflectionProbeType,
 };
 
-use super::face::{finite_positive_or, host_camera_frame_for_probe_face, reflection_probe_clip};
+use super::face::{
+    finite_positive_or, host_camera_frame_for_probe_face, reflection_probe_clip,
+    reflection_probe_seamless_fov_degrees,
+};
 use super::*;
 
 #[test]
@@ -161,7 +165,20 @@ fn realtime_capture_scheduler_ignores_non_realtime_and_solid_color_states() {
 }
 
 #[test]
-fn probe_face_projection_is_square_ninety_degrees() {
+fn reflection_probe_seamless_fov_expands_regular_faces() {
+    assert_eq!(reflection_probe_seamless_fov_degrees(0), 90.0);
+    assert_eq!(reflection_probe_seamless_fov_degrees(1), 90.0);
+
+    let fov_degrees = reflection_probe_seamless_fov_degrees(256);
+    let edge_scale = 1.0 / (fov_degrees.to_radians() * 0.5).tan();
+
+    assert!(fov_degrees > 90.0);
+    assert!(fov_degrees < 91.0);
+    assert!((edge_scale - 255.0 / 256.0).abs() < 1e-6);
+}
+
+#[test]
+fn probe_face_projection_uses_seamless_cubemap_fov() {
     let frame = host_camera_frame_for_probe_face(
         &HostCameraFrame::default(),
         ReflectionProbeState {
@@ -176,9 +193,12 @@ fn probe_face_projection_is_square_ninety_degrees() {
     let view = frame
         .explicit_view
         .expect("probe face should use explicit camera view");
+    let expected_fov = reflection_probe_seamless_fov_degrees(256);
+    let expected_scale = 255.0 / 256.0;
 
-    assert!((view.proj.x_axis.x - 1.0).abs() < 1e-6);
-    assert!((view.proj.y_axis.y - 1.0).abs() < 1e-6);
+    assert!((frame.desktop_fov_degrees - expected_fov).abs() < 1e-6);
+    assert!((view.proj.x_axis.x - expected_scale).abs() < 1e-6);
+    assert!((view.proj.y_axis.y - expected_scale).abs() < 1e-6);
 }
 
 #[test]
@@ -279,4 +299,21 @@ fn state_only_draw_filter_passes_or_suppresses_everything() {
     });
     assert!(skybox_only.only.as_ref().is_some_and(HashSet::is_empty));
     assert!(skybox_only.exclude.is_empty());
+}
+
+#[test]
+fn reflection_probe_task_space_rejects_inactive_spaces() {
+    let mut scene = SceneCoordinator::new();
+    let space = RenderSpaceId(12);
+    scene.test_seed_space_identity_worlds(space, Vec::new(), Vec::new());
+    scene.test_set_space_active(space, false);
+
+    let Err(error) = active_reflection_probe_task_space(&scene, space) else {
+        panic!("inactive render space must reject reflection probe render task");
+    };
+
+    assert!(matches!(
+        error,
+        ReflectionProbeBakeError::InactiveRenderSpace(12)
+    ));
 }

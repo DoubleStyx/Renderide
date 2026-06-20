@@ -395,6 +395,20 @@ struct PlannedCameraTask {
     output_format: CameraTaskOutputFormat,
 }
 
+fn active_camera_task_space<S>(scene: &S, render_space_id: i32) -> Result<(), CameraReadbackError>
+where
+    S: SceneSpaceRead + ?Sized,
+{
+    let id = RenderSpaceId(render_space_id);
+    let Some(space) = scene.space(id) else {
+        return Err(CameraReadbackError::MissingRenderSpace(render_space_id));
+    };
+    if !RenderSpaceRead::is_active(space) {
+        return Err(CameraReadbackError::InactiveRenderSpace(render_space_id));
+    }
+    Ok(())
+}
+
 fn plan_camera_task<S>(
     gpu: &GpuContext,
     scene: &S,
@@ -422,16 +436,7 @@ where
         return Err(CameraReadbackError::ResultDescriptorTooSmall { required, actual });
     }
     let render_space_id = RenderSpaceId(task.render_space_id);
-    let Some(space) = scene.space(render_space_id) else {
-        return Err(CameraReadbackError::MissingRenderSpace(
-            task.render_space_id,
-        ));
-    };
-    if !space.is_active() {
-        return Err(CameraReadbackError::InactiveRenderSpace(
-            task.render_space_id,
-        ));
-    }
+    active_camera_task_space(scene, task.render_space_id)?;
     let targets = CameraTaskTargets::create(gpu, extent)?;
     let camera_world_matrix = camera_render_task_world_matrix(task.position, task.rotation);
     let host_camera = host_camera_frame_for_render_task(

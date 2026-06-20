@@ -123,6 +123,11 @@ fn default_main_needs_surface_and_skips_single_sample_depth_resolve() {
     assert!(
         !g.pass_info
             .iter()
+            .any(|p| p.name.as_str() == "WorldMeshForwardOcclusionDepthResolve")
+    );
+    assert!(
+        !g.pass_info
+            .iter()
             .any(|p| p.name.as_str() == "WorldMeshForwardPrepare")
     );
     let pass_names: Vec<&str> = g.pass_info.iter().map(|p| p.name.as_str()).collect();
@@ -150,6 +155,18 @@ fn default_main_needs_surface_and_skips_single_sample_depth_resolve() {
         .iter()
         .position(|name| *name == "ClusteredLight")
         .expect("clustered light pass");
+    let intersect_pos = pass_names
+        .iter()
+        .position(|name| *name == "WorldMeshForwardIntersect")
+        .expect("intersect pass");
+    let hiz_pos = pass_names
+        .iter()
+        .position(|name| *name == "HiZBuild")
+        .expect("Hi-Z pass");
+    let transparent_pos = pass_names
+        .iter()
+        .position(|name| *name == "WorldMeshForwardTransparentSequence")
+        .expect("transparent sequence pass");
     let compose_pos = pass_names
         .iter()
         .position(|name| *name == "SceneColorCompose")
@@ -162,6 +179,9 @@ fn default_main_needs_surface_and_skips_single_sample_depth_resolve() {
     assert!(light_cookie_pos < shadow_pos);
     assert!(deform_pos < shadow_pos);
     assert!(shadow_pos < clustered_pos);
+    assert!(intersect_pos < hiz_pos);
+    assert!(hiz_pos < transparent_pos);
+    assert!(transparent_pos < compose_pos);
     assert!(compose_pos < overlay_pos);
 }
 
@@ -179,12 +199,22 @@ fn msaa_main_graph_uses_transparent_sequence_for_grab_resolves() {
         .iter()
         .position(|name| *name == "WorldMeshForwardTransparentSequence")
         .expect("transparent sequence pass");
+    let occlusion_resolve_pos = pass_names
+        .iter()
+        .position(|name| *name == "WorldMeshForwardOcclusionDepthResolve")
+        .expect("occlusion depth resolve pass");
+    let hiz_pos = pass_names
+        .iter()
+        .position(|name| *name == "HiZBuild")
+        .expect("Hi-Z pass");
     let depth_resolve_pos = pass_names
         .iter()
         .position(|name| *name == "WorldMeshForwardDepthResolve")
         .expect("depth resolve pass");
 
-    assert!(intersect_pos < sequence_pos);
+    assert!(intersect_pos < occlusion_resolve_pos);
+    assert!(occlusion_resolve_pos < hiz_pos);
+    assert!(hiz_pos < sequence_pos);
     assert!(sequence_pos < depth_resolve_pos);
     assert!(!pass_names.contains(&"WorldMeshForwardColorResolvePreGrab"));
     assert!(!pass_names.contains(&"WorldMeshColorSnapshot"));
@@ -199,9 +229,9 @@ fn msaa_main_graph_uses_transparent_sequence_for_grab_resolves() {
         .position(|name| *name == "WorldMeshDesktopOverlay")
         .expect("desktop overlay pass");
 
-    assert_eq!(g.pass_count(), 13);
-    assert_eq!(g.compile_stats.topo_levels, 12);
-    assert_eq!(g.compile_stats.registered_pass_count, 13);
+    assert_eq!(g.pass_count(), 14);
+    assert_eq!(g.compile_stats.topo_levels, 13);
+    assert_eq!(g.compile_stats.registered_pass_count, 14);
     assert!(!pass_names.contains(&"WorldMeshForwardGtaoDepthResolve"));
     assert!(compose_pos < overlay_pos);
 }
@@ -401,6 +431,14 @@ fn enabling_gtao_applies_before_depth_snapshot_and_transparent_tail() {
         .iter()
         .position(|name| *name == "WorldMeshDepthSnapshot")
         .expect("depth snapshot pass");
+    let intersect_pos = pass_names
+        .iter()
+        .position(|name| *name == "WorldMeshForwardIntersect")
+        .expect("intersect pass");
+    let hiz_pos = pass_names
+        .iter()
+        .position(|name| *name == "HiZBuild")
+        .expect("Hi-Z pass");
     let gtao_main_pos = pass_names
         .iter()
         .position(|name| *name == "GtaoMain")
@@ -419,9 +457,12 @@ fn enabling_gtao_applies_before_depth_snapshot_and_transparent_tail() {
     assert!(normal_pos < gtao_main_pos);
     assert!(gtao_main_pos < gtao_composite_pos);
     assert!(gtao_composite_pos < depth_snapshot_pos);
-    assert!(depth_snapshot_pos < transparent_pos);
+    assert!(depth_snapshot_pos < intersect_pos);
+    assert!(intersect_pos < hiz_pos);
+    assert!(hiz_pos < transparent_pos);
     assert!(!pass_names.contains(&"GtaoApply"));
     assert!(!pass_names.contains(&"WorldMeshForwardGtaoDepthResolve"));
+    assert!(!pass_names.contains(&"WorldMeshForwardOcclusionDepthResolve"));
     assert!(
         g.transient_textures
             .iter()
@@ -466,6 +507,18 @@ fn msaa_gtao_resolves_depth_before_depth_prefilter() {
         .iter()
         .position(|name| *name == "WorldMeshForwardTransparentSequence")
         .expect("transparent sequence pass");
+    let intersect_pos = pass_names
+        .iter()
+        .position(|name| *name == "WorldMeshForwardIntersect")
+        .expect("intersect pass");
+    let occlusion_resolve_pos = pass_names
+        .iter()
+        .position(|name| *name == "WorldMeshForwardOcclusionDepthResolve")
+        .expect("occlusion depth resolve pass");
+    let hiz_pos = pass_names
+        .iter()
+        .position(|name| *name == "HiZBuild")
+        .expect("Hi-Z pass");
     let final_resolve_pos = pass_names
         .iter()
         .position(|name| *name == "WorldMeshForwardDepthResolve")
@@ -475,6 +528,9 @@ fn msaa_gtao_resolves_depth_before_depth_prefilter() {
     assert!(pre_resolve_pos < normal_pos);
     assert!(normal_pos < prefilter_pos);
     assert!(prefilter_pos < gtao_main_pos);
+    assert!(intersect_pos < occlusion_resolve_pos);
+    assert!(occlusion_resolve_pos < hiz_pos);
+    assert!(hiz_pos < transparent_pos);
     assert!(transparent_pos < final_resolve_pos);
     assert!(
         g.transient_textures

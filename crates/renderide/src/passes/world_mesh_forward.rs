@@ -21,11 +21,13 @@
 //!    and copies single-sample depth into the scene-depth snapshot for depth-snapshot materials.
 //! 7. [`WorldMeshForwardIntersectPass`] -- **[`RasterPass`]** that draws nontransparent
 //!    intersection groups.
-//! 8. [`WorldMeshForwardTransparentSequencePass`] -- **[`EncoderPass`]** that draws the sorted
+//! 8. [`WorldMeshForwardOcclusionDepthResolvePass`] -- optional **[`EncoderPass`]** that resolves
+//!    pre-transparent MSAA depth before Hi-Z samples the single-sample frame depth.
+//! 9. [`WorldMeshForwardTransparentSequencePass`] -- **[`EncoderPass`]** that draws the sorted
 //!    transparent phase, including transparent intersection materials, resolving/copying a fresh
 //!    scene-color snapshot immediately before each grab-pass phase group.
-//! 9. [`WorldMeshForwardDepthResolvePass`] -- **[`EncoderPass`]** that resolves the final MSAA
-//!    depth into the single-sample frame depth used by Hi-Z.
+//! 10. [`WorldMeshForwardDepthResolvePass`] -- **[`EncoderPass`]** that resolves the final MSAA
+//!     visual depth into the single-sample frame depth after transparent rendering.
 //!
 //! ## VR stereo world draws
 //!
@@ -141,6 +143,12 @@ pub struct WorldMeshDesktopOverlayPass {
 /// Resolves the final MSAA forward depth into the single-sample frame depth target.
 #[derive(Debug)]
 pub struct WorldMeshForwardDepthResolvePass {
+    inner: WorldMeshForwardMsaaDepthResolvePass,
+}
+
+/// Resolves pre-transparent MSAA forward depth before Hi-Z samples frame depth.
+#[derive(Debug)]
+pub struct WorldMeshForwardOcclusionDepthResolvePass {
     inner: WorldMeshForwardMsaaDepthResolvePass,
 }
 
@@ -320,6 +328,18 @@ impl WorldMeshForwardDepthResolvePass {
             inner: WorldMeshForwardMsaaDepthResolvePass::new(
                 resources,
                 "WorldMeshForwardDepthResolve",
+            ),
+        }
+    }
+}
+
+impl WorldMeshForwardOcclusionDepthResolvePass {
+    /// Creates a pre-Hi-Z occlusion depth-resolve pass instance.
+    pub fn new(resources: WorldMeshForwardGraphResources) -> Self {
+        Self {
+            inner: WorldMeshForwardMsaaDepthResolvePass::new(
+                resources,
+                "WorldMeshForwardOcclusionDepthResolve",
             ),
         }
     }
@@ -868,6 +888,24 @@ impl EncoderPass for WorldMeshForwardMsaaDepthResolvePass {
 }
 
 impl EncoderPass for WorldMeshForwardGtaoDepthResolvePass {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn setup(&mut self, b: &mut PassBuilder<'_>) -> Result<(), SetupError> {
+        self.inner.setup(b)
+    }
+
+    fn should_record(&self, ctx: &EncoderPassCtx<'_, '_, '_>) -> Result<bool, RenderPassError> {
+        self.inner.should_record(ctx)
+    }
+
+    fn record(&self, ctx: &mut EncoderPassCtx<'_, '_, '_>) -> Result<(), RenderPassError> {
+        self.inner.record(ctx)
+    }
+}
+
+impl EncoderPass for WorldMeshForwardOcclusionDepthResolvePass {
     fn name(&self) -> &str {
         self.inner.name()
     }

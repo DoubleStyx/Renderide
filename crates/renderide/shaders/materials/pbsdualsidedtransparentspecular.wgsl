@@ -42,15 +42,10 @@ struct PbsDualSidedTransparentSpecularMaterial {
     _NormalScale: f32,
     /// Raw Froox shader variant bitmask; decoded locally via the PBSDST_KW_* constants.
     _RenderideVariantBits: u32,
-    /// Host sampler LOD bias for `_MainTex`.
-    _MainTex_LodBias: f32,
-    /// Host sampler LOD bias for `_NormalMap`.
     _NormalMap_LodBias: f32,
-    /// Host sampler LOD bias for `_EmissionMap`.
     _EmissionMap_LodBias: f32,
-    /// Host sampler LOD bias for `_OcclusionMap`.
+    _MainTex_LodBias: f32,
     _OcclusionMap_LodBias: f32,
-    /// Host sampler LOD bias for `_SpecularMap`.
     _SpecularMap_LodBias: f32,
 }
 

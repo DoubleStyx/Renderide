@@ -46,6 +46,7 @@
 #import renderide::pbs::splat as splat
 #import renderide::pbs::surface as psurf
 #import renderide::core::uv as uvu
+#import renderide::core::texture_sampling as ts
 
 struct PbsColorSplatMaterial {
     _Color: vec4<f32>,
@@ -72,6 +73,21 @@ struct PbsColorSplatMaterial {
     _Metallic2: f32,
     _Metallic3: f32,
     _RenderideVariantBits: u32,
+    _Albedo_LodBias: f32,
+    _Albedo1_LodBias: f32,
+    _Albedo2_LodBias: f32,
+    _Albedo3_LodBias: f32,
+    _ColorMap_LodBias: f32,
+    _EmissionMap_LodBias: f32,
+    _EmissionMap1_LodBias: f32,
+    _EmissionMap2_LodBias: f32,
+    _EmissionMap3_LodBias: f32,
+    _MetallicGloss01_LodBias: f32,
+    _MetallicGloss23_LodBias: f32,
+    _PackedEmissionMap_LodBias: f32,
+    _PackedHeightMap_LodBias: f32,
+    _PackedNormalMap01_LodBias: f32,
+    _PackedNormalMap23_LodBias: f32,
 }
 
 const PBSCOLORSPLAT_KW_EMISSIONTEX: u32 = 1u << 0u;
@@ -146,9 +162,9 @@ struct SurfaceData {
 }
 
 fn splat_weights(uv_albedo: vec2<f32>, uv_color: vec2<f32>) -> vec4<f32> {
-    let w = textureSample(_ColorMap, _ColorMap_sampler, uv_color);
+    let w = ts::sample_tex_2d(_ColorMap, _ColorMap_sampler, uv_color, mat._ColorMap_LodBias);
     if (kw_HEIGHTMAP()) {
-        let heights = textureSample(_PackedHeightMap, _PackedHeightMap_sampler, uv_albedo);
+        let heights = ts::sample_tex_2d(_PackedHeightMap, _PackedHeightMap_sampler, uv_albedo, mat._PackedHeightMap_LodBias);
         return splat::height_blended_weights(w, heights, mat._HeightTransitionRange);
     }
     return splat::normalize_weights(w);
@@ -159,8 +175,8 @@ fn sample_normal_world(uv_albedo: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f
     if (!kw_PACKED_NORMALMAP()) {
         return n;
     }
-    let n01 = textureSample(_PackedNormalMap01, _PackedNormalMap01_sampler, uv_albedo);
-    let n23 = textureSample(_PackedNormalMap23, _PackedNormalMap23_sampler, uv_albedo);
+    let n01 = ts::sample_tex_2d(_PackedNormalMap01, _PackedNormalMap01_sampler, uv_albedo, mat._PackedNormalMap01_LodBias);
+    let n23 = ts::sample_tex_2d(_PackedNormalMap23, _PackedNormalMap23_sampler, uv_albedo, mat._PackedNormalMap23_LodBias);
     let n0 = psamp::unpack_packed_normal_xy(n01.xy, mat._NormalScale);
     let n1 = psamp::unpack_packed_normal_xy(n01.zw, mat._NormalScale1);
     let n2 = psamp::unpack_packed_normal_xy(n23.xy, mat._NormalScale2);
@@ -176,8 +192,8 @@ fn sample_metallic_gloss(uv_albedo: vec2<f32>, weights: vec4<f32>) -> vec2<f32> 
     var m2 = vec2<f32>(mat._Metallic2, mat._Glossiness2);
     var m3 = vec2<f32>(mat._Metallic3, mat._Glossiness3);
     if (kw_METALLICMAP()) {
-        let s01 = textureSample(_MetallicGloss01, _MetallicGloss01_sampler, uv_albedo);
-        let s23 = textureSample(_MetallicGloss23, _MetallicGloss23_sampler, uv_albedo);
+        let s01 = ts::sample_tex_2d(_MetallicGloss01, _MetallicGloss01_sampler, uv_albedo, mat._MetallicGloss01_LodBias);
+        let s23 = ts::sample_tex_2d(_MetallicGloss23, _MetallicGloss23_sampler, uv_albedo, mat._MetallicGloss23_LodBias);
         m0 = s01.xy * m0;
         m1 = s01.zw * m1;
         m2 = s23.xy * m2;
@@ -192,16 +208,16 @@ fn sample_emission(uv_albedo: vec2<f32>, weights: vec4<f32>) -> vec3<f32> {
     var e2 = mat._EmissionColor2;
     var e3 = mat._EmissionColor3;
     if (kw_PACKED_EMISSIONTEX()) {
-        let packed = textureSample(_PackedEmissionMap, _PackedEmissionMap_sampler, uv_albedo);
+        let packed = ts::sample_tex_2d(_PackedEmissionMap, _PackedEmissionMap_sampler, uv_albedo, mat._PackedEmissionMap_LodBias);
         e0 = e0 * packed.x;
         e1 = e1 * packed.y;
         e2 = e2 * packed.z;
         e3 = e3 * packed.w;
     } else if (kw_EMISSIONTEX()) {
-        e0 = e0 * textureSample(_EmissionMap, _EmissionMap_sampler, uv_albedo);
-        e1 = e1 * textureSample(_EmissionMap1, _EmissionMap1_sampler, uv_albedo);
-        e2 = e2 * textureSample(_EmissionMap2, _EmissionMap2_sampler, uv_albedo);
-        e3 = e3 * textureSample(_EmissionMap3, _EmissionMap3_sampler, uv_albedo);
+        e0 = e0 * ts::sample_tex_2d(_EmissionMap, _EmissionMap_sampler, uv_albedo, mat._EmissionMap_LodBias);
+        e1 = e1 * ts::sample_tex_2d(_EmissionMap1, _EmissionMap1_sampler, uv_albedo, mat._EmissionMap1_LodBias);
+        e2 = e2 * ts::sample_tex_2d(_EmissionMap2, _EmissionMap2_sampler, uv_albedo, mat._EmissionMap2_LodBias);
+        e3 = e3 * ts::sample_tex_2d(_EmissionMap3, _EmissionMap3_sampler, uv_albedo, mat._EmissionMap3_LodBias);
     }
     let blended = e0 * weights.x + e1 * weights.y + e2 * weights.z + e3 * weights.w;
     return blended.rgb;
@@ -213,10 +229,10 @@ fn sample_surface(uv0: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>) -> Sur
 
     let weights = splat_weights(uv_albedo, uv_color);
 
-    let c0 = textureSample(_Albedo, _Albedo_sampler, uv_albedo) * mat._Color;
-    let c1 = textureSample(_Albedo1, _Albedo1_sampler, uv_albedo) * mat._Color1;
-    let c2 = textureSample(_Albedo2, _Albedo2_sampler, uv_albedo) * mat._Color2;
-    let c3 = textureSample(_Albedo3, _Albedo3_sampler, uv_albedo) * mat._Color3;
+    let c0 = ts::sample_tex_2d(_Albedo, _Albedo_sampler, uv_albedo, mat._Albedo_LodBias) * mat._Color;
+    let c1 = ts::sample_tex_2d(_Albedo1, _Albedo1_sampler, uv_albedo, mat._Albedo1_LodBias) * mat._Color1;
+    let c2 = ts::sample_tex_2d(_Albedo2, _Albedo2_sampler, uv_albedo, mat._Albedo2_LodBias) * mat._Color2;
+    let c3 = ts::sample_tex_2d(_Albedo3, _Albedo3_sampler, uv_albedo, mat._Albedo3_LodBias) * mat._Color3;
     let c = c0 * weights.x + c1 * weights.y + c2 * weights.z + c3 * weights.w;
 
     let mg = sample_metallic_gloss(uv_albedo, weights);

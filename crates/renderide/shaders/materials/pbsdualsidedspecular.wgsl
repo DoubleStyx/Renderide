@@ -33,9 +33,9 @@ struct PbsDualSidedSpecularMaterial {
     _NormalScale: f32,
     _AlphaClip: f32,
     _RenderideVariantBits: u32,
-    _MainTex_LodBias: f32,
     _NormalMap_LodBias: f32,
     _EmissionMap_LodBias: f32,
+    _MainTex_LodBias: f32,
     _OcclusionMap_LodBias: f32,
     _SpecularMap_LodBias: f32,
 }

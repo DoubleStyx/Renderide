@@ -28,9 +28,9 @@ struct ReflectionMaterial {
     _NormalMap_ST: vec4<f32>,
     _Cutoff: f32,
     _Distort: f32,
-    _ReflectionTex_LodBias: f32,
     _NormalMap_LodBias: f32,
     _RenderideVariantBits: u32,
+    _ReflectionTex_LodBias: f32,
     _pad0: vec2<u32>,
 }
 

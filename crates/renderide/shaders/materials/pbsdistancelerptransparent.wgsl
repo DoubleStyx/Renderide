@@ -48,11 +48,11 @@ struct PbsDistanceLerpTransparentMaterial {
     _EmissionDistanceTo: f32,
     _PointCount: f32,
     _RenderideVariantBits: u32,
-    _MainTex_LodBias: f32,
     _NormalMap_LodBias: f32,
     _EmissionMap_LodBias: f32,
-    _OcclusionMap_LodBias: f32,
+    _MainTex_LodBias: f32,
     _MetallicMap_LodBias: f32,
+    _OcclusionMap_LodBias: f32,
     _Points: array<vec4<f32>, 16>,
     _TintColors: array<vec4<f32>, 16>,
 }

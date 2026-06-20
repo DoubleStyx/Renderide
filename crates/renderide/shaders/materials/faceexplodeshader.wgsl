@@ -14,6 +14,7 @@
 #import renderide::pbs::sampling as psamp
 #import renderide::pbs::surface as psurf
 #import renderide::core::uv as uvu
+#import renderide::core::texture_sampling as ts
 
 struct FaceExplodeMaterial {
     _Color: vec4<f32>,
@@ -21,6 +22,7 @@ struct FaceExplodeMaterial {
     _Glossiness: f32,
     _Metallic: f32,
     _Explode: f32,
+    _MainTex_LodBias: f32,
 }
 
 @group(1) @binding(0) var<uniform> mat: FaceExplodeMaterial;
@@ -75,7 +77,7 @@ fn shade(
     view_layer: u32,
 ) -> vec4<f32> {
     let uv_main = uvu::apply_st(uv0, mat._MainTex_ST);
-    let albedo_s = textureSample(_MainTex, _MainTex_sampler, uv_main);
+    let albedo_s = ts::sample_tex_2d(_MainTex, _MainTex_sampler, uv_main, mat._MainTex_LodBias);
     let base_color = (mat._Color * albedo_s).rgb;
     let alpha = mat._Color.a * albedo_s.a;
     let metallic = clamp(mat._Metallic, 0.0, 1.0);

@@ -9,6 +9,8 @@ use crate::config::{RendererSettings, RendererSettingsHandle};
 use crate::connection::ConnectionParams;
 use crate::gpu::OutputDepthMode;
 use crate::materials::ShaderPermutation;
+use crate::scene::{CameraRenderableEntry, SceneCoordinator};
+use crate::shared::{CameraPortalState, CameraState, RenderTransform};
 
 fn build_runtime() -> RendererRuntime {
     let settings: RendererSettingsHandle =
@@ -21,6 +23,41 @@ fn build_runtime() -> RendererRuntime {
 }
 
 const TEST_EXTENT: (u32, u32) = (1920, 1080);
+
+fn identity_render_transform() -> RenderTransform {
+    RenderTransform {
+        position: glam::Vec3::ZERO,
+        scale: glam::Vec3::ONE,
+        rotation: glam::Quat::IDENTITY,
+    }
+}
+
+fn seed_view_task_space(scene: &mut SceneCoordinator, id: RenderSpaceId, active: bool) {
+    scene.test_seed_space_identity_worlds(id, vec![identity_render_transform()], vec![-1]);
+    scene.test_set_space_active(id, active);
+}
+
+fn secondary_camera_entry(render_texture_asset_id: i32, depth: f32) -> CameraRenderableEntry {
+    CameraRenderableEntry {
+        renderable_index: 0,
+        transform_id: 0,
+        state: CameraState {
+            flags: 1,
+            render_texture_asset_id,
+            depth,
+            ..CameraState::default()
+        },
+        selective_transform_ids: Vec::new(),
+        exclude_transform_ids: Vec::new(),
+    }
+}
+
+fn camera_portal_state(render_texture_id: i32) -> CameraPortalState {
+    CameraPortalState {
+        render_texture_id,
+        ..CameraPortalState::default()
+    }
+}
 
 fn test_eye(position: glam::Vec3) -> EyeView {
     let view = glam::Mat4::from_translation(-position);
@@ -504,6 +541,38 @@ fn secondary_view_tasks_sort_by_depth_then_space_then_camera() {
             (RenderSpaceId(2), 0.0, 4),
         ]
     );
+}
+
+#[test]
+fn secondary_rt_view_tasks_skip_inactive_spaces() {
+    let mut scene = SceneCoordinator::new();
+    let inactive = RenderSpaceId(1);
+    let active = RenderSpaceId(2);
+    seed_view_task_space(&mut scene, inactive, false);
+    seed_view_task_space(&mut scene, active, true);
+    scene.test_push_cameras(inactive, [secondary_camera_entry(10, -5.0)]);
+    scene.test_push_cameras(active, [secondary_camera_entry(20, 2.5)]);
+    let mut tasks = Vec::new();
+
+    collect_secondary_rt_view_tasks(&scene, &mut tasks);
+
+    assert_eq!(tasks, vec![(active, 2.5, 0)]);
+}
+
+#[test]
+fn camera_portal_view_tasks_skip_inactive_spaces() {
+    let mut scene = SceneCoordinator::new();
+    let inactive = RenderSpaceId(1);
+    let active = RenderSpaceId(2);
+    seed_view_task_space(&mut scene, inactive, false);
+    seed_view_task_space(&mut scene, active, true);
+    scene.test_push_camera_portal(inactive, 0, 0, camera_portal_state(10));
+    scene.test_push_camera_portal(active, 0, 0, camera_portal_state(20));
+    let mut tasks = Vec::new();
+
+    collect_camera_portal_view_tasks(&scene, &mut tasks);
+
+    assert_eq!(tasks, vec![(active, 0)]);
 }
 
 #[test]
