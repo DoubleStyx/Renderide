@@ -9,6 +9,7 @@
 #define_import_path renderide::xiexe::toon2::alpha
 
 #import renderide::xiexe::toon2::base as xb
+#import renderide::core::texture_sampling as ts
 #import renderide::frame::globals as rg
 
 /// Dispatches alpha handling for the seven `XIEE_ALPHA_MODE` variants. Returns the
@@ -43,7 +44,7 @@ fn apply_alpha(
     }
 
     if (alpha_mode == xb::ALPHA_A2C_MASKED) {
-        let mask = textureSample(xb::_CutoutMask, xb::_CutoutMask_sampler, uv_primary).r;
+        let mask = ts::sample_tex_2d(xb::_CutoutMask, xb::_CutoutMask_sampler, uv_primary, xb::mat._CutoutMask_LodBias).r;
         var coverage = xb::saturate(mask + xb::mat._Cutoff);
         coverage = mix(1.0 - coverage, coverage, xb::saturate(alpha));
         if (rg::frame_sample_count() <= 1u) {
@@ -58,7 +59,7 @@ fn apply_alpha(
     if (alpha_mode == xb::ALPHA_DITHERED) {
         let dither = xb::bayer_threshold(frag_xy);
         if (xb::prop_flag(xb::mat._FadeDither)) {
-            let mask = textureSample(xb::_CutoutMask, xb::_CutoutMask_sampler, uv_primary).r;
+            let mask = ts::sample_tex_2d(xb::_CutoutMask, xb::_CutoutMask_sampler, uv_primary, xb::mat._CutoutMask_LodBias).r;
             let dist = distance(rg::camera_world_pos_for_view(view_layer), world_pos);
             let d = smoothstep(xb::mat._FadeDitherDistance, xb::mat._FadeDitherDistance + 0.02, dist);
             if (((1.0 - mask) + d) < dither) {

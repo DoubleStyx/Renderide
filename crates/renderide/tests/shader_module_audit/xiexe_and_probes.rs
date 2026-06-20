@@ -705,7 +705,7 @@ fn xiexe_a2c_has_single_sample_dither_fallback() -> io::Result<()> {
         "rg::frame_sample_count() <= 1u",
         "if (coverage < d)",
         "if (coverage < xb::bayer_threshold(frag_xy))",
-        "textureSample(xb::_CutoutMask, xb::_CutoutMask_sampler, uv_primary).r",
+        "ts::sample_tex_2d(xb::_CutoutMask, xb::_CutoutMask_sampler, uv_primary, xb::mat._CutoutMask_LodBias).r",
     ] {
         assert!(
             alpha_src.contains(required),

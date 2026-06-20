@@ -6,7 +6,6 @@
 use std::num::NonZeroU32;
 
 use crate::gpu::GpuContext;
-use crate::gpu::blit_kit::layout::{sampled_2d_array_filtered_layout, sampled_2d_filtered_layout};
 use crate::gpu::blit_kit::sampler::linear_clamp_sampler;
 
 use super::pipelines::{eye_pipeline, openxr_multiview_pipeline};
@@ -34,10 +33,10 @@ impl VrMirrorBlitResources {
         self.ensure_staging(device, &limits, eye_extent);
 
         let sampler = linear_clamp_sampler(device);
-        let openxr_bind_group =
-            create_openxr_multiview_bind_group(device, sampler, source_color_array_view);
-        let staging_view_and_bind_group = self.staging_texture().map(|staging_tex| {
-            create_mirror_staging_bind_group(staging_tex, device, sampler, source_mirror_eye_view)
+        let openxr_bind_group = self.openxr_bind_group(device, sampler, source_color_array_view);
+        let staging_view_and_bind_group = self.staging_view().map(|staging_view| {
+            let bind_group = self.eye_bind_group(device, sampler, source_mirror_eye_view);
+            (staging_view, bind_group)
         });
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -74,57 +73,6 @@ impl VrMirrorBlitResources {
         profiling::scope!("CommandEncoder::finish::vr_mirror_hmd_final_copy");
         encoder.finish()
     }
-}
-
-/// Creates the bind group for the final multiview OpenXR swapchain copy.
-fn create_openxr_multiview_bind_group(
-    device: &wgpu::Device,
-    sampler: &wgpu::Sampler,
-    source_color_array_view: &wgpu::TextureView,
-) -> wgpu::BindGroup {
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("vr_mirror_hmd_to_openxr_multiview"),
-        layout: sampled_2d_array_filtered_layout(device),
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(source_color_array_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::Sampler(sampler),
-            },
-        ],
-    });
-    crate::profiling::note_resource_churn!(BindGroup, "gpu::vr_mirror_hmd_to_openxr_multiview");
-    bind_group
-}
-
-/// Creates the desktop mirror staging view and bind group.
-fn create_mirror_staging_bind_group(
-    staging_tex: &wgpu::Texture,
-    device: &wgpu::Device,
-    sampler: &wgpu::Sampler,
-    source_eye_view: &wgpu::TextureView,
-) -> (wgpu::TextureView, wgpu::BindGroup) {
-    let staging_view = staging_tex.create_view(&wgpu::TextureViewDescriptor::default());
-    crate::profiling::note_resource_churn!(TextureView, "gpu::vr_mirror_eye_staging_view");
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("vr_mirror_eye_to_staging"),
-        layout: sampled_2d_filtered_layout(device),
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(source_eye_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::Sampler(sampler),
-            },
-        ],
-    });
-    crate::profiling::note_resource_churn!(BindGroup, "gpu::vr_mirror_eye_bind_group");
-    (staging_view, bind_group)
 }
 
 /// Encodes the final OpenXR color copy as one multiview pass.

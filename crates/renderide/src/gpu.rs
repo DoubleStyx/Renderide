@@ -12,6 +12,7 @@
 //! - [`driver_thread`] -- dedicated submit/present worker.
 //! - [`present`], [`display_blit`], [`vr_mirror`], [`msaa_depth_resolve`] -- presentation passes.
 //! - [`bind_layout`] -- reusable [`wgpu::BindGroupLayoutEntry`] factories.
+//! - [`resource_cache`] -- small retained-resource slots used by presentation-side passes.
 //! - [`instance_setup`] -- renderer-policy clamps applied at instance/device creation.
 //!
 //! `blit_kit` (private) holds helpers shared by [`display_blit`] and [`vr_mirror`].
@@ -20,6 +21,7 @@ mod adapter;
 mod blit_kit;
 mod context;
 mod instance_setup;
+mod resource_cache;
 mod resource_retention;
 mod submission_state;
 mod sync;

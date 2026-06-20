@@ -6,7 +6,6 @@
 //! composites an overlay (e.g. Dear ImGui) on the same encoder.
 
 use crate::gpu::GpuContext;
-use crate::gpu::blit_kit::layout::sampled_2d_filtered_uv_layout;
 use crate::gpu::blit_kit::sampler::linear_clamp_sampler;
 use crate::present::{
     PresentClearError, SurfaceAcquireTrace, SurfaceFrameOutcome, SurfaceSubmitTrace,
@@ -56,19 +55,17 @@ impl VrMirrorBlitResources {
         let device_arc = gpu.device().clone();
         let device = device_arc.as_ref();
         self.ensure_surface_uniform(device);
-        let Some(uniform_buf) = self.surface_uniform().get() else {
+        let Some(uniform_buf) = self.surface_uniform().get().cloned() else {
             logger::warn!("vr_mirror: surface uniform buffer missing after ensure_surface_uniform");
             submit_surface_frame_traced(gpu, Vec::new(), frame, SurfaceSubmitTrace::VrMirror);
             return Ok(());
         };
         self.surface_uniform().write(gpu.queue(), uniform_bytes);
 
-        let Some(staging_tex) = self.staging_texture() else {
+        let Some(staging_view) = self.staging_view() else {
             submit_surface_frame_traced(gpu, Vec::new(), frame, SurfaceSubmitTrace::VrMirror);
             return Ok(());
         };
-        let staging_view = staging_tex.create_view(&wgpu::TextureViewDescriptor::default());
-        crate::profiling::note_resource_churn!(TextureView, "gpu::vr_mirror_surface_staging_view");
 
         let surface_view = frame
             .texture
@@ -76,25 +73,7 @@ impl VrMirrorBlitResources {
         crate::profiling::note_resource_churn!(TextureView, "gpu::vr_mirror_surface_view");
         let sampler = linear_clamp_sampler(device);
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("vr_mirror_surface"),
-            layout: sampled_2d_filtered_uv_layout(device),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&staging_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: uniform_buf.as_entire_binding(),
-                },
-            ],
-        });
-        crate::profiling::note_resource_churn!(BindGroup, "gpu::vr_mirror_surface_bind_group");
+        let bind_group = self.surface_bind_group(device, sampler, &staging_view, &uniform_buf);
 
         let pipeline = self.surface_pipeline_for_format(device, surface_format);
 

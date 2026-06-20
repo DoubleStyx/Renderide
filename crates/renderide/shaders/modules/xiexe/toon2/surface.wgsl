@@ -14,6 +14,7 @@
 #import renderide::draw::per_draw as pd
 #import renderide::pbs::normal as pnorm
 #import renderide::core::normal_decode as nd
+#import renderide::core::texture_sampling as ts
 #import renderide::core::uv as uvu
 
 /// Forward-pass vertex transform. Builds the world-space TBN, applies the per-eye VP,
@@ -73,7 +74,7 @@ fn decode_normal_world_for_layout(
 
     if (xvb::normal_map_enabled_for_layout(keyword_layout)) {
         let base_ts = nd::decode_ts_normal_with_placeholder_sample(
-            textureSample(xb::_BumpMap, xb::_BumpMap_sampler, uv_normal),
+            ts::sample_tex_2d(xb::_BumpMap, xb::_BumpMap_sampler, uv_normal, xb::mat._BumpMap_LodBias),
             xb::mat._BumpScale,
         );
         let tbn = mat3x3<f32>(t, b, n);
@@ -106,7 +107,7 @@ fn sample_surface_for_layout(
     let uv_thickness = uvu::apply_st(xb::uv_select(uv_primary, uv_secondary, xb::mat._UVSetThickness), xb::mat._ThicknessMap_ST);
     let uv_reflectivity = uvu::apply_st(xb::uv_select(uv_primary, uv_secondary, xb::mat._UVSetReflectivity), xb::mat._ReflectivityMask_ST);
 
-    var albedo = textureSample(xb::_MainTex, xb::_MainTex_sampler, uv_albedo) * xb::mat._Color;
+    var albedo = ts::sample_tex_2d(xb::_MainTex, xb::_MainTex_sampler, uv_albedo, xb::mat._MainTex_LodBias) * xb::mat._Color;
     let clip_alpha = albedo.a;
     if (xvb::vertex_color_albedo_enabled_for_layout(keyword_layout)) {
         albedo = vec4<f32>(albedo.rgb * color.rgb, albedo.a);
@@ -132,7 +133,7 @@ fn sample_surface_for_layout(
 
     var metallic = clamp(xb::mat._Metallic, 0.0, 1.0);
     var smoothness = clamp(xb::mat._Glossiness, 0.0, 1.0);
-    let mg = textureSample(xb::_MetallicGlossMap, xb::_MetallicGlossMap_sampler, uv_metallic);
+    let mg = ts::sample_tex_2d(xb::_MetallicGlossMap, xb::_MetallicGlossMap_sampler, uv_metallic, xb::mat._MetallicGlossMap_LodBias);
     if (xvb::metallic_map_enabled_for_layout(keyword_layout)) {
         metallic = clamp(xb::mat._Metallic * mg.r, 0.0, 1.0);
         smoothness = clamp(xb::mat._Glossiness * mg.a, 0.0, 1.0);
@@ -146,27 +147,27 @@ fn sample_surface_for_layout(
     albedo = vec4<f32>(diffuse_color * (1.0 - metallic), albedo.a);
 
     let reflectivity = clamp(xb::mat._Reflectivity, 0.0, 1.0);
-    let reflectivity_mask = textureSample(xb::_ReflectivityMask, xb::_ReflectivityMask_sampler, uv_reflectivity).r;
+    let reflectivity_mask = ts::sample_tex_2d(xb::_ReflectivityMask, xb::_ReflectivityMask_sampler, uv_reflectivity, xb::mat._ReflectivityMask_LodBias).r;
 
     var occlusion = vec3<f32>(1.0);
     if (xvb::occlusion_enabled_for_layout(keyword_layout)) {
-        let occ = textureSample(xb::_OcclusionMap, xb::_OcclusionMap_sampler, uv_occlusion).r;
+        let occ = ts::sample_tex_2d(xb::_OcclusionMap, xb::_OcclusionMap_sampler, uv_occlusion, xb::mat._OcclusionMap_LodBias).r;
         occlusion = mix(xb::mat._OcclusionColor.rgb, vec3<f32>(1.0), occ);
     }
 
     var emission = vec3<f32>(0.0);
     if (xvb::emission_map_enabled_for_layout(keyword_layout)) {
-        emission = textureSample(xb::_EmissionMap, xb::_EmissionMap_sampler, uv_emission).rgb;
+        emission = ts::sample_tex_2d(xb::_EmissionMap, xb::_EmissionMap_sampler, uv_emission, xb::mat._EmissionMap_LodBias).rgb;
     }
 
     var ramp_mask = 0.0;
     if (xvb::ramp_mask_enabled_for_layout(keyword_layout)) {
-        ramp_mask = textureSample(xb::_RampSelectionMask, xb::_RampSelectionMask_sampler, uv_primary).r;
+        ramp_mask = ts::sample_tex_2d(xb::_RampSelectionMask, xb::_RampSelectionMask_sampler, uv_primary, xb::mat._RampSelectionMask_LodBias).r;
     }
 
     var thickness = 1.0;
     if (xvb::thickness_enabled_for_layout(keyword_layout)) {
-        thickness = textureSample(xb::_ThicknessMap, xb::_ThicknessMap_sampler, uv_thickness).r;
+        thickness = ts::sample_tex_2d(xb::_ThicknessMap, xb::_ThicknessMap_sampler, uv_thickness, xb::mat._ThicknessMap_LodBias).r;
     }
 
     return xb::SurfaceData(

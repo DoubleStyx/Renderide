@@ -171,6 +171,25 @@ struct XiexeToon2Material {
     /// Each bit corresponds to one entry of the alphabetically-sorted `UniqueKeywords` list
     /// built from the Unity shader's `#pragma multi_compile` groups.
     _RenderideVariantBits: u32,
+
+    /// Host sampler LOD bias for `_MainTex`.
+    _MainTex_LodBias: f32,
+    /// Host sampler LOD bias for `_BumpMap`.
+    _BumpMap_LodBias: f32,
+    /// Host sampler LOD bias for `_MetallicGlossMap`.
+    _MetallicGlossMap_LodBias: f32,
+    /// Host sampler LOD bias for `_EmissionMap`.
+    _EmissionMap_LodBias: f32,
+    /// Host sampler LOD bias for `_RampSelectionMask`.
+    _RampSelectionMask_LodBias: f32,
+    /// Host sampler LOD bias for `_OcclusionMap`.
+    _OcclusionMap_LodBias: f32,
+    /// Host sampler LOD bias for `_ThicknessMap`.
+    _ThicknessMap_LodBias: f32,
+    /// Host sampler LOD bias for `_CutoutMask`.
+    _CutoutMask_LodBias: f32,
+    /// Host sampler LOD bias for `_ReflectivityMask`.
+    _ReflectivityMask_LodBias: f32,
 }
 
 /// Per-material uniform binding consumed by every xiexe-toon submodule.

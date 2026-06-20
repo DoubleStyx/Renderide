@@ -19,7 +19,10 @@ mod targets;
 use crate::embedded_shaders::embedded_wgsl;
 use crate::gpu::bind_layout::{storage_texture_layout_entry, texture_layout_entry};
 use crate::gpu::limits::GpuLimits;
+use crate::gpu::resource_cache::SingleResourceSlot;
 use crate::profiling::GpuProfilerHandle;
+
+use parking_lot::Mutex;
 
 use pipelines::{create_desktop_blit_pipelines, create_stereo_multiview_blit_pipelines};
 
@@ -49,6 +52,30 @@ pub struct MsaaDepthResolveResources {
     blit_stereo_pipeline_depth32_stencil8: Option<wgpu::RenderPipeline>,
     /// Bind-group layout for the stereo blit (`texture_2d_array<f32>` source).
     blit_stereo_bgl: Option<wgpu::BindGroupLayout>,
+    bind_group_cache: Mutex<MsaaDepthResolveBindGroupCache>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ViewPairKey {
+    first: wgpu::TextureView,
+    second: wgpu::TextureView,
+}
+
+impl ViewPairKey {
+    fn new(first: &wgpu::TextureView, second: &wgpu::TextureView) -> Self {
+        Self {
+            first: first.clone(),
+            second: second.clone(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct MsaaDepthResolveBindGroupCache {
+    mono_compute: SingleResourceSlot<ViewPairKey, wgpu::BindGroup>,
+    mono_blit: SingleResourceSlot<wgpu::TextureView, wgpu::BindGroup>,
+    stereo_compute: [SingleResourceSlot<ViewPairKey, wgpu::BindGroup>; 2],
+    stereo_blit: SingleResourceSlot<wgpu::TextureView, wgpu::BindGroup>,
 }
 
 impl MsaaDepthResolveResources {
@@ -132,6 +159,7 @@ impl MsaaDepthResolveResources {
             blit_stereo_pipeline_depth24_stencil8: stereo.depth24_stencil8,
             blit_stereo_pipeline_depth32_stencil8: stereo.depth32_stencil8,
             blit_stereo_bgl: stereo.bgl,
+            bind_group_cache: Mutex::new(MsaaDepthResolveBindGroupCache::default()),
         })
     }
 
@@ -224,4 +252,130 @@ impl MsaaDepthResolveResources {
     fn blit_stereo_bgl(&self) -> Option<&wgpu::BindGroupLayout> {
         self.blit_stereo_bgl.as_ref()
     }
+
+    fn mono_compute_bind_group(
+        &self,
+        device: &wgpu::Device,
+        msaa_depth_view: &wgpu::TextureView,
+        r32_view: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        let mut cache = self.bind_group_cache.lock();
+        cache
+            .mono_compute
+            .get_or_build(ViewPairKey::new(msaa_depth_view, r32_view), || {
+                let bind_group = create_compute_bind_group(
+                    device,
+                    self.compute_bgl(),
+                    "msaa_depth_resolve_compute_bg",
+                    msaa_depth_view,
+                    r32_view,
+                );
+                crate::profiling::note_resource_churn!(
+                    BindGroup,
+                    "gpu::msaa_depth_resolve_compute_bg"
+                );
+                bind_group
+            })
+    }
+
+    fn mono_blit_bind_group(
+        &self,
+        device: &wgpu::Device,
+        r32_view: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        let mut cache = self.bind_group_cache.lock();
+        cache.mono_blit.get_or_build(r32_view.clone(), || {
+            let bind_group =
+                create_blit_bind_group(device, self.blit_bgl(), "msaa_depth_blit_bg", r32_view);
+            crate::profiling::note_resource_churn!(BindGroup, "gpu::msaa_depth_blit_bg");
+            bind_group
+        })
+    }
+
+    fn stereo_compute_bind_group(
+        &self,
+        device: &wgpu::Device,
+        eye: usize,
+        msaa_depth_view: &wgpu::TextureView,
+        r32_view: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        let mut cache = self.bind_group_cache.lock();
+        let slot = if eye == 0 {
+            &mut cache.stereo_compute[0]
+        } else {
+            &mut cache.stereo_compute[1]
+        };
+        slot.get_or_build(ViewPairKey::new(msaa_depth_view, r32_view), || {
+            let bind_group = create_compute_bind_group(
+                device,
+                self.compute_bgl(),
+                "msaa_depth_resolve_compute_bg_stereo",
+                msaa_depth_view,
+                r32_view,
+            );
+            crate::profiling::note_resource_churn!(
+                BindGroup,
+                "gpu::msaa_depth_resolve_compute_bg_stereo"
+            );
+            bind_group
+        })
+    }
+
+    fn stereo_blit_bind_group(
+        &self,
+        device: &wgpu::Device,
+        blit_stereo_bgl: &wgpu::BindGroupLayout,
+        r32_array_view: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        let mut cache = self.bind_group_cache.lock();
+        cache.stereo_blit.get_or_build(r32_array_view.clone(), || {
+            let bind_group = create_blit_bind_group(
+                device,
+                blit_stereo_bgl,
+                "msaa_depth_blit_bg_stereo",
+                r32_array_view,
+            );
+            crate::profiling::note_resource_churn!(BindGroup, "gpu::msaa_depth_blit_bg_stereo");
+            bind_group
+        })
+    }
+}
+
+fn create_compute_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    label: &'static str,
+    msaa_depth_view: &wgpu::TextureView,
+    r32_view: &wgpu::TextureView,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some(label),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(msaa_depth_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(r32_view),
+            },
+        ],
+    })
+}
+
+fn create_blit_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    label: &'static str,
+    r32_view: &wgpu::TextureView,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some(label),
+        layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(r32_view),
+        }],
+    })
 }

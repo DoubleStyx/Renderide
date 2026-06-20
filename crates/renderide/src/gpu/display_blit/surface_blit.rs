@@ -12,7 +12,6 @@
 use glam::Vec4;
 
 use crate::gpu::GpuContext;
-use crate::gpu::blit_kit::layout::sampled_2d_filtered_uv_layout;
 use crate::gpu::blit_kit::pipeline::UvUniformBuffer;
 use crate::gpu::blit_kit::sampler::linear_clamp_sampler;
 use crate::present::{
@@ -101,7 +100,7 @@ impl DisplayBlitResources {
         let device_arc = gpu.device().clone();
         let device = device_arc.as_ref();
         self.ensure_uniform(device);
-        let Some(uniform_buf) = self.uniform().get() else {
+        let Some(uniform_buf) = self.uniform().get().cloned() else {
             logger::warn!("display_blit: uniform buffer missing after ensure_uniform");
             submit_surface_frame_traced(gpu, Vec::new(), frame, submit_trace);
             return Ok(());
@@ -114,14 +113,13 @@ impl DisplayBlitResources {
         crate::profiling::note_resource_churn!(TextureView, "gpu::display_blit_surface_view");
         let sampler = linear_clamp_sampler(device);
 
-        let bind_group = create_surface_blit_bind_group(
+        let bind_group = self.bind_group_for_source(
             device,
             "display_blit_surface",
             source.view,
             sampler,
-            uniform_buf,
+            &uniform_buf,
         );
-        crate::profiling::note_resource_churn!(BindGroup, "gpu::display_blit_bind_group");
         let prepared_base = PreparedBaseBlit {
             bind_group,
             rect,
@@ -212,33 +210,6 @@ fn encode_display_blit_passes(
 fn write_source_uv(gpu: &GpuContext, uniform: &UvUniformBuffer, source: DisplayBlitSource<'_>) {
     let uv_params = flip_uv_params(source.flip_horizontally, source.flip_vertically);
     uniform.write(gpu.queue(), bytemuck::bytes_of(&uv_params));
-}
-
-fn create_surface_blit_bind_group(
-    device: &wgpu::Device,
-    label: &'static str,
-    view: &wgpu::TextureView,
-    sampler: &wgpu::Sampler,
-    uniform_buf: &wgpu::Buffer,
-) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some(label),
-        layout: sampled_2d_filtered_uv_layout(device),
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::Sampler(sampler),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: uniform_buf.as_entire_binding(),
-            },
-        ],
-    })
 }
 
 /// Clears the swapchain to `background_color`, restricts the viewport to the fitted rect, and

@@ -4,7 +4,11 @@
 //! Per-frame blit logic for HMD final-copy and staging->surface lives in the sibling
 //! [`super::eye_blit`] / [`super::surface_blit`] modules.
 
+use crate::gpu::blit_kit::layout::{
+    sampled_2d_array_filtered_layout, sampled_2d_filtered_layout, sampled_2d_filtered_uv_layout,
+};
 use crate::gpu::blit_kit::pipeline::{ColorBlitPipelineSlot, UvUniformBuffer};
+use crate::gpu::resource_cache::SingleResourceSlot;
 
 use super::HMD_MIRROR_SOURCE_FORMAT;
 use super::pipelines::surface_pipeline;
@@ -12,9 +16,14 @@ use super::pipelines::surface_pipeline;
 /// GPU resources for VR mirror blit (staging texture + pipelines).
 pub struct VrMirrorBlitResources {
     staging_texture: Option<wgpu::Texture>,
+    staging_generation: u64,
     staging_extent: (u32, u32),
     /// `true` after a successful owned-eye to staging copy this session.
     staging_valid: bool,
+    staging_view: SingleResourceSlot<u64, wgpu::TextureView>,
+    openxr_bind_group: SingleResourceSlot<wgpu::TextureView, wgpu::BindGroup>,
+    eye_bind_group: SingleResourceSlot<wgpu::TextureView, wgpu::BindGroup>,
+    surface_bind_group: SingleResourceSlot<wgpu::TextureView, wgpu::BindGroup>,
     surface_uniform: UvUniformBuffer,
     surface_pipeline: ColorBlitPipelineSlot,
 }
@@ -30,8 +39,13 @@ impl VrMirrorBlitResources {
     pub fn new() -> Self {
         Self {
             staging_texture: None,
+            staging_generation: 0,
             staging_extent: (0, 0),
             staging_valid: false,
+            staging_view: SingleResourceSlot::new(),
+            openxr_bind_group: SingleResourceSlot::new(),
+            eye_bind_group: SingleResourceSlot::new(),
+            surface_bind_group: SingleResourceSlot::new(),
             surface_uniform: UvUniformBuffer::new(),
             surface_pipeline: ColorBlitPipelineSlot::new(),
         }
@@ -49,6 +63,17 @@ impl VrMirrorBlitResources {
 
     pub(super) fn staging_texture(&self) -> Option<&wgpu::Texture> {
         self.staging_texture.as_ref()
+    }
+
+    /// Returns the cached default view for the persistent mirror staging texture.
+    pub(super) fn staging_view(&mut self) -> Option<wgpu::TextureView> {
+        let staging_tex = self.staging_texture.as_ref()?;
+        let generation = self.staging_generation;
+        Some(self.staging_view.get_or_build(generation, || {
+            let view = staging_tex.create_view(&wgpu::TextureViewDescriptor::default());
+            crate::profiling::note_resource_churn!(TextureView, "gpu::vr_mirror_staging_view");
+            view
+        }))
     }
 
     pub(super) fn staging_extent(&self) -> (u32, u32) {
@@ -93,7 +118,11 @@ impl VrMirrorBlitResources {
             view_formats: &[],
         });
         self.staging_texture = Some(tex);
+        self.staging_generation = self.staging_generation.wrapping_add(1);
         self.staging_extent = (w, h);
+        self.staging_valid = false;
+        self.staging_view.clear();
+        self.surface_bind_group.clear();
     }
 
     pub(super) fn ensure_surface_uniform(&mut self, device: &wgpu::Device) {
@@ -107,5 +136,100 @@ impl VrMirrorBlitResources {
     ) -> &wgpu::RenderPipeline {
         self.surface_pipeline
             .get_or_build(format, |format| surface_pipeline(device, format))
+    }
+
+    /// Returns the bind group used to copy renderer-owned stereo color into the OpenXR swapchain.
+    pub(super) fn openxr_bind_group(
+        &mut self,
+        device: &wgpu::Device,
+        sampler: &wgpu::Sampler,
+        source_color_array_view: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        self.openxr_bind_group
+            .get_or_build(source_color_array_view.clone(), || {
+                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("vr_mirror_hmd_to_openxr_multiview"),
+                    layout: sampled_2d_array_filtered_layout(device),
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(source_color_array_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(sampler),
+                        },
+                    ],
+                });
+                crate::profiling::note_resource_churn!(
+                    BindGroup,
+                    "gpu::vr_mirror_hmd_to_openxr_multiview"
+                );
+                bind_group
+            })
+    }
+
+    /// Returns the bind group used to copy the selected renderer-owned eye into staging.
+    pub(super) fn eye_bind_group(
+        &mut self,
+        device: &wgpu::Device,
+        sampler: &wgpu::Sampler,
+        source_eye_view: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        self.eye_bind_group
+            .get_or_build(source_eye_view.clone(), || {
+                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("vr_mirror_eye_to_staging"),
+                    layout: sampled_2d_filtered_layout(device),
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(source_eye_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(sampler),
+                        },
+                    ],
+                });
+                crate::profiling::note_resource_churn!(BindGroup, "gpu::vr_mirror_eye_bind_group");
+                bind_group
+            })
+    }
+
+    /// Returns the bind group used to copy persistent mirror staging into the desktop surface.
+    pub(super) fn surface_bind_group(
+        &mut self,
+        device: &wgpu::Device,
+        sampler: &wgpu::Sampler,
+        staging_view: &wgpu::TextureView,
+        uniform_buf: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
+        self.surface_bind_group
+            .get_or_build(staging_view.clone(), || {
+                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("vr_mirror_surface"),
+                    layout: sampled_2d_filtered_uv_layout(device),
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(staging_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(sampler),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: uniform_buf.as_entire_binding(),
+                        },
+                    ],
+                });
+                crate::profiling::note_resource_churn!(
+                    BindGroup,
+                    "gpu::vr_mirror_surface_bind_group"
+                );
+                bind_group
+            })
     }
 }

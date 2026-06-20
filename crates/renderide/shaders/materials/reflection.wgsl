@@ -28,6 +28,7 @@ struct ReflectionMaterial {
     _NormalMap_ST: vec4<f32>,
     _Cutoff: f32,
     _Distort: f32,
+    _ReflectionTex_LodBias: f32,
     _NormalMap_LodBias: f32,
     _RenderideVariantBits: u32,
     _pad0: vec2<u32>,
@@ -129,7 +130,7 @@ fn fs_main(
         screen = screen + bump.xy * mat._Distort;
     }
     screen = reflection_texture_uv(screen, view_layer);
-    var col = textureSample(_ReflectionTex, _ReflectionTex_sampler, screen);
+    var col = ts::sample_tex_2d(_ReflectionTex, _ReflectionTex_sampler, screen, mat._ReflectionTex_LodBias);
     if (kw_COLOR()) {
         col = col * mat._Color;
     }
