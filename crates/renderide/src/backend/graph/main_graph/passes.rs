@@ -17,9 +17,10 @@ pub(super) struct MainGraphPassIds {
     pub(super) gtao: Option<GtaoNode>,
     pub(super) depth_snapshot: PassId,
     pub(super) forward_intersect: PassId,
+    pub(super) occlusion_depth_resolve: Option<PassId>,
+    pub(super) hiz: PassId,
     pub(super) forward_transparent_sequence: PassId,
     pub(super) depth_resolve: Option<PassId>,
-    pub(super) hiz: PassId,
 }
 
 fn main_forward_resources(h: &MainGraphHandles) -> crate::passes::WorldMeshForwardGraphResources {
@@ -73,7 +74,7 @@ fn add_world_mesh_depth_prepass(builder: &mut GraphBuilder, h: &MainGraphHandles
 ///
 /// Order matches execution: mesh deform compute, clustered lights, world-mesh depth prepass and
 /// forward opaque raster, optional opaque-only GTAO subchain, depth snapshot, forward intersect,
-/// transparent sequence, final MSAA depth resolve, and Hi-Z build. Edge wiring is performed
+/// pre-transparent Hi-Z build, transparent sequence, and final MSAA depth resolve. Edge wiring is performed
 /// separately by [`super::edges::add_main_graph_edges`].
 pub(super) fn register_main_graph_passes(
     builder: &mut GraphBuilder,
@@ -114,12 +115,9 @@ pub(super) fn register_main_graph_passes(
     let forward_intersect = builder.add_raster_pass(Box::new(
         crate::passes::WorldMeshForwardIntersectPass::new(forward_resources),
     ));
-    let forward_transparent_sequence = builder.add_encoder_pass(Box::new(
-        crate::passes::WorldMeshForwardTransparentSequencePass::new(forward_resources),
-    ));
-    let depth_resolve = if msaa_enabled && forward_resources.msaa_enabled() {
+    let occlusion_depth_resolve = if msaa_enabled && forward_resources.msaa_enabled() {
         Some(builder.add_encoder_pass(Box::new(
-            crate::passes::WorldMeshForwardDepthResolvePass::new(forward_resources),
+            crate::passes::WorldMeshForwardOcclusionDepthResolvePass::new(forward_resources),
         )))
     } else {
         builder.note_skipped_pass();
@@ -131,6 +129,17 @@ pub(super) fn register_main_graph_passes(
             hi_z_current: h.hi_z_current,
         },
     )));
+    let forward_transparent_sequence = builder.add_encoder_pass(Box::new(
+        crate::passes::WorldMeshForwardTransparentSequencePass::new(forward_resources),
+    ));
+    let depth_resolve = if msaa_enabled && forward_resources.msaa_enabled() {
+        Some(builder.add_encoder_pass(Box::new(
+            crate::passes::WorldMeshForwardDepthResolvePass::new(forward_resources),
+        )))
+    } else {
+        builder.note_skipped_pass();
+        None
+    };
     MainGraphPassIds {
         light_cookies,
         deform,
@@ -141,8 +150,9 @@ pub(super) fn register_main_graph_passes(
         gtao,
         depth_snapshot,
         forward_intersect,
+        occlusion_depth_resolve,
+        hiz,
         forward_transparent_sequence,
         depth_resolve,
-        hiz,
     }
 }

@@ -710,6 +710,10 @@ fn depth_prepass_rejects_non_opaque_or_custom_depth_state() {
     blended.batch_key.blend_mode = MaterialBlendMode::UnityBlend { src: 5, dst: 10 };
     cases.push(blended);
 
+    let mut alpha_blended = opaque(7, 1, 0, 11);
+    alpha_blended.batch_key.alpha_blended = true;
+    cases.push(alpha_blended);
+
     let mut zwrite_off = opaque(7, 1, 0, 4);
     zwrite_off.batch_key.render_state.depth_write = Some(false);
     cases.push(zwrite_off);

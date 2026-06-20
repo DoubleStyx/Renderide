@@ -48,17 +48,20 @@ pub(super) fn add_main_graph_edges(
         builder.add_edge(passes.forward_opaque, passes.depth_snapshot);
     }
     builder.add_edge(passes.depth_snapshot, passes.forward_intersect);
-    builder.add_edge(
-        passes.forward_intersect,
-        passes.forward_transparent_sequence,
-    );
+    let hiz_input = if let Some(occlusion_depth_resolve) = passes.occlusion_depth_resolve {
+        builder.add_edge(passes.forward_intersect, occlusion_depth_resolve);
+        occlusion_depth_resolve
+    } else {
+        passes.forward_intersect
+    };
+    builder.add_edge(hiz_input, passes.hiz);
+    builder.add_edge(passes.hiz, passes.forward_transparent_sequence);
     let forward_tail = if let Some(depth_resolve) = passes.depth_resolve {
         builder.add_edge(passes.forward_transparent_sequence, depth_resolve);
         depth_resolve
     } else {
         passes.forward_transparent_sequence
     };
-    builder.add_edge(forward_tail, passes.hiz);
-    connect_post_processing_edges(builder, passes.hiz, chain_output, compose);
+    connect_post_processing_edges(builder, forward_tail, chain_output, compose);
     builder.add_edge(compose, desktop_overlay);
 }
