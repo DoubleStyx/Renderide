@@ -43,7 +43,7 @@ pub(super) fn write_per_view_frame_uniforms(
 ) {
     let uniforms = build_frame_gpu_uniforms(
         hc,
-        frame.systems.scene,
+        &frame.systems.scene,
         FrameUniformInputs {
             viewport_px: frame.view.viewport_px,
             light_count: frame

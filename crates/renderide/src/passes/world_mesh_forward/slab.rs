@@ -11,7 +11,7 @@ use crate::cpu_parallelism::{
 };
 use crate::frame_upload_batch::GraphUploadSink;
 use crate::mesh_deform::PaddedPerDrawUniforms;
-use crate::scene::SceneCoordinator;
+use crate::scene::SceneTransformRead;
 use crate::shared::RenderingContext;
 use crate::world_mesh::draw_prep::WorldMeshDrawItem;
 
@@ -70,7 +70,7 @@ pub(super) fn pack_and_upload_per_draw_slab(
     );
 
     let view_id = frame.view.view_id;
-    let scene = frame.systems.scene;
+    let scene = &frame.systems.scene;
     let hc = &frame.view.host_camera;
 
     let Some(per_draw_storage) = frame
@@ -111,7 +111,7 @@ pub(super) fn pack_and_upload_per_draw_slab(
 fn pack_per_draw_vp_uniforms(
     uniforms: &mut [PaddedPerDrawUniforms],
     inputs: &SlabPackInputs<'_>,
-    scene: &SceneCoordinator,
+    scene: &(impl SceneTransformRead + Sync + ?Sized),
     hc: &HostCameraFrame,
 ) {
     profiling::scope!("world_mesh::pack_vp_matrices");

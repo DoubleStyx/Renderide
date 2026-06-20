@@ -6,18 +6,15 @@
 
 use std::sync::Arc;
 
-use glam::Mat4;
 use hashbrown::HashMap;
 use parking_lot::Mutex;
 
 use crate::camera::ViewId;
-use crate::cull_contract::{HiZTemporalState, WorldMeshCullProjParams};
+use crate::cull_contract::HiZTemporalState;
 use crate::gpu::OutputDepthMode;
 use crate::hi_z_cpu::HiZCullData;
-use crate::hi_z_temporal::capture_hi_z_temporal;
 use crate::history_texture::HistoryTextureMipViews;
 use crate::occlusion::gpu::{HiZBuildRecord, HiZGpuState, HiZHistoryTarget, encode_hi_z_build};
-use crate::scene::SceneCoordinator;
 
 /// Depth source, layout, and logical view for [`OcclusionSystem::encode_hi_z_build_pass`].
 pub(crate) struct HiZBuildInput<'a> {
@@ -236,24 +233,14 @@ impl OcclusionSystem {
         self.hi_z_state_slot(view)?.lock().temporal.clone()
     }
 
-    /// Records per-space views and cull params from **this** frame for Hi-Z tests on the **next** frame.
-    pub(crate) fn capture_hi_z_temporal_for_next_frame(
+    /// Stores a prepared temporal snapshot for next-frame Hi-Z occlusion tests.
+    pub(crate) fn store_hi_z_temporal_for_next_frame(
         &self,
-        scene: &SceneCoordinator,
-        prev_cull: &WorldMeshCullProjParams,
-        viewport_px: (u32, u32),
+        temporal: HiZTemporalState,
         state_slot: &Mutex<HiZGpuState>,
-        explicit_world_to_view: Option<Mat4>,
     ) {
-        profiling::scope!("hi_z::capture_temporal");
-        let temporal = Some(capture_hi_z_temporal(
-            scene,
-            prev_cull,
-            viewport_px,
-            explicit_world_to_view,
-        ));
         let mut state = state_slot.lock();
-        state.temporal = temporal;
+        state.temporal = Some(temporal);
     }
 }
 
@@ -272,22 +259,12 @@ impl crate::occlusion::OcclusionGraphHook for OcclusionSystem {
         OcclusionSystem::encode_hi_z_build_pass(self, record, state_slot, input, profiler);
     }
 
-    fn capture_hi_z_temporal_for_next_frame(
+    fn store_hi_z_temporal_for_next_frame(
         &self,
-        scene: &SceneCoordinator,
-        prev_cull: &WorldMeshCullProjParams,
-        viewport_px: (u32, u32),
+        temporal: HiZTemporalState,
         state_slot: &Mutex<HiZGpuState>,
-        explicit_world_to_view: Option<Mat4>,
     ) {
-        OcclusionSystem::capture_hi_z_temporal_for_next_frame(
-            self,
-            scene,
-            prev_cull,
-            viewport_px,
-            state_slot,
-            explicit_world_to_view,
-        );
+        OcclusionSystem::store_hi_z_temporal_for_next_frame(self, temporal, state_slot);
     }
 }
 

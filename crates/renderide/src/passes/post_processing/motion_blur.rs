@@ -422,7 +422,7 @@ impl MotionBlurCameraHistory {
     fn from_frame(frame: &PassFrameContext<'_, '_>) -> Self {
         let view = &*frame.view;
         let (view_proj_left, view_proj_right) =
-            view_proj_pair(frame.systems.scene, &view.host_camera, view.viewport_px);
+            view_proj_pair(&frame.systems.scene, &view.host_camera, view.viewport_px);
         Self {
             view_proj_left,
             view_proj_right,
@@ -512,7 +512,7 @@ fn view_motion_blur_active(
 
 /// Builds left/right view-projection matrices for reprojection.
 fn view_proj_pair(
-    scene: &crate::scene::SceneCoordinator,
+    scene: &(impl crate::scene::SceneSpaceRead + ?Sized),
     host_camera: &HostCameraFrame,
     viewport_px: (u32, u32),
 ) -> (Mat4, Mat4) {

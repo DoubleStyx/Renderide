@@ -10,6 +10,7 @@ use crate::gpu::GpuLimits;
 use crate::graph_inputs::{
     FrameSystemsShared, GraphPassFrameView, OffscreenWriteTarget, PerViewFramePlan,
 };
+use crate::hi_z_temporal::capture_hi_z_temporal;
 use crate::hud_contract::{PerViewHudConfig, PerViewHudOutputs, WorldMeshViewHudStats};
 use crate::materials::MaterialSystem;
 use crate::materials::ShaderPermutation;
@@ -214,16 +215,16 @@ pub(super) fn capture_hi_z_temporal_after_collect(
     let Some(cull_proj) = cull_proj else {
         return;
     };
+    let temporal = capture_hi_z_temporal(
+        &frame.systems.scene,
+        cull_proj,
+        frame.view.viewport_px,
+        hc.explicit_world_to_view(),
+    );
     frame
         .systems
         .occlusion
-        .capture_hi_z_temporal_for_next_frame(
-            frame.systems.scene,
-            cull_proj,
-            frame.view.viewport_px,
-            frame.view.hi_z_slot.as_ref(),
-            hc.explicit_world_to_view(),
-        );
+        .store_hi_z_temporal_for_next_frame(temporal, frame.view.hi_z_slot.as_ref());
 }
 
 /// Updates debug HUD mesh-draw payloads when an active HUD tab needs them.
@@ -488,7 +489,7 @@ fn pack_forward_draws_for_view(
     let (render_context, world_proj, overlay_proj) = {
         profiling::scope!("world_mesh::prepare_frame::compute_view_projections");
         compute_view_projections(
-            frame.systems.scene,
+            &frame.systems.scene,
             hc,
             frame.view.render_context,
             frame.view.viewport_px,

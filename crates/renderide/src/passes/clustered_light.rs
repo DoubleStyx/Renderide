@@ -150,7 +150,7 @@ impl ClusteredLightPass {
         }
 
         let hc = frame.view.host_camera;
-        let scene = frame.systems.scene;
+        let scene = &frame.systems.scene;
         let stereo = frame.view.multiview_stereo && hc.active_stereo().is_some();
         let view_id = frame.view.view_id;
         let light_count = frame.systems.frame_resources.frame_light_count_u32(view_id);

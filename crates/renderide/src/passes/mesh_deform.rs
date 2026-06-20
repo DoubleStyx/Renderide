@@ -853,12 +853,12 @@ impl ComputePass for MeshDeformPass {
             .frame_resources
             .visible_mesh_deform_keys_snapshot();
         let default_render_context =
-            SceneSpaceRead::active_main_render_context(frame.systems.scene);
+            SceneSpaceRead::active_main_render_context(&frame.systems.scene);
 
         let mut scratch = self.scratch.lock();
         collect_deform_work_into_scratch(
             &mut scratch,
-            frame.systems.scene,
+            &frame.systems.scene,
             mesh_pool,
             visible_filter.as_ref(),
             default_render_context,
@@ -899,7 +899,7 @@ impl ComputePass for MeshDeformPass {
             &mut ready_work_indices,
             &mut dispatch_batch,
             MeshDeformDispatchCtx {
-                scene: frame.systems.scene,
+                scene: &frame.systems.scene,
                 head_output_transform,
                 skin_weight_mode: frame.systems.skin_weight_mode,
             },

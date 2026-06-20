@@ -136,7 +136,7 @@ impl CompiledRenderGraph {
         let resolved = work_item.resolved.as_resolved();
         let frame_params = work_item.frame_input.frame_params(
             FrameSystemsShared {
-                scene: shared.scene.coordinator(),
+                scene: shared.scene.frame_read(),
                 occlusion: shared.occlusion,
                 frame_resources: shared.frame_resources,
                 materials: shared.materials,

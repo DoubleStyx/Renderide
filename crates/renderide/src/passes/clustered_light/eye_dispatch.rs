@@ -11,7 +11,7 @@ use crate::frame_upload_batch::GraphUploadSink;
 use crate::gpu::{CLUSTER_LIGHT_RANGE_WORDS, CLUSTER_PARAMS_UNIFORM_SIZE, GpuLimits};
 use crate::graph_inputs::OffscreenWriteTarget;
 use crate::profiling::GpuEncoderScope;
-use crate::scene::SceneCoordinator;
+use crate::scene::SceneSpaceRead;
 use crate::world_mesh::cluster::{
     CLUSTER_COUNT_Z, ClusterFrameParams, cluster_frame_params, cluster_frame_params_stereo,
 };
@@ -137,7 +137,7 @@ pub(super) fn run_clustered_light_eye_passes(env: ClusteredLightEyePassEnv<'_>) 
 pub(super) fn clustered_light_eye_params_for_viewport(
     stereo: bool,
     hc: &HostCameraFrame,
-    scene: &SceneCoordinator,
+    scene: &(impl SceneSpaceRead + ?Sized),
     viewport: (u32, u32),
     offscreen_write_target: OffscreenWriteTarget,
 ) -> Option<Vec<ClusterFrameParams>> {

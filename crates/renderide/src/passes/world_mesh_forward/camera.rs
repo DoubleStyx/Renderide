@@ -9,7 +9,7 @@ use crate::camera::{HostCameraFrame, WorldProjectionSet};
 use crate::gpu::GpuLimits;
 use crate::materials::MaterialPipelineDesc;
 use crate::materials::{SHADER_PERM_MULTIVIEW_STEREO, ShaderPermutation};
-use crate::scene::SceneCoordinator;
+use crate::scene::SceneSpaceRead;
 use crate::shared::RenderingContext;
 use crate::world_mesh::draw_prep::WorldMeshDrawItem;
 
@@ -72,7 +72,7 @@ pub(super) fn resolve_pass_config(
 
 /// Render context, perspective projection for world draws, and optional ortho for overlays.
 pub(super) fn compute_view_projections(
-    scene: &SceneCoordinator,
+    scene: &(impl SceneSpaceRead + ?Sized),
     hc: &HostCameraFrame,
     render_context: RenderingContext,
     viewport_px: (u32, u32),
