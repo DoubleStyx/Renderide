@@ -5,7 +5,7 @@ use super::snapshot::{SnapshotRebuildSource, SnapshotRendererTable, build_snapsh
 use super::state::{RenderWorldRendererRef, RenderWorldRendererTemplate};
 use super::*;
 use crate::cpu_parallelism::{FrameParallelPolicy, ParallelAdmission};
-use crate::scene::{SceneCacheFlushReport, StaticMeshRenderer};
+use crate::scene::{SceneCacheFlushReport, SceneCoordinator, StaticMeshRenderer};
 use crate::shared::{RenderTransform, ShadowCastMode};
 use crate::world_mesh::culling::MeshCullGeometry;
 use crate::world_mesh::draw_prep::prepared_renderables::FramePreparedDraw;

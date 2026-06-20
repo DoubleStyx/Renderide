@@ -5,8 +5,8 @@ use rayon::prelude::*;
 
 use crate::gpu_pools::MeshPool;
 use crate::scene::{
-    RenderSpaceId, RenderWorldBoundsDirty, RenderWorldRendererDirty, RenderWorldRendererKind,
-    RenderWorldTransformDirty, SceneCoordinator, SceneMeshRendererRead, WorldMeshSceneRead,
+    RenderSpaceId, RenderSpaceRead, RenderWorldBoundsDirty, RenderWorldRendererDirty,
+    RenderWorldRendererKind, RenderWorldTransformDirty, WorldMeshSceneRead,
 };
 use crate::shared::RenderingContext;
 
@@ -180,11 +180,13 @@ fn cached_renderer_dirties_for_space(
 
 impl RenderWorld {
     /// Expands deferred transform-root and mesh-asset dirties into renderer-record dirties.
-    pub(super) fn expand_deferred_dirty_inputs(
+    pub(super) fn expand_deferred_dirty_inputs<S>(
         &mut self,
-        scene: &SceneCoordinator,
+        scene: &S,
         stats: &mut RenderWorldMaintenanceStats,
-    ) {
+    ) where
+        S: WorldMeshSceneRead + Sync + ?Sized,
+    {
         let transform_stats = self.expand_dirty_transform_roots(scene);
         stats.transform_root_dirty_count += transform_stats.root_count;
         stats.transform_root_scanned_node_count += transform_stats.scanned_node_count;
@@ -194,10 +196,13 @@ impl RenderWorld {
     }
 
     /// Expands transform-root dirties to descendant renderer records.
-    pub(super) fn expand_dirty_transform_roots(
+    pub(super) fn expand_dirty_transform_roots<S>(
         &mut self,
-        scene: &SceneCoordinator,
-    ) -> TransformDirtyExpansionStats {
+        scene: &S,
+    ) -> TransformDirtyExpansionStats
+    where
+        S: WorldMeshSceneRead + Sync + ?Sized,
+    {
         if self.dirty_transform_roots.is_empty() {
             return TransformDirtyExpansionStats::default();
         }
@@ -220,11 +225,14 @@ impl RenderWorld {
     }
 
     /// Expands one transform-root dirty input using retained node reverse indexes.
-    fn expand_transform_dirty(
+    fn expand_transform_dirty<S>(
         &self,
-        scene: &SceneCoordinator,
+        scene: &S,
         dirty: &RenderWorldTransformDirty,
-    ) -> TransformDirtyExpansionResult {
+    ) -> TransformDirtyExpansionResult
+    where
+        S: WorldMeshSceneRead + ?Sized,
+    {
         let root_count = dirty.root_node_ids.len();
         if self.dirty_spaces.contains(&dirty.space_id) {
             return TransformDirtyExpansionResult {
@@ -407,12 +415,15 @@ impl RenderWorld {
     }
 
     /// Refreshes all spaces marked for full retained-template rebuild.
-    pub(super) fn refresh_dirty_spaces(
+    pub(super) fn refresh_dirty_spaces<S>(
         &mut self,
-        scene: &SceneCoordinator,
+        scene: &S,
         mesh_pool: &MeshPool,
         render_context: RenderingContext,
-    ) -> RefreshOutcome {
+    ) -> RefreshOutcome
+    where
+        S: WorldMeshSceneRead + Sync + ?Sized,
+    {
         profiling::scope!("mesh::render_world::refresh_dirty_spaces");
         let dirty_spaces = std::mem::take(&mut self.dirty_spaces);
         let mut work = Vec::with_capacity(dirty_spaces.len());
@@ -471,12 +482,15 @@ impl RenderWorld {
     }
 
     /// Refreshes individual renderer records marked dirty by scene or mesh-pool events.
-    pub(super) fn refresh_dirty_renderers(
+    pub(super) fn refresh_dirty_renderers<S>(
         &mut self,
-        scene: &SceneCoordinator,
+        scene: &S,
         mesh_pool: &MeshPool,
         render_context: RenderingContext,
-    ) -> RefreshOutcome {
+    ) -> RefreshOutcome
+    where
+        S: WorldMeshSceneRead + Sync + ?Sized,
+    {
         profiling::scope!("mesh::render_world::refresh_dirty_renderers");
         let dirty_renderers = std::mem::take(&mut self.dirty_renderers);
         self.dirty_bounds_renderers.retain(|dirty| {
@@ -543,12 +557,15 @@ impl RenderWorld {
     }
 
     /// Refreshes dynamic bounds for renderer records marked by transform-only scene changes.
-    pub(super) fn refresh_dirty_bounds(
+    pub(super) fn refresh_dirty_bounds<S>(
         &mut self,
-        scene: &SceneCoordinator,
+        scene: &S,
         mesh_pool: &MeshPool,
         render_context: RenderingContext,
-    ) -> RefreshOutcome {
+    ) -> RefreshOutcome
+    where
+        S: WorldMeshSceneRead + Sync + ?Sized,
+    {
         profiling::scope!("mesh::render_world::refresh_dirty_bounds");
         let dirty_bounds = std::mem::take(&mut self.dirty_bounds_renderers);
         let mut by_space: HashMap<RenderSpaceId, DirtyRendererSet> = HashMap::new();
@@ -655,7 +672,7 @@ impl RenderWorld {
 /// Estimates full-space retained-refresh work from cached and current scene renderer counts.
 fn estimate_full_space_refresh_work(
     cached: &RenderWorldSpace,
-    scene: &(impl WorldMeshSceneRead + ?Sized),
+    scene: &(impl WorldMeshSceneRead + Sync + ?Sized),
     id: RenderSpaceId,
 ) -> usize {
     let cached_renderer_count = cached
@@ -676,7 +693,7 @@ fn estimate_full_space_refresh_work(
 /// Refreshes one worker-owned retained render-space for a partial renderer dirty set.
 fn refresh_dirty_renderer_work(
     work: &mut DirtyRendererRefreshWork,
-    scene: &SceneCoordinator,
+    scene: &(impl WorldMeshSceneRead + Sync + ?Sized),
     mesh_pool: &MeshPool,
     render_context: RenderingContext,
 ) -> RefreshOutcome {
@@ -713,7 +730,7 @@ fn refresh_dirty_renderer_work(
 /// Refreshes one worker-owned retained render-space for a bounds-only dirty set.
 fn refresh_dirty_bounds_work(
     work: &mut DirtyBoundsRefreshWork,
-    scene: &SceneCoordinator,
+    scene: &(impl WorldMeshSceneRead + Sync + ?Sized),
     mesh_pool: &MeshPool,
     render_context: RenderingContext,
 ) -> RefreshOutcome {

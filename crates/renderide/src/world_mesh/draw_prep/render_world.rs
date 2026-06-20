@@ -16,7 +16,7 @@ use crate::gpu_pools::MeshPool;
 use crate::scene::{
     MeshRendererOverrideTarget, RenderSpaceId, RenderWorldBoundsDirty,
     RenderWorldMaterialOverrideDirty, RenderWorldRendererDirty, RenderWorldRendererKind,
-    RenderWorldTransformDirty, SceneApplyReport, SceneCacheFlushReport, SceneCoordinator,
+    RenderWorldTransformDirty, SceneApplyReport, SceneCacheFlushReport, WorldMeshSceneRead,
 };
 use crate::shared::RenderingContext;
 
@@ -383,13 +383,16 @@ impl RenderWorld {
     pub fn note_cache_flush_report(&self, _report: &SceneCacheFlushReport) {}
 
     /// Returns the prepared draw snapshot for this frame, refreshing dirty cached records first.
-    pub fn prepare_for_frame(
+    pub fn prepare_for_frame<S>(
         &mut self,
-        scene: &SceneCoordinator,
+        scene: &S,
         mesh_pool: &MeshPool,
         point_render_buffers: &HashMap<i32, crate::particles::PointRenderBufferAsset>,
         render_context: RenderingContext,
-    ) -> &FramePreparedRenderables {
+    ) -> &FramePreparedRenderables
+    where
+        S: WorldMeshSceneRead + Sync + ?Sized,
+    {
         profiling::scope!("mesh::render_world::prepare_for_frame");
         let mut stats = RenderWorldMaintenanceStats {
             context_invariant_count: usize::from(self.context_invariant),
@@ -579,7 +582,7 @@ impl RenderWorld {
     }
 
     /// Marks every live scene space dirty for a full rebuild.
-    fn mark_all_scene_spaces_dirty(&mut self, scene: &SceneCoordinator) {
+    fn mark_all_scene_spaces_dirty(&mut self, scene: &(impl WorldMeshSceneRead + ?Sized)) {
         profiling::scope!("mesh::render_world::mark_all_scene_spaces_dirty");
         self.spaces.retain(|id, _| scene.space(*id).is_some());
         for id in scene.render_space_ids() {
@@ -592,14 +595,17 @@ impl RenderWorld {
     }
 
     /// Rebuilds the per-view-consumable prepared snapshot from retained renderer templates.
-    fn rebuild_prepared_snapshot(
+    fn rebuild_prepared_snapshot<S>(
         &mut self,
-        scene: &SceneCoordinator,
+        scene: &S,
         mesh_pool: &MeshPool,
         point_render_buffers: &HashMap<i32, crate::particles::PointRenderBufferAsset>,
         render_context: RenderingContext,
         dirty_spaces: Option<&HashSet<RenderSpaceId>>,
-    ) -> SnapshotRebuildStats {
+    ) -> SnapshotRebuildStats
+    where
+        S: WorldMeshSceneRead + Sync + ?Sized,
+    {
         snapshot::rebuild_prepared_snapshot(
             self,
             scene,

@@ -8,7 +8,9 @@ use crate::gpu_pools::MeshPool;
 use crate::materials::host_data::{MaterialDictionary, MaterialPropertyStore};
 use crate::materials::{MaterialPipelinePropertyIds, MaterialRouter, RasterPipelineKind};
 use crate::reflection_probes::specular::ReflectionProbeFrameSelection;
-use crate::scene::{SceneApplyReport, SceneCacheFlushReport, SceneCoordinator, SceneSpaceRead};
+use crate::scene::{
+    SceneApplyReport, SceneCacheFlushReport, SceneCoordinator, SceneSpaceRead, WorldMeshSceneRead,
+};
 use crate::shared::RenderingContext;
 use crate::world_mesh::{
     FrameMaterialBatchCache, RenderWorld, RenderWorldMaintenanceStats, WorldMeshCommandCache,
@@ -194,13 +196,15 @@ pub(super) fn render_context_cache_key(
 }
 
 /// Refreshes every unique render-context cache required by this frame's views.
-fn prepare_render_worlds_for_views(
+fn prepare_render_worlds_for_views<S>(
     render_worlds: &mut HashMap<u8, RenderWorld>,
-    scene: &SceneCoordinator,
+    scene: &S,
     mesh_pool: &MeshPool,
     point_render_buffers: &HashMap<i32, crate::particles::PointRenderBufferAsset>,
     view_draw_preparations: &[(RenderingContext, ShaderPermutation)],
-) {
+) where
+    S: WorldMeshSceneRead + Sync + ?Sized,
+{
     profiling::scope!("render::prepare_render_worlds_for_views");
     let mut work = unique_render_context_work(scene, view_draw_preparations, render_worlds);
     let admission = FrameParallelPolicy::for_current_thread_pool().admit_independent_items(
@@ -239,7 +243,7 @@ fn prepare_render_worlds_for_views(
 
 /// Removes unique render-world caches from the map for worker-owned preparation.
 fn unique_render_context_work(
-    scene: &SceneCoordinator,
+    scene: &(impl SceneSpaceRead + ?Sized),
     view_draw_preparations: &[(RenderingContext, ShaderPermutation)],
     render_worlds: &mut HashMap<u8, RenderWorld>,
 ) -> Vec<(u8, RenderingContext, RenderWorld)> {
@@ -266,7 +270,7 @@ fn unique_render_context_work(
 fn refresh_material_caches(
     material_batch_caches: &mut HashMap<(u8, ShaderPermutation), FrameMaterialBatchCache>,
     render_worlds: &HashMap<u8, RenderWorld>,
-    scene: &SceneCoordinator,
+    scene: &(impl SceneSpaceRead + ?Sized),
     property_store: &MaterialPropertyStore,
     router: &MaterialRouter,
     pipeline_property_ids: &MaterialPipelinePropertyIds,
@@ -325,7 +329,7 @@ fn refresh_material_caches(
 
 /// Removes unique material caches from the map for worker-owned refresh.
 fn unique_material_cache_work(
-    scene: &SceneCoordinator,
+    scene: &(impl SceneSpaceRead + ?Sized),
     view_draw_preparations: &[(RenderingContext, ShaderPermutation)],
     material_batch_caches: &mut HashMap<(u8, ShaderPermutation), FrameMaterialBatchCache>,
 ) -> Vec<(u8, ShaderPermutation, FrameMaterialBatchCache)> {
