@@ -24,6 +24,59 @@ use super::prepared_renderables::FramePreparedRenderables;
 use snapshot::SnapshotRebuildStats;
 use state::RenderWorldSpace;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RenderWorldDirtyReason {
+    Topology,
+    MaterialOverride,
+    MeshAsset,
+    TransformOnly,
+}
+
+impl RenderWorldDirtyReason {
+    fn merge(self, other: Self) -> Self {
+        if other.priority() < self.priority() {
+            other
+        } else {
+            self
+        }
+    }
+
+    fn priority(self) -> u8 {
+        match self {
+            Self::Topology => 0,
+            Self::MaterialOverride => 1,
+            Self::MeshAsset => 2,
+            Self::TransformOnly => 3,
+        }
+    }
+}
+
+#[derive(Default)]
+struct RenderWorldDirtyReasonCounts {
+    topology: usize,
+    material: usize,
+    transform_only: usize,
+    mesh_asset: usize,
+}
+
+impl RenderWorldDirtyReasonCounts {
+    fn from_dirty_sets(
+        renderers: &HashMap<RenderWorldRendererDirty, RenderWorldDirtyReason>,
+        bounds: &HashMap<RenderWorldBoundsDirty, RenderWorldDirtyReason>,
+    ) -> Self {
+        let mut counts = Self::default();
+        for &reason in renderers.values().chain(bounds.values()) {
+            match reason {
+                RenderWorldDirtyReason::Topology => counts.topology += 1,
+                RenderWorldDirtyReason::MaterialOverride => counts.material += 1,
+                RenderWorldDirtyReason::TransformOnly => counts.transform_only += 1,
+                RenderWorldDirtyReason::MeshAsset => counts.mesh_asset += 1,
+            }
+        }
+        counts
+    }
+}
+
 /// Transform-root dirty records assigned to one expansion worker.
 const DIRTY_ROOT_EXPANSION_PARALLEL_CHUNK_ITEMS: usize = 1;
 /// Retained node-index entries required before one root expansion scans in parallel.
@@ -232,10 +285,10 @@ pub struct RenderWorld {
     spaces: HashMap<RenderSpaceId, RenderWorldSpace>,
     /// Spaces requiring full retained-template rebuild.
     dirty_spaces: HashSet<RenderSpaceId>,
-    /// Individual renderer records requiring retained-template refresh.
-    dirty_renderers: HashSet<RenderWorldRendererDirty>,
-    /// Individual renderer records requiring only dynamic bounds refresh.
-    dirty_bounds_renderers: HashSet<RenderWorldBoundsDirty>,
+    /// Individual renderer records requiring retained-template refresh, with the strongest dirty reason.
+    dirty_renderers: HashMap<RenderWorldRendererDirty, RenderWorldDirtyReason>,
+    /// Individual renderer records requiring only dynamic bounds refresh, with the strongest dirty reason.
+    dirty_bounds_renderers: HashMap<RenderWorldBoundsDirty, RenderWorldDirtyReason>,
     /// Transform-root dirties deferred until world-cache flush has completed.
     dirty_transform_roots: Vec<RenderWorldTransformDirty>,
     /// Mesh assets whose referencing renderer records need refresh.
@@ -248,14 +301,6 @@ pub struct RenderWorld {
     mesh_pool_generation: u64,
     /// Whether this cache represents render contexts that have no draw-prep overrides.
     context_invariant: bool,
-    /// Pending topology dirty events accumulated since the last maintenance pass.
-    pending_topology_dirty_count: usize,
-    /// Pending material dirty events accumulated since the last maintenance pass.
-    pending_material_dirty_count: usize,
-    /// Pending transform-only dirty events accumulated since the last maintenance pass.
-    pending_transform_only_dirty_count: usize,
-    /// Pending mesh-asset dirty renderer events accumulated since the last maintenance pass.
-    pending_mesh_asset_dirty_renderer_count: usize,
     /// Dense prepared snapshot consumed by per-view draw collection.
     prepared: FramePreparedRenderables,
     /// Most recent maintenance counters.
@@ -307,6 +352,22 @@ fn transform_roots_cover_space(parents: &[i32], roots: &[i32]) -> bool {
     roots.contains(&root_node)
 }
 
+fn bounds_dirty_for_renderer(dirty: RenderWorldRendererDirty) -> RenderWorldBoundsDirty {
+    RenderWorldBoundsDirty {
+        space_id: dirty.space_id,
+        kind: dirty.kind,
+        renderable_index: dirty.renderable_index,
+    }
+}
+
+fn renderer_dirty_for_bounds(dirty: RenderWorldBoundsDirty) -> RenderWorldRendererDirty {
+    RenderWorldRendererDirty {
+        space_id: dirty.space_id,
+        kind: dirty.kind,
+        renderable_index: dirty.renderable_index,
+    }
+}
+
 impl RenderWorld {
     /// Creates an empty render-world cache.
     pub fn new(render_context: RenderingContext) -> Self {
@@ -323,18 +384,14 @@ impl RenderWorld {
         Self {
             spaces: HashMap::new(),
             dirty_spaces: HashSet::new(),
-            dirty_renderers: HashSet::new(),
-            dirty_bounds_renderers: HashSet::new(),
+            dirty_renderers: HashMap::new(),
+            dirty_bounds_renderers: HashMap::new(),
             dirty_transform_roots: Vec::new(),
             dirty_mesh_assets: HashSet::new(),
             particle_snapshot_dirty: false,
             full_rebuild_requested: true,
             mesh_pool_generation: 0,
             context_invariant,
-            pending_topology_dirty_count: 0,
-            pending_material_dirty_count: 0,
-            pending_transform_only_dirty_count: 0,
-            pending_mesh_asset_dirty_renderer_count: 0,
             prepared: if context_invariant {
                 FramePreparedRenderables::empty_context_invariant(render_context)
             } else {
@@ -349,17 +406,13 @@ impl RenderWorld {
         let has_fine_dirty = !report.render_world_dirty.is_empty();
         if has_fine_dirty {
             for &id in &report.render_world_dirty.full_spaces {
-                self.dirty_spaces.insert(id);
+                self.note_space_dirty(id);
             }
             for &dirty in &report.render_world_dirty.renderers {
-                self.note_renderer_dirty(dirty);
-                self.pending_topology_dirty_count =
-                    self.pending_topology_dirty_count.saturating_add(1);
+                self.note_renderer_dirty(dirty, RenderWorldDirtyReason::Topology);
             }
             for &dirty in &report.render_world_dirty.bounds {
-                self.note_bounds_dirty(dirty);
-                self.pending_transform_only_dirty_count =
-                    self.pending_transform_only_dirty_count.saturating_add(1);
+                self.note_bounds_dirty(dirty, RenderWorldDirtyReason::TransformOnly);
             }
             self.dirty_transform_roots
                 .extend(report.render_world_dirty.transform_roots.iter().cloned());
@@ -368,7 +421,7 @@ impl RenderWorld {
             }
         } else {
             for &id in &report.changed_spaces {
-                self.dirty_spaces.insert(id);
+                self.note_space_dirty(id);
             }
         }
         for &id in &report.removed_spaces {
@@ -413,15 +466,19 @@ impl RenderWorld {
         }
 
         self.expand_deferred_dirty_inputs(scene, &mut stats);
-        stats.topology_dirty_count = self.pending_topology_dirty_count;
-        stats.material_dirty_count = self.pending_material_dirty_count;
-        stats.transform_only_dirty_count = self.pending_transform_only_dirty_count;
-        stats.mesh_asset_dirty_renderer_count = self.pending_mesh_asset_dirty_renderer_count;
+        let dirty_reason_counts = RenderWorldDirtyReasonCounts::from_dirty_sets(
+            &self.dirty_renderers,
+            &self.dirty_bounds_renderers,
+        );
+        stats.topology_dirty_count = dirty_reason_counts.topology;
+        stats.material_dirty_count = dirty_reason_counts.material;
+        stats.transform_only_dirty_count = dirty_reason_counts.transform_only;
+        stats.mesh_asset_dirty_renderer_count = dirty_reason_counts.mesh_asset;
         stats.dirty_renderer_count = self.dirty_renderers.len();
         stats.bounds_dirty_renderer_count = self.dirty_bounds_renderers.len();
         let mut snapshot_dirty_spaces = HashSet::new();
         snapshot_dirty_spaces.extend(self.dirty_spaces.iter().copied());
-        snapshot_dirty_spaces.extend(self.dirty_renderers.iter().map(|dirty| dirty.space_id));
+        snapshot_dirty_spaces.extend(self.dirty_renderers.keys().map(|dirty| dirty.space_id));
         let force_full_snapshot = full_rebuild || context_changed || self.particle_snapshot_dirty;
 
         let mut snapshot_dirty = if self.dirty_spaces.is_empty() {
@@ -470,10 +527,6 @@ impl RenderWorld {
         self.full_rebuild_requested = false;
         stats.retained_template_count = self.retained_template_count();
         self.maintenance_stats = stats;
-        self.pending_topology_dirty_count = 0;
-        self.pending_material_dirty_count = 0;
-        self.pending_transform_only_dirty_count = 0;
-        self.pending_mesh_asset_dirty_renderer_count = 0;
         crate::profiling::plot_render_world_maintenance(stats.profile_sample());
         &self.prepared
     }
@@ -492,31 +545,59 @@ impl RenderWorld {
     fn remove_space(&mut self, id: RenderSpaceId) {
         self.spaces.remove(&id);
         self.dirty_spaces.remove(&id);
-        self.dirty_renderers.retain(|dirty| dirty.space_id != id);
+        self.dirty_renderers.retain(|dirty, _| dirty.space_id != id);
         self.dirty_bounds_renderers
+            .retain(|dirty, _| dirty.space_id != id);
+        self.dirty_transform_roots
             .retain(|dirty| dirty.space_id != id);
+    }
+
+    /// Records a full-space retained-template rebuild and discards redundant finer-grained dirties.
+    fn note_space_dirty(&mut self, id: RenderSpaceId) {
+        self.dirty_spaces.insert(id);
+        self.dirty_renderers.retain(|dirty, _| dirty.space_id != id);
+        self.dirty_bounds_renderers
+            .retain(|dirty, _| dirty.space_id != id);
         self.dirty_transform_roots
             .retain(|dirty| dirty.space_id != id);
     }
 
     /// Records one renderer row dirty unless its whole space is already dirty.
-    fn note_renderer_dirty(&mut self, dirty: RenderWorldRendererDirty) {
+    fn note_renderer_dirty(
+        &mut self,
+        dirty: RenderWorldRendererDirty,
+        reason: RenderWorldDirtyReason,
+    ) {
         if self.dirty_spaces.contains(&dirty.space_id) {
             return;
         }
-        self.dirty_renderers.insert(dirty);
+        self.dirty_bounds_renderers
+            .remove(&bounds_dirty_for_renderer(dirty));
+        self.dirty_renderers
+            .entry(dirty)
+            .and_modify(|existing| *existing = existing.merge(reason))
+            .or_insert(reason);
     }
 
     /// Records one renderer row for bounds refresh unless its whole space is already dirty.
-    fn note_bounds_dirty(&mut self, dirty: RenderWorldBoundsDirty) {
+    fn note_bounds_dirty(&mut self, dirty: RenderWorldBoundsDirty, reason: RenderWorldDirtyReason) {
         if self.dirty_spaces.contains(&dirty.space_id) {
             return;
         }
-        if !self.spaces.contains_key(&dirty.space_id) {
-            self.dirty_spaces.insert(dirty.space_id);
+        if self
+            .dirty_renderers
+            .contains_key(&renderer_dirty_for_bounds(dirty))
+        {
             return;
         }
-        self.dirty_bounds_renderers.insert(dirty);
+        if !self.spaces.contains_key(&dirty.space_id) {
+            self.note_space_dirty(dirty.space_id);
+            return;
+        }
+        self.dirty_bounds_renderers
+            .entry(dirty)
+            .and_modify(|existing| *existing = existing.merge(reason))
+            .or_insert(reason);
     }
 
     /// Records a material override dirty event for this render context.
@@ -529,29 +610,29 @@ impl RenderWorld {
         }
         match dirty.target {
             MeshRendererOverrideTarget::Static(index) if index >= 0 => {
-                self.pending_material_dirty_count =
-                    self.pending_material_dirty_count.saturating_add(1);
-                self.note_renderer_dirty(RenderWorldRendererDirty {
-                    space_id: dirty.space_id,
-                    kind: RenderWorldRendererKind::Static,
-                    renderable_index: index as usize,
-                });
+                self.note_renderer_dirty(
+                    RenderWorldRendererDirty {
+                        space_id: dirty.space_id,
+                        kind: RenderWorldRendererKind::Static,
+                        renderable_index: index as usize,
+                    },
+                    RenderWorldDirtyReason::MaterialOverride,
+                );
             }
             MeshRendererOverrideTarget::Skinned(index) if index >= 0 => {
-                self.pending_material_dirty_count =
-                    self.pending_material_dirty_count.saturating_add(1);
-                self.note_renderer_dirty(RenderWorldRendererDirty {
-                    space_id: dirty.space_id,
-                    kind: RenderWorldRendererKind::Skinned,
-                    renderable_index: index as usize,
-                });
+                self.note_renderer_dirty(
+                    RenderWorldRendererDirty {
+                        space_id: dirty.space_id,
+                        kind: RenderWorldRendererKind::Skinned,
+                        renderable_index: index as usize,
+                    },
+                    RenderWorldDirtyReason::MaterialOverride,
+                );
             }
             MeshRendererOverrideTarget::Static(_)
             | MeshRendererOverrideTarget::Skinned(_)
             | MeshRendererOverrideTarget::Unknown => {
-                self.dirty_spaces.insert(dirty.space_id);
-                self.pending_material_dirty_count =
-                    self.pending_material_dirty_count.saturating_add(1);
+                self.note_space_dirty(dirty.space_id);
             }
         }
     }

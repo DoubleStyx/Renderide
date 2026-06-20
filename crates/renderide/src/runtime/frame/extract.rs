@@ -343,7 +343,7 @@ mod tests {
     use super::cull::{build_cull_snapshot_for_view, cull_projection_for_write_target};
     use super::queue::{
         desktop_overlay_view_inputs, select_inner_parallelism_for_prepared_work_with_policy,
-        shadow_caster_view_inputs, should_parallelize_view_collection_with_policy,
+        shadow_caster_view_inputs,
     };
     use super::sort::{
         OverlayTraceStats, overlay_trace_stats, select_arrange_parallelism_for_draws_with_policy,
@@ -650,27 +650,6 @@ mod tests {
             select_arrange_parallelism_for_draws_with_policy(policy, policy.draw_heavy_threshold()),
             WorldMeshDrawArrangeParallelism::Full
         );
-    }
-
-    #[test]
-    fn view_collection_parallelism_requires_multiple_views_and_enough_work() {
-        let policy = FrameParallelPolicy::new(4);
-        let draws_per_view = policy.draw_heavy_threshold() / 2;
-        assert!(!should_parallelize_view_collection_with_policy(
-            policy,
-            1,
-            policy.draw_heavy_threshold()
-        ));
-        assert!(!should_parallelize_view_collection_with_policy(
-            policy,
-            2,
-            draws_per_view - 1
-        ));
-        assert!(should_parallelize_view_collection_with_policy(
-            policy,
-            2,
-            draws_per_view
-        ));
     }
 
     #[test]

@@ -11,7 +11,9 @@ use crate::particles::ParticleDrawParams;
 use crate::reflection_probes::specular::ReflectionProbeDrawSelection;
 #[cfg(test)]
 use crate::scene::MeshMaterialSlot;
-use crate::scene::{MeshRendererInstanceId, RenderSpaceId, StaticMeshRenderer};
+#[cfg(test)]
+use crate::scene::StaticMeshRenderer;
+use crate::scene::{MeshRendererInstanceId, RenderSpaceId};
 use crate::shared::{RenderingContext, ShadowCastMode};
 use crate::world_mesh::materials::MaterialDrawBatchKey;
 
@@ -228,6 +230,7 @@ pub(crate) fn stacked_material_submesh_topology(
 }
 
 /// Counts material slots that can produce draws for `renderer` without allocating a fallback slot.
+#[cfg(test)]
 pub(crate) fn resolved_material_slot_count(renderer: &StaticMeshRenderer) -> usize {
     if !renderer.emits_visible_color_draws() {
         return 0;

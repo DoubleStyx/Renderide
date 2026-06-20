@@ -7,6 +7,7 @@ use crate::bounds::world_aabb_from_local_bounds;
 use crate::scene::{RenderSpaceId, SceneCoordinator, SceneTransformRead, SkinnedMeshRenderer};
 use crate::shared::RenderingContext;
 
+#[cfg(test)]
 use super::WorldMeshCullInput;
 use super::frustum::mesh_bounds_degenerate_for_cull;
 
@@ -46,6 +47,7 @@ pub(crate) struct MeshCullGeometry {
 }
 
 /// World-space AABB (and rigid matrix when applicable) for culling, evaluated once per draw slot.
+#[cfg(test)]
 pub(crate) fn mesh_world_geometry_for_cull<S>(
     target: &MeshCullTarget<'_, S>,
     culling: &WorldMeshCullInput<'_>,

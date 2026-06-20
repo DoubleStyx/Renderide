@@ -2,6 +2,7 @@
 
 mod cache;
 mod key;
+#[cfg(test)]
 mod keys;
 mod resolve;
 mod slot;

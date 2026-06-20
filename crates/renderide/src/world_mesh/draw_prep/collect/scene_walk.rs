@@ -4,10 +4,10 @@ mod cull_cache;
 mod per_renderer;
 mod per_slot;
 
-use crate::scene::{RenderSpaceId, SceneTransformRead, SkinnedMeshRenderer, StaticMeshRenderer};
+use crate::scene::{RenderSpaceId, SkinnedMeshRenderer, StaticMeshRenderer};
 
 use super::super::item::{MaterialStackOrder, WorldMeshDrawItem, resolved_material_slot_count};
-use super::{CollectState, DrawCollectionInputs};
+use super::{CollectState, DrawCollectionInputs, transform_chain_has_degenerate_scale};
 
 use cull_cache::CachedCull;
 use per_renderer::push_draws_for_renderer;
@@ -93,22 +93,6 @@ pub(super) struct WorldMeshChunkSpec {
     kind: ChunkKind,
     /// Renderer index range inside the selected list.
     range: std::ops::Range<usize>,
-}
-
-/// Returns `true` when a renderer node's effective transform chain collapses object scale.
-#[inline]
-pub(super) fn transform_chain_has_degenerate_scale(
-    ctx: &DrawCollectionInputs<'_>,
-    space_id: RenderSpaceId,
-    node_id: i32,
-) -> bool {
-    node_id >= 0
-        && SceneTransformRead::transform_has_degenerate_scale_for_context(
-            ctx.scene_assets.scene,
-            space_id,
-            node_id as usize,
-            ctx.view.render_context,
-        )
 }
 
 /// Builds the chunk list: one entry per 128-renderer slice of static or skinned renderers per space.

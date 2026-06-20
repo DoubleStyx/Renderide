@@ -112,7 +112,7 @@ fn apply_report_uses_fine_renderer_dirty_instead_of_changed_space() {
     assert!(
         world
             .dirty_renderers
-            .contains(&dirty_static(RenderSpaceId(1), 3))
+            .contains_key(&dirty_static(RenderSpaceId(1), 3))
     );
 }
 
@@ -167,6 +167,58 @@ fn removed_space_wins_over_changed_space_in_apply_report() {
     assert!(!world.spaces.contains_key(&RenderSpaceId(5)));
     assert!(!world.dirty_spaces.contains(&RenderSpaceId(5)));
     assert!(world.full_rebuild_requested);
+}
+
+#[test]
+fn full_space_dirty_discards_redundant_fine_grained_work() {
+    let space_id = RenderSpaceId(6);
+    let mut world = RenderWorld::default();
+    world.spaces.insert(space_id, RenderWorldSpace::default());
+    world.note_renderer_dirty(dirty_static(space_id, 0), RenderWorldDirtyReason::Topology);
+    world.note_bounds_dirty(
+        RenderWorldBoundsDirty {
+            space_id,
+            kind: RenderWorldRendererKind::Static,
+            renderable_index: 1,
+        },
+        RenderWorldDirtyReason::TransformOnly,
+    );
+    world.dirty_transform_roots.push(RenderWorldTransformDirty {
+        space_id,
+        root_node_ids: vec![0],
+    });
+
+    world.note_space_dirty(space_id);
+
+    assert!(world.dirty_spaces.contains(&space_id));
+    assert!(world.dirty_renderers.is_empty());
+    assert!(world.dirty_bounds_renderers.is_empty());
+    assert!(world.dirty_transform_roots.is_empty());
+}
+
+#[test]
+fn renderer_dirty_supersedes_existing_bounds_dirty() {
+    let space_id = RenderSpaceId(7);
+    let mut world = RenderWorld::default();
+    world.spaces.insert(space_id, RenderWorldSpace::default());
+    let bounds_dirty = RenderWorldBoundsDirty {
+        space_id,
+        kind: RenderWorldRendererKind::Static,
+        renderable_index: 0,
+    };
+    let renderer_dirty = dirty_static(space_id, 0);
+
+    world.note_bounds_dirty(bounds_dirty, RenderWorldDirtyReason::TransformOnly);
+    world.note_renderer_dirty(renderer_dirty, RenderWorldDirtyReason::Topology);
+
+    assert!(world.dirty_renderers.contains_key(&renderer_dirty));
+    assert!(!world.dirty_bounds_renderers.contains_key(&bounds_dirty));
+    let counts = RenderWorldDirtyReasonCounts::from_dirty_sets(
+        &world.dirty_renderers,
+        &world.dirty_bounds_renderers,
+    );
+    assert_eq!(counts.topology, 1);
+    assert_eq!(counts.transform_only, 0);
 }
 
 #[test]
@@ -256,7 +308,7 @@ fn transform_roots_expand_to_descendant_renderer_records() {
     assert!(
         world
             .dirty_bounds_renderers
-            .contains(&RenderWorldBoundsDirty {
+            .contains_key(&RenderWorldBoundsDirty {
                 space_id,
                 kind: RenderWorldRendererKind::Static,
                 renderable_index: 0,
@@ -285,7 +337,11 @@ fn mesh_asset_dirties_use_reverse_index() {
 
     world.expand_dirty_mesh_assets();
 
-    assert!(world.dirty_renderers.contains(&dirty_static(space_id, 0)));
+    assert!(
+        world
+            .dirty_renderers
+            .contains_key(&dirty_static(space_id, 0))
+    );
 }
 
 #[test]

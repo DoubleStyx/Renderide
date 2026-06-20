@@ -84,6 +84,7 @@ impl LodVisibility {
 
     /// Returns whether `instance_id` may emit draws when only scene state is available.
     #[inline]
+    #[cfg(test)]
     pub(super) fn renderer_visible_by_instance(
         &self,
         space_id: RenderSpaceId,

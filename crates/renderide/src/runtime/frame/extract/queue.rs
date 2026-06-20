@@ -1,9 +1,7 @@
 //! Per-view world-mesh draw queueing for frame extraction.
 
-use rayon::prelude::*;
-
 use crate::backend::ExtractedFrameShared;
-use crate::cpu_parallelism::{FrameCpuWorkload, FrameParallelPolicy};
+use crate::cpu_parallelism::FrameParallelPolicy;
 use crate::world_mesh::{
     DrawCollectionFrameCaches, DrawCollectionInputs, DrawCollectionMaterialInputs,
     DrawCollectionSceneAssets, DrawCollectionViewInputs, PrefetchedWorldMeshViewDraws,
@@ -15,9 +13,6 @@ use crate::world_mesh::{
 use super::super::view_plan::FrameViewPlan;
 use super::ViewWorldMeshDrawPlans;
 use super::cull::ViewCullSnapshot;
-
-/// Prepared view plans assigned to one draw-collection worker.
-const VIEW_COLLECTION_PARALLEL_CHUNK_VIEWS: usize = 1;
 
 /// Queued draw candidates and cull projection for one view.
 pub(super) struct QueuedViewDraws {
@@ -108,16 +103,14 @@ pub(super) fn queue_view_draws(
         max_prepared_draw_count,
         setup.inner_parallelism,
     );
-    let parallelize_views =
-        should_parallelize_view_collection(prepared.len(), max_prepared_draw_count);
     let (cull_inputs, cull_projs) = build_view_cull_inputs(prepared, cull_snapshots);
     let contexts =
         build_view_draw_collection_contexts(setup, prepared, &dict, &cull_inputs, mesh_lod_bias);
     let shadow_contexts =
         build_shadow_caster_draw_collection_contexts(setup, prepared, &dict, mesh_lod_bias);
-    let world_draws = queue_or_collect_view_draws(&contexts, parallelize_views, inner_parallelism);
+    let world_draws = queue_prepared_draws_for_views_with_parallelism(&contexts, inner_parallelism);
     let shadow_caster_draws =
-        queue_or_collect_view_draws(&shadow_contexts, parallelize_views, inner_parallelism);
+        queue_prepared_draws_for_views_with_parallelism(&shadow_contexts, inner_parallelism);
     let mut view_draws: Vec<QueuedViewDraws> = world_draws
         .into_iter()
         .zip(shadow_caster_draws)
@@ -351,77 +344,6 @@ pub(super) fn shadow_caster_view_inputs<'a>(
     }
 }
 
-fn queue_or_collect_view_draws(
-    contexts: &[DrawCollectionInputs<'_>],
-    parallelize_views: bool,
-    parallelism: WorldMeshDrawCollectParallelism,
-) -> Vec<QueuedWorldMeshDraws> {
-    if let Some(queued) = queue_prepared_draws_for_views_with_parallelism(contexts, parallelism) {
-        queued
-    } else {
-        collect_view_draws_with_strategy(contexts, parallelize_views, parallelism)
-    }
-}
-
-/// Queues one view through the general draw-collection path.
-fn collect_one_view_draws(
-    ctx: &DrawCollectionInputs<'_>,
-    parallelism: WorldMeshDrawCollectParallelism,
-) -> QueuedWorldMeshDraws {
-    profiling::scope!("render::queue_view_draws::queue_one");
-    queue_draws_with_parallelism(ctx, parallelism)
-}
-
-/// Dispatches queued draw collection using the selected view-level parallelism strategy.
-fn collect_view_draws_with_strategy(
-    contexts: &[DrawCollectionInputs<'_>],
-    parallelize_views: bool,
-    parallelism: WorldMeshDrawCollectParallelism,
-) -> Vec<QueuedWorldMeshDraws> {
-    match contexts.len() {
-        0 => Vec::new(),
-        1 => {
-            profiling::scope!("render::queue_view_draws::single_view");
-            vec![collect_one_view_draws(&contexts[0], parallelism)]
-        }
-        2 if parallelize_views => {
-            profiling::scope!("render::queue_view_draws::parallel_views");
-            profiling::scope!("render::queue_view_draws::parallel_views::two_view_join");
-            let (first, second) = rayon::join(
-                || {
-                    profiling::scope!(
-                        "render::queue_view_draws::parallel_views::two_view_join::left"
-                    );
-                    collect_one_view_draws(&contexts[0], parallelism)
-                },
-                || {
-                    profiling::scope!(
-                        "render::queue_view_draws::parallel_views::two_view_join::right"
-                    );
-                    collect_one_view_draws(&contexts[1], parallelism)
-                },
-            );
-            vec![first, second]
-        }
-        _ if parallelize_views => {
-            profiling::scope!("render::queue_view_draws::parallel_views");
-            profiling::scope!("render::queue_view_draws::parallel_views::par_iter");
-            contexts
-                .par_iter()
-                .with_min_len(VIEW_COLLECTION_PARALLEL_CHUNK_VIEWS)
-                .map(|ctx| collect_one_view_draws(ctx, parallelism))
-                .collect()
-        }
-        _ => {
-            profiling::scope!("render::queue_view_draws::serial_small_views");
-            contexts
-                .iter()
-                .map(|ctx| collect_one_view_draws(ctx, parallelism))
-                .collect()
-        }
-    }
-}
-
 /// Selects the per-view inner-walk parallelism tier for a tick based on how many views will
 /// collect draws. Keeps rayon from oversubscribing when several views each spawn worker-level
 /// parallelism.
@@ -461,31 +383,6 @@ pub(super) fn select_inner_parallelism_for_prepared_work_with_policy(
     } else {
         default_parallelism
     }
-}
-
-fn should_parallelize_view_collection(view_count: usize, max_prepared_draw_count: usize) -> bool {
-    should_parallelize_view_collection_with_policy(
-        FrameParallelPolicy::for_current_thread_pool(),
-        view_count,
-        max_prepared_draw_count,
-    )
-}
-
-/// Policy-injected implementation for deterministic unit tests.
-pub(super) fn should_parallelize_view_collection_with_policy(
-    policy: FrameParallelPolicy,
-    view_count: usize,
-    max_prepared_draw_count: usize,
-) -> bool {
-    policy
-        .admit_draw_heavy_views(
-            FrameCpuWorkload::view_draws(
-                view_count,
-                view_count.saturating_mul(max_prepared_draw_count),
-            ),
-            VIEW_COLLECTION_PARALLEL_CHUNK_VIEWS,
-        )
-        .is_parallel()
 }
 
 #[cfg(test)]

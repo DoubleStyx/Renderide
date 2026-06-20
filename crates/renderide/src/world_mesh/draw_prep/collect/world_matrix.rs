@@ -4,7 +4,9 @@
 use glam::Mat4;
 
 use crate::materials::RasterFrontFace;
-use crate::scene::{RenderSpaceId, SceneTransformRead, SkinnedMeshRenderer};
+#[cfg(test)]
+use crate::scene::SkinnedMeshRenderer;
+use crate::scene::{RenderSpaceId, SceneTransformRead};
 
 use super::DrawCollectionInputs;
 
@@ -54,6 +56,7 @@ pub(super) fn front_face_for_world_matrix(world_matrix: Option<Mat4>) -> RasterF
 
 /// Resolves root-transform parity for skinned world-space vertex streams.
 #[inline]
+#[cfg(test)]
 pub(super) fn skinned_front_face_world_matrix(
     ctx: &DrawCollectionInputs<'_>,
     space_id: RenderSpaceId,

@@ -5,25 +5,20 @@
 //! invalidates entries through material/router generation counters, so steady-state refreshes only
 //! stamp live entries instead of repeating dictionary and router lookups.
 
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashMap;
 use rayon::prelude::*;
 
 use crate::cpu_parallelism::{
-    ParallelAdmission, RELEVANCE_PACKET_MIN_ITEMS, admit_relevance_items,
-    current_reference_worker_count, record_parallel_admission,
+    RELEVANCE_PACKET_MIN_ITEMS, admit_relevance_items, current_reference_worker_count,
+    record_parallel_admission,
 };
 use crate::materials::ShaderPermutation;
 use crate::materials::host_data::MaterialDictionary;
 use crate::materials::{MaterialPipelinePropertyIds, MaterialRouter};
-use crate::scene::{RenderSpaceId, RenderSpaceRead, WorldMeshSceneRead};
 use crate::world_mesh::FramePreparedRenderables;
 
-use super::keys::{collect_material_keys_for_space, collect_material_keys_into};
 use super::resolve::{MaterialResolveCtx, ResolvedMaterialBatch, resolve_material_batch};
-use super::slot::normalized_material_slot;
 
-/// Active render spaces assigned to one material-key collection worker.
-const MATERIAL_KEY_PARALLEL_CHUNK_SPACES: usize = 1;
 /// Material keys assigned to one parallel material-resolution worker.
 const MATERIAL_RESOLVE_PARALLEL_CHUNK_KEYS: usize = RELEVANCE_PACKET_MIN_ITEMS;
 /// Material-key count required before stale/missing prepared keys resolve on Rayon workers.
@@ -32,98 +27,6 @@ const MATERIAL_RESOLVE_PARALLEL_MIN_KEYS: usize = MATERIAL_RESOLVE_PARALLEL_CHUN
 const MATERIAL_CLASSIFY_PARALLEL_CHUNK_KEYS: usize = RELEVANCE_PACKET_MIN_ITEMS;
 /// Material-key count required before prepared cache classification uses Rayon.
 const MATERIAL_CLASSIFY_PARALLEL_MIN_KEYS: usize = MATERIAL_CLASSIFY_PARALLEL_CHUNK_KEYS * 2;
-
-/// Shared immutable inputs for scene-driven material cache refresh.
-#[derive(Clone, Copy)]
-struct SceneMaterialRefreshInputs<'a, 'b, S: WorldMeshSceneRead + ?Sized> {
-    /// Scene containing active render spaces to walk.
-    scene: &'a S,
-    /// Material resolution context used for stale or missing keys.
-    ctx: MaterialResolveCtx<'b>,
-    /// Material router generation captured at the start of refresh.
-    router_gen: u64,
-    /// Cache frame stamp assigned to entries touched during refresh.
-    current_frame: u64,
-}
-
-/// Returns the material-key collection admission decision for a known worker count.
-#[inline]
-fn material_key_collection_admission(
-    space_count: usize,
-    work_units: usize,
-    worker_count: usize,
-) -> ParallelAdmission {
-    let work_admission = admit_relevance_items(work_units, worker_count);
-    if space_count >= MATERIAL_KEY_PARALLEL_CHUNK_SPACES * 2 && work_admission.is_parallel() {
-        ParallelAdmission::Parallel {
-            chunk_size: MATERIAL_KEY_PARALLEL_CHUNK_SPACES,
-        }
-    } else {
-        ParallelAdmission::Serial
-    }
-}
-
-/// Estimates material-slot rows scanned during frame material-key collection.
-fn estimate_material_key_collection_work(
-    scene: &(impl WorldMeshSceneRead + ?Sized),
-    space_ids: &[RenderSpaceId],
-) -> usize {
-    space_ids
-        .iter()
-        .copied()
-        .filter(|space_id| {
-            scene
-                .space(*space_id)
-                .is_some_and(|space| space.is_active())
-        })
-        .map(|space_id| {
-            let static_keys = scene
-                .static_mesh_renderers(space_id)
-                .map_or(0, |renderers| {
-                    renderers
-                        .iter()
-                        .filter(|renderer| {
-                            renderer.mesh_asset_id >= 0 && renderer.emits_visible_color_draws()
-                        })
-                        .map(estimate_renderer_material_keys)
-                        .sum::<usize>()
-                });
-            let skinned_keys = scene
-                .skinned_mesh_renderers(space_id)
-                .map_or(0, |renderers| {
-                    renderers
-                        .iter()
-                        .filter(|renderer| {
-                            renderer.base.mesh_asset_id >= 0
-                                && renderer.base.emits_visible_color_draws()
-                        })
-                        .map(|renderer| estimate_renderer_material_keys(&renderer.base))
-                        .sum::<usize>()
-                });
-            static_keys.saturating_add(skinned_keys)
-        })
-        .sum()
-}
-
-/// Estimates visible material-key rows referenced by one mesh renderer.
-fn estimate_renderer_material_keys(renderer: &crate::scene::StaticMeshRenderer) -> usize {
-    if renderer.material_slots.is_empty() {
-        usize::from(
-            renderer
-                .primary_material_asset_id
-                .and_then(|id| normalized_material_slot(id, renderer.primary_property_block_id))
-                .is_some(),
-        )
-    } else {
-        renderer
-            .material_slots
-            .iter()
-            .filter(|slot| {
-                normalized_material_slot(slot.material_asset_id, slot.property_block_id).is_some()
-            })
-            .count()
-    }
-}
 
 /// Cached resolution plus the validation keys captured at resolve time.
 #[derive(Clone)]
@@ -278,36 +181,20 @@ struct ResolvedMaterialCacheUpdate {
 /// Persistent `(material_asset_id, property_block_id)` -> [`ResolvedMaterialBatch`] lookup table.
 ///
 /// Owned by the renderer host and passed through per-view collection as an immutable reference.
-/// Call [`Self::refresh_for_frame`] once per frame before per-view draw
-/// collection: it walks every active render space, ensures every referenced key has an up-to-date
-/// entry (re-resolving on generation mismatch), and evicts entries not referenced this frame.
+/// Call [`Self::refresh_for_prepared`] once per frame before per-view draw collection: it walks the
+/// prepared snapshot's unique live material keys, ensures every referenced key has an up-to-date
+/// entry, and evicts entries not referenced by the prepared snapshot.
 ///
 /// In steady state (no material/router mutations, same shader permutation, same scene keys), this
 /// pass performs one HashMap probe and four `u64` compares per unique material -- no dictionary or
 /// router lookups, no allocations.
 pub struct FrameMaterialBatchCache {
     entries: HashMap<(i32, Option<i32>), CacheEntry>,
-    /// Monotonically advanced once per [`Self::refresh_for_frame`] call. Used as a "stamp" to mark
-    /// entries touched this frame; entries whose stamp does not match the current counter at the
-    /// end of `refresh_for_frame` are evicted.
+    /// Monotonically advanced once per [`Self::refresh_for_prepared`] call. Used as a "stamp" to
+    /// mark entries touched this frame; entries whose stamp does not match the current counter at
+    /// the end of the refresh are evicted.
     frame_counter: u64,
-    /// Reused per-frame deduplication set for `(material_asset_id, property_block_id)` keys
-    /// observed during [`Self::refresh_for_frame`]; cleared at the top of every refresh and
-    /// repopulated.
-    seen_scratch: HashSet<(i32, Option<i32>)>,
-    /// Reused active-space-id list for the multi-space refresh path; cleared at the top of every
-    /// [`Self::refresh_for_frame`] that needs it.
-    active_scratch: Vec<RenderSpaceId>,
-    /// Reused outer/inner key buffers for the multi-space refresh path. The outer [`Vec`] is
-    /// cleared and resized to the active-space count; each inner [`Vec`] is cleared inside the
-    /// rayon worker before [`collect_material_keys_into`] re-fills it. Capacities persist.
-    keys_per_space_scratch: Vec<Vec<(i32, Option<i32>)>>,
-    /// Snapshot of the inputs that determine whether a refresh would re-resolve any entry. When
-    /// the next refresh sees the same triple, no host-side material state has changed since the
-    /// last walk: the cache fast-paths by stamping every existing entry's `last_used_frame` so
-    /// eviction preserves them. Newly referenced materials (none in steady state) fall through to
-    /// the slow path in [`super::resolve::batch_key_for_slot_cached`], which resolves directly via
-    /// [`super::resolve::batch_key_for_slot`].
+    /// Snapshot of the inputs that determine whether a refresh would re-resolve any entry.
     last_refresh_router_gen: Option<u64>,
     /// Snapshot of [`crate::materials::host_data::MaterialPropertyStore::global_generation`] at
     /// the most recent refresh, paired with [`Self::last_refresh_router_gen`].
@@ -336,9 +223,6 @@ impl FrameMaterialBatchCache {
         Self {
             entries: HashMap::new(),
             frame_counter: 0,
-            seen_scratch: HashSet::new(),
-            active_scratch: Vec::new(),
-            keys_per_space_scratch: Vec::new(),
             last_refresh_router_gen: None,
             last_refresh_dict_global_gen: None,
             last_refresh_shader_perm: None,
@@ -347,37 +231,8 @@ impl FrameMaterialBatchCache {
         }
     }
 
-    /// Returns `true` and stamps every entry's `last_used_frame` to `current_frame` when the
-    /// inputs that determine cache-entry resolution are unchanged since the last refresh.
-    ///
-    /// Callers use the result to skip the per-pair walk: any draw that references a still-cached
-    /// material reads the existing entry, while a draw referencing a freshly added material falls
-    /// through to the slow path in
-    /// [`crate::world_mesh::materials::resolve::batch_key_for_slot_cached`]. New materials show
-    /// up exclusively after a host mutation (which bumps the global generation and disqualifies
-    /// the gate), so the slow-path fall-through is rare in practice.
-    fn try_fast_path_skip(
-        &mut self,
-        router_gen: u64,
-        dict_global_gen: u64,
-        shader_perm: ShaderPermutation,
-        current_frame: u64,
-    ) -> bool {
-        if self.last_refresh_router_gen == Some(router_gen)
-            && self.last_refresh_dict_global_gen == Some(dict_global_gen)
-            && self.last_refresh_shader_perm == Some(shader_perm)
-        {
-            for entry in self.entries.values_mut() {
-                entry.last_used_frame = current_frame;
-            }
-            true
-        } else {
-            false
-        }
-    }
-
     /// Records the snapshot of `(router_gen, dict_global_gen, shader_perm)` that the most recent
-    /// refresh resolved against. Read by [`Self::try_fast_path_skip`] on the next refresh.
+    /// prepared refresh resolved against.
     fn record_refresh_snapshot(
         &mut self,
         router_gen: u64,
@@ -424,193 +279,6 @@ impl FrameMaterialBatchCache {
         self.entries
             .get(&(material_asset_id, property_block_id))
             .map(|e| &e.batch)
-    }
-
-    /// Walks active scene renderers and refreshes every referenced material key.
-    fn refresh_scene_material_keys<S>(
-        &mut self,
-        inputs: SceneMaterialRefreshInputs<'_, '_, S>,
-    ) -> MaterialBatchCacheTouchStats
-    where
-        S: WorldMeshSceneRead + Sync + ?Sized,
-    {
-        let mut active_space_ids = inputs
-            .scene
-            .render_space_ids()
-            .filter(|id| inputs.scene.space(*id).is_some_and(|s| s.is_active()));
-        let first = active_space_ids.next();
-        let second = active_space_ids.next();
-        let mut seen = std::mem::take(&mut self.seen_scratch);
-        seen.clear();
-        let mut touch_stats = MaterialBatchCacheTouchStats::default();
-
-        match (first, second) {
-            (None, _) => {}
-            (Some(only), None) => {
-                self.refresh_single_space_material_keys(inputs, only, &mut seen, &mut touch_stats);
-            }
-            (Some(first), Some(second)) => {
-                self.refresh_multi_space_material_keys(
-                    inputs,
-                    [first, second].into_iter().chain(active_space_ids),
-                    &mut seen,
-                    &mut touch_stats,
-                );
-            }
-        }
-
-        self.seen_scratch = seen;
-        touch_stats
-    }
-
-    /// Refreshes cache entries referenced by one active render space.
-    fn refresh_single_space_material_keys<S>(
-        &mut self,
-        inputs: SceneMaterialRefreshInputs<'_, '_, S>,
-        space_id: RenderSpaceId,
-        seen: &mut HashSet<(i32, Option<i32>)>,
-        touch_stats: &mut MaterialBatchCacheTouchStats,
-    ) where
-        S: WorldMeshSceneRead + ?Sized,
-    {
-        for key in collect_material_keys_for_space(inputs.scene, space_id) {
-            if seen.insert(key) {
-                touch_stats.note(self.touch_or_refresh(
-                    key.0,
-                    key.1,
-                    inputs.ctx,
-                    inputs.router_gen,
-                    inputs.current_frame,
-                ));
-            }
-        }
-    }
-
-    /// Refreshes cache entries referenced by multiple active render spaces.
-    fn refresh_multi_space_material_keys<S>(
-        &mut self,
-        inputs: SceneMaterialRefreshInputs<'_, '_, S>,
-        active_space_ids: impl Iterator<Item = RenderSpaceId>,
-        seen: &mut HashSet<(i32, Option<i32>)>,
-        touch_stats: &mut MaterialBatchCacheTouchStats,
-    ) where
-        S: WorldMeshSceneRead + Sync + ?Sized,
-    {
-        let mut active = std::mem::take(&mut self.active_scratch);
-        active.clear();
-        active.extend(active_space_ids);
-        let work_units = estimate_material_key_collection_work(inputs.scene, &active);
-        let admission = material_key_collection_admission(
-            active.len(),
-            work_units,
-            current_reference_worker_count(),
-        );
-        record_parallel_admission(
-            "material_key_collection",
-            work_units,
-            active.len(),
-            admission,
-        );
-
-        let mut keys_per_space = std::mem::take(&mut self.keys_per_space_scratch);
-        keys_per_space.resize_with(active.len(), Vec::new);
-        if admission.is_parallel() {
-            keys_per_space
-                .par_iter_mut()
-                .with_min_len(MATERIAL_KEY_PARALLEL_CHUNK_SPACES)
-                .zip(
-                    active
-                        .par_iter()
-                        .with_min_len(MATERIAL_KEY_PARALLEL_CHUNK_SPACES),
-                )
-                .for_each(|(out, &space_id)| {
-                    out.clear();
-                    collect_material_keys_into(inputs.scene, space_id, out);
-                });
-        } else {
-            for (out, &space_id) in keys_per_space.iter_mut().zip(active.iter()) {
-                out.clear();
-                collect_material_keys_into(inputs.scene, space_id, out);
-            }
-        }
-
-        for keys in &keys_per_space {
-            for &key in keys {
-                if seen.insert(key) {
-                    touch_stats.note(self.touch_or_refresh(
-                        key.0,
-                        key.1,
-                        inputs.ctx,
-                        inputs.router_gen,
-                        inputs.current_frame,
-                    ));
-                }
-            }
-        }
-
-        self.active_scratch = active;
-        self.keys_per_space_scratch = keys_per_space;
-    }
-
-    /// Refreshes the cache against the current scene and dependency state.
-    ///
-    /// Walks every active render space once, for each referenced
-    /// `(material_asset_id, property_block_id)` key:
-    ///
-    /// - If an entry exists and all stored generations / shader permutation match the current
-    ///   values -> stamp `last_used_frame` and keep.
-    /// - Otherwise -> re-resolve via [`resolve_material_batch`] and overwrite.
-    ///
-    /// After the walk, entries not touched this frame are evicted so the cache size tracks the
-    /// live working set. Call once per frame before any per-view draw collection that reads the
-    /// cache.
-    pub fn refresh_for_frame<S>(
-        &mut self,
-        scene: &S,
-        dict: &MaterialDictionary<'_>,
-        router: &MaterialRouter,
-        pipeline_property_ids: &MaterialPipelinePropertyIds,
-        shader_perm: ShaderPermutation,
-    ) where
-        S: WorldMeshSceneRead + Sync + ?Sized,
-    {
-        profiling::scope!("mesh::material_batch_cache_refresh_for_frame");
-        self.frame_counter = self.frame_counter.wrapping_add(1);
-        let current_frame = self.frame_counter;
-        let router_gen = router.generation();
-        let dict_global_gen = dict.global_generation();
-        let fast_path_skip = {
-            profiling::scope!("mesh::material_batch_cache::prepared_fast_path");
-            self.try_fast_path_skip(router_gen, dict_global_gen, shader_perm, current_frame)
-        };
-        if fast_path_skip {
-            self.last_touch_stats = MaterialBatchCacheTouchStats {
-                fast_path_skips: 1,
-                ..Default::default()
-            };
-            return;
-        }
-        let ctx = MaterialResolveCtx {
-            dict,
-            router,
-            pipeline_property_ids,
-            shader_perm,
-        };
-        let mut touch_stats = self.refresh_scene_material_keys(SceneMaterialRefreshInputs {
-            scene,
-            ctx,
-            router_gen,
-            current_frame,
-        });
-
-        // Evict entries not referenced this frame so the cache tracks the live working set.
-        // Cheap -- the cache typically holds a few dozen entries, and this touches them all once.
-        let entry_count_before_evict = self.entries.len();
-        self.entries
-            .retain(|_, entry| entry.last_used_frame == current_frame);
-        touch_stats.evicted = entry_count_before_evict.saturating_sub(self.entries.len());
-        self.last_touch_stats = touch_stats;
-        self.record_refresh_snapshot(router_gen, dict_global_gen, shader_perm, None);
     }
 
     /// Refreshes the cache from a pre-expanded draw list instead of walking scene renderers.
@@ -892,6 +560,7 @@ impl FrameMaterialBatchCache {
 
     /// Ensures the cache has a valid entry for `(material_asset_id, property_block_id)` and
     /// stamps it as used this frame. Resolves / re-resolves on miss or generation mismatch.
+    #[cfg(test)]
     fn touch_or_refresh(
         &mut self,
         material_asset_id: i32,

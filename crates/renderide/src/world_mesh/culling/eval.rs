@@ -8,10 +8,13 @@
 use glam::{Mat4, Vec3, Vec4};
 
 use crate::scene::{RenderSpaceId, SceneSpaceRead};
+#[cfg(test)]
 use crate::shared::RenderingContext;
 
 use super::frustum::world_aabb_visible_in_homogeneous_clip;
-use super::geometry::{MeshCullGeometry, MeshCullTarget, mesh_world_geometry_for_cull};
+use super::geometry::MeshCullGeometry;
+#[cfg(test)]
+use super::geometry::{MeshCullTarget, mesh_world_geometry_for_cull};
 use super::{HiZTemporalState, WorldMeshCullInput, WorldMeshCullProjParams};
 use crate::camera::{overlay_camera_view_matrix, view_matrix_for_world_mesh_render_space};
 use crate::hi_z_cpu::HiZCullData;
@@ -131,6 +134,7 @@ pub(crate) enum CpuCullFailure {
 /// that opt in to `_RectClip`. When `Some`, the overlay path projects the rect's four corners
 /// through the same desktop overlay camera view-projection used by the draw pass and rejects the
 /// draw when the projected screen-space AABB doesn't intersect the viewport.
+#[cfg(test)]
 pub(crate) fn mesh_draw_passes_cpu_cull<S>(
     target: &MeshCullTarget<'_, S>,
     is_overlay: bool,

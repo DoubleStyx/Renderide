@@ -17,7 +17,7 @@ use crate::world_mesh::materials::FrameMaterialBatchCache;
 use super::super::item::{WorldMeshDrawItem, stacked_material_submesh_topology};
 use super::super::prepared_renderables::{FramePreparedDraw, FramePreparedRun};
 use super::candidate::{DrawCandidate, evaluate_draw_candidate};
-use super::scene_walk::transform_chain_has_degenerate_scale;
+use super::transform_chain_has_degenerate_scale;
 use super::world_matrix::{front_face_for_draw_matrices, world_matrix_for_local_vertex_stream};
 use super::{CollectState, DrawCollectionInputs};
 use super::{effective_overlay_in_view, special_layer_visible_in_view, transform_filter_for_space};

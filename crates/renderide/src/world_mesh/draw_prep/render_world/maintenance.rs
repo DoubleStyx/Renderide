@@ -16,7 +16,7 @@ use super::refresh::{
 };
 use super::state::{RenderWorldRendererRef, RenderWorldSpace};
 use super::{
-    RenderWorld, RenderWorldMaintenanceStats, dirty_refresh_admission,
+    RenderWorld, RenderWorldDirtyReason, RenderWorldMaintenanceStats, dirty_refresh_admission,
     mesh_asset_expansion_admission, node_is_under_any_root, transform_root_expansion_admission,
     transform_root_node_scan_admission, transform_roots_cover_space,
 };
@@ -350,18 +350,19 @@ impl RenderWorld {
             match expansion.expansion {
                 TransformDirtyExpansion::Removed(space_id) => self.remove_space(space_id),
                 TransformDirtyExpansion::FullSpace(space_id) => {
-                    self.dirty_spaces.insert(space_id);
+                    self.note_space_dirty(space_id);
                 }
                 TransformDirtyExpansion::Renderers(renderers) => {
                     stats.expanded_renderer_count += renderers.len();
                     for dirty in renderers {
-                        self.note_bounds_dirty(RenderWorldBoundsDirty {
-                            space_id: dirty.space_id,
-                            kind: dirty.kind,
-                            renderable_index: dirty.renderable_index,
-                        });
-                        self.pending_transform_only_dirty_count =
-                            self.pending_transform_only_dirty_count.saturating_add(1);
+                        self.note_bounds_dirty(
+                            RenderWorldBoundsDirty {
+                                space_id: dirty.space_id,
+                                kind: dirty.kind,
+                                renderable_index: dirty.renderable_index,
+                            },
+                            RenderWorldDirtyReason::TransformOnly,
+                        );
                     }
                 }
                 TransformDirtyExpansion::Empty => {}
@@ -407,10 +408,7 @@ impl RenderWorld {
                 None => spaces.iter().flat_map(collect_for_space).collect(),
             };
         for dirty in renderer_dirties {
-            self.note_renderer_dirty(dirty);
-            self.pending_mesh_asset_dirty_renderer_count = self
-                .pending_mesh_asset_dirty_renderer_count
-                .saturating_add(1);
+            self.note_renderer_dirty(dirty, RenderWorldDirtyReason::MeshAsset);
         }
     }
 
@@ -428,9 +426,9 @@ impl RenderWorld {
         let dirty_spaces = std::mem::take(&mut self.dirty_spaces);
         let mut work = Vec::with_capacity(dirty_spaces.len());
         for id in dirty_spaces {
-            self.dirty_renderers.retain(|dirty| dirty.space_id != id);
+            self.dirty_renderers.retain(|dirty, _| dirty.space_id != id);
             self.dirty_bounds_renderers
-                .retain(|dirty| dirty.space_id != id);
+                .retain(|dirty, _| dirty.space_id != id);
             let cached = self.spaces.remove(&id).unwrap_or_default();
             let estimated_work_units = estimate_full_space_refresh_work(&cached, scene, id);
             work.push(DirtySpaceRefreshWork {
@@ -493,15 +491,15 @@ impl RenderWorld {
     {
         profiling::scope!("mesh::render_world::refresh_dirty_renderers");
         let dirty_renderers = std::mem::take(&mut self.dirty_renderers);
-        self.dirty_bounds_renderers.retain(|dirty| {
-            !dirty_renderers.contains(&RenderWorldRendererDirty {
+        self.dirty_bounds_renderers.retain(|dirty, _| {
+            !dirty_renderers.contains_key(&RenderWorldRendererDirty {
                 space_id: dirty.space_id,
                 kind: dirty.kind,
                 renderable_index: dirty.renderable_index,
             })
         });
         let mut by_space: HashMap<RenderSpaceId, DirtyRendererSet> = HashMap::new();
-        for dirty in dirty_renderers {
+        for dirty in dirty_renderers.into_keys() {
             by_space
                 .entry(dirty.space_id)
                 .or_default()
@@ -569,7 +567,7 @@ impl RenderWorld {
         profiling::scope!("mesh::render_world::refresh_dirty_bounds");
         let dirty_bounds = std::mem::take(&mut self.dirty_bounds_renderers);
         let mut by_space: HashMap<RenderSpaceId, DirtyRendererSet> = HashMap::new();
-        for dirty in dirty_bounds {
+        for dirty in dirty_bounds.into_keys() {
             by_space
                 .entry(dirty.space_id)
                 .or_default()
@@ -586,7 +584,7 @@ impl RenderWorld {
                 continue;
             }
             let Some(cached) = self.spaces.remove(&space_id) else {
-                self.dirty_spaces.insert(space_id);
+                self.note_space_dirty(space_id);
                 continue;
             };
             let estimated_work_units = dirty_set.len();

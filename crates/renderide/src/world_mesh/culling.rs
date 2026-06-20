@@ -15,9 +15,11 @@ pub use crate::cull_contract::{HiZTemporalState, WorldMeshCullProjParams};
 use crate::hi_z_cpu::HiZCullData;
 use crate::scene::SceneSpaceRead;
 
+#[cfg(test)]
+pub(crate) use eval::mesh_draw_passes_cpu_cull;
 pub(crate) use eval::{
-    CpuCullFailure, mesh_cpu_cull_with_geometry, mesh_draw_passes_cpu_cull,
-    overlay_rect_clip_visible, world_aabb_visible_for_cull,
+    CpuCullFailure, mesh_cpu_cull_with_geometry, overlay_rect_clip_visible,
+    world_aabb_visible_for_cull,
 };
 pub(crate) use geometry::{
     MeshCullGeometry, MeshCullTarget, mesh_world_geometry_for_cull_with_head,
