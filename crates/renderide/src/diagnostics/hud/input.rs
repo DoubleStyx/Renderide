@@ -376,6 +376,8 @@ mod sanitize_input_state_tests {
             keyboard: Some(KeyboardState {
                 type_delta: Some("hi".into()),
                 held_keys: vec![Key::A],
+                composition_active: false,
+                composition_text: None
             }),
             window: None,
             vr: None,
@@ -409,6 +411,8 @@ mod sanitize_input_state_tests {
             keyboard: Some(KeyboardState {
                 type_delta: Some("x".into()),
                 held_keys: vec![],
+                composition_active: false,
+                composition_text: None
             }),
             window: None,
             vr: None,
