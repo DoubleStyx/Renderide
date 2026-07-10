@@ -50,7 +50,7 @@ impl WindowInputAccumulator {
             type_delta,
             held_keys: self.held_keys.clone(),
             composition_active: false,
-            composition_text: None
+            composition_text: None,
         });
         InputState {
             mouse: Some(mouse),
