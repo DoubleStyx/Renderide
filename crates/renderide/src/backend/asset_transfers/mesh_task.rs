@@ -15,6 +15,7 @@ use super::AssetTransferQueue;
 use super::integrator::StepResult;
 use super::mesh_upload_batch::{MeshUploadRecorder, MeshUploadStagingBatch};
 use super::reliable_ack::send_background_reliable;
+use super::shared_memory_payload::{OwnedSharedMemoryPayload, SharedMemoryPayloadCopy};
 
 const MESH_PREPARE_BACKGROUND_MIN_BYTES: usize = 32 * 1024;
 const MESH_PREPARE_BACKGROUND_MIN_VERTICES: i32 = 512;
@@ -29,7 +30,7 @@ pub(super) struct MeshTaskGpu<'a> {
     pub(super) mapped_buffer_health: &'a Arc<GpuMappedBufferHealth>,
     /// Deferred mesh buffer upload batch for this drain.
     pub(super) mesh_upload_batch: &'a Arc<MeshUploadStagingBatch>,
-    /// Whether wgpu validation scopes are enabled for mesh uploads.
+    /// Whether wgpu validation scopes are enabled for mesh uploads. -xlinka
     pub(super) mesh_validation_scopes_enabled: bool,
 }
 
@@ -90,9 +91,17 @@ pub(super) fn send_mesh_upload_result(
 enum MeshStage {
     /// Compute and cache [`MeshBufferLayout`] (CPU only).
     PendingLayout,
+    /// Host bytes are being copied in bounded chunks. -xlinka
+    CopyingPayload {
+        copy: SharedMemoryPayloadCopy,
+        layout: MeshBufferLayout,
+        existing: Option<Box<GpuMesh>>,
+        mapped_buffer_generation: u64,
+        derived_stream_demand: MeshDerivedStreamDemand,
+    },
     /// Derived stream bytes are being prepared on the asset worker pool.
     PreparingDerived {
-        raw: Arc<[u8]>,
+        raw: OwnedSharedMemoryPayload,
         layout: MeshBufferLayout,
         existing: Option<Box<GpuMesh>>,
         mapped_buffer_generation: u64,
@@ -101,7 +110,7 @@ enum MeshStage {
     },
     /// Host bytes are captured and ready for renderer-thread GPU upload.
     PendingGpuUpload {
-        raw: Arc<[u8]>,
+        raw: OwnedSharedMemoryPayload,
         layout: MeshBufferLayout,
         existing: Option<Box<GpuMesh>>,
         mapped_buffer_generation: u64,
@@ -146,7 +155,10 @@ impl MeshUploadTask {
             return self.drop_stale_upload(queue, "step");
         }
         if matches!(self.stage, MeshStage::PendingLayout) {
-            return self.start_pending_layout(queue, gpu, shm, ipc);
+            return self.start_pending_layout(queue, gpu, ipc);
+        }
+        if matches!(self.stage, MeshStage::CopyingPayload { .. }) {
+            return self.copy_pending_payload(shm, ipc);
         }
         if matches!(self.stage, MeshStage::PreparingDerived { .. }) {
             return self.poll_preparing_derived(ipc);
@@ -162,7 +174,6 @@ impl MeshUploadTask {
         &mut self,
         queue: &mut AssetTransferQueue,
         gpu: MeshTaskGpu<'_>,
-        shm: &mut SharedMemoryAccessor,
         ipc: &mut Option<&mut DualQueueIpc>,
     ) -> StepResult {
         profiling::scope!("asset::mesh_pending_layout");
@@ -176,20 +187,73 @@ impl MeshUploadTask {
             return StepResult::Done;
         };
 
-        let data = self.data.clone();
         let existing = queue.pools.mesh_pool.get(asset_id).cloned().map(Box::new);
         let derived_stream_demand = queue
             .pools
             .mesh_pool
-            .derived_stream_demand_for_upload(asset_id, &data);
-        let raw_len = data.buffer.length.max(0) as usize;
-        let raw_arc = Self::copy_mesh_payload(shm, &data, raw_len);
-        let Some(raw) = raw_arc else {
-            complete_failed_mesh_upload(asset_id, "shared memory payload unavailable", ipc);
+            .derived_stream_demand_for_upload(asset_id, &self.data);
+        let raw_len = self.data.buffer.length.max(0) as usize;
+        let mapped_buffer_generation = gpu.mapped_buffer_health.generation();
+        let copy = match SharedMemoryPayloadCopy::new(raw_len) {
+            Ok(copy) => copy,
+            Err(error) => {
+                logger::error!("mesh {asset_id}: {error}");
+                complete_failed_mesh_upload(asset_id, "payload allocation failed", ipc);
+                return StepResult::Done;
+            }
+        };
+        self.stage = MeshStage::CopyingPayload {
+            copy,
+            layout,
+            existing,
+            mapped_buffer_generation,
+            derived_stream_demand,
+        };
+        StepResult::Continue
+    }
+
+    fn copy_pending_payload(
+        &mut self,
+        shm: &mut SharedMemoryAccessor,
+        ipc: &mut Option<&mut DualQueueIpc>,
+    ) -> StepResult {
+        let copy_result = match &mut self.stage {
+            MeshStage::CopyingPayload { copy, .. } => copy.copy_next_chunk(shm, &self.data.buffer),
+            _ => return StepResult::Done,
+        };
+        let raw = match copy_result {
+            None => {
+                complete_failed_mesh_upload(
+                    self.data.asset_id,
+                    "shared memory payload unavailable",
+                    ipc,
+                );
+                return StepResult::Done;
+            }
+            Some(Err(err)) => {
+                logger::error!("mesh {}: {err}", self.data.asset_id);
+                complete_failed_mesh_upload(
+                    self.data.asset_id,
+                    "shared memory payload invalid",
+                    ipc,
+                );
+                return StepResult::Done;
+            }
+            Some(Ok(None)) => return StepResult::Continue,
+            Some(Ok(Some(raw))) => raw,
+        };
+        let stage = std::mem::replace(&mut self.stage, MeshStage::PendingLayout);
+        let MeshStage::CopyingPayload {
+            layout,
+            existing,
+            mapped_buffer_generation,
+            derived_stream_demand,
+            ..
+        } = stage
+        else {
             return StepResult::Done;
         };
-
-        let mapped_buffer_generation = gpu.mapped_buffer_health.generation();
+        let data = self.data.clone();
         if should_prepare_derived_streams_on_worker(&data, raw.len(), derived_stream_demand) {
             let rx = spawn_prepare_derived_streams(
                 Arc::clone(&raw),
@@ -289,27 +353,6 @@ impl MeshUploadTask {
             .mesh_pool
             .set_cached_mesh_layout(asset_id, input_fp, l);
         Some(l)
-    }
-
-    /// Copies the shared-memory mesh payload into an owned slice for background upload.
-    fn copy_mesh_payload(
-        shm: &mut SharedMemoryAccessor,
-        data: &MeshUploadData,
-        raw_len: usize,
-    ) -> Option<Arc<[u8]>> {
-        profiling::scope!("asset::mesh_shared_memory_read");
-        let asset_id = data.asset_id;
-        shm.with_read_bytes(&data.buffer, |raw| {
-            if raw.len() < raw_len {
-                logger::error!(
-                    "mesh {asset_id}: raw too short (need {}, got {})",
-                    raw_len,
-                    raw.len()
-                );
-                return None;
-            }
-            Some(Arc::from(&raw[..raw_len]))
-        })
     }
 
     /// Uploads captured mesh data on the renderer's cooperative GPU integration path.
@@ -454,7 +497,7 @@ fn should_prepare_derived_streams_on_worker(
 }
 
 fn spawn_prepare_derived_streams(
-    raw: Arc<[u8]>,
+    raw: OwnedSharedMemoryPayload,
     data: MeshUploadData,
     layout: MeshBufferLayout,
     demand: MeshDerivedStreamDemand,
@@ -553,7 +596,8 @@ mod tests {
             ..Default::default()
         };
 
-        let raw = MeshUploadTask::copy_mesh_payload(&mut shm, &data, 16);
+        let mut copy = SharedMemoryPayloadCopy::new(16).expect("payload copy allocation");
+        let raw = copy.copy_next_chunk(&mut shm, &data.buffer);
 
         assert!(raw.is_none());
     }

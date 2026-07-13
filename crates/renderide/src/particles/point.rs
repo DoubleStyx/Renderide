@@ -36,7 +36,7 @@ pub(crate) struct PointRenderBufferBuild {
 
 /// Builds point render-buffer metadata and generated billboard bytes without touching the GPU.
 pub(crate) fn build_point_render_buffer_cpu(
-    raw: Arc<[u8]>,
+    raw: Arc<Vec<u8>>,
     upload: &PointRenderBufferUpload,
 ) -> Result<PointRenderBufferBuild, ParticleRenderBufferError> {
     profiling::scope!("particle::build_point_render_buffer");

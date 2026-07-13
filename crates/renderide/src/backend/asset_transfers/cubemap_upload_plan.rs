@@ -1,7 +1,5 @@
 //! Data-oriented cubemap upload planning and cooperative stepping.
 
-use std::sync::Arc;
-
 use crate::assets::texture::{
     CubemapFaceMipUploadStep, CubemapMipChainUploader, MipChainAdvance, TextureUploadError,
 };
@@ -9,7 +7,9 @@ use crate::gpu::GpuQueueAccessMode;
 use crate::ipc::SharedMemoryAccessor;
 use crate::shared::{SetCubemapData, SetCubemapFormat};
 
-use super::shared_memory_payload::build_with_optional_owned_payload;
+use super::shared_memory_payload::{
+    OwnedSharedMemoryPayload, SharedMemoryPayloadCopy, build_with_optional_owned_payload,
+};
 
 /// Immutable inputs needed to execute one cubemap upload step.
 pub(crate) struct CubemapUploadPlan<'a> {
@@ -48,7 +48,12 @@ enum CubemapUploadStage {
         /// Incremental face/mip uploader.
         uploader: CubemapMipChainUploader,
         /// Owned shared-memory descriptor bytes used across integration ticks.
-        payload: Arc<[u8]>,
+        payload: OwnedSharedMemoryPayload,
+    },
+    /// Descriptor bytes are being copied in bounded chunks. -xlinka
+    CopyingChain {
+        uploader: CubemapMipChainUploader,
+        payload_copy: SharedMemoryPayloadCopy,
     },
 }
 
@@ -96,6 +101,22 @@ impl CubemapUploadStepper {
         profiling::scope!("asset::cubemap_upload_step");
         match &mut self.stage {
             CubemapUploadStage::Start => self.start(shm, plan),
+            CubemapUploadStage::CopyingChain { payload_copy, .. } => {
+                let copy_result = payload_copy.copy_next_chunk(shm, &plan.upload.data);
+                match copy_result {
+                    None => Ok(CubemapUploadCompletion::MissingPayload),
+                    Some(Err(err)) => Err(err),
+                    Some(Ok(None)) => Ok(CubemapUploadCompletion::Continue),
+                    Some(Ok(Some(payload))) => {
+                        let stage = std::mem::replace(&mut self.stage, CubemapUploadStage::Start);
+                        let CubemapUploadStage::CopyingChain { uploader, .. } = stage else {
+                            unreachable!();
+                        };
+                        self.stage = CubemapUploadStage::Chain { uploader, payload };
+                        Ok(CubemapUploadCompletion::Continue)
+                    }
+                }
+            }
             CubemapUploadStage::Chain { uploader, payload } => {
                 Self::upload_next_face_mip(uploader, payload, plan)
             }
@@ -119,9 +140,13 @@ impl CubemapUploadStepper {
             return Ok(CubemapUploadCompletion::MissingPayload);
         };
 
-        self.stage = CubemapUploadStage::Chain {
-            uploader: start.result?,
-            payload: start.payload,
+        let uploader = start.result?;
+        let payload_copy = start
+            .payload_copy
+            .ok_or_else(|| TextureUploadError::from("cubemap upload missing payload copy state"))?;
+        self.stage = CubemapUploadStage::CopyingChain {
+            uploader,
+            payload_copy,
         };
         Ok(CubemapUploadCompletion::Continue)
     }
@@ -129,7 +154,7 @@ impl CubemapUploadStepper {
     /// Uploads or polls one face/mip-chain step.
     fn upload_next_face_mip(
         uploader: &mut CubemapMipChainUploader,
-        payload: &Arc<[u8]>,
+        payload: &OwnedSharedMemoryPayload,
         plan: CubemapUploadPlan<'_>,
     ) -> Result<CubemapUploadCompletion, TextureUploadError> {
         profiling::scope!("asset::cubemap_upload_next_face_mip");

@@ -192,8 +192,7 @@ impl ReflectionProbeSpecularSystem {
             .retain(|identity, _probe| collected.active_identities.contains(identity));
         self.runtime_final_ready_generation
             .retain(|identity, _generation| collected.active_identities.contains(identity));
-        self.ibl_cache
-            .prune_completed_except(&collected.active_keys);
+        self.ibl_cache.prune_except(&collected.active_keys);
         collected.ready.sort_unstable_by_key(|probe| {
             (probe.identity.space_id.0, probe.identity.renderable_index)
         });
@@ -773,11 +772,11 @@ fn ibl_policy_for_probe_source(
     if !matches!(source, SkyboxIblSource::RuntimeCubemap(_)) {
         return IblBakePolicy::Immediate;
     }
-    match time_slicing_mode {
-        ReflectionProbeTimeSlicingMode::NoTimeSlicing => IblBakePolicy::Immediate,
-        ReflectionProbeTimeSlicingMode::AllFacesAtOnce
-        | ReflectionProbeTimeSlicingMode::IndividualFaces => IblBakePolicy::UnityTimeSliced,
-    }
+    runtime_ibl_policy(time_slicing_mode)
+}
+
+fn runtime_ibl_policy(_time_slicing_mode: ReflectionProbeTimeSlicingMode) -> IblBakePolicy {
+    IblBakePolicy::UnityTimeSliced
 }
 
 #[cfg(test)]

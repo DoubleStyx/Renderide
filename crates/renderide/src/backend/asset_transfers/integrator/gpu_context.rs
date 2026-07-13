@@ -91,7 +91,7 @@ pub(super) struct AssetUploadGpuContext<'a> {
     pub(super) mapped_buffer_health: &'a Arc<GpuMappedBufferHealth>,
     /// Mesh upload batch for deferred buffer writes.
     pub(super) mesh_upload_batch: &'a Arc<MeshUploadStagingBatch>,
-    /// Whether mesh uploads should use wgpu validation scopes.
+    /// Whether mesh uploads should use wgpu validation scopes. -xlinka
     pub(super) mesh_validation_scopes_enabled: bool,
 }
 

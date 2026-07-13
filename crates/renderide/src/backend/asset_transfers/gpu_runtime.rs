@@ -23,7 +23,7 @@ pub(crate) struct AssetGpuRuntimeAttach {
     pub(crate) limits: Arc<GpuLimits>,
     /// Shared mapped-buffer invalidation generation from the active GPU context.
     pub(crate) mapped_buffer_health: Arc<GpuMappedBufferHealth>,
-    /// Whether mesh uploads should use per-mesh wgpu validation scopes.
+    /// Whether mesh uploads should use per-mesh wgpu validation scopes. -xlinka
     pub(crate) mesh_validation_scopes_enabled: bool,
 }
 
@@ -46,7 +46,7 @@ pub(crate) struct AssetGpuRuntime {
     pub(crate) mesh_upload_batch: Arc<MeshUploadStagingBatch>,
     /// Persistent staging arena for mesh upload batch copies.
     pub(crate) mesh_upload_arena: Mutex<PersistentUploadArena>,
-    /// Whether mesh uploads should use per-mesh wgpu validation scopes.
+    /// Whether mesh uploads should use per-mesh wgpu validation scopes. -xlinka
     pub(crate) mesh_validation_scopes_enabled: bool,
 }
 

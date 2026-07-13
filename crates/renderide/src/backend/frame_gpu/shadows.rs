@@ -793,21 +793,20 @@ impl FrameGpuResources {
                 self.shadows.layer_uniform_bind_group(),
                 &[layer_uniform_offset],
             );
-            for phase in WorldMeshPhase::PRIMARY_FORWARD {
-                draw_shadow_depth_subset(ShadowDepthDrawBatch {
-                    rpass: &mut rpass,
-                    groups: view.groups(phase),
-                    draws: &caster_set.draws,
-                    encode: &mut *ctx.encode_refs,
-                    gpu_limits: ctx.gpu_limits,
-                    per_draw_bind_group: self.shadow_per_draw_bind_group(),
-                    slab_slot_offset: caster_set.slab_slot_offset,
-                    radial_shadow: shadow_view_uses_radial_depth(view.kind),
-                    supports_base_instance: ctx.gpu_limits.supports_base_instance,
-                    pipeline: ctx.pipeline,
-                    device: ctx.device,
-                });
-            }
+            let groups = WorldMeshPhase::PRIMARY_FORWARD.map(|phase| view.groups(phase));
+            draw_shadow_depth_subset(ShadowDepthDrawBatch {
+                rpass: &mut rpass,
+                groups: &groups,
+                draws: &caster_set.draws,
+                encode: &mut *ctx.encode_refs,
+                gpu_limits: ctx.gpu_limits,
+                per_draw_bind_group: self.shadow_per_draw_bind_group(),
+                slab_slot_offset: caster_set.slab_slot_offset,
+                radial_shadow: shadow_view_uses_radial_depth(view.kind),
+                supports_base_instance: ctx.gpu_limits.supports_base_instance,
+                pipeline: ctx.pipeline,
+                device: ctx.device,
+            });
         }
         if let Some(query) = pass_query
             && let Some(p) = ctx.profiler

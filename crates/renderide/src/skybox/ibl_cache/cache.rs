@@ -278,7 +278,7 @@ pub(crate) struct SkyboxIblCache {
     pending: HashMap<SkyboxIblKey, PendingBake>,
     /// Runtime IBL bakes whose filtering is spread across several maintenance ticks.
     active_sliced: HashMap<SkyboxIblKey, ActiveIblBake>,
-    /// Round-robin queue for active sliced IBL bake keys.
+    /// Round-robin queue for active sliced IBL bake keys. -xlinka
     sliced_queue: VecDeque<SkyboxIblKey>,
     /// Completed prefiltered cubes for the active skybox key.
     completed: HashMap<SkyboxIblKey, PrefilteredCube>,
@@ -315,8 +315,11 @@ impl SkyboxIblCache {
         self.advance_sliced_bakes(gpu);
     }
 
-    /// Removes completed cubes whose keys are not retained by the caller.
-    pub(crate) fn prune_completed_except(&mut self, retain: &hashbrown::HashSet<SkyboxIblKey>) {
+    /// Removes cancelable sliced work and completed cubes not retained by the caller. -xlinka
+    pub(crate) fn prune_except(&mut self, retain: &hashbrown::HashSet<SkyboxIblKey>) {
+        self.active_sliced.retain(|key, _| retain.contains(key));
+        self.sliced_queue
+            .retain(|key| self.active_sliced.contains_key(key));
         self.completed.retain(|key, _| retain.contains(key));
     }
 
@@ -432,37 +435,36 @@ impl SkyboxIblCache {
         Ok(())
     }
 
-    /// Advances every active sliced runtime IBL bake by one Unity filter slice.
+    /// Advances one active sliced runtime IBL bake with round-robin fairness. -xlinka
     fn advance_sliced_bakes(&mut self, gpu: &mut GpuContext) {
         if self.active_sliced.is_empty() {
             return;
         }
         profiling::scope!("skybox_ibl::advance_sliced_bakes");
-        let mut bakes_to_advance = self.active_sliced.len();
-        while bakes_to_advance > 0 {
-            let Some(key) = self.sliced_queue.pop_front() else {
-                return;
-            };
-            let Some(mut bake) = self.active_sliced.remove(&key) else {
-                continue;
-            };
-            bakes_to_advance -= 1;
-            let mut profiler = gpu.take_gpu_profiler();
-            let result = bake.encode_next_slice(gpu, &self.pipelines, profiler.as_mut());
-            gpu.restore_gpu_profiler(profiler);
-            match result {
-                Ok((encoder, true)) => {
-                    let pending = bake.into_pending();
-                    self.submit_pending_bake(gpu, key, encoder, pending);
-                }
-                Ok((encoder, false)) => {
-                    self.submit_sliced_bake_step(gpu, encoder);
-                    self.active_sliced.insert(key.clone(), bake);
-                    self.sliced_queue.push_back(key);
-                }
-                Err(error) => {
-                    logger::warn!("skybox_ibl: sliced bake failed for key {key:?}: {error}");
-                }
+        let active_sliced = &self.active_sliced;
+        let Some(key) = pop_next_sliced_key(&mut self.sliced_queue, |key| {
+            active_sliced.contains_key(key)
+        }) else {
+            return;
+        };
+        let Some(mut bake) = self.active_sliced.remove(&key) else {
+            return;
+        };
+        let mut profiler = gpu.take_gpu_profiler();
+        let result = bake.encode_next_slice(gpu, &self.pipelines, profiler.as_mut());
+        gpu.restore_gpu_profiler(profiler);
+        match result {
+            Ok((encoder, true)) => {
+                let pending = bake.into_pending();
+                self.submit_pending_bake(gpu, key, encoder, pending);
+            }
+            Ok((encoder, false)) => {
+                self.submit_sliced_bake_step(gpu, encoder);
+                self.active_sliced.insert(key.clone(), bake);
+                self.sliced_queue.push_back(key);
+            }
+            Err(error) => {
+                logger::warn!("skybox_ibl: sliced bake failed for key {key:?}: {error}");
             }
         }
     }
@@ -717,9 +719,22 @@ fn convolve_mips_for_slice(
     start..start + count
 }
 
+fn pop_next_sliced_key(
+    queue: &mut VecDeque<SkyboxIblKey>,
+    mut is_active: impl FnMut(&SkyboxIblKey) -> bool,
+) -> Option<SkyboxIblKey> {
+    while let Some(key) = queue.pop_front() {
+        if is_active(&key) {
+            return Some(key);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hashbrown::HashSet;
 
     #[test]
     fn unity_sliced_default_256_assigns_one_filtered_mip_per_slice() {
@@ -778,5 +793,38 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(assigned, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    }
+
+    #[test]
+    fn sliced_queue_skips_stale_keys_and_rotates_active_bakes() {
+        let stale = runtime_key(0);
+        let first = runtime_key(1);
+        let second = runtime_key(2);
+        let active = [first.clone(), second.clone()]
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let mut queue = VecDeque::from([stale, first.clone(), second.clone()]);
+
+        assert_eq!(
+            pop_next_sliced_key(&mut queue, |key| active.contains(key)),
+            Some(first.clone())
+        );
+        queue.push_back(first.clone());
+        assert_eq!(
+            pop_next_sliced_key(&mut queue, |key| active.contains(key)),
+            Some(second)
+        );
+        assert_eq!(queue, VecDeque::from([first]));
+    }
+
+    fn runtime_key(renderable_index: i32) -> SkyboxIblKey {
+        SkyboxIblKey::RuntimeCubemap {
+            render_space_id: 1,
+            renderable_index,
+            generation: 1,
+            mip_levels: 9,
+            storage_v_inverted: false,
+            face_size: 256,
+        }
     }
 }

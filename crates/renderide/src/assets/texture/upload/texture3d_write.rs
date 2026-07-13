@@ -247,7 +247,7 @@ pub struct Texture3dMipUploadStep<'a> {
     /// Upload record (asset id, descriptor length, etc.).
     pub upload: &'a SetTexture3DData,
     /// Payload bytes (`&raw[..upload.data.length]`).
-    pub payload: &'a Arc<[u8]>,
+    pub payload: &'a Arc<Vec<u8>>,
 }
 
 /// Incremental 3D mip upload: one mip level per [`Texture3dMipChainUploader::upload_next_mip`] call.
@@ -448,7 +448,7 @@ impl Texture3dMipChainUploader {
         fmt: &SetTexture3DFormat,
         wgpu_format: wgpu::TextureFormat,
         upload: &SetTexture3DData,
-        payload: &Arc<[u8]>,
+        payload: &Arc<Vec<u8>>,
         level: u32,
     ) -> Result<Texture3dMipAdvance, TextureUploadError> {
         profiling::scope!("asset::texture3d_spawn_mip_decode");

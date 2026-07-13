@@ -53,22 +53,54 @@ pub(in crate::scene::coordinator) fn extracted_update_changes_render_world(
     transforms_changed: bool,
 ) -> bool {
     transforms_changed
-        || update.meshes.is_some()
-        || update.skinned_meshes.is_some()
-        || update.layers.is_some()
-        || update.lod_groups.is_some()
-        || update.transform_overrides.is_some()
-        || update.material_overrides.is_some()
-        || update.billboard_render_buffers.is_some()
-        || update.mesh_render_buffers.is_some()
-        || update.trail_render_buffers.is_some()
+        || update
+            .meshes
+            .as_ref()
+            .is_some_and(static_mesh_update_has_work)
+        || update
+            .skinned_meshes
+            .as_ref()
+            .is_some_and(skinned_mesh_update_has_work)
+        || update.layers.as_ref().is_some_and(layer_update_has_work)
+        || update
+            .lod_groups
+            .as_ref()
+            .is_some_and(lod_group_update_has_work)
+        || update
+            .transform_overrides
+            .as_ref()
+            .is_some_and(transform_override_update_has_work)
+        || update
+            .material_overrides
+            .as_ref()
+            .is_some_and(material_override_update_has_work)
+        || update
+            .billboard_render_buffers
+            .as_ref()
+            .is_some_and(billboard_update_has_work)
+        || update
+            .mesh_render_buffers
+            .as_ref()
+            .is_some_and(mesh_render_buffer_update_has_work)
+        || update
+            .trail_render_buffers
+            .as_ref()
+            .is_some_and(trail_update_has_work)
 }
 
 pub(in crate::scene::coordinator) fn extracted_update_changes_reflection_probes(
     update: &ExtractedRenderSpaceUpdate,
     transforms_changed: bool,
 ) -> bool {
-    update.reflection_probes.is_some() || transforms_changed || update.transform_overrides.is_some()
+    update
+        .reflection_probes
+        .as_ref()
+        .is_some_and(reflection_probe_update_has_work)
+        || transforms_changed
+        || update
+            .transform_overrides
+            .as_ref()
+            .is_some_and(transform_override_update_has_work)
 }
 
 pub(in crate::scene::coordinator) fn transform_update_changes_space(
@@ -142,19 +174,41 @@ pub(in crate::scene::coordinator) fn note_render_world_dirty_for_extracted_updat
     if let Some(ref skinned_meshes) = update.skinned_meshes {
         note_skinned_mesh_update_render_world_dirty(report, space_id, skinned_meshes);
     }
-    if update.layers.is_some() || update.transform_overrides.is_some() {
-        report.render_world_dirty.note_full_space(space_id);
-    }
-    if update.lod_groups.is_some() {
-        report.render_world_dirty.note_full_space(space_id);
-    }
-    if update.billboard_render_buffers.is_some()
-        || update.mesh_render_buffers.is_some()
-        || update.trail_render_buffers.is_some()
+    if update.layers.as_ref().is_some_and(layer_update_has_work)
+        || update
+            .transform_overrides
+            .as_ref()
+            .is_some_and(transform_override_update_has_work)
     {
         report.render_world_dirty.note_full_space(space_id);
     }
-    if let Some(ref material_overrides) = update.material_overrides {
+    if update
+        .lod_groups
+        .as_ref()
+        .is_some_and(lod_group_update_has_work)
+    {
+        report.render_world_dirty.note_full_space(space_id);
+    }
+    if update
+        .billboard_render_buffers
+        .as_ref()
+        .is_some_and(billboard_update_has_work)
+        || update
+            .mesh_render_buffers
+            .as_ref()
+            .is_some_and(mesh_render_buffer_update_has_work)
+        || update
+            .trail_render_buffers
+            .as_ref()
+            .is_some_and(trail_update_has_work)
+    {
+        report.render_world_dirty.note_full_space(space_id);
+    }
+    if let Some(material_overrides) = update
+        .material_overrides
+        .as_ref()
+        .filter(|update| material_override_update_has_work(update))
+    {
         note_material_override_update_render_world_dirty(
             report,
             space_id,
@@ -164,13 +218,132 @@ pub(in crate::scene::coordinator) fn note_render_world_dirty_for_extracted_updat
     }
 }
 
-/// Returns whether a sentinel-terminated dense-index array contains at least one active row.
+/// Returns whether a sentinel-terminated dense-index array contains at least one active row. -xlinka
 fn has_active_dense_indices(values: &[i32]) -> bool {
     values
         .iter()
         .take_while(|&&value| value >= 0)
         .next()
         .is_some()
+}
+
+fn static_mesh_update_has_work(
+    update: &super::super::meshes::ExtractedMeshRenderablesUpdate,
+) -> bool {
+    has_active_dense_indices(&update.removals)
+        || has_active_dense_indices(&update.additions)
+        || update
+            .mesh_states
+            .first()
+            .is_some_and(|state| state.renderable_index >= 0)
+}
+
+fn skinned_mesh_update_has_work(
+    update: &super::super::meshes::ExtractedSkinnedMeshRenderablesUpdate,
+) -> bool {
+    has_active_dense_indices(&update.removals)
+        || has_active_dense_indices(&update.additions)
+        || update
+            .mesh_states
+            .first()
+            .is_some_and(|state| state.renderable_index >= 0)
+        || update
+            .bone_assignments
+            .first()
+            .is_some_and(|state| state.renderable_index >= 0)
+        || update
+            .blendshape_update_batches
+            .first()
+            .is_some_and(|state| state.renderable_index >= 0)
+        || update
+            .bounds_updates
+            .first()
+            .is_some_and(|state| state.renderable_index >= 0)
+}
+
+fn layer_update_has_work(update: &super::super::layer::ExtractedLayerUpdate) -> bool {
+    has_active_dense_indices(&update.removals) || has_active_dense_indices(&update.additions)
+}
+
+fn lod_group_update_has_work(
+    update: &super::super::lod_groups::ExtractedLodGroupRenderablesUpdate,
+) -> bool {
+    has_active_dense_indices(&update.removals)
+        || has_active_dense_indices(&update.additions)
+        || update
+            .states
+            .first()
+            .is_some_and(|state| state.renderable_index >= 0)
+}
+
+fn transform_override_update_has_work(
+    update: &super::super::overrides::ExtractedRenderTransformOverridesUpdate,
+) -> bool {
+    has_active_dense_indices(&update.removals)
+        || has_active_dense_indices(&update.additions)
+        || update
+            .states
+            .first()
+            .is_some_and(|state| state.renderable_index >= 0)
+}
+
+fn material_override_update_has_work(
+    update: &super::super::overrides::ExtractedRenderMaterialOverridesUpdate,
+) -> bool {
+    has_active_dense_indices(&update.removals)
+        || has_active_dense_indices(&update.additions)
+        || update
+            .states
+            .first()
+            .is_some_and(|state| state.renderable_index >= 0)
+}
+
+fn billboard_update_has_work(
+    update: &super::super::render_buffers::ExtractedBillboardRenderBufferUpdate,
+) -> bool {
+    has_active_dense_indices(&update.removals)
+        || has_active_dense_indices(&update.additions)
+        || update
+            .states
+            .first()
+            .is_some_and(|state| state.renderable_index >= 0)
+}
+
+fn mesh_render_buffer_update_has_work(
+    update: &super::super::render_buffers::ExtractedMeshRenderBufferUpdate,
+) -> bool {
+    has_active_dense_indices(&update.removals)
+        || has_active_dense_indices(&update.additions)
+        || update
+            .states
+            .first()
+            .is_some_and(|state| state.renderable_index >= 0)
+}
+
+fn trail_update_has_work(
+    update: &super::super::render_buffers::ExtractedTrailRendererUpdate,
+) -> bool {
+    has_active_dense_indices(&update.removals)
+        || has_active_dense_indices(&update.additions)
+        || update
+            .states
+            .first()
+            .is_some_and(|state| state.renderable_index >= 0)
+}
+
+fn reflection_probe_update_has_work(
+    update: &super::super::reflection_probe::ExtractedReflectionProbeRenderablesUpdate,
+) -> bool {
+    has_active_dense_indices(&update.removals)
+        || has_active_dense_indices(&update.additions)
+        || update
+            .states
+            .first()
+            .is_some_and(|state| state.renderable_index >= 0)
+        || update
+            .changed_probes_to_render
+            .first()
+            .is_some_and(|state| state.renderable_index >= 0)
 }
 
 /// Records dirty retained-template rows for a static or skinned mesh renderer update.

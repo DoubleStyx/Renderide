@@ -19,6 +19,7 @@ use super::AssetTransferQueue;
 use super::integrator::{AssetTask, AssetTaskLane, StepResult};
 use super::mesh_upload_batch::{MeshUploadRecorder, MeshUploadStagingBatch};
 use super::reliable_ack::enqueue_background_reliable;
+use super::shared_memory_payload::{OwnedSharedMemoryPayload, SharedMemoryPayloadCopy};
 
 /// GPU handles needed to publish particle-generated meshes on the renderer thread.
 #[derive(Clone, Copy)]
@@ -31,7 +32,7 @@ pub(in crate::backend::asset_transfers) struct ParticleTaskGpu<'a> {
     pub(in crate::backend::asset_transfers) mapped_buffer_health: &'a Arc<GpuMappedBufferHealth>,
     /// Deferred mesh buffer upload batch for this drain.
     pub(in crate::backend::asset_transfers) mesh_upload_batch: &'a Arc<MeshUploadStagingBatch>,
-    /// Whether wgpu validation scopes are enabled for generated mesh uploads.
+    /// Whether wgpu validation scopes are enabled for generated mesh uploads. -xlinka
     pub(in crate::backend::asset_transfers) mesh_validation_scopes_enabled: bool,
 }
 
@@ -54,6 +55,12 @@ pub struct TrailRenderBufferTask {
 enum PointRenderBufferTaskStage {
     /// Waiting to claim the newest pending upload for this asset.
     Pending { asset_id: i32 },
+    /// Shared-memory bytes are being copied in bounded chunks. -xlinka
+    Copying {
+        upload: PointRenderBufferUpload,
+        generation: u64,
+        copy: SharedMemoryPayloadCopy,
+    },
 }
 
 /// State for a trail render-buffer task.
@@ -61,6 +68,12 @@ enum PointRenderBufferTaskStage {
 enum TrailRenderBufferTaskStage {
     /// Waiting to claim the newest pending upload for this asset.
     Pending { asset_id: i32 },
+    /// Shared-memory bytes are being copied in bounded chunks. -xlinka
+    Copying {
+        upload: TrailRenderBufferUpload,
+        generation: u64,
+        copy: SharedMemoryPayloadCopy,
+    },
 }
 
 /// Background point build result.
@@ -87,14 +100,18 @@ pub(in crate::backend::asset_transfers) struct TrailBuildResult {
         Result<TrailRenderBufferBuild, crate::particles::ParticleRenderBufferError>,
 }
 
-/// Outcome from attempting to start a particle background build.
-enum ParticleTaskStart {
+/// Outcome from attempting to claim a particle background build. -xlinka
+enum ParticleTaskClaim<T> {
     /// The task completed without spawning work.
     Done,
     /// The task should stay queued for another drain.
     YieldPending,
-    /// The background build was spawned.
-    Spawned,
+    /// The upload was claimed and is ready for cooperative copying. -xlinka
+    Copying {
+        upload: T,
+        generation: u64,
+        copy: SharedMemoryPayloadCopy,
+    },
 }
 
 /// Summary of ready particle build results drained on the renderer thread.
@@ -125,8 +142,9 @@ impl PointRenderBufferTask {
 
     /// Host asset id this task is trying to claim.
     pub(in crate::backend::asset_transfers) fn asset_id(&self) -> i32 {
-        match self.stage {
-            PointRenderBufferTaskStage::Pending { asset_id } => asset_id,
+        match &self.stage {
+            PointRenderBufferTaskStage::Pending { asset_id } => *asset_id,
+            PointRenderBufferTaskStage::Copying { upload, .. } => upload.asset_id,
         }
     }
 
@@ -138,13 +156,82 @@ impl PointRenderBufferTask {
         shm: &mut SharedMemoryAccessor,
         ipc: &mut Option<&mut DualQueueIpc>,
     ) -> StepResult {
-        match &mut self.stage {
-            PointRenderBufferTaskStage::Pending { asset_id } => {
-                match start_point_task(queue, gpu, shm, ipc, *asset_id) {
-                    ParticleTaskStart::Done => StepResult::Done,
-                    ParticleTaskStart::YieldPending => StepResult::YieldBackground,
-                    ParticleTaskStart::Spawned => StepResult::Done,
-                }
+        let asset_id = match &self.stage {
+            PointRenderBufferTaskStage::Pending { asset_id } => *asset_id,
+            PointRenderBufferTaskStage::Copying { .. } => {
+                return self.copy_point_payload(queue, shm, ipc);
+            }
+        };
+        match claim_point_task(queue, gpu, ipc, asset_id) {
+            ParticleTaskClaim::Done => StepResult::Done,
+            ParticleTaskClaim::YieldPending => StepResult::YieldBackground,
+            ParticleTaskClaim::Copying {
+                upload,
+                generation,
+                copy,
+            } => {
+                self.stage = PointRenderBufferTaskStage::Copying {
+                    upload,
+                    generation,
+                    copy,
+                };
+                StepResult::Continue
+            }
+        }
+    }
+
+    fn copy_point_payload(
+        &mut self,
+        queue: &mut AssetTransferQueue,
+        shm: &mut SharedMemoryAccessor,
+        ipc: &mut Option<&mut DualQueueIpc>,
+    ) -> StepResult {
+        let (asset_id, generation) = match &self.stage {
+            PointRenderBufferTaskStage::Copying {
+                upload, generation, ..
+            } => (upload.asset_id, *generation),
+            PointRenderBufferTaskStage::Pending { .. } => return StepResult::Done,
+        };
+        if !queue.point_render_buffer_generation_is_current(asset_id, generation) {
+            finish_failed_point_copy(queue, ipc, asset_id, generation);
+            return StepResult::Done;
+        }
+        let copy_result = match &mut self.stage {
+            PointRenderBufferTaskStage::Copying { upload, copy, .. } => {
+                profiling::scope!("particle::copy_render_buffer_payload");
+                copy.copy_next_chunk(shm, &upload.buffer)
+            }
+            PointRenderBufferTaskStage::Pending { .. } => return StepResult::Done,
+        };
+        match copy_result {
+            Some(Ok(None)) => StepResult::Continue,
+            Some(Ok(Some(raw))) => {
+                let stage = std::mem::replace(
+                    &mut self.stage,
+                    PointRenderBufferTaskStage::Pending { asset_id },
+                );
+                let PointRenderBufferTaskStage::Copying { upload, .. } = stage else {
+                    return StepResult::Done;
+                };
+                send_point_render_buffer_consumed(ipc, asset_id);
+                spawn_point_build(
+                    queue.point_render_buffer_build_sender(),
+                    upload,
+                    raw,
+                    generation,
+                );
+                #[cfg(feature = "tracy")]
+                tracy_client::plot!("particle::point_builds_started", 1.0);
+                StepResult::Done
+            }
+            Some(Err(err)) => {
+                logger::warn!("point render buffer {asset_id}: {err}");
+                finish_failed_point_copy(queue, ipc, asset_id, generation);
+                StepResult::Done
+            }
+            None => {
+                finish_failed_point_copy(queue, ipc, asset_id, generation);
+                StepResult::Done
             }
         }
     }
@@ -160,8 +247,9 @@ impl TrailRenderBufferTask {
 
     /// Host asset id this task is trying to claim.
     pub(in crate::backend::asset_transfers) fn asset_id(&self) -> i32 {
-        match self.stage {
-            TrailRenderBufferTaskStage::Pending { asset_id } => asset_id,
+        match &self.stage {
+            TrailRenderBufferTaskStage::Pending { asset_id } => *asset_id,
+            TrailRenderBufferTaskStage::Copying { upload, .. } => upload.asset_id,
         }
     }
 
@@ -173,134 +261,185 @@ impl TrailRenderBufferTask {
         shm: &mut SharedMemoryAccessor,
         ipc: &mut Option<&mut DualQueueIpc>,
     ) -> StepResult {
-        match &mut self.stage {
-            TrailRenderBufferTaskStage::Pending { asset_id } => {
-                match start_trail_task(queue, gpu, shm, ipc, *asset_id) {
-                    ParticleTaskStart::Done => StepResult::Done,
-                    ParticleTaskStart::YieldPending => StepResult::YieldBackground,
-                    ParticleTaskStart::Spawned => StepResult::Done,
-                }
+        let asset_id = match &self.stage {
+            TrailRenderBufferTaskStage::Pending { asset_id } => *asset_id,
+            TrailRenderBufferTaskStage::Copying { .. } => {
+                return self.copy_trail_payload(queue, shm, ipc);
+            }
+        };
+        match claim_trail_task(queue, gpu, ipc, asset_id) {
+            ParticleTaskClaim::Done => StepResult::Done,
+            ParticleTaskClaim::YieldPending => StepResult::YieldBackground,
+            ParticleTaskClaim::Copying {
+                upload,
+                generation,
+                copy,
+            } => {
+                self.stage = TrailRenderBufferTaskStage::Copying {
+                    upload,
+                    generation,
+                    copy,
+                };
+                StepResult::Continue
+            }
+        }
+    }
+
+    fn copy_trail_payload(
+        &mut self,
+        queue: &mut AssetTransferQueue,
+        shm: &mut SharedMemoryAccessor,
+        ipc: &mut Option<&mut DualQueueIpc>,
+    ) -> StepResult {
+        let (asset_id, generation) = match &self.stage {
+            TrailRenderBufferTaskStage::Copying {
+                upload, generation, ..
+            } => (upload.asset_id, *generation),
+            TrailRenderBufferTaskStage::Pending { .. } => return StepResult::Done,
+        };
+        if !queue.trail_render_buffer_generation_is_current(asset_id, generation) {
+            finish_failed_trail_copy(queue, ipc, asset_id, generation);
+            return StepResult::Done;
+        }
+        let copy_result = match &mut self.stage {
+            TrailRenderBufferTaskStage::Copying { upload, copy, .. } => {
+                profiling::scope!("particle::copy_render_buffer_payload");
+                copy.copy_next_chunk(shm, &upload.buffer)
+            }
+            TrailRenderBufferTaskStage::Pending { .. } => return StepResult::Done,
+        };
+        match copy_result {
+            Some(Ok(None)) => StepResult::Continue,
+            Some(Ok(Some(raw))) => {
+                let stage = std::mem::replace(
+                    &mut self.stage,
+                    TrailRenderBufferTaskStage::Pending { asset_id },
+                );
+                let TrailRenderBufferTaskStage::Copying { upload, .. } = stage else {
+                    return StepResult::Done;
+                };
+                send_trail_render_buffer_consumed(ipc, asset_id);
+                spawn_trail_build(
+                    queue.trail_render_buffer_build_sender(),
+                    upload,
+                    raw,
+                    generation,
+                );
+                #[cfg(feature = "tracy")]
+                tracy_client::plot!("particle::trail_builds_started", 1.0);
+                StepResult::Done
+            }
+            Some(Err(err)) => {
+                logger::warn!("trail render buffer {asset_id}: {err}");
+                finish_failed_trail_copy(queue, ipc, asset_id, generation);
+                StepResult::Done
+            }
+            None => {
+                finish_failed_trail_copy(queue, ipc, asset_id, generation);
+                StepResult::Done
             }
         }
     }
 }
 
-/// Starts a point render-buffer background build.
-fn start_point_task(
+/// Claims a point render-buffer upload for cooperative copying. -xlinka
+fn claim_point_task(
     queue: &mut AssetTransferQueue,
     gpu: Option<ParticleTaskGpu<'_>>,
-    shm: &mut SharedMemoryAccessor,
     ipc: &mut Option<&mut DualQueueIpc>,
     asset_id: i32,
-) -> ParticleTaskStart {
+) -> ParticleTaskClaim<PointRenderBufferUpload> {
     profiling::scope!("particle::point_task_start");
     if gpu.is_none() {
-        return ParticleTaskStart::YieldPending;
+        return ParticleTaskClaim::YieldPending;
     }
     if queue.point_render_buffer_build_is_active(asset_id) {
-        return ParticleTaskStart::Done;
+        return ParticleTaskClaim::Done;
     }
     if !queue.try_acquire_particle_build_worker() {
-        return ParticleTaskStart::YieldPending;
+        return ParticleTaskClaim::YieldPending;
     }
 
     let Some(pending) = queue.take_pending_point_render_buffer_upload(asset_id) else {
         queue.release_particle_build_worker();
-        return ParticleTaskStart::Done;
+        return ParticleTaskClaim::Done;
     };
     let upload = pending.upload;
     let generation = pending.generation;
     if !queue.point_render_buffer_generation_is_current(asset_id, generation) {
         queue.release_particle_build_worker();
         send_point_render_buffer_consumed(ipc, asset_id);
-        return ParticleTaskStart::Done;
+        return ParticleTaskClaim::Done;
     }
     if !queue.mark_point_render_buffer_build_active(asset_id) {
         queue.release_particle_build_worker();
         enqueue_point_task_if_ready(queue, asset_id);
-        return ParticleTaskStart::Done;
+        return ParticleTaskClaim::Done;
     }
     let raw_len = upload.buffer.length.max(0) as usize;
-    let raw = copy_render_buffer_payload(shm, upload.buffer, "point", asset_id, raw_len);
-    send_point_render_buffer_consumed(ipc, asset_id);
-    let Some(raw) = raw else {
-        queue.release_particle_build_worker();
-        queue.clear_point_render_buffer_build_active(asset_id);
-        if queue.point_render_buffer_generation_is_current(asset_id, generation) {
-            remove_point_render_buffer(queue, asset_id);
+    let copy = match SharedMemoryPayloadCopy::new(raw_len) {
+        Ok(copy) => copy,
+        Err(error) => {
+            logger::warn!("point render buffer {asset_id}: {error}");
+            finish_failed_point_copy(queue, ipc, asset_id, generation);
+            return ParticleTaskClaim::Done;
         }
-        enqueue_point_task_if_ready(queue, asset_id);
-        return ParticleTaskStart::Done;
     };
-
-    spawn_point_build(
-        queue.point_render_buffer_build_sender(),
+    ParticleTaskClaim::Copying {
         upload,
-        raw,
         generation,
-    );
-    #[cfg(feature = "tracy")]
-    tracy_client::plot!("particle::point_builds_started", 1.0);
-    ParticleTaskStart::Spawned
+        copy,
+    }
 }
 
-/// Starts a trail render-buffer background build.
-fn start_trail_task(
+/// Claims a trail render-buffer upload for cooperative copying. -xlinka
+fn claim_trail_task(
     queue: &mut AssetTransferQueue,
     gpu: Option<ParticleTaskGpu<'_>>,
-    shm: &mut SharedMemoryAccessor,
     ipc: &mut Option<&mut DualQueueIpc>,
     asset_id: i32,
-) -> ParticleTaskStart {
+) -> ParticleTaskClaim<TrailRenderBufferUpload> {
     profiling::scope!("particle::trail_task_start");
     if gpu.is_none() {
-        return ParticleTaskStart::YieldPending;
+        return ParticleTaskClaim::YieldPending;
     }
     if queue.trail_render_buffer_build_is_active(asset_id) {
-        return ParticleTaskStart::Done;
+        return ParticleTaskClaim::Done;
     }
     if !queue.try_acquire_particle_build_worker() {
-        return ParticleTaskStart::YieldPending;
+        return ParticleTaskClaim::YieldPending;
     }
 
     let Some(pending) = queue.take_pending_trail_render_buffer_upload(asset_id) else {
         queue.release_particle_build_worker();
-        return ParticleTaskStart::Done;
+        return ParticleTaskClaim::Done;
     };
     let upload = pending.upload;
     let generation = pending.generation;
     if !queue.trail_render_buffer_generation_is_current(asset_id, generation) {
         queue.release_particle_build_worker();
         send_trail_render_buffer_consumed(ipc, asset_id);
-        return ParticleTaskStart::Done;
+        return ParticleTaskClaim::Done;
     }
     if !queue.mark_trail_render_buffer_build_active(asset_id) {
         queue.release_particle_build_worker();
         enqueue_trail_task_if_ready(queue, asset_id);
-        return ParticleTaskStart::Done;
+        return ParticleTaskClaim::Done;
     }
     let raw_len = upload.buffer.length.max(0) as usize;
-    let raw = copy_render_buffer_payload(shm, upload.buffer, "trail", asset_id, raw_len);
-    send_trail_render_buffer_consumed(ipc, asset_id);
-    let Some(raw) = raw else {
-        queue.release_particle_build_worker();
-        queue.clear_trail_render_buffer_build_active(asset_id);
-        if queue.trail_render_buffer_generation_is_current(asset_id, generation) {
-            remove_trail_render_buffer(queue, asset_id);
+    let copy = match SharedMemoryPayloadCopy::new(raw_len) {
+        Ok(copy) => copy,
+        Err(error) => {
+            logger::warn!("trail render buffer {asset_id}: {error}");
+            finish_failed_trail_copy(queue, ipc, asset_id, generation);
+            return ParticleTaskClaim::Done;
         }
-        enqueue_trail_task_if_ready(queue, asset_id);
-        return ParticleTaskStart::Done;
     };
-
-    spawn_trail_build(
-        queue.trail_render_buffer_build_sender(),
+    ParticleTaskClaim::Copying {
         upload,
-        raw,
         generation,
-    );
-    #[cfg(feature = "tracy")]
-    tracy_client::plot!("particle::trail_builds_started", 1.0);
-    ParticleTaskStart::Spawned
+        copy,
+    }
 }
 
 /// Drains ready particle build results without polling unfinished worker jobs.
@@ -519,7 +658,7 @@ fn integrate_trail_result(
 fn spawn_point_build(
     tx: crossbeam_channel::Sender<PointBuildResult>,
     upload: PointRenderBufferUpload,
-    raw: Arc<[u8]>,
+    raw: OwnedSharedMemoryPayload,
     generation: u64,
 ) {
     profiling::scope!("particle::point_task_spawn");
@@ -547,7 +686,7 @@ fn spawn_point_build(
 fn spawn_trail_build(
     tx: crossbeam_channel::Sender<TrailBuildResult>,
     upload: TrailRenderBufferUpload,
-    raw: Arc<[u8]>,
+    raw: OwnedSharedMemoryPayload,
     generation: u64,
 ) {
     profiling::scope!("particle::trail_task_spawn");
@@ -625,28 +764,34 @@ fn particle_lane_has_trail_task(queue: &AssetTransferQueue, asset_id: i32) -> bo
     )
 }
 
-/// Copies a render-buffer shared-memory payload into an owned slice.
-fn copy_render_buffer_payload(
-    shm: &mut SharedMemoryAccessor,
-    buffer: crate::shared::buffer::SharedMemoryBufferDescriptor,
-    kind: &'static str,
+fn finish_failed_point_copy(
+    queue: &mut AssetTransferQueue,
+    ipc: &mut Option<&mut DualQueueIpc>,
     asset_id: i32,
-    raw_len: usize,
-) -> Option<Arc<[u8]>> {
-    profiling::scope!("particle::copy_render_buffer_payload");
-    if raw_len == 0 {
-        return Some(Arc::from([]));
+    generation: u64,
+) {
+    queue.release_particle_build_worker();
+    queue.clear_point_render_buffer_build_active(asset_id);
+    send_point_render_buffer_consumed(ipc, asset_id);
+    if queue.point_render_buffer_generation_is_current(asset_id, generation) {
+        remove_point_render_buffer(queue, asset_id);
     }
-    shm.with_read_bytes(&buffer, |raw| {
-        if raw.len() < raw_len {
-            logger::warn!(
-                "{kind} render buffer {asset_id}: raw too short (need {raw_len}, got {})",
-                raw.len()
-            );
-            return None;
-        }
-        Some(Arc::from(&raw[..raw_len]))
-    })
+    enqueue_point_task_if_ready(queue, asset_id);
+}
+
+fn finish_failed_trail_copy(
+    queue: &mut AssetTransferQueue,
+    ipc: &mut Option<&mut DualQueueIpc>,
+    asset_id: i32,
+    generation: u64,
+) {
+    queue.release_particle_build_worker();
+    queue.clear_trail_render_buffer_build_active(asset_id);
+    send_trail_render_buffer_consumed(ipc, asset_id);
+    if queue.trail_render_buffer_generation_is_current(asset_id, generation) {
+        remove_trail_render_buffer(queue, asset_id);
+    }
+    enqueue_trail_task_if_ready(queue, asset_id);
 }
 
 /// Sends a point render-buffer consumed acknowledgement.

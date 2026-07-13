@@ -86,11 +86,10 @@ impl RenderBackend {
         self.renderer_settings = Some(renderer_settings.clone());
         self.surface_format = Some(surface_format);
         self.headless = headless;
-        let mesh_validation_scopes_enabled = cfg!(debug_assertions)
-            || renderer_settings
-                .read()
-                .ok()
-                .is_some_and(|settings| settings.debug.gpu_validation_layers);
+        let mesh_validation_scopes_enabled = renderer_settings
+            .read()
+            .ok()
+            .is_some_and(|settings| settings.debug.gpu_validation_layers);
         self.asset_transfers
             .attach_gpu_runtime(AssetGpuRuntimeAttach {
                 device: device.clone(),

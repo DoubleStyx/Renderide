@@ -1,7 +1,5 @@
 //! Data-oriented Texture2D upload planning and cooperative stepping.
 
-use std::sync::Arc;
-
 use crate::assets::texture::{
     MipChainAdvance, Texture2dUploadInputs, Texture2dUploadPayload, Texture2dUploadQueueInputs,
     Texture2dUploadTarget, TextureDataStart, TextureMipChainUploader, TextureMipUploadStep,
@@ -11,7 +9,9 @@ use crate::gpu::GpuQueueAccessMode;
 use crate::ipc::SharedMemoryAccessor;
 use crate::shared::{SetTexture2DData, SetTexture2DFormat};
 
-use super::shared_memory_payload::build_with_optional_owned_payload;
+use super::shared_memory_payload::{
+    OwnedSharedMemoryPayload, SharedMemoryPayloadCopy, build_with_optional_owned_payload,
+};
 
 /// Immutable inputs needed to execute one Texture2D upload step.
 pub(crate) struct TextureUploadPlan<'a> {
@@ -52,7 +52,12 @@ enum TextureUploadStage {
         /// Incremental mip-chain uploader.
         uploader: TextureMipChainUploader,
         /// Owned shared-memory descriptor bytes used across integration ticks.
-        payload: Arc<[u8]>,
+        payload: OwnedSharedMemoryPayload,
+    },
+    /// Descriptor bytes are being copied in bounded chunks. -xlinka
+    CopyingMipChain {
+        uploader: TextureMipChainUploader,
+        payload_copy: SharedMemoryPayloadCopy,
     },
 }
 
@@ -98,6 +103,22 @@ impl TextureUploadStepper {
         profiling::scope!("asset::texture2d_upload_step");
         match &mut self.stage {
             TextureUploadStage::Start => self.start(shm, plan),
+            TextureUploadStage::CopyingMipChain { payload_copy, .. } => {
+                let copy_result = payload_copy.copy_next_chunk(shm, &plan.upload.data);
+                match copy_result {
+                    None => Ok(UploadCompletion::MissingPayload),
+                    Some(Err(err)) => Err(err),
+                    Some(Ok(None)) => Ok(UploadCompletion::Continue),
+                    Some(Ok(Some(payload))) => {
+                        let stage = std::mem::replace(&mut self.stage, TextureUploadStage::Start);
+                        let TextureUploadStage::CopyingMipChain { uploader, .. } = stage else {
+                            unreachable!();
+                        };
+                        self.stage = TextureUploadStage::MipChain { uploader, payload };
+                        Ok(UploadCompletion::Continue)
+                    }
+                }
+            }
             TextureUploadStage::MipChain { uploader, payload } => {
                 Self::upload_next_mip(uploader, payload, plan)
             }
@@ -145,9 +166,12 @@ impl TextureUploadStepper {
                 storage_v_inverted: plan.storage_v_inverted,
             }),
             TextureDataStart::MipChain(uploader) => {
-                self.stage = TextureUploadStage::MipChain {
+                let payload_copy = start.payload_copy.ok_or_else(|| {
+                    TextureUploadError::from("mip-chain upload missing payload copy state")
+                })?;
+                self.stage = TextureUploadStage::CopyingMipChain {
                     uploader,
-                    payload: start.payload,
+                    payload_copy,
                 };
                 Ok(UploadCompletion::Continue)
             }
@@ -157,7 +181,7 @@ impl TextureUploadStepper {
     /// Uploads or polls one mip-chain step.
     fn upload_next_mip(
         uploader: &mut TextureMipChainUploader,
-        payload: &Arc<[u8]>,
+        payload: &OwnedSharedMemoryPayload,
         plan: TextureUploadPlan<'_>,
     ) -> Result<UploadCompletion, TextureUploadError> {
         profiling::scope!("asset::texture2d_upload_next_mip");

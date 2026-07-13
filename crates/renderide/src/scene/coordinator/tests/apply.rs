@@ -220,6 +220,35 @@ fn extracted_render_world_dirty_tracks_lod_group_updates() {
 }
 
 #[test]
+fn empty_optional_payloads_do_not_dirty_retained_scene_state() {
+    let mut update = empty_extracted_render_space_update();
+    update.meshes = Some(Default::default());
+    update.skinned_meshes = Some(Default::default());
+    update.layers = Some(Default::default());
+    update.lod_groups = Some(Default::default());
+    update.transform_overrides = Some(Default::default());
+    update.material_overrides = Some(Default::default());
+    update.billboard_render_buffers = Some(Default::default());
+    update.mesh_render_buffers = Some(Default::default());
+    update.trail_render_buffers = Some(Default::default());
+    update.reflection_probes = Some(Default::default());
+
+    assert!(!extracted_update_changes_render_world(&update, false));
+    assert!(!extracted_update_changes_reflection_probes(&update, false));
+
+    let mut report = SceneApplyReport::default();
+    note_render_world_dirty_for_extracted_update(
+        &mut report,
+        RenderSpaceId(1),
+        false,
+        0,
+        None,
+        &update,
+    );
+    assert!(report.render_world_dirty.is_empty());
+}
+
+#[test]
 fn extracted_reflection_probe_dirty_tracks_probe_updates() {
     let mut update = empty_extracted_render_space_update();
     update.reflection_probes =
@@ -406,8 +435,12 @@ fn render_world_dirty_report_marks_mesh_membership_as_full_space() {
 #[test]
 fn render_world_dirty_report_marks_lod_groups_as_full_space() {
     let mut update = empty_extracted_render_space_update();
-    update.lod_groups =
-        Some(crate::scene::lod_groups::ExtractedLodGroupRenderablesUpdate::default());
+    update.lod_groups = Some(
+        crate::scene::lod_groups::ExtractedLodGroupRenderablesUpdate {
+            additions: vec![4, -1],
+            ..Default::default()
+        },
+    );
     let mut report = SceneApplyReport::default();
 
     note_render_world_dirty_for_extracted_update(

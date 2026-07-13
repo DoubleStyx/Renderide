@@ -125,7 +125,11 @@ fn apply_render_space_geometry_phase(
         profiling::scope!("scene::apply_render_space_chunk::fixup_reflection_probes");
         fixup_reflection_probes_for_transform_removals(space, transform_removals);
     }
-    if let Some(ref rpu) = extracted.reflection_probes {
+    if let Some(rpu) = extracted
+        .reflection_probes
+        .as_ref()
+        .filter(|update| reflection_probe_update_has_work(update))
+    {
         profiling::scope!("scene::apply_render_space_chunk::reflection_probes");
         apply_reflection_probe_renderables_update_extracted(space, rpu);
     } else {
@@ -136,7 +140,11 @@ fn apply_render_space_geometry_phase(
         profiling::scope!("scene::apply_render_space_chunk::fixup_meshes");
         fixup_static_meshes_for_transform_removals(space, transform_removals);
     }
-    if let Some(ref mu) = extracted.meshes {
+    if let Some(mu) = extracted
+        .meshes
+        .as_ref()
+        .filter(|update| static_mesh_update_has_work(update))
+    {
         {
             profiling::scope!("scene::apply_render_space_chunk::fixup_camera_portal_mesh_targets");
             fixup_camera_portals_for_static_mesh_removals(space, &mu.removals);
@@ -158,7 +166,11 @@ fn apply_render_space_geometry_phase(
         profiling::scope!("scene::apply_render_space_chunk::camera_portals");
         apply_camera_portal_renderables_update_extracted(space, cpu);
     }
-    if let Some(ref lgu) = extracted.lod_groups {
+    if let Some(lgu) = extracted
+        .lod_groups
+        .as_ref()
+        .filter(|update| lod_group_update_has_work(update))
+    {
         profiling::scope!("scene::apply_render_space_chunk::lod_groups");
         apply_lod_group_renderables_update_extracted(space, lgu, scene_id);
     }
@@ -170,10 +182,17 @@ fn apply_render_space_layer_phase(
     transform_removals: &[TransformRemovalEvent],
 ) {
     let has_transform_removals = !transform_removals.is_empty();
-    let mesh_membership_or_nodes_changed =
-        extracted.meshes.is_some() || extracted.skinned_meshes.is_some();
-    let layer_inputs_changed =
-        has_transform_removals || extracted.layers.is_some() || space.hierarchy_dirty;
+    let mesh_membership_or_nodes_changed = extracted
+        .meshes
+        .as_ref()
+        .is_some_and(|update| mesh_membership_changed(&update.removals, &update.additions))
+        || extracted
+            .skinned_meshes
+            .as_ref()
+            .is_some_and(|update| mesh_membership_changed(&update.removals, &update.additions));
+    let layer_inputs_changed = has_transform_removals
+        || extracted.layers.as_ref().is_some_and(layer_update_has_work)
+        || space.hierarchy_dirty;
     if layer_inputs_changed || mesh_membership_or_nodes_changed || space.layer_index_dirty {
         profiling::scope!("scene::layers");
         if has_transform_removals {
@@ -182,7 +201,11 @@ fn apply_render_space_layer_phase(
                 transform_removals,
             );
         }
-        if let Some(ref lu) = extracted.layers {
+        if let Some(lu) = extracted
+            .layers
+            .as_ref()
+            .filter(|update| layer_update_has_work(update))
+        {
             apply_layer_update_extracted(space, lu);
         }
         crate::scene::layer::resolve_mesh_layers_from_assignments(space);
@@ -211,16 +234,104 @@ fn apply_render_space_context_phase(
         profiling::scope!("scene::apply_render_space_chunk::fixup_render_buffers");
         fixup_render_buffers_for_transform_removals(space, transform_removals);
     }
-    if let Some(ref bu) = extracted.billboard_render_buffers {
+    if let Some(bu) = extracted
+        .billboard_render_buffers
+        .as_ref()
+        .filter(|update| billboard_update_has_work(update))
+    {
         profiling::scope!("scene::apply_render_space_chunk::billboard_render_buffers");
         apply_billboard_render_buffer_update_extracted(space, bu);
     }
-    if let Some(ref mu) = extracted.mesh_render_buffers {
+    if let Some(mu) = extracted
+        .mesh_render_buffers
+        .as_ref()
+        .filter(|update| mesh_render_buffer_update_has_work(update))
+    {
         profiling::scope!("scene::apply_render_space_chunk::mesh_render_buffers");
         apply_mesh_render_buffer_update_extracted(space, mu);
     }
-    if let Some(ref tu) = extracted.trail_render_buffers {
+    if let Some(tu) = extracted
+        .trail_render_buffers
+        .as_ref()
+        .filter(|update| trail_update_has_work(update))
+    {
         profiling::scope!("scene::apply_render_space_chunk::trail_renderers");
         apply_trail_renderer_update_extracted(space, tu);
     }
+}
+
+fn has_active_dense_indices(values: &[i32]) -> bool {
+    values.first().is_some_and(|value| *value >= 0)
+}
+
+fn mesh_membership_changed(removals: &[i32], additions: &[i32]) -> bool {
+    has_active_dense_indices(removals) || has_active_dense_indices(additions)
+}
+
+fn static_mesh_update_has_work(
+    update: &crate::scene::meshes::ExtractedMeshRenderablesUpdate,
+) -> bool {
+    mesh_membership_changed(&update.removals, &update.additions)
+        || update
+            .mesh_states
+            .first()
+            .is_some_and(|state| state.renderable_index >= 0)
+}
+
+fn reflection_probe_update_has_work(
+    update: &crate::scene::reflection_probe::ExtractedReflectionProbeRenderablesUpdate,
+) -> bool {
+    mesh_membership_changed(&update.removals, &update.additions)
+        || update
+            .states
+            .first()
+            .is_some_and(|state| state.renderable_index >= 0)
+        || update
+            .changed_probes_to_render
+            .first()
+            .is_some_and(|state| state.renderable_index >= 0)
+}
+
+fn lod_group_update_has_work(
+    update: &crate::scene::lod_groups::ExtractedLodGroupRenderablesUpdate,
+) -> bool {
+    mesh_membership_changed(&update.removals, &update.additions)
+        || update
+            .states
+            .first()
+            .is_some_and(|state| state.renderable_index >= 0)
+}
+
+fn layer_update_has_work(update: &crate::scene::layer::ExtractedLayerUpdate) -> bool {
+    mesh_membership_changed(&update.removals, &update.additions)
+}
+
+fn billboard_update_has_work(
+    update: &crate::scene::render_buffers::ExtractedBillboardRenderBufferUpdate,
+) -> bool {
+    mesh_membership_changed(&update.removals, &update.additions)
+        || update
+            .states
+            .first()
+            .is_some_and(|state| state.renderable_index >= 0)
+}
+
+fn mesh_render_buffer_update_has_work(
+    update: &crate::scene::render_buffers::ExtractedMeshRenderBufferUpdate,
+) -> bool {
+    mesh_membership_changed(&update.removals, &update.additions)
+        || update
+            .states
+            .first()
+            .is_some_and(|state| state.renderable_index >= 0)
+}
+
+fn trail_update_has_work(
+    update: &crate::scene::render_buffers::ExtractedTrailRendererUpdate,
+) -> bool {
+    mesh_membership_changed(&update.removals, &update.additions)
+        || update
+            .states
+            .first()
+            .is_some_and(|state| state.renderable_index >= 0)
 }

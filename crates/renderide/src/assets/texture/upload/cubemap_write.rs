@@ -125,7 +125,7 @@ pub struct CubemapFaceMipUploadStep<'a> {
     /// Upload record.
     pub upload: &'a SetCubemapData,
     /// Payload (`&raw[..upload.data.length]`).
-    pub payload: &'a std::sync::Arc<[u8]>,
+    pub payload: &'a std::sync::Arc<Vec<u8>>,
 }
 
 /// Incremental cubemap upload: one face x one mip per step.

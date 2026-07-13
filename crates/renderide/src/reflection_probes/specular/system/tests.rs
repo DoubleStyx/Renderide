@@ -192,6 +192,17 @@ fn new_system_reports_default_stats() {
     );
 }
 
+#[test]
+fn runtime_ibl_bakes_are_sliced_for_every_host_mode() {
+    for mode in [
+        ReflectionProbeTimeSlicingMode::AllFacesAtOnce,
+        ReflectionProbeTimeSlicingMode::IndividualFaces,
+        ReflectionProbeTimeSlicingMode::NoTimeSlicing,
+    ] {
+        assert_eq!(runtime_ibl_policy(mode), IblBakePolicy::UnityTimeSliced);
+    }
+}
+
 fn ready_summary(
     space_id: RenderSpaceId,
     renderable_index: i32,

@@ -117,12 +117,12 @@ pub(crate) struct DepthPrepassDrawBatch<'a, 'b, 'c, 'd> {
     pub depth_pipelines: &'a WorldMeshForwardDepthPrepassPipelineCache,
 }
 
-/// Pre-grouped shadow-caster draws and pipeline state for one shadow atlas layer.
+/// Pre-grouped shadow-caster draws and pipeline state for one shadow atlas layer. -xlinka
 pub(crate) struct ShadowDepthDrawBatch<'a, 'b, 'c, 'd> {
     /// Active shadow-map render pass.
     pub rpass: &'a mut wgpu::RenderPass<'b>,
-    /// Pre-built shadow-caster draw groups in ascending representative order.
-    pub groups: &'c [DrawGroup],
+    /// Pre-built shadow-caster draw groups in ascending representative order. -xlinka
+    pub groups: &'c [&'c [DrawGroup]],
     /// Full sorted shadow-caster draw list for the layer.
     pub draws: &'c [WorldMeshDrawItem],
     /// Mesh pool and skin cache for vertex/index binding.
@@ -551,7 +551,7 @@ pub(crate) fn draw_depth_prepass_subset(batch: DepthPrepassDrawBatch<'_, '_, '_,
     }
 }
 
-/// Records one shadow-map depth layer by walking pre-built caster groups.
+/// Records one shadow-map depth layer by walking pre-built caster groups. -xlinka
 pub(crate) fn draw_shadow_depth_subset(batch: ShadowDepthDrawBatch<'_, '_, '_, '_>) {
     profiling::scope!("world_mesh::draw_shadow_depth_subset");
     let ShadowDepthDrawBatch {
@@ -572,45 +572,61 @@ pub(crate) fn draw_shadow_depth_subset(batch: ShadowDepthDrawBatch<'_, '_, '_, '
     let shadow_pipelines = shadow_pipelines();
     let radial_pipelines = radial_shadow_pipelines();
 
-    for group in groups {
-        let representative = group.representative_draw_idx;
-        let Some(item) = draws.get(representative) else {
-            continue;
-        };
-        if item.shadow_cast_mode == ShadowCastMode::Off {
-            continue;
-        }
-        let Some(key) = WorldMeshForwardDepthPrepassPipelineKey::for_shadow_draw(item, pipeline)
-        else {
-            continue;
-        };
+    let mut last_pipeline_key = None;
+    for phase_groups in groups {
+        for group in *phase_groups {
+            let representative = group.representative_draw_idx;
+            let Some(item) = draws.get(representative) else {
+                continue;
+            };
+            if item.shadow_cast_mode == ShadowCastMode::Off {
+                continue;
+            }
+            let Some(key) =
+                WorldMeshForwardDepthPrepassPipelineKey::for_shadow_draw(item, pipeline)
+            else {
+                continue;
+            };
 
-        let slab_first_instance = slab_slot_offset + group.instance_range.start as usize;
-        let instance_count = group.instance_range.end - group.instance_range.start;
-        bind_depth_like_per_draw_slab(
-            rpass,
-            DepthLikePerDrawBind {
-                bind_group_index: 0,
-                bind_group: per_draw_bind_group,
-                gpu_limits,
-                slab_first_instance,
-                instance_count,
+            let slab_first_instance = slab_slot_offset + group.instance_range.start as usize;
+            let instance_count = group.instance_range.end - group.instance_range.start;
+            bind_depth_like_per_draw_slab(
+                rpass,
+                DepthLikePerDrawBind {
+                    bind_group_index: 0,
+                    bind_group: per_draw_bind_group,
+                    gpu_limits,
+                    slab_first_instance,
+                    instance_count,
+                    supports_base_instance,
+                },
+                &mut state,
+            );
+
+            if last_pipeline_key != Some(key) {
+                let pipeline = if radial_shadow {
+                    radial_pipelines.pipeline(device, key)
+                } else {
+                    shadow_pipelines.pipeline(device, key)
+                };
+                set_depth_like_pipeline_if_changed(rpass, pipeline.as_ref(), &mut state);
+                last_pipeline_key = Some(key);
+            }
+
+            let inst_range = shadow_instance_range_for_draw_group(
+                group,
+                slab_slot_offset,
                 supports_base_instance,
-            },
-            &mut state,
-        );
-
-        let pipeline = if radial_shadow {
-            radial_pipelines.pipeline(device, key)
-        } else {
-            shadow_pipelines.pipeline(device, key)
-        };
-        set_depth_like_pipeline_if_changed(rpass, pipeline.as_ref(), &mut state);
-
-        let inst_range =
-            shadow_instance_range_for_draw_group(group, slab_slot_offset, supports_base_instance);
-        let gpu_refs = gpu_refs_for_encode(encode);
-        draw_mesh_submesh_depth_instanced(rpass, item, gpu_refs, inst_range, &mut state.last_mesh);
+            );
+            let gpu_refs = gpu_refs_for_encode(encode);
+            draw_mesh_submesh_depth_instanced(
+                rpass,
+                item,
+                gpu_refs,
+                inst_range,
+                &mut state.last_mesh,
+            );
+        }
     }
 }
 

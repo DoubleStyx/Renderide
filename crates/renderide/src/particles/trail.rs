@@ -42,7 +42,7 @@ pub(crate) struct TrailRenderBufferBuild {
 
 /// Builds trail render-buffer metadata and generated mesh bytes without touching the GPU.
 pub(crate) fn build_trail_render_buffer_cpu(
-    raw: Arc<[u8]>,
+    raw: Arc<Vec<u8>>,
     upload: &TrailRenderBufferUpload,
 ) -> Result<TrailRenderBufferBuild, ParticleRenderBufferError> {
     profiling::scope!("particle::build_trail_render_buffer");
