@@ -15,6 +15,7 @@ const ASSET_INTEGRATION_QUEUE_WARN_STRIDE: usize = 1024;
 
 /// Number of integration updates a removed GPU resource is retained before drop.
 const DELAYED_REMOVAL_UPDATES: usize = 3;
+const DELAYED_REMOVAL_RELEASES_PER_DRAIN: usize = 64;
 
 /// Logical scheduler lane for an [`AssetTask`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -223,21 +224,24 @@ impl AssetIntegrator {
         let index = (self.delayed_removal_bucket_index + (DELAYED_REMOVAL_UPDATES - 1))
             % DELAYED_REMOVAL_UPDATES;
         let count = self.delayed_removal_counts[index];
+        let release_count = count.min(DELAYED_REMOVAL_RELEASES_PER_DRAIN);
         let mut released_bytes = 0;
-        for _ in 0..count {
+        for _ in 0..release_count {
             if let Some(resource) = self.delayed_removals.pop_front() {
                 released_bytes += resource.resident_bytes();
             }
         }
-        if count > 0 {
+        if release_count > 0 {
             logger::trace!(
-                "asset integrator delayed removals released: count={count} bytes={released_bytes}"
+                "asset integrator delayed removals released: count={release_count} bytes={released_bytes}"
             );
         }
-        self.delayed_removal_counts[index] = 0;
-        self.delayed_removal_bucket_index =
-            (self.delayed_removal_bucket_index + 1) % DELAYED_REMOVAL_UPDATES;
-        count
+        self.delayed_removal_counts[index] -= release_count;
+        if self.delayed_removal_counts[index] == 0 {
+            self.delayed_removal_bucket_index =
+                (self.delayed_removal_bucket_index + 1) % DELAYED_REMOVAL_UPDATES;
+        }
+        release_count
     }
 
     fn record_queue_depth(&mut self) {

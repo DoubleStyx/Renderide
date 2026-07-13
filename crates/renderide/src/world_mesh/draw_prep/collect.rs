@@ -368,7 +368,6 @@ fn effective_overlay_in_view(ctx: &DrawCollectionInputs<'_>, is_overlay: bool) -
 
 impl QueuedWorldMeshDraws {
     /// Builds an empty queued draw packet for views whose required prepared inputs are missing.
-    #[cfg(not(test))]
     pub(crate) fn empty() -> Self {
         Self {
             chunks: Vec::new(),

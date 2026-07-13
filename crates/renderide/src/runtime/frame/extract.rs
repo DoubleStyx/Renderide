@@ -264,7 +264,9 @@ impl SubmitFrame<'_> {
                 .map(|(view, draws)| (view.view_id, &draws.shadow_casters)),
         );
         let mut visible_deform_keys = visible_mesh_deform_keys_from_draw_plans(&self.view_draws);
-        visible_deform_keys.extend(backend.frame_resources().shadow_mesh_deform_keys());
+        backend
+            .frame_resources()
+            .extend_shadow_mesh_deform_keys(&mut visible_deform_keys);
         backend
             .frame_resources_mut()
             .begin_mesh_deform_submission(visible_deform_keys);

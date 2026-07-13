@@ -1,7 +1,7 @@
 //! Global file sink, log facade integration, and mirror routing.
 
 use std::fs::{File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -12,13 +12,14 @@ use super::line::{format_log_line_into, with_line_buf};
 
 /// Default target used by programmatic logging helpers that do not receive a Rust module path.
 const DEFAULT_TARGET: &str = "renderide";
+const LOG_BUFFER_CAPACITY: usize = 64 * 1024;
 
 /// Global logger state: mutex-protected file sink, optional stderr mirror, and atomic max level.
 struct Logger {
     /// Active log file path (used by [`try_log`] when the primary mutex is busy).
     path: PathBuf,
     /// File output. Mutex for thread-safe writes.
-    file: Mutex<File>,
+    file: Mutex<BufWriter<File>>,
     /// When true, each log line is also written to stderr.
     mirror_stderr: bool,
     /// Optional process-specific sink for already-formatted lines that should also reach a
@@ -36,7 +37,7 @@ impl Logger {
     fn new(path: PathBuf, file: File, max_level: LogLevel, mirror_stderr: bool) -> Self {
         Self {
             path,
-            file: Mutex::new(file),
+            file: Mutex::new(BufWriter::with_capacity(LOG_BUFFER_CAPACITY, file)),
             mirror_stderr,
             mirror_writer: Mutex::new(None),
             max_level: AtomicU8::new(max_level as u8),
@@ -139,14 +140,14 @@ fn open_log_file(path: &Path, append: bool) -> io::Result<File> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut opts = OpenOptions::new();
-    opts.create(true).write(true);
-    if append {
-        opts.append(true);
-    } else {
-        opts.truncate(true);
+    if !append {
+        OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(path)?;
     }
-    opts.open(path)
+    OpenOptions::new().create(true).append(true).open(path)
 }
 
 /// Installs or replaces a severity-filtered mirror for already-formatted log lines.
@@ -225,15 +226,14 @@ fn current_max_level(logger: &Logger) -> LogLevel {
 
 /// Writes the formatted line in `bytes` to the global logger's file and configured mirrors.
 fn write_line_locked(logger: &Logger, level: LogLevel, bytes: &[u8]) {
-    write_primary_file(logger, bytes);
+    write_primary_file(logger, level, bytes);
     write_stderr_mirror(logger, bytes);
     write_callback_mirror(logger, level, bytes);
 }
 
-/// Writes `bytes` to the primary log file and flushes immediately.
-fn write_primary_file(logger: &Logger, bytes: &[u8]) {
+fn write_primary_file(logger: &Logger, level: LogLevel, bytes: &[u8]) {
     if let Ok(mut file) = logger.file.lock() {
-        write_and_flush(&mut *file, bytes);
+        write_primary(&mut *file, level, bytes);
     }
 }
 
@@ -258,6 +258,13 @@ fn write_callback_mirror(logger: &Logger, level: LogLevel, bytes: &[u8]) {
 fn write_and_flush(writer: &mut impl Write, bytes: &[u8]) {
     let _ = writer.write_all(bytes);
     let _ = writer.flush();
+}
+
+fn write_primary(writer: &mut impl Write, level: LogLevel, bytes: &[u8]) {
+    let _ = writer.write_all(bytes);
+    if matches!(level, LogLevel::Error | LogLevel::Warn) {
+        let _ = writer.flush();
+    }
 }
 
 /// Internal log writer. Called by the log macros.
@@ -310,13 +317,13 @@ pub fn try_log(level: LogLevel, args: std::fmt::Arguments<'_>) -> bool {
         format_log_line_into(buf, DEFAULT_TARGET, level, args);
         let bytes = buf.as_bytes();
         if let Ok(mut file) = logger.file.try_lock() {
-            write_and_flush(&mut *file, bytes);
+            write_primary(&mut *file, level, bytes);
             return true;
         }
         let mut opts = OpenOptions::new();
         opts.create(true).append(true);
         if let Ok(mut file) = opts.open(&logger.path) {
-            write_and_flush(&mut file, bytes);
+            write_primary(&mut file, level, bytes);
             return true;
         }
         false

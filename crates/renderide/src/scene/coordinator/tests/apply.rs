@@ -23,7 +23,9 @@ use super::super::apply::ExtractedRenderSpaceUpdate;
 use super::super::{
     RenderWorldRendererKind, SceneApplyReport, SceneCoordinator,
     extracted_update_affects_reflection_probes, extracted_update_affects_render_world,
+    extracted_update_changes_reflection_probes, extracted_update_changes_render_world,
     note_render_world_dirty_for_extracted_update, render_world_header_changed,
+    transform_update_changes_space,
 };
 
 fn empty_extracted_render_space_update() -> ExtractedRenderSpaceUpdate {
@@ -241,6 +243,55 @@ fn extracted_reflection_probe_dirty_tracks_transform_overrides() {
         Some(crate::scene::overrides::ExtractedRenderTransformOverridesUpdate::default());
 
     assert!(extracted_update_affects_reflection_probes(&update));
+}
+
+#[test]
+fn identical_transform_update_does_not_dirty_retained_scene_state() {
+    let space = RenderSpaceState {
+        nodes: vec![RenderTransform::default()],
+        node_parents: vec![-1],
+        ..Default::default()
+    };
+    let transforms = crate::scene::transforms::ExtractedTransformsUpdate {
+        pose_updates: vec![crate::shared::TransformPoseUpdate {
+            transform_id: 0,
+            pose: RenderTransform::default(),
+        }],
+        parent_updates: vec![crate::shared::TransformParentUpdate {
+            transform_id: 0,
+            new_parent_id: -1,
+        }],
+        target_transform_count: 1,
+        ..Default::default()
+    };
+    let mut update = empty_extracted_render_space_update();
+    update.transforms = Some(transforms);
+
+    let transforms_changed = transform_update_changes_space(
+        &space,
+        update.transforms.as_ref().expect("transform update"),
+    );
+
+    assert!(!transforms_changed);
+    assert!(!extracted_update_changes_render_world(
+        &update,
+        transforms_changed
+    ));
+    assert!(!extracted_update_changes_reflection_probes(
+        &update,
+        transforms_changed
+    ));
+    let mut report = SceneApplyReport::default();
+    note_render_world_dirty_for_extracted_update(
+        &mut report,
+        RenderSpaceId(1),
+        false,
+        1,
+        Some(&space),
+        &update,
+    );
+    assert!(report.render_world_dirty.transform_roots.is_empty());
+    assert!(report.render_world_dirty.full_spaces.is_empty());
 }
 
 #[test]

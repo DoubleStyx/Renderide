@@ -22,6 +22,7 @@ pub(in crate::scene::coordinator) fn render_world_header_changed(
 }
 
 /// Returns whether an extracted update can affect retained renderer templates.
+#[cfg(test)]
 pub(in crate::scene::coordinator) fn extracted_update_affects_render_world(
     update: &ExtractedRenderSpaceUpdate,
 ) -> bool {
@@ -38,12 +39,70 @@ pub(in crate::scene::coordinator) fn extracted_update_affects_render_world(
 }
 
 /// Returns whether an extracted update can affect reflection-probe source or spatial state.
+#[cfg(test)]
 pub(in crate::scene::coordinator) fn extracted_update_affects_reflection_probes(
     update: &ExtractedRenderSpaceUpdate,
 ) -> bool {
     update.reflection_probes.is_some()
         || update.transforms.is_some()
         || update.transform_overrides.is_some()
+}
+
+pub(in crate::scene::coordinator) fn extracted_update_changes_render_world(
+    update: &ExtractedRenderSpaceUpdate,
+    transforms_changed: bool,
+) -> bool {
+    transforms_changed
+        || update.meshes.is_some()
+        || update.skinned_meshes.is_some()
+        || update.layers.is_some()
+        || update.lod_groups.is_some()
+        || update.transform_overrides.is_some()
+        || update.material_overrides.is_some()
+        || update.billboard_render_buffers.is_some()
+        || update.mesh_render_buffers.is_some()
+        || update.trail_render_buffers.is_some()
+}
+
+pub(in crate::scene::coordinator) fn extracted_update_changes_reflection_probes(
+    update: &ExtractedRenderSpaceUpdate,
+    transforms_changed: bool,
+) -> bool {
+    update.reflection_probes.is_some() || transforms_changed || update.transform_overrides.is_some()
+}
+
+pub(in crate::scene::coordinator) fn transform_update_changes_space(
+    space: &RenderSpaceState,
+    transforms: &super::super::transforms::ExtractedTransformsUpdate,
+) -> bool {
+    if has_active_dense_indices(&transforms.removals)
+        || (transforms.target_transform_count >= 0
+            && transforms.target_transform_count as usize != space.nodes.len())
+    {
+        return true;
+    }
+
+    let parent_changed = transforms
+        .parent_updates
+        .iter()
+        .take_while(|parent| parent.transform_id >= 0)
+        .any(|parent| {
+            space
+                .node_parents
+                .get(parent.transform_id as usize)
+                .is_some_and(|current| *current != parent.new_parent_id)
+        });
+    parent_changed
+        || transforms
+            .pose_updates
+            .iter()
+            .take_while(|pose| pose.transform_id >= 0)
+            .any(|pose| {
+                space
+                    .nodes
+                    .get(pose.transform_id as usize)
+                    .is_some_and(|current| transform_pose_changes(current, &pose.pose))
+            })
 }
 
 /// Records fine-grained render-world dirty events for one extracted render-space update.
@@ -59,7 +118,13 @@ pub(in crate::scene::coordinator) fn note_render_world_dirty_for_extracted_updat
         report.render_world_dirty.note_full_space(space_id);
     }
     if let Some(ref transforms) = update.transforms {
-        note_transform_update_render_world_dirty(report, space_id, current_node_count, transforms);
+        note_transform_update_render_world_dirty(
+            report,
+            space_id,
+            current_node_count,
+            current_space,
+            transforms,
+        );
     }
     if let Some(ref meshes) = update.meshes {
         note_mesh_update_render_world_dirty(
@@ -187,6 +252,7 @@ fn note_transform_update_render_world_dirty(
     report: &mut SceneApplyReport,
     space_id: RenderSpaceId,
     current_node_count: usize,
+    current_space: Option<&RenderSpaceState>,
     transforms: &super::super::transforms::ExtractedTransformsUpdate,
 ) {
     if has_active_dense_indices(&transforms.removals)
@@ -200,15 +266,51 @@ fn note_transform_update_render_world_dirty(
         .pose_updates
         .iter()
         .take_while(|pose| pose.transform_id >= 0)
+        .filter(|pose| {
+            current_space.is_none_or(|space| {
+                space
+                    .nodes
+                    .get(pose.transform_id as usize)
+                    .is_some_and(|current| transform_pose_changes(current, &pose.pose))
+            })
+        })
         .map(|pose| pose.transform_id);
     let parent_roots = transforms
         .parent_updates
         .iter()
         .take_while(|parent| parent.transform_id >= 0)
+        .filter(|parent| {
+            current_space.is_none_or(|space| {
+                space
+                    .node_parents
+                    .get(parent.transform_id as usize)
+                    .is_some_and(|current| *current != parent.new_parent_id)
+            })
+        })
         .map(|parent| parent.transform_id);
     report
         .render_world_dirty
         .note_transform_roots(space_id, pose_roots.chain(parent_roots));
+}
+
+fn render_transform_matches(
+    current: &crate::shared::RenderTransform,
+    incoming: &crate::shared::RenderTransform,
+) -> bool {
+    current.position == incoming.position
+        && current.scale == incoming.scale
+        && current.rotation == incoming.rotation
+}
+
+fn transform_pose_changes(
+    current: &crate::shared::RenderTransform,
+    incoming: &crate::shared::RenderTransform,
+) -> bool {
+    if render_transform_matches(current, incoming) {
+        return false;
+    }
+    let repaired = crate::scene::pose::repair_render_transform(incoming, current);
+    !render_transform_matches(current, &repaired)
 }
 
 /// Records material override targets that can refresh retained templates without a full rebuild.

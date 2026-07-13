@@ -196,7 +196,6 @@ impl Subscriber {
         let msg = self.message_header_or_drain(&ring, header, read_offset, write_offset)?;
         self.claim_ready_message(header, msg, write_offset, spin_start_ticks)?;
         let extracted = self.read_valid_message(ring, header, msg, read_offset, write_offset)?;
-        ring.clear(read_offset, extracted.padded_len as usize);
         self.advance_read_offset(header, read_offset, extracted.padded_len);
         Some(extracted.body)
     }

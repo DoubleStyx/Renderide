@@ -44,7 +44,7 @@ impl PostProcessChainSignature {
     /// Derives the signature from live [`PostProcessingSettings`].
     pub fn from_settings(settings: &PostProcessingSettings) -> Self {
         let master = settings.enabled;
-        let gtao = master && settings.gtao.enabled;
+        let gtao = master && settings.gtao.is_effectively_enabled();
         let bloom = master && settings.bloom.enabled && settings.bloom.intensity > 0.0;
         let motion_blur = master && settings.motion_blur.is_effectively_enabled();
         let auto_exposure = master && settings.auto_exposure.enabled;
@@ -118,15 +118,15 @@ mod tests {
         assert!(!sig.agx_tonemap);
         assert!(sig.gtao);
         assert!(sig.bloom);
-        assert!(sig.motion_blur);
+        assert!(!sig.motion_blur);
         assert!(sig.auto_exposure);
-        assert_eq!(sig.active_count(), 5);
+        assert_eq!(sig.active_count(), 4);
 
         s.tonemap.mode = TonemapMode::AgX;
         let sig = PostProcessChainSignature::from_settings(&s);
         assert!(!sig.aces_tonemap);
         assert!(sig.agx_tonemap);
-        assert_eq!(sig.active_count(), 5);
+        assert_eq!(sig.active_count(), 4);
 
         s.tonemap.mode = TonemapMode::None;
         assert!(PostProcessChainSignature::from_settings(&s).gtao);
@@ -163,6 +163,38 @@ mod tests {
 
         s.enabled = false;
         assert!(PostProcessChainSignature::from_settings(&s).is_empty());
+    }
+
+    #[test]
+    fn signature_gates_gtao_that_cannot_produce_occlusion() {
+        let mut s = PostProcessingSettings {
+            enabled: true,
+            tonemap: TonemapSettings {
+                mode: TonemapMode::None,
+            },
+            ..Default::default()
+        };
+        s.bloom.enabled = false;
+        s.motion_blur.enabled = false;
+        s.auto_exposure.enabled = false;
+
+        s.gtao.radius_meters = 0.0;
+        assert!(PostProcessChainSignature::from_settings(&s).is_empty());
+
+        s.gtao.radius_meters = 1.0;
+        s.gtao.intensity = 0.0;
+        assert!(PostProcessChainSignature::from_settings(&s).is_empty());
+    }
+
+    #[test]
+    fn signature_skips_gtao_denoise_when_blur_is_disabled() {
+        let mut s = PostProcessingSettings::default();
+        s.gtao.denoise_blur_beta = 0.0;
+
+        let sig = PostProcessChainSignature::from_settings(&s);
+
+        assert!(sig.gtao);
+        assert_eq!(sig.gtao_denoise_passes, 0);
     }
 
     #[test]
@@ -237,7 +269,7 @@ mod tests {
         let quarter_res = PostProcessChainSignature::from_settings(&s);
 
         assert_ne!(full_res, quarter_res);
-        assert_eq!(full_res.gtao_resolution_divisor, 1);
+        assert_eq!(full_res.gtao_resolution_divisor, 2);
         assert_eq!(quarter_res.gtao_resolution_divisor, 4);
     }
 
@@ -333,6 +365,7 @@ mod tests {
             },
             ..Default::default()
         };
+        s.motion_blur.enabled = true;
 
         let sig = PostProcessChainSignature::from_settings(&s);
         assert!(sig.motion_blur);

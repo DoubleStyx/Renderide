@@ -200,12 +200,11 @@ pub(crate) fn compute_per_draw_vp_matrices(
         return PerDrawVpMatrices::new(overlay_vp, overlay_vp, model);
     }
     let model = || resolve_model_selection(scene, item, hc, render_context);
-    let view = view_matrix_for_host_world_mesh_space(scene, space, hc);
-    let vr_stereo_view = Mat4::IDENTITY;
     if let Some(stereo) = hc.active_stereo() {
         let (sl, sr) = stereo.view_proj_pair();
-        PerDrawVpMatrices::new(sl * vr_stereo_view, sr * vr_stereo_view, model())
+        PerDrawVpMatrices::new(sl, sr, model())
     } else {
+        let view = view_matrix_for_host_world_mesh_space(scene, space, hc);
         let proj = projection_for_world_mesh_draw(false, overlay_proj, world_proj);
         let base_vp = proj * view;
         PerDrawVpMatrices::new(base_vp, base_vp, model())

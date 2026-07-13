@@ -221,6 +221,7 @@ impl FrameResourceManager {
                     frame_bind_group,
                     named_scene_color_frame_bind_group,
                     cluster_params_buffer,
+                    cluster_params_version: 1,
                     scene_snapshots,
                     last_cluster_version: versions.cluster,
                     last_skybox_specular_version: versions.skybox_specular,
@@ -237,6 +238,7 @@ impl FrameResourceManager {
         if stereo && !entry.last_stereo {
             profiling::scope!("render::ensure_per_view_frame::resize_cluster_params");
             entry.cluster_params_buffer = make_cluster_params_buffer(device, true);
+            entry.cluster_params_version = entry.cluster_params_version.wrapping_add(1);
             entry.last_stereo = true;
         }
 

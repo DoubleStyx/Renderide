@@ -224,8 +224,10 @@ impl FrameResourceManager {
     }
 
     /// Deform keys required by this frame's shadow caster draws.
-    pub(crate) fn shadow_mesh_deform_keys(&self) -> hashbrown::HashSet<SkinCacheKey> {
-        let mut keys = hashbrown::HashSet::new();
+    pub(crate) fn extend_shadow_mesh_deform_keys(
+        &self,
+        keys: &mut hashbrown::HashSet<SkinCacheKey>,
+    ) {
         for caster_set in &self.shadow_frame.caster_sets {
             for item in caster_set.draws.iter() {
                 if item.world_space_deformed || item.blendshape_deformed {
@@ -238,7 +240,6 @@ impl FrameResourceManager {
                 }
             }
         }
-        keys
     }
 }
 
@@ -267,6 +268,26 @@ fn append_shadow_views_for_view(
     let Some(collection) = view.draw_plan.as_prefetched() else {
         return;
     };
+    let has_shadow_request = manager
+        .per_view_lights
+        .get(view.view_id)
+        .is_some_and(|lights| {
+            lights.lights.iter().any(|light| {
+                light.shadow_type != SHADOW_TYPE_NONE
+                    && light.shadow_strength > 0.0
+                    && shadow_view_count_for_light(light.light_type, quality) > 0
+                    && (light.light_type == light_type_u32(LightType::Directional)
+                        || quality.per_pixel_lights > 0)
+            })
+        });
+    if !has_shadow_request {
+        if let Some(lights) = manager.per_view_lights.get_mut(view.view_id) {
+            for light in &mut lights.lights {
+                clear_light_shadow_assignment(light);
+            }
+        }
+        return;
+    }
     let shadow_draws = collection
         .items
         .iter()

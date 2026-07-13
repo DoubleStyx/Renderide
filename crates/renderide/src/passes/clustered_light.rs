@@ -88,7 +88,7 @@ impl ClusteredLightPass {
         }
     }
 
-    /// Returns the compute bind group for `view_id`, rebuilding it when `cluster_ver` changes.
+    /// Returns the compute bind group for `view_id`, rebuilding it when resource versions change. -xlinka
     ///
     /// `params_buffer` is **per-view** and intentionally separated from `ClusterBufferRefs` to
     /// keep per-view uniforms independent from the shared cluster scratch buffers during
@@ -97,7 +97,7 @@ impl ClusteredLightPass {
         &self,
         device: &wgpu::Device,
         view_id: ViewId,
-        cluster_ver: u64,
+        cluster_ver: (u64, u64),
         bufs: ClusterComputeBuffers<'_>,
         bgl: &wgpu::BindGroupLayout,
     ) -> Arc<wgpu::BindGroup> {
@@ -161,9 +161,9 @@ impl ClusteredLightPass {
         };
         let cluster_light_counts = refs.cluster_light_counts;
         let cluster_light_indices = refs.cluster_light_indices;
-        let cluster_ver = frame.systems.frame_resources.shared_cluster_version();
+        let shared_cluster_ver = frame.systems.frame_resources.shared_cluster_version();
 
-        let Some(params_buffer) = frame
+        let Some((params_buffer, params_ver)) = frame
             .systems
             .frame_resources
             .per_view_cluster_params_buffer(view_id)
@@ -206,7 +206,7 @@ impl ClusteredLightPass {
 
         ClusteredLightRecordAction::GpuScan(ClusteredLightGpuScanData {
             view_id,
-            cluster_ver,
+            cluster_ver: (shared_cluster_ver, params_ver),
             cluster_light_counts,
             cluster_light_indices,
             params_buffer,

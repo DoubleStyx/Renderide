@@ -158,8 +158,8 @@ pub trait GraphFrameBindings {
     /// Current shared cluster-buffer version.
     fn shared_cluster_version(&self) -> u64;
 
-    /// Per-view cluster-params uniform buffer.
-    fn per_view_cluster_params_buffer(&self, view_id: ViewId) -> Option<wgpu::Buffer>;
+    /// Per-view cluster-params uniform buffer and allocation version. -xlinka
+    fn per_view_cluster_params_buffer(&self, view_id: ViewId) -> Option<(wgpu::Buffer, u64)>;
 
     /// Per-view frame bind group and frame-uniform buffer.
     fn per_view_frame_bind_group_and_buffer(

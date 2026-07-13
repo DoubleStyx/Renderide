@@ -1,5 +1,7 @@
 //! Forward-pass state and blackboard slots.
 
+use std::sync::Arc;
+
 use crate::materials::{MaterialPipelineDesc, ShaderPermutation};
 use crate::render_graph::blackboard::blackboard_slot;
 use crate::skybox::PreparedSkybox;
@@ -48,7 +50,7 @@ pub(crate) struct PreparedWorldMeshForwardFrame {
     /// Sorted world mesh draw items for this view.
     pub draws: Vec<WorldMeshDrawItem>,
     /// Per-view [`InstancePlan`]: per-draw slab layout plus phase-grouped draw submissions.
-    pub plan: InstancePlan,
+    pub plan: Arc<InstancePlan>,
     /// Pipeline format/sample/multiview state.
     pub pipeline: WorldMeshForwardPipelineState,
     /// Scene snapshot helper work needed by the prepared draw list.

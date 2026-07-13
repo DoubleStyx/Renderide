@@ -1,6 +1,5 @@
 //! Retained CPU arrangement-order cache for world-mesh draw collections.
 
-use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
@@ -52,7 +51,7 @@ pub(crate) struct WorldMeshCommandCache {
 #[derive(Debug, Default)]
 struct WorldMeshCommandCacheInner {
     entries: HashMap<WorldMeshCommandCacheKey, WorldMeshCommandCacheEntry>,
-    recency: VecDeque<WorldMeshCommandCacheKey>,
+    access_clock: u64,
     stats: WorldMeshCommandCacheStats,
     thrash: CacheThrashWindow,
 }
@@ -75,6 +74,7 @@ struct WorldMeshCommandCacheKey {
 struct WorldMeshCommandCacheEntry {
     order: Arc<[usize]>,
     arrangement: WorldMeshDrawArrangementStats,
+    last_used: u64,
 }
 
 impl WorldMeshCommandCache {
@@ -149,10 +149,14 @@ impl WorldMeshCommandCache {
 
     fn entry(&self, key: &WorldMeshCommandCacheKey) -> Option<WorldMeshCommandCacheEntry> {
         let mut inner = self.inner.lock();
-        let entry = inner.entries.get(key).cloned();
+        inner.access_clock = inner.access_clock.saturating_add(1);
+        let last_used = inner.access_clock;
+        let entry = inner.entries.get_mut(key).map(|entry| {
+            entry.last_used = last_used;
+            entry.clone()
+        });
         if entry.is_some() {
             inner.stats.hits = inner.stats.hits.saturating_add(1);
-            inner.recency.push_back(*key);
             inner.thrash.record_hit();
         } else {
             inner.stats.misses = inner.stats.misses.saturating_add(1);
@@ -171,10 +175,12 @@ impl WorldMeshCommandCache {
         arrangement: WorldMeshDrawArrangementStats,
     ) {
         let mut inner = self.inner.lock();
+        inner.access_clock = inner.access_clock.saturating_add(1);
+        let last_used = inner.access_clock;
         if let Some(entry) = inner.entries.get_mut(&key) {
             entry.order = Arc::from(order.to_vec());
             entry.arrangement = arrangement;
-            inner.recency.push_back(key);
+            entry.last_used = last_used;
             drop(inner);
             return;
         }
@@ -183,12 +189,17 @@ impl WorldMeshCommandCache {
             WorldMeshCommandCacheEntry {
                 order: Arc::from(order.to_vec()),
                 arrangement,
+                last_used,
             },
         );
-        inner.recency.push_back(key);
         inner.stats.insertions = inner.stats.insertions.saturating_add(1);
         while inner.entries.len() > WORLD_MESH_COMMAND_CACHE_CAPACITY {
-            let Some(candidate) = inner.recency.pop_front() else {
+            let Some(candidate) = inner
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(key, _)| *key)
+            else {
                 break;
             };
             if inner.entries.remove(&candidate).is_some() {

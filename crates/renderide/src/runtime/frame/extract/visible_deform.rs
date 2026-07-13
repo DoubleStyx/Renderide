@@ -39,9 +39,9 @@ fn visible_mesh_deform_keys_from_draw_plans_serial(
 ) -> hashbrown::HashSet<SkinCacheKey> {
     let mut keys = hashbrown::HashSet::new();
     for plan in draw_plans {
-        keys.extend(visible_mesh_deform_keys_for_plan(&plan.world));
+        extend_visible_mesh_deform_keys_for_plan(&mut keys, &plan.world);
         if let Some(overlay) = &plan.desktop_overlay {
-            keys.extend(visible_mesh_deform_keys_for_plan(overlay));
+            extend_visible_mesh_deform_keys_for_plan(&mut keys, overlay);
         }
     }
     keys
@@ -54,9 +54,10 @@ fn visible_mesh_deform_keys_from_draw_plans_parallel(
         .par_iter()
         .with_min_len(VISIBLE_DEFORM_KEYS_PARALLEL_CHUNK_VIEWS)
         .map(|plan| {
-            let mut keys = visible_mesh_deform_keys_for_plan(&plan.world);
+            let mut keys = hashbrown::HashSet::new();
+            extend_visible_mesh_deform_keys_for_plan(&mut keys, &plan.world);
             if let Some(overlay) = &plan.desktop_overlay {
-                keys.extend(visible_mesh_deform_keys_for_plan(overlay));
+                extend_visible_mesh_deform_keys_for_plan(&mut keys, overlay);
             }
             keys
         })
@@ -66,12 +67,12 @@ fn visible_mesh_deform_keys_from_draw_plans_parallel(
         })
 }
 
-fn visible_mesh_deform_keys_for_plan(
+fn extend_visible_mesh_deform_keys_for_plan(
+    keys: &mut hashbrown::HashSet<SkinCacheKey>,
     draw_plan: &WorldMeshDrawPlan,
-) -> hashbrown::HashSet<SkinCacheKey> {
-    let mut keys = hashbrown::HashSet::new();
+) {
     let Some(collection) = draw_plan.as_prefetched() else {
-        return keys;
+        return;
     };
     for item in &collection.items {
         if item.world_space_deformed || item.blendshape_deformed {
@@ -83,5 +84,4 @@ fn visible_mesh_deform_keys_for_plan(
             ));
         }
     }
-    keys
 }

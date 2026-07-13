@@ -30,8 +30,8 @@ pub(super) struct ClusteredLightClearData {
 pub(super) struct ClusteredLightGpuScanData {
     /// Graph view id.
     pub view_id: ViewId,
-    /// Shared cluster-buffer cache version.
-    pub cluster_ver: u64,
+    /// Shared and per-view cluster-buffer allocation versions. -xlinka
+    pub cluster_ver: (u64, u64),
     /// Shared cluster-range buffer.
     pub cluster_light_counts: wgpu::Buffer,
     /// Shared compact cluster-index buffer.

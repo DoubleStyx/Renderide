@@ -49,9 +49,13 @@ impl GraphFrameBindings for FrameResourceManager {
         self.shared_cluster_version()
     }
 
-    fn per_view_cluster_params_buffer(&self, view_id: ViewId) -> Option<wgpu::Buffer> {
-        self.per_view_frame(view_id)
-            .map(|state| state.cluster_params_buffer.clone())
+    fn per_view_cluster_params_buffer(&self, view_id: ViewId) -> Option<(wgpu::Buffer, u64)> {
+        self.per_view_frame(view_id).map(|state| {
+            (
+                state.cluster_params_buffer.clone(),
+                state.cluster_params_version,
+            )
+        })
     }
 
     fn per_view_frame_bind_group_and_buffer(

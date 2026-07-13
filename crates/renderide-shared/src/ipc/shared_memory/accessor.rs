@@ -143,8 +143,8 @@ impl SharedMemoryAccessor {
             ));
             return None;
         }
-        let path_for_diag = self.shm_path_for_buffer(descriptor.buffer_id);
         let Some(view) = self.get_view(descriptor) else {
+            let path_for_diag = self.shm_path_for_buffer(descriptor.buffer_id);
             log_shared_memory_read_failure(&describe_descriptor_failure(
                 descriptor,
                 "get_view failed",
@@ -195,8 +195,8 @@ impl SharedMemoryAccessor {
         f: impl FnOnce(&[u8]) -> Result<R, String>,
     ) -> Result<R, String> {
         let buffer_id = descriptor.buffer_id;
-        let path_for_diag = self.shm_path_for_buffer(buffer_id);
         let Some(view) = self.get_view(descriptor) else {
+            let path_for_diag = self.shm_path_for_buffer(buffer_id);
             return Err(prefix_err(&describe_get_view_failure(
                 buffer_id,
                 &path_for_diag,
@@ -248,8 +248,8 @@ impl SharedMemoryAccessor {
         f: impl FnOnce(&mut [u8]) -> Result<R, String>,
     ) -> Result<R, String> {
         let buffer_id = descriptor.buffer_id;
-        let path_for_diag = self.shm_path_for_buffer(buffer_id);
         let Some(view) = self.get_view(descriptor) else {
+            let path_for_diag = self.shm_path_for_buffer(buffer_id);
             return Err(prefix_err(&describe_get_view_failure(
                 buffer_id,
                 &path_for_diag,

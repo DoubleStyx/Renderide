@@ -81,6 +81,10 @@ fn first_sync_builds_graph_and_records_signature() {
             enabled: true,
             ..Default::default()
         },
+        motion_blur: crate::config::MotionBlurSettings {
+            enabled: true,
+            ..Default::default()
+        },
         tonemap: TonemapSettings {
             mode: TonemapMode::AcesFitted,
         },
@@ -164,7 +168,9 @@ fn unchanged_signature_does_not_rebuild() {
 #[test]
 fn multiview_change_updates_graph_key() {
     let mut backend = RenderBackend::new();
-    backend.renderer_settings = Some(settings_handle(PostProcessingSettings::default()));
+    let mut settings = PostProcessingSettings::default();
+    settings.motion_blur.enabled = true;
+    backend.renderer_settings = Some(settings_handle(settings));
 
     backend.ensure_frame_graph_in_sync(desktop_requirements());
     let mono_key = cached_graph_key(&backend);
@@ -185,6 +191,7 @@ fn multiview_change_updates_graph_key() {
 fn multiview_motion_blur_is_opt_in() {
     let mut backend = RenderBackend::new();
     let mut settings = PostProcessingSettings::default();
+    settings.motion_blur.enabled = true;
     settings.motion_blur.allow_vr = true;
     backend.renderer_settings = Some(settings_handle(settings));
 
@@ -211,7 +218,9 @@ fn post_processing_camera_without_motion_blur_omits_motion_blur_topology() {
 #[test]
 fn mixed_view_family_retains_motion_blur_when_any_view_can_use_it() {
     let mut backend = RenderBackend::new();
-    backend.renderer_settings = Some(settings_handle(PostProcessingSettings::default()));
+    let mut settings = PostProcessingSettings::default();
+    settings.motion_blur.enabled = true;
+    backend.renderer_settings = Some(settings_handle(settings));
     let mut requirements = camera_readback_without_motion_blur_requirements();
     requirements.include_profile(RenderPathProfile::desktop_main(), false);
 

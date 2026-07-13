@@ -1,9 +1,8 @@
 //! Retained instance-plan cache for world-mesh forward preparation.
 
-use std::collections::VecDeque;
-
 use hashbrown::HashMap;
 use parking_lot::Mutex;
+use std::sync::Arc;
 
 use crate::cpu_parallelism::RENDER_COMMAND_CHUNK_DRAWS;
 use crate::graph_inputs::OffscreenWriteTarget;
@@ -53,8 +52,8 @@ pub(crate) struct WorldMeshForwardInstancePlanCache {
 
 #[derive(Debug, Default)]
 struct WorldMeshForwardInstancePlanCacheInner {
-    entries: HashMap<WorldMeshForwardInstancePlanCacheKey, InstancePlan>,
-    recency: VecDeque<WorldMeshForwardInstancePlanCacheKey>,
+    entries: HashMap<WorldMeshForwardInstancePlanCacheKey, CachedInstancePlan>,
+    access_clock: u64,
     stats: WorldMeshForwardInstancePlanCacheStats,
     thrash: InstancePlanCacheThrashWindow,
 }
@@ -77,6 +76,12 @@ struct WorldMeshForwardInstancePlanCacheKey {
     pass_desc: MaterialPipelineDesc,
     front_face_flip: bool,
     offscreen_write_target: OffscreenWriteTarget,
+}
+
+#[derive(Debug)]
+struct CachedInstancePlan {
+    plan: Arc<InstancePlan>,
+    last_used: u64,
 }
 
 impl WorldMeshForwardInstancePlanCache {
@@ -107,7 +112,7 @@ impl WorldMeshForwardInstancePlanCache {
         supports_base_instance: bool,
         offscreen_write_target: OffscreenWriteTarget,
         build: impl FnOnce() -> InstancePlan,
-    ) -> InstancePlan {
+    ) -> Arc<InstancePlan> {
         let key = WorldMeshForwardInstancePlanCacheKey::new(
             draws,
             packets,
@@ -138,21 +143,25 @@ impl WorldMeshForwardInstancePlanCache {
         &self,
         key: WorldMeshForwardInstancePlanCacheKey,
         build: impl FnOnce() -> InstancePlan,
-    ) -> InstancePlan {
+    ) -> Arc<InstancePlan> {
         if let Some(plan) = self.entry(&key) {
             return plan;
         }
-        let plan = build();
-        self.insert(key, plan.clone());
+        let plan = Arc::new(build());
+        self.insert(key, Arc::clone(&plan));
         plan
     }
 
-    fn entry(&self, key: &WorldMeshForwardInstancePlanCacheKey) -> Option<InstancePlan> {
+    fn entry(&self, key: &WorldMeshForwardInstancePlanCacheKey) -> Option<Arc<InstancePlan>> {
         let mut inner = self.inner.lock();
-        let plan = inner.entries.get(key).cloned();
+        inner.access_clock = inner.access_clock.saturating_add(1);
+        let last_used = inner.access_clock;
+        let plan = inner.entries.get_mut(key).map(|entry| {
+            entry.last_used = last_used;
+            Arc::clone(&entry.plan)
+        });
         if plan.is_some() {
             inner.stats.hits = inner.stats.hits.saturating_add(1);
-            inner.recency.push_back(key.clone());
             inner.thrash.record_hit();
         } else {
             inner.stats.misses = inner.stats.misses.saturating_add(1);
@@ -165,19 +174,27 @@ impl WorldMeshForwardInstancePlanCache {
         plan
     }
 
-    fn insert(&self, key: WorldMeshForwardInstancePlanCacheKey, plan: InstancePlan) {
+    fn insert(&self, key: WorldMeshForwardInstancePlanCacheKey, plan: Arc<InstancePlan>) {
         let mut inner = self.inner.lock();
+        inner.access_clock = inner.access_clock.saturating_add(1);
+        let last_used = inner.access_clock;
         if let Some(entry) = inner.entries.get_mut(&key) {
-            *entry = plan;
-            inner.recency.push_back(key);
+            entry.plan = plan;
+            entry.last_used = last_used;
             drop(inner);
             return;
         }
-        inner.entries.insert(key.clone(), plan);
-        inner.recency.push_back(key);
+        inner
+            .entries
+            .insert(key, CachedInstancePlan { plan, last_used });
         inner.stats.insertions = inner.stats.insertions.saturating_add(1);
         while inner.entries.len() > WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_CAPACITY {
-            let Some(candidate) = inner.recency.pop_front() else {
+            let Some(candidate) = inner
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(key, _)| key.clone())
+            else {
                 break;
             };
             if inner.entries.remove(&candidate).is_some() {

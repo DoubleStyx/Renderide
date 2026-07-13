@@ -26,6 +26,7 @@ use crate::shared::RendererCommand;
 const SEND_BUFFER_CAP: usize = 65536;
 const INBOUND_PUMP_IDLE_WAIT: Duration = Duration::from_millis(10);
 const INBOUND_PUMP_BUFFERED_MESSAGES: usize = 1024;
+const INBOUND_BACKGROUND_DRAIN_MAX_MESSAGES: usize = 256;
 
 /// Log prefix used when [`encode_command`] overflows the send buffer on the renderer side.
 const ENCODE_OVERFLOW_LOG_PREFIX: &str = "IPC outgoing send: encode overflow";
@@ -308,6 +309,7 @@ impl DualQueueIpc {
                 &mut self.entity_pool,
                 out,
                 INVALID_MESSAGE_LOG_PREFIX,
+                usize::MAX,
             )
         };
         let background = {
@@ -317,6 +319,7 @@ impl DualQueueIpc {
                 &mut self.entity_pool,
                 out,
                 INVALID_MESSAGE_LOG_PREFIX,
+                INBOUND_BACKGROUND_DRAIN_MAX_MESSAGES,
             )
         };
         DualQueueDrainStats {
@@ -430,12 +433,14 @@ impl DualQueueIpc {
                 &mut self.entity_pool,
                 out,
                 INVALID_MESSAGE_LOG_PREFIX,
+                usize::MAX,
             ));
             let background = drain_timed_receiver(
                 self.inbound.background_rx.as_ref(),
                 &mut self.entity_pool,
                 out,
                 INVALID_MESSAGE_LOG_PREFIX,
+                INBOUND_BACKGROUND_DRAIN_MAX_MESSAGES,
             );
             DualQueueDrainStats {
                 primary,
@@ -615,12 +620,16 @@ fn drain_timed_receiver(
     pool: &mut DefaultEntityPool,
     out: &mut Vec<TimedRendererCommand>,
     invalid_log_prefix: &'static str,
+    max_messages: usize,
 ) -> IpcDrainStats {
     let mut stats = IpcDrainStats::default();
     let Some(rx) = rx else {
         return stats;
     };
-    while let Ok(msg) = rx.try_recv() {
+    for _ in 0..max_messages {
+        let Ok(msg) = rx.try_recv() else {
+            break;
+        };
         drain_timed_message(msg, pool, out, invalid_log_prefix, &mut stats);
     }
     stats
@@ -685,14 +694,43 @@ fn send_on_publisher(
 mod timed_ipc_tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
-    use super::DualQueueIpc;
+    use super::{DualQueueIpc, RawTimedIpcMessage, drain_timed_receiver, encode_command};
     use crate::ipc::connection::ConnectionParams;
     use crate::ipc::host_dual_queue::HostDualQueueIpc;
+    use crate::packing::default_entity_pool::DefaultEntityPool;
     use crate::shared::{FrameSubmitData, KeepAlive, QualityConfig, RendererCommand};
 
     static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    fn raw_keep_alive() -> RawTimedIpcMessage {
+        let mut command = RendererCommand::KeepAlive(KeepAlive::default());
+        let mut payload = vec![0; 1024];
+        let len = encode_command(&mut command, &mut payload, "test encode");
+        payload.truncate(len);
+        RawTimedIpcMessage {
+            payload,
+            received_at: Instant::now(),
+        }
+    }
+
+    #[test]
+    fn timed_receiver_limit_leaves_excess_messages_queued() {
+        let (tx, rx) = mpsc::sync_channel(4);
+        tx.send(raw_keep_alive()).expect("send first");
+        tx.send(raw_keep_alive()).expect("send second");
+        tx.send(raw_keep_alive()).expect("send third");
+        let mut pool = DefaultEntityPool;
+        let mut out = Vec::new();
+
+        let stats = drain_timed_receiver(Some(&rx), &mut pool, &mut out, "test", 2);
+
+        assert_eq!(stats.messages, 2);
+        assert_eq!(out.len(), 2);
+        assert!(rx.try_recv().is_ok());
+    }
 
     fn unique_params() -> (ConnectionParams, PathBuf) {
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);

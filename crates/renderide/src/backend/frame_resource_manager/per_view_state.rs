@@ -44,6 +44,8 @@ pub struct PerViewFrameState {
     ///
     /// Sized `CLUSTER_PARAMS_UNIFORM_SIZE x eye_multiplier`. Must be per-view -- see struct doc.
     pub cluster_params_buffer: wgpu::Buffer,
+    /// Incremented whenever [`Self::cluster_params_buffer`] is replaced. -xlinka
+    pub(super) cluster_params_version: u64,
     /// View-local depth/color snapshots sampled by embedded material helper passes.
     pub(super) scene_snapshots: PerViewSceneSnapshots,
     /// Shared cluster cache version at which [`Self::frame_bind_group`] was last built.

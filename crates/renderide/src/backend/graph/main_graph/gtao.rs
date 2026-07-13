@@ -21,7 +21,7 @@ pub(super) struct GtaoNode {
 pub(super) fn gtao_post_processing_active(
     settings: &crate::config::PostProcessingSettings,
 ) -> bool {
-    settings.enabled && settings.gtao.enabled
+    settings.enabled && settings.gtao.is_effectively_enabled()
 }
 
 fn create_gtao_view_normal_transients(

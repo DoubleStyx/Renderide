@@ -1,6 +1,7 @@
 //! Backend frame-plan helpers for world-mesh forward passes.
 
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 use hashbrown::HashMap;
 
@@ -100,7 +101,7 @@ pub(crate) struct WorldMeshForwardPrepareInputs<'a, 'frame> {
 
 struct PackedForwardDraws {
     draws: Vec<WorldMeshDrawItem>,
-    plan: InstancePlan,
+    plan: Arc<InstancePlan>,
     overlay_view_proj: glam::Mat4,
     precomputed_batches: Vec<MaterialBatchPacket>,
 }
@@ -564,7 +565,7 @@ fn pack_forward_draws_for_view(
 fn build_or_reuse_forward_instance_plan(
     cache: &WorldMeshForwardInstancePlanCache,
     inputs: ForwardInstancePlanBuildInputs<'_>,
-) -> InstancePlan {
+) -> Arc<InstancePlan> {
     let ForwardInstancePlanBuildInputs {
         draws,
         submission_classes,
@@ -576,16 +577,18 @@ fn build_or_reuse_forward_instance_plan(
         scratch,
     } = inputs;
     if !cache.should_probe_cache(draws.len(), precomputed_batches.len()) {
-        return build_forward_instance_plan(ForwardInstancePlanBuildInputs {
-            draws,
-            submission_classes,
-            precomputed_batches,
-            pipeline,
-            supports_base_instance,
-            shader_perm,
-            offscreen_write_target,
-            scratch,
-        });
+        return Arc::new(build_forward_instance_plan(
+            ForwardInstancePlanBuildInputs {
+                draws,
+                submission_classes,
+                precomputed_batches,
+                pipeline,
+                supports_base_instance,
+                shader_perm,
+                offscreen_write_target,
+                scratch,
+            },
+        ));
     }
     profiling::scope!("world_mesh::prepare_frame::instance_plan_cache_fingerprint");
     cache.get_or_build_plan(

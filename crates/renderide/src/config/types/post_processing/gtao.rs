@@ -83,26 +83,35 @@ impl Default for GtaoSettings {
         Self {
             enabled: true,
             quality_level: 2,
-            slice_count_override: 4,
-            resolution_divisor: 1,
+            slice_count_override: 0,
+            resolution_divisor: 2,
             radius_meters: 1.0,
             radius_multiplier: 1.457,
             intensity: 1.0,
             max_pixel_radius: 256.0,
-            step_count: 4,
+            step_count: 0,
             falloff_range: 1.0,
             sample_distribution_power: 2.0,
             thin_occluder_compensation: 0.0,
             final_value_power: 2.2,
             depth_mip_sampling_offset: 3.3,
             albedo_multibounce: 0.0,
-            denoise_passes: 6,
+            denoise_passes: 2,
             denoise_blur_beta: 1.2,
         }
     }
 }
 
 impl GtaoSettings {
+    /// Returns whether GTAO can produce a visible result. -xlinka
+    pub fn is_effectively_enabled(self) -> bool {
+        self.enabled
+            && self.radius_meters.is_finite()
+            && self.radius_meters > 0.0
+            && self.intensity.is_finite()
+            && self.intensity > 0.0
+    }
+
     /// Returns the clamped quality preset index.
     pub fn effective_quality_level(self) -> u32 {
         self.quality_level.min(GTAO_MAX_QUALITY_LEVEL)
@@ -116,7 +125,11 @@ impl GtaoSettings {
 
     /// Returns the clamped denoise pass count used by graph topology and shader dispatch.
     pub fn effective_denoise_passes(self) -> u32 {
-        self.denoise_passes.min(GTAO_MAX_DENOISE_PASSES)
+        if self.denoise_blur_beta.is_finite() && self.denoise_blur_beta > 0.0 {
+            self.denoise_passes.min(GTAO_MAX_DENOISE_PASSES)
+        } else {
+            0
+        }
     }
 
     /// Returns the effective `(slice_count, steps_per_slice)` sample layout.

@@ -141,11 +141,11 @@ mod tests {
     }
 
     #[test]
-    fn motion_blur_defaults_to_desktop_enabled_vr_opt_in() {
+    fn motion_blur_defaults_to_disabled_vr_opt_in() {
         let motion_blur = MotionBlurSettings::default();
 
-        assert!(motion_blur.enabled);
+        assert!(!motion_blur.enabled);
         assert!(!motion_blur.allow_vr);
-        assert!(motion_blur.is_effectively_enabled());
+        assert!(!motion_blur.is_effectively_enabled());
     }
 }

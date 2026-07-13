@@ -99,15 +99,6 @@ impl RingView {
         let segments = WrappedSegments::new(offset, self.capacity, data.len());
         segments.copy_to_ring(self.ptr, data);
     }
-
-    /// Zero-fills `len` bytes at logical `offset`, wrapping at `capacity`.
-    pub(crate) fn clear(self, offset: i64, len: usize) {
-        if len == 0 {
-            return;
-        }
-        let segments = WrappedSegments::new(offset, self.capacity, len);
-        segments.clear_ring(self.ptr);
-    }
 }
 
 /// One or two physical byte spans for a logical ring range.
@@ -172,24 +163,6 @@ impl WrappedSegments {
             // destination are distinct allocations under the queue wire protocol.
             unsafe {
                 std::ptr::copy_nonoverlapping(data.as_ptr().add(self.first), ring_ptr, self.second);
-            }
-        }
-    }
-
-    /// Zero-fills the described bytes at `ring_ptr`.
-    fn clear_ring(self, ring_ptr: *mut u8) {
-        if self.first > 0 {
-            // SAFETY: `new` guarantees `phys + first <= capacity`; the slot is guarded by the
-            // single-reader consumption protocol.
-            unsafe {
-                std::ptr::write_bytes(ring_ptr.add(self.phys), 0, self.first);
-            }
-        }
-        if self.second > 0 {
-            // SAFETY: `new` guarantees the wrapped segment starts at the ring base and fits the
-            // caller-constrained logical range.
-            unsafe {
-                std::ptr::write_bytes(ring_ptr, 0, self.second);
             }
         }
     }
@@ -314,15 +287,6 @@ mod tests {
     }
 
     #[test]
-    fn clear_zero_len_is_noop() {
-        let mut buf = [5u8; 4];
-        // SAFETY: see module `# Safety (tests)` -- `buf` outlives `ring`, capacity matches length.
-        let ring = unsafe { RingView::from_raw(buf.as_mut_ptr(), 4) };
-        ring.clear(0, 0);
-        assert_eq!(buf, [5u8; 4]);
-    }
-
-    #[test]
     fn read_spans_wrap_when_offset_near_capacity_end() {
         let buf = [10u8, 20u8, 30u8, 40u8, 50u8];
         // SAFETY: read-only test; `buf` outlives `ring`, capacity matches length.
@@ -338,15 +302,6 @@ mod tests {
         let ring = unsafe { RingView::from_raw(buf.as_mut_ptr(), 5) };
         ring.write(-2, &[1, 2, 3, 4]);
         assert_eq!(buf, [3, 4, 0, 1, 2]);
-    }
-
-    #[test]
-    fn clear_spans_wrap() {
-        let mut buf = [9u8; 6];
-        // SAFETY: see module `# Safety (tests)` -- `buf` outlives `ring`, capacity matches length.
-        let ring = unsafe { RingView::from_raw(buf.as_mut_ptr(), 6) };
-        ring.clear(4, 4);
-        assert_eq!(buf, [0u8, 0u8, 9u8, 9u8, 0u8, 0u8]);
     }
 
     #[test]

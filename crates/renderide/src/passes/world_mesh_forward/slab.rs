@@ -84,8 +84,8 @@ pub(super) fn pack_and_upload_per_draw_slab(
     // Step 2: pack VP uniforms in `slab_layout` order and enqueue the storage-buffer upload.
     let mut uploaded = false;
     let mut pack_and_upload = |uniforms: &mut Vec<PaddedPerDrawUniforms>| {
-        uniforms.clear();
         uniforms.resize_with(inputs.draws.len(), PaddedPerDrawUniforms::zeroed);
+        uniforms.truncate(inputs.draws.len());
 
         pack_per_draw_vp_uniforms(uniforms, &inputs, scene, hc);
 

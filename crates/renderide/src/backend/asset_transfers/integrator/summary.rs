@@ -41,6 +41,8 @@ pub struct AssetIntegrationDrainSummary {
     pub processed_render_tasks: u32,
     /// Number of particle-lane queue steps processed during the drain.
     pub processed_particle_tasks: u32,
+    /// Whether main-lane work exceeded the emergency budget. -xlinka
+    pub main_budget_exhausted: bool,
     /// Whether high-priority work exceeded the emergency budget.
     pub high_priority_budget_exhausted: bool,
     /// Whether normal-priority work exceeded the frame budget.
@@ -82,6 +84,7 @@ impl AssetIntegrationDrainSummary {
         self.render_after = asset.integrator.render.len();
         self.particle_after = asset.integrator.particle.len();
         self.gpu_ready = finish.gpu_ready;
+        self.main_budget_exhausted = finish.budgets.main;
         self.high_priority_budget_exhausted = finish.budgets.high_priority;
         self.normal_priority_budget_exhausted = finish.budgets.normal_priority;
         self.render_budget_exhausted = finish.budgets.render;
@@ -120,7 +123,8 @@ impl AssetIntegrationDrainSummary {
 
     /// Whether any budget ceiling was reached while work remained queued.
     pub fn budget_exhausted(self) -> bool {
-        self.high_priority_budget_exhausted
+        self.main_budget_exhausted
+            || self.high_priority_budget_exhausted
             || self.normal_priority_budget_exhausted
             || self.render_budget_exhausted
             || self.particle_budget_exhausted
@@ -130,6 +134,7 @@ impl AssetIntegrationDrainSummary {
 /// Per-lane budget exhaustion flags collected during a drain.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct BudgetExhaustion {
+    pub(super) main: bool,
     pub(super) high_priority: bool,
     pub(super) normal_priority: bool,
     pub(super) render: bool,

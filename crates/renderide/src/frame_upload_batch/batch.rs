@@ -107,6 +107,13 @@ impl FrameUploadBatch {
         }
     }
 
+    pub(crate) fn begin_frame(&self) {
+        let mut recorded = self.recorded.lock();
+        recorded.writes.clear();
+        recorded.bytes.clear();
+        self.fallback_sequence.store(0, Ordering::Relaxed);
+    }
+
     /// Enters `scope` for the current thread until the returned guard is dropped.
     pub(crate) fn enter_scope(&self, scope: FrameUploadScope) -> FrameUploadScopeGuard {
         let previous_scope = CURRENT_UPLOAD_SCOPE.with(|current| {

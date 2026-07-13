@@ -314,7 +314,13 @@ fn run_integration_lanes(
     normal_deadline: Instant,
     high_priority_deadline: Instant,
 ) -> IntegrationLaneOutcomes {
-    let main = drain_main_asset_tasks(asset, materials, gpu, shm, ipc);
+    let main = drain_main_asset_tasks(asset, materials, gpu, shm, ipc, high_priority_deadline);
+    if main.pending {
+        logger::trace!(
+            "asset integrator: main-lane budget exhausted with {} task(s) pending",
+            asset.integrator.main.len()
+        );
+    }
 
     let render = drain_render_asset_tasks(asset, materials, gpu, shm, ipc, normal_deadline);
     if render.pending {
@@ -406,6 +412,7 @@ fn finalize_drain(
         DrainFinishState {
             gpu_ready: outcomes.gpu_ready,
             budgets: BudgetExhaustion {
+                main: outcomes.integration.main.pending,
                 high_priority: outcomes.integration.high_priority.pending,
                 normal_priority: outcomes.integration.normal_priority.pending,
                 render: outcomes.integration.render.pending,
@@ -462,13 +469,14 @@ fn drain_normal_priority_asset_tasks(
     )
 }
 
-/// Drains renderer-main-thread tasks until empty.
+/// Drains renderer-main-thread tasks until empty or the emergency ceiling is hit.
 fn drain_main_asset_tasks(
     asset: &mut AssetTransferQueue,
     materials: &mut MaterialSystem,
     gpu: Option<&AssetUploadGpuContext<'_>>,
     shm: &mut SharedMemoryAccessor,
     ipc: &mut Option<&mut DualQueueIpc>,
+    main_deadline: Instant,
 ) -> LaneDrainOutcome {
     profiling::scope!("asset::main_drain");
     drain_lane(
@@ -477,7 +485,7 @@ fn drain_main_asset_tasks(
         gpu,
         shm,
         ipc,
-        Instant::now() + Duration::from_secs(3600),
+        main_deadline,
         AssetTaskLane::Main,
     )
 }

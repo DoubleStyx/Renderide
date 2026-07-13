@@ -193,11 +193,12 @@ impl MaterialPropertyStore {
         property_id: i32,
         value: MaterialPropertyValue,
     ) {
+        let properties = self.material_properties.entry(material_id).or_default();
+        if properties.get(&property_id) == Some(&value) {
+            return;
+        }
+        properties.insert(property_id, value);
         self.bump_material_generation(material_id);
-        self.material_properties
-            .entry(material_id)
-            .or_default()
-            .insert(property_id, value);
     }
 
     /// Sets a property on a **property block** asset.
@@ -207,11 +208,12 @@ impl MaterialPropertyStore {
         property_id: i32,
         value: MaterialPropertyValue,
     ) {
+        let properties = self.property_block_properties.entry(block_id).or_default();
+        if properties.get(&property_id) == Some(&value) {
+            return;
+        }
+        properties.insert(property_id, value);
         self.bump_property_block_generation(block_id);
-        self.property_block_properties
-            .entry(block_id)
-            .or_default()
-            .insert(property_id, value);
     }
 
     /// Gets a material-side property.
@@ -262,9 +264,12 @@ impl MaterialPropertyStore {
 
     /// Records `set_shader` for a material (`property_id` on wire is the shader asset id).
     pub fn set_shader_asset_for_material(&mut self, material_id: i32, shader_asset_id: i32) {
-        self.bump_material_generation(material_id);
+        if self.shader_asset_by_material.get(&material_id) == Some(&shader_asset_id) {
+            return;
+        }
         self.shader_asset_by_material
             .insert(material_id, shader_asset_id);
+        self.bump_material_generation(material_id);
     }
 
     /// Shader asset id from the last material-side `set_shader`.
@@ -418,6 +423,25 @@ mod material_dictionary_tests {
         assert_eq!(store.mutation_generation(ids), g1);
         store.set_shader_asset_for_material(3, 99);
         assert_ne!(store.mutation_generation(ids), g1);
+    }
+
+    #[test]
+    fn identical_writes_do_not_bump_generations() {
+        let mut store = MaterialPropertyStore::new();
+        store.set_material(3, 7, MaterialPropertyValue::Float(1.0));
+        store.set_property_block(4, 8, MaterialPropertyValue::Float4([1.0; 4]));
+        store.set_shader_asset_for_material(3, 99);
+        let material_generation = store.material_generation(3);
+        let block_generation = store.property_block_generation(4);
+        let global_generation = store.global_generation();
+
+        store.set_material(3, 7, MaterialPropertyValue::Float(1.0));
+        store.set_property_block(4, 8, MaterialPropertyValue::Float4([1.0; 4]));
+        store.set_shader_asset_for_material(3, 99);
+
+        assert_eq!(store.material_generation(3), material_generation);
+        assert_eq!(store.property_block_generation(4), block_generation);
+        assert_eq!(store.global_generation(), global_generation);
     }
 
     #[test]

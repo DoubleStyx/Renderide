@@ -827,8 +827,8 @@ impl FrameGpuResources {
             return;
         }
         self.shadows.with_scratch(|uniforms| {
-            uniforms.clear();
             uniforms.resize_with(plan.requested_draw_slots, PaddedShadowCasterDraw::zeroed);
+            uniforms.truncate(plan.requested_draw_slots);
             for caster_set in &plan.caster_sets {
                 let start = caster_set.slab_slot_offset;
                 let Some(end) = start.checked_add(caster_set.draws.len()) else {
@@ -853,8 +853,8 @@ impl FrameGpuResources {
             return;
         }
         let mut layer_scratch = self.shadows.layer_scratch.lock();
-        layer_scratch.clear();
         layer_scratch.resize_with(plan.render_views.len(), PaddedShadowLayerUniforms::zeroed);
+        layer_scratch.truncate(plan.render_views.len());
         for view in &plan.render_views {
             let Some(slot) = layer_scratch.get_mut(view.layer as usize) else {
                 continue;

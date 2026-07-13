@@ -11,6 +11,7 @@ use super::schedule::{FrameSchedule, ScheduleHudSnapshot};
 use super::validation::GraphValidationReport;
 use crate::camera::ViewId;
 use crate::frame_contract::{OffscreenWriteTarget, ViewWinding};
+use crate::frame_upload_batch::FrameUploadBatch;
 use crate::graph_inputs::GraphSceneView;
 use crate::render_graph::RenderGraphValidationMode;
 
@@ -126,6 +127,7 @@ pub struct CompiledRenderGraph {
     /// When this graph is the main frame graph from [`super::build_main_graph`], transient handles
     /// for the MSAA depth and R32-float depth-resolve scratch resources.
     pub(super) main_graph_msaa_transient_handles: Option<[TextureHandle; 2]>,
+    pub(super) upload_batch: FrameUploadBatch,
 }
 
 pub(super) struct ResolvedView<'a> {

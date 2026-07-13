@@ -61,10 +61,10 @@ impl MotionBlurSettings {
 impl Default for MotionBlurSettings {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             allow_vr: false,
             shutter_angle: 0.5,
-            sample_count: 16,
+            sample_count: 8,
             max_velocity_pixels: 256.0,
         }
     }

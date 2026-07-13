@@ -113,22 +113,77 @@ impl CompiledRenderGraph {
             return Ok(());
         }
 
-        let device_arc = gpu.device().clone();
-        let queue_arc = gpu.queue().clone();
-        let limits_arc = gpu.limits().clone();
-        let device = device_arc.as_ref();
-        let gpu_limits = limits_arc.as_ref();
+        let upload_batch = std::mem::take(&mut self.upload_batch);
+        upload_batch.begin_frame();
+        let execute_result = (|| {
+            let device_arc = gpu.device().clone();
+            let queue_arc = gpu.queue().clone();
+            let limits_arc = gpu.limits().clone();
+            let device = device_arc.as_ref();
+            let gpu_limits = limits_arc.as_ref();
 
-        let mut command_diagnostics = CommandEncodingDiagnostics::new(self, views.len());
+            let mut command_diagnostics = CommandEncodingDiagnostics::new(self, views.len());
 
-        let mut transient_by_key: HashMap<GraphResolveKey, GraphResolvedResources> = HashMap::new();
+            let mut transient_by_key: HashMap<GraphResolveKey, GraphResolvedResources> =
+                HashMap::new();
 
-        // Deferred graph upload sink shared by pre-record, frame-global, and per-view paths.
-        // Drained onto the main thread after all recording completes and before submit.
-        let upload_batch = FrameUploadBatch::new();
+            let backbuffer_view_holder = None;
+            let mut per_view_work_items = {
+                let mut mv_ctx = MultiViewExecutionContext {
+                    gpu,
+                    scene,
+                    backend,
+                    device,
+                    gpu_limits,
+                    backbuffer_view_holder: &backbuffer_view_holder,
+                };
+                self.begin_generation_and_pre_resolve_transients(
+                    &mut mv_ctx,
+                    views,
+                    &mut transient_by_key,
+                    &mut command_diagnostics,
+                )?;
+                let (per_view_work_items, prepare_resources_ms) =
+                    self.prepare_resources_and_work_items(&mut mv_ctx, views, &upload_batch)?;
+                command_diagnostics.prepare_resources_ms = prepare_resources_ms;
+                per_view_work_items
+            };
+            let command_recording_mode = backend.command_recording_mode();
+            let recording_plan = self.graph_command_recording_plan(
+                views,
+                &per_view_work_items,
+                command_recording_mode,
+            );
+            command_diagnostics.apply_recording_plan(recording_plan);
 
-        let backbuffer_view_holder = None;
-        let mut per_view_work_items = {
+            let (mut swapchain_scope, backbuffer_view_holder) = match self
+                .late_acquire_swapchain_for_prepared_views(gpu, views, &mut per_view_work_items)
+            {
+                Ok(Some(acquired)) => acquired,
+                Ok(None) => {
+                    Self::release_transients_after_early_exit(
+                        gpu,
+                        scene,
+                        backend,
+                        device,
+                        gpu_limits,
+                        transient_by_key,
+                    );
+                    return Ok(());
+                }
+                Err(err) => {
+                    Self::release_transients_after_early_exit(
+                        gpu,
+                        scene,
+                        backend,
+                        device,
+                        gpu_limits,
+                        transient_by_key,
+                    );
+                    return Err(err);
+                }
+            };
+
             let mut mv_ctx = MultiViewExecutionContext {
                 gpu,
                 scene,
@@ -137,75 +192,27 @@ impl CompiledRenderGraph {
                 gpu_limits,
                 backbuffer_view_holder: &backbuffer_view_holder,
             };
-            self.begin_generation_and_pre_resolve_transients(
+
+            self.record_submit_and_finalize_multi_view(
                 &mut mv_ctx,
-                views,
-                &mut transient_by_key,
+                RecordSubmitFinalizeInputs {
+                    views,
+                    frame_global,
+                    transient_by_key,
+                    upload_batch: &upload_batch,
+                    per_view_work_items,
+                    recording_plan,
+                    swapchain_scope: &mut swapchain_scope,
+                    backbuffer_view_holder: &backbuffer_view_holder,
+                    queue_arc: &queue_arc,
+                    device,
+                },
                 &mut command_diagnostics,
-            )?;
-            let (per_view_work_items, prepare_resources_ms) =
-                self.prepare_resources_and_work_items(&mut mv_ctx, views, &upload_batch)?;
-            command_diagnostics.prepare_resources_ms = prepare_resources_ms;
-            per_view_work_items
-        };
-        let command_recording_mode = backend.command_recording_mode();
-        let recording_plan =
-            self.graph_command_recording_plan(views, &per_view_work_items, command_recording_mode);
-        command_diagnostics.apply_recording_plan(recording_plan);
-
-        let (mut swapchain_scope, backbuffer_view_holder) = match self
-            .late_acquire_swapchain_for_prepared_views(gpu, views, &mut per_view_work_items)
-        {
-            Ok(Some(acquired)) => acquired,
-            Ok(None) => {
-                Self::release_transients_after_early_exit(
-                    gpu,
-                    scene,
-                    backend,
-                    device,
-                    gpu_limits,
-                    transient_by_key,
-                );
-                return Ok(());
-            }
-            Err(err) => {
-                Self::release_transients_after_early_exit(
-                    gpu,
-                    scene,
-                    backend,
-                    device,
-                    gpu_limits,
-                    transient_by_key,
-                );
-                return Err(err);
-            }
-        };
-
-        let mut mv_ctx = MultiViewExecutionContext {
-            gpu,
-            scene,
-            backend,
-            device,
-            gpu_limits,
-            backbuffer_view_holder: &backbuffer_view_holder,
-        };
-
-        self.record_submit_and_finalize_multi_view(
-            &mut mv_ctx,
-            RecordSubmitFinalizeInputs {
-                views,
-                frame_global,
-                transient_by_key,
-                upload_batch: &upload_batch,
-                per_view_work_items,
-                recording_plan,
-                swapchain_scope: &mut swapchain_scope,
-                backbuffer_view_holder: &backbuffer_view_holder,
-                queue_arc: &queue_arc,
-                device,
-            },
-            &mut command_diagnostics,
-        )
+            )
+        })();
+        upload_batch.begin_frame();
+        self.upload_batch = upload_batch;
+        execute_result
     }
 
     fn record_submit_and_finalize_multi_view(

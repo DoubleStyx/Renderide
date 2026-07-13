@@ -87,9 +87,12 @@ pub(super) fn apply_transform_parent_updates_extracted(
         if pu.transform_id < 0 {
             break;
         }
-        if (pu.transform_id as usize) < space.node_parents.len() {
-            space.node_parents[pu.transform_id as usize] = pu.new_parent_id;
-            changed.mark(pu.transform_id as usize);
+        let transform_index = pu.transform_id as usize;
+        if transform_index < space.node_parents.len()
+            && space.node_parents[transform_index] != pu.new_parent_id
+        {
+            space.node_parents[transform_index] = pu.new_parent_id;
+            changed.mark(transform_index);
             had_parent = true;
         }
     }

@@ -32,7 +32,8 @@ impl RendererRuntime {
         if self.tick_state.did_integrate_assets_this_tick() {
             return;
         }
-        let Some(summary) = self.run_asset_integration_pass(GpuQueueAccessMode::Blocking) else {
+        let Some(summary) = self.run_asset_integration_pass(GpuQueueAccessMode::NonBlocking, false)
+        else {
             return;
         };
         trace_asset_integration_summary(self.asset_integration_budget_ms(), summary);
@@ -66,7 +67,8 @@ impl RendererRuntime {
             }
             return false;
         }
-        let Some(summary) = self.run_asset_integration_pass(GpuQueueAccessMode::NonBlocking) else {
+        let Some(summary) = self.run_asset_integration_pass(GpuQueueAccessMode::NonBlocking, true)
+        else {
             return false;
         };
         let budget_ms = self.asset_integration_budget_ms();
@@ -94,7 +96,8 @@ impl RendererRuntime {
         if !self.backend.has_pending_asset_work() {
             return;
         }
-        let Some(summary) = self.run_asset_integration_pass(GpuQueueAccessMode::NonBlocking) else {
+        let Some(summary) = self.run_asset_integration_pass(GpuQueueAccessMode::NonBlocking, true)
+        else {
             return;
         };
         trace_asset_integration_summary(self.asset_integration_budget_ms(), summary);
@@ -123,16 +126,15 @@ impl RendererRuntime {
     fn run_asset_integration_pass(
         &mut self,
         queue_access_mode: GpuQueueAccessMode,
+        extend_particle_budget: bool,
     ) -> Option<crate::backend::AssetIntegrationDrainSummary> {
         let budget_ms = self.asset_integration_budget_ms();
         let now = Instant::now();
         let deadline = now + Duration::from_millis(u64::from(budget_ms));
-        let particle_deadline = match queue_access_mode {
-            GpuQueueAccessMode::Blocking => deadline,
-            GpuQueueAccessMode::NonBlocking => {
-                deadline
-                    + Duration::from_millis(u64::from(self.asset_particle_integration_budget_ms()))
-            }
+        let particle_deadline = if extend_particle_budget {
+            deadline + Duration::from_millis(u64::from(self.asset_particle_integration_budget_ms()))
+        } else {
+            deadline
         };
         let pending_asset_work = self.backend.has_pending_asset_work();
         let (shm, ipc) = self.frontend.transport_pair_mut();
@@ -195,7 +197,7 @@ fn trace_asset_integration_summary(
         return;
     }
     logger::trace!(
-        "asset integration: budget_ms={} gpu_ready={} elapsed_ms={:.3} particle_elapsed_ms={:.3} main {}->{} high {}->{} render {}->{} normal {}->{} particle {}->{} processed={} made_progress={} blocked_on_background={} exhausted_high={} exhausted_render={} exhausted_normal={} exhausted_particle={} peak_queued={}",
+        "asset integration: budget_ms={} gpu_ready={} elapsed_ms={:.3} particle_elapsed_ms={:.3} main {}->{} high {}->{} render {}->{} normal {}->{} particle {}->{} processed={} made_progress={} blocked_on_background={} exhausted_main={} exhausted_high={} exhausted_render={} exhausted_normal={} exhausted_particle={} peak_queued={}",
         budget_ms,
         summary.gpu_ready,
         summary.elapsed.as_secs_f64() * 1000.0,
@@ -213,6 +215,7 @@ fn trace_asset_integration_summary(
         summary.processed_tasks,
         summary.made_progress,
         summary.blocked_on_background,
+        summary.main_budget_exhausted,
         summary.high_priority_budget_exhausted,
         summary.render_budget_exhausted,
         summary.normal_priority_budget_exhausted,
@@ -238,12 +241,13 @@ fn trace_asset_integration_summary(
         && let Some(occurrence) = ASSET_INTEGRATION_BUDGET_LOG.should_log(4, 128)
     {
         logger::debug!(
-            "asset integration yielded with backlog: queued_before={} queued_after={} processed={} elapsed_ms={:.3} particle_elapsed_ms={:.3} exhausted_high={} exhausted_render={} exhausted_normal={} exhausted_particle={} occurrence={occurrence}",
+            "asset integration yielded with backlog: queued_before={} queued_after={} processed={} elapsed_ms={:.3} particle_elapsed_ms={:.3} exhausted_main={} exhausted_high={} exhausted_render={} exhausted_normal={} exhausted_particle={} occurrence={occurrence}",
             summary.total_before(),
             summary.total_after(),
             summary.processed_tasks,
             summary.elapsed.as_secs_f64() * 1000.0,
             summary.particle_elapsed.as_secs_f64() * 1000.0,
+            summary.main_budget_exhausted,
             summary.high_priority_budget_exhausted,
             summary.render_budget_exhausted,
             summary.normal_priority_budget_exhausted,

@@ -109,8 +109,22 @@ pub(super) fn queue_view_draws(
     let shadow_contexts =
         build_shadow_caster_draw_collection_contexts(setup, prepared, &dict, mesh_lod_bias);
     let world_draws = queue_prepared_draws_for_views_with_parallelism(&contexts, inner_parallelism);
-    let shadow_caster_draws =
-        queue_prepared_draws_for_views_with_parallelism(&shadow_contexts, inner_parallelism);
+    let mut queued_shadow_casters =
+        queue_prepared_draws_for_views_with_parallelism(&shadow_contexts, inner_parallelism)
+            .into_iter();
+    let shadow_caster_draws = prepared
+        .iter()
+        .map(|prep| {
+            if prep.render_shadows {
+                queued_shadow_casters
+                    .next()
+                    .unwrap_or_else(QueuedWorldMeshDraws::empty)
+            } else {
+                QueuedWorldMeshDraws::empty()
+            }
+        })
+        .collect::<Vec<_>>();
+    debug_assert!(queued_shadow_casters.next().is_none());
     let mut view_draws: Vec<QueuedViewDraws> = world_draws
         .into_iter()
         .zip(shadow_caster_draws)
@@ -164,6 +178,7 @@ fn build_shadow_caster_draw_collection_contexts<'a>(
     profiling::scope!("render::queue_view_draws::build_shadow_contexts");
     prepared
         .iter()
+        .filter(|prep| prep.render_shadows)
         .map(|prep| {
             build_draw_collection_context(
                 setup,

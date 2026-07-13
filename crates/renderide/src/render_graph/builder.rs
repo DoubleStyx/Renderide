@@ -405,6 +405,7 @@ impl GraphBuilder {
             validation_report,
             validation_mode: self.validation_mode,
             main_graph_msaa_transient_handles: None,
+            upload_batch: Default::default(),
         })
     }
 
@@ -454,6 +455,7 @@ impl GraphBuilder {
             validation_report: GraphValidationReport::new(self.validation_mode),
             validation_mode: self.validation_mode,
             main_graph_msaa_transient_handles: None,
+            upload_batch: Default::default(),
         }
     }
 

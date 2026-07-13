@@ -19,7 +19,9 @@ use crate::camera::ViewId;
 ///
 /// Uses [`parking_lot::Mutex`] to keep the `lock` API infallible -- the hot per-view
 /// recording path must not defensively `.expect()` on every access.
-pub(super) struct ClusteredLightBindGroupCache(Mutex<HashMap<ViewId, (u64, Arc<wgpu::BindGroup>)>>);
+pub(super) struct ClusteredLightBindGroupCache(
+    Mutex<HashMap<ViewId, ((u64, u64), Arc<wgpu::BindGroup>)>>,
+);
 
 impl std::fmt::Debug for ClusteredLightBindGroupCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -43,7 +45,7 @@ impl ClusteredLightBindGroupCache {
     pub(super) fn get_or_rebuild(
         &self,
         view_id: ViewId,
-        cluster_ver: u64,
+        cluster_ver: (u64, u64),
         create_fn: impl FnOnce() -> wgpu::BindGroup,
     ) -> Arc<wgpu::BindGroup> {
         let mut cache = self.0.lock();
@@ -73,9 +75,9 @@ impl ClusteredLightBindGroupCache {
 /// Extracted for unit testing without a GPU device.
 #[cfg(test)]
 fn needs_rebuild_for_version(
-    cache: &HashMap<ViewId, (u64, Arc<wgpu::BindGroup>)>,
+    cache: &HashMap<ViewId, ((u64, u64), Arc<wgpu::BindGroup>)>,
     view_id: ViewId,
-    cluster_ver: u64,
+    cluster_ver: (u64, u64),
 ) -> bool {
     cache
         .get(&view_id)
@@ -88,20 +90,20 @@ mod tests {
 
     #[test]
     fn missing_entry_triggers_rebuild() {
-        let cache: HashMap<ViewId, (u64, Arc<wgpu::BindGroup>)> = HashMap::new();
-        assert!(needs_rebuild_for_version(&cache, ViewId::Main, 1));
+        let cache: HashMap<ViewId, ((u64, u64), Arc<wgpu::BindGroup>)> = HashMap::new();
+        assert!(needs_rebuild_for_version(&cache, ViewId::Main, (1, 1)));
     }
 
     #[test]
     fn matching_version_suppresses_rebuild() {
         // We cannot create a real wgpu::BindGroup without a device, so we verify
         // the version-check helper logic directly.
-        let cache: HashMap<ViewId, (u64, Arc<wgpu::BindGroup>)> = HashMap::new();
+        let cache: HashMap<ViewId, ((u64, u64), Arc<wgpu::BindGroup>)> = HashMap::new();
 
         // Simulate an already-populated entry for version 5 (using a dummy slot --
         // this would fail if we actually ran the Arc::new path, but the test only
         // exercises the `needs_rebuild_for_version` pure function).
-        let version: u64 = 5;
+        let version = (5, 5);
         // Mark the slot as populated for version 5 without constructing a real BindGroup
         // by using the None-check branch: an entry is "present" iff it is in the map.
         // We cannot insert without a BindGroup, so we test that the absence branch fires:
@@ -119,9 +121,9 @@ mod tests {
     fn different_version_triggers_rebuild() {
         // Verify the is_none_or branch for version mismatch.
         // Uses only the pure logic function, not the Mutex wrapper.
-        let cache: HashMap<ViewId, (u64, Arc<wgpu::BindGroup>)> = HashMap::new();
+        let cache: HashMap<ViewId, ((u64, u64), Arc<wgpu::BindGroup>)> = HashMap::new();
         // Any version on an empty cache -> rebuild needed.
-        assert!(needs_rebuild_for_version(&cache, ViewId::Main, 0));
-        assert!(needs_rebuild_for_version(&cache, ViewId::Main, 99));
+        assert!(needs_rebuild_for_version(&cache, ViewId::Main, (0, 0)));
+        assert!(needs_rebuild_for_version(&cache, ViewId::Main, (99, 99)));
     }
 }

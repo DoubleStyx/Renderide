@@ -330,6 +330,7 @@ fn full_post_processing_orders_exposure_before_bloom_and_tonemap_last() {
         ..Default::default()
     };
     post.auto_exposure.enabled = true;
+    post.motion_blur.enabled = true;
     let mut key = smoke_key();
     key.post_processing = PostProcessChainSignature::from_settings(&post);
     let graph = build_main_graph(key, &post).expect("full post-processing graph");
@@ -381,6 +382,7 @@ fn agx_post_processing_orders_exposure_before_bloom_and_tonemap_last() {
     };
     post.gtao.enabled = false;
     post.auto_exposure.enabled = true;
+    post.motion_blur.enabled = true;
     let mut key = smoke_key();
     key.post_processing = PostProcessChainSignature::from_settings(&post);
     let graph = build_main_graph(key, &post).expect("agx post-processing graph");
