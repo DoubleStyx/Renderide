@@ -15,6 +15,7 @@ use crate::frame_upload_batch::GraphUploadSink;
 use crate::gpu::{
     GpuLimits, GpuShadowView, MAX_SHADOW_VIEWS, SHADOW_VIEW_KIND_POINT, SHADOW_VIEW_KIND_SPOT,
 };
+use crate::gpu_resource::DeferredBindGroupDrops;
 use crate::graph_inputs::{
     FrameGlobalPassSplitWorkload, FrameGlobalResourcePass, FrameGlobalSplitPassEncodeParams,
     ShadowAtlasEncodeParams,
@@ -343,14 +344,18 @@ impl ShadowAtlasResources {
         requested_resolution: u32,
         requested_layers: u32,
         requested_draw_slots: usize,
+        deferred_bind_group_drops: &DeferredBindGroupDrops,
     ) -> ShadowResourceSyncResult {
-        let _ = self
+        if let Some((_old_storage, old_bind_group)) = self
             .per_draw
-            .ensure_draw_slot_capacity(device, requested_draw_slots);
+            .ensure_draw_slot_capacity(device, requested_draw_slots)
+        {
+            deferred_bind_group_drops.defer(old_bind_group);
+        }
         let layers = requested_layers
             .max(1)
             .min(limits.wgpu.max_texture_array_layers.max(1));
-        self.ensure_layer_uniform_capacity(device, layers as usize);
+        self.ensure_layer_uniform_capacity(device, layers as usize, deferred_bind_group_drops);
         if !self.renderable {
             return self.sync_result(false);
         }
@@ -458,7 +463,12 @@ impl ShadowAtlasResources {
         }
     }
 
-    fn ensure_layer_uniform_capacity(&mut self, device: &wgpu::Device, need_layers: usize) {
+    fn ensure_layer_uniform_capacity(
+        &mut self,
+        device: &wgpu::Device,
+        need_layers: usize,
+        deferred_bind_group_drops: &DeferredBindGroupDrops,
+    ) {
         if need_layers <= self.layer_uniform_capacity {
             return;
         }
@@ -468,8 +478,10 @@ impl ShadowAtlasResources {
             .min(usize::try_from(u32::MAX).unwrap_or(usize::MAX));
         let (buffer, bind_group) =
             create_shadow_layer_uniforms(device, self.layer_uniform_layout.as_ref(), next);
-        self.layer_uniform_buffer = buffer;
-        self.layer_uniform_bind_group = bind_group;
+        let old_buffer = std::mem::replace(&mut self.layer_uniform_buffer, buffer);
+        let old_bind_group = std::mem::replace(&mut self.layer_uniform_bind_group, bind_group);
+        deferred_bind_group_drops.defer(old_bind_group);
+        drop(old_buffer);
         self.layer_uniform_capacity = next;
     }
 }

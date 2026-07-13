@@ -29,7 +29,7 @@ use super::texture_pools::EmbeddedTexturePools;
 use super::texture_resolve::default_embedded_sampler;
 use crate::frame_contract::OffscreenWriteTarget;
 use crate::frame_upload_batch::GraphUploadSink;
-use crate::gpu_resource::{AtomicCacheCounters, CacheStats, ShardedLru};
+use crate::gpu_resource::{AtomicCacheCounters, CacheStats, DeferredBindGroupDrops, ShardedLru};
 use crate::materials::host_data::{
     MaterialPropertyLookupIds, MaterialPropertyStore, PropertyIdRegistry,
 };
@@ -212,6 +212,7 @@ pub struct EmbeddedMaterialBindResources {
     /// `graph::per_view_fan_out`.
     bind_cache: ShardedLru<MaterialBindCacheKey, Arc<wgpu::BindGroup>>,
     bind_cache_stats: AtomicCacheCounters,
+    deferred_bind_group_drops: DeferredBindGroupDrops,
     sampler_cache: ShardedLru<EmbeddedSamplerCacheKey, Arc<wgpu::Sampler>>,
     /// Texture-debug HUD cache stays a single mutex: per-stem call frequency is low and the
     /// HUD does not run inside the per-view rayon fan-out, so sharding has no benefit here.
@@ -273,6 +274,7 @@ impl EmbeddedMaterialBindResources {
             uniform_arena_hasher: RandomState::new(),
             bind_cache: ShardedLru::new(max_cached_embedded_bind_groups(), EMBEDDED_CACHE_SHARDS),
             bind_cache_stats: AtomicCacheCounters::default(),
+            deferred_bind_group_drops: DeferredBindGroupDrops::new(),
             sampler_cache: ShardedLru::new(max_cached_embedded_samplers(), EMBEDDED_CACHE_SHARDS),
             texture_debug_cache: Mutex::new(LruCache::new(max_cached_texture_debug_ids())),
         })
@@ -512,7 +514,7 @@ impl EmbeddedMaterialBindResources {
         let evicted = self.bind_cache.put(final_bind_key, bind_group.clone());
         self.bind_cache_stats.note_insertion();
         if let Some(evicted) = evicted {
-            drop(evicted);
+            self.deferred_bind_group_drops.defer(evicted);
             self.bind_cache_stats.note_eviction();
             logger::trace!("EmbeddedMaterialBindResources: evicted LRU bind group cache entry");
         }
@@ -548,7 +550,9 @@ impl EmbeddedMaterialBindResources {
     }
 
     fn clear_bind_cache(&self) {
-        for _ in 0..self.bind_cache.clear() {
+        let evicted = self.bind_cache.drain_values();
+        for bind_group in evicted {
+            self.deferred_bind_group_drops.defer(bind_group);
             self.bind_cache_stats.note_eviction();
         }
     }

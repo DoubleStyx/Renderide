@@ -52,12 +52,11 @@ impl QueuedViewDraws {
         let desktop_overlay = self.desktop_overlay.map(|queued| {
             sort_and_package_one_view_draw_plan(queued, None, parallelism, command_cache)
         });
-        let shadow_casters = sort_and_package_one_view_draw_plan(
-            self.shadow_casters,
-            None,
-            parallelism,
-            command_cache,
-        );
+        let shadow_casters =
+            WorldMeshDrawPlan::Prefetched(Box::new(PrefetchedWorldMeshViewDraws::new(
+                self.shadow_casters.into_unarranged_collection(),
+                None,
+            )));
         ViewWorldMeshDrawPlans {
             world,
             shadow_casters,
@@ -108,10 +107,23 @@ pub(super) fn queue_view_draws(
         build_view_draw_collection_contexts(setup, prepared, &dict, &cull_inputs, mesh_lod_bias);
     let shadow_contexts =
         build_shadow_caster_draw_collection_contexts(setup, prepared, &dict, mesh_lod_bias);
-    let world_draws = queue_prepared_draws_for_views_with_parallelism(&contexts, inner_parallelism);
-    let mut queued_shadow_casters =
-        queue_prepared_draws_for_views_with_parallelism(&shadow_contexts, inner_parallelism)
-            .into_iter();
+    let overlap_world_and_shadows = prepared.len() == 1
+        && shadow_contexts.len() == 1
+        && FrameParallelPolicy::for_current_thread_pool()
+            .is_draw_heavy(max_prepared_draw_count.saturating_mul(2));
+    let (world_draws, queued_shadow_casters) = if overlap_world_and_shadows {
+        profiling::scope!("render::queue_view_draws::world_shadow_join");
+        rayon::join(
+            || queue_prepared_draws_for_views_with_parallelism(&contexts, inner_parallelism),
+            || queue_prepared_draws_for_views_with_parallelism(&shadow_contexts, inner_parallelism),
+        )
+    } else {
+        (
+            queue_prepared_draws_for_views_with_parallelism(&contexts, inner_parallelism),
+            queue_prepared_draws_for_views_with_parallelism(&shadow_contexts, inner_parallelism),
+        )
+    };
+    let mut queued_shadow_casters = queued_shadow_casters.into_iter();
     let shadow_caster_draws = prepared
         .iter()
         .map(|prep| {

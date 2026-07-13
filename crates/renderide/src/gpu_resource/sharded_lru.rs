@@ -62,13 +62,22 @@ impl<K: Eq + Hash, V> ShardedLru<K, V> {
 
     /// Removes every entry from every shard and returns the number of dropped entries.
     pub(crate) fn clear(&self) -> usize {
-        let mut dropped = 0usize;
+        let values = self.drain_values();
+        let dropped = values.len();
+        drop(values);
+        dropped
+    }
+
+    pub(crate) fn drain_values(&self) -> Vec<V> {
+        let mut values = Vec::new();
         for shard in &self.shards {
             let mut shard = shard.lock();
-            dropped = dropped.saturating_add(shard.len());
-            shard.clear();
+            values.reserve(shard.len());
+            while let Some((_key, value)) = shard.pop_lru() {
+                values.push(value);
+            }
         }
-        dropped
+        values
     }
 
     /// Returns the total number of entries currently retained across all shards.

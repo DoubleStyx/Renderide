@@ -13,7 +13,7 @@ use super::errors::SkyboxIblConvolveError;
 use super::key::source_max_lod;
 use super::pipeline_store::{PipelineSlot, PipelineStore};
 use super::resources::{
-    PendingBakeResources, copy_cube_mip0, create_full_array_sample_view, create_ibl_cube,
+    PendingBakeResources, copy_cube_mip0, create_full_cube_sample_view, create_ibl_cube,
 };
 
 /// Resources produced while encoding convolve passes and retained until submit completion.
@@ -31,7 +31,7 @@ struct ConvolverTextures {
     source_scratch_cube: super::resources::IblCubeTexture,
     /// Scratch target for filtered mip generation before stitching.
     filtered_scratch_cube: super::resources::IblCubeTexture,
-    /// Full-mip 2D-array view of [`Self::source_cube`].
+    /// Full-mip cube view of [`Self::source_cube`]. -xlinka
     source_sample_view: Arc<wgpu::TextureView>,
 }
 
@@ -56,7 +56,7 @@ impl ConvolverTextures {
             face_size,
             mip_levels,
         );
-        let source_sample_view = Arc::new(create_full_array_sample_view(
+        let source_sample_view = Arc::new(create_full_cube_sample_view(
             source_cube.texture.as_ref(),
             mip_levels,
         ));

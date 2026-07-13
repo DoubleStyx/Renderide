@@ -97,8 +97,15 @@ impl GraphPerDrawSlabResources for FrameResourceManager {
     ) -> Option<wgpu::Buffer> {
         let per_draw_slot = self.per_view_per_draw(view_id)?;
         let mut per_draw = per_draw_slot.lock();
-        let _ = per_draw.ensure_draw_slot_capacity(device, draw_count);
-        Some(per_draw.per_draw_storage.clone())
+        let replaced = per_draw.ensure_draw_slot_capacity(device, draw_count);
+        let storage = per_draw.per_draw_storage.clone();
+        drop(per_draw);
+        if let Some((_old_storage, old_bind_group)) = replaced
+            && let Some(fgpu) = self.frame_gpu.as_ref()
+        {
+            fgpu.defer_bind_group_drop(old_bind_group);
+        }
+        Some(storage)
     }
 
     fn with_per_view_per_draw_scratch(

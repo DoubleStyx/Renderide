@@ -259,8 +259,11 @@ impl FrameResourceManager {
                 refs,
                 &entry.scene_snapshots,
             );
-            entry.frame_bind_group = new_bg;
-            entry.named_scene_color_frame_bind_group = new_named_bg;
+            let old_bg = std::mem::replace(&mut entry.frame_bind_group, new_bg);
+            let old_named_bg =
+                std::mem::replace(&mut entry.named_scene_color_frame_bind_group, new_named_bg);
+            fgpu.defer_bind_group_drop(old_bg);
+            fgpu.defer_bind_group_drop(old_named_bg);
             versions.apply_to(entry);
         }
 
@@ -306,7 +309,13 @@ impl FrameResourceManager {
 
     /// Frees per-view frame bind resources for a view that is no longer active.
     pub fn retire_per_view_frame(&mut self, view_id: ViewId) {
-        self.per_view_frame.retire(view_id);
+        let Some(state) = self.per_view_frame.take(view_id) else {
+            return;
+        };
+        if let Some(fgpu) = self.frame_gpu.as_ref() {
+            fgpu.defer_bind_group_drop(state.frame_bind_group);
+            fgpu.defer_bind_group_drop(state.named_scene_color_frame_bind_group);
+        }
     }
 
     /// Returns the per-draw slab for the given view, creating it if it does not yet exist.
@@ -331,7 +340,12 @@ impl FrameResourceManager {
 
     /// Frees the per-draw slab for a view that is no longer active.
     pub fn retire_per_view_per_draw(&mut self, view_id: ViewId) {
-        self.per_view_draw.retire(view_id);
+        let Some(per_draw) = self.per_view_draw.take(view_id) else {
+            return;
+        };
+        if let Some(fgpu) = self.frame_gpu.as_ref() {
+            fgpu.defer_bind_group_drop(per_draw.into_inner().bind_group);
+        }
     }
 
     /// Returns the per-view scratch slot used for per-draw uniform packing, creating it on first use.
@@ -476,8 +490,11 @@ impl FrameResourceManager {
                 refs,
                 &entry.scene_snapshots,
             );
-            entry.frame_bind_group = new_bg;
-            entry.named_scene_color_frame_bind_group = new_named_bg;
+            let old_bg = std::mem::replace(&mut entry.frame_bind_group, new_bg);
+            let old_named_bg =
+                std::mem::replace(&mut entry.named_scene_color_frame_bind_group, new_named_bg);
+            fgpu.defer_bind_group_drop(old_bg);
+            fgpu.defer_bind_group_drop(old_named_bg);
             entry.last_light_cookie_resources_version = light_cookie_resources_version;
             entry.last_shadow_resources_version = shadow_resources_version;
         }

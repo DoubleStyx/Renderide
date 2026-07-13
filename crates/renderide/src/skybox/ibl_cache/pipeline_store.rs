@@ -79,7 +79,7 @@ impl PipelineStore {
                 &mut self.convolve,
                 device,
                 stem,
-                &mip0_input_layout_entries(wgpu::TextureViewDimension::D2Array),
+                &mip0_input_layout_entries(wgpu::TextureViewDimension::Cube),
             ),
         }
     }

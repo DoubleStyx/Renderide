@@ -68,6 +68,7 @@ impl ReflectionProbeServices {
         render_context: RenderingContext,
         reflection_probe_sh2_enabled: bool,
         max_local_reflection_probes: usize,
+        advance_sliced_ibl: bool,
     ) -> Option<ReflectionProbeSpecularResources> {
         self.specular
             .maintain(ReflectionProbeSpecularMaintainParams {
@@ -78,6 +79,7 @@ impl ReflectionProbeServices {
                 sh2_system: &mut self.sh2,
                 reflection_probe_sh2_enabled,
                 max_local_reflection_probes,
+                advance_sliced_ibl,
             });
         self.specular.resources()
     }

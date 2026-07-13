@@ -121,9 +121,9 @@ pub(crate) struct DepthPrepassDrawBatch<'a, 'b, 'c, 'd> {
 pub(crate) struct ShadowDepthDrawBatch<'a, 'b, 'c, 'd> {
     /// Active shadow-map render pass.
     pub rpass: &'a mut wgpu::RenderPass<'b>,
-    /// Pre-built shadow-caster draw groups in ascending representative order. -xlinka
+    /// Pre-built shadow-caster groups in shadow pipeline and mesh order. -xlinka
     pub groups: &'c [&'c [DrawGroup]],
-    /// Full sorted shadow-caster draw list for the layer.
+    /// Full collected shadow-caster draw list for the layer. -xlinka
     pub draws: &'c [WorldMeshDrawItem],
     /// Mesh pool and skin cache for vertex/index binding.
     pub encode: &'a mut WorldMeshForwardEncodeRefs<'d>,

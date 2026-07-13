@@ -21,6 +21,7 @@ use crate::backend::light_gpu::GpuLight;
 use crate::frame_upload_batch::GraphUploadSink;
 use crate::gpu::frame_globals::{FrameGpuUniforms, SkyboxSpecularUniformParams};
 use crate::gpu::{GpuLimits, GpuShadowView, MAX_LIGHTS, MAX_SHADOW_VIEWS, frame_bind_group_layout};
+use crate::gpu_resource::DeferredBindGroupDrops;
 use crate::reflection_probes::specular::ReflectionProbeSpecularResources;
 
 use super::frame_gpu_error::FrameGpuInitError;
@@ -95,6 +96,7 @@ pub struct FrameGpuResources {
     /// Per-view passes bind the per-view bind group from
     /// [`crate::backend::frame_resource_manager::PerViewFrameState`] instead.
     pub bind_group: Arc<wgpu::BindGroup>,
+    deferred_bind_group_drops: DeferredBindGroupDrops,
     cluster_bind_version: u64,
     limits: Arc<GpuLimits>,
 }
@@ -448,7 +450,7 @@ impl FrameGpuResources {
             logger::warn!("FrameGpu: cluster buffers missing; skipping bind group rebuild");
             return;
         };
-        self.bind_group = Self::create_bind_group(
+        let bind_group = Self::create_bind_group(
             device,
             FrameBindGroupInputs {
                 frame_uniform: &self.frame_uniform,
@@ -461,6 +463,8 @@ impl FrameGpuResources {
                 shadows: &self.shadows,
             },
         );
+        let replaced = std::mem::replace(&mut self.bind_group, bind_group);
+        self.deferred_bind_group_drops.defer(replaced);
     }
 
     /// Allocates frame uniform, lights storage, minimal cluster grid `(1x1xZ)`, and fallback
@@ -539,6 +543,7 @@ impl FrameGpuResources {
             light_cookies,
             shadows,
             bind_group,
+            deferred_bind_group_drops: DeferredBindGroupDrops::new(),
             cluster_bind_version,
             limits,
         })
@@ -605,6 +610,10 @@ impl FrameGpuResources {
                 shadows: &self.shadows,
             },
         )
+    }
+
+    pub(super) fn defer_bind_group_drop(&self, bind_group: Arc<wgpu::BindGroup>) {
+        self.deferred_bind_group_drops.defer(bind_group);
     }
 
     /// Starts a new frame of light-cookie assignment.
@@ -676,6 +685,7 @@ impl FrameGpuResources {
             requested_resolution,
             requested_layers,
             requested_draw_slots,
+            &self.deferred_bind_group_drops,
         );
         if result.changed {
             self.rebuild_bind_group(device);

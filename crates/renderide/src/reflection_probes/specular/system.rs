@@ -46,6 +46,8 @@ pub(crate) struct ReflectionProbeSpecularMaintainParams<'a> {
     pub(crate) reflection_probe_sh2_enabled: bool,
     /// Maximum number of local reflection probes that can contribute to reflections on a single mesh.
     pub(crate) max_local_reflection_probes: usize,
+    /// Whether this maintenance call may advance one sliced IBL bake. -xlinka
+    pub(crate) advance_sliced_ibl: bool,
 }
 
 /// Specular reflection-probe bake/cache/selection system.
@@ -175,7 +177,8 @@ impl ReflectionProbeSpecularSystem {
     pub(crate) fn maintain(&mut self, mut params: ReflectionProbeSpecularMaintainParams<'_>) {
         profiling::scope!("reflection_probes::specular::maintain");
         let mut stats = MaintainStats::default();
-        self.ibl_cache.maintain_gpu_jobs(params.gpu);
+        self.ibl_cache
+            .maintain_gpu_jobs(params.gpu, params.advance_sliced_ibl);
         let face_size = clamp_face_size(DEFAULT_REFLECTION_PROBE_FACE_SIZE, params.gpu.limits());
         self.refresh_collect_config(ProbeCollectConfig {
             face_size,

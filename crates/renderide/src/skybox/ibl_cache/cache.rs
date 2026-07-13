@@ -22,7 +22,7 @@ use super::key::{SkyboxIblKey, mip_levels_for_edge, source_max_lod};
 use super::pipeline_store::{PipelineSlot, PipelineStore};
 use super::resources::{
     PendingBake, PendingBakeResources, PrefilteredCube, copy_cube_mip0,
-    create_full_array_sample_view, create_ibl_cube,
+    create_full_cube_sample_view, create_ibl_cube,
 };
 
 /// Maximum concurrent in-flight bakes; matches the analytic-only ceiling we used previously.
@@ -61,7 +61,7 @@ struct BakeTextures {
     filtered_cube: super::resources::IblCubeTexture,
     /// Scratch target for filtered mip generation before stitching.
     filtered_scratch_cube: super::resources::IblCubeTexture,
-    /// Full-mip 2D-array view of [`Self::source_cube`].
+    /// Full-mip cube view of [`Self::source_cube`]. -xlinka
     source_sample_view: Arc<wgpu::TextureView>,
 }
 
@@ -83,7 +83,7 @@ impl BakeTextures {
             face_size,
             mip_levels,
         );
-        let source_sample_view = Arc::new(create_full_array_sample_view(
+        let source_sample_view = Arc::new(create_full_cube_sample_view(
             &source_cube.texture,
             mip_levels,
         ));
@@ -305,14 +305,12 @@ impl SkyboxIblCache {
         }
     }
 
-    /// Drains submit-completed bakes and advances one sliced runtime bake step.
-    pub(crate) fn maintain_gpu_jobs(&mut self, gpu: &mut GpuContext) {
-        {
-            profiling::scope!("skybox_ibl::poll_completed_jobs");
-            let _ = gpu.device().poll(wgpu::PollType::Poll);
-        }
+    /// Drains submit-completed bakes and advances one sliced runtime bake step. -xlinka
+    pub(crate) fn maintain_gpu_jobs(&mut self, gpu: &mut GpuContext, advance_sliced_bakes: bool) {
         self.drain_completed_jobs();
-        self.advance_sliced_bakes(gpu);
+        if advance_sliced_bakes {
+            self.advance_sliced_bakes(gpu);
+        }
     }
 
     /// Removes cancelable sliced work and completed cubes not retained by the caller. -xlinka

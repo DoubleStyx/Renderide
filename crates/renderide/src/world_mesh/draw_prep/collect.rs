@@ -30,10 +30,13 @@ use crate::shared::{LayerType, RenderingContext};
 use crate::world_mesh::culling::WorldMeshCullInput;
 use crate::world_mesh::materials::FrameMaterialBatchCache;
 
-use super::arrange::arrange_draw_chunks_by_phase_bins;
+use super::arrange::{arrange_draw_chunks_by_phase_bins, flatten_draw_chunks};
 use super::command_cache::WorldMeshCommandCache;
 use super::filter::CameraTransformDrawFilter;
-use super::item::{WorldMeshDrawCollection, WorldMeshDrawItem, WorldMeshVisibilityStats};
+use super::item::{
+    WorldMeshDrawArrangementStats, WorldMeshDrawCollection, WorldMeshDrawItem,
+    WorldMeshVisibilityStats,
+};
 use super::prepared_renderables::FramePreparedRenderables;
 
 mod candidate;
@@ -382,6 +385,19 @@ impl QueuedWorldMeshDraws {
     /// Number of queued draw candidates before arrangement.
     pub fn len(&self) -> usize {
         self.len
+    }
+
+    /// Packages deterministic collection order without the main-view phase sort. -xlinka
+    pub(crate) fn into_unarranged_collection(self) -> WorldMeshDrawCollection {
+        let items = flatten_draw_chunks(self.chunks, true);
+        WorldMeshDrawCollection {
+            items,
+            draws_pre_cull: self.draws_pre_cull,
+            draws_culled: self.draws_culled,
+            draws_hi_z_culled: self.draws_hi_z_culled,
+            visibility: self.visibility,
+            arrangement: WorldMeshDrawArrangementStats::default(),
+        }
     }
 
     /// Sorts and arranges queued draws, reusing a retained command-list cache when provided.

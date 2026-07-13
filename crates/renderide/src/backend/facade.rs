@@ -382,6 +382,7 @@ impl RenderBackend {
         gpu: &mut crate::gpu::GpuContext,
         scene: &crate::scene::SceneCoordinator,
         render_context: crate::shared::RenderingContext,
+        advance_sliced_ibl: bool,
     ) {
         let experimental_settings = self.experimental_settings();
         let resources = self.reflection_probes.maintain_specular_jobs(
@@ -391,6 +392,7 @@ impl RenderBackend {
             render_context,
             experimental_settings.reflection_probe_sh2_enabled,
             experimental_settings.effective_max_local_reflection_probes(),
+            advance_sliced_ibl,
         );
         let _ = self
             .frame_services

@@ -143,14 +143,13 @@ impl ReflectionProbeSh2System {
         self.prune_untouched_failures();
     }
 
-    /// Advances GPU callbacks, maps completed buffers, and schedules queued work.
+    /// Maps completed buffers and schedules queued work after the runtime GPU poll. -xlinka
     pub fn maintain_gpu_jobs(
         &mut self,
         gpu: &mut GpuContext,
         assets: &dyn ReflectionProbeCubemapAssets,
     ) {
         profiling::scope!("reflection_probe_sh2::maintain_gpu_jobs");
-        let _ = gpu.device().poll(wgpu::PollType::Poll);
         let outcomes = self.readback_jobs.maintain();
         for (key, sh) in outcomes.completed {
             self.failed.remove(&key);

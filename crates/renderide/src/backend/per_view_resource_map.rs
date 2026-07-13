@@ -65,6 +65,12 @@ impl<T> PerViewResourceMap<T> {
         self.entries.entry(view_id).or_insert_with(create)
     }
 
+    /// Removes and returns the resource for `view_id`. -xlinka
+    #[inline]
+    pub(crate) fn take(&mut self, view_id: ViewId) -> Option<T> {
+        self.entries.remove(&view_id)
+    }
+
     /// Removes the resource for `view_id`, returning true when one existed.
     #[inline]
     pub(crate) fn retire(&mut self, view_id: ViewId) -> bool {

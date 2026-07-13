@@ -414,6 +414,13 @@ fn build_shadow_caster_plan(
         }
     }
 
+    pending_groups.sort_unstable_by_key(|group| {
+        shadow_caster_sort_key(
+            &draws[group.representative_draw_idx],
+            group.representative_draw_idx,
+        )
+    });
+
     for group in pending_groups {
         let draw_group = append_shadow_draw_group(
             &mut plan.slab_layout,
@@ -450,6 +457,41 @@ fn shadow_caster_group_key(item: &WorldMeshDrawItem) -> ShadowCasterGroupKey {
                 .resolved_cull_mode(Some(wgpu::Face::Back))
         },
     }
+}
+
+fn shadow_caster_sort_key(
+    item: &WorldMeshDrawItem,
+    draw_idx: usize,
+) -> (
+    crate::materials::RasterFrontFace,
+    crate::materials::RasterPrimitiveTopology,
+    u8,
+    i32,
+    u32,
+    u32,
+    u8,
+    usize,
+) {
+    let key = shadow_caster_group_key(item);
+    let cull_mode = match key.primitive_topology {
+        crate::materials::RasterPrimitiveTopology::PointList => None,
+        crate::materials::RasterPrimitiveTopology::TriangleList => key.cull_mode,
+    };
+    let cull_order = match cull_mode {
+        None => 0,
+        Some(wgpu::Face::Front) => 1,
+        Some(wgpu::Face::Back) => 2,
+    };
+    (
+        key.front_face,
+        key.primitive_topology,
+        cull_order,
+        key.mesh_asset_id,
+        key.first_index,
+        key.index_count,
+        key.shadow_cast_mode,
+        draw_idx,
+    )
 }
 
 fn append_shadow_draw_group(

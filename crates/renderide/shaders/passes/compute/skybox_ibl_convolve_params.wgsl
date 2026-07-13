@@ -25,18 +25,17 @@ struct ConvolveParams {
 }
 
 @group(0) @binding(0) var<uniform> p: ConvolveParams;
-@group(0) @binding(1) var src_cube: texture_2d_array<f32>;
+@group(0) @binding(1) var src_cube: texture_cube<f32>;
 @group(0) @binding(2) var src_sampler: sampler;
 @group(0) @binding(3) var dst_mip: texture_storage_2d_array<rgba16float, write>;
 
 fn sample_source(dir: vec3<f32>, lod: f32) -> vec3<f32> {
-    return cube_filter::sample_trilinear(
+    return textureSampleLevel(
         src_cube,
+        src_sampler,
         dir,
-        lod,
-        max(p.src_face_size, 1u),
-        max(p.src_max_lod, 0.0),
-    );
+        clamp(lod, 0.0, max(p.src_max_lod, 0.0)),
+    ).rgb;
 }
 
 fn convolve_cosine(n: vec3<f32>, jitter: vec2<f32>, n_samples: u32) -> vec3<f32> {

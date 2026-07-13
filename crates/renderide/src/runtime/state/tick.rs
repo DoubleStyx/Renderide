@@ -23,6 +23,8 @@ pub(in crate::runtime) struct RuntimeTickState {
     frame_time_seconds: f32,
     /// Set when asset integration completed for the current winit tick.
     did_integrate_this_tick: bool,
+    /// Set after one sliced reflection-probe IBL step is admitted this tick. -xlinka
+    did_advance_reflection_probe_ibl_this_tick: bool,
     /// Main-thread compositor pacing waits observed outside [`crate::gpu::GpuContext`] this tick.
     frame_timing_excluded_wait: Duration,
     /// Last host/renderer lock-step pipeline action selected this tick.
@@ -69,6 +71,7 @@ impl RuntimeTickState {
             started_at,
             frame_time_seconds: 0.0,
             did_integrate_this_tick: false,
+            did_advance_reflection_probe_ibl_this_tick: false,
             frame_timing_excluded_wait: Duration::ZERO,
             lockstep_pipeline_action: LockstepPipelineAction::None,
             lockstep_one_credit_block: OneCreditBlockReason::None,
@@ -90,6 +93,7 @@ impl RuntimeTickState {
     /// Clears once-per-tick gates at the start of a new winit tick.
     pub(in crate::runtime) fn reset_for_tick(&mut self) {
         self.did_integrate_this_tick = false;
+        self.did_advance_reflection_probe_ibl_this_tick = false;
         self.frame_timing_excluded_wait = Duration::ZERO;
         self.lockstep_pipeline_action = LockstepPipelineAction::None;
         self.lockstep_one_credit_block = OneCreditBlockReason::None;
@@ -114,6 +118,15 @@ impl RuntimeTickState {
     /// Marks asset integration as completed for this tick.
     pub(in crate::runtime) fn mark_integrated_assets_this_tick(&mut self) {
         self.did_integrate_this_tick = true;
+    }
+
+    /// Admits the first sliced reflection-probe IBL step in this tick. -xlinka
+    pub(in crate::runtime) fn take_reflection_probe_ibl_advance_for_tick(&mut self) -> bool {
+        if self.did_advance_reflection_probe_ibl_this_tick {
+            return false;
+        }
+        self.did_advance_reflection_probe_ibl_this_tick = true;
+        true
     }
 
     /// Adds compositor or display pacing time that should not count as active CPU frame work.
