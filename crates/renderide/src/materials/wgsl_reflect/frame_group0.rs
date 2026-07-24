@@ -144,9 +144,12 @@ fn record_frame_group0_binding(
     }
     match (rb.binding, space) {
         (4, AddressSpace::Handle) => {
-            validate_frame_depth_texture_binding(module, data_ty, false, rb.binding)?;
+            validate_frame_scene_depth_snapshot_binding(module, data_ty, false, rb.binding)?;
         }
-        (5 | 17, AddressSpace::Handle) => {
+        (5, AddressSpace::Handle) => {
+            validate_frame_scene_depth_snapshot_binding(module, data_ty, true, rb.binding)?;
+        }
+        (17, AddressSpace::Handle) => {
             validate_frame_depth_texture_binding(module, data_ty, true, rb.binding)?;
         }
         (6 | 11, AddressSpace::Handle) => {
@@ -235,6 +238,40 @@ fn validate_frame_reflection_probe_array_binding(
             group: 0,
             binding,
             reason: "expected sampled 2D-array texture handle".into(),
+        }),
+    }
+}
+
+/// Validates the R32Float scene-depth snapshot bindings (4 mono, 5 array).
+fn validate_frame_scene_depth_snapshot_binding(
+    module: &Module,
+    data_ty: naga::Handle<naga::Type>,
+    arrayed: bool,
+    binding: u32,
+) -> Result<(), ReflectError> {
+    match &module.types[data_ty].inner {
+        TypeInner::Image {
+            dim,
+            arrayed: got_arrayed,
+            class:
+                ImageClass::Sampled {
+                    kind: ScalarKind::Float,
+                    multi: false,
+                },
+        } if *dim == ImageDimension::D2 && *got_arrayed == arrayed => Ok(()),
+        TypeInner::Image { .. } => Err(ReflectError::UnsupportedBinding {
+            group: 0,
+            binding,
+            reason: if arrayed {
+                "expected texture_2d_array<f32>".into()
+            } else {
+                "expected texture_2d<f32>".into()
+            },
+        }),
+        _ => Err(ReflectError::UnsupportedBinding {
+            group: 0,
+            binding,
+            reason: "expected sampled float texture handle".into(),
         }),
     }
 }

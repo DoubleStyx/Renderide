@@ -86,7 +86,7 @@ fn append_scene_snapshot_layout_entries(entries: &mut Vec<wgpu::BindGroupLayoutE
             binding: 4,
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Depth,
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
                 view_dimension: wgpu::TextureViewDimension::D2,
                 multisampled: false,
             },
@@ -96,7 +96,7 @@ fn append_scene_snapshot_layout_entries(entries: &mut Vec<wgpu::BindGroupLayoutE
             binding: 5,
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Depth,
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
                 view_dimension: wgpu::TextureViewDimension::D2Array,
                 multisampled: false,
             },

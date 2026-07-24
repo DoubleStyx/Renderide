@@ -105,8 +105,13 @@ pub(super) fn queue_view_draws(
     let (cull_inputs, cull_projs) = build_view_cull_inputs(prepared, cull_snapshots);
     let contexts =
         build_view_draw_collection_contexts(setup, prepared, &dict, &cull_inputs, mesh_lod_bias);
-    let shadow_contexts =
-        build_shadow_caster_draw_collection_contexts(setup, prepared, &dict, mesh_lod_bias);
+    let shadow_contexts = build_shadow_caster_draw_collection_contexts(
+        setup,
+        prepared,
+        &dict,
+        &cull_inputs,
+        mesh_lod_bias,
+    );
     let overlap_world_and_shadows = prepared.len() == 1
         && shadow_contexts.len() == 1
         && FrameParallelPolicy::for_current_thread_pool()
@@ -185,18 +190,20 @@ fn build_shadow_caster_draw_collection_contexts<'a>(
     setup: &'a ExtractedFrameShared<'a>,
     prepared: &'a [FrameViewPlan<'_>],
     dict: &'a crate::materials::host_data::MaterialDictionary<'a>,
+    cull_inputs: &'a [Option<WorldMeshCullInput<'a>>],
     mesh_lod_bias: f32,
 ) -> Vec<DrawCollectionInputs<'a>> {
     profiling::scope!("render::queue_view_draws::build_shadow_contexts");
     prepared
         .iter()
-        .filter(|prep| prep.render_shadows)
-        .map(|prep| {
+        .zip(cull_inputs.iter())
+        .filter(|(prep, _)| prep.render_shadows)
+        .map(|(prep, culling)| {
             build_draw_collection_context(
                 setup,
                 dict,
                 prep,
-                shadow_caster_view_inputs(prep, mesh_lod_bias),
+                shadow_caster_view_inputs(prep, culling.as_ref(), mesh_lod_bias),
             )
         })
         .collect()
@@ -244,6 +251,7 @@ fn visible_view_inputs<'a>(
         head_output_transform: prep.host_camera.head_output_transform,
         view_origin_world: prep.view_origin_world(),
         culling,
+        lod_selection_culling: None,
         mesh_lod_bias,
         transform_filter: prep.draw_filter.as_ref(),
         transform_filter_space: prep.transform_filter_space,
@@ -343,6 +351,7 @@ pub(super) fn desktop_overlay_view_inputs<'a>(
         head_output_transform: prep.host_camera.head_output_transform,
         view_origin_world: prep.view_origin_world(),
         culling: None,
+        lod_selection_culling: None,
         mesh_lod_bias,
         transform_filter: None,
         transform_filter_space: None,
@@ -355,6 +364,7 @@ pub(super) fn desktop_overlay_view_inputs<'a>(
 /// Builds shadow-caster draw-collection inputs for a view without camera visibility culling.
 pub(super) fn shadow_caster_view_inputs<'a>(
     prep: &'a FrameViewPlan<'_>,
+    lod_selection_culling: Option<&'a WorldMeshCullInput<'a>>,
     mesh_lod_bias: f32,
 ) -> DrawCollectionViewInputs<'a> {
     DrawCollectionViewInputs {
@@ -362,6 +372,7 @@ pub(super) fn shadow_caster_view_inputs<'a>(
         head_output_transform: prep.host_camera.head_output_transform,
         view_origin_world: prep.view_origin_world(),
         culling: None,
+        lod_selection_culling,
         mesh_lod_bias,
         transform_filter: prep.draw_filter.as_ref(),
         transform_filter_space: prep.transform_filter_space,

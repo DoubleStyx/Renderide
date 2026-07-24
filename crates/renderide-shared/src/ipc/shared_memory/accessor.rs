@@ -81,6 +81,11 @@ impl SharedMemoryAccessor {
         Ok(Self::available(prefix))
     }
 
+    /// Session prefix used to open per-buffer mappings.
+    pub fn prefix(&self) -> &str {
+        &self.prefix
+    }
+
     /// Builds a disabled accessor for standalone or no-shared-memory modes.
     pub fn unavailable() -> Self {
         Self {

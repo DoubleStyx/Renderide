@@ -71,6 +71,12 @@ impl RangeAllocator {
         self.capacity
     }
 
+    /// Bytes currently allocated (capacity minus free holes).
+    pub fn used_bytes(&self) -> u64 {
+        self.capacity
+            .saturating_sub(self.free.iter().map(|r| r.len_bytes).sum::<u64>())
+    }
+
     /// Aligns `len` up to [`Self::align`], then allocates the first free region that fits.
     pub fn allocate(&mut self, len_bytes: u64) -> Option<Range> {
         let need = align_up(len_bytes, self.align);

@@ -18,8 +18,8 @@
 @group(0) @binding(1) var<storage, read> lights: array<ft::GpuLight>;
 @group(0) @binding(2) var<storage, read> cluster_light_ranges: array<vec2<u32>>;
 @group(0) @binding(3) var<storage, read> cluster_light_indices: array<u32>;
-@group(0) @binding(4) var scene_depth: texture_depth_2d;
-@group(0) @binding(5) var scene_depth_array: texture_depth_2d_array;
+@group(0) @binding(4) var scene_depth: texture_2d<f32>;
+@group(0) @binding(5) var scene_depth_array: texture_2d_array<f32>;
 @group(0) @binding(6) var scene_color: texture_2d<f32>;
 @group(0) @binding(7) var scene_color_array: texture_2d_array<f32>;
 @group(0) @binding(8) var scene_color_sampler: sampler;

@@ -206,7 +206,7 @@ pub(super) fn build_lod_visibility(
     space_ids: &[RenderSpaceId],
 ) -> LodVisibility {
     profiling::scope!("mesh::lod_visibility");
-    let Some(culling) = ctx.view.culling else {
+    let Some(culling) = ctx.view.culling.or(ctx.view.lod_selection_culling) else {
         return LodVisibility::default();
     };
     if let Some(prepared) = ctx.caches.prepared {

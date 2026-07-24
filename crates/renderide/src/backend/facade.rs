@@ -279,7 +279,8 @@ impl RenderBackend {
     ///
     /// Call once per winit tick before IPC and frame work (see [`crate::runtime::RendererRuntime::tick_frame_wall_clock_begin`]).
     pub fn reset_light_prep_for_tick(&mut self) {
-        self.frame_services.reset_for_tick();
+        let device = self.asset_transfers.gpu_device().cloned();
+        self.frame_services.reset_for_tick(device.as_deref());
     }
 
     /// GPU limits snapshot after [`Self::attach`], if attach succeeded.

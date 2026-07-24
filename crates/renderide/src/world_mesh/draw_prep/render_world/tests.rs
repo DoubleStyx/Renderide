@@ -417,6 +417,45 @@ fn particle_snapshot_dirty_rebuilds_snapshot_without_static_refresh() {
 }
 
 #[test]
+fn parallel_snapshot_assembly_keeps_particle_outputs_for_earlier_spaces() {
+    let first_space = RenderSpaceId(61);
+    let second_space = RenderSpaceId(62);
+    let mut world = RenderWorld::default();
+    let render_context = world.prepared.render_context();
+    world.prepared.begin_cached_rebuild(render_context);
+    let outputs = vec![
+        (0usize, vec![prepared_draw(first_space, 0)]),
+        (1usize, vec![prepared_draw(second_space, 0)]),
+        (0usize, vec![prepared_draw(first_space, 7)]),
+    ];
+
+    snapshot::rebuild_snapshot_parallel(
+        &mut world,
+        &[first_space, second_space],
+        &HashSet::new(),
+        outputs,
+    );
+
+    let draws = world.prepared.draws();
+    assert_eq!(draws.len(), 3);
+    assert!(
+        draws
+            .iter()
+            .any(|draw| draw.space_id == first_space && draw.renderable_index == 7)
+    );
+    let first_range = draws
+        .iter()
+        .position(|draw| draw.space_id == second_space)
+        .expect("second space draw present");
+    assert!(
+        draws[..first_range]
+            .iter()
+            .all(|draw| draw.space_id == first_space),
+        "first space draws must stay contiguous"
+    );
+}
+
+#[test]
 fn reverse_index_delta_replaces_stale_renderer_identity() {
     let mut cached = RenderWorldSpace::default();
     cached.static_renderers.push(RenderWorldRendererTemplate {

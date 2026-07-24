@@ -44,6 +44,7 @@ pub use facade::{RenderBackend, RenderBackendAttachDesc};
 pub use frame_gpu_bindings::FrameGpuBindingsError;
 pub use frame_resource_manager::FrameResourceManager;
 pub(crate) use frame_resource_manager::{FrameLightCullDesc, FrameLightViewDesc};
+pub(crate) use frame_resource_manager::ShadowCameraFit;
 pub(crate) use shadow_quality::HostShadowQuality;
 pub(crate) use view_resource_registry::ViewResourceRegistry;
 pub(crate) use world_mesh_frame_plan::{

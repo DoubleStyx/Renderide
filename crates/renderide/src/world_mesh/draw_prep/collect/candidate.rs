@@ -254,6 +254,7 @@ mod tests {
                 head_output_transform: Mat4::IDENTITY,
                 view_origin_world: Vec3::ZERO,
                 culling: None,
+                lod_selection_culling: None,
                 mesh_lod_bias: 2.0,
                 transform_filter: None,
                 transform_filter_space: None,

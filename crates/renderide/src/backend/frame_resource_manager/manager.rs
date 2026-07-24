@@ -6,6 +6,7 @@ use std::sync::atomic::AtomicBool;
 use hashbrown::HashSet;
 use parking_lot::Mutex;
 
+use crate::camera::ViewId;
 use crate::gpu::GpuLimits;
 use crate::mesh_deform::SkinCacheKey;
 
@@ -47,6 +48,10 @@ pub struct FrameResourceManager {
     pub(super) light_visibility_stats: LightVisibilityStats,
     /// Shadow metadata and atlas render views planned for the current graph submission.
     pub(super) shadow_frame: ShadowFramePlan,
+    /// Persistent shadow atlas layer assignments and rendered content signatures.
+    pub(super) shadow_layer_cache: super::shadows::ShadowLayerCache,
+    /// Per-view camera frustums used to fit directional shadow cascades this frame.
+    pub(super) shadow_camera_fits: hashbrown::HashMap<ViewId, super::shadows::ShadowCameraFit>,
     /// Whether any packed light set subtracts in at least one signed-radiance channel.
     pub(super) signed_scene_color_required: bool,
     /// When true, [`crate::passes::MeshDeformPass`] already dispatched for the current graph
@@ -87,6 +92,8 @@ impl FrameResourceManager {
             per_view_lights: PerViewResourceMap::new(),
             light_visibility_stats: LightVisibilityStats::default(),
             shadow_frame: ShadowFramePlan::default(),
+            shadow_layer_cache: super::shadows::ShadowLayerCache::new(),
+            shadow_camera_fits: hashbrown::HashMap::new(),
             signed_scene_color_required: false,
             mesh_deform_dispatched_this_submission: AtomicBool::new(false),
             visible_mesh_deform_keys: Mutex::new(None),

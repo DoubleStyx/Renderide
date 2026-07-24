@@ -189,8 +189,11 @@ fn point_shadow_faces_share_caster_set_slab_range() {
         },
         None,
     )));
-    manager
-        .prepare_shadow_frame_for_views(HostShadowQuality::default(), [(ViewId::Main, &draw_plan)]);
+    manager.prepare_shadow_frame_for_views(
+        HostShadowQuality::default(),
+        None,
+        [(ViewId::Main, &draw_plan)],
+    );
 
     let plan = manager.shadow_frame_plan();
     assert_eq!(plan.render_views.len(), POINT_FACE_COUNT as usize);
@@ -230,8 +233,11 @@ fn shadow_planning_excludes_shadow_cast_mode_off_draws() {
         pbs_draw(3, ShadowCastMode::ShadowOnly),
     ]);
 
-    manager
-        .prepare_shadow_frame_for_views(HostShadowQuality::default(), [(ViewId::Main, &draw_plan)]);
+    manager.prepare_shadow_frame_for_views(
+        HostShadowQuality::default(),
+        None,
+        [(ViewId::Main, &draw_plan)],
+    );
 
     let plan = manager.shadow_frame_plan();
     assert_eq!(plan.render_views.len(), 1);
@@ -315,8 +321,11 @@ fn shadow_planning_uses_per_light_resolution_and_metadata_bias() {
     lights.push(shadowed_light(LightType::Spot));
     let draw_plan = prefetched_plan(vec![pbs_draw(1, ShadowCastMode::On)]);
 
-    manager
-        .prepare_shadow_frame_for_views(HostShadowQuality::default(), [(ViewId::Main, &draw_plan)]);
+    manager.prepare_shadow_frame_for_views(
+        HostShadowQuality::default(),
+        None,
+        [(ViewId::Main, &draw_plan)],
+    );
 
     let plan = manager.shadow_frame_plan();
     assert_eq!(plan.render_views.len(), 2);
@@ -348,8 +357,11 @@ fn shadow_planning_requests_only_custom_resolution_when_all_lights_override() {
         .push(light);
     let draw_plan = prefetched_plan(vec![pbs_draw(1, ShadowCastMode::On)]);
 
-    manager
-        .prepare_shadow_frame_for_views(HostShadowQuality::default(), [(ViewId::Main, &draw_plan)]);
+    manager.prepare_shadow_frame_for_views(
+        HostShadowQuality::default(),
+        None,
+        [(ViewId::Main, &draw_plan)],
+    );
 
     let plan = manager.shadow_frame_plan();
     assert_eq!(plan.requested_resolution, 512);
@@ -385,8 +397,11 @@ fn shadow_planning_disables_when_depth_atlas_format_is_not_renderable() {
         .push(light);
     let draw_plan = prefetched_plan(vec![pbs_draw(1, ShadowCastMode::On)]);
 
-    manager
-        .prepare_shadow_frame_for_views(HostShadowQuality::default(), [(ViewId::Main, &draw_plan)]);
+    manager.prepare_shadow_frame_for_views(
+        HostShadowQuality::default(),
+        None,
+        [(ViewId::Main, &draw_plan)],
+    );
 
     let plan = manager.shadow_frame_plan();
     assert!(plan.render_views.is_empty());

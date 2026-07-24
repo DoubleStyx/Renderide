@@ -129,7 +129,7 @@ pub(super) fn wgpu_from_hal_openxr_chain(
 ) -> Result<XrWgpuHandles, XrBootstrapError> {
     let mut limits = assembly.wgpu_exposed.capabilities.limits.clone();
     limits.max_multiview_view_count = limits.max_multiview_view_count.max(2);
-    let memory_hints = wgpu::MemoryHints::default();
+    let memory_hints = wgpu::MemoryHints::MemoryUsage;
 
     let wgpu_open_device = open_wgpu_hal_device_from_ash(
         &assembly.wgpu_exposed,

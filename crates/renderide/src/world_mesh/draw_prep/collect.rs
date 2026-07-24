@@ -159,6 +159,8 @@ pub struct DrawCollectionViewInputs<'a> {
     pub view_origin_world: Vec3,
     /// Optional CPU frustum + Hi-Z cull inputs.
     pub culling: Option<&'a WorldMeshCullInput<'a>>,
+    /// Camera cull inputs consumed only by LOD group selection when [`Self::culling`] is unset.
+    pub lod_selection_culling: Option<&'a WorldMeshCullInput<'a>>,
     /// Unity-style mesh LOD bias multiplier for relative screen-height selection.
     pub mesh_lod_bias: f32,
     /// Optional per-camera node filter.

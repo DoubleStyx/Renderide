@@ -177,7 +177,7 @@ impl CompiledRenderGraph {
                 PerViewSchedulerInputs {
                     upload_batch,
                     allow_parallel_batches: strategy.allows_in_view_parallel_batches(),
-                    split_serial_batches: true,
+                    split_serial_batches: false,
                     profiler,
                 },
             )?

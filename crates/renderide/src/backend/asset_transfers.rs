@@ -208,6 +208,12 @@ pub struct AssetTransferQueue {
     trail_render_buffer_build_tx: Sender<TrailBuildResult>,
     /// Ready trail render-buffer build results waiting for renderer-thread publication.
     trail_render_buffer_build_rx: Receiver<TrailBuildResult>,
+    /// Worker-owned shared-memory accessor for off-thread particle payload reads.
+    ///
+    /// A second set of mappings over the same session prefix so asset workers can copy render
+    /// buffer payloads without borrowing the renderer thread's accessor. The host is only told
+    /// the payload was consumed after the worker's read completes.
+    background_shm: Option<Arc<parking_lot::Mutex<crate::ipc::SharedMemoryAccessor>>>,
 }
 
 impl AssetTransferQueue {
@@ -333,6 +339,32 @@ impl AssetTransferQueue {
     #[inline]
     pub(crate) fn current_cubemap_upload_generation(&self, asset_id: i32) -> Option<u64> {
         self.cubemap_upload_generations.get(&asset_id).copied()
+    }
+
+    /// Lazily opens the worker-owned shared-memory accessor from the renderer accessor's prefix.
+    pub(crate) fn ensure_background_shm(&mut self, primary: &crate::ipc::SharedMemoryAccessor) {
+        if self.background_shm.is_some() || !primary.is_available() {
+            return;
+        }
+        let accessor = crate::ipc::SharedMemoryAccessor::new(primary.prefix().to_string());
+        if !accessor.is_available() {
+            return;
+        }
+        self.background_shm = Some(Arc::new(parking_lot::Mutex::new(accessor)));
+    }
+
+    /// Worker-owned shared-memory accessor for off-thread particle payload reads.
+    pub(in crate::backend::asset_transfers) fn background_shm(
+        &self,
+    ) -> Option<Arc<parking_lot::Mutex<crate::ipc::SharedMemoryAccessor>>> {
+        self.background_shm.clone()
+    }
+
+    /// Releases a cached view on the worker-owned accessor when the host frees a buffer.
+    pub(crate) fn release_background_shm_view(&self, buffer_id: i32) {
+        if let Some(shm) = &self.background_shm {
+            shm.lock().release_view(buffer_id);
+        }
     }
 
     /// Starts a point render-buffer generation and returns its monotonic token.
@@ -720,6 +752,12 @@ impl AssetTransferQueue {
         self.gpu.gpu_limits.as_ref()
     }
 
+    /// GPU device after attach.
+    #[inline]
+    pub(crate) fn gpu_device(&self) -> Option<&Arc<wgpu::Device>> {
+        self.gpu.gpu_device.as_ref()
+    }
+
     /// Number of host Texture2D format rows known to the asset catalog.
     #[inline]
     pub(crate) fn texture_format_registration_count(&self) -> usize {
@@ -843,6 +881,7 @@ impl AssetTransferQueue {
             point_render_buffer_build_rx,
             trail_render_buffer_build_tx,
             trail_render_buffer_build_rx,
+            background_shm: None,
         }
     }
 }

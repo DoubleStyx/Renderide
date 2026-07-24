@@ -142,6 +142,18 @@ impl RenderBackend {
             .prepare_lights_for_views(scene, views, Some(&self.asset_transfers));
     }
 
+    /// Installs the per-view camera frustums used to fit directional shadow cascades this frame.
+    ///
+    /// Call before [`Self::prepare_shadow_frame_for_views`].
+    pub(crate) fn set_shadow_camera_fits<I>(&mut self, fits: I)
+    where
+        I: IntoIterator<Item = (crate::camera::ViewId, crate::backend::ShadowCameraFit)>,
+    {
+        self.frame_services
+            .frame_resources
+            .set_shadow_camera_fits(fits);
+    }
+
     /// Prepares realtime shadow assignments and atlas render views for the sorted view draw plans.
     pub(crate) fn prepare_shadow_frame_for_views<'a, I>(&mut self, views: I)
     where
@@ -149,7 +161,11 @@ impl RenderBackend {
     {
         self.frame_services
             .frame_resources
-            .prepare_shadow_frame_for_views(self.shadow_quality(), views);
+            .prepare_shadow_frame_for_views(
+                self.shadow_quality(),
+                Some(self.asset_transfers.mesh_pool()),
+                views,
+            );
     }
 
     /// Drains completed Hi-Z readbacks into CPU snapshots at the top of the tick.

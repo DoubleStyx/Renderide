@@ -5,6 +5,9 @@ use crate::gpu::GpuLimits;
 /// Default scene-color snapshot format used before any grab pass has run.
 pub(super) const DEFAULT_SCENE_COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
+/// Scene-depth snapshot storage format; a blit target, not a depth copy.
+pub(super) const SCENE_DEPTH_SNAPSHOT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
+
 /// Snapshot texture family.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SceneSnapshotKind {
@@ -80,6 +83,8 @@ struct SceneSnapshotTexture {
     texture: wgpu::Texture,
     /// Default sampled view for the texture.
     view: wgpu::TextureView,
+    /// Per-layer render-target views for the depth blit; empty for color snapshots.
+    layer_views: Vec<wgpu::TextureView>,
     /// Allocated extent in pixels, clamped to at least `1x1`.
     extent_px: (u32, u32),
     /// Texture format used by the allocation.
@@ -109,20 +114,38 @@ impl SceneSnapshotTexture {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format,
-            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: kind.texture_usage(),
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor {
             label: Some(&format!("frame_scene_{kind_label}_{layout_label}_view")),
             dimension: Some(layout.view_dimension()),
             array_layer_count: (layout == SceneSnapshotLayout::StereoArray).then_some(2),
-            aspect: kind.view_aspect(),
+            aspect: wgpu::TextureAspect::All,
             ..Default::default()
         });
         crate::profiling::note_resource_churn!(TextureView, "backend::scene_snapshot_view");
+        let layer_views = if kind == SceneSnapshotKind::Depth {
+            (0..layout.layer_count())
+                .map(|layer| {
+                    texture.create_view(&wgpu::TextureViewDescriptor {
+                        label: Some(&format!(
+                            "frame_scene_{kind_label}_{layout_label}_target_l{layer}"
+                        )),
+                        dimension: Some(wgpu::TextureViewDimension::D2),
+                        base_array_layer: layer,
+                        array_layer_count: Some(1),
+                        ..Default::default()
+                    })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         Self {
             texture,
             view,
+            layer_views,
             extent_px,
             format,
         }
@@ -137,6 +160,7 @@ impl SceneSnapshotTexture {
     fn retain_submit_resources(&self, resources: &mut crate::gpu::GpuRetainedResources) {
         resources.retain_texture(self.texture.clone());
         resources.retain_texture_view(self.view.clone());
+        resources.retain_texture_views(self.layer_views.iter().cloned());
     }
 }
 
@@ -150,20 +174,23 @@ impl SceneSnapshotKind {
         }
     }
 
-    /// Texture view aspect for the bindable snapshot view.
-    fn view_aspect(self) -> wgpu::TextureAspect {
+    /// Texture usage for this snapshot family; depth renders via blit, colors copy.
+    fn texture_usage(self) -> wgpu::TextureUsages {
         match self {
-            Self::Depth => wgpu::TextureAspect::DepthOnly,
-            Self::Color | Self::NamedColor => wgpu::TextureAspect::All,
+            Self::Depth => {
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING
+            }
+            Self::Color | Self::NamedColor => {
+                wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING
+            }
         }
     }
 
-    /// Copy aspect for `copy_texture_to_texture`.
-    fn copy_aspect(self, source_format: wgpu::TextureFormat) -> wgpu::TextureAspect {
+    /// Storage format for this snapshot family given the source attachment format.
+    pub(super) fn snapshot_format(self, source_format: wgpu::TextureFormat) -> wgpu::TextureFormat {
         match self {
-            Self::Depth if source_format.has_stencil_aspect() => wgpu::TextureAspect::All,
-            Self::Depth => wgpu::TextureAspect::DepthOnly,
-            Self::Color | Self::NamedColor => wgpu::TextureAspect::All,
+            Self::Depth => SCENE_DEPTH_SNAPSHOT_FORMAT,
+            Self::Color | Self::NamedColor => source_format,
         }
     }
 }
@@ -192,7 +219,7 @@ impl SceneSnapshotLayoutTargets {
                 SceneSnapshotKind::Depth,
                 layout,
                 (1, 1),
-                depth_format,
+                SceneSnapshotKind::Depth.snapshot_format(depth_format),
             ),
             color: SceneSnapshotTexture::new(
                 device,
@@ -237,6 +264,73 @@ impl SceneSnapshotLayoutTargets {
     }
 }
 
+/// Depth-to-R32Float blit pipeline shared by both snapshot layouts.
+struct SceneDepthBlitter {
+    /// Fullscreen blit pipeline writing an R32Float color target.
+    pipeline: wgpu::RenderPipeline,
+    /// Single-entry layout binding the source depth attachment.
+    bgl: wgpu::BindGroupLayout,
+}
+
+impl SceneDepthBlitter {
+    /// Returns [`None`] when the blit shader is missing from the shader package.
+    fn try_new(device: &wgpu::Device) -> Option<Self> {
+        let source = crate::embedded_shaders::embedded_wgsl!("scene_depth_to_r32_blit");
+        if source.is_empty() {
+            return None;
+        }
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("scene_depth_to_r32_blit"),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("scene_depth_to_r32_blit_bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Depth,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            }],
+        });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("scene_depth_to_r32_blit_pl"),
+            bind_group_layouts: &[Some(&bgl)],
+            ..Default::default()
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("scene_depth_to_r32_blit"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: SCENE_DEPTH_SNAPSHOT_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        crate::profiling::note_resource_churn!(RenderPipeline, "backend::scene_depth_blit");
+        Some(Self { pipeline, bgl })
+    }
+}
+
 /// Owns mono/stereo depth and color snapshots plus their shared color sampler.
 pub(super) struct SceneSnapshotSet {
     /// Single-view depth and color snapshots.
@@ -245,6 +339,8 @@ pub(super) struct SceneSnapshotSet {
     stereo: SceneSnapshotLayoutTargets,
     /// Shared color sampler.
     color_sampler: wgpu::Sampler,
+    /// Depth-to-R32Float snapshot blit pipeline; absent when the package lacks the blit shader.
+    depth_blitter: Option<SceneDepthBlitter>,
 }
 
 impl SceneSnapshotSet {
@@ -278,6 +374,7 @@ impl SceneSnapshotSet {
                 color_format,
             ),
             color_sampler,
+            depth_blitter: SceneDepthBlitter::try_new(device),
         }
     }
 
@@ -313,6 +410,7 @@ impl SceneSnapshotSet {
         extent_px: (u32, u32),
         format: wgpu::TextureFormat,
     ) -> bool {
+        let format = kind.snapshot_format(format);
         let want = clamp_snapshot_extent(extent_px);
         let max_dim = limits.max_texture_dimension_2d();
         if want.0 > max_dim || want.1 > max_dim {
@@ -333,7 +431,7 @@ impl SceneSnapshotSet {
         true
     }
 
-    /// Encodes a copy into a pre-synchronized snapshot target.
+    /// Encodes a copy into a pre-synchronized color snapshot target.
     pub(super) fn encode_copy(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -342,6 +440,10 @@ impl SceneSnapshotSet {
         layout: SceneSnapshotLayout,
         viewport: (u32, u32),
     ) -> bool {
+        debug_assert!(
+            kind != SceneSnapshotKind::Depth,
+            "depth snapshots blit via encode_depth_blit"
+        );
         let width = viewport.0.max(1);
         let height = viewport.1.max(1);
         let format = source.format();
@@ -357,19 +459,18 @@ impl SceneSnapshotSet {
             );
             return false;
         }
-        let aspect = kind.copy_aspect(format);
         encoder.copy_texture_to_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: source,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
-                aspect,
+                aspect: wgpu::TextureAspect::All,
             },
             wgpu::TexelCopyTextureInfo {
                 texture: &target.texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
-                aspect,
+                aspect: wgpu::TextureAspect::All,
             },
             wgpu::Extent3d {
                 width,
@@ -377,6 +478,72 @@ impl SceneSnapshotSet {
                 depth_or_array_layers: layout.layer_count(),
             },
         );
+        true
+    }
+
+    /// Blits the single-sample depth attachment into the R32Float depth snapshot.
+    pub(super) fn encode_depth_blit(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        source_depth: &wgpu::Texture,
+        layout: SceneSnapshotLayout,
+        viewport: (u32, u32),
+    ) -> bool {
+        let Some(blitter) = self.depth_blitter.as_ref() else {
+            logger::warn!("scene depth snapshot blit: blit pipeline unavailable; skipping");
+            return false;
+        };
+        let width = viewport.0.max(1);
+        let height = viewport.1.max(1);
+        let target = self.targets(layout).target(SceneSnapshotKind::Depth);
+        if !target.matches((width, height), SCENE_DEPTH_SNAPSHOT_FORMAT) {
+            logger::warn!(
+                "scene depth snapshot blit: {} target not pre-synced for {}x{}; skipping blit",
+                layout.label_suffix(),
+                width,
+                height
+            );
+            return false;
+        }
+        for layer in 0..layout.layer_count() {
+            let Some(target_view) = target.layer_views.get(layer as usize) else {
+                logger::warn!("scene depth snapshot blit: missing target view for layer {layer}");
+                return false;
+            };
+            let source_view = source_depth.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("scene_depth_blit_src"),
+                dimension: Some(wgpu::TextureViewDimension::D2),
+                aspect: wgpu::TextureAspect::DepthOnly,
+                base_array_layer: layer,
+                array_layer_count: Some(1),
+                ..Default::default()
+            });
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("scene_depth_blit_bg"),
+                layout: &blitter.bgl,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&source_view),
+                }],
+            });
+            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("scene_depth_snapshot_blit"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            rpass.set_pipeline(&blitter.pipeline);
+            rpass.set_bind_group(0, &bind_group, &[]);
+            rpass.draw(0..3, 0..1);
+        }
         true
     }
 
@@ -440,25 +607,24 @@ mod tests {
         );
     }
 
-    /// Depth copies use depth-only aspects except combined depth-stencil sources, while color
-    /// copies always copy all aspects.
+    /// Depth snapshots store R32Float regardless of source depth format; colors keep the source.
     #[test]
-    fn snapshot_kind_copy_aspect_matches_source_format() {
+    fn snapshot_kind_formats_map_depth_to_r32() {
         assert_eq!(
-            SceneSnapshotKind::Depth.copy_aspect(wgpu::TextureFormat::Depth32Float),
-            wgpu::TextureAspect::DepthOnly
+            SceneSnapshotKind::Depth.snapshot_format(wgpu::TextureFormat::Depth32Float),
+            wgpu::TextureFormat::R32Float
         );
         assert_eq!(
-            SceneSnapshotKind::Depth.copy_aspect(wgpu::TextureFormat::Depth24PlusStencil8),
-            wgpu::TextureAspect::All
+            SceneSnapshotKind::Depth.snapshot_format(wgpu::TextureFormat::Depth24PlusStencil8),
+            wgpu::TextureFormat::R32Float
         );
         assert_eq!(
-            SceneSnapshotKind::Color.copy_aspect(wgpu::TextureFormat::Rgba16Float),
-            wgpu::TextureAspect::All
+            SceneSnapshotKind::Color.snapshot_format(wgpu::TextureFormat::Rgba16Float),
+            wgpu::TextureFormat::Rgba16Float
         );
         assert_eq!(
-            SceneSnapshotKind::NamedColor.copy_aspect(wgpu::TextureFormat::Rgba16Float),
-            wgpu::TextureAspect::All
+            SceneSnapshotKind::NamedColor.snapshot_format(wgpu::TextureFormat::Rgba16Float),
+            wgpu::TextureFormat::Rgba16Float
         );
     }
 }

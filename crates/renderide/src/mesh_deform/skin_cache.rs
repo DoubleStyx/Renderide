@@ -17,6 +17,9 @@ use self::entry::{
 pub use self::entry::{DeformSignature, SkinCacheEntry, SkinCacheFrameStats};
 pub use self::key::{EntryNeed, SkinCacheKey, SkinCacheRendererKind};
 
+/// Consecutive ticks below quarter utilization required before the arenas shrink.
+const SKIN_ARENA_SHRINK_TICKS: u32 = 600;
+
 /// Arenas for deform outputs; ranges are tracked by [`crate::mesh_deform::range_alloc::RangeAllocator`].
 pub struct GpuSkinCache {
     arenas: SkinArenas,
@@ -25,6 +28,8 @@ pub struct GpuSkinCache {
     frame_counter: u64,
     /// Counters reset by [`Self::advance_frame`] and plotted after the deform pass.
     stats: SkinCacheFrameStats,
+    /// Consecutive ticks the arenas sat below quarter utilization.
+    shrink_below_ticks: u32,
 }
 
 impl GpuSkinCache {
@@ -35,7 +40,31 @@ impl GpuSkinCache {
             entries: HashMap::new(),
             frame_counter: 0,
             stats: SkinCacheFrameStats::default(),
+            shrink_below_ticks: 0,
         }
+    }
+
+    /// Shrinks grown arenas back toward demand after sustained low utilization.
+    ///
+    /// Returns `true` when the arenas were recreated; the caller must then invalidate cached deform
+    /// bind groups ([`MeshDeformScratch::invalidate_after_arena_reset`]).
+    #[must_use]
+    pub fn maintain_capacity(&mut self, device: &wgpu::Device) -> bool {
+        let capacity = self.arenas.stream_capacity_bytes();
+        let target = match skin_arena_shrink_target(
+            capacity,
+            self.arenas.max_stream_used_bytes(),
+            &mut self.shrink_below_ticks,
+        ) {
+            Some(target) => target,
+            None => return false,
+        };
+        self.entries.clear();
+        self.arenas.reset_to_capacity(device, target);
+        logger::debug!(
+            "skin cache arenas shrunk: {capacity} -> {target} bytes per stream after sustained low use"
+        );
+        true
     }
 
     /// Monotonic frame index (for LRU / stale sweep).
@@ -271,5 +300,68 @@ impl GpuSkinCache {
             return;
         };
         self.arenas.free_entry(&entry);
+    }
+}
+
+/// Returns the shrink capacity once utilization stays below a quarter for the full window.
+fn skin_arena_shrink_target(capacity: u64, used: u64, below_ticks: &mut u32) -> Option<u64> {
+    if capacity <= arenas::DEFAULT_INITIAL_ARENA_BYTES || used.saturating_mul(4) > capacity {
+        *below_ticks = 0;
+        return None;
+    }
+    *below_ticks = below_ticks.saturating_add(1);
+    if *below_ticks < SKIN_ARENA_SHRINK_TICKS {
+        return None;
+    }
+    *below_ticks = 0;
+    let target = used
+        .saturating_mul(2)
+        .next_power_of_two()
+        .max(arenas::DEFAULT_INITIAL_ARENA_BYTES);
+    (target < capacity).then_some(target)
+}
+
+#[cfg(test)]
+mod shrink_tests {
+    use super::*;
+
+    const INITIAL: u64 = arenas::DEFAULT_INITIAL_ARENA_BYTES;
+
+    #[test]
+    fn shrink_target_requires_sustained_low_use() {
+        let mut ticks = 0u32;
+        for _ in 0..(SKIN_ARENA_SHRINK_TICKS - 1) {
+            assert_eq!(
+                skin_arena_shrink_target(INITIAL * 32, INITIAL, &mut ticks),
+                None
+            );
+        }
+        assert_eq!(
+            skin_arena_shrink_target(INITIAL * 32, INITIAL, &mut ticks),
+            Some(INITIAL * 2)
+        );
+        assert_eq!(ticks, 0);
+    }
+
+    #[test]
+    fn shrink_target_resets_on_high_use_or_initial_capacity() {
+        let mut ticks = 5u32;
+        assert_eq!(
+            skin_arena_shrink_target(INITIAL * 4, INITIAL * 2, &mut ticks),
+            None
+        );
+        assert_eq!(ticks, 0);
+        ticks = 5;
+        assert_eq!(skin_arena_shrink_target(INITIAL, 0, &mut ticks), None);
+        assert_eq!(ticks, 0);
+    }
+
+    #[test]
+    fn shrink_target_floors_at_initial_capacity() {
+        let mut ticks = SKIN_ARENA_SHRINK_TICKS - 1;
+        assert_eq!(
+            skin_arena_shrink_target(INITIAL * 32, 0, &mut ticks),
+            Some(INITIAL)
+        );
     }
 }

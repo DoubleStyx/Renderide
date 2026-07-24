@@ -22,6 +22,12 @@ pub struct SharedMemoryView {
     len: usize,
 }
 
+// SAFETY: the mapping handle and base pointer are process-wide, not thread-affine;
+// `UnmapViewOfFile` and `CloseHandle` are valid from any thread. Access to the mapped bytes
+// goes through `&self`/`&mut self` borrows, so exclusive use across threads is enforced by
+// whatever owns the view (e.g. a mutex around the accessor).
+unsafe impl Send for SharedMemoryView {}
+
 impl SharedMemoryView {
     /// Opens the existing mapping and maps `capacity` bytes.
     pub fn new(prefix: &str, buffer_id: i32, capacity: i32) -> io::Result<Self> {

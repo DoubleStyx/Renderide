@@ -110,6 +110,7 @@ fn ready_particle_completion_counts_as_pending_work() {
                 asset_id: 11,
             },
         ),
+        consumed_ack_pending: false,
     })
     .expect("ready point build result");
 

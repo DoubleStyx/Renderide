@@ -98,6 +98,15 @@ impl MeshDeformScratch {
         self.bind_group_caches.clear_on_grow();
     }
 
+    /// Drops cached deform bind groups after the skin-cache arenas were recreated.
+    ///
+    /// Bind-group keys identify buffers by address xor size, which aliases when a recreated arena
+    /// buffer reuses a prior capacity, so stale bind groups must be cleared here.
+    pub fn invalidate_after_arena_reset(&mut self) {
+        self.resource_generation = self.resource_generation.wrapping_add(1);
+        self.bind_group_caches.clear_on_grow();
+    }
+
     /// Current scratch-resource generation for bind-group cache keys.
     #[inline]
     pub fn resource_generation(&self) -> u64 {

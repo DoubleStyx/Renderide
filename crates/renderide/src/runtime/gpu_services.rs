@@ -81,11 +81,17 @@ impl RendererRuntime {
     }
 
     /// Advances nonblocking GPU services that feed host-visible async results.
+    ///
+    /// The reflection-probe maintain passes run on the first call of each tick; repeat calls in
+    /// the same tick only flush queued bake results and skip the idle collect/prune work.
     pub fn maintain_nonblocking_gpu_jobs(&mut self, gpu: &mut GpuContext) {
         profiling::scope!("tick::maintain_nonblocking_gpu_jobs");
         self.flush_reflection_probe_render_results();
         let advance_sliced_ibl = self.tick_state.take_reflection_probe_ibl_advance_for_tick();
-        if advance_sliced_ibl {
+        if !advance_sliced_ibl {
+            return;
+        }
+        {
             profiling::scope!("tick::poll_nonblocking_gpu_jobs");
             let _ = gpu.device().poll(wgpu::PollType::Poll);
         }

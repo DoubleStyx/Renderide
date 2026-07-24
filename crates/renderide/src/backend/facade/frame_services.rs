@@ -59,11 +59,22 @@ impl BackendFrameServices {
         Ok(())
     }
 
-    /// Resets per-tick coalescing and advances the skin-cache frame counter.
-    pub(super) fn reset_for_tick(&mut self) {
+    /// Resets per-tick coalescing, advances the skin-cache frame counter, and decays idle arenas.
+    pub(super) fn reset_for_tick(&mut self, device: Option<&wgpu::Device>) {
         self.frame_resources.reset_light_prep_for_tick();
-        if let Some(cache) = self.skin_cache.as_mut() {
+        let arenas_reset = if let Some(cache) = self.skin_cache.as_mut() {
             cache.advance_frame();
+            device
+                .map(|device| cache.maintain_capacity(device))
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        // Recreated arenas can alias stale deform bind groups, so drop those caches.
+        if arenas_reset
+            && let Some(scratch) = self.mesh_deform_scratch.as_mut()
+        {
+            scratch.invalidate_after_arena_reset();
         }
     }
 

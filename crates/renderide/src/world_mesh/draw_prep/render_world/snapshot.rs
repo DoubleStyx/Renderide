@@ -288,7 +288,7 @@ fn extend_snapshot_particle_tasks<'a, S>(
 }
 
 /// Returns whether a render space has generated particle render-buffer rows.
-fn space_has_render_buffer_renderers<S>(scene: &S, space_id: RenderSpaceId) -> bool
+pub(super) fn space_has_render_buffer_renderers<S>(scene: &S, space_id: RenderSpaceId) -> bool
 where
     S: WorldMeshSceneRead + ?Sized,
 {
@@ -421,34 +421,28 @@ fn retained_renderer_template_count(
     }
 }
 
-fn rebuild_snapshot_parallel(
+pub(super) fn rebuild_snapshot_parallel(
     render_world: &mut RenderWorld,
     active_space_ids: &[RenderSpaceId],
     reused_space_ids: &HashSet<RenderSpaceId>,
     outputs: Vec<(usize, Vec<FramePreparedDraw>)>,
 ) {
-    let mut output_index = 0usize;
+    let mut outputs_by_space: Vec<Vec<Vec<FramePreparedDraw>>> =
+        (0..active_space_ids.len()).map(|_| Vec::new()).collect();
+    for (space_index, draws) in outputs {
+        if let Some(bucket) = outputs_by_space.get_mut(space_index) {
+            bucket.push(draws);
+        }
+    }
     for (space_index, &id) in active_space_ids.iter().enumerate() {
         render_world.prepared.push_cached_space(id);
         if reused_space_ids.contains(&id) {
-            while outputs
-                .get(output_index)
-                .is_some_and(|(task_space_index, _)| *task_space_index == space_index)
-            {
-                output_index += 1;
-            }
             render_world
                 .prepared
                 .extend_previous_cached_draws_for_space(id);
         } else {
-            while outputs
-                .get(output_index)
-                .is_some_and(|(task_space_index, _)| *task_space_index == space_index)
-            {
-                render_world
-                    .prepared
-                    .extend_cached_draws(&outputs[output_index].1);
-                output_index += 1;
+            for draws in &outputs_by_space[space_index] {
+                render_world.prepared.extend_cached_draws(draws);
             }
         }
     }

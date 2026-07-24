@@ -30,6 +30,7 @@ pub(crate) async fn request_device_for_adapter(
             label: Some("renderide-skeleton"),
             required_features,
             required_limits: required_limits_for_adapter(adapter),
+            memory_hints: wgpu::MemoryHints::MemoryUsage,
             ..Default::default()
         })
         .await

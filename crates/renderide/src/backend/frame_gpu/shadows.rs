@@ -139,7 +139,10 @@ fn plot_shadow_atlas(plan: &ShadowFramePlan) {
 fn shadow_visible_group_stats(plan: &ShadowFramePlan) -> (usize, usize) {
     let mut groups = 0usize;
     let mut draws = 0usize;
-    for view in &plan.render_views {
+    for &layer_idx in &plan.rendering_layer_indices {
+        let Some(view) = plan.render_views.get(layer_idx as usize) else {
+            continue;
+        };
         for phase in WorldMeshPhase::PRIMARY_FORWARD {
             for group in view.groups(phase) {
                 groups = groups.saturating_add(1);
@@ -269,6 +272,60 @@ pub(super) struct ShadowAtlasResources {
     resolution: u32,
     layers: u32,
     version: u64,
+    shrink_window: ShadowAtlasShrinkWindow,
+}
+
+/// Consecutive below-capacity syncs required before the atlas shrinks to the window's peak demand.
+const SHADOW_ATLAS_SHRINK_SYNC_COUNT: u32 = 600;
+
+/// Tracks peak requested atlas demand while it stays below current capacity.
+#[derive(Debug, Default)]
+struct ShadowAtlasShrinkWindow {
+    below_capacity_syncs: u32,
+    peak_resolution: u32,
+    peak_layers: u32,
+}
+
+impl ShadowAtlasShrinkWindow {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Notes one sync's demand and returns the shrink target once the window matures.
+    fn note(
+        &mut self,
+        requested_resolution: u32,
+        requested_layers: u32,
+        current_resolution: u32,
+        current_layers: u32,
+    ) -> Option<(u32, u32)> {
+        let below = requested_resolution <= current_resolution
+            && requested_layers <= current_layers
+            && (requested_resolution < current_resolution || requested_layers < current_layers);
+        if !below {
+            self.reset();
+            return None;
+        }
+        self.peak_resolution = self.peak_resolution.max(requested_resolution.max(1));
+        self.peak_layers = self.peak_layers.max(requested_layers.max(1));
+        self.below_capacity_syncs = self.below_capacity_syncs.saturating_add(1);
+        if self.below_capacity_syncs < SHADOW_ATLAS_SHRINK_SYNC_COUNT {
+            return None;
+        }
+        let current_bytes = shadow_atlas_texel_area(current_resolution, current_layers);
+        let peak_bytes = shadow_atlas_texel_area(self.peak_resolution, self.peak_layers);
+        let target = (self.peak_resolution, self.peak_layers);
+        self.reset();
+        if peak_bytes.saturating_mul(4) > current_bytes.saturating_mul(3) {
+            return None;
+        }
+        Some(target)
+    }
+}
+
+/// Texel-area proxy for atlas allocation size comparisons.
+fn shadow_atlas_texel_area(resolution: u32, layers: u32) -> u64 {
+    (resolution as u64) * (resolution as u64) * (layers as u64)
 }
 
 impl ShadowAtlasResources {
@@ -333,6 +390,7 @@ impl ShadowAtlasResources {
             resolution,
             layers: 1,
             version: 1,
+            shrink_window: ShadowAtlasShrinkWindow::default(),
         })
     }
 
@@ -361,11 +419,16 @@ impl ShadowAtlasResources {
         }
         let requested_resolution =
             clamp_shadow_texture_resolution(limits, requested_resolution, layers, self.format);
+        let shrink_target =
+            self.shrink_window
+                .note(requested_resolution, layers, self.resolution, self.layers);
         let grown_layers = self.layers.max(layers);
         let grown_resolution = self.resolution.max(requested_resolution);
         let budgeted_grown_resolution =
             clamp_shadow_texture_resolution(limits, grown_resolution, grown_layers, self.format);
-        let (next_resolution, next_layers) = if budgeted_grown_resolution == grown_resolution {
+        let (next_resolution, next_layers) = if let Some((res, lay)) = shrink_target {
+            (res, lay)
+        } else if budgeted_grown_resolution == grown_resolution {
             (grown_resolution, grown_layers)
         } else {
             (requested_resolution, layers)
@@ -373,6 +436,7 @@ impl ShadowAtlasResources {
         if next_resolution == self.resolution && next_layers == self.layers {
             return self.sync_result(false);
         }
+        self.shrink_window.reset();
         let (texture, atlas_view, layer_views) =
             create_shadow_texture(device, next_resolution, next_layers, self.format, true);
         self.texture = texture;
@@ -657,13 +721,13 @@ impl FrameGpuResources {
         params: ShadowAtlasEncodeParams<'_, '_, '_>,
     ) {
         profiling::scope!("shadows::encode_atlas");
-        if plan.render_views.is_empty() || !self.shadows.renderable() {
+        if plan.rendering_layer_indices.is_empty() || !self.shadows.renderable() {
             return;
         }
         self.prepare_shadow_atlas_uploads(plan, params.gpu_limits, params.uploads);
         self.record_shadow_atlas_layers(
             plan,
-            0..plan.render_views.len(),
+            0..plan.rendering_layer_indices.len(),
             FrameGlobalSplitPassEncodeParams {
                 device: params.device,
                 encoder: params.encoder,
@@ -681,8 +745,8 @@ impl FrameGpuResources {
         &self,
         plan: &ShadowFramePlan,
     ) -> Option<FrameGlobalPassSplitWorkload> {
-        if plan.render_views.len() < SHADOW_ATLAS_PARALLEL_MIN_LAYERS || !self.shadows.renderable()
-        {
+        let rendering_layers = plan.rendering_layer_indices.len();
+        if rendering_layers < SHADOW_ATLAS_PARALLEL_MIN_LAYERS || !self.shadows.renderable() {
             return None;
         }
         let (visible_groups, visible_group_draws) = shadow_visible_group_stats(plan);
@@ -693,9 +757,9 @@ impl FrameGpuResources {
         if worker_count < 2 {
             return None;
         }
-        let chunk_size = plan.render_views.len().div_ceil(worker_count).max(1);
+        let chunk_size = rendering_layers.div_ceil(worker_count).max(1);
         Some(FrameGlobalPassSplitWorkload {
-            unit_count: plan.render_views.len(),
+            unit_count: rendering_layers,
             estimated_work: visible_groups.saturating_add(visible_group_draws),
             chunk_size,
         })
@@ -709,7 +773,7 @@ impl FrameGpuResources {
         uploads: GraphUploadSink<'_>,
     ) {
         profiling::scope!("shadows::prepare_atlas_uploads");
-        if plan.render_views.is_empty() || !self.shadows.renderable() {
+        if plan.rendering_layer_indices.is_empty() || !self.shadows.renderable() {
             return;
         }
         self.pack_shadow_slabs(plan, gpu_limits, uploads);
@@ -717,7 +781,10 @@ impl FrameGpuResources {
         plot_shadow_atlas(plan);
     }
 
-    /// Records a contiguous range of shadow atlas layers into `params.encoder`.
+    /// Records a contiguous range of this frame's rendering layers into `params.encoder`.
+    ///
+    /// `layer_range` indexes [`ShadowFramePlan::rendering_layer_indices`], so cached layers
+    /// whose contents are reused this frame are never visited.
     pub(in crate::backend) fn record_shadow_atlas_layers(
         &self,
         plan: &ShadowFramePlan,
@@ -725,7 +792,7 @@ impl FrameGpuResources {
         params: FrameGlobalSplitPassEncodeParams<'_, '_>,
     ) {
         profiling::scope!("shadows::record_atlas_layers");
-        if plan.render_views.is_empty() || !self.shadows.renderable() {
+        if plan.rendering_layer_indices.is_empty() || !self.shadows.renderable() {
             return;
         }
         let mut encode_refs = WorldMeshForwardEncodeRefs {
@@ -747,8 +814,11 @@ impl FrameGpuResources {
             gpu_limits: params.gpu_limits,
             profiler: params.profiler,
         };
-        for layer_idx in layer_range {
-            let Some(layer) = shadow_layer_plan(plan, layer_idx) else {
+        for slot_idx in layer_range {
+            let Some(&layer_idx) = plan.rendering_layer_indices.get(slot_idx) else {
+                continue;
+            };
+            let Some(layer) = shadow_layer_plan(plan, layer_idx as usize) else {
                 continue;
             };
             self.encode_shadow_view(&layer, &mut ctx);
@@ -837,10 +907,21 @@ impl FrameGpuResources {
         if plan.requested_draw_slots == 0 {
             return;
         }
+        let mut set_used = vec![false; plan.caster_sets.len()];
+        for &layer_idx in &plan.rendering_layer_indices {
+            if let Some(view) = plan.render_views.get(layer_idx as usize)
+                && let Some(flag) = set_used.get_mut(view.caster_set_index)
+            {
+                *flag = true;
+            }
+        }
         self.shadows.with_scratch(|uniforms| {
             uniforms.resize_with(plan.requested_draw_slots, PaddedShadowCasterDraw::zeroed);
             uniforms.truncate(plan.requested_draw_slots);
-            for caster_set in &plan.caster_sets {
+            for (set_idx, caster_set) in plan.caster_sets.iter().enumerate() {
+                if !set_used.get(set_idx).copied().unwrap_or(false) {
+                    continue;
+                }
                 let start = caster_set.slab_slot_offset;
                 let Some(end) = start.checked_add(caster_set.draws.len()) else {
                     continue;
@@ -860,13 +941,24 @@ impl FrameGpuResources {
 
     fn pack_shadow_layer_uniforms(&self, plan: &ShadowFramePlan, uploads: GraphUploadSink<'_>) {
         profiling::scope!("shadows::pack_layer_uniforms");
-        if plan.render_views.is_empty() {
+        let needed_rows = plan
+            .rendering_layer_indices
+            .iter()
+            .filter_map(|&layer_idx| plan.render_views.get(layer_idx as usize))
+            .map(|view| view.layer as usize + 1)
+            .max()
+            .unwrap_or(0)
+            .min(self.shadows.layer_uniform_capacity);
+        if needed_rows == 0 {
             return;
         }
         let mut layer_scratch = self.shadows.layer_scratch.lock();
-        layer_scratch.resize_with(plan.render_views.len(), PaddedShadowLayerUniforms::zeroed);
-        layer_scratch.truncate(plan.render_views.len());
-        for view in &plan.render_views {
+        layer_scratch.resize_with(needed_rows, PaddedShadowLayerUniforms::zeroed);
+        layer_scratch.truncate(needed_rows);
+        for &layer_idx in &plan.rendering_layer_indices {
+            let Some(view) = plan.render_views.get(layer_idx as usize) else {
+                continue;
+            };
             let Some(slot) = layer_scratch.get_mut(view.layer as usize) else {
                 continue;
             };

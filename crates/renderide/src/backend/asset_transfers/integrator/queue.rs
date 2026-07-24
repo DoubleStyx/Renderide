@@ -16,6 +16,8 @@ const ASSET_INTEGRATION_QUEUE_WARN_STRIDE: usize = 1024;
 /// Number of integration updates a removed GPU resource is retained before drop.
 const DELAYED_REMOVAL_UPDATES: usize = 3;
 const DELAYED_REMOVAL_RELEASES_PER_DRAIN: usize = 64;
+/// Backlog size above which an aged bucket drains fully so burst unloads reclaim VRAM promptly.
+const DELAYED_REMOVAL_BACKLOG_FULL_DRAIN: usize = 512;
 
 /// Logical scheduler lane for an [`AssetTask`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -224,7 +226,12 @@ impl AssetIntegrator {
         let index = (self.delayed_removal_bucket_index + (DELAYED_REMOVAL_UPDATES - 1))
             % DELAYED_REMOVAL_UPDATES;
         let count = self.delayed_removal_counts[index];
-        let release_count = count.min(DELAYED_REMOVAL_RELEASES_PER_DRAIN);
+        let release_cap = if self.delayed_removals.len() > DELAYED_REMOVAL_BACKLOG_FULL_DRAIN {
+            count
+        } else {
+            DELAYED_REMOVAL_RELEASES_PER_DRAIN
+        };
+        let release_count = count.min(release_cap);
         let mut released_bytes = 0;
         for _ in 0..release_count {
             if let Some(resource) = self.delayed_removals.pop_front() {

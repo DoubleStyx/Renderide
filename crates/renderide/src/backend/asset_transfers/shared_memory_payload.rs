@@ -6,7 +6,7 @@ use crate::assets::texture::TextureUploadError;
 use crate::ipc::SharedMemoryAccessor;
 use crate::shared::buffer::SharedMemoryBufferDescriptor;
 
-const PAYLOAD_COPY_CHUNK_BYTES: usize = 256 * 1024;
+const PAYLOAD_COPY_CHUNK_BYTES: usize = 1024 * 1024;
 
 /// Owned bytes shared with background asset jobs. -xlinka
 pub(super) type OwnedSharedMemoryPayload = Arc<Vec<u8>>;

@@ -5,6 +5,10 @@ mod frame_global;
 mod materialization;
 mod per_view;
 
+pub(in crate::render_graph::compiled::exec) use frame_global::{
+    FrameGlobalSplitCandidate, FrameGlobalSplitEncodeShared,
+};
+
 use super::super::super::blackboard::{
     Blackboard, BlackboardRuntimeAccessViolation, GraphCommandStats, GraphCommandStatsSlot,
 };

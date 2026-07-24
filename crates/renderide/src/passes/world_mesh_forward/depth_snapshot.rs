@@ -84,6 +84,7 @@ pub(super) fn encode_world_mesh_forward_depth_snapshot(
         .systems
         .frame_resources
         .copy_scene_depth_snapshot_for_view(
+            device,
             frame.view.view_id,
             encoder,
             frame.view.depth_texture,

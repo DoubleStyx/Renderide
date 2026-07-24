@@ -157,3 +157,37 @@ fn shadow_caster_uniforms_use_identity_model_for_world_space_positions() {
 
     assert_eq!(slot.model, Mat4::IDENTITY.to_cols_array());
 }
+
+#[test]
+fn shrink_window_requires_sustained_below_capacity_demand() {
+    let mut window = super::ShadowAtlasShrinkWindow::default();
+
+    for _ in 0..(super::SHADOW_ATLAS_SHRINK_SYNC_COUNT - 1) {
+        assert_eq!(window.note(1024, 4, 4096, 16), None);
+    }
+    assert_eq!(window.note(1024, 4, 4096, 16), Some((1024, 4)));
+}
+
+#[test]
+fn shrink_window_resets_on_growth_and_tracks_peak_demand() {
+    let mut window = super::ShadowAtlasShrinkWindow::default();
+
+    for _ in 0..10 {
+        assert_eq!(window.note(1024, 4, 4096, 16), None);
+    }
+    assert_eq!(window.note(4096, 16, 4096, 16), None);
+    for _ in 0..(super::SHADOW_ATLAS_SHRINK_SYNC_COUNT - 1) {
+        assert_eq!(window.note(2048, 8, 4096, 16), None);
+    }
+    assert_eq!(window.note(1024, 4, 4096, 16), Some((2048, 8)));
+}
+
+#[test]
+fn shrink_window_skips_marginal_savings() {
+    let mut window = super::ShadowAtlasShrinkWindow::default();
+
+    for _ in 0..(super::SHADOW_ATLAS_SHRINK_SYNC_COUNT - 1) {
+        assert_eq!(window.note(4096, 15, 4096, 16), None);
+    }
+    assert_eq!(window.note(4096, 15, 4096, 16), None);
+}

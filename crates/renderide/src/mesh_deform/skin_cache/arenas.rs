@@ -328,6 +328,30 @@ impl SkinArenas {
         self.capacity_cap_bytes
     }
 
+    /// Current per-stream capacity; streams grow in lockstep via [`Self::grow_all`].
+    pub fn stream_capacity_bytes(&self) -> u64 {
+        self.positions.alloc.capacity()
+    }
+
+    /// Largest allocated byte count across the four streams.
+    pub fn max_stream_used_bytes(&self) -> u64 {
+        self.positions
+            .alloc
+            .used_bytes()
+            .max(self.normals.alloc.used_bytes())
+            .max(self.tangents.alloc.used_bytes())
+            .max(self.temp.alloc.used_bytes())
+    }
+
+    /// Recreates every stream at `capacity`; every previously returned range becomes invalid.
+    pub fn reset_to_capacity(&mut self, device: &wgpu::Device, capacity: u64) {
+        let capacity = capacity.clamp(ARENA_ALIGN, self.capacity_cap_bytes);
+        self.positions = Arena::new(device, capacity, "gpu_skin_cache_positions_arena");
+        self.normals = Arena::new(device, capacity, "gpu_skin_cache_normals_arena");
+        self.tangents = Arena::new(device, capacity, "gpu_skin_cache_tangents_arena");
+        self.temp = Arena::new(device, capacity, "gpu_skin_cache_temp_arena");
+    }
+
     /// Allocates `bytes` from the positions arena, plus normals/temp dictated by `need`.
     ///
     /// On any partial failure all prior allocations are rolled back and `None` is returned, so the

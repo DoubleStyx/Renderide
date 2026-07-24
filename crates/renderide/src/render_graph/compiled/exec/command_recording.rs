@@ -9,6 +9,7 @@ use crate::gpu::GpuRetainedResources;
 use crate::hud_contract::PerViewHudOutputs;
 use crate::render_graph::blackboard::GraphCommandStats;
 
+use super::recording::{FrameGlobalSplitCandidate, FrameGlobalSplitEncodeShared};
 use super::recording_path::{
     GraphCommandRecordingPlan, GraphCommandRecordingStrategy, SingleSwapchainEncoderStatus,
 };
@@ -122,6 +123,19 @@ impl CompiledRenderGraph {
         };
         match path {
             GraphCommandRecordingPath::StandardCommandBuffers => {
+                if let Some(candidate) = self.frame_global_split_candidate(&*mv_ctx.backend) {
+                    return self.record_split_frame_global_and_per_view(
+                        mv_ctx,
+                        views,
+                        frame_global,
+                        per_view_work_items,
+                        transient_by_key,
+                        upload_batch,
+                        plan,
+                        command_diagnostics,
+                        candidate,
+                    );
+                }
                 let frame_global_cmds = self.encode_frame_global_command(
                     mv_ctx,
                     views,
@@ -170,6 +184,110 @@ impl CompiledRenderGraph {
         }
     }
 
+    /// Records split frame-global chunks and the per-view batch concurrently.
+    ///
+    /// The mutable frame-global prepare stage (target/transient resolution, serial before-split
+    /// range, split upload packing) runs first; the split chunk fan-out and per-view recording
+    /// then share a rayon join since both only need shared borrows; the serial after-split range
+    /// records last. Submit order is unchanged because command buffers are assembled in schedule
+    /// order regardless of recording order.
+    #[allow(clippy::too_many_arguments)]
+    fn record_split_frame_global_and_per_view(
+        &self,
+        mv_ctx: &mut MultiViewExecutionContext<'_>,
+        views: &[super::FrameView<'_>],
+        frame_global: &FrameGlobalView,
+        per_view_work_items: Vec<PerViewWorkItem>,
+        transient_by_key: &mut HashMap<GraphResolveKey, GraphResolvedResources>,
+        upload_batch: &FrameUploadBatch,
+        plan: GraphCommandRecordingPlan,
+        command_diagnostics: &mut CommandEncodingDiagnostics,
+        candidate: FrameGlobalSplitCandidate,
+    ) -> Result<(Vec<wgpu::CommandBuffer>, RecordedPerViewBatch), GraphExecuteError> {
+        let stage = self.prepare_frame_global_split_stage(
+            mv_ctx,
+            views,
+            frame_global,
+            transient_by_key,
+            upload_batch,
+            candidate,
+        )?;
+        let (split_result, per_view_result, per_view_profiler_cmd) = {
+            let MultiViewExecutionContext {
+                gpu,
+                scene,
+                backend,
+                device,
+                gpu_limits,
+                ..
+            } = &mut *mv_ctx;
+            let backend = &**backend;
+            let per_view_shared = PerViewRecordShared {
+                scene: *scene,
+                device,
+                gpu_limits,
+                occlusion: backend.occlusion(),
+                frame_resources: backend.frame_resources(),
+                history: backend.history_registry(),
+                materials: backend.materials(),
+                asset_resources: backend.asset_resources(),
+                mesh_preprocess: backend.mesh_preprocess(),
+                skin_cache: backend.skin_cache(),
+                skin_weight_mode: backend.skin_weight_mode(),
+                debug_hud: backend.per_view_hud_config(),
+                scene_color_format: backend.scene_color_format_wgpu(),
+            };
+            let split_shared = FrameGlobalSplitEncodeShared {
+                frame_resources: backend.frame_resources(),
+                materials: backend.materials(),
+                asset_resources: backend.asset_resources(),
+                skin_cache: backend.skin_cache(),
+                device,
+                gpu_limits,
+            };
+            let mut per_view_profiler = gpu.take_gpu_profiler();
+            let transient_ro: &HashMap<GraphResolveKey, GraphResolvedResources> = transient_by_key;
+            let (split_result, per_view_result) = rayon::join(
+                || self.record_frame_global_split_stage_commands(&stage, &split_shared),
+                || {
+                    profiling::scope!("graph::record_per_view_batch");
+                    self.record_per_view_batch_with_shared(
+                        &per_view_shared,
+                        per_view_profiler.as_ref(),
+                        per_view_work_items,
+                        transient_ro,
+                        upload_batch,
+                        plan,
+                    )
+                },
+            );
+            let per_view_profiler_cmd = if per_view_result.is_ok() {
+                Self::resolve_per_view_profiler_command(device, &mut per_view_profiler)
+            } else {
+                None
+            };
+            gpu.restore_gpu_profiler(per_view_profiler);
+            (split_result, per_view_result, per_view_profiler_cmd)
+        };
+        let mut batch = per_view_result?;
+        batch.per_view_profiler_cmd = per_view_profiler_cmd;
+        command_diagnostics.apply_per_view(&batch);
+        let frame_global_timed = self.finish_frame_global_split_stage(
+            mv_ctx,
+            frame_global,
+            stage,
+            split_result?,
+            transient_by_key,
+            upload_batch,
+        )?;
+        command_diagnostics.apply_frame_global(&frame_global_timed);
+        let frame_global_cmds = frame_global_timed
+            .into_iter()
+            .map(|command| command.command_buffer)
+            .collect();
+        Ok((frame_global_cmds, batch))
+    }
+
     /// Records optional frame-global graph work and folds its diagnostics into the frame report.
     fn encode_frame_global_command(
         &self,
@@ -206,86 +324,126 @@ impl CompiledRenderGraph {
         upload_batch: &FrameUploadBatch,
         plan: GraphCommandRecordingPlan,
     ) -> Result<RecordedPerViewBatch, GraphExecuteError> {
-        let n_views = per_view_work_items.len();
-        let device = mv_ctx.device;
-        let per_view_shared = PerViewRecordShared {
-            scene: mv_ctx.scene,
+        let MultiViewExecutionContext {
+            gpu,
+            scene,
+            backend,
             device,
-            gpu_limits: mv_ctx.gpu_limits,
-            occlusion: mv_ctx.backend.occlusion(),
-            frame_resources: mv_ctx.backend.frame_resources(),
-            history: mv_ctx.backend.history_registry(),
-            materials: mv_ctx.backend.materials(),
-            asset_resources: mv_ctx.backend.asset_resources(),
-            mesh_preprocess: mv_ctx.backend.mesh_preprocess(),
-            skin_cache: mv_ctx.backend.skin_cache(),
-            skin_weight_mode: mv_ctx.backend.skin_weight_mode(),
-            debug_hud: mv_ctx.backend.per_view_hud_config(),
-            scene_color_format: mv_ctx.backend.scene_color_format_wgpu(),
+            gpu_limits,
+            ..
+        } = mv_ctx;
+        let backend = &**backend;
+        let per_view_shared = PerViewRecordShared {
+            scene: *scene,
+            device,
+            gpu_limits,
+            occlusion: backend.occlusion(),
+            frame_resources: backend.frame_resources(),
+            history: backend.history_registry(),
+            materials: backend.materials(),
+            asset_resources: backend.asset_resources(),
+            mesh_preprocess: backend.mesh_preprocess(),
+            skin_cache: backend.skin_cache(),
+            skin_weight_mode: backend.skin_weight_mode(),
+            debug_hud: backend.per_view_hud_config(),
+            scene_color_format: backend.scene_color_format_wgpu(),
         };
-        let mut per_view_profiler = mv_ctx.gpu.take_gpu_profiler();
-        let record_result = (|| -> Result<RecordedPerViewBatch, GraphExecuteError> {
-            let per_view_outputs = self.record_per_view_outputs(
-                per_view_work_items,
-                PerViewRecordInputs {
-                    transient_by_key,
-                    upload_batch,
-                    per_view_shared: &per_view_shared,
-                    strategy: plan.strategy,
-                    profiler: per_view_profiler.as_ref(),
-                },
-                n_views,
-                plan.estimated_per_view_record_work,
-                plan.per_view_record_admission,
-            )?;
-            let mut per_view_cmds: Vec<wgpu::CommandBuffer> = Vec::with_capacity(n_views);
-            let mut per_view_occlusion_info: Vec<(ViewId, HostCameraFrame)> =
-                Vec::with_capacity(n_views);
-            let mut per_view_hud_outputs: Vec<Option<PerViewHudOutputs>> =
-                Vec::with_capacity(n_views);
-            let mut encode_ms = 0.0;
-            let mut finish_ms = 0.0;
-            let mut max_finish_ms = 0.0;
-            let mut command_stats = GraphCommandStats::default();
-            let mut retained_resources = GpuRetainedResources::new();
-            for output in per_view_outputs {
-                encode_ms += output.encode_ms;
-                finish_ms += output.finish_ms;
-                max_finish_ms = f64::max(max_finish_ms, output.max_finish_ms);
-                command_stats.add(output.command_stats);
-                retained_resources.append(output.retained_resources);
-                per_view_cmds.extend(output.command_buffers);
-                per_view_occlusion_info.push((output.view_id, output.host_camera));
-                per_view_hud_outputs.push(output.hud_outputs);
-            }
-            let per_view_profiler_cmd = per_view_profiler.as_mut().map(|profiler| {
-                let mut profiler_encoder = {
-                    profiling::scope!("graph::per_view_profiler::create_encoder");
-                    device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                        label: Some("render-graph-per-view-profiler-resolve"),
-                    })
-                };
-                profiler.resolve_queries(&mut profiler_encoder);
-                {
-                    profiling::scope!("CommandEncoder::finish::graph_per_view_profiler");
-                    profiler_encoder.finish()
-                }
-            });
-            Ok(RecordedPerViewBatch {
-                per_view_cmds,
-                per_view_occlusion_info,
-                per_view_hud_outputs,
-                per_view_profiler_cmd,
-                encode_ms,
-                finish_ms,
-                max_finish_ms,
-                command_stats,
-                retained_resources,
-            })
-        })();
-        mv_ctx.gpu.restore_gpu_profiler(per_view_profiler);
+        let mut per_view_profiler = gpu.take_gpu_profiler();
+        let record_result = self.record_per_view_batch_with_shared(
+            &per_view_shared,
+            per_view_profiler.as_ref(),
+            per_view_work_items,
+            transient_by_key,
+            upload_batch,
+            plan,
+        );
+        let record_result = record_result.map(|mut batch| {
+            batch.per_view_profiler_cmd =
+                Self::resolve_per_view_profiler_command(device, &mut per_view_profiler);
+            batch
+        });
+        gpu.restore_gpu_profiler(per_view_profiler);
 
         record_result
+    }
+
+    /// Records the per-view batch against shared borrows only.
+    ///
+    /// Safe to run on a rayon worker alongside split frame-global recording. Profiler query
+    /// resolution stays with the caller, so the returned batch carries no profiler command.
+    fn record_per_view_batch_with_shared(
+        &self,
+        per_view_shared: &PerViewRecordShared<'_>,
+        profiler: Option<&crate::profiling::GpuProfilerHandle>,
+        per_view_work_items: Vec<PerViewWorkItem>,
+        transient_by_key: &HashMap<GraphResolveKey, GraphResolvedResources>,
+        upload_batch: &FrameUploadBatch,
+        plan: GraphCommandRecordingPlan,
+    ) -> Result<RecordedPerViewBatch, GraphExecuteError> {
+        let n_views = per_view_work_items.len();
+        let per_view_outputs = self.record_per_view_outputs(
+            per_view_work_items,
+            PerViewRecordInputs {
+                transient_by_key,
+                upload_batch,
+                per_view_shared,
+                strategy: plan.strategy,
+                profiler,
+            },
+            n_views,
+            plan.estimated_per_view_record_work,
+            plan.per_view_record_admission,
+        )?;
+        let mut per_view_cmds: Vec<wgpu::CommandBuffer> = Vec::with_capacity(n_views);
+        let mut per_view_occlusion_info: Vec<(ViewId, HostCameraFrame)> =
+            Vec::with_capacity(n_views);
+        let mut per_view_hud_outputs: Vec<Option<PerViewHudOutputs>> = Vec::with_capacity(n_views);
+        let mut encode_ms = 0.0;
+        let mut finish_ms = 0.0;
+        let mut max_finish_ms = 0.0;
+        let mut command_stats = GraphCommandStats::default();
+        let mut retained_resources = GpuRetainedResources::new();
+        for output in per_view_outputs {
+            encode_ms += output.encode_ms;
+            finish_ms += output.finish_ms;
+            max_finish_ms = f64::max(max_finish_ms, output.max_finish_ms);
+            command_stats.add(output.command_stats);
+            retained_resources.append(output.retained_resources);
+            per_view_cmds.extend(output.command_buffers);
+            per_view_occlusion_info.push((output.view_id, output.host_camera));
+            per_view_hud_outputs.push(output.hud_outputs);
+        }
+        Ok(RecordedPerViewBatch {
+            per_view_cmds,
+            per_view_occlusion_info,
+            per_view_hud_outputs,
+            per_view_profiler_cmd: None,
+            encode_ms,
+            finish_ms,
+            max_finish_ms,
+            command_stats,
+            retained_resources,
+        })
+    }
+
+    /// Resolves pending per-view profiler queries into a standalone command buffer.
+    fn resolve_per_view_profiler_command(
+        device: &wgpu::Device,
+        per_view_profiler: &mut Option<crate::profiling::GpuProfilerHandle>,
+    ) -> Option<wgpu::CommandBuffer> {
+        per_view_profiler.as_mut().map(|profiler| {
+            let mut profiler_encoder = {
+                profiling::scope!("graph::per_view_profiler::create_encoder");
+                device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("render-graph-per-view-profiler-resolve"),
+                })
+            };
+            profiler.resolve_queries(&mut profiler_encoder);
+            {
+                profiling::scope!("CommandEncoder::finish::graph_per_view_profiler");
+                profiler_encoder.finish()
+            }
+        })
     }
 
     /// Records frame-global work and one serial swapchain view into a single command encoder.

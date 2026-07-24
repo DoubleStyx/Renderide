@@ -442,7 +442,7 @@ impl FrameResourceManager {
         if let Some(sync) = shadow_sync {
             let resolution = sync.resolution;
             let changed = sync.changed;
-            self.apply_shadow_atlas_resolution(resolution);
+            self.finalize_shadow_frame_after_atlas_sync(resolution, changed);
             if changed {
                 self.rebuild_per_view_frame_bind_groups_for_global_sync(device, view_layouts);
             }
@@ -503,6 +503,7 @@ impl FrameResourceManager {
     /// Copies the main depth attachment into this view's scene-depth snapshot.
     pub fn copy_scene_depth_snapshot_for_view(
         &self,
+        device: &wgpu::Device,
         view_id: ViewId,
         encoder: &mut wgpu::CommandEncoder,
         source_depth: &wgpu::Texture,
@@ -515,7 +516,7 @@ impl FrameResourceManager {
         };
         state
             .scene_snapshots
-            .encode_depth_copy(encoder, source_depth, viewport, multiview)
+            .encode_depth_copy(device, encoder, source_depth, viewport, multiview)
     }
 
     /// Copies the main color attachment into this view's scene-color snapshot.

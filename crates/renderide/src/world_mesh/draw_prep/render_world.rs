@@ -479,7 +479,7 @@ impl RenderWorld {
         let mut snapshot_dirty_spaces = HashSet::new();
         snapshot_dirty_spaces.extend(self.dirty_spaces.iter().copied());
         snapshot_dirty_spaces.extend(self.dirty_renderers.keys().map(|dirty| dirty.space_id));
-        let force_full_snapshot = full_rebuild || context_changed || self.particle_snapshot_dirty;
+        let force_full_snapshot = full_rebuild || context_changed;
 
         let mut snapshot_dirty = if self.dirty_spaces.is_empty() {
             full_rebuild || context_changed
@@ -504,6 +504,11 @@ impl RenderWorld {
         if self.particle_snapshot_dirty {
             stats.particle_snapshot_rebuild_count = 1;
             snapshot_dirty = true;
+            for id in scene.render_space_ids() {
+                if snapshot::space_has_render_buffer_renderers(scene, id) {
+                    snapshot_dirty_spaces.insert(id);
+                }
+            }
         }
 
         if snapshot_dirty {

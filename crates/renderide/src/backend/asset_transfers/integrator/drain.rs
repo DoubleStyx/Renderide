@@ -521,9 +521,11 @@ fn drain_particle_asset_tasks(
     particle_deadline: Instant,
 ) -> LaneDrainOutcome {
     profiling::scope!("asset::particle_drain");
+    asset.ensure_background_shm(shm);
     let particle_gpu = super::step::particle_task_gpu(gpu);
     let startable_before = enqueue_startable_particle_uploads(asset);
-    let ready_before = drain_ready_particle_builds(asset, particle_gpu.as_ref(), particle_deadline);
+    let ready_before =
+        drain_ready_particle_builds(asset, particle_gpu.as_ref(), ipc, particle_deadline);
     let queued = drain_lane(
         asset,
         materials,
@@ -533,7 +535,8 @@ fn drain_particle_asset_tasks(
         particle_deadline,
         AssetTaskLane::Particle,
     );
-    let ready_after = drain_ready_particle_builds(asset, particle_gpu.as_ref(), particle_deadline);
+    let ready_after =
+        drain_ready_particle_builds(asset, particle_gpu.as_ref(), ipc, particle_deadline);
     let startable_after = enqueue_startable_particle_uploads(asset);
     LaneDrainOutcome {
         pending: ready_before.pending

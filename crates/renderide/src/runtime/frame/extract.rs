@@ -256,6 +256,14 @@ impl SubmitFrame<'_> {
                 std::iter::once(desc).chain(overlay)
             }),
         );
+        backend.set_shadow_camera_fits(self.prepared_views.plans().iter().filter_map(|view| {
+            crate::backend::ShadowCameraFit::from_scene_camera(
+                scene,
+                view.viewport_px,
+                &view.host_camera,
+            )
+            .map(|fit| (view.view_id, fit))
+        }));
         backend.prepare_shadow_frame_for_views(
             self.prepared_views
                 .plans()
@@ -336,7 +344,7 @@ mod tests {
     use crate::world_mesh::CameraTransformDrawFilter;
     use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
     use crate::world_mesh::{
-        PrefetchedWorldMeshViewDraws, ViewLayerPolicy, ViewRenderSpaceScope,
+        PrefetchedWorldMeshViewDraws, ViewLayerPolicy, ViewRenderSpaceScope, WorldMeshCullInput,
         WorldMeshCullProjParams, WorldMeshDrawArrangeParallelism, WorldMeshDrawCollectParallelism,
         WorldMeshDrawCollection, WorldMeshDrawPlan,
     };
@@ -510,7 +518,17 @@ mod tests {
         plan.render_space_scope = ViewRenderSpaceScope::single(RenderSpaceId(99));
         plan.layer_policy = ViewLayerPolicy::MainView;
 
-        let inputs = shadow_caster_view_inputs(&plan, 1.25);
+        let cull_input = WorldMeshCullInput {
+            proj: WorldMeshCullProjParams {
+                world_proj: glam::Mat4::IDENTITY,
+                overlay_proj: glam::Mat4::IDENTITY,
+                vr_stereo: None,
+            },
+            host_camera: &plan.host_camera,
+            hi_z: None,
+            hi_z_temporal: None,
+        };
+        let inputs = shadow_caster_view_inputs(&plan, Some(&cull_input), 1.25);
 
         assert_eq!(inputs.render_context, RenderingContext::UserView);
         assert_eq!(
@@ -519,6 +537,7 @@ mod tests {
         );
         assert_eq!(inputs.view_origin_world, plan.view_origin_world());
         assert!(inputs.culling.is_none());
+        assert!(inputs.lod_selection_culling.is_some());
         assert!(inputs.transform_filter.is_some());
         assert_eq!(inputs.transform_filter_space, Some(RenderSpaceId(99)));
         assert_eq!(

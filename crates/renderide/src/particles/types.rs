@@ -74,6 +74,14 @@ pub(crate) enum ParticleRenderBufferError {
         /// Available raw bytes.
         raw_len: usize,
     },
+    /// The background worker could not read the payload from shared memory.
+    #[error("{kind} render buffer {asset_id}: shared memory payload read failed")]
+    SharedMemoryReadFailed {
+        /// Render-buffer family.
+        kind: &'static str,
+        /// Source asset id.
+        asset_id: i32,
+    },
     /// The generated mesh id cannot fit into the renderer's signed asset id space.
     #[error("{kind} render buffer {asset_id}: generated mesh id overflow")]
     GeneratedIdOverflow {

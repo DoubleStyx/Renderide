@@ -372,11 +372,18 @@ impl WorldMeshForwardDepthPrepassPipelineKey {
         } else {
             cull_for_topology(cull_mode.0, item.batch_key.primitive_topology)
         };
+        // Shadow views lack the camera view's handedness z-flip, so winding is inverted relative to
+        // the material front/back convention. Flip so a single-sided face casts only from its
+        // rendered side.
+        let mut front_face = item.batch_key.front_face.flipped();
+        if pipeline.front_face_flip {
+            front_face = front_face.flipped();
+        }
         Some(Self {
             depth_stencil_format,
             sample_count: pipeline.pass_desc.sample_count,
             multiview_mask: pipeline.pass_desc.multiview_mask,
-            front_face: item.batch_key.front_face,
+            front_face,
             cull_mode,
             primitive_topology: item.batch_key.primitive_topology,
             depth_compare: wgpu::CompareFunction::LessEqual,
@@ -721,6 +728,34 @@ mod tests {
                 .expect("double-sided PBS shadows should still cast");
 
         assert_eq!(key.cull_mode, None);
+    }
+
+    #[test]
+    fn shadow_key_flips_front_face_for_light_space_winding() {
+        let mut item = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 1,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 1,
+            node_id: 1,
+            slot_index: 0,
+            collect_order: 0,
+            alpha_blended: false,
+        });
+        item.batch_key.pipeline =
+            RasterPipelineKind::EmbeddedStem(Arc::from("pbsmetallic_default"));
+        item.batch_key.front_face = crate::materials::RasterFrontFace::CounterClockwise;
+
+        let key =
+            WorldMeshForwardDepthPrepassPipelineKey::for_shadow_draw(&item, &pipeline_state())
+                .expect("pbsmetallic casts shadows");
+
+        assert_eq!(
+            key.front_face,
+            crate::materials::RasterFrontFace::CounterClockwise.flipped(),
+            "shadow caster must invert winding to match the camera's front/back convention"
+        );
     }
 
     #[test]

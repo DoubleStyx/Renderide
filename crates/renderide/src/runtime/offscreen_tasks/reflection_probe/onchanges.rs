@@ -1,6 +1,7 @@
 //! Time-sliced runtime reflection-probe captures.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use hashbrown::HashSet;
 
@@ -65,6 +66,9 @@ pub(in crate::runtime) struct PendingOnChangesReflectionProbeCompletion {
     /// Latest host unique id queued while this completion was waiting.
     pub(in crate::runtime) queued_unique_id: Option<i32>,
 }
+
+/// Wall-clock budget for stepping active probe captures in one drain tick.
+const PROBE_CAPTURE_STEP_BUDGET: Duration = Duration::from_millis(4);
 
 /// Progress state for a runtime cubemap capture.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -163,17 +167,28 @@ impl RendererRuntime {
         let frame_time_seconds = self.tick_state.frame_time_seconds();
         let active =
             std::mem::take(&mut self.tick_state.active_onchanges_reflection_probe_captures);
+        let started = Instant::now();
+        let force_individual_faces = active.len() > 1;
+        let mut stepped_any = false;
         let mut still_active = Vec::with_capacity(active.len());
         let mut completed_results = Vec::new();
         for mut capture in active {
-            match step_onchanges_reflection_probe_capture(OnChangesCaptureStepCtx {
-                gpu,
-                backend: &mut self.backend,
-                scene: &self.scene,
-                base_camera,
-                frame_time_seconds,
-                capture: &mut capture,
-            }) {
+            if stepped_any && started.elapsed() >= PROBE_CAPTURE_STEP_BUDGET {
+                still_active.push(capture);
+                continue;
+            }
+            stepped_any = true;
+            match step_onchanges_reflection_probe_capture(
+                OnChangesCaptureStepCtx {
+                    gpu,
+                    backend: &mut self.backend,
+                    scene: &self.scene,
+                    base_camera,
+                    frame_time_seconds,
+                    capture: &mut capture,
+                },
+                force_individual_faces,
+            ) {
                 Ok(RuntimeProbeCaptureStep::Pending) => still_active.push(capture),
                 Ok(RuntimeProbeCaptureStep::Complete) => {
                     let completed_request = capture.request;
@@ -327,19 +342,30 @@ impl RendererRuntime {
         let base_camera = &self.host_camera;
         let frame_time_seconds = self.tick_state.frame_time_seconds();
         let active = std::mem::take(&mut self.tick_state.active_realtime_reflection_probe_captures);
+        let started = Instant::now();
+        let force_individual_faces = active.len() > 1;
+        let mut stepped_any = false;
         let mut still_active = Vec::with_capacity(active.len());
         for mut capture in active {
             if !realtime_capture_is_still_valid(&self.scene, &capture) {
                 continue;
             }
-            match step_realtime_reflection_probe_capture(RealtimeCaptureStepCtx {
-                gpu,
-                backend: &mut self.backend,
-                scene: &self.scene,
-                base_camera,
-                frame_time_seconds,
-                capture: &mut capture,
-            }) {
+            if stepped_any && started.elapsed() >= PROBE_CAPTURE_STEP_BUDGET {
+                still_active.push(capture);
+                continue;
+            }
+            stepped_any = true;
+            match step_realtime_reflection_probe_capture(
+                RealtimeCaptureStepCtx {
+                    gpu,
+                    backend: &mut self.backend,
+                    scene: &self.scene,
+                    base_camera,
+                    frame_time_seconds,
+                    capture: &mut capture,
+                },
+                force_individual_faces,
+            ) {
                 Ok(RuntimeProbeCaptureStep::Pending) => still_active.push(capture),
                 Ok(RuntimeProbeCaptureStep::Complete) => {
                     let key = capture.key;
@@ -359,6 +385,9 @@ impl RendererRuntime {
                     );
                 }
             }
+        }
+        if still_active.len() > 1 {
+            still_active.rotate_left(1);
         }
         self.tick_state.active_realtime_reflection_probe_captures = still_active;
     }
@@ -577,10 +606,12 @@ struct RealtimeCaptureStepCtx<'a> {
 /// Advances one realtime capture by one renderer tick.
 fn step_realtime_reflection_probe_capture(
     ctx: RealtimeCaptureStepCtx<'_>,
+    force_individual_faces: bool,
 ) -> Result<RuntimeProbeCaptureStep, ReflectionProbeBakeError> {
     profiling::scope!("reflection_probe_realtime::step");
     let state = realtime_capture_state(ctx.scene, ctx.capture.key)?;
-    let faces = ctx.capture.progress.faces_for_step(state.time_slicing_mode);
+    let mode = step_time_slicing_mode(state.time_slicing_mode, force_individual_faces);
+    let faces = ctx.capture.progress.faces_for_step(mode);
     if !faces.is_empty() {
         let plans = plan_realtime_reflection_probe_faces(
             ctx.scene,
@@ -595,19 +626,18 @@ fn step_realtime_reflection_probe_capture(
         render_result?;
         ctx.capture.progress.mark_rendered(&faces);
     }
-    Ok(ctx
-        .capture
-        .progress
-        .advance_after_step(state.time_slicing_mode))
+    Ok(ctx.capture.progress.advance_after_step(mode))
 }
 
 /// Advances one OnChanges capture by one renderer tick.
 fn step_onchanges_reflection_probe_capture(
     ctx: OnChangesCaptureStepCtx<'_>,
+    force_individual_faces: bool,
 ) -> Result<RuntimeProbeCaptureStep, ReflectionProbeBakeError> {
     profiling::scope!("reflection_probe_onchanges::step");
     let state = onchanges_capture_state(ctx.scene, ctx.capture.request)?;
-    let faces = ctx.capture.progress.faces_for_step(state.time_slicing_mode);
+    let mode = step_time_slicing_mode(state.time_slicing_mode, force_individual_faces);
+    let faces = ctx.capture.progress.faces_for_step(mode);
     if !faces.is_empty() {
         let plans = plan_onchanges_reflection_probe_faces(
             ctx.scene,
@@ -622,10 +652,19 @@ fn step_onchanges_reflection_probe_capture(
         render_result?;
         ctx.capture.progress.mark_rendered(&faces);
     }
-    Ok(ctx
-        .capture
-        .progress
-        .advance_after_step(state.time_slicing_mode))
+    Ok(ctx.capture.progress.advance_after_step(mode))
+}
+
+/// Downgrades a capture step to one face per tick when other captures are waiting.
+fn step_time_slicing_mode(
+    host_mode: ReflectionProbeTimeSlicingMode,
+    force_individual_faces: bool,
+) -> ReflectionProbeTimeSlicingMode {
+    if force_individual_faces {
+        ReflectionProbeTimeSlicingMode::IndividualFaces
+    } else {
+        host_mode
+    }
 }
 
 /// Returns the current OnChanges probe state for a capture request.

@@ -134,6 +134,9 @@ fn texture_sample_type_for_image_class(
                 });
             }
             match kind {
+                ScalarKind::Float if group == 0 && (binding == 4 || binding == 5) => {
+                    Ok(wgpu::TextureSampleType::Float { filterable: false })
+                }
                 ScalarKind::Float => Ok(wgpu::TextureSampleType::Float { filterable: true }),
                 ScalarKind::Sint => Ok(wgpu::TextureSampleType::Sint),
                 ScalarKind::Uint => Ok(wgpu::TextureSampleType::Uint),

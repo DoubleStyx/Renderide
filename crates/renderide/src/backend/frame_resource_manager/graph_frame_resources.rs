@@ -152,13 +152,21 @@ impl GraphPerDrawSlabResources for FrameResourceManager {
 impl GraphSceneSnapshotResources for FrameResourceManager {
     fn copy_scene_depth_snapshot_for_view(
         &self,
+        device: &wgpu::Device,
         view_id: ViewId,
         encoder: &mut wgpu::CommandEncoder,
         source_depth: &wgpu::Texture,
         viewport: (u32, u32),
         multiview: bool,
     ) -> bool {
-        self.copy_scene_depth_snapshot_for_view(view_id, encoder, source_depth, viewport, multiview)
+        self.copy_scene_depth_snapshot_for_view(
+            device,
+            view_id,
+            encoder,
+            source_depth,
+            viewport,
+            multiview,
+        )
     }
 
     fn copy_scene_color_snapshot_for_view(
@@ -277,7 +285,7 @@ impl GraphFrameGlobalResources for FrameResourceManager {
     }
 
     fn has_shadow_atlas_requests(&self) -> bool {
-        self.frame_gpu().is_some() && !self.shadow_frame_plan().render_views.is_empty()
+        self.frame_gpu().is_some() && !self.shadow_frame_plan().rendering_layer_indices.is_empty()
     }
 
     fn encode_shadow_atlas(&self, params: ShadowAtlasEncodeParams<'_, '_, '_>) {

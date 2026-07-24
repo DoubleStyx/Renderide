@@ -75,5 +75,8 @@ impl RendererRuntime {
         if let Some(shm) = self.frontend.shared_memory_mut() {
             shm.release_view(buffer_id);
         }
+        self.backend
+            .asset_transfers
+            .release_background_shm_view(buffer_id);
     }
 }

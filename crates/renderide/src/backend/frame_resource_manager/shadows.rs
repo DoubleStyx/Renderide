@@ -1,5 +1,6 @@
 //! Realtime shadow planning stored on [`FrameResourceManager`].
 
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Once};
 
 use glam::{Mat4, Vec3};
@@ -16,6 +17,7 @@ use crate::mesh_deform::SkinCacheKey;
 use crate::render_phase::RenderPhaseSet;
 use crate::shared::{LightType, ShadowCastMode};
 use crate::world_mesh::culling::frustum::world_aabb_visible_in_homogeneous_clip;
+use crate::world_mesh::draw_prep::WorldMeshDrawCollection;
 use crate::world_mesh::{
     DrawGroup, InstancePlan, WorldMeshDrawItem, WorldMeshDrawPlan, WorldMeshPhase,
 };
@@ -23,7 +25,13 @@ use crate::world_mesh::{
 use super::super::shadow_atlas_format::select_shadow_atlas_format;
 use super::manager::FrameResourceManager;
 
+mod cascade;
+mod layer_cache;
 mod point_faces;
+
+pub(crate) use cascade::ShadowCameraFit;
+pub(in crate::backend::frame_resource_manager) use layer_cache::ShadowLayerCache;
+use layer_cache::ShadowLayerLease;
 
 const POINT_FACE_COUNT: u32 = point_faces::POINT_FACE_COUNT;
 const SHADOW_TYPE_NONE: u32 = 0;
@@ -61,6 +69,18 @@ pub(crate) struct ShadowRenderView {
     pub(crate) caster_set_index: usize,
     /// Shadow-caster groups that conservatively intersect this shadow view.
     visible_groups: RenderPhaseSet<WorldMeshPhase, DrawGroup>,
+    /// Whether this layer's depth contents must be re-rendered this frame.
+    ///
+    /// `false` means the persistent layer cache holds valid contents for this view's signatures
+    /// and recording skips the layer entirely.
+    pub(crate) needs_render: bool,
+    /// Stable light-identity key into the persistent layer cache.
+    pub(crate) cache_key: u64,
+    /// Signature over the light parameters that shape this layer's output.
+    pub(crate) params_sig: u64,
+    /// Signature over the visible caster members, computed only when [`Self::params_sig`]
+    /// matched the cached layer and the members allow reuse.
+    pub(crate) caster_sig: Option<u64>,
 }
 
 impl ShadowRenderView {
@@ -88,6 +108,10 @@ impl ShadowRenderView {
             shadow_bias,
             caster_set_index: 0,
             visible_groups: RenderPhaseSet::new(),
+            needs_render: true,
+            cache_key: 0,
+            params_sig: 0,
+            caster_sig: None,
         }
     }
 }
@@ -107,6 +131,21 @@ pub(crate) struct ShadowFramePlan {
     pub(crate) requested_layers: u32,
     /// Requested shadow per-draw slab rows across all atlas layers.
     pub(crate) requested_draw_slots: usize,
+    /// Indices into [`Self::render_views`] whose layers actually record this frame.
+    pub(crate) rendering_layer_indices: Vec<u32>,
+}
+
+impl ShadowFramePlan {
+    /// Rebuilds the dense index list of views whose layers record this frame.
+    pub(crate) fn refresh_rendering_layer_indices(&mut self) {
+        self.rendering_layer_indices = self
+            .render_views
+            .iter()
+            .enumerate()
+            .filter(|(_, view)| view.needs_render)
+            .map(|(idx, _)| idx as u32)
+            .collect();
+    }
 }
 
 struct ShadowPlanningView<'a> {
@@ -125,12 +164,36 @@ struct ShadowCasterGroupKey {
     cull_mode: Option<wgpu::Face>,
 }
 
+type ShadowCasterSortKey = (
+    crate::materials::RasterFrontFace,
+    crate::materials::RasterPrimitiveTopology,
+    u8,
+    i32,
+    u32,
+    u32,
+    u8,
+    usize,
+);
+
 struct PendingShadowCasterGroup {
     representative_draw_idx: usize,
     members: Vec<usize>,
+    sort_key: ShadowCasterSortKey,
 }
 
 impl FrameResourceManager {
+    /// Installs the per-view camera frustums used to fit directional shadow cascades this frame.
+    ///
+    /// Set before [`Self::prepare_shadow_frame_for_views`]. Views without a fit fall back to a
+    /// camera-independent directional projection.
+    pub(crate) fn set_shadow_camera_fits(
+        &mut self,
+        fits: impl IntoIterator<Item = (ViewId, ShadowCameraFit)>,
+    ) {
+        self.shadow_camera_fits.clear();
+        self.shadow_camera_fits.extend(fits);
+    }
+
     /// Clears shadow assignments and stores an empty shadow frame plan.
     pub(crate) fn clear_shadow_frame(&mut self) {
         for lights in self.per_view_lights.values_mut() {
@@ -142,9 +205,13 @@ impl FrameResourceManager {
     }
 
     /// Plans shadow maps from packed per-view lights and sorted view draw plans.
+    ///
+    /// `mesh_pool` feeds the persistent layer cache's mesh-mutation tracking; passing [`None`]
+    /// conservatively treats every mesh as mutated, so no layer content is reused.
     pub(crate) fn prepare_shadow_frame_for_views<'a, I>(
         &mut self,
         quality: HostShadowQuality,
+        mesh_pool: Option<&crate::gpu_pools::MeshPool>,
         views: I,
     ) where
         I: IntoIterator<Item = (ViewId, &'a WorldMeshDrawPlan)>,
@@ -154,6 +221,7 @@ impl FrameResourceManager {
         if !shadow_atlas_rendering_supported(self.limits.as_deref()) {
             return;
         }
+        self.shadow_layer_cache.begin_frame(mesh_pool);
         let max_shadow_views = shadow_view_capacity(self.limits.as_deref());
         let mut plan = ShadowFramePlan {
             requested_resolution: 1,
@@ -170,9 +238,47 @@ impl FrameResourceManager {
                 break;
             }
         }
-        plan.requested_layers = plan.render_views.len().max(1).min(u32::MAX as usize) as u32;
+        self.shadow_layer_cache.evict_unused();
+        plan.requested_layers = self.shadow_layer_cache.layer_count().max(1);
+        plan.refresh_rendering_layer_indices();
         refresh_shadow_metadata_atlas_rects(&mut plan);
         self.shadow_frame = plan;
+    }
+
+    /// Applies the synced atlas state to the planned shadow frame and settles layer reuse.
+    ///
+    /// Runs after [`super::FrameResourceManager::prepare_shadow_frame_for_views`] once the atlas
+    /// texture has synced. An atlas recreation invalidates every cached layer's contents; a
+    /// post-sync resolution clamp re-renders the affected layers. Views that will record this
+    /// frame commit their new content signature to the cache.
+    pub(crate) fn finalize_shadow_frame_after_atlas_sync(
+        &mut self,
+        atlas_resolution: u32,
+        atlas_changed: bool,
+    ) {
+        self.apply_shadow_atlas_resolution(atlas_resolution);
+        if atlas_changed {
+            self.shadow_layer_cache.invalidate_rendered_contents();
+        }
+        let plan = &mut self.shadow_frame;
+        for view in &mut plan.render_views {
+            let params_sig = shadow_layer_params_signature(&self.shadow_layer_cache, view);
+            if atlas_changed
+                || (!view.needs_render
+                    && !self.shadow_layer_cache.rendered_contents_match(
+                        view.cache_key,
+                        params_sig,
+                        view.caster_sig,
+                    ))
+            {
+                view.needs_render = true;
+            }
+            if view.needs_render {
+                self.shadow_layer_cache
+                    .mark_rendered(view.cache_key, params_sig, view.caster_sig);
+            }
+        }
+        plan.refresh_rendering_layer_indices();
     }
 
     /// Returns the current shadow frame plan.
@@ -288,34 +394,13 @@ fn append_shadow_views_for_view(
         }
         return;
     }
-    let shadow_draws = collection
-        .items
-        .iter()
-        .filter(|item| {
-            item.shadow_cast_mode != ShadowCastMode::Off
-                && shadow_caster_policy_for_pipeline(&item.batch_key.pipeline).casts()
-        })
-        .cloned()
-        .collect::<Arc<[WorldMeshDrawItem]>>();
-    if shadow_draws.is_empty() {
+    let Some(caster_set_index) = append_shadow_caster_set(manager, collection, plan) else {
         return;
-    }
+    };
+    let camera_fit = manager.shadow_camera_fits.get(&view.view_id).copied();
     let Some(lights) = manager.per_view_lights.get_mut(view.view_id) else {
         return;
     };
-    let caster_set_index = plan.caster_sets.len();
-    let supports_base_instance = manager
-        .limits
-        .as_deref()
-        .is_none_or(|limits| limits.supports_base_instance);
-    let instance_plan = build_shadow_caster_plan(&shadow_draws, supports_base_instance);
-    let slab_slot_offset = plan.requested_draw_slots;
-    plan.requested_draw_slots = plan.requested_draw_slots.saturating_add(shadow_draws.len());
-    plan.caster_sets.push(ShadowCasterSet {
-        draws: shadow_draws,
-        instance_plan,
-        slab_slot_offset,
-    });
 
     let mut local_shadowed = 0u32;
     for light in &mut lights.lights {
@@ -348,36 +433,65 @@ fn append_shadow_views_for_view(
         let shadow_bias = light.shadow_bias.max(0.0);
         let resolution = shadow_resolution_for_light(light, quality, manager.limits.as_deref());
         plan.requested_resolution = plan.requested_resolution.max(resolution);
+        let light_ctx = ShadowViewPlanContext {
+            quality,
+            view_id: view.view_id,
+            kind,
+            resolution,
+            light_position,
+            light_range,
+            shadow_bias,
+            caster_set_index,
+            view_count,
+            camera_fit,
+        };
         for view_offset in 0..view_count {
-            let layer = plan.render_views.len().min(u32::MAX as usize) as u32;
-            let view_proj = shadow_projection_for_light(light, view_offset, view_count, quality);
-            let visible_groups =
-                visible_shadow_groups_for_view(view_proj, &plan.caster_sets[caster_set_index]);
-            plan.metadata.push(gpu_shadow_view_for_light(
+            plan_shadow_render_view(
+                &mut manager.shadow_layer_cache,
+                plan,
                 light,
-                view_proj,
-                layer,
-                resolution,
+                &light_ctx,
                 view_offset,
-                view_count,
-                quality,
-            ));
-            plan.render_views.push(ShadowRenderView {
-                layer,
-                kind,
-                resolution,
-                view_proj,
-                light_position,
-                light_range,
-                shadow_bias,
-                caster_set_index,
-                visible_groups,
-            });
+            );
         }
         light.shadow_view_start = start;
         light.shadow_view_count = view_count;
         light.shadow_flags = 0;
     }
+}
+
+/// Collects the view's shadow-casting draws into a shared caster set and returns its index.
+fn append_shadow_caster_set(
+    manager: &FrameResourceManager,
+    collection: &WorldMeshDrawCollection,
+    plan: &mut ShadowFramePlan,
+) -> Option<usize> {
+    let shadow_draws = collection
+        .items
+        .iter()
+        .filter(|item| {
+            item.shadow_cast_mode != ShadowCastMode::Off
+                && shadow_caster_policy_for_pipeline(&item.batch_key.pipeline).casts()
+        })
+        .cloned()
+        .collect::<Arc<[WorldMeshDrawItem]>>();
+    if shadow_draws.is_empty() {
+        return None;
+    }
+    let caster_set_index = plan.caster_sets.len();
+    let supports_base_instance = manager
+        .limits
+        .as_deref()
+        .is_none_or(|limits| limits.supports_base_instance);
+    let instance_plan = build_shadow_caster_plan(&shadow_draws, supports_base_instance);
+    let slab_slot_offset = plan.requested_draw_slots;
+    plan.requested_draw_slots = plan.requested_draw_slots.saturating_add(shadow_draws.len());
+    plan.caster_sets.push(ShadowCasterSet {
+        draws: shadow_draws,
+        instance_plan,
+        slab_slot_offset,
+    });
+    Some(caster_set_index)
 }
 
 fn build_shadow_caster_plan(
@@ -393,33 +507,31 @@ fn build_shadow_caster_plan(
     let mut group_index: HashMap<ShadowCasterGroupKey, usize> = HashMap::new();
     let mut pending_groups: Vec<PendingShadowCasterGroup> = Vec::new();
     for (draw_idx, item) in draws.iter().enumerate() {
+        let key = shadow_caster_group_key(item);
         if shadow_draw_requires_singleton(item, supports_base_instance) {
             pending_groups.push(PendingShadowCasterGroup {
                 representative_draw_idx: draw_idx,
                 members: vec![draw_idx],
+                sort_key: shadow_caster_sort_key(&key, draw_idx),
             });
             continue;
         }
 
-        let key = shadow_caster_group_key(item);
         if let Some(&group_idx) = group_index.get(&key) {
             pending_groups[group_idx].members.push(draw_idx);
         } else {
             let group_idx = pending_groups.len();
+            let sort_key = shadow_caster_sort_key(&key, draw_idx);
             group_index.insert(key, group_idx);
             pending_groups.push(PendingShadowCasterGroup {
                 representative_draw_idx: draw_idx,
                 members: vec![draw_idx],
+                sort_key,
             });
         }
     }
 
-    pending_groups.sort_unstable_by_key(|group| {
-        shadow_caster_sort_key(
-            &draws[group.representative_draw_idx],
-            group.representative_draw_idx,
-        )
-    });
+    pending_groups.sort_unstable_by_key(|group| group.sort_key);
 
     for group in pending_groups {
         let draw_group = append_shadow_draw_group(
@@ -441,6 +553,186 @@ fn shadow_draw_requires_singleton(item: &WorldMeshDrawItem, supports_base_instan
         || item.material_stack_order.is_some()
 }
 
+/// Per-light constants shared by every planned sub-view of one shadow-casting light.
+struct ShadowViewPlanContext {
+    quality: HostShadowQuality,
+    view_id: ViewId,
+    kind: u32,
+    resolution: u32,
+    light_position: Vec3,
+    light_range: f32,
+    shadow_bias: f32,
+    caster_set_index: usize,
+    view_count: u32,
+    /// Camera frustum used to fit directional cascades to this view, when available.
+    camera_fit: Option<ShadowCameraFit>,
+}
+
+/// Plans one shadow render view, assigning its persistent layer and reuse decision.
+///
+/// The caster scan only runs when the light parameters still match the cached layer; a layer
+/// whose parameters changed (a moving light or a camera-fitted cascade) re-renders without
+/// paying for the member walk.
+fn plan_shadow_render_view(
+    cache: &mut ShadowLayerCache,
+    plan: &mut ShadowFramePlan,
+    light: &crate::gpu::GpuLight,
+    ctx: &ShadowViewPlanContext,
+    view_offset: u32,
+) {
+    let view_proj = shadow_projection_for_light(
+        light,
+        view_offset,
+        ctx.view_count,
+        ctx.quality,
+        ctx.camera_fit.as_ref(),
+        ctx.resolution,
+    );
+    let visible_groups =
+        visible_shadow_groups_for_view(view_proj, &plan.caster_sets[ctx.caster_set_index]);
+    let cache_key = shadow_layer_cache_key(cache, ctx.view_id, light, view_offset);
+    let ShadowLayerLease {
+        layer,
+        rendered_params_sig,
+        rendered_caster_sig,
+    } = cache.acquire(cache_key);
+    let mut render_view = ShadowRenderView {
+        layer,
+        kind: ctx.kind,
+        resolution: ctx.resolution,
+        view_proj,
+        light_position: ctx.light_position,
+        light_range: ctx.light_range,
+        shadow_bias: ctx.shadow_bias,
+        caster_set_index: ctx.caster_set_index,
+        visible_groups,
+        needs_render: true,
+        cache_key,
+        params_sig: 0,
+        caster_sig: None,
+    };
+    render_view.params_sig = shadow_layer_params_signature(cache, &render_view);
+    if rendered_params_sig == Some(render_view.params_sig) {
+        let content = shadow_caster_content_hash(
+            cache,
+            &plan.caster_sets[ctx.caster_set_index],
+            &render_view.visible_groups,
+        );
+        render_view.caster_sig = content.reusable.then_some(content.hash);
+        render_view.needs_render = !content.reusable || rendered_caster_sig != Some(content.hash);
+    }
+    plan.metadata.push(gpu_shadow_view_for_light(
+        light,
+        view_proj,
+        layer,
+        ctx.resolution,
+        view_offset,
+    ));
+    plan.render_views.push(render_view);
+}
+
+/// Stable light identity for persistent shadow layer assignment.
+///
+/// Built from fields that distinguish one shadow-casting light from another without folding in
+/// per-frame render state: the source view, light type, sub-view index, and the light's world
+/// placement. Parameter changes on the same light (range, angle, bias) keep the key and are
+/// caught by the content signature instead.
+fn shadow_layer_cache_key(
+    cache: &ShadowLayerCache,
+    view_id: ViewId,
+    light: &crate::gpu::GpuLight,
+    view_offset: u32,
+) -> u64 {
+    let mut hasher = cache.build_hasher();
+    view_id.hash(&mut hasher);
+    hasher.write_u32(light.light_type);
+    hasher.write_u32(view_offset);
+    for v in light.position {
+        hasher.write_u32(v.to_bits());
+    }
+    for v in light.direction {
+        hasher.write_u32(v.to_bits());
+    }
+    hasher.finish()
+}
+
+/// Content hash over one shadow view's visible caster members.
+struct ShadowCasterContentHash {
+    /// Hash of member identity, geometry range, pipeline key, and world transform.
+    hash: u64,
+    /// Whether the members allow content reuse at all.
+    reusable: bool,
+}
+
+const SHADOW_CASTERS_NOT_REUSABLE: ShadowCasterContentHash = ShadowCasterContentHash {
+    hash: 0,
+    reusable: false,
+};
+
+/// Hashes the visible caster members, aborting as soon as reuse is impossible.
+///
+/// Skinned, world-space-deformed, and blendshape-deformed casters read GPU deform buffers that
+/// change without any draw-item field changing, and members whose resident mesh data mutated
+/// since the previous plan would render stale geometry under an unchanged hash. Either aborts
+/// the scan immediately since the layer must re-render regardless.
+fn shadow_caster_content_hash(
+    cache: &ShadowLayerCache,
+    caster_set: &ShadowCasterSet,
+    visible_groups: &RenderPhaseSet<WorldMeshPhase, DrawGroup>,
+) -> ShadowCasterContentHash {
+    let mut hasher = cache.build_hasher();
+    for phase in WorldMeshPhase::PRIMARY_FORWARD {
+        for group in visible_groups.phase(phase).items() {
+            let start = group.instance_range.start as usize;
+            let end = group.instance_range.end as usize;
+            let Some(members) = caster_set.instance_plan.slab_layout.get(start..end) else {
+                return SHADOW_CASTERS_NOT_REUSABLE;
+            };
+            for &draw_idx in members {
+                let Some(item) = caster_set.draws.get(draw_idx) else {
+                    return SHADOW_CASTERS_NOT_REUSABLE;
+                };
+                if item.skinned
+                    || item.world_space_deformed
+                    || item.blendshape_deformed
+                    || cache.mesh_mutated(item.mesh_asset_id)
+                {
+                    return SHADOW_CASTERS_NOT_REUSABLE;
+                }
+                hasher.write_i32(item.mesh_asset_id);
+                hasher.write_u32(item.first_index);
+                hasher.write_u32(item.index_count);
+                hasher.write_u8(item.shadow_cast_mode as u8);
+                hasher.write_u64(item.batch_key_hash);
+                let model = item.rigid_world_matrix.unwrap_or(Mat4::IDENTITY);
+                for v in model.to_cols_array() {
+                    hasher.write_u32(v.to_bits());
+                }
+            }
+        }
+    }
+    ShadowCasterContentHash {
+        hash: hasher.finish(),
+        reusable: true,
+    }
+}
+
+/// Signature over the light parameters that shape one shadow layer's rendered output.
+fn shadow_layer_params_signature(cache: &ShadowLayerCache, view: &ShadowRenderView) -> u64 {
+    let mut hasher = cache.build_hasher();
+    hasher.write_u32(view.kind);
+    hasher.write_u32(view.resolution);
+    for v in view.view_proj.to_cols_array() {
+        hasher.write_u32(v.to_bits());
+    }
+    hasher.write_u32(view.light_position.x.to_bits());
+    hasher.write_u32(view.light_position.y.to_bits());
+    hasher.write_u32(view.light_position.z.to_bits());
+    hasher.write_u32(view.light_range.to_bits());
+    hasher.write_u32(view.shadow_bias.to_bits());
+    hasher.finish()
+}
+
 fn shadow_caster_group_key(item: &WorldMeshDrawItem) -> ShadowCasterGroupKey {
     ShadowCasterGroupKey {
         mesh_asset_id: item.mesh_asset_id,
@@ -459,20 +751,7 @@ fn shadow_caster_group_key(item: &WorldMeshDrawItem) -> ShadowCasterGroupKey {
     }
 }
 
-fn shadow_caster_sort_key(
-    item: &WorldMeshDrawItem,
-    draw_idx: usize,
-) -> (
-    crate::materials::RasterFrontFace,
-    crate::materials::RasterPrimitiveTopology,
-    u8,
-    i32,
-    u32,
-    u32,
-    u8,
-    usize,
-) {
-    let key = shadow_caster_group_key(item);
+fn shadow_caster_sort_key(key: &ShadowCasterGroupKey, draw_idx: usize) -> ShadowCasterSortKey {
     let cull_mode = match key.primitive_topology {
         crate::materials::RasterPrimitiveTopology::PointList => None,
         crate::materials::RasterPrimitiveTopology::TriangleList => key.cull_mode,
@@ -620,8 +899,6 @@ fn gpu_shadow_view_for_light(
     layer: u32,
     resolution: u32,
     view_offset: u32,
-    view_count: u32,
-    quality: HostShadowQuality,
 ) -> GpuShadowView {
     let kind = shadow_kind_for_light(light.light_type);
     GpuShadowView {
@@ -631,14 +908,7 @@ fn gpu_shadow_view_for_light(
         light_params: [
             kind as f32,
             view_offset as f32,
-            shadow_normal_bias_world_units(
-                light,
-                kind,
-                resolution,
-                view_offset,
-                view_count,
-                quality,
-            ),
+            shadow_normal_bias_world_units(light, kind, resolution, view_proj),
             light.shadow_bias.max(0.0),
         ],
     }
@@ -660,20 +930,14 @@ fn shadow_normal_bias_world_units(
     light: &crate::gpu::GpuLight,
     kind: u32,
     resolution: u32,
-    view_offset: u32,
-    view_count: u32,
-    quality: HostShadowQuality,
+    view_proj: Mat4,
 ) -> f32 {
     let bias = light.shadow_normal_bias.max(0.0);
     if bias <= 0.0 {
         return 0.0;
     }
     let texel_world_size = match kind {
-        SHADOW_VIEW_KIND_DIRECTIONAL => {
-            let cascade_scale = (view_offset + 1) as f32 / view_count.max(1) as f32;
-            let extent = quality.shadow_distance.max(1.0) * cascade_scale;
-            extent * 2.0 / resolution.max(1) as f32
-        }
+        SHADOW_VIEW_KIND_DIRECTIONAL => directional_texel_world_size(view_proj, resolution),
         SHADOW_VIEW_KIND_SPOT => {
             let cos_half = light.spot_cos_half_angle.clamp(0.001, 1.0);
             let sin_half = (1.0 - cos_half * cos_half).max(0.0).sqrt();
@@ -684,6 +948,19 @@ fn shadow_normal_bias_world_units(
         _ => 0.0,
     };
     bias * texel_world_size
+}
+
+/// World-space size of one shadow texel for an orthographic (directional cascade) projection.
+///
+/// The clip-x world gradient is `1 / half_extent`, so it recovers the fitted extent for any
+/// cascade size.
+fn directional_texel_world_size(view_proj: Mat4, resolution: u32) -> f32 {
+    let clip_x_gradient = Vec3::new(view_proj.x_axis.x, view_proj.y_axis.x, view_proj.z_axis.x);
+    let scale = clip_x_gradient.length();
+    if scale <= 1e-9 {
+        return 0.0;
+    }
+    2.0 / (scale * resolution.max(1) as f32)
 }
 
 fn shadow_kind_for_light(light_type: u32) -> u32 {
@@ -700,13 +977,20 @@ fn shadow_projection_for_light(
     view_offset: u32,
     view_count: u32,
     quality: HostShadowQuality,
+    camera_fit: Option<&ShadowCameraFit>,
+    resolution: u32,
 ) -> Mat4 {
     let position = Vec3::from_array(light.position);
     let direction = safe_dir(Vec3::from_array(light.direction), Vec3::NEG_Z);
     match light.light_type {
-        x if x == light_type_u32(LightType::Directional) => {
-            directional_shadow_projection(direction, view_offset, view_count, quality)
-        }
+        x if x == light_type_u32(LightType::Directional) => directional_shadow_projection(
+            direction,
+            view_offset,
+            view_count,
+            quality,
+            camera_fit,
+            resolution,
+        ),
         x if x == light_type_u32(LightType::Spot) => {
             spot_shadow_projection(light, position, direction)
         }
@@ -717,7 +1001,31 @@ fn shadow_projection_for_light(
     }
 }
 
+/// Camera-fitted cascade projection for a directional light.
+///
+/// Falls back to a world-origin projection when no camera frustum is available.
 fn directional_shadow_projection(
+    direction: Vec3,
+    view_offset: u32,
+    view_count: u32,
+    quality: HostShadowQuality,
+    camera_fit: Option<&ShadowCameraFit>,
+    resolution: u32,
+) -> Mat4 {
+    let Some(fit) = camera_fit else {
+        return directional_shadow_projection_origin(direction, view_offset, view_count, quality);
+    };
+    let far = quality
+        .shadow_distance
+        .max(1.0)
+        .min(fit.far())
+        .max(fit.near() + 1.0);
+    let split = cascade::cascade_split(fit.near(), far, view_offset, view_count);
+    cascade::directional_cascade_view_proj(direction, light_up(direction), fit, split, resolution)
+}
+
+/// Camera-independent directional projection: nested world-origin cascades used as a fallback.
+fn directional_shadow_projection_origin(
     direction: Vec3,
     view_offset: u32,
     view_count: u32,

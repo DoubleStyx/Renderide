@@ -19,10 +19,11 @@ use crate::render_graph::pass::PassPhase;
 
 use super::super::super::helpers;
 use super::super::super::{
-    CompiledRenderGraph, FrameGlobalView, FrameView, MultiViewExecutionContext, ResolvedView,
+    CompiledRenderGraph, FrameGlobalView, FrameView, FrameViewTarget, MultiViewExecutionContext,
+    ResolvedView,
 };
 use super::super::{
-    FrameGlobalPassRecordInputs, GraphResolveKey, TimedCommandBuffer,
+    FrameGlobalPassRecordInputs, GraphResolveKey, OwnedResolvedView, TimedCommandBuffer,
     TransientTextureResolveSurfaceParams, elapsed_ms,
 };
 use super::{PassGpuInputs, PassRecordTargets, PassViewInputs, PhaseRecordingScope};
@@ -66,6 +67,32 @@ struct FrameGlobalSplitRecordState<'record, 'frame> {
     device: &'frame wgpu::Device,
     gpu_limits: &'frame crate::gpu::GpuLimits,
     upload_batch: &'record FrameUploadBatch,
+}
+
+/// Shared-only inputs for split-pass chunk recording, safe to use alongside per-view recording.
+pub(in crate::render_graph::compiled::exec) struct FrameGlobalSplitEncodeShared<'a> {
+    pub(in crate::render_graph::compiled::exec) frame_resources: &'a dyn GraphFrameResources,
+    pub(in crate::render_graph::compiled::exec) materials: &'a crate::materials::MaterialSystem,
+    pub(in crate::render_graph::compiled::exec) asset_resources:
+        &'a dyn crate::graph_inputs::GraphAssetResources,
+    pub(in crate::render_graph::compiled::exec) skin_cache:
+        Option<&'a crate::mesh_deform::GpuSkinCache>,
+    pub(in crate::render_graph::compiled::exec) device: &'a wgpu::Device,
+    pub(in crate::render_graph::compiled::exec) gpu_limits: &'a crate::gpu::GpuLimits,
+}
+
+/// Owned frame-global split state carried between the mutable prepare and finish stages.
+///
+/// Prepare resolves targets and transients, records the serial before-split range, and packs the
+/// split-pass uploads; the chunk fan-out then runs on shared borrows only, so per-view recording
+/// can proceed concurrently. Finish records the serial after-split range and restores order.
+pub(in crate::render_graph::compiled::exec) struct FrameGlobalSplitStage {
+    candidate: FrameGlobalSplitCandidate,
+    resolved: OwnedResolvedView,
+    resolve_key: GraphResolveKey,
+    frame_blackboard: Blackboard,
+    before_command: Option<TimedCommandBuffer>,
+    prepared: bool,
 }
 
 struct FrameGlobalRangeCommand<'record, 'frame> {
@@ -442,6 +469,241 @@ impl CompiledRenderGraph {
         )
     }
 
+    /// Runs the mutable-borrow half of split frame-global recording.
+    ///
+    /// Resolves the anchor view and transients, records the serial before-split range, and packs
+    /// split-pass uploads. The returned stage holds no borrows, so the chunk fan-out can run
+    /// against shared borrows while per-view recording proceeds on other workers.
+    pub(in crate::render_graph::compiled::exec) fn prepare_frame_global_split_stage(
+        &self,
+        mv_ctx: &mut MultiViewExecutionContext<'_>,
+        views: &[FrameView<'_>],
+        frame_global: &FrameGlobalView,
+        transient_by_key: &mut HashMap<GraphResolveKey, GraphResolvedResources>,
+        upload_batch: &FrameUploadBatch,
+        candidate: FrameGlobalSplitCandidate,
+    ) -> Result<FrameGlobalSplitStage, GraphExecuteError> {
+        profiling::scope!("graph::frame_global::split_prepare");
+        let MultiViewExecutionContext {
+            gpu,
+            scene,
+            backend,
+            device,
+            gpu_limits,
+            backbuffer_view_holder,
+        } = mv_ctx;
+        let anchor = views
+            .iter()
+            .find(|view| view.view_id() == frame_global.view_id)
+            .or_else(|| views.first())
+            .ok_or(GraphExecuteError::NoViewsInBatch)?;
+        let mut resolved_owned = Self::resolve_owned_view_metadata_from_target(
+            anchor.view_id(),
+            anchor.view_winding,
+            anchor.profile,
+            &anchor.host_camera,
+            &anchor.target,
+            gpu,
+        )?;
+        if matches!(anchor.target, FrameViewTarget::Swapchain) {
+            let Some(backbuffer) = backbuffer_view_holder.as_ref() else {
+                return Err(GraphExecuteError::MissingSwapchainView);
+            };
+            resolved_owned.attach_backbuffer(backbuffer);
+        }
+        let resolved = resolved_owned.as_resolved();
+        let resolve_key = GraphResolveKey::from_resolved(&resolved);
+        let resolved_resources = {
+            profiling::scope!("graph::frame_global::split::resolve_transients");
+            self.resolve_frame_global_transients(
+                &resolved,
+                transient_by_key,
+                device,
+                &mut **backend,
+                gpu_limits,
+            )
+        }?;
+        {
+            profiling::scope!("graph::frame_global::split::resolve_imported_resources");
+            self.resolve_imported_textures(
+                &resolved,
+                backend.history_registry(),
+                resolved_resources,
+            )?;
+            self.resolve_imported_buffers(
+                backend.frame_resources(),
+                backend.history_registry(),
+                &resolved,
+                resolved_resources,
+            )?;
+        }
+        let graph_resources: &GraphResolvedResources = &*resolved_resources;
+
+        let mut frame_params = {
+            profiling::scope!("graph::frame_global::split::build_frame_params");
+            helpers::frame_render_params_from_resolved(
+                *scene,
+                &mut **backend,
+                helpers::ResolvedFrameRenderParamsInputs {
+                    resolved: &resolved,
+                    host_camera: &frame_global.host_camera,
+                    render_context: frame_global.render_context,
+                    frame_time_seconds: frame_global.frame_time_seconds,
+                    clear: frame_global.clear,
+                    post_processing: frame_global.post_processing,
+                },
+            )
+        };
+        let mut frame_blackboard = Self::build_frame_global_blackboard();
+        let mut before_command = None;
+        let before_range = 0..candidate.step_idx;
+        if self.frame_global_range_has_active_passes(
+            frame_params.shared.frame_resources,
+            before_range.clone(),
+        ) {
+            before_command = Some(self.record_frame_global_range_command(
+                FrameGlobalRangeCommand {
+                    label: "render-graph-frame-global-before-split",
+                    step_range: before_range,
+                    resolved: &resolved,
+                    graph_resources,
+                    frame_params: &mut frame_params,
+                    frame_blackboard: &mut frame_blackboard,
+                    device,
+                    gpu_limits,
+                    upload_batch,
+                    pass_profiler: None,
+                },
+            )?);
+        }
+        let split_step = self.schedule.steps[candidate.step_idx];
+        let split_uploads = GraphUploadSink::new(upload_batch, split_step.frame_upload_scope(None));
+        let prepared = frame_params
+            .shared
+            .frame_resources
+            .prepare_frame_global_split_pass(candidate.resource_pass, gpu_limits, split_uploads);
+        Ok(FrameGlobalSplitStage {
+            candidate,
+            resolved: resolved_owned,
+            resolve_key,
+            frame_blackboard,
+            before_command,
+            prepared,
+        })
+    }
+
+    /// Records the split-pass chunk fan-out for a prepared stage using shared borrows only.
+    pub(in crate::render_graph::compiled::exec) fn record_frame_global_split_stage_commands(
+        &self,
+        stage: &FrameGlobalSplitStage,
+        shared: &FrameGlobalSplitEncodeShared<'_>,
+    ) -> Result<Vec<TimedCommandBuffer>, GraphExecuteError> {
+        if !stage.prepared {
+            return Ok(Vec::new());
+        }
+        self.record_frame_global_split_pass_commands(
+            stage.candidate.resource_pass,
+            stage.candidate.workload,
+            shared,
+            None,
+        )
+    }
+
+    /// Runs the trailing mutable-borrow half of split frame-global recording.
+    ///
+    /// Records the serial-range fallback when upload packing rejected the split, records the
+    /// serial after-split range, and assembles the command buffers in schedule order.
+    pub(in crate::render_graph::compiled::exec) fn finish_frame_global_split_stage(
+        &self,
+        mv_ctx: &mut MultiViewExecutionContext<'_>,
+        frame_global: &FrameGlobalView,
+        stage: FrameGlobalSplitStage,
+        split_commands: Vec<TimedCommandBuffer>,
+        transient_by_key: &HashMap<GraphResolveKey, GraphResolvedResources>,
+        upload_batch: &FrameUploadBatch,
+    ) -> Result<Vec<TimedCommandBuffer>, GraphExecuteError> {
+        profiling::scope!("graph::frame_global::split_finish");
+        let MultiViewExecutionContext {
+            scene,
+            backend,
+            device,
+            gpu_limits,
+            ..
+        } = mv_ctx;
+        let FrameGlobalSplitStage {
+            candidate,
+            resolved,
+            resolve_key,
+            mut frame_blackboard,
+            before_command,
+            prepared,
+        } = stage;
+        let after_start = candidate.step_idx.saturating_add(1);
+        let after_range = after_start..self.schedule.steps.len();
+        let after_active = self
+            .frame_global_range_has_active_passes(backend.frame_resources(), after_range.clone());
+
+        let mut commands = Vec::new();
+        commands.extend(before_command);
+        commands.extend(split_commands);
+        if prepared && !after_active {
+            return Ok(commands);
+        }
+
+        let resolved_view = resolved.as_resolved();
+        let graph_resources = transient_by_key.get(&resolve_key).ok_or_else(|| {
+            GraphExecuteError::MissingGraphAttachment {
+                pass: "frame-global-split".to_owned(),
+                resource: "frame-global transients".to_owned(),
+            }
+        })?;
+        let mut frame_params = helpers::frame_render_params_from_resolved(
+            *scene,
+            &mut **backend,
+            helpers::ResolvedFrameRenderParamsInputs {
+                resolved: &resolved_view,
+                host_camera: &frame_global.host_camera,
+                render_context: frame_global.render_context,
+                frame_time_seconds: frame_global.frame_time_seconds,
+                clear: frame_global.clear,
+                post_processing: frame_global.post_processing,
+            },
+        );
+        if !prepared {
+            commands.push(
+                self.record_frame_global_range_command(FrameGlobalRangeCommand {
+                    label: "render-graph-frame-global-split-fallback",
+                    step_range: candidate.step_idx..candidate.step_idx + 1,
+                    resolved: &resolved_view,
+                    graph_resources,
+                    frame_params: &mut frame_params,
+                    frame_blackboard: &mut frame_blackboard,
+                    device,
+                    gpu_limits,
+                    upload_batch,
+                    pass_profiler: None,
+                })?,
+            );
+        }
+        if after_active {
+            commands.push(
+                self.record_frame_global_range_command(FrameGlobalRangeCommand {
+                    label: "render-graph-frame-global-after-split",
+                    step_range: after_range,
+                    resolved: &resolved_view,
+                    graph_resources,
+                    frame_params: &mut frame_params,
+                    frame_blackboard: &mut frame_blackboard,
+                    device,
+                    gpu_limits,
+                    upload_batch,
+                    pass_profiler: None,
+                })?,
+            );
+        }
+        Ok(commands)
+    }
+
     fn record_frame_global_split_commands_ordered(
         &self,
         candidate: FrameGlobalSplitCandidate,
@@ -482,14 +744,27 @@ impl CompiledRenderGraph {
                 split_uploads,
             );
         if prepared {
-            let mut split_commands = self.record_frame_global_split_pass_commands(
-                candidate.resource_pass,
-                candidate.workload,
-                state.frame_params,
-                state.device,
-                state.gpu_limits,
-                None,
-            )?;
+            let mut split_commands = {
+                let split_shared = FrameGlobalSplitEncodeShared {
+                    frame_resources: state.frame_params.shared.frame_resources,
+                    materials: state.frame_params.shared.materials,
+                    asset_resources: state.frame_params.shared.asset_resources,
+                    skin_cache: state
+                        .frame_params
+                        .shared
+                        .mesh_deform_skin_cache
+                        .as_deref()
+                        .or(state.frame_params.shared.skin_cache),
+                    device: state.device,
+                    gpu_limits: state.gpu_limits,
+                };
+                self.record_frame_global_split_pass_commands(
+                    candidate.resource_pass,
+                    candidate.workload,
+                    &split_shared,
+                    None,
+                )?
+            };
             commands.append(&mut split_commands);
         } else {
             commands.push(
@@ -575,9 +850,7 @@ impl CompiledRenderGraph {
         &self,
         resource_pass: FrameGlobalResourcePass,
         workload: FrameGlobalPassSplitWorkload,
-        frame_params: &crate::graph_inputs::GraphPassFrame<'_>,
-        device: &wgpu::Device,
-        gpu_limits: &crate::gpu::GpuLimits,
+        shared: &FrameGlobalSplitEncodeShared<'_>,
         pass_profiler: Option<&crate::profiling::GpuProfilerHandle>,
     ) -> Result<Vec<TimedCommandBuffer>, GraphExecuteError> {
         profiling::scope!("graph::frame_global::record_split_pass");
@@ -597,14 +870,12 @@ impl CompiledRenderGraph {
         );
         crate::profiling::plot_frame_global_split(workload.unit_count, ranges.len(), chunk_size);
 
-        let frame_resources = frame_params.shared.frame_resources;
-        let materials = frame_params.shared.materials;
-        let asset_resources = frame_params.shared.asset_resources;
-        let skin_cache = frame_params
-            .shared
-            .mesh_deform_skin_cache
-            .as_deref()
-            .or(frame_params.shared.skin_cache);
+        let frame_resources = shared.frame_resources;
+        let materials = shared.materials;
+        let asset_resources = shared.asset_resources;
+        let skin_cache = shared.skin_cache;
+        let device = shared.device;
+        let gpu_limits = shared.gpu_limits;
 
         ranges
             .into_par_iter()

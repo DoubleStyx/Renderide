@@ -218,9 +218,10 @@ pub trait GraphPerDrawSlabResources {
 
 /// Graph-facing access to scene-depth and scene-color snapshot copies.
 pub trait GraphSceneSnapshotResources {
-    /// Copies the current depth attachment into this view's sampled scene-depth snapshot.
+    /// Blits the current depth attachment into this view's sampled R32Float scene-depth snapshot.
     fn copy_scene_depth_snapshot_for_view(
         &self,
+        device: &wgpu::Device,
         view_id: ViewId,
         encoder: &mut wgpu::CommandEncoder,
         source_depth: &wgpu::Texture,

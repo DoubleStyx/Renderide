@@ -339,18 +339,19 @@ impl PerViewSceneSnapshots {
         depth_changed || color_changed || named_color_changed
     }
 
-    /// Encodes a copy into this view's scene-depth snapshot.
+    /// Encodes a blit into this view's R32Float scene-depth snapshot.
     pub(super) fn encode_depth_copy(
         &self,
+        device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         source_depth: &wgpu::Texture,
         viewport: (u32, u32),
         multiview: bool,
     ) -> bool {
-        self.set.encode_copy(
+        self.set.encode_depth_blit(
+            device,
             encoder,
             source_depth,
-            SceneSnapshotKind::Depth,
             SceneSnapshotLayout::from_multiview(multiview),
             viewport,
         )
