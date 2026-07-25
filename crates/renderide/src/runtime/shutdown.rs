@@ -10,6 +10,7 @@ impl RendererRuntime {
         profiling::scope!("runtime::begin_graceful_shutdown");
         crash_context::set_tick_phase(TickPhase::Shutdown);
         self.log_compact_renderer_summary("graceful-shutdown-begin");
+        crate::gpu::persist_pipeline_cache();
         self.backend.begin_video_shutdown();
     }
 

@@ -28,6 +28,7 @@ fn optional_render_feature_mask() -> wgpu::Features {
     let optional_depth32_stencil8 = wgpu::Features::DEPTH32FLOAT_STENCIL8;
     let multisample_array = wgpu::Features::MULTISAMPLE_ARRAY;
     let shader_barycentrics = wgpu::Features::SHADER_BARYCENTRICS;
+    let pipeline_cache = wgpu::Features::PIPELINE_CACHE;
     compression
         | optional_float32_filterable
         | optional_rg11b10_renderable
@@ -35,6 +36,7 @@ fn optional_render_feature_mask() -> wgpu::Features {
         | optional_depth32_stencil8
         | multisample_array
         | shader_barycentrics
+        | pipeline_cache
 }
 
 #[cfg(test)]

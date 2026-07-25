@@ -223,6 +223,7 @@ async fn configure_window_gpu_for_adapter(
     )
     .await?;
 
+    crate::gpu::init_pipeline_cache(device.as_ref(), adapter);
     let limits = GpuLimits::try_new(device.as_ref(), adapter)?;
     let size = window.surface_size();
     let supported_present_modes = surface.get_capabilities(adapter).present_modes;

@@ -36,6 +36,7 @@ pub(crate) mod frame_bindings;
 pub(crate) mod frame_globals;
 pub(crate) mod limits;
 pub(crate) mod msaa_depth_resolve;
+pub(crate) mod pipeline_cache;
 pub(crate) mod present;
 pub(crate) mod profiling;
 
@@ -59,6 +60,7 @@ pub(crate) use frame_bindings::{
 };
 pub(crate) use instance_setup::{RENDERER_MAX_TEXTURE_DIMENSION_2D, instance_flags_for_gpu_init};
 pub(crate) use limits::{CUBEMAP_ARRAY_LAYERS, GpuLimits};
+pub(crate) use pipeline_cache::{init_pipeline_cache, persist_pipeline_cache, pipeline_cache};
 pub(crate) use msaa_depth_resolve::{
     MsaaDepthResolveMonoTargets, MsaaDepthResolveResources, MsaaDepthResolveStereoTargets,
 };

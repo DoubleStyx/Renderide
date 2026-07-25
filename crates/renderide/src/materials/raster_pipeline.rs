@@ -432,7 +432,7 @@ pub(crate) fn build_pipeline_from_pass(
                         && shared.desc.sample_count > 1,
                 },
                 multiview_mask: shared.desc.multiview_mask,
-                cache: None,
+                cache: crate::gpu::pipeline_cache(),
             });
         crate::profiling::note_resource_churn!(RenderPipeline, "materials::raster_pipeline");
         pipeline

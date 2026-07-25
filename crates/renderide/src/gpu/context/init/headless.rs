@@ -76,6 +76,7 @@ impl GpuContext {
         )
         .await?;
 
+        crate::gpu::init_pipeline_cache(device.as_ref(), &adapter);
         let limits = GpuLimits::try_new(device.as_ref(), &adapter)?;
 
         let format = wgpu::TextureFormat::Rgba8UnormSrgb;

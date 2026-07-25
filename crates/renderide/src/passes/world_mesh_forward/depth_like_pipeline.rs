@@ -91,6 +91,6 @@ pub(super) fn create_depth_like_pipeline(
             alpha_to_coverage_enabled: false,
         },
         multiview_mask: spec.multiview_mask,
-        cache: None,
+        cache: crate::gpu::pipeline_cache(),
     })
 }
