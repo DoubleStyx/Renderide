@@ -8,8 +8,6 @@ use super::{
     CompiledRenderGraph, FrameView, FrameViewTarget, GraphCommandRecordingPath, PerViewWorkItem,
 };
 
-const IN_VIEW_RECORD_PARALLEL_MIN_WORK: usize = 512;
-
 /// Command-recording strategy and parallelism metadata for one frame.
 #[derive(Clone, Copy)]
 pub(in crate::render_graph::compiled::exec) struct GraphCommandRecordingPlan {
@@ -279,9 +277,7 @@ fn auto_in_view_record_admitted(
 }
 
 fn in_view_record_parallel_min_work(policy: FrameParallelPolicy) -> usize {
-    policy
-        .draw_heavy_threshold()
-        .max(IN_VIEW_RECORD_PARALLEL_MIN_WORK)
+    policy.record_parallel_min_work()
 }
 
 fn single_swapchain_encoder_status(

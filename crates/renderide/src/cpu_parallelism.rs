@@ -71,6 +71,12 @@ const DRAW_HEAVY_PARALLEL_BASE_DRAWS: usize = 128;
 /// Additional draw count per worker used to scale the draw-heavy gate on larger machines.
 const DRAW_HEAVY_PARALLEL_DRAWS_PER_WORKER: usize = 16;
 
+/// Per-view command-record work below which recording stays serial at the reference worker count.
+const RECORD_PARALLEL_BASE_MIN_WORK: usize = 512;
+
+/// Worker count the record floor is tuned for; higher counts scale the floor down proportionally.
+const RECORD_PARALLEL_REFERENCE_WORKERS: usize = 4;
+
 /// Admission decision for one parallel work site.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ParallelAdmission {
@@ -410,6 +416,31 @@ impl FrameParallelPolicy {
     #[inline]
     pub(crate) const fn is_draw_heavy(self, total_draw_count: usize) -> bool {
         self.worker_count > 1 && total_draw_count >= self.draw_heavy_threshold()
+    }
+
+    /// Minimum per-view command-record work before Rayon fan-out is worthwhile.
+    ///
+    /// Scales the base floor down as worker count rises so many-core machines parallelize
+    /// mid-weight frames instead of leaving workers idle. Clamped between two full command chunks
+    /// and the base floor, so low-core machines keep the conservative default.
+    #[inline]
+    pub(crate) const fn record_parallel_min_work(self) -> usize {
+        let workers = if self.worker_count == 0 {
+            1
+        } else {
+            self.worker_count
+        };
+        let scaled = RECORD_PARALLEL_BASE_MIN_WORK
+            .saturating_mul(RECORD_PARALLEL_REFERENCE_WORKERS)
+            / workers;
+        let floor = RENDER_COMMAND_CHUNK_DRAWS.saturating_mul(MIN_PARALLEL_CHUNKS);
+        if scaled > RECORD_PARALLEL_BASE_MIN_WORK {
+            RECORD_PARALLEL_BASE_MIN_WORK
+        } else if scaled < floor {
+            floor
+        } else {
+            scaled
+        }
     }
 
     /// Decides whether independent item work should fan out through Rayon.

@@ -10,8 +10,6 @@ use crate::cpu_parallelism::{
 
 /// Per-view work items assigned to one recording worker.
 const PER_VIEW_RECORD_PARALLEL_CHUNK_VIEWS: usize = 1;
-/// Minimum actual draw work before automatic per-view command recording uses Rayon.
-const PER_VIEW_RECORD_PARALLEL_MIN_DRAWS: usize = 512;
 /// Draw-equivalent work assigned to each per-view graph pass during recording admission.
 const PER_VIEW_RECORD_PASS_DRAW_EQUIVALENT: usize = 16;
 
@@ -209,9 +207,7 @@ fn per_view_record_admission(
 }
 
 fn per_view_record_parallel_min_draws(policy: FrameParallelPolicy) -> usize {
-    policy
-        .draw_heavy_threshold()
-        .max(PER_VIEW_RECORD_PARALLEL_MIN_DRAWS)
+    policy.record_parallel_min_work()
 }
 
 fn per_view_record_draw_equivalent(
@@ -302,14 +298,18 @@ mod tests {
     }
 
     #[test]
-    fn per_view_record_admission_uses_command_recording_draw_floor() {
+    fn per_view_record_floor_scales_down_with_worker_count() {
         assert_eq!(
             per_view_record_parallel_min_draws(FrameParallelPolicy::new(4)),
             512
         );
         assert_eq!(
+            per_view_record_parallel_min_draws(FrameParallelPolicy::new(8)),
+            256
+        );
+        assert_eq!(
             per_view_record_parallel_min_draws(FrameParallelPolicy::new(64)),
-            512
+            128
         );
     }
 }
