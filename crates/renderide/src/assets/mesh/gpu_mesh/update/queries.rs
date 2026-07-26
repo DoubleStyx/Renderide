@@ -6,19 +6,12 @@ use super::super::{GpuMesh, MeshDerivedStreamMask};
 impl GpuMesh {
     /// `true` when [`Self::positions_buffer`] and [`Self::normals_buffer`] are current.
     pub fn debug_streams_ready(&self) -> bool {
-        self.derived_stream_state.streams_ready(
-            self.positions_buffer.is_some() && self.normals_buffer.is_some(),
-            MeshDerivedStreamMask::DRAWABLE_PRIMARY,
-        )
+        self.derived_streams_ready(MeshDerivedStreamMask::DRAWABLE_PRIMARY)
     }
 
     /// `true` when this mesh has current tangent and UV1-UV3 streams for embedded shaders.
     pub fn extended_vertex_streams_ready(&self) -> bool {
-        self.derived_stream_state.streams_ready(
-            self.tangent_buffer.is_some()
-                && self.uv1_buffer.is_some()
-                && self.uv2_buffer.is_some()
-                && self.uv3_buffer.is_some(),
+        self.derived_streams_ready(
             MeshDerivedStreamMask::TANGENT
                 | MeshDerivedStreamMask::UV1
                 | MeshDerivedStreamMask::UV2
@@ -28,52 +21,37 @@ impl GpuMesh {
 
     /// `true` when this mesh has a current standalone UV1 stream for compact UV1 shaders.
     pub fn uv1_vertex_stream_ready(&self) -> bool {
-        self.derived_stream_state
-            .streams_ready(self.uv1_buffer.is_some(), MeshDerivedStreamMask::UV1)
+        self.derived_streams_ready(MeshDerivedStreamMask::UV1)
     }
 
     /// `true` when this mesh has a current standalone tangent stream for compact shaders.
     pub fn tangent_vertex_stream_ready(&self) -> bool {
-        self.derived_stream_state.streams_ready(
-            self.tangent_buffer.is_some(),
-            MeshDerivedStreamMask::TANGENT,
-        )
+        self.derived_streams_ready(MeshDerivedStreamMask::TANGENT)
     }
 
     /// `true` when this mesh has a current raw tangent payload stream for UI payload shaders.
     pub fn raw_tangent_vertex_stream_ready(&self) -> bool {
-        self.derived_stream_state.streams_ready(
-            self.raw_tangent_buffer.is_some(),
-            MeshDerivedStreamMask::RAW_TANGENT,
-        )
+        self.derived_streams_ready(MeshDerivedStreamMask::RAW_TANGENT)
     }
 
     /// `true` when this mesh has a current standalone UV2 stream for compact shaders.
     pub fn uv2_vertex_stream_ready(&self) -> bool {
-        self.derived_stream_state
-            .streams_ready(self.uv2_buffer.is_some(), MeshDerivedStreamMask::UV2)
+        self.derived_streams_ready(MeshDerivedStreamMask::UV2)
     }
 
     /// `true` when this mesh has a current standalone UV3 stream for compact shaders.
     pub fn uv3_vertex_stream_ready(&self) -> bool {
-        self.derived_stream_state
-            .streams_ready(self.uv3_buffer.is_some(), MeshDerivedStreamMask::UV3)
+        self.derived_streams_ready(MeshDerivedStreamMask::UV3)
     }
 
     /// `true` when this mesh has a current packed UV0-UV3 stream for wide low UV shaders.
     pub fn wide_low_uv_vertex_stream_ready(&self) -> bool {
-        self.derived_stream_state.streams_ready(
-            self.wide_low_uv_buffer.is_some(),
-            MeshDerivedStreamMask::WIDE_UV_LOW,
-        )
+        self.derived_streams_ready(MeshDerivedStreamMask::WIDE_UV_LOW)
     }
 
     /// `true` when this mesh has a current packed UV4-UV7 stream for high UV shaders.
     pub fn wide_high_uv_vertex_stream_ready(&self) -> bool {
-        self.derived_stream_state.streams_ready(
-            self.wide_high_uv_buffer.is_some(),
-            MeshDerivedStreamMask::WIDE_UV_HIGH,
-        )
+        self.derived_streams_ready(MeshDerivedStreamMask::WIDE_UV_HIGH)
     }
 
     /// Returns whether this mesh has every GPU stream needed to produce world-space skinned output.

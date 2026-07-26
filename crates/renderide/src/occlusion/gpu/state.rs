@@ -1,9 +1,4 @@
 //! Per-view Hi-Z GPU state: CPU snapshots, GPU scratch, and the readback ring lifecycle.
-//!
-//! [`HiZGpuState`] is the single piece of state guarded by a `parking_lot::Mutex` per view in
-//! [`crate::occlusion::OcclusionSystem`]. It deliberately avoids heavy logic -- encode (in
-//! [`super::encode`]) and readback drain (in [`super::readback`]) operate on `&mut HiZGpuState`
-//! through narrow entry points so the lock-held footprint stays small.
 
 use crate::cull_contract::HiZTemporalState;
 use crate::gpu::OutputDepthMode;
@@ -21,6 +16,8 @@ pub struct HiZGpuState {
     pub stereo: Option<HiZStereoCpuSnapshot>,
     /// View/projection snapshot for the frame that produced [`Self::desktop`] / [`Self::stereo`].
     pub temporal: Option<HiZTemporalState>,
+    /// Monotonic identity of the most recently installed CPU pyramid snapshot.
+    pub(super) cpu_snapshot_generation: u64,
     /// GPU scratch resources reused while the pyramid extent and stereo layout are unchanged.
     pub(super) scratch: Option<HiZGpuScratch>,
     /// Last framebuffer extent used to validate [`Self::scratch`] and CPU snapshots.
@@ -39,6 +36,7 @@ impl Default for HiZGpuState {
             desktop: None,
             stereo: None,
             temporal: None,
+            cpu_snapshot_generation: 0,
             scratch: None,
             last_extent: (0, 0),
             last_mode: OutputDepthMode::DesktopSingle,
@@ -55,6 +53,7 @@ impl HiZGpuState {
             self.desktop = None;
             self.stereo = None;
             self.temporal = None;
+            self.cpu_snapshot_generation = self.cpu_snapshot_generation.wrapping_add(1);
             self.clear_pending();
             self.scratch = None;
         }
@@ -75,12 +74,13 @@ impl HiZGpuState {
         super::readback::drain(self);
     }
 
-    /// Records that the driver-thread submit carrying a copy-to-staging ticket has
-    /// completed. Does not touch wgpu -- [`Self::start_ready_maps`] promotes the slot to a real
-    /// `map_async` on the main thread. Keeping this callback pure (just a flag flip) avoids
-    /// running any wgpu call from inside a [`wgpu::Device::poll`] callback, which can hold
-    /// wgpu-internal locks that also serialize [`wgpu::Queue::write_texture`] and would
-    /// otherwise risk a futex-wait deadlock with the asset-upload path on the main thread.
+    /// Generation of the CPU Hi-Z data consumed by per-view CPU fallback culling.
+    #[inline]
+    pub(crate) const fn cpu_snapshot_generation(&self) -> u64 {
+        self.cpu_snapshot_generation
+    }
+
+    /// Marks a submitted staging copy complete without calling wgpu from its poll callback.
     pub(crate) fn mark_submit_done(&mut self, ticket: ReadbackTicket) {
         self.readback.mark_submit_done(ticket);
     }
@@ -116,8 +116,8 @@ impl HiZGpuState {
         self.readback.set_secondary_enabled(enabled);
     }
 
-    /// Returns true when the readback ring can safely accept another Hi-Z staging copy.
-    pub(crate) fn can_encode_hi_z(&self, scratch: &HiZGpuScratch) -> bool {
+    /// Returns whether CPU readback can accept another copy; pyramid generation is independent.
+    pub(crate) fn can_stage_hi_z_readback(&self, scratch: &HiZGpuScratch) -> bool {
         self.readback.can_claim_next_slot(scratch.is_stereo())
     }
 

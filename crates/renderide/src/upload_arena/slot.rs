@@ -4,6 +4,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(super) const UPLOAD_ARENA_SLOTS: usize = 3;
 const DEFAULT_SLOT_BYTES: u64 = 1024 * 1024;
+/// Low-demand observations required before reclaiming an oversized persistent slot.
+pub(super) const OVERSIZED_SLOT_RECLAIM_OBSERVATIONS: u32 = 240;
+/// Minimum capacity eligible for reclamation.
+pub(super) const OVERSIZED_SLOT_RECLAIM_MIN_BYTES: u64 = 8 * 1024 * 1024;
 static OVERSIZED_UPLOAD_LOG_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Lifecycle of one persistent upload arena slot.
@@ -32,6 +36,8 @@ pub(super) struct UploadArenaSlot {
     pub(super) buffer: Option<wgpu::Buffer>,
     pub(super) capacity: u64,
     pub(super) state: UploadArenaSlotState,
+    /// Consecutive upload drains whose demand fit in at most one quarter of this slot.
+    pub(super) oversized_observations: u32,
 }
 
 impl UploadArenaSlot {
@@ -40,8 +46,16 @@ impl UploadArenaSlot {
             buffer: None,
             capacity: 0,
             state: UploadArenaSlotState::Empty,
+            oversized_observations: 0,
         }
     }
+}
+
+/// Whether `capacity` is materially larger than the current upload demand.
+///
+/// Division avoids overflow at large device buffer limits. Zero demand counts as underutilization.
+pub(super) const fn slot_is_materially_oversized(capacity: u64, required: u64) -> bool {
+    capacity >= OVERSIZED_SLOT_RECLAIM_MIN_BYTES && (required == 0 || required <= capacity / 4)
 }
 
 pub(super) fn select_writable_slot(
@@ -164,5 +178,25 @@ mod tests {
         }
 
         assert_eq!(select_writable_slot(&slots, 512), None);
+    }
+
+    #[test]
+    fn material_overprovisioning_requires_a_large_four_x_slot() {
+        assert!(!slot_is_materially_oversized(
+            OVERSIZED_SLOT_RECLAIM_MIN_BYTES - 1,
+            1
+        ));
+        assert!(slot_is_materially_oversized(
+            OVERSIZED_SLOT_RECLAIM_MIN_BYTES,
+            0
+        ));
+        assert!(slot_is_materially_oversized(
+            64 * 1024 * 1024,
+            8 * 1024 * 1024
+        ));
+        assert!(!slot_is_materially_oversized(
+            64 * 1024 * 1024,
+            20 * 1024 * 1024
+        ));
     }
 }

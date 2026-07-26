@@ -274,11 +274,11 @@ fn fs_main(
 
     let emission = ts::sample_tex_2d(_EmissionMap, _EmissionMap_sampler, uv_main, mat._EmissionMap_LodBias).rgb * mat._EmissionColor.rgb;
     let ambient = rprobe::indirect_diffuse(world_pos, n, view_layer, true);
-    let planar_specular = select(
-        vec3<f32>(0.0),
-        ts::sample_tex_2d(_ReflectionTex, _ReflectionTex_sampler, screen_uv, mat._ReflectionTex_LodBias).rgb,
-        mat._PlanarReflection > 0.5,
-    );
+    var planar_specular = vec3<f32>(0.0);
+    if (mat._PlanarReflection > 0.5) {
+        planar_specular =
+            ts::sample_tex_2d(_ReflectionTex, _ReflectionTex_sampler, screen_uv, mat._ReflectionTex_LodBias).rgb;
+    }
     let indirect = tbrdf::indirect_light(
         diff_color,
         spec_color,

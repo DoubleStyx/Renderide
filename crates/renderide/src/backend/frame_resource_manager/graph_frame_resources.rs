@@ -9,10 +9,10 @@ use crate::frame_upload_batch::GraphUploadSink;
 use crate::gpu::frame_globals::SkyboxSpecularUniformParams;
 use crate::graph_inputs::{
     FrameGlobalPassSplitWorkload, FrameGlobalResourcePass, FrameGlobalSplitPassEncodeParams,
-    GraphAssetResources, GraphClusterBufferRefs, GraphFrameBindings, GraphFrameGlobalResources,
-    GraphMeshDeformResources, GraphPerDrawSlabResources, GraphPreRecordFrameResources,
-    GraphSceneSnapshotResources, GraphSubmitResourceRetention, PreRecordViewResourceLayout,
-    ShadowAtlasEncodeParams,
+    GeometryArenaPopulatePlan, GraphAssetResources, GraphClusterBufferRefs, GraphFrameBindings,
+    GraphFrameGlobalResources, GraphMeshDeformResources, GraphPerDrawSlabResources,
+    GraphPreRecordFrameResources, GraphSceneSnapshotResources, GraphSubmitResourceRetention,
+    PreRecordViewResourceLayout, ShadowAtlasEncodeParams,
 };
 use crate::mesh_deform::{PaddedPerDrawUniforms, SkinCacheKey};
 use crate::passes::MaterialBatchBoundary;
@@ -143,6 +143,28 @@ impl GraphPerDrawSlabResources for FrameResourceManager {
             .map(|per_draw| per_draw.lock().per_draw_storage.clone())
     }
 
+    fn shared_geometry_arena(&self) -> Option<crate::graph_inputs::SharedGeometryArena> {
+        if !crate::world_mesh::world_mesh_render_path().uses_geometry_arena() {
+            return None;
+        }
+        self.frame_gpu()
+            .map(|fgpu| fgpu.shared_geometry_arena_arc())
+    }
+
+    fn depth_prepass_indirect(&self) -> Option<crate::graph_inputs::DepthPrepassIndirectBuffers> {
+        self.frame_gpu()
+            .map(|fgpu| fgpu.depth_prepass_indirect_arc())
+    }
+
+    fn normal_prepass_indirect(&self) -> Option<crate::graph_inputs::NormalPrepassIndirectBuffers> {
+        self.frame_gpu()
+            .map(|fgpu| fgpu.normal_prepass_indirect_arc())
+    }
+
+    fn forward_indirect(&self) -> Option<crate::graph_inputs::ForwardIndirectBuffers> {
+        self.frame_gpu().map(|fgpu| fgpu.forward_indirect_arc())
+    }
+
     fn per_view_per_draw_bind_group(&self, view_id: ViewId) -> Option<Arc<wgpu::BindGroup>> {
         self.per_view_per_draw(view_id)
             .map(|per_draw| Arc::clone(&per_draw.lock().bind_group))
@@ -194,6 +216,23 @@ impl GraphSceneSnapshotResources for FrameResourceManager {
             source_color,
             viewport,
             multiview,
+        )
+    }
+
+    fn scene_color_snapshot_render_target_for_view(
+        &self,
+        view_id: ViewId,
+        viewport: (u32, u32),
+        color_format: wgpu::TextureFormat,
+        multiview: bool,
+        named: bool,
+    ) -> Option<&wgpu::TextureView> {
+        self.scene_color_snapshot_render_target_for_view(
+            view_id,
+            viewport,
+            color_format,
+            multiview,
+            named,
         )
     }
 }
@@ -288,6 +327,15 @@ impl GraphFrameGlobalResources for FrameResourceManager {
         self.frame_gpu().is_some() && !self.shadow_frame_plan().rendering_layer_indices.is_empty()
     }
 
+    fn geometry_arena_populate_plan(&self) -> GeometryArenaPopulatePlan<'_> {
+        let plan = self.geometry_arena_frame_plan();
+        GeometryArenaPopulatePlan {
+            mesh_asset_ids: &plan.mesh_asset_ids,
+            input_draws: plan.input_draws,
+            deformed_draws: plan.deformed_draws,
+        }
+    }
+
     fn encode_shadow_atlas(&self, params: ShadowAtlasEncodeParams<'_, '_, '_>) {
         if let Some(fgpu) = self.frame_gpu() {
             fgpu.encode_shadow_atlas(self.shadow_frame_plan(), params);
@@ -308,6 +356,7 @@ impl GraphFrameGlobalResources for FrameResourceManager {
     fn prepare_frame_global_split_pass(
         &self,
         pass: FrameGlobalResourcePass,
+        device: &wgpu::Device,
         gpu_limits: &crate::gpu::GpuLimits,
         uploads: GraphUploadSink<'_>,
     ) -> bool {
@@ -317,7 +366,7 @@ impl GraphFrameGlobalResources for FrameResourceManager {
         let Some(fgpu) = self.frame_gpu() else {
             return false;
         };
-        fgpu.prepare_shadow_atlas_uploads(self.shadow_frame_plan(), gpu_limits, uploads);
+        fgpu.prepare_shadow_atlas_recording(self.shadow_frame_plan(), device, gpu_limits, uploads);
         true
     }
 

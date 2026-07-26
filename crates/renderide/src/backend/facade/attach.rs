@@ -83,6 +83,8 @@ impl RenderBackend {
             suppress_renderer_config_disk_writes,
             headless,
         } = desc;
+        self.graph_warmup_cache.clear();
+        self.draw_preparation.reset_gpu_state();
         self.renderer_settings = Some(renderer_settings.clone());
         self.surface_format = Some(surface_format);
         self.headless = headless;
@@ -90,6 +92,12 @@ impl RenderBackend {
             .read()
             .ok()
             .is_some_and(|settings| settings.debug.gpu_validation_layers);
+        self.frame_services
+            .attach(device.as_ref(), queue.as_ref(), Arc::clone(&gpu_limits))?;
+        let static_geometry_store = self
+            .frame_services
+            .shared_static_geometry_store()
+            .expect("attached frame GPU resources must own a static geometry store");
         self.asset_transfers
             .attach_gpu_runtime(AssetGpuRuntimeAttach {
                 device: device.clone(),
@@ -98,10 +106,9 @@ impl RenderBackend {
                 gate: gpu_queue_access_gate,
                 limits: Arc::clone(&gpu_limits),
                 mapped_buffer_health,
+                static_geometry_store,
                 mesh_validation_scopes_enabled,
             });
-        self.frame_services
-            .attach(device.as_ref(), queue.as_ref(), Arc::clone(&gpu_limits))?;
         if headless {
             logger::info!("backend diagnostics HUD disabled for headless attach");
         } else {
@@ -116,6 +123,7 @@ impl RenderBackend {
         }
         self.materials
             .try_attach_gpu(device.clone(), &queue, Arc::clone(&gpu_limits))?;
+        self.reflection_probes.reset_gpu_state();
         self.reflection_probes
             .pre_warm_sh2_projection_pipelines(&device);
         asset_uploads::attach_flush_pending_asset_uploads(

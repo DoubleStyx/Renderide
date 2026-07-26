@@ -43,6 +43,8 @@ impl ReflectionProbeDrawSelection {
 pub struct ReflectionProbeFrameSelection {
     spaces: HashMap<RenderSpaceId, ReflectionProbeSpatialIndex>,
     max_local_reflection_probes: usize,
+    /// Monotonic identity of the spatial selection snapshot embedded into collected draw rows.
+    generation: u64,
 }
 
 impl Default for ReflectionProbeFrameSelection {
@@ -50,11 +52,18 @@ impl Default for ReflectionProbeFrameSelection {
         Self {
             spaces: Default::default(),
             max_local_reflection_probes: MAX_LOCAL_PROBES,
+            generation: 0,
         }
     }
 }
 
 impl ReflectionProbeFrameSelection {
+    /// Generation of the current CPU probe-selection snapshot.
+    #[inline]
+    pub(crate) const fn generation(&self) -> u64 {
+        self.generation
+    }
+
     /// Selects a global fallback probe and configured local probes for one object AABB.
     #[must_use]
     pub fn select(
@@ -121,6 +130,7 @@ impl ReflectionProbeFrameSelection {
                 );
             }
         }
+        self.generation = self.generation.wrapping_add(1);
     }
 }
 

@@ -133,11 +133,9 @@ fn surface_distance(p: vec3<f32>, normal: vec3<f32>, offset: f32) -> f32 {
 
 fn apply_slices(pos: vec3<f32>, c: vec4<f32>, slice_count: u32) -> vec4<f32> {
     var result = c;
-    for (var i = 0u; i < 4u; i = i + 1u) {
-        if (i < slice_count) {
-            if (surface_distance(pos, mat._SlicerNormal[i].xyz, mat._SlicerOffset[i].x) < 0.0) {
-                result = vec4<f32>(0.0);
-            }
+    for (var i = 0u; i < min(slice_count, 4u); i = i + 1u) {
+        if (surface_distance(pos, mat._SlicerNormal[i].xyz, mat._SlicerOffset[i].x) < 0.0) {
+            result = vec4<f32>(0.0);
         }
     }
     return result;
@@ -145,12 +143,10 @@ fn apply_slices(pos: vec3<f32>, c: vec4<f32>, slice_count: u32) -> vec4<f32> {
 
 fn apply_highlights(pos: vec3<f32>, c: vec4<f32>, highlight_count: u32) -> vec4<f32> {
     var result = c;
-    for (var i = 0u; i < 4u; i = i + 1u) {
-        if (i < highlight_count) {
-            let dist = abs(surface_distance(pos, mat._HighlightNormal[i].xyz, mat._HighlightOffset[i].x));
-            if (dist < mat._HighlightRange[i].x) {
-                result = result * mat._HighlightColor[i];
-            }
+    for (var i = 0u; i < min(highlight_count, 4u); i = i + 1u) {
+        let dist = abs(surface_distance(pos, mat._HighlightNormal[i].xyz, mat._HighlightOffset[i].x));
+        if (dist < mat._HighlightRange[i].x) {
+            result = result * mat._HighlightColor[i];
         }
     }
     return result;
@@ -215,9 +211,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let step_dir = segment.dir * step_size;
     let slice_count = active_slice_count();
     let highlight_count = active_highlight_count();
+    let hit_threshold = use_hit_threshold();
+    let additive_cutoff = use_additive_cutoff();
+    let additive = use_additive();
 
     var gain = mat._Gain;
-    if (use_additive() || use_additive_cutoff()) {
+    if (additive || additive_cutoff) {
         gain = gain * length(segment.dir * vol::safe_normalize_or(in.scale, vec3<f32>(1.0))) * step_size;
     }
 
@@ -234,7 +233,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         c = apply_slices(pos, c, slice_count);
         c = apply_highlights(pos, c, highlight_count);
 
-        if (use_hit_threshold()) {
+        if (hit_threshold) {
             if ((c.x + c.y + c.z) * 0.3333 >= mat._HitThreshold) {
                 acc = c;
                 hit_found = true;
@@ -244,7 +243,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             acc = acc + c;
         }
 
-        if (use_additive_cutoff()) {
+        if (additive_cutoff) {
             if (((acc.x + acc.y + acc.z) * 0.3333) > mat._AccumulationCutoff) {
                 break;
             }
@@ -253,11 +252,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         pos = pos + step_dir;
     }
 
-    if (use_hit_threshold() && !hit_found) {
+    if (hit_threshold && !hit_found) {
         discard;
     }
 
-    if (use_additive_cutoff()) {
+    if (additive_cutoff) {
         acc = vec4<f32>(acc.xyz / max(min(1.0, mat._AccumulationCutoff), vol::VOLUME_EPSILON), acc.a);
     }
 

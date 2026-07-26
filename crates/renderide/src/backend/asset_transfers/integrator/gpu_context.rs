@@ -19,6 +19,7 @@ pub(super) struct GpuHandles {
     pub(super) driver_submitter: crate::gpu::driver_thread::DriverSubmitter,
     pub(super) gate: GpuQueueAccessGate,
     pub(super) mapped_buffer_health: Arc<GpuMappedBufferHealth>,
+    pub(super) static_geometry_store: Option<crate::graph_inputs::SharedStaticGeometryStore>,
     pub(super) mesh_upload_batch: Arc<MeshUploadStagingBatch>,
     pub(super) mesh_validation_scopes_enabled: bool,
 }
@@ -36,6 +37,7 @@ impl GpuHandles {
             gpu_queue_access_gate: &self.gate,
             queue_access_mode,
             mapped_buffer_health: &self.mapped_buffer_health,
+            static_geometry_store: self.static_geometry_store.as_ref(),
             mesh_upload_batch: &self.mesh_upload_batch,
             mesh_validation_scopes_enabled: self.mesh_validation_scopes_enabled,
         }
@@ -67,6 +69,7 @@ pub(super) fn collect_gpu_handles(asset: &AssetTransferQueue) -> Option<GpuHandl
             driver_submitter,
             gate,
             mapped_buffer_health,
+            static_geometry_store: asset.gpu.static_geometry_store.clone(),
             mesh_upload_batch: Arc::clone(&asset.gpu.mesh_upload_batch),
             mesh_validation_scopes_enabled: asset.gpu.mesh_validation_scopes_enabled,
         }),
@@ -89,9 +92,11 @@ pub(super) struct AssetUploadGpuContext<'a> {
     pub(super) queue_access_mode: GpuQueueAccessMode,
     /// Shared mapped-buffer invalidation generation from the active GPU context.
     pub(super) mapped_buffer_health: &'a Arc<GpuMappedBufferHealth>,
+    /// Canonical immutable geometry store, if frame GPU resources are attached.
+    pub(super) static_geometry_store: Option<&'a crate::graph_inputs::SharedStaticGeometryStore>,
     /// Mesh upload batch for deferred buffer writes.
     pub(super) mesh_upload_batch: &'a Arc<MeshUploadStagingBatch>,
-    /// Whether mesh uploads should use wgpu validation scopes. -xlinka
+    /// Whether mesh uploads should use wgpu validation scopes.
     pub(super) mesh_validation_scopes_enabled: bool,
 }
 
@@ -102,6 +107,7 @@ impl AssetUploadGpuContext<'_> {
             device: self.device,
             gpu_limits: self.gpu_limits,
             mapped_buffer_health: self.mapped_buffer_health,
+            static_geometry_store: self.static_geometry_store,
             mesh_upload_batch: self.mesh_upload_batch,
             mesh_validation_scopes_enabled: self.mesh_validation_scopes_enabled,
         }
@@ -121,6 +127,7 @@ impl AssetUploadGpuContext<'_> {
     pub(super) fn particle_task_gpu(&self) -> ParticleTaskGpu<'_> {
         ParticleTaskGpu {
             device: self.device,
+            queue: self.queue,
             gpu_limits: self.gpu_limits,
             mapped_buffer_health: self.mapped_buffer_health,
             mesh_upload_batch: self.mesh_upload_batch,

@@ -4,7 +4,7 @@
 //! enabled when the adapter reports it, dropped silently otherwise. The fallback paths for the
 //! optional features are documented at their use sites in
 //! [`crate::gpu::GpuContext::set_swapchain_msaa_requested_stereo`] (MSAA array) and the
-//! reflection-probe / timestamp pipelines.
+//! reflection-probe, timestamp, and indirect world-mesh paths.
 
 use wgpu::wgt;
 
@@ -58,6 +58,12 @@ const OPTIONAL_WGPU_FEATURES: &[OptionalWgpuFeature] = &[
     },
     OptionalWgpuFeature {
         wgt: wgt::Features::SHADER_BARYCENTRICS,
+    },
+    OptionalWgpuFeature {
+        wgt: wgt::Features::INDIRECT_FIRST_INSTANCE,
+    },
+    OptionalWgpuFeature {
+        wgt: wgt::Features::MULTI_DRAW_INDIRECT_COUNT,
     },
 ];
 
@@ -144,7 +150,9 @@ mod tests {
             | wgt::Features::MULTISAMPLE_ARRAY
             | wgt::Features::TIMESTAMP_QUERY
             | wgt::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
-            | wgt::Features::SHADER_BARYCENTRICS;
+            | wgt::Features::SHADER_BARYCENTRICS
+            | wgt::Features::INDIRECT_FIRST_INSTANCE
+            | wgt::Features::MULTI_DRAW_INDIRECT_COUNT;
         let result = negotiate_wgpu_features(wgt::Features::all());
         assert_eq!(result, wgt::Features::MULTIVIEW | legacy);
     }

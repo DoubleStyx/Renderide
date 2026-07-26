@@ -59,6 +59,20 @@ pub(super) struct WorldMeshForwardColorResolveEncodeContext<'a, 'encoder, 'frame
     pub(super) label: &'static str,
 }
 
+/// Inputs for resolving the multisampled scene color directly into an external color view.
+pub(super) struct WorldMeshForwardColorResolveToViewEncodeContext<'a, 'encoder, 'frame, 'pass> {
+    pub(super) device: &'a wgpu::Device,
+    pub(super) graph_resources: &'a GraphResolvedResources,
+    pub(super) encoder: &'encoder mut wgpu::CommandEncoder,
+    pub(super) frame: &'frame PassFrameContext<'a, 'pass>,
+    pub(super) uploads: GraphUploadSink<'frame>,
+    pub(super) source: TextureHandle,
+    pub(super) destination_view: &'a wgpu::TextureView,
+    pub(super) destination_format: wgpu::TextureFormat,
+    pub(super) profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
+    pub(super) label: &'static str,
+}
+
 fn pipeline_cache() -> &'static MsaaResolveHdrPipelineCache {
     static CACHE: LazyLock<MsaaResolveHdrPipelineCache> =
         LazyLock::new(MsaaResolveHdrPipelineCache::default);
@@ -103,19 +117,84 @@ pub(in crate::passes::world_mesh_forward) fn encode_world_mesh_forward_msaa_colo
         });
     };
 
+    encode_msaa_color_resolve_to_view(
+        device,
+        encoder,
+        frame,
+        uploads,
+        &src.texture,
+        &dst.view,
+        dst.texture.format(),
+        profiler,
+        label,
+    );
+    Ok(true)
+}
+
+/// Encodes the same HDR-aware resolve directly into a persistent scene-snapshot view.
+pub(in crate::passes::world_mesh_forward) fn encode_world_mesh_forward_msaa_color_resolve_to_view(
+    ctx: WorldMeshForwardColorResolveToViewEncodeContext<'_, '_, '_, '_>,
+) -> Result<bool, RenderPassError> {
+    let WorldMeshForwardColorResolveToViewEncodeContext {
+        device,
+        graph_resources,
+        encoder,
+        frame,
+        uploads,
+        source,
+        destination_view,
+        destination_format,
+        profiler,
+        label,
+    } = ctx;
+    if frame.view.sample_count <= 1 {
+        return Ok(false);
+    }
+    let Some(src) = graph_resources.transient_texture(source) else {
+        return Err(RenderPassError::FrameParamsRequired {
+            pass: format!("{label} (missing transient scene_color_hdr_msaa {source:?})"),
+        });
+    };
+
+    encode_msaa_color_resolve_to_view(
+        device,
+        encoder,
+        frame,
+        uploads,
+        &src.texture,
+        destination_view,
+        destination_format,
+        profiler,
+        label,
+    );
+    Ok(true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_msaa_color_resolve_to_view(
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    frame: &PassFrameContext<'_, '_>,
+    uploads: GraphUploadSink<'_>,
+    source: &wgpu::Texture,
+    destination_view: &wgpu::TextureView,
+    destination_format: wgpu::TextureFormat,
+    profiler: Option<&crate::profiling::GpuProfilerHandle>,
+    label: &'static str,
+) {
     let multiview_stereo = frame.view.multiview_stereo;
     let pipelines = pipeline_cache();
-    let pipeline = pipelines.pipeline(device, dst.texture.format(), multiview_stereo);
+    let pipeline = pipelines.pipeline(device, destination_format, multiview_stereo);
     let params = ResolveParamsUbo {
-        sample_count,
+        sample_count: frame.view.sample_count,
         _pad: [0; 3],
     };
     let params_ubo = pipelines.params_ubo(device);
     uploads.write_buffer(params_ubo, 0, bytemuck::bytes_of(&params));
-    let bind_group = pipelines.bind_group(device, &src.texture, params_ubo, multiview_stereo);
+    let bind_group = pipelines.bind_group(device, source, params_ubo, multiview_stereo);
 
     let color_attachments = [Some(wgpu::RenderPassColorAttachment {
-        view: &dst.view,
+        view: destination_view,
         resolve_target: None,
         ops: wgpu::Operations {
             load: wgpu::LoadOp::Load,
@@ -141,5 +220,4 @@ pub(in crate::passes::world_mesh_forward) fn encode_world_mesh_forward_msaa_colo
     if let (Some(p), Some(q)) = (profiler, pass_query) {
         p.end_query(encoder, q);
     }
-    Ok(true)
 }

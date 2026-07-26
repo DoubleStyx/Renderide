@@ -4,10 +4,11 @@ use crate::backend::ExtractedFrameShared;
 use crate::cpu_parallelism::FrameParallelPolicy;
 use crate::world_mesh::{
     DrawCollectionFrameCaches, DrawCollectionInputs, DrawCollectionMaterialInputs,
-    DrawCollectionSceneAssets, DrawCollectionViewInputs, PrefetchedWorldMeshViewDraws,
-    QueuedWorldMeshDraws, ViewLayerPolicy, ViewRenderSpaceScope, WorldMeshCullInput,
-    WorldMeshCullProjParams, WorldMeshDrawCollectParallelism, WorldMeshDrawPlan,
-    queue_draws_with_parallelism, queue_prepared_draws_for_views_with_parallelism,
+    DrawCollectionSceneAssets, DrawCollectionViewInputs, HiZTemporalState,
+    PrefetchedWorldMeshViewDraws, QueuedWorldMeshDraws, ViewLayerPolicy, ViewRenderSpaceScope,
+    WorldMeshCullInput, WorldMeshCullProjParams, WorldMeshDrawCollectParallelism,
+    WorldMeshDrawPlan, queue_draws_with_parallelism,
+    queue_prepared_draws_for_views_with_parallelism,
 };
 
 use super::super::view_plan::FrameViewPlan;
@@ -24,6 +25,8 @@ pub(super) struct QueuedViewDraws {
     desktop_overlay: Option<QueuedWorldMeshDraws>,
     /// Projection parameters matching the view's camera/viewport.
     cull_proj: Option<WorldMeshCullProjParams>,
+    /// View/projection history that authored the previous Hi-Z pyramid.
+    hi_z_temporal: Option<HiZTemporalState>,
 }
 
 impl QueuedViewDraws {
@@ -46,14 +49,15 @@ impl QueuedViewDraws {
         let world = sort_and_package_one_view_draw_plan(
             self.world,
             self.cull_proj.as_ref(),
+            self.hi_z_temporal,
             parallelism,
             command_cache,
         );
         let desktop_overlay = self.desktop_overlay.map(|queued| {
-            sort_and_package_one_view_draw_plan(queued, None, parallelism, command_cache)
+            sort_and_package_one_view_draw_plan(queued, None, None, parallelism, command_cache)
         });
         let shadow_casters =
-            WorldMeshDrawPlan::Prefetched(Box::new(PrefetchedWorldMeshViewDraws::new(
+            WorldMeshDrawPlan::Prefetched(std::sync::Arc::new(PrefetchedWorldMeshViewDraws::new(
                 self.shadow_casters.into_unarranged_collection(),
                 None,
             )));
@@ -68,13 +72,14 @@ impl QueuedViewDraws {
 fn sort_and_package_one_view_draw_plan(
     queued: QueuedWorldMeshDraws,
     cull_proj: Option<&WorldMeshCullProjParams>,
+    hi_z_temporal: Option<HiZTemporalState>,
     parallelism: crate::world_mesh::WorldMeshDrawArrangeParallelism,
     command_cache: &crate::world_mesh::WorldMeshCommandCache,
 ) -> WorldMeshDrawPlan {
     let collection = queued.sort_and_arrange_with_cache(parallelism, Some(command_cache));
-    WorldMeshDrawPlan::Prefetched(Box::new(PrefetchedWorldMeshViewDraws::new(
-        collection, cull_proj,
-    )))
+    WorldMeshDrawPlan::Prefetched(std::sync::Arc::new(
+        PrefetchedWorldMeshViewDraws::new_with_cull_history(collection, cull_proj, hi_z_temporal),
+    ))
 }
 
 /// Queues world-mesh draws for every prepared view in parallel.
@@ -102,7 +107,8 @@ pub(super) fn queue_view_draws(
         max_prepared_draw_count,
         setup.inner_parallelism,
     );
-    let (cull_inputs, cull_projs) = build_view_cull_inputs(prepared, cull_snapshots);
+    let (cull_inputs, cull_projs, hi_z_temporals) =
+        build_view_cull_inputs(prepared, cull_snapshots);
     let contexts =
         build_view_draw_collection_contexts(setup, prepared, &dict, &cull_inputs, mesh_lod_bias);
     let shadow_contexts = build_shadow_caster_draw_collection_contexts(
@@ -146,12 +152,16 @@ pub(super) fn queue_view_draws(
         .into_iter()
         .zip(shadow_caster_draws)
         .zip(cull_projs)
-        .map(|((world, shadow_casters), cull_proj)| QueuedViewDraws {
-            world,
-            shadow_casters,
-            desktop_overlay: None,
-            cull_proj,
-        })
+        .zip(hi_z_temporals)
+        .map(
+            |(((world, shadow_casters), cull_proj), hi_z_temporal)| QueuedViewDraws {
+                world,
+                shadow_casters,
+                desktop_overlay: None,
+                cull_proj,
+                hi_z_temporal,
+            },
+        )
         .collect();
     queue_desktop_overlay_draws(
         setup,
@@ -251,6 +261,7 @@ fn visible_view_inputs<'a>(
         head_output_transform: prep.host_camera.head_output_transform,
         view_origin_world: prep.view_origin_world(),
         culling,
+        retain_gpu_static_candidates: setup.retain_gpu_static_candidates,
         lod_selection_culling: None,
         mesh_lod_bias,
         transform_filter: prep.draw_filter.as_ref(),
@@ -279,14 +290,17 @@ fn build_view_cull_inputs<'a>(
 ) -> (
     Vec<Option<WorldMeshCullInput<'a>>>,
     Vec<Option<WorldMeshCullProjParams>>,
+    Vec<Option<HiZTemporalState>>,
 ) {
     profiling::scope!("render::queue_view_draws::build_cull_inputs");
     let mut cull_inputs = Vec::with_capacity(prepared.len());
     let mut cull_projs = Vec::with_capacity(prepared.len());
+    let mut hi_z_temporals = Vec::with_capacity(prepared.len());
     let mut snapshots = cull_snapshots.into_iter();
     for prep in prepared {
         let snap = snapshots.next().unwrap_or(None);
         let cull_proj = snap.as_ref().map(|s| s.proj);
+        let hi_z_temporal = snap.as_ref().and_then(|s| s.hi_z_temporal.clone());
         let culling = snap.map(|s| WorldMeshCullInput {
             proj: s.proj,
             host_camera: &prep.host_camera,
@@ -294,9 +308,10 @@ fn build_view_cull_inputs<'a>(
             hi_z_temporal: s.hi_z_temporal,
         });
         cull_projs.push(cull_proj);
+        hi_z_temporals.push(hi_z_temporal);
         cull_inputs.push(culling);
     }
-    (cull_inputs, cull_projs)
+    (cull_inputs, cull_projs, hi_z_temporals)
 }
 
 fn queue_desktop_overlay_draws(
@@ -351,6 +366,7 @@ pub(super) fn desktop_overlay_view_inputs<'a>(
         head_output_transform: prep.host_camera.head_output_transform,
         view_origin_world: prep.view_origin_world(),
         culling: None,
+        retain_gpu_static_candidates: false,
         lod_selection_culling: None,
         mesh_lod_bias,
         transform_filter: None,
@@ -372,6 +388,7 @@ pub(super) fn shadow_caster_view_inputs<'a>(
         head_output_transform: prep.host_camera.head_output_transform,
         view_origin_world: prep.view_origin_world(),
         culling: None,
+        retain_gpu_static_candidates: false,
         lod_selection_culling,
         mesh_lod_bias,
         transform_filter: prep.draw_filter.as_ref(),
@@ -425,6 +442,9 @@ pub(super) fn select_inner_parallelism_for_prepared_work_with_policy(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use glam::Mat4;
     use hashbrown::HashMap;
 
     use crate::backend::ExtractedFrameShared;
@@ -437,12 +457,16 @@ mod tests {
     use crate::scene::{CameraRenderableEntry, RenderSpaceId, SceneCoordinator};
     use crate::shared::{CameraProjection, CameraState, RenderTransform, RenderingContext};
     use crate::world_mesh::{
-        FrameMaterialBatchCache, RenderWorld, WorldMeshCommandCache,
-        WorldMeshDrawCollectParallelism,
+        FrameMaterialBatchCache, HiZTemporalState, RenderWorld, WorldMeshCommandCache,
+        WorldMeshCullProjParams, WorldMeshDrawCollectParallelism,
     };
 
     use super::super::super::view_plan::{FrameViewPlan, FrameViewPlanParams, FrameViewPlanTarget};
-    use super::{QueuedViewDraws, queue_view_draws};
+    use super::super::cull::ViewCullSnapshot;
+    use super::{
+        QueuedViewDraws, build_view_cull_inputs, desktop_overlay_view_inputs, queue_view_draws,
+        shadow_caster_view_inputs, visible_view_inputs,
+    };
 
     fn dashboard_camera_entry(render_texture_asset_id: i32) -> CameraRenderableEntry {
         CameraRenderableEntry {
@@ -493,6 +517,7 @@ mod tests {
         let render_worlds = HashMap::<u8, RenderWorld>::new();
         let material_caches = HashMap::<(u8, ShaderPermutation), FrameMaterialBatchCache>::new();
         let command_cache = WorldMeshCommandCache::default();
+        let draw_plan_cache = crate::runtime::WorldMeshDrawPlanFrameCache::default();
         let occlusion = OcclusionSystem::new();
         let reflection_probes = ReflectionProbeFrameSelection::default();
         let pipeline_property_ids = materials.pipeline_property_resolver().resolve();
@@ -505,9 +530,11 @@ mod tests {
             render_worlds: &render_worlds,
             material_caches: &material_caches,
             command_cache: &command_cache,
+            draw_plan_cache: &draw_plan_cache,
             occlusion: &occlusion,
             reflection_probes: &reflection_probes,
             inner_parallelism: WorldMeshDrawCollectParallelism::Full,
+            retain_gpu_static_candidates: true,
         };
         let prepared = [main_desktop_plan()];
 
@@ -515,6 +542,51 @@ mod tests {
 
         assert_eq!(draws.len(), 1);
         assert!(overlay_plan_present(&draws));
+        assert!(visible_view_inputs(&shared, &prepared[0], None, 1.0).retain_gpu_static_candidates);
+        assert!(!desktop_overlay_view_inputs(&prepared[0], 1.0).retain_gpu_static_candidates);
+        assert!(!shadow_caster_view_inputs(&prepared[0], None, 1.0).retain_gpu_static_candidates);
+    }
+
+    #[test]
+    fn cull_input_builder_keeps_prior_hi_z_history_for_gpu_handoff() {
+        let prepared = [main_desktop_plan()];
+        let previous_views = Arc::new(HashMap::from_iter([(
+            RenderSpaceId(9),
+            Mat4::from_translation(glam::Vec3::Z),
+        )]));
+        let proj = WorldMeshCullProjParams {
+            world_proj: Mat4::IDENTITY,
+            overlay_proj: Mat4::IDENTITY,
+            vr_stereo: None,
+        };
+        let temporal = HiZTemporalState {
+            prev_cull: proj,
+            prev_view_by_space: Arc::clone(&previous_views),
+            depth_viewport_px: (320, 180),
+        };
+
+        let (inputs, projections, histories) = build_view_cull_inputs(
+            &prepared,
+            vec![Some(ViewCullSnapshot {
+                proj,
+                hi_z: None,
+                hi_z_temporal: Some(temporal),
+            })],
+        );
+
+        assert_eq!(inputs.len(), 1);
+        assert!(projections[0].is_some());
+        assert!(
+            inputs[0]
+                .as_ref()
+                .and_then(|input| input.hi_z_temporal.as_ref())
+                .is_some_and(|history| Arc::ptr_eq(&history.prev_view_by_space, &previous_views))
+        );
+        assert!(
+            histories[0]
+                .as_ref()
+                .is_some_and(|history| Arc::ptr_eq(&history.prev_view_by_space, &previous_views))
+        );
     }
 
     fn overlay_plan_present(draws: &[QueuedViewDraws]) -> bool {

@@ -2,6 +2,24 @@
 
 use super::tracy_plot::tracy_plot;
 
+/// CPU planning and indirect-upload work avoided by exact shadow cache hits.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ShadowCacheProfileSample {
+    pub caster_plan_hits: usize,
+    pub caster_plan_misses: usize,
+    pub visibility_hits: usize,
+    pub visibility_misses: usize,
+    pub content_hash_hits: usize,
+    pub avoided_caster_draw_scans: usize,
+    pub avoided_visibility_group_tests: usize,
+    pub avoided_visibility_draw_tests: usize,
+    pub avoided_content_hash_draws: usize,
+    pub indirect_hit: bool,
+    pub avoided_indirect_layers: usize,
+    pub avoided_indirect_commands: usize,
+    pub avoided_indirect_upload_bytes: usize,
+}
+
 /// Emits per-frame shadow atlas CPU work counters.
 pub fn plot_shadow_atlas(
     layers: usize,
@@ -20,6 +38,62 @@ pub fn plot_shadow_atlas(
         visible_group_draws as f64
     );
     tracy_plot!("shadow_atlas::upload_bytes", upload_bytes as f64);
+}
+
+/// Emits exact retained shadow-planning cache counters.
+pub fn plot_shadow_cache(sample: ShadowCacheProfileSample) {
+    tracy_plot!(
+        "shadow_atlas::caster_plan_cache_hits",
+        sample.caster_plan_hits as f64
+    );
+    tracy_plot!(
+        "shadow_atlas::caster_plan_cache_misses",
+        sample.caster_plan_misses as f64
+    );
+    tracy_plot!(
+        "shadow_atlas::visibility_cache_hits",
+        sample.visibility_hits as f64
+    );
+    tracy_plot!(
+        "shadow_atlas::visibility_cache_misses",
+        sample.visibility_misses as f64
+    );
+    tracy_plot!(
+        "shadow_atlas::content_hash_cache_hits",
+        sample.content_hash_hits as f64
+    );
+    tracy_plot!(
+        "shadow_atlas::avoided_caster_draw_scans",
+        sample.avoided_caster_draw_scans as f64
+    );
+    tracy_plot!(
+        "shadow_atlas::avoided_visibility_group_tests",
+        sample.avoided_visibility_group_tests as f64
+    );
+    tracy_plot!(
+        "shadow_atlas::avoided_visibility_draw_tests",
+        sample.avoided_visibility_draw_tests as f64
+    );
+    tracy_plot!(
+        "shadow_atlas::avoided_content_hash_draws",
+        sample.avoided_content_hash_draws as f64
+    );
+    tracy_plot!(
+        "shadow_atlas::indirect_plan_cache_hit",
+        f64::from(u8::from(sample.indirect_hit))
+    );
+    tracy_plot!(
+        "shadow_atlas::avoided_indirect_layers",
+        sample.avoided_indirect_layers as f64
+    );
+    tracy_plot!(
+        "shadow_atlas::avoided_indirect_commands",
+        sample.avoided_indirect_commands as f64
+    );
+    tracy_plot!(
+        "shadow_atlas::avoided_indirect_upload_bytes",
+        sample.avoided_indirect_upload_bytes as f64
+    );
 }
 
 /// Emits split frame-global command-recording counters for the shadow atlas path.

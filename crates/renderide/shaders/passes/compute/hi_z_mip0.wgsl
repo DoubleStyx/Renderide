@@ -36,9 +36,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     for (var sy = sy0; sy < max(sy1, sy0 + 1u); sy++) {
         for (var sx = sx0; sx < max(sx1, sx0 + 1u); sx++) {
 #ifdef MULTIVIEW
-            let sample = textureLoad(src_depth, vec2i(i32(min(sx, src_dims.x - 1u)), i32(min(sy, src_dims.y - 1u))), i32(layer_params.layer), 0);
+            let sample = textureLoad(src_depth, vec2i(i32(sx), i32(sy)), i32(layer_params.layer), 0);
 #else
-            let sample = textureLoad(src_depth, vec2i(i32(min(sx, src_dims.x - 1u)), i32(min(sy, src_dims.y - 1u))), 0);
+            let sample = textureLoad(src_depth, vec2i(i32(sx), i32(sy)), 0);
 #endif
             d = min(d, sample);
         }

@@ -9,7 +9,9 @@ mod bind_group;
 mod scissor;
 mod vertex_binding;
 
+use crate::frame_upload_batch::GraphUploadSink;
 use crate::gpu::GpuLimits;
+use crate::gpu_pools::geometry_arena::ArenaStream;
 use crate::materials::MaterialPipelineSet;
 use crate::passes::WorldMeshForwardEncodeRefs;
 use crate::shared::ShadowCastMode;
@@ -20,14 +22,22 @@ use super::depth_prepass::{
     WorldMeshForwardDepthPrepassPipelineCache, WorldMeshForwardDepthPrepassPipelineKey,
     radial_shadow_pipelines, shadow_pipelines,
 };
+use super::gpu_cull::{GpuCulledForwardRun, WorldMeshGpuCullResult};
 use super::material_batch::MaterialGroup1Binding;
-use super::normal_pass::{WorldMeshForwardNormalPipelineCache, WorldMeshForwardNormalPipelineKey};
+use super::normal_pass::{
+    WorldMeshForwardNormalPipelineCache, WorldMeshForwardNormalPipelineKey,
+    normal_pipeline_key_for_draw,
+};
 
 use bind_group::{PerDrawSlabBind, bind_per_draw_slab_if_changed};
 use scissor::{reset_forward_scissor, set_forward_scissor_if_changed};
+pub(in crate::passes::world_mesh_forward) use vertex_binding::{
+    EmbeddedVertexStreamFlags, forward_arena_alloc, forward_stream_flags,
+};
 use vertex_binding::{
-    LastMeshBindState, draw_mesh_submesh_depth_instanced, draw_mesh_submesh_instanced,
-    draw_mesh_submesh_normals_instanced, gpu_refs_for_encode, streams_for_item,
+    LastMeshBindState, bind_forward_arena_streams, draw_mesh_submesh_depth_instanced,
+    draw_mesh_submesh_instanced, draw_mesh_submesh_normals_instanced, gpu_refs_for_encode,
+    streams_for_item,
 };
 
 /// Pre-grouped draws, bind groups, and precomputed-batch table for one mesh-forward raster subpass.
@@ -65,6 +75,16 @@ pub(crate) struct ForwardDrawBatch<'a, 'b, 'c, 'd> {
     pub overlay_view_proj: glam::Mat4,
     /// Active viewport in pixels for the GPU scissor optimisation.
     pub viewport_px: (u32, u32),
+    /// GPU device used to build the per-batch indirect command buffers.
+    pub device: &'a wgpu::Device,
+    /// Deferred upload sink used to update the persistent phase command buffer.
+    pub uploads: GraphUploadSink<'a>,
+    /// Shared geometry mega-buffer; `Some` draws static groups with `multi_draw_indexed_indirect`.
+    pub geometry_arena: Option<&'a crate::gpu_pools::geometry_arena::GeometryArena>,
+    /// Persistent command buffer for this view and render phase.
+    pub indirect_buffer: Option<&'a mut crate::gpu::indirect_buffer::IndirectDrawBuffer>,
+    /// Compute-produced retained-static command runs for this phase.
+    pub gpu_cull: Option<(&'c WorldMeshGpuCullResult, &'c [GpuCulledForwardRun])>,
 }
 
 /// Pre-grouped draws and normal-prepass state for one mesh-forward raster subpass.
@@ -89,6 +109,8 @@ pub(crate) struct NormalDrawBatch<'a, 'b, 'c, 'd> {
     pub device: &'a wgpu::Device,
     /// Shared normal-prepass pipeline cache.
     pub normal_pipelines: &'a WorldMeshForwardNormalPipelineCache,
+    /// Shared geometry mega-buffer; when present, resident static draws use the indirect path.
+    pub geometry_arena: Option<&'a crate::gpu_pools::geometry_arena::GeometryArena>,
 }
 
 /// Pre-grouped draws and pipeline state for the generic opaque depth prepass.
@@ -115,15 +137,18 @@ pub(crate) struct DepthPrepassDrawBatch<'a, 'b, 'c, 'd> {
     pub device: &'a wgpu::Device,
     /// Shared depth-prepass pipeline cache.
     pub depth_pipelines: &'a WorldMeshForwardDepthPrepassPipelineCache,
+    /// Shared geometry mega-buffer; when present, its resident static draws are drawn by the
+    /// pre-built indirect runs and skipped here so this pass only records the per-mesh fallback.
+    pub geometry_arena: Option<&'a crate::gpu_pools::geometry_arena::GeometryArena>,
 }
 
-/// Pre-grouped shadow-caster draws and pipeline state for one shadow atlas layer. -xlinka
+/// Pre-grouped shadow-caster draws and pipeline state for one shadow atlas layer.
 pub(crate) struct ShadowDepthDrawBatch<'a, 'b, 'c, 'd> {
     /// Active shadow-map render pass.
     pub rpass: &'a mut wgpu::RenderPass<'b>,
-    /// Pre-built shadow-caster groups in shadow pipeline and mesh order. -xlinka
+    /// Pre-built shadow-caster groups in shadow pipeline and mesh order.
     pub groups: &'c [&'c [DrawGroup]],
-    /// Full collected shadow-caster draw list for the layer. -xlinka
+    /// Full collected shadow-caster draw list for the layer.
     pub draws: &'c [WorldMeshDrawItem],
     /// Mesh pool and skin cache for vertex/index binding.
     pub encode: &'a mut WorldMeshForwardEncodeRefs<'d>,
@@ -141,6 +166,8 @@ pub(crate) struct ShadowDepthDrawBatch<'a, 'b, 'c, 'd> {
     pub pipeline: &'a super::WorldMeshForwardPipelineState,
     /// GPU device used for lazy depth pipeline creation.
     pub device: &'a wgpu::Device,
+    /// Shared geometry mega-buffer for `multi_draw_indexed_indirect`, when populated.
+    pub geometry_arena: Option<&'a crate::gpu_pools::geometry_arena::GeometryArena>,
 }
 
 pub(super) struct ForwardDrawState {
@@ -175,6 +202,7 @@ pub(super) struct ForwardDrawResources<'draw, 'bind> {
     pub(super) overlay_view_proj: glam::Mat4,
     pub(super) viewport_px: (u32, u32),
     pub(super) full_viewport: (u32, u32, u32, u32),
+    geometry_arena: Option<&'draw crate::gpu_pools::geometry_arena::GeometryArena>,
 }
 
 struct DepthLikeDrawState {
@@ -202,6 +230,149 @@ struct DepthLikePerDrawBind<'a> {
     supports_base_instance: bool,
 }
 
+#[cfg(feature = "tracy")]
+struct ForwardIndirectProfile {
+    sample: crate::profiling::WorldMeshForwardIndirectProfileSample,
+}
+
+#[cfg(feature = "tracy")]
+impl ForwardIndirectProfile {
+    fn new(input_groups: usize) -> Self {
+        Self {
+            sample: crate::profiling::WorldMeshForwardIndirectProfileSample {
+                input_groups,
+                ..Default::default()
+            },
+        }
+    }
+
+    fn note_run(&mut self, command_count: usize) {
+        self.sample.indirect_commands = self.sample.indirect_commands.saturating_add(command_count);
+        self.sample.indirect_runs = self.sample.indirect_runs.saturating_add(1);
+        self.sample.max_commands_per_run = self.sample.max_commands_per_run.max(command_count);
+        if command_count == 1 {
+            self.sample.singleton_runs = self.sample.singleton_runs.saturating_add(1);
+        }
+    }
+
+    fn note_fallback(
+        &mut self,
+        group: &DrawGroup,
+        resources: &ForwardDrawResources<'_, '_>,
+        encode: &WorldMeshForwardEncodeRefs<'_>,
+        arena: Option<&crate::gpu_pools::geometry_arena::GeometryArena>,
+    ) {
+        let Some(item) = resources.draws.get(group.representative_draw_idx) else {
+            self.note_invalid_draw();
+            return;
+        };
+        if item.shadow_cast_mode == ShadowCastMode::ShadowOnly {
+            self.sample.skipped_groups = self.sample.skipped_groups.saturating_add(1);
+            return;
+        }
+        if item.node_id < 0 || item.index_count == 0 {
+            self.note_invalid_draw();
+            return;
+        }
+        let Some(packet) = resources.precomputed.get(group.material_packet_idx) else {
+            self.note_pipeline_unavailable();
+            return;
+        };
+        let Some(pipelines) = packet.pipelines.as_ref() else {
+            self.note_pipeline_unavailable();
+            return;
+        };
+        let Some(mesh) = encode.mesh_pool.get(item.mesh_asset_id) else {
+            self.sample.skipped_groups = self.sample.skipped_groups.saturating_add(1);
+            self.sample.mesh_unavailable_groups =
+                self.sample.mesh_unavailable_groups.saturating_add(1);
+            return;
+        };
+
+        self.sample.fallback_groups = self.sample.fallback_groups.saturating_add(1);
+        if item.skinned || item.world_space_deformed || item.blendshape_deformed {
+            self.sample.deformed_groups = self.sample.deformed_groups.saturating_add(1);
+            return;
+        }
+        if item.ui_rect_clip_local.is_some() {
+            self.sample.scissored_groups = self.sample.scissored_groups.saturating_add(1);
+            return;
+        }
+        if pipelines.len() != 1 {
+            self.sample.multi_pipeline_groups = self.sample.multi_pipeline_groups.saturating_add(1);
+            return;
+        }
+        let Some(arena) = arena else {
+            self.sample.path_unavailable_groups =
+                self.sample.path_unavailable_groups.saturating_add(1);
+            return;
+        };
+        let flags = forward_stream_flags(item);
+        if arena.mesh(item.mesh_asset_id).is_none() {
+            if crate::particles::is_generated_particle_mesh_asset_id(item.mesh_asset_id) {
+                self.sample.generated_mesh_groups =
+                    self.sample.generated_mesh_groups.saturating_add(1);
+            } else if mesh.dynamic_geometry {
+                self.sample.dynamic_mesh_groups = self.sample.dynamic_mesh_groups.saturating_add(1);
+            } else {
+                self.sample.arena_nonresident_groups =
+                    self.sample.arena_nonresident_groups.saturating_add(1);
+            }
+            return;
+        }
+        if forward_arena_alloc(item, arena, flags).is_none() {
+            self.sample.missing_stream_groups = self.sample.missing_stream_groups.saturating_add(1);
+            return;
+        }
+
+        // The eligibility and allocation checks above normally make the indirect attempt succeed.
+        // Reaching this fallback means arena stream-buffer binding rejected the run.
+        self.sample.missing_stream_groups = self.sample.missing_stream_groups.saturating_add(1);
+    }
+
+    fn note_invalid_draw(&mut self) {
+        self.sample.skipped_groups = self.sample.skipped_groups.saturating_add(1);
+        self.sample.invalid_draw_groups = self.sample.invalid_draw_groups.saturating_add(1);
+    }
+
+    fn note_pipeline_unavailable(&mut self) {
+        self.sample.skipped_groups = self.sample.skipped_groups.saturating_add(1);
+        self.sample.pipeline_unavailable_groups =
+            self.sample.pipeline_unavailable_groups.saturating_add(1);
+    }
+
+    fn finish(self) {
+        crate::profiling::plot_world_mesh_forward_indirect(self.sample);
+    }
+}
+
+#[cfg(not(feature = "tracy"))]
+struct ForwardIndirectProfile;
+
+#[cfg(not(feature = "tracy"))]
+impl ForwardIndirectProfile {
+    #[inline(always)]
+    fn new(_input_groups: usize) -> Self {
+        Self
+    }
+
+    #[inline(always)]
+    fn note_run(&mut self, _command_count: usize) {}
+
+    #[inline(always)]
+    fn note_fallback(
+        &mut self,
+        _group: &DrawGroup,
+        _resources: &ForwardDrawResources<'_, '_>,
+        _encode: &WorldMeshForwardEncodeRefs<'_>,
+        _arena: Option<&crate::gpu_pools::geometry_arena::GeometryArena>,
+    ) {
+    }
+
+    #[inline(always)]
+    fn finish(self) {}
+}
+
 /// Records one raster subpass by walking pre-built [`DrawGroup`]s.
 ///
 /// Each group is one `draw_indexed` covering a contiguous slab range of identical instances.
@@ -223,6 +394,11 @@ pub(crate) fn draw_subset(batch: ForwardDrawBatch<'_, '_, '_, '_>) {
         supports_base_instance,
         overlay_view_proj,
         viewport_px,
+        device,
+        uploads,
+        geometry_arena,
+        mut indirect_buffer,
+        gpu_cull,
     } = batch;
     let full_viewport: (u32, u32, u32, u32) = (0, 0, viewport_px.0, viewport_px.1);
     let (subpass_batch_count, subpass_input_draws) = summarize_forward_groups(groups);
@@ -237,14 +413,40 @@ pub(crate) fn draw_subset(batch: ForwardDrawBatch<'_, '_, '_, '_>) {
         overlay_view_proj,
         viewport_px,
         full_viewport,
+        geometry_arena,
     };
+    let mut indirect_commands = Vec::with_capacity(groups.len());
+    if gpu_cull.is_none()
+        && let Some(buffer) = indirect_buffer.as_deref_mut()
+    {
+        let max_commands = u32::try_from(groups.len()).unwrap_or(u32::MAX);
+        buffer.prepare_len(device, max_commands);
+    }
 
     {
         profiling::scope!("world_mesh::draw_subset::bind_frame_group");
         rpass.set_bind_group(0, frame_bg, &[]);
     }
 
-    draw_forward_groups(rpass, groups, encode, &resources, &mut state);
+    draw_forward_groups(
+        rpass,
+        groups,
+        encode,
+        &resources,
+        &mut state,
+        indirect_buffer.as_deref(),
+        &mut indirect_commands,
+        gpu_cull,
+    );
+    if let Some(buffer) = indirect_buffer {
+        let command_count = u32::try_from(indirect_commands.len()).unwrap_or(u32::MAX);
+        // Capacity was prepared for `groups.len()` before draws were recorded, so setting the exact
+        // active length here cannot replace the buffer referenced by the render pass.
+        buffer.prepare_len(device, command_count);
+        if !indirect_commands.is_empty() {
+            uploads.write_buffer(buffer.buffer(), 0, bytemuck::cast_slice(&indirect_commands));
+        }
+    }
     reset_forward_scissor(rpass, full_viewport, state.last_scissor);
 
     {
@@ -269,11 +471,213 @@ fn draw_forward_groups(
     encode: &WorldMeshForwardEncodeRefs<'_>,
     resources: &ForwardDrawResources<'_, '_>,
     state: &mut ForwardDrawState,
+    indirect_buffer: Option<&crate::gpu::indirect_buffer::IndirectDrawBuffer>,
+    indirect_commands: &mut Vec<crate::gpu::indirect_buffer::IndexedIndirectCommand>,
+    gpu_cull: Option<(&WorldMeshGpuCullResult, &[GpuCulledForwardRun])>,
 ) {
     profiling::scope!("world_mesh::draw_subset::group_loop");
-    for group in groups {
-        issue_forward_group(rpass, encode, resources, state, group);
+    // Static single-pipeline draws whose geometry is resident in the shared arena collapse into one
+    // `multi_draw_indexed_indirect` per material run; skinned/deformed, scissored (UI), and
+    // multi-pipeline draws stay on the per-mesh path (they cannot live in the arena or share one
+    // instanced draw).
+    let arena = resources
+        .geometry_arena
+        .filter(|_| resources.supports_base_instance && indirect_buffer.is_some());
+    let gpu_arena = resources
+        .geometry_arena
+        .filter(|_| resources.supports_base_instance && gpu_cull.is_some());
+    let mut profile = ForwardIndirectProfile::new(groups.len());
+    let mut i = 0;
+    let mut gpu_run_cursor = 0usize;
+    while i < groups.len() {
+        if let (Some(arena), Some((result, runs))) = (gpu_arena, gpu_cull) {
+            while runs
+                .get(gpu_run_cursor)
+                .is_some_and(|run| run.group_start < i)
+            {
+                gpu_run_cursor += 1;
+            }
+            if let Some(run) = runs.get(gpu_run_cursor).filter(|run| run.group_start == i) {
+                let consumed = run.group_count.min(groups.len().saturating_sub(i));
+                if consumed != 0
+                    && draw_forward_gpu_run(rpass, groups, resources, state, arena, result, run)
+                {
+                    profile.note_run(consumed);
+                } else {
+                    for group in &groups[i..i.saturating_add(consumed.max(1)).min(groups.len())] {
+                        profile.note_fallback(group, resources, encode, Some(arena));
+                        issue_forward_group(rpass, encode, resources, state, group);
+                    }
+                }
+                i = i.saturating_add(consumed.max(1));
+                gpu_run_cursor += 1;
+                continue;
+            }
+        }
+        if let (Some(arena), Some(buffer)) = (arena, indirect_buffer)
+            && let Some(consumed) = draw_forward_indirect_run(
+                rpass,
+                groups,
+                i,
+                resources,
+                state,
+                arena,
+                buffer,
+                indirect_commands,
+            )
+        {
+            profile.note_run(consumed);
+            i += consumed;
+            continue;
+        }
+        profile.note_fallback(&groups[i], resources, encode, arena);
+        issue_forward_group(rpass, encode, resources, state, &groups[i]);
+        i += 1;
     }
+    profile.finish();
+}
+
+fn draw_forward_gpu_run(
+    rpass: &mut wgpu::RenderPass<'_>,
+    groups: &[DrawGroup],
+    resources: &ForwardDrawResources<'_, '_>,
+    state: &mut ForwardDrawState,
+    arena: &crate::gpu_pools::geometry_arena::GeometryArena,
+    result: &WorldMeshGpuCullResult,
+    run: &GpuCulledForwardRun,
+) -> bool {
+    let Some(first) = groups.get(run.group_start) else {
+        return false;
+    };
+    if run.group_count == 0
+        || run.group_start.saturating_add(run.group_count) > groups.len()
+        || first.material_packet_idx != run.material_packet_idx
+    {
+        return false;
+    }
+    let Some(packet) = resources.precomputed.get(run.material_packet_idx) else {
+        return false;
+    };
+    let Some(pipelines) = packet.pipelines.as_ref() else {
+        return false;
+    };
+    if pipelines.len() != 1 || resources.draws.get(run.representative_draw_idx).is_none() {
+        return false;
+    }
+
+    bind_material_packet_if_changed(rpass, resources, state, run.material_packet_idx, packet);
+    bind_forward_per_draw_slab(rpass, resources, state, first);
+    set_stencil_reference_if_changed(rpass, resources, state, run.representative_draw_idx);
+    set_forward_scissor_if_changed(rpass, resources, state, run.representative_draw_idx);
+    let pipeline_id: *const wgpu::RenderPipeline = &pipelines[0];
+    if state.last_pipeline != Some(pipeline_id) {
+        rpass.set_pipeline(&pipelines[0]);
+        state.last_pipeline = Some(pipeline_id);
+    }
+    if !bind_forward_arena_streams(rpass, arena, run.streams, run.narrow, &mut state.last_mesh) {
+        return false;
+    }
+    run.draw
+        .issue(rpass, &result.indirect_buffer, &result.count_buffer);
+    true
+}
+
+/// Draws a maximal run of adjacent static, single-pipeline, unscissored groups sharing a material
+/// packet, index width, and stencil reference as one `multi_draw_indexed_indirect` from the arena.
+/// Returns the number of groups consumed, or [`None`] when `groups[start]` is not batchable (the
+/// caller records it per-mesh).
+fn draw_forward_indirect_run(
+    rpass: &mut wgpu::RenderPass<'_>,
+    groups: &[DrawGroup],
+    start: usize,
+    resources: &ForwardDrawResources<'_, '_>,
+    state: &mut ForwardDrawState,
+    arena: &crate::gpu_pools::geometry_arena::GeometryArena,
+    indirect_buffer: &crate::gpu::indirect_buffer::IndirectDrawBuffer,
+    commands: &mut Vec<crate::gpu::indirect_buffer::IndexedIndirectCommand>,
+) -> Option<usize> {
+    let first = &groups[start];
+    let representative = first.representative_draw_idx;
+    let rep = resources.draws.get(representative)?;
+    if !forward_group_is_indirect_eligible(rep) {
+        return None;
+    }
+    let packet_idx = first.material_packet_idx;
+    let pc = resources.precomputed.get(packet_idx)?;
+    let pipelines = pc.pipelines.as_ref()?;
+    if pipelines.len() != 1 {
+        return None;
+    }
+    let flags = forward_stream_flags(rep);
+    let first_alloc = forward_arena_alloc(rep, arena, flags)?;
+    let narrow = first_alloc.narrow_indices;
+    let stencil_ref = rep.batch_key.render_state.stencil_reference();
+
+    let first_command = u32::try_from(commands.len()).unwrap_or(u32::MAX);
+    let command_start = commands.len();
+    let mut end = start;
+    while end < groups.len() {
+        let group = &groups[end];
+        if group.material_packet_idx != packet_idx {
+            break;
+        }
+        let Some(item) = resources.draws.get(group.representative_draw_idx) else {
+            break;
+        };
+        if !forward_group_is_indirect_eligible(item)
+            || item.batch_key.render_state.stencil_reference() != stencil_ref
+        {
+            break;
+        }
+        let Some(alloc) = forward_arena_alloc(item, arena, flags) else {
+            break;
+        };
+        if alloc.narrow_indices != narrow {
+            break;
+        }
+        commands.push(crate::gpu::indirect_buffer::IndexedIndirectCommand {
+            index_count: item.index_count,
+            instance_count: group.instance_range.end - group.instance_range.start,
+            first_index: alloc.first_index_base().saturating_add(item.first_index),
+            base_vertex: alloc.base_vertex(),
+            first_instance: group.instance_range.start,
+        });
+        end += 1;
+    }
+    if commands.len() == command_start {
+        return None;
+    }
+
+    bind_material_packet_if_changed(rpass, resources, state, packet_idx, pc);
+    bind_forward_per_draw_slab(rpass, resources, state, first);
+    set_stencil_reference_if_changed(rpass, resources, state, representative);
+    set_forward_scissor_if_changed(rpass, resources, state, representative);
+    let pipeline_id: *const wgpu::RenderPipeline = &pipelines[0];
+    if state.last_pipeline != Some(pipeline_id) {
+        rpass.set_pipeline(&pipelines[0]);
+        state.last_pipeline = Some(pipeline_id);
+    }
+    if !bind_forward_arena_streams(rpass, arena, flags, narrow, &mut state.last_mesh) {
+        commands.truncate(command_start);
+        return None;
+    }
+    let command_count = u32::try_from(commands.len() - command_start).unwrap_or(u32::MAX);
+    indirect_buffer.draw_range(rpass, first_command, command_count);
+    Some(end - start)
+}
+
+/// Whether a forward draw may be recorded through the arena indirect path: static (not skinned or
+/// deformed), not shadow-only, and not scissored (per-draw UI rect clip forces its own scissor).
+pub(in crate::passes::world_mesh_forward) fn forward_group_is_indirect_eligible(
+    item: &WorldMeshDrawItem,
+) -> bool {
+    item.node_id >= 0
+        && item.index_count != 0
+        && item.shadow_cast_mode != ShadowCastMode::ShadowOnly
+        && !item.skinned
+        && !item.world_space_deformed
+        && !item.blendshape_deformed
+        && item.ui_rect_clip_local.is_none()
 }
 
 fn issue_forward_group(
@@ -323,6 +727,7 @@ fn issue_forward_group(
     issue_material_pipeline_passes(
         rpass,
         encode,
+        resources.geometry_arena,
         representative_item,
         ActivePipelineSelection { pipelines },
         &inst_range,
@@ -429,6 +834,15 @@ fn set_depth_like_pipeline_if_changed(
     }
 }
 
+#[inline]
+const fn indirect_depth_like_partition_enabled(
+    path: crate::world_mesh::WorldMeshRenderPath,
+    supports_base_instance: bool,
+    supports_indirect_first_instance: bool,
+) -> bool {
+    path.uses_indirect_draws() && supports_base_instance && supports_indirect_first_instance
+}
+
 /// Records the GTAO normal prepass draw subset.
 pub(crate) fn draw_normals_subset(batch: NormalDrawBatch<'_, '_, '_, '_>) {
     profiling::scope!("world_mesh::draw_normals_subset");
@@ -443,9 +857,17 @@ pub(crate) fn draw_normals_subset(batch: NormalDrawBatch<'_, '_, '_, '_>) {
         pipeline,
         device,
         normal_pipelines,
+        geometry_arena,
     } = batch;
 
     let mut state = DepthLikeDrawState::new();
+    let indirect_arena = geometry_arena.filter(|_| {
+        indirect_depth_like_partition_enabled(
+            crate::world_mesh::world_mesh_render_path(),
+            supports_base_instance,
+            gpu_limits.supports_indirect_first_instance(),
+        )
+    });
 
     for group in groups {
         let representative = group.representative_draw_idx;
@@ -455,13 +877,15 @@ pub(crate) fn draw_normals_subset(batch: NormalDrawBatch<'_, '_, '_, '_>) {
         if item.shadow_cast_mode == ShadowCastMode::ShadowOnly {
             continue;
         }
-        let Some(key) = WorldMeshForwardNormalPipelineKey::for_draw(
-            pipeline,
-            item.batch_key.front_face,
-            item.batch_key.primitive_topology,
-        ) else {
+        let Some(key) = normal_pipeline_key_for_draw(item, pipeline) else {
             continue;
         };
+
+        if let Some(arena) = indirect_arena
+            && indirect_normal_alloc(item, arena).is_some()
+        {
+            continue;
+        }
 
         let slab_first_instance = group.instance_range.start as usize;
         let instance_count = group.instance_range.end - group.instance_range.start;
@@ -482,7 +906,7 @@ pub(crate) fn draw_normals_subset(batch: NormalDrawBatch<'_, '_, '_, '_>) {
         set_depth_like_pipeline_if_changed(rpass, pipeline.as_ref(), &mut state);
 
         let inst_range = instance_range_for_draw_group(group, supports_base_instance);
-        let gpu_refs = gpu_refs_for_encode(encode);
+        let gpu_refs = gpu_refs_for_encode(encode, geometry_arena);
         draw_mesh_submesh_normals_instanced(
             rpass,
             item,
@@ -508,9 +932,20 @@ pub(crate) fn draw_depth_prepass_subset(batch: DepthPrepassDrawBatch<'_, '_, '_,
         pipeline,
         device,
         depth_pipelines,
+        geometry_arena,
     } = batch;
 
     let mut state = DepthLikeDrawState::new();
+
+    // Arena-resident static draws go through the pre-built indirect runs issued after this pass;
+    // everything else falls back to the per-mesh path here.
+    let indirect_arena = geometry_arena.filter(|_| {
+        indirect_depth_like_partition_enabled(
+            crate::world_mesh::world_mesh_render_path(),
+            supports_base_instance,
+            gpu_limits.supports_indirect_first_instance(),
+        )
+    });
 
     for group in groups {
         let representative = group.representative_draw_idx;
@@ -526,6 +961,12 @@ pub(crate) fn draw_depth_prepass_subset(batch: DepthPrepassDrawBatch<'_, '_, '_,
         let Some(key) = WorldMeshForwardDepthPrepassPipelineKey::for_draw(item, pipeline) else {
             continue;
         };
+
+        if let Some(arena) = indirect_arena
+            && indirect_depth_alloc(item, arena).is_some()
+        {
+            continue;
+        }
 
         let slab_first_instance = group.instance_range.start as usize;
         let instance_count = group.instance_range.end - group.instance_range.start;
@@ -546,12 +987,12 @@ pub(crate) fn draw_depth_prepass_subset(batch: DepthPrepassDrawBatch<'_, '_, '_,
         set_depth_like_pipeline_if_changed(rpass, pipeline.as_ref(), &mut state);
 
         let inst_range = instance_range_for_draw_group(group, supports_base_instance);
-        let gpu_refs = gpu_refs_for_encode(encode);
+        let gpu_refs = gpu_refs_for_encode(encode, geometry_arena);
         draw_mesh_submesh_depth_instanced(rpass, item, gpu_refs, inst_range, &mut state.last_mesh);
     }
 }
 
-/// Records one shadow-map depth layer by walking pre-built caster groups. -xlinka
+/// Records one shadow-map depth layer by walking pre-built caster groups.
 pub(crate) fn draw_shadow_depth_subset(batch: ShadowDepthDrawBatch<'_, '_, '_, '_>) {
     profiling::scope!("world_mesh::draw_shadow_depth_subset");
     let ShadowDepthDrawBatch {
@@ -566,11 +1007,24 @@ pub(crate) fn draw_shadow_depth_subset(batch: ShadowDepthDrawBatch<'_, '_, '_, '
         supports_base_instance,
         pipeline,
         device,
+        geometry_arena,
     } = batch;
 
     let mut state = DepthLikeDrawState::new();
     let shadow_pipelines = shadow_pipelines();
     let radial_pipelines = radial_shadow_pipelines();
+
+    // Arena-resident static casters draw through the pre-built indirect runs issued after this pass;
+    // skinned/deformed and non-resident casters, and downlevel devices, fall back to the per-mesh
+    // path here. Arena population is useful on every device and therefore does not by itself prove
+    // that commands may use non-zero indirect `first_instance`.
+    let indirect_arena = geometry_arena.filter(|_| {
+        indirect_depth_like_partition_enabled(
+            crate::world_mesh::world_mesh_render_path(),
+            supports_base_instance,
+            gpu_limits.supports_indirect_first_instance(),
+        )
+    });
 
     let mut last_pipeline_key = None;
     for phase_groups in groups {
@@ -587,6 +1041,12 @@ pub(crate) fn draw_shadow_depth_subset(batch: ShadowDepthDrawBatch<'_, '_, '_, '
             else {
                 continue;
             };
+
+            if let Some(arena) = indirect_arena
+                && indirect_depth_alloc(item, arena).is_some()
+            {
+                continue;
+            }
 
             let slab_first_instance = slab_slot_offset + group.instance_range.start as usize;
             let instance_count = group.instance_range.end - group.instance_range.start;
@@ -618,7 +1078,7 @@ pub(crate) fn draw_shadow_depth_subset(batch: ShadowDepthDrawBatch<'_, '_, '_, '
                 slab_slot_offset,
                 supports_base_instance,
             );
-            let gpu_refs = gpu_refs_for_encode(encode);
+            let gpu_refs = gpu_refs_for_encode(encode, geometry_arena);
             draw_mesh_submesh_depth_instanced(
                 rpass,
                 item,
@@ -627,6 +1087,425 @@ pub(crate) fn draw_shadow_depth_subset(batch: ShadowDepthDrawBatch<'_, '_, '_, '
                 &mut state.last_mesh,
             );
         }
+    }
+}
+
+/// Geometry-arena allocation for a shadow caster eligible for the indirect path (resident, not
+/// skinned or deformed), or [`None`] when the caster must use the per-mesh path. Shared by the
+/// per-mesh fallback in [`draw_shadow_depth_subset`] and the command builder in
+/// [`collect_shadow_indirect_layer`] so both partition casters identically.
+pub(in crate::passes::world_mesh_forward) fn indirect_depth_alloc(
+    item: &WorldMeshDrawItem,
+    arena: &crate::gpu_pools::geometry_arena::GeometryArena,
+) -> Option<crate::gpu_pools::geometry_arena::GeometryAllocation> {
+    if item.node_id < 0
+        || item.index_count == 0
+        || item.skinned
+        || item.world_space_deformed
+        || item.blendshape_deformed
+    {
+        return None;
+    }
+    arena.mesh_for_index_span(item.mesh_asset_id, item.first_index, item.index_count)
+}
+
+/// Geometry-arena allocation for a valid static normal-prepass draw whose normal stream is
+/// resident. Skinned, deformed, and non-resident draws stay on the per-mesh path.
+pub(in crate::passes::world_mesh_forward) fn indirect_normal_alloc(
+    item: &WorldMeshDrawItem,
+    arena: &crate::gpu_pools::geometry_arena::GeometryArena,
+) -> Option<crate::gpu_pools::geometry_arena::GeometryAllocation> {
+    if item.node_id < 0
+        || item.index_count == 0
+        || item.skinned
+        || item.world_space_deformed
+        || item.blendshape_deformed
+    {
+        return None;
+    }
+    let alloc =
+        arena.mesh_for_index_span(item.mesh_asset_id, item.first_index, item.index_count)?;
+    alloc.has_stream(ArenaStream::Normal).then_some(alloc)
+}
+
+/// A contiguous run of normal-prepass commands sharing a pipeline and index width.
+pub(crate) struct IndirectNormalRun {
+    /// Normal-prepass pipeline key shared by the run.
+    pub key: WorldMeshForwardNormalPipelineKey,
+    /// Whether the run uses the `u16` index arena.
+    pub narrow: bool,
+    /// Offset of the first command in the view's command buffer.
+    pub first_command: u32,
+    /// Number of commands in the run.
+    pub command_count: u32,
+}
+
+fn push_indirect_normal_command(
+    commands: &mut Vec<crate::gpu::indirect_buffer::IndexedIndirectCommand>,
+    runs: &mut Vec<IndirectNormalRun>,
+    key: WorldMeshForwardNormalPipelineKey,
+    narrow: bool,
+    command: crate::gpu::indirect_buffer::IndexedIndirectCommand,
+) {
+    let command_index = u32::try_from(commands.len()).unwrap_or(u32::MAX);
+    commands.push(command);
+    match runs.last_mut() {
+        Some(run)
+            if run.key == key
+                && run.narrow == narrow
+                && run.first_command + run.command_count == command_index =>
+        {
+            run.command_count += 1;
+        }
+        _ => runs.push(IndirectNormalRun {
+            key,
+            narrow,
+            first_command: command_index,
+            command_count: 1,
+        }),
+    }
+}
+
+/// Builds indirect commands for arena-resident static normal-prepass draws.
+pub(crate) fn collect_normal_prepass_indirect(
+    groups: &[DrawGroup],
+    draws: &[WorldMeshDrawItem],
+    arena: &crate::gpu_pools::geometry_arena::GeometryArena,
+    pipeline: &super::WorldMeshForwardPipelineState,
+    commands: &mut Vec<crate::gpu::indirect_buffer::IndexedIndirectCommand>,
+) -> Vec<IndirectNormalRun> {
+    let mut runs = Vec::new();
+    for group in groups {
+        let Some(item) = draws.get(group.representative_draw_idx) else {
+            continue;
+        };
+        if item.shadow_cast_mode == ShadowCastMode::ShadowOnly {
+            continue;
+        }
+        let Some(key) = normal_pipeline_key_for_draw(item, pipeline) else {
+            continue;
+        };
+        let Some(alloc) = indirect_normal_alloc(item, arena) else {
+            continue;
+        };
+
+        push_indirect_normal_command(
+            commands,
+            &mut runs,
+            key,
+            alloc.narrow_indices,
+            crate::gpu::indirect_buffer::IndexedIndirectCommand {
+                index_count: item.index_count,
+                instance_count: group.instance_range.end - group.instance_range.start,
+                first_index: alloc.first_index_base().saturating_add(item.first_index),
+                base_vertex: alloc.base_vertex(),
+                first_instance: group.instance_range.start,
+            },
+        );
+    }
+    runs
+}
+
+/// Arguments for [`issue_normal_prepass_indirect`].
+pub(crate) struct NormalPrepassIndirectDraw<'a, 'pass> {
+    /// Active normal-prepass render pass.
+    pub rpass: &'a mut wgpu::RenderPass<'pass>,
+    /// Device used for lazy pipeline creation.
+    pub device: &'a wgpu::Device,
+    /// Per-draw storage slab bound at `@group(0)`.
+    pub per_draw_bind_group: &'a wgpu::BindGroup,
+    /// Shared geometry mega-buffer holding positions, normals, and indices.
+    pub arena: &'a crate::gpu_pools::geometry_arena::GeometryArena,
+    /// View-local indirect command buffer.
+    pub commands: &'a crate::gpu::indirect_buffer::IndirectDrawBuffer,
+    /// Contiguous pipeline and index-width runs to issue.
+    pub runs: &'a [IndirectNormalRun],
+    /// Shared normal-prepass pipeline cache.
+    pub normal_pipelines: &'a WorldMeshForwardNormalPipelineCache,
+}
+
+/// Issues the static normal-prepass runs from the shared geometry arena.
+pub(crate) fn issue_normal_prepass_indirect(draw: NormalPrepassIndirectDraw<'_, '_>) {
+    let NormalPrepassIndirectDraw {
+        rpass,
+        device,
+        per_draw_bind_group,
+        arena,
+        commands,
+        runs,
+        normal_pipelines,
+    } = draw;
+    if runs.is_empty() {
+        return;
+    }
+    let Some(normals) = arena.stream_buffer(ArenaStream::Normal) else {
+        return;
+    };
+
+    rpass.set_bind_group(0, per_draw_bind_group, &[0]);
+    rpass.set_vertex_buffer(0, arena.position_buffer().slice(..));
+    rpass.set_vertex_buffer(1, normals.slice(..));
+
+    for run in runs {
+        let pipeline = normal_pipelines.pipeline(device, run.key);
+        rpass.set_pipeline(pipeline.as_ref());
+        let (index_buffer, index_format) = if run.narrow {
+            (arena.index_buffer_u16(), wgpu::IndexFormat::Uint16)
+        } else {
+            (arena.index_buffer_u32(), wgpu::IndexFormat::Uint32)
+        };
+        rpass.set_index_buffer(index_buffer.slice(..), index_format);
+        commands.draw_range(rpass, run.first_command, run.command_count);
+    }
+}
+
+/// A contiguous run of depth-only indirect commands sharing a pipeline key and index width, issued
+/// as one `multi_draw_indexed_indirect`. `first_command` is a global offset into the frame's shared
+/// command buffer. Shared by the shadow and depth-prepass indirect paths.
+pub(crate) struct IndirectDepthRun {
+    /// Depth pipeline key shared by the run.
+    pub key: WorldMeshForwardDepthPrepassPipelineKey,
+    /// Whether the run's meshes use the `u16` index arena (else `u32`).
+    pub narrow: bool,
+    /// Offset of the first command into the shared command buffer.
+    pub first_command: u32,
+    /// Number of commands in the run.
+    pub command_count: u32,
+}
+
+/// Appends `command` to `commands`, extending the trailing run when it shares `key`/`narrow` and is
+/// contiguous, or starting a new run. Shared by the shadow and depth-prepass command builders.
+fn push_indirect_depth_command(
+    commands: &mut Vec<crate::gpu::indirect_buffer::IndexedIndirectCommand>,
+    runs: &mut Vec<IndirectDepthRun>,
+    key: WorldMeshForwardDepthPrepassPipelineKey,
+    narrow: bool,
+    command: crate::gpu::indirect_buffer::IndexedIndirectCommand,
+) {
+    let command_index = u32::try_from(commands.len()).unwrap_or(u32::MAX);
+    commands.push(command);
+    match runs.last_mut() {
+        Some(run)
+            if run.key == key
+                && run.narrow == narrow
+                && run.first_command + run.command_count == command_index =>
+        {
+            run.command_count += 1;
+        }
+        _ => runs.push(IndirectDepthRun {
+            key,
+            narrow,
+            first_command: command_index,
+            command_count: 1,
+        }),
+    }
+}
+
+/// Appends indirect draw commands for one shadow layer's arena-resident static casters to
+/// `commands` and returns the contiguous (pipeline, index width) runs. Run offsets are global into
+/// `commands` so many layers can share one uploaded command buffer.
+pub(crate) fn collect_shadow_indirect_layer(
+    groups: &[&[DrawGroup]],
+    draws: &[WorldMeshDrawItem],
+    slab_slot_offset: usize,
+    arena: &crate::gpu_pools::geometry_arena::GeometryArena,
+    pipeline: &super::WorldMeshForwardPipelineState,
+    commands: &mut Vec<crate::gpu::indirect_buffer::IndexedIndirectCommand>,
+) -> Vec<IndirectDepthRun> {
+    let mut runs: Vec<IndirectDepthRun> = Vec::new();
+    for phase_groups in groups {
+        for group in *phase_groups {
+            let Some(item) = draws.get(group.representative_draw_idx) else {
+                continue;
+            };
+            if item.shadow_cast_mode == ShadowCastMode::Off {
+                continue;
+            }
+            let Some(key) =
+                WorldMeshForwardDepthPrepassPipelineKey::for_shadow_draw(item, pipeline)
+            else {
+                continue;
+            };
+            let Some(alloc) = indirect_depth_alloc(item, arena) else {
+                continue;
+            };
+
+            let instance_count = group.instance_range.end - group.instance_range.start;
+            let first_instance = u32::try_from(slab_slot_offset)
+                .unwrap_or(0)
+                .saturating_add(group.instance_range.start);
+            push_indirect_depth_command(
+                commands,
+                &mut runs,
+                key,
+                alloc.narrow_indices,
+                crate::gpu::indirect_buffer::IndexedIndirectCommand {
+                    index_count: item.index_count,
+                    instance_count,
+                    first_index: alloc.first_index_base().saturating_add(item.first_index),
+                    base_vertex: alloc.base_vertex(),
+                    first_instance,
+                },
+            );
+        }
+    }
+    runs
+}
+
+/// Arguments for [`issue_shadow_indirect_runs`].
+pub(crate) struct ShadowIndirectDraw<'a, 'pass> {
+    /// Active shadow-map render pass.
+    pub rpass: &'a mut wgpu::RenderPass<'pass>,
+    /// Device used for lazy shadow pipeline creation.
+    pub device: &'a wgpu::Device,
+    /// Per-draw storage slab bound at `@group(0)`.
+    pub per_draw_bind_group: &'a wgpu::BindGroup,
+    /// Shared geometry mega-buffer holding the run positions and indices.
+    pub arena: &'a crate::gpu_pools::geometry_arena::GeometryArena,
+    /// Frame command buffer the runs index into.
+    pub commands: &'a crate::gpu::indirect_buffer::IndirectDrawBuffer,
+    /// Runs to issue for this layer.
+    pub runs: &'a [IndirectDepthRun],
+    /// Whether the active shadow layer stores radial light-distance depth.
+    pub radial_shadow: bool,
+}
+
+/// Issues one layer's pre-built indirect runs: binds the per-draw slab and arena position stream
+/// once, then one `multi_draw_indexed_indirect` per run (pipeline and index width switch per run).
+pub(crate) fn issue_shadow_indirect_runs(draw: ShadowIndirectDraw<'_, '_>) {
+    let ShadowIndirectDraw {
+        rpass,
+        device,
+        per_draw_bind_group,
+        arena,
+        commands,
+        runs,
+        radial_shadow,
+    } = draw;
+    if runs.is_empty() {
+        return;
+    }
+
+    // Base-instance path: bind the per-draw slab once at offset 0; `first_instance` selects the row.
+    rpass.set_bind_group(0, per_draw_bind_group, &[0]);
+    rpass.set_vertex_buffer(0, arena.position_buffer().slice(..));
+
+    let shadow_pipelines = shadow_pipelines();
+    let radial_pipelines = radial_shadow_pipelines();
+    for run in runs {
+        let pipeline = if radial_shadow {
+            radial_pipelines.pipeline(device, run.key)
+        } else {
+            shadow_pipelines.pipeline(device, run.key)
+        };
+        rpass.set_pipeline(pipeline.as_ref());
+        let (index_buffer, index_format) = if run.narrow {
+            (arena.index_buffer_u16(), wgpu::IndexFormat::Uint16)
+        } else {
+            (arena.index_buffer_u32(), wgpu::IndexFormat::Uint32)
+        };
+        rpass.set_index_buffer(index_buffer.slice(..), index_format);
+        commands.draw_range(rpass, run.first_command, run.command_count);
+    }
+}
+
+/// Appends indirect draw commands for the depth prepass's arena-resident static draws to `commands`
+/// and returns the contiguous (pipeline, index width) runs. Mirrors the eligibility filter in
+/// [`draw_depth_prepass_subset`] so the per-mesh and indirect paths partition draws identically.
+pub(crate) fn collect_depth_prepass_indirect(
+    groups: &[DrawGroup],
+    slab_layout: &[usize],
+    draws: &[WorldMeshDrawItem],
+    arena: &crate::gpu_pools::geometry_arena::GeometryArena,
+    pipeline: &super::WorldMeshForwardPipelineState,
+    commands: &mut Vec<crate::gpu::indirect_buffer::IndexedIndirectCommand>,
+) -> Vec<IndirectDepthRun> {
+    let mut runs: Vec<IndirectDepthRun> = Vec::new();
+    for group in groups {
+        let Some(item) = draws.get(group.representative_draw_idx) else {
+            continue;
+        };
+        if item.shadow_cast_mode == ShadowCastMode::ShadowOnly {
+            continue;
+        }
+        if !depth_prepass_group_eligible(draws, slab_layout, group, pipeline.shader_perm) {
+            continue;
+        }
+        let Some(key) = WorldMeshForwardDepthPrepassPipelineKey::for_draw(item, pipeline) else {
+            continue;
+        };
+        let Some(alloc) = indirect_depth_alloc(item, arena) else {
+            continue;
+        };
+
+        let instance_count = group.instance_range.end - group.instance_range.start;
+        // The depth prepass slab starts at row 0, so `first_instance` is just the group's range.
+        let first_instance = group.instance_range.start;
+        push_indirect_depth_command(
+            commands,
+            &mut runs,
+            key,
+            alloc.narrow_indices,
+            crate::gpu::indirect_buffer::IndexedIndirectCommand {
+                index_count: item.index_count,
+                instance_count,
+                first_index: alloc.first_index_base().saturating_add(item.first_index),
+                base_vertex: alloc.base_vertex(),
+                first_instance,
+            },
+        );
+    }
+    runs
+}
+
+/// Arguments for [`issue_depth_prepass_indirect`].
+pub(crate) struct DepthPrepassIndirectDraw<'a, 'pass> {
+    /// Active depth-prepass render pass.
+    pub rpass: &'a mut wgpu::RenderPass<'pass>,
+    /// Device used for lazy depth-prepass pipeline creation.
+    pub device: &'a wgpu::Device,
+    /// Per-draw storage slab bound at `@group(0)`.
+    pub per_draw_bind_group: &'a wgpu::BindGroup,
+    /// Shared geometry mega-buffer holding the run positions and indices.
+    pub arena: &'a crate::gpu_pools::geometry_arena::GeometryArena,
+    /// Frame command buffer the runs index into.
+    pub commands: &'a crate::gpu::indirect_buffer::IndirectDrawBuffer,
+    /// Runs to issue for this view.
+    pub runs: &'a [IndirectDepthRun],
+    /// Depth-prepass pipeline cache.
+    pub depth_pipelines: &'a WorldMeshForwardDepthPrepassPipelineCache,
+}
+
+/// Issues the depth prepass's pre-built indirect runs: binds the per-draw slab and arena position
+/// stream once, then one `multi_draw_indexed_indirect` per run.
+pub(crate) fn issue_depth_prepass_indirect(draw: DepthPrepassIndirectDraw<'_, '_>) {
+    let DepthPrepassIndirectDraw {
+        rpass,
+        device,
+        per_draw_bind_group,
+        arena,
+        commands,
+        runs,
+        depth_pipelines,
+    } = draw;
+    if runs.is_empty() {
+        return;
+    }
+
+    // Base-instance path: bind the per-draw slab once at offset 0; `first_instance` selects the row.
+    rpass.set_bind_group(0, per_draw_bind_group, &[0]);
+    rpass.set_vertex_buffer(0, arena.position_buffer().slice(..));
+
+    for run in runs {
+        let pipeline = depth_pipelines.pipeline(device, run.key);
+        rpass.set_pipeline(pipeline.as_ref());
+        let (index_buffer, index_format) = if run.narrow {
+            (arena.index_buffer_u16(), wgpu::IndexFormat::Uint16)
+        } else {
+            (arena.index_buffer_u32(), wgpu::IndexFormat::Uint32)
+        };
+        rpass.set_index_buffer(index_buffer.slice(..), index_format);
+        commands.draw_range(rpass, run.first_command, run.command_count);
     }
 }
 
@@ -643,13 +1522,14 @@ struct ActivePipelineSelection<'a> {
 fn issue_material_pipeline_passes(
     rpass: &mut wgpu::RenderPass<'_>,
     encode: &WorldMeshForwardEncodeRefs<'_>,
+    geometry_arena: Option<&crate::gpu_pools::geometry_arena::GeometryArena>,
     item: &WorldMeshDrawItem,
     pipeline_sel: ActivePipelineSelection<'_>,
     inst_range: &std::ops::Range<u32>,
     last_mesh: &mut LastMeshBindState,
     last_pipeline: &mut Option<*const wgpu::RenderPipeline>,
 ) {
-    let gpu_refs = gpu_refs_for_encode(encode);
+    let gpu_refs = gpu_refs_for_encode(encode, geometry_arena);
     let streams = streams_for_item(item);
     for pipeline in pipeline_sel.pipelines.iter() {
         let pipeline_id: *const wgpu::RenderPipeline = pipeline;
@@ -712,8 +1592,34 @@ fn shadow_instance_range_for_draw_group(
 
 #[cfg(test)]
 mod tests {
-    use super::{instance_range_for_draw_group, shadow_instance_range_for_draw_group};
-    use crate::world_mesh::DrawGroup;
+    use super::{
+        WorldMeshForwardNormalPipelineKey, indirect_depth_like_partition_enabled,
+        instance_range_for_draw_group, push_indirect_normal_command,
+        shadow_instance_range_for_draw_group,
+    };
+    use crate::gpu::indirect_buffer::IndexedIndirectCommand;
+    use crate::materials::{RasterFrontFace, RasterPrimitiveTopology};
+    use crate::world_mesh::{DrawGroup, WorldMeshRenderPath};
+
+    fn normal_key(front_face: RasterFrontFace) -> WorldMeshForwardNormalPipelineKey {
+        WorldMeshForwardNormalPipelineKey {
+            depth_stencil_format: wgpu::TextureFormat::Depth24PlusStencil8,
+            sample_count: 1,
+            multiview_mask: None,
+            front_face,
+            primitive_topology: RasterPrimitiveTopology::TriangleList,
+        }
+    }
+
+    fn indirect_command(first_instance: u32) -> IndexedIndirectCommand {
+        IndexedIndirectCommand {
+            index_count: 12,
+            instance_count: 1,
+            first_index: 0,
+            base_vertex: 0,
+            first_instance,
+        }
+    }
 
     #[test]
     fn no_base_instance_draws_from_zero() {
@@ -759,5 +1665,88 @@ mod tests {
             shadow_instance_range_for_draw_group(&group, 40, false),
             0..1
         );
+    }
+
+    #[test]
+    fn arena_draws_only_leave_direct_path_when_indirect_first_instance_is_available() {
+        assert!(indirect_depth_like_partition_enabled(
+            WorldMeshRenderPath::Gpu,
+            true,
+            true
+        ));
+        assert!(indirect_depth_like_partition_enabled(
+            WorldMeshRenderPath::CpuIndirect,
+            true,
+            true
+        ));
+        assert!(!indirect_depth_like_partition_enabled(
+            WorldMeshRenderPath::ArenaDirect,
+            true,
+            true
+        ));
+        assert!(!indirect_depth_like_partition_enabled(
+            WorldMeshRenderPath::DedicatedDirect,
+            true,
+            true
+        ));
+        assert!(!indirect_depth_like_partition_enabled(
+            WorldMeshRenderPath::Gpu,
+            true,
+            false
+        ));
+        assert!(!indirect_depth_like_partition_enabled(
+            WorldMeshRenderPath::Gpu,
+            false,
+            true
+        ));
+    }
+
+    #[test]
+    fn normal_indirect_runs_coalesce_only_matching_pipeline_and_index_width() {
+        let mut commands = Vec::new();
+        let mut runs = Vec::new();
+        let clockwise = normal_key(RasterFrontFace::Clockwise);
+        let counter_clockwise = normal_key(RasterFrontFace::CounterClockwise);
+
+        push_indirect_normal_command(
+            &mut commands,
+            &mut runs,
+            clockwise,
+            false,
+            indirect_command(0),
+        );
+        push_indirect_normal_command(
+            &mut commands,
+            &mut runs,
+            clockwise,
+            false,
+            indirect_command(1),
+        );
+        push_indirect_normal_command(
+            &mut commands,
+            &mut runs,
+            clockwise,
+            true,
+            indirect_command(2),
+        );
+        push_indirect_normal_command(
+            &mut commands,
+            &mut runs,
+            counter_clockwise,
+            true,
+            indirect_command(3),
+        );
+
+        assert_eq!(commands.len(), 4);
+        assert_eq!(runs.len(), 3);
+        assert_eq!(runs[0].first_command, 0);
+        assert_eq!(runs[0].command_count, 2);
+        assert!(!runs[0].narrow);
+        assert_eq!(runs[1].first_command, 2);
+        assert_eq!(runs[1].command_count, 1);
+        assert!(runs[1].narrow);
+        assert_eq!(runs[2].first_command, 3);
+        assert_eq!(runs[2].command_count, 1);
+        assert_eq!(runs[2].key, counter_clockwise);
     }
 }

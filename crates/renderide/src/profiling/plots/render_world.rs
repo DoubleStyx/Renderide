@@ -36,6 +36,10 @@ pub struct RenderWorldMaintenanceProfileSample {
     pub refreshed_template_count: usize,
     /// Mesh asset ids consumed from the mesh-pool mutation log this frame.
     pub mesh_asset_invalidation_count: usize,
+    /// Mesh mutations whose draw-preparation-relevant state changed.
+    pub mesh_asset_draw_prep_change_count: usize,
+    /// Mesh mutations suppressed because their draw-preparation-relevant state was unchanged.
+    pub mesh_asset_draw_prep_noop_count: usize,
     /// Full render-world rebuild requests processed this frame.
     pub full_world_rebuild_count: usize,
     /// Prepared snapshots rebuilt only because generated particle meshes changed.
@@ -115,6 +119,14 @@ pub fn plot_render_world_maintenance(sample: RenderWorldMaintenanceProfileSample
     tracy_plot!(
         "render_world::mesh_asset_invalidations",
         sample.mesh_asset_invalidation_count as f64
+    );
+    tracy_plot!(
+        "render_world::mesh_draw_prep_changes",
+        sample.mesh_asset_draw_prep_change_count as f64
+    );
+    tracy_plot!(
+        "render_world::mesh_draw_prep_noops",
+        sample.mesh_asset_draw_prep_noop_count as f64
     );
     tracy_plot!(
         "render_world::full_rebuild",

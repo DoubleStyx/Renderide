@@ -1,8 +1,4 @@
 //! Hi-Z readback drain: turns completed `map_async` callbacks into [`HiZCpuSnapshot`]s.
-//!
-//! Owns the stereo pairing buffer ([`StereoStash`]) and the snapshot decoders. The
-//! [`HiZGpuState`] owner forwards `drain` and `start_ready_maps` here so the state struct stays
-//! focused on lifecycle.
 
 use crossbeam_channel as mpsc;
 
@@ -12,11 +8,7 @@ use crate::hi_z_cpu::snapshot::{HiZCpuSnapshot, HiZStereoCpuSnapshot};
 use super::readback_ring::{HIZ_STAGING_RING, pending_none_array};
 use super::state::HiZGpuState;
 
-/// Per-slot left/right byte buffers that pair stereo readbacks before decode.
-///
-/// Both rings flow into [`StereoStash`]; pairs are taken only after both eyes for the same slot
-/// have completed. A reset clears both halves; this lives in the readback module so the state
-/// struct does not own the pairing rules.
+/// Per-slot left/right byte buffers paired before stereo decode.
 pub(super) struct StereoStash {
     left: [Option<Vec<u8>>; HIZ_STAGING_RING],
     right: [Option<Vec<u8>>; HIZ_STAGING_RING],
@@ -159,6 +151,7 @@ fn apply_primary_bytes(state: &mut HiZGpuState, slot: usize, shape: ScratchShape
     } else if let Some(snap) = unpack_desktop_snapshot(shape.extent, shape.mip_levels, &raw) {
         state.desktop = Some(snap);
         state.stereo = None;
+        state.cpu_snapshot_generation = state.cpu_snapshot_generation.wrapping_add(1);
     }
 }
 
@@ -205,6 +198,7 @@ fn combine_paired_stereo(state: &mut HiZGpuState, shape: ScratchShape) {
         {
             state.stereo = Some(stereo_snap);
             state.desktop = None;
+            state.cpu_snapshot_generation = state.cpu_snapshot_generation.wrapping_add(1);
         }
     }
 }
@@ -235,12 +229,7 @@ fn unpack_desktop_snapshot(
     }
 }
 
-/// Unpacks the per-eye CPU snapshots in parallel via [`rayon::join`].
-///
-/// Each eye performs an independent O(W*H*mips) byte-to-`f32` walk over its own staging buffer
-/// (see [`unpack_linear_rows_to_mips`]), then validates dimensions through
-/// [`hi_z_snapshot_from_linear_linear`]. The two walks share no state, so fan-out is straightforward
-/// and roughly halves stereo Hi-Z readback wall time on multi-core hosts.
+/// Unpacks and validates both eye snapshots in parallel.
 fn unpack_stereo_snapshot(
     extent: (u32, u32),
     mip_levels: u32,

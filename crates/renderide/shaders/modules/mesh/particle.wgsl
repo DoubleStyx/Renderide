@@ -14,6 +14,13 @@ struct MeshParticleBasis {
     forward: vec3<f32>,
 }
 
+/// World-space frame shared by material vertex roots that need position, normal, and tangent.
+struct ParticleVertexFrame {
+    world_position: vec4<f32>,
+    world_normal: vec3<f32>,
+    world_tangent: vec4<f32>,
+}
+
 fn mesh_particle_view_basis(draw: dt::PerDrawUniforms, view_idx: u32) -> MeshParticleBasis {
     let center_world = draw.model[3].xyz;
     let view_up = rmath::safe_normalize(rg::view_to_world_y_coeffs_for_view(view_idx).xyz, vec3<f32>(0.0, 1.0, 0.0));
@@ -270,6 +277,32 @@ fn render_buffer_billboard_normal(axes: mb::BillboardBasis) -> vec3<f32> {
     return rmath::safe_normalize(cross(axes.right, axes.up), vec3<f32>(0.0, 0.0, 1.0));
 }
 
+fn source_material_render_buffer_vertex_frame_for_view(
+    draw: dt::PerDrawUniforms,
+    pos: vec4<f32>,
+    pointdata: vec4<f32>,
+    tangent: vec4<f32>,
+    view_idx: u32,
+) -> ParticleVertexFrame {
+    let center_world = mt::world_position(draw, pos).xyz;
+    let axes = source_material_render_buffer_billboard_basis(draw, center_world, pointdata.xyz, tangent, view_idx);
+    let corner = signed_corner_from_pointdata(pointdata.xyz);
+    let model_scale = mesh_particle_model_scale(draw).xy;
+    let unclamped_size = max(abs(pointdata.xy) * model_scale, vec2<f32>(1e-6, 1e-6));
+    let size = screen_clamped_billboard_size(
+        draw,
+        center_world,
+        axes,
+        unclamped_size,
+        mt::select_view_proj(draw, view_idx),
+    );
+    return ParticleVertexFrame(
+        render_buffer_billboard_position(center_world, axes, corner, size),
+        render_buffer_billboard_normal(axes),
+        vec4<f32>(axes.right, 1.0),
+    );
+}
+
 fn source_material_render_buffer_position_for_view(
     draw: dt::PerDrawUniforms,
     pos: vec4<f32>,
@@ -348,6 +381,46 @@ fn mesh_particle_world_position_for_view(draw: dt::PerDrawUniforms, pos: vec4<f3
     return vec4<f32>(
         center_world + basis.right * local.x + basis.up * local.y + basis.forward * local.z,
         1.0,
+    );
+}
+
+fn particle_vertex_frame_for_view(
+    draw: dt::PerDrawUniforms,
+    pos: vec4<f32>,
+    n: vec4<f32>,
+    t: vec4<f32>,
+    view_idx: u32,
+) -> ParticleVertexFrame {
+    if (render_buffer_billboard_uses_source_material(draw)) {
+        return source_material_render_buffer_vertex_frame_for_view(draw, pos, n, t, view_idx);
+    }
+    if (!mesh_particle_uses_view_alignment(draw)) {
+        return ParticleVertexFrame(
+            mt::world_position(draw, pos),
+            mt::world_normal(draw, n),
+            mt::world_tangent(draw, t),
+        );
+    }
+
+    let basis = mesh_particle_view_basis(draw, view_idx);
+    let local = pos.xyz * mesh_particle_model_scale(draw);
+    let center_world = draw.model[3].xyz;
+    let world_position = vec4<f32>(
+        center_world + basis.right * local.x + basis.up * local.y + basis.forward * local.z,
+        1.0,
+    );
+    let world_normal = rmath::safe_normalize(
+        basis.right * n.x + basis.up * n.y + basis.forward * n.z,
+        basis.forward,
+    );
+    let tangent = rmath::safe_normalize(
+        basis.right * t.x + basis.up * t.y + basis.forward * t.z,
+        basis.right,
+    );
+    return ParticleVertexFrame(
+        world_position,
+        world_normal,
+        vec4<f32>(tangent, mt::tangent_w_sign(t.w)),
     );
 }
 

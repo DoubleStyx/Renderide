@@ -130,12 +130,8 @@ pub(super) fn evaluate_draw_candidate(
         0.0
     };
     let batch_key_hash = compute_batch_key_hash(&batch_key);
-    // Precompute the opaque depth bucket here so the sort comparator does not redo `sqrt + log2`
-    // on every pairwise compare. The argument matches the previous comparator-side computation
-    // (`opaque_depth_bucket(item.camera_distance_sq)`) so the resulting order is stable:
-    // transparent-sorted draws use the class-compatible sort metric preserved on
-    // `camera_distance_sq`, while opaque-queue draws feed `0.0` and bucket to `0`,
-    // leaving batch-key tiebreaking intact.
+    // Cache the opaque depth bucket to avoid `sqrt + log2` in each sort comparison.
+    // Opaque draws use bucket zero, preserving batch-key tie-breaking.
     let opaque_depth_bucket =
         crate::world_mesh::draw_prep::sort::opaque_depth_bucket(camera_distance_sq);
     let sort_prefix = crate::world_mesh::draw_prep::sort::pack_sort_prefix(
@@ -254,6 +250,7 @@ mod tests {
                 head_output_transform: Mat4::IDENTITY,
                 view_origin_world: Vec3::ZERO,
                 culling: None,
+                retain_gpu_static_candidates: false,
                 lod_selection_culling: None,
                 mesh_lod_bias: 2.0,
                 transform_filter: None,

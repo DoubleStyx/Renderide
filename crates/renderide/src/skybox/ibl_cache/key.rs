@@ -69,7 +69,7 @@ pub(crate) enum SkyboxIblKey {
 
 impl SkyboxIblKey {
     /// Returns the destination face size for this bake.
-    pub(super) fn face_size(&self) -> u32 {
+    pub(crate) fn face_size(&self) -> u32 {
         match *self {
             Self::Cubemap { face_size, .. }
             | Self::SolidColor { face_size, .. }

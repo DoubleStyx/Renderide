@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use glam::{Quat, Vec2, Vec3, Vec4};
+#[cfg(test)]
+use glam::Vec2;
+use glam::{Quat, Vec3, Vec4};
 use rayon::prelude::*;
 
 use crate::shared::PointRenderBufferUpload;
@@ -11,30 +13,34 @@ use super::types::{
     ParticleRenderBufferError, PointParticle, PointRenderBufferAsset, checked_optional_range,
     checked_range, nonnegative_count, photondust_particle_color_to_linear, read_pod_at,
 };
+#[cfg(test)]
 use super::upload::{
-    GeneratedExtraStreams, GeneratedMeshUploadInput, generated_vertex_stride,
-    prepared_generated_derived_streams, write_generated_vertex, write_u32s,
+    GeneratedExtraStreams, generated_vertex_stride, write_generated_vertex, write_u32s,
 };
 
 /// Number of billboard vertices generated for one point particle.
+#[cfg(test)]
 pub(super) const BILLBOARD_VERTICES_PER_POINT: usize = 4;
 /// Number of billboard indices generated for one point particle.
+#[cfg(test)]
 pub(super) const BILLBOARD_INDICES_PER_POINT: usize = 6;
 /// Point particle chunk size used by parallel vertex/index fill.
 const POINT_PARTICLE_PARALLEL_CHUNK: usize = 256;
 /// Minimum point particles before Rayon decode/fill scheduling is worthwhile.
 const POINT_PARTICLE_PARALLEL_MIN: usize = POINT_PARTICLE_PARALLEL_CHUNK * 2;
 
-/// CPU output from building a point render buffer.
+/// Decoded point-particle data and generated-mesh metadata.
 #[derive(Debug)]
 pub(crate) struct PointRenderBufferBuild {
-    /// Resident point render-buffer metadata.
+    /// Resident point render-buffer metadata (carries the decoded points).
     pub(crate) asset: PointRenderBufferAsset,
-    /// Generated billboard mesh input ready for renderer-thread GPU upload.
-    pub(crate) billboard_mesh: GeneratedMeshUploadInput,
+    /// Renderer-generated billboard mesh asset id to allocate and expand into.
+    pub(crate) mesh_asset_id: i32,
+    /// Local-space bounds of the point set for the generated mesh.
+    pub(crate) bounds: crate::shared::RenderBoundingBox,
 }
 
-/// Builds point render-buffer metadata and generated billboard bytes without touching the GPU.
+/// Decodes a point render buffer and derives its bounds without expanding billboard geometry.
 pub(crate) fn build_point_render_buffer_cpu(
     raw: Arc<Vec<u8>>,
     upload: &PointRenderBufferUpload,
@@ -49,9 +55,8 @@ pub(crate) fn build_point_render_buffer_cpu(
             asset_id,
         },
     )?;
-    let billboard_mesh =
-        build_billboard_mesh_input(mesh_asset_id, asset_id, &points, upload.frame_grid_size)?;
     let points: Arc<[PointParticle]> = Arc::from(points.into_boxed_slice());
+    let bounds = bounds_for_points(&points);
     Ok(PointRenderBufferBuild {
         asset: PointRenderBufferAsset {
             asset_id,
@@ -59,7 +64,8 @@ pub(crate) fn build_point_render_buffer_cpu(
             frame_grid_size: upload.frame_grid_size,
             points,
         },
-        billboard_mesh,
+        mesh_asset_id,
+        bounds,
     })
 }
 
@@ -138,56 +144,8 @@ pub(super) fn decode_point_particles(
     Ok(points)
 }
 
-fn build_billboard_mesh_input(
-    mesh_asset_id: i32,
-    source_asset_id: i32,
-    points: &[PointParticle],
-    frame_grid_size: glam::IVec2,
-) -> Result<GeneratedMeshUploadInput, ParticleRenderBufferError> {
-    let vertex_count = points
-        .len()
-        .checked_mul(BILLBOARD_VERTICES_PER_POINT)
-        .ok_or(ParticleRenderBufferError::MeshTooLarge {
-            kind: "point",
-            asset_id: source_asset_id,
-        })?;
-    let index_count = points
-        .len()
-        .checked_mul(BILLBOARD_INDICES_PER_POINT)
-        .ok_or(ParticleRenderBufferError::MeshTooLarge {
-            kind: "point",
-            asset_id: source_asset_id,
-        })?;
-    if vertex_count > u32::MAX as usize || index_count > i32::MAX as usize {
-        return Err(ParticleRenderBufferError::MeshTooLarge {
-            kind: "point",
-            asset_id: source_asset_id,
-        });
-    }
-
-    let mut vertices = vec![0u8; vertex_count * generated_vertex_stride()];
-    let mut indices = vec![0u8; index_count * size_of::<u32>()];
-    fill_billboard_buffers(points, frame_grid_size, &mut vertices, &mut indices);
-    let prepared_derived_streams = prepared_generated_derived_streams(
-        &vertices,
-        vertex_count,
-        billboard_extra_streams(points),
-    );
-
-    Ok(GeneratedMeshUploadInput {
-        kind: "point",
-        source_asset_id,
-        mesh_asset_id,
-        vertices,
-        indices,
-        prepared_derived_streams,
-        vertex_count,
-        index_count,
-        bounds: bounds_for_points(points),
-    })
-}
-
-/// Builds raw orientation streams consumed by Billboard/Unlit render-buffer alignment.
+/// Builds the reference orientation streams used to verify GPU billboard expansion.
+#[cfg(test)]
 pub(super) fn billboard_extra_streams(points: &[PointParticle]) -> GeneratedExtraStreams {
     let vertex_count = points.len() * BILLBOARD_VERTICES_PER_POINT;
     let mut tangent = vec![0u8; vertex_count * 16];
@@ -219,6 +177,7 @@ fn point_parallel_is_worthwhile(count: usize) -> bool {
 }
 
 /// Fills packed billboard vertex and index buffers for `points`.
+#[cfg(test)]
 pub(super) fn fill_billboard_buffers(
     points: &[PointParticle],
     frame_grid_size: glam::IVec2,
@@ -251,6 +210,7 @@ pub(super) fn fill_billboard_buffers(
 }
 
 /// Fills one contiguous point chunk into matching vertex and index chunks.
+#[cfg(test)]
 fn fill_billboard_chunk(
     points: &[PointParticle],
     base_particle: usize,
@@ -276,6 +236,7 @@ fn fill_billboard_chunk(
 }
 
 /// Fills the four billboard vertices and one front-facing quad for one point.
+#[cfg(test)]
 fn fill_billboard_particle(
     point: &PointParticle,
     particle_index: usize,
@@ -325,6 +286,7 @@ fn fill_billboard_particle(
     );
 }
 
+#[cfg(test)]
 fn particle_frame_uv(corner: Vec2, frame_index: Option<u16>, frame_grid_size: glam::IVec2) -> Vec2 {
     let columns = frame_grid_size.x.max(0) as u32;
     let rows = frame_grid_size.y.max(0) as u32;

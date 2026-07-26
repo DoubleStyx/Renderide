@@ -70,6 +70,7 @@ fn log_renderer_startup_context(log_path: &Path) {
         "RENDERIDE_LOGS_ROOT",
         "RENDERIDE_INTERPROCESS_DIR",
         "RENDERIDE_GPU_VALIDATION",
+        "RENDERIDE_WORLD_MESH_PATH",
         "WGPU_BACKEND",
     ] {
         if let Ok(value) = env::var(key)
@@ -78,6 +79,7 @@ fn log_renderer_startup_context(log_path: &Path) {
             logger::info!("Renderer env override: {key}={value}");
         }
     }
+    crate::world_mesh::log_world_mesh_render_path();
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

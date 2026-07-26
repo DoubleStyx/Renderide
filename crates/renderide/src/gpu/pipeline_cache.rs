@@ -28,8 +28,7 @@ pub(crate) fn pipeline_cache() -> Option<&'static wgpu::PipelineCache> {
 /// No-op when the device lacks [`wgpu::Features::PIPELINE_CACHE`], the adapter has no cache key, or
 /// the cache was already initialized.
 pub(crate) fn init_pipeline_cache(device: &wgpu::Device, adapter: &wgpu::Adapter) {
-    if PIPELINE_CACHE.get().is_some()
-        || !device.features().contains(wgpu::Features::PIPELINE_CACHE)
+    if PIPELINE_CACHE.get().is_some() || !device.features().contains(wgpu::Features::PIPELINE_CACHE)
     {
         return;
     }

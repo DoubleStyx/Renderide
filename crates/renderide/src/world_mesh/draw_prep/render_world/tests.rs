@@ -66,6 +66,13 @@ fn prepared_draw(space_id: RenderSpaceId, renderable_index: usize) -> FramePrepa
     }
 }
 
+/// Marks a prepared test row as generated particle content.
+fn particle_prepared_draw(space_id: RenderSpaceId, renderable_index: usize) -> FramePreparedDraw {
+    let mut draw = prepared_draw(space_id, renderable_index);
+    draw.particle_draw.kind = crate::render_contract::ParticleDrawKind::Billboard;
+    draw
+}
+
 /// Builds test cull geometry with a recognizable AABB.
 fn test_cull_geometry(min_x: f32, max_x: f32) -> MeshCullGeometry {
     MeshCullGeometry {
@@ -73,6 +80,22 @@ fn test_cull_geometry(min_x: f32, max_x: f32) -> MeshCullGeometry {
         rigid_world_matrix: Some(Mat4::IDENTITY),
         front_face_world_matrix: Some(Mat4::IDENTITY),
     }
+}
+
+#[test]
+fn recreated_render_world_has_distinct_cross_frame_cache_identity() {
+    let first = RenderWorld::new(RenderingContext::Camera);
+    let replacement = RenderWorld::new(RenderingContext::Camera);
+
+    assert_eq!(
+        first.prepared_generation(),
+        replacement.prepared_generation()
+    );
+    assert_ne!(
+        first.cache_identity(),
+        replacement.cache_identity(),
+        "a replacement at the same local generation must invalidate retained draw-item arcs"
+    );
 }
 
 #[test]
@@ -270,6 +293,7 @@ fn rebuild_prepared_snapshot_skips_inactive_cached_spaces() {
         &point_render_buffers,
         RenderingContext::RenderToAsset,
         None,
+        &HashSet::new(),
     );
 
     assert_eq!(
@@ -342,6 +366,96 @@ fn mesh_asset_dirties_use_reverse_index() {
             .dirty_renderers
             .contains_key(&dirty_static(space_id, 0))
     );
+}
+
+#[test]
+fn identical_mesh_metadata_mutation_suppresses_renderer_dirty() {
+    let asset_id = 56;
+    let mut mesh_pool = MeshPool::default_pool();
+    mesh_pool.insert(crate::assets::mesh::GpuMesh::test_draw_prep_mesh(
+        asset_id,
+    ));
+    let mut world = RenderWorld {
+        full_rebuild_requested: false,
+        mesh_pool_generation: mesh_pool.mutation_generation(),
+        ..Default::default()
+    };
+    world.mesh_draw_prep_states.insert(
+        asset_id,
+        MeshDrawPrepState::capture(mesh_pool.get(asset_id)),
+    );
+
+    mesh_pool.insert(crate::assets::mesh::GpuMesh::test_draw_prep_mesh(
+        asset_id,
+    ));
+    let mut stats = RenderWorldMaintenanceStats::default();
+    world.note_mesh_pool_delta(&mesh_pool, &mut stats);
+
+    assert_eq!(stats.mesh_asset_invalidation_count, 1);
+    assert_eq!(stats.mesh_asset_draw_prep_noop_count, 1);
+    assert_eq!(stats.mesh_asset_draw_prep_change_count, 0);
+    assert!(world.dirty_mesh_assets.is_empty());
+}
+
+#[test]
+fn changed_mesh_draw_prep_metadata_marks_asset_dirty() {
+    let asset_id = 57;
+    let mut mesh_pool = MeshPool::default_pool();
+    mesh_pool.insert(crate::assets::mesh::GpuMesh::test_draw_prep_mesh(
+        asset_id,
+    ));
+    let mut world = RenderWorld {
+        full_rebuild_requested: false,
+        mesh_pool_generation: mesh_pool.mutation_generation(),
+        ..Default::default()
+    };
+    world.mesh_draw_prep_states.insert(
+        asset_id,
+        MeshDrawPrepState::capture(mesh_pool.get(asset_id)),
+    );
+
+    let mut changed = crate::assets::mesh::GpuMesh::test_draw_prep_mesh(asset_id);
+    changed.submeshes[0].1 = 6;
+    mesh_pool.insert(changed);
+    let mut stats = RenderWorldMaintenanceStats::default();
+    world.note_mesh_pool_delta(&mesh_pool, &mut stats);
+
+    assert_eq!(stats.mesh_asset_draw_prep_noop_count, 0);
+    assert_eq!(stats.mesh_asset_draw_prep_change_count, 1);
+    assert!(world.dirty_mesh_assets.contains(&asset_id));
+}
+
+#[test]
+fn mesh_removal_and_reappearance_each_invalidate_draw_prep_state() {
+    let asset_id = 58;
+    let mut mesh_pool = MeshPool::default_pool();
+    mesh_pool.insert(crate::assets::mesh::GpuMesh::test_draw_prep_mesh(
+        asset_id,
+    ));
+    let mut world = RenderWorld {
+        full_rebuild_requested: false,
+        mesh_pool_generation: mesh_pool.mutation_generation(),
+        ..Default::default()
+    };
+    world.mesh_draw_prep_states.insert(
+        asset_id,
+        MeshDrawPrepState::capture(mesh_pool.get(asset_id)),
+    );
+
+    assert!(mesh_pool.remove(asset_id));
+    let mut removed_stats = RenderWorldMaintenanceStats::default();
+    world.note_mesh_pool_delta(&mesh_pool, &mut removed_stats);
+    assert_eq!(removed_stats.mesh_asset_draw_prep_change_count, 1);
+    assert!(world.dirty_mesh_assets.remove(&asset_id));
+
+    mesh_pool.insert(crate::assets::mesh::GpuMesh::test_draw_prep_mesh(
+        asset_id,
+    ));
+    let mut reappeared_stats = RenderWorldMaintenanceStats::default();
+    world.note_mesh_pool_delta(&mesh_pool, &mut reappeared_stats);
+    assert_eq!(reappeared_stats.mesh_asset_draw_prep_change_count, 1);
+    assert_eq!(reappeared_stats.mesh_asset_draw_prep_noop_count, 0);
+    assert!(world.dirty_mesh_assets.contains(&asset_id));
 }
 
 #[test]
@@ -433,6 +547,7 @@ fn parallel_snapshot_assembly_keeps_particle_outputs_for_earlier_spaces() {
         &mut world,
         &[first_space, second_space],
         &HashSet::new(),
+        &HashSet::new(),
         outputs,
     );
 
@@ -452,6 +567,108 @@ fn parallel_snapshot_assembly_keeps_particle_outputs_for_earlier_spaces() {
             .iter()
             .all(|draw| draw.space_id == first_space),
         "first space draws must stay contiguous"
+    );
+}
+
+#[test]
+fn particle_only_snapshot_reuses_static_and_skinned_rows_then_replaces_particle_rows() {
+    let space_id = RenderSpaceId(63);
+    let render_context = RenderingContext::UserView;
+    let scene = SceneCoordinator::new();
+    let mut world = RenderWorld::new(render_context);
+    let mut old_static = prepared_draw(space_id, 0);
+    old_static.material_asset_id = 11;
+    old_static.cull_geometry = Some(test_cull_geometry(-2.0, 2.0));
+    let mut old_skinned = prepared_draw(space_id, 1);
+    old_skinned.skinned = true;
+    old_skinned.material_asset_id = 12;
+    let mut old_particle = particle_prepared_draw(space_id, 2);
+    old_particle.material_asset_id = 22;
+
+    world.prepared.begin_cached_rebuild(render_context);
+    world.prepared.push_cached_space(space_id);
+    world
+        .prepared
+        .extend_cached_draws(&[old_static, old_skinned, old_particle]);
+    world.prepared.finish_cached_rebuild(&scene);
+    world.prepared.begin_cached_rebuild(render_context);
+
+    let mut fresh_particle = particle_prepared_draw(space_id, 3);
+    fresh_particle.material_asset_id = 33;
+    snapshot::rebuild_snapshot_parallel(
+        &mut world,
+        &[space_id],
+        &HashSet::new(),
+        &HashSet::from([space_id]),
+        vec![(0, vec![fresh_particle])],
+    );
+
+    let draws = world.prepared.draws();
+    assert_eq!(draws.len(), 3);
+    assert_eq!(
+        draws
+            .iter()
+            .map(|draw| draw.material_asset_id)
+            .collect::<Vec<_>>(),
+        vec![11, 12, 33],
+        "stable static/skinned rows keep their order and fresh particles remain the suffix"
+    );
+    assert_eq!(
+        draws[0]
+            .cull_geometry
+            .and_then(|geometry| geometry.world_aabb),
+        test_cull_geometry(-2.0, 2.0).world_aabb
+    );
+    assert!(
+        draws.iter().all(|draw| draw.material_asset_id != 22),
+        "the previous generated particle row must not survive a particle-only rebuild"
+    );
+}
+
+#[test]
+fn particle_only_serial_rebuild_copies_stable_prefix_and_drops_previous_particle_suffix() {
+    let space_id = RenderSpaceId(64);
+    let render_context = RenderingContext::UserView;
+    let mut scene = SceneCoordinator::new();
+    scene.test_seed_space_identity_worlds(space_id, vec![identity_transform()], vec![-1]);
+    scene.test_set_space_active(space_id, true);
+    let mut world = RenderWorld::new(render_context);
+    world.spaces.insert(
+        space_id,
+        RenderWorldSpace {
+            active: true,
+            ..Default::default()
+        },
+    );
+    let mut old_static = prepared_draw(space_id, 0);
+    old_static.material_asset_id = 41;
+    let mut old_particle = particle_prepared_draw(space_id, 1);
+    old_particle.material_asset_id = 42;
+    world.prepared.begin_cached_rebuild(render_context);
+    world.prepared.push_cached_space(space_id);
+    world
+        .prepared
+        .extend_cached_draws(&[old_static, old_particle]);
+    world.prepared.finish_cached_rebuild(&scene);
+
+    let dirty_spaces = HashSet::from([space_id]);
+    let particle_only_spaces = HashSet::from([space_id]);
+    let stats = world.rebuild_prepared_snapshot(
+        &scene,
+        &MeshPool::default_pool(),
+        &HashMap::new(),
+        render_context,
+        Some(&dirty_spaces),
+        &particle_only_spaces,
+    );
+
+    assert_eq!(stats.retained_draw_count, 0);
+    assert_eq!(stats.reused_space_count, 1);
+    assert_eq!(world.prepared.draws().len(), 1);
+    assert_eq!(world.prepared.draws()[0].material_asset_id, 41);
+    assert_eq!(
+        world.prepared.draws()[0].particle_draw.kind,
+        crate::render_contract::ParticleDrawKind::None
     );
 }
 
@@ -561,6 +778,7 @@ fn prepared_snapshot_reuses_unchanged_space_draw_ranges() {
         &point_render_buffers,
         RenderingContext::UserView,
         None,
+        &HashSet::new(),
     );
     world.spaces.get_mut(&first_space).unwrap().static_renderers[0].draws[0].material_asset_id = 33;
     world
@@ -578,6 +796,7 @@ fn prepared_snapshot_reuses_unchanged_space_draw_ranges() {
         &point_render_buffers,
         RenderingContext::UserView,
         Some(&dirty_spaces),
+        &HashSet::new(),
     );
 
     assert_eq!(

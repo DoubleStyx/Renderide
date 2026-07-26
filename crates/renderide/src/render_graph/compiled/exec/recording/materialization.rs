@@ -108,6 +108,7 @@ impl CompiledRenderGraph {
                 targets.reborrow(),
                 gpu,
                 upload_batch,
+                None,
             )?;
             step_idx += 1;
         }

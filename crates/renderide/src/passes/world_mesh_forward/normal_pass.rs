@@ -349,6 +349,7 @@ impl RasterPass for WorldMeshForwardNormalPass {
             record_world_mesh_forward_normal_graph_raster(
                 rpass,
                 ctx.device,
+                ctx.uploads,
                 frame,
                 &prepared,
                 self.pipelines,

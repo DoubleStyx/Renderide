@@ -53,7 +53,7 @@ pub(crate) fn encode_world_mesh_forward_color_snapshot(
 
 /// Returns whether the scene-color snapshot copy should be recorded for this view.
 fn color_snapshot_recording_needed(helper_needs: WorldMeshHelperNeeds) -> bool {
-    helper_needs.color_snapshot
+    helper_needs.per_object_color_snapshot
 }
 
 #[cfg(test)]
@@ -66,11 +66,13 @@ mod tests {
     fn color_snapshot_recording_follows_helper_needs() {
         assert!(!color_snapshot_recording_needed(WorldMeshHelperNeeds {
             depth_snapshot: true,
-            color_snapshot: false,
+            per_object_color_snapshot: false,
+            named_color_snapshot: true,
         }));
         assert!(color_snapshot_recording_needed(WorldMeshHelperNeeds {
             depth_snapshot: false,
-            color_snapshot: true,
+            per_object_color_snapshot: true,
+            named_color_snapshot: false,
         }));
     }
 }

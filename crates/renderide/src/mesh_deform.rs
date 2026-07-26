@@ -4,7 +4,7 @@
 mod blendshape_bind_chunks;
 mod mesh_preprocess;
 mod per_draw_uniforms;
-mod range_alloc;
+pub(crate) mod range_alloc;
 mod scratch;
 mod skin_cache;
 mod skinning_palette;

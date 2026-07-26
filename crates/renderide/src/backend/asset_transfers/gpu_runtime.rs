@@ -23,7 +23,9 @@ pub(crate) struct AssetGpuRuntimeAttach {
     pub(crate) limits: Arc<GpuLimits>,
     /// Shared mapped-buffer invalidation generation from the active GPU context.
     pub(crate) mapped_buffer_health: Arc<GpuMappedBufferHealth>,
-    /// Whether mesh uploads should use per-mesh wgpu validation scopes. -xlinka
+    /// Canonical immutable-mesh geometry store shared with frame recording.
+    pub(crate) static_geometry_store: crate::graph_inputs::SharedStaticGeometryStore,
+    /// Whether mesh uploads should use per-mesh wgpu validation scopes.
     pub(crate) mesh_validation_scopes_enabled: bool,
 }
 
@@ -42,11 +44,13 @@ pub(crate) struct AssetGpuRuntime {
     pub(crate) gpu_limits: Option<Arc<GpuLimits>>,
     /// Shared mapped-buffer invalidation generation from the active GPU context.
     pub(crate) mapped_buffer_health: Option<Arc<GpuMappedBufferHealth>>,
+    /// Canonical immutable-mesh geometry store shared with frame recording.
+    pub(crate) static_geometry_store: Option<crate::graph_inputs::SharedStaticGeometryStore>,
     /// Mesh buffer upload batch reused across cooperative drains.
     pub(crate) mesh_upload_batch: Arc<MeshUploadStagingBatch>,
     /// Persistent staging arena for mesh upload batch copies.
     pub(crate) mesh_upload_arena: Mutex<PersistentUploadArena>,
-    /// Whether mesh uploads should use per-mesh wgpu validation scopes. -xlinka
+    /// Whether mesh uploads should use per-mesh wgpu validation scopes.
     pub(crate) mesh_validation_scopes_enabled: bool,
 }
 
@@ -65,6 +69,7 @@ impl AssetGpuRuntime {
             gate,
             limits,
             mapped_buffer_health,
+            static_geometry_store,
             mesh_validation_scopes_enabled,
         } = desc;
         self.gpu_device = Some(device);
@@ -73,6 +78,7 @@ impl AssetGpuRuntime {
         self.gpu_queue_access_gate = Some(gate);
         self.gpu_limits = Some(limits);
         self.mapped_buffer_health = Some(mapped_buffer_health);
+        self.static_geometry_store = Some(static_geometry_store);
         self.mesh_validation_scopes_enabled = mesh_validation_scopes_enabled;
     }
 }

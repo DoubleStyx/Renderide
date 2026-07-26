@@ -23,11 +23,12 @@ pub(crate) use post_processing::{
 pub(crate) use scene_color_compose::{SceneColorComposeGraphResources, SceneColorComposePass};
 pub(crate) use world_mesh_forward::ForwardMsaaResources;
 pub(crate) use world_mesh_forward::{
-    GTAO_VIEW_NORMAL_FORMAT, MaterialBatchBoundary, PreparedWorldMeshForwardFrame,
-    ShadowDepthDrawBatch, WorldMeshDepthSnapshotPass, WorldMeshDesktopOverlayGraphResources,
-    WorldMeshDesktopOverlayPass, WorldMeshForwardDepthPrepass,
-    WorldMeshForwardDepthPrepassGraphResources, WorldMeshForwardDepthPrepassPipelineKey,
-    WorldMeshForwardDepthResolvePass, WorldMeshForwardEncodeRefs, WorldMeshForwardGraphResources,
+    GTAO_VIEW_NORMAL_FORMAT, GeometryArenaPopulatePass, IndirectDepthRun, MaterialBatchBoundary,
+    PreparedWorldMeshForwardFrame, ShadowDepthDrawBatch, ShadowIndirectDraw,
+    WorldMeshDepthSnapshotPass, WorldMeshDesktopOverlayGraphResources, WorldMeshDesktopOverlayPass,
+    WorldMeshForwardDepthPrepass, WorldMeshForwardDepthPrepassGraphResources,
+    WorldMeshForwardDepthPrepassPipelineKey, WorldMeshForwardDepthResolvePass,
+    WorldMeshForwardEncodeRefs, WorldMeshForwardGraphResources,
     WorldMeshForwardGtaoDepthResolvePass, WorldMeshForwardInstancePlanCache,
     WorldMeshForwardInstancePlanCacheStats, WorldMeshForwardIntersectPass,
     WorldMeshForwardNormalGraphResources, WorldMeshForwardNormalPass,
@@ -35,7 +36,9 @@ pub(crate) use world_mesh_forward::{
     WorldMeshForwardOpaquePass, WorldMeshForwardPipelineState, WorldMeshForwardPlanSlot,
     WorldMeshForwardPrepareCaches, WorldMeshForwardPrepareGpu, WorldMeshForwardPrepareInputs,
     WorldMeshForwardPrepareScratch, WorldMeshForwardPrepareView, WorldMeshForwardSkyboxRenderer,
-    WorldMeshForwardTransparentSequencePass, WorldMeshOverlayForwardPlanSlot,
-    depth_prepass_pipeline_key_for_draw, draw_shadow_depth_subset, normal_pipeline_key_for_draw,
-    pre_warm_depth_prepass_pipeline, pre_warm_normal_pipeline, prepare_world_mesh_forward_frame,
+    WorldMeshForwardTransparentSequencePass, WorldMeshGpuCullGraphResources, WorldMeshGpuCullPass,
+    WorldMeshOverlayForwardPlanSlot, collect_shadow_indirect_layer,
+    depth_prepass_pipeline_key_for_draw, draw_shadow_depth_subset, issue_shadow_indirect_runs,
+    normal_pipeline_key_for_draw, pre_warm_depth_prepass_pipeline, pre_warm_normal_pipeline,
+    prepare_world_mesh_forward_frame, take_gpu_cull_submit_resources,
 };

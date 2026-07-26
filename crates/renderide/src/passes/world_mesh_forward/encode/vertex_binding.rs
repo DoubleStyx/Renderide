@@ -6,13 +6,14 @@
 //! [`super::draw_subset`] via [`draw_mesh_submesh_instanced`].
 
 use crate::assets::mesh::GpuMesh;
+use crate::gpu_pools::geometry_arena::{ArenaStream, GeometryAllocation, GeometryArena};
 use crate::mesh_deform::{GpuSkinCache, SkinCacheKey};
 use crate::passes::WorldMeshForwardEncodeRefs;
 use crate::world_mesh::WorldMeshDrawItem;
 
 /// Embedded material vertex stream requirements for one draw (matches pipeline reflection flags).
-#[derive(Clone, Copy, Default)]
-pub(super) struct EmbeddedVertexStreamFlags {
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(in crate::passes::world_mesh_forward) struct EmbeddedVertexStreamFlags {
     /// UV0 stream at `@location(2)`.
     embedded_uv: bool,
     /// Vertex color at `@location(3)`.
@@ -134,6 +135,110 @@ impl EmbeddedVertexStreamFlags {
     }
 }
 
+/// Visits each optional forward vertex stream these flags require as `(slot, arena stream)`, in the
+/// same order as [`bind_optional_vertex_streams`]. Position (`@location(0)`) and normal
+/// (`@location(1)`) are always bound and are not visited here. Shared by [`forward_arena_alloc`] and
+/// [`bind_forward_arena_streams`] so the residency check and the bind stay in lockstep.
+fn for_each_forward_arena_stream(
+    flags: EmbeddedVertexStreamFlags,
+    mut visit: impl FnMut(usize, ArenaStream),
+) {
+    if let Some(slot) = flags.wide_low_uv_slot() {
+        visit(slot, ArenaStream::WideLow);
+    }
+    if let Some(slot) = flags.wide_high_uv_slot() {
+        visit(slot, ArenaStream::WideHigh);
+    }
+    if let Some(slot) = flags.uv_slot() {
+        visit(slot, ArenaStream::Uv0);
+    }
+    if let Some(slot) = flags.color_slot() {
+        visit(slot, ArenaStream::Color);
+    }
+    if let Some(slot) = flags.tangent_slot() {
+        let stream = if flags.embedded_raw_tangent_payload {
+            ArenaStream::RawTangent
+        } else {
+            ArenaStream::Tangent
+        };
+        visit(slot, stream);
+    }
+    if let Some(slot) = flags.uv1_slot() {
+        visit(slot, ArenaStream::Uv1);
+    }
+    if let Some(slot) = flags.uv2_slot() {
+        visit(slot, ArenaStream::Uv2);
+    }
+    if let Some(slot) = flags.uv3_slot() {
+        visit(slot, ArenaStream::Uv3);
+    }
+}
+
+/// Returns the arena allocation for a static forward draw whose every required stream (normal plus
+/// each stream `flags` enables) is resident, or [`None`] when the mesh is not in the arena or is
+/// missing a stream. The caller guarantees the draw is non-skinned.
+pub(in crate::passes::world_mesh_forward) fn forward_arena_alloc(
+    item: &WorldMeshDrawItem,
+    arena: &GeometryArena,
+    flags: EmbeddedVertexStreamFlags,
+) -> Option<GeometryAllocation> {
+    let alloc =
+        arena.mesh_for_index_span(item.mesh_asset_id, item.first_index, item.index_count)?;
+    if !alloc.has_stream(ArenaStream::Normal) {
+        return None;
+    }
+    let mut resident = true;
+    for_each_forward_arena_stream(flags, |_slot, stream| {
+        if !alloc.has_stream(stream) {
+            resident = false;
+        }
+    });
+    resident.then_some(alloc)
+}
+
+/// Binds the arena's position (`@location(0)`), normal (`@location(1)`), each required optional
+/// stream, and the selected full index buffer for a `multi_draw` batch sharing `flags`.
+///
+/// The full arena buffers are stable across material runs, so this goes through
+/// [`LastMeshBindState`] instead of resubmitting every vertex/index bind for every run. Returns
+/// `false` if a required stream buffer is absent (caller must not draw the batch).
+pub(super) fn bind_forward_arena_streams(
+    rpass: &mut wgpu::RenderPass<'_>,
+    arena: &GeometryArena,
+    flags: EmbeddedVertexStreamFlags,
+    narrow_indices: bool,
+    last_mesh: &mut LastMeshBindState,
+) -> bool {
+    bind_full_vertex_buffer_if_changed(rpass, 0, arena.position_buffer(), last_mesh);
+    let Some(normal) = arena.stream_buffer(ArenaStream::Normal) else {
+        return false;
+    };
+    bind_full_vertex_buffer_if_changed(rpass, 1, normal, last_mesh);
+    let mut ok = true;
+    for_each_forward_arena_stream(flags, |slot, stream| match arena.stream_buffer(stream) {
+        Some(buffer) => bind_full_vertex_buffer_if_changed(rpass, slot, buffer, last_mesh),
+        None => ok = false,
+    });
+    if !ok {
+        return false;
+    }
+    let format = arena_index_format(narrow_indices);
+    let index_buffer = if narrow_indices {
+        arena.index_buffer_u16()
+    } else {
+        arena.index_buffer_u32()
+    };
+    bind_full_index_buffer_if_changed(rpass, index_buffer, format, last_mesh);
+    true
+}
+
+/// Forward vertex stream flags for `item`, exposed to the indirect batch collector.
+pub(in crate::passes::world_mesh_forward) fn forward_stream_flags(
+    item: &WorldMeshDrawItem,
+) -> EmbeddedVertexStreamFlags {
+    streams_for_item(item)
+}
+
 /// GPU mesh pool and optional skin cache for [`draw_mesh_submesh_instanced`].
 #[derive(Clone, Copy)]
 pub(super) struct WorldMeshDrawGpuRefs<'a> {
@@ -141,6 +246,8 @@ pub(super) struct WorldMeshDrawGpuRefs<'a> {
     mesh_pool: &'a crate::gpu_pools::MeshPool,
     /// Skin/deform cache when the draw uses deformed or blendshape streams.
     skin_cache: Option<&'a GpuSkinCache>,
+    /// Canonical shared geometry storage for immutable static draws.
+    geometry_arena: Option<&'a GeometryArena>,
 }
 
 /// Compact identity for a [`wgpu::Buffer`] sub-range used to skip redundant vertex / index binds.
@@ -190,8 +297,8 @@ const MESH_FORWARD_VERTEX_BIND_SLOTS: usize = 16;
 pub(super) struct LastMeshBindState {
     /// Last bound buffer identity per vertex slot; `None` = never bound this pass.
     vertex: [Option<BufferBindId>; MESH_FORWARD_VERTEX_BIND_SLOTS],
-    /// Last bound index buffer (pointer-as-usize identity) and format; `None` = never bound.
-    index: Option<(usize, wgpu::IndexFormat)>,
+    /// Last bound index buffer identity/range and format; `None` = never bound.
+    index: Option<(BufferBindId, wgpu::IndexFormat)>,
 }
 
 impl LastMeshBindState {
@@ -201,6 +308,48 @@ impl LastMeshBindState {
             vertex: [None; MESH_FORWARD_VERTEX_BIND_SLOTS],
             index: None,
         }
+    }
+
+    /// Records a full/ranged vertex binding and reports whether the render pass must submit it.
+    fn replace_vertex_if_changed(&mut self, slot: usize, next: BufferBindId) -> bool {
+        if self.vertex[slot] == Some(next) {
+            return false;
+        }
+        self.vertex[slot] = Some(next);
+        true
+    }
+
+    /// Records an index binding and reports whether the render pass must submit it.
+    fn replace_index_if_changed(&mut self, next: (BufferBindId, wgpu::IndexFormat)) -> bool {
+        if self.index == Some(next) {
+            return false;
+        }
+        self.index = Some(next);
+        true
+    }
+}
+
+/// Binds one full arena vertex buffer only when the slot's buffer identity changed.
+fn bind_full_vertex_buffer_if_changed(
+    rpass: &mut wgpu::RenderPass<'_>,
+    slot: usize,
+    buffer: &wgpu::Buffer,
+    last_mesh: &mut LastMeshBindState,
+) {
+    if last_mesh.replace_vertex_if_changed(slot, BufferBindId::full(buffer)) {
+        rpass.set_vertex_buffer(slot as u32, buffer.slice(..));
+    }
+}
+
+/// Binds one full arena index buffer only when its buffer identity or format changed.
+fn bind_full_index_buffer_if_changed(
+    rpass: &mut wgpu::RenderPass<'_>,
+    buffer: &wgpu::Buffer,
+    format: wgpu::IndexFormat,
+    last_mesh: &mut LastMeshBindState,
+) {
+    if last_mesh.replace_index_if_changed((BufferBindId::full(buffer), format)) {
+        rpass.set_index_buffer(buffer.slice(..), format);
     }
 }
 
@@ -244,6 +393,9 @@ pub(super) fn draw_mesh_submesh_instanced(
     instances: std::ops::Range<u32>,
     last_mesh: &mut LastMeshBindState,
 ) {
+    if draw_static_forward_from_arena(rpass, item, gpu, streams, instances.clone(), last_mesh) {
+        return;
+    }
     let Some(mesh) = resident_draw_mesh(item, gpu, streams) else {
         return;
     };
@@ -258,7 +410,9 @@ pub(super) fn draw_mesh_submesh_instanced(
         return;
     }
 
-    bind_index_buffer_if_changed(rpass, mesh, last_mesh);
+    if !bind_index_buffer_if_changed(rpass, mesh, last_mesh) {
+        return;
+    }
 
     let first = item.first_index;
     let end = first.saturating_add(item.index_count);
@@ -273,6 +427,9 @@ pub(super) fn draw_mesh_submesh_normals_instanced(
     instances: std::ops::Range<u32>,
     last_mesh: &mut LastMeshBindState,
 ) {
+    if draw_static_normals_from_arena(rpass, item, gpu, instances.clone(), last_mesh) {
+        return;
+    }
     let Some(mesh) = resident_depth_draw_mesh(item, gpu) else {
         return;
     };
@@ -292,7 +449,9 @@ pub(super) fn draw_mesh_submesh_normals_instanced(
         return;
     }
 
-    bind_index_buffer_if_changed(rpass, mesh, last_mesh);
+    if !bind_index_buffer_if_changed(rpass, mesh, last_mesh) {
+        return;
+    }
 
     let first = item.first_index;
     let end = first.saturating_add(item.index_count);
@@ -307,6 +466,9 @@ pub(super) fn draw_mesh_submesh_depth_instanced(
     instances: std::ops::Range<u32>,
     last_mesh: &mut LastMeshBindState,
 ) {
+    if draw_static_depth_from_arena(rpass, item, gpu, instances.clone(), last_mesh) {
+        return;
+    }
     let Some(mesh) = resident_depth_draw_mesh(item, gpu) else {
         return;
     };
@@ -315,7 +477,9 @@ pub(super) fn draw_mesh_submesh_depth_instanced(
         return;
     }
 
-    bind_index_buffer_if_changed(rpass, mesh, last_mesh);
+    if !bind_index_buffer_if_changed(rpass, mesh, last_mesh) {
+        return;
+    }
 
     let first = item.first_index;
     let end = first.saturating_add(item.index_count);
@@ -399,6 +563,224 @@ fn resident_depth_draw_mesh<'a>(
         return None;
     }
     gpu.mesh_pool.get(item.mesh_asset_id)
+}
+
+#[inline]
+fn draw_can_use_static_geometry(item: &WorldMeshDrawItem, gpu: WorldMeshDrawGpuRefs<'_>) -> bool {
+    item.node_id >= 0
+        && item.index_count != 0
+        && !item.skinned
+        && !item.world_space_deformed
+        && !item.blendshape_deformed
+        && gpu
+            .mesh_pool
+            .get(item.mesh_asset_id)
+            .is_some_and(GpuMesh::uses_shared_static_geometry)
+}
+
+fn draw_static_forward_from_arena(
+    rpass: &mut wgpu::RenderPass<'_>,
+    item: &WorldMeshDrawItem,
+    gpu: WorldMeshDrawGpuRefs<'_>,
+    streams: EmbeddedVertexStreamFlags,
+    instances: std::ops::Range<u32>,
+    last_mesh: &mut LastMeshBindState,
+) -> bool {
+    if !draw_can_use_static_geometry(item, gpu) {
+        return false;
+    }
+    let Some(arena) = gpu.geometry_arena else {
+        return false;
+    };
+    let Some(allocation) = forward_arena_alloc(item, arena, streams) else {
+        return false;
+    };
+    if !bind_forward_arena_stream_ranges(rpass, arena, allocation, streams, last_mesh) {
+        return false;
+    }
+    bind_arena_index_range_if_changed(rpass, arena, allocation, last_mesh);
+    issue_arena_indexed_draw(rpass, item, instances);
+    true
+}
+
+fn draw_static_normals_from_arena(
+    rpass: &mut wgpu::RenderPass<'_>,
+    item: &WorldMeshDrawItem,
+    gpu: WorldMeshDrawGpuRefs<'_>,
+    instances: std::ops::Range<u32>,
+    last_mesh: &mut LastMeshBindState,
+) -> bool {
+    if !draw_can_use_static_geometry(item, gpu) {
+        return false;
+    }
+    let Some(arena) = gpu.geometry_arena else {
+        return false;
+    };
+    let Some(allocation) = arena
+        .mesh_for_index_span(item.mesh_asset_id, item.first_index, item.index_count)
+        .filter(|allocation| allocation.has_stream(ArenaStream::Normal))
+    else {
+        return false;
+    };
+    bind_arena_position_range(rpass, arena, allocation, last_mesh);
+    if !bind_arena_stream_range(rpass, 1, arena, allocation, ArenaStream::Normal, last_mesh) {
+        return false;
+    }
+    bind_arena_index_range_if_changed(rpass, arena, allocation, last_mesh);
+    issue_arena_indexed_draw(rpass, item, instances);
+    true
+}
+
+fn draw_static_depth_from_arena(
+    rpass: &mut wgpu::RenderPass<'_>,
+    item: &WorldMeshDrawItem,
+    gpu: WorldMeshDrawGpuRefs<'_>,
+    instances: std::ops::Range<u32>,
+    last_mesh: &mut LastMeshBindState,
+) -> bool {
+    if !draw_can_use_static_geometry(item, gpu) {
+        return false;
+    }
+    let Some((arena, allocation)) = gpu.geometry_arena.and_then(|arena| {
+        arena
+            .mesh_for_index_span(item.mesh_asset_id, item.first_index, item.index_count)
+            .map(|allocation| (arena, allocation))
+    }) else {
+        return false;
+    };
+    bind_arena_position_range(rpass, arena, allocation, last_mesh);
+    bind_arena_index_range_if_changed(rpass, arena, allocation, last_mesh);
+    issue_arena_indexed_draw(rpass, item, instances);
+    true
+}
+
+fn bind_forward_arena_stream_ranges(
+    rpass: &mut wgpu::RenderPass<'_>,
+    arena: &GeometryArena,
+    allocation: GeometryAllocation,
+    streams: EmbeddedVertexStreamFlags,
+    last_mesh: &mut LastMeshBindState,
+) -> bool {
+    bind_arena_position_range(rpass, arena, allocation, last_mesh);
+    if !bind_arena_stream_range(rpass, 1, arena, allocation, ArenaStream::Normal, last_mesh) {
+        return false;
+    }
+    let mut ready = true;
+    for_each_forward_arena_stream(streams, |slot, stream| {
+        if !bind_arena_stream_range(rpass, slot, arena, allocation, stream, last_mesh) {
+            ready = false;
+        }
+    });
+    ready
+}
+
+fn bind_arena_position_range(
+    rpass: &mut wgpu::RenderPass<'_>,
+    arena: &GeometryArena,
+    allocation: GeometryAllocation,
+    last_mesh: &mut LastMeshBindState,
+) {
+    let buffer = arena.position_buffer();
+    let range =
+        arena_position_byte_range(allocation.vertices.offset_bytes, allocation.vertex_count);
+    let (start, end) = (range.start, range.end);
+    bind_vertex_if_changed!(
+        rpass,
+        0,
+        buffer.slice(range),
+        BufferBindId::ranged(buffer, start, end),
+        last_mesh.vertex
+    );
+}
+
+fn bind_arena_stream_range(
+    rpass: &mut wgpu::RenderPass<'_>,
+    slot: usize,
+    arena: &GeometryArena,
+    allocation: GeometryAllocation,
+    stream: ArenaStream,
+    last_mesh: &mut LastMeshBindState,
+) -> bool {
+    let Some(buffer) = arena.stream_buffer(stream) else {
+        return false;
+    };
+    let range = arena_stream_byte_range(allocation.base_vertex(), allocation.vertex_count, stream);
+    let (start, end) = (range.start, range.end);
+    bind_vertex_if_changed!(
+        rpass,
+        slot,
+        buffer.slice(range),
+        BufferBindId::ranged(buffer, start, end),
+        last_mesh.vertex
+    );
+    true
+}
+
+fn bind_arena_index_range_if_changed(
+    rpass: &mut wgpu::RenderPass<'_>,
+    arena: &GeometryArena,
+    allocation: GeometryAllocation,
+    last_mesh: &mut LastMeshBindState,
+) {
+    let format = arena_index_format(allocation.narrow_indices);
+    let buffer = if allocation.narrow_indices {
+        arena.index_buffer_u16()
+    } else {
+        arena.index_buffer_u32()
+    };
+    let range = arena_index_byte_range(
+        allocation.indices.offset_bytes,
+        allocation.indices.len_bytes,
+    );
+    let id = BufferBindId::ranged(buffer, range.start, range.end);
+    let key = (id, format);
+    if last_mesh.index != Some(key) {
+        rpass.set_index_buffer(buffer.slice(range), format);
+        last_mesh.index = Some(key);
+    }
+}
+
+fn arena_position_byte_range(
+    position_offset_bytes: u64,
+    vertex_count: u32,
+) -> std::ops::Range<u64> {
+    let start = position_offset_bytes;
+    start
+        ..start.saturating_add(
+            u64::from(vertex_count)
+                .saturating_mul(crate::gpu_pools::geometry_arena::ARENA_POSITION_STRIDE),
+        )
+}
+
+fn arena_stream_byte_range(
+    base_vertex: i32,
+    vertex_count: u32,
+    stream: ArenaStream,
+) -> std::ops::Range<u64> {
+    let start = u64::from(base_vertex.max(0) as u32).saturating_mul(stream.stride());
+    start..start.saturating_add(u64::from(vertex_count).saturating_mul(stream.stride()))
+}
+
+fn arena_index_format(narrow_indices: bool) -> wgpu::IndexFormat {
+    if narrow_indices {
+        wgpu::IndexFormat::Uint16
+    } else {
+        wgpu::IndexFormat::Uint32
+    }
+}
+
+fn arena_index_byte_range(index_offset_bytes: u64, index_len_bytes: u64) -> std::ops::Range<u64> {
+    index_offset_bytes..index_offset_bytes.saturating_add(index_len_bytes)
+}
+
+fn issue_arena_indexed_draw(
+    rpass: &mut wgpu::RenderPass<'_>,
+    item: &WorldMeshDrawItem,
+    instances: std::ops::Range<u32>,
+) {
+    let first = item.first_index;
+    let end = first.saturating_add(item.index_count);
+    rpass.draw_indexed(first..end, 0, instances);
 }
 
 /// Binds position and normal streams, choosing static mesh buffers or the deformation cache.
@@ -790,24 +1172,27 @@ fn bind_index_buffer_if_changed(
     rpass: &mut wgpu::RenderPass<'_>,
     mesh: &GpuMesh,
     last_mesh: &mut LastMeshBindState,
-) {
-    let index_key = (
-        core::ptr::from_ref(mesh.index_buffer.as_ref()).addr(),
-        mesh.index_format,
-    );
+) -> bool {
+    let Some(index_buffer) = mesh.index_buffer.as_deref() else {
+        return false;
+    };
+    let index_key = (BufferBindId::full(index_buffer), mesh.index_format);
     if last_mesh.index != Some(index_key) {
-        rpass.set_index_buffer(mesh.index_buffer.slice(..), mesh.index_format);
+        rpass.set_index_buffer(index_buffer.slice(..), mesh.index_format);
         last_mesh.index = Some(index_key);
     }
+    true
 }
 
 /// Resolves the per-encode-call refs needed by [`draw_mesh_submesh_instanced`].
 pub(super) fn gpu_refs_for_encode<'a>(
     encode: &'a WorldMeshForwardEncodeRefs<'_>,
+    geometry_arena: Option<&'a GeometryArena>,
 ) -> WorldMeshDrawGpuRefs<'a> {
     WorldMeshDrawGpuRefs {
         mesh_pool: encode.mesh_pool(),
         skin_cache: encode.skin_cache,
+        geometry_arena,
     }
 }
 
@@ -829,9 +1214,14 @@ pub(super) fn streams_for_item(item: &WorldMeshDrawItem) -> EmbeddedVertexStream
 
 #[cfg(test)]
 mod tests {
+    use crate::gpu_pools::geometry_arena::ArenaStream;
     use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
 
-    use super::{draw_uses_deformed_primary_streams, draw_uses_deformed_tangent_stream_for_flags};
+    use super::{
+        BufferBindId, LastMeshBindState, arena_index_byte_range, arena_index_format,
+        arena_position_byte_range, arena_stream_byte_range, draw_uses_deformed_primary_streams,
+        draw_uses_deformed_tangent_stream_for_flags,
+    };
 
     fn item(
         world_space_deformed: bool,
@@ -877,5 +1267,56 @@ mod tests {
         assert!(draw_uses_deformed_tangent_stream_for_flags(
             true, false, false
         ));
+    }
+
+    #[test]
+    fn direct_arena_ranges_are_mesh_local_and_stride_correct() {
+        let base_vertex = 32;
+        let vertex_count = 7;
+
+        assert_eq!(arena_position_byte_range(512, vertex_count), 512..624);
+        assert_eq!(
+            arena_stream_byte_range(base_vertex, vertex_count, ArenaStream::Normal),
+            512..624
+        );
+        assert_eq!(
+            arena_stream_byte_range(base_vertex, vertex_count, ArenaStream::Uv0),
+            256..312
+        );
+        assert_eq!(
+            arena_stream_byte_range(base_vertex, vertex_count, ArenaStream::WideLow),
+            2048..2496
+        );
+        assert_eq!(arena_index_byte_range(768, 256), 768..1024);
+    }
+
+    #[test]
+    fn direct_arena_index_width_follows_allocation() {
+        assert_eq!(arena_index_format(true), wgpu::IndexFormat::Uint16);
+        assert_eq!(arena_index_format(false), wgpu::IndexFormat::Uint32);
+    }
+
+    #[test]
+    fn arena_full_buffer_state_skips_only_identical_rebinds() {
+        let full = BufferBindId {
+            ptr: 7,
+            byte_offset: 0,
+            byte_len: None,
+        };
+        let ranged = BufferBindId {
+            ptr: 7,
+            byte_offset: 64,
+            byte_len: Some(128),
+        };
+        let mut state = LastMeshBindState::new();
+
+        assert!(state.replace_vertex_if_changed(0, full));
+        assert!(!state.replace_vertex_if_changed(0, full));
+        assert!(state.replace_vertex_if_changed(0, ranged));
+        assert!(state.replace_vertex_if_changed(0, full));
+
+        assert!(state.replace_index_if_changed((full, wgpu::IndexFormat::Uint16)));
+        assert!(!state.replace_index_if_changed((full, wgpu::IndexFormat::Uint16)));
+        assert!(state.replace_index_if_changed((full, wgpu::IndexFormat::Uint32)));
     }
 }

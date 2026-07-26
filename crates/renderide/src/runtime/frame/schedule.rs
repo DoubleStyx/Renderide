@@ -1,8 +1,7 @@
 //! Explicit CPU render schedule shared by main and offscreen render paths.
 //!
 //! The schedule is intentionally a small typed orchestration layer, not a dynamic ECS scheduler.
-//! It makes the renderer's CPU frame order visible and gives future async work stable phase
-//! boundaries without changing the existing render-graph or view-plan contracts.
+//! It exposes CPU frame order without changing render-graph or view-plan contracts.
 
 use crate::backend::RenderBackend;
 use crate::camera::ViewId;
@@ -267,12 +266,14 @@ fn execute_prepared_views_with_cleanup<'a>(
         .iter()
         .map(|plan| (plan.render_context(), plan.shader_permutation()))
         .collect::<Vec<_>>();
-    let queued_draws = schedule.run_phase(CpuRenderPhase::DrawQueue, || {
+    let prepared_draws = schedule.run_phase(CpuRenderPhase::DrawQueue, || {
         let shared =
             backend.extract_frame_shared(scene, inner_parallelism, &view_draw_preparations);
-        ExtractedFrame::new(prepared_views, shared, schedule.mesh_lod_bias()).queue_draws()
+        // Exact plans and camera-independent rigid plans can reuse cached draw preparation.
+        ExtractedFrame::new(prepared_views, shared, schedule.mesh_lod_bias()).prepare_draws_cached(
+            |queued| schedule.run_phase(CpuRenderPhase::Sort, || queued.sort_draws()),
+        )
     });
-    let prepared_draws = schedule.run_phase(CpuRenderPhase::Sort, || queued_draws.sort_draws());
     let submit_frame = prepared_draws.into_submit_frame();
     schedule.run_phase(CpuRenderPhase::ResourcePrepare, || {
         submit_frame.prepare_resources(scene, backend);

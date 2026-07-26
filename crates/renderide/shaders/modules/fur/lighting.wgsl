@@ -48,10 +48,10 @@ fn direct_specular_clustered(
     view_layer: u32,
     s: psurf::SpecularSurface,
     view_dir: vec3<f32>,
+    aa_roughness: f32,
     energy_compensation: vec3<f32>,
     options: FurLightingOptions,
 ) -> vec3<f32> {
-    let aa_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal, s.geometric_normal);
     let cluster_id = cluster_id_for_fragment(frag_xy, world_pos, view_layer);
     let count = pcls::cluster_light_count_at(cluster_id);
     let visibility = clamp(options.direct_visibility, 0.0, 1.0);
@@ -105,6 +105,7 @@ fn shade_specular_clustered(
 ) -> vec3<f32> {
     let view_dir = rg::view_dir_for_world_pos(world_pos, view_layer);
     let specular_normal = brdf::view_facing_normal(s.normal, view_dir);
+    let filtered_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal, s.geometric_normal);
     let f0 = brdf::specular_f0(s.specular_color);
     let one_minus_reflectivity = brdf::specular_one_minus_reflectivity(f0);
     let n_dot_v = clamp(dot(specular_normal, view_dir), 0.0, 1.0);
@@ -127,13 +128,14 @@ fn shade_specular_clustered(
             s.emission,
         ),
         view_dir,
+        filtered_roughness,
         energy_compensation,
         options,
     );
 
     let indirect_specular_enabled =
         rprobe::has_indirect_specular(view_layer, options.glossy_reflections_enabled);
-    let indirect_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal, s.geometric_normal);
+    let indirect_roughness = filtered_roughness;
     let indirect_dfg = brdf::sample_ibl_dfg_lut(indirect_roughness, n_dot_v);
     let specular_energy =
         brdf::indirect_specular_energy_from_dfg(indirect_dfg, f0, indirect_specular_enabled);

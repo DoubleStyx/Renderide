@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use super::{MaterialBatchPacket, PreparedWorldMeshForwardFrame};
 use crate::camera::ViewId;
+use crate::frame_upload_batch::GraphUploadSink;
 use crate::gpu::GpuLimits;
 use crate::graph_inputs::PerViewFramePlanSlot;
 use crate::passes::WorldMeshForwardEncodeRefs;
@@ -12,7 +13,10 @@ use crate::render_graph::context::PassFrameContext;
 use crate::world_mesh::draw_prep::WorldMeshDrawItem;
 use crate::world_mesh::{MeshPassKind, WorldMeshPhase};
 
-use super::encode::{ForwardDrawBatch, NormalDrawBatch, draw_normals_subset, draw_subset};
+use super::encode::{
+    ForwardDrawBatch, NormalDrawBatch, NormalPrepassIndirectDraw, collect_normal_prepass_indirect,
+    draw_normals_subset, draw_subset, issue_normal_prepass_indirect,
+};
 use super::normal_pass::WorldMeshForwardNormalPipelineCache;
 
 /// Returns stencil load/store ops when the active depth format has a stencil aspect.
@@ -59,6 +63,19 @@ struct ForwardSubpassDrawRecord<'a, 'c, 'd> {
     precomputed: &'c [MaterialBatchPacket],
     /// Mesh pool and skin cache ([`WorldMeshForwardEncodeRefs`]).
     encode: &'a mut WorldMeshForwardEncodeRefs<'d>,
+    /// Device for building indirect command buffers.
+    device: &'a wgpu::Device,
+    /// Deferred upload sink used to update this phase's persistent indirect buffer.
+    uploads: GraphUploadSink<'a>,
+    /// Shared geometry mega-buffer; `Some` enables indirect static draws for this subpass.
+    geometry_arena: Option<&'c crate::gpu_pools::geometry_arena::GeometryArena>,
+    /// Persistent command buffer dedicated to this view and render phase.
+    indirect_buffer: Option<&'a mut crate::gpu::indirect_buffer::IndirectDrawBuffer>,
+    /// Compute-produced retained-static commands for this phase.
+    gpu_cull: Option<(
+        &'c super::gpu_cull::WorldMeshGpuCullResult,
+        &'c [super::gpu_cull::GpuCulledForwardRun],
+    )>,
 }
 
 fn record_world_mesh_forward_subpass(
@@ -81,6 +98,11 @@ fn record_world_mesh_forward_subpass(
         supports_base_instance: cfg.supports_base_instance,
         overlay_view_proj: cfg.overlay_view_proj,
         viewport_px: cfg.viewport_px,
+        device: sub.device,
+        uploads: sub.uploads,
+        geometry_arena: sub.geometry_arena,
+        indirect_buffer: sub.indirect_buffer,
+        gpu_cull: sub.gpu_cull,
     });
 }
 
@@ -108,10 +130,13 @@ fn record_world_mesh_forward_graph_raster(
     blackboard: &Blackboard,
     prepared: &PreparedWorldMeshForwardFrame,
     mesh_pass: MeshPassKind,
+    device: &wgpu::Device,
+    uploads: GraphUploadSink<'_>,
 ) -> bool {
     for &phase in mesh_pass.phases() {
-        if !record_world_mesh_forward_phase_graph_raster(rpass, frame, blackboard, prepared, phase)
-        {
+        if !record_world_mesh_forward_phase_graph_raster(
+            rpass, frame, blackboard, prepared, phase, device, uploads,
+        ) {
             return false;
         }
     }
@@ -125,6 +150,8 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_phase_gra
     blackboard: &Blackboard,
     prepared: &PreparedWorldMeshForwardFrame,
     phase: WorldMeshPhase,
+    device: &wgpu::Device,
+    uploads: GraphUploadSink<'_>,
 ) -> bool {
     record_world_mesh_forward_phase_graph_raster_for_view(
         rpass,
@@ -133,6 +160,8 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_phase_gra
         prepared,
         phase,
         frame.view.view_id,
+        device,
+        uploads,
     )
 }
 
@@ -144,6 +173,8 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_phase_gra
     prepared: &PreparedWorldMeshForwardFrame,
     phase: WorldMeshPhase,
     resource_view_id: ViewId,
+    device: &wgpu::Device,
+    uploads: GraphUploadSink<'_>,
 ) -> bool {
     let groups = prepared.plan.phase(phase);
     #[cfg(feature = "tracy")]
@@ -156,7 +187,10 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_phase_gra
         blackboard,
         prepared,
         groups,
+        phase,
         resource_view_id,
+        device,
+        uploads,
     );
     #[cfg(feature = "tracy")]
     rpass.pop_debug_group();
@@ -170,11 +204,47 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_groups_gr
     blackboard: &Blackboard,
     prepared: &PreparedWorldMeshForwardFrame,
     groups: &[crate::world_mesh::DrawGroup],
+    phase: WorldMeshPhase,
     resource_view_id: ViewId,
+    device: &wgpu::Device,
+    uploads: GraphUploadSink<'_>,
 ) -> bool {
+    if groups.is_empty() {
+        return true;
+    }
     let Some(frame_bg_arc) = frame_bind_group_for_view(frame, blackboard) else {
         return false;
     };
+    // Static opaque draws go indirect from the shared geometry arena. Read guards let views record
+    // concurrently while the graph keeps population writes ordered before raster passes.
+    let indirect_enabled = crate::world_mesh::world_mesh_render_path().uses_indirect_draws()
+        && prepared.supports_base_instance
+        && frame
+            .view
+            .gpu_limits
+            .as_deref()
+            .is_some_and(GpuLimits::supports_indirect_first_instance);
+    let arena_arc = frame.systems.frame_resources.shared_geometry_arena();
+    let arena_guard = arena_arc.as_ref().map(|arena| arena.read());
+    let geometry_arena = arena_guard.as_ref().and_then(|guard| guard.as_ref());
+    let gpu_cull = prepared.gpu_cull.as_ref().and_then(|result| {
+        let runs = result.forward_runs(phase);
+        (!runs.is_empty() && indirect_enabled && geometry_arena.is_some()).then_some((result, runs))
+    });
+    let forward_indirect_arc = (indirect_enabled && geometry_arena.is_some() && gpu_cull.is_none())
+        .then(|| frame.systems.frame_resources.forward_indirect())
+        .flatten();
+    let indirect_buffer_arc = forward_indirect_arc.as_ref().map(|buffers| {
+        let mut buffers = buffers.lock();
+        Arc::clone(buffers.entry((resource_view_id, phase)).or_insert_with(|| {
+            let initial_commands = u32::try_from(groups.len()).unwrap_or(u32::MAX);
+            Arc::new(parking_lot::Mutex::new(
+                crate::gpu::indirect_buffer::IndirectDrawBuffer::new(device, initial_commands),
+            ))
+        }))
+    });
+    let mut indirect_buffer_guard = indirect_buffer_arc.as_ref().map(|buffer| buffer.lock());
+    let indirect_buffer = indirect_buffer_guard.as_mut().map(|buffer| &mut **buffer);
     record_world_mesh_forward_groups_graph_raster_with_frame_bind_group(
         rpass,
         frame,
@@ -182,6 +252,11 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_groups_gr
         groups,
         &frame_bg_arc,
         resource_view_id,
+        device,
+        uploads,
+        geometry_arena,
+        indirect_buffer,
+        gpu_cull,
     )
 }
 
@@ -193,6 +268,14 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_groups_gr
     groups: &[crate::world_mesh::DrawGroup],
     frame_bg_arc: &Arc<wgpu::BindGroup>,
     resource_view_id: ViewId,
+    device: &wgpu::Device,
+    uploads: GraphUploadSink<'_>,
+    geometry_arena: Option<&crate::gpu_pools::geometry_arena::GeometryArena>,
+    indirect_buffer: Option<&mut crate::gpu::indirect_buffer::IndirectDrawBuffer>,
+    gpu_cull: Option<(
+        &super::gpu_cull::WorldMeshGpuCullResult,
+        &[super::gpu_cull::GpuCulledForwardRun],
+    )>,
 ) -> bool {
     if groups.is_empty() {
         return true;
@@ -233,6 +316,11 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_groups_gr
             groups,
             precomputed: &prepared.precomputed_batches,
             encode: &mut encode_refs,
+            device,
+            uploads,
+            geometry_arena,
+            indirect_buffer,
+            gpu_cull,
         },
         &bind_groups,
         &raster_cfg,
@@ -243,10 +331,11 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_groups_gr
 /// Records the opaque draw subset into a render pass already opened by the graph.
 pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_opaque_graph_raster(
     rpass: &mut wgpu::RenderPass<'_>,
-    _device: &wgpu::Device,
+    device: &wgpu::Device,
     frame: &PassFrameContext<'_, '_>,
     blackboard: &Blackboard,
     prepared: &PreparedWorldMeshForwardFrame,
+    uploads: GraphUploadSink<'_>,
 ) -> bool {
     profiling::scope!("world_mesh_forward::record_opaque_graph_raster");
     record_world_mesh_forward_graph_raster(
@@ -255,6 +344,8 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_opaque_gr
         blackboard,
         prepared,
         MeshPassKind::ForwardOpaque,
+        device,
+        uploads,
     )
 }
 
@@ -262,6 +353,7 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_opaque_gr
 pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_normal_graph_raster(
     rpass: &mut wgpu::RenderPass<'_>,
     device: &wgpu::Device,
+    uploads: GraphUploadSink<'_>,
     frame: &PassFrameContext<'_, '_>,
     prepared: &PreparedWorldMeshForwardFrame,
     pipelines: &WorldMeshForwardNormalPipelineCache,
@@ -282,6 +374,33 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_normal_gr
     let Some(gpu_limits) = frame.view.gpu_limits.clone() else {
         return false;
     };
+
+    let indirect_enabled = crate::world_mesh::world_mesh_render_path().uses_indirect_draws()
+        && prepared.supports_base_instance
+        && gpu_limits.supports_indirect_first_instance();
+    let arena_arc = frame.systems.frame_resources.shared_geometry_arena();
+    let arena_guard = arena_arc.as_ref().map(|arena| arena.read());
+    let arena = arena_guard.as_ref().and_then(|guard| guard.as_ref());
+    let indirect_arena = indirect_enabled.then_some(arena).flatten();
+    let gpu_normals = prepared
+        .gpu_cull
+        .as_ref()
+        .filter(|result| !result.normal_runs.is_empty() && indirect_arena.is_some());
+
+    let mut commands = Vec::new();
+    let runs = indirect_arena
+        .filter(|_| gpu_normals.is_none())
+        .map(|arena| {
+            collect_normal_prepass_indirect(
+                groups,
+                &prepared.draws,
+                arena,
+                &prepared.pipeline,
+                &mut commands,
+            )
+        })
+        .unwrap_or_default();
+
     let mut encode_refs = WorldMeshForwardEncodeRefs::from_pass_frame(frame);
     #[cfg(feature = "tracy")]
     rpass.push_debug_group("world_mesh_forward::view_normals");
@@ -296,7 +415,37 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_normal_gr
         pipeline: &prepared.pipeline,
         device,
         normal_pipelines: pipelines,
+        geometry_arena: arena,
     });
+
+    if let (Some(arena), Some(result)) = (indirect_arena, gpu_normals) {
+        result.issue_normal_runs(rpass, device, per_draw_bg.as_ref(), arena, pipelines);
+    } else if let Some(arena) = indirect_arena
+        && !commands.is_empty()
+        && let Some(indirect_arc) = frame.systems.frame_resources.normal_prepass_indirect()
+    {
+        let count = u32::try_from(commands.len()).unwrap_or(u32::MAX);
+        let buffer_arc = {
+            let mut buffers = indirect_arc.lock();
+            Arc::clone(buffers.entry(frame.view.view_id).or_insert_with(|| {
+                Arc::new(parking_lot::Mutex::new(
+                    crate::gpu::indirect_buffer::IndirectDrawBuffer::new(device, count),
+                ))
+            }))
+        };
+        let mut buffer = buffer_arc.lock();
+        buffer.prepare_len(device, count);
+        uploads.write_buffer(buffer.buffer(), 0, bytemuck::cast_slice(&commands));
+        issue_normal_prepass_indirect(NormalPrepassIndirectDraw {
+            rpass,
+            device,
+            per_draw_bind_group: per_draw_bg.as_ref(),
+            arena,
+            commands: &buffer,
+            runs: &runs,
+            normal_pipelines: pipelines,
+        });
+    }
     #[cfg(feature = "tracy")]
     rpass.pop_debug_group();
     true
@@ -305,10 +454,11 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_normal_gr
 /// Records the nontransparent intersection draw subset into a render pass already opened by the graph.
 pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_intersection_graph_raster(
     rpass: &mut wgpu::RenderPass<'_>,
-    _device: &wgpu::Device,
+    device: &wgpu::Device,
     frame: &PassFrameContext<'_, '_>,
     blackboard: &Blackboard,
     prepared: &PreparedWorldMeshForwardFrame,
+    uploads: GraphUploadSink<'_>,
 ) -> bool {
     profiling::scope!("world_mesh_forward::record_intersection_graph_raster");
     record_world_mesh_forward_graph_raster(
@@ -317,5 +467,7 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_intersect
         blackboard,
         prepared,
         MeshPassKind::Intersection,
+        device,
+        uploads,
     )
 }

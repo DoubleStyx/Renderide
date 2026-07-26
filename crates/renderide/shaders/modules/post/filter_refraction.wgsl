@@ -2,6 +2,7 @@
 
 #define_import_path renderide::post::filter_refraction
 
+#import renderide::core::math as rmath
 #import renderide::core::normal_decode as nd
 #import renderide::core::texture_sampling as ts
 #import renderide::core::uv as uvu
@@ -11,7 +12,6 @@
 #import renderide::mesh::vertex as mv
 #import renderide::pbs::normal as pnorm
 #import renderide::post::filter_math as fm
-#import renderide::post::filter_vertex as fv
 
 struct VertexOutput {
     @builtin(position) clip_pos: vec4<f32>,
@@ -25,10 +25,63 @@ struct VertexOutput {
     @location(7) clip_w: f32,
 }
 
-fn view_tangent_for_draw(instance_index: u32, view_idx: u32, world_t: vec4<f32>) -> vec4<f32> {
+fn world_to_view_normal_with_basis(
+    world_n: vec3<f32>,
+    basis: vbasis::ViewBasis,
+) -> vec3<f32> {
+    return rmath::safe_normalize(
+        vec3<f32>(
+            dot(world_n, basis.x),
+            dot(world_n, basis.y),
+            dot(world_n, basis.z),
+        ),
+        vec3<f32>(0.0, 0.0, 1.0),
+    );
+}
+
+/// Builds the refraction vertex payload required by the selected material features.
+fn vertex_main_with_features(
+    instance_index: u32,
+    view_idx: u32,
+    pos: vec4<f32>,
+    n: vec4<f32>,
+    t: vec4<f32>,
+    uv0: vec2<f32>,
+    refraction_enabled: bool,
+    normal_map_enabled: bool,
+) -> VertexOutput {
     let d = pd::get_draw(instance_index);
+    let world_p = mv::world_position(d, pos);
     let vp = mv::select_view_proj(d, view_idx);
-    return vec4<f32>(vbasis::world_to_view_normal(world_t.xyz, vp), world_t.w);
+    let clip_pos = vp * world_p;
+
+    var out: VertexOutput;
+    out.clip_pos = clip_pos;
+    out.primary_uv = uv0;
+    out.world_pos = world_p.xyz;
+    out.world_n = vec3<f32>(0.0);
+    out.view_layer = view_idx;
+    out.view_n = vec3<f32>(0.0);
+    out.obj_xy = pos.xy;
+    out.view_t = vec4<f32>(0.0);
+    out.clip_w = clip_pos.w;
+
+    if (refraction_enabled) {
+        let world_n =
+            rmath::safe_normalize(d.normal_matrix * n.xyz, vec3<f32>(0.0, 1.0, 0.0));
+        let view_basis = vbasis::from_view_projection(vp);
+        out.world_n = world_n;
+        out.view_n = world_to_view_normal_with_basis(world_n, view_basis);
+
+        if (normal_map_enabled) {
+            let world_t = mv::world_tangent(d, t);
+            out.view_t = vec4<f32>(
+                world_to_view_normal_with_basis(world_t.xyz, view_basis),
+                world_t.w,
+            );
+        }
+    }
+    return out;
 }
 
 fn vertex_main(
@@ -39,18 +92,16 @@ fn vertex_main(
     t: vec4<f32>,
     uv0: vec2<f32>,
 ) -> VertexOutput {
-    let inner = fv::vertex_main(instance_index, view_idx, pos, n, t, uv0);
-    var out: VertexOutput;
-    out.clip_pos = inner.clip_pos;
-    out.primary_uv = inner.primary_uv;
-    out.world_pos = inner.world_pos;
-    out.world_n = inner.world_n;
-    out.view_layer = inner.view_layer;
-    out.view_n = inner.view_n;
-    out.obj_xy = pos.xy;
-    out.view_t = view_tangent_for_draw(instance_index, view_idx, inner.world_t);
-    out.clip_w = inner.clip_pos.w;
-    return out;
+    return vertex_main_with_features(
+        instance_index,
+        view_idx,
+        pos,
+        n,
+        t,
+        uv0,
+        true,
+        true,
+    );
 }
 
 fn normal_offset(

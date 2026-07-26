@@ -260,7 +260,10 @@ fn build_view_layouts(
                 depth_format,
                 color_format,
                 needs_depth_snapshot: view.resource_hints.needs_depth_snapshot,
-                needs_color_snapshot: view.resource_hints.needs_color_snapshot,
+                needs_per_object_color_snapshot: view
+                    .resource_hints
+                    .needs_per_object_color_snapshot,
+                needs_named_color_snapshot: view.resource_hints.needs_named_color_snapshot,
             })
         })
         .collect()
@@ -285,7 +288,8 @@ fn build_resource_layouts(
                 sample_count: 1,
                 color_format: surface_format,
                 needs_depth_snapshot: false,
-                needs_color_snapshot: false,
+                needs_per_object_color_snapshot: false,
+                needs_named_color_snapshot: false,
                 ..layout
             });
         }

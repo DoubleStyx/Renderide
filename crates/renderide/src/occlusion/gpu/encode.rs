@@ -1,9 +1,4 @@
-//! Hi-Z pyramid compute dispatch and copy-to-staging encoding.
-//!
-//! This module is the top-level coordinator for one `encode_hi_z_build` call. Per-stage work
-//! (mip0 from depth, hierarchical downsample, copy-to-staging) lives in the submodules
-//! [`mip0`], [`downsample`], and [`staging_copy`]; each takes a borrowed [`EncodeSession`] plus
-//! per-call arguments.
+//! Hi-Z pyramid compute dispatch and optional copy-to-staging encoding.
 
 mod downsample;
 mod mip0;
@@ -24,13 +19,13 @@ pub struct HiZBuildRecord<'a> {
     pub device: &'a wgpu::Device,
     /// Effective device caps used to validate scratch allocations and dispatches.
     pub limits: &'a crate::gpu::GpuLimits,
-    /// Command encoder receiving the mip0, downsample, and staging copy commands.
+    /// Command encoder receiving the mip0, downsample, and optional staging copy commands.
     pub encoder: &'a mut wgpu::CommandEncoder,
 }
 
 /// Registry-owned Hi-Z pyramid selected for this view and ping-pong half.
 pub struct HiZHistoryTarget<'a> {
-    /// Backing history texture that receives mip writes and is copied to readback staging.
+    /// Backing history texture that receives mip writes and may be copied to readback staging.
     pub texture: &'a wgpu::Texture,
     /// Per-layer/per-mip texture views for writing the current view's pyramid.
     pub mip_views: &'a HistoryTextureMipViews,
@@ -55,11 +50,7 @@ struct HiZHistoryViews<'a> {
     right: Option<&'a [wgpu::TextureView]>,
 }
 
-/// Stable handles shared across every per-stage dispatch inside one [`encode_hi_z_build`] call.
-///
-/// Per-call differentiators such as `pyramid_views`, `depth_bind`, `side`, `history_texture`,
-/// `ws`, `right_eye`, and `layer` are passed as function arguments to each stage; only the
-/// invariant handles live here so the stereo loop can re-use the session across both sides.
+/// Shared state for one Hi-Z build.
 pub(super) struct EncodeSession<'a> {
     /// Device for on-demand bind-group creation.
     pub(super) device: &'a wgpu::Device,
@@ -75,17 +66,10 @@ pub(super) struct EncodeSession<'a> {
     pub(super) profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
 }
 
-/// Records Hi-Z build + copy-to-staging into the state's current readback slot.
+/// Records the Hi-Z build and an optional staging copy.
 ///
-/// Claims the staging slot at encode time so two consecutive frames can never aim the
-/// same buffer even if the prior frame's `on_submitted_work_done` callback has not yet fired.
-///
-/// The claimed slot is stored as a transient handoff for the main-thread submit path to bake into
-/// a [`wgpu::Queue::on_submitted_work_done`] closure, so the slot travels with the closure by value
-/// and a late-firing callback cannot consume a newer frame's slot.
-///
-/// Call [`HiZGpuState::drain_completed_map_async`] at the **start** of the next frame to drain
-/// completed maps.
+/// Readback pressure never suppresses pyramid generation. The claimed slot travels by value with
+/// the submit callback, preventing late callbacks from consuming a newer frame's slot.
 pub fn encode_hi_z_build(
     record: HiZBuildRecord<'_>,
     depth_view: &wgpu::TextureView,
@@ -104,7 +88,10 @@ pub fn encode_hi_z_build(
         return;
     }
 
-    let ws = state.next_write_slot();
+    let readback_slot = state
+        .scratch()
+        .filter(|scratch| state.can_stage_hi_z_readback(scratch))
+        .map(|_| state.next_write_slot());
     let Some(scratch) = state.scratch_mut() else {
         return;
     };
@@ -126,23 +113,23 @@ pub fn encode_hi_z_build(
     };
     let recorded = match mode {
         OutputDepthMode::DesktopSingle => {
-            record_desktop_pyramid(&mut session, &history_views, history.texture, ws)
+            record_desktop_pyramid(&mut session, &history_views, history.texture, readback_slot)
         }
         OutputDepthMode::StereoArray { .. } => {
-            record_stereo_pyramids(&mut session, &history_views, history.texture, ws)
+            record_stereo_pyramids(&mut session, &history_views, history.texture, readback_slot)
         }
     };
 
     if !recorded {
         return;
     }
-    let claimed_ws = state.claim_encoded_slot();
-    debug_assert_eq!(claimed_ws, ws);
+    if let Some(readback_slot) = readback_slot {
+        let claimed_ws = state.claim_encoded_slot();
+        debug_assert_eq!(claimed_ws, readback_slot);
+    }
 }
 
-/// Resets slot validity, invalidates cache, ensures [`HiZGpuScratch`] matches `extent` / stereo layout.
-///
-/// Returns `false` when encoding must abort (zero extent, missing scratch, or GPU not ready).
+/// Prepares scratch resources, returning `false` when pyramid generation cannot run.
 fn prepare_scratch(
     device: &wgpu::Device,
     limits: &crate::gpu::GpuLimits,
@@ -177,11 +164,7 @@ fn prepare_scratch(
         state.set_secondary_readback_enabled(stereo);
     }
     state.set_secondary_readback_enabled(stereo);
-    let Some(scratch_ref) = state.scratch() else {
-        return false;
-    };
-
-    state.can_encode_hi_z(scratch_ref)
+    state.scratch().is_some()
 }
 
 /// Drops cached bind groups whose source views (depth attachment / pyramid target) have changed.
@@ -242,15 +225,23 @@ fn record_desktop_pyramid(
     session: &mut EncodeSession<'_>,
     history_views: &HiZHistoryViews<'_>,
     history_texture: &wgpu::Texture,
-    ws: usize,
+    readback_slot: Option<usize>,
 ) -> bool {
-    record_pyramid_side(
+    record_build_then_optional_readback(
         session,
-        history_views.left,
-        DepthBinding::D2,
-        PyramidSide::DesktopOrLeft,
+        readback_slot,
+        |session| {
+            record_pyramid_side(
+                session,
+                history_views.left,
+                DepthBinding::D2,
+                PyramidSide::DesktopOrLeft,
+            );
+        },
+        |session, slot| {
+            staging_copy::copy_layer(session, history_texture, slot, 0, false);
+        },
     );
-    staging_copy::copy_layer(session, history_texture, ws, 0, false);
     true
 }
 
@@ -258,7 +249,7 @@ fn record_stereo_pyramids(
     session: &mut EncodeSession<'_>,
     history_views: &HiZHistoryViews<'_>,
     history_texture: &wgpu::Texture,
-    ws: usize,
+    readback_slot: Option<usize>,
 ) -> bool {
     if !session.scratch.is_stereo() {
         return false;
@@ -267,22 +258,42 @@ fn record_stereo_pyramids(
         return false;
     };
 
-    record_pyramid_side(
+    record_build_then_optional_readback(
         session,
-        history_views.left,
-        DepthBinding::D2Array { layer: 0 },
-        PyramidSide::DesktopOrLeft,
+        readback_slot,
+        |session| {
+            record_pyramid_side(
+                session,
+                history_views.left,
+                DepthBinding::D2Array { layer: 0 },
+                PyramidSide::DesktopOrLeft,
+            );
+            record_pyramid_side(
+                session,
+                views_right,
+                DepthBinding::D2Array { layer: 1 },
+                PyramidSide::Right,
+            );
+        },
+        |session, slot| {
+            staging_copy::copy_layer(session, history_texture, slot, 0, false);
+            staging_copy::copy_layer(session, history_texture, slot, 1, true);
+        },
     );
-    record_pyramid_side(
-        session,
-        views_right,
-        DepthBinding::D2Array { layer: 1 },
-        PyramidSide::Right,
-    );
-
-    staging_copy::copy_layer(session, history_texture, ws, 0, false);
-    staging_copy::copy_layer(session, history_texture, ws, 1, true);
     true
+}
+
+/// Records pyramid work before the optional readback copy.
+fn record_build_then_optional_readback<T>(
+    session: &mut T,
+    readback_slot: Option<usize>,
+    build: impl FnOnce(&mut T),
+    readback: impl FnOnce(&mut T, usize),
+) {
+    build(session);
+    if let Some(slot) = readback_slot {
+        readback(session, slot);
+    }
 }
 
 /// Records mip0 + downsample dispatches for one pyramid layer chain.
@@ -298,6 +309,47 @@ fn record_pyramid_side(
 
 #[cfg(test)]
 mod tests {
+    use super::record_build_then_optional_readback;
+
+    #[derive(Default)]
+    struct RecordingCounts {
+        pyramid_builds: usize,
+        staging_copies: usize,
+    }
+
+    #[test]
+    fn pyramid_build_proceeds_when_no_readback_slot_is_available() {
+        let mut counts = RecordingCounts::default();
+
+        record_build_then_optional_readback(
+            &mut counts,
+            None,
+            |counts| counts.pyramid_builds += 1,
+            |counts, _slot| counts.staging_copies += 1,
+        );
+
+        assert_eq!(counts.pyramid_builds, 1);
+        assert_eq!(counts.staging_copies, 0);
+    }
+
+    #[test]
+    fn available_readback_slot_stages_the_built_pyramid() {
+        let mut counts = RecordingCounts::default();
+
+        record_build_then_optional_readback(
+            &mut counts,
+            Some(2),
+            |counts| counts.pyramid_builds += 1,
+            |counts, slot| {
+                assert_eq!(slot, 2);
+                counts.staging_copies += 1;
+            },
+        );
+
+        assert_eq!(counts.pyramid_builds, 1);
+        assert_eq!(counts.staging_copies, 1);
+    }
+
     #[test]
     fn hi_z_encode_avoids_deferred_uploads_for_dispatch_local_uniforms() {
         let mip0 = include_str!("encode/mip0.rs");

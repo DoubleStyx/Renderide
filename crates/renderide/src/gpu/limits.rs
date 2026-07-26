@@ -70,6 +70,22 @@ impl GpuLimits {
         validation::try_new(device, adapter)
     }
 
+    /// Whether indirect commands support non-zero `first_instance`.
+    #[must_use]
+    #[inline]
+    pub fn supports_indirect_first_instance(&self) -> bool {
+        self.features
+            .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE)
+    }
+
+    /// Whether compute-written counts can drive `multi_draw_indexed_indirect_count`.
+    #[must_use]
+    #[inline]
+    pub fn supports_multi_draw_indirect_count(&self) -> bool {
+        self.features
+            .contains(wgpu::Features::MULTI_DRAW_INDIRECT_COUNT)
+    }
+
     #[cfg(test)]
     pub(crate) fn synthetic_for_tests(
         wgpu_limits: wgpu::Limits,
@@ -97,6 +113,23 @@ impl GpuLimits {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn indirect_feature_queries_follow_enabled_device_features() {
+        let features =
+            wgpu::Features::INDIRECT_FIRST_INSTANCE | wgpu::Features::MULTI_DRAW_INDIRECT_COUNT;
+        let gl = GpuLimits::synthetic_for_tests(wgpu::Limits::default(), features, HashMap::new());
+        assert!(gl.supports_indirect_first_instance());
+        assert!(gl.supports_multi_draw_indirect_count());
+
+        let gl = GpuLimits::synthetic_for_tests(
+            wgpu::Limits::default(),
+            wgpu::Features::empty(),
+            HashMap::new(),
+        );
+        assert!(!gl.supports_indirect_first_instance());
+        assert!(!gl.supports_multi_draw_indirect_count());
+    }
 
     #[test]
     fn compute_dispatch_fits_respects_max_per_axis() {

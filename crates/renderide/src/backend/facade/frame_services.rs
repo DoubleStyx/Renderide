@@ -44,19 +44,32 @@ impl BackendFrameServices {
         queue: &wgpu::Queue,
         gpu_limits: Arc<GpuLimits>,
     ) -> Result<(), FrameGpuBindingsError> {
+        // Build a complete replacement before publishing it. Reusing the existing manager would
+        // retain per-view bind groups and buffers created by the previous device.
+        let mut replacement = Self::new();
         let max_buffer_size = gpu_limits.max_buffer_size();
-        self.mesh_deform_scratch = Some(MeshDeformScratch::new(device, max_buffer_size));
-        self.frame_resources.attach(device, queue, gpu_limits)?;
-        self.skin_cache = Some(GpuSkinCache::new(device, max_buffer_size));
+        replacement.mesh_deform_scratch = Some(MeshDeformScratch::new(device, max_buffer_size));
+        replacement
+            .frame_resources
+            .attach(device, queue, gpu_limits)?;
+        replacement.skin_cache = Some(GpuSkinCache::new(device, max_buffer_size));
         match MeshPreprocessPipelines::new(device) {
-            Ok(pipelines) => self.mesh_preprocess = Some(pipelines),
+            Ok(pipelines) => replacement.mesh_preprocess = Some(pipelines),
             Err(error) => {
                 logger::warn!("mesh preprocess compute pipelines not created: {error}");
-                self.mesh_preprocess = None;
+                replacement.mesh_preprocess = None;
             }
         }
-        self.msaa_depth_resolve = MsaaDepthResolveResources::try_new(device).map(Arc::new);
+        replacement.msaa_depth_resolve = MsaaDepthResolveResources::try_new(device).map(Arc::new);
+        *self = replacement;
         Ok(())
+    }
+
+    /// Returns the canonical immutable-geometry store allocated with frame GPU resources.
+    pub(super) fn shared_static_geometry_store(
+        &self,
+    ) -> Option<crate::graph_inputs::SharedStaticGeometryStore> {
+        self.frame_resources.shared_static_geometry_store()
     }
 
     /// Resets per-tick coalescing, advances the skin-cache frame counter, and decays idle arenas.
@@ -71,9 +84,7 @@ impl BackendFrameServices {
             false
         };
         // Recreated arenas can alias stale deform bind groups, so drop those caches.
-        if arenas_reset
-            && let Some(scratch) = self.mesh_deform_scratch.as_mut()
-        {
+        if arenas_reset && let Some(scratch) = self.mesh_deform_scratch.as_mut() {
             scratch.invalidate_after_arena_reset();
         }
     }

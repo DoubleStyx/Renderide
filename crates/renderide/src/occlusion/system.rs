@@ -140,7 +140,7 @@ impl OcclusionSystem {
         self.offscreen.lock().len()
     }
 
-    /// Records Hi-Z GPU work into `encoder` (staging copy included).
+    /// Records Hi-Z GPU work into `encoder` (with a staging copy when the ring has capacity).
     pub(crate) fn encode_hi_z_build_pass(
         &self,
         record: HiZBuildRecord<'_>,
@@ -164,24 +164,10 @@ impl OcclusionSystem {
         );
     }
 
-    /// Drains completed Hi-Z `map_async` readbacks into CPU snapshots for [`Self::hi_z_cull_data`]
-    /// and promotes any submit-done readback slots into fresh `map_async` requests on the main thread.
+    /// Drains completed readbacks and starts ready maps without blocking.
     ///
-    /// Non-blocking: uses bounded [`wgpu::Device::poll`] calls; if a read is not ready, prior
-    /// snapshots are kept. The second poll gives newly-started maps a chance to complete in the
-    /// same frame-start drain, avoiding an extra tick of CPU Hi-Z latency after the GPU-completion
-    /// callback has already fired.
-    ///
-    /// The poll runs **before** any [`HiZGpuState`] lock so the
-    /// [`wgpu::Queue::on_submitted_work_done`] callback installed by
-    /// [`crate::render_graph::compiled::exec::CompiledRenderGraph::execute_multi_view`]
-    /// (which itself locks the per-view [`HiZGpuState`]) can execute without re-entering
-    /// a lock held by this function. That callback only marks the encoded readback slot as
-    /// submit-done; the actual `map_async` runs here via
-    /// [`crate::occlusion::gpu::HiZGpuState::start_ready_maps`], so no
-    /// wgpu call is issued from inside the device-poll callback (which would risk deadlocks
-    /// with wgpu's internal queue-write locks -- observed as a futex hang inside
-    /// `queue.write_texture` during asset upload).
+    /// Device polling occurs outside every [`HiZGpuState`] lock so submit callbacks can acquire
+    /// their view lock. `map_async` starts here rather than inside a device-poll callback.
     pub fn hi_z_begin_frame_readback(&self, device: &wgpu::Device) {
         profiling::scope!("hi_z::readback_drain");
         let _ = device.poll(wgpu::PollType::Poll);
@@ -231,6 +217,12 @@ impl OcclusionSystem {
     /// View/projection snapshot from the **previous** world forward pass (for Hi-Z occlusion tests).
     pub(crate) fn hi_z_temporal_snapshot(&self, view: ViewId) -> Option<HiZTemporalState> {
         self.hi_z_state_slot(view)?.lock().temporal.clone()
+    }
+
+    /// CPU Hi-Z snapshot generation for `view`, or zero when no slot exists.
+    pub(crate) fn hi_z_cpu_snapshot_generation(&self, view: ViewId) -> u64 {
+        self.hi_z_state_slot(view)
+            .map_or(0, |slot| slot.lock().cpu_snapshot_generation())
     }
 
     /// Stores a prepared temporal snapshot for next-frame Hi-Z occlusion tests.

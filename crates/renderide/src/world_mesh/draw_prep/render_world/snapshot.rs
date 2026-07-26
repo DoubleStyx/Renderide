@@ -166,6 +166,7 @@ pub(super) fn rebuild_prepared_snapshot<S>(
     point_render_buffers: &HashMap<i32, crate::particles::PointRenderBufferAsset>,
     render_context: RenderingContext,
     dirty_spaces: Option<&HashSet<RenderSpaceId>>,
+    particle_only_spaces: &HashSet<RenderSpaceId>,
 ) -> SnapshotRebuildStats
 where
     S: WorldMeshSceneRead + Sync + ?Sized,
@@ -187,13 +188,17 @@ where
         })
         .collect::<Vec<_>>();
     render_world.prepared.begin_cached_rebuild(render_context);
-    let reused_space_ids =
-        reusable_prepared_space_ids(&render_world.prepared, &active_space_ids, dirty_spaces);
+    let (reused_space_ids, particle_only_reused_space_ids) = reusable_prepared_space_ids(
+        &render_world.prepared,
+        &active_space_ids,
+        dirty_spaces,
+        particle_only_spaces,
+    );
     let active_spaces = active_space_ids
         .iter()
         .enumerate()
         .filter_map(|(space_index, id)| {
-            if reused_space_ids.contains(id) {
+            if reused_space_ids.contains(id) || particle_only_reused_space_ids.contains(id) {
                 return None;
             }
             render_world
@@ -208,11 +213,26 @@ where
         .map(RenderWorldSpace::retained_template_count)
         .sum::<usize>();
     let mut tasks = build_snapshot_rebuild_tasks(&active_spaces);
-    extend_snapshot_particle_tasks(&mut tasks, &active_spaces, scene);
+    let particle_refresh_spaces = active_space_ids
+        .iter()
+        .enumerate()
+        .filter_map(|(space_index, id)| {
+            if reused_space_ids.contains(id) {
+                return None;
+            }
+            render_world
+                .spaces
+                .get(id)
+                .map(|space| (space_index, *id, space))
+        })
+        .collect::<Vec<_>>();
+    extend_snapshot_particle_tasks(&mut tasks, &particle_refresh_spaces, scene);
     let stats = SnapshotRebuildStats {
         task_count: tasks.len(),
         retained_draw_count,
-        reused_space_count: reused_space_ids.len(),
+        reused_space_count: reused_space_ids
+            .len()
+            .saturating_add(particle_only_reused_space_ids.len()),
     };
     let policy = FrameParallelPolicy::for_current_thread_pool();
     let parallel_outputs = snapshot_rebuild_admission(policy, tasks.len(), retained_draw_count)
@@ -232,10 +252,23 @@ where
         });
     drop(tasks);
     drop(active_spaces);
+    drop(particle_refresh_spaces);
     if let Some(outputs) = parallel_outputs {
-        rebuild_snapshot_parallel(render_world, &active_space_ids, &reused_space_ids, outputs);
+        rebuild_snapshot_parallel(
+            render_world,
+            &active_space_ids,
+            &reused_space_ids,
+            &particle_only_reused_space_ids,
+            outputs,
+        );
     } else {
-        rebuild_snapshot_serial(render_world, &inputs, active_space_ids, &reused_space_ids);
+        rebuild_snapshot_serial(
+            render_world,
+            &inputs,
+            active_space_ids,
+            &reused_space_ids,
+            &particle_only_reused_space_ids,
+        );
     }
     render_world.prepared.finish_cached_rebuild(scene);
     stats
@@ -425,6 +458,7 @@ pub(super) fn rebuild_snapshot_parallel(
     render_world: &mut RenderWorld,
     active_space_ids: &[RenderSpaceId],
     reused_space_ids: &HashSet<RenderSpaceId>,
+    particle_only_reused_space_ids: &HashSet<RenderSpaceId>,
     outputs: Vec<(usize, Vec<FramePreparedDraw>)>,
 ) {
     let mut outputs_by_space: Vec<Vec<Vec<FramePreparedDraw>>> =
@@ -440,6 +474,13 @@ pub(super) fn rebuild_snapshot_parallel(
             render_world
                 .prepared
                 .extend_previous_cached_draws_for_space(id);
+        } else if particle_only_reused_space_ids.contains(&id) {
+            render_world
+                .prepared
+                .extend_previous_cached_non_particle_draws_for_space(id);
+            for draws in &outputs_by_space[space_index] {
+                render_world.prepared.extend_cached_draws(draws);
+            }
         } else {
             for draws in &outputs_by_space[space_index] {
                 render_world.prepared.extend_cached_draws(draws);
@@ -453,6 +494,7 @@ fn rebuild_snapshot_serial<S>(
     inputs: &SnapshotRebuildInputs<'_, S>,
     active_space_ids: Vec<RenderSpaceId>,
     reused_space_ids: &HashSet<RenderSpaceId>,
+    particle_only_reused_space_ids: &HashSet<RenderSpaceId>,
 ) where
     S: WorldMeshSceneRead + ?Sized,
 {
@@ -463,6 +505,11 @@ fn rebuild_snapshot_serial<S>(
             render_world
                 .prepared
                 .extend_previous_cached_draws_for_space(id);
+        } else if particle_only_reused_space_ids.contains(&id) {
+            render_world
+                .prepared
+                .extend_previous_cached_non_particle_draws_for_space(id);
+            append_particle_draws(render_world, inputs, id);
         } else if let Some(space) = render_world.spaces.get(&id) {
             space.append_to_prepared(&mut render_world.prepared);
             append_particle_draws(render_world, inputs, id);
@@ -474,20 +521,24 @@ fn reusable_prepared_space_ids(
     prepared: &super::super::prepared_renderables::FramePreparedRenderables,
     active_space_ids: &[RenderSpaceId],
     dirty_spaces: Option<&HashSet<RenderSpaceId>>,
-) -> HashSet<RenderSpaceId> {
+    particle_only_spaces: &HashSet<RenderSpaceId>,
+) -> (HashSet<RenderSpaceId>, HashSet<RenderSpaceId>) {
     let Some(dirty_spaces) = dirty_spaces else {
-        return HashSet::new();
+        return (HashSet::new(), HashSet::new());
     };
     let mut reused = HashSet::new();
+    let mut particle_only_reused = HashSet::new();
     for &id in active_space_ids {
-        if dirty_spaces.contains(&id) {
+        if !prepared.has_previous_cached_draws_for_space(id) {
             continue;
         }
-        if prepared.has_previous_cached_draws_for_space(id) {
+        if !dirty_spaces.contains(&id) {
             reused.insert(id);
+        } else if particle_only_spaces.contains(&id) {
+            particle_only_reused.insert(id);
         }
     }
-    reused
+    (reused, particle_only_reused)
 }
 
 fn append_particle_draws<S>(

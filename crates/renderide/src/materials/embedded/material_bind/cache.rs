@@ -13,11 +13,10 @@ use crate::frame_contract::OffscreenWriteTarget;
 use crate::gpu_pools::SamplerState;
 use crate::materials::host_data::{MaterialPropertyLookupIds, MaterialPropertyStore};
 
-/// Number of shards across which the embedded `@group(1)` bind, uniform, and sampler caches are
-/// split. Each shard owns its own [`parking_lot::Mutex`] over [`lru::LruCache`]; per-view rayon workers
-/// hash their cache key into a shard index and only contend with workers whose keys hash into the
-/// same shard. 16 is enough to keep contention sub-linear up through ~16-core rayon pools while
-/// keeping the per-shard LRU large enough to track the working set.
+/// Number of shards used by the embedded bind, uniform, and sampler caches.
+///
+/// Sixteen shards keep the per-shard working set useful while allowing renderer workers to resolve
+/// unrelated keys concurrently.
 pub(super) const EMBEDDED_CACHE_SHARDS: usize = 16;
 
 /// LRU cap for `@group(1)` bind groups (per stem/texture signature/arena generation).
@@ -137,9 +136,16 @@ impl EmbeddedMaterialBindResources {
         &self,
         stem: &str,
     ) -> Result<Arc<StemMaterialLayout>, EmbeddedMaterialBindError> {
-        let mut cache = self.stem_cache.lock();
-        if let Some(s) = cache.get(stem) {
-            return Ok(s.clone());
+        {
+            let cache = self.stem_cache.read();
+            if let Some(layout) = cache.get(stem) {
+                return Ok(layout.clone());
+            }
+        }
+
+        let mut cache = self.stem_cache.write();
+        if let Some(layout) = cache.get(stem) {
+            return Ok(layout.clone());
         }
 
         let layout = build_stem_material_layout(
@@ -148,7 +154,6 @@ impl EmbeddedMaterialBindResources {
             self.property_registry.as_ref(),
         )?;
         cache.insert(stem.to_string(), layout.clone());
-        drop(cache);
         Ok(layout)
     }
 

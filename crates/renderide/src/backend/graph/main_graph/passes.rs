@@ -11,6 +11,8 @@ pub(super) struct MainGraphPassIds {
     pub(super) light_cookies: PassId,
     pub(super) deform: PassId,
     pub(super) shadows: PassId,
+    pub(super) geometry_populate: PassId,
+    pub(super) gpu_cull: PassId,
     pub(super) clustered: PassId,
     pub(super) depth_prepass: PassId,
     pub(super) forward_opaque: PassId,
@@ -90,6 +92,13 @@ pub(super) fn register_main_graph_passes(
     let deform = builder.add_compute_pass(Box::new(crate::passes::MeshDeformPass::new()));
     let shadows =
         builder.add_encoder_pass(Box::new(crate::backend::frame_gpu::ShadowAtlasPass::new()));
+    let geometry_populate =
+        builder.add_encoder_pass(Box::new(crate::passes::GeometryArenaPopulatePass::new()));
+    let gpu_cull = builder.add_compute_pass(Box::new(crate::passes::WorldMeshGpuCullPass::new(
+        crate::passes::WorldMeshGpuCullGraphResources {
+            hi_z_previous: h.hi_z_previous,
+        },
+    )));
     let clustered = builder.add_compute_pass(Box::new(crate::passes::ClusteredLightPass::new(
         crate::passes::ClusteredLightGraphResources {
             lights: h.lights,
@@ -144,6 +153,8 @@ pub(super) fn register_main_graph_passes(
         light_cookies,
         deform,
         shadows,
+        geometry_populate,
+        gpu_cull,
         clustered,
         depth_prepass,
         forward_opaque,

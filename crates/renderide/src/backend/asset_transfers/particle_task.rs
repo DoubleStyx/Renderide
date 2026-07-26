@@ -3,7 +3,10 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
-use crate::assets::mesh::{MeshBufferUploadSink, MeshDerivedStreamDemand, MeshGpuUploadContext};
+use crate::assets::mesh::{
+    MeshBufferUploadSink, MeshDerivedStreamDemand, MeshGpuUploadContext,
+    allocate_generated_point_mesh,
+};
 use crate::gpu::{GpuLimits, GpuMappedBufferHealth};
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
 use crate::particles::{
@@ -27,13 +30,15 @@ use super::shared_memory_payload::{OwnedSharedMemoryPayload, SharedMemoryPayload
 pub(in crate::backend::asset_transfers) struct ParticleTaskGpu<'a> {
     /// Logical device used to create generated mesh buffers.
     pub(in crate::backend::asset_transfers) device: &'a Arc<wgpu::Device>,
+    /// Queue used to submit the GPU point-particle billboard expansion dispatch.
+    pub(in crate::backend::asset_transfers) queue: &'a Arc<wgpu::Queue>,
     /// Effective GPU limits used by mesh upload validation.
     pub(in crate::backend::asset_transfers) gpu_limits: &'a Arc<GpuLimits>,
     /// Shared mapped-buffer invalidation generation from the active GPU context.
     pub(in crate::backend::asset_transfers) mapped_buffer_health: &'a Arc<GpuMappedBufferHealth>,
     /// Deferred mesh buffer upload batch for this drain.
     pub(in crate::backend::asset_transfers) mesh_upload_batch: &'a Arc<MeshUploadStagingBatch>,
-    /// Whether wgpu validation scopes are enabled for generated mesh uploads. -xlinka
+    /// Whether wgpu validation scopes are enabled for generated mesh uploads.
     pub(in crate::backend::asset_transfers) mesh_validation_scopes_enabled: bool,
 }
 
@@ -56,7 +61,7 @@ pub struct TrailRenderBufferTask {
 enum PointRenderBufferTaskStage {
     /// Waiting to claim the newest pending upload for this asset.
     Pending { asset_id: i32 },
-    /// Shared-memory bytes are being copied in bounded chunks. -xlinka
+    /// Shared-memory bytes are being copied in bounded chunks.
     Copying {
         upload: PointRenderBufferUpload,
         generation: u64,
@@ -69,7 +74,7 @@ enum PointRenderBufferTaskStage {
 enum TrailRenderBufferTaskStage {
     /// Waiting to claim the newest pending upload for this asset.
     Pending { asset_id: i32 },
-    /// Shared-memory bytes are being copied in bounded chunks. -xlinka
+    /// Shared-memory bytes are being copied in bounded chunks.
     Copying {
         upload: TrailRenderBufferUpload,
         generation: u64,
@@ -105,13 +110,13 @@ pub(in crate::backend::asset_transfers) struct TrailBuildResult {
     pub(in crate::backend::asset_transfers) consumed_ack_pending: bool,
 }
 
-/// Outcome from attempting to claim a particle background build. -xlinka
+/// Outcome from attempting to claim a particle background build.
 enum ParticleTaskClaim<T> {
     /// The task completed without spawning work.
     Done,
     /// The task should stay queued for another drain.
     YieldPending,
-    /// The upload was claimed and is ready for payload copying. -xlinka
+    /// The upload was claimed and is ready for payload copying.
     Claimed { upload: T, generation: u64 },
 }
 
@@ -375,7 +380,7 @@ impl TrailRenderBufferTask {
     }
 }
 
-/// Claims a point render-buffer upload for cooperative copying. -xlinka
+/// Claims a point render-buffer upload for cooperative copying.
 fn claim_point_task(
     queue: &mut AssetTransferQueue,
     gpu: Option<ParticleTaskGpu<'_>>,
@@ -412,7 +417,7 @@ fn claim_point_task(
     ParticleTaskClaim::Claimed { upload, generation }
 }
 
-/// Claims a trail render-buffer upload for cooperative copying. -xlinka
+/// Claims a trail render-buffer upload for cooperative copying.
 fn claim_trail_task(
     queue: &mut AssetTransferQueue,
     gpu: Option<ParticleTaskGpu<'_>>,
@@ -557,6 +562,7 @@ fn particle_mesh_gpu_context<'a>(
         prepared_derived_streams: None,
         gpu_limits: gpu.gpu_limits.as_ref(),
         mapped_buffer_health: gpu.mapped_buffer_health.as_ref(),
+        static_geometry_store: None,
         mapped_buffer_generation: gpu.mapped_buffer_health.generation(),
         derived_stream_demand: MeshDerivedStreamDemand::GENERATED_PARTICLE,
         validation_scopes_enabled: gpu.mesh_validation_scopes_enabled,
@@ -579,19 +585,39 @@ fn integrate_point_result(
     }
     match result.result {
         Ok(build) => {
-            let existing = crate::particles::billboard_render_buffer_mesh_asset_id(asset_id)
-                .and_then(|mesh_id| queue.pools.mesh_pool.get(mesh_id).cloned());
+            let existing = queue.pools.mesh_pool.get(build.mesh_asset_id).cloned();
             let upload_recorder = MeshUploadRecorder::new(gpu.mesh_upload_batch.as_ref());
             let ctx = particle_mesh_gpu_context(&gpu, &upload_recorder);
-            let mesh = match upload_generated_mesh(ctx, build.billboard_mesh, existing) {
-                Ok(mesh) => mesh,
-                Err(err) => {
-                    logger::warn!("{err}");
+            let capacity = u32::try_from(build.asset.count).unwrap_or(u32::MAX);
+            let mesh = match allocate_generated_point_mesh(
+                ctx,
+                build.mesh_asset_id,
+                capacity,
+                build.bounds,
+                existing.as_ref(),
+            ) {
+                Some(mesh) => mesh,
+                None => {
+                    logger::warn!(
+                        "point render buffer {asset_id}: failed to allocate generated billboard mesh"
+                    );
                     remove_point_render_buffer(queue, asset_id);
                     return;
                 }
             };
             upload_recorder.flush();
+            // GPU-expand the billboard geometry into the freshly allocated mesh buffers. No CPU
+            // bytes are written to them, so the compute submit is the only writer (no race).
+            if let Some(targets) = crate::particles::point_mesh_targets(&mesh) {
+                crate::particles::expand_point_mesh(
+                    gpu.device,
+                    gpu.queue,
+                    targets,
+                    &build.asset.points,
+                    capacity,
+                    build.asset.frame_grid_size,
+                );
+            }
             let stored_asset_id = build.asset.asset_id;
             let count = build.asset.count;
             let frame_grid_size = build.asset.frame_grid_size;
@@ -603,7 +629,7 @@ fn integrate_point_result(
             #[cfg(feature = "tracy")]
             tracy_client::plot!("particle::point_publications", 1.0);
             logger::trace!(
-                "point render buffer {stored_asset_id}: uploaded billboard mesh for {count} particles frame_grid={frame_grid_size:?}"
+                "point render buffer {stored_asset_id}: GPU-expanded billboard mesh for {count} particles frame_grid={frame_grid_size:?}"
             );
         }
         Err(err) => {

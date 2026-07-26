@@ -23,8 +23,9 @@ use crate::graph_inputs::{
 use crate::materials::{MaterialPipelineDesc, ShaderPermutation};
 use crate::mesh_deform::PER_DRAW_UNIFORM_STRIDE;
 use crate::passes::{
-    ShadowDepthDrawBatch, WorldMeshForwardEncodeRefs, WorldMeshForwardPipelineState,
-    draw_shadow_depth_subset,
+    IndirectDepthRun, ShadowDepthDrawBatch, ShadowIndirectDraw, WorldMeshForwardEncodeRefs,
+    WorldMeshForwardPipelineState, collect_shadow_indirect_layer, draw_shadow_depth_subset,
+    issue_shadow_indirect_runs,
 };
 use crate::render_graph::pass::{EncoderPass, PassBuilder, PassPhase};
 use crate::world_mesh::WorldMeshPhase;
@@ -120,7 +121,7 @@ fn shadow_view_uses_radial_depth(kind: u32) -> bool {
     matches!(kind, SHADOW_VIEW_KIND_POINT | SHADOW_VIEW_KIND_SPOT)
 }
 
-fn plot_shadow_atlas(plan: &ShadowFramePlan) {
+fn plot_shadow_atlas(plan: &ShadowFramePlan, indirect: ShadowIndirectCacheResult) {
     let (visible_groups, visible_group_draws) = shadow_visible_group_stats(plan);
     let upload_bytes = plan
         .requested_draw_slots
@@ -134,6 +135,22 @@ fn plot_shadow_atlas(plan: &ShadowFramePlan) {
         visible_group_draws,
         upload_bytes,
     );
+    let stats = plan.cache_stats;
+    crate::profiling::plot_shadow_cache(crate::profiling::ShadowCacheProfileSample {
+        caster_plan_hits: stats.caster_plan_hits,
+        caster_plan_misses: stats.caster_plan_misses,
+        visibility_hits: stats.visibility_hits,
+        visibility_misses: stats.visibility_misses,
+        content_hash_hits: stats.content_hash_hits,
+        avoided_caster_draw_scans: stats.avoided_caster_draw_scans,
+        avoided_visibility_group_tests: stats.avoided_visibility_group_tests,
+        avoided_visibility_draw_tests: stats.avoided_visibility_draw_tests,
+        avoided_content_hash_draws: stats.avoided_content_hash_draws,
+        indirect_hit: indirect.hit,
+        avoided_indirect_layers: indirect.avoided_layers,
+        avoided_indirect_commands: indirect.avoided_commands,
+        avoided_indirect_upload_bytes: indirect.avoided_upload_bytes,
+    });
 }
 
 fn shadow_visible_group_stats(plan: &ShadowFramePlan) -> (usize, usize) {
@@ -143,16 +160,30 @@ fn shadow_visible_group_stats(plan: &ShadowFramePlan) -> (usize, usize) {
         let Some(view) = plan.render_views.get(layer_idx as usize) else {
             continue;
         };
-        for phase in WorldMeshPhase::PRIMARY_FORWARD {
-            for group in view.groups(phase) {
-                groups = groups.saturating_add(1);
-                draws = draws.saturating_add(
-                    (group.instance_range.end - group.instance_range.start) as usize,
-                );
-            }
-        }
+        groups = groups.saturating_add(view.visible_group_count);
+        draws = draws.saturating_add(view.visible_group_draw_count);
     }
     (groups, draws)
+}
+
+fn select_shadow_atlas_split_workload(
+    rendering_layers: usize,
+    visible_groups: usize,
+    visible_group_draws: usize,
+    renderable: bool,
+    worker_count: usize,
+) -> Option<FrameGlobalPassSplitWorkload> {
+    if rendering_layers < SHADOW_ATLAS_PARALLEL_MIN_LAYERS || !renderable {
+        return None;
+    }
+    if visible_groups < SHADOW_ATLAS_PARALLEL_MIN_VISIBLE_GROUPS || worker_count < 2 {
+        return None;
+    }
+    Some(FrameGlobalPassSplitWorkload {
+        unit_count: rendering_layers,
+        estimated_work: visible_groups.saturating_add(visible_group_draws),
+        chunk_size: rendering_layers.div_ceil(worker_count).max(1),
+    })
 }
 
 struct ShadowLayerEncodeContext<'a, 'encoder, 'refs> {
@@ -273,6 +304,63 @@ pub(super) struct ShadowAtlasResources {
     layers: u32,
     version: u64,
     shrink_window: ShadowAtlasShrinkWindow,
+    /// Shared mega-buffer holding static shadow-caster geometry for indirect draws.
+    geometry_arena: crate::graph_inputs::SharedGeometryArena,
+    /// Persistent commands prepared once and read concurrently by layer encoders.
+    indirect_plan: parking_lot::RwLock<ShadowIndirectPlan>,
+}
+
+/// Prepared indirect shadow commands shared by every atlas-layer recording worker.
+#[derive(Default)]
+struct ShadowIndirectPlan {
+    commands: Option<crate::gpu::indirect_buffer::IndirectDrawBuffer>,
+    runs_by_layer: hashbrown::HashMap<u32, Vec<IndirectDepthRun>>,
+    key: ShadowIndirectPlanKey,
+    pending_key: ShadowIndirectPlanKey,
+    key_initialized: bool,
+    command_count: usize,
+}
+
+/// Exact retained-input key for a shared indirect command upload.
+#[derive(Default)]
+struct ShadowIndirectPlanKey {
+    allocation_generation: u64,
+    layers: Vec<ShadowIndirectLayerKey>,
+}
+
+struct ShadowIndirectLayerKey {
+    layer: u32,
+    slab_slot_offset: usize,
+    view_signature: super::super::frame_resource_manager::ShadowViewSignature,
+    draws: Arc<[crate::world_mesh::WorldMeshDrawItem]>,
+    visible_groups:
+        Arc<crate::render_phase::RenderPhaseSet<WorldMeshPhase, crate::world_mesh::DrawGroup>>,
+}
+
+impl ShadowIndirectPlanKey {
+    fn matches(&self, other: &Self) -> bool {
+        self.allocation_generation == other.allocation_generation
+            && self.layers.len() == other.layers.len()
+            && self.layers.iter().zip(&other.layers).all(|(left, right)| {
+                left.layer == right.layer
+                    && left.slab_slot_offset == right.slab_slot_offset
+                    && left.view_signature == right.view_signature
+                    && Arc::ptr_eq(&left.draws, &right.draws)
+                    && Arc::ptr_eq(&left.visible_groups, &right.visible_groups)
+            })
+    }
+
+    fn clear(&mut self) {
+        self.layers.clear();
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ShadowIndirectCacheResult {
+    hit: bool,
+    avoided_layers: usize,
+    avoided_commands: usize,
+    avoided_upload_bytes: usize,
 }
 
 /// Consecutive below-capacity syncs required before the atlas shrinks to the window's peak demand.
@@ -391,6 +479,8 @@ impl ShadowAtlasResources {
             layers: 1,
             version: 1,
             shrink_window: ShadowAtlasShrinkWindow::default(),
+            geometry_arena: Arc::new(parking_lot::RwLock::new(None)),
+            indirect_plan: parking_lot::RwLock::new(ShadowIndirectPlan::default()),
         })
     }
 
@@ -503,6 +593,133 @@ impl ShadowAtlasResources {
         f(&mut self.scratch.lock());
     }
 
+    /// Geometry arena read guard for indirect shadow recording; [`None`] until first populated.
+    fn geometry_arena(
+        &self,
+    ) -> parking_lot::RwLockReadGuard<'_, Option<crate::gpu_pools::geometry_arena::GeometryArena>>
+    {
+        self.geometry_arena.read()
+    }
+
+    /// Shared geometry arena used by shadow and per-view indirect draws.
+    pub(super) fn geometry_arena_arc(&self) -> crate::graph_inputs::SharedGeometryArena {
+        Arc::clone(&self.geometry_arena)
+    }
+
+    /// Rebuilds the shared shadow command buffer and per-layer run table.
+    fn build_shadow_indirect_plan(
+        &self,
+        plan: &ShadowFramePlan,
+        device: &wgpu::Device,
+        gpu_limits: &GpuLimits,
+        uploads: GraphUploadSink<'_>,
+    ) -> ShadowIndirectCacheResult {
+        profiling::scope!("shadows::build_shadow_indirect_plan");
+        let arena_guard = self.geometry_arena.read();
+        let mut indirect_plan = self.indirect_plan.write();
+        if !crate::world_mesh::world_mesh_render_path().uses_indirect_draws()
+            || !gpu_limits.supports_indirect_first_instance()
+            || !gpu_limits.supports_base_instance
+        {
+            indirect_plan.runs_by_layer.clear();
+            indirect_plan.key_initialized = false;
+            indirect_plan.command_count = 0;
+            return ShadowIndirectCacheResult::default();
+        }
+        let Some(arena) = arena_guard.as_ref() else {
+            indirect_plan.runs_by_layer.clear();
+            indirect_plan.key_initialized = false;
+            indirect_plan.command_count = 0;
+            return ShadowIndirectCacheResult::default();
+        };
+        indirect_plan.pending_key.clear();
+        indirect_plan.pending_key.allocation_generation = arena.allocation_generation();
+        for &layer_idx in &plan.rendering_layer_indices {
+            let Some(layer) = shadow_layer_plan(plan, layer_idx as usize) else {
+                continue;
+            };
+            indirect_plan
+                .pending_key
+                .layers
+                .push(ShadowIndirectLayerKey {
+                    layer: layer.view.layer,
+                    slab_slot_offset: layer.caster_set.slab_slot_offset,
+                    view_signature: layer.view.view_signature,
+                    draws: Arc::clone(&layer.caster_set.draws),
+                    visible_groups: Arc::clone(layer.view.visible_groups_arc()),
+                });
+        }
+        if indirect_plan.key_initialized && indirect_plan.key.matches(&indirect_plan.pending_key) {
+            profiling::scope!("shadows::indirect_plan_cache_hit");
+            let avoided_commands = indirect_plan.command_count;
+            let result = ShadowIndirectCacheResult {
+                hit: true,
+                avoided_layers: indirect_plan.pending_key.layers.len(),
+                avoided_commands,
+                avoided_upload_bytes: avoided_commands.saturating_mul(size_of::<
+                    crate::gpu::indirect_buffer::IndexedIndirectCommand,
+                >()),
+            };
+            indirect_plan.pending_key.clear();
+            return result;
+        }
+
+        profiling::scope!("shadows::indirect_plan_cache_miss");
+        indirect_plan.runs_by_layer.clear();
+        let pipeline = shadow_pipeline_state(self.format());
+        let mut commands: Vec<crate::gpu::indirect_buffer::IndexedIndirectCommand> = Vec::new();
+        for &layer_idx in &plan.rendering_layer_indices {
+            let Some(layer) = shadow_layer_plan(plan, layer_idx as usize) else {
+                continue;
+            };
+            let view = layer.view;
+            let caster_set = layer.caster_set;
+            if caster_set.draws.is_empty() {
+                continue;
+            }
+            let groups = WorldMeshPhase::PRIMARY_FORWARD.map(|phase| view.groups(phase));
+            let runs = collect_shadow_indirect_layer(
+                &groups,
+                &caster_set.draws,
+                caster_set.slab_slot_offset,
+                arena,
+                &pipeline,
+                &mut commands,
+            );
+            if !runs.is_empty() {
+                indirect_plan.runs_by_layer.insert(view.layer, runs);
+            }
+        }
+        let count = u32::try_from(commands.len()).unwrap_or(u32::MAX);
+        indirect_plan.command_count = commands.len();
+        if count == 0 {
+            if let Some(buf) = indirect_plan.commands.as_mut() {
+                buf.prepare_len(device, 0);
+            }
+        } else {
+            let buf = indirect_plan.commands.get_or_insert_with(|| {
+                crate::gpu::indirect_buffer::IndirectDrawBuffer::new(device, count)
+            });
+            buf.prepare_len(device, count);
+            uploads.write_buffer(buf.buffer(), 0, bytemuck::cast_slice(&commands));
+        }
+        let ShadowIndirectPlan {
+            key,
+            pending_key,
+            key_initialized,
+            ..
+        } = &mut *indirect_plan;
+        std::mem::swap(key, pending_key);
+        pending_key.clear();
+        *key_initialized = true;
+        ShadowIndirectCacheResult::default()
+    }
+
+    /// Prepared indirect shadow plan for concurrent layer recording.
+    fn indirect_plan(&self) -> parking_lot::RwLockReadGuard<'_, ShadowIndirectPlan> {
+        self.indirect_plan.read()
+    }
+
     /// Current bind-resource version.
     pub(super) const fn version(&self) -> u64 {
         self.version
@@ -518,6 +735,12 @@ impl ShadowAtlasResources {
         self.per_draw.retain_submit_resources(resources);
         resources.retain_buffer(self.layer_uniform_buffer.as_ref().clone());
         resources.retain_bind_group(self.layer_uniform_bind_group.as_ref().clone());
+        if let Some(arena) = self.geometry_arena.write().as_mut() {
+            arena.retain_submit_resources(resources);
+        }
+        if let Some(commands) = self.indirect_plan.write().commands.as_mut() {
+            commands.retain_submit_resources(resources);
+        }
     }
 
     fn sync_result(&self, changed: bool) -> ShadowResourceSyncResult {
@@ -724,7 +947,7 @@ impl FrameGpuResources {
         if plan.rendering_layer_indices.is_empty() || !self.shadows.renderable() {
             return;
         }
-        self.prepare_shadow_atlas_uploads(plan, params.gpu_limits, params.uploads);
+        self.prepare_shadow_atlas_recording(plan, params.device, params.gpu_limits, params.uploads);
         self.record_shadow_atlas_layers(
             plan,
             0..plan.rendering_layer_indices.len(),
@@ -746,39 +969,34 @@ impl FrameGpuResources {
         plan: &ShadowFramePlan,
     ) -> Option<FrameGlobalPassSplitWorkload> {
         let rendering_layers = plan.rendering_layer_indices.len();
-        if rendering_layers < SHADOW_ATLAS_PARALLEL_MIN_LAYERS || !self.shadows.renderable() {
-            return None;
-        }
         let (visible_groups, visible_group_draws) = shadow_visible_group_stats(plan);
-        if visible_groups < SHADOW_ATLAS_PARALLEL_MIN_VISIBLE_GROUPS {
-            return None;
-        }
-        let worker_count = current_reference_worker_count();
-        if worker_count < 2 {
-            return None;
-        }
-        let chunk_size = rendering_layers.div_ceil(worker_count).max(1);
-        Some(FrameGlobalPassSplitWorkload {
-            unit_count: rendering_layers,
-            estimated_work: visible_groups.saturating_add(visible_group_draws),
-            chunk_size,
-        })
+        select_shadow_atlas_split_workload(
+            rendering_layers,
+            visible_groups,
+            visible_group_draws,
+            self.shadows.renderable(),
+            current_reference_worker_count(),
+        )
     }
 
-    /// Packs shadow uploads that are shared by all atlas layer command buffers.
-    pub(in crate::backend) fn prepare_shadow_atlas_uploads(
+    /// Prepares shared shadow uploads and indirect commands before layer recording.
+    pub(in crate::backend) fn prepare_shadow_atlas_recording(
         &self,
         plan: &ShadowFramePlan,
+        device: &wgpu::Device,
         gpu_limits: &GpuLimits,
         uploads: GraphUploadSink<'_>,
     ) {
-        profiling::scope!("shadows::prepare_atlas_uploads");
+        profiling::scope!("shadows::prepare_atlas_recording");
         if plan.rendering_layer_indices.is_empty() || !self.shadows.renderable() {
             return;
         }
         self.pack_shadow_slabs(plan, gpu_limits, uploads);
         self.pack_shadow_layer_uniforms(plan, uploads);
-        plot_shadow_atlas(plan);
+        let indirect_cache = self
+            .shadows
+            .build_shadow_indirect_plan(plan, device, gpu_limits, uploads);
+        plot_shadow_atlas(plan, indirect_cache);
     }
 
     /// Records a contiguous range of this frame's rendering layers into `params.encoder`.
@@ -842,6 +1060,12 @@ impl FrameGpuResources {
         let Some(layer_uniform_offset) = shadow_layer_uniform_offset(view.layer) else {
             return;
         };
+        let arena_guard = self.shadows.geometry_arena();
+        let geometry_arena = crate::world_mesh::world_mesh_render_path()
+            .uses_geometry_arena()
+            .then(|| arena_guard.as_ref())
+            .flatten();
+        let indirect_plan = self.shadows.indirect_plan();
         let pass_query = ctx
             .profiler
             .map(|p| p.begin_pass_query("shadows::atlas_layer", ctx.encoder));
@@ -888,7 +1112,24 @@ impl FrameGpuResources {
                 supports_base_instance: ctx.gpu_limits.supports_base_instance,
                 pipeline: ctx.pipeline,
                 device: ctx.device,
+                geometry_arena,
             });
+
+            if let Some(arena) = geometry_arena {
+                if let Some(runs) = indirect_plan.runs_by_layer.get(&view.layer)
+                    && let Some(commands) = indirect_plan.commands.as_ref()
+                {
+                    issue_shadow_indirect_runs(ShadowIndirectDraw {
+                        rpass: &mut rpass,
+                        device: ctx.device,
+                        per_draw_bind_group: self.shadow_per_draw_bind_group(),
+                        arena,
+                        commands,
+                        runs,
+                        radial_shadow: shadow_view_uses_radial_depth(view.kind),
+                    });
+                }
+            }
         }
         if let Some(query) = pass_query
             && let Some(p) = ctx.profiler

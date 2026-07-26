@@ -122,13 +122,14 @@ fn sample_probe_radiance(
     }
     let sample_dir = box_project_dir(probe, world_pos, dir, perceptual_roughness);
     let lod = roughness_lod(perceptual_roughness, max(probe.params.y, 0.0));
+    let texture_slot = u32(max(probe.position.w, 0.0));
     return cube_filter::sample_trilinear_base(
         rg::reflection_probe_specular,
         sample_dir,
         lod,
         textureDimensions(rg::reflection_probe_specular, 0).x,
         max(probe.params.y, 0.0),
-        atlas_index * 6u,
+        texture_slot * 6u,
     ) * intensity;
 }
 

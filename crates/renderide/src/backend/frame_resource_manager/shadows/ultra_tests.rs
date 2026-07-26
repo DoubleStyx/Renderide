@@ -60,10 +60,10 @@ fn pbs_draw(node_id: i32, shadow_cast_mode: ShadowCastMode) -> WorldMeshDrawItem
 }
 
 fn prefetched_plan(items: Vec<WorldMeshDrawItem>) -> WorldMeshDrawPlan {
-    WorldMeshDrawPlan::Prefetched(Box::new(PrefetchedWorldMeshViewDraws::new(
+    WorldMeshDrawPlan::Prefetched(Arc::new(PrefetchedWorldMeshViewDraws::new(
         WorldMeshDrawCollection {
             draws_pre_cull: items.len(),
-            items,
+            items: items.into(),
             draws_culled: 0,
             draws_hi_z_culled: 0,
             visibility: Default::default(),

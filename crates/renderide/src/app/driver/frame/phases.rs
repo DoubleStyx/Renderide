@@ -76,21 +76,28 @@ impl AppDriver {
         let xr_tick = self.xr_begin_tick();
         drop(xr_pause);
 
+        let mut one_credit_begin_sent = startup.one_credit_begin_sent;
         if !startup.vr_active {
-            self.lock_step_exchange();
+            if !one_credit_begin_sent {
+                profiling::scope!("tick::desktop_post_wait_one_credit");
+                one_credit_begin_sent = self.try_desktop_one_credit_for_renderable_submit();
+            }
+            if !one_credit_begin_sent {
+                self.lock_step_exchange();
+            }
         }
         if self.handle_openxr_exit_request(event_loop) {
             self.queue_empty_openxr_frame_if_needed(xr_tick);
             self.poll_graceful_shutdown(event_loop);
             return Err(FrameTickOutcome::ExitRequested);
         }
-        let one_credit_begin_sent = if startup.vr_active
+        one_credit_begin_sent = if startup.vr_active
             && xr_tick.is_some()
             && self.runtime.should_send_one_credit_begin_frame()
         {
-            self.one_credit_lock_step_exchange() || startup.one_credit_begin_sent
+            self.one_credit_lock_step_exchange() || one_credit_begin_sent
         } else {
-            startup.one_credit_begin_sent
+            one_credit_begin_sent
         };
         Ok(XrFrameBeginState {
             one_credit_begin_sent,

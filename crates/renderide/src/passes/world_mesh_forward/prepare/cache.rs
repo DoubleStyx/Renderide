@@ -391,6 +391,48 @@ mod tests {
     }
 
     #[test]
+    fn instance_plan_cache_reuses_plan_when_only_transform_payload_changes() {
+        let cache = WorldMeshForwardInstancePlanCache::default();
+        let first_draws = cache_draws(WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_MIN_DRAWS);
+        let packets = [test_packet(0, 63), test_packet(64, first_draws.len() - 1)];
+        let first_key = cache_key(&first_draws, &packets);
+        let first = cache.get_or_build(first_key, InstancePlan::default);
+
+        let mut moved_draws = first_draws;
+        moved_draws[0].rigid_world_matrix =
+            Some(glam::Mat4::from_translation(glam::Vec3::new(3.0, 5.0, 7.0)));
+        moved_draws[0].world_aabb = Some((
+            glam::Vec3::new(2.0, 4.0, 6.0),
+            glam::Vec3::new(4.0, 6.0, 8.0),
+        ));
+        let moved_key = cache_key(&moved_draws, &packets);
+        let reused = cache.get_or_build(moved_key, || {
+            panic!("dynamic transform payload must not rebuild structural instance plan")
+        });
+
+        assert!(Arc::ptr_eq(&first, &reused));
+        assert_eq!(cache.stats().hits, 1);
+        assert_eq!(cache.stats().misses, 1);
+    }
+
+    #[test]
+    fn instance_plan_cache_misses_when_mesh_subrange_changes() {
+        let cache = WorldMeshForwardInstancePlanCache::default();
+        let first_draws = cache_draws(WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_MIN_DRAWS);
+        let packets = [test_packet(0, 63), test_packet(64, first_draws.len() - 1)];
+        let first_key = cache_key(&first_draws, &packets);
+
+        let mut changed_draws = first_draws;
+        changed_draws[0].first_index = changed_draws[0].first_index.saturating_add(3);
+        let changed_key = cache_key(&changed_draws, &packets);
+
+        assert_ne!(first_key, changed_key);
+        let _ = cache.get_or_build(first_key, InstancePlan::default);
+        let _ = cache.get_or_build(changed_key, InstancePlan::default);
+        assert_eq!(cache.stats().misses, 2);
+    }
+
+    #[test]
     fn instance_plan_cache_misses_when_material_submission_changes() {
         let cache = WorldMeshForwardInstancePlanCache::default();
         let draws = cache_draws(WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_MIN_DRAWS);

@@ -78,8 +78,10 @@ impl RenderPathFormatPolicy {
 pub struct FrameViewResourceHints {
     /// Whether passes in this view require a scene-depth snapshot resource.
     pub needs_depth_snapshot: bool,
-    /// Whether passes in this view require a scene-color snapshot resource.
-    pub needs_color_snapshot: bool,
+    /// Whether passes in this view require a per-object scene-color snapshot resource.
+    pub needs_per_object_color_snapshot: bool,
+    /// Whether passes in this view require a reusable named scene-color snapshot resource.
+    pub needs_named_color_snapshot: bool,
 }
 
 /// Snapshot resources allowed by a render-path profile.

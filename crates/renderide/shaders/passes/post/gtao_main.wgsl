@@ -65,33 +65,42 @@ fn view_is_orthographic(view_layer: u32) -> bool {
 
 fn mip_dimensions(mip: u32) -> vec2<u32> {
 #ifdef MULTIVIEW
-    var dim = textureDimensions(view_depth);
     if (mip == 1u) {
-        dim = textureDimensions(view_depth_mip1);
-    } else if (mip == 2u) {
-        dim = textureDimensions(view_depth_mip2);
-    } else if (mip == 3u) {
-        dim = textureDimensions(view_depth_mip3);
-    } else if (mip >= 4u) {
-        dim = textureDimensions(view_depth_mip4);
+        return vec2<u32>(textureDimensions(view_depth_mip1).xy);
     }
+    if (mip == 2u) {
+        return vec2<u32>(textureDimensions(view_depth_mip2).xy);
+    }
+    if (mip == 3u) {
+        return vec2<u32>(textureDimensions(view_depth_mip3).xy);
+    }
+    if (mip >= 4u) {
+        return vec2<u32>(textureDimensions(view_depth_mip4).xy);
+    }
+    return vec2<u32>(textureDimensions(view_depth).xy);
 #else
-    var dim = textureDimensions(view_depth);
     if (mip == 1u) {
-        dim = textureDimensions(view_depth_mip1);
-    } else if (mip == 2u) {
-        dim = textureDimensions(view_depth_mip2);
-    } else if (mip == 3u) {
-        dim = textureDimensions(view_depth_mip3);
-    } else if (mip >= 4u) {
-        dim = textureDimensions(view_depth_mip4);
+        return vec2<u32>(textureDimensions(view_depth_mip1).xy);
     }
+    if (mip == 2u) {
+        return vec2<u32>(textureDimensions(view_depth_mip2).xy);
+    }
+    if (mip == 3u) {
+        return vec2<u32>(textureDimensions(view_depth_mip3).xy);
+    }
+    if (mip >= 4u) {
+        return vec2<u32>(textureDimensions(view_depth_mip4).xy);
+    }
+    return vec2<u32>(textureDimensions(view_depth).xy);
 #endif
-    return vec2<u32>(dim.xy);
 }
 
-fn load_view_z(pix: vec2<i32>, view_layer: u32, mip: u32) -> f32 {
-    let dim = mip_dimensions(mip);
+fn load_view_z_with_dimensions(
+    pix: vec2<i32>,
+    view_layer: u32,
+    mip: u32,
+    dim: vec2<u32>,
+) -> f32 {
     let max_pix = vec2<i32>(i32(dim.x) - 1, i32(dim.y) - 1);
     let p = clamp(pix, vec2<i32>(0), max_pix);
 #ifdef MULTIVIEW
@@ -128,7 +137,7 @@ fn load_view_z(pix: vec2<i32>, view_layer: u32, mip: u32) -> f32 {
 fn load_view_z_uv(uv: vec2<f32>, view_layer: u32, mip: u32) -> f32 {
     let dim = mip_dimensions(mip);
     let pix = vec2<i32>(uv * vec2<f32>(dim));
-    return load_view_z(pix, view_layer, mip);
+    return load_view_z_with_dimensions(pix, view_layer, mip, dim);
 }
 
 fn normal_dimensions() -> vec2<u32> {
@@ -209,6 +218,7 @@ fn add_horizon_sample(
     view_pos: vec3<f32>,
     view_dir: vec3<f32>,
     proj_params: vec4<f32>,
+    orthographic: bool,
     low_horizon_cos: f32,
     falloff_mul: f32,
     falloff_add: f32,
@@ -218,7 +228,7 @@ fn add_horizon_sample(
         return low_horizon_cos;
     }
 
-    let sample_pos = gm::view_pos_from_uv(sample_uv, sample_z, proj_params, view_is_orthographic(view_layer));
+    let sample_pos = gm::view_pos_from_uv(sample_uv, sample_z, proj_params, orthographic);
     let delta = sample_pos - view_pos;
     let dist = length(delta);
     if (dist <= 1e-4) {
@@ -241,11 +251,11 @@ fn compute_gtao(pix: vec2<i32>, uv: vec2<f32>, view_layer: u32) -> GtaoSampleOut
     let inv_viewport = 1.0 / viewport;
     let proj_params = proj_params_for_view(view_layer);
 
-    let z_center = load_view_z(pix, view_layer, 0u);
-    let z_left = load_view_z(pix + vec2<i32>(-1, 0), view_layer, 0u);
-    let z_right = load_view_z(pix + vec2<i32>(1, 0), view_layer, 0u);
-    let z_top = load_view_z(pix + vec2<i32>(0, -1), view_layer, 0u);
-    let z_bottom = load_view_z(pix + vec2<i32>(0, 1), view_layer, 0u);
+    let z_center = load_view_z_with_dimensions(pix, view_layer, 0u, depth_dim);
+    let z_left = load_view_z_with_dimensions(pix + vec2<i32>(-1, 0), view_layer, 0u, depth_dim);
+    let z_right = load_view_z_with_dimensions(pix + vec2<i32>(1, 0), view_layer, 0u, depth_dim);
+    let z_top = load_view_z_with_dimensions(pix + vec2<i32>(0, -1), view_layer, 0u, depth_dim);
+    let z_bottom = load_view_z_with_dimensions(pix + vec2<i32>(0, 1), view_layer, 0u, depth_dim);
     let edges_lrtb = gf::gtao_calculate_edges(z_center, z_left, z_right, z_top, z_bottom);
 
     if (z_center <= 0.0 || gtao.radius_world <= 0.0 || gtao.intensity <= 0.0) {
@@ -346,6 +356,7 @@ fn compute_gtao(pix: vec2<i32>, uv: vec2<f32>, view_layer: u32) -> GtaoSampleOut
                 view_pos,
                 view_dir,
                 proj_params,
+                orthographic,
                 low_horizon_cos0,
                 falloff_mul,
                 falloff_add,
@@ -357,6 +368,7 @@ fn compute_gtao(pix: vec2<i32>, uv: vec2<f32>, view_layer: u32) -> GtaoSampleOut
                 view_pos,
                 view_dir,
                 proj_params,
+                orthographic,
                 low_horizon_cos1,
                 falloff_mul,
                 falloff_add,

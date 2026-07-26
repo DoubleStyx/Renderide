@@ -22,12 +22,12 @@ fn wrap_tile(tile_in: vec2<f32>, scale: vec2<f32>) -> vec2<f32> {
     return tile;
 }
 
-/// Result of the full Voronoi scan: closest distance, second-closest distance, and the integer
-/// cell seed of the nearest cell (so callers can hash per-cell properties from `min_point`).
+/// Distances and nearest-cell data from a Voronoi scan.
 struct VoronoiResult {
     min_dist: f32,
     second_min_dist: f32,
     min_point: vec2<f32>,
+    min_cell_offset: vec2<f32>,
 }
 
 /// Tiled animated Voronoi: scans the 3x3 neighborhood around `floor(uv_scaled)`, wraps tile
@@ -38,6 +38,7 @@ fn voronoi_full(uv_scaled: vec2<f32>, scale: vec2<f32>, anim_offset: f32) -> Vor
     var min_dist: f32 = 2.0;
     var second_min: f32 = 2.0;
     var min_point: vec2<f32> = vec2<f32>(0.0);
+    var min_cell_offset: vec2<f32> = vec2<f32>(0.0);
     for (var y: i32 = -1; y <= 1; y = y + 1) {
         for (var x: i32 = -1; x <= 1; x = x + 1) {
             let neighbor = vec2<f32>(f32(x), f32(y));
@@ -50,12 +51,13 @@ fn voronoi_full(uv_scaled: vec2<f32>, scale: vec2<f32>, anim_offset: f32) -> Vor
                 second_min = min_dist;
                 min_dist = dist;
                 min_point = p_orig;
+                min_cell_offset = p;
             } else if (dist < second_min) {
                 second_min = dist;
             }
         }
     }
-    return VoronoiResult(min_dist, second_min, min_point);
+    return VoronoiResult(min_dist, second_min, min_point, min_cell_offset);
 }
 
 /// Unwrapped animated Voronoi returning only the nearest cell distance. Caller is responsible for

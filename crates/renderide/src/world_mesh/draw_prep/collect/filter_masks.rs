@@ -139,6 +139,7 @@ mod tests {
                 head_output_transform: Mat4::IDENTITY,
                 view_origin_world: Vec3::ZERO,
                 culling: None,
+                retain_gpu_static_candidates: false,
                 lod_selection_culling: None,
                 mesh_lod_bias: 2.0,
                 transform_filter,

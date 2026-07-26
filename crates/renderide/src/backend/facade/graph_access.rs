@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 mod warmup;
 
+pub(super) use warmup::BackendGraphWarmupCache;
+
 use crate::backend::AssetTransferQueue;
 use crate::frame_upload_batch::{FrameUploadBatchStats, GraphUploadSink};
 use crate::gpu::{GpuLimits, MsaaDepthResolveResources};
@@ -54,6 +56,8 @@ pub(super) struct LivePostProcessingSettings {
 /// graph execution can mutate transient/history/frame/HUD state without gaining access to IPC,
 /// facade-only helpers, or unrelated backend orchestration fields.
 pub(crate) struct BackendGraphAccess<'a> {
+    /// Successful warmup input retained across frames to skip unchanged draw-list rescans.
+    pub(super) graph_warmup_cache: &'a mut BackendGraphWarmupCache,
     /// Hi-Z and temporal occlusion state.
     pub(crate) occlusion: &'a mut OcclusionSystem,
     /// Frame-global and per-view bind resources.

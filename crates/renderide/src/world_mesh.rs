@@ -11,6 +11,7 @@ pub(crate) mod instances;
 pub(crate) mod materials;
 pub(crate) mod phase_classification;
 pub mod prefetch;
+mod render_path;
 #[cfg(test)]
 pub(crate) mod test_fixtures;
 
@@ -41,3 +42,6 @@ pub(crate) use instances::{depth_prepass_group_eligible, depth_prepass_item_elig
 pub(crate) use materials::compute_batch_key_hash;
 pub use materials::{FrameMaterialBatchCache, MaterialDrawBatchKey, TransparentMaterialClass};
 pub use prefetch::{PrefetchedWorldMeshViewDraws, WorldMeshDrawPlan, WorldMeshHelperNeeds};
+pub(crate) use render_path::{
+    WorldMeshRenderPath, log_world_mesh_render_path, world_mesh_render_path,
+};

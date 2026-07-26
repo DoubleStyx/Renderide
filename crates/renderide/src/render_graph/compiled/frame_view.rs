@@ -496,7 +496,8 @@ mod tests {
     fn snapshot_policy_combines_with_material_needs() {
         let needs = FrameViewResourceHints {
             needs_depth_snapshot: true,
-            needs_color_snapshot: true,
+            needs_per_object_color_snapshot: true,
+            needs_named_color_snapshot: true,
         };
 
         assert_eq!(RenderPathSnapshotPolicy::MaterialDriven.apply(needs), needs);

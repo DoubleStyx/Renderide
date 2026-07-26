@@ -65,15 +65,20 @@ fn vs_main(
 #endif
     let world_p = mv::world_position(d, pos);
     let world_n = rmath::safe_normalize(d.normal_matrix * n.xyz, vec3<f32>(0.0, 1.0, 0.0));
-    let tbn = pnorm::orthonormal_tbn(world_n, mv::world_tangent(d, tangent));
     let vp = mv::select_view_proj(d, view_layer);
 
     var out: VertexOutput;
     out.clip_pos = vp * world_p;
-    out.uv_normal = uvu::apply_st(uv0, mat._NormalMap_ST);
+    out.uv_normal = vec2<f32>(0.0);
     out.world_n = world_n;
-    out.world_t = tbn[0];
-    out.world_b = tbn[1];
+    out.world_t = vec3<f32>(1.0, 0.0, 0.0);
+    out.world_b = vec3<f32>(0.0, 0.0, 1.0);
+    if (kw_NORMALMAP()) {
+        let tbn = pnorm::orthonormal_tbn(world_n, mv::world_tangent(d, tangent));
+        out.uv_normal = uvu::apply_st(uv0, mat._NormalMap_ST);
+        out.world_t = tbn[0];
+        out.world_b = tbn[1];
+    }
     out.view_layer = view_layer;
     return out;
 }
@@ -87,19 +92,23 @@ fn fs_main(
     @location(3) world_b: vec3<f32>,
     @location(4) @interpolate(flat) view_layer: u32,
 ) -> @location(0) vec4<f32> {
-    var normal_ts = vec3<f32>(0.0, 0.0, 1.0);
+    var n_world: vec3<f32>;
     if (kw_NORMALMAP()) {
-        normal_ts = nd::decode_ts_normal_with_placeholder_sample(
+        let normal_ts = nd::decode_ts_normal_with_placeholder_sample(
             ts::sample_tex_2d(_NormalMap, _NormalMap_sampler, uv_normal, mat._NormalMap_LodBias),
             1.0,
         );
+        let tbn = mat3x3<f32>(
+            rmath::safe_normalize(world_t, vec3<f32>(1.0, 0.0, 0.0)),
+            rmath::safe_normalize(world_b, vec3<f32>(0.0, 0.0, 1.0)),
+            rmath::safe_normalize(world_n, vec3<f32>(0.0, 1.0, 0.0)),
+        );
+        n_world = rmath::safe_normalize(tbn * normal_ts, world_n);
+    } else {
+        let geometric_n =
+            rmath::safe_normalize(world_n, vec3<f32>(0.0, 1.0, 0.0));
+        n_world = rmath::safe_normalize(geometric_n, world_n);
     }
-    let tbn = mat3x3<f32>(
-        rmath::safe_normalize(world_t, vec3<f32>(1.0, 0.0, 0.0)),
-        rmath::safe_normalize(world_b, vec3<f32>(0.0, 0.0, 1.0)),
-        rmath::safe_normalize(world_n, vec3<f32>(0.0, 1.0, 0.0)),
-    );
-    let n_world = rmath::safe_normalize(tbn * normal_ts, world_n);
     let n_view = rg::world_to_view_normal_for_view(n_world, view_layer);
     let uv = n_view.xy * 0.5 + vec2<f32>(0.5);
     let col = ts::sample_tex_2d(_MainTex, _MainTex_sampler, uv, mat._MainTex_LodBias);

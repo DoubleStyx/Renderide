@@ -47,6 +47,8 @@ mod depth_resolve;
 mod depth_snapshot;
 mod encode;
 mod frame_uniforms;
+mod geometry_populate;
+mod gpu_cull;
 mod material_batch;
 mod material_resolve;
 mod normal_pass;
@@ -63,7 +65,14 @@ pub(crate) use depth_prepass::{
     WorldMeshForwardDepthPrepassPipelineKey, depth_prepass_pipeline_key_for_draw,
     pre_warm_depth_prepass_pipeline,
 };
-pub(crate) use encode::{ShadowDepthDrawBatch, draw_shadow_depth_subset};
+pub(crate) use encode::{
+    IndirectDepthRun, ShadowDepthDrawBatch, ShadowIndirectDraw, collect_shadow_indirect_layer,
+    draw_shadow_depth_subset, issue_shadow_indirect_runs,
+};
+pub(crate) use geometry_populate::GeometryArenaPopulatePass;
+pub(crate) use gpu_cull::{
+    WorldMeshGpuCullGraphResources, WorldMeshGpuCullPass, take_gpu_cull_submit_resources,
+};
 pub(crate) use material_batch::{MaterialBatchBoundary, MaterialBatchPacket, MaterialDrawResolver};
 pub(crate) use normal_pass::{
     GTAO_VIEW_NORMAL_FORMAT, WorldMeshForwardNormalPipelineKey, normal_pipeline_key_for_draw,
@@ -591,6 +600,7 @@ impl RasterPass for WorldMeshForwardOpaquePass {
             frame,
             ctx.blackboard,
             &prepared,
+            ctx.uploads,
         );
         let skybox_recorded = prepared
             .skybox
@@ -742,6 +752,7 @@ impl RasterPass for WorldMeshForwardIntersectPass {
                 frame,
                 ctx.blackboard,
                 &prepared,
+                ctx.uploads,
             )
         } else {
             false
@@ -821,6 +832,7 @@ impl RasterPass for WorldMeshDesktopOverlayPass {
         rpass: &mut wgpu::RenderPass<'_>,
     ) -> Result<(), RenderPassError> {
         profiling::scope!("world_mesh_forward::desktop_overlay_record");
+        let device = ctx.device;
         let frame = &ctx.frame;
         let Some(mut prepared) = ctx.blackboard.take::<WorldMeshOverlayForwardPlanSlot>() else {
             return Ok(());
@@ -834,6 +846,11 @@ impl RasterPass for WorldMeshDesktopOverlayPass {
                 .insert::<WorldMeshOverlayForwardPlanSlot>(prepared);
             return Ok(());
         };
+        let geometry_arena_arc = frame.systems.frame_resources.shared_geometry_arena();
+        let geometry_arena_guard = geometry_arena_arc.as_ref().map(|arena| arena.read());
+        let geometry_arena = geometry_arena_guard
+            .as_ref()
+            .and_then(|guard| guard.as_ref());
         let mut recorded = true;
         for phase in WorldMeshPhase::PRIMARY_FORWARD {
             let groups = prepared.plan.phase(phase);
@@ -844,6 +861,11 @@ impl RasterPass for WorldMeshDesktopOverlayPass {
                 groups,
                 &frame_bind_group,
                 ViewId::MainOverlay,
+                device,
+                ctx.uploads,
+                geometry_arena,
+                None,
+                None,
             ) {
                 recorded = false;
                 break;

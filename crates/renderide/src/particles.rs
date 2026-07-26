@@ -2,6 +2,9 @@
 
 /// Bounding-volume helpers for generated particle meshes.
 mod bounds;
+/// GPU point-particle billboard expansion (compute).
+mod gpu_expand;
+pub(crate) use gpu_expand::{expand_point_mesh, point_mesh_targets};
 /// Generated mesh asset id helpers.
 mod ids;
 /// Point-particle decoding and billboard mesh generation.

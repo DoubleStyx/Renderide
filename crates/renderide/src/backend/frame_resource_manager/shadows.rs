@@ -31,15 +31,71 @@ mod point_faces;
 
 pub(crate) use cascade::ShadowCameraFit;
 pub(in crate::backend::frame_resource_manager) use layer_cache::ShadowLayerCache;
-use layer_cache::ShadowLayerLease;
+use layer_cache::{ShadowLayerLease, ShadowVisibilityLease};
 
 const POINT_FACE_COUNT: u32 = point_faces::POINT_FACE_COUNT;
 const SHADOW_TYPE_NONE: u32 = 0;
 static SHADOW_ATLAS_UNSUPPORTED_WARNING: Once = Once::new();
 
+/// Bitwise shadow-view signature stored without hash-collision risk.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ShadowViewSignature {
+    kind: u32,
+    resolution: u32,
+    view_proj: [u32; 16],
+    light_position: [u32; 3],
+    light_range: u32,
+    shadow_bias: u32,
+}
+
+impl ShadowViewSignature {
+    fn new(
+        kind: u32,
+        resolution: u32,
+        view_proj: Mat4,
+        light_position: Vec3,
+        light_range: f32,
+        shadow_bias: f32,
+    ) -> Self {
+        Self {
+            kind,
+            resolution,
+            view_proj: view_proj.to_cols_array().map(f32::to_bits),
+            light_position: light_position.to_array().map(f32::to_bits),
+            light_range: light_range.to_bits(),
+            shadow_bias: shadow_bias.to_bits(),
+        }
+    }
+}
+
+/// Per-frame CPU shadow-cache effectiveness carried into frame-GPU profiling.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ShadowPlanningCacheStats {
+    /// Source caster packets moved forward without filtering/cloning/regrouping their draws.
+    pub(crate) caster_plan_hits: usize,
+    /// Source caster packets rebuilt because their immutable draw-array identity changed.
+    pub(crate) caster_plan_misses: usize,
+    /// Layer visibility packets reused under an exact view signature.
+    pub(crate) visibility_hits: usize,
+    /// Layer visibility packets rebuilt.
+    pub(crate) visibility_misses: usize,
+    /// Source draw rows not rescanned by caster-plan hits.
+    pub(crate) avoided_caster_draw_scans: usize,
+    /// Candidate draw rows not reconsidered for layer visibility on cache hits.
+    pub(crate) avoided_visibility_draw_tests: usize,
+    /// Candidate groups not reconsidered for layer visibility on cache hits.
+    pub(crate) avoided_visibility_group_tests: usize,
+    /// Visible-member content hashes reused under the current mesh-pool generation.
+    pub(crate) content_hash_hits: usize,
+    /// Visible-member rows not rehashed on content-cache hits.
+    pub(crate) avoided_content_hash_draws: usize,
+}
+
 /// Shared shadow-caster draw packet for one source render view.
 #[derive(Clone, Debug)]
 pub(crate) struct ShadowCasterSet {
+    /// Strong source identity used by geometry-arena and shadow caches.
+    pub(crate) source_draws: Arc<[WorldMeshDrawItem]>,
     /// Shadow-casting world-mesh draws shared by all shadow views for the source view.
     pub(crate) draws: Arc<[WorldMeshDrawItem]>,
     /// Instance grouping shared by every shadow map that renders [`Self::draws`].
@@ -68,7 +124,13 @@ pub(crate) struct ShadowRenderView {
     /// Index of the shared caster set rendered by this shadow view.
     pub(crate) caster_set_index: usize,
     /// Shadow-caster groups that conservatively intersect this shadow view.
-    visible_groups: RenderPhaseSet<WorldMeshPhase, DrawGroup>,
+    visible_groups: Arc<RenderPhaseSet<WorldMeshPhase, DrawGroup>>,
+    /// Cached visible group count, so split-workload/profile decisions do not walk every group.
+    pub(crate) visible_group_count: usize,
+    /// Cached total member count across visible groups.
+    pub(crate) visible_group_draw_count: usize,
+    /// Exact signature that authored [`Self::visible_groups`].
+    pub(crate) view_signature: ShadowViewSignature,
     /// Whether this layer's depth contents must be re-rendered this frame.
     ///
     /// `false` means the persistent layer cache holds valid contents for this view's signatures
@@ -89,6 +151,11 @@ impl ShadowRenderView {
         self.visible_groups.phase(phase).items()
     }
 
+    /// Strong identity for the exact cached visible-group packet used by indirect-plan caching.
+    pub(crate) fn visible_groups_arc(&self) -> &Arc<RenderPhaseSet<WorldMeshPhase, DrawGroup>> {
+        &self.visible_groups
+    }
+
     /// Creates a minimal shadow render view for unit tests outside this module.
     #[cfg(test)]
     pub(crate) fn for_tests(
@@ -107,7 +174,17 @@ impl ShadowRenderView {
             light_range,
             shadow_bias,
             caster_set_index: 0,
-            visible_groups: RenderPhaseSet::new(),
+            visible_groups: Arc::new(RenderPhaseSet::new()),
+            visible_group_count: 0,
+            visible_group_draw_count: 0,
+            view_signature: ShadowViewSignature::new(
+                kind,
+                512,
+                view_proj,
+                light_position,
+                light_range,
+                shadow_bias,
+            ),
             needs_render: true,
             cache_key: 0,
             params_sig: 0,
@@ -133,6 +210,8 @@ pub(crate) struct ShadowFramePlan {
     pub(crate) requested_draw_slots: usize,
     /// Indices into [`Self::render_views`] whose layers actually record this frame.
     pub(crate) rendering_layer_indices: Vec<u32>,
+    /// CPU planning work reused or avoided while constructing this frame.
+    pub(crate) cache_stats: ShadowPlanningCacheStats,
 }
 
 impl ShadowFramePlan {
@@ -217,6 +296,8 @@ impl FrameResourceManager {
         I: IntoIterator<Item = (ViewId, &'a WorldMeshDrawPlan)>,
     {
         profiling::scope!("render::prepare_shadow_frame");
+        // Preserve source-identity hits without cloning the draw layout.
+        let mut previous_caster_sets = std::mem::take(&mut self.shadow_frame.caster_sets);
         self.clear_shadow_frame();
         if !shadow_atlas_rendering_supported(self.limits.as_deref()) {
             return;
@@ -233,7 +314,14 @@ impl FrameResourceManager {
             .map(|(view_id, draw_plan)| ShadowPlanningView { view_id, draw_plan })
             .collect::<Vec<_>>();
         for view in planning_views {
-            append_shadow_views_for_view(self, quality, view, &mut plan, max_shadow_views);
+            append_shadow_views_for_view(
+                self,
+                quality,
+                view,
+                &mut plan,
+                max_shadow_views,
+                &mut previous_caster_sets,
+            );
             if plan.metadata.len() >= max_shadow_views {
                 break;
             }
@@ -242,6 +330,8 @@ impl FrameResourceManager {
         plan.requested_layers = self.shadow_layer_cache.layer_count().max(1);
         plan.refresh_rendering_layer_indices();
         refresh_shadow_metadata_atlas_rects(&mut plan);
+        plan.cache_stats = self.shadow_layer_cache.frame_stats();
+        plot_shadow_planning_cache(plan.cache_stats);
         self.shadow_frame = plan;
     }
 
@@ -349,6 +439,21 @@ impl FrameResourceManager {
     }
 }
 
+fn plot_shadow_planning_cache(stats: ShadowPlanningCacheStats) {
+    crate::profiling::plot_shadow_cache(crate::profiling::ShadowCacheProfileSample {
+        caster_plan_hits: stats.caster_plan_hits,
+        caster_plan_misses: stats.caster_plan_misses,
+        visibility_hits: stats.visibility_hits,
+        visibility_misses: stats.visibility_misses,
+        content_hash_hits: stats.content_hash_hits,
+        avoided_caster_draw_scans: stats.avoided_caster_draw_scans,
+        avoided_visibility_group_tests: stats.avoided_visibility_group_tests,
+        avoided_visibility_draw_tests: stats.avoided_visibility_draw_tests,
+        avoided_content_hash_draws: stats.avoided_content_hash_draws,
+        ..crate::profiling::ShadowCacheProfileSample::default()
+    });
+}
+
 fn shadow_atlas_rendering_supported(limits: Option<&GpuLimits>) -> bool {
     let Some(limits) = limits else {
         return true;
@@ -370,6 +475,7 @@ fn append_shadow_views_for_view(
     view: ShadowPlanningView<'_>,
     plan: &mut ShadowFramePlan,
     max_shadow_views: usize,
+    previous_caster_sets: &mut Vec<ShadowCasterSet>,
 ) {
     let Some(collection) = view.draw_plan.as_prefetched() else {
         return;
@@ -394,7 +500,9 @@ fn append_shadow_views_for_view(
         }
         return;
     }
-    let Some(caster_set_index) = append_shadow_caster_set(manager, collection, plan) else {
+    let Some(caster_set_index) =
+        append_shadow_caster_set(manager, collection, plan, previous_caster_sets)
+    else {
         return;
     };
     let camera_fit = manager.shadow_camera_fits.get(&view.view_id).copied();
@@ -462,10 +570,30 @@ fn append_shadow_views_for_view(
 
 /// Collects the view's shadow-casting draws into a shared caster set and returns its index.
 fn append_shadow_caster_set(
-    manager: &FrameResourceManager,
+    manager: &mut FrameResourceManager,
     collection: &WorldMeshDrawCollection,
     plan: &mut ShadowFramePlan,
+    previous_caster_sets: &mut Vec<ShadowCasterSet>,
 ) -> Option<usize> {
+    if let Some(cached_index) = previous_caster_sets
+        .iter()
+        .position(|cached| Arc::ptr_eq(&cached.source_draws, &collection.items))
+    {
+        let mut cached = previous_caster_sets.swap_remove(cached_index);
+        manager
+            .shadow_layer_cache
+            .note_caster_plan_hit(collection.items.len());
+        if cached.draws.is_empty() {
+            return None;
+        }
+        let caster_set_index = plan.caster_sets.len();
+        cached.slab_slot_offset = plan.requested_draw_slots;
+        plan.requested_draw_slots = plan.requested_draw_slots.saturating_add(cached.draws.len());
+        plan.caster_sets.push(cached);
+        return Some(caster_set_index);
+    }
+
+    manager.shadow_layer_cache.note_caster_plan_miss();
     let shadow_draws = collection
         .items
         .iter()
@@ -487,6 +615,7 @@ fn append_shadow_caster_set(
     let slab_slot_offset = plan.requested_draw_slots;
     plan.requested_draw_slots = plan.requested_draw_slots.saturating_add(shadow_draws.len());
     plan.caster_sets.push(ShadowCasterSet {
+        source_draws: Arc::clone(&collection.items),
         draws: shadow_draws,
         instance_plan,
         slab_slot_offset,
@@ -570,9 +699,7 @@ struct ShadowViewPlanContext {
 
 /// Plans one shadow render view, assigning its persistent layer and reuse decision.
 ///
-/// The caster scan only runs when the light parameters still match the cached layer; a layer
-/// whose parameters changed (a moving light or a camera-fitted cascade) re-renders without
-/// paying for the member walk.
+/// Plans a shadow view, reusing scans when source, view, and mesh generation match.
 fn plan_shadow_render_view(
     cache: &mut ShadowLayerCache,
     plan: &mut ShadowFramePlan,
@@ -588,14 +715,35 @@ fn plan_shadow_render_view(
         ctx.camera_fit.as_ref(),
         ctx.resolution,
     );
-    let visible_groups =
-        visible_shadow_groups_for_view(view_proj, &plan.caster_sets[ctx.caster_set_index]);
+    let view_signature = ShadowViewSignature::new(
+        ctx.kind,
+        ctx.resolution,
+        view_proj,
+        ctx.light_position,
+        ctx.light_range,
+        ctx.shadow_bias,
+    );
     let cache_key = shadow_layer_cache_key(cache, ctx.view_id, light, view_offset);
     let ShadowLayerLease {
         layer,
         rendered_params_sig,
         rendered_caster_sig,
     } = cache.acquire(cache_key);
+    let caster_set = &plan.caster_sets[ctx.caster_set_index];
+    let visibility = cache
+        .cached_visibility(cache_key, &caster_set.source_draws, view_signature)
+        .unwrap_or_else(|| {
+            let built = visible_shadow_groups_for_view(view_proj, caster_set);
+            cache.store_visibility(
+                cache_key,
+                Arc::clone(&caster_set.source_draws),
+                view_signature,
+                &built.lease,
+                built.candidate_group_count,
+                built.candidate_draw_count,
+            );
+            built.lease
+        });
     let mut render_view = ShadowRenderView {
         layer,
         kind: ctx.kind,
@@ -605,7 +753,10 @@ fn plan_shadow_render_view(
         light_range: ctx.light_range,
         shadow_bias: ctx.shadow_bias,
         caster_set_index: ctx.caster_set_index,
-        visible_groups,
+        visible_groups: visibility.groups,
+        visible_group_count: visibility.visible_group_count,
+        visible_group_draw_count: visibility.visible_group_draw_count,
+        view_signature,
         needs_render: true,
         cache_key,
         params_sig: 0,
@@ -613,11 +764,22 @@ fn plan_shadow_render_view(
     };
     render_view.params_sig = shadow_layer_params_signature(cache, &render_view);
     if rendered_params_sig == Some(render_view.params_sig) {
-        let content = shadow_caster_content_hash(
-            cache,
-            &plan.caster_sets[ctx.caster_set_index],
-            &render_view.visible_groups,
-        );
+        let content = cache
+            .cached_caster_content_hash(cache_key, &caster_set.source_draws, view_signature)
+            .unwrap_or_else(|| {
+                let content = shadow_caster_content_hash(
+                    cache,
+                    caster_set,
+                    render_view.visible_groups.as_ref(),
+                );
+                cache.store_caster_content_hash(
+                    cache_key,
+                    &caster_set.source_draws,
+                    view_signature,
+                    content,
+                );
+                content
+            });
         render_view.caster_sig = content.reusable.then_some(content.hash);
         render_view.needs_render = !content.reusable || rendered_caster_sig != Some(content.hash);
     }
@@ -657,6 +819,7 @@ fn shadow_layer_cache_key(
 }
 
 /// Content hash over one shadow view's visible caster members.
+#[derive(Clone, Copy)]
 struct ShadowCasterContentHash {
     /// Hash of member identity, geometry range, pipeline key, and world transform.
     hash: u64,
@@ -788,20 +951,42 @@ fn append_shadow_draw_group(
     }
 }
 
+struct VisibleShadowGroupsBuild {
+    lease: ShadowVisibilityLease,
+    candidate_group_count: usize,
+    candidate_draw_count: usize,
+}
+
 fn visible_shadow_groups_for_view(
     view_proj: Mat4,
     caster_set: &ShadowCasterSet,
-) -> RenderPhaseSet<WorldMeshPhase, DrawGroup> {
+) -> VisibleShadowGroupsBuild {
     profiling::scope!("render::prepare_shadow_frame::visible_groups");
     let mut visible = RenderPhaseSet::new();
+    let mut visible_group_count = 0usize;
+    let mut visible_group_draw_count = 0usize;
+    let mut candidate_group_count = 0usize;
     for phase in WorldMeshPhase::PRIMARY_FORWARD {
         for group in caster_set.instance_plan.phase(phase) {
+            candidate_group_count = candidate_group_count.saturating_add(1);
             if shadow_group_visible_to_view(view_proj, caster_set, group) {
+                visible_group_count = visible_group_count.saturating_add(1);
+                visible_group_draw_count = visible_group_draw_count.saturating_add(
+                    (group.instance_range.end - group.instance_range.start) as usize,
+                );
                 visible.phase_mut(phase).push(group.clone());
             }
         }
     }
-    visible
+    VisibleShadowGroupsBuild {
+        lease: ShadowVisibilityLease {
+            groups: Arc::new(visible),
+            visible_group_count,
+            visible_group_draw_count,
+        },
+        candidate_group_count,
+        candidate_draw_count: caster_set.draws.len(),
+    }
 }
 
 fn shadow_group_visible_to_view(

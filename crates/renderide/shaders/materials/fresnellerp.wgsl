@@ -139,8 +139,8 @@ fn compute_lerp(uv: vec2<f32>) -> f32 {
 
 fn sample_normal(uv: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>, l: f32) -> vec3<f32> {
     var n = normalize(world_n);
-    let t = normalize(world_t);
     if (kw_NORMALMAP()) {
+        let t = normalize(world_t);
         let n0 = ts::sample_tex_2d(_NormalMap0, _NormalMap0_sampler, uvu::apply_st(uv, mat._NormalMap0_ST), mat._NormalMap0_LodBias);
         let n1 = ts::sample_tex_2d(_NormalMap1, _NormalMap1_sampler, uvu::apply_st(uv, mat._NormalMap1_ST), mat._NormalMap1_LodBias);
         let ts_n = nd::decode_ts_normal_with_placeholder_sample(mix(n0, n1, vec4<f32>(l)), 1.0);

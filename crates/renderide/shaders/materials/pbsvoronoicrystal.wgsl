@@ -122,7 +122,6 @@ fn shade(
     let scale = mat._Scale.xy;
     let global_uv = uvu::apply_st(uv, mat._Global_ST);
     let v_result = vor::voronoi_full(global_uv * scale, scale, mat._AnimationOffset);
-    let cell_offset = vec2<f32>(0.5) + vec2<f32>(0.5) * sin(mat._AnimationOffset + 6.2831 * v_result.min_point);
     let border_dist = v_result.second_min_dist - v_result.min_dist;
     let aaf = fwidth(border_dist);
     let border_lerp = smoothstep(mat._EdgeThickness - aaf, mat._EdgeThickness, border_dist);
@@ -137,13 +136,13 @@ fn shade(
     let tbn = pnorm::orthonormal_tbn(world_n, world_t);
     let n = normalize(tbn * n_blend_ts);
 
-    let cell_color = ts::sample_tex_2d(_ColorGradient, _ColorGradient_sampler, cell_offset, mat._ColorGradient_LodBias).rgb * mat._ColorTint.rgb;
+    let cell_color = ts::sample_tex_2d(_ColorGradient, _ColorGradient_sampler, v_result.min_cell_offset, mat._ColorGradient_LodBias).rgb * mat._ColorTint.rgb;
     let base_color = mix(mat._EdgeColor.rgb, cell_color, border_lerp);
     let metallic = clamp(mix(mat._EdgeMetallic, mat._Metallic, border_lerp), 0.0, 1.0);
     let gloss_sample = ts::sample_tex_2d(_GlossGradient, _GlossGradient_sampler, v_result.min_point, mat._GlossGradient_LodBias).x;
     let smoothness = clamp(mix(mat._EdgeGloss, mat._Glossiness * gloss_sample, border_lerp), 0.0, 1.0);
     let roughness = psamp::roughness_from_smoothness(smoothness);
-    let cell_emission = ts::sample_tex_2d(_EmissionGradient, _EmissionGradient_sampler, cell_offset, mat._EmissionGradient_LodBias).rgb * mat._EmissionColor.rgb;
+    let cell_emission = ts::sample_tex_2d(_EmissionGradient, _EmissionGradient_sampler, v_result.min_cell_offset, mat._EmissionGradient_LodBias).rgb * mat._EmissionColor.rgb;
     let emission = mix(mat._EdgeEmission.rgb, cell_emission, border_lerp);
 
     let surface = psurf::metallic_with_geometric_normal(

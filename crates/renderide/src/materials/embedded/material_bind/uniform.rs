@@ -85,6 +85,30 @@ impl MaterialUniformArenaAllocator {
         self.capacity
     }
 
+    /// Returns an existing slot only when it needs no allocation or refresh.
+    fn stable_slot(
+        &self,
+        key: &MaterialUniformCacheKey,
+        size: NonZeroU64,
+        mutation_gen: u64,
+        texture_state_sig: u64,
+    ) -> Option<MaterialUniformSlotResolution> {
+        let slot = self.slots.get(key)?;
+        if slot.size != size.get()
+            || slot.last_written_generation != mutation_gen
+            || slot.last_written_texture_state_sig != texture_state_sig
+            || slot.buffer_generation != self.generation
+        {
+            return None;
+        }
+        Some(MaterialUniformSlotResolution {
+            offset: slot.offset,
+            size,
+            buffer_generation: self.generation,
+            needs_write: false,
+        })
+    }
+
     fn resolve_slot(
         &mut self,
         key: MaterialUniformCacheKey,
@@ -218,6 +242,23 @@ impl MaterialUniformArena {
         }
     }
 
+    /// Returns an exact existing binding without mutating allocator or buffer state.
+    fn stable_binding(
+        &self,
+        key: &MaterialUniformCacheKey,
+        size: NonZeroU64,
+        mutation_gen: u64,
+        texture_state_sig: u64,
+    ) -> Result<Option<MaterialUniformArenaSlotBinding>, EmbeddedMaterialBindError> {
+        let Some(resolved) = self
+            .allocator
+            .stable_slot(key, size, mutation_gen, texture_state_sig)
+        else {
+            return Ok(None);
+        };
+        self.binding_for_resolution(resolved).map(Some)
+    }
+
     fn resolve_binding(
         &mut self,
         key: MaterialUniformCacheKey,
@@ -240,21 +281,26 @@ impl MaterialUniformArena {
                 self.allocator.generation()
             );
         }
+        self.binding_for_resolution(resolved)
+            .map(|binding| (binding, resolved.needs_write))
+    }
+
+    fn binding_for_resolution(
+        &self,
+        resolved: MaterialUniformSlotResolution,
+    ) -> Result<MaterialUniformArenaSlotBinding, EmbeddedMaterialBindError> {
         let dynamic_offset = u32::try_from(resolved.offset).map_err(|_err| {
             EmbeddedMaterialBindError::from(format!(
                 "material uniform arena offset {} exceeds dynamic offset range",
                 resolved.offset
             ))
         })?;
-        Ok((
-            MaterialUniformArenaSlotBinding {
-                buffer: self.buffer.clone(),
-                dynamic_offset,
-                size: resolved.size,
-                buffer_generation: resolved.buffer_generation,
-            },
-            resolved.needs_write,
-        ))
+        Ok(MaterialUniformArenaSlotBinding {
+            buffer: self.buffer.clone(),
+            dynamic_offset,
+            size: resolved.size,
+            buffer_generation: resolved.buffer_generation,
+        })
     }
 
     fn mark_written(
@@ -327,14 +373,11 @@ impl EmbeddedMaterialBindResources {
     /// Refreshes bytes when [`MaterialPropertyStore`] mutates, when texture-derived uniform state
     /// changes, or when the arena grows to a new backing buffer generation.
     ///
-    /// `resolve_binding`, the uniform byte build, the `GraphUploadSink::write_buffer` call, and
-    /// `mark_written` all run under one arena shard lock. Splitting them across two critical
-    /// sections allowed `slot.last_written_(generation|texture_state_sig)` to record a
-    /// `(mutation_gen, texture_state_sig)` snapshot that disagreed with the bytes actually
-    /// uploaded if any concurrent caller mutated relevant state between the resolve and the
-    /// mark - a later cache hit could then skip a needed rewrite and let one material draw
-    /// with another material's uniforms. `write_buffer` is a deferred queue push that does no
-    /// GPU synchronization, so holding the shard lock across it is cheap.
+    /// Exact no-write hits only clone an existing binding under a shared shard lock. Every other
+    /// path reacquires the shard exclusively and revalidates before allocation or refresh.
+    /// `resolve_binding`, the uniform byte build, `GraphUploadSink::write_buffer`, and
+    /// `mark_written` stay in that one exclusive section so recorded generations cannot disagree
+    /// with uploaded bytes.
     ///
     /// The arena is sharded by [`MaterialUniformCacheKey`] so concurrent rayon recording workers
     /// hitting distinct keys land on distinct shards and never block one another. A given key
@@ -342,7 +385,7 @@ impl EmbeddedMaterialBindResources {
     /// counter remain self-consistent.
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "the arena shard lock is intentionally held across resolve_binding, the uniform byte build, write_buffer, and mark_written so slot tracking cannot disagree with the uploaded bytes"
+        reason = "the arena shard write lock is intentionally held across resolve_binding, uniform packing, upload, and mark_written"
     )]
     pub(super) fn get_or_update_embedded_uniform_arena_slot(
         &self,
@@ -380,8 +423,19 @@ impl EmbeddedMaterialBindResources {
             primary_texture_2d,
         };
 
+        let shard = self.uniform_arena_shard(uniform_key);
+        {
+            profiling::scope!("materials::embedded_uniform_arena_read");
+            let arena = shard.read();
+            if let Some(binding) =
+                arena.stable_binding(uniform_key, uniform_size, mutation_gen, texture_state_sig)?
+            {
+                return Ok(binding);
+            }
+        }
+
         profiling::scope!("materials::embedded_uniform_arena_critical_section");
-        let mut arena = self.uniform_arena_shard(uniform_key).lock();
+        let mut arena = shard.write();
         let (binding, needs_write) =
             arena.resolve_binding(*uniform_key, uniform_size, mutation_gen, texture_state_sig)?;
         if needs_write {
@@ -466,6 +520,30 @@ mod tests {
     }
 
     #[test]
+    fn arena_allocator_stable_slot_requires_exact_state() {
+        let mut allocator = MaterialUniformArenaAllocator::new(1024, 4096, 256);
+        let size = NonZeroU64::new(80).unwrap();
+        let cache_key = key(1);
+        let first = allocator.resolve_slot(cache_key, size, 3, 5).unwrap();
+        allocator.mark_written(&cache_key, first.buffer_generation, 3, 5);
+
+        assert!(allocator.stable_slot(&cache_key, size, 3, 5).is_some());
+        assert!(allocator.stable_slot(&cache_key, size, 4, 5).is_none());
+        assert!(allocator.stable_slot(&cache_key, size, 3, 6).is_none());
+
+        let changed_size = NonZeroU64::new(96).unwrap();
+        assert!(
+            allocator
+                .stable_slot(&cache_key, changed_size, 3, 5)
+                .is_none()
+        );
+        let error = allocator
+            .resolve_slot(cache_key, changed_size, 3, 5)
+            .expect_err("exclusive resolution must retain size mismatch validation");
+        assert!(error.to_string().contains("slot size changed"));
+    }
+
+    #[test]
     fn arena_allocator_growth_invalidates_existing_slots_for_new_generation() {
         let mut allocator = MaterialUniformArenaAllocator::new(256, 2048, 256);
         let size = NonZeroU64::new(128).unwrap();
@@ -473,14 +551,59 @@ mod tests {
         let first = allocator.resolve_slot(key(1), size, 1, 1).unwrap();
         allocator.mark_written(&key(1), first.buffer_generation, 1, 1);
         assert_eq!(allocator.generation(), 0);
+        assert!(allocator.stable_slot(&key(1), size, 1, 1).is_some());
 
         let _second = allocator.resolve_slot(key(2), size, 1, 1).unwrap();
         assert_eq!(allocator.generation(), 1);
+        assert!(allocator.stable_slot(&key(1), size, 1, 1).is_none());
         let first_after_growth = allocator.resolve_slot(key(1), size, 1, 1).unwrap();
 
         assert_eq!(first_after_growth.offset, first.offset);
         assert_eq!(first_after_growth.buffer_generation, 1);
         assert!(first_after_growth.needs_write);
+    }
+
+    #[test]
+    fn concurrent_stale_readers_revalidate_to_one_refresh() {
+        const WORKERS: usize = 8;
+
+        let size = NonZeroU64::new(80).unwrap();
+        let cache_key = key(1);
+        let mut allocator = MaterialUniformArenaAllocator::new(1024, 4096, 256);
+        let first = allocator.resolve_slot(cache_key, size, 1, 2).unwrap();
+        allocator.mark_written(&cache_key, first.buffer_generation, 1, 2);
+
+        let shared = Arc::new(parking_lot::RwLock::new(allocator));
+        let ready = Arc::new(std::sync::Barrier::new(WORKERS));
+        let refreshes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut threads = Vec::with_capacity(WORKERS);
+
+        for _ in 0..WORKERS {
+            let shared = shared.clone();
+            let ready = ready.clone();
+            let refreshes = refreshes.clone();
+            threads.push(std::thread::spawn(move || {
+                {
+                    let allocator = shared.read();
+                    assert!(allocator.stable_slot(&cache_key, size, 3, 4).is_none());
+                }
+                ready.wait();
+
+                let mut allocator = shared.write();
+                let resolved = allocator.resolve_slot(cache_key, size, 3, 4).unwrap();
+                if resolved.needs_write {
+                    refreshes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    allocator.mark_written(&cache_key, resolved.buffer_generation, 3, 4);
+                }
+            }));
+        }
+
+        for thread in threads {
+            thread.join().expect("uniform arena worker");
+        }
+
+        assert_eq!(refreshes.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert!(shared.read().stable_slot(&cache_key, size, 3, 4).is_some());
     }
 
     #[test]

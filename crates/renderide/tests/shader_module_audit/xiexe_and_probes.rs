@@ -291,15 +291,20 @@ fn xiexe_pbr_reflections_use_pbs_probe_energy_terms() -> io::Result<()> {
 
     for required in [
         "return rprobe::indirect_diffuse(world_pos, s.normal, view_layer, true);",
-        "let indirect_enabled = rprobe::has_indirect_specular(view_layer, xvb::reflection_uses_pbr_for_layout(keyword_layout));",
-        "let roughness = brdf::filter_perceptual_roughness(clamp(perceptual_roughness, 0.0, 1.0), normal, s.raw_normal);",
+        "struct IndirectReflectionContext {",
+        "let roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal, s.raw_normal);",
         "let n_dot_v = clamp(dot(specular_normal, view_dir), 0.0, 1.0);",
-        "let dfg = brdf::sample_ibl_dfg_lut(roughness, n_dot_v);",
-        "let specular_energy = brdf::indirect_specular_energy_from_dfg(dfg, specular_reflectance, indirect_enabled);",
-        "let specular_visibility =\n        brdf::indirect_specular_visibility(n_dot_v, occlusion_scalar(s), roughness, specular_reflectance);",
-        "let spec = rprobe::indirect_specular_with_energy(",
-        "specular_energy * specular_visibility",
         "let specular_reflectance = brdf::metallic_f0(s.diffuse_color, s.metallic);",
+        "let has_environment = rprobe::has_indirect_specular(view_layer, true);",
+        "let pbr_enabled = has_environment && xvb::reflection_uses_pbr_for_layout(keyword_layout);",
+        "if (pbr_enabled) {",
+        "let dfg = brdf::sample_ibl_dfg_lut(roughness, n_dot_v);",
+        "specular_energy = brdf::indirect_specular_energy_from_dfg(dfg, specular_reflectance, true);",
+        "if (!reflection.pbr_enabled) {",
+        "let weighted_specular_energy = reflection.specular_energy * specular_visibility;",
+        "return reflection.radiance",
+        "* weighted_specular_energy",
+        "* reflection.horizon;",
         "spec = mix(spec, spec * dominant_ramp, roughness);",
         "col + reflection * clamp(s.reflectivity_mask, 0.0, 1.0)",
     ] {
@@ -323,17 +328,28 @@ fn xiexe_pbr_reflections_use_pbs_probe_energy_terms() -> io::Result<()> {
         "Xiexe indirect reflections must not apply the direct-light roughness floor"
     );
 
+    assert_eq!(
+        lighting_src.matches("brdf::sample_ibl_dfg_lut(").count(),
+        2,
+        "Xiexe must keep one direct DFG lookup and one shared indirect DFG lookup"
+    );
     let pbr_branch_pos = lighting_src
-        .find("let indirect_enabled = rprobe::has_indirect_specular(view_layer, xvb::reflection_uses_pbr_for_layout(keyword_layout));")
-        .expect("Xiexe PBR reflection branch must query probe availability");
+        .find("fn indirect_reflection_branch_for_layout(")
+        .expect("Xiexe PBR reflection branch must exist");
     let pbr_return_pos = lighting_src[pbr_branch_pos..]
-        .find("return spec;")
+        .find("fn indirect_specular_for_layout(")
         .map(|offset| pbr_branch_pos + offset)
-        .expect("Xiexe PBR reflection branch must return its specular result");
+        .expect("Xiexe PBR reflection branch must end before the layout wrapper");
     let pbr_branch = &lighting_src[pbr_branch_pos..pbr_return_pos];
     assert!(
-        !pbr_branch.contains("raw_indirect_specular"),
-        "Xiexe PBR reflection branch must not multiply raw probe radiance by hand-rolled Fresnel"
+        !pbr_branch.contains("rprobe::indirect_radiance(")
+            && !pbr_branch.contains("brdf::sample_ibl_dfg_lut("),
+        "Xiexe PBR branch must reuse the shared probe traversal and DFG result"
+    );
+    assert!(
+        !lighting_src.contains("rprobe::raw_indirect_specular_with_horizon(")
+            && !lighting_src.contains("rprobe::indirect_specular_with_energy("),
+        "Xiexe must use the shared raw-radiance/horizon context instead of traversing probes again"
     );
 
     Ok(())
@@ -346,7 +362,8 @@ fn reflection_probe_specular_samples_manual_cubemap_array_atlas() -> io::Result<
     for required in [
         "#import renderide::ibl::cubemap_filter as cube_filter",
         "cube_filter::sample_trilinear_base(",
-        "atlas_index * 6u,",
+        "let texture_slot = u32(max(probe.position.w, 0.0));",
+        "texture_slot * 6u,",
         "let sample_dir = box_project_dir(probe, world_pos, dir, perceptual_roughness);",
     ] {
         assert!(
@@ -418,13 +435,19 @@ fn reflection_probe_specular_applies_horizon_occlusion() -> io::Result<()> {
 
     let xiexe_lighting = module_source("xiexe/toon2/lighting.wgsl")?;
     assert!(
-        xiexe_lighting.contains("specular_normal,\n        s.raw_normal,\n        view_dir,"),
+        xiexe_lighting.contains(
+            "horizon = rprobe::horizon_specular_occlusion(specular_normal, s.raw_normal, view_dir, roughness);"
+        ),
         "Xiexe indirect specular must pass the shifted specular normal and raw horizon normal"
     );
     assert!(
-        xiexe_lighting.contains("let indirect_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal, s.raw_normal);")
-            && xiexe_lighting.contains("rprobe::raw_indirect_specular_with_horizon(world_pos, specular_normal, s.raw_normal, view_dir, indirect_roughness, true, view_layer)"),
-        "Xiexe environment tint must use combined filtered roughness and shifted horizon-occluded probe radiance"
+        xiexe_lighting.contains(
+            "let roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal, s.raw_normal);"
+        )
+            && xiexe_lighting.contains("radiance = rprobe::indirect_radiance(")
+            && xiexe_lighting
+                .contains("return reflection.radiance * reflection.horizon;"),
+        "Xiexe environment tint must reuse filtered roughness and shifted horizon-occluded probe radiance"
     );
     assert!(
         !xiexe_lighting.contains("filter_perceptual_roughness(s.roughness, s.raw_normal)")
@@ -443,9 +466,9 @@ fn xiexe_indirect_diffuse_uses_pbs_energy_split() -> io::Result<()> {
     let lighting_src =
         source_file(manifest_dir().join("shaders/modules/xiexe/toon2/lighting.wgsl"))?;
     for required in [
-        "let indirect_specular_reflectance = brdf::metallic_f0(s.diffuse_color, s.metallic);",
-        "let indirect_specular_energy = brdf::indirect_specular_energy_from_dfg(",
-        "let indirect_diffuse_energy_scale =\n        brdf::indirect_diffuse_energy_scale(indirect_specular_energy, indirect_specular_enabled);",
+        "let specular_reflectance = brdf::metallic_f0(s.diffuse_color, s.metallic);",
+        "specular_energy = brdf::indirect_specular_energy_from_dfg(",
+        "let indirect_diffuse_energy_scale =\n        brdf::indirect_diffuse_energy_scale(indirect_reflection.specular_energy, indirect_reflection.pbr_enabled);",
         "fn indirect_diffuse_visibility(s: xb::SurfaceData) -> vec3<f32>",
         "let visibility = brdf::indirect_diffuse_visibility(scalar_occlusion, s.albedo.rgb);",
         "return min(vec3<f32>(1.0), colored_occlusion * visibility / vec3<f32>(scalar_occlusion));",

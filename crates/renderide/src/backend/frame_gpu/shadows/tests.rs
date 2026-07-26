@@ -1,17 +1,20 @@
 use std::mem::size_of;
+use std::sync::Arc;
 
 use glam::{Mat4, Vec3};
 use hashbrown::HashMap;
 
 use super::{
     PaddedShadowCasterDraw, PaddedShadowLayerUniforms, clamp_shadow_resolution,
-    clamp_shadow_texture_resolution, shadow_atlas_array_view_descriptor,
-    shadow_atlas_layer_view_descriptor, shadow_pipeline_state,
+    clamp_shadow_texture_resolution, select_shadow_atlas_split_workload,
+    shadow_atlas_array_view_descriptor, shadow_atlas_layer_view_descriptor, shadow_pipeline_state,
 };
 use crate::backend::frame_resource_manager::ShadowRenderView;
 use crate::gpu::{SHADOW_VIEW_KIND_DIRECTIONAL, SHADOW_VIEW_KIND_POINT, SHADOW_VIEW_KIND_SPOT};
 use crate::mesh_deform::PER_DRAW_UNIFORM_STRIDE;
+use crate::render_phase::RenderPhaseSet;
 use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
+use crate::world_mesh::{DrawGroup, WorldMeshDrawItem, WorldMeshPhase};
 
 fn limits(max_texture_dimension_2d: u32, max_texture_array_layers: u32) -> crate::gpu::GpuLimits {
     crate::gpu::GpuLimits::synthetic_for_tests(
@@ -25,7 +28,7 @@ fn limits(max_texture_dimension_2d: u32, max_texture_array_layers: u32) -> crate
     )
 }
 
-fn dummy_draw_item() -> crate::world_mesh::WorldMeshDrawItem {
+fn dummy_draw_item() -> WorldMeshDrawItem {
     dummy_world_mesh_draw_item(DummyDrawItemSpec {
         material_asset_id: 1,
         property_block: None,
@@ -148,6 +151,40 @@ fn projected_shadow_layer_uniforms_do_not_pack_radial_bias() {
 }
 
 #[test]
+fn shadow_split_workload_preserves_layer_order_and_balances_chunks() {
+    let groups = super::SHADOW_ATLAS_PARALLEL_MIN_VISIBLE_GROUPS;
+
+    let workload =
+        select_shadow_atlas_split_workload(5, groups, 300, true, 2).expect("split workload");
+
+    assert_eq!(workload.unit_count, 5);
+    assert_eq!(workload.estimated_work, groups + 300);
+    assert_eq!(workload.chunk_size, 3);
+}
+
+#[test]
+fn shadow_split_workload_rejects_unsafe_or_tiny_fanout() {
+    let groups = super::SHADOW_ATLAS_PARALLEL_MIN_VISIBLE_GROUPS;
+
+    assert_eq!(
+        select_shadow_atlas_split_workload(1, groups, 300, true, 4),
+        None
+    );
+    assert_eq!(
+        select_shadow_atlas_split_workload(2, groups - 1, 300, true, 4),
+        None
+    );
+    assert_eq!(
+        select_shadow_atlas_split_workload(2, groups, 300, true, 1),
+        None
+    );
+    assert_eq!(
+        select_shadow_atlas_split_workload(2, groups, 300, false, 4),
+        None
+    );
+}
+
+#[test]
 fn shadow_caster_uniforms_use_identity_model_for_world_space_positions() {
     let mut item = dummy_draw_item();
     item.world_space_deformed = true;
@@ -190,4 +227,68 @@ fn shrink_window_skips_marginal_savings() {
         assert_eq!(window.note(4096, 15, 4096, 16), None);
     }
     assert_eq!(window.note(4096, 15, 4096, 16), None);
+}
+
+fn indirect_key(
+    generation: u64,
+    slab_slot_offset: usize,
+    draws: Arc<[WorldMeshDrawItem]>,
+    visible_groups: Arc<RenderPhaseSet<WorldMeshPhase, DrawGroup>>,
+    view: &ShadowRenderView,
+) -> super::ShadowIndirectPlanKey {
+    super::ShadowIndirectPlanKey {
+        allocation_generation: generation,
+        layers: vec![super::ShadowIndirectLayerKey {
+            layer: view.layer,
+            slab_slot_offset,
+            view_signature: view.view_signature,
+            draws,
+            visible_groups,
+        }],
+    }
+}
+
+#[test]
+fn shadow_indirect_key_requires_strong_packet_identity_and_arena_generation() {
+    let draws: Arc<[WorldMeshDrawItem]> = Arc::from([dummy_draw_item()]);
+    let groups = Arc::new(RenderPhaseSet::new());
+    let view = shadow_view(SHADOW_VIEW_KIND_SPOT);
+    let first = indirect_key(7, 4, Arc::clone(&draws), Arc::clone(&groups), &view);
+    let exact = indirect_key(7, 4, Arc::clone(&draws), Arc::clone(&groups), &view);
+    assert!(first.matches(&exact));
+
+    let replaced_draws = indirect_key(
+        7,
+        4,
+        Arc::from([dummy_draw_item()]),
+        Arc::clone(&groups),
+        &view,
+    );
+    assert!(!first.matches(&replaced_draws));
+
+    let replaced_groups = indirect_key(
+        7,
+        4,
+        Arc::clone(&draws),
+        Arc::new(RenderPhaseSet::new()),
+        &view,
+    );
+    assert!(!first.matches(&replaced_groups));
+
+    let moved_arena = indirect_key(8, 4, Arc::clone(&draws), Arc::clone(&groups), &view);
+    assert!(!first.matches(&moved_arena));
+}
+
+#[test]
+fn shadow_indirect_key_tracks_slab_and_exact_view_signature() {
+    let draws: Arc<[WorldMeshDrawItem]> = Arc::from([dummy_draw_item()]);
+    let groups = Arc::new(RenderPhaseSet::new());
+    let spot = shadow_view(SHADOW_VIEW_KIND_SPOT);
+    let point = shadow_view(SHADOW_VIEW_KIND_POINT);
+    let first = indirect_key(3, 0, Arc::clone(&draws), Arc::clone(&groups), &spot);
+    let moved_slab = indirect_key(3, 1, Arc::clone(&draws), Arc::clone(&groups), &spot);
+    let changed_view = indirect_key(3, 0, draws, groups, &point);
+
+    assert!(!first.matches(&moved_slab));
+    assert!(!first.matches(&changed_view));
 }

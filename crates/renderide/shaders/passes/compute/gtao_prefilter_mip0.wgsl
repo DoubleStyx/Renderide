@@ -74,14 +74,8 @@ fn load_mip0_depth(mip0_pix: vec2<i32>, mip0_max: vec2<i32>, raw_dim: vec2<u32>,
     let raw_base = clamped_mip0_pix * i32(divisor);
     var sum = 0.0;
     var count = 0.0;
-    for (var y = 0u; y < 4u; y = y + 1u) {
-        if (y >= divisor) {
-            continue;
-        }
-        for (var x = 0u; x < 4u; x = x + 1u) {
-            if (x >= divisor) {
-                continue;
-            }
+    for (var y = 0u; y < divisor; y = y + 1u) {
+        for (var x = 0u; x < divisor; x = x + 1u) {
             let raw_pix = raw_base + vec2<i32>(i32(x), i32(y));
             if (raw_pix.x >= i32(raw_dim.x) || raw_pix.y >= i32(raw_dim.y)) {
                 continue;
@@ -197,39 +191,40 @@ fn cs_main(
 
     let depth_mip1 = depth_mip_filter(d0, d1, d2, d3);
     store_mip1(base_mip1, layer, depth_mip1);
-    previous_mip_depth[lid.x][lid.y] = depth_mip1;
+    // Keep adjacent X lanes contiguous in workgroup memory.
+    previous_mip_depth[lid.y][lid.x] = depth_mip1;
 
     workgroupBarrier();
 
     if all(lid.xy % vec2<u32>(2u) == vec2<u32>(0u)) {
-        let depth0 = previous_mip_depth[lid.x + 0u][lid.y + 0u];
-        let depth1 = previous_mip_depth[lid.x + 1u][lid.y + 0u];
-        let depth2 = previous_mip_depth[lid.x + 0u][lid.y + 1u];
-        let depth3 = previous_mip_depth[lid.x + 1u][lid.y + 1u];
+        let depth0 = previous_mip_depth[lid.y + 0u][lid.x + 0u];
+        let depth1 = previous_mip_depth[lid.y + 0u][lid.x + 1u];
+        let depth2 = previous_mip_depth[lid.y + 1u][lid.x + 0u];
+        let depth3 = previous_mip_depth[lid.y + 1u][lid.x + 1u];
         let depth_mip2 = depth_mip_filter(depth0, depth1, depth2, depth3);
         store_mip2(base_mip1 / 2, layer, depth_mip2);
-        previous_mip_depth[lid.x][lid.y] = depth_mip2;
+        previous_mip_depth[lid.y][lid.x] = depth_mip2;
     }
 
     workgroupBarrier();
 
     if all(lid.xy % vec2<u32>(4u) == vec2<u32>(0u)) {
-        let depth0 = previous_mip_depth[lid.x + 0u][lid.y + 0u];
-        let depth1 = previous_mip_depth[lid.x + 2u][lid.y + 0u];
-        let depth2 = previous_mip_depth[lid.x + 0u][lid.y + 2u];
-        let depth3 = previous_mip_depth[lid.x + 2u][lid.y + 2u];
+        let depth0 = previous_mip_depth[lid.y + 0u][lid.x + 0u];
+        let depth1 = previous_mip_depth[lid.y + 0u][lid.x + 2u];
+        let depth2 = previous_mip_depth[lid.y + 2u][lid.x + 0u];
+        let depth3 = previous_mip_depth[lid.y + 2u][lid.x + 2u];
         let depth_mip3 = depth_mip_filter(depth0, depth1, depth2, depth3);
         store_mip3(base_mip1 / 4, layer, depth_mip3);
-        previous_mip_depth[lid.x][lid.y] = depth_mip3;
+        previous_mip_depth[lid.y][lid.x] = depth_mip3;
     }
 
     workgroupBarrier();
 
     if all(lid.xy % vec2<u32>(8u) == vec2<u32>(0u)) {
-        let depth0 = previous_mip_depth[lid.x + 0u][lid.y + 0u];
-        let depth1 = previous_mip_depth[lid.x + 4u][lid.y + 0u];
-        let depth2 = previous_mip_depth[lid.x + 0u][lid.y + 4u];
-        let depth3 = previous_mip_depth[lid.x + 4u][lid.y + 4u];
+        let depth0 = previous_mip_depth[lid.y + 0u][lid.x + 0u];
+        let depth1 = previous_mip_depth[lid.y + 0u][lid.x + 4u];
+        let depth2 = previous_mip_depth[lid.y + 4u][lid.x + 0u];
+        let depth3 = previous_mip_depth[lid.y + 4u][lid.x + 4u];
         let depth_mip4 = depth_mip_filter(depth0, depth1, depth2, depth3);
         store_mip4(base_mip1 / 8, layer, depth_mip4);
     }

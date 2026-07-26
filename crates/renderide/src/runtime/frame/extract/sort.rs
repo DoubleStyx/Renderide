@@ -144,7 +144,7 @@ pub(super) fn trace_view_draw_plans(
         };
         let helper_needs = draw_plan.world.helper_needs();
         logger::trace!(
-            "render view draws: view_id={:?} extent={}x{} shader_perm={:?} draws={} overlay_plan_present={} overlay_draws={} pre_cull={} frustum_culled={} hi_z_culled={} overlay_pre_cull={} overlay_frustum_culled={} overlay_hi_z_culled={} helper_depth_snapshot={} helper_color_snapshot={}",
+            "render view draws: view_id={:?} extent={}x{} shader_perm={:?} draws={} overlay_plan_present={} overlay_draws={} pre_cull={} frustum_culled={} hi_z_culled={} overlay_pre_cull={} overlay_frustum_culled={} overlay_hi_z_culled={} helper_depth_snapshot={} helper_per_object_color_snapshot={} helper_named_color_snapshot={}",
             prep.view_id,
             prep.viewport_px.0,
             prep.viewport_px.1,
@@ -159,7 +159,8 @@ pub(super) fn trace_view_draw_plans(
             overlay.draws_culled,
             overlay.draws_hi_z_culled,
             helper_needs.depth_snapshot,
-            helper_needs.color_snapshot,
+            helper_needs.per_object_color_snapshot,
+            helper_needs.named_color_snapshot,
         );
     }
 }

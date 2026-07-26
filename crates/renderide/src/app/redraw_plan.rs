@@ -49,6 +49,14 @@ pub(crate) struct RedrawInputs {
     pub(crate) now: Instant,
 }
 
+/// Whether an event-loop wait leaves time for one cooperative asset-integration pass.
+///
+/// A redraw that is already due always wins. Asset integration still runs while an FPS cap leaves
+/// the event loop genuinely idle, and the caller recomputes the redraw plan after that pass.
+pub(crate) fn can_run_idle_asset_work(decision: RedrawDecision) -> bool {
+    matches!(decision, RedrawDecision::WaitUntil(_))
+}
+
 /// Wall-clock minimum spacing between redraws for a positive FPS cap.
 pub(crate) fn min_interval_for_fps_cap(cap: u32) -> Option<Duration> {
     if cap == 0 {
@@ -113,8 +121,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        PresentationModeSetting, RedrawDecision, RedrawInputs, min_interval_for_fps_cap,
-        next_redraw_wait_until, plan_redraw,
+        PresentationModeSetting, RedrawDecision, RedrawInputs, can_run_idle_asset_work,
+        min_interval_for_fps_cap, next_redraw_wait_until, plan_redraw,
     };
 
     #[test]
@@ -359,5 +367,18 @@ mod tests {
             .decision,
             RedrawDecision::Idle
         );
+    }
+
+    #[test]
+    fn due_redraw_defers_idle_asset_work() {
+        assert!(!can_run_idle_asset_work(RedrawDecision::RedrawNow));
+    }
+
+    #[test]
+    fn capped_wait_retains_idle_asset_progress() {
+        let now = Instant::now();
+        assert!(can_run_idle_asset_work(RedrawDecision::WaitUntil(
+            now + Duration::from_millis(16)
+        )));
     }
 }

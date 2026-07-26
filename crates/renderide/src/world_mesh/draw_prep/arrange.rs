@@ -2,7 +2,7 @@
 
 use std::cmp::Ordering;
 
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashTable};
 use rayon::prelude::*;
 
 use crate::world_mesh::WorldMeshPhase;
@@ -181,22 +181,47 @@ impl BatchIdTable {
     /// Builds compact batch IDs from the flattened draw list.
     fn build_from_items(items: &[WorldMeshDrawItem], allow_parallel: bool) -> Self {
         profiling::scope!("mesh::arrange_draws_by_phase_bins::batch_ids");
-        let mut sorted_indices = (0..items.len()).collect::<Vec<_>>();
-        sort_batch_indices(&mut sorted_indices, items, allow_parallel);
+        let expected_unique = items.len().min(1_024);
+        let mut representatives = Vec::<usize>::with_capacity(expected_unique);
+        let mut representatives_by_key = HashTable::<u32>::with_capacity(expected_unique);
+        let mut draw_ids = Vec::with_capacity(items.len());
+        for (draw_index, item) in items.iter().enumerate() {
+            let unique_id = representatives_by_key
+                .find(item.batch_key_hash, |&candidate_id| {
+                    let candidate = &items[representatives[candidate_id as usize]];
+                    candidate.batch_key_hash == item.batch_key_hash
+                        && candidate.batch_key == item.batch_key
+                })
+                .copied()
+                .unwrap_or_else(|| {
+                    let unique_id = u32::try_from(representatives.len()).unwrap_or(u32::MAX);
+                    representatives.push(draw_index);
+                    representatives_by_key.insert_unique(
+                        item.batch_key_hash,
+                        unique_id,
+                        |&candidate_id| {
+                            items[representatives[candidate_id as usize]].batch_key_hash
+                        },
+                    );
+                    unique_id
+                });
+            draw_ids.push(unique_id);
+        }
 
-        let mut draw_ids = vec![u32::MAX; items.len()];
-        let mut previous = None::<usize>;
-        let mut batch_id = 0u32;
-        for &index in &sorted_indices {
-            if let Some(previous_index) = previous
-                && !same_batch_identity(&items[previous_index], &items[index])
-            {
-                batch_id = batch_id.saturating_add(1);
-            }
-            if let Some(slot) = draw_ids.get_mut(index) {
-                *slot = batch_id;
-            }
-            previous = Some(index);
+        let mut sorted_unique_ids = (0..representatives.len())
+            .map(|unique_id| u32::try_from(unique_id).unwrap_or(u32::MAX))
+            .collect::<Vec<_>>();
+        sort_batch_unique_ids(
+            &mut sorted_unique_ids,
+            &representatives,
+            items,
+            allow_parallel,
+        );
+        for (batch_id, unique_id) in sorted_unique_ids.into_iter().enumerate() {
+            representatives[unique_id as usize] = batch_id;
+        }
+        for draw_id in &mut draw_ids {
+            *draw_id = u32::try_from(representatives[*draw_id as usize]).unwrap_or(u32::MAX);
         }
 
         Self { draw_ids }
@@ -257,14 +282,25 @@ impl WorldMeshDrawArrangementOrder {
     }
 }
 
-/// Sorts flattened draw indices by material batch identity.
-fn sort_batch_indices(indices: &mut [usize], items: &[WorldMeshDrawItem], allow_parallel: bool) {
-    if allow_parallel && indices.len() >= ARRANGE_PARALLEL_MIN_DRAWS {
+/// Sorts unique material-batch IDs by their representative draw.
+fn sort_batch_unique_ids(
+    unique_ids: &mut [u32],
+    representatives: &[usize],
+    items: &[WorldMeshDrawItem],
+    allow_parallel: bool,
+) {
+    let compare = |&a: &u32, &b: &u32| {
+        cmp_batch_identity(
+            &items[representatives[a as usize]],
+            &items[representatives[b as usize]],
+        )
+    };
+    if allow_parallel && unique_ids.len() >= ARRANGE_PARALLEL_MIN_DRAWS {
         profiling::scope!("mesh::arrange_draws_by_phase_bins::batch_ids_sort_parallel");
-        indices.par_sort_unstable_by(|&a, &b| cmp_batch_identity(&items[a], &items[b]));
+        unique_ids.par_sort_unstable_by(compare);
     } else {
         profiling::scope!("mesh::arrange_draws_by_phase_bins::batch_ids_sort_serial");
-        indices.sort_unstable_by(|&a, &b| cmp_batch_identity(&items[a], &items[b]));
+        unique_ids.sort_unstable_by(compare);
     }
 }
 
@@ -275,11 +311,6 @@ fn cmp_batch_identity(a: &WorldMeshDrawItem, b: &WorldMeshDrawItem) -> Ordering 
         .then_with(|| a.batch_key.cmp(&b.batch_key))
 }
 
-/// Returns whether two draws share the same material batch identity.
-fn same_batch_identity(a: &WorldMeshDrawItem, b: &WorldMeshDrawItem) -> bool {
-    a.batch_key_hash == b.batch_key_hash && a.batch_key == b.batch_key
-}
-
 /// Flattens deterministic draw chunks and optionally assigns dense collection order.
 pub(super) fn flatten_draw_chunks(
     chunks: Vec<Vec<WorldMeshDrawItem>>,
@@ -287,8 +318,18 @@ pub(super) fn flatten_draw_chunks(
 ) -> Vec<WorldMeshDrawItem> {
     profiling::scope!("mesh::arrange_draws_by_phase_bins::flatten_input");
     let draw_count = chunks.iter().map(Vec::len).sum::<usize>();
-    let mut items = Vec::with_capacity(draw_count);
-    let mut collect_order = 0usize;
+    let mut chunks = chunks.into_iter();
+    let Some(mut items) = chunks.next() else {
+        return Vec::new();
+    };
+    items.reserve(draw_count.saturating_sub(items.len()));
+
+    let mut collect_order = items.len();
+    if assign_collect_order {
+        for (index, item) in items.iter_mut().enumerate() {
+            item.collect_order = index;
+        }
+    }
     for mut chunk in chunks {
         if assign_collect_order {
             for item in &mut chunk {
@@ -346,13 +387,10 @@ pub(super) fn materialize_arranged_draw_order(
     order: &WorldMeshDrawArrangementOrder,
 ) -> (Vec<WorldMeshDrawItem>, WorldMeshDrawArrangementStats) {
     let stats = order.stats;
-    if !validate_arranged_draw_order(&order.indices, items.len()) {
-        debug_assert!(
-            order.indices.is_empty(),
-            "arrangement order must cover every draw exactly once"
-        );
-        return (items, stats);
-    }
+    debug_assert!(
+        validate_arranged_draw_order(&order.indices, items.len()),
+        "arrangement order must cover every draw exactly once"
+    );
     (
         apply_validated_arranged_draw_order(items, &order.indices),
         stats,

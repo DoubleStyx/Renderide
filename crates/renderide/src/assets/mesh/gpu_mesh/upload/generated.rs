@@ -4,10 +4,12 @@ use std::sync::Arc;
 
 use crate::gpu::GpuLimits;
 use crate::render_contract::EmbeddedTangentFallbackMode;
-use crate::shared::MeshUploadData;
+use crate::shared::{
+    IndexBufferFormat, MeshUploadData, RenderBoundingBox, SubmeshBufferDescriptor, SubmeshTopology,
+};
 
 use super::super::super::layout::{MeshBufferLayout, compute_index_count, compute_vertex_stride};
-use super::super::demand::MeshDerivedStreamState;
+use super::super::demand::{MeshDerivedStreamMask, MeshDerivedStreamState};
 use super::super::hints::{
     validated_submesh_ranges, validated_submesh_topologies, wgpu_index_format,
 };
@@ -241,18 +243,23 @@ fn upload_generated_core_buffers(
 ) -> Option<(Arc<wgpu::Buffer>, Arc<wgpu::Buffer>)> {
     let vertex_buffer = upload_generated_core_buffer(
         ctx,
-        existing.map(|mesh| &mesh.vertex_buffer),
+        existing.and_then(|mesh| mesh.vertex_buffer.as_ref()),
         &format!("mesh {} generated vertices", data.asset_id),
         vertices,
-        wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        // STORAGE so GPU point-particle expansion can write the interleaved billboard vertices.
+        wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE,
         GeneratedCoreBufferProfile::Vertices,
     )?;
     let index_buffer = upload_generated_core_buffer(
         ctx,
-        existing.map(|mesh| &mesh.index_buffer),
+        existing.and_then(|mesh| mesh.index_buffer.as_ref()),
         &format!("mesh {} generated indices", data.asset_id),
         indices,
-        wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+        // Used as an arena copy source and as particle-expansion storage.
+        wgpu::BufferUsages::INDEX
+            | wgpu::BufferUsages::COPY_DST
+            | wgpu::BufferUsages::COPY_SRC
+            | wgpu::BufferUsages::STORAGE,
         GeneratedCoreBufferProfile::Indices,
     )?;
     Some((vertex_buffer, index_buffer))
@@ -267,7 +274,9 @@ struct GeneratedDerivedUploadLimits {
 
 impl GeneratedDerivedUploadLimits {
     fn from_context(ctx: MeshGpuUploadContext<'_>) -> Self {
-        let usages = DerivedBufferUsages::new();
+        let mut usages = DerivedBufferUsages::new();
+        // Particle expansion writes generated UV and color streams.
+        usages.vertex |= wgpu::BufferUsages::STORAGE;
         let max_buffer_size = ctx.gpu_limits.max_buffer_size();
         let storage_size_limit =
             max_buffer_size.min(ctx.gpu_limits.max_storage_buffer_binding_size());
@@ -476,6 +485,203 @@ fn generated_mesh_resident_bytes(
         ])
 }
 
+/// Interleaved generated billboard vertex stride (pos.xyz, normal.xyz, uv.xy, color.rgba).
+const GENERATED_BILLBOARD_STRIDE: usize = 12 + 12 + 8 + 16;
+
+/// Reuses a generated buffer when it is large enough; otherwise allocates without a CPU write.
+fn allocate_or_reuse_generated_buffer(
+    ctx: MeshGpuUploadContext<'_>,
+    existing: Option<&Arc<wgpu::Buffer>>,
+    label: &str,
+    byte_len: usize,
+    usage: wgpu::BufferUsages,
+    max_size: u64,
+) -> Option<Arc<wgpu::Buffer>> {
+    let required = queue_init_buffer_size(byte_len).max(EMPTY_MESH_PLACEHOLDER_BYTES);
+    if let Some(existing) = existing
+        && existing.size() >= required
+    {
+        return Some(Arc::clone(existing));
+    }
+    let size = if byte_len == 0 {
+        EMPTY_MESH_PLACEHOLDER_BYTES
+    } else {
+        generated_particle_buffer_capacity(byte_len, max_size)?
+    };
+    try_create_generated_buffer(ctx, label, size, usage)
+}
+
+/// Allocates point-particle billboard buffers for GPU expansion.
+///
+/// The fixed `capacity * 6` index count keeps a stable allocation from changing the draw item.
+pub(crate) fn allocate_generated_point_mesh(
+    ctx: MeshGpuUploadContext<'_>,
+    asset_id: i32,
+    capacity: u32,
+    bounds: RenderBoundingBox,
+    existing: Option<&GpuMesh>,
+) -> Option<GpuMesh> {
+    let vertex_count = capacity.checked_mul(4)?;
+    let index_count = capacity.checked_mul(6)?;
+    let verts = vertex_count as usize;
+    let limits = GeneratedDerivedUploadLimits::from_context(ctx);
+
+    let vertex_buffer = allocate_or_reuse_generated_buffer(
+        ctx,
+        existing.and_then(|mesh| mesh.vertex_buffer.as_ref()),
+        &format!("mesh {asset_id} generated vertices"),
+        verts * GENERATED_BILLBOARD_STRIDE,
+        wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE,
+        limits.max_buffer_size,
+    )?;
+    let index_buffer = allocate_or_reuse_generated_buffer(
+        ctx,
+        existing.and_then(|mesh| mesh.index_buffer.as_ref()),
+        &format!("mesh {asset_id} generated indices"),
+        index_count as usize * size_of::<u32>(),
+        wgpu::BufferUsages::INDEX
+            | wgpu::BufferUsages::COPY_DST
+            | wgpu::BufferUsages::COPY_SRC
+            | wgpu::BufferUsages::STORAGE,
+        limits.max_buffer_size,
+    )?;
+
+    let alloc_derived = |existing: Option<&Arc<wgpu::Buffer>>,
+                         profile: DerivedBufferProfile,
+                         byte_len: usize,
+                         usage: wgpu::BufferUsages,
+                         max_size: u64|
+     -> Option<Arc<wgpu::Buffer>> {
+        allocate_or_reuse_generated_buffer(
+            ctx,
+            existing,
+            &format!("mesh {asset_id} {}_stream", profile.label()),
+            byte_len,
+            usage,
+            max_size,
+        )
+    };
+    let derived = DerivedStreams {
+        positions_buffer: Some(alloc_derived(
+            existing.and_then(|m| m.positions_buffer.as_ref()),
+            DerivedBufferProfile::Positions,
+            verts * 16,
+            limits.usages.primary,
+            limits.storage_size_limit,
+        )?),
+        normals_buffer: Some(alloc_derived(
+            existing.and_then(|m| m.normals_buffer.as_ref()),
+            DerivedBufferProfile::Normals,
+            verts * 16,
+            limits.usages.primary,
+            limits.storage_size_limit,
+        )?),
+        uv0_buffer: Some(alloc_derived(
+            existing.and_then(|m| m.uv0_buffer.as_ref()),
+            DerivedBufferProfile::Uv0,
+            verts * 8,
+            limits.usages.vertex,
+            limits.max_buffer_size,
+        )?),
+        color_buffer: Some(alloc_derived(
+            existing.and_then(|m| m.color_buffer.as_ref()),
+            DerivedBufferProfile::Color,
+            verts * 16,
+            limits.usages.vertex,
+            limits.max_buffer_size,
+        )?),
+        tangent_buffer: Some(alloc_derived(
+            existing.and_then(|m| m.tangent_buffer.as_ref()),
+            DerivedBufferProfile::Tangent,
+            verts * 16,
+            limits.usages.tangent,
+            limits.storage_size_limit,
+        )?),
+        raw_tangent_buffer: Some(alloc_derived(
+            existing.and_then(|m| m.raw_tangent_buffer.as_ref()),
+            DerivedBufferProfile::RawTangent,
+            verts * 16,
+            limits.usages.tangent,
+            limits.storage_size_limit,
+        )?),
+        uv1_buffer: Some(alloc_derived(
+            existing.and_then(|m| m.uv1_buffer.as_ref()),
+            DerivedBufferProfile::Uv1,
+            verts * 8,
+            limits.usages.vertex,
+            limits.max_buffer_size,
+        )?),
+        uv2_buffer: None,
+        uv3_buffer: None,
+        wide_low_uv_buffer: None,
+        wide_high_uv_buffer: None,
+    };
+
+    let derived_available_mask = derived.available_mask();
+    let derived_stream_state = MeshDerivedStreamState::after_full_upload(
+        ctx.derived_stream_demand,
+        derived_available_mask,
+        derived_available_mask,
+    );
+    let resident_bytes = generated_mesh_resident_bytes(&vertex_buffer, &index_buffer, &derived);
+    let submeshes = if index_count > 0 {
+        vec![SubmeshBufferDescriptor {
+            topology: SubmeshTopology::Triangles,
+            index_start: 0,
+            index_count: index_count as i32,
+            bounds,
+        }]
+    } else {
+        Vec::new()
+    };
+
+    Some(GpuMesh {
+        asset_id,
+        dynamic_geometry: true,
+        geometry_storage: super::super::MeshGeometryStorage::Dedicated,
+        shared_static_resident_streams: MeshDerivedStreamMask::EMPTY,
+        vertex_buffer: Some(vertex_buffer),
+        index_buffer: Some(index_buffer),
+        index_format: wgpu_index_format(IndexBufferFormat::UInt32),
+        index_count,
+        submeshes: validated_submesh_ranges(&submeshes, index_count),
+        submesh_topologies: validated_submesh_topologies(&submeshes, index_count),
+        vertex_count,
+        vertex_stride: GENERATED_BILLBOARD_STRIDE as u32,
+        bounds,
+        bone_counts_buffer: None,
+        bone_indices_buffer: None,
+        bone_weights_vec4_buffer: None,
+        bone_influence_offsets_buffer: None,
+        bone_influences_buffer: None,
+        bind_poses_buffer: None,
+        blendshape_sparse_buffer: None,
+        blendshape_frame_ranges: Vec::new(),
+        blendshape_shape_frame_spans: Vec::new(),
+        num_blendshapes: 0,
+        blendshape_has_position_deltas: false,
+        blendshape_has_normal_deltas: false,
+        blendshape_has_tangent_deltas: false,
+        positions_buffer: derived.positions_buffer,
+        normals_buffer: derived.normals_buffer,
+        uv0_buffer: derived.uv0_buffer,
+        color_buffer: derived.color_buffer,
+        tangent_buffer: derived.tangent_buffer,
+        raw_tangent_buffer: derived.raw_tangent_buffer,
+        tangent_fallback_mode: EmbeddedTangentFallbackMode::default(),
+        uv1_buffer: derived.uv1_buffer,
+        uv2_buffer: derived.uv2_buffer,
+        uv3_buffer: derived.uv3_buffer,
+        wide_low_uv_buffer: derived.wide_low_uv_buffer,
+        wide_high_uv_buffer: derived.wide_high_uv_buffer,
+        derived_stream_state,
+        extended_vertex_stream_source: None,
+        has_skeleton: false,
+        skinning_bind_matrices: Vec::new(),
+        resident_bytes,
+    })
+}
+
 /// Uploads renderer-generated particle geometry with grow-only GPU buffers.
 pub(crate) fn try_upload_generated_mesh_from_parts(
     ctx: MeshGpuUploadContext<'_>,
@@ -514,8 +720,11 @@ pub(crate) fn try_upload_generated_mesh_from_parts(
 
     Some(GpuMesh {
         asset_id: data.asset_id,
-        vertex_buffer,
-        index_buffer,
+        dynamic_geometry: data.upload_hint.flags.dynamic(),
+        geometry_storage: super::super::MeshGeometryStorage::Dedicated,
+        shared_static_resident_streams: MeshDerivedStreamMask::EMPTY,
+        vertex_buffer: Some(vertex_buffer),
+        index_buffer: Some(index_buffer),
         index_format: wgpu_index_format(data.index_buffer_format),
         index_count: index_count_u32,
         submeshes: validated_submesh_ranges(&data.submeshes, index_count_u32),

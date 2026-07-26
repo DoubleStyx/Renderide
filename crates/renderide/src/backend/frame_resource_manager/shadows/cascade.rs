@@ -172,8 +172,14 @@ pub(crate) fn directional_cascade_view_proj(
     let pullback = radius * CASCADE_CASTER_PULLBACK;
     let eye = center - direction * (radius + pullback);
     let view = Mat4::look_at_rh(eye, center, up);
-    let mut proj =
-        Mat4::orthographic_rh(-radius, radius, -radius, radius, 0.0, 2.0 * radius + pullback);
+    let mut proj = Mat4::orthographic_rh(
+        -radius,
+        radius,
+        -radius,
+        radius,
+        0.0,
+        2.0 * radius + pullback,
+    );
 
     // Texel snap: quantize the projected world origin to the texel grid. Ortho leaves w = 1, so
     // clip xy need no perspective divide.
@@ -210,10 +216,16 @@ mod tests {
         for index in 0..count {
             let split = cascade_split(near, far, index, count);
             assert!(split.far > split.near, "cascade {index} is degenerate");
-            assert!((split.near - prev_far).abs() < 1e-3, "cascade {index} leaves a gap");
+            assert!(
+                (split.near - prev_far).abs() < 1e-3,
+                "cascade {index} leaves a gap"
+            );
             prev_far = split.far;
         }
-        assert!((prev_far - far).abs() < 1e-2, "last cascade must reach the far plane");
+        assert!(
+            (prev_far - far).abs() < 1e-2,
+            "last cascade must reach the far plane"
+        );
     }
 
     #[test]
@@ -238,20 +250,18 @@ mod tests {
         let fit = look_down_neg_z_fit(0.1, 200.0);
         let split = cascade_split(fit.near(), 175.0, 0, 4);
         // Sun straight down, up along +Z (parallel-safe).
-        let view_proj = directional_cascade_view_proj(
-            Vec3::new(0.0, -1.0, 0.0),
-            Vec3::Z,
-            &fit,
-            split,
-            2048,
-        );
+        let view_proj =
+            directional_cascade_view_proj(Vec3::new(0.0, -1.0, 0.0), Vec3::Z, &fit, split, 2048);
         // A point in the middle of the near slice must land inside the shadow map bounds.
         let mid_depth = 0.5 * (split.near + split.far);
         let sample = fit.slice_corners(mid_depth, mid_depth);
         let center = sample.iter().copied().sum::<Vec3>() / 8.0;
         let clip = view_proj * Vec4::new(center.x, center.y, center.z, 1.0);
         let ndc = clip.truncate() / clip.w;
-        assert!(ndc.x.abs() <= 1.0 && ndc.y.abs() <= 1.0, "xy out of bounds: {ndc:?}");
+        assert!(
+            ndc.x.abs() <= 1.0 && ndc.y.abs() <= 1.0,
+            "xy out of bounds: {ndc:?}"
+        );
         assert!(ndc.z >= 0.0 && ndc.z <= 1.0, "depth out of bounds: {ndc:?}");
     }
 

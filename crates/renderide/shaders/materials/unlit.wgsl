@@ -180,26 +180,28 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let use_texture = kw_TEXTURE() || kw_TEXTURE_NORMALMAP();
     let use_color = kw_COLOR();
     let use_polar_uv = use_texture && kw_POLARUV();
-    let main_st = main_texture_st(in.view_layer);
 
-    var uv_main: vec2<f32>;
-    var ddx_uv: vec2<f32>;
-    var ddy_uv: vec2<f32>;
-    if (use_polar_uv) {
-        let mapped = uvu::polar_mapping(in.uv, main_st, mat._PolarPow);
-        uv_main = mapped.uv;
-        ddx_uv = mapped.ddx_uv;
-        ddy_uv = mapped.ddy_uv;
-    } else {
-        uv_main = uvu::apply_st(in.uv, main_st);
-        ddx_uv = dpdx(uv_main);
-        ddy_uv = dpdy(uv_main);
-    }
+    var uv_main = vec2<f32>(0.0);
+    var ddx_uv = vec2<f32>(0.0);
+    var ddy_uv = vec2<f32>(0.0);
+    if (use_texture) {
+        let main_st = main_texture_st(in.view_layer);
+        if (use_polar_uv) {
+            let mapped = uvu::polar_mapping(in.uv, main_st, mat._PolarPow);
+            uv_main = mapped.uv;
+            ddx_uv = mapped.ddx_uv;
+            ddy_uv = mapped.ddy_uv;
+        } else {
+            uv_main = uvu::apply_st(in.uv, main_st);
+            ddx_uv = dpdx(uv_main);
+            ddy_uv = dpdy(uv_main);
+        }
 
-    if (use_texture && kw_OFFSET_TEXTURE()) {
-        let uv_off = uvu::apply_st(in.uv, mat._OffsetTex_ST);
-        let offset_s = ts::sample_tex_2d(_OffsetTex, _OffsetTex_sampler, uv_off, mat._OffsetTex_LodBias);
-        uv_main = uv_main + offset_s.xy * mat._OffsetMagnitude.xy;
+        if (kw_OFFSET_TEXTURE()) {
+            let uv_off = uvu::apply_st(in.uv, mat._OffsetTex_ST);
+            let offset_s = ts::sample_tex_2d(_OffsetTex, _OffsetTex_sampler, uv_off, mat._OffsetTex_LodBias);
+            uv_main = uv_main + offset_s.xy * mat._OffsetMagnitude.xy;
+        }
     }
 
     var color: vec4<f32>;
@@ -230,10 +232,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let mask_mul = kw_MASK_TEXTURE_MUL();
     let mul_rgb_by_alpha = kw_MUL_RGB_BY_ALPHA();
 
-    let uv_mask = uvu::apply_st(in.uv, mat._MaskTex_ST);
     var mask_lum_for_clip = 1.0;
 
     if (mask_mul || mask_clip) {
+        let uv_mask = uvu::apply_st(in.uv, mat._MaskTex_ST);
         let mask_sample = ts::sample_tex_2d(_MaskTex, _MaskTex_sampler, uv_mask, mat._MaskTex_LodBias);
         let mask_lum = ma::mask_luminance(mask_sample);
         mask_lum_for_clip = mask_lum;

@@ -103,7 +103,8 @@ impl BackendWorldMeshFramePlanner {
             view_idx: frame_plan.view_idx,
         };
         let prefetched = match draw_plan {
-            WorldMeshDrawPlan::Prefetched(draws) => *draws,
+            // Clones only while another retained plan shares the collection.
+            WorldMeshDrawPlan::Prefetched(draws) => Arc::unwrap_or_clone(draws),
             WorldMeshDrawPlan::Empty => PrefetchedWorldMeshViewDraws::empty(),
         };
         let scratch_slot = self.prepare_scratch_for_view(frame.view.view_id);
@@ -348,9 +349,12 @@ mod tests {
     #[test]
     fn take_world_mesh_draw_plan_consumes_prefetched_slot() {
         let mut blackboard = Blackboard::new();
-        blackboard.insert::<WorldMeshDrawPlanSlot>(WorldMeshDrawPlan::Prefetched(Box::new(
-            PrefetchedWorldMeshViewDraws::new(WorldMeshDrawCollection::empty(), None),
-        )));
+        blackboard.insert::<WorldMeshDrawPlanSlot>(WorldMeshDrawPlan::Prefetched(
+            std::sync::Arc::new(PrefetchedWorldMeshViewDraws::new(
+                WorldMeshDrawCollection::empty(),
+                None,
+            )),
+        ));
 
         let WorldMeshDrawPlan::Prefetched(draws) = take_world_mesh_draw_plan(&mut blackboard)
         else {

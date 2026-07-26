@@ -5,7 +5,10 @@ use std::sync::Arc;
 use crate::materials::{MaterialPipelineDesc, ShaderPermutation};
 use crate::render_graph::blackboard::blackboard_slot;
 use crate::skybox::PreparedSkybox;
-use crate::world_mesh::{InstancePlan, WorldMeshDrawItem, WorldMeshHelperNeeds};
+use crate::world_mesh::{
+    HiZTemporalState, InstancePlan, WorldMeshCullProjParams, WorldMeshDrawItem,
+    WorldMeshHelperNeeds,
+};
 
 use super::MaterialBatchPacket;
 
@@ -48,13 +51,20 @@ pub(crate) struct WorldMeshForwardPipelineState {
 /// Per-view forward-pass preparation shared by split graph nodes.
 pub(crate) struct PreparedWorldMeshForwardFrame {
     /// Sorted world mesh draw items for this view.
-    pub draws: Vec<WorldMeshDrawItem>,
+    pub draws: Arc<[WorldMeshDrawItem]>,
     /// Per-view [`InstancePlan`]: per-draw slab layout plus phase-grouped draw submissions.
     pub plan: Arc<InstancePlan>,
     /// Pipeline format/sample/multiview state.
     pub pipeline: WorldMeshForwardPipelineState,
     /// Scene snapshot helper work needed by the prepared draw list.
     pub helper_needs: WorldMeshHelperNeeds,
+    /// Current-frame projection bundle used by the GPU visibility pass to build per-space
+    /// view-projection matrix rows.
+    pub cull_proj: Option<WorldMeshCullProjParams>,
+    /// View/projection history that authored the previous Hi-Z pyramid sampled by GPU culling.
+    pub hi_z_temporal: Option<HiZTemporalState>,
+    /// Compute-produced indirect commands for the retained rigid static subset.
+    pub(super) gpu_cull: Option<super::gpu_cull::WorldMeshGpuCullResult>,
     /// Whether indexed draws may use base instance.
     pub supports_base_instance: bool,
     /// Whether the opaque/clear forward subpass was already recorded by a split graph node.

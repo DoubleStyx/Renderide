@@ -15,9 +15,21 @@ use super::super::frame_gpu_bindings::{FrameGpuBindings, FrameGpuBindingsError};
 use super::super::light_gpu::GpuLight;
 use super::super::per_draw_resources::PerDrawResources;
 use super::super::per_view_resource_map::PerViewResourceMap;
+use super::geometry_arena::GeometryArenaFramePlanCache;
 use super::lights::LightVisibilityStats;
 use super::per_view_state::{PerViewFrameState, PerViewPerDrawScratch, PreparedViewLights};
 use super::shadows::ShadowFramePlan;
+
+/// Static geometry required by one graph submission.
+#[derive(Default)]
+pub(super) struct GeometryArenaFramePlan {
+    /// Unique required static mesh asset ids, in first-seen order.
+    pub(super) mesh_asset_ids: Vec<i32>,
+    /// Draw rows inspected while building [`Self::mesh_asset_ids`].
+    pub(super) input_draws: usize,
+    /// Draw rows excluded because they use deform output.
+    pub(super) deformed_draws: usize,
+}
 
 /// Per-frame GPU state: shared frame/light/cluster resources, per-view bind groups,
 /// per-view per-draw storage slabs, and the CPU-side packed light buffer.
@@ -61,6 +73,10 @@ pub struct FrameResourceManager {
     pub(super) mesh_deform_dispatched_this_submission: AtomicBool,
     /// Optional visible deform filter derived from prefetched per-view draw lists.
     pub(super) visible_mesh_deform_keys: Mutex<Option<HashSet<SkinCacheKey>>>,
+    /// Visible static mesh ids populated into the shared geometry arena before per-view recording.
+    pub(super) geometry_arena_frame: GeometryArenaFramePlan,
+    /// Retained collection identities and reusable dedupe storage for arena population planning.
+    pub(super) geometry_arena_frame_cache: GeometryArenaFramePlanCache,
     /// Reused per-view scratch for per-draw VP/pack before graph upload.
     ///
     /// Each view owns its own mutex-wrapped slot so rayon workers never alias the same scratch.
@@ -97,6 +113,8 @@ impl FrameResourceManager {
             signed_scene_color_required: false,
             mesh_deform_dispatched_this_submission: AtomicBool::new(false),
             visible_mesh_deform_keys: Mutex::new(None),
+            geometry_arena_frame: GeometryArenaFramePlan::default(),
+            geometry_arena_frame_cache: GeometryArenaFramePlanCache::default(),
             per_view_per_draw_scratch: PerViewResourceMap::new(),
             lights_overflow_warned: false,
             signed_scene_color_required_logged: false,
@@ -121,6 +139,18 @@ impl FrameResourceManager {
         self.empty_material = Some(binds.empty_material);
         self.per_draw_bind_group_layout = Some(binds.per_draw_bind_group_layout);
         self.limits = Some(limits);
+        // Shadow cache entries belong to the attached device and atlas.
+        self.clear_shadow_frame();
+        self.shadow_layer_cache = super::shadows::ShadowLayerCache::new();
         Ok(())
+    }
+
+    /// Immutable-geometry store shared with asset uploads.
+    pub(crate) fn shared_static_geometry_store(
+        &self,
+    ) -> Option<crate::graph_inputs::SharedStaticGeometryStore> {
+        self.frame_gpu
+            .as_ref()
+            .map(FrameGpuResources::shared_geometry_arena_arc)
     }
 }

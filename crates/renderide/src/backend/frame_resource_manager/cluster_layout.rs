@@ -30,7 +30,8 @@ pub(super) fn per_view_snapshot_sync_params(
         color_format: layout.color_format,
         multiview: layout.stereo,
         needs_depth_snapshot: layout.needs_depth_snapshot,
-        needs_color_snapshot: layout.needs_color_snapshot,
+        needs_per_object_color_snapshot: layout.needs_per_object_color_snapshot,
+        needs_named_color_snapshot: layout.needs_named_color_snapshot,
     }
 }
 

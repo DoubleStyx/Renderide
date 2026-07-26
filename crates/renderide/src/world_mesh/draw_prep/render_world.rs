@@ -5,11 +5,13 @@
 //! rediscover every frame.
 
 mod maintenance;
+mod mesh_state;
 mod refresh;
 mod snapshot;
 mod state;
 
 use hashbrown::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::cpu_parallelism::{FrameCpuWorkload, FrameParallelPolicy, ParallelAdmission};
 use crate::gpu_pools::MeshPool;
@@ -21,6 +23,7 @@ use crate::scene::{
 use crate::shared::RenderingContext;
 
 use super::prepared_renderables::FramePreparedRenderables;
+use mesh_state::MeshDrawPrepState;
 use snapshot::SnapshotRebuildStats;
 use state::RenderWorldSpace;
 
@@ -96,6 +99,17 @@ const SNAPSHOT_REBUILD_PARALLEL_TARGET_CHUNK_TEMPLATES: usize = 256;
 /// Retained draw-template count required before snapshot rebuild fan-out is considered.
 const SNAPSHOT_REBUILD_PARALLEL_MIN_DRAWS: usize =
     SNAPSHOT_REBUILD_PARALLEL_TARGET_CHUNK_TEMPLATES * 2;
+
+/// Process-local identity source for retained render-world instances.
+///
+/// [`RenderWorld::prepared_generation`] is monotonic only within one `RenderWorld`. A cross-frame
+/// draw-plan cache outlives map-entry replacement, so generation alone cannot distinguish a newly
+/// created world from the previous instance at the same generation.
+static NEXT_RENDER_WORLD_CACHE_IDENTITY: AtomicU64 = AtomicU64::new(1);
+
+fn next_render_world_cache_identity() -> u64 {
+    NEXT_RENDER_WORLD_CACHE_IDENTITY.fetch_add(1, Ordering::Relaxed)
+}
 
 /// Returns the admission decision for transform-root dirty expansion.
 fn transform_root_expansion_admission(
@@ -194,6 +208,10 @@ pub struct RenderWorldMaintenanceStats {
     pub refreshed_template_count: usize,
     /// Mesh asset ids consumed from the mesh-pool mutation log this frame.
     pub mesh_asset_invalidation_count: usize,
+    /// Mesh mutations whose draw-preparation-relevant state changed or lacked a retained baseline.
+    pub mesh_asset_draw_prep_change_count: usize,
+    /// Mesh mutations proven equivalent for draw preparation and suppressed before renderer dirties.
+    pub mesh_asset_draw_prep_noop_count: usize,
     /// Render spaces rebuilt through the full-space fallback this frame.
     pub full_space_rebuild_count: usize,
     /// Full render-world rebuild requests processed this frame.
@@ -236,6 +254,8 @@ impl RenderWorldMaintenanceStats {
             refreshed_renderer_count: self.refreshed_renderer_count,
             refreshed_template_count: self.refreshed_template_count,
             mesh_asset_invalidation_count: self.mesh_asset_invalidation_count,
+            mesh_asset_draw_prep_change_count: self.mesh_asset_draw_prep_change_count,
+            mesh_asset_draw_prep_noop_count: self.mesh_asset_draw_prep_noop_count,
             full_world_rebuild_count: self.full_world_rebuild_count,
             particle_snapshot_rebuild_count: self.particle_snapshot_rebuild_count,
             snapshot_rebuild_task_count: self.snapshot_rebuild_task_count,
@@ -265,6 +285,8 @@ impl RenderWorldMaintenanceStats {
         self.refreshed_renderer_count += other.refreshed_renderer_count;
         self.refreshed_template_count += other.refreshed_template_count;
         self.mesh_asset_invalidation_count += other.mesh_asset_invalidation_count;
+        self.mesh_asset_draw_prep_change_count += other.mesh_asset_draw_prep_change_count;
+        self.mesh_asset_draw_prep_noop_count += other.mesh_asset_draw_prep_noop_count;
         self.full_space_rebuild_count += other.full_space_rebuild_count;
         self.full_world_rebuild_count += other.full_world_rebuild_count;
         self.particle_snapshot_rebuild_count += other.particle_snapshot_rebuild_count;
@@ -281,6 +303,11 @@ impl RenderWorldMaintenanceStats {
 
 /// Persistent renderer-facing cache of expanded world-mesh renderables.
 pub struct RenderWorld {
+    /// Process-unique identity for cross-frame caches retaining rows derived from this world.
+    ///
+    /// Generations restart when a `RenderWorld` is recreated. Pairing this identity with
+    /// [`Self::prepared_generation`] prevents a replacement from aliasing an old retained plan.
+    cache_identity: u64,
     /// Per-space retained renderer template records.
     spaces: HashMap<RenderSpaceId, RenderWorldSpace>,
     /// Spaces requiring full retained-template rebuild.
@@ -293,6 +320,8 @@ pub struct RenderWorld {
     dirty_transform_roots: Vec<RenderWorldTransformDirty>,
     /// Mesh assets whose referencing renderer records need refresh.
     dirty_mesh_assets: HashSet<i32>,
+    /// Exact draw-preparation metadata retained per observed mesh asset.
+    mesh_draw_prep_states: HashMap<i32, MeshDrawPrepState>,
     /// Whether generated particle mesh churn requires rebuilding the prepared snapshot.
     particle_snapshot_dirty: bool,
     /// Whether the next prepare must rebuild every scene space.
@@ -303,6 +332,14 @@ pub struct RenderWorld {
     context_invariant: bool,
     /// Dense prepared snapshot consumed by per-view draw collection.
     prepared: FramePreparedRenderables,
+    /// Monotonic generation bumped whenever [`Self::prepared`] is rebuilt (any scene change). Lets
+    /// per-view collection reuse a cached draw list when the snapshot is unchanged.
+    prepared_generation: u64,
+    /// Monotonic generation bumped only on non-particle-only snapshot change (static topology,
+    /// material override, mesh asset, transform/bounds). Particle-generated mesh churn advances
+    /// [`Self::prepared_generation`] every frame but leaves this stable, so camera-independent
+    /// GPU-static plan reuse survives particle churn (particle draws are never GPU-static eligible).
+    static_generation: u64,
     /// Most recent maintenance counters.
     maintenance_stats: RenderWorldMaintenanceStats,
 }
@@ -382,12 +419,14 @@ impl RenderWorld {
     /// Creates an empty render-world cache with explicit context compatibility.
     fn new_with_context_mode(render_context: RenderingContext, context_invariant: bool) -> Self {
         Self {
+            cache_identity: next_render_world_cache_identity(),
             spaces: HashMap::new(),
             dirty_spaces: HashSet::new(),
             dirty_renderers: HashMap::new(),
             dirty_bounds_renderers: HashMap::new(),
             dirty_transform_roots: Vec::new(),
             dirty_mesh_assets: HashSet::new(),
+            mesh_draw_prep_states: HashMap::new(),
             particle_snapshot_dirty: false,
             full_rebuild_requested: true,
             mesh_pool_generation: 0,
@@ -397,8 +436,31 @@ impl RenderWorld {
             } else {
                 FramePreparedRenderables::empty(render_context)
             },
+            prepared_generation: 0,
+            static_generation: 0,
             maintenance_stats: RenderWorldMaintenanceStats::default(),
         }
+    }
+
+    /// Generation of the current prepared snapshot; bumped on every rebuild. Per-view collection can
+    /// reuse a cached draw list while this is unchanged (the snapshot did not change).
+    #[inline]
+    pub(crate) fn prepared_generation(&self) -> u64 {
+        self.prepared_generation
+    }
+
+    /// Generation of the static (non-particle) prepared content. Unchanged across particle-only
+    /// frames, so camera-independent GPU-static plan reuse keys on this instead of
+    /// [`Self::prepared_generation`].
+    #[inline]
+    pub(crate) fn static_generation(&self) -> u64 {
+        self.static_generation
+    }
+
+    /// Stable identity of this retained world instance for cross-frame dependency keys.
+    #[inline]
+    pub(crate) fn cache_identity(&self) -> u64 {
+        self.cache_identity
     }
 
     /// Marks spaces or renderer records touched by scene apply as needing maintenance.
@@ -479,6 +541,7 @@ impl RenderWorld {
         let mut snapshot_dirty_spaces = HashSet::new();
         snapshot_dirty_spaces.extend(self.dirty_spaces.iter().copied());
         snapshot_dirty_spaces.extend(self.dirty_renderers.keys().map(|dirty| dirty.space_id));
+        let mut particle_only_snapshot_spaces = HashSet::new();
         let force_full_snapshot = full_rebuild || context_changed;
 
         let mut snapshot_dirty = if self.dirty_spaces.is_empty() {
@@ -496,16 +559,25 @@ impl RenderWorld {
             stats.refreshed_template_count += outcome.template_count;
             snapshot_dirty |= outcome.renderer_count > 0;
         }
+        // Any snapshot change up to here is static (topology, material override, mesh asset, full
+        // rebuild); the particle branch below is the only particle-driven cause. Records whether the
+        // static half of the snapshot changed so GPU-static plan reuse can ignore particle churn.
+        let static_snapshot_change = snapshot_dirty;
+        let mut prepared_bounds_patched = false;
         if !self.dirty_bounds_renderers.is_empty() {
             let outcome = self.refresh_dirty_bounds(scene, mesh_pool, render_context);
             stats.bounds_refreshed_renderer_count += outcome.renderer_count;
             stats.spatial_refit_count += outcome.spatial_refit_count;
+            prepared_bounds_patched = outcome.renderer_count > 0 || outcome.spatial_refit_count > 0;
         }
         if self.particle_snapshot_dirty {
             stats.particle_snapshot_rebuild_count = 1;
             snapshot_dirty = true;
             for id in scene.render_space_ids() {
                 if snapshot::space_has_render_buffer_renderers(scene, id) {
+                    if !force_full_snapshot && !snapshot_dirty_spaces.contains(&id) {
+                        particle_only_snapshot_spaces.insert(id);
+                    }
                     snapshot_dirty_spaces.insert(id);
                 }
             }
@@ -520,16 +592,31 @@ impl RenderWorld {
                 point_render_buffers,
                 render_context,
                 dirty_spaces,
+                &particle_only_snapshot_spaces,
             );
             stats.snapshot_rebuild_task_count = snapshot_stats.task_count;
             stats.snapshot_retained_draw_count = snapshot_stats.retained_draw_count;
             stats.snapshot_reused_space_count = snapshot_stats.reused_space_count;
             self.particle_snapshot_dirty = false;
             stats.spatial_rebuild_count = 1;
+            // The prepared snapshot changed; invalidate any per-view collection reusing it.
+            self.prepared_generation = self.prepared_generation.wrapping_add(1);
+            if static_snapshot_change {
+                self.static_generation = self.static_generation.wrapping_add(1);
+            }
+        } else if prepared_bounds_patched {
+            // Bounds-only maintenance patches matrices/AABBs in the retained prepared rows without
+            // rebuilding the snapshot. Cached view draw items embed those values and must not
+            // survive this mutation. Transforms/bounds are static content, so both generations bump.
+            self.prepared_generation = self.prepared_generation.wrapping_add(1);
+            self.static_generation = self.static_generation.wrapping_add(1);
         } else {
             stats.steady_state_skip_count = 1;
         }
         self.full_rebuild_requested = false;
+        if full_rebuild {
+            self.rebuild_mesh_draw_prep_states(mesh_pool);
+        }
         stats.retained_template_count = self.retained_template_count();
         self.maintenance_stats = stats;
         crate::profiling::plot_render_world_maintenance(stats.profile_sample());
@@ -654,16 +741,48 @@ impl RenderWorld {
         }
         self.mesh_pool_generation = delta.current_generation;
         if delta.requires_full_rebuild {
+            self.mesh_draw_prep_states.clear();
             self.full_rebuild_requested = true;
             return;
         }
         stats.mesh_asset_invalidation_count += delta.changed_asset_ids.len();
+        profiling::scope!("mesh::render_world::classify_mesh_asset_deltas");
         for &asset_id in delta.changed_asset_ids {
             if crate::particles::is_generated_particle_mesh_asset_id(asset_id) {
                 self.particle_snapshot_dirty = true;
                 continue;
             }
+            let mesh = mesh_pool.get(asset_id);
+            if self
+                .mesh_draw_prep_states
+                .get(&asset_id)
+                .is_some_and(|retained| retained.matches(mesh))
+            {
+                stats.mesh_asset_draw_prep_noop_count += 1;
+                continue;
+            }
+            self.mesh_draw_prep_states
+                .insert(asset_id, MeshDrawPrepState::capture(mesh));
+            stats.mesh_asset_draw_prep_change_count += 1;
             self.dirty_mesh_assets.insert(asset_id);
+        }
+    }
+
+    /// Rebuilds mesh mutation baselines from assets referenced by the refreshed retained world.
+    fn rebuild_mesh_draw_prep_states(&mut self, mesh_pool: &MeshPool) {
+        profiling::scope!("mesh::render_world::rebuild_mesh_draw_prep_states");
+        let asset_ids = self
+            .spaces
+            .values()
+            .flat_map(|space| space.mesh_asset_index.keys().copied())
+            .collect::<HashSet<_>>();
+        self.mesh_draw_prep_states.clear();
+        self.mesh_draw_prep_states.reserve(asset_ids.len());
+        for asset_id in asset_ids {
+            self.mesh_draw_prep_states.insert(
+                asset_id,
+                MeshDrawPrepState::capture(mesh_pool.get(asset_id)),
+            );
         }
     }
 
@@ -688,6 +807,7 @@ impl RenderWorld {
         point_render_buffers: &HashMap<i32, crate::particles::PointRenderBufferAsset>,
         render_context: RenderingContext,
         dirty_spaces: Option<&HashSet<RenderSpaceId>>,
+        particle_only_spaces: &HashSet<RenderSpaceId>,
     ) -> SnapshotRebuildStats
     where
         S: WorldMeshSceneRead + Sync + ?Sized,
@@ -699,6 +819,7 @@ impl RenderWorld {
             point_render_buffers,
             render_context,
             dirty_spaces,
+            particle_only_spaces,
         )
     }
 

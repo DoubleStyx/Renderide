@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use crate::assets::mesh::{
     GpuMesh, MeshBufferLayout, MeshDerivedStreamDemand, MeshDerivedStreamMask,
-    MeshGpuUploadContext, PreparedDerivedStreams, compute_and_validate_mesh_layout,
-    mesh_upload_input_fingerprint, prepare_derived_stream_bytes, try_upload_mesh_from_raw,
+    MeshGpuUploadContext, MeshInPlaceUploadPlan, PreparedDerivedStreams,
+    compute_and_validate_mesh_layout, mesh_upload_input_fingerprint, prepare_derived_stream_bytes,
+    try_upload_mesh_from_raw,
 };
 use crate::gpu::{GpuLimits, GpuMappedBufferHealth};
 use crate::ipc::{DualQueueIpc, SharedMemoryAccessor};
@@ -28,9 +29,11 @@ pub(super) struct MeshTaskGpu<'a> {
     pub(super) gpu_limits: &'a Arc<GpuLimits>,
     /// Shared mapped-buffer invalidation generation from the active GPU context.
     pub(super) mapped_buffer_health: &'a Arc<GpuMappedBufferHealth>,
+    /// Canonical immutable geometry store shared with frame recording.
+    pub(super) static_geometry_store: Option<&'a crate::graph_inputs::SharedStaticGeometryStore>,
     /// Deferred mesh buffer upload batch for this drain.
     pub(super) mesh_upload_batch: &'a Arc<MeshUploadStagingBatch>,
-    /// Whether wgpu validation scopes are enabled for mesh uploads. -xlinka
+    /// Whether wgpu validation scopes are enabled for mesh uploads.
     pub(super) mesh_validation_scopes_enabled: bool,
 }
 
@@ -91,7 +94,7 @@ pub(super) fn send_mesh_upload_result(
 enum MeshStage {
     /// Compute and cache [`MeshBufferLayout`] (CPU only).
     PendingLayout,
-    /// Host bytes are being copied in bounded chunks. -xlinka
+    /// Host bytes are being copied in bounded chunks.
     CopyingPayload {
         copy: SharedMemoryPayloadCopy,
         layout: MeshBufferLayout,
@@ -104,6 +107,7 @@ enum MeshStage {
         raw: OwnedSharedMemoryPayload,
         layout: MeshBufferLayout,
         existing: Option<Box<GpuMesh>>,
+        in_place_plan: Option<MeshInPlaceUploadPlan>,
         mapped_buffer_generation: u64,
         derived_stream_demand: MeshDerivedStreamDemand,
         rx: crossbeam_channel::Receiver<PreparedDerivedStreams>,
@@ -113,6 +117,7 @@ enum MeshStage {
         raw: OwnedSharedMemoryPayload,
         layout: MeshBufferLayout,
         existing: Option<Box<GpuMesh>>,
+        in_place_plan: Option<MeshInPlaceUploadPlan>,
         mapped_buffer_generation: u64,
         derived_stream_demand: MeshDerivedStreamDemand,
         prepared_derived_streams: Option<Arc<PreparedDerivedStreams>>,
@@ -254,28 +259,31 @@ impl MeshUploadTask {
             return StepResult::Done;
         };
         let data = self.data.clone();
-        if should_prepare_derived_streams_on_worker(&data, raw.len(), derived_stream_demand) {
-            let rx = spawn_prepare_derived_streams(
-                Arc::clone(&raw),
-                data,
-                layout,
-                derived_stream_demand,
-            );
+        let in_place_plan = existing.as_deref().and_then(|mesh| {
+            mesh.plan_in_place_upload(&data, &layout, &raw, derived_stream_demand)
+        });
+        let preparation_demand = in_place_plan.map_or(derived_stream_demand, |plan| {
+            plan.changed_derived_stream_demand(derived_stream_demand)
+        });
+        if should_prepare_derived_streams_on_worker(&data, raw.len(), preparation_demand) {
+            let rx =
+                spawn_prepare_derived_streams(Arc::clone(&raw), data, layout, preparation_demand);
             self.stage = MeshStage::PreparingDerived {
                 raw,
                 layout,
                 existing,
+                in_place_plan,
                 mapped_buffer_generation,
                 derived_stream_demand,
                 rx,
             };
         } else {
-            let prepared =
-                prepare_derived_stream_bytes(&raw, &data, &layout, derived_stream_demand);
+            let prepared = prepare_derived_stream_bytes(&raw, &data, &layout, preparation_demand);
             self.stage = MeshStage::PendingGpuUpload {
                 raw,
                 layout,
                 existing,
+                in_place_plan,
                 mapped_buffer_generation,
                 derived_stream_demand,
                 prepared_derived_streams: Some(Arc::new(prepared)),
@@ -291,6 +299,7 @@ impl MeshUploadTask {
             raw,
             layout,
             existing,
+            in_place_plan,
             mapped_buffer_generation,
             derived_stream_demand,
             rx,
@@ -304,6 +313,7 @@ impl MeshUploadTask {
                     raw,
                     layout,
                     existing,
+                    in_place_plan,
                     mapped_buffer_generation,
                     derived_stream_demand,
                     prepared_derived_streams: Some(Arc::new(prepared)),
@@ -315,6 +325,7 @@ impl MeshUploadTask {
                     raw,
                     layout,
                     existing,
+                    in_place_plan,
                     mapped_buffer_generation,
                     derived_stream_demand,
                     rx,
@@ -368,6 +379,7 @@ impl MeshUploadTask {
             raw,
             layout,
             existing,
+            in_place_plan,
             mapped_buffer_generation,
             derived_stream_demand,
             prepared_derived_streams,
@@ -385,6 +397,7 @@ impl MeshUploadTask {
                 prepared_derived_streams: prepared_derived_streams.as_deref(),
                 gpu_limits: gpu.gpu_limits.as_ref(),
                 mapped_buffer_health: gpu.mapped_buffer_health.as_ref(),
+                static_geometry_store: gpu.static_geometry_store,
                 mapped_buffer_generation,
                 derived_stream_demand,
                 validation_scopes_enabled,
@@ -398,6 +411,7 @@ impl MeshUploadTask {
                     &raw,
                     &self.data,
                     existing.map(|mesh| *mesh),
+                    in_place_plan,
                     &layout,
                 );
                 if let Some(err) = pollster::block_on(validation_scope.pop()) {
@@ -406,7 +420,14 @@ impl MeshUploadTask {
                 }
                 upload_result
             } else {
-                try_upload_mesh_from_raw(ctx, &raw, &self.data, existing.map(|mesh| *mesh), &layout)
+                try_upload_mesh_from_raw(
+                    ctx,
+                    &raw,
+                    &self.data,
+                    existing.map(|mesh| *mesh),
+                    in_place_plan,
+                    &layout,
+                )
             };
             if upload_result.is_some() {
                 upload_recorder.flush();

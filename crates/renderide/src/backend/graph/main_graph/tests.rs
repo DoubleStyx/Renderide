@@ -9,7 +9,9 @@ use crate::config::{
 };
 use crate::render_graph::error::GraphBuildError;
 use crate::render_graph::post_process_chain::PostProcessChainSignature;
-use crate::render_graph::resources::TransientArrayLayers;
+use crate::render_graph::resources::{
+    HistorySlotId, ImportSource, StorageAccess, TextureAccess, TransientArrayLayers,
+};
 use crate::render_graph::{GraphCache, GraphCacheEnsureResult};
 
 fn smoke_key() -> GraphCacheKey {
@@ -107,12 +109,46 @@ fn gtao_enabled_post() -> PostProcessingSettings {
 }
 
 #[test]
+fn main_graph_imports_distinct_previous_and_current_hi_z_halves() {
+    let graph = build_main_graph(smoke_key(), &no_post()).expect("default graph");
+    let previous = graph
+        .imported_textures
+        .iter()
+        .find(|decl| decl.label == "hi_z_previous")
+        .expect("previous-frame Hi-Z import");
+    let current = graph
+        .imported_textures
+        .iter()
+        .find(|decl| decl.label == "hi_z_current")
+        .expect("current-frame Hi-Z import");
+
+    assert_eq!(previous.source, ImportSource::PingPong(HistorySlotId::HI_Z));
+    assert_eq!(
+        previous.initial_access,
+        TextureAccess::Sampled {
+            stages: wgpu::ShaderStages::COMPUTE,
+        }
+    );
+    assert_eq!(previous.final_access, previous.initial_access);
+
+    assert_eq!(current.source, ImportSource::PingPong(HistorySlotId::HI_Z));
+    assert_eq!(
+        current.initial_access,
+        TextureAccess::Storage {
+            stages: wgpu::ShaderStages::COMPUTE,
+            access: StorageAccess::WriteOnly,
+        }
+    );
+    assert_eq!(current.final_access, current.initial_access);
+}
+
+#[test]
 fn default_main_needs_surface_and_skips_single_sample_depth_resolve() {
     let g = build_main_graph(smoke_key(), &no_post()).expect("default graph");
     assert!(g.needs_surface_acquire());
-    assert_eq!(g.pass_count(), 12);
-    assert_eq!(g.compile_stats.topo_levels, 11);
-    assert_eq!(g.compile_stats.registered_pass_count, 12);
+    assert_eq!(g.pass_count(), 14);
+    assert_eq!(g.compile_stats.topo_levels, 12);
+    assert_eq!(g.compile_stats.registered_pass_count, 14);
     assert!(g.compile_stats.compile_skipped_pass_count >= 1);
     assert_eq!(g.compile_stats.transient_texture_count, 1);
     assert!(
@@ -147,6 +183,14 @@ fn default_main_needs_surface_and_skips_single_sample_depth_resolve() {
         .iter()
         .position(|name| *name == "shadow_atlas")
         .expect("shadow atlas pass");
+    let geometry_populate_pos = pass_names
+        .iter()
+        .position(|name| *name == "GeometryArenaPopulate")
+        .expect("geometry arena population pass");
+    let gpu_cull_pos = pass_names
+        .iter()
+        .position(|name| *name == "WorldMeshGpuCull")
+        .expect("GPU world-mesh cull pass");
     let light_cookie_pos = pass_names
         .iter()
         .position(|name| *name == "light_cookie_atlas")
@@ -178,6 +222,9 @@ fn default_main_needs_surface_and_skips_single_sample_depth_resolve() {
     assert!(depth_prepass_pos < opaque_pos);
     assert!(light_cookie_pos < shadow_pos);
     assert!(deform_pos < shadow_pos);
+    assert!(geometry_populate_pos < shadow_pos);
+    assert!(geometry_populate_pos < gpu_cull_pos);
+    assert!(gpu_cull_pos < depth_prepass_pos);
     assert!(shadow_pos < clustered_pos);
     assert!(intersect_pos < hiz_pos);
     assert!(hiz_pos < transparent_pos);
@@ -229,9 +276,9 @@ fn msaa_main_graph_uses_transparent_sequence_for_grab_resolves() {
         .position(|name| *name == "WorldMeshDesktopOverlay")
         .expect("desktop overlay pass");
 
-    assert_eq!(g.pass_count(), 14);
-    assert_eq!(g.compile_stats.topo_levels, 13);
-    assert_eq!(g.compile_stats.registered_pass_count, 14);
+    assert_eq!(g.pass_count(), 16);
+    assert_eq!(g.compile_stats.topo_levels, 14);
+    assert_eq!(g.compile_stats.registered_pass_count, 16);
     assert!(!pass_names.contains(&"WorldMeshForwardGtaoDepthResolve"));
     assert!(compose_pos < overlay_pos);
 }

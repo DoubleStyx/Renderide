@@ -39,6 +39,31 @@ use scene_snapshot::{
 pub(crate) use shadows::ShadowAtlasPass;
 use shadows::ShadowAtlasResources;
 
+fn remove_forward_indirect_entries_for_view<V>(
+    buffers: &mut hashbrown::HashMap<(crate::camera::ViewId, crate::world_mesh::WorldMeshPhase), V>,
+    view_id: crate::camera::ViewId,
+) -> usize {
+    let before = buffers.len();
+    buffers.retain(|(entry_view, _), _| *entry_view != view_id);
+    before.saturating_sub(buffers.len())
+}
+
+/// Retains current and replaced indirect buffers without nesting map and entry locks.
+fn retain_indirect_buffer_entries<K>(
+    buffers: &parking_lot::Mutex<
+        hashbrown::HashMap<
+            K,
+            Arc<parking_lot::Mutex<crate::gpu::indirect_buffer::IndirectDrawBuffer>>,
+        >,
+    >,
+    resources: &mut crate::gpu::GpuRetainedResources,
+) {
+    let entries: Vec<_> = buffers.lock().values().cloned().collect();
+    for entry in entries {
+        entry.lock().retain_submit_resources(resources);
+    }
+}
+
 /// Result of synchronizing the realtime shadow atlas before graph recording.
 pub(crate) struct ShadowResourceSyncResult {
     /// Whether the atlas texture or views were recreated.
@@ -91,6 +116,12 @@ pub struct FrameGpuResources {
     light_cookies: LightCookieAtlasResources,
     /// Frame-global realtime shadow-map atlas and metadata.
     shadows: ShadowAtlasResources,
+    /// Persistent per-view depth-prepass indirect command buffers.
+    depth_prepass_indirect: crate::graph_inputs::DepthPrepassIndirectBuffers,
+    /// Persistent per-view normal-prepass indirect command buffers.
+    normal_prepass_indirect: crate::graph_inputs::NormalPrepassIndirectBuffers,
+    /// Persistent forward indirect command buffers, keyed by view and render phase.
+    forward_indirect: crate::graph_inputs::ForwardIndirectBuffers,
     /// Global `@group(0)` bind group (fallback frame uniform + fallback lights/snapshots).
     ///
     /// Per-view passes bind the per-view bind group from
@@ -275,8 +306,10 @@ pub(super) struct PerViewSceneSnapshotSyncParams {
     pub multiview: bool,
     /// Whether the depth snapshot family should be grown for this layout.
     pub needs_depth_snapshot: bool,
-    /// Whether the color snapshot family should be grown for this layout.
-    pub needs_color_snapshot: bool,
+    /// Whether the per-object color snapshot family should be grown for this layout.
+    pub needs_per_object_color_snapshot: bool,
+    /// Whether the named color snapshot family should be grown for this layout.
+    pub needs_named_color_snapshot: bool,
 }
 
 impl PerViewSceneSnapshots {
@@ -308,35 +341,53 @@ impl PerViewSceneSnapshots {
         limits: &GpuLimits,
         params: PerViewSceneSnapshotSyncParams,
     ) -> bool {
-        let layout = SceneSnapshotLayout::from_multiview(params.multiview);
-        let depth_changed = params.needs_depth_snapshot
-            && self.set.ensure(
+        let active_layout = SceneSnapshotLayout::from_multiview(params.multiview);
+        let mut changed = false;
+        for layout in [
+            SceneSnapshotLayout::Mono2d,
+            SceneSnapshotLayout::StereoArray,
+        ] {
+            changed |= self.set.ensure(
                 device,
                 limits,
                 SceneSnapshotKind::Depth,
                 layout,
-                params.viewport,
+                snapshot_sync_extent(
+                    layout,
+                    active_layout,
+                    params.needs_depth_snapshot,
+                    params.viewport,
+                ),
                 params.depth_format,
             );
-        let color_changed = params.needs_color_snapshot
-            && self.set.ensure(
+            changed |= self.set.ensure(
                 device,
                 limits,
                 SceneSnapshotKind::Color,
                 layout,
-                params.viewport,
+                snapshot_sync_extent(
+                    layout,
+                    active_layout,
+                    params.needs_per_object_color_snapshot,
+                    params.viewport,
+                ),
                 params.color_format,
             );
-        let named_color_changed = params.needs_color_snapshot
-            && self.set.ensure(
+            changed |= self.set.ensure(
                 device,
                 limits,
                 SceneSnapshotKind::NamedColor,
                 layout,
-                params.viewport,
+                snapshot_sync_extent(
+                    layout,
+                    active_layout,
+                    params.needs_named_color_snapshot,
+                    params.viewport,
+                ),
                 params.color_format,
             );
-        depth_changed || color_changed || named_color_changed
+        }
+        changed
     }
 
     /// Encodes a blit into this view's R32Float scene-depth snapshot.
@@ -391,12 +442,41 @@ impl PerViewSceneSnapshots {
         )
     }
 
+    /// Returns the pre-synchronized color snapshot view for direct MSAA resolve.
+    pub(super) fn color_render_target_view(
+        &self,
+        viewport: (u32, u32),
+        color_format: wgpu::TextureFormat,
+        multiview: bool,
+        named: bool,
+    ) -> Option<&wgpu::TextureView> {
+        self.set.color_render_target_view(
+            SceneSnapshotLayout::from_multiview(multiview),
+            viewport,
+            color_format,
+            named,
+        )
+    }
+
     /// Retains this view's snapshot resources until driver submit.
     pub(in crate::backend) fn retain_submit_resources(
         &self,
         resources: &mut crate::gpu::GpuRetainedResources,
     ) {
         self.set.retain_submit_resources(resources);
+    }
+}
+
+fn snapshot_sync_extent(
+    layout: SceneSnapshotLayout,
+    active_layout: SceneSnapshotLayout,
+    needed: bool,
+    viewport: (u32, u32),
+) -> (u32, u32) {
+    if needed && layout == active_layout {
+        viewport
+    } else {
+        (1, 1)
     }
 }
 
@@ -543,11 +623,45 @@ impl FrameGpuResources {
             ibl_dfg_lut_view,
             light_cookies,
             shadows,
+            depth_prepass_indirect: Arc::new(parking_lot::Mutex::new(hashbrown::HashMap::new())),
+            normal_prepass_indirect: Arc::new(parking_lot::Mutex::new(hashbrown::HashMap::new())),
+            forward_indirect: Arc::new(parking_lot::Mutex::new(hashbrown::HashMap::new())),
             bind_group,
             deferred_bind_group_drops: DeferredBindGroupDrops::new(),
             cluster_bind_version,
             limits,
         })
+    }
+
+    /// Shared geometry arena used by shadow and per-view indirect draws.
+    pub(crate) fn shared_geometry_arena_arc(&self) -> crate::graph_inputs::SharedGeometryArena {
+        self.shadows.geometry_arena_arc()
+    }
+
+    /// Persistent per-view depth-prepass indirect command buffers.
+    pub(crate) fn depth_prepass_indirect_arc(
+        &self,
+    ) -> crate::graph_inputs::DepthPrepassIndirectBuffers {
+        Arc::clone(&self.depth_prepass_indirect)
+    }
+
+    /// Persistent per-view normal-prepass indirect command buffers.
+    pub(crate) fn normal_prepass_indirect_arc(
+        &self,
+    ) -> crate::graph_inputs::NormalPrepassIndirectBuffers {
+        Arc::clone(&self.normal_prepass_indirect)
+    }
+
+    /// Persistent forward indirect command buffers, keyed by view and render phase.
+    pub(crate) fn forward_indirect_arc(&self) -> crate::graph_inputs::ForwardIndirectBuffers {
+        Arc::clone(&self.forward_indirect)
+    }
+
+    /// Releases persistent indirect buffers owned by a view that is no longer active.
+    pub(crate) fn retire_view_indirect_buffers(&self, view_id: crate::camera::ViewId) {
+        self.depth_prepass_indirect.lock().remove(&view_id);
+        self.normal_prepass_indirect.lock().remove(&view_id);
+        remove_forward_indirect_entries_for_view(&mut self.forward_indirect.lock(), view_id);
     }
 
     /// Grows the shared cluster cache to cover `viewport` x `stereo` and `index_capacity_words`
@@ -758,6 +872,9 @@ impl FrameGpuResources {
         resources.retain_texture_view(self.ibl_dfg_lut_view.as_ref().clone());
         self.light_cookies.retain_submit_resources(resources);
         self.shadows.retain_submit_resources(resources);
+        retain_indirect_buffer_entries(self.depth_prepass_indirect.as_ref(), resources);
+        retain_indirect_buffer_entries(self.normal_prepass_indirect.as_ref(), resources);
+        retain_indirect_buffer_entries(self.forward_indirect.as_ref(), resources);
         resources.retain_bind_group(self.bind_group.as_ref().clone());
     }
 
@@ -768,7 +885,18 @@ impl FrameGpuResources {
         resources: Option<ReflectionProbeSpecularResources>,
     ) -> bool {
         let Some(resources) = resources else {
-            return false;
+            if self.reflection_probe_version == 0 {
+                return false;
+            }
+            let (texture, view, sampler, metadata_buffer) =
+                create_reflection_probe_specular_fallback(device);
+            self.reflection_probe_fallback_texture = texture;
+            self.reflection_probe_array_view = view;
+            self.reflection_probe_sampler = sampler;
+            self.reflection_probe_metadata_buffer = metadata_buffer;
+            self.reflection_probe_version = 0;
+            self.rebuild_bind_group(device);
+            return true;
         };
         if resources.version == self.reflection_probe_version {
             return false;
@@ -808,6 +936,11 @@ impl FrameGpuResources {
 
 #[cfg(test)]
 mod tests {
+    use super::{remove_forward_indirect_entries_for_view, snapshot_sync_extent};
+    use crate::backend::frame_gpu::scene_snapshot::SceneSnapshotLayout;
+    use crate::camera::ViewId;
+    use crate::world_mesh::WorldMeshPhase;
+
     fn fragment_resource_count(
         entries: &[wgpu::BindGroupLayoutEntry],
         matches_ty: impl Fn(&wgpu::BindingType) -> bool,
@@ -838,6 +971,35 @@ mod tests {
                 wgpu::BindingType::Texture { .. }
             )),
             9
+        );
+    }
+
+    #[test]
+    fn snapshot_sync_reclaims_unused_and_inactive_layouts() {
+        let viewport = (1920, 1080);
+        let mono = SceneSnapshotLayout::Mono2d;
+        let stereo = SceneSnapshotLayout::StereoArray;
+
+        assert_eq!(snapshot_sync_extent(mono, mono, true, viewport), viewport);
+        assert_eq!(snapshot_sync_extent(mono, mono, false, viewport), (1, 1));
+        assert_eq!(snapshot_sync_extent(stereo, mono, true, viewport), (1, 1));
+    }
+
+    #[test]
+    fn retiring_forward_indirect_entries_only_removes_the_target_view() {
+        let mut buffers = hashbrown::HashMap::new();
+        buffers.insert((ViewId::Main, WorldMeshPhase::ForwardOpaque), 1u8);
+        buffers.insert((ViewId::Main, WorldMeshPhase::ForwardAlphaTest), 2u8);
+        buffers.insert((ViewId::MainOverlay, WorldMeshPhase::ForwardOpaque), 3u8);
+
+        assert_eq!(
+            remove_forward_indirect_entries_for_view(&mut buffers, ViewId::Main),
+            2
+        );
+        assert_eq!(buffers.len(), 1);
+        assert_eq!(
+            buffers.get(&(ViewId::MainOverlay, WorldMeshPhase::ForwardOpaque)),
+            Some(&3)
         );
     }
 }

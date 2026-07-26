@@ -28,12 +28,14 @@ mod sync;
 mod vr_mirror;
 
 pub(crate) mod bind_layout;
+pub(crate) mod cull_compact;
 pub(crate) mod depth;
 pub(crate) mod display_blit;
 pub(crate) mod driver_thread;
 pub(crate) mod flight_recorder;
 pub(crate) mod frame_bindings;
 pub(crate) mod frame_globals;
+pub(crate) mod indirect_buffer;
 pub(crate) mod limits;
 pub(crate) mod msaa_depth_resolve;
 pub(crate) mod pipeline_cache;
@@ -60,10 +62,10 @@ pub(crate) use frame_bindings::{
 };
 pub(crate) use instance_setup::{RENDERER_MAX_TEXTURE_DIMENSION_2D, instance_flags_for_gpu_init};
 pub(crate) use limits::{CUBEMAP_ARRAY_LAYERS, GpuLimits};
-pub(crate) use pipeline_cache::{init_pipeline_cache, persist_pipeline_cache, pipeline_cache};
 pub(crate) use msaa_depth_resolve::{
     MsaaDepthResolveMonoTargets, MsaaDepthResolveResources, MsaaDepthResolveStereoTargets,
 };
+pub(crate) use pipeline_cache::{init_pipeline_cache, persist_pipeline_cache, pipeline_cache};
 pub(crate) use resource_retention::GpuRetainedResources;
 pub(crate) use vr_mirror::{VR_MIRROR_EYE_LAYER, VrMirrorBlitResources};
 

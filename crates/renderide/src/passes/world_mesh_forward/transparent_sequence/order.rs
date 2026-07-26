@@ -1,6 +1,7 @@
 //! Ordering helpers for interleaving transparent post groups and grab-pass groups.
 
-use crate::world_mesh::{InstancePlan, MeshPassKind, WorldMeshPhase};
+use crate::materials::SceneColorSnapshotMode;
+use crate::world_mesh::{DrawGroup, InstancePlan, MeshPassKind, WorldMeshPhase};
 
 /// Returns the phases that make up the transparent sequence mesh pass.
 pub(super) fn transparent_sequence_phase_pair() -> (WorldMeshPhase, WorldMeshPhase) {
@@ -11,7 +12,11 @@ pub(super) fn transparent_sequence_phase_pair() -> (WorldMeshPhase, WorldMeshPha
 }
 
 /// Returns whether the next sorted transparent sequence entry is a post group.
-fn next_sequence_entry_is_post(plan: &InstancePlan, post_idx: usize, grab_idx: usize) -> bool {
+pub(super) fn next_sequence_entry_is_post(
+    plan: &InstancePlan,
+    post_idx: usize,
+    grab_idx: usize,
+) -> bool {
     let (transparent_phase, grab_phase) = transparent_sequence_phase_pair();
     let Some(post) = plan.phase(transparent_phase).get(post_idx) else {
         return false;
@@ -22,7 +27,39 @@ fn next_sequence_entry_is_post(plan: &InstancePlan, post_idx: usize, grab_idx: u
     post.representative_draw_idx <= grab.representative_draw_idx
 }
 
+/// Returns the end of the next named-grab run before a post group or snapshot-mode change.
+pub(super) fn consecutive_named_grab_run_end(
+    transparent_groups: &[DrawGroup],
+    grab_groups: &[DrawGroup],
+    post_idx: usize,
+    grab_idx: usize,
+    mut snapshot_mode_for_group: impl FnMut(usize, &DrawGroup) -> SceneColorSnapshotMode,
+) -> usize {
+    let Some(first) = grab_groups.get(grab_idx) else {
+        return grab_idx;
+    };
+    if snapshot_mode_for_group(grab_idx, first) != SceneColorSnapshotMode::NamedBackgroundGrab {
+        return grab_idx + 1;
+    }
+
+    let mut end = grab_idx + 1;
+    while let Some(next_grab) = grab_groups.get(end) {
+        if transparent_groups
+            .get(post_idx)
+            .is_some_and(|post| post.representative_draw_idx <= next_grab.representative_draw_idx)
+        {
+            break;
+        }
+        if snapshot_mode_for_group(end, next_grab) != SceneColorSnapshotMode::NamedBackgroundGrab {
+            break;
+        }
+        end += 1;
+    }
+    end
+}
+
 /// Advances a pending transparent-post run when the next sorted item is a post group.
+#[cfg(test)]
 pub(super) fn advance_pending_post_run(
     plan: &InstancePlan,
     post_idx: &mut usize,

@@ -230,29 +230,26 @@ fn main(@builtin(global_invocation_id) global_id: vec3u) {
 
     for (var i = 0u; i < params.light_count; i++) {
         let light = lights[i];
-        let pos_view = (params.view * vec4f(light.position.x, light.position.y, light.position.z, 1.0)).xyz;
-        let dir_view = (params.view * vec4f(light.direction.x, light.direction.y, light.direction.z, 0.0)).xyz;
 
         var intersects = false;
-        // `light.range` is in world units; `pos_view` and the cluster AABB are in scaled view
-        // space. Multiply by `world_to_view_scale` (CPU-computed max row length of the
-        // world-to-view linear part) so the sphere/spot bounds are in matching units. Without
-        // this, a player avatar with non-unit scale (e.g. 0.01) culls lights with a radius that
-        // is `1/scale` too small in view space, dropping lights from clusters that should
-        // contain them and producing tile-shaped dark seams in the lit image.
-        let cull_range = max(light.range * params.world_to_view_scale, 0.0);
-        if light.light_type == 0u {
-            intersects = sphere_aabb_intersect(pos_view, cull_range, aabb_min, aabb_max);
-        } else if light.light_type == 1u {
+        if light.light_type == 1u {
             intersects = true;
         } else {
-            let dir_len_sq = dot(dir_view, dir_view);
-            let axis = select(
-                vec3f(0.0, 0.0, 1.0),
-                dir_view * inverseSqrt(dir_len_sq),
-                dir_len_sq > 1e-16
-            );
-            intersects = spotlight_bounds_intersect_aabb(pos_view, axis, light.spot_cos_half_angle, cull_range, aabb_min, aabb_max);
+            let pos_view = (params.view * vec4f(light.position.x, light.position.y, light.position.z, 1.0)).xyz;
+            // Convert the world-space light range to the view-space AABB scale.
+            let cull_range = max(light.range * params.world_to_view_scale, 0.0);
+            if light.light_type == 0u {
+                intersects = sphere_aabb_intersect(pos_view, cull_range, aabb_min, aabb_max);
+            } else {
+                let dir_view = (params.view * vec4f(light.direction.x, light.direction.y, light.direction.z, 0.0)).xyz;
+                let dir_len_sq = dot(dir_view, dir_view);
+                let axis = select(
+                    vec3f(0.0, 0.0, 1.0),
+                    dir_view * inverseSqrt(dir_len_sq),
+                    dir_len_sq > 1e-16
+                );
+                intersects = spotlight_bounds_intersect_aabb(pos_view, axis, light.spot_cos_half_angle, cull_range, aabb_min, aabb_max);
+            }
         }
 
         if intersects {

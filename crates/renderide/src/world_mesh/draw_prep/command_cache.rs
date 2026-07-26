@@ -256,7 +256,12 @@ fn cache_hit_rate_per_mille(hits: u64, misses: u64) -> u16 {
     ((hits.saturating_mul(1000)) / lookups).min(1000) as u16
 }
 
-/// Computes a deterministic structural fingerprint for an already ordered draw slice.
+/// Computes a deterministic instance-plan fingerprint for an already ordered draw slice.
+///
+/// Per-frame transform payload is deliberately excluded: neither the rigid model matrix nor the
+/// world AABB affects instance grouping, slab order, or phase membership. Forward slab packing
+/// consumes the current draw slice on every frame, and the GPU-cull structural cache separately
+/// refreshes candidate AABBs when a cached plan is paired with a new draw payload.
 pub(crate) fn fingerprint_world_mesh_draws(draws: &[WorldMeshDrawItem]) -> u64 {
     let mut hasher = ahash::AHasher::default();
     draws.len().hash(&mut hasher);
@@ -308,7 +313,6 @@ fn hash_world_mesh_draw_item<H: Hasher>(item: &WorldMeshDrawItem, hasher: &mut H
     item.batch_key_hash.hash(hasher);
     item._opaque_depth_bucket.hash(hasher);
     item.sort_prefix.hash(hasher);
-    hash_mat4_option(item.rigid_world_matrix, hasher);
     hash_reflection_probe_selection(item, hasher);
     hash_vec4_option(item.ui_rect_clip_local, hasher);
 }
@@ -343,15 +347,6 @@ fn hash_camera_distance_if_ordered<H: Hasher>(item: &WorldMeshDrawItem, hasher: 
 
 fn hash_shadow_cast_mode<H: Hasher>(mode: crate::shared::ShadowCastMode, hasher: &mut H) {
     (mode as u8).hash(hasher);
-}
-
-fn hash_mat4_option<H: Hasher>(value: Option<glam::Mat4>, hasher: &mut H) {
-    value.is_some().hash(hasher);
-    if let Some(value) = value {
-        for component in value.to_cols_array() {
-            component.to_bits().hash(hasher);
-        }
-    }
 }
 
 fn hash_reflection_probe_selection<H: Hasher>(item: &WorldMeshDrawItem, hasher: &mut H) {
@@ -471,6 +466,28 @@ mod tests {
         assert_ne!(
             fingerprint_world_mesh_draws(&[plain]),
             fingerprint_world_mesh_draws(&[shadow_only])
+        );
+    }
+
+    #[test]
+    fn instance_plan_fingerprint_ignores_dynamic_transform_payload() {
+        let plain = draw(1);
+        let mut moved = plain.clone();
+        moved.rigid_world_matrix = Some(glam::Mat4::from_translation(glam::Vec3::new(
+            8.0, -3.0, 2.0,
+        )));
+        moved.world_aabb = Some((
+            glam::Vec3::new(-2.0, -1.0, 3.0),
+            glam::Vec3::new(4.0, 5.0, 6.0),
+        ));
+
+        assert_eq!(
+            fingerprint_world_mesh_draws(std::slice::from_ref(&plain)),
+            fingerprint_world_mesh_draws(std::slice::from_ref(&moved))
+        );
+        assert_eq!(
+            fingerprint_world_mesh_draw_order(std::slice::from_ref(&plain)),
+            fingerprint_world_mesh_draw_order(std::slice::from_ref(&moved))
         );
     }
 

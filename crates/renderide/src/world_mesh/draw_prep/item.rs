@@ -53,7 +53,10 @@ pub struct WorldMeshVisibilityStats {
 #[derive(Clone, Debug)]
 pub struct WorldMeshDrawCollection {
     /// Draw items after culling and sorting.
-    pub items: Vec<WorldMeshDrawItem>,
+    ///
+    /// The immutable final list is shared across the retained frame cache and forward
+    /// preparation. This keeps a cache hit O(1) instead of deep-cloning every draw row.
+    pub items: std::sync::Arc<[WorldMeshDrawItem]>,
     /// Draw slots considered for culling after material-slot to submesh-range expansion.
     pub draws_pre_cull: usize,
     /// Draws removed by frustum culling.
@@ -70,7 +73,7 @@ impl WorldMeshDrawCollection {
     /// Builds an empty draw collection that explicitly suppresses in-graph scene collection.
     pub fn empty() -> Self {
         Self {
-            items: Vec::new(),
+            items: std::sync::Arc::from([]),
             draws_pre_cull: 0,
             draws_culled: 0,
             draws_hi_z_culled: 0,

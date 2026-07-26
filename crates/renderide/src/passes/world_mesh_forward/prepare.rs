@@ -24,9 +24,9 @@ use crate::world_mesh::draw_prep::{
 };
 use crate::world_mesh::instances::InstancePlanBuildScratch;
 use crate::world_mesh::{
-    DrawGroup, InstancePlan, PrefetchedWorldMeshViewDraws, WorldMeshCullProjParams,
-    WorldMeshHelperNeeds, WorldMeshPhase, state_rows_from_sorted, stats_from_sorted,
-    stats_from_sorted_with_plan,
+    DrawGroup, HiZTemporalState, InstancePlan, PrefetchedWorldMeshViewDraws,
+    WorldMeshCullProjParams, WorldMeshHelperNeeds, WorldMeshPhase, state_rows_from_sorted,
+    stats_from_sorted, stats_from_sorted_with_plan,
 };
 
 use super::camera::{compute_view_projections, resolve_pass_config};
@@ -100,7 +100,7 @@ pub(crate) struct WorldMeshForwardPrepareInputs<'a, 'frame> {
 }
 
 struct PackedForwardDraws {
-    draws: Vec<WorldMeshDrawItem>,
+    draws: Arc<[WorldMeshDrawItem]>,
     plan: Arc<InstancePlan>,
     overlay_view_proj: glam::Mat4,
     precomputed_batches: Vec<MaterialBatchPacket>,
@@ -109,6 +109,8 @@ struct PackedForwardDraws {
 struct ForwardViewFinalizeInputs {
     pipeline: WorldMeshForwardPipelineState,
     helper_needs: WorldMeshHelperNeeds,
+    cull_proj: Option<WorldMeshCullProjParams>,
+    hi_z_temporal: Option<HiZTemporalState>,
     supports_base_instance: bool,
     skybox: Option<PreparedSkybox>,
     viewport_px: (u32, u32),
@@ -300,6 +302,8 @@ pub(crate) fn prepare_world_mesh_forward_frame(
     let shader_perm = pipeline.shader_perm;
 
     let helper_needs = prefetched.helper_needs;
+    let cull_proj = prefetched.cull_proj;
+    let hi_z_temporal = prefetched.hi_z_temporal;
     let cull_counts = (
         prefetched.collection.draws_pre_cull,
         prefetched.collection.draws_culled,
@@ -313,7 +317,7 @@ pub(crate) fn prepare_world_mesh_forward_frame(
     };
     {
         profiling::scope!("world_mesh::prepare_frame::capture_hi_z_temporal");
-        capture_hi_z_temporal_after_collect(&frame, prefetched.cull_proj.as_ref(), hc);
+        capture_hi_z_temporal_after_collect(&frame, cull_proj.as_ref(), hc);
     }
 
     let mut hud_outputs = {
@@ -374,6 +378,8 @@ pub(crate) fn prepare_world_mesh_forward_frame(
         ForwardViewFinalizeInputs {
             pipeline,
             helper_needs,
+            cull_proj,
+            hi_z_temporal,
             supports_base_instance,
             skybox,
             viewport_px: frame.view.viewport_px,
@@ -395,6 +401,8 @@ fn prepared_forward_view_from_pack(
     let ForwardViewFinalizeInputs {
         pipeline,
         helper_needs,
+        cull_proj,
+        hi_z_temporal,
         supports_base_instance,
         skybox,
         viewport_px,
@@ -406,6 +414,9 @@ fn prepared_forward_view_from_pack(
             plan,
             pipeline,
             helper_needs,
+            cull_proj,
+            hi_z_temporal,
+            gpu_cull: None,
             supports_base_instance,
             opaque_recorded: false,
             depth_snapshot_recorded: false,
@@ -465,7 +476,7 @@ fn update_world_mesh_draw_stats_from_plan(
 
 fn pack_forward_draws_for_view(
     inputs: ForwardDrawPackInputs<'_, '_>,
-    draws: Vec<WorldMeshDrawItem>,
+    draws: Arc<[WorldMeshDrawItem]>,
     scratch: &mut WorldMeshForwardPrepareScratch,
 ) -> Option<PackedForwardDraws> {
     let ForwardDrawPackInputs {

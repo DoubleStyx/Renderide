@@ -136,14 +136,15 @@ struct SurfaceData {
 
 /// Sample the normal map (when enabled) and transform the tangent-space normal to world space.
 fn sample_normal_world(uv_main: vec2<f32>, world_n: vec3<f32>, world_t: vec4<f32>) -> vec3<f32> {
-    let tbn = pnorm::orthonormal_tbn(normalize(world_n), normalize(world_t));
-    var ts_n = vec3<f32>(0.0, 0.0, 1.0);
-    if (kw_NORMALMAP()) {
-        ts_n = nd::decode_ts_normal_with_placeholder_sample(
-            ts::sample_tex_2d(_NormalMap, _NormalMap_sampler, uv_main, mat._NormalMap_LodBias),
-            mat._NormalScale,
-        );
+    if (!kw_NORMALMAP()) {
+        return normalize(world_n);
     }
+
+    let tbn = pnorm::orthonormal_tbn(normalize(world_n), normalize(world_t));
+    let ts_n = nd::decode_ts_normal_with_placeholder_sample(
+        ts::sample_tex_2d(_NormalMap, _NormalMap_sampler, uv_main, mat._NormalMap_LodBias),
+        mat._NormalScale,
+    );
     return normalize(tbn * ts_n);
 }
 

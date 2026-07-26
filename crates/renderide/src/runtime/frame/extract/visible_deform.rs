@@ -74,7 +74,7 @@ fn extend_visible_mesh_deform_keys_for_plan(
     let Some(collection) = draw_plan.as_prefetched() else {
         return;
     };
-    for item in &collection.items {
+    for item in collection.items.iter() {
         if item.world_space_deformed || item.blendshape_deformed {
             keys.insert(SkinCacheKey::from_draw_parts(
                 item.space_id,

@@ -41,7 +41,7 @@ struct CacheEntry {
     router_gen: u64,
     /// Shader permutation the entry was resolved for.
     shader_perm: ShaderPermutation,
-    /// Cache's frame counter at the most recent touch; used to evict entries no longer referenced.
+    /// Cache frame counter at the most recent touch; used to evict unreferenced entries.
     last_used_frame: u64,
 }
 
@@ -229,6 +229,20 @@ impl FrameMaterialBatchCache {
             last_refresh_prepared_material_signature: None,
             last_touch_stats: MaterialBatchCacheTouchStats::default(),
         }
+    }
+
+    /// Dependency snapshot used to invalidate retained per-view draw plans.
+    ///
+    /// A draw plan embeds resolved batch keys and helper-pass requirements, so it may only be
+    /// reused while the router, material/property dictionary, shader permutation, and prepared
+    /// material live set still match the cache refresh that produced it.
+    pub(crate) fn draw_plan_dependency_signature(&self) -> Option<(u64, u64, u32, u64)> {
+        Some((
+            self.last_refresh_router_gen?,
+            self.last_refresh_dict_global_gen?,
+            self.last_refresh_shader_perm?.0,
+            self.last_refresh_prepared_material_signature?,
+        ))
     }
 
     /// Records the snapshot of `(router_gen, dict_global_gen, shader_perm)` that the most recent

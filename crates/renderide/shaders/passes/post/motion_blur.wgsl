@@ -25,6 +25,11 @@ struct MotionBlurUniforms {
     _pad0: vec2<f32>,
 }
 
+struct ClampedVelocity {
+    uv: vec2<f32>,
+    pixel_length: f32,
+}
+
 #ifdef MULTIVIEW
 @group(0) @binding(0) var frame_depth: texture_depth_2d_array;
 #else
@@ -100,13 +105,19 @@ fn hash12(p: vec2<f32>) -> f32 {
     return fract(sin(h) * 43758.5453123);
 }
 
-fn clamp_velocity_to_radius(velocity_uv: vec2<f32>) -> vec2<f32> {
+fn clamp_velocity_to_radius(velocity_uv: vec2<f32>) -> ClampedVelocity {
     let pixel_velocity = velocity_uv * blur.viewport_px;
     let pixel_len = length(pixel_velocity);
     if (pixel_len <= blur.max_velocity_pixels || pixel_len <= 1e-5) {
-        return velocity_uv;
+        return ClampedVelocity(velocity_uv, pixel_len);
     }
-    return (pixel_velocity * (blur.max_velocity_pixels / pixel_len)) / blur.viewport_px;
+    let clamped_uv =
+        (pixel_velocity * (blur.max_velocity_pixels / pixel_len)) / blur.viewport_px;
+    // Recompute the pixel length after clamping.
+    return ClampedVelocity(
+        clamped_uv,
+        length(clamped_uv * blur.viewport_px),
+    );
 }
 
 fn motion_blur_sample(uv: vec2<f32>, view: u32) -> vec4<f32> {
@@ -115,9 +126,11 @@ fn motion_blur_sample(uv: vec2<f32>, view: u32) -> vec4<f32> {
         return center;
     }
 
-    var velocity = textureSample(velocity_texture, scene_color_sampler, uv, view).xy;
-    velocity = clamp_velocity_to_radius(velocity * blur.shutter_angle);
-    if (length(velocity * blur.viewport_px) < 1.0) {
+    let sampled_velocity = textureSample(velocity_texture, scene_color_sampler, uv, view).xy;
+    let clamped_velocity =
+        clamp_velocity_to_radius(sampled_velocity * blur.shutter_angle);
+    let velocity = clamped_velocity.uv;
+    if (clamped_velocity.pixel_length < 1.0) {
         return center;
     }
 

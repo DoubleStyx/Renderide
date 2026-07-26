@@ -18,7 +18,7 @@ pub struct GpuReflectionProbeMetadata {
     pub box_min: [f32; 4],
     /// World-space AABB maximum, padded to a vec4.
     pub box_max: [f32; 4],
-    /// World-space probe position, padded to a vec4.
+    /// World-space probe position; `.w` stores the deduplicated specular-atlas texture slot.
     pub position: [f32; 4],
     /// `.x` intensity, `.y` max LOD, `.z` flags, `.w` SH2 source kind.
     pub params: [f32; 4],

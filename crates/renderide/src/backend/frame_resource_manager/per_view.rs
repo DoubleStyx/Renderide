@@ -377,6 +377,9 @@ impl FrameResourceManager {
         self.retire_per_view_per_draw(view_id);
         self.retire_per_view_per_draw_scratch(view_id);
         let _ = self.per_view_lights.retire(view_id);
+        if let Some(frame_gpu) = self.frame_gpu.as_ref() {
+            frame_gpu.retire_view_indirect_buffers(view_id);
+        }
     }
 
     /// Pre-synchronizes shared cluster buffers for every unique view layout before per-view
@@ -555,5 +558,20 @@ impl FrameResourceManager {
         state
             .scene_snapshots
             .encode_named_color_copy(encoder, source_color, viewport, multiview)
+    }
+
+    /// Returns the sampled color-snapshot view as a render target for direct MSAA resolve.
+    pub fn scene_color_snapshot_render_target_for_view(
+        &self,
+        view_id: ViewId,
+        viewport: (u32, u32),
+        color_format: wgpu::TextureFormat,
+        multiview: bool,
+        named: bool,
+    ) -> Option<&wgpu::TextureView> {
+        self.per_view_frame
+            .get(view_id)?
+            .scene_snapshots
+            .color_render_target_view(viewport, color_format, multiview, named)
     }
 }

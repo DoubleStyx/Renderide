@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 /// Reflection-probe source to be baked into a GGX-prefiltered cubemap.
+#[derive(Clone)]
 pub(crate) enum SkyboxIblSource {
     /// Resident host-uploaded cubemap read directly from a baked reflection probe.
     Cubemap(CubemapIblSource),
@@ -13,6 +14,7 @@ pub(crate) enum SkyboxIblSource {
 }
 
 /// Resident cubemap source identity and GPU handle.
+#[derive(Clone)]
 pub(crate) struct CubemapIblSource {
     /// Material asset id when this source came from a material, or `-1` for direct probe sources.
     pub material_asset_id: i32,
@@ -39,6 +41,7 @@ pub(crate) struct CubemapIblSource {
 }
 
 /// Constant-color source identity and color.
+#[derive(Clone)]
 pub(crate) struct SolidColorIblSource {
     /// Renderer-side identity for this color source.
     pub identity: u64,
@@ -47,6 +50,7 @@ pub(crate) struct SolidColorIblSource {
 }
 
 /// Renderer-owned cubemap source identity and GPU handle.
+#[derive(Clone)]
 pub(crate) struct RuntimeCubemapIblSource {
     /// Render space that owns the captured probe.
     pub render_space_id: i32,

@@ -31,7 +31,10 @@ pub(super) fn add_main_graph_edges(
 ) {
     builder.add_edge(passes.light_cookies, passes.shadows);
     builder.add_edge(passes.deform, passes.shadows);
+    builder.add_edge(passes.geometry_populate, passes.shadows);
+    builder.add_edge(passes.geometry_populate, passes.gpu_cull);
     builder.add_edge(passes.shadows, passes.clustered);
+    builder.add_edge(passes.gpu_cull, passes.depth_prepass);
     builder.add_edge(passes.clustered, passes.depth_prepass);
     builder.add_edge(passes.depth_prepass, passes.forward_opaque);
     if let Some(gtao) = passes.gtao.as_ref() {

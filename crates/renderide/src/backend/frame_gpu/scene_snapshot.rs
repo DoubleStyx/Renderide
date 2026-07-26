@@ -8,6 +8,9 @@ pub(super) const DEFAULT_SCENE_COLOR_FORMAT: wgpu::TextureFormat = wgpu::Texture
 /// Scene-depth snapshot storage format; a blit target, not a depth copy.
 pub(super) const SCENE_DEPTH_SNAPSHOT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
 
+/// Scene snapshots are sampled explicitly at level zero by grab-pass shaders.
+const SCENE_SNAPSHOT_MIP_LEVEL_COUNT: u32 = 1;
+
 /// Snapshot texture family.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SceneSnapshotKind {
@@ -110,7 +113,7 @@ impl SceneSnapshotTexture {
                 height: extent_px.1,
                 depth_or_array_layers: layout.layer_count(),
             },
-            mip_level_count: 1,
+            mip_level_count: SCENE_SNAPSHOT_MIP_LEVEL_COUNT,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format,
@@ -181,7 +184,9 @@ impl SceneSnapshotKind {
                 wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING
             }
             Self::Color | Self::NamedColor => {
-                wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING
+                wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING
             }
         }
     }
@@ -350,16 +355,7 @@ impl SceneSnapshotSet {
         depth_format: wgpu::TextureFormat,
         color_format: wgpu::TextureFormat,
     ) -> Self {
-        let color_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("frame_scene_color_sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
-            ..Default::default()
-        });
+        let color_sampler = device.create_sampler(&scene_color_sampler_descriptor());
         Self {
             mono: SceneSnapshotLayoutTargets::new(
                 device,
@@ -481,6 +477,24 @@ impl SceneSnapshotSet {
         true
     }
 
+    /// Returns the color snapshot view used both as the direct MSAA resolve target and by the
+    /// frame bind group that samples the snapshot.
+    pub(super) fn color_render_target_view(
+        &self,
+        layout: SceneSnapshotLayout,
+        viewport: (u32, u32),
+        format: wgpu::TextureFormat,
+        named: bool,
+    ) -> Option<&wgpu::TextureView> {
+        let kind = if named {
+            SceneSnapshotKind::NamedColor
+        } else {
+            SceneSnapshotKind::Color
+        };
+        let target = self.targets(layout).target(kind);
+        target.matches(viewport, format).then_some(&target.view)
+    }
+
     /// Blits the single-sample depth attachment into the R32Float depth snapshot.
     pub(super) fn encode_depth_blit(
         &self,
@@ -576,9 +590,26 @@ fn clamp_snapshot_extent(extent_px: (u32, u32)) -> (u32, u32) {
     (extent_px.0.max(1), extent_px.1.max(1))
 }
 
+/// Fixed sampler paired with level-zero scene-snapshot sampling in grab-pass shaders.
+fn scene_color_sampler_descriptor() -> wgpu::SamplerDescriptor<'static> {
+    wgpu::SamplerDescriptor {
+        label: Some("frame_scene_color_sampler"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{SceneSnapshotKind, SceneSnapshotLayout, clamp_snapshot_extent};
+    use super::{
+        SCENE_SNAPSHOT_MIP_LEVEL_COUNT, SceneSnapshotKind, SceneSnapshotLayout,
+        clamp_snapshot_extent, scene_color_sampler_descriptor,
+    };
 
     /// Zero viewport dimensions clamp to a valid texture extent.
     #[test]
@@ -626,5 +657,28 @@ mod tests {
             SceneSnapshotKind::NamedColor.snapshot_format(wgpu::TextureFormat::Rgba16Float),
             wgpu::TextureFormat::Rgba16Float
         );
+    }
+
+    #[test]
+    fn color_snapshots_support_copy_resolve_and_sampling() {
+        for kind in [SceneSnapshotKind::Color, SceneSnapshotKind::NamedColor] {
+            let usage = kind.texture_usage();
+            assert!(usage.contains(wgpu::TextureUsages::COPY_DST));
+            assert!(usage.contains(wgpu::TextureUsages::RENDER_ATTACHMENT));
+            assert!(usage.contains(wgpu::TextureUsages::TEXTURE_BINDING));
+        }
+    }
+
+    #[test]
+    fn color_snapshot_sampling_matches_level_zero_shader_contract() {
+        let sampler = scene_color_sampler_descriptor();
+
+        assert_eq!(SCENE_SNAPSHOT_MIP_LEVEL_COUNT, 1);
+        assert_eq!(sampler.address_mode_u, wgpu::AddressMode::ClampToEdge);
+        assert_eq!(sampler.address_mode_v, wgpu::AddressMode::ClampToEdge);
+        assert_eq!(sampler.address_mode_w, wgpu::AddressMode::ClampToEdge);
+        assert_eq!(sampler.mag_filter, wgpu::FilterMode::Linear);
+        assert_eq!(sampler.min_filter, wgpu::FilterMode::Linear);
+        assert_eq!(sampler.mipmap_filter, wgpu::MipmapFilterMode::Nearest);
     }
 }

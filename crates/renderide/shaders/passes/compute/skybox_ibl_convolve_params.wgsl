@@ -47,11 +47,7 @@ fn convolve_cosine(n: vec3<f32>, jitter: vec2<f32>, n_samples: u32) -> vec3<f32>
         let n_dot_l = max(dot(n, l), 0.0);
         if (n_dot_l > 0.0) {
             let pdf = max(n_dot_l / ggx::PI, 1e-7);
-            let src_lod = clamp(
-                ggx::solid_angle_lod(pdf, n_samples, p.src_face_size),
-                0.0,
-                p.src_max_lod,
-            );
+            let src_lod = ggx::solid_angle_lod(pdf, n_samples, p.src_face_size);
             color = color + sample_source(l, src_lod);
             weight = weight + 1.0;
         }
@@ -70,11 +66,7 @@ fn convolve_ggx(n: vec3<f32>, r: f32, jitter: vec2<f32>, n_samples: u32) -> vec3
         if (n_dot_l > 0.0) {
             let n_dot_h = max(dot(n, h), 0.0);
             let pdf = ggx::ggx_sample_pdf(n_dot_h, r);
-            let src_lod = clamp(
-                ggx::solid_angle_lod(pdf, n_samples, p.src_face_size),
-                0.0,
-                p.src_max_lod,
-            );
+            let src_lod = ggx::solid_angle_lod(pdf, n_samples, p.src_face_size);
             color = color + sample_source(l, src_lod) * n_dot_l;
             weight = weight + n_dot_l;
         }

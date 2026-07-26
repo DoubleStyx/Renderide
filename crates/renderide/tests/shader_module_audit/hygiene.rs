@@ -334,6 +334,32 @@ fn blur_poisson_path_avoids_dynamic_sample_array_indexing() -> io::Result<()> {
 }
 
 #[test]
+fn blur_circular_path_reuses_one_trig_pair() -> io::Result<()> {
+    let blur = material_source("blur.wgsl")?;
+    assert!(
+        blur.contains("let tap_count = u32(ceil(clamped_iterations));")
+            && blur
+                .contains("let rotation = vec2<f32>(cos(angle_step), sin(angle_step));"),
+        "blur.wgsl must rotate a shared angular step instead of evaluating trig per tap"
+    );
+    assert_eq!(
+        blur.matches("cos(").count(),
+        1,
+        "blur.wgsl circular blur must evaluate cosine once per fragment"
+    );
+    assert_eq!(
+        blur.matches("sin(").count(),
+        1,
+        "blur.wgsl circular blur must evaluate sine once per fragment"
+    );
+    assert!(
+        !blur.contains("let angle = (f32(i) / clamped_iterations)"),
+        "blur.wgsl must not rebuild the tap angle inside the sample loop"
+    );
+    Ok(())
+}
+
+#[test]
 fn grab_filter_roots_use_shared_filter_common_helpers() -> io::Result<()> {
     for material in [
         "blur.wgsl",

@@ -111,32 +111,34 @@ fn sample_overlay_tex(
     tex: texture_2d<f32>,
     samp: sampler,
     uv: vec2<f32>,
+    polar_uv: vec2<f32>,
     st: vec4<f32>,
     lod_bias: f32,
 ) -> vec4<f32> {
     if (kw_POLARUV()) {
-        let mapped = uvu::polar_mapping(uv, st, mat._PolarPow);
+        let mapped = uvu::transform_polar_mapping(polar_uv, st);
         return textureSampleGrad(tex, samp, mapped.uv, mapped.ddx_uv, mapped.ddy_uv);
     }
     return ts::sample_tex_2d(tex, samp, uvu::apply_st(uv, st), lod_bias);
 }
 
 fn overlay_normal(in: mv::WorldVertexOutput) -> vec3<f32> {
-    var n = normalize(in.world_n);
-    let t = normalize(in.world_t);
-    if (kw_NORMALMAP()) {
-        let uv_n = uvu::apply_st(
-            in.primary_uv,
-            mat._NormalMap_ST,
-        );
-        let tbn = pnorm::orthonormal_tbn(n, t);
-        let ts_n = nd::decode_ts_normal_with_placeholder_sample(
-            ts::sample_tex_2d(_NormalMap, _NormalMap_sampler, uv_n, mat._NormalMap_LodBias),
-            1.0,
-        );
-        n = normalize(tbn * ts_n);
+    if (!kw_NORMALMAP()) {
+        return normalize(in.world_n);
     }
-    return n;
+
+    let n = normalize(in.world_n);
+    let t = normalize(in.world_t);
+    let uv_n = uvu::apply_st(
+        in.primary_uv,
+        mat._NormalMap_ST,
+    );
+    let tbn = pnorm::orthonormal_tbn(n, t);
+    let ts_n = nd::decode_ts_normal_with_placeholder_sample(
+        ts::sample_tex_2d(_NormalMap, _NormalMap_sampler, uv_n, mat._NormalMap_LodBias),
+        1.0,
+    );
+    return normalize(tbn * ts_n);
 }
 
 fn fresnel_value(in: mv::WorldVertexOutput, apply_gamma: bool) -> f32 {
@@ -159,11 +161,12 @@ fn layer_color(
     tex: texture_2d<f32>,
     samp: sampler,
     uv: vec2<f32>,
+    polar_uv: vec2<f32>,
     st: vec4<f32>,
     lod_bias: f32,
 ) -> vec4<f32> {
     if (kw_TEXTURE()) {
-        return tint * sample_overlay_tex(tex, samp, uv, st, lod_bias);
+        return tint * sample_overlay_tex(tex, samp, uv, polar_uv, st, lod_bias);
     }
     return tint;
 }
@@ -172,11 +175,16 @@ fn layer_color(
 @fragment
 fn fs_main_behind(in: mv::WorldVertexOutput) -> @location(0) vec4<f32> {
     let fresnel = fresnel_value(in, false);
+    var polar_uv = vec2<f32>(0.0);
+    if (kw_TEXTURE() && kw_POLARUV()) {
+        polar_uv = uvu::polar_uv(in.primary_uv, mat._PolarPow);
+    }
     let far_color = layer_color(
         mat._BehindFarColor,
         _BehindFarTex,
         _BehindFarTex_sampler,
         in.primary_uv,
+        polar_uv,
         mat._BehindFarTex_ST,
         mat._BehindFarTex_LodBias,
     );
@@ -185,6 +193,7 @@ fn fs_main_behind(in: mv::WorldVertexOutput) -> @location(0) vec4<f32> {
         _BehindNearTex,
         _BehindNearTex_sampler,
         in.primary_uv,
+        polar_uv,
         mat._BehindNearTex_ST,
         mat._BehindNearTex_LodBias,
     );
@@ -196,11 +205,16 @@ fn fs_main_behind(in: mv::WorldVertexOutput) -> @location(0) vec4<f32> {
 @fragment
 fn fs_main_front(in: mv::WorldVertexOutput) -> @location(0) vec4<f32> {
     let fresnel = fresnel_value(in, true);
+    var polar_uv = vec2<f32>(0.0);
+    if (kw_TEXTURE() && kw_POLARUV()) {
+        polar_uv = uvu::polar_uv(in.primary_uv, mat._PolarPow);
+    }
     let far_color = layer_color(
         mat._FrontFarColor,
         _FrontFarTex,
         _FrontFarTex_sampler,
         in.primary_uv,
+        polar_uv,
         mat._FrontFarTex_ST,
         mat._FrontFarTex_LodBias,
     );
@@ -209,6 +223,7 @@ fn fs_main_front(in: mv::WorldVertexOutput) -> @location(0) vec4<f32> {
         _FrontNearTex,
         _FrontNearTex_sampler,
         in.primary_uv,
+        polar_uv,
         mat._FrontNearTex_ST,
         mat._FrontNearTex_LodBias,
     );

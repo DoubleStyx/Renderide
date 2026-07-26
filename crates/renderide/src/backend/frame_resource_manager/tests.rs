@@ -32,7 +32,8 @@ fn pre_record_layout(
     height: u32,
     stereo: bool,
     needs_depth_snapshot: bool,
-    needs_color_snapshot: bool,
+    needs_per_object_color_snapshot: bool,
+    needs_named_color_snapshot: bool,
 ) -> PreRecordViewResourceLayout {
     PreRecordViewResourceLayout {
         view_id: ViewId::Main,
@@ -43,7 +44,8 @@ fn pre_record_layout(
         depth_format: wgpu::TextureFormat::Depth32Float,
         color_format: wgpu::TextureFormat::Rgba16Float,
         needs_depth_snapshot,
-        needs_color_snapshot,
+        needs_per_object_color_snapshot,
+        needs_named_color_snapshot,
     }
 }
 
@@ -97,10 +99,10 @@ fn mesh_deform_submission_replaces_visible_filter_and_clears_dispatch_flag() {
 /// Shared pre-record work deduplicates only the cluster allocation shape, not snapshot needs.
 #[test]
 fn cluster_pre_record_layouts_ignore_snapshot_fields() {
-    let dashboard = pre_record_layout(512, 256, false, false, true);
-    let mut dashboard_depth = pre_record_layout(512, 256, false, true, false);
+    let dashboard = pre_record_layout(512, 256, false, false, true, false);
+    let mut dashboard_depth = pre_record_layout(512, 256, false, true, false, false);
     dashboard_depth.view_id = ViewId::secondary_camera(RenderSpaceId(7), 0);
-    let main = pre_record_layout(1920, 1080, false, false, false);
+    let main = pre_record_layout(1920, 1080, false, false, false, false);
     let light_count = 3;
     let dashboard_depth_light_count = 7;
 
@@ -138,19 +140,29 @@ fn cluster_pre_record_layouts_ignore_snapshot_fields() {
 
 /// Snapshot sync requests stay per-view, so an unrelated view cannot become the grab winner.
 #[test]
-fn per_view_snapshot_sync_params_preserve_grab_need_per_view() {
-    let dashboard = pre_record_layout(512, 256, false, false, true);
-    let main = pre_record_layout(1920, 1080, false, false, false);
+fn per_view_snapshot_sync_params_preserve_each_grab_family() {
+    let per_object =
+        per_view_snapshot_sync_params(pre_record_layout(512, 256, false, false, true, false));
+    let named =
+        per_view_snapshot_sync_params(pre_record_layout(640, 360, false, false, false, true));
+    let both =
+        per_view_snapshot_sync_params(pre_record_layout(1920, 1080, true, false, true, true));
 
-    let dashboard_sync = per_view_snapshot_sync_params(dashboard);
-    let main_sync = per_view_snapshot_sync_params(main);
+    assert_eq!(per_object.viewport, (512, 256));
+    assert!(per_object.needs_per_object_color_snapshot);
+    assert!(!per_object.needs_named_color_snapshot);
+    assert!(!per_object.needs_depth_snapshot);
 
-    assert_eq!(dashboard_sync.viewport, (512, 256));
-    assert!(dashboard_sync.needs_color_snapshot);
-    assert!(!dashboard_sync.needs_depth_snapshot);
-    assert_eq!(main_sync.viewport, (1920, 1080));
-    assert!(!main_sync.needs_color_snapshot);
-    assert!(!main_sync.needs_depth_snapshot);
+    assert_eq!(named.viewport, (640, 360));
+    assert!(!named.needs_per_object_color_snapshot);
+    assert!(named.needs_named_color_snapshot);
+    assert!(!named.needs_depth_snapshot);
+
+    assert_eq!(both.viewport, (1920, 1080));
+    assert!(both.multiview);
+    assert!(both.needs_per_object_color_snapshot);
+    assert!(both.needs_named_color_snapshot);
+    assert!(!both.needs_depth_snapshot);
 }
 
 #[test]

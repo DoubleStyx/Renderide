@@ -7,7 +7,8 @@ use crate::world_mesh::DrawGroup;
 
 use super::super::color_resolve::{
     WorldMeshForwardColorResolveEncodeContext, WorldMeshForwardColorResolveGraphResources,
-    encode_world_mesh_forward_msaa_color_resolve,
+    WorldMeshForwardColorResolveToViewEncodeContext, encode_world_mesh_forward_msaa_color_resolve,
+    encode_world_mesh_forward_msaa_color_resolve_to_view,
 };
 use super::super::color_snapshot::encode_world_mesh_forward_color_snapshot;
 use super::super::{PreparedWorldMeshForwardFrame, WorldMeshForwardGraphResources};
@@ -60,16 +61,55 @@ fn encode_color_resolve(
     Ok(resolved)
 }
 
-/// Resolves the multisampled scene color before a grab snapshot copies the single-sample target.
-pub(super) fn resolve_for_grab_snapshot(
+/// Resolves multisampled scene color directly into the snapshot sampled by a grab group.
+fn resolve_grab_snapshot_direct(
     ctx: &mut EncoderPassCtx<'_, '_, '_>,
     resources: WorldMeshForwardGraphResources,
+    snapshot_mode: SceneColorSnapshotMode,
 ) -> Result<bool, RenderPassError> {
-    encode_color_resolve(
-        ctx,
-        resources,
-        "WorldMeshForwardTransparentSequencePreGrabResolve",
-    )
+    let Some(msaa) = resources.msaa else {
+        return Ok(false);
+    };
+    let named = snapshot_mode == SceneColorSnapshotMode::NamedBackgroundGrab;
+    let destination = ctx
+        .frame
+        .systems
+        .frame_resources
+        .scene_color_snapshot_render_target_for_view(
+            ctx.frame.view.view_id,
+            ctx.frame.view.viewport_px,
+            ctx.frame.view.scene_color_format,
+            ctx.frame.view.multiview_stereo,
+            named,
+        );
+    let Some(destination_view) = destination else {
+        logger::warn!(
+            "world mesh color snapshot resolve: target is unavailable for view {:?}",
+            ctx.frame.view.view_id
+        );
+        return Ok(false);
+    };
+    let label = if named {
+        "WorldMeshForwardTransparentSequenceNamedGrabResolve"
+    } else {
+        "WorldMeshForwardTransparentSequencePerObjectGrabResolve"
+    };
+    let resolved = encode_world_mesh_forward_msaa_color_resolve_to_view(
+        WorldMeshForwardColorResolveToViewEncodeContext {
+            device: ctx.device,
+            graph_resources: ctx.graph_resources,
+            encoder: ctx.encoder,
+            frame: &ctx.frame,
+            uploads: ctx.uploads,
+            source: msaa.scene_color_hdr,
+            destination_view,
+            destination_format: ctx.frame.view.scene_color_format,
+            profiler: ctx.profiler,
+            label,
+        },
+    )?;
+    record_color_resolve_stats(ctx, resolved);
+    Ok(resolved)
 }
 
 /// Copies the default per-object scene-color snapshot for a grab-pass group.
@@ -102,7 +142,7 @@ fn copy_named_grab_snapshot(
     resources: WorldMeshForwardGraphResources,
 ) -> bool {
     profiling::scope!("world_mesh_forward::encode_named_color_snapshot");
-    if !prepared.helper_needs.color_snapshot {
+    if !prepared.helper_needs.named_color_snapshot {
         logger::warn!(
             "world mesh named color snapshot copy: helper needs did not request a color snapshot"
         );
@@ -163,34 +203,47 @@ pub(super) fn scene_color_snapshot_mode_for_group(
         .unwrap_or(SceneColorSnapshotMode::PerObjectGrab)
 }
 
-/// Copies the scene-color snapshot required before drawing a grab-pass group.
-pub(super) fn copy_snapshot_for_mode(
+fn copy_snapshot_for_mode(
     ctx: &mut EncoderPassCtx<'_, '_, '_>,
     prepared: &PreparedWorldMeshForwardFrame,
     resources: WorldMeshForwardGraphResources,
     snapshot_mode: SceneColorSnapshotMode,
-    grab_idx: usize,
-    named_background_snapshot_ready: &mut bool,
 ) -> bool {
-    let copied = match snapshot_mode {
+    match snapshot_mode {
         SceneColorSnapshotMode::NamedBackgroundGrab => {
             copy_named_grab_snapshot(ctx, prepared, resources)
         }
         SceneColorSnapshotMode::PerObjectGrab | SceneColorSnapshotMode::None => {
             copy_grab_snapshot(ctx, prepared, resources)
         }
+    }
+}
+
+/// Refreshes the scene-color snapshot required before drawing a grab-pass group.
+pub(super) fn refresh_snapshot_for_mode(
+    ctx: &mut EncoderPassCtx<'_, '_, '_>,
+    prepared: &PreparedWorldMeshForwardFrame,
+    resources: WorldMeshForwardGraphResources,
+    snapshot_mode: SceneColorSnapshotMode,
+    grab_idx: usize,
+    named_background_snapshot_ready: &mut bool,
+) -> Result<bool, RenderPassError> {
+    let refreshed = if ctx.frame.view.sample_count > 1 {
+        resolve_grab_snapshot_direct(ctx, resources, snapshot_mode)?
+    } else {
+        copy_snapshot_for_mode(ctx, prepared, resources, snapshot_mode)
     };
-    if !copied {
+    if !refreshed {
         logger::warn!(
-            "WorldMeshForwardTransparentSequence: skipping grab-pass filter group {} because scene-color snapshot copy failed",
+            "WorldMeshForwardTransparentSequence: skipping grab-pass filter group {} because scene-color snapshot refresh failed",
             grab_idx
         );
-        return false;
+        return Ok(false);
     }
     if snapshot_mode == SceneColorSnapshotMode::NamedBackgroundGrab {
         *named_background_snapshot_ready = true;
     }
-    true
+    Ok(true)
 }
 
 /// Resolves the multisampled forward color into the single-sample scene color consumed downstream.

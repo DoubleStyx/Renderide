@@ -9,7 +9,9 @@ use crate::config::PresentationModeSetting;
 use crate::frontend::input::{apply_device_event, apply_window_event};
 
 use super::super::exit::ExitReason;
-use super::super::redraw_plan::{RedrawDecision, RedrawInputs, plan_redraw};
+use super::super::redraw_plan::{
+    RedrawDecision, RedrawInputs, can_run_idle_asset_work, plan_redraw,
+};
 use super::shortcuts::{fullscreen_toggle_shortcut, imgui_visibility_shortcut};
 use super::{AppDriver, RenderTarget};
 
@@ -159,10 +161,6 @@ impl ApplicationHandler for AppDriver {
             return;
         }
 
-        let wants_more_idle_asset_work = self
-            .runtime
-            .run_asset_integration_while_waiting_for_submit(std::time::Instant::now());
-
         let presentation_mode = self
             .runtime
             .settings()
@@ -170,17 +168,36 @@ impl ApplicationHandler for AppDriver {
             .map(|settings| settings.rendering.presentation_mode)
             .unwrap_or(PresentationModeSetting::Immediate);
         let frame_pacing_caps = self.runtime.desktop_frame_pacing_caps();
-        let plan = plan_redraw(RedrawInputs {
-            has_window: self.target.is_some(),
-            exit_requested: self.exit_is_requested(),
-            hmd_compositor_paced: self.hmd_compositor_paced_last_frame,
-            presentation_mode,
-            window_has_keyboard_focus: self.input.window_focused,
-            foreground_fps_cap: frame_pacing_caps.foreground_fps_cap,
-            background_fps_cap: frame_pacing_caps.background_fps_cap,
-            last_frame_start: self.frame_clock.last_frame_start(),
-            now: std::time::Instant::now(),
-        });
+        let has_window = self.target.is_some();
+        let exit_requested = self.exit_is_requested();
+        let hmd_compositor_paced = self.hmd_compositor_paced_last_frame;
+        let window_has_keyboard_focus = self.input.window_focused;
+        let foreground_fps_cap = frame_pacing_caps.foreground_fps_cap;
+        let background_fps_cap = frame_pacing_caps.background_fps_cap;
+        let last_frame_start = self.frame_clock.last_frame_start();
+        let plan_at = |now| {
+            plan_redraw(RedrawInputs {
+                has_window,
+                exit_requested,
+                hmd_compositor_paced,
+                presentation_mode,
+                window_has_keyboard_focus,
+                foreground_fps_cap,
+                background_fps_cap,
+                last_frame_start,
+                now,
+            })
+        };
+
+        let mut plan = plan_at(std::time::Instant::now());
+        if can_run_idle_asset_work(plan.decision) {
+            let _ = self
+                .runtime
+                .run_asset_integration_while_waiting_for_submit(std::time::Instant::now());
+            plan = plan_at(std::time::Instant::now());
+        } else if matches!(plan.decision, RedrawDecision::RedrawNow) {
+            profiling::scope!("app::idle_asset_work_deferred_for_redraw");
+        }
 
         crate::profiling::plot_fps_cap_active(plan.fps_cap);
         crate::profiling::plot_event_loop_wait_ms(plan.wait_ms);
@@ -192,11 +209,6 @@ impl ApplicationHandler for AppDriver {
                 return;
             }
             RedrawDecision::RedrawNow => {
-                if wants_more_idle_asset_work {
-                    event_loop.set_control_flow(ControlFlow::Poll);
-                    self.flush_logs_if_due();
-                    return;
-                }
                 if let Some(target) = self.target.as_ref() {
                     target.window().request_redraw();
                 }

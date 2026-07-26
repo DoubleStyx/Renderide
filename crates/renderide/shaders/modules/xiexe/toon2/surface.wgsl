@@ -133,8 +133,8 @@ fn sample_surface_for_layout(
 
     var metallic = clamp(xb::mat._Metallic, 0.0, 1.0);
     var smoothness = clamp(xb::mat._Glossiness, 0.0, 1.0);
-    let mg = ts::sample_tex_2d(xb::_MetallicGlossMap, xb::_MetallicGlossMap_sampler, uv_metallic, xb::mat._MetallicGlossMap_LodBias);
     if (xvb::metallic_map_enabled_for_layout(keyword_layout)) {
+        let mg = ts::sample_tex_2d(xb::_MetallicGlossMap, xb::_MetallicGlossMap_sampler, uv_metallic, xb::mat._MetallicGlossMap_LodBias);
         metallic = clamp(xb::mat._Metallic * mg.r, 0.0, 1.0);
         smoothness = clamp(xb::mat._Glossiness * mg.a, 0.0, 1.0);
     }

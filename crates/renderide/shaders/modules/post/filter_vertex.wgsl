@@ -57,6 +57,28 @@ fn vertex_main(
     return out;
 }
 
+/// Lightweight vertex transform for filters that do not consume surface orientation.
+fn minimal_vertex_main(
+    instance_index: u32,
+    view_idx: u32,
+    pos: vec4<f32>,
+    primary_uv: vec2<f32>,
+) -> VertexOutput {
+    let d = pd::get_draw(instance_index);
+    let world_p = mv::world_position(d, pos);
+    let vp = mv::select_view_proj(d, view_idx);
+
+    var out: VertexOutput;
+    out.clip_pos = vp * world_p;
+    out.primary_uv = primary_uv;
+    out.world_pos = world_p.xyz;
+    out.world_n = vec3<f32>(0.0);
+    out.world_t = vec4<f32>(0.0);
+    out.view_layer = view_idx;
+    out.view_n = vec3<f32>(0.0);
+    return out;
+}
+
 fn rect_vertex_main(
     instance_index: u32,
     view_idx: u32,
@@ -66,6 +88,25 @@ fn rect_vertex_main(
     primary_uv: vec2<f32>,
 ) -> RectVertexOutput {
     let inner = vertex_main(instance_index, view_idx, pos, n, t, primary_uv);
+    var out: RectVertexOutput;
+    out.clip_pos = inner.clip_pos;
+    out.primary_uv = inner.primary_uv;
+    out.world_pos = inner.world_pos;
+    out.world_n = inner.world_n;
+    out.view_layer = inner.view_layer;
+    out.view_n = inner.view_n;
+    out.obj_xy = pos.xy;
+    return out;
+}
+
+/// Lightweight rectangular-filter vertex transform.
+fn minimal_rect_vertex_main(
+    instance_index: u32,
+    view_idx: u32,
+    pos: vec4<f32>,
+    primary_uv: vec2<f32>,
+) -> RectVertexOutput {
+    let inner = minimal_vertex_main(instance_index, view_idx, pos, primary_uv);
     var out: RectVertexOutput;
     out.clip_pos = inner.clip_pos;
     out.primary_uv = inner.primary_uv;

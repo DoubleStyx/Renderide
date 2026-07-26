@@ -2,7 +2,9 @@
 
 use hashbrown::HashMap;
 
-use crate::assets::mesh::{GpuMesh, MeshBufferLayout, MeshDerivedStreamDemand};
+use crate::assets::mesh::{
+    GpuMesh, MeshBufferLayout, MeshDerivedStreamDemand, MeshDerivedStreamMask,
+};
 use crate::render_contract::EmbeddedTangentFallbackMode;
 
 use crate::gpu_pools::resource_pool::{GpuResourcePool, StreamingAccess};
@@ -302,6 +304,38 @@ impl MeshPool {
         self.ensure_stream(asset_id, |mesh| {
             mesh.ensure_wide_high_uv_vertex_stream(device)
         })
+    }
+
+    /// Releases dedicated copies of arena-resident streams and returns their byte count.
+    pub(crate) fn release_shared_static_geometry_sources(
+        &mut self,
+        asset_id: i32,
+        resident_streams: MeshDerivedStreamMask,
+    ) -> u64 {
+        let (released, before, after) = {
+            let Some(mesh) = self.inner.get_mut(asset_id) else {
+                return 0;
+            };
+            let before = mesh.resident_bytes();
+            let released = mesh.release_shared_static_geometry_sources(resident_streams);
+            let after = mesh.resident_bytes();
+            (released, before, after)
+        };
+        if released != 0 {
+            self.inner.account_resident_delta(before, after);
+            self.inner.note_access(asset_id);
+        }
+        released
+    }
+
+    /// Bytes in per-mesh buffers that duplicate committed shared-static arena contents.
+    #[cfg(feature = "tracy")]
+    pub(crate) fn shared_static_duplicate_source_bytes(&self) -> u64 {
+        self.inner
+            .resources()
+            .values()
+            .map(GpuMesh::shared_static_duplicate_source_bytes)
+            .sum()
     }
 
     /// Runs `op` against the resident mesh for `asset_id` (if any), then

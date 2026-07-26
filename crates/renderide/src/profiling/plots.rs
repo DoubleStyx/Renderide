@@ -16,6 +16,7 @@ mod rayon_admission;
 mod render_world;
 mod shadow_atlas;
 mod tracy_plot;
+mod world_mesh_indirect;
 mod world_mesh_prepare;
 
 pub use asset_integration::{AssetIntegrationProfileSample, plot_asset_integration};
@@ -37,5 +38,17 @@ pub(crate) use mesh_upload::{
 };
 pub use rayon_admission::{RayonAdmissionProfileSample, plot_rayon_admission};
 pub use render_world::{RenderWorldMaintenanceProfileSample, plot_render_world_maintenance};
-pub use shadow_atlas::{plot_frame_global_split, plot_shadow_atlas};
+pub use shadow_atlas::{
+    ShadowCacheProfileSample, plot_frame_global_split, plot_shadow_atlas, plot_shadow_cache,
+};
+pub use world_mesh_indirect::{
+    WorldMeshDrawPlanCacheProfileSample, WorldMeshGeometryArenaProfileSample,
+    WorldMeshGpuCullCacheProfileSample, WorldMeshStaticSourceReleaseProfileSample,
+    plot_world_mesh_draw_plan_cache, plot_world_mesh_geometry_arena,
+    plot_world_mesh_gpu_cull_cache, plot_world_mesh_static_source_release,
+};
+#[cfg(feature = "tracy")]
+pub use world_mesh_indirect::{
+    WorldMeshForwardIndirectProfileSample, plot_world_mesh_forward_indirect,
+};
 pub use world_mesh_prepare::plot_world_mesh_prepare;

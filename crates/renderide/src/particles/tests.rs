@@ -913,6 +913,7 @@ fn generated_mesh_upload_data_validates_counts() {
     let populated = generated_mesh_upload_data(-11, 8, 12, bounds).unwrap();
     assert_eq!(populated.submeshes.len(), 1);
     assert_eq!(populated.submeshes[0].index_count, 12);
+    assert!(populated.upload_hint.flags.dynamic());
 
     assert!(matches!(
         generated_mesh_upload_data(-11, i32::MAX as usize + 1, 0, bounds),

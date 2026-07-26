@@ -25,7 +25,7 @@ use super::resources::{
     create_full_cube_sample_view, create_ibl_cube,
 };
 
-/// Maximum concurrent in-flight bakes; matches the analytic-only ceiling we used previously.
+/// Maximum concurrent IBL bakes.
 const MAX_IN_FLIGHT_IBL_BAKES: usize = 2;
 /// Unity spends eight frames filtering after runtime reflection-probe face capture.
 const UNITY_RUNTIME_FILTER_SLICES: u32 = 8;
@@ -61,7 +61,7 @@ struct BakeTextures {
     filtered_cube: super::resources::IblCubeTexture,
     /// Scratch target for filtered mip generation before stitching.
     filtered_scratch_cube: super::resources::IblCubeTexture,
-    /// Full-mip cube view of [`Self::source_cube`]. -xlinka
+    /// Full-mip cube view of [`Self::source_cube`].
     source_sample_view: Arc<wgpu::TextureView>,
 }
 
@@ -278,10 +278,12 @@ pub(crate) struct SkyboxIblCache {
     pending: HashMap<SkyboxIblKey, PendingBake>,
     /// Runtime IBL bakes whose filtering is spread across several maintenance ticks.
     active_sliced: HashMap<SkyboxIblKey, ActiveIblBake>,
-    /// Round-robin queue for active sliced IBL bake keys. -xlinka
+    /// Round-robin queue for active sliced IBL bake keys.
     sliced_queue: VecDeque<SkyboxIblKey>,
     /// Completed prefiltered cubes for the active skybox key.
     completed: HashMap<SkyboxIblKey, PrefilteredCube>,
+    /// Completed cubes retained by an external cache, keyed to their mip count.
+    externally_resident: HashMap<SkyboxIblKey, u32>,
     /// Lazily-built compute pipelines and cached input sampler.
     pipelines: PipelineStore,
 }
@@ -301,11 +303,12 @@ impl SkyboxIblCache {
             active_sliced: HashMap::new(),
             sliced_queue: VecDeque::new(),
             completed: HashMap::new(),
+            externally_resident: HashMap::new(),
             pipelines: PipelineStore::default(),
         }
     }
 
-    /// Drains submit-completed bakes and advances one sliced runtime bake step. -xlinka
+    /// Drains submit-completed bakes and advances one sliced runtime bake step.
     pub(crate) fn maintain_gpu_jobs(&mut self, gpu: &mut GpuContext, advance_sliced_bakes: bool) {
         self.drain_completed_jobs();
         if advance_sliced_bakes {
@@ -313,12 +316,14 @@ impl SkyboxIblCache {
         }
     }
 
-    /// Removes cancelable sliced work and completed cubes not retained by the caller. -xlinka
+    /// Removes cancelable sliced work and completed cubes not retained by the caller.
     pub(crate) fn prune_except(&mut self, retain: &hashbrown::HashSet<SkyboxIblKey>) {
         self.active_sliced.retain(|key, _| retain.contains(key));
         self.sliced_queue
             .retain(|key| self.active_sliced.contains_key(key));
         self.completed.retain(|key, _| retain.contains(key));
+        self.externally_resident
+            .retain(|key, _| retain.contains(key));
     }
 
     /// Removes pending and completed IBL bakes whose keys match `predicate`.
@@ -329,15 +334,18 @@ impl SkyboxIblCache {
         let pending_before = self.pending.len();
         let active_before = self.active_sliced.len();
         let completed_before = self.completed.len();
+        let externally_resident_before = self.externally_resident.len();
         self.pending.retain(|key, _| !predicate(key));
         self.active_sliced.retain(|key, _| !predicate(key));
         self.sliced_queue
             .retain(|key| self.active_sliced.contains_key(key));
         self.completed.retain(|key, _| !predicate(key));
+        self.externally_resident.retain(|key, _| !predicate(key));
         self.jobs.retain(|key| !predicate(key));
         pending_before.saturating_sub(self.pending.len())
             + active_before.saturating_sub(self.active_sliced.len())
             + completed_before.saturating_sub(self.completed.len())
+            + externally_resident_before.saturating_sub(self.externally_resident.len())
     }
 
     /// Ensures one arbitrary IBL source is scheduled with the requested policy.
@@ -348,7 +356,7 @@ impl SkyboxIblCache {
         source: SkyboxIblSource,
         policy: IblBakePolicy,
     ) -> bool {
-        if self.completed.contains_key(&key)
+        if self.completed_mip_levels(&key).is_some()
             || self.pending.contains_key(&key)
             || self.jobs.contains_key(&key)
             || self.active_sliced.contains_key(&key)
@@ -381,9 +389,19 @@ impl SkyboxIblCache {
         self.pending.len() + self.active_sliced.len()
     }
 
-    /// Returns the number of completed filtered cubes currently retained.
+    /// Returns the total completed cube count.
     pub(crate) fn completed_len(&self) -> usize {
+        self.completed.len() + self.externally_resident.len()
+    }
+
+    /// Returns the locally owned completed cube count.
+    pub(crate) fn owned_completed_len(&self) -> usize {
         self.completed.len()
+    }
+
+    /// Returns the externally resident completed cube count.
+    pub(crate) fn externally_resident_len(&self) -> usize {
+        self.externally_resident.len()
     }
 
     /// Returns the number of runtime bakes currently being filtered across multiple ticks.
@@ -396,11 +414,27 @@ impl SkyboxIblCache {
         self.completed.get(key)
     }
 
+    /// Returns the mip count for any completed cube.
+    pub(crate) fn completed_mip_levels(&self, key: &SkyboxIblKey) -> Option<u32> {
+        self.completed
+            .get(key)
+            .map(|cube| cube.mip_levels)
+            .or_else(|| self.externally_resident.get(key).copied())
+    }
+
+    /// Marks a cube externally resident and releases its local texture.
+    pub(crate) fn mark_external_resident(&mut self, key: SkyboxIblKey, mip_levels: u32) {
+        self.completed.remove(&key);
+        self.externally_resident.insert(key, mip_levels.max(1));
+    }
+
     /// Promotes submit-completed bakes into the completed cache.
     fn drain_completed_jobs(&mut self) {
         let outcomes = self.jobs.maintain();
         for key in outcomes.completed {
-            if let Some(pending) = self.pending.remove(&key) {
+            if let Some(pending) = self.pending.remove(&key)
+                && !self.externally_resident.contains_key(&key)
+            {
                 self.completed.insert(key, pending.cube);
             }
         }
@@ -433,7 +467,7 @@ impl SkyboxIblCache {
         Ok(())
     }
 
-    /// Advances one active sliced runtime IBL bake with round-robin fairness. -xlinka
+    /// Advances one active sliced runtime IBL bake with round-robin fairness.
     fn advance_sliced_bakes(&mut self, gpu: &mut GpuContext) {
         if self.active_sliced.is_empty() {
             return;
@@ -813,6 +847,37 @@ mod tests {
             Some(second)
         );
         assert_eq!(queue, VecDeque::from([first]));
+    }
+
+    #[test]
+    fn external_residency_keeps_completion_metadata_without_a_cube() {
+        let mut cache = SkyboxIblCache::new();
+        let key = runtime_key(3);
+
+        cache.mark_external_resident(key.clone(), 9);
+
+        assert_eq!(cache.completed_mip_levels(&key), Some(9));
+        assert!(cache.completed_cube(&key).is_none());
+        assert_eq!(cache.completed_len(), 1);
+    }
+
+    #[test]
+    fn external_residency_participates_in_prune_and_purge() {
+        let mut cache = SkyboxIblCache::new();
+        let retained = runtime_key(4);
+        let pruned = runtime_key(5);
+        cache.mark_external_resident(retained.clone(), 9);
+        cache.mark_external_resident(pruned.clone(), 8);
+
+        cache.prune_except(&HashSet::from([retained.clone()]));
+
+        assert_eq!(cache.completed_mip_levels(&retained), Some(9));
+        assert_eq!(cache.completed_mip_levels(&pruned), None);
+        assert_eq!(cache.completed_len(), 1);
+
+        assert_eq!(cache.purge_where(|key| key == &retained), 1);
+        assert_eq!(cache.completed_mip_levels(&retained), None);
+        assert_eq!(cache.completed_len(), 0);
     }
 
     fn runtime_key(renderable_index: i32) -> SkyboxIblKey {

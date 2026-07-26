@@ -581,7 +581,12 @@ impl CompiledRenderGraph {
         let prepared = frame_params
             .shared
             .frame_resources
-            .prepare_frame_global_split_pass(candidate.resource_pass, gpu_limits, split_uploads);
+            .prepare_frame_global_split_pass(
+                candidate.resource_pass,
+                device,
+                gpu_limits,
+                split_uploads,
+            );
         Ok(FrameGlobalSplitStage {
             candidate,
             resolved: resolved_owned,
@@ -740,6 +745,7 @@ impl CompiledRenderGraph {
             .frame_resources
             .prepare_frame_global_split_pass(
                 candidate.resource_pass,
+                state.device,
                 state.gpu_limits,
                 split_uploads,
             );

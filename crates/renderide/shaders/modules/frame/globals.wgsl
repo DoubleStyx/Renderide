@@ -187,20 +187,22 @@ fn view_dir_for_world_pos(world_pos: vec3<f32>, view_layer: u32) -> vec3<f32> {
     return safe_normalize_or(camera_world_pos_for_view(view_layer) - world_pos, fallback);
 }
 
-/// Adds infinitesimal terms tied to lights/cluster storage so every frame binding stays referenced
-/// when a material would otherwise not touch storage (naga-oil drops unused globals).
+/// Keeps the fixed frame bindings visible to reflection without reading them for valid viewports.
 fn retain_globals_additive(color: vec4<f32>) -> vec4<f32> {
-    var lit: u32 = 0u;
-    if (frame.light_count > 0u) {
-        lit = lights[0].light_type;
+    if (frame.viewport_width == 0u) {
+        var lit: u32 = 0u;
+        if (frame.light_count > 0u) {
+            lit = lights[0].light_type;
+        }
+        let cluster_touch =
+            f32(cluster_light_ranges[0u].y & 255u) * 1e-10 +
+            f32(cluster_light_indices[0u] & 255u) * 1e-10;
+        let probe_touch = reflection_probes[0u].params.x * 1e-10;
+        let cookie_touch =
+            textureSampleLevel(light_cookie_2d_atlas, light_cookie_sampler, vec2<f32>(0.5), 0.0).r * 1e-10 +
+            textureSampleLevel(light_cookie_point_atlas, light_cookie_sampler, vec2<f32>(0.5), 0.0).r * 1e-10 +
+            light_cookie_rects[0u].origin_scale.x * 1e-10;
+        return color + vec4<f32>(vec3<f32>(f32(lit) * 1e-10 + cluster_touch + probe_touch + cookie_touch), 0.0);
     }
-    let cluster_touch =
-        f32(cluster_light_ranges[0u].y & 255u) * 1e-10 +
-        f32(cluster_light_indices[0u] & 255u) * 1e-10;
-    let probe_touch = reflection_probes[0u].params.x * 1e-10;
-    let cookie_touch =
-        textureSampleLevel(light_cookie_2d_atlas, light_cookie_sampler, vec2<f32>(0.5), 0.0).r * 1e-10 +
-        textureSampleLevel(light_cookie_point_atlas, light_cookie_sampler, vec2<f32>(0.5), 0.0).r * 1e-10 +
-        light_cookie_rects[0u].origin_scale.x * 1e-10;
-    return color + vec4<f32>(vec3<f32>(f32(lit) * 1e-10 + cluster_touch + probe_touch + cookie_touch), 0.0);
+    return color;
 }

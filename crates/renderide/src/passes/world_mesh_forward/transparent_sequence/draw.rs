@@ -14,21 +14,30 @@ use super::super::raster_recording::{
     stencil_load_ops,
 };
 use super::super::{PreparedWorldMeshForwardFrame, WorldMeshForwardGraphResources};
-use super::order::transparent_sequence_phase_pair;
+use super::order::consecutive_named_grab_run_end;
+use super::snapshot::scene_color_snapshot_mode_for_group;
 
-/// Draws a slice of already sorted transparent sequence groups.
-pub(super) fn draw_tail_groups(
+/// Draws sorted transparent and grab ranges in one render pass.
+pub(super) fn draw_transparent_sequence_ranges(
     ctx: &mut EncoderPassCtx<'_, '_, '_>,
     prepared: &PreparedWorldMeshForwardFrame,
     resources: WorldMeshForwardGraphResources,
-    groups: &[DrawGroup],
-    frame_bind_group: &Arc<wgpu::BindGroup>,
+    transparent_groups: &[DrawGroup],
+    grab_groups: &[DrawGroup],
+    default_frame_bind_group: &Arc<wgpu::BindGroup>,
+    named_frame_bind_group: &Arc<wgpu::BindGroup>,
 ) -> Result<bool, RenderPassError> {
-    if groups.is_empty() {
+    if transparent_groups.is_empty() && grab_groups.is_empty() {
         return Ok(true);
     }
 
+    let device = ctx.device;
     let frame = &ctx.frame;
+    let geometry_arena_arc = frame.systems.frame_resources.shared_geometry_arena();
+    let geometry_arena_guard = geometry_arena_arc.as_ref().map(|arena| arena.read());
+    let geometry_arena = geometry_arena_guard
+        .as_ref()
+        .and_then(|guard| guard.as_ref());
     let sample_count = frame.view.sample_count.max(1);
     let Some(targets) = forward_draw_attachment_targets(resources, sample_count) else {
         return Err(RenderPassError::FrameParamsRequired {
@@ -85,14 +94,76 @@ pub(super) fn draw_tail_groups(
         });
         #[cfg(feature = "tracy")]
         rpass.push_debug_group("world_mesh_forward::transparent_sequence_draw");
-        let recorded = record_world_mesh_forward_groups_graph_raster_with_frame_bind_group(
-            &mut rpass,
-            frame,
-            prepared,
-            groups,
-            frame_bind_group,
-            frame.view.view_id,
-        );
+
+        let mut post_idx = 0usize;
+        let mut grab_idx = 0usize;
+        let mut recorded = true;
+        while post_idx < transparent_groups.len() || grab_idx < grab_groups.len() {
+            let next_is_post = transparent_groups.get(post_idx).is_some_and(|post| {
+                grab_groups
+                    .get(grab_idx)
+                    .is_none_or(|grab| post.representative_draw_idx <= grab.representative_draw_idx)
+            });
+            if next_is_post {
+                let post_start = post_idx;
+                let next_grab_draw_idx = grab_groups
+                    .get(grab_idx)
+                    .map(|grab| grab.representative_draw_idx)
+                    .unwrap_or(usize::MAX);
+                while transparent_groups
+                    .get(post_idx)
+                    .is_some_and(|post| post.representative_draw_idx <= next_grab_draw_idx)
+                {
+                    post_idx += 1;
+                }
+                recorded = record_world_mesh_forward_groups_graph_raster_with_frame_bind_group(
+                    &mut rpass,
+                    frame,
+                    prepared,
+                    &transparent_groups[post_start..post_idx],
+                    default_frame_bind_group,
+                    frame.view.view_id,
+                    device,
+                    ctx.uploads,
+                    geometry_arena,
+                    None,
+                    None,
+                );
+            } else {
+                let grab_end = consecutive_named_grab_run_end(
+                    transparent_groups,
+                    grab_groups,
+                    post_idx,
+                    grab_idx,
+                    |_, group| scene_color_snapshot_mode_for_group(prepared, group),
+                );
+                let frame_bind_group =
+                    match scene_color_snapshot_mode_for_group(prepared, &grab_groups[grab_idx]) {
+                        SceneColorSnapshotMode::NamedBackgroundGrab => named_frame_bind_group,
+                        SceneColorSnapshotMode::PerObjectGrab | SceneColorSnapshotMode::None => {
+                            default_frame_bind_group
+                        }
+                    };
+                recorded = record_world_mesh_forward_groups_graph_raster_with_frame_bind_group(
+                    &mut rpass,
+                    frame,
+                    prepared,
+                    &grab_groups[grab_idx..grab_end],
+                    frame_bind_group,
+                    frame.view.view_id,
+                    device,
+                    ctx.uploads,
+                    geometry_arena,
+                    None,
+                    None,
+                );
+                grab_idx = grab_end;
+            }
+            if !recorded {
+                break;
+            }
+        }
+
         #[cfg(feature = "tracy")]
         rpass.pop_debug_group();
         recorded
@@ -109,44 +180,6 @@ pub(super) fn draw_tail_groups(
     Ok(recorded)
 }
 
-/// Flushes the pending transparent post range when one exists.
-fn flush_post_groups(
-    ctx: &mut EncoderPassCtx<'_, '_, '_>,
-    prepared: &PreparedWorldMeshForwardFrame,
-    resources: WorldMeshForwardGraphResources,
-    start: Option<usize>,
-    end: usize,
-    frame_bind_group: &Arc<wgpu::BindGroup>,
-) -> Result<bool, RenderPassError> {
-    let Some(start) = start else {
-        return Ok(true);
-    };
-    let (transparent_phase, _) = transparent_sequence_phase_pair();
-    draw_tail_groups(
-        ctx,
-        prepared,
-        resources,
-        &prepared.plan.phase(transparent_phase)[start..end],
-        frame_bind_group,
-    )
-}
-
-/// Flushes an optional pending transparent-post run and reports whether it had any groups.
-pub(super) fn flush_optional_post_groups(
-    ctx: &mut EncoderPassCtx<'_, '_, '_>,
-    prepared: &PreparedWorldMeshForwardFrame,
-    resources: WorldMeshForwardGraphResources,
-    start: Option<usize>,
-    end: usize,
-    frame_bind_group: &Arc<wgpu::BindGroup>,
-) -> Result<Option<bool>, RenderPassError> {
-    let flushed = start.is_some();
-    if !flush_post_groups(ctx, prepared, resources, start, end, frame_bind_group)? {
-        return Ok(None);
-    }
-    Ok(Some(flushed))
-}
-
 /// Returns default and named-scene-color frame bind groups for the current view.
 pub(super) fn transparent_sequence_frame_bind_groups(
     ctx: &EncoderPassCtx<'_, '_, '_>,
@@ -158,29 +191,4 @@ pub(super) fn transparent_sequence_frame_bind_groups(
         .frame_resources
         .per_view_named_scene_color_frame_bind_group(ctx.frame.view.view_id)?;
     Some((default, named))
-}
-
-/// Draws one grab-pass group with the frame bind group selected by its snapshot mode.
-pub(super) fn draw_grab_group(
-    ctx: &mut EncoderPassCtx<'_, '_, '_>,
-    prepared: &PreparedWorldMeshForwardFrame,
-    resources: WorldMeshForwardGraphResources,
-    grab_group: &DrawGroup,
-    snapshot_mode: SceneColorSnapshotMode,
-    default_frame_bind_group: &Arc<wgpu::BindGroup>,
-    named_frame_bind_group: &Arc<wgpu::BindGroup>,
-) -> Result<bool, RenderPassError> {
-    let grab_frame_bind_group = match snapshot_mode {
-        SceneColorSnapshotMode::NamedBackgroundGrab => named_frame_bind_group,
-        SceneColorSnapshotMode::PerObjectGrab | SceneColorSnapshotMode::None => {
-            default_frame_bind_group
-        }
-    };
-    draw_tail_groups(
-        ctx,
-        prepared,
-        resources,
-        std::slice::from_ref(grab_group),
-        grab_frame_bind_group,
-    )
 }

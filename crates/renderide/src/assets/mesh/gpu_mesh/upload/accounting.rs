@@ -17,13 +17,13 @@ pub(in crate::assets::mesh::gpu_mesh) fn sum_optional_buffer_bytes(
 
 /// Sums VRAM for all optional mesh buffers plus fixed vertex/index sizes.
 pub(in crate::assets::mesh::gpu_mesh) fn resident_bytes_for_mesh_upload(
-    core_vb: &wgpu::Buffer,
+    core_vb: Option<&wgpu::Buffer>,
     core_ib: &wgpu::Buffer,
     derived: &DerivedStreams,
     bone_skin: &BoneSkinUpload,
     blend_sparse: Option<&Arc<wgpu::Buffer>>,
 ) -> u64 {
-    let mut n = core_vb.size() + core_ib.size();
+    let mut n = fixed_core_buffer_bytes(core_vb.map(wgpu::Buffer::size), core_ib.size());
     n += sum_optional_buffer_bytes(&[
         bone_skin.bone_counts_buffer.as_ref(),
         bone_skin.bone_indices_buffer.as_ref(),
@@ -47,4 +47,24 @@ pub(in crate::assets::mesh::gpu_mesh) fn resident_bytes_for_mesh_upload(
         n += b.size();
     }
     n
+}
+
+#[inline]
+const fn fixed_core_buffer_bytes(core_vb_bytes: Option<u64>, core_ib_bytes: u64) -> u64 {
+    let vertex_bytes = match core_vb_bytes {
+        Some(bytes) => bytes,
+        None => 0,
+    };
+    vertex_bytes.saturating_add(core_ib_bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixed_core_buffer_bytes;
+
+    #[test]
+    fn absent_interleaved_vertex_buffer_is_not_counted_as_resident_vram() {
+        assert_eq!(fixed_core_buffer_bytes(None, 4096), 4096);
+        assert_eq!(fixed_core_buffer_bytes(Some(8192), 4096), 12_288);
+    }
 }

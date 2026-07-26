@@ -51,11 +51,11 @@ fn mesh_normals_do_not_use_model_vector_helper_path() -> io::Result<()> {
         "fn world_normal_for_view(draw: dt::PerDrawUniforms, pos: vec4<f32>, n: vec4<f32>, t: vec4<f32>, view_idx: u32) -> vec3<f32>",
         "return mt::world_normal(draw, n);",
         "return source_material_render_buffer_normal_for_view(draw, pos, n, t, view_idx);",
-        "out.world_n = world_normal_for_view(draw, pos, n, t, view_idx);",
+        "out.world_n = particle_frame.world_normal;",
     ] {
         assert!(
             combined.contains(required),
-            "mesh/vertex.wgsl must route world vertex normals through the inverse-transpose helper `{required}`"
+            "mesh/vertex.wgsl must route world vertex normals through the shared inverse-transpose particle frame `{required}`"
         );
     }
 

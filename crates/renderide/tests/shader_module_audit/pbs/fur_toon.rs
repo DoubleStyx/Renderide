@@ -304,11 +304,9 @@ fn fur_and_xiexe_use_combined_specular_aa_and_shifted_specular_normals() -> io::
     for required in [
         "brdf::filter_perceptual_roughness(s.roughness, s.normal, s.raw_normal)",
         "brdf::filter_perceptual_roughness(roughness, s.normal, s.raw_normal)",
-        "brdf::filter_perceptual_roughness(clamp(perceptual_roughness, 0.0, 1.0), normal, s.raw_normal)",
         "let specular_normal = brdf::view_facing_normal(s.normal, view_dir);",
-        "let specular_normal = brdf::view_facing_normal(normal, view_dir);",
         "let n_dot_v = clamp(dot(specular_normal, view_dir), 0.0, 1.0);",
-        "world_pos,\n        specular_normal,\n        s.raw_normal,",
+        "horizon_specular_occlusion(specular_normal, s.raw_normal, view_dir, roughness)",
     ] {
         assert!(
             xiexe.contains(required),
@@ -431,14 +429,14 @@ fn furfx_roots_do_not_use_shader_variant_bits() -> io::Result<()> {
 fn fur_lighting_uses_full_pbs_brdf_stack() -> io::Result<()> {
     let fur_lighting = module_source("fur/lighting.wgsl")?;
     for required in [
-        "let aa_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal, s.geometric_normal);",
+        "let filtered_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal, s.geometric_normal);",
         "direct = direct + brdf::direct_radiance_specular(",
-        "aa_roughness,\n                s.roughness,",
+        "filtered_roughness,",
         "let direct_roughness = brdf::direct_perceptual_roughness(s.roughness);",
         "let direct_dfg = brdf::sample_ibl_dfg_lut(direct_roughness, n_dot_v);",
         "let energy_compensation = brdf::energy_compensation_from_dfg(direct_dfg, f0);",
         "rprobe::has_indirect_specular(view_layer, options.glossy_reflections_enabled)",
-        "let indirect_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal, s.geometric_normal);",
+        "let indirect_roughness = filtered_roughness;",
         "brdf::indirect_specular_energy_from_dfg(indirect_dfg, f0, indirect_specular_enabled)",
         "brdf::indirect_specular_visibility(n_dot_v, s.occlusion, indirect_roughness, f0)",
         "let ambient = brdf::indirect_diffuse_specular(",
@@ -450,6 +448,15 @@ fn fur_lighting_uses_full_pbs_brdf_stack() -> io::Result<()> {
             "fur/lighting.wgsl must use PBS BRDF feature `{required}`"
         );
     }
+    assert_eq!(
+        fur_lighting
+            .matches(
+                "brdf::filter_perceptual_roughness(s.roughness, s.normal, s.geometric_normal)",
+            )
+            .count(),
+        1,
+        "Fur lighting must compute derivative-filtered roughness once per fragment"
+    );
     assert!(
         !fur_lighting.contains("let specular_occlusion = brdf::specular_ao_lagarde"),
         "Fur lighting must route specular AO through PBS multi-bounce visibility"

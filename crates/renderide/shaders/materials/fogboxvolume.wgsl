@@ -159,7 +159,6 @@ fn vs_main(
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let draw = pd::get_draw(rg::draw_index_from_layer(in.view_layer));
     let scene_depth = sds::scene_linear_depth(in.clip_pos, in.view_layer);
-    let part_depth = sds::fragment_linear_depth(in.world_pos, in.view_layer);
 
     var raw_distance: f32;
     var acc_color: vec4<f32>;
@@ -180,6 +179,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         raw_distance = segment.distance;
         acc_color = world_space_accumulation_color(draw, segment);
     } else {
+        let part_depth = sds::fragment_linear_depth(in.world_pos, in.view_layer);
         let segment = vol::local_depth_limited_segment(
             draw,
             in.local_pos,

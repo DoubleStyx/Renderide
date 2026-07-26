@@ -86,21 +86,44 @@ fn vs_main(
     @location(2) uv0: vec2<f32>,
     @location(4) t: vec4<f32>,
 ) -> fr::VertexOutput {
+    let use_normal_map = kw_REFRACT_NORMALMAP();
+    let use_refraction = kw_REFRACT() || use_normal_map;
 #ifdef MULTIVIEW
-    return fr::vertex_main(instance_index, view_idx, pos, n, t, uv0);
+    return fr::vertex_main_with_features(
+        instance_index,
+        view_idx,
+        pos,
+        n,
+        t,
+        uv0,
+        use_refraction,
+        use_normal_map,
+    );
 #else
-    return fr::vertex_main(instance_index, 0u, pos, n, t, uv0);
+    return fr::vertex_main_with_features(
+        instance_index,
+        0u,
+        pos,
+        n,
+        t,
+        uv0,
+        use_refraction,
+        use_normal_map,
+    );
 #endif
 }
 
-fn refraction_enabled() -> bool {
-    return kw_REFRACT() || kw_REFRACT_NORMALMAP();
-}
-
-fn refract_offset(uv0: vec2<f32>, view_n: vec3<f32>, view_t: vec4<f32>, clip_w: f32) -> vec2<f32> {
+fn refract_offset(
+    uv0: vec2<f32>,
+    view_n: vec3<f32>,
+    view_t: vec4<f32>,
+    clip_w: f32,
+    refraction_enabled: bool,
+    normal_map_enabled: bool,
+) -> vec2<f32> {
     return fr::normal_offset(
-        refraction_enabled(),
-        kw_REFRACT_NORMALMAP(),
+        refraction_enabled,
+        normal_map_enabled,
         uv0,
         view_n,
         view_t,
@@ -121,15 +144,22 @@ fn spread_modulation(uv0: vec2<f32>) -> vec2<f32> {
 }
 
 fn sample_circular_blur(center_uv: vec2<f32>, spread: vec2<f32>, iterations: f32, view_layer: u32) -> vec4<f32> {
-    var c = vec4<f32>(0.0);
     let clamped_iterations = clamp(iterations, 1.0, 128.0);
-    for (var i = 0u; i < 128u; i = i + 1u) {
-        if (f32(i) >= clamped_iterations) {
-            break;
-        }
-        let angle = (f32(i) / clamped_iterations) * fm::TAU;
-        let offset = vec2<f32>(-cos(angle), sin(angle)) * spread;
-        c = c + gp::sample_scene_color(center_uv + offset, view_layer);
+    let tap_count = u32(ceil(clamped_iterations));
+    var direction = vec2<f32>(-1.0, 0.0);
+    var c = gp::sample_scene_color(center_uv + direction * spread, view_layer);
+    if (tap_count == 1u) {
+        return c / clamped_iterations;
+    }
+
+    let angle_step = fm::TAU / clamped_iterations;
+    let rotation = vec2<f32>(cos(angle_step), sin(angle_step));
+    for (var i = 1u; i < tap_count; i = i + 1u) {
+        direction = vec2<f32>(
+            direction.x * rotation.x + direction.y * rotation.y,
+            direction.y * rotation.x - direction.x * rotation.y,
+        );
+        c = c + gp::sample_scene_color(center_uv + direction * spread, view_layer);
     }
     return c / clamped_iterations;
 }
@@ -145,8 +175,17 @@ fn sample_blur(center_uv: vec2<f32>, spread: vec2<f32>, iterations: f32, view_la
 @fragment
 fn fs_main(in: fr::VertexOutput) -> @location(0) vec4<f32> {
     fc::discard_rect_if_enabled(in.obj_xy, mat._Rect, kw_RECTCLIP());
+    let normal_map_enabled = kw_REFRACT_NORMALMAP();
+    let refraction_enabled = kw_REFRACT() || normal_map_enabled;
     let screen_uv = fc::screen_uv(in.clip_pos);
-    let center_uv = screen_uv - refract_offset(in.primary_uv, in.view_n, in.view_t, in.clip_w);
+    let center_uv = screen_uv - refract_offset(
+        in.primary_uv,
+        in.view_n,
+        in.view_t,
+        in.clip_w,
+        refraction_enabled,
+        normal_map_enabled,
+    );
     let fade = sds::depth_fade_at_uv(center_uv, in.world_pos, in.view_layer, mat._DepthDivisor);
     let spread = mat._Spread.xy * spread_modulation(in.primary_uv) * fade;
     return fc::retain_globals(sample_blur(center_uv, spread, mat._Iterations, in.view_layer));

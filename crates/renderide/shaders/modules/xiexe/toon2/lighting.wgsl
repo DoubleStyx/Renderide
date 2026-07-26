@@ -55,15 +55,71 @@ fn indirect_diffuse_visibility(s: xb::SurfaceData) -> vec3<f32> {
     return min(vec3<f32>(1.0), colored_occlusion * visibility / vec3<f32>(scalar_occlusion));
 }
 
+/// Cached indirect-reflection terms shared by the toon lighting branches.
+struct IndirectReflectionContext {
+    has_environment: bool,
+    pbr_enabled: bool,
+    roughness: f32,
+    n_dot_v: f32,
+    specular_reflectance: vec3<f32>,
+    specular_energy: vec3<f32>,
+    radiance: vec3<f32>,
+    horizon: f32,
+}
+
+fn indirect_reflection_context(
+    s: xb::SurfaceData,
+    view_dir: vec3<f32>,
+    world_pos: vec3<f32>,
+    view_layer: u32,
+    keyword_layout: u32,
+) -> IndirectReflectionContext {
+    let specular_normal = brdf::view_facing_normal(s.normal, view_dir);
+    let roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal, s.raw_normal);
+    let n_dot_v = clamp(dot(specular_normal, view_dir), 0.0, 1.0);
+    let specular_reflectance = brdf::metallic_f0(s.diffuse_color, s.metallic);
+    let has_environment = rprobe::has_indirect_specular(view_layer, true);
+    let pbr_enabled = has_environment && xvb::reflection_uses_pbr_for_layout(keyword_layout);
+
+    var radiance = vec3<f32>(0.0);
+    var horizon = 1.0;
+    if (has_environment) {
+        radiance = rprobe::indirect_radiance(
+            world_pos,
+            specular_normal,
+            view_dir,
+            roughness,
+            view_layer,
+            true,
+        );
+        horizon = rprobe::horizon_specular_occlusion(specular_normal, s.raw_normal, view_dir, roughness);
+    }
+
+    var specular_energy = vec3<f32>(0.0);
+    if (pbr_enabled) {
+        let dfg = brdf::sample_ibl_dfg_lut(roughness, n_dot_v);
+        specular_energy = brdf::indirect_specular_energy_from_dfg(dfg, specular_reflectance, true);
+    }
+
+    return IndirectReflectionContext(
+        has_environment,
+        pbr_enabled,
+        roughness,
+        n_dot_v,
+        specular_reflectance,
+        specular_energy,
+        radiance,
+        horizon,
+    );
+}
+
 /// Reflection tint used by `_RimCubemapTint`. Falls back to white when no specular probe is bound so
 /// the tint slider does not collapse the rim light to black.
-fn environment_tint(s: xb::SurfaceData, view_dir: vec3<f32>, world_pos: vec3<f32>, view_layer: u32) -> vec3<f32> {
-    if (!rprobe::has_indirect_specular(view_layer, true)) {
+fn environment_tint(reflection: IndirectReflectionContext) -> vec3<f32> {
+    if (!reflection.has_environment) {
         return vec3<f32>(1.0);
     }
-    let specular_normal = brdf::view_facing_normal(s.normal, view_dir);
-    let indirect_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal, s.raw_normal);
-    return rprobe::raw_indirect_specular_with_horizon(world_pos, specular_normal, s.raw_normal, view_dir, indirect_roughness, true, view_layer);
+    return reflection.radiance * reflection.horizon;
 }
 
 /// `UNITY_SPECCUBE_LOD_STEPS` on PC/console.
@@ -93,7 +149,7 @@ fn remap_specular_area(area: f32) -> f32 {
     return remapped * (1.7 - 0.7 * remapped);
 }
 
-/// Direct-specular inputs derived once per fragment for the primary lobe.
+/// Cached primary direct-specular terms.
 struct DirectSpecularTerms {
     /// Primary lobe F0, identical to PBSMetallic's `metallic_f0(base, metallic)`.
     specular_reflectance: vec3<f32>,
@@ -299,12 +355,10 @@ fn indirect_reflection_branch_for_layout(
     s: xb::SurfaceData,
     normal: vec3<f32>,
     view_dir: vec3<f32>,
-    world_pos: vec3<f32>,
-    view_layer: u32,
     perceptual_roughness: f32,
-    specular_reflectance: vec3<f32>,
     ambient: vec3<f32>,
     dominant_light_col_atten: vec3<f32>,
+    reflection: IndirectReflectionContext,
     keyword_layout: u32,
 ) -> vec3<f32> {
     if (xvb::matcap_enabled_for_layout(keyword_layout)) {
@@ -315,51 +369,42 @@ fn indirect_reflection_branch_for_layout(
         return spec;
     }
 
-    let specular_normal = brdf::view_facing_normal(normal, view_dir);
-    let roughness = brdf::filter_perceptual_roughness(clamp(perceptual_roughness, 0.0, 1.0), normal, s.raw_normal);
-    let n_dot_v = clamp(dot(specular_normal, view_dir), 0.0, 1.0);
-    let indirect_enabled = rprobe::has_indirect_specular(view_layer, xvb::reflection_uses_pbr_for_layout(keyword_layout));
-    let dfg = brdf::sample_ibl_dfg_lut(roughness, n_dot_v);
-    let specular_energy = brdf::indirect_specular_energy_from_dfg(dfg, specular_reflectance, indirect_enabled);
+    if (!reflection.pbr_enabled) {
+        return vec3<f32>(0.0);
+    }
+
     let specular_visibility =
-        brdf::indirect_specular_visibility(n_dot_v, occlusion_scalar(s), roughness, specular_reflectance);
-    let spec = rprobe::indirect_specular_with_energy(
-        world_pos,
-        specular_normal,
-        s.raw_normal,
-        view_dir,
-        roughness,
-        specular_energy * specular_visibility,
-        1.0,
-        indirect_enabled,
-        view_layer,
-    );
-    return spec;
+        brdf::indirect_specular_visibility(
+            reflection.n_dot_v,
+            occlusion_scalar(s),
+            reflection.roughness,
+            reflection.specular_reflectance,
+        );
+    let weighted_specular_energy = reflection.specular_energy * specular_visibility;
+    return reflection.radiance
+        * weighted_specular_energy
+        * clamp(1.0, 0.0, 1.0)
+        * reflection.horizon;
 }
 
 /// Indirect-specular contribution for a selected XSToon keyword layout.
 fn indirect_specular_for_layout(
     s: xb::SurfaceData,
     view_dir: vec3<f32>,
-    world_pos: vec3<f32>,
-    view_layer: u32,
     ambient: vec3<f32>,
     dominant_light_col_atten: vec3<f32>,
     dominant_ramp: vec3<f32>,
+    reflection: IndirectReflectionContext,
     keyword_layout: u32,
 ) -> vec3<f32> {
-    let specular_reflectance = brdf::metallic_f0(s.diffuse_color, s.metallic);
-
     var spec = indirect_reflection_branch_for_layout(
         s,
         s.normal,
         view_dir,
-        world_pos,
-        view_layer,
         s.roughness,
-        specular_reflectance,
         ambient,
         dominant_light_col_atten,
+        reflection,
         keyword_layout,
     );
 
@@ -392,25 +437,14 @@ fn clustered_toon_lighting_for_layout(
 ) -> vec3<f32> {
     let view_dir = rg::view_dir_for_world_pos(world_pos, view_layer);
     let ambient = indirect_diffuse(s, world_pos, view_layer);
-    let env = environment_tint(s, view_dir, world_pos, view_layer);
+    let indirect_reflection = indirect_reflection_context(s, view_dir, world_pos, view_layer, keyword_layout);
+    let env = environment_tint(indirect_reflection);
     let primary_specular_terms = primary_direct_specular_terms(s, view_dir);
 
     // Indirect diffuse / specular share a single energy budget: whatever the spec
     // probe lobe takes, the diffuse term must give up.
-    let indirect_specular_reflectance = brdf::metallic_f0(s.diffuse_color, s.metallic);
-    let specular_normal = brdf::view_facing_normal(s.normal, view_dir);
-    let n_dot_v = clamp(dot(specular_normal, view_dir), 0.0, 1.0);
-    let indirect_specular_enabled =
-        rprobe::has_indirect_specular(view_layer, xvb::reflection_uses_pbr_for_layout(keyword_layout));
-    let indirect_roughness = brdf::filter_perceptual_roughness(s.roughness, s.normal, s.raw_normal);
-    let indirect_dfg = brdf::sample_ibl_dfg_lut(indirect_roughness, n_dot_v);
-    let indirect_specular_energy = brdf::indirect_specular_energy_from_dfg(
-        indirect_dfg,
-        indirect_specular_reflectance,
-        indirect_specular_enabled,
-    );
     let indirect_diffuse_energy_scale =
-        brdf::indirect_diffuse_energy_scale(indirect_specular_energy, indirect_specular_enabled);
+        brdf::indirect_diffuse_energy_scale(indirect_reflection.specular_energy, indirect_reflection.pbr_enabled);
 
     let cluster_id = pcls::cluster_id_from_frag(
         frag_xy,
@@ -500,11 +534,10 @@ fn clustered_toon_lighting_for_layout(
         let reflection = indirect_specular_for_layout(
             s,
             view_dir,
-            world_pos,
-            view_layer,
             ambient,
             dominant_light_col_atten,
             dominant_ramp,
+            indirect_reflection,
             keyword_layout,
         );
         col = col + reflection * clamp(s.reflectivity_mask, 0.0, 1.0);

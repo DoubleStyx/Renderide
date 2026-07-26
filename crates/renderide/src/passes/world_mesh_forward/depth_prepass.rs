@@ -28,7 +28,10 @@ use crate::world_mesh::{MeshPassKind, WorldMeshDrawItem};
 
 use super::attachments::declare_forward_depth_attachment;
 use super::depth_like_pipeline::{DepthLikePipelineSpec, create_depth_like_pipeline};
-use super::encode::{DepthPrepassDrawBatch, draw_depth_prepass_subset};
+use super::encode::{
+    DepthPrepassDrawBatch, DepthPrepassIndirectDraw, collect_depth_prepass_indirect,
+    draw_depth_prepass_subset, issue_depth_prepass_indirect,
+};
 use super::{WorldMeshForwardPipelineState, WorldMeshForwardPlanSlot};
 
 const POSITION_ATTRIBUTES: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
@@ -565,12 +568,44 @@ impl RasterPass for WorldMeshForwardDepthPrepass {
         let Some(gpu_limits) = frame.view.gpu_limits.clone() else {
             return Ok(());
         };
+
+        let view_id = frame.view.view_id;
+        let groups = prepared
+            .plan
+            .phase(MeshPassKind::DepthPrepass.first_phase());
+
+        // Indirect commands select their slab row through `first_instance`.
+        let indirect_enabled = crate::world_mesh::world_mesh_render_path().uses_indirect_draws()
+            && prepared.supports_base_instance
+            && gpu_limits.supports_indirect_first_instance();
+        let arena_arc = frame.systems.frame_resources.shared_geometry_arena();
+        let arena_guard = arena_arc.as_ref().map(|a| a.read());
+        let arena = arena_guard.as_ref().and_then(|g| g.as_ref());
+        let indirect_arena = indirect_enabled.then_some(arena).flatten();
+        let gpu_depth = prepared
+            .gpu_cull
+            .as_ref()
+            .filter(|result| !result.depth_runs.is_empty() && indirect_arena.is_some());
+
+        let mut commands = Vec::new();
+        let runs = indirect_arena
+            .filter(|_| gpu_depth.is_none())
+            .map(|a| {
+                collect_depth_prepass_indirect(
+                    groups,
+                    &prepared.plan.slab_layout,
+                    &prepared.draws,
+                    a,
+                    &prepared.pipeline,
+                    &mut commands,
+                )
+            })
+            .unwrap_or_default();
+
         let mut encode_refs = super::WorldMeshForwardEncodeRefs::from_pass_frame(frame);
         draw_depth_prepass_subset(DepthPrepassDrawBatch {
-            rpass,
-            groups: prepared
-                .plan
-                .phase(MeshPassKind::DepthPrepass.first_phase()),
+            rpass: &mut *rpass,
+            groups,
             slab_layout: &prepared.plan.slab_layout,
             draws: &prepared.draws,
             encode: &mut encode_refs,
@@ -580,7 +615,43 @@ impl RasterPass for WorldMeshForwardDepthPrepass {
             pipeline: &prepared.pipeline,
             device: ctx.device,
             depth_pipelines: self.pipelines,
+            geometry_arena: arena,
         });
+
+        if let (Some(arena), Some(result)) = (indirect_arena, gpu_depth) {
+            result.issue_depth_runs(
+                &mut *rpass,
+                ctx.device,
+                per_draw_bg.as_ref(),
+                arena,
+                self.pipelines,
+            );
+        } else if let Some(arena) = indirect_arena
+            && !commands.is_empty()
+            && let Some(indirect_arc) = frame.systems.frame_resources.depth_prepass_indirect()
+        {
+            let count = u32::try_from(commands.len()).unwrap_or(u32::MAX);
+            let buffer_arc = {
+                let mut buffers = indirect_arc.lock();
+                Arc::clone(buffers.entry(view_id).or_insert_with(|| {
+                    Arc::new(parking_lot::Mutex::new(
+                        crate::gpu::indirect_buffer::IndirectDrawBuffer::new(ctx.device, count),
+                    ))
+                }))
+            };
+            let mut buffer = buffer_arc.lock();
+            buffer.prepare_len(ctx.device, count);
+            ctx.write_buffer(buffer.buffer(), 0, bytemuck::cast_slice(&commands));
+            issue_depth_prepass_indirect(DepthPrepassIndirectDraw {
+                rpass: &mut *rpass,
+                device: ctx.device,
+                per_draw_bind_group: per_draw_bg.as_ref(),
+                arena,
+                commands: &buffer,
+                runs: &runs,
+                depth_pipelines: self.pipelines,
+            });
+        }
         Ok(())
     }
 }

@@ -100,6 +100,17 @@ pub struct FrameGlobalSplitPassEncodeParams<'a, 'encoder> {
     pub profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
 }
 
+/// Visible and shadow-casting static meshes selected for frame-global geometry-arena population.
+#[derive(Clone, Copy, Debug)]
+pub struct GeometryArenaPopulatePlan<'a> {
+    /// Unique required mesh asset ids in stable first-seen order.
+    pub mesh_asset_ids: &'a [i32],
+    /// Visible and refreshed-shadow draw rows inspected while building the list.
+    pub input_draws: usize,
+    /// Draw rows excluded because they use deform output.
+    pub deformed_draws: usize,
+}
+
 /// Renderer-owned frame-global passes with backend resource routing.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum FrameGlobalResourcePass {
@@ -138,6 +149,38 @@ impl<T> GraphFrameResources for T where
 {
 }
 
+/// Shared canonical store for immutable rigid mesh geometry. Asset uploads and frame passes retain
+/// this exact `Arc`, so there is one ownership domain for allocation, upload, and binding.
+pub(crate) type SharedStaticGeometryStore =
+    Arc<parking_lot::RwLock<Option<crate::gpu_pools::StaticGeometryStore>>>;
+
+/// Geometry-arena handle used by graph passes.
+pub(crate) type SharedGeometryArena = SharedStaticGeometryStore;
+
+/// Persistent per-view depth-prepass indirect command buffers, keyed by view.
+pub(crate) type DepthPrepassIndirectBuffers = Arc<
+    Mutex<hashbrown::HashMap<ViewId, Arc<Mutex<crate::gpu::indirect_buffer::IndirectDrawBuffer>>>>,
+>;
+
+/// Persistent per-view normal-prepass indirect command buffers, keyed by view.
+pub(crate) type NormalPrepassIndirectBuffers = Arc<
+    Mutex<hashbrown::HashMap<ViewId, Arc<Mutex<crate::gpu::indirect_buffer::IndirectDrawBuffer>>>>,
+>;
+
+/// Persistent forward indirect command buffers, keyed by view and render phase.
+///
+/// Forward opaque and alpha-test phases share one render pass, while intersection records later in
+/// a separate pass. Keeping a distinct buffer per phase prevents the graph's pre-submit upload
+/// drain from making a later phase overwrite commands referenced by an earlier phase.
+pub(crate) type ForwardIndirectBuffers = Arc<
+    Mutex<
+        hashbrown::HashMap<
+            (ViewId, crate::world_mesh::WorldMeshPhase),
+            Arc<Mutex<crate::gpu::indirect_buffer::IndirectDrawBuffer>>,
+        >,
+    >,
+>;
+
 /// Graph-facing access to per-frame bind groups, buffers, and shared frame constants.
 pub trait GraphFrameBindings {
     /// Whether frame-global GPU resources were attached.
@@ -158,7 +201,7 @@ pub trait GraphFrameBindings {
     /// Current shared cluster-buffer version.
     fn shared_cluster_version(&self) -> u64;
 
-    /// Per-view cluster-params uniform buffer and allocation version. -xlinka
+    /// Per-view cluster-params uniform buffer and allocation version.
     fn per_view_cluster_params_buffer(&self, view_id: ViewId) -> Option<(wgpu::Buffer, u64)>;
 
     /// Per-view frame bind group and frame-uniform buffer.
@@ -214,6 +257,22 @@ pub trait GraphPerDrawSlabResources {
 
     /// Per-view per-draw bind group.
     fn per_view_per_draw_bind_group(&self, view_id: ViewId) -> Option<Arc<wgpu::BindGroup>>;
+
+    /// Shared geometry mega-buffer for indirect draws, or [`None`] when frame GPU resources are
+    /// not attached. The depth prepass reads it to draw its arena-resident static geometry.
+    fn shared_geometry_arena(&self) -> Option<SharedGeometryArena>;
+
+    /// Persistent per-view depth-prepass indirect command buffers, or [`None`] when frame GPU
+    /// resources are not attached.
+    fn depth_prepass_indirect(&self) -> Option<DepthPrepassIndirectBuffers>;
+
+    /// Persistent per-view normal-prepass indirect command buffers, or [`None`] when frame GPU
+    /// resources are not attached.
+    fn normal_prepass_indirect(&self) -> Option<NormalPrepassIndirectBuffers>;
+
+    /// Persistent forward indirect command buffers, keyed by view and phase, or [`None`] when
+    /// frame GPU resources are not attached.
+    fn forward_indirect(&self) -> Option<ForwardIndirectBuffers>;
 }
 
 /// Graph-facing access to scene-depth and scene-color snapshot copies.
@@ -248,6 +307,16 @@ pub trait GraphSceneSnapshotResources {
         viewport: (u32, u32),
         multiview: bool,
     ) -> bool;
+
+    /// Returns the sampled color snapshot view for a direct MSAA resolve.
+    fn scene_color_snapshot_render_target_for_view(
+        &self,
+        view_id: ViewId,
+        viewport: (u32, u32),
+        color_format: wgpu::TextureFormat,
+        multiview: bool,
+        named: bool,
+    ) -> Option<&wgpu::TextureView>;
 }
 
 /// Graph-facing access to mesh-deform submission state and visibility filters.
@@ -309,6 +378,9 @@ pub trait GraphFrameGlobalResources {
     /// Whether realtime shadow atlas rendering has work.
     fn has_shadow_atlas_requests(&self) -> bool;
 
+    /// Static meshes needed by this submission's shadow-atlas and per-view indirect draws.
+    fn geometry_arena_populate_plan(&self) -> GeometryArenaPopulatePlan<'_>;
+
     /// Records realtime shadow atlas layers.
     fn encode_shadow_atlas(&self, params: ShadowAtlasEncodeParams<'_, '_, '_>);
 
@@ -324,6 +396,7 @@ pub trait GraphFrameGlobalResources {
     fn prepare_frame_global_split_pass(
         &self,
         _pass: FrameGlobalResourcePass,
+        _device: &wgpu::Device,
         _gpu_limits: &GpuLimits,
         _uploads: GraphUploadSink<'_>,
     ) -> bool {
@@ -367,7 +440,7 @@ blackboard_slot! {
     ///
     /// Populated by the executor (before per-view passes run) from
     /// `resolve_forward_msaa_views_from_graph_resources` output.
-    /// Replaces the six `msaa_*` fields that previously lived on [`GraphPassFrame`].
+    /// Provides the forward-pass MSAA views to per-view passes.
     pub MsaaViewsSlot => MsaaViews,
 }
 
@@ -452,8 +525,10 @@ pub struct PreRecordViewResourceLayout {
     pub color_format: wgpu::TextureFormat,
     /// Whether this view has materials that need a full-size scene-depth snapshot.
     pub needs_depth_snapshot: bool,
-    /// Whether this view has materials that need a full-size scene-color snapshot.
-    pub needs_color_snapshot: bool,
+    /// Whether this view has materials that need a full-size per-object scene-color snapshot.
+    pub needs_per_object_color_snapshot: bool,
+    /// Whether this view has materials that need a full-size reusable named scene-color snapshot.
+    pub needs_named_color_snapshot: bool,
 }
 
 /// Opaque read-only scene borrow threaded through the render graph executor.
@@ -711,8 +786,7 @@ pub struct FrameSystemsShared<'a> {
 /// Per-view surface and camera state for one render target within a multi-view frame.
 ///
 /// All fields are value types or immutable references: they are derived from the resolved view
-/// target before recording begins and do not change during per-view pass execution. This is the
-/// primary per-view context type; [`GraphPassFrame`] remains during a staged migration.
+/// target before recording begins and do not change during per-view pass execution.
 pub struct GraphPassFrameView<'a> {
     /// Backing depth texture for the main forward pass (copy source for scene-depth snapshots).
     pub depth_texture: &'a wgpu::Texture,

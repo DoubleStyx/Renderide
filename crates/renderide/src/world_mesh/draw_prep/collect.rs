@@ -4,10 +4,8 @@
 //! renderer runs in deterministic prepared order, and assigns [`WorldMeshDrawItem::collect_order`].
 //! The caller then runs the explicit sort phase.
 //!
-//! Material-derived batch key fields are computed once per `(material_asset_id, property_block_id)`
-//! before collection by the backend-owned [`FrameMaterialBatchCache`]. Cache misses still resolve
-//! directly for test contexts and unusual transition frames, but production collection no longer
-//! performs a second scene-wide material refresh.
+//! [`FrameMaterialBatchCache`] resolves material-derived batch keys before collection. Direct
+//! resolution remains available when a prepared cache is absent.
 
 use hashbrown::HashMap;
 
@@ -63,7 +61,10 @@ use super::prepared_renderables::FramePreparedDraw;
 use prepared::prepared_draws_share_renderer;
 
 /// Prepared renderer-run chunks assigned to one draw-collection worker.
-const PREPARED_COLLECT_PARALLEL_CHUNK_TASKS: usize = 1;
+///
+/// Each cached run chunk already targets 256 draws, so pairing chunks prevents Rayon from
+/// scheduling tiny single-chunk jobs while retaining ample fan-out in draw-heavy views.
+const PREPARED_COLLECT_PARALLEL_CHUNK_TASKS: usize = 2;
 /// Scene-walk chunk specs assigned to one draw-collection worker in unit-test fallback contexts.
 #[cfg(test)]
 const SCENE_COLLECT_PARALLEL_CHUNK_TASKS: usize = 1;
@@ -159,6 +160,11 @@ pub struct DrawCollectionViewInputs<'a> {
     pub view_origin_world: Vec3,
     /// Optional CPU frustum + Hi-Z cull inputs.
     pub culling: Option<&'a WorldMeshCullInput<'a>>,
+    /// Preserve arena-eligible rigid static candidates for GPU frustum/Hi-Z culling instead of
+    /// rejecting them during prepared-renderable CPU collection.
+    ///
+    /// Transparent, deformed, dynamic, and overlay draws remain on the CPU visibility path.
+    pub retain_gpu_static_candidates: bool,
     /// Camera cull inputs consumed only by LOD group selection when [`Self::culling`] is unset.
     pub lod_selection_culling: Option<&'a WorldMeshCullInput<'a>>,
     /// Unity-style mesh LOD bias multiplier for relative screen-height selection.
@@ -389,11 +395,11 @@ impl QueuedWorldMeshDraws {
         self.len
     }
 
-    /// Packages deterministic collection order without the main-view phase sort. -xlinka
+    /// Packages deterministic collection order without the main-view phase sort.
     pub(crate) fn into_unarranged_collection(self) -> WorldMeshDrawCollection {
         let items = flatten_draw_chunks(self.chunks, true);
         WorldMeshDrawCollection {
-            items,
+            items: items.into(),
             draws_pre_cull: self.draws_pre_cull,
             draws_culled: self.draws_culled,
             draws_hi_z_culled: self.draws_hi_z_culled,
@@ -418,7 +424,7 @@ impl QueuedWorldMeshDraws {
             }
         };
         WorldMeshDrawCollection {
-            items,
+            items: items.into(),
             draws_pre_cull: self.draws_pre_cull,
             draws_culled: self.draws_culled,
             draws_hi_z_culled: self.draws_hi_z_culled,
@@ -748,7 +754,12 @@ fn collect_prepared_chunks_for_state(
     state: &PreparedCollectionState<'_>,
     allow_parallel_chunks: bool,
 ) -> WorldMeshCollectedChunks {
-    if ctx.view.culling.is_some() {
+    // The spatial index only knows renderer bounds, not the material phase or whether a mesh is
+    // backed by dynamic/deformed streams. When GPU-static retention is active it therefore cannot
+    // reject a whole renderer run up front: an off-screen run may still contain an opaque slot
+    // whose visibility must be decided by compute. Per-run collection below keeps CPU culling for
+    // unsupported and strict-order slots.
+    if ctx.view.culling.is_some() && !ctx.view.retain_gpu_static_candidates {
         let parallelism = if allow_parallel_chunks {
             WorldMeshDrawCollectParallelism::Full
         } else {

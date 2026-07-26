@@ -43,6 +43,9 @@ impl MainGraphPostProcessingResources {
 pub(super) struct MainGraphHandles {
     pub(super) color: ImportedTextureHandle,
     pub(super) depth: ImportedTextureHandle,
+    /// Previous-frame Hi-Z pyramid, sampled by GPU visibility work.
+    pub(super) hi_z_previous: ImportedTextureHandle,
+    /// Current-frame Hi-Z pyramid, written by the Hi-Z build pass.
     pub(super) hi_z_current: ImportedTextureHandle,
     pub(super) lights: ImportedBufferHandle,
     pub(super) cluster_light_counts: ImportedBufferHandle,
@@ -82,6 +85,7 @@ fn import_main_graph_textures(
     ImportedTextureHandle,
     ImportedTextureHandle,
     ImportedTextureHandle,
+    ImportedTextureHandle,
 ) {
     let color = builder.import_texture(ImportedTextureDecl {
         label: "frame_color",
@@ -107,6 +111,18 @@ fn import_main_graph_textures(
             stages: wgpu::ShaderStages::COMPUTE,
         },
     });
+    // A read-only import resolves to the previous ping-pong half. Keep it separate from the
+    // writable current import so GPU visibility can sample frame N-1 while Hi-Z build writes N.
+    let hi_z_previous = builder.import_texture(ImportedTextureDecl {
+        label: "hi_z_previous",
+        source: ImportSource::PingPong(HistorySlotId::HI_Z),
+        initial_access: TextureAccess::Sampled {
+            stages: wgpu::ShaderStages::COMPUTE,
+        },
+        final_access: TextureAccess::Sampled {
+            stages: wgpu::ShaderStages::COMPUTE,
+        },
+    });
     let hi_z_current = builder.import_texture(ImportedTextureDecl {
         label: "hi_z_current",
         source: ImportSource::PingPong(HistorySlotId::HI_Z),
@@ -119,7 +135,7 @@ fn import_main_graph_textures(
             access: StorageAccess::WriteOnly,
         },
     });
-    (color, depth, hi_z_current)
+    (color, depth, hi_z_previous, hi_z_current)
 }
 
 fn import_main_graph_buffers(builder: &mut GraphBuilder) -> MainGraphBufferImports {
@@ -265,13 +281,14 @@ pub(super) fn import_main_graph_resources(
     builder: &mut GraphBuilder,
     msaa_enabled: bool,
 ) -> MainGraphHandles {
-    let (color, depth, hi_z_current) = import_main_graph_textures(builder);
+    let (color, depth, hi_z_previous, hi_z_current) = import_main_graph_textures(builder);
     let buf = import_main_graph_buffers(builder);
     let (cluster_params, scene_color_hdr, msaa) =
         create_main_graph_transient_resources(builder, msaa_enabled);
     MainGraphHandles {
         color,
         depth,
+        hi_z_previous,
         hi_z_current,
         lights: buf.lights,
         cluster_light_counts: buf.cluster_light_counts,

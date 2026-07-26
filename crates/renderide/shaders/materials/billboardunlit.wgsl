@@ -210,15 +210,17 @@ fn vs_main(
 #endif
     let center_world = mt::world_position(d, pos).xyz;
     let use_rotation = kw_POINT_ROTATION() && abs(pointdata.z) > 1e-4;
-    let fallback_axes = mb::billboard_axes(center_world, pointdata, layer, use_rotation);
-    var axes = fallback_axes;
-    if (kw_RENDER_BUFFER()) {
+    let render_buffer = kw_RENDER_BUFFER();
+    var axes: mb::BillboardBasis;
+    if (render_buffer) {
         axes = mp::render_buffer_billboard_basis_from_forward_up(d, center_world, pointdata, point_forward_upz, point_up_xy, layer);
+    } else {
+        axes = mb::billboard_axes(center_world, pointdata, layer, use_rotation);
     }
     let corner = billboard_corner_for_vertex(pos.xyz, uv, vertex_index);
     let unclamped_size = billboard_size(pointdata, d.model);
     var size = unclamped_size;
-    if (kw_RENDER_BUFFER()) {
+    if (render_buffer) {
         size = mp::screen_clamped_billboard_size(d, center_world, axes, unclamped_size, vp);
     }
     let world_p = center_world + axes.right * (corner.x * size.x) + axes.up * (corner.y * size.y);
@@ -230,7 +232,10 @@ fn vs_main(
     out.view_layer = layer;
     out.fog_coord = rfog::coord_from_world_pos(world_p, layer);
     out.world_p = world_p;
-    out.n = mp::render_buffer_billboard_normal(axes);
+    out.n = vec3<f32>(0.0, 0.0, 1.0);
+    if (kw_SIMPLE_LIT()) {
+        out.n = mp::render_buffer_billboard_normal(axes);
+    }
     return out;
 }
 

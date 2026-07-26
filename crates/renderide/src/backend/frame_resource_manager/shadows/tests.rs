@@ -6,6 +6,7 @@ use crate::backend::HostShadowQuality;
 use crate::backend::frame_resource_manager::per_view_state::PreparedViewLights;
 use crate::camera::ViewId;
 use crate::gpu::{GpuLight, GpuLimits};
+use crate::gpu_pools::MeshPool;
 use crate::materials::RasterPipelineKind;
 use crate::shared::{LightType, ShadowCastMode};
 use crate::world_mesh::draw_prep::WorldMeshDrawCollection;
@@ -75,10 +76,10 @@ fn pbs_draw(node_id: i32, shadow_cast_mode: ShadowCastMode) -> WorldMeshDrawItem
 }
 
 fn prefetched_plan(items: Vec<WorldMeshDrawItem>) -> WorldMeshDrawPlan {
-    WorldMeshDrawPlan::Prefetched(Box::new(PrefetchedWorldMeshViewDraws::new(
+    WorldMeshDrawPlan::Prefetched(Arc::new(PrefetchedWorldMeshViewDraws::new(
         WorldMeshDrawCollection {
             draws_pre_cull: items.len(),
-            items,
+            items: items.into(),
             draws_culled: 0,
             draws_hi_z_culled: 0,
             visibility: Default::default(),
@@ -178,9 +179,9 @@ fn point_shadow_faces_share_caster_set_slab_range() {
     second.node_id = 2;
     second.collect_order = 1;
 
-    let draw_plan = WorldMeshDrawPlan::Prefetched(Box::new(PrefetchedWorldMeshViewDraws::new(
+    let draw_plan = WorldMeshDrawPlan::Prefetched(Arc::new(PrefetchedWorldMeshViewDraws::new(
         WorldMeshDrawCollection {
-            items: vec![first, second],
+            items: vec![first, second].into(),
             draws_pre_cull: 2,
             draws_culled: 0,
             draws_hi_z_culled: 0,
@@ -413,4 +414,151 @@ fn shadow_planning_disables_when_depth_atlas_format_is_not_renderable() {
     assert_eq!(light.shadow_view_start, 0);
     assert_eq!(light.shadow_view_count, 0);
     assert_eq!(light.shadow_flags, 0);
+}
+
+#[test]
+fn unchanged_static_shadow_input_reuses_caster_and_visibility_packets() {
+    let mut manager = super::FrameResourceManager::new();
+    manager
+        .per_view_lights
+        .get_or_insert_with(ViewId::Main, PreparedViewLights::default)
+        .lights
+        .push(shadowed_light(LightType::Spot));
+    let draw_plan = prefetched_plan(vec![
+        pbs_draw(1, ShadowCastMode::On),
+        pbs_draw(2, ShadowCastMode::On),
+    ]);
+
+    manager.prepare_shadow_frame_for_views(
+        HostShadowQuality::default(),
+        None,
+        [(ViewId::Main, &draw_plan)],
+    );
+    let first = manager.shadow_frame_plan();
+    let first_draws = Arc::clone(&first.caster_sets[0].draws);
+    let first_slab_ptr = first.caster_sets[0].instance_plan.slab_layout.as_ptr();
+    let first_visibility = Arc::clone(first.render_views[0].visible_groups_arc());
+    assert_eq!(first.cache_stats.caster_plan_misses, 1);
+    assert_eq!(first.cache_stats.visibility_misses, 1);
+
+    manager.prepare_shadow_frame_for_views(
+        HostShadowQuality::default(),
+        None,
+        [(ViewId::Main, &draw_plan)],
+    );
+    let second = manager.shadow_frame_plan();
+
+    assert_eq!(second.cache_stats.caster_plan_hits, 1);
+    assert_eq!(second.cache_stats.visibility_hits, 1);
+    assert_eq!(second.cache_stats.avoided_caster_draw_scans, 2);
+    assert!(Arc::ptr_eq(&first_draws, &second.caster_sets[0].draws));
+    assert_eq!(
+        first_slab_ptr,
+        second.caster_sets[0].instance_plan.slab_layout.as_ptr(),
+        "the cached O(draws) slab/group allocation should move forward, not be cloned"
+    );
+    assert!(Arc::ptr_eq(
+        &first_visibility,
+        second.render_views[0].visible_groups_arc()
+    ));
+}
+
+#[test]
+fn exact_shadow_view_signature_invalidates_visibility_without_regrouping_casters() {
+    let mut manager = super::FrameResourceManager::new();
+    manager
+        .per_view_lights
+        .get_or_insert_with(ViewId::Main, PreparedViewLights::default)
+        .lights
+        .push(shadowed_light(LightType::Spot));
+    let draw_plan = prefetched_plan(vec![pbs_draw(1, ShadowCastMode::On)]);
+
+    manager.prepare_shadow_frame_for_views(
+        HostShadowQuality::default(),
+        None,
+        [(ViewId::Main, &draw_plan)],
+    );
+    manager
+        .per_view_lights
+        .get_mut(ViewId::Main)
+        .unwrap()
+        .lights[0]
+        .range = 19.0;
+    manager.prepare_shadow_frame_for_views(
+        HostShadowQuality::default(),
+        None,
+        [(ViewId::Main, &draw_plan)],
+    );
+    let plan = manager.shadow_frame_plan();
+
+    assert_eq!(plan.cache_stats.caster_plan_hits, 1);
+    assert_eq!(plan.cache_stats.visibility_hits, 0);
+    assert_eq!(plan.cache_stats.visibility_misses, 1);
+}
+
+#[test]
+fn equal_draw_values_with_new_arc_identity_do_not_hit_shadow_planning_cache() {
+    let mut manager = super::FrameResourceManager::new();
+    manager
+        .per_view_lights
+        .get_or_insert_with(ViewId::Main, PreparedViewLights::default)
+        .lights
+        .push(shadowed_light(LightType::Spot));
+    let first_plan = prefetched_plan(vec![pbs_draw(1, ShadowCastMode::On)]);
+    let replacement_plan = prefetched_plan(vec![pbs_draw(1, ShadowCastMode::On)]);
+
+    manager.prepare_shadow_frame_for_views(
+        HostShadowQuality::default(),
+        None,
+        [(ViewId::Main, &first_plan)],
+    );
+    manager.prepare_shadow_frame_for_views(
+        HostShadowQuality::default(),
+        None,
+        [(ViewId::Main, &replacement_plan)],
+    );
+    let plan = manager.shadow_frame_plan();
+
+    assert_eq!(plan.cache_stats.caster_plan_hits, 0);
+    assert_eq!(plan.cache_stats.caster_plan_misses, 1);
+    assert_eq!(plan.cache_stats.visibility_hits, 0);
+    assert_eq!(plan.cache_stats.visibility_misses, 1);
+}
+
+#[test]
+fn stable_mesh_generation_reuses_visible_caster_content_hash() {
+    let mut manager = super::FrameResourceManager::new();
+    let mesh_pool = MeshPool::default_pool();
+    manager
+        .per_view_lights
+        .get_or_insert_with(ViewId::Main, PreparedViewLights::default)
+        .lights
+        .push(shadowed_light(LightType::Spot));
+    let draw_plan = prefetched_plan(vec![
+        pbs_draw(1, ShadowCastMode::On),
+        pbs_draw(2, ShadowCastMode::On),
+    ]);
+
+    for _ in 0..2 {
+        manager.prepare_shadow_frame_for_views(
+            HostShadowQuality::default(),
+            Some(&mesh_pool),
+            [(ViewId::Main, &draw_plan)],
+        );
+        let resolution = manager.shadow_frame_plan().requested_resolution;
+        manager.finalize_shadow_frame_after_atlas_sync(resolution, false);
+    }
+    manager.prepare_shadow_frame_for_views(
+        HostShadowQuality::default(),
+        Some(&mesh_pool),
+        [(ViewId::Main, &draw_plan)],
+    );
+    let plan = manager.shadow_frame_plan();
+
+    assert_eq!(plan.cache_stats.content_hash_hits, 1);
+    assert_eq!(plan.cache_stats.avoided_content_hash_draws, 2);
+    assert!(
+        plan.rendering_layer_indices.is_empty(),
+        "stable static depth contents should reuse their persistent atlas layer"
+    );
 }

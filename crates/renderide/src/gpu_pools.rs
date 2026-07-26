@@ -13,6 +13,7 @@
 //! * `test_support` (test-only) -- builders shared by submodule unit tests.
 
 pub(crate) mod budget;
+pub(crate) mod geometry_arena;
 pub(crate) mod pools;
 pub(crate) mod resource_pool;
 pub(crate) mod sampler_state;
@@ -22,6 +23,8 @@ pub(crate) mod texture_allocation;
 pub(crate) mod test_support;
 
 pub(crate) use budget::{NoopStreamingPolicy, StreamingPolicy, VramAccounting, VramResourceKind};
+/// Persistent store for immutable rigid mesh geometry.
+pub(crate) type StaticGeometryStore = geometry_arena::GeometryArena;
 pub(crate) use pools::cubemap::{CubemapPool, GpuCubemap};
 pub(crate) use pools::mesh::MeshPool;
 pub(crate) use pools::render_texture::{GpuRenderTexture, RenderTexturePool};

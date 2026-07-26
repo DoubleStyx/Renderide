@@ -28,10 +28,11 @@ fn downsample_color(face: u32, xy: vec2<u32>) -> vec3<f32> {
     let center = vec2<f32>(xy) * 2.0 + vec2<f32>(0.5);
     var weighted = vec3<f32>(0.0);
     var total_weight = 0.0;
-    for (var oy = 0u; oy < 4u; oy = oy + 1u) {
+    // The outer tent taps have zero weight.
+    for (var oy = 1u; oy < 3u; oy = oy + 1u) {
         let fy = f32(oy) - 1.5;
         let wy = tent_weight(fy);
-        for (var ox = 0u; ox < 4u; ox = ox + 1u) {
+        for (var ox = 1u; ox < 3u; ox = ox + 1u) {
             let fx = f32(ox) - 1.5;
             let wx = tent_weight(fx);
             let tap = center + vec2<f32>(fx, fy);

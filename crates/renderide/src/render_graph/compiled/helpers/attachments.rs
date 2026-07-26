@@ -259,6 +259,7 @@ pub(in crate::render_graph::compiled) fn execute_graph_raster_pass_node(
     graph_resources: &GraphResolvedResources,
     encoder: &mut wgpu::CommandEncoder,
     ctx: &mut RasterPassCtx<'_, '_>,
+    before_record: Option<&mut dyn FnMut(&mut wgpu::CommandEncoder)>,
 ) -> Result<(), GraphExecuteError> {
     let should_record = {
         profiling::scope!("graph::raster::should_record");
@@ -270,6 +271,9 @@ pub(in crate::render_graph::compiled) fn execute_graph_raster_pass_node(
         return Ok(());
     }
 
+    if let Some(before_record) = before_record {
+        before_record(encoder);
+    }
     let sample_count = frame_sample_count_from_raster_ctx(ctx);
     let color_attachments =
         resolve_color_attachments(pass.name(), template, graph_resources, sample_count)?;

@@ -435,7 +435,8 @@ mod tests {
         let plan = main_swapchain_plan();
         let hints = FrameViewResourceHints {
             needs_depth_snapshot: true,
-            needs_color_snapshot: false,
+            needs_per_object_color_snapshot: false,
+            needs_named_color_snapshot: true,
         };
         let frame_view = plan.to_frame_view(hints, Blackboard::new());
 

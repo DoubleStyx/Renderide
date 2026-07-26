@@ -7,7 +7,7 @@ use super::super::layout::{
     index_bytes_per_element,
 };
 use super::fingerprint::mesh_layout_fingerprint;
-use super::{GpuMesh, upload::MeshGpuUploadContext};
+use super::{GpuMesh, MeshInPlaceUploadPlan, upload::MeshGpuUploadContext};
 
 /// Computes [`MeshBufferLayout`] from [`MeshUploadData`] and validates bone region lengths.
 pub fn compute_and_validate_mesh_layout(data: &MeshUploadData) -> Option<MeshBufferLayout> {
@@ -62,6 +62,7 @@ pub fn try_upload_mesh_from_raw(
     raw: &[u8],
     data: &MeshUploadData,
     existing: Option<GpuMesh>,
+    in_place_plan: Option<MeshInPlaceUploadPlan>,
     layout: &MeshBufferLayout,
 ) -> Option<GpuMesh> {
     profiling::scope!("asset::mesh_upload_raw");
@@ -94,9 +95,8 @@ pub fn try_upload_mesh_from_raw(
         return None;
     }
 
-    if let Some(existing) = existing
-        && existing.compatible_for_in_place_update(data, layout, raw)
-        && let Some(mesh) = existing.write_in_place(ctx, raw, data, layout, hint)
+    if let (Some(existing), Some(in_place_plan)) = (existing, in_place_plan)
+        && let Some(mesh) = existing.write_in_place(ctx, raw, data, layout, hint, in_place_plan)
     {
         if ctx.mapped_buffer_health.generation() != ctx.mapped_buffer_generation {
             logger::debug!(

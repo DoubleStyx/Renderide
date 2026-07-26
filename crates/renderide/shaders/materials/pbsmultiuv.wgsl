@@ -136,15 +136,20 @@ fn sample_normal_world(
     world_t: vec4<f32>,
     front_facing: bool,
 ) -> vec3<f32> {
-    let tbn = pnorm::orthonormal_tbn(world_n, world_t);
-    var ts_n = vec3<f32>(0.0, 0.0, 1.0);
-    if (pbs_kw(PBSMULTIUV_KW_NORMALMAP)) {
-        let uv_n = uvu::apply_st_uv4(uv0, uv1, uv2, uv3, mat._NormalUV, mat._NormalMap_ST);
-        ts_n = nd::decode_ts_normal_with_placeholder_sample(
-            ts::sample_tex_2d(_NormalMap, _NormalMap_sampler, uv_n, mat._NormalMap_LodBias),
-            mat._NormalScale,
-        );
+    if (!pbs_kw(PBSMULTIUV_KW_NORMALMAP)) {
+        var n = normalize(world_n);
+        if (!front_facing) {
+            n = -n;
+        }
+        return n;
     }
+
+    let tbn = pnorm::orthonormal_tbn(world_n, world_t);
+    let uv_n = uvu::apply_st_uv4(uv0, uv1, uv2, uv3, mat._NormalUV, mat._NormalMap_ST);
+    var ts_n = nd::decode_ts_normal_with_placeholder_sample(
+        ts::sample_tex_2d(_NormalMap, _NormalMap_sampler, uv_n, mat._NormalMap_LodBias),
+        mat._NormalScale,
+    );
     if (!front_facing) {
         ts_n.z = -ts_n.z;
     }

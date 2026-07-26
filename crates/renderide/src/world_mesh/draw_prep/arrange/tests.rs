@@ -13,7 +13,8 @@ use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_
 use crate::world_mesh::WorldMeshDrawItem;
 
 use super::{
-    ARRANGE_PARALLEL_MIN_DRAWS, arrange_draw_chunks_by_phase_bins, arrange_draws_by_phase_bins,
+    ARRANGE_PARALLEL_MIN_DRAWS, BatchIdTable, arrange_draw_chunks_by_phase_bins,
+    arrange_draws_by_phase_bins, cmp_batch_identity, flatten_draw_chunks,
 };
 
 /// Builds an opaque dummy draw item.
@@ -109,6 +110,96 @@ fn arranged_signature(items: &[WorldMeshDrawItem]) -> Vec<(usize, i32, i32, bool
             )
         })
         .collect()
+}
+
+/// Assigns batch IDs with the previous full-draw sort for equivalence checks.
+fn reference_batch_ids(items: &[WorldMeshDrawItem]) -> Vec<u32> {
+    let mut sorted_indices = (0..items.len()).collect::<Vec<_>>();
+    sorted_indices.sort_unstable_by(|&a, &b| cmp_batch_identity(&items[a], &items[b]));
+
+    let mut draw_ids = vec![u32::MAX; items.len()];
+    let mut previous = None::<usize>;
+    let mut batch_id = 0u32;
+    for index in sorted_indices {
+        if let Some(previous_index) = previous
+            && cmp_batch_identity(&items[previous_index], &items[index]) != Ordering::Equal
+        {
+            batch_id = batch_id.saturating_add(1);
+        }
+        draw_ids[index] = batch_id;
+        previous = Some(index);
+    }
+    draw_ids
+}
+
+#[test]
+fn compact_batch_ids_deduplicate_exact_keys_and_split_hash_collisions() {
+    let first = opaque(10, 1, 0);
+    let mut duplicate = first.clone();
+    duplicate.node_id = 99;
+    let mut colliding = opaque(10, 2, 2);
+    colliding.batch_key_hash = first.batch_key_hash;
+    let items = [first, duplicate, colliding];
+
+    let table = BatchIdTable::build_from_items(&items, false);
+
+    assert_eq!(table.id_for_index(0), table.id_for_index(1));
+    assert_ne!(table.id_for_index(0), table.id_for_index(2));
+}
+
+#[test]
+fn compact_batch_ids_match_reference_for_randomized_collision_heavy_draws() {
+    let templates = (0..ARRANGE_PARALLEL_MIN_DRAWS + 73)
+        .map(|index| {
+            let mut item = opaque(
+                (index % 37) as i32,
+                i32::try_from(index).unwrap_or(i32::MAX),
+                index,
+            );
+            item.batch_key_hash = (index % 19) as u64;
+            item
+        })
+        .collect::<Vec<_>>();
+
+    let mut state = 0xD1B5_4A32_D192_ED03u64;
+    let items = (0..4_096)
+        .map(|collect_order| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let mut item = templates[(state as usize) % templates.len()].clone();
+            item.collect_order = collect_order;
+            item.node_id = collect_order as i32;
+            item
+        })
+        .collect::<Vec<_>>();
+    let expected = reference_batch_ids(&items);
+
+    assert_eq!(
+        BatchIdTable::build_from_items(&items, false).draw_ids,
+        expected
+    );
+    assert_eq!(
+        BatchIdTable::build_from_items(&items, true).draw_ids,
+        expected
+    );
+}
+
+#[test]
+fn single_chunk_flatten_reuses_storage_and_assigns_dense_order() {
+    let chunk = vec![opaque(10, 1, 99), opaque(20, 2, 98)];
+    let allocation = chunk.as_ptr();
+
+    let flattened = flatten_draw_chunks(vec![chunk], true);
+
+    assert_eq!(flattened.as_ptr(), allocation);
+    assert_eq!(
+        flattened
+            .iter()
+            .map(|item| item.collect_order)
+            .collect::<Vec<_>>(),
+        vec![0, 1]
+    );
 }
 
 #[test]

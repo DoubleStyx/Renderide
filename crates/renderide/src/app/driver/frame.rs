@@ -192,6 +192,10 @@ impl AppDriver {
     fn drain_completion_and_try_desktop_one_credit(&mut self) -> bool {
         self.runtime.update_decoupling_activation(Instant::now());
         self.drain_submit_completion_work();
+        self.try_desktop_one_credit_for_renderable_submit()
+    }
+
+    fn try_desktop_one_credit_for_renderable_submit(&mut self) -> bool {
         let action = self.runtime.record_lockstep_pipeline_decision();
         if should_attempt_desktop_one_credit(DesktopOneCreditInput {
             vr_active: self.runtime.vr_active(),

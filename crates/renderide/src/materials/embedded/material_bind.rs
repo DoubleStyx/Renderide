@@ -20,7 +20,7 @@ use hashbrown::{HashMap, HashSet};
 use std::sync::Arc;
 
 use lru::LruCache;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 
 use super::bind_kind::TextureBindKind;
 use super::embedded_material_bind_error::EmbeddedMaterialBindError;
@@ -191,18 +191,15 @@ pub struct EmbeddedMaterialBindResources {
     red_cube: PlaceholderTexture,
     default_sampler: Arc<wgpu::Sampler>,
     property_registry: Arc<PropertyIdRegistry>,
-    stem_cache: Mutex<HashMap<String, Arc<StemMaterialLayout>>>,
+    stem_cache: RwLock<HashMap<String, Arc<StemMaterialLayout>>>,
     /// Sharded dynamic uniform arenas for `@group(1) @binding(0)` material constants.
     ///
-    /// Each shard owns an independent growable GPU buffer and slot allocator; a uniform cache
-    /// key always routes to the same shard, so concurrent rayon recording workers hitting
-    /// distinct keys never block each other. Replaces the previous single
-    /// `Mutex<MaterialUniformArena>` whose lock was the dominant contention point during
-    /// `graph::per_view_fan_out` (3 ms `embedded_uniform_arena_critical_section` zone).
+    /// Each shard owns an independent growable GPU buffer and slot allocator. Exact stable hits
+    /// share a read lock; allocation, refresh, growth, and purge retain exclusive access.
     ///
     /// Per-shard growth bumps that shard's `buffer_generation`; the bind group cache key already
     /// includes the slot's `buffer_generation`, so per-shard generations are self-consistent.
-    uniform_arena_shards: Box<[Mutex<MaterialUniformArena>]>,
+    uniform_arena_shards: Box<[RwLock<MaterialUniformArena>]>,
     /// Deterministic per-process hasher routing a [`MaterialUniformCacheKey`] to its shard.
     uniform_arena_hasher: RandomState,
     /// Sharded LRU caches for `@group(1)` bind groups and samplers.
@@ -267,9 +264,9 @@ impl EmbeddedMaterialBindResources {
             red_cube,
             default_sampler,
             property_registry,
-            stem_cache: Mutex::new(HashMap::new()),
+            stem_cache: RwLock::new(HashMap::new()),
             uniform_arena_shards: (0..EMBEDDED_CACHE_SHARDS)
-                .map(|_| Mutex::new(MaterialUniformArena::new(device.clone(), limits.clone())))
+                .map(|_| RwLock::new(MaterialUniformArena::new(device.clone(), limits.clone())))
                 .collect(),
             uniform_arena_hasher: RandomState::new(),
             bind_cache: ShardedLru::new(max_cached_embedded_bind_groups(), EMBEDDED_CACHE_SHARDS),
@@ -329,7 +326,7 @@ impl EmbeddedMaterialBindResources {
         self.texture_debug_cache.lock().clear();
         for shard in &self.uniform_arena_shards {
             shard
-                .lock()
+                .write()
                 .purge_material_assets(material_ids, property_block_ids);
         }
     }
@@ -344,7 +341,7 @@ impl EmbeddedMaterialBindResources {
     /// Invalidates reflected layout and group-1 caches for one composed shader stem.
     pub(crate) fn invalidate_stem_layout(&self, stem: &str) {
         profiling::scope!("materials::embedded_invalidate_stem_layout");
-        self.stem_cache.lock().remove(stem);
+        self.stem_cache.write().remove(stem);
         self.clear_bind_cache();
         self.texture_debug_cache.lock().clear();
     }
@@ -544,7 +541,7 @@ impl EmbeddedMaterialBindResources {
 
     /// Routes a uniform cache key to its arena shard. A given key always maps to the same shard,
     /// so the per-shard generation tracked by [`MaterialUniformArena`] is self-consistent.
-    fn uniform_arena_shard(&self, key: &MaterialUniformCacheKey) -> &Mutex<MaterialUniformArena> {
+    fn uniform_arena_shard(&self, key: &MaterialUniformCacheKey) -> &RwLock<MaterialUniformArena> {
         let idx = (self.uniform_arena_hasher.hash_one(key) as usize) & (EMBEDDED_CACHE_SHARDS - 1);
         &self.uniform_arena_shards[idx]
     }

@@ -4,9 +4,9 @@
 use std::sync::mpsc;
 
 use super::slot::{
-    UPLOAD_ARENA_SLOTS, UploadArenaSlot, UploadArenaSlotState, create_persistent_slot_buffer,
-    create_temporary_staging_buffer, log_oversized_upload, next_slot_capacity,
-    select_writable_slot,
+    OVERSIZED_SLOT_RECLAIM_OBSERVATIONS, UPLOAD_ARENA_SLOTS, UploadArenaSlot, UploadArenaSlotState,
+    create_persistent_slot_buffer, create_temporary_staging_buffer, log_oversized_upload,
+    next_slot_capacity, select_writable_slot, slot_is_materially_oversized,
 };
 use super::staging::{PreparedUploadStaging, UploadStagingSource};
 use crate::upload_stats::{UploadArenaAcquireStats, UploadArenaPressure};
@@ -67,6 +67,7 @@ impl PersistentUploadArena {
             slot.buffer = None;
             slot.capacity = 0;
             slot.state = UploadArenaSlotState::Empty;
+            slot.oversized_observations = 0;
         }
 
         logger::debug!(
@@ -83,6 +84,7 @@ impl PersistentUploadArena {
         staged_writes: usize,
     ) -> PreparedUploadStaging {
         profiling::scope!("frame_upload_arena::prepare_staging");
+        self.reclaim_sustained_oversized_free_slots(required);
         if required == 0 {
             return PreparedUploadStaging {
                 buffer: None,
@@ -124,6 +126,39 @@ impl PersistentUploadArena {
                 temporary_staging_fallbacks: 1,
                 ..UploadArenaAcquireStats::default()
             },
+        }
+    }
+
+    /// Reclaims oversized mapped slots after sustained low demand.
+    ///
+    /// Only [`UploadArenaSlotState::Free`] slots are dropped, preserving in-flight staging buffers.
+    fn reclaim_sustained_oversized_free_slots(&mut self, required: u64) {
+        let mut released_capacity = 0u64;
+        let mut released_slots = 0usize;
+        for slot in &mut self.slots {
+            if !slot_is_materially_oversized(slot.capacity, required) {
+                slot.oversized_observations = 0;
+                continue;
+            }
+            slot.oversized_observations = slot.oversized_observations.saturating_add(1);
+            if slot.oversized_observations < OVERSIZED_SLOT_RECLAIM_OBSERVATIONS
+                || slot.state != UploadArenaSlotState::Free
+            {
+                continue;
+            }
+            released_capacity = released_capacity.saturating_add(slot.capacity);
+            released_slots = released_slots.saturating_add(1);
+            slot.buffer = None;
+            slot.capacity = 0;
+            slot.state = UploadArenaSlotState::Empty;
+            slot.oversized_observations = 0;
+        }
+        if released_slots != 0 {
+            logger::debug!(
+                "frame upload arena: reclaimed overprovisioned persistent slots \
+                 slots={released_slots} released_capacity_bytes={released_capacity} \
+                 current_required_bytes={required}"
+            );
         }
     }
 
@@ -196,6 +231,7 @@ impl PersistentUploadArena {
             };
             arena_slot.buffer = Some(create_persistent_slot_buffer(device, capacity));
             arena_slot.capacity = capacity;
+            arena_slot.oversized_observations = 0;
             acquire_stats.persistent_slot_grows = 1;
         } else {
             acquire_stats.persistent_slot_reuses = 1;
@@ -276,6 +312,7 @@ impl PersistentUploadArena {
         let Some(buffer) = arena_slot.buffer.clone() else {
             arena_slot.state = UploadArenaSlotState::Empty;
             arena_slot.capacity = 0;
+            arena_slot.oversized_observations = 0;
             return;
         };
         arena_slot.state = UploadArenaSlotState::Remapping { generation };
@@ -306,6 +343,7 @@ impl PersistentUploadArena {
         arena_slot.buffer = None;
         arena_slot.capacity = 0;
         arena_slot.state = UploadArenaSlotState::Empty;
+        arena_slot.oversized_observations = 0;
     }
 }
 
@@ -400,6 +438,47 @@ mod tests {
         assert_eq!(pressure.free_slots, 1);
         assert_eq!(pressure.in_flight_slots, 1);
         assert_eq!(pressure.remapping_slots, 1);
+    }
+
+    #[test]
+    fn sustained_low_demand_reclaims_only_free_large_slots() {
+        let mut arena = PersistentUploadArena::new();
+        arena.slots[0].state = UploadArenaSlotState::Free;
+        arena.slots[0].capacity = 64 * 1024 * 1024;
+        arena.slots[1].state = UploadArenaSlotState::InFlight { generation: 1 };
+        arena.slots[1].capacity = 64 * 1024 * 1024;
+        arena.slots[2].state = UploadArenaSlotState::Free;
+        arena.slots[2].capacity = 4 * 1024 * 1024;
+
+        for _ in 0..OVERSIZED_SLOT_RECLAIM_OBSERVATIONS {
+            arena.reclaim_sustained_oversized_free_slots(8 * 1024 * 1024);
+        }
+
+        assert_eq!(arena.slots[0].state, UploadArenaSlotState::Empty);
+        assert_eq!(arena.slots[0].capacity, 0);
+        assert_eq!(
+            arena.slots[1].state,
+            UploadArenaSlotState::InFlight { generation: 1 }
+        );
+        assert_eq!(arena.slots[1].capacity, 64 * 1024 * 1024);
+        assert_eq!(arena.slots[2].state, UploadArenaSlotState::Free);
+        assert_eq!(arena.slots[2].capacity, 4 * 1024 * 1024);
+    }
+
+    #[test]
+    fn renewed_large_demand_resets_reclaim_observations() {
+        let mut arena = PersistentUploadArena::new();
+        arena.slots[0].state = UploadArenaSlotState::Free;
+        arena.slots[0].capacity = 64 * 1024 * 1024;
+
+        for _ in 0..OVERSIZED_SLOT_RECLAIM_OBSERVATIONS - 1 {
+            arena.reclaim_sustained_oversized_free_slots(8 * 1024 * 1024);
+        }
+        arena.reclaim_sustained_oversized_free_slots(32 * 1024 * 1024);
+        arena.reclaim_sustained_oversized_free_slots(8 * 1024 * 1024);
+
+        assert_eq!(arena.slots[0].state, UploadArenaSlotState::Free);
+        assert_eq!(arena.slots[0].oversized_observations, 1);
     }
 
     #[test]

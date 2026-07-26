@@ -35,10 +35,42 @@ use frame_params::build_per_view_frame_params;
 use offscreen_copy::{record_offscreen_color_copy, record_offscreen_color_copy_command};
 
 struct PerViewUnitEncodeOutput {
-    command_buffer: wgpu::CommandBuffer,
+    command_buffer: Option<wgpu::CommandBuffer>,
     encode_ms: f64,
     finish_ms: f64,
     command_stats: crate::render_graph::blackboard::GraphCommandStats,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PerViewUnitRecordingOutcome {
+    admitted_pass: bool,
+    recorded_gpu_query: bool,
+    materialized_group: bool,
+}
+
+impl PerViewUnitRecordingOutcome {
+    fn add(&mut self, other: Self) {
+        self.admitted_pass |= other.admitted_pass;
+        self.recorded_gpu_query |= other.recorded_gpu_query;
+        self.materialized_group |= other.materialized_group;
+    }
+
+    fn retains_command_buffer(self) -> bool {
+        self.admitted_pass || self.recorded_gpu_query || self.materialized_group
+    }
+}
+
+fn finish_unit_command_buffer_if_needed<T>(
+    outcome: PerViewUnitRecordingOutcome,
+    finish: impl FnOnce() -> T,
+) -> Option<T> {
+    outcome.retains_command_buffer().then(finish)
+}
+
+fn append_unit_command_buffer<T>(command_buffers: &mut Vec<T>, command_buffer: Option<T>) {
+    if let Some(command_buffer) = command_buffer {
+        command_buffers.push(command_buffer);
+    }
 }
 
 struct PerViewCommandEncodeBatch {
@@ -194,6 +226,9 @@ impl CompiledRenderGraph {
         let encode_ms = encoded.encode_ms.max(elapsed_ms(encode_start));
         let mut retained_resources = GpuRetainedResources::new();
         resolved_resources.retain_submit_resources(&mut retained_resources);
+        retained_resources.append(crate::passes::take_gpu_cull_submit_resources(
+            &mut view_blackboard,
+        ));
         Ok(PerViewEncodeOutput {
             command_buffers: encoded.command_buffers,
             hud_outputs,
@@ -269,6 +304,9 @@ impl CompiledRenderGraph {
         let hud_outputs = view_blackboard.take::<PerViewHudOutputsSlot>();
         let mut retained_resources = GpuRetainedResources::new();
         resolved_resources.retain_submit_resources(&mut retained_resources);
+        retained_resources.append(crate::passes::take_gpu_cull_submit_resources(
+            &mut view_blackboard,
+        ));
         Ok(PerViewEncodeOutput {
             command_buffers: Vec::new(),
             hud_outputs,
@@ -418,7 +456,7 @@ impl CompiledRenderGraph {
                     encode_ms += output.encode_ms;
                     finish_ms += output.finish_ms;
                     max_finish_ms = f64::max(max_finish_ms, output.finish_ms);
-                    command_buffers.push(output.command_buffer);
+                    append_unit_command_buffer(&mut command_buffers, output.command_buffer);
                     batch_index =
                         next_phase_batch_index(batches, next_batch_index, PassPhase::PerView);
                 }
@@ -446,7 +484,7 @@ impl CompiledRenderGraph {
                         finish_ms += output.finish_ms;
                         max_finish_ms = f64::max(max_finish_ms, output.finish_ms);
                         parallel_stats.add(output.command_stats);
-                        command_buffers.push(output.command_buffer);
+                        append_unit_command_buffer(&mut command_buffers, output.command_buffer);
                     }
                     batch_index = next_phase_batch_index(
                         batches,
@@ -505,11 +543,11 @@ impl CompiledRenderGraph {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("render-graph-per-view-serial-units"),
                 });
+        let mut recording_outcome = PerViewUnitRecordingOutcome::default();
         for unit_idx in unit_range {
             let unit = self.schedule.recording_plan.units[unit_idx];
             let query_label = self.schedule.recording_plan.unit_label(unit_idx);
-            let gpu_query = profiler.map(|p| p.begin_query(query_label, &mut encoder));
-            self.record_unit_into_encoder(
+            recording_outcome.add(self.record_profiled_unit_into_encoder(
                 scope,
                 PassRecordTargets {
                     frame_params: &mut *state.frame_params,
@@ -519,12 +557,8 @@ impl CompiledRenderGraph {
                 upload_batch,
                 profiler,
                 unit,
-            )?;
-            if let Some(query) = gpu_query
-                && let Some(prof) = profiler
-            {
-                prof.end_query(&mut encoder, query);
-            }
+                query_label,
+            )?);
         }
         let command_stats = state
             .blackboard
@@ -532,12 +566,14 @@ impl CompiledRenderGraph {
             .copied()
             .unwrap_or_default();
         let encode_ms = elapsed_ms(encode_start);
-        let (command_buffer, finish_ms) = {
+        let finish_start = recording_outcome
+            .retains_command_buffer()
+            .then(Instant::now);
+        let command_buffer = finish_unit_command_buffer_if_needed(recording_outcome, || {
             profiling::scope!("CommandEncoder::finish::graph_per_view_serial_batch");
-            let finish_start = Instant::now();
-            let command_buffer = encoder.finish();
-            (command_buffer, elapsed_ms(finish_start))
-        };
+            encoder.finish()
+        });
+        let finish_ms = finish_start.map_or(0.0, elapsed_ms);
         Ok(PerViewUnitEncodeOutput {
             command_buffer,
             encode_ms,
@@ -609,8 +645,7 @@ impl CompiledRenderGraph {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some(labels.encoder),
                 });
-        let gpu_query = profiler.map(|p| p.begin_query(labels.query, &mut encoder));
-        self.record_unit_into_encoder(
+        let recording_outcome = self.record_profiled_unit_into_encoder(
             scope,
             PassRecordTargets {
                 frame_params: &mut *state.frame_params,
@@ -620,29 +655,89 @@ impl CompiledRenderGraph {
             upload_batch,
             profiler,
             unit,
+            labels.query,
         )?;
-        if let Some(query) = gpu_query
-            && let Some(prof) = profiler
-        {
-            prof.end_query(&mut encoder, query);
-        }
         let command_stats = state
             .blackboard
             .get_untracked::<GraphCommandStatsSlot>()
             .copied()
             .unwrap_or_default();
         let encode_ms = elapsed_ms(encode_start);
-        let (command_buffer, finish_ms) = {
+        let finish_start = recording_outcome
+            .retains_command_buffer()
+            .then(Instant::now);
+        let command_buffer = finish_unit_command_buffer_if_needed(recording_outcome, || {
             profiling::scope!("CommandEncoder::finish::graph_per_view_unit");
-            let finish_start = Instant::now();
-            let command_buffer = encoder.finish();
-            (command_buffer, elapsed_ms(finish_start))
-        };
+            encoder.finish()
+        });
+        let finish_ms = finish_start.map_or(0.0, elapsed_ms);
         Ok(PerViewUnitEncodeOutput {
             command_buffer,
             encode_ms,
             finish_ms,
             command_stats,
+        })
+    }
+
+    fn record_profiled_unit_into_encoder<'a>(
+        &self,
+        scope: PerViewRecordingScope<'a>,
+        mut targets: PassRecordTargets<'a, '_, '_>,
+        upload_batch: &FrameUploadBatch,
+        profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
+        unit: RecordingUnit,
+        query_label: &str,
+    ) -> Result<PerViewUnitRecordingOutcome, GraphExecuteError> {
+        if !recording_unit_query_starts_on_pass_admission(unit) {
+            let query = profiler.map(|profiler| profiler.begin_query(query_label, targets.encoder));
+            let result = self.record_unit_into_encoder(
+                scope,
+                targets.reborrow(),
+                upload_batch,
+                profiler,
+                unit,
+                None,
+            );
+            let recorded_gpu_query = query.is_some();
+            if let (Some(profiler), Some(query)) = (profiler, query) {
+                profiler.end_query(targets.encoder, query);
+            }
+            result?;
+            return Ok(PerViewUnitRecordingOutcome {
+                admitted_pass: false,
+                recorded_gpu_query,
+                materialized_group: true,
+            });
+        }
+
+        let mut query = None;
+        let mut admitted_pass = false;
+        let mut begin_query = |encoder: &mut wgpu::CommandEncoder| {
+            admitted_pass = true;
+            if let Some(profiler) = profiler {
+                open_recording_unit_query_if_admitted(&mut query, true, || {
+                    profiler.begin_query(query_label, encoder)
+                });
+            }
+        };
+        let result = self.record_unit_into_encoder(
+            scope,
+            targets.reborrow(),
+            upload_batch,
+            profiler,
+            unit,
+            Some(&mut begin_query),
+        );
+        drop(begin_query);
+        let recorded_gpu_query = query.is_some();
+        if let (Some(profiler), Some(query)) = (profiler, query) {
+            profiler.end_query(targets.encoder, query);
+        }
+        result?;
+        Ok(PerViewUnitRecordingOutcome {
+            admitted_pass,
+            recorded_gpu_query,
+            materialized_group: false,
         })
     }
 
@@ -653,6 +748,7 @@ impl CompiledRenderGraph {
         upload_batch: &FrameUploadBatch,
         profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
         unit: RecordingUnit,
+        mut before_record: Option<&mut dyn FnMut(&mut wgpu::CommandEncoder)>,
     ) -> Result<(), GraphExecuteError> {
         if unit.is_materialized_group()
             && self.try_execute_raster_materialization_group(
@@ -690,6 +786,7 @@ impl CompiledRenderGraph {
                     profiler,
                 },
                 upload_batch,
+                before_record.take(),
             )?;
         }
         Ok(())
@@ -716,5 +813,176 @@ impl CompiledRenderGraph {
             &mut resolved_resources,
         )?;
         Ok(resolved_resources)
+    }
+}
+
+#[inline]
+const fn recording_unit_query_starts_on_pass_admission(unit: RecordingUnit) -> bool {
+    !unit.is_materialized_group()
+}
+
+#[inline]
+fn open_recording_unit_query_if_admitted<T>(
+    query: &mut Option<T>,
+    admitted: bool,
+    open: impl FnOnce() -> T,
+) {
+    if admitted && query.is_none() {
+        *query = Some(open());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render_graph::pass::PassPhase;
+    use crate::render_graph::schedule::RecordingSerialReason;
+    use std::cell::Cell;
+
+    fn recording_unit(start_step: usize, end_step: usize) -> RecordingUnit {
+        RecordingUnit {
+            start_step,
+            end_step,
+            phase: PassPhase::PerView,
+            wave_idx: 0,
+            parallel_safe: false,
+            serial_reason: RecordingSerialReason::NeverParallel,
+        }
+    }
+
+    #[test]
+    fn single_pass_unit_defers_gpu_query_until_pass_admission() {
+        assert!(recording_unit_query_starts_on_pass_admission(
+            recording_unit(3, 4)
+        ));
+    }
+
+    #[test]
+    fn materialized_unit_keeps_eager_gpu_query_boundary() {
+        assert!(!recording_unit_query_starts_on_pass_admission(
+            recording_unit(3, 5)
+        ));
+    }
+
+    #[test]
+    fn skipped_single_pass_opens_no_deferred_query() {
+        let opens = Cell::new(0);
+        let mut query = None;
+        open_recording_unit_query_if_admitted(&mut query, false, || {
+            opens.set(opens.get() + 1);
+            7
+        });
+
+        assert!(query.is_none());
+        assert_eq!(opens.get(), 0);
+    }
+
+    #[test]
+    fn admitted_single_pass_opens_one_deferred_query() {
+        let opens = Cell::new(0);
+        let mut query = None;
+        open_recording_unit_query_if_admitted(&mut query, true, || {
+            opens.set(opens.get() + 1);
+            7
+        });
+        open_recording_unit_query_if_admitted(&mut query, true, || {
+            opens.set(opens.get() + 1);
+            8
+        });
+
+        assert_eq!(query, Some(7));
+        assert_eq!(opens.get(), 1);
+    }
+
+    #[test]
+    fn skipped_single_pass_unit_returns_no_command_buffer_without_finishing() {
+        let finishes = Cell::new(0);
+        let command_buffer =
+            finish_unit_command_buffer_if_needed(PerViewUnitRecordingOutcome::default(), || {
+                finishes.set(finishes.get() + 1);
+                7
+            });
+
+        assert_eq!(command_buffer, None);
+        assert_eq!(finishes.get(), 0);
+    }
+
+    #[test]
+    fn admitted_single_pass_unit_retains_its_command_buffer() {
+        let finishes = Cell::new(0);
+        let command_buffer = finish_unit_command_buffer_if_needed(
+            PerViewUnitRecordingOutcome {
+                admitted_pass: true,
+                ..Default::default()
+            },
+            || {
+                finishes.set(finishes.get() + 1);
+                7
+            },
+        );
+
+        assert_eq!(command_buffer, Some(7));
+        assert_eq!(finishes.get(), 1);
+    }
+
+    #[test]
+    fn recorded_gpu_query_retains_its_command_buffer() {
+        let finishes = Cell::new(0);
+        let command_buffer = finish_unit_command_buffer_if_needed(
+            PerViewUnitRecordingOutcome {
+                recorded_gpu_query: true,
+                ..Default::default()
+            },
+            || {
+                finishes.set(finishes.get() + 1);
+                7
+            },
+        );
+
+        assert_eq!(command_buffer, Some(7));
+        assert_eq!(finishes.get(), 1);
+    }
+
+    #[test]
+    fn all_skipped_serial_range_returns_no_command_buffer() {
+        let finishes = Cell::new(0);
+        let mut range_outcome = PerViewUnitRecordingOutcome::default();
+        range_outcome.add(PerViewUnitRecordingOutcome::default());
+        range_outcome.add(PerViewUnitRecordingOutcome::default());
+        let command_buffer = finish_unit_command_buffer_if_needed(range_outcome, || {
+            finishes.set(finishes.get() + 1);
+            7
+        });
+
+        assert_eq!(command_buffer, None);
+        assert_eq!(finishes.get(), 0);
+    }
+
+    #[test]
+    fn materialized_group_retains_its_command_buffer() {
+        let finishes = Cell::new(0);
+        let command_buffer = finish_unit_command_buffer_if_needed(
+            PerViewUnitRecordingOutcome {
+                materialized_group: true,
+                ..Default::default()
+            },
+            || {
+                finishes.set(finishes.get() + 1);
+                7
+            },
+        );
+
+        assert_eq!(command_buffer, Some(7));
+        assert_eq!(finishes.get(), 1);
+    }
+
+    #[test]
+    fn parallel_unit_filter_omits_empty_buffers_without_reordering() {
+        let mut command_buffers = Vec::new();
+        append_unit_command_buffer(&mut command_buffers, Some(3));
+        append_unit_command_buffer(&mut command_buffers, None);
+        append_unit_command_buffer(&mut command_buffers, Some(7));
+
+        assert_eq!(command_buffers, vec![3, 7]);
     }
 }

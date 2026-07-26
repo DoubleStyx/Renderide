@@ -64,6 +64,9 @@ pub(super) struct DrawPreparationExtractDesc<'a, 'v> {
     pub(super) inner_parallelism: crate::world_mesh::WorldMeshDrawCollectParallelism,
     /// Render context and shader permutation used by each prepared view this tick.
     pub(super) view_draw_preparations: &'v [(RenderingContext, ShaderPermutation)],
+    /// Whether rigid static candidates should be retained for GPU visibility and indirect
+    /// command generation instead of being rejected by the CPU culler.
+    pub(super) retain_gpu_static_candidates: bool,
 }
 
 /// Backend-owned CPU draw-preparation caches.
@@ -76,6 +79,8 @@ pub(super) struct BackendDrawPreparation {
     render_worlds: HashMap<u8, RenderWorld>,
     /// Retained arranged draw command lists keyed by visible draw fingerprints.
     command_cache: WorldMeshCommandCache,
+    /// Retained per-view draw-plan cache reused across frames when the scene/camera/views match.
+    draw_plan_cache: crate::runtime::WorldMeshDrawPlanFrameCache,
 }
 
 impl BackendDrawPreparation {
@@ -86,7 +91,13 @@ impl BackendDrawPreparation {
             material_batch_caches: HashMap::new(),
             render_worlds: HashMap::new(),
             command_cache: WorldMeshCommandCache::default(),
+            draw_plan_cache: Default::default(),
         }
+    }
+
+    /// Invalidates cross-frame packets that embed GPU-device-relative atlas selections.
+    pub(super) fn reset_gpu_state(&mut self) {
+        self.draw_plan_cache.clear();
     }
 
     /// Applies scene mutation reports to backend-owned CPU render-world caches.
@@ -116,12 +127,14 @@ impl BackendDrawPreparation {
             reflection_probes,
             inner_parallelism,
             view_draw_preparations,
+            retain_gpu_static_candidates,
         } = desc;
         let Self {
             null_material_router,
             material_batch_caches,
             render_worlds,
             command_cache,
+            draw_plan_cache,
         } = self;
         let (property_store, router, pipeline_property_ids) = {
             profiling::scope!("render::extract_frame_shared::material_inputs");
@@ -162,9 +175,11 @@ impl BackendDrawPreparation {
             render_worlds,
             material_caches: material_batch_caches,
             command_cache,
+            draw_plan_cache,
             occlusion,
             reflection_probes,
             inner_parallelism,
+            retain_gpu_static_candidates,
         }
     }
 

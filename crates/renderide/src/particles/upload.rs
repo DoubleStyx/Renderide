@@ -6,8 +6,9 @@ use crate::assets::mesh::{
 };
 use crate::shared::buffer::SharedMemoryBufferDescriptor;
 use crate::shared::{
-    IndexBufferFormat, MeshUploadData, RenderBoundingBox, SubmeshBufferDescriptor, SubmeshTopology,
-    VertexAttributeDescriptor, VertexAttributeFormat, VertexAttributeType,
+    IndexBufferFormat, MeshUploadData, MeshUploadHint, MeshUploadHintFlag, RenderBoundingBox,
+    SubmeshBufferDescriptor, SubmeshTopology, VertexAttributeDescriptor, VertexAttributeFormat,
+    VertexAttributeType,
 };
 
 use super::types::ParticleRenderBufferError;
@@ -45,6 +46,7 @@ fn push_f32s<const N: usize>(out: &mut Vec<u8>, values: &[f32; N]) {
 }
 
 /// Writes one generated vertex into an already sized byte slice.
+#[cfg(test)]
 pub(super) fn write_generated_vertex(
     out: &mut [u8],
     position: Vec3,
@@ -60,6 +62,7 @@ pub(super) fn write_generated_vertex(
 }
 
 /// Writes tightly packed `f32` values into `out` and returns the byte count written.
+#[cfg(test)]
 fn write_f32s<const N: usize>(out: &mut [u8], values: &[f32; N]) -> usize {
     let bytes = bytemuck::cast_slice(values);
     out[..bytes.len()].copy_from_slice(bytes);
@@ -67,6 +70,7 @@ fn write_f32s<const N: usize>(out: &mut [u8], values: &[f32; N]) -> usize {
 }
 
 /// Writes tightly packed `u32` values into `out`.
+#[cfg(test)]
 pub(super) fn write_u32s(out: &mut [u8], values: &[u32]) {
     out.copy_from_slice(bytemuck::cast_slice(values));
 }
@@ -147,6 +151,7 @@ pub(crate) fn upload_generated_mesh(
     )?;
     let gpu = MeshGpuUploadContext {
         prepared_derived_streams: Some(&input.prepared_derived_streams),
+        static_geometry_store: None,
         ..gpu
     };
     let mesh = if gpu.validation_scopes_enabled {
@@ -252,6 +257,10 @@ pub(super) fn generated_mesh_upload_data(
         },
         bounds,
         asset_id: mesh_asset_id,
+        // Generated particle and trail meshes use dedicated dynamic buffers.
+        upload_hint: MeshUploadHint {
+            flags: MeshUploadHintFlag(MeshUploadHintFlag::DYNAMIC),
+        },
         ..Default::default()
     })
 }

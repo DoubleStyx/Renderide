@@ -109,6 +109,7 @@ impl CompiledRenderGraph {
         targets: PassRecordTargets<'a, '_, '_>,
         gpu: PassGpuInputs<'a>,
         upload_batch: &FrameUploadBatch,
+        before_record: Option<&mut dyn FnMut(&mut wgpu::CommandEncoder)>,
     ) -> Result<(), GraphExecuteError> {
         let PassRecordTargets {
             frame_params,
@@ -145,6 +146,7 @@ impl CompiledRenderGraph {
                         view.graph_resources,
                         encoder,
                         &mut ctx,
+                        before_record,
                     )
                 }
                 PassKind::Compute => {
@@ -166,7 +168,7 @@ impl CompiledRenderGraph {
                             profiler: gpu.profiler,
                         }
                     };
-                    record_compute_pass(pass, ctx)
+                    record_compute_pass(pass, ctx, before_record)
                 }
                 PassKind::Encoder => {
                     profiling::scope!("graph::record_encoder");
@@ -185,7 +187,7 @@ impl CompiledRenderGraph {
                             profiler: gpu.profiler,
                         }
                     };
-                    record_encoder_pass(pass, ctx)
+                    record_encoder_pass(pass, ctx, before_record)
                 }
             }
         })();
@@ -242,6 +244,7 @@ impl CompiledRenderGraph {
 fn record_compute_pass(
     pass: &PassNode,
     mut ctx: ComputePassCtx<'_, '_, '_>,
+    before_record: Option<&mut dyn FnMut(&mut wgpu::CommandEncoder)>,
 ) -> Result<(), GraphExecuteError> {
     let should_record = {
         profiling::scope!("graph::record_compute::should_record");
@@ -249,6 +252,9 @@ fn record_compute_pass(
             .map_err(GraphExecuteError::Pass)?
     };
     if should_record {
+        if let Some(before_record) = before_record {
+            before_record(ctx.encoder);
+        }
         let pass_query = ctx
             .profiler
             .map(|p| p.begin_query(pass.profiling_label(), ctx.encoder));
@@ -270,6 +276,7 @@ fn record_compute_pass(
 fn record_encoder_pass(
     pass: &PassNode,
     mut ctx: EncoderPassCtx<'_, '_, '_>,
+    before_record: Option<&mut dyn FnMut(&mut wgpu::CommandEncoder)>,
 ) -> Result<(), GraphExecuteError> {
     let should_record = {
         profiling::scope!("graph::record_encoder::should_record");
@@ -277,6 +284,9 @@ fn record_encoder_pass(
             .map_err(GraphExecuteError::Pass)?
     };
     if should_record {
+        if let Some(before_record) = before_record {
+            before_record(ctx.encoder);
+        }
         let pass_query = ctx
             .profiler
             .map(|p| p.begin_query(pass.profiling_label(), ctx.encoder));

@@ -101,6 +101,16 @@ fn mesh_particle_world_position_for_view(draw: dt::PerDrawUniforms, pos: vec4<f3
     return mp::mesh_particle_world_position_for_view(draw, pos, view_idx);
 }
 
+fn particle_vertex_frame_for_view(
+    draw: dt::PerDrawUniforms,
+    pos: vec4<f32>,
+    n: vec4<f32>,
+    t: vec4<f32>,
+    view_idx: u32,
+) -> mp::ParticleVertexFrame {
+    return mp::particle_vertex_frame_for_view(draw, pos, n, t, view_idx);
+}
+
 fn world_position_for_view(draw: dt::PerDrawUniforms, pos: vec4<f32>, n: vec4<f32>, t: vec4<f32>, view_idx: u32) -> vec4<f32> {
     return mp::world_position_for_view(draw, pos, n, t, view_idx);
 }
@@ -173,14 +183,15 @@ fn world_vertex_main(
     primary_uv: vec2<f32>,
 ) -> WorldVertexOutput {
     let draw = pd::get_draw(instance_index);
-    let world_p = world_position_for_view(draw, pos, n, t, view_idx);
+    let particle_frame = particle_vertex_frame_for_view(draw, pos, n, t, view_idx);
+    let world_p = particle_frame.world_position;
     let vp = select_view_proj(draw, view_idx);
 
     var out: WorldVertexOutput;
     out.clip_pos = vp * world_p;
     out.world_pos = world_p.xyz;
-    out.world_n = world_normal_for_view(draw, pos, n, t, view_idx);
-    out.world_t = world_tangent_for_view(draw, pos, n, t, view_idx);
+    out.world_n = particle_frame.world_normal;
+    out.world_t = particle_frame.world_tangent;
     out.primary_uv = particle_primary_uv(draw, primary_uv);
     out.view_layer = packed_view_layer(instance_index, view_idx);
     return out;
@@ -196,14 +207,15 @@ fn world_uv2_vertex_main(
     secondary_uv: vec2<f32>,
 ) -> WorldUv2VertexOutput {
     let draw = pd::get_draw(instance_index);
-    let world_p = world_position_for_view(draw, pos, n, t, view_idx);
+    let particle_frame = particle_vertex_frame_for_view(draw, pos, n, t, view_idx);
+    let world_p = particle_frame.world_position;
     let vp = select_view_proj(draw, view_idx);
 
     var out: WorldUv2VertexOutput;
     out.clip_pos = vp * world_p;
     out.world_pos = world_p.xyz;
-    out.world_n = world_normal_for_view(draw, pos, n, t, view_idx);
-    out.world_t = world_tangent_for_view(draw, pos, n, t, view_idx);
+    out.world_n = particle_frame.world_normal;
+    out.world_t = particle_frame.world_tangent;
     out.primary_uv = particle_primary_uv(draw, primary_uv);
     out.secondary_uv = secondary_uv;
     out.view_layer = packed_view_layer(instance_index, view_idx);
@@ -222,14 +234,15 @@ fn world_uv4_vertex_main(
     uv_d: vec2<f32>,
 ) -> WorldUv4VertexOutput {
     let draw = pd::get_draw(instance_index);
-    let world_p = world_position_for_view(draw, pos, n, t, view_idx);
+    let particle_frame = particle_vertex_frame_for_view(draw, pos, n, t, view_idx);
+    let world_p = particle_frame.world_position;
     let vp = select_view_proj(draw, view_idx);
 
     var out: WorldUv4VertexOutput;
     out.clip_pos = vp * world_p;
     out.world_pos = world_p.xyz;
-    out.world_n = world_normal_for_view(draw, pos, n, t, view_idx);
-    out.world_t = world_tangent_for_view(draw, pos, n, t, view_idx);
+    out.world_n = particle_frame.world_normal;
+    out.world_t = particle_frame.world_tangent;
     out.uv_a = particle_primary_uv(draw, uv_a);
     out.uv_b = uv_b;
     out.uv_c = uv_c;
@@ -247,15 +260,16 @@ fn world_object_vertex_main(
     primary_uv: vec2<f32>,
 ) -> WorldObjectVertexOutput {
     let draw = pd::get_draw(instance_index);
-    let world_p = world_position_for_view(draw, pos, n, t, view_idx);
+    let particle_frame = particle_vertex_frame_for_view(draw, pos, n, t, view_idx);
+    let world_p = particle_frame.world_position;
     let vp = select_view_proj(draw, view_idx);
 
     var out: WorldObjectVertexOutput;
     out.clip_pos = vp * world_p;
     out.world_pos = world_p.xyz;
     out.object_pos = pos.xyz;
-    out.world_n = world_normal_for_view(draw, pos, n, t, view_idx);
-    out.world_t = world_tangent_for_view(draw, pos, n, t, view_idx);
+    out.world_n = particle_frame.world_normal;
+    out.world_t = particle_frame.world_tangent;
     out.primary_uv = particle_primary_uv(draw, primary_uv);
     out.view_layer = packed_view_layer(instance_index, view_idx);
     return out;
@@ -271,14 +285,15 @@ fn world_color_vertex_main(
     color: vec4<f32>,
 ) -> WorldColorVertexOutput {
     let draw = pd::get_draw(instance_index);
-    let world_p = world_position_for_view(draw, pos, n, t, view_idx);
+    let particle_frame = particle_vertex_frame_for_view(draw, pos, n, t, view_idx);
+    let world_p = particle_frame.world_position;
     let vp = select_view_proj(draw, view_idx);
 
     var out: WorldColorVertexOutput;
     out.clip_pos = vp * world_p;
     out.world_pos = world_p.xyz;
-    out.world_n = world_normal_for_view(draw, pos, n, t, view_idx);
-    out.world_t = world_tangent_for_view(draw, pos, n, t, view_idx);
+    out.world_n = particle_frame.world_normal;
+    out.world_t = particle_frame.world_tangent;
     out.color = color * dt::particle_color(draw);
     out.primary_uv = particle_primary_uv(draw, primary_uv);
     out.view_layer = packed_view_layer(instance_index, view_idx);

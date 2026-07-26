@@ -29,6 +29,9 @@ fn optional_render_feature_mask() -> wgpu::Features {
     let multisample_array = wgpu::Features::MULTISAMPLE_ARRAY;
     let shader_barycentrics = wgpu::Features::SHADER_BARYCENTRICS;
     let pipeline_cache = wgpu::Features::PIPELINE_CACHE;
+    // Required by arena-backed indirect draws and optional GPU command compaction.
+    let indirect_draws =
+        wgpu::Features::INDIRECT_FIRST_INSTANCE | wgpu::Features::MULTI_DRAW_INDIRECT_COUNT;
     compression
         | optional_float32_filterable
         | optional_rg11b10_renderable
@@ -37,6 +40,7 @@ fn optional_render_feature_mask() -> wgpu::Features {
         | multisample_array
         | shader_barycentrics
         | pipeline_cache
+        | indirect_draws
 }
 
 #[cfg(test)]
@@ -46,5 +50,12 @@ mod tests {
     #[test]
     fn optional_render_features_include_shader_barycentrics() {
         assert!(optional_render_feature_mask().contains(wgpu::Features::SHADER_BARYCENTRICS));
+    }
+
+    #[test]
+    fn optional_render_features_include_gpu_driven_draw_support() {
+        let features = optional_render_feature_mask();
+        assert!(features.contains(wgpu::Features::INDIRECT_FIRST_INSTANCE));
+        assert!(features.contains(wgpu::Features::MULTI_DRAW_INDIRECT_COUNT));
     }
 }

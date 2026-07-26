@@ -39,9 +39,9 @@ fn vs_main(
     @location(4) t: vec4<f32>,
 ) -> fv::RectVertexOutput {
 #ifdef MULTIVIEW
-    return fv::rect_vertex_main(instance_index, view_idx, pos, n, t, uv0);
+    return fv::minimal_rect_vertex_main(instance_index, view_idx, pos, uv0);
 #else
-    return fv::rect_vertex_main(instance_index, 0u, pos, n, t, uv0);
+    return fv::minimal_rect_vertex_main(instance_index, 0u, pos, uv0);
 #endif
 }
 

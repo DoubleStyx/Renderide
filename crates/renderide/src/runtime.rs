@@ -89,6 +89,7 @@ mod asset_integration;
 mod debug_hud_frame;
 pub mod display;
 mod frame;
+pub(crate) use frame::extract::WorldMeshDrawPlanFrameCache;
 mod gpu_services;
 mod ipc;
 mod lockstep;

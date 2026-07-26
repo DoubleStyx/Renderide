@@ -22,7 +22,7 @@ pub(super) use extended_streams::{
 };
 #[cfg(test)]
 use extended_streams::{tangent_stream_usage, vertex_stream_usage};
-pub(crate) use generated::try_upload_generated_mesh_from_parts;
+pub(crate) use generated::{allocate_generated_point_mesh, try_upload_generated_mesh_from_parts};
 
 #[cfg(test)]
 use std::borrow::Cow;
@@ -37,7 +37,7 @@ use super::hints::wgpu_index_format;
 
 /// Interleaved VB, IB, and layout-derived scalars after validation.
 pub(super) struct CoreBuffers {
-    pub vb: wgpu::Buffer,
+    pub vb: Option<wgpu::Buffer>,
     pub ib: wgpu::Buffer,
     pub index_format: wgpu::IndexFormat,
     pub vertex_stride: u32,
@@ -57,6 +57,8 @@ pub(crate) struct MeshGpuUploadContext<'a> {
     pub gpu_limits: &'a GpuLimits,
     /// Shared mapped-buffer invalidation generation from the active GPU context.
     pub mapped_buffer_health: &'a GpuMappedBufferHealth,
+    /// Shared store for immutable host geometry; `None` for generated or dynamic uploads.
+    pub static_geometry_store: Option<&'a crate::graph_inputs::SharedStaticGeometryStore>,
     /// Invalidation generation captured before the upload began.
     pub mapped_buffer_generation: u64,
     /// Derived streams requested by current or pending material reflection.
@@ -373,15 +375,20 @@ pub(super) fn create_core_vertex_index_buffers(
     let index_count = compute_index_count(&data.submeshes);
     let index_count_u32 = index_count.max(0) as u32;
 
-    let vb = try_create_buffer_init(
-        ctx,
-        &wgpu::util::BufferInitDescriptor {
-            label: Some(&format!("mesh {} vertices", data.asset_id)),
-            contents: &raw[..layout.vertex_size],
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        },
-    )?;
-    crate::profiling::note_resource_churn!(Buffer, "assets::mesh_core_vertices");
+    let vb = if retains_interleaved_vertex_buffer(data) {
+        let buffer = try_create_buffer_init(
+            ctx,
+            &wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("mesh {} dynamic vertices", data.asset_id)),
+                contents: &raw[..layout.vertex_size],
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            },
+        )?;
+        crate::profiling::note_resource_churn!(Buffer, "assets::mesh_core_vertices");
+        Some(buffer)
+    } else {
+        None
+    };
 
     let ib_slice =
         &raw[layout.index_buffer_start..layout.index_buffer_start + layout.index_buffer_length];
@@ -390,7 +397,10 @@ pub(super) fn create_core_vertex_index_buffers(
         &wgpu::util::BufferInitDescriptor {
             label: Some(&format!("mesh {} indices", data.asset_id)),
             contents: ib_slice,
-            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+            // COPY_SRC so the geometry arena can suballocate this mesh for indirect draws.
+            usage: wgpu::BufferUsages::INDEX
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
         },
     )?;
     crate::profiling::note_resource_churn!(Buffer, "assets::mesh_core_indices");
@@ -404,6 +414,12 @@ pub(super) fn create_core_vertex_index_buffers(
         vertex_stride,
         index_count_u32,
     })
+}
+
+/// Returns whether updates require the host-interleaved vertex payload.
+#[inline]
+fn retains_interleaved_vertex_buffer(data: &MeshUploadData) -> bool {
+    data.upload_hint.flags.dynamic()
 }
 
 #[derive(Clone, Copy)]
@@ -526,8 +542,11 @@ impl DerivedBufferUsages {
             | wgpu::BufferUsages::VERTEX
             | wgpu::BufferUsages::COPY_DST
             | wgpu::BufferUsages::COPY_SRC;
-        let vertex = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
-        let tangent = vertex | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC;
+        // COPY_SRC so the geometry arena can suballocate these streams for indirect draws.
+        let vertex = wgpu::BufferUsages::VERTEX
+            | wgpu::BufferUsages::COPY_DST
+            | wgpu::BufferUsages::COPY_SRC;
+        let tangent = vertex | wgpu::BufferUsages::STORAGE;
         Self {
             primary,
             vertex,
@@ -662,15 +681,15 @@ mod tests {
 
     use crate::gpu::GpuMappedBufferHealth;
     use crate::shared::{
-        IndexBufferFormat, MeshUploadData, VertexAttributeDescriptor, VertexAttributeFormat,
-        VertexAttributeType,
+        IndexBufferFormat, MeshUploadData, MeshUploadHint, MeshUploadHintFlag,
+        VertexAttributeDescriptor, VertexAttributeFormat, VertexAttributeType,
     };
 
     use super::{
         MeshDerivedStreamDemand, MeshDerivedStreamMask, generated_particle_buffer_capacity,
         mapped_buffer_generation_still_current, prepare_derived_stream_bytes,
         queue_init_buffer_size, queue_init_buffer_size_matches, queue_write_bytes,
-        tangent_stream_usage, vertex_stream_usage,
+        retains_interleaved_vertex_buffer, tangent_stream_usage, vertex_stream_usage,
     };
 
     fn float_attr(attribute: VertexAttributeType, dimensions: i32) -> VertexAttributeDescriptor {
@@ -685,6 +704,20 @@ mod tests {
         for value in values {
             out.extend_from_slice(&value.to_le_bytes());
         }
+    }
+
+    #[test]
+    fn only_dynamic_host_meshes_retain_the_interleaved_vertex_buffer() {
+        assert!(!retains_interleaved_vertex_buffer(
+            &MeshUploadData::default()
+        ));
+        let dynamic = MeshUploadData {
+            upload_hint: MeshUploadHint {
+                flags: MeshUploadHintFlag(MeshUploadHintFlag::DYNAMIC),
+            },
+            ..Default::default()
+        };
+        assert!(retains_interleaved_vertex_buffer(&dynamic));
     }
 
     #[test]
@@ -763,13 +796,14 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_vertex_streams_remain_vertex_only_upload_targets() {
+    fn ordinary_vertex_streams_are_copyable_into_the_geometry_arena() {
         let usage = vertex_stream_usage();
 
         assert!(usage.contains(wgpu::BufferUsages::VERTEX));
         assert!(usage.contains(wgpu::BufferUsages::COPY_DST));
         assert!(!usage.contains(wgpu::BufferUsages::STORAGE));
-        assert!(!usage.contains(wgpu::BufferUsages::COPY_SRC));
+        // COPY_SRC lets the geometry arena suballocate this stream for indirect draws.
+        assert!(usage.contains(wgpu::BufferUsages::COPY_SRC));
     }
 
     #[test]

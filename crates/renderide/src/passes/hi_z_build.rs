@@ -1,4 +1,5 @@
-//! Builds a CPU-readable hierarchical depth pyramid from pre-transparent forward depth.
+//! Builds a GPU hierarchical depth pyramid from pre-transparent forward depth, with optional
+//! staging for CPU readback.
 
 use crate::occlusion::HiZBuildInput;
 use crate::render_graph::context::{ComputePassCtx, PostSubmitContext};
@@ -9,7 +10,7 @@ use crate::render_graph::pass::params::{
 use crate::render_graph::pass::{ComputePass, PassBuilder};
 use crate::render_graph::resources::{ImportedTextureHandle, StorageAccess, TextureAccess};
 
-/// Compute + copy pass that samples main depth and stages mips for next-frame occlusion.
+/// Compute pass that samples main depth and optionally stages mips for CPU occlusion.
 #[derive(Debug)]
 pub struct HiZBuildPass {
     resources: HiZBuildGraphResources,
@@ -116,10 +117,7 @@ impl ComputePass for HiZBuildPass {
     }
 
     fn post_submit(&mut self, _ctx: &mut PostSubmitContext<'_>) -> Result<(), RenderPassError> {
-        // Hi-Z staging-buffer `map_async` now runs from a
-        // [`wgpu::Queue::on_submitted_work_done`] callback installed in
-        // [`crate::render_graph::compiled::exec::CompiledRenderGraph::execute_multi_view`],
-        // so this post-submit hook is a no-op on the main thread.
+        // Readback mapping is scheduled by the queue-completion callback.
         Ok(())
     }
 }

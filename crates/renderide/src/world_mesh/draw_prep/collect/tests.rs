@@ -63,6 +63,7 @@ fn test_draw_context<'a>(
             head_output_transform: Mat4::IDENTITY,
             view_origin_world: Vec3::ZERO,
             culling: None,
+            retain_gpu_static_candidates: false,
             lod_selection_culling: None,
             mesh_lod_bias: 2.0,
             transform_filter,
@@ -511,18 +512,19 @@ fn transform_filter_masks_are_source_space_bound() {
 #[test]
 fn prepared_collect_parallelism_requires_draw_heavy_work_and_multiple_tasks() {
     let threshold = RENDER_COMMAND_CHUNK_DRAWS * 2;
+    let task_threshold = PREPARED_COLLECT_PARALLEL_CHUNK_TASKS * 2;
 
     assert_eq!(
-        prepared_collect_admission(2, threshold - 1, 2),
+        prepared_collect_admission(task_threshold, threshold - 1, 2),
         ParallelAdmission::Serial
     );
     assert_eq!(
-        prepared_collect_admission(1, threshold, 2),
+        prepared_collect_admission(task_threshold - 1, threshold, 2),
         ParallelAdmission::Serial
     );
-    assert!(prepared_collect_admission(2, threshold, 2).is_parallel());
+    assert!(prepared_collect_admission(task_threshold, threshold, 2).is_parallel());
     assert_eq!(
-        prepared_collect_admission(2, threshold, 1),
+        prepared_collect_admission(task_threshold, threshold, 1),
         ParallelAdmission::Serial
     );
 }

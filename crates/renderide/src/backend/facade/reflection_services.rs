@@ -29,6 +29,11 @@ impl ReflectionProbeServices {
         }
     }
 
+    /// Drops every device-owned reflection resource before attaching a new GPU context.
+    pub(super) fn reset_gpu_state(&mut self) {
+        *self = Self::new();
+    }
+
     /// Starts SH2 projection pipeline builds early so first probe use does not discover them lazily.
     pub(super) fn pre_warm_sh2_projection_pipelines(
         &mut self,

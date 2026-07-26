@@ -225,12 +225,13 @@ fn compute_default_extended_stream_bytes(
 
 #[inline]
 pub(in crate::assets::mesh::gpu_mesh) fn vertex_stream_usage() -> wgpu::BufferUsages {
-    wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST
+    // COPY_SRC so the geometry arena can suballocate these streams for indirect draws.
+    wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC
 }
 
 #[inline]
 pub(in crate::assets::mesh::gpu_mesh) fn tangent_stream_usage() -> wgpu::BufferUsages {
-    vertex_stream_usage() | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC
+    vertex_stream_usage() | wgpu::BufferUsages::STORAGE
 }
 
 fn create_vertex_stream_buffer(

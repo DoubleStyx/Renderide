@@ -4,8 +4,10 @@
 //! Backend frame planning builds [`PipelineVariantKey`] once per batch so raster recording cannot
 //! drift on MSAA, front-face, blend, render-state, or shader permutations.
 
-use std::sync::Arc;
+use std::hash::{Hash, Hasher};
+use std::sync::{Arc, OnceLock};
 
+use hashbrown::HashMap;
 use rayon::prelude::*;
 
 use crate::cpu_parallelism::{
@@ -27,6 +29,7 @@ use crate::materials::{
     ensure_render_buffer_billboard_variant_bits, remap_variant_bits_for_billboard,
 };
 use crate::passes::WorldMeshForwardEncodeRefs;
+use crate::world_mesh::MaterialDrawBatchKey;
 use crate::world_mesh::draw_prep::WorldMeshDrawItem;
 
 /// Material boundary runs assigned to one packet-resolution worker.
@@ -40,6 +43,29 @@ static EMBEDDED_MATERIAL_BIND_FAILURE_LOG: LogThrottle = LogThrottle::new();
 /// Inclusive `(first_draw_idx, last_draw_idx)` span over the sorted world-mesh draw list
 /// identifying one contiguous material batch run.
 pub(crate) type MaterialBatchBoundary = (usize, usize);
+
+/// Draw-local identity that determines material pipeline and group-1 resolution.
+///
+/// Transparent sorting can split one material into hundreds of non-contiguous runs. Hashing the
+/// cached batch-key hash keeps this deduplication cheap while `PartialEq` still compares the full
+/// key, so a hash collision cannot alias distinct material state.
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct MaterialBatchResolutionIdentity<'a> {
+    batch_key_hash: u64,
+    batch_key: &'a MaterialDrawBatchKey,
+    material_asset_id: i32,
+    property_block_slot0: Option<i32>,
+    renderer_property_block_id: Option<i32>,
+}
+
+impl Hash for MaterialBatchResolutionIdentity<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.batch_key_hash.hash(state);
+        self.material_asset_id.hash(state);
+        self.property_block_slot0.hash(state);
+        self.renderer_property_block_id.hash(state);
+    }
+}
 
 /// Kind-only summary of the group-1 binding carried by a material packet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -223,6 +249,13 @@ impl PipelineVariantKey {
     }
 }
 
+/// Exact registry request shared by material packets that use the same raster pipeline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct PipelineResolutionRequest<'a> {
+    requested_kind: &'a RasterPipelineKind,
+    pipeline_key: PipelineVariantKey,
+}
+
 /// Material pipeline and embedded-bind resolver for one world-mesh forward view plan.
 pub(crate) struct MaterialDrawResolver<'a> {
     /// Material registry used for pipeline lookup.
@@ -285,31 +318,84 @@ impl<'a> MaterialDrawResolver<'a> {
         }
 
         collect_material_batch_boundaries_into(draws, boundaries_scratch);
+        let (unique_boundaries, boundary_template_indices) = {
+            profiling::scope!("world_mesh_forward::deduplicate_material_packets");
+            collect_unique_material_batch_boundaries(draws, boundaries_scratch)
+        };
+        let (pipeline_requests, template_pipeline_request_indices) = {
+            profiling::scope!("world_mesh_forward::deduplicate_material_pipelines");
+            collect_unique_pipeline_resolution_requests(
+                draws,
+                &unique_boundaries,
+                self.pass_desc,
+                self.shader_perm,
+                self.front_face_flip,
+            )
+        };
+        let pipeline_resolutions: Vec<OnceLock<Option<MaterialPipelineResolution>>> =
+            std::iter::repeat_with(OnceLock::new)
+                .take(pipeline_requests.len())
+                .collect();
         let admission =
-            admit_relevance_items(boundaries_scratch.len(), current_reference_worker_count());
+            admit_relevance_items(unique_boundaries.len(), current_reference_worker_count());
         record_parallel_admission(
             "material_batch_resolve",
             boundaries_scratch.len(),
-            boundaries_scratch.len(),
+            unique_boundaries.len(),
             admission,
         );
-        if boundaries_scratch.len() < MATERIAL_BATCH_PARALLEL_MIN_RUNS || !admission.is_parallel() {
-            let mut packets = Vec::with_capacity(boundaries_scratch.len());
-            for &(first, last) in boundaries_scratch.iter() {
-                packets.push(self.resolve_one_batch(draws, first, last));
+        let templates = if unique_boundaries.len() < MATERIAL_BATCH_PARALLEL_MIN_RUNS
+            || !admission.is_parallel()
+        {
+            let mut packets = Vec::with_capacity(unique_boundaries.len());
+            for (template_idx, &(first, last)) in unique_boundaries.iter().enumerate() {
+                let request_idx = template_pipeline_request_indices[template_idx];
+                packets.push(self.resolve_one_batch(
+                    draws,
+                    first,
+                    last,
+                    pipeline_requests[request_idx],
+                    &pipeline_resolutions[request_idx],
+                ));
             }
             packets
         } else {
             let chunk_size = admission
                 .chunk_size()
                 .unwrap_or(MATERIAL_BATCH_PARALLEL_CHUNK_RUNS);
-            boundaries_scratch
+            unique_boundaries
                 .par_iter()
                 .with_min_len(chunk_size)
                 .copied()
-                .map(|(first, last)| self.resolve_one_batch(draws, first, last))
+                .enumerate()
+                .map(|(template_idx, (first, last))| {
+                    let request_idx = template_pipeline_request_indices[template_idx];
+                    self.resolve_one_batch(
+                        draws,
+                        first,
+                        last,
+                        pipeline_requests[request_idx],
+                        &pipeline_resolutions[request_idx],
+                    )
+                })
                 .collect()
+        };
+
+        if unique_boundaries.len() == boundaries_scratch.len() {
+            return templates;
         }
+
+        profiling::scope!("world_mesh_forward::expand_material_packet_runs");
+        boundaries_scratch
+            .iter()
+            .zip(boundary_template_indices)
+            .map(|(&(first_draw_idx, last_draw_idx), template_idx)| {
+                let mut packet = templates[template_idx].clone();
+                packet.first_draw_idx = first_draw_idx;
+                packet.last_draw_idx = last_draw_idx;
+                packet
+            })
+            .collect()
     }
 
     /// Resolves one material run into a record-ready packet.
@@ -318,15 +404,16 @@ impl<'a> MaterialDrawResolver<'a> {
         draws: &[WorldMeshDrawItem],
         first: usize,
         last: usize,
+        pipeline_request: PipelineResolutionRequest<'_>,
+        pipeline_resolution: &OnceLock<Option<MaterialPipelineResolution>>,
     ) -> MaterialBatchPacket {
         let item = &draws[first];
-        let mut pipeline_key =
-            PipelineVariantKey::for_draw_item(item, self.pass_desc, self.shader_perm);
-        if self.front_face_flip {
-            pipeline_key.front_face = pipeline_key.front_face.flipped();
-        }
-
-        let resolved = self.resolve_pipeline_and_group1(item, pipeline_key);
+        debug_assert_eq!(pipeline_request.requested_kind, &item.batch_key.pipeline);
+        let pipeline_key = pipeline_request.pipeline_key;
+        let pipeline_resolution = resolve_pipeline_once(pipeline_resolution, || {
+            self.resolve_pipeline_resolution(pipeline_request.requested_kind, pipeline_key)
+        });
+        let resolved = self.resolve_pipeline_and_group1(item, pipeline_key, pipeline_resolution);
 
         if let Some((resolution, group1_binding)) = resolved {
             debug_assert!(material_group1_binding_matches_pipeline(
@@ -358,9 +445,9 @@ impl<'a> MaterialDrawResolver<'a> {
         &self,
         item: &WorldMeshDrawItem,
         pipeline_key: PipelineVariantKey,
+        resolution: Option<&MaterialPipelineResolution>,
     ) -> Option<(MaterialPipelineResolution, MaterialGroup1Binding)> {
-        let resolution =
-            self.resolve_pipeline_resolution(&item.batch_key.pipeline, pipeline_key)?;
+        let resolution = resolution.cloned()?;
         match &resolution.kind {
             RasterPipelineKind::Null => Some((resolution, MaterialGroup1Binding::Empty)),
             RasterPipelineKind::EmbeddedStem(stem) => {
@@ -574,6 +661,79 @@ fn collect_material_batch_boundaries_into(
     out.push((current_start, draws.len() - 1));
 }
 
+/// Collapses non-contiguous runs that resolve to the same material packet template.
+///
+/// The returned index list stays aligned with `boundaries`; callers clone the selected template
+/// and restore each run's draw range after the expensive pipeline/bind resolution happens once.
+fn collect_unique_material_batch_boundaries(
+    draws: &[WorldMeshDrawItem],
+    boundaries: &[MaterialBatchBoundary],
+) -> (Vec<MaterialBatchBoundary>, Vec<usize>) {
+    let mut unique_boundaries = Vec::with_capacity(boundaries.len());
+    let mut boundary_template_indices = Vec::with_capacity(boundaries.len());
+    let mut template_by_identity = HashMap::with_capacity(boundaries.len());
+
+    for &(first, last) in boundaries {
+        let item = &draws[first];
+        let identity = MaterialBatchResolutionIdentity {
+            batch_key_hash: item.batch_key_hash,
+            batch_key: &item.batch_key,
+            material_asset_id: item.lookup_ids.material_asset_id,
+            property_block_slot0: item.lookup_ids.mesh_property_block_slot0,
+            renderer_property_block_id: item.lookup_ids.mesh_renderer_property_block_id,
+        };
+        let next_template_idx = unique_boundaries.len();
+        let template_idx = *template_by_identity.entry(identity).or_insert_with(|| {
+            unique_boundaries.push((first, last));
+            next_template_idx
+        });
+        boundary_template_indices.push(template_idx);
+    }
+
+    (unique_boundaries, boundary_template_indices)
+}
+
+/// Deduplicates exact pipeline requests while retaining one request index per material template.
+fn collect_unique_pipeline_resolution_requests<'a>(
+    draws: &'a [WorldMeshDrawItem],
+    material_boundaries: &[MaterialBatchBoundary],
+    pass_desc: MaterialPipelineDesc,
+    shader_perm: ShaderPermutation,
+    front_face_flip: bool,
+) -> (Vec<PipelineResolutionRequest<'a>>, Vec<usize>) {
+    let mut unique_requests = Vec::with_capacity(material_boundaries.len());
+    let mut material_request_indices = Vec::with_capacity(material_boundaries.len());
+    let mut request_indices = HashMap::with_capacity(material_boundaries.len());
+
+    for &(first, _) in material_boundaries {
+        let item = &draws[first];
+        let mut pipeline_key = PipelineVariantKey::for_draw_item(item, pass_desc, shader_perm);
+        if front_face_flip {
+            pipeline_key.front_face = pipeline_key.front_face.flipped();
+        }
+        let request = PipelineResolutionRequest {
+            requested_kind: &item.batch_key.pipeline,
+            pipeline_key,
+        };
+        let next_request_idx = unique_requests.len();
+        let request_idx = *request_indices.entry(request).or_insert_with(|| {
+            unique_requests.push(request);
+            next_request_idx
+        });
+        material_request_indices.push(request_idx);
+    }
+
+    (unique_requests, material_request_indices)
+}
+
+/// Resolves one local cache slot, including unavailable pipeline results.
+fn resolve_pipeline_once(
+    slot: &OnceLock<Option<MaterialPipelineResolution>>,
+    resolve: impl FnOnce() -> Option<MaterialPipelineResolution>,
+) -> Option<&MaterialPipelineResolution> {
+    slot.get_or_init(resolve).as_ref()
+}
+
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroU32;
@@ -719,6 +879,180 @@ mod tests {
         collect_material_batch_boundaries_into(&draws, &mut boundaries);
 
         assert_eq!(boundaries, vec![(0, 0), (1, 1)]);
+    }
+
+    #[test]
+    fn non_contiguous_identical_material_runs_share_one_resolution_template() {
+        let first = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 42,
+            property_block: Some(420),
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 7,
+            node_id: 1,
+            slot_index: 0,
+            collect_order: 0,
+            alpha_blended: true,
+        });
+        let middle = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 99,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 8,
+            node_id: 2,
+            slot_index: 0,
+            collect_order: 1,
+            alpha_blended: true,
+        });
+        let mut last = first.clone();
+        last.node_id = 3;
+        last.collect_order = 2;
+        let draws = vec![first, middle, last];
+        let mut boundaries = Vec::new();
+        collect_material_batch_boundaries_into(&draws, &mut boundaries);
+
+        let (unique, template_indices) =
+            collect_unique_material_batch_boundaries(&draws, &boundaries);
+
+        assert_eq!(boundaries, vec![(0, 0), (1, 1), (2, 2)]);
+        assert_eq!(unique, vec![(0, 0), (1, 1)]);
+        assert_eq!(template_indices, vec![0, 1, 0]);
+    }
+
+    #[test]
+    fn material_resolution_dedup_preserves_renderer_property_block_identity() {
+        let first = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 42,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 7,
+            node_id: 1,
+            slot_index: 0,
+            collect_order: 0,
+            alpha_blended: true,
+        });
+        let middle = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 99,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 8,
+            node_id: 2,
+            slot_index: 0,
+            collect_order: 1,
+            alpha_blended: true,
+        });
+        let mut last = first.clone();
+        last.node_id = 3;
+        last.collect_order = 2;
+        last.lookup_ids.mesh_renderer_property_block_id = Some(700);
+        let draws = vec![first, middle, last];
+        let mut boundaries = Vec::new();
+        collect_material_batch_boundaries_into(&draws, &mut boundaries);
+
+        let (unique, template_indices) =
+            collect_unique_material_batch_boundaries(&draws, &boundaries);
+
+        assert_eq!(unique, boundaries);
+        assert_eq!(template_indices, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn distinct_material_templates_share_one_pipeline_resolution_request() {
+        let first = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 42,
+            property_block: Some(420),
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 7,
+            node_id: 1,
+            slot_index: 0,
+            collect_order: 0,
+            alpha_blended: true,
+        });
+        let second = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 99,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 8,
+            node_id: 2,
+            slot_index: 0,
+            collect_order: 1,
+            alpha_blended: true,
+        });
+        let draws = vec![first, second];
+        let mut boundaries = Vec::new();
+        collect_material_batch_boundaries_into(&draws, &mut boundaries);
+        let (material_templates, _) = collect_unique_material_batch_boundaries(&draws, &boundaries);
+
+        let (requests, request_indices) = collect_unique_pipeline_resolution_requests(
+            &draws,
+            &material_templates,
+            base_desc(),
+            ShaderPermutation(1),
+            true,
+        );
+
+        assert_eq!(material_templates.len(), 2);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(request_indices, vec![0, 0]);
+        assert_eq!(
+            requests[0].pipeline_key.front_face,
+            RasterFrontFace::CounterClockwise
+        );
+    }
+
+    #[test]
+    fn pipeline_resolution_request_keeps_kind_and_shader_id_exact() {
+        let first = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 1,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 1,
+            node_id: 1,
+            slot_index: 0,
+            collect_order: 0,
+            alpha_blended: false,
+        });
+        let mut different_kind = first.clone();
+        different_kind.batch_key.pipeline = embedded_pipeline("unlit_default");
+        different_kind.lookup_ids.material_asset_id = 2;
+        let mut different_shader_id = first.clone();
+        different_shader_id.batch_key.shader_asset_id = 77;
+        different_shader_id.lookup_ids.material_asset_id = 3;
+        let draws = vec![first, different_kind, different_shader_id];
+        let boundaries = vec![(0, 0), (1, 1), (2, 2)];
+
+        let (requests, request_indices) = collect_unique_pipeline_resolution_requests(
+            &draws,
+            &boundaries,
+            base_desc(),
+            ShaderPermutation(1),
+            false,
+        );
+
+        assert_eq!(requests.len(), 3);
+        assert_eq!(request_indices, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn unavailable_pipeline_resolution_is_probed_once_per_local_slot() {
+        let slot = OnceLock::new();
+        let probe_count = std::cell::Cell::new(0usize);
+
+        for _ in 0..3 {
+            let resolution = resolve_pipeline_once(&slot, || {
+                probe_count.set(probe_count.get() + 1);
+                None
+            });
+            assert!(resolution.is_none());
+        }
+
+        assert_eq!(probe_count.get(), 1);
     }
 
     /// A draw batch snapshot that stayed Null still requires empty group 1 even if routing changes.

@@ -1,15 +1,10 @@
 //! Frame-scope dense expansion of scene mesh renderables into one entry per
 //! `(renderer, material slot)` pair.
 //!
-//! This is the Stage 3 amortization of [`super::collect::queue_draws_with_parallelism`]:
-//! every per-view collection used to walk each active render space, look up the resident
-//! [`crate::assets::mesh::GpuMesh`] per renderer, expand material slots onto submesh ranges, and resolve
-//! render-context material overrides -- all of which are functions of frame-global state, not the
-//! view. Doing that work once per frame and reusing the dense list across every view (desktop
-//! multi-view secondary render-texture cameras + main swapchain) removes the N+1 scene walk that
-//! dominated frame cost.
+//! Resident meshes, material slots, submesh ranges, and render-context overrides are resolved
+//! once per frame and shared across views.
 //!
-//! The cull step and [`super::item::WorldMeshDrawItem`] construction stay per-view because they
+//! Culling and [`super::item::WorldMeshDrawItem`] construction remain per-view because they
 //! depend on the view's camera, filter, and Hi-Z snapshot.
 
 mod expand;
@@ -25,6 +20,7 @@ use crate::cpu_parallelism::RENDER_COMMAND_CHUNK_DRAWS;
 #[cfg(test)]
 use crate::gpu_pools::MeshPool;
 use crate::particles::ParticleDrawParams;
+use crate::render_contract::ParticleDrawKind;
 use crate::scene::{
     MeshRendererInstanceId, RenderSpaceId, SceneCoordinator, SceneMeshRendererRead,
     WorldMeshSceneRead,
@@ -47,7 +43,11 @@ pub(in crate::world_mesh::draw_prep) use expand::{
 };
 
 /// Target draw count for one prepared renderer-run chunk.
-pub(super) const PREPARED_RUN_CHUNK_DRAW_TARGET: usize = RENDER_COMMAND_CHUNK_DRAWS;
+///
+/// Collection is branch-light compared with command recording, so using the 64-draw command
+/// packet directly creates many sub-20-us worker calls in draw-heavy scenes. Keep renderer runs
+/// intact while amortizing collection setup over a coarser packet.
+pub(super) const PREPARED_RUN_CHUNK_DRAW_TARGET: usize = RENDER_COMMAND_CHUNK_DRAWS * 4;
 /// Active render spaces assigned to one prepared-renderable expansion worker.
 #[cfg(test)]
 const PREPARED_EXPAND_PARALLEL_CHUNK_SPACES: usize = 1;
@@ -365,10 +365,7 @@ impl FramePreparedRenderables {
             return;
         }
 
-        // Reuse a long-lived per-space scratch so each frame's parallel expansion does not
-        // allocate a fresh outer `Vec` (the prior `par_iter().map(...).collect()` pattern) or a
-        // fresh inner `Vec` per worker (`let mut local = Vec::new();`). Capacities persist across
-        // frames; only the contents get cleared and refilled.
+        // Retain per-space scratch capacity across frame rebuilds.
         let mut space_scratch = std::mem::take(&mut self.space_scratch);
         {
             profiling::scope!("mesh::prepared_renderables::prepare_space_scratch");
@@ -490,6 +487,12 @@ impl FramePreparedRenderables {
         &self.lod_groups
     }
 
+    /// Whether per-view camera state can change renderer selection through an LOD group.
+    #[inline]
+    pub(crate) fn has_lod_groups(&self) -> bool {
+        !self.lod_groups.is_empty()
+    }
+
     /// Number of expanded draws across all active render spaces.
     #[inline]
     pub fn len(&self) -> usize {
@@ -596,6 +599,34 @@ impl FramePreparedRenderables {
             return false;
         };
         self.draws.extend(draws.iter().cloned());
+        true
+    }
+
+    /// Appends only the retained non-particle rows for `id` from the previous snapshot.
+    ///
+    /// Generated particle rows form a suffix in prepared-space order, so the stable prefix can be
+    /// copied as one slice.
+    pub(super) fn extend_previous_cached_non_particle_draws_for_space(
+        &mut self,
+        id: RenderSpaceId,
+    ) -> bool {
+        let Some(range) = self.previous_cached_space_draw_ranges.get(&id).cloned() else {
+            return false;
+        };
+        let Some(draws) = self.previous_draws.get(range) else {
+            return false;
+        };
+        let stable_end = draws
+            .iter()
+            .position(|draw| draw.particle_draw.kind != ParticleDrawKind::None)
+            .unwrap_or(draws.len());
+        debug_assert!(
+            draws[stable_end..]
+                .iter()
+                .all(|draw| draw.particle_draw.kind != ParticleDrawKind::None),
+            "prepared space order must remain static/skinned rows followed by generated particles"
+        );
+        self.draws.extend_from_slice(&draws[..stable_end]);
         true
     }
 

@@ -29,10 +29,11 @@ fn light_cookie_atlas_sampling_uses_scalar_red_channel() -> io::Result<()> {
 
     let globals = source_file(manifest_dir().join("shaders/modules/frame/globals.wgsl"))?;
     assert!(
-        globals.contains("textureSampleLevel(light_cookie_2d_atlas, light_cookie_sampler, vec2<f32>(0.5), 0.0).r")
+        globals.contains("if (frame.viewport_width == 0u)")
+            && globals.contains("textureSampleLevel(light_cookie_2d_atlas, light_cookie_sampler, vec2<f32>(0.5), 0.0).r")
             && globals.contains("textureSampleLevel(light_cookie_point_atlas, light_cookie_sampler, vec2<f32>(0.5), 0.0).r")
             && globals.contains("light_cookie_rects[0u].origin_scale.x"),
-        "frame globals retain path must read scalar red from light-cookie atlases"
+        "frame globals retain path must keep scalar cookie bindings behind the invalid-viewport guard"
     );
     assert!(
         !globals.contains("textureSampleLevel(light_cookie_2d_atlas, light_cookie_sampler, vec2<f32>(0.5), 0.0).a")

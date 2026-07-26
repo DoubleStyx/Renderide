@@ -26,9 +26,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     var m = 1.0;
     for (var sy = sy0; sy < max(sy1, sy0 + 1u); sy++) {
         for (var sx = sx0; sx < max(sx1, sx0 + 1u); sx++) {
-            let xx = min(sx, sizes.src_w - 1u);
-            let yy = min(sy, sizes.src_h - 1u);
-            let v = textureLoad(src, vec2i(i32(xx), i32(yy))).x;
+            let v = textureLoad(src, vec2i(i32(sx), i32(sy))).x;
             m = min(m, v);
         }
     }

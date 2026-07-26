@@ -92,15 +92,15 @@ const RAW_SAMPLE_EXCEPTIONS: &[RawSampleException] = &[
     },
     RawSampleException {
         label: "shaders/modules/frame/grab_pass.wgsl",
-        builtin: "textureSample",
+        builtin: "textureSampleLevel",
         texture: "rg::scene_color_array",
-        reason: "scene-color graph resource, not a host material texture",
+        reason: "single-mip scene-color graph resource sampled explicitly at level zero",
     },
     RawSampleException {
         label: "shaders/modules/frame/grab_pass.wgsl",
-        builtin: "textureSample",
+        builtin: "textureSampleLevel",
         texture: "rg::scene_color",
-        reason: "scene-color graph resource, not a host material texture",
+        reason: "single-mip scene-color graph resource sampled explicitly at level zero",
     },
     RawSampleException {
         label: "shaders/modules/lighting/light_cookies.wgsl",

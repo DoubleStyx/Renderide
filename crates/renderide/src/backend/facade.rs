@@ -42,7 +42,7 @@ use diagnostics::BackendDiagnostics;
 use draw_preparation::BackendDrawPreparation;
 use frame_services::BackendFrameServices;
 pub(crate) use graph_access::BackendGraphAccess;
-use graph_access::LivePostProcessingSettings;
+use graph_access::{BackendGraphWarmupCache, LivePostProcessingSettings};
 use graph_state::RenderGraphState;
 use reflection_services::ReflectionProbeServices;
 
@@ -103,6 +103,8 @@ pub struct RenderBackend {
     secondary_rt_scratch: SecondaryRtScratchCache,
     /// Render-graph cache, transient pool, history registry, and view-scoped graph resource ownership.
     graph_state: RenderGraphState,
+    /// Last successful graph asset warmup input for unchanged draw-list fast paths.
+    graph_warmup_cache: BackendGraphWarmupCache,
     /// Hierarchical depth pyramid, CPU readback, and temporal cull state for occlusion culling.
     pub(crate) occlusion: OcclusionSystem,
     /// Swapchain or primary output color format used for frame-graph cache identity.
@@ -136,6 +138,7 @@ impl RenderBackend {
             reflection_probes: ReflectionProbeServices::new(),
             secondary_rt_scratch: SecondaryRtScratchCache::new(),
             graph_state: RenderGraphState::new(),
+            graph_warmup_cache: BackendGraphWarmupCache::default(),
             occlusion: OcclusionSystem::new(),
             surface_format: None,
             renderer_settings: None,
@@ -694,6 +697,7 @@ impl RenderBackend {
         let (frame_resources, mesh_preprocess, mesh_deform_scratch, skin_cache) =
             self.frame_services.graph_access_slices();
         BackendGraphAccess {
+            graph_warmup_cache: &mut self.graph_warmup_cache,
             occlusion: &mut self.occlusion,
             frame_resources,
             materials: &self.materials,

@@ -16,15 +16,15 @@ fn frag_screen_uv(frag_pos: vec4<f32>) -> vec2<f32> {
 }
 
 fn sample_scene_color(uv: vec2<f32>, view_layer: u32) -> vec4<f32> {
-    let clamped_uv = clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0));
 #ifdef MULTIVIEW
-    return textureSample(
+    return textureSampleLevel(
         rg::scene_color_array,
         rg::scene_color_sampler,
-        clamped_uv,
+        uv,
         i32(rg::view_index_from_layer(view_layer)),
+        0.0,
     );
 #else
-    return textureSample(rg::scene_color, rg::scene_color_sampler, clamped_uv);
+    return textureSampleLevel(rg::scene_color, rg::scene_color_sampler, uv, 0.0);
 #endif
 }

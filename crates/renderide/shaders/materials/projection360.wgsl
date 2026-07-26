@@ -165,12 +165,26 @@ fn vs_main(
     out.clip_pos = clip;
     out.pos_os = pos.xyz;
     out.world_pos = world_p.xyz;
-    out.normal_os = normalize(-n.xyz);
     out.uv = uv;
     out.dist = clip.w;
     out.local_xy = pos.xy;
-    out.object_view_dir = object_space_view_dir(d.model, world_p.xyz, layer);
     out.view_layer = layer;
+
+    let variant_bits = mat._RenderideVariantBits;
+    let use_perspective = p360m::kw_PERSPECTIVE(variant_bits);
+    let use_normal = !use_perspective && p360m::kw_NORMAL(variant_bits);
+    let use_world_view =
+        !use_perspective && !use_normal && p360m::kw_WORLD_VIEW(variant_bits);
+
+    out.normal_os = vec3<f32>(0.0);
+    if (use_normal) {
+        out.normal_os = normalize(-n.xyz);
+    }
+
+    out.object_view_dir = vec3<f32>(0.0);
+    if (!use_perspective && !use_normal && !use_world_view) {
+        out.object_view_dir = object_space_view_dir(d.model, world_p.xyz, layer);
+    }
     return out;
 }
 

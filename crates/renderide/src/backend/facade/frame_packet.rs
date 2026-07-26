@@ -40,12 +40,17 @@ pub(crate) struct ExtractedFrameShared<'a> {
     pub(crate) material_caches: &'a HashMap<(u8, ShaderPermutation), FrameMaterialBatchCache>,
     /// Persistent arranged draw command-list cache shared by per-view sorting.
     pub(crate) command_cache: &'a WorldMeshCommandCache,
+    /// Retained per-view draw-plan cache, including camera-independent rigid GPU-static reuse.
+    pub(crate) draw_plan_cache: &'a crate::runtime::WorldMeshDrawPlanFrameCache,
     /// Shared occlusion state used for Hi-Z snapshots and temporal cull data.
     pub(crate) occlusion: &'a OcclusionSystem,
     /// CPU-side specular reflection-probe selector for per-object probe assignment.
     pub(crate) reflection_probes: &'a ReflectionProbeFrameSelection,
     /// Rayon parallelism tier for each view's inner walk.
     pub(crate) inner_parallelism: WorldMeshDrawCollectParallelism,
+    /// Whether static arena-eligible draw candidates should survive CPU visibility rejection for
+    /// the GPU culling/indirect-command path.
+    pub(crate) retain_gpu_static_candidates: bool,
 }
 
 impl ExtractedFrameShared<'_> {
@@ -57,6 +62,42 @@ impl ExtractedFrameShared<'_> {
         self.render_worlds
             .get(&render_context_cache_key(self.scene, render_context))
             .map(RenderWorld::prepared)
+    }
+
+    /// Scene and material dependencies for a retained draw plan.
+    ///
+    /// Cache identity disambiguates generations reused by recreated contexts.
+    pub(crate) fn draw_dependencies_for(
+        &self,
+        render_context: RenderingContext,
+        shader_perm: ShaderPermutation,
+    ) -> Option<(u8, u64, u64, (u64, u64, u32, u64))> {
+        let context_key = render_context_cache_key(self.scene, render_context);
+        let render_world = self.render_worlds.get(&context_key)?;
+        Some((
+            context_key,
+            render_world.cache_identity(),
+            render_world.prepared_generation(),
+            self.material_cache_for(render_context, shader_perm)?
+                .draw_plan_dependency_signature()?,
+        ))
+    }
+
+    /// Static-generation dependencies for a camera-independent rigid draw plan.
+    pub(crate) fn gpu_static_draw_dependencies_for(
+        &self,
+        render_context: RenderingContext,
+        shader_perm: ShaderPermutation,
+    ) -> Option<(u8, u64, u64, (u64, u64, u32, u64))> {
+        let context_key = render_context_cache_key(self.scene, render_context);
+        let render_world = self.render_worlds.get(&context_key)?;
+        Some((
+            context_key,
+            render_world.cache_identity(),
+            render_world.static_generation(),
+            self.material_cache_for(render_context, shader_perm)?
+                .draw_plan_dependency_signature()?,
+        ))
     }
 
     /// Material batch cache matching one view's render context and shader permutation.
@@ -154,6 +195,67 @@ impl RenderBackend {
             .set_shadow_camera_fits(fits);
     }
 
+    /// Releases dedicated buffers after arena residency reaches submit-resource retention.
+    pub(crate) fn release_arena_resident_static_mesh_sources(&mut self) {
+        // Dedicated-direct mode cannot reconstruct sources already released to the arena.
+        if !crate::world_mesh::world_mesh_render_path().releases_dedicated_sources() {
+            return;
+        }
+        let releases = self
+            .frame_services
+            .shared_static_geometry_store()
+            .and_then(|store| {
+                let mesh_pool = self.asset_transfers.mesh_pool();
+                let mut store = store.write();
+                let arena = store.as_mut()?;
+                arena.synchronize_mesh_pool(mesh_pool);
+                Some(
+                    arena
+                        .take_source_release_ready_asset_ids()
+                        .into_iter()
+                        .filter_map(|asset_id| {
+                            arena
+                                .mesh(asset_id)
+                                .map(|allocation| (asset_id, allocation.derived_stream_mask()))
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .unwrap_or_default();
+
+        let mut profile = crate::profiling::WorldMeshStaticSourceReleaseProfileSample::default();
+        {
+            let mesh_pool = self.asset_transfers.mesh_pool_mut();
+            for (asset_id, resident_streams) in releases {
+                let released =
+                    mesh_pool.release_shared_static_geometry_sources(asset_id, resident_streams);
+                if released != 0 {
+                    profile.released_meshes = profile.released_meshes.saturating_add(1);
+                    profile.released_bytes = profile.released_bytes.saturating_add(released);
+                }
+            }
+            // The full resident-mesh scan is Tracy-only.
+            #[cfg(feature = "tracy")]
+            {
+                profile.remaining_duplicate_source_bytes =
+                    mesh_pool.shared_static_duplicate_source_bytes();
+            }
+        }
+
+        crate::profiling::plot_world_mesh_static_source_release(profile);
+    }
+
+    /// Collects visible and shadow-casting static meshes for frame-global geometry-arena
+    /// population. Call after [`Self::prepare_shadow_frame_for_views`].
+    pub(crate) fn prepare_geometry_arena_for_views<'a, I>(&mut self, views: I)
+    where
+        I: IntoIterator<Item = &'a WorldMeshDrawPlan>,
+    {
+        self.frame_services
+            .frame_resources
+            .prepare_geometry_arena_for_views(views);
+    }
+
     /// Prepares realtime shadow assignments and atlas render views for the sorted view draw plans.
     pub(crate) fn prepare_shadow_frame_for_views<'a, I>(&mut self, views: I)
     where
@@ -173,8 +275,7 @@ impl RenderBackend {
         self.occlusion.hi_z_begin_frame_readback(device);
     }
 
-    /// Refreshes backend-owned draw-prep state and returns the immutable frame setup used by the
-    /// runtime's per-view draw collection stage.
+    /// Refreshes backend-owned draw-prep state for per-view collection.
     ///
     /// `view_draw_preparations` lists each prepared view's render context and shader permutation;
     /// one material batch cache is refreshed per distinct pair so multi-view frames (e.g. VR
@@ -186,6 +287,11 @@ impl RenderBackend {
         inner_parallelism: WorldMeshDrawCollectParallelism,
         view_draw_preparations: &[(RenderingContext, ShaderPermutation)],
     ) -> ExtractedFrameShared<'a> {
+        // Arena commands select per-draw slab rows through non-zero first_instance.
+        // Fixed command slots do not require MULTI_DRAW_INDIRECT_COUNT.
+        let retain_gpu_static_candidates = self.gpu_limits().is_some_and(|limits| {
+            limits.supports_base_instance && limits.supports_indirect_first_instance()
+        });
         self.draw_preparation
             .extract_frame_shared(DrawPreparationExtractDesc {
                 scene,
@@ -195,6 +301,7 @@ impl RenderBackend {
                 reflection_probes: self.reflection_probes.selection(),
                 inner_parallelism,
                 view_draw_preparations,
+                retain_gpu_static_candidates,
             })
     }
 }

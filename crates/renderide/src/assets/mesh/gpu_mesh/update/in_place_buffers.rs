@@ -298,12 +298,14 @@ pub(super) fn write_in_place_vertex_and_derived_streams(
     if write_vertex {
         {
             profiling::scope!("asset::mesh_write_in_place::write_interleaved_vertex");
-            write_mesh_upload_buffer(
-                ctx.upload_sink,
-                ctx.mesh.vertex_buffer.as_ref(),
-                0,
-                &ctx.raw[..ctx.layout.vertex_size],
-            );
+            if let Some(vertex_buffer) = ctx.mesh.vertex_buffer.as_ref() {
+                write_mesh_upload_buffer(
+                    ctx.upload_sink,
+                    vertex_buffer.as_ref(),
+                    0,
+                    &ctx.raw[..ctx.layout.vertex_size],
+                );
+            }
         }
     }
     let vertex_slice = &ctx.raw[..ctx.layout.vertex_size];
@@ -732,7 +734,9 @@ pub(super) fn write_in_place_index_buffer(
     }
     let ib_slice =
         &raw[layout.index_buffer_start..layout.index_buffer_start + layout.index_buffer_length];
-    write_mesh_upload_buffer(upload_sink, mesh.index_buffer.as_ref(), 0, ib_slice);
+    if let Some(index_buffer) = mesh.index_buffer.as_deref() {
+        write_mesh_upload_buffer(upload_sink, index_buffer, 0, ib_slice);
+    }
 }
 
 /// Per-buffer hint flags driving [`write_in_place_bone_buffers`].
