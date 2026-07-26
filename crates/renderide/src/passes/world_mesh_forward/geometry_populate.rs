@@ -100,11 +100,18 @@ impl EncoderPass for GeometryArenaPopulatePass {
                     .then_with(|| left.cmp(right))
             });
             let capacity_hint = geometry_arena_capacity_hint(mesh_pool, &asset_ids);
-            *guard = Some(GeometryArena::new_with_capacity_hint(
+            let Some(arena) = GeometryArena::new_with_capacity_hint(
                 ctx.device,
                 gpu_limits.max_buffer_size(),
                 &capacity_hint,
-            ));
+            ) else {
+                // The device refused the core arenas. Leave the store uninitialized so every mesh
+                // draws from its dedicated buffers, and retry when the plan next changes.
+                profile.allocation_failures = profile.allocation_failures.saturating_add(1);
+                crate::profiling::plot_world_mesh_geometry_arena(profile);
+                return Ok(());
+            };
+            *guard = Some(arena);
             initial_mesh_order = Some(asset_ids);
         }
         let arena = guard

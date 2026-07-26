@@ -592,10 +592,15 @@ fn draw_static_forward_from_arena(
     let Some(arena) = gpu.geometry_arena else {
         return false;
     };
-    let Some(allocation) = forward_arena_alloc(item, arena, streams) else {
+    let Some(allocation) =
+        arena.mesh_for_index_span(item.mesh_asset_id, item.first_index, item.index_count)
+    else {
         return false;
     };
-    if !bind_forward_arena_stream_ranges(rpass, arena, allocation, streams, last_mesh) {
+    let Some(mesh) = gpu.mesh_pool.get(item.mesh_asset_id) else {
+        return false;
+    };
+    if !bind_forward_arena_stream_ranges(rpass, arena, mesh, allocation, streams, last_mesh) {
         return false;
     }
     bind_arena_index_range_if_changed(rpass, arena, allocation, last_mesh);
@@ -616,14 +621,24 @@ fn draw_static_normals_from_arena(
     let Some(arena) = gpu.geometry_arena else {
         return false;
     };
-    let Some(allocation) = arena
-        .mesh_for_index_span(item.mesh_asset_id, item.first_index, item.index_count)
-        .filter(|allocation| allocation.has_stream(ArenaStream::Normal))
+    let Some(allocation) =
+        arena.mesh_for_index_span(item.mesh_asset_id, item.first_index, item.index_count)
     else {
         return false;
     };
+    let Some(mesh) = gpu.mesh_pool.get(item.mesh_asset_id) else {
+        return false;
+    };
     bind_arena_position_range(rpass, arena, allocation, last_mesh);
-    if !bind_arena_stream_range(rpass, 1, arena, allocation, ArenaStream::Normal, last_mesh) {
+    if !bind_forward_stream_slot(
+        rpass,
+        arena,
+        mesh,
+        allocation,
+        1,
+        ArenaStream::Normal,
+        last_mesh,
+    ) {
         return false;
     }
     bind_arena_index_range_if_changed(rpass, arena, allocation, last_mesh);
@@ -654,24 +669,99 @@ fn draw_static_depth_from_arena(
     true
 }
 
+/// Binds positions from the arena and each remaining stream from whichever source holds it.
+///
+/// Optional streams can be absent from the arena while the mesh still owns its dedicated copy: the
+/// shared buffer for a stream is only grown for meshes that actually supply it, and that growth can
+/// be refused. Both sources address vertices mesh-locally here (the arena binds this mesh's slice,
+/// a dedicated buffer binds whole), so falling back per slot draws the mesh instead of dropping it.
 fn bind_forward_arena_stream_ranges(
     rpass: &mut wgpu::RenderPass<'_>,
     arena: &GeometryArena,
+    mesh: &GpuMesh,
     allocation: GeometryAllocation,
     streams: EmbeddedVertexStreamFlags,
     last_mesh: &mut LastMeshBindState,
 ) -> bool {
     bind_arena_position_range(rpass, arena, allocation, last_mesh);
-    if !bind_arena_stream_range(rpass, 1, arena, allocation, ArenaStream::Normal, last_mesh) {
+    if !bind_forward_stream_slot(
+        rpass,
+        arena,
+        mesh,
+        allocation,
+        1,
+        ArenaStream::Normal,
+        last_mesh,
+    ) {
         return false;
     }
     let mut ready = true;
     for_each_forward_arena_stream(streams, |slot, stream| {
-        if !bind_arena_stream_range(rpass, slot, arena, allocation, stream, last_mesh) {
+        if !bind_forward_stream_slot(rpass, arena, mesh, allocation, slot, stream, last_mesh) {
             ready = false;
         }
     });
     ready
+}
+
+/// Binds one stream slot from the arena, or from the mesh's own buffer when the arena lacks it.
+fn bind_forward_stream_slot(
+    rpass: &mut wgpu::RenderPass<'_>,
+    arena: &GeometryArena,
+    mesh: &GpuMesh,
+    allocation: GeometryAllocation,
+    slot: usize,
+    stream: ArenaStream,
+    last_mesh: &mut LastMeshBindState,
+) -> bool {
+    if allocation.has_stream(stream)
+        && bind_arena_stream_range(rpass, slot, arena, allocation, stream, last_mesh)
+    {
+        return true;
+    }
+    let Some(buffer) = dedicated_arena_stream_buffer(mesh, stream) else {
+        return false;
+    };
+    bind_vertex_if_changed!(
+        rpass,
+        slot,
+        buffer.slice(..),
+        BufferBindId::full(buffer),
+        last_mesh.vertex
+    );
+    true
+}
+
+/// The mesh's own buffer for an arena stream, retained whenever the arena does not hold it.
+///
+/// Lazily derived streams are gated on readiness exactly as the dedicated draw path gates them, so
+/// a stream still being regenerated skips the draw instead of binding stale contents.
+fn dedicated_arena_stream_buffer(mesh: &GpuMesh, stream: ArenaStream) -> Option<&wgpu::Buffer> {
+    let (buffer, ready) = match stream {
+        ArenaStream::Normal => (mesh.normals_buffer.as_deref(), mesh.debug_streams_ready()),
+        ArenaStream::Uv0 => (mesh.uv0_buffer.as_deref(), true),
+        ArenaStream::Color => (mesh.color_buffer.as_deref(), true),
+        ArenaStream::Tangent => (
+            mesh.tangent_buffer.as_deref(),
+            mesh.tangent_vertex_stream_ready(),
+        ),
+        ArenaStream::RawTangent => (
+            mesh.raw_tangent_buffer.as_deref(),
+            mesh.raw_tangent_vertex_stream_ready(),
+        ),
+        ArenaStream::Uv1 => (mesh.uv1_buffer.as_deref(), mesh.uv1_vertex_stream_ready()),
+        ArenaStream::Uv2 => (mesh.uv2_buffer.as_deref(), mesh.uv2_vertex_stream_ready()),
+        ArenaStream::Uv3 => (mesh.uv3_buffer.as_deref(), mesh.uv3_vertex_stream_ready()),
+        ArenaStream::WideLow => (
+            mesh.wide_low_uv_buffer.as_deref(),
+            mesh.wide_low_uv_vertex_stream_ready(),
+        ),
+        ArenaStream::WideHigh => (
+            mesh.wide_high_uv_buffer.as_deref(),
+            mesh.wide_high_uv_vertex_stream_ready(),
+        ),
+    };
+    buffer.filter(|_| ready)
 }
 
 fn bind_arena_position_range(

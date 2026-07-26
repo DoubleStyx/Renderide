@@ -102,6 +102,55 @@ impl RangeAllocator {
         Some(used)
     }
 
+    /// Aligns `len` up, then allocates from the top of the highest free region that fits.
+    ///
+    /// Callers that suballocate parallel per element buffers indexed by this arena's offsets use
+    /// this for entries that need none of those buffers, so the low region stays reserved for the
+    /// entries that do and the parallel buffers stay dense.
+    pub fn allocate_high(&mut self, len_bytes: u64) -> Option<Range> {
+        let need = align_up(len_bytes, self.align);
+        if need == 0 || need > self.capacity {
+            return None;
+        }
+        let idx = self.free.iter().rposition(|r| r.len_bytes >= need)?;
+        let old = self.free[idx];
+        let offset_bytes = align_down(
+            old.offset_bytes
+                .saturating_add(old.len_bytes)
+                .saturating_sub(need),
+            self.align,
+        );
+        if offset_bytes < old.offset_bytes {
+            return None;
+        }
+        let used = Range {
+            offset_bytes,
+            len_bytes: need,
+        };
+        let head = offset_bytes.saturating_sub(old.offset_bytes);
+        let tail = old
+            .offset_bytes
+            .saturating_add(old.len_bytes)
+            .saturating_sub(offset_bytes.saturating_add(need));
+        if head > 0 {
+            self.free[idx].len_bytes = head;
+        } else {
+            self.free.remove(idx);
+        }
+        if tail > 0 {
+            let insert_at = if head > 0 { idx + 1 } else { idx };
+            self.free.insert(
+                insert_at,
+                Range {
+                    offset_bytes: offset_bytes.saturating_add(need),
+                    len_bytes: tail,
+                },
+            );
+        }
+        debug_assert!(self.debug_free_invariant());
+        Some(used)
+    }
+
     /// Returns a free range to the allocator and merges with adjacent free holes.
     pub fn free(&mut self, range: Range) {
         if range.len_bytes == 0 {
@@ -172,6 +221,14 @@ fn align_up(n: u64, align: u64) -> u64 {
     (n.saturating_add(align - 1)) / align * align
 }
 
+#[inline]
+fn align_down(n: u64, align: u64) -> u64 {
+    if align == 0 {
+        return n;
+    }
+    n / align * align
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,6 +252,31 @@ mod tests {
         let mut a = RangeAllocator::new(1024, 256);
         let r = a.allocate(1).unwrap();
         assert_eq!(r.len_bytes, 256);
+    }
+
+    #[test]
+    fn allocate_high_takes_the_top_and_keeps_the_low_region_free() {
+        let mut a = RangeAllocator::new(1024, 256);
+
+        let high = a.allocate_high(256).unwrap();
+        assert_eq!(high.offset_bytes, 768);
+        let low = a.allocate(256).unwrap();
+        assert_eq!(low.offset_bytes, 0);
+
+        assert_eq!(a.free.len(), 1);
+        assert_eq!(a.free[0].offset_bytes, 256);
+        assert_eq!(a.free[0].len_bytes, 512);
+    }
+
+    #[test]
+    fn allocate_high_reuses_freed_top_ranges() {
+        let mut a = RangeAllocator::new(1024, 256);
+        let first = a.allocate_high(256).unwrap();
+        let second = a.allocate_high(256).unwrap();
+        assert_eq!(second.offset_bytes, 512);
+
+        a.free(first);
+        assert_eq!(a.allocate_high(256).unwrap().offset_bytes, 768);
     }
 
     #[test]
