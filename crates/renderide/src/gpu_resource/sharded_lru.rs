@@ -6,7 +6,7 @@ use std::num::NonZeroUsize;
 use ahash::RandomState;
 use lru::LruCache;
 use parking_lot::RwLock;
- 
+
 /// Hash-sharded LRU cache.
 ///
 /// Each shard is an independent `RwLock<LruCache<K, V>>`; lookups and inserts route by hash so

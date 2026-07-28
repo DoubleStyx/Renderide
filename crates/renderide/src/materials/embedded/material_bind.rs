@@ -39,7 +39,6 @@ use cache::{
     EMBEDDED_CACHE_SHARDS, EmbeddedSamplerCacheKey, TextureDebugCacheKey,
     max_cached_embedded_bind_groups, max_cached_embedded_samplers, max_cached_texture_debug_ids,
 };
-use texture_signature::compute_uniform_texture_state_signature;
 use uniform::{
     EmbeddedUniformArenaRequest, MaterialUniformArena, MaterialUniformArenaSlotBinding,
     MaterialUniformCacheKey,
@@ -208,6 +207,12 @@ pub struct EmbeddedMaterialBindResources {
     /// single-`Mutex<LruCache<...>>` whose lock was the dominant contention point during
     /// `graph::per_view_fan_out`.
     bind_cache: ShardedLru<MaterialBindCacheKey, Arc<wgpu::BindGroup>>,
+    /// L1 over `@group(1)` input resolution, which costs more than the bind-group lookup it feeds.
+    ///
+    /// Building a [`MaterialBindCacheKey`] walks every texture binding and hashes pool residency
+    /// per entry, once per draw. The key here carries both the property-store generation and the
+    /// texture-binding epoch, so a hit is only served while every input it skipped is unchanged.
+    resolve_cache: ShardedLru<resolve::EmbeddedBindResolveCacheKey, EmbeddedBindInputResolution>,
     bind_cache_stats: AtomicCacheCounters,
     deferred_bind_group_drops: DeferredBindGroupDrops,
     sampler_cache: ShardedLru<EmbeddedSamplerCacheKey, Arc<wgpu::Sampler>>,
@@ -270,6 +275,10 @@ impl EmbeddedMaterialBindResources {
                 .collect(),
             uniform_arena_hasher: RandomState::new(),
             bind_cache: ShardedLru::new(max_cached_embedded_bind_groups(), EMBEDDED_CACHE_SHARDS),
+            resolve_cache: ShardedLru::new(
+                max_cached_embedded_bind_groups(),
+                EMBEDDED_CACHE_SHARDS,
+            ),
             bind_cache_stats: AtomicCacheCounters::default(),
             deferred_bind_group_drops: DeferredBindGroupDrops::new(),
             sampler_cache: ShardedLru::new(max_cached_embedded_samplers(), EMBEDDED_CACHE_SHARDS),
@@ -368,6 +377,7 @@ impl EmbeddedMaterialBindResources {
             stem_hash,
             texture_bind_signature,
             texture_2d_asset_id,
+            texture_state_sig,
         } = self.resolve_embedded_bind_inputs(
             shader.stem,
             shader.shader_variant_bits,
@@ -378,16 +388,6 @@ impl EmbeddedMaterialBindResources {
         )?;
 
         let mutation_gen = store.mutation_generation(lookup);
-        let texture_state_sig = {
-            profiling::scope!("materials::embedded_uniform_texture_signature");
-            compute_uniform_texture_state_signature(
-                &layout,
-                pools,
-                store,
-                lookup,
-                texture_2d_asset_id,
-            )
-        };
         let uniform_binding = if layout.reflected.material_uniform.is_some() {
             Some(
                 self.get_or_update_embedded_uniform_arena_slot(EmbeddedUniformArenaRequest {
@@ -547,6 +547,8 @@ impl EmbeddedMaterialBindResources {
     }
 
     fn clear_bind_cache(&self) {
+        // Resolutions hold the stem layout, so they must go whenever bind groups do.
+        let _ = self.resolve_cache.drain_values();
         let evicted = self.bind_cache.drain_values();
         for bind_group in evicted {
             self.deferred_bind_group_drops.defer(bind_group);

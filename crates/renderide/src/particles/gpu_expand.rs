@@ -21,7 +21,9 @@ fn expand_pipeline() -> &'static ParticleBillboardExpandPipeline {
 }
 
 /// Returns the writable streams when all point-mesh buffers are allocated.
-pub(crate) fn point_mesh_targets(mesh: &crate::assets::mesh::GpuMesh) -> Option<PointMeshTargets<'_>> {
+pub(crate) fn point_mesh_targets(
+    mesh: &crate::assets::mesh::GpuMesh,
+) -> Option<PointMeshTargets<'_>> {
     Some(PointMeshTargets {
         interleaved: mesh.vertex_buffer.as_deref()?,
         positions: mesh.positions_buffer.as_deref()?,
@@ -248,7 +250,9 @@ impl ParticleBillboardExpandPipeline {
             });
             let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("particle_billboard_expand"),
-                source: wgpu::ShaderSource::Wgsl(embedded_wgsl!("particle_billboard_expand").into()),
+                source: wgpu::ShaderSource::Wgsl(
+                    embedded_wgsl!("particle_billboard_expand").into(),
+                ),
             });
             let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("particle_billboard_expand"),

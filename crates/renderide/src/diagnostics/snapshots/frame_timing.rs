@@ -14,7 +14,8 @@ use std::time::{Duration, Instant};
 
 pub use ema::FrameTimingEma;
 pub use history::{
-    FrameTimeHistory, FrameTimingHistorySample, FrameTimingHistoryStats, FrameTimingOnePercentStats,
+    FrameTimeHistory, FrameTimingHistorySample, FrameTimingHistoryStats, FrameTimingJitterStats,
+    FrameTimingOnePercentStats,
 };
 
 use crate::gpu::GpuContext;

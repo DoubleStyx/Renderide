@@ -38,6 +38,19 @@ pub struct FrameTimingOnePercentStats {
     pub high: Option<f64>,
 }
 
+/// Frame-to-frame pacing consistency over the rolling window.
+///
+/// Percentiles describe how slow the worst frames are; these describe how much consecutive frames
+/// disagree. A run that alternates 8 ms and 20 ms has the same average as a steady 14 ms but is
+/// what actually reads as stutter, and only these fields separate the two.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FrameTimingJitterStats {
+    /// Mean absolute change between consecutive wall-frame intervals.
+    pub mean_abs_delta_ms: Option<f64>,
+    /// Largest single change between consecutive wall-frame intervals.
+    pub max_abs_delta_ms: Option<f64>,
+}
+
 /// Rolling 1-second stats for the compact frame timing HUD.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FrameTimingHistoryStats {
@@ -45,6 +58,8 @@ pub struct FrameTimingHistoryStats {
     pub fps: FrameTimingOnePercentStats,
     /// Frame-ms 1% slow/fast derived from wall-frame samples.
     pub frame_ms: FrameTimingOnePercentStats,
+    /// Wall-frame pacing consistency.
+    pub jitter: FrameTimingJitterStats,
     /// CPU-ms 1% slow/fast from new primary timing generations.
     pub cpu_ms: FrameTimingOnePercentStats,
     /// GPU-ms 1% slow/fast from timestamp-backed new primary timing generations.
@@ -118,6 +133,7 @@ impl FrameTimeHistory {
 
         FrameTimingHistoryStats {
             fps: low_high_fps(fps),
+            jitter: jitter_stats(&wall_ms),
             frame_ms: slow_fast_ms(wall_ms),
             cpu_ms: slow_fast_ms(cpu_ms),
             gpu_ms: slow_fast_ms(gpu_ms),
@@ -154,6 +170,24 @@ fn push_optional(out: &mut Vec<f64>, value: Option<f64>) {
 
 fn finite_non_negative(value: f64) -> Option<f64> {
     (value.is_finite() && value >= 0.0).then_some(value)
+}
+
+/// Mean and worst absolute change between consecutive samples, oldest first.
+fn jitter_stats(values: &[f64]) -> FrameTimingJitterStats {
+    if values.len() < 2 {
+        return FrameTimingJitterStats::default();
+    }
+    let mut total = 0.0;
+    let mut max = 0.0_f64;
+    for pair in values.windows(2) {
+        let delta = (pair[1] - pair[0]).abs();
+        total += delta;
+        max = max.max(delta);
+    }
+    FrameTimingJitterStats {
+        mean_abs_delta_ms: Some(total / (values.len() - 1) as f64),
+        max_abs_delta_ms: Some(max),
+    }
 }
 
 fn low_high_fps(values: Vec<f64>) -> FrameTimingOnePercentStats {
@@ -238,6 +272,34 @@ mod tests {
         assert_eq!(stats.frame_ms.high, Some(10.0));
         assert_eq!(stats.fps.low, Some(100.0));
         assert_eq!(stats.fps.high, Some(100.0));
+    }
+
+    #[test]
+    fn jitter_tracks_frame_to_frame_swing_not_average() {
+        let mut steady = FrameTimeHistory::new();
+        let mut alternating = FrameTimeHistory::new();
+        let start = Instant::now();
+        for i in 0..8u64 {
+            let at = start + Duration::from_millis(i * 14);
+            steady.push(sample(at, 14.0, i));
+            alternating.push(sample(at, if i % 2 == 0 { 8.0 } else { 20.0 }, i));
+        }
+
+        let steady_jitter = steady.stats().jitter;
+        let alternating_jitter = alternating.stats().jitter;
+
+        assert_eq!(steady_jitter.mean_abs_delta_ms, Some(0.0));
+        assert_eq!(steady_jitter.max_abs_delta_ms, Some(0.0));
+        assert_eq!(alternating_jitter.mean_abs_delta_ms, Some(12.0));
+        assert_eq!(alternating_jitter.max_abs_delta_ms, Some(12.0));
+    }
+
+    #[test]
+    fn jitter_needs_two_samples() {
+        let mut h = FrameTimeHistory::new();
+        h.push(sample(Instant::now(), 14.0, 1));
+
+        assert_eq!(h.stats().jitter.mean_abs_delta_ms, None);
     }
 
     #[test]

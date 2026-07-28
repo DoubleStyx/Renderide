@@ -28,13 +28,37 @@ pub(super) struct EmbeddedGroup1Snapshot {
     pub(super) texture_bind_signature: u64,
 }
 
+/// Identity of one embedded `@group(1)` resolution, including every input that can change it.
+///
+/// `store_mutation_generation` covers material property writes; `texture_binding_epoch` covers pool
+/// residency, view generation, and sampler changes, which never touch the property store. Dropping
+/// either term makes the cache serve bindings that no longer describe live state.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) struct EmbeddedBindResolveCacheKey {
+    stem_hash: u64,
+    shader_variant_bits: Option<u32>,
+    material_asset_id: i32,
+    property_block_slot0: Option<i32>,
+    renderer_property_block_id: Option<i32>,
+    offscreen_write_target: OffscreenWriteTarget,
+    store_mutation_generation: u64,
+    texture_binding_epoch: u64,
+}
+
 /// Stem layout, uniform/bind cache keys, and resolved primary texture ids for embedded `@group(1)` wiring.
+#[derive(Clone)]
 pub(super) struct EmbeddedBindInputResolution {
     pub(super) layout: Arc<StemMaterialLayout>,
     pub(super) uniform_key: MaterialUniformCacheKey,
     pub(super) stem_hash: u64,
     pub(super) texture_bind_signature: u64,
     pub(super) texture_2d_asset_id: i32,
+    /// Uniform-visible texture state, resolved here so a cache hit reads no pool entries at all.
+    ///
+    /// This walks the same pool rows as the bind signature. Caching only one of the two leaves the
+    /// other paying the cache misses the first used to absorb, which measured as a straight
+    /// transfer of cost rather than a saving.
+    pub(super) texture_state_sig: u64,
 }
 
 use super::EmbeddedMaterialBindResources;
@@ -57,8 +81,23 @@ impl EmbeddedMaterialBindResources {
         offscreen_write_target: OffscreenWriteTarget,
     ) -> Result<EmbeddedBindInputResolution, EmbeddedMaterialBindError> {
         profiling::scope!("materials::embedded_resolve_bind_inputs");
-        let layout = self.stem_layout(stem)?;
         let sh = stem_hash(stem);
+        let cache_key = EmbeddedBindResolveCacheKey {
+            stem_hash: sh,
+            shader_variant_bits,
+            material_asset_id: lookup.material_asset_id,
+            property_block_slot0: lookup.mesh_property_block_slot0,
+            renderer_property_block_id: lookup.mesh_renderer_property_block_id,
+            offscreen_write_target,
+            store_mutation_generation: store.mutation_generation(lookup),
+            texture_binding_epoch: crate::gpu_pools::resource_pool::texture_binding_epoch(),
+        };
+        if let Some(hit) = self.resolve_cache.get_cloned(&cache_key) {
+            profiling::scope!("materials::embedded_resolve_cache_hit");
+            return Ok(hit);
+        }
+
+        let layout = self.stem_layout(stem)?;
 
         let texture_2d_asset_id =
             primary_texture_2d_asset_id(&layout.reflected, layout.ids.as_ref(), store, lookup);
@@ -80,13 +119,26 @@ impl EmbeddedMaterialBindResources {
             texture_2d_asset_id,
             shader_variant_bits,
         };
-        Ok(EmbeddedBindInputResolution {
+        let texture_state_sig = {
+            profiling::scope!("materials::embedded_uniform_texture_signature");
+            super::texture_signature::compute_uniform_texture_state_signature(
+                &layout,
+                pools,
+                store,
+                lookup,
+                texture_2d_asset_id,
+            )
+        };
+        let resolution = EmbeddedBindInputResolution {
             layout,
             uniform_key,
             stem_hash: sh,
             texture_bind_signature,
             texture_2d_asset_id,
-        })
+            texture_state_sig,
+        };
+        self.resolve_cache.put(cache_key, resolution.clone());
+        Ok(resolution)
     }
 
     /// Walks `@group(1)` material entries once, capturing texture views, samplers, and the

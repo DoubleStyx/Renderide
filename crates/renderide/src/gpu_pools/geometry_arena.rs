@@ -1274,8 +1274,8 @@ impl GeometryArena {
         if denied != 0 && required_size >= denied {
             return None;
         }
-        let growth = required_size
-            .saturating_sub(self.streams[slot].as_ref().map_or(0, wgpu::Buffer::size));
+        let growth =
+            required_size.saturating_sub(self.streams[slot].as_ref().map_or(0, wgpu::Buffer::size));
         if growth > MAX_UNJUSTIFIED_STREAM_GROWTH_BYTES
             && payload_bytes.saturating_mul(MIN_STREAM_GROWTH_PAYLOAD_SHARE) < growth
         {
@@ -2152,7 +2152,12 @@ mod tests {
         for asset_id in 0..4 {
             entries.insert(
                 asset_id,
-                committed_entry(u64::try_from(asset_id).unwrap_or(0) * 16 * 1024 * 1024, 16, false, 0),
+                committed_entry(
+                    u64::try_from(asset_id).unwrap_or(0) * 16 * 1024 * 1024,
+                    16,
+                    false,
+                    0,
+                ),
             );
         }
         entries.insert(99, refused);

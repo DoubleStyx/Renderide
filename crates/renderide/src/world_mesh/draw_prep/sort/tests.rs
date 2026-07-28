@@ -567,7 +567,7 @@ fn opaque_blend_uses_transparent_sort_prefix_after_geometry_last() {
             UNITY_TRANSPARENT_RENDER_QUEUE_MIN - 1,
             true,
             boundary_draw._opaque_depth_bucket,
-            boundary_draw.batch_key_hash,
+            boundary_draw.batch_key_hash
         )
     );
 

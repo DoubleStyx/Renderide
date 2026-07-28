@@ -21,7 +21,7 @@ pub use frame_diagnostics::{
 };
 pub use frame_timing::{
     FrameTimeHistory, FrameTimingEma, FrameTimingHudCapture, FrameTimingHudSnapshot,
-    FrameTimingOnePercentStats,
+    FrameTimingJitterStats, FrameTimingOnePercentStats,
 };
 pub use renderer_info::{RendererInfoSnapshot, RendererInfoSnapshotCapture};
 pub use scene_transforms::SceneTransformsSnapshot;

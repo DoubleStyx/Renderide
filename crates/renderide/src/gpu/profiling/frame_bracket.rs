@@ -279,15 +279,43 @@ fn frame_bracket_readback_generation_current(
     health.generation() == expected_generation
 }
 
+/// Upper bound for a believable single-submit GPU time. Anything above this is a broken pair.
+///
+/// A resolved slot that was never written reads as zero, which turns the delta into the GPU's
+/// absolute tick counter, so the rejected values look like the device's uptime rather than a frame.
+const MAX_PLAUSIBLE_GPU_FRAME_MS: f64 = 10_000.0;
+
+/// Converts a resolved timestamp pair to milliseconds, rejecting pairs that cannot be a frame.
+///
+/// Both slots must hold a nonzero, forward-running tick count. A single bad sample is worth
+/// dropping outright: the HUD value is an EMA, so one absolute-counter reading skews the displayed
+/// GPU time and the rolling low/high stats for the rest of the session.
 fn timestamp_pair_bytes_to_ms(bytes: &[u8], timestamp_period: f32) -> Option<f64> {
     if bytes.len() < TIMESTAMP_PAIR_BYTES as usize {
         return None;
     }
     let begin = u64::from_le_bytes(bytes[0..8].try_into().ok()?);
     let end = u64::from_le_bytes(bytes[8..16].try_into().ok()?);
-    let ticks = end.saturating_sub(begin);
-    let ns = (ticks as f64) * f64::from(timestamp_period);
-    Some(ns / 1_000_000.0)
+    let ns = end
+        .checked_sub(begin)
+        .filter(|_| begin != 0 && end != 0)
+        .map(|ticks| (ticks as f64) * f64::from(timestamp_period));
+    let ms = ns.map(|ns| ns / 1_000_000.0);
+    match ms {
+        Some(ms) if ms.is_finite() && ms <= MAX_PLAUSIBLE_GPU_FRAME_MS => Some(ms),
+        _ => {
+            static IMPLAUSIBLE_PAIR_LOG: crate::log_throttle::LogThrottle =
+                crate::log_throttle::LogThrottle::new();
+            if let Some(occurrence) = IMPLAUSIBLE_PAIR_LOG.should_log(4, 512) {
+                logger::warn!(
+                    "frame bracket rejected timestamp pair begin={begin} end={end} \
+                     period={timestamp_period} occurrence={occurrence}; \
+                     a zero slot means one of the two writes never resolved"
+                );
+            }
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -312,12 +340,31 @@ mod tests {
     }
 
     #[test]
-    fn timestamp_pair_bytes_saturate_reversed_ticks() {
+    fn timestamp_pair_bytes_reject_reversed_ticks() {
         let bytes = timestamp_bytes(3_500, 1_000);
 
-        let ms = timestamp_pair_bytes_to_ms(&bytes, 2.0).unwrap();
+        assert_eq!(timestamp_pair_bytes_to_ms(&bytes, 2.0), None);
+    }
 
-        assert_eq!(ms, 0.0);
+    /// An unwritten query slot resolves to zero, which would otherwise report the GPU's absolute
+    /// tick counter as this frame's duration.
+    #[test]
+    fn timestamp_pair_bytes_reject_unwritten_slots() {
+        assert_eq!(
+            timestamp_pair_bytes_to_ms(&timestamp_bytes(0, 191_000_000_000), 1.0),
+            None
+        );
+        assert_eq!(
+            timestamp_pair_bytes_to_ms(&timestamp_bytes(1_000, 0), 1.0),
+            None
+        );
+    }
+
+    #[test]
+    fn timestamp_pair_bytes_reject_implausible_durations() {
+        let bytes = timestamp_bytes(1, 20_000_000_000);
+
+        assert_eq!(timestamp_pair_bytes_to_ms(&bytes, 1.0), None);
     }
 
     #[test]

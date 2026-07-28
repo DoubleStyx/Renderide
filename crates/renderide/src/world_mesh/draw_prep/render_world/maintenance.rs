@@ -350,7 +350,8 @@ impl RenderWorld {
             match expansion.expansion {
                 TransformDirtyExpansion::Removed(space_id) => self.remove_space(space_id),
                 TransformDirtyExpansion::FullSpace(space_id) => {
-                    self.note_space_dirty(space_id);
+                    stats.expanded_renderer_count +=
+                        self.note_space_transform_bounds_dirty(space_id);
                 }
                 TransformDirtyExpansion::Renderers(renderers) => {
                     stats.expanded_renderer_count += renderers.len();
@@ -369,6 +370,49 @@ impl RenderWorld {
             }
         }
         stats
+    }
+
+    /// Marks every retained renderer in a space bounds-dirty after a space-wide transform change.
+    ///
+    /// A transform root covering the whole space moves every renderer in it, but draw templates are
+    /// transform independent: only world matrices and cull bounds change. Marking the space dirty
+    /// refreshes every template and rebuilds the prepared snapshot, which measured as the dominant
+    /// per-frame cost in a world whose root ticks. The bounds path patches the retained prepared
+    /// rows in place instead and leaves the snapshot intact.
+    ///
+    /// Falls back to a full space rebuild when nothing is retained yet, since there are no rows to
+    /// patch. Returns the number of renderers marked.
+    pub(super) fn note_space_transform_bounds_dirty(&mut self, space_id: RenderSpaceId) -> usize {
+        if self.dirty_spaces.contains(&space_id) {
+            return 0;
+        }
+        let Some(space) = self.spaces.get(&space_id) else {
+            self.note_space_dirty(space_id);
+            return 0;
+        };
+        let dirties = space
+            .static_renderers
+            .iter()
+            .enumerate()
+            .map(|(index, _)| (RenderWorldRendererKind::Static, index))
+            .chain(
+                space
+                    .skinned_renderers
+                    .iter()
+                    .enumerate()
+                    .map(|(index, _)| (RenderWorldRendererKind::Skinned, index)),
+            )
+            .map(|(kind, renderable_index)| RenderWorldBoundsDirty {
+                space_id,
+                kind,
+                renderable_index,
+            })
+            .collect::<Vec<_>>();
+        let count = dirties.len();
+        for dirty in dirties {
+            self.note_bounds_dirty(dirty, RenderWorldDirtyReason::TransformOnly);
+        }
+        count
     }
 
     /// Expands dirty mesh asset ids to renderer records through retained reverse indexes.

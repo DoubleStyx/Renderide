@@ -655,7 +655,7 @@ impl PreviousHiZViewCache {
             return None;
         }
 
-            // A shape change replaces the entire ping-pong pair, so both cached handles are stale.
+        // A shape change replaces the entire ping-pong pair, so both cached handles are stale.
         self.entries.retain(|entry| entry.shape == shape);
         if let Some(index) = self
             .entries
@@ -826,7 +826,7 @@ fn materialize_gpu_cull_inputs(
             .min(pending.candidates.len());
 
         for candidate in &pending.candidates[source_start..source_end] {
-        // Matrix-plan overflow or an unresolved render-space lookup must not erase geometry.
+            // Matrix-plan overflow or an unresolved render-space lookup must not erase geometry.
             // Matrix zero is safe here because `current_valid = false` makes the candidate bypass
             // both visibility tests and emit its original command unchanged.
             let lookup = matrix_plan
@@ -1467,7 +1467,7 @@ fn split_group_by_render_space(
     let covered_instances = slices.iter().fold(0u32, |total, slice| {
         total.saturating_add(slice.instance_count)
     });
-        // Invalid slab layouts remain conservative: keep the complete original group
+    // Invalid slab layouts remain conservative: keep the complete original group
     // visible rather than silently dropping only the rows that could not be resolved.
     if covered_instances != expected_instances
         && expected_instances != 0

@@ -189,17 +189,46 @@ impl GpuTexture2d {
             && self.wgpu_format == desc.wgpu_format
     }
 
-    /// Marks uploaded mip levels and updates the contiguous resident prefix used for sampler LOD clamps.
+    /// Marks uploaded mip levels and clamps the binding view to the contiguous resident prefix.
+    ///
+    /// Mips past the prefix are allocated but hold no texels yet. Materials bind a texture as soon
+    /// as mip 0 lands, so a view spanning the whole chain lets every minified sample read
+    /// uninitialized texels while the rest of the chain streams in. Growing the view with the
+    /// prefix keeps sampling inside written mips instead.
     pub fn mark_mips_resident(&mut self, start_mip: u32, uploaded_mips: u32) {
         if uploaded_mips == 0 {
             return;
         }
-        self.mip_levels_resident = mark_resident_mip_mask(
+        let resident = mark_resident_mip_mask(
             &mut self.resident_mip_mask,
             self.mip_levels_total,
             start_mip,
             uploaded_mips,
         );
+        if resident == self.mip_levels_resident {
+            return;
+        }
+        self.mip_levels_resident = resident;
+        self.refresh_resident_view();
+    }
+
+    /// Rebuilds the binding view over `mip_levels_resident` mips and bumps the view generation.
+    ///
+    /// Material bind signatures already hash the view generation and the resident count, so the
+    /// replacement is picked up by the same rebuild that residency changes trigger today.
+    fn refresh_resident_view(&mut self) {
+        let mip_level_count = self.mip_levels_resident.min(self.mip_levels_total);
+        if mip_level_count == 0 {
+            return;
+        }
+        let label = format!("Texture2D {} mips 0..{mip_level_count}", self.asset_id);
+        self.view = Arc::new(self.texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some(&label),
+            mip_level_count: Some(mip_level_count),
+            ..Default::default()
+        }));
+        crate::profiling::note_resource_churn!(TextureView, "gpu_pools::texture2d_resident_view");
+        self.view_generation = NEXT_TEXTURE2D_VIEW_GENERATION.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Marks that a completed upload changed this texture's GPU contents.

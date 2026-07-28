@@ -19,9 +19,10 @@ pub use hud::{
 pub use snapshots::{
     AssetDiagnosticsSnapshot, BackendDiagSnapshot, FrameDiagnosticsIpcQueues,
     FrameDiagnosticsSnapshot, FrameDiagnosticsSnapshotCapture, FrameTimeHistory, FrameTimingEma,
-    FrameTimingHudCapture, FrameTimingHudSnapshot, FrameTimingOnePercentStats,
-    FrameUploadArenaSnapshot, GpuAllocatorHud, GpuAllocatorHudRefresh, GpuAllocatorReportHud,
-    HostHudGatherer, LightDiagnosticsSnapshot, RendererInfoSnapshot, RendererInfoSnapshotCapture,
-    SceneTransformsSnapshot, ShaderRouteSnapshot, TextureDebugSnapshot, XrRecoverableFailureCounts,
+    FrameTimingHudCapture, FrameTimingHudSnapshot, FrameTimingJitterStats,
+    FrameTimingOnePercentStats, FrameUploadArenaSnapshot, GpuAllocatorHud, GpuAllocatorHudRefresh,
+    GpuAllocatorReportHud, HostHudGatherer, LightDiagnosticsSnapshot, RendererInfoSnapshot,
+    RendererInfoSnapshotCapture, SceneTransformsSnapshot, ShaderRouteSnapshot,
+    TextureDebugSnapshot, XrRecoverableFailureCounts,
 };
 pub use watchdog::{Heartbeat, Watchdog, WatchdogPause};

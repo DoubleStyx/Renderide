@@ -2,7 +2,9 @@
 
 use imgui::WindowFlags;
 
-use crate::diagnostics::{FrameTimingHudSnapshot, FrameTimingOnePercentStats};
+use crate::diagnostics::{
+    FrameTimingHudSnapshot, FrameTimingJitterStats, FrameTimingOnePercentStats,
+};
 
 use super::super::layout::{self, Viewport, WindowSlot};
 use super::super::state::HudUiState;
@@ -101,6 +103,31 @@ fn render_cadence_rows(ui: &imgui::Ui, t: &FrameTimingHudSnapshot) {
         Some(("Low/High", format_percent_pair_ms(t.history_stats.frame_ms))),
         Some(FRAME_TOOLTIP),
     );
+
+    let jitter = t.history_stats.jitter;
+    metric_row(
+        ui,
+        ("Jitter", FPS_HEAD_COLOR),
+        (
+            format!("{} ms", ms_or_dash(jitter.mean_abs_delta_ms)),
+            jitter_color(jitter),
+        ),
+        Some((
+            "Worst",
+            format!("{} ms", ms_or_dash(jitter.max_abs_delta_ms)),
+        )),
+        Some(JITTER_TOOLTIP),
+    );
+}
+
+/// Colors mean frame-to-frame swing against the pacing a viewer perceives as smooth.
+fn jitter_color(jitter: FrameTimingJitterStats) -> [f32; 4] {
+    match jitter.mean_abs_delta_ms {
+        Some(ms) if ms < 1.0 => [0.50, 1.00, 0.55, 1.0],
+        Some(ms) if ms < 4.0 => [1.00, 0.95, 0.40, 1.0],
+        Some(_) => [1.00, 0.45, 0.40, 1.0],
+        None => DIM_COLOR,
+    }
 }
 
 fn render_work_rows(ui: &imgui::Ui, t: &FrameTimingHudSnapshot) {
@@ -290,6 +317,7 @@ fn host_ram_text(t: &FrameTimingHudSnapshot) -> String {
 
 const FPS_TOOLTIP: &str = "Smoothed wall-frame FPS. Low/High is a raw rolling one-second percentile window; spikes remain until they age out.";
 const FRAME_TOOLTIP: &str = "Wall-clock between consecutive winit ticks. Includes presentation mode, FPS caps, host lockstep, presentation waits, and event-loop pacing.";
+const JITTER_TOOLTIP: &str = "Pacing consistency over the rolling one-second window: mean change between consecutive frame intervals, and the worst single change. A steady rate reads near zero no matter how fast it is, so a high value with a healthy average frame time is stutter rather than low throughput.";
 const CPU_TOOLTIP: &str = "Main-thread active renderer work from frame start to submit dispatch, minus explicit pacing waits.";
 const GPU_TOOLTIP: &str = "Real primary GPU busy time measured by hardware timestamp brackets around primary render submits.";
 const HOST_TOOLTIP: &str = "Renderer-observed host update turnaround: outgoing FrameStartData send to matching inbound FrameSubmitData queue receipt.";

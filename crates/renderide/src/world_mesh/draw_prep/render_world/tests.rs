@@ -219,6 +219,48 @@ fn full_space_dirty_discards_redundant_fine_grained_work() {
     assert!(world.dirty_transform_roots.is_empty());
 }
 
+/// A world root that ticks every frame reaches this path. Marking the space dirty refreshes every
+/// template and rebuilds the prepared snapshot; transforms only move renderers, so the retained
+/// rows are patched through the bounds path instead.
+#[test]
+fn space_wide_transform_change_patches_bounds_instead_of_rebuilding() {
+    let space_id = RenderSpaceId(61);
+    let mut world = RenderWorld::default();
+    let mut space = RenderWorldSpace::default();
+    space
+        .static_renderers
+        .push(RenderWorldRendererTemplate::default());
+    space
+        .static_renderers
+        .push(RenderWorldRendererTemplate::default());
+    space
+        .skinned_renderers
+        .push(RenderWorldRendererTemplate::default());
+    world.spaces.insert(space_id, space);
+
+    let marked = world.note_space_transform_bounds_dirty(space_id);
+
+    assert_eq!(marked, 3);
+    assert!(
+        !world.dirty_spaces.contains(&space_id),
+        "a transform-only change must not force a full space rebuild"
+    );
+    assert!(world.dirty_renderers.is_empty());
+    assert_eq!(world.dirty_bounds_renderers.len(), 3);
+}
+
+/// Nothing retained means there are no prepared rows to patch, so the full path is still required.
+#[test]
+fn space_wide_transform_change_falls_back_when_nothing_is_retained() {
+    let space_id = RenderSpaceId(62);
+    let mut world = RenderWorld::default();
+
+    let marked = world.note_space_transform_bounds_dirty(space_id);
+
+    assert_eq!(marked, 0);
+    assert!(world.dirty_spaces.contains(&space_id));
+}
+
 #[test]
 fn renderer_dirty_supersedes_existing_bounds_dirty() {
     let space_id = RenderSpaceId(7);
@@ -372,9 +414,7 @@ fn mesh_asset_dirties_use_reverse_index() {
 fn identical_mesh_metadata_mutation_suppresses_renderer_dirty() {
     let asset_id = 56;
     let mut mesh_pool = MeshPool::default_pool();
-    mesh_pool.insert(crate::assets::mesh::GpuMesh::test_draw_prep_mesh(
-        asset_id,
-    ));
+    mesh_pool.insert(crate::assets::mesh::GpuMesh::test_draw_prep_mesh(asset_id));
     let mut world = RenderWorld {
         full_rebuild_requested: false,
         mesh_pool_generation: mesh_pool.mutation_generation(),
@@ -385,9 +425,7 @@ fn identical_mesh_metadata_mutation_suppresses_renderer_dirty() {
         MeshDrawPrepState::capture(mesh_pool.get(asset_id)),
     );
 
-    mesh_pool.insert(crate::assets::mesh::GpuMesh::test_draw_prep_mesh(
-        asset_id,
-    ));
+    mesh_pool.insert(crate::assets::mesh::GpuMesh::test_draw_prep_mesh(asset_id));
     let mut stats = RenderWorldMaintenanceStats::default();
     world.note_mesh_pool_delta(&mesh_pool, &mut stats);
 
@@ -401,9 +439,7 @@ fn identical_mesh_metadata_mutation_suppresses_renderer_dirty() {
 fn changed_mesh_draw_prep_metadata_marks_asset_dirty() {
     let asset_id = 57;
     let mut mesh_pool = MeshPool::default_pool();
-    mesh_pool.insert(crate::assets::mesh::GpuMesh::test_draw_prep_mesh(
-        asset_id,
-    ));
+    mesh_pool.insert(crate::assets::mesh::GpuMesh::test_draw_prep_mesh(asset_id));
     let mut world = RenderWorld {
         full_rebuild_requested: false,
         mesh_pool_generation: mesh_pool.mutation_generation(),
@@ -429,9 +465,7 @@ fn changed_mesh_draw_prep_metadata_marks_asset_dirty() {
 fn mesh_removal_and_reappearance_each_invalidate_draw_prep_state() {
     let asset_id = 58;
     let mut mesh_pool = MeshPool::default_pool();
-    mesh_pool.insert(crate::assets::mesh::GpuMesh::test_draw_prep_mesh(
-        asset_id,
-    ));
+    mesh_pool.insert(crate::assets::mesh::GpuMesh::test_draw_prep_mesh(asset_id));
     let mut world = RenderWorld {
         full_rebuild_requested: false,
         mesh_pool_generation: mesh_pool.mutation_generation(),
@@ -448,9 +482,7 @@ fn mesh_removal_and_reappearance_each_invalidate_draw_prep_state() {
     assert_eq!(removed_stats.mesh_asset_draw_prep_change_count, 1);
     assert!(world.dirty_mesh_assets.remove(&asset_id));
 
-    mesh_pool.insert(crate::assets::mesh::GpuMesh::test_draw_prep_mesh(
-        asset_id,
-    ));
+    mesh_pool.insert(crate::assets::mesh::GpuMesh::test_draw_prep_mesh(asset_id));
     let mut reappeared_stats = RenderWorldMaintenanceStats::default();
     world.note_mesh_pool_delta(&mesh_pool, &mut reappeared_stats);
     assert_eq!(reappeared_stats.mesh_asset_draw_prep_change_count, 1);

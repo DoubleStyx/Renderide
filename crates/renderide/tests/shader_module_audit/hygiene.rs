@@ -338,8 +338,7 @@ fn blur_circular_path_reuses_one_trig_pair() -> io::Result<()> {
     let blur = material_source("blur.wgsl")?;
     assert!(
         blur.contains("let tap_count = u32(ceil(clamped_iterations));")
-            && blur
-                .contains("let rotation = vec2<f32>(cos(angle_step), sin(angle_step));"),
+            && blur.contains("let rotation = vec2<f32>(cos(angle_step), sin(angle_step));"),
         "blur.wgsl must rotate a shared angular step instead of evaluating trig per tap"
     );
     assert_eq!(

@@ -13,8 +13,17 @@ const CASCADE_SPLIT_LAMBDA: f32 = 0.75;
 /// Extra light-space depth pulled toward the light to capture occluders above each slice, as a
 /// multiple of the cascade bounding radius.
 const CASCADE_CASTER_PULLBACK: f32 = 1.0;
-/// Bounding-radius quantization steps per world unit; stabilizes the sphere fit frame to frame.
-const CASCADE_RADIUS_QUANTIZE: f32 = 16.0;
+/// Bounding-radius quantization steps across one cascade radius.
+///
+/// The radius is derived from live frustum corners, so it moves whenever the camera's clip planes,
+/// field of view, or aspect move, and a resized cascade resamples the whole shadow map. Quantizing
+/// relative to the radius keeps a cascade one fixed size across the small per-frame changes that
+/// dominate normal movement, matching how a stable fit only ever steps in texels. An absolute step
+/// cannot do this: 1/16 of a world unit is below the noise floor of a 50 unit cascade.
+const CASCADE_RADIUS_STEPS: f32 = 32.0;
+
+/// Smallest absolute bounding-radius step, for cascades small enough that the relative step vanishes.
+const CASCADE_RADIUS_MIN_STEP: f32 = 1.0 / 16.0;
 
 /// World-space camera frustum used to fit directional shadow cascades to what the camera sees.
 #[derive(Clone, Copy, Debug)]
@@ -149,6 +158,21 @@ pub(crate) fn cascade_split(near: f32, far: f32, index: u32, count: u32) -> Casc
     }
 }
 
+/// Rounds a cascade bounding radius up to a step sized for its own magnitude.
+///
+/// The step is a power of two near `radius / CASCADE_RADIUS_STEPS`, so it holds constant across a
+/// wide band of radii. A step derived directly from the radius would scale with its own input and
+/// barely quantize at all, leaving the cascade tracking every wobble it was meant to absorb.
+fn quantize_cascade_radius(radius: f32) -> f32 {
+    let radius = radius.max(1e-3);
+    let step = (radius / CASCADE_RADIUS_STEPS)
+        .max(CASCADE_RADIUS_MIN_STEP)
+        .log2()
+        .floor()
+        .exp2();
+    ((radius / step).ceil() * step).max(1e-3)
+}
+
 /// Builds a camera-fitted, texel-snapped orthographic cascade projection (world to shadow clip).
 pub(crate) fn directional_cascade_view_proj(
     direction: Vec3,
@@ -167,7 +191,7 @@ pub(crate) fn directional_cascade_view_proj(
     for c in &corners {
         radius = radius.max(center.distance(*c));
     }
-    radius = ((radius * CASCADE_RADIUS_QUANTIZE).ceil() / CASCADE_RADIUS_QUANTIZE).max(1e-3);
+    radius = quantize_cascade_radius(radius);
 
     let pullback = radius * CASCADE_CASTER_PULLBACK;
     let eye = center - direction * (radius + pullback);
@@ -263,6 +287,49 @@ mod tests {
             "xy out of bounds: {ndc:?}"
         );
         assert!(ndc.z >= 0.0 && ndc.z <= 1.0, "depth out of bounds: {ndc:?}");
+    }
+
+    /// The camera's clip planes move slightly frame to frame. A cascade that resizes with them
+    /// resamples the whole shadow map, which is the shimmer people report while moving, and it
+    /// changes the shadow view signature so the cached atlas layer re-renders every frame.
+    #[test]
+    fn clip_plane_wobble_collapses_to_one_cascade_size() {
+        let mut sizes = Vec::new();
+        for step in 0..24 {
+            let jitter = step as f32 * 0.02;
+            let fit = look_down_neg_z_fit(0.1 + jitter * 0.01, 200.0 + jitter);
+            let split = cascade_split(fit.near(), 175.0, 0, 4);
+            let proj = directional_cascade_view_proj(
+                Vec3::new(0.0, -1.0, 0.0),
+                Vec3::Z,
+                &fit,
+                split,
+                2048,
+            );
+            sizes.push(proj.x_axis.x);
+        }
+        sizes.sort_by(f32::total_cmp);
+        sizes.dedup();
+
+        assert!(
+            sizes.len() <= 2,
+            "cascade resized {} times across sub-unit clip wobble: {sizes:?}",
+            sizes.len()
+        );
+    }
+
+    #[test]
+    fn radius_quantization_collapses_nearby_radii_onto_one_step() {
+        // Step near 64/32 = 2, so this whole band shares one cascade size.
+        let base = super::quantize_cascade_radius(64.5);
+
+        assert!(base >= 64.5 && base <= 66.0, "base: {base}");
+        assert_eq!(base, super::quantize_cascade_radius(64.5));
+        assert_eq!(base, super::quantize_cascade_radius(65.0));
+        assert_eq!(base, super::quantize_cascade_radius(65.9));
+        // Small cascades keep a usable floor instead of collapsing to nothing.
+        assert!(super::quantize_cascade_radius(2.0) >= 2.0);
+        assert!(super::quantize_cascade_radius(0.0) > 0.0);
     }
 
     #[test]

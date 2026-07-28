@@ -115,6 +115,26 @@ impl PoolResourceAccess for UntrackedAccess {
     fn note_access(&mut self, _asset_id: i32) {}
 }
 
+/// Monotonic counter over every mutation of a texture-kind resident pool.
+static TEXTURE_BINDING_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Current texture-binding epoch.
+///
+/// Material `@group(1)` resolution reads pool residency, view generations, and sampler state, none
+/// of which bump [`crate::materials::host_data::MaterialPropertyStore`] mutation generations. Any
+/// cache that skips that resolution must include this epoch, or it will keep serving bindings that
+/// describe pool state which has since changed.
+#[inline]
+pub(crate) fn texture_binding_epoch() -> u64 {
+    TEXTURE_BINDING_EPOCH.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Advances the texture-binding epoch.
+#[inline]
+fn bump_texture_binding_epoch() {
+    TEXTURE_BINDING_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Common resident-resource table with VRAM accounting and a typed access policy.
 #[derive(Debug)]
 pub(crate) struct GpuResourcePool<T, A>
@@ -157,8 +177,17 @@ where
         &mut self.access
     }
 
+    /// Bumps the shared texture-binding epoch when this pool holds texture-kind resources.
+    #[inline]
+    fn note_texture_binding_mutation(&self) {
+        if self.access.kind() == VramResourceKind::Texture {
+            bump_texture_binding_epoch();
+        }
+    }
+
     /// Inserts or replaces a resident resource and returns whether an entry already existed.
     pub(crate) fn insert(&mut self, resource: T) -> bool {
+        self.note_texture_binding_mutation();
         let id = resource.asset_id();
         let bytes = resource.resident_bytes();
         let kind = self.access.kind();
@@ -182,6 +211,7 @@ where
 
     /// Removes a resident resource by host asset id and returns it when it existed.
     pub(crate) fn take(&mut self, asset_id: i32) -> Option<T> {
+        self.note_texture_binding_mutation();
         let old = self.resources.remove(&asset_id)?;
         self.accounting
             .on_resident_removed(self.access.kind(), old.resident_bytes());
@@ -201,8 +231,13 @@ where
     }
 
     /// Mutably borrows a resident resource by host asset id.
+    ///
+    /// Conservatively bumps the texture-binding epoch: the caller can change mip residency, view
+    /// generation, or sampler state through this borrow, and none of those write the material
+    /// property store, so nothing else would invalidate a cached binding resolution.
     #[inline]
     pub(crate) fn get_mut(&mut self, asset_id: i32) -> Option<&mut T> {
+        self.note_texture_binding_mutation();
         self.resources.get_mut(&asset_id)
     }
 
@@ -398,6 +433,39 @@ mod tests {
     /// Creates an empty pool with the texture-tagged untracked access policy.
     fn texture_pool() -> GpuResourcePool<TestResource, UntrackedAccess> {
         GpuResourcePool::new(UntrackedAccess::new(VramResourceKind::Texture))
+    }
+
+    /// Material bind resolution is cached against this epoch, and mip residency or sampler changes
+    /// arrive through `get_mut` without ever writing the material property store. If any of these
+    /// stopped bumping it, that cache would keep serving bindings for pool state that has changed.
+    #[test]
+    fn texture_pool_mutations_advance_the_binding_epoch() {
+        let mut pool = texture_pool();
+        pool.insert(TestResource::new(7, 128));
+
+        let after_insert = super::texture_binding_epoch();
+        assert!(pool.get_mut(7).is_some());
+        let after_get_mut = super::texture_binding_epoch();
+        assert!(pool.remove(7));
+        let after_remove = super::texture_binding_epoch();
+
+        assert!(after_get_mut > after_insert, "get_mut must bump the epoch");
+        assert!(after_remove > after_get_mut, "remove must bump the epoch");
+    }
+
+    /// Mesh pools share this table but contribute nothing to material texture bindings.
+    #[test]
+    fn mesh_pool_mutations_leave_the_binding_epoch_alone() {
+        let mut pool = GpuResourcePool::<TestResource, UntrackedAccess>::new(UntrackedAccess::new(
+            VramResourceKind::Mesh,
+        ));
+
+        let before = super::texture_binding_epoch();
+        pool.insert(TestResource::new(9, 64));
+        let _ = pool.get_mut(9);
+        pool.remove(9);
+
+        assert_eq!(super::texture_binding_epoch(), before);
     }
 
     /// Insert adds bytes and records an access through the policy.

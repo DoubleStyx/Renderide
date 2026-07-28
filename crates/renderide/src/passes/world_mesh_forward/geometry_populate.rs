@@ -159,8 +159,8 @@ impl EncoderPass for GeometryArenaPopulatePass {
                 mesh.positions_buffer.as_deref(),
                 mesh.index_buffer.as_deref(),
             ) {
-        // Revalidate source identity and declared counts while dedicated sources exist.
-        // `ensure_mesh` replaces a stale allocation before copying.
+                // Revalidate source identity and declared counts while dedicated sources exist.
+                // `ensure_mesh` replaces a stale allocation before copying.
                 let allocation = arena.ensure_mesh(
                     ctx.device,
                     ctx.encoder,
