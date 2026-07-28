@@ -1246,15 +1246,19 @@ pub(crate) fn issue_normal_prepass_indirect(draw: NormalPrepassIndirectDraw<'_, 
     rpass.set_vertex_buffer(0, arena.position_buffer().slice(..));
     rpass.set_vertex_buffer(1, normals.slice(..));
 
+    let mut last_index_narrow: Option<bool> = None;
     for run in runs {
         let pipeline = normal_pipelines.pipeline(device, run.key);
         rpass.set_pipeline(pipeline.as_ref());
-        let (index_buffer, index_format) = if run.narrow {
-            (arena.index_buffer_u16(), wgpu::IndexFormat::Uint16)
-        } else {
-            (arena.index_buffer_u32(), wgpu::IndexFormat::Uint32)
-        };
-        rpass.set_index_buffer(index_buffer.slice(..), index_format);
+        if last_index_narrow != Some(run.narrow) {
+            let (index_buffer, index_format) = if run.narrow {
+                (arena.index_buffer_u16(), wgpu::IndexFormat::Uint16)
+            } else {
+                (arena.index_buffer_u32(), wgpu::IndexFormat::Uint32)
+            };
+            rpass.set_index_buffer(index_buffer.slice(..), index_format);
+            last_index_narrow = Some(run.narrow);
+        }
         commands.draw_range(rpass, run.first_command, run.command_count);
     }
 }
@@ -1392,6 +1396,7 @@ pub(crate) fn issue_shadow_indirect_runs(draw: ShadowIndirectDraw<'_, '_>) {
 
     let shadow_pipelines = shadow_pipelines();
     let radial_pipelines = radial_shadow_pipelines();
+    let mut last_index_narrow: Option<bool> = None;
     for run in runs {
         let pipeline = if radial_shadow {
             radial_pipelines.pipeline(device, run.key)
@@ -1399,12 +1404,15 @@ pub(crate) fn issue_shadow_indirect_runs(draw: ShadowIndirectDraw<'_, '_>) {
             shadow_pipelines.pipeline(device, run.key)
         };
         rpass.set_pipeline(pipeline.as_ref());
-        let (index_buffer, index_format) = if run.narrow {
-            (arena.index_buffer_u16(), wgpu::IndexFormat::Uint16)
-        } else {
-            (arena.index_buffer_u32(), wgpu::IndexFormat::Uint32)
-        };
-        rpass.set_index_buffer(index_buffer.slice(..), index_format);
+        if last_index_narrow != Some(run.narrow) {
+            let (index_buffer, index_format) = if run.narrow {
+                (arena.index_buffer_u16(), wgpu::IndexFormat::Uint16)
+            } else {
+                (arena.index_buffer_u32(), wgpu::IndexFormat::Uint32)
+            };
+            rpass.set_index_buffer(index_buffer.slice(..), index_format);
+            last_index_narrow = Some(run.narrow);
+        }
         commands.draw_range(rpass, run.first_command, run.command_count);
     }
 }
@@ -1496,15 +1504,19 @@ pub(crate) fn issue_depth_prepass_indirect(draw: DepthPrepassIndirectDraw<'_, '_
     rpass.set_bind_group(0, per_draw_bind_group, &[0]);
     rpass.set_vertex_buffer(0, arena.position_buffer().slice(..));
 
+    let mut last_index_narrow: Option<bool> = None;
     for run in runs {
         let pipeline = depth_pipelines.pipeline(device, run.key);
         rpass.set_pipeline(pipeline.as_ref());
-        let (index_buffer, index_format) = if run.narrow {
-            (arena.index_buffer_u16(), wgpu::IndexFormat::Uint16)
-        } else {
-            (arena.index_buffer_u32(), wgpu::IndexFormat::Uint32)
-        };
-        rpass.set_index_buffer(index_buffer.slice(..), index_format);
+        if last_index_narrow != Some(run.narrow) {
+            let (index_buffer, index_format) = if run.narrow {
+                (arena.index_buffer_u16(), wgpu::IndexFormat::Uint16)
+            } else {
+                (arena.index_buffer_u32(), wgpu::IndexFormat::Uint32)
+            };
+            rpass.set_index_buffer(index_buffer.slice(..), index_format);
+            last_index_narrow = Some(run.narrow);
+        }
         commands.draw_range(rpass, run.first_command, run.command_count);
     }
 }

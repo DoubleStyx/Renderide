@@ -1058,15 +1058,19 @@ impl WorldMeshGpuCullResult {
         }
         rpass.set_bind_group(0, per_draw_bind_group, &[0]);
         rpass.set_vertex_buffer(0, arena.position_buffer().slice(..));
+        let mut last_index_narrow: Option<bool> = None;
         for run in self.depth_runs.iter() {
             let pipeline = pipelines.pipeline(device, run.key);
             rpass.set_pipeline(pipeline.as_ref());
-            let (index_buffer, index_format) = if run.narrow {
-                (arena.index_buffer_u16(), wgpu::IndexFormat::Uint16)
-            } else {
-                (arena.index_buffer_u32(), wgpu::IndexFormat::Uint32)
-            };
-            rpass.set_index_buffer(index_buffer.slice(..), index_format);
+            if last_index_narrow != Some(run.narrow) {
+                let (index_buffer, index_format) = if run.narrow {
+                    (arena.index_buffer_u16(), wgpu::IndexFormat::Uint16)
+                } else {
+                    (arena.index_buffer_u32(), wgpu::IndexFormat::Uint32)
+                };
+                rpass.set_index_buffer(index_buffer.slice(..), index_format);
+                last_index_narrow = Some(run.narrow);
+            }
             run.draw
                 .issue(rpass, &self.indirect_buffer, &self.count_buffer);
         }
@@ -1089,15 +1093,19 @@ impl WorldMeshGpuCullResult {
         rpass.set_bind_group(0, per_draw_bind_group, &[0]);
         rpass.set_vertex_buffer(0, arena.position_buffer().slice(..));
         rpass.set_vertex_buffer(1, normals.slice(..));
+        let mut last_index_narrow: Option<bool> = None;
         for run in self.normal_runs.iter() {
             let pipeline = pipelines.pipeline(device, run.key);
             rpass.set_pipeline(pipeline.as_ref());
-            let (index_buffer, index_format) = if run.narrow {
-                (arena.index_buffer_u16(), wgpu::IndexFormat::Uint16)
-            } else {
-                (arena.index_buffer_u32(), wgpu::IndexFormat::Uint32)
-            };
-            rpass.set_index_buffer(index_buffer.slice(..), index_format);
+            if last_index_narrow != Some(run.narrow) {
+                let (index_buffer, index_format) = if run.narrow {
+                    (arena.index_buffer_u16(), wgpu::IndexFormat::Uint16)
+                } else {
+                    (arena.index_buffer_u32(), wgpu::IndexFormat::Uint32)
+                };
+                rpass.set_index_buffer(index_buffer.slice(..), index_format);
+                last_index_narrow = Some(run.narrow);
+            }
             run.draw
                 .issue(rpass, &self.indirect_buffer, &self.count_buffer);
         }
