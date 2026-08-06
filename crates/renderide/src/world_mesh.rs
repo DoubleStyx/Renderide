@@ -34,7 +34,8 @@ pub use draw_prep::{
 };
 pub(crate) use draw_prep::{
     QueuedWorldMeshDraws, WorldMeshCommandCache, fingerprint_world_mesh_draws,
-    queue_draws_with_parallelism, queue_prepared_draws_for_views_with_parallelism,
+    log_opaque_depth_bucket_policy, queue_draws_with_parallelism,
+    queue_prepared_draws_for_views_with_parallelism,
 };
 pub use instances::{DrawGroup, InstancePlan, MeshPassKind, WorldMeshPhase, build_plan_for_shader};
 pub(crate) use instances::{depth_prepass_group_eligible, depth_prepass_item_eligible};

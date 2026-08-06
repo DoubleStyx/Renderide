@@ -748,18 +748,28 @@ fn build_prepared_view_chunk_tasks(
     tasks
 }
 
+/// Returns whether prepared collection runs the spatial broadphase before expanding runs.
+///
+/// Deliberately does not consult `retain_gpu_static_candidates`. Retention exists to keep the draw
+/// plan camera-independent for the GPU-static plan cache, but skipping the broadphase to get that
+/// made CPU cost scale with total scene size instead of visible size. Culling first is the same
+/// order Unity uses and is what keeps large sparse worlds affordable.
+pub(super) fn prepared_collection_uses_broadphase(view: &DrawCollectionViewInputs<'_>) -> bool {
+    view.culling.is_some()
+}
+
 /// Collects prepared chunks for one view state.
 fn collect_prepared_chunks_for_state(
     ctx: &DrawCollectionInputs<'_>,
     state: &PreparedCollectionState<'_>,
     allow_parallel_chunks: bool,
 ) -> WorldMeshCollectedChunks {
-    // The spatial index only knows renderer bounds, not the material phase or whether a mesh is
-    // backed by dynamic/deformed streams. When GPU-static retention is active it therefore cannot
-    // reject a whole renderer run up front: an off-screen run may still contain an opaque slot
-    // whose visibility must be decided by compute. Per-run collection below keeps CPU culling for
-    // unsupported and strict-order slots.
-    if ctx.view.culling.is_some() && !ctx.view.retain_gpu_static_candidates {
+    // Broadphase first, always. Retaining every off-screen candidate so the draw plan stays
+    // camera-independent only pays for itself if the GPU-static plan cache actually reuses it, and
+    // that cache measured zero hits across every profiling capture. Without the broadphase, CPU
+    // cost scales with total scene size instead of visible size, which is why worlds Unity culls
+    // comfortably could tank here. GPU culling still runs afterwards and still does occlusion.
+    if prepared_collection_uses_broadphase(&ctx.view) {
         let parallelism = if allow_parallel_chunks {
             WorldMeshDrawCollectParallelism::Full
         } else {

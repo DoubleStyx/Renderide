@@ -8,13 +8,11 @@ use crate::materials::RasterFrontFace;
 use crate::scene::{RenderSpaceId, SkinnedMeshRenderer};
 use crate::shared::LayerType;
 
-use crate::world_mesh::WorldMeshPhase;
 use crate::world_mesh::culling::{
-    CpuCullFailure, MeshCullGeometry, MeshCullTarget, mesh_cpu_cull_with_geometry,
+    CpuCullFailure, MeshCullTarget, mesh_cpu_cull_with_geometry,
     mesh_world_geometry_for_cull_with_head,
 };
 use crate::world_mesh::materials::FrameMaterialBatchCache;
-use crate::world_mesh::phase_classification::classify_world_mesh_batch;
 
 use super::super::item::{WorldMeshDrawItem, stacked_material_submesh_topology};
 use super::super::prepared_renderables::{FramePreparedDraw, FramePreparedRun};
@@ -57,9 +55,6 @@ struct PreparedRunViewState {
     front_face: RasterFrontFace,
     /// Camera distance reused by alpha-blended slot draws.
     alpha_distance_sq: f32,
-    /// Geometry retained so unsupported material slots in an otherwise GPU-static renderer run
-    /// can still use the CPU visibility fallback after material classification.
-    cull_geometry: Option<MeshCullGeometry>,
 }
 
 /// Skinned renderer lookup result for a prepared renderer run.
@@ -162,9 +157,10 @@ fn prepared_run_view_state(
     if let Some(geom) = geometry {
         world_aabb = geom.world_aabb;
         deformed_front_face_world_matrix = geom.front_face_world_matrix;
-        if let Some(c) = ctx.view.culling
-            && !defer_visibility_to_gpu
-        {
+        // Cull every run on the CPU, including runs whose visibility compute would decide anyway.
+        // Rejecting here removes the draw from collection, sorting, material resolve, slab packing
+        // and instance planning; deferring only removed it from the GPU.
+        if let Some(c) = ctx.view.culling {
             cull_stats.0 += run.len();
             match mesh_cpu_cull_with_geometry(
                 geom,
@@ -211,7 +207,6 @@ fn prepared_run_view_state(
             world_aabb,
             front_face,
             alpha_distance_sq,
-            cull_geometry: geometry,
         }),
         cull_stats,
     )
@@ -238,65 +233,6 @@ fn renderer_can_defer_visibility_to_gpu(
         && !first.tangent_blendshape_deform_active
         && !mesh.dynamic_geometry
         && mesh.has_raster_core_residency()
-}
-
-/// Returns whether a resolved material slot belongs to the opaque/alpha-test phases supported by
-/// the GPU visibility handoff. Intersection, transparent, and grab-pass slots retain CPU culling.
-#[inline]
-fn material_can_defer_visibility_to_gpu(item: &WorldMeshDrawItem) -> bool {
-    item.ui_rect_clip_local.is_none()
-        && matches!(
-            classify_world_mesh_batch(&item.batch_key).phase,
-            WorldMeshPhase::ForwardOpaque | WorldMeshPhase::ForwardAlphaTest
-        )
-}
-
-/// Applies CPU culling only to unsupported slots in a renderer whose opaque/alpha-test slots were
-/// retained for GPU visibility. This keeps mixed-material renderers correct without paying a CPU
-/// frustum/Hi-Z test when every emitted slot can move to compute.
-fn cull_gpu_static_run_fallback_slots(
-    ctx: &DrawCollectionInputs<'_>,
-    first: &FramePreparedDraw,
-    is_overlay: bool,
-    state: &PreparedRunViewState,
-    run_output_start: usize,
-    out: &mut Vec<WorldMeshDrawItem>,
-) -> (usize, usize, usize) {
-    let fallback_slot_count = out[run_output_start..]
-        .iter()
-        .filter(|item| !material_can_defer_visibility_to_gpu(item))
-        .count();
-    if fallback_slot_count == 0 {
-        return (0, 0, 0);
-    }
-    let (Some(culling), Some(geometry)) = (ctx.view.culling, state.cull_geometry) else {
-        return (0, 0, 0);
-    };
-
-    let mut stats = (fallback_slot_count, 0usize, 0usize);
-    let failure = mesh_cpu_cull_with_geometry(
-        geometry,
-        ctx.scene_assets.scene,
-        first.space_id,
-        is_overlay,
-        culling,
-        None,
-    )
-    .err();
-    match failure {
-        None => return stats,
-        Some(CpuCullFailure::Frustum | CpuCullFailure::UiRectMask) => {
-            stats.1 = fallback_slot_count;
-        }
-        Some(CpuCullFailure::HiZ) => {
-            stats.2 = fallback_slot_count;
-        }
-    }
-
-    let mut run_output = out.split_off(run_output_start);
-    run_output.retain(material_can_defer_visibility_to_gpu);
-    out.append(&mut run_output);
-    stats
 }
 
 /// Emits one [`WorldMeshDrawItem`] per material slot in a surviving prepared renderer run.
@@ -394,7 +330,7 @@ fn collect_prepared_renderer_run(
     }
     let defer_visibility_to_gpu =
         renderer_can_defer_visibility_to_gpu(first, mesh, is_overlay, ctx);
-    let (view_state, mut cull_stats) = prepared_run_view_state(
+    let (view_state, cull_stats) = prepared_run_view_state(
         run,
         first,
         is_overlay,
@@ -404,18 +340,7 @@ fn collect_prepared_renderer_run(
         defer_visibility_to_gpu,
     );
     if let Some(view_state) = view_state {
-        let run_output_start = out.len();
         append_prepared_run_draws(run, ctx, state.cache, mesh, is_overlay, &view_state, out);
-        if defer_visibility_to_gpu {
-            cull_stats = cull_gpu_static_run_fallback_slots(
-                ctx,
-                first,
-                is_overlay,
-                &view_state,
-                run_output_start,
-                out,
-            );
-        }
     }
     cull_stats
 }
@@ -457,51 +382,4 @@ pub(super) fn collect_prepared_chunk(
     }
 
     (out, cull_stats)
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::materials::UNITY_RENDER_QUEUE_ALPHA_TEST;
-    use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
-
-    use super::material_can_defer_visibility_to_gpu;
-
-    fn draw(alpha_blended: bool) -> crate::world_mesh::WorldMeshDrawItem {
-        dummy_world_mesh_draw_item(DummyDrawItemSpec {
-            material_asset_id: 1,
-            property_block: None,
-            skinned: false,
-            sorting_order: 0,
-            mesh_asset_id: 1,
-            node_id: 0,
-            slot_index: 0,
-            collect_order: 0,
-            alpha_blended,
-        })
-    }
-
-    #[test]
-    fn gpu_visibility_handoff_accepts_opaque_and_alpha_test_only() {
-        let opaque = draw(false);
-        assert!(material_can_defer_visibility_to_gpu(&opaque));
-
-        let mut alpha_test = draw(false);
-        alpha_test.batch_key.render_queue = UNITY_RENDER_QUEUE_ALPHA_TEST;
-        assert!(material_can_defer_visibility_to_gpu(&alpha_test));
-
-        let transparent = draw(true);
-        assert!(!material_can_defer_visibility_to_gpu(&transparent));
-
-        let mut intersection = draw(false);
-        intersection.batch_key.embedded_requires_intersection_pass = true;
-        assert!(!material_can_defer_visibility_to_gpu(&intersection));
-
-        let mut grab = draw(false);
-        grab.batch_key.embedded_uses_scene_color_snapshot = true;
-        assert!(!material_can_defer_visibility_to_gpu(&grab));
-
-        let mut scissored = draw(false);
-        scissored.ui_rect_clip_local = Some(glam::Vec4::ZERO);
-        assert!(!material_can_defer_visibility_to_gpu(&scissored));
-    }
 }

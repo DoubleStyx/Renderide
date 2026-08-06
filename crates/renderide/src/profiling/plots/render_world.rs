@@ -80,6 +80,8 @@ pub struct RenderWorldMaintenanceProfileSample {
     pub context_overlay_sync_count: usize,
     /// Overlay frames that re-cloned the whole prepared snapshot instead of patching it.
     pub context_overlay_clone_count: usize,
+    /// Condition that forced the clone; 0 means none was needed.
+    pub context_overlay_clone_reason: usize,
     /// Exact override renderer ranges patched into context overlays.
     pub context_override_patch_count: usize,
     /// Frames where this render world proved its retained snapshot did not need rebuilding.
@@ -231,6 +233,10 @@ pub fn plot_render_world_maintenance(sample: &RenderWorldMaintenanceProfileSampl
     tracy_plot!(
         "render_world::context_overlay_clone",
         sample.context_overlay_clone_count as f64
+    );
+    tracy_plot!(
+        "render_world::context_overlay_clone_reason",
+        sample.context_overlay_clone_reason as f64
     );
     tracy_plot!(
         "render_world::context_override_patches",

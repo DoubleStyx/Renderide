@@ -528,3 +528,54 @@ fn prepared_collect_parallelism_requires_draw_heavy_work_and_multiple_tasks() {
         ParallelAdmission::Serial
     );
 }
+
+#[test]
+fn broadphase_runs_regardless_of_gpu_static_retention() {
+    // Retention used to skip the broadphase so plans stayed camera-independent for the GPU-static
+    // draw cache. That cache measured zero hits, and skipping made CPU cost scale with total scene
+    // size rather than visible size. Culling must happen either way.
+    let scene = SceneCoordinator::new();
+    let mesh_pool = MeshPool::default_pool();
+    let store = MaterialPropertyStore::new();
+    let material_dict = MaterialDictionary::new(&store);
+    let router = MaterialRouter::new(RasterPipelineKind::Null);
+    let registry = PropertyIdRegistry::new();
+    let property_ids = MaterialPipelinePropertyIds::new(&registry);
+    let mut ctx = test_draw_context(
+        TestDrawContextResources {
+            scene: &scene,
+            mesh_pool: &mesh_pool,
+            material_dict: &material_dict,
+            router: &router,
+            property_ids: &property_ids,
+        },
+        None,
+        ViewRenderSpaceScope::AllActive,
+        ViewLayerPolicy::MainView,
+    );
+
+    let host_camera = crate::camera::HostCameraFrame::default();
+    let culling = crate::world_mesh::culling::WorldMeshCullInput {
+        proj: crate::world_mesh::culling::WorldMeshCullProjParams {
+            world_proj: Mat4::IDENTITY,
+            overlay_proj: Mat4::IDENTITY,
+            vr_stereo: None,
+        },
+        host_camera: &host_camera,
+        hi_z: None,
+        hi_z_temporal: None,
+    };
+
+    ctx.view.culling = None;
+    ctx.view.retain_gpu_static_candidates = false;
+    assert!(!prepared_collection_uses_broadphase(&ctx.view));
+
+    ctx.view.culling = Some(&culling);
+    for retain in [false, true] {
+        ctx.view.retain_gpu_static_candidates = retain;
+        assert!(
+            prepared_collection_uses_broadphase(&ctx.view),
+            "retain_gpu_static_candidates={retain} must not disable the broadphase"
+        );
+    }
+}

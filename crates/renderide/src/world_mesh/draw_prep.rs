@@ -40,6 +40,7 @@ pub use item::{
 };
 pub use prepared_renderables::FramePreparedRenderables;
 pub use render_world::{RenderWorld, RenderWorldMaintenanceStats};
+pub(crate) use sort::log_opaque_depth_bucket_policy;
 #[cfg(test)]
 pub use sort::pack_sort_prefix;
 #[cfg(test)]

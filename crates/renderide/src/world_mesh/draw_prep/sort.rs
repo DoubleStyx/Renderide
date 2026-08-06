@@ -7,6 +7,11 @@ use rayon::slice::ParallelSliceMut;
 
 use super::item::WorldMeshDrawItem;
 
+mod depth_bucket_policy;
+
+pub(crate) use depth_bucket_policy::log_opaque_depth_bucket_policy;
+use depth_bucket_policy::{coarsen_opaque_depth_bucket, opaque_depth_bucket_bits};
+
 /// Draws assigned to one secondary structural resort worker chunk.
 #[cfg(test)]
 const INTRA_PREFIX_RUN_PARALLEL_CHUNK_DRAWS: usize = 256;
@@ -77,7 +82,7 @@ pub fn pack_sort_prefix(
         (0u64, 0u64)
     } else {
         (
-            u64::from(opaque_depth_bucket.min((1u16 << 8) - 1)),
+            coarsen_opaque_depth_bucket(opaque_depth_bucket, opaque_depth_bucket_bits()),
             batch_key_hash >> (u64::BITS - SORT_PREFIX_BATCH_HASH_BITS),
         )
     };
@@ -301,3 +306,14 @@ pub(super) fn sort_draws_serial(items: &mut [WorldMeshDrawItem]) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod size_probe {
+    #[test]
+    fn report_draw_item_size() {
+        println!(
+            "WorldMeshDrawItem = {} bytes",
+            size_of::<super::WorldMeshDrawItem>()
+        );
+    }
+}

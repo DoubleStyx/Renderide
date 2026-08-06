@@ -262,6 +262,8 @@ pub struct RenderWorldMaintenanceStats {
     pub context_overlay_sync_count: usize,
     /// Overlay frames that had to re-clone the whole prepared snapshot.
     pub context_overlay_clone_count: usize,
+    /// Why the last overlay clone happened. See [`OVERLAY_CLONE_REASON_*`].
+    pub context_overlay_clone_reason: usize,
     /// Exact override renderer ranges patched into context overlays.
     pub context_override_patch_count: usize,
     /// Frames where this render world proved its retained snapshot did not need rebuilding.
@@ -308,6 +310,7 @@ impl RenderWorldMaintenanceStats {
             context_overlay_count: self.context_overlay_count,
             context_overlay_sync_count: self.context_overlay_sync_count,
             context_overlay_clone_count: self.context_overlay_clone_count,
+            context_overlay_clone_reason: self.context_overlay_clone_reason,
             context_override_patch_count: self.context_override_patch_count,
             steady_state_skip_count: self.steady_state_skip_count,
         }
@@ -353,6 +356,9 @@ impl RenderWorldMaintenanceStats {
         self.context_overlay_count += other.context_overlay_count;
         self.context_overlay_sync_count += other.context_overlay_sync_count;
         self.context_overlay_clone_count += other.context_overlay_clone_count;
+        self.context_overlay_clone_reason = self
+            .context_overlay_clone_reason
+            .max(other.context_overlay_clone_reason);
         self.context_override_patch_count += other.context_override_patch_count;
         self.steady_state_skip_count += other.steady_state_skip_count;
     }
@@ -460,6 +466,19 @@ pub struct RenderWorld {
     /// Most recent maintenance counters.
     maintenance_stats: RenderWorldMaintenanceStats,
 }
+
+/// Overlay did not need a clone.
+pub const OVERLAY_CLONE_REASON_NONE: usize = 0;
+/// Overlay was freshly created or its override membership changed.
+pub const OVERLAY_CLONE_REASON_DIRTY: usize = 1;
+/// Base render world instance was replaced.
+pub const OVERLAY_CLONE_REASON_IDENTITY: usize = 2;
+/// Base prepared rows were re-laid structurally.
+pub const OVERLAY_CLONE_REASON_STRUCTURAL: usize = 3;
+/// Overlay skipped a frame, so the bounds patch log no longer spans the gap.
+pub const OVERLAY_CLONE_REASON_BOUNDS_GAP: usize = 4;
+/// Overlay skipped a frame, so the mesh patch log no longer spans the gap.
+pub const OVERLAY_CLONE_REASON_MESH_GAP: usize = 5;
 
 /// One identity-addressed cull-geometry write applied by a bounds-only refresh.
 ///
@@ -972,11 +991,22 @@ impl RenderWorld {
         let mesh_replayable = self.overlay_base_mesh_patch_generation
             == base.mesh_patch_log_base_generation
             || self.overlay_base_mesh_patch_generation == base.mesh_patch_generation;
-        let full_sync = self.overlay_dirty
-            || self.overlay_base_cache_identity != base.cache_identity
-            || self.overlay_base_structural_generation != base.structural_generation
-            || !bounds_replayable
-            || !mesh_replayable;
+        // Reported so a capture names the condition instead of leaving it to inference.
+        let clone_reason = if self.overlay_dirty {
+            OVERLAY_CLONE_REASON_DIRTY
+        } else if self.overlay_base_cache_identity != base.cache_identity {
+            OVERLAY_CLONE_REASON_IDENTITY
+        } else if self.overlay_base_structural_generation != base.structural_generation {
+            OVERLAY_CLONE_REASON_STRUCTURAL
+        } else if !bounds_replayable {
+            OVERLAY_CLONE_REASON_BOUNDS_GAP
+        } else if !mesh_replayable {
+            OVERLAY_CLONE_REASON_MESH_GAP
+        } else {
+            OVERLAY_CLONE_REASON_NONE
+        };
+        stats.context_overlay_clone_reason = clone_reason;
+        let full_sync = clone_reason != OVERLAY_CLONE_REASON_NONE;
         let bounds_sync =
             !full_sync && self.overlay_base_bounds_generation != base.bounds_generation;
         let mesh_sync =

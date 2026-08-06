@@ -80,6 +80,7 @@ fn log_renderer_startup_context(log_path: &Path) {
         }
     }
     crate::world_mesh::log_world_mesh_render_path();
+    crate::world_mesh::log_opaque_depth_bucket_policy();
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
