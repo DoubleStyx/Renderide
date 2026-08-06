@@ -1,12 +1,12 @@
 use super::PhaseQuery;
 
-/// Zero-sized stub that stands in for the real GPU profiler handle when the `tracy` feature
-/// is not enabled. All methods are no-ops inlined to nothing; the stub is never instantiated
+/// Zero-sized stub that stands in for the real GPU profiler handle when the `tracy-gpu`
+/// feature is not enabled. All methods are no-ops inlined to nothing; the stub is never instantiated
 /// because [`GpuProfilerHandle::try_new`] always returns [`None`].
 pub struct GpuProfilerHandle;
 
 impl GpuProfilerHandle {
-    /// Always returns [`None`]; GPU profiling is unavailable without the `tracy` feature.
+    /// Always returns [`None`]; GPU profiling is unavailable without the `tracy-gpu` feature.
     #[inline]
     pub fn try_new(
         _adapter: &wgpu::Adapter,
@@ -16,7 +16,7 @@ impl GpuProfilerHandle {
         None
     }
 
-    /// No-op stub; Tracy bridge state only exists when the `tracy` feature is enabled.
+    /// No-op stub; Tracy bridge state only exists when the `tracy-gpu` feature is enabled.
     #[inline]
     pub fn refresh_tracy_bridge(
         &self,
@@ -27,7 +27,7 @@ impl GpuProfilerHandle {
     ) {
     }
 
-    /// No-op stub; see the `tracy` feature variant for the real implementation.
+    /// No-op stub; see the `tracy-gpu` feature variant for the real implementation.
     #[inline]
     pub fn begin_query(
         &self,
@@ -37,7 +37,7 @@ impl GpuProfilerHandle {
         PhaseQuery
     }
 
-    /// No-op stub; see the `tracy` feature variant for the real implementation.
+    /// No-op stub; see the `tracy-gpu` feature variant for the real implementation.
     #[inline]
     pub fn begin_pass_query(
         &self,
@@ -47,27 +47,27 @@ impl GpuProfilerHandle {
         PhaseQuery
     }
 
-    /// No-op stub; see the `tracy` feature variant for the real implementation.
+    /// No-op stub; see the `tracy-gpu` feature variant for the real implementation.
     #[inline]
     pub fn end_query(&self, _encoder: &mut wgpu::CommandEncoder, _query: PhaseQuery) {}
 
-    /// No-op stub; see the `tracy` feature variant for the real implementation.
+    /// No-op stub; see the `tracy-gpu` feature variant for the real implementation.
     #[inline]
     pub fn resolve_queries(&self, _encoder: &mut wgpu::CommandEncoder) {}
 
-    /// No-op stub; see the `tracy` feature variant for the real implementation.
+    /// No-op stub; see the `tracy-gpu` feature variant for the real implementation.
     #[inline]
     pub fn has_queries_opened_since_frame_end(&self) -> bool {
         false
     }
 
-    /// No-op stub; see the `tracy` feature variant for the real implementation.
+    /// No-op stub; see the `tracy-gpu` feature variant for the real implementation.
     #[inline]
     pub fn end_frame_if_queries_opened(&self, _frame_order: u64) -> bool {
         false
     }
 
-    /// No-op stub; see the `tracy` feature variant for the real implementation.
+    /// No-op stub; see the `tracy-gpu` feature variant for the real implementation.
     ///
     /// Always returns [`None`] because the stub never opens queries.
     #[inline]

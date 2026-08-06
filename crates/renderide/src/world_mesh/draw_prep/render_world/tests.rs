@@ -830,6 +830,172 @@ fn generated_particle_mesh_delta_patches_only_matching_prepared_renderer_run() {
     assert_eq!(world.prepared.draws()[0].index_count, 12);
 }
 
+/// Builds a base + overlay pair already synced once, over a two-renderer space.
+fn synced_overlay_pair(
+    space_id: RenderSpaceId,
+    render_context: RenderingContext,
+) -> (SceneCoordinator, MeshPool, RenderWorld, RenderWorld) {
+    let mut scene = SceneCoordinator::new();
+    scene.test_seed_space_identity_worlds(
+        space_id,
+        vec![identity_transform(), identity_transform()],
+        vec![-1, 0],
+    );
+    scene.test_push_scale_render_transform_override(space_id, 0, render_context, Vec3::splat(2.0));
+    let mesh_pool = MeshPool::default_pool();
+    let point_render_buffers = HashMap::new();
+    let mut base = RenderWorld::new_context_invariant(render_context);
+    let mut overlay = RenderWorld::new_context_overlay(render_context);
+    base.prepare_for_frame(
+        &scene.context_invariant_read(),
+        &mesh_pool,
+        &point_render_buffers,
+        render_context,
+    );
+    overlay.prepare_context_overlay_from(
+        &base,
+        &scene,
+        &mesh_pool,
+        &point_render_buffers,
+        render_context,
+    );
+    (scene, mesh_pool, base, overlay)
+}
+
+fn mark_bounds_dirty(world: &mut RenderWorld, space_id: RenderSpaceId) {
+    world.note_bounds_dirty(
+        RenderWorldBoundsDirty {
+            space_id,
+            kind: RenderWorldRendererKind::Static,
+            renderable_index: 0,
+        },
+        RenderWorldDirtyReason::TransformOnly,
+    );
+}
+
+#[test]
+fn bounds_only_change_replays_into_the_overlay_without_recloning() {
+    let space_id = RenderSpaceId(70);
+    let render_context = RenderingContext::Camera;
+    let (scene, mesh_pool, mut base, mut overlay) = synced_overlay_pair(space_id, render_context);
+    let point_render_buffers = HashMap::new();
+
+    mark_bounds_dirty(&mut base, space_id);
+    base.prepare_for_frame(
+        &scene.context_invariant_read(),
+        &mesh_pool,
+        &point_render_buffers,
+        render_context,
+    );
+    overlay.prepare_context_overlay_from(
+        &base,
+        &scene,
+        &mesh_pool,
+        &point_render_buffers,
+        render_context,
+    );
+
+    assert_eq!(
+        overlay.maintenance_stats().context_overlay_clone_count,
+        0,
+        "a bounds-only frame must not re-clone the prepared snapshot"
+    );
+}
+
+#[test]
+fn overlay_full_syncs_when_it_missed_a_bounds_frame() {
+    let space_id = RenderSpaceId(71);
+    let render_context = RenderingContext::Camera;
+    let (scene, mesh_pool, mut base, mut overlay) = synced_overlay_pair(space_id, render_context);
+    let point_render_buffers = HashMap::new();
+
+    // two base frames, no overlay prepare in between: the retained log only covers the last one.
+    for _ in 0..2 {
+        mark_bounds_dirty(&mut base, space_id);
+        base.prepare_for_frame(
+            &scene.context_invariant_read(),
+            &mesh_pool,
+            &point_render_buffers,
+            render_context,
+        );
+    }
+    overlay.prepare_context_overlay_from(
+        &base,
+        &scene,
+        &mesh_pool,
+        &point_render_buffers,
+        render_context,
+    );
+
+    assert_eq!(
+        overlay.maintenance_stats().context_overlay_clone_count,
+        1,
+        "a skipped frame leaves a gap the log cannot cover, so it must re-clone"
+    );
+}
+
+#[test]
+fn repeated_bounds_frames_keep_replaying_into_the_overlay() {
+    let space_id = RenderSpaceId(72);
+    let render_context = RenderingContext::Camera;
+    let (scene, mesh_pool, mut base, mut overlay) = synced_overlay_pair(space_id, render_context);
+    let point_render_buffers = HashMap::new();
+
+    for _ in 0..4 {
+        mark_bounds_dirty(&mut base, space_id);
+        base.prepare_for_frame(
+            &scene.context_invariant_read(),
+            &mesh_pool,
+            &point_render_buffers,
+            render_context,
+        );
+        overlay.prepare_context_overlay_from(
+            &base,
+            &scene,
+            &mesh_pool,
+            &point_render_buffers,
+            render_context,
+        );
+        assert_eq!(overlay.maintenance_stats().context_overlay_clone_count, 0);
+    }
+}
+
+#[test]
+fn mesh_row_patch_replays_into_the_overlay_without_recloning() {
+    let space_id = RenderSpaceId(73);
+    let render_context = RenderingContext::Camera;
+    let (scene, mesh_pool, mut base, mut overlay) = synced_overlay_pair(space_id, render_context);
+    let point_render_buffers = HashMap::new();
+
+    base.note_renderer_dirty(
+        RenderWorldRendererDirty {
+            space_id,
+            kind: RenderWorldRendererKind::Static,
+            renderable_index: 0,
+        },
+        RenderWorldDirtyReason::MaterialOverride,
+    );
+    base.prepare_for_frame(
+        &scene.context_invariant_read(),
+        &mesh_pool,
+        &point_render_buffers,
+        render_context,
+    );
+    overlay.prepare_context_overlay_from(
+        &base,
+        &scene,
+        &mesh_pool,
+        &point_render_buffers,
+        render_context,
+    );
+
+    assert_eq!(
+        overlay.maintenance_stats().context_overlay_clone_count,
+        0,
+        "a non-structural mesh row patch must replay, not re-clone"
+    );
+}
+
 #[test]
 fn particle_membership_refreshes_cached_context_overlay_targets() {
     let space_id = RenderSpaceId(66);

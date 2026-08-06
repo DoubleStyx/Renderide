@@ -37,17 +37,100 @@ fn arc_slice_identities_match<T>(left: &[Arc<[T]>], right: &[Arc<[T]>]) -> bool 
             .all(|(left, right)| Arc::ptr_eq(left, right))
 }
 
+/// Everything the arena plan output depends on, reduced to one hash plus the two counters.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct ArenaPlanContentSignature {
+    fingerprint: u64,
+    input_draws: usize,
+    deformed_draws: usize,
+}
+
+/// Returns whether a draw sources its geometry from deform output rather than the static arena.
+#[inline]
+fn draw_is_deformed(item: &WorldMeshDrawItem) -> bool {
+    item.skinned || item.world_space_deformed || item.blendshape_deformed
+}
+
+/// Hashes exactly the per-item facts that reach `mesh_asset_ids`.
+///
+/// Draw arrays are rebuilt every frame in a live world because [`WorldMeshDrawItem`] carries
+/// `rigid_world_matrix` and `world_aabb`, so pointer identity fails as soon as anything moves even
+/// though the mesh set is unchanged. Only the mesh id and the two skip predicates below are read by
+/// the population walk, and none of them move with a transform. Hashing them costs one cheap pass
+/// and lets the far more expensive dedup pass (a hash-set insert per draw) be skipped.
+fn arena_plan_content_signature(
+    key: &GeometryArenaFramePlanKey,
+    shadow_plan: &ShadowFramePlan,
+    shadow_caster_indices: &[usize],
+) -> ArenaPlanContentSignature {
+    use std::hash::{Hash, Hasher};
+
+    profiling::scope!("world_mesh::geometry_arena_plan_signature");
+    let mut hasher = ahash::AHasher::default();
+    let mut input_draws = 0usize;
+    let mut deformed_draws = 0usize;
+
+    key.world_draws.len().hash(&mut hasher);
+    for draws in &key.world_draws {
+        draws.len().hash(&mut hasher);
+        for item in draws.iter() {
+            input_draws = input_draws.saturating_add(1);
+            if item.shadow_cast_mode == ShadowCastMode::ShadowOnly {
+                2u8.hash(&mut hasher);
+                continue;
+            }
+            if draw_is_deformed(item) {
+                deformed_draws = deformed_draws.saturating_add(1);
+                1u8.hash(&mut hasher);
+                continue;
+            }
+            0u8.hash(&mut hasher);
+            item.mesh_asset_id.hash(&mut hasher);
+        }
+    }
+
+    // Hash the selection itself: dropping a layer from the refresh set changes the output even when
+    // every retained caster array is untouched.
+    shadow_caster_indices.hash(&mut hasher);
+    for &caster_set_index in shadow_caster_indices {
+        let Some(caster_set) = shadow_plan.caster_sets.get(caster_set_index) else {
+            continue;
+        };
+        caster_set.draws.len().hash(&mut hasher);
+        for item in caster_set.draws.iter() {
+            input_draws = input_draws.saturating_add(1);
+            if draw_is_deformed(item) {
+                deformed_draws = deformed_draws.saturating_add(1);
+                1u8.hash(&mut hasher);
+                continue;
+            }
+            0u8.hash(&mut hasher);
+            item.mesh_asset_id.hash(&mut hasher);
+        }
+    }
+
+    ArenaPlanContentSignature {
+        fingerprint: hasher.finish(),
+        input_draws,
+        deformed_draws,
+    }
+}
+
 /// Retained arena-plan key plus allocation-free scratch for the miss path.
 #[derive(Default)]
 pub(super) struct GeometryArenaFramePlanCache {
     initialized: bool,
     key: GeometryArenaFramePlanKey,
     pending_key: GeometryArenaFramePlanKey,
+    /// Content signature of the retained plan, used when pointer identity fails.
+    signature: ArenaPlanContentSignature,
     shadow_caster_indices: Vec<usize>,
     seen_meshes: HashSet<i32>,
     seen_caster_sets: HashSet<usize>,
     #[cfg(test)]
     hits: u64,
+    #[cfg(test)]
+    content_hits: u64,
     #[cfg(test)]
     misses: u64,
 }
@@ -93,6 +176,28 @@ where
         return true;
     }
 
+    // Pointer identity is gone but the mesh set usually is not: a moving renderer rewrites its draw
+    // item without touching which mesh it draws. Pay one cheap hashing pass to find out before
+    // paying the dedup pass.
+    let signature = arena_plan_content_signature(
+        &cache.pending_key,
+        shadow_plan,
+        &cache.shadow_caster_indices,
+    );
+    if cache.initialized && signature == cache.signature {
+        plan.input_draws = signature.input_draws;
+        plan.deformed_draws = signature.deformed_draws;
+        std::mem::swap(&mut cache.key, &mut cache.pending_key);
+        cache.pending_key.clear();
+        #[cfg(feature = "tracy")]
+        tracy_client::plot!("world_mesh::geometry_arena_plan_cache_hit", 1.0);
+        #[cfg(test)]
+        {
+            cache.content_hits = cache.content_hits.saturating_add(1);
+        }
+        return true;
+    }
+
     plan.mesh_asset_ids.clear();
     plan.input_draws = 0;
     plan.deformed_draws = 0;
@@ -133,6 +238,7 @@ where
 
     std::mem::swap(&mut cache.key, &mut cache.pending_key);
     cache.pending_key.clear();
+    cache.signature = signature;
     cache.initialized = true;
     #[cfg(feature = "tracy")]
     {
@@ -377,6 +483,104 @@ mod tests {
         assert_eq!(frame.input_draws, 3);
         assert_eq!(cache.misses, 1);
         assert_eq!(cache.hits, 1);
+    }
+
+    #[test]
+    fn frame_plan_reuses_mesh_set_when_only_transforms_moved() {
+        // a renderer that moves rewrites its draw item, so the array is a fresh Arc with a fresh
+        // matrix. the mesh set is identical, so population must not run again.
+        let mut moved = draw(10);
+        moved.rigid_world_matrix = Some(glam::Mat4::from_translation(glam::Vec3::splat(5.0)));
+        let first = plan(vec![draw(10), draw(20)]);
+        let after_motion = plan(vec![moved, draw(20)]);
+        let mut frame = GeometryArenaFramePlan::default();
+        let mut cache = GeometryArenaFramePlanCache::default();
+
+        assert!(!collect_geometry_arena_frame_plan(
+            [&first],
+            &ShadowFramePlan::default(),
+            &mut frame,
+            &mut cache,
+        ));
+        assert!(collect_geometry_arena_frame_plan(
+            [&after_motion],
+            &ShadowFramePlan::default(),
+            &mut frame,
+            &mut cache,
+        ));
+
+        assert_eq!(frame.mesh_asset_ids, [10, 20]);
+        assert_eq!(frame.input_draws, 2);
+        assert_eq!(cache.misses, 1);
+        assert_eq!(
+            cache.hits, 0,
+            "pointer identity is gone once the array is rebuilt"
+        );
+        assert_eq!(cache.content_hits, 1);
+    }
+
+    #[test]
+    fn frame_plan_content_hit_reports_the_same_counters_as_a_rebuild() {
+        let mut skinned = draw(30);
+        skinned.skinned = true;
+        let mut shadow_only = draw(40);
+        shadow_only.shadow_cast_mode = ShadowCastMode::ShadowOnly;
+        let items = || vec![draw(10), skinned.clone(), shadow_only.clone(), draw(20)];
+        let mut rebuilt = GeometryArenaFramePlan::default();
+        let mut rebuilt_cache = GeometryArenaFramePlanCache::default();
+        collect_geometry_arena_frame_plan(
+            [&plan(items())],
+            &ShadowFramePlan::default(),
+            &mut rebuilt,
+            &mut rebuilt_cache,
+        );
+
+        let mut frame = GeometryArenaFramePlan::default();
+        let mut cache = GeometryArenaFramePlanCache::default();
+        collect_geometry_arena_frame_plan(
+            [&plan(items())],
+            &ShadowFramePlan::default(),
+            &mut frame,
+            &mut cache,
+        );
+        assert!(collect_geometry_arena_frame_plan(
+            [&plan(items())],
+            &ShadowFramePlan::default(),
+            &mut frame,
+            &mut cache,
+        ));
+
+        assert_eq!(cache.content_hits, 1);
+        assert_eq!(frame.mesh_asset_ids, rebuilt.mesh_asset_ids);
+        assert_eq!(frame.input_draws, rebuilt.input_draws);
+        assert_eq!(frame.deformed_draws, rebuilt.deformed_draws);
+    }
+
+    #[test]
+    fn frame_plan_content_signature_separates_skip_reasons_from_a_real_mesh() {
+        // a deformed draw and a shadow-only draw both contribute no mesh id. they must still hash
+        // differently from each other and from a drawn mesh, or a swap between them goes unnoticed.
+        let mut skinned = draw(10);
+        skinned.skinned = true;
+        let mut shadow_only = draw(10);
+        shadow_only.shadow_cast_mode = ShadowCastMode::ShadowOnly;
+        let mut frame = GeometryArenaFramePlan::default();
+        let mut cache = GeometryArenaFramePlanCache::default();
+
+        collect_geometry_arena_frame_plan(
+            [&plan(vec![skinned])],
+            &ShadowFramePlan::default(),
+            &mut frame,
+            &mut cache,
+        );
+        assert!(!collect_geometry_arena_frame_plan(
+            [&plan(vec![shadow_only])],
+            &ShadowFramePlan::default(),
+            &mut frame,
+            &mut cache,
+        ));
+        assert_eq!(cache.content_hits, 0);
+        assert_eq!(frame.deformed_draws, 0);
     }
 
     #[test]

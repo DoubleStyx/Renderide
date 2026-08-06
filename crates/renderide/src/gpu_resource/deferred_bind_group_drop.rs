@@ -24,6 +24,7 @@ impl DeferredBindGroupDrops {
         let worker = std::thread::Builder::new()
             .name("renderide-bind-group-drop".to_string())
             .spawn(move || {
+                crate::profiling::register_worker_thread();
                 while let Ok(item) = receiver.recv() {
                     let delay = item.ready_at.saturating_duration_since(Instant::now());
                     if !delay.is_zero() {

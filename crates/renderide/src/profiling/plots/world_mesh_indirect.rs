@@ -244,7 +244,9 @@ pub struct WorldMeshForwardIndirectProfileSample {
     pub invalid_draw_groups: usize,
     /// Groups whose mesh was missing from the resident mesh pool.
     pub mesh_unavailable_groups: usize,
-    /// Groups that could not go indirect because the arena/feature/buffer path was unavailable.
+    /// Groups that were batchable but had no indirect path to take: arena-resident, static, single
+    /// pipeline, yet still recorded per mesh. This is the size of the prize for widening indirect
+    /// coverage, so it counts only groups that passed every eligibility check.
     pub path_unavailable_groups: usize,
     /// Skinned, world-space-deformed, or blendshape-deformed groups.
     pub deformed_groups: usize,

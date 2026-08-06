@@ -317,13 +317,17 @@ impl ForwardIndirectProfile {
             self.sample.multi_pipeline_groups = self.sample.multi_pipeline_groups.saturating_add(1);
             return;
         }
-        let Some(arena) = arena else {
+        // classify against the unfiltered arena, not the one gated on indirect availability.
+        // reading `arena` here instead used to return path_unavailable for every group whenever the
+        // buffer was absent, which buried the residency reasons and made the counter useless for
+        // sizing the work: it answered "was the path on" when the question is "would this batch".
+        let Some(residency) = resources.geometry_arena else {
             self.sample.path_unavailable_groups =
                 self.sample.path_unavailable_groups.saturating_add(1);
             return;
         };
         let flags = forward_stream_flags(item);
-        if arena.mesh(item.mesh_asset_id).is_none() {
+        if residency.mesh(item.mesh_asset_id).is_none() {
             if crate::particles::is_generated_particle_mesh_asset_id(item.mesh_asset_id) {
                 self.sample.generated_mesh_groups =
                     self.sample.generated_mesh_groups.saturating_add(1);
@@ -335,13 +339,18 @@ impl ForwardIndirectProfile {
             }
             return;
         }
-        if forward_arena_alloc(item, arena, flags).is_none() {
+        if forward_arena_alloc(item, residency, flags).is_none() {
             self.sample.missing_stream_groups = self.sample.missing_stream_groups.saturating_add(1);
             return;
         }
 
-        // The eligibility and allocation checks above normally make the indirect attempt succeed.
-        // Reaching this fallback means arena stream-buffer binding rejected the run.
+        // arena-resident, static, single pipeline: this group would have batched. so either the
+        // indirect path was switched off for it, or stream binding rejected the run.
+        if arena.is_none() {
+            self.sample.path_unavailable_groups =
+                self.sample.path_unavailable_groups.saturating_add(1);
+            return;
+        }
         self.sample.missing_stream_groups = self.sample.missing_stream_groups.saturating_add(1);
     }
 
@@ -431,9 +440,9 @@ pub(crate) fn draw_subset(batch: ForwardDrawBatch<'_, '_, '_, '_>) {
         geometry_arena,
     };
     let mut indirect_commands = Vec::with_capacity(groups.len());
-    if gpu_cull.is_none()
-        && let Some(buffer) = indirect_buffer.as_deref_mut()
-    {
+    // reserve worst case before any draw is recorded so the buffer the pass references cannot be
+    // replaced mid-pass. one command per group is the ceiling on every path, hybrid included.
+    if let Some(buffer) = indirect_buffer.as_deref_mut() {
         let max_commands = u32::try_from(groups.len()).unwrap_or(u32::MAX);
         buffer.prepare_len(device, max_commands);
     }
@@ -505,35 +514,42 @@ fn draw_forward_groups(
     let mut i = 0;
     let mut gpu_run_cursor = 0usize;
     while i < groups.len() {
-        if let (Some(arena), Some((result, runs))) = (gpu_arena, gpu_cull) {
+        // keep the cursor on the first run not yet passed, whether or not a gpu run fires here.
+        // the cpu batcher below reads it to find where it must stop.
+        if let Some((_, runs)) = gpu_cull {
             while runs
                 .get(gpu_run_cursor)
                 .is_some_and(|run| run.group_start < i)
             {
                 gpu_run_cursor += 1;
             }
-            if let Some(run) = runs.get(gpu_run_cursor).filter(|run| run.group_start == i) {
-                let consumed = run.group_count.min(groups.len().saturating_sub(i));
-                if consumed != 0
-                    && draw_forward_gpu_run(rpass, groups, resources, state, arena, result, run)
-                {
-                    profile.note_run(consumed);
-                } else {
-                    for group in &groups[i..i.saturating_add(consumed.max(1)).min(groups.len())] {
-                        profile.note_fallback(group, resources, encode, Some(arena));
-                        issue_forward_group(rpass, encode, resources, state, group);
-                    }
-                }
-                i = i.saturating_add(consumed.max(1));
-                gpu_run_cursor += 1;
-                continue;
-            }
         }
+        if let (Some(arena), Some((result, runs))) = (gpu_arena, gpu_cull)
+            && let Some(run) = runs.get(gpu_run_cursor).filter(|run| run.group_start == i)
+        {
+            let consumed = run.group_count.min(groups.len().saturating_sub(i));
+            if consumed != 0
+                && draw_forward_gpu_run(rpass, groups, resources, state, arena, result, run)
+            {
+                profile.note_run(consumed);
+            } else {
+                for group in &groups[i..i.saturating_add(consumed.max(1)).min(groups.len())] {
+                    profile.note_fallback(group, resources, encode, Some(arena));
+                    issue_forward_group(rpass, encode, resources, state, group);
+                }
+            }
+            i = i.saturating_add(consumed.max(1));
+            gpu_run_cursor += 1;
+            continue;
+        }
+        let batch_limit =
+            cpu_indirect_batch_limit(gpu_cull.map(|(_, runs)| runs), gpu_run_cursor, groups.len());
         if let (Some(arena), Some(buffer)) = (arena, indirect_buffer)
             && let Some(consumed) = draw_forward_indirect_run(
                 rpass,
                 groups,
                 i,
+                batch_limit,
                 resources,
                 state,
                 arena,
@@ -597,20 +613,40 @@ fn draw_forward_gpu_run(
     true
 }
 
+/// Exclusive end the CPU indirect batcher may reach before the next GPU-culled run takes over.
+///
+/// Crossing it would batch groups whose visibility the GPU owns and draw them unculled, and the
+/// cursor advance in [`draw_forward_groups`] would then step past that run without issuing it.
+fn cpu_indirect_batch_limit(
+    runs: Option<&[GpuCulledForwardRun]>,
+    cursor: usize,
+    group_count: usize,
+) -> usize {
+    runs.and_then(|runs| runs.get(cursor))
+        .map_or(group_count, |run| run.group_start)
+}
+
 /// Draws a maximal run of adjacent static, single-pipeline, unscissored groups sharing a material
 /// packet, index width, and stencil reference as one `multi_draw_indexed_indirect` from the arena.
 /// Returns the number of groups consumed, or [`None`] when `groups[start]` is not batchable (the
 /// caller records it per-mesh).
+///
+/// `limit` is the exclusive end the run may not cross, used to stop short of the next GPU-culled
+/// run. Pass `groups.len()` when nothing else owns a later group.
 fn draw_forward_indirect_run(
     rpass: &mut wgpu::RenderPass<'_>,
     groups: &[DrawGroup],
     start: usize,
+    limit: usize,
     resources: &ForwardDrawResources<'_, '_>,
     state: &mut ForwardDrawState,
     arena: &crate::gpu_pools::geometry_arena::GeometryArena,
     indirect_buffer: &crate::gpu::indirect_buffer::IndirectDrawBuffer,
     commands: &mut Vec<crate::gpu::indirect_buffer::IndexedIndirectCommand>,
 ) -> Option<usize> {
+    if start >= limit {
+        return None;
+    }
     let first = &groups[start];
     let representative = first.representative_draw_idx;
     let rep = resources.draws.get(representative)?;
@@ -631,7 +667,7 @@ fn draw_forward_indirect_run(
     let first_command = u32::try_from(commands.len()).unwrap_or(u32::MAX);
     let command_start = commands.len();
     let mut end = start;
-    while end < groups.len() {
+    while end < limit.min(groups.len()) {
         let group = &groups[end];
         if group.material_packet_idx != packet_idx {
             break;
@@ -1657,6 +1693,7 @@ fn shadow_instance_range_for_draw_group(
 
 #[cfg(test)]
 mod tests {
+    use super::{GpuCulledForwardRun, cpu_indirect_batch_limit};
     use super::{
         WorldMeshForwardNormalPipelineKey, indirect_depth_like_partition_enabled,
         instance_range_for_draw_group, push_indirect_normal_command,
@@ -1664,7 +1701,55 @@ mod tests {
     };
     use crate::gpu::indirect_buffer::IndexedIndirectCommand;
     use crate::materials::{RasterFrontFace, RasterPrimitiveTopology};
+    use crate::passes::world_mesh_forward::gpu_cull::GpuCulledIndirectDraw;
     use crate::world_mesh::{DrawGroup, WorldMeshRenderPath};
+
+    fn gpu_run(group_start: usize, group_count: usize) -> GpuCulledForwardRun {
+        GpuCulledForwardRun {
+            group_start,
+            group_count,
+            representative_draw_idx: group_start,
+            material_packet_idx: 0,
+            narrow: false,
+            streams: Default::default(),
+            draw: GpuCulledIndirectDraw {
+                indirect_offset: 0,
+                count_offset: None,
+                max_count: group_count as u32,
+                fixed_count: group_count as u32,
+            },
+        }
+    }
+
+    #[test]
+    fn cpu_batch_limit_is_the_whole_list_without_gpu_runs() {
+        assert_eq!(cpu_indirect_batch_limit(None, 0, 40), 40);
+        assert_eq!(cpu_indirect_batch_limit(Some(&[]), 0, 40), 40);
+    }
+
+    #[test]
+    fn cpu_batch_limit_stops_at_the_next_gpu_run() {
+        let runs = [gpu_run(5, 3), gpu_run(12, 2)];
+
+        assert_eq!(cpu_indirect_batch_limit(Some(&runs), 0, 40), 5);
+        assert_eq!(cpu_indirect_batch_limit(Some(&runs), 1, 40), 12);
+    }
+
+    #[test]
+    fn cpu_batch_limit_opens_up_once_every_gpu_run_is_consumed() {
+        let runs = [gpu_run(5, 3)];
+
+        assert_eq!(cpu_indirect_batch_limit(Some(&runs), 1, 40), 40);
+    }
+
+    #[test]
+    fn cpu_batch_limit_of_zero_width_blocks_the_batcher() {
+        // cursor sits on a run starting exactly here; the gpu arm owns it, so the cpu batcher must
+        // decline rather than draw the same groups a second time
+        let runs = [gpu_run(7, 2)];
+
+        assert_eq!(cpu_indirect_batch_limit(Some(&runs), 0, 40), 7);
+    }
 
     fn normal_key(front_face: RasterFrontFace) -> WorldMeshForwardNormalPipelineKey {
         WorldMeshForwardNormalPipelineKey {

@@ -22,6 +22,13 @@ const WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_MIN_PACKETS: usize = 2;
 const WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_THRASH_WINDOW_LOOKUPS: u32 = 16;
 const WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_THRASH_MIN_HIT_RATE_PER_MILLE: u32 = 250;
 const WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_THRASH_BYPASS_LOOKUPS: u32 = 16;
+/// Doublings applied to the bypass window for each consecutive failed probe window.
+///
+/// Probing is not free: the key needs `material_packet_submission_fingerprint` over every packet,
+/// measured at ~600us per probe in a city world. A fixed 16-lookup bypass after a 16-lookup window
+/// leaves a 50% duty cycle, so a cache that never hits still burns ~300us per frame to keep proving
+/// it never hits. Back off geometrically instead and reset the moment a window pays off.
+const WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_THRASH_MAX_BYPASS_DOUBLINGS: u32 = 6;
 
 /// Runtime counters for the retained forward instance-plan cache.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -63,6 +70,8 @@ struct InstancePlanCacheThrashWindow {
     lookups: u32,
     hits: u32,
     bypass_remaining: u32,
+    /// Consecutive windows that failed the hit-rate floor, capped at the doubling limit.
+    consecutive_failed_windows: u32,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -168,8 +177,7 @@ impl WorldMeshForwardInstancePlanCache {
             inner.thrash.record_miss();
         }
         if inner.thrash.should_enter_bypass() {
-            inner.thrash.bypass_remaining =
-                WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_THRASH_BYPASS_LOOKUPS;
+            inner.thrash.bypass_remaining = inner.thrash.bypass_lookups();
         }
         plan
     }
@@ -247,7 +255,21 @@ impl InstancePlanCacheThrashWindow {
             < WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_THRASH_MIN_HIT_RATE_PER_MILLE as u16;
         self.lookups = 0;
         self.hits = 0;
+        if should_bypass {
+            self.consecutive_failed_windows = self
+                .consecutive_failed_windows
+                .saturating_add(1)
+                .min(WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_THRASH_MAX_BYPASS_DOUBLINGS);
+        } else {
+            self.consecutive_failed_windows = 0;
+        }
         should_bypass
+    }
+
+    /// Bypass length for the window that just failed, doubling per consecutive failure.
+    fn bypass_lookups(&self) -> u32 {
+        WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_THRASH_BYPASS_LOOKUPS
+            << self.consecutive_failed_windows.saturating_sub(1)
     }
 }
 
@@ -448,6 +470,58 @@ mod tests {
         let _ = cache.get_or_build(cache_key(&draws, &second_packets), InstancePlan::default);
 
         assert_eq!(cache.stats().misses, 2);
+    }
+
+    #[test]
+    fn repeated_failed_windows_double_the_bypass_and_a_hit_resets_it() {
+        let mut window = InstancePlanCacheThrashWindow::default();
+        let fail_one_window = |window: &mut InstancePlanCacheThrashWindow| {
+            for _ in 0..WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_THRASH_WINDOW_LOOKUPS {
+                window.record_miss();
+            }
+            assert!(window.should_enter_bypass());
+            window.bypass_lookups()
+        };
+
+        assert_eq!(
+            fail_one_window(&mut window),
+            WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_THRASH_BYPASS_LOOKUPS
+        );
+        assert_eq!(
+            fail_one_window(&mut window),
+            WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_THRASH_BYPASS_LOOKUPS * 2
+        );
+        assert_eq!(
+            fail_one_window(&mut window),
+            WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_THRASH_BYPASS_LOOKUPS * 4
+        );
+
+        // a window that clears the hit-rate floor puts probing straight back to full rate
+        for _ in 0..WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_THRASH_WINDOW_LOOKUPS {
+            window.record_hit();
+        }
+        assert!(!window.should_enter_bypass());
+        assert_eq!(
+            fail_one_window(&mut window),
+            WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_THRASH_BYPASS_LOOKUPS
+        );
+    }
+
+    #[test]
+    fn bypass_growth_is_capped() {
+        let mut window = InstancePlanCacheThrashWindow::default();
+        for _ in 0..64 {
+            for _ in 0..WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_THRASH_WINDOW_LOOKUPS {
+                window.record_miss();
+            }
+            assert!(window.should_enter_bypass());
+        }
+
+        assert_eq!(
+            window.bypass_lookups(),
+            WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_THRASH_BYPASS_LOOKUPS
+                << (WORLD_MESH_FORWARD_INSTANCE_PLAN_CACHE_THRASH_MAX_BYPASS_DOUBLINGS - 1)
+        );
     }
 
     #[test]

@@ -198,9 +198,10 @@ The workspace customizes two profiles in `Cargo.toml`:
 - `dev` raises the default development optimization level to 1, keeps incremental compilation on, uses many codegen units, and emits line-table debug info so routine debug builds run faster while retaining assertions.
 - `release` raises optimization to 3, disables incremental compilation and debug assertions, uses one codegen unit, enables thin LTO, emits line-table debug info, strips debuginfo from the final binaries, and keeps unwind panics.
 
-The `renderide` crate declares two opt-in Cargo features. Both are off by default to keep stock builds and CI lean.
+The `renderide` crate declares three opt-in Cargo features. All are off by default to keep stock builds and CI lean.
 
-- `tracy` enables Tracy profiling. CPU spans come from the `profiling` crate. GPU timestamp queries come from `wgpu-profiler`. The Tracy client links statically and runs in on-demand mode, so a profiled build idles near zero cost when no GUI is connected.
+- `tracy` enables CPU-side Tracy profiling: spans, frame marks, and plots from the `profiling` crate. The Tracy client links statically and runs in on-demand mode, so a profiled build idles near zero cost when no GUI is connected.
+- `tracy-gpu` adds `wgpu-profiler` GPU timestamp queries and debug groups on top of `tracy`. It is deliberately not implied by `tracy`: the queries cost real main-thread recording work, so a CPU-bound capture taken with them on is partly measuring the profiler.
 - `video-textures` enables GStreamer-backed video texture decoding. Without this feature, the renderer still accepts video texture IPC commands and allocates GPU placeholders, but no decoding runs and the placeholder stays black. On Linux, install `libgstreamer1.0-dev`, `libgstreamer-plugins-base1.0-dev`, and `libgstreamer-plugins-good1.0-dev`; the last package provides the `videoflip` element used to land decoded frames in the texture orientation shaders expect.
 
 See `README.md` for the exact build commands and platform-specific dependencies for each feature.
@@ -262,7 +263,7 @@ The repository also provides local hooks through `pre-commit`. Install both stag
 pre-commit install --hook-type pre-commit --hook-type pre-push
 ```
 
-The `pre-commit` stage catches Rust formatting, TOML formatting, and Clippy failures before a commit is created. The `pre-push` stage runs [`scripts/ci/pre-push-check.sh`](scripts/ci/pre-push-check.sh), which mirrors the same-machine parts of hosted CI: Rust formatting, Taplo, strict Clippy, Rust build/test, and the .NET generator restore/build/test path. On Linux it runs Rust Clippy with `--all-features`; on Windows and macOS it checks the `tracy` feature instead, matching the hosted matrix split.
+The `pre-commit` stage catches Rust formatting, TOML formatting, and Clippy failures before a commit is created. The `pre-push` stage runs [`scripts/ci/pre-push-check.sh`](scripts/ci/pre-push-check.sh), which mirrors the same-machine parts of hosted CI: Rust formatting, Taplo, strict Clippy, Rust build/test, and the .NET generator restore/build/test path. On Linux it runs Rust Clippy with `--all-features`; on Windows and macOS it checks the `tracy` and `tracy-gpu` features instead, matching the hosted matrix split.
 
 ### 2.7 Code conventions
 
@@ -295,7 +296,7 @@ The main check workflow lives under `.github/workflows/`.
 
 The current workflows are:
 
-- `ci.yml` builds and tests the Rust workspace and the .NET generator solution as independent jobs. The Rust matrix runs on Ubuntu, Windows, and macOS; Linux is the only entry that uses `--all-features`, because GStreamer dev packages are reliably installable from the system package manager only on Linux. Windows and macOS still check the `tracy` feature so it stays warning-free on those platforms. The Rust job checks formatting, Taplo, Clippy, targeted package builds, the full workspace test suite, and the headless renderer golden suite. The .NET job uses the .NET 10 SDK on Ubuntu, Windows, and macOS, restores `Generators.sln` in locked mode, verifies formatting on Linux only, builds `SharedTypeGenerator.Tests` with warnings as errors, and runs its tests. Hosted runners do not have `Renderite.Shared.dll`, so generator roundtrip sources are excluded there.
+- `ci.yml` builds and tests the Rust workspace and the .NET generator solution as independent jobs. The Rust matrix runs on Ubuntu, Windows, and macOS; Linux is the only entry that uses `--all-features`, because GStreamer dev packages are reliably installable from the system package manager only on Linux. Windows and macOS still check the `tracy` and `tracy-gpu` features so both stay warning-free on those platforms. The Rust job checks formatting, Taplo, Clippy, targeted package builds, the full workspace test suite, and the headless renderer golden suite. The .NET job uses the .NET 10 SDK on Ubuntu, Windows, and macOS, restores `Generators.sln` in locked mode, verifies formatting on Linux only, builds `SharedTypeGenerator.Tests` with warnings as errors, and runs its tests. Hosted runners do not have `Renderite.Shared.dll`, so generator roundtrip sources are excluded there.
 - `codeql.yml` runs CodeQL analysis for GitHub Actions, C#, and Rust on pushes and pull requests that target `master`, plus a weekly schedule.
 - `release.yml` builds nightly or manually requested release artifacts from the newest green CI run on `master`.
 - `static.yml` deploys the static site to GitHub Pages when the site files change on `master` or when manually dispatched.
@@ -965,9 +966,11 @@ The driver thread itself lives in `crates/renderide/src/gpu/driver_thread/`. It 
 
 ### 4.27 Profiling with Tracy
 
-When the `tracy` feature is enabled, the renderer streams CPU spans and GPU timestamps to a Tracy GUI on port 8086. The integration is on-demand: data is only streamed while a GUI is connected, so a profiled build idles near zero cost when nothing is attached.
+When the `tracy` feature is enabled, the renderer streams CPU spans to a Tracy GUI on port 8086. The integration is on-demand: data is only streamed while a GUI is connected, so a profiled build idles near zero cost when nothing is attached.
 
-The CPU side comes from the `profiling` crate, which expands to no-ops when no backend feature is active. The GPU side comes from `wgpu-profiler`, which inserts timestamp queries around the render-graph execution sub-phases. GPU timing requires the adapter to support `TIMESTAMP_QUERY` and `TIMESTAMP_QUERY_INSIDE_ENCODERS`. If either is missing, the renderer logs a warning at startup and falls back to CPU spans only.
+The CPU side comes from the `profiling` crate, which expands to no-ops when no backend feature is active. The GPU side is a separate feature, `tracy-gpu`, and comes from `wgpu-profiler`, which inserts timestamp queries around the render-graph execution sub-phases. GPU timing requires the adapter to support `TIMESTAMP_QUERY` and `TIMESTAMP_QUERY_INSIDE_ENCODERS`. If either is missing, the renderer logs a warning at startup and falls back to CPU spans only.
+
+Reach for `tracy-gpu` only when the question is which GPU pass is slow. Each query allocates a label string and a query slot while recording and forces a resolve plus readback every frame, and that cost lands on `CommandEncoder::finish`, so leaving it on distorts exactly the zones you read in a CPU investigation. The debug HUD's GPU frame time and the IPC `render_time` metric come from the frame bracket in `crates/renderide/src/gpu/profiling/`, not from `wgpu-profiler`, so both survive a CPU-only build.
 
 When you add a new hot path or a long-running per-tick phase, instrument it. Match the granularity of nearby code: too coarse and you cannot see what is slow; too fine and you flood the trace.
 

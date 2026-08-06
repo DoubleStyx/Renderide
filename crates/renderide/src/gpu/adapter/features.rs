@@ -7,7 +7,7 @@
 ///
 /// Always requests the subset of `TIMESTAMP_QUERY | TIMESTAMP_QUERY_INSIDE_ENCODERS` that the
 /// adapter supports, regardless of Cargo features. The debug HUD's frame-bracket GPU timing
-/// uses encoder-level `write_timestamp` calls on the driver thread; the `tracy`-gated
+/// uses encoder-level `write_timestamp` calls on the driver thread; the `tracy-gpu`-gated
 /// [`crate::profiling::GpuProfilerHandle`] consumes the same features for its pass-level path.
 /// Either feature being absent is gracefully tolerated: primary GPU busy time remains unavailable
 /// and [`crate::profiling::GpuProfilerHandle::try_new`] returns [`None`].

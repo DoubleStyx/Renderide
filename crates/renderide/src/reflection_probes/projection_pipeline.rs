@@ -68,6 +68,7 @@ pub(super) fn spawn_projection_pipeline_build(
     std::thread::Builder::new()
         .name(format!("sh2-pipeline-{}", kind.stem()))
         .spawn(move || {
+            crate::profiling::register_worker_thread();
             let result = build_projection_pipeline(device.as_ref(), kind.stem());
             let _ = tx.send(ProjectionPipelineBuildOutcome { kind, result });
         })

@@ -26,7 +26,7 @@ fn stubs_are_accessible_without_tracy_feature() {
     plot_surface_get_current_texture_ms(std::time::Duration::from_millis(3));
     plot_event_loop_wait_ms(11.0);
     plot_event_loop_idle_ms(11.0);
-    plot_render_world_maintenance(RenderWorldMaintenanceProfileSample::default());
+    plot_render_world_maintenance(&RenderWorldMaintenanceProfileSample::default());
     plot_world_mesh_prepare(10, 4, 3);
     plot_world_mesh_geometry_arena(WorldMeshGeometryArenaProfileSample::default());
     plot_world_mesh_static_source_release(WorldMeshStaticSourceReleaseProfileSample::default());
@@ -48,11 +48,11 @@ fn stubs_are_accessible_without_tracy_feature() {
 }
 
 /// Verifies that `timestamp_query_features_if_supported` has the correct function signature
-/// and can be referenced as a function pointer when the `tracy` feature is off.
+/// and can be referenced as a function pointer when `tracy-gpu` is off. The HUD frame bracket
+/// still needs those adapter features, so the signature must not move with the feature.
 ///
-/// The `cfg(not(feature = "tracy"))` branch returns `wgpu::Features::empty()` without ever
-/// calling `adapter.features()`, so no real wgpu instance is required.
-#[cfg(not(feature = "tracy"))]
+/// Only takes a function pointer, never calls it, so no real wgpu instance is required.
+#[cfg(not(feature = "tracy-gpu"))]
 #[test]
 fn timestamp_features_fn_signature_compiles_without_tracy() {
     let _: fn(&wgpu::Adapter) -> wgpu::Features = timestamp_query_features_if_supported;
@@ -70,7 +70,7 @@ fn thread_registration_and_frame_mark_are_idempotent() {
 
 /// The no-tracy [`PhaseQuery`] placeholder is zero-sized so its presence in per-phase structs
 /// cannot regress memory layout when profiling is disabled.
-#[cfg(not(feature = "tracy"))]
+#[cfg(not(feature = "tracy-gpu"))]
 #[test]
 fn phase_query_stub_is_zero_sized() {
     assert_eq!(size_of::<PhaseQuery>(), 0);
@@ -78,7 +78,7 @@ fn phase_query_stub_is_zero_sized() {
 
 /// The no-tracy [`GpuProfilerHandle`] stub is also zero-sized; construction is unreachable via
 /// [`GpuProfilerHandle::try_new`] (always returns [`None`]), so the placeholder must stay free.
-#[cfg(not(feature = "tracy"))]
+#[cfg(not(feature = "tracy-gpu"))]
 #[test]
 fn gpu_profiler_handle_stub_is_zero_sized() {
     assert_eq!(size_of::<GpuProfilerHandle>(), 0);
@@ -86,7 +86,7 @@ fn gpu_profiler_handle_stub_is_zero_sized() {
 
 /// The no-tracy `render_pass_timestamp_writes` helper must always return `None` regardless
 /// of what `query` is -- the `PhaseQuery` placeholder carries no data to reserve writes from.
-#[cfg(not(feature = "tracy"))]
+#[cfg(not(feature = "tracy-gpu"))]
 #[test]
 fn render_pass_timestamp_writes_is_none_without_tracy() {
     let q = PhaseQuery;
@@ -95,7 +95,7 @@ fn render_pass_timestamp_writes_is_none_without_tracy() {
 }
 
 /// The no-tracy `compute_pass_timestamp_writes` helper must always return `None`.
-#[cfg(not(feature = "tracy"))]
+#[cfg(not(feature = "tracy-gpu"))]
 #[test]
 fn compute_pass_timestamp_writes_is_none_without_tracy() {
     let q = PhaseQuery;

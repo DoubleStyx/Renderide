@@ -289,6 +289,7 @@ fn worker_loop(
     stats: Arc<AssetWorkerStats>,
 ) {
     ON_ASSET_WORKER.with(|on_worker| on_worker.set(true));
+    crate::profiling::register_worker_thread();
     let mut foreground_streak = 0usize;
     while let Some((job, lane)) =
         receive_worker_job(&foreground_rx, &background_rx, foreground_streak)

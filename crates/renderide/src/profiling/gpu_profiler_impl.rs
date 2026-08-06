@@ -28,7 +28,7 @@ enum TracyBridgeAction {
 /// Wraps [`GpuProfiler`] and provides a GPU timestamp query interface for render and
 /// compute passes, bridging results to the Tracy GPU timeline.
 ///
-/// Created via [`GpuProfilerHandle::try_new`]; only available when the `tracy` feature is on.
+/// Created via [`GpuProfilerHandle::try_new`]; only available when `tracy-gpu` is on.
 pub struct GpuProfilerHandle {
     /// Underlying query allocator, resolver, readback processor, and Tracy bridge.
     inner: GpuProfiler,

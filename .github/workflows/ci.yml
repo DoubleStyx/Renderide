@@ -50,7 +50,8 @@ jobs:
           # Linux is the only runner where GStreamer dev packages are reliably installable
           # via the system package manager, so it's the only OS that exercises the
           # `video-textures` feature (which pulls in gstreamer-sys / glib-sys).
-          # `--all-features` here also enables `tracy`, giving us lint coverage of that path.
+          # `--all-features` here also enables `tracy` + `tracy-gpu`, giving us lint coverage
+          # of those paths.
           - os: ubuntu-latest
             clippy_features: "--all-features"
           - os: windows-latest
@@ -114,9 +115,13 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets --locked ${{ matrix.clippy_features }} -- -D warnings
 
-      - name: Check Tracy feature
+      # Both gates: `tracy` alone is the CPU-only build (GPU profiler stubs active), `tracy-gpu`
+      # is the only config that compiles the wgpu-profiler paths.
+      - name: Check Tracy features
         if: runner.os != 'Linux'
-        run: cargo check --locked -p renderide --features tracy
+        run: |
+          cargo check --locked -p renderide --features tracy
+          cargo check --locked -p renderide --features tracy-gpu
 
       - name: cargo build
         run: cargo build --locked -p renderide -p renderide-test -p bootstrapper

@@ -177,9 +177,9 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_phase_gra
     uploads: GraphUploadSink<'_>,
 ) -> bool {
     let groups = prepared.plan.phase(phase);
-    #[cfg(feature = "tracy")]
+    #[cfg(feature = "tracy-gpu")]
     let debug_label = format!("world_mesh_forward::{phase:?}");
-    #[cfg(feature = "tracy")]
+    #[cfg(feature = "tracy-gpu")]
     rpass.push_debug_group(debug_label.as_str());
     let recorded = record_world_mesh_forward_groups_graph_raster_for_view(
         rpass,
@@ -192,7 +192,7 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_phase_gra
         device,
         uploads,
     );
-    #[cfg(feature = "tracy")]
+    #[cfg(feature = "tracy-gpu")]
     rpass.pop_debug_group();
     recorded
 }
@@ -231,9 +231,14 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_groups_gr
         let runs = result.forward_runs(phase);
         (!runs.is_empty() && indirect_enabled && geometry_arena.is_some()).then_some((result, runs))
     });
-    let forward_indirect_arc = (indirect_enabled && geometry_arena.is_some() && gpu_cull.is_none())
-        .then(|| frame.systems.frame_resources.forward_indirect())
-        .flatten();
+    // gpu_hybrid also wants the buffer while gpu cull is running, to batch the groups no gpu run
+    // covers. every other path keeps the original either/or.
+    let cpu_fills_gaps = crate::world_mesh::world_mesh_render_path().fills_indirect_gaps_on_cpu()
+        && gpu_cull.is_some();
+    let forward_indirect_arc =
+        (indirect_enabled && geometry_arena.is_some() && (gpu_cull.is_none() || cpu_fills_gaps))
+            .then(|| frame.systems.frame_resources.forward_indirect())
+            .flatten();
     let indirect_buffer_arc = forward_indirect_arc.as_ref().map(|buffers| {
         let mut buffers = buffers.lock();
         Arc::clone(buffers.entry((resource_view_id, phase)).or_insert_with(|| {
@@ -402,7 +407,7 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_normal_gr
         .unwrap_or_default();
 
     let mut encode_refs = WorldMeshForwardEncodeRefs::from_pass_frame(frame);
-    #[cfg(feature = "tracy")]
+    #[cfg(feature = "tracy-gpu")]
     rpass.push_debug_group("world_mesh_forward::view_normals");
     draw_normals_subset(NormalDrawBatch {
         rpass,
@@ -446,7 +451,7 @@ pub(in crate::passes::world_mesh_forward) fn record_world_mesh_forward_normal_gr
             normal_pipelines: pipelines,
         });
     }
-    #[cfg(feature = "tracy")]
+    #[cfg(feature = "tracy-gpu")]
     rpass.pop_debug_group();
     true
 }

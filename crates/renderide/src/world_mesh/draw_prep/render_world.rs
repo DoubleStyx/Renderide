@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::cpu_parallelism::{FrameCpuWorkload, FrameParallelPolicy, ParallelAdmission};
 use crate::gpu_pools::MeshPool;
+use crate::scene::MeshRendererInstanceId;
 use crate::scene::{
     MeshRendererOverrideTarget, RenderSpaceId, RenderWorldBoundsDirty,
     RenderWorldMaterialOverrideDirty, RenderWorldParticleRendererDirty,
@@ -23,6 +24,7 @@ use crate::scene::{
     WorldMeshSceneRead,
 };
 use crate::shared::RenderingContext;
+use crate::world_mesh::culling::MeshCullGeometry;
 
 use super::prepared_renderables::FramePreparedRenderables;
 use mesh_state::MeshDrawPrepState;
@@ -258,6 +260,8 @@ pub struct RenderWorldMaintenanceStats {
     pub context_overlay_count: usize,
     /// Base prepared snapshots synchronized into context overlays.
     pub context_overlay_sync_count: usize,
+    /// Overlay frames that had to re-clone the whole prepared snapshot.
+    pub context_overlay_clone_count: usize,
     /// Exact override renderer ranges patched into context overlays.
     pub context_override_patch_count: usize,
     /// Frames where this render world proved its retained snapshot did not need rebuilding.
@@ -303,6 +307,7 @@ impl RenderWorldMaintenanceStats {
             context_invariant_count: self.context_invariant_count,
             context_overlay_count: self.context_overlay_count,
             context_overlay_sync_count: self.context_overlay_sync_count,
+            context_overlay_clone_count: self.context_overlay_clone_count,
             context_override_patch_count: self.context_override_patch_count,
             steady_state_skip_count: self.steady_state_skip_count,
         }
@@ -347,6 +352,7 @@ impl RenderWorldMaintenanceStats {
         self.context_invariant_count += other.context_invariant_count;
         self.context_overlay_count += other.context_overlay_count;
         self.context_overlay_sync_count += other.context_overlay_sync_count;
+        self.context_overlay_clone_count += other.context_overlay_clone_count;
         self.context_override_patch_count += other.context_override_patch_count;
         self.steady_state_skip_count += other.steady_state_skip_count;
     }
@@ -397,6 +403,12 @@ pub struct RenderWorld {
     overlay_base_prepared_generation: u64,
     /// Base static generation most recently synchronized into this overlay.
     overlay_base_static_generation: u64,
+    /// Base structural generation most recently synchronized into this overlay.
+    overlay_base_structural_generation: u64,
+    /// Base bounds generation most recently replayed into this overlay.
+    overlay_base_bounds_generation: u64,
+    /// Base mesh-patch generation most recently replayed into this overlay.
+    overlay_base_mesh_patch_generation: u64,
     /// Whether context-override membership/state changed since the overlay was last patched.
     overlay_dirty: bool,
     /// Whether particle renderer membership changed the cached transform-override target set.
@@ -419,8 +431,47 @@ pub struct RenderWorld {
     /// [`Self::prepared_generation`] every frame but leaves this stable, so camera-independent
     /// GPU-static plan reuse survives particle churn (particle draws are never GPU-static eligible).
     static_generation: u64,
+    /// Everything [`Self::static_generation`] covers except bounds-only patches.
+    ///
+    /// A live world moves renderers every frame, so bounds patches advance `static_generation`
+    /// constantly. A context overlay keyed on that re-cloned the entire prepared snapshot every
+    /// frame to apply a handful of override patches. Overlays key on this instead and replay
+    /// [`Self::bounds_patch_log`] for the bounds-only case.
+    structural_generation: u64,
+    /// Monotonic generation bumped once per frame that bounds-only patches touched `prepared`.
+    bounds_generation: u64,
+    /// [`Self::bounds_generation`] before this frame's `bounds_patch_log` was recorded.
+    ///
+    /// An overlay may only replay the log when its last synced value matches this, otherwise it
+    /// skipped a frame and the log no longer covers the whole gap.
+    bounds_patch_log_base_generation: u64,
+    /// Cull-geometry updates applied to `prepared` this frame, retained for overlay replay.
+    bounds_patch_log: Vec<PreparedCullGeometryPatch>,
+    /// Monotonic generation bumped once per frame that non-structural mesh patches touched
+    /// `prepared`. Structural patches bump [`Self::structural_generation`] instead.
+    mesh_patch_generation: u64,
+    /// [`Self::mesh_patch_generation`] before this frame's `mesh_patch_log` was recorded.
+    mesh_patch_log_base_generation: u64,
+    /// Renderers patched into `prepared` this frame, replayed by an overlay against its own
+    /// context so overrides are re-derived rather than copied.
+    mesh_patch_log: HashSet<RenderWorldRendererDirty>,
+    /// Spaces needing a spatial/LOD refit after [`Self::bounds_patch_log`] is replayed.
+    bounds_patch_refit_spaces: Vec<RenderSpaceId>,
     /// Most recent maintenance counters.
     maintenance_stats: RenderWorldMaintenanceStats,
+}
+
+/// One identity-addressed cull-geometry write applied by a bounds-only refresh.
+///
+/// Addressed by renderer identity rather than prepared row index so an overlay whose rows were
+/// re-laid out by override patches still lands the update on the right run.
+#[derive(Clone, Copy, Debug)]
+struct PreparedCullGeometryPatch {
+    space_id: RenderSpaceId,
+    skinned: bool,
+    renderable_index: usize,
+    instance_id: MeshRendererInstanceId,
+    cull_geometry: Option<MeshCullGeometry>,
 }
 
 /// Returns whether `node_id` is equal to or below `root_id` in the supplied parent table.
@@ -527,6 +578,9 @@ impl RenderWorld {
             overlay_base_cache_identity: 0,
             overlay_base_prepared_generation: 0,
             overlay_base_static_generation: 0,
+            overlay_base_structural_generation: 0,
+            overlay_base_bounds_generation: 0,
+            overlay_base_mesh_patch_generation: 0,
             overlay_dirty: false,
             overlay_particle_targets_dirty: false,
             overlay_mesh_override_targets: HashSet::new(),
@@ -538,6 +592,14 @@ impl RenderWorld {
             },
             prepared_generation: 0,
             static_generation: 0,
+            structural_generation: 0,
+            bounds_generation: 0,
+            bounds_patch_log_base_generation: 0,
+            bounds_patch_log: Vec::new(),
+            mesh_patch_generation: 0,
+            mesh_patch_log_base_generation: 0,
+            mesh_patch_log: HashSet::new(),
+            bounds_patch_refit_spaces: Vec::new(),
             maintenance_stats: RenderWorldMaintenanceStats::default(),
         }
     }
@@ -555,6 +617,47 @@ impl RenderWorld {
     #[inline]
     pub(crate) fn static_generation(&self) -> u64 {
         self.static_generation
+    }
+
+    /// Starts a fresh bounds patch log for this frame's bounds-only refresh.
+    pub(super) fn begin_bounds_patch_log(&mut self) {
+        self.bounds_patch_log.clear();
+        self.bounds_patch_refit_spaces.clear();
+        self.bounds_patch_log_base_generation = self.bounds_generation;
+        self.bounds_generation = self.bounds_generation.wrapping_add(1);
+    }
+
+    /// Applies one cull-geometry update to `prepared` and records it for overlay replay.
+    pub(super) fn apply_and_log_cull_geometry(
+        &mut self,
+        space_id: RenderSpaceId,
+        skinned: bool,
+        renderable_index: usize,
+        instance_id: MeshRendererInstanceId,
+        cull_geometry: Option<MeshCullGeometry>,
+    ) {
+        self.prepared.update_cached_renderer_cull_geometry(
+            space_id,
+            skinned,
+            renderable_index,
+            instance_id,
+            cull_geometry,
+        );
+        self.bounds_patch_log.push(PreparedCullGeometryPatch {
+            space_id,
+            skinned,
+            renderable_index,
+            instance_id,
+            cull_geometry,
+        });
+    }
+
+    /// Records spaces the overlay must refit after replaying the log.
+    pub(super) fn record_bounds_patch_refit_spaces<I>(&mut self, space_ids: I)
+    where
+        I: IntoIterator<Item = RenderSpaceId>,
+    {
+        self.bounds_patch_refit_spaces.extend(space_ids);
     }
 
     /// Stable identity of this retained world instance for cross-frame dependency keys.
@@ -733,6 +836,15 @@ impl RenderWorld {
             stats.spatial_refit_count += patch_stats.spatial_refit_count;
             stats.spatial_rebuild_count += usize::from(patch_stats.structural_rebuild);
             prepared_meshes_patched = patch_stats.changed;
+            // A structural patch re-lays rows, so an overlay has to re-clone. A plain row patch can
+            // be replayed against the overlay's own context instead.
+            if patch_stats.changed && !patch_stats.structural_rebuild {
+                self.mesh_patch_log_base_generation = self.mesh_patch_generation;
+                self.mesh_patch_generation = self.mesh_patch_generation.wrapping_add(1);
+                self.mesh_patch_log.clone_from(&dirty_renderer_targets);
+            } else if patch_stats.structural_rebuild {
+                self.structural_generation = self.structural_generation.wrapping_add(1);
+            }
         }
         // Any snapshot change up to here is static (topology, material override, mesh asset, full
         // rebuild); the particle branch below is the only particle-driven cause. Records whether the
@@ -811,6 +923,7 @@ impl RenderWorld {
             self.prepared_generation = self.prepared_generation.wrapping_add(1);
             if static_snapshot_change {
                 self.static_generation = self.static_generation.wrapping_add(1);
+                self.structural_generation = self.structural_generation.wrapping_add(1);
             }
         } else if prepared_meshes_patched || prepared_bounds_patched || prepared_particles_patched {
             // Direct retained-row maintenance still invalidates cached per-view draw items. Only
@@ -829,7 +942,7 @@ impl RenderWorld {
         }
         stats.retained_template_count = self.retained_template_count();
         self.maintenance_stats = stats;
-        crate::profiling::plot_render_world_maintenance(stats.profile_sample());
+        crate::profiling::plot_render_world_maintenance(&stats.profile_sample());
         &self.prepared
     }
 
@@ -850,15 +963,66 @@ impl RenderWorld {
             context_overlay_count: 1,
             ..Default::default()
         };
+        // Bounds patches are excluded from `structural_generation` on purpose: they rewrite cull
+        // geometry in place and are replayed below. Keying the clone on `static_generation` meant a
+        // full re-clone every frame, because a live world moves renderers every frame.
+        let bounds_replayable = self.overlay_base_bounds_generation
+            == base.bounds_patch_log_base_generation
+            || self.overlay_base_bounds_generation == base.bounds_generation;
+        let mesh_replayable = self.overlay_base_mesh_patch_generation
+            == base.mesh_patch_log_base_generation
+            || self.overlay_base_mesh_patch_generation == base.mesh_patch_generation;
         let full_sync = self.overlay_dirty
             || self.overlay_base_cache_identity != base.cache_identity
-            || self.overlay_base_static_generation != base.static_generation;
+            || self.overlay_base_structural_generation != base.structural_generation
+            || !bounds_replayable
+            || !mesh_replayable;
+        let bounds_sync =
+            !full_sync && self.overlay_base_bounds_generation != base.bounds_generation;
+        let mesh_sync =
+            !full_sync && self.overlay_base_mesh_patch_generation != base.mesh_patch_generation;
         let particle_sync =
             !full_sync && self.overlay_base_prepared_generation != base.prepared_generation;
         let mut changed = false;
+        if !full_sync && bounds_sync {
+            profiling::scope!("mesh::render_world::overlay_bounds_replay");
+            for patch in &base.bounds_patch_log {
+                self.prepared.update_cached_renderer_cull_geometry(
+                    patch.space_id,
+                    patch.skinned,
+                    patch.renderable_index,
+                    patch.instance_id,
+                    patch.cull_geometry,
+                );
+            }
+            if !base.bounds_patch_refit_spaces.is_empty() {
+                stats.spatial_refit_count +=
+                    self.prepared.refit_cached_spatial_and_lods_for_spaces(
+                        scene,
+                        base.bounds_patch_refit_spaces.iter().copied(),
+                    );
+            }
+            changed |= !base.bounds_patch_log.is_empty();
+        }
+        if !full_sync && mesh_sync && !base.mesh_patch_log.is_empty() {
+            profiling::scope!("mesh::render_world::overlay_mesh_replay");
+            // Re-derive the same renderers against this overlay's context rather than copying the
+            // base rows, so context overrides land without a second patch pass.
+            let patch = self.prepared.patch_mesh_renderers(
+                scene,
+                mesh_pool,
+                render_context,
+                &base.mesh_patch_log,
+            );
+            stats.mesh_renderer_patch_count += patch.range_count;
+            stats.mesh_patch_draw_count += patch.draw_count;
+            stats.spatial_refit_count += patch.spatial_refit_count;
+            changed |= patch.changed;
+        }
         if full_sync {
             self.prepared = base.prepared.clone_for_context_overlay(render_context);
             stats.context_overlay_sync_count = 1;
+            stats.context_overlay_clone_count = 1;
             changed = true;
         } else if particle_sync {
             let sync = self.prepared.sync_particle_rows_from(&base.prepared, scene);
@@ -908,18 +1072,26 @@ impl RenderWorld {
         self.overlay_base_cache_identity = base.cache_identity;
         self.overlay_base_prepared_generation = base.prepared_generation;
         self.overlay_base_static_generation = base.static_generation;
+        self.overlay_base_structural_generation = base.structural_generation;
+        self.overlay_base_bounds_generation = base.bounds_generation;
+        self.overlay_base_mesh_patch_generation = base.mesh_patch_generation;
         self.overlay_dirty = false;
         self.overlay_particle_targets_dirty = false;
         if changed {
             self.prepared_generation = self.prepared_generation.wrapping_add(1);
-            if full_sync {
+            // A replayed bounds patch changes cull geometry, which the GPU-static plan key covers,
+            // so the overlay's static generation has to move with it as well as on a full sync.
+            if full_sync || bounds_sync || mesh_sync {
                 self.static_generation = self.static_generation.wrapping_add(1);
+            }
+            if full_sync {
+                self.structural_generation = self.structural_generation.wrapping_add(1);
             }
         } else {
             stats.steady_state_skip_count = 1;
         }
         self.maintenance_stats = stats;
-        crate::profiling::plot_render_world_maintenance(stats.profile_sample());
+        crate::profiling::plot_render_world_maintenance(&stats.profile_sample());
         &self.prepared
     }
 

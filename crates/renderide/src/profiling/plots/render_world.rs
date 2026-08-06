@@ -78,6 +78,8 @@ pub struct RenderWorldMaintenanceProfileSample {
     pub context_overlay_count: usize,
     /// Base prepared snapshots synchronized into context overlays.
     pub context_overlay_sync_count: usize,
+    /// Overlay frames that re-cloned the whole prepared snapshot instead of patching it.
+    pub context_overlay_clone_count: usize,
     /// Exact override renderer ranges patched into context overlays.
     pub context_override_patch_count: usize,
     /// Frames where this render world proved its retained snapshot did not need rebuilding.
@@ -85,7 +87,7 @@ pub struct RenderWorldMaintenanceProfileSample {
 }
 
 /// Records retained render-world dirty, rebuild, and spatial maintenance counters.
-pub fn plot_render_world_maintenance(sample: RenderWorldMaintenanceProfileSample) {
+pub fn plot_render_world_maintenance(sample: &RenderWorldMaintenanceProfileSample) {
     tracy_plot!(
         "render_world::topology_dirty",
         sample.topology_dirty_count as f64
@@ -225,6 +227,10 @@ pub fn plot_render_world_maintenance(sample: RenderWorldMaintenanceProfileSample
     tracy_plot!(
         "render_world::context_overlay_sync",
         sample.context_overlay_sync_count as f64
+    );
+    tracy_plot!(
+        "render_world::context_overlay_clone",
+        sample.context_overlay_clone_count as f64
     );
     tracy_plot!(
         "render_world::context_override_patches",

@@ -728,13 +728,23 @@ fn material_packet_submission_key(packet: &MaterialBatchPacket) -> MaterialPacke
     }
 }
 
+// hashes the same fields the derived Hash on MaterialPacketSubmissionKey would, in the same
+// order, without materializing the key. building it clones resolved_pipeline_kind, and that is an
+// Arc<str>, so the owned-key version paid an atomic pair per packet for a value it threw away.
+fn hash_material_packet_submission_key<H: Hasher>(packet: &MaterialBatchPacket, hasher: &mut H) {
+    packet.pipeline_key.hash(hasher);
+    packet.resolved_pipeline_kind.hash(hasher);
+    material_group1_submission_key(&packet.group1_binding).hash(hasher);
+    packet.pipelines.is_some().hash(hasher);
+}
+
 fn material_packet_submission_fingerprint(packets: &[MaterialBatchPacket]) -> u64 {
     let mut hasher = ahash::AHasher::default();
     packets.len().hash(&mut hasher);
     for packet in packets {
         packet.first_draw_idx.hash(&mut hasher);
         packet.last_draw_idx.hash(&mut hasher);
-        material_packet_submission_key(packet).hash(&mut hasher);
+        hash_material_packet_submission_key(packet, &mut hasher);
     }
     hasher.finish()
 }
@@ -872,6 +882,62 @@ mod tests {
             group1_binding: MaterialGroup1Binding::Empty,
             pipelines: None,
         }
+    }
+
+    /// Hashes one packet through the owned key, the way the fingerprint used to.
+    fn owned_key_hash(packet: &MaterialBatchPacket) -> u64 {
+        let mut hasher = ahash::AHasher::default();
+        material_packet_submission_key(packet).hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Hashes one packet in place, the way the fingerprint does now.
+    fn in_place_hash(packet: &MaterialBatchPacket) -> u64 {
+        let mut hasher = ahash::AHasher::default();
+        hash_material_packet_submission_key(packet, &mut hasher);
+        hasher.finish()
+    }
+
+    #[test]
+    fn in_place_submission_hash_matches_the_owned_key() {
+        let stem =
+            crate::materials::RasterPipelineKind::EmbeddedStem("ui_textunlit_default".into());
+        let mut embedded = test_packet(0, 3);
+        embedded.resolved_pipeline_kind = Some(stem);
+
+        let pipeline_key = test_packet(0, 0).pipeline_key;
+        for packet in [
+            test_packet(0, 3),
+            test_packet_with_key(4, 9, pipeline_key),
+            embedded,
+        ] {
+            assert_eq!(owned_key_hash(&packet), in_place_hash(&packet));
+        }
+    }
+
+    #[test]
+    fn submission_fingerprint_separates_distinct_packet_state() {
+        let base = [test_packet(0, 3), test_packet(4, 9)];
+        let mut moved_boundary = base.clone();
+        moved_boundary[1].first_draw_idx = 5;
+        let mut other_pipeline = base.clone();
+        other_pipeline[1].resolved_pipeline_kind = Some(crate::materials::RasterPipelineKind::Null);
+
+        let fingerprint = material_packet_submission_fingerprint(&base);
+
+        assert_eq!(fingerprint, material_packet_submission_fingerprint(&base));
+        assert_ne!(
+            fingerprint,
+            material_packet_submission_fingerprint(&moved_boundary)
+        );
+        assert_ne!(
+            fingerprint,
+            material_packet_submission_fingerprint(&other_pipeline)
+        );
+        assert_ne!(
+            fingerprint,
+            material_packet_submission_fingerprint(&base[..1])
+        );
     }
 
     fn group(representative_draw_idx: usize) -> DrawGroup {

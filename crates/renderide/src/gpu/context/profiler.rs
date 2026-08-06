@@ -9,20 +9,20 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::gpu::driver_thread::SubmitToken;
-#[cfg(feature = "tracy")]
+#[cfg(feature = "tracy-gpu")]
 use crate::log_throttle::LogThrottle;
 
 use super::GpuContext;
 
 /// Throttles logs when every profiler handle is waiting for submit completion.
-#[cfg(feature = "tracy")]
+#[cfg(feature = "tracy-gpu")]
 static GPU_PROFILER_POOL_EXHAUSTED_LOG: LogThrottle = LogThrottle::new();
 /// Throttles logs when replacement profiler creation unexpectedly fails.
-#[cfg(feature = "tracy")]
+#[cfg(feature = "tracy-gpu")]
 static GPU_PROFILER_REPLACEMENT_FAILED_LOG: LogThrottle = LogThrottle::new();
 
 /// Drains completed timestamp trees from one Tracy-enabled profiler handle.
-#[cfg(feature = "tracy")]
+#[cfg(feature = "tracy-gpu")]
 fn drain_profiler_handle_results(
     profiler: &mut crate::profiling::GpuProfilerHandle,
     timestamp_period: f32,
@@ -35,7 +35,7 @@ fn drain_profiler_handle_results(
 }
 
 /// Drains completed timestamp trees from the no-Tracy profiler stub.
-#[cfg(not(feature = "tracy"))]
+#[cfg(not(feature = "tracy-gpu"))]
 fn drain_profiler_handle_results(
     profiler: &crate::profiling::GpuProfilerHandle,
     timestamp_period: f32,
@@ -117,7 +117,7 @@ impl GpuContext {
 
     /// Mutable reference to the GPU profiler, when one is active.
     ///
-    /// Returns [`None`] when the `tracy` feature is off, or when the adapter lacks the required
+    /// Returns [`None`] when the `tracy-gpu` feature is off, or when the adapter lacks the required
     /// timestamp-query features (see [`crate::profiling::GpuProfilerHandle::try_new`]).
     pub fn gpu_profiler_mut(&mut self) -> Option<&mut crate::profiling::GpuProfilerHandle> {
         self.finish_deferred_gpu_profiler_frames_if_ready();
@@ -217,9 +217,9 @@ impl GpuContext {
             let Some(pending) = self.submission.gpu_profiler_pool.pop_front_pending_submit() else {
                 break;
             };
-            #[cfg(feature = "tracy")]
+            #[cfg(feature = "tracy-gpu")]
             let mut profiler = pending.profiler;
-            #[cfg(not(feature = "tracy"))]
+            #[cfg(not(feature = "tracy-gpu"))]
             let profiler = pending.profiler;
             profiler.end_frame_if_queries_opened(pending.frame_order);
             self.submission.gpu_profiler_pool.push_ready(profiler);
@@ -245,21 +245,21 @@ impl GpuContext {
         }
     }
 
-    #[cfg(feature = "tracy")]
+    #[cfg(feature = "tracy-gpu")]
     fn end_active_gpu_profiler_frame(&mut self, frame_order: u64) {
         if let Some(profiler) = self.submission.gpu_profiler_pool.active_mut() {
             profiler.end_frame_if_queries_opened(frame_order);
         }
     }
 
-    #[cfg(not(feature = "tracy"))]
+    #[cfg(not(feature = "tracy-gpu"))]
     fn end_active_gpu_profiler_frame(&self, frame_order: u64) {
         if let Some(profiler) = self.submission.gpu_profiler_pool.active() {
             profiler.end_frame_if_queries_opened(frame_order);
         }
     }
 
-    #[cfg(feature = "tracy")]
+    #[cfg(feature = "tracy-gpu")]
     fn drain_gpu_profiler_results(&mut self) {
         let ts_period = self.queue.get_timestamp_period();
         let mut latest_snapshot = None;
@@ -291,7 +291,7 @@ impl GpuContext {
         self.publish_latest_gpu_profiler_snapshot(latest_snapshot);
     }
 
-    #[cfg(feature = "tracy")]
+    #[cfg(feature = "tracy-gpu")]
     fn ensure_active_gpu_profiler(&mut self) {
         if self.submission.gpu_profiler_pool.activate_ready() {
             return;
@@ -339,7 +339,7 @@ impl GpuContext {
         }
     }
 
-    #[cfg(feature = "tracy")]
+    #[cfg(feature = "tracy-gpu")]
     fn log_gpu_profiler_pool_unavailable_if_needed(&self) {
         let pool = &self.submission.gpu_profiler_pool;
         if !pool.enabled() || pool.active().is_some() {
@@ -353,10 +353,10 @@ impl GpuContext {
         }
     }
 
-    #[cfg(not(feature = "tracy"))]
+    #[cfg(not(feature = "tracy-gpu"))]
     fn ensure_active_gpu_profiler(&self) {}
 
-    #[cfg(not(feature = "tracy"))]
+    #[cfg(not(feature = "tracy-gpu"))]
     fn drain_gpu_profiler_results(&self) {
         let ts_period = self.queue.get_timestamp_period();
         let mut latest_snapshot = None;

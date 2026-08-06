@@ -44,6 +44,7 @@ run cargo clippy --all-targets --locked "${clippy_features[@]}" -- -W clippy::al
 
 if ! is_linux; then
   run cargo check --locked -p renderide --features tracy
+  run cargo check --locked -p renderide --features tracy-gpu
 fi
 
 run cargo build --locked -p renderide -p renderide-test -p bootstrapper

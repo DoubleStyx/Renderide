@@ -29,6 +29,7 @@ impl HostHudWorker {
         thread::Builder::new()
             .name("renderide-host-hud".to_string())
             .spawn(move || {
+                crate::profiling::register_worker_thread();
                 let pid = sysinfo::get_current_pid().ok();
                 let mut system = System::new_with_specifics(
                     RefreshKind::nothing()

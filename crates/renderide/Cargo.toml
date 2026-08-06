@@ -26,23 +26,29 @@ name = "roundtrip"
 path = "src/bin/roundtrip.rs"
 
 [features]
-## Enables Tracy profiling integration. When active, `profiling::scope!` macros emit CPU spans
-## to the Tracy client, frame marks appear in the Tracy GUI timeline, and `wgpu-profiler` inserts
-## GPU timestamp queries around render-graph passes, manual GPU passes, copies, readbacks, and
-## expensive bounded subpasses.
+## Enables CPU-side Tracy profiling. `profiling::scope!` macros emit CPU spans to the Tracy
+## client, frame marks appear in the Tracy GUI timeline, and plots stream counters. No GPU
+## timestamp queries and no GPU debug groups: see `tracy-gpu` for those.
 ##
-## Usage: `cargo build --profile dev-fast --features tracy`
-## For realistic numbers: `cargo build --release --features tracy`
+## Usage: `cargo build --release --features tracy`. Do not profile a `dev` build and believe the
+## numbers; `dev` keeps debug assertions and skips LTO.
 ##
 ## Requires no runtime configuration; connect the Tracy GUI on port 8086 before or after launching.
-## Uses Tracy's `ondemand` mode, and the GPU bridge is rebuilt at clean frame boundaries so late
-## attach starts with fresh GPU query ids instead of replaying disconnected GPU events.
-tracy = [
-  "dep:wgpu-profiler",
-  "dep:tracy-client",
-  "profiling/profile-with-tracy",
-  "wgpu-profiler/tracy",
-]
+## Uses Tracy's `ondemand` mode, so an unattached build idles near zero cost.
+tracy = ["dep:tracy-client", "profiling/profile-with-tracy"]
+
+## Adds the GPU timeline on top of `tracy`: `wgpu-profiler` timestamp queries around render-graph
+## passes, manual GPU passes, copies, readbacks, and expensive bounded subpasses, plus
+## push/pop_debug_group markers for vendor captures. The GPU bridge is rebuilt at clean frame
+## boundaries so late attach starts with fresh query ids instead of replaying disconnected events.
+##
+## Deliberately NOT implied by `tracy`. Every query costs main-thread recording work (a label
+## String per pass, query allocation, per-frame resolve plus readback) and it lands on
+## `CommandEncoder::finish`, which is exactly the zone you are reading when the bottleneck is CPU.
+## Measured at ~12% CPU tax with GPU queries on. Turn this on only when chasing GPU pass costs.
+##
+## Usage: `cargo build --release --features tracy-gpu`
+tracy-gpu = ["dep:wgpu-profiler", "tracy", "wgpu-profiler/tracy"]
 ## Enables GStreamer-backed video texture playback. When disabled, video texture IPC commands
 ## still create GPU placeholders (the host sees a black frame), but no decoding occurs and
 ## `VideoPlayer::new` returns `None`. Off by default to keep cross-platform CI lean -- GStreamer
@@ -102,15 +108,42 @@ crash-handler = "0.7"
 ## (second pass) for native faults that bypass Rust's panic hook.
 backtrace = "0.3"
 bevy_mikktspace = "1.0"
-## GPU timestamp query scopes; bridges per-phase GPU timing to Tracy when the `tracy` feature is on.
-## Only compiled when the `tracy` workspace feature is enabled.
+## GPU timestamp query scopes; bridges per-phase GPU timing to Tracy.
+## Only compiled when the `tracy-gpu` feature is enabled.
 wgpu-profiler = { version = "0.27", optional = true }
 ## Tracy client. `enable` activates the native client library; `ondemand` keeps runtime cost
 ## near-zero by only streaming data while a profiler GUI is attached. Only compiled when the
 ## `tracy` feature is enabled.
+##
+## `default-features = false` here is mostly decorative: `profiling/profile-with-tracy` depends on
+## tracy-client WITH defaults, and cargo unions features, so a tracy build always ends up with
+## sampling, system-tracing, context-switch-tracing, code-transfer, callstack-inlines, broadcast
+## and crash-handler on. Listing them anyway keeps the resolved set visible instead of hiding it
+## behind a transitive dep. Check with `cargo tree -e features -i tracy-client`.
+##
+## Those are the automatic capture layer, and it is the half that matters when the renderer is CPU
+## bound: `sampling` grabs periodic callstacks so uninstrumented and third-party code (wgpu, the
+## driver, the allocator) shows up at all, and `context-switch-tracing` marks when a thread is
+## actually on core rather than blocked or preempted, which is the only way to tell a real CPU
+## cost from a wait. Windows sources both from ETW, so the renderer must run elevated to fill
+## them in; unelevated, the manual zones still record and those tracks are empty.
+##
+## `demangle` is the one addition that is genuinely ours: it is not in tracy-client's default set,
+## and without it sampled Rust frames come back mangled.
+##
+## `crash-handler` arrives with the defaults and cannot be dropped from here. It collides with the
+## handler `process_io::fatal_crash_log` installs, since both want the same process-wide exception
+## filter and last writer wins. Only tracy builds are affected, never a shipped one, but do not
+## trust a crash dump taken from a tracy build. -xlinka
 tracy-client = { version = "0.18", optional = true, default-features = false, features = [
+  "callstack-inlines",
+  "code-transfer",
+  "context-switch-tracing",
+  "demangle",
   "enable",
   "ondemand",
+  "sampling",
+  "system-tracing",
 ] }
 ## Optional: enabled by the `video-textures` feature. Provides the GStreamer pipeline that
 ## decodes video texture sources into wgpu textures. Without this feature, video texture

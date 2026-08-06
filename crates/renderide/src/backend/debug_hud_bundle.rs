@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use crate::config::RendererSettingsHandle;
 use crate::diagnostics::{
@@ -23,9 +24,16 @@ pub struct DebugHudBundle {
     last_world_mesh_view_stats: Vec<WorldMeshViewHudStats>,
     last_world_mesh_draw_state_rows: Vec<WorldMeshDrawStateRow>,
     per_view_config: PerViewHudConfig,
+    last_per_view_capture: Option<Instant>,
     capture_graph_command_diagnostics: bool,
     current_view_texture_2d_asset_ids: BTreeSet<i32>,
 }
+
+// stats and draw-state capture walk every draw in the view, inside the serial prepare path.
+// measured at 0.63ms per frame in a city world with the Stats tab open, about 4% of frame time.
+// the tab is unreadable at frame rate anyway, so refresh on a timer and let the retained
+// snapshot cover the frames in between.
+const PER_VIEW_CAPTURE_INTERVAL: Duration = Duration::from_millis(100);
 
 impl Default for DebugHudBundle {
     fn default() -> Self {
@@ -46,6 +54,7 @@ impl DebugHudBundle {
             last_world_mesh_view_stats: Vec::new(),
             last_world_mesh_draw_state_rows: Vec::new(),
             per_view_config: PerViewHudConfig::default(),
+            last_per_view_capture: None,
             capture_graph_command_diagnostics: false,
             current_view_texture_2d_asset_ids: BTreeSet::new(),
         }
@@ -85,7 +94,39 @@ impl DebugHudBundle {
         if !config.capture_current_view_texture_2d_asset_ids {
             self.current_view_texture_2d_asset_ids.clear();
         }
-        self.per_view_config = config;
+        // clearing above keys off the requested interest, not the throttled result, so a skipped
+        // frame keeps the last stats instead of blanking the tab
+        self.per_view_config = self.throttle_per_view_capture(config, Instant::now());
+    }
+
+    /// Drops the draw-walking capture switches on frames inside [`PER_VIEW_CAPTURE_INTERVAL`].
+    fn throttle_per_view_capture(
+        &mut self,
+        interest: PerViewHudConfig,
+        now: Instant,
+    ) -> PerViewHudConfig {
+        let walks_draws = interest.capture_world_mesh_draw_stats
+            || interest.capture_world_mesh_view_stats
+            || interest.capture_world_mesh_draw_state_rows;
+        if !walks_draws {
+            self.last_per_view_capture = None;
+            return interest;
+        }
+        let due = self
+            .last_per_view_capture
+            .is_none_or(|last| now.saturating_duration_since(last) >= PER_VIEW_CAPTURE_INTERVAL);
+        if due {
+            self.last_per_view_capture = Some(now);
+            return interest;
+        }
+        PerViewHudConfig {
+            capture_world_mesh_draw_stats: false,
+            capture_world_mesh_view_stats: false,
+            capture_world_mesh_draw_state_rows: false,
+            // texture ids get cleared every frame, so throttling them empties the Textures window
+            capture_current_view_texture_2d_asset_ids: interest
+                .capture_current_view_texture_2d_asset_ids,
+        }
     }
 
     /// Per-view HUD diagnostics capture interests for the next graph recording.
@@ -326,5 +367,103 @@ impl DebugHudBundle {
             }
             Err(e) => Err(e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DebugHudBundle, PER_VIEW_CAPTURE_INTERVAL, PerViewHudConfig};
+    use crate::world_mesh::WorldMeshDrawStats;
+    use std::time::Instant;
+
+    fn stats_interest() -> PerViewHudConfig {
+        PerViewHudConfig {
+            capture_world_mesh_draw_stats: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn first_capture_is_admitted() {
+        let mut bundle = DebugHudBundle::new();
+        bundle.set_per_view_config(stats_interest());
+
+        assert!(bundle.per_view_config().capture_world_mesh_draw_stats);
+    }
+
+    #[test]
+    fn capture_inside_interval_is_skipped_then_admitted_again() {
+        let mut bundle = DebugHudBundle::new();
+        let t0 = Instant::now();
+
+        assert!(
+            bundle
+                .throttle_per_view_capture(stats_interest(), t0)
+                .capture_world_mesh_draw_stats
+        );
+        assert!(
+            !bundle
+                .throttle_per_view_capture(stats_interest(), t0 + PER_VIEW_CAPTURE_INTERVAL / 2)
+                .capture_world_mesh_draw_stats
+        );
+        assert!(
+            bundle
+                .throttle_per_view_capture(stats_interest(), t0 + PER_VIEW_CAPTURE_INTERVAL)
+                .capture_world_mesh_draw_stats
+        );
+    }
+
+    #[test]
+    fn skipped_capture_keeps_the_retained_stats() {
+        let mut bundle = DebugHudBundle::new();
+        bundle.set_per_view_config(stats_interest());
+        bundle.set_last_world_mesh_draw_stats(&WorldMeshDrawStats {
+            draws_total: 7,
+            ..Default::default()
+        });
+
+        // second call lands inside the interval, so the switch drops but the numbers stay
+        bundle.set_per_view_config(stats_interest());
+
+        assert!(!bundle.per_view_config().capture_world_mesh_draw_stats);
+        assert_eq!(bundle.last_world_mesh_draw_stats().draws_total, 7);
+    }
+
+    #[test]
+    fn dropping_interest_clears_retained_stats_and_rearms() {
+        let mut bundle = DebugHudBundle::new();
+        bundle.set_per_view_config(stats_interest());
+        bundle.set_last_world_mesh_draw_stats(&WorldMeshDrawStats {
+            draws_total: 7,
+            ..Default::default()
+        });
+
+        bundle.set_per_view_config(PerViewHudConfig::default());
+
+        assert_eq!(bundle.last_world_mesh_draw_stats().draws_total, 0);
+        assert!(
+            bundle
+                .throttle_per_view_capture(stats_interest(), Instant::now())
+                .capture_world_mesh_draw_stats,
+            "reopening the tab should capture immediately, not wait out the interval"
+        );
+    }
+
+    #[test]
+    fn texture_ids_are_not_throttled() {
+        let mut bundle = DebugHudBundle::new();
+        let interest = PerViewHudConfig {
+            capture_world_mesh_draw_stats: true,
+            capture_current_view_texture_2d_asset_ids: true,
+            ..Default::default()
+        };
+        let t0 = Instant::now();
+
+        bundle.throttle_per_view_capture(interest, t0);
+        let throttled =
+            bundle.throttle_per_view_capture(interest, t0 + PER_VIEW_CAPTURE_INTERVAL / 2);
+
+        assert!(!throttled.capture_world_mesh_draw_stats);
+        assert!(throttled.capture_current_view_texture_2d_asset_ids);
     }
 }

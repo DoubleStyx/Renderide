@@ -446,10 +446,10 @@ pub(super) fn record_prepared_skybox(
     prepared: &PreparedSkybox,
 ) -> bool {
     profiling::scope!("world_mesh_forward::skybox_record");
-    #[cfg(feature = "tracy")]
+    #[cfg(feature = "tracy-gpu")]
     rpass.push_debug_group("world_mesh_forward::skybox");
     let recorded = record_prepared_skybox_inner(rpass, frame, blackboard, prepared);
-    #[cfg(feature = "tracy")]
+    #[cfg(feature = "tracy-gpu")]
     rpass.pop_debug_group();
     recorded
 }

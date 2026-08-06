@@ -11,6 +11,13 @@ pub(crate) enum WorldMeshRenderPath {
     /// Production path: GPU culling writes indirect commands that draw from the shared arena.
     #[default]
     Gpu,
+    /// Experimental: `Gpu`, plus CPU-built indirect commands for the groups GPU cull leaves behind.
+    ///
+    /// Under `Gpu` alone the CPU indirect buffer is not provisioned, so every group outside a GPU
+    /// run drops to a per-mesh draw even when it is arena-resident and static. Traces put that at
+    /// ~82 groups per subpass. CPU runs here are clamped to the next GPU run boundary, otherwise a
+    /// run would swallow groups whose visibility the GPU owns and draw them unculled.
+    GpuHybrid,
     /// Diagnostic path: CPU-built indirect commands draw from the same shared arena.
     CpuIndirect,
     /// Diagnostic path: direct indexed draws bind mesh-local slices of the shared arena.
@@ -27,6 +34,7 @@ impl WorldMeshRenderPath {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Gpu => "gpu",
+            Self::GpuHybrid => "gpu_hybrid",
             Self::CpuIndirect => "cpu_indirect",
             Self::ArenaDirect => "arena_direct",
             Self::DedicatedDirect => "dedicated_direct",
@@ -35,12 +43,17 @@ impl WorldMeshRenderPath {
 
     /// Whether the world compute pass may generate raster commands.
     pub(crate) const fn uses_gpu_generated_commands(self) -> bool {
-        matches!(self, Self::Gpu)
+        matches!(self, Self::Gpu | Self::GpuHybrid)
     }
 
     /// Whether raster passes consume indexed-indirect commands.
     pub(crate) const fn uses_indirect_draws(self) -> bool {
-        matches!(self, Self::Gpu | Self::CpuIndirect)
+        matches!(self, Self::Gpu | Self::GpuHybrid | Self::CpuIndirect)
+    }
+
+    /// Whether CPU-built indirect runs fill the gaps between GPU-culled runs.
+    pub(crate) const fn fills_indirect_gaps_on_cpu(self) -> bool {
+        matches!(self, Self::GpuHybrid)
     }
 
     /// Whether raster passes and population expose the shared geometry arena.
@@ -73,6 +86,7 @@ impl WorldMeshRenderPathSelection {
         let normalized = raw.trim().to_ascii_lowercase();
         let path = match normalized.as_str() {
             "" | "gpu" => WorldMeshRenderPath::Gpu,
+            "gpu_hybrid" => WorldMeshRenderPath::GpuHybrid,
             "cpu_indirect" => WorldMeshRenderPath::CpuIndirect,
             "arena_direct" => WorldMeshRenderPath::ArenaDirect,
             "dedicated_direct" => WorldMeshRenderPath::DedicatedDirect,
@@ -151,8 +165,43 @@ mod tests {
     }
 
     #[test]
+    fn hybrid_only_differs_from_gpu_by_the_cpu_gap_fill() {
+        let gpu = WorldMeshRenderPath::Gpu;
+        let hybrid = WorldMeshRenderPath::GpuHybrid;
+
+        assert!(!gpu.fills_indirect_gaps_on_cpu());
+        assert!(hybrid.fills_indirect_gaps_on_cpu());
+        assert_eq!(
+            hybrid.uses_gpu_generated_commands(),
+            gpu.uses_gpu_generated_commands()
+        );
+        assert_eq!(hybrid.uses_indirect_draws(), gpu.uses_indirect_draws());
+        assert_eq!(hybrid.uses_geometry_arena(), gpu.uses_geometry_arena());
+        assert_eq!(
+            hybrid.releases_dedicated_sources(),
+            gpu.releases_dedicated_sources()
+        );
+    }
+
+    #[test]
+    fn no_other_path_fills_gaps_on_cpu() {
+        for path in [
+            WorldMeshRenderPath::Gpu,
+            WorldMeshRenderPath::CpuIndirect,
+            WorldMeshRenderPath::ArenaDirect,
+            WorldMeshRenderPath::DedicatedDirect,
+        ] {
+            assert!(!path.fills_indirect_gaps_on_cpu(), "{}", path.as_str());
+        }
+    }
+
+    #[test]
     fn every_documented_path_parses_case_insensitively() {
         assert_eq!(parse(Some("gpu")).path, WorldMeshRenderPath::Gpu);
+        assert_eq!(
+            parse(Some(" GPU_HYBRID ")).path,
+            WorldMeshRenderPath::GpuHybrid
+        );
         assert_eq!(
             parse(Some(" CPU_INDIRECT ")).path,
             WorldMeshRenderPath::CpuIndirect

@@ -798,6 +798,7 @@ impl RenderWorld {
         S: WorldMeshSceneRead + Sync + ?Sized,
     {
         profiling::scope!("mesh::render_world::refresh_dirty_bounds");
+        self.begin_bounds_patch_log();
         let dirty_bounds = std::mem::take(&mut self.dirty_bounds_renderers);
         let mut by_space: HashMap<RenderSpaceId, DirtyRendererSet> = HashMap::new();
         for dirty in dirty_bounds.into_keys() {
@@ -861,6 +862,7 @@ impl RenderWorld {
             }
         }
         if !refit_spaces.is_empty() {
+            self.record_bounds_patch_refit_spaces(refit_spaces.iter().copied());
             outcome.spatial_refit_count = self
                 .prepared
                 .refit_cached_spatial_and_lods_for_spaces(scene, refit_spaces.iter().copied());
@@ -877,7 +879,7 @@ impl RenderWorld {
     ) {
         for &index in &dirty_set.static_indices {
             if let Some(record) = cached.static_renderers.get(index) {
-                self.prepared.update_cached_renderer_cull_geometry(
+                self.apply_and_log_cull_geometry(
                     space_id,
                     false,
                     index,
@@ -888,7 +890,7 @@ impl RenderWorld {
         }
         for &index in &dirty_set.skinned_indices {
             if let Some(record) = cached.skinned_renderers.get(index) {
-                self.prepared.update_cached_renderer_cull_geometry(
+                self.apply_and_log_cull_geometry(
                     space_id,
                     true,
                     index,

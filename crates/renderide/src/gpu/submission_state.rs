@@ -32,10 +32,10 @@ pub(super) struct GpuProfilerPool<T> {
     /// Handles waiting for the driver thread to submit command buffers before frame close.
     pending_submit_end: VecDeque<PendingGpuProfilerEnd<T>>,
     /// Maximum number of live handles this pool may retain.
-    #[cfg(any(test, feature = "tracy"))]
+    #[cfg(any(test, feature = "tracy-gpu"))]
     capacity: usize,
     /// Whether profiling was available at startup and replacement handles should be attempted.
-    #[cfg(any(test, feature = "tracy"))]
+    #[cfg(any(test, feature = "tracy-gpu"))]
     enabled: bool,
     /// Next profiler-frame order assigned to a non-empty frame.
     next_frame_order: u64,
@@ -46,18 +46,18 @@ pub(super) struct GpuProfilerPool<T> {
 impl<T> GpuProfilerPool<T> {
     /// Creates a profiler pool with an optional initial active handle.
     pub(super) fn new(initial: Option<T>, capacity: usize) -> Self {
-        #[cfg(any(test, feature = "tracy"))]
+        #[cfg(any(test, feature = "tracy-gpu"))]
         let enabled = initial.is_some();
-        #[cfg(not(any(test, feature = "tracy")))]
+        #[cfg(not(any(test, feature = "tracy-gpu")))]
         let _ = capacity;
         Self {
             active: initial,
             checked_out_active: false,
             ready: Vec::new(),
             pending_submit_end: VecDeque::new(),
-            #[cfg(any(test, feature = "tracy"))]
+            #[cfg(any(test, feature = "tracy-gpu"))]
             capacity,
-            #[cfg(any(test, feature = "tracy"))]
+            #[cfg(any(test, feature = "tracy-gpu"))]
             enabled,
             next_frame_order: 1,
             latest_published_frame_order: 0,
@@ -65,7 +65,7 @@ impl<T> GpuProfilerPool<T> {
     }
 
     /// Returns whether replacement handles may be created for this pool.
-    #[cfg(feature = "tracy")]
+    #[cfg(feature = "tracy-gpu")]
     #[inline]
     pub(super) const fn enabled(&self) -> bool {
         self.enabled
@@ -84,7 +84,7 @@ impl<T> GpuProfilerPool<T> {
     }
 
     /// Returns mutable access to handles that are ready for reuse.
-    #[cfg(feature = "tracy")]
+    #[cfg(feature = "tracy-gpu")]
     #[inline]
     pub(super) fn ready_mut(&mut self) -> &mut [T] {
         self.ready.as_mut_slice()
@@ -151,7 +151,7 @@ impl<T> GpuProfilerPool<T> {
     }
 
     /// Activates a ready handle when the active slot is empty.
-    #[cfg(any(test, feature = "tracy"))]
+    #[cfg(any(test, feature = "tracy-gpu"))]
     pub(super) fn activate_ready(&mut self) -> bool {
         if self.active.is_some() || self.checked_out_active {
             return false;
@@ -164,7 +164,7 @@ impl<T> GpuProfilerPool<T> {
     }
 
     /// Returns whether a new replacement handle may be allocated.
-    #[cfg(any(test, feature = "tracy"))]
+    #[cfg(any(test, feature = "tracy-gpu"))]
     #[inline]
     pub(super) fn can_allocate_replacement(&self) -> bool {
         self.enabled
@@ -174,7 +174,7 @@ impl<T> GpuProfilerPool<T> {
     }
 
     /// Inserts a newly allocated replacement handle into the active slot.
-    #[cfg(any(test, feature = "tracy"))]
+    #[cfg(any(test, feature = "tracy-gpu"))]
     #[inline]
     pub(super) fn insert_allocated_active(&mut self, profiler: T) -> bool {
         if !self.can_allocate_replacement() {
@@ -205,14 +205,14 @@ impl<T> GpuProfilerPool<T> {
     }
 
     /// Records the newest profiler-frame order published to diagnostics.
-    #[cfg(any(test, feature = "tracy"))]
+    #[cfg(any(test, feature = "tracy-gpu"))]
     #[inline]
     pub(super) fn mark_published_frame_order(&mut self, frame_order: u64) {
         self.latest_published_frame_order = self.latest_published_frame_order.max(frame_order);
     }
 
     /// Returns the number of live handles owned or temporarily checked out by the pool.
-    #[cfg(any(test, feature = "tracy"))]
+    #[cfg(any(test, feature = "tracy-gpu"))]
     #[inline]
     pub(super) fn live_handle_count(&self) -> usize {
         self.active.is_some() as usize

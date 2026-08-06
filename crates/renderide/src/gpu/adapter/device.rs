@@ -107,7 +107,7 @@ pub(crate) fn try_gpu_profiler(
     unavailable_message: &str,
 ) -> Option<crate::profiling::GpuProfilerHandle> {
     let gpu_profiler = crate::profiling::GpuProfilerHandle::try_new(adapter, device, queue);
-    if cfg!(feature = "tracy") && gpu_profiler.is_none() {
+    if cfg!(feature = "tracy-gpu") && gpu_profiler.is_none() {
         logger::warn!("{unavailable_message}");
     }
     gpu_profiler

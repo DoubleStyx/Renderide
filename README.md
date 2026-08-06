@@ -158,13 +158,23 @@ cargo build --release --features "tracy video-textures"
 
 ### `tracy`
 
-CPU and GPU profiling integration. Activates `profiling::scope!` zones, frame marks, and `wgpu-profiler` GPU timestamp queries that stream into the [Tracy](https://github.com/wolfpld/tracy) profiler GUI on port 8086. The Tracy client links statically, so this feature has no system-library prerequisites.
+CPU profiling integration. Activates `profiling::scope!` zones, frame marks, and plots that stream into the [Tracy](https://github.com/wolfpld/tracy) profiler GUI on port 8086. The Tracy client links statically, so this feature has no system-library prerequisites.
 
 ```bash
 cargo build --release --features tracy
 ```
 
 See [Profiling](#profiling) for adapter requirements and connection details.
+
+### `tracy-gpu`
+
+Adds the GPU timeline on top of `tracy`: `wgpu-profiler` timestamp queries around passes, copies, and readbacks, plus debug-group markers for vendor captures. Implies `tracy`, so it does not need to be listed alongside it.
+
+Kept separate because GPU queries are not free on the CPU: every scope allocates a label string and a query slot on the recording thread, and each frame pays a resolve plus a readback, all of it landing on `CommandEncoder::finish`. A CPU-bound capture taken with this on partly measures the profiler. Use plain `tracy` for CPU work and add this only when the question is which GPU pass is slow.
+
+```bash
+cargo build --release --features tracy-gpu
+```
 
 ### `video-textures`
 
@@ -191,14 +201,20 @@ The full schema lives next to the loader in [`crates/renderide/src/config`](crat
 ## Profiling
 
 Renderide integrates with [Tracy](https://github.com/wolfpld/tracy) for CPU and GPU profiling.
-CPU spans come from the `profiling` crate; GPU timestamp queries come from `wgpu-profiler`.
-CPU profiling only requires the `tracy` feature. Pass-level GPU profiling requires `TIMESTAMP_QUERY` adapter support; frame-bracket and encoder-level GPU timing also require `TIMESTAMP_QUERY_INSIDE_ENCODERS`.
+CPU spans come from the `profiling` crate and need only the `tracy` feature; GPU timestamp queries come from `wgpu-profiler` and need `tracy-gpu`.
+Pass-level GPU profiling requires `TIMESTAMP_QUERY` adapter support; frame-bracket and encoder-level GPU timing also require `TIMESTAMP_QUERY_INSIDE_ENCODERS`.
 If timestamp queries are unavailable, a warning is logged and Tracy still receives CPU spans.
+
+The debug HUD's GPU frame time and the IPC `render_time` metric use the frame bracket, not `wgpu-profiler`, so they keep working in a CPU-only `tracy` build.
 
 ### Building with profiling enabled
 
 ```bash
+# CPU spans only, the default choice when chasing frame time or jitter
 cargo build --release --features tracy
+
+# adds the GPU timeline, at a measurable CPU cost on the recording thread
+cargo build --release --features tracy-gpu
 ```
 
 ### Connecting Tracy
@@ -206,12 +222,29 @@ cargo build --release --features tracy
 1. Download the Tracy profiler GUI from the [Tracy releases page](https://github.com/wolfpld/tracy/releases)
    and launch it.
 
-1. Start Renderide normally (launcher or renderer directly).
+1. Start Renderide normally (launcher or renderer directly). **On Windows, start it elevated** if
+   you want callstack sampling and context-switch tracing: both come from ETW, which needs
+   administrator rights. Unelevated runs still record every manual zone, they just leave the
+   sampling and thread-state tracks empty.
 
 1. In the Tracy GUI, connect to `localhost` on port **8086**.
 
-Renderide uses Tracy's `ondemand` mode: data is only streamed while the GUI is connected, so
-profiled builds carry near-zero runtime cost when Tracy is not attached.
+Renderide uses Tracy's `ondemand` mode: zone data is only streamed while the GUI is connected, so
+profiled builds carry near-zero runtime cost when Tracy is not attached. The OS-level tracing
+session is the exception, it opens when the process starts. That only affects `tracy` builds,
+which are never shipped.
+
+### Reading a capture
+
+A capture has two layers, and mixing them up wastes time:
+
+- **Named zones** are the manual `profiling::scope!` instrumentation. Dense (about a thousand
+  sites) but only as complete as whoever placed them. A gap in the timeline is uninstrumented
+  code, not idle time.
+- **Sampling and context-switch tracks** are automatic. Use these to find cost in code nobody
+  instrumented (wgpu, the driver, the allocator) and, more importantly, to tell whether a long
+  zone was burning CPU or blocked waiting. A CPU-bound investigation that skips this layer
+  usually ends up optimizing a wait.
 
 ## Cross-platform support
 

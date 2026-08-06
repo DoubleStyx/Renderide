@@ -92,7 +92,7 @@ pub(super) fn draw_transparent_sequence_ranges(
             timestamp_writes,
             multiview_mask: stereo_mask_or_template(prepared.pipeline.use_multiview, None),
         });
-        #[cfg(feature = "tracy")]
+        #[cfg(feature = "tracy-gpu")]
         rpass.push_debug_group("world_mesh_forward::transparent_sequence_draw");
 
         let mut post_idx = 0usize;
@@ -164,7 +164,7 @@ pub(super) fn draw_transparent_sequence_ranges(
             }
         }
 
-        #[cfg(feature = "tracy")]
+        #[cfg(feature = "tracy-gpu")]
         rpass.pop_debug_group();
         recorded
     };
