@@ -826,7 +826,7 @@ fn single_point_trail_build_declares_matching_vertex_count() {
         ..Default::default()
     };
 
-    let build = build_trail_render_buffer_cpu(raw.into(), &upload).unwrap();
+    let build = build_trail_render_buffer_cpu(&raw, &upload).unwrap();
 
     for mesh in &build.meshes {
         assert_eq!(mesh.vertex_count, 8);

@@ -2,7 +2,10 @@ use super::expand::populate_runs_and_material_keys;
 use super::*;
 use crate::camera::HostCameraFrame;
 use crate::gpu_pools::MeshPool;
-use crate::scene::{RenderSpaceId, SceneCoordinator, SkinnedMeshRenderer, StaticMeshRenderer};
+use crate::scene::{
+    MeshMaterialSlot, RenderSpaceId, RenderWorldRendererDirty, RenderWorldRendererKind,
+    SceneCoordinator, SkinnedMeshRenderer, StaticMeshRenderer,
+};
 use crate::shared::{RenderTransform, ShadowCastMode};
 use crate::world_mesh::culling::{MeshCullGeometry, WorldMeshCullInput, WorldMeshCullProjParams};
 use glam::{Mat4, Vec3};
@@ -97,6 +100,43 @@ fn prepared_from_space_draws(
         [(space_id, adjusted.as_slice())],
     );
     prepared
+}
+
+fn patchable_static_renderer(renderable_index: usize) -> StaticMeshRenderer {
+    StaticMeshRenderer {
+        instance_id: MeshRendererInstanceId(renderable_index as u64 + 1),
+        node_id: renderable_index as i32,
+        mesh_asset_id: 10,
+        material_slots: vec![MeshMaterialSlot {
+            material_asset_id: 100 + renderable_index as i32,
+            property_block_id: None,
+        }],
+        ..Default::default()
+    }
+}
+
+fn patchable_static_scene() -> (SceneCoordinator, MeshPool, RenderSpaceId) {
+    let space_id = RenderSpaceId(1);
+    let mut scene = SceneCoordinator::new();
+    scene.test_insert_static_mesh_renderers(
+        space_id,
+        vec![patchable_static_renderer(0), patchable_static_renderer(1)],
+    );
+    scene.test_set_space_active(space_id, true);
+    let mut mesh_pool = MeshPool::default_pool();
+    mesh_pool.insert(crate::assets::mesh::GpuMesh::test_draw_prep_mesh(10));
+    (scene, mesh_pool, space_id)
+}
+
+fn dirty_static_renderer(
+    space_id: RenderSpaceId,
+    renderable_index: usize,
+) -> RenderWorldRendererDirty {
+    RenderWorldRendererDirty {
+        space_id,
+        kind: RenderWorldRendererKind::Static,
+        renderable_index,
+    }
 }
 
 #[test]
@@ -523,4 +563,134 @@ fn estimated_draw_count_includes_skinned_shadow_only_renderers() {
     scene.test_insert_skinned_mesh_renderers(id, vec![visible, shadow_only]);
 
     assert_eq!(estimated_draw_count(&scene, id), 4);
+}
+
+#[test]
+fn mesh_renderer_patch_filters_semantic_noop_after_restoring_renderer_ordinal() {
+    let (scene, mesh_pool, space_id) = patchable_static_scene();
+    let render_context = RenderingContext::UserView;
+    let mut prepared =
+        FramePreparedRenderables::build_for_frame(&scene, &mesh_pool, render_context);
+    let before = prepared.draws.clone();
+    assert_eq!(prepared.draws[1].renderer_ordinal, 1);
+
+    let stats = prepared.patch_mesh_renderers(
+        &scene,
+        &mesh_pool,
+        render_context,
+        &HashSet::from([dirty_static_renderer(space_id, 1)]),
+    );
+
+    assert_eq!(stats.candidate_count, 1);
+    assert_eq!(stats.range_count, 0);
+    assert_eq!(stats.draw_count, 0);
+    assert_eq!(stats.noop_count, 1);
+    assert!(!stats.changed);
+    assert!(!stats.structural_rebuild);
+    assert_eq!(prepared.draws, before);
+}
+
+#[test]
+fn mesh_renderer_patch_updates_stable_range_without_moving_runs_or_lookups() {
+    let (mut scene, mesh_pool, space_id) = patchable_static_scene();
+    let render_context = RenderingContext::UserView;
+    let mut prepared =
+        FramePreparedRenderables::build_for_frame(&scene, &mesh_pool, render_context);
+    let runs_before = prepared.runs.clone();
+    let ranges_before = prepared.cached_space_draw_ranges.clone();
+    let lookup_before = prepared.renderer_run_lookup.clone();
+    let signature_before = prepared.material_property_key_signature;
+    let mut renderers = vec![patchable_static_renderer(0), patchable_static_renderer(1)];
+    renderers[1].sorting_order = 17;
+    scene.test_set_static_mesh_renderers(space_id, renderers);
+
+    let stats = prepared.patch_mesh_renderers(
+        &scene,
+        &mesh_pool,
+        render_context,
+        &HashSet::from([dirty_static_renderer(space_id, 1)]),
+    );
+
+    assert_eq!(stats.candidate_count, 1);
+    assert_eq!(stats.range_count, 1);
+    assert_eq!(stats.draw_count, 1);
+    assert_eq!(stats.noop_count, 0);
+    assert!(stats.changed);
+    assert!(!stats.structural_rebuild);
+    assert_eq!(stats.spatial_refit_count, 1);
+    assert_eq!(prepared.draws[1].sorting_order, 17);
+    assert_eq!(prepared.draws[1].renderer_ordinal, 1);
+    assert_eq!(prepared.runs, runs_before);
+    assert_eq!(prepared.cached_space_draw_ranges, ranges_before);
+    assert_eq!(prepared.renderer_run_lookup, lookup_before);
+    assert_eq!(prepared.material_property_key_signature, signature_before);
+}
+
+#[test]
+fn mesh_renderer_patch_structural_fallback_rebuilds_ranges_and_remains_patchable() {
+    let (mut scene, mesh_pool, space_id) = patchable_static_scene();
+    let render_context = RenderingContext::UserView;
+    let mut prepared =
+        FramePreparedRenderables::build_for_frame(&scene, &mesh_pool, render_context);
+    let mut renderers = vec![patchable_static_renderer(0), patchable_static_renderer(1)];
+    renderers[1].material_slots.push(MeshMaterialSlot {
+        material_asset_id: 202,
+        property_block_id: Some(302),
+    });
+    scene.test_set_static_mesh_renderers(space_id, renderers);
+    let dirty = dirty_static_renderer(space_id, 1);
+
+    let stats =
+        prepared.patch_mesh_renderers(&scene, &mesh_pool, render_context, &HashSet::from([dirty]));
+
+    assert_eq!(stats.candidate_count, 1);
+    assert_eq!(stats.range_count, 1);
+    assert_eq!(stats.draw_count, 2);
+    assert_eq!(stats.noop_count, 0);
+    assert!(stats.changed);
+    assert!(stats.structural_rebuild);
+    assert_eq!(prepared.draws.len(), 3);
+    assert_eq!(
+        prepared
+            .draws
+            .iter()
+            .map(|draw| (draw.renderable_index, draw.slot_index))
+            .collect::<Vec<_>>(),
+        vec![(0, 0), (1, 0), (1, 1)]
+    );
+    assert_eq!(prepared.runs.len(), 2);
+    assert_eq!(prepared.runs[1], FramePreparedRun { start: 1, end: 3 });
+
+    let second =
+        prepared.patch_mesh_renderers(&scene, &mesh_pool, render_context, &HashSet::from([dirty]));
+    assert_eq!(second.noop_count, 1);
+    assert!(!second.changed);
+}
+
+#[test]
+fn scene_aware_spatial_refit_rebuilds_stale_lod_metadata() {
+    let space_id = RenderSpaceId(1);
+    let mut prepared = prepared_from_space_draws(
+        space_id,
+        &[prepared_draw_with_bounds(
+            0,
+            Vec3::splat(-1.0),
+            Vec3::splat(1.0),
+        )],
+    );
+    prepared.lod_groups.push(FramePreparedLodGroup {
+        space_id,
+        scene_group_index: 0,
+        any_overlay: false,
+        world_aabb: Some((Vec3::splat(-99.0), Vec3::splat(99.0))),
+        lods: Vec::new(),
+    });
+
+    let refit_count = prepared.refit_cached_spatial_and_lods_for_spaces(&empty_scene(), [space_id]);
+
+    assert_eq!(refit_count, 1);
+    assert!(
+        prepared.lod_groups.is_empty(),
+        "scene-aware maintenance must rebuild rather than preserve stale cached LOD metadata"
+    );
 }

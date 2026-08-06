@@ -5,7 +5,10 @@ use super::snapshot::{SnapshotRebuildSource, SnapshotRendererTable, build_snapsh
 use super::state::{RenderWorldRendererRef, RenderWorldRendererTemplate};
 use super::*;
 use crate::cpu_parallelism::{FrameParallelPolicy, ParallelAdmission};
-use crate::scene::{SceneCacheFlushReport, SceneCoordinator, StaticMeshRenderer};
+use crate::scene::{
+    BillboardRenderBufferEntry, MeshMaterialSlot, MeshRenderBufferEntry, MeshRendererInstanceId,
+    SceneCacheFlushReport, SceneCoordinator, SkinnedMeshRenderer, StaticMeshRenderer,
+};
 use crate::shared::{RenderTransform, ShadowCastMode};
 use crate::world_mesh::culling::MeshCullGeometry;
 use crate::world_mesh::draw_prep::prepared_renderables::FramePreparedDraw;
@@ -115,6 +118,24 @@ fn apply_report_marks_changed_spaces_dirty_without_fine_report() {
 }
 
 #[test]
+fn classified_noop_report_does_not_fall_back_to_full_space_dirty() {
+    let space_id = RenderSpaceId(1);
+    let mut world = RenderWorld::default();
+    world.note_scene_apply_report(&SceneApplyReport {
+        frame_index: 7,
+        submitted_spaces: vec![space_id],
+        changed_spaces: vec![space_id],
+        render_world_classified_spaces: vec![space_id],
+        removed_spaces: Vec::new(),
+        render_world_dirty: Default::default(),
+        ..Default::default()
+    });
+
+    assert!(!world.dirty_spaces.contains(&space_id));
+    assert!(world.dirty_renderers.is_empty());
+}
+
+#[test]
 fn apply_report_uses_fine_renderer_dirty_instead_of_changed_space() {
     let mut world = RenderWorld::default();
     let mut report = SceneApplyReport {
@@ -137,6 +158,38 @@ fn apply_report_uses_fine_renderer_dirty_instead_of_changed_space() {
             .dirty_renderers
             .contains_key(&dirty_static(RenderSpaceId(1), 3))
     );
+}
+
+#[test]
+fn deformation_candidate_uses_non_topology_dirty_reason() {
+    let space_id = RenderSpaceId(2);
+    let dirty = RenderWorldRendererDirty {
+        space_id,
+        kind: RenderWorldRendererKind::Skinned,
+        renderable_index: 3,
+    };
+    let mut report = SceneApplyReport {
+        frame_index: 7,
+        submitted_spaces: vec![space_id],
+        changed_spaces: vec![space_id],
+        render_world_classified_spaces: vec![space_id],
+        ..Default::default()
+    };
+    report.render_world_dirty.deform_renderers.push(dirty);
+    let mut world = RenderWorld::default();
+
+    world.note_scene_apply_report(&report);
+
+    assert_eq!(
+        world.dirty_renderers.get(&dirty),
+        Some(&RenderWorldDirtyReason::Deformation)
+    );
+    let counts = RenderWorldDirtyReasonCounts::from_dirty_sets(
+        &world.dirty_renderers,
+        &world.dirty_bounds_renderers,
+    );
+    assert_eq!(counts.deformation, 1);
+    assert_eq!(counts.topology, 0);
 }
 
 #[test]
@@ -462,6 +515,118 @@ fn changed_mesh_draw_prep_metadata_marks_asset_dirty() {
 }
 
 #[test]
+fn renderer_state_change_patches_prepared_range_without_snapshot_rebuild() {
+    let space_id = RenderSpaceId(59);
+    let mesh_asset_id = 159;
+    let instance_id = MeshRendererInstanceId(1);
+    let render_context = RenderingContext::UserView;
+    let renderer = StaticMeshRenderer {
+        instance_id,
+        node_id: 0,
+        mesh_asset_id,
+        material_slots: vec![MeshMaterialSlot {
+            material_asset_id: 7,
+            property_block_id: None,
+        }],
+        ..Default::default()
+    };
+    let mut scene = SceneCoordinator::new();
+    scene.test_insert_static_mesh_renderers(space_id, vec![renderer.clone()]);
+    scene.test_set_space_active(space_id, true);
+    let mut mesh_pool = MeshPool::default_pool();
+    mesh_pool.insert(crate::assets::mesh::GpuMesh::test_draw_prep_mesh(
+        mesh_asset_id,
+    ));
+    let point_render_buffers = HashMap::new();
+    let mut world = RenderWorld::new(render_context);
+    world.prepare_for_frame(&scene, &mesh_pool, &point_render_buffers, render_context);
+    assert_eq!(world.prepared.draws().len(), 1);
+    let old_prepared_generation = world.prepared_generation();
+    let old_static_generation = world.static_generation();
+
+    scene.test_set_static_mesh_renderers(
+        space_id,
+        vec![StaticMeshRenderer {
+            sorting_order: 23,
+            ..renderer
+        }],
+    );
+    let dirty = dirty_static(space_id, 0);
+    let mut report = SceneApplyReport {
+        changed_spaces: vec![space_id],
+        render_world_classified_spaces: vec![space_id],
+        ..Default::default()
+    };
+    report.render_world_dirty.renderers.push(dirty);
+    world.note_scene_apply_report(&report);
+    world.prepare_for_frame(&scene, &mesh_pool, &point_render_buffers, render_context);
+
+    let stats = world.maintenance_stats();
+    assert_eq!(stats.mesh_renderer_patch_count, 1);
+    assert_eq!(stats.snapshot_rebuild_task_count, 0);
+    assert_eq!(stats.mesh_patch_structural_rebuild_count, 0);
+    assert_eq!(world.prepared.draws()[0].sorting_order, 23);
+    assert_ne!(world.prepared_generation(), old_prepared_generation);
+    assert_ne!(world.static_generation(), old_static_generation);
+}
+
+#[test]
+fn unchanged_deformation_candidate_preserves_generations_and_overlay_key() {
+    let space_id = RenderSpaceId(60);
+    let mesh_asset_id = 160;
+    let render_context = RenderingContext::UserView;
+    let renderer = SkinnedMeshRenderer {
+        base: StaticMeshRenderer {
+            instance_id: MeshRendererInstanceId(2),
+            node_id: 0,
+            mesh_asset_id,
+            material_slots: vec![MeshMaterialSlot {
+                material_asset_id: 8,
+                property_block_id: None,
+            }],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut scene = SceneCoordinator::new();
+    scene.test_insert_skinned_mesh_renderers(space_id, vec![renderer]);
+    scene.test_set_space_active(space_id, true);
+    let mut mesh_pool = MeshPool::default_pool();
+    mesh_pool.insert(crate::assets::mesh::GpuMesh::test_draw_prep_mesh(
+        mesh_asset_id,
+    ));
+    let point_render_buffers = HashMap::new();
+    let mut world = RenderWorld::new(render_context);
+    world.prepare_for_frame(&scene, &mesh_pool, &point_render_buffers, render_context);
+    assert_eq!(world.prepared.draws().len(), 1);
+    let old_prepared_generation = world.prepared_generation();
+    let old_static_generation = world.static_generation();
+    let dirty = RenderWorldRendererDirty {
+        space_id,
+        kind: RenderWorldRendererKind::Skinned,
+        renderable_index: 0,
+    };
+    let mut report = SceneApplyReport {
+        changed_spaces: vec![space_id],
+        render_world_classified_spaces: vec![space_id],
+        ..Default::default()
+    };
+    report.render_world_dirty.deform_renderers.push(dirty);
+    world.note_scene_apply_report(&report);
+
+    world.prepare_for_frame(&scene, &mesh_pool, &point_render_buffers, render_context);
+
+    let stats = world.maintenance_stats();
+    assert_eq!(stats.deformation_dirty_renderer_count, 1);
+    assert_eq!(stats.mesh_renderer_patch_count, 0);
+    assert_eq!(stats.mesh_renderer_patch_noop_count, 1);
+    assert_eq!(stats.snapshot_rebuild_task_count, 0);
+    assert_eq!(stats.steady_state_skip_count, 1);
+    assert_eq!(world.prepared_generation(), old_prepared_generation);
+    assert_eq!(world.static_generation(), old_static_generation);
+}
+
+#[test]
 fn mesh_removal_and_reappearance_each_invalidate_draw_prep_state() {
     let asset_id = 58;
     let mut mesh_pool = MeshPool::default_pool();
@@ -542,7 +707,219 @@ fn generated_particle_mesh_delta_marks_only_snapshot_dirty() {
 }
 
 #[test]
-fn particle_snapshot_dirty_rebuilds_snapshot_without_static_refresh() {
+fn generated_point_mesh_delta_classifies_mesh_particle_renderer_using_same_buffer() {
+    let space_id = RenderSpaceId(66);
+    let point_buffer_asset_id = 45;
+    let generated_mesh_id =
+        crate::particles::billboard_render_buffer_mesh_asset_id(point_buffer_asset_id)
+            .expect("generated point-buffer mesh id");
+    let mut scene = SceneCoordinator::new();
+    scene.test_seed_space_identity_worlds(space_id, vec![identity_transform()], vec![-1]);
+    scene.test_push_mesh_render_buffers(
+        space_id,
+        [MeshRenderBufferEntry {
+            node_id: 0,
+            point_render_buffer_asset_id: point_buffer_asset_id,
+            material_asset_id: 7,
+            mesh_asset_id: 8,
+            ..Default::default()
+        }],
+    );
+    let mut world = RenderWorld {
+        full_rebuild_requested: false,
+        particle_snapshot_dirty: true,
+        dirty_generated_particle_mesh_assets: HashSet::from([generated_mesh_id]),
+        ..Default::default()
+    };
+
+    world.classify_generated_particle_mesh_dirties(&scene);
+
+    assert!(world.dirty_generated_particle_mesh_assets.is_empty());
+    assert_eq!(
+        world.dirty_particle_renderers,
+        HashSet::from([RenderWorldParticleRendererDirty {
+            space_id,
+            kind: RenderWorldParticleRendererKind::Mesh,
+            renderable_index: 0,
+        }])
+    );
+    assert!(world.dirty_particle_spaces.is_empty());
+}
+
+#[test]
+fn source_mesh_delta_classifies_mesh_particle_renderer_without_static_reference() {
+    let space_id = RenderSpaceId(67);
+    let source_mesh_asset_id = 812;
+    let mut scene = SceneCoordinator::new();
+    scene.test_seed_space_identity_worlds(space_id, vec![identity_transform()], vec![-1]);
+    scene.test_push_mesh_render_buffers(
+        space_id,
+        [MeshRenderBufferEntry {
+            node_id: 0,
+            point_render_buffer_asset_id: 45,
+            material_asset_id: 7,
+            mesh_asset_id: source_mesh_asset_id,
+            ..Default::default()
+        }],
+    );
+    let mut world = RenderWorld {
+        full_rebuild_requested: false,
+        dirty_particle_source_mesh_assets: HashSet::from([source_mesh_asset_id]),
+        ..Default::default()
+    };
+
+    world.classify_generated_particle_mesh_dirties(&scene);
+
+    assert!(world.particle_snapshot_dirty);
+    assert!(world.dirty_particle_source_mesh_assets.is_empty());
+    assert_eq!(
+        world.dirty_particle_renderers,
+        HashSet::from([RenderWorldParticleRendererDirty {
+            space_id,
+            kind: RenderWorldParticleRendererKind::Mesh,
+            renderable_index: 0,
+        }])
+    );
+}
+
+#[test]
+fn generated_particle_mesh_delta_patches_only_matching_prepared_renderer_run() {
+    let space_id = RenderSpaceId(65);
+    let point_buffer_asset_id = 44;
+    let generated_mesh_id =
+        crate::particles::billboard_render_buffer_mesh_asset_id(point_buffer_asset_id)
+            .expect("generated billboard id");
+    let mut scene = SceneCoordinator::new();
+    scene.test_seed_space_identity_worlds(space_id, vec![identity_transform()], vec![-1]);
+    scene.test_push_billboard_render_buffers(
+        space_id,
+        [BillboardRenderBufferEntry {
+            node_id: 0,
+            point_render_buffer_asset_id: point_buffer_asset_id,
+            material_asset_id: 17,
+            ..Default::default()
+        }],
+    );
+    let mut mesh_pool = MeshPool::default_pool();
+    mesh_pool.insert(crate::assets::mesh::GpuMesh::test_draw_prep_mesh(
+        generated_mesh_id,
+    ));
+    let point_render_buffers = HashMap::new();
+    let render_context = RenderingContext::UserView;
+    let mut world = RenderWorld::new(render_context);
+
+    world.prepare_for_frame(&scene, &mesh_pool, &point_render_buffers, render_context);
+    let static_generation = world.static_generation();
+    let prepared_generation = world.prepared_generation();
+    assert_eq!(world.prepared.draws().len(), 1);
+
+    let mut changed_mesh = crate::assets::mesh::GpuMesh::test_draw_prep_mesh(generated_mesh_id);
+    changed_mesh.submeshes[0] = (7, 12);
+    mesh_pool.insert(changed_mesh);
+    world.prepare_for_frame(&scene, &mesh_pool, &point_render_buffers, render_context);
+
+    let stats = world.maintenance_stats();
+    assert_eq!(stats.particle_renderer_patch_count, 1);
+    assert_eq!(stats.particle_patch_draw_count, 1);
+    assert_eq!(stats.particle_snapshot_rebuild_count, 0);
+    assert_eq!(stats.snapshot_rebuild_task_count, 0);
+    assert_eq!(stats.snapshot_retained_draw_count, 0);
+    assert_eq!(world.static_generation(), static_generation);
+    assert_ne!(world.prepared_generation(), prepared_generation);
+    assert_eq!(world.prepared.draws()[0].first_index, 7);
+    assert_eq!(world.prepared.draws()[0].index_count, 12);
+}
+
+#[test]
+fn particle_membership_refreshes_cached_context_overlay_targets() {
+    let space_id = RenderSpaceId(66);
+    let point_buffer_asset_id = 45;
+    let generated_mesh_id =
+        crate::particles::billboard_render_buffer_mesh_asset_id(point_buffer_asset_id)
+            .expect("generated billboard id");
+    let render_context = RenderingContext::Camera;
+    let mut scene = SceneCoordinator::new();
+    scene.test_seed_space_identity_worlds(
+        space_id,
+        vec![identity_transform(), identity_transform()],
+        vec![-1, 0],
+    );
+    scene.test_push_scale_render_transform_override(space_id, 0, render_context, Vec3::splat(2.0));
+    let mut mesh_pool = MeshPool::default_pool();
+    let mut generated_mesh = crate::assets::mesh::GpuMesh::test_draw_prep_mesh(generated_mesh_id);
+    generated_mesh.bounds.extents = Vec3::ONE;
+    mesh_pool.insert(generated_mesh);
+    let point_render_buffers = HashMap::new();
+    let mut base = RenderWorld::new_context_invariant(render_context);
+    let mut overlay = RenderWorld::new_context_overlay(render_context);
+
+    base.prepare_for_frame(
+        &scene.context_invariant_read(),
+        &mesh_pool,
+        &point_render_buffers,
+        render_context,
+    );
+    overlay.prepare_context_overlay_from(
+        &base,
+        &scene,
+        &mesh_pool,
+        &point_render_buffers,
+        render_context,
+    );
+    assert!(overlay.overlay_particle_override_targets.is_empty());
+    let static_generation = base.static_generation();
+
+    scene.test_push_billboard_render_buffers(
+        space_id,
+        [BillboardRenderBufferEntry {
+            node_id: 1,
+            point_render_buffer_asset_id: point_buffer_asset_id,
+            material_asset_id: 17,
+            ..Default::default()
+        }],
+    );
+    let mut report = SceneApplyReport::default();
+    report.render_world_dirty.particle_spaces.push(space_id);
+    base.note_scene_apply_report(&report);
+    overlay.note_scene_apply_report(&report);
+
+    base.prepare_for_frame(
+        &scene.context_invariant_read(),
+        &mesh_pool,
+        &point_render_buffers,
+        render_context,
+    );
+    overlay.prepare_context_overlay_from(
+        &base,
+        &scene,
+        &mesh_pool,
+        &point_render_buffers,
+        render_context,
+    );
+
+    let dirty = RenderWorldParticleRendererDirty {
+        space_id,
+        kind: RenderWorldParticleRendererKind::Billboard,
+        renderable_index: 0,
+    };
+    assert_eq!(base.static_generation(), static_generation);
+    assert!(overlay.overlay_particle_override_targets.contains(&dirty));
+    assert!(!overlay.overlay_particle_targets_dirty);
+    let base_matrix = base.prepared.draws()[0]
+        .cull_geometry
+        .and_then(|geometry| geometry.rigid_world_matrix)
+        .expect("base billboard rigid matrix");
+    let overlay_matrix = overlay.prepared.draws()[0]
+        .cull_geometry
+        .and_then(|geometry| geometry.rigid_world_matrix)
+        .expect("context billboard rigid matrix");
+    assert_eq!(base_matrix, Mat4::IDENTITY);
+    assert_eq!(overlay_matrix, Mat4::from_scale(Vec3::splat(2.0)));
+    assert_eq!(overlay.maintenance_stats().context_override_patch_count, 1);
+}
+
+#[test]
+fn empty_particle_invalidation_skips_snapshot_without_static_refresh() {
     let scene = SceneCoordinator::new();
     let mesh_pool = MeshPool::default_pool();
     let point_render_buffers = HashMap::new();
@@ -556,9 +933,11 @@ fn particle_snapshot_dirty_rebuilds_snapshot_without_static_refresh() {
     world.prepare_for_frame(&scene, &mesh_pool, &point_render_buffers, render_context);
 
     let stats = world.maintenance_stats();
-    assert_eq!(stats.particle_snapshot_rebuild_count, 1);
+    assert_eq!(stats.particle_snapshot_rebuild_count, 0);
+    assert_eq!(stats.snapshot_rebuild_task_count, 0);
     assert_eq!(stats.full_world_rebuild_count, 0);
     assert_eq!(stats.full_space_rebuild_count, 0);
+    assert_eq!(stats.steady_state_skip_count, 1);
     assert!(!world.particle_snapshot_dirty);
 }
 

@@ -1,5 +1,4 @@
 use std::ops::Range;
-use std::sync::Arc;
 
 use glam::{Vec2, Vec3, Vec4};
 use rayon::prelude::*;
@@ -42,7 +41,7 @@ pub(crate) struct TrailRenderBufferBuild {
 
 /// Builds trail render-buffer metadata and generated mesh bytes without touching the GPU.
 pub(crate) fn build_trail_render_buffer_cpu(
-    raw: Arc<Vec<u8>>,
+    raw: &[u8],
     upload: &TrailRenderBufferUpload,
 ) -> Result<TrailRenderBufferBuild, ParticleRenderBufferError> {
     profiling::scope!("particle::build_trail_render_buffer");
@@ -54,7 +53,7 @@ pub(crate) fn build_trail_render_buffer_cpu(
         "trail_point_count",
         upload.trail_point_count,
     )?;
-    let trails = decode_trails(raw.as_ref(), upload, trails_count, trail_point_count)?;
+    let trails = decode_trails(raw, upload, trails_count, trail_point_count)?;
     let meshes = build_trail_mesh_inputs(asset_id, &trails)?;
     Ok(TrailRenderBufferBuild {
         asset: TrailRenderBufferAsset {
@@ -199,6 +198,7 @@ pub(super) fn trail_decode_parallel_is_worthwhile(total_points: usize, chunk_cou
     total_points >= TRAIL_DECODE_PARALLEL_MIN_POINTS
         && chunk_count >= 2
         && rayon::current_num_threads() > 1
+        && !crate::assets::worker::is_asset_worker_thread()
 }
 
 /// Decodes one contiguous trail-index range into ordered polylines.
@@ -322,6 +322,7 @@ fn build_trail_mesh_inputs(
 fn trail_mesh_parallel_is_worthwhile(trails: &[TrailPolyline]) -> bool {
     trails.iter().map(|trail| trail.points.len()).sum::<usize>() >= TRAIL_PARALLEL_POINT_MIN
         && rayon::current_num_threads() > 1
+        && !crate::assets::worker::is_asset_worker_thread()
 }
 
 fn build_trail_mesh_input(
@@ -424,6 +425,7 @@ fn trail_mesh_inner_parallel_is_worthwhile(total_points: usize, chunk_count: usi
     total_points >= TRAIL_MESH_PARALLEL_MIN_POINTS
         && chunk_count >= 2
         && rayon::current_num_threads() > 1
+        && !crate::assets::worker::is_asset_worker_thread()
 }
 
 /// Builds one contiguous trail-index range into local vertex and index buffers.

@@ -128,6 +128,11 @@ fn independent_per_view_units_share_parallel_recording_batch() -> Result<(), Gra
         g.schedule.recording_plan.batches[0].kind,
         RecordingBatchKind::Parallel
     );
+    assert_eq!(g.schedule.recording_plan.per_view_execution_runs().len(), 1);
+    assert_eq!(
+        g.schedule.recording_plan.per_view_execution_runs()[0].kind,
+        RecordingBatchKind::Parallel
+    );
     Ok(())
 }
 
@@ -153,6 +158,11 @@ fn blackboard_writers_remain_serial_recording_units() -> Result<(), GraphBuildEr
         g.schedule.recording_plan.batches[1].kind,
         RecordingBatchKind::Serial
     );
+    let runs = g.schedule.recording_plan.per_view_execution_runs();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].start_unit, 0);
+    assert_eq!(runs[0].end_unit, 2);
+    assert_eq!(runs[0].kind, RecordingBatchKind::Serial);
     Ok(())
 }
 

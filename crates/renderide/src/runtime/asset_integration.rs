@@ -110,7 +110,7 @@ impl RendererRuntime {
             .settings
             .read()
             .map(|s| s.rendering.asset_integration_budget_ms)
-            .unwrap_or(2);
+            .unwrap_or(crate::config::DEFAULT_ASSET_INTEGRATION_BUDGET_MS);
         self.frontend
             .effective_asset_integration_budget_ms(coupled_default_ms)
     }

@@ -43,6 +43,14 @@ impl Blackboard {
         Self::default()
     }
 
+    /// Creates an empty blackboard with room for at least `capacity` typed slots.
+    pub(crate) fn with_capacity(capacity: usize) -> Self {
+        Self {
+            slots: HashMap::with_capacity(capacity),
+            access_validation: Mutex::new(None),
+        }
+    }
+
     /// Inserts `value` under slot `S`, replacing any previous value.
     pub fn insert<S: BlackboardSlot>(&mut self, value: S::Value) {
         self.record_access::<S>(BlackboardRuntimeAccessKind::Write);
@@ -58,7 +66,14 @@ impl Blackboard {
     ///
     /// Slots from `other` replace existing values with the same slot key.
     pub fn extend(&mut self, other: Self) {
+        self.slots.reserve(other.slots.len());
         self.slots.extend(other.slots);
+    }
+
+    /// Drops all frame-local values while retaining the lookup table allocation for reuse.
+    pub(crate) fn clear_for_reuse(&mut self) {
+        self.slots.clear();
+        self.access_validation.lock().take();
     }
 
     /// Creates a shallow read-only snapshot of the current slots.
@@ -198,13 +213,19 @@ impl Blackboard {
     /// Removes all stored values.
     #[cfg(test)]
     pub fn clear(&mut self) {
-        self.slots.clear();
+        self.clear_for_reuse();
     }
 
     /// Whether the blackboard has no stored slots.
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.slots.is_empty()
+    }
+
+    /// Allocated slot capacity exposed only for reuse regression tests.
+    #[cfg(test)]
+    fn slot_capacity(&self) -> usize {
+        self.slots.capacity()
     }
 }
 
@@ -535,6 +556,19 @@ mod tests {
         bb.insert::<BarSlot>("x".into());
         bb.clear();
         assert!(bb.is_empty());
+    }
+
+    #[test]
+    fn clear_for_reuse_retains_slot_table_capacity() {
+        let mut bb = Blackboard::with_capacity(12);
+        bb.insert::<FooSlot>(1);
+        bb.insert::<BarSlot>("x".into());
+        let capacity = bb.slot_capacity();
+
+        bb.clear_for_reuse();
+
+        assert!(bb.is_empty());
+        assert!(bb.slot_capacity() >= capacity);
     }
 
     #[test]

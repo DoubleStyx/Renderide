@@ -34,10 +34,10 @@ struct Texture2dAllocationDesc {
 
 /// GPU Texture2D: no CPU mip storage; mips live only in [`wgpu::Texture`].
 ///
-/// **`mip_levels_resident`** tracks how many mips currently hold uploaded or synthesized texels. A future
-/// streaming pass may reduce resident mips under [`crate::gpu_pools::StreamingPolicy`] (evict fine
-/// mips, re-upload from SHM or transcode). Prefer **recreating** the `wgpu::Texture` with a lower
-/// `mip_level_count` over sparse partial images until wgpu exposes true sparse textures.
+/// **`mip_levels_resident`** tracks the size of the contiguous mip range currently exposed through
+/// [`Self::view`]. During tail-first streaming that view initially starts at a coarse mip and grows
+/// toward mip 0 as finer levels arrive. A future streaming pass may reduce resident mips under
+/// [`crate::gpu_pools::StreamingPolicy`] (evict fine mips, re-upload from SHM or transcode).
 #[derive(Debug)]
 pub struct GpuTexture2d {
     /// Host Texture2D asset id.
@@ -60,13 +60,15 @@ pub struct GpuTexture2d {
     pub height: u32,
     /// Mip chain length allocated on GPU.
     pub mip_levels_total: u32,
-    /// Contiguous mips with uploaded or synthesized texels available for sampling.
+    /// Number of contiguous uploaded or synthesized mips exposed by [`Self::view`].
     pub mip_levels_resident: u32,
     /// Monotonic generation bumped whenever this texture's GPU texel contents are uploaded.
     pub content_generation: u64,
     /// Whether native compressed bytes were left in host V orientation and need sampling compensation.
     pub storage_v_inverted: bool,
-    /// Uploaded mip-level bitset; [`Self::mip_levels_resident`] is the contiguous prefix from mip 0.
+    /// First texture mip represented as LOD 0 by [`Self::view`].
+    resident_mip_base: u32,
+    /// Uploaded mip-level bitset used to select a fully initialized contiguous view.
     resident_mip_mask: u64,
     /// Estimated VRAM for allocated mips.
     pub resident_bytes: u64,
@@ -139,6 +141,7 @@ impl GpuTexture2d {
             height: desc.height,
             mip_levels_total: desc.mip_levels_total,
             mip_levels_resident: 0,
+            resident_mip_base: 0,
             content_generation: 0,
             storage_v_inverted: false,
             resident_mip_mask: 0,
@@ -189,30 +192,58 @@ impl GpuTexture2d {
             && self.wgpu_format == desc.wgpu_format
     }
 
-    /// Marks uploaded mip levels and clamps the binding view to the contiguous resident prefix.
+    /// Marks uploaded mip levels and clamps the binding view to a contiguous initialized range.
     ///
-    /// Mips past the prefix are allocated but hold no texels yet. Materials bind a texture as soon
-    /// as mip 0 lands, so a view spanning the whole chain lets every minified sample read
-    /// uninitialized texels while the rest of the chain streams in. Growing the view with the
-    /// prefix keeps sampling inside written mips instead.
+    /// Mips outside the selected range are allocated but may hold no texels yet. Rebasing the view
+    /// to a coarse tail mip makes a texture usable before its much larger mip 0 has decoded, while
+    /// still preventing minified samples from reading uninitialized levels.
     pub fn mark_mips_resident(&mut self, start_mip: u32, uploaded_mips: u32) {
         if uploaded_mips == 0 {
             return;
         }
-        let resident = mark_resident_mip_mask(
+        let (resident_base, resident_count) = mark_resident_mip_mask(
             &mut self.resident_mip_mask,
             self.mip_levels_total,
             start_mip,
             uploaded_mips,
         );
-        if resident == self.mip_levels_resident {
+        self.apply_resident_mip_range(resident_base, resident_count);
+    }
+
+    /// Starts a new full-chain stream at its first completed physical mip.
+    ///
+    /// The previous upload remains sampleable while the first new mip decodes. Once that write
+    /// completes, clearing the old mask prevents stale fine mips from being exposed alongside the
+    /// new coarse tail. Later mips in the same upload use [`Self::mark_mips_resident`].
+    pub fn begin_mip_stream(&mut self, start_mip: u32, uploaded_mips: u32) {
+        if uploaded_mips == 0 {
             return;
         }
-        self.mip_levels_resident = resident;
+        let (resident_base, resident_count) = begin_resident_mip_mask(
+            &mut self.resident_mip_mask,
+            self.mip_levels_total,
+            start_mip,
+            uploaded_mips,
+        );
+        self.apply_resident_mip_range(resident_base, resident_count);
+    }
+
+    fn apply_resident_mip_range(&mut self, resident_base: u32, resident_count: u32) {
+        if resident_base == self.resident_mip_base && resident_count == self.mip_levels_resident {
+            return;
+        }
+        self.resident_mip_base = resident_base;
+        self.mip_levels_resident = resident_count;
         self.refresh_resident_view();
     }
 
-    /// Rebuilds the binding view over `mip_levels_resident` mips and bumps the view generation.
+    /// Returns whether one physical texture mip has initialized texels.
+    pub fn mip_is_resident(&self, mip_level: u32) -> bool {
+        mip_level < self.mip_levels_total.min(64)
+            && (self.resident_mip_mask & (1u64 << mip_level)) != 0
+    }
+
+    /// Rebuilds the binding view over the resident mip range and bumps the view generation.
     ///
     /// Material bind signatures already hash the view generation and the resident count, so the
     /// replacement is picked up by the same rebuild that residency changes trigger today.
@@ -221,9 +252,14 @@ impl GpuTexture2d {
         if mip_level_count == 0 {
             return;
         }
-        let label = format!("Texture2D {} mips 0..{mip_level_count}", self.asset_id);
+        let mip_end = self.resident_mip_base.saturating_add(mip_level_count);
+        let label = format!(
+            "Texture2D {} mips {}..{mip_end}",
+            self.asset_id, self.resident_mip_base
+        );
         self.view = Arc::new(self.texture.create_view(&wgpu::TextureViewDescriptor {
             label: Some(&label),
+            base_mip_level: self.resident_mip_base,
             mip_level_count: Some(mip_level_count),
             ..Default::default()
         }));
@@ -289,9 +325,9 @@ fn mark_resident_mip_mask(
     mip_levels_total: u32,
     start_mip: u32,
     uploaded_mips: u32,
-) -> u32 {
+) -> (u32, u32) {
     if uploaded_mips == 0 || start_mip >= mip_levels_total {
-        return resident_prefix_len(*resident_mip_mask, mip_levels_total);
+        return resident_mip_range(*resident_mip_mask, mip_levels_total);
     }
 
     let end = start_mip
@@ -302,15 +338,46 @@ fn mark_resident_mip_mask(
         *resident_mip_mask |= 1u64 << mip;
     }
 
-    resident_prefix_len(*resident_mip_mask, mip_levels_total)
+    resident_mip_range(*resident_mip_mask, mip_levels_total)
 }
 
-fn resident_prefix_len(resident_mip_mask: u64, mip_levels_total: u32) -> u32 {
-    let mut contiguous = 0u32;
-    while contiguous < mip_levels_total.min(64) && (resident_mip_mask & (1u64 << contiguous)) != 0 {
-        contiguous += 1;
+fn begin_resident_mip_mask(
+    resident_mip_mask: &mut u64,
+    mip_levels_total: u32,
+    start_mip: u32,
+    uploaded_mips: u32,
+) -> (u32, u32) {
+    *resident_mip_mask = 0;
+    mark_resident_mip_mask(
+        resident_mip_mask,
+        mip_levels_total,
+        start_mip,
+        uploaded_mips,
+    )
+}
+
+/// Chooses the longest initialized mip run, preferring the finer base when runs tie.
+fn resident_mip_range(resident_mip_mask: u64, mip_levels_total: u32) -> (u32, u32) {
+    let limit = mip_levels_total.min(64);
+    let mut best_base = 0u32;
+    let mut best_count = 0u32;
+    let mut mip = 0u32;
+    while mip < limit {
+        if resident_mip_mask & (1u64 << mip) == 0 {
+            mip += 1;
+            continue;
+        }
+        let base = mip;
+        while mip < limit && resident_mip_mask & (1u64 << mip) != 0 {
+            mip += 1;
+        }
+        let count = mip - base;
+        if count > best_count {
+            best_base = base;
+            best_count = count;
+        }
     }
-    contiguous
+    (best_base, best_count)
 }
 
 /// Resident Texture2D table; pairs with [`super::MeshPool`] under one renderer.
@@ -350,7 +417,8 @@ mod tests {
     use crate::shared::{ColorProfile, SetTexture2DFormat, TextureFormat};
 
     use super::{
-        NEXT_TEXTURE2D_VIEW_GENERATION, mark_resident_mip_mask, texture2d_allocation_desc,
+        NEXT_TEXTURE2D_VIEW_GENERATION, begin_resident_mip_mask, mark_resident_mip_mask,
+        texture2d_allocation_desc,
     };
 
     fn test_limits(max_texture_dimension_2d: u32) -> GpuLimits {
@@ -469,15 +537,48 @@ mod tests {
     }
 
     #[test]
-    fn resident_prefix_waits_for_lower_mip_gap() {
+    fn coarse_tail_is_immediately_exposed_and_grows_toward_mip_zero() {
         let mut mask = 0;
-        assert_eq!(mark_resident_mip_mask(&mut mask, 6, 3, 2), 0);
-        assert_eq!(mark_resident_mip_mask(&mut mask, 6, 0, 3), 5);
+        assert_eq!(mark_resident_mip_mask(&mut mask, 6, 5, 1), (5, 1));
+        assert_eq!(mark_resident_mip_mask(&mut mask, 6, 4, 1), (4, 2));
+        assert_eq!(mark_resident_mip_mask(&mut mask, 6, 0, 4), (0, 6));
     }
 
     #[test]
-    fn resident_prefix_clamps_to_total_mips() {
+    fn resident_range_clamps_to_total_mips() {
         let mut mask = 0;
-        assert_eq!(mark_resident_mip_mask(&mut mask, 4, 0, 10), 4);
+        assert_eq!(mark_resident_mip_mask(&mut mask, 4, 0, 10), (0, 4));
+    }
+
+    #[test]
+    fn resident_range_prefers_finer_run_when_lengths_tie() {
+        let mut mask = 0;
+        assert_eq!(mark_resident_mip_mask(&mut mask, 6, 4, 2), (4, 2));
+        assert_eq!(mark_resident_mip_mask(&mut mask, 6, 0, 2), (0, 2));
+    }
+
+    #[test]
+    fn second_tail_first_upload_drops_old_fine_mips_at_first_completion() {
+        let mut mask = 0;
+        assert_eq!(begin_resident_mip_mask(&mut mask, 6, 0, 6), (0, 6));
+
+        // Keep the old complete upload visible until the first physical mip of upload two lands,
+        // then atomically begin the new stream from its coarse tail.
+        assert_eq!(begin_resident_mip_mask(&mut mask, 6, 5, 1), (5, 1));
+        assert_eq!(mask, 1 << 5);
+        assert_eq!(mark_resident_mip_mask(&mut mask, 6, 4, 1), (4, 2));
+    }
+
+    #[test]
+    fn nonzero_start_chain_preserves_earlier_residency() {
+        let mut mask = 0;
+        assert_eq!(begin_resident_mip_mask(&mut mask, 6, 0, 3), (0, 3));
+
+        // A complete suffix update starting at mip 3 is not a full replacement. Its tail-first
+        // writes accumulate alongside the valid lower mips until the suffix becomes contiguous.
+        assert_eq!(mark_resident_mip_mask(&mut mask, 6, 5, 1), (0, 3));
+        assert_eq!(mask & 0b111, 0b111);
+        assert_eq!(mark_resident_mip_mask(&mut mask, 6, 4, 1), (0, 3));
+        assert_eq!(mark_resident_mip_mask(&mut mask, 6, 3, 1), (0, 6));
     }
 }

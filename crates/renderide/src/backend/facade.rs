@@ -274,7 +274,7 @@ impl RenderBackend {
         self.asset_transfers
             .texture_pool()
             .iter()
-            .filter(|t| t.mip_levels_resident > 0)
+            .filter(|t| t.mip_is_resident(0))
             .count()
     }
 

@@ -19,8 +19,12 @@ use super::payload::{MipChainWalkState, NextMipUploadSlice, validate_and_resolve
 /// Incremental full mip-chain upload: call [`Self::upload_next_mip`] until [`MipChainAdvance::Finished`].
 #[derive(Debug)]
 pub struct TextureMipChainUploader {
-    /// Next host mip-array index to upload.
+    /// Number of host mip-array entries uploaded so far.
     next_i: usize,
+    /// Number of host mips required to cover the remaining GPU chain.
+    host_mip_limit: usize,
+    /// Whether complete host mips are visited from coarse to fine.
+    tail_first: bool,
     /// Number of mip levels successfully written.
     uploaded_mips: u32,
     /// Descriptor-relative byte offset used to rebase host `mip_starts`.
@@ -45,6 +49,8 @@ pub struct TextureMipChainUploader {
     background_rx: Option<crossbeam_channel::Receiver<Result<MipUploadPixels, TextureUploadError>>>,
     /// Destination `(mip_level, width, height)` paired with [`Self::background_rx`].
     pending_mip: Option<(u32, u32, u32)>,
+    /// Physical mip written by the most recent [`Self::upload_next_mip`] call.
+    last_step_uploaded_mip: Option<u32>,
 }
 
 /// Result of one [`TextureMipChainUploader::upload_next_mip`] step.
@@ -147,7 +153,7 @@ impl TextureMipChainUploader {
         }
 
         let payload_len = want;
-        let (start_bias, _valid_prefix_mips) =
+        let (start_bias, valid_prefix_mips) =
             choose_mip_start_bias(fmt.format, upload, payload_len)?;
         if start_bias != 0 {
             logger::debug!(
@@ -157,8 +163,28 @@ impl TextureMipChainUploader {
             );
         }
 
+        let host_mip_limit = mipmap_count
+            .saturating_sub(start_base)
+            .min(upload.mip_map_sizes.len() as u32) as usize;
+        let tail_first = should_upload_tail_first(
+            upload,
+            valid_prefix_mips,
+            start_base,
+            mipmap_count,
+            tex_extent,
+        );
+        if tail_first && host_mip_limit > 1 {
+            logger::trace!(
+                "texture {}: streaming {} complete host mips coarse-to-fine",
+                upload.asset_id,
+                host_mip_limit
+            );
+        }
+
         Ok(Self {
             next_i: 0,
+            host_mip_limit,
+            tail_first,
             uploaded_mips: 0,
             start_bias,
             start_base,
@@ -171,6 +197,7 @@ impl TextureMipChainUploader {
             last_rgba8_mip: None,
             background_rx: None,
             pending_mip: None,
+            last_step_uploaded_mip: None,
         })
     }
 
@@ -180,6 +207,7 @@ impl TextureMipChainUploader {
         step: TextureMipUploadStep<'_>,
     ) -> Result<MipChainAdvance, TextureUploadError> {
         profiling::scope!("asset::texture2d_mip_chain_step");
+        self.last_step_uploaded_mip = None;
         if self.stopped {
             return Ok(MipChainAdvance::Finished {
                 total_uploaded: self.uploaded_mips,
@@ -192,6 +220,16 @@ impl TextureMipChainUploader {
         }
 
         self.spawn_upload_next_host_mip(&step)
+    }
+
+    /// Takes the physical texture mip written by the preceding upload step.
+    pub fn take_last_step_uploaded_mip(&mut self) -> Option<u32> {
+        self.last_step_uploaded_mip.take()
+    }
+
+    /// Whether this chain completely replaces the texture from physical mip 0.
+    pub fn replaces_full_texture(&self) -> bool {
+        mip_chain_replaces_full_texture(self.start_base, self.tail_first)
     }
 
     /// Drains a completed background decode into a `Queue::write_texture`, or yields if still pending.
@@ -241,10 +279,11 @@ impl TextureMipChainUploader {
                     });
                 }
                 self.storage_v_inverted |= pixels.storage_v_inverted;
+                self.last_step_uploaded_mip = Some(mip_level);
                 self.uploaded_mips += 1;
                 self.next_i += 1;
 
-                if self.start_base + self.next_i as u32 >= self.mipmap_count {
+                if self.completed_required_mips() {
                     self.stopped = true;
                     return Ok(Some(MipChainAdvance::Finished {
                         total_uploaded: self.uploaded_mips,
@@ -308,10 +347,11 @@ impl TextureMipChainUploader {
                     });
                 }
                 self.storage_v_inverted |= pixels.storage_v_inverted;
+                self.last_step_uploaded_mip = Some(mip_level);
                 self.uploaded_mips += 1;
                 self.next_i += 1;
 
-                if self.start_base + self.next_i as u32 >= self.mipmap_count {
+                if self.completed_required_mips() {
                     self.stopped = true;
                     return Ok(Some(MipChainAdvance::Finished {
                         total_uploaded: self.uploaded_mips,
@@ -338,6 +378,15 @@ impl TextureMipChainUploader {
         step: &TextureMipUploadStep<'_>,
     ) -> Result<MipChainAdvance, TextureUploadError> {
         profiling::scope!("asset::texture2d_spawn_mip_decode");
+        let Some(mip_index) =
+            next_host_mip_index(self.tail_first, self.host_mip_limit, self.next_i)
+        else {
+            self.stopped = true;
+            return Ok(MipChainAdvance::Finished {
+                total_uploaded: self.uploaded_mips,
+                storage_v_inverted: self.storage_v_inverted,
+            });
+        };
         let chain = MipChainWalkState {
             fmt: step.fmt,
             upload: step.upload,
@@ -347,7 +396,7 @@ impl TextureMipChainUploader {
         let slice = validate_and_resolve_next_mip_slice(
             &chain,
             self.uploaded_mips,
-            self.next_i,
+            mip_index,
             self.start_base,
             self.mipmap_count,
             self.tex_extent,
@@ -470,6 +519,54 @@ impl TextureMipChainUploader {
 
         Ok(MipChainAdvance::YieldBackground)
     }
+
+    fn completed_required_mips(&self) -> bool {
+        if self.tail_first {
+            self.next_i >= self.host_mip_limit
+        } else {
+            self.start_base + self.next_i as u32 >= self.mipmap_count
+        }
+    }
+}
+
+fn next_host_mip_index(
+    tail_first: bool,
+    host_mip_limit: usize,
+    completed_host_mips: usize,
+) -> Option<usize> {
+    if tail_first {
+        host_mip_limit.checked_sub(completed_host_mips + 1)
+    } else {
+        Some(completed_host_mips)
+    }
+}
+
+fn mip_chain_replaces_full_texture(start_base: u32, complete_chain: bool) -> bool {
+    start_base == 0 && complete_chain
+}
+
+fn should_upload_tail_first(
+    upload: &SetTexture2DData,
+    valid_prefix_mips: usize,
+    start_base: u32,
+    mipmap_count: u32,
+    tex_extent: wgpu::Extent3d,
+) -> bool {
+    let required = mipmap_count.saturating_sub(start_base) as usize;
+    if required == 0 || valid_prefix_mips < required || upload.mip_map_sizes.len() < required {
+        return false;
+    }
+    upload
+        .mip_map_sizes
+        .iter()
+        .take(required)
+        .enumerate()
+        .all(|(index, size)| {
+            let mip_level = start_base + index as u32;
+            let (width, height) =
+                mip_dimensions_at_level(tex_extent.width, tex_extent.height, mip_level);
+            size.x.max(0) as u32 == width && size.y.max(0) as u32 == height
+        })
 }
 
 /// Result of [`texture_upload_start`]: either sub-region finished in one step or a mip-chain uploader is needed.
@@ -560,4 +657,54 @@ pub fn texture_upload_start(
         upload,
         inputs.payload.raw,
     )?))
+}
+
+#[cfg(test)]
+mod tests {
+    use glam::IVec2;
+
+    use super::{mip_chain_replaces_full_texture, next_host_mip_index, should_upload_tail_first};
+    use crate::shared::SetTexture2DData;
+
+    #[test]
+    fn complete_chain_visits_coarsest_mip_first() {
+        let order = (0..4)
+            .map(|completed| next_host_mip_index(true, 4, completed))
+            .collect::<Vec<_>>();
+
+        assert_eq!(order, vec![Some(3), Some(2), Some(1), Some(0)]);
+        assert_eq!(next_host_mip_index(true, 4, 4), None);
+    }
+
+    #[test]
+    fn tail_first_requires_a_complete_dimensionally_valid_chain() {
+        let upload = SetTexture2DData {
+            mip_map_sizes: vec![
+                IVec2::new(16, 8),
+                IVec2::new(8, 4),
+                IVec2::new(4, 2),
+                IVec2::new(2, 1),
+            ],
+            ..Default::default()
+        };
+        let extent = wgpu::Extent3d {
+            width: 16,
+            height: 8,
+            depth_or_array_layers: 1,
+        };
+
+        assert!(should_upload_tail_first(&upload, 4, 0, 4, extent));
+        assert!(!should_upload_tail_first(&upload, 3, 0, 4, extent));
+
+        let mut malformed = upload;
+        malformed.mip_map_sizes[2] = IVec2::new(3, 2);
+        assert!(!should_upload_tail_first(&malformed, 4, 0, 4, extent));
+    }
+
+    #[test]
+    fn nonzero_start_chain_is_not_a_full_texture_replacement() {
+        assert!(mip_chain_replaces_full_texture(0, true));
+        assert!(!mip_chain_replaces_full_texture(0, false));
+        assert!(!mip_chain_replaces_full_texture(2, true));
+    }
 }

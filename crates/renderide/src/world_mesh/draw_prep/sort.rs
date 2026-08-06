@@ -38,8 +38,10 @@ const SORT_PREFIX_RENDER_QUEUE_SHIFT: u32 = 45;
 const SORT_PREFIX_TRANSPARENT_SHIFT: u32 = 44;
 /// Bit shift for the 8-bit opaque depth bucket.
 const SORT_PREFIX_DEPTH_BUCKET_SHIFT: u32 = 36;
-/// Bit shift for the 32-bit upper half of the batch-key hash.
-const SORT_PREFIX_BATCH_HASH_SHIFT: u32 = 4;
+/// Bit width of the batch-key hash suffix in the packed prefix.
+const SORT_PREFIX_BATCH_HASH_BITS: u32 = 36;
+/// Bit shift for the batch-key hash (occupies every remaining low bit).
+const SORT_PREFIX_BATCH_HASH_SHIFT: u32 = 0;
 
 /// Maps camera-distance squared into a coarse logarithmic front-to-back bucket.
 ///
@@ -76,7 +78,7 @@ pub fn pack_sort_prefix(
     } else {
         (
             u64::from(opaque_depth_bucket.min((1u16 << 8) - 1)),
-            batch_key_hash >> 32,
+            batch_key_hash >> (u64::BITS - SORT_PREFIX_BATCH_HASH_BITS),
         )
     };
 
@@ -197,7 +199,7 @@ fn cmp_material_stack_total_key(a: &WorldMeshDrawItem, b: &WorldMeshDrawItem) ->
 /// Tiebreaker for opaque draws sharing the same packed prefix.
 ///
 /// Two opaque draws share a packed prefix when their `(overlay, render_queue, depth_bucket,
-/// batch_key_hash_hi32)` agree. Within that bucket the original comparator preserved a
+/// batch_key_hash_hi36)` agree. Within that bucket the original comparator preserved a
 /// deterministic order via the full `batch_key_hash`, then a structural `batch_key` compare on
 /// hash collisions, then `sorting_order` descending, then `(mesh_asset_id, node_id, slot_index)`.
 /// This function reproduces that order for the post-radix fix-up in
@@ -219,7 +221,7 @@ fn cmp_opaque_intra_prefix(a: &WorldMeshDrawItem, b: &WorldMeshDrawItem) -> Orde
 ///
 /// Two cases produce a multi-element run:
 ///
-/// * Opaque draws sharing `(overlay, render_queue, depth_bucket, batch_key_hash_hi32)`. Within
+/// * Opaque draws sharing `(overlay, render_queue, depth_bucket, batch_key_hash_hi36)`. Within
 ///   such a run the structural opaque comparator preserves the deterministic
 ///   `batch_key_hash` -> `batch_key` -> `sorting_order` (descending) -> `mesh / node / slot`
 ///   ordering. Common when many draws share a batch key.

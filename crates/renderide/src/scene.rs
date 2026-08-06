@@ -78,9 +78,9 @@ pub use camera_portal::{
     camera_portal_portal_mode,
 };
 pub use coordinator::{
-    RenderWorldBoundsDirty, RenderWorldMaterialOverrideDirty, RenderWorldRendererDirty,
-    RenderWorldRendererKind, RenderWorldTransformDirty, SceneApplyReport, SceneCacheFlushReport,
-    SceneCoordinator,
+    RenderWorldBoundsDirty, RenderWorldMaterialOverrideDirty, RenderWorldParticleRendererDirty,
+    RenderWorldParticleRendererKind, RenderWorldRendererDirty, RenderWorldRendererKind,
+    RenderWorldTransformDirty, SceneApplyReport, SceneCacheFlushReport, SceneCoordinator,
 };
 pub use ids::RenderSpaceId;
 pub use lights::{ResolvedLight, light_contributes, light_has_negative_contribution};

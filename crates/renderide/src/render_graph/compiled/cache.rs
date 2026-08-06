@@ -289,6 +289,7 @@ mod tests {
             validation_mode: RenderGraphValidationMode::default(),
             main_graph_msaa_transient_handles: None,
             upload_batch: Default::default(),
+            view_blackboard_pool: Default::default(),
         }
     }
 

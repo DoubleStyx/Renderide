@@ -651,11 +651,19 @@ fn collect_material_batch_boundaries_into(
     out.clear();
     let mut current_start = 0usize;
     let mut last_key = &draws[0].batch_key;
+    let mut last_key_hash = draws[0].batch_key_hash;
+    let mut last_renderer_property_block_id = draws[0].lookup_ids.mesh_renderer_property_block_id;
     for (idx, item) in draws.iter().enumerate().skip(1) {
-        if &item.batch_key != last_key {
+        let renderer_property_block_id = item.lookup_ids.mesh_renderer_property_block_id;
+        if item.batch_key_hash != last_key_hash
+            || &item.batch_key != last_key
+            || renderer_property_block_id != last_renderer_property_block_id
+        {
             out.push((current_start, idx - 1));
             current_start = idx;
             last_key = &item.batch_key;
+            last_key_hash = item.batch_key_hash;
+            last_renderer_property_block_id = renderer_property_block_id;
         }
     }
     out.push((current_start, draws.len() - 1));
@@ -957,6 +965,35 @@ mod tests {
 
         assert_eq!(unique, boundaries);
         assert_eq!(template_indices, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn adjacent_renderer_property_blocks_split_material_packets() {
+        let first = dummy_world_mesh_draw_item(DummyDrawItemSpec {
+            material_asset_id: 42,
+            property_block: None,
+            skinned: false,
+            sorting_order: 0,
+            mesh_asset_id: 7,
+            node_id: 1,
+            slot_index: 0,
+            collect_order: 0,
+            alpha_blended: true,
+        });
+        let mut second = first.clone();
+        second.node_id = 2;
+        second.collect_order = 1;
+        second.lookup_ids.mesh_renderer_property_block_id = Some(700);
+        let draws = vec![first, second];
+        let mut boundaries = Vec::new();
+
+        collect_material_batch_boundaries_into(&draws, &mut boundaries);
+        let (unique, template_indices) =
+            collect_unique_material_batch_boundaries(&draws, &boundaries);
+
+        assert_eq!(boundaries, vec![(0, 0), (1, 1)]);
+        assert_eq!(unique, boundaries);
+        assert_eq!(template_indices, vec![0, 1]);
     }
 
     #[test]

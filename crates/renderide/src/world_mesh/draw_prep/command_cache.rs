@@ -309,7 +309,9 @@ fn hash_world_mesh_draw_item<H: Hasher>(item: &WorldMeshDrawItem, hasher: &mut H
     item.lookup_ids.material_asset_id.hash(hasher);
     item.lookup_ids.mesh_property_block_slot0.hash(hasher);
     item.lookup_ids.mesh_renderer_property_block_id.hash(hasher);
-    item.batch_key.hash(hasher);
+    // `batch_key_hash` is the cached content hash of the full, comparatively large material
+    // key. Re-hashing every field here made the retained-order and instance-plan cache probes
+    // walk that structure again for every draw on every frame.
     item.batch_key_hash.hash(hasher);
     item._opaque_depth_bucket.hash(hasher);
     item.sort_prefix.hash(hasher);
@@ -333,7 +335,7 @@ fn hash_world_mesh_draw_order_item<H: Hasher>(item: &WorldMeshDrawItem, hasher: 
     item.skinned.hash(hasher);
     item.collect_order.hash(hasher);
     hash_camera_distance_if_ordered(item, hasher);
-    item.batch_key.hash(hasher);
+    // The precomputed content hash covers every material/pipeline ordering field.
     item.batch_key_hash.hash(hasher);
     item._opaque_depth_bucket.hash(hasher);
     item.sort_prefix.hash(hasher);

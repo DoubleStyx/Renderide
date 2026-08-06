@@ -13,6 +13,7 @@ use crate::frame_upload_batch::GraphUploadSink;
 use crate::gpu::GpuLimits;
 use crate::gpu_pools::geometry_arena::ArenaStream;
 use crate::materials::MaterialPipelineSet;
+use crate::materials::embedded::MaterialBindCacheKey;
 use crate::passes::WorldMeshForwardEncodeRefs;
 use crate::shared::ShadowCastMode;
 use crate::world_mesh::{DrawGroup, WorldMeshDrawItem, depth_prepass_group_eligible};
@@ -174,7 +175,7 @@ pub(super) struct ForwardDrawState {
     last_mesh: LastMeshBindState,
     last_per_draw_dyn_offset: Option<u32>,
     last_stencil_ref: Option<u32>,
-    bound_batch_cursor: Option<usize>,
+    bound_material_group1: Option<BoundMaterialGroup1>,
     last_pipeline: Option<*const wgpu::RenderPipeline>,
     pub(super) last_scissor: Option<(u32, u32, u32, u32)>,
 }
@@ -185,11 +186,25 @@ impl ForwardDrawState {
             last_mesh: LastMeshBindState::new(),
             last_per_draw_dyn_offset: None,
             last_stencil_ref: None,
-            bound_batch_cursor: None,
+            bound_material_group1: None,
             last_pipeline: None,
             last_scissor: None,
         }
     }
+}
+
+/// Concrete group-1 command state retained across material packet boundaries.
+///
+/// Packet indices are draw-list-local and can differ even when two non-contiguous runs use the
+/// exact same persistent bind group and dynamic constant offset. Tracking the command identity
+/// avoids re-emitting those redundant bindings.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BoundMaterialGroup1 {
+    Empty,
+    Embedded {
+        bind_key: MaterialBindCacheKey,
+        uniform_dynamic_offset: Option<u32>,
+    },
 }
 
 pub(super) struct ForwardDrawResources<'draw, 'bind> {
@@ -740,10 +755,21 @@ fn bind_material_packet_if_changed(
     rpass: &mut wgpu::RenderPass<'_>,
     resources: &ForwardDrawResources<'_, '_>,
     state: &mut ForwardDrawState,
-    batch_cursor: usize,
+    _batch_cursor: usize,
     packet: &MaterialBatchPacket,
 ) {
-    if state.bound_batch_cursor == Some(batch_cursor) {
+    let next = match &packet.group1_binding {
+        MaterialGroup1Binding::Empty => BoundMaterialGroup1::Empty,
+        MaterialGroup1Binding::Embedded {
+            bind_key,
+            uniform_dynamic_offset,
+            ..
+        } => BoundMaterialGroup1::Embedded {
+            bind_key: *bind_key,
+            uniform_dynamic_offset: *uniform_dynamic_offset,
+        },
+    };
+    if state.bound_material_group1 == Some(next) {
         return;
     }
     match &packet.group1_binding {
@@ -762,7 +788,7 @@ fn bind_material_packet_if_changed(
             }
         }
     }
-    state.bound_batch_cursor = Some(batch_cursor);
+    state.bound_material_group1 = Some(next);
 }
 
 fn bind_forward_per_draw_slab(
@@ -1130,6 +1156,12 @@ pub(in crate::passes::world_mesh_forward) fn indirect_normal_alloc(
 
 /// A contiguous run of normal-prepass commands sharing a pipeline and index width.
 pub(crate) struct IndirectNormalRun {
+    /// Dynamic stencil reference shared by the run.
+    ///
+    /// The reference is render-pass state in wgpu, not pipeline state, so it is not part of the
+    /// pipeline key and a run must be split when it changes. Without this the indirect path leaves
+    /// whatever reference the direct path last set, and masked UI tests against the wrong value.
+    pub stencil_reference: u32,
     /// Normal-prepass pipeline key shared by the run.
     pub key: WorldMeshForwardNormalPipelineKey,
     /// Whether the run uses the `u16` index arena.
@@ -1144,6 +1176,7 @@ fn push_indirect_normal_command(
     commands: &mut Vec<crate::gpu::indirect_buffer::IndexedIndirectCommand>,
     runs: &mut Vec<IndirectNormalRun>,
     key: WorldMeshForwardNormalPipelineKey,
+    stencil_reference: u32,
     narrow: bool,
     command: crate::gpu::indirect_buffer::IndexedIndirectCommand,
 ) {
@@ -1152,12 +1185,14 @@ fn push_indirect_normal_command(
     match runs.last_mut() {
         Some(run)
             if run.key == key
+                && run.stencil_reference == stencil_reference
                 && run.narrow == narrow
                 && run.first_command + run.command_count == command_index =>
         {
             run.command_count += 1;
         }
         _ => runs.push(IndirectNormalRun {
+            stencil_reference,
             key,
             narrow,
             first_command: command_index,
@@ -1193,6 +1228,7 @@ pub(crate) fn collect_normal_prepass_indirect(
             commands,
             &mut runs,
             key,
+            item.batch_key.render_state.stencil_reference(),
             alloc.narrow_indices,
             crate::gpu::indirect_buffer::IndexedIndirectCommand {
                 index_count: item.index_count,
@@ -1247,9 +1283,14 @@ pub(crate) fn issue_normal_prepass_indirect(draw: NormalPrepassIndirectDraw<'_, 
     rpass.set_vertex_buffer(1, normals.slice(..));
 
     let mut last_index_narrow: Option<bool> = None;
+    let mut last_stencil_ref: Option<u32> = None;
     for run in runs {
         let pipeline = normal_pipelines.pipeline(device, run.key);
         rpass.set_pipeline(pipeline.as_ref());
+        if last_stencil_ref != Some(run.stencil_reference) {
+            rpass.set_stencil_reference(run.stencil_reference);
+            last_stencil_ref = Some(run.stencil_reference);
+        }
         if last_index_narrow != Some(run.narrow) {
             let (index_buffer, index_format) = if run.narrow {
                 (arena.index_buffer_u16(), wgpu::IndexFormat::Uint16)
@@ -1267,6 +1308,8 @@ pub(crate) fn issue_normal_prepass_indirect(draw: NormalPrepassIndirectDraw<'_, 
 /// as one `multi_draw_indexed_indirect`. `first_command` is a global offset into the frame's shared
 /// command buffer. Shared by the shadow and depth-prepass indirect paths.
 pub(crate) struct IndirectDepthRun {
+    /// Dynamic stencil reference shared by the run. See [`IndirectNormalRun::stencil_reference`].
+    pub stencil_reference: u32,
     /// Depth pipeline key shared by the run.
     pub key: WorldMeshForwardDepthPrepassPipelineKey,
     /// Whether the run's meshes use the `u16` index arena (else `u32`).
@@ -1283,6 +1326,7 @@ fn push_indirect_depth_command(
     commands: &mut Vec<crate::gpu::indirect_buffer::IndexedIndirectCommand>,
     runs: &mut Vec<IndirectDepthRun>,
     key: WorldMeshForwardDepthPrepassPipelineKey,
+    stencil_reference: u32,
     narrow: bool,
     command: crate::gpu::indirect_buffer::IndexedIndirectCommand,
 ) {
@@ -1291,12 +1335,14 @@ fn push_indirect_depth_command(
     match runs.last_mut() {
         Some(run)
             if run.key == key
+                && run.stencil_reference == stencil_reference
                 && run.narrow == narrow
                 && run.first_command + run.command_count == command_index =>
         {
             run.command_count += 1;
         }
         _ => runs.push(IndirectDepthRun {
+            stencil_reference,
             key,
             narrow,
             first_command: command_index,
@@ -1342,6 +1388,7 @@ pub(crate) fn collect_shadow_indirect_layer(
                 commands,
                 &mut runs,
                 key,
+                item.batch_key.render_state.stencil_reference(),
                 alloc.narrow_indices,
                 crate::gpu::indirect_buffer::IndexedIndirectCommand {
                     index_count: item.index_count,
@@ -1397,6 +1444,7 @@ pub(crate) fn issue_shadow_indirect_runs(draw: ShadowIndirectDraw<'_, '_>) {
     let shadow_pipelines = shadow_pipelines();
     let radial_pipelines = radial_shadow_pipelines();
     let mut last_index_narrow: Option<bool> = None;
+    let mut last_stencil_ref: Option<u32> = None;
     for run in runs {
         let pipeline = if radial_shadow {
             radial_pipelines.pipeline(device, run.key)
@@ -1404,6 +1452,10 @@ pub(crate) fn issue_shadow_indirect_runs(draw: ShadowIndirectDraw<'_, '_>) {
             shadow_pipelines.pipeline(device, run.key)
         };
         rpass.set_pipeline(pipeline.as_ref());
+        if last_stencil_ref != Some(run.stencil_reference) {
+            rpass.set_stencil_reference(run.stencil_reference);
+            last_stencil_ref = Some(run.stencil_reference);
+        }
         if last_index_narrow != Some(run.narrow) {
             let (index_buffer, index_format) = if run.narrow {
                 (arena.index_buffer_u16(), wgpu::IndexFormat::Uint16)
@@ -1453,6 +1505,7 @@ pub(crate) fn collect_depth_prepass_indirect(
             commands,
             &mut runs,
             key,
+            item.batch_key.render_state.stencil_reference(),
             alloc.narrow_indices,
             crate::gpu::indirect_buffer::IndexedIndirectCommand {
                 index_count: item.index_count,
@@ -1713,6 +1766,26 @@ mod tests {
         ));
     }
 
+    /// The stencil reference is render-pass state, not pipeline state, so a run that spans two
+    /// references would leave masked draws testing against the wrong value. Masked UI depends on
+    /// this split.
+    #[test]
+    fn normal_indirect_runs_split_on_stencil_reference() {
+        let mut commands = Vec::new();
+        let mut runs = Vec::new();
+        let key = normal_key(RasterFrontFace::Clockwise);
+
+        push_indirect_normal_command(&mut commands, &mut runs, key, 1, false, indirect_command(0));
+        push_indirect_normal_command(&mut commands, &mut runs, key, 1, false, indirect_command(1));
+        push_indirect_normal_command(&mut commands, &mut runs, key, 2, false, indirect_command(2));
+
+        assert_eq!(runs.len(), 2, "a reference change must start a new run");
+        assert_eq!(runs[0].stencil_reference, 1);
+        assert_eq!(runs[0].command_count, 2);
+        assert_eq!(runs[1].stencil_reference, 2);
+        assert_eq!(runs[1].command_count, 1);
+    }
+
     #[test]
     fn normal_indirect_runs_coalesce_only_matching_pipeline_and_index_width() {
         let mut commands = Vec::new();
@@ -1724,6 +1797,7 @@ mod tests {
             &mut commands,
             &mut runs,
             clockwise,
+            0,
             false,
             indirect_command(0),
         );
@@ -1731,6 +1805,7 @@ mod tests {
             &mut commands,
             &mut runs,
             clockwise,
+            0,
             false,
             indirect_command(1),
         );
@@ -1738,6 +1813,7 @@ mod tests {
             &mut commands,
             &mut runs,
             clockwise,
+            0,
             true,
             indirect_command(2),
         );
@@ -1745,6 +1821,7 @@ mod tests {
             &mut commands,
             &mut runs,
             counter_clockwise,
+            0,
             true,
             indirect_command(3),
         );

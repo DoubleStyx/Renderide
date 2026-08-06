@@ -8,9 +8,7 @@ use crate::gpu_pools::MeshPool;
 use crate::materials::host_data::{MaterialDictionary, MaterialPropertyStore};
 use crate::materials::{MaterialPipelinePropertyIds, MaterialRouter, RasterPipelineKind};
 use crate::reflection_probes::specular::ReflectionProbeFrameSelection;
-use crate::scene::{
-    SceneApplyReport, SceneCacheFlushReport, SceneCoordinator, SceneSpaceRead, WorldMeshSceneRead,
-};
+use crate::scene::{SceneApplyReport, SceneCacheFlushReport, SceneCoordinator, SceneSpaceRead};
 use crate::shared::RenderingContext;
 use crate::world_mesh::{
     FrameMaterialBatchCache, RenderWorld, RenderWorldMaintenanceStats, WorldMeshCommandCache,
@@ -41,8 +39,6 @@ impl DrawPrepAssetRead for AssetTransferQueue {
     }
 }
 
-/// Unique render contexts assigned to one render-world preparation worker.
-const RENDER_WORLD_PREP_PARALLEL_CHUNK_CONTEXTS: usize = 1;
 /// Unique material caches assigned to one cache-refresh worker.
 const MATERIAL_CACHE_PREP_PARALLEL_CHUNK_CACHES: usize = 1;
 /// Shared cache key for render contexts with no draw-prep overrides.
@@ -211,74 +207,51 @@ pub(super) fn render_context_cache_key(
 }
 
 /// Refreshes every unique render-context cache required by this frame's views.
-fn prepare_render_worlds_for_views<S>(
+fn prepare_render_worlds_for_views(
     render_worlds: &mut HashMap<u8, RenderWorld>,
-    scene: &S,
+    scene: &SceneCoordinator,
     mesh_pool: &MeshPool,
     point_render_buffers: &HashMap<i32, crate::particles::PointRenderBufferAsset>,
     view_draw_preparations: &[(RenderingContext, ShaderPermutation)],
-) where
-    S: WorldMeshSceneRead + Sync + ?Sized,
-{
+) {
     profiling::scope!("render::prepare_render_worlds_for_views");
-    let mut work = unique_render_context_work(scene, view_draw_preparations, render_worlds);
-    let admission = FrameParallelPolicy::for_current_thread_pool().admit_independent_items(
-        FrameCpuWorkload::independent_items(work.len()),
-        RENDER_WORLD_PREP_PARALLEL_CHUNK_CONTEXTS,
-    );
-    record_parallel_admission(
-        "render_world_prepare_contexts",
-        work.len(),
-        work.len(),
-        admission,
-    );
-    if admission.is_parallel() {
-        profiling::scope!("render::prepare_render_worlds_for_views::parallel_contexts");
-        work.par_iter_mut()
-            .with_min_len(admission.chunk_size().unwrap_or(1))
-            .for_each(|(_, render_context, render_world)| {
-                profiling::scope!("render::prepare_render_worlds_for_views::context_worker");
-                render_world.prepare_for_frame(
-                    scene,
-                    mesh_pool,
-                    point_render_buffers,
-                    *render_context,
-                );
-            });
-    } else {
-        for (_, render_context, render_world) in &mut work {
-            profiling::scope!("render::prepare_render_worlds_for_views::context");
-            render_world.prepare_for_frame(scene, mesh_pool, point_render_buffers, *render_context);
-        }
+    let Some(&(base_render_context, _)) = view_draw_preparations.first() else {
+        return;
+    };
+    let mut base = render_worlds
+        .remove(&CONTEXT_INVARIANT_RENDER_WORLD_KEY)
+        .unwrap_or_else(|| RenderWorld::new_context_invariant(base_render_context));
+    {
+        profiling::scope!("render::prepare_render_worlds_for_views::invariant_base");
+        let invariant_scene = scene.context_invariant_read();
+        base.prepare_for_frame(
+            &invariant_scene,
+            mesh_pool,
+            point_render_buffers,
+            base_render_context,
+        );
     }
-    for (key, _, render_world) in work {
-        render_worlds.insert(key, render_world);
-    }
-}
 
-/// Removes unique render-world caches from the map for worker-owned preparation.
-fn unique_render_context_work(
-    scene: &(impl SceneSpaceRead + ?Sized),
-    view_draw_preparations: &[(RenderingContext, ShaderPermutation)],
-    render_worlds: &mut HashMap<u8, RenderWorld>,
-) -> Vec<(u8, RenderingContext, RenderWorld)> {
-    let mut work = Vec::new();
     let mut seen_contexts = HashSet::with_capacity(view_draw_preparations.len());
     for &(render_context, _) in view_draw_preparations {
         let key = render_context_cache_key(scene, render_context);
-        if !seen_contexts.insert(key) {
+        if key == CONTEXT_INVARIANT_RENDER_WORLD_KEY || !seen_contexts.insert(key) {
             continue;
         }
-        let render_world = render_worlds.remove(&key).unwrap_or_else(|| {
-            if key == CONTEXT_INVARIANT_RENDER_WORLD_KEY {
-                RenderWorld::new_context_invariant(render_context)
-            } else {
-                RenderWorld::new(render_context)
-            }
-        });
-        work.push((key, render_context, render_world));
+        profiling::scope!("render::prepare_render_worlds_for_views::context_overlay");
+        let mut overlay = render_worlds
+            .remove(&key)
+            .unwrap_or_else(|| RenderWorld::new_context_overlay(render_context));
+        overlay.prepare_context_overlay_from(
+            &base,
+            scene,
+            mesh_pool,
+            point_render_buffers,
+            render_context,
+        );
+        render_worlds.insert(key, overlay);
     }
-    work
+    render_worlds.insert(CONTEXT_INVARIANT_RENDER_WORLD_KEY, base);
 }
 
 /// Refreshes material batch caches for every unique context and shader permutation.
@@ -374,7 +347,9 @@ fn unique_material_cache_work(
 mod tests {
     use super::*;
     use crate::gpu_pools::MeshPool;
-    use crate::scene::RenderSpaceId;
+    use crate::scene::{
+        MeshMaterialSlot, MeshRendererOverrideTarget, RenderSpaceId, StaticMeshRenderer,
+    };
     use crate::shared::RenderTransform;
 
     #[test]
@@ -451,6 +426,105 @@ mod tests {
                 .get(&render_context_cache_key(&scene, RenderingContext::Camera))
                 .map(|world| world.prepared().render_context()),
             Some(RenderingContext::Camera)
+        );
+    }
+
+    #[test]
+    fn context_override_uses_raw_shared_world_and_patches_only_lightweight_overlay() {
+        let space_id = RenderSpaceId(2);
+        let mesh_asset_id = 88;
+        let mut render_worlds = HashMap::new();
+        let mut scene = SceneCoordinator::new();
+        scene.test_seed_space_identity_worlds(
+            space_id,
+            vec![RenderTransform {
+                scale: glam::Vec3::ONE,
+                ..Default::default()
+            }],
+            vec![-1],
+        );
+        scene.test_set_static_mesh_renderers(
+            space_id,
+            vec![StaticMeshRenderer {
+                node_id: 0,
+                mesh_asset_id,
+                material_slots: vec![MeshMaterialSlot {
+                    material_asset_id: 11,
+                    property_block_id: None,
+                }],
+                ..Default::default()
+            }],
+        );
+        scene.test_push_material_override(
+            space_id,
+            0,
+            RenderingContext::Camera,
+            MeshRendererOverrideTarget::Static(0),
+            0,
+            22,
+        );
+        let mut mesh_pool = MeshPool::default_pool();
+        mesh_pool.insert(crate::assets::mesh::GpuMesh::test_draw_prep_mesh(
+            mesh_asset_id,
+        ));
+        let point_render_buffers = HashMap::new();
+        let views = [(RenderingContext::Camera, ShaderPermutation(0))];
+
+        prepare_render_worlds_for_views(
+            &mut render_worlds,
+            &scene,
+            &mesh_pool,
+            &point_render_buffers,
+            &views,
+        );
+
+        let base = render_worlds
+            .get(&CONTEXT_INVARIANT_RENDER_WORLD_KEY)
+            .expect("shared invariant world");
+        let overlay_key = render_context_cache_key(&scene, RenderingContext::Camera);
+        let overlay = render_worlds.get(&overlay_key).expect("camera overlay");
+        assert_eq!(
+            base.prepared().mesh_material_pairs().collect::<Vec<_>>(),
+            vec![(mesh_asset_id, 11)],
+            "base snapshot must ignore every context-local material override"
+        );
+        assert_eq!(
+            overlay.prepared().mesh_material_pairs().collect::<Vec<_>>(),
+            vec![(mesh_asset_id, 22)]
+        );
+        assert_eq!(base.retained_space_count_for_tests(), 1);
+        assert_eq!(
+            overlay.retained_space_count_for_tests(),
+            0,
+            "context specialization must not fork retained renderer templates"
+        );
+        assert_eq!(base.maintenance_stats().full_world_rebuild_count, 1);
+        assert_eq!(overlay.maintenance_stats().full_world_rebuild_count, 0);
+        assert_eq!(overlay.maintenance_stats().context_overlay_count, 1);
+        assert_eq!(overlay.maintenance_stats().context_override_patch_count, 1);
+
+        prepare_render_worlds_for_views(
+            &mut render_worlds,
+            &scene,
+            &mesh_pool,
+            &point_render_buffers,
+            &views,
+        );
+        assert_eq!(
+            render_worlds
+                .get(&CONTEXT_INVARIANT_RENDER_WORLD_KEY)
+                .unwrap()
+                .maintenance_stats()
+                .steady_state_skip_count,
+            1
+        );
+        assert_eq!(
+            render_worlds
+                .get(&overlay_key)
+                .unwrap()
+                .maintenance_stats()
+                .steady_state_skip_count,
+            1
         );
     }
 }

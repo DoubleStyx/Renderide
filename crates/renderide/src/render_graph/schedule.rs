@@ -261,6 +261,23 @@ pub enum RecordingBatchKind {
     Parallel,
 }
 
+/// One compile-time-coalesced execution run consumed by per-view command recording.
+///
+/// Scheduler batches retain their exact topological-wave metadata for diagnostics. Execution runs
+/// are a second, cached view of that immutable plan: adjacent serial batches are folded into one
+/// unit range because recording them into separate encoders provides no parallelism.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecordingExecutionRun {
+    /// First recording-unit index in [`RecordingSchedulePlan::units`].
+    pub start_unit: usize,
+    /// Exclusive recording-unit index after this run.
+    pub end_unit: usize,
+    /// Phase shared by every unit in the run.
+    pub phase: PassPhase,
+    /// Serial recording or a true parallel scheduler batch.
+    pub kind: RecordingBatchKind,
+}
+
 /// Scheduler command-recording plan.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RecordingSchedulePlan {
@@ -270,9 +287,41 @@ pub struct RecordingSchedulePlan {
     pub unit_labels: Vec<String>,
     /// Deterministic batches over [`Self::units`].
     pub batches: Vec<RecordingBatch>,
+    /// Cached frame-global batches, avoiding per-frame filtering of the immutable plan.
+    frame_global_batches: Vec<RecordingBatch>,
+    /// Cached per-view batches, avoiding per-frame filtering of the immutable plan.
+    per_view_batches: Vec<RecordingBatch>,
+    /// Cached per-view execution runs with adjacent serial batches already coalesced.
+    per_view_execution_runs: Vec<RecordingExecutionRun>,
 }
 
 impl RecordingSchedulePlan {
+    fn from_parts(
+        units: Vec<RecordingUnit>,
+        unit_labels: Vec<String>,
+        batches: Vec<RecordingBatch>,
+    ) -> Self {
+        let frame_global_batches = batches
+            .iter()
+            .copied()
+            .filter(|batch| batch.phase == PassPhase::FrameGlobal)
+            .collect();
+        let per_view_batches: Vec<_> = batches
+            .iter()
+            .copied()
+            .filter(|batch| batch.phase == PassPhase::PerView)
+            .collect();
+        let per_view_execution_runs = build_recording_execution_runs(&per_view_batches);
+        Self {
+            units,
+            unit_labels,
+            batches,
+            frame_global_batches,
+            per_view_batches,
+            per_view_execution_runs,
+        }
+    }
+
     /// Builds a conservative all-serial plan from schedule steps.
     pub fn serial_from_steps(steps: &[ScheduleStep]) -> Self {
         let units: Vec<_> = steps
@@ -306,11 +355,7 @@ impl RecordingSchedulePlan {
                 kind: RecordingBatchKind::Serial,
             })
             .collect();
-        Self {
-            units,
-            unit_labels,
-            batches,
-        }
+        Self::from_parts(units, unit_labels, batches)
     }
 
     /// Returns the cached profiler label for `unit_idx`.
@@ -323,10 +368,16 @@ impl RecordingSchedulePlan {
 
     /// Returns batches for one pass phase.
     pub fn phase_batches(&self, phase: PassPhase) -> impl Iterator<Item = RecordingBatch> + '_ {
-        self.batches
-            .iter()
-            .copied()
-            .filter(move |batch| batch.phase == phase)
+        let batches = match phase {
+            PassPhase::FrameGlobal => self.frame_global_batches.as_slice(),
+            PassPhase::PerView => self.per_view_batches.as_slice(),
+        };
+        batches.iter().copied()
+    }
+
+    /// Returns the cached per-view execution runs used by the command recorder.
+    pub fn per_view_execution_runs(&self) -> &[RecordingExecutionRun] {
+        &self.per_view_execution_runs
     }
 
     /// Returns whether this phase has any real parallel batch.
@@ -362,11 +413,29 @@ pub(crate) fn build_recording_schedule_plan(
         .map(|unit| recording_unit_label_from_steps(steps, unit, Some(pass_info)))
         .collect();
     let batches = build_recording_batches(&units, steps, pass_info);
-    RecordingSchedulePlan {
-        units,
-        unit_labels,
-        batches,
+    RecordingSchedulePlan::from_parts(units, unit_labels, batches)
+}
+
+fn build_recording_execution_runs(batches: &[RecordingBatch]) -> Vec<RecordingExecutionRun> {
+    let mut runs: Vec<RecordingExecutionRun> = Vec::with_capacity(batches.len());
+    for batch in batches {
+        if batch.kind == RecordingBatchKind::Serial
+            && let Some(previous) = runs.last_mut()
+            && previous.kind == RecordingBatchKind::Serial
+            && previous.phase == batch.phase
+            && previous.end_unit == batch.start_unit
+        {
+            previous.end_unit = batch.end_unit;
+            continue;
+        }
+        runs.push(RecordingExecutionRun {
+            start_unit: batch.start_unit,
+            end_unit: batch.end_unit,
+            phase: batch.phase,
+            kind: batch.kind,
+        });
     }
+    runs
 }
 
 fn recording_unit_label_from_steps(

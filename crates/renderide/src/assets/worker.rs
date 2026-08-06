@@ -4,6 +4,7 @@
 //! Rayon work. This pool keeps that traffic on named secondary threads with a fixed queue and an
 //! inline fallback when the queue is saturated.
 
+use std::cell::Cell;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -13,6 +14,11 @@ use crossbeam_channel::{Receiver, Sender, TrySendError};
 
 const ASSET_WORKER_MAX_THREADS: usize = 4;
 const ASSET_WORKER_QUEUE_CAPACITY: usize = 256;
+const ASSET_WORKER_FOREGROUND_BURST: usize = 3;
+
+thread_local! {
+    static ON_ASSET_WORKER: Cell<bool> = const { Cell::new(false) };
+}
 
 /// Result of dispatching a job to the asset worker pool.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -54,6 +60,31 @@ pub(crate) fn spawn_asset_job(work: impl FnOnce() + Send + 'static) -> AssetWork
     }
 }
 
+/// Dispatches latency-tolerant work without letting it queue ahead of texture decode jobs.
+///
+/// Particle mesh construction uses this lane. Workers still service it after a bounded foreground
+/// burst, so sustained texture streaming cannot starve dynamic buffers.
+pub(crate) fn spawn_background_asset_job(
+    work: impl FnOnce() + Send + 'static,
+) -> AssetWorkerDispatch {
+    match global_asset_worker() {
+        Ok(worker) => worker.spawn_background(Box::new(work)),
+        Err(err) => {
+            logger::warn!("asset worker unavailable; running background asset job inline: {err}");
+            work();
+            AssetWorkerDispatch::Inline
+        }
+    }
+}
+
+/// Returns whether the caller is already running on the dedicated asset worker pool.
+///
+/// Particle builders use this to avoid nesting global Rayon work inside a low-priority asset job,
+/// which would otherwise compete with frame-critical renderer workers.
+pub(crate) fn is_asset_worker_thread() -> bool {
+    ON_ASSET_WORKER.with(Cell::get)
+}
+
 /// Returns the current global asset-worker diagnostics.
 pub(crate) fn diagnostic_snapshot() -> AssetWorkerDiagnosticSnapshot {
     match global_asset_worker() {
@@ -63,7 +94,8 @@ pub(crate) fn diagnostic_snapshot() -> AssetWorkerDiagnosticSnapshot {
 }
 
 struct AssetWorker {
-    sender: Option<Sender<AssetWorkerJob>>,
+    foreground_sender: Option<Sender<AssetWorkerJob>>,
+    background_sender: Option<Sender<AssetWorkerJob>>,
     stats: Arc<AssetWorkerStats>,
     threads: Vec<JoinHandle<()>>,
 }
@@ -74,21 +106,25 @@ impl AssetWorker {
         worker_count: usize,
         queue_capacity: usize,
     ) -> Result<Self, String> {
-        let (tx, rx) = crossbeam_channel::bounded(queue_capacity.max(1));
+        let (foreground_tx, foreground_rx) = crossbeam_channel::bounded(queue_capacity.max(1));
+        let background_capacity = queue_capacity.div_ceil(4).max(1);
+        let (background_tx, background_rx) = crossbeam_channel::bounded(background_capacity);
         let stats = Arc::new(AssetWorkerStats::default());
         let mut threads = Vec::with_capacity(worker_count);
         for index in 0..worker_count.max(1) {
-            let rx = rx.clone();
+            let foreground_rx = foreground_rx.clone();
+            let background_rx = background_rx.clone();
             let stats = Arc::clone(&stats);
             let name = format!("{thread_name_prefix}-{index}");
             let handle = thread::Builder::new()
                 .name(name)
-                .spawn(move || worker_loop(rx, stats))
+                .spawn(move || worker_loop(foreground_rx, background_rx, stats))
                 .map_err(|e| format!("asset worker thread creation failed: {e}"))?;
             threads.push(handle);
         }
         Ok(Self {
-            sender: Some(tx),
+            foreground_sender: Some(foreground_tx),
+            background_sender: Some(background_tx),
             stats,
             threads,
         })
@@ -103,9 +139,21 @@ impl AssetWorker {
     }
 
     fn spawn(&self, job: AssetJob) -> AssetWorkerDispatch {
+        self.spawn_in_lane(job, AssetWorkerLane::Foreground)
+    }
+
+    fn spawn_background(&self, job: AssetJob) -> AssetWorkerDispatch {
+        self.spawn_in_lane(job, AssetWorkerLane::Background)
+    }
+
+    fn spawn_in_lane(&self, job: AssetJob, lane: AssetWorkerLane) -> AssetWorkerDispatch {
         self.stats.spawned.fetch_add(1, Ordering::Relaxed);
         let worker_job = AssetWorkerJob { job };
-        let Some(sender) = self.sender.as_ref() else {
+        let sender = match lane {
+            AssetWorkerLane::Foreground => self.foreground_sender.as_ref(),
+            AssetWorkerLane::Background => self.background_sender.as_ref(),
+        };
+        let Some(sender) = sender else {
             self.run_inline(worker_job);
             return AssetWorkerDispatch::Inline;
         };
@@ -142,7 +190,8 @@ impl AssetWorker {
 
 impl Drop for AssetWorker {
     fn drop(&mut self) {
-        self.sender.take();
+        self.foreground_sender.take();
+        self.background_sender.take();
         for thread in self.threads.drain(..) {
             let _ = thread.join();
         }
@@ -153,6 +202,12 @@ type AssetJob = Box<dyn FnOnce() + Send + 'static>;
 
 struct AssetWorkerJob {
     job: AssetJob,
+}
+
+#[derive(Clone, Copy)]
+enum AssetWorkerLane {
+    Foreground,
+    Background,
 }
 
 impl AssetWorkerJob {
@@ -228,12 +283,54 @@ fn global_asset_worker() -> Result<&'static AssetWorker, &'static str> {
         .map_err(String::as_str)
 }
 
-fn worker_loop(rx: Receiver<AssetWorkerJob>, stats: Arc<AssetWorkerStats>) {
-    while let Ok(job) = rx.recv() {
+fn worker_loop(
+    foreground_rx: Receiver<AssetWorkerJob>,
+    background_rx: Receiver<AssetWorkerJob>,
+    stats: Arc<AssetWorkerStats>,
+) {
+    ON_ASSET_WORKER.with(|on_worker| on_worker.set(true));
+    let mut foreground_streak = 0usize;
+    while let Some((job, lane)) =
+        receive_worker_job(&foreground_rx, &background_rx, foreground_streak)
+    {
         profiling::scope!("asset_worker::job");
         stats.note_worker_start();
         job.run();
         stats.note_worker_done();
+        foreground_streak = match lane {
+            AssetWorkerLane::Foreground => foreground_streak.saturating_add(1),
+            AssetWorkerLane::Background => 0,
+        };
+    }
+    ON_ASSET_WORKER.with(|on_worker| on_worker.set(false));
+}
+
+fn receive_worker_job(
+    foreground_rx: &Receiver<AssetWorkerJob>,
+    background_rx: &Receiver<AssetWorkerJob>,
+    foreground_streak: usize,
+) -> Option<(AssetWorkerJob, AssetWorkerLane)> {
+    if foreground_streak >= ASSET_WORKER_FOREGROUND_BURST
+        && let Ok(job) = background_rx.try_recv()
+    {
+        return Some((job, AssetWorkerLane::Background));
+    }
+    if let Ok(job) = foreground_rx.try_recv() {
+        return Some((job, AssetWorkerLane::Foreground));
+    }
+    if let Ok(job) = background_rx.try_recv() {
+        return Some((job, AssetWorkerLane::Background));
+    }
+
+    crossbeam_channel::select! {
+        recv(foreground_rx) -> result => match result {
+            Ok(job) => Some((job, AssetWorkerLane::Foreground)),
+            Err(_) => background_rx.recv().ok().map(|job| (job, AssetWorkerLane::Background)),
+        },
+        recv(background_rx) -> result => match result {
+            Ok(job) => Some((job, AssetWorkerLane::Background)),
+            Err(_) => foreground_rx.recv().ok().map(|job| (job, AssetWorkerLane::Foreground)),
+        },
     }
 }
 

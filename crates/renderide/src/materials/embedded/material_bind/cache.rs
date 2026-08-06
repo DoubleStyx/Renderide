@@ -9,6 +9,7 @@ use super::super::texture_resolve::{
     ResolvedTextureBinding, primary_texture_2d_asset_id, resolved_texture_binding_for_host,
     texture_property_ids_for_binding,
 };
+use super::uniform::{MaterialPropertyGenerations, material_property_generations};
 use crate::frame_contract::OffscreenWriteTarget;
 use crate::gpu_pools::SamplerState;
 use crate::materials::host_data::{MaterialPropertyLookupIds, MaterialPropertyStore};
@@ -107,24 +108,22 @@ pub(super) struct TextureDebugCacheKey {
     pub(super) stem_hash: u64,
     pub(super) material_asset_id: i32,
     pub(super) property_block_slot0: Option<i32>,
-    pub(super) mutation_generation: u64,
+    pub(super) renderer_property_block_id: Option<i32>,
+    pub(super) property_generations: MaterialPropertyGenerations,
 }
 
 /// Key for [`EmbeddedMaterialBindResources`](super::EmbeddedMaterialBindResources) `@group(1)` bind-group cache (matches internal hashing).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub(crate) struct MaterialBindCacheKey {
     pub(super) stem_hash: u64,
-    /// Host material asset id when the reflected layout has a material uniform block.
-    /// No-uniform layouts canonicalize this field because the bind group only depends on
-    /// texture/sampler state.
-    pub(super) material_asset_id: i32,
-    /// Optional per-slot `MaterialPropertyBlock` id for uniform-backed layouts.
-    pub(super) property_block_slot0: Option<i32>,
-    /// Optional renderer-level `MaterialPropertyBlock` id for uniform-backed layouts.
-    pub(super) renderer_property_block_id: Option<i32>,
     pub(super) texture_bind_signature: u64,
     /// Distinguishes direct, untracked offscreen, and host render-texture write targets.
     pub(super) offscreen_write_target: OffscreenWriteTarget,
+    /// Uniform-arena shard whose persistent buffer is bound at group 1.
+    ///
+    /// Material identity is deliberately absent: constants are selected by dynamic offset, so
+    /// materials using the same stem, textures, and arena buffer can share one bind group.
+    pub(super) uniform_arena_shard: Option<u8>,
     /// Bumps whenever the shared material uniform arena reallocates to a new GPU buffer.
     pub(super) uniform_arena_generation: u64,
 }
@@ -171,7 +170,8 @@ impl EmbeddedMaterialBindResources {
             stem_hash: stem_hash(stem),
             material_asset_id: lookup.material_asset_id,
             property_block_slot0: lookup.mesh_property_block_slot0,
-            mutation_generation: store.mutation_generation(lookup),
+            renderer_property_block_id: lookup.mesh_renderer_property_block_id,
+            property_generations: material_property_generations(store, lookup),
         };
         {
             let mut cache = self.texture_debug_cache.lock();

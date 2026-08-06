@@ -24,6 +24,8 @@ pub struct RenderWorldMaintenanceProfileSample {
     pub transform_root_full_space_count: usize,
     /// Renderer records dirtied by mesh-asset mutations this frame.
     pub mesh_asset_dirty_renderer_count: usize,
+    /// Skinned renderer records whose deformation eligibility may have changed.
+    pub deformation_dirty_renderer_count: usize,
     /// Renderer records whose retained templates were requested dirty this frame.
     pub dirty_renderer_count: usize,
     /// Renderer records whose retained bounds were requested dirty this frame.
@@ -44,6 +46,20 @@ pub struct RenderWorldMaintenanceProfileSample {
     pub full_world_rebuild_count: usize,
     /// Prepared snapshots rebuilt only because generated particle meshes changed.
     pub particle_snapshot_rebuild_count: usize,
+    /// Generated particle renderer ranges patched directly in the prepared snapshot.
+    pub particle_renderer_patch_count: usize,
+    /// Fresh generated particle draws copied by direct range patches.
+    pub particle_patch_draw_count: usize,
+    /// Direct particle updates whose prepared metadata needed structural reconstruction.
+    pub particle_patch_structural_rebuild_count: usize,
+    /// Static/skinned renderer ranges patched directly in the prepared snapshot.
+    pub mesh_renderer_patch_count: usize,
+    /// Static/skinned renderer patch candidates suppressed as semantic no-ops.
+    pub mesh_renderer_patch_noop_count: usize,
+    /// Fresh static/skinned draw rows considered by direct range patching.
+    pub mesh_patch_draw_count: usize,
+    /// Static/skinned range patches that rebuilt prepared metadata.
+    pub mesh_patch_structural_rebuild_count: usize,
     /// Prepared-snapshot copy tasks built while rebuilding retained templates.
     pub snapshot_rebuild_task_count: usize,
     /// Retained draw templates considered while rebuilding prepared snapshots.
@@ -58,6 +74,12 @@ pub struct RenderWorldMaintenanceProfileSample {
     pub retained_template_count: usize,
     /// Render-world caches serving contexts with no draw-prep overrides.
     pub context_invariant_count: usize,
+    /// Lightweight prepared overlays serving contexts with exact overrides.
+    pub context_overlay_count: usize,
+    /// Base prepared snapshots synchronized into context overlays.
+    pub context_overlay_sync_count: usize,
+    /// Exact override renderer ranges patched into context overlays.
+    pub context_override_patch_count: usize,
     /// Frames where this render world proved its retained snapshot did not need rebuilding.
     pub steady_state_skip_count: usize,
 }
@@ -95,6 +117,10 @@ pub fn plot_render_world_maintenance(sample: RenderWorldMaintenanceProfileSample
     tracy_plot!(
         "render_world::mesh_asset_dirty",
         sample.mesh_asset_dirty_renderer_count as f64
+    );
+    tracy_plot!(
+        "render_world::deformation_dirty",
+        sample.deformation_dirty_renderer_count as f64
     );
     tracy_plot!(
         "render_world::dirty_renderers",
@@ -137,6 +163,34 @@ pub fn plot_render_world_maintenance(sample: RenderWorldMaintenanceProfileSample
         sample.particle_snapshot_rebuild_count as f64
     );
     tracy_plot!(
+        "render_world::particle_renderer_patches",
+        sample.particle_renderer_patch_count as f64
+    );
+    tracy_plot!(
+        "render_world::particle_patch_draws",
+        sample.particle_patch_draw_count as f64
+    );
+    tracy_plot!(
+        "render_world::particle_patch_structural_rebuild",
+        sample.particle_patch_structural_rebuild_count as f64
+    );
+    tracy_plot!(
+        "render_world::mesh_renderer_patches",
+        sample.mesh_renderer_patch_count as f64
+    );
+    tracy_plot!(
+        "render_world::mesh_renderer_patch_noops",
+        sample.mesh_renderer_patch_noop_count as f64
+    );
+    tracy_plot!(
+        "render_world::mesh_patch_draws",
+        sample.mesh_patch_draw_count as f64
+    );
+    tracy_plot!(
+        "render_world::mesh_patch_structural_rebuild",
+        sample.mesh_patch_structural_rebuild_count as f64
+    );
+    tracy_plot!(
         "render_world::snapshot_tasks",
         sample.snapshot_rebuild_task_count as f64
     );
@@ -163,6 +217,18 @@ pub fn plot_render_world_maintenance(sample: RenderWorldMaintenanceProfileSample
     tracy_plot!(
         "render_world::context_invariant",
         sample.context_invariant_count as f64
+    );
+    tracy_plot!(
+        "render_world::context_overlay",
+        sample.context_overlay_count as f64
+    );
+    tracy_plot!(
+        "render_world::context_overlay_sync",
+        sample.context_overlay_sync_count as f64
+    );
+    tracy_plot!(
+        "render_world::context_override_patches",
+        sample.context_override_patch_count as f64
     );
     tracy_plot!(
         "render_world::steady_state_skip",

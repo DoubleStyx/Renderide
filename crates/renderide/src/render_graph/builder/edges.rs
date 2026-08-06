@@ -33,21 +33,24 @@ pub(super) fn explicit_edges(
     Ok(edges)
 }
 
-/// Adds linear-size relay edges so every pass in set `a` precedes every pass in set `b`.
-fn relay_all_before(a: &[usize], b: &[usize], edges: &mut BTreeSet<(usize, usize)>) {
+/// Adds the exact dependency relation required for every pass in `a` to precede every pass in
+/// `b`.
+///
+/// A previous linear-size relay representation routed the relation through the first pass in
+/// `b`. Although that preserved ordering, it also made that otherwise-independent pass a
+/// dependency of every sibling in `b`, adding a synthetic topological wave. Group boundaries are
+/// compiled once and the retained render graphs are small, so the exact bipartite relation is the
+/// better trade: no false runtime dependency in exchange for a few more build-time edges.
+fn add_all_before_edges(a: &[usize], b: &[usize], edges: &mut BTreeSet<(usize, usize)>) {
     if a.is_empty() || b.is_empty() {
         return;
     }
-    let mut b_sorted = b.to_vec();
-    b_sorted.sort_unstable();
-    let rep_b = b_sorted[0];
-    for &ai in a {
-        if ai != rep_b {
-            edges.insert((ai, rep_b));
+    for &before in a {
+        for &after in b {
+            if before != after {
+                edges.insert((before, after));
+            }
         }
-    }
-    for &bi in b_sorted.iter().skip(1) {
-        edges.insert((rep_b, bi));
     }
 }
 
@@ -74,7 +77,7 @@ pub(super) fn add_group_edges(
     }
     frame_global.sort_unstable();
     per_view.sort_unstable();
-    relay_all_before(&frame_global, &per_view, edges);
+    add_all_before_edges(&frame_global, &per_view, edges);
 
     for (gb_idx, gb) in builder.groups.iter().enumerate() {
         let gb_id = GroupId(gb_idx);
@@ -91,7 +94,7 @@ pub(super) fn add_group_edges(
                 .filter_map(|(i, s)| (s.group == ga_id).then_some(i))
                 .collect();
             passes_a.sort_unstable();
-            relay_all_before(&passes_a, &passes_b, edges);
+            add_all_before_edges(&passes_a, &passes_b, edges);
         }
     }
     Ok(())

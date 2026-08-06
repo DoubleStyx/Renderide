@@ -65,6 +65,11 @@ pub struct PerViewFrameState {
 pub struct PerViewPerDrawScratch {
     /// Packed per-draw uniforms before uploading into the per-view storage slab.
     pub uniforms: Vec<PaddedPerDrawUniforms>,
+    /// Dirty flags for fixed-size row chunks in [`Self::uniforms`].
+    ///
+    /// The buffer persists across frames so unchanged static rows can skip CPU staging and GPU
+    /// copies while sparse particle/transform changes upload only the affected chunks.
+    pub dirty_chunks: Vec<bool>,
     /// Contiguous `(first_draw_idx, last_draw_idx)` runs of identical material batch keys for
     /// this view's sorted draw list. Cleared and refilled by world-mesh forward frame planning;
     /// held here so the boundary Vec does not reallocate as it grows across frames.

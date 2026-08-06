@@ -897,11 +897,29 @@ fn materialize_gpu_cull_result_runs(
             fixed_count: core_draw.fixed_count,
         };
         match pending_run.kind {
-            PendingCullRunKind::Depth { key, narrow } => {
-                depth_runs.push(GpuCulledDepthRun { key, narrow, draw });
+            PendingCullRunKind::Depth {
+                key,
+                stencil_reference,
+                narrow,
+            } => {
+                depth_runs.push(GpuCulledDepthRun {
+                    stencil_reference,
+                    key,
+                    narrow,
+                    draw,
+                });
             }
-            PendingCullRunKind::Normal { key, narrow } => {
-                normal_runs.push(GpuCulledNormalRun { key, narrow, draw });
+            PendingCullRunKind::Normal {
+                key,
+                stencil_reference,
+                narrow,
+            } => {
+                normal_runs.push(GpuCulledNormalRun {
+                    stencil_reference,
+                    key,
+                    narrow,
+                    draw,
+                });
             }
             PendingCullRunKind::Forward {
                 phase,
@@ -983,6 +1001,8 @@ impl GpuCulledIndirectDraw {
 /// One depth-prepass pipeline/index-width run.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct GpuCulledDepthRun {
+    /// Dynamic stencil reference shared by the run; pass state in wgpu, not pipeline state.
+    pub(super) stencil_reference: u32,
     pub(super) key: WorldMeshForwardDepthPrepassPipelineKey,
     pub(super) narrow: bool,
     pub(super) draw: GpuCulledIndirectDraw,
@@ -991,6 +1011,8 @@ pub(super) struct GpuCulledDepthRun {
 /// One view-normal pipeline/index-width run.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct GpuCulledNormalRun {
+    /// Dynamic stencil reference shared by the run; pass state in wgpu, not pipeline state.
+    pub(super) stencil_reference: u32,
     pub(super) key: WorldMeshForwardNormalPipelineKey,
     pub(super) narrow: bool,
     pub(super) draw: GpuCulledIndirectDraw,
@@ -1059,9 +1081,14 @@ impl WorldMeshGpuCullResult {
         rpass.set_bind_group(0, per_draw_bind_group, &[0]);
         rpass.set_vertex_buffer(0, arena.position_buffer().slice(..));
         let mut last_index_narrow: Option<bool> = None;
+        let mut last_stencil_ref: Option<u32> = None;
         for run in self.depth_runs.iter() {
             let pipeline = pipelines.pipeline(device, run.key);
             rpass.set_pipeline(pipeline.as_ref());
+            if last_stencil_ref != Some(run.stencil_reference) {
+                rpass.set_stencil_reference(run.stencil_reference);
+                last_stencil_ref = Some(run.stencil_reference);
+            }
             if last_index_narrow != Some(run.narrow) {
                 let (index_buffer, index_format) = if run.narrow {
                     (arena.index_buffer_u16(), wgpu::IndexFormat::Uint16)
@@ -1094,9 +1121,14 @@ impl WorldMeshGpuCullResult {
         rpass.set_vertex_buffer(0, arena.position_buffer().slice(..));
         rpass.set_vertex_buffer(1, normals.slice(..));
         let mut last_index_narrow: Option<bool> = None;
+        let mut last_stencil_ref: Option<u32> = None;
         for run in self.normal_runs.iter() {
             let pipeline = pipelines.pipeline(device, run.key);
             rpass.set_pipeline(pipeline.as_ref());
+            if last_stencil_ref != Some(run.stencil_reference) {
+                rpass.set_stencil_reference(run.stencil_reference);
+                last_stencil_ref = Some(run.stencil_reference);
+            }
             if last_index_narrow != Some(run.narrow) {
                 let (index_buffer, index_format) = if run.narrow {
                     (arena.index_buffer_u16(), wgpu::IndexFormat::Uint16)
@@ -1134,10 +1166,12 @@ struct PendingCullCandidate {
 enum PendingCullRunKind {
     Depth {
         key: WorldMeshForwardDepthPrepassPipelineKey,
+        stencil_reference: u32,
         narrow: bool,
     },
     Normal {
         key: WorldMeshForwardNormalPipelineKey,
+        stencil_reference: u32,
         narrow: bool,
     },
     Forward {
@@ -1200,23 +1234,27 @@ fn pending_depth_like_runs_match(a: PendingCullRunKind, b: PendingCullRunKind) -
         (
             PendingCullRunKind::Depth {
                 key: a_key,
+                stencil_reference: a_ref,
                 narrow: a_narrow,
             },
             PendingCullRunKind::Depth {
                 key: b_key,
+                stencil_reference: b_ref,
                 narrow: b_narrow,
             },
-        ) => a_key == b_key && a_narrow == b_narrow,
+        ) => a_key == b_key && a_ref == b_ref && a_narrow == b_narrow,
         (
             PendingCullRunKind::Normal {
                 key: a_key,
+                stencil_reference: a_ref,
                 narrow: a_narrow,
             },
             PendingCullRunKind::Normal {
                 key: b_key,
+                stencil_reference: b_ref,
                 narrow: b_narrow,
             },
-        ) => a_key == b_key && a_narrow == b_narrow,
+        ) => a_key == b_key && a_ref == b_ref && a_narrow == b_narrow,
         _ => false,
     }
 }
@@ -1273,6 +1311,7 @@ fn append_depth_candidates(
         out.push_candidate_run(
             PendingCullRunKind::Depth {
                 key,
+                stencil_reference: item.batch_key.render_state.stencil_reference(),
                 narrow: alloc.narrow_indices,
             },
             candidates,
@@ -1309,6 +1348,7 @@ fn append_normal_candidates(
         out.push_candidate_run(
             PendingCullRunKind::Normal {
                 key,
+                stencil_reference: item.batch_key.render_state.stencil_reference(),
                 narrow: alloc.narrow_indices,
             },
             candidates,
@@ -1768,7 +1808,11 @@ mod tests {
             runs: vec![PendingCullRun {
                 candidate_start: 0,
                 candidate_count: 1,
-                kind: PendingCullRunKind::Depth { key, narrow: false },
+                kind: PendingCullRunKind::Depth {
+                    key,
+                    stencil_reference: 0,
+                    narrow: false,
+                },
             }],
         };
         let mut by_space = HashMap::new();

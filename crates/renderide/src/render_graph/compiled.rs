@@ -1,8 +1,12 @@
 //! Compiled DAG: immutable pass order and per-frame execution.
 
+use hashbrown::HashMap;
+use parking_lot::Mutex;
+
 use crate::gpu::{GpuContext, GpuLimits};
 use crate::render_graph::GraphExecutionBackend;
 
+use super::blackboard::Blackboard;
 use super::pass::PassNode;
 use super::resources::{
     ImportedBufferDecl, ImportedTextureDecl, TextureHandle, TransientSubresourceDesc,
@@ -37,6 +41,10 @@ pub(super) use resource::{
     ResourceLifetime, ResourceLifetimeLane, ResourceLifetimeSegment,
 };
 
+/// Typical prepared-view blackboard size: caller draw plans, graph frame/settings slots, prepared
+/// forward plans, optional MSAA views, HUD output, and command statistics.
+const PREPARED_VIEW_BLACKBOARD_SLOT_CAPACITY: usize = 12;
+
 /// Borrows shared across frame-global and per-view [`CompiledRenderGraph::execute_multi_view`] passes.
 pub(super) struct MultiViewExecutionContext<'a> {
     /// GPU context (surface, swapchain, submits).
@@ -67,6 +75,31 @@ impl CompiledRenderGraph {
         for pass in &mut self.passes {
             pass.release_view_resources(retired_views);
         }
+        let mut pool = self.view_blackboard_pool.lock();
+        for view_id in retired_views {
+            pool.remove(view_id);
+        }
+    }
+
+    /// Acquires a retained slot table and moves this frame's caller-provided seeds into it.
+    pub(super) fn acquire_view_blackboard(
+        &self,
+        view_id: ViewId,
+        initial: Blackboard,
+    ) -> Blackboard {
+        let mut blackboard = self
+            .view_blackboard_pool
+            .lock()
+            .remove(&view_id)
+            .unwrap_or_else(|| Blackboard::with_capacity(PREPARED_VIEW_BLACKBOARD_SLOT_CAPACITY));
+        blackboard.extend(initial);
+        blackboard
+    }
+
+    /// Returns an emptied per-view slot table to the graph for reuse on the next frame.
+    pub(super) fn recycle_view_blackboard(&self, view_id: ViewId, mut blackboard: Blackboard) {
+        blackboard.clear_for_reuse();
+        self.view_blackboard_pool.lock().insert(view_id, blackboard);
     }
 }
 
@@ -128,6 +161,9 @@ pub struct CompiledRenderGraph {
     /// for the MSAA depth and R32-float depth-resolve scratch resources.
     pub(super) main_graph_msaa_transient_handles: Option<[TextureHandle; 2]>,
     pub(super) upload_batch: FrameUploadBatch,
+    /// Empty per-view blackboard slot tables retained by view id to avoid rebuilding hash-table
+    /// allocations every frame.
+    pub(super) view_blackboard_pool: Mutex<HashMap<ViewId, Blackboard>>,
 }
 
 pub(super) struct ResolvedView<'a> {
@@ -144,4 +180,30 @@ pub(super) struct ResolvedView<'a> {
     pub(super) post_processing: ViewPostProcessing,
     // MSAA views are now in the per-view blackboard (MsaaViewsSlot), resolved from graph
     // transient textures by the executor via resolve_forward_msaa_views_from_graph_resources.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render_graph::blackboard::BlackboardSlot;
+    use crate::render_graph::builder::GraphBuilder;
+
+    struct RecycledSlot;
+
+    impl BlackboardSlot for RecycledSlot {
+        type Value = u32;
+    }
+
+    #[test]
+    fn recycled_view_blackboard_drops_old_values_before_reseeding() {
+        let graph = GraphBuilder::new().build().expect("empty graph");
+        let mut first_seed = Blackboard::new();
+        first_seed.insert::<RecycledSlot>(1);
+        let first = graph.acquire_view_blackboard(ViewId::Main, first_seed);
+        assert_eq!(first.get::<RecycledSlot>(), Some(&1));
+        graph.recycle_view_blackboard(ViewId::Main, first);
+
+        let second = graph.acquire_view_blackboard(ViewId::Main, Blackboard::new());
+        assert!(!second.contains::<RecycledSlot>());
+    }
 }

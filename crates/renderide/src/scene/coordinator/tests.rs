@@ -7,10 +7,14 @@
 //! scale flags). Shared test-only helpers on [`super::SceneCoordinator`] live here so both
 //! subject files can use them.
 
-use crate::scene::overrides::RenderTransformOverrideEntry;
+use crate::scene::overrides::{
+    MaterialOverrideBinding, MeshRendererOverrideTarget, RenderMaterialOverrideEntry,
+    RenderTransformOverrideEntry,
+};
 use crate::scene::render_space::{LayerAssignmentEntry, RenderSpaceState};
 use crate::scene::{
-    CameraRenderableEntry, ReflectionProbeEntry, SkinnedMeshRenderer, StaticMeshRenderer,
+    BillboardRenderBufferEntry, CameraRenderableEntry, MeshRenderBufferEntry, ReflectionProbeEntry,
+    SkinnedMeshRenderer, StaticMeshRenderer,
 };
 use crate::shared::{CameraPortalState, LayerType, RenderTransform, RenderingContext};
 
@@ -116,6 +120,50 @@ impl SceneCoordinator {
             });
     }
 
+    /// Appends one material-slot override to a seeded render space (unit tests only).
+    pub(crate) fn test_push_material_override(
+        &mut self,
+        id: RenderSpaceId,
+        node_id: i32,
+        context: RenderingContext,
+        target: MeshRendererOverrideTarget,
+        material_slot_index: i32,
+        material_asset_id: i32,
+    ) {
+        let space = self.spaces.get_mut(&id).expect("seeded space");
+        space
+            .render_material_overrides
+            .push(RenderMaterialOverrideEntry {
+                node_id,
+                context,
+                target,
+                material_overrides: vec![MaterialOverrideBinding {
+                    material_slot_index,
+                    material_asset_id,
+                }],
+            });
+    }
+
+    /// Appends PhotonDust billboard renderer rows to a seeded render space (unit tests only).
+    pub(crate) fn test_push_billboard_render_buffers(
+        &mut self,
+        id: RenderSpaceId,
+        renderers: impl IntoIterator<Item = BillboardRenderBufferEntry>,
+    ) {
+        let space = self.spaces.get_mut(&id).expect("seeded space");
+        space.billboard_render_buffers.extend(renderers);
+    }
+
+    /// Appends PhotonDust mesh-particle renderer rows to a seeded render space (unit tests only).
+    pub(crate) fn test_push_mesh_render_buffers(
+        &mut self,
+        id: RenderSpaceId,
+        renderers: impl IntoIterator<Item = MeshRenderBufferEntry>,
+    ) {
+        let space = self.spaces.get_mut(&id).expect("seeded space");
+        space.mesh_render_buffers.extend(renderers);
+    }
+
     /// Inserts a render space with static mesh renderers (unit tests only).
     pub(crate) fn test_insert_static_mesh_renderers(
         &mut self,
@@ -130,6 +178,18 @@ impl SceneCoordinator {
                 ..Default::default()
             },
         );
+    }
+
+    /// Replaces static mesh renderers on an already seeded render space (unit tests only).
+    pub(crate) fn test_set_static_mesh_renderers(
+        &mut self,
+        id: RenderSpaceId,
+        renderers: Vec<StaticMeshRenderer>,
+    ) {
+        self.spaces
+            .get_mut(&id)
+            .expect("seeded space")
+            .static_mesh_renderers = renderers;
     }
 
     /// Appends camera renderables to a seeded render space (unit tests only).

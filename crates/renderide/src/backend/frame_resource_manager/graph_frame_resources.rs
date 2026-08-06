@@ -94,10 +94,11 @@ impl GraphPerDrawSlabResources for FrameResourceManager {
         device: &wgpu::Device,
         view_id: ViewId,
         draw_count: usize,
-    ) -> Option<wgpu::Buffer> {
+    ) -> Option<(wgpu::Buffer, bool)> {
         let per_draw_slot = self.per_view_per_draw(view_id)?;
         let mut per_draw = per_draw_slot.lock();
         let replaced = per_draw.ensure_draw_slot_capacity(device, draw_count);
+        let contents_invalidated = replaced.is_some();
         let storage = per_draw.per_draw_storage.clone();
         drop(per_draw);
         if let Some((_old_storage, old_bind_group)) = replaced
@@ -105,21 +106,20 @@ impl GraphPerDrawSlabResources for FrameResourceManager {
         {
             fgpu.defer_bind_group_drop(old_bind_group);
         }
-        Some(storage)
+        Some((storage, contents_invalidated))
     }
 
     fn with_per_view_per_draw_scratch(
         &self,
         view_id: ViewId,
-        f: &mut dyn FnMut(&mut Vec<PaddedPerDrawUniforms>),
+        f: &mut dyn FnMut(&mut Vec<PaddedPerDrawUniforms>, &mut Vec<bool>),
     ) -> bool {
         let Some(scratch_slot) = self.per_view_per_draw_scratch(view_id) else {
             return false;
         };
         let mut scratch_guard = scratch_slot.lock();
         let scratch = &mut *scratch_guard;
-        let uniforms = &mut scratch.uniforms;
-        f(uniforms);
+        f(&mut scratch.uniforms, &mut scratch.dirty_chunks);
         drop(scratch_guard);
         true
     }

@@ -224,6 +224,8 @@ impl CompiledRenderGraph {
             let estimated_draw_count = mv_ctx
                 .backend
                 .estimate_view_blackboard_prepare_draw_count(&view.initial_blackboard);
+            let initial_blackboard =
+                self.acquire_view_blackboard(view_id, std::mem::take(&mut view.initial_blackboard));
             work_items.push(PerViewWorkItem {
                 view_idx,
                 host_camera,
@@ -233,7 +235,7 @@ impl CompiledRenderGraph {
                 clear: view.clear,
                 post_processing,
                 target_is_swapchain,
-                initial_blackboard: std::mem::take(&mut view.initial_blackboard),
+                initial_blackboard,
                 resolved,
                 frame_input,
                 estimated_draw_count,

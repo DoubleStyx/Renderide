@@ -158,6 +158,27 @@ impl MeshRendererStateApplyPlan {
         }
     }
 
+    /// Returns whether applying this merged plan changes retained draw-preparation state.
+    ///
+    /// Motion-vector mode is intentionally absent: static/skinned prepared draw rows do not cache
+    /// or consume it. The scene mirror still applies that field, but a motion-only host row must
+    /// not invalidate the retained render world.
+    pub(crate) fn changes_render_world_state(&self, current: &StaticMeshRenderer) -> bool {
+        self.mesh_asset_id != current.mesh_asset_id
+            || self.sorting_order != current.sorting_order
+            || self.shadow_cast_mode != current.shadow_cast_mode
+            || self.material_update.as_ref().is_some_and(|materials| {
+                !semantic_material_slots_match(
+                    &materials.slots,
+                    materials.primary_material,
+                    materials.primary_property_block,
+                    &current.material_slots,
+                    current.primary_material_asset_id,
+                    current.primary_property_block_id,
+                )
+            })
+    }
+
     /// Applies this decoded plan to one renderer.
     pub(crate) fn apply_to<S: MeshRendererStateSink>(self, drawable: &mut S) {
         drawable.set_mesh_visual_header(
@@ -174,6 +195,99 @@ impl MeshRendererStateApplyPlan {
             );
         }
     }
+}
+
+/// Compares the material-slot state observed by prepared renderer expansion.
+///
+/// Slots below the missing-material sentinel (`-1`) do not draw, while the `-1` Null-material
+/// fallback ignores property blocks. Suppressed-only lists compare equal regardless of length
+/// because they cannot emit a material-stack row. This stays allocation-free on the repeated
+/// mesh-state classification hot path.
+fn semantic_material_slots_match(
+    left_slots: &[MeshMaterialSlot],
+    left_primary: Option<i32>,
+    left_primary_property_block: Option<i32>,
+    right_slots: &[MeshMaterialSlot],
+    right_primary: Option<i32>,
+    right_primary_property_block: Option<i32>,
+) -> bool {
+    let left_count = resolved_material_slot_count(left_slots, left_primary);
+    let right_count = resolved_material_slot_count(right_slots, right_primary);
+    let left_has_draw = (0..left_count).any(|index| {
+        resolved_semantic_material_slot(
+            left_slots,
+            left_primary,
+            left_primary_property_block,
+            index,
+        )
+        .is_some()
+    });
+    let right_has_draw = (0..right_count).any(|index| {
+        resolved_semantic_material_slot(
+            right_slots,
+            right_primary,
+            right_primary_property_block,
+            index,
+        )
+        .is_some()
+    });
+    if !left_has_draw || !right_has_draw {
+        return left_has_draw == right_has_draw;
+    }
+    left_count == right_count
+        && (0..left_count).all(|index| {
+            resolved_semantic_material_slot(
+                left_slots,
+                left_primary,
+                left_primary_property_block,
+                index,
+            ) == resolved_semantic_material_slot(
+                right_slots,
+                right_primary,
+                right_primary_property_block,
+                index,
+            )
+        })
+}
+
+fn resolved_material_slot_count(
+    slots: &[MeshMaterialSlot],
+    primary_material: Option<i32>,
+) -> usize {
+    if slots.is_empty() {
+        usize::from(primary_material.is_some())
+    } else {
+        slots.len()
+    }
+}
+
+fn resolved_semantic_material_slot(
+    slots: &[MeshMaterialSlot],
+    primary_material: Option<i32>,
+    primary_property_block: Option<i32>,
+    index: usize,
+) -> Option<(i32, Option<i32>)> {
+    if let Some(slot) = slots.get(index) {
+        return semantic_material_slot(slot.material_asset_id, slot.property_block_id);
+    }
+    (slots.is_empty() && index == 0)
+        .then(|| semantic_material_slot(primary_material?, primary_property_block))
+        .flatten()
+}
+
+fn semantic_material_slot(
+    material_asset_id: i32,
+    property_block_id: Option<i32>,
+) -> Option<(i32, Option<i32>)> {
+    if material_asset_id < -1 {
+        return None;
+    }
+    Some((
+        material_asset_id,
+        (material_asset_id != -1)
+            .then_some(property_block_id)
+            .flatten(),
+    ))
 }
 
 impl MeshRendererStateSink for StaticMeshRenderer {

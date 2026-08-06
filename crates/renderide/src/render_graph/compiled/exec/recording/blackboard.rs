@@ -48,15 +48,13 @@ impl CompiledRenderGraph {
     ) -> Blackboard {
         profiling::scope!("graph::per_view::build_blackboard");
         let mut view_blackboard = initial_blackboard;
-        let mut graph_blackboard = Blackboard::new();
         if let Some(msaa_views) = helpers::resolve_forward_msaa_views_from_graph_resources(
             frame_params,
             graph_resources,
             self.main_graph_msaa_transient_handles,
         ) {
-            graph_blackboard.insert::<MsaaViewsSlot>(msaa_views);
+            view_blackboard.insert::<MsaaViewsSlot>(msaa_views);
         }
-        view_blackboard.extend(graph_blackboard);
         view_blackboard
     }
 

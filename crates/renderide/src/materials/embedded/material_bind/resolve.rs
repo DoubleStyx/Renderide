@@ -15,7 +15,9 @@ use super::super::texture_resolve::{
     resolved_texture_binding_for_host, texture_bind_signature, texture_property_ids_for_binding,
 };
 use super::cache::EmbeddedSamplerCacheKey;
-use super::uniform::MaterialUniformCacheKey;
+use super::uniform::{
+    MaterialPropertyGenerations, MaterialUniformCacheKey, material_property_generations,
+};
 use crate::embedded_shaders::EmbeddedTextureDefaultKind;
 use crate::frame_contract::OffscreenWriteTarget;
 use crate::materials::host_data::{MaterialPropertyLookupIds, MaterialPropertyStore};
@@ -30,9 +32,9 @@ pub(super) struct EmbeddedGroup1Snapshot {
 
 /// Identity of one embedded `@group(1)` resolution, including every input that can change it.
 ///
-/// `store_mutation_generation` covers material property writes; `texture_binding_epoch` covers pool
-/// residency, view generation, and sampler changes, which never touch the property store. Dropping
-/// either term makes the cache serve bindings that no longer describe live state.
+/// `property_generations` records each property source independently; `texture_binding_epoch`
+/// covers pool residency, view generation, and sampler changes, which never touch the property
+/// store. Dropping either term makes the cache serve bindings that no longer describe live state.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct EmbeddedBindResolveCacheKey {
     stem_hash: u64,
@@ -41,8 +43,29 @@ pub(super) struct EmbeddedBindResolveCacheKey {
     property_block_slot0: Option<i32>,
     renderer_property_block_id: Option<i32>,
     offscreen_write_target: OffscreenWriteTarget,
-    store_mutation_generation: u64,
+    property_generations: MaterialPropertyGenerations,
     texture_binding_epoch: u64,
+}
+
+impl EmbeddedBindResolveCacheKey {
+    pub(super) fn new(
+        stem: &str,
+        shader_variant_bits: Option<u32>,
+        store: &MaterialPropertyStore,
+        lookup: MaterialPropertyLookupIds,
+        offscreen_write_target: OffscreenWriteTarget,
+    ) -> Self {
+        Self {
+            stem_hash: stem_hash(stem),
+            shader_variant_bits,
+            material_asset_id: lookup.material_asset_id,
+            property_block_slot0: lookup.mesh_property_block_slot0,
+            renderer_property_block_id: lookup.mesh_renderer_property_block_id,
+            offscreen_write_target,
+            property_generations: material_property_generations(store, lookup),
+            texture_binding_epoch: crate::gpu_pools::resource_pool::texture_binding_epoch(),
+        }
+    }
 }
 
 /// Stem layout, uniform/bind cache keys, and resolved primary texture ids for embedded `@group(1)` wiring.
@@ -67,7 +90,7 @@ impl EmbeddedMaterialBindResources {
     /// Resolves stem layout, primary texture ids, texture signature, and LRU cache keys for embedded binds.
     ///
     /// The texture bind signature in [`MaterialBindCacheKey`] must reflect pool residency and sampler state.
-    /// A cheaper fingerprint that omits it (e.g. keyed only by [`MaterialPropertyStore::mutation_generation`])
+    /// A cheaper fingerprint that omits it (e.g. keyed only by property generations)
     /// would be **unsound**: material mutations do not bump generation when textures stream mips or pools
     /// change without a store write. Any future L1 fast path must include this signature or a dedicated
     /// texture-binding epoch bumped on those events.
@@ -81,22 +104,19 @@ impl EmbeddedMaterialBindResources {
         offscreen_write_target: OffscreenWriteTarget,
     ) -> Result<EmbeddedBindInputResolution, EmbeddedMaterialBindError> {
         profiling::scope!("materials::embedded_resolve_bind_inputs");
-        let sh = stem_hash(stem);
-        let cache_key = EmbeddedBindResolveCacheKey {
-            stem_hash: sh,
+        let cache_key = EmbeddedBindResolveCacheKey::new(
+            stem,
             shader_variant_bits,
-            material_asset_id: lookup.material_asset_id,
-            property_block_slot0: lookup.mesh_property_block_slot0,
-            renderer_property_block_id: lookup.mesh_renderer_property_block_id,
+            store,
+            lookup,
             offscreen_write_target,
-            store_mutation_generation: store.mutation_generation(lookup),
-            texture_binding_epoch: crate::gpu_pools::resource_pool::texture_binding_epoch(),
-        };
+        );
         if let Some(hit) = self.resolve_cache.get_cloned(&cache_key) {
             profiling::scope!("materials::embedded_resolve_cache_hit");
             return Ok(hit);
         }
 
+        let sh = cache_key.stem_hash;
         let layout = self.stem_layout(stem)?;
 
         let texture_2d_asset_id =

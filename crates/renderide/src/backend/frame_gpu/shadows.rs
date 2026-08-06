@@ -52,6 +52,13 @@ const SHADOW_SLAB_PARALLEL_CHUNKS_PER_TASK: usize = 1;
 const SHADOW_ATLAS_PARALLEL_MIN_LAYERS: usize = 2;
 /// Minimum visible group work before shadow atlas command recording uses Rayon.
 const SHADOW_ATLAS_PARALLEL_MIN_VISIBLE_GROUPS: usize = RENDER_COMMAND_CHUNK_DRAWS;
+/// Maximum command buffers emitted by one split shadow-atlas pass.
+///
+/// More encoders increase fixed `CommandEncoder::finish` and submit bookkeeping faster than they
+/// improve CPU occupancy for the small layer counts used by the atlas.
+const SHADOW_ATLAS_PARALLEL_MAX_ENCODERS: usize = 4;
+/// Estimated group/draw work required to amortize one split command buffer.
+const SHADOW_ATLAS_PARALLEL_MIN_WORK_PER_ENCODER: usize = RENDER_COMMAND_CHUNK_DRAWS * 2;
 
 const SHADOW_NORMAL_MATRIX_IDENTITY: [[f32; 4]; 3] = [
     [1.0, 0.0, 0.0, 0.0],
@@ -121,12 +128,12 @@ fn shadow_view_uses_radial_depth(kind: u32) -> bool {
     matches!(kind, SHADOW_VIEW_KIND_POINT | SHADOW_VIEW_KIND_SPOT)
 }
 
-fn plot_shadow_atlas(plan: &ShadowFramePlan, indirect: ShadowIndirectCacheResult) {
+fn plot_shadow_atlas(
+    plan: &ShadowFramePlan,
+    indirect: ShadowIndirectCacheResult,
+    upload_bytes: usize,
+) {
     let (visible_groups, visible_group_draws) = shadow_visible_group_stats(plan);
-    let upload_bytes = plan
-        .requested_draw_slots
-        .saturating_add(plan.render_views.len())
-        .saturating_mul(PER_DRAW_UNIFORM_STRIDE);
     crate::profiling::plot_shadow_atlas(
         plan.render_views.len(),
         plan.caster_sets.len(),
@@ -179,10 +186,20 @@ fn select_shadow_atlas_split_workload(
     if visible_groups < SHADOW_ATLAS_PARALLEL_MIN_VISIBLE_GROUPS || worker_count < 2 {
         return None;
     }
+    let estimated_work = visible_groups.saturating_add(visible_group_draws);
+    let work_limited_encoder_count =
+        estimated_work.div_ceil(SHADOW_ATLAS_PARALLEL_MIN_WORK_PER_ENCODER);
+    let encoder_count = rendering_layers
+        .min(worker_count)
+        .min(SHADOW_ATLAS_PARALLEL_MAX_ENCODERS)
+        .min(work_limited_encoder_count);
+    if encoder_count < 2 {
+        return None;
+    }
     Some(FrameGlobalPassSplitWorkload {
         unit_count: rendering_layers,
-        estimated_work: visible_groups.saturating_add(visible_group_draws),
-        chunk_size: rendering_layers.div_ceil(worker_count).max(1),
+        estimated_work,
+        chunk_size: rendering_layers.div_ceil(encoder_count).max(1),
     })
 }
 
@@ -299,6 +316,7 @@ pub(super) struct ShadowAtlasResources {
     layer_uniform_layout: Arc<wgpu::BindGroupLayout>,
     layer_uniform_capacity: usize,
     scratch: parking_lot::Mutex<Vec<PaddedShadowCasterDraw>>,
+    scratch_dirty_rows: parking_lot::Mutex<Vec<bool>>,
     layer_scratch: parking_lot::Mutex<Vec<PaddedShadowLayerUniforms>>,
     resolution: u32,
     layers: u32,
@@ -474,6 +492,7 @@ impl ShadowAtlasResources {
             layer_uniform_layout,
             layer_uniform_capacity,
             scratch: parking_lot::Mutex::new(Vec::new()),
+            scratch_dirty_rows: parking_lot::Mutex::new(Vec::new()),
             layer_scratch: parking_lot::Mutex::new(Vec::new()),
             resolution,
             layers: 1,
@@ -499,6 +518,8 @@ impl ShadowAtlasResources {
             .ensure_draw_slot_capacity(device, requested_draw_slots)
         {
             deferred_bind_group_drops.defer(old_bind_group);
+            self.scratch.get_mut().clear();
+            self.scratch_dirty_rows.get_mut().clear();
         }
         let layers = requested_layers
             .max(1)
@@ -769,6 +790,7 @@ impl ShadowAtlasResources {
         let old_bind_group = std::mem::replace(&mut self.layer_uniform_bind_group, bind_group);
         deferred_bind_group_drops.defer(old_bind_group);
         drop(old_buffer);
+        self.layer_scratch.get_mut().clear();
         self.layer_uniform_capacity = next;
     }
 }
@@ -991,12 +1013,13 @@ impl FrameGpuResources {
         if plan.rendering_layer_indices.is_empty() || !self.shadows.renderable() {
             return;
         }
-        self.pack_shadow_slabs(plan, gpu_limits, uploads);
-        self.pack_shadow_layer_uniforms(plan, uploads);
+        let upload_bytes = self
+            .pack_shadow_slabs(plan, gpu_limits, uploads)
+            .saturating_add(self.pack_shadow_layer_uniforms(plan, uploads));
         let indirect_cache = self
             .shadows
             .build_shadow_indirect_plan(plan, device, gpu_limits, uploads);
-        plot_shadow_atlas(plan, indirect_cache);
+        plot_shadow_atlas(plan, indirect_cache, upload_bytes);
     }
 
     /// Records a contiguous range of this frame's rendering layers into `params.encoder`.
@@ -1143,10 +1166,10 @@ impl FrameGpuResources {
         plan: &ShadowFramePlan,
         gpu_limits: &GpuLimits,
         uploads: GraphUploadSink<'_>,
-    ) {
+    ) -> usize {
         profiling::scope!("shadows::pack_slabs");
         if plan.requested_draw_slots == 0 {
-            return;
+            return 0;
         }
         let mut set_used = vec![false; plan.caster_sets.len()];
         for &layer_idx in &plan.rendering_layer_indices {
@@ -1156,9 +1179,14 @@ impl FrameGpuResources {
                 *flag = true;
             }
         }
+        let mut upload_bytes = 0usize;
         self.shadows.with_scratch(|uniforms| {
+            let previous_len = uniforms.len();
             uniforms.resize_with(plan.requested_draw_slots, PaddedShadowCasterDraw::zeroed);
             uniforms.truncate(plan.requested_draw_slots);
+            let mut dirty_rows = self.shadows.scratch_dirty_rows.lock();
+            dirty_rows.clear();
+            dirty_rows.resize(plan.requested_draw_slots, false);
             for (set_idx, caster_set) in plan.caster_sets.iter().enumerate() {
                 if !set_used.get(set_idx).copied().unwrap_or(false) {
                     continue;
@@ -1167,20 +1195,40 @@ impl FrameGpuResources {
                 let Some(end) = start.checked_add(caster_set.draws.len()) else {
                     continue;
                 };
-                let Some(slots) = uniforms.get_mut(start..end) else {
+                let (Some(slots), Some(set_dirty_rows)) =
+                    (uniforms.get_mut(start..end), dirty_rows.get_mut(start..end))
+                else {
                     continue;
                 };
-                pack_shadow_uniforms(slots, caster_set, gpu_limits);
+                pack_shadow_uniforms(
+                    slots,
+                    set_dirty_rows,
+                    start,
+                    previous_len,
+                    caster_set,
+                    gpu_limits,
+                );
             }
-            uploads.write_buffer(
-                self.shadow_per_draw_storage(),
-                0,
-                bytemuck::cast_slice(uniforms.as_slice()),
-            );
+            for (start, end) in shadow_dirty_row_ranges(&dirty_rows) {
+                upload_bytes = upload_bytes.saturating_add(
+                    end.saturating_sub(start)
+                        .saturating_mul(size_of::<PaddedShadowCasterDraw>()),
+                );
+                uploads.write_buffer(
+                    self.shadow_per_draw_storage(),
+                    (start * size_of::<PaddedShadowCasterDraw>()) as u64,
+                    bytemuck::cast_slice(&uniforms[start..end]),
+                );
+            }
         });
+        upload_bytes
     }
 
-    fn pack_shadow_layer_uniforms(&self, plan: &ShadowFramePlan, uploads: GraphUploadSink<'_>) {
+    fn pack_shadow_layer_uniforms(
+        &self,
+        plan: &ShadowFramePlan,
+        uploads: GraphUploadSink<'_>,
+    ) -> usize {
         profiling::scope!("shadows::pack_layer_uniforms");
         let needed_rows = plan
             .rendering_layer_indices
@@ -1191,11 +1239,13 @@ impl FrameGpuResources {
             .unwrap_or(0)
             .min(self.shadows.layer_uniform_capacity);
         if needed_rows == 0 {
-            return;
+            return 0;
         }
         let mut layer_scratch = self.shadows.layer_scratch.lock();
+        let previous_len = layer_scratch.len();
         layer_scratch.resize_with(needed_rows, PaddedShadowLayerUniforms::zeroed);
         layer_scratch.truncate(needed_rows);
+        let mut dirty_rows = vec![false; needed_rows];
         for &layer_idx in &plan.rendering_layer_indices {
             let Some(view) = plan.render_views.get(layer_idx as usize) else {
                 continue;
@@ -1203,13 +1253,26 @@ impl FrameGpuResources {
             let Some(slot) = layer_scratch.get_mut(view.layer as usize) else {
                 continue;
             };
-            *slot = PaddedShadowLayerUniforms::new(view);
+            let packed = PaddedShadowLayerUniforms::new(view);
+            let row = view.layer as usize;
+            if row >= previous_len || bytemuck::bytes_of(slot) != bytemuck::bytes_of(&packed) {
+                *slot = packed;
+                dirty_rows[row] = true;
+            }
         }
-        uploads.write_buffer(
-            self.shadows.layer_uniform_buffer(),
-            0,
-            bytemuck::cast_slice(layer_scratch.as_slice()),
-        );
+        let mut upload_bytes = 0usize;
+        for (start, end) in shadow_dirty_row_ranges(&dirty_rows) {
+            upload_bytes = upload_bytes.saturating_add(
+                end.saturating_sub(start)
+                    .saturating_mul(size_of::<PaddedShadowLayerUniforms>()),
+            );
+            uploads.write_buffer(
+                self.shadows.layer_uniform_buffer(),
+                (start * size_of::<PaddedShadowLayerUniforms>()) as u64,
+                bytemuck::cast_slice(&layer_scratch[start..end]),
+            );
+        }
+        upload_bytes
     }
 }
 
@@ -1246,6 +1309,9 @@ fn clear_shadow_layer(
 
 fn pack_shadow_uniforms(
     uniforms: &mut [PaddedShadowCasterDraw],
+    dirty_rows: &mut [bool],
+    first_slot: usize,
+    previous_len: usize,
     caster_set: &ShadowCasterSet,
     gpu_limits: &GpuLimits,
 ) {
@@ -1258,10 +1324,17 @@ fn pack_shadow_uniforms(
         admission,
     );
     let slab_layout = &caster_set.instance_plan.slab_layout;
-    let pack_one = |slot: &mut PaddedShadowCasterDraw, draw_idx: usize| {
-        let item = &caster_set.draws[draw_idx];
-        *slot = PaddedShadowCasterDraw::new(item);
-    };
+    let pack_one =
+        |slot: &mut PaddedShadowCasterDraw, dirty: &mut bool, slot_idx: usize, draw_idx: usize| {
+            let item = &caster_set.draws[draw_idx];
+            let packed = PaddedShadowCasterDraw::new(item);
+            if first_slot.saturating_add(slot_idx) >= previous_len
+                || bytemuck::bytes_of(slot) != bytemuck::bytes_of(&packed)
+            {
+                *slot = packed;
+                *dirty = true;
+            }
+        };
     if caster_set.draws.len() >= SHADOW_SLAB_PARALLEL_MIN_DRAWS && admission.is_parallel() {
         uniforms
             .par_chunks_mut(SHADOW_SLAB_PARALLEL_CHUNK_DRAWS)
@@ -1271,15 +1344,32 @@ fn pack_shadow_uniforms(
                     .par_chunks(SHADOW_SLAB_PARALLEL_CHUNK_DRAWS)
                     .with_min_len(SHADOW_SLAB_PARALLEL_CHUNKS_PER_TASK),
             )
-            .for_each(|(slots, layout)| {
+            .zip(
+                dirty_rows
+                    .par_chunks_mut(SHADOW_SLAB_PARALLEL_CHUNK_DRAWS)
+                    .with_min_len(SHADOW_SLAB_PARALLEL_CHUNKS_PER_TASK),
+            )
+            .enumerate()
+            .for_each(|(chunk_idx, ((slots, layout), chunk_dirty_rows))| {
                 profiling::scope!("shadows::pack_slab::worker");
-                for (slot, &draw_idx) in slots.iter_mut().zip(layout.iter()) {
-                    pack_one(slot, draw_idx);
+                let chunk_start = chunk_idx * SHADOW_SLAB_PARALLEL_CHUNK_DRAWS;
+                for (slot_idx, ((slot, dirty), &draw_idx)) in slots
+                    .iter_mut()
+                    .zip(chunk_dirty_rows.iter_mut())
+                    .zip(layout.iter())
+                    .enumerate()
+                {
+                    pack_one(slot, dirty, chunk_start + slot_idx, draw_idx);
                 }
             });
     } else {
-        for (slot, &draw_idx) in uniforms.iter_mut().zip(slab_layout.iter()) {
-            pack_one(slot, draw_idx);
+        for (slot_idx, ((slot, dirty), &draw_idx)) in uniforms
+            .iter_mut()
+            .zip(dirty_rows.iter_mut())
+            .zip(slab_layout.iter())
+            .enumerate()
+        {
+            pack_one(slot, dirty, slot_idx, draw_idx);
         }
     }
     if !gpu_limits.supports_base_instance {
@@ -1289,6 +1379,24 @@ fn pack_shadow_uniforms(
             "downlevel shadow slabs still pack one slot per singleton draw group"
         );
     }
+}
+
+/// Returns maximal contiguous dirty row ranges.
+fn shadow_dirty_row_ranges(dirty_rows: &[bool]) -> impl Iterator<Item = (usize, usize)> + '_ {
+    let mut row = 0usize;
+    std::iter::from_fn(move || {
+        while row < dirty_rows.len() && !dirty_rows[row] {
+            row += 1;
+        }
+        if row >= dirty_rows.len() {
+            return None;
+        }
+        let start = row;
+        while row < dirty_rows.len() && dirty_rows[row] {
+            row += 1;
+        }
+        Some((start, row))
+    })
 }
 
 fn shadow_layer_uniform_offset(layer: u32) -> Option<u32> {

@@ -14,6 +14,28 @@ pub enum RenderWorldRendererKind {
     Skinned,
 }
 
+/// PhotonDust render-buffer table addressed by a fine-grained prepared-snapshot dirty event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RenderWorldParticleRendererKind {
+    /// Billboard point-buffer renderer table.
+    Billboard,
+    /// Source-mesh particle renderer table.
+    Mesh,
+    /// Trail ribbon renderer table.
+    Trail,
+}
+
+/// One generated particle renderer whose prepared rows need to be patched.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct RenderWorldParticleRendererDirty {
+    /// Host render space containing the renderer.
+    pub space_id: RenderSpaceId,
+    /// PhotonDust renderer table addressed by [`Self::renderable_index`].
+    pub kind: RenderWorldParticleRendererKind,
+    /// Dense renderer index in the selected table.
+    pub renderable_index: usize,
+}
+
 /// One renderer row whose retained draw templates need to be refreshed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct RenderWorldRendererDirty {
@@ -56,6 +78,15 @@ pub struct RenderWorldMaterialOverrideDirty {
     pub target: MeshRendererOverrideTarget,
 }
 
+/// Render context whose override targets need to be rescanned for a lightweight overlay.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RenderWorldContextOverrideDirty {
+    /// Host render space containing the override rows.
+    pub space_id: RenderSpaceId,
+    /// Context whose prepared overlay may differ from the invariant base.
+    pub context: RenderingContext,
+}
+
 /// Fine-grained dirty events consumed by backend render-world caches.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SceneRenderWorldDirtyReport {
@@ -63,12 +94,29 @@ pub struct SceneRenderWorldDirtyReport {
     pub full_spaces: Vec<RenderSpaceId>,
     /// Renderer rows that need retained-template refresh.
     pub renderers: Vec<RenderWorldRendererDirty>,
+    /// Renderer rows whose live deformation inputs changed.
+    ///
+    /// Blendshape weights are consumed directly by the frame-global deform pass. The retained
+    /// render world only needs to inspect these rows for a cached deformation-eligibility
+    /// transition; ordinary active-to-active animation does not rebuild prepared rows. Bone-index
+    /// changes are omitted entirely because the current prepared skin predicate receives
+    /// `Some(slice)` regardless of the slice contents.
+    pub deform_renderers: Vec<RenderWorldRendererDirty>,
     /// Renderer rows that only need dynamic world bounds refreshed.
     pub bounds: Vec<RenderWorldBoundsDirty>,
     /// Transform roots that need descendant renderer records refreshed after world-cache flush.
     pub transform_roots: Vec<RenderWorldTransformDirty>,
     /// Material override targets that need refresh only in matching render contexts.
     pub material_overrides: Vec<RenderWorldMaterialOverrideDirty>,
+    /// Transform-override contexts whose exact overlay target set needs to be rescanned.
+    pub context_overrides: Vec<RenderWorldContextOverrideDirty>,
+    /// Particle render spaces whose generated-renderer membership changed.
+    ///
+    /// This invalidates only the particle suffix of a prepared space. Static and skinned retained
+    /// templates remain reusable.
+    pub particle_spaces: Vec<RenderSpaceId>,
+    /// Individual particle renderer rows whose generated prepared runs need patching.
+    pub particle_renderers: Vec<RenderWorldParticleRendererDirty>,
 }
 
 impl SceneRenderWorldDirtyReport {
@@ -76,9 +124,13 @@ impl SceneRenderWorldDirtyReport {
     pub fn is_empty(&self) -> bool {
         self.full_spaces.is_empty()
             && self.renderers.is_empty()
+            && self.deform_renderers.is_empty()
             && self.bounds.is_empty()
             && self.transform_roots.is_empty()
             && self.material_overrides.is_empty()
+            && self.context_overrides.is_empty()
+            && self.particle_spaces.is_empty()
+            && self.particle_renderers.is_empty()
     }
 
     /// Records a renderer row that needs only dynamic bounds refresh.
@@ -88,11 +140,23 @@ impl SceneRenderWorldDirtyReport {
         kind: RenderWorldRendererKind,
         renderable_index: usize,
     ) {
-        self.bounds.push(RenderWorldBoundsDirty {
+        if self.full_spaces.contains(&space_id)
+            || self.renderers.iter().any(|dirty| {
+                dirty.space_id == space_id
+                    && dirty.kind == kind
+                    && dirty.renderable_index == renderable_index
+            })
+        {
+            return;
+        }
+        let dirty = RenderWorldBoundsDirty {
             space_id,
             kind,
             renderable_index,
-        });
+        };
+        if !self.bounds.contains(&dirty) {
+            self.bounds.push(dirty);
+        }
     }
 
     /// Records a render space that needs a full retained-template refresh.
@@ -100,6 +164,9 @@ impl SceneRenderWorldDirtyReport {
         if !self.full_spaces.contains(&id) {
             self.full_spaces.push(id);
         }
+        self.renderers.retain(|dirty| dirty.space_id != id);
+        self.deform_renderers.retain(|dirty| dirty.space_id != id);
+        self.bounds.retain(|dirty| dirty.space_id != id);
     }
 
     /// Records a renderer row that needs retained-template refresh.
@@ -109,11 +176,45 @@ impl SceneRenderWorldDirtyReport {
         kind: RenderWorldRendererKind,
         renderable_index: usize,
     ) {
-        self.renderers.push(RenderWorldRendererDirty {
+        if self.full_spaces.contains(&space_id) {
+            return;
+        }
+        let dirty = RenderWorldRendererDirty {
             space_id,
             kind,
             renderable_index,
+        };
+        if !self.renderers.contains(&dirty) {
+            self.renderers.push(dirty);
+        }
+        self.deform_renderers
+            .retain(|candidate| *candidate != dirty);
+        self.bounds.retain(|candidate| {
+            candidate.space_id != space_id
+                || candidate.kind != kind
+                || candidate.renderable_index != renderable_index
         });
+    }
+
+    /// Records one renderer whose dynamic deformation inputs changed.
+    pub(super) fn note_deform_renderer(
+        &mut self,
+        space_id: RenderSpaceId,
+        kind: RenderWorldRendererKind,
+        renderable_index: usize,
+    ) {
+        if self.full_spaces.contains(&space_id) {
+            return;
+        }
+        let dirty = RenderWorldRendererDirty {
+            space_id,
+            kind,
+            renderable_index,
+        };
+        if self.renderers.contains(&dirty) || self.deform_renderers.contains(&dirty) {
+            return;
+        }
+        self.deform_renderers.push(dirty);
     }
 
     /// Records transform roots whose descendants may own cached renderer templates.
@@ -149,6 +250,50 @@ impl SceneRenderWorldDirtyReport {
                 target,
             });
     }
+
+    /// Records a context-local override change without invalidating the invariant render world.
+    pub(super) fn note_context_override(
+        &mut self,
+        space_id: RenderSpaceId,
+        context: RenderingContext,
+    ) {
+        if !self
+            .context_overrides
+            .iter()
+            .any(|dirty| dirty.space_id == space_id && dirty.context == context)
+        {
+            self.context_overrides
+                .push(RenderWorldContextOverrideDirty { space_id, context });
+        }
+    }
+
+    /// Records particle-renderer membership churn without invalidating retained mesh templates.
+    pub(super) fn note_particle_space(&mut self, id: RenderSpaceId) {
+        if !self.particle_spaces.contains(&id) {
+            self.particle_spaces.push(id);
+        }
+        self.particle_renderers.retain(|dirty| dirty.space_id != id);
+    }
+
+    /// Records one generated particle renderer row unless its full particle suffix is dirty.
+    pub(super) fn note_particle_renderer(
+        &mut self,
+        space_id: RenderSpaceId,
+        kind: RenderWorldParticleRendererKind,
+        renderable_index: usize,
+    ) {
+        if self.particle_spaces.contains(&space_id) {
+            return;
+        }
+        let dirty = RenderWorldParticleRendererDirty {
+            space_id,
+            kind,
+            renderable_index,
+        };
+        if !self.particle_renderers.contains(&dirty) {
+            self.particle_renderers.push(dirty);
+        }
+    }
 }
 
 /// Scene changes observed while applying one host frame submission.
@@ -160,6 +305,13 @@ pub struct SceneApplyReport {
     pub submitted_spaces: Vec<RenderSpaceId>,
     /// Render spaces whose header or body payload may have changed scene-renderable state.
     pub changed_spaces: Vec<RenderSpaceId>,
+    /// Render spaces whose extracted updates received complete fine-grained render-world
+    /// classification, including the no-op case.
+    ///
+    /// Backends may use [`Self::changed_spaces`] as a conservative fallback only for spaces absent
+    /// from this list. This prevents an exactly classified no-op or dynamic-deformation update from
+    /// being promoted back into a full-space rebuild.
+    pub render_world_classified_spaces: Vec<RenderSpaceId>,
     /// Render spaces whose reflection-probe sources or spatial placement may need refresh.
     pub reflection_probe_dirty_spaces: Vec<RenderSpaceId>,
     /// Render spaces removed because they were absent from the submission.
@@ -175,6 +327,7 @@ impl SceneApplyReport {
             frame_index,
             submitted_spaces: Vec::new(),
             changed_spaces: Vec::new(),
+            render_world_classified_spaces: Vec::new(),
             reflection_probe_dirty_spaces: Vec::new(),
             removed_spaces: Vec::new(),
             render_world_dirty: SceneRenderWorldDirtyReport::default(),
@@ -190,6 +343,13 @@ impl SceneApplyReport {
     pub(super) fn note_changed_space(&mut self, id: RenderSpaceId) {
         if !self.changed_spaces.contains(&id) {
             self.changed_spaces.push(id);
+        }
+    }
+
+    /// Marks one submitted space as completely classified for retained render-world effects.
+    pub(super) fn note_render_world_classified_space(&mut self, id: RenderSpaceId) {
+        if !self.render_world_classified_spaces.contains(&id) {
+            self.render_world_classified_spaces.push(id);
         }
     }
 

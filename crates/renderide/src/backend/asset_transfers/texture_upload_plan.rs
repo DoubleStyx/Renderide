@@ -61,6 +61,26 @@ enum TextureUploadStage {
     },
 }
 
+/// Physical mip residency change produced by one upload step.
+pub(crate) enum TextureResidencyUpdate {
+    /// No mip was written by this step.
+    None,
+    /// One contiguous range was written synchronously.
+    Range {
+        /// First physical texture mip.
+        start_mip: u32,
+        /// Number of physical texture mips.
+        mip_count: u32,
+    },
+    /// One physical texture mip completed asynchronously.
+    Mip {
+        /// Physical texture mip that completed.
+        mip_level: u32,
+        /// Whether this complete mip-0 chain replaces all prior texture contents.
+        replaces_full_texture: bool,
+    },
+}
+
 /// Result of one Texture2D upload step.
 pub(crate) enum UploadCompletion {
     /// The shared-memory descriptor was not available.
@@ -69,8 +89,10 @@ pub(crate) enum UploadCompletion {
     Continue,
     /// One mip was uploaded and the task should update residency before continuing.
     UploadedOne {
-        /// Total mips uploaded by this chain so far.
-        uploaded_mips: u32,
+        /// Physical texture mip written by this step.
+        mip_level: u32,
+        /// Whether this complete mip-0 chain replaces all prior texture contents.
+        replaces_full_texture: bool,
         /// Whether any written mip used host-V-inverted storage.
         storage_v_inverted: bool,
     },
@@ -80,6 +102,8 @@ pub(crate) enum UploadCompletion {
     Complete {
         /// Number of mip levels made resident by this upload.
         uploaded_mips: u32,
+        /// Physical mip residency change produced by the completing step.
+        residency_update: TextureResidencyUpdate,
         /// Whether any written mip used host-V-inverted storage.
         storage_v_inverted: bool,
     },
@@ -163,6 +187,10 @@ impl TextureUploadStepper {
         match start.result? {
             TextureDataStart::SubregionComplete(uploaded_mips) => Ok(UploadCompletion::Complete {
                 uploaded_mips,
+                residency_update: TextureResidencyUpdate::Range {
+                    start_mip: plan.upload.start_mip_level.max(0) as u32,
+                    mip_count: uploaded_mips,
+                },
                 storage_v_inverted: plan.storage_v_inverted,
             }),
             TextureDataStart::MipChain(uploader) => {
@@ -185,7 +213,7 @@ impl TextureUploadStepper {
         plan: TextureUploadPlan<'_>,
     ) -> Result<UploadCompletion, TextureUploadError> {
         profiling::scope!("asset::texture2d_upload_next_mip");
-        match uploader.upload_next_mip(TextureMipUploadStep {
+        let advance = uploader.upload_next_mip(TextureMipUploadStep {
             device: plan.device,
             queue: plan.queue,
             gpu_queue_access_gate: plan.gpu_queue_access_gate,
@@ -195,19 +223,40 @@ impl TextureUploadStepper {
             wgpu_format: plan.wgpu_format,
             upload: plan.upload,
             payload,
-        })? {
+        })?;
+        let replaces_full_texture = uploader.replaces_full_texture();
+        let uploaded_mip = uploader.take_last_step_uploaded_mip();
+        match advance {
             MipChainAdvance::UploadedOne {
                 total_uploaded,
                 storage_v_inverted,
-            } => Ok(UploadCompletion::UploadedOne {
-                uploaded_mips: total_uploaded,
-                storage_v_inverted,
-            }),
+            } => {
+                debug_assert!(
+                    total_uploaded > 0,
+                    "Texture2D UploadedOne must follow a physical mip write"
+                );
+                let mip_level = uploaded_mip.ok_or_else(|| {
+                    TextureUploadError::from(
+                        "texture mip uploader advanced without reporting the physical mip written",
+                    )
+                })?;
+                Ok(UploadCompletion::UploadedOne {
+                    mip_level,
+                    replaces_full_texture,
+                    storage_v_inverted,
+                })
+            }
             MipChainAdvance::Finished {
                 total_uploaded,
                 storage_v_inverted,
             } => Ok(UploadCompletion::Complete {
                 uploaded_mips: total_uploaded,
+                residency_update: uploaded_mip.map_or(TextureResidencyUpdate::None, |mip_level| {
+                    TextureResidencyUpdate::Mip {
+                        mip_level,
+                        replaces_full_texture,
+                    }
+                }),
                 storage_v_inverted,
             }),
             MipChainAdvance::YieldBackground => Ok(UploadCompletion::YieldBackground),

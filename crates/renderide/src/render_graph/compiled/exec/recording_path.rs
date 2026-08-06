@@ -56,13 +56,9 @@ impl CompiledRenderGraph {
             .schedule
             .recording_plan
             .phase_has_parallel_batches(PassPhase::PerView);
-        let has_split_per_view_batches = self
-            .schedule
-            .recording_plan
-            .phase_batches(PassPhase::PerView)
-            .nth(1)
-            .is_some()
-            || has_parallel_per_view_batches;
+        let has_split_per_view_batches =
+            self.schedule.recording_plan.per_view_execution_runs().len() > 1
+                || has_parallel_per_view_batches;
         let auto_in_view_record_admitted = auto_in_view_record_admitted(
             FrameParallelPolicy::for_current_thread_pool(),
             views.len(),

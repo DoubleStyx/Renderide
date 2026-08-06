@@ -13,6 +13,8 @@ pub(crate) use apply::{
     apply_render_transform_overrides_update_extracted, extract_render_material_overrides_update,
     extract_render_transform_overrides_update,
 };
+#[cfg(test)]
+pub(crate) use types::MaterialOverrideBinding;
 pub(in crate::scene) use types::decode_packed_mesh_renderer_target;
 pub use types::{
     MeshRendererOverrideTarget, RenderMaterialOverrideEntry, RenderTransformOverrideEntry,

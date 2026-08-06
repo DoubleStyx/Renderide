@@ -64,14 +64,15 @@ pub use persist::{
 #[cfg(test)]
 pub(crate) use persist::{ConfigResolveOutcome, ConfigSource};
 pub use types::{
-    AutoExposureSettings, BloomCompositeMode, BloomSettings, CommandRecordingMode, DebugHudMainTab,
-    DebugHudMainTabVisibility, DebugHudRendererConfigTab, DebugHudRendererConfigTabVisibility,
-    DebugHudSettings, DebugHudStatsSectionVisibility, ExperimentalSettings,
-    GTAO_MAX_DENOISE_PASSES, GTAO_MAX_QUALITY_LEVEL, GTAO_MAX_RESOLUTION_DIVISOR,
-    GTAO_MAX_SLICE_COUNT, GTAO_MAX_STEPS_PER_SLICE, GraphicsApiSetting, GtaoSettings,
-    MotionBlurSettings, MsaaSampleCount, PostProcessingSettings, PowerPreferenceSetting,
-    PresentationModeSetting, RenderGraphValidationMode, RendererSettings, SceneColorFormat,
-    TonemapMode, WatchdogAction, WatchdogSettings,
+    AutoExposureSettings, BloomCompositeMode, BloomSettings, CommandRecordingMode,
+    DEFAULT_ASSET_INTEGRATION_BUDGET_MS, DebugHudMainTab, DebugHudMainTabVisibility,
+    DebugHudRendererConfigTab, DebugHudRendererConfigTabVisibility, DebugHudSettings,
+    DebugHudStatsSectionVisibility, ExperimentalSettings, GTAO_MAX_DENOISE_PASSES,
+    GTAO_MAX_QUALITY_LEVEL, GTAO_MAX_RESOLUTION_DIVISOR, GTAO_MAX_SLICE_COUNT,
+    GTAO_MAX_STEPS_PER_SLICE, GraphicsApiSetting, GtaoSettings, MotionBlurSettings,
+    MsaaSampleCount, PostProcessingSettings, PowerPreferenceSetting, PresentationModeSetting,
+    RenderGraphValidationMode, RendererSettings, SceneColorFormat, TonemapMode, WatchdogAction,
+    WatchdogSettings,
 };
 #[cfg(test)]
 pub(crate) use types::{DebugSettings, TonemapSettings};

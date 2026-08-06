@@ -140,22 +140,10 @@ impl MaterialPropertyStore {
         self.global_mutation_generation
     }
 
-    /// Monotonic generation for `material_id` and optional property blocks, used to skip redundant GPU uniform uploads.
-    pub fn mutation_generation(&self, ids: MaterialPropertyLookupIds) -> u64 {
-        let m = self.material_generation(ids.material_asset_id);
-        let slot_pb = ids
-            .mesh_property_block_slot0
-            .map_or(0, |b| self.property_block_generation(b));
-        let renderer_pb = ids
-            .mesh_renderer_property_block_id
-            .map_or(0, |b| self.property_block_generation(b));
-        m ^ slot_pb.rotate_left(17) ^ renderer_pb.rotate_left(31)
-    }
-
     /// Monotonic per-material generation. Bumped by every `set_material` /
-    /// `set_shader_asset_for_material`. Unlike [`Self::mutation_generation`], the material and
-    /// property-block generations are exposed separately so persistent caches can store both and
-    /// avoid hash-collision ambiguity between pairs with the same XOR-rotated combination.
+    /// `set_shader_asset_for_material`. Material and property-block generations are exposed
+    /// separately so persistent caches can store the exact dependency tuple without introducing
+    /// collision ambiguity through a lossy combined fingerprint.
     ///
     /// Not decremented on [`Self::remove_material`] -- the counter stays in place so that a later
     /// `set_material` bumps from the old value, preserving monotonicity across unload/reload
@@ -407,22 +395,17 @@ mod material_dictionary_tests {
     }
 
     #[test]
-    fn mutation_generation_bumps_on_writes_only() {
+    fn material_generation_bumps_on_writes_only() {
         let mut store = MaterialPropertyStore::new();
-        let ids = MaterialPropertyLookupIds {
-            material_asset_id: 3,
-            mesh_property_block_slot0: None,
-            mesh_renderer_property_block_id: None,
-        };
-        let g0 = store.mutation_generation(ids);
+        let g0 = store.material_generation(3);
         store.set_material(3, 7, MaterialPropertyValue::Float(1.0));
-        let g1 = store.mutation_generation(ids);
+        let g1 = store.material_generation(3);
         assert_ne!(g0, g1);
         // Pure reads do not bump.
         let _ = store.get_material(3, 7);
-        assert_eq!(store.mutation_generation(ids), g1);
+        assert_eq!(store.material_generation(3), g1);
         store.set_shader_asset_for_material(3, 99);
-        assert_ne!(store.mutation_generation(ids), g1);
+        assert_ne!(store.material_generation(3), g1);
     }
 
     #[test]

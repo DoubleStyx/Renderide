@@ -13,7 +13,6 @@ use crate::particles::{
     PointRenderBufferBuild, TrailRenderBufferBuild, build_point_render_buffer_cpu,
     build_trail_render_buffer_cpu, upload_generated_mesh,
 };
-use crate::shared::buffer::SharedMemoryBufferDescriptor;
 use crate::shared::{
     PointRenderBufferConsumed, PointRenderBufferUpload, RendererCommand, TrailRenderBufferConsumed,
     TrailRenderBufferUpload,
@@ -172,7 +171,7 @@ impl PointRenderBufferTask {
             ParticleTaskClaim::Done => StepResult::Done,
             ParticleTaskClaim::YieldPending => StepResult::YieldBackground,
             ParticleTaskClaim::Claimed { upload, generation } => {
-                if let Some(background_shm) = queue.background_shm() {
+                if let Some(background_shm) = queue.background_shm(upload.buffer.buffer_id) {
                     spawn_point_copy_build(
                         queue.point_render_buffer_build_sender(),
                         upload,
@@ -293,7 +292,7 @@ impl TrailRenderBufferTask {
             ParticleTaskClaim::Done => StepResult::Done,
             ParticleTaskClaim::YieldPending => StepResult::YieldBackground,
             ParticleTaskClaim::Claimed { upload, generation } => {
-                if let Some(background_shm) = queue.background_shm() {
+                if let Some(background_shm) = queue.background_shm(upload.buffer.buffer_id) {
                     spawn_trail_copy_build(
                         queue.trail_render_buffer_build_sender(),
                         upload,
@@ -703,10 +702,10 @@ fn spawn_point_build(
 ) {
     profiling::scope!("particle::point_task_spawn");
     let asset_id = upload.asset_id;
-    crate::assets::worker::spawn_asset_job(move || {
+    crate::assets::worker::spawn_background_asset_job(move || {
         profiling::scope!("particle::point_task_build_worker");
         let result = catch_unwind(AssertUnwindSafe(|| {
-            build_point_render_buffer_cpu(raw, &upload)
+            build_point_render_buffer_cpu(raw.as_ref(), &upload)
         }))
         .unwrap_or(Err(
             crate::particles::ParticleRenderBufferError::WorkerPanicked {
@@ -723,24 +722,7 @@ fn spawn_point_build(
     });
 }
 
-/// Copies one payload from the worker-owned shared-memory accessor into owned bytes.
-fn read_background_payload(
-    shm: &parking_lot::Mutex<SharedMemoryAccessor>,
-    descriptor: &SharedMemoryBufferDescriptor,
-) -> Option<OwnedSharedMemoryPayload> {
-    profiling::scope!("particle::background_payload_copy");
-    let mut guard = shm.lock();
-    guard.with_read_bytes(descriptor, |raw| {
-        let mut bytes = Vec::new();
-        if bytes.try_reserve_exact(raw.len()).is_err() {
-            return None;
-        }
-        bytes.extend_from_slice(raw);
-        Some(Arc::new(bytes))
-    })
-}
-
-/// Spawns a point build whose shared-memory read also runs on the asset worker.
+/// Spawns a point build that decodes directly from a worker-owned shared-memory mapping.
 ///
 /// The consumed ack stays owed until the result drains on the renderer thread, so the host
 /// cannot reuse the payload region while the worker still reads it.
@@ -752,10 +734,14 @@ fn spawn_point_copy_build(
 ) {
     profiling::scope!("particle::point_task_spawn");
     let asset_id = upload.asset_id;
-    crate::assets::worker::spawn_asset_job(move || {
+    crate::assets::worker::spawn_background_asset_job(move || {
         profiling::scope!("particle::point_task_build_worker");
         let result = catch_unwind(AssertUnwindSafe(|| {
-            let Some(raw) = read_background_payload(&shm, &upload.buffer) else {
+            profiling::scope!("particle::background_payload_decode");
+            let mut guard = shm.lock();
+            let Some(result) = guard.with_read_bytes(&upload.buffer, |raw| {
+                Some(build_point_render_buffer_cpu(raw, &upload))
+            }) else {
                 return Err(
                     crate::particles::ParticleRenderBufferError::SharedMemoryReadFailed {
                         kind: "point",
@@ -763,7 +749,7 @@ fn spawn_point_copy_build(
                     },
                 );
             };
-            build_point_render_buffer_cpu(raw, &upload)
+            result
         }))
         .unwrap_or(Err(
             crate::particles::ParticleRenderBufferError::WorkerPanicked {
@@ -789,10 +775,10 @@ fn spawn_trail_build(
 ) {
     profiling::scope!("particle::trail_task_spawn");
     let asset_id = upload.asset_id;
-    crate::assets::worker::spawn_asset_job(move || {
+    crate::assets::worker::spawn_background_asset_job(move || {
         profiling::scope!("particle::trail_task_build_worker");
         let result = catch_unwind(AssertUnwindSafe(|| {
-            build_trail_render_buffer_cpu(raw, &upload)
+            build_trail_render_buffer_cpu(raw.as_ref(), &upload)
         }))
         .unwrap_or(Err(
             crate::particles::ParticleRenderBufferError::WorkerPanicked {
@@ -809,7 +795,7 @@ fn spawn_trail_build(
     });
 }
 
-/// Spawns a trail build whose shared-memory read also runs on the asset worker.
+/// Spawns a trail build that decodes directly from a worker-owned shared-memory mapping.
 ///
 /// The consumed ack stays owed until the result drains on the renderer thread, so the host
 /// cannot reuse the payload region while the worker still reads it.
@@ -821,10 +807,14 @@ fn spawn_trail_copy_build(
 ) {
     profiling::scope!("particle::trail_task_spawn");
     let asset_id = upload.asset_id;
-    crate::assets::worker::spawn_asset_job(move || {
+    crate::assets::worker::spawn_background_asset_job(move || {
         profiling::scope!("particle::trail_task_build_worker");
         let result = catch_unwind(AssertUnwindSafe(|| {
-            let Some(raw) = read_background_payload(&shm, &upload.buffer) else {
+            profiling::scope!("particle::background_payload_decode");
+            let mut guard = shm.lock();
+            let Some(result) = guard.with_read_bytes(&upload.buffer, |raw| {
+                Some(build_trail_render_buffer_cpu(raw, &upload))
+            }) else {
                 return Err(
                     crate::particles::ParticleRenderBufferError::SharedMemoryReadFailed {
                         kind: "trail",
@@ -832,7 +822,7 @@ fn spawn_trail_copy_build(
                     },
                 );
             };
-            build_trail_render_buffer_cpu(raw, &upload)
+            result
         }))
         .unwrap_or(Err(
             crate::particles::ParticleRenderBufferError::WorkerPanicked {

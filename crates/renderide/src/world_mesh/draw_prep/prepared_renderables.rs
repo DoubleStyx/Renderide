@@ -17,13 +17,13 @@ use rayon::prelude::*;
 use std::ops::Range;
 
 use crate::cpu_parallelism::RENDER_COMMAND_CHUNK_DRAWS;
-#[cfg(test)]
 use crate::gpu_pools::MeshPool;
 use crate::particles::ParticleDrawParams;
 use crate::render_contract::ParticleDrawKind;
 use crate::scene::{
-    MeshRendererInstanceId, RenderSpaceId, SceneCoordinator, SceneMeshRendererRead,
-    WorldMeshSceneRead,
+    MeshRendererInstanceId, RenderSpaceId, RenderWorldParticleRendererDirty,
+    RenderWorldParticleRendererKind, RenderWorldRendererDirty, RenderWorldRendererKind,
+    SceneCoordinator, SceneMeshRendererRead, WorldMeshSceneRead,
 };
 use crate::shared::{RenderingContext, ShadowCastMode};
 use crate::world_mesh::culling::{MeshCullGeometry, WorldMeshCullInput};
@@ -39,7 +39,8 @@ pub(in crate::world_mesh::draw_prep) use expand::expand_space_into;
 #[cfg(test)]
 pub(in crate::world_mesh::draw_prep) use expand::expand_space_into_aggressive;
 pub(in crate::world_mesh::draw_prep) use expand::{
-    expand_render_buffer_renderers_into, expand_skinned_renderer_into, expand_static_renderer_into,
+    expand_render_buffer_renderer_into, expand_render_buffer_renderers_into,
+    expand_skinned_renderer_into, expand_static_renderer_into,
 };
 
 /// Target draw count for one prepared renderer-run chunk.
@@ -63,7 +64,7 @@ const PREPARED_EXPAND_PARALLEL_MIN_SPACES: usize = PREPARED_EXPAND_PARALLEL_CHUN
 ///
 /// [`Self::skinned`] implicitly selects which renderer list [`Self::renderable_index`] targets
 /// (static renderers when `false`, skinned renderers when `true`).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct FramePreparedDraw {
     /// Host render space that owns the source renderer.
     pub space_id: RenderSpaceId,
@@ -143,6 +144,83 @@ struct FramePreparedRunLookupKey {
     instance_id: MeshRendererInstanceId,
 }
 
+/// Stable source identity for all prepared rows emitted by one PhotonDust renderer.
+///
+/// Mesh-particle renderers produce one ordinary prepared run per point instance, so the
+/// [`FramePreparedRunLookupKey`] cannot represent the complete renderer by itself. This coarser
+/// key retains the same stable space/table/index identity while grouping that contiguous run set
+/// into one patchable range.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct FramePreparedParticleRendererLookupKey {
+    /// Host render space that owns the renderer.
+    space_id: RenderSpaceId,
+    /// PhotonDust renderer family.
+    kind: RenderWorldParticleRendererKind,
+    /// Dense renderer index in its source table.
+    renderable_index: usize,
+}
+
+impl From<RenderWorldParticleRendererDirty> for FramePreparedParticleRendererLookupKey {
+    fn from(dirty: RenderWorldParticleRendererDirty) -> Self {
+        Self {
+            space_id: dirty.space_id,
+            kind: dirty.kind,
+            renderable_index: dirty.renderable_index,
+        }
+    }
+}
+
+/// Result of patching generated particle rows in an existing prepared snapshot.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct PreparedParticlePatchStats {
+    /// Particle renderer sources whose previous or replacement range was non-empty.
+    pub(super) renderer_count: usize,
+    /// Prepared draw rows copied into the snapshot.
+    pub(super) draw_count: usize,
+    /// Whether any prepared rows changed.
+    pub(super) changed: bool,
+    /// Whether variable-length/run/material changes required metadata reconstruction.
+    pub(super) structural_rebuild: bool,
+    /// Spatial spaces refit on the stable-run fast path.
+    pub(super) spatial_refit_count: usize,
+}
+
+/// Result of patching exact static/skinned renderer ranges in an existing prepared snapshot.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct PreparedMeshPatchStats {
+    /// Unique renderer rows requested by the caller.
+    pub(super) candidate_count: usize,
+    /// Non-empty old or replacement ranges that actually changed.
+    pub(super) range_count: usize,
+    /// Fresh prepared draw rows copied by changed replacements.
+    pub(super) draw_count: usize,
+    /// Candidate ranges proven semantically identical after expansion.
+    pub(super) noop_count: usize,
+    /// Whether any prepared row changed.
+    pub(super) changed: bool,
+    /// Whether draw/run/material shape changes required metadata reconstruction.
+    pub(super) structural_rebuild: bool,
+    /// Spatial spaces refit on the stable-range fast path.
+    pub(super) spatial_refit_count: usize,
+}
+
+/// Summary of lightweight context-overlay synchronization and exact renderer patching.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct PreparedContextPatchStats {
+    /// Static/skinned renderer ranges expanded for context-local values.
+    pub(super) mesh_renderer_count: usize,
+    /// Particle renderer ranges expanded for context-local values.
+    pub(super) particle_renderer_count: usize,
+    /// Fresh prepared rows copied by the context patch.
+    pub(super) draw_count: usize,
+    /// Whether any prepared row changed.
+    pub(super) changed: bool,
+    /// Number of metadata reconstructions caused by shape/material changes.
+    pub(super) structural_rebuild_count: usize,
+    /// Spatial spaces refit without metadata reconstruction.
+    pub(super) spatial_refit_count: usize,
+}
+
 /// Contiguous range of [`FramePreparedRenderables::runs`] consumed as one collection task.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct FramePreparedRunChunk {
@@ -204,6 +282,46 @@ fn populate_renderer_run_lookup(
     }
 }
 
+/// Rebuilds the direct particle-renderer range lookup from prepared draw order.
+fn populate_particle_renderer_draw_lookup(
+    draws: &[FramePreparedDraw],
+    lookup: &mut HashMap<FramePreparedParticleRendererLookupKey, Range<usize>>,
+) {
+    lookup.clear();
+    for (draw_index, draw) in draws.iter().enumerate() {
+        let Some(kind) = particle_renderer_kind(draw.particle_draw.kind) else {
+            continue;
+        };
+        let key = FramePreparedParticleRendererLookupKey {
+            space_id: draw.space_id,
+            kind,
+            renderable_index: draw.renderable_index,
+        };
+        match lookup.entry(key) {
+            hashbrown::hash_map::Entry::Occupied(mut entry) => {
+                let range = entry.get_mut();
+                debug_assert_eq!(
+                    range.end, draw_index,
+                    "particle renderer rows must remain contiguous"
+                );
+                range.end = draw_index + 1;
+            }
+            hashbrown::hash_map::Entry::Vacant(entry) => {
+                entry.insert(draw_index..draw_index + 1);
+            }
+        }
+    }
+}
+
+fn particle_renderer_kind(kind: ParticleDrawKind) -> Option<RenderWorldParticleRendererKind> {
+    match kind {
+        ParticleDrawKind::None => None,
+        ParticleDrawKind::Billboard => Some(RenderWorldParticleRendererKind::Billboard),
+        ParticleDrawKind::Mesh => Some(RenderWorldParticleRendererKind::Mesh),
+        ParticleDrawKind::Trail => Some(RenderWorldParticleRendererKind::Trail),
+    }
+}
+
 /// Frame-scope dense list of [`FramePreparedDraw`] entries across every active render space.
 ///
 /// Build once per frame via [`FramePreparedRenderables::build_for_frame`] and hand as a borrow to
@@ -228,6 +346,8 @@ pub struct FramePreparedRenderables {
     run_chunks: Vec<FramePreparedRunChunk>,
     /// Direct lookup from renderer identity to its prepared run.
     renderer_run_lookup: HashMap<FramePreparedRunLookupKey, FramePreparedRun>,
+    /// Direct lookup from one PhotonDust source renderer to all contiguous prepared rows it emits.
+    particle_renderer_draw_lookup: HashMap<FramePreparedParticleRendererLookupKey, Range<usize>>,
     /// First-seen unique `(material_asset_id, property_block_id)` keys referenced by
     /// [`Self::draws`]. Material caches consume this list once per shader permutation instead of
     /// materializing and deduping every prepared draw.
@@ -277,6 +397,7 @@ impl FramePreparedRenderables {
             runs: Vec::new(),
             run_chunks: Vec::new(),
             renderer_run_lookup: HashMap::new(),
+            particle_renderer_draw_lookup: HashMap::new(),
             material_property_keys: Vec::new(),
             material_property_key_signature: empty_material_key_signature(),
             spatial: PreparedSpatialIndex::default(),
@@ -331,6 +452,7 @@ impl FramePreparedRenderables {
         self.runs.clear();
         self.run_chunks.clear();
         self.renderer_run_lookup.clear();
+        self.particle_renderer_draw_lookup.clear();
         self.material_property_keys.clear();
         self.lod_groups.clear();
 
@@ -429,6 +551,10 @@ impl FramePreparedRenderables {
             PREPARED_RUN_CHUNK_DRAW_TARGET,
         );
         populate_renderer_run_lookup(&self.draws, &self.runs, &mut self.renderer_run_lookup);
+        populate_particle_renderer_draw_lookup(
+            &self.draws,
+            &mut self.particle_renderer_draw_lookup,
+        );
         self.rebuild_lod_groups(scene);
         self.spatial.rebuild(&self.draws, &self.runs);
     }
@@ -485,6 +611,32 @@ impl FramePreparedRenderables {
     #[inline]
     pub(super) fn lod_groups(&self) -> &[FramePreparedLodGroup] {
         &self.lod_groups
+    }
+
+    /// Clones a finalized base snapshot as a context-specialized prepared overlay.
+    pub(super) fn clone_for_context_overlay(&self, render_context: RenderingContext) -> Self {
+        Self {
+            active_space_ids: self.active_space_ids.clone(),
+            cached_space_draw_ranges: self.cached_space_draw_ranges.clone(),
+            draws: self.draws.clone(),
+            runs: self.runs.clone(),
+            run_chunks: self.run_chunks.clone(),
+            renderer_run_lookup: self.renderer_run_lookup.clone(),
+            particle_renderer_draw_lookup: self.particle_renderer_draw_lookup.clone(),
+            material_property_keys: self.material_property_keys.clone(),
+            material_property_key_signature: self.material_property_key_signature,
+            spatial: self.spatial.clone(),
+            lod_groups: self.lod_groups.clone(),
+            render_context,
+            context_invariant: false,
+            previous_draws: Vec::new(),
+            previous_cached_space_draw_ranges: HashMap::new(),
+            #[cfg(test)]
+            space_scratch: Vec::new(),
+            material_property_seen_scratch: HashSet::with_capacity(
+                self.material_property_seen_scratch.capacity(),
+            ),
+        }
     }
 
     /// Whether per-view camera state can change renderer selection through an LOD group.
@@ -577,6 +729,7 @@ impl FramePreparedRenderables {
         self.runs.clear();
         self.run_chunks.clear();
         self.renderer_run_lookup.clear();
+        self.particle_renderer_draw_lookup.clear();
         self.lod_groups.clear();
     }
 
@@ -674,13 +827,448 @@ impl FramePreparedRenderables {
         }
     }
 
-    /// Refits cached spatial data for spaces whose dynamic bounds changed.
-    pub(super) fn refit_cached_spatial_for_spaces<I>(&mut self, space_ids: I) -> usize
+    /// Refits cached spatial data and rebuilds LOD metadata after dynamic bounds changed.
+    ///
+    /// Prepared LOD groups cache the union of their renderer AABBs, so updating draw-row cull
+    /// geometry without rebuilding them leaves LOD selection on stale bounds even when the
+    /// spatial index itself was refit.
+    pub(super) fn refit_cached_spatial_and_lods_for_spaces<S, I>(
+        &mut self,
+        scene: &S,
+        space_ids: I,
+    ) -> usize
     where
+        S: WorldMeshSceneRead + ?Sized,
         I: IntoIterator<Item = RenderSpaceId>,
     {
-        self.spatial
-            .refit_spaces(&self.draws, &self.runs, space_ids)
+        let spatial_refit_count = self
+            .spatial
+            .refit_spaces(&self.draws, &self.runs, space_ids);
+        self.rebuild_lod_groups(Some(scene));
+        spatial_refit_count
+    }
+
+    /// Re-expands and patches exact static/skinned renderer ranges.
+    ///
+    /// Equal-size replacements with stable renderer/material/spatial shape update in place and
+    /// preserve every cached range and lookup offset. Visibility, residency, slot-count, material,
+    /// or renderer-identity changes splice only the affected ranges and rebuild prepared metadata
+    /// once after all replacements.
+    pub(super) fn patch_mesh_renderers<S>(
+        &mut self,
+        scene: &S,
+        mesh_pool: &MeshPool,
+        render_context: RenderingContext,
+        dirty_renderers: &HashSet<RenderWorldRendererDirty>,
+    ) -> PreparedMeshPatchStats
+    where
+        S: WorldMeshSceneRead + ?Sized,
+    {
+        profiling::scope!("mesh::prepared_renderables::patch_mesh_renderers");
+        let mut dirties = dirty_renderers.iter().copied().collect::<Vec<_>>();
+        dirties.sort_unstable_by_key(|dirty| {
+            (
+                dirty.space_id.0,
+                matches!(dirty.kind, RenderWorldRendererKind::Skinned),
+                dirty.renderable_index,
+            )
+        });
+
+        let candidate_count = dirties.len();
+        let mut replacements = Vec::with_capacity(candidate_count);
+        for dirty in dirties {
+            let skinned = matches!(dirty.kind, RenderWorldRendererKind::Skinned);
+            let instance_id = if skinned {
+                scene
+                    .skinned_mesh_renderers(dirty.space_id)
+                    .and_then(|renderers| renderers.get(dirty.renderable_index))
+                    .map(|renderer| renderer.base.instance_id)
+            } else {
+                scene
+                    .static_mesh_renderers(dirty.space_id)
+                    .and_then(|renderers| renderers.get(dirty.renderable_index))
+                    .map(|renderer| renderer.instance_id)
+            };
+            let old_range = instance_id
+                .and_then(|instance_id| {
+                    self.renderer_run_lookup
+                        .get(&FramePreparedRunLookupKey {
+                            space_id: dirty.space_id,
+                            skinned,
+                            renderable_index: dirty.renderable_index,
+                            instance_id,
+                        })
+                        .copied()
+                })
+                .map(|run| run.start as usize..run.end as usize)
+                .or_else(|| self.cached_mesh_renderer_draw_range(dirty));
+
+            let mut fresh = Vec::new();
+            if skinned {
+                expand_skinned_renderer_into(
+                    &mut fresh,
+                    scene,
+                    mesh_pool,
+                    render_context,
+                    dirty.space_id,
+                    dirty.renderable_index,
+                );
+            } else {
+                expand_static_renderer_into(
+                    &mut fresh,
+                    scene,
+                    mesh_pool,
+                    render_context,
+                    dirty.space_id,
+                    dirty.renderable_index,
+                );
+            }
+            let old_range = old_range.unwrap_or_else(|| {
+                let insertion = self.mesh_renderer_insertion_index(
+                    dirty.space_id,
+                    skinned,
+                    dirty.renderable_index,
+                );
+                insertion..insertion
+            });
+            replacements.push(PreparedRangeReplacement {
+                space_id: dirty.space_id,
+                old_range,
+                fresh,
+            });
+        }
+
+        let applied = self.apply_range_replacements(scene, replacements);
+        PreparedMeshPatchStats {
+            candidate_count,
+            range_count: applied.range_count,
+            draw_count: applied.draw_count,
+            noop_count: applied.noop_count,
+            changed: applied.changed,
+            structural_rebuild: applied.structural_rebuild,
+            spatial_refit_count: applied.spatial_refit_count,
+        }
+    }
+
+    /// Patches generated particle rows while retaining static/skinned prepared runs in place.
+    ///
+    /// Stable renderer shapes (the usual billboard/trail and fixed-count mesh-particle frame)
+    /// replace their existing ranges directly, preserve run lookup offsets, and refit only touched
+    /// spatial spaces. Membership, run-identity, material-key, or indexed-bounds-shape changes
+    /// splice the affected particle ranges and rebuild prepared metadata once after all patches.
+    pub(super) fn patch_particle_renderers<S>(
+        &mut self,
+        scene: &S,
+        mesh_pool: &MeshPool,
+        point_render_buffers: &HashMap<i32, crate::particles::PointRenderBufferAsset>,
+        render_context: RenderingContext,
+        dirty_spaces: &HashSet<RenderSpaceId>,
+        dirty_renderers: &HashSet<RenderWorldParticleRendererDirty>,
+    ) -> PreparedParticlePatchStats
+    where
+        S: WorldMeshSceneRead + ?Sized,
+    {
+        profiling::scope!("mesh::prepared_renderables::patch_particle_renderers");
+        let mut full_spaces = dirty_spaces.clone();
+        let mut replacements = Vec::new();
+
+        for &dirty in dirty_renderers {
+            if full_spaces.contains(&dirty.space_id) {
+                continue;
+            }
+            let key = FramePreparedParticleRendererLookupKey::from(dirty);
+            let old_range = self.particle_renderer_draw_lookup.get(&key).cloned();
+            let mut fresh = Vec::new();
+            expand_render_buffer_renderer_into(
+                &mut fresh,
+                scene,
+                mesh_pool,
+                point_render_buffers,
+                render_context,
+                dirty,
+            );
+            if old_range.is_none() && !fresh.is_empty() {
+                // A previously filtered/non-resident row becoming drawable needs its deterministic
+                // position relative to sibling particle tables restored.
+                full_spaces.insert(dirty.space_id);
+                continue;
+            }
+            if let Some(old_range) = old_range {
+                replacements.push(PreparedRangeReplacement {
+                    space_id: dirty.space_id,
+                    old_range,
+                    fresh,
+                });
+            }
+        }
+
+        replacements.retain(|replacement| !full_spaces.contains(&replacement.space_id));
+        for &space_id in &full_spaces {
+            let Some(old_range) = self.cached_particle_draw_range_for_space(space_id) else {
+                continue;
+            };
+            let mut fresh = Vec::new();
+            expand_render_buffer_renderers_into(
+                &mut fresh,
+                scene,
+                mesh_pool,
+                point_render_buffers,
+                render_context,
+                space_id,
+            );
+            replacements.push(PreparedRangeReplacement {
+                space_id,
+                old_range,
+                fresh,
+            });
+        }
+
+        let applied = self.apply_range_replacements(scene, replacements);
+        PreparedParticlePatchStats {
+            renderer_count: applied.range_count,
+            draw_count: applied.draw_count,
+            changed: applied.changed,
+            structural_rebuild: applied.structural_rebuild,
+            spatial_refit_count: applied.spatial_refit_count,
+        }
+    }
+
+    /// Synchronizes only generated particle suffixes from a context-invariant base snapshot.
+    pub(super) fn sync_particle_rows_from<S>(
+        &mut self,
+        source: &Self,
+        scene: &S,
+    ) -> PreparedParticlePatchStats
+    where
+        S: WorldMeshSceneRead + ?Sized,
+    {
+        let mut replacements = Vec::new();
+        for &space_id in &self.active_space_ids {
+            let Some(old_range) = self.cached_particle_draw_range_for_space(space_id) else {
+                continue;
+            };
+            let fresh = source
+                .cached_particle_draw_range_for_space(space_id)
+                .and_then(|range| source.draws.get(range))
+                .map_or_else(Vec::new, <[FramePreparedDraw]>::to_vec);
+            replacements.push(PreparedRangeReplacement {
+                space_id,
+                old_range,
+                fresh,
+            });
+        }
+        let applied = self.apply_range_replacements(scene, replacements);
+        PreparedParticlePatchStats {
+            renderer_count: applied.range_count,
+            draw_count: applied.draw_count,
+            changed: applied.changed,
+            structural_rebuild: applied.structural_rebuild,
+            spatial_refit_count: applied.spatial_refit_count,
+        }
+    }
+
+    /// Re-expands only the static/skinned and particle rows affected by one render context.
+    pub(super) fn patch_context_override_renderers<S>(
+        &mut self,
+        scene: &S,
+        mesh_pool: &MeshPool,
+        point_render_buffers: &HashMap<i32, crate::particles::PointRenderBufferAsset>,
+        render_context: RenderingContext,
+        mesh_renderers: &HashSet<RenderWorldRendererDirty>,
+        particle_renderers: &HashSet<RenderWorldParticleRendererDirty>,
+    ) -> PreparedContextPatchStats
+    where
+        S: WorldMeshSceneRead + ?Sized,
+    {
+        let mesh_patch =
+            self.patch_mesh_renderers(scene, mesh_pool, render_context, mesh_renderers);
+        let particle_patch = self.patch_particle_renderers(
+            scene,
+            mesh_pool,
+            point_render_buffers,
+            render_context,
+            &HashSet::new(),
+            particle_renderers,
+        );
+        PreparedContextPatchStats {
+            mesh_renderer_count: mesh_patch.range_count,
+            particle_renderer_count: particle_patch.renderer_count,
+            draw_count: mesh_patch.draw_count + particle_patch.draw_count,
+            changed: mesh_patch.changed || particle_patch.changed,
+            structural_rebuild_count: usize::from(mesh_patch.structural_rebuild)
+                + usize::from(particle_patch.structural_rebuild),
+            spatial_refit_count: mesh_patch.spatial_refit_count
+                + particle_patch.spatial_refit_count,
+        }
+    }
+
+    /// Finds an existing non-particle renderer run by dense table identity.
+    ///
+    /// The normal path performs an O(1) exact lookup with the live renderer instance id. This
+    /// scan is the defensive fallback for a stale/missing scene row so a structural patch removes
+    /// an old prepared run instead of inserting a duplicate beside it.
+    fn cached_mesh_renderer_draw_range(
+        &self,
+        dirty: RenderWorldRendererDirty,
+    ) -> Option<Range<usize>> {
+        let skinned = matches!(dirty.kind, RenderWorldRendererKind::Skinned);
+        self.renderer_run_lookup.iter().find_map(|(key, run)| {
+            (key.space_id == dirty.space_id
+                && key.skinned == skinned
+                && key.renderable_index == dirty.renderable_index
+                && self
+                    .draws
+                    .get(run.start as usize)
+                    .is_some_and(|draw| draw.particle_draw.kind == ParticleDrawKind::None))
+            .then_some(run.start as usize..run.end as usize)
+        })
+    }
+
+    fn mesh_renderer_insertion_index(
+        &self,
+        space_id: RenderSpaceId,
+        skinned: bool,
+        renderable_index: usize,
+    ) -> usize {
+        let Some(range) = self.cached_space_draw_ranges.get(&space_id).cloned() else {
+            return self.draws.len();
+        };
+        for draw_index in range.clone() {
+            let draw = &self.draws[draw_index];
+            if draw.particle_draw.kind != ParticleDrawKind::None {
+                return draw_index;
+            }
+            let follows = if skinned {
+                draw.skinned && draw.renderable_index > renderable_index
+            } else {
+                draw.skinned || (!draw.skinned && draw.renderable_index > renderable_index)
+            };
+            if follows {
+                return draw_index;
+            }
+        }
+        range.end
+    }
+
+    fn apply_range_replacements<S>(
+        &mut self,
+        scene: &S,
+        mut replacements: Vec<PreparedRangeReplacement>,
+    ) -> PreparedRangePatchStats
+    where
+        S: WorldMeshSceneRead + ?Sized,
+    {
+        if replacements.is_empty() {
+            return PreparedRangePatchStats::default();
+        }
+        replacements.sort_by_key(|replacement| replacement.old_range.start);
+        debug_assert!(
+            replacements
+                .windows(2)
+                .all(|pair| pair[0].old_range.end <= pair[1].old_range.start),
+            "prepared patch ranges must not overlap"
+        );
+
+        // Fresh expansion assigns ordinal zero. Preserve the finalized ordinal before comparing
+        // payloads so an otherwise identical renderer at ordinal > 0 is still a true no-op.
+        // Normalizing here also means the stable copy below does not transiently publish a stale
+        // ordinal.
+        let mut noop_count = 0usize;
+        replacements.retain_mut(|replacement| {
+            let Some(old) = self.draws.get(replacement.old_range.clone()) else {
+                return true;
+            };
+            if old.len() == replacement.fresh.len() {
+                for (previous, fresh) in old.iter().zip(&mut replacement.fresh) {
+                    fresh.renderer_ordinal = previous.renderer_ordinal;
+                }
+            }
+            if old == replacement.fresh.as_slice() {
+                noop_count += 1;
+                false
+            } else {
+                true
+            }
+        });
+        if replacements.is_empty() {
+            return PreparedRangePatchStats {
+                noop_count,
+                ..Default::default()
+            };
+        }
+
+        let range_count = replacements
+            .iter()
+            .filter(|replacement| {
+                !replacement.old_range.is_empty() || !replacement.fresh.is_empty()
+            })
+            .count();
+        if range_count == 0 {
+            return PreparedRangePatchStats {
+                noop_count,
+                ..Default::default()
+            };
+        }
+        let draw_count = replacements
+            .iter()
+            .map(|replacement| replacement.fresh.len())
+            .sum();
+        let stable_in_place = replacements.iter().all(|replacement| {
+            self.draws
+                .get(replacement.old_range.clone())
+                .is_some_and(|old| prepared_patch_shape_is_stable(old, &replacement.fresh))
+        });
+        let touched_spaces = replacements
+            .iter()
+            .map(|replacement| replacement.space_id)
+            .collect::<HashSet<_>>();
+
+        if stable_in_place {
+            for replacement in replacements {
+                let old = &mut self.draws[replacement.old_range];
+                for (destination, fresh) in old.iter_mut().zip(replacement.fresh) {
+                    *destination = fresh;
+                }
+            }
+            let spatial_refit_count =
+                self.refit_cached_spatial_and_lods_for_spaces(scene, touched_spaces);
+            return PreparedRangePatchStats {
+                range_count,
+                draw_count,
+                noop_count,
+                changed: true,
+                structural_rebuild: false,
+                spatial_refit_count,
+            };
+        }
+
+        for replacement in replacements.into_iter().rev() {
+            self.draws
+                .splice(replacement.old_range, replacement.fresh.into_iter());
+        }
+        self.refresh_runs_material_keys_and_chunks(Some(scene));
+        PreparedRangePatchStats {
+            range_count,
+            draw_count,
+            noop_count,
+            changed: true,
+            structural_rebuild: true,
+            spatial_refit_count: 0,
+        }
+    }
+
+    /// Returns the particle suffix range for one active prepared space.
+    fn cached_particle_draw_range_for_space(
+        &self,
+        space_id: RenderSpaceId,
+    ) -> Option<Range<usize>> {
+        let space_range = self.cached_space_draw_ranges.get(&space_id)?.clone();
+        let draws = self.draws.get(space_range.clone())?;
+        let particle_offset = draws
+            .iter()
+            .position(|draw| draw.particle_draw.kind != ParticleDrawKind::None)
+            .unwrap_or(draws.len());
+        Some(space_range.start + particle_offset..space_range.end)
     }
 
     /// Finalizes a retained snapshot rebuild by refreshing runs, chunks, and material keys.
@@ -704,6 +1292,44 @@ impl FramePreparedRenderables {
         }
         self.refresh_runs_material_keys_and_chunks::<SceneCoordinator>(None);
     }
+}
+
+struct PreparedRangeReplacement {
+    space_id: RenderSpaceId,
+    old_range: Range<usize>,
+    fresh: Vec<FramePreparedDraw>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PreparedRangePatchStats {
+    range_count: usize,
+    draw_count: usize,
+    noop_count: usize,
+    changed: bool,
+    structural_rebuild: bool,
+    spatial_refit_count: usize,
+}
+
+/// Returns whether a replacement can preserve every prepared-run/material/spatial shape.
+fn prepared_patch_shape_is_stable(old: &[FramePreparedDraw], fresh: &[FramePreparedDraw]) -> bool {
+    old.len() == fresh.len()
+        && old.iter().zip(fresh).all(|(old, fresh)| {
+            old.space_id == fresh.space_id
+                && old.skinned == fresh.skinned
+                && old.renderable_index == fresh.renderable_index
+                && old.instance_id == fresh.instance_id
+                && old.particle_draw.kind == fresh.particle_draw.kind
+                && old.material_asset_id == fresh.material_asset_id
+                && old.property_block_id == fresh.property_block_id
+                && old
+                    .cull_geometry
+                    .and_then(|geometry| geometry.world_aabb)
+                    .is_some()
+                    == fresh
+                        .cull_geometry
+                        .and_then(|geometry| geometry.world_aabb)
+                        .is_some()
+        })
 }
 
 /// Assigns stable scene-table renderer ordinals to every prepared draw row.

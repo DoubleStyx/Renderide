@@ -28,8 +28,8 @@ pub use post_processing::{
     TonemapMode,
 };
 pub use rendering::{
-    GraphicsApiSetting, MsaaSampleCount, PresentationModeSetting, RenderingSettings,
-    SceneColorFormat,
+    DEFAULT_ASSET_INTEGRATION_BUDGET_MS, GraphicsApiSetting, MsaaSampleCount,
+    PresentationModeSetting, RenderingSettings, SceneColorFormat,
 };
 pub use watchdog::{WatchdogAction, WatchdogSettings};
 

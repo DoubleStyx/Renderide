@@ -9,19 +9,19 @@ use renderide_shared::{SharedMemoryWriter, SharedMemoryWriterConfig};
 
 use crate::ipc::SharedMemoryAccessor;
 use crate::scene::camera_portal::CameraPortalEntry;
-use crate::scene::meshes::types::StaticMeshRenderer;
+use crate::scene::meshes::types::{MeshMaterialSlot, SkinnedMeshRenderer, StaticMeshRenderer};
 use crate::scene::overrides::{MeshRendererOverrideTarget, RenderMaterialOverrideEntry};
 use crate::scene::render_space::RenderSpaceState;
 use crate::shared::{
-    CameraPortalState, FrameSubmitData, RenderSpaceUpdate, RenderTransform, RenderingContext,
-    TransformsUpdate,
+    BillboardRenderBufferState, CameraPortalState, FrameSubmitData, RenderSpaceUpdate,
+    RenderTransform, RenderTransformOverrideState, RenderingContext, TransformsUpdate,
 };
 
 use super::super::super::ids::RenderSpaceId;
 use super::super::super::world::{WorldTransformCache, compute_world_matrices_for_space};
 use super::super::apply::ExtractedRenderSpaceUpdate;
 use super::super::{
-    RenderWorldRendererKind, SceneApplyReport, SceneCoordinator,
+    RenderWorldParticleRendererKind, RenderWorldRendererKind, SceneApplyReport, SceneCoordinator,
     extracted_update_affects_reflection_probes, extracted_update_affects_render_world,
     extracted_update_changes_reflection_probes, extracted_update_changes_render_world,
     note_render_world_dirty_for_extracted_update, render_world_header_changed,
@@ -249,6 +249,92 @@ fn empty_optional_payloads_do_not_dirty_retained_scene_state() {
 }
 
 #[test]
+fn particle_state_rows_dirty_only_the_target_generated_renderer() {
+    let space_id = RenderSpaceId(9);
+    let mut update = empty_extracted_render_space_update();
+    update.billboard_render_buffers = Some(
+        crate::scene::render_buffers::ExtractedBillboardRenderBufferUpdate {
+            states: vec![BillboardRenderBufferState {
+                renderable_index: 4,
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+    );
+    let mut report = SceneApplyReport::default();
+
+    note_render_world_dirty_for_extracted_update(&mut report, space_id, false, 0, None, &update);
+
+    assert!(report.render_world_dirty.full_spaces.is_empty());
+    assert!(report.render_world_dirty.particle_spaces.is_empty());
+    assert_eq!(report.render_world_dirty.particle_renderers.len(), 1);
+    let dirty = report.render_world_dirty.particle_renderers[0];
+    assert_eq!(dirty.space_id, space_id);
+    assert_eq!(dirty.kind, RenderWorldParticleRendererKind::Billboard);
+    assert_eq!(dirty.renderable_index, 4);
+}
+
+#[test]
+fn particle_membership_churn_dirties_only_the_space_particle_suffix() {
+    let space_id = RenderSpaceId(10);
+    let mut update = empty_extracted_render_space_update();
+    update.mesh_render_buffers = Some(
+        crate::scene::render_buffers::ExtractedMeshRenderBufferUpdate {
+            additions: vec![3, -1],
+            ..Default::default()
+        },
+    );
+    let mut report = SceneApplyReport::default();
+
+    note_render_world_dirty_for_extracted_update(&mut report, space_id, false, 0, None, &update);
+
+    assert!(report.render_world_dirty.full_spaces.is_empty());
+    assert_eq!(report.render_world_dirty.particle_spaces, vec![space_id]);
+    assert!(report.render_world_dirty.particle_renderers.is_empty());
+}
+
+#[test]
+fn transform_override_state_dirties_only_matching_context_overlay() {
+    let space_id = RenderSpaceId(11);
+    let mut update = empty_extracted_render_space_update();
+    update.transform_overrides = Some(
+        crate::scene::overrides::ExtractedRenderTransformOverridesUpdate {
+            states: vec![RenderTransformOverrideState {
+                renderable_index: 0,
+                context: RenderingContext::Camera,
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+    );
+    let mut current_space = RenderSpaceState::default();
+    current_space.render_transform_overrides.push(
+        crate::scene::overrides::RenderTransformOverrideEntry {
+            node_id: 0,
+            context: RenderingContext::Camera,
+            ..Default::default()
+        },
+    );
+    let mut report = SceneApplyReport::default();
+
+    note_render_world_dirty_for_extracted_update(
+        &mut report,
+        space_id,
+        false,
+        1,
+        Some(&current_space),
+        &update,
+    );
+
+    assert!(report.render_world_dirty.full_spaces.is_empty());
+    assert_eq!(report.render_world_dirty.context_overrides.len(), 1);
+    assert_eq!(
+        report.render_world_dirty.context_overrides[0].context,
+        RenderingContext::Camera
+    );
+}
+
+#[test]
 fn extracted_reflection_probe_dirty_tracks_probe_updates() {
     let mut update = empty_extracted_render_space_update();
     update.reflection_probes =
@@ -369,6 +455,65 @@ fn render_world_dirty_report_tracks_static_state_rows() {
 }
 
 #[test]
+fn static_mesh_state_classifier_merges_rows_and_suppresses_exact_noop() {
+    let mut space = RenderSpaceState::default();
+    space.static_mesh_renderers.push(StaticMeshRenderer {
+        mesh_asset_id: 11,
+        sorting_order: 3,
+        shadow_cast_mode: crate::shared::ShadowCastMode::On,
+        material_slots: vec![MeshMaterialSlot {
+            material_asset_id: 7,
+            property_block_id: Some(70),
+        }],
+        primary_material_asset_id: Some(7),
+        primary_property_block_id: Some(70),
+        ..Default::default()
+    });
+    let mut update = empty_extracted_render_space_update();
+    update.meshes = Some(crate::scene::meshes::ExtractedMeshRenderablesUpdate {
+        mesh_states: vec![
+            crate::shared::MeshRendererState {
+                renderable_index: 0,
+                mesh_asset_id: 99,
+                material_count: 1,
+                material_property_block_count: 1,
+                sorting_order: 99,
+                shadow_cast_mode: crate::shared::ShadowCastMode::Off,
+                ..Default::default()
+            },
+            crate::shared::MeshRendererState {
+                renderable_index: 0,
+                mesh_asset_id: 11,
+                material_count: -1,
+                material_property_block_count: -1,
+                sorting_order: 3,
+                shadow_cast_mode: crate::shared::ShadowCastMode::On,
+                motion_vector_mode: crate::shared::MotionVectorMode::NoMotion,
+                ..Default::default()
+            },
+        ],
+        mesh_materials_and_property_blocks: Some(vec![7, 70]),
+        ..Default::default()
+    });
+    let mut report = SceneApplyReport::default();
+
+    note_render_world_dirty_for_extracted_update(
+        &mut report,
+        RenderSpaceId(3),
+        false,
+        0,
+        Some(&space),
+        &update,
+    );
+
+    assert!(report.render_world_dirty.renderers.is_empty());
+    assert_eq!(
+        report.render_world_classified_spaces,
+        vec![RenderSpaceId(3)]
+    );
+}
+
+#[test]
 fn render_world_dirty_report_tracks_skinned_bounds_separately() {
     let mut update = empty_extracted_render_space_update();
     update.skinned_meshes = Some(
@@ -405,6 +550,280 @@ fn render_world_dirty_report_tracks_skinned_bounds_separately() {
     assert_eq!(report.render_world_dirty.bounds[0].renderable_index, 2);
     assert!(report.render_world_dirty.renderers.is_empty());
     assert!(report.render_world_dirty.full_spaces.is_empty());
+}
+
+fn classify_skinned_update(
+    space: &RenderSpaceState,
+    update: crate::scene::meshes::ExtractedSkinnedMeshRenderablesUpdate,
+) -> SceneApplyReport {
+    let mut extracted = empty_extracted_render_space_update();
+    extracted.skinned_meshes = Some(update);
+    let mut report = SceneApplyReport::default();
+    note_render_world_dirty_for_extracted_update(
+        &mut report,
+        RenderSpaceId(3),
+        false,
+        space.nodes.len(),
+        Some(space),
+        &extracted,
+    );
+    report
+}
+
+#[test]
+fn skinned_mesh_state_classifier_merges_rows_and_suppresses_exact_noop() {
+    let mut space = RenderSpaceState::default();
+    space.skinned_mesh_renderers.push(SkinnedMeshRenderer {
+        base: StaticMeshRenderer {
+            mesh_asset_id: 11,
+            sorting_order: 3,
+            shadow_cast_mode: crate::shared::ShadowCastMode::On,
+            material_slots: vec![MeshMaterialSlot {
+                material_asset_id: 7,
+                property_block_id: Some(70),
+            }],
+            primary_material_asset_id: Some(7),
+            primary_property_block_id: Some(70),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let update = crate::scene::meshes::ExtractedSkinnedMeshRenderablesUpdate {
+        mesh_states: vec![
+            crate::shared::MeshRendererState {
+                renderable_index: 0,
+                mesh_asset_id: 99,
+                material_count: 1,
+                material_property_block_count: 1,
+                sorting_order: 99,
+                shadow_cast_mode: crate::shared::ShadowCastMode::Off,
+                ..Default::default()
+            },
+            crate::shared::MeshRendererState {
+                renderable_index: 0,
+                mesh_asset_id: 11,
+                material_count: -1,
+                material_property_block_count: -1,
+                sorting_order: 3,
+                shadow_cast_mode: crate::shared::ShadowCastMode::On,
+                motion_vector_mode: crate::shared::MotionVectorMode::NoMotion,
+                ..Default::default()
+            },
+            crate::shared::MeshRendererState {
+                renderable_index: -1,
+                ..Default::default()
+            },
+        ],
+        mesh_materials_and_property_blocks: Some(vec![7, 70]),
+        ..Default::default()
+    };
+
+    let report = classify_skinned_update(&space, update);
+
+    assert!(report.render_world_dirty.renderers.is_empty());
+    assert!(report.render_world_dirty.deform_renderers.is_empty());
+    assert!(report.render_world_dirty.bounds.is_empty());
+    assert_eq!(
+        report.render_world_classified_spaces,
+        vec![RenderSpaceId(3)]
+    );
+}
+
+#[test]
+fn skinned_mesh_state_classifier_reports_one_final_prepared_row_change() {
+    let mut space = RenderSpaceState::default();
+    space.skinned_mesh_renderers.push(SkinnedMeshRenderer {
+        base: StaticMeshRenderer {
+            mesh_asset_id: 11,
+            sorting_order: 3,
+            shadow_cast_mode: crate::shared::ShadowCastMode::On,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let update = crate::scene::meshes::ExtractedSkinnedMeshRenderablesUpdate {
+        mesh_states: vec![
+            crate::shared::MeshRendererState {
+                renderable_index: 0,
+                mesh_asset_id: 11,
+                material_count: -1,
+                material_property_block_count: -1,
+                sorting_order: 4,
+                shadow_cast_mode: crate::shared::ShadowCastMode::On,
+                ..Default::default()
+            },
+            crate::shared::MeshRendererState {
+                renderable_index: 0,
+                mesh_asset_id: 11,
+                material_count: -1,
+                material_property_block_count: -1,
+                sorting_order: 5,
+                shadow_cast_mode: crate::shared::ShadowCastMode::On,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+
+    let report = classify_skinned_update(&space, update);
+
+    assert_eq!(report.render_world_dirty.renderers.len(), 1);
+    assert_eq!(report.render_world_dirty.renderers[0].renderable_index, 0);
+}
+
+#[test]
+fn skinned_bone_classifier_ignores_palette_values_and_tracks_root_bounds() {
+    let mut space = RenderSpaceState::default();
+    space.skinned_mesh_renderers.push(SkinnedMeshRenderer {
+        bone_transform_indices: vec![3, 4],
+        root_bone_transform_id: Some(9),
+        ..Default::default()
+    });
+
+    let palette_report = classify_skinned_update(
+        &space,
+        crate::scene::meshes::ExtractedSkinnedMeshRenderablesUpdate {
+            bone_assignments: vec![crate::shared::BoneAssignment {
+                renderable_index: 0,
+                root_bone_transform_id: 9,
+                bone_count: 2,
+            }],
+            bone_transform_indexes: vec![5, 6],
+            ..Default::default()
+        },
+    );
+    assert!(
+        palette_report
+            .render_world_dirty
+            .deform_renderers
+            .is_empty()
+    );
+    assert!(palette_report.render_world_dirty.bounds.is_empty());
+    assert!(palette_report.render_world_dirty.renderers.is_empty());
+
+    let root_report = classify_skinned_update(
+        &space,
+        crate::scene::meshes::ExtractedSkinnedMeshRenderablesUpdate {
+            bone_assignments: vec![crate::shared::BoneAssignment {
+                renderable_index: 0,
+                root_bone_transform_id: 10,
+                bone_count: 2,
+            }],
+            bone_transform_indexes: vec![3, 4],
+            ..Default::default()
+        },
+    );
+    assert!(root_report.render_world_dirty.deform_renderers.is_empty());
+    assert_eq!(root_report.render_world_dirty.bounds.len(), 1);
+    assert!(root_report.render_world_dirty.renderers.is_empty());
+}
+
+#[test]
+fn skinned_blendshape_classifier_uses_final_effective_weights_and_stream_offsets() {
+    let mut space = RenderSpaceState::default();
+    space.skinned_mesh_renderers.extend([
+        SkinnedMeshRenderer::default(),
+        SkinnedMeshRenderer::default(),
+    ]);
+    space.skinned_mesh_renderers[0].base.blend_shape_weights = vec![1.0];
+
+    let cancelled = classify_skinned_update(
+        &space,
+        crate::scene::meshes::ExtractedSkinnedMeshRenderablesUpdate {
+            blendshape_update_batches: vec![
+                crate::shared::BlendshapeUpdateBatch {
+                    renderable_index: 0,
+                    blendshape_update_count: 1,
+                },
+                crate::shared::BlendshapeUpdateBatch {
+                    renderable_index: 0,
+                    blendshape_update_count: 1,
+                },
+            ],
+            blendshape_updates: vec![
+                crate::shared::BlendshapeUpdate {
+                    blendshape_index: 0,
+                    weight: 2.0,
+                },
+                crate::shared::BlendshapeUpdate {
+                    blendshape_index: 0,
+                    weight: 1.0,
+                },
+            ],
+            ..Default::default()
+        },
+    );
+    assert!(cancelled.render_world_dirty.deform_renderers.is_empty());
+
+    let offset_aligned = classify_skinned_update(
+        &space,
+        crate::scene::meshes::ExtractedSkinnedMeshRenderablesUpdate {
+            blendshape_update_batches: vec![
+                crate::shared::BlendshapeUpdateBatch {
+                    renderable_index: 99,
+                    blendshape_update_count: 1,
+                },
+                crate::shared::BlendshapeUpdateBatch {
+                    renderable_index: 1,
+                    blendshape_update_count: 1,
+                },
+            ],
+            blendshape_updates: vec![
+                crate::shared::BlendshapeUpdate {
+                    blendshape_index: 0,
+                    weight: 99.0,
+                },
+                crate::shared::BlendshapeUpdate {
+                    blendshape_index: -7,
+                    weight: 0.5,
+                },
+            ],
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        offset_aligned.render_world_dirty.deform_renderers,
+        vec![super::super::RenderWorldRendererDirty {
+            space_id: RenderSpaceId(3),
+            kind: RenderWorldRendererKind::Skinned,
+            renderable_index: 1,
+        }]
+    );
+}
+
+#[test]
+fn skinned_bounds_classifier_coalesces_duplicates_and_filters_identical_value() {
+    let existing = crate::shared::RenderBoundingBox {
+        center: Vec3::new(1.0, 2.0, 3.0),
+        extents: Vec3::splat(4.0),
+    };
+    let mut space = RenderSpaceState::default();
+    space.skinned_mesh_renderers.push(SkinnedMeshRenderer {
+        posed_object_bounds: Some(existing),
+        ..Default::default()
+    });
+    let report = classify_skinned_update(
+        &space,
+        crate::scene::meshes::ExtractedSkinnedMeshRenderablesUpdate {
+            bounds_updates: vec![
+                crate::shared::SkinnedMeshBoundsUpdate {
+                    renderable_index: 0,
+                    local_bounds: crate::shared::RenderBoundingBox {
+                        center: Vec3::splat(99.0),
+                        extents: Vec3::splat(99.0),
+                    },
+                },
+                crate::shared::SkinnedMeshBoundsUpdate {
+                    renderable_index: 0,
+                    local_bounds: existing,
+                },
+            ],
+            ..Default::default()
+        },
+    );
+
+    assert!(report.render_world_dirty.bounds.is_empty());
+    assert!(report.render_world_dirty.renderers.is_empty());
 }
 
 #[test]
@@ -592,7 +1011,7 @@ fn render_world_dirty_report_tracks_material_override_previous_and_new_targets()
 }
 
 #[test]
-fn render_world_dirty_report_marks_unknown_previous_material_override_target_as_full_space() {
+fn render_world_dirty_report_routes_unknown_previous_material_override_to_context_overlay() {
     let mut space = RenderSpaceState::default();
     space
         .render_material_overrides
@@ -625,11 +1044,29 @@ fn render_world_dirty_report_marks_unknown_previous_material_override_target_as_
         &update,
     );
 
+    assert!(report.render_world_dirty.full_spaces.is_empty());
+    assert_eq!(report.render_world_dirty.context_overrides.len(), 1);
     assert_eq!(
-        report.render_world_dirty.full_spaces,
-        vec![RenderSpaceId(5)]
+        report.render_world_dirty.context_overrides[0].space_id,
+        RenderSpaceId(5)
     );
-    assert!(report.render_world_dirty.material_overrides.is_empty());
+    assert_eq!(
+        report.render_world_dirty.context_overrides[0].context,
+        RenderingContext::Portal
+    );
+    assert_eq!(report.render_world_dirty.material_overrides.len(), 1);
+    assert_eq!(
+        report.render_world_dirty.material_overrides[0].space_id,
+        RenderSpaceId(5)
+    );
+    assert_eq!(
+        report.render_world_dirty.material_overrides[0].context,
+        RenderingContext::UserView
+    );
+    assert_eq!(
+        report.render_world_dirty.material_overrides[0].target,
+        MeshRendererOverrideTarget::Static(9)
+    );
 }
 
 /// [`super::super::apply::apply_extracted_render_space_update`] mutates only the per-space

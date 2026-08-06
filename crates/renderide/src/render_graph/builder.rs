@@ -406,6 +406,7 @@ impl GraphBuilder {
             validation_mode: self.validation_mode,
             main_graph_msaa_transient_handles: None,
             upload_batch: Default::default(),
+            view_blackboard_pool: Default::default(),
         })
     }
 
@@ -456,6 +457,7 @@ impl GraphBuilder {
             validation_mode: self.validation_mode,
             main_graph_msaa_transient_handles: None,
             upload_batch: Default::default(),
+            view_blackboard_pool: Default::default(),
         }
     }
 

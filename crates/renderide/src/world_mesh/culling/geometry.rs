@@ -32,7 +32,7 @@ pub(crate) struct MeshCullTarget<'a, S: SceneTransformRead + ?Sized = SceneCoord
 /// View-invariant for non-overlay spaces (the matrix and bounds are functions of the scene,
 /// mesh, and `render_context` only); overlay spaces re-root against the view's
 /// `head_output_transform`, so a precomputed value is invalid for them.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct MeshCullGeometry {
     /// When `None`, culling treats the draw as visible (conservative).
     pub world_aabb: Option<(Vec3, Vec3)>,

@@ -18,7 +18,7 @@ use crate::render_graph::context::GraphResolvedResources;
 use crate::render_graph::error::GraphExecuteError;
 use crate::render_graph::pass::PassPhase;
 use crate::render_graph::schedule::{
-    RecordingBatch, RecordingBatchKind, RecordingUnit, RenderPassMaterializationGroup,
+    RecordingBatchKind, RecordingExecutionRun, RecordingUnit, RenderPassMaterializationGroup,
 };
 use crate::shared::RenderingContext;
 
@@ -30,7 +30,7 @@ use super::super::{
 };
 use super::{PassExecution, PassGpuInputs, PassRecordTargets, PassViewInputs, PhaseRecordingScope};
 
-use batch_plan::{next_phase_batch_index, serial_batch_run_end};
+use batch_plan::per_view_recording_runs;
 use frame_params::build_per_view_frame_params;
 use offscreen_copy::{record_offscreen_color_copy, record_offscreen_color_copy_command};
 
@@ -117,7 +117,6 @@ struct PerViewLiveState<'a, 'frame> {
 struct PerViewSchedulerInputs<'a> {
     upload_batch: &'a FrameUploadBatch,
     allow_parallel_batches: bool,
-    split_serial_batches: bool,
     profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
 }
 
@@ -153,6 +152,7 @@ impl CompiledRenderGraph {
             host_camera,
             render_context,
             frame_time_seconds,
+            view_id,
             clear,
             post_processing,
             initial_blackboard,
@@ -191,12 +191,11 @@ impl CompiledRenderGraph {
         };
 
         let use_scheduler = strategy.uses_in_view_scheduler()
-            && self
+            && !self
                 .schedule
                 .recording_plan
-                .phase_batches(PassPhase::PerView)
-                .next()
-                .is_some();
+                .per_view_execution_runs()
+                .is_empty();
         let encoded = if use_scheduler {
             self.record_one_view_scheduler(
                 scope,
@@ -209,7 +208,6 @@ impl CompiledRenderGraph {
                 PerViewSchedulerInputs {
                     upload_batch,
                     allow_parallel_batches: strategy.allows_in_view_parallel_batches(),
-                    split_serial_batches: false,
                     profiler,
                 },
             )?
@@ -229,6 +227,7 @@ impl CompiledRenderGraph {
         retained_resources.append(crate::passes::take_gpu_cull_submit_resources(
             &mut view_blackboard,
         ));
+        self.recycle_view_blackboard(view_id, view_blackboard);
         Ok(PerViewEncodeOutput {
             command_buffers: encoded.command_buffers,
             hud_outputs,
@@ -256,6 +255,7 @@ impl CompiledRenderGraph {
             host_camera,
             render_context,
             frame_time_seconds,
+            view_id,
             clear,
             post_processing,
             initial_blackboard,
@@ -307,6 +307,7 @@ impl CompiledRenderGraph {
         retained_resources.append(crate::passes::take_gpu_cull_submit_resources(
             &mut view_blackboard,
         ));
+        self.recycle_view_blackboard(view_id, view_blackboard);
         Ok(PerViewEncodeOutput {
             command_buffers: Vec::new(),
             hud_outputs,
@@ -435,21 +436,14 @@ impl CompiledRenderGraph {
         let mut encode_ms = 0.0;
         let mut finish_ms = 0.0;
         let mut max_finish_ms = 0.0;
-        let batches = self.schedule.recording_plan.batches.as_slice();
-        let mut batch_index = next_phase_batch_index(batches, 0, PassPhase::PerView);
-        while let Some(current_batch_index) = batch_index {
-            let batch = batches[current_batch_index];
-            match batch.kind {
+        let runs = per_view_recording_runs(&self.schedule.recording_plan);
+        for run in runs.iter().copied() {
+            match run.kind {
                 RecordingBatchKind::Serial => {
-                    let (next_batch_index, end_unit) = if scheduler.split_serial_batches {
-                        (current_batch_index + 1, batch.end_unit)
-                    } else {
-                        serial_batch_run_end(batches, current_batch_index)
-                    };
                     let output = self.record_serial_unit_range(
                         scope,
                         state.reborrow(),
-                        batch.start_unit..end_unit,
+                        run.start_unit..run.end_unit,
                         scheduler.upload_batch,
                         scheduler.profiler,
                     )?;
@@ -457,8 +451,6 @@ impl CompiledRenderGraph {
                     finish_ms += output.finish_ms;
                     max_finish_ms = f64::max(max_finish_ms, output.finish_ms);
                     append_unit_command_buffer(&mut command_buffers, output.command_buffer);
-                    batch_index =
-                        next_phase_batch_index(batches, next_batch_index, PassPhase::PerView);
                 }
                 RecordingBatchKind::Parallel => {
                     let outputs = if scheduler.allow_parallel_batches {
@@ -466,7 +458,7 @@ impl CompiledRenderGraph {
                             scope,
                             frame_reuse,
                             &*state.blackboard,
-                            batch,
+                            run,
                             scheduler.upload_batch,
                             scheduler.profiler,
                         )?
@@ -474,7 +466,7 @@ impl CompiledRenderGraph {
                         vec![self.record_serial_unit_range(
                             scope,
                             state.reborrow(),
-                            batch.start_unit..batch.end_unit,
+                            run.start_unit..run.end_unit,
                             scheduler.upload_batch,
                             scheduler.profiler,
                         )?]
@@ -486,11 +478,6 @@ impl CompiledRenderGraph {
                         parallel_stats.add(output.command_stats);
                         append_unit_command_buffer(&mut command_buffers, output.command_buffer);
                     }
-                    batch_index = next_phase_batch_index(
-                        batches,
-                        current_batch_index + 1,
-                        PassPhase::PerView,
-                    );
                 }
             }
         }
@@ -587,13 +574,13 @@ impl CompiledRenderGraph {
         scope: PerViewRecordingScope<'a>,
         frame_reuse: PerViewFrameReuse<'a>,
         view_blackboard: &Blackboard,
-        batch: RecordingBatch,
+        run: RecordingExecutionRun,
         upload_batch: &FrameUploadBatch,
         profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
     ) -> Result<Vec<PerViewUnitEncodeOutput>, GraphExecuteError> {
         profiling::scope!("graph::per_view::scheduler::parallel_batch");
         use rayon::prelude::*;
-        let mut outputs = (batch.start_unit..batch.end_unit)
+        let mut outputs = (run.start_unit..run.end_unit)
             .into_par_iter()
             .map(|unit_idx| {
                 let unit = self.schedule.recording_plan.units[unit_idx];

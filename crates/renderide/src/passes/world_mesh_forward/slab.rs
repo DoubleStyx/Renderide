@@ -24,6 +24,11 @@ const PER_DRAW_VP_PARALLEL_CHUNK_DRAWS: usize = RENDER_COMMAND_CHUNK_DRAWS;
 const PER_DRAW_VP_PARALLEL_CHUNKS_PER_TASK: usize = 1;
 /// Minimum draws before parallelizing per-draw VP / model uniform packing.
 const PER_DRAW_VP_PARALLEL_MIN_DRAWS: usize = PER_DRAW_VP_PARALLEL_CHUNK_DRAWS * 2;
+/// Rows covered by one dirty flag and sparse upload range.
+///
+/// This matches the packing worker chunk so workers can compare and mark their own range without
+/// synchronization. Adjacent dirty chunks are merged into one upload before enqueue.
+const PER_DRAW_UPLOAD_DIRTY_CHUNK_DRAWS: usize = PER_DRAW_VP_PARALLEL_CHUNK_DRAWS;
 
 /// Per-frame inputs to [`pack_and_upload_per_draw_slab`].
 ///
@@ -73,7 +78,7 @@ pub(super) fn pack_and_upload_per_draw_slab(
     let scene = &frame.systems.scene;
     let hc = &frame.view.host_camera;
 
-    let Some(per_draw_storage) = frame
+    let Some((per_draw_storage, contents_invalidated)) = frame
         .systems
         .frame_resources
         .ensure_per_view_per_draw_capacity(device, view_id, inputs.draws.len())
@@ -83,15 +88,25 @@ pub(super) fn pack_and_upload_per_draw_slab(
 
     // Step 2: pack VP uniforms in `slab_layout` order and enqueue the storage-buffer upload.
     let mut uploaded = false;
-    let mut pack_and_upload = |uniforms: &mut Vec<PaddedPerDrawUniforms>| {
+    let mut pack_and_upload = |uniforms: &mut Vec<PaddedPerDrawUniforms>,
+                               dirty_chunks: &mut Vec<bool>| {
+        let previous_len = uniforms.len();
         uniforms.resize_with(inputs.draws.len(), PaddedPerDrawUniforms::zeroed);
         uniforms.truncate(inputs.draws.len());
 
-        pack_per_draw_vp_uniforms(uniforms, &inputs, scene, hc);
+        pack_per_draw_vp_uniforms(
+            uniforms,
+            dirty_chunks,
+            previous_len,
+            contents_invalidated,
+            &inputs,
+            scene,
+            hc,
+        );
 
         {
             profiling::scope!("world_mesh::enqueue_slab_upload");
-            uploads.write_buffer(&per_draw_storage, 0, bytemuck::cast_slice(uniforms));
+            enqueue_dirty_slab_uploads(uploads, &per_draw_storage, uniforms, dirty_chunks);
             uploaded = true;
         }
     };
@@ -110,12 +125,15 @@ pub(super) fn pack_and_upload_per_draw_slab(
 /// depending on whether `compute_per_draw_vp_matrices` returns identical left/right matrices.
 fn pack_per_draw_vp_uniforms(
     uniforms: &mut [PaddedPerDrawUniforms],
+    dirty_chunks: &mut Vec<bool>,
+    previous_len: usize,
+    contents_invalidated: bool,
     inputs: &SlabPackInputs<'_>,
     scene: &(impl SceneTransformRead + Sync + ?Sized),
     hc: &HostCameraFrame,
 ) {
     profiling::scope!("world_mesh::pack_vp_matrices");
-    let pack_one = |slot: &mut PaddedPerDrawUniforms, item: &WorldMeshDrawItem| {
+    let pack_one = |item: &WorldMeshDrawItem| {
         let matrices = compute_per_draw_vp_matrices(
             scene,
             item,
@@ -133,14 +151,17 @@ fn pack_per_draw_vp_uniforms(
                 matrices.model,
             )
         };
-        *slot = packed
+        packed
             .with_position_stream_world_space(matrices.position_stream_world_space)
             .with_reflection_probe_selection(
                 item.reflection_probes.atlas_indices,
                 item.reflection_probes.importance_mask,
             )
-            .with_particle_draw(item.particle_draw);
+            .with_particle_draw(item.particle_draw)
     };
+    let dirty_chunk_count = uniforms.len().div_ceil(PER_DRAW_UPLOAD_DIRTY_CHUNK_DRAWS);
+    dirty_chunks.clear();
+    dirty_chunks.resize(dirty_chunk_count, false);
     let admission =
         admit_render_command_items(inputs.draws.len(), current_reference_worker_count());
     record_parallel_admission(
@@ -159,15 +180,110 @@ fn pack_per_draw_vp_uniforms(
                     .par_chunks(PER_DRAW_VP_PARALLEL_CHUNK_DRAWS)
                     .with_min_len(PER_DRAW_VP_PARALLEL_CHUNKS_PER_TASK),
             )
-            .for_each(|(slots, layout)| {
+            .zip(dirty_chunks.par_iter_mut())
+            .enumerate()
+            .for_each(|(chunk_index, ((slots, layout), dirty))| {
                 profiling::scope!("world_mesh::pack_vp_matrices::worker");
-                for (slot, &draw_idx) in slots.iter_mut().zip(layout.iter()) {
-                    pack_one(slot, &inputs.draws[draw_idx]);
+                let first_slot = chunk_index * PER_DRAW_VP_PARALLEL_CHUNK_DRAWS;
+                for (slot_index, (slot, &draw_idx)) in
+                    slots.iter_mut().zip(layout.iter()).enumerate()
+                {
+                    let packed = pack_one(&inputs.draws[draw_idx]);
+                    let existed = first_slot.saturating_add(slot_index) < previous_len;
+                    if contents_invalidated || !existed || !uniform_rows_equal(slot, &packed) {
+                        *dirty = true;
+                        *slot = packed;
+                    }
                 }
             });
     } else {
-        for (slot, &draw_idx) in uniforms.iter_mut().zip(inputs.slab_layout.iter()) {
-            pack_one(slot, &inputs.draws[draw_idx]);
+        for (chunk_index, ((slots, layout), dirty)) in uniforms
+            .chunks_mut(PER_DRAW_VP_PARALLEL_CHUNK_DRAWS)
+            .zip(inputs.slab_layout.chunks(PER_DRAW_VP_PARALLEL_CHUNK_DRAWS))
+            .zip(dirty_chunks.iter_mut())
+            .enumerate()
+        {
+            let first_slot = chunk_index * PER_DRAW_VP_PARALLEL_CHUNK_DRAWS;
+            for (slot_index, (slot, &draw_idx)) in slots.iter_mut().zip(layout.iter()).enumerate() {
+                let packed = pack_one(&inputs.draws[draw_idx]);
+                let existed = first_slot.saturating_add(slot_index) < previous_len;
+                if contents_invalidated || !existed || !uniform_rows_equal(slot, &packed) {
+                    *dirty = true;
+                    *slot = packed;
+                }
+            }
         }
+    }
+}
+
+#[inline]
+fn uniform_rows_equal(a: &PaddedPerDrawUniforms, b: &PaddedPerDrawUniforms) -> bool {
+    bytemuck::bytes_of(a) == bytemuck::bytes_of(b)
+}
+
+/// Enqueues maximal contiguous ranges of dirty uniform chunks.
+fn enqueue_dirty_slab_uploads(
+    uploads: GraphUploadSink<'_>,
+    per_draw_storage: &wgpu::Buffer,
+    uniforms: &[PaddedPerDrawUniforms],
+    dirty_chunks: &[bool],
+) {
+    for (first_row, end_row) in dirty_row_ranges(dirty_chunks, uniforms.len()) {
+        let offset = (first_row * size_of::<PaddedPerDrawUniforms>()) as u64;
+        uploads.write_buffer(
+            per_draw_storage,
+            offset,
+            bytemuck::cast_slice(&uniforms[first_row..end_row]),
+        );
+    }
+}
+
+/// Converts dirty chunk flags into merged row ranges.
+fn dirty_row_ranges(
+    dirty_chunks: &[bool],
+    row_count: usize,
+) -> impl Iterator<Item = (usize, usize)> + '_ {
+    let mut chunk = 0usize;
+    std::iter::from_fn(move || {
+        while chunk < dirty_chunks.len() && !dirty_chunks[chunk] {
+            chunk += 1;
+        }
+        if chunk >= dirty_chunks.len() {
+            return None;
+        }
+        let start = chunk;
+        while chunk < dirty_chunks.len() && dirty_chunks[chunk] {
+            chunk += 1;
+        }
+        Some((
+            start * PER_DRAW_UPLOAD_DIRTY_CHUNK_DRAWS,
+            (chunk * PER_DRAW_UPLOAD_DIRTY_CHUNK_DRAWS).min(row_count),
+        ))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dirty_ranges_merge_adjacent_chunks_and_clip_tail() {
+        let ranges = dirty_row_ranges(&[false, true, true, false, true], 273).collect::<Vec<_>>();
+
+        assert_eq!(
+            ranges,
+            vec![
+                (
+                    PER_DRAW_UPLOAD_DIRTY_CHUNK_DRAWS,
+                    PER_DRAW_UPLOAD_DIRTY_CHUNK_DRAWS * 3,
+                ),
+                (PER_DRAW_UPLOAD_DIRTY_CHUNK_DRAWS * 4, 273),
+            ]
+        );
+    }
+
+    #[test]
+    fn clean_slab_enqueues_no_ranges() {
+        assert_eq!(dirty_row_ranges(&[false, false, false], 128).count(), 0);
     }
 }

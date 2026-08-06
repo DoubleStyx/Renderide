@@ -13,7 +13,9 @@ use super::texture_task_common::{
     TextureTaskGpu, failed_upload, missing_payload, resident_texture_arc, send_background_result,
     storage_orientation_allows_mark, storage_orientation_allows_upload,
 };
-use super::texture_upload_plan::{TextureUploadPlan, TextureUploadStepper, UploadCompletion};
+use super::texture_upload_plan::{
+    TextureResidencyUpdate, TextureUploadPlan, TextureUploadStepper, UploadCompletion,
+};
 
 /// One in-flight Texture2D data upload.
 #[derive(Debug)]
@@ -24,6 +26,8 @@ pub struct TextureUploadTask {
     wgpu_format: wgpu::TextureFormat,
     generation: u64,
     stepper: TextureUploadStepper,
+    /// Whether this full-chain upload has replaced the previous upload's resident mip mask.
+    mip_stream_started: bool,
 }
 
 impl TextureUploadTask {
@@ -40,6 +44,7 @@ impl TextureUploadTask {
             wgpu_format,
             generation,
             stepper: TextureUploadStepper::default(),
+            mip_stream_started: false,
         }
     }
 
@@ -106,18 +111,31 @@ impl TextureUploadTask {
             }
             Ok(UploadCompletion::Continue) => StepResult::Continue,
             Ok(UploadCompletion::UploadedOne {
-                uploaded_mips,
+                mip_level,
+                replaces_full_texture,
                 storage_v_inverted,
             }) => {
-                self.mark_uploaded_mips(queue, uploaded_mips, storage_v_inverted);
+                self.mark_uploaded_chain_mip(
+                    queue,
+                    mip_level,
+                    storage_v_inverted,
+                    replaces_full_texture,
+                );
                 StepResult::Continue
             }
             Ok(UploadCompletion::YieldBackground) => StepResult::YieldBackground,
             Ok(UploadCompletion::Complete {
                 uploaded_mips,
+                residency_update,
                 storage_v_inverted,
             }) => {
-                self.finalize_success(queue, ipc, uploaded_mips, storage_v_inverted);
+                self.finalize_success(
+                    queue,
+                    ipc,
+                    uploaded_mips,
+                    residency_update,
+                    storage_v_inverted,
+                );
                 StepResult::Done
             }
             Err(e) if e.is_queue_access_busy() => StepResult::YieldBackground,
@@ -157,8 +175,10 @@ impl TextureUploadTask {
     fn mark_uploaded_mips(
         &self,
         queue: &mut AssetTransferQueue,
+        start_mip: u32,
         uploaded_mips: u32,
         storage_v_inverted: bool,
+        begin_stream: bool,
     ) -> bool {
         if uploaded_mips == 0 {
             return false;
@@ -175,11 +195,14 @@ impl TextureUploadTask {
                 return false;
             }
             t.storage_v_inverted = storage_v_inverted;
-            let start = self.data.start_mip_level.max(0) as u32;
-            t.mark_mips_resident(start, uploaded_mips);
+            if begin_stream {
+                t.begin_mip_stream(start_mip, uploaded_mips);
+            } else {
+                t.mark_mips_resident(start_mip, uploaded_mips);
+            }
             if t.mip_levels_total > 1 && t.mip_levels_resident < t.mip_levels_total {
                 logger::trace!(
-                    "texture {}: {} of {} mips resident; sampling clamped to LOD {} until remaining mips stream in",
+                    "texture {}: {} of {} contiguous mips exposed; sampling clamped to view LOD {} until remaining mips stream in",
                     t.asset_id,
                     t.mip_levels_resident,
                     t.mip_levels_total,
@@ -191,11 +214,28 @@ impl TextureUploadTask {
         false
     }
 
+    /// Publishes one full-chain mip, resetting residency only at this upload's first completed write.
+    fn mark_uploaded_chain_mip(
+        &mut self,
+        queue: &mut AssetTransferQueue,
+        mip_level: u32,
+        storage_v_inverted: bool,
+        replaces_full_texture: bool,
+    ) -> bool {
+        let begin_stream = replaces_full_texture && !self.mip_stream_started;
+        let marked = self.mark_uploaded_mips(queue, mip_level, 1, storage_v_inverted, begin_stream);
+        if marked && replaces_full_texture {
+            self.mip_stream_started = true;
+        }
+        marked
+    }
+
     fn finalize_success(
-        &self,
+        &mut self,
         queue: &mut AssetTransferQueue,
         ipc: &mut Option<&mut DualQueueIpc>,
         uploaded_mips: u32,
+        residency_update: TextureResidencyUpdate,
         storage_v_inverted: bool,
     ) {
         let id = self.data.asset_id;
@@ -203,7 +243,24 @@ impl TextureUploadTask {
             self.finalize_failure(ipc);
             return;
         }
-        if self.mark_uploaded_mips(queue, uploaded_mips, storage_v_inverted)
+        let residency_ok = match residency_update {
+            TextureResidencyUpdate::None => true,
+            TextureResidencyUpdate::Range {
+                start_mip,
+                mip_count,
+            } => self.mark_uploaded_mips(queue, start_mip, mip_count, storage_v_inverted, false),
+            TextureResidencyUpdate::Mip {
+                mip_level,
+                replaces_full_texture,
+            } => self.mark_uploaded_chain_mip(
+                queue,
+                mip_level,
+                storage_v_inverted,
+                replaces_full_texture,
+            ),
+        };
+        if residency_ok
+            && uploaded_mips > 0
             && let Some(t) = queue.pools.texture_pool.get_mut(id)
         {
             t.mark_content_uploaded();

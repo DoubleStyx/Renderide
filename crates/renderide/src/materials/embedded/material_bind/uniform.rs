@@ -17,6 +17,27 @@ use crate::materials::host_data::{MaterialPropertyLookupIds, MaterialPropertySto
 
 const INITIAL_MATERIAL_UNIFORM_ARENA_BYTES: u64 = 64 * 1024;
 
+/// Exact per-source property generations used by persistent material caches.
+///
+/// Keeping the three counters separate avoids the collision ambiguity of a lossy combined
+/// fingerprint.
+pub(super) type MaterialPropertyGenerations = [u64; 3];
+
+pub(super) fn material_property_generations(
+    store: &MaterialPropertyStore,
+    lookup: MaterialPropertyLookupIds,
+) -> MaterialPropertyGenerations {
+    [
+        store.material_generation(lookup.material_asset_id),
+        lookup
+            .mesh_property_block_slot0
+            .map_or(0, |id| store.property_block_generation(id)),
+        lookup
+            .mesh_renderer_property_block_id
+            .map_or(0, |id| store.property_block_generation(id)),
+    ]
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub(super) struct MaterialUniformCacheKey {
     pub(super) stem_hash: u64,
@@ -34,6 +55,7 @@ pub(super) struct MaterialUniformArenaSlotBinding {
     pub(super) buffer: Arc<wgpu::Buffer>,
     pub(super) dynamic_offset: u32,
     pub(super) size: NonZeroU64,
+    pub(super) arena_shard: u8,
     pub(super) buffer_generation: u64,
 }
 
@@ -41,7 +63,7 @@ pub(super) struct MaterialUniformArenaSlotBinding {
 struct MaterialUniformSlot {
     offset: u64,
     size: u64,
-    last_written_generation: u64,
+    last_written_generations: MaterialPropertyGenerations,
     last_written_texture_state_sig: u64,
     buffer_generation: u64,
 }
@@ -90,12 +112,12 @@ impl MaterialUniformArenaAllocator {
         &self,
         key: &MaterialUniformCacheKey,
         size: NonZeroU64,
-        mutation_gen: u64,
+        property_generations: MaterialPropertyGenerations,
         texture_state_sig: u64,
     ) -> Option<MaterialUniformSlotResolution> {
         let slot = self.slots.get(key)?;
         if slot.size != size.get()
-            || slot.last_written_generation != mutation_gen
+            || slot.last_written_generations != property_generations
             || slot.last_written_texture_state_sig != texture_state_sig
             || slot.buffer_generation != self.generation
         {
@@ -113,7 +135,7 @@ impl MaterialUniformArenaAllocator {
         &mut self,
         key: MaterialUniformCacheKey,
         size: NonZeroU64,
-        mutation_gen: u64,
+        property_generations: MaterialPropertyGenerations,
         texture_state_sig: u64,
     ) -> Result<MaterialUniformSlotResolution, EmbeddedMaterialBindError> {
         let size = size.get();
@@ -124,7 +146,7 @@ impl MaterialUniformArenaAllocator {
                     key, slot.size, size
                 )));
             }
-            let needs_write = slot.last_written_generation != mutation_gen
+            let needs_write = slot.last_written_generations != property_generations
                 || slot.last_written_texture_state_sig != texture_state_sig
                 || slot.buffer_generation != self.generation;
             return Ok(MaterialUniformSlotResolution {
@@ -146,7 +168,7 @@ impl MaterialUniformArenaAllocator {
             MaterialUniformSlot {
                 offset,
                 size,
-                last_written_generation: u64::MAX,
+                last_written_generations: [u64::MAX; 3],
                 last_written_texture_state_sig: u64::MAX,
                 buffer_generation: self.generation,
             },
@@ -163,7 +185,7 @@ impl MaterialUniformArenaAllocator {
         &mut self,
         key: &MaterialUniformCacheKey,
         buffer_generation: u64,
-        mutation_gen: u64,
+        property_generations: MaterialPropertyGenerations,
         texture_state_sig: u64,
     ) {
         let Some(slot) = self.slots.get_mut(key) else {
@@ -173,7 +195,7 @@ impl MaterialUniformArenaAllocator {
             return;
         }
         slot.buffer_generation = buffer_generation;
-        slot.last_written_generation = mutation_gen;
+        slot.last_written_generations = property_generations;
         slot.last_written_texture_state_sig = texture_state_sig;
     }
 
@@ -188,13 +210,31 @@ impl MaterialUniformArenaAllocator {
                 && key
                     .property_block_slot0
                     .is_none_or(|id| !property_block_ids.contains(&id))
+                && key
+                    .renderer_property_block_id
+                    .is_none_or(|id| !property_block_ids.contains(&id))
         });
         let removed = before.saturating_sub(self.slots.len());
+        self.reset_empty_arena_after_purge(removed);
+        removed
+    }
+
+    /// Clears every slot after a global material-layout cache invalidation.
+    ///
+    /// The allocator is bump-only, so removing one stem while retaining other slots would leave
+    /// holes that repeated shader reloads could never reclaim.
+    fn clear_slots(&mut self) -> usize {
+        let removed = self.slots.len();
+        self.slots.clear();
+        self.reset_empty_arena_after_purge(removed);
+        removed
+    }
+
+    fn reset_empty_arena_after_purge(&mut self, removed: usize) {
         if self.slots.is_empty() && removed > 0 {
             self.cursor = 0;
             self.generation = self.generation.wrapping_add(1);
         }
-        removed
     }
 
     fn ensure_capacity(&mut self, needed: u64) -> Result<(), EmbeddedMaterialBindError> {
@@ -247,29 +287,31 @@ impl MaterialUniformArena {
         &self,
         key: &MaterialUniformCacheKey,
         size: NonZeroU64,
-        mutation_gen: u64,
+        property_generations: MaterialPropertyGenerations,
         texture_state_sig: u64,
+        arena_shard: u8,
     ) -> Result<Option<MaterialUniformArenaSlotBinding>, EmbeddedMaterialBindError> {
-        let Some(resolved) = self
-            .allocator
-            .stable_slot(key, size, mutation_gen, texture_state_sig)
+        let Some(resolved) =
+            self.allocator
+                .stable_slot(key, size, property_generations, texture_state_sig)
         else {
             return Ok(None);
         };
-        self.binding_for_resolution(resolved).map(Some)
+        self.binding_for_resolution(resolved, arena_shard).map(Some)
     }
 
     fn resolve_binding(
         &mut self,
         key: MaterialUniformCacheKey,
         size: NonZeroU64,
-        mutation_gen: u64,
+        property_generations: MaterialPropertyGenerations,
         texture_state_sig: u64,
+        arena_shard: u8,
     ) -> Result<(MaterialUniformArenaSlotBinding, bool), EmbeddedMaterialBindError> {
         let previous_generation = self.allocator.generation();
-        let resolved = self
-            .allocator
-            .resolve_slot(key, size, mutation_gen, texture_state_sig)?;
+        let resolved =
+            self.allocator
+                .resolve_slot(key, size, property_generations, texture_state_sig)?;
         if self.allocator.generation() != previous_generation {
             self.buffer = Arc::new(create_material_uniform_arena_buffer(
                 self.device.as_ref(),
@@ -281,13 +323,14 @@ impl MaterialUniformArena {
                 self.allocator.generation()
             );
         }
-        self.binding_for_resolution(resolved)
+        self.binding_for_resolution(resolved, arena_shard)
             .map(|binding| (binding, resolved.needs_write))
     }
 
     fn binding_for_resolution(
         &self,
         resolved: MaterialUniformSlotResolution,
+        arena_shard: u8,
     ) -> Result<MaterialUniformArenaSlotBinding, EmbeddedMaterialBindError> {
         let dynamic_offset = u32::try_from(resolved.offset).map_err(|_err| {
             EmbeddedMaterialBindError::from(format!(
@@ -299,6 +342,7 @@ impl MaterialUniformArena {
             buffer: self.buffer.clone(),
             dynamic_offset,
             size: resolved.size,
+            arena_shard,
             buffer_generation: resolved.buffer_generation,
         })
     }
@@ -307,13 +351,13 @@ impl MaterialUniformArena {
         &mut self,
         key: &MaterialUniformCacheKey,
         binding: &MaterialUniformArenaSlotBinding,
-        mutation_gen: u64,
+        property_generations: MaterialPropertyGenerations,
         texture_state_sig: u64,
     ) {
         self.allocator.mark_written(
             key,
             binding.buffer_generation,
-            mutation_gen,
+            property_generations,
             texture_state_sig,
         );
     }
@@ -325,6 +369,10 @@ impl MaterialUniformArena {
     ) -> usize {
         self.allocator
             .purge_material_assets(material_ids, property_block_ids)
+    }
+
+    pub(super) fn clear_slots(&mut self) -> usize {
+        self.allocator.clear_slots()
     }
 }
 
@@ -357,11 +405,12 @@ pub(super) struct EmbeddedUniformArenaRequest<'a> {
     pub(super) shader_variant_bits: Option<u32>,
     pub(super) layout: &'a Arc<StemMaterialLayout>,
     pub(super) uniform_key: &'a MaterialUniformCacheKey,
-    pub(super) mutation_gen: u64,
+    pub(super) property_generations: MaterialPropertyGenerations,
     pub(super) store: &'a MaterialPropertyStore,
     pub(super) lookup: MaterialPropertyLookupIds,
     pub(super) pools: &'a EmbeddedTexturePools<'a>,
     pub(super) primary_texture_2d: i32,
+    pub(super) texture_bind_signature: u64,
     pub(super) texture_state_sig: u64,
 }
 
@@ -379,10 +428,10 @@ impl EmbeddedMaterialBindResources {
     /// `mark_written` stay in that one exclusive section so recorded generations cannot disagree
     /// with uploaded bytes.
     ///
-    /// The arena is sharded by [`MaterialUniformCacheKey`] so concurrent rayon recording workers
-    /// hitting distinct keys land on distinct shards and never block one another. A given key
-    /// always routes to the same shard, so the per-shard slot table and `buffer_generation`
-    /// counter remain self-consistent.
+    /// The arena is sharded by compatible `(stem, shader variant, texture signature)` tuples so
+    /// concurrent rayon recording workers usually land on distinct shards. A given tuple always
+    /// routes to the same shard, so the per-shard slot table and `buffer_generation` counter
+    /// remain self-consistent.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the arena shard write lock is intentionally held across resolve_binding, uniform packing, upload, and mark_written"
@@ -398,11 +447,12 @@ impl EmbeddedMaterialBindResources {
             shader_variant_bits,
             layout,
             uniform_key,
-            mutation_gen,
+            property_generations,
             store,
             lookup,
             pools,
             primary_texture_2d,
+            texture_bind_signature,
             texture_state_sig,
         } = req;
         let uniform_size = non_zero_u64(
@@ -423,21 +473,30 @@ impl EmbeddedMaterialBindResources {
             primary_texture_2d,
         };
 
-        let shard = self.uniform_arena_shard(uniform_key);
+        let (arena_shard, shard) = self.uniform_arena_shard(uniform_key, texture_bind_signature);
         {
             profiling::scope!("materials::embedded_uniform_arena_read");
             let arena = shard.read();
-            if let Some(binding) =
-                arena.stable_binding(uniform_key, uniform_size, mutation_gen, texture_state_sig)?
-            {
+            if let Some(binding) = arena.stable_binding(
+                uniform_key,
+                uniform_size,
+                property_generations,
+                texture_state_sig,
+                arena_shard,
+            )? {
                 return Ok(binding);
             }
         }
 
         profiling::scope!("materials::embedded_uniform_arena_critical_section");
         let mut arena = shard.write();
-        let (binding, needs_write) =
-            arena.resolve_binding(*uniform_key, uniform_size, mutation_gen, texture_state_sig)?;
+        let (binding, needs_write) = arena.resolve_binding(
+            *uniform_key,
+            uniform_size,
+            property_generations,
+            texture_state_sig,
+            arena_shard,
+        )?;
         if needs_write {
             profiling::scope!("materials::embedded_uniform_arena_write");
             let uniform_bytes = build_embedded_uniform_bytes_with_material_defaults(
@@ -460,7 +519,12 @@ impl EmbeddedMaterialBindResources {
                 u64::from(binding.dynamic_offset),
                 &uniform_bytes,
             );
-            arena.mark_written(uniform_key, &binding, mutation_gen, texture_state_sig);
+            arena.mark_written(
+                uniform_key,
+                &binding,
+                property_generations,
+                texture_state_sig,
+            );
         } else {
             profiling::scope!("materials::embedded_uniform_arena_hit");
         }
@@ -494,13 +558,35 @@ mod tests {
         }
     }
 
+    fn key_with_renderer_block(
+        material_asset_id: i32,
+        property_block_id: i32,
+    ) -> MaterialUniformCacheKey {
+        MaterialUniformCacheKey {
+            stem_hash: 7,
+            material_asset_id,
+            property_block_slot0: None,
+            renderer_property_block_id: Some(property_block_id),
+            texture_2d_asset_id: -1,
+            shader_variant_bits: None,
+        }
+    }
+
+    fn generations(value: u64) -> MaterialPropertyGenerations {
+        [value; 3]
+    }
+
     #[test]
     fn arena_allocator_aligns_offsets() {
         let mut allocator = MaterialUniformArenaAllocator::new(1024, 4096, 256);
         let size = NonZeroU64::new(80).unwrap();
 
-        let a = allocator.resolve_slot(key(1), size, 0, 0).unwrap();
-        let b = allocator.resolve_slot(key(2), size, 0, 0).unwrap();
+        let a = allocator
+            .resolve_slot(key(1), size, generations(0), 0)
+            .unwrap();
+        let b = allocator
+            .resolve_slot(key(2), size, generations(0), 0)
+            .unwrap();
 
         assert_eq!(a.offset, 0);
         assert_eq!(b.offset, 256);
@@ -511,9 +597,13 @@ mod tests {
         let mut allocator = MaterialUniformArenaAllocator::new(1024, 4096, 256);
         let size = NonZeroU64::new(80).unwrap();
 
-        let first = allocator.resolve_slot(key(1), size, 3, 5).unwrap();
-        allocator.mark_written(&key(1), first.buffer_generation, 3, 5);
-        let second = allocator.resolve_slot(key(1), size, 3, 5).unwrap();
+        let first = allocator
+            .resolve_slot(key(1), size, generations(3), 5)
+            .unwrap();
+        allocator.mark_written(&key(1), first.buffer_generation, generations(3), 5);
+        let second = allocator
+            .resolve_slot(key(1), size, generations(3), 5)
+            .unwrap();
 
         assert_eq!(first.offset, second.offset);
         assert!(!second.needs_write);
@@ -524,21 +614,35 @@ mod tests {
         let mut allocator = MaterialUniformArenaAllocator::new(1024, 4096, 256);
         let size = NonZeroU64::new(80).unwrap();
         let cache_key = key(1);
-        let first = allocator.resolve_slot(cache_key, size, 3, 5).unwrap();
-        allocator.mark_written(&cache_key, first.buffer_generation, 3, 5);
+        let first = allocator
+            .resolve_slot(cache_key, size, generations(3), 5)
+            .unwrap();
+        allocator.mark_written(&cache_key, first.buffer_generation, generations(3), 5);
 
-        assert!(allocator.stable_slot(&cache_key, size, 3, 5).is_some());
-        assert!(allocator.stable_slot(&cache_key, size, 4, 5).is_none());
-        assert!(allocator.stable_slot(&cache_key, size, 3, 6).is_none());
+        assert!(
+            allocator
+                .stable_slot(&cache_key, size, generations(3), 5)
+                .is_some()
+        );
+        assert!(
+            allocator
+                .stable_slot(&cache_key, size, [3, 4, 3], 5)
+                .is_none()
+        );
+        assert!(
+            allocator
+                .stable_slot(&cache_key, size, generations(3), 6)
+                .is_none()
+        );
 
         let changed_size = NonZeroU64::new(96).unwrap();
         assert!(
             allocator
-                .stable_slot(&cache_key, changed_size, 3, 5)
+                .stable_slot(&cache_key, changed_size, generations(3), 5)
                 .is_none()
         );
         let error = allocator
-            .resolve_slot(cache_key, changed_size, 3, 5)
+            .resolve_slot(cache_key, changed_size, generations(3), 5)
             .expect_err("exclusive resolution must retain size mismatch validation");
         assert!(error.to_string().contains("slot size changed"));
     }
@@ -548,15 +652,29 @@ mod tests {
         let mut allocator = MaterialUniformArenaAllocator::new(256, 2048, 256);
         let size = NonZeroU64::new(128).unwrap();
 
-        let first = allocator.resolve_slot(key(1), size, 1, 1).unwrap();
-        allocator.mark_written(&key(1), first.buffer_generation, 1, 1);
+        let first = allocator
+            .resolve_slot(key(1), size, generations(1), 1)
+            .unwrap();
+        allocator.mark_written(&key(1), first.buffer_generation, generations(1), 1);
         assert_eq!(allocator.generation(), 0);
-        assert!(allocator.stable_slot(&key(1), size, 1, 1).is_some());
+        assert!(
+            allocator
+                .stable_slot(&key(1), size, generations(1), 1)
+                .is_some()
+        );
 
-        let _second = allocator.resolve_slot(key(2), size, 1, 1).unwrap();
+        let _second = allocator
+            .resolve_slot(key(2), size, generations(1), 1)
+            .unwrap();
         assert_eq!(allocator.generation(), 1);
-        assert!(allocator.stable_slot(&key(1), size, 1, 1).is_none());
-        let first_after_growth = allocator.resolve_slot(key(1), size, 1, 1).unwrap();
+        assert!(
+            allocator
+                .stable_slot(&key(1), size, generations(1), 1)
+                .is_none()
+        );
+        let first_after_growth = allocator
+            .resolve_slot(key(1), size, generations(1), 1)
+            .unwrap();
 
         assert_eq!(first_after_growth.offset, first.offset);
         assert_eq!(first_after_growth.buffer_generation, 1);
@@ -570,8 +688,10 @@ mod tests {
         let size = NonZeroU64::new(80).unwrap();
         let cache_key = key(1);
         let mut allocator = MaterialUniformArenaAllocator::new(1024, 4096, 256);
-        let first = allocator.resolve_slot(cache_key, size, 1, 2).unwrap();
-        allocator.mark_written(&cache_key, first.buffer_generation, 1, 2);
+        let first = allocator
+            .resolve_slot(cache_key, size, generations(1), 2)
+            .unwrap();
+        allocator.mark_written(&cache_key, first.buffer_generation, generations(1), 2);
 
         let shared = Arc::new(parking_lot::RwLock::new(allocator));
         let ready = Arc::new(std::sync::Barrier::new(WORKERS));
@@ -585,15 +705,26 @@ mod tests {
             threads.push(std::thread::spawn(move || {
                 {
                     let allocator = shared.read();
-                    assert!(allocator.stable_slot(&cache_key, size, 3, 4).is_none());
+                    assert!(
+                        allocator
+                            .stable_slot(&cache_key, size, generations(3), 4)
+                            .is_none()
+                    );
                 }
                 ready.wait();
 
                 let mut allocator = shared.write();
-                let resolved = allocator.resolve_slot(cache_key, size, 3, 4).unwrap();
+                let resolved = allocator
+                    .resolve_slot(cache_key, size, generations(3), 4)
+                    .unwrap();
                 if resolved.needs_write {
                     refreshes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    allocator.mark_written(&cache_key, resolved.buffer_generation, 3, 4);
+                    allocator.mark_written(
+                        &cache_key,
+                        resolved.buffer_generation,
+                        generations(3),
+                        4,
+                    );
                 }
             }));
         }
@@ -603,27 +734,88 @@ mod tests {
         }
 
         assert_eq!(refreshes.load(std::sync::atomic::Ordering::Relaxed), 1);
-        assert!(shared.read().stable_slot(&cache_key, size, 3, 4).is_some());
+        assert!(
+            shared
+                .read()
+                .stable_slot(&cache_key, size, generations(3), 4)
+                .is_some()
+        );
     }
 
     #[test]
     fn arena_allocator_purges_material_and_property_block_slots() {
         let mut allocator = MaterialUniformArenaAllocator::new(1024, 4096, 256);
         let size = NonZeroU64::new(80).unwrap();
-        allocator.resolve_slot(key(1), size, 0, 0).unwrap();
         allocator
-            .resolve_slot(key_with_block(2, 20), size, 0, 0)
+            .resolve_slot(key(1), size, generations(0), 0)
             .unwrap();
-        allocator.resolve_slot(key(3), size, 0, 0).unwrap();
+        allocator
+            .resolve_slot(key_with_block(2, 20), size, generations(0), 0)
+            .unwrap();
+        allocator
+            .resolve_slot(key_with_renderer_block(3, 30), size, generations(0), 0)
+            .unwrap();
+        allocator
+            .resolve_slot(key(4), size, generations(0), 0)
+            .unwrap();
 
         let mut materials = HashSet::new();
         materials.insert(1);
         let mut blocks = HashSet::new();
         blocks.insert(20);
-        assert_eq!(allocator.purge_material_assets(&materials, &blocks), 2);
+        blocks.insert(30);
+        assert_eq!(allocator.purge_material_assets(&materials, &blocks), 3);
 
         assert!(!allocator.slots.contains_key(&key(1)));
         assert!(!allocator.slots.contains_key(&key_with_block(2, 20)));
-        assert!(allocator.slots.contains_key(&key(3)));
+        assert!(
+            !allocator
+                .slots
+                .contains_key(&key_with_renderer_block(3, 30))
+        );
+        assert!(allocator.slots.contains_key(&key(4)));
+    }
+
+    #[test]
+    fn arena_allocator_clear_forces_equal_size_rewrite() {
+        let mut allocator = MaterialUniformArenaAllocator::new(1024, 4096, 256);
+        let size = NonZeroU64::new(80).unwrap();
+        let cache_key = key(1);
+        let first = allocator
+            .resolve_slot(cache_key, size, generations(3), 5)
+            .unwrap();
+        allocator.mark_written(&cache_key, first.buffer_generation, generations(3), 5);
+        assert!(
+            allocator
+                .stable_slot(&cache_key, size, generations(3), 5)
+                .is_some()
+        );
+
+        assert_eq!(allocator.clear_slots(), 1);
+        let refreshed = allocator
+            .resolve_slot(cache_key, size, generations(3), 5)
+            .unwrap();
+
+        assert!(refreshed.needs_write);
+    }
+
+    #[test]
+    fn arena_allocator_clear_accepts_changed_uniform_size() {
+        let mut allocator = MaterialUniformArenaAllocator::new(1024, 4096, 256);
+        let old_size = NonZeroU64::new(80).unwrap();
+        let new_size = NonZeroU64::new(96).unwrap();
+        let cache_key = key(1);
+        let first = allocator
+            .resolve_slot(cache_key, old_size, generations(3), 5)
+            .unwrap();
+        allocator.mark_written(&cache_key, first.buffer_generation, generations(3), 5);
+
+        assert_eq!(allocator.clear_slots(), 1);
+        let refreshed = allocator
+            .resolve_slot(cache_key, new_size, generations(3), 5)
+            .expect("invalidating the stem must discard the old slot size");
+
+        assert_eq!(refreshed.size, new_size);
+        assert!(refreshed.needs_write);
     }
 }

@@ -6,7 +6,12 @@ use crate::assets::texture::TextureUploadError;
 use crate::ipc::SharedMemoryAccessor;
 use crate::shared::buffer::SharedMemoryBufferDescriptor;
 
-const PAYLOAD_COPY_CHUNK_BYTES: usize = 1024 * 1024;
+/// Maximum descriptor bytes copied while holding the shared-memory mapping borrow.
+///
+/// Texture payloads in representative scenes commonly land around 6 MiB. An 8 MiB chunk avoids
+/// repeatedly resolving and locking the same mapping for those uploads while retaining a bounded
+/// cooperative step for unusually large assets.
+const PAYLOAD_COPY_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 
 /// Owned bytes shared with background asset jobs. -xlinka
 pub(super) type OwnedSharedMemoryPayload = Arc<Vec<u8>>;
@@ -47,9 +52,7 @@ impl SharedMemoryPayloadCopy {
                 ))));
             }
             let start = self.bytes.len();
-            let end = start
-                .saturating_add(PAYLOAD_COPY_CHUNK_BYTES)
-                .min(self.expected_len);
+            let end = payload_copy_chunk_end(start, self.expected_len);
             self.bytes.extend_from_slice(&raw[start..end]);
             if end < self.expected_len {
                 return Some(Ok(None));
@@ -111,4 +114,41 @@ pub(super) fn build_with_optional_owned_payload<T>(
             payload_copy,
         })
     })
+}
+
+#[inline]
+fn payload_copy_chunk_end(start: usize, expected_len: usize) -> usize {
+    start
+        .saturating_add(PAYLOAD_COPY_CHUNK_BYTES)
+        .min(expected_len)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PAYLOAD_COPY_CHUNK_BYTES, payload_copy_chunk_end};
+
+    #[test]
+    fn representative_payload_copies_in_one_mapping_borrow() {
+        let representative_payload = 6 * 1024 * 1024 + 128 * 1024;
+
+        assert_eq!(
+            payload_copy_chunk_end(0, representative_payload),
+            representative_payload
+        );
+    }
+
+    #[test]
+    fn oversized_payload_steps_in_bounded_chunks() {
+        let total = PAYLOAD_COPY_CHUNK_BYTES * 2 + 17;
+
+        assert_eq!(payload_copy_chunk_end(0, total), PAYLOAD_COPY_CHUNK_BYTES);
+        assert_eq!(
+            payload_copy_chunk_end(PAYLOAD_COPY_CHUNK_BYTES, total),
+            PAYLOAD_COPY_CHUNK_BYTES * 2
+        );
+        assert_eq!(
+            payload_copy_chunk_end(PAYLOAD_COPY_CHUNK_BYTES * 2, total),
+            total
+        );
+    }
 }

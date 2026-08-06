@@ -29,7 +29,7 @@ pub(in crate::world_mesh::draw_prep) struct PreparedSpatialRunCandidates {
 }
 
 /// Per-render-space BVH and linear fallback buckets for prepared renderer runs.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct PreparedSpatialIndex {
     spaces: HashMap<RenderSpaceId, PreparedSpatialSpace>,
 }
@@ -185,7 +185,7 @@ impl PreparedSpatialSpaceBuilder {
 }
 
 /// One render space's BVH plus conservative linear fallback runs.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct PreparedSpatialSpace {
     linear: Vec<LinearPreparedRun>,
     indexed: Vec<IndexedPreparedRun>,

@@ -13,8 +13,9 @@ use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_
 use crate::world_mesh::WorldMeshDrawItem;
 
 use super::{
-    ARRANGE_PARALLEL_MIN_DRAWS, BatchIdTable, arrange_draw_chunks_by_phase_bins,
-    arrange_draws_by_phase_bins, cmp_batch_identity, flatten_draw_chunks,
+    ARRANGE_PARALLEL_MIN_DRAWS, BatchIdTable, NonTransparentSurfaceStackTable,
+    arrange_draw_chunks_by_phase_bins, arrange_draws_by_phase_bins, build_arrangement_rows,
+    cmp_batch_identity, cmp_nontransparent_bin_keys, cmp_nontransparent_rows, flatten_draw_chunks,
 };
 
 /// Builds an opaque dummy draw item.
@@ -512,6 +513,33 @@ fn parallel_partition_matches_serial_arrangement() {
 
     assert_eq!(parallel_stats, serial_stats);
     assert_eq!(arranged_signature(&parallel), arranged_signature(&serial));
+}
+
+#[test]
+fn packed_nonstacked_row_key_matches_structural_comparator() {
+    let items = (0..96)
+        .map(|idx| {
+            let mut item = opaque((idx as i32 % 17) - 8, (idx as i32 % 13) - 6, idx);
+            set_render_queue(&mut item, (idx as i32 % 19) - 9);
+            item.first_index = (idx % 7) as u32;
+            item.index_count = (idx % 11 + 1) as u32;
+            item.is_overlay = idx % 5 == 0;
+            item
+        })
+        .collect::<Vec<_>>();
+    let batch_ids = BatchIdTable::build_from_items(&items, false);
+    let surface_stacks = NonTransparentSurfaceStackTable::build_from_items(&items);
+    let (rows, strict) = build_arrangement_rows(&items, &batch_ids, &surface_stacks);
+    assert!(strict.is_empty());
+    assert!(rows.iter().all(|row| row.key.stack.is_none()));
+
+    for a in &rows {
+        for b in &rows {
+            let structural = cmp_nontransparent_bin_keys(&a.key, &b.key)
+                .then(a.source_index.cmp(&b.source_index));
+            assert_eq!(cmp_nontransparent_rows(a, b), structural);
+        }
+    }
 }
 
 #[test]

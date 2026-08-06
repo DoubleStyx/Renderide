@@ -68,6 +68,21 @@ impl SceneCoordinator {
         Some(overlay_space_root_matrix(space, head_output_transform) * local)
     }
 
+    /// Hierarchy world matrix prepared for rendering without applying context-local overrides.
+    pub(crate) fn world_matrix_for_render_context_invariant(
+        &self,
+        id: RenderSpaceId,
+        transform_index: usize,
+        head_output_transform: Mat4,
+    ) -> Option<Mat4> {
+        let local = self.world_matrix(id, transform_index)?;
+        let space = self.spaces.get(&id)?;
+        if !space.is_overlay {
+            return Some(local);
+        }
+        Some(overlay_space_root_matrix(space, head_output_transform) * local)
+    }
+
     /// Hierarchy matrix for an overlay-layer draw relative to its nearest overlay-layer ancestor.
     ///
     /// Screen-space overlay meshes inherit [`LayerType::Overlay`] from a parent slot such as the
@@ -87,6 +102,20 @@ impl SceneCoordinator {
 
         let anchor = nearest_overlay_layer_ancestor(space, transform_index)?;
         matrix_from_ancestor_for_context(space, transform_index, context, anchor)
+    }
+
+    /// Overlay-layer local matrix without applying context-local transform overrides.
+    pub(crate) fn overlay_layer_model_matrix_invariant(
+        &self,
+        id: RenderSpaceId,
+        transform_index: usize,
+    ) -> Option<Mat4> {
+        let space = self.spaces.get(&id)?;
+        if transform_index >= space.nodes.len() {
+            return None;
+        }
+        let anchor = nearest_overlay_layer_ancestor(space, transform_index)?;
+        matrix_from_ancestor_invariant(space, transform_index, anchor)
     }
 
     /// Returns the nearest inherited special layer (`Overlay` / `Hidden`) for this transform.
@@ -254,6 +283,30 @@ fn matrix_from_ancestor_for_context(
         }
         let (local, _) = local_transform_for_context(space, cursor, context);
         matrix = render_transform_to_matrix(&local) * matrix;
+        let parent = *space.node_parents.get(cursor).unwrap_or(&-1);
+        if parent < 0 || parent as usize >= space.nodes.len() || parent == cursor as i32 {
+            break;
+        }
+        cursor = parent as usize;
+    }
+    None
+}
+
+fn matrix_from_ancestor_invariant(
+    space: &RenderSpaceState,
+    transform_index: usize,
+    ancestor_index: usize,
+) -> Option<Mat4> {
+    if transform_index >= space.nodes.len() || ancestor_index >= space.nodes.len() {
+        return None;
+    }
+    let mut cursor = transform_index;
+    let mut matrix = Mat4::IDENTITY;
+    for _ in 0..space.nodes.len() {
+        if cursor == ancestor_index {
+            return Some(matrix);
+        }
+        matrix = render_transform_to_matrix(&space.nodes[cursor]) * matrix;
         let parent = *space.node_parents.get(cursor).unwrap_or(&-1);
         if parent < 0 || parent as usize >= space.nodes.len() || parent == cursor as i32 {
             break;

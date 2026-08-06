@@ -39,9 +39,10 @@ use cache::{
     EMBEDDED_CACHE_SHARDS, EmbeddedSamplerCacheKey, TextureDebugCacheKey,
     max_cached_embedded_bind_groups, max_cached_embedded_samplers, max_cached_texture_debug_ids,
 };
+use resolve::EmbeddedBindResolveCacheKey;
 use uniform::{
     EmbeddedUniformArenaRequest, MaterialUniformArena, MaterialUniformArenaSlotBinding,
-    MaterialUniformCacheKey,
+    MaterialUniformCacheKey, material_property_generations,
 };
 use white_texture::{
     PlaceholderTexture, create_black, create_checkerboard_2d, create_flat_normal, create_gray,
@@ -125,45 +126,30 @@ struct EmbeddedBindCacheMissInputs<'a> {
 
 fn build_material_bind_cache_key(
     stem_hash: u64,
-    lookup: MaterialPropertyLookupIds,
     texture_bind_signature: u64,
     offscreen_write_target: OffscreenWriteTarget,
     uniform_binding: Option<&MaterialUniformArenaSlotBinding>,
 ) -> MaterialBindCacheKey {
     build_material_bind_cache_key_parts(
         stem_hash,
-        lookup,
         texture_bind_signature,
         offscreen_write_target,
-        uniform_binding.map(|binding| binding.buffer_generation),
+        uniform_binding.map(|binding| (binding.arena_shard, binding.buffer_generation)),
     )
 }
 
 fn build_material_bind_cache_key_parts(
     stem_hash: u64,
-    lookup: MaterialPropertyLookupIds,
     texture_bind_signature: u64,
     offscreen_write_target: OffscreenWriteTarget,
-    uniform_arena_generation: Option<u64>,
+    uniform_arena: Option<(u8, u64)>,
 ) -> MaterialBindCacheKey {
-    let (material_asset_id, property_block_slot0, renderer_property_block_id) =
-        if uniform_arena_generation.is_some() {
-            (
-                lookup.material_asset_id,
-                lookup.mesh_property_block_slot0,
-                lookup.mesh_renderer_property_block_id,
-            )
-        } else {
-            (-1, None, None)
-        };
     MaterialBindCacheKey {
         stem_hash,
-        material_asset_id,
-        property_block_slot0,
-        renderer_property_block_id,
         texture_bind_signature,
         offscreen_write_target,
-        uniform_arena_generation: uniform_arena_generation.unwrap_or(0),
+        uniform_arena_shard: uniform_arena.map(|(shard, _generation)| shard),
+        uniform_arena_generation: uniform_arena.map_or(0, |(_shard, generation)| generation),
     }
 }
 
@@ -199,7 +185,7 @@ pub struct EmbeddedMaterialBindResources {
     /// Per-shard growth bumps that shard's `buffer_generation`; the bind group cache key already
     /// includes the slot's `buffer_generation`, so per-shard generations are self-consistent.
     uniform_arena_shards: Box<[RwLock<MaterialUniformArena>]>,
-    /// Deterministic per-process hasher routing a [`MaterialUniformCacheKey`] to its shard.
+    /// Deterministic per-process hasher routing compatible material/texture bindings to a shard.
     uniform_arena_hasher: RandomState,
     /// Sharded LRU caches for `@group(1)` bind groups and samplers.
     /// Each shard is a `parking_lot::Mutex<LruCache<...>>` so per-view rayon workers contend
@@ -212,7 +198,14 @@ pub struct EmbeddedMaterialBindResources {
     /// Building a [`MaterialBindCacheKey`] walks every texture binding and hashes pool residency
     /// per entry, once per draw. The key here carries both the property-store generation and the
     /// texture-binding epoch, so a hit is only served while every input it skipped is unchanged.
-    resolve_cache: ShardedLru<resolve::EmbeddedBindResolveCacheKey, EmbeddedBindInputResolution>,
+    resolve_cache: ShardedLru<EmbeddedBindResolveCacheKey, EmbeddedBindInputResolution>,
+    /// Final persistent material binding cache.
+    ///
+    /// A hit returns before layout, texture, uniform-arena, and bind-group resolution. The key
+    /// includes material/property mutations and the texture binding epoch, so stable materials
+    /// pay one sharded lookup per frame while changed inputs take the full validation path.
+    prepared_bind_cache:
+        ShardedLru<EmbeddedBindResolveCacheKey, (MaterialBindCacheKey, EmbeddedMaterialBindGroup)>,
     bind_cache_stats: AtomicCacheCounters,
     deferred_bind_group_drops: DeferredBindGroupDrops,
     sampler_cache: ShardedLru<EmbeddedSamplerCacheKey, Arc<wgpu::Sampler>>,
@@ -276,6 +269,10 @@ impl EmbeddedMaterialBindResources {
             uniform_arena_hasher: RandomState::new(),
             bind_cache: ShardedLru::new(max_cached_embedded_bind_groups(), EMBEDDED_CACHE_SHARDS),
             resolve_cache: ShardedLru::new(
+                max_cached_embedded_bind_groups(),
+                EMBEDDED_CACHE_SHARDS,
+            ),
+            prepared_bind_cache: ShardedLru::new(
                 max_cached_embedded_bind_groups(),
                 EMBEDDED_CACHE_SHARDS,
             ),
@@ -353,6 +350,9 @@ impl EmbeddedMaterialBindResources {
         self.stem_cache.write().remove(stem);
         self.clear_bind_cache();
         self.texture_debug_cache.lock().clear();
+        for shard in &self.uniform_arena_shards {
+            shard.write().clear_slots();
+        }
     }
 
     /// Returns or builds a `@group(1)` bind group for the composed embedded `stem`. Callers
@@ -371,6 +371,17 @@ impl EmbeddedMaterialBindResources {
         offscreen_write_target: OffscreenWriteTarget,
     ) -> Result<(MaterialBindCacheKey, EmbeddedMaterialBindGroup), EmbeddedMaterialBindError> {
         profiling::scope!("materials::embedded_bind_group");
+        let prepared_key = EmbeddedBindResolveCacheKey::new(
+            shader.stem,
+            shader.shader_variant_bits,
+            store,
+            lookup,
+            offscreen_write_target,
+        );
+        if let Some(hit) = self.prepared_bind_cache.get_cloned(&prepared_key) {
+            profiling::scope!("materials::embedded_prepared_bind_hit");
+            return Ok(hit);
+        }
         let EmbeddedBindInputResolution {
             layout,
             uniform_key,
@@ -387,7 +398,7 @@ impl EmbeddedMaterialBindResources {
             offscreen_write_target,
         )?;
 
-        let mutation_gen = store.mutation_generation(lookup);
+        let property_generations = material_property_generations(store, lookup);
         let uniform_binding = if layout.reflected.material_uniform.is_some() {
             Some(
                 self.get_or_update_embedded_uniform_arena_slot(EmbeddedUniformArenaRequest {
@@ -396,11 +407,12 @@ impl EmbeddedMaterialBindResources {
                     shader_variant_bits: shader.shader_variant_bits,
                     layout: &layout,
                     uniform_key: &uniform_key,
-                    mutation_gen,
+                    property_generations,
                     store,
                     lookup,
                     pools,
                     primary_texture_2d: texture_2d_asset_id,
+                    texture_bind_signature,
                     texture_state_sig,
                 })?,
             )
@@ -409,7 +421,6 @@ impl EmbeddedMaterialBindResources {
         };
         let bind_key = build_material_bind_cache_key(
             stem_hash,
-            lookup,
             texture_bind_signature,
             offscreen_write_target,
             uniform_binding.as_ref(),
@@ -422,16 +433,14 @@ impl EmbeddedMaterialBindResources {
         if let Some(bg) = hit_bg {
             profiling::scope!("materials::embedded_bind_cache_hit");
             self.bind_cache_stats.note_hit();
-            return Ok(material_bind_group_result(
-                bind_key,
-                bg,
-                uniform_binding.as_ref(),
-            ));
+            let result = material_bind_group_result(bind_key, bg, uniform_binding.as_ref());
+            self.cache_prepared_bind(prepared_key, result.clone());
+            return Ok(result);
         }
 
         profiling::scope!("materials::embedded_bind_cache_miss");
         self.bind_cache_stats.note_miss();
-        self.build_and_cache_embedded_bind_group(EmbeddedBindCacheMissInputs {
+        let result = self.build_and_cache_embedded_bind_group(EmbeddedBindCacheMissInputs {
             layout: &layout,
             stem_hash,
             texture_2d_asset_id,
@@ -442,7 +451,9 @@ impl EmbeddedMaterialBindResources {
             lookup_bind_key: bind_key,
             lookup_texture_bind_signature: texture_bind_signature,
             uniform_binding: uniform_binding.as_ref(),
-        })
+        })?;
+        self.cache_prepared_bind(prepared_key, result.clone());
+        Ok(result)
     }
 
     fn build_and_cache_embedded_bind_group(
@@ -480,7 +491,6 @@ impl EmbeddedMaterialBindResources {
         } else {
             let updated = build_material_bind_cache_key(
                 stem_hash,
-                lookup,
                 snapshot.texture_bind_signature,
                 offscreen_write_target,
                 uniform_binding,
@@ -539,14 +549,42 @@ impl EmbeddedMaterialBindResources {
         )
     }
 
-    /// Routes a uniform cache key to its arena shard. A given key always maps to the same shard,
-    /// so the per-shard generation tracked by [`MaterialUniformArena`] is self-consistent.
-    fn uniform_arena_shard(&self, key: &MaterialUniformCacheKey) -> &RwLock<MaterialUniformArena> {
-        let idx = (self.uniform_arena_hasher.hash_one(key) as usize) & (EMBEDDED_CACHE_SHARDS - 1);
-        &self.uniform_arena_shards[idx]
+    /// Routes a compatible material/texture binding pair to its arena shard.
+    ///
+    /// A given `(stem, shader variant, texture signature)` tuple always maps to the same shard, so
+    /// the per-shard generation tracked by [`MaterialUniformArena`] is self-consistent.
+    fn uniform_arena_shard(
+        &self,
+        key: &MaterialUniformCacheKey,
+        texture_bind_signature: u64,
+    ) -> (u8, &RwLock<MaterialUniformArena>) {
+        // Route compatible group-1 bindings together. Material identity still selects a stable
+        // offset inside the shard, but no longer scatters otherwise identical texture bindings
+        // across unrelated buffers.
+        let route = (
+            key.stem_hash,
+            key.shader_variant_bits,
+            texture_bind_signature,
+        );
+        let idx =
+            (self.uniform_arena_hasher.hash_one(route) as usize) & (EMBEDDED_CACHE_SHARDS - 1);
+        (idx as u8, &self.uniform_arena_shards[idx])
+    }
+
+    fn cache_prepared_bind(
+        &self,
+        key: EmbeddedBindResolveCacheKey,
+        prepared: (MaterialBindCacheKey, EmbeddedMaterialBindGroup),
+    ) {
+        if let Some((_bind_key, evicted)) = self.prepared_bind_cache.put(key, prepared) {
+            self.deferred_bind_group_drops.defer(evicted.bind_group);
+        }
     }
 
     fn clear_bind_cache(&self) {
+        for (_bind_key, prepared) in self.prepared_bind_cache.drain_values() {
+            self.deferred_bind_group_drops.defer(prepared.bind_group);
+        }
         // Resolutions hold the stem layout, so they must go whenever bind groups do.
         let _ = self.resolve_cache.drain_values();
         let evicted = self.bind_cache.drain_values();
@@ -561,96 +599,81 @@ impl EmbeddedMaterialBindResources {
 mod tests {
     use super::*;
 
-    /// Builds lookup ids for cache-key canonicalization tests.
-    fn lookup_ids(
-        material_asset_id: i32,
-        mesh_property_block_slot0: Option<i32>,
-        mesh_renderer_property_block_id: Option<i32>,
-    ) -> MaterialPropertyLookupIds {
-        MaterialPropertyLookupIds {
-            material_asset_id,
-            mesh_property_block_slot0,
-            mesh_renderer_property_block_id,
-        }
-    }
-
     #[test]
-    fn no_uniform_bind_cache_keys_share_across_material_ids() {
+    fn no_uniform_bind_cache_keys_are_canonical() {
         let a = build_material_bind_cache_key_parts(
             11,
-            lookup_ids(1, Some(10), Some(20)),
             42,
             OffscreenWriteTarget::host_render_texture(5),
             None,
         );
         let b = build_material_bind_cache_key_parts(
             11,
-            lookup_ids(2, Some(30), Some(40)),
             42,
             OffscreenWriteTarget::host_render_texture(5),
             None,
         );
 
         assert_eq!(a, b);
-        assert_eq!(a.material_asset_id, -1);
-        assert_eq!(a.property_block_slot0, None);
-        assert_eq!(a.renderer_property_block_id, None);
+        assert_eq!(a.uniform_arena_shard, None);
         assert_eq!(a.uniform_arena_generation, 0);
     }
 
     #[test]
-    fn uniform_bind_cache_keys_keep_material_identity() {
+    fn uniform_bind_cache_keys_share_persistent_arena_buffer() {
         let a = build_material_bind_cache_key_parts(
             11,
-            lookup_ids(1, Some(10), Some(20)),
             42,
             OffscreenWriteTarget::host_render_texture(5),
-            Some(7),
+            Some((3, 7)),
         );
         let b = build_material_bind_cache_key_parts(
             11,
-            lookup_ids(2, Some(30), Some(40)),
             42,
             OffscreenWriteTarget::host_render_texture(5),
-            Some(7),
+            Some((3, 7)),
         );
 
-        assert_ne!(a, b);
-        assert_eq!(a.material_asset_id, 1);
-        assert_eq!(a.property_block_slot0, Some(10));
-        assert_eq!(a.renderer_property_block_id, Some(20));
+        assert_eq!(a, b);
+        assert_eq!(a.uniform_arena_shard, Some(3));
         assert_eq!(a.uniform_arena_generation, 7);
+    }
+
+    #[test]
+    fn uniform_bind_cache_keys_distinguish_arena_buffers() {
+        let a =
+            build_material_bind_cache_key_parts(11, 42, OffscreenWriteTarget::None, Some((3, 7)));
+        let b =
+            build_material_bind_cache_key_parts(11, 42, OffscreenWriteTarget::None, Some((4, 7)));
+
+        assert_ne!(a, b);
     }
 
     #[test]
     fn bind_cache_key_tracks_texture_signature_and_offscreen_mask() {
         let base = build_material_bind_cache_key_parts(
             11,
-            lookup_ids(1, Some(10), Some(20)),
             42,
             OffscreenWriteTarget::host_render_texture(5),
-            Some(7),
+            Some((3, 7)),
         );
         let changed_texture = build_material_bind_cache_key_parts(
             11,
-            lookup_ids(1, Some(10), Some(20)),
             43,
             OffscreenWriteTarget::host_render_texture(5),
-            Some(7),
+            Some((3, 7)),
         );
         let changed_offscreen = build_material_bind_cache_key_parts(
             11,
-            lookup_ids(1, Some(10), Some(20)),
             42,
             OffscreenWriteTarget::host_render_texture(6),
-            Some(7),
+            Some((3, 7)),
         );
         let untracked_offscreen = build_material_bind_cache_key_parts(
             11,
-            lookup_ids(1, Some(10), Some(20)),
             42,
             OffscreenWriteTarget::Untracked,
-            Some(7),
+            Some((3, 7)),
         );
 
         assert_ne!(base, changed_texture);
@@ -662,20 +685,18 @@ mod tests {
     fn bind_cache_key_tracks_render_texture_self_sampling_policy() {
         let suppressed = build_material_bind_cache_key_parts(
             11,
-            lookup_ids(1, Some(10), Some(20)),
             42,
             OffscreenWriteTarget::host_render_texture(5),
-            Some(7),
+            Some((3, 7)),
         );
         let allowed = build_material_bind_cache_key_parts(
             11,
-            lookup_ids(1, Some(10), Some(20)),
             42,
             OffscreenWriteTarget::host_render_texture_with_self_sampling(
                 5,
                 crate::frame_contract::RenderTextureSelfSampling::AllowPreviousContents,
             ),
-            Some(7),
+            Some((3, 7)),
         );
 
         assert_ne!(suppressed, allowed);
@@ -683,20 +704,10 @@ mod tests {
 
     #[test]
     fn bind_cache_key_tracks_uniform_arena_generation() {
-        let first = build_material_bind_cache_key_parts(
-            11,
-            lookup_ids(1, Some(10), Some(20)),
-            42,
-            OffscreenWriteTarget::None,
-            Some(7),
-        );
-        let second = build_material_bind_cache_key_parts(
-            11,
-            lookup_ids(1, Some(10), Some(20)),
-            42,
-            OffscreenWriteTarget::None,
-            Some(8),
-        );
+        let first =
+            build_material_bind_cache_key_parts(11, 42, OffscreenWriteTarget::None, Some((3, 7)));
+        let second =
+            build_material_bind_cache_key_parts(11, 42, OffscreenWriteTarget::None, Some((3, 8)));
 
         assert_ne!(first, second);
         assert_eq!(first.uniform_arena_generation, 7);

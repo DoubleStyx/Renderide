@@ -70,6 +70,46 @@ use video_runtime::VideoAssetRuntime;
 
 /// Maximum active background particle mesh builds admitted at once.
 const PARTICLE_BACKGROUND_WORKER_LIMIT: usize = 16;
+/// Independent mapping caches used by particle workers decoding directly from shared memory.
+const BACKGROUND_SHARED_MEMORY_ACCESSORS: usize = 4;
+
+/// Small sharded accessor pool for off-thread particle decoding.
+///
+/// A particle build holds one accessor lock while it decodes from the mapped bytes. Sharding by
+/// buffer id preserves mapping reuse without serializing every point/trail build behind one mutex.
+struct BackgroundSharedMemoryPool {
+    accessors: Vec<Arc<parking_lot::Mutex<crate::ipc::SharedMemoryAccessor>>>,
+}
+
+impl BackgroundSharedMemoryPool {
+    fn new(prefix: &str) -> Option<Self> {
+        let accessors = (0..BACKGROUND_SHARED_MEMORY_ACCESSORS)
+            .map(|_| {
+                Arc::new(parking_lot::Mutex::new(
+                    crate::ipc::SharedMemoryAccessor::new(prefix.to_owned()),
+                ))
+            })
+            .collect::<Vec<_>>();
+        accessors
+            .first()
+            .is_some_and(|accessor| accessor.lock().is_available())
+            .then_some(Self { accessors })
+    }
+
+    fn accessor_for_buffer(
+        &self,
+        buffer_id: i32,
+    ) -> Arc<parking_lot::Mutex<crate::ipc::SharedMemoryAccessor>> {
+        let index = (buffer_id as u32 as usize) % self.accessors.len();
+        Arc::clone(&self.accessors[index])
+    }
+
+    fn release_view(&self, buffer_id: i32) {
+        for accessor in &self.accessors {
+            accessor.lock().release_view(buffer_id);
+        }
+    }
+}
 
 /// Latest point render-buffer upload retained for one asset before a worker consumes it.
 #[derive(Debug)]
@@ -208,12 +248,12 @@ pub struct AssetTransferQueue {
     trail_render_buffer_build_tx: Sender<TrailBuildResult>,
     /// Ready trail render-buffer build results waiting for renderer-thread publication.
     trail_render_buffer_build_rx: Receiver<TrailBuildResult>,
-    /// Worker-owned shared-memory accessor for off-thread particle payload reads.
+    /// Worker-owned shared-memory accessors for off-thread particle payload reads.
     ///
-    /// A second set of mappings over the same session prefix so asset workers can copy render
-    /// buffer payloads without borrowing the renderer thread's accessor. The host is only told
-    /// the payload was consumed after the worker's read completes.
-    background_shm: Option<Arc<parking_lot::Mutex<crate::ipc::SharedMemoryAccessor>>>,
+    /// Independent mappings over the same session prefix let asset workers decode render buffers
+    /// without borrowing the renderer thread's accessor or copying the complete payload first.
+    /// The host is only told the payload was consumed after the worker's decode completes.
+    background_shm: Option<BackgroundSharedMemoryPool>,
 }
 
 impl AssetTransferQueue {
@@ -346,24 +386,23 @@ impl AssetTransferQueue {
         if self.background_shm.is_some() || !primary.is_available() {
             return;
         }
-        let accessor = crate::ipc::SharedMemoryAccessor::new(primary.prefix().to_string());
-        if !accessor.is_available() {
-            return;
-        }
-        self.background_shm = Some(Arc::new(parking_lot::Mutex::new(accessor)));
+        self.background_shm = BackgroundSharedMemoryPool::new(primary.prefix());
     }
 
-    /// Worker-owned shared-memory accessor for off-thread particle payload reads.
+    /// Worker-owned shared-memory accessor shard for one off-thread particle payload read.
     pub(in crate::backend::asset_transfers) fn background_shm(
         &self,
+        buffer_id: i32,
     ) -> Option<Arc<parking_lot::Mutex<crate::ipc::SharedMemoryAccessor>>> {
-        self.background_shm.clone()
+        self.background_shm
+            .as_ref()
+            .map(|pool| pool.accessor_for_buffer(buffer_id))
     }
 
-    /// Releases a cached view on the worker-owned accessor when the host frees a buffer.
+    /// Releases cached views on every worker-owned accessor when the host frees a buffer.
     pub(crate) fn release_background_shm_view(&self, buffer_id: i32) {
         if let Some(shm) = &self.background_shm {
-            shm.lock().release_view(buffer_id);
+            shm.release_view(buffer_id);
         }
     }
 

@@ -505,7 +505,7 @@ fn render_world_maintenance_row(ui: &imgui::Ui, stats: RenderWorldMaintenanceSta
         ui,
         "Render world",
         &format!(
-            "retained={}  dirty={}  bounds={}/{}  topo={}  mat={}  xform={} roots={} scan={} expanded={} mesh={}  refreshed={}  templates={}  snapshot={}/{}  full-space={}  full-world={}  spatial={}/{}  particle-snapshot={}  skips={}",
+            "retained={}  dirty={}  bounds={}/{}  topo={}  mat={}  xform={} roots={} scan={} expanded={} mesh={}  refreshed={}  templates={}  snapshot={}/{}  full-space={}  full-world={}  spatial={}/{}  particle-snapshot={} patch={}/{} structural={} overlay={}/{}/{}  skips={}",
             stats.retained_template_count,
             stats.dirty_renderer_count,
             stats.bounds_dirty_renderer_count,
@@ -526,6 +526,12 @@ fn render_world_maintenance_row(ui: &imgui::Ui, stats: RenderWorldMaintenanceSta
             stats.spatial_rebuild_count,
             stats.spatial_refit_count,
             stats.particle_snapshot_rebuild_count,
+            stats.particle_renderer_patch_count,
+            stats.particle_patch_draw_count,
+            stats.particle_patch_structural_rebuild_count,
+            stats.context_overlay_count,
+            stats.context_overlay_sync_count,
+            stats.context_override_patch_count,
             stats.steady_state_skip_count
         ),
     );

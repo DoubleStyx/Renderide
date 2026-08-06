@@ -163,6 +163,29 @@ fn shadow_split_workload_preserves_layer_order_and_balances_chunks() {
 }
 
 #[test]
+fn shadow_split_workload_caps_command_buffer_fan_out() {
+    let groups = super::SHADOW_ATLAS_PARALLEL_MIN_VISIBLE_GROUPS * 16;
+    let workload =
+        select_shadow_atlas_split_workload(64, groups, 16_384, true, 64).expect("split workload");
+
+    assert_eq!(workload.chunk_size, 16);
+    assert_eq!(
+        workload.unit_count.div_ceil(workload.chunk_size),
+        super::SHADOW_ATLAS_PARALLEL_MAX_ENCODERS
+    );
+}
+
+#[test]
+fn shadow_split_workload_requires_enough_work_for_two_encoders() {
+    let groups = super::SHADOW_ATLAS_PARALLEL_MIN_VISIBLE_GROUPS;
+
+    assert_eq!(
+        select_shadow_atlas_split_workload(8, groups, 0, true, 8),
+        None
+    );
+}
+
+#[test]
 fn shadow_split_workload_rejects_unsafe_or_tiny_fanout() {
     let groups = super::SHADOW_ATLAS_PARALLEL_MIN_VISIBLE_GROUPS;
 
@@ -291,4 +314,13 @@ fn shadow_indirect_key_tracks_slab_and_exact_view_signature() {
 
     assert!(!first.matches(&moved_slab));
     assert!(!first.matches(&changed_view));
+}
+
+#[test]
+fn shadow_dirty_ranges_merge_only_adjacent_rows() {
+    let ranges =
+        super::shadow_dirty_row_ranges(&[false, true, true, false, true]).collect::<Vec<_>>();
+
+    assert_eq!(ranges, vec![(1, 3), (4, 5)]);
+    assert_eq!(super::shadow_dirty_row_ranges(&[false, false]).count(), 0);
 }

@@ -6,7 +6,10 @@ use hashbrown::HashMap;
 use crate::assets::mesh::GpuMesh;
 use crate::gpu_pools::MeshPool;
 use crate::particles::{ParticleDrawParams, PointRenderBufferAsset};
-use crate::scene::{MeshRendererInstanceId, RenderSpaceId, RenderSpaceRead, WorldMeshSceneRead};
+use crate::scene::{
+    MeshRendererInstanceId, RenderSpaceId, RenderSpaceRead, RenderWorldParticleRendererDirty,
+    RenderWorldParticleRendererKind, WorldMeshSceneRead,
+};
 use crate::shared::ShadowCastMode;
 use crate::shared::{LayerType, RenderingContext};
 use crate::world_mesh::culling::{
@@ -107,6 +110,103 @@ pub(in crate::world_mesh::draw_prep) fn expand_render_buffer_renderers_into<S>(
             renderable_index,
             renderer,
         );
+    }
+}
+
+/// Expands exactly one PhotonDust renderer row for a prepared-run patch.
+pub(in crate::world_mesh::draw_prep) fn expand_render_buffer_renderer_into<S>(
+    out: &mut Vec<FramePreparedDraw>,
+    scene: &S,
+    mesh_pool: &MeshPool,
+    point_render_buffers: &HashMap<i32, PointRenderBufferAsset>,
+    render_context: RenderingContext,
+    dirty: RenderWorldParticleRendererDirty,
+) where
+    S: WorldMeshSceneRead + ?Sized,
+{
+    let Some(space) = scene.space(dirty.space_id) else {
+        return;
+    };
+    if !space.is_active() {
+        return;
+    }
+    let mut ctx = ExpandCtx {
+        out,
+        scene,
+        mesh_pool,
+        render_context,
+        space_id: dirty.space_id,
+        space_is_overlay: space.is_overlay(),
+    };
+    match dirty.kind {
+        RenderWorldParticleRendererKind::Billboard => {
+            let Some(renderer) = scene
+                .billboard_render_buffers(dirty.space_id)
+                .and_then(|renderers| renderers.get(dirty.renderable_index))
+            else {
+                return;
+            };
+            let Some(mesh_asset_id) = crate::particles::billboard_render_buffer_mesh_asset_id(
+                renderer.point_render_buffer_asset_id,
+            ) else {
+                return;
+            };
+            try_expand_render_buffer_renderer(
+                &mut ctx,
+                dirty.renderable_index,
+                renderer.node_id,
+                mesh_asset_id,
+                renderer.material_asset_id,
+                ParticleRenderBufferPreparedKind::Billboard,
+                ParticleDrawParams::billboard(
+                    renderer.alignment,
+                    renderer.min_billboard_screen_size,
+                    renderer.max_billboard_screen_size,
+                    renderer.motion_vector_mode,
+                ),
+            );
+        }
+        RenderWorldParticleRendererKind::Mesh => {
+            let Some(renderer) = scene
+                .mesh_render_buffers(dirty.space_id)
+                .and_then(|renderers| renderers.get(dirty.renderable_index))
+            else {
+                return;
+            };
+            try_expand_mesh_render_buffer_renderer(
+                &mut ctx,
+                point_render_buffers,
+                dirty.renderable_index,
+                renderer,
+            );
+        }
+        RenderWorldParticleRendererKind::Trail => {
+            let Some(renderer) = scene
+                .trail_render_buffers(dirty.space_id)
+                .and_then(|renderers| renderers.get(dirty.renderable_index))
+            else {
+                return;
+            };
+            let Some(mesh_asset_id) = crate::particles::trail_render_buffer_mesh_asset_id(
+                renderer.trails_render_buffer_asset_id,
+                renderer.texture_mode,
+            ) else {
+                return;
+            };
+            try_expand_render_buffer_renderer(
+                &mut ctx,
+                dirty.renderable_index,
+                renderer.node_id,
+                mesh_asset_id,
+                renderer.material_asset_id,
+                ParticleRenderBufferPreparedKind::Trail,
+                ParticleDrawParams::trail(
+                    renderer.texture_mode,
+                    renderer.motion_vector_mode,
+                    renderer.generate_lighting_data,
+                ),
+            );
+        }
     }
 }
 

@@ -43,8 +43,9 @@ use dirty::{
     transform_update_changes_space,
 };
 pub use reports::{
-    RenderWorldBoundsDirty, RenderWorldMaterialOverrideDirty, RenderWorldRendererDirty,
-    RenderWorldRendererKind, RenderWorldTransformDirty, SceneApplyReport, SceneCacheFlushReport,
+    RenderWorldBoundsDirty, RenderWorldMaterialOverrideDirty, RenderWorldParticleRendererDirty,
+    RenderWorldParticleRendererKind, RenderWorldRendererDirty, RenderWorldRendererKind,
+    RenderWorldTransformDirty, SceneApplyReport, SceneCacheFlushReport,
 };
 
 /// Dirty render spaces assigned to one world-cache flush worker.
@@ -100,6 +101,24 @@ pub struct SceneCoordinator {
     apply_scratch: SceneApplyScratch,
 }
 
+/// Render-facing scene adapter that deliberately suppresses every context-local override.
+///
+/// The backend builds one retained base [`crate::world_mesh::RenderWorld`] through this view,
+/// then lightweight context overlays patch only explicitly overridden renderer ranges.
+#[derive(Clone, Copy)]
+pub(crate) struct ContextInvariantSceneRead<'a> {
+    coordinator: &'a SceneCoordinator,
+}
+
+/// Exact prepared renderer rows whose values differ from the context-invariant base snapshot.
+#[derive(Default)]
+pub(crate) struct RenderContextDrawPrepOverrideTargets {
+    /// Static/skinned source renderers affected by transform or material overrides.
+    pub(crate) mesh_renderers: hashbrown::HashSet<RenderWorldRendererDirty>,
+    /// Generated particle renderers affected by transform overrides.
+    pub(crate) particle_renderers: hashbrown::HashSet<RenderWorldParticleRendererDirty>,
+}
+
 #[derive(Default)]
 struct WorldCacheFlushScratch {
     /// Reused in [`SceneCoordinator::flush_world_caches`] to avoid per-flush `Vec` allocation.
@@ -152,6 +171,30 @@ struct ApplyWorkSlot {
     world_dirty: bool,
 }
 
+fn node_is_under_override_root(
+    space: &RenderSpaceState,
+    node_id: i32,
+    roots: &HashSet<i32>,
+) -> bool {
+    if node_id < 0 {
+        return false;
+    }
+    let mut cursor = node_id;
+    for _ in 0..=space.node_parents.len() {
+        if roots.contains(&cursor) {
+            return true;
+        }
+        let Some(&parent) = space.node_parents.get(cursor as usize) else {
+            return false;
+        };
+        if parent < 0 || parent == cursor {
+            return false;
+        }
+        cursor = parent;
+    }
+    false
+}
+
 impl Default for SceneCoordinator {
     fn default() -> Self {
         Self::new()
@@ -159,6 +202,111 @@ impl Default for SceneCoordinator {
 }
 
 impl SceneCoordinator {
+    /// Returns a read adapter that resolves transforms/materials from context-invariant scene data.
+    pub(crate) fn context_invariant_read(&self) -> ContextInvariantSceneRead<'_> {
+        ContextInvariantSceneRead { coordinator: self }
+    }
+
+    /// Classifies the exact source renderers whose prepared values differ in `context`.
+    pub(crate) fn render_context_draw_prep_override_targets(
+        &self,
+        context: RenderingContext,
+    ) -> RenderContextDrawPrepOverrideTargets {
+        let mut targets = RenderContextDrawPrepOverrideTargets::default();
+        for (&space_id, space) in &self.spaces {
+            for material in space
+                .render_material_overrides
+                .iter()
+                .filter(|entry| entry.context == context && entry.node_id >= 0)
+            {
+                let (kind, renderable_index) = match material.target {
+                    MeshRendererOverrideTarget::Static(index) if index >= 0 => {
+                        (RenderWorldRendererKind::Static, index as usize)
+                    }
+                    MeshRendererOverrideTarget::Skinned(index) if index >= 0 => {
+                        (RenderWorldRendererKind::Skinned, index as usize)
+                    }
+                    _ => continue,
+                };
+                targets.mesh_renderers.insert(RenderWorldRendererDirty {
+                    space_id,
+                    kind,
+                    renderable_index,
+                });
+            }
+
+            let transform_roots = space
+                .render_transform_overrides
+                .iter()
+                .filter(|entry| entry.context == context && entry.node_id >= 0)
+                .map(|entry| entry.node_id)
+                .collect::<HashSet<_>>();
+            if transform_roots.is_empty() {
+                continue;
+            }
+            for (renderable_index, renderer) in space.static_mesh_renderers.iter().enumerate() {
+                if node_is_under_override_root(space, renderer.node_id, &transform_roots) {
+                    targets.mesh_renderers.insert(RenderWorldRendererDirty {
+                        space_id,
+                        kind: RenderWorldRendererKind::Static,
+                        renderable_index,
+                    });
+                }
+            }
+            for (renderable_index, renderer) in space.skinned_mesh_renderers.iter().enumerate() {
+                if node_is_under_override_root(space, renderer.base.node_id, &transform_roots)
+                    || space.render_transform_overrides.iter().any(|entry| {
+                        entry.context == context
+                            && entry.node_id >= 0
+                            && entry
+                                .skinned_mesh_renderer_indices
+                                .contains(&(renderable_index as i32))
+                    })
+                {
+                    targets.mesh_renderers.insert(RenderWorldRendererDirty {
+                        space_id,
+                        kind: RenderWorldRendererKind::Skinned,
+                        renderable_index,
+                    });
+                }
+            }
+            for (renderable_index, renderer) in space.billboard_render_buffers.iter().enumerate() {
+                if node_is_under_override_root(space, renderer.node_id, &transform_roots) {
+                    targets
+                        .particle_renderers
+                        .insert(RenderWorldParticleRendererDirty {
+                            space_id,
+                            kind: RenderWorldParticleRendererKind::Billboard,
+                            renderable_index,
+                        });
+                }
+            }
+            for (renderable_index, renderer) in space.mesh_render_buffers.iter().enumerate() {
+                if node_is_under_override_root(space, renderer.node_id, &transform_roots) {
+                    targets
+                        .particle_renderers
+                        .insert(RenderWorldParticleRendererDirty {
+                            space_id,
+                            kind: RenderWorldParticleRendererKind::Mesh,
+                            renderable_index,
+                        });
+                }
+            }
+            for (renderable_index, renderer) in space.trail_render_buffers.iter().enumerate() {
+                if node_is_under_override_root(space, renderer.node_id, &transform_roots) {
+                    targets
+                        .particle_renderers
+                        .insert(RenderWorldParticleRendererDirty {
+                            space_id,
+                            kind: RenderWorldParticleRendererKind::Trail,
+                            renderable_index,
+                        });
+                }
+            }
+        }
+        targets
+    }
+
     /// Empty registry.
     pub fn new() -> Self {
         Self {
@@ -640,6 +788,140 @@ impl WorldMeshSceneRead for SceneCoordinator {
         self.spaces
             .get(&id)
             .map(|space| space.trail_render_buffers.as_slice())
+    }
+}
+
+impl SceneSpaceRead for ContextInvariantSceneRead<'_> {
+    type Space<'a>
+        = RenderSpaceView<'a>
+    where
+        Self: 'a;
+    type RenderSpaceIds<'a>
+        = std::vec::IntoIter<RenderSpaceId>
+    where
+        Self: 'a;
+
+    fn render_space_ids(&self) -> Self::RenderSpaceIds<'_> {
+        SceneSpaceRead::render_space_ids(self.coordinator)
+    }
+
+    fn space(&self, id: RenderSpaceId) -> Option<Self::Space<'_>> {
+        SceneSpaceRead::space(self.coordinator, id)
+    }
+
+    fn active_main_space(&self) -> Option<Self::Space<'_>> {
+        SceneSpaceRead::active_main_space(self.coordinator)
+    }
+
+    fn active_main_ambient_light(&self) -> RenderSH2 {
+        SceneSpaceRead::active_main_ambient_light(self.coordinator)
+    }
+
+    fn active_main_render_context(&self) -> RenderingContext {
+        SceneSpaceRead::active_main_render_context(self.coordinator)
+    }
+
+    fn render_context_affects_draw_prep(&self, _context: RenderingContext) -> bool {
+        false
+    }
+}
+
+impl SceneTransformRead for ContextInvariantSceneRead<'_> {
+    fn world_matrix_for_context(
+        &self,
+        id: RenderSpaceId,
+        transform_index: usize,
+        _context: RenderingContext,
+    ) -> Option<Mat4> {
+        self.coordinator.world_matrix(id, transform_index)
+    }
+
+    fn world_matrix_for_render_context(
+        &self,
+        id: RenderSpaceId,
+        transform_index: usize,
+        _context: RenderingContext,
+        head_output_transform: Mat4,
+    ) -> Option<Mat4> {
+        self.coordinator.world_matrix_for_render_context_invariant(
+            id,
+            transform_index,
+            head_output_transform,
+        )
+    }
+
+    fn overlay_layer_model_matrix_for_context(
+        &self,
+        id: RenderSpaceId,
+        transform_index: usize,
+        _context: RenderingContext,
+    ) -> Option<Mat4> {
+        self.coordinator
+            .overlay_layer_model_matrix_invariant(id, transform_index)
+    }
+
+    fn transform_special_layer(
+        &self,
+        id: RenderSpaceId,
+        transform_index: usize,
+    ) -> Option<LayerType> {
+        SceneTransformRead::transform_special_layer(self.coordinator, id, transform_index)
+    }
+
+    fn transform_is_in_overlay_layer(&self, id: RenderSpaceId, transform_index: usize) -> bool {
+        SceneTransformRead::transform_is_in_overlay_layer(self.coordinator, id, transform_index)
+    }
+
+    fn transform_has_degenerate_scale_for_context(
+        &self,
+        id: RenderSpaceId,
+        transform_index: usize,
+        _context: RenderingContext,
+    ) -> bool {
+        self.coordinator
+            .transform_has_degenerate_scale(id, transform_index)
+    }
+
+    fn overridden_material_asset_id(
+        &self,
+        _space_id: RenderSpaceId,
+        _context: RenderingContext,
+        _skinned: bool,
+        _renderable_index: usize,
+        _slot_index: usize,
+    ) -> Option<i32> {
+        None
+    }
+}
+
+impl SceneMeshRendererRead for ContextInvariantSceneRead<'_> {
+    fn static_mesh_renderers(&self, id: RenderSpaceId) -> Option<&[super::StaticMeshRenderer]> {
+        SceneMeshRendererRead::static_mesh_renderers(self.coordinator, id)
+    }
+
+    fn skinned_mesh_renderers(&self, id: RenderSpaceId) -> Option<&[super::SkinnedMeshRenderer]> {
+        SceneMeshRendererRead::skinned_mesh_renderers(self.coordinator, id)
+    }
+}
+
+impl WorldMeshSceneRead for ContextInvariantSceneRead<'_> {
+    fn lod_groups(&self, id: RenderSpaceId) -> Option<&[super::LodGroupEntry]> {
+        WorldMeshSceneRead::lod_groups(self.coordinator, id)
+    }
+
+    fn billboard_render_buffers(
+        &self,
+        id: RenderSpaceId,
+    ) -> Option<&[super::BillboardRenderBufferEntry]> {
+        WorldMeshSceneRead::billboard_render_buffers(self.coordinator, id)
+    }
+
+    fn mesh_render_buffers(&self, id: RenderSpaceId) -> Option<&[super::MeshRenderBufferEntry]> {
+        WorldMeshSceneRead::mesh_render_buffers(self.coordinator, id)
+    }
+
+    fn trail_render_buffers(&self, id: RenderSpaceId) -> Option<&[super::TrailRenderBufferEntry]> {
+        WorldMeshSceneRead::trail_render_buffers(self.coordinator, id)
     }
 }
 

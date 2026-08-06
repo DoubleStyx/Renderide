@@ -15,6 +15,12 @@ pub use scene_color::SceneColorFormat;
 
 use serde::{Deserialize, Serialize};
 
+/// Default wall-clock slice for cooperative mesh/texture integration.
+///
+/// Four milliseconds keeps the work bounded to a quarter of a 60 Hz frame while giving
+/// multi-megabyte texture payloads enough room to make visible progress in one tick.
+pub const DEFAULT_ASSET_INTEGRATION_BUDGET_MS: u32 = 4;
+
 /// Rendering toggles and scalars. Persisted as `[rendering]`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -53,10 +59,24 @@ impl Default for RenderingSettings {
         Self {
             presentation_mode: PresentationModeSetting::default(),
             graphics_api: GraphicsApiSetting::default(),
-            asset_integration_budget_ms: 2,
+            asset_integration_budget_ms: DEFAULT_ASSET_INTEGRATION_BUDGET_MS,
             asset_particle_integration_budget_ms: 4,
             msaa: MsaaSampleCount::default(),
             scene_color_format: SceneColorFormat::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DEFAULT_ASSET_INTEGRATION_BUDGET_MS, RenderingSettings};
+
+    #[test]
+    fn default_asset_budget_matches_streaming_slice() {
+        assert_eq!(
+            RenderingSettings::default().asset_integration_budget_ms,
+            DEFAULT_ASSET_INTEGRATION_BUDGET_MS
+        );
+        assert_eq!(DEFAULT_ASSET_INTEGRATION_BUDGET_MS, 4);
     }
 }

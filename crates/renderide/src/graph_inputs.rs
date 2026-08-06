@@ -225,19 +225,20 @@ pub trait GraphFrameBindings {
 
 /// Graph-facing access to per-view per-draw slab storage and packing scratch.
 pub trait GraphPerDrawSlabResources {
-    /// Ensures this view's per-draw slab can hold `draw_count` rows and returns its storage buffer.
+    /// Ensures this view's per-draw slab can hold `draw_count` rows and returns its storage buffer
+    /// plus whether growth replaced the buffer and invalidated its previous contents.
     fn ensure_per_view_per_draw_capacity(
         &self,
         device: &wgpu::Device,
         view_id: ViewId,
         draw_count: usize,
-    ) -> Option<wgpu::Buffer>;
+    ) -> Option<(wgpu::Buffer, bool)>;
 
     /// Gives callers mutable access to the per-view CPU slab-packing scratch.
     fn with_per_view_per_draw_scratch(
         &self,
         view_id: ViewId,
-        f: &mut dyn FnMut(&mut Vec<PaddedPerDrawUniforms>),
+        f: &mut dyn FnMut(&mut Vec<PaddedPerDrawUniforms>, &mut Vec<bool>),
     ) -> bool;
 
     /// Gives callers mutable access to the per-view material-batch boundary scratch so it can be

@@ -17,6 +17,33 @@ fn frameglobal_runs_before_perview_by_default() -> Result<(), GraphBuildError> {
 }
 
 #[test]
+fn phase_boundary_does_not_serialize_independent_perview_siblings() -> Result<(), GraphBuildError> {
+    let mut b = GraphBuilder::new();
+    b.add_compute_pass(Box::new(
+        TestComputePass::new("frame-a").frame_global().cull_exempt(),
+    ));
+    b.add_compute_pass(Box::new(
+        TestComputePass::new("frame-b").frame_global().cull_exempt(),
+    ));
+    b.add_compute_pass(Box::new(TestComputePass::new("view-a").cull_exempt()));
+    b.add_compute_pass(Box::new(TestComputePass::new("view-b").cull_exempt()));
+
+    let g = b.build()?;
+
+    assert_eq!(g.schedule.waves, vec![0..2, 2..4]);
+    assert_eq!(
+        g.schedule
+            .steps
+            .iter()
+            .map(|step| step.wave_idx)
+            .collect::<Vec<_>>(),
+        vec![0, 0, 1, 1]
+    );
+    assert_eq!(g.compile_stats.dependency_edge_count, 4);
+    Ok(())
+}
+
+#[test]
 fn group_order_respects_group_after_declarations() -> Result<(), GraphBuildError> {
     let mut b = GraphBuilder::new();
     let bb = b.import_texture(backbuffer_import());

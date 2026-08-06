@@ -182,7 +182,7 @@ pub struct WorldMeshDrawItem {
     /// single `u64::cmp` instead of a multi-field comparator chain.
     ///
     /// Layout (highest bit first): `[overlay:1][render_queue:18][transparent_sort:1]
-    /// [opaque_depth_bucket:8][batch_key_hash_hi:32][reserved:4]`. Transparent-sorted draws zero
+    /// [opaque_depth_bucket:8][batch_key_hash_hi:36]`. Transparent-sorted draws zero
     /// the depth-bucket and hash bits so they share a key within their `(overlay, render_queue)`
     /// bucket; [`super::sort::sort_draws`] then resorts each such run with a
     /// class-aware structural comparator.

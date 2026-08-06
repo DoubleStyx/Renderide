@@ -42,13 +42,13 @@ pub(crate) struct PointRenderBufferBuild {
 
 /// Decodes a point render buffer and derives its bounds without expanding billboard geometry.
 pub(crate) fn build_point_render_buffer_cpu(
-    raw: Arc<Vec<u8>>,
+    raw: &[u8],
     upload: &PointRenderBufferUpload,
 ) -> Result<PointRenderBufferBuild, ParticleRenderBufferError> {
     profiling::scope!("particle::build_point_render_buffer");
     let asset_id = upload.asset_id;
     let count = nonnegative_count("point", asset_id, "count", upload.count)?;
-    let points = decode_point_particles(raw.as_ref(), upload, count)?;
+    let points = decode_point_particles(raw, upload, count)?;
     let mesh_asset_id = billboard_render_buffer_mesh_asset_id(asset_id).ok_or(
         ParticleRenderBufferError::GeneratedIdOverflow {
             kind: "point",
@@ -173,7 +173,9 @@ pub(super) fn billboard_extra_streams(points: &[PointParticle]) -> GeneratedExtr
 
 /// Returns whether point decode/fill work is large enough to amortize Rayon scheduling.
 fn point_parallel_is_worthwhile(count: usize) -> bool {
-    count >= POINT_PARTICLE_PARALLEL_MIN && rayon::current_num_threads() > 1
+    count >= POINT_PARTICLE_PARALLEL_MIN
+        && rayon::current_num_threads() > 1
+        && !crate::assets::worker::is_asset_worker_thread()
 }
 
 /// Fills packed billboard vertex and index buffers for `points`.

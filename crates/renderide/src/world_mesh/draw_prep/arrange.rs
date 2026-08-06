@@ -239,6 +239,12 @@ impl BatchIdTable {
 struct NonTransparentDrawRow {
     /// Bin key for this row.
     key: NonTransparentBinKey,
+    /// Fully packed common-case ordering key for non-stacked draws.
+    ///
+    /// The previous comparator walked overlay, phase, render queue, stack presence, batch, and
+    /// mesh fields for every comparison. Most rows are not material stacks, so packing those
+    /// fields once turns their hot comparison path into one integer compare.
+    sort_prefix: u128,
     /// Flattened source draw index.
     source_index: usize,
 }
@@ -449,13 +455,15 @@ fn build_arrangement_rows(
                 batch_id,
             });
         } else {
+            let key = NonTransparentBinKey::from_draw(
+                item,
+                classification.phase,
+                batch_id,
+                surface_stacks,
+            );
             nontransparent_rows.push(NonTransparentDrawRow {
-                key: NonTransparentBinKey::from_draw(
-                    item,
-                    classification.phase,
-                    batch_id,
-                    surface_stacks,
-                ),
+                sort_prefix: pack_nontransparent_sort_prefix(&key),
+                key,
                 source_index,
             });
         }
@@ -475,7 +483,35 @@ fn sort_nontransparent_rows(rows: &mut [NonTransparentDrawRow], allow_parallel: 
 
 /// Compares compact nontransparent rows.
 fn cmp_nontransparent_rows(a: &NonTransparentDrawRow, b: &NonTransparentDrawRow) -> Ordering {
-    cmp_nontransparent_bin_keys(&a.key, &b.key).then(a.source_index.cmp(&b.source_index))
+    if a.key.stack.is_none() && b.key.stack.is_none() {
+        a.sort_prefix
+            .cmp(&b.sort_prefix)
+            .then(a.key.first_index.cmp(&b.key.first_index))
+            .then(a.key.index_count.cmp(&b.key.index_count))
+            .then(a.source_index.cmp(&b.source_index))
+    } else {
+        cmp_nontransparent_bin_keys(&a.key, &b.key).then(a.source_index.cmp(&b.source_index))
+    }
+}
+
+/// Packs the complete common ordering prefix for an unstacked nontransparent bin.
+///
+/// Signed fields are biased before packing so unsigned comparison preserves their natural order.
+/// The remaining submesh range fields are compared only after this prefix matches.
+#[inline]
+fn pack_nontransparent_sort_prefix(key: &NonTransparentBinKey) -> u128 {
+    const PHASE_SHIFT: u32 = 96;
+    const OVERLAY_SHIFT: u32 = 99;
+    const RENDER_QUEUE_SHIFT: u32 = 64;
+    const BATCH_SHIFT: u32 = 32;
+
+    let render_queue = (key.render_queue as u32) ^ (1 << 31);
+    let mesh_asset_id = (key.mesh_asset_id as u32) ^ (1 << 31);
+    (u128::from(key.is_overlay) << OVERLAY_SHIFT)
+        | (u128::from(key.phase_rank) << PHASE_SHIFT)
+        | (u128::from(render_queue) << RENDER_QUEUE_SHIFT)
+        | (u128::from(key.batch_id) << BATCH_SHIFT)
+        | u128::from(mesh_asset_id)
 }
 
 /// Sorts strict order-sensitive rows through the existing draw comparator.
