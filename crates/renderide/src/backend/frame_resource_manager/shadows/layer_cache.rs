@@ -56,6 +56,41 @@ struct ShadowLayerCacheEntry {
     last_used_frame: u64,
     /// CPU visibility/group work retained independently from atlas depth-content validity.
     visibility: Option<ShadowVisibilityCacheEntry>,
+    /// Projection this cascade is pinned to while it is being held across frames.
+    held_cascade: Option<HeldCascade>,
+    /// Static-caster signature currently held in this layer's static depth store.
+    ///
+    /// Independent of [`Self::rendered`], which tracks the live atlas layer. The store holds only
+    /// the rigid casters, so it survives frames where dynamic casters forced the live layer to be
+    /// re-recorded. [`None`] means the store holds nothing usable for this layer.
+    static_store: Option<StaticStoreContents>,
+}
+
+/// Static-only depth retained for one layer, and the projection it was rendered under.
+#[derive(Clone, Copy)]
+struct StaticStoreContents {
+    /// Light-parameter signature the static depth was rendered with.
+    params_sig: u64,
+    /// Static-caster content signature of that depth.
+    caster_sig: u64,
+}
+
+/// A directional cascade projection held across frames instead of refitted every frame.
+///
+/// Refitting every frame is why camera-fitted cascades never hit the layer cache: the projection
+/// moves with the camera, so its signature changes and the retained depth contents are discarded
+/// even when nothing in the world moved. Pinning the projection to an inflated slice sphere lets
+/// the camera travel inside it for several frames while the cached shadow map stays exactly valid.
+#[derive(Clone, Copy, Debug)]
+struct HeldCascade {
+    /// Pinned world-to-shadow-clip matrix.
+    view_proj: glam::Mat4,
+    /// Sphere the pinned projection covers.
+    center: glam::Vec3,
+    /// Radius of that sphere, already inflated by the hold slack.
+    radius: f32,
+    /// Planning frame the projection was fitted on.
+    fitted_frame: u64,
 }
 
 /// Result of acquiring a persistent layer for one planned shadow view.
@@ -66,6 +101,10 @@ pub(super) struct ShadowLayerLease {
     pub(super) rendered_params_sig: Option<u64>,
     /// Caster signature of those contents, when the last render computed one.
     pub(super) rendered_caster_sig: Option<u64>,
+    /// Static depth already held in the store for this layer, if any.
+    pub(super) static_store_params_sig: Option<u64>,
+    /// Static-caster signature of that stored depth.
+    pub(super) static_store_caster_sig: Option<u64>,
 }
 
 /// Retained visible groups and their aggregate workload counts.
@@ -86,6 +125,8 @@ pub(in crate::backend::frame_resource_manager) struct ShadowLayerCache {
     mutated_meshes: HashSet<i32>,
     all_meshes_mutated: bool,
     frame_stats: ShadowPlanningCacheStats,
+    /// Whether a static depth store texture exists for layers to restore from.
+    static_store_available: bool,
 }
 
 impl ShadowLayerCache {
@@ -100,6 +141,7 @@ impl ShadowLayerCache {
             mutated_meshes: HashSet::new(),
             all_meshes_mutated: true,
             frame_stats: ShadowPlanningCacheStats::default(),
+            static_store_available: false,
         }
     }
 
@@ -156,6 +198,58 @@ impl ShadowLayerCache {
         self.hasher.build_hasher()
     }
 
+    /// Returns the pinned cascade projection for `key`, when it still covers `wanted`.
+    ///
+    /// Reuse requires two things: the hold has not aged past `cadence_frames`, and the sphere the
+    /// camera now wants is fully inside the sphere the pinned projection was fitted to. The second
+    /// check is what keeps this safe. Holding a projection that no longer contains the slice would
+    /// leave that band of the world without shadow depth, which reads as shadows vanishing as you
+    /// walk, so coverage is verified rather than assumed.
+    pub(super) fn held_cascade_projection(
+        &self,
+        key: u64,
+        wanted: super::cascade::CascadeBounds,
+        cadence_frames: u64,
+    ) -> Option<glam::Mat4> {
+        let held = self.entries.get(&key)?.held_cascade?;
+        if self.frame.saturating_sub(held.fitted_frame) >= cadence_frames {
+            return None;
+        }
+        let covers = held.center.distance(wanted.center) + wanted.radius <= held.radius;
+        covers.then_some(held.view_proj)
+    }
+
+    /// Pins `view_proj` as this cascade's projection until it ages out or stops covering the slice.
+    pub(super) fn store_cascade_projection(
+        &mut self,
+        key: u64,
+        view_proj: glam::Mat4,
+        bounds: super::cascade::CascadeBounds,
+    ) {
+        let frame = self.frame;
+        if let Some(entry) = self.entries.get_mut(&key) {
+            entry.held_cascade = Some(HeldCascade {
+                view_proj,
+                center: bounds.center,
+                radius: bounds.radius,
+                fitted_frame: frame,
+            });
+        }
+    }
+
+    /// Whether a static depth store exists this frame for layers to restore from.
+    pub(super) const fn static_store_available(&self) -> bool {
+        self.static_store_available
+    }
+
+    /// Sets whether the static depth store is usable, dropping stale contents when it vanishes.
+    pub(super) fn set_static_store_available(&mut self, available: bool) {
+        if self.static_store_available && !available {
+            self.invalidate_static_stores();
+        }
+        self.static_store_available = available;
+    }
+
     /// Acquires the persistent layer for `key` and marks it used this frame.
     pub(super) fn acquire(&mut self, key: u64) -> ShadowLayerLease {
         let free_layers = &mut self.free_layers;
@@ -173,6 +267,8 @@ impl ShadowLayerCache {
                 rendered: false,
                 last_used_frame: 0,
                 visibility: None,
+                held_cascade: None,
+                static_store: None,
             }
         });
         entry.last_used_frame = self.frame;
@@ -180,6 +276,25 @@ impl ShadowLayerCache {
             layer: entry.layer,
             rendered_params_sig: entry.rendered.then_some(entry.params_sig),
             rendered_caster_sig: entry.rendered.then_some(entry.caster_sig).flatten(),
+            static_store_params_sig: entry.static_store.map(|store| store.params_sig),
+            static_store_caster_sig: entry.static_store.map(|store| store.caster_sig),
+        }
+    }
+
+    /// Records that the static depth store now holds `caster_sig` rendered under `params_sig`.
+    pub(super) fn mark_static_store_rendered(&mut self, key: u64, params_sig: u64, caster_sig: u64) {
+        if let Some(entry) = self.entries.get_mut(&key) {
+            entry.static_store = Some(StaticStoreContents {
+                params_sig,
+                caster_sig,
+            });
+        }
+    }
+
+    /// Drops every layer's static depth store, e.g. when the store texture is reallocated.
+    pub(super) fn invalidate_static_stores(&mut self) {
+        for entry in self.entries.values_mut() {
+            entry.static_store = None;
         }
     }
 
@@ -341,6 +456,61 @@ impl ShadowLayerCache {
 #[cfg(test)]
 mod tests {
     use super::ShadowLayerCache;
+
+    fn bounds(center: glam::Vec3, radius: f32) -> super::super::cascade::CascadeBounds {
+        super::super::cascade::CascadeBounds { center, radius }
+    }
+
+    #[test]
+    fn held_cascade_is_reused_while_it_still_covers_the_slice() {
+        let mut cache = ShadowLayerCache::new();
+        cache.begin_frame(None);
+        cache.acquire(1);
+        let pinned = glam::Mat4::from_translation(glam::Vec3::X);
+        cache.store_cascade_projection(1, pinned, bounds(glam::Vec3::ZERO, 100.0));
+
+        cache.begin_frame(None);
+        // camera drifted 10 units, slice radius 50: 10 + 50 <= 100, still covered
+        let held =
+            cache.held_cascade_projection(1, bounds(glam::Vec3::splat(10.0) * 0.577, 50.0), 8);
+
+        assert_eq!(held, Some(pinned));
+    }
+
+    #[test]
+    fn held_cascade_is_dropped_once_it_stops_covering_the_slice() {
+        let mut cache = ShadowLayerCache::new();
+        cache.begin_frame(None);
+        cache.acquire(1);
+        cache.store_cascade_projection(1, glam::Mat4::IDENTITY, bounds(glam::Vec3::ZERO, 100.0));
+
+        cache.begin_frame(None);
+        // 60 away with radius 50 needs 110 of coverage, more than the pinned 100
+        let held =
+            cache.held_cascade_projection(1, bounds(glam::Vec3::new(60.0, 0.0, 0.0), 50.0), 8);
+
+        assert!(
+            held.is_none(),
+            "a projection that no longer contains the slice must refit, or that band loses shadows"
+        );
+    }
+
+    #[test]
+    fn held_cascade_expires_after_its_cadence() {
+        let mut cache = ShadowLayerCache::new();
+        cache.begin_frame(None);
+        cache.acquire(1);
+        cache.store_cascade_projection(1, glam::Mat4::IDENTITY, bounds(glam::Vec3::ZERO, 100.0));
+        let wanted = bounds(glam::Vec3::ZERO, 10.0);
+
+        for _ in 0..3 {
+            cache.begin_frame(None);
+            assert!(cache.held_cascade_projection(1, wanted, 4).is_some());
+        }
+        cache.begin_frame(None);
+
+        assert!(cache.held_cascade_projection(1, wanted, 4).is_none());
+    }
 
     #[test]
     fn acquire_pins_layer_across_frames() {

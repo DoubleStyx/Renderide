@@ -445,6 +445,7 @@ impl FrameResourceManager {
         if let Some(sync) = shadow_sync {
             let resolution = sync.resolution;
             let changed = sync.changed;
+            self.set_shadow_static_store_available(sync.static_store_available, changed);
             self.finalize_shadow_frame_after_atlas_sync(resolution, changed);
             if changed {
                 self.rebuild_per_view_frame_bind_groups_for_global_sync(device, view_layouts);

@@ -70,6 +70,8 @@ pub(crate) struct ShadowResourceSyncResult {
     pub(crate) changed: bool,
     /// Actual atlas edge resolution backing the current shadow frame.
     pub(crate) resolution: u32,
+    /// Whether cached static depth exists for layers to restore from this frame.
+    pub(crate) static_store_available: bool,
 }
 
 /// GPU buffers and bind groups for `@group(0)` frame globals (camera, lights, cluster lists,

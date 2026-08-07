@@ -33,7 +33,8 @@ mod tests;
 pub use manager::FrameResourceManager;
 
 pub(crate) use shadows::{
-    ShadowCameraFit, ShadowCasterSet, ShadowFramePlan, ShadowRenderView, ShadowViewSignature,
+    ShadowCameraFit, ShadowCasterSet, ShadowFramePlan, ShadowRenderScope, ShadowRenderView,
+    ShadowViewSignature,
 };
 pub(crate) use view_desc::{FrameLightCullDesc, FrameLightViewDesc};
 

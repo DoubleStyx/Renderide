@@ -263,10 +263,10 @@ fn shadow_caster_plan_merges_forward_material_state_changes() {
 
     let plan = super::build_shadow_caster_plan(&[first, second], true);
 
-    assert_eq!(plan.slab_layout, vec![0, 1]);
-    assert_eq!(plan.phase_len(WorldMeshPhase::ForwardOpaque), 1);
+    assert_eq!(plan.instance_plan.slab_layout, vec![0, 1]);
+    assert_eq!(plan.instance_plan.phase_len(WorldMeshPhase::ForwardOpaque), 1);
     assert_eq!(
-        plan.phase(WorldMeshPhase::ForwardOpaque)[0].instance_range,
+        plan.instance_plan.phase(WorldMeshPhase::ForwardOpaque)[0].instance_range,
         0..2
     );
 }
@@ -280,14 +280,14 @@ fn shadow_caster_plan_keeps_deformed_draws_singleton() {
 
     let plan = super::build_shadow_caster_plan(&[first, second], true);
 
-    assert_eq!(plan.slab_layout, vec![0, 1]);
-    assert_eq!(plan.phase_len(WorldMeshPhase::ForwardOpaque), 2);
+    assert_eq!(plan.instance_plan.slab_layout, vec![0, 1]);
+    assert_eq!(plan.instance_plan.phase_len(WorldMeshPhase::ForwardOpaque), 2);
     assert_eq!(
-        plan.phase(WorldMeshPhase::ForwardOpaque)[0].instance_range,
+        plan.instance_plan.phase(WorldMeshPhase::ForwardOpaque)[0].instance_range,
         0..1
     );
     assert_eq!(
-        plan.phase(WorldMeshPhase::ForwardOpaque)[1].instance_range,
+        plan.instance_plan.phase(WorldMeshPhase::ForwardOpaque)[1].instance_range,
         1..2
     );
 }
@@ -299,10 +299,10 @@ fn shadow_caster_plan_keeps_downlevel_draws_singleton() {
 
     let plan = super::build_shadow_caster_plan(&[first, second], false);
 
-    assert_eq!(plan.slab_layout, vec![0, 1]);
-    assert_eq!(plan.phase_len(WorldMeshPhase::ForwardOpaque), 2);
+    assert_eq!(plan.instance_plan.slab_layout, vec![0, 1]);
+    assert_eq!(plan.instance_plan.phase_len(WorldMeshPhase::ForwardOpaque), 2);
     assert!(
-        plan.phase(WorldMeshPhase::ForwardOpaque)
+        plan.instance_plan.phase(WorldMeshPhase::ForwardOpaque)
             .iter()
             .all(|group| group.instance_range.end - group.instance_range.start == 1)
     );
@@ -561,4 +561,197 @@ fn stable_mesh_generation_reuses_visible_caster_content_hash() {
         plan.rendering_layer_indices.is_empty(),
         "stable static depth contents should reuse their persistent atlas layer"
     );
+}
+
+#[test]
+fn shadow_budget_keeps_the_nearest_punctual_lights_and_directional_first() {
+    // A 4-user session measured 13 shadow layers driving 81% of all draw submissions, so the
+    // punctual budget is the direct lever on shadow cost. It only stays usable if truncating it
+    // drops the lights nobody looks at, not whichever ones happen to be first in the list.
+    use glam::Vec3;
+    let far = {
+        let mut light = shadowed_light(LightType::Point);
+        light.position = [200.0, 0.0, 0.0];
+        light
+    };
+    let near = {
+        let mut light = shadowed_light(LightType::Point);
+        light.position = [1.0, 0.0, 0.0];
+        light
+    };
+    let sun = shadowed_light(LightType::Directional);
+
+    // Declaration order deliberately puts the least useful light first.
+    let lights = [far, near, sun];
+    // Viewer at the origin looking down -Z, so the "near" light really is the near one.
+    use crate::backend::ShadowCameraFit;
+    use glam::Mat4;
+    let view = Mat4::look_at_rh(Vec3::ZERO, Vec3::NEG_Z, Vec3::Y);
+    let proj = Mat4::perspective_rh(1.0, 1.6, 0.1, 100.0);
+    let fit = ShadowCameraFit::from_world_to_clip(proj * view, 0.1, 100.0).expect("finite fit");
+
+    let order = super::shadow_light_priority_order(&lights, Some(&fit));
+
+    assert_eq!(
+        order.first().copied(),
+        Some(2),
+        "directional lights are not punctual-budgeted and must lead"
+    );
+    assert_eq!(
+        order[1], 1,
+        "the near point light must outrank the distant one despite being declared later"
+    );
+}
+
+#[test]
+fn shadow_light_order_is_declaration_order_without_a_camera_fit() {
+    let lights = [
+        shadowed_light(LightType::Point),
+        shadowed_light(LightType::Spot),
+    ];
+
+    assert_eq!(
+        super::shadow_light_priority_order(&lights, None),
+        vec![0, 1],
+        "with no viewer to rank against, ordering must stay stable"
+    );
+}
+
+#[test]
+fn dynamic_casters_sort_last_and_no_group_straddles_the_boundary() {
+    // The whole static/dynamic shadow split rests on this: if a group could contain both a skinned
+    // and a rigid caster, "redraw only the dynamic half" would silently drop static geometry.
+    let mut skinned = pbs_draw(1, ShadowCastMode::On);
+    skinned.skinned = true;
+    let mut deformed = pbs_draw(2, ShadowCastMode::On);
+    deformed.blendshape_deformed = true;
+    // Declared with the dynamic casters first so ordering cannot come out right by accident.
+    let draws = vec![
+        skinned,
+        pbs_draw(3, ShadowCastMode::On),
+        deformed,
+        pbs_draw(4, ShadowCastMode::On),
+    ];
+
+    let plan = super::build_shadow_caster_plan(&draws, true);
+    let groups = plan.instance_plan.phase(WorldMeshPhase::ForwardOpaque);
+
+    assert_eq!(
+        plan.first_dynamic_instance, 2,
+        "the two rigid casters must occupy the static prefix"
+    );
+    for group in groups {
+        let start = group.instance_range.start;
+        let end = group.instance_range.end;
+        let straddles = start < plan.first_dynamic_instance && end > plan.first_dynamic_instance;
+        assert!(!straddles, "group {start}..{end} straddles the boundary");
+    }
+    for &slot in &plan.instance_plan.slab_layout[plan.first_dynamic_instance as usize..] {
+        assert!(
+            super::shadow_draw_is_dynamic(&draws[slot]),
+            "static caster landed in the dynamic suffix"
+        );
+    }
+}
+
+#[test]
+fn caster_set_without_dynamic_draws_reports_an_empty_dynamic_suffix() {
+    let draws = vec![pbs_draw(1, ShadowCastMode::On), pbs_draw(2, ShadowCastMode::On)];
+
+    let plan = super::build_shadow_caster_plan(&draws, true);
+
+    assert_eq!(
+        plan.first_dynamic_instance,
+        plan.instance_plan.slab_layout.len() as u32,
+        "a fully static set must leave nothing in the dynamic suffix"
+    );
+}
+
+mod render_scope {
+    use super::super::{
+        ShadowCasterContentHash, ShadowRenderScope, ShadowRetainedDepth, shadow_render_scope,
+    };
+
+    fn content(hash: u64, has_dynamic: bool) -> ShadowCasterContentHash {
+        ShadowCasterContentHash {
+            hash,
+            reusable: true,
+            has_dynamic,
+        }
+    }
+
+    fn retained(live: Option<u64>, store: Option<u64>, available: bool) -> ShadowRetainedDepth {
+        ShadowRetainedDepth {
+            live_caster_sig: live,
+            store_caster_sig: store,
+            store_available: available,
+        }
+    }
+
+    #[test]
+    fn a_settled_static_layer_records_nothing() {
+        assert_eq!(
+            shadow_render_scope(content(7, false), retained(Some(7), None, true)),
+            ShadowRenderScope::Reuse
+        );
+    }
+
+    #[test]
+    fn a_moved_static_layer_redraws_in_full() {
+        assert_eq!(
+            shadow_render_scope(content(7, false), retained(Some(6), None, true)),
+            ShadowRenderScope::Full
+        );
+    }
+
+    #[test]
+    fn one_avatar_no_longer_forces_the_whole_layer_to_redraw() {
+        // This is the entire point of the split. Before, has_dynamic meant a full redraw of every
+        // static caster in the layer, 13 times a frame with 4 users in the room.
+        assert_eq!(
+            shadow_render_scope(content(7, true), retained(None, Some(7), true)),
+            ShadowRenderScope::DynamicOverStatic {
+                refresh_static: false
+            }
+        );
+    }
+
+    #[test]
+    fn a_dynamic_layer_with_stale_static_depth_refreshes_the_store_first() {
+        assert_eq!(
+            shadow_render_scope(content(7, true), retained(None, Some(6), true)),
+            ShadowRenderScope::DynamicOverStatic {
+                refresh_static: true
+            }
+        );
+        assert_eq!(
+            shadow_render_scope(content(7, true), retained(None, None, true)),
+            ShadowRenderScope::DynamicOverStatic {
+                refresh_static: true
+            }
+        );
+    }
+
+    #[test]
+    fn without_a_store_dynamic_layers_fall_back_to_the_old_full_redraw() {
+        assert_eq!(
+            shadow_render_scope(content(7, true), retained(None, Some(7), false)),
+            ShadowRenderScope::Full
+        );
+    }
+
+    #[test]
+    fn unreusable_content_always_redraws_everything() {
+        // Mutated mesh residency: stale geometry would render under an unchanged hash.
+        let not_reusable = ShadowCasterContentHash {
+            hash: 7,
+            reusable: false,
+            has_dynamic: false,
+        };
+
+        assert_eq!(
+            shadow_render_scope(not_reusable, retained(Some(7), Some(7), true)),
+            ShadowRenderScope::Full
+        );
+    }
 }

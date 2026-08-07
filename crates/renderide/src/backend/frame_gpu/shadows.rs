@@ -28,10 +28,12 @@ use crate::passes::{
     issue_shadow_indirect_runs,
 };
 use crate::render_graph::pass::{EncoderPass, PassBuilder, PassPhase};
-use crate::world_mesh::WorldMeshPhase;
+use crate::world_mesh::{DrawGroup, WorldMeshPhase};
 
 use super::super::frame_gpu_error::FrameGpuInitError;
-use super::super::frame_resource_manager::{ShadowCasterSet, ShadowFramePlan, ShadowRenderView};
+use super::super::frame_resource_manager::{
+    ShadowCasterSet, ShadowFramePlan, ShadowRenderScope, ShadowRenderView,
+};
 use super::super::per_draw_resources::PerDrawResources;
 use super::super::shadow_atlas_budget::clamp_shadow_atlas_resolution;
 use super::super::shadow_atlas_format::{
@@ -142,6 +144,7 @@ fn plot_shadow_atlas(
         visible_group_draws,
         upload_bytes,
     );
+    plot_shadow_static_split_stats(plan);
     let stats = plan.cache_stats;
     crate::profiling::plot_shadow_cache(crate::profiling::ShadowCacheProfileSample {
         caster_plan_hits: stats.caster_plan_hits,
@@ -158,6 +161,57 @@ fn plot_shadow_atlas(
         avoided_indirect_commands: indirect.avoided_commands,
         avoided_indirect_upload_bytes: indirect.avoided_upload_bytes,
     });
+}
+
+/// Counts how each rendering layer resolved its static/dynamic split this frame.
+fn plot_shadow_static_split_stats(plan: &ShadowFramePlan) {
+    let mut full = 0usize;
+    let mut dynamic_over_static = 0usize;
+    let mut static_refresh = 0usize;
+    let mut skipped_static_draws = 0usize;
+    for &layer_idx in &plan.rendering_layer_indices {
+        let Some(view) = plan.render_views.get(layer_idx as usize) else {
+            continue;
+        };
+        let Some(caster_set) = plan.caster_sets.get(view.caster_set_index) else {
+            continue;
+        };
+        match view.render_scope {
+            ShadowRenderScope::DynamicOverStatic { refresh_static } => {
+                dynamic_over_static = dynamic_over_static.saturating_add(1);
+                if refresh_static {
+                    static_refresh = static_refresh.saturating_add(1);
+                } else {
+                    skipped_static_draws = skipped_static_draws
+                        .saturating_add(static_visible_draws(view, caster_set));
+                }
+            }
+            ShadowRenderScope::Full => full = full.saturating_add(1),
+            ShadowRenderScope::Reuse => {}
+        }
+    }
+    crate::profiling::plot_shadow_static_split(
+        full,
+        dynamic_over_static,
+        static_refresh,
+        skipped_static_draws,
+    );
+}
+
+/// Draw submissions in a layer's static half, which a restored layer never records.
+fn static_visible_draws(view: &ShadowRenderView, caster_set: &ShadowCasterSet) -> usize {
+    let mut draws = 0usize;
+    for phase in WorldMeshPhase::PRIMARY_FORWARD {
+        for group in view.groups(phase) {
+            if caster_set.group_is_dynamic(group) {
+                break;
+            }
+            draws = draws.saturating_add(
+                (group.instance_range.end - group.instance_range.start) as usize,
+            );
+        }
+    }
+    draws
 }
 
 fn shadow_visible_group_stats(plan: &ShadowFramePlan) -> (usize, usize) {
@@ -210,6 +264,23 @@ struct ShadowLayerEncodeContext<'a, 'encoder, 'refs> {
     encode_refs: &'refs mut WorldMeshForwardEncodeRefs<'a>,
     gpu_limits: &'a GpuLimits,
     profiler: Option<&'a crate::profiling::GpuProfilerHandle>,
+}
+
+/// One recorded depth pass over a subset of a shadow layer's casters.
+struct ShadowCasterPassParams<'a, 'b, 'encoder, 'refs> {
+    /// Depth attachment: either a live atlas layer or a static store layer.
+    target: &'a wgpu::TextureView,
+    label: &'static str,
+    profiling_label: &'static str,
+    view: &'a ShadowRenderView,
+    caster_set: &'a ShadowCasterSet,
+    groups: &'a [&'a [DrawGroup]],
+    layer_uniform_offset: u32,
+    /// Whether arena-resident indirect runs are issued in this pass.
+    include_indirect: bool,
+    /// Whether the pass opens by restoring cached static depth over the whole target.
+    restore_static_first: bool,
+    ctx: &'a mut ShadowLayerEncodeContext<'b, 'encoder, 'refs>,
 }
 
 struct ShadowLayerPlan<'a> {
@@ -326,6 +397,10 @@ pub(super) struct ShadowAtlasResources {
     geometry_arena: crate::graph_inputs::SharedGeometryArena,
     /// Persistent commands prepared once and read concurrently by layer encoders.
     indirect_plan: parking_lot::RwLock<ShadowIndirectPlan>,
+    /// Cached static-caster depth backing partial layer re-records.
+    static_store: Option<static_store::ShadowStaticStore>,
+    /// Fullscreen pipeline that restores static depth into a live atlas layer.
+    static_restore_pipeline: Option<wgpu::RenderPipeline>,
 }
 
 /// Prepared indirect shadow commands shared by every atlas-layer recording worker.
@@ -352,7 +427,7 @@ struct ShadowIndirectLayerKey {
     view_signature: super::super::frame_resource_manager::ShadowViewSignature,
     draws: Arc<[crate::world_mesh::WorldMeshDrawItem]>,
     visible_groups:
-        Arc<crate::render_phase::RenderPhaseSet<WorldMeshPhase, crate::world_mesh::DrawGroup>>,
+        Arc<crate::render_phase::RenderPhaseSet<WorldMeshPhase, DrawGroup>>,
 }
 
 impl ShadowIndirectPlanKey {
@@ -500,6 +575,8 @@ impl ShadowAtlasResources {
             shrink_window: ShadowAtlasShrinkWindow::default(),
             geometry_arena: Arc::new(parking_lot::RwLock::new(None)),
             indirect_plan: parking_lot::RwLock::new(ShadowIndirectPlan::default()),
+            static_store: None,
+            static_restore_pipeline: None,
         })
     }
 
@@ -556,7 +633,67 @@ impl ShadowAtlasResources {
         self.resolution = next_resolution;
         self.layers = next_layers;
         self.version = self.version.saturating_add(1);
+        self.resync_static_store(device);
         self.sync_result(true)
+    }
+
+    /// Reallocates the static depth store to match the atlas it backs.
+    ///
+    /// The store is 1:1 with atlas layers, so any atlas reshape invalidates it wholesale. Declining
+    /// to allocate is a supported outcome: layers just fall back to redrawing in full.
+    fn resync_static_store(&mut self, device: &wgpu::Device) {
+        if !self.renderable {
+            self.static_store = None;
+            return;
+        }
+        if self
+            .static_store
+            .as_ref()
+            .is_some_and(|store| store.matches(self.resolution, self.layers))
+        {
+            return;
+        }
+        self.static_store =
+            static_store::ShadowStaticStore::new(device, self.resolution, self.layers, self.format);
+        if self.static_store.is_some() && self.static_restore_pipeline.is_none() {
+            self.static_restore_pipeline =
+                Some(static_store::create_restore_pipeline(device, self.format));
+        }
+        match self.static_store.as_ref() {
+            Some(store) => logger::info!(
+                "Shadow static depth store: {}x{} x{} layers ({:.1} MB)",
+                self.resolution,
+                self.resolution,
+                self.layers,
+                store.vram_bytes(self.format) as f64 / (1024.0 * 1024.0),
+            ),
+            None => logger::info!(
+                "Shadow static depth store declined for {}x{} x{} layers; layers redraw in full",
+                self.resolution,
+                self.resolution,
+                self.layers,
+            ),
+        }
+    }
+
+    /// Whether cached static depth is available for partial layer re-records.
+    pub(super) const fn static_store_available(&self) -> bool {
+        self.static_store.is_some() && self.static_restore_pipeline.is_some()
+    }
+
+    /// Render target holding one layer's cached static depth.
+    fn static_store_layer_view(&self, layer: u32) -> Option<&wgpu::TextureView> {
+        self.static_store.as_ref()?.layer_view(layer)
+    }
+
+    /// Restore source for one layer's cached static depth.
+    fn static_store_layer_bind_group(&self, layer: u32) -> Option<&wgpu::BindGroup> {
+        self.static_store.as_ref()?.layer_bind_group(layer)
+    }
+
+    /// Fullscreen pipeline that writes stored static depth into a live layer.
+    fn static_restore_pipeline(&self) -> Option<&wgpu::RenderPipeline> {
+        self.static_restore_pipeline.as_ref()
     }
 
     /// Shadow metadata storage buffer.
@@ -768,6 +905,7 @@ impl ShadowAtlasResources {
         ShadowResourceSyncResult {
             changed,
             resolution: self.resolution,
+            static_store_available: self.static_store_available(),
         }
     }
 
@@ -1083,6 +1221,92 @@ impl FrameGpuResources {
         let Some(layer_uniform_offset) = shadow_layer_uniform_offset(view.layer) else {
             return;
         };
+        let groups = WorldMeshPhase::PRIMARY_FORWARD.map(|phase| view.groups(phase));
+        // Visible groups keep the caster plan's order, which sorts every dynamic group last, so the
+        // static/dynamic boundary is a single partition point per phase.
+        let splits = groups.map(|phase_groups| {
+            phase_groups.partition_point(|group| !caster_set.group_is_dynamic(group))
+        });
+        let scope = self.resolved_shadow_render_scope(view);
+        if let ShadowRenderScope::DynamicOverStatic { refresh_static } = scope {
+            let static_groups: [&[DrawGroup]; WorldMeshPhase::PRIMARY_FORWARD.len()] =
+                std::array::from_fn(|i| &groups[i][..splits[i]]);
+            let dynamic_groups: [&[DrawGroup]; WorldMeshPhase::PRIMARY_FORWARD.len()] =
+                std::array::from_fn(|i| &groups[i][splits[i]..]);
+            if refresh_static
+                && let Some(store_view) = self.shadows.static_store_layer_view(view.layer)
+            {
+                self.encode_shadow_caster_pass(ShadowCasterPassParams {
+                    target: store_view,
+                    label: "shadow_static_store_layer",
+                    profiling_label: "shadows::static_store_layer",
+                    view,
+                    caster_set: layer.caster_set,
+                    groups: &static_groups,
+                    layer_uniform_offset,
+                    // Arena-resident indirect runs reject skinned and deformed casters outright,
+                    // so every one of them belongs to the static half.
+                    include_indirect: true,
+                    restore_static_first: false,
+                    ctx,
+                });
+            }
+            self.encode_shadow_caster_pass(ShadowCasterPassParams {
+                target: layer_view,
+                label: "shadow_atlas_layer_dynamic",
+                profiling_label: "shadows::atlas_layer_dynamic",
+                view,
+                caster_set: layer.caster_set,
+                groups: &dynamic_groups,
+                layer_uniform_offset,
+                include_indirect: false,
+                restore_static_first: true,
+                ctx,
+            });
+            return;
+        }
+        self.encode_shadow_caster_pass(ShadowCasterPassParams {
+            target: layer_view,
+            label: "shadow_atlas_layer",
+            profiling_label: "shadows::atlas_layer",
+            view,
+            caster_set: layer.caster_set,
+            groups: &groups,
+            layer_uniform_offset,
+            include_indirect: true,
+            restore_static_first: false,
+            ctx,
+        });
+    }
+
+    /// Degrades a planned scope to a full redraw when its static depth is not actually available.
+    ///
+    /// Planning decides the scope before recording, so a store that vanished between the two would
+    /// otherwise restore garbage. Falling back to a full redraw is always correct, just slower.
+    fn resolved_shadow_render_scope(&self, view: &ShadowRenderView) -> ShadowRenderScope {
+        if view.render_scope.restores_static_depth()
+            && (self.shadows.static_store_layer_bind_group(view.layer).is_none()
+                || self.shadows.static_restore_pipeline().is_none())
+        {
+            return ShadowRenderScope::Full;
+        }
+        view.render_scope
+    }
+
+    /// Records one depth pass over a subset of a layer's caster groups.
+    fn encode_shadow_caster_pass(&self, params: ShadowCasterPassParams<'_, '_, '_, '_>) {
+        let ShadowCasterPassParams {
+            target,
+            label,
+            profiling_label,
+            view,
+            caster_set,
+            groups,
+            layer_uniform_offset,
+            include_indirect,
+            restore_static_first,
+            ctx,
+        } = params;
         let arena_guard = self.shadows.geometry_arena();
         let geometry_arena = crate::world_mesh::world_mesh_render_path()
             .uses_geometry_arena()
@@ -1091,14 +1315,14 @@ impl FrameGpuResources {
         let indirect_plan = self.shadows.indirect_plan();
         let pass_query = ctx
             .profiler
-            .map(|p| p.begin_pass_query("shadows::atlas_layer", ctx.encoder));
+            .map(|p| p.begin_pass_query(profiling_label, ctx.encoder));
         let timestamp_writes = crate::profiling::render_pass_timestamp_writes(pass_query.as_ref());
         {
             let mut rpass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("shadow_atlas_layer"),
+                label: Some(label),
                 color_attachments: &[],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: layer_view,
+                    view: target,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(1.0),
                         store: wgpu::StoreOp::Store,
@@ -1109,6 +1333,17 @@ impl FrameGpuResources {
                 timestamp_writes,
                 multiview_mask: None,
             });
+            // Restore runs at the target's own size, not the view's, so the region outside the
+            // shadow viewport keeps the cleared 1.0 the static pass left there.
+            if restore_static_first
+                && let Some(pipeline) = self.shadows.static_restore_pipeline()
+                && let Some(source) = self.shadows.static_store_layer_bind_group(view.layer)
+            {
+                profiling::scope!("shadows::restore_static_depth");
+                rpass.set_pipeline(pipeline);
+                rpass.set_bind_group(0, source, &[]);
+                rpass.draw(0..3, 0..1);
+            }
             rpass.set_viewport(
                 0.0,
                 0.0,
@@ -1122,10 +1357,9 @@ impl FrameGpuResources {
                 self.shadows.layer_uniform_bind_group(),
                 &[layer_uniform_offset],
             );
-            let groups = WorldMeshPhase::PRIMARY_FORWARD.map(|phase| view.groups(phase));
             draw_shadow_depth_subset(ShadowDepthDrawBatch {
                 rpass: &mut rpass,
-                groups: &groups,
+                groups,
                 draws: &caster_set.draws,
                 encode: &mut *ctx.encode_refs,
                 gpu_limits: ctx.gpu_limits,
@@ -1138,9 +1372,10 @@ impl FrameGpuResources {
                 geometry_arena,
             });
 
-            if let Some(arena) = geometry_arena {
-                if let Some(runs) = indirect_plan.runs_by_layer.get(&view.layer)
-                    && let Some(commands) = indirect_plan.commands.as_ref()
+            if let Some(arena) = geometry_arena.filter(|_| include_indirect)
+                && let Some(runs) = indirect_plan.runs_by_layer.get(&view.layer)
+                && let Some(commands) = indirect_plan.commands.as_ref()
+            {
                 {
                     issue_shadow_indirect_runs(ShadowIndirectDraw {
                         rpass: &mut rpass,
@@ -1424,6 +1659,8 @@ fn shadow_pipeline_state(format: wgpu::TextureFormat) -> WorldMeshForwardPipelin
         front_face_flip: false,
     }
 }
+
+mod static_store;
 
 #[cfg(test)]
 mod tests;

@@ -102,6 +102,63 @@ pub(crate) struct ShadowCasterSet {
     pub(crate) instance_plan: InstancePlan,
     /// First per-draw slab row reserved for this caster set.
     pub(crate) slab_slot_offset: usize,
+    /// First instance row in [`Self::instance_plan`] belonging to a dynamic caster.
+    ///
+    /// Dynamic casters (skinned, world-space deformed, blendshape deformed) sort after every
+    /// static caster, so any draw group starting at or past this row is dynamic and every group
+    /// before it is static. Groups never straddle the boundary because the dynamic flag is the
+    /// highest term of the caster sort key. Equal to the instance count when nothing is dynamic.
+    pub(crate) first_dynamic_instance: u32,
+}
+
+impl ShadowCasterSet {
+    /// Whether `group` draws dynamic casters that must be re-recorded every frame.
+    pub(crate) fn group_is_dynamic(&self, group: &DrawGroup) -> bool {
+        group.instance_range.start >= self.first_dynamic_instance
+    }
+}
+
+/// What a shadow layer must re-record this frame.
+///
+/// The old model was binary: either the atlas layer still held the right image or every visible
+/// caster was redrawn. That collapsed the moment a single skinned caster appeared in a layer, which
+/// is why a room full of static geometry re-rendered 13 times a frame whenever anyone was present.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ShadowRenderScope {
+    /// Layer already holds the exact image. Record nothing.
+    Reuse,
+    /// Draw every visible caster into a cleared layer.
+    Full,
+    /// Restore cached static depth into the layer, then draw only the dynamic casters over it.
+    ///
+    /// Depth testing makes this identical to drawing both halves in one pass, so this is an exact
+    /// reproduction of [`Self::Full`] and not an approximation.
+    DynamicOverStatic {
+        /// Whether the static store must be re-rendered before being restored.
+        refresh_static: bool,
+    },
+}
+
+impl ShadowRenderScope {
+    /// Whether this layer records any commands this frame.
+    pub(crate) const fn records(self) -> bool {
+        !matches!(self, Self::Reuse)
+    }
+
+    /// Whether the static depth store is rewritten this frame.
+    pub(crate) const fn refreshes_static_store(self) -> bool {
+        matches!(
+            self,
+            Self::DynamicOverStatic {
+                refresh_static: true
+            }
+        )
+    }
+
+    /// Whether only the dynamic casters are drawn into the live layer.
+    pub(crate) const fn restores_static_depth(self) -> bool {
+        matches!(self, Self::DynamicOverStatic { .. })
+    }
 }
 
 /// Draw packet for one shadow atlas layer.
@@ -135,7 +192,9 @@ pub(crate) struct ShadowRenderView {
     ///
     /// `false` means the persistent layer cache holds valid contents for this view's signatures
     /// and recording skips the layer entirely.
-    pub(crate) needs_render: bool,
+    pub(crate) render_scope: ShadowRenderScope,
+    /// Static-caster signature backing this layer's static depth store.
+    pub(crate) static_caster_sig: Option<u64>,
     /// Stable light-identity key into the persistent layer cache.
     pub(crate) cache_key: u64,
     /// Signature over the light parameters that shape this layer's output.
@@ -154,6 +213,24 @@ impl ShadowRenderView {
     /// Strong identity for the exact cached visible-group packet used by indirect-plan caching.
     pub(crate) fn visible_groups_arc(&self) -> &Arc<RenderPhaseSet<WorldMeshPhase, DrawGroup>> {
         &self.visible_groups
+    }
+
+    /// Declares which caster groups this layer draws, for tests that exercise consumers of
+    /// [`Self::visible_groups`].
+    #[cfg(test)]
+    pub(crate) fn set_visible_groups_for_tests(
+        &mut self,
+        phase: WorldMeshPhase,
+        groups: Vec<DrawGroup>,
+    ) {
+        let mut set = RenderPhaseSet::new();
+        self.visible_group_count = groups.len();
+        self.visible_group_draw_count = groups
+            .iter()
+            .map(|group| (group.instance_range.end - group.instance_range.start) as usize)
+            .sum();
+        *set.phase_mut(phase).items_mut() = groups;
+        self.visible_groups = Arc::new(set);
     }
 
     /// Creates a minimal shadow render view for unit tests outside this module.
@@ -185,7 +262,8 @@ impl ShadowRenderView {
                 light_range,
                 shadow_bias,
             ),
-            needs_render: true,
+            render_scope: ShadowRenderScope::Full,
+            static_caster_sig: None,
             cache_key: 0,
             params_sig: 0,
             caster_sig: None,
@@ -221,7 +299,7 @@ impl ShadowFramePlan {
             .render_views
             .iter()
             .enumerate()
-            .filter(|(_, view)| view.needs_render)
+            .filter(|(_, view)| view.render_scope.records())
             .map(|(idx, _)| idx as u32)
             .collect();
     }
@@ -244,6 +322,7 @@ struct ShadowCasterGroupKey {
 }
 
 type ShadowCasterSortKey = (
+    u8,
     crate::materials::RasterFrontFace,
     crate::materials::RasterPrimitiveTopology,
     u8,
@@ -258,6 +337,13 @@ struct PendingShadowCasterGroup {
     representative_draw_idx: usize,
     members: Vec<usize>,
     sort_key: ShadowCasterSortKey,
+    dynamic: bool,
+}
+
+/// Instance grouping for one caster set, plus where its dynamic casters begin.
+struct ShadowCasterPlan {
+    instance_plan: InstancePlan,
+    first_dynamic_instance: u32,
 }
 
 impl FrameResourceManager {
@@ -341,6 +427,18 @@ impl FrameResourceManager {
     /// texture has synced. An atlas recreation invalidates every cached layer's contents; a
     /// post-sync resolution clamp re-renders the affected layers. Views that will record this
     /// frame commit their new content signature to the cache.
+    /// Publishes whether cached static depth exists, dropping stale contents when it reshapes.
+    ///
+    /// An atlas reshape reallocates the store 1:1 with it, so everything the store held is gone
+    /// even when the store itself is still available.
+    pub(crate) fn set_shadow_static_store_available(&mut self, available: bool, reallocated: bool) {
+        if reallocated {
+            self.shadow_layer_cache.invalidate_static_stores();
+        }
+        self.shadow_layer_cache
+            .set_static_store_available(available);
+    }
+
     pub(crate) fn finalize_shadow_frame_after_atlas_sync(
         &mut self,
         atlas_resolution: u32,
@@ -354,18 +452,29 @@ impl FrameResourceManager {
         for view in &mut plan.render_views {
             let params_sig = shadow_layer_params_signature(&self.shadow_layer_cache, view);
             if atlas_changed
-                || (!view.needs_render
+                || (!view.render_scope.records()
                     && !self.shadow_layer_cache.rendered_contents_match(
                         view.cache_key,
                         params_sig,
                         view.caster_sig,
                     ))
             {
-                view.needs_render = true;
+                view.render_scope = ShadowRenderScope::Full;
             }
-            if view.needs_render {
+            if view.render_scope.records() {
                 self.shadow_layer_cache
                     .mark_rendered(view.cache_key, params_sig, view.caster_sig);
+            }
+            // The store is written during encoding, so commit its signature only for the layers
+            // that will actually refresh it this frame.
+            if view.render_scope.refreshes_static_store()
+                && let Some(static_sig) = view.static_caster_sig
+            {
+                self.shadow_layer_cache.mark_static_store_rendered(
+                    view.cache_key,
+                    params_sig,
+                    static_sig,
+                );
             }
         }
         plan.refresh_rendering_layer_indices();
@@ -510,8 +619,18 @@ fn append_shadow_views_for_view(
         return;
     };
 
+    // Order shadow candidates by how much they can matter on screen before the budget truncates.
+    // The punctual budget (`quality.per_pixel_lights`) used to bite in light-list order, so a dim
+    // light across the room could take the last shadow slot from one at your feet. Lowering the
+    // budget is the direct lever on shadow cost (13 layers measured in a 4-user session, 81% of all
+    // draw submissions), and it is only usable if the lights it keeps are the ones you notice.
+    let shadow_order = shadow_light_priority_order(&lights.lights, camera_fit.as_ref());
+
     let mut local_shadowed = 0u32;
-    for light in &mut lights.lights {
+    for light_index in shadow_order {
+        let Some(light) = lights.lights.get_mut(light_index) else {
+            continue;
+        };
         if light.shadow_type == SHADOW_TYPE_NONE || light.shadow_strength <= 0.0 {
             clear_light_shadow_assignment(light);
             continue;
@@ -611,14 +730,15 @@ fn append_shadow_caster_set(
         .limits
         .as_deref()
         .is_none_or(|limits| limits.supports_base_instance);
-    let instance_plan = build_shadow_caster_plan(&shadow_draws, supports_base_instance);
+    let caster_plan = build_shadow_caster_plan(&shadow_draws, supports_base_instance);
     let slab_slot_offset = plan.requested_draw_slots;
     plan.requested_draw_slots = plan.requested_draw_slots.saturating_add(shadow_draws.len());
     plan.caster_sets.push(ShadowCasterSet {
         source_draws: Arc::clone(&collection.items),
         draws: shadow_draws,
-        instance_plan,
+        instance_plan: caster_plan.instance_plan,
         slab_slot_offset,
+        first_dynamic_instance: caster_plan.first_dynamic_instance,
     });
     Some(caster_set_index)
 }
@@ -626,22 +746,27 @@ fn append_shadow_caster_set(
 fn build_shadow_caster_plan(
     draws: &[WorldMeshDrawItem],
     supports_base_instance: bool,
-) -> InstancePlan {
+) -> ShadowCasterPlan {
     profiling::scope!("render::prepare_shadow_frame::build_caster_plan");
     let mut plan = InstancePlan::new();
     if draws.is_empty() {
-        return plan;
+        return ShadowCasterPlan {
+            instance_plan: plan,
+            first_dynamic_instance: 0,
+        };
     }
 
     let mut group_index: HashMap<ShadowCasterGroupKey, usize> = HashMap::new();
     let mut pending_groups: Vec<PendingShadowCasterGroup> = Vec::new();
     for (draw_idx, item) in draws.iter().enumerate() {
         let key = shadow_caster_group_key(item);
+        let dynamic = shadow_draw_is_dynamic(item);
         if shadow_draw_requires_singleton(item, supports_base_instance) {
             pending_groups.push(PendingShadowCasterGroup {
                 representative_draw_idx: draw_idx,
                 members: vec![draw_idx],
-                sort_key: shadow_caster_sort_key(&key, draw_idx),
+                sort_key: shadow_caster_sort_key(&key, draw_idx, dynamic),
+                dynamic,
             });
             continue;
         }
@@ -650,19 +775,25 @@ fn build_shadow_caster_plan(
             pending_groups[group_idx].members.push(draw_idx);
         } else {
             let group_idx = pending_groups.len();
-            let sort_key = shadow_caster_sort_key(&key, draw_idx);
+            let sort_key = shadow_caster_sort_key(&key, draw_idx, dynamic);
             group_index.insert(key, group_idx);
             pending_groups.push(PendingShadowCasterGroup {
                 representative_draw_idx: draw_idx,
                 members: vec![draw_idx],
                 sort_key,
+                dynamic,
             });
         }
     }
 
     pending_groups.sort_unstable_by_key(|group| group.sort_key);
 
+    // Dynamic sorts last, so the first dynamic group marks the static/dynamic instance boundary.
+    let mut first_dynamic_instance = None;
     for group in pending_groups {
+        if group.dynamic && first_dynamic_instance.is_none() {
+            first_dynamic_instance = Some(plan.slab_layout.len() as u32);
+        }
         let draw_group = append_shadow_draw_group(
             &mut plan.slab_layout,
             group.representative_draw_idx,
@@ -671,7 +802,11 @@ fn build_shadow_caster_plan(
         plan.phase_mut(WorldMeshPhase::ForwardOpaque)
             .push(draw_group);
     }
-    plan
+    let first_dynamic_instance = first_dynamic_instance.unwrap_or(plan.slab_layout.len() as u32);
+    ShadowCasterPlan {
+        instance_plan: plan,
+        first_dynamic_instance,
+    }
 }
 
 fn shadow_draw_requires_singleton(item: &WorldMeshDrawItem, supports_base_instance: bool) -> bool {
@@ -707,13 +842,18 @@ fn plan_shadow_render_view(
     ctx: &ShadowViewPlanContext,
     view_offset: u32,
 ) {
+    let cache_key = shadow_layer_cache_key(cache, ctx.view_id, light, view_offset);
     let view_proj = shadow_projection_for_light(
-        light,
-        view_offset,
-        ctx.view_count,
-        ctx.quality,
-        ctx.camera_fit.as_ref(),
-        ctx.resolution,
+        ShadowProjectionRequest {
+            light,
+            view_offset,
+            view_count: ctx.view_count,
+            quality: ctx.quality,
+            camera_fit: ctx.camera_fit.as_ref(),
+            resolution: ctx.resolution,
+        },
+        cache,
+        cache_key,
     );
     let view_signature = ShadowViewSignature::new(
         ctx.kind,
@@ -723,11 +863,12 @@ fn plan_shadow_render_view(
         ctx.light_range,
         ctx.shadow_bias,
     );
-    let cache_key = shadow_layer_cache_key(cache, ctx.view_id, light, view_offset);
     let ShadowLayerLease {
         layer,
         rendered_params_sig,
         rendered_caster_sig,
+        static_store_params_sig,
+        static_store_caster_sig,
     } = cache.acquire(cache_key);
     let caster_set = &plan.caster_sets[ctx.caster_set_index];
     let visibility = cache
@@ -757,13 +898,23 @@ fn plan_shadow_render_view(
         visible_group_count: visibility.visible_group_count,
         visible_group_draw_count: visibility.visible_group_draw_count,
         view_signature,
-        needs_render: true,
+        render_scope: ShadowRenderScope::Full,
+        static_caster_sig: None,
         cache_key,
         params_sig: 0,
         caster_sig: None,
     };
     render_view.params_sig = shadow_layer_params_signature(cache, &render_view);
-    if rendered_params_sig == Some(render_view.params_sig) {
+    // Worth scanning the casters only if some retained depth was rendered under these exact light
+    // parameters. A moved projection invalidates the live layer and the static store alike.
+    let params_match_live = rendered_params_sig == Some(render_view.params_sig);
+    let params_match_store = static_store_params_sig == Some(render_view.params_sig);
+    if params_match_live || params_match_store {
+        let retained = ShadowRetainedDepth {
+            live_caster_sig: params_match_live.then_some(rendered_caster_sig).flatten(),
+            store_caster_sig: params_match_store.then_some(static_store_caster_sig).flatten(),
+            store_available: cache.static_store_available(),
+        };
         let content = cache
             .cached_caster_content_hash(cache_key, &caster_set.source_draws, view_signature)
             .unwrap_or_else(|| {
@@ -780,8 +931,11 @@ fn plan_shadow_render_view(
                 );
                 content
             });
-        render_view.caster_sig = content.reusable.then_some(content.hash);
-        render_view.needs_render = !content.reusable || rendered_caster_sig != Some(content.hash);
+        render_view.render_scope = shadow_render_scope(content, retained);
+        // A layer that draws dynamic casters never holds reusable live contents, so it reports no
+        // live signature. Its reuse comes from the static store instead.
+        render_view.caster_sig = (content.reusable && !content.has_dynamic).then_some(content.hash);
+        render_view.static_caster_sig = content.reusable.then_some(content.hash);
     }
     plan.metadata.push(gpu_shadow_view_for_light(
         light,
@@ -791,6 +945,40 @@ fn plan_shadow_render_view(
         view_offset,
     ));
     plan.render_views.push(render_view);
+}
+
+/// Retained depth already available to a layer under its current light parameters.
+struct ShadowRetainedDepth {
+    /// Caster signature held by the live atlas layer, when it is reusable.
+    live_caster_sig: Option<u64>,
+    /// Static-caster signature held by the static depth store.
+    store_caster_sig: Option<u64>,
+    /// Whether the static depth store exists to be restored from at all.
+    store_available: bool,
+}
+
+/// Decides what a layer must re-record given its content hash and what depth it already retains.
+fn shadow_render_scope(
+    content: ShadowCasterContentHash,
+    retained: ShadowRetainedDepth,
+) -> ShadowRenderScope {
+    if !content.reusable {
+        return ShadowRenderScope::Full;
+    }
+    if !content.has_dynamic {
+        // Nothing in this layer moves under its own power, so the live layer is its own cache.
+        return if retained.live_caster_sig == Some(content.hash) {
+            ShadowRenderScope::Reuse
+        } else {
+            ShadowRenderScope::Full
+        };
+    }
+    if !retained.store_available {
+        return ShadowRenderScope::Full;
+    }
+    ShadowRenderScope::DynamicOverStatic {
+        refresh_static: retained.store_caster_sig != Some(content.hash),
+    }
 }
 
 /// Stable light identity for persistent shadow layer assignment.
@@ -818,34 +1006,44 @@ fn shadow_layer_cache_key(
     hasher.finish()
 }
 
-/// Content hash over one shadow view's visible caster members.
+/// Content hash over one shadow view's visible *static* caster members.
 #[derive(Clone, Copy)]
-struct ShadowCasterContentHash {
+pub(crate) struct ShadowCasterContentHash {
     /// Hash of member identity, geometry range, pipeline key, and world transform.
     hash: u64,
-    /// Whether the members allow content reuse at all.
+    /// Whether the static members allow content reuse at all.
     reusable: bool,
+    /// Whether the layer also draws dynamic casters that must be re-recorded every frame.
+    has_dynamic: bool,
 }
 
 const SHADOW_CASTERS_NOT_REUSABLE: ShadowCasterContentHash = ShadowCasterContentHash {
     hash: 0,
     reusable: false,
+    has_dynamic: true,
 };
 
-/// Hashes the visible caster members, aborting as soon as reuse is impossible.
+/// Hashes the visible *static* caster members, aborting as soon as reuse is impossible.
 ///
-/// Skinned, world-space-deformed, and blendshape-deformed casters read GPU deform buffers that
-/// change without any draw-item field changing, and members whose resident mesh data mutated
-/// since the previous plan would render stale geometry under an unchanged hash. Either aborts
-/// the scan immediately since the layer must re-render regardless.
+/// Dynamic casters are skipped rather than aborting the scan. They read GPU deform buffers that
+/// change without any draw-item field changing, so their depth can never be reused, but that is no
+/// reason to throw away the static half: a room full of furniture does not stop holding still
+/// because someone walked into it. The caller redraws only the dynamic groups over restored static
+/// depth. Members whose resident mesh data mutated since the previous plan would render stale
+/// geometry under an unchanged hash, so those still abort.
 fn shadow_caster_content_hash(
     cache: &ShadowLayerCache,
     caster_set: &ShadowCasterSet,
     visible_groups: &RenderPhaseSet<WorldMeshPhase, DrawGroup>,
 ) -> ShadowCasterContentHash {
     let mut hasher = cache.build_hasher();
+    let mut has_dynamic = false;
     for phase in WorldMeshPhase::PRIMARY_FORWARD {
         for group in visible_groups.phase(phase).items() {
+            if caster_set.group_is_dynamic(group) {
+                has_dynamic = true;
+                continue;
+            }
             let start = group.instance_range.start as usize;
             let end = group.instance_range.end as usize;
             let Some(members) = caster_set.instance_plan.slab_layout.get(start..end) else {
@@ -855,11 +1053,8 @@ fn shadow_caster_content_hash(
                 let Some(item) = caster_set.draws.get(draw_idx) else {
                     return SHADOW_CASTERS_NOT_REUSABLE;
                 };
-                if item.skinned
-                    || item.world_space_deformed
-                    || item.blendshape_deformed
-                    || cache.mesh_mutated(item.mesh_asset_id)
-                {
+                // Belt and braces: the sort partition should make this unreachable.
+                if shadow_draw_is_dynamic(item) || cache.mesh_mutated(item.mesh_asset_id) {
                     return SHADOW_CASTERS_NOT_REUSABLE;
                 }
                 hasher.write_i32(item.mesh_asset_id);
@@ -877,6 +1072,7 @@ fn shadow_caster_content_hash(
     ShadowCasterContentHash {
         hash: hasher.finish(),
         reusable: true,
+        has_dynamic,
     }
 }
 
@@ -914,7 +1110,19 @@ fn shadow_caster_group_key(item: &WorldMeshDrawItem) -> ShadowCasterGroupKey {
     }
 }
 
-fn shadow_caster_sort_key(key: &ShadowCasterGroupKey, draw_idx: usize) -> ShadowCasterSortKey {
+/// Whether this caster's geometry is rebuilt on the GPU every frame.
+///
+/// These read deform buffers that change without any draw-item field changing, so their depth can
+/// never be reused across frames. Everything else holds still until its transform or mesh changes.
+fn shadow_draw_is_dynamic(item: &WorldMeshDrawItem) -> bool {
+    item.skinned || item.world_space_deformed || item.blendshape_deformed
+}
+
+fn shadow_caster_sort_key(
+    key: &ShadowCasterGroupKey,
+    draw_idx: usize,
+    dynamic: bool,
+) -> ShadowCasterSortKey {
     let cull_mode = match key.primitive_topology {
         crate::materials::RasterPrimitiveTopology::PointList => None,
         crate::materials::RasterPrimitiveTopology::TriangleList => key.cull_mode,
@@ -925,6 +1133,7 @@ fn shadow_caster_sort_key(key: &ShadowCasterGroupKey, draw_idx: usize) -> Shadow
         Some(wgpu::Face::Back) => 2,
     };
     (
+        u8::from(dynamic),
         key.front_face,
         key.primitive_topology,
         cull_order,
@@ -1056,6 +1265,46 @@ fn quality_shadow_resolution_for_light(light_type: u32, quality: HostShadowQuali
     }
 }
 
+/// Orders light indices so shadow budgets truncate the least noticeable lights first.
+///
+/// Directional lights keep declaration order and come first: they are not subject to the punctual
+/// budget and there is normally only one. Punctual lights follow, ranked by `range / distance` to
+/// the viewer, which approximates how much of the screen the light can affect without needing its
+/// photometric intensity.
+fn shadow_light_priority_order(
+    lights: &[crate::gpu::GpuLight],
+    camera_fit: Option<&ShadowCameraFit>,
+) -> Vec<usize> {
+    let directional = light_type_u32(LightType::Directional);
+    let mut order: Vec<usize> = (0..lights.len()).collect();
+    let Some(view_origin) = camera_fit.map(ShadowCameraFit::view_origin) else {
+        return order;
+    };
+    order.sort_by(|&a, &b| {
+        let (la, lb) = (&lights[a], &lights[b]);
+        let dir_a = la.light_type == directional;
+        let dir_b = lb.light_type == directional;
+        dir_b
+            .cmp(&dir_a)
+            .then_with(|| {
+                shadow_light_priority(lb, view_origin)
+                    .total_cmp(&shadow_light_priority(la, view_origin))
+            })
+            .then(a.cmp(&b))
+    });
+    order
+}
+
+/// Approximate on-screen significance of a punctual shadow light.
+fn shadow_light_priority(light: &crate::gpu::GpuLight, view_origin: Vec3) -> f32 {
+    let distance = Vec3::from_array(light.position).distance(view_origin).max(0.01);
+    let reach = light.range.max(0.0);
+    if !reach.is_finite() || !distance.is_finite() {
+        return 0.0;
+    }
+    reach / distance
+}
+
 fn shadow_view_capacity(limits: Option<&GpuLimits>) -> usize {
     let max_layers = limits.map_or(MAX_SHADOW_VIEWS, |limits| {
         limits.max_texture_array_layers().max(1) as usize
@@ -1157,24 +1406,43 @@ fn shadow_kind_for_light(light_type: u32) -> u32 {
     }
 }
 
-fn shadow_projection_for_light(
-    light: &crate::gpu::GpuLight,
+/// Inputs selecting one shadow view's projection.
+struct ShadowProjectionRequest<'a> {
+    light: &'a crate::gpu::GpuLight,
     view_offset: u32,
     view_count: u32,
     quality: HostShadowQuality,
-    camera_fit: Option<&ShadowCameraFit>,
+    camera_fit: Option<&'a ShadowCameraFit>,
     resolution: u32,
+}
+
+fn shadow_projection_for_light(
+    req: ShadowProjectionRequest<'_>,
+    cache: &mut ShadowLayerCache,
+    cache_key: u64,
 ) -> Mat4 {
+    let ShadowProjectionRequest {
+        light,
+        view_offset,
+        view_count,
+        quality,
+        camera_fit,
+        resolution,
+    } = req;
     let position = Vec3::from_array(light.position);
     let direction = safe_dir(Vec3::from_array(light.direction), Vec3::NEG_Z);
     match light.light_type {
         x if x == light_type_u32(LightType::Directional) => directional_shadow_projection(
             direction,
-            view_offset,
-            view_count,
-            quality,
-            camera_fit,
-            resolution,
+            DirectionalCascadeRequest {
+                view_offset,
+                view_count,
+                quality,
+                camera_fit,
+                resolution,
+            },
+            cache,
+            cache_key,
         ),
         x if x == light_type_u32(LightType::Spot) => {
             spot_shadow_projection(light, position, direction)
@@ -1186,17 +1454,31 @@ fn shadow_projection_for_light(
     }
 }
 
+/// Cascade selection inputs for one directional shadow view.
+struct DirectionalCascadeRequest<'a> {
+    view_offset: u32,
+    view_count: u32,
+    quality: HostShadowQuality,
+    camera_fit: Option<&'a ShadowCameraFit>,
+    resolution: u32,
+}
+
 /// Camera-fitted cascade projection for a directional light.
 ///
 /// Falls back to a world-origin projection when no camera frustum is available.
 fn directional_shadow_projection(
     direction: Vec3,
-    view_offset: u32,
-    view_count: u32,
-    quality: HostShadowQuality,
-    camera_fit: Option<&ShadowCameraFit>,
-    resolution: u32,
+    req: DirectionalCascadeRequest<'_>,
+    cache: &mut ShadowLayerCache,
+    cache_key: u64,
 ) -> Mat4 {
+    let DirectionalCascadeRequest {
+        view_offset,
+        view_count,
+        quality,
+        camera_fit,
+        resolution,
+    } = req;
     let Some(fit) = camera_fit else {
         return directional_shadow_projection_origin(direction, view_offset, view_count, quality);
     };
@@ -1206,8 +1488,54 @@ fn directional_shadow_projection(
         .min(fit.far())
         .max(fit.near() + 1.0);
     let split = cascade::cascade_split(fit.near(), far, view_offset, view_count);
-    cascade::directional_cascade_view_proj(direction, light_up(direction), fit, split, resolution)
+    let wanted = cascade::cascade_bounds(fit, split);
+    let cadence = cascade_hold_frames(view_offset);
+    if cadence > 1
+        && let Some(held) = cache.held_cascade_projection(cache_key, wanted, cadence)
+    {
+        return held;
+    }
+    // Fit to an inflated sphere so the camera has room to move inside the pinned projection before
+    // it stops covering the slice. Cascade 0 is never held, so it keeps its exact fit and full
+    // texel density.
+    let fitted = if cadence > 1 {
+        cascade::CascadeBounds {
+            center: wanted.center,
+            radius: wanted.radius * CASCADE_HOLD_SLACK,
+        }
+    } else {
+        wanted
+    };
+    let view_proj = cascade::directional_cascade_view_proj_for_bounds(
+        direction,
+        light_up(direction),
+        fitted,
+        resolution,
+    );
+    if cadence > 1 {
+        cache.store_cascade_projection(cache_key, view_proj, fitted);
+    }
+    view_proj
 }
+
+/// Frames a cascade keeps its projection before refitting.
+///
+/// Cascade 0 hugs the camera and is refitted every frame. Each outer cascade covers a
+/// geometrically larger slice that changes proportionally more slowly on screen, so doubling the
+/// hold per level costs very little visually and removes most cascade re-renders: a refit changes
+/// the view signature, which is what discards the layer cache and forces the depth pass.
+const fn cascade_hold_frames(view_offset: u32) -> u64 {
+    match view_offset {
+        0 => 1,
+        n if n >= CASCADE_HOLD_MAX_DOUBLINGS => 1u64 << CASCADE_HOLD_MAX_DOUBLINGS,
+        n => 1u64 << n,
+    }
+}
+
+/// Radius inflation applied to a held cascade so the camera can move inside it.
+const CASCADE_HOLD_SLACK: f32 = 1.25;
+/// Cap on the hold doubling, so the outermost cascade cannot go stale indefinitely.
+const CASCADE_HOLD_MAX_DOUBLINGS: u32 = 3;
 
 /// Camera-independent directional projection: nested world-origin cascades used as a fallback.
 fn directional_shadow_projection_origin(

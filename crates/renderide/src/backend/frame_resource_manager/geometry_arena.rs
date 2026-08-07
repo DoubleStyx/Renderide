@@ -5,7 +5,7 @@ use std::sync::Arc;
 use hashbrown::HashSet;
 
 use crate::shared::ShadowCastMode;
-use crate::world_mesh::{WorldMeshDrawItem, WorldMeshDrawPlan};
+use crate::world_mesh::{WorldMeshDrawItem, WorldMeshDrawPlan, WorldMeshPhase};
 
 use super::manager::{FrameResourceManager, GeometryArenaFramePlan};
 use super::shadows::ShadowFramePlan;
@@ -61,7 +61,7 @@ fn draw_is_deformed(item: &WorldMeshDrawItem) -> bool {
 fn arena_plan_content_signature(
     key: &GeometryArenaFramePlanKey,
     shadow_plan: &ShadowFramePlan,
-    shadow_caster_indices: &[usize],
+    shadow_rendering_layers: &[(usize, usize)],
 ) -> ArenaPlanContentSignature {
     use std::hash::{Hash, Hasher};
 
@@ -91,21 +91,30 @@ fn arena_plan_content_signature(
 
     // Hash the selection itself: dropping a layer from the refresh set changes the output even when
     // every retained caster array is untouched.
-    shadow_caster_indices.hash(&mut hasher);
-    for &caster_set_index in shadow_caster_indices {
-        let Some(caster_set) = shadow_plan.caster_sets.get(caster_set_index) else {
+    shadow_rendering_layers.hash(&mut hasher);
+    for &(layer_idx, caster_set_index) in shadow_rendering_layers {
+        let (Some(view), Some(caster_set)) = (
+            shadow_plan.render_views.get(layer_idx),
+            shadow_plan.caster_sets.get(caster_set_index),
+        ) else {
             continue;
         };
-        caster_set.draws.len().hash(&mut hasher);
-        for item in caster_set.draws.iter() {
-            input_draws = input_draws.saturating_add(1);
-            if draw_is_deformed(item) {
-                deformed_draws = deformed_draws.saturating_add(1);
-                1u8.hash(&mut hasher);
-                continue;
+        for phase in WorldMeshPhase::PRIMARY_FORWARD {
+            let groups = view.groups(phase);
+            groups.len().hash(&mut hasher);
+            for group in groups {
+                let Some(item) = caster_set.draws.get(group.representative_draw_idx) else {
+                    continue;
+                };
+                input_draws = input_draws.saturating_add(1);
+                if draw_is_deformed(item) {
+                    deformed_draws = deformed_draws.saturating_add(1);
+                    1u8.hash(&mut hasher);
+                    continue;
+                }
+                0u8.hash(&mut hasher);
+                item.mesh_asset_id.hash(&mut hasher);
             }
-            0u8.hash(&mut hasher);
-            item.mesh_asset_id.hash(&mut hasher);
         }
     }
 
@@ -125,6 +134,8 @@ pub(super) struct GeometryArenaFramePlanCache {
     /// Content signature of the retained plan, used when pointer identity fails.
     signature: ArenaPlanContentSignature,
     shadow_caster_indices: Vec<usize>,
+    /// `(render view index, caster set index)` for every shadow layer rendering this frame.
+    shadow_rendering_layers: Vec<(usize, usize)>,
     seen_meshes: HashSet<i32>,
     seen_caster_sets: HashSet<usize>,
     #[cfg(test)]
@@ -182,7 +193,7 @@ where
     let signature = arena_plan_content_signature(
         &cache.pending_key,
         shadow_plan,
-        &cache.shadow_caster_indices,
+        &cache.shadow_rendering_layers,
     );
     if cache.initialized && signature == cache.signature {
         plan.input_draws = signature.input_draws;
@@ -219,19 +230,32 @@ where
         }
     }
 
-    // Include shadow-only meshes only for layers refreshed this frame.
-    for &caster_set_index in &cache.shadow_caster_indices {
-        let Some(caster_set) = shadow_plan.caster_sets.get(caster_set_index) else {
+    // Include shadow meshes only for layers refreshed this frame, and only for the caster groups
+    // that layer actually draws. The shared caster set is collected without any culling, so it runs
+    // an order of magnitude larger than what any layer renders (measured 6659 caster draws against
+    // 669 camera draws). `visible_groups` is already culled against the layer's own shadow view, so
+    // walking it instead is both cheaper and exact: a caster no layer draws needs no residency.
+    // Instanced groups share one mesh, so the representative draw carries the whole group's id.
+    for &(layer_idx, caster_set_index) in &cache.shadow_rendering_layers {
+        let (Some(view), Some(caster_set)) = (
+            shadow_plan.render_views.get(layer_idx),
+            shadow_plan.caster_sets.get(caster_set_index),
+        ) else {
             continue;
         };
-        for item in caster_set.draws.iter() {
-            plan.input_draws = plan.input_draws.saturating_add(1);
-            if item.skinned || item.world_space_deformed || item.blendshape_deformed {
-                plan.deformed_draws = plan.deformed_draws.saturating_add(1);
-                continue;
-            }
-            if cache.seen_meshes.insert(item.mesh_asset_id) {
-                plan.mesh_asset_ids.push(item.mesh_asset_id);
+        for phase in WorldMeshPhase::PRIMARY_FORWARD {
+            for group in view.groups(phase) {
+                let Some(item) = caster_set.draws.get(group.representative_draw_idx) else {
+                    continue;
+                };
+                plan.input_draws = plan.input_draws.saturating_add(1);
+                if item.skinned || item.world_space_deformed || item.blendshape_deformed {
+                    plan.deformed_draws = plan.deformed_draws.saturating_add(1);
+                    continue;
+                }
+                if cache.seen_meshes.insert(item.mesh_asset_id) {
+                    plan.mesh_asset_ids.push(item.mesh_asset_id);
+                }
             }
         }
     }
@@ -275,6 +299,7 @@ fn build_pending_plan_key<'a, I>(
     }
 
     cache.shadow_caster_indices.clear();
+    cache.shadow_rendering_layers.clear();
     cache.seen_caster_sets.clear();
     for &layer_idx in &shadow_plan.rendering_layer_indices {
         let Some(view) = shadow_plan.render_views.get(layer_idx as usize) else {
@@ -288,6 +313,9 @@ fn build_pending_plan_key<'a, I>(
         };
         cache.shadow_caster_indices.push(view.caster_set_index);
         cache
+            .shadow_rendering_layers
+            .push((layer_idx as usize, view.caster_set_index));
+        cache
             .pending_key
             .shadow_source_draws
             .push(Arc::clone(&caster_set.source_draws));
@@ -297,9 +325,12 @@ fn build_pending_plan_key<'a, I>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::frame_resource_manager::ShadowRenderView;
+    use crate::world_mesh::DrawGroup;
     use crate::world_mesh::draw_prep::WorldMeshDrawCollection;
     use crate::world_mesh::test_fixtures::{DummyDrawItemSpec, dummy_world_mesh_draw_item};
     use crate::world_mesh::{PrefetchedWorldMeshViewDraws, WorldMeshDrawPlan};
+    use glam::{Mat4, Vec3};
 
     fn draw(mesh_asset_id: i32) -> WorldMeshDrawItem {
         dummy_world_mesh_draw_item(DummyDrawItemSpec {
@@ -313,6 +344,27 @@ mod tests {
             collect_order: 0,
             alpha_blended: false,
         })
+    }
+
+    /// Shadow layer that draws the given caster-set draw indices, one group each.
+    fn caster_layer_drawing(representative_draw_indices: &[usize]) -> ShadowRenderView {
+        let mut view = ShadowRenderView::for_tests(
+            crate::gpu::SHADOW_VIEW_KIND_DIRECTIONAL,
+            Mat4::IDENTITY,
+            Vec3::ZERO,
+            1.0,
+            0.0,
+        );
+        let groups = representative_draw_indices
+            .iter()
+            .map(|&idx| DrawGroup {
+                representative_draw_idx: idx,
+                instance_range: idx as u32..idx as u32 + 1,
+                material_packet_idx: 0,
+            })
+            .collect();
+        view.set_visible_groups_for_tests(WorldMeshPhase::ForwardOpaque, groups);
+        view
     }
 
     fn plan(items: Vec<WorldMeshDrawItem>) -> WorldMeshDrawPlan {
@@ -388,27 +440,20 @@ mod tests {
     fn frame_plan_includes_static_casters_for_rendering_shadow_layers() {
         use std::sync::Arc;
 
-        use glam::{Mat4, Vec3};
-
-        use crate::backend::frame_resource_manager::{ShadowCasterSet, ShadowRenderView};
+        use crate::backend::frame_resource_manager::ShadowCasterSet;
 
         let visible = plan(vec![draw(10)]);
         let mut deformed = draw(30);
         deformed.skinned = true;
         let shadow_plan = ShadowFramePlan {
             caster_sets: vec![ShadowCasterSet {
+                first_dynamic_instance: u32::MAX,
                 source_draws: Arc::from([draw(10), draw(20), deformed.clone()]),
                 draws: Arc::from([draw(10), draw(20), deformed]),
                 instance_plan: Default::default(),
                 slab_slot_offset: 0,
             }],
-            render_views: vec![ShadowRenderView::for_tests(
-                crate::gpu::SHADOW_VIEW_KIND_DIRECTIONAL,
-                Mat4::IDENTITY,
-                Vec3::ZERO,
-                1.0,
-                0.0,
-            )],
+            render_views: vec![caster_layer_drawing(&[0, 1, 2])],
             rendering_layer_indices: vec![0],
             ..ShadowFramePlan::default()
         };
@@ -426,12 +471,11 @@ mod tests {
     fn frame_plan_ignores_casters_for_cached_shadow_layers() {
         use std::sync::Arc;
 
-        use glam::{Mat4, Vec3};
-
-        use crate::backend::frame_resource_manager::{ShadowCasterSet, ShadowRenderView};
+        use crate::backend::frame_resource_manager::ShadowCasterSet;
 
         let shadow_plan = ShadowFramePlan {
             caster_sets: vec![ShadowCasterSet {
+                first_dynamic_instance: u32::MAX,
                 source_draws: Arc::from([draw(20)]),
                 draws: Arc::from([draw(20)]),
                 instance_plan: Default::default(),
@@ -490,7 +534,7 @@ mod tests {
         // a renderer that moves rewrites its draw item, so the array is a fresh Arc with a fresh
         // matrix. the mesh set is identical, so population must not run again.
         let mut moved = draw(10);
-        moved.rigid_world_matrix = Some(glam::Mat4::from_translation(glam::Vec3::splat(5.0)));
+        moved.rigid_world_matrix = Some(Mat4::from_translation(Vec3::splat(5.0)));
         let first = plan(vec![draw(10), draw(20)]);
         let after_motion = plan(vec![moved, draw(20)]);
         let mut frame = GeometryArenaFramePlan::default();
@@ -610,25 +654,18 @@ mod tests {
 
     #[test]
     fn frame_plan_reuses_shadow_source_identity_when_filtered_packet_is_rebuilt() {
-        use glam::{Mat4, Vec3};
-
-        use crate::backend::frame_resource_manager::{ShadowCasterSet, ShadowRenderView};
+        use crate::backend::frame_resource_manager::ShadowCasterSet;
 
         let source: Arc<[WorldMeshDrawItem]> = Arc::from([draw(20)]);
         let mut shadow_plan = ShadowFramePlan {
             caster_sets: vec![ShadowCasterSet {
+                first_dynamic_instance: u32::MAX,
                 source_draws: Arc::clone(&source),
                 draws: Arc::from([draw(20)]),
                 instance_plan: Default::default(),
                 slab_slot_offset: 0,
             }],
-            render_views: vec![ShadowRenderView::for_tests(
-                crate::gpu::SHADOW_VIEW_KIND_DIRECTIONAL,
-                Mat4::IDENTITY,
-                Vec3::ZERO,
-                1.0,
-                0.0,
-            )],
+            render_views: vec![caster_layer_drawing(&[0])],
             rendering_layer_indices: vec![0],
             ..ShadowFramePlan::default()
         };
@@ -657,13 +694,12 @@ mod tests {
 
     #[test]
     fn frame_plan_invalidates_when_shadow_refresh_selection_changes() {
-        use glam::{Mat4, Vec3};
-
-        use crate::backend::frame_resource_manager::{ShadowCasterSet, ShadowRenderView};
+        use crate::backend::frame_resource_manager::ShadowCasterSet;
 
         let source: Arc<[WorldMeshDrawItem]> = Arc::from([draw(20)]);
         let mut shadow_plan = ShadowFramePlan {
             caster_sets: vec![ShadowCasterSet {
+                first_dynamic_instance: u32::MAX,
                 source_draws: source,
                 draws: Arc::from([draw(20)]),
                 instance_plan: Default::default(),

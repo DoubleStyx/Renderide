@@ -40,6 +40,32 @@ pub fn plot_shadow_atlas(
     tracy_plot!("shadow_atlas::upload_bytes", upload_bytes as f64);
 }
 
+/// Emits how the static/dynamic split resolved this frame.
+///
+/// `dynamic_over_static` is the count that matters: those layers restored cached static depth and
+/// redrew only their dynamic casters instead of every visible caster. `skipped_static_draws` is the
+/// draw submissions that avoided the encoder because of it.
+pub fn plot_shadow_static_split(
+    full_layers: usize,
+    dynamic_over_static_layers: usize,
+    static_refresh_layers: usize,
+    skipped_static_draws: usize,
+) {
+    tracy_plot!("shadow_atlas::layers_full_redraw", full_layers as f64);
+    tracy_plot!(
+        "shadow_atlas::layers_dynamic_over_static",
+        dynamic_over_static_layers as f64
+    );
+    tracy_plot!(
+        "shadow_atlas::layers_static_refresh",
+        static_refresh_layers as f64
+    );
+    tracy_plot!(
+        "shadow_atlas::skipped_static_draws",
+        skipped_static_draws as f64
+    );
+}
+
 /// Emits exact retained shadow-planning cache counters.
 pub fn plot_shadow_cache(sample: ShadowCacheProfileSample) {
     tracy_plot!(

@@ -39,6 +39,18 @@ pub(crate) struct ShadowCameraFit {
 }
 
 impl ShadowCameraFit {
+    /// Approximate camera position, taken as the near-plane centroid.
+    ///
+    /// Exact enough for ranking lights by distance; the near plane sits within centimetres of the
+    /// eye for any normal projection.
+    pub(crate) fn view_origin(&self) -> Vec3 {
+        let mut origin = Vec3::ZERO;
+        for corner in &self.near_corners {
+            origin += *corner;
+        }
+        origin / self.near_corners.len() as f32
+    }
+
     /// Builds a fit from the scene main-camera world-to-clip, the same matrix the forward and cull
     /// paths use. Returns [`None`] when the projection is not invertible.
     pub(crate) fn from_scene_camera<S>(
@@ -66,7 +78,7 @@ impl ShadowCameraFit {
     ///
     /// `near`/`far` are the view-space distances that map to the reverse-Z near (ndc z = 1) and far
     /// (ndc z = 0) planes.
-    fn from_world_to_clip(world_to_clip: Mat4, near: f32, far: f32) -> Option<Self> {
+    pub(crate) fn from_world_to_clip(world_to_clip: Mat4, near: f32, far: f32) -> Option<Self> {
         let inv = world_to_clip.inverse();
         let near_corners = [
             unproject(inv, -1.0, -1.0, 1.0),
@@ -173,14 +185,20 @@ fn quantize_cascade_radius(radius: f32) -> f32 {
     ((radius / step).ceil() * step).max(1e-3)
 }
 
-/// Builds a camera-fitted, texel-snapped orthographic cascade projection (world to shadow clip).
-pub(crate) fn directional_cascade_view_proj(
-    direction: Vec3,
-    up: Vec3,
-    fit: &ShadowCameraFit,
-    split: CascadeSplit,
-    resolution: u32,
-) -> Mat4 {
+/// World-space sphere a cascade slice must cover, before texel snapping.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CascadeBounds {
+    /// Slice centroid in world space.
+    pub(crate) center: Vec3,
+    /// Quantized radius enclosing the slice corners.
+    pub(crate) radius: f32,
+}
+
+/// Returns the sphere a cascade slice covers, without building its projection.
+///
+/// A staggered cascade needs this to decide whether the projection it is currently pinned to still
+/// contains the slice the camera now wants, without paying for a full refit.
+pub(crate) fn cascade_bounds(fit: &ShadowCameraFit, split: CascadeSplit) -> CascadeBounds {
     let corners = fit.slice_corners(split.near, split.far);
     let mut center = Vec3::ZERO;
     for c in &corners {
@@ -191,7 +209,40 @@ pub(crate) fn directional_cascade_view_proj(
     for c in &corners {
         radius = radius.max(center.distance(*c));
     }
-    radius = quantize_cascade_radius(radius);
+    CascadeBounds {
+        center,
+        radius: quantize_cascade_radius(radius),
+    }
+}
+
+/// Builds a camera-fitted, texel-snapped orthographic cascade projection (world to shadow clip).
+///
+/// Production fits through [`cascade_bounds`] plus
+/// [`directional_cascade_view_proj_for_bounds`] so a held cascade can be fitted to an inflated
+/// sphere; this stays as the unsplit reference the fit tests exercise.
+#[cfg(test)]
+pub(crate) fn directional_cascade_view_proj(
+    direction: Vec3,
+    up: Vec3,
+    fit: &ShadowCameraFit,
+    split: CascadeSplit,
+    resolution: u32,
+) -> Mat4 {
+    directional_cascade_view_proj_for_bounds(direction, up, cascade_bounds(fit, split), resolution)
+}
+
+/// Builds the cascade projection for an explicit slice sphere.
+///
+/// Split out so a staggered cascade can be fitted once to an inflated sphere and then held across
+/// several frames while the camera moves inside it.
+pub(crate) fn directional_cascade_view_proj_for_bounds(
+    direction: Vec3,
+    up: Vec3,
+    bounds: CascadeBounds,
+    resolution: u32,
+) -> Mat4 {
+    let center = bounds.center;
+    let radius = bounds.radius.max(1e-3);
 
     let pullback = radius * CASCADE_CASTER_PULLBACK;
     let eye = center - direction * (radius + pullback);

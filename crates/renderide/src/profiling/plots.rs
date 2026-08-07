@@ -40,6 +40,7 @@ pub use rayon_admission::{RayonAdmissionProfileSample, plot_rayon_admission};
 pub use render_world::{RenderWorldMaintenanceProfileSample, plot_render_world_maintenance};
 pub use shadow_atlas::{
     ShadowCacheProfileSample, plot_frame_global_split, plot_shadow_atlas, plot_shadow_cache,
+    plot_shadow_static_split,
 };
 pub use world_mesh_indirect::{
     WorldMeshDrawPlanCacheProfileSample, WorldMeshGeometryArenaProfileSample,
