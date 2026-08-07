@@ -12,6 +12,10 @@ name: Release
     - cron: "17 7 * * *"
   workflow_dispatch:
     inputs:
+      ref:
+        description: "Branch or SHA to release. Anything other than master publishes a prerelease that the updater ignores."
+        type: string
+        default: master
       force:
         description: "Re-release the candidate SHA even if it matches the previous release."
         type: boolean
@@ -35,20 +39,50 @@ jobs:
       previous_release_sha: ${{ steps.pick.outputs.previous_release_sha }}
       tag: ${{ steps.pick.outputs.tag }}
       should_release: ${{ steps.pick.outputs.should_release }}
+      prerelease: ${{ steps.pick.outputs.prerelease }}
+      make_latest: ${{ steps.pick.outputs.make_latest }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: master
+          ref: ${{ inputs.ref || 'master' }}
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Find newest green commit on master
+      - name: Find release candidate
         id: pick
         env:
           GH_TOKEN: ${{ github.token }}
           FORCE: ${{ inputs.force }}
+          RELEASE_REF: ${{ inputs.ref || 'master' }}
         run: |
           set -euo pipefail
+
+          # Branch builds are deliberate, manual, and must never reach nightly users. The `branch-`
+          # tag prefix is what enforces that: the updater only lists releases starting with
+          # `nightly-`, and a launcher whose embedded tag lacks that prefix reports no release
+          # metadata at all, so it neither offers itself to others nor self-updates.
+          if [ "${RELEASE_REF}" != "master" ]; then
+            candidate=$(git rev-parse --verify HEAD)
+            short=${candidate:0:7}
+            slug=$(printf '%s' "${RELEASE_REF}" | tr -c 'A-Za-z0-9' '-' | sed 's/-\{2,\}/-/g; s/^-//; s/-$//')
+            tag="branch-${slug}-$(date -u +%Y-%m-%d)-${short}"
+            {
+              echo "Releasing ${RELEASE_REF} at ${candidate} as prerelease ${tag}."
+              echo "CI green status is not checked for branch releases."
+              echo "This build will not self-update and nightly users will not be offered it."
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+            {
+              echo "sha=$candidate"
+              echo "short_sha=$short"
+              echo "previous_release_tag="
+              echo "previous_release_sha="
+              echo "tag=$tag"
+              echo "should_release=true"
+              echo "prerelease=true"
+              echo "make_latest=false"
+            } >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           green_shas=$(mktemp)
           gh api -X GET \
@@ -133,6 +167,8 @@ jobs:
             echo "previous_release_sha=$previous_release_sha"
             echo "tag=$tag"
             echo "should_release=true"
+            echo "prerelease=false"
+            echo "make_latest=true"
           } >>"$GITHUB_OUTPUT"
 
   build:
@@ -432,6 +468,6 @@ jobs:
           body_path: release-notes.md
           target_commitish: ${{ needs.select-commit.outputs.sha }}
           files: artifacts/**/*.zip
-          make_latest: "true"
-          prerelease: false
+          make_latest: ${{ needs.select-commit.outputs.make_latest }}
+          prerelease: ${{ needs.select-commit.outputs.prerelease == 'true' }}
           fail_on_unmatched_files: true
