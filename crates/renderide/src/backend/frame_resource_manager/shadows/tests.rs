@@ -706,8 +706,7 @@ mod render_scope {
 
     #[test]
     fn one_avatar_no_longer_forces_the_whole_layer_to_redraw() {
-        // This is the entire point of the split. Before, has_dynamic meant a full redraw of every
-        // static caster in the layer, 13 times a frame with 4 users in the room.
+        // A dynamic caster must cost only its own redraw, not the whole layer's.
         assert_eq!(
             shadow_render_scope(content(7, true), retained(None, Some(7), true)),
             ShadowRenderScope::DynamicOverStatic {

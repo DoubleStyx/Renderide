@@ -1,18 +1,17 @@
 //! Cached static-caster depth for shadow atlas layers.
 //!
-//! A shadow layer used to be all-or-nothing: either its atlas depth was still exactly right and the
-//! layer was skipped, or every visible caster was redrawn. One skinned caster anywhere in the layer
-//! forced the second path, so in a session with four avatars all thirteen layers redrew the entire
-//! static room every frame. That was 81% of all draw submissions in the capture.
+//! Holds the rigid half of each layer's depth in a parallel depth array. A layer that mixes static
+//! and dynamic casters restores its static depth with one fullscreen draw and then draws only the
+//! dynamic casters over it. Depth testing makes that identical to drawing both halves in one pass,
+//! so it is an exact reproduction and not an approximation.
 //!
-//! This store holds the rigid half of each layer's depth in a parallel depth array. Layers that mix
-//! static and dynamic casters restore their static depth with one fullscreen draw and then draw only
-//! the dynamic casters over it. Depth testing makes that identical to the combined pass, so it is an
-//! exact reproduction rather than an approximation.
+//! This exists because a skinned caster invalidates a layer every frame while the room around it
+//! holds still. Without the split, one avatar costs a full redraw of every caster in every layer it
+//! is visible to.
 //!
 //! The store is 1:1 with the atlas: store layer N backs atlas layer N. That costs a second atlas
-//! worth of VRAM, so allocation is capped by [`STATIC_STORE_VRAM_BUDGET_BYTES`] and simply declines
-//! when the atlas is too big, leaving the old full-redraw behavior in place.
+//! worth of VRAM, so allocation is capped by [`STATIC_STORE_VRAM_BUDGET_BYTES`] and declines when
+//! the atlas is too big, leaving those layers to redraw in full.
 
 use std::sync::Arc;
 

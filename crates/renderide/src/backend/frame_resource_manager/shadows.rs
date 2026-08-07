@@ -120,9 +120,8 @@ impl ShadowCasterSet {
 
 /// What a shadow layer must re-record this frame.
 ///
-/// The old model was binary: either the atlas layer still held the right image or every visible
-/// caster was redrawn. That collapsed the moment a single skinned caster appeared in a layer, which
-/// is why a room full of static geometry re-rendered 13 times a frame whenever anyone was present.
+/// The middle variant is the one that earns its keep: a skinned caster invalidates a layer every
+/// frame, but the static geometry around it does not need redrawing to accommodate that.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ShadowRenderScope {
     /// Layer already holds the exact image. Record nothing.
@@ -620,10 +619,9 @@ fn append_shadow_views_for_view(
     };
 
     // Order shadow candidates by how much they can matter on screen before the budget truncates.
-    // The punctual budget (`quality.per_pixel_lights`) used to bite in light-list order, so a dim
-    // light across the room could take the last shadow slot from one at your feet. Lowering the
-    // budget is the direct lever on shadow cost (13 layers measured in a 4-user session, 81% of all
-    // draw submissions), and it is only usable if the lights it keeps are the ones you notice.
+    // The punctual budget (`quality.per_pixel_lights`) is the direct lever on shadow cost, and it
+    // is only worth pulling if the lights it keeps are the ones you notice. Ranked here so a dim
+    // light across the room cannot take the last shadow slot from one at your feet.
     let shadow_order = shadow_light_priority_order(&lights.lights, camera_fit.as_ref());
 
     let mut local_shadowed = 0u32;
